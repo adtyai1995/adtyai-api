@@ -3,6 +3,7 @@ package adtygov
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,4 +179,92 @@ func compactJSONL(raw string) string {
 		return raw
 	}
 	return string(b) + "\n"
+}
+
+// 正式分母必须由同一个枚举入口生成，功能和规则不得由手工数字替代。
+func TestEnumerateUnitsIncludesFrozenFeatureAndRuleDenominators(t *testing.T) {
+	units, err := EnumerateUnits(repoRoot(t))
+	require.NoError(t, err)
+	byKind := map[string]map[string]Unit{}
+	seen := map[string]bool{}
+	for _, unit := range units {
+		require.False(t, seen[unit.UnitID], "unit IDs must be unique")
+		seen[unit.UnitID] = true
+		if byKind[unit.Kind] == nil {
+			byKind[unit.Kind] = map[string]Unit{}
+		}
+		byKind[unit.Kind][unit.UnitID] = unit
+	}
+	t.Run("all 240 official features", func(t *testing.T) {
+		require.Len(t, byKind["feature"], 240)
+		for group := 1; group <= 24; group++ {
+			for item := 1; item <= 10; item++ {
+				id := fmt.Sprintf("WU-FEATURE-ADTY-%02d-%02d", group, item)
+				require.Contains(t, byKind["feature"], id)
+				require.NotEmpty(t, byKind["feature"][id].Dims)
+				require.NotEmpty(t, byKind["feature"][id].SourceHash)
+			}
+		}
+	})
+	t.Run("every official G and A rule", func(t *testing.T) {
+		rules, err := OfficialRuleMappings()
+		require.NoError(t, err)
+		require.Len(t, byKind["rule"], len(rules))
+		for _, rule := range rules {
+			require.Contains(t, byKind["rule"], "WU-RULE-"+rule.RuleID)
+		}
+	})
+}
+
+func TestEnumerateUnitsIncludesCrossLayerAssets(t *testing.T) {
+	units, err := EnumerateUnits(repoRoot(t))
+	require.NoError(t, err)
+	paths := map[string]bool{}
+	for _, unit := range units {
+		paths[unit.Path] = true
+	}
+	for _, path := range []string{
+		".github/workflows/ci.yml", "docker-compose.yml", "scripts/adty/check.sh",
+		"web/src/components/copy-button.tsx", "model/adty_topup_order_test.go",
+		"middleware/testdata/adty_admin_routes.txt", "LICENSE", "go.mod",
+	} {
+		require.True(t, paths[path], "review denominator must cover %s", path)
+	}
+	foundTaskPlugin := false
+	for path := range paths {
+		if strings.HasPrefix(path, "plugins/tasks/") && strings.HasSuffix(path, ".js") {
+			foundTaskPlugin = true
+		}
+	}
+	require.True(t, foundTaskPlugin, "task plugin source must be in the denominator")
+}
+
+func TestEnumerateUnitsKeepsVendoredReviewInstructions(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module fixture\n"), 0o644))
+	instructions := ".agents/skills/shadcn-ui/vendor/shadcn/README.md"
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(root, instructions)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, instructions), []byte("Required component reuse instructions\n"), 0o644))
+	units, err := EnumerateUnits(root)
+	require.NoError(t, err)
+	var found bool
+	for _, unit := range units {
+		if unit.Path == instructions {
+			found = true
+			require.NotEmpty(t, unit.SourceHash)
+		}
+	}
+	require.True(t, found, "vendored review instructions are repository assets, not installed dependencies")
+}
+
+func TestEnumerateUnitsAssignsDomainAndMigrationToS13(t *testing.T) {
+	units, err := EnumerateUnits(repoRoot(t))
+	require.NoError(t, err)
+	owners := map[string]string{}
+	for _, unit := range units {
+		owners[unit.Path] = unit.AuditSlice
+	}
+	for _, path := range []string{"model/adty_site_domain.go", "model/adty_migrate.go"} {
+		require.Equal(t, "S13", owners[path], "plan 3.1 assigns domain and migration assets to S13")
+	}
 }

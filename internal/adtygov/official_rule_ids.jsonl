@@ -36,7 +36,7 @@
 {"rule_id": "A.12", "title": "分站客户余额、本金批次与永久赠金", "source": "volume1"}
 {"rule_id": "A.12.1", "title": "客户余额组成", "source": "volume1"}
 {"rule_id": "A.12.2", "title": "固定消费顺序", "source": "volume1"}
-{"rule_id": "A.12.3", "title": "永久赠金", "source": "volume1"}
+{"rule_id": "A.12.3", "title": "客户充值赠金（永久赠金）", "source": "volume1"}
 {"rule_id": "A.12.4", "title": "客户余额调整", "source": "volume1"}
 {"rule_id": "A.12.5", "title": "调减待核查", "source": "volume1"}
 {"rule_id": "A.12.6", "title": "退款、赠金回收和消费竞争", "source": "volume1"}
@@ -47,7 +47,7 @@
 {"rule_id": "A.13.2", "title": "分站一级邀请返佣", "source": "volume1"}
 {"rule_id": "A.13.3", "title": "佣金计算", "source": "volume1"}
 {"rule_id": "A.13.4", "title": "分站佣金资金冻结与去向 [R-02]", "source": "volume1"}
-{"rule_id": "A.13.5", "title": "退款按状态释放、冲回或追偿", "source": "volume1"}
+{"rule_id": "A.13.5", "title": "退款冲回", "source": "volume1"}
 {"rule_id": "A.13.6", "title": "反作弊与测试", "source": "volume1"}
 {"rule_id": "A.14", "title": "站长收益、提现与人工退款", "source": "volume1"}
 {"rule_id": "A.14.1", "title": "收益入账和结算", "source": "volume1"}
@@ -85,7 +85,7 @@
 {"rule_id": "A.20.4", "title": "页面视觉和交互验收", "source": "volume1"}
 {"rule_id": "A.21", "title": "PostgreSQL、资金安全与数据隔离", "source": "volume1"}
 {"rule_id": "A.21.1", "title": "关系型数据库", "source": "volume1"}
-{"rule_id": "A.21.2", "title": "本方案数据库测试范围 [R-03]", "source": "volume1"}
+{"rule_id": "A.21.2", "title": "共享上游工程兼容要求", "source": "volume1"}
 {"rule_id": "A.21.3", "title": "数据隔离", "source": "volume1"}
 {"rule_id": "A.21.4", "title": "资金流水和事务", "source": "volume1"}
 {"rule_id": "A.21.5", "title": "数据库迁移和事务恢复", "source": "volume1"}

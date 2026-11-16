@@ -1,0 +1,1447 @@
+{
+  "schema_version": "2.0",
+  "doc_version": "v2.7-unified",
+  "plan_sha256": "2730e26297b93f0545b3acfc1ba7495c5b6ad5ea3191daf0c502d81c1df78282",
+  "features": [
+    {
+      "feature_id": "ADTY-01-01",
+      "title": "首页展示与站点品牌信息",
+      "group": "H.01",
+      "source_line": 2466
+    },
+    {
+      "feature_id": "ADTY-01-02",
+      "title": "模型/服务介绍页面",
+      "group": "H.01",
+      "source_line": 2467
+    },
+    {
+      "feature_id": "ADTY-01-03",
+      "title": "价格展示页面",
+      "group": "H.01",
+      "source_line": 2468
+    },
+    {
+      "feature_id": "ADTY-01-04",
+      "title": "帮助中心入口",
+      "group": "H.01",
+      "source_line": 2469
+    },
+    {
+      "feature_id": "ADTY-01-05",
+      "title": "服务条款页面",
+      "group": "H.01",
+      "source_line": 2470
+    },
+    {
+      "feature_id": "ADTY-01-06",
+      "title": "隐私政策页面",
+      "group": "H.01",
+      "source_line": 2471
+    },
+    {
+      "feature_id": "ADTY-01-07",
+      "title": "公告列表与公告详情",
+      "group": "H.01",
+      "source_line": 2472
+    },
+    {
+      "feature_id": "ADTY-01-08",
+      "title": "中英文页面切换",
+      "group": "H.01",
+      "source_line": 2473
+    },
+    {
+      "feature_id": "ADTY-01-09",
+      "title": "页面 SEO 元信息管理",
+      "group": "H.01",
+      "source_line": 2474
+    },
+    {
+      "feature_id": "ADTY-01-10",
+      "title": "公开页面响应式布局",
+      "group": "H.01",
+      "source_line": 2475
+    },
+    {
+      "feature_id": "ADTY-02-01",
+      "title": "主站用户注册",
+      "group": "H.02",
+      "source_line": 2479
+    },
+    {
+      "feature_id": "ADTY-02-02",
+      "title": "分站用户注册",
+      "group": "H.02",
+      "source_line": 2480
+    },
+    {
+      "feature_id": "ADTY-02-03",
+      "title": "邮箱验证码发送与校验",
+      "group": "H.02",
+      "source_line": 2481
+    },
+    {
+      "feature_id": "ADTY-02-04",
+      "title": "用户登录",
+      "group": "H.02",
+      "source_line": 2482
+    },
+    {
+      "feature_id": "ADTY-02-05",
+      "title": "用户退出与会话失效",
+      "group": "H.02",
+      "source_line": 2483
+    },
+    {
+      "feature_id": "ADTY-02-06",
+      "title": "个人资料查看与修改",
+      "group": "H.02",
+      "source_line": 2484
+    },
+    {
+      "feature_id": "ADTY-02-07",
+      "title": "密码修改",
+      "group": "H.02",
+      "source_line": 2485
+    },
+    {
+      "feature_id": "ADTY-02-08",
+      "title": "邮箱修改及验证",
+      "group": "H.02",
+      "source_line": 2486
+    },
+    {
+      "feature_id": "ADTY-02-09",
+      "title": "账号注销申请与邮箱二次确认",
+      "group": "H.02",
+      "source_line": 2487
+    },
+    {
+      "feature_id": "ADTY-02-10",
+      "title": "账号状态及登录安全管理",
+      "group": "H.02",
+      "source_line": 2488
+    },
+    {
+      "feature_id": "ADTY-03-01",
+      "title": "账户美元余额展示",
+      "group": "H.03",
+      "source_line": 2492
+    },
+    {
+      "feature_id": "ADTY-03-02",
+      "title": "本金余额、永久赠金（充值赠金）余额和有到期时间赠金余额分开展示（DEC-031 两类须区分）",
+      "group": "H.03",
+      "source_line": 2493
+    },
+    {
+      "feature_id": "ADTY-03-03",
+      "title": "余额变动记录查询",
+      "group": "H.03",
+      "source_line": 2494
+    },
+    {
+      "feature_id": "ADTY-03-04",
+      "title": "个人充值订单列表",
+      "group": "H.03",
+      "source_line": 2495
+    },
+    {
+      "feature_id": "ADTY-03-05",
+      "title": "个人消费订单列表",
+      "group": "H.03",
+      "source_line": 2496
+    },
+    {
+      "feature_id": "ADTY-03-06",
+      "title": "订单详情查看",
+      "group": "H.03",
+      "source_line": 2497
+    },
+    {
+      "feature_id": "ADTY-03-07",
+      "title": "订单状态与支付状态展示",
+      "group": "H.03",
+      "source_line": 2498
+    },
+    {
+      "feature_id": "ADTY-03-08",
+      "title": "订单编号查询",
+      "group": "H.03",
+      "source_line": 2499
+    },
+    {
+      "feature_id": "ADTY-03-09",
+      "title": "个人订单筛选与分页",
+      "group": "H.03",
+      "source_line": 2500
+    },
+    {
+      "feature_id": "ADTY-03-10",
+      "title": "个人历史记录查看",
+      "group": "H.03",
+      "source_line": 2501
+    },
+    {
+      "feature_id": "ADTY-04-01",
+      "title": "创建 API Key",
+      "group": "H.04",
+      "source_line": 2505
+    },
+    {
+      "feature_id": "ADTY-04-02",
+      "title": "查看 Key 列表",
+      "group": "H.04",
+      "source_line": 2506
+    },
+    {
+      "feature_id": "ADTY-04-03",
+      "title": "编辑 Key 名称",
+      "group": "H.04",
+      "source_line": 2507
+    },
+    {
+      "feature_id": "ADTY-04-04",
+      "title": "删除 API Key",
+      "group": "H.04",
+      "source_line": 2508
+    },
+    {
+      "feature_id": "ADTY-04-05",
+      "title": "Key 状态启用/禁用",
+      "group": "H.04",
+      "source_line": 2509
+    },
+    {
+      "feature_id": "ADTY-04-06",
+      "title": "Key 额度配置",
+      "group": "H.04",
+      "source_line": 2510
+    },
+    {
+      "feature_id": "ADTY-04-07",
+      "title": "Key 有效期配置",
+      "group": "H.04",
+      "source_line": 2511
+    },
+    {
+      "feature_id": "ADTY-04-08",
+      "title": "Key 模型权限配置",
+      "group": "H.04",
+      "source_line": 2512
+    },
+    {
+      "feature_id": "ADTY-04-09",
+      "title": "Key 分组权限配置",
+      "group": "H.04",
+      "source_line": 2513
+    },
+    {
+      "feature_id": "ADTY-04-10",
+      "title": "Key IP 白名单及速率限制配置",
+      "group": "H.04",
+      "source_line": 2514
+    },
+    {
+      "feature_id": "ADTY-05-01",
+      "title": "模型新增与编辑",
+      "group": "H.05",
+      "source_line": 2518
+    },
+    {
+      "feature_id": "ADTY-05-02",
+      "title": "模型上下架及可用状态管理",
+      "group": "H.05",
+      "source_line": 2519
+    },
+    {
+      "feature_id": "ADTY-05-03",
+      "title": "模型别名与映射管理",
+      "group": "H.05",
+      "source_line": 2520
+    },
+    {
+      "feature_id": "ADTY-05-04",
+      "title": "模型输入/输出价格配置",
+      "group": "H.05",
+      "source_line": 2521
+    },
+    {
+      "feature_id": "ADTY-05-05",
+      "title": "模型能力及上下文配置",
+      "group": "H.05",
+      "source_line": 2522
+    },
+    {
+      "feature_id": "ADTY-05-06",
+      "title": "分组新增与编辑",
+      "group": "H.05",
+      "source_line": 2523
+    },
+    {
+      "feature_id": "ADTY-05-07",
+      "title": "分组模型范围配置",
+      "group": "H.05",
+      "source_line": 2524
+    },
+    {
+      "feature_id": "ADTY-05-08",
+      "title": "分组倍率与站点授权配置",
+      "group": "H.05",
+      "source_line": 2525
+    },
+    {
+      "feature_id": "ADTY-05-09",
+      "title": "上游渠道新增与编辑",
+      "group": "H.05",
+      "source_line": 2526
+    },
+    {
+      "feature_id": "ADTY-05-10",
+      "title": "渠道密钥、协议、模型映射及健康状态管理",
+      "group": "H.05",
+      "source_line": 2527
+    },
+    {
+      "feature_id": "ADTY-06-01",
+      "title": "API 请求认证与 Key 校验",
+      "group": "H.06",
+      "source_line": 2531
+    },
+    {
+      "feature_id": "ADTY-06-02",
+      "title": "请求模型和分组解析",
+      "group": "H.06",
+      "source_line": 2532
+    },
+    {
+      "feature_id": "ADTY-06-03",
+      "title": "上游渠道路由选择",
+      "group": "H.06",
+      "source_line": 2533
+    },
+    {
+      "feature_id": "ADTY-06-04",
+      "title": "协议格式转换",
+      "group": "H.06",
+      "source_line": 2534
+    },
+    {
+      "feature_id": "ADTY-06-05",
+      "title": "非流式请求转发",
+      "group": "H.06",
+      "source_line": 2535
+    },
+    {
+      "feature_id": "ADTY-06-06",
+      "title": "流式请求转发",
+      "group": "H.06",
+      "source_line": 2536
+    },
+    {
+      "feature_id": "ADTY-06-07",
+      "title": "多模态请求处理",
+      "group": "H.06",
+      "source_line": 2537
+    },
+    {
+      "feature_id": "ADTY-06-08",
+      "title": "工具调用请求处理",
+      "group": "H.06",
+      "source_line": 2538
+    },
+    {
+      "feature_id": "ADTY-06-09",
+      "title": "异步任务提交与结果查询",
+      "group": "H.06",
+      "source_line": 2539
+    },
+    {
+      "feature_id": "ADTY-06-10",
+      "title": "上游超时、失败、重试和终态处理",
+      "group": "H.06",
+      "source_line": 2540
+    },
+    {
+      "feature_id": "ADTY-07-01",
+      "title": "请求费用预估",
+      "group": "H.07",
+      "source_line": 2544
+    },
+    {
+      "feature_id": "ADTY-07-02",
+      "title": "调用前余额预扣",
+      "group": "H.07",
+      "source_line": 2545
+    },
+    {
+      "feature_id": "ADTY-07-03",
+      "title": "预扣失败时阻止上游调用",
+      "group": "H.07",
+      "source_line": 2546
+    },
+    {
+      "feature_id": "ADTY-07-04",
+      "title": "真实用量采集",
+      "group": "H.07",
+      "source_line": 2547
+    },
+    {
+      "feature_id": "ADTY-07-05",
+      "title": "按请求价格快照计算实际费用",
+      "group": "H.07",
+      "source_line": 2548
+    },
+    {
+      "feature_id": "ADTY-07-06",
+      "title": "实际费用结算",
+      "group": "H.07",
+      "source_line": 2549
+    },
+    {
+      "feature_id": "ADTY-07-07",
+      "title": "预扣差额释放",
+      "group": "H.07",
+      "source_line": 2550
+    },
+    {
+      "feature_id": "ADTY-07-08",
+      "title": "调用失败费用处理",
+      "group": "H.07",
+      "source_line": 2551
+    },
+    {
+      "feature_id": "ADTY-07-09",
+      "title": "个人账户扣费",
+      "group": "H.07",
+      "source_line": 2552
+    },
+    {
+      "feature_id": "ADTY-07-10",
+      "title": "团队账户扣费",
+      "group": "H.07",
+      "source_line": 2553
+    },
+    {
+      "feature_id": "ADTY-08-01",
+      "title": "美元账户记账",
+      "group": "H.08",
+      "source_line": 2557
+    },
+    {
+      "feature_id": "ADTY-08-02",
+      "title": "美元与内部额度固定换算",
+      "group": "H.08",
+      "source_line": 2558
+    },
+    {
+      "feature_id": "ADTY-08-03",
+      "title": "主站外币汇率配置",
+      "group": "H.08",
+      "source_line": 2559
+    },
+    {
+      "feature_id": "ADTY-08-04",
+      "title": "支付宝人民币应付金额计算",
+      "group": "H.08",
+      "source_line": 2560
+    },
+    {
+      "feature_id": "ADTY-08-05",
+      "title": "微信人民币应付金额计算",
+      "group": "H.08",
+      "source_line": 2561
+    },
+    {
+      "feature_id": "ADTY-08-06",
+      "title": "支付订单创建",
+      "group": "H.08",
+      "source_line": 2562
+    },
+    {
+      "feature_id": "ADTY-08-07",
+      "title": "易支付商户通道配置与选择",
+      "group": "H.08",
+      "source_line": 2563
+    },
+    {
+      "feature_id": "ADTY-08-08",
+      "title": "BEpusdt USDT 订单创建",
+      "group": "H.08",
+      "source_line": 2564
+    },
+    {
+      "feature_id": "ADTY-08-09",
+      "title": "支付回调验签及金额核对",
+      "group": "H.08",
+      "source_line": 2565
+    },
+    {
+      "feature_id": "ADTY-08-10",
+      "title": "主动补查、重复回调幂等与充值入账",
+      "group": "H.08",
+      "source_line": 2566
+    },
+    {
+      "feature_id": "ADTY-09-01",
+      "title": "主站按支付宝、微信、USDT 等支付方式设置赠金开关",
+      "group": "H.09",
+      "source_line": 2570
+    },
+    {
+      "feature_id": "ADTY-09-02",
+      "title": "主站按支付方式设置赠金比例",
+      "group": "H.09",
+      "source_line": 2571
+    },
+    {
+      "feature_id": "ADTY-09-03",
+      "title": "Root 授权分站可使用赠金的支付方式",
+      "group": "H.09",
+      "source_line": 2572
+    },
+    {
+      "feature_id": "ADTY-09-04",
+      "title": "站长仅在授权支付方式内配置本站赠金开关和比例",
+      "group": "H.09",
+      "source_line": 2573
+    },
+    {
+      "feature_id": "ADTY-09-05",
+      "title": "同一支付宝/微信支付方式下不同易支付商户共用赠金规则",
+      "group": "H.09",
+      "source_line": 2574
+    },
+    {
+      "feature_id": "ADTY-09-06",
+      "title": "订单保存支付方式、赠金比例、美元基数和赠金金额快照",
+      "group": "H.09",
+      "source_line": 2575
+    },
+    {
+      "feature_id": "ADTY-09-07",
+      "title": "分站赠金按收益钱包优先、授权保证金补位并保存来源",
+      "group": "H.09",
+      "source_line": 2576
+    },
+    {
+      "feature_id": "ADTY-09-08",
+      "title": "充值赠金（支付方式赠金）永久有效；有到期时间的赠金（如 Root 发放的试用赠金）由每日定时任务在到期日零点后清零（DEC-031）",
+      "group": "H.09",
+      "source_line": 2577
+    },
+    {
+      "feature_id": "ADTY-09-09",
+      "title": "充值本金按 FIFO 消费，全部本金耗尽后先消费有到期时间的赠金，再消费永久赠金（充值赠金）（有到期赠金顺序依赖 DEC-031 数据结构建立后实施）",
+      "group": "H.09",
+      "source_line": 2578
+    },
+    {
+      "feature_id": "ADTY-09-10",
+      "title": "原订单赠金追溯、退款累计回收和幂等",
+      "group": "H.09",
+      "source_line": 2579
+    },
+    {
+      "feature_id": "ADTY-10-01",
+      "title": "Root 创建分站",
+      "group": "H.10",
+      "source_line": 2583
+    },
+    {
+      "feature_id": "ADTY-10-02",
+      "title": "分站站点资料编辑",
+      "group": "H.10",
+      "source_line": 2584
+    },
+    {
+      "feature_id": "ADTY-10-03",
+      "title": "分站域名绑定",
+      "group": "H.10",
+      "source_line": 2585
+    },
+    {
+      "feature_id": "ADTY-10-04",
+      "title": "分站域名验证与解绑",
+      "group": "H.10",
+      "source_line": 2586
+    },
+    {
+      "feature_id": "ADTY-10-05",
+      "title": "分站品牌及页面配置",
+      "group": "H.10",
+      "source_line": 2587
+    },
+    {
+      "feature_id": "ADTY-10-06",
+      "title": "分站站长指定",
+      "group": "H.10",
+      "source_line": 2588
+    },
+    {
+      "feature_id": "ADTY-10-07",
+      "title": "分站启用状态管理",
+      "group": "H.10",
+      "source_line": 2589
+    },
+    {
+      "feature_id": "ADTY-10-08",
+      "title": "分站等级配置",
+      "group": "H.10",
+      "source_line": 2590
+    },
+    {
+      "feature_id": "ADTY-10-09",
+      "title": "分站人数/充值/消费等级考核",
+      "group": "H.10",
+      "source_line": 2591
+    },
+    {
+      "feature_id": "ADTY-10-10",
+      "title": "分站关闭及主站承接",
+      "group": "H.10",
+      "source_line": 2592
+    },
+    {
+      "feature_id": "ADTY-11-01",
+      "title": "主站配置分站供货价格",
+      "group": "H.11",
+      "source_line": 2596
+    },
+    {
+      "feature_id": "ADTY-11-02",
+      "title": "分站普通客户售价配置",
+      "group": "H.11",
+      "source_line": 2597
+    },
+    {
+      "feature_id": "ADTY-11-03",
+      "title": "分站团队折扣配置",
+      "group": "H.11",
+      "source_line": 2598
+    },
+    {
+      "feature_id": "ADTY-11-04",
+      "title": "分站团队折后价下限校验",
+      "group": "H.11",
+      "source_line": 2599
+    },
+    {
+      "feature_id": "ADTY-11-05",
+      "title": "主站团队协议价配置",
+      "group": "H.11",
+      "source_line": 2600
+    },
+    {
+      "feature_id": "ADTY-11-06",
+      "title": "主站团队价格不设供货价下限",
+      "group": "H.11",
+      "source_line": 2601
+    },
+    {
+      "feature_id": "ADTY-11-07",
+      "title": "模型及分组价格快照",
+      "group": "H.11",
+      "source_line": 2602
+    },
+    {
+      "feature_id": "ADTY-11-08",
+      "title": "价格修改历史记录",
+      "group": "H.11",
+      "source_line": 2603
+    },
+    {
+      "feature_id": "ADTY-11-09",
+      "title": "站长收益计算明细",
+      "group": "H.11",
+      "source_line": 2604
+    },
+    {
+      "feature_id": "ADTY-11-10",
+      "title": "收益明细展示模型和分组且隐藏渠道",
+      "group": "H.11",
+      "source_line": 2605
+    },
+    {
+      "feature_id": "ADTY-12-01",
+      "title": "经营钱包内部账务记录",
+      "group": "H.12",
+      "source_line": 2609
+    },
+    {
+      "feature_id": "ADTY-12-02",
+      "title": "经营钱包客户本金对应资金核算",
+      "group": "H.12",
+      "source_line": 2610
+    },
+    {
+      "feature_id": "ADTY-12-03",
+      "title": "经营钱包消费本金扣减",
+      "group": "H.12",
+      "source_line": 2611
+    },
+    {
+      "feature_id": "ADTY-12-04",
+      "title": "经营钱包与客户本金对账",
+      "group": "H.12",
+      "source_line": 2612
+    },
+    {
+      "feature_id": "ADTY-12-05",
+      "title": "收益钱包余额与流水管理",
+      "group": "H.12",
+      "source_line": 2613
+    },
+    {
+      "feature_id": "ADTY-12-06",
+      "title": "保证金钱包余额与流水管理",
+      "group": "H.12",
+      "source_line": 2614
+    },
+    {
+      "feature_id": "ADTY-12-07",
+      "title": "保证金档位90%可动用额度计算",
+      "group": "H.12",
+      "source_line": 2615
+    },
+    {
+      "feature_id": "ADTY-12-08",
+      "title": "保证金补充后额度重新计算",
+      "group": "H.12",
+      "source_line": 2616
+    },
+    {
+      "feature_id": "ADTY-12-09",
+      "title": "收益钱包划转保证金",
+      "group": "H.12",
+      "source_line": 2617
+    },
+    {
+      "feature_id": "ADTY-12-10",
+      "title": "站长每笔收益实时入账及每日0点汇总账单",
+      "group": "H.12",
+      "source_line": 2618
+    },
+    {
+      "feature_id": "ADTY-13-01",
+      "title": "创建团队",
+      "group": "H.13",
+      "source_line": 2622
+    },
+    {
+      "feature_id": "ADTY-13-02",
+      "title": "团队负责人管理团队资料",
+      "group": "H.13",
+      "source_line": 2623
+    },
+    {
+      "feature_id": "ADTY-13-03",
+      "title": "团队成员注册/邀请",
+      "group": "H.13",
+      "source_line": 2624
+    },
+    {
+      "feature_id": "ADTY-13-04",
+      "title": "团队成员删除",
+      "group": "H.13",
+      "source_line": 2625
+    },
+    {
+      "feature_id": "ADTY-13-05",
+      "title": "团队成员单团队归属校验",
+      "group": "H.13",
+      "source_line": 2626
+    },
+    {
+      "feature_id": "ADTY-13-06",
+      "title": "团队共享余额管理",
+      "group": "H.13",
+      "source_line": 2627
+    },
+    {
+      "feature_id": "ADTY-13-07",
+      "title": "团队充值订单",
+      "group": "H.13",
+      "source_line": 2628
+    },
+    {
+      "feature_id": "ADTY-13-08",
+      "title": "团队充值不发放支付通道赠金",
+      "group": "H.13",
+      "source_line": 2629
+    },
+    {
+      "feature_id": "ADTY-13-09",
+      "title": "团队 API Key 创建与管理",
+      "group": "H.13",
+      "source_line": 2630
+    },
+    {
+      "feature_id": "ADTY-13-10",
+      "title": "负责人退出/注销时团队关闭",
+      "group": "H.13",
+      "source_line": 2631
+    },
+    {
+      "feature_id": "ADTY-14-01",
+      "title": "站长创建员工独立账号",
+      "group": "H.14",
+      "source_line": 2635
+    },
+    {
+      "feature_id": "ADTY-14-02",
+      "title": "站长删除员工账号",
+      "group": "H.14",
+      "source_line": 2636
+    },
+    {
+      "feature_id": "ADTY-14-03",
+      "title": "员工角色及权限配置",
+      "group": "H.14",
+      "source_line": 2637
+    },
+    {
+      "feature_id": "ADTY-14-04",
+      "title": "员工权限变更",
+      "group": "H.14",
+      "source_line": 2638
+    },
+    {
+      "feature_id": "ADTY-14-05",
+      "title": "员工会话及权限撤销",
+      "group": "H.14",
+      "source_line": 2639
+    },
+    {
+      "feature_id": "ADTY-14-06",
+      "title": "员工提交客户余额增加申请",
+      "group": "H.14",
+      "source_line": 2640
+    },
+    {
+      "feature_id": "ADTY-14-07",
+      "title": "员工提交客户余额扣减申请",
+      "group": "H.14",
+      "source_line": 2641
+    },
+    {
+      "feature_id": "ADTY-14-08",
+      "title": "站长审批员工余额申请",
+      "group": "H.14",
+      "source_line": 2642
+    },
+    {
+      "feature_id": "ADTY-14-09",
+      "title": "主站管理员审批员工余额申请",
+      "group": "H.14",
+      "source_line": 2643
+    },
+    {
+      "feature_id": "ADTY-14-10",
+      "title": "审批结果、资金流水与审计记录",
+      "group": "H.14",
+      "source_line": 2644
+    },
+    {
+      "feature_id": "ADTY-15-01",
+      "title": "主站发行主站用户充值兑换码",
+      "group": "H.15",
+      "source_line": 2648
+    },
+    {
+      "feature_id": "ADTY-15-02",
+      "title": "主站发行指定站长保证金兑换码",
+      "group": "H.15",
+      "source_line": 2649
+    },
+    {
+      "feature_id": "ADTY-15-03",
+      "title": "主站兑换码用途、主站范围和账户类型限制",
+      "group": "H.15",
+      "source_line": 2650
+    },
+    {
+      "feature_id": "ADTY-15-04",
+      "title": "分站站长发行本站范围客户本金兑换码",
+      "group": "H.15",
+      "source_line": 2651
+    },
+    {
+      "feature_id": "ADTY-15-05",
+      "title": "分站站长发行仅本人兑换的消费本金兑换码",
+      "group": "H.15",
+      "source_line": 2652
+    },
+    {
+      "feature_id": "ADTY-15-06",
+      "title": "分站兑换码资金来源冻结",
+      "group": "H.15",
+      "source_line": 2653
+    },
+    {
+      "feature_id": "ADTY-15-07",
+      "title": "兑换码复制与查看（完整码只在生成时返回一次，之后只显示后四位）",
+      "group": "H.15",
+      "source_line": 2654
+    },
+    {
+      "feature_id": "ADTY-15-08",
+      "title": "兑换码一次性核销",
+      "group": "H.15",
+      "source_line": 2655
+    },
+    {
+      "feature_id": "ADTY-15-09",
+      "title": "兑换成功生成统一订单记录",
+      "group": "H.15",
+      "source_line": 2656
+    },
+    {
+      "feature_id": "ADTY-15-10",
+      "title": "未兑换码手动取消、历史记录、范围迁移和权限隔离",
+      "group": "H.15",
+      "source_line": 2657
+    },
+    {
+      "feature_id": "ADTY-16-01",
+      "title": "主站邀请关系管理",
+      "group": "H.16",
+      "source_line": 2661
+    },
+    {
+      "feature_id": "ADTY-16-02",
+      "title": "主站邀请佣金比例配置",
+      "group": "H.16",
+      "source_line": 2662
+    },
+    {
+      "feature_id": "ADTY-16-03",
+      "title": "分站一级邀请关系管理",
+      "group": "H.16",
+      "source_line": 2663
+    },
+    {
+      "feature_id": "ADTY-16-04",
+      "title": "分站邀请佣金比例配置",
+      "group": "H.16",
+      "source_line": 2664
+    },
+    {
+      "feature_id": "ADTY-16-05",
+      "title": "邀请佣金计算与订单快照",
+      "group": "H.16",
+      "source_line": 2665
+    },
+    {
+      "feature_id": "ADTY-16-06",
+      "title": "佣金实时/规则入账及明细",
+      "group": "H.16",
+      "source_line": 2666
+    },
+    {
+      "feature_id": "ADTY-16-07",
+      "title": "人工部分退款金额录入",
+      "group": "H.16",
+      "source_line": 2667
+    },
+    {
+      "feature_id": "ADTY-16-08",
+      "title": "人工退款审批及线下付款凭证记录",
+      "group": "H.16",
+      "source_line": 2668
+    },
+    {
+      "feature_id": "ADTY-16-09",
+      "title": "退款回收原订单赠金及按比例冲回佣金",
+      "group": "H.16",
+      "source_line": 2669
+    },
+    {
+      "feature_id": "ADTY-16-10",
+      "title": "站长提现申请、汇率快照与处理记录",
+      "group": "H.16",
+      "source_line": 2670
+    },
+    {
+      "feature_id": "ADTY-17-01",
+      "title": "主站全局用户列表",
+      "group": "H.17",
+      "source_line": 2674
+    },
+    {
+      "feature_id": "ADTY-17-02",
+      "title": "站长本站用户列表",
+      "group": "H.17",
+      "source_line": 2675
+    },
+    {
+      "feature_id": "ADTY-17-03",
+      "title": "主站全局订单列表",
+      "group": "H.17",
+      "source_line": 2676
+    },
+    {
+      "feature_id": "ADTY-17-04",
+      "title": "站长本站用户订单列表",
+      "group": "H.17",
+      "source_line": 2677
+    },
+    {
+      "feature_id": "ADTY-17-05",
+      "title": "订单详情及资金来源追溯",
+      "group": "H.17",
+      "source_line": 2678
+    },
+    {
+      "feature_id": "ADTY-17-06",
+      "title": "充值/消费/兑换/退款订单分类查询",
+      "group": "H.17",
+      "source_line": 2679
+    },
+    {
+      "feature_id": "ADTY-17-07",
+      "title": "订单状态筛选与分页",
+      "group": "H.17",
+      "source_line": 2680
+    },
+    {
+      "feature_id": "ADTY-17-08",
+      "title": "资金流水查询",
+      "group": "H.17",
+      "source_line": 2681
+    },
+    {
+      "feature_id": "ADTY-17-09",
+      "title": "财务记录导出及权限控制",
+      "group": "H.17",
+      "source_line": 2682
+    },
+    {
+      "feature_id": "ADTY-17-10",
+      "title": "员工余额调整和财务调整单查询",
+      "group": "H.17",
+      "source_line": 2683
+    },
+    {
+      "feature_id": "ADTY-18-01",
+      "title": "站内通知生成",
+      "group": "H.18",
+      "source_line": 2687
+    },
+    {
+      "feature_id": "ADTY-18-02",
+      "title": "站内通知列表与历史记录",
+      "group": "H.18",
+      "source_line": 2688
+    },
+    {
+      "feature_id": "ADTY-18-03",
+      "title": "通知已读/未读状态",
+      "group": "H.18",
+      "source_line": 2689
+    },
+    {
+      "feature_id": "ADTY-18-04",
+      "title": "用户手动删除通知（实现为对本人隐藏，原记录和审计保留）",
+      "group": "H.18",
+      "source_line": 2690
+    },
+    {
+      "feature_id": "ADTY-18-05",
+      "title": "严重待办手动标记完成",
+      "group": "H.18",
+      "source_line": 2691
+    },
+    {
+      "feature_id": "ADTY-18-06",
+      "title": "主站公告发布",
+      "group": "H.18",
+      "source_line": 2692
+    },
+    {
+      "feature_id": "ADTY-18-07",
+      "title": "按站点/团队/用户范围发送通知",
+      "group": "H.18",
+      "source_line": 2693
+    },
+    {
+      "feature_id": "ADTY-18-08",
+      "title": "平台用户通知 Bot 配置",
+      "group": "H.18",
+      "source_line": 2694
+    },
+    {
+      "feature_id": "ADTY-18-09",
+      "title": "分站管理通知 Bot 配置",
+      "group": "H.18",
+      "source_line": 2695
+    },
+    {
+      "feature_id": "ADTY-18-10",
+      "title": "账号绑定/解绑及双语 Telegram 通知",
+      "group": "H.18",
+      "source_line": 2696
+    },
+    {
+      "feature_id": "ADTY-19-01",
+      "title": "主站翻译服务配置",
+      "group": "H.19",
+      "source_line": 2700
+    },
+    {
+      "feature_id": "ADTY-19-02",
+      "title": "翻译模型选择",
+      "group": "H.19",
+      "source_line": 2701
+    },
+    {
+      "feature_id": "ADTY-19-03",
+      "title": "翻译 API 地址与密钥配置",
+      "group": "H.19",
+      "source_line": 2702
+    },
+    {
+      "feature_id": "ADTY-19-04",
+      "title": "翻译服务连通性测试",
+      "group": "H.19",
+      "source_line": 2703
+    },
+    {
+      "feature_id": "ADTY-19-05",
+      "title": "中文动态内容自动翻译英文",
+      "group": "H.19",
+      "source_line": 2704
+    },
+    {
+      "feature_id": "ADTY-19-06",
+      "title": "翻译结果保存与复用",
+      "group": "H.19",
+      "source_line": 2705
+    },
+    {
+      "feature_id": "ADTY-19-07",
+      "title": "固定系统通知双语模板管理",
+      "group": "H.19",
+      "source_line": 2706
+    },
+    {
+      "feature_id": "ADTY-19-08",
+      "title": "翻译术语表管理",
+      "group": "H.19",
+      "source_line": 2707
+    },
+    {
+      "feature_id": "ADTY-19-09",
+      "title": "译文失败状态与重试",
+      "group": "H.19",
+      "source_line": 2708
+    },
+    {
+      "feature_id": "ADTY-19-10",
+      "title": "金额/订单号/占位符翻译一致性校验",
+      "group": "H.19",
+      "source_line": 2709
+    },
+    {
+      "feature_id": "ADTY-20-01",
+      "title": "模型/分组24小时状态统计",
+      "group": "H.20",
+      "source_line": 2713
+    },
+    {
+      "feature_id": "ADTY-20-02",
+      "title": "96个15分钟监控窗口展示",
+      "group": "H.20",
+      "source_line": 2714
+    },
+    {
+      "feature_id": "ADTY-20-03",
+      "title": "请求成功率统计",
+      "group": "H.20",
+      "source_line": 2715
+    },
+    {
+      "feature_id": "ADTY-20-04",
+      "title": "主动探测可用率统计",
+      "group": "H.20",
+      "source_line": 2716
+    },
+    {
+      "feature_id": "ADTY-20-05",
+      "title": "样本量和数据更新时间展示",
+      "group": "H.20",
+      "source_line": 2717
+    },
+    {
+      "feature_id": "ADTY-20-06",
+      "title": "无样本/数据过期状态展示",
+      "group": "H.20",
+      "source_line": 2718
+    },
+    {
+      "feature_id": "ADTY-20-07",
+      "title": "用户创建客服工单",
+      "group": "H.20",
+      "source_line": 2719
+    },
+    {
+      "feature_id": "ADTY-20-08",
+      "title": "客服工单图片上传",
+      "group": "H.20",
+      "source_line": 2720
+    },
+    {
+      "feature_id": "ADTY-20-09",
+      "title": "客服工单分配及转交",
+      "group": "H.20",
+      "source_line": 2721
+    },
+    {
+      "feature_id": "ADTY-20-10",
+      "title": "客服回复、内部备注及工单状态流转",
+      "group": "H.20",
+      "source_line": 2722
+    },
+    {
+      "feature_id": "ADTY-21-01",
+      "title": "重要操作重新输入账号密码验证",
+      "group": "H.21",
+      "source_line": 2726
+    },
+    {
+      "feature_id": "ADTY-21-02",
+      "title": "重要操作邮箱验证码验证",
+      "group": "H.21",
+      "source_line": 2727
+    },
+    {
+      "feature_id": "ADTY-21-03",
+      "title": "Root 二次验证豁免",
+      "group": "H.21",
+      "source_line": 2728
+    },
+    {
+      "feature_id": "ADTY-21-04",
+      "title": "敏感操作权限校验",
+      "group": "H.21",
+      "source_line": 2729
+    },
+    {
+      "feature_id": "ADTY-21-05",
+      "title": "用户/站点/团队数据隔离",
+      "group": "H.21",
+      "source_line": 2730
+    },
+    {
+      "feature_id": "ADTY-21-06",
+      "title": "管理员与员工操作审计",
+      "group": "H.21",
+      "source_line": 2731
+    },
+    {
+      "feature_id": "ADTY-21-07",
+      "title": "资金余额与流水差异检测",
+      "group": "H.21",
+      "source_line": 2732
+    },
+    {
+      "feature_id": "ADTY-21-08",
+      "title": "重复入账/重复退款异常检测",
+      "group": "H.21",
+      "source_line": 2733
+    },
+    {
+      "feature_id": "ADTY-21-09",
+      "title": "赠金保障及保证金异常检测",
+      "group": "H.21",
+      "source_line": 2734
+    },
+    {
+      "feature_id": "ADTY-21-10",
+      "title": "异常核查、处置记录与通知",
+      "group": "H.21",
+      "source_line": 2735
+    },
+    {
+      "feature_id": "ADTY-22-01",
+      "title": "普通用户使用文档",
+      "group": "H.22",
+      "source_line": 2739
+    },
+    {
+      "feature_id": "ADTY-22-02",
+      "title": "团队负责人使用文档",
+      "group": "H.22",
+      "source_line": 2740
+    },
+    {
+      "feature_id": "ADTY-22-03",
+      "title": "团队成员使用文档",
+      "group": "H.22",
+      "source_line": 2741
+    },
+    {
+      "feature_id": "ADTY-22-04",
+      "title": "分站站长使用文档",
+      "group": "H.22",
+      "source_line": 2742
+    },
+    {
+      "feature_id": "ADTY-22-05",
+      "title": "分站员工使用文档",
+      "group": "H.22",
+      "source_line": 2743
+    },
+    {
+      "feature_id": "ADTY-22-06",
+      "title": "主站管理员使用文档",
+      "group": "H.22",
+      "source_line": 2744
+    },
+    {
+      "feature_id": "ADTY-22-07",
+      "title": "API 接入文档",
+      "group": "H.22",
+      "source_line": 2745
+    },
+    {
+      "feature_id": "ADTY-22-08",
+      "title": "模型及分组调用说明",
+      "group": "H.22",
+      "source_line": 2746
+    },
+    {
+      "feature_id": "ADTY-22-09",
+      "title": "智能体调用方法与示例",
+      "group": "H.22",
+      "source_line": 2747
+    },
+    {
+      "feature_id": "ADTY-22-10",
+      "title": "中英文文档及页面帮助入口",
+      "group": "H.22",
+      "source_line": 2748
+    },
+    {
+      "feature_id": "ADTY-23-01",
+      "title": "PostgreSQL 初始化与迁移",
+      "group": "H.23",
+      "source_line": 2752
+    },
+    {
+      "feature_id": "ADTY-23-02",
+      "title": "确认运行的是 PostgreSQL 18，记录实际 `server_version_num`；低于 18 须升级 [R-03][R-04]",
+      "group": "H.23",
+      "source_line": 2753
+    },
+    {
+      "feature_id": "ADTY-23-03",
+      "title": "Redis 缓存与限流服务",
+      "group": "H.23",
+      "source_line": 2754
+    },
+    {
+      "feature_id": "ADTY-23-04",
+      "title": "后台任务与任务恢复",
+      "group": "H.23",
+      "source_line": 2755
+    },
+    {
+      "feature_id": "ADTY-23-05",
+      "title": "邮件服务配置",
+      "group": "H.23",
+      "source_line": 2756
+    },
+    {
+      "feature_id": "ADTY-23-06",
+      "title": "日志与错误追踪",
+      "group": "H.23",
+      "source_line": 2757
+    },
+    {
+      "feature_id": "ADTY-23-07",
+      "title": "应用构建与部署配置",
+      "group": "H.23",
+      "source_line": 2758
+    },
+    {
+      "feature_id": "ADTY-23-08",
+      "title": "运行健康检查",
+      "group": "H.23",
+      "source_line": 2759
+    },
+    {
+      "feature_id": "ADTY-23-09",
+      "title": "配置与密钥安全管理",
+      "group": "H.23",
+      "source_line": 2760
+    },
+    {
+      "feature_id": "ADTY-23-10",
+      "title": "数据一致性及事务/进程重启恢复",
+      "group": "H.23",
+      "source_line": 2761
+    },
+    {
+      "feature_id": "ADTY-24-01",
+      "title": "全仓源码资产盘点",
+      "group": "H.24",
+      "source_line": 2765
+    },
+    {
+      "feature_id": "ADTY-24-02",
+      "title": "全仓业务规则映射",
+      "group": "H.24",
+      "source_line": 2766
+    },
+    {
+      "feature_id": "ADTY-24-03",
+      "title": "全局代码审查",
+      "group": "H.24",
+      "source_line": 2767
+    },
+    {
+      "feature_id": "ADTY-24-04",
+      "title": "全项目问题清单管理",
+      "group": "H.24",
+      "source_line": 2768
+    },
+    {
+      "feature_id": "ADTY-24-05",
+      "title": "缺陷根因分析与修复",
+      "group": "H.24",
+      "source_line": 2769
+    },
+    {
+      "feature_id": "ADTY-24-06",
+      "title": "退役功能完整调用链清理",
+      "group": "H.24",
+      "source_line": 2770
+    },
+    {
+      "feature_id": "ADTY-24-07",
+      "title": "重复代码与无效依赖清理",
+      "group": "H.24",
+      "source_line": 2771
+    },
+    {
+      "feature_id": "ADTY-24-08",
+      "title": "修复后全项目重新审查",
+      "group": "H.24",
+      "source_line": 2772
+    },
+    {
+      "feature_id": "ADTY-24-09",
+      "title": "全局审查清零后的完整冒烟测试",
+      "group": "H.24",
+      "source_line": 2773
+    },
+    {
+      "feature_id": "ADTY-24-10",
+      "title": "大规模用户/分站/团队测试及最终验收",
+      "group": "H.24",
+      "source_line": 2774
+    }
+  ]
+}
