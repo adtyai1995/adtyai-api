@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// 在真库上验一遍：主版本判据放行 17.x，补丁号只记录。
+// 在真库上验一遍：主版本判据放行 18.x，补丁号只记录。
 func TestRecordServerVersionOnLivePostgres(t *testing.T) {
 	dsn := os.Getenv("ADTY_TEST_PG_DSN")
 	if dsn == "" {
@@ -29,6 +29,6 @@ func TestRecordServerVersionOnLivePostgres(t *testing.T) {
 	if versionNum == "" {
 		t.Fatal("版本号必须被记录")
 	}
-	// 17.12 / 17.13 都应当到这里；16 或 18 会在 RecordServerVersion 里 Fatal。
+	// 18.x 的不同补丁版本都应到这里；其他主版本在 RecordServerVersion 里 Fatal。
 	t.Logf("live server_version_num=%s (major check passed)", versionNum)
 }

@@ -717,3 +717,12 @@
 | `web/src/features/auth/secure-verification/types.ts` | `SiteOwnerAction` 加 `voucher.issue`、`voucher.freeze`、`voucher.cancel` | 站长签发、冻结、取消兑换码要二次验证 | 补界面 2026-11-17 |
 | `web/src/features/system-settings/operations/section-registry.tsx` | 运维设置加「分组健康」分区（`GroupHealthSection`） | 分组健康阈值后台可改 | 补界面 2026-11-17 |
 | `web/src/i18n/locales/en.json`、`zh.json` | 追加补界面用到的词条，补上数据保留页缺的中文 | 新界面要有中英文 | 补界面 2026-11-17 |
+
+| `internal/pgtest/pgtest.go` | PostgreSQL 版本要求、实际连接回归及补丁号反钉死门禁对齐 18.x | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
+| `internal/pgtest/pgtest_gate_test.go` | PostgreSQL 版本要求、实际连接回归及补丁号反钉死门禁对齐 18.x | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
+| `internal/pgtest/pgtest_live_test.go` | PostgreSQL 版本要求、实际连接回归及补丁号反钉死门禁对齐 18.x | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
+| `docker-compose.yml` | PostgreSQL 镜像对齐 18；Compose 同步官方 18 数据卷挂载并保留旧库迁移警告 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
+| `docker-compose.dev.yml` | PostgreSQL 镜像对齐 18；Compose 同步官方 18 数据卷挂载并保留旧库迁移警告 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
+| `deploy/adty/docker-compose.yml` | PostgreSQL 镜像对齐 18；Compose 同步官方 18 数据卷挂载并保留旧库迁移警告 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
+| `.github/workflows/ci.yml` | 隔离 PostgreSQL 测试服务镜像由 17 对齐为 18 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
+| `.github/workflows/adty-ghcr.yml` | 隔离 PostgreSQL 测试服务镜像由 17 对齐为 18 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |

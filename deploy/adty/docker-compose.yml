@@ -59,7 +59,9 @@ services:
     logging: *default-logging
 
   postgres:
-    image: postgres:17
+    # PostgreSQL 18 uses /var/lib/postgresql/18/docker under this volume.
+    # Existing 17.x data requires migration to a new volume and reconciliation first.
+    image: postgres:18
     container_name: adtyai-postgres
     restart: always
     environment:
@@ -68,7 +70,7 @@ services:
       POSTGRES_DB: adtyai
       TZ: ${TZ:-UTC}
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U adtyai -d adtyai"]
       interval: 10s

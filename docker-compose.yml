@@ -81,7 +81,9 @@ services:
       - new-api-network
 
   postgres:
-    image: postgres:17
+    # PostgreSQL 18 uses /var/lib/postgresql/18/docker under this volume.
+    # Existing 17.x data requires migration to a new volume and reconciliation first.
+    image: postgres:18
     container_name: postgres
     restart: always
     environment:
@@ -89,7 +91,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: new-api
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql
     networks:
       - new-api-network
 #    ports:

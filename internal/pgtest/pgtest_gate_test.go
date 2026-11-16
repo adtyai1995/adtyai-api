@@ -1,12 +1,15 @@
 package pgtest
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // pinnedVersionAssertion 匹配「把 PostgreSQL **补丁号**当通过条件」的写法：
@@ -14,18 +17,18 @@ import (
 //	require.Equal(t, 170012, version, ...)   ← 门禁会剥掉本行；`rg 170012` 数得到
 //	require.EqualValues(t, 170012, ...)      ← 同上
 //
-// 只要数字是五到六位的 `17xxxx`，就是同一个错——**它把「我跑的是 17.12」
+// 比较版本变量时，数字为 `17xxxx` 或 `18xxxx`，就是同一个错——**它把「我跑的是 17.12」
 // 变成了测试通过的条件**，而测试要验的（扣费、退款、迁移、可见性）与补丁号无关。
 // 升到 17.13 就红、改个数字就绿，这个约束于是变成一个没人看的常量。
 //
 // **主版本断言不在禁列**：`pgtest.RecordServerVersion` 里那条
-// `num / 10000 != RequiredPostgresMajor` 是刻意的（17.13 不红、16/18 才红），
+// `num / 10000 != RequiredPostgresMajor` 是刻意的（18.x 不红，其他主版本才红），
 // 它写的是除法和常量，不是 `require.Equal(t, 17xxxx, …)`，正则不会命中。
-var pinnedVersionAssertion = regexp.MustCompile(`require\.(Equal|EqualValues)\(t, 17\d{4},`)
+var pinnedVersionAssertion = regexp.MustCompile(`require\.(Equal|EqualValues)\(t, (?:17|18)\d{4},\s*(?i:[a-z_]*version[a-z0-9_]*)\s*[,)]`)
 
 // 这条是**门禁**：它不验产品行为，只防「有人又把版本号钉回去」。
 // 判据是可执行的，不是一句「注意不要」。新增文件同样被扫到——这是它比
-// code review 强的地方。
+// code review 强的地方。金额等非版本变量不属于本门禁，不能按数字形状误报。
 func TestNoPinnedPostgresPatchLevelAssertions(t *testing.T) {
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -96,4 +99,20 @@ func stripLineComments(source string) string {
 		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
+}
+
+// 18.x与历史17.x的补丁号都只能作为证据，不能写死为通过条件。
+func TestPinnedPostgresPatchLevelGateCoversCurrentAndHistoricalMajor(t *testing.T) {
+	for _, tc := range []struct {
+		method  string
+		version int
+	}{
+		{"Equal", 170012}, {"Equal", 180007}, {"EqualValues", 180008},
+	} {
+		assertion := fmt.Sprintf("require.%s(t, %d, version)", tc.method, tc.version)
+		require.True(t, pinnedVersionAssertion.MatchString(assertion), "must detect patch pin: %s", assertion)
+	}
+	require.False(t, pinnedVersionAssertion.MatchString("num / 10000 != RequiredPostgresMajor"))
+	quotaAssertion := fmt.Sprintf("require.%s(t, %d, summary.Quota)", "Equal", 180000)
+	require.False(t, pinnedVersionAssertion.MatchString(quotaAssertion), "a real quota expectation is not a server-version pin")
 }

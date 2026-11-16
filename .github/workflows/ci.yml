@@ -27,7 +27,7 @@ jobs:
       AUDIT_POSTGRES_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable client_encoding=UTF8'
     services:
       postgres:
-        image: postgres:17
+        image: postgres:18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: adty_ci_test
@@ -174,7 +174,7 @@ jobs:
       ADTY_TEST_PG_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable client_encoding=UTF8'
     services:
       postgres:
-        image: postgres:17
+        image: postgres:18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: adty_ci_test
