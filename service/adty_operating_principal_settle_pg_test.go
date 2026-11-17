@@ -249,19 +249,61 @@ func TestTaskAdjustmentDebitsOnlyTheIncrementPG(t *testing.T) {
 	assert.Equal(t, "-0.1", ledgers[1].Delta.String())
 }
 
-// 运营钱包余额不够也必须能把账结完。
-//
-// 结算发生在上游已经跑完之后：这里报「余额不足」让整笔回滚，用户就白用了，
-// 恢复任务还会一直重试同一笔。余额变负正是对账要的信号
-// （ReconcileOperatingWallet 拿它和站内客户本金比），不是拒绝计费的理由。
-func TestSettlementWithEmptyOperatingWalletStillBillsPG(t *testing.T) {
+func TestSettlementWithInsufficientOperatingWalletRetriesAfterCoverPG(t *testing.T) {
+	for _, balance := range []string{"0", "0.2"} {
+		t.Run(balance, func(t *testing.T) {
+			f := newOperatingSettleFixture(t)
+			if balance != "0" {
+				f.fundOperating(t, balance, "op-partial-cover")
+			}
+			key := "request:op-unfunded-1"
+			f.reserve(t, key, 300_000)
+			require.NoError(t, model.QueueBillingSettlement(key, 300_000, false))
+			_, applied, err := model.ApplyBillingSettlement(key)
+			require.ErrorIs(t, err, ErrAdtySiteWalletInsufficient)
+			assert.False(t, applied)
+			assert.Equal(t, balance, f.operating(t).String())
+			assert.Equal(t, 700_000, f.quota(t), "the original reservation remains in place")
+			assert.EqualValues(t, operatingSettlePrincipal, f.remaining(t), "failed settlement must not consume principal batches")
+			assert.Empty(t, f.consumeLedgers(t))
+			var operation model.BillingOperation
+			require.NoError(t, f.db.Where("operation_key = ?", key).First(&operation).Error)
+			assert.Equal(t, model.BillingSettlePending, operation.State)
+			var events int64
+			require.NoError(t, f.db.Model(&model.AdtySiteEarningEvent{}).Where("operation_key = ?", key).Count(&events).Error)
+			assert.Zero(t, events, "failed settlement must not publish earnings")
+
+			root := &model.User{Username: "op-cover-root", Password: "hashed-password", Role: common.RoleRootUser, Status: common.UserStatusEnabled}
+			require.NoError(t, f.db.Create(root).Error)
+			missing := decimal.RequireFromString("0.6").Sub(decimal.RequireFromString(balance))
+			_, err = ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletOperating, missing, AdtySiteWalletChange{
+				Type: "adjustment", RefType: "adjustment", RefID: "op-cover-1", Reason: "verified missing principal cover",
+				OperatorID: root.Id, IdempotencyKey: "op-root-cover-1",
+			})
+			require.NoError(t, err)
+			_, applied, err = model.ApplyBillingSettlement(key)
+			require.NoError(t, err)
+			assert.True(t, applied)
+			assert.True(t, f.operating(t).IsZero(), "exact cover permits settlement without overdraft")
+			assert.EqualValues(t, 700_000, f.remaining(t))
+			assert.Equal(t, 700_000, f.quota(t))
+			require.Len(t, f.consumeLedgers(t), 1)
+			_, applied, err = model.ApplyBillingSettlement(key)
+			require.NoError(t, err)
+			assert.False(t, applied)
+			assert.True(t, f.operating(t).IsZero())
+			require.Len(t, f.consumeLedgers(t), 1)
+		})
+	}
+}
+
+func TestOperatingWalletCannotEnableOverdraftPG(t *testing.T) {
 	f := newOperatingSettleFixture(t)
-
-	f.reserve(t, "request:op-unfunded-1", 300_000)
-	f.settle(t, "request:op-unfunded-1", 300_000)
-
-	assert.Equal(t, 700_000, f.quota(t), "钱包不够也照常扣用户余额")
-	assert.EqualValues(t, 700_000, f.remaining(t))
-	assert.Equal(t, "-0.6", f.operating(t).String(), "透支要如实记下来（站长欠平台 0.6 USD）")
-	require.Len(t, f.consumeLedgers(t), 1)
+	_, err := ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletOperating, decimal.RequireFromString("-0.6"), AdtySiteWalletChange{
+		Type: "principal_consume", RefType: "consume", RefID: "op-no-overdraft",
+		IdempotencyKey: "op-no-overdraft", AllowOverdraft: true,
+	})
+	require.ErrorIs(t, err, ErrAdtySiteWalletInsufficient)
+	assert.True(t, f.operating(t).IsZero())
+	assert.Empty(t, f.consumeLedgers(t))
 }

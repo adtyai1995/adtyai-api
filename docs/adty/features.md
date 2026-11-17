@@ -429,11 +429,11 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - **等级自动考核已实现**：动态等级定义存在 `adty_site_tiers`，Root 用 `GET/PUT /api/adty/admin/reseller/tiers` 管理代码、名称、供货倍率、加价上限和保证金要求，不硬编码等级数值。主节点每小时跑一次自动考核（`service/adty_site_finance.go:795-833`），按 UTC 日期做周期 ID，同一站同一周期重复跑不会重复写等级、保证金要求或预警（`service/adty_site_finance.go:715-784`）。门槛是开站以来累计的三个指标：有效客户数、留存本金、已结算消费；取所有已启用等级里三项都满足的最高档（`service/adty_site_finance.go:580-661`）。手动钉住的站（`tier_mode=manual`）不会被自动考核覆盖；三项都达不到时通知 Root「未达最低档」，只预警、不关站（`service/adty_site_finance.go:766-793`）。界面：Root 在分站后台「设置」页的「分站等级」里新增、编辑、停用等级，按代码保存，不能删除；分站详情的「分站等级」可以把站点固定到某个已启用等级，或改回自动考核（`PUT /api/adty/admin/sites/:id/tier`，Root，PAT `option:write`；改回自动会先清空等级，等下一次整点考核）。
 - **等级落地**：切换等级会在同一事务更新站点的 `tier_cost_factor`、`tier_max_markup` 和保证金钱包的 `required_balance`；保证金要求变更只改应缴额，不会凭空增加余额（`service/adty_site_finance.go:679-698`）。手动等级模式不受旧月度业绩档位和旧延迟生效任务覆盖。
 - **三钱包已实现**：`adty_site_wallets`（经营 / 收益 / 保证金）和 `adty_site_wallet_ledgers`。钱包唯一绑定站点和类型，变动在事务内锁钱包并追加含前后余额、业务来源和幂等键的流水；流水禁止通过模型更新或删除，重复幂等键返回原流水。站点查询 `GET /api/adty/site/wallets`、`GET /api/adty/site/wallet-ledgers`（PAT `wallet:read`）；Root 查询 `GET /api/adty/admin/sites/:id/wallets`、`GET /api/adty/admin/sites/:id/wallet-ledgers`（PAT `option:read`），普通管理员不能使用。界面：Root 在分站详情的资金区看三个钱包的余额和流水；站长在「收益」页看收益钱包、保证金钱包的余额（含冻结）和流水，看不到经营钱包；两边都能按钱包筛选、分页。
-- **保证金补充周期**：Root 指定保证金码核销、本站收益划转保证金，每次真实入账都在原资金事务内开启新周期，使用归零，目标取锁定钱包时当前档位；小额补充不要求补满整档，业务重放不再次重置。调档只改当前应缴目标，不能直接扩大原周期。钱包保存周期编号、起点和初始余额；不可变流水保存带版本的周期前后公式快照，旧流水的空快照表示历史未知。旧冻结及订单预留继续承担原来源责任；现有 `frozen_usd` 包含两者，公式快照明确记录其合计，不另造零预留，也不重复扣减。新周期仍同时受真实资金和周期90%限制；现有整档最低余额门的独立差异尚待修复。
-- **经营钱包本金已联动**：客户充值成功时按面额把本金记进经营钱包（`principal_credit`），消费结算时按「站点本金垫付」的部分扣经营钱包（`principal_consume`）。扣款允许透支，余额变负是对账信号，不是拒绝计费的理由（`service/adty_operating_principal.go:14-51`）。
+- **保证金补充周期**：Root 指定保证金码核销、本站收益划转保证金，每次真实入账都在原资金事务内开启新周期，使用归零，目标取锁定钱包时当前档位；小额补充不要求补满整档，业务重放不再次重置。调档只改当前应缴目标，不能直接扩大原周期。钱包保存周期编号、起点和初始余额；不可变流水保存带版本的周期前后公式快照，旧流水的空快照表示历史未知。旧冻结及订单预留继续承担原来源责任；现有 `frozen_usd` 包含两者，公式快照明确记录其合计，不另造零预留，也不重复扣减。新周期同时受真实资金和周期90%限制，已开启周期的最低保留额取原周期档位的10%，不随当前应缴目标变化；冻结转支出时冻结与余额等额减少，实际使用只增加一次。
+- **经营钱包本金已联动**：客户充值成功时按面额把本金记进经营钱包（`principal_credit`），消费结算时按「站点本金垫付」的部分扣经营钱包（`principal_consume`）。经营钱包禁止透支，内部 `AllowOverdraft` 也不能绕过余额检查。余额不足直接报错，结算事务回滚并保留原预扣及待结算状态；经授权补足资金后按原 operation 重试，不重复扣款（`service/adty_operating_principal.go`、`service/adty_site_finance.go`）。
 - **日结单已实现**：`adty_site_settlement_sheets` 保存每个站每个营业日的核对单，主节点每 10 分钟补齐到昨天，重复跑只刷新数字、不动钱包（`service/adty_site_settlement_sheet.go:56-171,379-395`）。营业日时区由 Root 存 `adty.business_timezone`，没设按 UTC（`service/adty_site_settlement_sheet.go:15-54`）。站长 `GET /api/adty/site/settlement-sheets`，Root 可查全部。
 - **旧站兼容**：查询旧站时缺失的钱包显示零余额，不创建余额或历史流水；收益钱包只投影功能启用后的新结算，不回填旧推广佣金账户。
-- **记账口径**：所有钱包、收益和结算金额按 USD 记账；规范里的人民币保证金示例没有写成美元默认值。`AllowOverdraft` 目前只给经营钱包和结算路径内部使用，不是面向客户的 Root 授权透支产品。
+- **记账口径**：所有钱包、收益和结算金额按 USD 记账；规范里的人民币保证金示例没有写成美元默认值。`AllowOverdraft` 仍是内部流水选项，不是面向客户的 Root 授权透支产品，且对经营钱包不生效。
 
 ## 分组和后台权限
 

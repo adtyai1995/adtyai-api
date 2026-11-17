@@ -215,8 +215,12 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	minimum := decimal.Zero
 	if kind == model.AdtySiteWalletMargin {
 		minimum = wallet.RequiredBalance
+		if wallet.CycleTierUSD.IsPositive() {
+			minimum = wallet.CycleTierUSD.Sub(AdtyMarginCycleLimit(wallet.CycleTierUSD))
+		}
 	}
-	if (delta.IsNegative() || change.HoldDelta.IsPositive()) && !change.AllowOverdraft && after.Sub(frozenAfter).LessThan(minimum) {
+	if (delta.IsNegative() || change.HoldDelta.IsPositive()) &&
+		(kind == model.AdtySiteWalletOperating || !change.AllowOverdraft) && after.Sub(frozenAfter).LessThan(minimum) {
 		return nil, ErrAdtySiteWalletInsufficient
 	}
 	cycleUsed := wallet.CycleUsedUSD

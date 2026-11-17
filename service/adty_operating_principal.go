@@ -43,11 +43,8 @@ func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string,
 		key = "operating:consume:" + operationKey
 		refID = operationKey
 	}
-	// 允许透支：这笔钱是站长**欠**平台的，余额不够不等于这笔消费没发生。
-	// 结算是在上游已经跑完之后做的，余额不足若让整笔结算回滚，用户就白用了；
-	// 运营钱包变负是对账信号（ReconcileOperatingWallet 拿它和站内客户本金比），
-	// 不是拒绝计费的理由。`debitOperatingPrincipal` 那条同类动作也是这么写的。
-	return adtyMoveOperatingPrincipalTx(tx, user.SiteId, -principalQuota, "principal_consume", "consume", refID, key, true)
+	// Insufficient cover leaves settlement pending for an authorized adjustment.
+	return adtyMoveOperatingPrincipalTx(tx, user.SiteId, -principalQuota, "principal_consume", "consume", refID, key, false)
 }
 
 func adtyMoveOperatingPrincipalTx(tx *gorm.DB, siteID int, quota int64, changeType, refType, refID, key string, allowOverdraft bool) error {

@@ -407,6 +407,54 @@ func TestMarginDebitStopsAtNinetyPercentOfOpenCycle(t *testing.T) {
 	require.ErrorIs(t, err, ErrAdtySiteWalletInsufficient)
 }
 
+func TestMarginCycleUsesFrozenTierInsteadOfCurrentRequiredBalance(t *testing.T) {
+	for _, target := range []string{"100", "200"} {
+		t.Run(target, func(t *testing.T) {
+			db := prepareSiteDB(t)
+			pgtest.RecordServerVersion(t, db)
+			_, site := openActiveSite(t, db, "margin-cycle-floor")
+			setAdtyMarginTargetForTest(t, site.Id, decimal.NewFromInt(100))
+			require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.NewFromInt(100), "floor-cycle"))
+			if target != "100" {
+				setAdtyMarginTargetForTest(t, site.Id, decimal.NewFromInt(200))
+			}
+			change := AdtySiteWalletChange{Type: "gift_reserve", RefType: "topup", RefID: "floor-order", IdempotencyKey: "floor-hold", HoldDelta: decimal.NewFromInt(30)}
+			err := db.Transaction(func(tx *gorm.DB) error {
+				_, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletMargin, decimal.Zero, change)
+				return err
+			})
+			require.NoError(t, err, "funded margin may reserve within its original cycle")
+			err = db.Transaction(func(tx *gorm.DB) error {
+				_, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletMargin, decimal.Zero, change)
+				return err
+			})
+			require.NoError(t, err)
+			_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletMargin, decimal.NewFromInt(-10), AdtySiteWalletChange{
+				Type: "gift_spend", RefType: "topup", RefID: "floor-order", IdempotencyKey: "floor-spend", HoldDelta: decimal.NewFromInt(-10),
+			})
+			require.NoError(t, err)
+			_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletMargin, decimal.NewFromInt(-60), AdtySiteWalletChange{Type: "margin_draw", IdempotencyKey: "floor-draw"})
+			require.NoError(t, err, "used 10 + frozen 20 + new draw 60 reaches the 90 percent cap")
+			err = db.Transaction(func(tx *gorm.DB) error {
+				_, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletMargin, decimal.Zero, AdtySiteWalletChange{Type: "gift_release", IdempotencyKey: "floor-release", HoldDelta: decimal.NewFromInt(-20)})
+				return err
+			})
+			require.NoError(t, err)
+			_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletMargin, decimal.NewFromInt(-20), AdtySiteWalletChange{Type: "margin_draw", IdempotencyKey: "floor-final-draw"})
+			require.NoError(t, err)
+			_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletMargin, decimal.NewFromInt(-1), AdtySiteWalletChange{Type: "margin_draw", IdempotencyKey: "floor-overdraw"})
+			require.ErrorIs(t, err, ErrAdtySiteWalletInsufficient)
+			var margin model.AdtySiteWallet
+			require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).First(&margin).Error)
+			assert.Equal(t, "10", margin.Balance.String())
+			assert.Equal(t, "90", margin.CycleUsedUSD.String())
+			assert.Equal(t, "100", margin.CycleTierUSD.String())
+			assert.Equal(t, target, margin.RequiredBalance.String())
+			assert.True(t, margin.FrozenUSD.IsZero())
+		})
+	}
+}
+
 func TestTransferEarningToMarginOpensNewCycle(t *testing.T) {
 	db := prepareSiteDB(t)
 	_, site := openActiveSite(t, db, "margin-transfer")
