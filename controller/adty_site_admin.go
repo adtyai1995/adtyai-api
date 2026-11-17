@@ -750,6 +750,10 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if _, present := body["max_site_bonus_extra"]; present {
+		common.ApiError(c, service.ErrAdtyAmountTierRetired)
+		return
+	}
 	if c.GetInt("role") < common.RoleRootUser {
 		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "clear_secrets"} {
 			if _, present := body[key]; present {

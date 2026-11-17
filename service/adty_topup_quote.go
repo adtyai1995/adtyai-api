@@ -60,7 +60,7 @@ func AdtyBonusFor(face int64) (rate, bonus decimal.Decimal) {
 	return adtyBonusFromRates(adty_setting.GetTopupSetting().BonusRates, face)
 }
 
-// adtyBonusFromRates 只给历史档位上限计算使用。新订单赠金不走这里。
+// adtyBonusFromRates 只保留历史档位兼容计算。新订单赠金不走这里。
 func adtyBonusFromRates(rates map[int]float64, face int64) (rate, bonus decimal.Decimal) {
 	best := int64(-1)
 	for tier, tierRate := range rates {
@@ -81,7 +81,7 @@ func AdtyQuoteFor(userGroup string, face int64, method string) (*AdtyQuote, erro
 	return AdtyQuoteForSite(nil, userGroup, face, method)
 }
 
-// AdtyQuoteForSite 算一笔充值的报价；site 是客户所属的分站（主站传 nil），分站客户按站点的加赠档位算（11.5）。
+// AdtyQuoteForSite 算一笔充值的报价；site 是客户所属的分站（主站传 nil），赠金取本站获授权的支付方式规则。
 // TOKENS 显示模式会改变金额含义，这种模式下不报价。
 func AdtyQuoteForSite(site *model.AdtySite, userGroup string, face int64, method string) (*AdtyQuote, error) {
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
@@ -119,16 +119,6 @@ func adtyQuotaQuoteForSite(site *model.AdtySite, userGroup string, faceUSD decim
 		return nil, err
 	}
 	if site != nil && bonus.IsPositive() {
-		// 策略上限（features.md「站长分站·加赠和试用额度」）：站点加赠
-		// 不得超过 面额 ×（主站同档比例 + max_site_bonus_extra）÷ 100。
-		// 这和下面的 SiteBonusEarningCovers 不是一回事：那个查站长的钱够不够垫这笔加赠，
-		// 这个查规则允许站长给多少。预算够不等于允许给。
-		if !adtySiteBonusWithinCap(faceUSD, bonus) {
-			return nil, common.NewMessage("This site's bonus exceeds the cap of {{cap}} USD for a {{face}} USD top-up", map[string]any{
-				"cap":  adtySiteBonusCapAmount(faceUSD).String(),
-				"face": faceUSD.String(),
-			})
-		}
 		if err := SiteBonusEarningCovers(site.Id, bonus); err != nil {
 			return nil, err
 		}

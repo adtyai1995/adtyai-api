@@ -55,9 +55,11 @@ func TestResellerSettingsSaveRules(t *testing.T) {
 		return envelope
 	}
 
-	assert.False(t, put(`{"enabled":true,"root_domains":["sites.example.com"]}`).Success, "money settings are unset")
+	unset := put(`{"enabled":true,"root_domains":["sites.example.com"]}`)
+	assert.False(t, unset.Success, "money settings are unset")
+	assert.NotContains(t, unset.Message, "extra bonus", "the error must not ask for a retired setting")
 	saved := put(`{"enabled":true,"root_domains":["Sites.Example.com"],"cost_factor":0.8,"min_cost_factor":0.5,"max_markup":3,
-		"max_site_bonus_extra":0,"trial_grant_max_usd":5,"trial_grant_daily_usd":20}`)
+		"trial_grant_max_usd":5,"trial_grant_daily_usd":20}`)
 	require.True(t, saved.Success, saved.Message)
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, []string{"sites.example.com"}, cfg.RootDomains)
@@ -141,6 +143,40 @@ func TestResellerSettingsSaveRules(t *testing.T) {
 	referral := adtyJSON(t, f.engine, http.MethodPut, "/api/option/", `{"key":"adty_referral_setting.enabled","value":"true"}`, f.root)
 	assert.Contains(t, referral.Body.String(), `"success":false`)
 	assert.False(t, adty_setting.GetReferralSetting().Enabled, "the generic option API cannot turn referral on without the default rate")
+}
+
+func TestRetiredBonusSettingsCannotChangeCurrentConfiguration(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	cfg := withResellerSetting(t)
+	topup := adty_setting.GetTopupSetting()
+	previousRates := topup.BonusRates
+	t.Cleanup(func() { topup.BonusRates = previousRates })
+	const historicalRates = `{"100":2.5}`
+	require.NoError(t, model.UpdateOption(adty_setting.TopupSettingKeyBonusRates, historicalRates))
+	cfg.MaxSiteBonusExtra = new(2.0)
+	require.NoError(t, model.UpdateOption("adty_reseller_setting.max_site_bonus_extra", "2"))
+
+	tier := adtyJSON(t, f.engine, http.MethodPut, "/api/option/", `{"key":"adty_topup_setting.bonus_rates","value":"{\"100\":50}"}`, f.root)
+	assert.Contains(t, tier.Body.String(), `"success":false`)
+	assert.Contains(t, tier.Body.String(), "Amount-tier bonuses are retired")
+	stored, exists, err := model.ReadOptionFromDB(adty_setting.TopupSettingKeyBonusRates)
+	require.NoError(t, err)
+	require.True(t, exists)
+	assert.Equal(t, historicalRates, stored, "retirement preserves historical options")
+	assert.Equal(t, map[int]float64{100: 2.5}, topup.BonusRates)
+
+	for _, body := range []string{`{"max_site_bonus_extra":0,"freeze_days":11}`, `{"max_site_bonus_extra":null}`} {
+		extra := adtyJSON(t, f.engine, http.MethodPut, "/api/adty/admin/reseller/settings", body, f.root)
+		assert.Contains(t, extra.Body.String(), `"success":false`)
+		assert.Contains(t, extra.Body.String(), "Amount-tier bonuses are retired")
+		require.NotNil(t, cfg.MaxSiteBonusExtra)
+		assert.Equal(t, 2.0, *cfg.MaxSiteBonusExtra)
+		assert.Equal(t, 7, cfg.FreezeDays, "a rejected retired field does not partially save other fields")
+	}
+	stored, exists, err = model.ReadOptionFromDB("adty_reseller_setting.max_site_bonus_extra")
+	require.NoError(t, err)
+	require.True(t, exists)
+	assert.Equal(t, "2", stored)
 }
 
 func TestAdminSiteCustomersMaskEmailWithoutUserRead(t *testing.T) {

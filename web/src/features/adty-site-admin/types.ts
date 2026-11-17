@@ -201,6 +201,7 @@ export type ResellerSettings = {
   min_cost_factor: number | null
   cost_factor_tiers: CostTier[] | null
   max_markup: number | null
+  /** Retired amount-tier setting, returned only for historical compatibility. */
   max_site_bonus_extra: number | null
   trial_grant_max_usd: number | null
   trial_grant_daily_usd: number | null
@@ -246,6 +247,7 @@ export type ResellerSettingsUpdate = Partial<
     | 'money_configured'
     | 'site_agreement_version'
     | 'site_customer_terms_version'
+    | 'max_site_bonus_extra'
   >
 > & { clear_secrets?: Array<'cloudflare_apiToken' | 'turnstile_widget_secret'> }
 

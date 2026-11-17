@@ -8544,6 +8544,7 @@
     "Reseller sites are not available": "Reseller sites are not available",
     "Review reseller sites": "Review reseller sites",
     "Set the cost factor, its minimum, the markup limit, the extra bonus limit and the trial credit limits before turning reseller sites on": "Set the cost factor, its minimum, the markup limit, the extra bonus limit and the trial credit limits before turning reseller sites on",
+    "Set the cost factor, its minimum, the markup limit and the trial credit limits before turning reseller sites on": "Set the cost factor, its minimum, the markup limit and the trial credit limits before turning reseller sites on",
     "Site not found": "Site not found",
     "The bonus for ${{tier}} can be at most {{max}}%": "The bonus for ${{tier}} can be at most {{max}}%",
     "The cost factor cannot be below the minimum cost factor": "The cost factor cannot be below the minimum cost factor",

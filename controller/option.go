@@ -196,12 +196,9 @@ func UpdateOption(c *gin.Context) {
 		"TelegramOAuthEnabled", "telegram.client_id", "telegram.client_secret":
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
-	// 二开：加赠比例写错时 config 会静默保留旧值，先校验（任务 3.1）
 	case adty_setting.TopupSettingKeyBonusRates:
-		if err := adty_setting.ValidateBonusRates(option.Value.(string)); err != nil {
-			common.ApiError(c, err)
-			return
-		}
+		common.ApiError(c, service.ErrAdtyAmountTierRetired)
+		return
 	case adty_setting.EpaySettingKeyChannelTimeout, adty_setting.EpaySettingKeyTotalTimeout:
 		if err := adty_setting.ValidateEpayTimeout(option.Key, option.Value.(string)); err != nil {
 			common.ApiError(c, err)

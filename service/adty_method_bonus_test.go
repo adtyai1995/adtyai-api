@@ -1,13 +1,73 @@
 package service
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSiteMethodGiftIgnoresRetiredAmountSettings(t *testing.T) {
+	db := prepareSiteDB(t)
+	setAdtyQuoteDefaults(t)
+	restoreSiteMethodSettings(t)
+	_, site := openActiveSite(t, db, "gift-retired-settings")
+	adty_setting.AuthorizeSiteBonusMarginFill(site.Id, true)
+	require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.NewFromInt(20), "retired-settings-cycle"))
+	for _, method := range []string{"usdt", AdtyMethodAlipay, AdtyMethodWxpay} {
+		authorizeSiteBonusForTest(t, site.Id, method, true)
+		setSiteBonusForTest(t, site.Id, method, true, "0.03")
+	}
+
+	for _, legacy := range []struct {
+		name  string
+		rates map[int]float64
+		extra *float64
+	}{
+		{"empty", nil, nil},
+		{"stale-zero", map[int]float64{100: 0}, new(0.0)},
+		{"stale-positive", map[int]float64{100: 50}, new(2.0)},
+	} {
+		t.Run(legacy.name, func(t *testing.T) {
+			setAdtyBonusRates(t, legacy.rates)
+			adty_setting.GetResellerSetting().MaxSiteBonusExtra = legacy.extra
+			for _, amount := range []int64{50, 100, 150} {
+				for _, method := range []string{AdtyMethodUSDTTRC20, AdtyMethodUSDTBEP20, AdtyMethodAlipay, AdtyMethodWxpay} {
+					t.Run(fmt.Sprintf("%d-%s", amount, method), func(t *testing.T) {
+						quote, err := AdtyQuoteForSite(site, "default", amount, method)
+						require.NoError(t, err)
+						require.Equal(t, "0.03", quote.BonusRate.String())
+						require.EqualValues(t, amount*515_000, quote.CreditQuota)
+						if IsAdtyUSDTMethod(method) {
+							require.Equal(t, AdtyCurrencyUSDT, quote.PayCurrency)
+						} else {
+							require.Equal(t, AdtyCurrencyCNY, quote.PayCurrency)
+						}
+					})
+				}
+			}
+		})
+	}
+	var margin model.AdtySiteWallet
+	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).First(&margin).Error)
+	require.Equal(t, "20", margin.Balance.String(), "quoting does not spend site funds")
+	require.True(t, margin.FrozenUSD.IsZero(), "quoting does not reserve order funds")
+
+	adty_setting.GetResellerSetting().MaxSiteBonusExtra = nil
+	setAdtyBonusRates(t, nil)
+	authorizeSiteBonusForTest(t, site.Id, "usdt", false)
+	quote, err := AdtyQuoteForSite(site, "default", 100, AdtyMethodUSDTTRC20)
+	require.NoError(t, err)
+	require.True(t, quote.BonusUSD.IsZero(), "revoked authorization still disables gifts")
+	require.EqualValues(t, 50_000_000, quote.CreditQuota)
+	adty_setting.AuthorizeSiteBonusMarginFill(site.Id, false)
+	_, err = AdtyQuoteForSite(site, "default", 100, AdtyMethodAlipay)
+	require.EqualError(t, err, "Site gift reserve is not covered by the earning wallet")
+}
 
 func TestQuoteUsesPaymentMethodRateNotAmountTier(t *testing.T) {
 	setAdtyQuoteDefaults(t)
@@ -35,8 +95,7 @@ func TestAmountTierDoesNotCreateBonus(t *testing.T) {
 func TestSiteGiftQuoteRequiresEarningReserve(t *testing.T) {
 	db := prepareSiteDB(t)
 	setAdtyQuoteDefaults(t)
-	// 主站 100 档 8% + max_site_bonus_extra 2 = 上限 10%，让 10% 这一档不撞策略上限，
-	// 用例断言的是「收益不够垫这笔加赠」，不是上限。
+	// 保留升级库的历史档位；拒绝依据必须是实际保障不足。
 	setAdtyBonusRates(t, map[int]float64{100: 8})
 	_, site := openActiveSite(t, db, "gift-reserve")
 	restoreSiteMethodSettings(t)
@@ -47,7 +106,7 @@ func TestSiteGiftQuoteRequiresEarningReserve(t *testing.T) {
 	}
 	_, err := AdtyQuoteForSite(AdtySiteById(site.Id), "default", 100, AdtyMethodUSDTTRC20)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "not covered", "上限不是这条用例要挡的东西")
+	require.EqualError(t, err, "Site gift reserve is not covered by the earning wallet")
 }
 
 func TestSameMethodSharesBonusAcrossChains(t *testing.T) {
@@ -65,7 +124,7 @@ func TestSameMethodSharesBonusAcrossChains(t *testing.T) {
 func TestSiteGiftCanUseAuthorizedMarginFill(t *testing.T) {
 	db := prepareSiteDB(t)
 	setAdtyQuoteDefaults(t)
-	// 上限 10%（主站 100 档 8% + extra 2），用例断言的是保证金补位，不是上限。
+	// 历史金额档位不影响已授权保证金补位。
 	setAdtyBonusRates(t, map[int]float64{100: 8})
 	restoreSiteMethodSettings(t)
 	_, site := openActiveSite(t, db, "gift-margin")
@@ -78,30 +137,28 @@ func TestSiteGiftCanUseAuthorizedMarginFill(t *testing.T) {
 	require.Equal(t, "10", quote.BonusUSD.String())
 }
 
-// 上限是「面额 ×（主站同档比例 + max_site_bonus_extra）÷ 100」。prepareSiteDB 把
-// max_site_bonus_extra 设成 2，所以主站 100 档 2.5% 时 $100 的分站订单最多给 $4.5 加赠。
-func TestSiteBonusAboveCapIsRefusedAtQuote(t *testing.T) {
+func TestSiteBonusWithoutReserveIsRefusedAtQuote(t *testing.T) {
 	db := prepareSiteDB(t)
 	setAdtyQuoteDefaults(t)
 	restoreSiteMethodSettings(t)
 	setAdtyBonusRates(t, map[int]float64{100: 2.5})
 	_, site := openActiveSite(t, db, "gift-over-cap")
 	authorizeSiteBonusForTest(t, site.Id, "usdt", true)
-	setSiteBonusForTest(t, site.Id, "usdt", true, "0.05") // $100 × 5% = $5 > $4.5
+	setSiteBonusForTest(t, site.Id, "usdt", true, "0.05")
 
 	_, err := AdtyQuoteForSite(AdtySiteById(site.Id), "default", 100, AdtyMethodUSDTTRC20)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "4.5", "报错要点出这一单的上限，运维才知道改哪一档")
+	require.EqualError(t, err, "Site gift reserve is not covered by the earning wallet")
 }
 
-func TestSiteBonusAtCapIsQuoted(t *testing.T) {
+func TestSiteBonusWithAuthorizedReserveIsQuoted(t *testing.T) {
 	db := prepareSiteDB(t)
 	setAdtyQuoteDefaults(t)
 	restoreSiteMethodSettings(t)
 	setAdtyBonusRates(t, map[int]float64{100: 2.5})
 	_, site := openActiveSite(t, db, "gift-at-cap")
 	authorizeSiteBonusForTest(t, site.Id, "usdt", true)
-	setSiteBonusForTest(t, site.Id, "usdt", true, "0.045") // 恰好等于 $4.5，不算超
+	setSiteBonusForTest(t, site.Id, "usdt", true, "0.045")
 	adty_setting.AuthorizeSiteBonusMarginFill(site.Id, true)
 	require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.RequireFromString("20"), "gift-at-cap-cycle"))
 
@@ -136,14 +193,19 @@ func authorizeSiteBonusForTest(t *testing.T, siteID int, method string, allowed 
 	require.NoError(t, adty_setting.ApplyMethodBonusOption(adty_setting.TopupSettingKeySiteMethodAuth, value))
 }
 
-// restoreSiteMethodSettings 把站点的授权/加赠规则在用例结束时还原：这两张表是进程级
+// restoreSiteMethodSettings 把站点的授权/加赠规则在用例结束时还原：配置是进程级
 // 全局配置，而每个用例的站点 id 都从 1 开始，不还原就会串到下一个用例。
 func restoreSiteMethodSettings(t *testing.T) {
 	t.Helper()
 	setting := adty_setting.GetTopupSetting()
 	oldAuth, oldRules := setting.SiteMethodAuth, setting.SiteMethodBonus
+	oldMargin := setting.SiteBonusMarginFill
+	setting.SiteMethodAuth = map[int][]string{}
+	setting.SiteMethodBonus = map[int]map[string]adty_setting.MethodBonusRule{}
+	setting.SiteBonusMarginFill = map[int]bool{}
 	t.Cleanup(func() {
 		setting.SiteMethodAuth, setting.SiteMethodBonus = oldAuth, oldRules
+		setting.SiteBonusMarginFill = oldMargin
 	})
 }
 

@@ -253,6 +253,16 @@ func TestOpenSiteRequiresSettings(t *testing.T) {
 	}
 }
 
+func TestOpenSiteDoesNotRequireRetiredBonusExtra(t *testing.T) {
+	db := prepareSiteDB(t)
+	cfg := adty_setting.GetResellerSetting()
+	cfg.MaxSiteBonusExtra = nil
+	require.NoError(t, adty_setting.ValidateResellerSetting(cfg, false))
+	owner, site := openActiveSite(t, db, "no-retired-bonus")
+	require.Equal(t, owner.Id, site.OwnerUserId)
+	require.Equal(t, model.AdtySiteStatusActive, site.Status)
+}
+
 func TestSubdomainRules(t *testing.T) {
 	db := prepareSiteDB(t)
 	_, _ = openActiveSite(t, db, "taken")

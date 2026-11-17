@@ -25,11 +25,9 @@
 
 - **面额**：普通自选面额为正整数美元，不低于最低充值额 `MinTopUp`（默认 1）。钱包总额不能超过 2^53 − 1 额度，下单时会检查。易支付还受通道的单笔和每日限额限制。
 - **加赠按支付方式**：三个配置键 `adty_topup_setting.method_bonus`（主站规则）、`adty_topup_setting.site_method_auth`（Root 对分站的逐站授权）、`adty_topup_setting.site_method_bonus`（站长在本站授权范围内的规则）。每条规则是 `{"enabled": bool, "rate": "0.025"}`，`rate` 是 **0–1 的小数比例**（0.025 = 2.5%），不是百分数，也不是金额档位；没有规则或 `enabled=false` 就不送（`setting/adty_setting/bonus_method.go:20-23,186-195`）。支付方式规范化成 `alipay`、`wxpay`、`usdt`，USDT 的 TRC20 / BEP20 / Polygon / X Layer **共用一条 `usdt` 规则**（`service/adty_method_bonus.go:15-26`）。
-- **金额档位已退役**：`adty_topup_setting.bonus_rates` 只剩历史值，结构体注释写明「已退役的金额档位，不参与新订单赠金」（`setting/adty_setting/topup.go:13`）。保存档位的 `SaveAdtySiteBonusRates` 一律返回 `ErrAdtyAmountTierRetired`（`service/adty_site_earning.go:370-376`）。旧档位唯一的用途是算分站加赠上限里的「主站同档比例」。
+- **金额档位已退役**：`adty_topup_setting.bonus_rates` 和 `adty_reseller_setting.max_site_bonus_extra` 只保留历史读取，不参与现行报价、开站必填项或设置校验。通用配置接口拒绝保存旧档位，分站设置接口拒绝写入旧 extra（包括 null），已有历史值保留。`SaveAdtySiteBonusRates` 一律返回 `ErrAdtyAmountTierRetired`。
 - **Root 授权流程**：主站比例 Root 用 `PUT /api/adty/admin/bonus-methods {method, enabled, rate}`。分站先由 Root 调 `PUT /api/adty/admin/sites/:id/bonus-methods {method, allowed}` 逐站授权；站长再调 `PUT /api/adty/site/bonus-methods {method, enabled, rate}` 设本站规则。未授权的支付方式站长存不进去（`MergeSiteMethodBonus` 直接拒绝），也不会付赠金（`setting/adty_setting/bonus_method.go:103-132`、`service/adty_method_bonus.go:47-55`）。
-- **报价两道闸**（分站加赠为正值时）：
-  1. **规则上限** `adtySiteBonusWithinCap`：本站加赠 ≤ 面额 ×（主站历史同档比例 + `adty_reseller_setting.max_site_bonus_extra`）÷ 100。主站同档比例从退役的 `bonus_rates` 按整数面额取「不超过它的最高档」，`max_site_bonus_extra` 没设按 0（`service/adty_site_earning.go:279-297`）。
-  2. **保障** `SiteBonusEarningCovers`：站长收益钱包的可用余额（`balance − frozen_usd`）要够垫这笔赠金；不够时只有 Root 授权了保证金补位（`adty_topup_setting.site_bonus_margin_fill`）且保证金本周期还能支取才放行（`service/adty_method_bonus.go:86-121`）。两道都过才报价，否则直接拒绝（`service/adty_topup_quote.go:151-165`）。
+- **报价授权与保障**：先按 Root 的逐站支付方式授权和本站启用规则计算赠金；未授权或未启用则不送。分站加赠为正时，`SiteBonusEarningCovers` 校验收益钱包可用余额（`balance − frozen_usd`）；不足部分只有 Root 授权了保证金补位（`adty_topup_setting.site_bonus_margin_fill`）且保证金本周期允许支取才放行。保障不足拒绝报价。不存在按主站历史金额档位或旧 extra 计算的上限。
 - **公式**：
   - 加赠 = 面额 × rate（8 位小数）。
   - 入账额度 = (面额 + 加赠) × QuotaPerUnit，向下取整。
@@ -46,7 +44,7 @@
 - $100 支付宝（`Price` 7.3）：加赠 $1.00，入账 $101.00 = 50,500,000 额度；应付 ¥730.00。
 - 自定义 $150 USDT：加赠 $3.75，入账 $153.75 = 76,875,000 额度。
 
-**算例（分站）**：主站旧 100 档 2.5%、`max_site_bonus_extra` = 2，则 $100 订单的加赠上限 = 100 × (2.5 + 2) ÷ 100 = **$4.50**。站长把 USDT 规则设成 3%，加赠 $3.00 ≤ $4.50，且收益钱包可用余额 ≥ $3.00 时才能报价；可用余额只有 $2.00 又没授权保证金补位，报价被拒。站长把比例调到 5%，加赠 $5.00 > $4.50，报价被拒。
+**算例（分站）**：Root 已授权本站 USDT 赠金，站长将比例设为 3%，$100 订单赠金为 $3.00。收益钱包可用余额 ≥ $3.00 时可报价；只有 $2.00 且未授权保证金补位时拒绝报价。旧档位为空或历史 extra 未设置，计算结果一致；比例改为 5% 后按 $5.00 校验真实保障。
 
 **后台**：
 
@@ -64,8 +62,7 @@
 
 **限制**：
 
-- 上限和保障是两条独立判断：上限查「规则允不允许给」，保障查「站长的钱够不够垫」。二者都过才报价。
-- `max_site_bonus_extra` 只放宽上限，不会给站长钱；收益不够、保证金没授权时同样报价失败。
+- Root 的支付方式授权和本站真实资金保障仍由服务端检查；退役配置不能扩大授权或产生资金。
 - 待履约赠金在补足保障前不能消费；全额退款时取消，不会折现。
 - 站长删掉旧的金额档位不影响新订单：新订单根本不读档位。
 
@@ -273,7 +270,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 **做什么**：用户可以开一个分站（白标），用自己的站名和 Logo 拉客户。客户付「供货价 × (1 + 加价比例)」，平台按供货价收，站长赚差价，收益按消费记账、冻结后可以提现。客户是平台的用户，钱由平台收。
 
-**设置总则**：模块 `adty_reseller_setting`，只能在「分站管理 → 设置」（`/site-admin/settings`）或 `PUT /api/adty/admin/reseller/settings` 改（通用的 `PUT /api/option/` 拒绝这个前缀，防止绕过校验）。六个钱的参数**没有默认值**：`cost_factor`、`min_cost_factor`、`max_markup`、`max_site_bonus_extra`、`trial_grant_max_usd`、`trial_grant_daily_usd`。它们都设了、并且 `root_domains` 不为空，总开关 `enabled` 才能打开。
+**设置总则**：模块 `adty_reseller_setting`，只能在「分站管理 → 设置」（`/site-admin/settings`）或 `PUT /api/adty/admin/reseller/settings` 改（通用的 `PUT /api/option/` 拒绝这个前缀，防止绕过校验）。五个钱的参数**没有默认值**：`cost_factor`、`min_cost_factor`、`max_markup`、`trial_grant_max_usd`、`trial_grant_daily_usd`。它们都设了、并且 `root_domains` 不为空，总开关 `enabled` 才能打开。退役的 `max_site_bonus_extra` 不显示、不提交，也不阻止开站。
 
 ### 开站
 
@@ -312,7 +309,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 ### 加赠和试用额度
 
-- **加赠**：按支付方式，不按金额档位。Root 先逐站授权支付方式（`site_method_auth`），站长再在站长中心 → 加赠（`/site-owner/bonus`）设本站比例（`site_method_bonus`，要重新验证身份）。上限、收益保障、赠金冻结和待履约见「充值和加赠」。旧站点金额档位 `adty_sites.bonus_rates` 不再接受新保存（`SaveAdtySiteBonusRates` 返回 `ErrAdtyAmountTierRetired`）。
+- **加赠**：按支付方式，不按金额档位。Root 先逐站授权支付方式（`site_method_auth`），站长再在站长中心 → 加赠（`/site-owner/bonus`）设本站比例（`site_method_bonus`，要重新验证身份）。授权、收益保障、赠金冻结和待履约见「充值和加赠」。旧站点金额档位 `adty_sites.bonus_rates` 不再接受新保存（`SaveAdtySiteBonusRates` 返回 `ErrAdtyAmountTierRetired`）。
 - **试用额度**：站长在客户详情里给单个客户送（`POST /api/adty/site/customers/:id/trial`，要重新验证身份），单次不超过 `trial_grant_max_usd`、本站每天合计不超过 `trial_grant_daily_usd`，任一没设就不能送。钱从站长的推广佣金可提现余额里扣（`referral_commission_accounts.available_amount`），不够就拒绝；给客户加额度、写余额流水 `site_trial`，并记一条已结算的 `trial` 日汇总行（只做报表，结算任务不再取它）（`service/adty_site_earning.go:381-506`）。
 
 ### 收益、冻结、结算、提现

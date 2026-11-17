@@ -122,7 +122,6 @@ try {
     cost_factor: 0.8,
     min_cost_factor: 0.5,
     max_markup: 3,
-    max_site_bonus_extra: 0,
     trial_grant_max_usd: 0,
     trial_grant_daily_usd: 0,
   })

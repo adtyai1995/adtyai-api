@@ -355,6 +355,7 @@
     "The cost factor cannot be below the minimum cost factor": "拿货系数不能低于下限",
     "Site not found": "找不到这个分站",
     "Set the cost factor, its minimum, the markup limit, the extra bonus limit and the trial credit limits before turning reseller sites on": "开启分站前，请先设置拿货系数、拿货系数下限、倍率上限、分站加赠额外上限和试用额度上限",
+    "Set the cost factor, its minimum, the markup limit and the trial credit limits before turning reseller sites on": "开启分站前，请先设置拿货系数、拿货系数下限、倍率上限和试用额度上限",
     "Review reseller sites": "审核分站",
     "Reseller sites are not available": "分站功能暂未开放",
     "Reseller settings can only be changed on the reseller settings page": "分站设置只能在分站设置页面修改",

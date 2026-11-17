@@ -28,7 +28,7 @@ type ResellerSetting struct {
 	PendingMinCostFactorAt int64              `json:"pending_min_cost_factor_at"`
 	CostFactorTiers        []ResellerCostTier `json:"cost_factor_tiers"`
 	MaxMarkup              *float64           `json:"max_markup"`           // 存储 k 的上限，加价比例 = k-1，0 < k ≤ 100
-	MaxSiteBonusExtra      *float64           `json:"max_site_bonus_extra"` // 分站加赠比主站同档最多多几个百分点
+	MaxSiteBonusExtra      *float64           `json:"max_site_bonus_extra"` // 已退役；只保留历史读取，不参与报价、开站或现行设置校验
 	TrialGrantMaxUSD       *float64           `json:"trial_grant_max_usd"`
 	TrialGrantDailyUSD     *float64           `json:"trial_grant_daily_usd"`
 
@@ -134,7 +134,7 @@ func GetResellerSetting() *ResellerSetting {
 // ResellerMoneyConfigured 说明开分站要的金额参数是否都设了（档位可以为空）。
 func (s *ResellerSetting) ResellerMoneyConfigured() bool {
 	return s.CostFactor != nil && s.MinCostFactor != nil && s.MaxMarkup != nil &&
-		s.MaxSiteBonusExtra != nil && s.TrialGrantMaxUSD != nil && s.TrialGrantDailyUSD != nil
+		s.TrialGrantMaxUSD != nil && s.TrialGrantDailyUSD != nil
 }
 
 // Ready 说明分站功能可用：总开关开着，金额参数和根域名都已设置。
@@ -269,9 +269,6 @@ func ValidateResellerSetting(s *ResellerSetting, resendConfigured bool) error {
 	if s.MaxMarkup != nil && (math.IsNaN(*s.MaxMarkup) || math.IsInf(*s.MaxMarkup, 0) || *s.MaxMarkup <= 0 || *s.MaxMarkup > 100) {
 		return common.NewMessage("The markup limit must be greater than 0 and at most 100")
 	}
-	if s.MaxSiteBonusExtra != nil && (math.IsNaN(*s.MaxSiteBonusExtra) || *s.MaxSiteBonusExtra < 0 || *s.MaxSiteBonusExtra > 100) {
-		return common.NewMessage("The extra bonus must be between 0 and 100")
-	}
 	for _, value := range []*float64{s.TrialGrantMaxUSD, s.TrialGrantDailyUSD} {
 		if value != nil && (math.IsNaN(*value) || *value < 0) {
 			return common.NewMessage("Trial credit limits cannot be negative")
@@ -300,7 +297,7 @@ func ValidateResellerSetting(s *ResellerSetting, resendConfigured bool) error {
 		}
 	}
 	if s.Enabled && !s.ResellerMoneyConfigured() {
-		return common.NewMessage("Set the cost factor, its minimum, the markup limit, the extra bonus limit and the trial credit limits before turning reseller sites on")
+		return common.NewMessage("Set the cost factor, its minimum, the markup limit and the trial credit limits before turning reseller sites on")
 	}
 	if s.Enabled && len(s.RootDomains) == 0 {
 		return common.NewMessage("Add at least one root domain before turning reseller sites on")

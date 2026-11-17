@@ -28,7 +28,6 @@ export const MONEY_KEYS = [
   'cost_factor',
   'min_cost_factor',
   'max_markup',
-  'max_site_bonus_extra',
   'trial_grant_max_usd',
   'trial_grant_daily_usd',
 ] as const
