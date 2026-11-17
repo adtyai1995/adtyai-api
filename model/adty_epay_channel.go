@@ -18,6 +18,7 @@ const (
 	AdtyEpayStatusEnabled     = "enabled"
 	AdtyEpayStatusMaintenance = "maintenance"
 	AdtyEpayStatusDisabled    = "disabled"
+	AdtyEpayStatusRevoked     = "revoked"
 
 	AdtyEpayReasonManual = "manual"
 	AdtyEpayReasonUnpaid = "unpaid"
@@ -118,10 +119,67 @@ func GetAdtyEpayChannel(id int) (*AdtyEpayChannel, error) {
 	return &channels[0], nil
 }
 
+// SamePaymentIdentity compares the credentials and method mapping used for
+// checkout, callbacks and queries. Operational limits and labels may change.
+func (channel *AdtyEpayChannel) SamePaymentIdentity(other *AdtyEpayChannel) bool {
+	if other == nil || channel.Id != other.Id || channel.MerchantId != other.MerchantId ||
+		channel.MerchantKey != other.MerchantKey || channel.GatewayURL != other.GatewayURL ||
+		channel.OrderMode != other.OrderMode || len(channel.Methods) != len(other.Methods) {
+		return false
+	}
+	codes := make(map[string]string, len(channel.Methods))
+	for _, method := range channel.Methods {
+		code := method.TypeCode
+		if code == "" {
+			code = method.Method
+		}
+		codes[method.Method] = code
+	}
+	for _, method := range other.Methods {
+		code := method.TypeCode
+		if code == "" {
+			code = method.Method
+		}
+		if original, ok := codes[method.Method]; !ok || original != code {
+			return false
+		}
+		delete(codes, method.Method)
+	}
+	return true
+}
+
 // SaveAdtyEpayChannel 新建或改一个通道，方式整组替换。keepKey 为真时不改商户密钥。
 func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		methods := channel.Methods
+		defer func() { channel.Methods = methods }()
+		if channel.Id != 0 {
+			var existing AdtyEpayChannel
+			if err := AdtyLockForUpdate(tx).Preload("Methods").First(&existing, channel.Id).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyEpayChannelNotFound
+				}
+				return err
+			}
+			if existing.Status == AdtyEpayStatusRevoked {
+				return common.NewMessage("This payment channel has been permanently revoked")
+			}
+			if keepKey {
+				channel.MerchantKey = existing.MerchantKey
+			}
+			if !existing.SamePaymentIdentity(channel) {
+				var count int64
+				if err := tx.Model(&AdtyTopupOrder{}).Where("channel_id = ?", channel.Id).Count(&count).Error; err != nil {
+					return err
+				}
+				if count > 0 {
+					return common.NewMessage("This channel has orders. Create a new channel to change payment credentials or method codes")
+				}
+			}
+			// Status writes use their own operation; do not restore a stale
+			// status read by the editor before this transaction acquired its lock.
+			channel.Status, channel.StatusReason = existing.Status, existing.StatusReason
+		}
 		channel.Methods = nil
 		if channel.Id == 0 {
 			if err := tx.Create(channel).Error; err != nil {
@@ -162,14 +220,18 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 
 // DeleteAdtyEpayChannel 删除通道。旧订单的回调仍按 channelId 路由，所以有订单的通道只能停用。
 func DeleteAdtyEpayChannel(id int) error {
-	var count int64
-	if err := DB.Model(&AdtyTopupOrder{}).Where("channel_id = ?", id).Count(&count).Error; err != nil {
-		return err
-	}
-	if count > 0 {
-		return common.NewMessage("This channel has orders. Disable it instead of deleting it")
-	}
 	return DB.Transaction(func(tx *gorm.DB) error {
+		var channel AdtyEpayChannel
+		if err := AdtyLockForUpdate(tx).First(&channel, id).Error; err != nil {
+			return err
+		}
+		var count int64
+		if err := tx.Model(&AdtyTopupOrder{}).Where("channel_id = ?", id).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return common.NewMessage("This channel has orders. Disable it instead of deleting it")
+		}
 		if err := tx.Where("channel_id = ?", id).Delete(&AdtyEpayChannelMethod{}).Error; err != nil {
 			return err
 		}
@@ -179,19 +241,65 @@ func DeleteAdtyEpayChannel(id int) error {
 
 // SetAdtyEpayChannelStatus 改通道状态和原因；启用时清零连续未付和探活计数。
 func SetAdtyEpayChannelStatus(id int, status, reason string) error {
+	return setAdtyEpayChannelStatus(DB, id, status, reason)
+}
+
+// RevokeAdtyEpayChannelWithAudit commits permanent credential removal together
+// with recoverable evidence. A log-store outage cannot lose the operation.
+func RevokeAdtyEpayChannelWithAudit(id int, event AuditLog) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var channel AdtyEpayChannel
+		if err := AdtyLockForUpdate(tx).First(&channel, id).Error; err != nil {
+			return err
+		}
+		before, err := encodeOfficialAuditValue(map[string]any{
+			"status": channel.Status, "status_reason": channel.StatusReason, "credential_present": channel.MerchantKey != "",
+		})
+		if err != nil {
+			return err
+		}
+		after, err := encodeOfficialAuditValue(map[string]any{
+			"status": AdtyEpayStatusRevoked, "status_reason": AdtyEpayReasonManual, "credential_present": false,
+		})
+		if err != nil {
+			return err
+		}
+		event.BeforeValue, event.AfterValue = before, after
+		if err := setAdtyEpayChannelStatus(tx, id, AdtyEpayStatusRevoked, AdtyEpayReasonManual); err != nil {
+			return err
+		}
+		return AppendAuditIntentTx(tx, event)
+	})
+}
+
+func setAdtyEpayChannelStatus(tx *gorm.DB, id int, status, reason string) error {
 	updates := map[string]any{"status": status, "status_reason": reason}
+	if status == AdtyEpayStatusRevoked {
+		updates["merchant_key"] = ""
+		updates["status_reason"] = AdtyEpayReasonManual
+	}
 	if status == AdtyEpayStatusEnabled {
 		updates["status_reason"] = ""
 		updates["unpaid_streak"] = 0
 		updates["probe_fail_count"] = 0
 		updates["probe_ok_count"] = 0
 	}
-	result := DB.Model(&AdtyEpayChannel{}).Where("id = ?", id).Updates(updates)
+	result := tx.Model(&AdtyEpayChannel{}).Where("id = ? AND status <> ?", id, AdtyEpayStatusRevoked).Updates(updates)
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return ErrAdtyEpayChannelNotFound
+		var channel AdtyEpayChannel
+		if err := tx.First(&channel, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtyEpayChannelNotFound
+			}
+			return err
+		}
+		if status == AdtyEpayStatusRevoked && channel.Status == AdtyEpayStatusRevoked {
+			return nil
+		}
+		return common.NewMessage("This payment channel has been permanently revoked")
 	}
 	return nil
 }

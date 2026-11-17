@@ -154,6 +154,122 @@ func TestAdtyEpayChannelKeyNotSerialized(t *testing.T) {
 	assert.NotContains(t, string(raw), "super-secret")
 }
 
+func TestEpayHistoricalChannelIdentityCannotBeOverwritten(t *testing.T) {
+	for _, field := range []string{"merchant", "key", "gateway", "mode", "type", "remove_method"} {
+		t.Run(field, func(t *testing.T) {
+			db := prepareEpayDB(t)
+			channel := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "original", GatewayURL: "https://old.example.test", MerchantId: "old-merchant"}, alipay("qrcode"))
+			seedEpayOrder(t, db, channel.Id, "EPY-frozen", common.GetTimestamp())
+			changed, err := model.GetAdtyEpayChannel(channel.Id)
+			require.NoError(t, err)
+			switch field {
+			case "merchant":
+				changed.MerchantId = "new-merchant"
+			case "key":
+				changed.MerchantKey = "new-key"
+			case "gateway":
+				changed.GatewayURL = "https://new.example.test"
+			case "mode":
+				changed.OrderMode = model.AdtyEpayOrderModeSubmit
+			case "type":
+				changed.Methods[0].TypeCode = "new-type"
+			case "remove_method":
+				changed.Methods = nil
+			}
+			require.Error(t, model.SaveAdtyEpayChannel(changed, false), "historical payment identity must require a new channel")
+			stored, err := model.GetAdtyEpayChannel(channel.Id)
+			require.NoError(t, err)
+			assert.Equal(t, "old-merchant", stored.MerchantId)
+			assert.Equal(t, "key", stored.MerchantKey)
+			assert.Equal(t, "https://old.example.test", stored.GatewayURL)
+			require.Len(t, stored.Methods, 1)
+			assert.Equal(t, "alipay", stored.Methods[0].TypeCode)
+		})
+	}
+}
+
+func TestEpayHistoricalChannelAllowsOperationalEdits(t *testing.T) {
+	db := prepareEpayDB(t)
+	channel := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "original", GatewayURL: "https://old.example.test", MerchantId: "old-merchant"}, alipay("qrcode"))
+	seedEpayOrder(t, db, channel.Id, "EPY-operational", common.GetTimestamp())
+	channel.Name = "renamed"
+	channel.MerchantKey = ""
+	channel.Methods[0].Enabled = false
+	channel.Methods[0].MinCNY = decimal.NewFromInt(10)
+	require.NoError(t, model.SaveAdtyEpayChannel(channel, true))
+	stored, err := model.GetAdtyEpayChannel(channel.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "renamed", stored.Name)
+	assert.Equal(t, "key", stored.MerchantKey)
+	assert.False(t, stored.Methods[0].Enabled)
+	assert.True(t, stored.Methods[0].MinCNY.Equal(decimal.NewFromInt(10)))
+	assert.NotNil(t, stored.MethodByTypeCode("alipay"), "disabled methods must still identify historical callbacks")
+}
+
+func TestEpayRevocationErasesKeyAndFencesDelayedPayment(t *testing.T) {
+	for _, initialStatus := range []string{common.TopUpStatusPending, common.TopUpStatusExpired} {
+		t.Run(initialStatus, func(t *testing.T) {
+			db := prepareEpayDB(t)
+			pgtest.RecordServerVersion(t, db)
+			channel := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "revocable", GatewayURL: "https://old.example.test", MerchantId: "old-merchant"}, alipay("qrcode"))
+			seedEpayOrder(t, db, channel.Id, "EPY-revoked", common.GetTimestamp()-300)
+			require.NoError(t, db.Model(&model.TopUp{}).Where("trade_no = ?", "EPY-revoked").Update("status", initialStatus).Error)
+			ext, err := model.GetAdtyTopupOrder("EPY-revoked")
+			require.NoError(t, err)
+			calls := stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, OutTradeNo: ext.TradeNo, MerchantId: "old-merchant", GatewayTradeNo: "gw-revoked", TypeCode: "alipay", MoneyCNY: decimal.NewFromInt(730)})
+			facts, err := (adtyEpayProvider{}).Query(t.Context(), ext)
+			require.NoError(t, err)
+			require.NotNil(t, facts)
+			require.NoError(t, model.SetAdtyEpayChannelStatus(channel.Id, "revoked", model.AdtyEpayReasonManual))
+			stored, err := model.GetAdtyEpayChannel(channel.Id)
+			require.NoError(t, err)
+			assert.Empty(t, stored.MerchantKey, "revocation must erase the retained credential")
+			assert.Error(t, model.SetAdtyEpayChannelStatus(channel.Id, model.AdtyEpayStatusEnabled, ""))
+			assert.Error(t, model.SaveAdtyEpayChannel(channel, false), "a stale editor cannot revive a revoked channel")
+			_, err = (adtyEpayProvider{}).Query(t.Context(), ext)
+			assert.Error(t, err)
+			assert.Equal(t, 1, *calls, "revoked channels must not send another credentialed query")
+			_, err = model.CompleteAdtyTopUp(ext.TradeNo, *facts, "")
+			assert.Error(t, err, "a query fetched before revocation must be fenced at credit")
+			assert.Equal(t, initialStatus, topUpStatusOf(t, db, ext.TradeNo))
+			var buyer model.User
+			require.NoError(t, db.First(&buyer, ext.UserId).Error)
+			assert.Zero(t, buyer.Quota)
+			facts.Source = model.AdtyPaymentSourceManual
+			facts.OperatorId = 88
+			_, err = model.CompleteAdtyTopUp(ext.TradeNo, *facts, "")
+			require.NoError(t, err, "revocation must preserve the evidence-based manual reconciliation path")
+			assert.Equal(t, common.TopUpStatusSuccess, topUpStatusOf(t, db, ext.TradeNo))
+		})
+	}
+}
+
+func TestEpayCheckoutRejectsIdentityChangedAfterSelection(t *testing.T) {
+	db := prepareEpayDB(t)
+	channel := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "selected", GatewayURL: "https://old.example.test", MerchantId: "old-merchant"}, alipay("qrcode"))
+	selected, _, err := PickAdtyEpayChannel("alipay", decimal.NewFromInt(730), "pc", nil, common.GetTimestamp())
+	require.NoError(t, err)
+	channel.MerchantId = "replacement-merchant"
+	channel.MerchantKey = "replacement-key"
+	channel.GatewayURL = "https://replacement.example.test"
+	channel.Methods[0].TypeCode = "replacement-alipay"
+	require.NoError(t, model.SaveAdtyEpayChannel(channel, false), "an unused channel can still be configured")
+	user := &model.User{Username: "epay-selection", Password: "hashed-password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1}
+	require.NoError(t, db.Create(user).Error)
+	top, ext := paymentSceneOrder(user.Id, "epay-selection")
+	top.PaymentProvider, top.PaymentMethod, top.Money = model.PaymentProviderAdtyEpay, "alipay", 730
+	ext.Provider, ext.Method, ext.ChannelId = model.PaymentProviderAdtyEpay, "alipay", channel.Id
+	ext.PayCurrency, ext.PayAmount = "CNY", decimal.NewFromInt(730)
+	require.Error(t, CreateAdtyPaymentOrder(top, ext, "wallet_topup", selected))
+	var count int64
+	require.NoError(t, db.Model(&model.TopUp{}).Where("trade_no = ?", top.TradeNo).Count(&count).Error)
+	assert.Zero(t, count, "a stale selection must leave no payable order")
+	current, err := model.GetAdtyEpayChannel(channel.Id)
+	require.NoError(t, err)
+	require.NoError(t, CreateAdtyPaymentOrder(top, ext, "wallet_topup", current))
+	require.Error(t, model.DeleteAdtyEpayChannel(channel.Id))
+}
+
 func seedEpayChannel(t *testing.T, db *gorm.DB, channel model.AdtyEpayChannel, methods ...model.AdtyEpayChannelMethod) *model.AdtyEpayChannel {
 	t.Helper()
 	if channel.Status == "" {

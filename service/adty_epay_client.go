@@ -74,6 +74,9 @@ func adtyEpayOrderParams(channel *model.AdtyEpayChannel, method *model.AdtyEpayC
 
 // CreateAdtyEpayOrder 下单。API 模式 POST mapi.php；页面跳转模式只生成签名后的 submit.php 链接。
 func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, method *model.AdtyEpayChannelMethod, req AdtyEpayCreateRequest) (*AdtyEpayCreateResult, error) {
+	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || channel.MerchantKey == "" {
+		return nil, common.NewMessage("This payment channel has been permanently revoked")
+	}
 	params := adtyEpayOrderParams(channel, method, req)
 	if channel.OrderMode == model.AdtyEpayOrderModeSubmit {
 		sign, err := EpaySign(params, channel.MerchantKey)
@@ -212,6 +215,9 @@ func adtyRejectUnsafeEpayLink(result *AdtyEpayCreateResult) error {
 
 // QueryAdtyEpayOrder 按我们的订单号查单（api.php?act=order）。status、code 兼容数字和字符串。
 func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, outTradeNo string) (*AdtyEpayQueryResult, error) {
+	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || channel.MerchantKey == "" {
+		return nil, common.NewMessage("This payment channel has been permanently revoked")
+	}
 	values := url.Values{}
 	values.Set("act", "order")
 	values.Set("pid", channel.MerchantId)
@@ -266,6 +272,9 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 // ProbeAdtyEpayChannel 探活：按 ProbeMode 调 act=query、act=balance，或查一个不存在的订单。
 // HTTP 200 并且返回 JSON 就算通（查不到订单的 code=-1 也算网关正常）。
 func ProbeAdtyEpayChannel(ctx context.Context, channel *model.AdtyEpayChannel) error {
+	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || channel.MerchantKey == "" {
+		return common.NewMessage("This payment channel has been permanently revoked")
+	}
 	values := url.Values{}
 	values.Set("pid", channel.MerchantId)
 	values.Set("key", channel.MerchantKey)

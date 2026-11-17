@@ -323,10 +323,12 @@ func registerAdtyEpayRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/epay/channels", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/epay/channels/:id", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("DELETE", "/api/adty/admin/epay/channels/:id", "scope", "option:write")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/epay/channels/:id/revoke", "scope", "option:write")
 	root := apiRouter.Group("/adty/admin/epay", middleware.RootAuth())
 	root.POST("/channels", controller.CreateAdtyEpayChannel)
 	root.PUT("/channels/:id", controller.UpdateAdtyEpayChannel)
 	root.DELETE("/channels/:id", controller.DeleteAdtyEpayChannel)
+	root.POST("/channels/:id/revoke", controller.RevokeAdtyEpayChannel)
 }
 
 // registerAdtyReferralRoutes 挂推广返佣（P6）。用户侧接口读 wallet:read、写 wallet:write；后台按权限注册。

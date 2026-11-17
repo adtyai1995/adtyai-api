@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -295,6 +296,103 @@ func epayCallback(t *testing.T, f *adtyGuardFixture, channelID int, key string, 
 	resp := httptest.NewRecorder()
 	f.engine.ServeHTTP(resp, req)
 	return resp.Body.String()
+}
+
+func TestEpayControlledChannelSwitchAndRevocation(t *testing.T) {
+	for _, status := range []string{common.TopUpStatusPending, common.TopUpStatusExpired} {
+		t.Run(status, func(t *testing.T) {
+			f := newAdtyGuardFixture(t)
+			setRouterBonusRates(t)
+			gateway := newFakeEpay(t, epayQR)
+			old := seedRouterEpayChannel(t, "old", gateway.server.URL, model.AdtyEpayOrderModeAPI, 1)
+			token, userID := bepusdtBuyer(t, f, "epay-switch")
+			oldOrder := decodeAdtyData[model.AdtyTopUpView](t, epayPay(t, f, token).Body)
+			if status == common.TopUpStatusExpired {
+				require.NoError(t, model.UpdatePendingTopUpStatus(oldOrder.TradeNo, model.PaymentProviderAdtyEpay, status))
+			}
+			require.NoError(t, model.SetAdtyEpayChannelStatus(old.Id, model.AdtyEpayStatusDisabled, model.AdtyEpayReasonManual))
+			fresh := seedRouterEpayChannel(t, "new", gateway.server.URL, model.AdtyEpayOrderModeAPI, 2)
+			fresh.Methods[0].TypeCode = "new-alipay"
+			require.NoError(t, model.SaveAdtyEpayChannel(fresh, true))
+			params := func(order model.AdtyTopUpView, pid, code string) map[string]string {
+				return map[string]string{"pid": pid, "type": code, "trade_no": "G" + order.TradeNo, "out_trade_no": order.TradeNo, "money": "730.00", "trade_status": "TRADE_SUCCESS"}
+			}
+			before := quotaOf(t, f, userID)
+			assert.Equal(t, "fail", epayCallback(t, f, old.Id, fresh.MerchantKey, params(oldOrder, fresh.MerchantId, "new-alipay")))
+			assert.Equal(t, before, quotaOf(t, f, userID))
+			for range 2 {
+				assert.Equal(t, "success", epayCallback(t, f, old.Id, old.MerchantKey, params(oldOrder, old.MerchantId, "alipay")))
+			}
+			assert.Equal(t, before+51_250_000, quotaOf(t, f, userID))
+			newOrder := decodeAdtyData[model.AdtyTopUpView](t, epayPay(t, f, token).Body)
+			require.Equal(t, fresh.Id, newOrder.Ext.ChannelId)
+			assert.Equal(t, "success", epayCallback(t, f, fresh.Id, fresh.MerchantKey, params(newOrder, fresh.MerchantId, "new-alipay")))
+			assert.Equal(t, before+102_500_000, quotaOf(t, f, userID))
+			late := decodeAdtyData[model.AdtyTopUpView](t, epayPay(t, f, token).Body)
+			path := fmt.Sprintf("/api/adty/admin/epay/channels/%d/revoke", fresh.Id)
+			f.grant(t, authz.AdtyPaymentOperate)
+			denied := adtyJSON(t, f.engine, http.MethodPost, path, "{}", f.token)
+			assert.Equal(t, http.StatusForbidden, denied.Code)
+			for range 2 {
+				response := adtyJSON(t, f.engine, http.MethodPost, path, "{}", f.root)
+				require.Contains(t, response.Body.String(), `"success":true`)
+				assert.NotContains(t, response.Body.String(), fresh.MerchantKey)
+			}
+			stored, err := model.GetAdtyEpayChannel(fresh.Id)
+			require.NoError(t, err)
+			assert.Empty(t, stored.MerchantKey)
+			assert.Equal(t, "fail", epayCallback(t, f, fresh.Id, fresh.MerchantKey, params(late, fresh.MerchantId, "new-alipay")))
+			assert.Equal(t, "fail", epayCallback(t, f, fresh.Id, "", params(late, fresh.MerchantId, "new-alipay")))
+			assert.Equal(t, before+102_500_000, quotaOf(t, f, userID))
+		})
+	}
+}
+
+func TestEpayRevocationAuditSurvivesLogFailure(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	channel := seedRouterEpayChannel(t, "audit-revoke", "https://pay.example.test", model.AdtyEpayOrderModeAPI, 1)
+	path := fmt.Sprintf("/api/adty/admin/epay/channels/%d/revoke", channel.Id)
+	require.NoError(t, f.db.Migrator().RenameTable("audit_logs", "audit_logs_offline"))
+	t.Cleanup(func() { _ = f.db.Migrator().RenameTable("audit_logs_offline", "audit_logs") })
+	response := adtyJSON(t, f.engine, http.MethodPost, path, "{}", f.root)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	stored, err := model.GetAdtyEpayChannel(channel.Id)
+	require.NoError(t, err)
+	assert.Empty(t, stored.MerchantKey)
+	var intents []model.AuditIntent
+	require.NoError(t, f.db.Find(&intents).Error)
+	require.Len(t, intents, 1, "permanent revocation needs recoverable evidence while the log store is unavailable")
+	var event model.AuditLog
+	require.NoError(t, common.UnmarshalJsonStr(intents[0].Payload, &event))
+	assert.Equal(t, "adty.epay_channel.revoke", event.Action)
+	assert.Equal(t, fmt.Sprint(channel.Id), event.ObjectId)
+	assert.Equal(t, common.RoleRootUser, event.ActorRole)
+	assert.NotEmpty(t, event.Reason)
+	assert.JSONEq(t, `{"status":"enabled","status_reason":"","credential_present":true}`, event.BeforeValue)
+	assert.JSONEq(t, `{"status":"revoked","status_reason":"manual","credential_present":false}`, event.AfterValue)
+	assert.NotContains(t, intents[0].Payload, channel.MerchantKey)
+	assert.Zero(t, intents[0].DeliveredAt)
+	require.NoError(t, f.db.Migrator().RenameTable("audit_logs_offline", "audit_logs"))
+	for range 2 {
+		require.NoError(t, model.DeliverAuditIntent(context.Background(), event.EventId))
+	}
+	var delivered int64
+	require.NoError(t, f.db.Model(&model.AuditLog{}).Where("event_id = ?", event.EventId).Count(&delivered).Error)
+	assert.EqualValues(t, 1, delivered)
+}
+
+func TestEpayRevocationRollsBackWhenAuditIntentCannotPersist(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	channel := seedRouterEpayChannel(t, "audit-rollback", "https://pay.example.test", model.AdtyEpayOrderModeAPI, 1)
+	require.NoError(t, f.db.Migrator().RenameTable("audit_intents", "audit_intents_offline"))
+	t.Cleanup(func() { _ = f.db.Migrator().RenameTable("audit_intents_offline", "audit_intents") })
+	path := fmt.Sprintf("/api/adty/admin/epay/channels/%d/revoke", channel.Id)
+	response := adtyJSON(t, f.engine, http.MethodPost, path, "{}", f.root)
+	assert.NotContains(t, response.Body.String(), `"success":true`)
+	stored, err := model.GetAdtyEpayChannel(channel.Id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtyEpayStatusEnabled, stored.Status)
+	assert.Equal(t, channel.MerchantKey, stored.MerchantKey, "failed evidence persistence must roll back irreversible key deletion")
 }
 
 func TestAdtyEpayNotify(t *testing.T) {

@@ -123,6 +123,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 			quote:        quote,
 			expireAt:     time.Now().Unix() + int64(minutes*60),
 			channelID:    channel.Id,
+			channel:      channel,
 			methodLabel:  method.DisplayName,
 		})
 		if errors.Is(err, model.ErrAdtyEpayDailyLimit) {
@@ -211,7 +212,7 @@ func AdtyEpayNotify(c *gin.Context) {
 		return
 	}
 	params := adtyEpayCallbackParams(c)
-	if !service.EpayVerify(params, channel.MerchantKey) || params["pid"] != channel.MerchantId {
+	if channel.Status == model.AdtyEpayStatusRevoked || channel.MerchantKey == "" || !service.EpayVerify(params, channel.MerchantKey) || params["pid"] != channel.MerchantId {
 		common.SysLog(common.LogText("epay notify rejected channel=%d: bad signature or pid", channelID))
 		c.String(http.StatusOK, "fail")
 		return

@@ -166,6 +166,7 @@ func (p financeQueryProvider) Query(_ context.Context, ext *model.AdtyTopupOrder
 
 func TestFinanceQueryRequiresWritePermissionAndCreditsOnce(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	channel := seedRouterEpayChannel(t, "finance-query", "https://query.example", model.AdtyEpayOrderModeAPI, 1)
 	buyer := adtySessionToken(t, f.db, "query-buyer", common.RoleCommonUser)
 	var user model.User
 	require.NoError(t, f.db.Where("username = ?", "query-buyer").First(&user).Error)
@@ -173,7 +174,7 @@ func TestFinanceQueryRequiresWritePermissionAndCreditsOnce(t *testing.T) {
 		PaymentProvider: model.PaymentProviderAdtyEpay, PaymentMethod: "alipay", Status: common.TopUpStatusExpired}
 	ext := model.AdtyTopupOrder{TradeNo: order.TradeNo, UserId: user.Id, Provider: order.PaymentProvider, Method: order.PaymentMethod,
 		FaceUSD: decimal.NewFromInt(2), CreditQuota: 1000000, PayAmount: decimal.RequireFromString("14.60"), PayCurrency: "CNY",
-		TopupGroupRatio: decimal.NewFromInt(1), GatewayTradeId: "gw-query"}
+		TopupGroupRatio: decimal.NewFromInt(1), GatewayTradeId: "gw-query", ChannelId: channel.Id}
 	require.NoError(t, model.CreateAdtyTopUp(&order, &ext))
 	queries := 0
 	paid, wrongAmount, gatewayFails := false, false, false
@@ -495,6 +496,7 @@ func TestPaymentOrphanReviewRequiresWritePermissionAndEvidence(t *testing.T) {
 
 func TestOrphanCreditRunsBonusAndHooks(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	channel := seedRouterEpayChannel(t, "orphan-credit", "https://query.example", model.AdtyEpayOrderModeAPI, 1)
 	f.grant(t, authz.AdtyFinanceRead, authz.AdtyFinanceManualCredit)
 	var user model.User
 	adtySessionToken(t, f.db, "orphan-buyer", common.RoleCommonUser)
@@ -513,7 +515,7 @@ func TestOrphanCreditRunsBonusAndHooks(t *testing.T) {
 
 	require.NoError(t, model.CreateAdtyTopUp(
 		&model.TopUp{UserId: user.Id, Amount: 100, TradeNo: "EPY-orphan", PaymentMethod: "alipay", PaymentProvider: model.PaymentProviderAdtyEpay, CreateTime: 1, Status: common.TopUpStatusPending},
-		&model.AdtyTopupOrder{TradeNo: "EPY-orphan", UserId: user.Id, Provider: model.PaymentProviderAdtyEpay, Method: "alipay",
+		&model.AdtyTopupOrder{TradeNo: "EPY-orphan", UserId: user.Id, Provider: model.PaymentProviderAdtyEpay, Method: "alipay", ChannelId: channel.Id,
 			FaceUSD: decimal.NewFromInt(100), BonusUSD: decimal.RequireFromString("2.5"), CreditQuota: 51_250_000,
 			PayAmount: decimal.RequireFromString("730"), PayCurrency: "CNY", TopupGroupRatio: decimal.NewFromInt(1), ExpireAt: 100},
 	))

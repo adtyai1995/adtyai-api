@@ -199,6 +199,24 @@ func DeleteAdtyEpayChannel(c *gin.Context) {
 	common.ApiSuccess(c, nil)
 }
 
+// RevokeAdtyEpayChannel permanently removes the historical credential. Old
+// orders remain available for evidence-based manual reconciliation.
+func RevokeAdtyEpayChannel(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	event := prepareManageAuditChange(c, c.GetInt("id"), "adty.epay_channel.revoke", map[string]any{"id": id}, nil, nil,
+		"Root confirmed permanent payment credential revocation", "")
+	if err := model.RevokeAdtyEpayChannelWithAudit(id, event); err != nil {
+		writeAdtyEpayAdminError(c, err)
+		return
+	}
+	deliverCommittedAudits(c, []model.AuditLog{event})
+	common.ApiSuccess(c, nil)
+}
+
 // SetAdtyEpayChannelStatus 启用、停用或手动转维护（支付通道·启停）。
 func SetAdtyEpayChannelStatus(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))

@@ -258,6 +258,9 @@ func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*
 	if err != nil {
 		return nil, err
 	}
+	if channel.Status == model.AdtyEpayStatusRevoked {
+		return nil, common.NewMessage("This payment channel has been permanently revoked")
+	}
 	endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || channel.MerchantId == "" || channel.MerchantKey == "" {
 		return nil, errors.New("authenticated HTTPS Epay query is unavailable")

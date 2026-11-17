@@ -42,7 +42,7 @@ export type EpayChannel = {
   weight: number
   order_mode: 'api' | 'submit'
   probe_mode: string
-  status: 'enabled' | 'maintenance' | 'disabled'
+  status: 'enabled' | 'maintenance' | 'disabled' | 'revoked'
   status_reason: string
   unpaid_streak: number
   unpaid_threshold: number
@@ -92,6 +92,13 @@ export async function saveEpayChannel(
 export async function deleteEpayChannel(id: number) {
   const res = await api.delete<ApiResponse<null>>(
     `/api/adty/admin/epay/channels/${id}`
+  )
+  requireServerSuccess(res.data)
+}
+
+export async function revokeEpayChannel(id: number) {
+  const res = await api.post<ApiResponse<null>>(
+    `/api/adty/admin/epay/channels/${id}/revoke`
   )
   requireServerSuccess(res.data)
 }

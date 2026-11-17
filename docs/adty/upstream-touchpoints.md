@@ -736,3 +736,4 @@
 | `relay/mjproxy_handler.go`、`relay/mjproxy_handler_test.go` | 普通 MJ 与 SwapFace 在上游调用前准备付款快照，外部测试桩在响应前执行真实重绑/撤权验证原账户扣费 | 封住上游执行期间 Key 绑定变化的付款漂移窗口 | ISS-R1-0001 |
 | `service/task_billing_test.go`、`service/task_polling_test.go` | 原有任务夹具通过真实预扣、结算保存原付款流水，补齐资金批次、分摊和短差挂账清理，以真实 PostgreSQL 重用用户夹具验证隔离；保留退款、调整和轮询的余额及幂等断言 | 新付款保护不能由无原扣款事实的夹具绕过，也不能放宽既有回归断言或继承上一测试的资金状态 | ISS-R1-0001 |
 | `relay/request_billing.go`、`service/billing.go` | 免费模型在上游前用现有零预扣事务持久保存付款快照；违规费从该原请求继承个人或团队账户，零余额免费准入不变 | 免费请求不能到违规响应后才读取可变 Key 绑定选择付款人 | ISS-R1-0001 |
+| `web/src/i18n/locales/en.json`、`web/src/i18n/locales/zh.json` | 追加易支付历史身份冻结、凭据永久撤销及确认操作的中英文词条 | 新通道轮换和撤销行为需要明确提示，沿用原语言包 | ISS-R1-0005 |

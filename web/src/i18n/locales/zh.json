@@ -1,5 +1,10 @@
 {
   "translation": {
+    "revoked": "凭据已撤销",
+    "Revoke credentials": "撤销凭据",
+    "Permanently revoke {{name}}? This erases its key and blocks late callbacks and automatic queries. Reconcile old payments manually with evidence. This cannot be undone.": "确定永久撤销 {{name}} 的凭据？这会清除密钥并阻止迟到回调和自动补查入账。旧单须凭真实凭证人工对账，此操作不可撤销。",
+    "This payment channel has been permanently revoked": "此支付通道的凭据已永久撤销",
+    "This channel has orders. Create a new channel to change payment credentials or method codes": "此通道已有订单，更换支付凭据或方式代码请新建通道",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

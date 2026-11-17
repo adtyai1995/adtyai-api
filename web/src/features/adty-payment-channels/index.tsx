@@ -39,6 +39,7 @@ import {
   deleteEpayChannel,
   epayChannelsQueryKey,
   getEpayChannels,
+  revokeEpayChannel,
   setEpayChannelStatus,
   testEpayChannel,
   type EpayChannel,
@@ -49,6 +50,7 @@ const STATUS_VARIANT = {
   enabled: 'success',
   maintenance: 'warning',
   disabled: 'neutral',
+  revoked: 'danger',
 } as const
 const METHOD_LABEL: Record<string, string> = {
   alipay: 'Alipay',
@@ -65,6 +67,7 @@ export function PaymentChannels() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<EpayChannel | null>(null)
   const [deleting, setDeleting] = useState<EpayChannel | null>(null)
+  const [revoking, setRevoking] = useState<EpayChannel | null>(null)
   const query = useQuery({
     queryKey: epayChannelsQueryKey,
     queryFn: getEpayChannels,
@@ -110,6 +113,14 @@ export function PaymentChannels() {
     mutationFn: (id: number) => deleteEpayChannel(id),
     onSuccess: () => {
       setDeleting(null)
+      void refresh()
+    },
+    onError: (error) => handleServerError(error),
+  })
+  const revoke = useMutation({
+    mutationFn: (id: number) => revokeEpayChannel(id),
+    onSuccess: () => {
+      setRevoking(null)
       void refresh()
     },
     onError: (error) => handleServerError(error),
@@ -225,17 +236,19 @@ export function PaymentChannels() {
                         cellClassName: 'text-right',
                         cell: (row) => (
                           <div className='flex justify-end gap-1'>
-                            {canOperate && row.order_mode === 'api' && (
-                              <Button
-                                size='sm'
-                                variant='outline'
-                                disabled={test.isPending}
-                                onClick={() => test.mutate(row.id)}
-                              >
-                                {t('Test order')}
-                              </Button>
-                            )}
-                            {canOperate && (
+                            {canOperate &&
+                              row.status !== 'revoked' &&
+                              row.order_mode === 'api' && (
+                                <Button
+                                  size='sm'
+                                  variant='outline'
+                                  disabled={test.isPending}
+                                  onClick={() => test.mutate(row.id)}
+                                >
+                                  {t('Test order')}
+                                </Button>
+                              )}
+                            {canOperate && row.status !== 'revoked' && (
                               <Button
                                 size='sm'
                                 variant='outline'
@@ -257,16 +270,28 @@ export function PaymentChannels() {
                             )}
                             {isRoot && (
                               <>
-                                <Button
-                                  size='sm'
-                                  variant='ghost'
-                                  onClick={() => {
-                                    setEditing(row)
-                                    setDrawerOpen(true)
-                                  }}
-                                >
-                                  {t('Edit')}
-                                </Button>
+                                {row.status !== 'revoked' && (
+                                  <>
+                                    <Button
+                                      size='sm'
+                                      variant='ghost'
+                                      onClick={() => {
+                                        setEditing(row)
+                                        setDrawerOpen(true)
+                                      }}
+                                    >
+                                      {t('Edit')}
+                                    </Button>
+                                    <Button
+                                      size='sm'
+                                      variant='ghost'
+                                      disabled={revoke.isPending}
+                                      onClick={() => setRevoking(row)}
+                                    >
+                                      {t('Revoke credentials')}
+                                    </Button>
+                                  </>
+                                )}
                                 <Button
                                   size='sm'
                                   variant='ghost'
@@ -295,6 +320,18 @@ export function PaymentChannels() {
             onSaved={() => void refresh()}
           />
         )}
+        <ConfirmDialog
+          open={revoking !== null}
+          onOpenChange={(open) => !open && setRevoking(null)}
+          title={t('Revoke credentials')}
+          desc={t(
+            'Permanently revoke {{name}}? This erases its key and blocks late callbacks and automatic queries. Reconcile old payments manually with evidence. This cannot be undone.',
+            { name: revoking?.name ?? '' }
+          )}
+          destructive
+          isLoading={revoke.isPending}
+          handleConfirm={() => revoking && revoke.mutate(revoking.id)}
+        />
         <ConfirmDialog
           open={deleting !== null}
           onOpenChange={(open) => !open && setDeleting(null)}

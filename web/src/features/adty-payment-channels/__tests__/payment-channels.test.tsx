@@ -33,6 +33,7 @@ const api = vi.hoisted(() => ({
   deleteEpayChannel: vi.fn(),
   setEpayChannelStatus: vi.fn(),
   testEpayChannel: vi.fn(),
+  revokeEpayChannel: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api')>()),
@@ -120,6 +121,37 @@ describe('PaymentChannels', () => {
       screen.queryByRole('button', { name: 'Edit' })
     ).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Test order' })).toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: 'Revoke credentials' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('requires root confirmation before permanently revoking credentials', async () => {
+    const user = userEvent.setup()
+    api.revokeEpayChannel.mockResolvedValue(undefined)
+    renderPage(100)
+    await user.click(
+      await screen.findByRole('button', { name: 'Revoke credentials' })
+    )
+    const dialog = await screen.findByRole('alertdialog')
+    expect(
+      within(dialog).getByText(/late callbacks and automatic queries/i)
+    ).toBeVisible()
+    expect(api.revokeEpayChannel).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    expect(api.revokeEpayChannel).toHaveBeenCalledWith(3)
+  })
+
+  it('prevents testing, editing or enabling a permanently revoked channel', async () => {
+    api.getEpayChannels.mockResolvedValue([
+      { ...channel, status: 'revoked', has_key: false },
+    ])
+    renderPage(100)
+    await screen.findByText('ZPay A')
+    for (const name of ['Test order', 'Enable', 'Edit', 'Revoke credentials']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    expect(screen.getByText('revoked')).toBeVisible()
   })
 
   it('opens the drawer for root with an empty key field and default type codes', async () => {

@@ -96,7 +96,7 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	if site := AdtyBillingSiteForUser(leaderID); site != nil {
 		ext.SiteId = site.Id
 	}
-	if err := CreateAdtyPaymentOrder(topUp, ext, "wallet_topup"); err != nil {
+	if err := CreateAdtyPaymentOrder(topUp, ext, "wallet_topup", channel); err != nil {
 		return nil, err
 	}
 	result, err := CreateAdtyEpayOrder(context.Background(), channel, channelMethod, AdtyEpayCreateRequest{

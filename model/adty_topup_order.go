@@ -278,6 +278,15 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 		if err := checkAdtyPaymentFacts(ext, facts); err != nil {
 			return false, 0, nil, nil, err
 		}
+		if ext.Provider == PaymentProviderAdtyEpay {
+			var channel AdtyEpayChannel
+			if err := AdtyLockForUpdate(tx).First(&channel, ext.ChannelId).Error; err != nil {
+				return false, 0, nil, nil, err
+			}
+			if channel.Status == AdtyEpayStatusRevoked {
+				return false, 0, nil, nil, common.NewMessage("This payment channel has been permanently revoked")
+			}
+		}
 	}
 	if ext.CreditQuota <= 0 || ext.CreditQuota > int64(common.MaxWalletQuota) {
 		return false, 0, nil, nil, ErrInvalidTopUpQuota

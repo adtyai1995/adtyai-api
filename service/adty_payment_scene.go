@@ -368,7 +368,7 @@ func AuthorizeAdtyPaymentScene(userID int, key, provider, method string, quote *
 
 // All production payment entry points converge here. Read/quote authorization
 // cannot replace this transaction's check of the latest policy and SQL identity.
-func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key string) error {
+func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key string, selected ...*model.AdtyEpayChannel) error {
 	if topUp == nil || ext == nil || topUp.UserId <= 0 || topUp.UserId != ext.UserId {
 		return common.NewMessage("Invalid parameters")
 	}
@@ -389,10 +389,10 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 			if ext.ChannelId <= 0 {
 				return common.NewMessage("This payment method is not available")
 			}
-			if err := model.AdtyLockForUpdate(tx).First(&channel, ext.ChannelId).Error; err != nil {
+			if err := model.AdtyLockForUpdate(tx).Preload("Methods").First(&channel, ext.ChannelId).Error; err != nil {
 				return err
 			}
-			if channel.Status != model.AdtyEpayStatusEnabled {
+			if channel.Status != model.AdtyEpayStatusEnabled || len(selected) != 1 || !channel.SamePaymentIdentity(selected[0]) {
 				return common.NewMessage("This payment method is not available")
 			}
 		}
