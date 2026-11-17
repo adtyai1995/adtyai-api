@@ -1,8 +1,13 @@
 package adtygov
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -55,6 +60,7 @@ func EnumerateUnits(root string) ([]Unit, error) {
 	}
 
 	var units []Unit
+	packages := map[string]*inventoryPackage{}
 	seen := map[string]bool{}
 	add := func(u Unit) error {
 		if u.Path == "" || u.UnitID == "" || seen[u.UnitID] {
@@ -97,12 +103,38 @@ func EnumerateUnits(root string) ([]Unit, error) {
 		if d.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("inventory requires explicit review of symlink scope: %s", rel)
 		}
-		if strings.HasSuffix(rel, ".go") && !strings.HasSuffix(rel, "_test.go") {
+		if strings.HasSuffix(rel, ".go") {
 			unit, err := goFileUnit(root, rel)
 			if err != nil {
 				return err
 			}
-			return add(unit)
+			parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.PackageClauseOnly)
+			if err != nil {
+				return fmt.Errorf("inventory Go package %s: %w", rel, err)
+			}
+			dir := filepath.ToSlash(filepath.Dir(rel))
+			key := dir + "\x00" + parsed.Name.Name
+			if packages[key] == nil {
+				packages[key] = &inventoryPackage{path: dir, name: parsed.Name.Name}
+			}
+			packages[key].files = append(packages[key].files, unit)
+			if !strings.HasSuffix(rel, "_test.go") {
+				if err := add(unit); err != nil {
+					return err
+				}
+				if strings.HasPrefix(rel, "router/") {
+					groups, err := routerGroupUnits(root, unit)
+					if err != nil {
+						return err
+					}
+					for _, group := range groups {
+						if err := add(group); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			}
 		}
 		// Feature-directory units already include every nested source and fixture in their hash.
 		if strings.HasPrefix(rel, "web/src/features/") {
@@ -118,6 +150,21 @@ func EnumerateUnits(root string) ([]Unit, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, pkg := range packages {
+		sort.Slice(pkg.files, func(i, j int) bool { return pkg.files[i].Path < pkg.files[j].Path })
+		h := sha256.New()
+		for _, file := range pkg.files {
+			fmt.Fprintf(h, "%s %s\n", filepath.Base(file.Path), file.SourceHash)
+		}
+		identity := sha256.Sum256([]byte(pkg.path + "\x00" + pkg.name))
+		pathID := strings.NewReplacer("/", "-", ".", "root").Replace(pkg.path)
+		if err := add(Unit{UnitID: fmt.Sprintf("WU-PKG-%s-%s-%x", pathID, pkg.name, identity[:4]),
+			Kind: "code", Path: pkg.path, Dims: append([]string(nil), backendDims...), Slice: "GEN-PKG",
+			AuditSlice: "B00", Title: "Go package " + pkg.path + " (" + pkg.name + ")",
+			SourceHash: fmt.Sprintf("sha256:%x", h.Sum(nil)), State: "pending"}); err != nil {
+			return nil, err
+		}
 	}
 	features, err := OfficialFeatures()
 	if err != nil {
@@ -146,6 +193,98 @@ func EnumerateUnits(root string) ([]Unit, error) {
 		}
 	}
 	sort.Slice(units, func(i, j int) bool { return units[i].UnitID < units[j].UnitID })
+	return units, nil
+}
+
+type inventoryPackage struct {
+	path  string
+	name  string
+	files []Unit
+}
+
+// routerGroupUnits keeps each registration expression, including nested and multiline calls.
+// The parent file remains a separate unit so Use calls and inherited authentication are reviewed too.
+func routerGroupUnits(root string, file Unit) ([]Unit, error) {
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, filepath.Join(root, filepath.FromSlash(file.Path)), nil, 0)
+	if err != nil {
+		return nil, fmt.Errorf("inventory router groups %s: %w", file.Path, err)
+	}
+	var units []Unit
+	type registrationScope struct {
+		name string
+		node ast.Node
+	}
+	var scopes []registrationScope
+	for _, declaration := range parsed.Decls {
+		switch declaration := declaration.(type) {
+		case *ast.FuncDecl:
+			if declaration.Body == nil {
+				continue
+			}
+			name := declaration.Name.Name
+			if declaration.Recv != nil {
+				var receiver bytes.Buffer
+				if err := format.Node(&receiver, fset, declaration.Recv.List[0].Type); err != nil {
+					return nil, fmt.Errorf("inventory router receiver %s: %w", file.Path, err)
+				}
+				name = "(" + receiver.String() + ")." + name
+			}
+			scopes = append(scopes, registrationScope{name, declaration.Body})
+		case *ast.GenDecl:
+			if declaration.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range declaration.Specs {
+				value, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				var names []string
+				for _, name := range value.Names {
+					names = append(names, name.Name)
+				}
+				scopes = append(scopes, registrationScope{"var " + strings.Join(names, ","), value})
+			}
+		}
+	}
+	for _, scope := range scopes {
+		occurrences := map[string]int{}
+		var formatErr error
+		ast.Inspect(scope.node, func(node ast.Node) bool {
+			if formatErr != nil {
+				return false
+			}
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "Group" || len(call.Args) == 0 {
+				return true
+			}
+			var receiver, path, expression bytes.Buffer
+			for _, output := range []struct {
+				buffer *bytes.Buffer
+				node   ast.Node
+			}{{&receiver, selector.X}, {&path, call.Args[0]}, {&expression, call}} {
+				if formatErr = format.Node(output.buffer, fset, output.node); formatErr != nil {
+					return false
+				}
+			}
+			key := scope.name + "\x00" + receiver.String() + "\x00" + path.String()
+			occurrences[key]++
+			identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", file.Path, key, occurrences[key])))
+			units = append(units, Unit{UnitID: fmt.Sprintf("WU-AUTH-GROUP-%x", identity[:12]),
+				Kind: "code", Path: file.Path, Dims: append([]string(nil), authDims...), Slice: "GEN-AUTH-GROUP",
+				AuditSlice: "B00", Title: scope.name + ": " + expression.String(),
+				SourceLine: fset.Position(call.Pos()).Line, SourceHash: file.SourceHash, State: "pending"})
+			return true
+		})
+		if formatErr != nil {
+			return nil, fmt.Errorf("inventory router expression %s: %w", file.Path, formatErr)
+		}
+	}
 	return units, nil
 }
 

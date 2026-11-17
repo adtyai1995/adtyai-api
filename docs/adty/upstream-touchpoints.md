@@ -728,3 +728,5 @@
 | `.github/workflows/adty-ghcr.yml` | 隔离 PostgreSQL 测试服务镜像由 17 对齐为 18 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
 
 | `internal/adtygov/inventory.go`、`internal/adtygov/acceptance_test.go`、`internal/adtygov/official_rule_ids.jsonl` | 扩展原有枚举入口，纳入240功能、G/A规则、共享源码/测试/脚本/部署/许可证资产；保留原单元ID并增加正式审查分片；对齐三处规则标题元数据 | 方案0.12.6、3.2.1要求完整冻结分母，不能另写平行枚举器 | Round 0 / R0-DENOMINATOR |
+
+| `internal/adtygov/inventory.go`、`internal/adtygov/acceptance_test.go` | 在原文件单元之外补齐 Go package 与 AST 路由注册组的独立身份、来源摘要和定位；保留原单元 | 方案 3.2.1 明确枚举 package 与 router 注册组，文件覆盖不能代替原生身份 | Round 0 / R0-NATIVE-UNITS |

@@ -268,3 +268,127 @@ func TestEnumerateUnitsAssignsDomainAndMigrationToS13(t *testing.T) {
 		require.Equal(t, "S13", owners[path], "plan 3.1 assigns domain and migration assets to S13")
 	}
 }
+
+// 文件路径覆盖不能代替3.2.1要求的package与注册组独立身份。
+func TestEnumerateUnitsRetainsFilesAndEmitsPackagesAndRouterGroups(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"go.mod":             "module fixture\n",
+		"main.go":            "package main\nfunc main() {}\n",
+		"service/fixture.go": "package service\nfunc Work() {}\n",
+		"router/routes.go": `package router
+func Register(apiRouter *Router) {
+	// ignored.Group("/comment")
+	users := apiRouter.Group("/users", UserAuth())
+	users.Group(
+		"/settings",
+		WriteAuth(),
+	)
+	Handle(apiRouter.Group("", AdminAuth()))
+}
+
+`,
+	}
+	for path, content := range files {
+		full := filepath.Join(root, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	units, err := EnumerateUnits(root)
+	require.NoError(t, err)
+	packages := map[string]Unit{}
+	var groups []Unit
+	var originalRouterFile bool
+	for _, unit := range units {
+		switch unit.Slice {
+		case "GEN-PKG":
+			packages[unit.Path] = unit
+		case "GEN-AUTH-GROUP":
+			groups = append(groups, unit)
+		case "GEN-AUTH":
+			originalRouterFile = originalRouterFile || unit.Path == "router/routes.go"
+		}
+	}
+	require.True(t, originalRouterFile, "原文件级单元必须保留")
+	t.Run("native Go packages", func(t *testing.T) {
+		require.Len(t, packages, 3, "根目录和两个子目录均须有原生Go package单元")
+		for _, path := range []string{".", "service", "router"} {
+			require.Contains(t, packages, path)
+			require.NotEmpty(t, packages[path].SourceHash)
+		}
+	})
+	t.Run("native router groups", func(t *testing.T) {
+		require.Len(t, groups, 3, "注释不算组；多行和嵌入调用的Group不能遗漏")
+		seen := map[string]bool{}
+		for _, group := range groups {
+			require.False(t, seen[group.UnitID])
+			seen[group.UnitID] = true
+			require.Equal(t, "router/routes.go", group.Path)
+			require.Equal(t, "B00", group.AuditSlice)
+			require.Positive(t, group.SourceLine)
+			require.Contains(t, group.Title, "Register")
+			require.Contains(t, group.Title, ".Group(")
+			require.NotEmpty(t, group.SourceHash)
+		}
+	})
+	before := packages["service"].SourceHash
+	require.NoError(t, os.WriteFile(filepath.Join(root, "service/fixture.go"), []byte("package service\nfunc Work() { panic(\"changed\") }\n"), 0o644))
+	updated, err := EnumerateUnits(root)
+	require.NoError(t, err)
+	found := false
+	for _, unit := range updated {
+		if unit.Slice == "GEN-PKG" && unit.Path == "service" {
+			found = true
+			require.NotEqual(t, before, unit.SourceHash, "包内代码变化必须使该包来源摘要失效")
+		}
+	}
+	require.True(t, found, "更新后仍须保留该package单元")
+}
+
+func TestEnumerateUnitsKeepsTestOnlyPackagesAndAllRegistrationDeclarations(t *testing.T) {
+	cases := []struct {
+		name     string
+		files    map[string]string
+		packages []string
+		groups   int
+	}{
+		{name: "test-only external-test and nested-module packages", files: map[string]string{
+			"only/fixture_test.go":  "package only\n",
+			"mixed/fixture.go":      "package mixed\n",
+			"mixed/fixture_test.go": "package mixed_test\n",
+			"nested/go.mod":         "module nested\n",
+			"nested/fixture.go":     "package nested\n",
+		}, packages: []string{"Go package only (only)", "Go package mixed (mixed)", "Go package mixed (mixed_test)", "Go package nested (nested)"}},
+		{name: "package-level registration function", files: map[string]string{
+			"router/routes.go": "package router\nvar Register = func(r *Router) { r.Group(\"/global\") }\n",
+		}, packages: []string{"Go package router (router)"}, groups: 1},
+		{name: "same method name on distinct receivers", files: map[string]string{
+			"router/routes.go": "package router\nfunc (s *First) Register(r *Router) { r.Group(\"/same\") }\nfunc (s *Second) Register(r *Router) { r.Group(\"/same\") }\n",
+		}, packages: []string{"Go package router (router)"}, groups: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module fixture\n"), 0o644))
+			for path, content := range tc.files {
+				full := filepath.Join(root, path)
+				require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+				require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+			}
+			units, err := EnumerateUnits(root)
+			require.NoError(t, err)
+			var packages []string
+			groups := 0
+			for _, unit := range units {
+				if unit.Slice == "GEN-PKG" {
+					packages = append(packages, unit.Title)
+				}
+				if unit.Slice == "GEN-AUTH-GROUP" {
+					groups++
+				}
+			}
+			require.ElementsMatch(t, tc.packages, packages)
+			require.Equal(t, tc.groups, groups)
+		})
+	}
+}
