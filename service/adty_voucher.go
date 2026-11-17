@@ -349,6 +349,11 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 			if err := model.CreateAdtyFundBatchesWithSiteTx(tx, user.Id, model.AdtyFundBatchSiteID(batchSite), trade, voucher.Quota, 0); err != nil {
 				return err
 			}
+			if voucher.Purpose == model.AdtyVoucherPurposeSiteCustomer || voucher.Purpose == model.AdtyVoucherPurposeSiteOwner {
+				if err := adtyMoveOperatingPrincipalTx(tx, batchSite, voucher.Quota, "principal_credit", "voucher", trade, "operating:voucher:"+trade, false); err != nil {
+					return err
+				}
+			}
 			credit = voucher.Quota
 		}
 		if err := insertAdtyVoucherOrderTx(tx, user.Id, trade, &voucher, now); err != nil {

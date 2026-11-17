@@ -1,15 +1,299 @@
 package service
 
 import (
+	"errors"
 	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+// prepareAdtyOperatingVoucher funds and issues a real site voucher. The owner
+// remains a main-site account, so ownership must come from the issued voucher.
+func prepareAdtyOperatingVoucher(t *testing.T, purpose, source string) (*gorm.DB, *model.User, *model.AdtySite, *AdtyVoucherIssued) {
+	t.Helper()
+	db := prepareReferralDialectDB(t, "postgres")
+	pgtest.RecordServerVersion(t, db)
+	ResetAdtyVoucherGuesses()
+	t.Cleanup(ResetAdtyVoucherGuesses)
+	owner := referralUser(t, db, "voucher-operating-owner")
+	customer := referralUser(t, db, "voucher-operating-customer")
+	site := &model.AdtySite{OwnerUserId: owner.Id, Subdomain: "voucher-operating", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
+	require.NoError(t, db.Create(site).Error)
+	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
+	require.NoError(t, EnsureAdtySiteWallets(site.Id))
+	_, err := ApplyAdtySiteWalletChange(site.Id, source, decimal.NewFromInt(30), AdtySiteWalletChange{
+		Type: "seed", Reason: "synthetic voucher funding", IdempotencyKey: "voucher-operating-seed",
+	})
+	require.NoError(t, err)
+	if source == model.AdtyVoucherSourceMargin {
+		root := referralUser(t, db, "voucher-operating-root")
+		require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
+		require.NoError(t, SetAdtyVoucherMarginAuthorization(root.Id, site.Id, true))
+	}
+	issued, err := IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId: owner.Id, Purpose: purpose, SiteId: site.Id, Source: source,
+		AmountUSD: decimal.RequireFromString("10.50"), Reason: "operating principal regression",
+	})
+	require.NoError(t, err)
+	if purpose == model.AdtyVoucherPurposeSiteOwner {
+		return db, owner, site, issued
+	}
+	return db, customer, site, issued
+}
+
+func TestAdtyVoucherSitePrincipalBooksOperatingWallet(t *testing.T) {
+	for _, purpose := range []string{model.AdtyVoucherPurposeSiteCustomer, model.AdtyVoucherPurposeSiteOwner} {
+		for _, source := range []string{model.AdtyVoucherSourceEarnings, model.AdtyVoucherSourceMargin} {
+			t.Run(purpose+"/"+source, func(t *testing.T) {
+				db, user, site, issued := prepareAdtyOperatingVoucher(t, purpose, source)
+				funding := mustAdtyVoucherWallet(t, db, site.Id, source)
+				assert.True(t, funding.Balance.Equal(decimal.NewFromInt(30)))
+				assert.True(t, funding.FrozenUSD.Equal(decimal.RequireFromString("10.50")))
+				operating := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+				assert.True(t, operating.Balance.IsZero(), "issuance only freezes the source")
+
+				redeemed, err := RedeemAdtyVoucher(user.Id, issued.Code)
+				require.NoError(t, err)
+				assert.False(t, redeemed.Replayed)
+				replay, err := RedeemAdtyVoucher(user.Id, issued.Code)
+				require.NoError(t, err)
+				assert.True(t, replay.Replayed)
+				assert.Equal(t, redeemed.TradeNo, replay.TradeNo)
+				funding = mustAdtyVoucherWallet(t, db, site.Id, source)
+				assert.True(t, funding.Balance.Equal(decimal.RequireFromString("19.50")))
+				assert.True(t, funding.FrozenUSD.IsZero())
+				operating = mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+				assert.True(t, operating.Balance.Equal(decimal.RequireFromString("10.50")), "the source must back the credited principal exactly once")
+				var credited model.User
+				require.NoError(t, db.First(&credited, user.Id).Error)
+				assert.EqualValues(t, 5_250_000, credited.Quota)
+				var entry model.AdtySiteWalletLedger
+				require.NoError(t, db.Where("site_id = ? AND wallet_kind = ? AND type = ?", site.Id, model.AdtySiteWalletOperating, "principal_credit").First(&entry).Error)
+				assert.True(t, entry.Delta.Equal(decimal.RequireFromString("10.50")))
+				assert.True(t, entry.BalanceBefore.IsZero())
+				assert.True(t, entry.BalanceAfter.Equal(decimal.RequireFromString("10.50")))
+				assert.Equal(t, "voucher", entry.RefType)
+				assert.Equal(t, redeemed.TradeNo, entry.RefId)
+				assert.Equal(t, "operating:voucher:"+redeemed.TradeNo, entry.IdempotencyKey)
+				assert.EqualValues(t, 1, countAdtyVoucherLedgers(t, db, site.Id, "principal_credit", model.AdtySiteWalletOperating))
+				var lots []model.AdtyFundBatch
+				require.NoError(t, db.Where("user_id = ? AND source = ?", user.Id, redeemed.TradeNo).Find(&lots).Error)
+				require.Len(t, lots, 1)
+				assert.Equal(t, "principal", lots[0].Kind)
+				require.NotNil(t, lots[0].SiteId)
+				assert.Equal(t, site.Id, *lots[0].SiteId)
+				assert.EqualValues(t, 5_250_000, lots[0].Original)
+				assert.EqualValues(t, 5_250_000, lots[0].Remaining)
+				for _, table := range []any{&model.AdtyTopupOrder{}, &model.TopUp{}, &model.AdtyBalanceLedger{}} {
+					var count int64
+					require.NoError(t, db.Model(table).Count(&count).Error)
+					assert.EqualValues(t, 1, count)
+				}
+				for _, table := range []any{&model.AdtyGiftFulfillment{}, &model.ReferralCommission{}, &model.AdtySiteInviteCommission{}} {
+					var count int64
+					require.NoError(t, db.Model(table).Count(&count).Error)
+					assert.Zero(t, count, "voucher credit must not create gifts or commission")
+				}
+			})
+		}
+	}
+}
+
+func TestAdtyVoucherOperatingCreditFailureRollsBack(t *testing.T) {
+	for _, failure := range []string{"operating_ledger", "formal_order"} {
+		t.Run(failure, func(t *testing.T) {
+			db, user, site, issued := prepareAdtyOperatingVoucher(t, model.AdtyVoucherPurposeSiteCustomer, model.AdtyVoucherSourceEarnings)
+			const callback = "test:voucher-operating-rollback"
+			injected := errors.New("voucher transaction write unavailable")
+			require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+				if failure == "formal_order" && tx.Statement.Table == "adty_topup_orders" {
+					tx.AddError(injected)
+				}
+				if entry, ok := tx.Statement.Dest.(*model.AdtySiteWalletLedger); ok && failure == "operating_ledger" && entry.WalletKind == model.AdtySiteWalletOperating {
+					tx.AddError(injected)
+				}
+			}))
+			t.Cleanup(func() { db.Callback().Create().Remove(callback) })
+			_, err := RedeemAdtyVoucher(user.Id, issued.Code)
+			require.ErrorIs(t, err, injected)
+			var pending model.AdtyVoucher
+			require.NoError(t, db.First(&pending, issued.Id).Error)
+			assert.Equal(t, model.AdtyVoucherStatusPending, pending.Status)
+			assert.Empty(t, pending.TradeNo)
+			var credited model.User
+			require.NoError(t, db.First(&credited, user.Id).Error)
+			assert.Zero(t, credited.Quota)
+			funding := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletEarnings)
+			assert.True(t, funding.Balance.Equal(decimal.NewFromInt(30)))
+			assert.True(t, funding.FrozenUSD.Equal(decimal.RequireFromString("10.50")))
+			operating := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+			assert.True(t, operating.Balance.IsZero())
+			assert.Zero(t, countAdtyVoucherLedgers(t, db, site.Id, "voucher_spend", model.AdtySiteWalletEarnings))
+			assert.Zero(t, countAdtyVoucherLedgers(t, db, site.Id, "principal_credit", model.AdtySiteWalletOperating))
+			for _, table := range []any{&model.AdtyTopupOrder{}, &model.TopUp{}, &model.AdtyBalanceLedger{}, &model.AdtyFundBatch{}} {
+				var count int64
+				require.NoError(t, db.Model(table).Count(&count).Error)
+				assert.Zero(t, count, "the failed transaction must leave no successful financial fact")
+			}
+			require.NoError(t, db.Callback().Create().Remove(callback))
+			_, err = RedeemAdtyVoucher(user.Id, issued.Code)
+			require.NoError(t, err)
+			operating = mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+			assert.True(t, operating.Balance.Equal(decimal.RequireFromString("10.50")))
+			assert.EqualValues(t, 1, countAdtyVoucherLedgers(t, db, site.Id, "principal_credit", model.AdtySiteWalletOperating))
+		})
+	}
+}
+
+func TestAdtyVoucherOperatingCreditConcurrentRedeem(t *testing.T) {
+	db, first, site, issued := prepareAdtyOperatingVoucher(t, model.AdtyVoucherPurposeSiteCustomer, model.AdtyVoucherSourceEarnings)
+	second := referralUser(t, db, "voucher-operating-second")
+	require.NoError(t, db.Model(second).Update("site_id", site.Id).Error)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var group sync.WaitGroup
+	for _, user := range []*model.User{first, second} {
+		group.Go(func() {
+			<-start
+			_, err := RedeemAdtyVoucher(user.Id, issued.Code)
+			results <- err
+		})
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	succeeded, used := 0, 0
+	for err := range results {
+		if err == nil {
+			succeeded++
+		} else {
+			assert.ErrorIs(t, err, ErrAdtyVoucherUsed)
+			used++
+		}
+	}
+	assert.Equal(t, 1, succeeded)
+	assert.Equal(t, 1, used)
+	var total int64
+	require.NoError(t, db.Model(&model.User{}).Where("id IN ?", []int{first.Id, second.Id}).Select("COALESCE(SUM(quota), 0)").Scan(&total).Error)
+	assert.EqualValues(t, 5_250_000, total)
+	funding := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletEarnings)
+	assert.True(t, funding.Balance.Equal(decimal.RequireFromString("19.50")))
+	assert.True(t, funding.FrozenUSD.IsZero())
+	operating := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+	assert.True(t, operating.Balance.Equal(decimal.RequireFromString("10.50")))
+	assert.EqualValues(t, 1, countAdtyVoucherLedgers(t, db, site.Id, "principal_credit", model.AdtySiteWalletOperating))
+}
+
+func TestAdtyVoucherInheritedOperatingCreditKeepsOriginalSite(t *testing.T) {
+	db, user, site, issued := prepareAdtyOperatingVoucher(t, model.AdtyVoucherPurposeSiteCustomer, model.AdtyVoucherSourceEarnings)
+	root := referralUser(t, db, "voucher-close-admin")
+	require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
+	_, err := RequestAdtySiteClose(site.OwnerUserId, "operating inheritance regression")
+	require.NoError(t, err)
+	_, err = ScheduleAdtySiteClose(site.Id, root.Id, AdtySiteClosePlan{Immediate: true, Reason: "operating inheritance regression"})
+	require.NoError(t, err)
+	var migrated model.User
+	require.NoError(t, db.First(&migrated, user.Id).Error)
+	require.Zero(t, migrated.SiteId)
+	var inherited model.AdtyVoucher
+	require.NoError(t, db.First(&inherited, issued.Id).Error)
+	require.True(t, inherited.InheritedByMain)
+	_, err = RedeemAdtyVoucher(user.Id, issued.Code)
+	require.NoError(t, err)
+	operating := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+	assert.True(t, operating.Balance.Equal(decimal.RequireFromString("10.50")))
+	var mainWallets int64
+	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ?", 0).Count(&mainWallets).Error)
+	assert.Zero(t, mainWallets)
+}
+
+func TestAdtyVoucherFrozenOrCancelledDoesNotCreditOperating(t *testing.T) {
+	db, user, site, issued := prepareAdtyOperatingVoucher(t, model.AdtyVoucherPurposeSiteCustomer, model.AdtyVoucherSourceEarnings)
+	require.NoError(t, FreezeAdtyVoucher(site.OwnerUserId, issued.Id))
+	_, err := RedeemAdtyVoucher(user.Id, issued.Code)
+	require.ErrorIs(t, err, ErrAdtyVoucherFrozen)
+	funding := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletEarnings)
+	assert.True(t, funding.Balance.Equal(decimal.NewFromInt(30)))
+	assert.True(t, funding.FrozenUSD.Equal(decimal.RequireFromString("10.50")))
+	require.NoError(t, CancelAdtyVoucher(site.OwnerUserId, issued.Id))
+	_, err = RedeemAdtyVoucher(user.Id, issued.Code)
+	require.ErrorIs(t, err, ErrAdtyVoucherCancelled)
+	funding = mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletEarnings)
+	assert.True(t, funding.Balance.Equal(decimal.NewFromInt(30)))
+	assert.True(t, funding.FrozenUSD.IsZero())
+	operating := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+	assert.True(t, operating.Balance.IsZero())
+	assert.Zero(t, countAdtyVoucherLedgers(t, db, site.Id, "principal_credit", model.AdtySiteWalletOperating))
+}
+
+func TestAdtyVoucherPlatformPurposesDoNotCreditOperating(t *testing.T) {
+	db := prepareReferralDialectDB(t, "postgres")
+	pgtest.RecordServerVersion(t, db)
+	ResetAdtyVoucherGuesses()
+	t.Cleanup(ResetAdtyVoucherGuesses)
+	root := referralUser(t, db, "voucher-platform-root")
+	require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
+	owner := referralUser(t, db, "voucher-platform-owner")
+	mainUser := referralUser(t, db, "voucher-platform-main")
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "voucher-platform", Status: model.AdtySiteStatusActive}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, SetAdtyVoucherIssuanceLimit(root.Id, decimal.NewFromInt(30)))
+	for _, input := range []struct {
+		purpose string
+		siteID  int
+		userID  int
+	}{
+		{model.AdtyVoucherPurposeMainUser, 0, mainUser.Id},
+		{model.AdtyVoucherPurposeSiteMargin, site.Id, owner.Id},
+	} {
+		issued, err := IssueAdtyVoucher(AdtyVoucherIssueInput{IssuerId: root.Id, Purpose: input.purpose, SiteId: input.siteID, AmountUSD: decimal.RequireFromString("10.50"), Reason: "platform boundary"})
+		require.NoError(t, err)
+		_, err = RedeemAdtyVoucher(input.userID, issued.Code)
+		require.NoError(t, err)
+	}
+	operating := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+	assert.True(t, operating.Balance.IsZero())
+	assert.Zero(t, countAdtyVoucherLedgers(t, db, site.Id, "principal_credit", model.AdtySiteWalletOperating))
+	var mainWallets int64
+	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ?", 0).Count(&mainWallets).Error)
+	assert.Zero(t, mainWallets)
+}
+
+func TestAdtyVoucherOperatingCreditDoesNotDuplicatePaymentTopup(t *testing.T) {
+	db, user, site, issued := prepareAdtyOperatingVoucher(t, model.AdtyVoucherPurposeSiteCustomer, model.AdtyVoucherSourceEarnings)
+	const trade = "voucher-operating-normal-payment"
+	amount := decimal.RequireFromString("10.50")
+	require.NoError(t, model.CreateAdtyTopUp(
+		&model.TopUp{TradeNo: trade, UserId: user.Id, Amount: 10, PaymentProvider: model.PaymentProviderAdtyBEpusdt, PaymentMethod: "usdt.trc20", Status: common.TopUpStatusPending},
+		&model.AdtyTopupOrder{TradeNo: trade, UserId: user.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId,
+			Provider: model.PaymentProviderAdtyBEpusdt, Method: "usdt.trc20", FaceUSD: amount, CreditQuota: 5_250_000,
+			PayAmount: amount, PayCurrency: "USDT", TopupGroupRatio: decimal.NewFromInt(1)},
+	))
+	facts := model.AdtyPaymentFacts{Provider: model.PaymentProviderAdtyBEpusdt, Source: model.AdtyPaymentSourceCallback,
+		PaidAmount: amount, FiatAmount: amount, PaidCurrency: "USDT"}
+	_, err := model.CompleteAdtyTopUp(trade, facts, "")
+	require.NoError(t, err)
+	_, err = model.CompleteAdtyTopUp(trade, facts, "")
+	require.NoError(t, err)
+	operating := mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+	assert.True(t, operating.Balance.Equal(amount))
+	assert.EqualValues(t, 1, countAdtyVoucherLedgers(t, db, site.Id, "principal_credit", model.AdtySiteWalletOperating))
+	_, err = RedeemAdtyVoucher(user.Id, issued.Code)
+	require.NoError(t, err)
+	operating = mustAdtyVoucherWallet(t, db, site.Id, model.AdtySiteWalletOperating)
+	assert.True(t, operating.Balance.Equal(decimal.NewFromInt(21)))
+	assert.EqualValues(t, 2, countAdtyVoucherLedgers(t, db, site.Id, "principal_credit", model.AdtySiteWalletOperating))
+	var credited model.User
+	require.NoError(t, db.First(&credited, user.Id).Error)
+	assert.EqualValues(t, 10_500_000, credited.Quota)
+}
 
 func TestAdtyVoucherQuotaUsesOfficialDecimalHelpers(t *testing.T) {
 	old := common.QuotaPerUnit
