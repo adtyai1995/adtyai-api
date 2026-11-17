@@ -90,7 +90,7 @@
 - **挑通道**（不带 `channel_id` 的下单，比如直接调接口）：先只留启用、支持这种方式、金额在单笔范围内、今天到账加这笔不超过每日限额的通道；在里面取优先级最高的一组；电脑端优先挑能返回二维码的；最后按权重随机。
 - **自动切换**：一次下单最多试 5 个通道，单通道超时 `adty_epay_setting.channel_timeout_seconds`（默认 5 秒），总时长 `total_timeout_seconds`（默认 12 秒）。某个通道报错或超时，这笔单标失败、换下一个通道新建一单。只在不带 `channel_id` 时这样自动切换。
 - **连续未付转维护**：订单过期或被用户取消，通道的连续未付数加一；达到通道自己的阈值或全局 `unpaid_threshold`（默认 10，0 表示不转）时转维护并通知超级管理员；任何一笔到账清零。
-- **补查**：下单超过 `query_after_seconds`（默认 120 秒）还没回调、还没过期的订单，主节点每分钟去网关查一次（只对 https 网关），查到已付且方式、金额对得上就入账。
+- **补查**：下单超过 `query_after_seconds`（默认 120 秒）的待支付订单，以及过期后仍在 `expired_query_seconds` 配置宽限期内的订单，主节点每分钟去 HTTPS 网关补查。自动和手动补查共用身份核验：响应本地订单号、商户号必须与原单及查询商户精确匹配，网关交易号必须非空，原单已保存网关交易号时还须完全相同；再核对支付方式和金额。身份缺失或不符时不入账，自动补查保留人工核查记录，手动补查记录失败事件并返回错误，不能只凭同金额认定付款。
 - **探活**：`probe_enabled` 默认关，间隔 `probe_interval_minutes`（默认 5 分钟）；失败转维护，探活转的维护连续 3 次正常就自动恢复，手动设的不会。
 - **有效期**：`adty_topup_setting.epay_order_minutes`，默认 10 分钟。电脑端显示二维码，手机跳转支付。
 - **回调**：每个通道独立回调 `/api/user/epay/notify/:channelId`（GET、POST 都收），用这个通道自己的密钥验签；停用或维护中的通道照样接收旧单回调。易支付没有取消接口，本地取消后用户仍然付了钱，照样入账。
@@ -106,7 +106,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 **表和接口**：`adty_topup_orders`、`top_ups`、`adty_epay_channels`、`adty_epay_channel_methods`、`adty_payment_orphan_events`。下单 `POST /api/user/bepusdt/pay`、`POST /api/adty/epay/pay`；回调 `POST /api/user/bepusdt/notify`、`GET`/`POST /api/user/epay/notify/:channelId`；通道 `GET /api/adty/admin/epay/channels`、`POST /api/adty/admin/epay/channels/:id/status`、`POST /api/adty/admin/epay/channels/:id/test`（新增、编辑、删除 `POST /api/adty/admin/epay/channels`、`PUT`/`DELETE /api/adty/admin/epay/channels/:id` 只有超级管理员）；对账 `GET /api/user/admin/finance/recharge-audit`、`GET /api/user/admin/finance/payment-orphans`，补单 `POST /api/adty/admin/topup/:trade_no/complete`；付完跳回 `GET /pay/result/:token`。
 
-**补查边界**：易支付补查发现已付款但方式不符或入账失败，会写入人工审核；易支付订单过期以后不再补查。BEpusdt 对超过 120 秒且在七天恢复窗口内的待付、失败、过期、取消订单自动执行认证查询，每单至少间隔 60 秒，每轮最多 20 单；核对下单时冻结的 trade_id、收款地址和金额后，调用相同入账事务。更早的订单通过支付商重送或有凭证的手动补单处理。存在尚未排除的撤销事件时，查询和成功回调都不能自动补入账。
+**补查边界**：易支付自动补查发现支付身份或方式不符、或入账失败时，写入人工审核；超过配置宽限期的过期订单不再自动补查，仍可通过有权限的手动查询或凭证核查处理。BEpusdt 对超过 120 秒且在七天恢复窗口内的待付、失败、过期、取消订单自动执行认证查询，每单至少间隔 60 秒，每轮最多 20 单；核对下单时冻结的 trade_id、收款地址和金额后，调用相同入账事务。更早的订单通过支付商重送或有凭证的手动补单处理。存在尚未排除的撤销事件时，查询和成功回调都不能自动补入账。
 
 **外部退款、撤销和拒付审核**：可信通知进入待核对事件，管理员填写原订单、支付商凭证、备注、累计实际撤销金额和币种。争议打开不等于已发生退款，可以先以 0 金额记录待核对事实。部分撤销保持待核对，保存审核不扣钱包、不自动触发整单退款。全额撤销以原单实际支付金额和币种为准；先通过原订单现有退款操作扣回可回收额度，再凭同单、同用户的真实退款流水结案。审核快照保存实际扣回额度、本金额度、按既定规则可覆盖的现金及未覆盖差额；差额只表示财务暴露，不创建负钱包或客户债务，也不与其他累计通知重复相加。从未入账的订单可在锁内核实后以「从未入账」结案，仍拦截迟到自动入账。忽略事件须说明它属于其他订单或撤销已取消，并提供凭证；该动作会解除此事件的入账拦截。结案事实不可改写，相同请求重放返回原审核，冲突请求被拒绝。
 

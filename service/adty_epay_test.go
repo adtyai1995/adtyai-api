@@ -5,10 +5,13 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Calcium-Ion/go-epay/epay"
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
@@ -274,25 +277,239 @@ func topUpStatusOf(t *testing.T, db *gorm.DB, tradeNo string) string {
 	return topUp.Status
 }
 
+func TestEpayRecoveryBindsPaymentIdentity(t *testing.T) {
+	for _, entry := range []string{"automatic", "manual"} {
+		for _, status := range []string{common.TopUpStatusPending, common.TopUpStatusExpired} {
+			for _, test := range []struct {
+				name, order, merchant, gateway, storedGateway string
+				wantCredit                                    bool
+			}{
+				{"valid_known_gateway", "EPY-identity", "identity-merchant", "gw-identity", "gw-identity", true},
+				{"valid_unknown_gateway", "EPY-identity", "identity-merchant", "gw-identity", "", true},
+				{"wrong_order", "another-order", "identity-merchant", "gw-identity", "gw-identity", false},
+				{"empty_order", "", "identity-merchant", "gw-identity", "gw-identity", false},
+				{"wrong_merchant", "EPY-identity", "another-merchant", "gw-identity", "gw-identity", false},
+				{"empty_merchant", "EPY-identity", "", "gw-identity", "gw-identity", false},
+				{"wrong_gateway", "EPY-identity", "identity-merchant", "another-gateway", "gw-identity", false},
+				{"empty_gateway", "EPY-identity", "identity-merchant", "", "", false},
+				{"blank_gateway", "EPY-identity", "identity-merchant", "   ", "", false},
+			} {
+				t.Run(entry+"/"+status+"/"+test.name, func(t *testing.T) {
+					db := prepareReferralDB(t)
+					pgtest.RecordServerVersion(t, db)
+					settings := adty_setting.GetEpaySetting()
+					oldAfter, oldGrace := settings.QueryAfterSeconds, settings.ExpiredQuerySeconds
+					settings.QueryAfterSeconds = 120
+					settings.ExpiredQuerySeconds = 3600
+					t.Cleanup(func() { settings.QueryAfterSeconds, settings.ExpiredQuerySeconds = oldAfter, oldGrace })
+					var mutex sync.Mutex
+					reply := map[string]any{"code": 1, "status": 1, "out_trade_no": test.order,
+						"pid": test.merchant, "trade_no": test.gateway, "type": "alipay", "money": "730.00"}
+					server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+						assert.Equal(t, "/api.php", request.URL.Path)
+						assert.Equal(t, "EPY-identity", request.URL.Query().Get("out_trade_no"))
+						assert.Equal(t, "identity-merchant", request.URL.Query().Get("pid"))
+						mutex.Lock()
+						body, err := common.Marshal(reply)
+						mutex.Unlock()
+						if !assert.NoError(t, err) {
+							http.Error(w, "fixture response unavailable", http.StatusInternalServerError)
+							return
+						}
+						_, err = w.Write(body)
+						assert.NoError(t, err)
+					}))
+					t.Cleanup(server.Close)
+					oldClient := adtyEpayHTTPClient
+					adtyEpayHTTPClient = server.Client
+					t.Cleanup(func() { adtyEpayHTTPClient = oldClient })
+					channel := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "identity", GatewayURL: server.URL,
+						MerchantId: "identity-merchant", MerchantKey: "identity-secret"}, alipay("qrcode"))
+					now := common.GetTimestamp()
+					created := now - 300
+					if status == common.TopUpStatusExpired {
+						created = now - 1000
+					}
+					seedEpayOrder(t, db, channel.Id, "EPY-identity", created)
+					if status == common.TopUpStatusExpired {
+						require.NoError(t, db.Model(&model.TopUp{}).Where("trade_no = ?", "EPY-identity").Update("status", status).Error)
+					}
+					require.NoError(t, model.UpdateAdtyTopupOrderFields("EPY-identity", map[string]any{"gateway_trade_id": test.storedGateway}))
+					ext, err := model.GetAdtyTopupOrder("EPY-identity")
+					require.NoError(t, err)
+					if entry == "automatic" {
+						runAdtyEpayFollowUpQueries(now)
+					} else {
+						err = RecoverAdtyHostedPayment(t.Context(), ext)
+						if test.wantCredit {
+							require.NoError(t, err)
+						} else {
+							assert.Error(t, err, "unbound facts must not be treated as a verified receipt")
+						}
+					}
+					var user model.User
+					require.NoError(t, db.First(&user, ext.UserId).Error)
+					var credits int64
+					require.NoError(t, db.Model(&model.AdtyBalanceLedger{}).Where("ref_id = ?", ext.TradeNo).Count(&credits).Error)
+					if test.wantCredit {
+						assert.Equal(t, common.TopUpStatusSuccess, topUpStatusOf(t, db, ext.TradeNo))
+						assert.Equal(t, 50_000_000, user.Quota)
+						assert.EqualValues(t, 1, credits)
+					} else {
+						assert.Equal(t, status, topUpStatusOf(t, db, ext.TradeNo))
+						assert.Zero(t, user.Quota, "same amount alone cannot authorize any credit")
+						assert.Zero(t, credits)
+						var stored model.AdtyTopupOrder
+						require.NoError(t, db.First(&stored, ext.Id).Error)
+						assert.Equal(t, test.storedGateway, stored.GatewayTradeId)
+						assert.Empty(t, stored.PaidTxHash)
+						var attempt model.AdtyOrderPaymentEvent
+						require.NoError(t, db.Where("trade_no = ? AND source = ? AND outcome = ?", ext.TradeNo, model.AdtyPaymentSourceQuery, "failed").First(&attempt).Error)
+						assert.Equal(t, ext.Provider, attempt.Provider)
+						assert.Equal(t, ext.UserId, attempt.UserId)
+						if entry == "automatic" {
+							var review model.PaymentOrphanEvent
+							require.NoError(t, db.Where("provider = ? AND reference_id = ? AND event_type = ?", ext.Provider, ext.TradeNo, "payment_query").First(&review).Error)
+							assert.Equal(t, model.PaymentOrphanStatusPendingReview, review.Status)
+							assert.Equal(t, test.storedGateway, review.SessionID)
+						}
+					}
+					// Correct evidence can subsequently recover the same original order.
+					mutex.Lock()
+					reply["out_trade_no"], reply["pid"], reply["trade_no"] = "EPY-identity", "identity-merchant", "gw-identity"
+					mutex.Unlock()
+					if entry == "automatic" {
+						runAdtyEpayFollowUpQueries(now + 61)
+					} else {
+						require.NoError(t, RecoverAdtyHostedPayment(t.Context(), ext))
+					}
+					var recovered model.User
+					require.NoError(t, db.First(&recovered, ext.UserId).Error)
+					assert.Equal(t, 50_000_000, recovered.Quota)
+					require.NoError(t, db.Model(&model.AdtyBalanceLedger{}).Where("ref_id = ?", ext.TradeNo).Count(&credits).Error)
+					assert.EqualValues(t, 1, credits, "rejection, correction and replay have one financial effect")
+				})
+			}
+		}
+	}
+}
+
+func TestEpayRecoveryCannotReuseAnotherOrdersReceipt(t *testing.T) {
+	db := prepareReferralDB(t)
+	pgtest.RecordServerVersion(t, db)
+	settings := adty_setting.GetEpaySetting()
+	oldAfter := settings.QueryAfterSeconds
+	settings.QueryAfterSeconds = 120
+	t.Cleanup(func() { settings.QueryAfterSeconds = oldAfter })
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		// The gateway mistakenly returns order A's complete response for both lookups.
+		_, err := w.Write([]byte(`{"code":1,"status":1,"out_trade_no":"EPY-bound-a","pid":"bound-merchant","trade_no":"gw-bound-a","type":"alipay","money":"730.00"}`))
+		assert.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	oldClient := adtyEpayHTTPClient
+	adtyEpayHTTPClient = server.Client
+	t.Cleanup(func() { adtyEpayHTTPClient = oldClient })
+	channel := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "bound", GatewayURL: server.URL,
+		MerchantId: "bound-merchant", MerchantKey: "bound-secret"}, alipay("qrcode"))
+	now := common.GetTimestamp()
+	for _, suffix := range []string{"a", "b"} {
+		seedEpayOrder(t, db, channel.Id, "EPY-bound-"+suffix, now-300)
+		require.NoError(t, model.UpdateAdtyTopupOrderFields("EPY-bound-"+suffix, map[string]any{"gateway_trade_id": "gw-bound-" + suffix}))
+	}
+	runAdtyEpayFollowUpQueries(now)
+	runAdtyEpayFollowUpQueries(now + 61)
+	for _, test := range []struct {
+		trade, status string
+		quota         int
+		credits       int64
+	}{
+		{"EPY-bound-a", common.TopUpStatusSuccess, 50_000_000, 1},
+		{"EPY-bound-b", common.TopUpStatusPending, 0, 0},
+	} {
+		ext, err := model.GetAdtyTopupOrder(test.trade)
+		require.NoError(t, err)
+		var user model.User
+		require.NoError(t, db.First(&user, ext.UserId).Error)
+		assert.Equal(t, test.quota, user.Quota, test.trade)
+		assert.Equal(t, test.status, topUpStatusOf(t, db, test.trade))
+		var credits int64
+		require.NoError(t, db.Model(&model.AdtyBalanceLedger{}).Where("ref_id = ?", test.trade).Count(&credits).Error)
+		assert.Equal(t, test.credits, credits)
+	}
+}
+
+func TestEpayRecoveryAndCallbackShareOneCredit(t *testing.T) {
+	db := prepareReferralDB(t)
+	pgtest.RecordServerVersion(t, db)
+	settings := adty_setting.GetEpaySetting()
+	oldAfter := settings.QueryAfterSeconds
+	settings.QueryAfterSeconds = 120
+	t.Cleanup(func() { settings.QueryAfterSeconds = oldAfter })
+	entered, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(resume) }) }
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		close(entered)
+		<-resume
+		_, err := w.Write([]byte(`{"code":1,"status":1,"out_trade_no":"EPY-race-query","pid":"race-merchant","trade_no":"gw-race-query","type":"alipay","money":"730.00"}`))
+		assert.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	oldClient := adtyEpayHTTPClient
+	adtyEpayHTTPClient = server.Client
+	t.Cleanup(func() { adtyEpayHTTPClient = oldClient })
+	channel := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "race-query", GatewayURL: server.URL,
+		MerchantId: "race-merchant", MerchantKey: "race-secret"}, alipay("qrcode"))
+	now := common.GetTimestamp()
+	seedEpayOrder(t, db, channel.Id, "EPY-race-query", now-300)
+	require.NoError(t, model.UpdateAdtyTopupOrderFields("EPY-race-query", map[string]any{"gateway_trade_id": "gw-race-query"}))
+	finished := make(chan struct{})
+	go func() { defer close(finished); runAdtyEpayFollowUpQueries(now) }()
+	t.Cleanup(func() { release(); <-finished })
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("query did not reach the gateway boundary")
+	}
+	already, err := model.CompleteAdtyTopUp("EPY-race-query", model.AdtyPaymentFacts{
+		Provider: model.PaymentProviderAdtyEpay, Method: "alipay", PaidAmount: decimal.NewFromInt(730), PaidCurrency: "CNY",
+		GatewayTradeId: "gw-race-query", TxHash: "gw-race-query", Source: model.AdtyPaymentSourceCallback,
+	}, "")
+	require.NoError(t, err)
+	assert.False(t, already)
+	release()
+	<-finished
+	ext, err := model.GetAdtyTopupOrder("EPY-race-query")
+	require.NoError(t, err)
+	var user model.User
+	require.NoError(t, db.First(&user, ext.UserId).Error)
+	assert.Equal(t, 50_000_000, user.Quota)
+	var credits int64
+	require.NoError(t, db.Model(&model.AdtyBalanceLedger{}).Where("ref_id = ?", ext.TradeNo).Count(&credits).Error)
+	assert.EqualValues(t, 1, credits)
+	assert.Equal(t, common.TopUpStatusSuccess, topUpStatusOf(t, db, ext.TradeNo))
+}
+
 func TestEpayFollowUpQuery(t *testing.T) {
 	db := prepareEpayDB(t)
-	https := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "https", GatewayURL: "https://pay.example", Priority: 1, Weight: 1}, alipay("qrcode"))
+	https := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "https", GatewayURL: "https://pay.example", MerchantId: "followup-merchant", Priority: 1, Weight: 1}, alipay("qrcode"))
 	plain := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "http", GatewayURL: "http://pay.example", Priority: 1, Weight: 1}, alipay("qrcode"))
 	now := common.GetTimestamp()
 
 	t.Run("credits a paid order", func(t *testing.T) {
 		seedEpayOrder(t, db, https.Id, "EPY-q-paid", now-300)
-		stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, MoneyCNY: decimal.RequireFromString("730"), TypeCode: "alipay", GatewayTradeNo: "G1"})
+		stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, MoneyCNY: decimal.RequireFromString("730"), TypeCode: "alipay", GatewayTradeNo: "G1", OutTradeNo: "EPY-q-paid", MerchantId: "followup-merchant"})
 		runAdtyEpayFollowUpQueries(now)
 		assert.Equal(t, common.TopUpStatusSuccess, topUpStatusOf(t, db, "EPY-q-paid"))
 	})
 	t.Run("checks money and type", func(t *testing.T) {
 		seedEpayOrder(t, db, https.Id, "EPY-q-money", now-300)
-		stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, MoneyCNY: decimal.RequireFromString("1"), TypeCode: "alipay"})
+		stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, MoneyCNY: decimal.RequireFromString("1"), TypeCode: "alipay", GatewayTradeNo: "G-money", OutTradeNo: "EPY-q-money", MerchantId: "followup-merchant"})
 		runAdtyEpayFollowUpQueries(now)
 		assert.Equal(t, common.TopUpStatusPending, topUpStatusOf(t, db, "EPY-q-money"))
 		seedEpayOrder(t, db, https.Id, "EPY-q-type", now-300)
-		stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, MoneyCNY: decimal.RequireFromString("730"), TypeCode: "wxpay"})
+		stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, MoneyCNY: decimal.RequireFromString("730"), TypeCode: "wxpay", GatewayTradeNo: "G-type", OutTradeNo: "EPY-q-type", MerchantId: "followup-merchant"})
 		runAdtyEpayFollowUpQueries(now + 61)
 		assert.Equal(t, common.TopUpStatusPending, topUpStatusOf(t, db, "EPY-q-type"))
 	})
@@ -321,12 +538,12 @@ func TestEpayFollowUpQueriesExpiredOrdersInsideGrace(t *testing.T) {
 	oldGrace := setting.ExpiredQuerySeconds
 	setting.ExpiredQuerySeconds = 3600
 	t.Cleanup(func() { setting.ExpiredQuerySeconds = oldGrace })
-	https := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "https-expired", GatewayURL: "https://pay.example", Priority: 1, Weight: 1}, alipay("qrcode"))
+	https := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "https-expired", GatewayURL: "https://pay.example", MerchantId: "expired-merchant", Priority: 1, Weight: 1}, alipay("qrcode"))
 	now := common.GetTimestamp()
 
 	seedEpayOrder(t, db, https.Id, "EPY-exp-paid", now-1000)
 	require.NoError(t, db.Model(&model.TopUp{}).Where("trade_no = ?", "EPY-exp-paid").Update("status", common.TopUpStatusExpired).Error)
-	stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, MoneyCNY: decimal.RequireFromString("730"), TypeCode: "alipay", GatewayTradeNo: "G-exp"})
+	stubEpayQuery(t, &AdtyEpayQueryResult{Paid: true, MoneyCNY: decimal.RequireFromString("730"), TypeCode: "alipay", GatewayTradeNo: "G-exp", OutTradeNo: "EPY-exp-paid", MerchantId: "expired-merchant"})
 	runAdtyEpayFollowUpQueries(now)
 	assert.Equal(t, common.TopUpStatusSuccess, topUpStatusOf(t, db, "EPY-exp-paid"))
 	var payer model.User

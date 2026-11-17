@@ -31,7 +31,8 @@ var (
 )
 
 // runAdtyEpayFollowUpQueries 找下单超过 query_after_seconds、距上次查询超过 1 分钟的易支付订单去查单。
-// 未过期的 pending，以及过期后仍在 expired_query_seconds 内的 expired，都会查。金额和方式对得上才入账；只对 https 网关这样入账。
+// 未过期的 pending，以及过期后仍在 expired_query_seconds 内的 expired，都会查。
+// 与手动补查共用 provider Query 核验订单、商户及付款凭据；只对 https 网关这样入账。
 func runAdtyEpayFollowUpQueries(now int64) {
 	after := int64(adty_setting.GetEpaySetting().QueryAfterSeconds)
 	if after <= 0 {
@@ -67,36 +68,25 @@ func runAdtyEpayFollowUpQueries(now int64) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		result, err := adtyEpayQuery(ctx, channel, ext.TradeNo)
+		facts, err := (adtyEpayProvider{}).Query(ctx, &ext)
 		cancel()
-		if err != nil || !result.Paid {
+		if err != nil || facts == nil {
 			outcome := "unpaid"
 			if err != nil {
 				outcome = "failed"
+				if errors.Is(err, model.ErrPaymentMethodMismatch) {
+					adtyQueuePaymentReview(ext.TradeNo, ext.GatewayTradeId, err.Error())
+				}
 			}
 			if recordErr := model.RecordAdtyPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, outcome, 0); recordErr != nil {
 				common.SysError("payment attempt history could not be recorded")
 			}
 			continue
 		}
-		method := channel.MethodByTypeCode(result.TypeCode)
-		if method == nil || method.Method != ext.Method {
-			common.SysLog(common.LogText("epay query type mismatch trade_no=%s type=%s", ext.TradeNo, result.TypeCode))
-			adtyQueuePaymentReview(ext.TradeNo, result.GatewayTradeNo, "query type mismatch: "+result.TypeCode)
-			continue
-		}
-		_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
-			Provider:       model.PaymentProviderAdtyEpay,
-			Method:         ext.Method,
-			PaidAmount:     result.MoneyCNY,
-			PaidCurrency:   "CNY",
-			GatewayTradeId: result.GatewayTradeNo,
-			TxHash:         result.GatewayTradeNo,
-			Source:         model.AdtyPaymentSourceQuery,
-		}, "")
+		_, err = model.CompleteAdtyTopUp(ext.TradeNo, *facts, "")
 		if err != nil {
 			common.SysLog(common.LogText("epay follow-up credit failed trade_no=%s: %s", ext.TradeNo, err.Error()))
-			adtyQueuePaymentReview(ext.TradeNo, result.GatewayTradeNo, err.Error())
+			adtyQueuePaymentReview(ext.TradeNo, facts.GatewayTradeId, err.Error())
 		}
 	}
 }
@@ -272,18 +262,18 @@ func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || channel.MerchantId == "" || channel.MerchantKey == "" {
 		return nil, errors.New("authenticated HTTPS Epay query is unavailable")
 	}
-	result, err := QueryAdtyEpayOrder(ctx, channel, ext.TradeNo)
+	result, err := adtyEpayQuery(ctx, channel, ext.TradeNo)
 	if err != nil {
 		return nil, err
 	}
-	if result.OutTradeNo != ext.TradeNo || result.MerchantId != "" && result.MerchantId != channel.MerchantId {
+	if result == nil || result.OutTradeNo != ext.TradeNo || result.MerchantId != channel.MerchantId {
 		return nil, model.ErrPaymentMethodMismatch
 	}
 	if !result.Paid {
 		return nil, nil
 	}
 	method := channel.MethodByTypeCode(result.TypeCode)
-	if method == nil || method.Method != ext.Method || result.GatewayTradeNo == "" || ext.GatewayTradeId != "" && ext.GatewayTradeId != result.GatewayTradeNo {
+	if method == nil || method.Method != ext.Method || strings.TrimSpace(result.GatewayTradeNo) == "" || ext.GatewayTradeId != "" && ext.GatewayTradeId != result.GatewayTradeNo {
 		return nil, model.ErrPaymentMethodMismatch
 	}
 	return &model.AdtyPaymentFacts{
