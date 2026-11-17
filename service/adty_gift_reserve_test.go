@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
@@ -417,6 +418,105 @@ func TestConsumingSiteGiftDebitsGuaranteeOnce(t *testing.T) {
 		require.True(t, held.IsZero(), "exhausting the gift batch must not leave or re-open the original reserve")
 		return nil
 	}))
+}
+
+func TestAllocatedGiftSettlementConsumesOriginalGuarantee(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		principalUsed bool
+		reserved      int
+		actual        int
+		bonusSpent    int64
+		rollback      bool
+	}{
+		{name: "bonus_only", principalUsed: true, reserved: 2_500_000, actual: 2_500_000, bonusSpent: 2_500_000},
+		{name: "mixed", reserved: 52_500_000, actual: 52_500_000, bonusSpent: 2_500_000},
+		{name: "supplement_bonus", reserved: 50_000_000, actual: 52_500_000, bonusSpent: 2_500_000},
+		{name: "supplement_same_source", reserved: 51_000_000, actual: 52_500_000, bonusSpent: 2_500_000},
+		{name: "exhaust_bonus", reserved: 55_000_000, actual: 55_000_000, bonusSpent: 5_000_000},
+		{name: "release_unused_bonus", reserved: 52_500_000, actual: 50_000_000},
+		{name: "rollback_then_retry", reserved: 52_500_000, actual: 52_500_000, bonusSpent: 2_500_000, rollback: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := prepareSiteDB(t)
+			pgtest.RecordServerVersion(t, db)
+			_, site, customer, ext := seedReservedSiteGift(t, db, "allocated-gift", "10")
+			_, err := model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
+				Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
+				PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+			}, "")
+			require.NoError(t, err)
+			if test.principalUsed {
+				_, err := model.ReserveBillingOperation(model.BillingOperation{
+					OperationKey: "request:gift-principal", UserId: customer.Id, SiteId: site.Id,
+				}, 50_000_000)
+				require.NoError(t, err)
+				require.NoError(t, model.QueueBillingSettlement("request:gift-principal", 50_000_000, false))
+				_, applied, err := model.ApplyBillingSettlement("request:gift-principal")
+				require.NoError(t, err)
+				require.True(t, applied)
+			}
+			const key = "request:allocated-gift"
+			_, err = model.ReserveBillingOperation(model.BillingOperation{
+				OperationKey: key, UserId: customer.Id, SiteId: site.Id,
+			}, test.reserved)
+			require.NoError(t, err)
+			require.NoError(t, model.QueueBillingSettlement(key, test.actual, false))
+			var beforeBatches []model.AdtyFundBatch
+			require.NoError(t, db.Where("user_id = ?", customer.Id).Order("id").Find(&beforeBatches).Error)
+			earningBefore, marginBefore := mustSiteGiftWallets(t, db, site.Id)
+			if test.rollback {
+				require.NoError(t, db.Exec("ALTER TABLE adty_site_wallet_ledgers ADD CONSTRAINT test_gift_spend_unavailable CHECK (type <> 'gift_spend')").Error)
+				t.Cleanup(func() {
+					require.NoError(t, db.Exec("ALTER TABLE adty_site_wallet_ledgers DROP CONSTRAINT IF EXISTS test_gift_spend_unavailable").Error)
+				})
+				_, _, err := model.ApplyBillingSettlement(key)
+				require.Error(t, err, "a failed guarantee debit must roll back the whole settlement")
+				var afterBatches []model.AdtyFundBatch
+				require.NoError(t, db.Where("user_id = ?", customer.Id).Order("id").Find(&afterBatches).Error)
+				require.Equal(t, beforeBatches, afterBatches)
+				earning, margin := mustSiteGiftWallets(t, db, site.Id)
+				require.True(t, earning.Balance.Equal(earningBefore.Balance) && earning.FrozenUSD.Equal(earningBefore.FrozenUSD))
+				require.True(t, margin.Balance.Equal(marginBefore.Balance) && margin.FrozenUSD.Equal(marginBefore.FrozenUSD))
+				var operation model.BillingOperation
+				require.NoError(t, db.First(&operation, "operation_key = ?", key).Error)
+				require.Equal(t, model.BillingSettlePending, operation.State)
+				require.NoError(t, db.Exec("ALTER TABLE adty_site_wallet_ledgers DROP CONSTRAINT test_gift_spend_unavailable").Error)
+			}
+			row, applied, err := model.ApplyBillingSettlement(key)
+			require.NoError(t, err)
+			require.True(t, applied)
+			require.Equal(t, test.actual, row.AppliedQuota)
+			require.Zero(t, row.FundBatchGap)
+			earning, margin := mustSiteGiftWallets(t, db, site.Id)
+			spentEarning, spentMargin := decimal.Zero, decimal.Zero
+			if test.bonusSpent == 2_500_000 {
+				spentEarning, spentMargin = decimal.NewFromInt(2), decimal.NewFromInt(3)
+			} else if test.bonusSpent == 5_000_000 {
+				spentEarning, spentMargin = decimal.NewFromInt(4), decimal.NewFromInt(6)
+			}
+			require.True(t, earning.Balance.Equal(earningBefore.Balance.Sub(spentEarning)), "earning balance=%s", earning.Balance)
+			require.True(t, earning.FrozenUSD.Equal(earningBefore.FrozenUSD.Sub(spentEarning)), "earning hold=%s", earning.FrozenUSD)
+			require.True(t, margin.Balance.Equal(marginBefore.Balance.Sub(spentMargin)), "margin balance=%s", margin.Balance)
+			require.True(t, margin.FrozenUSD.Equal(marginBefore.FrozenUSD.Sub(spentMargin)), "margin hold=%s", margin.FrozenUSD)
+			var bonus model.AdtyFundBatch
+			require.NoError(t, db.Where("user_id = ? AND source = ? AND kind = ?", customer.Id, ext.TradeNo, "bonus").First(&bonus).Error)
+			require.EqualValues(t, 5_000_000-test.bonusSpent, bonus.Remaining)
+			var giftLedgers int64
+			if test.bonusSpent > 0 {
+				giftLedgers = 1
+			}
+			require.Equal(t, giftLedgers, countGiftLedgers(t, db, site.Id, "gift_spend", ext.TradeNo, model.AdtySiteWalletEarnings))
+			require.Equal(t, giftLedgers, countGiftLedgers(t, db, site.Id, "gift_spend", ext.TradeNo, model.AdtySiteWalletMargin))
+			_, applied, err = model.ApplyBillingSettlement(key)
+			require.NoError(t, err)
+			require.False(t, applied)
+			replayedEarning, replayedMargin := mustSiteGiftWallets(t, db, site.Id)
+			require.True(t, replayedEarning.Balance.Equal(earning.Balance) && replayedEarning.FrozenUSD.Equal(earning.FrozenUSD))
+			require.True(t, replayedMargin.Balance.Equal(margin.Balance) && replayedMargin.FrozenUSD.Equal(margin.FrozenUSD))
+			require.Equal(t, giftLedgers, countGiftLedgers(t, db, site.Id, "gift_spend", ext.TradeNo, model.AdtySiteWalletEarnings))
+		})
+	}
 }
 
 func TestNetGiftHoldIncludesGiftSpend(t *testing.T) {

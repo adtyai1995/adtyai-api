@@ -424,6 +424,7 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 	// 这里只有「消费」语义（applied > 0 的分摊转实扣），退款走的是 take<=0
 	// 的释放分支，一分都不会计进 principalSpent。
 	principalSpent := int64(0)
+	bonusBySource := map[string]int64{}
 	left := applied
 	for i := range shares {
 		held := shares[i].Held - shares[i].Settled
@@ -446,6 +447,9 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		if shares[i].Kind == "principal" && shares[i].Source != "legacy" {
 			principalSpent += take
 		}
+		if shares[i].Kind == "bonus" && shares[i].Source != "" {
+			bonusBySource[shares[i].Source] += take
+		}
 		// 只消费了一部分时，把这份分摊收窄到实际消耗，held 与 settled 相等，
 		// 未用到的部分随之释放（批次没有扣过它，不需要回补）。
 		if err := tx.Model(&AdtyFundAllocation{}).
@@ -462,7 +466,7 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationID, principalSpent); err != nil {
 			return 0, err
 		}
-		return applied, nil
+		return applied, adtyNotifyBonusSpentTx(tx, userID, bonusBySource)
 	}
 	// 已登记额度不够覆盖实际消耗：补记一条已结算分摊，再按 FIFO 扣批次。
 	//
@@ -490,6 +494,9 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		}
 		if shares[i].Kind == "principal" && shares[i].Source != "legacy" {
 			principalSpent += take
+		}
+		if shares[i].Kind == "bonus" && shares[i].Source != "" {
+			bonusBySource[shares[i].Source] += take
 		}
 		if err := tx.Model(&AdtyFundAllocation{}).
 			Where("id = ? AND held = ?", shares[i].Id, shares[i].Held).
@@ -524,7 +531,7 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 	if err := adtyNotifyPrincipalSpentTx(tx, userID, operationID, principalSpent); err != nil {
 		return 0, err
 	}
-	return backed, nil
+	return backed, adtyNotifyBonusSpentTx(tx, userID, bonusBySource)
 }
 
 // deductAdtyFundBatchTx 扣一个批次的 remaining。扣不动就报错，让调用方整事务回滚。

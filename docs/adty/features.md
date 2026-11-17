@@ -34,7 +34,7 @@
   - USDT 应付 = 面额 × 分组充值倍率（8 位）；下单后改成网关返回的实际应付。
   - 支付宝、微信应付 = 面额 × 人民币单价 `Price`（默认 7.3）× 分组充值倍率（2 位）。
   - 返佣只按面额算，不含任何加赠。
-- **保障冻结与待履约**：下单/入账时按「站长出资的加赠」从收益钱包冻结，不够再用 Root 授权的保证金（流水 `gift_reserve`）；取消、过期、替换时按原路释放（`gift_release`）；客户消费赠金时按比例释放（`gift_spend`）（`service/adty_method_bonus.go:127-246`、`service/adty_gift_fulfillment.go:534-616`）。如果客户在订单取消或过期之后才付款、而站长当时保障不足：**本金照常入账，赠金记成「待履约」**（`adty_gift_fulfillments`，状态 `pending`），不可消费；站长把收益转进保证金（`POST /api/adty/site/wallets/earning-to-margin`）后，系统立即重取保障并补发（`service/adty_gift_fulfillment.go:340-472`、`service/adty_site_finance.go:420-425`）。整笔退款会把 pending 取消。
+- **保障冻结与待履约**：下单/入账时按「站长出资的加赠」从收益钱包冻结，不够再用 Root 授权的保证金（流水 `gift_reserve`）；取消、过期、替换时按原路释放（`gift_release`）；客户实际消费赠金时，在结算事务中按原订单出资比例同时扣减原钱包的账面余额和冻结金额（`gift_spend`），未用保障继续冻结；预扣未用部分的释放不产生赠金支出（`service/adty_method_bonus.go`、`service/adty_gift_fulfillment.go`、`model/adty_fund_allocation.go`）。如果客户在订单取消或过期之后才付款、而站长当时保障不足：**本金照常入账，赠金记成「待履约」**（`adty_gift_fulfillments`，状态 `pending`），不可消费；站长把收益转进保证金（`POST /api/adty/site/wallets/earning-to-margin`）后，系统立即重取保障并补发（`service/adty_gift_fulfillment.go:340-472`、`service/adty_site_finance.go:420-425`）。整笔退款会把 pending 取消。
 - **分站客户**：只用 Root 授权过的支付方式下站长自己的规则；站长没设或没开就不送，不存在「回落到主站规则」。
 - **优惠码**：已整条删除（2026-11-16）：报价和下单不再接受优惠码，订单上没有优惠码字段，管理接口和面板也已删除。要主动加额度只能用充值额度兑换码。
 
@@ -624,7 +624,7 @@ Root 和获授用户读取权限的管理员在统一用户列表、搜索及详
 
 ### 资金批次与分摊
 
-`adty_fund_batches` 按 `(user_id, source, kind)` 记录每一笔入账的本金批次和赠金批次，字段 `original` / `remaining`，`site_id` 可以为 NULL（证不出站点时不猜）。消费按 FIFO 先扣本金、再扣赠金；升级前没有批次的历史余额会补一条 `legacy` 本金批次，否则老用户一笔都扣不出去。批次扣不动时返回 `ErrAdtyFundBatchShortfall`，外层钱包事务整笔回滚；退款按 `source` 回收对应批次。站点经营钱包的本金扣减和赠金保障释放都挂在这条分摊链上（`model/adty_fund_batch.go:28-39,246-274,379-445`）。
+`adty_fund_batches` 按 `(user_id, source, kind)` 记录每一笔入账的本金批次和赠金批次，字段 `original` / `remaining`，`site_id` 可以为 NULL（证不出站点时不猜）。消费按 FIFO 先扣本金、再扣赠金；升级前没有批次的历史余额会补一条 `legacy` 本金批次，否则老用户一笔都扣不出去。批次扣不动时返回 `ErrAdtyFundBatchShortfall`，外层钱包事务整笔回滚；退款按 `source` 回收对应批次。正常预扣分摊、超出预扣的补记及旧记录直接扣费均在同一事务触发经营钱包本金扣减和原来源赠金保障支出；同一来源的多段消费合并结算，重放不重复扣减（`model/adty_fund_allocation.go`、`model/adty_fund_batch.go`）。
 
 ### 数据保留与清理
 

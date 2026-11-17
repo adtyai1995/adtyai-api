@@ -232,6 +232,17 @@ type AdtyBonusSpend struct {
 // that reclaim lots by source do not call it.
 var AdtyAfterBonusSpentTx func(tx *gorm.DB, userID int, spends []AdtyBonusSpend) error
 
+func adtyNotifyBonusSpentTx(tx *gorm.DB, userID int, bonusBySource map[string]int64) error {
+	if len(bonusBySource) == 0 || AdtyAfterBonusSpentTx == nil {
+		return nil
+	}
+	spends := make([]AdtyBonusSpend, 0, len(bonusBySource))
+	for source, quota := range bonusBySource {
+		spends = append(spends, AdtyBonusSpend{Source: source, Quota: quota})
+	}
+	return AdtyAfterBonusSpentTx(tx, userID, spends)
+}
+
 // ConsumeAdtyFundBatchesTx spends principal lots before bonus lots.
 // A user with no lots gets one legacy principal lot for the pre-charge balance,
 // then this charge consumes from that lot. If lots still cannot cover the debit,
@@ -351,15 +362,8 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 			return backed, err
 		}
 	}
-	if len(bonusBySource) > 0 && AdtyAfterBonusSpentTx != nil {
-		spends := make([]AdtyBonusSpend, 0, len(bonusBySource))
-		for source, quota := range bonusBySource {
-			spends = append(spends, AdtyBonusSpend{Source: source, Quota: quota})
-		}
-		return backed, AdtyAfterBonusSpentTx(tx, userID, spends)
-	}
 	_ = taken
-	return backed, nil
+	return backed, adtyNotifyBonusSpentTx(tx, userID, bonusBySource)
 }
 
 // ReclaimAdtyFundBatchesBySourceTx reduces remaining on the lots of one credit
