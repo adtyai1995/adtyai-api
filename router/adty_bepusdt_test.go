@@ -4,12 +4,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -295,4 +297,123 @@ func TestBEpusdtCancelCallsGateway(t *testing.T) {
 	require.NoError(t, f.db.Where("trade_no = ?", droppedOrder.TradeNo).First(&stored).Error)
 	assert.Equal(t, model.TopUpStatusCanceled, stored.Status)
 	assert.Equal(t, []string{"tid-" + view.TradeNo, "tid-" + paid.TradeNo, "tid-" + droppedOrder.TradeNo}, gw.snapshot().cancels)
+}
+
+func TestPaymentReviewPersistenceControlsCallbackAcknowledgement(t *testing.T) {
+	for _, protocol := range []struct {
+		name          string
+		provider      string
+		method        string
+		ack           string
+		failureStatus int
+	}{
+		{"bepusdt", model.PaymentProviderAdtyBEpusdt, http.MethodPost, "ok", http.StatusInternalServerError},
+		{"epay_get", model.PaymentProviderAdtyEpay, http.MethodGet, "success", http.StatusOK},
+		{"epay_post", model.PaymentProviderAdtyEpay, http.MethodPost, "success", http.StatusOK},
+	} {
+		t.Run(protocol.name, func(t *testing.T) {
+			for _, unknown := range []bool{true, false} {
+				name := "amount_mismatch"
+				if unknown {
+					name = "unknown_order"
+				}
+				t.Run(name, func(t *testing.T) {
+					f := newAdtyGuardFixture(t)
+					pgtest.RecordServerVersion(t, f.db)
+					setRouterBonusRates(t)
+					token, userID := bepusdtBuyer(t, f, "review-buyer")
+					tradeNo := "unknown-review-order"
+					var channel *model.AdtyEpayChannel
+					if protocol.provider == model.PaymentProviderAdtyBEpusdt {
+						useFakeBEpusdt(t)
+						if !unknown {
+							tradeNo = payBEpusdt(t, f, token).TradeNo
+						}
+					} else {
+						gateway := newFakeEpay(t, epayQR)
+						channel = seedRouterEpayChannel(t, "review", gateway.server.URL, model.AdtyEpayOrderModeAPI, 1)
+						if !unknown {
+							tradeNo = decodeAdtyData[model.AdtyTopUpView](t, epayPay(t, f, token).Body).TradeNo
+						}
+					}
+					path, body, contentType := "/api/user/bepusdt/notify", notifyFor(tradeNo, 2, 99.5, "TAddr"), "application/json"
+					if channel != nil {
+						params := map[string]string{"pid": channel.MerchantId, "type": "alipay", "trade_no": "G" + tradeNo,
+							"out_trade_no": tradeNo, "money": "729.99", "trade_status": "TRADE_SUCCESS"}
+						signature, err := service.EpaySign(params, channel.MerchantKey)
+						require.NoError(t, err)
+						params["sign"], params["sign_type"] = signature, "MD5"
+						form := url.Values{}
+						for key, value := range params {
+							form.Set(key, value)
+						}
+						path, body, contentType = "/api/user/epay/notify/"+strconv.Itoa(channel.Id), form.Encode(), "application/x-www-form-urlencoded"
+						if protocol.method == http.MethodGet {
+							path, body = path+"?"+body, ""
+						}
+					}
+					send := func() *httptest.ResponseRecorder {
+						req := httptest.NewRequest(protocol.method, path, strings.NewReader(body))
+						req.Header.Set("Content-Type", contentType)
+						response := httptest.NewRecorder()
+						f.engine.ServeHTTP(response, req)
+						return response
+					}
+					before := quotaOf(t, f, userID)
+					// A real PostgreSQL constraint rejects the required INSERT while
+					// order lookup and receipt recording remain available.
+					require.NoError(t, f.db.Exec("ALTER TABLE adty_payment_orphan_events ADD CONSTRAINT test_review_unavailable CHECK (false)").Error)
+					t.Cleanup(func() {
+						assert.NoError(t, f.db.Exec("ALTER TABLE adty_payment_orphan_events DROP CONSTRAINT IF EXISTS test_review_unavailable").Error)
+					})
+					failed := send()
+					assert.Equal(t, protocol.failureStatus, failed.Code)
+					assert.Equal(t, "fail", failed.Body.String(), "a receipt cannot acknowledge a payment whose review did not persist")
+					var reviews []model.PaymentOrphanEvent
+					require.NoError(t, f.db.Where("reference_id = ?", tradeNo).Find(&reviews).Error)
+					assert.Empty(t, reviews)
+					require.NoError(t, f.db.Exec("ALTER TABLE adty_payment_orphan_events DROP CONSTRAINT test_review_unavailable").Error)
+					for attempt := range 2 {
+						response := send()
+						assert.Equal(t, http.StatusOK, response.Code)
+						assert.Equal(t, protocol.ack, response.Body.String())
+						var stored []model.PaymentOrphanEvent
+						require.NoError(t, f.db.Where("reference_id = ?", tradeNo).Find(&stored).Error)
+						require.Len(t, stored, 1, "redelivery must preserve one durable reconciliation record")
+						assert.Equal(t, model.PaymentOrphanStatusPendingReview, stored[0].Status)
+						assert.Equal(t, protocol.provider, stored[0].Provider)
+						if attempt == 0 {
+							reviews = stored
+						} else {
+							assert.Equal(t, reviews[0].ID, stored[0].ID)
+						}
+					}
+					assert.Equal(t, before, quotaOf(t, f, userID))
+					for _, table := range []string{"adty_balance_ledgers", "adty_fund_batches"} {
+						var count int64
+						require.NoError(t, f.db.Table(table).Where("user_id = ?", userID).Count(&count).Error)
+						assert.Zero(t, count, table)
+					}
+					var credited int64
+					require.NoError(t, f.db.Model(&model.AdtyOrderPaymentEvent{}).Where("trade_no = ? AND outcome IN ?", tradeNo, []string{"credited", "replayed"}).Count(&credited).Error)
+					assert.Zero(t, credited, "received/rejected events are not payment proof")
+					if unknown {
+						var count int64
+						require.NoError(t, f.db.Model(&model.TopUp{}).Where("trade_no = ?", tradeNo).Count(&count).Error)
+						assert.Zero(t, count, "a callback must not fabricate an order")
+					} else {
+						var topUp model.TopUp
+						require.NoError(t, f.db.Where("trade_no = ?", tradeNo).First(&topUp).Error)
+						assert.Equal(t, common.TopUpStatusPending, topUp.Status)
+						ext, err := model.GetAdtyTopupOrder(tradeNo)
+						require.NoError(t, err)
+						require.NotNil(t, ext)
+						assert.True(t, ext.PaidAmount.IsZero())
+						assert.Empty(t, ext.PaidCurrency)
+						assert.Empty(t, ext.PaidSource)
+					}
+				})
+			}
+		})
+	}
 }

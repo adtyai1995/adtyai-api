@@ -249,7 +249,10 @@ func AdtyEpayNotify(c *gin.Context) {
 		return
 	}
 	if bepusdtPermanentError(err) {
-		recordAdtyPaymentReview(model.PaymentProviderAdtyEpay, tradeNo, params["trade_no"], payload, err)
+		if reviewErr := recordAdtyPaymentReview(model.PaymentProviderAdtyEpay, tradeNo, params["trade_no"], payload, err); reviewErr != nil {
+			c.String(http.StatusOK, "fail")
+			return
+		}
 		c.String(http.StatusOK, "success")
 		return
 	}

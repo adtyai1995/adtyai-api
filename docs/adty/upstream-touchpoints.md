@@ -739,3 +739,4 @@
 | `web/src/i18n/locales/en.json`、`web/src/i18n/locales/zh.json` | 追加易支付历史身份冻结、凭据永久撤销及确认操作的中英文词条 | 新通道轮换和撤销行为需要明确提示，沿用原语言包 | ISS-R1-0005 |
 | `controller/option.go` | 通用配置接口拒绝写退役充值金额档位，保留历史配置读取 | 现行赠金只按获授权支付方式和真实资金保障计算，退役配置不能重新启用 | ISS-R1-0006 |
 | `web/src/i18n/locales/en.json`、`web/src/i18n/locales/zh.json` | 追加只列现行金额参数的分站开通提示 | 开站不再依赖退役赠金额外上限，错误提示与实际必填项一致 | ISS-R1-0006 |
+| `controller/topup_bepusdt.go` | 人工审核记录持久化失败向回调入口返回错误；BEpusdt 回 500/fail，Epay GET/POST 回 fail | 必要待核查记录落库后才确认接收，沿用原事件去重和支付入账事务 | ISS-R1-0007 |

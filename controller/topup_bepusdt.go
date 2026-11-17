@@ -181,7 +181,10 @@ func BEpusdtTopUpNotify(c *gin.Context) {
 		return
 	}
 	if bepusdtPermanentError(err) {
-		recordAdtyPaymentReview(model.PaymentProviderAdtyBEpusdt, tradeNo, facts.GatewayTradeId, string(raw), err)
+		if reviewErr := recordAdtyPaymentReview(model.PaymentProviderAdtyBEpusdt, tradeNo, facts.GatewayTradeId, string(raw), err); reviewErr != nil {
+			c.String(http.StatusInternalServerError, "fail")
+			return
+		}
 		c.String(http.StatusOK, "ok")
 		return
 	}
@@ -190,7 +193,7 @@ func BEpusdtTopUpNotify(c *gin.Context) {
 }
 
 // recordAdtyPaymentReview 把入账失败的回调记进人工审核（充值对账页处理）。
-func recordAdtyPaymentReview(provider, tradeNo, sessionID, payload string, cause error) {
+func recordAdtyPaymentReview(provider, tradeNo, sessionID, payload string, cause error) error {
 	if err := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
 		Provider:    provider,
 		EventType:   "payment_callback",
@@ -201,6 +204,8 @@ func recordAdtyPaymentReview(provider, tradeNo, sessionID, payload string, cause
 		Payload:     payload,
 	}); err != nil {
 		common.SysError(common.LogText("record payment review failed trade_no=%s: %s", tradeNo, err.Error()))
+		return err
 	}
 	common.SysLog(common.LogText("payment queued for review provider=%s trade_no=%s: %s", provider, tradeNo, cause.Error()))
+	return nil
 }
