@@ -17,6 +17,33 @@ const (
 	BillingSourceWallet = "wallet"
 )
 
+// FreezeRequestBillingPayer persists the acceptance identity even when the
+// model is free. A later violation fee must not select a new token binding.
+// Zero reservation leaves genuinely free requests available at zero balance.
+func FreezeRequestBillingPayer(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
+	if info == nil {
+		return types.NewError(model.ErrBillingOperationConflict, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+	if info.RequestId == "" {
+		info.RequestId = common.NewRequestId()
+	}
+	AdtyFreezeRequestPriceSnapshot(c, info)
+	spec := model.BillingOperation{OperationKey: "request:" + info.RequestId, UserId: info.UserId,
+		TokenId: info.TokenId, TokenUnlimited: info.TokenUnlimited, LeaseOwner: billingProcessLeaseOwner}
+	if info.IsPlayground {
+		spec.TokenId = 0
+	}
+	if snap := AdtyFrozenPriceSnapshot(c); snap != nil {
+		applySnapshotToBillingOperation(&spec, snap)
+	} else if k, d, ok := AdtySiteMarkupFromContext(c); ok {
+		spec.SiteId, spec.SiteMarkup, spec.SiteCostFactor = c.GetInt(AdtySiteIdContextKey), k, d
+	}
+	if _, err := model.ReserveBillingOperation(spec, 0); err != nil {
+		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
+	return nil
+}
+
 // PreConsumeBilling 创建 BillingSession 并执行预扣费。
 // 会话存储在 relayInfo.Billing 上，供后续 Settle / Refund 使用。
 // 会话已存在时（任务重试换到另一个渠道）把预扣补到 preConsumedQuota，

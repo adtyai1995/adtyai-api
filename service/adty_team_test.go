@@ -77,7 +77,7 @@ func TestAdtyTeamInviteKeyAndCloseKeepSharedBalance(t *testing.T) {
 	require.NoError(t, db.Create(&token).Error)
 	require.NoError(t, BindAdtyTeamKey(member.Id, token.Id))
 	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 500000, "team-credit"))
-	handled, err := reserveAdtyTeamQuotaHook(db, token.Id, member.Id, 200000, "request:team-1")
+	handled, err := reserveAdtyTeamQuotaHook(db, created.Team.Id, member.Id, 200000, "request:team-1")
 	require.NoError(t, err)
 	assert.True(t, handled)
 	var team model.AdtyTeam

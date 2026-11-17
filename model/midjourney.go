@@ -36,6 +36,8 @@ type Midjourney struct {
 	BillingChargePending   bool    `json:"-" gorm:"index;not null;default:false"`
 	BillingPending         bool    `json:"-" gorm:"index;not null;default:false"`
 	BillingOperationKey    string  `json:"-" gorm:"type:varchar(191)"`
+	BillingPayerKind       string  `json:"-" gorm:"type:varchar(16);not null;default:''"`
+	BillingPayerTeamId     int64   `json:"-" gorm:"not null;default:0"`
 	BillingTokenQuota      int     `json:"-"`
 }
 

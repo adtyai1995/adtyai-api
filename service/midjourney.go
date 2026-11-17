@@ -29,7 +29,8 @@ func CovertMjpActionToModelName(mjAction string) string {
 	return modelName
 }
 
-// PrepareMidjourneyTaskBilling sets the durable refund marker before the task is inserted.
+// PrepareMidjourneyTaskBilling freezes the payer before a billable upstream call.
+// The caller persists the prepared task before charging it.
 func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.Midjourney, quota int, shouldBill bool, contexts ...*gin.Context) (bool, error) {
 	if task == nil {
 		return false, errors.New("Midjourney task is nil")
@@ -39,6 +40,7 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	task.BillingChannelId = 0
 	task.BillingChargePending, task.BillingPending = false, false
 	task.BillingOperationKey, task.BillingTokenQuota = "", 0
+	task.BillingPayerKind, task.BillingPayerTeamId = "", 0
 	if !shouldBill {
 		return false, nil
 	}
@@ -55,6 +57,11 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	if !relayInfo.IsPlayground {
 		task.TokenId = relayInfo.TokenId
 	}
+	payer, err := model.CaptureBillingPayer(task.UserId, task.TokenId)
+	if err != nil {
+		return false, err
+	}
+	task.BillingPayerKind, task.BillingPayerTeamId = payer.PayerKind, payer.PayerTeamId
 	if len(contexts) > 0 && contexts[0] != nil {
 		contexts[0].Set(adtyDurableBillingContextKey, true)
 		contexts[0].Set(adtyBillingOperationContextKey, task.BillingOperationKey)

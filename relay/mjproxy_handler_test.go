@@ -26,9 +26,126 @@ import (
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+// ISS-R1-0001: an upstream-side rebind must not change the accepted payer.
+func TestMidjourneyPayerIsFrozenBeforeUpstreamPG(t *testing.T) {
+	previousPrices := ratio_setting.ModelPrice2JSONString()
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"mj_imagine":0.1,"swap_face":0.1}`))
+	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices)) })
+	oldRedis, oldBatch := common.RedisEnabled, common.BatchUpdateEnabled
+	common.RedisEnabled, common.BatchUpdateEnabled = false, false
+	t.Cleanup(func() { common.RedisEnabled, common.BatchUpdateEnabled = oldRedis, oldBatch })
+	service.InitHttpClient()
+	gin.SetMode(gin.TestMode)
+	for _, endpoint := range []struct {
+		name, path, model, body string
+	}{
+		{"imagine", "/mj/submit/imagine", "mj_imagine", `{"prompt":"a cat"}`},
+		{"swapface", "/mj/insight-face/swap", "swap_face", `{"sourceBase64":"source","targetBase64":"target"}`},
+	} {
+		for _, change := range []string{"team_rebind", "personal_bind", "revoke"} {
+			t.Run(endpoint.name+"/"+change, func(t *testing.T) {
+				opened, err := model.OpenAdtyTestDatabase()
+				require.NoError(t, err, "requires isolated PostgreSQL")
+				t.Cleanup(func() { require.NoError(t, opened.Close()) })
+				db := opened.DB
+				require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Midjourney{}, &model.Log{},
+					&model.BillingOperation{}, &model.BillingOperationMovement{}, &model.AuditLog{}))
+				require.NoError(t, model.MigrateAdtyTables())
+				users := []model.User{
+					{Username: "mj-payer-member", Group: "default", Status: common.UserStatusEnabled, Role: common.RoleCommonUser, Quota: 500_000},
+					{Username: "mj-payer-leader-a", Group: "default", Status: common.UserStatusEnabled, Role: common.RoleCommonUser},
+					{Username: "mj-payer-leader-b", Group: "default", Status: common.UserStatusEnabled, Role: common.RoleCommonUser},
+				}
+				require.NoError(t, db.Create(&users).Error)
+				member := &users[0]
+				a, err := service.CreateAdtyTeam(users[1].Id, 0, "Original", decimal.NewFromInt(1))
+				require.NoError(t, err)
+				b, err := service.CreateAdtyTeam(users[2].Id, 0, "Later", decimal.NewFromInt(1))
+				require.NoError(t, err)
+				_, err = service.JoinAdtyTeam(member.Id, a.Team.Id)
+				require.NoError(t, err)
+				require.NoError(t, service.CreditAdtyTeam(int64(users[1].Id), a.Team.Id, 100_000, "original-credit"))
+				require.NoError(t, service.CreditAdtyTeam(int64(users[2].Id), b.Team.Id, 200_000, "later-credit"))
+				token := &model.Token{UserId: member.Id, Key: "mj-payer-key", Name: "mj-payer", Status: common.TokenStatusEnabled,
+					RemainQuota: 1_000_000, UnlimitedQuota: true, ExpiredTime: -1}
+				require.NoError(t, token.Insert())
+				if change != "personal_bind" {
+					require.NoError(t, service.BindAdtyTeamKey(member.Id, token.Id))
+				}
+				mutated := make(chan error, 1)
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var changeErr error
+					switch change {
+					case "personal_bind":
+						changeErr = service.BindAdtyTeamKey(member.Id, token.Id)
+					case "revoke":
+						changeErr = service.RevokeAdtyTeamKey(member.Id, a.Team.Id, token.Id)
+					case "team_rebind":
+						changeErr = service.LeaveAdtyTeam(member.Id, a.Team.Id)
+						if changeErr == nil {
+							_, changeErr = service.JoinAdtyTeam(member.Id, b.Team.Id)
+						}
+						if changeErr == nil {
+							token.Status = common.TokenStatusEnabled
+							changeErr = token.SelectUpdate()
+						}
+						if changeErr == nil {
+							changeErr = service.BindAdtyTeamKey(member.Id, token.Id)
+						}
+					}
+					mutated <- changeErr
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"code":1,"description":"submitted","result":"frozen-before-upstream"}`))
+				}))
+				t.Cleanup(upstream.Close)
+				recorder := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(recorder)
+				ctx.Request = httptest.NewRequest(http.MethodPost, endpoint.path, strings.NewReader(endpoint.body))
+				ctx.Request.Header.Set("Content-Type", "application/json")
+				ctx.Set("id", member.Id)
+				ctx.Set("original_model", endpoint.model)
+				ctx.Set("group", "default")
+				ctx.Set("user_group", "default")
+				ctx.Set("base_url", upstream.URL)
+				ctx.Set("channel_id", 2)
+				ctx.Set("channel_type", constant.ChannelTypeMidjourney)
+				ctx.Set("token_id", token.Id)
+				ctx.Set("token_key", token.Key)
+				ctx.Set("username", member.Username)
+				info, err := relaycommon.GenRelayInfo(ctx, kittypes.RelayFormatMjProxy, nil, nil)
+				require.NoError(t, err)
+				var response *dto.MidjourneyResponse
+				if endpoint.name == "swapface" {
+					response = RelaySwapFace(ctx, info)
+				} else {
+					response = RelayMidjourneySubmit(ctx, info)
+				}
+				require.Nil(t, response)
+				require.NoError(t, <-mutated)
+				var task model.Midjourney
+				require.NoError(t, db.Where("mj_id = ?", "frozen-before-upstream").First(&task).Error)
+				require.False(t, task.BillingChargePending, "accepted task must remain settleable after rebind or revocation")
+				require.Equal(t, 50_000, task.Quota)
+				require.NoError(t, db.First(&a.Team, a.Team.Id).Error)
+				require.NoError(t, db.First(&b.Team, b.Team.Id).Error)
+				require.NoError(t, db.First(member, member.Id).Error)
+				if change == "personal_bind" {
+					require.EqualValues(t, 100_000, a.Team.SharedQuota)
+					require.Equal(t, 450_000, member.Quota)
+				} else {
+					require.EqualValues(t, 50_000, a.Team.SharedQuota, "original team pays")
+					require.Equal(t, 500_000, member.Quota)
+				}
+				require.EqualValues(t, 200_000, b.Team.SharedQuota, "later team cannot inherit the in-flight charge")
+			})
+		}
+	}
+}
 
 // 上游 code 21 表示任务已存在。重试不能再扣钱包，也不能为同一 mj_id 再插一行。
 func TestMidjourneyCode21DoesNotChargeOrDuplicate(t *testing.T) {

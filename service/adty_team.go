@@ -968,29 +968,15 @@ func InheritAdtyTeamsOnCloseTx(tx *gorm.DB, siteId int) error {
 	return nil
 }
 
-func reserveAdtyTeamQuotaHook(tx *gorm.DB, tokenId, userId, delta int, ref string) (bool, error) {
-	if tokenId <= 0 || delta <= 0 {
+func reserveAdtyTeamQuotaHook(tx *gorm.DB, teamId int64, userId, delta int, ref string) (bool, error) {
+	if teamId <= 0 || delta <= 0 {
 		return false, nil
-	}
-	if !adtyTeamTableReadyFor(tx, &model.AdtyTeamKey{}) {
-		return false, nil
-	}
-	var key model.AdtyTeamKey
-	lookup := tx.Where("token_id = ? AND status = ?", tokenId, model.AdtyTeamMemberActive).Limit(1).Find(&key)
-	if lookup.Error != nil {
-		return false, lookup.Error
-	}
-	if lookup.RowsAffected == 0 {
-		return false, nil
-	}
-	if key.UserId != userId {
-		return false, ErrAdtyTeamForbidden
 	}
 	var team model.AdtyTeam
-	if err := model.AdtyLockForUpdate(tx).First(&team, key.TeamId).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).First(&team, teamId).Error; err != nil {
 		return false, err
 	}
-	if team.Status != model.AdtyTeamStatusActive || team.SharedQuota < int64(delta) {
+	if team.SharedQuota < int64(delta) {
 		return false, model.ErrBillingWalletInsufficient
 	}
 	if err := applyAdtyTeamQuotaTx(tx, &team, -int64(delta), "reserve", ref, userId); err != nil {
@@ -1005,32 +991,18 @@ func reserveAdtyTeamQuotaHook(tx *gorm.DB, tokenId, userId, delta int, ref strin
 // delta>0 补扣团队，delta<0 退回团队，并写一条 adty_team_ledgers。成员个人钱包
 // 全程不参与——这正是原来「补扣扣错人、退还凭空多给」的修法。
 //
-// 判定只看绑定关系，不看绑定状态、不看团队是否已关闭：预扣发生时这笔就是团队付的，
+// 只使用受理时冻结的 teamId，不看当前绑定、不看团队是否已关闭：这笔是原团队付的，
 // 成员事后退出团队或团队被关闭都不能把差额改记到个人钱包，也不能让结算永远卡住。
 // 团队余额不够补扣时扣到 0 为止，剩下的差额由调用方记 Shortfall。
-func settleAdtyTeamQuotaHook(tx *gorm.DB, tokenId, userId, delta int, ref string) (bool, int, error) {
-	if tokenId <= 0 {
+func settleAdtyTeamQuotaHook(tx *gorm.DB, teamId int64, userId, delta int, ref string) (bool, int, error) {
+	if teamId <= 0 {
 		return false, 0, nil
-	}
-	if !adtyTeamTableReadyFor(tx, &model.AdtyTeamKey{}) {
-		return false, 0, nil
-	}
-	var key model.AdtyTeamKey
-	lookup := tx.Where("token_id = ?", tokenId).Limit(1).Find(&key)
-	if lookup.Error != nil {
-		return false, 0, lookup.Error
-	}
-	if lookup.RowsAffected == 0 {
-		return false, 0, nil
-	}
-	if key.UserId != userId {
-		return false, 0, ErrAdtyTeamForbidden
 	}
 	if delta == 0 {
 		return true, 0, nil
 	}
 	var team model.AdtyTeam
-	if err := model.AdtyLockForUpdate(tx).First(&team, key.TeamId).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).First(&team, teamId).Error; err != nil {
 		return true, 0, err
 	}
 	applied, kind := delta, "settle"

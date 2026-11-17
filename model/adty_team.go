@@ -152,8 +152,8 @@ type AdtyTeamKey struct {
 func (AdtyTeamKey) TableName() string { return "adty_team_keys" }
 
 // AdtyTeamReserveHook spends a team key from the shared balance inside the billing transaction.
-// handled is false when the token is not a team key.
-var AdtyTeamReserveHook func(tx *gorm.DB, tokenId, userId, delta int, ref string) (handled bool, err error)
+// teamId is the accepted operation's frozen payer, never a mutable token binding.
+var AdtyTeamReserveHook func(tx *gorm.DB, teamId int64, userId, delta int, ref string) (handled bool, err error)
 
 // AdtyTeamSettleHook 是 AdtyTeamReserveHook 的结算侧对称项（`ISS-R4-0017`）：
 // 团队 Key 的结算差额记到团队共享余额，成员个人钱包不再参与。
@@ -162,10 +162,10 @@ var AdtyTeamReserveHook func(tx *gorm.DB, tokenId, userId, delta int, ref string
 //     小于 delta，差额由调用方记 Shortfall，绝不回落成员钱包）；
 //   - delta < 0：把未用的预扣退回团队，applied = delta；
 //   - delta == 0：不动账，也不写流水；
-//   - handled 为 false 表示这个 token 不是团队 Key，调用方按个人钱包结算。
+//   - handled 为 false 表示冻结的 teamId 无效，调用方拒绝结算，不回退个人钱包。
 //
-// 判定和扣减必须在结算事务里完成，并且要在动 users.quota 之前。
-var AdtyTeamSettleHook func(tx *gorm.DB, tokenId, userId, delta int, ref string) (handled bool, applied int, err error)
+// 扣减在结算事务里完成，只使用持久付款快照，不重新读取 Key 绑定。
+var AdtyTeamSettleHook func(tx *gorm.DB, teamId int64, userId, delta int, ref string) (handled bool, applied int, err error)
 
 // AdtyTokenIsTeamKeyTx reports whether this token is bound to a team. A team key
 // spends the shared team balance, so the member's personal wallet — and their

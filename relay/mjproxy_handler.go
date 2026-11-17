@@ -361,6 +361,31 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	requestURL := getMjRequestPath(c.Request.URL.String())
 	baseURL := c.GetString("base_url")
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
+	midjourneyTask := &model.Midjourney{
+		UserId:     info.UserId,
+		Action:     constant.MjActionSwapFace,
+		Prompt:     "InsightFace",
+		PromptEn:   "",
+		State:      "",
+		SubmitTime: info.StartTime.UnixNano() / int64(time.Millisecond),
+		StartTime:  time.Now().UnixNano() / int64(time.Millisecond),
+		FinishTime: 0,
+		ImageUrl:   "",
+		Status:     "",
+		Progress:   "0%",
+		FailReason: "",
+		ChannelId:  c.GetInt("channel_id"),
+	}
+	billingPrepared, billingErr := service.PrepareMidjourneyTaskBilling(
+		info,
+		midjourneyTask,
+		priceData.Quota,
+		true,
+		c,
+	)
+	if billingErr != nil {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, billingErr.Error())
+	}
 	service.RequestPolicy(c).BeginAttempt(&model.Channel{Id: c.GetInt("channel_id")}, info.UsingGroup)
 	mjResp, _, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	accepted := service.RecordMidjourneyPolicyResponse(c, mjResp, err)
@@ -368,33 +393,10 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		return &mjResp.Response
 	}
 	midjResponse := &mjResp.Response
-	midjourneyTask := &model.Midjourney{
-		UserId:      info.UserId,
-		Code:        midjResponse.Code,
-		Action:      constant.MjActionSwapFace,
-		MjId:        midjResponse.Result,
-		Prompt:      "InsightFace",
-		PromptEn:    "",
-		Description: midjResponse.Description,
-		State:       "",
-		SubmitTime:  info.StartTime.UnixNano() / int64(time.Millisecond),
-		StartTime:   time.Now().UnixNano() / int64(time.Millisecond),
-		FinishTime:  0,
-		ImageUrl:    "",
-		Status:      "",
-		Progress:    "0%",
-		FailReason:  "",
-		ChannelId:   c.GetInt("channel_id"),
-	}
-	billingPrepared, billingErr := service.PrepareMidjourneyTaskBilling(
-		info,
-		midjourneyTask,
-		priceData.Quota,
-		mjResp.StatusCode == http.StatusOK && midjResponse.Code == 1,
-		c,
-	)
-	if billingErr != nil {
-		common.SysLog(common.LogText("error consuming Midjourney quota: %s", billingErr.Error()))
+	midjourneyTask.Code, midjourneyTask.MjId = midjResponse.Code, midjResponse.Result
+	midjourneyTask.Description = midjResponse.Description
+	if mjResp.StatusCode != http.StatusOK || midjResponse.Code != 1 {
+		billingPrepared, _ = service.PrepareMidjourneyTaskBilling(info, midjourneyTask, 0, false)
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {
@@ -697,6 +699,25 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
+	midjourneyTask := &model.Midjourney{
+		UserId:     relayInfo.UserId,
+		Action:     midjRequest.Action,
+		Prompt:     midjRequest.Prompt,
+		PromptEn:   "",
+		State:      "",
+		SubmitTime: time.Now().UnixNano() / int64(time.Millisecond),
+		StartTime:  0,
+		FinishTime: 0,
+		ImageUrl:   "",
+		Status:     "",
+		Progress:   "0%",
+		FailReason: "",
+		ChannelId:  c.GetInt("channel_id"),
+	}
+	billingPrepared, billingErr := service.PrepareMidjourneyTaskBilling(relayInfo, midjourneyTask, priceData.Quota, consumeQuota, c)
+	if billingErr != nil {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, billingErr.Error())
+	}
 	service.RequestPolicy(c).BeginAttempt(&model.Channel{Id: c.GetInt("channel_id")}, relayInfo.UsingGroup)
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	accepted := service.RecordMidjourneyPolicyResponse(c, midjResponseWithStatus, err)
@@ -704,6 +725,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		return &midjResponseWithStatus.Response
 	}
 	midjResponse := &midjResponseWithStatus.Response
+	midjourneyTask.Code, midjourneyTask.MjId = midjResponse.Code, midjResponse.Result
+	midjourneyTask.Description = midjResponse.Description
 
 	// 文档：https://github.com/novicezk/midjourney-proxy/blob/main/docs/api.md
 	//1-提交成功
@@ -712,24 +735,6 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	// 23-队列已满，请稍后再试 {"code":23,"description":"队列已满，请稍后尝试","result":"14001929738841620","properties":{"discordInstanceId":"1118138338562560102"}}
 	// 24-prompt包含敏感词 {"code":24,"description":"可能包含敏感词","properties":{"promptEn":"nude body","bannedWord":"nude"}}
 	// other: 提交错误，description为错误描述
-	midjourneyTask := &model.Midjourney{
-		UserId:      relayInfo.UserId,
-		Code:        midjResponse.Code,
-		Action:      midjRequest.Action,
-		MjId:        midjResponse.Result,
-		Prompt:      midjRequest.Prompt,
-		PromptEn:    "",
-		Description: midjResponse.Description,
-		State:       "",
-		SubmitTime:  time.Now().UnixNano() / int64(time.Millisecond),
-		StartTime:   0,
-		FinishTime:  0,
-		ImageUrl:    "",
-		Status:      "",
-		Progress:    "0%",
-		FailReason:  "",
-		ChannelId:   c.GetInt("channel_id"),
-	}
 	if midjResponse.Code == 3 {
 		//无实例账号自动禁用渠道（No available account instance）
 		channel, err := model.GetChannelById(midjourneyTask.ChannelId, true)
@@ -795,15 +800,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	}
 	billingApplied := false
 	if !skipNewRow {
-		billingPrepared, billingErr := service.PrepareMidjourneyTaskBilling(
-			relayInfo,
-			midjourneyTask,
-			priceData.Quota,
-			consumeQuota && midjResponseWithStatus.StatusCode == http.StatusOK,
-			c,
-		)
-		if billingErr != nil {
-			common.SysLog(common.LogText("error consuming Midjourney quota: %s", billingErr.Error()))
+		if !consumeQuota || midjResponseWithStatus.StatusCode != http.StatusOK {
+			billingPrepared, _ = service.PrepareMidjourneyTaskBilling(relayInfo, midjourneyTask, 0, false)
 		}
 		err = midjourneyTask.Insert()
 		if err != nil {

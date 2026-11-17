@@ -39,12 +39,12 @@ func TestAdtyTeamReserveTopUpDoesNotCollideWithUniqueKeyPG(t *testing.T) {
 
 	// 两次预扣，同一个 ref（= operation_key），金额不同。
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-		handled, err := reserveAdtyTeamQuotaHook(tx, token.Id, member.Id, 2_000_000, "request:team-grow-1")
+		handled, err := reserveAdtyTeamQuotaHook(tx, team.Id, member.Id, 2_000_000, "request:team-grow-1")
 		require.True(t, handled)
 		return err
 	}))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-		handled, err := reserveAdtyTeamQuotaHook(tx, token.Id, member.Id, 1_000_000, "request:team-grow-1")
+		handled, err := reserveAdtyTeamQuotaHook(tx, team.Id, member.Id, 1_000_000, "request:team-grow-1")
 		require.True(t, handled,
 			"第二次预扣必须成功：修前它撞 reserve:<ref> 的唯一索引（2067/23505）")
 		return err

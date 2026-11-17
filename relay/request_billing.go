@@ -62,7 +62,7 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	}
 	if priceData.FreeModel {
 		logger.LogInfo(c, common.LogText("model %s is free, skipping pre-consume", info.OriginModelName))
-		return nil
+		return service.FreezeRequestBillingPayer(c, info)
 	}
 	return service.PreConsumeBilling(c, priceData.QuotaToPreConsume, info)
 }

@@ -190,13 +190,15 @@ func TestAdtyFundSettleIsIdempotentPG(t *testing.T) {
 // 当成「没登记过的旧账单」去扣个人批次。
 func TestTeamKeyConsumptionLeavesMemberBatchesUntouchedPG(t *testing.T) {
 	f := newFundSettleFixture(t, 50_000_000)
-	require.NoError(t, f.db.AutoMigrate(&AdtyTeamKey{}, &Token{}))
+	require.NoError(t, f.db.AutoMigrate(&AdtyTeam{}, &AdtyTeamKey{}, &Token{}))
+	require.NoError(t, f.db.Create(&AdtyTeam{Id: 1, Status: AdtyTeamStatusActive}).Error)
+	require.NoError(t, f.db.Create(&Token{Id: 9001, UserId: f.user.Id, Key: "fund-team-payer"}).Error)
 	require.NoError(t, f.db.Create(&AdtyTeamKey{
 		TokenId: 9001, TeamId: 1, UserId: f.user.Id, Status: "active",
 	}).Error)
 
 	previousHook := AdtyTeamReserveHook
-	AdtyTeamReserveHook = func(tx *gorm.DB, tokenId, userId, delta int, ref string) (bool, error) {
+	AdtyTeamReserveHook = func(tx *gorm.DB, teamId int64, userId, delta int, ref string) (bool, error) {
 		return true, nil // 模拟团队余额已扣
 	}
 	t.Cleanup(func() { AdtyTeamReserveHook = previousHook })

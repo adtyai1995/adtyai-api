@@ -203,6 +203,14 @@ func TestMarkupAppliedOnEveryBillingPath(t *testing.T) {
 		{"task recalculated by tokens", func(t *testing.T, ctx *gin.Context, user *model.User, token *model.Token) int {
 			task := &model.Task{TaskID: fmt.Sprintf("recalc-%d", user.Id), UserId: user.Id, Group: "default", Quota: 0, Status: model.TaskStatusSuccess}
 			task.PrivateData.TokenId = token.Id
+			task.PrivateData.BillingOperationKey = "request:" + task.TaskID
+			_, err := model.ReserveBillingOperation(model.BillingOperation{
+				OperationKey: task.PrivateData.BillingOperationKey, UserId: user.Id, TokenId: token.Id,
+			}, 0)
+			require.NoError(t, err)
+			require.NoError(t, model.QueueBillingSettlement(task.PrivateData.BillingOperationKey, 0, false))
+			_, _, err = model.ApplyBillingSettlement(task.PrivateData.BillingOperationKey)
+			require.NoError(t, err)
 			task.PrivateData.BillingContext = &model.TaskBillingContext{OriginModelName: "markup-task"}
 			require.NoError(t, db.Create(task).Error)
 			require.True(t, RecalculateTaskQuotaByTokens(context.Background(), task, 1000))

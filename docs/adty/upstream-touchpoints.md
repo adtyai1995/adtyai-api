@@ -730,3 +730,9 @@
 | `internal/adtygov/inventory.go`、`internal/adtygov/acceptance_test.go`、`internal/adtygov/official_rule_ids.jsonl` | 扩展原有枚举入口，纳入240功能、G/A规则、共享源码/测试/脚本/部署/许可证资产；保留原单元ID并增加正式审查分片；对齐三处规则标题元数据 | 方案0.12.6、3.2.1要求完整冻结分母，不能另写平行枚举器 | Round 0 / R0-DENOMINATOR |
 
 | `internal/adtygov/inventory.go`、`internal/adtygov/acceptance_test.go` | 在原文件单元之外补齐 Go package 与 AST 路由注册组的独立身份、来源摘要和定位；保留原单元 | 方案 3.2.1 明确枚举 package 与 router 注册组，文件覆盖不能代替原生身份 | Round 0 / R0-NATIVE-UNITS |
+| `model/billing_operation.go` | 受理时持久冻结付款种类及原团队；增加预扣、直接扣款、任务调整和恢复结算继承原账户 | 防止 Key 重绑把在途补扣或退款转给另一账户 | ISS-R1-0001 |
+| `model/midjourney.go` | 增加仅内部可见的受理时付款种类和原团队字段 | 任务落库后、实际扣款前重绑也不能改变付款人 | ISS-R1-0001 |
+| `service/midjourney.go` | PrepareMidjourneyTaskBilling 捕获原付款账户并随任务保存 | Midjourney 恢复扣款和退款沿用原财务归属 | ISS-R1-0001 |
+| `relay/mjproxy_handler.go`、`relay/mjproxy_handler_test.go` | 普通 MJ 与 SwapFace 在上游调用前准备付款快照，外部测试桩在响应前执行真实重绑/撤权验证原账户扣费 | 封住上游执行期间 Key 绑定变化的付款漂移窗口 | ISS-R1-0001 |
+| `service/task_billing_test.go`、`service/task_polling_test.go` | 原有任务夹具通过真实预扣、结算保存原付款流水，补齐资金批次、分摊和短差挂账清理，以真实 PostgreSQL 重用用户夹具验证隔离；保留退款、调整和轮询的余额及幂等断言 | 新付款保护不能由无原扣款事实的夹具绕过，也不能放宽既有回归断言或继承上一测试的资金状态 | ISS-R1-0001 |
+| `relay/request_billing.go`、`service/billing.go` | 免费模型在上游前用现有零预扣事务持久保存付款快照；违规费从该原请求继承个人或团队账户，零余额免费准入不变 | 免费请求不能到违规响应后才读取可变 Key 绑定选择付款人 | ISS-R1-0001 |

@@ -29,14 +29,20 @@ func TestFailTasksWithoutChannelRefundsPrecharge(t *testing.T) {
 	seedUser(t, userID, startQuota)
 	seedToken(t, tokenID, userID, "sk-missing-channel", tokenRemain)
 	seedChannel(t, channelID)
-	seedChargedAccounting(t, userID, channelID, tokenID, charged, 1)
-	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", userID).Update("quota", startQuota-charged).Error)
-	require.NoError(t, model.DB.Model(&model.Token{}).Where("id = ?", tokenID).Updates(map[string]any{
-		"remain_quota": tokenRemain - charged,
-		"used_quota":   charged,
-	}).Error)
+	const operationKey = "request:missing-channel-refund"
+	_, err = model.ReserveBillingOperation(model.BillingOperation{
+		OperationKey: operationKey, UserId: userID, TokenId: tokenID,
+	}, charged)
+	require.NoError(t, err)
+	require.NoError(t, model.QueueBillingSettlement(operationKey, charged, false))
+	_, applied, err := model.ApplyBillingSettlement(operationKey)
+	require.NoError(t, err)
+	require.True(t, applied)
+	model.UpdateUserUsedQuotaAndRequestCount(userID, charged)
+	model.UpdateChannelUsedQuota(channelID, charged)
 
 	task := makeTask(userID, channelID, charged, tokenID, BillingSourceWallet, 0)
+	task.PrivateData.BillingOperationKey = operationKey
 	task.Status = model.TaskStatusInProgress
 	require.NoError(t, model.DB.Create(task).Error)
 

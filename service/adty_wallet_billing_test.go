@@ -370,6 +370,7 @@ func adtyWalletTask(t *testing.T, userID, tokenID, channelID int) *model.Task {
 		Properties:  model.Properties{OriginModelName: "test-model"},
 		PrivateData: model.TaskPrivateData{TokenId: tokenID},
 	}
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 	return task
 }
@@ -556,6 +557,7 @@ func floorTask(t *testing.T, db *gorm.DB, user *model.User, token *model.Token, 
 	task := &model.Task{TaskID: fmt.Sprintf("floor-task-%d", user.Id), UserId: user.Id, Group: "default", Quota: preConsumed,
 		Status: model.TaskStatusInProgress, Properties: model.Properties{OriginModelName: "floor-task"},
 		PrivateData: model.TaskPrivateData{TokenId: token.Id}}
+	seedTaskReservation(t, task)
 	require.NoError(t, db.Create(task).Error)
 	return task
 }

@@ -52,6 +52,8 @@ type BillingOperation struct {
 	UserId             int    `gorm:"index;not null"`
 	TokenId            int
 	TokenUnlimited     bool
+	PayerKind          string `gorm:"type:varchar(16);not null;default:''"`
+	PayerTeamId        int64  `gorm:"not null;default:0"`
 	LeaseOwner         string `gorm:"type:varchar(64);index"`
 	Kind               string `gorm:"type:varchar(24);not null"` // request, task, mj_charge, mj_refund
 	ReferenceId        int64  `gorm:"index"`
@@ -275,18 +277,23 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 	var result BillingOperation
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		spec.State, spec.Kind = BillingReserved, "request"
+		spec.PayerKind, spec.PayerTeamId = "", 0
 		spec.SiteOwnerUserId = 0
 		if err := freezeBillingSiteOwnerTx(tx, &spec, true); err != nil {
 			return err
 		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&spec).Error; err != nil {
-			return err
+		inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&spec)
+		if inserted.Error != nil {
+			return inserted.Error
 		}
 		if err := lockForUpdate(tx).Where("operation_key = ?", spec.OperationKey).First(&result).Error; err != nil {
 			return err
 		}
 		if result.UserId != spec.UserId || result.TokenId != spec.TokenId || result.Kind != "request" || result.State != BillingReserved {
 			return ErrBillingOperationConflict
+		}
+		if err := freezeBillingPayerTx(tx, &result, inserted.RowsAffected == 1); err != nil {
+			return err
 		}
 		snapshotWritten := false
 		if result.SiteId != spec.SiteId || result.SiteMarkup != spec.SiteMarkup || result.SiteCostFactor != spec.SiteCostFactor {
@@ -311,6 +318,23 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			return tx.Save(&result).Error
 		}
 		delta := target - result.ReservedQuota
+		if result.PayerKind == BillingPayerTeam {
+			if AdtyTeamReserveHook == nil {
+				return ErrBillingOperationConflict
+			}
+			handled, err := AdtyTeamReserveHook(tx, result.PayerTeamId, result.UserId, delta, result.OperationKey)
+			if err != nil {
+				return err
+			}
+			if !handled {
+				return ErrBillingOperationConflict
+			}
+			result.ReservedQuota = target
+			if err := freezeBillingEarningRiskTx(tx, &result); err != nil {
+				return err
+			}
+			return tx.Save(&result).Error
+		}
 		var user User
 		if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {
 			return err
@@ -318,22 +342,6 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 		balance, err := userWalletBalance(user.Quota, user.QuotaPending)
 		if err != nil {
 			return err
-		}
-		if balance < delta && (AdtyTeamReserveHook == nil || result.TokenId <= 0) {
-			return ErrBillingWalletInsufficient
-		}
-		if AdtyTeamReserveHook != nil && result.TokenId > 0 {
-			handled, hookErr := AdtyTeamReserveHook(tx, result.TokenId, result.UserId, delta, result.OperationKey)
-			if hookErr != nil {
-				return hookErr
-			}
-			if handled {
-				result.ReservedQuota = target
-				if err := freezeBillingEarningRiskTx(tx, &result); err != nil {
-					return err
-				}
-				return tx.Save(&result).Error
-			}
 		}
 		if balance < delta {
 			return ErrBillingWalletInsufficient
@@ -430,6 +438,7 @@ func QueueExpiredBillingRefund(key string, cutoff int64) error {
 // the explicitly recorded base, never arithmetic overflow.
 func QueueDirectBillingDelta(spec BillingOperation, delta int) error {
 	spec.Kind, spec.State = "direct", BillingSettlePending
+	spec.PayerKind, spec.PayerTeamId = "", 0
 	if delta < 0 {
 		if delta == -int(^uint(0)>>1)-1 {
 			return ErrBillingOperationConflict
@@ -445,7 +454,14 @@ func QueueDirectBillingDelta(spec BillingOperation, delta int) error {
 		if err := freezeBillingSiteOwnerTx(tx, &spec, true); err != nil {
 			return err
 		}
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&spec).Error
+		inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&spec)
+		if inserted.Error != nil || inserted.RowsAffected == 0 {
+			return inserted.Error
+		}
+		if err := freezeBillingPayerTx(tx, &spec, delta >= 0); err != nil {
+			return err
+		}
+		return tx.Save(&spec).Error
 	}); err != nil {
 		return err
 	}
@@ -485,6 +501,9 @@ func QueueTaskBillingOperation(task *Task, target int, refund bool) (string, err
 		}
 	}
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := freezeBillingPayerTx(tx, &row, false); err != nil {
+			return err
+		}
 		if err := freezeBillingSiteOwnerTx(tx, &row, false); err != nil {
 			return err
 		}
@@ -515,9 +534,13 @@ func QueueMidjourneyBillingOperation(task *Midjourney, refund bool) (string, err
 	}
 	row := BillingOperation{OperationKey: key, UserId: task.UserId, TokenId: task.TokenId, Kind: kind, ReferenceId: int64(task.Id),
 		ActualQuota: target, State: state, SiteId: task.BillingSiteId, SiteMarkup: task.BillingSiteMarkup, SiteCostFactor: task.BillingSiteCostFactor,
-		EarningRootKey: task.BillingOperationKey, PriceSnapshot: task.BillingPriceSnapshot}
+		EarningRootKey: task.BillingOperationKey, PriceSnapshot: task.BillingPriceSnapshot,
+		PayerKind: task.BillingPayerKind, PayerTeamId: task.BillingPayerTeamId}
 	row.SiteOwnerUserId = task.BillingSiteOwnerUserId
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := freezeBillingPayerTx(tx, &row, false); err != nil {
+			return err
+		}
 		if err := freezeBillingSiteOwnerTx(tx, &row, false); err != nil {
 			return err
 		}
@@ -540,6 +563,9 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		if row.State != BillingSettlePending && row.State != BillingRefundPending {
 			return ErrBillingOperationConflict
+		}
+		if err := freezeBillingPayerTx(tx, &row, false); err != nil {
+			return err
 		}
 		base, tokenBase := row.ReservedQuota, row.TokenReservedQuota
 		if row.Kind == "request" {
@@ -613,12 +639,10 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		delta := row.ActualQuota - base
 		// 团队 Key 的差额只记团队账（`ISS-R4-0017`）。判定必须发生在动 users.quota
-		// 之前：先按个人钱包扣（退），再让钩子去动团队余额，等于同一笔差额记了两条
+		// 之前，付款身份只从原操作快照读取：先按个人钱包扣（退），再让钩子去动团队余额，等于同一笔差额记了两条
 		// 账——补扣是扣错人，退还更是给成员凭空加钱。
-		teamPaid, err := AdtyTokenIsTeamKeyTx(tx, row.TokenId)
-		if err != nil {
-			return err
-		}
+		teamPaid := row.PayerKind == BillingPayerTeam
+		var err error
 		charged := 0
 		balance := 0
 		if teamPaid {
@@ -626,12 +650,12 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 			// delta<0 退回团队，并入 adty_team_ledgers。团队付不起的差额记 Shortfall，
 			// 绝不回落成员个人钱包。
 			if AdtyTeamSettleHook != nil {
-				handled, applied, hookErr := AdtyTeamSettleHook(tx, row.TokenId, row.UserId, delta, row.OperationKey)
+				handled, applied, hookErr := AdtyTeamSettleHook(tx, row.PayerTeamId, row.UserId, delta, row.OperationKey)
 				if hookErr != nil {
 					return hookErr
 				}
 				if !handled {
-					// 绑定存在而钩子说不是团队 Key：账的归属不明，宁可让恢复任务
+					// 已冻结团队付款而钩子未处理：宁可让恢复任务
 					// 重试，也不能挑一个钱包去扣。
 					return ErrBillingOperationConflict
 				}

@@ -81,6 +81,9 @@ func TestMain(m *testing.M) {
 func truncate(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
+		require.NoError(t, model.DB.Exec("DELETE FROM adty_fund_allocations").Error)
+		require.NoError(t, model.DB.Exec("DELETE FROM adty_fund_batches").Error)
+		require.NoError(t, model.DB.Exec("DELETE FROM adty_billing_holds").Error)
 		model.DB.Exec("DELETE FROM billing_operation_movements")
 		model.DB.Exec("DELETE FROM adty_site_earning_events")
 		model.DB.Exec("DELETE FROM billing_operations")
@@ -160,6 +163,61 @@ func makeTask(userId, channelId, quota, tokenId int, billingSource string, _ int
 				OriginModelName: "test-model",
 			},
 		},
+	}
+}
+
+// seedTaskReservation gives a precharged task fixture a real acceptance and
+// original payment history. The existing fixture balances describe the state
+// after that charge; only opening balances are initialized here. Reservation
+// and settlement themselves must go through the production billing methods.
+func seedTaskReservation(t *testing.T, task *model.Task) {
+	t.Helper()
+	if task.PrivateData.TokenId <= 0 || task.PrivateData.BillingOperationKey != "" || task.Quota <= 0 {
+		return
+	}
+	var token model.Token
+	require.NoError(t, model.DB.First(&token, task.PrivateData.TokenId).Error)
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", task.UserId).
+		UpdateColumn("quota", gorm.Expr("quota + ?", task.Quota)).Error)
+	require.NoError(t, model.DB.Model(&model.Token{}).Where("id = ?", token.Id).
+		Updates(map[string]any{
+			"remain_quota": token.RemainQuota + task.Quota,
+			"used_quota":   max(0, token.UsedQuota-task.Quota),
+		}).Error)
+	key := "request:task-fixture-" + common.NewRequestId()
+	_, err := model.ReserveBillingOperation(model.BillingOperation{
+		OperationKey: key, UserId: task.UserId, TokenId: token.Id, TokenUnlimited: token.UnlimitedQuota,
+	}, task.Quota)
+	require.NoError(t, err)
+	require.NoError(t, model.QueueBillingSettlement(key, task.Quota, false))
+	_, applied, err := model.ApplyBillingSettlement(key)
+	require.NoError(t, err)
+	require.True(t, applied)
+	task.PrivateData.BillingOperationKey = key
+}
+
+// Reusing a fixture user must not reuse the prior test's principal lots.
+func TestTaskReservationFixturesDoNotInheritPriorFundsPG(t *testing.T) {
+	db := prepareReferralDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Task{}, &model.Channel{}, &model.Midjourney{},
+		&model.SystemTask{}, &model.SystemTaskLock{}))
+	for _, name := range []string{"first_fixture", "reused_user_fixture"} {
+		t.Run(name, func(t *testing.T) {
+			truncate(t)
+			seedUser(t, 9104, 9_000)
+			seedToken(t, 9104, 9104, "independent-task-fixture", 9_000)
+			task := makeTask(9104, 0, 1_000, 9104, BillingSourceWallet, 0)
+			seedTaskReservation(t, task)
+
+			sums, err := model.SumAdtyFundBatchRemainingByKind(9104)
+			require.NoError(t, err)
+			assert.EqualValues(t, 9_000, sums.Principal+sums.Bonus,
+				"each fixture must start with its own opening principal, not consume the previous fixture's lot")
+			assert.Equal(t, 9_000, getUserQuota(t, 9104))
+			var allocations int64
+			require.NoError(t, db.Model(&model.AdtyFundAllocation{}).Where("user_id = ?", 9104).Count(&allocations).Error)
+			assert.Zero(t, allocations, "each opening legacy balance has no prior request allocation to inherit")
+		})
 	}
 }
 
@@ -867,6 +925,7 @@ func TestRefundTaskQuota_Wallet(t *testing.T) {
 	seedChargedAccounting(t, userID, channelID, tokenID, preConsumed, 1)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	assert.True(t, RefundTaskQuota(ctx, task, "task failed: upstream error"))
@@ -922,6 +981,7 @@ func TestRefundTaskQuota_NoToken(t *testing.T) {
 	seedChargedAccounting(t, userID, channelID, 0, preConsumed, 1)
 
 	task := makeTask(userID, channelID, preConsumed, 0, BillingSourceWallet, 0) // TokenId=0
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	assert.True(t, RefundTaskQuota(ctx, task, "no token task failed"))
@@ -951,6 +1011,7 @@ func TestRefundTaskQuota_FundingFailureKeepsAccountingAndPendingMarker(t *testin
 	seedChargedAccounting(t, userID, channelID, 0, preConsumed, 1)
 	task := makeTask(userID, channelID, preConsumed, 0, BillingSourceWallet, 0)
 	task.Status = model.TaskStatusFailure
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	assert.False(t, RefundTaskQuota(ctx, task, "wallet quota limit"))
@@ -984,6 +1045,7 @@ func TestRecalculate_PositiveDelta(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	RecalculateTaskQuota(ctx, task, actualQuota, common.NewMessage("adaptor adjustment"))
@@ -1025,6 +1087,7 @@ func TestRecalculate_NegativeDelta(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	RecalculateTaskQuota(ctx, task, actualQuota, common.NewMessage("adaptor adjustment"))
@@ -1061,6 +1124,7 @@ func TestRecalculate_ZeroDelta(t *testing.T) {
 
 	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
 
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	RecalculateTaskQuota(ctx, task, preConsumed, common.NewMessage("exact match"))
@@ -1082,6 +1146,7 @@ func TestRecalculate_ActualQuotaZero(t *testing.T) {
 	seedUser(t, userID, initQuota)
 
 	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	RecalculateTaskQuota(ctx, task, 0, common.NewMessage("zero actual"))
@@ -1179,6 +1244,7 @@ func TestCASGuardedRefund_Win(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 	task.Status = model.TaskStatus(model.TaskStatusInProgress)
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	simulatePollBilling(ctx, task, model.TaskStatus(model.TaskStatusFailure), 0)
@@ -1218,6 +1284,7 @@ func TestCASGuardedRefund_Lose(t *testing.T) {
 	// Create task with IN_PROGRESS in DB
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 	task.Status = model.TaskStatus(model.TaskStatusInProgress)
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	// Simulate another process already transitioning to FAILURE
@@ -1255,6 +1322,7 @@ func TestCASGuardedSettle_Win(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 	task.Status = model.TaskStatus(model.TaskStatusInProgress)
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	simulatePollBilling(ctx, task, model.TaskStatus(model.TaskStatusSuccess), actualQuota)
@@ -1289,6 +1357,7 @@ func TestNonTerminalUpdate_NoBilling(t *testing.T) {
 	task := makeTask(userID, channelID, preConsumed, 0, BillingSourceWallet, 0)
 	task.Status = model.TaskStatus(model.TaskStatusInProgress)
 	task.Progress = "20%"
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 
 	// Simulate a non-terminal poll update (still IN_PROGRESS, progress changed)
@@ -1400,6 +1469,7 @@ func TestSettle_NonPerCallBilling_AppliesAdaptorAdjustment(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 	// PerCallBilling defaults to false
 
@@ -1429,6 +1499,7 @@ func TestSettle_TieredEvaluationFailureKeepsPreConsumedCharge(t *testing.T) {
 
 	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
 
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 	task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
 		ExprString:       `tier("broken",`,
@@ -1494,6 +1565,7 @@ func TestSettle_TieredSuccessStillRecomputes(t *testing.T) {
 
 	expression := `tier("base", u("seconds") + u("clips") * 10)`
 	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 	task.Status = model.TaskStatusSuccess
 	task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
@@ -1569,6 +1641,7 @@ func TestSettle_TieredUsageFactsMergeCompletionOverSubmission(t *testing.T) {
 			expression := `tier("base", u("seconds") + u("clips") * 10)`
 			submissionFacts := map[string]any{"seconds": float64(5), "clips": float64(2)}
 			task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
+			seedTaskReservation(t, task)
 			require.NoError(t, model.DB.Create(task).Error)
 			task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
 				ExprString:       expression,
@@ -1619,6 +1692,7 @@ func TestSettle_TieredSnapshotWriteBackUsesSettledFactsAndMatchedTier(t *testing
 
 	expression := `u("resolution") == "1080P" ? tier("1080P", u("seconds") * 10) : tier("720P", u("seconds") * 5)`
 	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
+	seedTaskReservation(t, task)
 	require.NoError(t, model.DB.Create(task).Error)
 	task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
 		ExprString:       expression,
@@ -1713,6 +1787,7 @@ func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 
 			task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 
+			seedTaskReservation(t, task)
 			require.NoError(t, model.DB.Create(task).Error)
 			settled := settleTaskBillingOnComplete(
 				context.Background(),
