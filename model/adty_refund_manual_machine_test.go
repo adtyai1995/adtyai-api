@@ -263,3 +263,144 @@ func TestManualRefundTableMissingFailsClosed(t *testing.T) {
 	_, err = LoadAdtyRefundPageFacts("EPU-MISSING", decimal.Zero)
 	require.ErrorIs(t, err, ErrAdtyManualRefundTableMissing)
 }
+
+func TestManualRefundUnknownPayoutCannotTerminateAndKeepsUOccupancyPG(t *testing.T) {
+	prepareAdtyTopUpDB(t)
+	seedManualRefundOrder(t, "unknown-term-user", "EPU-UNK-TERM")
+
+	_, err := ApplyAdtyTopUpManualRefund("EPU-UNK-TERM", "chargeback", 1, "refund-unk-1", decimal.RequireFromString("40"))
+	require.NoError(t, err)
+	_, err = ApproveAdtyTopUpManualRefund("EPU-UNK-TERM", "refund-unk-1", 1, "", "")
+	require.NoError(t, err)
+	unk, err := RecordAdtyTopUpManualRefundPayout("EPU-UNK-TERM", "refund-unk-1", 1, "", AdtyManualRefundPayout{
+		Status: AdtyManualRefundPayoutUnknown, Currency: "USDT", Amount: decimal.RequireFromString("40"), PaidAt: 10, Voucher: "wire-unk",
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 20_000_000, unk.Occupancy.UnknownQuota)
+	require.EqualValues(t, 30_000_000, unk.Occupancy.RemainingQuota)
+
+	// ISS-R1-0014: payout_status == unknown must refuse Terminate and preserve U occupancy.
+	_, err = TerminateAdtyTopUpManualRefund("EPU-UNK-TERM", "refund-unk-1", 1, "", "try terminate unknown")
+	require.Error(t, err)
+
+	facts, err := LoadAdtyRefundPageFacts("EPU-UNK-TERM", decimal.Zero)
+	require.NoError(t, err)
+	require.EqualValues(t, 20_000_000, facts.RefundUnknownQuota)
+	require.EqualValues(t, 30_000_000, facts.RefundRemainingQuota)
+
+	// Even if an existing row has status=terminated with payout_status=unknown, bucket remains U.
+	require.Equal(t, "U", adtyManualRefundOccupancyBucket(AdtyManualRefund{
+		Status: AdtyManualRefundStatusTerminated, PayoutStatus: AdtyManualRefundPayoutUnknown,
+	}))
+
+	// Once confirmed failed, terminate succeeds and releases U occupancy.
+	_, err = RecordAdtyTopUpManualRefundPayout("EPU-UNK-TERM", "refund-unk-1", 1, "payout-fail", AdtyManualRefundPayout{
+		Status: AdtyManualRefundPayoutFailed, Currency: "USDT", Amount: decimal.RequireFromString("40"), PaidAt: 11, Voucher: "wire-fail",
+	})
+	require.NoError(t, err)
+	term, err := TerminateAdtyTopUpManualRefund("EPU-UNK-TERM", "refund-unk-1", 1, "term-after-fail", "confirmed failed")
+	require.NoError(t, err)
+	require.Equal(t, AdtyManualRefundStatusTerminated, term.Refund.Status)
+	require.Zero(t, term.Occupancy.UnknownQuota)
+	require.Zero(t, term.Occupancy.InProgressQuota)
+	require.EqualValues(t, 50_000_000, term.Occupancy.RemainingQuota)
+}
+
+func TestManualRefundDoesNotSeizeInFlightAllocatedLotsPG(t *testing.T) {
+	prepareAdtyTopUpDB(t)
+	user := seedManualRefundOrder(t, "inflight-lot-user", "EPU-INFLIGHT-A")
+	// Add a second order so spendable wallet balance exceeds order A's unallocated remainder.
+	seedAdtyOrder(t, user.Id, "EPU-INFLIGHT-B", PaymentProviderAdtyBEpusdt, common.TopUpStatusPending)
+	_, err := CompleteAdtyTopUp("EPU-INFLIGHT-B", usdtFacts("EPU-INFLIGHT-B", "50.01"), "")
+	require.NoError(t, err)
+
+	// Reserve 80 USD (40,000,000 quota): allocates 40,000,000 on EPU-INFLIGHT-A's 50,000,000 principal lot.
+	_, err = ReserveBillingOperation(BillingOperation{OperationKey: "op-inflight-principal", UserId: user.Id}, 40_000_000)
+	require.NoError(t, err)
+
+	// Refund $40 (20,000,000) on EPU-INFLIGHT-A: only 10,000,000 principal is unallocated!
+	_, err = ApplyAdtyTopUpManualRefund("EPU-INFLIGHT-A", "partial", 1, "refund-inf-1", decimal.RequireFromString("40"))
+	require.NoError(t, err)
+	_, err = ApproveAdtyTopUpManualRefund("EPU-INFLIGHT-A", "refund-inf-1", 1, "", "")
+	require.NoError(t, err)
+	reclaimed, err := ReclaimAdtyTopUpManualRefund("EPU-INFLIGHT-A", "refund-inf-1", 1, "")
+	require.NoError(t, err)
+	require.EqualValues(t, 10_000_000, reclaimed.Refund.ReclaimablePrincipalQuota)
+	require.EqualValues(t, 10_000_000, reclaimed.Refund.DeductedPrincipalQuota)
+	require.EqualValues(t, 10_000_000, reclaimed.Refund.ShortfallQuota)
+
+	var lotA AdtyFundBatch
+	require.NoError(t, DB.Where("user_id = ? AND source = ? AND kind = ?", user.Id, "EPU-INFLIGHT-A", "principal").First(&lotA).Error)
+	require.EqualValues(t, 40_000_000, lotA.Remaining, "in-flight allocated principal must remain intact")
+
+	require.NoError(t, QueueBillingSettlement("op-inflight-principal", 40_000_000, false))
+	settled, applied, err := ApplyBillingSettlement("op-inflight-principal")
+	require.NoError(t, err)
+	require.True(t, applied)
+	require.Zero(t, settled.FundBatchGap)
+
+	// Now test in-flight bonus allocation protection during refund completion.
+	user2 := seedManualRefundOrder(t, "inflight-bonus-user", "EPU-INFLIGHT-C")
+	seedAdtyOrder(t, user2.Id, "EPU-INFLIGHT-D", PaymentProviderAdtyBEpusdt, common.TopUpStatusPending)
+	_, err = CompleteAdtyTopUp("EPU-INFLIGHT-D", usdtFacts("EPU-INFLIGHT-D", "50.01"), "")
+	require.NoError(t, err)
+	// Reserve 202 USD (101,000,000 quota): allocates C-principal (50M) + D-principal (50M) + C-bonus (1M),
+	// leaving 250,000 unallocated on C-bonus while spendable remains 1,500,000 >= planned 1,250,000.
+	_, err = ReserveBillingOperation(BillingOperation{OperationKey: "op-inflight-bonus", UserId: user2.Id}, 101_000_000)
+	require.NoError(t, err)
+
+	done, err := completeManualRefundForTest(t, "EPU-INFLIGHT-C", "full-with-held-bonus", 1, "refund-inf-c1", decimal.RequireFromString("100"))
+	require.NoError(t, err)
+	require.EqualValues(t, 0, done.Refund.DeductedPrincipalQuota)
+	require.EqualValues(t, 250_000, done.Refund.BonusDeductedQuota)
+	require.EqualValues(t, 1_000_000, done.Refund.BonusShortfallQuota)
+
+	require.NoError(t, QueueBillingSettlement("op-inflight-bonus", 101_000_000, false))
+	settled2, applied2, err := ApplyBillingSettlement("op-inflight-bonus")
+	require.NoError(t, err)
+	require.True(t, applied2)
+	require.Zero(t, settled2.FundBatchGap)
+}
+
+func TestManualRefundSplitFullRefundTailCorrectionPG(t *testing.T) {
+	prepareAdtyTopUpDB(t)
+	user := seedAdtyTopUpUser(t, DB, "tail-user", 0)
+	tradeNo := "EPU-TAIL-30"
+	require.NoError(t, CreateAdtyTopUp(
+		&TopUp{UserId: user.Id, Amount: 30, Money: 30, TradeNo: tradeNo, PaymentMethod: "usdt.trc20", PaymentProvider: PaymentProviderAdtyBEpusdt, CreateTime: 1, Status: common.TopUpStatusPending},
+		&AdtyTopupOrder{
+			TradeNo: tradeNo, UserId: user.Id, Provider: PaymentProviderAdtyBEpusdt, Method: "usdt.trc20",
+			FaceUSD: decimal.NewFromInt(30), BonusRate: decimal.RequireFromString("3.33333333"), BonusUSD: decimal.NewFromInt(1),
+			CreditQuota: 15_500_000, PayAmount: decimal.NewFromInt(30), PayCurrency: "USDT", TopupGroupRatio: decimal.NewFromInt(1),
+		},
+	))
+	_, err := CompleteAdtyTopUp(tradeNo, AdtyPaymentFacts{
+		Provider:     PaymentProviderAdtyBEpusdt,
+		PaidAmount:   decimal.NewFromInt(30),
+		FiatAmount:   decimal.NewFromInt(30),
+		PaidCurrency: "USDT",
+		Source:       AdtyPaymentSourceCallback,
+	}, "")
+	require.NoError(t, err)
+
+	r1, err := completeManualRefundForTest(t, tradeNo, "split-1", 1, "tail-r1", decimal.NewFromInt(10))
+	require.NoError(t, err)
+	require.EqualValues(t, 166_666, r1.Refund.BonusPlannedQuota)
+	require.EqualValues(t, 166_666, r1.Refund.BonusDeductedQuota)
+
+	r2, err := completeManualRefundForTest(t, tradeNo, "split-2", 1, "tail-r2", decimal.NewFromInt(10))
+	require.NoError(t, err)
+	require.EqualValues(t, 166_666, r2.Refund.BonusPlannedQuota)
+	require.EqualValues(t, 166_666, r2.Refund.BonusDeductedQuota)
+
+	r3, err := completeManualRefundForTest(t, tradeNo, "split-3", 1, "tail-r3", decimal.NewFromInt(10))
+	require.NoError(t, err)
+	require.EqualValues(t, 166_668, r3.Refund.BonusPlannedQuota)
+	require.EqualValues(t, 166_668, r3.Refund.BonusDeductedQuota)
+	require.Zero(t, r3.Refund.BonusShortfallQuota)
+	require.Zero(t, userQuota(t, DB, user.Id))
+
+	var bonusLot AdtyFundBatch
+	require.NoError(t, DB.Where("user_id = ? AND source = ? AND kind = ?", user.Id, tradeNo, "bonus").First(&bonusLot).Error)
+	require.Zero(t, bonusLot.Remaining)
+}

@@ -182,11 +182,47 @@ func netGiftHoldTx(tx *gorm.DB, siteID int, tradeNo string) (decimal.Decimal, er
 	return held, nil
 }
 
+func adtyProportionalGiftUSD(siteBonus decimal.Decimal, reclaimed, totalBonusQuota int64) decimal.Decimal {
+	if reclaimed <= 0 || !siteBonus.IsPositive() {
+		return decimal.Zero
+	}
+	if totalBonusQuota <= 0 || reclaimed >= totalBonusQuota {
+		return siteBonus
+	}
+	return siteBonus.Mul(decimal.NewFromInt(reclaimed)).Div(decimal.NewFromInt(totalBonusQuota)).RoundFloor(8)
+}
+
+func adtyCompletedManualRefundBonusStatsTx(tx *gorm.DB, ext *model.AdtyTopupOrder) (hasRows bool, prevReclaimed, cumReclaimed int64, err error) {
+	if tx == nil || ext == nil || ext.TradeNo == "" || !tx.Migrator().HasTable(&model.AdtyManualRefund{}) {
+		return false, 0, 0, nil
+	}
+	var rows []model.AdtyManualRefund
+	if err := tx.Where("trade_no = ? AND status = ?", ext.TradeNo, model.AdtyManualRefundStatusCompleted).Find(&rows).Error; err != nil {
+		return false, 0, 0, err
+	}
+	if len(rows) == 0 {
+		return false, 0, 0, nil
+	}
+	for _, r := range rows {
+		cumReclaimed += max(r.BonusDeductedQuota, 0)
+	}
+	step := min(cumReclaimed, max(ext.RefundBonusQuota, 0))
+	prevReclaimed = cumReclaimed - step
+	return true, prevReclaimed, cumReclaimed, nil
+}
+
 func reacquireAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder) error {
+	return reacquireAdtySiteGiftAmountTx(tx, ext, adtyBonusUSDForSite(ext))
+}
+
+func reacquireAdtySiteGiftAmountTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonus decimal.Decimal) error {
 	if tx == nil || ext == nil || ext.SiteId <= 0 {
 		return errGiftGuaranteeShort
 	}
-	bonus := adtyBonusUSDForSite(ext)
+	maxBonus := adtyBonusUSDForSite(ext)
+	if !bonus.IsPositive() || bonus.GreaterThan(maxBonus) {
+		bonus = maxBonus
+	}
 	if !bonus.IsPositive() {
 		return errGiftGuaranteeShort
 	}
@@ -408,13 +444,26 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 		if face := ext.FaceQuota(); face > 0 && ext.RefundQuota >= face {
 			return nil
 		}
+		// Active H/U manual refunds hold the top-up under dispute, so pending
+		// site gift fulfillment pauses until they settle or shrink (ISS-R1-0013).
+		hasActiveRefund, err := model.HasActiveManualRefundOccupancyTx(tx, tradeNo)
+		if err != nil {
+			return err
+		}
+		if hasActiveRefund {
+			return nil
+		}
 		// 当时被扣下的正是「本单赠送额度 - 已发放额度」。pending 行记的 bonus
-		// 额度是站长承诺额，本单赠送额度是实发上限，取小的那个才不会多发。
+		// 额度是站长承诺额（可能已因部分退款缩小），本单赠送额度是实发上限，取小的那个才不会多发。
 		owed := min(row.BonusQuota, topUpBonusQuota(&ext))
 		if owed <= 0 {
 			return nil
 		}
-		if err := reacquireAdtySiteGiftTx(tx, &ext); err != nil {
+		targetBonusUSD := row.BonusUSD
+		if !targetBonusUSD.IsPositive() {
+			targetBonusUSD = adtyBonusUSDForSite(&ext)
+		}
+		if err := reacquireAdtySiteGiftAmountTx(tx, &ext, targetBonusUSD); err != nil {
 			return err
 		}
 		before, err := model.AdtyCreditUserQuotaTx(tx, row.UserId, owed)
@@ -540,18 +589,66 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 	if tx == nil || ext == nil || ext.SiteId <= 0 {
 		return nil
 	}
-	bonusQuota := ext.RefundBonusQuota
-	if bonusQuota <= 0 {
-		return nil
-	}
-	reclaimed := min(bonusQuota, max(ext.RefundDeductedQuota, 0))
 	siteBonus := adtyBonusUSDForSite(ext)
-	if !siteBonus.IsPositive() || reclaimed <= 0 {
-		return nil
+	totalBonusQuota, err := siteGiftBonusQuota(ext)
+	if err != nil {
+		return err
 	}
-	unusedUSD := siteBonus.Mul(decimal.NewFromInt(reclaimed)).Div(decimal.NewFromInt(bonusQuota)).RoundFloor(8)
-	if reclaimed == bonusQuota {
-		unusedUSD = siteBonus
+	hasRows, _, cumReclaimed, err := adtyCompletedManualRefundBonusStatsTx(tx, ext)
+	if err != nil {
+		return err
+	}
+	var unusedUSD decimal.Decimal
+	var key string
+	var reclaimedForCancel int64
+	var denomForCancel int64
+	var fullRelease bool
+	if hasRows {
+		denom := totalBonusQuota
+		if denom <= 0 {
+			denom = cumReclaimed
+		}
+		denomForCancel = denom
+		reclaimedForCancel = cumReclaimed
+		if !siteBonus.IsPositive() || cumReclaimed <= 0 {
+			return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimedForCancel, denomForCancel)
+		}
+		cumTarget := adtyProportionalGiftUSD(siteBonus, cumReclaimed, denom)
+		var ledgers []model.AdtySiteWalletLedger
+		if err := tx.Where("site_id = ? AND ref_type = ? AND ref_id = ? AND type = ? AND idempotency_key LIKE ?",
+			ext.SiteId, "topup", ext.TradeNo, "gift_release", "%:refund-release").Find(&ledgers).Error; err != nil {
+			return err
+		}
+		alreadyReleased := decimal.Zero
+		for _, l := range ledgers {
+			if l.HoldDelta.IsNegative() {
+				alreadyReleased = alreadyReleased.Add(l.HoldDelta.Neg())
+			}
+		}
+		unusedUSD = cumTarget.Sub(alreadyReleased)
+		key = "gift:" + ext.TradeNo + ":refund-" + strconv.FormatInt(cumReclaimed, 10)
+		fullRelease = totalBonusQuota > 0 && cumReclaimed >= totalBonusQuota
+	} else {
+		bonusQuota := ext.RefundBonusQuota
+		if bonusQuota <= 0 {
+			return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, 0, totalBonusQuota)
+		}
+		denom := totalBonusQuota
+		if denom <= 0 {
+			denom = bonusQuota
+		}
+		reclaimed := min(denom, min(bonusQuota, max(ext.RefundDeductedQuota, 0)))
+		reclaimedForCancel = reclaimed
+		denomForCancel = denom
+		if !siteBonus.IsPositive() || reclaimed <= 0 {
+			return nil
+		}
+		unusedUSD = adtyProportionalGiftUSD(siteBonus, reclaimed, denom)
+		key = "gift:" + ext.TradeNo
+		fullRelease = reclaimed == denom
+	}
+	if !unusedUSD.IsPositive() {
+		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimedForCancel, denomForCancel)
 	}
 	heldEarning, heldMargin, err := netGiftHoldByKindTx(tx, ext.SiteId, ext.TradeNo)
 	if err != nil {
@@ -559,14 +656,14 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 	}
 	held := heldEarning.Add(heldMargin)
 	if !held.IsPositive() {
-		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimed, bonusQuota)
+		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimedForCancel, denomForCancel)
 	}
 	toRelease := unusedUSD
-	if toRelease.GreaterThan(held) || reclaimed == bonusQuota {
+	if toRelease.GreaterThan(held) || fullRelease {
 		toRelease = held
 	}
 	if !toRelease.IsPositive() {
-		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimed, bonusQuota)
+		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimedForCancel, denomForCancel)
 	}
 	relEarning := decimal.Zero
 	if held.IsPositive() && heldEarning.IsPositive() {
@@ -583,7 +680,6 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 			relEarning = heldEarning
 		}
 	}
-	key := "gift:" + ext.TradeNo
 	already, err := adtyWalletIdempotencyExists(tx, key+":earn:refund-release", key+":margin:refund-release")
 	if err != nil {
 		return err
@@ -612,7 +708,7 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 				"phase": "refund",
 			})
 	}
-	return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimed, bonusQuota)
+	return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimedForCancel, denomForCancel)
 }
 
 func netGiftHoldByKindTx(tx *gorm.DB, siteID int, tradeNo string) (earning, margin decimal.Decimal, err error) {
@@ -646,6 +742,49 @@ func cancelPendingGiftFulfillmentOnFullRefundTx(tx *gorm.DB, ext *model.AdtyTopu
 	fullPrincipal := ext.FaceQuota() > 0 && ext.RefundQuota >= ext.FaceQuota()
 	fullGift := bonusQuota > 0 && reclaimed >= bonusQuota
 	if !fullPrincipal && !fullGift {
+		if ext.FaceQuota() <= 0 || ext.RefundQuota <= 0 || !tx.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+			return nil
+		}
+		var row model.AdtyGiftFulfillment
+		if err := model.AdtyLockForUpdate(tx).
+			Where("trade_no = ? AND status = ?", ext.TradeNo, model.AdtyGiftFulfillmentPending).
+			Limit(1).Find(&row).Error; err != nil {
+			return err
+		}
+		if row.Id == 0 {
+			return nil
+		}
+		origBonusUSD := adtyBonusUSDForSite(ext)
+		refundedUSD := decimal.NewFromInt(ext.RefundQuota).Div(common.QuotaPerUnitDecimal())
+		reclaimedUSD := model.CumulativeGiftReclaim(origBonusUSD, ext.FaceUSD, decimal.Zero, refundedUSD)
+		shrunkUSD := origBonusUSD.Sub(reclaimedUSD)
+		if shrunkUSD.IsNegative() {
+			shrunkUSD = decimal.Zero
+		}
+		shrunkQuotaDec, err := common.WalletQuotaFromDecimalStrict(shrunkUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
+		if err != nil {
+			return err
+		}
+		shrunkQuota := int64(shrunkQuotaDec)
+		if shrunkQuota <= 0 || !shrunkUSD.IsPositive() {
+			return tx.Model(&model.AdtyGiftFulfillment{}).
+				Where("id = ?", row.Id).
+				Updates(map[string]any{"status": model.AdtyGiftFulfillmentCanceled, "reason": "partial refund left no remaining gift"}).Error
+		}
+		if shrunkUSD.LessThan(row.BonusUSD) || shrunkQuota < row.BonusQuota {
+			history := adtyGiftFulfillmentHistory(row.History, map[string]any{
+				"at":           time.Now().Unix(),
+				"action":       "shrunk_on_partial_refund",
+				"bonus_usd":    shrunkUSD.String(),
+				"bonus_quota":  shrunkQuota,
+				"refund_quota": ext.RefundQuota,
+			})
+			return tx.Model(&model.AdtyGiftFulfillment{}).Where("id = ?", row.Id).Updates(map[string]any{
+				"bonus_usd":   shrunkUSD,
+				"bonus_quota": shrunkQuota,
+				"history":     history,
+			}).Error
+		}
 		return nil
 	}
 	res := tx.Model(&model.AdtyGiftFulfillment{}).

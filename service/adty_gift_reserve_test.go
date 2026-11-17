@@ -906,3 +906,141 @@ func TestMarginTopUpShortOfGuaranteeLeavesGiftPending(t *testing.T) {
 	_, margin := mustSiteGiftWallets(t, db, site.Id)
 	require.True(t, margin.FrozenUSD.IsZero())
 }
+
+func TestPartialAndSplitRefundsReleaseProportionalSiteGiftGuarantee(t *testing.T) {
+	// Subtest A: single $40 refund on $100 principal + $10 site gift ($4 earning + $6 margin).
+	t.Run("single_partial_40", func(t *testing.T) {
+		db := prepareSiteDB(t)
+		_, site, customer, ext := seedReservedSiteGift(t, db, "gift-part-single", "10")
+		_, err := model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
+			Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
+			PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		}, "")
+		require.NoError(t, err)
+
+		res, err := completeManualRefundForTest(t, ext.TradeNo, "partial 40", 1, "gift-part-single-r1", decimal.NewFromInt(40))
+		require.NoError(t, err)
+		require.EqualValues(t, 2_000_000, res.Refund.BonusDeductedQuota)
+		require.EqualValues(t, 33_000_000, userQuotaOf(t, db, customer.Id))
+
+		require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+			held, err := netGiftHoldTx(tx, site.Id, ext.TradeNo)
+			require.NoError(t, err)
+			require.True(t, held.Equal(decimal.RequireFromString("6")), "expected $6 remaining guarantee, got %s", held)
+			return nil
+		}))
+		earning, margin := mustSiteGiftWallets(t, db, site.Id)
+		require.True(t, earning.FrozenUSD.Add(margin.FrozenUSD).Equal(decimal.RequireFromString("6")))
+
+		totals := earningTotals(t, db, site.Id)
+		require.True(t, totals[model.AdtySiteEarningBonusReversal].Equal(usd("4")), "expected bonus_reversal $4, got %s", totals[model.AdtySiteEarningBonusReversal])
+	})
+
+	// Subtest B: split $10 + $30 refunds on $100 principal + $10 site gift produce identical cumulative $4 release & reversal.
+	t.Run("split_10_and_30", func(t *testing.T) {
+		db := prepareSiteDB(t)
+		_, site, customer, ext := seedReservedSiteGift(t, db, "gift-part-split", "10")
+		_, err := model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
+			Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
+			PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		}, "")
+		require.NoError(t, err)
+
+		r1, err := completeManualRefundForTest(t, ext.TradeNo, "split 10", 1, "gift-part-split-r1", decimal.NewFromInt(10))
+		require.NoError(t, err)
+		require.EqualValues(t, 500_000, r1.Refund.BonusDeductedQuota)
+		require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+			held, err := netGiftHoldTx(tx, site.Id, ext.TradeNo)
+			require.NoError(t, err)
+			require.True(t, held.Equal(decimal.RequireFromString("9")), "after $10 refund expected $9 held, got %s", held)
+			return nil
+		}))
+
+		r2, err := completeManualRefundForTest(t, ext.TradeNo, "split 30", 1, "gift-part-split-r2", decimal.NewFromInt(30))
+		require.NoError(t, err)
+		require.EqualValues(t, 1_500_000, r2.Refund.BonusDeductedQuota)
+		require.EqualValues(t, 33_000_000, userQuotaOf(t, db, customer.Id))
+
+		require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+			held, err := netGiftHoldTx(tx, site.Id, ext.TradeNo)
+			require.NoError(t, err)
+			require.True(t, held.Equal(decimal.RequireFromString("6")), "after $10+$30 refund expected $6 held, got %s", held)
+			return nil
+		}))
+		totals := earningTotals(t, db, site.Id)
+		require.True(t, totals[model.AdtySiteEarningBonusReversal].Equal(usd("4")), "expected cumulative bonus_reversal $4, got %s", totals[model.AdtySiteEarningBonusReversal])
+	})
+}
+
+func TestPendingSiteGiftPausesDuringActiveRefundAndShrinksOnPartialRefund(t *testing.T) {
+	db := prepareSiteDB(t)
+	owner, site, customer, ext := seedReservedSiteGift(t, db, "gift-pend-ref", "10")
+	_, err := model.CancelAdtyTopUp(ext.TradeNo, customer.Id)
+	require.NoError(t, err)
+	require.NoError(t, drainSiteGiftWallets(t, db, site.Id, "gift-pend-ref"))
+	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
+		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
+		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+	}, "")
+	require.NoError(t, err)
+	require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
+
+	// Replenish earnings so guarantee IS available, then apply H refund: fulfillment must pause!
+	_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.RequireFromString("20"), AdtySiteWalletChange{
+		Type: "earning_settlement", IdempotencyKey: "gift-pend-ref-earn20",
+	})
+	require.NoError(t, err)
+	_, err = model.ApplyAdtyTopUpManualRefund(ext.TradeNo, "partial pending", 1, "pend-ref-1", decimal.NewFromInt(40))
+	require.NoError(t, err)
+	n, err := ResumePendingAdtyGiftFulfillments(site.Id)
+	require.NoError(t, err)
+	require.Zero(t, n, "pending gift must pause while an H manual refund exists")
+	require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
+
+	// Move refund to U (unknown payout): fulfillment must remain paused!
+	_, err = model.ApproveAdtyTopUpManualRefund(ext.TradeNo, "pend-ref-1", 1, "", "")
+	require.NoError(t, err)
+	_, err = model.RecordAdtyTopUpManualRefundPayout(ext.TradeNo, "pend-ref-1", 1, "pend-ref-unk", model.AdtyManualRefundPayout{
+		Status: model.AdtyManualRefundPayoutUnknown, Currency: "USDT", Amount: decimal.NewFromInt(40), PaidAt: 10, Voucher: "unk",
+	})
+	require.NoError(t, err)
+	n, err = ResumePendingAdtyGiftFulfillments(site.Id)
+	require.NoError(t, err)
+	require.Zero(t, n, "pending gift must pause while a U manual refund exists")
+
+	// Drain earnings so guarantee is temporarily short while completing the $40 refund.
+	require.NoError(t, drainSiteGiftWallets(t, db, site.Id, "gift-pend-ref-drain2"))
+	_, err = model.ReclaimAdtyTopUpManualRefund(ext.TradeNo, "pend-ref-1", 1, "")
+	require.NoError(t, err)
+	_, err = model.PlanAdtyTopUpManualRefundBonus(ext.TradeNo, "pend-ref-1", 1, "")
+	require.NoError(t, err)
+	_, err = model.PlanAdtyTopUpManualRefundCommission(ext.TradeNo, "pend-ref-1", 1, "")
+	require.NoError(t, err)
+	_, err = model.RecordAdtyTopUpManualRefundPayout(ext.TradeNo, "pend-ref-1", 1, "pend-ref-ok", model.AdtyManualRefundPayout{
+		Status: model.AdtyManualRefundPayoutSuccess, Currency: "USDT", Amount: decimal.NewFromInt(40), PaidAt: 11, Voucher: "ok",
+	})
+	require.NoError(t, err)
+	_, err = model.CompleteAdtyTopUpManualRefund(ext.TradeNo, "pend-ref-1", 1, "")
+	require.NoError(t, err)
+	require.EqualValues(t, 30_000_000, userQuotaOf(t, db, customer.Id))
+
+	// Check pending gift shrunk to $6 (3,000,000 quota).
+	var fg model.AdtyGiftFulfillment
+	require.NoError(t, db.Where("trade_no = ?", ext.TradeNo).First(&fg).Error)
+	require.Equal(t, model.AdtyGiftFulfillmentPending, fg.Status)
+	require.True(t, fg.BonusUSD.Equal(decimal.NewFromInt(6)), "shrunk BonusUSD=%s", fg.BonusUSD)
+	require.EqualValues(t, 3_000_000, fg.BonusQuota)
+
+	// Top up only $6 earning (insufficient for original $10, sufficient for shrunk $6!).
+	_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.RequireFromString("6"), AdtySiteWalletChange{
+		Type: "earning_settlement", IdempotencyKey: "gift-pend-ref-earn6",
+	})
+	require.NoError(t, err)
+	_ = owner
+	n, err = ResumePendingAdtyGiftFulfillments(site.Id)
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "shrunk pending gift of $6 must fulfill with $6 guarantee")
+	require.EqualValues(t, 33_000_000, userQuotaOf(t, db, customer.Id))
+	require.NoError(t, db.Where("trade_no = ?", ext.TradeNo).First(&fg).Error)
+	require.Equal(t, model.AdtyGiftFulfillmentFulfilled, fg.Status)
+}

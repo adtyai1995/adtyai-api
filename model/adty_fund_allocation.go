@@ -326,6 +326,9 @@ func outstandingAdtyFundAllocationByBatchTx(tx *gorm.DB, userID int) (map[int64]
 	if tx == nil || userID <= 0 {
 		return out, nil
 	}
+	if !tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+		return out, nil
+	}
 	var rows []struct {
 		BatchId int64
 		Held    int64

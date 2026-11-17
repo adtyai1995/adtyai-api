@@ -311,14 +311,40 @@ func adtySiteBonusAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 // 客户已经花掉的额度是真实消费。
 func adtySiteBonusAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
 	bonus := adtyBonusUSDForSite(ext)
-	if bonus.IsZero() || ext.RefundBonusQuota <= 0 {
-		// Official complete may reclaim no gift when A.8 fulfillment is still
-		// pending (the promise was never credited). A full principal refund
-		// must still cancel that pending fulfillment.
+	if bonus.IsZero() {
 		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, ext.RefundBonusQuota, ext.RefundBonusQuota)
 	}
-	reclaimed := min(ext.RefundBonusQuota, max(ext.RefundDeductedQuota, 0))
-	returned := bonus.Mul(decimal.NewFromInt(reclaimed)).Div(decimal.NewFromInt(ext.RefundBonusQuota)).RoundFloor(8)
+	hasRows, prevReclaimed, cumReclaimed, err := adtyCompletedManualRefundBonusStatsTx(tx, ext)
+	if err != nil {
+		return err
+	}
+	totalBonusQuota, err := siteGiftBonusQuota(ext)
+	if err != nil {
+		return err
+	}
+	var returned decimal.Decimal
+	if hasRows {
+		if cumReclaimed <= 0 && ext.RefundBonusQuota <= 0 {
+			return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, 0, totalBonusQuota)
+		}
+		denom := totalBonusQuota
+		if denom <= 0 {
+			denom = cumReclaimed
+		}
+		cumUSD := adtyProportionalGiftUSD(bonus, cumReclaimed, denom)
+		prevUSD := adtyProportionalGiftUSD(bonus, prevReclaimed, denom)
+		returned = cumUSD.Sub(prevUSD)
+	} else {
+		if ext.RefundBonusQuota <= 0 {
+			return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, 0, totalBonusQuota)
+		}
+		denom := totalBonusQuota
+		if denom <= 0 {
+			denom = ext.RefundBonusQuota
+		}
+		reclaimed := min(denom, min(ext.RefundBonusQuota, max(ext.RefundDeductedQuota, 0)))
+		returned = adtyProportionalGiftUSD(bonus, reclaimed, denom)
+	}
 	if returned.IsPositive() {
 		if err := upsertAdtySiteEarningTx(tx, adtySiteEarningDayFn(), adtySiteEarningEntry{
 			SiteId: ext.SiteId, SiteOwnerUserId: ext.SiteOwnerUserId, UserId: topUp.UserId, Kind: model.AdtySiteEarningBonusReversal, Earning: returned,

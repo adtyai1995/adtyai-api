@@ -380,6 +380,10 @@ func ReclaimAdtyFundBatchesBySourceTx(tx *gorm.DB, userID int, source string, pr
 	if err := tx.Where("user_id = ? AND source = ? AND remaining > 0", userID, source).Find(&rows).Error; err != nil {
 		return 0, err
 	}
+	heldByBatch, err := outstandingAdtyFundAllocationByBatchTx(tx, userID)
+	if err != nil {
+		return 0, err
+	}
 	taken := int64(0)
 	for i := range rows {
 		var want *int64
@@ -394,7 +398,11 @@ func ReclaimAdtyFundBatchesBySourceTx(tx *gorm.DB, userID int, source string, pr
 		if *want <= 0 {
 			continue
 		}
-		take := rows[i].Remaining
+		// Never seize balance currently held by in-flight billing allocations (ISS-R1-0012).
+		take := rows[i].Remaining - heldByBatch[rows[i].Id]
+		if take <= 0 {
+			continue
+		}
 		if take > *want {
 			take = *want
 		}

@@ -147,15 +147,16 @@ func adtyRequireManualRefundTable(tx *gorm.DB) error {
 }
 
 func adtyManualRefundOccupancyBucket(row AdtyManualRefund) string {
-	switch row.Status {
-	case AdtyManualRefundStatusCompleted, AdtyManualRefundStatusTerminated:
+	if row.Status == AdtyManualRefundStatusCompleted {
 		return ""
-	default:
-		if row.PayoutStatus == AdtyManualRefundPayoutUnknown {
-			return "U"
-		}
-		return "H"
 	}
+	if row.PayoutStatus == AdtyManualRefundPayoutUnknown {
+		return "U"
+	}
+	if row.Status == AdtyManualRefundStatusTerminated {
+		return ""
+	}
+	return "H"
 }
 
 func adtyQuotaUSDString(quota int64) string {

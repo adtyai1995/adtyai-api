@@ -272,3 +272,57 @@ func TestCashBackedRefundStillApprovesAndRecordsPayoutPG(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, AdtyManualRefundPayoutSuccess, result.Refund.PayoutStatus)
 }
+
+func TestAdtyTeamCashTopUpManualRefundReclaimsSharedQuotaPG(t *testing.T) {
+	db, root := adtyCashRefundFixture(t)
+	leader := User{Username: "team-cash-leader", Password: "x", Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "default", Quota: 10_000_000, AuthVersion: 1}
+	require.NoError(t, db.Create(&leader).Error)
+	team := AdtyTeam{SiteId: 0, LeaderUserId: leader.Id, Name: "CashTeam",
+		Discount: decimal.NewFromInt(1), Status: AdtyTeamStatusActive, SharedQuota: 50_000_000}
+	require.NoError(t, db.Create(&team).Error)
+
+	tradeNo := "TEAM-CASH-REFUND-1"
+	require.NoError(t, db.Create(&TopUp{
+		UserId: leader.Id, Amount: 100, Money: 100, TradeNo: tradeNo,
+		PaymentMethod: "usdt.trc20", PaymentProvider: PaymentProviderAdtyBEpusdt, Status: common.TopUpStatusSuccess,
+	}).Error)
+	require.NoError(t, db.Create(&AdtyTopupOrder{
+		TradeNo: tradeNo, UserId: leader.Id, Provider: PaymentProviderAdtyBEpusdt, Method: "usdt.trc20",
+		FaceUSD: decimal.NewFromInt(100), CreditQuota: 50_000_000, TeamId: team.Id,
+		PayAmount: decimal.NewFromInt(100), PayCurrency: "USDT", PaidAmount: decimal.NewFromInt(100), PaidCurrency: "USDT",
+	}).Error)
+
+	// Partial $40 cash refund on real team order reclaims 20,000,000 from team SharedQuota.
+	r1, err := completeManualRefundForTest(t, tradeNo, "team partial refund", root.Id, "team-cash-r1", decimal.NewFromInt(40))
+	require.NoError(t, err)
+	require.EqualValues(t, 20_000_000, r1.Refund.DeductedPrincipalQuota)
+	require.Zero(t, r1.Refund.ShortfallQuota)
+
+	var updatedTeam AdtyTeam
+	require.NoError(t, db.First(&updatedTeam, team.Id).Error)
+	assert.EqualValues(t, 30_000_000, updatedTeam.SharedQuota)
+
+	var updatedLeader User
+	require.NoError(t, db.First(&updatedLeader, leader.Id).Error)
+	assert.EqualValues(t, 10_000_000, updatedLeader.Quota, "leader personal wallet must not be debited")
+
+	var personalLedgers int64
+	require.NoError(t, db.Model(&AdtyBalanceLedger{}).Where("user_id = ? AND ref_id = ?", leader.Id, tradeNo).Count(&personalLedgers).Error)
+	assert.Zero(t, personalLedgers, "team cash refund must not write personal balance ledgers")
+
+	var teamLedger AdtyTeamLedger
+	require.NoError(t, db.Where("team_id = ? AND type = ? AND ref_id = ?", team.Id, "manual_refund", "team-cash-r1").First(&teamLedger).Error)
+	assert.EqualValues(t, -20_000_000, teamLedger.DeltaQuota)
+	assert.EqualValues(t, 50_000_000, teamLedger.BalanceBefore)
+	assert.EqualValues(t, 30_000_000, teamLedger.BalanceAfter)
+
+	// Team spends 20,000,000 (leaving 10,000,000), then refunds remaining $60 (30,000,000): shortfall 20,000,000.
+	require.NoError(t, db.Model(&AdtyTeam{}).Where("id = ?", team.Id).Update("shared_quota", 10_000_000).Error)
+	r2, err := completeManualRefundForTest(t, tradeNo, "team remainder refund", root.Id, "team-cash-r2", decimal.NewFromInt(60))
+	require.NoError(t, err)
+	require.EqualValues(t, 10_000_000, r2.Refund.DeductedPrincipalQuota)
+	require.EqualValues(t, 20_000_000, r2.Refund.ShortfallQuota)
+	require.NoError(t, db.First(&updatedTeam, team.Id).Error)
+	assert.Zero(t, updatedTeam.SharedQuota)
+}

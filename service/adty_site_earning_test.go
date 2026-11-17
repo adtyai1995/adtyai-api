@@ -465,9 +465,8 @@ func TestPartialTopupRefundKeepsUsageEarning(t *testing.T) {
 	assert.EqualValues(t, perUnit("70"), result.Occupancy.CompletedQuota, "previewed principal")
 	assert.True(t, result.Refund.RequestUSD.Equal(usd("70")))
 	totals := earningTotals(t, db, site.Id)
-	// The refund machine reclaims $3.5 gift (G.9). The existing hook still divides
-	// owner bonus by ext.RefundBonusQuota (the reclaimed amount), so the reversal is the full $5.
-	assert.True(t, totals[model.AdtySiteEarningBonusReversal].Equal(usd("5")), "existing hook reverses the full site-owner bonus when any gift is reclaimed")
+	// The refund machine reclaims $3.5 gift (G.9), so the site-owner bonus reversal and guarantee release follow 70/100 ($3.5).
+	assert.True(t, totals[model.AdtySiteEarningBonusReversal].Equal(usd("3.5")), "site-owner bonus reversal must match proportional gift reclaim")
 	assert.True(t, totals[model.AdtySiteEarningUsage].Equal(usd("0")), "k=1 usage earning stays at zero after the refund")
 	assert.True(t, totals[model.AdtySiteEarningRefund].IsZero())
 }
