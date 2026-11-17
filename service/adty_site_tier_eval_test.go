@@ -141,7 +141,8 @@ func TestAdtySiteTierPrincipalIncludesExternalAndCustomerVouchers(t *testing.T) 
 		Type: "earning_credit", IdempotencyKey: "prin-earning-credit",
 	})
 	require.NoError(t, err)
-	require.NoError(t, TransferAdtyEarningToMargin(site.Id, site.OwnerUserId, adtySiteTierUSD("12"), adtySiteTierUSD("15"), "prin-earn-to-margin"))
+	setAdtyMarginTargetForTest(t, site.Id, adtySiteTierUSD("15"))
+	require.NoError(t, TransferAdtyEarningToMargin(site.Id, site.OwnerUserId, adtySiteTierUSD("12"), "prin-earn-to-margin"))
 
 	stats, err := ComputeAdtySiteTierStats(site.Id)
 	require.NoError(t, err)

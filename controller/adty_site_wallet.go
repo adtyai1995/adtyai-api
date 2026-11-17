@@ -35,16 +35,7 @@ func PostAdtyEarningToMargin(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	var tier model.AdtySiteTier
-	if err := model.DB.Where("code = ? AND enabled = ?", site.TierCode, true).Limit(1).Find(&tier).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if !tier.DepositUSD.IsPositive() {
-		common.ApiErrorT(c, "Margin tier is not configured")
-		return
-	}
-	if err := service.TransferAdtyEarningToMargin(site.Id, c.GetInt("id"), amount, tier.DepositUSD, "earn-margin:"+key); err != nil {
+	if err := service.TransferAdtyEarningToMargin(site.Id, c.GetInt("id"), amount, "earn-margin:"+key); err != nil {
 		common.ApiError(c, err)
 		return
 	}

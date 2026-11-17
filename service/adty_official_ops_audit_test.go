@@ -210,8 +210,9 @@ func TestAdtyGiftAndMarginOperationsWriteOfficialAudit(t *testing.T) {
 		Type: "earning_settlement", IdempotencyKey: "audit-xfer-earn", OperatorID: owner.Id,
 	})
 	require.NoError(t, err)
-	require.NoError(t, TransferAdtyEarningToMargin(site.Id, owner.Id, decimal.RequireFromString("8"), decimal.RequireFromString("8"), "audit-xfer-1"))
-	require.NoError(t, TransferAdtyEarningToMargin(site.Id, owner.Id, decimal.RequireFromString("8"), decimal.RequireFromString("8"), "audit-xfer-1"))
+	setAdtyMarginTargetForTest(t, site.Id, decimal.NewFromInt(8))
+	require.NoError(t, TransferAdtyEarningToMargin(site.Id, owner.Id, decimal.RequireFromString("8"), "audit-xfer-1"))
+	require.NoError(t, TransferAdtyEarningToMargin(site.Id, owner.Id, decimal.RequireFromString("8"), "audit-xfer-1"))
 	xferLog := requireOfficialAudit(t, "margin", strconv.Itoa(site.Id), "adty.margin.earning_to_margin")
 	require.NotNil(t, xferLog.SiteId)
 	assert.Equal(t, site.Id, *xferLog.SiteId)

@@ -1,6 +1,48 @@
 package service
 
-import "github.com/shopspring/decimal"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/shopspring/decimal"
+)
+
+// Margin holds already include order reservations. Store F+R without guessing
+// a split or claiming R=0; the two constraints both subtract that same total.
+// CycleNumber=0 and a nil initial balance preserve unknown legacy history.
+type adtyMarginCycleSnapshot struct {
+	Version           int              `json:"version"`
+	CycleNumber       int64            `json:"cycle_number"`
+	StartedAt         int64            `json:"started_at"`
+	InitialBalanceUSD *decimal.Decimal `json:"initial_balance_usd"`
+	TierUSD           decimal.Decimal  `json:"tier_usd"`
+	LimitUSD          decimal.Decimal  `json:"limit_usd"`
+	RetainedUSD       decimal.Decimal  `json:"retained_usd"`
+	BalanceUSD        decimal.Decimal  `json:"balance_usd"`
+	UsedUSD           decimal.Decimal  `json:"used_usd"`
+	FrozenReservedUSD decimal.Decimal  `json:"frozen_and_reserved_usd"`
+	CycleRoomUSD      decimal.Decimal  `json:"cycle_room_usd"`
+	CashRoomUSD       decimal.Decimal  `json:"cash_room_usd"`
+	NewDrawUSD        decimal.Decimal  `json:"new_draw_usd"`
+}
+
+func snapshotAdtyMarginCycle(wallet model.AdtySiteWallet) (*string, error) {
+	limit := AdtyMarginCycleLimit(wallet.CycleTierUSD)
+	retained := wallet.CycleTierUSD.Sub(limit)
+	cycleRoom := decimal.Max(decimal.Zero, limit.Sub(wallet.CycleUsedUSD).Sub(wallet.FrozenUSD))
+	cashRoom := decimal.Max(decimal.Zero, wallet.Balance.Sub(wallet.FrozenUSD).Sub(retained))
+	data, err := common.Marshal(adtyMarginCycleSnapshot{
+		Version: 1, CycleNumber: wallet.CycleNumber, StartedAt: wallet.CycleStartedAt,
+		InitialBalanceUSD: wallet.CycleInitialUSD, TierUSD: wallet.CycleTierUSD,
+		LimitUSD: limit, RetainedUSD: retained, BalanceUSD: wallet.Balance,
+		UsedUSD: wallet.CycleUsedUSD, FrozenReservedUSD: wallet.FrozenUSD,
+		CycleRoomUSD: cycleRoom, CashRoomUSD: cashRoom, NewDrawUSD: decimal.Min(cycleRoom, cashRoom),
+	})
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	return &text, nil
+}
 
 // AdtyMarginDrawInput is one margin cycle. TierUSD is the frozen tier T.
 // Used, Frozen and Reserved occupy the 90% cap. Balance is the real margin cash.

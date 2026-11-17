@@ -728,13 +728,19 @@ func TestMarginTopUpFulfillsPendingSiteGift(t *testing.T) {
 	require.Zero(t, n)
 	require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
 
-	// 站长补足保证金（唯一的补足入口）：收益转保证金，转账提交后自动兑现一次。
+	// 保留旧保证金10，再真实划转20。当前整档最低余额门独立保留，
+	// 因此补发10后还必须留足档位20；本用例不以透支绕过该门。
+	_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletMargin, decimal.NewFromInt(10), AdtySiteWalletChange{
+		Type: "legacy_credit", IdempotencyKey: "gift-fulfil-existing-margin",
+	})
+	require.NoError(t, err)
 	_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.RequireFromString("20"), AdtySiteWalletChange{
 		Type: "earning_settlement", IdempotencyKey: "gift-fulfil-topup",
 	})
 	require.NoError(t, err)
+	setAdtyMarginTargetForTest(t, site.Id, decimal.NewFromInt(20))
 	require.NoError(t, TransferAdtyEarningToMargin(site.Id, owner.Id,
-		decimal.RequireFromString("20"), decimal.RequireFromString("20"), "gift-fulfil-transfer"))
+		decimal.RequireFromString("20"), "gift-fulfil-transfer"))
 
 	require.EqualValues(t, 55_000_000, userQuotaOf(t, db, customer.Id))
 	require.EqualValues(t, 1, notified)
@@ -789,8 +795,9 @@ func TestMarginTopUpShortOfGuaranteeLeavesGiftPending(t *testing.T) {
 		Type: "earning_settlement", IdempotencyKey: "gift-fulfil-short-topup",
 	})
 	require.NoError(t, err)
+	setAdtyMarginTargetForTest(t, site.Id, decimal.NewFromInt(2))
 	require.NoError(t, TransferAdtyEarningToMargin(site.Id, owner.Id,
-		decimal.RequireFromString("2"), decimal.RequireFromString("2"), "gift-fulfil-short-transfer"))
+		decimal.RequireFromString("2"), "gift-fulfil-short-transfer"))
 
 	require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
 	var row model.AdtyGiftFulfillment

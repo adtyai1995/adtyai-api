@@ -243,8 +243,13 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 			return nil, ErrAdtySiteWalletInsufficient
 		}
 	}
-	if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.OpenMarginCycle && change.CycleTier.IsPositive() {
-		cycleTier = change.CycleTier
+	if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.OpenMarginCycle {
+		// RequiredBalance is updated by tier assignment/configuration under
+		// this same wallet lock. Never use a controller's earlier tier read.
+		cycleTier = wallet.RequiredBalance
+		if change.CycleTier.IsPositive() {
+			cycleTier = change.CycleTier
+		}
 		cycleUsed = decimal.Zero
 	}
 	if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.ReleaseCycleUsed.IsPositive() && !change.OpenMarginCycle {
@@ -253,9 +258,33 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 			cycleUsed = decimal.Zero
 		}
 	}
-	if err := tx.Model(&model.AdtySiteWallet{}).Where("id = ?", wallet.Id).Updates(map[string]any{
+	updates := map[string]any{
 		"balance": after, "frozen_usd": frozenAfter, "cycle_tier_usd": cycleTier, "cycle_used_usd": cycleUsed,
-	}).Error; err != nil {
+	}
+	var cycleBefore, cycleAfter *string
+	if kind == model.AdtySiteWalletMargin {
+		var err error
+		cycleBefore, err = snapshotAdtyMarginCycle(wallet)
+		if err != nil {
+			return nil, err
+		}
+		current := wallet
+		current.Balance, current.FrozenUSD = after, frozenAfter
+		current.CycleTierUSD, current.CycleUsedUSD = cycleTier, cycleUsed
+		if delta.IsPositive() && change.OpenMarginCycle {
+			current.CycleNumber++
+			current.CycleStartedAt = time.Now().Unix()
+			current.CycleInitialUSD = &after
+			updates["cycle_number"] = current.CycleNumber
+			updates["cycle_started_at"] = current.CycleStartedAt
+			updates["cycle_initial_usd"] = after
+		}
+		cycleAfter, err = snapshotAdtyMarginCycle(current)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Model(&model.AdtySiteWallet{}).Where("id = ?", wallet.Id).Updates(updates).Error; err != nil {
 		return nil, err
 	}
 	result := &model.AdtySiteWalletLedger{
@@ -263,6 +292,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		BalanceBefore: before, BalanceAfter: after, Type: change.Type,
 		RefType: change.RefType, RefId: change.RefID, Reason: change.Reason,
 		OperatorId: change.OperatorID, AllowOverdraft: change.AllowOverdraft, IdempotencyKey: change.IdempotencyKey,
+		MarginCycleBefore: cycleBefore, MarginCycleAfter: cycleAfter,
 	}
 	if err := tx.Create(result).Error; err != nil {
 		return nil, err
@@ -380,12 +410,10 @@ func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDispositio
 	return tx.Create(&notice).Error
 }
 
-// TransferAdtyEarningToMargin moves earning cash into margin. Only the top-up
-// that refills the margin wallet to the tier deposit opens a new draw cycle;
-// every smaller credit just moves cash. Opening a cycle on any positive credit
-// would let a 0.00000001 transfer zero CycleUsedUSD and hand the 90% cap back.
-func TransferAdtyEarningToMargin(siteID, operator int, amount, tier decimal.Decimal, key string) error {
-	if !amount.IsPositive() || !tier.IsPositive() || strings.TrimSpace(key) == "" {
+// TransferAdtyEarningToMargin opens a current-target cycle only after the
+// earnings debit and the actual margin credit succeed in the same transaction.
+func TransferAdtyEarningToMargin(siteID, operator int, amount decimal.Decimal, key string) error {
+	if !amount.IsPositive() || strings.TrimSpace(key) == "" {
 		return ErrAdtySiteWalletInvalidOperation
 	}
 	earnKey, marginKey, err := adtyEarningToMarginKeys(siteID, key)
@@ -401,25 +429,39 @@ func TransferAdtyEarningToMargin(siteID, operator int, amount, tier decimal.Deci
 		}); err != nil {
 			return err
 		}
-		opensCycle, err := adtyEarningTopUpOpensMarginCycleTx(tx, siteID, amount, tier)
-		if err != nil {
+		var margin model.AdtySiteWallet
+		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).First(&margin).Error; err != nil {
 			return err
 		}
-		change := AdtySiteWalletChange{
+		// A replay returns the existing pair even if Root has since removed
+		// the tier; it never opens another cycle or depends on current funds.
+		var existing model.AdtySiteWalletLedger
+		lookup := tx.Where("idempotency_key = ?", marginKey).Limit(1).Find(&existing)
+		if lookup.Error != nil {
+			return lookup.Error
+		}
+		if lookup.RowsAffected == 0 {
+			var site model.AdtySite
+			if err := tx.Select("tier_code").First(&site, siteID).Error; err != nil {
+				return err
+			}
+			var configured int64
+			if err := tx.Model(&model.AdtySiteTier{}).Where("code = ? AND enabled = ?", site.TierCode, true).Count(&configured).Error; err != nil {
+				return err
+			}
+			if configured == 0 || !margin.RequiredBalance.IsPositive() {
+				return common.NewMessage("Margin tier is not configured")
+			}
+		}
+		_, err := applyAdtySiteWalletChangeTx(tx, siteID, model.AdtySiteWalletMargin, amount, AdtySiteWalletChange{
 			Type: "earning_to_margin", IdempotencyKey: marginKey, OperatorID: operator,
-		}
-		if opensCycle {
-			change.OpenMarginCycle = true
-			change.CycleTier = tier
-		}
-		_, err = applyAdtySiteWalletChangeTx(tx, siteID, model.AdtySiteWalletMargin, amount, change)
+			OpenMarginCycle: true,
+		})
 		return err
 	}); err != nil {
 		return err
 	}
-	// 这是站长补足保证金的唯一生产入口，也是「待履约赠金」唯一的兑现时机
-	// （ISS-R4-0076）。转账已经提交，兑现失败不回滚它：没兑现的仍是 pending，
-	// 下一次补足会再试。
+	// 转账已经提交，兑现失败不回滚它；未兑现的仍是 pending。
 	if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
 		common.SysLog(common.LogText("gift fulfillment: resume after margin top-up site %d: %s", siteID, err.Error()))
 	}
@@ -437,18 +479,6 @@ func adtyEarningToMarginKeys(siteID int, key string) (string, string, error) {
 		return "", "", ErrAdtySiteWalletIdempotencyKey
 	}
 	return earn, margin, nil
-}
-
-// adtyEarningTopUpOpensMarginCycleTx reports whether this credit is the top-up
-// that lifts the margin wallet from below the tier deposit to the deposit
-// itself. A credit landing on a wallet that already holds the deposit is not a
-// new cycle, so replaying it must not reset the cycle usage.
-func adtyEarningTopUpOpensMarginCycleTx(tx *gorm.DB, siteID int, amount, tier decimal.Decimal) (bool, error) {
-	var margin model.AdtySiteWallet
-	if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).First(&margin).Error; err != nil {
-		return false, err
-	}
-	return margin.Balance.LessThan(tier) && margin.Balance.Add(amount).GreaterThanOrEqual(tier), nil
 }
 
 func ApplyAdtySiteWalletChange(siteID int, kind string, delta decimal.Decimal, change AdtySiteWalletChange) (*model.AdtySiteWalletLedger, error) {

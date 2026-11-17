@@ -845,6 +845,7 @@ func creditAdtyVoucherMarginTx(tx *gorm.DB, siteId int, amount decimal.Decimal, 
 	}
 	_, err := applyAdtySiteWalletChangeTx(tx, siteId, model.AdtySiteWalletMargin, amount, AdtySiteWalletChange{
 		Type: "voucher_margin", RefType: "voucher", RefID: trade, Reason: "voucher margin credit", IdempotencyKey: "voucher-margin:" + trade,
+		OpenMarginCycle: true,
 	})
 	return err
 }
