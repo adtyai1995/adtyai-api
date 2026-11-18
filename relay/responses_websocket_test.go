@@ -15,11 +15,13 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	appdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -96,6 +98,7 @@ func TestSelectResponsesWSChannelHonorsPinsAndFilters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 			constraints := service.GetChannelConstraints(c)
 			constraints.AddPin(appdto.ChannelPin{ChannelId: disabled.Id, Source: appdto.PinSourceOriginTask, Rank: appdto.PinRankOriginTask, RetryMode: appdto.PinRetrySameChannel})
 			constraints.AddPin(appdto.ChannelPin{ChannelId: tc.channelID, Source: appdto.PinSourceToken, Rank: appdto.PinRankToken, RetryMode: appdto.PinRetrySingleAttempt})
@@ -204,7 +207,8 @@ func TestRestoreConnectionContextRejectsChangedAdvancedCustomRoute(t *testing.T)
 	service.GetChannelConstraints(c).AddPin(appdto.ChannelPin{ChannelId: channel.Id, Source: appdto.PinSourceToken, Rank: appdto.PinRankToken, RetryMode: appdto.PinRetrySingleAttempt})
 	route, ok := channel.GetOtherSettings().AdvancedCustom.MatchPathForModel("/v1/responses", "ws-model")
 	require.True(t, ok)
-	session := &responsesWSSession{lockedChannelID: channel.Id, lockedModel: "ws-model", lockedKey: "sk-test", lockedRoute: route,
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+	session := &responsesWSSession{lockedChannelID: channel.Id, lockedModel: "ws-model", lockedGroup: "default", lockedKey: "sk-test", lockedRoute: route,
 		lockedContext: map[constant.ContextKey]any{constant.ContextKeyChannelBaseUrl: channel.GetBaseURL(), constant.ContextKeyChannelHeaderOverride: channel.GetHeaderOverride()}}
 	require.Nil(t, session.restoreConnectionContext(c, "ws-model"))
 
@@ -219,6 +223,67 @@ func TestRestoreConnectionContextRejectsChangedAdvancedCustomRoute(t *testing.T)
 	require.NotNil(t, apiErr)
 	assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
 	assert.ErrorContains(t, apiErr, "upstream route changed")
+}
+
+func TestRestoreConnectionContextRechecksBillingGroupScope(t *testing.T) {
+	opened, err := model.OpenAdtyTestDatabase()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, opened.Close()) })
+	database := opened.DB
+	pgtest.RecordServerVersion(t, database)
+	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.AdtySite{}))
+	channel := &model.Channel{Name: "group-scope", Key: "sk-test", Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Group: "vip", Models: "ws-model"}
+	channel.SetSetting(dto.ChannelSettings{ResponsesWebSocketEnabled: true})
+	require.NoError(t, database.Create(channel).Error)
+	require.NoError(t, channel.AddAbilities(nil))
+	site := &model.AdtySite{OwnerUserId: 1, Subdomain: "ws-scope", RootDomain: "example.test", Status: model.AdtySiteStatusActive, AllowedGroups: `["default"]`}
+	require.NoError(t, database.Create(site).Error)
+	service.InvalidateAdtySiteCache()
+	t.Cleanup(service.InvalidateAdtySiteCache)
+	previousOptions := common.OptionMap
+	common.OptionMap = map[string]string{}
+	t.Cleanup(func() { common.OptionMap = previousOptions })
+	previousAuto := setting.AutoGroups2JsonString()
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["vip"]`))
+	t.Cleanup(func() { require.NoError(t, setting.UpdateAutoGroupsByJsonString(previousAuto)) })
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+	for _, tc := range []struct {
+		name                        string
+		siteID                      int
+		modelDenied, pinned, denied bool
+	}{
+		{name: "main site remains allowed"},
+		{name: "site restriction", siteID: site.Id, denied: true},
+		{name: "model restriction", modelDenied: true, denied: true},
+		{name: "pinned site restriction", siteID: site.Id, pinned: true, denied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			common.OptionMap = map[string]string{}
+			if tc.modelDenied {
+				common.OptionMap["GroupModelAllow"] = `{"vip":["other-model"]}`
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			(&model.UserBase{Group: "default", SiteId: tc.siteID}).WriteContext(c)
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, "auto")
+			common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, []string{"vip"})
+			if tc.pinned {
+				service.GetChannelConstraints(c).AddPin(appdto.ChannelPin{ChannelId: channel.Id, Source: appdto.PinSourceToken, Rank: appdto.PinRankToken})
+			}
+			session := &responsesWSSession{lockedChannelID: channel.Id, lockedModel: "ws-model", lockedGroup: "vip", lockedKey: channel.Key,
+				lockedContext: map[constant.ContextKey]any{constant.ContextKeyChannelBaseUrl: channel.GetBaseURL(), constant.ContextKeyChannelHeaderOverride: channel.GetHeaderOverride()}}
+			apiErr := session.restoreConnectionContext(c, "ws-model")
+			if tc.denied {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
+				assert.False(t, service.ShouldRetryRelayError(c, apiErr, 2))
+				return
+			}
+			assert.Nil(t, apiErr)
+		})
+	}
 }
 
 func TestResponsesWSChannelRoutingRequiresExplicitOptIn(t *testing.T) {

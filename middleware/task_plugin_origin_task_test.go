@@ -365,6 +365,7 @@ func TestDistributeHonorsOriginTaskChannelPin(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/vendor/jobs", strings.NewReader(`{}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("resolved_task_model", "resolved-model")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 	service.GetChannelConstraints(c).AddPin(dto.ChannelPin{
 		ChannelId: channel.Id,
 		Source:    dto.PinSourceOriginTask,
@@ -398,6 +399,7 @@ func TestDistributeTokenPinBeatsOriginPin(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/vendor/jobs", strings.NewReader(`{}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("resolved_task_model", "resolved-model")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 	constraints := service.GetChannelConstraints(c)
 	constraints.AddPin(dto.ChannelPin{
 		ChannelId: tokenChannel.Id,

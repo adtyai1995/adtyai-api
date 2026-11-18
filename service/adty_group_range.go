@@ -4,10 +4,31 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/gin-gonic/gin"
 )
 
 const groupModelAllowOption = "GroupModelAllow"
+
+// SelectedBillingGroupAllowed reports whether a resolved concrete billing group
+// satisfies both the current site group allow-list and the requested model's
+// group allow-list. Unlike pre-selection checks, it rejects empty or unresolved
+// "auto" placeholders.
+func SelectedBillingGroupAllowed(c *gin.Context, group, modelName string) bool {
+	group = strings.TrimSpace(group)
+	if group == "" || group == "auto" {
+		return false
+	}
+	siteID := AdtyRequestSiteID(c)
+	if siteID == 0 && c != nil {
+		siteID = common.GetContextKeyInt(c, constant.ContextKeyUserSiteId)
+	}
+	if !SiteGroupAllowed(siteID, group) {
+		return false
+	}
+	return GroupModelAllowed(group, modelName)
+}
 
 // GroupModelAllowed reports whether a billing group may call a model.
 // A missing or empty list keeps the live catalog. A configured list is closed.
@@ -44,6 +65,9 @@ func SiteGroupAllowed(siteID int, group string) bool {
 	group = strings.TrimSpace(group)
 	if siteID <= 0 || group == "" || group == "auto" {
 		return true
+	}
+	if model.DB == nil {
+		return false
 	}
 	site, err := GetAdtySite(siteID)
 	if err != nil {

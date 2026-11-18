@@ -137,6 +137,12 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 		for i := startGroupIndex; i < len(autoGroups); i++ {
 			autoGroup := autoGroups[i]
+			if !SelectedBillingGroupAllowed(param.Ctx, autoGroup, param.ModelName) {
+				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
+				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupRetryIndex, 0)
+				param.SetRetry(0)
+				continue
+			}
 			// Calculate priorityRetry for current group
 			// 计算当前分组的 priorityRetry
 			priorityRetry := param.GetRetry()
@@ -190,6 +196,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
+		if !SelectedBillingGroupAllowed(param.Ctx, param.TokenGroup, param.ModelName) {
+			return nil, param.TokenGroup, nil
+		}
 		channel, err = model.GetRandomSatisfiedChannel(
 			param.TokenGroup,
 			param.ModelName,
@@ -303,7 +312,26 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				FilterKind: kind, Channel: channel,
 			}
 		}
-		return channel, "", nil
+		selectGroup := retry.TokenGroup
+		if selectGroup == "auto" {
+			selectGroup = ""
+			for _, group := range GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup)) {
+				if SelectedBillingGroupAllowed(c, group, modelName) && model.IsChannelEnabledForGroupModel(group, modelName, channel.Id) {
+					selectGroup = group
+					break
+				}
+			}
+		}
+		if !SelectedBillingGroupAllowed(c, selectGroup, modelName) {
+			return nil, selectGroup, &ChannelSelectError{
+				StatusCode: http.StatusForbidden, Code: types.ErrorCodeAccessDenied, MessageID: i18n.MsgDistributorNoAvailableChannel,
+				Params: map[string]any{"Group": retry.TokenGroup, "Model": modelName}, NoAvailableChannel: true,
+			}
+		}
+		if retry.TokenGroup == "auto" {
+			common.SetContextKey(c, constant.ContextKeyAutoGroup, selectGroup)
+		}
+		return channel, selectGroup, nil
 	}
 
 	usingGroup := retry.TokenGroup
@@ -321,6 +349,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				if usingGroup == "auto" {
 					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 					for _, g := range GetRequestAutoGroups(c, userGroup) {
+						if !SelectedBillingGroupAllowed(c, g, modelName) {
+							continue
+						}
 						if model.IsChannelEnabledForGroupModel(g, modelName, preferred.Id) {
 							selectGroup = g
 							common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
@@ -330,7 +361,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 							break
 						}
 					}
-				} else if model.IsChannelEnabledForGroupModel(usingGroup, modelName, preferred.Id) {
+				} else if SelectedBillingGroupAllowed(c, usingGroup, modelName) && model.IsChannelEnabledForGroupModel(usingGroup, modelName, preferred.Id) {
 					channel = preferred
 					selectGroup = usingGroup
 					affinityUsable = true
@@ -371,6 +402,12 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
 			Params:     map[string]any{"Group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup), "Model": modelName},
 			FilterKind: kind, Channel: channel, NoAvailableChannel: true,
+		}
+	}
+	if !SelectedBillingGroupAllowed(c, selectGroup, modelName) {
+		return nil, selectGroup, &ChannelSelectError{
+			StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
+			Params: map[string]any{"Group": usingGroup, "Model": modelName}, NoAvailableChannel: true,
 		}
 	}
 	return channel, selectGroup, nil

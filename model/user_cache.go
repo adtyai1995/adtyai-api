@@ -43,6 +43,7 @@ func (user UserBase) cacheMAC() (string, error) {
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {
+	common.SetContextKey(c, constant.ContextKeyUserSiteId, user.SiteId)
 	common.SetContextKey(c, constant.ContextKeyUserGroup, user.Group)
 	common.SetContextKey(c, constant.ContextKeyUserQuota, user.Quota)
 	common.SetContextKey(c, constant.ContextKeyUserStatus, user.Status)
