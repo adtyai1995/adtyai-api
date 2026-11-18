@@ -84,23 +84,10 @@ func CreateAdtyMainTeamRegistration(actorId int, ttl time.Duration) (*AdtyTeamRe
 	return issueAdtyTeamRegistration(actorId, 0, ttl)
 }
 
-// CreateAdtyOwnerSiteTeamRegistration issues a create-team link bound to the
-// owner's own site. The site comes from the trusted owner context.
-func CreateAdtyOwnerSiteTeamRegistration(ownerId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, error) {
-	if !adtyTeamRegistrationTTLValid(ttl) {
-		return nil, ErrAdtyTeamInvalid
-	}
-	if siteId <= 0 {
-		return nil, ErrAdtyTeamForbidden
-	}
-	site, err := lockOwnerSite(siteId, ownerId)
-	if err != nil {
-		return nil, err
-	}
-	if site.Status != model.AdtySiteStatusActive {
-		return nil, ErrAdtyTeamForbidden
-	}
-	return issueAdtyTeamRegistration(ownerId, site.Id, ttl)
+// CreateAdtyOwnerSiteTeamRegistration permanently rejects the former owner
+// provisioning path under A.9.1 / DEC-012.
+func CreateAdtyOwnerSiteTeamRegistration(_, _ int, _ time.Duration) (*AdtyTeamRegistrationIssue, error) {
+	return nil, ErrAdtyTeamForbidden
 }
 
 func issueAdtyTeamRegistration(actorId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, error) {
@@ -157,6 +144,16 @@ func CompleteAdtyTeamRegistration(code, username, password, teamName string, req
 			return ErrAdtyTeamRegistrationExpired
 		}
 		if requestedSiteID != nil && *requestedSiteID != link.SiteId {
+			return ErrAdtyTeamForbidden
+		}
+		var issuer model.User
+		if err := tx.Select("id", "role", "status").First(&issuer, link.CreatedBy).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtyTeamForbidden
+			}
+			return err
+		}
+		if issuer.Role != common.RoleRootUser || issuer.Status != common.UserStatusEnabled {
 			return ErrAdtyTeamForbidden
 		}
 		leaderID, createdUser, err := resolveAdtyTeamRegistrationLeader(tx, link.SiteId, username, password)

@@ -216,12 +216,14 @@ func TestRootCreatesMainSiteTeamWithDesignatedLeader(t *testing.T) {
 	teamAuthRejected(t, denied)
 }
 
-func TestOwnerCreatesTeamOnOwnSiteOnly(t *testing.T) {
+func TestOnlyRootCreatesSiteTeamWithDesignatedLeader(t *testing.T) {
 	f := newTeamAuthFixture(t)
 	start := f.teamCount(t)
 
-	rec := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/site/teams",
-		fmt.Sprintf(`{"name":"Site Desk","leader_id":%d,"discount":"0.90"}`, f.leaderA.Id), f.ownerATok)
+	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/site/teams",
+		fmt.Sprintf(`{"name":"Owner Denied","leader_id":%d,"discount":"0.90"}`, f.leaderA.Id), f.ownerATok))
+	rec := f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
+		fmt.Sprintf(`{"name":"Site Desk","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, f.leaderA.Id), f.rootTok)
 	created := f.decodeCreated(t, rec)
 	assert.Equal(t, f.siteA.Id, created.Team.SiteId)
 	assert.NotEqual(t, 0, created.Team.SiteId)
@@ -260,8 +262,8 @@ func TestOwnerCreatesTeamOnOwnSiteOnly(t *testing.T) {
 func TestDesignatedLeaderMustBeEligibleSameSiteUser(t *testing.T) {
 	f := newTeamAuthFixture(t)
 	start := f.teamCount(t)
-	ok := f.decodeCreated(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/site/teams",
-		fmt.Sprintf(`{"name":"Site Desk","leader_id":%d,"discount":"0.90"}`, f.leaderA.Id), f.ownerATok))
+	ok := f.decodeCreated(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
+		fmt.Sprintf(`{"name":"Site Desk","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, f.leaderA.Id), f.rootTok))
 	require.Equal(t, f.leaderA.Id, ok.Team.LeaderUserId)
 
 	for _, tc := range []struct {
@@ -275,8 +277,8 @@ func TestDesignatedLeaderMustBeEligibleSameSiteUser(t *testing.T) {
 		{"main-site user", f.mainLeader.Id},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := fmt.Sprintf(`{"name":"Bad Leader","leader_id":%d,"discount":"0.90"}`, tc.leaderID)
-			rec := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/site/teams", body, f.ownerATok)
+			body := fmt.Sprintf(`{"name":"Bad Leader","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, tc.leaderID)
+			rec := f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams", body, f.rootTok)
 			teamAuthRejected(t, rec)
 			if tc.name == "missing user" || tc.name == "other site user" {
 				assert.NotContains(t, rec.Body.String(), "record not found")
@@ -292,8 +294,8 @@ func TestDesignatedLeaderMustBeEligibleSameSiteUser(t *testing.T) {
 	}](t, invite.Body).Code
 	accepted := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/teams/accept", fmt.Sprintf(`{"code":%q}`, code), f.memberATok)
 	require.Equal(t, http.StatusOK, accepted.Code, accepted.Body.String())
-	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/site/teams",
-		fmt.Sprintf(`{"name":"Already Member","leader_id":%d,"discount":"0.90"}`, f.memberA.Id), f.ownerATok))
+	teamAuthRejected(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
+		fmt.Sprintf(`{"name":"Already Member","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, f.memberA.Id), f.rootTok))
 	assert.Equal(t, start+1, f.teamCount(t))
 }
 
@@ -301,8 +303,8 @@ func TestOnlyRootOrAuthorizedOwnerCanSetProtocolDiscount(t *testing.T) {
 	f := newTeamAuthFixture(t)
 	mainTeam := f.decodeCreated(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
 		fmt.Sprintf(`{"name":"Main Desk","leader_id":%d,"discount":"1"}`, f.mainLeader.Id), f.rootTok))
-	siteTeam := f.decodeCreated(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/site/teams",
-		fmt.Sprintf(`{"name":"Site Desk","leader_id":%d,"discount":"0.90"}`, f.leaderA.Id), f.ownerATok))
+	siteTeam := f.decodeCreated(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
+		fmt.Sprintf(`{"name":"Site Desk","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, f.leaderA.Id), f.rootTok))
 
 	okMain := f.call(t, http.MethodPut, teamAuthMainHost, fmt.Sprintf("/api/adty/admin/teams/%d/agreement-price", mainTeam.Team.Id),
 		`{"discount":"0.70"}`, f.rootTok)
@@ -336,8 +338,8 @@ func TestOnlyRootOrAuthorizedOwnerCanSetProtocolDiscount(t *testing.T) {
 
 func TestAuthorizedTeamInviteAcceptAndMineStillWork(t *testing.T) {
 	f := newTeamAuthFixture(t)
-	created := f.decodeCreated(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/site/teams",
-		fmt.Sprintf(`{"name":"Site Desk","leader_id":%d,"discount":"0.90"}`, f.leaderA.Id), f.ownerATok))
+	created := f.decodeCreated(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
+		fmt.Sprintf(`{"name":"Site Desk","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, f.leaderA.Id), f.rootTok))
 
 	mine := f.call(t, http.MethodGet, f.siteAHost(), "/api/adty/teams/mine", "", f.leaderATok)
 	require.Equal(t, http.StatusOK, mine.Code, mine.Body.String())
@@ -362,8 +364,8 @@ func TestAuthorizedTeamInviteAcceptAndMineStillWork(t *testing.T) {
 
 func TestAuthorizedTeamInviteTTLAndRevoke(t *testing.T) {
 	f := newTeamAuthFixture(t)
-	created := f.decodeCreated(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/site/teams",
-		fmt.Sprintf(`{"name":"Invite Desk","leader_id":%d,"discount":"0.90"}`, f.leaderA.Id), f.ownerATok))
+	created := f.decodeCreated(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
+		fmt.Sprintf(`{"name":"Invite Desk","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, f.leaderA.Id), f.rootTok))
 
 	now := time.Now().Unix()
 	defaultInvite := f.call(t, http.MethodPost, f.siteAHost(), fmt.Sprintf("/api/adty/teams/%d/invites", created.Team.Id), "", f.leaderATok)

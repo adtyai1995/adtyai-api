@@ -15,6 +15,8 @@ import (
 // 密码预言机：猜错不计数、链接仍然 outstanding，可以一直猜下去。
 func TestAdtyTeamRegistrationPasswordGuessesFeedTheLoginLock(t *testing.T) {
 	db := prepareReferralDB(t)
+	root := referralUser(t, db, teamRegName("rt"))
+	require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
 	owner := referralUser(t, db, teamRegName("lk"))
 	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: teamRegName("lks"), Status: model.AdtySiteStatusActive, CostFactor: decimalPtr("0.80")}
 	require.NoError(t, db.Create(&site).Error)
@@ -23,7 +25,7 @@ func TestAdtyTeamRegistrationPasswordGuessesFeedTheLoginLock(t *testing.T) {
 	leader.SiteId = site.Id
 	hashTeamRegPassword(t, db, leader, "RightPass123")
 
-	issued, err := CreateAdtyOwnerSiteTeamRegistration(owner.Id, site.Id, time.Hour)
+	issued, err := issueAdtyTeamRegistration(root.Id, site.Id, time.Hour)
 	require.NoError(t, err)
 	common.ClearLoginFailures(leader.Username)
 	t.Cleanup(func() { common.ClearLoginFailures(leader.Username) })

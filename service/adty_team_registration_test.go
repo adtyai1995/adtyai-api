@@ -75,10 +75,27 @@ func TestAdtyTeamRegistrationIssueAuthorization(t *testing.T) {
 	assert.Equal(t, model.AdtyTeamRegistrationStatusOutstanding, issued.Status)
 	assert.InDelta(t, time.Now().Unix()+int64(AdtyTeamInviteDefaultTTL.Seconds()), issued.ExpiresAt, 3)
 
-	owned, err := CreateAdtyOwnerSiteTeamRegistration(ownerA.Id, siteA.Id, 2*time.Hour)
-	require.NoError(t, err)
-	assert.Equal(t, siteA.Id, owned.SiteId)
-	assert.NotEqual(t, issued.Code, owned.Code)
+	_, err = CreateAdtyOwnerSiteTeamRegistration(ownerA.Id, siteA.Id, 2*time.Hour)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+}
+
+func TestAdtyTeamRegistrationRejectsLegacyOwnerLinks(t *testing.T) {
+	db := prepareReferralDB(t)
+	owner := referralUser(t, db, teamRegName("ow"))
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: teamRegName("site"), Status: model.AdtySiteStatusActive, CostFactor: decimalPtr("0.80")}
+	require.NoError(t, db.Create(&site).Error)
+	// Persist an outstanding credential issued before Root-only provisioning.
+	const code = "legacy-owner-registration-code"
+	link := model.AdtyTeamRegistrationLink{SiteId: site.Id, CreatedBy: owner.Id, CodeHash: hashAdtyTeamRegistrationCode(code), ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	require.NoError(t, db.Create(&link).Error)
+	username := teamRegName("denied")
+	_, err := CompleteAdtyTeamRegistration(code, username, "password1", "Denied", nil)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	var count int64
+	require.NoError(t, db.Model(&model.User{}).Where("username = ?", username).Count(&count).Error)
+	assert.Zero(t, count)
+	require.NoError(t, db.First(&link, link.Id).Error)
+	assert.Zero(t, link.UsedAt)
 }
 
 func TestAdtyTeamRegistrationCompleteBindsIssuanceSite(t *testing.T) {
@@ -92,7 +109,7 @@ func TestAdtyTeamRegistrationCompleteBindsIssuanceSite(t *testing.T) {
 	other := model.AdtySite{OwnerUserId: owner.Id, Subdomain: teamRegName("s2"), Status: model.AdtySiteStatusActive, CostFactor: decimalPtr("0.80")}
 	require.NoError(t, db.Create(&other).Error)
 
-	issued, err := CreateAdtyOwnerSiteTeamRegistration(owner.Id, site.Id, time.Hour)
+	issued, err := issueAdtyTeamRegistration(root.Id, site.Id, time.Hour)
 	require.NoError(t, err)
 	wrongSite := other.Id
 	_, err = CompleteAdtyTeamRegistration(issued.Code, teamRegName("nu"), "password1", "Desk", &wrongSite)
@@ -117,6 +134,8 @@ func TestAdtyTeamRegistrationCompleteBindsIssuanceSite(t *testing.T) {
 
 func TestAdtyTeamRegistrationExistingIdentityAndDEC022(t *testing.T) {
 	db := prepareReferralDB(t)
+	root := referralUser(t, db, teamRegName("rt"))
+	require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
 	owner := referralUser(t, db, teamRegName("ow"))
 	siteA := model.AdtySite{OwnerUserId: owner.Id, Subdomain: teamRegName("sa"), Status: model.AdtySiteStatusActive, CostFactor: decimalPtr("0.80")}
 	siteB := model.AdtySite{OwnerUserId: owner.Id, Subdomain: teamRegName("sb"), Status: model.AdtySiteStatusActive, CostFactor: decimalPtr("0.80")}
@@ -133,7 +152,7 @@ func TestAdtyTeamRegistrationExistingIdentityAndDEC022(t *testing.T) {
 	otherSite.SiteId = siteB.Id
 	hashTeamRegPassword(t, db, otherSite, "password1")
 
-	issued, err := CreateAdtyOwnerSiteTeamRegistration(owner.Id, siteA.Id, time.Hour)
+	issued, err := issueAdtyTeamRegistration(root.Id, siteA.Id, time.Hour)
 	require.NoError(t, err)
 
 	_, err = CompleteAdtyTeamRegistration(issued.Code, sameSite.Username, "wrong-password", "Desk", nil)

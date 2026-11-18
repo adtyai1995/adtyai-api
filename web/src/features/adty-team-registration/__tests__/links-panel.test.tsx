@@ -23,8 +23,8 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { TeamRegistrationLinksPanel } from '../components/team-registration-links-panel'
 import type { TeamRegistrationIssue, TeamRegistrationView } from '../api'
+import { TeamRegistrationLinksPanel } from '../components/team-registration-links-panel'
 
 const teamApi = vi.hoisted(() => ({
   listTeamRegistrations: vi.fn(),
@@ -108,17 +108,26 @@ describe('TeamRegistrationLinksPanel', () => {
       issued({ code: 'abc123def456ghi789jkl012mno345pq' })
     )
     render(<TeamRegistrationLinksPanel actor='root' />, { wrapper })
-    expect(await screen.findByText('No registration links yet')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Issue registration link' }))
+    expect(
+      await screen.findByText('No registration links yet')
+    ).toBeInTheDocument()
+    await user.click(
+      screen.getByRole('button', { name: 'Issue registration link' })
+    )
     await waitFor(() =>
-      expect(teamApi.issueTeamRegistration).toHaveBeenCalledWith('root', 24 * 3600)
+      expect(teamApi.issueTeamRegistration).toHaveBeenCalledWith(
+        'root',
+        24 * 3600
+      )
     )
     expect(
       await screen.findByText(
         'Registration link: https://app.example/team-register/abc123def456ghi789jkl012mno345pq'
       )
     ).toBeInTheDocument()
-    expect(screen.getByText('The registration link is shown once')).toBeInTheDocument()
+    expect(
+      screen.getByText('The registration link is shown once')
+    ).toBeInTheDocument()
     expect(teamApi.listTeamRegistrations).toHaveBeenCalledWith('root')
   })
 
@@ -126,11 +135,27 @@ describe('TeamRegistrationLinksPanel', () => {
     const user = userEvent.setup()
     teamApi.listTeamRegistrations.mockResolvedValue([view({ id: 22 })])
     teamApi.revokeTeamRegistration.mockResolvedValue(
-      view({ id: 22, status: 'revoked', revoked_by: 9, revoked_at: 1_700_000_100 })
+      view({
+        id: 22,
+        status: 'revoked',
+        revoked_by: 9,
+        revoked_at: 1_700_000_100,
+      })
     )
     render(<TeamRegistrationLinksPanel actor='owner' />, { wrapper })
     expect(await screen.findByText(/#22/)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Revoke registration link' }))
+    expect(
+      screen.queryByRole('button', { name: 'Issue registration link' })
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Validity (hours)')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(
+        'Issue a team registration link so the recipient can set a username, password, and team name.'
+      )
+    ).not.toBeInTheDocument()
+    await user.click(
+      screen.getByRole('button', { name: 'Revoke registration link' })
+    )
     await waitFor(() =>
       expect(teamApi.revokeTeamRegistration).toHaveBeenCalledWith('owner', 22)
     )
@@ -143,7 +168,9 @@ describe('TeamRegistrationLinksPanel', () => {
     )
     render(<TeamRegistrationLinksPanel actor='root' />, { wrapper })
     await screen.findByText('No registration links yet')
-    await user.click(screen.getByRole('button', { name: 'Issue registration link' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Issue registration link' })
+    )
     expect(
       await screen.findByText('No permission to perform this action')
     ).toBeInTheDocument()

@@ -332,9 +332,19 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			if AdtyTeamReserveHook == nil {
 				return ErrBillingOperationConflict
 			}
+			// Serialize with migration before taking team and token locks.
+			var user User
+			if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {
+				return err
+			}
+			var team AdtyTeam
+			if err := lockForUpdate(tx).First(&team, result.PayerTeamId).Error; err != nil {
+				return err
+			}
 			var token Token
 			if result.TokenId > 0 {
-				if err := lockForUpdate(tx).First(&token, result.TokenId).Error; err != nil {
+				// Accepted requests retain quota accounting after key migration.
+				if err := lockForUpdate(tx.Unscoped()).First(&token, result.TokenId).Error; err != nil {
 					return err
 				}
 				if token.UserId != result.UserId {
@@ -357,7 +367,7 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			}
 			tokenDelta := 0
 			if result.TokenId > 0 {
-				if err := applyTokenQuotaDeltaTx(tx, &token, -delta, common.BatchUpdateEnabled && common.RedisEnabled); err != nil {
+				if err := applyTokenQuotaDeltaTx(tx.Unscoped(), &token, -delta, common.BatchUpdateEnabled && common.RedisEnabled); err != nil {
 					return err
 				}
 				result.TokenReservedQuota += delta

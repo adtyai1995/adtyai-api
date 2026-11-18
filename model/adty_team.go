@@ -238,3 +238,35 @@ func BackfillAdtyTeamSourceSiteID(db *gorm.DB) error {
 		return nil
 	})
 }
+
+// ValidateAdtyTeamTokenTx reads current lifecycle state even when token metadata
+// came from a different node's cache. Historical bindings cannot become personal.
+func ValidateAdtyTeamTokenTx(tx *gorm.DB, token *Token) error {
+	if !tx.Migrator().HasTable(&AdtyTeamKey{}) {
+		return nil
+	}
+	var key AdtyTeamKey
+	if err := tx.Where("token_id = ?", token.Id).Limit(1).Find(&key).Error; err != nil {
+		return err
+	}
+	if key.Id == 0 {
+		return nil
+	}
+	if key.Status != AdtyTeamMemberActive || key.UserId != token.UserId || key.TeamId <= 0 {
+		return ErrTokenInvalid
+	}
+	var count int64
+	if err := tx.Model(&AdtyTeam{}).Where("id = ? AND status = ?", key.TeamId, AdtyTeamStatusActive).Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrTokenInvalid
+	}
+	if err := tx.Model(&AdtyTeamMember{}).Where("team_id = ? AND user_id = ? AND status = ?", key.TeamId, token.UserId, AdtyTeamMemberActive).Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrTokenInvalid
+	}
+	return nil
+}

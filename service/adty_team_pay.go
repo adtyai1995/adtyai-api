@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"strconv"
 	"strings"
 	"time"
@@ -55,16 +56,10 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	if err := model.DB.First(&leader, leaderID).Error; err != nil {
 		return nil, err
 	}
-	quote, err := AdtyQuoteForSite(AdtyBillingSiteForUser(leaderID), leader.Group, amountUSD.IntPart(), method)
+	quote, err := adtyTeamQuote(leader.Group, amountUSD.IntPart(), method)
 	if err != nil {
 		return nil, err
 	}
-	quote.BonusRate, quote.BonusUSD = decimal.Zero, decimal.Zero
-	faceQuota, err := common.WalletQuotaFromDecimalStrict(quote.FaceUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
-	if err != nil || faceQuota <= 0 {
-		return nil, ErrAdtyTeamInvalid
-	}
-	quote.CreditQuota = int64(faceQuota)
 	scene, err := AuthorizeAdtyPaymentScene(leaderID, "wallet_topup", model.PaymentProviderAdtyEpay, method, quote)
 	if err != nil {
 		return nil, err
@@ -147,16 +142,10 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 	if err := model.DB.First(&leader, leaderID).Error; err != nil {
 		return nil, err
 	}
-	quote, err := AdtyQuoteForSite(AdtyBillingSiteForUser(leaderID), leader.Group, amountUSD.IntPart(), method)
+	quote, err := adtyTeamQuote(leader.Group, amountUSD.IntPart(), method)
 	if err != nil {
 		return nil, err
 	}
-	quote.BonusRate, quote.BonusUSD = decimal.Zero, decimal.Zero
-	faceQuota, err := common.WalletQuotaFromDecimalStrict(quote.FaceUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
-	if err != nil || faceQuota <= 0 {
-		return nil, ErrAdtyTeamInvalid
-	}
-	quote.CreditQuota = int64(faceQuota)
 	if _, err := AuthorizeAdtyPaymentScene(leaderID, "wallet_topup", model.PaymentProviderAdtyBEpusdt, method, quote); err != nil {
 		return nil, err
 	}
@@ -195,4 +184,46 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 		return nil, err
 	}
 	return model.GetAdtyTopupOrder(tradeNo)
+}
+
+func adtyTeamQuote(userGroup string, face int64, method string) (*AdtyQuote, error) {
+	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
+		return nil, common.NewMessage("Top-up is unavailable while quota is displayed as tokens")
+	}
+	method = strings.TrimSpace(method)
+	if !IsAdtyUSDTMethod(method) && !IsAdtyEpayMethod(method) {
+		return nil, common.NewMessage("Unsupported payment method")
+	}
+	if face < int64(operation_setting.MinTopUp) || face <= 0 {
+		return nil, common.NewMessage("Top-up amount cannot be less than {{amount}}", map[string]any{"amount": operation_setting.MinTopUp})
+	}
+	faceUSD := decimal.NewFromInt(face)
+	creditQuota := faceUSD.Mul(common.QuotaPerUnitDecimal()).Floor()
+	if _, err := common.WalletQuotaFromDecimalStrict(creditQuota); err != nil || !creditQuota.IsPositive() {
+		return nil, common.NewMessage("Top-up quota exceeds the range the system can represent")
+	}
+	groupRatio := decimal.NewFromFloat(common.GetTopupGroupRatio(userGroup))
+	if !groupRatio.IsPositive() {
+		groupRatio = decimal.NewFromInt(1)
+	}
+	quote := &AdtyQuote{
+		FaceUSD:         faceUSD,
+		BonusRate:       decimal.Zero,
+		BonusUSD:        decimal.Zero,
+		CreditQuota:     creditQuota.IntPart(),
+		TopupGroupRatio: groupRatio,
+	}
+	if IsAdtyUSDTMethod(method) {
+		quote.PayCurrency = AdtyCurrencyUSDT
+		quote.PayAmount = quote.FaceUSD.Mul(quote.TopupGroupRatio).Round(8)
+		return quote, nil
+	}
+	price := decimal.NewFromFloat(operation_setting.Price)
+	if !price.IsPositive() {
+		return nil, common.NewMessage("The top-up price is not configured")
+	}
+	quote.PayCurrency = AdtyCurrencyCNY
+	quote.PriceCNYPerUSD = price
+	quote.PayAmount = quote.FaceUSD.Mul(price).Mul(quote.TopupGroupRatio).Round(2)
+	return quote, nil
 }

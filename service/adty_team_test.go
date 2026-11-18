@@ -1,9 +1,14 @@
 package service
 
 import (
+	"context"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,7 +185,7 @@ func TestCreateAdtyTeamFollowsG2PayRatioFormula(t *testing.T) {
 }
 
 func TestAdtyTeamCreateRequiresRootOrAuthorizedOwner(t *testing.T) {
-	db := prepareReferralDialectDB(t, "sqlite")
+	db := prepareReferralDB(t)
 	root := referralUser(t, db, "auth-root")
 	require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
 	root.Role = common.RoleRootUser
@@ -242,7 +247,14 @@ func TestAdtyTeamCreateRequiresRootOrAuthorizedOwner(t *testing.T) {
 	assert.Equal(t, mainUser.Id, defaulted.Team.LeaderUserId)
 	assert.True(t, defaulted.Team.Discount.Equal(decimal.NewFromInt(1)))
 
-	owned, err := CreateAdtyOwnerSiteTeam(ownerA.Id, siteA.Id, leaderA.Id, "Site Desk", "0.90")
+	_, err = CreateAdtyOwnerSiteTeam(ownerA.Id, siteA.Id, leaderA.Id, "Site Desk", "0.90")
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	_, err = CreateAdtySiteTeamByRoot(ownerA.Id, siteA.Id, leaderA.Id, "Site Desk", "0.90")
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	_, err = CreateAdtySiteTeamByRoot(admin.Id, siteA.Id, leaderA.Id, "Site Desk", "0.90")
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+
+	owned, err := CreateAdtySiteTeamByRoot(root.Id, siteA.Id, leaderA.Id, "Site Desk", "0.90")
 	require.NoError(t, err)
 	assert.Equal(t, siteA.Id, owned.Team.SiteId)
 	assert.NotEqual(t, 0, owned.Team.SiteId)
@@ -251,28 +263,28 @@ func TestAdtyTeamCreateRequiresRootOrAuthorizedOwner(t *testing.T) {
 	assert.True(t, owned.Team.Discount.Equal(decimal.RequireFromString("0.90")))
 
 	_, err = CreateAdtyOwnerSiteTeam(ownerA.Id, 0, mainLeader.Id, "Main From Owner", "1")
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
 	_, err = CreateAdtyOwnerSiteTeam(ownerA.Id, siteB.Id, leaderB.Id, "Other Site", "0.90")
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
 	_, err = CreateAdtyOwnerSiteTeam(ownerB.Id, siteA.Id, leaderA.Id, "Cross Owner", "0.90")
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
 	_, err = CreateAdtyOwnerSiteTeam(staffA.Id, siteA.Id, memberA.Id, "Staff Create", "0.90")
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
 
 	missingID := 9_000_001
-	_, err = CreateAdtyOwnerSiteTeam(ownerA.Id, siteA.Id, missingID, "Missing", "0.90")
+	_, err = CreateAdtySiteTeamByRoot(root.Id, siteA.Id, missingID, "Missing", "0.90")
 	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
-	_, err = CreateAdtyOwnerSiteTeam(ownerA.Id, siteA.Id, leaderB.Id, "Wrong Site Leader", "0.90")
+	_, err = CreateAdtySiteTeamByRoot(root.Id, siteA.Id, leaderB.Id, "Wrong Site Leader", "0.90")
 	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
-	_, err = CreateAdtyOwnerSiteTeam(ownerA.Id, siteA.Id, staffA.Id, "Staff Leader", "0.90")
+	_, err = CreateAdtySiteTeamByRoot(root.Id, siteA.Id, staffA.Id, "Staff Leader", "0.90")
 	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
-	_, err = CreateAdtyOwnerSiteTeam(ownerA.Id, siteA.Id, leaderA.Id, "Already Leader", "0.90")
+	_, err = CreateAdtySiteTeamByRoot(root.Id, siteA.Id, leaderA.Id, "Already Leader", "0.90")
 	require.ErrorIs(t, err, ErrAdtyTeamBusy)
 
 	busyMember, err := JoinAdtyTeam(memberA.Id, owned.Team.Id)
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtyTeamRoleMember, busyMember.Role)
-	_, err = CreateAdtyOwnerSiteTeam(ownerA.Id, siteA.Id, memberA.Id, "Already Member", "0.90")
+	_, err = CreateAdtySiteTeamByRoot(root.Id, siteA.Id, memberA.Id, "Already Member", "0.90")
 	require.ErrorIs(t, err, ErrAdtyTeamBusy)
 
 	require.NoError(t, SaveAdtyMainTeamAgreementPrice(created.Team.Id, "0.70"))
@@ -602,4 +614,351 @@ func TestBackfillAdtyTeamSourceSiteIDDoesNotChangeClosePath(t *testing.T) {
 	assert.Equal(t, site.Id, stored.SourceSiteId)
 	stored = load(legacy.Id)
 	assert.Zero(t, stored.SourceSiteId)
+}
+
+func TestTeamKeyLifecycleRejectsRevokedRemovedAndClosedTeamKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		revoke func(t *testing.T, leaderID, memberID int, teamID int64, tokenID int)
+	}{
+		{
+			name: "revoked_key",
+			revoke: func(t *testing.T, leaderID, _ int, teamID int64, tokenID int) {
+				require.NoError(t, RevokeAdtyTeamKey(leaderID, teamID, tokenID))
+			},
+		},
+		{
+			name: "removed_member",
+			revoke: func(t *testing.T, leaderID, memberID int, teamID int64, _ int) {
+				require.NoError(t, DisableAdtyTeamMember(leaderID, teamID, memberID))
+			},
+		},
+		{
+			name: "closed_team",
+			revoke: func(t *testing.T, leaderID, _ int, teamID int64, _ int) {
+				require.NoError(t, CloseAdtyTeam(leaderID, teamID))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := prepareReferralDB(t)
+			require.NoError(t, db.AutoMigrate(&model.Token{}, &model.BillingOperation{}, &model.BillingOperationMovement{}))
+			leader := referralUser(t, db, "tk-life-leader-"+tc.name)
+			member := referralUser(t, db, "tk-life-member-"+tc.name)
+			require.NoError(t, db.Model(member).Update("quota", 500_000).Error)
+
+			created, err := CreateAdtyTeam(leader.Id, 0, "Lifecycle", decimal.NewFromInt(1))
+			require.NoError(t, err)
+			_, err = JoinAdtyTeam(member.Id, created.Team.Id)
+			require.NoError(t, err)
+			require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 1_000_000, "init-credit-"+tc.name))
+
+			token := model.Token{
+				UserId: member.Id, Key: "tk-life-" + tc.name, Name: "team-key",
+				Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true,
+			}
+			require.NoError(t, db.Create(&token).Error)
+			require.NoError(t, BindAdtyTeamKey(member.Id, token.Id))
+
+			tc.revoke(t, leader.Id, member.Id, created.Team.Id, token.Id)
+
+			// Simulate the token owner re-enabling token.status directly.
+			require.NoError(t, db.Model(&model.Token{}).Where("id = ?", token.Id).Update("status", common.TokenStatusEnabled).Error)
+			_, authErr := model.ValidateUserToken(token.Key)
+			assert.ErrorIs(t, authErr, model.ErrTokenInvalid, "authentication must recheck team revocation from SQL")
+
+			quota, isTeamKey, err := adtyTeamSharedQuotaForToken(token.Id)
+			require.NoError(t, err)
+			assert.True(t, isTeamKey, "historical team key binding must still be recognized as a team key")
+			assert.Zero(t, quota, "revoked/removed/closed team key must have zero usable quota")
+
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+			common.SetContextKey(ctx, constant.ContextKeyTokenId, token.Id)
+			info := &relaycommon.RelayInfo{
+				UserId: member.Id, TokenId: token.Id, TokenKey: token.Key, TokenUnlimited: true,
+				RequestId: "req-life-" + tc.name, StartTime: time.Now(), UsingGroup: "default", UserGroup: "default",
+				PriceData: hosttypes.PriceData{UsePrice: true, ModelPrice: 1, GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1}},
+			}
+			session, apiErr := NewBillingSession(ctx, info, 50_000)
+			require.Nil(t, session)
+			require.NotNil(t, apiErr)
+			assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
+
+			_, err = model.ReserveBillingOperation(model.BillingOperation{
+				OperationKey: "request:direct-life-" + tc.name, UserId: member.Id, TokenId: token.Id,
+			}, 50_000)
+			require.Error(t, err)
+
+			handled, hookErr := reserveAdtyTeamQuotaHook(db, created.Team.Id, member.Id, 50_000, "request:hook-life-"+tc.name)
+			assert.True(t, handled)
+			require.Error(t, hookErr)
+
+			var storedMember model.User
+			require.NoError(t, db.First(&storedMember, member.Id).Error)
+			assert.Equal(t, 500_000, storedMember.Quota, "must never fall back to personal funds")
+
+			var storedTeam model.AdtyTeam
+			require.NoError(t, db.First(&storedTeam, created.Team.Id).Error)
+			assert.EqualValues(t, 1_000_000, storedTeam.SharedQuota, "team balance must remain untouched")
+		})
+	}
+}
+
+func TestTeamReservationCumulativeEventIdentitySurvivesInterveningBalanceChange(t *testing.T) {
+	db := prepareReferralDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}))
+	leader := referralUser(t, db, "res-id-leader")
+	member := referralUser(t, db, "res-id-member")
+	created, err := CreateAdtyTeam(leader.Id, 0, "ReserveIdentity", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	_, err = JoinAdtyTeam(member.Id, created.Team.Id)
+	require.NoError(t, err)
+	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 100_000, "res-id-credit"))
+
+	// First reservation increment on op-1: 20,000 -> team balance becomes 80,000.
+	handled, err := reserveAdtyTeamQuotaHook(db, created.Team.Id, member.Id, 20_000, "request:op-1")
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	// Intervening refund on another operation restores team balance to 100,000.
+	handled, applied, err := settleAdtyTeamQuotaHook(db, created.Team.Id, member.Id, -20_000, "request:op-other")
+	require.NoError(t, err)
+	assert.True(t, handled)
+	assert.Equal(t, -20_000, applied)
+
+	// Second reservation increment on op-1 (+20,000, cumulative 40,000) produces
+	// the exact same afterBalance (80,000) but must have a distinct ledger identity.
+	handled, err = reserveAdtyTeamQuotaHook(db, created.Team.Id, member.Id, 20_000, "request:op-1")
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	var team model.AdtyTeam
+	require.NoError(t, db.First(&team, created.Team.Id).Error)
+	assert.EqualValues(t, 80_000, team.SharedQuota)
+
+	var ledgers []model.AdtyTeamLedger
+	require.NoError(t, db.Where("team_id = ? AND type = ? AND ref_id = ?", created.Team.Id, "reserve", "request:op-1").Order("id ASC").Find(&ledgers).Error)
+	require.Len(t, ledgers, 2)
+	assert.Equal(t, "reserve:request:op-1:20000", ledgers[0].IdempotencyKey)
+	assert.Equal(t, "reserve:request:op-1:40000", ledgers[1].IdempotencyKey)
+}
+
+func TestTeamBindConcurrentRevocationRejectsStaleMembership(t *testing.T) {
+	for _, action := range []string{"remove_member", "close_team"} {
+		t.Run(action, func(t *testing.T) {
+			db := prepareReferralDB(t)
+			leader := referralUser(t, db, "race-leader")
+			member := referralUser(t, db, "race-member")
+			created, err := CreateAdtyTeam(leader.Id, 0, "ConcurrentBind", decimal.NewFromInt(1))
+			require.NoError(t, err)
+			_, err = JoinAdtyTeam(member.Id, created.Team.Id)
+			require.NoError(t, err)
+			token := model.Token{UserId: member.Id, Key: "race-team-key", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
+			require.NoError(t, db.Create(&token).Error)
+
+			readMembership := make(chan struct{})
+			releaseBinding := make(chan struct{})
+			var paused atomic.Bool
+			var release sync.Once
+			// Pause after the optimistic membership read, before any binding write.
+			// Revocation must commit while that old active row is in memory.
+			const callback = "test:pause_team_binding"
+			require.NoError(t, db.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if row, ok := tx.Statement.Dest.(*model.AdtyTeamMember); ok && row.UserId == member.Id && tx.Statement.Table == "adty_team_members" && paused.CompareAndSwap(false, true) {
+					close(readMembership)
+					<-releaseBinding
+				}
+			}))
+			t.Cleanup(func() {
+				release.Do(func() { close(releaseBinding) })
+				_ = db.Callback().Query().Remove(callback)
+			})
+			bound := make(chan error, 1)
+			go func() { bound <- BindAdtyTeamKey(member.Id, token.Id) }()
+			select {
+			case <-readMembership:
+			case <-time.After(10 * time.Second):
+				t.Fatal("binding never reached its membership read")
+			}
+			if action == "remove_member" {
+				err = DisableAdtyTeamMember(leader.Id, created.Team.Id, member.Id)
+			} else {
+				err = CloseAdtyTeam(leader.Id, created.Team.Id)
+			}
+			release.Do(func() { close(releaseBinding) })
+			require.NoError(t, err)
+			select {
+			case err = <-bound:
+				require.Error(t, err, "revocation committed before binding resumed")
+			case <-time.After(10 * time.Second):
+				t.Fatal("binding did not finish after revocation")
+			}
+			var active int64
+			require.NoError(t, db.Model(&model.AdtyTeamKey{}).Where("token_id = ? AND status = ?", token.Id, model.AdtyTeamMemberActive).Count(&active).Error)
+			assert.Zero(t, active, "revocation cannot leave an active binding behind")
+		})
+	}
+}
+
+func TestTeamAdditionalReserveSerializesWithSiteMigration(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "reserve-migration")
+	leader := siteCustomer(t, db, site, "reserve-mig-leader")
+	created, err := CreateAdtyTeam(leader.Id, site.Id, "Migration reserve", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	token := model.Token{UserId: leader.Id, Key: "reserve-migration-key", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
+	require.NoError(t, db.Create(&token).Error)
+	require.NoError(t, BindAdtyTeamKey(leader.Id, token.Id))
+	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 100_000, "migration-opening"))
+	spec := model.BillingOperation{OperationKey: "request:migration-reserve", UserId: leader.Id, TokenId: token.Id, TokenUnlimited: true}
+	_, err = model.ReserveBillingOperation(spec, 20_000)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	userLocked := make(chan struct{})
+	tokensLocked := make(chan struct{})
+	releaseMigration := make(chan struct{})
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(releaseMigration) }) })
+	migrated := make(chan error, 1)
+	go func() {
+		migrated <- db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var user model.User
+			if err := model.AdtyLockForUpdate(tx).First(&user, leader.Id).Error; err != nil {
+				return err
+			}
+			close(userLocked)
+			select {
+			case <-releaseMigration:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if _, err := model.AdtySetUsersSiteTx(tx, site.Id, 0); err != nil {
+				return err
+			}
+			return InheritAdtyTeamsOnCloseTx(tx, site.Id)
+		})
+	}()
+	select {
+	case <-userLocked:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	// A user-first reserve waits behind migration. A team-first reserve holds
+	// the team until migration holds the token, exposing the inverse order.
+	const callback = "test:team_reserve_migration"
+	var reached atomic.Bool
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+		if _, locked := tx.Statement.Clauses["FOR"]; !locked {
+			return
+		}
+		if tx.Statement.Table == "users" && reached.CompareAndSwap(false, true) {
+			release.Do(func() { close(releaseMigration) })
+		}
+	}))
+	var tokensOnce sync.Once
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register(callback+":after", func(tx *gorm.DB) {
+		if _, locked := tx.Statement.Clauses["FOR"]; !locked || tx.Error != nil {
+			return
+		}
+		if _, ok := tx.Statement.Dest.(*[]model.Token); ok {
+			tokensOnce.Do(func() { close(tokensLocked) })
+		}
+		if team, ok := tx.Statement.Dest.(*model.AdtyTeam); ok && team.Id == created.Team.Id && reached.CompareAndSwap(false, true) {
+			release.Do(func() { close(releaseMigration) })
+			select {
+			case <-tokensLocked:
+			case <-ctx.Done():
+			}
+		}
+	}))
+	t.Cleanup(func() {
+		_ = db.Callback().Query().Remove(callback)
+		_ = db.Callback().Query().Remove(callback + ":after")
+	})
+	originalDB := model.DB
+	model.DB = db.WithContext(ctx)
+	t.Cleanup(func() { model.DB = originalDB })
+	_, reserveErr := model.ReserveBillingOperation(spec, 40_000)
+	select {
+	case err = <-migrated:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.NoError(t, reserveErr)
+	require.True(t, reached.Load())
+	var team model.AdtyTeam
+	require.NoError(t, db.First(&team, created.Team.Id).Error)
+	assert.Zero(t, team.SiteId)
+	assert.EqualValues(t, 60_000, team.SharedQuota)
+	var personal model.User
+	require.NoError(t, db.First(&personal, leader.Id).Error)
+	assert.Equal(t, leader.Quota, personal.Quota)
+}
+
+func TestClosedTeamPaidTopupFulfillmentPreservesPrincipal(t *testing.T) {
+	db := prepareReferralDB(t)
+	require.NoError(t, db.AutoMigrate(&model.TopUp{}, &model.AdtyTopupOrder{}, &model.AdtyOrderPaymentEvent{}, &model.PaymentOrphanEvent{}, &model.AdtyAnomalyDisposition{}))
+	leader := referralUser(t, db, "closed-topup-leader")
+	other := referralUser(t, db, "closed-topup-other")
+	created, err := CreateAdtyTeam(leader.Id, 0, "ClosedTopup", decimal.NewFromInt(1))
+	require.NoError(t, err)
+
+	channel := seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "closed-team-epay", GatewayURL: "https://pay.example.com", MerchantId: "m-closed",
+		OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"))
+
+	order, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(10), "alipay", channel.Id, "closed-team-paid", "127.0.0.1")
+	require.NoError(t, err)
+
+	// Close the team before the payment callback arrives.
+	require.NoError(t, CloseAdtyTeam(leader.Id, created.Team.Id))
+
+	facts := model.AdtyPaymentFacts{
+		Provider:       model.PaymentProviderAdtyEpay,
+		Method:         "alipay",
+		PaidAmount:     order.PayAmount,
+		PaidCurrency:   "CNY",
+		GatewayTradeId: "gw-closed-1",
+		TxHash:         "gw-closed-1",
+		Source:         model.AdtyPaymentSourceCallback,
+	}
+	already, credited, _, _, err := model.CompleteAdtyTopUpTx(db, order.TradeNo, facts)
+	require.NoError(t, err)
+	assert.False(t, already)
+	assert.Equal(t, 5_000_000, credited)
+
+	var storedTeam model.AdtyTeam
+	require.NoError(t, db.First(&storedTeam, created.Team.Id).Error)
+	assert.Equal(t, model.AdtyTeamStatusClosed, storedTeam.Status)
+	assert.EqualValues(t, 5_000_000, storedTeam.SharedQuota)
+	already, _, _, _, err = model.CompleteAdtyTopUpTx(db, order.TradeNo, facts)
+	require.NoError(t, err)
+	assert.True(t, already)
+	require.NoError(t, db.First(&storedTeam, created.Team.Id).Error)
+	assert.EqualValues(t, 5_000_000, storedTeam.SharedQuota)
+	var ledgers []model.AdtyTeamLedger
+	require.NoError(t, db.Where("team_id = ? AND type = ? AND ref_id = ?", created.Team.Id, "topup", order.TradeNo).Find(&ledgers).Error)
+	require.Len(t, ledgers, 1)
+	assert.EqualValues(t, 5_000_000, ledgers[0].DeltaQuota)
+	var personal model.User
+	require.NoError(t, db.First(&personal, leader.Id).Error)
+	assert.Equal(t, leader.Quota, personal.Quota)
+
+	var dispositions []model.AdtyAnomalyDisposition
+	require.NoError(t, db.Where("kind = ? AND ref = ?", "closed_team_topup", order.TradeNo).Find(&dispositions).Error)
+	require.Len(t, dispositions, 1)
+	assert.Equal(t, "open", dispositions[0].Status)
+
+	// Mismatched leader must fail with a permanent status error for review routing.
+	badTopUp := &model.TopUp{UserId: other.Id, Amount: 10, TradeNo: "TTEPbadleader00000001"}
+	badExt := &model.AdtyTopupOrder{TradeNo: badTopUp.TradeNo, UserId: other.Id, TeamId: created.Team.Id}
+	err = creditAdtyTeamTopUpTx(db, badTopUp, badExt, 5_000_000)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	require.ErrorIs(t, err, model.ErrTopUpStatusInvalid)
 }

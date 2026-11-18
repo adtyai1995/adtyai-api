@@ -109,15 +109,17 @@ func completeAdtyStaleApprovedRefund(t *testing.T, db *gorm.DB, root User, trade
 
 func TestStaleApprovedTeamRefundCannotCompletePG(t *testing.T) {
 	db, root := adtyCashRefundFixture(t)
-	seedAdtyCashRefundOrder(t, db, root, "STALE-TEAM-1", "adty_team", 42, decimal.Zero)
-	// 让申请阶段的门失效，只测完成阶段：这一步模拟补丁之前留下的行。
-	require.NoError(t, db.Model(&AdtyTopupOrder{}).Where("trade_no = ?", "STALE-TEAM-1").
-		Update("team_id", 42).Error)
+	team := AdtyTeam{LeaderUserId: root.Id, Name: "Stale refund", Status: AdtyTeamStatusActive, Discount: decimal.NewFromInt(1)}
+	require.NoError(t, db.Create(&team).Error)
+	seedAdtyCashRefundOrder(t, db, root, "STALE-TEAM-1", "adty_team", team.Id, decimal.Zero)
 
-	err := completeAdtyStaleApprovedRefund(t, db, root, "STALE-TEAM-1", "stale-team-refund", 42, "adty_team")
+	err := completeAdtyStaleApprovedRefund(t, db, root, "STALE-TEAM-1", "stale-team-refund", team.Id, "adty_team")
 	require.Error(t, err, "补丁前遗留的 approved 团队单不能完成退款")
 	assert.Contains(t, err.Error(), "cannot be refunded in cash")
 	assertAdtyNothingMoved(t, db, root, "STALE-TEAM-1", "stale-team-refund")
+	var stored AdtyTeam
+	require.NoError(t, db.First(&stored, team.Id).Error)
+	assert.Equal(t, team.SharedQuota, stored.SharedQuota)
 }
 
 func TestStaleApprovedVoucherRefundCannotCompletePG(t *testing.T) {

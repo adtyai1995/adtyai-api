@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -107,4 +108,53 @@ func TestTeamTopupStartsExistingBEpusdtWithoutGift(t *testing.T) {
 	replay, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "usdt.trc20", 0, "team-usdt-1", "127.0.0.1")
 	require.NoError(t, err)
 	require.Equal(t, order.TradeNo, replay.TradeNo)
+}
+
+func TestTeamTopupSubsiteNoGiftQuoteIgnoresPersonalGiftCoverage(t *testing.T) {
+	_, err := model.OfficialPostgresAcceptanceDSN()
+	require.NoError(t, err)
+	db := prepareSiteDB(t)
+	previousPrice := operation_setting.Price
+	operation_setting.Price = 7.2
+	t.Cleanup(func() { operation_setting.Price = previousPrice })
+
+	_, site := openActiveSite(t, db, "team-subsite")
+	leader := siteCustomer(t, db, site, "team-subsite-leader")
+
+	created, err := CreateAdtyTeam(leader.Id, site.Id, "SubsitePay", decimal.NewFromInt(1))
+	require.NoError(t, err)
+
+	// Configure a subsite personal payment method gift rule whose bonus exceeds subsite margin (0%)
+	// and has margin fill disabled, so personal quote fails with SiteBonusEarningCovers error.
+	topupCfg := adty_setting.GetTopupSetting()
+	savedAuth := topupCfg.SiteMethodAuth
+	savedBonus := topupCfg.SiteMethodBonus
+	savedFill := topupCfg.SiteBonusMarginFill
+	topupCfg.SiteMethodAuth = map[int][]string{site.Id: {"alipay"}}
+	topupCfg.SiteMethodBonus = map[int]map[string]adty_setting.MethodBonusRule{
+		site.Id: {
+			"alipay": {Enabled: true, Rate: "0.20"},
+		},
+	}
+	topupCfg.SiteBonusMarginFill = map[int]bool{site.Id: false}
+	t.Cleanup(func() {
+		topupCfg.SiteMethodAuth = savedAuth
+		topupCfg.SiteMethodBonus = savedBonus
+		topupCfg.SiteBonusMarginFill = savedFill
+	})
+
+	_, err = AdtyQuoteForSite(site, "default", 1, "alipay")
+	require.EqualError(t, err, "Site gift reserve is not covered by the earning wallet")
+
+	seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "team-subsite-epay", GatewayURL: "https://pay.example.com", MerchantId: "m-sub",
+		OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"))
+
+	order, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "team-subsite-nogift-1", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, created.Team.Id, order.TeamId)
+	require.True(t, order.BonusUSD.IsZero())
+	require.True(t, order.BonusRate.IsZero())
+	require.EqualValues(t, 500000, order.CreditQuota)
 }

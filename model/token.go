@@ -267,6 +267,12 @@ func ValidateUserToken(key string) (token *Token, err error) {
 			}
 			return token, ErrTokenInvalid
 		}
+		if err := ValidateAdtyTeamTokenTx(DB, token); err != nil {
+			if errors.Is(err, ErrTokenInvalid) {
+				return token, ErrTokenInvalid
+			}
+			return token, fmt.Errorf("%w: %v", ErrDatabase, err)
+		}
 		return token, nil
 	}
 	common.SysLog(common.LogText("ValidateUserToken: failed to get token: %s", err.Error()))

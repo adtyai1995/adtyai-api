@@ -192,7 +192,7 @@ func TestTeamKeyConsumptionLeavesMemberBatchesUntouchedPG(t *testing.T) {
 	f := newFundSettleFixture(t, 50_000_000)
 	require.NoError(t, f.db.AutoMigrate(&AdtyTeam{}, &AdtyTeamKey{}, &Token{}))
 	require.NoError(t, f.db.Create(&AdtyTeam{Id: 1, Status: AdtyTeamStatusActive}).Error)
-	require.NoError(t, f.db.Create(&Token{Id: 9001, UserId: f.user.Id, Key: "fund-team-payer"}).Error)
+	require.NoError(t, f.db.Create(&Token{Id: 9001, UserId: f.user.Id, Key: "fund-team-payer", RemainQuota: 30_000_000}).Error)
 	require.NoError(t, f.db.Create(&AdtyTeamKey{
 		TokenId: 9001, TeamId: 1, UserId: f.user.Id, Status: "active",
 	}).Error)

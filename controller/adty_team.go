@@ -102,13 +102,14 @@ func PostAdtyMainTeam(c *gin.Context) {
 	var body struct {
 		Name     string `json:"name"`
 		LeaderId int    `json:"leader_id"`
+		SiteId   int    `json:"site_id"`
 		Discount string `json:"discount"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	created, err := service.CreateAdtyMainTeamByRoot(c.GetInt("id"), body.LeaderId, body.Name, body.Discount)
+	created, err := service.CreateAdtySiteTeamByRoot(c.GetInt("id"), body.SiteId, body.LeaderId, body.Name, body.Discount)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -117,25 +118,7 @@ func PostAdtyMainTeam(c *gin.Context) {
 }
 
 func PostAdtyOwnerSiteTeam(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	var body struct {
-		Name     string `json:"name"`
-		LeaderId int    `json:"leader_id"`
-		Discount string `json:"discount"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	created, err := service.CreateAdtyOwnerSiteTeam(c.GetInt("id"), site.Id, body.LeaderId, body.Name, body.Discount)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, created)
+	common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyTeamForbidden)
 }
 
 func GetAdtyTeamMine(c *gin.Context) {
@@ -290,20 +273,7 @@ func PostAdtyMainTeamRegistrationRevoke(c *gin.Context) {
 }
 
 func PostAdtyOwnerSiteTeamRegistration(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	ttl, ok := parseAdtyTeamInviteTTL(c)
-	if !ok {
-		return
-	}
-	issued, err := service.CreateAdtyOwnerSiteTeamRegistration(c.GetInt("id"), site.Id, ttl)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, issued)
+	common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyTeamForbidden)
 }
 
 func GetAdtyOwnerSiteTeamRegistrations(c *gin.Context) {

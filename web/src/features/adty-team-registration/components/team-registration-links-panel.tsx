@@ -47,7 +47,11 @@ const statusLabel: Record<string, string> = {
 
 function ttlSecondsFromHours(value: string): number | null {
   const hours = Number(value)
-  if (!Number.isFinite(hours) || hours <= 0 || hours > TEAM_REGISTRATION_MAX_TTL_HOURS) {
+  if (
+    !Number.isFinite(hours) ||
+    hours <= 0 ||
+    hours > TEAM_REGISTRATION_MAX_TTL_HOURS
+  ) {
     return null
   }
   return Math.round(hours * 3600)
@@ -122,32 +126,38 @@ export function TeamRegistrationLinksPanel(props: {
     <section className='flex flex-col gap-4'>
       <div className='flex flex-col gap-1'>
         <h2 className='text-sm font-medium'>{t('Team registration')}</h2>
-        <p className='text-muted-foreground text-sm'>
-          {t(
-            'Issue a team registration link so the recipient can set a username, password, and team name.'
-          )}
-        </p>
+        {props.actor === 'root' && (
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Issue a team registration link so the recipient can set a username, password, and team name.'
+            )}
+          </p>
+        )}
       </div>
-      <div className='flex flex-col gap-1'>
-        <Label htmlFor={`team-registration-ttl-${props.actor}`}>
-          {t('Validity (hours)')}
-        </Label>
-        <Input
-          id={`team-registration-ttl-${props.actor}`}
-          value={ttlHours}
-          inputMode='decimal'
-          autoComplete='off'
-          onChange={(event) => setTtlHours(event.target.value)}
-        />
-      </div>
-      <Button
-        type='button'
-        variant='outline'
-        disabled={pending}
-        onClick={() => void issue()}
-      >
-        {t('Issue registration link')}
-      </Button>
+      {props.actor === 'root' && (
+        <>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor={`team-registration-ttl-${props.actor}`}>
+              {t('Validity (hours)')}
+            </Label>
+            <Input
+              id={`team-registration-ttl-${props.actor}`}
+              value={ttlHours}
+              inputMode='decimal'
+              autoComplete='off'
+              onChange={(event) => setTtlHours(event.target.value)}
+            />
+          </div>
+          <Button
+            type='button'
+            variant='outline'
+            disabled={pending}
+            onClick={() => void issue()}
+          >
+            {t('Issue registration link')}
+          </Button>
+        </>
+      )}
       {issuedUrl && (
         <div className='flex flex-col gap-2'>
           <p className='text-sm break-all'>
