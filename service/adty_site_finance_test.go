@@ -786,3 +786,34 @@ func TestAdtySiteWalletConcurrentDebitReplayReturnsOriginalEntry(t *testing.T) {
 	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Where("idempotency_key = ?", "same-debit-replayed").Count(&count).Error)
 	assert.EqualValues(t, 1, count)
 }
+
+func TestReviewAdtyAnomalyDispositionNotifiesPrivateRecipientOnly(t *testing.T) {
+	db := prepareSiteDB(t)
+	root := referralUser(t, db, "anomaly-root")
+	owner, site := openActiveSite(t, db, "anomaly-private")
+	customer := siteCustomer(t, db, site, "anomaly-customer")
+	bystander := siteCustomer(t, db, site, "anomaly-bystander")
+
+	disp := model.AdtyAnomalyDisposition{
+		Kind:       AdtyAnomalyOrderSuccessUnbooked,
+		Ref:        "ORD-ANOM-1",
+		OrderRef:   "ORD-ANOM-1",
+		Status:     "open",
+		SiteId:     site.Id,
+		AccountId:  customer.Id,
+		Difference: "10",
+		Note:       "detected",
+	}
+	require.NoError(t, db.Create(&disp).Error)
+
+	require.NoError(t, ReviewAdtyAnomalyDisposition(disp.Id, root.Id, "reviewing", "internal root investigation note"))
+
+	var pubs []model.AdtyNotificationPublication
+	require.NoError(t, db.Where("business = ?", "fund_anomaly").Find(&pubs).Error)
+	require.Len(t, pubs, 1)
+	assert.Equal(t, "user", pubs[0].Audience, "anomaly disposition must never be persisted as a site-wide broadcast")
+	assert.Equal(t, "user:"+fmt.Sprintf("%d", owner.Id), pubs[0].TargetSiteName)
+	assert.True(t, adtyUserCanReadPublication(owner, &pubs[0]), "site owner must be able to read the private anomaly notification")
+	assert.False(t, adtyUserCanReadPublication(customer, &pubs[0]), "site customer must not read internal anomaly disposition notice")
+	assert.False(t, adtyUserCanReadPublication(bystander, &pubs[0]), "unrelated site customer must not read internal anomaly disposition notice")
+}

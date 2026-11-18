@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // 站点表的进程内缓存（执行层决定 28）。变更时清缓存；多实例下按 SYNC_FREQUENCY 过期重读（第八节）。
@@ -424,8 +425,11 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 	for _, key := range []string{"footer_html", "wechat_qrcode", "docs_link", "passkey_rp_id"} {
 		data[key] = ""
 	}
-	for _, key := range []string{"chats", "api_info", "announcements", "faq", "passkey_rp_ids"} {
+	for _, key := range []string{"chats", "api_info", "faq", "passkey_rp_ids"} {
 		data[key] = []any{}
+	}
+	if data["announcements"] == nil {
+		data["announcements"] = []any{}
 	}
 }
 
@@ -525,17 +529,108 @@ func AdtyAcceptedSiteCustomerTerms(c *gin.Context) string {
 // AdtyCheckSiteCustomerRisk 由 11.5 注册：注册时按指纹判断疑似自用、疑似主站迁移，返回风控标记和原因。
 var AdtyCheckSiteCustomerRisk func(siteId, userId int, ipHash, deviceHash string) (flag, reason string)
 
-// AdtyRecordSiteCustomer 在分站注册成功后写客户行（和 users.site_id 同步）。出错只记日志，不影响注册。
-func AdtyRecordSiteCustomer(userId, siteId int, ipHash, deviceHash, termsVersion string) {
+// AdtyRecordSiteCustomerTx 在事务内原子写入或恢复分站客户关系（与 users.site_id 及客户条款版本一致）。
+// 对同一 (userId, siteId) 幂等，支持注册事务内直接调用或事后补偿恢复。
+func AdtyRecordSiteCustomerTx(tx *gorm.DB, userId, siteId int, ipHash, deviceHash, termsVersion string) error {
+	var riskFlag, riskReason string
+	if AdtyCheckSiteCustomerRisk != nil && (ipHash != "" || deviceHash != "") {
+		riskFlag, riskReason = AdtyCheckSiteCustomerRisk(siteId, userId, ipHash, deviceHash)
+	}
+	return adtyRecordSiteCustomerWithRiskTx(tx, userId, siteId, termsVersion, riskFlag, riskReason)
+}
+
+func adtyRecordSiteCustomerWithRiskTx(tx *gorm.DB, userId, siteId int, termsVersion, riskFlag, riskReason string) error {
+	if tx == nil {
+		tx = model.DB
+	}
+	if tx == nil || userId <= 0 || siteId <= 0 {
+		return common.NewMessage("Invalid parameters")
+	}
 	now := time.Now().Unix()
-	customer := model.AdtySiteCustomer{UserId: userId, SiteId: siteId, JoinedAt: now, TermsVersion: termsVersion}
+	termsVersion = strings.TrimSpace(termsVersion)
+	var existing []model.AdtySiteCustomer
+	if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userId).Limit(1).Find(&existing).Error; err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		row := existing[0]
+		if row.SiteId != siteId && row.Status != model.AdtySiteCustomerArchived {
+			return common.NewMessage("Customer already belongs to another site")
+		}
+		updates := map[string]any{
+			"site_id":     siteId,
+			"status":      "active",
+			"archived_at": 0,
+		}
+		if row.JoinedAt <= 0 {
+			updates["joined_at"] = now
+		}
+		if termsVersion != "" && row.TermsVersion != termsVersion {
+			updates["terms_version"] = termsVersion
+			updates["terms_at"] = now
+		}
+		if riskFlag != "" && row.RiskFlag == "" {
+			updates["risk_flag"] = riskFlag
+			updates["risk_reason"] = riskReason
+		}
+		return tx.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", row.UserId).Updates(updates).Error
+	}
+	customer := model.AdtySiteCustomer{
+		UserId:       userId,
+		SiteId:       siteId,
+		Status:       "active",
+		JoinedAt:     now,
+		TermsVersion: termsVersion,
+		RiskFlag:     riskFlag,
+		RiskReason:   riskReason,
+	}
 	if termsVersion != "" {
 		customer.TermsAt = now
 	}
-	if AdtyCheckSiteCustomerRisk != nil {
-		customer.RiskFlag, customer.RiskReason = AdtyCheckSiteCustomerRisk(siteId, userId, ipHash, deviceHash)
+	return tx.Create(&customer).Error
+}
+
+// AdtyEnsureSiteCustomer 确保分站账号对应的 AdtySiteCustomer 关系持久落库；
+// 若写入失败，留下可追踪的官方审计记录并返回错误，此时 AdtySiteTermsStatus 保持 fail-closed 拦截。
+func AdtyEnsureSiteCustomer(userId, siteId int, ipHash, deviceHash, termsVersion string) error {
+	if userId <= 0 || siteId <= 0 || model.DB == nil {
+		return common.NewMessage("Invalid parameters")
 	}
-	if err := model.DB.Create(&customer).Error; err != nil {
+	var riskFlag, riskReason string
+	if AdtyCheckSiteCustomerRisk != nil && (ipHash != "" || deviceHash != "") {
+		riskFlag, riskReason = AdtyCheckSiteCustomerRisk(siteId, userId, ipHash, deviceHash)
+	}
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		return adtyRecordSiteCustomerWithRiskTx(tx, userId, siteId, termsVersion, riskFlag, riskReason)
+	})
+	if err != nil {
+		sID := siteId
+		_ = model.WriteOfficialAuditLog(nil, model.OfficialAuditWrite{
+			UserId:     userId,
+			SiteID:     &sID,
+			ObjectType: "site_customer",
+			ObjectID:   strings.TrimSpace(termsVersion),
+			Action:     "adty.site.customer_relation_recovery_needed",
+			Category:   model.AuditCategoryOperation,
+			Content:    "site customer relation persistence failed; account remains terms-gated until recovered",
+			After: map[string]any{
+				"user_id":       userId,
+				"site_id":       siteId,
+				"terms_version": strings.TrimSpace(termsVersion),
+				"error":         err.Error(),
+			},
+			Result:  model.AuditResultFailure,
+			Success: false,
+		})
+		return err
+	}
+	return nil
+}
+
+// AdtyRecordSiteCustomer 在分站注册后写客户行（和 users.site_id 同步）。
+// 若写入失败，记错误日志与可追踪审计，且缺失客户关系在 AdtySiteTermsStatus 中保持拦截，绝不当作免签放行。
+func AdtyRecordSiteCustomer(userId, siteId int, ipHash, deviceHash, termsVersion string) {
+	if err := AdtyEnsureSiteCustomer(userId, siteId, ipHash, deviceHash, termsVersion); err != nil {
 		common.SysError(common.LogText("record site customer failed user=%d site=%d: %s", userId, siteId, err.Error()))
 	}
 }

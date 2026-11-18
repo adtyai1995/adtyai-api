@@ -122,22 +122,32 @@ func AdtyCurrentSiteCustomerTermsVersion() string {
 }
 
 // AdtySiteTermsStatus 说明登录后要不要重新勾选。站长看开站协议，分站客户看客户条款。
+// 查询失败或分站客户缺少 AdtySiteCustomer 关系时一律按需重签（required=true）拦截，绝不当作免签放行（ISS-R1-0032）。
 func AdtySiteTermsStatus(userId int) (required bool, version string) {
 	if site, err := AdtyOwnerSite(userId); err == nil && site != nil {
 		version = AdtyCurrentSiteAgreementVersion()
 		return site.AgreementVer != version, version
+	} else if err != nil && !errors.Is(err, ErrAdtySiteNotOwner) {
+		return true, AdtyCurrentSiteAgreementVersion()
 	}
 	version = AdtyCurrentSiteCustomerTermsVersion()
 	if adty_setting.GetLegalSetting().SiteCustomerTermsVersion <= 0 {
 		return false, version
 	}
-	var siteID int
-	if err := model.DB.Model(&model.User{}).Select("site_id").Where("id = ?", userId).Scan(&siteID).Error; err != nil || siteID == 0 {
+	if userId <= 0 || model.DB == nil {
+		return true, version
+	}
+	var users []model.User
+	if err := model.DB.Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil || len(users) == 0 {
+		return true, version
+	}
+	siteID := users[0].SiteId
+	if siteID <= 0 || users[0].StaffSiteId > 0 {
 		return false, version
 	}
 	var rows []model.AdtySiteCustomer
-	if err := model.DB.Select("terms_version").Where("user_id = ? AND site_id = ?", userId, siteID).Limit(1).Find(&rows).Error; err != nil || len(rows) == 0 {
-		return false, version
+	if err := model.AdtyLiveSiteCustomer(model.DB.Model(&model.AdtySiteCustomer{})).Select("terms_version").Where("user_id = ? AND site_id = ?", userId, siteID).Limit(1).Find(&rows).Error; err != nil || len(rows) == 0 {
+		return true, version
 	}
 	return rows[0].TermsVersion != version, version
 }
@@ -192,26 +202,44 @@ func acceptCustomerSiteTerms(userId int, version string) error {
 	}
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var users []model.User
-		if err := tx.Select("id", "site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil {
+		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil {
 			return err
 		}
-		if len(users) == 0 || users[0].SiteId == 0 {
+		if len(users) == 0 || users[0].SiteId <= 0 || users[0].StaffSiteId > 0 {
 			return ErrAdtySiteNotOwner
 		}
+		siteID := users[0].SiteId
 		var rows []model.AdtySiteCustomer
-		if err := model.AdtyLockForUpdate(tx).Where("user_id = ? AND site_id = ?", userId, users[0].SiteId).Limit(1).Find(&rows).Error; err != nil {
+		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userId).Limit(1).Find(&rows).Error; err != nil {
 			return err
-		}
-		if len(rows) == 0 {
-			return ErrAdtySiteNotOwner
-		}
-		if rows[0].TermsVersion == current {
-			return nil
 		}
 		now := time.Now().Unix()
-		return tx.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", userId).Updates(map[string]any{
+		if len(rows) == 0 {
+			if err := adtyRecordSiteCustomerWithRiskTx(tx, userId, siteID, current, "", ""); err != nil {
+				return err
+			}
+			return recordSiteAuditTx(tx, siteID, "customer_terms_recover", userId,
+				nil, map[string]any{"user_id": userId, "terms_version": current}, "recover missing site customer relation on terms accept")
+		}
+		if rows[0].SiteId != siteID && rows[0].Status != model.AdtySiteCustomerArchived {
+			return ErrAdtySiteNotOwner
+		}
+		if rows[0].Status != model.AdtySiteCustomerArchived && rows[0].SiteId == siteID && rows[0].TermsVersion == current {
+			return nil
+		}
+		oldVer := rows[0].TermsVersion
+		if err := tx.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", userId).Updates(map[string]any{
+			"site_id": siteID, "status": "active", "archived_at": 0,
 			"terms_version": current, "terms_at": now,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		if oldVer == "" || rows[0].Status == model.AdtySiteCustomerArchived {
+			return recordSiteAuditTx(tx, siteID, "customer_terms_recover", userId,
+				map[string]any{"user_id": userId, "terms_version": oldVer, "status": rows[0].Status},
+				map[string]any{"user_id": userId, "terms_version": current, "status": "active"}, "recover customer terms relation")
+		}
+		return nil
 	})
 }
 
@@ -841,6 +869,7 @@ func ScheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan) (*model.
 func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, requiredStatus string) (*model.AdtySite, error) {
 	now := time.Now().Unix()
 	immediate := plan.Immediate
+	wasPending := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
@@ -856,6 +885,7 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 			return ErrAdtySiteStatus
 		}
 		if site.Status == model.AdtySiteStatusPending {
+			wasPending = true
 			immediate = true
 		}
 		if plan.TransferTo != 0 {
@@ -888,7 +918,7 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 		return nil, err
 	}
 	InvalidateAdtySiteCache()
-	if AdtyOnSiteClosing != nil && !immediate {
+	if AdtyOnSiteClosing != nil && !wasPending {
 		if site, err := GetAdtySite(siteId); err == nil {
 			AdtyOnSiteClosing(site)
 		}

@@ -386,13 +386,9 @@ func ReviewAdtyAnomalyDisposition(id int64, operatorID int, status, note string)
 }
 
 func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDisposition, operatorID int, status, note string) error {
-	siteID := row.SiteId
-	if siteID <= 0 {
-		parsed, err := strconv.Atoi(strings.TrimSpace(row.Ref))
-		if err != nil || parsed <= 0 {
-			return nil
-		}
-		siteID = parsed
+	recipientID, targetSiteID, includeInternalNote := resolveAdtyAnomalyDispositionRecipientTx(tx, row, operatorID)
+	if recipientID <= 0 {
+		return nil
 	}
 	publisher := "root"
 	var operator model.User
@@ -400,18 +396,94 @@ func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDispositio
 		publisher = operator.Username
 	}
 	content := "资金异常处置已记录。Fund anomaly review recorded. " + status
-	if note != "" {
+	if includeInternalNote && note != "" {
 		content += ": " + note
 	}
 	now := time.Now().Unix()
 	notice := model.AdtyNotificationPublication{
-		IssuerSiteId: 0, PublisherId: operatorID, PublisherName: publisher,
-		Title: "资金异常处置", Content: content, Kind: "system", Audience: "site",
-		TargetSiteId: siteID, TargetSiteName: "", Business: "fund_anomaly",
-		Status: "published", Revision: 1, PublishedAt: now, UpdatedAt: now, UpdatedBy: operatorID,
-		ReadKey: adtyNotificationVersion("anomaly:" + strconv.FormatInt(row.Id, 10) + ":" + status),
+		IssuerSiteId:    0,
+		PublisherId:     operatorID,
+		PublisherName:   publisher,
+		Title:           "资金异常处置",
+		Content:         content,
+		Kind:            "system",
+		Audience:        "user",
+		TargetSiteId:    targetSiteID,
+		TargetSiteName:  "user:" + strconv.Itoa(recipientID),
+		Business:        "fund_anomaly",
+		TelegramChannel: adtyPrivateTelegramMarker,
+		Status:          "published",
+		Revision:        1,
+		PublishedAt:     now,
+		UpdatedAt:       now,
+		UpdatedBy:       operatorID,
+		ReadKey:         adtyNotificationVersion("anomaly:" + strconv.FormatInt(row.Id, 10) + ":" + status + ":user:" + strconv.Itoa(recipientID)),
 	}
-	return tx.Create(&notice).Error
+	if err := tx.Create(&notice).Error; err != nil {
+		return err
+	}
+	if tx.Migrator().HasTable(&model.AdtyTelegramDelivery{}) &&
+		tx.Migrator().HasTable(&model.AdtyTelegramBinding{}) &&
+		tx.Migrator().HasTable(&model.AdtyTelegramBot{}) {
+		if err := queueAdtyPrivatePublicationTelegramTx(tx, &notice); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resolveAdtyAnomalyDispositionRecipientTx(tx *gorm.DB, row model.AdtyAnomalyDisposition, operatorID int) (recipientID, targetSiteID int, includeInternalNote bool) {
+	siteID := row.SiteId
+	if siteID <= 0 {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(row.Ref)); err == nil && parsed > 0 {
+			siteID = parsed
+		}
+	}
+	if siteID <= 0 && tx.Migrator().HasTable(&model.AdtyTopupOrder{}) {
+		for _, candidate := range []string{strings.TrimSpace(row.OrderRef), strings.TrimSpace(row.Ref)} {
+			if candidate == "" {
+				continue
+			}
+			var orders []model.AdtyTopupOrder
+			if err := tx.Select("site_id", "user_id").Where("trade_no = ?", candidate).Limit(1).Find(&orders).Error; err == nil && len(orders) > 0 {
+				if orders[0].SiteId > 0 {
+					siteID = orders[0].SiteId
+				}
+				if row.AccountId <= 0 && orders[0].UserId > 0 {
+					row.AccountId = orders[0].UserId
+				}
+				break
+			}
+		}
+	}
+	if siteID > 0 {
+		var sites []model.AdtySite
+		if err := tx.Select("id", "owner_user_id").Where("id = ?", siteID).Limit(1).Find(&sites).Error; err == nil && len(sites) > 0 && sites[0].OwnerUserId > 0 {
+			recipientID = sites[0].OwnerUserId
+			includeInternalNote = true
+		}
+	}
+	if recipientID <= 0 && row.AccountId > 0 {
+		recipientID = row.AccountId
+	}
+	if recipientID <= 0 && operatorID > 0 {
+		recipientID = operatorID
+		includeInternalNote = true
+	}
+	if recipientID <= 0 {
+		return 0, 0, false
+	}
+	var users []model.User
+	if err := tx.Select("id", "site_id", "staff_site_id", "role").Where("id = ?", recipientID).Limit(1).Find(&users).Error; err == nil && len(users) > 0 {
+		if users[0].StaffSiteId > 0 {
+			return 0, 0, false
+		}
+		targetSiteID = users[0].SiteId
+		if users[0].Role >= common.RoleAdminUser {
+			includeInternalNote = true
+		}
+	}
+	return recipientID, targetSiteID, includeInternalNote
 }
 
 // TransferAdtyEarningToMargin opens a current-target cycle only after the

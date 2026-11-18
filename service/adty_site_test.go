@@ -901,3 +901,29 @@ func TestLeftoverPausedSitesAreListedAndRepairedByRootWithoutAutoFlip(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtySiteStatusActive, stillActive.Status)
 }
+
+func TestImmediateCloseSendsMigrationMailBeforeCustomerTransfer(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "imm-mail")
+	customer := siteCustomer(t, db, site, "imm-mail-customer")
+
+	var closingHookSites []int
+	var customersDuringClosingHook int64
+	savedClosing := AdtyOnSiteClosing
+	AdtyOnSiteClosing = func(s *model.AdtySite) {
+		closingHookSites = append(closingHookSites, s.Id)
+		_ = db.Model(&model.User{}).Where("site_id = ?", s.Id).Count(&customersDuringClosingHook).Error
+	}
+	t.Cleanup(func() { AdtyOnSiteClosing = savedClosing })
+
+	closed, err := ScheduleAdtySiteClose(site.Id, 1, AdtySiteClosePlan{Immediate: true, Reason: "immediate migration"})
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtySiteStatusClosed, closed.Status)
+	assert.Equal(t, []int{site.Id}, closingHookSites, "immediate close of an active site must still trigger migration mail hook")
+	assert.EqualValues(t, 1, customersDuringClosingHook, "migration mail hook must run before customers are moved to main site")
+
+	var migrated model.User
+	require.NoError(t, db.First(&migrated, customer.Id).Error)
+	assert.Zero(t, migrated.SiteId)
+	assert.Equal(t, site.Id, migrated.InheritedFromSiteId)
+}
