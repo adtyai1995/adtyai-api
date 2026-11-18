@@ -9362,6 +9362,25 @@
     "Run again": "Run again",
     "Every change to affiliate commission accounts in USD: settling, withdrawable, withdrawing and withdrawn.": "Every change to affiliate commission accounts in USD: settling, withdrawable, withdrawing and withdrawn.",
     "Affiliate ID": "Affiliate ID",
-    "Who reviewed partner applications and withdrawals, changed affiliates, adjusted commission or changed the withdrawal rate.": "Who reviewed partner applications and withdrawals, changed affiliates, adjusted commission or changed the withdrawal rate."
+    "Who reviewed partner applications and withdrawals, changed affiliates, adjusted commission or changed the withdrawal rate.": "Who reviewed partner applications and withdrawals, changed affiliates, adjusted commission or changed the withdrawal rate.",
+    "Withdrawal history": "Withdrawal history",
+    "Close your account and revoke active sessions and tokens while retaining order, financial, and audit records": "Close your account and revoke active sessions and tokens while retaining order, financial, and audit records",
+    "Closing your account revokes active sessions and tokens after unsettled obligations are cleared. Historical order, financial, and audit records are retained as required.": "Closing your account revokes active sessions and tokens after unsettled obligations are cleared. Historical order, financial, and audit records are retained as required.",
+    "Warning: Account closure cannot be undone. Order, financial, and audit records are retained.": "Warning: Account closure cannot be undone. Order, financial, and audit records are retained.",
+    "The translator is not enabled": "The translator is not enabled",
+    "Daily translation quota reached": "Daily translation quota reached",
+    "Object key": "Object key",
+    "Translation tasks": "Translation tasks",
+    "Retry task": "Retry task",
+    "Edit translation": "Edit translation",
+    "Manual English override": "Manual English override",
+    "Save translation": "Save translation",
+    "Glossary": "Glossary",
+    "Source term": "Source term",
+    "Target term": "Target term",
+    "Glossary locale": "Glossary locale",
+    "Save term": "Save term",
+    "Edit term": "Edit term",
+    "Delete term": "Delete term"
   }
 }

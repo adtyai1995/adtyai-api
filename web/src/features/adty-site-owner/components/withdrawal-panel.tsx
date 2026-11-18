@@ -15,9 +15,12 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { EmptyState } from '@/components/empty-state'
+import { ErrorState } from '@/components/error-state'
+import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -32,6 +35,7 @@ import {
   getSiteWithdrawRules,
   siteOwnerKeys,
 } from '../api'
+import { newIdempotencyKey } from '../lib/site-owner'
 
 const NETWORKS = ['TRC20', 'BEP20', 'POLYGON', 'XLAYER'] as const
 
@@ -53,6 +57,7 @@ export function WithdrawalPanel() {
   const [accountNo, setAccountNo] = useState('')
   const [accountName, setAccountName] = useState('')
   const [confirmed, setConfirmed] = useState(false)
+  const submitIntentRef = useRef<{ payload: string; key: string } | null>(null)
 
   const submit = useMutation({
     mutationFn: () => {
@@ -61,17 +66,28 @@ export function WithdrawalPanel() {
           ? rules.data?.usdt_usd_rate
           : rules.data?.alipay_cny_rate
       if (!rate) throw new Error(t('Withdrawal rules are not set'))
-      return createSiteWithdrawal({
+      const payload = {
         amount_usd: amount,
         method,
         network: method === 'usdt' ? network : '',
         account_no: accountNo,
         account_name: accountName,
         expected_rate: rate,
-        idempotencyKey: crypto.randomUUID(),
+      }
+      const serialized = JSON.stringify(payload)
+      if (submitIntentRef.current?.payload !== serialized) {
+        submitIntentRef.current = {
+          payload: serialized,
+          key: newIdempotencyKey(),
+        }
+      }
+      return createSiteWithdrawal({
+        ...payload,
+        idempotencyKey: submitIntentRef.current.key,
       })
     },
     onSuccess: () => {
+      submitIntentRef.current = null
       setAmount('')
       setAccountNo('')
       setAccountName('')
@@ -214,30 +230,42 @@ export function WithdrawalPanel() {
           </div>
         </form>
       )}
-      <ul className='flex flex-col gap-2'>
-        {(list.data ?? []).map((row) => (
-          <li
-            key={row.id}
-            className='flex flex-wrap items-center justify-between gap-2 text-sm tabular-nums'
-          >
-            <span>
-              {row.amount_usd} USD · {row.method} ·{' '}
-              {siteWithdrawalStatusLabel(t, row.status)}
-            </span>
-            {row.status === 'pending' && (
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                disabled={cancel.isPending}
-                onClick={() => cancel.mutate(row.id)}
+      <section
+        className='flex flex-col gap-2'
+        aria-label={t('Withdrawal history')}
+      >
+        {list.isPending && <LoadingState />}
+        {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
+        {list.isSuccess && (list.data ?? []).length === 0 && (
+          <EmptyState className='min-h-24' title={t('No withdrawals yet')} />
+        )}
+        {list.isSuccess && (list.data ?? []).length > 0 && (
+          <ul className='flex flex-col gap-2'>
+            {(list.data ?? []).map((row) => (
+              <li
+                key={row.id}
+                className='flex flex-wrap items-center justify-between gap-2 text-sm tabular-nums'
               >
-                {t('Cancel')}
-              </Button>
-            )}
-          </li>
-        ))}
-      </ul>
+                <span>
+                  {row.amount_usd} USD · {row.method} ·{' '}
+                  {siteWithdrawalStatusLabel(t, row.status)}
+                </span>
+                {row.status === 'pending' && (
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={cancel.isPending}
+                    onClick={() => cancel.mutate(row.id)}
+                  >
+                    {t('Cancel')}
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </section>
   )
 }

@@ -96,11 +96,13 @@ export async function saveOwnerSite(body: {
 export async function saveOwnerSiteMethodBonus(
   method: string,
   enabled: boolean,
-  rate: string
+  rate: string,
+  proof: string
 ): Promise<void> {
   const res = await api.put<ApiResponse<{ site_id: number }>>(
     `${BASE}/bonus-methods`,
-    { method, enabled, rate }
+    { method, enabled, rate },
+    proofHeaders(proof)
   )
   requireServerSuccess(res.data)
 }
@@ -174,11 +176,14 @@ export async function createSiteWithdrawal(body: {
   return requireServerSuccess(res.data).data
 }
 
-export async function transferEarningToMargin(amountUsd: string): Promise<void> {
+export async function transferEarningToMargin(
+  amountUsd: string,
+  idempotencyKey: string = crypto.randomUUID()
+): Promise<void> {
   const res = await api.post<ApiResponse<{ transferred: boolean }>>(
     `${BASE}/wallets/earning-to-margin`,
     { amount_usd: amountUsd },
-    { headers: { 'Idempotency-Key': crypto.randomUUID() } }
+    { headers: { 'Idempotency-Key': idempotencyKey } }
   )
   requireServerSuccess(res.data)
 }

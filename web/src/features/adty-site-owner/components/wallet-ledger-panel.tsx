@@ -25,6 +25,7 @@ import { siteWalletKindLabel } from '@/features/adty-ledger/site-wallet-labels'
 import { SiteWalletLedger } from '@/features/adty-ledger/site-wallet-ledger'
 
 import { getOwnerWalletLedger, getOwnerWallets, siteOwnerKeys } from '../api'
+import { marginCycleSummary } from '../lib/site-owner'
 import { OwnerStatGrid } from './stat-grid'
 
 /**
@@ -55,17 +56,41 @@ export function WalletLedgerPanel() {
       {rows.length > 0 && (
         <OwnerStatGrid
           label={t('Wallets')}
-          items={rows.flatMap((wallet) => [
-            {
-              label: siteWalletKindLabel(t, wallet.kind),
-              value: `${wallet.balance} USD`,
-              negative: Number(wallet.balance) < 0,
-            },
-            {
-              label: `${siteWalletKindLabel(t, wallet.kind)} · ${t('Frozen')}`,
-              value: `${wallet.frozen_usd || '0'} USD`,
-            },
-          ])}
+          items={rows.flatMap((wallet) => {
+            const label = siteWalletKindLabel(t, wallet.kind)
+            const base = [
+              {
+                label,
+                value: `${wallet.balance} USD`,
+                negative: Number(wallet.balance) < 0,
+              },
+              {
+                label: `${label} · ${t('Frozen')}`,
+                value: `${wallet.frozen_usd || '0'} USD`,
+              },
+            ]
+            if (wallet.kind !== 'margin') return base
+            const cycle = marginCycleSummary(wallet)
+            return [
+              ...base,
+              {
+                label: `${label} · ${t('Tier')}`,
+                value: `${cycle.tierUsd} USD`,
+              },
+              {
+                label: `${label} · ${t('Used')}`,
+                value: `${cycle.usedUsd} USD`,
+              },
+              {
+                label: `${label} · ${t('Limit')}`,
+                value: `${cycle.limit90Usd} USD`,
+              },
+              {
+                label: `${label} · ${t('Available')}`,
+                value: `${cycle.availableUsd} USD`,
+              },
+            ]
+          })}
         />
       )}
       <SiteWalletLedger

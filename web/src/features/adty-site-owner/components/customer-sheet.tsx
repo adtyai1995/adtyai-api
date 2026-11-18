@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -89,12 +89,16 @@ export function CustomerSheet(props: {
     enabled: id > 0,
     meta: { errorToast: false },
   })
+  const trialIntentRef = useRef<{ payload: string; key: string } | null>(null)
   const trial = useVerifiedOwnerMutation<{ amount: string; key: string }>({
     action: 'trial',
     target: () => id,
     run: (vars, proof) => grantTrial(id, vars.amount, vars.key, proof),
     successMessage: t('Trial credit sent'),
-    onSuccess: () => setTrialAmount(''),
+    onSuccess: () => {
+      trialIntentRef.current = null
+      setTrialAmount('')
+    },
   })
   const price = useVerifiedOwnerMutation<string>({
     action: 'pricing',
@@ -313,12 +317,19 @@ export function CustomerSheet(props: {
                 </div>
                 <Button
                   disabled={!trialAmount || trial.isPending}
-                  onClick={() =>
+                  onClick={() => {
+                    const payload = `${id}:${trialAmount}`
+                    if (trialIntentRef.current?.payload !== payload) {
+                      trialIntentRef.current = {
+                        payload,
+                        key: newIdempotencyKey(),
+                      }
+                    }
                     trial.mutate({
                       amount: trialAmount,
-                      key: newIdempotencyKey(),
+                      key: trialIntentRef.current.key,
                     })
-                  }
+                  }}
                 >
                   {t('Send')}
                 </Button>
@@ -377,6 +388,7 @@ export function CustomerSheet(props: {
         open={discarding}
         onOpenChange={setDiscarding}
         onDiscard={() => {
+          trialIntentRef.current = null
           setTrialAmount('')
           setMarkup('')
           setReason('')

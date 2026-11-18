@@ -16,7 +16,84 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { SiteWallet } from '@/features/adty-ledger/site-wallet-labels'
+
 import type { SenderDnsRecord, SitePrice } from '../types'
+
+const USD_SCALE = 8
+const USD_SCALE_FACTOR = 10n ** BigInt(USD_SCALE)
+
+function parseScaledUsd(raw: string | undefined): bigint {
+  const s = (raw ?? '').trim()
+  if (!s) return 0n
+  const neg = s.startsWith('-')
+  const clean = neg || s.startsWith('+') ? s.slice(1) : s
+  const [intPart = '0', fracPart = ''] = clean.split('.')
+  if (!/^\d+$/.test(intPart || '0') || !/^\d*$/.test(fracPart)) return 0n
+  const paddedFrac = (fracPart + '0'.repeat(USD_SCALE)).slice(0, USD_SCALE)
+  const val =
+    BigInt(intPart || '0') * USD_SCALE_FACTOR + BigInt(paddedFrac || '0')
+  return neg ? -val : val
+}
+
+function formatScaledUsd(val: bigint): string {
+  if (val === 0n) return '0'
+  const neg = val < 0n
+  const abs = neg ? -val : val
+  const intPart = abs / USD_SCALE_FACTOR
+  const fracPart = (abs % USD_SCALE_FACTOR)
+    .toString()
+    .padStart(USD_SCALE, '0')
+    .replace(/0+$/, '')
+  const formatted = fracPart ? `${intPart}.${fracPart}` : `${intPart}`
+  return neg ? `-${formatted}` : formatted
+}
+
+export type MarginCycleSummary = {
+  tierUsd: string
+  usedUsd: string
+  limit90Usd: string
+  availableUsd: string
+}
+
+/**
+ * Computes the margin cycle summary (tier, used, 90% limit, and currently
+ * available draw) using scaled BigInt arithmetic.
+ */
+export function marginCycleSummary(
+  wallet: Pick<
+    SiteWallet,
+    'balance' | 'frozen_usd' | 'cycle_tier_usd' | 'cycle_used_usd'
+  >
+): MarginCycleSummary {
+  const tier = parseScaledUsd(wallet.cycle_tier_usd)
+  const used = parseScaledUsd(wallet.cycle_used_usd)
+  const frozen = parseScaledUsd(wallet.frozen_usd)
+  const balance = parseScaledUsd(wallet.balance)
+
+  if (tier <= 0n) {
+    return {
+      tierUsd: formatScaledUsd(tier > 0n ? tier : 0n),
+      usedUsd: formatScaledUsd(used > 0n ? used : 0n),
+      limit90Usd: '0',
+      availableUsd: '0',
+    }
+  }
+
+  const limit90 = (tier * 9n) / 10n
+  const floor10 = tier - limit90
+  const capRoom = limit90 - used - frozen
+  const cashRoom = balance - frozen - floor10
+  const minRoom = capRoom < cashRoom ? capRoom : cashRoom
+  const available = minRoom > 0n ? minRoom : 0n
+
+  return {
+    tierUsd: formatScaledUsd(tier),
+    usedUsd: formatScaledUsd(used),
+    limit90Usd: formatScaledUsd(limit90),
+    availableUsd: formatScaledUsd(available),
+  }
+}
 
 /** True for a decimal string below zero ("-0.00" counts as zero). */
 export function isNegativeAmount(value: string | undefined): boolean {

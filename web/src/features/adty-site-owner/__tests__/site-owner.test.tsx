@@ -23,6 +23,8 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BonusPanel } from '../components/bonus-panel'
+import { CustomerSheet } from '../components/customer-sheet'
+import { EarningToMarginPanel } from '../components/earning-to-margin-panel'
 import { EarningsPanel } from '../components/earnings-panel'
 import { OverviewPanel } from '../components/overview-panel'
 import { OwnerVerificationProvider } from '../components/owner-verification'
@@ -40,6 +42,11 @@ const api = vi.hoisted(() => ({
   uploadLogo: vi.fn(),
   saveOwnerSite: vi.fn(),
   saveOwnerSiteMethodBonus: vi.fn(),
+  transferEarningToMargin: vi.fn(),
+  getOwnerCustomer: vi.fn(),
+  getOwnerCustomerLogs: vi.fn(),
+  getOwnerCustomerTopUps: vi.fn(),
+  grantTrial: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api')>()),
@@ -507,7 +514,10 @@ describe('Brand logo', () => {
 })
 
 describe('BonusPanel', () => {
-  it('edits a payment-method gift and shows no amount tiers', async () => {
+  it('edits a payment-method gift with step-up proof and shows no amount tiers', async () => {
+    verification.requestVerification.mockResolvedValue({
+      proof_token: 'proof-bonus',
+    })
     api.saveOwnerSiteMethodBonus.mockResolvedValue(undefined)
     render(
       wrap(
@@ -529,9 +539,35 @@ describe('BonusPanel', () => {
       expect(api.saveOwnerSiteMethodBonus).toHaveBeenCalledWith(
         'alipay',
         true,
-        '0.025'
+        '0.025',
+        'proof-bonus'
       )
     )
+    expect(verification.requestVerification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'site.owner.manage',
+        context: { action: 'bonus', target: 7 },
+      })
+    )
+  })
+
+  it('does not save bonus when the owner cancels verification', async () => {
+    verification.requestVerification.mockResolvedValue(null)
+    render(
+      wrap(
+        <BonusPanel
+          site={ownerSite({
+            bonus_methods: [{ method: 'alipay', enabled: false, rate: '0' }],
+          })}
+        />
+      )
+    )
+    await userEvent.click(screen.getByRole('switch'))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(verification.requestVerification).toHaveBeenCalled()
+    )
+    expect(api.saveOwnerSiteMethodBonus).not.toHaveBeenCalled()
   })
 
   it('says no method is authorized when the platform authorized none', () => {
@@ -540,5 +576,107 @@ describe('BonusPanel', () => {
       screen.getByText(/No payment method is authorized for a gift yet/)
     ).toBeInTheDocument()
     expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+  })
+})
+
+describe('EarningToMarginPanel idempotency', () => {
+  it('reuses the same idempotency key on retry and rotates on payload change or success', async () => {
+    let callCount = 0
+    api.transferEarningToMargin.mockImplementation(async () => {
+      callCount += 1
+      if (callCount === 1) throw new Error('network error')
+    })
+    render(wrap(<EarningToMarginPanel />))
+    const input = screen.getByLabelText('Amount')
+    const button = screen.getByRole('button', {
+      name: 'Transfer earnings to margin',
+    })
+
+    await userEvent.type(input, '10')
+    await userEvent.click(button)
+    await waitFor(() =>
+      expect(api.transferEarningToMargin).toHaveBeenCalledTimes(1)
+    )
+    const firstKey = api.transferEarningToMargin.mock.calls[0]?.[1]
+    expect(firstKey).toBeTruthy()
+
+    // Retry same payload -> same key
+    await userEvent.click(button)
+    await waitFor(() =>
+      expect(api.transferEarningToMargin).toHaveBeenCalledTimes(2)
+    )
+    const secondKey = api.transferEarningToMargin.mock.calls[1]?.[1]
+    expect(secondKey).toBe(firstKey)
+
+    // After success, submitting same amount again rotates key
+    await userEvent.type(input, '10')
+    await userEvent.click(button)
+    await waitFor(() =>
+      expect(api.transferEarningToMargin).toHaveBeenCalledTimes(3)
+    )
+    const thirdKey = api.transferEarningToMargin.mock.calls[2]?.[1]
+    expect(thirdKey).not.toBe(firstKey)
+
+    // If failed then payload changed -> rotates key
+    api.transferEarningToMargin.mockRejectedValueOnce(new Error('network error'))
+    await userEvent.type(input, '20')
+    await userEvent.click(button)
+    await waitFor(() =>
+      expect(api.transferEarningToMargin).toHaveBeenCalledTimes(4)
+    )
+    const fourthKey = api.transferEarningToMargin.mock.calls[3]?.[1]
+
+    api.transferEarningToMargin.mockResolvedValueOnce(undefined)
+    await userEvent.clear(input)
+    await userEvent.type(input, '25')
+    await userEvent.click(button)
+    await waitFor(() =>
+      expect(api.transferEarningToMargin).toHaveBeenCalledTimes(5)
+    )
+    const fifthKey = api.transferEarningToMargin.mock.calls[4]?.[1]
+    expect(fifthKey).not.toBe(fourthKey)
+  })
+})
+
+describe('CustomerSheet trial idempotency', () => {
+  it('reuses the same idempotency key on retry and rotates on amount change or success', async () => {
+    verification.requestVerification.mockResolvedValue({
+      proof_token: 'proof-trial',
+    })
+    api.getOwnerCustomer.mockResolvedValue({
+      customer: { id: 9, username: 'bob', created_at: 1_700_000_000 },
+      prices: [],
+      tokens: [],
+    })
+    api.getOwnerCustomerLogs.mockResolvedValue({ items: [], total: 0 })
+    api.getOwnerCustomerTopUps.mockResolvedValue({ items: [], total: 0 })
+    let attempts = 0
+    api.grantTrial.mockImplementation(async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('timeout')
+    })
+
+    render(wrap(<CustomerSheet customerId={9} onOpenChange={() => {}} />))
+    const input = await screen.findByLabelText('Amount (USD)')
+    const sendBtn = screen.getByRole('button', { name: 'Send' })
+
+    await userEvent.type(input, '5')
+    await userEvent.click(sendBtn)
+    await waitFor(() => expect(api.grantTrial).toHaveBeenCalledTimes(1))
+    const key1 = api.grantTrial.mock.calls[0]?.[2]
+    expect(key1).toBeTruthy()
+
+    // Retry same amount -> same key
+    await userEvent.click(sendBtn)
+    await waitFor(() => expect(api.grantTrial).toHaveBeenCalledTimes(2))
+    const key2 = api.grantTrial.mock.calls[1]?.[2]
+    expect(key2).toBe(key1)
+
+    // New intent after success -> rotates key
+    await userEvent.type(input, '5')
+    await userEvent.click(sendBtn)
+    await waitFor(() => expect(api.grantTrial).toHaveBeenCalledTimes(3))
+    const key3 = api.grantTrial.mock.calls[2]?.[2]
+    expect(key3).not.toBe(key1)
   })
 })

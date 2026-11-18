@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -25,9 +24,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
-import { handleServerError } from '@/lib/handle-server-error'
 
-import { saveOwnerSiteMethodBonus, siteOwnerKeys } from '../api'
+import { saveOwnerSiteMethodBonus } from '../api'
+import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
 import type { OwnerSite } from '../types'
 
 type MethodRow = { method: string; enabled: boolean; rate: string }
@@ -45,7 +44,6 @@ const rowValue = (row: MethodRow) =>
 /** Payment-method gifts for this site's top-ups; the bonus is paid from the owner's earnings. */
 export function BonusPanel(props: { site: OwnerSite }) {
   const { t } = useTranslation()
-  const client = useQueryClient()
   const saved = props.site.bonus_methods
   const [rows, setRows] = useState<MethodRow[]>(() =>
     saved.map(({ method, enabled, rate }) => ({ method, enabled, rate }))
@@ -63,12 +61,11 @@ export function BonusPanel(props: { site: OwnerSite }) {
   useDraftNavigation(
     rows.some((row) => savedByMethod.get(row.method) !== rowValue(row))
   )
-  const save = useMutation({
-    mutationFn: (row: MethodRow) =>
-      saveOwnerSiteMethodBonus(row.method, row.enabled, row.rate.trim()),
-    onSuccess: () =>
-      void client.invalidateQueries({ queryKey: siteOwnerKeys.all }),
-    onError: (error) => handleServerError(error),
+  const save = useVerifiedOwnerMutation<MethodRow>({
+    action: 'bonus',
+    target: () => props.site.id,
+    run: (row, proof) =>
+      saveOwnerSiteMethodBonus(row.method, row.enabled, row.rate.trim(), proof),
   })
   const closing = props.site.status === 'closing'
   const update = (method: string, patch: Partial<MethodRow>) =>

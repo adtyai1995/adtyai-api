@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -26,15 +26,24 @@ import { Label } from '@/components/ui/label'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { siteOwnerKeys, transferEarningToMargin } from '../api'
+import { newIdempotencyKey } from '../lib/site-owner'
 
 /** Moves typed earnings into margin. The tier deposit comes from the enabled site tier. */
 export function EarningToMarginPanel() {
   const { t } = useTranslation()
   const client = useQueryClient()
   const [amount, setAmount] = useState('')
+  const intentRef = useRef<{ payload: string; key: string } | null>(null)
   const transfer = useMutation({
-    mutationFn: () => transferEarningToMargin(amount.trim()),
+    mutationFn: () => {
+      const trimmed = amount.trim()
+      if (intentRef.current?.payload !== trimmed) {
+        intentRef.current = { payload: trimmed, key: newIdempotencyKey() }
+      }
+      return transferEarningToMargin(trimmed, intentRef.current.key)
+    },
     onSuccess: () => {
+      intentRef.current = null
       setAmount('')
       void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
     },

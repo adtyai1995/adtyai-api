@@ -9362,6 +9362,25 @@
     "Run again": "重新执行",
     "Every change to affiliate commission accounts in USD: settling, withdrawable, withdrawing and withdrawn.": "推广员佣金账户的每一笔变动（USD）：待结算、可提现、提现中、已提现。",
     "Affiliate ID": "推广员 ID",
-    "Who reviewed partner applications and withdrawals, changed affiliates, adjusted commission or changed the withdrawal rate.": "谁审核了合作伙伴申请和提现、改了推广员、调整了佣金或改了提现汇率。"
+    "Who reviewed partner applications and withdrawals, changed affiliates, adjusted commission or changed the withdrawal rate.": "谁审核了合作伙伴申请和提现、改了推广员、调整了佣金或改了提现汇率。",
+    "Withdrawal history": "提现记录",
+    "Close your account and revoke active sessions and tokens while retaining order, financial, and audit records": "注销账号并吊销当前会话与令牌，历史订单、财务与审计记录将依法保留",
+    "Closing your account revokes active sessions and tokens after unsettled obligations are cleared. Historical order, financial, and audit records are retained as required.": "账号注销需先结清未完结事项，注销后将吊销全部会话与访问令牌，历史订单、财务及审计记录按规定保留。",
+    "Warning: Account closure cannot be undone. Order, financial, and audit records are retained.": "警告：账号注销不可撤销，历史订单、财务及审计记录将按规定保留。",
+    "The translator is not enabled": "系统翻译未启用",
+    "Daily translation quota reached": "已达到今日翻译调用上限",
+    "Object key": "对象键",
+    "Translation tasks": "翻译任务",
+    "Retry task": "重试任务",
+    "Edit translation": "人工编辑译文",
+    "Manual English override": "人工英文译文覆盖",
+    "Save translation": "保存译文",
+    "Glossary": "术语表",
+    "Source term": "源术语",
+    "Target term": "目标术语",
+    "Glossary locale": "目标语种",
+    "Save term": "保存术语",
+    "Edit term": "编辑术语",
+    "Delete term": "删除术语"
   }
 }

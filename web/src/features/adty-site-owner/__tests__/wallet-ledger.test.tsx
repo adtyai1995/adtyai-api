@@ -23,13 +23,75 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { api } from '@/lib/api'
 
 import { WalletLedgerPanel } from '../components/wallet-ledger-panel'
+import { marginCycleSummary } from '../lib/site-owner'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
 })
 
-it('shows earnings and margin wallets without the operating wallet or operator ids', async () => {
+it('computes marginCycleSummary using scaled BigInt arithmetic', () => {
+  expect(
+    marginCycleSummary({
+      balance: '70',
+      frozen_usd: '10',
+      cycle_tier_usd: '100',
+      cycle_used_usd: '30',
+    })
+  ).toEqual({
+    tierUsd: '100',
+    usedUsd: '30',
+    limit90Usd: '90',
+    availableUsd: '50',
+  })
+
+  // Cash room limited: limit90 - used - frozen = 90 - 10 - 10 = 70, balance - frozen - floor10 = 50 - 10 - 10 = 30 -> 30
+  expect(
+    marginCycleSummary({
+      balance: '50',
+      frozen_usd: '10',
+      cycle_tier_usd: '100',
+      cycle_used_usd: '10',
+    })
+  ).toEqual({
+    tierUsd: '100',
+    usedUsd: '10',
+    limit90Usd: '90',
+    availableUsd: '30',
+  })
+
+  // Clamped at 0 when overused or under floor
+  expect(
+    marginCycleSummary({
+      balance: '15',
+      frozen_usd: '10',
+      cycle_tier_usd: '100',
+      cycle_used_usd: '85',
+    })
+  ).toEqual({
+    tierUsd: '100',
+    usedUsd: '85',
+    limit90Usd: '90',
+    availableUsd: '0',
+  })
+
+  // High precision decimals without float drift
+  expect(
+    marginCycleSummary({
+      balance: '0.3',
+      frozen_usd: '0.1',
+      cycle_tier_usd: '0.3',
+      cycle_used_usd: '0.05',
+    })
+  ).toEqual({
+    tierUsd: '0.3',
+    usedUsd: '0.05',
+    limit90Usd: '0.27',
+    availableUsd: '0.12',
+  })
+})
+
+it('shows earnings and margin wallets with margin cycle summary and without operating wallet or operator ids', async () => {
   const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
     if (url === '/api/adty/site/wallets') {
       return {
@@ -38,7 +100,14 @@ it('shows earnings and margin wallets without the operating wallet or operator i
           data: [
             { id: 1, kind: 'operating', balance: '999' },
             { id: 2, kind: 'earnings', balance: '20', frozen_usd: '5' },
-            { id: 3, kind: 'margin', balance: '100', frozen_usd: '0' },
+            {
+              id: 3,
+              kind: 'margin',
+              balance: '70',
+              frozen_usd: '10',
+              cycle_tier_usd: '100',
+              cycle_used_usd: '30',
+            },
           ],
         },
       }
@@ -85,6 +154,17 @@ it('shows earnings and margin wallets without the operating wallet or operator i
   expect(balances).toHaveTextContent('Earnings wallet')
   expect(balances).toHaveTextContent('20 USD')
   expect(balances).toHaveTextContent('Margin wallet')
+  expect(balances).toHaveTextContent('70 USD')
+  expect(balances).toHaveTextContent('Margin wallet · Frozen')
+  expect(balances).toHaveTextContent('10 USD')
+  expect(balances).toHaveTextContent('Margin wallet · Tier')
+  expect(balances).toHaveTextContent('100 USD')
+  expect(balances).toHaveTextContent('Margin wallet · Used')
+  expect(balances).toHaveTextContent('30 USD')
+  expect(balances).toHaveTextContent('Margin wallet · Limit')
+  expect(balances).toHaveTextContent('90 USD')
+  expect(balances).toHaveTextContent('Margin wallet · Available')
+  expect(balances).toHaveTextContent('50 USD')
   expect(balances).not.toHaveTextContent('Operating wallet')
   expect(balances).not.toHaveTextContent('999')
   const table = await screen.findByRole('table', { name: 'Wallet ledger' })
