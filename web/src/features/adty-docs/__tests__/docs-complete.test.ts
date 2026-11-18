@@ -58,4 +58,13 @@ describe('docs content', () => {
       }
     }
   )
+
+  it('documents API key routing group selection accurately in models.md', () => {
+    const en = getDocMarkdown('models', 'en')
+    const zh = getDocMarkdown('models', 'zh-CN')
+    expect(en).toContain('authenticated API key')
+    expect(en).not.toContain('in `group`')
+    expect(zh).toContain('API 密钥决定')
+    expect(zh).not.toContain('`group` 使用已授权分组')
+  })
 })

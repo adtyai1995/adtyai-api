@@ -26,6 +26,7 @@ var accessTokenExemptRoutes = []string{
 	"POST /api/setup",
 	"GET /api/status",
 	"GET /api/ready",
+	"GET /api/health",
 	"GET /api/uptime/status",
 	"GET /api/notice",
 	"GET /api/user-agreement",
@@ -187,4 +188,16 @@ func TestAccessTokenVerificationScopesAreAllListed(t *testing.T) {
 		_, listed := service.AccessTokenVerificationScope(scope)
 		assert.True(t, listed, "verification scope %s has no access token rule", scope)
 	}
+}
+
+func TestApiHealthRouteRegistered(t *testing.T) {
+	engine := newAccessTokenScopeTestEngine(t)
+	found := false
+	for _, route := range engine.Routes() {
+		if route.Method == "GET" && route.Path == "/api/health" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "GET /api/health must be registered")
 }

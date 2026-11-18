@@ -279,7 +279,7 @@ try {
   }
   assert.deepEqual(errors, [])
   console.log(
-    'PASS six-provider production finance actions; pageerrors=0; query success covered by authenticated provider HTTP boundary tests'
+    'PASS two-provider (bepusdt, adty_epay) production finance actions; pageerrors=0; query success covered by authenticated provider HTTP boundary tests'
   )
 } finally {
   await browser.close()

@@ -181,7 +181,7 @@ func adtyCustomDomainAdminAPI(path string) bool {
 // 会先看服务是否在线、有哪些模型分组，这些不带账号状态，放行没有风险。
 func adtyApiOnlyProbePath(path string) bool {
 	switch path {
-	case "/api/status", "/api/ready", "/api/uptime/status", "/api/ratio_config",
+	case "/api/status", "/api/ready", "/api/health", "/api/uptime/status", "/api/ratio_config",
 		"/api/adty/groups/display", "/api/adty/site":
 		return true
 	}

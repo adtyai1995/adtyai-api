@@ -79,6 +79,10 @@ if ! [[ "$adty_pg_version" =~ ^[0-9]+$ ]] || [ "$adty_pg_version" -le 0 ]; then
   echo "browser-business: could not read server_version_num ($adty_pg_version)" >&2
   exit 1
 fi
+if [ $((adty_pg_version / 10000)) -ne 18 ]; then
+  echo "browser-business: formal PostgreSQL 18 is required (180000 <= server_version_num < 190000); got server_version_num=$adty_pg_version" >&2
+  exit 1
+fi
 echo "browser-business: server_version_num=$adty_pg_version"
 
 adty_tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/adty-browser.XXXXXXXX")

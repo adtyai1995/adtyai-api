@@ -1,6 +1,6 @@
 # 部署：Docker Compose、Nginx 和 Cloudflare
 
-单台服务器：Cloudflare 小云朵 → 本机 Nginx（443）→ `127.0.0.1:3000` 上的 adtyai-api 容器。正式运行和验收只使用 PostgreSQL，不使用 SQLite 或 MySQL。不设最低版本或最高版本。建议版本为 PostgreSQL 17，compose 示例优先使用 17，但不把 16、18 或其他版本排除在验收之外。Redis 也在 compose 里，不对外开端口。已有数据目录升级主要版本时，必须另建目录迁移并核对账目，不能直接换镜像启动。文件都在 `deploy/adty/`（任务 10.1）：
+单台服务器：Cloudflare 小云朵 → 本机 Nginx（443）→ `127.0.0.1:3000` 上的 adtyai-api 容器。正式运行和验收只使用 PostgreSQL 18，不使用 SQLite 或 MySQL。生产 compose、测试与备份恢复客户端统一使用 PostgreSQL 18。Redis 也在 compose 里，不对外开端口。已有数据目录升级主要版本时，必须另建目录迁移并核对账目，不能直接换镜像启动。文件都在 `deploy/adty/`（任务 10.1）：
 
 | 文件 | 用途 |
 | --- | --- |
@@ -32,7 +32,7 @@ sudo cp .env.example .env && sudo chmod 600 .env
 - `SESSION_SECRET`、`CRYPTO_SECRET` 分开设，设了就不要再改：换了会让所有登录会话、推广 cookie 签名、防刷指纹和任务产物的签名失效。不设 `CRYPTO_SECRET` 时它等于 `SESSION_SECRET`，以后想换 `SESSION_SECRET` 就会连带出问题，所以一开始就分开。
 - `.env` 另存一份到密码管理器。备份脚本不备份 `.env`，恢复时要用它。
 - Cloudflare Token 和 Turnstile widget secret 的数据库加密要求显式设置至少 32 字节的 `CRYPTO_SECRET`（建议上述随机 64 位十六进制），不能使用临时生成或会话默认值。所有节点及恢复环境必须使用同一个 key。历史明文首次载入自动加密；key 错误或密文损坏会停用本节点此域凭证并记录通用错误。恢复原 key 后重载配置，或由 Root 重新录入有效凭证；不得把密文当令牌填回界面。外部令牌泄露时先在 Cloudflare 撤销，再由 Root 保存替代值；不要直接修改 `CRYPTO_SECRET`，它还用于其他签名。旧明文备份仍须按敏感文件保管，不能因新版本加密就公开。
-- `LOG_SQL_DSN` 可选，留空时日志使用主库；设置时必须是 PostgreSQL，不限定主版本，且 API 容器和用于备份的 postgres 客户端容器均能访问它。备份按 API 容器实际的 `SQL_DSN` 和 `LOG_SQL_DSN` 导出，不假设连接是 compose 默认库。
+- `LOG_SQL_DSN` 可选，留空时日志使用主库；设置时必须是 PostgreSQL 18，且 API 容器和用于备份的 postgres 客户端容器均能访问它。备份按 API 容器实际的 `SQL_DSN` 和 `LOG_SQL_DSN` 导出，不假设连接是 compose 默认库。
 - compose 里固定写好的：`SESSION_COOKIE_SECURE=true`（和 `SESSION_COOKIE_TRUSTED_URL` 必须同时设，否则启动失败）、`ERROR_LOG_ENABLED=true`（默认关，不开就不记错误日志）、`BATCH_UPDATE_ENABLED=true`、`TRUSTED_PROXIES=172.30.0.1`。
 - `ADTY_FLUSH_TOKEN` 必填：`docker-compose.yml:40` 写成 `${ADTY_FLUSH_TOKEN:?set ADTY_FLUSH_TOKEN in .env}`，**不填 `docker compose up` 会直接报错退出**。它就是第 10 节升级时 `POST /api/adty/internal/flush-batch` 要带的 `X-Adty-Flush-Token`（`controller/adty_topup.go:155`），`backup.sh` 也从运行中的容器里读它，所以换值后要重启 API 容器。
 
@@ -45,7 +45,7 @@ sudo cp .env.example .env && sudo chmod 600 .env
 | `SESSION_SECRET`、`CRYPTO_SECRET` | 是 | — | 会话与加密密钥，分开设（见上面的密钥说明） |
 | `SESSION_COOKIE_TRUSTED_URL` | 是 | — | 与 `SESSION_COOKIE_SECURE=true` 配套，写 https origin |
 | `ADTY_FLUSH_TOKEN` | 是 | — | 内部刷盘接口密钥，compose 用 `:?` 强制要求 |
-| `LOG_SQL_DSN` | 否 | 空（用主库） | 独立日志库，必须是 PostgreSQL |
+| `LOG_SQL_DSN` | 否 | 空（用主库） | 独立日志库，必须是 PostgreSQL 18 |
 | `ADTY_TELEGRAM_ALLOW_NETWORK` | 否 | `1` | 设成 `0` 时进程里没有 Telegram sender：通知和公告同步全部失败，外部只看到「没有消息要发」 |
 | `NODE_NAME` | 否 | `adtyai-node-1` | 节点名，多节点时区分 |
 | `TZ` | 否 | `UTC` | 容器本地时区；业务日切不看它，看后台的 `adty.business_timezone` |
@@ -182,14 +182,14 @@ sudo docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$
 sudo tar -xzf /var/backups/adtyai/adtyai-data-<时间>.tar.gz -C /opt/adtyai   # 解出 /opt/adtyai/data
 ```
 
-上述主库命令用于 compose 默认主库。自定义主库或独立日志库须连接各自的新建空库，不能把两份 dump 恢复到同一个库，也不能把下面命令直接用于已有业务表的库。保留原库，另建空库恢复及核对，再在停写状态下切换连接。使用版本 17 的客户端，在 root 专属、权限 600 的 `/root/adty-restore.pg_service.conf` 配置 `[adty-main]` 和 `[adty-log]` 的目标 host、port、dbname、user、password、sslmode；该文件不进入仓库或日志。确认两个目标均为空后分别执行：
+上述主库命令用于 compose 默认主库。自定义主库或独立日志库须连接各自的新建空库，不能把两份 dump 恢复到同一个库，也不能把下面命令直接用于已有业务表的库。保留原库，另建空库恢复及核对，再在停写状态下切换连接。使用版本 18 的客户端，在 root 专属、权限 600 的 `/root/adty-restore.pg_service.conf` 配置 `[adty-main]` 和 `[adty-log]` 的目标 host、port、dbname、user、password、sslmode；该文件不进入仓库或日志。确认两个目标均为空后分别执行：
 
 ```bash
 sudo env PGSERVICEFILE=/root/adty-restore.pg_service.conf \
-  /usr/lib/postgresql/17/bin/pg_restore --dbname=service=adty-main --no-owner --exit-on-error \
+  /usr/lib/postgresql/18/bin/pg_restore --dbname=service=adty-main --no-owner --exit-on-error \
   </var/backups/adtyai/adtyai-db-<时间>.dump
 sudo env PGSERVICEFILE=/root/adty-restore.pg_service.conf \
-  /usr/lib/postgresql/17/bin/pg_restore --dbname=service=adty-log --no-owner --exit-on-error \
+  /usr/lib/postgresql/18/bin/pg_restore --dbname=service=adty-log --no-owner --exit-on-error \
   </var/backups/adtyai/adtyai-logdb-<时间>.dump
 ```
 
@@ -219,11 +219,11 @@ sudo docker compose ps adtyai-api                 # 等到 healthy
 ```
 
 - 回滚同样先停写、排空全部节点。新协议已经处理过业务时，不能直接启动不认识 `quota_pending` 的旧版本；先用新版本刷完差额并核对，再使用已在隔离环境验证过的兼容回滚方案。
-- 新库已有写入后不能直接恢复升级前备份或切回旧数据卷，这会丢失新订单、余额和会话变更。数据库 16 → 17 使用独立新目录迁移，保留旧卷；应用迁移是前向迁移，不能仅凭“只加列”断言旧应用兼容。
+- 新库已有写入后不能直接恢复升级前备份或切回旧数据卷，这会丢失新订单、余额和会话变更。数据库 17 → 18 使用独立新目录迁移，保留旧卷；应用迁移是前向迁移，不能仅凭“只加列”断言旧应用兼容。
 
 ## 11. 站长分站（P11）
 
-分站有两种域名来源：平台子域名 `<子域名>.<分站根域名>`，和站长自己的自定义域名。自定义域名本身又按用途分两种：`role=site` 出页面、登录、充值和用量，`role=base_url` 只放行 `/v1`、`/v1beta`、`/mj`、`/pg` 与探活（页面 404，账号接口 403）。两种都走同一台机器、同一个网关，网关按请求的 Host 查站点表识别是哪个站（任务 11.2），Nginx 只要把 Host 原样传过去。下面用 `sites.example.com` 代表分站根域名。
+分站有两种域名来源：平台子域名 `<子域名>.<分站根域名>`，和站长自己的自定义域名。自定义域名本身又按用途分两种：`role=site` 出页面、登录、充值和用量，`role=base_url` 只放行 `/v1`、`/v1beta`、`/mj` 与探活（页面 404，账号接口 403）。两种都走同一台机器、同一个网关，网关按请求的 Host 查站点表识别是哪个站（任务 11.2），Nginx 只要把 Host 原样传过去。下面用 `sites.example.com` 代表分站根域名。
 
 ### Cloudflare
 

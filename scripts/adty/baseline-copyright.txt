@@ -1,5 +1,3 @@
-src/components/ai-elements/response-fade.ts
-src/features/auth/lib/oauth-callback-mode.ts
 src/features/channels/components/__tests__/responses-websocket-setting.test.tsx
 src/features/channels/constants.ts
 src/features/channels/lib/channel-field-update.ts

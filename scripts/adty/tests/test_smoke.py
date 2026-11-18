@@ -98,6 +98,19 @@ class SmokeContractTests(unittest.TestCase):
         self.assertEqual("failed", result[0]["outcome"])
         self.assertEqual(4, result[0]["exit_code"])
 
+    def test_health_step_targets_api_health_endpoint(self):
+        with tempfile.TemporaryDirectory(prefix="adty-smoke-contract-") as directory:
+            runtime = self.smoke.Runtime(Path(directory), Path(directory))
+            seen = []
+            runtime.api = lambda method, path, data=None, expect_success=True: seen.append((method, path, expect_success))
+            runtime.health()
+        self.assertEqual([("GET", "/api/health", True)], seen)
+
+    def test_browser_business_requires_postgresql_18(self):
+        script = (Path(__file__).resolve().parents[1] / "browser-business.sh").read_text(encoding="utf-8")
+        self.assertIn("adty_pg_version / 10000", script)
+        self.assertIn("-ne 18", script)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
