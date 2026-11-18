@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,11 +15,10 @@ import (
 // 一旦它把 Turnstile 的字段算进来，开自定义域名但不用 Turnstile 的部署就会
 // **静默停摆**——新增域名被关掉、定期检查任务每 5 分钟空转。
 //
-// 所以这里直接验这两处放行，而不是只验判据本身。
+// 所以这里直接验这两处放行并真正推进待检查域名，而不是在空库上只验 `nil` 返回值。
 func TestCloudflareGatesAllowDomainWithoutTurnstile(t *testing.T) {
-	announcementTestDB(t)
-	previous := *adty_setting.GetResellerSetting()
-	t.Cleanup(func() { *adty_setting.GetResellerSetting() = previous })
+	db, fake := prepareDomainDB(t)
+	owner, _ := openActiveSite(t, db, "no-turnstile")
 
 	cfg := adty_setting.GetResellerSetting()
 	cfg.Enabled = true
@@ -30,14 +30,21 @@ func TestCloudflareGatesAllowDomainWithoutTurnstile(t *testing.T) {
 	// 不给 account / widget：这个部署不用 Turnstile。
 	cfg.CloudflareAccountId = ""
 	cfg.TurnstileWidgets = nil
+	cfg.TurnstileWidgetSecret = nil
 
-	// ① 定期检查任务不能因为「没配 Turnstile」而整轮返回。
-	// 它会去查 pending 的域名；库刚建好、没有域名时应当正常返回 nil，而不是提前 return。
+	// ① 新增自定义域名不能被关掉，且能在无 Turnstile 配置下完成创建与挂载。
+	domain, err := AddAdtySiteDomain(context.Background(), owner.Id, "shop.customer.org")
+	require.NoError(t, err, "开自定义域名但不用 Turnstile 时，新增域名应正常通过门控")
+	require.NotEmpty(t, domain.CFHostnameId)
+	assert.Equal(t, model.AdtySiteDomainPending, domain.Status)
+
+	// ② 定期检查任务不能因为「没配 Turnstile」而提前 return nil：
+	// 待检查域名必须被查询并从 pending 推进到 active。
+	fake.setStatus(domain.CFHostnameId, "active", "active")
 	require.NoError(t, RunAdtySiteDomainCheckOnce(context.Background(), time.Now()))
 
-	// ② 新增自定义域名不能被关掉。这里不造完整站点，只验「没有被 Gate 拦下」：
-	// 被拦下时返回的是 ErrAdtyCustomDomainOff，其它错误说明已经过了这道门。
-	_, err := AddAdtySiteDomain(context.Background(), 999_999, "shop.example.com")
-	assert.NotErrorIs(t, err, ErrAdtyCustomDomainOff,
-		"开自定义域名但不用 Turnstile 时，新增域名不该被判成「自定义域名已关闭」")
+	var stored model.AdtySiteDomain
+	require.NoError(t, db.First(&stored, domain.Id).Error)
+	assert.Equal(t, model.AdtySiteDomainActive, stored.Status, "轮询任务必须穿过总门控并把已就绪的 pending 域名推进到 active")
+	assert.Empty(t, stored.TurnstileWidget)
 }

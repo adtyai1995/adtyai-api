@@ -251,13 +251,16 @@ func adtyMainHost() string {
 	return strings.ToLower(parsed.Hostname())
 }
 
-// adtyRegistrableDomain 粗略取「最后两段」作注册域名，用来判断主站域名下的子域名。
+// adtyRegistrableDomain 按公共后缀表取注册域名（eTLD+1），用来判断主站、CNAME 目标和回源域名下的子域名。
 func adtyRegistrableDomain(host string) string {
-	parts := strings.Split(host, ".")
-	if len(parts) <= 2 {
-		return host
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return ""
 	}
-	return strings.Join(parts[len(parts)-2:], ".")
+	if registrable, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil && registrable != "" {
+		return registrable
+	}
+	return host
 }
 
 func adtyHostUnder(host, domain string) bool {
@@ -302,6 +305,8 @@ func adtyCustomDomainIsApex(host string) bool {
 	return err != nil || registrable == host
 }
 
+const adtySiteDomainCreateAuditAction = "domain_create"
+
 // adtyCustomDomainAllowCreate 检查这个站还能不能再新建一个自定义域名。
 // reusingCountedRow 为真时，这一行已经是本站的 pending、active 或 failed，不占新名额；每小时新建数两种都算。
 func adtyCustomDomainAllowCreate(tx *gorm.DB, siteId int, reusingCountedRow bool, now int64) error {
@@ -319,16 +324,27 @@ func adtyCustomDomainAllowCreate(tx *gorm.DB, siteId int, reusingCountedRow bool
 			return ErrAdtyCustomDomainLimit
 		}
 	}
-	var recent int64
-	err := tx.Model(&model.AdtySiteDomain{}).
-		Where("site_id = ? AND created_at >= ?", siteId, now-3600).Count(&recent).Error
-	if err != nil {
+	var recentDomains int64
+	if err := tx.Model(&model.AdtySiteDomain{}).
+		Where("site_id = ? AND created_at >= ?", siteId, now-3600).Count(&recentDomains).Error; err != nil {
 		return err
 	}
-	if int(recent) >= cfg.CustomDomainCreatesPerHour {
+	var recentAudits int64
+	if err := tx.Model(&model.AdtySiteAudit{}).
+		Where("site_id = ? AND action = ? AND created_at >= ?", siteId, adtySiteDomainCreateAuditAction, now-3600).Count(&recentAudits).Error; err != nil {
+		return err
+	}
+	if int(max(recentDomains, recentAudits)) >= cfg.CustomDomainCreatesPerHour {
 		return ErrAdtyCustomDomainRate
 	}
 	return nil
+}
+
+func adtyLockSiteRow(tx *gorm.DB, id int, current *model.AdtySite) error {
+	if err := tx.Model(&model.AdtySite{}).Where("id = ?", id).UpdateColumn("id", gorm.Expr("id")).Error; err != nil {
+		return err
+	}
+	return model.AdtyLockForUpdate(tx).First(current, id).Error
 }
 
 // adtyOwnerSite 是这个用户名下能绑定域名的站：active 或 paused。
@@ -387,6 +403,16 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 	}
 	var domain model.AdtySiteDomain
 	err = model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lockedSite model.AdtySite
+		if err := adtyLockSiteRow(tx, site.Id, &lockedSite); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtySiteNotFound
+			}
+			return err
+		}
+		if lockedSite.OwnerUserId != ownerUserId || (lockedSite.Status != model.AdtySiteStatusActive && lockedSite.Status != model.AdtySiteStatusPaused) {
+			return ErrAdtySiteNotFound
+		}
 		var existing model.AdtySiteDomain
 		result := tx.Where("hostname = ?", host).Limit(1).Find(&existing)
 		if result.Error != nil {
@@ -421,13 +447,25 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 			LastCheckedAt: now, CreatedAt: now,
 		}
 		if !found {
-			return tx.Create(&domain).Error
+			if err := tx.Create(&domain).Error; err != nil {
+				return err
+			}
+		} else {
+			domain.Id = existing.Id
+			if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", existing.Id).Updates(map[string]any{
+				"site_id": site.Id, "role": role, "ownership_token": token, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
+				"ssl_status": "", "verify_records": domain.VerifyRecords, "turnstile_widget": "",
+				"last_error": "", "last_checked_at": now, "created_at": now,
+			}).Error; err != nil {
+				return err
+			}
 		}
-		domain.Id = existing.Id
-		return tx.Model(&model.AdtySiteDomain{}).Where("id = ?", existing.Id).Updates(map[string]any{
-			"site_id": site.Id, "role": role, "ownership_token": token, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
-			"ssl_status": "", "verify_records": domain.VerifyRecords, "turnstile_widget": "",
-			"last_error": "", "last_checked_at": now, "created_at": now,
+		return tx.Create(&model.AdtySiteAudit{
+			SiteId:     site.Id,
+			Action:     adtySiteDomainCreateAuditAction,
+			OperatorId: ownerUserId,
+			NewValue:   host,
+			CreatedAt:  now,
 		}).Error
 	})
 	if err != nil {

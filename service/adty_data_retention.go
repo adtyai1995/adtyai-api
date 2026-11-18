@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -12,11 +14,14 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
 	dataRetentionCleanupBatchSize  = 100
 	dataRetentionSchedulerInterval = 24 * time.Hour
+	secondsPerDay                  = int64(24 * 60 * 60)
+	maxDataRetentionDays           = int(math.MaxInt64 / int64(24*time.Hour))
 
 	dataRetentionSkipUnconfigured = "unconfigured; no automatic deletion"
 	dataRetentionSkipNotification = "permanent retention; automatic cleanup must not delete notification history"
@@ -25,6 +30,8 @@ const (
 	dataRetentionSkipArtifacts    = "policy: task artifacts are kept by default, as in official NewAPI; they are never automatically deleted after a retention period expires or an account is cancelled"
 	dataRetentionSkipDeidentify   = "de-identification is not implemented for this category; no automatic deletion was performed"
 )
+
+var errTicketImageDeleteFailed = errors.New("ticket image file delete failed")
 
 // DataRetentionCategoryView is the Root admin representation of one category.
 type DataRetentionCategoryView struct {
@@ -191,7 +198,7 @@ func ListDataRetentionSettings() (gin.H, error) {
 			view.Action = model.DataRetentionActionExclude
 		}
 		if policy, ok := policies[spec.Category]; ok && policy.RetentionDays != nil && *policy.RetentionDays > 0 && spec.AutoCleanable {
-			days := *policy.RetentionDays
+			days := min(*policy.RetentionDays, maxDataRetentionDays)
 			view.Configured = true
 			view.RetentionDays = &days
 			view.Action = policy.Action
@@ -205,13 +212,23 @@ func ListDataRetentionSettings() (gin.H, error) {
 	}, nil
 }
 
+type dataRetentionPolicyMutation struct {
+	category string
+	clear    bool
+	days     int
+	action   string
+}
+
 // SaveDataRetentionPolicies updates Root-configured periods. It does not start cleanup.
 func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, inputs []DataRetentionPolicyInput) error {
 	if len(inputs) == 0 {
 		return common.NewMessage("Invalid parameters")
 	}
+	if model.DB == nil {
+		return errors.New("database unavailable")
+	}
 	seen := map[string]bool{}
-	changes := make([]string, 0, len(inputs))
+	mutations := make([]dataRetentionPolicyMutation, 0, len(inputs))
 	for _, input := range inputs {
 		category := strings.TrimSpace(input.Category)
 		if !model.IsDataRetentionCategory(category) || seen[category] {
@@ -232,18 +249,14 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 			}
 			continue
 		}
-		previous, _, err := model.GetAdtyDataRetentionPolicy(category)
-		if err != nil {
-			return err
-		}
 		if input.Clear || (input.RetentionDays == nil && action == "") {
-			if err := model.ClearAdtyDataRetentionPolicy(category); err != nil {
-				return err
-			}
-			changes = append(changes, fmt.Sprintf("%s:cleared", category))
+			mutations = append(mutations, dataRetentionPolicyMutation{
+				category: category,
+				clear:    true,
+			})
 			continue
 		}
-		if input.RetentionDays == nil || *input.RetentionDays < 1 {
+		if input.RetentionDays == nil || *input.RetentionDays < 1 || *input.RetentionDays > maxDataRetentionDays {
 			return common.NewMessage("A retention period must be a positive number of days")
 		}
 		if action == "" {
@@ -252,40 +265,114 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 		if !allowedDataRetentionAction(spec, action) {
 			return common.NewMessage("Invalid parameters")
 		}
-		row := model.AdtyDataRetentionPolicy{
-			Category:      category,
-			RetentionDays: input.RetentionDays,
-			Action:        action,
-			UpdatedBy:     actorID,
-			UpdatedAt:     common.GetTimestamp(),
-		}
-		if err := model.UpsertAdtyDataRetentionPolicy(row); err != nil {
-			return err
-		}
-		prev := "unconfigured"
-		if previous.RetentionDays != nil {
-			prev = fmt.Sprintf("%s/%d", previous.Action, *previous.RetentionDays)
-		}
-		changes = append(changes, fmt.Sprintf("%s:%s->%s/%d", category, prev, action, *input.RetentionDays))
+		mutations = append(mutations, dataRetentionPolicyMutation{
+			category: category,
+			days:     *input.RetentionDays,
+			action:   action,
+		})
 	}
-	if len(changes) > 0 {
+	if len(mutations) == 0 {
+		return nil
+	}
+
+	var auditEventID string
+	var beforeSummary, afterSummary string
+	now := common.GetTimestamp()
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		changes := make([]string, 0, len(mutations))
+		beforeChanges := make([]string, 0, len(mutations))
+		hasPolicyTable := tx.Migrator().HasTable(&model.AdtyDataRetentionPolicy{})
+		for _, m := range mutations {
+			var previous model.AdtyDataRetentionPolicy
+			if hasPolicyTable {
+				err := tx.Where("category = ?", m.category).Take(&previous).Error
+				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+			}
+			prev := "unconfigured"
+			if previous.RetentionDays != nil {
+				prev = fmt.Sprintf("%s/%d", previous.Action, *previous.RetentionDays)
+			}
+			beforeChanges = append(beforeChanges, fmt.Sprintf("%s:%s", m.category, prev))
+			if m.clear {
+				if hasPolicyTable {
+					if err := tx.Where("category = ?", m.category).Delete(&model.AdtyDataRetentionPolicy{}).Error; err != nil {
+						return err
+					}
+				}
+				changes = append(changes, fmt.Sprintf("%s:cleared", m.category))
+				continue
+			}
+			days := m.days
+			row := model.AdtyDataRetentionPolicy{
+				Category:      m.category,
+				RetentionDays: &days,
+				Action:        m.action,
+				UpdatedBy:     actorID,
+				UpdatedAt:     now,
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "category"}},
+				DoUpdates: clause.AssignmentColumns([]string{"retention_days", "action", "updated_by", "updated_at"}),
+			}).Create(&row).Error; err != nil {
+				return err
+			}
+			changes = append(changes, fmt.Sprintf("%s:%s->%s/%d", m.category, prev, m.action, days))
+		}
 		siteID := 0
-		if err := model.WriteOfficialAuditLog(c, model.OfficialAuditWrite{
+		beforeSummary = strings.Join(beforeChanges, "; ")
+		afterSummary = strings.Join(changes, "; ")
+		entry, err := model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
 			UserId: actorID, Username: actorName, ActorRole: common.RoleRootUser,
 			SiteID: &siteID, ObjectType: "data_retention", ObjectID: "policy",
 			Action: "data_retention.update", Category: model.AuditCategoryOperation,
-			Content: "data retention policy updated: " + strings.Join(changes, "; "),
-			After:   strings.Join(changes, "; "),
+			Content: "data retention policy updated: " + afterSummary,
+			Before:  beforeSummary,
+			After:   afterSummary,
 			Result:  model.AuditResultSuccess, Success: true,
 			Other: model.AuditOther{
 				Op: &model.AuditOperation{
 					Action: "data_retention.update",
-					Params: model.AuditFields{"changes": strings.Join(changes, "; ")},
+					Params: model.AuditFields{"changes": afterSummary},
 				},
 			},
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		if tx.Migrator().HasTable(&model.AuditIntent{}) {
+			if err := model.AppendAuditIntentTx(tx, entry); err != nil {
+				return err
+			}
+			auditEventID = entry.EventId
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if auditEventID != "" {
+		deliveryCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = model.DeliverAuditIntent(deliveryCtx, auditEventID)
+	} else {
+		siteID := 0
+		_ = model.WriteOfficialAuditLog(c, model.OfficialAuditWrite{
+			UserId: actorID, Username: actorName, ActorRole: common.RoleRootUser,
+			SiteID: &siteID, ObjectType: "data_retention", ObjectID: "policy",
+			Action: "data_retention.update", Category: model.AuditCategoryOperation,
+			Content: "data retention policy updated: " + afterSummary,
+			Before:  beforeSummary,
+			After:   afterSummary,
+			Result:  model.AuditResultSuccess, Success: true,
+			Other: model.AuditOther{
+				Op: &model.AuditOperation{
+					Action: "data_retention.update",
+					Params: model.AuditFields{"changes": afterSummary},
+				},
+			},
+		})
 	}
 	return nil
 }
@@ -305,13 +392,16 @@ func ConfiguredDataRetentionDays(category string) (int, bool) {
 	if err != nil || !ok || row.RetentionDays == nil || *row.RetentionDays <= 0 {
 		return 0, false
 	}
+	if *row.RetentionDays > maxDataRetentionDays {
+		return maxDataRetentionDays, true
+	}
 	return *row.RetentionDays, true
 }
 
 func usageLogCleanupFloor(now time.Time) time.Duration {
 	floor := LogCleanupRetention
 	if days, ok := ConfiguredDataRetentionDays(model.DataRetentionCategoryAPIUsageLogs); ok {
-		configured := time.Duration(days) * 24 * time.Hour
+		configured := time.Duration(min(days, maxDataRetentionDays)) * 24 * time.Hour
 		if configured > floor {
 			return configured
 		}
@@ -356,33 +446,45 @@ func RunDataRetentionCleanup(ctx context.Context, trigger, systemTaskID string, 
 	if err != nil {
 		return nil, nil, err
 	}
-	items := make([]model.AdtyDataRetentionRunItem, 0, len(dataRetentionCatalog()))
-	for _, spec := range dataRetentionCatalog() {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		item := applyDataRetentionCategory(ctx, spec, policies[spec.Category], now)
-		items = append(items, item)
-	}
-	finished := time.Now().Unix()
 	run := &model.AdtyDataRetentionRun{
 		StartedAt:    started,
-		FinishedAt:   finished,
+		FinishedAt:   started,
 		Trigger:      trigger,
 		Scope:        model.DataRetentionScopePlatform,
 		SystemTaskID: systemTaskID,
 	}
-	if err := model.CreateAdtyDataRetentionRun(run, items); err != nil {
+	if err := model.DB.Create(run).Error; err != nil {
 		return nil, nil, err
+	}
+	items := make([]model.AdtyDataRetentionRunItem, 0, len(dataRetentionCatalog()))
+	for _, spec := range dataRetentionCatalog() {
+		item := applyDataRetentionCategory(ctx, spec, policies[spec.Category], now)
+		item.RunId = run.Id
+		if err := model.DB.Create(&item).Error; err != nil {
+			return run, items, err
+		}
+		items = append(items, item)
+	}
+	finished := time.Now().Unix()
+	if finished < started {
+		finished = started
+	}
+	run.FinishedAt = finished
+	if err := model.DB.Model(run).Update("finished_at", finished).Error; err != nil {
+		return run, items, err
 	}
 	return run, items, nil
 }
 
 func applyDataRetentionCategory(ctx context.Context, spec dataRetentionCategorySpec, policy model.AdtyDataRetentionPolicy, now time.Time) model.AdtyDataRetentionRunItem {
+	executedAt := time.Now().Unix()
+	if executedAt < now.Unix() {
+		executedAt = now.Unix()
+	}
 	item := model.AdtyDataRetentionRunItem{
 		Category:   spec.Category,
 		Scope:      model.DataRetentionScopePlatform,
-		ExecutedAt: now.Unix(),
+		ExecutedAt: executedAt,
 	}
 	if spec.Category == model.DataRetentionCategoryNotificationHistory || !spec.AutoCleanable {
 		item.Rule = "exclude; permanent retention"
@@ -408,43 +510,68 @@ func applyDataRetentionCategory(ctx context.Context, spec dataRetentionCategoryS
 		item.SkipReason = spec.SkipConfigured
 		return item
 	}
+	if err := ctx.Err(); err != nil {
+		item.FailureCount = 1
+		item.SkipReason = err.Error()
+		return item
+	}
+	effectiveDays := effectiveRetentionDays(days, spec.MinDays)
 	if spec.Category == model.DataRetentionCategoryUserAccountProfile {
-		cleared, err := model.ClearCancelledAccountProfileLeftovers(ctx, now.Add(-time.Duration(effectiveRetentionDays(days, spec.MinDays))*24*time.Hour).Unix(), dataRetentionCleanupBatchSize)
+		cleared, err := model.ClearCancelledAccountProfileLeftovers(ctx, retentionCutoffUnix(now, effectiveDays), dataRetentionCleanupBatchSize)
+		item.DeidentifyCount = cleared
 		if err != nil {
 			item.FailureCount = 1
 			item.SkipReason = err.Error()
-			return item
 		}
-		item.DeidentifyCount = cleared
 		return item
 	}
 	if action == model.DataRetentionActionDeidentify {
 		item.SkipReason = dataRetentionSkipDeidentify
 		return item
 	}
-	deleted, failed, err := executeDataRetentionDelete(ctx, spec.Category, effectiveRetentionDays(days, spec.MinDays), now)
+	deleted, failed, err := executeDataRetentionDelete(ctx, spec.Category, effectiveDays, now)
+	item.DeleteCount = deleted
+	item.FailureCount = failed
 	if err != nil {
-		item.FailureCount = failed
 		if item.FailureCount == 0 {
 			item.FailureCount = 1
 		}
 		item.SkipReason = err.Error()
-		return item
 	}
-	item.DeleteCount = deleted
-	item.FailureCount = failed
 	return item
 }
 
 func effectiveRetentionDays(days, minDays int) int {
 	if minDays > 0 && days < minDays {
-		return minDays
+		days = minDays
+	}
+	if days > maxDataRetentionDays {
+		return maxDataRetentionDays
 	}
 	return days
 }
 
+func retentionCutoffUnix(now time.Time, days int) int64 {
+	if days <= 0 {
+		return 0
+	}
+	if days > maxDataRetentionDays {
+		days = maxDataRetentionDays
+	}
+	nowUnix := now.Unix()
+	if int64(days) > math.MaxInt64/secondsPerDay {
+		return math.MinInt64
+	}
+	delta := int64(days) * secondsPerDay
+	if nowUnix < 0 && delta > math.MaxInt64+nowUnix {
+		return math.MinInt64
+	}
+	return nowUnix - delta
+}
+
 func executeDataRetentionDelete(ctx context.Context, category string, days int, now time.Time) (deleted, failed int64, err error) {
-	cutoff := now.Add(-time.Duration(days) * 24 * time.Hour).Unix()
+	days = effectiveRetentionDays(days, 0)
+	cutoff := retentionCutoffUnix(now, days)
 	switch category {
 	case model.DataRetentionCategoryAPIUsageLogs:
 		count, err := drainRetentionBatches(ctx, func() (int64, error) {
@@ -456,7 +583,10 @@ func executeDataRetentionDelete(ctx context.Context, category string, days int, 
 		quota, err := drainRetentionBatches(ctx, func() (int64, error) {
 			return model.DeleteOldQuotaDataBatch(ctx, cutoff, dataRetentionCleanupBatchSize)
 		})
-		return count + quota, 0, err
+		if err != nil {
+			return count + quota, 1, err
+		}
+		return count + quota, 0, nil
 	case model.DataRetentionCategoryLoginSecurity:
 		logs, err := drainRetentionBatches(ctx, func() (int64, error) {
 			return model.DeleteOldLogsOfTypesBatch(ctx, []int{model.LogTypeLogin}, cutoff, dataRetentionCleanupBatchSize)
@@ -470,12 +600,21 @@ func executeDataRetentionDelete(ctx context.Context, category string, days int, 
 		if err != nil {
 			return logs + audits, 1, err
 		}
+		if err := ctx.Err(); err != nil {
+			return logs + audits, 1, err
+		}
 		sessions, err := model.DeleteInactiveUserSessionsForRetention(now.Unix(), days)
 		if err != nil {
 			return logs + audits + sessions, 1, err
 		}
+		if err := ctx.Err(); err != nil {
+			return logs + audits + sessions, 1, err
+		}
 		tokens, err := model.DeleteExpiredUserAccessTokensForRetention(now.Unix(), days)
-		return logs + audits + sessions + tokens, 0, err
+		if err != nil {
+			return logs + audits + sessions + tokens, 1, err
+		}
+		return logs + audits + sessions + tokens, 0, nil
 	case model.DataRetentionCategoryOperationAudit:
 		count, err := drainRetentionBatches(ctx, func() (int64, error) {
 			return model.DeleteOldAuditLogsByCategoriesBatch(ctx, []string{model.AuditCategoryOperation, model.AuditCategoryAccessToken}, cutoff, dataRetentionCleanupBatchSize)
@@ -496,12 +635,12 @@ func deleteExpiredSupportTickets(ctx context.Context, cutoff int64, limit int) (
 		limit = dataRetentionCleanupBatchSize
 	}
 	if model.DB == nil {
-		return 0, 0, fmt.Errorf("database unavailable")
+		return 0, 1, fmt.Errorf("database unavailable")
 	}
 	var lastID int64
 	for {
 		if err := ctx.Err(); err != nil {
-			return deleted, failed, err
+			return deleted, failed + 1, err
 		}
 		var ids []int64
 		lookup := model.DB.WithContext(ctx).Raw(`
@@ -519,20 +658,20 @@ func deleteExpiredSupportTickets(ctx context.Context, cutoff int64, limit int) (
 			LIMIT ?
 		`, model.AdtyTicketResolved, model.AdtyTicketClosed, lastID, "status", model.AdtyTicketResolved, model.AdtyTicketClosed, cutoff, limit)
 		if err := lookup.Scan(&ids).Error; err != nil {
-			return deleted, failed, err
+			return deleted, failed + 1, err
 		}
 		if len(ids) == 0 {
 			return deleted, failed, nil
 		}
 		for _, id := range ids {
 			lastID = id
-			ok, ferr := deleteOneExpiredSupportTicket(ctx, id)
+			removed, fileFailed, ferr := deleteOneExpiredSupportTicket(ctx, id, cutoff)
 			if ferr != nil {
-				return deleted, failed, ferr
+				return deleted, failed + 1, ferr
 			}
-			if ok {
+			if removed {
 				deleted++
-			} else {
+			} else if fileFailed {
 				failed++
 			}
 		}
@@ -542,24 +681,48 @@ func deleteExpiredSupportTickets(ctx context.Context, cutoff int64, limit int) (
 	}
 }
 
-func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64) (bool, error) {
-	var images []model.AdtyTicketImage
-	if err := model.DB.WithContext(ctx).Where("ticket_id = ?", ticketID).Order("id").Find(&images).Error; err != nil {
-		return false, err
-	}
-	for _, image := range images {
-		path, err := adtyTicketImageFilePath(image.Storage)
-		if err != nil {
-			return false, nil
+func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64, cutoff int64) (deleted, fileFailed bool, err error) {
+	txErr := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ticket model.AdtyTicket
+		if err := model.AdtyLockForUpdate(tx).First(&ticket, ticketID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
 		}
-		if path == "" {
-			continue
+		if ticket.Status != model.AdtyTicketResolved && ticket.Status != model.AdtyTicketClosed {
+			return nil
 		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return false, nil
+		var closedAt int64
+		if err := tx.Raw(`
+			SELECT COALESCE(
+			  (SELECT MAX(e.created_at) FROM adty_ticket_events e
+			    WHERE e.ticket_id = ? AND e.action = ? AND e.detail IN (?, ?)),
+			  NULLIF(?, 0),
+			  ?
+			)
+		`, ticket.Id, "status", model.AdtyTicketResolved, model.AdtyTicketClosed, ticket.UpdatedAt, ticket.CreatedAt).Scan(&closedAt).Error; err != nil {
+			return err
 		}
-	}
-	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if closedAt >= cutoff {
+			return nil
+		}
+		var images []model.AdtyTicketImage
+		if err := tx.Where("ticket_id = ?", ticketID).Order("id").Find(&images).Error; err != nil {
+			return err
+		}
+		for _, image := range images {
+			path, err := adtyTicketImageFilePath(image.Storage)
+			if err != nil {
+				return errTicketImageDeleteFailed
+			}
+			if path == "" {
+				continue
+			}
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return errTicketImageDeleteFailed
+			}
+		}
 		if err := tx.Where("ticket_id = ?", ticketID).Delete(&model.AdtyTicketImage{}).Error; err != nil {
 			return err
 		}
@@ -569,12 +732,19 @@ func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64) (bool, e
 		if err := tx.Where("ticket_id = ?", ticketID).Delete(&model.AdtyTicketEvent{}).Error; err != nil {
 			return err
 		}
-		return tx.Where("id = ?", ticketID).Delete(&model.AdtyTicket{}).Error
+		if err := tx.Where("id = ?", ticketID).Delete(&model.AdtyTicket{}).Error; err != nil {
+			return err
+		}
+		deleted = true
+		return nil
 	})
-	if err != nil {
-		return false, err
+	if errors.Is(txErr, errTicketImageDeleteFailed) {
+		return false, true, nil
 	}
-	return true, nil
+	if txErr != nil {
+		return false, false, txErr
+	}
+	return deleted, false, nil
 }
 
 func drainRetentionBatches(ctx context.Context, fn func() (int64, error)) (int64, error) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func setupDataRetentionTestDB(t *testing.T) {
@@ -30,6 +32,7 @@ func setupDataRetentionTestDB(t *testing.T) {
 		&model.Log{},
 		&model.QuotaData{},
 		&model.AuditLog{},
+		&model.AuditIntent{},
 		&model.AdtyNotificationPublication{},
 		&model.UserSession{},
 		&model.UserAccessToken{},
@@ -419,6 +422,190 @@ func writeRetentionTicketBlockedImage(t *testing.T, dir string, ticketID int64, 
 	image := model.AdtyTicketImage{TicketId: ticketID, Mime: "image/png", Size: 4, Storage: name}
 	require.NoError(t, model.DB.Create(&image).Error)
 	return image
+}
+
+func TestDataRetentionTicketCleanupSkipsReopenedTicketAndHoldsLock(t *testing.T) {
+	setupDataRetentionTestDB(t)
+	require.NoError(t, model.DB.AutoMigrate(
+		&model.AdtyTicket{}, &model.AdtyTicketMessage{}, &model.AdtyTicketImage{}, &model.AdtyTicketEvent{},
+		&model.AdtySite{}, &model.AdtySiteStaff{}, &model.AdtyTeamMember{},
+	))
+	now := time.Now()
+	imageDir := t.TempDir()
+	restore := SetAdtyTicketImageDirForTest(imageDir)
+	t.Cleanup(restore)
+
+	owner := &model.User{
+		Id: 9, Username: "ticket-owner", Password: "hash", Email: "owner@example.com",
+		Role: common.RoleCommonUser, Status: common.UserStatusEnabled,
+	}
+	require.NoError(t, model.DB.Create(owner).Error)
+
+	reopened := createRetentionTicket(t, model.AdtyTicketClosed, now.Add(-200*24*time.Hour))
+	reopenedImg := writeRetentionTicketImage(t, imageDir, reopened.Id, "reopened.png", []byte("reopened-image"))
+
+	// Concurrent reopen between candidate selection and deleteOneExpiredSupportTicket:
+	require.NoError(t, SetAdtyTicketStatus(owner.Id, reopened.Id, "reopen", "", 0))
+
+	cutoff := retentionCutoffUnix(now, 90)
+	deleted, fileFailed, err := deleteOneExpiredSupportTicket(context.Background(), reopened.Id, cutoff)
+	require.NoError(t, err)
+	assert.False(t, deleted, "reopened ticket must not be deleted even if its ID was selected earlier")
+	assert.False(t, fileFailed, "skipping a reopened ticket is not a file deletion failure")
+
+	assert.FileExists(t, filepath.Join(imageDir, reopenedImg.Storage))
+	var ticketCount, msgCount, imgCount int64
+	require.NoError(t, model.DB.Model(&model.AdtyTicket{}).Where("id = ?", reopened.Id).Count(&ticketCount).Error)
+	require.NoError(t, model.DB.Model(&model.AdtyTicketMessage{}).Where("ticket_id = ?", reopened.Id).Count(&msgCount).Error)
+	require.NoError(t, model.DB.Model(&model.AdtyTicketImage{}).Where("ticket_id = ?", reopened.Id).Count(&imgCount).Error)
+	assert.EqualValues(t, 1, ticketCount)
+	assert.EqualValues(t, 1, msgCount)
+	assert.EqualValues(t, 1, imgCount)
+}
+
+func TestDataRetentionRejectsOverflowDaysAndComputesSafeCutoff(t *testing.T) {
+	now := time.Unix(1_795_000_000, 0)
+	cutoff := retentionCutoffUnix(now, 200_000)
+	assert.Less(t, cutoff, now.Add(-90*24*time.Hour).Unix(), "overflowing days must saturate to a past cutoff, never flip into the future")
+	assert.Equal(t, maxDataRetentionDays, effectiveRetentionDays(200_000, 90))
+
+	setupDataRetentionTestDB(t)
+	err := SaveDataRetentionPolicies(nil, 1, "root", []DataRetentionPolicyInput{{
+		Category:      model.DataRetentionCategoryAPIUsageLogs,
+		RetentionDays: intPtr(200_000),
+		Action:        model.DataRetentionActionDelete,
+	}})
+	require.Error(t, err)
+
+	// Even if an out-of-range value exists in DB, cleanup must saturate safely and keep recent data.
+	overflowDays := 200_000
+	require.NoError(t, model.UpsertAdtyDataRetentionPolicy(model.AdtyDataRetentionPolicy{
+		Category:      model.DataRetentionCategoryAPIUsageLogs,
+		RetentionDays: &overflowDays,
+		Action:        model.DataRetentionActionDelete,
+		UpdatedBy:     1,
+		UpdatedAt:     now.Unix(),
+	}))
+	require.NoError(t, model.LOG_DB.Create(&model.Log{UserId: 9, CreatedAt: now.Add(-24 * time.Hour).Unix(), Type: model.LogTypeConsume, Content: "recent-log-under-overflow"}).Error)
+
+	_, items, err := RunDataRetentionCleanup(context.Background(), model.DataRetentionTriggerManual, "", now)
+	require.NoError(t, err)
+	for _, item := range items {
+		if item.Category == model.DataRetentionCategoryAPIUsageLogs {
+			assert.Zero(t, item.DeleteCount)
+		}
+	}
+	var count int64
+	require.NoError(t, model.LOG_DB.Model(&model.Log{}).Where("content = ?", "recent-log-under-overflow").Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+}
+
+func TestDataRetentionSavePoliciesValidatesAllBeforeMutatingAndCommitsAuditIntent(t *testing.T) {
+	setupDataRetentionTestDB(t)
+
+	err := SaveDataRetentionPolicies(nil, 1, "root", []DataRetentionPolicyInput{
+		{
+			Category:      model.DataRetentionCategoryAPIUsageLogs,
+			RetentionDays: intPtr(180),
+			Action:        model.DataRetentionActionDelete,
+		},
+		{
+			Category:      "unknown_category",
+			RetentionDays: intPtr(30),
+			Action:        model.DataRetentionActionDelete,
+		},
+	})
+	require.Error(t, err)
+
+	_, ok, err := model.GetAdtyDataRetentionPolicy(model.DataRetentionCategoryAPIUsageLogs)
+	require.NoError(t, err)
+	assert.False(t, ok, "invalid batch item must prevent earlier items from being persisted")
+
+	var intents, audits int64
+	require.NoError(t, model.DB.Model(&model.AuditIntent{}).Count(&intents).Error)
+	require.NoError(t, model.LOG_DB.Model(&model.AuditLog{}).Where("action = ?", "data_retention.update").Count(&audits).Error)
+	assert.Zero(t, intents)
+	assert.Zero(t, audits)
+
+	require.NoError(t, SaveDataRetentionPolicies(nil, 1, "root", []DataRetentionPolicyInput{
+		{
+			Category:      model.DataRetentionCategoryAPIUsageLogs,
+			RetentionDays: intPtr(180),
+			Action:        model.DataRetentionActionDelete,
+		},
+		{
+			Category:      model.DataRetentionCategoryOperationAudit,
+			RetentionDays: intPtr(365),
+			Action:        model.DataRetentionActionDelete,
+		},
+	}))
+
+	require.NoError(t, model.DB.Model(&model.AuditIntent{}).Count(&intents).Error)
+	require.NoError(t, model.LOG_DB.Model(&model.AuditLog{}).Where("action = ?", "data_retention.update").Count(&audits).Error)
+	assert.EqualValues(t, 1, intents)
+	assert.EqualValues(t, 1, audits)
+}
+
+func TestDataRetentionRunRecordsPartialProgressOnBatchInterruption(t *testing.T) {
+	setupDataRetentionTestDB(t)
+	now := time.Now()
+
+	for i := 0; i < 150; i++ {
+		require.NoError(t, model.LOG_DB.Create(&model.Log{
+			UserId:    9,
+			CreatedAt: daysAgo(200),
+			Type:      model.LogTypeConsume,
+			Content:   fmt.Sprintf("batch-log-%d", i),
+		}).Error)
+	}
+	require.NoError(t, SaveDataRetentionPolicies(nil, 1, "root", []DataRetentionPolicyInput{{
+		Category:      model.DataRetentionCategoryAPIUsageLogs,
+		RetentionDays: intPtr(90),
+		Action:        model.DataRetentionActionDelete,
+	}}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deleteCalls := 0
+	const cbName = "test:cancel-after-first-log-batch"
+	const rawCbName = "test:cancel-after-first-log-batch-raw"
+	cancelAfterFirstBatch := func(tx *gorm.DB) {
+		if tx.Statement == nil {
+			return
+		}
+		isLogsDelete := tx.Statement.Table == "logs" || strings.Contains(strings.ToUpper(tx.Statement.SQL.String()), "DELETE FROM LOGS")
+		if isLogsDelete {
+			deleteCalls++
+			if deleteCalls == 1 {
+				cancel()
+			}
+		}
+	}
+	require.NoError(t, model.LOG_DB.Callback().Delete().After("gorm:delete").Register(cbName, cancelAfterFirstBatch))
+	require.NoError(t, model.LOG_DB.Callback().Raw().After("gorm:raw").Register(rawCbName, cancelAfterFirstBatch))
+	t.Cleanup(func() {
+		_ = model.LOG_DB.Callback().Delete().Remove(cbName)
+		_ = model.LOG_DB.Callback().Raw().Remove(rawCbName)
+	})
+
+	run, items, err := RunDataRetentionCleanup(ctx, model.DataRetentionTriggerManual, "task-partial", now)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	require.Len(t, items, 9)
+
+	byCategory := map[string]model.AdtyDataRetentionRunItem{}
+	for _, item := range items {
+		byCategory[item.Category] = item
+	}
+	usageItem := byCategory[model.DataRetentionCategoryAPIUsageLogs]
+	assert.EqualValues(t, 100, usageItem.DeleteCount, "committed first batch must be recorded even when second batch is interrupted")
+	assert.EqualValues(t, 1, usageItem.FailureCount)
+	assert.NotEmpty(t, usageItem.SkipReason)
+
+	runs, err := ListDataRetentionRuns(1)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, run.Id, runs[0].Id)
 }
 
 func intPtr(v int) *int { return &v }

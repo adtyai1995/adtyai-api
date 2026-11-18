@@ -38,6 +38,7 @@ func PutAdtyDataRetention(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	markAuditLogged(c)
 	view, err := service.ListDataRetentionSettings()
 	if err != nil {
 		common.ApiError(c, err)

@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/common/logsinktest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -223,8 +224,34 @@ func prepareDomainDB(t *testing.T) (*gorm.DB, *fakeCloudflare) {
 	t.Cleanup(func() {
 		AdtyCloudflare, adtyCustomHostnameRecordDelay, adtyCloudflareSleep, adtyLookupOwnershipTXT = oldClient, oldWait, oldSleep, oldLookup
 	})
-	require.NoError(t, db.AutoMigrate(&model.AdtySiteDomain{}))
+	require.NoError(t, db.AutoMigrate(&model.AdtySiteDomain{}, &model.AdtySiteAudit{}))
 	return db, fake
+}
+
+func TestCustomDomainMultiLabelPublicSuffixBlocksOnlyPlatformRegistrableDomain(t *testing.T) {
+	db, _ := prepareDomainDB(t)
+	owner, _ := openActiveSite(t, db, "etld-uk")
+
+	oldServerAddr := system_setting.ServerAddress
+	system_setting.ServerAddress = "https://www.platform.co.uk"
+	t.Cleanup(func() { system_setting.ServerAddress = oldServerAddr })
+
+	cfg := adty_setting.GetResellerSetting()
+	cfg.CnameTarget = "customers.edge.co.uk"
+	cfg.FallbackOrigin = "origin.fallback.co.uk"
+
+	for _, blockedHost := range []string{
+		"sub.platform.co.uk",
+		"sub.edge.co.uk",
+		"sub.fallback.co.uk",
+	} {
+		_, err := AddAdtySiteDomain(context.Background(), owner.Id, blockedHost)
+		assert.ErrorIs(t, err, ErrAdtyCustomDomainInvalid, blockedHost)
+	}
+
+	allowed, err := AddAdtySiteDomain(context.Background(), owner.Id, "api.customer.co.uk")
+	require.NoError(t, err, "unrelated subdomain under multi-label public suffix co.uk must be allowed")
+	assert.Equal(t, "api.customer.co.uk", allowed.Hostname)
 }
 
 func TestCustomDomainRejectsApexAndOwnDomains(t *testing.T) {
@@ -616,11 +643,56 @@ func TestCustomDomainLimitsPerSite(t *testing.T) {
 
 	cfg.MaxCustomDomainsPerSite = 10
 	cfg.CustomDomainCreatesPerHour = 1
-	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("site_id = ?", site.Id).Update("created_at", time.Now().Unix()-7200).Error)
-	_, err = AddAdtySiteDomain(context.Background(), owner.Id, "d.limit.example")
+	aged := time.Now().Unix() - 7200
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("site_id = ?", site.Id).Update("created_at", aged).Error)
+	require.NoError(t, db.Model(&model.AdtySiteAudit{}).Where("site_id = ? AND action = ?", site.Id, adtySiteDomainCreateAuditAction).Update("created_at", aged).Error)
+	d, err := AddAdtySiteDomain(context.Background(), owner.Id, "d.limit.example")
 	require.NoError(t, err)
 	_, err = AddAdtySiteDomain(context.Background(), owner.Id, "e.limit.example")
 	assert.ErrorIs(t, err, ErrAdtyCustomDomainRate)
+
+	// Removing and re-adding the same hostname must also count against CustomDomainCreatesPerHour.
+	require.NoError(t, RemoveAdtySiteDomain(context.Background(), owner.Id, d.Id))
+	_, err = AddAdtySiteDomain(context.Background(), owner.Id, "d.limit.example")
+	assert.ErrorIs(t, err, ErrAdtyCustomDomainRate)
+}
+
+func TestConcurrentCustomDomainCreateHonorsPerSiteLimit(t *testing.T) {
+	db, _ := prepareDomainDB(t)
+	owner, site := openActiveSite(t, db, "concurrent-limit")
+	cfg := adty_setting.GetResellerSetting()
+	cfg.MaxCustomDomainsPerSite = 1
+	cfg.CustomDomainCreatesPerHour = 10
+
+	errs := make(chan error, 2)
+	var start sync.WaitGroup
+	start.Add(1)
+	for _, host := range []string{"one.concurrent.example", "two.concurrent.example"} {
+		go func(h string) {
+			start.Wait()
+			_, err := AddAdtySiteDomain(context.Background(), owner.Id, h)
+			errs <- err
+		}(host)
+	}
+	start.Done()
+	err1, err2 := <-errs, <-errs
+	var succeeded, limited int
+	for _, err := range []error{err1, err2} {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrAdtyCustomDomainLimit):
+			limited++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	assert.Equal(t, 1, succeeded)
+	assert.Equal(t, 1, limited)
+
+	var activeCount int64
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("site_id = ?", site.Id).Count(&activeCount).Error)
+	assert.EqualValues(t, 1, activeCount)
 }
 
 func TestCustomDomainRequiresSwitchAndCloudflare(t *testing.T) {
