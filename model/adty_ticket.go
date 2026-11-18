@@ -63,6 +63,7 @@ func (AdtyTicketMessage) TableName() string { return "adty_ticket_messages" }
 // internal and never reaches a customer, in the detail list or by direct id.
 type AdtyTicketImage struct {
 	Id         int64  `json:"id"`
+	ObjectId   string `json:"object_id" gorm:"type:varchar(64);index"`
 	TicketId   int64  `json:"ticket_id" gorm:"index"`
 	MessageId  int64  `json:"message_id" gorm:"index"`
 	Visibility string `json:"visibility" gorm:"type:varchar(16);index"`
@@ -76,6 +77,25 @@ type AdtyTicketImage struct {
 }
 
 func (AdtyTicketImage) TableName() string { return "adty_ticket_images" }
+
+// AdtyTicketNotice is an authoritative in-site notification record produced from
+// a ticket event (create, public reply, or status/reopen transition).
+type AdtyTicketNotice struct {
+	Id        int64  `json:"id"`
+	EventKey  string `json:"event_key" gorm:"uniqueIndex;type:varchar(128);not null"`
+	TicketId  int64  `json:"ticket_id" gorm:"index;not null"`
+	EventId   int64  `json:"event_id" gorm:"index"`
+	SiteId    int    `json:"site_id" gorm:"index"`
+	UserId    int    `json:"user_id" gorm:"index;not null"`
+	ActorId   int    `json:"actor_id"`
+	Action    string `json:"action" gorm:"type:varchar(32);index"`
+	Title     string `json:"title" gorm:"type:varchar(120)"`
+	Content   string `json:"content" gorm:"type:text"`
+	ReadKey   string `json:"read_key" gorm:"uniqueIndex;type:char(64);not null"`
+	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
+}
+
+func (AdtyTicketNotice) TableName() string { return "adty_ticket_notices" }
 
 // AdtyTicketEvent is an append-only handling record. It does not grant money or key permissions.
 type AdtyTicketEvent struct {
@@ -124,6 +144,9 @@ func NormalizeAdtyTicketStatus(status string, assigneeId int) string {
 func RemapAdtyTicketLegacyStatuses(db *gorm.DB) error {
 	if db == nil {
 		db = DB
+	}
+	if err := db.AutoMigrate(&AdtyTicketImage{}, &AdtyTicketNotice{}); err != nil {
+		return err
 	}
 	if err := db.Model(&AdtyTicket{}).Where("status = ?", AdtyTicketLegacyAssigned).Update("status", AdtyTicketInProgress).Error; err != nil {
 		return err

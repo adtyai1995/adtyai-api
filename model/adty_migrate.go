@@ -77,7 +77,7 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 			return err
 		}
 	}
-	if err := db.AutoMigrate(&AdtyTelegramBot{}, &AdtyTelegramChallenge{}, &AdtyTelegramBinding{}, &AdtyTelegramDelivery{}, &AdtyTicket{}, &AdtyTicketMessage{}, &AdtyTicketImage{}, &AdtyTicketEvent{}, &AdtyTicketPolicy{}, &AdtyTranslationConfig{}, &AdtyTranslationHead{}, &AdtyTranslationJob{}, &AdtyTranslationUsage{}, &AdtyGroupHealthSample{}, &AdtyGroupHealthState{}, &AdtyGroupHealthAlert{}, &AdtyDataRetentionPolicy{}, &AdtyDataRetentionRun{}, &AdtyDataRetentionRunItem{}); err != nil {
+	if err := db.AutoMigrate(&AdtyTelegramBot{}, &AdtyTelegramChallenge{}, &AdtyTelegramBinding{}, &AdtyTelegramDelivery{}, &AdtyTicket{}, &AdtyTicketMessage{}, &AdtyTicketImage{}, &AdtyTicketEvent{}, &AdtyTicketNotice{}, &AdtyTicketPolicy{}, &AdtyTranslationConfig{}, &AdtyTranslationHead{}, &AdtyTranslationJob{}, &AdtyTranslationUsage{}, &AdtyGroupHealthSample{}, &AdtyGroupHealthState{}, &AdtyGroupHealthAlert{}, &AdtyDataRetentionPolicy{}, &AdtyDataRetentionRun{}, &AdtyDataRetentionRunItem{}); err != nil {
 		return err
 	}
 	if err := RemapAdtyTicketLegacyStatuses(db); err != nil {

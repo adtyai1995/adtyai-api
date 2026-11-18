@@ -31,8 +31,10 @@ import { getServerErrorMessage } from '@/lib/server-error-message'
 
 import {
   TICKET_QUEUES,
+  TICKET_STATUS_LABELS,
   type TicketBadges,
   type TicketQueueId,
+  normalizeTicketStatus,
   ticketStatusLabel,
 } from './ticket-status'
 
@@ -50,9 +52,34 @@ type TicketMessage = {
   body: string
 }
 
+type TicketImage = {
+  id: number
+  object_id?: string
+  ticket_id?: number
+  message_id?: number
+  visibility: string
+  mime: string
+  size?: number
+  width?: number
+  height?: number
+  sha256?: string
+  created_at?: number
+}
+
+type TicketEvent = {
+  id: number
+  ticket_id?: number
+  actor_id?: number
+  action: string
+  detail?: string
+  created_at?: number
+}
+
 type TicketDetail = {
   ticket: Ticket
   messages: TicketMessage[]
+  images?: TicketImage[]
+  events?: TicketEvent[]
   can_note: boolean
   can_manage: boolean
 }
@@ -157,6 +184,63 @@ export function TicketCenter() {
     }
   }
 
+  const submitReply = async () => {
+    if (selected === null || reply.trim() === '') return
+    setPending(true)
+    setError('')
+    try {
+      const response = await api.post(`/api/adty/tickets/${selected}/replies`, {
+        body: reply.trim(),
+      })
+      const payload = response.data as { success?: boolean; message?: string }
+      if (!payload?.success) throw new Error(payload?.message || t('Failed to save'))
+      setReply('')
+      await refresh()
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Failed to save')))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const submitNote = async () => {
+    if (selected === null || note.trim() === '') return
+    setPending(true)
+    setError('')
+    try {
+      const response = await api.post(`/api/adty/tickets/${selected}/notes`, {
+        body: note.trim(),
+      })
+      const payload = response.data as { success?: boolean; message?: string }
+      if (!payload?.success) throw new Error(payload?.message || t('Failed to save'))
+      setNote('')
+      await refresh()
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Failed to save')))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const uploadImage = async (encodedData: string) => {
+    if (selected === null) return
+    setPending(true)
+    setError('')
+    try {
+      const response = await api.post(`/api/adty/tickets/${selected}/images`, {
+        data: encodedData,
+        visibility: 'public',
+      })
+      const payload = response.data as { success?: boolean; message?: string }
+      if (!payload?.success) throw new Error(payload?.message || t('Only images are accepted'))
+      await refresh()
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Only images are accepted')))
+    } finally {
+      setPending(false)
+    }
+  }
+
   const badges = list.data?.badges
   const canManage = Boolean(list.data?.can_manage || detail.data?.can_manage)
 
@@ -225,32 +309,67 @@ export function TicketCenter() {
                 {message.body}
               </p>
             ))}
-            <Textarea value={reply} onChange={(event) => setReply(event.target.value)} />
+            {(detail.data.images ?? [])
+              .filter((image) => image.visibility === 'public' || detail.data.can_note)
+              .map((image) => {
+                const href = `/api/adty/tickets/${detail.data.ticket.id}/images/${image.id}`
+                const label = image.object_id
+                  ? `${t('Image')} ${image.object_id}`
+                  : `${t('Image')} #${image.id}`
+                return (
+                  <div key={image.id} className='flex flex-col gap-1 text-sm'>
+                    <a href={href} target='_blank' rel='noreferrer' className='underline'>
+                      {image.visibility === 'internal' ? `${t('Internal note')}: ` : ''}
+                      {label}
+                    </a>
+                    <img
+                      src={href}
+                      alt={label}
+                      className='max-h-48 max-w-xs rounded border object-contain'
+                    />
+                  </div>
+                )
+              })}
+            {(detail.data.events ?? [])
+              .filter((event) => event.action !== 'note' || detail.data.can_note)
+              .map((event) => {
+                let detailLabel = ''
+                if (event.detail) {
+                  detailLabel = TICKET_STATUS_LABELS[normalizeTicketStatus(event.detail)]
+                    ? `${t(ticketStatusLabel(event.detail))} (${event.detail})`
+                    : event.detail
+                }
+                return (
+                  <p key={event.id} className='text-muted-foreground text-xs'>
+                    {t('Event')}: {event.action}
+                    {detailLabel ? ` · ${detailLabel}` : ''}
+                  </p>
+                )
+              })}
+            <Textarea
+              aria-label={t('Reply')}
+              value={reply}
+              onChange={(event) => setReply(event.target.value)}
+            />
             <Button
               type='button'
               disabled={pending || reply.trim() === ''}
-              onClick={() =>
-                void api.post(`/api/adty/tickets/${selected}/replies`, { body: reply.trim() }).then(() => {
-                  setReply('')
-                  return refresh()
-                })
-              }
+              onClick={() => void submitReply()}
             >
               {t('Reply')}
             </Button>
             {detail.data.can_note && (
               <>
-                <Textarea value={note} onChange={(event) => setNote(event.target.value)} />
+                <Textarea
+                  aria-label={t('Internal note')}
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                />
                 <Button
                   type='button'
                   variant='outline'
                   disabled={pending || note.trim() === ''}
-                  onClick={() =>
-                    void api.post(`/api/adty/tickets/${selected}/notes`, { body: note.trim() }).then(() => {
-                      setNote('')
-                      return refresh()
-                    })
-                  }
+                  onClick={() => void submitNote()}
                 >
                   {t('Internal note')}
                 </Button>
@@ -332,19 +451,14 @@ export function TicketCenter() {
               id='ticket-image'
               type='file'
               accept='image/png,image/jpeg,image/gif,image/webp'
+              disabled={pending}
               onChange={(event) => {
                 const file = event.target.files?.[0]
                 if (!file || selected === null) return
                 const reader = new FileReader()
                 reader.onload = () => {
                   const value = String(reader.result || '')
-                  void api
-                    .post(`/api/adty/tickets/${selected}/images`, {
-                      data: value.slice(value.indexOf(',') + 1),
-                      visibility: 'public',
-                    })
-                    .then(() => refresh())
-                    .catch((cause) => setError(getServerErrorMessage(cause, t('Only images are accepted'))))
+                  void uploadImage(value.slice(value.indexOf(',') + 1))
                 }
                 reader.readAsDataURL(file)
               }}

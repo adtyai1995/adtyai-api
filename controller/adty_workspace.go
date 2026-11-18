@@ -387,7 +387,7 @@ func PostAdtyTicketImage(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"id": image.Id, "mime": image.Mime, "width": image.Width, "height": image.Height})
+	common.ApiSuccess(c, gin.H{"id": image.Id, "object_id": image.ObjectId, "mime": image.Mime, "width": image.Width, "height": image.Height})
 }
 
 func GetAdtyTicketImage(c *gin.Context) {

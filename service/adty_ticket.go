@@ -2,8 +2,10 @@ package service
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"image"
 	"image/gif"
 	"image/jpeg"
@@ -94,6 +96,29 @@ func adtyTicketImageFilePath(storage string) (string, error) {
 	return filepath.Join(adtyTicketImageDir(), storage), nil
 }
 
+func adtyTicketImageStoragePath(imageRow model.AdtyTicketImage) (string, error) {
+	storage := strings.TrimSpace(imageRow.Storage)
+	if storage == "" && strings.TrimSpace(imageRow.ObjectId) != "" {
+		storage = strings.TrimSpace(imageRow.ObjectId) + adtyTicketExt(imageRow.Mime)
+	}
+	if storage == "" {
+		return "", os.ErrNotExist
+	}
+	path, err := adtyTicketImageFilePath(storage)
+	if err != nil || path == "" {
+		return "", os.ErrNotExist
+	}
+	return path, nil
+}
+
+func newAdtyTicketImageObjectID() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
+}
+
 func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, error) {
 	input.Title = strings.TrimSpace(redactAdtySecrets(input.Title))
 	input.Body = strings.TrimSpace(redactAdtySecrets(input.Body))
@@ -129,12 +154,14 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureAdtyTicketNoticeSchema(); err != nil {
+		return nil, err
+	}
 	var created *model.AdtyTicket
 	createdNew := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		dedupe := ticketDedupe(0, input.Idempotency)
-		if input.Idempotency != "" {
-			dedupe = "create:" + input.Idempotency
+		dedupe := ticketCreateDedupe(actor.User.SiteId, actor.User.Id, input.Idempotency)
+		if strings.TrimSpace(input.Idempotency) != "" {
 			var prior model.AdtyTicketMessage
 			lookup := tx.Where("dedupe = ?", dedupe).Limit(1).Find(&prior)
 			if lookup.Error != nil {
@@ -145,6 +172,10 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 				if err := tx.First(&ticket, prior.TicketId).Error; err != nil {
 					return err
 				}
+				if prior.AuthorId != actor.User.Id || ticket.UserId != actor.User.Id || ticket.SiteId != actor.User.SiteId || !actor.canRead(ticket) {
+					return ErrAdtyTicketForbidden
+				}
+				ticket.Status = model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
 				created = &ticket
 				return nil
 			}
@@ -165,7 +196,11 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 		if err := tx.Create(&message).Error; err != nil {
 			return err
 		}
-		if err := tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "create", Detail: input.RelatedKind}).Error; err != nil {
+		createEvent := model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "create", Detail: input.RelatedKind}
+		if err := tx.Create(&createEvent).Error; err != nil {
+			return err
+		}
+		if err := emitAdtyTicketCreateNoticesTx(tx, ticket, createEvent.Id, actor.User.Id); err != nil {
 			return err
 		}
 		created = &ticket
@@ -300,7 +335,7 @@ func GetAdtyTicket(userId int, ticketId int64) (*AdtyTicketDetail, error) {
 		return nil, err
 	}
 	var images []model.AdtyTicketImage
-	if err := model.DB.Select("id", "ticket_id", "message_id", "visibility", "mime", "size", "width", "height", "sha256", "created_at").Where("ticket_id = ? AND visibility IN ?", ticket.Id, visibility).Order("id ASC").Find(&images).Error; err != nil {
+	if err := model.DB.Select("id", "object_id", "ticket_id", "message_id", "visibility", "mime", "size", "width", "height", "sha256", "created_at").Where("ticket_id = ? AND visibility IN ?", ticket.Id, visibility).Order("id ASC").Find(&images).Error; err != nil {
 		return nil, err
 	}
 	var events []model.AdtyTicketEvent
@@ -320,8 +355,14 @@ func NoteAdtyTicket(userId int, ticketId int64, body, idempotency string) (*mode
 }
 
 func SetAdtyTicketStatus(userId int, ticketId int64, status, priority string, assigneeId int) error {
+	if assigneeId < 0 {
+		return ErrAdtyTicketInvalid
+	}
 	actor, err := loadAdtyTicketActor(userId)
 	if err != nil {
+		return err
+	}
+	if err := ensureAdtyTicketNoticeSchema(); err != nil {
 		return err
 	}
 	var statusAudit map[string]any
@@ -339,6 +380,9 @@ func SetAdtyTicketStatus(userId int, ticketId int64, status, priority string, as
 		if assigneeId > 0 {
 			if !actor.canManage(ticket) {
 				return ErrAdtyTicketForbidden
+			}
+			if err := validateAdtyTicketAssigneeTx(tx, ticket, assigneeId); err != nil {
+				return err
 			}
 			nextAssignee = assigneeId
 		}
@@ -393,16 +437,22 @@ func SetAdtyTicketStatus(userId int, ticketId int64, status, priority string, as
 			"ticket_id": ticket.Id, "status": next, "priority": nextPriority, "assignee_id": nextAssignee,
 			"site_id": ticket.SiteId, "user_id": ticket.UserId, "event": action,
 		}
-		if action == "reopen" {
-			return tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "reopen", Detail: next}).Error
+		eventAction := action
+		eventDetail := next
+		if action != "reopen" {
+			if next == current && nextAssignee != ticket.AssigneeId {
+				eventAction = "status"
+				eventDetail = next
+			} else if next == current && nextPriority != ticket.Priority {
+				eventAction = "priority"
+				eventDetail = nextPriority
+			}
 		}
-		if next == current && nextAssignee != ticket.AssigneeId {
-			return tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "status", Detail: next}).Error
+		eventRow := model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: eventAction, Detail: eventDetail}
+		if err := tx.Create(&eventRow).Error; err != nil {
+			return err
 		}
-		if next == current && nextPriority != ticket.Priority {
-			return tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "priority", Detail: nextPriority}).Error
-		}
-		return tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: action, Detail: next}).Error
+		return emitAdtyTicketStatusNoticesTx(tx, ticket, eventRow, actor.User.Id, next, nextAssignee)
 	})
 	if err == nil && statusAudit != nil {
 		siteID := 0
@@ -525,55 +575,81 @@ func AddAdtyTicketImage(userId int, ticketId int64, visibility string, data []by
 	if err != nil {
 		return nil, err
 	}
-	var ticket model.AdtyTicket
-	if err := model.DB.First(&ticket, ticketId).Error; err != nil {
-		return nil, err
-	}
-	if !actor.canRead(ticket) {
-		return nil, ErrAdtyTicketForbidden
-	}
-	if visibility == model.AdtyTicketVisibilityNote && !actor.canNote(ticket) {
-		return nil, ErrAdtyTicketForbidden
-	}
 	policy := adtyTicketPolicy()
-	if len(data) == 0 || len(data) > policy.MaxBytes {
-		return nil, ErrAdtyTicketImage
+	var stripped []byte
+	var mime string
+	var width, height int
+	var sanitizeErr error = ErrAdtyTicketImage
+	if len(data) > 0 && len(data) <= policy.MaxBytes {
+		stripped, mime, width, height, sanitizeErr = sanitizeAdtyTicketImage(data, policy)
 	}
-	var count int64
-	var total int64
-	if err := model.DB.Model(&model.AdtyTicketImage{}).Where("ticket_id = ?", ticket.Id).Count(&count).Error; err != nil {
-		return nil, err
+	var sum [32]byte
+	var objectID string
+	var name string
+	var dir string
+	if sanitizeErr == nil {
+		sum = sha256.Sum256(stripped)
+		objectID, err = newAdtyTicketImageObjectID()
+		if err != nil {
+			return nil, err
+		}
+		dir = adtyTicketImageDir()
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return nil, err
+		}
+		name = objectID + adtyTicketExt(mime)
 	}
-	if int(count) >= policy.MaxCount {
-		return nil, ErrAdtyTicketImage
-	}
-	if err := model.DB.Model(&model.AdtyTicketImage{}).Where("ticket_id = ?", ticket.Id).Select("COALESCE(SUM(size),0)").Scan(&total).Error; err != nil {
-		return nil, err
-	}
-	stripped, mime, width, height, err := sanitizeAdtyTicketImage(data, policy)
+	var row model.AdtyTicketImage
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		var ticket model.AdtyTicket
+		if err := model.AdtyLockForUpdate(tx).First(&ticket, ticketId).Error; err != nil {
+			return err
+		}
+		if !actor.canRead(ticket) {
+			return ErrAdtyTicketForbidden
+		}
+		if visibility == model.AdtyTicketVisibilityNote && !actor.canNote(ticket) {
+			return ErrAdtyTicketForbidden
+		}
+		if sanitizeErr != nil {
+			return sanitizeErr
+		}
+		var count int64
+		var total int64
+		if err := tx.Model(&model.AdtyTicketImage{}).Where("ticket_id = ?", ticket.Id).Count(&count).Error; err != nil {
+			return err
+		}
+		if int(count) >= policy.MaxCount {
+			return ErrAdtyTicketImage
+		}
+		if err := tx.Model(&model.AdtyTicketImage{}).Where("ticket_id = ?", ticket.Id).Select("COALESCE(SUM(size),0)").Scan(&total).Error; err != nil {
+			return err
+		}
+		if int(total)+len(stripped) > policy.MaxTotal {
+			return ErrAdtyTicketImage
+		}
+		filePath := filepath.Join(dir, name)
+		if err := os.WriteFile(filePath, stripped, 0o640); err != nil {
+			return err
+		}
+		row = model.AdtyTicketImage{
+			ObjectId: objectID, TicketId: ticket.Id, Visibility: visibility, Mime: mime,
+			Size: len(stripped), Width: width, Height: height, SHA256: hex.EncodeToString(sum[:]), Storage: name,
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			_ = os.Remove(filePath)
+			return err
+		}
+		if err := tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "image_upload", Detail: mime}).Error; err != nil {
+			_ = os.Remove(filePath)
+			return err
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if int(total)+len(stripped) > policy.MaxTotal {
-		return nil, ErrAdtyTicketImage
-	}
-	sum := sha256.Sum256(stripped)
-	dir := adtyTicketImageDir()
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return nil, err
-	}
-	name := strconv.FormatInt(ticket.Id, 10) + "-" + hex.EncodeToString(sum[:8]) + adtyTicketExt(mime)
-	if err := os.WriteFile(filepath.Join(dir, name), stripped, 0o640); err != nil {
-		return nil, err
-	}
-	row := model.AdtyTicketImage{TicketId: ticket.Id, Visibility: visibility, Mime: mime, Size: len(stripped), Width: width, Height: height, SHA256: hex.EncodeToString(sum[:]), Storage: name}
-	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&row).Error; err != nil {
-			return err
-		}
-		return tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "image_upload", Detail: mime}).Error
-	})
-	return &row, err
+	return &row, nil
 }
 
 func OpenAdtyTicketImage(userId int, ticketId, imageId int64) (string, string, error) {
@@ -597,11 +673,14 @@ func OpenAdtyTicketImage(userId int, ticketId, imageId int64) (string, string, e
 	if imageRow.Visibility != model.AdtyTicketVisibilityPublic && !actor.canNote(ticket) {
 		return "", "", ErrAdtyTicketForbidden
 	}
-	if strings.Contains(imageRow.Storage, "..") || strings.ContainsAny(imageRow.Storage, `/\`) {
+	path, err := adtyTicketImageStoragePath(imageRow)
+	if err != nil {
 		return "", "", os.ErrNotExist
 	}
-	_ = model.DB.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "image_view", Detail: strconv.FormatInt(imageRow.Id, 10)}).Error
-	return filepath.Join(adtyTicketImageDir(), imageRow.Storage), imageRow.Mime, nil
+	if err := model.DB.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "image_view", Detail: strconv.FormatInt(imageRow.Id, 10)}).Error; err != nil {
+		return "", "", err
+	}
+	return path, imageRow.Mime, nil
 }
 
 func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visibility string) (*model.AdtyTicketMessage, error) {
@@ -613,10 +692,10 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureAdtyTicketNoticeSchema(); err != nil {
+		return nil, err
+	}
 	var saved *model.AdtyTicketMessage
-	var notifyUser int
-	var notifyPurpose string
-	var notifyID int64
 	createdNew := false
 	var ticketSiteID int
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
@@ -630,14 +709,20 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 		if visibility == model.AdtyTicketVisibilityNote && !actor.canNote(ticket) {
 			return ErrAdtyTicketForbidden
 		}
-		dedupe := ticketDedupe(ticket.Id, idempotency)
-		if idempotency != "" {
+		dedupe := ticketMessageDedupe(ticket.Id, actor.User.Id, visibility, idempotency)
+		if strings.TrimSpace(idempotency) != "" {
 			var prior model.AdtyTicketMessage
 			lookup := tx.Where("dedupe = ?", dedupe).Limit(1).Find(&prior)
 			if lookup.Error != nil {
 				return lookup.Error
 			}
 			if lookup.RowsAffected > 0 {
+				if prior.TicketId != ticket.Id || prior.AuthorId != actor.User.Id || prior.Visibility != visibility {
+					return ErrAdtyTicketForbidden
+				}
+				if prior.Visibility != model.AdtyTicketVisibilityPublic && !actor.canNote(ticket) {
+					return ErrAdtyTicketForbidden
+				}
 				saved = &prior
 				return nil
 			}
@@ -650,7 +735,8 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 		if visibility == model.AdtyTicketVisibilityNote {
 			action = "note"
 		}
-		if err := tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: action}).Error; err != nil {
+		eventRow := model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: action}
+		if err := tx.Create(&eventRow).Error; err != nil {
 			return err
 		}
 		saved = &row
@@ -658,21 +744,12 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 		ticketSiteID = ticket.SiteId
 		// 推送按「回复者的对端」分流，作者本人永不进队列。
 		//
-		// 以前不分方向：任何公开回帖都排给 ticket.UserId，于是客户自己补充一句会给
-		// 自己发一条提醒，而客服/站长那边一条都收不到（工单侧以前从不使用 admin
-		// purpose）。对端以 actor.User.Id 对 ticket.UserId 判定，不看角色——作者是
-		// 客户就通知处理人，其他人回帖（客服、站长、团队长）一律通知客户。
+		// 对端以 actor.User.Id 对 ticket.UserId 判定，不看角色——作者是客户就通知
+		// 处理人，其他人回帖（客服、站长、团队长）一律通知客户。与消息和事件处于
+		// 同一事务，避免消息已提交而通知出箱落库失败被吞掉。
 		if visibility == model.AdtyTicketVisibilityPublic {
-			notifyID = ticket.Id
-			if actor.User.Id == ticket.UserId {
-				notifyUser = adtyTicketHandlerTx(tx, ticket)
-				notifyPurpose = model.AdtyTelegramPurposeAdmin
-			} else {
-				notifyUser = ticket.UserId
-				notifyPurpose = model.AdtyTelegramPurposeUser
-			}
-			if notifyUser == actor.User.Id {
-				notifyUser = 0
+			if err := emitAdtyTicketReplyNoticesTx(tx, ticket, row, eventRow.Id, actor.User.Id); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -686,21 +763,18 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 			},
 			model.AuditResultSuccess)
 	}
-	if err == nil && notifyUser > 0 && saved != nil && notifyPurpose != "" {
-		_ = QueueAdtyTelegramNotice(notifyUser, notifyPurpose,
-			"工单 "+strconv.FormatInt(notifyID, 10)+" 有新回复。请在网站查看。\n\nTicket "+strconv.FormatInt(notifyID, 10)+" has a new reply. Open the website.",
-			"ticket:"+strconv.FormatInt(notifyID, 10)+":msg:"+strconv.FormatInt(saved.Id, 10))
-	}
 	return saved, err
 }
 
-// adtyTicketHandlerTx 回答「客户回帖该通知谁」：优先处理人，未分配则本站站长。
+// adtyTicketHandlerTx 回答「客户回帖该通知谁」：优先处理人（需仍在工单作用域内有效），未分配则本站站长。
 //
 // 主站工单（site_id=0）在未分配时没有单一的处理人，这里返回 0 而不是挑一个——
 // 猜错人会变成骚扰，少一条提醒只是漏，两者代价不对等。
 func adtyTicketHandlerTx(tx *gorm.DB, ticket model.AdtyTicket) int {
 	if ticket.AssigneeId > 0 {
-		return ticket.AssigneeId
+		if validateAdtyTicketAssigneeTx(tx, ticket, ticket.AssigneeId) == nil {
+			return ticket.AssigneeId
+		}
 	}
 	if ticket.SiteId <= 0 {
 		return 0
@@ -709,16 +783,43 @@ func adtyTicketHandlerTx(tx *gorm.DB, ticket model.AdtyTicket) int {
 	if err := tx.Where("id = ?", ticket.SiteId).Limit(1).Find(&site).Error; err != nil {
 		return 0
 	}
-	return site.OwnerUserId
+	if site.OwnerUserId > 0 && validateAdtyTicketAssigneeTx(tx, ticket, site.OwnerUserId) == nil {
+		return site.OwnerUserId
+	}
+	return 0
+}
+
+func validateAdtyTicketAssigneeTx(tx *gorm.DB, ticket model.AdtyTicket, assigneeId int) error {
+	if assigneeId <= 0 {
+		return ErrAdtyTicketInvalid
+	}
+	target, err := loadAdtyTicketActorTx(tx, assigneeId)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrAdtyTicketInvalid
+		}
+		return err
+	}
+	if target.User.Status != common.UserStatusEnabled {
+		return ErrAdtyTicketInvalid
+	}
+	if !target.canManage(ticket) {
+		return ErrAdtyTicketInvalid
+	}
+	return nil
 }
 
 func loadAdtyTicketActor(userId int) (adtyTicketActor, error) {
+	return loadAdtyTicketActorTx(model.DB, userId)
+}
+
+func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 	var actor adtyTicketActor
-	if err := model.DB.First(&actor.User, userId).Error; err != nil {
+	if err := tx.First(&actor.User, userId).Error; err != nil {
 		return actor, err
 	}
 	var staff model.AdtySiteStaff
-	lookup := model.DB.Where("user_id = ?", userId).Limit(1).Find(&staff)
+	lookup := tx.Where("user_id = ?", userId).Limit(1).Find(&staff)
 	if lookup.Error != nil {
 		return actor, lookup.Error
 	}
@@ -726,7 +827,7 @@ func loadAdtyTicketActor(userId int) (adtyTicketActor, error) {
 		actor.Staff = &staff
 	}
 	var site model.AdtySite
-	owned := model.DB.Where("owner_user_id = ?", userId).Limit(1).Find(&site)
+	owned := tx.Where("owner_user_id = ?", userId).Limit(1).Find(&site)
 	if owned.Error != nil {
 		return actor, owned.Error
 	}
@@ -734,7 +835,7 @@ func loadAdtyTicketActor(userId int) (adtyTicketActor, error) {
 		actor.OwnerSiteId = site.Id
 	}
 	var member model.AdtyTeamMember
-	team := model.DB.Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).Limit(1).Find(&member)
+	team := tx.Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).Limit(1).Find(&member)
 	if team.Error != nil {
 		return actor, team.Error
 	}
@@ -794,14 +895,348 @@ func (actor adtyTicketActor) scopeSite() int {
 	return actor.User.SiteId
 }
 
+func ticketCreateDedupe(siteId, userId int, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ticketDedupe(0, "")
+	}
+	prefix := "create:" + strconv.Itoa(siteId) + ":" + strconv.Itoa(userId) + ":"
+	raw := prefix + key
+	if len(raw) > 160 {
+		sum := sha256.Sum256([]byte(raw))
+		return prefix + "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return raw
+}
+
+func ticketMessageDedupe(ticketId int64, userId int, visibility, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ticketDedupe(ticketId, "")
+	}
+	action := "reply"
+	if visibility == model.AdtyTicketVisibilityNote {
+		action = "note"
+	}
+	prefix := strconv.FormatInt(ticketId, 10) + ":" + strconv.Itoa(userId) + ":" + action + ":"
+	raw := prefix + key
+	if len(raw) > 160 {
+		sum := sha256.Sum256([]byte(raw))
+		return prefix + "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return raw
+}
+
 func ticketDedupe(ticketId int64, key string) string {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		raw := strconv.FormatInt(time.Now().UnixNano(), 10) + ":" + strconv.FormatInt(ticketId, 10)
+		var rnd [16]byte
+		_, _ = rand.Read(rnd[:])
+		raw := strconv.FormatInt(time.Now().UnixNano(), 10) + ":" + strconv.FormatInt(ticketId, 10) + ":" + hex.EncodeToString(rnd[:])
 		sum := sha256.Sum256([]byte(raw))
 		return "auto:" + hex.EncodeToString(sum[:])
 	}
 	return strconv.FormatInt(ticketId, 10) + ":" + key
+}
+
+func ensureAdtyTicketNoticeSchema() error {
+	if model.DB == nil {
+		return nil
+	}
+	if !model.DB.Migrator().HasTable(&model.AdtyTicketNotice{}) {
+		if err := model.DB.AutoMigrate(&model.AdtyTicketNotice{}); err != nil {
+			return err
+		}
+	}
+	if !model.DB.Migrator().HasTable(&model.AdtyTelegramDelivery{}) {
+		if err := model.DB.AutoMigrate(&model.AdtyTelegramBot{}, &model.AdtyTelegramBinding{}, &model.AdtyTelegramDelivery{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func saveAdtyTicketNoticeTx(tx *gorm.DB, row model.AdtyTicketNotice) error {
+	row.EventKey = strings.TrimSpace(row.EventKey)
+	if row.UserId <= 0 || row.TicketId <= 0 || row.EventKey == "" {
+		return ErrAdtyTicketInvalid
+	}
+	sum := sha256.Sum256([]byte("ticket-notice:" + row.EventKey + ":" + strconv.Itoa(row.UserId)))
+	row.ReadKey = hex.EncodeToString(sum[:])
+	var existing model.AdtyTicketNotice
+	lookup := tx.Where("event_key = ?", row.EventKey).Limit(1).Find(&existing)
+	if lookup.Error != nil {
+		return lookup.Error
+	}
+	if lookup.RowsAffected > 0 {
+		return nil
+	}
+	return tx.Create(&row).Error
+}
+
+func queueAdtyTicketTelegramNoticeTx(tx *gorm.DB, userId int, purpose, body, eventKey string) error {
+	body = strings.TrimSpace(redactAdtySecrets(body))
+	eventKey = strings.TrimSpace(eventKey)
+	if userId <= 0 || eventKey == "" || body == "" || adtyTextHasSecret(body) {
+		return ErrAdtyTelegramInvalid
+	}
+	if !strings.Contains(body, "\n\n") {
+		body += "\n\nEnglish is not ready"
+	}
+	var existing model.AdtyTelegramDelivery
+	lookup := tx.Where("event_key = ?", eventKey).Limit(1).Find(&existing)
+	if lookup.Error != nil {
+		return lookup.Error
+	}
+	if lookup.RowsAffected > 0 {
+		return nil
+	}
+	delivery := model.AdtyTelegramDelivery{
+		EventKey: eventKey, UserId: userId, Purpose: purpose, Body: body, Status: model.AdtyTelegramDeliverySkip,
+	}
+	var binding model.AdtyTelegramBinding
+	found := tx.Where("user_id = ? AND purpose = ? AND status = ?", userId, purpose, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
+	if found.Error != nil {
+		return found.Error
+	}
+	if found.RowsAffected > 0 {
+		var bot model.AdtyTelegramBot
+		if err := tx.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).Error; err != nil {
+			return err
+		}
+		if bot.Id != 0 && bot.IdentityHash == binding.BotIdentity {
+			delivery.Status = model.AdtyTelegramDeliveryWait
+			delivery.BindingId = binding.Id
+			delivery.SiteId = binding.SiteId
+		}
+	}
+	return tx.Create(&delivery).Error
+}
+
+func emitAdtyTicketCreateNoticesTx(tx *gorm.DB, ticket model.AdtyTicket, eventId int64, actorUserId int) error {
+	if ticket.UserId > 0 {
+		userKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":create:user"
+		title := "工单 #" + strconv.FormatInt(ticket.Id, 10) + " 已创建 / Ticket #" + strconv.FormatInt(ticket.Id, 10) + " created"
+		body := "工单 " + strconv.FormatInt(ticket.Id, 10) + " 已创建。请在网站查看。\n\nTicket " + strconv.FormatInt(ticket.Id, 10) + " has been created. Open the website."
+		if err := saveAdtyTicketNoticeTx(tx, model.AdtyTicketNotice{
+			EventKey: userKey, TicketId: ticket.Id, EventId: eventId, SiteId: ticket.SiteId,
+			UserId: ticket.UserId, ActorId: actorUserId, Action: "create", Title: title, Content: body,
+		}); err != nil {
+			return err
+		}
+		if err := queueAdtyTicketTelegramNoticeTx(tx, ticket.UserId, model.AdtyTelegramPurposeUser, body, userKey); err != nil {
+			return err
+		}
+	}
+	handlerId := adtyTicketHandlerTx(tx, ticket)
+	if handlerId > 0 && handlerId != actorUserId {
+		adminKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":create"
+		title := "新工单 #" + strconv.FormatInt(ticket.Id, 10) + " / New ticket #" + strconv.FormatInt(ticket.Id, 10)
+		body := "工单 " + strconv.FormatInt(ticket.Id, 10) + " 待处理。请在网站查看。\n\nTicket " + strconv.FormatInt(ticket.Id, 10) + " is waiting to be handled. Open the website."
+		if err := saveAdtyTicketNoticeTx(tx, model.AdtyTicketNotice{
+			EventKey: adminKey, TicketId: ticket.Id, EventId: eventId, SiteId: ticket.SiteId,
+			UserId: handlerId, ActorId: actorUserId, Action: "create", Title: title, Content: body,
+		}); err != nil {
+			return err
+		}
+		if err := queueAdtyTicketTelegramNoticeTx(tx, handlerId, model.AdtyTelegramPurposeAdmin, body, adminKey); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func emitAdtyTicketReplyNoticesTx(tx *gorm.DB, ticket model.AdtyTicket, message model.AdtyTicketMessage, eventId int64, actorUserId int) error {
+	notifyUser := 0
+	notifyPurpose := ""
+	if actorUserId == ticket.UserId {
+		notifyUser = adtyTicketHandlerTx(tx, ticket)
+		notifyPurpose = model.AdtyTelegramPurposeAdmin
+	} else {
+		notifyUser = ticket.UserId
+		notifyPurpose = model.AdtyTelegramPurposeUser
+	}
+	if notifyUser == actorUserId {
+		notifyUser = 0
+	}
+	if notifyUser <= 0 || notifyPurpose == "" {
+		return nil
+	}
+	eventKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":msg:" + strconv.FormatInt(message.Id, 10)
+	title := "工单 #" + strconv.FormatInt(ticket.Id, 10) + " 新回复 / Ticket #" + strconv.FormatInt(ticket.Id, 10) + " new reply"
+	body := "工单 " + strconv.FormatInt(ticket.Id, 10) + " 有新回复。请在网站查看。\n\nTicket " + strconv.FormatInt(ticket.Id, 10) + " has a new reply. Open the website."
+	if err := saveAdtyTicketNoticeTx(tx, model.AdtyTicketNotice{
+		EventKey: eventKey, TicketId: ticket.Id, EventId: eventId, SiteId: ticket.SiteId,
+		UserId: notifyUser, ActorId: actorUserId, Action: "reply", Title: title, Content: body,
+	}); err != nil {
+		return err
+	}
+	return queueAdtyTicketTelegramNoticeTx(tx, notifyUser, notifyPurpose, body, eventKey)
+}
+
+func emitAdtyTicketStatusNoticesTx(tx *gorm.DB, ticket model.AdtyTicket, event model.AdtyTicketEvent, actorUserId int, nextStatus string, nextAssignee int) error {
+	updated := ticket
+	if nextStatus != "" {
+		updated.Status = nextStatus
+	}
+	if nextAssignee > 0 {
+		updated.AssigneeId = nextAssignee
+	}
+	detail := event.Detail
+	if detail == "" {
+		detail = updated.Status
+	}
+	title := "工单 #" + strconv.FormatInt(ticket.Id, 10) + " 状态更新 / Ticket #" + strconv.FormatInt(ticket.Id, 10) + " status updated"
+	body := "工单 " + strconv.FormatInt(ticket.Id, 10) + " 状态已更新为 " + detail + "。请在网站查看。\n\nTicket " + strconv.FormatInt(ticket.Id, 10) + " status updated to " + detail + ". Open the website."
+	baseKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":event:" + strconv.FormatInt(event.Id, 10)
+	notifiedCustomer := false
+	if ticket.UserId > 0 && ticket.UserId != actorUserId {
+		notifiedCustomer = true
+		if err := saveAdtyTicketNoticeTx(tx, model.AdtyTicketNotice{
+			EventKey: baseKey, TicketId: ticket.Id, EventId: event.Id, SiteId: ticket.SiteId,
+			UserId: ticket.UserId, ActorId: actorUserId, Action: event.Action, Title: title, Content: body,
+		}); err != nil {
+			return err
+		}
+		if err := queueAdtyTicketTelegramNoticeTx(tx, ticket.UserId, model.AdtyTelegramPurposeUser, body, baseKey); err != nil {
+			return err
+		}
+	}
+	handlerId := adtyTicketHandlerTx(tx, updated)
+	if handlerId > 0 && handlerId != actorUserId && handlerId != ticket.UserId {
+		adminKey := baseKey
+		if notifiedCustomer {
+			adminKey = baseKey + ":admin"
+		}
+		if err := saveAdtyTicketNoticeTx(tx, model.AdtyTicketNotice{
+			EventKey: adminKey, TicketId: ticket.Id, EventId: event.Id, SiteId: ticket.SiteId,
+			UserId: handlerId, ActorId: actorUserId, Action: event.Action, Title: title, Content: body,
+		}); err != nil {
+			return err
+		}
+		if err := queueAdtyTicketTelegramNoticeTx(tx, handlerId, model.AdtyTelegramPurposeAdmin, body, adminKey); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SyncAdtyTicketEventNotices scans persisted ticket events and idempotently
+// recovers any missing in-site ticket notices or retriable Telegram outbox rows.
+func SyncAdtyTicketEventNotices() (int, error) {
+	if model.DB == nil {
+		return 0, nil
+	}
+	if err := ensureAdtyTicketNoticeSchema(); err != nil {
+		return 0, err
+	}
+	var events []model.AdtyTicketEvent
+	if err := model.DB.Where("action IN ?", []string{"create", "reply", "status", "reopen", "priority"}).Order("id ASC").Find(&events).Error; err != nil {
+		return 0, err
+	}
+	var beforeNotices, beforeDeliveries int64
+	_ = model.DB.Model(&model.AdtyTicketNotice{}).Count(&beforeNotices).Error
+	_ = model.DB.Model(&model.AdtyTelegramDelivery{}).Count(&beforeDeliveries).Error
+
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		tickets := map[int64]model.AdtyTicket{}
+		repliedTickets := map[int64]bool{}
+		for _, event := range events {
+			ticket, ok := tickets[event.TicketId]
+			if !ok {
+				if err := tx.First(&ticket, event.TicketId).Error; err != nil {
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						continue
+					}
+					return err
+				}
+				tickets[event.TicketId] = ticket
+			}
+			switch event.Action {
+			case "create":
+				if err := emitAdtyTicketCreateNoticesTx(tx, ticket, event.Id, event.ActorId); err != nil {
+					return err
+				}
+			case "reply":
+				if repliedTickets[ticket.Id] {
+					continue
+				}
+				repliedTickets[ticket.Id] = true
+				var messages []model.AdtyTicketMessage
+				if err := tx.Where("ticket_id = ? AND visibility = ?", ticket.Id, model.AdtyTicketVisibilityPublic).Order("id ASC").Find(&messages).Error; err != nil {
+					return err
+				}
+				for i, msg := range messages {
+					if i == 0 && strings.HasPrefix(msg.Dedupe, "create:") {
+						continue
+					}
+					if i == 0 && len(messages) >= 1 && msg.AuthorId == ticket.UserId && event.ActorId != msg.AuthorId {
+						continue
+					}
+					if i == 0 {
+						// First public message created with CreateAdtyTicket has its own create event.
+						var createCount int64
+						_ = tx.Model(&model.AdtyTicketEvent{}).Where("ticket_id = ? AND action = ? AND id <= ?", ticket.Id, "create", event.Id).Count(&createCount).Error
+						if createCount > 0 {
+							continue
+						}
+					}
+					if err := emitAdtyTicketReplyNoticesTx(tx, ticket, msg, event.Id, msg.AuthorId); err != nil {
+						return err
+					}
+				}
+			case "status", "reopen", "priority":
+				if err := emitAdtyTicketStatusNoticesTx(tx, ticket, event, event.ActorId, event.Detail, ticket.AssigneeId); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	var afterNotices, afterDeliveries int64
+	_ = model.DB.Model(&model.AdtyTicketNotice{}).Count(&afterNotices).Error
+	_ = model.DB.Model(&model.AdtyTelegramDelivery{}).Count(&afterDeliveries).Error
+	recovered := int((afterNotices - beforeNotices) + (afterDeliveries - beforeDeliveries))
+	if recovered < 0 {
+		recovered = 0
+	}
+	return recovered, nil
+}
+
+// ListAdtyTicketNoticesForUser returns persisted in-site ticket notices for the
+// given user and site scope, newest first.
+func ListAdtyTicketNoticesForUser(userId, siteId, limit int) ([]model.AdtyTicketNotice, error) {
+	if userId <= 0 || model.DB == nil {
+		return []model.AdtyTicketNotice{}, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	var rows []model.AdtyTicketNotice
+	err := model.DB.Where("user_id = ? AND site_id = ?", userId, siteId).Order("id DESC").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+func startAdtyTicketNoticeSyncTask() {
+	if _, err := SyncAdtyTicketEventNotices(); err != nil {
+		common.SysError(common.LogText("ticket notice sync on startup: %s", err.Error()))
+	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if _, err := SyncAdtyTicketEventNotices(); err != nil {
+				common.SysError(common.LogText("ticket notice sync task: %s", err.Error()))
+			}
+		}
+	}()
+}
+
+func init() {
+	adtyMasterTasks = append(adtyMasterTasks, startAdtyTicketNoticeSyncTask)
 }
 
 func adtyTicketPolicy() model.AdtyTicketPolicy {
