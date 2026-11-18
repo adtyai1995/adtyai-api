@@ -362,3 +362,69 @@ func TestSharedEndpointRebindsToBoundNewAPIExtension(t *testing.T) {
 	assert.Equal(t, "alpha", c.GetString("task_plugin_key"), "the first bound candidate executes regardless of the earlier pin")
 	assert.Equal(t, "alpha", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).Plugin.Meta.Key)
 }
+
+func TestSetupContextForSelectedChannelDoesNotLeavePartialContextOnKeyError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	brokenMultiKeyChannel := &model.Channel{
+		Id:     77,
+		Name:   "broken-multikey",
+		Type:   constant.ChannelTypeOpenAI,
+		Status: common.ChannelStatusEnabled,
+		Key:    "",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey: true,
+		},
+	}
+
+	setupErr := SetupContextForSelectedChannel(c, brokenMultiKeyChannel, "gpt-4o")
+	require.NotNil(t, setupErr)
+
+	_, hasChannelID := common.GetContextKey(c, constant.ContextKeyChannelId)
+	_, hasChannelType := common.GetContextKey(c, constant.ContextKeyChannelType)
+	_, hasChannelName := common.GetContextKey(c, constant.ContextKeyChannelName)
+	_, hasChannelKey := common.GetContextKey(c, constant.ContextKeyChannelKey)
+	assert.False(t, hasChannelID, "ChannelId must not be set when key selection fails")
+	assert.False(t, hasChannelType, "ChannelType must not be set when key selection fails")
+	assert.False(t, hasChannelName, "ChannelName must not be set when key selection fails")
+	assert.False(t, hasChannelKey, "ChannelKey must not be set when key selection fails")
+}
+
+func TestDistributeAbortsWhenSelectedChannelSetupFails(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	gin.SetMode(gin.TestMode)
+
+	brokenMultiKeyChannel := &model.Channel{
+		Id:     88,
+		Name:   "broken-multikey-distribute",
+		Type:   constant.ChannelTypeOpenAI,
+		Status: common.ChannelStatusEnabled,
+		Key:    "",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey: true,
+		},
+	}
+
+	downstreamCalled := false
+	router := gin.New()
+	router.POST("/v1/chat/completions", RequestId(), func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+		c.Set("resolved_task_model", "gpt-4o")
+		c.Set(contextKeyTaskPluginEndpointSelection, taskPluginEndpointSelection{
+			Model:   "gpt-4o",
+			Channel: brokenMultiKeyChannel,
+		})
+	}, Distribute(), func(c *gin.Context) {
+		downstreamCalled = true
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.False(t, downstreamCalled, "next handler must not execute when SetupContextForSelectedChannel fails")
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}

@@ -1,12 +1,59 @@
 package controller
 
 import (
+	"net/http"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
+
+var (
+	adtyUserLimitGetTargetUser = func(userID int) (*model.User, error) {
+		return model.GetUserById(userID, false)
+	}
+	adtyUserLimitGetLimit    = model.GetAdtyUserLimit
+	adtyUserLimitSaveLimit   = model.SaveAdtyUserLimit
+	adtyUserLimitRecordAudit = func(c *gin.Context, targetID int, action string, after map[string]any) {
+		if model.DB == nil {
+			return
+		}
+		recordManageAuditFor(c, targetID, action, after)
+	}
+)
+
+func adtyCheckUserLimitTargetScope(c *gin.Context, targetUserID int, requireTarget bool) bool {
+	myRole := c.GetInt("role")
+	actorID := c.GetInt("id")
+	if myRole == 0 && actorID > 0 {
+		if actor, err := adtyUserLimitGetTargetUser(actorID); err == nil && actor != nil {
+			myRole = actor.Role
+		}
+	}
+	targetUser, err := adtyUserLimitGetTargetUser(targetUserID)
+	if err != nil || targetUser == nil {
+		if !requireTarget && (myRole == common.RoleRootUser || (myRole == 0 && actorID == 0)) {
+			return true
+		}
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("User not found"))
+		return false
+	}
+	if myRole != common.RoleRootUser {
+		if myRole < common.RoleAdminUser || myRole <= targetUser.Role {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to update user with same or higher role"))
+			return false
+		}
+	}
+	if hostSite := service.AdtySiteForRequest(c); hostSite != nil && hostSite.Id > 0 && myRole != common.RoleRootUser {
+		if _, err := service.GetAdtyOwnerCustomer(hostSite, targetUserID); err != nil {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
+			return false
+		}
+	}
+	return true
+}
 
 // GetAdtyUserLimits 返回一个用户的请求限制（任务 7.4，用户·查看）。-1 表示跟默认。
 func GetAdtyUserLimits(c *gin.Context) {
@@ -15,7 +62,10 @@ func GetAdtyUserLimits(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	limit, err := model.GetAdtyUserLimit(userID)
+	if !adtyCheckUserLimitTargetScope(c, userID, false) {
+		return
+	}
+	limit, err := adtyUserLimitGetLimit(userID)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -39,11 +89,14 @@ func PutAdtyUserLimits(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if !adtyCheckUserLimitTargetScope(c, userID, true) {
+		return
+	}
 	limit := model.AdtyUserLimit{UserId: userID, RPM: body.RPM, TPM: body.TPM, Concurrency: body.Concurrency}
-	if err := model.SaveAdtyUserLimit(limit); err != nil {
+	if err := adtyUserLimitSaveLimit(limit); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, userID, "adty.user.limits", map[string]any{"rpm": body.RPM, "tpm": body.TPM, "concurrency": body.Concurrency})
+	adtyUserLimitRecordAudit(c, userID, "adty.user.limits", map[string]any{"rpm": body.RPM, "tpm": body.TPM, "concurrency": body.Concurrency})
 	common.ApiSuccess(c, limit)
 }

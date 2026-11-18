@@ -41,7 +41,7 @@ func TestOwnerStaffLifecycleAndScope(t *testing.T) {
 	theirs := f.customer(t, f.other, "staff-other", "other@example.com")
 	create := `{"username":"employee-1","display_name":"Support One","password":"employee-password-42","role":"support"}`
 	require.Equal(t, http.StatusForbidden, f.call(t, http.MethodPost, "/api/adty/site/staff", create, "").Code)
-	proof := sessionProof(t, f.owner, "staff.create", f.site.Id)
+	proof := sessionProof(t, f.owner, "staff.create", f.site.Id, create)
 	response := f.call(t, http.MethodPost, "/api/adty/site/staff", create, proof)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	staff := decodeAdtyData[struct {
@@ -100,12 +100,12 @@ func TestOwnerStaffLifecycleAndScope(t *testing.T) {
 	}
 	staffPath := fmt.Sprintf("/api/adty/site/staff/%d", staff.Id)
 	update := `{"display_name":"Finance One","role":"finance","permissions":["customers.read","customers.balance","customers.topups","customers.usage"],"status":"enabled","expected_version":1}`
-	for _, wrongProof := range []string{sessionProof(t, f.owner, "staff.password", staff.Id), sessionProof(t, f.owner, "staff.update", staff.Id+1)} {
+	for _, wrongProof := range []string{sessionProof(t, f.owner, "staff.password", staff.Id, update), sessionProof(t, f.owner, "staff.update", staff.Id+1, update), sessionProof(t, f.owner, "staff.update", staff.Id, `{"display_name":"Tampered","role":"support","status":"enabled","expected_version":1}`)} {
 		assert.Equal(t, http.StatusForbidden, f.call(t, http.MethodPut, staffPath, update, wrongProof).Code)
 	}
-	response = f.call(t, http.MethodPut, staffPath, update, sessionProof(t, f.owner, "staff.update", staff.Id))
+	response = f.call(t, http.MethodPut, staffPath, update, sessionProof(t, f.owner, "staff.update", staff.Id, update))
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-	assert.Equal(t, http.StatusConflict, f.call(t, http.MethodPut, staffPath, update, sessionProof(t, f.owner, "staff.update", staff.Id)).Code)
+	assert.Equal(t, http.StatusConflict, f.call(t, http.MethodPut, staffPath, update, sessionProof(t, f.owner, "staff.update", staff.Id, update)).Code)
 	assert.Equal(t, http.StatusUnauthorized, f.siteJSON(t, http.MethodGet, path, "", login.AccessToken).Code)
 	_, _, err = service.RefreshLoginSession(login.RefreshToken, login.Session.SID, "127.0.0.1", "staff-test")
 	assert.Error(t, err, "old refresh cannot restore revoked permissions")
@@ -132,19 +132,21 @@ func TestOwnerStaffLifecycleAndScope(t *testing.T) {
 	// Disabling and enabling invalidates every old JWT and refresh generation.
 	for i, status := range []string{"disabled", "enabled"} {
 		body := fmt.Sprintf(`{"display_name":"Finance One","role":"finance","status":%q,"expected_version":%d}`, status, i+2)
-		response = f.call(t, http.MethodPut, staffPath, body, sessionProof(t, f.owner, "staff.update", staff.Id))
+		response = f.call(t, http.MethodPut, staffPath, body, sessionProof(t, f.owner, "staff.update", staff.Id, body))
 		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 		assert.Equal(t, http.StatusUnauthorized, f.siteJSON(t, http.MethodGet, path, "", login.AccessToken).Code)
 	}
 	login, err = service.CreateLoginSession(employee.Id, "password", "127.0.0.1", "staff-test")
 	require.NoError(t, err)
-	response = f.call(t, http.MethodPut, staffPath+"/password", `{"password":"replacement-password-42","expected_version":4}`, sessionProof(t, f.owner, "staff.password", staff.Id))
+	pwdBody := `{"password":"replacement-password-42","expected_version":4}`
+	response = f.call(t, http.MethodPut, staffPath+"/password", pwdBody, sessionProof(t, f.owner, "staff.password", staff.Id, pwdBody))
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	assert.Equal(t, http.StatusUnauthorized, f.siteJSON(t, http.MethodGet, path, "", login.AccessToken).Code)
 	require.NoError(t, f.db.First(&employee, employee.Id).Error)
 	assert.True(t, common.ValidatePasswordAndHash("replacement-password-42", employee.Password))
 	assert.False(t, common.ValidatePasswordAndHash("employee-password-42", employee.Password))
-	response = f.call(t, http.MethodDelete, staffPath, `{"expected_version":5}`, sessionProof(t, f.owner, "staff.delete", staff.Id))
+	delBody := `{"expected_version":5}`
+	response = f.call(t, http.MethodDelete, staffPath, delBody, sessionProof(t, f.owner, "staff.delete", staff.Id, delBody))
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	_, err = service.CreateLoginSession(employee.Id, "password", "127.0.0.1", "staff-test")
 	assert.Error(t, err)
@@ -161,7 +163,7 @@ func TestOwnerStaffRejectsForbiddenGrantsAndForeignOwner(t *testing.T) {
 	f := newOwnerFixture(t)
 	for _, grant := range []string{"customers.keys", "wallets.write", "customers.credit", "site.manage", "*"} {
 		body := fmt.Sprintf(`{"username":"bad-grant","display_name":"Bad","password":"employee-password-42","role":"manager","permissions":[%q]}`, grant)
-		response := f.call(t, http.MethodPost, "/api/adty/site/staff", body, sessionProof(t, f.owner, "staff.create", f.site.Id))
+		response := f.call(t, http.MethodPost, "/api/adty/site/staff", body, sessionProof(t, f.owner, "staff.create", f.site.Id, body))
 		assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
 	}
 	var count int64
@@ -204,10 +206,10 @@ func TestOwnerStaffCustomerSecurityActions(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, call(path+"/"+action, "").Code, "write access defaults to denied")
 	}
 	rejected := fmt.Sprintf(`{"display_name":"Support","role":"support","permissions":["customers.read","customers.password","customers.disable"],"status":"enabled","expected_version":%d}`, staff.Version)
-	response := f.call(t, http.MethodPut, fmt.Sprintf("/api/adty/site/staff/%d", staff.Id), rejected, sessionProof(t, f.owner, "staff.update", staff.Id))
+	response := f.call(t, http.MethodPut, fmt.Sprintf("/api/adty/site/staff/%d", staff.Id), rejected, sessionProof(t, f.owner, "staff.update", staff.Id, rejected))
 	assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
 	input := fmt.Sprintf(`{"display_name":"Support","role":"support","permissions":["customers.read","customers.disable"],"status":"enabled","expected_version":%d}`, staff.Version)
-	response = f.call(t, http.MethodPut, fmt.Sprintf("/api/adty/site/staff/%d", staff.Id), input, sessionProof(t, f.owner, "staff.update", staff.Id))
+	response = f.call(t, http.MethodPut, fmt.Sprintf("/api/adty/site/staff/%d", staff.Id), input, sessionProof(t, f.owner, "staff.update", staff.Id, input))
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	login, err = service.CreateLoginSession(staff.UserId, "password", "127.0.0.1", "staff-security")
 	require.NoError(t, err)
@@ -274,9 +276,9 @@ func TestOwnerStaffCustomerSecurityActions(t *testing.T) {
 }
 
 // sessionFor 给 adtySessionToken 建的用户签一个 proof（和 /api/verify 签的一样，方法是密码）。
-func sessionProof(t *testing.T, user model.User, action string, target int) string {
+func sessionProof(t *testing.T, user model.User, action string, target int, request ...any) string {
 	t.Helper()
-	binding, err := service.BindVerificationOperation(service.AdtySiteOwnerOperation(action, target))
+	binding, err := service.BindVerificationOperation(service.AdtySiteOwnerOperation(action, target, request...))
 	require.NoError(t, err)
 	identity := service.AuthIdentity{UserID: user.Id, SessionID: "sid-" + user.Username, UserAuthVersion: 1, SessionVersion: 1}
 	proof, _, err := service.IssueSecurityProof(identity, service.VerificationMethodPassword, binding)

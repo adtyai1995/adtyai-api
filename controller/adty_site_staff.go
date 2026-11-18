@@ -81,8 +81,38 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 	common.ApiSuccess(c, page)
 }
 
+var (
+	adtyOwnerSiteResolver = adtyOwnerSiteOr403
+	adtyOwnerStaffExists  = func(siteID, ownerUserID, staffID int) (bool, error) {
+		var count int64
+		err := model.DB.Model(&model.AdtySiteStaff{}).
+			Where("id = ? AND site_id = ? AND owner_user_id = ? AND status <> ?", staffID, siteID, ownerUserID, "deleted").
+			Count(&count).Error
+		return count == 1, err
+	}
+	adtyOwnerStaffProofCheck = func(c *gin.Context, operation service.VerificationOperation) bool {
+		return middleware.RequireSecurityProof(c, operation) != nil
+	}
+	adtyOwnerStaffCreateFn = service.CreateAdtyStaff
+	adtyOwnerStaffMutateFn = service.MutateAdtyStaff
+)
+
+// AdtyStaffRequestDigest computes the canonical SHA-256 hex digest of a staff mutation payload.
+func AdtyStaffRequestDigest(v any) string {
+	return service.AdtyStaffRequestDigest(v)
+}
+
+// AdtySiteOwnerStaffOperation binds action, target, and the exact staff mutation request digest.
+func AdtySiteOwnerStaffOperation(action string, target int, input any) service.VerificationOperation {
+	return service.AdtySiteOwnerOperation(action, target, input)
+}
+
+func adtyRequireOwnerStaffProof(c *gin.Context, action string, target int, input service.AdtyStaffInput) bool {
+	return adtyOwnerStaffProofCheck(c, AdtySiteOwnerStaffOperation(action, target, input))
+}
+
 func PostAdtyOwnerStaff(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
+	site, ok := adtyOwnerSiteResolver(c)
 	if !ok {
 		return
 	}
@@ -91,10 +121,10 @@ func PostAdtyOwnerStaff(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, service.ErrAdtyStaffInput)
 		return
 	}
-	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionStaffCreate, site.Id) {
+	if !adtyRequireOwnerStaffProof(c, service.AdtySiteOwnerActionStaffCreate, site.Id, input) {
 		return
 	}
-	staff, err := service.CreateAdtyStaff(c.GetInt("id"), site.Id, input)
+	staff, err := adtyOwnerStaffCreateFn(c.GetInt("id"), site.Id, input)
 	if err != nil {
 		common.ApiErrorStatus(c, service.AdtyStaffErrorStatus(err), err)
 		return
@@ -113,7 +143,7 @@ func DeleteAdtyOwnerStaff(c *gin.Context) {
 }
 
 func mutateAdtyOwnerStaff(c *gin.Context, action string) {
-	site, ok := adtyOwnerSiteOr403(c)
+	site, ok := adtyOwnerSiteResolver(c)
 	if !ok {
 		return
 	}
@@ -127,19 +157,19 @@ func mutateAdtyOwnerStaff(c *gin.Context, action string) {
 		return
 	}
 	// Reject foreign IDs before consuming the proof.
-	var count int64
-	if err := model.DB.Model(&model.AdtySiteStaff{}).Where("id = ? AND site_id = ? AND owner_user_id = ? AND status <> ?", id, site.Id, c.GetInt("id"), "deleted").Count(&count).Error; err != nil {
+	exists, err := adtyOwnerStaffExists(site.Id, c.GetInt("id"), id)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if count != 1 {
+	if !exists {
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Staff account not found"))
 		return
 	}
-	if !adtyRequireOwnerProof(c, action, id) {
+	if !adtyRequireOwnerStaffProof(c, action, id, input) {
 		return
 	}
-	staff, err := service.MutateAdtyStaff(c.GetInt("id"), site.Id, id, action, input)
+	staff, err := adtyOwnerStaffMutateFn(c.GetInt("id"), site.Id, id, action, input)
 	if err != nil {
 		common.ApiErrorStatus(c, service.AdtyStaffErrorStatus(err), err)
 		return
