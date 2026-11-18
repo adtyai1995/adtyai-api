@@ -48,8 +48,9 @@ import {
 } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
-import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
+import { getApiKeys } from '@/features/keys/api'
 import type { ApiKey } from '@/features/keys/types'
+import { fetchTokenKeyWithSecurityProof } from '@/features/tokens/key-reveal-proof'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { getUserModels } from '@/lib/api'
@@ -284,7 +285,7 @@ function RequestPreview(props: {
 
     setIsCopying(true)
     try {
-      const result = await fetchTokenKey(props.example.keyId)
+      const result = await fetchTokenKeyWithSecurityProof(props.example.keyId)
       const key = result.success && result.data?.key ? result.data.key : ''
       if (!key) {
         handleServerError(result, t('Failed to copy to clipboard'))

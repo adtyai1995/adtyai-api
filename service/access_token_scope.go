@@ -12,6 +12,7 @@ import (
 
 const (
 	AccessTokenGroupPersonal = "personal"
+	AccessTokenGroupOwner    = "owner"
 	AccessTokenGroupAdmin    = "admin"
 	AccessTokenGroupSystem   = "system"
 
@@ -19,6 +20,11 @@ const (
 	AccessTokenDefaultExpiryDays = 30
 	accessTokenActionReveal      = "reveal"
 	accessTokenScopeSeparator    = ":"
+
+	AccessTokenResourceSiteOwnerCustomer = "site_owner_customer"
+	AccessTokenResourceSiteOwnerOrder    = "site_owner_order"
+	AccessTokenResourceSiteOwnerLog      = "site_owner_log"
+	AccessTokenResourceSiteOwnerSetting  = "site_owner_setting"
 )
 
 var (
@@ -67,11 +73,26 @@ var accessTokenStaticResources = []AccessTokenResource{
 	}},
 	{Resource: "wallet", LabelKey: "Wallet", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View balance and top-up records."),
-		accessTokenEdit("Top up and check in."),
+		accessTokenEdit("Top up."),
 	}},
 	{Resource: "account_security", LabelKey: "Account security", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View Passkey, two-factor, and sign-in binding status."),
 		accessTokenEdit("Includes changes that require security verification, such as password, two-factor settings, and account deletion."),
+	}},
+	{Resource: AccessTokenResourceSiteOwnerCustomer, LabelKey: "Site customers", group: AccessTokenGroupOwner, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View site customers and their account status."),
+		accessTokenEdit("Manage site customers and their settings."),
+	}},
+	{Resource: AccessTokenResourceSiteOwnerOrder, LabelKey: "Site orders & finance", group: AccessTokenGroupOwner, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View site orders, wallets, earnings, settlements, and commissions."),
+		accessTokenEdit("Manage site orders, refunds, withdrawals, vouchers, and financial operations."),
+	}},
+	{Resource: AccessTokenResourceSiteOwnerLog, LabelKey: "Site logs", group: AccessTokenGroupOwner, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View site customer usage logs and operational audit records."),
+	}},
+	{Resource: AccessTokenResourceSiteOwnerSetting, LabelKey: "Site settings & pricing", group: AccessTokenGroupOwner, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View site configuration, domains, pricing, notices, teams, and staff."),
+		accessTokenEdit("Change site configuration, domains, pricing, notices, teams, and staff."),
 	}},
 	{Resource: "user", LabelKey: "Users", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View users, their sign-in bindings, and permission settings."),
@@ -93,8 +114,8 @@ var accessTokenStaticResources = []AccessTokenResource{
 		accessTokenEdit("Create, edit, and delete prefill groups."),
 	}},
 	{Resource: "option", LabelKey: "System settings", group: AccessTokenGroupSystem, minRole: common.RoleRootUser, Actions: []authz.ActionDefinition{
-		accessTokenView("View system settings, custom OAuth providers, and price sync sources."),
-		accessTokenEdit("Change system settings and custom OAuth providers, and sync prices."),
+		accessTokenView("View system settings and price sync sources."),
+		accessTokenEdit("Change system settings and sync prices."),
 	}},
 	{Resource: "plugin", LabelKey: "Task plugins", group: AccessTokenGroupSystem, minRole: common.RoleRootUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View installed task plugins and their settings."),
@@ -111,13 +132,74 @@ func AccessTokenScopeOf(permission authz.Permission) string {
 	return permission.Resource + accessTokenScopeSeparator + permission.Action
 }
 
+func isAccessTokenSiteOwner(userID int) bool {
+	if userID <= 0 || model.DB == nil {
+		return false
+	}
+	var count int64
+	if err := model.DB.Table("adty_sites").
+		Where("owner_user_id = ? AND status NOT IN ?", userID, []string{"closed", "deleted", "rejected"}).
+		Count(&count).Error; err != nil {
+		return false
+	}
+	return count > 0
+}
+
+// AccessTokenOwnerRouteScope maps a site-owner management HTTP route and method
+// to its dedicated site-owner domain/action scope so site-owner routes never
+// share personal wallet:read / wallet:write scopes.
+func AccessTokenOwnerRouteScope(method, fullPath string) string {
+	var rest string
+	matched := false
+	for _, prefix := range []string{"/api/adty/owner", "/api/user/adty/owner", "/api/adty/site/owner"} {
+		if fullPath == prefix {
+			rest = ""
+			matched = true
+			break
+		}
+		if strings.HasPrefix(fullPath, prefix+"/") {
+			rest = strings.TrimPrefix(fullPath, prefix+"/")
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+	action := authz.ActionWrite
+	switch strings.ToUpper(method) {
+	case "GET", "HEAD", "OPTIONS":
+		action = authz.ActionRead
+	}
+	segment, _, _ := strings.Cut(rest, "/")
+	switch segment {
+	case "customers", "customer":
+		return AccessTokenResourceSiteOwnerCustomer + accessTokenScopeSeparator + action
+	case "orders", "order", "wallet", "wallets", "finance", "earnings", "earning",
+		"settlements", "settlement", "withdrawals", "withdrawal", "commissions", "commission",
+		"vouchers", "voucher", "anomalies", "anomaly", "refund", "refunds", "topup", "topups":
+		return AccessTokenResourceSiteOwnerOrder + accessTokenScopeSeparator + action
+	case "logs", "log", "usage", "audit", "audits":
+		if action != authz.ActionRead {
+			return AccessTokenResourceSiteOwnerLog + accessTokenScopeSeparator + authz.ActionWrite
+		}
+		return AccessTokenResourceSiteOwnerLog + accessTokenScopeSeparator + authz.ActionRead
+	default:
+		return AccessTokenResourceSiteOwnerSetting + accessTokenScopeSeparator + action
+	}
+}
+
 // AccessTokenCatalog lists the scopes this user may grant right now, grouped
 // for display. Resources without a grantable action and empty groups are
 // omitted.
 func AccessTokenCatalog(userID, role int) []AccessTokenCatalogGroup {
 	resources := map[string][]AccessTokenResource{}
+	isSiteOwner := isAccessTokenSiteOwner(userID)
 	for _, resource := range accessTokenStaticResources {
 		if role < resource.minRole {
+			continue
+		}
+		if resource.group == AccessTokenGroupOwner && !isSiteOwner {
 			continue
 		}
 		if AdtyAdminPermissionsEnabled() {
@@ -141,8 +223,8 @@ func AccessTokenCatalog(userID, role int) []AccessTokenCatalogGroup {
 			}
 		}
 	}
-	groups := make([]AccessTokenCatalogGroup, 0, 3)
-	for _, group := range []string{AccessTokenGroupPersonal, AccessTokenGroupAdmin, AccessTokenGroupSystem} {
+	groups := make([]AccessTokenCatalogGroup, 0, 4)
+	for _, group := range []string{AccessTokenGroupPersonal, AccessTokenGroupOwner, AccessTokenGroupAdmin, AccessTokenGroupSystem} {
 		if len(resources[group]) > 0 {
 			groups = append(groups, AccessTokenCatalogGroup{Group: group, Resources: resources[group]})
 		}
@@ -216,6 +298,12 @@ func AccessTokenScopeAllowsRoute(scopes []string, scopeVersion, role int, method
 	if scopeVersion != 0 && scopeVersion != model.AccessTokenScopeVersion {
 		return false
 	}
+	if ownerScope := AccessTokenOwnerRouteScope(method, fullPath); ownerScope != "" {
+		if requiredScope == "" || !strings.HasPrefix(requiredScope, "site_owner_") {
+			requiredScope = ownerScope
+		}
+		return AccessTokenScopeGranted(scopes, requiredScope)
+	}
 	key := method + " " + fullPath
 	if AdtyAdminPermissionsEnabled() && key == "GET /api/group/" && requiredScope == "group:read" {
 		return scopeVersion == 0 && AccessTokenScopeGranted(scopes, "group:read") ||
@@ -244,17 +332,14 @@ func AccessTokenScopeAllowsRoute(scopes []string, scopeVersion, role int, method
 }
 
 var accessTokenLegacyActionScopes = map[string]map[string]string{
-	"GET /api/user/":                                   {"adty_user:read": "user:read"},
-	"GET /api/user/search":                             {"adty_user:read": "user:read"},
-	"GET /api/user/:id":                                {"adty_user:read": "user:read"},
-	"GET /api/user/:id/oauth/bindings":                 {"adty_user:read": "user:read"},
-	"GET /api/user/2fa/stats":                          {"adty_user:read": "user:read"},
-	"GET /api/authz/catalog":                           {"adty_user:read": "user:read"},
-	"PUT /api/user/":                                   {"adty_user:write": "user:write", "adty_user:group": "user:write"},
-	"DELETE /api/user/:id/oauth/bindings/:provider_id": {"adty_user:write": "user:write"},
-	"DELETE /api/user/:id/bindings/:binding_type":      {"adty_user:write": "user:write"},
-	"DELETE /api/user/:id/reset_passkey":               {"adty_user:write": "user:write"},
-	"DELETE /api/user/:id/2fa":                         {"adty_user:write": "user:write"},
+	"GET /api/user/":                      {"adty_user:read": "user:read"},
+	"GET /api/user/search":                {"adty_user:read": "user:read"},
+	"GET /api/user/:id":                   {"adty_user:read": "user:read"},
+	"GET /api/user/2fa/stats":             {"adty_user:read": "user:read"},
+	"GET /api/authz/catalog":              {"adty_user:read": "user:read"},
+	"PUT /api/user/":                      {"adty_user:write": "user:write", "adty_user:group": "user:write"},
+	"DELETE /api/user/:id/reset_passkey":  {"adty_user:write": "user:write"},
+	"DELETE /api/user/:id/2fa":            {"adty_user:write": "user:write"},
 	"GET /api/models/":                                 {"adty_model:read": "model:read"},
 	"GET /api/models/search":                           {"adty_model:read": "model:read"},
 	"GET /api/models/:id":                              {"adty_model:read": "model:read"},

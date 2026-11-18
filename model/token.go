@@ -371,7 +371,18 @@ func (token *Token) Insert() error {
 // InsertWithLimit serializes owner-scoped creation across processes. The count
 // includes disabled and expired tokens until they are actually deleted.
 func (token *Token) InsertWithLimit(limit int) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return token.InsertWithLimitAndKeyLimit(limit, AdtyKeyLimitPatch{})
+}
+
+// InsertWithLimitAndKeyLimit atomically inserts the token and persists its per-key
+// rate-limit policy in the same transaction so neither commits without the other.
+func (token *Token) InsertWithLimitAndKeyLimit(limit int, keyLimitPatch AdtyKeyLimitPatch) error {
+	if keyLimitPatch.HasChanges() {
+		if err := EnsureAdtyKeyLimitSchema(DB); err != nil {
+			return err
+		}
+	}
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		groups, err := token.GetAutoGroups()
 		if err != nil {
 			return err
@@ -390,8 +401,21 @@ func (token *Token) InsertWithLimit(limit int) error {
 		if count >= int64(limit) {
 			return ErrTokenLimit
 		}
-		return tx.Create(token).Error
+		if err := tx.Create(token).Error; err != nil {
+			return err
+		}
+		if keyLimitPatch.HasChanges() {
+			if _, _, err := ApplyAdtyKeyLimitPatchTx(tx, token.Id, keyLimitPatch); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+	if err != nil {
+		token.Id = 0
+		return err
+	}
+	return nil
 }
 
 // mutateMetadata locks the same row used by cold-cache readers. Invalidation
@@ -431,24 +455,33 @@ func (token *Token) mutateMetadata(mutate func(*gorm.DB) error, groups ...string
 // Update writes the editable token fields except remain_quota. A loaded snapshot
 // must not put an already-spent balance back.
 func (token *Token) Update() error {
-	return token.update(false)
+	_, _, err := token.UpdateWithKeyLimit(false, AdtyKeyLimitPatch{})
+	return err
 }
 
 // UpdateReplacingRemainQuota writes remain_quota as well. Call it only when the
 // request asks for a different remaining quota than the one just read.
 func (token *Token) UpdateReplacingRemainQuota() error {
-	return token.update(true)
+	_, _, err := token.UpdateWithKeyLimit(true, AdtyKeyLimitPatch{})
+	return err
 }
 
-func (token *Token) update(writeRemainQuota bool) error {
+// UpdateWithKeyLimit atomically updates the token metadata and applies any per-key
+// rate-limit policy changes inside one database transaction.
+func (token *Token) UpdateWithKeyLimit(writeRemainQuota bool, keyLimitPatch AdtyKeyLimitPatch) (previousLimit AdtyKeyLimits, updatedLimit AdtyKeyLimits, err error) {
+	if keyLimitPatch.HasChanges() {
+		if err := EnsureAdtyKeyLimitSchema(DB); err != nil {
+			return previousLimit, updatedLimit, err
+		}
+	}
 	groups, err := token.GetAutoGroups()
 	if err != nil {
-		return err
+		return previousLimit, updatedLimit, err
 	}
 	columns := []string{"name", "status", "expired_time", "unlimited_quota",
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
 		"allow_user_quota_query"}
-	return token.mutateMetadata(func(tx *gorm.DB) error {
+	err = token.mutateMetadata(func(tx *gorm.DB) error {
 		if writeRemainQuota {
 			var current Token
 			if err := tx.First(&current, token.Id).Error; err != nil {
@@ -464,8 +497,19 @@ func (token *Token) update(writeRemainQuota bool) error {
 				return err
 			}
 		}
-		return tx.Model(token).Select(columns).Updates(token).Error
+		if err := tx.Model(token).Select(columns).Updates(token).Error; err != nil {
+			return err
+		}
+		if keyLimitPatch.HasChanges() {
+			var limitErr error
+			previousLimit, updatedLimit, limitErr = ApplyAdtyKeyLimitPatchTx(tx, token.Id, keyLimitPatch)
+			if limitErr != nil {
+				return limitErr
+			}
+		}
+		return nil
 	}, append(groups, token.Group)...)
+	return previousLimit, updatedLimit, err
 }
 
 func (token *Token) SelectUpdate() (err error) {

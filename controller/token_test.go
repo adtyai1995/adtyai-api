@@ -183,6 +183,7 @@ func setupTokenControllerTestDB(t *testing.T) *gorm.DB {
 
 	db := openTokenControllerTestDB(t)
 	migrateTokenControllerTestDB(t, db)
+	require.NoError(t, model.EnsureAdtyKeyLimitSchema(db))
 	return db
 }
 
@@ -1114,3 +1115,163 @@ func verifyAPITokenAudit(t *testing.T) {
 		assert.EqualValues(t, 1, count)
 	})
 }
+
+func TestTokenMetadataAndRateLimitCommitOrRollbackAtomically(t *testing.T) {
+	// ISS-R1-0095: Token metadata creation/update and per-key rate-limit policy
+	// persistence must commit or roll back inside a single transaction.
+	db := setupTokenControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+	user := model.User{Id: 91, Username: "atomic-owner", Password: "password", Group: "default", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&user).Error)
+
+	t.Run("create rolls back token when rate limit write fails", func(t *testing.T) {
+		require.NoError(t, db.Callback().Create().Before("gorm:create").Register("test:fail-key-limit-create", func(tx *gorm.DB) {
+			if tx.Statement.Table == "adty_key_limits" {
+				_ = tx.AddError(errors.New("simulated rate limit write failure"))
+			}
+		}))
+		t.Cleanup(func() { _ = db.Callback().Create().Remove("test:fail-key-limit-create") })
+
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
+			"name":                  "rollback-on-limit-error",
+			"expired_time":          -1,
+			"unlimited_quota":       true,
+			"group":                 "default",
+			"rate_limit_per_minute": 30,
+			"rate_limit_tpm":        12000,
+		}, user.Id)
+		AddToken(ctx)
+
+		resp := decodeAPIResponse(t, recorder)
+		assert.False(t, resp.Success)
+		assert.False(t, common.GetContextKeyBool(ctx, constant.ContextKeyTokenAuditSucceeded))
+
+		var tokenCount int64
+		require.NoError(t, db.Model(&model.Token{}).Where("user_id = ? AND name = ?", user.Id, "rollback-on-limit-error").Count(&tokenCount).Error)
+		assert.Zero(t, tokenCount, "failed rate-limit write must roll back the token row")
+	})
+
+	t.Run("update rolls back token metadata when rate limit write fails", func(t *testing.T) {
+		token := seedToken(t, db, user.Id, "original-name", "atomic-update-key-1")
+		require.NoError(t, model.SaveAdtyKeyLimits(token.Id, 10, 1000, 2))
+
+		require.NoError(t, db.Callback().Update().Before("gorm:update").Register("test:fail-key-limit-update", func(tx *gorm.DB) {
+			if tx.Statement.Table == "adty_key_limits" {
+				_ = tx.AddError(errors.New("simulated rate limit update failure"))
+			}
+		}))
+		t.Cleanup(func() { _ = db.Callback().Update().Remove("test:fail-key-limit-update") })
+
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", map[string]any{
+			"id":                    token.Id,
+			"name":                  "should-be-rolled-back",
+			"expired_time":          -1,
+			"unlimited_quota":       true,
+			"group":                 "default",
+			"rate_limit_per_minute": 50,
+			"rate_limit_tpm":        5000,
+		}, user.Id)
+		UpdateToken(ctx)
+
+		resp := decodeAPIResponse(t, recorder)
+		assert.False(t, resp.Success)
+		assert.False(t, common.GetContextKeyBool(ctx, constant.ContextKeyTokenAuditSucceeded))
+
+		var reloaded model.Token
+		require.NoError(t, db.First(&reloaded, token.Id).Error)
+		assert.Equal(t, "original-name", reloaded.Name, "failed rate-limit update must roll back token metadata change")
+
+		limits, err := model.GetAdtyKeyLimits(token.Id)
+		require.NoError(t, err)
+		assert.Equal(t, 10, limits.PerMinute)
+		assert.Equal(t, 1000, limits.TPM)
+		assert.Equal(t, 2, limits.Concurrency)
+	})
+}
+
+func TestTokenRateLimitThreeDimensionsCRUDAndAudit(t *testing.T) {
+	// ISS-R1-0100: API key CRUD supports RPM, TPM, and Concurrency rate-limit dimensions.
+	db := setupTokenControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+	user := model.User{Id: 92, Username: "three-dim-owner", Password: "password", Group: "default", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&user).Error)
+
+	// 1. Create with all three dimensions.
+	createCtx, createRecorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
+		"name":                   "three-dim-key",
+		"expired_time":           -1,
+		"unlimited_quota":        true,
+		"group":                  "default",
+		"rate_limit_per_minute":  60,
+		"rate_limit_tpm":         50000,
+		"rate_limit_concurrency": 5,
+	}, user.Id)
+	AddToken(createCtx)
+	require.True(t, decodeAPIResponse(t, createRecorder).Success, createRecorder.Body.String())
+
+	var created model.Token
+	require.NoError(t, db.Where("user_id = ? AND name = ?", user.Id, "three-dim-key").First(&created).Error)
+
+	// 2. GetToken returns all three dimensions.
+	getCtx, getRecorder := newAuthenticatedContext(t, http.MethodGet, "/api/token/"+strconv.Itoa(created.Id), nil, user.Id)
+	getCtx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(created.Id)}}
+	GetToken(getCtx)
+	getResp := decodeAPIResponse(t, getRecorder)
+	require.True(t, getResp.Success)
+	var detail struct {
+		RateLimitPerMinute   int `json:"rate_limit_per_minute"`
+		RateLimitTPM         int `json:"rate_limit_tpm"`
+		RateLimitConcurrency int `json:"rate_limit_concurrency"`
+		TPMLimit             int `json:"tpm_limit"`
+		ConcurrencyLimit     int `json:"concurrency_limit"`
+	}
+	require.NoError(t, common.Unmarshal(getResp.Data, &detail))
+	assert.Equal(t, 60, detail.RateLimitPerMinute)
+	assert.Equal(t, 50000, detail.RateLimitTPM)
+	assert.Equal(t, 5, detail.RateLimitConcurrency)
+	assert.Equal(t, 50000, detail.TPMLimit)
+	assert.Equal(t, 5, detail.ConcurrencyLimit)
+
+	// 3. Partial update modifying TPM and concurrency preserves RPM and records changed_fields.
+	updateCtx, updateRecorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", map[string]any{
+		"id":                created.Id,
+		"name":              "three-dim-key",
+		"expired_time":      -1,
+		"unlimited_quota":   true,
+		"group":             "default",
+		"allow_ips":         "",
+		"tpm_limit":         80000,
+		"concurrency_limit": 8,
+	}, user.Id)
+	UpdateToken(updateCtx)
+	updateResp := decodeAPIResponse(t, updateRecorder)
+	require.True(t, updateResp.Success, updateResp.Message)
+	assert.Equal(t, []string{"rate_limit_tpm", "rate_limit_concurrency"}, tokenAuditParams(updateCtx)["changed_fields"])
+
+	limits, err := model.GetAdtyKeyLimits(created.Id)
+	require.NoError(t, err)
+	assert.Equal(t, 60, limits.PerMinute)
+	assert.Equal(t, 80000, limits.TPM)
+	assert.Equal(t, 8, limits.Concurrency)
+
+	// 4. Clearing all three dimensions deletes the row.
+	clearCtx, clearRecorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", map[string]any{
+		"id":                     created.Id,
+		"name":                   "three-dim-key",
+		"expired_time":           -1,
+		"unlimited_quota":        true,
+		"group":                  "default",
+		"allow_ips":              "",
+		"rate_limit_per_minute":  0,
+		"rate_limit_tpm":         0,
+		"rate_limit_concurrency": 0,
+	}, user.Id)
+	UpdateToken(clearCtx)
+	require.True(t, decodeAPIResponse(t, clearRecorder).Success)
+	cleared, err := model.GetAdtyKeyLimits(created.Id)
+	require.NoError(t, err)
+	assert.Zero(t, cleared.PerMinute)
+	assert.Zero(t, cleared.TPM)
+	assert.Zero(t, cleared.Concurrency)
+}
+

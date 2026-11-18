@@ -128,3 +128,39 @@ func TestRetryAfter(t *testing.T) {
 	assert.EqualValues(t, 60, RetryAfter(minuteStart))
 	assert.EqualValues(t, 15, RetryAfter(minuteStart.Add(45*time.Second)))
 }
+
+func TestAdtyKeyScopedLimitsIndependentFromUserLimits(t *testing.T) {
+	for name, store := range stores(t) {
+		minute := MinuteOf(minuteStart)
+		keyLimits := Limits{RPM: 2, TPM: 500, Concurrency: 1}
+
+		// User 11 and Token 11 do not share buckets even though their numeric IDs match.
+		require.NoError(t, store.AddTPM(11, minute, 10000), name)
+
+		release1, reason, err := CheckKey(store, 11, keyLimits, "req-1", minuteStart)
+		require.NoError(t, err, name)
+		assert.Equal(t, ReasonNone, reason, name)
+		require.NotNil(t, release1, name)
+
+		// Second concurrent request on token 11 hits per-key concurrency limit.
+		_, reason, err = CheckKey(store, 11, keyLimits, "req-2", minuteStart)
+		require.NoError(t, err, name)
+		assert.Equal(t, ReasonConcurrency, reason, name)
+
+		// Another key (token 12) is unaffected.
+		releaseOther, reason, err := CheckKey(store, 12, keyLimits, "req-other", minuteStart)
+		require.NoError(t, err, name)
+		assert.Equal(t, ReasonNone, reason, name)
+		if releaseOther != nil {
+			releaseOther()
+		}
+
+		release1()
+
+		// Record 500 TPM on token 11 -> next request on token 11 hits ReasonTPM.
+		require.NoError(t, AddKeyTPM(store, 11, minute, 500), name)
+		_, reason, err = CheckKey(store, 11, keyLimits, "req-3", minuteStart.Add(time.Second))
+		require.NoError(t, err, name)
+		assert.Equal(t, ReasonTPM, reason, name)
+	}
+}

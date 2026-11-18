@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,9 +17,10 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-// AdtyKeyRateLimit enforces a per-key request cap when one is configured.
-// A key with no row is not extra-limited. This does not replace the user limit.
-// When midjourney is true, 429 and 503 responses use the Midjourney error shape.
+// AdtyKeyRateLimit enforces per-key request (RPM), token (TPM), and concurrency
+// caps when configured. A key with no row is not extra-limited. This does not
+// replace the user limit. When midjourney is true, 429 and 503 responses use
+// the Midjourney error shape.
 func AdtyKeyRateLimit(midjourney ...bool) gin.HandlerFunc {
 	isMJ := len(midjourney) > 0 && midjourney[0]
 	return func(c *gin.Context) {
@@ -26,29 +29,81 @@ func AdtyKeyRateLimit(midjourney ...bool) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		limit, err := model.GetAdtyKeyLimit(tokenID)
+		limit, err := model.GetAdtyKeyLimits(tokenID)
 		if err != nil {
 			common.SysError(common.LogText("adty key limit config unavailable token=%d: %s", tokenID, err.Error()))
 			adtyAbortUnavailable(c, isMJ)
 			return
 		}
-		if limit.PerMinute <= 0 {
+		if limit.PerMinute <= 0 && limit.TPM <= 0 && limit.Concurrency <= 0 {
 			c.Next()
 			return
 		}
 		now := adtyLimitNow()
-		allowed, err := adtyKeyRateAllow(tokenID, limit.PerMinute, now)
-		if err != nil {
-			common.SysError(common.LogText("adty key limit store unavailable token=%d: %s", tokenID, err.Error()))
-			adtyAbortUnavailable(c, isMJ)
-			return
+		if limit.TPM > 0 {
+			allowed, err := adtyKeyTPMAllow(tokenID, limit.TPM, now)
+			if err != nil {
+				common.SysError(common.LogText("adty key tpm limit store unavailable token=%d: %s", tokenID, err.Error()))
+				adtyAbortUnavailable(c, isMJ)
+				return
+			}
+			if !allowed {
+				adtyRejectLimited(c, adtylimit.ReasonTPM, now, isMJ)
+				return
+			}
 		}
-		if !allowed {
-			adtyRejectLimited(c, adtylimit.ReasonRPM, now, isMJ)
-			return
+		if limit.PerMinute > 0 {
+			allowed, err := adtyKeyRateAllow(tokenID, limit.PerMinute, now)
+			if err != nil {
+				common.SysError(common.LogText("adty key limit store unavailable token=%d: %s", tokenID, err.Error()))
+				adtyAbortUnavailable(c, isMJ)
+				return
+			}
+			if !allowed {
+				adtyRejectLimited(c, adtylimit.ReasonRPM, now, isMJ)
+				return
+			}
+		}
+		var release func()
+		if limit.Concurrency > 0 {
+			var allowed bool
+			release, allowed, err = adtyKeyConcurrencyAcquire(c, tokenID, limit.Concurrency, now)
+			if err != nil {
+				common.SysError(common.LogText("adty key concurrency limit store unavailable token=%d: %s", tokenID, err.Error()))
+				adtyAbortUnavailable(c, isMJ)
+				return
+			}
+			if !allowed {
+				adtyRejectLimited(c, adtylimit.ReasonConcurrency, now, isMJ)
+				return
+			}
+		}
+		if release != nil {
+			defer release()
 		}
 		c.Next()
+		if usedTokens := extractContextKeyTokens(c); usedTokens > 0 {
+			_ = RecordAdtyKeyTPM(tokenID, usedTokens, now)
+		}
 	}
+}
+
+func extractContextKeyTokens(c *gin.Context) int {
+	if c == nil {
+		return 0
+	}
+	if total := c.GetInt("adty_key_tokens"); total > 0 {
+		return total
+	}
+	if total := c.GetInt("total_tokens"); total > 0 {
+		return total
+	}
+	prompt := c.GetInt("prompt_tokens")
+	completion := c.GetInt("completion_tokens")
+	if prompt+completion > 0 {
+		return prompt + completion
+	}
+	return 0
 }
 
 // adtyKeyRateBucket is one key's counter inside a single minute window. The minute is
@@ -64,6 +119,14 @@ var (
 	adtyKeyRateMemory            = map[int]adtyKeyRateBucket{}
 	adtyKeyRateMemorySwept int64 = -1
 	adtyKeyRateMemoryMu    sync.Mutex
+
+	adtyKeyTPMMemory            = map[int]adtyKeyRateBucket{}
+	adtyKeyTPMMemorySwept int64 = -1
+	adtyKeyTPMMemoryMu    sync.Mutex
+
+	adtyKeyConcurrencyMemory = map[int]map[string]time.Time{}
+	adtyKeyConcurrencyMu     sync.Mutex
+	adtyKeyConcurrencySeq    atomic.Uint64
 
 	adtyKeyRateTTLArg      any = adtyKeyRateTTLSeconds
 	adtyKeyRateIncrWithTTL     = redis.NewScript(`
@@ -84,6 +147,10 @@ return count`)
 
 func adtyKeyRateRedisKey(tokenID int, now time.Time) string {
 	return fmt.Sprintf("ADTY:KEYRPM:%d:%d", tokenID, now.Unix()/60)
+}
+
+func adtyKeyTPMRedisKey(tokenID int, now time.Time) string {
+	return fmt.Sprintf("ADTY:KEYTPM:%d:%d", tokenID, now.Unix()/60)
 }
 
 func adtyKeyRateAllow(tokenID, perMinute int, now time.Time) (bool, error) {
@@ -149,4 +216,157 @@ func adtyKeyRateAllowFallback(ctx context.Context, key string, perMinute int) (b
 		}
 	}
 	return count <= int64(perMinute), nil
+}
+
+// RecordAdtyKeyTPM adds consumed tokens to the per-key minute bucket.
+func RecordAdtyKeyTPM(tokenID, tokens int, nowOpt ...time.Time) error {
+	if tokenID <= 0 || tokens <= 0 {
+		return nil
+	}
+	now := adtyLimitNow()
+	if len(nowOpt) > 0 {
+		now = nowOpt[0]
+	}
+	if common.RedisEnabled {
+		if common.RDB == nil {
+			return errAdtyLimitStoreUnavailable
+		}
+		ctx := context.Background()
+		key := adtyKeyTPMRedisKey(tokenID, now)
+		if _, err := common.RDB.IncrBy(ctx, key, int64(tokens)).Result(); err != nil {
+			return err
+		}
+		if ttl, err := common.RDB.TTL(ctx, key).Result(); err == nil && ttl <= 0 {
+			_ = common.RDB.Expire(ctx, key, adtyKeyRateTTLSeconds*time.Second).Err()
+		}
+		return nil
+	}
+	minute := now.Unix() / 60
+	adtyKeyTPMMemoryMu.Lock()
+	defer adtyKeyTPMMemoryMu.Unlock()
+	if minute != adtyKeyTPMMemorySwept {
+		adtyKeyTPMMemorySwept = minute
+		for id, bucket := range adtyKeyTPMMemory {
+			if bucket.minute < minute-1 {
+				delete(adtyKeyTPMMemory, id)
+			}
+		}
+	}
+	bucket := adtyKeyTPMMemory[tokenID]
+	if bucket.minute != minute {
+		bucket = adtyKeyRateBucket{minute: minute}
+	}
+	bucket.count += tokens
+	adtyKeyTPMMemory[tokenID] = bucket
+	return nil
+}
+
+func adtyKeyTPMAllow(tokenID, tpmLimit int, now time.Time) (bool, error) {
+	var used int64
+	if common.RedisEnabled {
+		if common.RDB == nil {
+			return false, errAdtyLimitStoreUnavailable
+		}
+		raw, err := common.RDB.Get(context.Background(), adtyKeyTPMRedisKey(tokenID, now)).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return false, err
+		}
+		if raw != "" {
+			parsed, parseErr := strconv.ParseInt(raw, 10, 64)
+			if parseErr != nil {
+				return false, parseErr
+			}
+			used = parsed
+		}
+	} else {
+		minute := now.Unix() / 60
+		adtyKeyTPMMemoryMu.Lock()
+		if minute != adtyKeyTPMMemorySwept {
+			adtyKeyTPMMemorySwept = minute
+			for id, bucket := range adtyKeyTPMMemory {
+				if bucket.minute < minute-1 {
+					delete(adtyKeyTPMMemory, id)
+				}
+			}
+		}
+		if bucket, ok := adtyKeyTPMMemory[tokenID]; ok && bucket.minute == minute {
+			used = int64(bucket.count)
+		}
+		adtyKeyTPMMemoryMu.Unlock()
+	}
+	if logUsed := adtyKeyTPMLogTokens(tokenID, now); logUsed > used {
+		used = logUsed
+	}
+	return used < int64(tpmLimit), nil
+}
+
+func adtyKeyTPMLogTokens(tokenID int, now time.Time) int64 {
+	if model.LOG_DB == nil || !model.LOG_DB.Migrator().HasTable("logs") {
+		return 0
+	}
+	minuteStart := (now.Unix() / 60) * 60
+	var sum int64
+	_ = model.LOG_DB.Table("logs").
+		Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0)").
+		Where("token_id = ? AND created_at >= ? AND created_at < ?", tokenID, minuteStart, minuteStart+60).
+		Scan(&sum).Error
+	return sum
+}
+
+func adtyKeyConcurrencyAcquire(c *gin.Context, tokenID, maxConcurrency int, now time.Time) (func(), bool, error) {
+	seq := adtyKeyConcurrencySeq.Add(1)
+	reqID := ""
+	if c != nil {
+		reqID = c.GetString(common.RequestIdKey)
+	}
+	member := fmt.Sprintf("%s:%d", reqID, seq)
+	if common.RedisEnabled {
+		if common.RDB == nil {
+			return nil, false, errAdtyLimitStoreUnavailable
+		}
+		store := adtylimit.NewRedisStore(common.RDB)
+		subjectID := adtylimit.KeySubjectID(tokenID)
+		ok, err := store.Acquire(subjectID, member, maxConcurrency, now, adtylimit.ConcurrencyTTL)
+		if err != nil || !ok {
+			return nil, ok, err
+		}
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				_ = store.Release(subjectID, member)
+			})
+		}, true, nil
+	}
+
+	adtyKeyConcurrencyMu.Lock()
+	active := adtyKeyConcurrencyMemory[tokenID]
+	if active == nil {
+		active = map[string]time.Time{}
+		adtyKeyConcurrencyMemory[tokenID] = active
+	}
+	for m, exp := range active {
+		if !now.Before(exp) {
+			delete(active, m)
+		}
+	}
+	if len(active) >= maxConcurrency {
+		adtyKeyConcurrencyMu.Unlock()
+		return nil, false, nil
+	}
+	active[member] = now.Add(adtylimit.ConcurrencyTTL)
+	adtyKeyConcurrencyMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			adtyKeyConcurrencyMu.Lock()
+			if current := adtyKeyConcurrencyMemory[tokenID]; current != nil {
+				delete(current, member)
+				if len(current) == 0 {
+					delete(adtyKeyConcurrencyMemory, tokenID)
+				}
+			}
+			adtyKeyConcurrencyMu.Unlock()
+		})
+	}, true, nil
 }

@@ -226,11 +226,17 @@ func resetKeyRateMemory(t *testing.T) {
 	t.Helper()
 	previousRedis := common.RedisEnabled
 	previousMemory, previousSwept := adtyKeyRateMemory, adtyKeyRateMemorySwept
+	previousTPMMemory, previousTPMSwept := adtyKeyTPMMemory, adtyKeyTPMMemorySwept
+	previousConcurrency := adtyKeyConcurrencyMemory
 	common.RedisEnabled = false
 	adtyKeyRateMemory, adtyKeyRateMemorySwept = map[int]adtyKeyRateBucket{}, -1
+	adtyKeyTPMMemory, adtyKeyTPMMemorySwept = map[int]adtyKeyRateBucket{}, -1
+	adtyKeyConcurrencyMemory = map[int]map[string]time.Time{}
 	t.Cleanup(func() {
 		common.RedisEnabled = previousRedis
 		adtyKeyRateMemory, adtyKeyRateMemorySwept = previousMemory, previousSwept
+		adtyKeyTPMMemory, adtyKeyTPMMemorySwept = previousTPMMemory, previousTPMSwept
+		adtyKeyConcurrencyMemory = previousConcurrency
 	})
 }
 
@@ -281,4 +287,102 @@ func TestKeyRateMemoryCapSurvivesTheSweepWithinOneMinute(t *testing.T) {
 	next, err := adtyKeyRateAllow(21, 1, start.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, next, "下一分钟是新的窗口")
+}
+
+func TestKeyRateLimitEnforcesTPMAndConcurrencyIndependently(t *testing.T) {
+	// ISS-R1-0100: Per-key TPM and Concurrency caps are enforced independently per key.
+	require.NoError(t, i18n.Init())
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, model.EnsureAdtyKeyLimitSchema(db))
+	oldDB := model.DB
+	model.DB = db
+	t.Cleanup(func() { model.DB = oldDB })
+	resetKeyRateMemory(t)
+
+	now := time.Unix(1_700_000_040, 0).Truncate(time.Minute)
+	SetAdtyLimitStoreForTest(t, nil, func() time.Time { return now })
+
+	// Key 51: RPM=10, TPM=100, Concurrency=1
+	// Key 52: RPM=10, TPM=1000, Concurrency=2
+	require.NoError(t, model.SaveAdtyKeyLimits(51, 10, 100, 1))
+	require.NoError(t, model.SaveAdtyKeyLimits(52, 10, 1000, 2))
+
+	inFlightStarted := make(chan struct{})
+	releaseInFlight := make(chan struct{})
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.POST("/v1/chat/completions", func(c *gin.Context) {
+		switch c.GetHeader("X-Token-ID") {
+		case "52":
+			c.Set("token_id", 52)
+		default:
+			c.Set("token_id", 51)
+		}
+		c.Next()
+	}, AdtyKeyRateLimit(), func(c *gin.Context) {
+		if c.GetHeader("X-Hold") == "true" {
+			close(inFlightStarted)
+			<-releaseInFlight
+		}
+		if c.GetHeader("X-Tokens") == "100" {
+			c.Set("total_tokens", 100)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	// 1. Hold 1 concurrency slot on Key 51.
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		req.Header.Set("X-Token-ID", "51")
+		req.Header.Set("X-Hold", "true")
+		engine.ServeHTTP(rec, req)
+		done <- rec
+	}()
+	<-inFlightStarted
+
+	// Concurrent request on Key 51 is rejected with 429 (concurrency limit = 1).
+	concurrent51 := httptest.NewRecorder()
+	req51 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req51.Header.Set("X-Token-ID", "51")
+	engine.ServeHTTP(concurrent51, req51)
+	assert.Equal(t, http.StatusTooManyRequests, concurrent51.Code, concurrent51.Body.String())
+
+	// Concurrent request on Key 52 succeeds (independent key concurrency).
+	concurrent52 := httptest.NewRecorder()
+	req52 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req52.Header.Set("X-Token-ID", "52")
+	engine.ServeHTTP(concurrent52, req52)
+	assert.Equal(t, http.StatusOK, concurrent52.Code)
+
+	// Release Key 51's held request.
+	close(releaseInFlight)
+	heldRec := <-done
+	assert.Equal(t, http.StatusOK, heldRec.Code)
+
+	// 2. Consume 100 tokens on Key 51 -> reaches TPM=100 cap.
+	consume51 := httptest.NewRecorder()
+	reqConsume := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqConsume.Header.Set("X-Token-ID", "51")
+	reqConsume.Header.Set("X-Tokens", "100")
+	engine.ServeHTTP(consume51, reqConsume)
+	assert.Equal(t, http.StatusOK, consume51.Code)
+
+	// Next request in the same minute on Key 51 is rejected with 429 (TPM exceeded).
+	tpmLimited51 := httptest.NewRecorder()
+	reqLimited := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqLimited.Header.Set("X-Token-ID", "51")
+	engine.ServeHTTP(tpmLimited51, reqLimited)
+	assert.Equal(t, http.StatusTooManyRequests, tpmLimited51.Code, tpmLimited51.Body.String())
+
+	// Advancing to the next minute resets Key 51's TPM bucket.
+	now = now.Add(time.Minute)
+	nextMin51 := httptest.NewRecorder()
+	reqNextMin := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqNextMin.Header.Set("X-Token-ID", "51")
+	engine.ServeHTTP(nextMin51, reqNextMin)
+	assert.Equal(t, http.StatusOK, nextMin51.Code)
 }

@@ -210,3 +210,29 @@ func Check(store Store, userID int, limits Limits, member string, now time.Time)
 	}
 	return trackActiveLease(store, userID, member, now), ReasonNone, nil
 }
+
+// KeySubjectID maps a positive token ID to a negative subject key in Store so
+// per-Key RPM/TPM/Concurrency counters never collide with positive user IDs.
+func KeySubjectID(tokenID int) int {
+	if tokenID <= 0 {
+		return 0
+	}
+	return -tokenID
+}
+
+// CheckKey enforces per-Key TPM, RPM, and Concurrency limits independently of
+// the owning user's limits.
+func CheckKey(store Store, tokenID int, limits Limits, member string, now time.Time) (release func(), reason Reason, err error) {
+	if tokenID <= 0 {
+		return nil, ReasonNone, nil
+	}
+	return Check(store, KeySubjectID(tokenID), limits, member, now)
+}
+
+// AddKeyTPM records token consumption against a specific API key's current minute bucket.
+func AddKeyTPM(store Store, tokenID int, minute int64, tokens int64) error {
+	if tokenID <= 0 || tokens <= 0 {
+		return nil
+	}
+	return store.AddTPM(KeySubjectID(tokenID), minute, tokens)
+}

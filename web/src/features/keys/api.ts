@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { api } from '@/lib/api'
+import { api, type ApiRequestConfig } from '@/lib/api'
 
 import type {
   ApiKey,
@@ -108,20 +108,50 @@ export async function updateApiKeyStatus(
   return res.data
 }
 
+function buildSecurityProofConfig(
+  proofOrConfig?: string | ApiRequestConfig
+): ApiRequestConfig | undefined {
+  if (!proofOrConfig) return undefined
+  if (typeof proofOrConfig === 'string') {
+    return {
+      headers: {
+        'X-Security-Proof': proofOrConfig,
+      },
+    }
+  }
+  return proofOrConfig
+}
+
 // Fetch the real (unmasked) key for a token by ID
 export async function fetchTokenKey(
-  id: number
-): Promise<{ success: boolean; message?: string; data?: { key: string } }> {
-  const res = await api.post(`/api/token/${id}/key`)
+  id: number,
+  proofOrConfig?: string | ApiRequestConfig
+): Promise<{
+  success: boolean
+  code?: string
+  message?: string
+  data?: { key: string }
+}> {
+  const config = buildSecurityProofConfig(proofOrConfig)
+  const res = config
+    ? await api.post(`/api/token/${id}/key`, undefined, config)
+    : await api.post(`/api/token/${id}/key`)
   return res.data
 }
 
 // Batch fetch real (unmasked) keys for multiple tokens
-export async function fetchTokenKeysBatch(ids: number[]): Promise<{
+export async function fetchTokenKeysBatch(
+  ids: number[],
+  proofOrConfig?: string | ApiRequestConfig
+): Promise<{
   success: boolean
+  code?: string
   message?: string
   data?: { keys: Record<number, string> }
 }> {
-  const res = await api.post('/api/token/batch/keys', { ids })
+  const config = buildSecurityProofConfig(proofOrConfig)
+  const res = config
+    ? await api.post('/api/token/batch/keys', { ids }, config)
+    : await api.post('/api/token/batch/keys', { ids })
   return res.data
 }

@@ -37,9 +37,12 @@ import {
   DEFAULT_SNIPPET_MODEL,
   type ClientSnippetId,
 } from '@/features/adty-site/client-snippets'
-import { fetchTokenKey } from '@/features/keys/api'
 import { CCSwitchDialog } from '@/features/keys/components/dialogs/cc-switch-dialog'
 import type { ApiKey } from '@/features/keys/types'
+import {
+  fetchTokenKeyWithSecurityProof,
+  type ApiKeySecurityProofRequester,
+} from '@/features/tokens/key-reveal-proof'
 import { handleServerError } from '@/lib/handle-server-error'
 
 /**
@@ -49,6 +52,8 @@ import { handleServerError } from '@/lib/handle-server-error'
 export function AdtyQuickStartCard(props: {
   apiKey: ApiKey | null
   model?: string
+  securityProof?: string | null
+  onRequestSecurityProof?: ApiKeySecurityProofRequester
 }) {
   const { t } = useTranslation()
   const baseUrl = useApiBaseUrl()
@@ -73,7 +78,10 @@ export function AdtyQuickStartCard(props: {
     if (!props.apiKey || isLoadingKey) return
     setIsLoadingKey(true)
     try {
-      const result = await fetchTokenKey(props.apiKey.id)
+      const result = await fetchTokenKeyWithSecurityProof(props.apiKey.id, {
+        proof: props.securityProof,
+        requestProof: props.onRequestSecurityProof,
+      })
       const key = result.success && result.data?.key ? result.data.key : ''
       if (!key) {
         handleServerError(result, t('Failed to load the API key'))

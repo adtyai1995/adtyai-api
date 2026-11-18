@@ -39,9 +39,26 @@ type tokenRequest struct {
 	model.Token
 	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
 	// 指针区分“未传”和显式 false：新建时未传即开启，更新时未传则保留原值。
-	AllowUserQuotaQuery *bool `json:"allow_user_quota_query"`
-	RateLimitPerMinute  *int  `json:"rate_limit_per_minute"`
-	remainQuotaSet      bool  `json:"-"`
+	AllowUserQuotaQuery  *bool `json:"allow_user_quota_query"`
+	RateLimitPerMinute   *int  `json:"rate_limit_per_minute"`
+	RateLimitTPM         *int  `json:"rate_limit_tpm"`
+	RateLimitConcurrency *int  `json:"rate_limit_concurrency"`
+	remainQuotaSet       bool  `json:"-"`
+}
+
+func unmarshalFirstOptionalInt(fields map[string]json.RawMessage, keys ...string) (*int, error) {
+	for _, key := range keys {
+		raw, ok := fields[key]
+		if !ok || strings.TrimSpace(string(raw)) == "null" {
+			continue
+		}
+		var value int
+		if err := common.Unmarshal(raw, &value); err != nil {
+			return nil, err
+		}
+		return &value, nil
+	}
+	return nil, nil
 }
 
 func (r *tokenRequest) UnmarshalJSON(data []byte) error {
@@ -55,6 +72,27 @@ func (r *tokenRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*r = tokenRequest(body)
+	if r.RateLimitPerMinute == nil {
+		val, err := unmarshalFirstOptionalInt(fields, "rpm_limit", "rpm", "per_minute")
+		if err != nil {
+			return err
+		}
+		r.RateLimitPerMinute = val
+	}
+	if r.RateLimitTPM == nil {
+		val, err := unmarshalFirstOptionalInt(fields, "tpm_limit", "tokens_per_minute", "tpm")
+		if err != nil {
+			return err
+		}
+		r.RateLimitTPM = val
+	}
+	if r.RateLimitConcurrency == nil {
+		val, err := unmarshalFirstOptionalInt(fields, "concurrency_limit", "max_concurrency", "concurrency")
+		if err != nil {
+			return err
+		}
+		r.RateLimitConcurrency = val
+	}
 	raw, ok := fields["remain_quota"]
 	if !ok || string(raw) == "null" {
 		return nil
@@ -68,10 +106,22 @@ func (r *tokenRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (r tokenRequest) keyLimitPatch() model.AdtyKeyLimitPatch {
+	return model.AdtyKeyLimitPatch{
+		PerMinute:   r.RateLimitPerMinute,
+		TPM:         r.RateLimitTPM,
+		Concurrency: r.RateLimitConcurrency,
+	}
+}
+
 type tokenResponse struct {
 	*model.Token
-	AutoGroups          []string `json:"auto_groups"`
-	RateLimitPerMinute int      `json:"rate_limit_per_minute"`
+	AutoGroups           []string `json:"auto_groups"`
+	RateLimitPerMinute   int      `json:"rate_limit_per_minute"`
+	RateLimitTPM         int      `json:"rate_limit_tpm"`
+	RateLimitConcurrency int      `json:"rate_limit_concurrency"`
+	TPMLimit             int      `json:"tpm_limit"`
+	ConcurrencyLimit     int      `json:"concurrency_limit"`
 }
 
 func maxTokenQuota() int {
@@ -99,8 +149,12 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 		autoGroups = nil
 	}
 	response := &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
-	if limit, err := model.GetAdtyKeyLimit(token.Id); err == nil {
-		response.RateLimitPerMinute = limit.PerMinute
+	if limits, err := model.GetAdtyKeyLimits(token.Id); err == nil {
+		response.RateLimitPerMinute = limits.PerMinute
+		response.RateLimitTPM = limits.TPM
+		response.RateLimitConcurrency = limits.Concurrency
+		response.TPMLimit = limits.TPM
+		response.ConcurrencyLimit = limits.Concurrency
 	}
 	return response
 }
@@ -409,7 +463,7 @@ func AddToken(c *gin.Context) {
 		AutoGroups:         token.AutoGroups,
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
-	err = cleanToken.InsertWithLimit(maxTokens)
+	err = cleanToken.InsertWithLimitAndKeyLimit(maxTokens, request.keyLimitPatch())
 	if err != nil {
 		if errors.Is(err, model.ErrTokenLimit) {
 			common.ApiErrorT(c, "Maximum number of tokens reached ({{max}})", map[string]any{"max": maxTokens})
@@ -419,9 +473,6 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	params["id"] = cleanToken.Id
-	if !saveTokenRateLimit(c, cleanToken.Id, request.RateLimitPerMinute) {
-		return
-	}
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -498,6 +549,7 @@ func UpdateToken(c *gin.Context) {
 		}
 	}
 	replaceRemainQuota := false
+	keyLimitPatch := model.AdtyKeyLimitPatch{}
 	if statusOnly != "" {
 		cleanToken.Status = token.Status
 	} else {
@@ -526,23 +578,11 @@ func UpdateToken(c *gin.Context) {
 				return
 			}
 		}
+		keyLimitPatch = request.keyLimitPatch()
 	}
-	if replaceRemainQuota {
-		err = cleanToken.UpdateReplacingRemainQuota()
-	} else {
-		err = cleanToken.Update()
-	}
+	previousLimit, updatedLimit, err := cleanToken.UpdateWithKeyLimit(replaceRemainQuota, keyLimitPatch)
 	if err != nil {
 		common.ApiError(c, err)
-		return
-	}
-	previousLimit := 0
-	if statusOnly == "" && request.RateLimitPerMinute != nil {
-		if stored, limitErr := model.GetAdtyKeyLimit(cleanToken.Id); limitErr == nil {
-			previousLimit = stored.PerMinute
-		}
-	}
-	if statusOnly == "" && !saveTokenRateLimit(c, cleanToken.Id, request.RateLimitPerMinute) {
 		return
 	}
 	params["name"] = cleanToken.Name
@@ -550,14 +590,9 @@ func UpdateToken(c *gin.Context) {
 		params["from"], params["to"] = previous.Status, cleanToken.Status
 	} else {
 		changedFields := []string{}
-		rateChanged := false
-		if request.RateLimitPerMinute != nil {
-			next := *request.RateLimitPerMinute
-			if next < 0 {
-				next = 0
-			}
-			rateChanged = next != previousLimit
-		}
+		rateChanged := request.RateLimitPerMinute != nil && updatedLimit.PerMinute != previousLimit.PerMinute
+		tpmChanged := request.RateLimitTPM != nil && updatedLimit.TPM != previousLimit.TPM
+		concurrencyChanged := request.RateLimitConcurrency != nil && updatedLimit.Concurrency != previousLimit.Concurrency
 		for _, field := range []struct {
 			name    string
 			changed bool
@@ -575,6 +610,8 @@ func UpdateToken(c *gin.Context) {
 			{"cross_group_retry", previous.CrossGroupRetry != cleanToken.CrossGroupRetry},
 			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
 			{"rate_limit_per_minute", rateChanged},
+			{"rate_limit_tpm", tpmChanged},
+			{"rate_limit_concurrency", concurrencyChanged},
 		} {
 			if field.changed {
 				changedFields = append(changedFields, field.name)

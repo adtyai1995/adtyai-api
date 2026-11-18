@@ -19,15 +19,21 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery } from '@tanstack/react-query'
 import { t } from 'i18next'
 
-import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
+import { getApiKeys } from '@/features/keys/api'
 import { API_KEY_STATUS } from '@/features/keys/constants'
+import {
+  fetchTokenKeyWithSecurityProof,
+  type FetchTokenKeyWithProofOptions,
+} from '@/features/tokens/key-reveal-proof'
 import {
   requireServerSuccess,
   createServerError,
 } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
-export async function fetchActiveChatKey() {
+export async function fetchActiveChatKey(
+  options?: FetchTokenKeyWithProofOptions
+) {
   const result = await getApiKeys({ p: 1, size: 50 })
   if (!result.success) {
     throw createServerError(result, t('Failed to load API keys'))
@@ -39,7 +45,7 @@ export async function fetchActiveChatKey() {
     throw new Error('No enabled API keys found. Create or enable one first.')
   }
 
-  const keyResult = await fetchTokenKey(active.id)
+  const keyResult = await fetchTokenKeyWithSecurityProof(active.id, options)
   if (!keyResult.success || !keyResult.data?.key) {
     throw createServerError(keyResult, t('Failed to load API keys'))
   }
