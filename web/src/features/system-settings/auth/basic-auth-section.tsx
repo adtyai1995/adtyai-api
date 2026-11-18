@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -80,6 +80,16 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
     defaultValues: formDefaults,
   })
 
+  const baselineRef = useRef<BasicAuthFormValues>(defaultValues)
+  const baselineSerializedRef = useRef<string>(JSON.stringify(defaultValues))
+
+  useEffect(() => {
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
+  }, [defaultValues])
+
   useResetForm(form, formDefaults)
 
   const onSubmit = async (data: BasicAuthFormValues) => {
@@ -93,17 +103,25 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
           .map((domain) => domain.trim())
           .filter(Boolean)
           .join(',')
-        if (domains !== defaultValues.EmailDomainWhitelist) {
+        if (domains !== baselineRef.current.EmailDomainWhitelist) {
           updates.push({ key, value: domains })
         }
-      } else if (value !== defaultValues[key as keyof typeof defaultValues]) {
+      } else if (
+        value !== baselineRef.current[key as keyof BasicAuthFormValues]
+      ) {
         updates.push({ key, value })
       }
     })
 
     for (const update of updates) {
       await updateOption.mutateAsync(update)
+      baselineRef.current = {
+        ...baselineRef.current,
+        [update.key]: update.value,
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
+    form.reset(data, { keepDirtyValues: true })
   }
 
   return (

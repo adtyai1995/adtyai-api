@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -79,19 +79,32 @@ export function DashboardSection({ defaultValues }: DashboardSectionProps) {
     defaultValues,
   })
 
+  const baselineRef = useRef<DataDashboardFormValues>(defaultValues)
+  const baselineSerializedRef = useRef<string>(JSON.stringify(defaultValues))
+
   useEffect(() => {
-    form.reset(defaultValues)
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
+    form.reset(defaultValues, { keepDirtyValues: true })
   }, [defaultValues, form])
 
   const onSubmit = async (values: DataDashboardFormValues) => {
     const updates = Object.entries(values).filter(
       ([key, value]) =>
-        value !== defaultValues[key as keyof DataDashboardFormValues]
+        value !== baselineRef.current[key as keyof DataDashboardFormValues]
     )
 
     for (const [key, value] of updates) {
       await updateOption.mutateAsync({ key, value })
+      baselineRef.current = {
+        ...baselineRef.current,
+        [key]: value,
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
+    form.reset(values, { keepDirtyValues: true })
   }
 
   const isEnabled = form.watch('DataExportEnabled')

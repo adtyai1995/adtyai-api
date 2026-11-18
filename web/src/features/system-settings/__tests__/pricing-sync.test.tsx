@@ -41,6 +41,7 @@ import {
 } from '@/stores/system-config-store'
 
 import { adjustSyncPrice } from '../models/upstream-price-adjustment'
+import { ChannelSelectorDialog } from '../models/channel-selector-dialog'
 import { UpstreamRatioSync } from '../models/upstream-ratio-sync'
 import {
   getSyncPriceLines,
@@ -1196,4 +1197,53 @@ it('disables both batch shortcuts when the configured exchange rate becomes inva
   expect(
     screen.getByRole('button', { name: /Divide by exchange rate/ })
   ).toBeDisabled()
+})
+
+it('allows selecting a custom endpoint in ChannelSelectorDialog and submits the custom path', async () => {
+  const user = userEvent.setup()
+  const onConfirm = vi.fn()
+  const endpointsHistory: Record<number, string>[] = []
+
+  function DialogFixture() {
+    const [selectedIds, setSelectedIds] = useState<number[]>([11])
+    const [endpoints, setEndpoints] = useState<Record<number, string>>({})
+    return (
+      <ChannelSelectorDialog
+        open
+        onOpenChange={vi.fn()}
+        channels={[
+          {
+            id: 11,
+            name: 'Upstream One',
+            base_url: 'https://api.example.com',
+            status: 1,
+          },
+        ]}
+        selectedChannelIds={selectedIds}
+        onSelectedChannelIdsChange={setSelectedIds}
+        channelEndpoints={endpoints}
+        onChannelEndpointsChange={(next) => {
+          endpointsHistory.push(next)
+          setEndpoints(next)
+        }}
+        onConfirm={onConfirm}
+      />
+    )
+  }
+
+  render(<DialogFixture />)
+
+  const selectTrigger = screen.getByRole('combobox', { name: 'Sync Endpoint' })
+  await user.click(selectTrigger)
+  await user.click(await screen.findByRole('option', { name: 'custom' }))
+
+  const customInput = await screen.findByPlaceholderText('/your/endpoint')
+  expect(customInput).toBeVisible()
+  expect(customInput).toHaveValue('')
+
+  await user.type(customInput, '/v1/custom-pricing')
+  await user.click(screen.getByRole('button', { name: 'Confirm Selection' }))
+
+  expect(endpointsHistory.at(-1)).toEqual({ 11: '/v1/custom-pricing' })
+  expect(onConfirm).toHaveBeenCalledWith([11])
 })

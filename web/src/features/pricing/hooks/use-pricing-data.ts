@@ -74,22 +74,23 @@ export function usePricingData(enabled = true, displayGroup?: string) {
   const { status } = useStatus()
   const groupParam = pricingDisplayGroupParam(displayGroup)
 
-  const { data, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: groupParam ? ['pricing', groupParam] : ['pricing'],
     queryFn: async () => requireServerSuccess(await getPricing(groupParam)),
     staleTime: 5 * 60 * 1000,
     enabled,
   })
+  const hasData = Array.isArray(data?.data)
 
   // Ensure rates never reach zero to prevent division errors
-  const priceRate = useMemo(
-    () => Math.max((status?.price as number) ?? 1, 0.001),
-    [status?.price]
-  )
-  const usdExchangeRate = useMemo(
-    () => Math.max((status?.usd_exchange_rate as number) ?? priceRate, 0.001),
-    [status?.usd_exchange_rate, priceRate]
-  )
+  const priceRate = useMemo(() => {
+    const raw = Number(status?.price)
+    return Number.isFinite(raw) && raw > 0 ? Math.max(raw, 0.001) : 1
+  }, [status?.price])
+  const usdExchangeRate = useMemo(() => {
+    const raw = Number(status?.usd_exchange_rate)
+    return Number.isFinite(raw) && raw > 0 ? Math.max(raw, 0.001) : priceRate
+  }, [status?.usd_exchange_rate, priceRate])
 
   const models = useMemo(() => modelsFromPricing(data), [data])
 
@@ -100,7 +101,10 @@ export function usePricingData(enabled = true, displayGroup?: string) {
     usableGroup: data?.usable_group ?? {},
     endpointMap: data?.supported_endpoint ?? {},
     autoGroups: data?.auto_groups ?? [],
+    hasData,
     isLoading,
+    isFetching,
+    isError: isError || Boolean(error),
     error,
     refetch,
     priceRate,

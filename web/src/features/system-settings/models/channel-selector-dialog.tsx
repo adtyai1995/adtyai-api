@@ -18,7 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef, RowSelectionState } from '@tanstack/react-table'
 import { Search } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -70,6 +77,92 @@ function isOfficialChannel(channel: UpstreamChannel): boolean {
   )
 }
 
+function getEndpointType(endpoint: string) {
+  const option = ENDPOINT_OPTIONS.find((opt) => opt.value === endpoint)
+  return option ? endpoint : 'custom'
+}
+
+type ChannelEndpointContextValue = {
+  channelEndpoints: Record<number, string>
+  customEndpoints: Record<number, boolean>
+  updateEndpoint: (channelId: number, endpoint: string) => void
+  setCustomEndpoint: (channelId: number, isCustom: boolean) => void
+}
+
+const ChannelEndpointContext = createContext<ChannelEndpointContextValue>({
+  channelEndpoints: {},
+  customEndpoints: {},
+  updateEndpoint: () => {},
+  setCustomEndpoint: () => {},
+})
+
+function ChannelEndpointCell({ channel }: { channel: UpstreamChannel }) {
+  const { t } = useTranslation()
+  const {
+    channelEndpoints,
+    customEndpoints,
+    updateEndpoint,
+    setCustomEndpoint,
+  } = useContext(ChannelEndpointContext)
+  const hasExplicitEndpoint = Object.hasOwn(channelEndpoints, channel.id)
+  const currentEndpoint = hasExplicitEndpoint
+    ? channelEndpoints[channel.id]
+    : DEFAULT_ENDPOINT
+  const endpointType = customEndpoints[channel.id]
+    ? 'custom'
+    : getEndpointType(currentEndpoint)
+
+  const handleTypeChange = (value: string) => {
+    if (value === 'custom') {
+      setCustomEndpoint(channel.id, true)
+      updateEndpoint(
+        channel.id,
+        getEndpointType(currentEndpoint) === 'custom' ? currentEndpoint : ''
+      )
+    } else {
+      setCustomEndpoint(channel.id, false)
+      updateEndpoint(channel.id, value)
+    }
+  }
+
+  return (
+    <div className='flex min-w-0 items-center gap-2'>
+      <Select
+        items={ENDPOINT_OPTIONS.map((option) => ({
+          value: option.value,
+          label: option.label,
+        }))}
+        value={endpointType}
+        onValueChange={(v) => v !== null && handleTypeChange(v)}
+      >
+        <SelectTrigger className='h-8 w-32' aria-label={t('Sync Endpoint')}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent alignItemWithTrigger={false}>
+          <SelectGroup>
+            {ENDPOINT_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+      {endpointType === 'custom' && (
+        <Input
+          value={currentEndpoint}
+          onChange={(e) => updateEndpoint(channel.id, e.target.value)}
+          placeholder={t('/your/endpoint')}
+          aria-label={t('Custom endpoint for {{name}}', {
+            name: getUpstreamDisplayName(channel.name, t),
+          })}
+          className='h-8 min-w-0 flex-1 font-mono text-xs'
+        />
+      )}
+    </div>
+  )
+}
+
 export function ChannelSelectorDialog({
   open,
   onOpenChange,
@@ -84,6 +177,9 @@ export function ChannelSelectorDialog({
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 200)
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
+  const [customEndpoints, setCustomEndpoints] = useState<
+    Record<number, boolean>
+  >({})
 
   useEffect(() => {
     if (!selectedChannelIds.length) {
@@ -113,10 +209,22 @@ export function ChannelSelectorDialog({
     [channelEndpoints, onChannelEndpointsChange]
   )
 
-  const getEndpointType = (endpoint: string) => {
-    const option = ENDPOINT_OPTIONS.find((opt) => opt.value === endpoint)
-    return option ? endpoint : 'custom'
-  }
+  const setCustomEndpoint = useCallback(
+    (channelId: number, isCustom: boolean) => {
+      setCustomEndpoints((prev) => ({ ...prev, [channelId]: isCustom }))
+    },
+    []
+  )
+
+  const endpointContextValue = useMemo<ChannelEndpointContextValue>(
+    () => ({
+      channelEndpoints,
+      customEndpoints,
+      updateEndpoint,
+      setCustomEndpoint,
+    }),
+    [channelEndpoints, customEndpoints, setCustomEndpoint, updateEndpoint]
+  )
 
   const columns = useMemo<ColumnDef<UpstreamChannel>[]>(
     () => [
@@ -224,57 +332,10 @@ export function ChannelSelectorDialog({
         header: t('Sync Endpoint'),
         size: 460,
         minSize: 360,
-        cell: ({ row }) => {
-          const channel = row.original
-          const currentEndpoint =
-            channelEndpoints[channel.id] || DEFAULT_ENDPOINT
-          const endpointType = getEndpointType(currentEndpoint)
-
-          const handleTypeChange = (value: string) => {
-            if (value === 'custom') {
-              updateEndpoint(channel.id, '')
-            } else {
-              updateEndpoint(channel.id, value)
-            }
-          }
-
-          return (
-            <div className='flex min-w-0 items-center gap-2'>
-              <Select
-                items={ENDPOINT_OPTIONS.map((option) => ({
-                  value: option.value,
-                  label: option.label,
-                }))}
-                value={endpointType}
-                onValueChange={(v) => v !== null && handleTypeChange(v)}
-              >
-                <SelectTrigger className='h-8 w-32'>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent alignItemWithTrigger={false}>
-                  <SelectGroup>
-                    {ENDPOINT_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              {endpointType === 'custom' && (
-                <Input
-                  value={currentEndpoint}
-                  onChange={(e) => updateEndpoint(channel.id, e.target.value)}
-                  placeholder={t('/your/endpoint')}
-                  className='h-8 min-w-0 flex-1 font-mono text-xs'
-                />
-              )}
-            </div>
-          )
-        },
+        cell: ({ row }) => <ChannelEndpointCell channel={row.original} />,
       },
     ],
-    [channelEndpoints, t, updateEndpoint]
+    [t]
   )
 
   const filteredChannels = useMemo(() => {
@@ -321,61 +382,62 @@ export function ChannelSelectorDialog({
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title={t('Select price sources')}
-      contentClassName='flex max-h-[min(90dvh,var(--dialog-available-height))] max-w-[calc(100%-2rem)] flex-col sm:max-w-[90vw] xl:max-w-[1400px]'
-      contentHeight='min(72vh, 720px)'
-      bodyClassName='flex h-full min-h-0 flex-col overflow-hidden'
-      footer={
-        <>
-          <Button variant='outline' onClick={() => onOpenChange(false)}>
-            {t('Cancel')}
-          </Button>
-          <Button
-            variant='brand'
-            onClick={handleConfirm}>{t('Confirm Selection')}</Button
-          >
-        </>
-      }
-    >
-      <div className='flex h-full min-h-0 flex-col gap-4 overflow-hidden'>
-        <div className='flex shrink-0 items-center gap-2'>
-          <div className='relative flex-1'>
-            <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2' />
-            <Input
-              placeholder={t('Search by name or URL...')}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className='ps-9'
-            />
+    <ChannelEndpointContext.Provider value={endpointContextValue}>
+      <Dialog
+        open={open}
+        onOpenChange={onOpenChange}
+        title={t('Select price sources')}
+        contentClassName='flex max-h-[min(90dvh,var(--dialog-available-height))] max-w-[calc(100%-2rem)] flex-col sm:max-w-[90vw] xl:max-w-[1400px]'
+        contentHeight='min(72vh, 720px)'
+        bodyClassName='flex h-full min-h-0 flex-col overflow-hidden'
+        footer={
+          <>
+            <Button variant='outline' onClick={() => onOpenChange(false)}>
+              {t('Cancel')}
+            </Button>
+            <Button variant='brand' onClick={handleConfirm}>
+              {t('Confirm Selection')}
+            </Button>
+          </>
+        }
+      >
+        <div className='flex h-full min-h-0 flex-col gap-4 overflow-hidden'>
+          <div className='flex shrink-0 items-center gap-2'>
+            <div className='relative flex-1'>
+              <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2' />
+              <Input
+                placeholder={t('Search by name or URL...')}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className='ps-9'
+              />
+            </div>
+          </div>
+
+          <DataTableView
+            table={table}
+            containerClassName='min-h-0 flex-1 rounded-md'
+            tableContainerClassName='h-full min-h-0'
+            tableHeaderClassName='[background-color:var(--table-header)]'
+            splitHeaderScrollClassName='h-full'
+            bodyContainerClassName='[scrollbar-gutter:stable]'
+            splitHeader
+            getColumnClassName={(columnId, part) => {
+              if (columnId === 'select') return 'w-11 text-center align-middle'
+              if (columnId === 'status') {
+                return part === 'header' ? 'h-11 align-middle' : 'align-middle'
+              }
+              return part === 'header' ? 'h-11 align-middle' : 'align-middle'
+            }}
+            emptyContent={t('No channels found')}
+            emptyCellClassName='h-24 text-center'
+          />
+
+          <div className='shrink-0'>
+            <DataTablePagination table={table} />
           </div>
         </div>
-
-        <DataTableView
-          table={table}
-          containerClassName='min-h-0 flex-1 rounded-md'
-          tableContainerClassName='h-full min-h-0'
-          tableHeaderClassName='[background-color:var(--table-header)]'
-          splitHeaderScrollClassName='h-full'
-          bodyContainerClassName='[scrollbar-gutter:stable]'
-          splitHeader
-          getColumnClassName={(columnId, part) => {
-            if (columnId === 'select') return 'w-11 text-center align-middle'
-            if (columnId === 'status') {
-              return part === 'header' ? 'h-11 align-middle' : 'align-middle'
-            }
-            return part === 'header' ? 'h-11 align-middle' : 'align-middle'
-          }}
-          emptyContent={t('No channels found')}
-          emptyCellClassName='h-24 text-center'
-        />
-
-        <div className='shrink-0'>
-          <DataTablePagination table={table} />
-        </div>
-      </div>
-    </Dialog>
+      </Dialog>
+    </ChannelEndpointContext.Provider>
   )
 }

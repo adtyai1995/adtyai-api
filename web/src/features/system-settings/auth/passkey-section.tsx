@@ -236,7 +236,9 @@ export function PasskeySection(props: PasskeySectionProps) {
     if (serialized === baselineSerializedRef.current) return
     baselineRef.current = props.defaultValues
     baselineSerializedRef.current = serialized
-    form.reset(buildFormDefaults(props.defaultValues))
+    form.reset(buildFormDefaults(props.defaultValues), {
+      keepDirtyValues: true,
+    })
   }, [props.defaultValues, form])
 
   const saveSettings = async (

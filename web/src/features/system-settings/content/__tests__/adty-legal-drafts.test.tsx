@@ -173,3 +173,89 @@ it.each(['-1', '1.5'])(
     expect(put).not.toHaveBeenCalled()
   }
 )
+
+it('requires bumping the version when modifying an already-published versioned agreement', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  clients.push(client)
+  const user = userEvent.setup()
+  render(
+    <Fixture
+      values={{
+        ...saved,
+        site_agreement: '{"en":"Published v1"}',
+        site_agreement_version: 1,
+      }}
+      client={client}
+    />
+  )
+
+  await user.selectOptions(screen.getByLabelText('Document'), 'site_agreement')
+  await user.clear(screen.getByRole('textbox'))
+  await user.type(screen.getByRole('textbox'), 'Updated body without version bump')
+
+  expect(screen.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
+  expect(screen.getByRole('alert')).toHaveTextContent(
+    'Increase the version after changing a published agreement.'
+  )
+  expect(put).not.toHaveBeenCalled()
+
+  await user.clear(screen.getByLabelText('Document version'))
+  await user.type(screen.getByLabelText('Document version'), '2')
+  expect(screen.getByRole('button', { name: 'Save Changes' })).toBeEnabled()
+})
+
+it('rolls back the agreement body and keeps drafts dirty when the version update fails', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValueOnce({ data: { success: true } })
+    .mockRejectedValueOnce(new Error('version write failed'))
+    .mockResolvedValueOnce({ data: { success: true } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  clients.push(client)
+  const user = userEvent.setup()
+  render(
+    <Fixture
+      values={{
+        ...saved,
+        site_agreement: '{"en":"Published v1"}',
+        site_agreement_version: 1,
+      }}
+      client={client}
+    />
+  )
+
+  await user.selectOptions(screen.getByLabelText('Document'), 'site_agreement')
+  await user.clear(screen.getByRole('textbox'))
+  await user.type(screen.getByRole('textbox'), 'Draft v2')
+  await user.clear(screen.getByLabelText('Document version'))
+  await user.type(screen.getByLabelText('Document version'), '2')
+
+  await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() => expect(put).toHaveBeenCalledTimes(3))
+
+  expect(put).toHaveBeenNthCalledWith(1, '/api/option/', {
+    key: 'adty_legal_setting.site_agreement',
+    value: '{"en":"Draft v2"}',
+  })
+  expect(put).toHaveBeenNthCalledWith(2, '/api/option/', {
+    key: 'adty_legal_setting.site_agreement_version',
+    value: '2',
+  })
+  expect(put).toHaveBeenNthCalledWith(3, '/api/option/', {
+    key: 'adty_legal_setting.site_agreement',
+    value: '{"en":"Published v1"}',
+  })
+
+  expect(
+    await screen.findByRole('button', { name: 'Save Changes' })
+  ).toBeEnabled()
+  expect(screen.getByRole('textbox')).toHaveValue('Draft v2')
+  expect(screen.getByLabelText('Document version')).toHaveValue(2)
+})

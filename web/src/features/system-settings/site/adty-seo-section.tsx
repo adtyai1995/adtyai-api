@@ -107,8 +107,27 @@ export function AdtySeoSection(props: { defaultValues: AdtySeoDefaults }) {
   const savedKey = JSON.stringify(props.defaultValues)
   useEffect(() => {
     const next: AdtySeoDefaults = JSON.parse(savedKey)
+    const prevSaved = savedRef.current
     savedRef.current = next
-    setDrafts(toDrafts(next))
+    setDrafts((current) => {
+      const nextDrafts = toDrafts(next)
+      return {
+        home_title:
+          serializeTexts(current.home_title) ===
+          serializeTexts(parseTexts(prevSaved.home_title))
+            ? nextDrafts.home_title
+            : current.home_title,
+        home_description:
+          serializeTexts(current.home_description) ===
+          serializeTexts(parseTexts(prevSaved.home_description))
+            ? nextDrafts.home_description
+            : current.home_description,
+        og_image:
+          current.og_image.trim() === prevSaved.og_image
+            ? nextDrafts.og_image
+            : current.og_image,
+      }
+    })
   }, [savedKey])
 
   const save = async () => {

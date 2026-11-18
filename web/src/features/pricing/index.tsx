@@ -20,9 +20,11 @@ import { useSearch } from '@tanstack/react-router'
 import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ErrorState } from '@/components/error-state'
 import { PublicLayout } from '@/components/layout'
 import { PageTransition } from '@/components/page-transition'
 import { toIntlLocale } from '@/i18n/languages'
+import { getServerErrorMessage } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -61,11 +63,18 @@ export function Pricing() {
     usableGroup,
     endpointMap,
     autoGroups,
+    hasData,
     isLoading,
+    isFetching,
+    isError,
+    error,
+    refetch,
     priceRate,
     usdExchangeRate,
   } = usePricingData(true, displayGroup)
   const officialPrices = useOfficialPrices()
+  const hasCatalogData = hasData ?? Boolean(models && models.length > 0)
+  const hasError = Boolean(isError || error)
 
   // Groups the viewer can pick; hidden group IDs on models are not shown.
   const availableGroups = useMemo(
@@ -171,11 +180,28 @@ export function Pricing() {
     )
   }
 
-  if (isLoading) {
+  if (isLoading || (isFetching && !hasCatalogData)) {
     return (
       <PublicLayout showMainContainer={false}>
         <div className='mx-auto w-full max-w-[1180px] px-5 pt-[104px] pb-16 sm:px-10'>
           <LoadingSkeleton viewMode={viewMode} />
+        </div>
+      </PublicLayout>
+    )
+  }
+
+  if (hasError && !hasCatalogData) {
+    return (
+      <PublicLayout showMainContainer={false}>
+        <div className='mx-auto w-full max-w-[1180px] px-5 pt-[104px] pb-16 sm:px-10'>
+          <ErrorState
+            title={t('Failed to load models')}
+            description={getServerErrorMessage(
+              error,
+              t('Failed to load models')
+            )}
+            onRetry={() => void refetch?.()}
+          />
         </div>
       </PublicLayout>
     )

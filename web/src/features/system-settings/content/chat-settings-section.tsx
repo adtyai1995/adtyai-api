@@ -111,8 +111,13 @@ export function ChatSettingsSection({
   const initialNormalizedRef = useRef(normalizeJsonString(defaultValue, '[]'))
 
   useEffect(() => {
-    form.reset({ Chats: formatJsonForEditor(defaultValue, '[]') })
-    initialNormalizedRef.current = normalizeJsonString(defaultValue, '[]')
+    const normalized = normalizeJsonString(defaultValue, '[]')
+    if (normalized === initialNormalizedRef.current) return
+    form.reset(
+      { Chats: formatJsonForEditor(defaultValue, '[]') },
+      { keepDirtyValues: true }
+    )
+    initialNormalizedRef.current = normalized
   }, [defaultValue, form])
 
   const onSubmit = async (values: ChatSettingsFormValues) => {
@@ -125,6 +130,8 @@ export function ChatSettingsSection({
       key: 'Chats',
       value: normalized,
     })
+    initialNormalizedRef.current = normalized
+    form.reset({ Chats: values.Chats }, { keepDirtyValues: true })
   }
 
   return (

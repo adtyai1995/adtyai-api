@@ -25,6 +25,7 @@ import { useTranslation } from 'react-i18next'
 import { CopyButton } from '@/components/copy-button'
 import { StaticDataTable } from '@/components/data-table'
 import { sideDrawerContentClassName } from '@/components/drawer-layout'
+import { ErrorState } from '@/components/error-state'
 import { GroupBadge } from '@/components/group-badge'
 import { PublicLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
@@ -47,7 +48,10 @@ import {
 } from '@/features/performance-metrics/lib/format'
 import { PluginIcon } from '@/features/task-plugins/components/plugin-icon'
 import { getLobeIcon } from '@/lib/lobe-icon'
-import { requireServerSuccess } from '@/lib/server-error-message'
+import {
+  getServerErrorMessage,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSystemConfigStore } from '@/stores/system-config-store'
@@ -1355,10 +1359,17 @@ export function ModelDetails() {
     usableGroup,
     endpointMap,
     autoGroups,
+    hasData,
     isLoading,
+    isFetching,
+    isError,
+    error,
+    refetch,
     priceRate,
     usdExchangeRate,
   } = usePricingData(true, resolvePricingDisplayGroup(search.group, userGroup))
+  const hasCatalogData = hasData ?? Boolean(models && models.length > 0)
+  const hasError = Boolean(isError || error)
 
   const tokenUnit: TokenUnit =
     search.tokenUnit === 'K' ? 'K' : DEFAULT_TOKEN_UNIT
@@ -1372,7 +1383,7 @@ export function ModelDetails() {
     navigate({ to: '/pricing', search })
   }
 
-  if (isLoading) {
+  if (isLoading || (isFetching && !hasCatalogData)) {
     return (
       <PublicLayout>
         <div className='mx-auto w-full max-w-[1000px]'>
@@ -1392,6 +1403,23 @@ export function ModelDetails() {
               <Skeleton key={`section-${key}`} className='h-24 w-full' />
             ))}
           </div>
+        </div>
+      </PublicLayout>
+    )
+  }
+
+  if (hasError && !model) {
+    return (
+      <PublicLayout>
+        <div className='mx-auto w-full max-w-[1000px]'>
+          <ErrorState
+            title={t('Failed to load model details')}
+            description={getServerErrorMessage(
+              error,
+              t('Failed to load model details')
+            )}
+            onRetry={() => void refetch?.()}
+          />
         </div>
       </PublicLayout>
     )

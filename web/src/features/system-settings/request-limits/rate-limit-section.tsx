@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Code2, Palette } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -99,19 +99,32 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
     defaultValues,
   })
 
+  const baselineRef = useRef<RateLimitFormValues>(defaultValues)
+  const baselineSerializedRef = useRef<string>(JSON.stringify(defaultValues))
+
   useEffect(() => {
-    form.reset(defaultValues)
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
+    form.reset(defaultValues, { keepDirtyValues: true })
   }, [defaultValues, form])
 
   const onSubmit = async (values: RateLimitFormValues) => {
     const updates = Object.entries(values).filter(
       ([key, value]) =>
-        value !== defaultValues[key as keyof RateLimitFormValues]
+        value !== baselineRef.current[key as keyof RateLimitFormValues]
     )
 
     for (const [key, value] of updates) {
       await updateOption.mutateAsync({ key, value: value ?? '' })
+      baselineRef.current = {
+        ...baselineRef.current,
+        [key]: value,
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
+    form.reset(values, { keepDirtyValues: true })
   }
 
   return (

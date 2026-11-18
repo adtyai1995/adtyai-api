@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useEffect, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -63,16 +64,33 @@ export function SystemBehaviorSection({
     defaultValues,
   })
 
+  const baselineRef = useRef<BehaviorFormValues>(defaultValues)
+  const baselineSerializedRef = useRef<string>(JSON.stringify(defaultValues))
+
+  useEffect(() => {
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
+  }, [defaultValues])
+
   useResetForm(form, defaultValues)
 
   const onSubmit = async (data: BehaviorFormValues) => {
     const updates = Object.entries(data).filter(
-      ([key, value]) => value !== defaultValues[key as keyof BehaviorFormValues]
+      ([key, value]) =>
+        value !== baselineRef.current[key as keyof BehaviorFormValues]
     )
 
     for (const [key, value] of updates) {
       await updateOption.mutateAsync({ key, value })
+      baselineRef.current = {
+        ...baselineRef.current,
+        [key]: value,
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
+    form.reset(data, { keepDirtyValues: true })
   }
 
   return (

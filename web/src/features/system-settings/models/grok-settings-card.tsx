@@ -109,7 +109,9 @@ export function GrokSettingsCard(props: Props) {
     if (serialized === baselineSerializedRef.current) return
     baselineRef.current = props.defaultValues
     baselineSerializedRef.current = serialized
-    form.reset(buildFormDefaults(props.defaultValues))
+    form.reset(buildFormDefaults(props.defaultValues), {
+      keepDirtyValues: true,
+    })
   }, [props.defaultValues, form])
 
   const onSubmit = async (values: GrokFormValues) => {
@@ -128,11 +130,14 @@ export function GrokSettingsCard(props: Props) {
         key,
         value: normalized[key],
       })
+      baselineRef.current = {
+        ...baselineRef.current,
+        [key]: normalized[key],
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
 
-    baselineRef.current = normalized
-    baselineSerializedRef.current = JSON.stringify(normalized)
-    form.reset(buildFormDefaults(normalized))
+    form.reset(buildFormDefaults(normalized), { keepDirtyValues: true })
   }
 
   const enabled = form.watch('grok.violation_deduction_enabled')

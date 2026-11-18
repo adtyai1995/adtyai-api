@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
@@ -102,11 +102,28 @@ export function EmailSettingsSection({
       'QuotaRemindEnabled',
     ],
   })
+  const baselineRef = useRef(defaultValues)
+  const baselineSerializedRef = useRef(JSON.stringify(defaultValues))
+  useEffect(() => {
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
+  }, [defaultValues])
+
   const tokensOnly = getCurrencyDisplay().meta.kind === 'tokens'
   const isSaving = form.formState.isSubmitting || updateOption.isPending
   useResetForm(form, isSaving ? undefined : initialValues)
 
   const onSubmit = async (values: EmailFormValues) => {
+    const savedDefaults = baselineRef.current
+    const savedInitialValues = {
+      ...savedDefaults,
+      ...parseResendSender(savedDefaults.ResendFrom),
+      QuotaRemindThreshold: String(
+        quotaUnitsToDollars(Number(savedDefaults.QuotaRemindThreshold) || 0)
+      ),
+    }
     const securityMode = getSmtpSecurityMode(values)
     const sanitized = {
       SMTPServer: values.SMTPServer.trim(),
@@ -121,15 +138,15 @@ export function EmailSettingsSection({
     }
 
     const initial = {
-      SMTPServer: defaultValues.SMTPServer.trim(),
-      SMTPPort: defaultValues.SMTPPort.trim(),
-      SMTPAccount: defaultValues.SMTPAccount.trim(),
-      SMTPFrom: defaultValues.SMTPFrom.trim(),
-      SMTPToken: defaultValues.SMTPToken.trim(),
-      SMTPSSLEnabled: defaultValues.SMTPSSLEnabled,
-      SMTPStartTLSEnabled: defaultValues.SMTPStartTLSEnabled,
-      SMTPInsecureSkipVerify: defaultValues.SMTPInsecureSkipVerify,
-      SMTPForceAuthLogin: defaultValues.SMTPForceAuthLogin,
+      SMTPServer: savedDefaults.SMTPServer.trim(),
+      SMTPPort: savedDefaults.SMTPPort.trim(),
+      SMTPAccount: savedDefaults.SMTPAccount.trim(),
+      SMTPFrom: savedDefaults.SMTPFrom.trim(),
+      SMTPToken: savedDefaults.SMTPToken.trim(),
+      SMTPSSLEnabled: savedDefaults.SMTPSSLEnabled,
+      SMTPStartTLSEnabled: savedDefaults.SMTPStartTLSEnabled,
+      SMTPInsecureSkipVerify: savedDefaults.SMTPInsecureSkipVerify,
+      SMTPForceAuthLogin: savedDefaults.SMTPForceAuthLogin,
     }
 
     const updates: Array<{ key: string; value: string | boolean }> = []
@@ -138,8 +155,8 @@ export function EmailSettingsSection({
       const from = values.ResendFrom.trim()
       const name = values.ResendSenderName.trim()
       if (
-        from !== initialValues.ResendFrom ||
-        name !== initialValues.ResendSenderName
+        from !== savedInitialValues.ResendFrom ||
+        name !== savedInitialValues.ResendSenderName
       ) {
         // Quote display names so commas, quotes and angle brackets stay text,
         // not mailbox syntax. The server also validates the combined address.
@@ -199,7 +216,7 @@ export function EmailSettingsSection({
       }
     }
 
-    if (values.QuotaRemindEnabled !== defaultValues.QuotaRemindEnabled) {
+    if (values.QuotaRemindEnabled !== savedDefaults.QuotaRemindEnabled) {
       updates.push({
         key: 'QuotaRemindEnabled',
         value: values.QuotaRemindEnabled,
@@ -207,7 +224,7 @@ export function EmailSettingsSection({
     }
 
     const threshold = values.QuotaRemindThreshold.trim()
-    if (threshold !== initialValues.QuotaRemindThreshold) {
+    if (threshold !== savedInitialValues.QuotaRemindThreshold) {
       updates.push({
         key: 'QuotaRemindThreshold',
         value: String(parseQuotaFromDollars(Number(threshold || 0))),
@@ -216,7 +233,7 @@ export function EmailSettingsSection({
 
     // Save credentials first. A failed configuration write must not activate
     // the new provider; only the final selector write changes delivery.
-    if (values.EmailProvider !== defaultValues.EmailProvider) {
+    if (values.EmailProvider !== savedDefaults.EmailProvider) {
       updates.push({ key: 'EmailProvider', value: values.EmailProvider })
     }
 
@@ -225,7 +242,17 @@ export function EmailSettingsSection({
         await updateOption.mutateAsync(update)
         if (update.key === 'ResendApiKey') {
           form.setValue('ResendKeyConfigured', true)
+          baselineRef.current = {
+            ...baselineRef.current,
+            ResendKeyConfigured: true,
+          }
+        } else if (update.key !== 'SMTPToken') {
+          baselineRef.current = {
+            ...baselineRef.current,
+            [update.key]: update.value,
+          }
         }
+        baselineSerializedRef.current = JSON.stringify(baselineRef.current)
       }
       form.setValue('ResendApiKey', '')
     } catch (error) {

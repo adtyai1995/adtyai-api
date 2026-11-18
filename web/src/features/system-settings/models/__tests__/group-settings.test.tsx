@@ -69,7 +69,17 @@ beforeEach(() => {
   )
 })
 
-const defaults = {
+const defaults: {
+  GroupRatio: string
+  TopupGroupRatio: string
+  UserUsableGroups: string
+  GroupGroupRatio: string
+  AutoGroups: string
+  MaxTokenAutoGroups: number
+  DefaultUseAutoGroup: boolean
+  GroupSpecialUsableGroup: string
+  GroupModelAllow?: string
+} = {
   GroupRatio: '{"default":1,"vip":0.8}',
   TopupGroupRatio: '{"vip":1.2}',
   UserUsableGroups: '{"default":"Standard access","vip":"Premium access"}',
@@ -78,6 +88,7 @@ const defaults = {
   MaxTokenAutoGroups: 5,
   DefaultUseAutoGroup: false,
   GroupSpecialUsableGroup: '{}',
+  GroupModelAllow: '{}',
 }
 
 const schema = z.object({
@@ -89,6 +100,7 @@ const schema = z.object({
   MaxTokenAutoGroups: positiveIntegerSchema('Enter a positive integer'),
   DefaultUseAutoGroup: z.boolean(),
   GroupSpecialUsableGroup: z.string(),
+  GroupModelAllow: z.string().optional(),
 })
 
 function Fixture(props: {
@@ -437,5 +449,42 @@ describe('group settings workspace', () => {
     expect(
       screen.queryByRole('button', { name: 'Switch to JSON' })
     ).not.toBeInTheDocument()
+  })
+
+  it('edits per-group allowed models and saves GroupModelAllow', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(
+      <Fixture
+        onSave={onSave}
+        initial={{
+          GroupModelAllow: '{"default":["gpt-4o-mini"]}',
+        }}
+      />
+    )
+    await user.click(screen.getByRole('tab', { name: 'Allowed models' }))
+    const defaultInput = screen.getByRole('textbox', {
+      name: 'Allowed models for default',
+    })
+    const vipInput = screen.getByRole('textbox', {
+      name: 'Allowed models for vip',
+    })
+    expect(defaultInput).toHaveValue('gpt-4o-mini')
+    expect(vipInput).toHaveValue('')
+
+    await user.type(vipInput, 'gpt-4o, claude-3-5-sonnet')
+    await user.click(
+      screen.getByRole('button', { name: 'Clear allowed models for default' })
+    )
+    expect(defaultInput).toHaveValue('')
+
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    const saved = onSave.mock.calls[0]?.[0]
+    expect(JSON.parse(saved?.GroupModelAllow ?? '{}')).toEqual({
+      vip: ['gpt-4o', 'claude-3-5-sonnet'],
+    })
   })
 })

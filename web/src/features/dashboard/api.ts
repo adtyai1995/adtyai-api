@@ -44,10 +44,13 @@ export async function getUserQuotaDates(
   isAdmin = false
 ) {
   const endpoint = isAdmin ? '/api/data' : '/api/data/self'
-  const res = await api.get<{ success: boolean; data: QuotaDataItem[] }>(
-    endpoint,
-    { params }
-  )
+  const res = await api.get<{
+    success: boolean
+    data?: QuotaDataItem[]
+    message?: string
+    message_key?: string
+    message_params?: Record<string, unknown>
+  }>(endpoint, { params })
   return res.data
 }
 
@@ -59,10 +62,13 @@ export async function getUserQuotaDataByUsers(params: {
   start_timestamp: number
   end_timestamp: number
 }) {
-  const res = await api.get<{ success: boolean; data: QuotaDataItem[] }>(
-    '/api/data/users',
-    { params }
-  )
+  const res = await api.get<{
+    success: boolean
+    data?: QuotaDataItem[]
+    message?: string
+    message_key?: string
+    message_params?: Record<string, unknown>
+  }>('/api/data/users', { params })
   return res.data
 }
 
@@ -86,8 +92,12 @@ export async function getFlowQuotaDates(
 
 // Get uptime monitoring status for all services
 export async function getUptimeStatus() {
-  const res = await api.get<{ success: boolean; data: UptimeGroupResult[] }>(
-    '/api/uptime/status'
-  )
+  const res = await api.get<{
+    success: boolean
+    data?: UptimeGroupResult[]
+    message?: string
+    message_key?: string
+    message_params?: Record<string, unknown>
+  }>('/api/uptime/status')
   return res.data
 }

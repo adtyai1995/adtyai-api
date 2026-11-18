@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useEffect, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -73,13 +74,23 @@ export function WorkerSettingsSection({
     defaultValues,
   })
 
+  const baselineRef = useRef<WorkerFormValues>(defaultValues)
+  const baselineSerializedRef = useRef<string>(JSON.stringify(defaultValues))
+
+  useEffect(() => {
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
+  }, [defaultValues])
+
   useResetForm(form, defaultValues)
 
   const onSubmit = async (values: WorkerFormValues) => {
     const sanitizedUrl = removeTrailingSlash(values.WorkerUrl)
     const sanitizedKey = values.WorkerValidKey.trim()
-    const initialUrl = removeTrailingSlash(defaultValues.WorkerUrl)
-    const initialKey = defaultValues.WorkerValidKey.trim()
+    const initialUrl = removeTrailingSlash(baselineRef.current.WorkerUrl)
+    const initialKey = baselineRef.current.WorkerValidKey.trim()
 
     const updates: Array<{ key: string; value: string | boolean }> = []
 
@@ -93,7 +104,7 @@ export function WorkerSettingsSection({
 
     if (
       values.WorkerAllowHttpImageRequestEnabled !==
-      defaultValues.WorkerAllowHttpImageRequestEnabled
+      baselineRef.current.WorkerAllowHttpImageRequestEnabled
     ) {
       updates.push({
         key: 'WorkerAllowHttpImageRequestEnabled',
@@ -103,6 +114,13 @@ export function WorkerSettingsSection({
 
     for (const update of updates) {
       await updateOption.mutateAsync(update)
+      if (update.key !== 'WorkerValidKey') {
+        baselineRef.current = {
+          ...baselineRef.current,
+          [update.key]: update.value,
+        }
+        baselineSerializedRef.current = JSON.stringify(baselineRef.current)
+      }
     }
   }
 

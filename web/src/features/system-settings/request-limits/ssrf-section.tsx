@@ -175,9 +175,17 @@ export function SSRFSection({ defaultValues }: SSRFSectionProps) {
     defaultValues: formDefaults,
   })
 
+  const baselineSerializedRef = useRef<string>(
+    JSON.stringify(baselineRef.current)
+  )
+
   useEffect(() => {
-    baselineRef.current = normalizeDefaults(defaultValues)
-    form.reset(buildFormDefaults(defaultValues))
+    const nextNormalized = normalizeDefaults(defaultValues)
+    const serialized = JSON.stringify(nextNormalized)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = nextNormalized
+    baselineSerializedRef.current = serialized
+    form.reset(buildFormDefaults(defaultValues), { keepDirtyValues: true })
   }, [defaultValues, form])
 
   const onSubmit = async (data: SSRFFormValues) => {
@@ -198,6 +206,11 @@ export function SSRFSection({ defaultValues }: SSRFSectionProps) {
           key,
           value: Array.isArray(value) ? JSON.stringify(value) : value,
         })
+        baselineRef.current = {
+          ...baselineRef.current,
+          [key]: value,
+        }
+        baselineSerializedRef.current = JSON.stringify(baselineRef.current)
       }
     } catch {
       // useUpdateOption already shows the server error. A rejected save must
@@ -205,7 +218,7 @@ export function SSRFSection({ defaultValues }: SSRFSectionProps) {
       return
     }
 
-    baselineRef.current = normalized
+    form.reset(data, { keepDirtyValues: true })
   }
 
   const domainFilterMode = form.watch('fetch_setting.domain_filter_mode')

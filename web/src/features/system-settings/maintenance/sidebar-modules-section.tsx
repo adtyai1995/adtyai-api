@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
@@ -166,13 +166,17 @@ export function SidebarModulesSection({
     defaultValues: formDefaults,
   })
 
+  const baselineSerializedRef = useRef<string>(initialSerialized)
+
   useEffect(() => {
-    form.reset(formDefaults)
-  }, [formDefaults, form])
+    if (initialSerialized === baselineSerializedRef.current) return
+    baselineSerializedRef.current = initialSerialized
+    form.reset(formDefaults, { keepDirtyValues: true })
+  }, [formDefaults, form, initialSerialized])
 
   const onSubmit = async (values: SidebarFormValues) => {
     const serialized = serializeSidebarModulesAdmin(values)
-    if (serialized === initialSerialized) {
+    if (serialized === baselineSerializedRef.current) {
       return
     }
 
@@ -180,6 +184,8 @@ export function SidebarModulesSection({
       key: 'SidebarModulesAdmin',
       value: serialized,
     })
+    baselineSerializedRef.current = serialized
+    form.reset(values, { keepDirtyValues: true })
   }
 
   const resetToDefault = () => {

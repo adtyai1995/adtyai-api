@@ -164,8 +164,12 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
     defaultValues: buildFormDefaults(defaultValues),
   })
 
+  const baselineSerializedRef = useRef<string>(
+    JSON.stringify(normalizedDefaultsRef.current)
+  )
+
   useEffect(() => {
-    normalizedDefaultsRef.current = {
+    const nextNormalized: FlatGeminiSettings = {
       'gemini.safety_settings': normalizeJsonString(
         defaultValues.gemini.safety_settings
       ),
@@ -185,8 +189,12 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
       'gemini.remove_function_response_id_enabled':
         defaultValues.gemini.remove_function_response_id_enabled ?? true,
     }
+    const serialized = JSON.stringify(nextNormalized)
+    if (serialized === baselineSerializedRef.current) return
+    normalizedDefaultsRef.current = nextNormalized
+    baselineSerializedRef.current = serialized
 
-    form.reset(buildFormDefaults(defaultValues))
+    form.reset(buildFormDefaults(defaultValues), { keepDirtyValues: true })
   }, [defaultValues, form])
 
   const isAdapterEnabled = form.watch('gemini.thinking_adapter_enabled')
@@ -225,7 +233,15 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
         key,
         value: normalized[key],
       })
+      normalizedDefaultsRef.current = {
+        ...normalizedDefaultsRef.current,
+        [key]: normalized[key],
+      }
+      baselineSerializedRef.current = JSON.stringify(
+        normalizedDefaultsRef.current
+      )
     }
+    form.reset(buildFormDefaults(values), { keepDirtyValues: true })
   }
 
   const imaginePlaceholder = useMemo(

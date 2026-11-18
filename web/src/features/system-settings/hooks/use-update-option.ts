@@ -24,7 +24,39 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { updatePasskeyDomains, updateSystemOption } from '../api'
-import type { UpdateOptionRequest, UpdatePasskeyDomainsRequest } from '../types'
+import type {
+  SystemOption,
+  SystemOptionsResponse,
+  UpdateOptionRequest,
+  UpdatePasskeyDomainsRequest,
+} from '../types'
+
+function isSensitiveOptionKey(key: string): boolean {
+  return (
+    key.endsWith('Token') ||
+    key.endsWith('Secret') ||
+    key.endsWith('Key') ||
+    key.endsWith('secret') ||
+    key.endsWith('api_key')
+  )
+}
+
+function upsertSystemOption(
+  options: SystemOption[],
+  key: string,
+  value: string
+): SystemOption[] {
+  const index = options.findIndex((item) => item.key === key)
+  if (index === -1) {
+    return [...options, { key, value }]
+  }
+  if (options[index]?.value === value) {
+    return options
+  }
+  const next = [...options]
+  next[index] = { key, value }
+  return next
+}
 
 // Configuration keys that require status refresh
 const STATUS_RELATED_KEYS = new Set([
@@ -59,6 +91,34 @@ export function useUpdateOption() {
       requireServerSuccess(await updateSystemOption(request)),
     onSuccess: (data, variables) => {
       if (data.success) {
+        const stringValue = String(variables.value)
+        queryClient.setQueryData<SystemOptionsResponse>(
+          ['system-options'],
+          (current) => {
+            if (!current || !Array.isArray(current.data)) return current
+            let nextData = current.data
+            if (!isSensitiveOptionKey(variables.key)) {
+              nextData = upsertSystemOption(
+                nextData,
+                variables.key,
+                stringValue
+              )
+            }
+            if (
+              variables.key === 'ResendApiKey' &&
+              stringValue.trim() !== ''
+            ) {
+              nextData = upsertSystemOption(
+                nextData,
+                'ResendKeyConfigured',
+                'true'
+              )
+            }
+            if (nextData === current.data) return current
+            return { ...current, data: nextData }
+          }
+        )
+
         // Always refresh system-options
         // Mark the options stale for the next settings load without refetching
         // the active settings form. A refetch here replaces local drafts while

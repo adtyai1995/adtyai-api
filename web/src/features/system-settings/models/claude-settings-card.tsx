@@ -135,8 +135,12 @@ export function ClaudeSettingsCard({ defaultValues }: ClaudeSettingsCardProps) {
     defaultValues: buildFormDefaults(defaultValues),
   })
 
+  const baselineSerializedRef = useRef<string>(
+    JSON.stringify(normalizedDefaultsRef.current)
+  )
+
   useEffect(() => {
-    normalizedDefaultsRef.current = {
+    const nextNormalized: FlatClaudeSettings = {
       'claude.model_headers_settings': normalizeJsonString(
         defaultValues.claude.model_headers_settings
       ),
@@ -149,8 +153,12 @@ export function ClaudeSettingsCard({ defaultValues }: ClaudeSettingsCardProps) {
         defaultValues.claude.thinking_adapter_budget_tokens_percentage
       ),
     }
+    const serialized = JSON.stringify(nextNormalized)
+    if (serialized === baselineSerializedRef.current) return
+    normalizedDefaultsRef.current = nextNormalized
+    baselineSerializedRef.current = serialized
 
-    form.reset(buildFormDefaults(defaultValues))
+    form.reset(buildFormDefaults(defaultValues), { keepDirtyValues: true })
   }, [defaultValues, form])
 
   const onSubmit = async (values: ClaudeSettingsFormValues) => {
@@ -177,7 +185,15 @@ export function ClaudeSettingsCard({ defaultValues }: ClaudeSettingsCardProps) {
 
     for (const key of updates) {
       await updateOption.mutateAsync({ key, value: normalized[key] })
+      normalizedDefaultsRef.current = {
+        ...normalizedDefaultsRef.current,
+        [key]: normalized[key],
+      }
+      baselineSerializedRef.current = JSON.stringify(
+        normalizedDefaultsRef.current
+      )
     }
+    form.reset(buildFormDefaults(values), { keepDirtyValues: true })
   }
 
   return (

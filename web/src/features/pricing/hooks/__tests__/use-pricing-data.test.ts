@@ -170,4 +170,25 @@ describe('usePricingData', () => {
       2 * (1.5 / 1.3)
     )
   })
+
+  it('reports isError and hasData=false when getPricing rejects', async () => {
+    const errorClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    function errorWrapper({ children }: { children: ReactNode }) {
+      return createElement(
+        QueryClientProvider,
+        { client: errorClient },
+        children
+      )
+    }
+
+    getPricing.mockRejectedValueOnce(new Error('Pricing endpoint failed'))
+
+    const hook = renderHook(() => usePricingData(), { wrapper: errorWrapper })
+    await waitFor(() => expect(hook.result.current.isError).toBe(true))
+    expect(hook.result.current.hasData).toBe(false)
+    expect(hook.result.current.models).toEqual([])
+    expect(hook.result.current.error).toBeInstanceOf(Error)
+  })
 })

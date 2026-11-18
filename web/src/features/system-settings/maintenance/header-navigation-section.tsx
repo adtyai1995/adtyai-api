@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -110,31 +110,38 @@ export function HeaderNavigationSection({
     defaultValues: formDefaults,
   })
 
+  const baselineConfigRef = useRef<HeaderNavModulesConfig>(config)
+  const baselineSerializedRef = useRef<string>(initialSerialized)
+
   useEffect(() => {
-    form.reset(formDefaults)
-  }, [formDefaults, form])
+    if (initialSerialized === baselineSerializedRef.current) return
+    baselineConfigRef.current = config
+    baselineSerializedRef.current = initialSerialized
+    form.reset(formDefaults, { keepDirtyValues: true })
+  }, [config, formDefaults, form, initialSerialized])
 
   const onSubmit = async (values: HeaderNavFormValues) => {
+    const baseConfig = baselineConfigRef.current
     const payload: HeaderNavModulesConfig = {
-      ...config,
+      ...baseConfig,
       home: values.home,
       console: values.console,
       docs: values.docs,
       about: values.about,
       pricing: {
-        ...(config.pricing ?? HEADER_NAV_DEFAULT.pricing),
+        ...(baseConfig.pricing ?? HEADER_NAV_DEFAULT.pricing),
         enabled: values.pricingEnabled,
         requireAuth: values.pricingRequireAuth,
       },
       rankings: {
-        ...(config.rankings ?? HEADER_NAV_DEFAULT.rankings),
+        ...(baseConfig.rankings ?? HEADER_NAV_DEFAULT.rankings),
         enabled: values.rankingsEnabled,
         requireAuth: values.rankingsRequireAuth,
       },
     }
 
     const serialized = serializeHeaderNavModules(payload)
-    if (serialized === initialSerialized) {
+    if (serialized === baselineSerializedRef.current) {
       return
     }
 
@@ -142,6 +149,9 @@ export function HeaderNavigationSection({
       key: 'HeaderNavModules',
       value: serialized,
     })
+    baselineConfigRef.current = payload
+    baselineSerializedRef.current = serialized
+    form.reset(values, { keepDirtyValues: true })
   }
 
   const resetToDefault = () => {

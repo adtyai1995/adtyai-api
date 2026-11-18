@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -46,6 +47,11 @@ type AnnouncementsSectionProps = {
 export function AnnouncementsSection({ enabled }: AnnouncementsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const [isEnabled, setIsEnabled] = useState(enabled)
+
+  useEffect(() => {
+    setIsEnabled(enabled)
+  }, [enabled])
 
   const handleToggleEnabled = async (checked: boolean) => {
     try {
@@ -53,6 +59,7 @@ export function AnnouncementsSection({ enabled }: AnnouncementsSectionProps) {
         key: 'console_setting.announcements_enabled',
         value: checked,
       })
+      setIsEnabled(checked)
       toast.success(t('Setting saved'))
     } catch (error) {
       handleServerError(error, t('Failed to update setting'))
@@ -63,7 +70,7 @@ export function AnnouncementsSection({ enabled }: AnnouncementsSectionProps) {
     <>
       <SettingsSection title={t('Announcements')}>
         <SettingsSwitchField
-          checked={enabled}
+          checked={isEnabled}
           onCheckedChange={handleToggleEnabled}
           label={t('Enabled')}
           description={t(

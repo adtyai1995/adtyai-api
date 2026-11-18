@@ -9382,5 +9382,21 @@
     "Save term": "保存术语",
     "Edit term": "编辑术语",
     "Delete term": "删除术语"
-  }
+  },
+  "Allowed models": "允许的模型",
+  "Restrict which models each billing group can access. Leave empty to allow all models.": "限制各计费分组可访问的模型；留空表示允许全部模型。",
+  "No pricing groups configured": "尚未配置计费分组",
+  "Add groups in Pricing groups first to configure allowed models.": "请先在「计费分组」中添加分组，再配置允许的模型。",
+  "{{count}} models": "{{count}} 个模型",
+  "All models": "全部模型",
+  "Allowed models for {{group}}": "{{group}} 允许的模型",
+  "All models (e.g. gpt-4o, claude-3-5-sonnet)": "全部模型（例如 gpt-4o, claude-3-5-sonnet）",
+  "Clear allowed models for {{group}}": "清空 {{group}} 的允许模型",
+  "Please increase the document version when updating published terms.": "更新已发布协议时请先提高文档版本号。",
+  "Failed to load usage statistics": "加载用量统计失败",
+  "Failed to load uptime status": "加载可用性状态失败",
+  "Failed to load models": "加载模型列表失败",
+  "Failed to load model details": "加载模型详情失败",
+  "Failed to load system configuration": "加载系统配置失败",
+  "Failed to load system config": "加载系统配置失败"
 }

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -151,18 +151,31 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
     defaultValues: defaultValues as GlobalModelSettingsFormInput,
   })
 
+  const baselineRef = useRef<FlatGlobalModelSettings>(
+    flattenGlobalValues(defaultValues)
+  )
+  const baselineSerializedRef = useRef<string>(
+    JSON.stringify(baselineRef.current)
+  )
+
   useEffect(() => {
-    form.reset(defaultValues as GlobalModelSettingsFormInput)
+    const nextFlattened = flattenGlobalValues(defaultValues)
+    const serialized = JSON.stringify(nextFlattened)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = nextFlattened
+    baselineSerializedRef.current = serialized
+    form.reset(defaultValues as GlobalModelSettingsFormInput, {
+      keepDirtyValues: true,
+    })
   }, [defaultValues, form])
 
   const pingEnabled = form.watch('general_setting.ping_interval_enabled')
 
   const onSubmit = async (values: GlobalModelSettingsFormValues) => {
-    const flattenedDefaults = flattenGlobalValues(defaultValues)
     const flattenedValues = flattenGlobalValues(values)
     const updates = Object.entries(flattenedValues).filter(
       ([key, value]) =>
-        value !== flattenedDefaults[key as keyof FlatGlobalModelSettings]
+        value !== baselineRef.current[key as keyof FlatGlobalModelSettings]
     )
 
     if (updates.length === 0) {
@@ -175,7 +188,15 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
         key,
         value,
       })
+      baselineRef.current = {
+        ...baselineRef.current,
+        [key]: value,
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
+    form.reset(values as GlobalModelSettingsFormInput, {
+      keepDirtyValues: true,
+    })
   }
 
   return (

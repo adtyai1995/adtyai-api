@@ -34,6 +34,8 @@ import type {
 import { toIntlLocale } from '@/i18n/languages'
 import { canViewAllLogs } from '@/lib/adty-permissions'
 import { formatCompactNumber, formatNumber, formatQuota } from '@/lib/format'
+import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { computeTimeRange } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
@@ -59,7 +61,7 @@ function formatStatNumber(value: number, locale: Intl.LocalesArgument) {
 }
 
 export function LogStatCards(props: LogStatCardsProps) {
-  const { i18n } = useTranslation()
+  const { t, i18n } = useTranslation()
   const statCardsConfig = useModelStatCardsConfig()
   const user = useAuthStore((state) => state.auth.user)
   const isAdmin = canViewAllLogs(user)
@@ -92,12 +94,14 @@ export function LogStatCards(props: LogStatCardsProps) {
     void getUserQuotaDates(buildQueryParams(timeRange, filters), isAdmin)
       .then((res) => {
         if (abortController.signal.aborted) return
-        const data = res?.data || []
+        const checked = requireServerSuccess(res)
+        const data = checked?.data || []
         setStats(calculateDashboardStats(data))
         onDataUpdate?.(data, false)
       })
-      .catch(() => {
+      .catch((err) => {
         if (abortController.signal.aborted) return
+        handleServerError(err, t('Failed to load usage statistics'))
         setStats(null)
         setError(true)
         onDataUpdate?.([], false)
@@ -111,7 +115,7 @@ export function LogStatCards(props: LogStatCardsProps) {
     return () => {
       abortController.abort()
     }
-  }, [filters, isAdmin, onDataUpdate])
+  }, [filters, isAdmin, onDataUpdate, t])
 
   const adaptedStats = {
     rpm: stats?.totalCount ?? 0,

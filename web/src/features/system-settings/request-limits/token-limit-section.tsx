@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -78,16 +78,29 @@ export function TokenLimitSection({ defaultValues }: TokenLimitSectionProps) {
     defaultValues: buildFormDefaults(defaultValues),
   })
 
+  const baselineRef = useRef<NormalizedTokenLimitValues>(defaultValues)
+  const baselineSerializedRef = useRef<string>(JSON.stringify(defaultValues))
+
   useEffect(() => {
-    form.reset(buildFormDefaults(defaultValues))
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
+    form.reset(buildFormDefaults(defaultValues), { keepDirtyValues: true })
   }, [defaultValues, form])
 
   const onSubmit = async (values: TokenLimitFormValues) => {
     const key = 'token_setting.max_user_tokens' as const
     const normalized = normalizeFormValues(values)
     const value = normalized[key]
-    if (value !== defaultValues[key]) {
+    if (value !== baselineRef.current[key]) {
       await updateOption.mutateAsync({ key, value })
+      baselineRef.current = {
+        ...baselineRef.current,
+        [key]: value,
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
+      form.reset(values, { keepDirtyValues: true })
     }
   }
 

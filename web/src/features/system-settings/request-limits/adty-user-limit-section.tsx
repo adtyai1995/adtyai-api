@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -49,26 +49,34 @@ export function AdtyUserLimitSection(props: {
 }) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
-  const saved = props.defaultValues
+  const savedRef = useRef<AdtyUserLimitDefaults>(props.defaultValues)
   const labels: Record<NumberKey, string> = {
     default_rpm: t('Requests per minute (RPM)'),
     default_tpm: t('Tokens per minute (TPM)'),
     default_concurrency: t('Concurrent requests'),
   }
-  const [enabled, setEnabled] = useState(saved.enabled)
+  const [enabled, setEnabled] = useState(props.defaultValues.enabled)
   const [drafts, setDrafts] = useState<Record<NumberKey, string>>({
-    default_rpm: String(saved.default_rpm),
-    default_tpm: String(saved.default_tpm),
-    default_concurrency: String(saved.default_concurrency),
+    default_rpm: String(props.defaultValues.default_rpm),
+    default_tpm: String(props.defaultValues.default_tpm),
+    default_concurrency: String(props.defaultValues.default_concurrency),
   })
-  const savedKey = JSON.stringify(saved)
+  const savedKey = JSON.stringify(props.defaultValues)
   useEffect(() => {
     const next: AdtyUserLimitDefaults = JSON.parse(savedKey)
-    setEnabled(next.enabled)
-    setDrafts({
-      default_rpm: String(next.default_rpm),
-      default_tpm: String(next.default_tpm),
-      default_concurrency: String(next.default_concurrency),
+    const prevSaved = savedRef.current
+    savedRef.current = next
+    setEnabled((current) =>
+      current === prevSaved.enabled ? next.enabled : current
+    )
+    setDrafts((current) => {
+      const updated = { ...current }
+      for (const key of NUMBER_KEYS) {
+        if (current[key] === String(prevSaved[key])) {
+          updated[key] = String(next[key])
+        }
+      }
+      return updated
     })
   }, [savedKey])
 
@@ -79,6 +87,7 @@ export function AdtyUserLimitSection(props: {
 
   const save = async () => {
     if (invalid.length > 0) return
+    const saved = savedRef.current
     for (const key of NUMBER_KEYS) {
       const value = Number(drafts[key])
       if (value !== saved[key]) {
@@ -86,6 +95,10 @@ export function AdtyUserLimitSection(props: {
           key: `adty_limit_setting.${key}`,
           value,
         })
+        savedRef.current = {
+          ...savedRef.current,
+          [key]: value,
+        }
       }
     }
     if (enabled !== saved.enabled) {
@@ -93,6 +106,10 @@ export function AdtyUserLimitSection(props: {
         key: 'adty_limit_setting.enabled',
         value: enabled,
       })
+      savedRef.current = {
+        ...savedRef.current,
+        enabled,
+      }
     }
   }
 

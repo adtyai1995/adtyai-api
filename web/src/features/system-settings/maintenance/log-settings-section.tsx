@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect, useId, useMemo } from 'react'
+import { useEffect, useId, useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -87,9 +87,16 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
     defaultValues: formDefaults,
   })
 
+  const baselineRef = useRef(props.defaultValues)
+  const baselineSerializedRef = useRef(JSON.stringify(props.defaultValues))
+
   useEffect(() => {
-    form.reset(formDefaults)
-  }, [formDefaults, form])
+    const serialized = JSON.stringify(props.defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = props.defaultValues
+    baselineSerializedRef.current = serialized
+    form.reset(formDefaults, { keepDirtyValues: true })
+  }, [props.defaultValues, formDefaults, form])
 
   const onSubmit = async (values: LogSettingsFormValues) => {
     const changes = [
@@ -101,9 +108,15 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
       ['log_setting.max_range_days', values.log_setting.max_range_days],
     ] as const
     for (const [key, value] of changes) {
-      if (value === props.defaultValues[key]) continue
+      if (value === baselineRef.current[key]) continue
       await updateOption.mutateAsync({ key, value })
+      baselineRef.current = {
+        ...baselineRef.current,
+        [key]: value,
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
+    form.reset(values, { keepDirtyValues: true })
   }
 
   return (

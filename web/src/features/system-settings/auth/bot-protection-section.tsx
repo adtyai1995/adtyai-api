@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -66,19 +66,32 @@ export function BotProtectionSection({
     defaultValues,
   })
 
+  const baselineRef = useRef<BotProtectionFormValues>(defaultValues)
+  const baselineSerializedRef = useRef<string>(JSON.stringify(defaultValues))
+
   useEffect(() => {
-    form.reset(defaultValues)
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
+    form.reset(defaultValues, { keepDirtyValues: true })
   }, [defaultValues, form])
 
   const onSubmit = async (data: BotProtectionFormValues) => {
     const updates = Object.entries(data).filter(
       ([key, value]) =>
-        value !== defaultValues[key as keyof BotProtectionFormValues]
+        value !== baselineRef.current[key as keyof BotProtectionFormValues]
     )
 
     for (const [key, value] of updates) {
       await updateOption.mutateAsync({ key, value: value ?? '' })
+      baselineRef.current = {
+        ...baselineRef.current,
+        [key]: value,
+      }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
+    form.reset(data, { keepDirtyValues: true })
   }
 
   return (

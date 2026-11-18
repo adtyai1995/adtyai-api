@@ -219,7 +219,7 @@ export function useSettingsForm<T extends FieldValues>({
     baselineRef.current = flattened
     defaultValuesRef.current = expandedDefaults as T
     serializedDefaultsRef.current = serialized
-    form.reset(expandedDefaults as T)
+    form.reset(expandedDefaults as T, { keepDirtyValues: true })
   }, [expandedDefaults, form])
 
   const defaultCompare = (a: unknown, b: unknown): boolean => {

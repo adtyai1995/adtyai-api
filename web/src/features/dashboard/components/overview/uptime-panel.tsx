@@ -27,6 +27,11 @@ import type {
   UptimeGroupResult,
   UptimeMonitor,
 } from '@/features/dashboard/types'
+import { handleServerError } from '@/lib/handle-server-error'
+import {
+  getServerErrorMessage,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 import { PanelWrapper } from '../ui/panel-wrapper'
@@ -49,6 +54,7 @@ export function UptimePanel() {
   const [groups, setGroups] = useState<UptimeGroupResult[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const abortController = new AbortController()
@@ -56,10 +62,15 @@ export function UptimePanel() {
     void getUptimeStatus()
       .then((res) => {
         if (abortController.signal.aborted) return
-        setGroups(res?.data || [])
+        const checked = requireServerSuccess(res)
+        setError(null)
+        setGroups(checked?.data || [])
       })
-      .catch(() => {
+      .catch((err) => {
         if (abortController.signal.aborted) return
+        const fallback = t('Failed to load uptime status')
+        handleServerError(err, fallback)
+        setError(getServerErrorMessage(err, fallback))
         setGroups([])
       })
       .finally(() => {
@@ -71,7 +82,7 @@ export function UptimePanel() {
     return () => {
       abortController.abort()
     }
-  }, [])
+  }, [t])
 
   const handleRefresh = () => {
     const abortController = new AbortController()
@@ -80,10 +91,15 @@ export function UptimePanel() {
     void getUptimeStatus()
       .then((res) => {
         if (abortController.signal.aborted) return
-        setGroups(res?.data || [])
+        const checked = requireServerSuccess(res)
+        setError(null)
+        setGroups(checked?.data || [])
       })
-      .catch(() => {
+      .catch((err) => {
         if (abortController.signal.aborted) return
+        const fallback = t('Failed to load uptime status')
+        handleServerError(err, fallback)
+        setError(getServerErrorMessage(err, fallback))
         setGroups([])
       })
       .finally(() => {
@@ -103,6 +119,8 @@ export function UptimePanel() {
       }
       description={t('Grouped monitor status from Uptime Kuma')}
       loading={loading}
+      error={error}
+      onRetry={handleRefresh}
       empty={!groups.length}
       emptyMessage={t('No uptime monitoring configured')}
       height='h-80'

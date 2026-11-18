@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -57,19 +57,26 @@ export function NoticeSection({ defaultValue }: NoticeSectionProps) {
     },
   })
 
+  const baselineRef = useRef<string>(defaultValue ?? '')
+
   useEffect(() => {
-    form.reset({ Notice: defaultValue ?? '' })
+    const next = defaultValue ?? ''
+    if (next === baselineRef.current) return
+    baselineRef.current = next
+    form.reset({ Notice: next }, { keepDirtyValues: true })
   }, [defaultValue, form])
 
   const onSubmit = async (values: NoticeFormValues) => {
     const normalized = values.Notice ?? ''
-    if (normalized === (defaultValue ?? '')) {
+    if (normalized === baselineRef.current) {
       return
     }
     await updateOption.mutateAsync({
       key: 'Notice',
       value: normalized,
     })
+    baselineRef.current = normalized
+    form.reset({ Notice: normalized }, { keepDirtyValues: true })
   }
 
   return (

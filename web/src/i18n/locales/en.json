@@ -9382,5 +9382,21 @@
     "Save term": "Save term",
     "Edit term": "Edit term",
     "Delete term": "Delete term"
-  }
+  },
+  "Allowed models": "Allowed models",
+  "Restrict which models each billing group can access. Leave empty to allow all models.": "Restrict which models each billing group can access. Leave empty to allow all models.",
+  "No pricing groups configured": "No pricing groups configured",
+  "Add groups in Pricing groups first to configure allowed models.": "Add groups in Pricing groups first to configure allowed models.",
+  "{{count}} models": "{{count}} models",
+  "All models": "All models",
+  "Allowed models for {{group}}": "Allowed models for {{group}}",
+  "All models (e.g. gpt-4o, claude-3-5-sonnet)": "All models (e.g. gpt-4o, claude-3-5-sonnet)",
+  "Clear allowed models for {{group}}": "Clear allowed models for {{group}}",
+  "Please increase the document version when updating published terms.": "Please increase the document version when updating published terms.",
+  "Failed to load usage statistics": "Failed to load usage statistics",
+  "Failed to load uptime status": "Failed to load uptime status",
+  "Failed to load models": "Failed to load models",
+  "Failed to load model details": "Failed to load model details",
+  "Failed to load system configuration": "Failed to load system configuration",
+  "Failed to load system config": "Failed to load system config"
 }

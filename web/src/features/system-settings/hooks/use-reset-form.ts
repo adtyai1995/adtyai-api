@@ -38,7 +38,7 @@ export function useResetForm<TFieldValues extends FieldValues>(
       return
     }
 
-    form.reset(values)
+    form.reset(values, { keepDirtyValues: true })
     lastSerializedDefaults.current = serializedDefaults
   }, [values, form])
 }

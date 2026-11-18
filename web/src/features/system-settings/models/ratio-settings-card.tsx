@@ -146,6 +146,7 @@ const createGroupSchema = (t: Translate) =>
     MaxTokenAutoGroups: positiveIntegerSchema(t('Enter a positive integer')),
     DefaultUseAutoGroup: z.boolean(),
     GroupSpecialUsableGroup: createJsonStringField(t),
+    GroupModelAllow: createJsonStringField(t).optional(),
   })
 
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>
@@ -254,7 +255,11 @@ export function RatioSettingsCard({
     GroupSpecialUsableGroup: normalizeJsonString(
       groupDefaults.GroupSpecialUsableGroup
     ),
+    GroupModelAllow: normalizeJsonString(groupDefaults.GroupModelAllow ?? '{}'),
   })
+  const groupNormalizedSerializedRef = useRef(
+    JSON.stringify(groupNormalizedDefaults.current)
+  )
   const modelSchema = useMemo(() => createModelSchema(t), [t])
   const groupSchema = useMemo(() => createGroupSchema(t), [t])
 
@@ -291,6 +296,9 @@ export function RatioSettingsCard({
       AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
       GroupSpecialUsableGroup: formatJsonForTextarea(
         groupDefaults.GroupSpecialUsableGroup
+      ),
+      GroupModelAllow: formatJsonForTextarea(
+        groupDefaults.GroupModelAllow ?? '{}'
       ),
     },
   })
@@ -333,7 +341,7 @@ export function RatioSettingsCard({
   }, [modelDefaults, modelForm])
 
   useEffect(() => {
-    groupNormalizedDefaults.current = {
+    const nextGroupNormalized = {
       GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
       TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
       UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
@@ -344,19 +352,32 @@ export function RatioSettingsCard({
       GroupSpecialUsableGroup: normalizeJsonString(
         groupDefaults.GroupSpecialUsableGroup
       ),
-    }
-
-    groupForm.reset({
-      ...groupDefaults,
-      GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
-      TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
-      UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
-      GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
-      AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
-      GroupSpecialUsableGroup: formatJsonForTextarea(
-        groupDefaults.GroupSpecialUsableGroup
+      GroupModelAllow: normalizeJsonString(
+        groupDefaults.GroupModelAllow ?? '{}'
       ),
-    })
+    }
+    const serialized = JSON.stringify(nextGroupNormalized)
+    if (serialized === groupNormalizedSerializedRef.current) return
+    groupNormalizedDefaults.current = nextGroupNormalized
+    groupNormalizedSerializedRef.current = serialized
+
+    groupForm.reset(
+      {
+        ...groupDefaults,
+        GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
+        TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
+        UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
+        GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
+        AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
+        GroupSpecialUsableGroup: formatJsonForTextarea(
+          groupDefaults.GroupSpecialUsableGroup
+        ),
+        GroupModelAllow: formatJsonForTextarea(
+          groupDefaults.GroupModelAllow ?? '{}'
+        ),
+      },
+      { keepDirtyValues: true }
+    )
   }, [groupDefaults, groupForm])
 
   const saveModelRatios = useCallback(
@@ -422,6 +443,7 @@ export function RatioSettingsCard({
         GroupSpecialUsableGroup: normalizeJsonString(
           values.GroupSpecialUsableGroup
         ),
+        GroupModelAllow: normalizeJsonString(values.GroupModelAllow ?? '{}'),
       }
 
       // Map form field names to API keys (most are 1:1, except GroupSpecialUsableGroup)
@@ -439,9 +461,14 @@ export function RatioSettingsCard({
       for (const key of updates) {
         const apiKey = apiKeyMap[key] || key
         await updateOption.mutateAsync({ key: apiKey, value: normalized[key] })
+        groupNormalizedDefaults.current = {
+          ...groupNormalizedDefaults.current,
+          [key]: normalized[key],
+        }
+        groupNormalizedSerializedRef.current = JSON.stringify(
+          groupNormalizedDefaults.current
+        )
       }
-
-      groupNormalizedDefaults.current = normalized
     },
     [updateOption]
   )

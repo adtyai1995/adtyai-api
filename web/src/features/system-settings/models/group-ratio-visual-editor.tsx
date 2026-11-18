@@ -76,6 +76,7 @@ export type GroupSettingsSection =
   | 'pricing'
   | 'overrides'
   | 'visibility'
+  | 'models'
   | 'auto'
 
 type GroupRatioVisualEditorProps = {
@@ -89,6 +90,7 @@ type GroupRatioVisualEditorProps = {
   autoGroups: string
   maxTokenAutoGroupsField: ReactNode
   groupSpecialUsableGroup: string
+  groupModelAllow?: string
   onChange: (field: string, value: string) => void
 }
 
@@ -183,6 +185,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   autoGroups,
   maxTokenAutoGroupsField,
   groupSpecialUsableGroup,
+  groupModelAllow = '{}',
   onChange,
 }: GroupRatioVisualEditorProps) {
   const { t, i18n } = useTranslation()
@@ -267,6 +270,9 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
           <TabsTrigger value='visibility' className='px-3'>
             {t('Group visibility')}
           </TabsTrigger>
+          <TabsTrigger value='models' className='px-3'>
+            {t('Allowed models')}
+          </TabsTrigger>
           <TabsTrigger value='auto' className='px-3'>
             {t('Auto group order')}
           </TabsTrigger>
@@ -292,6 +298,13 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
           value={groupSpecialUsableGroup}
           groupOptions={registryNames}
           onChange={(value) => onChange('GroupSpecialUsableGroup', value)}
+        />
+      </TabsContent>
+      <TabsContent value='models' keepMounted>
+        <GroupModelAllowEditor
+          registry={registry}
+          value={groupModelAllow}
+          onChange={(value) => onChange('GroupModelAllow', value)}
         />
       </TabsContent>
       <TabsContent value='auto' keepMounted>
@@ -373,6 +386,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
         groupGroupRatio={groupGroupRatio}
         autoGroups={autoGroupsList}
         groupSpecialUsableGroup={groupSpecialUsableGroup}
+        groupModelAllow={groupModelAllow}
       />
     </Tabs>
   )
@@ -851,6 +865,192 @@ function GroupOverrideDialog({
   )
 }
 
+type GroupModelAllowEditorProps = {
+  registry: RegistryEntry[]
+  value: string
+  onChange: (value: string) => void
+}
+
+function parseGroupModelAllowMap(value: string): Record<string, string[]> {
+  const raw = safeJsonParse<Record<string, unknown>>(value, {
+    fallback: {},
+    silent: true,
+  })
+  const result: Record<string, string[]> = {}
+  for (const [group, list] of Object.entries(raw)) {
+    if (!Array.isArray(list)) continue
+    const cleaned = list
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0)
+    if (cleaned.length > 0) {
+      result[group] = cleaned
+    }
+  }
+  return result
+}
+
+function parseModelsInput(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+}
+
+function GroupModelAllowEditor({
+  registry,
+  value,
+  onChange,
+}: GroupModelAllowEditorProps) {
+  const { t } = useTranslation()
+  const display = useGroupDisplay()
+  const allowMap = useMemo(() => parseGroupModelAllowMap(value), [value])
+  const [draftByGroup, setDraftByGroup] = useState<Record<string, string>>({})
+
+  const groupNames = useMemo(() => {
+    const names = new Set<string>([
+      ...registry.map((entry) => entry.name),
+      ...Object.keys(allowMap),
+    ])
+    return [...names]
+  }, [registry, allowMap])
+
+  const emitAllowMap = useCallback(
+    (nextMap: Record<string, string[]>) => {
+      const cleaned: Record<string, string[]> = {}
+      for (const [group, models] of Object.entries(nextMap)) {
+        const valid = models.map((m) => m.trim()).filter((m) => m.length > 0)
+        if (valid.length > 0) {
+          cleaned[group] = valid
+        }
+      }
+      onChange(
+        Object.keys(cleaned).length === 0
+          ? '{}'
+          : JSON.stringify(cleaned, null, 2)
+      )
+    },
+    [onChange]
+  )
+
+  const handleGroupInputChange = useCallback(
+    (groupName: string, rawValue: string) => {
+      setDraftByGroup((prev) => ({ ...prev, [groupName]: rawValue }))
+      const nextMap = { ...allowMap }
+      const models = parseModelsInput(rawValue)
+      if (models.length === 0) {
+        delete nextMap[groupName]
+      } else {
+        nextMap[groupName] = models
+      }
+      emitAllowMap(nextMap)
+    },
+    [allowMap, emitAllowMap]
+  )
+
+  const handleClearGroup = useCallback(
+    (groupName: string) => {
+      setDraftByGroup((prev) => {
+        const next = { ...prev }
+        delete next[groupName]
+        return next
+      })
+      const nextMap = { ...allowMap }
+      delete nextMap[groupName]
+      emitAllowMap(nextMap)
+    },
+    [allowMap, emitAllowMap]
+  )
+
+  return (
+    <Card className={sectionCardClassName}>
+      <CardHeader className={sectionHeaderClassName}>
+        <CardTitle>{t('Allowed models')}</CardTitle>
+        <CardDescription>
+          {t(
+            'Restrict which models each billing group can access. Leave empty to allow all models.'
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {groupNames.length === 0 ? (
+          <EmptyState
+            className='min-h-40'
+            title={t('No pricing groups configured')}
+            description={t(
+              'Add groups in Pricing groups first to configure allowed models.'
+            )}
+          />
+        ) : (
+          <div className='space-y-3'>
+            {groupNames.map((groupName) => {
+              const models = allowMap[groupName] ?? []
+              const draft = draftByGroup[groupName]
+              const inputValue =
+                draft !== undefined &&
+                JSON.stringify(parseModelsInput(draft)) ===
+                  JSON.stringify(models)
+                  ? draft
+                  : models.join(', ')
+              return (
+                <div
+                  key={groupName}
+                  className='flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between'
+                >
+                  <div className='min-w-0 space-y-0.5'>
+                    <div className='flex items-center gap-2 font-medium'>
+                      <span className='truncate'>
+                        {display.adminLabel(groupName)}
+                      </span>
+                      <StatusBadge
+                        variant={models.length > 0 ? 'info' : 'neutral'}
+                        copyable={false}
+                      >
+                        {models.length > 0
+                          ? t('{{count}} models', { count: models.length })
+                          : t('All models')}
+                      </StatusBadge>
+                    </div>
+                    <p className='text-muted-foreground text-xs'>
+                      {groupName}
+                    </p>
+                  </div>
+                  <div className='flex flex-1 items-center gap-2 sm:max-w-md'>
+                    <Input
+                      aria-label={t('Allowed models for {{group}}', {
+                        group: groupName,
+                      })}
+                      value={inputValue}
+                      onChange={(e) =>
+                        handleGroupInputChange(groupName, e.target.value)
+                      }
+                      placeholder={t(
+                        'All models (e.g. gpt-4o, claude-3-5-sonnet)'
+                      )}
+                    />
+                    {models.length > 0 && (
+                      <Button
+                        type='button'
+                        variant='ghost'
+                        size='sm'
+                        aria-label={t('Clear allowed models for {{group}}', {
+                          group: groupName,
+                        })}
+                        onClick={() => handleClearGroup(groupName)}
+                      >
+                        <Trash2 className='h-4 w-4' />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 type GroupDetailSheetProps = {
   groupName: string | null
   onOpenChange: (open: boolean) => void
@@ -860,6 +1060,7 @@ type GroupDetailSheetProps = {
   groupGroupRatio: string
   autoGroups: string[]
   groupSpecialUsableGroup: string
+  groupModelAllow?: string
 }
 
 type VisibilityRule = {
@@ -897,6 +1098,8 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
       props.groupSpecialUsableGroup,
       { fallback: {}, silent: true }
     )
+    const allowMap = parseGroupModelAllowMap(props.groupModelAllow ?? '{}')
+    const allowedModels = allowMap[name] ?? []
 
     // Overrides that apply when other user groups bill as this group
     const incomingOverrides: { userGroup: string; ratio: number }[] = []
@@ -936,6 +1139,7 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
       incomingOverrides,
       outgoingOverrides,
       visibilityRules,
+      allowedModels,
       autoIndex,
     }
   }, [
@@ -946,6 +1150,7 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
     props.groupGroupRatio,
     props.autoGroups,
     props.groupSpecialUsableGroup,
+    props.groupModelAllow,
   ])
 
   return (
@@ -1093,6 +1298,28 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
                     </li>
                   ))}
                 </ul>
+              )}
+            </section>
+            <section className='space-y-2'>
+              <h3 className='text-sm font-semibold'>
+                {t('Allowed models')}
+              </h3>
+              {detail.allowedModels.length === 0 ? (
+                <p className='text-muted-foreground text-sm'>
+                  {t('All models')}
+                </p>
+              ) : (
+                <div className='flex flex-wrap gap-1.5'>
+                  {detail.allowedModels.map((modelName) => (
+                    <StatusBadge
+                      key={modelName}
+                      variant='info'
+                      copyable={false}
+                    >
+                      {modelName}
+                    </StatusBadge>
+                  ))}
+                </div>
               )}
             </section>
           </div>

@@ -257,6 +257,7 @@ export type ModelSettings = {
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
   'group_ratio_setting.group_special_usable_group': string
+  GroupModelAllow?: string
 }
 
 export type BillingSettings = {
@@ -292,6 +293,7 @@ export type BillingSettings = {
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
   'group_ratio_setting.group_special_usable_group': string
+  GroupModelAllow?: string
   Price: number
   MinTopUp: number
   CustomCallbackAddress: string

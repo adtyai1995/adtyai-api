@@ -59,7 +59,7 @@ const NUMBER_FIELDS: Array<{ field: NumberField; min: number }> = [
   { field: 'totalTimeoutSeconds', min: 1 },
   { field: 'queryAfterSeconds', min: 30 },
   { field: 'expiredQuerySeconds', min: 0 },
-  { field: 'unpaidThreshold', min: 1 },
+  { field: 'unpaidThreshold', min: 0 },
   { field: 'probeIntervalMinutes', min: 1 },
 ]
 
@@ -97,9 +97,20 @@ export function AdtyEpaySettingsSection(props: {
   const savedKey = JSON.stringify(props.defaultValues)
   useEffect(() => {
     const next: AdtyEpaySettingsDefaults = JSON.parse(savedKey)
+    const prevSaved = savedRef.current
     savedRef.current = next
-    setDrafts(toDrafts(next))
-    setProbeEnabled(next.probeEnabled)
+    setDrafts((current) => {
+      const updated = { ...current }
+      for (const item of NUMBER_FIELDS) {
+        if (current[item.field] === String(prevSaved[item.field])) {
+          updated[item.field] = String(next[item.field])
+        }
+      }
+      return updated
+    })
+    setProbeEnabled((current) =>
+      current === prevSaved.probeEnabled ? next.probeEnabled : current
+    )
   }, [savedKey])
 
   const values = {} as Record<NumberField, number>

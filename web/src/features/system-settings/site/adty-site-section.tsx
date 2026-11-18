@@ -70,9 +70,22 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
   const savedKey = JSON.stringify(props.defaultValues)
   useEffect(() => {
     const next: AdtySiteDefaults = JSON.parse(savedKey)
+    const prevSaved = savedRef.current
     savedRef.current = next
-    setDrafts(toDrafts(next))
-    setRefundPolicy(next.refund_policy_enabled)
+    setDrafts((current) => {
+      const updated = { ...current }
+      for (const item of TEXT_FIELDS) {
+        if (current[item.field].trim() === prevSaved[item.field]) {
+          updated[item.field] = next[item.field]
+        }
+      }
+      return updated
+    })
+    setRefundPolicy((current) =>
+      current === prevSaved.refund_policy_enabled
+        ? next.refund_policy_enabled
+        : current
+    )
     setShowErrors(false)
   }, [savedKey])
 

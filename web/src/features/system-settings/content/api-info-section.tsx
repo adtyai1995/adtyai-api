@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Plus, Trash2, Save } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -126,7 +126,9 @@ export function ApiInfoSection({ enabled, data }: ApiInfoSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const apiInfoSchema = createApiInfoSchema(t)
-  const parsedApiInfoList = useMemo(() => parseApiInfoList(data), [data])
+  const [savedApiInfoList, setSavedApiInfoList] = useState<ApiInfo[]>(() =>
+    parseApiInfoList(data)
+  )
   const [draftApiInfoList, setDraftApiInfoList] = useState<ApiInfo[] | null>(
     null
   )
@@ -136,9 +138,13 @@ export function ApiInfoSection({ enabled, data }: ApiInfoSectionProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [editingApiInfo, setEditingApiInfo] = useState<ApiInfo | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<'single' | 'batch'>('single')
-  const apiInfoList = draftApiInfoList ?? parsedApiInfoList
+  const apiInfoList = draftApiInfoList ?? savedApiInfoList
   const isEnabled = isEnabledDraft ?? enabled
   const hasChanges = draftApiInfoList !== null
+
+  useEffect(() => {
+    setSavedApiInfoList(parseApiInfoList(data))
+  }, [data])
 
   const form = useForm<ApiInfoFormValues>({
     resolver: zodResolver(apiInfoSchema),
@@ -244,6 +250,7 @@ export function ApiInfoSection({ enabled, data }: ApiInfoSectionProps) {
         value: JSON.stringify(apiInfoList),
       })
       if (result.success) {
+        setSavedApiInfoList(apiInfoList)
         setDraftApiInfoList(null)
       }
     } catch (error) {

@@ -72,6 +72,7 @@ type GroupFormValues = {
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
   GroupSpecialUsableGroup: string
+  GroupModelAllow?: string
 }
 
 type GroupRatioFormProps = {
@@ -132,6 +133,8 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               if (errors.MaxTokenAutoGroups) {
                 setSection('auto')
                 requestAnimationFrame(() => form.setFocus('MaxTokenAutoGroups'))
+              } else if (errors.GroupModelAllow) {
+                setSection('models')
               }
             })}
             disabled={isSaving}
@@ -198,6 +201,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
             />
           }
           groupSpecialUsableGroup={values.GroupSpecialUsableGroup ?? ''}
+          groupModelAllow={values.GroupModelAllow ?? '{}'}
           onChange={(field, value) =>
             handleFieldChange(field as keyof GroupFormValues, value)
           }

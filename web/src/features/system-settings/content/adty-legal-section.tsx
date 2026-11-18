@@ -126,9 +126,25 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
   const [saving, setSaving] = useState(false)
   const versionKey = versionKeyFor(field)
   const version = versionKey ? editor.values[versionKey] : ''
-  const validVersion =
+  const isNonNegativeIntVersion =
     !versionKey ||
     (/^(0|[1-9]\d*)$/.test(version) && Number.isSafeInteger(Number(version)))
+  const currentFieldNormalized = normalizeValue(field, editor.values[field])
+  const baselineFieldNormalized = editor.baseline[field]
+  const baselineVersionNum = versionKey
+    ? Number(editor.baseline[versionKey])
+    : 0
+  const wasPublishedAgreement =
+    Boolean(versionKey) &&
+    baselineFieldNormalized !== '{}' &&
+    baselineVersionNum > 0
+  const requiresVersionBump =
+    wasPublishedAgreement &&
+    currentFieldNormalized !== baselineFieldNormalized &&
+    currentFieldNormalized !== '{}' &&
+    isNonNegativeIntVersion &&
+    Number(version) <= baselineVersionNum
+  const validVersion = isNonNegativeIntVersion && !requiresVersionBump
   const dirty = (Object.keys(editor.values) as LegalKey[]).some(
     (key) => normalizeValue(key, editor.values[key]) !== editor.baseline[key]
   )
@@ -136,6 +152,7 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
 
   const savedKey = JSON.stringify(props.defaultValues)
   useEffect(() => {
+    if (saving) return
     const next = toValues(JSON.parse(savedKey))
     setEditor((current) => {
       const values = { ...current.values }
@@ -146,29 +163,49 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
       }
       return { values, baseline: next }
     })
-  }, [savedKey])
+  }, [savedKey, saving])
 
   const save = async () => {
     if (!validVersion || saving) return
+    const previousBaseline = editor.baseline
     const changes: Array<{ key: LegalKey; value: string }> = []
     for (const key of [field, versionKey]) {
       if (!key) continue
       const value = normalizeValue(key, editor.values[key])
-      if (value !== editor.baseline[key]) changes.push({ key, value })
+      if (value !== previousBaseline[key]) changes.push({ key, value })
     }
+    if (changes.length === 0) return
     setSaving(true)
+    const committed: Array<{ key: LegalKey; previousValue: string }> = []
     try {
       for (const { key, value } of changes) {
         await updateOption.mutateAsync({
           key: `adty_legal_setting.${key}`,
           value,
         })
-        setEditor((current) => ({
-          ...current,
-          baseline: { ...current.baseline, [key]: value },
-        }))
+        committed.push({ key, previousValue: previousBaseline[key] })
       }
+      setEditor((current) => {
+        const nextBaseline = { ...current.baseline }
+        for (const { key, value } of changes) {
+          nextBaseline[key] = value
+        }
+        return {
+          ...current,
+          baseline: nextBaseline,
+        }
+      })
     } catch {
+      for (const item of [...committed].reverse()) {
+        try {
+          await updateOption.mutateAsync({
+            key: `adty_legal_setting.${item.key}`,
+            value: item.previousValue,
+          })
+        } catch {
+          // Best-effort rollback if network is down.
+        }
+      }
       // The mutation reports the error; remaining drafts stay available to retry.
     } finally {
       setSaving(false)
@@ -225,7 +262,9 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
             </p>
             {!validVersion && (
               <p className='text-destructive text-sm' role='alert'>
-                {t('Version must be a non-negative integer.')}
+                {requiresVersionBump
+                  ? t('Increase the version after changing a published agreement.')
+                  : t('Version must be a non-negative integer.')}
               </p>
             )}
           </div>

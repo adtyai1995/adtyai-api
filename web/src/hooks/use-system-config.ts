@@ -17,10 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useCallback } from 'react'
+import i18next from 'i18next'
+import { useEffect, useCallback, useState } from 'react'
 
 import { DEFAULT_LOGO } from '@/lib/constants'
 import { applySystemBrandingToDom } from '@/lib/dom-utils'
+import { handleServerError } from '@/lib/handle-server-error'
+import { getServerErrorMessage } from '@/lib/server-error-message'
 import { ensureStatus } from '@/lib/status-query'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
@@ -62,6 +65,7 @@ export function useSystemConfig(options: UseSystemConfigOptions = {}) {
   const queryClient = useQueryClient()
   const { config, loading, loadedLogoUrl, setLoadedLogoUrl, setLoading } =
     useSystemConfigStore()
+  const [error, setError] = useState<string | null>(null)
 
   // Load config from backend via the shared `/api/status` cache.
   // `ensureStatus` writes the mapped config into this store itself, so there is
@@ -69,17 +73,19 @@ export function useSystemConfig(options: UseSystemConfigOptions = {}) {
   const loadConfig = useCallback(async () => {
     try {
       setLoading(true)
+      setError(null)
       await ensureStatus(queryClient)
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to load system config:', error)
+    } catch (err) {
+      const fallback = i18next.t('Failed to load system config')
+      setError(getServerErrorMessage(err, fallback))
+      handleServerError(err, fallback)
     } finally {
       setLoading(false)
     }
   }, [queryClient, setLoading])
 
   useEffect(() => {
-    if (autoLoad) loadConfig()
+    if (autoLoad) void loadConfig()
   }, [autoLoad, loadConfig])
 
   useEffect(() => applySystemBrandingToDom(config), [config])
@@ -112,6 +118,8 @@ export function useSystemConfig(options: UseSystemConfigOptions = {}) {
   return {
     ...config,
     loading,
+    error,
+    loadConfig,
     logoLoaded: config.logo === loadedLogoUrl && !!loadedLogoUrl,
   }
 }

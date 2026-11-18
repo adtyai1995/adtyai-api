@@ -39,13 +39,17 @@ export function useHomePageContent(): HomePageContentResult {
     let mounted = true
 
     const loadContent = async () => {
-      // Load from localStorage first for immediate display
-      const cached = localStorage.getItem(STORAGE_KEY)
-      if (cached && mounted) {
-        setContent(cached)
-      }
-
       try {
+        try {
+          // Load from localStorage first for immediate display
+          const cached = window.localStorage.getItem(STORAGE_KEY)
+          if (cached && mounted) {
+            setContent(cached)
+          }
+        } catch {
+          // Storage may be unavailable or restricted; continue with remote load
+        }
+
         const response = await getHomePageContent()
         const { success, data } = response
 
@@ -53,11 +57,19 @@ export function useHomePageContent(): HomePageContentResult {
 
         if (success && data) {
           setContent(data)
-          localStorage.setItem(STORAGE_KEY, data)
+          try {
+            window.localStorage.setItem(STORAGE_KEY, data)
+          } catch {
+            // Ignore storage write failures
+          }
         } else {
           // Clear content if API returns empty
           setContent('')
-          localStorage.removeItem(STORAGE_KEY)
+          try {
+            window.localStorage.removeItem(STORAGE_KEY)
+          } catch {
+            // Ignore storage remove failures
+          }
         }
       } catch (error) {
         if (!mounted) return
@@ -69,7 +81,7 @@ export function useHomePageContent(): HomePageContentResult {
       }
     }
 
-    loadContent()
+    void loadContent()
 
     return () => {
       mounted = false
