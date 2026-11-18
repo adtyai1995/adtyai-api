@@ -43,11 +43,14 @@ import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
+  type AdminVoucherIssued,
   cancelAdminVoucher,
+  createVoucherIssuanceIntentKey,
   freezeAdminVoucher,
   getAdminVouchers,
   getVoucherIssuance,
   issueMainUserVoucher,
+  resetVoucherIssuanceIntent,
   saveVoucherIssuanceLimit,
   siteAdminKeys,
 } from '../api'
@@ -72,6 +75,10 @@ export function VoucherAdminPanel() {
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
   const [code, setCode] = useState('')
+  const [intentKey, setIntentKey] = useState(() =>
+    createVoucherIssuanceIntentKey()
+  )
+  const [reconciled, setReconciled] = useState<AdminVoucherIssued | null>(null)
   const [filters, setFilters] = useState({ status: '', purpose: '' })
   const [page, setPage] = useState(1)
   const issuance = useQuery({
@@ -99,11 +106,21 @@ export function VoucherAdminPanel() {
       issueMainUserVoucher({
         amount_usd: amount.trim(),
         reason: reason.trim(),
+        intent_key: intentKey,
       }),
     onSuccess: (issued) => {
+      if (issued.replayed || !issued.code) {
+        setCode('')
+        setReconciled(issued)
+        refresh()
+        return
+      }
       setCode(issued.code)
+      setReconciled(null)
       setAmount('')
       setReason('')
+      resetVoucherIssuanceIntent(intentKey)
+      setIntentKey(createVoucherIssuanceIntentKey())
       refresh()
     },
     onError: (error) => handleServerError(error),
@@ -114,6 +131,11 @@ export function VoucherAdminPanel() {
         ? freezeAdminVoucher(input.id)
         : cancelAdminVoucher(input.id),
     onSuccess: (_data, input) => {
+      if (input.kind === 'cancel' && reconciled?.id === input.id) {
+        setReconciled(null)
+        resetVoucherIssuanceIntent(intentKey)
+        setIntentKey(createVoucherIssuanceIntentKey())
+      }
       toast.success(
         input.kind === 'freeze' ? t('Code frozen') : t('Code cancelled')
       )
@@ -211,12 +233,64 @@ export function VoucherAdminPanel() {
           type='button'
           variant='brand'
           disabled={
-            issue.isPending || amount.trim() === '' || reason.trim() === ''
+            issue.isPending ||
+            reconciled !== null ||
+            amount.trim() === '' ||
+            reason.trim() === ''
           }
           onClick={() => issue.mutate()}
         >
           {t('Issue code')}
         </Button>
+        {reconciled && (
+          <div
+            data-testid='voucher-reconcile-banner'
+            className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
+          >
+            <p>
+              {t(
+                'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
+                {
+                  id: reconciled.id,
+                  tail: reconciled.code_tail,
+                  defaultValue: `Previous issuance request already created code #${reconciled.id} (tail ${reconciled.code_tail}). Full codes are shown once.`,
+                }
+              )}
+            </p>
+            <div className='flex flex-wrap gap-2'>
+              {reconciled.status !== 'cancelled' && reconciled.id > 0 ? (
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={change.isPending}
+                  onClick={() =>
+                    change.mutate({ kind: 'cancel', id: reconciled.id })
+                  }
+                >
+                  {t('Cancel code and replace', {
+                    defaultValue: 'Cancel code and replace',
+                  })}
+                </Button>
+              ) : (
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  onClick={() => {
+                    setReconciled(null)
+                    resetVoucherIssuanceIntent(intentKey)
+                    setIntentKey(createVoucherIssuanceIntentKey())
+                  }}
+                >
+                  {t('Prepare replacement code', {
+                    defaultValue: 'Prepare replacement code',
+                  })}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
         {code && (
           <div className='flex items-center gap-2 text-sm'>
             <span>{t('Voucher code')}:</span>

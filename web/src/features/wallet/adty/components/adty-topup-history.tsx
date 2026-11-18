@@ -33,33 +33,74 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
 
 import { adtyTopupQueryKeys, getAdtyTopupHistory } from '../api'
 import {
+  METHOD_LABELS,
   methodLabel,
   ORDER_STATUS_LABELS,
   ORDER_STATUS_VARIANTS,
 } from '../lib/methods'
 import { formatUsd } from '../lib/money'
+import type { AdtyOrderStatus, AdtyTopupHistoryFilters } from '../types'
 
 const PAGE_SIZE = 10
+const STATUS_OPTIONS = Object.keys(ORDER_STATUS_LABELS) as AdtyOrderStatus[]
+const METHOD_OPTIONS = Object.keys(METHOD_LABELS)
+
+function dateInputToUnixSeconds(
+  value: string,
+  endOfDay: boolean
+): number | undefined {
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  const suffix = endOfDay ? 'T23:59:59' : 'T00:00:00'
+  const parsed = new Date(`${trimmed}${suffix}`)
+  const ms = parsed.getTime()
+  if (!Number.isFinite(ms)) return undefined
+  return Math.floor(ms / 1000)
+}
 
 /** The user's own top-up orders with face value, bonus, payment and status. */
 export function AdtyTopupHistory() {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
+  const [status, setStatus] = useState('')
+  const [paymentMethod, setPaymentMethod] = useState('')
+  const [tradeNo, setTradeNo] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+
+  const startTimestamp = dateInputToUnixSeconds(startDate, false)
+  const endTimestamp = dateInputToUnixSeconds(endDate, true)
+  const filters: AdtyTopupHistoryFilters = {
+    ...(status ? { status } : {}),
+    ...(paymentMethod ? { payment_method: paymentMethod } : {}),
+    ...(tradeNo.trim() ? { trade_no: tradeNo.trim() } : {}),
+    ...(startTimestamp !== undefined
+      ? { start_timestamp: startTimestamp }
+      : {}),
+    ...(endTimestamp !== undefined ? { end_timestamp: endTimestamp } : {}),
+  }
+  const hasActiveFilters = Boolean(
+    status || paymentMethod || tradeNo.trim() || startDate || endDate
+  )
+
   const query = useQuery({
-    queryKey: adtyTopupQueryKeys.history(page),
-    queryFn: () => getAdtyTopupHistory(page, PAGE_SIZE),
+    queryKey: adtyTopupQueryKeys.history(page, filters),
+    queryFn: () => getAdtyTopupHistory(page, PAGE_SIZE, filters),
   })
   const items = query.data?.items ?? []
   const total = query.data?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
-  if (query.isError && !query.data) {
+  if (query.isError && !query.data && !hasActiveFilters) {
     return <ErrorState onRetry={() => void query.refetch()} />
   }
 
@@ -72,6 +113,110 @@ export function AdtyTopupHistory() {
         </CardDescription>
       </CardHeader>
       <CardContent className='flex flex-col gap-3'>
+        <div className='flex flex-wrap items-end gap-2'>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='topup-history-status'>{t('Status')}</Label>
+            <NativeSelect
+              id='topup-history-status'
+              aria-label={t('Status')}
+              value={status}
+              onChange={(event) => {
+                setStatus(event.target.value)
+                setPage(1)
+              }}
+            >
+              <NativeSelectOption value=''>
+                {t('All statuses', { defaultValue: 'All statuses' })}
+              </NativeSelectOption>
+              {STATUS_OPTIONS.map((value) => (
+                <NativeSelectOption key={value} value={value}>
+                  {t(ORDER_STATUS_LABELS[value])}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='topup-history-method'>{t('Payment method')}</Label>
+            <NativeSelect
+              id='topup-history-method'
+              aria-label={t('Payment method')}
+              value={paymentMethod}
+              onChange={(event) => {
+                setPaymentMethod(event.target.value)
+                setPage(1)
+              }}
+            >
+              <NativeSelectOption value=''>
+                {t('All methods', { defaultValue: 'All methods' })}
+              </NativeSelectOption>
+              {METHOD_OPTIONS.map((value) => (
+                <NativeSelectOption key={value} value={value}>
+                  {t(METHOD_LABELS[value])}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='topup-history-trade-no'>{t('Order number')}</Label>
+            <Input
+              id='topup-history-trade-no'
+              aria-label={t('Order number')}
+              value={tradeNo}
+              placeholder={t('Order number')}
+              onChange={(event) => {
+                setTradeNo(event.target.value)
+                setPage(1)
+              }}
+            />
+          </div>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='topup-history-start-date'>
+              {t('Start date', { defaultValue: 'Start date' })}
+            </Label>
+            <Input
+              id='topup-history-start-date'
+              aria-label={t('Start date', { defaultValue: 'Start date' })}
+              type='date'
+              value={startDate}
+              onChange={(event) => {
+                setStartDate(event.target.value)
+                setPage(1)
+              }}
+            />
+          </div>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='topup-history-end-date'>
+              {t('End date', { defaultValue: 'End date' })}
+            </Label>
+            <Input
+              id='topup-history-end-date'
+              aria-label={t('End date', { defaultValue: 'End date' })}
+              type='date'
+              value={endDate}
+              onChange={(event) => {
+                setEndDate(event.target.value)
+                setPage(1)
+              }}
+            />
+          </div>
+          {hasActiveFilters && (
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={() => {
+                setStatus('')
+                setPaymentMethod('')
+                setTradeNo('')
+                setStartDate('')
+                setEndDate('')
+                setPage(1)
+              }}
+            >
+              {t('Reset', { defaultValue: 'Reset' })}
+            </Button>
+          )}
+        </div>
         {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
         <StaticDataTable
           tableClassName='min-w-[720px]'

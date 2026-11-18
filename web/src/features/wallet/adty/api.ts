@@ -19,14 +19,23 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
-import type { AdtyOrder, AdtyPage, AdtyQuote, AdtyTopupInfo } from './types'
+import type {
+  AdtyOrder,
+  AdtyPage,
+  AdtyQuote,
+  AdtyTopupHistoryFilters,
+  AdtyTopupInfo,
+} from './types'
 
 type ApiResponse<T> = { success: boolean; message?: string; data: T }
 
 export const adtyTopupQueryKeys = {
   info: ['adty-topup', 'info'] as const,
   order: (tradeNo: string) => ['adty-topup', 'order', tradeNo] as const,
-  history: (page: number) => ['adty-topup', 'history', page] as const,
+  history: (page: number, filters?: AdtyTopupHistoryFilters) =>
+    filters && Object.values(filters).some((v) => v !== undefined && v !== '')
+      ? (['adty-topup', 'history', page, filters] as const)
+      : (['adty-topup', 'history', page] as const),
 }
 
 export async function getAdtyTopupInfo(): Promise<AdtyTopupInfo> {
@@ -67,11 +76,39 @@ export async function cancelAdtyOrder(tradeNo: string): Promise<void> {
 
 export async function getAdtyTopupHistory(
   page: number,
-  pageSize: number
+  pageSize: number,
+  filters?: AdtyTopupHistoryFilters
 ): Promise<AdtyPage<AdtyOrder>> {
+  const params: Record<string, string | number> = {
+    p: page,
+    page_size: pageSize,
+  }
+  if (filters?.status && filters.status !== 'all') {
+    params.status = filters.status
+  }
+  if (filters?.payment_method && filters.payment_method !== 'all') {
+    params.payment_method = filters.payment_method
+  }
+  if (filters?.trade_no && filters.trade_no.trim() !== '') {
+    params.trade_no = filters.trade_no.trim()
+  }
+  if (
+    typeof filters?.start_timestamp === 'number' &&
+    Number.isFinite(filters.start_timestamp) &&
+    filters.start_timestamp > 0
+  ) {
+    params.start_timestamp = filters.start_timestamp
+  }
+  if (
+    typeof filters?.end_timestamp === 'number' &&
+    Number.isFinite(filters.end_timestamp) &&
+    filters.end_timestamp > 0
+  ) {
+    params.end_timestamp = filters.end_timestamp
+  }
   const res = await api.get<ApiResponse<AdtyPage<AdtyOrder>>>(
     '/api/adty/topup/self',
-    { params: { p: page, page_size: pageSize } }
+    { params }
   )
   return requireServerSuccess(res.data).data
 }

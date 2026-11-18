@@ -541,3 +541,200 @@ func TestAdtyVoucherGuessLimitSharedAcrossRedisClients(t *testing.T) {
 	voucherGuess.mu.Unlock()
 	require.False(t, remembered, "fail-closed Redis must not record an in-memory guess")
 }
+
+func TestAdtyVoucherMarginDesignatedOwnerSnapshotAndMutation(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	ResetAdtyVoucherGuesses()
+	root := referralUser(t, db, "voucher-snap-root")
+	require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
+	owner1 := referralUser(t, db, "voucher-snap-owner1")
+	owner2 := referralUser(t, db, "voucher-snap-owner2")
+	customer := referralUser(t, db, "voucher-snap-customer")
+	site := model.AdtySite{
+		OwnerUserId:  owner1.Id,
+		Subdomain:    "voucher-snap-site",
+		Status:       model.AdtySiteStatusActive,
+		AgreementVer: AdtyCurrentSiteAgreementVersion(),
+	}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
+	require.NoError(t, EnsureAdtySiteWallets(site.Id))
+	require.NoError(t, SetAdtyVoucherIssuanceLimit(root.Id, decimal.NewFromInt(50)))
+
+	// Conflicting designated owner at issue time must be rejected.
+	_, err := IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:          root.Id,
+		Purpose:           model.AdtyVoucherPurposeSiteMargin,
+		SiteId:            site.Id,
+		DesignatedOwnerId: owner2.Id,
+		AmountUSD:         decimal.NewFromInt(5),
+		Reason:            "wrong owner",
+	})
+	require.Error(t, err)
+
+	_, err = IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:          root.Id,
+		Purpose:           model.AdtyVoucherPurposeSiteMargin,
+		SiteId:            site.Id,
+		DesignatedOwnerId: owner1.Id,
+		OwnerUserId:       owner2.Id,
+		AmountUSD:         decimal.NewFromInt(5),
+		Reason:            "mismatch owner fields",
+	})
+	require.Error(t, err)
+
+	// Issue without explicit DesignatedOwnerId snapshots current site.OwnerUserId.
+	snapIssued, err := IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:  root.Id,
+		Purpose:   model.AdtyVoucherPurposeSiteMargin,
+		SiteId:    site.Id,
+		AmountUSD: decimal.NewFromInt(6),
+		Reason:    "snapshot owner1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, site.Id, snapIssued.TargetSiteId)
+	assert.Equal(t, owner1.Id, snapIssued.DesignatedOwnerId)
+
+	// Issue with explicit matching DesignatedOwnerId also persists the snapshot.
+	explicitIssued, err := IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:          root.Id,
+		Purpose:           model.AdtyVoucherPurposeSiteMargin,
+		SiteId:            site.Id,
+		DesignatedOwnerId: owner1.Id,
+		AmountUSD:         decimal.NewFromInt(4),
+		Reason:            "explicit owner1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, owner1.Id, explicitIssued.DesignatedOwnerId)
+
+	var persisted model.AdtyVoucher
+	require.NoError(t, db.First(&persisted, snapIssued.Id).Error)
+	assert.Equal(t, site.Id, persisted.TargetSiteId)
+	assert.Equal(t, owner1.Id, persisted.DesignatedOwnerId)
+
+	// Mutate site.OwnerUserId after issuance: owner2 must NOT be allowed to redeem,
+	// while the snapshotted designated owner (owner1) remains the only eligible redeemer.
+	require.NoError(t, db.Model(&site).Update("owner_user_id", owner2.Id).Error)
+
+	_, err = RedeemAdtyVoucher(owner2.Id, snapIssued.Code)
+	require.ErrorIs(t, err, ErrAdtyVoucherWrongAccount)
+	_, err = RedeemAdtyVoucher(customer.Id, snapIssued.Code)
+	require.ErrorIs(t, err, ErrAdtyVoucherWrongAccount)
+
+	redeemed, err := RedeemAdtyVoucher(owner1.Id, snapIssued.Code)
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtyVoucherPurposeSiteMargin, redeemed.Purpose)
+
+	var order model.AdtyTopupOrder
+	require.NoError(t, db.Where("trade_no = ?", redeemed.TradeNo).First(&order).Error)
+	assert.Equal(t, site.Id, order.SiteId)
+	assert.Equal(t, owner1.Id, order.SiteOwnerUserId)
+
+	// A voucher missing DesignatedOwnerId (<= 0) must fail closed on redeem.
+	require.NoError(t, db.Model(&model.AdtyVoucher{}).Where("id = ?", explicitIssued.Id).Update("designated_owner_id", 0).Error)
+	_, err = RedeemAdtyVoucher(owner1.Id, explicitIssued.Code)
+	require.ErrorIs(t, err, ErrAdtyVoucherWrongAccount)
+	_, err = RedeemAdtyVoucher(owner2.Id, explicitIssued.Code)
+	require.ErrorIs(t, err, ErrAdtyVoucherWrongAccount)
+}
+
+func TestAdtyVoucherIssuanceIntentIdempotencyAndConflict(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	ResetAdtyVoucherGuesses()
+	root := referralUser(t, db, "voucher-intent-root")
+	require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
+	owner := referralUser(t, db, "voucher-intent-owner")
+	site := model.AdtySite{
+		OwnerUserId:  owner.Id,
+		Subdomain:    "voucher-intent-site",
+		Status:       model.AdtySiteStatusActive,
+		AgreementVer: AdtyCurrentSiteAgreementVersion(),
+	}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, EnsureAdtySiteWallets(site.Id))
+	require.NoError(t, SetAdtyVoucherIssuanceLimit(root.Id, decimal.NewFromInt(50)))
+
+	first, err := IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:  root.Id,
+		Purpose:   model.AdtyVoucherPurposeMainUser,
+		AmountUSD: decimal.NewFromInt(10),
+		Reason:    "lost-response-retry",
+		IntentKey: "intent-main-001",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, first.Code)
+	assert.False(t, first.Replayed)
+	assert.Equal(t, "intent-main-001", first.IntentKey)
+
+	// Replaying the same intent key with identical parameters reconciles to the
+	// existing voucher without freezing additional funds or re-exposing plaintext code.
+	replay, err := IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:  root.Id,
+		Purpose:   model.AdtyVoucherPurposeMainUser,
+		AmountUSD: decimal.NewFromInt(10),
+		Reason:    "lost-response-retry",
+		IntentKey: "intent-main-001",
+	})
+	require.NoError(t, err)
+	assert.True(t, replay.Replayed)
+	assert.Equal(t, first.Id, replay.Id)
+	assert.Empty(t, replay.Code, "replayed issuance must not re-expose plaintext code")
+	assert.Equal(t, first.CodeTail, replay.CodeTail)
+	assert.Equal(t, model.AdtyVoucherStatusPending, replay.Status)
+
+	var liability model.AdtyVoucherLiability
+	require.NoError(t, db.Where("scope = ?", "main").First(&liability).Error)
+	assert.True(t, liability.FrozenUSD.Equal(decimal.NewFromInt(10)), "retry must not double-freeze issuance limit")
+
+	var count int64
+	require.NoError(t, db.Model(&model.AdtyVoucher{}).Where("issuer_id = ? AND intent_key = ?", root.Id, "intent-main-001").Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+
+	// Reusing the same intent key with altered parameters must be rejected.
+	_, err = IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:  root.Id,
+		Purpose:   model.AdtyVoucherPurposeMainUser,
+		AmountUSD: decimal.NewFromInt(15),
+		Reason:    "lost-response-retry",
+		IntentKey: "intent-main-001",
+	})
+	require.ErrorIs(t, err, ErrAdtyVoucherIntentConflict)
+
+	_, err = IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:  root.Id,
+		Purpose:   model.AdtyVoucherPurposeSiteMargin,
+		SiteId:    site.Id,
+		AmountUSD: decimal.NewFromInt(10),
+		Reason:    "lost-response-retry",
+		IntentKey: "intent-main-001",
+	})
+	require.ErrorIs(t, err, ErrAdtyVoucherIntentConflict)
+
+	// After cancelling the reconciled voucher, a new intent key mints a replacement cleanly.
+	require.NoError(t, CancelAdtyVoucher(root.Id, first.Id))
+	require.NoError(t, db.Where("scope = ?", "main").First(&liability).Error)
+	assert.True(t, liability.FrozenUSD.IsZero())
+
+	cancelledReplay, err := IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:  root.Id,
+		Purpose:   model.AdtyVoucherPurposeMainUser,
+		AmountUSD: decimal.NewFromInt(10),
+		Reason:    "lost-response-retry",
+		IntentKey: "intent-main-001",
+	})
+	require.NoError(t, err)
+	assert.True(t, cancelledReplay.Replayed)
+	assert.Equal(t, model.AdtyVoucherStatusCancelled, cancelledReplay.Status)
+
+	replacement, err := IssueAdtyVoucher(AdtyVoucherIssueInput{
+		IssuerId:  root.Id,
+		Purpose:   model.AdtyVoucherPurposeMainUser,
+		AmountUSD: decimal.NewFromInt(10),
+		Reason:    "replacement-after-cancel",
+		IntentKey: "intent-main-002",
+	})
+	require.NoError(t, err)
+	assert.False(t, replacement.Replayed)
+	assert.NotEqual(t, first.Id, replacement.Id)
+	assert.NotEmpty(t, replacement.Code)
+}

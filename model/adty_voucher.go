@@ -28,19 +28,22 @@ const (
 
 // AdtyVoucher is the one recharge-quota code. The plaintext is not stored.
 type AdtyVoucher struct {
-	Id              int64           `json:"id"`
-	CodeHash        string          `json:"-" gorm:"uniqueIndex;type:varchar(64);not null"`
-	CodeTail        string          `json:"code_tail" gorm:"type:varchar(8);not null"`
-	Purpose         string          `json:"purpose" gorm:"type:varchar(32);index;not null"`
-	Status          string          `json:"status" gorm:"type:varchar(16);index;not null"`
-	AmountUSD       decimal.Decimal `json:"amount_usd" gorm:"type:decimal(20,8);not null"`
-	Quota           int64           `json:"quota"`
-	SourceKind      string          `json:"source_kind" gorm:"type:varchar(16);not null"`
-	SourceSiteId    int             `json:"source_site_id" gorm:"index"`
-	TargetSiteId    int             `json:"target_site_id" gorm:"index"`
-	IssuerId        int             `json:"issuer_id" gorm:"index"`
-	RedeemerId      int             `json:"redeemer_id" gorm:"index"`
-	InheritedByMain bool            `json:"inherited_by_main"`
+	Id                int64           `json:"id"`
+	CodeHash          string          `json:"-" gorm:"uniqueIndex;type:varchar(64);not null"`
+	CodeTail          string          `json:"code_tail" gorm:"type:varchar(8);not null"`
+	Purpose           string          `json:"purpose" gorm:"type:varchar(32);index;not null"`
+	Status            string          `json:"status" gorm:"type:varchar(16);index;not null"`
+	AmountUSD         decimal.Decimal `json:"amount_usd" gorm:"type:decimal(20,8);not null"`
+	Quota             int64           `json:"quota"`
+	SourceKind        string          `json:"source_kind" gorm:"type:varchar(16);not null"`
+	SourceSiteId      int             `json:"source_site_id" gorm:"index"`
+	TargetSiteId      int             `json:"target_site_id" gorm:"index"`
+	DesignatedOwnerId int             `json:"designated_owner_id" gorm:"index"`
+	IssuerId          int             `json:"issuer_id" gorm:"index;uniqueIndex:ux_adty_voucher_issuer_intent"`
+	RedeemerId        int             `json:"redeemer_id" gorm:"index"`
+	Reason            string          `json:"reason,omitempty" gorm:"type:varchar(200)"`
+	IntentKey         *string         `json:"intent_key,omitempty" gorm:"uniqueIndex:ux_adty_voucher_issuer_intent;type:varchar(128)"`
+	InheritedByMain   bool            `json:"inherited_by_main"`
 	// TradeNo is empty until redeem. Uniqueness of non-empty values is enforced
 	// by ux_adty_vouchers_trade_no, not by a full-column uniqueIndex, so pending
 	// codes can share an empty trade number.

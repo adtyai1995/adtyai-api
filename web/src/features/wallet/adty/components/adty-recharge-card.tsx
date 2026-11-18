@@ -130,16 +130,47 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     )
   }
 
+  const quotedFaceUsd = quote ? Number(quote.face_usd) : NaN
+  const quotedBonusUsd = quote ? Number(quote.bonus_usd) : NaN
+  const quotedCreditUsd =
+    quote && Number.isFinite(quote.credit_quota) && quote.credit_quota > 0
+      ? quote.credit_quota / 500_000
+      : NaN
   const bonusRate = validAmount ? bonusRateFor(amount, rates) : 0
-  const bonusUsd = validAmount ? bonusUsdFor(amount, rates) : 0
+  const bonusUsd = validAmount
+    ? quote
+      ? Number.isFinite(quotedBonusUsd) && quotedBonusUsd > 0
+        ? quotedBonusUsd
+        : 0
+      : bonusUsdFor(amount, rates)
+    : 0
+  const totalCreditUsd = validAmount
+    ? quote
+      ? (() => {
+          const faceBase =
+            Number.isFinite(quotedFaceUsd) && quotedFaceUsd > 0
+              ? quotedFaceUsd
+              : amount
+          const facePlusBonus = faceBase + bonusUsd
+          if (
+            Number.isFinite(quotedCreditUsd) &&
+            (!(Number.isFinite(quotedFaceUsd) && quotedFaceUsd > 0) ||
+              Math.abs(quotedCreditUsd - facePlusBonus) < 0.01)
+          ) {
+            return quotedCreditUsd
+          }
+          return facePlusBonus
+        })()
+      : amount + bonusUsd
+    : 0
   let creditText = '-'
   if (validAmount && bonusUsd > 0) {
     creditText = t('{{total}} (incl. {{bonus}} bonus)', {
-      total: formatUsd(amount + bonusUsd, locale),
+      total: formatUsd(totalCreditUsd, locale),
       bonus: formatUsd(bonusUsd, locale),
     })
-  } else if (validAmount) {
-    creditText = formatUsd(amount, locale)
+  } else if (validAmount && totalCreditUsd > 0) {
+    creditText = formatUsd(totalCreditUsd, locale)
   }
   let payText = quote
     ? formatPaymentAmount(quote.pay_amount, quote.pay_currency, locale)

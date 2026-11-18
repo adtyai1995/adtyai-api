@@ -121,3 +121,11 @@ export type AdtyPage<T> = {
   total: number
   items: T[]
 }
+
+export type AdtyTopupHistoryFilters = {
+  status?: string
+  payment_method?: string
+  trade_no?: string
+  start_timestamp?: number
+  end_timestamp?: number
+}

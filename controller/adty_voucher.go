@@ -32,10 +32,13 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Purpose   string `json:"purpose"`
-		AmountUSD string `json:"amount_usd"`
-		Source    string `json:"source"`
-		Reason    string `json:"reason"`
+		Purpose         string `json:"purpose"`
+		AmountUSD       string `json:"amount_usd"`
+		Source          string `json:"source"`
+		Reason          string `json:"reason"`
+		IntentKey       string `json:"intent_key"`
+		IdempotencyKey  string `json:"idempotency_key"`
+		ClientRequestId string `json:"client_request_id"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -46,11 +49,17 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	intentKey, ok := resolveAdtyVoucherIntentKey(c, body.IntentKey, body.IdempotencyKey, body.ClientRequestId)
+	if !ok {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
 	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherIssue, site.Id) {
 		return
 	}
 	issued, err := service.IssueAdtyVoucher(service.AdtyVoucherIssueInput{
-		IssuerId: c.GetInt("id"), Purpose: body.Purpose, SiteId: site.Id, AmountUSD: amount, Source: body.Source, Reason: body.Reason,
+		IssuerId: c.GetInt("id"), Purpose: body.Purpose, SiteId: site.Id, AmountUSD: amount,
+		Source: body.Source, Reason: body.Reason, IntentKey: intentKey,
 	})
 	if err != nil {
 		common.ApiError(c, err)
@@ -61,10 +70,16 @@ func PostAdtySiteVoucher(c *gin.Context) {
 
 func PostAdtyAdminVoucher(c *gin.Context) {
 	var body struct {
-		Purpose   string `json:"purpose"`
-		SiteId    int    `json:"site_id"`
-		AmountUSD string `json:"amount_usd"`
-		Reason    string `json:"reason"`
+		Purpose           string `json:"purpose"`
+		SiteId            int    `json:"site_id"`
+		DesignatedOwnerId int    `json:"designated_owner_id"`
+		OwnerUserId       int    `json:"owner_user_id"`
+		OwnerId           int    `json:"owner_id"`
+		AmountUSD         string `json:"amount_usd"`
+		Reason            string `json:"reason"`
+		IntentKey         string `json:"intent_key"`
+		IdempotencyKey    string `json:"idempotency_key"`
+		ClientRequestId   string `json:"client_request_id"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -75,14 +90,68 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	designatedOwnerID, ok := resolveAdtyVoucherDesignatedOwnerID(body.DesignatedOwnerId, body.OwnerUserId, body.OwnerId)
+	if !ok {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	intentKey, ok := resolveAdtyVoucherIntentKey(c, body.IntentKey, body.IdempotencyKey, body.ClientRequestId)
+	if !ok {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
 	issued, err := service.IssueAdtyVoucher(service.AdtyVoucherIssueInput{
-		IssuerId: c.GetInt("id"), Purpose: body.Purpose, SiteId: body.SiteId, AmountUSD: amount, Reason: body.Reason,
+		IssuerId: c.GetInt("id"), Purpose: body.Purpose, SiteId: body.SiteId,
+		DesignatedOwnerId: designatedOwnerID, AmountUSD: amount, Reason: body.Reason, IntentKey: intentKey,
 	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, issued)
+}
+
+func resolveAdtyVoucherDesignatedOwnerID(values ...int) (int, bool) {
+	resolved := 0
+	for _, v := range values {
+		if v < 0 {
+			return 0, false
+		}
+		if v == 0 {
+			continue
+		}
+		if resolved != 0 && resolved != v {
+			return 0, false
+		}
+		resolved = v
+	}
+	return resolved, true
+}
+
+func resolveAdtyVoucherIntentKey(c *gin.Context, bodyValues ...string) (string, bool) {
+	candidates := append([]string{}, bodyValues...)
+	if c != nil {
+		candidates = append(candidates,
+			c.GetHeader("X-Intent-Key"),
+			c.GetHeader("X-Idempotency-Key"),
+			c.GetHeader("Idempotency-Key"),
+		)
+	}
+	resolved := ""
+	for _, raw := range candidates {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if len(v) > 128 {
+			return "", false
+		}
+		if resolved != "" && resolved != v {
+			return "", false
+		}
+		resolved = v
+	}
+	return resolved, true
 }
 
 func PostAdtyVoucherFreeze(c *gin.Context) {

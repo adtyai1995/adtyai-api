@@ -304,6 +304,51 @@ describe('AdtyRechargeCard', () => {
     )
     expect(screen.getByRole('button', { name: /X Layer/ })).toBeDisabled()
   })
+
+  it('derives credit preview and bonus from the selected payment method quote when bonus_rates is empty', async () => {
+    api.quoteAdtyTopup.mockImplementation(async (_amount, method) => ({
+      available: true,
+      quote: {
+        face_usd: '100',
+        bonus_rate: method === 'usdt.trc20' ? '0.025' : '0',
+        bonus_usd: method === 'usdt.trc20' ? '2.5' : '0',
+        credit_quota: method === 'usdt.trc20' ? 51250000 : 50000000,
+        pay_amount: method === 'usdt.trc20' ? '100' : '730',
+        pay_currency: method === 'usdt.trc20' ? 'USDT' : 'CNY',
+        price_cny_per_usd: method === 'usdt.trc20' ? '0' : '7.3',
+        topup_group_ratio: '1',
+      },
+    }))
+    const user = userEvent.setup()
+    render(
+      <AdtyRechargeCard
+        info={{
+          ...info,
+          tiers: [
+            { amount: 10, rate: 0 },
+            { amount: 100, rate: 0 },
+          ],
+          bonus_rates: {},
+        }}
+        loading={false}
+        paying={false}
+        onPay={() => {}}
+      />,
+      { wrapper }
+    )
+    await user.click(screen.getByRole('button', { name: /\$100/ }))
+    await user.click(screen.getByRole('button', { name: /TRC20/ }))
+    await waitFor(() =>
+      expect(screen.getByTestId('adty-credit')).toHaveTextContent(
+        '$102.50 (incl. $2.50 bonus)'
+      )
+    )
+    await user.click(screen.getByRole('button', { name: /Alipay/ }))
+    await waitFor(() =>
+      expect(screen.getByTestId('adty-credit')).toHaveTextContent('$100.00')
+    )
+    expect(screen.getByTestId('adty-credit')).not.toHaveTextContent('bonus')
+  })
 })
 
 describe('AdtyPendingBanner', () => {

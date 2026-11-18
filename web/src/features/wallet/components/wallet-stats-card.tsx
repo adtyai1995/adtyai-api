@@ -27,11 +27,12 @@ import { WalletLotProjectionLines } from './wallet-lot-projection'
 interface WalletStatsCardProps {
   user: UserWalletData | null
   loading?: boolean
+  error?: boolean
 }
 
 export function WalletStatsCard(props: WalletStatsCardProps) {
   const { t } = useTranslation()
-  const hasUser = props.user != null
+  const hasUser = props.user != null && !props.error
 
   if (props.loading) {
     return (
@@ -54,7 +55,9 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
     {
       label: t('Current Balance'),
       value: hasUser ? formatQuota(props.user?.quota ?? 0) : '—',
-      description: t('Remaining quota'),
+      description: props.error
+        ? t('Balance unavailable', { defaultValue: 'Balance unavailable' })
+        : t('Remaining quota'),
     },
     {
       label: t('Total Usage'),
@@ -89,10 +92,16 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
             >
               {item.value}
             </div>
-            <div className='text-dim mt-1.5 hidden text-[11.5px] leading-snug md:block'>
+            <div
+              className={
+                props.error && item.label === t('Current Balance')
+                  ? 'text-destructive mt-1.5 text-[11.5px] leading-snug'
+                  : 'text-dim mt-1.5 hidden text-[11.5px] leading-snug md:block'
+              }
+            >
               {item.description}
             </div>
-            {item.label === t('Current Balance') && (
+            {item.label === t('Current Balance') && hasUser && (
               <WalletLotProjectionLines
                 projection={props.user?.wallet_lot_projection}
               />

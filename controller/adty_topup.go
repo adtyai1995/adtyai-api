@@ -3,11 +3,13 @@ package controller
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,16 +168,314 @@ func GetAdtyTopUpPending(c *gin.Context) {
 	common.ApiSuccess(c, view)
 }
 
-// GetAdtyTopUpSelf 分页列出本人的充值记录。
+var listUserAdtyTopUpsFn = model.ListUserAdtyTopUps
+
+type adtyTopUpSelfFilter struct {
+	Status         string
+	PaymentMethod  string
+	PaymentScene   string
+	TradeNo        string
+	Keyword        string
+	StartTimestamp int64
+	EndTimestamp   int64
+}
+
+func (f adtyTopUpSelfFilter) Active() bool {
+	return f.Status != "" ||
+		f.PaymentMethod != "" ||
+		f.PaymentScene != "" ||
+		f.TradeNo != "" ||
+		f.Keyword != "" ||
+		f.StartTimestamp > 0 ||
+		f.EndTimestamp > 0
+}
+
+type adtyTopUpFilterRow struct {
+	UserID          int    `json:"user_id"`
+	TradeNo         string `json:"trade_no"`
+	PaymentMethod   string `json:"payment_method"`
+	PaymentProvider string `json:"payment_provider"`
+	Status          string `json:"status"`
+	CreateTime      int64  `json:"create_time"`
+	Ext             *struct {
+		Method           string `json:"method"`
+		MethodLabel      string `json:"method_label"`
+		PaymentScene     string `json:"payment_scene"`
+		PaymentSceneName string `json:"payment_scene_name"`
+		GatewayTradeID   string `json:"gateway_trade_id"`
+	} `json:"ext"`
+}
+
+func firstAdtyQuery(c *gin.Context, keys ...string) string {
+	for _, key := range keys {
+		if val := strings.TrimSpace(c.Query(key)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+func parseAdtyTopUpFilterTimestamp(raw string, isEnd bool) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	if unixVal, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if unixVal < 0 {
+			return 0, fmt.Errorf("negative timestamp")
+		}
+		if unixVal > 1_000_000_000_000 {
+			unixVal /= 1000
+		}
+		return unixVal, nil
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.Unix(), nil
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02T15:04",
+	} {
+		if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+			return t.Unix(), nil
+		}
+	}
+	if d, err := time.ParseInLocation("2006-01-02", raw, time.Local); err == nil {
+		if isEnd {
+			return d.Add(24*time.Hour - time.Second).Unix(), nil
+		}
+		return d.Unix(), nil
+	}
+	return 0, fmt.Errorf("invalid timestamp")
+}
+
+func normalizeAdtyOrderStatus(s string) string {
+	v := strings.ToLower(strings.TrimSpace(s))
+	if v == "cancelled" {
+		return "canceled"
+	}
+	return v
+}
+
+func parseAdtyTopUpSelfFilter(c *gin.Context) (adtyTopUpSelfFilter, error) {
+	status := strings.TrimSpace(c.Query("status"))
+	if strings.EqualFold(status, "all") {
+		status = ""
+	}
+	paymentMethod := firstAdtyQuery(c, "payment_method", "method")
+	if strings.EqualFold(paymentMethod, "all") {
+		paymentMethod = ""
+	}
+	paymentScene := firstAdtyQuery(c, "payment_scene", "scene")
+	if strings.EqualFold(paymentScene, "all") {
+		paymentScene = ""
+	}
+	tradeNo := strings.TrimSpace(c.Query("trade_no"))
+	keyword := firstAdtyQuery(c, "keyword", "q")
+	startTS, err := parseAdtyTopUpFilterTimestamp(firstAdtyQuery(c, "start_timestamp", "start_time", "from"), false)
+	if err != nil {
+		return adtyTopUpSelfFilter{}, err
+	}
+	endTS, err := parseAdtyTopUpFilterTimestamp(firstAdtyQuery(c, "end_timestamp", "end_time", "to"), true)
+	if err != nil {
+		return adtyTopUpSelfFilter{}, err
+	}
+	if startTS > 0 && endTS > 0 && startTS > endTS {
+		return adtyTopUpSelfFilter{}, fmt.Errorf("start timestamp after end timestamp")
+	}
+	return adtyTopUpSelfFilter{
+		Status:         status,
+		PaymentMethod:  paymentMethod,
+		PaymentScene:   paymentScene,
+		TradeNo:        tradeNo,
+		Keyword:        keyword,
+		StartTimestamp: startTS,
+		EndTimestamp:   endTS,
+	}, nil
+}
+
+func matchAdtyTopUpSelfFilter(userID int, item model.AdtyTopUpView, filter adtyTopUpSelfFilter) bool {
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return false
+	}
+	var row adtyTopUpFilterRow
+	if err := json.Unmarshal(raw, &row); err != nil {
+		return false
+	}
+	if row.UserID != 0 && row.UserID != userID {
+		return false
+	}
+	if filter.Status != "" && normalizeAdtyOrderStatus(row.Status) != normalizeAdtyOrderStatus(filter.Status) {
+		return false
+	}
+	if filter.PaymentMethod != "" {
+		wantMethod := strings.ToLower(filter.PaymentMethod)
+		gotMethod := strings.ToLower(row.PaymentMethod)
+		extMethod := ""
+		extLabel := ""
+		if row.Ext != nil {
+			extMethod = strings.ToLower(row.Ext.Method)
+			extLabel = strings.ToLower(row.Ext.MethodLabel)
+		}
+		methodMatched := gotMethod == wantMethod ||
+			extMethod == wantMethod ||
+			(extLabel != "" && extLabel == wantMethod) ||
+			(wantMethod == "usdt" && (strings.HasPrefix(gotMethod, "usdt.") || strings.HasPrefix(extMethod, "usdt.") || strings.EqualFold(row.PaymentProvider, service.AdtyProviderBEpusdt)))
+		if !methodMatched {
+			return false
+		}
+	}
+	if filter.PaymentScene != "" {
+		if row.Ext == nil {
+			return false
+		}
+		if !strings.EqualFold(row.Ext.PaymentScene, filter.PaymentScene) &&
+			!strings.EqualFold(row.Ext.PaymentSceneName, filter.PaymentScene) {
+			return false
+		}
+	}
+	if filter.TradeNo != "" && !strings.Contains(strings.ToLower(row.TradeNo), strings.ToLower(filter.TradeNo)) {
+		return false
+	}
+	if filter.Keyword != "" {
+		kw := strings.ToLower(filter.Keyword)
+		candidates := []string{
+			row.TradeNo,
+			row.PaymentMethod,
+			row.PaymentProvider,
+			row.Status,
+		}
+		if row.Ext != nil {
+			candidates = append(
+				candidates,
+				row.Ext.Method,
+				row.Ext.MethodLabel,
+				row.Ext.PaymentScene,
+				row.Ext.PaymentSceneName,
+				row.Ext.GatewayTradeID,
+			)
+		}
+		matchedKeyword := false
+		for _, candidate := range candidates {
+			if candidate != "" && strings.Contains(strings.ToLower(candidate), kw) {
+				matchedKeyword = true
+				break
+			}
+		}
+		if !matchedKeyword {
+			return false
+		}
+	}
+	if filter.StartTimestamp > 0 && row.CreateTime < filter.StartTimestamp {
+		return false
+	}
+	if filter.EndTimestamp > 0 && row.CreateTime > filter.EndTimestamp {
+		return false
+	}
+	return true
+}
+
+func newAdtyScanPageInfo(page, pageSize int) *common.PageInfo {
+	var info common.PageInfo
+	raw, _ := json.Marshal(map[string]int{
+		"page":      page,
+		"page_size": pageSize,
+	})
+	_ = json.Unmarshal(raw, &info)
+	return &info
+}
+
+func resolveAdtyPageWindow(pageInfo *common.PageInfo) (int, int) {
+	var window struct {
+		Page     int `json:"page"`
+		PageSize int `json:"page_size"`
+	}
+	if raw, err := json.Marshal(pageInfo); err == nil {
+		_ = json.Unmarshal(raw, &window)
+	}
+	if window.Page <= 0 {
+		window.Page = 1
+	}
+	if window.PageSize <= 0 {
+		window.PageSize = 10
+	}
+	return window.Page, window.PageSize
+}
+
+func collectUserAdtyTopUpsForFilter(userID int) ([]model.AdtyTopUpView, error) {
+	const batchSize = 500
+	firstPage := newAdtyScanPageInfo(1, batchSize)
+	items, total, err := listUserAdtyTopUpsFn(userID, firstPage)
+	if err != nil {
+		return nil, err
+	}
+	if int(total) <= len(items) || len(items) == 0 {
+		return items, nil
+	}
+	all := make([]model.AdtyTopUpView, 0, int(total))
+	all = append(all, items...)
+	for page := 2; len(all) < int(total); page++ {
+		nextPage := newAdtyScanPageInfo(page, batchSize)
+		batch, _, err := listUserAdtyTopUpsFn(userID, nextPage)
+		if err != nil {
+			return nil, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		all = append(all, batch...)
+	}
+	return all, nil
+}
+
+// GetAdtyTopUpSelf 分页列出本人的充值记录，支持按状态、支付方式、订单号、关键字与时间范围筛选。
 func GetAdtyTopUpSelf(c *gin.Context) {
+	userID := c.GetInt("id")
 	pageInfo := common.GetPageQuery(c)
-	items, total, err := model.ListUserAdtyTopUps(c.GetInt("id"), pageInfo)
+	filter, err := parseAdtyTopUpSelfFilter(c)
+	if err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if !filter.Active() {
+		items, total, err := listUserAdtyTopUpsFn(userID, pageInfo)
+		if err != nil {
+			writeAdtyTopUpError(c, err)
+			return
+		}
+		pageInfo.SetTotal(int(total))
+		pageInfo.SetItems(items)
+		common.ApiSuccess(c, pageInfo)
+		return
+	}
+	allItems, err := collectUserAdtyTopUpsForFilter(userID)
 	if err != nil {
 		writeAdtyTopUpError(c, err)
 		return
 	}
-	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(items)
+	matched := make([]model.AdtyTopUpView, 0, len(allItems))
+	for _, item := range allItems {
+		if matchAdtyTopUpSelfFilter(userID, item, filter) {
+			matched = append(matched, item)
+		}
+	}
+	page, pageSize := resolveAdtyPageWindow(pageInfo)
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	var pageItems []model.AdtyTopUpView
+	if start < len(matched) {
+		if end > len(matched) {
+			end = len(matched)
+		}
+		pageItems = matched[start:end]
+	} else {
+		pageItems = make([]model.AdtyTopUpView, 0)
+	}
+	pageInfo.SetTotal(len(matched))
+	pageInfo.SetItems(pageItems)
 	common.ApiSuccess(c, pageInfo)
 }
 

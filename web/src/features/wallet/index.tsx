@@ -48,6 +48,7 @@ export function Wallet(props: WalletProps) {
   const queryClient = useQueryClient()
   const [user, setUser] = useState<UserWalletData | null>(null)
   const [userLoading, setUserLoading] = useState(true)
+  const [userError, setUserError] = useState(false)
   const [activePayment, setActivePayment] = useState<ActivePayment | null>(null)
 
   const infoQuery = useQuery({
@@ -58,10 +59,17 @@ export function Wallet(props: WalletProps) {
   const fetchUser = useCallback(async () => {
     try {
       setUserLoading(true)
+      setUserError(false)
       const response = await getSelf()
       if (response.success && response.data) {
         setUser(response.data as UserWalletData)
+        return
       }
+      setUser(null)
+      setUserError(true)
+    } catch {
+      setUser(null)
+      setUserError(true)
     } finally {
       setUserLoading(false)
     }
@@ -133,7 +141,12 @@ export function Wallet(props: WalletProps) {
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4'>
-            <WalletStatsCard user={user} loading={userLoading} />
+            <WalletStatsCard
+              user={userError ? null : user}
+              loading={userLoading}
+              error={userError}
+            />
+            {userError && <ErrorState onRetry={() => void fetchUser()} />}
             <VoucherRedeemCard onRedeemed={() => void fetchUser()} />
             <TeamPanel />
             <SiteCommissionPanel onConverted={() => void fetchUser()} />

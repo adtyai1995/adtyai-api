@@ -33,6 +33,9 @@ import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
+  type AdminVoucherIssued,
+  cancelAdminVoucher,
+  createVoucherIssuanceIntentKey,
   getAdminAnomalyDispositions,
   getAdminFundAnomalies,
   getAdminSiteCommissionMargin,
@@ -40,6 +43,7 @@ import {
   getAdminSiteWallets,
   getAdminVoucherMarginAuthorization,
   issueAdminMarginVoucher,
+  resetVoucherIssuanceIntent,
   reviewAdminAnomalyDisposition,
   saveAdminSiteCommissionMargin,
   saveAdminVoucherMarginAuthorization,
@@ -55,6 +59,10 @@ export function SiteFundPanel(props: { siteId: number }) {
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
   const [code, setCode] = useState('')
+  const [intentKey, setIntentKey] = useState(() =>
+    createVoucherIssuanceIntentKey()
+  )
+  const [reconciled, setReconciled] = useState<AdminVoucherIssued | null>(null)
   const [note, setNote] = useState('')
   const wallets = useQuery({
     queryKey: siteAdminKeys.list('wallets', { siteId: props.siteId }),
@@ -114,11 +122,33 @@ export function SiteFundPanel(props: { siteId: number }) {
         site_id: props.siteId,
         amount_usd: amount.trim(),
         reason: reason.trim(),
+        intent_key: intentKey,
       }),
     onSuccess: (issued) => {
+      if (issued.replayed || !issued.code) {
+        setCode('')
+        setReconciled(issued)
+        void client.invalidateQueries({ queryKey: siteAdminKeys.all })
+        void invalidateSidebarBadges(client)
+        return
+      }
       setCode(issued.code)
+      setReconciled(null)
       setAmount('')
       setReason('')
+      resetVoucherIssuanceIntent(intentKey)
+      setIntentKey(createVoucherIssuanceIntentKey())
+      void client.invalidateQueries({ queryKey: siteAdminKeys.all })
+      void invalidateSidebarBadges(client)
+    },
+    onError: (error) => handleServerError(error),
+  })
+  const cancelReconciled = useMutation({
+    mutationFn: (id: number) => cancelAdminVoucher(id),
+    onSuccess: () => {
+      setReconciled(null)
+      resetVoucherIssuanceIntent(intentKey)
+      setIntentKey(createVoucherIssuanceIntentKey())
       void client.invalidateQueries({ queryKey: siteAdminKeys.all })
       void invalidateSidebarBadges(client)
     },
@@ -275,11 +305,63 @@ export function SiteFundPanel(props: { siteId: number }) {
       <Button
         type='button'
         variant='outline'
-        disabled={issue.isPending || amount.trim() === '' || reason.trim() === ''}
+        disabled={
+          issue.isPending ||
+          reconciled !== null ||
+          amount.trim() === '' ||
+          reason.trim() === ''
+        }
         onClick={() => issue.mutate()}
       >
         {t('Issue margin code')}
       </Button>
+      {reconciled && (
+        <div
+          data-testid='margin-voucher-reconcile-banner'
+          className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
+        >
+          <p>
+            {t(
+              'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
+              {
+                id: reconciled.id,
+                tail: reconciled.code_tail,
+                defaultValue: `Previous issuance request already created code #${reconciled.id} (tail ${reconciled.code_tail}). Full codes are shown once.`,
+              }
+            )}
+          </p>
+          <div className='flex flex-wrap gap-2'>
+            {reconciled.status !== 'cancelled' && reconciled.id > 0 ? (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={cancelReconciled.isPending}
+                onClick={() => cancelReconciled.mutate(reconciled.id)}
+              >
+                {t('Cancel code and replace', {
+                  defaultValue: 'Cancel code and replace',
+                })}
+              </Button>
+            ) : (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() => {
+                  setReconciled(null)
+                  resetVoucherIssuanceIntent(intentKey)
+                  setIntentKey(createVoucherIssuanceIntentKey())
+                }}
+              >
+                {t('Prepare replacement code', {
+                  defaultValue: 'Prepare replacement code',
+                })}
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
       {code && <p className='text-sm break-all'>{code}</p>}
     </section>
   )

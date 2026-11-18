@@ -117,16 +117,122 @@ export async function saveAdminWithdrawRules(body: {
   requireServerSuccess(res.data)
 }
 
-export async function issueAdminMarginVoucher(body: {
-  site_id: number
+export type AdminVoucherIssued = VoucherIssued & {
+  status?: string
+  target_site_id?: number
+  designated_owner_id?: number
+  intent_key?: string
+  replayed?: boolean
+}
+
+type PendingVoucherIntent = {
+  intentKey: string
+  voucherId?: number
+  reconciled: boolean
+}
+
+let voucherIntentSeq = 0
+const pendingVoucherIntents = new Map<string, PendingVoucherIntent>()
+
+export function createVoucherIssuanceIntentKey(): string {
+  voucherIntentSeq += 1
+  const rand = Math.random().toString(36).slice(2, 10)
+  return `vch-intent-${Date.now().toString(36)}-${voucherIntentSeq}-${rand}`
+}
+
+function voucherDraftSignature(input: {
+  purpose: string
+  site_id?: number
+  designated_owner_id?: number
   amount_usd: string
   reason: string
-}): Promise<{ code: string }> {
-  const res = await api.post<ApiResponse<{ code: string }>>(
+}): string {
+  return [
+    input.purpose.trim(),
+    input.site_id ?? 0,
+    input.designated_owner_id ?? 0,
+    input.amount_usd.trim(),
+    input.reason.trim(),
+  ].join('|')
+}
+
+export function resetVoucherIssuanceIntent(
+  intentKeyOrVoucherId?: string | number
+): void {
+  if (intentKeyOrVoucherId === undefined) {
+    pendingVoucherIntents.clear()
+    return
+  }
+  for (const [sig, entry] of pendingVoucherIntents.entries()) {
+    if (
+      entry.intentKey === intentKeyOrVoucherId ||
+      (typeof intentKeyOrVoucherId === 'number' &&
+        entry.voucherId === intentKeyOrVoucherId)
+    ) {
+      pendingVoucherIntents.delete(sig)
+    }
+  }
+}
+
+async function postAdminVoucherWithIntent(input: {
+  purpose: 'main_user' | 'site_margin'
+  site_id?: number
+  designated_owner_id?: number
+  amount_usd: string
+  reason: string
+  intent_key?: string
+}): Promise<AdminVoucherIssued> {
+  const sig = voucherDraftSignature(input)
+  const existing = pendingVoucherIntents.get(sig)
+  const intentKey =
+    input.intent_key?.trim() ||
+    existing?.intentKey ||
+    createVoucherIssuanceIntentKey()
+  pendingVoucherIntents.set(sig, {
+    intentKey,
+    voucherId: existing?.voucherId,
+    reconciled: existing?.reconciled ?? false,
+  })
+  const payload: Record<string, unknown> = {
+    purpose: input.purpose,
+    amount_usd: input.amount_usd,
+    reason: input.reason,
+    intent_key: intentKey,
+  }
+  if (input.site_id !== undefined) {
+    payload.site_id = input.site_id
+  }
+  if (input.designated_owner_id !== undefined) {
+    payload.designated_owner_id = input.designated_owner_id
+  }
+  const res = await api.post<ApiResponse<AdminVoucherIssued>>(
     `${BASE}/vouchers`,
-    { purpose: 'site_margin', ...body }
+    payload
   )
-  return requireServerSuccess(res.data).data
+  const data = requireServerSuccess(res.data).data
+  if (!data.replayed && Boolean(data.code)) {
+    pendingVoucherIntents.delete(sig)
+  } else {
+    pendingVoucherIntents.set(sig, {
+      intentKey: data.intent_key || intentKey,
+      voucherId: data.id,
+      reconciled: true,
+    })
+  }
+  return data
+}
+
+export async function issueAdminMarginVoucher(body: {
+  site_id: number
+  designated_owner_id?: number
+  amount_usd: string
+  reason: string
+  intent_key?: string
+}): Promise<AdminVoucherIssued> {
+  return postAdminVoucherWithIntent({
+    purpose: 'site_margin',
+    ...body,
+  })
 }
 
 export type AdminWallet = {
@@ -707,12 +813,12 @@ export async function saveVoucherIssuanceLimit(
 export async function issueMainUserVoucher(body: {
   amount_usd: string
   reason: string
-}): Promise<VoucherIssued> {
-  const res = await api.post<ApiResponse<VoucherIssued>>(`${BASE}/vouchers`, {
+  intent_key?: string
+}): Promise<AdminVoucherIssued> {
+  return postAdminVoucherWithIntent({
     purpose: 'main_user',
     ...body,
   })
-  return requireServerSuccess(res.data).data
 }
 
 export async function freezeAdminVoucher(id: number): Promise<void> {
@@ -727,6 +833,7 @@ export async function cancelAdminVoucher(id: number): Promise<void> {
     `${BASE}/vouchers/${id}/cancel`
   )
   requireServerSuccess(res.data)
+  resetVoucherIssuanceIntent(id)
 }
 
 export async function getAdminVoucherMarginAuthorization(
