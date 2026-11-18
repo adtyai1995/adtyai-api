@@ -353,3 +353,192 @@ func TestClosedSiteDeletesSenderDomain(t *testing.T) {
 
 	assert.Equal(t, []string{"dom-mail.closesender.org"}, fake.deleted)
 }
+
+func TestSiteCloseMailRootInspectionRetryAndAutoWorker(t *testing.T) {
+	db, _ := prepareMailDB(t)
+	require.NoError(t, i18n.Init())
+	require.NoError(t, db.AutoMigrate(&model.AdtySiteAudit{}, &model.AuditLog{}))
+	owner, site := openActiveSite(t, db, "retryroot")
+	u1 := siteCustomer(t, db, site, "retryroot-u1")
+	u2 := siteCustomer(t, db, site, "retryroot-u2")
+	require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", site.Id).Update("status", model.AdtySiteStatusClosing).Error)
+	site.Status = model.AdtySiteStatusClosing
+
+	failU2 := true
+	sentByEmail := map[string]int{}
+	previous := AdtyDeliverSiteEmail
+	AdtyDeliverSiteEmail = func(_ *model.AdtySite, _, to, _ string) error {
+		if failU2 && to == u2.Email {
+			return errors.New("smtp temporary timeout")
+		}
+		sentByEmail[to]++
+		return nil
+	}
+	t.Cleanup(func() { AdtyDeliverSiteEmail = previous })
+
+	require.NoError(t, SendAdtySiteCloseMigrationMail(site))
+	assert.Equal(t, 1, sentByEmail[u1.Email])
+	assert.Equal(t, 0, sentByEmail[u2.Email])
+
+	batches, total, err := ListAdtySiteCloseMailBatches(model.AdtySiteCloseMailRetryRetryable, 0, 20)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, total)
+	require.Len(t, batches, 1)
+	assert.Equal(t, site.Id, batches[0].SiteId)
+	assert.Equal(t, 2, batches[0].RecipientCount)
+	assert.Equal(t, 1, batches[0].SuccessCount)
+	assert.Equal(t, 1, batches[0].FailCount)
+	require.Len(t, batches[0].FailedRecipients, 1)
+	assert.Equal(t, u2.Id, batches[0].FailedRecipients[0].UserId)
+	assert.Contains(t, batches[0].FailedRecipients[0].LastError, "smtp temporary timeout")
+
+	failedOnlyView, err := GetAdtySiteCloseMailBatch(site.Id, model.AdtySiteCloseMailFailed)
+	require.NoError(t, err)
+	require.Len(t, failedOnlyView.Recipients, 1)
+	assert.Equal(t, u2.Id, failedOnlyView.Recipients[0].UserId)
+
+	// Background worker retries failed/pending recipients while u2 still fails, then succeeds once recovered.
+	require.NoError(t, RunAdtySiteCloseMailRetryOnce(time.Now()))
+	assert.Equal(t, 1, sentByEmail[u1.Email], "successful recipient must not be resent")
+	assert.Equal(t, 0, sentByEmail[u2.Email])
+
+	failU2 = false
+	retriedView, err := RetryAdtySiteCloseMigrationMailByRoot(site.Id, owner.Id, false, "manual root retry")
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtySiteCloseMailRetryComplete, retriedView.RetryStatus)
+	assert.Equal(t, 2, retriedView.SuccessCount)
+	assert.Equal(t, 0, retriedView.FailCount)
+	assert.Empty(t, retriedView.FailedRecipients)
+	assert.Equal(t, 1, sentByEmail[u1.Email])
+	assert.Equal(t, 1, sentByEmail[u2.Email])
+
+	var siteAudit model.AdtySiteAudit
+	require.NoError(t, db.Where("site_id = ? AND action = ?", site.Id, "close_mail_retry").First(&siteAudit).Error)
+	assert.Equal(t, "manual root retry", siteAudit.Reason)
+}
+
+func TestSiteCloseMailSnapshotIncludesMigratedUsersAndResumesPartialSnapshot(t *testing.T) {
+	db, _ := prepareMailDB(t)
+	require.NoError(t, i18n.Init())
+	require.NoError(t, db.AutoMigrate(&model.AdtySiteCustomer{}, &model.AdtyUserSiteMigration{}))
+	_, site := openActiveSite(t, db, "snapresume")
+	u1 := siteCustomer(t, db, site, "snap-u1")
+	u2 := siteCustomer(t, db, site, "snap-u2")
+	u3 := siteCustomer(t, db, site, "snap-u3")
+	staff := siteCustomer(t, db, site, "snap-staff")
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staff.Id).Update("staff_site_id", site.Id).Error)
+
+	// Simulate u2 already migrated via inherited_from_site_id and u3 migrated via AdtyUserSiteMigration.
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", u2.Id).Updates(map[string]any{
+		"site_id":                0,
+		"inherited_from_site_id": site.Id,
+	}).Error)
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", u3.Id).Updates(map[string]any{
+		"site_id": 0,
+	}).Error)
+	require.NoError(t, db.Create(&model.AdtyUserSiteMigration{
+		UserId:       u3.Id,
+		SourceSiteId: site.Id,
+		TargetSiteId: 0,
+		CreatedAt:    time.Now().Unix(),
+	}).Error)
+
+	// Simulate an interrupted earlier snapshot that only persisted u1 before crashing.
+	batch := model.AdtySiteCloseMailBatch{
+		SiteId:      site.Id,
+		RetryStatus: model.AdtySiteCloseMailRetryNone,
+		CreatedAt:   time.Now().Unix(),
+		UpdatedAt:   time.Now().Unix(),
+	}
+	require.NoError(t, db.Create(&batch).Error)
+	require.NoError(t, db.Create(&model.AdtySiteCloseMailRecipient{
+		BatchId:   batch.Id,
+		SiteId:    site.Id,
+		UserId:    u1.Id,
+		Username:  u1.Username,
+		Email:     u1.Email,
+		Status:    model.AdtySiteCloseMailSuccess,
+		CreatedAt: time.Now().Unix(),
+		UpdatedAt: time.Now().Unix(),
+	}).Error)
+
+	sentByEmail := map[string]int{}
+	previous := AdtyDeliverSiteEmail
+	AdtyDeliverSiteEmail = func(_ *model.AdtySite, _, to, _ string) error {
+		sentByEmail[to]++
+		return nil
+	}
+	t.Cleanup(func() { AdtyDeliverSiteEmail = previous })
+
+	require.NoError(t, RetryAdtySiteCloseMigrationMail(site))
+	assert.Equal(t, 0, sentByEmail[u1.Email], "already successful u1 must not be resent")
+	assert.Equal(t, 1, sentByEmail[u2.Email], "inherited/migrated u2 must be snapshotted and mailed")
+	assert.Equal(t, 1, sentByEmail[u3.Email], "archived/migrated u3 must be snapshotted and mailed")
+	assert.Equal(t, 0, sentByEmail[staff.Email], "staff account must be excluded from customer close mail")
+
+	view, err := GetAdtySiteCloseMailBatch(site.Id, "")
+	require.NoError(t, err)
+	assert.Equal(t, 3, view.RecipientCount)
+	assert.Equal(t, 3, view.SuccessCount)
+	assert.Equal(t, 0, view.FailCount)
+	assert.Equal(t, model.AdtySiteCloseMailRetryComplete, view.RetryStatus)
+}
+
+func TestSiteCloseMailExclusiveRecipientClaimBatchStatusAndResendIdempotency(t *testing.T) {
+	db, _ := prepareMailDB(t)
+	require.NoError(t, i18n.Init())
+	_, site := openActiveSite(t, db, "claimmail")
+	u1 := siteCustomer(t, db, site, "claim-u1")
+	u2 := siteCustomer(t, db, site, "claim-u2")
+
+	now := time.Now().Unix()
+	batch, err := loadOrCreateAdtySiteCloseMailBatch(site.Id, now)
+	require.NoError(t, err)
+	require.NoError(t, ensureAdtySiteCloseMailRecipients(batch, site.Id, now, false))
+
+	// While recipients are still pending (fail_count == 0, success_count == 0), batch must be retryable, NOT complete.
+	require.NoError(t, refreshAdtySiteCloseMailBatchCounts(batch.Id, now))
+	var refreshed model.AdtySiteCloseMailBatch
+	require.NoError(t, db.First(&refreshed, batch.Id).Error)
+	assert.Equal(t, model.AdtySiteCloseMailRetryRetryable, refreshed.RetryStatus)
+
+	// Mark u1 as already in-flight ('sending'): normal retry must not double-send to u1, and batch stays retryable.
+	require.NoError(t, db.Model(&model.AdtySiteCloseMailRecipient{}).
+		Where("batch_id = ? AND user_id = ?", batch.Id, u1.Id).
+		Update("status", AdtySiteCloseMailSending).Error)
+
+	var idempotencyKeys []string
+	var deliveredTo []string
+	mailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/emails" {
+			idempotencyKeys = append(idempotencyKeys, r.Header.Get("Idempotency-Key"))
+			var payload AdtyResendEmail
+			body, _ := io.ReadAll(r.Body)
+			_ = common.Unmarshal(body, &payload)
+			deliveredTo = append(deliveredTo, payload.To...)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"email_1"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(mailServer.Close)
+	oldResend := AdtyResend
+	AdtyResend = &AdtyResendClient{BaseURL: mailServer.URL, HTTP: mailServer.Client(), APIKey: func() string { return "re_test" }}
+	t.Cleanup(func() { AdtyResend = oldResend })
+	common.OptionMap["EmailProvider"] = "resend"
+
+	require.NoError(t, RetryAdtySiteCloseMigrationMail(site))
+	assert.Equal(t, []string{u2.Email}, deliveredTo, "in-flight sending recipient u1 must not be double-sent")
+	assert.Equal(t, []string{AdtySiteCloseMailIdempotencyKey(batch.Id, u2.Id)}, idempotencyKeys)
+
+	require.NoError(t, db.First(&refreshed, batch.Id).Error)
+	assert.Equal(t, model.AdtySiteCloseMailRetryRetryable, refreshed.RetryStatus, "batch with sending recipient must remain retryable")
+
+	// Root manual retry with includeSending=true can reclaim a stuck sending recipient and complete the batch.
+	_, err = RetryAdtySiteCloseMigrationMailByRoot(site.Id, 0, true, "reclaim stuck sending")
+	require.NoError(t, err)
+	assert.Equal(t, []string{u2.Email, u1.Email}, deliveredTo)
+	require.NoError(t, db.First(&refreshed, batch.Id).Error)
+	assert.Equal(t, model.AdtySiteCloseMailRetryComplete, refreshed.RetryStatus)
+}

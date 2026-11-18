@@ -32,12 +32,11 @@ func GetAdtyNotifications(c *gin.Context) {
 }
 
 func GetAdtyAnnouncement(c *gin.Context) {
-	inbox, err := service.GetAdtyNotificationInbox(c.GetInt("id"), service.AdtySiteForRequest(c), 0)
+	item, ok, err := service.GetAdtyNotificationDetail(c.GetInt("id"), service.AdtySiteForRequest(c), c.Param("key"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	item, ok := service.AnnouncementDetail(inbox.Announcements, c.Param("key"))
 	if !ok {
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Announcement not found"))
 		return
