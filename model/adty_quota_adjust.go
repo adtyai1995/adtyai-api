@@ -74,7 +74,8 @@ func AdjustUserQuotaWithLedger(userID, operatorID, operatorRole int, mode string
 			return err
 		}
 		if existing != nil {
-			if existing.Type != AdtyLedgerTypeManualAdjust || existing.UserId != userID || existing.RefId != refID {
+			if existing.Type != AdtyLedgerTypeManualAdjust || existing.UserId != userID || existing.RefId != refID ||
+				existing.Reason != reason || existing.OperatorId != operatorID {
 				return ErrAdtyIdempotencyConflict
 			}
 			result = AdtyQuotaAdjustResult{

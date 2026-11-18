@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -34,8 +35,22 @@ func RegisterAdtyMaintenanceHook(name string, fn func(now int64)) {
 	adtyMaintenanceHooks = append(adtyMaintenanceHooks, adtyMaintenanceHook{name: name, fn: fn})
 }
 
-// RunAdtyTopUpMaintenanceOnce 跑一轮：先把过期的 pending 改成 expired，再跑各钩子。
+// RunAdtyTopUpMaintenanceOnce 跑一轮：先跑补查与恢复钩子确认远端支付状态，再对确认未付且过缓冲期的 pending 订单执行过期释放（ISS-R1-0010）。
 func RunAdtyTopUpMaintenanceOnce(now int64) {
+	adtyMaintenanceMu.RLock()
+	hooks := append([]adtyMaintenanceHook(nil), adtyMaintenanceHooks...)
+	adtyMaintenanceMu.RUnlock()
+	for _, hook := range hooks {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					common.SysError(common.LogText("adty maintenance hook %s panic: %v", hook.name, r))
+				}
+			}()
+			hook.fn(now)
+		}()
+	}
+	verifyExpiredOrdersUnpaidBeforeExpire(now)
 	for {
 		expired, err := model.ExpireAdtyTopUps(now, 200)
 		if len(expired) > 0 && AdtyExpiredHook != nil {
@@ -49,18 +64,44 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 			break
 		}
 	}
-	adtyMaintenanceMu.RLock()
-	hooks := append([]adtyMaintenanceHook(nil), adtyMaintenanceHooks...)
-	adtyMaintenanceMu.RUnlock()
-	for _, hook := range hooks {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					common.SysError(common.LogText("adty maintenance hook %s panic: %v", hook.name, r))
-				}
-			}()
-			hook.fn(now)
-		}()
+}
+
+// verifyExpiredOrdersUnpaidBeforeExpire confirms via remote query outside row
+// locks that expired gateway-backed orders have not paid before ExpireAdtyTopUps
+// releases their gift guarantee reserves (ISS-R1-0010).
+func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
+	if model.DB == nil {
+		return
+	}
+	cutoff := now - adtyExpireReleaseBufferSeconds
+	var orders []model.AdtyTopupOrder
+	err := model.DB.Table("adty_topup_orders AS a").Select("a.*").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no AND t.user_id = a.user_id AND t.payment_provider = a.provider").
+		Where("t.status = ? AND a.expire_at > 0 AND a.expire_at <= ? AND (a.last_query_at < a.expire_at OR a.last_query_at <= ?)",
+			common.TopUpStatusPending, cutoff, now-60).
+		Order("a.expire_at asc, a.id asc").Limit(200).Scan(&orders).Error
+	if err != nil {
+		common.SysError(common.LogText("list adty pre-expire query orders: %s", err.Error()))
+		return
+	}
+	for i := range orders {
+		ext := &orders[i]
+		requiresRemote, checkErr := adtyOrderRequiresRemoteUnpaidConfirm(model.DB, ext)
+		if checkErr != nil || !requiresRemote {
+			continue
+		}
+		var latest model.AdtyOrderPaymentEvent
+		if qErr := model.DB.Where("trade_no = ? AND source = ?", ext.TradeNo, model.AdtyPaymentSourceQuery).
+			Order("id desc").Limit(1).Find(&latest).Error; qErr != nil {
+			continue
+		}
+		if latest.Id > 0 && latest.Outcome == "unpaid" && (ext.LastQueryAt >= ext.ExpireAt || latest.CreatedAt >= ext.ExpireAt) {
+			continue
+		}
+		_ = model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"last_query_at": now})
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		_ = RecoverAdtyHostedPayment(ctx, ext)
+		cancel()
 	}
 }
 

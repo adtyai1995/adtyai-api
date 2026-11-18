@@ -44,13 +44,15 @@ func TestSiteOwnerWithdrawalFreezesEarningsAndRejectsRelease(t *testing.T) {
 	require.True(t, row.FeeUSD.Equal(decimal.RequireFromString("1")))
 	var earning model.AdtySiteWallet
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).First(&earning).Error)
-	require.True(t, earning.Balance.Equal(decimal.RequireFromString("30")))
+	require.True(t, earning.Balance.Equal(decimal.RequireFromString("50")), "ISS-R1-0018: balance stays 50 while frozen")
+	require.True(t, earning.FrozenUSD.Equal(decimal.RequireFromString("20")), "ISS-R1-0018: frozen increases by 20")
 
 	require.NoError(t, MarkAdtySiteWithdrawalPaying(row.Id, 1))
 	require.ErrorIs(t, CancelAdtySiteWithdrawal(site.Id, owner.Id, row.Id), ErrAdtySiteWithdrawLocked)
 	require.NoError(t, RejectAdtySiteWithdrawal(row.Id, 1, "bad account"))
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).First(&earning).Error)
 	require.True(t, earning.Balance.Equal(decimal.RequireFromString("50")))
+	require.True(t, earning.FrozenUSD.IsZero(), "ISS-R1-0018: reject releases freeze without mutating balance")
 }
 
 func TestSiteOwnerWithdrawalPaidKeepsFreezeAndRecordsProof(t *testing.T) {
@@ -78,4 +80,42 @@ func TestSiteOwnerWithdrawalPaidKeepsFreezeAndRecordsProof(t *testing.T) {
 	var earning model.AdtySiteWallet
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).First(&earning).Error)
 	require.True(t, earning.Balance.Equal(decimal.RequireFromString("28")))
+	require.True(t, earning.FrozenUSD.IsZero(), "ISS-R1-0018: paid settles freeze into spent")
+	var paidLedger model.AdtySiteWalletLedger
+	require.NoError(t, db.Where("site_id = ? AND type = ? AND ref_id = ?", site.Id, "earning_withdraw_paid", "wd-paid").First(&paidLedger).Error)
+	require.True(t, paidLedger.Delta.Equal(decimal.RequireFromString("-12")))
+	require.True(t, paidLedger.HoldDelta.Equal(decimal.RequireFromString("-12")))
+}
+
+func TestSiteOwnerWithdrawalIdempotencyRejectsPayloadMutation(t *testing.T) {
+	db := prepareSiteDB(t)
+	owner, site := openActiveSite(t, db, "withdraw-idem")
+	require.NoError(t, SaveAdtySiteWithdrawRules(AdtySiteWithdrawRules{
+		MinUSD: "10", FeeUSD: "1", AlipayCNYRate: "7.20", USDTUSDRate: "1.00",
+	}, owner.Id))
+	_, err := ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.RequireFromString("50"), AdtySiteWalletChange{
+		Type: "earning_settlement", IdempotencyKey: "earn-idem",
+	})
+	require.NoError(t, err)
+	base := AdtySiteWithdrawInput{
+		SiteID: site.Id, OwnerID: owner.Id, AmountUSD: decimal.RequireFromString("15"),
+		Method: "usdt", Network: "TRC20", AccountNo: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+		ExpectedRate: decimal.RequireFromString("1.00"), IdempotencyKey: "wd-idem-1",
+	}
+	first, err := CreateAdtySiteWithdrawal(base)
+	require.NoError(t, err)
+	replay, err := CreateAdtySiteWithdrawal(base)
+	require.NoError(t, err)
+	require.Equal(t, first.Id, replay.Id)
+
+	diffAddr := base
+	diffAddr.AccountNo = "TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL"
+	_, err = CreateAdtySiteWithdrawal(diffAddr)
+	require.ErrorIs(t, err, model.ErrAdtyIdempotencyConflict)
+
+	diffNet := base
+	diffNet.Network = "BEP20"
+	diffNet.AccountNo = "0x1111111111111111111111111111111111111111"
+	_, err = CreateAdtySiteWithdrawal(diffNet)
+	require.ErrorIs(t, err, model.ErrAdtyIdempotencyConflict)
 }

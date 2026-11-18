@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -193,6 +195,7 @@ func TestLatePayAfterCancelReacquiresGiftGuarantee(t *testing.T) {
 	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
 		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		PaidAt: ext.CreatedAt + 1, PaidTimeVerified: true,
 	}, "")
 	require.NoError(t, err)
 
@@ -209,24 +212,85 @@ func TestLatePayAfterCancelReacquiresGiftGuarantee(t *testing.T) {
 }
 
 func TestLatePayAfterExpireReacquiresGiftGuarantee(t *testing.T) {
-	db := prepareSiteDB(t)
-	_, site, customer, ext := seedReservedSiteGift(t, db, "gift-late-exp", "10")
-	require.NoError(t, db.Model(ext).Update("expire_at", 100).Error)
-	expired, err := model.ExpireAdtyTopUps(common.GetTimestamp(), 50)
-	require.NoError(t, err)
-	require.Len(t, expired, 1)
+	t.Run("unknown_payment_time_holds_pending_review", func(t *testing.T) {
+		db := prepareSiteDB(t)
+		_, site, customer, ext := seedReservedSiteGift(t, db, "gift-late-exp-unk", "10")
+		require.NoError(t, db.Model(ext).Update("expire_at", 100).Error)
+		expired, err := model.ExpireAdtyTopUps(common.GetTimestamp(), 50)
+		require.NoError(t, err)
+		require.Len(t, expired, 1)
 
-	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
-		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
-		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
-	}, "")
-	require.NoError(t, err)
+		_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
+			Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
+			PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		}, "")
+		require.NoError(t, err)
 
-	earning, margin := mustSiteGiftWallets(t, db, site.Id)
-	require.True(t, earning.FrozenUSD.Equal(decimal.RequireFromString("4")))
-	require.True(t, margin.FrozenUSD.Equal(decimal.RequireFromString("6")))
-	require.EqualValues(t, 55_000_000, userQuotaOf(t, db, customer.Id))
-	require.EqualValues(t, 0, countGiftFulfillments(t, db, ext.TradeNo))
+		// ISS-R1-0009: without verified payment effective-time evidence, principal credits immediately
+		// while gift waits for manual review and is not auto-fulfilled even when site guarantee suffices.
+		earning, margin := mustSiteGiftWallets(t, db, site.Id)
+		require.True(t, earning.FrozenUSD.IsZero())
+		require.True(t, margin.FrozenUSD.IsZero())
+		require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
+		require.EqualValues(t, 1, countGiftFulfillments(t, db, ext.TradeNo))
+		reloaded, err := model.GetAdtyTopupOrder(ext.TradeNo)
+		require.NoError(t, err)
+		require.Equal(t, model.AdtyGiftFulfillmentPendingReview, reloaded.GiftFulfillmentStatus)
+		n, err := ResumePendingAdtyGiftFulfillments(site.Id)
+		require.NoError(t, err)
+		require.Zero(t, n)
+		require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
+	})
+
+	t.Run("confirmed_in_window_reacquires_guarantee", func(t *testing.T) {
+		db := prepareSiteDB(t)
+		_, site, customer, ext := seedReservedSiteGift(t, db, "gift-late-exp-in", "10")
+		require.NoError(t, db.Model(ext).Update("expire_at", 100).Error)
+		expired, err := model.ExpireAdtyTopUps(common.GetTimestamp(), 50)
+		require.NoError(t, err)
+		require.Len(t, expired, 1)
+
+		_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
+			Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
+			PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+			PaidAt: 95, PaidTimeVerified: true,
+		}, "")
+		require.NoError(t, err)
+
+		earning, margin := mustSiteGiftWallets(t, db, site.Id)
+		require.True(t, earning.FrozenUSD.Equal(decimal.RequireFromString("4")))
+		require.True(t, margin.FrozenUSD.Equal(decimal.RequireFromString("6")))
+		require.EqualValues(t, 55_000_000, userQuotaOf(t, db, customer.Id))
+		require.EqualValues(t, 0, countGiftFulfillments(t, db, ext.TradeNo))
+	})
+
+	t.Run("confirmed_post_expiry_credits_principal_only", func(t *testing.T) {
+		db := prepareSiteDB(t)
+		_, site, customer, ext := seedReservedSiteGift(t, db, "gift-late-exp-post", "10")
+		require.NoError(t, db.Model(ext).Update("expire_at", 100).Error)
+		expired, err := model.ExpireAdtyTopUps(common.GetTimestamp(), 50)
+		require.NoError(t, err)
+		require.Len(t, expired, 1)
+
+		_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
+			Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
+			PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+			PaidAt: 105, PaidTimeVerified: true,
+		}, "")
+		require.NoError(t, err)
+
+		earning, margin := mustSiteGiftWallets(t, db, site.Id)
+		require.True(t, earning.FrozenUSD.IsZero())
+		require.True(t, margin.FrozenUSD.IsZero())
+		require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
+		require.EqualValues(t, 0, countGiftFulfillments(t, db, ext.TradeNo))
+		reloaded, err := model.GetAdtyTopupOrder(ext.TradeNo)
+		require.NoError(t, err)
+		require.Equal(t, model.AdtyGiftFulfillmentCanceled, reloaded.GiftFulfillmentStatus)
+		n, err := ResumePendingAdtyGiftFulfillments(site.Id)
+		require.NoError(t, err)
+		require.Zero(t, n)
+	})
 }
 
 func TestLatePayAfterCancelRecordsPendingGiftWhenUncovered(t *testing.T) {
@@ -244,6 +308,7 @@ func TestLatePayAfterCancelRecordsPendingGiftWhenUncovered(t *testing.T) {
 	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
 		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		PaidAt: ext.CreatedAt + 1, PaidTimeVerified: true,
 	}, "")
 	require.NoError(t, err)
 
@@ -264,6 +329,7 @@ func TestLatePayAfterCancelRecordsPendingGiftWhenUncovered(t *testing.T) {
 	already, err := model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
 		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		PaidAt: ext.CreatedAt + 1, PaidTimeVerified: true,
 	}, "")
 	require.NoError(t, err)
 	require.True(t, already)
@@ -283,6 +349,7 @@ func TestPendingGiftCreditLogShowsActuallyCreditedQuota(t *testing.T) {
 	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
 		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		PaidAt: ext.CreatedAt + 1, PaidTimeVerified: true,
 	}, "")
 	require.NoError(t, err)
 
@@ -357,6 +424,7 @@ func TestRefundAfterPendingFulfillmentReturnsFullPrincipal(t *testing.T) {
 	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
 		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		PaidAt: ext.CreatedAt + 1, PaidTimeVerified: true,
 	}, "")
 	require.NoError(t, err)
 	require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
@@ -809,6 +877,7 @@ func TestMarginTopUpFulfillsPendingSiteGift(t *testing.T) {
 	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
 		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		PaidAt: ext.CreatedAt + 1, PaidTimeVerified: true,
 	}, "")
 	require.NoError(t, err)
 	// 本金到账、赠金被扣下：pending，客户只拿到 50,000,000。
@@ -887,6 +956,7 @@ func TestMarginTopUpShortOfGuaranteeLeavesGiftPending(t *testing.T) {
 	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
 		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		PaidAt: ext.CreatedAt + 1, PaidTimeVerified: true,
 	}, "")
 	require.NoError(t, err)
 
@@ -981,6 +1051,7 @@ func TestPendingSiteGiftPausesDuringActiveRefundAndShrinksOnPartialRefund(t *tes
 	_, err = model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),
 		PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+		PaidAt: ext.CreatedAt + 1, PaidTimeVerified: true,
 	}, "")
 	require.NoError(t, err)
 	require.EqualValues(t, 50_000_000, userQuotaOf(t, db, customer.Id))
@@ -1043,4 +1114,92 @@ func TestPendingSiteGiftPausesDuringActiveRefundAndShrinksOnPartialRefund(t *tes
 	require.EqualValues(t, 33_000_000, userQuotaOf(t, db, customer.Id))
 	require.NoError(t, db.Where("trade_no = ?", ext.TradeNo).First(&fg).Error)
 	require.Equal(t, model.AdtyGiftFulfillmentFulfilled, fg.Status)
+}
+
+func TestRunAdtyTopUpMaintenanceRunsRecoveryHooksBeforeExpiring(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site, _, ext := seedReservedSiteGift(t, db, "maint-hook-order", "10")
+	require.NoError(t, db.Model(ext).Update("expire_at", 100).Error)
+
+	// Restore original hooks after test.
+	adtyMaintenanceMu.Lock()
+	savedHooks := append([]adtyMaintenanceHook(nil), adtyMaintenanceHooks...)
+	adtyMaintenanceHooks = nil
+	adtyMaintenanceMu.Unlock()
+	t.Cleanup(func() {
+		adtyMaintenanceMu.Lock()
+		adtyMaintenanceHooks = savedHooks
+		adtyMaintenanceMu.Unlock()
+	})
+
+	observedStatus := ""
+	RegisterAdtyMaintenanceHook("test-check-before-expire", func(_ int64) {
+		var topUp model.TopUp
+		if err := db.Where("trade_no = ?", ext.TradeNo).First(&topUp).Error; err == nil {
+			observedStatus = topUp.Status
+		}
+	})
+
+	RunAdtyTopUpMaintenanceOnce(common.GetTimestamp())
+	require.Equal(t, common.TopUpStatusPending, observedStatus, "ISS-R1-0010: recovery hooks must inspect pending orders before ExpireAdtyTopUps marks them expired")
+	earning, _ := mustSiteGiftWallets(t, db, site.Id)
+	require.True(t, earning.FrozenUSD.IsZero(), "after hook check, past-buffer expiry still releases reserve")
+}
+
+func TestRunAdtyTopUpMaintenanceRequiresRemoteUnpaidConfirmBeforeReleasingGift(t *testing.T) {
+	db := prepareSiteDB(t)
+	channel := seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "https-gift-exp", GatewayURL: "https://pay.example", MerchantId: "m-exp", Priority: 1, Weight: 1,
+	}, alipay("qrcode"))
+	_, site, _, ext := seedReservedSiteGift(t, db, "gift-epay-exp", "10")
+	require.NoError(t, db.Model(&model.TopUp{}).Where("trade_no = ?", ext.TradeNo).Updates(map[string]any{
+		"payment_provider": model.PaymentProviderAdtyEpay,
+		"payment_method":   "alipay",
+	}).Error)
+	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("trade_no = ?", ext.TradeNo).Updates(map[string]any{
+		"provider":   model.PaymentProviderAdtyEpay,
+		"method":     "alipay",
+		"channel_id": channel.Id,
+		"expire_at":  int64(1000),
+	}).Error)
+
+	adtyMaintenanceMu.Lock()
+	savedHooks := append([]adtyMaintenanceHook(nil), adtyMaintenanceHooks...)
+	adtyMaintenanceHooks = nil
+	adtyMaintenanceMu.Unlock()
+	t.Cleanup(func() {
+		adtyMaintenanceMu.Lock()
+		adtyMaintenanceHooks = savedHooks
+		adtyMaintenanceMu.Unlock()
+	})
+
+	oldQuery := adtyEpayQuery
+	t.Cleanup(func() { adtyEpayQuery = oldQuery })
+	adtyEpayQuery = func(context.Context, *model.AdtyEpayChannel, string) (*AdtyEpayQueryResult, error) {
+		return nil, errors.New("gateway timeout")
+	}
+
+	// Inside post-expiry buffer: must stay pending with gift reserve intact.
+	RunAdtyTopUpMaintenanceOnce(1030)
+	require.Equal(t, common.TopUpStatusPending, topUpStatusOf(t, db, ext.TradeNo))
+	earning, margin := mustSiteGiftWallets(t, db, site.Id)
+	require.True(t, earning.FrozenUSD.Equal(decimal.RequireFromString("4")))
+	require.True(t, margin.FrozenUSD.Equal(decimal.RequireFromString("6")))
+
+	// Past buffer, but remote query fails: must stay pending with gift reserve intact.
+	RunAdtyTopUpMaintenanceOnce(1100)
+	require.Equal(t, common.TopUpStatusPending, topUpStatusOf(t, db, ext.TradeNo))
+	earning, margin = mustSiteGiftWallets(t, db, site.Id)
+	require.True(t, earning.FrozenUSD.Equal(decimal.RequireFromString("4")))
+	require.True(t, margin.FrozenUSD.Equal(decimal.RequireFromString("6")))
+
+	// Remote query confirms unpaid: transitions to expired and releases gift reserve.
+	adtyEpayQuery = func(context.Context, *model.AdtyEpayChannel, string) (*AdtyEpayQueryResult, error) {
+		return &AdtyEpayQueryResult{Paid: false, OutTradeNo: ext.TradeNo, MerchantId: "m-exp"}, nil
+	}
+	RunAdtyTopUpMaintenanceOnce(1200)
+	require.Equal(t, common.TopUpStatusExpired, topUpStatusOf(t, db, ext.TradeNo))
+	earning, margin = mustSiteGiftWallets(t, db, site.Id)
+	require.True(t, earning.FrozenUSD.IsZero())
+	require.True(t, margin.FrozenUSD.IsZero())
 }

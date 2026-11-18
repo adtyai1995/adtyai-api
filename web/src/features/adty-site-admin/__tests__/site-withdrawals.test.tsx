@@ -175,3 +175,26 @@ it('requires a reason before rejecting', async () => {
     )
   )
 })
+
+it('recalls a paying withdrawal back to pending with a required reason', async () => {
+  show()
+  const user = userEvent.setup()
+  const row = await screen.findByRole('row', { name: /T-address/ })
+  await user.click(within(row).getByRole('button', { name: 'Recall to pending' }))
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Recall to pending',
+  })
+  const recall = within(dialog).getByRole('button', { name: 'Recall to pending' })
+  expect(recall).toBeDisabled()
+  await user.type(
+    within(dialog).getByLabelText('Reason (required)'),
+    'bank bounce'
+  )
+  await user.click(recall)
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/adty/admin/site-withdrawals/1/recall',
+      { reason: 'bank bounce' }
+    )
+  )
+})

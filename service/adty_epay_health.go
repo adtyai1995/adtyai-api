@@ -46,11 +46,11 @@ func runAdtyEpayFollowUpQueries(now int64) {
 	err := model.DB.Table("adty_topup_orders AS a").Select("a.*").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
 		Where(`a.provider = ? AND a.created_at <= ? AND a.last_query_at <= ? AND (
-			(t.status = ? AND a.expire_at > ?) OR
+			(t.status = ? AND (a.expire_at > ? OR (a.expire_at <= ? AND a.expire_at > ?))) OR
 			(t.status = ? AND a.expire_at <= ? AND a.expire_at > ?)
 		)`,
 			model.PaymentProviderAdtyEpay, now-after, now-60,
-			common.TopUpStatusPending, now,
+			common.TopUpStatusPending, now, now, now-grace,
 			common.TopUpStatusExpired, now, now-grace).
 		Order("a.id").Limit(50).Scan(&exts).Error
 	if err != nil {
@@ -247,8 +247,37 @@ func (adtyEpayProvider) AvailableFor(method string, quote *AdtyQuote) bool {
 	return quote != nil && adtyEpayCanTake(method, quote.PayAmount)
 }
 
-// Cancel 只取消本地订单，易支付没有取消接口。
-func (adtyEpayProvider) Cancel(*model.AdtyTopupOrder) error { return nil }
+// Cancel 取消易支付订单前，如果该通道具备 HTTPS 主动查单能力，先确认网关确实未付款（ISS-R1-0010）。
+// 网关返回已支付时返回 ErrAdtyPaymentDetected；网关失败或不可达时返回错误以中止本地取消，防止网关已付款却被本地错置为取消。
+func (adtyEpayProvider) Cancel(ext *model.AdtyTopupOrder) error {
+	if ext == nil || ext.Provider != model.PaymentProviderAdtyEpay || ext.ChannelId <= 0 {
+		return nil
+	}
+	channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
+	if err != nil {
+		if errors.Is(err, model.ErrAdtyEpayChannelNotFound) {
+			return nil
+		}
+		return err
+	}
+	if channel.Status == model.AdtyEpayStatusRevoked {
+		return nil
+	}
+	endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || channel.MerchantId == "" || channel.MerchantKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	facts, err := (adtyEpayProvider{}).Query(ctx, ext)
+	if err != nil {
+		return err
+	}
+	if facts != nil {
+		return ErrAdtyPaymentDetected
+	}
+	return nil
+}
 
 func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*model.AdtyPaymentFacts, error) {
 	if ext == nil || ext.Provider != model.PaymentProviderAdtyEpay {

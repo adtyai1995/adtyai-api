@@ -119,10 +119,10 @@ func CancelAdtyTopUpOrder(c *gin.Context) {
 			return nil
 		}
 		cancelErr := provider.Cancel(locked)
-		if cancelErr == nil || errors.Is(cancelErr, service.ErrAdtyPaymentDetected) {
+		if cancelErr != nil {
+			common.SysLog(common.LogText("cancel adty order at provider failed trade_no=%s: %s", locked.TradeNo, cancelErr.Error()))
 			return cancelErr
 		}
-		common.SysLog(common.LogText("cancel adty order at provider failed trade_no=%s: %s", locked.TradeNo, cancelErr.Error()))
 		return nil
 	})
 	if errors.Is(err, service.ErrAdtyPaymentDetected) {
@@ -216,10 +216,9 @@ func replaceOtherPendingAdtyOrders(c *gin.Context) error {
 				return nil
 			}
 			cancelErr := provider.Cancel(locked)
-			if cancelErr == nil || errors.Is(cancelErr, service.ErrAdtyPaymentDetected) {
+			if cancelErr != nil {
 				return cancelErr
 			}
-			common.SysLog(common.LogText("replace adty order at provider failed trade_no=%s: %s", locked.TradeNo, cancelErr.Error()))
 			return nil
 		})
 		if errors.Is(err, model.ErrAdtyTopUpNotCancel) {

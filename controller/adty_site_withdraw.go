@@ -124,6 +124,10 @@ func PostAdtySiteWithdrawalPaying(c *gin.Context) {
 	reviewAdtySiteWithdrawal(c, "paying")
 }
 
+func PostAdtySiteWithdrawalRecall(c *gin.Context) {
+	reviewAdtySiteWithdrawal(c, "recall")
+}
+
 func PostAdtySiteWithdrawalReject(c *gin.Context) {
 	reviewAdtySiteWithdrawal(c, "reject")
 }
@@ -158,6 +162,13 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 	switch action {
 	case "paying":
 		err = service.MarkAdtySiteWithdrawalPaying(id, c.GetInt("id"))
+	case "recall":
+		reason := strings.TrimSpace(body.Reason)
+		if reason == "" {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Recall reason is required"))
+			return
+		}
+		err = service.RecallAdtySiteWithdrawalToPending(id, c.GetInt("id"), reason)
 	case "reject":
 		reason := strings.TrimSpace(body.Reason)
 		if reason == "" {

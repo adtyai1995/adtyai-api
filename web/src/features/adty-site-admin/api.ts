@@ -633,6 +633,17 @@ export async function markSiteWithdrawalPaying(id: number): Promise<void> {
   requireServerSuccess(res.data)
 }
 
+export async function recallSiteWithdrawal(
+  id: number,
+  reason: string
+): Promise<void> {
+  const res = await api.post<ApiResponse<unknown>>(
+    `${BASE}/site-withdrawals/${id}/recall`,
+    { reason }
+  )
+  requireServerSuccess(res.data)
+}
+
 export async function markSiteWithdrawalPaid(
   id: number,
   body: { tx_id: string; proof: string }

@@ -27,8 +27,8 @@ type AdtyPaymentProvider interface {
 	Name() string
 	Methods() []AdtyMethodInfo
 	AvailableFor(method string, quote *AdtyQuote) bool
-	// Cancel 取消支付商那边的订单。返回 ErrAdtyPaymentDetected 时本地留在待支付。
-	// 网络失败、未配置和其它业务错误不代表已经收到钱，调用方仍可取消本地订单。
+	// Cancel queries/cancels the gateway order. Returns ErrAdtyPaymentDetected when paid/transfer
+	// detected; returns non-nil error when remote state cannot be verified so local order stays pending.
 	Cancel(ext *model.AdtyTopupOrder) error
 }
 

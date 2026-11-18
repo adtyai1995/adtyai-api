@@ -355,7 +355,7 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 			return err
 		}
 		if existing != nil {
-			if existing.TradeNo != tradeNo {
+			if existing.TradeNo != tradeNo || !existing.RequestUSD.Equal(requestUSD) || existing.Reason != reason || existing.ApplyOperatorId != operatorID {
 				return ErrAdtyIdempotencyConflict
 			}
 			rows, err := lockAdtyManualRefundsTx(tx, tradeNo)

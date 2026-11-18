@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	AdtyGiftFulfillmentPending   = "pending"
-	AdtyGiftFulfillmentFulfilled = "fulfilled"
-	AdtyGiftFulfillmentCanceled  = "canceled"
+	AdtyGiftFulfillmentPending       = "pending"
+	AdtyGiftFulfillmentPendingReview = "pending_review"
+	AdtyGiftFulfillmentFulfilled     = "fulfilled"
+	AdtyGiftFulfillmentCanceled      = "canceled"
 )
 
 // AdtyGiftFulfillment is the official A.8 待履约 record for a site-funded

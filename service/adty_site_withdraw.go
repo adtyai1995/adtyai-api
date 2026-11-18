@@ -222,6 +222,8 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 	} else if strings.TrimSpace(input.AccountName) == "" || strings.TrimSpace(input.AccountNo) == "" {
 		return nil, common.NewMessage("Enter the payee name and account")
 	}
+	accountNo := strings.TrimSpace(input.AccountNo)
+	accountName := strings.TrimSpace(input.AccountName)
 	var created *model.AdtySiteWithdrawal
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
@@ -243,7 +245,11 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 			return err
 		}
 		if len(existing) > 0 {
-			if existing[0].SiteId != input.SiteID || !existing[0].AmountUSD.Equal(amount) {
+			existingRate, rateErr := decimal.NewFromString(existing[0].Rate)
+			if existing[0].SiteId != input.SiteID || existing[0].OwnerUserId != input.OwnerID ||
+				!existing[0].AmountUSD.Equal(amount) || existing[0].Method != method ||
+				existing[0].Network != input.Network || existing[0].AccountNo != accountNo ||
+				existing[0].AccountName != accountName || rateErr != nil || !existingRate.Equal(input.ExpectedRate) {
 				return model.ErrAdtyIdempotencyConflict
 			}
 			created = &existing[0]
@@ -262,14 +268,15 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		}
 		net := amount.Sub(cfg.Fee)
 		payout := net.Mul(rate)
-		if _, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletEarnings, amount.Neg(), AdtySiteWalletChange{
-			Type: "earning_withdraw_freeze", IdempotencyKey: "site-withdraw:" + key, OperatorID: input.OwnerID, RefType: "site_withdraw", RefID: key,
+		// ISS-R1-0018: freeze earnings on application without decrementing Balance until paid.
+		if _, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
+			Type: "earning_withdraw_freeze", HoldDelta: amount, IdempotencyKey: "site-withdraw:" + key, OperatorID: input.OwnerID, RefType: "site_withdraw", RefID: key,
 		}); err != nil {
 			return err
 		}
 		row := &model.AdtySiteWithdrawal{
 			SiteId: site.Id, OwnerUserId: input.OwnerID, AmountUSD: amount, FeeUSD: cfg.Fee, NetUSD: net,
-			Method: method, Network: input.Network, AccountNo: strings.TrimSpace(input.AccountNo), AccountName: strings.TrimSpace(input.AccountName),
+			Method: method, Network: input.Network, AccountNo: accountNo, AccountName: accountName,
 			Rate: rateRaw, PayoutAmount: payout.String(), PayoutCurrency: currency,
 			Status: model.AdtySiteWithdrawPending, IdempotencyKey: key,
 		}
@@ -297,6 +304,27 @@ func MarkAdtySiteWithdrawalPaying(id int64, reviewerID int) error {
 	})
 }
 
+// RecallAdtySiteWithdrawalToPending returns a paying withdrawal to pending review
+// per DEC-030 (ISS-R1-0070), preserving the frozen earnings hold and recording reason.
+func RecallAdtySiteWithdrawalToPending(id int64, reviewerID int, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return common.NewMessage("Recall reason is required")
+	}
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var row model.AdtySiteWithdrawal
+		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
+			return err
+		}
+		if row.Status != model.AdtySiteWithdrawPaying {
+			return ErrAdtySiteWithdrawLocked
+		}
+		return tx.Model(&row).Updates(map[string]any{
+			"status": model.AdtySiteWithdrawPending, "reviewer_id": reviewerID, "reviewed_at": time.Now().Unix(), "proof_note": reason,
+		}).Error
+	})
+}
+
 func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string) error {
 	txID = strings.TrimSpace(txID)
 	proof = strings.TrimSpace(proof)
@@ -313,6 +341,12 @@ func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string) er
 		}
 		if row.Method == "usdt" && txID == "" {
 			return common.NewMessage("Enter the payout reference")
+		}
+		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, model.AdtySiteWalletEarnings, row.AmountUSD.Neg(), AdtySiteWalletChange{
+			Type: "earning_withdraw_paid", HoldDelta: row.AmountUSD.Neg(), IdempotencyKey: "site-withdraw-paid:" + row.IdempotencyKey,
+			OperatorID: reviewerID, Reason: proof, RefType: "site_withdraw", RefID: row.IdempotencyKey,
+		}); err != nil {
+			return err
 		}
 		return tx.Model(&row).Updates(map[string]any{
 			"status": model.AdtySiteWithdrawPaid, "reviewer_id": reviewerID, "tx_id": txID, "proof_note": proof, "paid_at": time.Now().Unix(),
@@ -333,8 +367,8 @@ func RejectAdtySiteWithdrawal(id int64, reviewerID int, reason string) error {
 		if row.Status != model.AdtySiteWithdrawPending && row.Status != model.AdtySiteWithdrawPaying {
 			return ErrAdtySiteWithdrawLocked
 		}
-		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, model.AdtySiteWalletEarnings, row.AmountUSD, AdtySiteWalletChange{
-			Type: "earning_withdraw_release", IdempotencyKey: "site-withdraw-release:" + row.IdempotencyKey, OperatorID: reviewerID, Reason: reason, RefType: "site_withdraw", RefID: row.IdempotencyKey,
+		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
+			Type: "earning_withdraw_release", HoldDelta: row.AmountUSD.Neg(), IdempotencyKey: "site-withdraw-release:" + row.IdempotencyKey, OperatorID: reviewerID, Reason: reason, RefType: "site_withdraw", RefID: row.IdempotencyKey,
 		}); err != nil {
 			return err
 		}
@@ -356,8 +390,8 @@ func releaseAdtySiteWithdrawal(id int64, siteID, ownerID int, status string, own
 		if row.Status != model.AdtySiteWithdrawPending {
 			return ErrAdtySiteWithdrawLocked
 		}
-		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, model.AdtySiteWalletEarnings, row.AmountUSD, AdtySiteWalletChange{
-			Type: "earning_withdraw_release", IdempotencyKey: "site-withdraw-release:" + row.IdempotencyKey, OperatorID: ownerID, RefType: "site_withdraw", RefID: row.IdempotencyKey,
+		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
+			Type: "earning_withdraw_release", HoldDelta: row.AmountUSD.Neg(), IdempotencyKey: "site-withdraw-release:" + row.IdempotencyKey, OperatorID: ownerID, RefType: "site_withdraw", RefID: row.IdempotencyKey,
 		}); err != nil {
 			return err
 		}

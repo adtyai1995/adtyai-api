@@ -221,6 +221,7 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.GET("/adty/admin/site-withdrawals", middleware.RootAuth(), controller.GetAdtyAdminSiteWithdrawals)
 	apiRouter.PUT("/adty/admin/site-withdrawals/rules", middleware.RootAuth(), controller.PutAdtySiteWithdrawRules)
 	apiRouter.POST("/adty/admin/site-withdrawals/:id/paying", middleware.RootAuth(), controller.PostAdtySiteWithdrawalPaying)
+	apiRouter.POST("/adty/admin/site-withdrawals/:id/recall", middleware.RootAuth(), controller.PostAdtySiteWithdrawalRecall)
 	apiRouter.POST("/adty/admin/site-withdrawals/:id/reject", middleware.RootAuth(), controller.PostAdtySiteWithdrawalReject)
 	apiRouter.POST("/adty/admin/site-withdrawals/:id/paid", middleware.RootAuth(), controller.PostAdtySiteWithdrawalPaid)
 	apiRouter.GET("/adty/admin/payment-scenes", middleware.RootAuth(), controller.GetAdtyPaymentScenes)

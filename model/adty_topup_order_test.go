@@ -518,3 +518,57 @@ func TestRefundAdtyTopUpWithRedis(t *testing.T) {
 		})
 	}
 }
+
+func TestListUserAdtyTopUpsIncludesRedeemedVoucherOrders(t *testing.T) {
+	db := prepareAdtyTopUpDB(t)
+	user := seedAdtyTopUpUser(t, db, "voucher-hist-user", 0)
+	tradeNo := "VCH-LIST-1"
+	require.NoError(t, db.Create(&TopUp{
+		UserId: user.Id, Amount: 20, Money: 20, TradeNo: tradeNo,
+		PaymentMethod: AdtyVoucherPurposeSiteCustomer, PaymentProvider: AdtyVoucherProvider,
+		CreateTime: 100, CompleteTime: 100, Status: common.TopUpStatusSuccess,
+	}).Error)
+	require.NoError(t, db.Create(&AdtyTopupOrder{
+		TradeNo: tradeNo, UserId: user.Id, Provider: AdtyVoucherProvider, Method: AdtyVoucherPurposeSiteCustomer,
+		FaceUSD: decimal.NewFromInt(20), CreditQuota: 10_000_000, PayAmount: decimal.NewFromInt(20),
+		PayCurrency: "USD", PaidAmount: decimal.NewFromInt(20), PaidCurrency: "USD",
+	}).Error)
+
+	items, total, err := ListUserAdtyTopUps(user.Id, &common.PageInfo{Page: 1, PageSize: 20})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Len(t, items, 1)
+	assert.Equal(t, tradeNo, items[0].TradeNo)
+	assert.Equal(t, AdtyVoucherProvider, items[0].PaymentProvider)
+}
+
+func TestManualRefundAndQuotaAdjustIdempotencyRejectPayloadMutationPG(t *testing.T) {
+	db := prepareAdtyTopUpDB(t)
+	user := seedAdtyTopUpUser(t, db, "idem-payload-user", 0)
+	seedCreditedOrder(t, db, user.Id, "RF-IDEM-PG", PaymentProviderAdtyBEpusdt, "100", "0", "100")
+
+	first, err := ApplyAdtyTopUpManualRefund("RF-IDEM-PG", "reason-a", 1, "idem-ref-key-1", decimal.NewFromInt(20))
+	require.NoError(t, err)
+	replay, err := ApplyAdtyTopUpManualRefund("RF-IDEM-PG", "reason-a", 1, "idem-ref-key-1", decimal.NewFromInt(20))
+	require.NoError(t, err)
+	require.Equal(t, first.Refund.RefundId, replay.Refund.RefundId)
+
+	_, err = ApplyAdtyTopUpManualRefund("RF-IDEM-PG", "reason-changed", 1, "idem-ref-key-1", decimal.NewFromInt(20))
+	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
+	_, err = ApplyAdtyTopUpManualRefund("RF-IDEM-PG", "reason-a", 2, "idem-ref-key-1", decimal.NewFromInt(20))
+	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
+	_, err = ApplyAdtyTopUpManualRefund("RF-IDEM-PG", "reason-a", 1, "idem-ref-key-1", decimal.NewFromInt(30))
+	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
+
+	adj1, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1")
+	require.NoError(t, err)
+	require.False(t, adj1.Replayed)
+	adjReplay, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1")
+	require.NoError(t, err)
+	require.True(t, adjReplay.Replayed)
+
+	_, err = AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "adj-changed", "idem-adj-key-1")
+	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
+	_, err = AdjustUserQuotaWithLedger(user.Id, 2, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1")
+	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
+}

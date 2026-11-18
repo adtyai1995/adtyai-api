@@ -86,9 +86,9 @@ func adtyRefundFigures(ext *AdtyTopupOrder, balance, checkinQuota int64) (deduct
 	if bonus < 0 {
 		bonus = 0
 	}
-	// A.8 待履约 gift was not credited to the spendable wallet, so a refund
+	// A.8 待履约 or un-credited gift was not credited to the spendable wallet, so a refund
 	// of the paid principal must not treat that promise as already-granted gift.
-	if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentPending {
+	if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentPending || ext.GiftFulfillmentStatus == AdtyGiftFulfillmentPendingReview || ext.GiftFulfillmentStatus == AdtyGiftFulfillmentCanceled {
 		bonus = 0
 	}
 	spendable := balance - checkinQuota

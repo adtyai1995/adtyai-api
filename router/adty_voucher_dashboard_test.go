@@ -123,3 +123,50 @@ func TestRootListsSiteWithdrawalsAcrossSites(t *testing.T) {
 	assert.NotContains(t, adtyJSON(t, f.engine, http.MethodGet, "/api/adty/admin/site-withdrawals?status=unknown", "", root).Body.String(), `"success":true`)
 	assert.NotContains(t, adtyJSON(t, f.engine, http.MethodGet, "/api/adty/admin/site-withdrawals", "", f.token).Body.String(), `"success":true`)
 }
+
+func TestRootRecallsPayingSiteWithdrawalToPending(t *testing.T) {
+	f := newOwnerFixture(t)
+	root := adtySessionToken(t, f.db, "withdraw-recall-root", common.RoleRootUser)
+	require.NoError(t, service.SaveAdtySiteWithdrawRules(service.AdtySiteWithdrawRules{
+		MinUSD: "10", FeeUSD: "1", AlipayCNYRate: "7.20", USDTUSDRate: "1.00",
+	}, 1))
+	_, err := service.ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(50), service.AdtySiteWalletChange{
+		Type: "earning_settlement", IdempotencyKey: "recall-earn-50",
+	})
+	require.NoError(t, err)
+	row, err := service.CreateAdtySiteWithdrawal(service.AdtySiteWithdrawInput{
+		SiteID: f.site.Id, OwnerID: f.owner.Id, AmountUSD: decimal.NewFromInt(20),
+		Method: "alipay", AccountName: "Owner", AccountNo: "owner@example.com",
+		ExpectedRate: decimal.NewFromInt(7).Add(decimal.RequireFromString("0.20")), IdempotencyKey: "recall-wd-1",
+	})
+	require.NoError(t, err)
+	require.NoError(t, service.MarkAdtySiteWithdrawalPaying(row.Id, 1))
+
+	// Empty reason or non-Root caller must be refused.
+	rec := adtyJSON(t, f.engine, http.MethodPost, fmt.Sprintf("/api/adty/admin/site-withdrawals/%d/recall", row.Id), `{"reason":"  "}`, root)
+	require.NotEqual(t, http.StatusOK, rec.Code) // or error JSON
+	recOwner := adtyJSON(t, f.engine, http.MethodPost, fmt.Sprintf("/api/adty/admin/site-withdrawals/%d/recall", row.Id), `{"reason":"retry"}`, f.token)
+	require.NotEqual(t, http.StatusOK, recOwner.Code)
+
+	// Root recalls paying -> pending with reason.
+	recOK := adtyJSON(t, f.engine, http.MethodPost, fmt.Sprintf("/api/adty/admin/site-withdrawals/%d/recall", row.Id), `{"reason":"bank details check"}`, root)
+	require.Equal(t, http.StatusOK, recOK.Code, recOK.Body.String())
+	require.Contains(t, recOK.Body.String(), `"success":true`)
+
+	var reloaded model.AdtySiteWithdrawal
+	require.NoError(t, f.db.First(&reloaded, row.Id).Error)
+	assert.Equal(t, model.AdtySiteWithdrawPending, reloaded.Status)
+	assert.Equal(t, "bank details check", reloaded.ProofNote)
+
+	var wallet model.AdtySiteWallet
+	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, model.AdtySiteWalletEarnings).First(&wallet).Error)
+	assert.True(t, wallet.Balance.Equal(decimal.NewFromInt(50)), "recall preserves Balance")
+	assert.True(t, wallet.FrozenUSD.Equal(decimal.NewFromInt(20)), "recall preserves FrozenUSD")
+
+	// Can re-mark paying and complete paid after recall.
+	require.NoError(t, service.MarkAdtySiteWithdrawalPaying(row.Id, 1))
+	require.NoError(t, service.MarkAdtySiteWithdrawalPaid(row.Id, 1, "alipay-ref-99", "completed after recall"))
+	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, model.AdtySiteWalletEarnings).First(&wallet).Error)
+	assert.True(t, wallet.Balance.Equal(decimal.NewFromInt(30)))
+	assert.True(t, wallet.FrozenUSD.IsZero())
+}

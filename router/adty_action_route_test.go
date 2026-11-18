@@ -35,6 +35,7 @@ func TestAdtyGapRoutesRegistered(t *testing.T) {
 		"POST /api/adty/site/withdrawals/:id/cancel",
 		"PUT /api/adty/admin/site-withdrawals/rules",
 		"POST /api/adty/admin/site-withdrawals/:id/paying",
+		"POST /api/adty/admin/site-withdrawals/:id/recall",
 		"POST /api/adty/admin/site-withdrawals/:id/reject",
 		"POST /api/adty/admin/site-withdrawals/:id/paid",
 		"POST /api/adty/teams/:id/profile",

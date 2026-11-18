@@ -114,7 +114,9 @@ type AdtyPaymentFacts struct {
 	ProductId        string
 	MerchantId       string
 	Environment      string
-	OperatorId       int // Server-side actor; zero denotes a provider or maintenance task.
+	OperatorId       int   // Server-side actor; zero denotes a provider or maintenance task.
+	PaidAt           int64 // Verified Unix timestamp when payment became effective (ISS-R1-0009).
+	PaidTimeVerified bool  // True only when PaidAt comes from verified gateway or reviewed timing evidence.
 }
 
 var (
@@ -141,12 +143,16 @@ var AdtyAfterTopUpCompleted func(topUp *TopUp, ext *AdtyTopupOrder)
 // AdtyReleaseTopUpReserveTx 在取消、过期或被替换改状态的同一事务里释放分站赠金冻结。未注册就跳过。
 var AdtyReleaseTopUpReserveTx func(tx *gorm.DB, ext *AdtyTopupOrder) error
 
+// AdtyBeforeExpireReleaseTx checks contractual grace buffer and remote unpaid state
+// before releasing a locally expired pending order's guarantee (ISS-R1-0010).
+// Returning allowExpire=false leaves the order pending with its guarantee intact.
+var AdtyBeforeExpireReleaseTx func(tx *gorm.DB, topUp *TopUp, ext *AdtyTopupOrder, now int64) (allowExpire bool, err error)
+
 // AdtyPrepareTopUpGiftOnCreditTx runs inside the credit transaction with the
-// pre-update order status. After cancel or expiry released a site-gift
-// reserve, it re-acquires a full guarantee or persists a 待履约 record.
-// The returned bonus quota is the spendable gift to credit with principal;
-// a pending fulfillment returns the non-site gift only (usually 0).
-var AdtyPrepareTopUpGiftOnCreditTx func(tx *gorm.DB, ext *AdtyTopupOrder, priorStatus string) (grantedBonusQuota int64, err error)
+// pre-update order status and payment facts. After cancel or expiry released
+// a site-gift reserve, it checks verified payment effective-time evidence
+// before re-acquiring a guarantee or persisting a 待履约/待核查 record.
+var AdtyPrepareTopUpGiftOnCreditTx func(tx *gorm.DB, ext *AdtyTopupOrder, priorStatus string, facts AdtyPaymentFacts) (grantedBonusQuota int64, err error)
 
 // AdtyAfterTopUpCreditCommitted runs after a successful credit commit
 // (including 待履约 persistence). It must not be used to change ledger
@@ -348,7 +354,7 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 		faceQuota = int64(credited)
 	}
 	if AdtyPrepareTopUpGiftOnCreditTx != nil {
-		granted, prepErr := AdtyPrepareTopUpGiftOnCreditTx(tx, ext, priorStatus)
+		granted, prepErr := AdtyPrepareTopUpGiftOnCreditTx(tx, ext, priorStatus, facts)
 		if prepErr != nil {
 			return false, 0, nil, nil, prepErr
 		}
@@ -616,6 +622,15 @@ func ExpireAdtyTopUps(now int64, limit int) ([]ExpiredAdtyTopUp, error) {
 			if topUp.Status != common.TopUpStatusPending || locked.ExpireAt <= 0 || locked.ExpireAt >= now {
 				return nil
 			}
+			if AdtyBeforeExpireReleaseTx != nil {
+				allow, err := AdtyBeforeExpireReleaseTx(tx, topUp, locked, now)
+				if err != nil {
+					return err
+				}
+				if !allow {
+					return nil
+				}
+			}
 			if AdtyReleaseTopUpReserveTx != nil {
 				if err := AdtyReleaseTopUpReserveTx(tx, locked); err != nil {
 					return err
@@ -678,7 +693,7 @@ func GetUserPendingAdtyTopUp(userId int, now int64) (*AdtyTopUpView, error) {
 // ListUserAdtyTopUps 分页列出本人的二开订单。
 func ListUserAdtyTopUps(userId int, pageInfo *common.PageInfo) ([]AdtyTopUpView, int64, error) {
 	query := DB.Model(&TopUp{}).Where("user_id = ? AND payment_provider IN ?", userId, []string{
-		PaymentProviderAdtyBEpusdt, PaymentProviderAdtyEpay,
+		PaymentProviderAdtyBEpusdt, PaymentProviderAdtyEpay, AdtyVoucherProvider,
 	})
 	var total int64
 	if err := query.Count(&total).Error; err != nil {

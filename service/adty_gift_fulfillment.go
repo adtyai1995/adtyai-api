@@ -1,8 +1,8 @@
 package service
 
 import (
-	"encoding/json"
 	"errors"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -77,7 +77,7 @@ func stringsHasZH(lang string) bool {
 	return len(lang) >= 2 && (lang == "zh-CN" || lang == "zh" || lang == "zhCN" || (len(lang) >= 2 && (lang[0] == 'z' || lang[0] == 'Z') && (lang[1] == 'h' || lang[1] == 'H')))
 }
 
-func prepareTopUpGiftOnCreditTx(tx *gorm.DB, ext *model.AdtyTopupOrder, priorStatus string) (int64, error) {
+func prepareTopUpGiftOnCreditTx(tx *gorm.DB, ext *model.AdtyTopupOrder, priorStatus string, facts model.AdtyPaymentFacts) (int64, error) {
 	totalBonus := topUpBonusQuota(ext)
 	bonus := adtyBonusUSDForSite(ext)
 	if tx == nil || ext == nil || ext.SiteId <= 0 || !bonus.IsPositive() {
@@ -92,6 +92,32 @@ func prepareTopUpGiftOnCreditTx(tx *gorm.DB, ext *model.AdtyTopupOrder, priorSta
 	if err != nil {
 		return 0, err
 	}
+	grantedWithoutSiteGift := totalBonus - siteQuota
+	if grantedWithoutSiteGift < 0 {
+		grantedWithoutSiteGift = 0
+	}
+	// ISS-R1-0009: Payments completed after cancel/expiry require verified payment
+	// effective-time evidence inside the order window before auto-granting site gifts.
+	if ext.ExpireAt > 0 {
+		if !facts.PaidTimeVerified || facts.PaidAt <= 0 {
+			reason := "payment completed after cancel or expiry without verified payment timestamp; pending manual review"
+			if err := upsertGiftFulfillmentTx(tx, ext, siteQuota, model.AdtyGiftFulfillmentPendingReview, "pending_review", reason); err != nil {
+				return 0, err
+			}
+			if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Update("gift_fulfillment_status", model.AdtyGiftFulfillmentPendingReview).Error; err != nil {
+				return 0, err
+			}
+			ext.GiftFulfillmentStatus = model.AdtyGiftFulfillmentPendingReview
+			return grantedWithoutSiteGift, nil
+		}
+		if facts.PaidAt > ext.ExpireAt {
+			if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Update("gift_fulfillment_status", model.AdtyGiftFulfillmentCanceled).Error; err != nil {
+				return 0, err
+			}
+			ext.GiftFulfillmentStatus = model.AdtyGiftFulfillmentCanceled
+			return grantedWithoutSiteGift, nil
+		}
+	}
 	held, err := netGiftHoldTx(tx, ext.SiteId, ext.TradeNo)
 	if err != nil {
 		return 0, err
@@ -103,18 +129,14 @@ func prepareTopUpGiftOnCreditTx(tx *gorm.DB, ext *model.AdtyTopupOrder, priorSta
 		if !errors.Is(err, errGiftGuaranteeShort) && !errors.Is(err, ErrAdtySiteWalletInsufficient) {
 			return 0, err
 		}
-		if err := upsertPendingGiftFulfillmentTx(tx, ext, siteQuota, err.Error()); err != nil {
+		if err := upsertGiftFulfillmentTx(tx, ext, siteQuota, model.AdtyGiftFulfillmentPending, "pending", err.Error()); err != nil {
 			return 0, err
 		}
 		if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Update("gift_fulfillment_status", model.AdtyGiftFulfillmentPending).Error; err != nil {
 			return 0, err
 		}
 		ext.GiftFulfillmentStatus = model.AdtyGiftFulfillmentPending
-		granted := totalBonus - siteQuota
-		if granted < 0 {
-			granted = 0
-		}
-		return granted, nil
+		return grantedWithoutSiteGift, nil
 	}
 	if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
 		"gift_reserve_source":     ext.GiftReserveSource,
@@ -331,10 +353,10 @@ func reacquireAdtySiteGiftAmountTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonus
 	return nil
 }
 
-func upsertPendingGiftFulfillmentTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonusQuota int64, reason string) error {
-	event, _ := json.Marshal(map[string]any{
+func upsertGiftFulfillmentTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonusQuota int64, status, action, reason string) error {
+	event, _ := common.Marshal(map[string]any{
 		"at":      time.Now().Unix(),
-		"action":  "pending",
+		"action":  action,
 		"reason":  reason,
 		"source":  ext.GiftReserveSource,
 		"earning": ext.GiftReserveEarning.String(),
@@ -346,7 +368,7 @@ func upsertPendingGiftFulfillmentTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonu
 		return lookup.Error
 	}
 	if lookup.RowsAffected > 0 {
-		if existing.Status == model.AdtyGiftFulfillmentPending {
+		if existing.Status == model.AdtyGiftFulfillmentPending || existing.Status == model.AdtyGiftFulfillmentPendingReview {
 			return nil
 		}
 		// A later official fulfillment or cancel is not overwritten here.
@@ -361,7 +383,7 @@ func upsertPendingGiftFulfillmentTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonu
 		OriginalSource:  ext.GiftReserveSource,
 		OriginalEarning: ext.GiftReserveEarning,
 		OriginalMargin:  ext.GiftReserveMargin,
-		Status:          model.AdtyGiftFulfillmentPending,
+		Status:          status,
 		Reason:          reason,
 		History:         "[" + string(event) + "]",
 	}
@@ -553,7 +575,7 @@ func addAdtyGiftFulfilledBonusTx(tx *gorm.DB, userID int, source string, quota i
 
 // adtyGiftFulfillmentHistory appends one event to the row's JSON history.
 func adtyGiftFulfillmentHistory(raw string, event map[string]any) string {
-	body, err := json.Marshal(event)
+	body, err := common.Marshal(event)
 	if err != nil {
 		return raw
 	}
@@ -568,16 +590,81 @@ func adtyGiftFulfillmentHistory(raw string, event map[string]any) string {
 }
 
 func notifyPendingGiftFulfillmentAfterCredit(_ *model.TopUp, ext *model.AdtyTopupOrder, _ int) {
-	if ext == nil || ext.GiftFulfillmentStatus != model.AdtyGiftFulfillmentPending {
+	if ext == nil || (ext.GiftFulfillmentStatus != model.AdtyGiftFulfillmentPending && ext.GiftFulfillmentStatus != model.AdtyGiftFulfillmentPendingReview) {
 		return
 	}
 	adtyNotifyGiftFulfillmentPending(ext)
+}
+
+const adtyExpireReleaseBufferSeconds int64 = 60
+
+// adtyOrderRequiresRemoteUnpaidConfirm reports whether an expired order had an
+// active remote HTTPS gateway checkout/channel capable of answering payment status.
+func adtyOrderRequiresRemoteUnpaidConfirm(tx *gorm.DB, ext *model.AdtyTopupOrder) (bool, error) {
+	if ext == nil || tx == nil {
+		return false, nil
+	}
+	switch ext.Provider {
+	case model.PaymentProviderAdtyBEpusdt:
+		if strings.TrimSpace(ext.GatewayTradeId) == "" || strings.TrimSpace(ext.PayAddress) == "" {
+			return false, nil
+		}
+		endpoint, err := url.Parse(strings.TrimSpace(ext.PayURL))
+		return err == nil && endpoint.Scheme == "https" && endpoint.Host != "" && endpoint.User == nil, nil
+	case model.PaymentProviderAdtyEpay:
+		if ext.ChannelId <= 0 {
+			return false, nil
+		}
+		var channel model.AdtyEpayChannel
+		if err := tx.Where("id = ?", ext.ChannelId).Limit(1).Find(&channel).Error; err != nil {
+			return false, err
+		}
+		if channel.Id == 0 || channel.Status == model.AdtyEpayStatusRevoked {
+			return false, nil
+		}
+		endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))
+		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil {
+			return false, nil
+		}
+		return channel.MerchantId != "" && channel.MerchantKey != "", nil
+	default:
+		return false, nil
+	}
+}
+
+// confirmTopUpUnpaidBeforeExpireTx enforces the post-expiry buffer and remote
+// unpaid confirmation before ExpireAdtyTopUps releases site gift guarantees (ISS-R1-0010).
+func confirmTopUpUnpaidBeforeExpireTx(tx *gorm.DB, _ *model.TopUp, ext *model.AdtyTopupOrder, now int64) (bool, error) {
+	if ext == nil || ext.ExpireAt <= 0 {
+		return true, nil
+	}
+	if now < ext.ExpireAt+adtyExpireReleaseBufferSeconds {
+		return false, nil
+	}
+	requiresRemote, err := adtyOrderRequiresRemoteUnpaidConfirm(tx, ext)
+	if err != nil {
+		return false, err
+	}
+	if !requiresRemote {
+		return true, nil
+	}
+	var latest model.AdtyOrderPaymentEvent
+	err = tx.Where("trade_no = ? AND source = ?", ext.TradeNo, model.AdtyPaymentSourceQuery).
+		Order("id desc").Limit(1).Find(&latest).Error
+	if err != nil {
+		return false, err
+	}
+	if latest.Id == 0 || latest.Outcome != "unpaid" {
+		return false, nil
+	}
+	return ext.LastQueryAt >= ext.ExpireAt || latest.CreatedAt >= ext.ExpireAt, nil
 }
 
 func initGiftFulfillmentHooks() {
 	model.AdtyPrepareTopUpGiftOnCreditTx = prepareTopUpGiftOnCreditTx
 	model.AdtyAfterTopUpCreditCommitted = notifyPendingGiftFulfillmentAfterCredit
 	model.AdtyAfterBonusSpentTx = applySiteGiftSpendOnBonusTx
+	model.AdtyBeforeExpireReleaseTx = confirmTopUpUnpaidBeforeExpireTx
 }
 
 // releaseUnusedSiteGiftGuaranteeTx releases the unused portion of a paid
@@ -747,7 +834,7 @@ func cancelPendingGiftFulfillmentOnFullRefundTx(tx *gorm.DB, ext *model.AdtyTopu
 		}
 		var row model.AdtyGiftFulfillment
 		if err := model.AdtyLockForUpdate(tx).
-			Where("trade_no = ? AND status = ?", ext.TradeNo, model.AdtyGiftFulfillmentPending).
+			Where("trade_no = ? AND status IN ?", ext.TradeNo, []string{model.AdtyGiftFulfillmentPending, model.AdtyGiftFulfillmentPendingReview}).
 			Limit(1).Find(&row).Error; err != nil {
 			return err
 		}
@@ -788,7 +875,7 @@ func cancelPendingGiftFulfillmentOnFullRefundTx(tx *gorm.DB, ext *model.AdtyTopu
 		return nil
 	}
 	res := tx.Model(&model.AdtyGiftFulfillment{}).
-		Where("trade_no = ? AND status = ?", ext.TradeNo, model.AdtyGiftFulfillmentPending).
+		Where("trade_no = ? AND status IN ?", ext.TradeNo, []string{model.AdtyGiftFulfillmentPending, model.AdtyGiftFulfillmentPendingReview}).
 		Updates(map[string]any{"status": model.AdtyGiftFulfillmentCanceled, "reason": "full refund cancelled pending fulfillment"})
 	if res.Error != nil {
 		return res.Error
@@ -824,7 +911,7 @@ func applySiteGiftSpendForSourceTx(tx *gorm.DB, userID int, tradeNo string, take
 	if ext.Id == 0 || ext.SiteId <= 0 || !bonus.IsPositive() {
 		return nil
 	}
-	if ext.GiftFulfillmentStatus == model.AdtyGiftFulfillmentPending {
+	if ext.GiftFulfillmentStatus == model.AdtyGiftFulfillmentPending || ext.GiftFulfillmentStatus == model.AdtyGiftFulfillmentPendingReview {
 		return nil
 	}
 	heldEarning, heldMargin, err := netGiftHoldByKindTx(tx, ext.SiteId, ext.TradeNo)

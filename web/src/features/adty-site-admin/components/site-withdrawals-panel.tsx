@@ -49,6 +49,7 @@ import {
   getAdminSiteWithdrawals,
   markSiteWithdrawalPaid,
   markSiteWithdrawalPaying,
+  recallSiteWithdrawal,
   rejectSiteWithdrawal,
   siteAdminKeys,
   type AdminSiteWithdrawal,
@@ -61,6 +62,7 @@ type Action =
   | { kind: 'paying'; row: AdminSiteWithdrawal }
   | { kind: 'paid'; row: AdminSiteWithdrawal }
   | { kind: 'reject'; row: AdminSiteWithdrawal }
+  | { kind: 'recall'; row: AdminSiteWithdrawal }
 
 function statusVariant(status: string) {
   if (status === 'paid') return 'success' as const
@@ -104,6 +106,9 @@ export function SiteWithdrawalsPanel() {
           proof: proof.trim(),
         })
       }
+      if (next.kind === 'recall') {
+        return recallSiteWithdrawal(next.row.id, reason.trim())
+      }
       return rejectSiteWithdrawal(next.row.id, reason.trim())
     },
     onSuccess: (_data, next) => {
@@ -111,6 +116,7 @@ export function SiteWithdrawalsPanel() {
         paying: t('Marked as paying'),
         paid: t('Payout recorded'),
         reject: t('Withdrawal rejected'),
+        recall: t('Withdrawal recalled to pending'),
       }
       toast.success(done[next.kind])
       setAction(null)
@@ -124,6 +130,35 @@ export function SiteWithdrawalsPanel() {
     (action.row.method === 'usdt'
       ? txId.trim() !== ''
       : txId.trim() !== '' || proof.trim() !== '')
+
+  const dialogConfig = (() => {
+    if (action?.kind === 'paid') {
+      return {
+        title: t('Record payout'),
+        description: t(
+          'Enter the transaction hash, or for Alipay the transfer reference. USDT payouts require the transaction hash.'
+        ),
+        submitText: t('Record payout'),
+        variant: 'brand' as const,
+      }
+    }
+    if (action?.kind === 'recall') {
+      return {
+        title: t('Recall to pending'),
+        description: t(
+          'The request returns to pending review with the earnings still frozen.'
+        ),
+        submitText: t('Recall to pending'),
+        variant: 'brand' as const,
+      }
+    }
+    return {
+      title: t('Reject withdrawal'),
+      description: t('The amount returns to the site earnings wallet.'),
+      submitText: t('Reject'),
+      variant: 'destructive' as const,
+    }
+  })()
 
   return (
     <section className='flex flex-col gap-3'>
@@ -274,12 +309,21 @@ export function SiteWithdrawalsPanel() {
                         </Button>
                       )}
                       {row.status === 'paying' && (
-                        <Button
-                          size='sm'
-                          onClick={() => open({ kind: 'paid', row })}
-                        >
-                          {t('Record payout')}
-                        </Button>
+                        <>
+                          <Button
+                            size='sm'
+                            onClick={() => open({ kind: 'paid', row })}
+                          >
+                            {t('Record payout')}
+                          </Button>
+                          <Button
+                            size='sm'
+                            variant='outline'
+                            onClick={() => open({ kind: 'recall', row })}
+                          >
+                            {t('Recall to pending')}
+                          </Button>
+                        </>
                       )}
                       {(row.status === 'pending' ||
                         row.status === 'paying') && (
@@ -319,20 +363,16 @@ export function SiteWithdrawalsPanel() {
         handleConfirm={() => action && mutation.mutate(action)}
       />
       <Dialog
-        open={action?.kind === 'paid' || action?.kind === 'reject'}
+        open={
+          action?.kind === 'paid' ||
+          action?.kind === 'reject' ||
+          action?.kind === 'recall'
+        }
         onOpenChange={(value) => {
           if (!value && !mutation.isPending) setAction(null)
         }}
-        title={
-          action?.kind === 'paid' ? t('Record payout') : t('Reject withdrawal')
-        }
-        description={
-          action?.kind === 'paid'
-            ? t(
-                'Enter the transaction hash, or for Alipay the transfer reference. USDT payouts require the transaction hash.'
-              )
-            : t('The amount returns to the site earnings wallet.')
-        }
+        title={dialogConfig.title}
+        description={dialogConfig.description}
         contentHeight='auto'
         bodyClassName='space-y-4'
         footer={
@@ -345,14 +385,14 @@ export function SiteWithdrawalsPanel() {
               {t('Cancel')}
             </Button>
             <Button
-              variant={action?.kind === 'reject' ? 'destructive' : 'brand'}
+              variant={dialogConfig.variant}
               disabled={
                 mutation.isPending ||
                 (action?.kind === 'paid' ? !paidReady : reason.trim() === '')
               }
               onClick={() => action && mutation.mutate(action)}
             >
-              {action?.kind === 'paid' ? t('Record payout') : t('Reject')}
+              {dialogConfig.submitText}
             </Button>
           </>
         }

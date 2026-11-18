@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// withdrawRejectFixture 是一条待审核的站点提现：站点收益 50 已冻结 20，钱包余 30。
+// withdrawRejectFixture 是一条待审核的站点提现：站点收益 Balance 50, FrozenUSD 20（可用 30）。
 type withdrawRejectFixture struct {
 	db       *gorm.DB
 	site     model.AdtySite
@@ -61,11 +61,17 @@ func prepareWithdrawRejectFixture(t *testing.T, name string) withdrawRejectFixtu
 	return withdrawRejectFixture{db: db, site: site, withdraw: *row}
 }
 
-func (f withdrawRejectFixture) earnings(t *testing.T) decimal.Decimal {
+func (f withdrawRejectFixture) wallet(t *testing.T) model.AdtySiteWallet {
 	t.Helper()
 	var wallet model.AdtySiteWallet
 	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, model.AdtySiteWalletEarnings).First(&wallet).Error)
-	return wallet.Balance
+	return wallet
+}
+
+func (f withdrawRejectFixture) earnings(t *testing.T) decimal.Decimal {
+	t.Helper()
+	wallet := f.wallet(t)
+	return wallet.Balance.Sub(wallet.FrozenUSD)
 }
 
 func (f withdrawRejectFixture) reload(t *testing.T) model.AdtySiteWithdrawal {

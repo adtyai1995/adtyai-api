@@ -740,3 +740,4 @@
 | `controller/option.go` | 通用配置接口拒绝写退役充值金额档位，保留历史配置读取 | 现行赠金只按获授权支付方式和真实资金保障计算，退役配置不能重新启用 | ISS-R1-0006 |
 | `web/src/i18n/locales/en.json`、`web/src/i18n/locales/zh.json` | 追加只列现行金额参数的分站开通提示 | 开站不再依赖退役赠金额外上限，错误提示与实际必填项一致 | ISS-R1-0006 |
 | `controller/topup_bepusdt.go` | 人工审核记录持久化失败向回调入口返回错误；BEpusdt 回 500/fail，Epay GET/POST 回 fail | 必要待核查记录落库后才确认接收，沿用原事件去重和支付入账事务 | ISS-R1-0007 |
+| `web/src/i18n/locales/en.json`、`web/src/i18n/locales/zh.json` | 追加分站提现打款中撤回至待审核的操作与提示词条 | Root 撤回打款中提现需同步中英文界面文案 | ISS-R1-0070 |
