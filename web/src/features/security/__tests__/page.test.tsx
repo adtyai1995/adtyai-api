@@ -256,4 +256,34 @@ describe('security page migration', () => {
       await screen.findByRole('button', { name: 'Delete Account' })
     ).toBeVisible()
   })
+
+  it('describes soft account closure, session/token revocation, and record retention on card and dialog', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    const actionsRegion = await screen.findByRole('region', {
+      name: 'Account Actions',
+    })
+    expect(
+      within(actionsRegion).getByText(
+        'Close your account and revoke active sessions and tokens while retaining order, financial, and audit records'
+      )
+    ).toBeVisible()
+
+    await user.click(
+      within(actionsRegion).getByRole('button', { name: 'Delete Account' })
+    )
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Delete Account',
+    })
+    expect(
+      within(dialog).getByText(
+        'Closing your account revokes active sessions and tokens after unsettled obligations are cleared. Historical order, financial, and audit records are retained as required.'
+      )
+    ).toBeVisible()
+    expect(
+      within(dialog).getByText(
+        'Warning: Account closure cannot be undone. Order, financial, and audit records are retained.'
+      )
+    ).toBeVisible()
+  })
 })

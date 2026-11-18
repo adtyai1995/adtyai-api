@@ -20,6 +20,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatLogQuota } from '@/lib/format'
 import { requireServerSuccess } from '@/lib/server-error-message'
@@ -50,7 +51,13 @@ export function CommonLogsStats() {
   const searchParams = route.useSearch()
   const { sensitiveVisible } = useUsageLogsContext()
 
-  const { data: stats, isLoading } = useQuery({
+  const {
+    data: stats,
+    isLoading,
+    isFetching,
+    isError,
+    refetch,
+  } = useQuery({
     queryKey: ['usage-logs-stats', isAdmin, searchParams],
     queryFn: async () => {
       const params = buildApiParams({
@@ -65,14 +72,17 @@ export function CommonLogsStats() {
         ? requireServerSuccess(await getLogStats(params))
         : requireServerSuccess(await getUserLogStats(params))
 
-      return result.success
-        ? result.data || DEFAULT_LOG_STATS
-        : DEFAULT_LOG_STATS
+      return result.data || DEFAULT_LOG_STATS
     },
-    placeholderData: (previousData) => previousData,
+    placeholderData: (previousData, previousQuery) => {
+      if (previousQuery?.queryKey[1] === isAdmin) {
+        return previousData
+      }
+      return undefined
+    },
   })
 
-  if (isLoading) {
+  if (isLoading || (isFetching && !stats && !isError)) {
     return (
       <div className='border-border flex overflow-hidden rounded-[8px] border'>
         {['usage', 'rpm', 'tpm'].map((key) => (
@@ -88,15 +98,36 @@ export function CommonLogsStats() {
     )
   }
 
+  if (isError || !stats) {
+    return (
+      <div
+        role='alert'
+        className='border-destructive/40 bg-destructive/5 text-destructive inline-flex h-7 max-w-full items-center gap-2 rounded-[8px] border px-2.5 text-xs'
+      >
+        <span>{t('Failed to load')}</span>
+        <Button
+          type='button'
+          variant='ghost'
+          size='xs'
+          className='h-5 px-1.5 text-xs'
+          disabled={isFetching}
+          onClick={() => void refetch()}
+        >
+          {t('Retry')}
+        </Button>
+      </div>
+    )
+  }
+
   // One quiet strip of cells separated by hairlines (design system §4).
   return (
     <div className='border-border divide-border inline-flex max-w-full items-stretch divide-x overflow-hidden rounded-[8px] border'>
       <StatBadge
         label={t('Usage')}
-        value={sensitiveVisible ? formatLogQuota(stats?.quota || 0) : '••••'}
+        value={sensitiveVisible ? formatLogQuota(stats.quota || 0) : '••••'}
       />
-      <StatBadge label={t('RPM')} value={stats?.rpm || 0} />
-      <StatBadge label={t('TPM')} value={stats?.tpm || 0} />
+      <StatBadge label={t('RPM')} value={stats.rpm || 0} />
+      <StatBadge label={t('TPM')} value={stats.tpm || 0} />
     </div>
   )
 }

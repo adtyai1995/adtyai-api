@@ -254,4 +254,54 @@ describe('API key group combobox Auto effect', () => {
     expect(option).toHaveTextContent('Last updated')
     expect(option.textContent?.toLowerCase()).not.toContain('channel')
   })
+
+  test('renders 96 fifteen-minute health series windows and numeric request/probe sample counts', () => {
+    const series = Array.from({ length: 96 }, (_, idx) => {
+      if (idx === 0) return { ts: 1_700_000_000 + idx * 900, success: 0, fail: 0 }
+      if (idx === 1) return { ts: 1_700_000_000 + idx * 900, success: 5, fail: 0 }
+      if (idx === 2) return { ts: 1_700_000_000 + idx * 900, success: 3, fail: 1 }
+      if (idx === 3) return { ts: 1_700_000_000 + idx * 900, success: 0, fail: 2 }
+      return { ts: 1_700_000_000 + idx * 900, success: 0, fail: 0 }
+    })
+
+    render(
+      <I18nextProvider i18n={i18n}>
+        <ApiKeyGroupCombobox
+          options={[
+            {
+              value: 'vip',
+              label: 'vip',
+              desc: 'Priority group',
+              ratio: 3,
+              health: {
+                status: 'ok',
+                request_success_rate: 0.8,
+                request_samples: 10,
+                probe_rate: 0.5,
+                probe_samples: 2,
+                updated_at: 1_700_086_400,
+                scope: 'platform',
+                series,
+              },
+            },
+          ]}
+          value='vip'
+          onValueChange={() => {}}
+        />
+      </I18nextProvider>
+    )
+
+    fireEvent.click(getTrigger())
+    const option = getCommandItem('Priority group')
+    const windows = option.querySelectorAll('[data-slot="group-health-window"]')
+    expect(windows).toHaveLength(96)
+    expect(windows[0]).toHaveAttribute('data-state', 'no_data')
+    expect(windows[0]).toHaveClass('bg-muted')
+    expect(windows[1]).toHaveAttribute('data-state', 'ok')
+    expect(windows[2]).toHaveAttribute('data-state', 'degraded')
+    expect(windows[3]).toHaveAttribute('data-state', 'fail')
+    expect(option).toHaveTextContent('Request success 80% · 10')
+    expect(option).toHaveTextContent('Probe availability 50% · 2')
+    expect(option.textContent?.toLowerCase()).not.toContain('channel')
+  })
 })

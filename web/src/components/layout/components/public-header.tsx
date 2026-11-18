@@ -80,6 +80,9 @@ export function PublicHeader(props: PublicHeaderProps) {
   const navigate = useNavigate()
   const [scrolled, setScrolled] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [desktopNotificationsOpen, setDesktopNotificationsOpen] =
+    useState(false)
+  const [mobileNotificationsOpen, setMobileNotificationsOpen] = useState(false)
   const [authPromptTarget, setAuthPromptTarget] =
     useState<AuthPromptTarget | null>(null)
   const [authPromptSecondsLeft, setAuthPromptSecondsLeft] =
@@ -307,8 +310,15 @@ export function PublicHeader(props: PublicHeaderProps) {
               {showThemeSwitch && <ThemeSwitch />}
               {showNotifications && (
                 <NotificationPopover
-                  open={notifications.popoverOpen}
-                  onOpenChange={notifications.setPopoverOpen}
+                  open={
+                    desktopNotificationsOpen ||
+                    (notifications.popoverOpen && !mobileNotificationsOpen)
+                  }
+                  onOpenChange={(open) => {
+                    setDesktopNotificationsOpen(open)
+                    if (open) setMobileNotificationsOpen(false)
+                    notifications.setPopoverOpen(open)
+                  }}
                   unreadCount={notifications.unreadCount}
                   activeTab={notifications.activeTab}
                   onTabChange={notifications.setActiveTab}
@@ -342,6 +352,33 @@ export function PublicHeader(props: PublicHeaderProps) {
             <div className='flex shrink-0 items-center gap-2 lg:hidden'>
               {showLanguageSwitcher && <LanguageSwitcher />}
               {showThemeSwitch && <ThemeSwitch />}
+              {showNotifications && (
+                <NotificationPopover
+                  open={mobileNotificationsOpen}
+                  onOpenChange={(open) => {
+                    setMobileNotificationsOpen(open)
+                    if (open) setDesktopNotificationsOpen(false)
+                    notifications.setPopoverOpen(open)
+                  }}
+                  unreadCount={notifications.unreadCount}
+                  activeTab={notifications.activeTab}
+                  onTabChange={notifications.setActiveTab}
+                  notice={notifications.notice}
+                  announcements={notifications.announcements}
+                  onHideAnnouncement={notifications.hideAnnouncement}
+                  hidingAnnouncement={notifications.hidingAnnouncement}
+                  hasMore={notifications.hasMore}
+                  loadingMore={notifications.loadingMore}
+                  onLoadMore={() => {
+                    void notifications.loadMore()
+                  }}
+                  loading={notifications.loading}
+                  error={notifications.error}
+                  onRetry={() => {
+                    void notifications.refetchNotice()
+                  }}
+                />
+              )}
               {showAuthButtons && !loading && isAuthenticated && (
                 <ProfileDropdown />
               )}

@@ -424,4 +424,79 @@ describe('API keys mutate drawer user quota query switch', () => {
     await waitFor(() => expect(createdPayloads).toHaveLength(1))
     expect(createdPayloads[0]?.allow_user_quota_query).toBe(false)
   })
+
+  test('omits remain_quota on metadata-only edit when fresh detail differs from stale row and renders ErrorState on detail error', async () => {
+    installApiFixtures([])
+    const staleRow: ApiKey = {
+      id: 10,
+      name: 'prod-key',
+      key: '',
+      status: 1,
+      remain_quota: 50_000_000,
+      used_quota: 0,
+      unlimited_quota: false,
+      expired_time: -1,
+      created_time: 1,
+      accessed_time: 0,
+      group: 'default',
+      auto_groups: [],
+      cross_group_retry: false,
+      model_limits_enabled: false,
+      model_limits: '',
+      allow_ips: '',
+      allow_user_quota_query: true,
+      rate_limit_per_minute: null,
+    }
+    const freshDetail: ApiKey = {
+      ...staleRow,
+      remain_quota: 45_000_000,
+    }
+    let failDetail = true
+    const getFixture = apiClient.get
+    vi.spyOn(apiClient, 'get').mockImplementation(async (url) => {
+      if (url === '/api/token/10') {
+        if (failDetail) {
+          throw new Error('detail load failed')
+        }
+        return { data: { success: true, data: freshDetail } }
+      }
+      return getFixture(url)
+    })
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    renderedDrawer = { queryClient }
+    render(
+      <QueryClientProvider client={queryClient}>
+        <I18nextProvider i18n={i18n}>
+          <ApiKeysProvider>
+            <ApiKeysMutateDrawer
+              open
+              currentRow={staleRow}
+              onOpenChange={() => undefined}
+            />
+          </ApiKeysProvider>
+        </I18nextProvider>
+      </QueryClientProvider>
+    )
+
+    const retryButton = await screen.findByRole('button', { name: 'Retry' })
+    expect(findButton('Save changes', true)).toBeDisabled()
+
+    failDetail = false
+    fireEvent.click(retryButton)
+
+    await waitFor(() => expect(findButton('Save changes', true)).toBeEnabled())
+    changeInput(getControlByLabel('Name'), 'prod-key-renamed')
+    fireEvent.click(findButton('Save changes', true))
+
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
+    const payload = put.mock.calls[0]?.[1] as Record<string, unknown>
+    expect(payload.name).toBe('prod-key-renamed')
+    expect(payload.remain_quota).toBeUndefined()
+  })
 })

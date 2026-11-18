@@ -111,3 +111,88 @@ it('keeps the newly selected user when the previous user request finishes later'
   expect(screen.queryByText('North Studio')).not.toBeInTheDocument()
   client.clear()
 })
+
+it('clears previous target state and gates Save/Quota/Ledger/bindings when switching to a target whose load fails', async () => {
+  useAuthStore
+    .getState()
+    .auth.setUser({ id: 1, username: 'operator', role: 100 })
+  const alice = userSchema.parse({
+    id: 7,
+    username: 'alice',
+    display_name: 'Alice',
+    role: 1,
+    status: 1,
+    quota: 5_000_000,
+    live_quota: 5_000_000,
+    used_quota: 0,
+    request_count: 0,
+    group: 'default',
+    email: 'alice@example.com',
+    site_id: 7,
+    site_name: 'North Studio',
+  })
+  const bob = userSchema.parse({
+    ...alice,
+    id: 8,
+    username: 'bob',
+    display_name: 'Bob',
+    quota: 1_000_000,
+    live_quota: 1_000_000,
+    email: 'bob-stale@example.com',
+    site_id: 8,
+    site_name: 'South Studio',
+  })
+
+  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url === '/api/user/7') {
+      return { data: { success: true, data: alice } }
+    }
+    if (url === '/api/user/8') {
+      return { data: { success: false, message: 'user load failed' } }
+    }
+    if (url === '/api/group/') {
+      return { data: { success: true, data: ['default'] } }
+    }
+    return { data: { success: true, data: { resources: [], roles: [] } } }
+  })
+
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const wrapper = (row: typeof alice) => (
+    <QueryClientProvider client={client}>
+      <UsersProvider>
+        <UsersMutateDrawer
+          open
+          currentRow={row}
+          onOpenChange={() => undefined}
+        />
+      </UsersProvider>
+    </QueryClientProvider>
+  )
+
+  const view = render(wrapper(alice))
+  expect(await screen.findByDisplayValue('Alice')).toBeInTheDocument()
+  expect(screen.getByDisplayValue('alice@example.com')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Adjust Quota' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Balance ledger' })).toBeEnabled()
+
+  view.rerender(wrapper(bob))
+
+  await act(async () => {
+    await Promise.resolve()
+  })
+
+  expect(screen.queryByDisplayValue('Alice')).not.toBeInTheDocument()
+  expect(
+    screen.queryByDisplayValue('alice@example.com')
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByDisplayValue('bob-stale@example.com')
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Adjust Quota' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Balance ledger' })).toBeDisabled()
+  client.clear()
+})

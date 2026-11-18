@@ -50,6 +50,7 @@ import {
 } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { BundledLanguage } from 'shiki'
+import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -442,7 +443,7 @@ export const CodeBlockFrame = ({
     {showToolbar && (
       <div className='bg-muted/35 border-border/70 flex min-h-10 items-center gap-2 border-b px-2 py-1.5'>
         <div className='min-w-0 flex-1'>
-          <div className='text-muted-foreground truncate font-mono text-[11px] font-medium tracking-wide uppercase'>
+          <div className='text-muted-foreground truncate font-mono text-[11px] font-medium tracking-wide'>
             {title}
           </div>
         </div>
@@ -650,6 +651,7 @@ export const CodeBlockCopyButton = ({
 }: CodeBlockCopyButtonProps) => {
   const { t } = useTranslation()
   const [isCopied, setIsCopied] = useState(false)
+  const [isCopyError, setIsCopyError] = useState(false)
   const { code } = useContext(CodeBlockContext)
   const mounted = useRef(true)
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -662,9 +664,25 @@ export const CodeBlockCopyButton = ({
     }
   }, [])
 
+  const reportCopyError = (err: Error) => {
+    if (!mounted.current) return
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current)
+    setIsCopied(false)
+    setIsCopyError(true)
+    resetTimer.current = setTimeout(() => {
+      resetTimer.current = null
+      setIsCopyError(false)
+    }, timeout)
+    if (onError) {
+      onError(err)
+    } else {
+      toast.error(t('Copy failed'))
+    }
+  }
+
   const copyToClipboard = async () => {
     if (typeof window === 'undefined' || !navigator?.clipboard?.writeText) {
-      onError?.(new Error(t('Clipboard API not available')))
+      reportCopyError(new Error(t('Clipboard API not available')))
       return
     }
 
@@ -672,6 +690,7 @@ export const CodeBlockCopyButton = ({
       await navigator.clipboard.writeText(code)
       if (!mounted.current) return
       if (resetTimer.current !== null) clearTimeout(resetTimer.current)
+      setIsCopyError(false)
       setIsCopied(true)
       resetTimer.current = setTimeout(() => {
         resetTimer.current = null
@@ -679,15 +698,23 @@ export const CodeBlockCopyButton = ({
       }, timeout)
       onCopy?.()
     } catch (error) {
-      if (mounted.current) onError?.(error as Error)
+      reportCopyError(
+        error instanceof Error ? error : new Error(t('Copy failed'))
+      )
     }
   }
 
   const Icon = isCopied ? CheckIcon : CopyIcon
+  let label = t('Copy code')
+  if (isCopied) {
+    label = t('Copied!')
+  } else if (isCopyError) {
+    label = t('Copy failed')
+  }
 
   const button = (
     <Button
-      aria-label={isCopied ? t('Copied!') : t('Copy code')}
+      aria-label={label}
       className={cn('size-8 shrink-0', className)}
       onClick={copyToClipboard}
       size='icon-sm'
@@ -703,7 +730,7 @@ export const CodeBlockCopyButton = ({
     <Tooltip>
       <TooltipTrigger render={button} />
       <TooltipContent>
-        <p>{isCopied ? t('Copied!') : t('Copy code')}</p>
+        <p>{label}</p>
       </TooltipContent>
     </Tooltip>
   )

@@ -23,10 +23,14 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PublicHeader } from '../public-header'
+
+afterEach(() => {
+  cleanup()
+})
 
 vi.mock('@/hooks/use-system-config', () => ({
   useSystemConfig: () => ({
@@ -54,13 +58,13 @@ vi.mock('@/hooks/use-notifications', () => ({
   }),
 }))
 
-async function renderHeader() {
+async function renderHeader(showNotifications = false) {
   const router = createRouter({
     routeTree: createRootRoute({
       component: () => (
         <PublicHeader
           showThemeSwitch={false}
-          showNotifications={false}
+          showNotifications={showNotifications}
           showAuthButtons={false}
         />
       ),
@@ -86,5 +90,31 @@ describe('public header language switch', () => {
     expect(mobile).not.toBeNull()
     const buttons = screen.getAllByRole('button', { name: 'Change language' })
     expect(buttons.some((button) => mobile?.contains(button))).toBe(true)
+  })
+
+  it('renders a notifications popover in the mobile bar with independent open state when showNotifications is true', async () => {
+    await renderHeader(true)
+
+    const mobile = document.querySelector('.lg\\:hidden')
+    const desktop = document.querySelector('.lg\\:flex')
+    expect(mobile).not.toBeNull()
+    expect(desktop).not.toBeNull()
+
+    const buttons = screen.getAllByRole('button', { name: 'Notifications' })
+    const mobileNotificationBtn = buttons.find((button) =>
+      mobile?.contains(button)
+    )
+    const desktopNotificationBtn = buttons.find((button) =>
+      desktop?.contains(button)
+    )
+    expect(mobileNotificationBtn).toBeDefined()
+    expect(desktopNotificationBtn).toBeDefined()
+    if (!mobileNotificationBtn) {
+      throw new Error('Mobile notification button not found')
+    }
+
+    fireEvent.click(mobileNotificationBtn)
+    expect(mobileNotificationBtn).toHaveAttribute('aria-expanded', 'true')
+    expect(desktopNotificationBtn).toHaveAttribute('aria-expanded', 'false')
   })
 })

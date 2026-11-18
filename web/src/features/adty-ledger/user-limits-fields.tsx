@@ -65,15 +65,33 @@ export function UserLimitsFields(props: { userId: number; canEdit: boolean }) {
     tpm: '',
     concurrency: '',
   })
+  const [loadedForUserId, setLoadedForUserId] = useState<number | null>(null)
   const loaded = query.data
+
   useEffect(() => {
-    if (!loaded) return
+    setDrafts({
+      rpm: '',
+      tpm: '',
+      concurrency: '',
+    })
+    setLoadedForUserId(null)
+  }, [props.userId])
+
+  useEffect(() => {
+    if (!loaded || query.isError || query.isPending) return
     setDrafts({
       rpm: loaded.rpm < 0 ? '' : String(loaded.rpm),
       tpm: loaded.tpm < 0 ? '' : String(loaded.tpm),
       concurrency: loaded.concurrency < 0 ? '' : String(loaded.concurrency),
     })
-  }, [loaded])
+    setLoadedForUserId(props.userId)
+  }, [loaded, query.isError, query.isPending, props.userId])
+
+  const isReady =
+    loadedForUserId === props.userId &&
+    query.isSuccess &&
+    !query.isError &&
+    loaded !== undefined
 
   const toValue = (draft: string) => (draft.trim() === '' ? -1 : Number(draft))
   const invalid = KEYS.some((key) => {
@@ -81,14 +99,10 @@ export function UserLimitsFields(props: { userId: number; canEdit: boolean }) {
     return !Number.isInteger(value) || value < -1
   })
   const save = useMutation({
-    mutationFn: () =>
-      putUserLimits(props.userId, {
-        rpm: toValue(drafts.rpm),
-        tpm: toValue(drafts.tpm),
-        concurrency: toValue(drafts.concurrency),
-      }),
-    onSuccess: (next) => {
-      queryClient.setQueryData(queryKey, next)
+    mutationFn: (payload: { userId: number; limits: UserLimits }) =>
+      putUserLimits(payload.userId, payload.limits),
+    onSuccess: (next, payload) => {
+      queryClient.setQueryData(['adty-user-limits', payload.userId], next)
       toast.success(t('Saved successfully'))
     },
     onError: (err) => handleServerError(err),
@@ -113,9 +127,9 @@ export function UserLimitsFields(props: { userId: number; canEdit: boolean }) {
               type='number'
               min={0}
               step={1}
-              value={drafts[key]}
+              value={isReady ? drafts[key] : ''}
               placeholder={t('Default')}
-              disabled={!props.canEdit}
+              disabled={!props.canEdit || !isReady || save.isPending}
               onChange={(event) =>
                 setDrafts((prev) => ({ ...prev, [key]: event.target.value }))
               }
@@ -123,6 +137,22 @@ export function UserLimitsFields(props: { userId: number; canEdit: boolean }) {
           </div>
         ))}
       </div>
+      {query.isError && (
+        <div
+          role='alert'
+          className='text-destructive flex items-center justify-between gap-2 text-xs'
+        >
+          <span>{t('Failed to load')}</span>
+          <Button
+            type='button'
+            size='xs'
+            variant='outline'
+            onClick={() => void query.refetch()}
+          >
+            {t('Retry')}
+          </Button>
+        </div>
+      )}
       <div className='flex items-center justify-between gap-2'>
         <p className='text-muted-foreground text-xs'>
           {t('Empty follows the default, 0 means no limit.')}
@@ -132,8 +162,18 @@ export function UserLimitsFields(props: { userId: number; canEdit: boolean }) {
             type='button'
             size='sm'
             variant='outline'
-            disabled={invalid || save.isPending}
-            onClick={() => save.mutate()}
+            disabled={!isReady || invalid || save.isPending}
+            onClick={() => {
+              if (!isReady || invalid || save.isPending) return
+              save.mutate({
+                userId: props.userId,
+                limits: {
+                  rpm: toValue(drafts.rpm),
+                  tpm: toValue(drafts.tpm),
+                  concurrency: toValue(drafts.concurrency),
+                },
+              })
+            }}
           >
             {t('Save limits')}
           </Button>

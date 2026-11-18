@@ -51,7 +51,9 @@ export function AccountActionCard(props: AccountActionCardProps) {
     },
     delete: {
       title: t('Delete Account'),
-      description: t('Permanently delete your account and all data'),
+      description: t(
+        'Close your account and revoke active sessions and tokens while retaining order, financial, and audit records'
+      ),
       icon: Trash2,
     },
   }

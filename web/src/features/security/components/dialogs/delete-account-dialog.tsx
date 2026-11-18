@@ -88,7 +88,7 @@ export function DeleteAccountDialog(props: DeleteAccountDialogProps) {
         onOpenChange={handleOpenChange}
         title={t('Delete Account')}
         desc={t(
-          'This action cannot be undone. This will permanently delete your account and remove all your data from our servers.'
+          'Closing your account revokes active sessions and tokens after unsettled obligations are cleared. Historical order, financial, and audit records are retained as required.'
         )}
         confirmText={security.pending ? t('Deleting...') : t('Delete Account')}
         destructive
@@ -101,7 +101,9 @@ export function DeleteAccountDialog(props: DeleteAccountDialogProps) {
         <Alert variant='destructive'>
           <AlertTriangle className='size-4' />
           <AlertDescription>
-            {t('Warning: This action is permanent and irreversible!')}
+            {t(
+              'Warning: Account closure cannot be undone. Order, financial, and audit records are retained.'
+            )}
           </AlertDescription>
         </Alert>
         <div className='space-y-2'>

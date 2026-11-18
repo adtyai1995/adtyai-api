@@ -27,11 +27,16 @@ import { render, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { CodeBlockFrame } from '@/components/ai-elements/code-block'
+import { staticDataTableClassNames } from '@/components/data-table/static/static-data-table-classnames'
+import { SidebarProvider } from '@/components/ui/sidebar'
+import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { adtySiteQueryKey } from '@/features/adty-site/api'
 import { STATUS_QUERY_KEY } from '@/lib/status-query'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { Footer } from '../footer'
+import { NavGroup } from '../nav-group'
 import { PublicLayout } from '../public-layout'
 
 const REMOVED_HREFS = [
@@ -164,5 +169,51 @@ describe('public layout', () => {
     )
 
     expect(screen.getAllByRole('contentinfo')).toHaveLength(1)
+  })
+
+  it('preserves natural English casing without forcing uppercase on headings, table headers, or code block titles', async () => {
+    useSystemConfigStore.getState().setConfig({
+      demoSiteEnabled: true,
+    })
+
+    await renderPage(
+      <div>
+        <SidebarProvider>
+          <NavGroup title='Console' items={[]} />
+        </SidebarProvider>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Owner</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody />
+        </Table>
+        <CodeBlockFrame showToolbar title='Quick Start Example'>
+          <div>code</div>
+        </CodeBlockFrame>
+        <Footer
+          columns={[
+            {
+              title: 'Resources',
+              links: [{ text: 'Guide', href: '/guide' }],
+            },
+          ]}
+        />
+      </div>
+    )
+
+    expect(screen.getByText('Console')).not.toHaveClass('uppercase')
+    expect(screen.getByRole('columnheader', { name: 'Owner' })).not.toHaveClass(
+      'uppercase'
+    )
+    expect(screen.getByText('Quick Start Example')).not.toHaveClass('uppercase')
+    expect(screen.getByText('Resources')).not.toHaveClass('uppercase')
+    expect(staticDataTableClassNames.compactHeaderCell).not.toContain(
+      'uppercase'
+    )
+    expect(staticDataTableClassNames.compactHeaderCellRight).not.toContain(
+      'uppercase'
+    )
   })
 })

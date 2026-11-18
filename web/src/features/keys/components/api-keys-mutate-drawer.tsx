@@ -17,9 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, KeyRound, Settings2, WalletCards } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useForm, type SubmitErrorHandler } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -34,6 +34,7 @@ import {
   sideDrawerHeaderClassName,
   sideDrawerSwitchItemClassName,
 } from '@/components/drawer-layout'
+import { ErrorState } from '@/components/error-state'
 import { MultiSelect } from '@/components/multi-select'
 import { Button } from '@/components/ui/button'
 import {
@@ -92,6 +93,7 @@ import type { ApiKey } from '../types'
 import {
   ApiKeyGroupCombobox,
   type ApiKeyGroupOption,
+  type GroupHealth,
 } from './api-key-group-combobox'
 import { useApiKeys } from './api-keys-provider'
 import { AutoGroupOrderEditor } from './auto-group-order-editor'
@@ -108,6 +110,7 @@ export function ApiKeysMutateDrawer({
   currentRow,
 }: ApiKeyMutateDrawerProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const groupDisplay = useGroupDisplay()
   const isUpdate = !!currentRow
   const currentRowId = currentRow?.id
@@ -118,6 +121,10 @@ export function ApiKeysMutateDrawer({
   const [initializedTarget, setInitializedTarget] = useState<string | null>(
     null
   )
+  const [initializedQuota, setInitializedQuota] = useState<
+    { remain_quota: number; unlimited_quota: boolean } | undefined
+  >(undefined)
+  const previousRowIdRef = useRef<number | undefined>(currentRowId)
   const defaultUseAutoGroup = status?.default_use_auto_group === true
 
   // Fetch models
@@ -144,6 +151,8 @@ export function ApiKeysMutateDrawer({
     data: apiKeyData,
     isFetched: apiKeyFetched,
     isFetching: apiKeyFetching,
+    isError: apiKeyError,
+    refetch: refetchApiKey,
   } = useQuery({
     queryKey: ['api-key', currentRowId],
     queryFn: async () =>
@@ -170,7 +179,9 @@ export function ApiKeysMutateDrawer({
       const response = await api.get('/api/adty/groups/health')
       return response.data as {
         success?: boolean
-        data?: { groups?: Array<{ group: string; status: string; request_success_rate?: number | null; request_samples?: number; probe_rate?: number | null; probe_samples?: number; scope?: string; updated_at?: number }> }
+        data?: {
+          groups?: Array<{ group: string } & GroupHealth>
+        }
       }
     },
     enabled: open,
@@ -221,13 +232,28 @@ export function ApiKeysMutateDrawer({
     defaultValues: getApiKeyFormDefaultValues(defaultUseAutoGroup),
   })
 
+  useEffect(() => {
+    if (previousRowIdRef.current !== currentRowId) {
+      if (previousRowIdRef.current !== undefined) {
+        queryClient.removeQueries({
+          queryKey: ['api-key', previousRowIdRef.current],
+        })
+      }
+      previousRowIdRef.current = currentRowId
+      setInitializedTarget(null)
+      setInitializedQuota(undefined)
+    }
+  }, [currentRowId, queryClient])
+
   // Load existing data when updating
   useEffect(() => {
     if (!open) {
+      queryClient.removeQueries({ queryKey: ['api-key'] })
       form.reset(
         getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
       )
       setInitializedTarget(null)
+      setInitializedQuota(undefined)
       return
     }
     if (
@@ -252,12 +278,17 @@ export function ApiKeysMutateDrawer({
             maxAutoGroups
           )
         )
+        setInitializedQuota({
+          remain_quota: apiKeyData.data.remain_quota,
+          unlimited_quota: apiKeyData.data.unlimited_quota,
+        })
         setInitializedTarget(target)
       }
     } else {
       form.reset(
         getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
       )
+      setInitializedQuota(undefined)
       setInitializedTarget(target)
     }
   }, [
@@ -278,6 +309,7 @@ export function ApiKeysMutateDrawer({
     availableAutoGroupNames,
     maxAutoGroups,
     initializedTarget,
+    queryClient,
   ])
 
   const formTarget =
@@ -306,14 +338,17 @@ export function ApiKeysMutateDrawer({
   const onSubmit = async (data: ApiKeyFormValues) => {
     setIsSubmitting(true)
     try {
+      const freshQuotaBaseline =
+        initializedQuota ??
+        (apiKeyData?.data
+          ? {
+              remain_quota: apiKeyData.data.remain_quota,
+              unlimited_quota: apiKeyData.data.unlimited_quota,
+            }
+          : undefined)
       const basePayload = transformFormDataToPayload(
         data,
-        isUpdate && currentRow
-          ? {
-              remain_quota: currentRow.remain_quota,
-              unlimited_quota: currentRow.unlimited_quota,
-            }
-          : undefined
+        isUpdate && currentRow ? freshQuotaBaseline : undefined
       )
 
       if (isUpdate && currentRow) {
@@ -409,6 +444,13 @@ export function ApiKeysMutateDrawer({
               : t('Add a new API key by providing necessary info.')}
           </SheetDescription>
         </SheetHeader>
+        {isUpdate && apiKeyError && (
+          <ErrorState
+            className='min-h-40'
+            title={t('Failed to load')}
+            onRetry={() => void refetchApiKey()}
+          />
+        )}
         <Form {...form}>
           <form
             id='api-key-form'

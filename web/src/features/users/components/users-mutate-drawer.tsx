@@ -121,6 +121,7 @@ export function UsersMutateDrawer({
   const groupDisplay = useGroupDisplay()
 
   const isUpdate = !!currentRow
+  const targetUserId = currentRow?.id
   const { triggerRefresh, requestVerification } = useUsers()
   const currentUser = useAuthStore((s) => s.auth.user)
   const canSubmit = canAdmin(
@@ -133,13 +134,14 @@ export function UsersMutateDrawer({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
   // Adjustments use exact quota units, separate from the form display.
-  const [currentQuotaRaw, setCurrentQuotaRaw] = useState(currentRow?.quota ?? 0)
-  const [currentLiveQuota, setCurrentLiveQuota] = useState(
-    currentRow?.live_quota ?? currentRow?.quota ?? 0
-  )
+  const [currentQuotaRaw, setCurrentQuotaRaw] = useState(0)
+  const [currentLiveQuota, setCurrentLiveQuota] = useState(0)
   const [ledgerOpen, setLedgerOpen] = useState(false)
   const [loadedUser, setLoadedUser] = useState<User>()
-  const siteUser = loadedUser?.id === currentRow?.id ? loadedUser : currentRow
+  const loadedTargetId = loadedUser?.id
+  const isTargetLoaded =
+    !isUpdate || (targetUserId !== undefined && loadedTargetId === targetUserId)
+  const siteUser = isTargetLoaded ? loadedUser : undefined
   // Matrix as loaded from the server; an unchanged matrix is not resubmitted so
   // routine edits of an administrator do not require step-up verification.
   const loadedPermissions = useRef<AdminPermissionMatrix | undefined>(undefined)
@@ -168,9 +170,17 @@ export function UsersMutateDrawer({
   // Load existing data when updating
   useEffect(() => {
     let cancelled = false
-    if (open && isUpdate && currentRow) {
+    setLoadedUser(undefined)
+    loadedPermissions.current = undefined
+    setCurrentQuotaRaw(0)
+    setCurrentLiveQuota(0)
+    setQuotaDialogOpen(false)
+    setLedgerOpen(false)
+    form.reset(USER_FORM_DEFAULT_VALUES)
+
+    if (open && isUpdate && targetUserId !== undefined) {
       // For update, fetch fresh data
-      getUser(currentRow.id)
+      getUser(targetUserId)
         .then((result) => {
           if (cancelled) return
           if (result.success && result.data) {
@@ -186,14 +196,11 @@ export function UsersMutateDrawer({
         .catch((error) => {
           if (!cancelled) handleServerError(error, t('Failed to load'))
         })
-    } else if (open && !isUpdate) {
-      // For create, reset to defaults
-      form.reset(USER_FORM_DEFAULT_VALUES)
     }
     return () => {
       cancelled = true
     }
-  }, [open, isUpdate, currentRow, form, t])
+  }, [open, isUpdate, targetUserId, form, t])
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -201,9 +208,11 @@ export function UsersMutateDrawer({
 
   const selectedRole = form.watch('role')
   const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
-  const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
+  const targetIsAdmin =
+    (selectedRole ?? (isTargetLoaded ? loadedUser?.role : 0) ?? 0) >= ROLE.ADMIN
 
   const onSubmit = async (data: UserFormValues) => {
+    if (isUpdate && !isTargetLoaded) return
     const action = isUpdate
       ? ADTY_PERMISSIONS.USER_WRITE
       : ADTY_PERMISSIONS.USER_CREATE
@@ -548,7 +557,7 @@ export function UsersMutateDrawer({
                             type='button'
                             variant='outline'
                             onClick={() => setQuotaDialogOpen(true)}
-                            disabled={!canAdjustQuota}
+                            disabled={!canAdjustQuota || !isTargetLoaded}
                           >
                             <Pencil className='mr-1 h-4 w-4' />
                             {t('Adjust Quota')}
@@ -558,6 +567,7 @@ export function UsersMutateDrawer({
                               type='button'
                               variant='outline'
                               onClick={() => setLedgerOpen(true)}
+                              disabled={!isTargetLoaded}
                             >
                               {t('Balance ledger')}
                             </Button>
@@ -676,7 +686,9 @@ export function UsersMutateDrawer({
                         </Label>
                         <Input
                           value={
-                            (currentRow?.[key as keyof User] as string) || '-'
+                            (isTargetLoaded
+                              ? (loadedUser?.[key as keyof User] as string)
+                              : '') || '-'
                           }
                           disabled
                           className='mt-1'
@@ -696,7 +708,7 @@ export function UsersMutateDrawer({
               variant='brand'
               form='user-form'
               type='submit'
-              disabled={isSubmitting || !canSubmit}
+              disabled={isSubmitting || !canSubmit || !isTargetLoaded}
             >
               {isSubmitting ? t('Saving...') : t('Save changes')}
             </Button>
@@ -705,21 +717,21 @@ export function UsersMutateDrawer({
       </Sheet>
 
       {/* Adjust Quota Dialog */}
-      {currentRow && (
+      {currentRow && isTargetLoaded && loadedUser && (
         <UserQuotaDialog
-          open={quotaDialogOpen}
+          open={quotaDialogOpen && isTargetLoaded}
           onOpenChange={setQuotaDialogOpen}
-          userId={currentRow.id}
+          userId={loadedUser.id}
           currentQuota={currentQuotaRaw}
           currentLiveQuota={currentLiveQuota}
           onSuccess={refreshUserData}
         />
       )}
-      {currentRow && (
+      {currentRow && isTargetLoaded && loadedUser && (
         <UserLedgerDialog
-          open={ledgerOpen}
+          open={ledgerOpen && isTargetLoaded}
           onOpenChange={setLedgerOpen}
-          userId={currentRow.id}
+          userId={loadedUser.id}
         />
       )}
     </>

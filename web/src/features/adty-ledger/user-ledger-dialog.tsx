@@ -17,12 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
+import { ErrorState } from '@/components/error-state'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { api } from '@/lib/api'
 import { formatQuota, formatTimestamp } from '@/lib/format'
@@ -65,6 +66,11 @@ export function UserLedgerDialog(props: {
 }) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
+
+  useEffect(() => {
+    setPage(1)
+  }, [props.userId, props.open])
+
   const query = useQuery({
     queryKey: ['adty-ledger', props.userId, page],
     queryFn: () => getUserLedger(props.userId, page),
@@ -76,18 +82,31 @@ export function UserLedgerDialog(props: {
     commission_transfer: t('Commission to balance'),
   }
 
-  return (
-    <Dialog
-      open={props.open}
-      onOpenChange={props.onOpenChange}
-      title={t('Balance ledger')}
-      contentClassName='sm:max-w-4xl'
-    >
-      <div className='flex flex-col gap-3'>
+  let bodyContent: React.ReactNode
+  if (query.isPending) {
+    bodyContent = (
+      <div
+        role='status'
+        className='text-muted-foreground flex min-h-32 items-center justify-center text-sm'
+      >
+        {t('Loading...')}
+      </div>
+    )
+  } else if (query.isError) {
+    bodyContent = (
+      <ErrorState
+        className='min-h-32'
+        title={t('Failed to load')}
+        onRetry={() => void query.refetch()}
+      />
+    )
+  } else {
+    bodyContent = (
+      <>
         <StaticDataTable
           tableClassName='min-w-[760px]'
           tableProps={{ 'aria-label': t('Balance ledger') }}
-          data={query.data?.items ?? []}
+          data={query.data.items}
           getRowKey={(row) => String(row.id)}
           emptyContent={
             <EmptyState className='min-h-32' title={t('No records')} />
@@ -127,18 +146,28 @@ export function UserLedgerDialog(props: {
             {
               id: 'operator',
               header: t('Operator'),
-              cell: (row) =>
-                row.operator_id > 0 ? `#${row.operator_id}` : '-',
+              cell: (row) => (row.operator_id > 0 ? `#${row.operator_id}` : '-'),
             },
           ]}
         />
         <PageSwitcher
           page={page}
-          total={query.data?.total ?? 0}
+          total={query.data.total}
           pageSize={PAGE_SIZE}
           onPageChange={setPage}
         />
-      </div>
+      </>
+    )
+  }
+
+  return (
+    <Dialog
+      open={props.open}
+      onOpenChange={props.onOpenChange}
+      title={t('Balance ledger')}
+      contentClassName='sm:max-w-4xl'
+    >
+      <div className='flex flex-col gap-3'>{bodyContent}</div>
     </Dialog>
   )
 }

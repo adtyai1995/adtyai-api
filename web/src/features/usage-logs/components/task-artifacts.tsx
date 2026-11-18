@@ -134,6 +134,9 @@ function LegacyAudioPreview(props: { taskId: string }) {
         onOpenChange={setOpen}
         clips={artifactsQuery.data?.legacyAudioClips ?? []}
         loading={open && artifactsQuery.isPending}
+        error={artifactsQuery.isError}
+        retrying={artifactsQuery.isFetching}
+        onRetry={() => void artifactsQuery.refetch()}
       />
     </>
   )

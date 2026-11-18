@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Dialog } from '@/components/dialog'
+import { ErrorState } from '@/components/error-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { IconBadge } from '@/components/ui/icon-badge'
@@ -37,6 +38,9 @@ interface AudioPreviewDialogProps {
   onOpenChange: (open: boolean) => void
   clips: AudioClip[]
   loading?: boolean
+  error?: boolean
+  retrying?: boolean
+  onRetry?: () => void
 }
 
 function formatDuration(seconds?: number): string {
@@ -153,6 +157,15 @@ export function AudioPreviewDialog(props: AudioPreviewDialogProps) {
       <div className='flex justify-center py-4' aria-label={t('Loading...')}>
         <Spinner />
       </div>
+    )
+  } else if (props.error) {
+    body = (
+      <ErrorState
+        className='min-h-40 py-4'
+        title={t('Failed to load artifacts')}
+        description={t('Preview unavailable')}
+        onRetry={props.onRetry}
+      />
     )
   } else if (clips.length === 0) {
     body = (

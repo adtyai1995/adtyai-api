@@ -17,11 +17,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
-import { describe, expect, test } from 'vitest'
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+
+import { api } from '@/lib/api'
 
 import type { TaskLog } from '../../types'
 import { TaskArtifactsCell } from '../task-artifacts'
+
+if (typeof Element !== 'undefined' && !Element.prototype.getAnimations) {
+  Element.prototype.getAnimations = () => []
+}
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 function taskLog(overrides: Partial<TaskLog> = {}): TaskLog {
   return {
@@ -82,5 +99,52 @@ describe('task artifacts cell', () => {
     expect(
       screen.queryByRole('button', { name: /Artifacts/ })
     ).not.toBeInTheDocument()
+  })
+
+  test('renders retryable ErrorState instead of None when legacy Suno audio preview query fails', async () => {
+    let shouldFail = true
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url.includes('/artifacts')) {
+        if (shouldFail) {
+          throw new Error('artifact projection failed')
+        }
+        return {
+          data: {
+            success: true,
+            data: {
+              artifacts: [],
+              legacy_audio_clips: [
+                {
+                  id: 'clip-1',
+                  title: 'Suno Song',
+                  audio_url: 'https://example.com/song.mp3',
+                },
+              ],
+            },
+          },
+        }
+      }
+      throw new Error(`Unexpected GET ${url}`)
+    })
+
+    renderCell(
+      taskLog({
+        platform: 'suno',
+        action: 'MUSIC',
+        admin_info: undefined,
+      })
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Click to preview audio' })
+    )
+
+    const retryButton = await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.getByText('Failed to load artifacts')).toBeVisible()
+    expect(screen.queryByText('None')).not.toBeInTheDocument()
+
+    shouldFail = false
+    fireEvent.click(retryButton)
+    await waitFor(() => expect(screen.getByText('Suno Song')).toBeVisible())
   })
 })

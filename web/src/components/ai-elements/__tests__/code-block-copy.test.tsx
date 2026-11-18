@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { CodeBlock, CodeBlockCopyButton } from '../code-block'
@@ -97,4 +98,40 @@ it('does not report completion when a pending clipboard write resolves after unm
 
   expect(onCopy).not.toHaveBeenCalled()
   expect(vi.getTimerCount()).toBe(0)
+})
+
+it('shows a default error toast and accessible error state when clipboard API is unavailable or rejects without onError', async () => {
+  const toastError = vi.spyOn(toast, 'error').mockImplementation(() => '')
+  Reflect.deleteProperty(navigator, 'clipboard')
+
+  render(
+    <CodeBlock code='const answer = 42' language='javascript'>
+      <CodeBlockCopyButton />
+    </CodeBlock>
+  )
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Copy code' }))
+  })
+
+  expect(toastError).toHaveBeenCalledWith('Copy failed')
+  expect(screen.getByRole('button', { name: 'Copy failed' })).toBeVisible()
+
+  act(() => vi.advanceTimersByTime(2000))
+  expect(screen.getByRole('button', { name: 'Copy code' })).toBeVisible()
+
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: () => Promise.reject(new Error('Permission denied')),
+    },
+  })
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Copy code' }))
+  })
+
+  expect(toastError).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole('button', { name: 'Copy failed' })).toBeVisible()
+  toastError.mockRestore()
 })

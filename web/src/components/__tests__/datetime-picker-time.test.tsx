@@ -16,10 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { createInstance } from 'i18next'
+import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { expect, test, vi } from 'vitest'
 
+import en from '@/i18n/locales/en.json'
+import zh from '@/i18n/locales/zh.json'
+
 import { DateTimePicker } from '../datetime-picker'
+import { StatusBadge } from '../status-badge'
 
 test('shows the seconds of the selected time', () => {
   render(
@@ -71,4 +77,37 @@ test('keeps the current time when the time field is emptied', () => {
   fireEvent.change(field, { target: { value: '' } })
   expect(onChange).not.toHaveBeenCalled()
   expect(field).toHaveValue('20:30:45')
+})
+
+test('translates DateTimePicker Clear aria-label and StatusBadge Click to copy title across language switches', async () => {
+  const i18n = createInstance()
+  await i18n.use(initReactI18next).init({
+    lng: 'zh',
+    fallbackLng: false,
+    nsSeparator: false,
+    resources: { en, zh },
+  })
+
+  render(
+    <I18nextProvider i18n={i18n}>
+      <DateTimePicker
+        value={new Date(2026, 9, 11, 8, 30, 0)}
+        onChange={() => undefined}
+      />
+      <StatusBadge label='草稿' />
+    </I18nextProvider>
+  )
+
+  expect(screen.getByRole('button', { name: '清空' })).toBeVisible()
+  expect(screen.getByText('草稿').closest('[data-slot="status-badge"]')).toHaveAttribute(
+    'title',
+    '点击复制: 草稿'
+  )
+
+  await act(() => i18n.changeLanguage('en'))
+  expect(screen.getByRole('button', { name: 'Clear' })).toBeVisible()
+  expect(screen.getByText('草稿').closest('[data-slot="status-badge"]')).toHaveAttribute(
+    'title',
+    'Click to copy: 草稿'
+  )
 })

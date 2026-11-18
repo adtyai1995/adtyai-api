@@ -44,6 +44,12 @@ import {
   GroupRatioBadge,
 } from './auto-group-visuals'
 
+export type GroupHealthPoint = {
+  ts: number
+  success: number
+  fail: number
+}
+
 export type GroupHealth = {
   status: 'no_data' | 'interrupted' | 'ok' | 'degraded' | string
   request_success_rate?: number | null
@@ -52,6 +58,7 @@ export type GroupHealth = {
   probe_samples?: number
   scope?: string
   updated_at?: number
+  series?: GroupHealthPoint[]
 }
 
 export type ApiKeyGroupOption = {
@@ -85,25 +92,78 @@ function formatRate(
   return `${Math.round(rate * 100)}%`
 }
 
+function getWindowState(point: GroupHealthPoint) {
+  if (point.success === 0 && point.fail === 0) return 'no_data'
+  if (point.fail === 0) return 'ok'
+  if (point.success === 0) return 'fail'
+  return 'degraded'
+}
+
+function getWindowBarClass(state: ReturnType<typeof getWindowState>) {
+  switch (state) {
+    case 'ok':
+      return 'bg-success'
+    case 'degraded':
+      return 'bg-warning'
+    case 'fail':
+      return 'bg-destructive'
+    default:
+      return 'bg-muted'
+  }
+}
+
+function GroupHealthSeriesBars(props: { series?: GroupHealthPoint[] }) {
+  const series = props.series
+  if (!series || series.length === 0) return null
+  return (
+    <span
+      data-slot='group-health-series'
+      className='mt-1 flex h-2 w-full items-stretch gap-px overflow-hidden rounded-xs'
+    >
+      {series.map((point, index) => {
+        const state = getWindowState(point)
+        return (
+          <span
+            key={point.ts || index}
+            data-slot='group-health-window'
+            data-state={state}
+            className={cn(
+              'min-w-0 flex-1 rounded-[1px]',
+              getWindowBarClass(state)
+            )}
+          />
+        )
+      })}
+    </span>
+  )
+}
+
 function GroupHealthLine(props: { health?: GroupHealth }) {
   const { t } = useTranslation()
   const health = props.health
   const updated = health?.updated_at ? ` · ${t('Last updated')} ${formatTimestamp(health.updated_at)}` : ''
+  const seriesBars = <GroupHealthSeriesBars series={health?.series} />
   if (!health || (health.status === 'no_data' && !health.probe_samples && !health.request_samples)) {
     return (
-      <span className='text-muted-foreground mt-1 flex items-center gap-2 text-xs'>
-        <span className='bg-muted inline-block size-2 rounded-full' />
-        {t('No data')}
-        {updated}
+      <span className='mt-1 flex flex-col gap-1'>
+        {seriesBars}
+        <span className='text-muted-foreground flex items-center gap-2 text-xs'>
+          <span className='bg-muted inline-block size-2 rounded-full' />
+          {t('No data')}
+          {updated}
+        </span>
       </span>
     )
   }
   if (health.status === 'interrupted') {
     return (
-      <span className='text-muted-foreground mt-1 flex items-center gap-2 text-xs'>
-        <span className='bg-muted inline-block size-2 rounded-full' />
-        {t('Monitoring interrupted')}
-        {updated}
+      <span className='mt-1 flex flex-col gap-1'>
+        {seriesBars}
+        <span className='text-muted-foreground flex items-center gap-2 text-xs'>
+          <span className='bg-muted inline-block size-2 rounded-full' />
+          {t('Monitoring interrupted')}
+          {updated}
+        </span>
       </span>
     )
   }
@@ -111,14 +171,19 @@ function GroupHealthLine(props: { health?: GroupHealth }) {
   const probe = health.probe_samples
     ? formatRate(health.probe_rate, t)
     : t('No data')
+  const requestSamples = health.request_samples ?? 0
+  const probeSamples = health.probe_samples ?? 0
   const expired = health.status === 'stale'
   return (
-    <span className='text-muted-foreground mt-1 flex items-center gap-2 text-xs tabular-nums'>
-      <span className={statusDotClass(health.status, expired)} />
-      {expired ? `${t('Expired')} · ` : ''}
-      {t('Request success')} {request} · {health.request_samples} · {t('Probe availability')} {probe}
-      {health.scope === 'site' ? ` · ${t('Site data')}` : ` · ${t('Platform data')}`}
-      {updated}
+    <span className='mt-1 flex flex-col gap-1'>
+      {seriesBars}
+      <span className='text-muted-foreground flex flex-wrap items-center gap-2 text-xs tabular-nums'>
+        <span className={statusDotClass(health.status, expired)} />
+        {expired ? `${t('Expired')} · ` : ''}
+        {t('Request success')} {request} · {requestSamples} · {t('Probe availability')} {probe} · {probeSamples}
+        {health.scope === 'site' ? ` · ${t('Site data')}` : ` · ${t('Platform data')}`}
+        {updated}
+      </span>
     </span>
   )
 }
