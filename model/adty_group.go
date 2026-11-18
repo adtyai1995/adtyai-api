@@ -23,7 +23,12 @@ const (
 	adtyGroupIDSuffixLen = 4
 	// AdtyDefaultGroupID 是 users、channels 的列默认值，不能删除。
 	AdtyDefaultGroupID = "default"
+	// AdtyGroupModelAllowOption 是分组可用模型白名单在 options 表里的键。
+	AdtyGroupModelAllowOption = "GroupModelAllow"
 )
+
+// AdtyOnSiteGroupConfigChanged 在分组迁移或删除改到分站 allowed_groups 后调用，由 service 挂上清站点缓存。
+var AdtyOnSiteGroupConfigChanged func()
 
 // adtyGroupConfigMu 让删除分组时的整份回写和单键保存排队。
 // 只在内存快照上改完再写回，会盖掉这中间已经保存的倍率。
@@ -32,7 +37,7 @@ var adtyGroupConfigMu sync.Mutex
 func adtyGroupConfigOption(key string) bool {
 	switch key {
 	case "GroupRatio", "UserUsableGroups", "TopupGroupRatio", "GroupGroupRatio", "AutoGroups",
-		"group_ratio_setting.group_special_usable_group", "ModelRequestRateLimitGroup":
+		"group_ratio_setting.group_special_usable_group", "ModelRequestRateLimitGroup", AdtyGroupModelAllowOption:
 		return true
 	default:
 		return false
@@ -99,11 +104,12 @@ type AdtyGroupRefs struct {
 	Users    int64 `json:"users"`
 	Tokens   int64 `json:"tokens"`
 	Channels int64 `json:"channels"`
+	Sites    int64 `json:"sites"`
 }
 
-// Total 是三类引用之和。
+// Total 是四类引用之和。
 func (refs AdtyGroupRefs) Total() int64 {
-	return refs.Users + refs.Tokens + refs.Channels
+	return refs.Users + refs.Tokens + refs.Channels + refs.Sites
 }
 
 // NewAdtyGroupID 生成 "g" + 4 位 [a-z0-9]，避开保留字、表里已有的 ID（含软删除）和设置里出现过的分组键。
@@ -247,7 +253,7 @@ func ActiveAdtyGroupIDs() (map[string]struct{}, error) {
 	return out, nil
 }
 
-// CountAdtyGroupRefs 统计还在使用这个分组的用户、密钥和渠道。
+// CountAdtyGroupRefs 统计还在使用这个分组的用户、密钥、渠道和分站。
 func CountAdtyGroupRefs(id string) (AdtyGroupRefs, error) {
 	return countAdtyGroupRefs(DB, id)
 }
@@ -264,7 +270,68 @@ func countAdtyGroupRefs(db *gorm.DB, id string) (AdtyGroupRefs, error) {
 		return refs, err
 	}
 	refs.Channels, err = countAdtyChannelRefs(db, id)
+	if err != nil {
+		return refs, err
+	}
+	refs.Sites, err = countAdtySiteRefs(db, id)
 	return refs, err
+}
+
+func countAdtySiteRefs(db *gorm.DB, id string) (int64, error) {
+	if db == nil || !db.Migrator().HasTable(&AdtySite{}) {
+		return 0, nil
+	}
+	var sites []AdtySite
+	if err := db.Select("id", "allowed_groups").
+		Where("allowed_groups <> '' AND status <> ?", AdtySiteStatusClosed).
+		Find(&sites).Error; err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, site := range sites {
+		groups, err := parseAdtySiteAllowedGroups(site.AllowedGroups)
+		if err != nil {
+			continue
+		}
+		if slices.Contains(groups, id) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func parseAdtySiteAllowedGroups(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var groups []string
+	if err := common.UnmarshalJsonStr(raw, &groups); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(groups))
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if group == "" || slices.Contains(out, group) {
+			continue
+		}
+		out = append(out, group)
+	}
+	return out, nil
+}
+
+func replaceAdtyGroupInSlice(groups []string, fromID, toID string) []string {
+	out := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if group == fromID {
+			group = toID
+		}
+		if group == "" || slices.Contains(out, group) {
+			continue
+		}
+		out = append(out, group)
+	}
+	return out
 }
 
 func countAdtyUserRefs(db *gorm.DB, id string) (int64, error) {
@@ -273,26 +340,62 @@ func countAdtyUserRefs(db *gorm.DB, id string) (int64, error) {
 	return count, err
 }
 
+func adtyIsPostgresDB(db *gorm.DB) bool {
+	return db != nil && db.Dialector != nil && db.Dialector.Name() == "postgres"
+}
+
 func countAdtyTokenRefs(db *gorm.DB, id string) (int64, error) {
+	if adtyIsPostgresDB(db) {
+		var count int64
+		// 空字符串不能转 jsonb。分组列和自动分组同时命中时，这一行只计一次。
+		err := db.Model(&Token{}).Where(
+			`(`+commonGroupCol+` = ? OR (auto_groups <> '' AND jsonb_exists(auto_groups::jsonb, ?)))`,
+			id, id,
+		).Count(&count).Error
+		return count, err
+	}
+	var tokens []Token
+	if err := db.Select("id", commonGroupCol, "auto_groups").
+		Where(commonGroupCol+" = ? OR auto_groups <> ''", id).Find(&tokens).Error; err != nil {
+		return 0, err
+	}
 	var count int64
-	// 空字符串不能转 jsonb。分组列和自动分组同时命中时，这一行只计一次。
-	err := db.Model(&Token{}).Where(
-		`(`+commonGroupCol+` = ? OR (auto_groups <> '' AND jsonb_exists(auto_groups::jsonb, ?)))`,
-		id, id,
-	).Count(&count).Error
-	return count, err
+	for _, token := range tokens {
+		if token.Group == id {
+			count++
+			continue
+		}
+		groups, err := token.GetAutoGroups()
+		if err == nil && slices.Contains(groups, id) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func countAdtyChannelRefs(db *gorm.DB, id string) (int64, error) {
-	var count int64
-	// 和 Channel.GetGroups 一样：先去掉首尾逗号，再按逗号拆开后精确匹配。group_2 不能命中 group_20。
-	query := `EXISTS (
+	if adtyIsPostgresDB(db) {
+		var count int64
+		// 和 Channel.GetGroups 一样：先去掉首尾逗号，再按逗号拆开后精确匹配。group_2 不能命中 group_20。
+		query := `EXISTS (
 		SELECT 1
 		FROM unnest(string_to_array(trim(both ',' from channels.` + commonGroupCol + `), ',')) AS part
 		WHERE btrim(part) = ?
 	)`
-	err := db.Model(&Channel{}).Where(query, id).Count(&count).Error
-	return count, err
+		err := db.Model(&Channel{}).Where(query, id).Count(&count).Error
+		return count, err
+	}
+	var channels []Channel
+	if err := db.Select("id", commonGroupCol).Find(&channels).Error; err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, ch := range channels {
+		if slices.Contains(ch.GetGroups(), id) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // lockLiveAdtyGroupsTx 按 ID 顺序锁住还在的分组行，避免删除和迁移互相死锁。
@@ -431,9 +534,10 @@ var (
 	ErrAdtyGroupUndeletable = errors.New("adty default group cannot be deleted")
 )
 
-// MigrateAdtyGroup 在一个事务里把用户、密钥（分组和自动分组）和渠道从 fromID 改到 toID，
+// MigrateAdtyGroup 在一个事务里把用户、密钥（分组和自动分组）、渠道、分站 allowed_groups 和 GroupModelAllow 从 fromID 改到 toID，
 // 渠道的 abilities 跟着重建。软删除的用户和密钥也一起改，免得恢复后指向不存在的分组。
-// 提交后刷新受影响用户的分组缓存和密钥缓存，再重建本机的渠道缓存。
+// 历史计费快照（RequestPriceSnapshot 等）保持原样不改。
+// 提交后刷新受影响用户的分组缓存、密钥缓存、渠道缓存、分站缓存与内存配置。
 func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 	var moved AdtyGroupRefs
 	if fromID == toID {
@@ -445,7 +549,11 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 	if _, err := GetAdtyGroup(toID); err != nil {
 		return moved, err
 	}
+	adtyGroupConfigMu.Lock()
+	defer adtyGroupConfigMu.Unlock()
 	affectedUsers := map[int]struct{}{}
+	var optionValues map[string]string
+	var siteChanged bool
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockLiveAdtyGroupsTx(tx, fromID, toID); err != nil {
 			return err
@@ -467,9 +575,13 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 		}
 
 		var tokens []Token
-		if err := lockForUpdate(tx.Unscoped()).Select("id", "user_id", commonKeyCol, commonGroupCol, "auto_groups").
-			Where(`(`+commonGroupCol+` = ? OR (auto_groups <> '' AND jsonb_exists(auto_groups::jsonb, ?)))`, fromID, fromID).
-			Order("id").Find(&tokens).Error; err != nil {
+		tokenQuery := lockForUpdate(tx.Unscoped()).Select("id", "user_id", commonKeyCol, commonGroupCol, "auto_groups")
+		if adtyIsPostgresDB(tx) {
+			tokenQuery = tokenQuery.Where(`(`+commonGroupCol+` = ? OR (auto_groups <> '' AND jsonb_exists(auto_groups::jsonb, ?)))`, fromID, fromID)
+		} else {
+			tokenQuery = tokenQuery.Where(commonGroupCol+` = ? OR auto_groups <> ''`, fromID)
+		}
+		if err := tokenQuery.Order("id").Find(&tokens).Error; err != nil {
 			return err
 		}
 		if err := invalidateTokensCache(tokens); err != nil {
@@ -485,15 +597,7 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 				return err
 			}
 			if slices.Contains(groups, fromID) {
-				next := make([]string, 0, len(groups))
-				for _, group := range groups {
-					if group == fromID {
-						group = toID
-					}
-					if !slices.Contains(next, group) {
-						next = append(next, group)
-					}
-				}
+				next := replaceAdtyGroupInSlice(groups, fromID, toID)
 				if err := token.SetAutoGroups(next); err != nil {
 					return err
 				}
@@ -518,15 +622,7 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 			if !slices.Contains(groups, fromID) {
 				continue
 			}
-			next := make([]string, 0, len(groups))
-			for _, group := range groups {
-				if group == fromID {
-					group = toID
-				}
-				if !slices.Contains(next, group) {
-					next = append(next, group)
-				}
-			}
+			next := replaceAdtyGroupInSlice(groups, fromID, toID)
 			channel.Group = strings.Join(next, ",")
 			if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Update(commonGroupCol, channel.Group).Error; err != nil {
 				return err
@@ -536,10 +632,65 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 			}
 			moved.Channels++
 		}
+
+		if tx.Migrator().HasTable(&AdtySite{}) {
+			var sites []AdtySite
+			if err := lockForUpdate(tx).Select("id", "status", "allowed_groups").
+				Where("allowed_groups <> ''").
+				Order("id").Find(&sites).Error; err != nil {
+				return err
+			}
+			for _, site := range sites {
+				groups, err := parseAdtySiteAllowedGroups(site.AllowedGroups)
+				if err != nil || !slices.Contains(groups, fromID) {
+					continue
+				}
+				next := replaceAdtyGroupInSlice(groups, fromID, toID)
+				raw, err := common.Marshal(next)
+				if err != nil {
+					return err
+				}
+				if err := tx.Model(&AdtySite{}).Where("id = ?", site.Id).Update("allowed_groups", string(raw)).Error; err != nil {
+					return err
+				}
+				siteChanged = true
+				if site.Status != AdtySiteStatusClosed {
+					moved.Sites++
+				}
+			}
+		}
+
+		if tx.Migrator().HasTable(&Option{}) {
+			var err error
+			optionValues, err = adtyGroupOptionsMigrated(fromID, toID, func(key string) (string, error) {
+				return loadAdtyGroupOptionTx(tx, key)
+			})
+			if err != nil {
+				return err
+			}
+			for key, value := range optionValues {
+				option := Option{Key: key}
+				if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+					return err
+				}
+				option.Value = value
+				if err := tx.Save(&option).Error; err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return AdtyGroupRefs{}, err
+	}
+	for key, value := range optionValues {
+		if err := updateOptionMap(key, value); err != nil {
+			common.SysError(common.LogText("update option map after group migrate (%s): %s", key, err.Error()))
+		}
+	}
+	if siteChanged && AdtyOnSiteGroupConfigChanged != nil {
+		AdtyOnSiteGroupConfigChanged()
 	}
 	for userID := range affectedUsers {
 		if err := RefreshUserGroupCache(userID); err != nil {
@@ -555,8 +706,8 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 	return moved, nil
 }
 
-// DeleteAdtyGroup 软删除分组：default 不能删，还有用户、密钥或渠道在用时拒绝。
-// 同一个事务里从各分组配置里去掉这个 ID，提交后再更新内存里的配置。
+// DeleteAdtyGroup 软删除分组：default 不能删，还有用户、密钥、渠道或分站在用时拒绝。
+// 同一个事务里从各分组配置（含 GroupModelAllow 及已关停分站的 allowed_groups）里去掉这个 ID，提交后再更新内存里的配置与缓存。
 func DeleteAdtyGroup(id string) error {
 	if id == AdtyDefaultGroupID {
 		return ErrAdtyGroupUndeletable
@@ -567,6 +718,7 @@ func DeleteAdtyGroup(id string) error {
 	adtyGroupConfigMu.Lock()
 	defer adtyGroupConfigMu.Unlock()
 	var values map[string]string
+	var siteChanged bool
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockLiveAdtyGroupsTx(tx, id); err != nil {
 			return err
@@ -577,6 +729,33 @@ func DeleteAdtyGroup(id string) error {
 		}
 		if refs.Total() > 0 {
 			return ErrAdtyGroupInUse
+		}
+		if tx.Migrator().HasTable(&AdtySite{}) {
+			var sites []AdtySite
+			if err := lockForUpdate(tx).Select("id", "allowed_groups").
+				Where("allowed_groups <> ''").
+				Order("id").Find(&sites).Error; err != nil {
+				return err
+			}
+			for _, site := range sites {
+				groups, err := parseAdtySiteAllowedGroups(site.AllowedGroups)
+				if err != nil || !slices.Contains(groups, id) {
+					continue
+				}
+				next := slices.DeleteFunc(slices.Clone(groups), func(group string) bool { return group == id })
+				encoded := ""
+				if len(next) > 0 {
+					raw, err := common.Marshal(next)
+					if err != nil {
+						return err
+					}
+					encoded = string(raw)
+				}
+				if err := tx.Model(&AdtySite{}).Where("id = ?", site.Id).Update("allowed_groups", encoded).Error; err != nil {
+					return err
+				}
+				siteChanged = true
+			}
 		}
 		values, err = adtyGroupOptionsWithout(id, func(key string) (string, error) {
 			return loadAdtyGroupOptionTx(tx, key)
@@ -603,6 +782,9 @@ func DeleteAdtyGroup(id string) error {
 		if err := updateOptionMap(key, value); err != nil {
 			return err
 		}
+	}
+	if siteChanged && AdtyOnSiteGroupConfigChanged != nil {
+		AdtyOnSiteGroupConfigChanged()
 	}
 	return nil
 }
@@ -765,5 +947,147 @@ func adtyGroupOptionsWithout(id string, load func(string) (string, error)) (map[
 	if err := put("ModelRequestRateLimitGroup", had, limits); err != nil {
 		return nil, err
 	}
+
+	common.OptionMapRWMutex.RLock()
+	gmaMemory := common.OptionMap[AdtyGroupModelAllowOption]
+	common.OptionMapRWMutex.RUnlock()
+	gmaRaw, err := adtyGroupOptionSource(load, AdtyGroupModelAllowOption, gmaMemory)
+	if err != nil {
+		return nil, err
+	}
+	gma := map[string][]string{}
+	if err := adtyUnmarshalObject(gmaRaw, &gma); err != nil {
+		return nil, err
+	}
+	_, had = gma[id]
+	delete(gma, id)
+	if err := put(AdtyGroupModelAllowOption, had, gma); err != nil {
+		return nil, err
+	}
 	return values, nil
+}
+
+// adtyGroupOptionsMigrated 在分组迁移时把 GroupModelAllow 里的源分组模型白名单并入目标分组并删掉源分组。
+func adtyGroupOptionsMigrated(fromID, toID string, load func(string) (string, error)) (map[string]string, error) {
+	values := map[string]string{}
+	common.OptionMapRWMutex.RLock()
+	gmaMemory := common.OptionMap[AdtyGroupModelAllowOption]
+	common.OptionMapRWMutex.RUnlock()
+	gmaRaw, err := adtyGroupOptionSource(load, AdtyGroupModelAllowOption, gmaMemory)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(gmaRaw) == "" {
+		return values, nil
+	}
+	gma := map[string][]string{}
+	if err := adtyUnmarshalObject(gmaRaw, &gma); err != nil {
+		return nil, err
+	}
+	fromModels, ok := gma[fromID]
+	if !ok {
+		return values, nil
+	}
+	merged := make([]string, 0, len(gma[toID])+len(fromModels))
+	for _, item := range gma[toID] {
+		item = strings.TrimSpace(item)
+		if item != "" && !slices.Contains(merged, item) {
+			merged = append(merged, item)
+		}
+	}
+	for _, item := range fromModels {
+		item = strings.TrimSpace(item)
+		if item != "" && !slices.Contains(merged, item) {
+			merged = append(merged, item)
+		}
+	}
+	gma[toID] = merged
+	delete(gma, fromID)
+	raw, err := common.Marshal(gma)
+	if err != nil {
+		return nil, err
+	}
+	values[AdtyGroupModelAllowOption] = string(raw)
+	return values, nil
+}
+
+// ValidateAdtyGroupModelAllowSchema 校验 GroupModelAllow 的值结构：空串表示清空，
+// 非空必须是「分组 ID → 非空模型名数组」的 JSON 对象，拒绝非对象、非数组、空数组元素或非字符串元素。
+func ValidateAdtyGroupModelAllowSchema(raw string) (map[string][]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var generic any
+	if err := common.UnmarshalJsonStr(raw, &generic); err != nil {
+		return nil, common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": AdtyGroupModelAllowOption})
+	}
+	object, ok := generic.(map[string]any)
+	if !ok || object == nil {
+		return nil, common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": AdtyGroupModelAllowOption})
+	}
+	out := make(map[string][]string, len(object))
+	for groupID, rawModels := range object {
+		trimmedID := strings.TrimSpace(groupID)
+		if trimmedID == "" || trimmedID != groupID {
+			return nil, common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": AdtyGroupModelAllowOption})
+		}
+		items, ok := rawModels.([]any)
+		if !ok || rawModels == nil {
+			return nil, common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": AdtyGroupModelAllowOption})
+		}
+		models := make([]string, 0, len(items))
+		for _, item := range items {
+			name, ok := item.(string)
+			if !ok || strings.TrimSpace(name) == "" {
+				return nil, common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": AdtyGroupModelAllowOption})
+			}
+			models = append(models, strings.TrimSpace(name))
+		}
+		out[trimmedID] = models
+	}
+	return out, nil
+}
+
+// BeforeSave 在持久化 options 表前守住 GroupModelAllow 的结构与活动分组引用，防止非法值覆盖已有配置。
+func (option *Option) BeforeSave(tx *gorm.DB) error {
+	if option == nil || option.Key != AdtyGroupModelAllowOption {
+		return nil
+	}
+	parsed, err := ValidateAdtyGroupModelAllowSchema(option.Value)
+	if err != nil {
+		return err
+	}
+	if len(parsed) == 0 {
+		return nil
+	}
+	for id := range parsed {
+		if id == "auto" {
+			return common.NewMessage("Group auto cannot be used in {{key}}", map[string]any{"key": AdtyGroupModelAllowOption})
+		}
+	}
+	if tx == nil || !tx.Migrator().HasTable(&AdtyGroup{}) {
+		return nil
+	}
+	var total int64
+	if err := tx.Model(&AdtyGroup{}).Count(&total).Error; err != nil {
+		return err
+	}
+	if total == 0 {
+		return nil
+	}
+	var ids []string
+	if err := tx.Model(&AdtyGroup{}).Pluck("id", &ids).Error; err != nil {
+		return err
+	}
+	active := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		active[id] = struct{}{}
+	}
+	for id := range parsed {
+		if _, ok := active[id]; !ok {
+			return common.NewMessage("Unknown group ID {{id}} in {{key}}", map[string]any{"id": id, "key": AdtyGroupModelAllowOption})
+		}
+	}
+	return nil
 }

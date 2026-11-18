@@ -25,6 +25,8 @@ import { parseModelTags as parseTagsFromUtils } from './model-utils'
 // Model Form Schema
 // ============================================================================
 
+export const MAX_MODEL_CONTEXT_LENGTH = 100_000_000
+
 /**
  * Model form validation schema
  */
@@ -36,6 +38,15 @@ export const modelFormSchema = z.object({
   tags: z.array(z.string()).default([]),
   vendor_id: z.number(),
   endpoints: z.string().default(''),
+  context_length: z
+    .number()
+    .int('Context length must be an integer')
+    .min(0, 'Context length cannot be negative')
+    .max(
+      MAX_MODEL_CONTEXT_LENGTH,
+      `Context length cannot exceed ${MAX_MODEL_CONTEXT_LENGTH}`
+    )
+    .default(0),
   name_rule: z.number().min(0).max(3).default(0),
   status: z.boolean().default(true),
   sync_official: z.boolean().default(true),
@@ -52,6 +63,7 @@ export const MODEL_FORM_DEFAULT_VALUES: ModelFormValues = {
   tags: [],
   vendor_id: 0,
   endpoints: '',
+  context_length: 0,
   name_rule: 0,
   status: true,
   sync_official: true,
@@ -92,6 +104,7 @@ export function transformModelToFormDefaults(model: Model): ModelFormValues {
     tags: parseTagsFromUtils(model.tags),
     vendor_id: model.vendor_id ?? 0,
     endpoints: model.endpoints || '',
+    context_length: model.context_length ?? 0,
     name_rule: model.name_rule || 0,
     status: model.status === 1,
     sync_official: model.sync_official === 1,
@@ -114,6 +127,7 @@ export function transformFormDataToModelPayload(
     tags: formatTagsArray(formData.tags),
     vendor_id: formData.vendor_id,
     endpoints: formData.endpoints || '',
+    context_length: formData.context_length ?? 0,
     name_rule: formData.name_rule,
     status: formData.status ? 1 : 0,
     sync_official: formData.sync_official ? 1 : 0,

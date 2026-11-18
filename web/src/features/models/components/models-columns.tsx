@@ -40,7 +40,11 @@ import { formatTimestampToDate } from '@/lib/format'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
 import { getNameRuleConfig } from '../constants'
-import { parseModelTags, formatEndpointsDisplay } from '../lib'
+import {
+  parseModelTags,
+  formatEndpointsDisplay,
+  formatModelContextLength,
+} from '../lib'
 import { getModelChannelState } from '../lib/model-utils'
 import type { Model, Vendor } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
@@ -355,6 +359,18 @@ export function useModelsColumns(
               )
             )}
           />
+        ),
+        meta: { mobileHidden: true },
+      },
+      {
+        accessorKey: 'context_length',
+        header: t('Context Length'),
+        size: 140,
+        enableSorting: false,
+        cell: ({ row }) => (
+          <TruncatedCell>
+            {formatModelContextLength(row.original.context_length)}
+          </TruncatedCell>
         ),
         meta: { mobileHidden: true },
       },

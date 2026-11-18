@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,13 @@ const (
 	NameRulePrefix
 	NameRuleContains
 	NameRuleSuffix
+
+	MaxModelContextLength = 100_000_000
+)
+
+var (
+	ErrModelContextInvalid  = errors.New("context length must be between 0 and 100000000")
+	ErrModelContextExceeded = errors.New("request tokens exceed configured model context length")
 )
 
 type ModelSquareState string
@@ -40,6 +48,7 @@ type Model struct {
 	Tags               string         `json:"tags,omitempty" gorm:"type:varchar(255)"`
 	VendorID           int            `json:"vendor_id,omitempty" gorm:"index"`
 	Endpoints          string         `json:"endpoints,omitempty" gorm:"type:text"`
+	ContextLength      int            `json:"context_length,omitempty" gorm:"default:0"`
 	SupportedEndpoints []string       `json:"supported_endpoints,omitempty" gorm:"-"`
 	Status             int            `json:"status" gorm:"default:1"`
 	SyncOfficial       int            `json:"sync_official" gorm:"default:1"`
@@ -266,7 +275,80 @@ func assertLiveModelNameAvailable(tx *gorm.DB, id int, name string) error {
 	return nil
 }
 
+func ValidateModelContextLength(contextLength int) error {
+	if contextLength < 0 || contextLength > MaxModelContextLength {
+		return ErrModelContextInvalid
+	}
+	return nil
+}
+
+// ResolveModelContextLength returns the effective token context window configured for modelName
+// across Model metadata (following exact -> prefix -> suffix -> contains precedence) and enabled AdtyModelAlias records.
+func ResolveModelContextLength(modelName string) (int, error) {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" || DB == nil {
+		return 0, nil
+	}
+	lookupNames := []string{modelName}
+	aliasContext := 0
+	if DB.Migrator().HasTable(&AdtyModelAlias{}) {
+		var alias AdtyModelAlias
+		if err := DB.Where("alias = ? AND enabled = ?", modelName, true).Limit(1).Find(&alias).Error; err != nil {
+			return 0, err
+		}
+		if err := ValidateModelContextLength(alias.Context); err != nil {
+			return 0, err
+		}
+		if alias.Context > 0 {
+			aliasContext = alias.Context
+		}
+		target := strings.TrimSpace(alias.Target)
+		if target != "" && target != modelName {
+			lookupNames = append(lookupNames, target)
+		}
+	}
+	if DB.Migrator().HasTable(&Model{}) {
+		var records []Model
+		if err := DB.Where("context_length > 0").Order("id").Find(&records).Error; err != nil {
+			return 0, err
+		}
+		resolved := resolveModelMetadata(records, lookupNames)
+		for _, candidate := range lookupNames {
+			if matched := resolved[candidate]; matched != nil && matched.ContextLength > 0 {
+				return matched.ContextLength, nil
+			}
+		}
+	}
+	return aliasContext, nil
+}
+
+func GetModelContextLength(modelName string) int {
+	limit, err := ResolveModelContextLength(modelName)
+	if err != nil {
+		return 0
+	}
+	return limit
+}
+
+// CheckModelContextLimit validates a request token count against the configured context window for modelName.
+func CheckModelContextLimit(modelName string, tokenCount int) error {
+	if tokenCount < 0 {
+		return ErrModelContextInvalid
+	}
+	limit, err := ResolveModelContextLength(modelName)
+	if err != nil {
+		return err
+	}
+	if limit > 0 && tokenCount > limit {
+		return fmt.Errorf("%w: model %s token count %d exceeds context length %d", ErrModelContextExceeded, strings.TrimSpace(modelName), tokenCount, limit)
+	}
+	return nil
+}
+
 func (mi *Model) Insert() error {
+	if err := ValidateModelContextLength(mi.ContextLength); err != nil {
+		return err
+	}
 	return metadataTransaction(func(tx *gorm.DB) error {
 		if err := validateModelVendor(tx, mi.VendorID); err != nil {
 			return err
@@ -276,15 +358,19 @@ func (mi *Model) Insert() error {
 		}
 		now := common.GetTimestamp()
 		mi.CreatedTime, mi.UpdatedTime = now, now
-		status, syncOfficial := mi.Status, mi.SyncOfficial
+		status, syncOfficial, contextLength := mi.Status, mi.SyncOfficial, mi.ContextLength
 		if err := tx.Create(mi).Error; err != nil {
 			if isAdtyUniqueViolation(err) {
 				return ErrModelNameDuplicated
 			}
 			return err
 		}
-		mi.Status, mi.SyncOfficial = status, syncOfficial
-		return tx.Model(&Model{}).Where("id = ?", mi.Id).Updates(map[string]any{"status": status, "sync_official": syncOfficial}).Error
+		mi.Status, mi.SyncOfficial, mi.ContextLength = status, syncOfficial, contextLength
+		return tx.Model(&Model{}).Where("id = ?", mi.Id).Updates(map[string]any{
+			"status":         status,
+			"sync_official":  syncOfficial,
+			"context_length": contextLength,
+		}).Error
 	})
 }
 
@@ -298,6 +384,9 @@ func IsModelNameDuplicated(id int, name string) (bool, error) {
 }
 
 func (mi *Model) Update() error {
+	if err := ValidateModelContextLength(mi.ContextLength); err != nil {
+		return err
+	}
 	return metadataTransaction(func(tx *gorm.DB) error {
 		if err := validateModelVendor(tx, mi.VendorID); err != nil {
 			return err
@@ -307,7 +396,7 @@ func (mi *Model) Update() error {
 		}
 		mi.UpdatedTime = common.GetTimestamp()
 		return tx.Model(&Model{}).Where("id = ?", mi.Id).
-			Select("model_name", "description", "icon", "tags", "vendor_id", "endpoints", "status", "sync_official", "name_rule", "updated_time").Updates(mi).Error
+			Select("model_name", "description", "icon", "tags", "vendor_id", "endpoints", "context_length", "status", "sync_official", "name_rule", "updated_time").Updates(mi).Error
 	})
 }
 

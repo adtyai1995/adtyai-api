@@ -196,6 +196,7 @@ export function ModelsTable() {
       vendor_id: false,
       name_rule: false,
       endpoints: false,
+      context_length: false,
       created_time: false,
       updated_time: false,
       status: false,

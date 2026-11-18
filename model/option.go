@@ -338,6 +338,10 @@ func validateOptionValue(key string, value string) error {
 		if err := common.UnmarshalJsonStr(value, &parsed); err != nil || parsed == nil {
 			return common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": key})
 		}
+	case AdtyGroupModelAllowOption:
+		if _, err := ValidateAdtyGroupModelAllowSchema(value); err != nil {
+			return err
+		}
 	}
 	parts := strings.SplitN(key, ".", 2)
 	if len(parts) == 2 {

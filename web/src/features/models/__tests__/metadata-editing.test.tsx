@@ -38,6 +38,12 @@ import { DataTableRowActions } from '../components/data-table-row-actions'
 import { ModelMutateDrawer } from '../components/drawers/model-mutate-drawer'
 import { ModelsDialogs } from '../components/models-dialogs'
 import { ModelsProvider } from '../components/models-provider'
+import {
+  formatModelContextLength,
+  modelFormSchema,
+  transformFormDataToModelPayload,
+  transformModelToFormDefaults,
+} from '../lib'
 import type { Model } from '../types'
 
 const model = {
@@ -684,6 +690,102 @@ describe('metadata editing', () => {
     expect(screen.getByLabelText('Description')).toHaveValue(
       'Unsaved metadata draft'
     )
+    client.clear()
+  })
+
+  it('edits and persists context_length while preserving tags and endpoints and rejecting invalid boundaries', async () => {
+    const modelWithContext: Model = {
+      ...model,
+      tags: 'Chat,Vision',
+      endpoints: '{"openai":"/v1/chat/completions"}',
+      context_length: 128000,
+    }
+    const defaults = transformModelToFormDefaults(modelWithContext)
+    expect(defaults.context_length).toBe(128000)
+    expect(defaults.tags).toEqual(['Chat', 'Vision'])
+    expect(defaults.endpoints).toBe('{"openai":"/v1/chat/completions"}')
+    expect(formatModelContextLength(128000)).toBe('128,000 tokens')
+    expect(formatModelContextLength(0)).toBe('—')
+    expect(
+      modelFormSchema.safeParse({ ...defaults, context_length: -1 }).success
+    ).toBe(false)
+    expect(
+      modelFormSchema.safeParse({
+        ...defaults,
+        context_length: 100_000_001,
+      }).success
+    ).toBe(false)
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/models/7') {
+        return { data: { success: true, data: modelWithContext } }
+      }
+      if (url === '/api/vendors/') {
+        return {
+          data: {
+            success: true,
+            data: { items: [{ id: 3, name: 'Existing vendor' }] },
+          },
+        }
+      }
+      return { data: { success: true, data: { items: [] } } }
+    })
+    const put = vi.spyOn(api, 'put').mockImplementation(async (_url, body) => ({
+      data: {
+        success: true,
+        data: { ...modelWithContext, ...(body as Partial<Model>) },
+      },
+    }))
+
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ModelsProvider>
+          <ModelMutateDrawer
+            open
+            onOpenChange={() => {}}
+            currentRow={modelWithContext}
+          />
+        </ModelsProvider>
+      </QueryClientProvider>
+    )
+
+    const contextInput = await screen.findByLabelText('Context Length')
+    await waitFor(() => expect(contextInput).toHaveValue(128000))
+    const user = userEvent.setup()
+
+    fireEvent.change(contextInput, { target: { value: '-5' } })
+    await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+    expect(
+      await screen.findByText('Context length cannot be negative')
+    ).toBeVisible()
+    expect(put).not.toHaveBeenCalled()
+
+    fireEvent.change(contextInput, { target: { value: '256000' } })
+    await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
+    expect(put).toHaveBeenCalledWith(
+      '/api/models/',
+      expect.objectContaining({
+        id: 7,
+        model_name: 'example-model',
+        tags: 'Chat,Vision',
+        endpoints: '{"openai":"/v1/chat/completions"}',
+        context_length: 256000,
+      }),
+      { skipBusinessError: true, skipErrorHandler: true }
+    )
+    expect(
+      transformFormDataToModelPayload({
+        ...defaults,
+        context_length: 256000,
+      }).context_length
+    ).toBe(256000)
     client.clear()
   })
 })

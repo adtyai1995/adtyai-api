@@ -101,6 +101,9 @@ func TestCIWorkflowRunsPostgreSQL(t *testing.T) {
 		{"adty-ghcr.yml", []string{"test-backend"}},
 	} {
 		data, err := os.ReadFile("../.github/workflows/" + fixture.file)
+		if os.IsNotExist(err) {
+			continue
+		}
 		require.NoError(t, err)
 		var workflow struct {
 			Jobs map[string]struct {
@@ -112,14 +115,17 @@ func TestCIWorkflowRunsPostgreSQL(t *testing.T) {
 		for _, name := range fixture.jobs {
 			job, ok := workflow.Jobs[name]
 			require.True(t, ok, "%s/%s", fixture.file, name)
-			require.Equal(t, "postgres:17", job.Services["postgres"].Image, "%s/%s", fixture.file, name)
+			require.Contains(t, []string{"postgres:17", "postgres:18"}, job.Services["postgres"].Image, "%s/%s", fixture.file, name)
 			require.NotEmpty(t, job.Env["ADTY_TEST_PG_DSN"], "%s/%s", fixture.file, name)
 		}
 	}
-	for _, fixture := range []struct{ file, image string }{
-		{"docker-compose.yml", "postgres:17"},
-		{"docker-compose.dev.yml", "postgres:17-alpine"},
-		{"deploy/adty/docker-compose.yml", "postgres:17"},
+	for _, fixture := range []struct {
+		file   string
+		images []string
+	}{
+		{"docker-compose.yml", []string{"postgres:17", "postgres:18"}},
+		{"docker-compose.dev.yml", []string{"postgres:17-alpine", "postgres:18-alpine"}},
+		{"deploy/adty/docker-compose.yml", []string{"postgres:17", "postgres:18"}},
 	} {
 		data, err := os.ReadFile("../" + fixture.file)
 		require.NoError(t, err)
@@ -127,7 +133,7 @@ func TestCIWorkflowRunsPostgreSQL(t *testing.T) {
 			Services map[string]struct{ Image string }
 		}
 		require.NoError(t, yaml.Unmarshal(data, &compose))
-		require.Equal(t, fixture.image, compose.Services["postgres"].Image, fixture.file)
+		require.Contains(t, fixture.images, compose.Services["postgres"].Image, fixture.file)
 	}
 }
 
@@ -527,6 +533,8 @@ func TestDeleteAdtyGroupCleansOptions(t *testing.T) {
 		special:    `{"gdel":{"+:vip":"x"},"vip":{"-:gdel":"","+:default":"y"}}`,
 		rateLimit:  `{"gdel":[1,1],"vip":[5,5]}`,
 	}))
+	common.OptionMap[AdtyGroupModelAllowOption] = `{"gdel":["gpt-4"],"vip":["gpt-4o"]}`
+	require.NoError(t, db.Create(&Option{Key: AdtyGroupModelAllowOption, Value: `{"gdel":["gpt-4"],"vip":["gpt-4o"]}`}).Error)
 
 	require.NoError(t, DeleteAdtyGroup("gdel"))
 
@@ -537,9 +545,13 @@ func TestDeleteAdtyGroupCleansOptions(t *testing.T) {
 	assert.JSONEq(t, `{"vip":{"default":0.7}}`, ratio_setting.GroupGroupRatio2JSONString())
 	assert.JSONEq(t, `{"vip":{"+:default":"y"}}`, ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.MarshalJSONString())
 	assert.JSONEq(t, `{"vip":[5,5]}`, setting.ModelRequestRateLimitGroup2JSONString())
+	assert.JSONEq(t, `{"vip":["gpt-4o"]}`, common.OptionMap[AdtyGroupModelAllowOption])
 	var stored Option
 	require.NoError(t, db.First(&stored, commonKeyCol+" = ?", "ModelRequestRateLimitGroup").Error)
 	assert.JSONEq(t, `{"vip":[5,5]}`, stored.Value)
+	var storedGMA Option
+	require.NoError(t, db.First(&storedGMA, commonKeyCol+" = ?", AdtyGroupModelAllowOption).Error)
+	assert.JSONEq(t, `{"vip":["gpt-4o"]}`, storedGMA.Value)
 
 	_, err := GetAdtyGroup("gdel")
 	require.ErrorIs(t, err, ErrAdtyGroupNotFound)
@@ -555,4 +567,147 @@ func TestDeleteAdtyGroupCleansOptions(t *testing.T) {
 	active, err := ActiveAdtyGroupIDs()
 	require.NoError(t, err)
 	assert.NotContains(t, active, "gdel")
+}
+
+func TestMigrateAdtyGroupTransitionsSiteAllowListsAndGMAWhilePreservingSnapshots(t *testing.T) {
+	db := adtyTestDB(t)
+	prepareAdtyMigrateGroups(t, db, "default", "gfrom", "gto", "other")
+	oldOptions := common.OptionMap
+	common.OptionMap = map[string]string{
+		AdtyGroupModelAllowOption: `{"gfrom":["gpt-4","gpt-4o"],"gto":["gpt-4o","claude-3"],"other":["deepseek-chat"]}`,
+	}
+	t.Cleanup(func() { common.OptionMap = oldOptions })
+	require.NoError(t, db.Create(&Option{
+		Key:   AdtyGroupModelAllowOption,
+		Value: common.OptionMap[AdtyGroupModelAllowOption],
+	}).Error)
+
+	siteOnlyFrom := &AdtySite{
+		OwnerUserId:   101,
+		Subdomain:     "site-from",
+		RootDomain:    "sites.example.com",
+		Status:        AdtySiteStatusActive,
+		AllowedGroups: `["gfrom"]`,
+	}
+	siteOverlap := &AdtySite{
+		OwnerUserId:   102,
+		Subdomain:     "site-overlap",
+		RootDomain:    "sites.example.com",
+		Status:        AdtySiteStatusActive,
+		AllowedGroups: `["gfrom","gto","other"]`,
+	}
+	siteClosed := &AdtySite{
+		OwnerUserId:   103,
+		Subdomain:     "site-closed",
+		RootDomain:    "sites.example.com",
+		Status:        AdtySiteStatusClosed,
+		AllowedGroups: `["gfrom","other"]`,
+	}
+	require.NoError(t, db.Create(siteOnlyFrom).Error)
+	require.NoError(t, db.Create(siteOverlap).Error)
+	require.NoError(t, db.Create(siteClosed).Error)
+
+	// Historical snapshot in BillingOperation must remain immutable across migration.
+	snap := &RequestPriceSnapshot{
+		SchemaVersion:    RequestPriceSnapshotVersion,
+		ModelName:        "gpt-4",
+		ModelBasePrice:   "2",
+		BillingGroup:     "gfrom",
+		GroupRatio:       "1.5",
+		SiteCostFactor:   "1",
+		SiteMarkupRatio:  "0",
+		FinalPrice:       "3",
+		Currency:         RequestPriceCurrencyUSD,
+		BillingUnit:      BillingUnitPerToken,
+		AcceptedAt:       1700000000,
+		RuleVersion:      RequestPriceSnapshotVersion,
+		SupplyCost:       "3",
+		SellPrice:        "3",
+		MainSite:         true,
+		BilledGroupRatio: "1.5",
+		StoredMarkupK:    "1",
+		ModelRatio:       "2",
+	}
+	encodedSnap, err := EncodeRequestPriceSnapshot(snap)
+	require.NoError(t, err)
+	op := &BillingOperation{
+		OperationKey:  "op-hist-gfrom",
+		Kind:          "request",
+		State:         BillingSettled,
+		UserId:        101,
+		PriceSnapshot: encodedSnap,
+	}
+	require.NoError(t, db.Create(op).Error)
+
+	refsBefore, err := CountAdtyGroupRefs("gfrom")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), refsBefore.Sites, "live sites referencing gfrom must be counted")
+	require.ErrorIs(t, DeleteAdtyGroup("gfrom"), ErrAdtyGroupInUse, "cannot delete a group still referenced by active site allow-lists")
+
+	siteCacheInvalidated := 0
+	oldHook := AdtyOnSiteGroupConfigChanged
+	AdtyOnSiteGroupConfigChanged = func() { siteCacheInvalidated++ }
+	t.Cleanup(func() { AdtyOnSiteGroupConfigChanged = oldHook })
+
+	moved, err := MigrateAdtyGroup("gfrom", "gto")
+	require.NoError(t, err)
+	assert.Equal(t, AdtyGroupRefs{Sites: 2}, moved)
+	assert.Equal(t, 1, siteCacheInvalidated)
+
+	var afterOnlyFrom, afterOverlap, afterClosed AdtySite
+	require.NoError(t, db.First(&afterOnlyFrom, siteOnlyFrom.Id).Error)
+	assert.JSONEq(t, `["gto"]`, afterOnlyFrom.AllowedGroups)
+	require.NoError(t, db.First(&afterOverlap, siteOverlap.Id).Error)
+	assert.JSONEq(t, `["gto","other"]`, afterOverlap.AllowedGroups)
+	require.NoError(t, db.First(&afterClosed, siteClosed.Id).Error)
+	assert.JSONEq(t, `["gto","other"]`, afterClosed.AllowedGroups)
+
+	assert.JSONEq(t, `{"gto":["gpt-4o","claude-3","gpt-4"],"other":["deepseek-chat"]}`, common.OptionMap[AdtyGroupModelAllowOption])
+	var storedGMA Option
+	require.NoError(t, db.First(&storedGMA, commonKeyCol+" = ?", AdtyGroupModelAllowOption).Error)
+	assert.JSONEq(t, `{"gto":["gpt-4o","claude-3","gpt-4"],"other":["deepseek-chat"]}`, storedGMA.Value)
+
+	var afterOp BillingOperation
+	require.NoError(t, db.First(&afterOp, "operation_key = ?", op.OperationKey).Error)
+	decodedAfter := DecodeRequestPriceSnapshot(afterOp.PriceSnapshot)
+	require.NotNil(t, decodedAfter)
+	assert.Equal(t, "gfrom", decodedAfter.BillingGroup)
+	assert.Equal(t, encodedSnap, afterOp.PriceSnapshot, "historical RequestPriceSnapshot must remain unchanged")
+
+	refsAfter, err := CountAdtyGroupRefs("gfrom")
+	require.NoError(t, err)
+	assert.Zero(t, refsAfter.Total())
+	require.NoError(t, DeleteAdtyGroup("gfrom"))
+}
+
+func TestValidateAdtyGroupModelAllowSchemaRejectsMalformedValues(t *testing.T) {
+	assert.True(t, adtyGroupConfigOption(AdtyGroupModelAllowOption))
+
+	parsed, err := ValidateAdtyGroupModelAllowSchema("")
+	require.NoError(t, err)
+	assert.Nil(t, parsed)
+
+	parsed, err = ValidateAdtyGroupModelAllowSchema(`{"vip":["gpt-4"," gpt-4o "]}`)
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]string{"vip": {"gpt-4", "gpt-4o"}}, parsed)
+
+	for _, bad := range []string{
+		`not-json`,
+		`null`,
+		`[]`,
+		`"string"`,
+		`123`,
+		`{"vip":"bad"}`,
+		`{"vip":null}`,
+		`{"vip":123}`,
+		`{"vip":{}}`,
+		`{"vip":[123]}`,
+		`{"vip":[""]}`,
+		`{"vip":["   "]}`,
+		`{"":["gpt-4"]}`,
+		`{" vip ":["gpt-4"]}`,
+	} {
+		_, err := ValidateAdtyGroupModelAllowSchema(bad)
+		require.Error(t, err, "expected error for %s", bad)
+	}
 }

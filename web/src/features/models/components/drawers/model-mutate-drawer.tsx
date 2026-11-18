@@ -318,6 +318,7 @@ export function ModelMutateDrawer(props: {
                 <Form {...form}>
                   <form
                     id='model-form'
+                    noValidate
                     onSubmit={form.handleSubmit((values) =>
                       save.mutate(values)
                     )}
@@ -439,6 +440,43 @@ export function ModelMutateDrawer(props: {
                             </FormControl>
                             <FormDescription>
                               {t('Press Enter or comma to add tags')}
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name='context_length'
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{t('Context Length')}</FormLabel>
+                            <FormControl>
+                              <Input
+                                type='number'
+                                min={0}
+                                max={100000000}
+                                step={1}
+                                placeholder={t('0 (unset)')}
+                                value={field.value ?? 0}
+                                onChange={(event) => {
+                                  const raw = event.target.value.trim()
+                                  if (raw === '') {
+                                    field.onChange(0)
+                                    return
+                                  }
+                                  const parsed = Number(raw)
+                                  field.onChange(
+                                    Number.isNaN(parsed) ? -1 : parsed
+                                  )
+                                }}
+                              />
+                            </FormControl>
+                            <FormDescription>
+                              {t(
+                                'Maximum context window in tokens (0 means unset)'
+                              )}
                             </FormDescription>
                             <FormMessage />
                           </FormItem>

@@ -196,6 +196,23 @@ export function isModelSyncOfficial(model: Model): boolean {
   return model.sync_official === 1
 }
 
+/**
+ * Format model context length for display
+ */
+export function formatModelContextLength(
+  contextLength: number | undefined
+): string {
+  if (
+    contextLength === undefined ||
+    contextLength === null ||
+    !Number.isInteger(contextLength) ||
+    contextLength <= 0
+  ) {
+    return '—'
+  }
+  return `${contextLength.toLocaleString('en-US')} tokens`
+}
+
 // Keep table labels compact; the drawer and tooltip share the full explanation.
 export function getModelChannelState(model: Model) {
   const available = model.bound_channels?.length ?? 0

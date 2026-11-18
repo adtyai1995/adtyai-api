@@ -522,15 +522,26 @@ func PutAdtyGroupHealth(c *gin.Context) {
 
 func PostAdtyGroupProbe(c *gin.Context) {
 	var body struct {
-		Group string `json:"group"`
-		Model string `json:"model"`
-		Ok    bool   `json:"ok"`
+		SiteId  int    `json:"site_id"`
+		Group   string `json:"group"`
+		Model   string `json:"model"`
+		Ok      *bool  `json:"ok"`
+		Execute bool   `json:"execute"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.RecordAdtyGroupProbe(0, body.Group, body.Model, body.Ok, time.Now()); err != nil {
+	if body.Execute || body.Ok == nil {
+		sample, err := service.ExecuteAdtyGroupProbe(body.SiteId, body.Group, body.Model, time.Now())
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, gin.H{"recorded": true, "sample": sample})
+		return
+	}
+	if err := service.RecordAdtyGroupProbe(body.SiteId, body.Group, body.Model, *body.Ok, time.Now()); err != nil {
 		common.ApiError(c, err)
 		return
 	}

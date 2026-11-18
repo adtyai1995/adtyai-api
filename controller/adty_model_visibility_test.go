@@ -35,7 +35,7 @@ func TestAdtyModelDelistNeedsDeletePermissionDatabaseMatrix(t *testing.T) {
 					c.Set("role", common.RoleAdminUser)
 					UpdateModelMeta(c)
 				})
-				body := fmt.Sprintf(`{"id":%d,"model_name":%q,"status":%d}`, row.Id, row.ModelName, row.Status)
+				body := fmt.Sprintf(`{"id":%d,"model_name":%q,"description":%q,"status":%d}`, row.Id, row.ModelName, row.Description, row.Status)
 				request := httptest.NewRequest(http.MethodPut, "/api/models/"+query, strings.NewReader(body))
 				request.Header.Set("Content-Type", "application/json")
 				response := httptest.NewRecorder()
@@ -49,7 +49,11 @@ func TestAdtyModelDelistNeedsDeletePermissionDatabaseMatrix(t *testing.T) {
 				return stored.Status
 			}
 
-			visible := model.Model{ModelName: "delist-visible", Status: 1}
+			const (
+				descriptionBefore = "initial visible description"
+				descriptionAfter  = "edited without delisting"
+			)
+			visible := model.Model{ModelName: "delist-visible", Description: descriptionBefore, Status: 1}
 			require.NoError(t, visible.Insert())
 			hidden := model.Model{ModelName: "delist-hidden", Status: 0}
 			require.NoError(t, hidden.Insert())
@@ -58,9 +62,21 @@ func TestAdtyModelDelistNeedsDeletePermissionDatabaseMatrix(t *testing.T) {
 
 			// 编辑元数据（不动 status）只要「模型·编辑」。
 			editable := visible
-			editable.Description = "edited without delisting"
-			assert.Equal(t, http.StatusOK, update(t, &editable, "").Code)
-			assert.EqualValues(t, 1, storedStatus(t, visible.Id), "editing metadata must not delist")
+			editable.Description = descriptionAfter
+			editResponse := update(t, &editable, "")
+			assert.Equal(t, http.StatusOK, editResponse.Code, editResponse.Body.String())
+			var editPayload struct {
+				Success bool        `json:"success"`
+				Data    model.Model `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(editResponse.Body.Bytes(), &editPayload), editResponse.Body.String())
+			assert.True(t, editPayload.Success, editResponse.Body.String())
+			assert.Equal(t, descriptionAfter, editPayload.Data.Description)
+			assert.EqualValues(t, 1, editPayload.Data.Status)
+			var storedAfterEdit model.Model
+			require.NoError(t, db.First(&storedAfterEdit, visible.Id).Error)
+			assert.Equal(t, descriptionAfter, storedAfterEdit.Description, "editing metadata must persist updated description")
+			assert.EqualValues(t, 1, storedAfterEdit.Status, "editing metadata must not delist")
 
 			// 下架要「模型·删除」，status_only 的快捷路径也一样。
 			delist := visible

@@ -11,6 +11,10 @@ import (
 // adtyGroupSpecialUsableKey 是特殊可用分组在 options 表里的键（带点的 config 键）。
 const adtyGroupSpecialUsableKey = "group_ratio_setting.group_special_usable_group"
 
+func init() {
+	model.AdtyOnSiteGroupConfigChanged = InvalidateAdtySiteCache
+}
+
 // IsAdtyGroupOption 说明这个配置项的键或值里写的是分组 ID，保存前要校验。
 func IsAdtyGroupOption(key string) bool {
 	switch key {
@@ -24,13 +28,19 @@ func IsAdtyGroupOption(key string) bool {
 // ValidateAdtyGroupOption 检查分组类配置里出现的每个分组 ID 都在分组表里（未删除）。
 // auto 只能出现在 UserUsableGroups 的键和特殊可用分组的内层键里。
 // GroupRatio 还不能漏掉任何未删除的分组：删除分组只能走迁移和删除。
-// 值的格式错误留给上游各自的检查，这里解析不了就放行。
+// GroupModelAllow 额外在保存前强校验「分组 ID → 非空模型名数组」结构，其余配置项的格式错误留给上游各自的检查。
 func ValidateAdtyGroupOption(key, value string) error {
 	if !IsAdtyGroupOption(key) {
 		return nil
 	}
 	ids, err := groupIDsInOption(key, value)
 	if err != nil {
+		if key == groupModelAllowOption {
+			return err
+		}
+		return nil
+	}
+	if key == groupModelAllowOption && len(ids) == 0 {
 		return nil
 	}
 	active, err := model.ActiveAdtyGroupIDs()
@@ -82,7 +92,15 @@ func groupIDsInOption(key, value string) ([]adtyGroupRef, error) {
 		return nil, nil
 	}
 	switch key {
-	case "GroupRatio", "TopupGroupRatio", "UserUsableGroups", "ModelRequestRateLimitGroup", groupModelAllowOption:
+	case groupModelAllowOption:
+		parsed, err := model.ValidateAdtyGroupModelAllowSchema(value)
+		if err != nil {
+			return nil, err
+		}
+		for id := range parsed {
+			add(id, false)
+		}
+	case "GroupRatio", "TopupGroupRatio", "UserUsableGroups", "ModelRequestRateLimitGroup":
 		object := map[string]any{}
 		if err := common.UnmarshalJsonStr(value, &object); err != nil {
 			return nil, err
