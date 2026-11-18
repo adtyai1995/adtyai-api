@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -67,6 +68,9 @@ func GetReferralSettings(c *gin.Context) {
 	cfg := *adty_setting.GetReferralSetting()
 	if rate, updatedAt, err := service.CurrentWithdrawCNYRate(); err == nil {
 		cfg.WithdrawCNYRate, cfg.WithdrawCNYRateUpdatedAt = rate.String(), updatedAt
+	} else if !errors.Is(err, service.ErrReferralRateUnset) {
+		common.ApiError(c, err)
+		return
 	} else {
 		cfg.WithdrawCNYRate, cfg.WithdrawCNYRateUpdatedAt = "", 0
 	}
@@ -77,6 +81,8 @@ func GetReferralSettings(c *gin.Context) {
 func UpdateReferralSettings(c *gin.Context) {
 	var body struct {
 		DefaultRate              *float64 `json:"default_rate"`
+		PartnerMinRate           *float64 `json:"partner_min_rate"`
+		PartnerMaxRate           *float64 `json:"partner_max_rate"`
 		CookieTTLDays            *int     `json:"cookie_ttl_days"`
 		FreezeDays               *int     `json:"freeze_days"`
 		MinWithdrawUSD           *float64 `json:"min_withdraw_usd"`
@@ -87,7 +93,7 @@ func UpdateReferralSettings(c *gin.Context) {
 		BatchRegisterWindowHours *int     `json:"batch_register_window_hours"`
 		Enabled                  *bool    `json:"enabled"`
 		WithdrawCNYRate          string   `json:"withdraw_cny_rate"`
-		// Clear 列出要改回「未设置」的钱款项：default_rate、min_withdraw_usd、usdt_withdraw_fee（约定 I）。
+		// Clear 列出要改回「未设置」的钱款项：default_rate、partner_min_rate、partner_max_rate、min_withdraw_usd、usdt_withdraw_fee（约定 I）。
 		Clear []string `json:"clear"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
@@ -121,7 +127,16 @@ func UpdateReferralSettings(c *gin.Context) {
 		common.ApiErrorT(c, "The rate must be between 0 and 100")
 		return
 	}
-	if !putFloat("default_rate", body.DefaultRate, 0) || !putInt("cookie_ttl_days", body.CookieTTLDays, 1) ||
+	if (body.PartnerMinRate != nil && *body.PartnerMinRate > 100) || (body.PartnerMaxRate != nil && *body.PartnerMaxRate > 100) {
+		common.ApiErrorT(c, "The rate must be between 0 and 100")
+		return
+	}
+	if body.PartnerMinRate != nil && body.PartnerMaxRate != nil && *body.PartnerMinRate > *body.PartnerMaxRate {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if !putFloat("default_rate", body.DefaultRate, 0) || !putFloat("partner_min_rate", body.PartnerMinRate, 0) ||
+		!putFloat("partner_max_rate", body.PartnerMaxRate, 0) || !putInt("cookie_ttl_days", body.CookieTTLDays, 1) ||
 		!putInt("freeze_days", body.FreezeDays, 0) || !putFloat("min_withdraw_usd", body.MinWithdrawUSD, 0) ||
 		!putFloat("usdt_withdraw_fee", body.USDTWithdrawFee, 0) || !putInt("cancel_window_minutes", body.CancelWindowMinutes, 0) ||
 		!putInt("self_invite_window_days", body.SelfInviteWindowDays, 1) || !putInt("batch_register_threshold", body.BatchRegisterThreshold, 0) ||
@@ -130,7 +145,7 @@ func UpdateReferralSettings(c *gin.Context) {
 	}
 	for _, key := range body.Clear {
 		switch key {
-		case "default_rate", "min_withdraw_usd", "usdt_withdraw_fee":
+		case "default_rate", "partner_min_rate", "partner_max_rate", "min_withdraw_usd", "usdt_withdraw_fee":
 			values["adty_referral_setting."+key] = "null"
 		default:
 			common.ApiErrorT(c, "Invalid parameters")

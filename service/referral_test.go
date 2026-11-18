@@ -1872,13 +1872,13 @@ func TestPartnerApprovalSetsRate(t *testing.T) {
 	db := prepareReferralDB(t)
 	user := referralUser(t, db, "partner")
 	require.NoError(t, Referral.ApplyPartner(user.Id, "I run a blog"))
-	require.NoError(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(18), "", "", ""))
+	require.NoError(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(25), "", "", ""))
 	affiliate, err := Referral.EnsureAffiliate(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, model.ReferralPartnerStatusApproved, affiliate.PartnerStatus)
 	rate, ok := AffiliateRate(affiliate)
 	require.True(t, ok)
-	assert.Equal(t, "18", rate.String())
+	assert.Equal(t, "25", rate.String())
 	require.Error(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(20), "", "", ""))
 }
 
@@ -1886,8 +1886,16 @@ func TestPartnerReviewRequiresPendingAndBoundedRate(t *testing.T) {
 	db := prepareReferralDB(t)
 	user := referralUser(t, db, "partner-bounds")
 	require.NoError(t, Referral.ApplyPartner(user.Id, "note"))
-	require.Error(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(14), "", "", ""))
-	require.Error(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(21), "", "", ""))
+	require.Error(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(-1), "", "", ""))
+	require.Error(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(101), "", "", ""))
+
+	cfg := adty_setting.GetReferralSetting()
+	minRate, maxRate := 12.5, 28.0
+	cfg.PartnerMinRate, cfg.PartnerMaxRate = &minRate, &maxRate
+	t.Cleanup(func() { cfg.PartnerMinRate, cfg.PartnerMaxRate = nil, nil })
+
+	require.Error(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(12), "", "", ""))
+	require.Error(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(29), "", "", ""))
 
 	var affiliate model.ReferralAffiliate
 	require.NoError(t, db.Where("user_id = ?", user.Id).First(&affiliate).Error)
@@ -1903,10 +1911,64 @@ func TestPartnerReviewRequiresPendingAndBoundedRate(t *testing.T) {
 	require.Error(t, Referral.ReviewPartner(user.Id, 1, false, decimal.Zero, "again", "", ""))
 
 	require.NoError(t, Referral.ApplyPartner(user.Id, "again"))
-	require.NoError(t, Referral.ReviewPartner(user.Id, 1, true, decimal.NewFromInt(20), "", "", ""))
+	require.NoError(t, Referral.ReviewPartner(user.Id, 1, true, decimal.RequireFromString("12.5"), "", "", ""))
 	require.NoError(t, db.Where("user_id = ?", user.Id).First(&affiliate).Error)
 	require.NotNil(t, affiliate.RateOverride)
-	assert.Equal(t, "20", decimal.NewFromFloat(*affiliate.RateOverride).String())
+	assert.Equal(t, "12.5", decimal.NewFromFloat(*affiliate.RateOverride).String())
+}
+
+func TestReferralAdjustAccountAndCommissionPreserveDecimalPrecision(t *testing.T) {
+	db := prepareReferralDB(t)
+	inviter := referralUser(t, db, "dec-inviter")
+	affiliate, err := Referral.EnsureAffiliate(inviter.Id)
+	require.NoError(t, err)
+
+	var acc model.ReferralCommissionAccount
+	require.NoError(t, db.Where("affiliate_id = ?", affiliate.Id).First(&acc).Error)
+
+	commission := &model.ReferralCommission{
+		AffiliateId:      affiliate.Id,
+		AffiliateUserId:  inviter.Id,
+		InviteeUserId:    inviter.Id,
+		SourceType:       model.ReferralSourceTopup,
+		SourceTradeNo:    "EPU-dec-authority",
+		BaseAmount:       100,
+		Rate:             12.34567891,
+		CommissionAmount: 12.34567891,
+		Status:           model.ReferralCommissionStatusPending,
+	}
+	require.NoError(t, db.Create(commission).Error)
+
+	exactPending := decimal.RequireFromString("123456789.12345678")
+	exactAvailable := decimal.RequireFromString("98765432.87654321")
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		return AdjustAccountTx(tx, &acc, exactPending, decimal.Zero, decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
+			CommissionId:  commission.Id,
+			Type:          "commission_pending",
+			ExternalRefId: "dec-auth-pending",
+		})
+	}))
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		return AdjustAccountTx(tx, &acc, decimal.Zero, exactAvailable, decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
+			Type:          "commission_settle",
+			ExternalRefId: "dec-auth-available",
+		})
+	}))
+
+	amounts, err := GetReferralAccountAmountsTx(db, affiliate.Id)
+	require.NoError(t, err)
+	assert.True(t, exactPending.Equal(amounts.PendingAmount), "want %s, got %s", exactPending, amounts.PendingAmount)
+	assert.True(t, exactAvailable.Equal(amounts.AvailableAmount), "want %s, got %s", exactAvailable, amounts.AvailableAmount)
+
+	commAmt, err := GetReferralCommissionAmountTx(db, commission.Id)
+	require.NoError(t, err)
+	assert.True(t, exactPending.Equal(commAmt), "want %s, got %s", exactPending, commAmt)
+
+	var pendingLedger model.ReferralCommissionLedger
+	require.NoError(t, db.Where("external_ref_id = ?", "dec-auth-pending").First(&pendingLedger).Error)
+	deltas, err := GetReferralLedgerDeltasTx(db, pendingLedger.Id)
+	require.NoError(t, err)
+	assert.True(t, exactPending.Equal(deltas.DeltaPending), "want %s, got %s", exactPending, deltas.DeltaPending)
 }
 
 func TestReferralRisk(t *testing.T) {

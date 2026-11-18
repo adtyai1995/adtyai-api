@@ -47,6 +47,8 @@ func GetAdtyReferralPublicSettings(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"enabled":           cfg.Enabled,
 		"default_rate":      cfg.DefaultRate,
+		"partner_min_rate":  cfg.PartnerMinRate,
+		"partner_max_rate":  cfg.PartnerMaxRate,
 		"freeze_days":       cfg.FreezeDays,
 		"min_withdraw_usd":  cfg.MinWithdrawUSD,
 		"usdt_withdraw_fee": cfg.USDTWithdrawFee,
@@ -58,6 +60,8 @@ type referralProfile struct {
 	Affiliate        *model.ReferralAffiliate         `json:"affiliate"`
 	Account          *model.ReferralCommissionAccount `json:"account"`
 	Rate             string                           `json:"rate"`
+	PartnerMinRate   *float64                         `json:"partner_min_rate"` // null：未设置
+	PartnerMaxRate   *float64                         `json:"partner_max_rate"` // null：未设置
 	FreezeDays       int                              `json:"freeze_days"`
 	MinWithdrawUSD   *float64                         `json:"min_withdraw_usd"`  // null：未设置
 	USDTWithdrawFee  *float64                         `json:"usdt_withdraw_fee"` // null：未设置
@@ -85,6 +89,7 @@ func GetReferralProfile(c *gin.Context) {
 	cfg := adty_setting.GetReferralSetting()
 	profile := referralProfile{
 		Affiliate: affiliate, Account: &account,
+		PartnerMinRate: cfg.PartnerMinRate, PartnerMaxRate: cfg.PartnerMaxRate,
 		FreezeDays: cfg.FreezeDays, MinWithdrawUSD: cfg.MinWithdrawUSD, USDTWithdrawFee: cfg.USDTWithdrawFee,
 		CancelWindowMins: cfg.CancelWindowMinutes, Enabled: cfg.Enabled, SiteOwner: affiliate.SiteOwnerSince > 0,
 	}
@@ -93,15 +98,30 @@ func GetReferralProfile(c *gin.Context) {
 	}
 	if rate, updatedAt, err := service.CurrentWithdrawCNYRate(); err == nil {
 		profile.CNYRate, profile.CNYRateUpdatedAt = rate.String(), updatedAt
+	} else if !errors.Is(err, service.ErrReferralRateUnset) {
+		common.ApiError(c, err)
+		return
 	}
 	var clicks, signups, paying int64
 	var earned decimal.Decimal
-	model.DB.Model(&model.ReferralClick{}).Where("affiliate_id = ?", affiliate.Id).Count(&clicks)
-	model.DB.Model(&model.ReferralBinding{}).Where("affiliate_id = ?", affiliate.Id).Count(&signups)
-	model.DB.Model(&model.ReferralCommission{}).Where("affiliate_id = ? AND status NOT IN ?", affiliate.Id,
-		[]string{model.ReferralCommissionStatusVoid, model.ReferralCommissionStatusClawedBack}).Distinct("invitee_user_id").Count(&paying)
-	model.DB.Model(&model.ReferralCommission{}).Where("affiliate_id = ? AND status NOT IN ?", affiliate.Id,
-		[]string{model.ReferralCommissionStatusVoid, model.ReferralCommissionStatusClawedBack}).Select("COALESCE(SUM(commission_amount), 0)").Scan(&earned)
+	if err := model.DB.Model(&model.ReferralClick{}).Where("affiliate_id = ?", affiliate.Id).Count(&clicks).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.DB.Model(&model.ReferralBinding{}).Where("affiliate_id = ?", affiliate.Id).Count(&signups).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.DB.Model(&model.ReferralCommission{}).Where("affiliate_id = ? AND status NOT IN ?", affiliate.Id,
+		[]string{model.ReferralCommissionStatusVoid, model.ReferralCommissionStatusClawedBack}).Distinct("invitee_user_id").Count(&paying).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.DB.Model(&model.ReferralCommission{}).Where("affiliate_id = ? AND status NOT IN ?", affiliate.Id,
+		[]string{model.ReferralCommissionStatusVoid, model.ReferralCommissionStatusClawedBack}).Select("COALESCE(SUM(commission_amount), 0)").Scan(&earned).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	profile.Funnel = map[string]any{"clicks": clicks, "signups": signups, "paying": paying, "earned": earned.StringFixed(2)}
 	common.ApiSuccess(c, profile)
 }
@@ -130,7 +150,10 @@ func GetReferralCommissions(c *gin.Context) {
 	var items []model.ReferralCommission
 	var total int64
 	query := model.DB.Model(&model.ReferralCommission{}).Where("affiliate_id = ?", affiliate.Id)
-	query.Count(&total)
+	if err := query.Count(&total).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	if err := query.Order("id DESC").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&items).Error; err != nil {
 		common.ApiError(c, err)
 		return
@@ -146,7 +169,10 @@ func GetReferralWithdrawals(c *gin.Context) {
 	var items []model.ReferralWithdrawal
 	var total int64
 	query := model.DB.Model(&model.ReferralWithdrawal{}).Where("user_id = ?", c.GetInt("id"))
-	query.Count(&total)
+	if err := query.Count(&total).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	if err := query.Order("id DESC").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&items).Error; err != nil {
 		common.ApiError(c, err)
 		return

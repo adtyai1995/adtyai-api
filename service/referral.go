@@ -50,6 +50,40 @@ func moneyF(value decimal.Decimal) float64 {
 	f, _ := value.Round(8).Float64()
 	return f
 }
+func normalizeReferralMoney(value decimal.Decimal) decimal.Decimal {
+	return value.Round(8)
+}
+
+// ValidateReferralRate 校验通用返佣比例（0–100 百分数）。
+func ValidateReferralRate(rate decimal.Decimal) error {
+	if rate.LessThan(decimal.Zero) || rate.GreaterThan(decimal.NewFromInt(100)) {
+		return common.NewMessage("The commission rate must be between 0 and 100")
+	}
+	return nil
+}
+
+// ValidatePartnerReferralRate 按后台配置的合作伙伴比例范围（未单独配置时采用通用 0–100 范围）校验审核比例。
+func ValidatePartnerReferralRate(rate decimal.Decimal) error {
+	if err := ValidateReferralRate(rate); err != nil {
+		return err
+	}
+	cfg := referralSetting()
+	minRate := decimal.Zero
+	if cfg.PartnerMinRate != nil {
+		minRate = decimal.NewFromFloat(*cfg.PartnerMinRate).Round(8)
+	}
+	maxRate := decimal.NewFromInt(100)
+	if cfg.PartnerMaxRate != nil {
+		maxRate = decimal.NewFromFloat(*cfg.PartnerMaxRate).Round(8)
+	}
+	if minRate.LessThan(decimal.Zero) || maxRate.GreaterThan(decimal.NewFromInt(100)) || minRate.GreaterThan(maxRate) {
+		return common.NewMessage("The configured partner rate range is invalid")
+	}
+	if rate.LessThan(minRate) || rate.GreaterThan(maxRate) {
+		return common.NewMessage(fmt.Sprintf("The partner rate must be between %s and %s", minRate.String(), maxRate.String()))
+	}
+	return nil
+}
 
 // referralSecret 是 cookie 签名和指纹哈希的密钥：CryptoSecret，没有就用 SessionSecret。
 // 部署必须固定 SESSION_SECRET 和 CRYPTO_SECRET，否则重启后 cookie 失效、指纹对不上。
@@ -270,7 +304,7 @@ func (s *ReferralService) ApplyPartner(userId int, note string) error {
 	}).Error
 }
 
-// ReviewPartner 批准（设 15–20 的比例）或驳回合作伙伴申请。
+// ReviewPartner 批准（按后台配置的合作伙伴比例范围或通用 0–100 范围设比例）或驳回合作伙伴申请。
 func (s *ReferralService) ReviewPartner(userId, adminId int, approve bool, rate decimal.Decimal, reason, ip, ua string) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var affiliate model.ReferralAffiliate
@@ -283,12 +317,11 @@ func (s *ReferralService) ReviewPartner(userId, adminId int, approve bool, rate 
 		old := map[string]any{"partner_status": affiliate.PartnerStatus, "rate_override": affiliate.RateOverride}
 		updates := map[string]any{"pending_review_cursor": 0, "approved_by": adminId}
 		if approve {
-			if rate.LessThan(decimal.NewFromInt(15)) || rate.GreaterThan(decimal.NewFromInt(20)) {
-				return common.NewMessage("The partner rate must be between 15 and 20")
+			if err := ValidatePartnerReferralRate(rate); err != nil {
+				return err
 			}
-			value := moneyF(rate)
 			updates["partner_status"] = model.ReferralPartnerStatusApproved
-			updates["rate_override"] = value
+			updates["rate_override"] = normalizeReferralMoney(rate)
 		} else {
 			updates["partner_status"] = model.ReferralPartnerStatusRejected
 			updates["rate_override"] = nil
@@ -356,21 +389,114 @@ func addReferralLedgerTx(tx *gorm.DB, entry *model.ReferralCommissionLedger) err
 	return tx.Create(entry).Error
 }
 
+// ReferralCommissionAccountAmounts 是佣金账户四个余额的 decimal 权威读数。
+type ReferralCommissionAccountAmounts struct {
+	PendingAmount   decimal.Decimal `gorm:"column:pending_amount"`
+	AvailableAmount decimal.Decimal `gorm:"column:available_amount"`
+	FrozenAmount    decimal.Decimal `gorm:"column:frozen_amount"`
+	WithdrawnAmount decimal.Decimal `gorm:"column:withdrawn_amount"`
+}
+
+// ReferralCommissionLedgerDeltas 是佣金流水四个增量的 decimal 权威读数。
+type ReferralCommissionLedgerDeltas struct {
+	DeltaPending   decimal.Decimal `gorm:"column:delta_pending"`
+	DeltaAvailable decimal.Decimal `gorm:"column:delta_available"`
+	DeltaFrozen    decimal.Decimal `gorm:"column:delta_frozen"`
+	DeltaWithdrawn decimal.Decimal `gorm:"column:delta_withdrawn"`
+}
+
+// GetReferralAccountAmountsTx 直接按 decimal 扫描佣金账户余额，避免 float64 扫描丢位。
+func GetReferralAccountAmountsTx(tx *gorm.DB, affiliateId int) (ReferralCommissionAccountAmounts, error) {
+	var amounts ReferralCommissionAccountAmounts
+	if tx == nil {
+		tx = model.DB
+	}
+	if err := tx.Model(&model.ReferralCommissionAccount{}).
+		Select("pending_amount", "available_amount", "frozen_amount", "withdrawn_amount").
+		Where("affiliate_id = ?", affiliateId).
+		Take(&amounts).Error; err != nil {
+		return ReferralCommissionAccountAmounts{}, err
+	}
+	amounts.PendingAmount = normalizeReferralMoney(amounts.PendingAmount)
+	amounts.AvailableAmount = normalizeReferralMoney(amounts.AvailableAmount)
+	amounts.FrozenAmount = normalizeReferralMoney(amounts.FrozenAmount)
+	amounts.WithdrawnAmount = normalizeReferralMoney(amounts.WithdrawnAmount)
+	return amounts, nil
+}
+
+// GetReferralLedgerDeltasTx 直接按 decimal 扫描佣金流水增量，避免 float64 扫描丢位。
+func GetReferralLedgerDeltasTx(tx *gorm.DB, ledgerId int) (ReferralCommissionLedgerDeltas, error) {
+	var deltas ReferralCommissionLedgerDeltas
+	if tx == nil {
+		tx = model.DB
+	}
+	if err := tx.Model(&model.ReferralCommissionLedger{}).
+		Select("delta_pending", "delta_available", "delta_frozen", "delta_withdrawn").
+		Where("id = ?", ledgerId).
+		Take(&deltas).Error; err != nil {
+		return ReferralCommissionLedgerDeltas{}, err
+	}
+	deltas.DeltaPending = normalizeReferralMoney(deltas.DeltaPending)
+	deltas.DeltaAvailable = normalizeReferralMoney(deltas.DeltaAvailable)
+	deltas.DeltaFrozen = normalizeReferralMoney(deltas.DeltaFrozen)
+	deltas.DeltaWithdrawn = normalizeReferralMoney(deltas.DeltaWithdrawn)
+	return deltas, nil
+}
+
+// GetReferralCommissionAmountTx 直接按 decimal 扫描单笔佣金金额，避免 float64 扫描丢位。
+func GetReferralCommissionAmountTx(tx *gorm.DB, commissionId int) (decimal.Decimal, error) {
+	var row struct {
+		CommissionAmount decimal.Decimal `gorm:"column:commission_amount"`
+	}
+	if tx == nil {
+		tx = model.DB
+	}
+	if err := tx.Model(&model.ReferralCommission{}).
+		Select("commission_amount").
+		Where("id = ?", commissionId).
+		Take(&row).Error; err != nil {
+		return decimal.Zero, err
+	}
+	return normalizeReferralMoney(row.CommissionAmount), nil
+}
+
 // AdjustAccountTx 按增量改佣金账户四个余额（可以为负，扣回用），并写流水。
 func AdjustAccountTx(tx *gorm.DB, account *model.ReferralCommissionAccount, pending, available, frozen, withdrawn decimal.Decimal, entry model.ReferralCommissionLedger) error {
+	pendingDec := normalizeReferralMoney(pending)
+	availableDec := normalizeReferralMoney(available)
+	frozenDec := normalizeReferralMoney(frozen)
+	withdrawnDec := normalizeReferralMoney(withdrawn)
 	if err := tx.Model(&model.ReferralCommissionAccount{}).Where("id = ?", account.Id).Updates(map[string]any{
-		"pending_amount":   gorm.Expr("pending_amount + ?", moneyF(pending)),
-		"available_amount": gorm.Expr("available_amount + ?", moneyF(available)),
-		"frozen_amount":    gorm.Expr("frozen_amount + ?", moneyF(frozen)),
-		"withdrawn_amount": gorm.Expr("withdrawn_amount + ?", moneyF(withdrawn)),
+		"pending_amount":   gorm.Expr("pending_amount + ?", pendingDec),
+		"available_amount": gorm.Expr("available_amount + ?", availableDec),
+		"frozen_amount":    gorm.Expr("frozen_amount + ?", frozenDec),
+		"withdrawn_amount": gorm.Expr("withdrawn_amount + ?", withdrawnDec),
 	}).Error; err != nil {
 		return err
 	}
+	if entry.CommissionId > 0 && pendingDec.IsPositive() && availableDec.IsZero() && frozenDec.IsZero() && withdrawnDec.IsZero() {
+		if err := tx.Model(&model.ReferralCommission{}).Where("id = ?", entry.CommissionId).Update("commission_amount", pendingDec).Error; err != nil {
+			return err
+		}
+	}
 	entry.AffiliateId = account.AffiliateId
 	entry.UserId = account.UserId
-	entry.DeltaPending = moneyF(pending)
-	entry.DeltaAvailable = moneyF(available)
-	entry.DeltaFrozen = moneyF(frozen)
-	entry.DeltaWithdrawn = moneyF(withdrawn)
-	return addReferralLedgerTx(tx, &entry)
+	entry.DeltaPending = moneyF(pendingDec)
+	entry.DeltaAvailable = moneyF(availableDec)
+	entry.DeltaFrozen = moneyF(frozenDec)
+	entry.DeltaWithdrawn = moneyF(withdrawnDec)
+	if err := addReferralLedgerTx(tx, &entry); err != nil {
+		return err
+	}
+	if entry.Id > 0 {
+		if err := tx.Model(&model.ReferralCommissionLedger{}).Where("id = ?", entry.Id).Updates(map[string]any{
+			"delta_pending":   pendingDec,
+			"delta_available": availableDec,
+			"delta_frozen":    frozenDec,
+			"delta_withdrawn": withdrawnDec,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
