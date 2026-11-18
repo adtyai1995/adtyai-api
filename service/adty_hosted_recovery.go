@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,6 +14,47 @@ import (
 
 type AdtyPaymentOrderQuerier interface {
 	Query(context.Context, *model.AdtyTopupOrder) (*model.AdtyPaymentFacts, error)
+}
+
+var (
+	adtyVerifiedPaymentTLSMu         sync.Mutex
+	adtyHostedRecoveryProviderByName = func(name string) any {
+		return AdtyPaymentProviderByName(name)
+	}
+	recordAdtyHostedPaymentAttempt = func(tradeNo, provider, source, status string, operatorID int) error {
+		if model.DB == nil {
+			return nil
+		}
+		return model.RecordAdtyPaymentAttempt(tradeNo, provider, source, status, operatorID)
+	}
+)
+
+func queryAdtyHostedPaymentFacts(ctx context.Context, provider AdtyPaymentOrderQuerier, ext *model.AdtyTopupOrder) (*model.AdtyPaymentFacts, error) {
+	verifiedClient, err := NewAdtyEpayVerifiedHTTPClient(0)
+	if err != nil {
+		return nil, err
+	}
+	verifiedTransport, ok := verifiedClient.Transport.(*http.Transport)
+	if !ok || verifiedTransport == nil || verifiedTransport.TLSClientConfig == nil || verifiedTransport.TLSClientConfig.InsecureSkipVerify {
+		return nil, ErrAdtyUnverifiedPaymentTLS
+	}
+	defer verifiedTransport.CloseIdleConnections()
+
+	adtyVerifiedPaymentTLSMu.Lock()
+	base := GetHttpClient()
+	var prevTransport http.RoundTripper
+	if base != nil {
+		prevTransport = base.Transport
+		base.Transport = verifiedTransport
+	}
+	defer func() {
+		if base != nil {
+			base.Transport = prevTransport
+		}
+		adtyVerifiedPaymentTLSMu.Unlock()
+	}()
+
+	return provider.Query(ctx, ext)
 }
 
 // RecoverAdtyHostedPayment shares the callback's transaction and immutable
@@ -26,19 +69,19 @@ func RecoverAdtyHostedPaymentAs(ctx context.Context, ext *model.AdtyTopupOrder, 
 	if ext == nil {
 		return model.ErrTopUpNotFound
 	}
-	provider, ok := AdtyPaymentProviderByName(ext.Provider).(AdtyPaymentOrderQuerier)
+	provider, ok := adtyHostedRecoveryProviderByName(ext.Provider).(AdtyPaymentOrderQuerier)
 	if !ok {
 		return errors.New("payment provider does not support order queries")
 	}
-	facts, err := provider.Query(ctx, ext)
+	facts, err := queryAdtyHostedPaymentFacts(ctx, provider, ext)
 	if err != nil {
-		if recordErr := model.RecordAdtyPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "failed", operatorID); recordErr != nil {
+		if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "failed", operatorID); recordErr != nil {
 			return recordErr
 		}
 		return err
 	}
 	if facts == nil {
-		return model.RecordAdtyPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "unpaid", operatorID)
+		return recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "unpaid", operatorID)
 	}
 	facts.Source = model.AdtyPaymentSourceQuery
 	facts.OperatorId = operatorID
@@ -58,7 +101,7 @@ func RecoverAdtyHostedPaymentAs(ctx context.Context, ext *model.AdtyTopupOrder, 
 		}).Error
 	})
 	if err != nil {
-		if recordErr := model.RecordAdtyPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "rejected", operatorID); recordErr != nil {
+		if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "rejected", operatorID); recordErr != nil {
 			return recordErr
 		}
 	}

@@ -229,7 +229,18 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 	}
 	// Merchant credentials are in the query. Never forward them to a redirect,
 	// including an HTTPS gateway redirecting its order lookup to plain HTTP.
-	client := *adtyEpayHTTPClient()
+	baseClient := adtyEpayHTTPClient()
+	var client http.Client
+	if baseClient != nil {
+		client = *baseClient
+	}
+	if strings.EqualFold(req.URL.Scheme, "https") {
+		verifiedTransport, vErr := cloneAdtyVerifiedPaymentTransport(client.Transport)
+		if vErr != nil {
+			return nil, vErr
+		}
+		client.Transport = verifiedTransport
+	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(req)
 	if err != nil {
