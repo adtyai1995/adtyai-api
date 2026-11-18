@@ -231,8 +231,31 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
 
-	if userQuota < quota {
-		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(userQuota), logger.FormatQuota(quota))
+	availableQuota := int64(userQuota)
+	isTeamKey := false
+	if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
+		if op, opErr := model.GetBillingOperation(session.operationKey); opErr == nil && op != nil && op.PayerKind == model.BillingPayerTeam && op.PayerTeamId > 0 {
+			var team model.AdtyTeam
+			if err := model.DB.Select("id", "shared_quota").First(&team, op.PayerTeamId).Error; err != nil {
+				return err
+			}
+			availableQuota = team.SharedQuota
+			isTeamKey = true
+		}
+	}
+	if !isTeamKey && relayInfo.TokenId > 0 && !relayInfo.IsPlayground {
+		teamQuota, teamBound, teamErr := adtyTeamSharedQuotaForToken(relayInfo.TokenId)
+		if teamErr != nil {
+			return teamErr
+		}
+		if teamBound {
+			availableQuota = teamQuota
+			isTeamKey = true
+		}
+	}
+
+	if availableQuota < int64(quota) {
+		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(int(min(availableQuota, int64(math.MaxInt)))), logger.FormatQuota(quota))
 	}
 
 	if !token.UnlimitedQuota && token.RemainQuota < quota {

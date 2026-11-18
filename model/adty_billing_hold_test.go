@@ -54,3 +54,24 @@ func TestRecordAdtyBillingHoldKeepsTheRowWithoutBlocking(t *testing.T) {
 	require.NoError(t, DB.Model(&AdtyBillingHold{}).Where("user_id = ?", 53).Count(&other).Error)
 	require.Zero(t, other)
 }
+
+func TestReserveBillingOperationBlocksPaidRequestAfterOpenHold(t *testing.T) {
+	db := withMemoryBillingHoldDB(t, true)
+	require.NoError(t, db.AutoMigrate(&User{}, &Token{}, &BillingOperation{}, &BillingOperationMovement{}, &AdtyFundBatch{}, &AdtyFundAllocation{}))
+	prevSpent := AdtyAfterPrincipalSpentTx
+	AdtyAfterPrincipalSpentTx = nil
+	t.Cleanup(func() { AdtyAfterPrincipalSpentTx = prevSpent })
+
+	u := User{Id: 501, Username: "hold-model-u", Quota: 50_000}
+	require.NoError(t, db.Create(&u).Error)
+	require.NoError(t, RecordAdtyBillingHold(501, "prior-shortfall", 100))
+
+	_, err := ReserveBillingOperation(BillingOperation{OperationKey: "request:new-paid", UserId: 501}, 100)
+	require.Error(t, err, "new paid reservation must be rejected while user has an open shortfall hold")
+
+	// Resolving the hold unblocks new paid reservations.
+	require.NoError(t, db.Model(&AdtyBillingHold{}).Where("user_id = ?", 501).Update("status", "resolved").Error)
+	op, err := ReserveBillingOperation(BillingOperation{OperationKey: "request:after-resolve", UserId: 501}, 100)
+	require.NoError(t, err)
+	require.EqualValues(t, 100, op.ReservedQuota)
+}

@@ -165,6 +165,9 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 			first = err
 		}
 	}
+	if err := model.BackfillMissingAdtyBillingHolds(ctx, limit); err != nil && first == nil {
+		first = err
+	}
 	return first
 }
 

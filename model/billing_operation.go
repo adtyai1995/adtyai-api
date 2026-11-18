@@ -180,6 +180,9 @@ func RecordBillingOperationRetryFailure(key string, failure error, now int64) (b
 		if err := lockForUpdate(tx).Where("operation_key = ?", key).First(&row).Error; err != nil {
 			return err
 		}
+		if row.State != BillingSettlePending && row.State != BillingRefundPending {
+			return nil
+		}
 		attempts := row.Attempts + 1
 		state, nextRetryAt := row.State, int64(0)
 		if attempts >= BillingOperationMaxAttempts {
@@ -187,10 +190,12 @@ func RecordBillingOperationRetryFailure(key string, failure error, now int64) (b
 		} else {
 			nextRetryAt = now + int64(BillingOperationRetryDelay(attempts)/time.Second)
 		}
-		return tx.Model(&BillingOperation{}).Where("operation_key = ?", key).UpdateColumns(map[string]any{
-			"attempts": attempts, "last_error": truncateBillingOperationError(failure.Error()),
-			"next_retry_at": nextRetryAt, "state": state,
-		}).Error
+		return tx.Model(&BillingOperation{}).
+			Where("operation_key = ? AND state IN ?", key, []string{BillingSettlePending, BillingRefundPending}).
+			UpdateColumns(map[string]any{
+				"attempts": attempts, "last_error": truncateBillingOperationError(failure.Error()),
+				"next_retry_at": nextRetryAt, "state": state,
+			}).Error
 	})
 	if err != nil {
 		return false, err
@@ -318,9 +323,30 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			return tx.Save(&result).Error
 		}
 		delta := target - result.ReservedQuota
+		if result.ReservedQuota == 0 && target > 0 {
+			if err := CheckAdtyBillingHoldForPayerTx(tx, result.UserId, result.PayerKind, result.PayerTeamId); err != nil {
+				return err
+			}
+		}
 		if result.PayerKind == BillingPayerTeam {
 			if AdtyTeamReserveHook == nil {
 				return ErrBillingOperationConflict
+			}
+			var token Token
+			if result.TokenId > 0 {
+				if err := lockForUpdate(tx).First(&token, result.TokenId).Error; err != nil {
+					return err
+				}
+				if token.UserId != result.UserId {
+					return ErrBillingOperationConflict
+				}
+				remain, _, err := tokenQuotaBalance(&token)
+				if err != nil {
+					return err
+				}
+				if !result.TokenUnlimited && remain < delta {
+					return ErrBillingTokenInsufficient
+				}
 			}
 			handled, err := AdtyTeamReserveHook(tx, result.PayerTeamId, result.UserId, delta, result.OperationKey)
 			if err != nil {
@@ -329,9 +355,22 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			if !handled {
 				return ErrBillingOperationConflict
 			}
+			tokenDelta := 0
+			if result.TokenId > 0 {
+				if err := applyTokenQuotaDeltaTx(tx, &token, -delta, common.BatchUpdateEnabled && common.RedisEnabled); err != nil {
+					return err
+				}
+				result.TokenReservedQuota += delta
+				tokenDelta = -delta
+			}
 			result.ReservedQuota = target
 			if err := freezeBillingEarningRiskTx(tx, &result); err != nil {
 				return err
+			}
+			if tokenDelta != 0 {
+				if err := recordBillingMovementTx(tx, &result, fmt.Sprintf("reserve:%d", target), 0, tokenDelta); err != nil {
+					return err
+				}
 			}
 			return tx.Save(&result).Error
 		}
@@ -711,15 +750,21 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		var backedByBatches int64
 		if !teamPaid {
-			// 传的是「这次业务消耗之前」的钱包余额，不是此刻的余额：
-			// 预扣的 base 已经在 PreConsume 阶段扣掉了，若把此刻余额（可能已是 0）
-			// 传给「无批次时补建 legacy 批次」的分支，补出来的批次不够扣本次消耗，
-			// 结算会整笔失败——老用户（升级前就有额度、从来没批次）就再也结不了账。
-			backed, err := SettleAdtyFundAllocationsTx(tx, row.UserId, row.OperationKey, settledQuota, settledBalanceBefore)
-			if err != nil {
-				return err
+			if row.Kind == "task" && charged < 0 {
+				if err := ReverseSettledAdtyFundAllocationsTx(tx, row.UserId, row.EarningRootKey, row.OperationKey, int64(-charged)); err != nil {
+					return err
+				}
+			} else {
+				// 传的是「这次业务消耗之前」的钱包余额，不是此刻的余额：
+				// 预扣的 base 已经在 PreConsume 阶段扣掉了，若把此刻余额（可能已是 0）
+				// 传给「无批次时补建 legacy 批次」的分支，补出来的批次不够扣本次消耗，
+				// 结算会整笔失败——老用户（升级前就有额度、从来没批次）就再也结不了账。
+				backed, err := SettleAdtyFundAllocationsTx(tx, row.UserId, row.OperationKey, settledQuota, settledBalanceBefore)
+				if err != nil {
+					return err
+				}
+				backedByBatches = backed
 			}
-			backedByBatches = backed
 		}
 		// 差额落库，不能只写日志：日志不可聚合，事后无法回答「这个用户漂了多少、
 		// 从哪一笔开始漂」。团队 Key 由团队余额付款，个人批次不参与，gap 记 0。

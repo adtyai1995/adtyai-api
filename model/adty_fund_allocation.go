@@ -589,3 +589,63 @@ func ReleaseAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string) e
 		Where("user_id = ? AND operation_id = ? AND held > 0", userID, operationID).
 		Update("held", 0).Error
 }
+
+// AdtyAfterPrincipalRefundedTx runs inside the settlement transaction when a
+// settled task charge is adjusted downward or refunded, crediting the reversed
+// non-legacy principal share back to the site operating wallet.
+var AdtyAfterPrincipalRefundedTx func(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error
+
+func adtyNotifyPrincipalRefundedTx(tx *gorm.DB, userID int, operationKey string, principalRefunded int64) error {
+	if principalRefunded <= 0 || AdtyAfterPrincipalRefundedTx == nil {
+		return nil
+	}
+	return AdtyAfterPrincipalRefundedTx(tx, userID, operationKey, principalRefunded)
+}
+
+// ReverseSettledAdtyFundAllocationsTx reverses up to refundQuota of already-settled
+// shares on sourceOperationID (in reverse allocation order, bonus before principal),
+// restores the corresponding AdtyFundBatch.Remaining, and credits the reversed
+// non-legacy principal portion back to the site operating wallet.
+func ReverseSettledAdtyFundAllocationsTx(tx *gorm.DB, userID int, sourceOperationID, reverseOperationID string, refundQuota int64) error {
+	if tx == nil || userID <= 0 || refundQuota <= 0 || sourceOperationID == "" {
+		return nil
+	}
+	if !tx.Migrator().HasTable(&AdtyFundAllocation{}) || !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		return nil
+	}
+	var shares []AdtyFundAllocation
+	if err := lockForUpdate(tx).
+		Where("user_id = ? AND operation_id = ? AND settled > 0", userID, sourceOperationID).
+		Order("seq DESC").
+		Find(&shares).Error; err != nil {
+		return err
+	}
+	left := refundQuota
+	principalRefunded := int64(0)
+	for i := range shares {
+		if left <= 0 {
+			break
+		}
+		giveBack := min(shares[i].Settled, left)
+		if giveBack <= 0 {
+			continue
+		}
+		if err := tx.Model(&AdtyFundBatch{}).
+			Where("id = ?", shares[i].BatchId).
+			Update("remaining", gorm.Expr("remaining + ?", giveBack)).Error; err != nil {
+			return err
+		}
+		newSettled := shares[i].Settled - giveBack
+		newHeld := min(shares[i].Held, newSettled)
+		if err := tx.Model(&AdtyFundAllocation{}).
+			Where("id = ? AND settled = ?", shares[i].Id, shares[i].Settled).
+			Updates(map[string]any{"held": newHeld, "settled": newSettled}).Error; err != nil {
+			return err
+		}
+		if shares[i].Kind == "principal" && shares[i].Source != "legacy" {
+			principalRefunded += giveBack
+		}
+		left -= giveBack
+	}
+	return adtyNotifyPrincipalRefundedTx(tx, userID, reverseOperationID, principalRefunded)
+}

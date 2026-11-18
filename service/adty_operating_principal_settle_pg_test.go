@@ -307,3 +307,90 @@ func TestOperatingWalletCannotEnableOverdraftPG(t *testing.T) {
 	assert.True(t, f.operating(t).IsZero())
 	assert.Empty(t, f.consumeLedgers(t))
 }
+
+func TestTaskRefundAndDownwardAdjustmentReversePrincipalAndBatchPG(t *testing.T) {
+	t.Run("downward adjustment reverses batch and credits operating wallet idempotently", func(t *testing.T) {
+		f := newOperatingSettleFixture(t)
+		require.NoError(t, f.db.AutoMigrate(&model.Task{}, &model.Channel{}, &model.Midjourney{}, &model.Log{}))
+		f.fundOperating(t, "2", "op-down-fund")
+
+		initialKey := "request:op-down-submit"
+		task := &model.Task{
+			TaskID: "op-down-task", UserId: f.customer.Id, Group: "default",
+			Quota: 100_000, Status: model.TaskStatusInProgress,
+			Properties:  model.Properties{OriginModelName: "op-settle-model"},
+			PrivateData: model.TaskPrivateData{BillingOperationKey: initialKey},
+		}
+		require.NoError(t, f.db.Create(task).Error)
+		require.NoError(t, f.db.Create(&model.BillingOperation{
+			OperationKey: initialKey, UserId: f.customer.Id, Kind: "request", ReferenceId: int64(task.ID),
+			State: model.BillingSettlePending, ActualQuota: 100_000, ReservedQuota: 100_000,
+			SiteId: f.site.Id, SiteMarkup: 2, SiteCostFactor: 0.8, EarningRootKey: initialKey,
+		}).Error)
+		require.NoError(t, f.db.Transaction(func(tx *gorm.DB) error {
+			return model.AllocateAdtyFundAllocationsTx(tx, f.customer.Id, initialKey, 100_000, operatingSettlePrincipal)
+		}))
+		require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", f.customer.Id).Update("quota", 900_000).Error)
+		_, _, err := model.ApplyBillingSettlement(initialKey)
+		require.NoError(t, err)
+		require.Equal(t, 900_000, f.quota(t))
+		require.EqualValues(t, 900_000, f.remaining(t))
+		require.Equal(t, "1.8", f.operating(t).String())
+
+		// Downward adjust from 100,000 -> 40,000 refunds 60,000 quota (0.12 USD).
+		adjKey, err := model.QueueTaskBillingOperation(task, 40_000, false)
+		require.NoError(t, err)
+		op, applied, err := model.ApplyBillingSettlement(adjKey)
+		require.NoError(t, err)
+		require.True(t, applied)
+		assert.EqualValues(t, 40_000, op.AppliedQuota)
+		assert.EqualValues(t, 0, op.FundBatchGap)
+		assert.Equal(t, 960_000, f.quota(t))
+		assert.EqualValues(t, 960_000, f.remaining(t), "principal batch remaining must restore the refunded 60,000")
+		assert.Equal(t, "1.92", f.operating(t).String(), "operating wallet must be credited +0.12 USD for the reversed principal")
+
+		// Idempotent replay must not credit operating wallet or batch again.
+		_, appliedAgain, err := model.ApplyBillingSettlement(adjKey)
+		require.NoError(t, err)
+		assert.False(t, appliedAgain)
+		assert.EqualValues(t, 960_000, f.remaining(t))
+		assert.Equal(t, "1.92", f.operating(t).String())
+	})
+
+	t.Run("failure refund after settled initial request restores full batch and operating principal", func(t *testing.T) {
+		f := newOperatingSettleFixture(t)
+		require.NoError(t, f.db.AutoMigrate(&model.Task{}, &model.Channel{}, &model.Midjourney{}, &model.Log{}))
+		f.fundOperating(t, "2", "op-refund-fund")
+
+		initialKey := "request:op-refund-submit"
+		task := &model.Task{
+			TaskID: "op-refund-task", UserId: f.customer.Id, Group: "default",
+			Quota: 100_000, Status: model.TaskStatusInProgress,
+			Properties:  model.Properties{OriginModelName: "op-settle-model"},
+			PrivateData: model.TaskPrivateData{BillingOperationKey: initialKey},
+		}
+		require.NoError(t, f.db.Create(task).Error)
+		require.NoError(t, f.db.Create(&model.BillingOperation{
+			OperationKey: initialKey, UserId: f.customer.Id, Kind: "request", ReferenceId: int64(task.ID),
+			State: model.BillingSettlePending, ActualQuota: 100_000, ReservedQuota: 100_000,
+			SiteId: f.site.Id, SiteMarkup: 2, SiteCostFactor: 0.8, EarningRootKey: initialKey,
+		}).Error)
+		require.NoError(t, f.db.Transaction(func(tx *gorm.DB) error {
+			return model.AllocateAdtyFundAllocationsTx(tx, f.customer.Id, initialKey, 100_000, operatingSettlePrincipal)
+		}))
+		require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", f.customer.Id).Update("quota", 900_000).Error)
+		_, _, err := model.ApplyBillingSettlement(initialKey)
+		require.NoError(t, err)
+
+		refKey, err := model.QueueTaskBillingOperation(task, 0, true)
+		require.NoError(t, err)
+		op, applied, err := model.ApplyBillingSettlement(refKey)
+		require.NoError(t, err)
+		require.True(t, applied)
+		assert.EqualValues(t, 0, op.AppliedQuota)
+		assert.EqualValues(t, 0, op.FundBatchGap)
+		assert.Equal(t, operatingSettlePrincipal, f.quota(t))
+		assert.EqualValues(t, operatingSettlePrincipal, f.remaining(t))
+		assert.Equal(t, "2", f.operating(t).String())
+	})
+}

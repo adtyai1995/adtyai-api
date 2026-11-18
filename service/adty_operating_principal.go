@@ -9,6 +9,7 @@ import (
 
 func init() {
 	model.AdtyAfterPrincipalSpentTx = adtyDebitOperatingPrincipalTx
+	model.AdtyAfterPrincipalRefundedTx = adtyRefundOperatingPrincipalTx
 }
 
 func adtyCreditOperatingPrincipalTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
@@ -45,6 +46,26 @@ func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string,
 	}
 	// Insufficient cover leaves settlement pending for an authorized adjustment.
 	return adtyMoveOperatingPrincipalTx(tx, user.SiteId, -principalQuota, "principal_consume", "consume", refID, key, false)
+}
+
+func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error {
+	if tx == nil || userID <= 0 || principalQuota <= 0 {
+		return nil
+	}
+	var user model.User
+	if err := tx.Select("id", "site_id").First(&user, userID).Error; err != nil {
+		return err
+	}
+	if user.SiteId <= 0 {
+		return nil
+	}
+	key := "operating:refund:" + common.GetUUID()
+	refID := key
+	if operationKey != "" {
+		key = "operating:refund:" + operationKey
+		refID = operationKey
+	}
+	return adtyMoveOperatingPrincipalTx(tx, user.SiteId, principalQuota, "principal_refund", "refund", refID, key, false)
 }
 
 func adtyMoveOperatingPrincipalTx(tx *gorm.DB, siteID int, quota int64, changeType, refType, refID, key string, allowOverdraft bool) error {

@@ -443,6 +443,8 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		// 否则个人余额为 0 的成员即使团队余额充足也会在预扣前被拒，团队 Key 等于
 		// 用不了（`ISS-R4-0017`）。非团队 Key 仍按个人余额判断。
 		available := int64(userQuota)
+		payerKind := model.BillingPayerPersonal
+		payerTeamID := int64(0)
 		if relayInfo.TokenId > 0 && !relayInfo.IsPlayground {
 			teamQuota, isTeamKey, teamErr := adtyTeamSharedQuotaForToken(relayInfo.TokenId)
 			if teamErr != nil {
@@ -450,6 +452,16 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			}
 			if isTeamKey {
 				available = teamQuota
+				payerKind = model.BillingPayerTeam
+				var keyRow model.AdtyTeamKey
+				if err := model.DB.Where("token_id = ? AND status = ?", relayInfo.TokenId, "active").Limit(1).Find(&keyRow).Error; err == nil {
+					payerTeamID = keyRow.TeamId
+				}
+			}
+		}
+		if preConsumedQuota > 0 {
+			if holdErr := model.CheckAdtyBillingHoldForPayerTx(model.DB, relayInfo.UserId, payerKind, payerTeamID); holdErr != nil {
+				return nil, types.NewErrorWithStatusCode(holdErr, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 			}
 		}
 		remaining := int(min(available, int64(math.MaxInt)))

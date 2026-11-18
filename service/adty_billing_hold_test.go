@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
@@ -17,44 +19,86 @@ func dropBillingHoldTable(t *testing.T, db *gorm.DB) {
 	require.False(t, db.Migrator().HasTable(&model.AdtyBillingHold{}))
 }
 
-// 有开口差额的用户**仍然可以付费请求**（`ISS-R4-0084`）。
-//
-// 老板的原话：「额度不足就不能调用，补充余额以后再调用呗」——所以「暂停」这套
-// 机制整个是多余的。余额不足由请求前的余额检查挡，那一层已经存在，不需要
-// 第二道**永久**封锁（它把「补了余额」也一起挡住了）。
-//
-// 差额记录本身保留（财务对账要用），只是不再有拦截副作用。
-func TestShortfallHoldDoesNotBlockNextPaidRequest(t *testing.T) {
+// DEC034（G3.6）确认规则：同一付款域出现尚未解除的短差额后，即使老在途退款或充值
+// 让余额重新变为正数，仍须暂停该付款域新的付费请求，直到核查/解除；同时免费请求与
+// 老在途请求的结算/退还不得被新付费暂停错误阻断，也不得回滚已成功的结算扣款。
+func TestShortfallHoldBlocksNextPaidRequestPerDEC034(t *testing.T) {
 	db := prepareFloorDB(t)
 	require.NoError(t, db.AutoMigrate(&model.AdtyBillingHold{}))
 	site := floorSite(t, db, "hold")
 	user, token := floorCustomer(t, db, site, "hold", 10_000)
+
+	// In-flight request B reserves 2,000 before A produces a shortfall.
+	ctxInflight, infoInflight, _ := floorRelay(t, user, token)
+	infoInflight.RequestId = "hold-req-inflight"
+	require.Nil(t, PreConsumeBilling(ctxInflight, 2_000, infoInflight))
+
+	// Request A reserves 4,000 then settles for more than remaining balance -> open shortfall hold.
 	ctx, info, quota := floorRelay(t, user, token)
 	info.RequestId = "hold-req-1"
 	require.Nil(t, PreConsumeBilling(ctx, 4_000, info))
 	require.NoError(t, SettleBilling(ctx, info, quota))
 	require.Positive(t, info.BillingShortfall, "这一笔确实产生了差额")
 
-	// 差额记录还在——这是财务对账的数据来源。
 	var holds int64
 	require.NoError(t, db.Model(&model.AdtyBillingHold{}).Where("user_id = ? AND status = ?",
 		user.Id, model.AdtyBillingHoldOpen).Count(&holds).Error)
 	require.EqualValues(t, 1, holds, "缺口必须被记下来")
 
-	// **余额不足时该拒** —— 这是老板那句「额度不足就不能调用」的一半，
-	// 而它就是请求前那层余额检查，和「暂停」无关。
-	ctx2, info2, _ := floorRelay(t, user, token)
-	info2.RequestId = "hold-req-2"
-	require.NotNil(t, PreConsumeBilling(ctx2, 1_000, info2), "余额是 0，该拒")
+	// Existing in-flight request B can still refund/settle cleanly even while A's hold is open.
+	require.NoError(t, SettleBilling(ctxInflight, infoInflight, 0))
+	require.Positive(t, floorBalance(t, user.Id), "in-flight refund restores positive balance")
 
-	// **补充余额之后再调用就该通过** —— 这是另一半，也是修前做不到的：
-	// 那时候第二道门禁是「有开口差额就永久 403」，补了余额也照样拒。
+	// Even with positive balance after in-flight refund or manual topup, DEC034 pauses NEW paid requests.
 	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", user.Id).
 		Update("quota", 50_000).Error)
-	ctx3, info3, _ := floorRelay(t, user, token)
-	info3.RequestId = "hold-req-3"
-	require.Nil(t, PreConsumeBilling(ctx3, 1_000, info3),
-		"补了余额就该能继续调用：修前这里仍然是 403「paused until reviewed」")
+	ctxPaid, infoPaid, _ := floorRelay(t, user, token)
+	infoPaid.RequestId = "hold-req-blocked"
+	blockedErr := PreConsumeBilling(ctxPaid, 1_000, infoPaid)
+	require.NotNil(t, blockedErr, "open shortfall hold must pause new paid requests even when balance > 0")
+	require.Equal(t, http.StatusForbidden, blockedErr.StatusCode)
+	require.Equal(t, 50_000, floorBalance(t, user.Id), "blocked request must not debit wallet")
+
+	// Free requests must still be admitted cleanly during shortfall pause.
+	ctxFree, infoFree, _ := floorRelay(t, user, token)
+	infoFree.RequestId = "hold-req-free"
+	require.Nil(t, FreezeRequestBillingPayer(ctxFree, infoFree))
+
+	// Once the hold is resolved, new paid requests succeed again.
+	require.NoError(t, db.Model(&model.AdtyBillingHold{}).Where("user_id = ?", user.Id).Update("status", "resolved").Error)
+	ctxAfter, infoAfter, _ := floorRelay(t, user, token)
+	infoAfter.RequestId = "hold-req-after-resolve"
+	require.Nil(t, PreConsumeBilling(ctxAfter, 1_000, infoAfter))
+}
+
+func TestSettledShortfallBackfillsMissingHoldOnRecoveryAndBlocksPaidRequests(t *testing.T) {
+	db := prepareFloorDB(t)
+	require.NoError(t, db.AutoMigrate(&model.AdtyBillingHold{}))
+	user, token := floorCustomer(t, db, nil, "hold-backfill", 10)
+	ctx, info, _ := floorRelay(t, user, token)
+	info.RequestId = "hold-backfill-1"
+	require.Nil(t, PreConsumeBilling(ctx, 10, info))
+	dropBillingHoldTable(t, db)
+
+	err := SettleBilling(ctx, info, 225)
+	require.ErrorIs(t, err, model.ErrAdtyBillingHoldTableMissing)
+
+	// Re-topup user before hold table is restored: settled operation shortfall must still pause new paid requests.
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", user.Id).Update("quota", 50_000).Error)
+	ctxBlocked, infoBlocked, _ := floorRelay(t, user, token)
+	infoBlocked.RequestId = "hold-backfill-blocked"
+	blocked := PreConsumeBilling(ctxBlocked, 1_000, infoBlocked)
+	require.NotNil(t, blocked, "settled shortfall must pause new paid requests even if hold row projection initially failed")
+	require.Equal(t, http.StatusForbidden, blocked.StatusCode)
+
+	// Restore table and run recovery -> missing open hold projection is repaired automatically.
+	require.NoError(t, db.AutoMigrate(&model.AdtyBillingHold{}))
+	require.NoError(t, RecoverBillingOperations(context.Background(), 100))
+	var holds []model.AdtyBillingHold
+	require.NoError(t, db.Where("user_id = ? AND request_id = ? AND status = ?",
+		user.Id, "hold-backfill-1", model.AdtyBillingHoldOpen).Find(&holds).Error)
+	require.Len(t, holds, 1)
+	require.EqualValues(t, 215, holds[0].ShortfallQuota)
 }
 
 func TestAdtyNoteBillingShortfallReturnsHoldWriteError(t *testing.T) {

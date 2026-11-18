@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -143,5 +144,28 @@ func TestRecoverBillingOperationsBacksOffPoisonedOperations(t *testing.T) {
 		var after model.BillingOperation
 		require.NoError(t, model.DB.First(&after, "operation_key = ?", "poison:exhausted").Error)
 		assert.Equal(t, model.BillingOperationMaxAttempts, after.Attempts)
+	})
+
+	t.Run("late failure receipt cannot turn settled or refunded operation into dead", func(t *testing.T) {
+		truncate(t)
+		for _, finalState := range []string{model.BillingSettled, model.BillingRefunded} {
+			opKey := "terminal:late-fail:" + finalState
+			require.NoError(t, model.DB.Create(&model.BillingOperation{
+				OperationKey: opKey, UserId: 90_501, Kind: "request",
+				State: finalState, ReservedQuota: 500, ActualQuota: 500, AppliedQuota: 500,
+				Attempts: model.BillingOperationMaxAttempts - 1, UpdatedAt: 1,
+			}).Error)
+
+			dead, err := model.RecordBillingOperationRetryFailure(opKey, errors.New("stale SQL connection reset"), time.Now().Unix())
+			require.NoError(t, err)
+			assert.False(t, dead, "late failure receipt after %s must not mark operation dead", finalState)
+
+			after, getErr := model.GetBillingOperation(opKey)
+			require.NoError(t, getErr)
+			assert.Equal(t, finalState, after.State, "terminal state %s must stay immutable", finalState)
+			assert.Equal(t, model.BillingOperationMaxAttempts-1, after.Attempts, "attempts must not increment after commit")
+			assert.Empty(t, after.LastError, "stale error must not overwrite committed terminal outcome")
+			assert.Zero(t, after.NextRetryAt)
+		}
 	})
 }

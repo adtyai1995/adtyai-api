@@ -13,6 +13,8 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -455,4 +457,70 @@ func TestBillingPayerSnapshotLegacyDirectSiblingPG(t *testing.T) {
 			assert.EqualValues(t, 500_000, f.personalQuota(t))
 		})
 	}
+}
+
+func TestTeamFiniteKeyReservationPreventsOverrunPG(t *testing.T) {
+	f := newTeamSettleFixture(t, 0, 1_000_000)
+	finiteToken := &model.Token{
+		UserId: f.member.Id, Key: fmt.Sprintf("team-finite-%d", f.member.Id), Name: "team-finite",
+		RemainQuota: 50_000, UnlimitedQuota: false, Status: common.TokenStatusEnabled, ExpiredTime: -1,
+	}
+	require.NoError(t, f.db.Create(finiteToken).Error)
+	require.NoError(t, BindAdtyTeamKey(f.member.Id, finiteToken.Id))
+
+	// First request claims the full 50,000 remaining token quota.
+	first, err := model.ReserveBillingOperation(model.BillingOperation{
+		OperationKey: "request:team-finite-1", UserId: f.member.Id, TokenId: finiteToken.Id, TokenUnlimited: false,
+	}, 50_000)
+	require.NoError(t, err)
+	assert.EqualValues(t, 50_000, first.TokenReservedQuota)
+	assert.EqualValues(t, 950_000, f.teamQuota(t))
+
+	var tokAfterFirst model.Token
+	require.NoError(t, f.db.First(&tokAfterFirst, finiteToken.Id).Error)
+	assert.EqualValues(t, 0, tokAfterFirst.RemainQuota)
+
+	// Concurrent second request before the first settles must be rejected on finite key budget
+	// without charging the shared team wallet.
+	_, err = model.ReserveBillingOperation(model.BillingOperation{
+		OperationKey: "request:team-finite-2", UserId: f.member.Id, TokenId: finiteToken.Id, TokenUnlimited: false,
+	}, 10_000)
+	require.ErrorIs(t, err, model.ErrBillingTokenInsufficient)
+	assert.EqualValues(t, 950_000, f.teamQuota(t))
+
+	require.NoError(t, f.db.First(&tokAfterFirst, finiteToken.Id).Error)
+	assert.EqualValues(t, 0, tokAfterFirst.RemainQuota)
+}
+
+func TestTeamRealtimeChunkPreWssConsumeUsesTeamSharedBalancePG(t *testing.T) {
+	f := newTeamSettleFixture(t, 0, 500_000)
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"gpt-4o-realtime-preview":10}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime", nil)
+	info := &relaycommon.RelayInfo{
+		UserId:          f.member.Id,
+		TokenId:         f.token.Id,
+		TokenKey:        f.token.Key,
+		TokenUnlimited:  true,
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		OriginModelName: "gpt-4o-realtime-preview",
+		RequestId:       "team-realtime-1",
+		StartTime:       time.Now(),
+	}
+	info.PriceData.UsePrice = false
+	info.PriceData.ModelRatio = 10
+	info.PriceData.CompletionRatio = 1
+	info.PriceData.GroupRatioInfo.GroupRatio = 1
+	require.Nil(t, PreConsumeBilling(c, 5_000, info))
+	assert.EqualValues(t, 0, f.personalQuota(t))
+	assert.EqualValues(t, 495_000, f.teamQuota(t))
+
+	usage := &dto.RealtimeUsage{InputTokens: 200, OutputTokens: 100, TotalTokens: 300}
+	usage.InputTokenDetails.TextTokens = 200
+	usage.OutputTokenDetails.TextTokens = 100
+	require.NoError(t, PreWssConsumeQuota(c, info, usage))
+	assert.EqualValues(t, 0, f.personalQuota(t), "member personal wallet must remain untouched")
+	assert.Less(t, f.teamQuota(t), int64(495_000), "realtime chunk must debit the shared team balance")
 }
