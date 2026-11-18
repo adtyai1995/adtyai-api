@@ -3,6 +3,7 @@ package billingexpr
 import (
 	"crypto/sha256"
 	"fmt"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 
@@ -16,6 +17,12 @@ type RequestInput struct {
 	// ImageCount is a validated billing quantity, separate from the frozen
 	// request's n. Settlement can replace it with the actual returned count.
 	ImageCount *int
+	// AcceptedAt freezes the request acceptance instant so time-of-day billing
+	// helpers (hour/minute/weekday/month/day) evaluate consistently across pre-consume,
+	// retries, and settlement without wall-clock boundary tearing.
+	AcceptedAt       time.Time
+	AcceptedUnix     int64
+	BusinessTimezone string
 }
 
 // TokenParams holds all token dimensions passed into an Expr evaluation.
@@ -87,6 +94,8 @@ type BillingSnapshot struct {
 	ExprVersion               int            `json:"expr_version"`
 	TaskUsageBilling          bool           `json:"task_usage_billing,omitempty"`
 	UsageFacts                map[string]any `json:"usage_facts,omitempty"`
+	AcceptedAt                int64          `json:"accepted_at,omitempty"`
+	BusinessTimezone          string         `json:"business_timezone,omitempty"`
 }
 
 // TieredResult holds everything needed after running tiered settlement.

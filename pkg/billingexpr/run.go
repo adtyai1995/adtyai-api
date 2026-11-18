@@ -64,12 +64,14 @@ func runProgram(entry *cachedEntry, params TokenParams, request RequestInput) (f
 	}
 
 	cost, err := evalBillingExpr(entry.tree, entry.body, &decimalEvalEnv{
-		src:     entry.body,
-		vars:    tokenParamsAsDecimals(params, imageCount),
-		trace:   &trace,
-		headers: normalizeHeaders(request.Headers),
-		body:    request.Body,
-		usage:   request.Usage,
+		src:             entry.body,
+		vars:            tokenParamsAsDecimals(params, imageCount),
+		trace:           &trace,
+		headers:         normalizeHeaders(request.Headers),
+		body:            request.Body,
+		usage:           request.Usage,
+		now:             resolveEvalInstant(request),
+		defaultTimezone: strings.TrimSpace(request.BusinessTimezone),
 	})
 	if err != nil {
 		return 0, trace, err
@@ -79,16 +81,48 @@ func runProgram(entry *cachedEntry, params TokenParams, request RequestInput) (f
 	return trace.Cost, trace, nil
 }
 
-func timeInZone(tz string) time.Time {
+func resolveEvalInstant(request RequestInput) time.Time {
+	if !request.AcceptedAt.IsZero() {
+		return request.AcceptedAt.UTC()
+	}
+	if request.AcceptedUnix > 0 {
+		return time.Unix(request.AcceptedUnix, 0).UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (env *decimalEvalEnv) timeInZone(tz string) time.Time {
+	instant := time.Now().UTC()
+	defaultTZ := ""
+	if env != nil {
+		if !env.now.IsZero() {
+			instant = env.now
+		}
+		defaultTZ = env.defaultTimezone
+	}
+	return instantInZone(instant, tz, defaultTZ)
+}
+
+func instantInZone(instant time.Time, tz string, defaultTZ string) time.Time {
+	if instant.IsZero() {
+		instant = time.Now().UTC()
+	}
 	tz = strings.TrimSpace(tz)
 	if tz == "" {
-		return time.Now().UTC()
+		tz = strings.TrimSpace(defaultTZ)
+	}
+	if tz == "" {
+		return instant.UTC()
 	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		return time.Now().UTC()
+		return instant.UTC()
 	}
-	return time.Now().In(loc)
+	return instant.In(loc)
+}
+
+func timeInZone(tz string) time.Time {
+	return instantInZone(time.Now().UTC(), tz, "")
 }
 
 func normalizeHeaders(headers map[string]string) map[string]string {

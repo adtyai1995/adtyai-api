@@ -577,6 +577,31 @@ func QueueMidjourneyBillingOperation(task *Midjourney, refund bool) (string, err
 		PayerKind: task.BillingPayerKind, PayerTeamId: task.BillingPayerTeamId}
 	row.SiteOwnerUserId = task.BillingSiteOwnerUserId
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		if !refund {
+			var existing []BillingOperation
+			if err := lockForUpdate(tx).Where("operation_key = ?", key).Limit(1).Find(&existing).Error; err != nil {
+				return err
+			}
+			if len(existing) > 0 {
+				cur := existing[0]
+				if cur.UserId != task.UserId {
+					return ErrBillingOperationConflict
+				}
+				if cur.State == BillingReserved {
+					updates := map[string]any{
+						"kind":         "mj_charge",
+						"reference_id": int64(task.Id),
+						"actual_quota": target,
+						"state":        BillingSettlePending,
+					}
+					if cur.EarningRootKey == "" {
+						updates["earning_root_key"] = key
+					}
+					return tx.Model(&cur).Updates(updates).Error
+				}
+				return nil
+			}
+		}
 		if err := freezeBillingPayerTx(tx, &row, false); err != nil {
 			return err
 		}
@@ -661,7 +686,11 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 			if mj.UserId != row.UserId {
 				return ErrBillingOperationConflict
 			}
-			base, tokenBase = 0, 0
+			if row.Kind == "mj_charge" {
+				base, tokenBase = row.ReservedQuota, row.TokenReservedQuota
+			} else {
+				base, tokenBase = 0, 0
+			}
 			if row.Kind == "mj_refund" && !mj.BillingChargePending {
 				base = mj.Quota
 				if row.TokenId > 0 {
@@ -846,7 +875,7 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		stampConsumedAmountOnSnapshot(&row)
 		earningQuota := charged
-		if row.Kind == "request" {
+		if row.Kind == "request" || row.Kind == "mj_charge" {
 			earningQuota = row.AppliedQuota - row.StreamWalletQuota
 			if row.State == BillingRefundPending {
 				earningQuota = 0

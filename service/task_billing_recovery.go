@@ -121,11 +121,11 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 			RefundTaskQuota(ctx, task, task.FailReason)
 			continue
 		}
-		if GetTaskAdaptorFunc == nil {
+		if GetTaskAdaptorFunc == nil && GetTaskAdaptorForTaskFunc == nil {
 			flagTaskBillingManualReview(ctx, task, "no task adaptor factory is registered for platform "+string(task.Platform))
 			continue
 		}
-		adaptor := GetTaskAdaptorFunc(task.Platform)
+		adaptor := ResolveTaskPollingAdaptor(task, task.Platform)
 		if adaptor == nil {
 			flagTaskBillingManualReview(ctx, task, "no task adaptor for platform "+string(task.Platform))
 			continue

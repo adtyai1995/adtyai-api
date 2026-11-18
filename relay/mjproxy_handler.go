@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -283,9 +284,13 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 			midjourneyTask.ImageUrl = ""
 		} else {
 			midjourneyTask.ImageUrl = strings.TrimRight(system_setting.ServerAddress, "/") + imagePath
-		}
-		if originTask.Status != "SUCCESS" {
-			midjourneyTask.ImageUrl += "?rand=" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			if originTask.Status != "SUCCESS" {
+				sep := "?"
+				if strings.Contains(midjourneyTask.ImageUrl, "?") {
+					sep = "&"
+				}
+				midjourneyTask.ImageUrl += sep + "rand=" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			}
 		}
 	} else {
 		midjourneyTask.ImageUrl = originTask.ImageUrl
@@ -384,8 +389,20 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		c,
 	)
 	if billingErr != nil {
+		if errors.Is(billingErr, model.ErrBillingWalletInsufficient) {
+			return &dto.MidjourneyResponse{Code: 4, Description: "quota_not_enough"}
+		}
+		if errors.Is(billingErr, model.ErrBillingTokenInsufficient) {
+			return &dto.MidjourneyResponse{Code: 4, Description: "token_quota_not_enough"}
+		}
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, billingErr.Error())
 	}
+	billingApplied := false
+	defer func() {
+		if !billingApplied {
+			service.ReleaseMidjourneyTaskBilling(midjourneyTask)
+		}
+	}()
 	service.RequestPolicy(c).BeginAttempt(&model.Channel{Id: c.GetInt("channel_id")}, info.UsingGroup)
 	mjResp, _, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	accepted := service.RecordMidjourneyPolicyResponse(c, mjResp, err)
@@ -402,7 +419,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	if err != nil {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "insert_midjourney_task_failed")
 	}
-	billingApplied, billingErr := service.SettleMidjourneyTaskBilling(info, midjourneyTask, billingPrepared)
+	billingApplied, billingErr = service.SettleMidjourneyTaskBilling(info, midjourneyTask, billingPrepared)
 	if billingErr != nil {
 		common.SysLog(common.LogText("error settling Midjourney quota: %s", billingErr.Error()))
 	}
@@ -716,8 +733,20 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	}
 	billingPrepared, billingErr := service.PrepareMidjourneyTaskBilling(relayInfo, midjourneyTask, priceData.Quota, consumeQuota, c)
 	if billingErr != nil {
+		if errors.Is(billingErr, model.ErrBillingWalletInsufficient) {
+			return &dto.MidjourneyResponse{Code: 4, Description: "quota_not_enough"}
+		}
+		if errors.Is(billingErr, model.ErrBillingTokenInsufficient) {
+			return &dto.MidjourneyResponse{Code: 4, Description: "token_quota_not_enough"}
+		}
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, billingErr.Error())
 	}
+	billingApplied := false
+	defer func() {
+		if !billingApplied {
+			service.ReleaseMidjourneyTaskBilling(midjourneyTask)
+		}
+	}()
 	service.RequestPolicy(c).BeginAttempt(&model.Channel{Id: c.GetInt("channel_id")}, relayInfo.UsingGroup)
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	accepted := service.RecordMidjourneyPolicyResponse(c, midjResponseWithStatus, err)
@@ -798,7 +827,6 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			skipNewRow = true
 		}
 	}
-	billingApplied := false
 	if !skipNewRow {
 		if !consumeQuota || midjResponseWithStatus.StatusCode != http.StatusOK {
 			billingPrepared, _ = service.PrepareMidjourneyTaskBilling(relayInfo, midjourneyTask, 0, false)

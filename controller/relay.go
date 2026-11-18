@@ -1,11 +1,13 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -633,7 +635,12 @@ func executeTaskSubmissionWith(
 	}
 
 	if taskErr != nil {
-		diagnostics.failed(stage, "task_error", taskErr, false)
+		if c != nil && c.GetBool("task_submit_ambiguous") && (c.Request == nil || c.Request.Context().Err() == nil) {
+			if holdAmbiguousTaskSubmission(c, relayInfo, taskErr) {
+				durable = true
+			}
+		}
+		diagnostics.failed(stage, "task_error", taskErr, durable)
 		return nil, taskErr
 	}
 	if result == nil {
@@ -831,6 +838,50 @@ func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 	respondTaskError(c, taskErr)
 }
 
+func holdAmbiguousTaskSubmission(c *gin.Context, relayInfo *relaycommon.RelayInfo, taskErr *taskdto.TaskError) bool {
+	if relayInfo == nil || model.DB == nil {
+		return false
+	}
+	platform := constant.TaskPlatform(c.GetString("platform"))
+	if platform == "" {
+		if key := c.GetString("task_plugin_key"); key != "" {
+			platform = constant.TaskPlatform(key)
+		} else {
+			platform = constant.TaskPlatform(strconv.Itoa(relayInfo.ChannelType))
+		}
+	}
+	task := model.InitTask(platform, relayInfo)
+	task.Status = model.TaskStatusSubmitted
+	task.BillingPending = true
+	reason := "ambiguous_upstream_submit"
+	if taskErr != nil && taskErr.Message != "" {
+		reason += ": " + taskErr.Message
+	}
+	task.PrivateData.BillingReviewReason = reason
+	task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
+	task.PrivateData.BillingSource = relayInfo.BillingSource
+	task.PrivateData.TokenId = relayInfo.TokenId
+	task.PrivateData.NodeName = common.NodeName
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		ModelPrice:      relayInfo.PriceData.ModelPrice,
+		GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
+		ModelRatio:      relayInfo.PriceData.ModelRatio,
+		OtherRatios:     relayInfo.PriceData.OtherRatios(),
+		OriginModelName: relayInfo.OriginModelName,
+		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
+	}
+	service.AdtyStampTaskSiteBilling(c, task.PrivateData.BillingContext)
+	task.Quota = relayInfo.PriceData.Quota
+	task.Action = relayInfo.Action
+	service.AttachTaskBillingReservation(relayInfo, task)
+	if err := task.InsertWithContext(context.Background()); err != nil {
+		common.SysError(common.LogText("persist ambiguous task submission failed: %s", err.Error()))
+		return false
+	}
+	return true
+}
+
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）
 func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
 	if taskErr.StatusCode == http.StatusTooManyRequests {
@@ -877,8 +928,8 @@ func decideTaskRetry(c *gin.Context, taskErr *taskdto.TaskError, retryTimes int)
 			break
 		}
 		return retry
-	case taskErr.StatusCode == http.StatusBadRequest, taskErr.StatusCode == 408:
-		// azure处理超时不重试
+	case taskErr.StatusCode == http.StatusBadRequest, taskErr.StatusCode == 408, taskErr.StatusCode == http.StatusGatewayTimeout:
+		// azure处理超时或网关超时不重试
 		stop.Reason = "status_not_retryable"
 	case taskErr.LocalError:
 		stop.Reason = "local_rejection"

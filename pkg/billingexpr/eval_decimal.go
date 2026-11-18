@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/expr-lang/expr/ast"
 	"github.com/expr-lang/expr/file"
@@ -15,12 +16,14 @@ import (
 var errNonFiniteExpr = errors.New("expr result must be finite and non-negative")
 
 type decimalEvalEnv struct {
-	src     string
-	vars    map[string]decimal.Decimal
-	trace   *TraceResult
-	headers map[string]string
-	body    []byte
-	usage   map[string]any
+	src             string
+	vars            map[string]decimal.Decimal
+	trace           *TraceResult
+	headers         map[string]string
+	body            []byte
+	usage           map[string]any
+	now             time.Time
+	defaultTimezone string
 }
 
 func evalBillingExpr(node ast.Node, src string, env *decimalEvalEnv) (decimal.Decimal, error) {
@@ -344,31 +347,31 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return decimal.NewFromInt(int64(timeInZone(tz).Hour())), nil
+		return decimal.NewFromInt(int64(env.timeInZone(tz).Hour())), nil
 	case "minute":
 		tz, err := timezoneArg(args)
 		if err != nil {
 			return nil, err
 		}
-		return decimal.NewFromInt(int64(timeInZone(tz).Minute())), nil
+		return decimal.NewFromInt(int64(env.timeInZone(tz).Minute())), nil
 	case "weekday":
 		tz, err := timezoneArg(args)
 		if err != nil {
 			return nil, err
 		}
-		return decimal.NewFromInt(int64(timeInZone(tz).Weekday())), nil
+		return decimal.NewFromInt(int64(env.timeInZone(tz).Weekday())), nil
 	case "month":
 		tz, err := timezoneArg(args)
 		if err != nil {
 			return nil, err
 		}
-		return decimal.NewFromInt(int64(timeInZone(tz).Month())), nil
+		return decimal.NewFromInt(int64(env.timeInZone(tz).Month())), nil
 	case "day":
 		tz, err := timezoneArg(args)
 		if err != nil {
 			return nil, err
 		}
-		return decimal.NewFromInt(int64(timeInZone(tz).Day())), nil
+		return decimal.NewFromInt(int64(env.timeInZone(tz).Day())), nil
 	case "max", "min":
 		if len(args) != 2 {
 			return nil, fmt.Errorf("expr run error: %s expects 2 arguments", name)
@@ -404,6 +407,9 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 }
 
 func timezoneArg(args []any) (string, error) {
+	if len(args) == 0 {
+		return "", nil
+	}
 	if len(args) != 1 {
 		return "", fmt.Errorf("expr run error: timezone helper expects 1 argument")
 	}

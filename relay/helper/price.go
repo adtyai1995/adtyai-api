@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -477,6 +478,16 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 			return hosttypes.PriceData{}, err
 		}
 	}
+	acceptedAt := time.Now().UTC()
+	if info != nil && !info.StartTime.IsZero() {
+		acceptedAt = info.StartTime.UTC()
+	} else if snap := service.AdtyFrozenPriceSnapshot(c); snap != nil && snap.AcceptedAt > 0 {
+		acceptedAt = time.Unix(snap.AcceptedAt, 0).UTC()
+	}
+	if requestInput.AcceptedAt.IsZero() && requestInput.AcceptedUnix == 0 {
+		requestInput.AcceptedAt = acceptedAt
+		requestInput.AcceptedUnix = acceptedAt.Unix()
+	}
 
 	rawCost, trace, err := billingexpr.RunExprByHashWithRequest(exprStr, exprHash, billingexpr.TokenParams{
 		P:   float64(promptTokens),
@@ -525,6 +536,8 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 		EstimatedFixedPrice:       trace.FixedPrice,
 		QuotaPerUnit:              float64(common.FixedQuotaPerUnit),
 		ExprVersion:               billingexpr.ExprVersion(exprStr),
+		AcceptedAt:                requestInput.AcceptedUnix,
+		BusinessTimezone:          requestInput.BusinessTimezone,
 	}
 	info.TieredBillingSnapshot = snapshot
 	info.BillingRequestInput = &requestInput

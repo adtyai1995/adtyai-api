@@ -88,6 +88,21 @@ type BatchTaskResult struct {
 // 打破 service -> relay -> relay/channel -> service 的循环依赖。
 var GetTaskAdaptorFunc func(platform constant.TaskPlatform) TaskPollingAdaptor
 
+// GetTaskAdaptorForTaskFunc 按任务提交时冻结的插件 (key, version) 获取适配器。
+var GetTaskAdaptorForTaskFunc func(task *model.Task, platform constant.TaskPlatform) TaskPollingAdaptor
+
+func ResolveTaskPollingAdaptor(task *model.Task, platform constant.TaskPlatform) TaskPollingAdaptor {
+	if task != nil && task.PrivateData.Execution != nil && task.PrivateData.Execution.TaskPlugin != nil && GetTaskAdaptorForTaskFunc != nil {
+		if pinned := GetTaskAdaptorForTaskFunc(task, platform); pinned != nil {
+			return pinned
+		}
+	}
+	if GetTaskAdaptorFunc != nil {
+		return GetTaskAdaptorFunc(platform)
+	}
+	return nil
+}
+
 // sweepTimedOutTasks 在主轮询之前独立清理超时任务。
 // 每次最多处理 100 条，剩余的下个周期继续处理。
 // 使用 per-task CAS (UpdateWithStatus) 防止覆盖被正常轮询已推进的任务。
@@ -346,6 +361,13 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		HeadersOverride: ch.GetHeaderOverride(),
 	}
 	info.ApiKey = ch.Key
+	if len(tasks) > 0 && tasks[0] != nil && tasks[0].PrivateData.Execution != nil && tasks[0].PrivateData.Execution.TaskPlugin != nil && GetTaskAdaptorForTaskFunc != nil {
+		if pinned := GetTaskAdaptorForTaskFunc(tasks[0], tasks[0].Platform); pinned != nil {
+			if pinnedBatch, ok := pinned.(BatchTaskPollingAdaptor); ok && pinnedBatch.FetchMode() == "batch" {
+				adaptor = pinnedBatch
+			}
+		}
+	}
 	adaptor.Init(info)
 	pollCtx, cancel := TaskPollContext(ctx)
 	defer cancel()
@@ -584,6 +606,22 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if task.BillingInitialPending {
 		return nil
 	}
+	if task.PrivateData.Execution != nil && task.PrivateData.Execution.TaskPlugin != nil && GetTaskAdaptorForTaskFunc != nil {
+		if pinned := GetTaskAdaptorForTaskFunc(task, task.Platform); pinned != nil {
+			info := &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType:     ch.Type,
+					ChannelId:       ch.Id,
+					ChannelBaseUrl:  ch.GetBaseURL(),
+					ChannelSetting:  ch.GetSetting(),
+					HeadersOverride: ch.GetHeaderOverride(),
+				},
+			}
+			info.ApiKey = ch.Key
+			pinned.Init(info)
+			adaptor = pinned
+		}
+	}
 	key := ch.Key
 
 	privateData := task.PrivateData
@@ -753,6 +791,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 }
 
 // finalizeTerminalTask 终态统一收尾（状态 CAS 赢家调用，恰好一次）：采样 + 结算 + 失败兜底退款。
+// 待结算恢复重入时，RecordTaskResult 按任务级持久标记去重，只重放计费结算而不重复累计性能样本。
 func finalizeTerminalTask(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
 	// The terminal CAS has committed. Finish its accounting independently of
 	// lease/client cancellation, while keeping completion hooks bounded.

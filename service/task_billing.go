@@ -379,12 +379,14 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	modelRatioDec, hasRatioSetting := decimal.Zero, false
 	if bc := task.PrivateData.BillingContext; bc != nil {
 		if snap := bc.PriceSnapshot; snap != nil {
-			if d, ok := snap.ModelRatioDecimal(); ok && d.IsPositive() {
+			if d, ok := snap.ModelRatioDecimal(); ok && (d.IsPositive() || (d.IsZero() && (snap.FreeModel || snap.ModelRatio != ""))) {
 				modelRatioDec, hasRatioSetting = d, true
 			}
 		}
 		if !hasRatioSetting && bc.ModelRatio > 0 {
 			modelRatioDec, hasRatioSetting = decimal.NewFromFloat(bc.ModelRatio), true
+		} else if !hasRatioSetting && bc.ModelRatio == 0 && !bc.PerCallBilling && bc.ModelPrice <= 0 && bc.PriceSnapshot != nil && (bc.PriceSnapshot.FreeModel || bc.PriceSnapshot.ModelRatio == "0") {
+			modelRatioDec, hasRatioSetting = decimal.Zero, true
 		}
 	}
 	if !hasRatioSetting {
@@ -395,7 +397,17 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	}
 	modelRatio := modelRatioDec.InexactFloat64()
 	// 只有配置了倍率(非固定价格)时才按 token 重新计费
-	if !hasRatioSetting || !modelRatioDec.IsPositive() {
+	if !hasRatioSetting {
+		return false
+	}
+	if modelRatioDec.IsZero() {
+		if task.Quota > 0 {
+			RecalculateTaskQuota(ctx, task, 0, common.NewMessage("Free model ratio 0"))
+			return true
+		}
+		return false
+	}
+	if !modelRatioDec.IsPositive() {
 		return false
 	}
 

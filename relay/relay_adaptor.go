@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	_ "github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -44,8 +45,26 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/xunfei"
 	"github.com/QuantumNous/new-api/relay/channel/zhipu"
 	"github.com/QuantumNous/new-api/relay/channel/zhipu_4v"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
+
+func init() {
+	service.GetTaskAdaptorForTaskFunc = func(task *model.Task, platform constant.TaskPlatform) service.TaskPollingAdaptor {
+		if task == nil || task.PrivateData.Execution == nil || task.PrivateData.Execution.TaskPlugin == nil {
+			return nil
+		}
+		tp := task.PrivateData.Execution.TaskPlugin
+		if tp.Key == "" || tp.Version == "" {
+			return nil
+		}
+		plugin, ok := ResolveTaskPluginVersion(tp.Key, tp.Version)
+		if !ok || plugin == nil {
+			return nil
+		}
+		return jspluginadaptor.New(plugin)
+	}
+}
 
 func GetAdaptor(apiType int) channel.Adaptor {
 	switch apiType {
@@ -188,6 +207,48 @@ func TaskPlatformUnavailableError(platform constant.TaskPlatform) (string, strin
 func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 	plugin, ok := ResolveTaskPluginForPlatform(pluginruntime.DefaultRegistry.Generation(), platform)
 	if !ok {
+		return nil
+	}
+	return jspluginadaptor.New(plugin)
+}
+
+func ResolveTaskPluginVersion(key, version string) (*pluginruntime.LoadedPlugin, bool) {
+	if key == "" || version == "" {
+		return nil, false
+	}
+	if plugin, ok := pluginruntime.DefaultRegistry.GetVersion(key, version); ok && plugin != nil {
+		return plugin, true
+	}
+	if model.DB != nil {
+		var rows []model.TaskPlugin
+		if err := model.DB.Where("key = ? AND version = ?", key, version).Limit(1).Find(&rows).Error; err == nil && len(rows) > 0 && rows[0].Source != "" {
+			if compiled, compileErr := pluginruntime.CompilePlugin(string(rows[0].Source), pluginruntime.Options{Key: rows[0].Key, Version: rows[0].Version}); compileErr == nil && compiled != nil {
+				pluginruntime.DefaultRegistry.CacheVersion(compiled)
+				return compiled, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func ResolveTaskPluginForTask(task *model.Task, fallbackPlatform constant.TaskPlatform) (*pluginruntime.LoadedPlugin, bool) {
+	if task != nil && task.PrivateData.Execution != nil && task.PrivateData.Execution.TaskPlugin != nil {
+		tp := task.PrivateData.Execution.TaskPlugin
+		if plugin, ok := ResolveTaskPluginVersion(tp.Key, tp.Version); ok && plugin != nil {
+			return plugin, true
+		}
+		if tp.Key != "" {
+			if plugin, ok := pluginruntime.DefaultRegistry.Generation().Get(tp.Key); ok && plugin != nil {
+				return plugin, true
+			}
+		}
+	}
+	return ResolveTaskPluginForPlatform(pluginruntime.DefaultRegistry.Generation(), fallbackPlatform)
+}
+
+func GetTaskAdaptorForTask(task *model.Task, fallbackPlatform constant.TaskPlatform) channel.TaskAdaptor {
+	plugin, ok := ResolveTaskPluginForTask(task, fallbackPlatform)
+	if !ok || plugin == nil {
 		return nil
 	}
 	return jspluginadaptor.New(plugin)

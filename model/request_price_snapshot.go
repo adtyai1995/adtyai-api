@@ -44,6 +44,7 @@ type RequestPriceSnapshot struct {
 	SiteId               int    `json:"site_id,omitempty"`
 	SiteOwnerUserId      int    `json:"site_owner_user_id,omitempty"`
 	MainSite             bool   `json:"main_site,omitempty"`
+	FreeModel            bool   `json:"free_model,omitempty"`
 	ModelRatio           string `json:"model_ratio,omitempty"`
 	ModelPrice           string `json:"model_price,omitempty"`
 	CompletionRatio      string `json:"completion_ratio,omitempty"`
@@ -93,7 +94,8 @@ func (s *RequestPriceSnapshot) HasPriceBasis() bool {
 	}
 	base, hasBase := ParseSnapshotDecimal(s.ModelBasePrice)
 	final, hasFinal := ParseSnapshotDecimal(s.FinalPrice)
-	return hasBase && base.IsPositive() && hasFinal && !final.IsNegative()
+	baseValid := hasBase && (base.IsPositive() || (base.IsZero() && s.FreeModel))
+	return baseValid && hasFinal && !final.IsNegative()
 }
 
 // optionalSnapshotPrice reads a price field that may be omitted but must be a

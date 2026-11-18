@@ -260,6 +260,7 @@ type Registry struct {
 	factory         map[string]*LoadedPlugin
 	override        map[string]*LoadedPlugin
 	activeOverride  map[string]*LoadedPlugin
+	versions        map[string]*LoadedPlugin
 	disabledFactory map[string]struct{}
 	masterEnabled   atomic.Bool
 	generation      atomic.Pointer[RoutingGeneration]
@@ -274,6 +275,7 @@ func NewRegistry() *Registry {
 		factory:        make(map[string]*LoadedPlugin),
 		override:       make(map[string]*LoadedPlugin),
 		activeOverride: make(map[string]*LoadedPlugin),
+		versions:       make(map[string]*LoadedPlugin),
 		routingErrors:  make(map[string]string),
 	}
 	registry.masterEnabled.Store(true)
@@ -531,6 +533,43 @@ func (r *Registry) Get(platform string) (*LoadedPlugin, bool) {
 	return r.Generation().Get(platform)
 }
 
+func (r *Registry) CacheVersion(plugin *LoadedPlugin) {
+	if plugin == nil || plugin.Meta.Key == "" || plugin.Meta.Version == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.versions == nil {
+		r.versions = make(map[string]*LoadedPlugin)
+	}
+	r.versions[plugin.Meta.Key+"@"+plugin.Meta.Version] = plugin
+}
+
+func (r *Registry) GetVersion(key, version string) (*LoadedPlugin, bool) {
+	if key == "" || version == "" {
+		return nil, false
+	}
+	if gen := r.Generation(); gen != nil {
+		if plugin, ok := gen.Get(key); ok && plugin != nil && plugin.Meta.Version == version {
+			return plugin, true
+		}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.versions != nil {
+		if plugin, ok := r.versions[key+"@"+version]; ok && plugin != nil {
+			return plugin, true
+		}
+	}
+	if plugin, ok := r.override[key]; ok && plugin != nil && plugin.Meta.Version == version {
+		return plugin, true
+	}
+	if plugin, ok := r.factory[key]; ok && plugin != nil && plugin.Meta.Version == version {
+		return plugin, true
+	}
+	return nil, false
+}
+
 func (r *Registry) GetByChannelType(channelType int) (*LoadedPlugin, bool) {
 	return r.Generation().GetByChannelType(channelType)
 }
@@ -766,6 +805,31 @@ func (r *Registry) publishGeneration(
 	routingErrors map[string]string,
 	activeOverride map[string]*LoadedPlugin,
 ) {
+	if r.versions == nil {
+		r.versions = make(map[string]*LoadedPlugin)
+	}
+	for _, plugin := range r.factory {
+		if plugin != nil && plugin.Meta.Key != "" && plugin.Meta.Version != "" {
+			r.versions[plugin.Meta.Key+"@"+plugin.Meta.Version] = plugin
+		}
+	}
+	for _, plugin := range r.override {
+		if plugin != nil && plugin.Meta.Key != "" && plugin.Meta.Version != "" {
+			r.versions[plugin.Meta.Key+"@"+plugin.Meta.Version] = plugin
+		}
+	}
+	for _, plugin := range activeOverride {
+		if plugin != nil && plugin.Meta.Key != "" && plugin.Meta.Version != "" {
+			r.versions[plugin.Meta.Key+"@"+plugin.Meta.Version] = plugin
+		}
+	}
+	if generation != nil {
+		for _, plugin := range generation.plugins {
+			if plugin != nil && plugin.Meta.Key != "" && plugin.Meta.Version != "" {
+				r.versions[plugin.Meta.Key+"@"+plugin.Meta.Version] = plugin
+			}
+		}
+	}
 	previous := r.generation.Load()
 	var previousNumber uint64
 	if previous != nil {

@@ -501,10 +501,15 @@ func ActivateTaskPlugin(c *gin.Context) {
 		common.ApiErrorMsg(c, "plugin version not found")
 		return
 	}
-	if _, err = jsplugin.NewRegistry().Register(string(target.Source), jsplugin.Options{Key: target.Key, Version: target.Version}); err != nil {
+	compiled, err := jsplugin.NewRegistry().Register(string(target.Source), jsplugin.Options{Key: target.Key, Version: target.Version})
+	if err != nil {
 		taskPluginCompileError(c, err)
 		return
 	}
+	if current, ok := jsplugin.DefaultRegistry.Generation().Get(target.Key); ok && current != nil {
+		jsplugin.DefaultRegistry.CacheVersion(current)
+	}
+	jsplugin.DefaultRegistry.CacheVersion(compiled)
 	if err = model.ActivateTaskPlugin(target.Key, target.Version); err != nil {
 		common.ApiError(c, err)
 		return

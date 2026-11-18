@@ -11,9 +11,47 @@ import (
 )
 
 const (
-	adtyPriceFactorsContextKey  = "adty_price_factors"
-	AdtyPriceSnapshotContextKey = "adty_price_snapshot"
+	adtyPriceFactorsContextKey    = "adty_price_factors"
+	AdtyPriceSnapshotContextKey   = "adty_price_snapshot"
+	adtyFrozenPriceDataContextKey = "adty_frozen_price_data"
 )
+
+func clonePriceData(price hosttypes.PriceData) hosttypes.PriceData {
+	out := hosttypes.PriceData{
+		FreeModel:            price.FreeModel,
+		ModelPrice:           price.ModelPrice,
+		ModelRatio:           price.ModelRatio,
+		CompletionRatio:      price.CompletionRatio,
+		CacheRatio:           price.CacheRatio,
+		CacheCreationRatio:   price.CacheCreationRatio,
+		ImageRatio:           price.ImageRatio,
+		AudioRatio:           price.AudioRatio,
+		AudioCompletionRatio: price.AudioCompletionRatio,
+		UsePrice:             price.UsePrice,
+		Quota:                price.Quota,
+		QuotaToPreConsume:    price.QuotaToPreConsume,
+		GroupRatioInfo:       price.GroupRatioInfo,
+	}
+	if price.HasBilledModelPrice() {
+		out.SetBilledModelPrice(price.BilledModelPrice())
+	}
+	if price.HasBilledModelRatio() {
+		out.SetBilledModelRatio(price.BilledModelRatio())
+	}
+	if price.HasBilledCompletionRatio() {
+		out.SetBilledCompletionRatio(price.BilledCompletionRatio())
+	}
+	if price.HasBilledAudioRatio() {
+		out.SetBilledAudioRatio(price.BilledAudioRatio())
+	}
+	if price.HasBilledAudioCompletionRatio() {
+		out.SetBilledAudioCompletionRatio(price.BilledAudioCompletionRatio())
+	}
+	if ratios := price.OtherRatios(); len(ratios) > 0 {
+		out.ReplaceOtherRatios(ratios)
+	}
+	return out
+}
 
 // adtyPriceFactors holds the exact decimal ratios captured while applying the
 // official G.2 formula, in group-ratio space (multipliers on the model base).
@@ -95,6 +133,9 @@ func AdtyFreezeRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo)
 	if c == nil || info == nil {
 		return
 	}
+	if _, exists := c.Get(adtyFrozenPriceDataContextKey); !exists {
+		c.Set(adtyFrozenPriceDataContextKey, clonePriceData(info.PriceData))
+	}
 	if AdtyFrozenPriceSnapshot(c) != nil {
 		return
 	}
@@ -157,6 +198,9 @@ func buildRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo) *mod
 	if unit == model.BillingUnitTieredExpr && !base.IsPositive() {
 		basePrice, finalPrice, supplyCost, sellPrice = "", "", "", ""
 	}
+	freeModel := price.FreeModel ||
+		(price.UsePrice && base.IsZero() && price.HasBilledModelPrice()) ||
+		(!price.UsePrice && base.IsZero() && price.HasBilledModelRatio())
 	snap := &model.RequestPriceSnapshot{
 		SchemaVersion:    model.RequestPriceSnapshotVersion,
 		ModelName:        modelName,
@@ -175,6 +219,7 @@ func buildRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo) *mod
 		SiteId:           factors.SiteId,
 		SiteOwnerUserId:  factors.SiteOwnerUserId,
 		MainSite:         factors.MainSite || factors.SiteId == 0,
+		FreeModel:        freeModel,
 		BilledGroupRatio: finalRatio.String(),
 		StoredMarkupK:    factors.StoredK.String(),
 	}
@@ -291,6 +336,11 @@ func AdtyReuseFrozenPriceData(c *gin.Context, info *relaycommon.RelayInfo) bool 
 	}
 	if snap.ModelName != "" && name != "" && snap.ModelName != name && snap.ModelName != info.OriginModelName {
 		return false
+	}
+	if v, exists := c.Get(adtyFrozenPriceDataContextKey); exists {
+		if frozenBase, ok := v.(hosttypes.PriceData); ok {
+			info.PriceData = clonePriceData(frozenBase)
+		}
 	}
 	return info.PriceData.ModelRatio != 0 || info.PriceData.ModelPrice != 0 || info.PriceData.UsePrice || info.PriceData.FreeModel || info.PriceData.QuotaToPreConsume != 0 || info.PriceData.Quota != 0
 }

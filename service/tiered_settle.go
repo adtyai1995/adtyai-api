@@ -264,6 +264,17 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 	} else if snap.EstimatedImageCount != nil {
 		requestInput.ImageCount = snap.EstimatedImageCount
 	}
+	if requestInput.AcceptedAt.IsZero() && requestInput.AcceptedUnix == 0 {
+		if snap.AcceptedAt > 0 {
+			requestInput.AcceptedUnix = snap.AcceptedAt
+		} else if !relayInfo.StartTime.IsZero() {
+			requestInput.AcceptedAt = relayInfo.StartTime.UTC()
+			requestInput.AcceptedUnix = relayInfo.StartTime.UTC().Unix()
+		}
+	}
+	if requestInput.BusinessTimezone == "" && snap.BusinessTimezone != "" {
+		requestInput.BusinessTimezone = snap.BusinessTimezone
+	}
 
 	tr, err := billingexpr.ComputeTieredQuotaWithRequest(snap, params, requestInput)
 	if err != nil {

@@ -30,10 +30,13 @@ func CovertMjpActionToModelName(mjAction string) string {
 }
 
 // PrepareMidjourneyTaskBilling freezes the payer before a billable upstream call.
-// The caller persists the prepared task before charging it.
+// When called on a live request context, it also atomically reserves wallet and token quota.
 func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.Midjourney, quota int, shouldBill bool, contexts ...*gin.Context) (bool, error) {
 	if task == nil {
 		return false, errors.New("Midjourney task is nil")
+	}
+	if task.BillingOperationKey != "" {
+		ReleaseMidjourneyTaskBilling(task)
 	}
 	task.Quota = 0
 	task.TokenId = 0
@@ -90,7 +93,71 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	if relayInfo.ChannelMeta != nil && relayInfo.ChannelId > 0 {
 		task.BillingChannelId = relayInfo.ChannelId
 	}
+	if len(contexts) > 0 && contexts[0] != nil && model.DB != nil {
+		if err := reserveMidjourneyTaskBilling(relayInfo, task, quota); err != nil {
+			return false, err
+		}
+	}
 	return true, nil
+}
+
+// ReserveMidjourneyTaskBilling prepares and atomically reserves wallet and token quota in DB before upstream call.
+func ReserveMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.Midjourney, quota int, shouldBill bool, contexts ...*gin.Context) (bool, error) {
+	prepared, err := PrepareMidjourneyTaskBilling(relayInfo, task, quota, shouldBill, contexts...)
+	if err != nil || !prepared {
+		return prepared, err
+	}
+	if len(contexts) == 0 || contexts[0] == nil {
+		if err := reserveMidjourneyTaskBilling(relayInfo, task, quota); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func reserveMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.Midjourney, quota int) error {
+	spec := model.BillingOperation{
+		OperationKey:   task.BillingOperationKey,
+		UserId:         task.UserId,
+		TokenId:        task.TokenId,
+		TokenUnlimited: relayInfo != nil && relayInfo.TokenUnlimited,
+		SiteId:         task.BillingSiteId,
+		SiteMarkup:     task.BillingSiteMarkup,
+		SiteCostFactor: task.BillingSiteCostFactor,
+		PriceSnapshot:  task.BillingPriceSnapshot,
+		EarningRootKey: task.BillingOperationKey,
+		LeaseOwner:     billingProcessLeaseOwner,
+	}
+	row, err := model.ReserveBillingOperation(spec, quota)
+	if err != nil {
+		task.Quota = 0
+		task.BillingChargePending = false
+		task.BillingOperationKey = ""
+		return err
+	}
+	task.BillingTokenQuota = row.TokenReservedQuota
+	return nil
+}
+
+// ReleaseMidjourneyTaskBilling refunds a pre-reserved Midjourney billing operation when upstream submission fails or is rejected.
+func ReleaseMidjourneyTaskBilling(task *model.Midjourney) {
+	if task == nil || task.BillingOperationKey == "" || model.DB == nil {
+		return
+	}
+	key := task.BillingOperationKey
+	op, err := model.GetBillingOperation(key)
+	if err != nil || op == nil || op.State != model.BillingReserved {
+		return
+	}
+	if err := model.QueueBillingSettlement(key, 0, true); err != nil {
+		common.SysError(common.LogText("queue midjourney billing release failed: %s", err.Error()))
+		return
+	}
+	if _, _, err := model.ApplyBillingSettlement(key); err != nil {
+		common.SysError(common.LogText("apply midjourney billing release failed: %s", err.Error()))
+	}
+	task.BillingChargePending = false
+	task.BillingTokenQuota = 0
 }
 
 // SettleMidjourneyTaskBilling charges a persisted legacy task and records the applied stages.

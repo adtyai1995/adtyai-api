@@ -2,6 +2,7 @@ package billingexpr
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/shopspring/decimal"
@@ -45,6 +46,13 @@ func ComputeTieredQuota(snap *BillingSnapshot, params TokenParams) (TieredResult
 func ComputeTieredQuotaWithRequest(snap *BillingSnapshot, params TokenParams, request RequestInput) (TieredResult, error) {
 	if snap.TaskUsageBilling && UsesFixedPricingByHash(snap.ExprString, snap.ExprHash) {
 		return TieredResult{}, fmt.Errorf("fixed pricing is not supported for task usage expressions")
+	}
+	if request.AcceptedAt.IsZero() && request.AcceptedUnix == 0 && snap != nil && snap.AcceptedAt > 0 {
+		request.AcceptedUnix = snap.AcceptedAt
+		request.AcceptedAt = time.Unix(snap.AcceptedAt, 0).UTC()
+	}
+	if request.BusinessTimezone == "" && snap != nil && snap.BusinessTimezone != "" {
+		request.BusinessTimezone = snap.BusinessTimezone
 	}
 	_, trace, err := RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, params, request)
 	if err != nil {
