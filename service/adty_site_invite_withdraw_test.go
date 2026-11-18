@@ -213,6 +213,10 @@ func availableSiteCommission(t *testing.T, db *gorm.DB, amount decimal.Decimal) 
 	}))
 	require.NoError(t, db.First(&commission, commission.Id).Error)
 	require.NoError(t, ReleaseAdtySiteInviteCommissions(time.Unix(commission.AvailableAt, 0)))
+	require.NoError(t, db.Create(&model.ReferralAsset{
+		OwnerUserId: inviter.Id, Purpose: model.ReferralAssetPurposeWithdrawalQR,
+		StoragePath: "ada.png", ContentType: "image/png", CreatedBy: "user",
+	}).Error)
 	return site, owner, inviter
 }
 
@@ -316,4 +320,35 @@ func TestHistoricalSiteInviteWeChatWithdrawalCanStillBeReviewedAndPaid(t *testin
 			require.True(t, commission.WithdrawnUSD.Equal(decimal.NewFromInt(2)))
 		})
 	}
+}
+
+func TestSiteInviteWithdrawalRejectsForeignOrUnregisteredQR(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	site, _, inviter := availableSiteCommission(t, db, decimal.NewFromInt(4))
+	stranger := referralUser(t, db, "site-wd-stranger")
+	require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0.1", "7"))
+	require.NoError(t, db.Create(&model.ReferralAsset{
+		OwnerUserId: stranger.Id, Purpose: model.ReferralAssetPurposeWithdrawalQR, StoragePath: "stranger.png", ContentType: "image/png", CreatedBy: "user",
+	}).Error)
+	require.NoError(t, db.Create(&model.ReferralAsset{
+		OwnerUserId: inviter.Id, Purpose: model.ReferralAssetPurposePaymentProof, StoragePath: "inviter-proof.png", ContentType: "image/png", CreatedBy: "admin",
+	}).Error)
+
+	_, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
+		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.NewFromInt(2), Method: "alipay",
+		AccountName: "Ada", QRImageURL: "/api/referral-assets/stranger.png", ExpectedCNYRate: decimal.NewFromInt(7), IdempotencyKey: "site-qr-foreign",
+	})
+	require.Error(t, err)
+
+	_, err = CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
+		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.NewFromInt(2), Method: "alipay",
+		AccountName: "Ada", QRImageURL: "/api/referral-assets/inviter-proof.png", ExpectedCNYRate: decimal.NewFromInt(7), IdempotencyKey: "site-qr-proof",
+	})
+	require.Error(t, err)
+
+	_, err = CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
+		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.NewFromInt(2), Method: "alipay",
+		AccountName: "Ada", QRImageURL: "/api/referral-assets/missing-site.png", ExpectedCNYRate: decimal.NewFromInt(7), IdempotencyKey: "site-qr-missing",
+	})
+	require.Error(t, err)
 }

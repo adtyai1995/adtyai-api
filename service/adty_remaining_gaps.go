@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -106,44 +107,155 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 	if idempotencyKey == "" || len(idempotencyKey) > 64 {
 		return nil, common.NewMessage("Idempotency key is required")
 	}
-	var staff model.AdtySiteStaff
-	if err := model.DB.Where("user_id = ? AND status = ?", staffUserID, "enabled").First(&staff).Error; err != nil {
-		return nil, common.NewMessage("No permission to perform this action")
-	}
-	var customer model.User
-	if err := model.DB.First(&customer, customerUserID).Error; err != nil {
+	var result *model.AdtyStaffBalanceRequest
+	var officialEntry *model.AuditLog
+	var deliverIntent bool
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var staff model.AdtySiteStaff
+		if err := tx.Where("user_id = ? AND status = ?", staffUserID, "enabled").First(&staff).Error; err != nil {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, staff.SiteId).Error; err != nil {
+			return err
+		}
+		if site.OwnerUserId != staff.OwnerUserId || site.Status != model.AdtySiteStatusActive {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var customer model.User
+		if err := model.AdtyLockForUpdate(tx).First(&customer, customerUserID).Error; err != nil {
+			return err
+		}
+		if customer.SiteId != staff.SiteId || customer.StaffSiteId != 0 || customer.Status != common.UserStatusEnabled {
+			return common.NewMessage("No permission to perform this action")
+		}
+		if existing, err := findAdtyStaffBalanceRequestByIdemKey(tx, idempotencyKey); err != nil {
+			return err
+		} else if existing != nil {
+			if !sameAdtyStaffBalanceRequest(existing, staff.SiteId, staffUserID, customerUserID, direction, amount) {
+				return model.ErrAdtyIdempotencyConflict
+			}
+			result = existing
+			return nil
+		}
+		row := &model.AdtyStaffBalanceRequest{
+			SiteId: staff.SiteId, StaffUserId: staffUserID, CustomerUserId: customerUserID,
+			Direction: direction, AmountUSD: amount, Status: model.AdtyStaffBalancePending,
+			IdempotencyKey: &idempotencyKey,
+		}
+		if err := tx.Create(row).Error; err != nil {
+			return err
+		}
+		var actor model.User
+		if err := tx.Select("id", "username", "role").First(&actor, staffUserID).Error; err != nil {
+			return err
+		}
+		snapshot := map[string]any{
+			"id":              row.Id,
+			"request_id":      row.Id,
+			"staff_id":        staffUserID,
+			"customer_id":     customerUserID,
+			"site_id":         row.SiteId,
+			"direction":       direction,
+			"amount_usd":      amount.String(),
+			"status":          row.Status,
+			"idempotency_key": idempotencyKey,
+			"customer_quota":  customer.Quota,
+		}
+		if err := tx.Create(&model.AdtySiteAudit{
+			SiteId: row.SiteId, Action: "staff.balance_request", OperatorId: staffUserID,
+			NewValue: common.GetJsonString(snapshot), Reason: "staff balance request",
+		}).Error; err != nil {
+			return err
+		}
+		entry, ok, err := appendStaffBalanceOfficialAuditTx(tx, actor.Id, actor.Username, actor.Role, row.SiteId,
+			strconv.FormatInt(row.Id, 10), "adty.staff.balance_request",
+			fmt.Sprintf("staff_balance:%d", row.Id), nil, snapshot, "staff balance request")
+		if err != nil {
+			return err
+		}
+		officialEntry = entry
+		deliverIntent = ok
+		result = row
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	if customer.SiteId != staff.SiteId || customer.StaffSiteId != 0 {
-		return nil, common.NewMessage("No permission to perform this action")
+	if officialEntry != nil {
+		deliverStaffBalanceOfficialAudit(officialEntry, deliverIntent)
 	}
-	if existing, err := findAdtyStaffBalanceRequestByIdemKey(model.DB, idempotencyKey); err != nil {
-		return nil, err
-	} else if existing != nil {
-		if !sameAdtyStaffBalanceRequest(existing, staff.SiteId, staffUserID, customerUserID, direction, amount) {
-			return nil, model.ErrAdtyIdempotencyConflict
-		}
-		return existing, nil
+	return result, nil
+}
+
+func appendStaffBalanceOfficialAuditTx(tx *gorm.DB, actorID int, username string, actorRole, siteID int, objectID, action, approvalRef string, before, after any, reason string) (*model.AuditLog, bool, error) {
+	entry, err := model.PrepareOfficialAuditLog(nil, model.OfficialAuditWrite{
+		UserId:      actorID,
+		Username:    username,
+		ActorRole:   actorRole,
+		SiteID:      model.OfficialAuditSiteIDPointer(siteID),
+		ObjectType:  "staff_balance_request",
+		ObjectID:    objectID,
+		Action:      action,
+		Category:    model.AuditCategoryOperation,
+		Content:     action,
+		Before:      before,
+		After:       after,
+		Reason:      reason,
+		ApprovalRef: approvalRef,
+		Result:      model.AuditResultSuccess,
+		Success:     true,
+	})
+	if err != nil {
+		return nil, false, err
 	}
-	row := &model.AdtyStaffBalanceRequest{
-		SiteId: staff.SiteId, StaffUserId: staffUserID, CustomerUserId: customerUserID,
-		Direction: direction, AmountUSD: amount, Status: model.AdtyStaffBalancePending,
-		IdempotencyKey: &idempotencyKey,
+	if tx.Migrator().HasTable(&model.AuditIntent{}) {
+		if err := model.AppendAuditIntentTx(tx, entry); err != nil {
+			return nil, false, err
+		}
+		return &entry, true, nil
 	}
-	if err := model.DB.Create(row).Error; err != nil {
-		existing, lookupErr := findAdtyStaffBalanceRequestByIdemKey(model.DB, idempotencyKey)
-		if lookupErr != nil {
-			return nil, lookupErr
-		}
-		if existing == nil {
-			return nil, err
-		}
-		if !sameAdtyStaffBalanceRequest(existing, staff.SiteId, staffUserID, customerUserID, direction, amount) {
-			return nil, model.ErrAdtyIdempotencyConflict
-		}
-		return existing, nil
+	return &entry, false, nil
+}
+
+func deliverStaffBalanceOfficialAudit(entry *model.AuditLog, hasIntent bool) {
+	if entry == nil {
+		return
 	}
-	return row, nil
+	if hasIntent {
+		if err := model.DeliverAuditIntent(context.Background(), entry.EventId); err != nil {
+			common.SysLog(common.LogText("official staff balance audit delivery deferred action=%s id=%s: %s", entry.Action, entry.ObjectId, err.Error()))
+		}
+		return
+	}
+	if err := model.WriteOfficialAuditLog(nil, model.OfficialAuditWrite{
+		UserId:      entry.UserId,
+		Username:    entry.Username,
+		ActorRole:   entry.ActorRole,
+		SiteID:      entry.SiteId,
+		ObjectType:  entry.ObjectType,
+		ObjectID:    entry.ObjectId,
+		Action:      entry.Action,
+		Category:    entry.Category,
+		Content:     entry.Content,
+		Before:      jsonRawString(entry.BeforeValue),
+		After:       jsonRawString(entry.AfterValue),
+		Reason:      entry.Reason,
+		ApprovalRef: entry.ApprovalRef,
+		Result:      entry.Result,
+		Success:     entry.Success,
+	}); err != nil {
+		common.SysLog(common.LogText("official staff balance audit write failed action=%s id=%s: %s", entry.Action, entry.ObjectId, err.Error()))
+	}
+}
+
+type jsonRawString string
+
+func (s jsonRawString) MarshalJSON() ([]byte, error) {
+	if strings.TrimSpace(string(s)) == "" {
+		return []byte("null"), nil
+	}
+	return []byte(s), nil
 }
 
 func findAdtyStaffBalanceRequestByIdemKey(db *gorm.DB, key string) (*model.AdtyStaffBalanceRequest, error) {
@@ -188,121 +300,123 @@ func sameStaffBalanceLedger(entry *model.AdtyBalanceLedger, row model.AdtyStaffB
 // helpers so the same transaction writes the ledger and principal fund batches.
 // A decrease is refused unless available balance (quota minus in-flight holds)
 // covers the full amount.
-func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest, reviewerID int) error {
+type staffBalanceApplyResult struct {
+	LedgerID      int64
+	BeforeQuota   int64
+	AfterQuota    int64
+	FundingSource string
+}
+
+func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest, reviewerID int) (staffBalanceApplyResult, error) {
 	quota, err := common.WalletQuotaFromDecimalStrict(row.AmountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
 	if err != nil {
-		return err
+		return staffBalanceApplyResult{}, err
 	}
 	delta := int64(quota)
 	if delta <= 0 {
-		return common.NewMessage("Invalid parameters")
+		return staffBalanceApplyResult{}, common.NewMessage("Invalid parameters")
 	}
 	var user model.User
 	if err := model.AdtyLockForUpdate(tx).First(&user, row.CustomerUserId).Error; err != nil {
-		return err
+		return staffBalanceApplyResult{}, err
+	}
+	// Customer must still belong to this site (and not be a staff member) for both increase and decrease.
+	if user.SiteId != row.SiteId || user.StaffSiteId != 0 || user.Status != common.UserStatusEnabled {
+		return staffBalanceApplyResult{}, common.NewMessage("No permission to perform this action")
 	}
 	key := adtyStaffBalanceLedgerKey(row)
 	existing, err := model.FindAdtyLedgerByIdemKeyTx(tx, key)
 	if err != nil {
-		return err
+		return staffBalanceApplyResult{}, err
 	}
 	if existing != nil {
 		if !sameStaffBalanceLedger(existing, row, delta) {
-			return model.ErrAdtyIdempotencyConflict
+			return staffBalanceApplyResult{}, model.ErrAdtyIdempotencyConflict
 		}
-		return nil
+		return staffBalanceApplyResult{
+			LedgerID:    existing.Id,
+			BeforeQuota: existing.BalanceBefore,
+			AfterQuota:  existing.BalanceAfter,
+		}, nil
 	}
 	var before, applied int64
+	var fundingSource string
 	if row.Direction == model.AdtyStaffBalanceDecrease {
 		var debited int64
 		before, debited, err = model.AdtyDebitUserQuotaTx(tx, row.CustomerUserId, delta)
 		if err != nil {
-			return err
+			return staffBalanceApplyResult{}, err
 		}
 		if debited != delta {
-			return common.NewMessage("Customer balance is not enough")
+			return staffBalanceApplyResult{}, common.NewMessage("Customer balance is not enough")
 		}
 		applied = -debited
-		// 传 `before`，不传 `user.Quota`。
-		//
-		// `AdtyDebitUserQuotaTx` 已经把**逻辑余额**（quota + pending）当 before 返回了，
-		// 而准入判据用的也是逻辑余额。所以扣批次必须用同一把尺子——用 raw quota 会让
-		// 「钱主要在 quota_pending 里」的账户被判定为批次不够，整笔回滚，报
-		// `fund batches cannot cover the debit`。管理员没有绕法。
-		//
-		// 同一个函数、相隔几行，正确值和错误值同时在手上。
 		if err := model.ConsumeAdtyFundBatchesQuietTx(tx, row.CustomerUserId, debited, before); err != nil {
-			return err
+			return staffBalanceApplyResult{}, err
 		}
 	} else {
-		// **加额度必须先有出资**（`ISS-R4-0075`）。
-		//
-		// 修前这个分支只做两件事：加客户额度 + 建一条「无资金来源」的批次。
-		// 全函数没有任何出资调用，于是一个员工（或站长）可以无限次让平台凭空
-		// 给客户加钱——批次表还会把这笔钱记成「有背书的本金」，看起来完全正常。
-		//
-		// 现在按 operating → earnings → margin 的顺序从站点钱包出资，扣不动就
-		// 整笔拒绝。出资和加额度在**同一个事务**里，所以失败时客户余额一分不动。
-		if err := adtyFundStaffBalanceIncreaseTx(tx, row, delta); err != nil {
-			return err
+		fundingSource, err = adtyFundStaffBalanceIncreaseTx(tx, row, delta)
+		if err != nil {
+			return staffBalanceApplyResult{}, err
 		}
 		before, err = model.AdtyCreditUserQuotaTx(tx, row.CustomerUserId, delta)
 		if err != nil {
-			return err
+			return staffBalanceApplyResult{}, err
 		}
 		applied = delta
 		// 员工调额批次记在申请单所在站（row.SiteId），与该单的出资钱包同站。
 		if err := model.CreateAdtyFundBatchesWithSiteTx(tx, row.CustomerUserId, model.AdtyFundBatchSiteID(row.SiteId), adtyStaffBalanceLedgerKey(row), delta, 0); err != nil {
-			return err
+			return staffBalanceApplyResult{}, err
 		}
 	}
-	return model.InsertAdtyLedgerTx(tx, &model.AdtyBalanceLedger{
+	entry := &model.AdtyBalanceLedger{
 		UserId: row.CustomerUserId, DeltaQuota: applied,
 		BalanceBefore: before, BalanceAfter: before + applied,
 		Type: model.AdtyLedgerTypeManualAdjust, RefType: "staff_balance",
 		RefId: strconv.FormatInt(row.Id, 10), Reason: "staff balance request",
 		OperatorId: reviewerID, IdempotencyKey: &key,
-	})
+	}
+	if err := model.InsertAdtyLedgerTx(tx, entry); err != nil {
+		return staffBalanceApplyResult{}, err
+	}
+	return staffBalanceApplyResult{
+		LedgerID:      entry.Id,
+		BeforeQuota:   before,
+		AfterQuota:    before + applied,
+		FundingSource: fundingSource,
+	}, nil
 }
 
 // ReviewAdtyStaffBalanceRequest approves or rejects a pending request.
 // Site owners review their own site. Root reviews any site. Approval changes the customer quota once
 // through the official credit or debit path, writing the ledger and fund batches.
-// adtyStaffBalanceFundingOrder 是「员工加款从哪儿出钱」的顺序。
-//
-// 运营钱包先出（那是站点的经营结余），其次已结算收益，最后保证金。
-// 顺序有意义：保证金是履约担保，能不动就不动。
+// adtyStaffBalanceFundingOrder 是「员工加款从哪儿出钱」的顺序：
+// 只允许从站点自有盈余（已结算收益）或可用保证金（受 10% 底线与 90% 周期上限约束）出资；
+// 运营钱包是现有客户本金的 1:1 托管准备金，绝不可当成站长可支配盈余花费。
 var adtyStaffBalanceFundingOrder = []string{
-	model.AdtySiteWalletOperating,
 	model.AdtySiteWalletEarnings,
 	model.AdtySiteWalletMargin,
 }
 
-// adtyFundStaffBalanceIncreaseTx 为一次「员工给客户加款」找到出资并扣掉。
-//
-// 一个钱包扣不动就试下一个；三个都不够就返回 ErrAdtySiteWalletInsufficient，
-// 由调用方整笔回滚——**不允许凭空加额度**（`ISS-R4-0075`）。
-//
-// 金额用 `delta / QuotaPerUnit` 而不是 `row.AmountUSD`：`delta` 是真正要加给客户
-// 的额度，用它反算 USD 才能保证「站点扣了多少、客户得到多少」是同一笔。
-// QuotaPerUnit 固定 500000，这个除法是精确的（最多 6 位小数）。
-func adtyFundStaffBalanceIncreaseTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest, delta int64) error {
+// adtyFundStaffBalanceIncreaseTx 从收益或保证金扣出站方出资，并同步向运营钱包入账等额本金背书。
+func adtyFundStaffBalanceIncreaseTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest, delta int64) (string, error) {
 	if delta <= 0 {
-		return common.NewMessage("Invalid parameters")
+		return "", common.NewMessage("Invalid parameters")
 	}
 	if row.SiteId <= 0 {
-		return common.NewMessage("This request has no site to fund it")
+		return "", common.NewMessage("This request has no site to fund it")
 	}
 	var customer model.User
-	if err := tx.Select("id", "site_id").First(&customer, row.CustomerUserId).Error; err != nil {
-		return err
+	if err := tx.Select("id", "site_id", "staff_site_id").First(&customer, row.CustomerUserId).Error; err != nil {
+		return "", err
 	}
 	// 客户必须还在这个站点下：站点换了之后，旧站点不该继续为他的加款出钱。
-	if customer.SiteId != row.SiteId {
-		return common.NewMessage("No permission to perform this action")
+	if customer.SiteId != row.SiteId || customer.StaffSiteId != 0 {
+		return "", common.NewMessage("No permission to perform this action")
 	}
 	amountUSD := decimal.NewFromInt(delta).Div(common.QuotaPerUnitDecimal())
 	key := adtyStaffBalanceLedgerKey(row)
+	var fundedKind string
 	for _, kind := range adtyStaffBalanceFundingOrder {
 		_, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, kind, amountUSD.Neg(), AdtySiteWalletChange{
 			Type: "staff_balance", RefType: "staff_balance", RefID: strconv.FormatInt(row.Id, 10),
@@ -310,18 +424,28 @@ func adtyFundStaffBalanceIncreaseTx(tx *gorm.DB, row model.AdtyStaffBalanceReque
 			IdempotencyKey: fmt.Sprintf("%s:fund:%s", key, kind),
 		})
 		if err == nil {
-			return nil
+			fundedKind = kind
+			break
 		}
 		if errors.Is(err, ErrAdtySiteWalletInsufficient) {
 			continue
 		}
-		return err
+		return "", err
 	}
-	return ErrAdtySiteWalletInsufficient
+	if fundedKind == "" {
+		return "", ErrAdtySiteWalletInsufficient
+	}
+	if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, delta, "principal_credit", "staff_balance",
+		strconv.FormatInt(row.Id, 10), key+":operating", false); err != nil {
+		return "", err
+	}
+	return fundedKind, nil
 }
 
 func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestID int64, approve bool) error {
 	var changedUserID int
+	var officialEntry *model.AuditLog
+	var deliverIntent bool
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtyStaffBalanceRequest
 		if err := model.AdtyLockForUpdate(tx).First(&row, requestID).Error; err != nil {
@@ -330,31 +454,105 @@ func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestI
 		if row.Status != model.AdtyStaffBalancePending {
 			return common.NewMessage("This request is already reviewed")
 		}
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, row.SiteId).Error; err != nil {
+			return err
+		}
 		if reviewerRole == "owner" {
-			var site model.AdtySite
-			if err := tx.First(&site, row.SiteId).Error; err != nil {
-				return err
-			}
-			if site.OwnerUserId != reviewerID {
+			if site.OwnerUserId != reviewerID || site.Status != model.AdtySiteStatusActive {
 				return common.NewMessage("No permission to perform this action")
 			}
 		} else if reviewerRole != "root" {
 			return common.NewMessage("No permission to perform this action")
+		} else if approve && site.Status != model.AdtySiteStatusActive {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var customerBefore model.User
+		if err := model.AdtyLockForUpdate(tx).First(&customerBefore, row.CustomerUserId).Error; err != nil {
+			return err
+		}
+		if reviewerRole == "owner" && (customerBefore.SiteId != row.SiteId || customerBefore.StaffSiteId != 0) {
+			return common.NewMessage("No permission to perform this action")
 		}
 		status := model.AdtyStaffBalanceRejected
+		var applied staffBalanceApplyResult
 		if approve {
 			status = model.AdtyStaffBalanceApproved
-			if err := applyApprovedStaffBalanceTx(tx, row, reviewerID); err != nil {
-				return err
+			var applyErr error
+			applied, applyErr = applyApprovedStaffBalanceTx(tx, row, reviewerID)
+			if applyErr != nil {
+				return applyErr
 			}
 			changedUserID = row.CustomerUserId
+		} else {
+			applied.BeforeQuota = int64(customerBefore.Quota)
+			applied.AfterQuota = int64(customerBefore.Quota)
 		}
-		return tx.Model(&row).Updates(map[string]any{
-			"status": status, "reviewer_id": reviewerID, "reviewer_role": reviewerRole, "reviewed_at": common.GetTimestamp(),
-		}).Error
+		reviewedAt := common.GetTimestamp()
+		if err := tx.Model(&row).Updates(map[string]any{
+			"status": status, "reviewer_id": reviewerID, "reviewer_role": reviewerRole, "reviewed_at": reviewedAt,
+		}).Error; err != nil {
+			return err
+		}
+		var reviewer model.User
+		if err := tx.Select("id", "username", "role").First(&reviewer, reviewerID).Error; err != nil {
+			return err
+		}
+		beforeSnapshot := map[string]any{
+			"request_id":   row.Id,
+			"staff_id":     row.StaffUserId,
+			"customer_id":  row.CustomerUserId,
+			"site_id":      row.SiteId,
+			"direction":    row.Direction,
+			"amount_usd":   row.AmountUSD.String(),
+			"status":       model.AdtyStaffBalancePending,
+			"before_quota": applied.BeforeQuota,
+		}
+		afterSnapshot := map[string]any{
+			"id":             row.Id,
+			"request_id":     row.Id,
+			"staff_id":       row.StaffUserId,
+			"customer_id":    row.CustomerUserId,
+			"reviewer_id":    reviewerID,
+			"reviewer_role":  reviewerRole,
+			"site_id":        row.SiteId,
+			"direction":      row.Direction,
+			"amount_usd":     row.AmountUSD.String(),
+			"status":         status,
+			"before_quota":   applied.BeforeQuota,
+			"after_quota":    applied.AfterQuota,
+			"ledger_id":      applied.LedgerID,
+			"funding_source": applied.FundingSource,
+			"reviewed_at":    reviewedAt,
+		}
+		if err := tx.Create(&model.AdtySiteAudit{
+			SiteId: row.SiteId, Action: "staff.balance_review", OperatorId: reviewerID,
+			OldValue: common.GetJsonString(beforeSnapshot),
+			NewValue: common.GetJsonString(afterSnapshot),
+			Reason:   "staff balance " + status,
+		}).Error; err != nil {
+			return err
+		}
+		officialAction := "adty.staff.balance_reject"
+		approvalRef := fmt.Sprintf("staff_balance:%d", row.Id)
+		if approve {
+			officialAction = "adty.staff.balance_approve"
+			approvalRef = fmt.Sprintf("staff_balance:%d:ledger:%d", row.Id, applied.LedgerID)
+		}
+		entry, ok, err := appendStaffBalanceOfficialAuditTx(tx, reviewer.Id, reviewer.Username, reviewer.Role, row.SiteId,
+			strconv.FormatInt(row.Id, 10), officialAction, approvalRef, beforeSnapshot, afterSnapshot, "staff balance "+status)
+		if err != nil {
+			return err
+		}
+		officialEntry = entry
+		deliverIntent = ok
+		return nil
 	})
 	if err != nil {
 		return err
+	}
+	if officialEntry != nil {
+		deliverStaffBalanceOfficialAudit(officialEntry, deliverIntent)
 	}
 	if changedUserID > 0 {
 		model.AdtySyncUserQuotaCache(changedUserID, "staff-balance")
@@ -414,53 +612,70 @@ func QuotaToUSD(quota int64) decimal.Decimal {
 }
 
 // BindSiteInviteFromIP records one direct site invite and keeps the client IP hash.
-// A saved Root batch threshold can refuse another same-IP bind and open a review.
-// An unset threshold does not guess a count.
+// It serializes on locked inviter/invitee user rows with first-payment completion
+// so a concurrent paid order cannot leave a post-payment binding.
 func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error {
 	if siteID <= 0 || inviterID <= 0 || inviteeID <= 0 || inviterID == inviteeID {
 		return common.NewMessage("Invalid parameters")
 	}
-	var rate model.AdtySiteReferralRate
-	if err := model.DB.Where("site_id = ?", siteID).First(&rate).Error; err != nil {
-		return common.NewMessage("Site invite rate is not configured")
-	}
-	var inviter, invitee model.User
-	if err := model.DB.First(&inviter, inviterID).Error; err != nil {
-		return err
-	}
-	if err := model.DB.First(&invitee, inviteeID).Error; err != nil {
-		return err
-	}
-	if inviter.SiteId != siteID || invitee.SiteId != siteID {
-		return common.NewMessage("No permission to perform this action")
-	}
-	var paid int64
-	if err := model.DB.Model(&model.TopUp{}).Where("user_id = ? AND status = ?", inviteeID, common.TopUpStatusSuccess).Count(&paid).Error; err != nil {
-		return err
-	}
-	if paid > 0 {
-		return common.NewMessage("This customer already has a paid order")
-	}
-	var existing model.AdtySiteInvite
-	lookup := model.DB.Where("invitee_id = ?", inviteeID).Limit(1).Find(&existing)
-	if lookup.Error != nil {
-		return lookup.Error
-	}
-	if lookup.RowsAffected > 0 {
-		if existing.InviterId != inviterID || existing.SiteId != siteID {
-			return common.NewMessage("Invitee already has an inviter")
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		firstID, secondID := inviterID, inviteeID
+		if secondID < firstID {
+			firstID, secondID = secondID, firstID
 		}
-		return nil
-	}
-	if err := refuseSiteInviteBatch(siteID, inviterID, ipHash); err != nil {
-		return err
-	}
-	return model.DB.Create(&model.AdtySiteInvite{
-		SiteId: siteID, InviterId: inviterID, InviteeId: inviteeID, Rate: rate.Rate, IpHash: strings.TrimSpace(ipHash),
-	}).Error
+		var firstUser, secondUser model.User
+		if err := model.AdtyLockForUpdate(tx).First(&firstUser, firstID).Error; err != nil {
+			return err
+		}
+		if err := model.AdtyLockForUpdate(tx).First(&secondUser, secondID).Error; err != nil {
+			return err
+		}
+		inviter, invitee := firstUser, secondUser
+		if inviterID != firstID {
+			inviter, invitee = secondUser, firstUser
+		}
+		if inviter.SiteId != siteID || invitee.SiteId != siteID {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var site model.AdtySite
+		if err := tx.First(&site, siteID).Error; err != nil {
+			return err
+		}
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing {
+			return common.NewMessage("Site is not open for registration")
+		}
+		var rate model.AdtySiteReferralRate
+		if err := tx.Where("site_id = ?", siteID).First(&rate).Error; err != nil {
+			return common.NewMessage("Site invite rate is not configured")
+		}
+		var paid int64
+		if err := tx.Model(&model.TopUp{}).Where("user_id = ? AND status = ?", inviteeID, common.TopUpStatusSuccess).Count(&paid).Error; err != nil {
+			return err
+		}
+		if paid > 0 {
+			return common.NewMessage("This customer already has a paid order")
+		}
+		var existing model.AdtySiteInvite
+		lookup := tx.Where("invitee_id = ?", inviteeID).Limit(1).Find(&existing)
+		if lookup.Error != nil {
+			return lookup.Error
+		}
+		if lookup.RowsAffected > 0 {
+			if existing.InviterId != inviterID || existing.SiteId != siteID {
+				return common.NewMessage("Invitee already has an inviter")
+			}
+			return nil
+		}
+		if err := refuseSiteInviteBatchTx(tx, siteID, inviterID, ipHash); err != nil {
+			return err
+		}
+		return tx.Create(&model.AdtySiteInvite{
+			SiteId: siteID, InviterId: inviterID, InviteeId: inviteeID, Rate: rate.Rate, IpHash: strings.TrimSpace(ipHash),
+		}).Error
+	})
 }
 
-func refuseSiteInviteBatch(siteID, inviterID int, ipHash string) error {
+func refuseSiteInviteBatchTx(tx *gorm.DB, siteID, inviterID int, ipHash string) error {
 	ipHash = strings.TrimSpace(ipHash)
 	if ipHash == "" {
 		return nil
@@ -483,7 +698,7 @@ func refuseSiteInviteBatch(siteID, inviterID int, ipHash string) error {
 	}
 	since := time.Now().Unix() - hours*3600
 	var count int64
-	if err := model.DB.Model(&model.AdtySiteInvite{}).
+	if err := tx.Model(&model.AdtySiteInvite{}).
 		Where("inviter_id = ? AND ip_hash = ? AND created_at >= ?", inviterID, ipHash, since).
 		Count(&count).Error; err != nil {
 		return err
@@ -494,13 +709,13 @@ func refuseSiteInviteBatch(siteID, inviterID int, ipHash string) error {
 	ref := strconv.Itoa(siteID)
 	note := "inviter " + strconv.Itoa(inviterID)
 	var existing int64
-	if err := model.DB.Model(&model.AdtyAnomalyDisposition{}).
+	if err := tx.Model(&model.AdtyAnomalyDisposition{}).
 		Where("kind = ? AND ref = ? AND status = ? AND note = ?", "batch_register", ref, "open", note).
 		Count(&existing).Error; err != nil {
 		return err
 	}
 	if existing == 0 {
-		if err := recordAdtyAnomalyDisposition("batch_register", ref, "open", note, 0); err != nil {
+		if err := tx.Create(&model.AdtyAnomalyDisposition{Kind: "batch_register", Ref: ref, Status: "open", Note: note}).Error; err != nil {
 			return err
 		}
 	}

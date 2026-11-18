@@ -235,6 +235,87 @@ func referralAdminSiteScope(actor adtyTicketActor) (*int, bool) {
 	return nil, false
 }
 
+// ResolveAdtyReferralAdminScope returns the caller's referral-admin site scope:
+// nil for Root (global), &0 for non-root Admin (main site only).
+func ResolveAdtyReferralAdminScope(userID int) (*int, bool, error) {
+	if userID <= 0 {
+		return nil, false, common.NewMessage("Invalid parameters")
+	}
+	actor, err := loadAdtyTicketActor(userID)
+	if err != nil {
+		return nil, false, err
+	}
+	siteID, ok := referralAdminSiteScope(actor)
+	if !ok {
+		return nil, false, ErrAdtyTicketForbidden
+	}
+	return siteID, true, nil
+}
+
+// ScopeAdtyReferralUsersQuery scopes a query by user column matching siteID (no-op for Root).
+func ScopeAdtyReferralUsersQuery(query *gorm.DB, userColumn string, siteID *int) *gorm.DB {
+	return scopeReferralUserQuery(query, userColumn, siteID)
+}
+
+// ScopeAdtyReferralAffiliateIDsQuery scopes a query referencing affiliate_id by affiliate owner siteID.
+func ScopeAdtyReferralAffiliateIDsQuery(query *gorm.DB, affiliateColumn string, siteID *int) *gorm.DB {
+	if siteID == nil {
+		return query
+	}
+	return query.Where(
+		affiliateColumn+" IN (?)",
+		model.DB.Model(&model.ReferralAffiliate{}).
+			Select("id").
+			Where("user_id IN (?)", model.DB.Model(&model.User{}).Select("id").Where("site_id = ?", *siteID)),
+	)
+}
+
+// EnsureAdtyReferralTargetUserScope enforces that non-root referral admins only inspect/mutate main-site users.
+func EnsureAdtyReferralTargetUserScope(siteID *int, targetUserID int) error {
+	if siteID == nil {
+		return nil
+	}
+	if targetUserID <= 0 {
+		return common.NewMessage("No permission to perform this action")
+	}
+	var user model.User
+	if err := model.DB.Select("id", "site_id").First(&user, targetUserID).Error; err != nil {
+		return err
+	}
+	if user.SiteId != *siteID {
+		return common.NewMessage("No permission to perform this action")
+	}
+	return nil
+}
+
+// EnsureAdtyReferralWithdrawalScope enforces target site scope for a referral withdrawal record.
+func EnsureAdtyReferralWithdrawalScope(siteID *int, withdrawalID int) error {
+	if siteID == nil {
+		return nil
+	}
+	var w model.ReferralWithdrawal
+	if err := model.DB.Select("id", "user_id").First(&w, withdrawalID).Error; err != nil {
+		return err
+	}
+	return EnsureAdtyReferralTargetUserScope(siteID, w.UserId)
+}
+
+// EnsureAdtyReferralTradeScope enforces target site scope for a commission job retry identified by trade_no.
+func EnsureAdtyReferralTradeScope(siteID *int, tradeNo string) error {
+	if siteID == nil {
+		return nil
+	}
+	var job model.ReferralCommissionJob
+	if err := model.DB.Where("source_type = ? AND source_trade_no = ?", model.ReferralSourceTopup, tradeNo).First(&job).Error; err != nil {
+		return err
+	}
+	var aff model.ReferralAffiliate
+	if err := model.DB.Select("id", "user_id").First(&aff, job.AffiliateId).Error; err != nil {
+		return err
+	}
+	return EnsureAdtyReferralTargetUserScope(siteID, aff.UserId)
+}
+
 func countAdtyReferralAdminBadges(siteID *int) (AdtyReferralAdminBadges, error) {
 	var out AdtyReferralAdminBadges
 	var err error

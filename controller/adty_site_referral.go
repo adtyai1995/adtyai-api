@@ -435,8 +435,8 @@ func presentAdtySiteInviteWithdrawals(rows []model.AdtySiteInviteWithdrawal, nam
 	now := time.Now()
 	out := make([]adtySiteInviteWithdrawalItem, len(rows))
 	for i, row := range rows {
-		row.QRImageURL = service.ResignReferralAssetURL(row.QRImageURL, now)
-		row.ProofNote = service.ResignReferralAssetURL(row.ProofNote, now)
+		row.QRImageURL = service.ResignReferralAssetURLForWithdrawal(row.QRImageURL, row.UserId, model.ReferralAssetPurposeWithdrawalQR, now)
+		row.ProofNote = service.ResignReferralAssetURLForWithdrawal(row.ProofNote, 0, model.ReferralAssetPurposePaymentProof, now)
 		item := adtySiteInviteWithdrawalItem{AdtySiteInviteWithdrawal: row}
 		if names != nil {
 			item.Username = names[row.UserId]

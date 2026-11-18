@@ -148,9 +148,26 @@ func UpdateReferralSettings(c *gin.Context) {
 	GetReferralSettings(c)
 }
 
+func referralAdminScopeOrError(c *gin.Context) (*int, bool) {
+	siteID, ok, err := service.ResolveAdtyReferralAdminScope(c.GetInt("id"))
+	if err != nil || !ok {
+		if err != nil {
+			common.ApiError(c, err)
+		} else {
+			common.ApiErrorT(c, "No permission to perform this action")
+		}
+		return nil, false
+	}
+	return siteID, true
+}
+
 // GetReferralAffiliates 列出推广员，可按状态、合作伙伴申请、关键词筛选。
 func GetReferralAffiliates(c *gin.Context) {
-	query := model.DB.Model(&model.ReferralAffiliate{})
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralAffiliate{}), "user_id", siteID)
 	if partner := strings.TrimSpace(c.Query("partner_status")); partner != "" {
 		query = query.Where("partner_status = ?", partner)
 	}
@@ -164,20 +181,36 @@ func GetReferralAffiliates(c *gin.Context) {
 
 // GetReferralBindings 列出一个推广员带来的用户。
 func GetReferralBindings(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
 	userID, err := strconv.Atoi(c.Param("user_id"))
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if err := service.EnsureAdtyReferralTargetUserScope(siteID, userID); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	var items []model.ReferralBinding
-	referralPage(c, model.DB.Model(&model.ReferralBinding{}).Where("inviter_user_id = ?", userID), &items)
+	referralPage(c, service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralBinding{}).Where("inviter_user_id = ?", userID), "inviter_user_id", siteID), &items)
 }
 
 // ReviewReferralPartner 通过（带 15–20 的比例）或驳回合作伙伴申请（推广返佣·审核）。
 func ReviewReferralPartner(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
 	userID, err := strconv.Atoi(c.Param("user_id"))
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.EnsureAdtyReferralTargetUserScope(siteID, userID); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	var body struct {
@@ -199,9 +232,17 @@ func ReviewReferralPartner(c *gin.Context) {
 
 // UpdateReferralAffiliate 调整推广员（推广返佣·调整）：设比例、停用/恢复、冻结/恢复结算和提现、调佣金。
 func UpdateReferralAffiliate(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
 	userID, err := strconv.Atoi(c.Param("user_id"))
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.EnsureAdtyReferralTargetUserScope(siteID, userID); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	var body struct {
@@ -293,7 +334,11 @@ func UpdateReferralAffiliate(c *gin.Context) {
 
 // GetAdminReferralCommissions 列出佣金（含作废、扣回）。
 func GetAdminReferralCommissions(c *gin.Context) {
-	query := model.DB.Model(&model.ReferralCommission{})
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralCommission{}), "affiliate_user_id", siteID)
 	if status := strings.TrimSpace(c.Query("status")); status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -306,7 +351,11 @@ func GetAdminReferralCommissions(c *gin.Context) {
 
 // GetReferralCommissionJobs 列出计佣任务。
 func GetReferralCommissionJobs(c *gin.Context) {
-	query := model.DB.Model(&model.ReferralCommissionJob{})
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	query := service.ScopeAdtyReferralAffiliateIDsQuery(model.DB.Model(&model.ReferralCommissionJob{}), "affiliate_id", siteID)
 	if status := strings.TrimSpace(c.Query("status")); status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -316,11 +365,19 @@ func GetReferralCommissionJobs(c *gin.Context) {
 
 // RetryReferralCommissionJob 立即重试一个计佣任务。
 func RetryReferralCommissionJob(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
 	var body struct {
 		TradeNo string `json:"trade_no"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil || body.TradeNo == "" {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.EnsureAdtyReferralTradeScope(siteID, body.TradeNo); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	if err := service.ProcessAdtyTopUpCommission(body.TradeNo); err != nil {
@@ -332,7 +389,11 @@ func RetryReferralCommissionJob(c *gin.Context) {
 
 // RunReferralSettlement 手动跑一轮结算。
 func RunReferralSettlement(c *gin.Context) {
-	settled, err := service.RunReferralSettlementOnce(time.Now().Unix(), 500)
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	settled, err := service.RunReferralSettlementOnceForSite(time.Now().Unix(), 500, siteID)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -342,7 +403,11 @@ func RunReferralSettlement(c *gin.Context) {
 
 // GetReferralLedgers 列出返佣流水。
 func GetReferralLedgers(c *gin.Context) {
-	query := model.DB.Model(&model.ReferralCommissionLedger{})
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralCommissionLedger{}), "user_id", siteID)
 	if raw := c.Query("affiliate_id"); raw != "" {
 		query = query.Where("affiliate_id = ?", raw)
 	}
@@ -352,13 +417,25 @@ func GetReferralLedgers(c *gin.Context) {
 
 // GetReferralAdminAuditLogs 列出推广管理的操作记录。
 func GetReferralAdminAuditLogs(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	query := model.DB.Model(&model.ReferralAdminAuditLog{})
+	if siteID != nil {
+		query = service.ScopeAdtyReferralUsersQuery(query.Where("target_user_id > 0"), "target_user_id", siteID)
+	}
 	var items []model.ReferralAdminAuditLog
-	referralPage(c, model.DB.Model(&model.ReferralAdminAuditLog{}), &items)
+	referralPage(c, query, &items)
 }
 
 // GetAdminReferralWithdrawals 列出提现，收款码和凭证链接重新签名。
 func GetAdminReferralWithdrawals(c *gin.Context) {
-	query := model.DB.Model(&model.ReferralWithdrawal{})
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralWithdrawal{}), "user_id", siteID)
 	if status := strings.TrimSpace(c.Query("status")); status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -381,9 +458,17 @@ func GetAdminReferralWithdrawals(c *gin.Context) {
 
 // ReviewReferralWithdrawal 通过或驳回提现（推广返佣·审核）。
 func ReviewReferralWithdrawal(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.EnsureAdtyReferralWithdrawalScope(siteID, id); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	var body struct {
@@ -408,9 +493,17 @@ func ReviewReferralWithdrawal(c *gin.Context) {
 
 // PayReferralWithdrawal 标记已打款（推广返佣·打款）。
 func PayReferralWithdrawal(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.EnsureAdtyReferralWithdrawalScope(siteID, id); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	var body struct {

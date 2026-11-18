@@ -4,10 +4,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
@@ -365,9 +367,9 @@ func seedStaffBalanceActors(t *testing.T, db *gorm.DB, prefix string) (owner, st
 func fundStaffBalanceSite(t *testing.T, db *gorm.DB, siteID int, tag string) {
 	t.Helper()
 	require.NoError(t, EnsureAdtySiteWallets(siteID))
-	_, err := ApplyAdtySiteWalletChange(siteID, model.AdtySiteWalletOperating, decimal.NewFromInt(100), AdtySiteWalletChange{
-		Type: "seed", RefType: "test", RefID: tag, Reason: "seed operating balance for staff balance tests",
-		IdempotencyKey: "seed-operating-" + tag,
+	_, err := ApplyAdtySiteWalletChange(siteID, model.AdtySiteWalletEarnings, decimal.NewFromInt(100), AdtySiteWalletChange{
+		Type: "seed", RefType: "test", RefID: tag, Reason: "seed earnings balance for staff balance tests",
+		IdempotencyKey: "seed-earnings-" + tag,
 	})
 	require.NoError(t, err)
 }
@@ -492,6 +494,188 @@ func TestStaffBalanceDecreaseConsumesBatches(t *testing.T) {
 			require.EqualValues(t, 1_000_000, ledgers[1].BalanceBefore)
 			require.EqualValues(t, 500_000, ledgers[1].BalanceAfter)
 			requireWalletMatchesStaffBatches(t, db, customer.Id)
+		})
+	}
+}
+
+func TestBindSiteInviteFromIPSerializesWithFirstPaymentPG(t *testing.T) {
+	db := announcementTestDB(t)
+	pgtest.RecordServerVersion(t, db)
+
+	owner := ticketTestUser(t, db, "inv-race-owner", 1)
+	site := model.AdtySite{
+		OwnerUserId: owner.Id, Subdomain: "inv-race-site", RootDomain: "example.com",
+		Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion(),
+	}
+	require.NoError(t, db.Create(&site).Error)
+	inviter := ticketTestUser(t, db, "inv-race-inviter", 1)
+	customer := ticketTestUser(t, db, "inv-race-customer", 1)
+	require.NoError(t, db.Model(&model.User{}).Where("id IN ?", []int{inviter.Id, customer.Id}).Update("site_id", site.Id).Error)
+	require.NoError(t, SetSiteReferralRate(site.Id, decimal.RequireFromString("0.1")))
+
+	tradeNo := "INV-RACE-" + strconv.Itoa(customer.Id)
+	require.NoError(t, model.CreateAdtyTopUp(
+		&model.TopUp{
+			UserId: customer.Id, Amount: 10, TradeNo: tradeNo,
+			PaymentMethod: "usdt.trc20", PaymentProvider: model.PaymentProviderAdtyBEpusdt,
+			Status: common.TopUpStatusPending,
+		},
+		&model.AdtyTopupOrder{
+			TradeNo: tradeNo, SiteId: site.Id, UserId: customer.Id,
+			Provider: model.PaymentProviderAdtyBEpusdt, Method: "usdt.trc20",
+			FaceUSD: decimal.NewFromInt(10), CreditQuota: 5_000_000,
+			PayAmount: decimal.NewFromInt(10), PayCurrency: "USDT",
+			TopupGroupRatio: decimal.NewFromInt(1), ExpireAt: time.Now().Unix() + 900,
+		},
+	))
+
+	topUpUpdated := make(chan struct{})
+	bindStarted := make(chan struct{})
+	var hookOnce sync.Once
+	const hookName = "test_bind_invite_pause_after_topup_update"
+	require.NoError(t, db.Callback().Update().After("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Table != "top_ups" {
+			return
+		}
+		hookOnce.Do(func() {
+			close(topUpUpdated)
+			<-bindStarted
+			time.Sleep(120 * time.Millisecond)
+		})
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	var payErr error
+	var bindErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _, _, _, payErr = func() (bool, int, *model.TopUp, *model.AdtyTopupOrder, error) {
+			var done bool
+			var credited int
+			var tu *model.TopUp
+			var ext *model.AdtyTopupOrder
+			err := model.DB.Transaction(func(tx *gorm.DB) error {
+				var err error
+				done, credited, tu, ext, err = model.CompleteAdtyTopUpTx(tx, tradeNo, model.AdtyPaymentFacts{
+					Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(10),
+					FiatAmount: decimal.NewFromInt(10), PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback,
+				})
+				return err
+			})
+			return done, credited, tu, ext, err
+		}()
+	}()
+	go func() {
+		defer wg.Done()
+		<-topUpUpdated
+		close(bindStarted)
+		bindErr = BindSiteInviteFromIP(site.Id, inviter.Id, customer.Id, "iphash-1")
+	}()
+	wg.Wait()
+
+	require.NoError(t, payErr)
+	var paidTopUp model.TopUp
+	require.NoError(t, db.Where("trade_no = ?", tradeNo).First(&paidTopUp).Error)
+	require.Equal(t, common.TopUpStatusSuccess, paidTopUp.Status)
+
+	var inviteCount int64
+	require.NoError(t, db.Model(&model.AdtySiteInvite{}).Where("invitee_id = ?", customer.Id).Count(&inviteCount).Error)
+	require.Error(t, bindErr, "concurrent invite bind after payment has already entered TopUp success transition must be refused")
+	require.Zero(t, inviteCount, "customer with committed first paid order must never receive a post-payment invite binding")
+}
+
+func TestStaffBalanceReviewChecksLiveSiteAndCustomerScope(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := prepareReferralDialectDB(t, dialect)
+			owner, staffUser, customer, site := seedStaffBalanceActors(t, db, "scope-"+dialect)
+			otherOwner := referralUser(t, db, "scope-other-owner-"+dialect)
+			root := referralUser(t, db, "scope-root-"+dialect)
+			require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).Update("balance", decimal.NewFromInt(100)).Error)
+
+			inc0, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "scope-inc-init")
+			require.NoError(t, err)
+			require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", inc0.Id, true))
+
+			// Case 1: customer migrated to main site -> pending decrease & increase must be refused even for owner/root.
+			decMigrated, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.NewFromInt(1), "scope-dec-migrated")
+			require.NoError(t, err)
+			incMigrated, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(1), "scope-inc-migrated")
+			require.NoError(t, err)
+			require.NoError(t, db.Model(&model.User{}).Where("id = ?", customer.Id).Update("site_id", 0).Error)
+
+			require.Error(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", decMigrated.Id, true), "migrated customer must not be debited by old site owner")
+			require.Error(t, ReviewAdtyStaffBalanceRequest(root.Id, "root", decMigrated.Id, true), "migrated customer must not be debited via old site request")
+			require.Error(t, ReviewAdtyStaffBalanceRequest(root.Id, "root", incMigrated.Id, true), "migrated customer must not be credited via old site request")
+
+			// Restore customer membership to test closing/closed & ownership transfer.
+			require.NoError(t, db.Model(&model.User{}).Where("id = ?", customer.Id).Update("site_id", site.Id).Error)
+			require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", site.Id).Update("status", model.AdtySiteStatusClosing).Error)
+			require.Error(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", decMigrated.Id, true), "closing site must reject approval")
+			require.Error(t, ReviewAdtyStaffBalanceRequest(root.Id, "root", decMigrated.Id, true), "closing site must reject root approval")
+
+			require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", site.Id).Update("status", model.AdtySiteStatusClosed).Error)
+			require.Error(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", incMigrated.Id, true), "closed site must reject approval")
+			require.Error(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", incMigrated.Id, false), "closed site must reject owner review")
+
+			// Reactivate with transferred ownership -> old owner must fail, new owner succeeds.
+			require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(map[string]any{
+				"status": model.AdtySiteStatusActive, "owner_user_id": otherOwner.Id,
+			}).Error)
+			require.Error(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", decMigrated.Id, true), "former owner must be rejected after transfer")
+			require.NoError(t, ReviewAdtyStaffBalanceRequest(otherOwner.Id, "owner", decMigrated.Id, true), "live new owner succeeds")
+		})
+	}
+}
+
+func TestStaffBalanceWorkflowWritesSiteAndOfficialAudit(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := prepareReferralDialectDB(t, dialect)
+			owner, staffUser, customer, site := seedStaffBalanceActors(t, db, "audit-"+dialect)
+			require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).Update("balance", decimal.NewFromInt(100)).Error)
+
+			req, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "audit-inc-1")
+			require.NoError(t, err)
+			// Idempotent replay must not emit a duplicate submit audit.
+			_, err = SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "audit-inc-1")
+			require.NoError(t, err)
+
+			var siteAudits []model.AdtySiteAudit
+			require.NoError(t, db.Where("site_id = ? AND action = ?", site.Id, "staff.balance_request").Find(&siteAudits).Error)
+			require.Len(t, siteAudits, 1)
+			require.Contains(t, siteAudits[0].NewValue, strconv.FormatInt(req.Id, 10))
+
+			var officialAudits []model.AuditLog
+			require.NoError(t, model.LOG_DB.Where("object_type = ? AND object_id = ?", "staff_balance_request", strconv.FormatInt(req.Id, 10)).Order("id").Find(&officialAudits).Error)
+			require.Len(t, officialAudits, 1)
+			require.Equal(t, "adty.staff.balance_request", officialAudits[0].Action)
+			require.Equal(t, staffUser.Id, officialAudits[0].UserId)
+
+			// Approve -> appends review audit linked to request and ledger with before/after quota.
+			require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", req.Id, true))
+			require.NoError(t, db.Where("site_id = ? AND action = ?", site.Id, "staff.balance_review").Find(&siteAudits).Error)
+			require.Len(t, siteAudits, 1)
+			require.Contains(t, siteAudits[0].NewValue, `"ledger_id"`)
+
+			require.NoError(t, model.LOG_DB.Where("object_type = ? AND object_id = ?", "staff_balance_request", strconv.FormatInt(req.Id, 10)).Order("id").Find(&officialAudits).Error)
+			require.Len(t, officialAudits, 2)
+			require.Equal(t, "adty.staff.balance_approve", officialAudits[1].Action)
+			require.Equal(t, owner.Id, officialAudits[1].UserId)
+			require.Contains(t, officialAudits[1].AfterValue, "before_quota")
+			require.Contains(t, officialAudits[1].AfterValue, "after_quota")
+			require.Contains(t, officialAudits[1].ApprovalRef, strconv.FormatInt(req.Id, 10))
+
+			// Reject also audits even though no financial ledger entry is written.
+			root := referralUser(t, db, "audit-root-"+dialect)
+			req2, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.NewFromInt(1), "audit-dec-2")
+			require.NoError(t, err)
+			require.NoError(t, ReviewAdtyStaffBalanceRequest(root.Id, "root", req2.Id, false))
+			require.NoError(t, model.LOG_DB.Where("object_type = ? AND object_id = ? AND action = ?", "staff_balance_request", strconv.FormatInt(req2.Id, 10), "adty.staff.balance_reject").Find(&officialAudits).Error)
+			require.Len(t, officialAudits, 1)
+			require.Equal(t, root.Id, officialAudits[0].UserId)
 		})
 	}
 }

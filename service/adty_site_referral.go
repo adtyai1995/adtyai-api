@@ -144,26 +144,6 @@ func BindAdtyOwnerSiteInvite(siteID, ownerID, inviterID, inviteeID int) error {
 	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
 		return err
 	}
-	if inviterID == inviteeID {
-		return common.NewMessage("Invalid parameters")
-	}
-	var inviter, invitee model.User
-	if err := model.DB.First(&inviter, inviterID).Error; err != nil {
-		return err
-	}
-	if err := model.DB.First(&invitee, inviteeID).Error; err != nil {
-		return err
-	}
-	if inviter.SiteId != siteID || invitee.SiteId != siteID {
-		return common.NewMessage("No permission to perform this action")
-	}
-	var paid int64
-	if err := model.DB.Model(&model.TopUp{}).Where("user_id = ? AND status = ?", inviteeID, common.TopUpStatusSuccess).Count(&paid).Error; err != nil {
-		return err
-	}
-	if paid > 0 {
-		return common.NewMessage("This customer already has a paid order")
-	}
 	return BindSiteInviteFromIP(siteID, inviterID, inviteeID, "")
 }
 

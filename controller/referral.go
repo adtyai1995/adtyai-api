@@ -160,8 +160,8 @@ func GetReferralWithdrawals(c *gin.Context) {
 func resignWithdrawalAssets(items []model.ReferralWithdrawal) {
 	now := time.Now()
 	for i := range items {
-		items[i].QRImageURL = service.ResignReferralAssetURL(items[i].QRImageURL, now)
-		items[i].PaymentProofURL = service.ResignReferralAssetURL(items[i].PaymentProofURL, now)
+		items[i].QRImageURL = service.ResignReferralAssetURLForWithdrawal(items[i].QRImageURL, items[i].UserId, model.ReferralAssetPurposeWithdrawalQR, now)
+		items[i].PaymentProofURL = service.ResignReferralAssetURLForWithdrawal(items[i].PaymentProofURL, 0, model.ReferralAssetPurposePaymentProof, now)
 	}
 }
 

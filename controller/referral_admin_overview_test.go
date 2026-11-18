@@ -1,14 +1,17 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -106,4 +109,133 @@ func overviewTestUser(t *testing.T, db *gorm.DB, name string, role, siteID int) 
 	user := &model.User{Username: name, Password: "hashed-password", Role: role, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1, Email: name + "@example.com", SiteId: siteID}
 	require.NoError(t, db.Create(user).Error)
 	return user
+}
+
+func TestReferralAdminHandlersEnforceMainSiteScopeAndAssetResignAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.AdtyTopupOrder{}, &model.AdtySite{}, &model.AdtySiteStaff{}, &model.AdtyTeam{}, &model.AdtyTeamMember{}))
+	require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
+
+	root := overviewTestUser(t, db, "scope-root", common.RoleRootUser, 0)
+	admin := overviewTestUser(t, db, "scope-admin", common.RoleAdminUser, 0)
+	owner := overviewTestUser(t, db, "scope-owner", common.RoleCommonUser, 0)
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "scope-site", Status: model.AdtySiteStatusActive}
+	require.NoError(t, db.Create(&site).Error)
+
+	mainUser := overviewTestUser(t, db, "scope-main-aff", common.RoleCommonUser, 0)
+	subUser := overviewTestUser(t, db, "scope-sub-aff", common.RoleCommonUser, site.Id)
+	mainInvitee := overviewTestUser(t, db, "scope-main-inv", common.RoleCommonUser, 0)
+	subInvitee := overviewTestUser(t, db, "scope-sub-inv", common.RoleCommonUser, site.Id)
+	stranger := overviewTestUser(t, db, "scope-stranger", common.RoleCommonUser, 0)
+
+	mainAff := model.ReferralAffiliate{UserId: mainUser.Id, InviteCode: "MAINSCOP1", Status: model.ReferralAffiliateStatusApproved, PartnerStatus: model.ReferralPartnerStatusPending}
+	subAff := model.ReferralAffiliate{UserId: subUser.Id, InviteCode: "SUBSCOP1", Status: model.ReferralAffiliateStatusApproved, PartnerStatus: model.ReferralPartnerStatusPending}
+	require.NoError(t, db.Create(&mainAff).Error)
+	require.NoError(t, db.Create(&subAff).Error)
+	require.NoError(t, db.Create(&model.ReferralCommissionAccount{AffiliateId: mainAff.Id, UserId: mainUser.Id, AvailableAmount: 50, FrozenAmount: 10}).Error)
+	require.NoError(t, db.Create(&model.ReferralCommissionAccount{AffiliateId: subAff.Id, UserId: subUser.Id, AvailableAmount: 50, FrozenAmount: 20}).Error)
+	require.NoError(t, db.Create(&model.ReferralBinding{InviteeUserId: mainInvitee.Id, InviterUserId: mainUser.Id, AffiliateId: mainAff.Id}).Error)
+	require.NoError(t, db.Create(&model.ReferralBinding{InviteeUserId: subInvitee.Id, InviterUserId: subUser.Id, AffiliateId: subAff.Id}).Error)
+
+	mainComm := model.ReferralCommission{AffiliateId: mainAff.Id, AffiliateUserId: mainUser.Id, InviteeUserId: mainInvitee.Id, SourceType: model.ReferralSourceTopup, SourceTradeNo: "MAIN-TRD-1", CommissionAmount: 5, Status: model.ReferralCommissionStatusFrozen}
+	subComm := model.ReferralCommission{AffiliateId: subAff.Id, AffiliateUserId: subUser.Id, InviteeUserId: subInvitee.Id, SourceType: model.ReferralSourceTopup, SourceTradeNo: "SUB-TRD-1", CommissionAmount: 6, Status: model.ReferralCommissionStatusFrozen}
+	require.NoError(t, db.Create(&mainComm).Error)
+	require.NoError(t, db.Create(&subComm).Error)
+	require.NoError(t, db.Create(&model.ReferralCommissionJob{SourceType: model.ReferralSourceTopup, SourceTradeNo: "MAIN-TRD-1", AffiliateId: mainAff.Id, Status: model.ReferralCommissionJobStatusFailed}).Error)
+	require.NoError(t, db.Create(&model.ReferralCommissionJob{SourceType: model.ReferralSourceTopup, SourceTradeNo: "SUB-TRD-1", AffiliateId: subAff.Id, Status: model.ReferralCommissionJobStatusFailed}).Error)
+	require.NoError(t, db.Create(&model.ReferralCommissionLedger{AffiliateId: mainAff.Id, UserId: mainUser.Id, Type: "accrue", ExternalRefId: "main-leg-1"}).Error)
+	require.NoError(t, db.Create(&model.ReferralCommissionLedger{AffiliateId: subAff.Id, UserId: subUser.Id, Type: "accrue", ExternalRefId: "sub-leg-1"}).Error)
+	require.NoError(t, db.Create(&model.ReferralAdminAuditLog{Action: "rate", TargetUserId: mainUser.Id, AffiliateId: mainAff.Id, AdminUserId: root.Id}).Error)
+	require.NoError(t, db.Create(&model.ReferralAdminAuditLog{Action: "rate", TargetUserId: subUser.Id, AffiliateId: subAff.Id, AdminUserId: root.Id}).Error)
+
+	// Assets: mainUser's valid QR, stranger's QR illegally referenced on mainWd2 for resign check, subUser's QR.
+	require.NoError(t, db.Create(&model.ReferralAsset{OwnerUserId: mainUser.Id, Purpose: model.ReferralAssetPurposeWithdrawalQR, StoragePath: "main-own.png", ContentType: "image/png", CreatedBy: "user"}).Error)
+	require.NoError(t, db.Create(&model.ReferralAsset{OwnerUserId: stranger.Id, Purpose: model.ReferralAssetPurposeWithdrawalQR, StoragePath: "stranger-stolen.png", ContentType: "image/png", CreatedBy: "user"}).Error)
+	require.NoError(t, db.Create(&model.ReferralAsset{OwnerUserId: subUser.Id, Purpose: model.ReferralAssetPurposeWithdrawalQR, StoragePath: "sub-own.png", ContentType: "image/png", CreatedBy: "user"}).Error)
+
+	mainWd := model.ReferralWithdrawal{AffiliateId: mainAff.Id, UserId: mainUser.Id, Amount: 10, AccountType: model.ReferralWithdrawToAlipay, QRImageURL: "/api/referral-assets/main-own.png", Status: model.ReferralWithdrawalStatusPending}
+	mainStolenWd := model.ReferralWithdrawal{AffiliateId: mainAff.Id, UserId: mainUser.Id, Amount: 10, AccountType: model.ReferralWithdrawToAlipay, QRImageURL: "/api/referral-assets/stranger-stolen.png", Status: model.ReferralWithdrawalStatusCanceled}
+	subWd := model.ReferralWithdrawal{AffiliateId: subAff.Id, UserId: subUser.Id, Amount: 20, AccountType: model.ReferralWithdrawToAlipay, QRImageURL: "/api/referral-assets/sub-own.png", Status: model.ReferralWithdrawalStatusPending}
+	require.NoError(t, db.Create(&mainWd).Error)
+	require.NoError(t, db.Create(&mainStolenWd).Error)
+	require.NoError(t, db.Create(&subWd).Error)
+
+	callJSON := func(method, path string, userID int, body any, params gin.Params, handler gin.HandlerFunc) (int, map[string]any, string) {
+		var raw []byte
+		if body != nil {
+			var err error
+			raw, err = json.Marshal(body)
+			require.NoError(t, err)
+		}
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(method, path, bytes.NewReader(raw))
+		ctx.Set("id", userID)
+		ctx.Params = params
+		handler(ctx)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out, rec.Body.String()
+	}
+	itemCount := func(resp map[string]any) int {
+		data, _ := resp["data"].(map[string]any)
+		if data == nil {
+			return 0
+		}
+		items, _ := data["items"].([]any)
+		return len(items)
+	}
+
+	// Non-root admin reads MUST only return main-site rows (whereas Root sees both).
+	_, adminAffResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/affiliates", admin.Id, nil, nil, GetReferralAffiliates)
+	_, rootAffResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/affiliates", root.Id, nil, nil, GetReferralAffiliates)
+	assert.Equal(t, 1, itemCount(adminAffResp), "admin only sees main-site affiliates")
+	assert.Equal(t, 2, itemCount(rootAffResp), "root sees all affiliates")
+
+	_, adminCommResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/commissions", admin.Id, nil, nil, GetAdminReferralCommissions)
+	_, rootCommResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/commissions", root.Id, nil, nil, GetAdminReferralCommissions)
+	assert.Equal(t, 1, itemCount(adminCommResp), "admin only sees main-site commissions")
+	assert.Equal(t, 2, itemCount(rootCommResp))
+
+	_, adminJobsResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/commission-jobs", admin.Id, nil, nil, GetReferralCommissionJobs)
+	_, rootJobsResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/commission-jobs", root.Id, nil, nil, GetReferralCommissionJobs)
+	assert.Equal(t, 1, itemCount(adminJobsResp), "admin only sees main-site commission jobs")
+	assert.Equal(t, 2, itemCount(rootJobsResp))
+
+	_, adminLedgersResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/ledgers", admin.Id, nil, nil, GetReferralLedgers)
+	_, rootLedgersResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/ledgers", root.Id, nil, nil, GetReferralLedgers)
+	assert.Equal(t, 1, itemCount(adminLedgersResp), "admin only sees main-site ledgers")
+	assert.Equal(t, 2, itemCount(rootLedgersResp))
+
+	_, adminAuditResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/audit-logs", admin.Id, nil, nil, GetReferralAdminAuditLogs)
+	_, rootAuditResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/audit-logs", root.Id, nil, nil, GetReferralAdminAuditLogs)
+	assert.Equal(t, 1, itemCount(adminAuditResp), "admin only sees main-site audit logs")
+	assert.Equal(t, 2, itemCount(rootAuditResp))
+
+	_, adminWdResp, adminWdBody := callJSON(http.MethodGet, "/api/user/admin/referral/withdrawals", admin.Id, nil, nil, GetAdminReferralWithdrawals)
+	_, rootWdResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/withdrawals", root.Id, nil, nil, GetAdminReferralWithdrawals)
+	assert.Equal(t, 2, itemCount(adminWdResp), "admin sees only main-site withdrawals, never sub-site withdrawal")
+	assert.Equal(t, 3, itemCount(rootWdResp))
+	assert.NotContains(t, adminWdBody, "sub-own.png")
+	assert.NotContains(t, adminWdBody, "stranger-stolen.png", "forged QR referencing stranger's asset must NOT be re-signed on list response")
+
+	// Non-root admin MUST be blocked from inspecting or mutating sub-site targets.
+	_, adminSubBindResp, _ := callJSON(http.MethodGet, "/api/user/admin/referral/affiliates/bindings", admin.Id, nil, gin.Params{{Key: "user_id", Value: strconv.Itoa(subUser.Id)}}, GetReferralBindings)
+	assert.Equal(t, false, adminSubBindResp["success"], "admin must not read sub-site affiliate bindings")
+
+	_, adminPartnerResp, _ := callJSON(http.MethodPost, "/api/user/admin/referral/affiliates/partner", admin.Id, map[string]any{"approve": true, "rate": decimal.NewFromInt(15)}, gin.Params{{Key: "user_id", Value: strconv.Itoa(subUser.Id)}}, ReviewReferralPartner)
+	assert.Equal(t, false, adminPartnerResp["success"], "admin must not review sub-site partner")
+
+	_, adminAffUpdResp, _ := callJSON(http.MethodPost, "/api/user/admin/referral/affiliates/update", admin.Id, map[string]any{"action": "disable"}, gin.Params{{Key: "user_id", Value: strconv.Itoa(subUser.Id)}}, UpdateReferralAffiliate)
+	assert.Equal(t, false, adminAffUpdResp["success"], "admin must not update sub-site affiliate")
+
+	_, adminJobRetryResp, _ := callJSON(http.MethodPost, "/api/user/admin/referral/commission-jobs/retry", admin.Id, map[string]any{"trade_no": "SUB-TRD-1"}, nil, RetryReferralCommissionJob)
+	assert.Equal(t, false, adminJobRetryResp["success"], "admin must not retry sub-site commission job")
+
+	_, adminWdReviewResp, _ := callJSON(http.MethodPost, "/api/user/admin/referral/withdrawals/review", admin.Id, map[string]any{"approve": false, "reason": "no"}, gin.Params{{Key: "id", Value: strconv.Itoa(subWd.Id)}}, ReviewReferralWithdrawal)
+	assert.Equal(t, false, adminWdReviewResp["success"], "admin must not review sub-site withdrawal")
+
+	_, adminWdPayResp, _ := callJSON(http.MethodPost, "/api/user/admin/referral/withdrawals/pay", admin.Id, map[string]any{"txn_no": "tx1"}, gin.Params{{Key: "id", Value: strconv.Itoa(subWd.Id)}}, PayReferralWithdrawal)
+	assert.Equal(t, false, adminWdPayResp["success"], "admin must not pay sub-site withdrawal")
 }

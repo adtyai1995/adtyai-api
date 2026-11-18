@@ -206,13 +206,19 @@ func markReferralJobFailed(tradeNo string, cause error) {
 // RunReferralSettlementOnce 跑一轮结算：先重试 pending、failed 的计佣任务，再把到期的 pending 佣金转成可提现
 // （停结算的推广员跳过）。返回转成可提现的笔数。
 func RunReferralSettlementOnce(now int64, limit int) (int, error) {
+	return RunReferralSettlementOnceForSite(now, limit, nil)
+}
+
+// RunReferralSettlementOnceForSite runs commission accrual + pending settlement, optionally restricted to one user site.
+func RunReferralSettlementOnceForSite(now int64, limit int, siteID *int) (int, error) {
 	if limit <= 0 {
 		limit = 200
 	}
+	jobQuery := model.DB.Where("source_type = ? AND status IN ?", model.ReferralSourceTopup,
+		[]string{model.ReferralCommissionJobStatusPending, model.ReferralCommissionJobStatusFailed})
+	jobQuery = ScopeAdtyReferralAffiliateIDsQuery(jobQuery, "affiliate_id", siteID)
 	var jobs []model.ReferralCommissionJob
-	if err := model.DB.Where("source_type = ? AND status IN ?", model.ReferralSourceTopup,
-		[]string{model.ReferralCommissionJobStatusPending, model.ReferralCommissionJobStatusFailed}).
-		Order("id").Limit(limit).Find(&jobs).Error; err != nil {
+	if err := jobQuery.Order("id").Limit(limit).Find(&jobs).Error; err != nil {
 		return 0, err
 	}
 	for _, job := range jobs {
@@ -220,11 +226,14 @@ func RunReferralSettlementOnce(now int64, limit int) (int, error) {
 			markReferralJobFailed(job.SourceTradeNo, err)
 		}
 	}
-	var due []model.ReferralCommission
-	if err := model.DB.Table("referral_commissions AS c").Select("c.*").
+	commQuery := model.DB.Table("referral_commissions AS c").Select("c.*").
 		Joins("JOIN referral_affiliates a ON a.id = c.affiliate_id").
-		Where("c.status = ? AND c.settle_at <= ? AND a.settlement_enabled = ?", model.ReferralCommissionStatusPending, now, true).
-		Order("c.settle_at, c.id").Limit(limit).Scan(&due).Error; err != nil {
+		Where("c.status = ? AND c.settle_at <= ? AND a.settlement_enabled = ?", model.ReferralCommissionStatusPending, now, true)
+	if siteID != nil {
+		commQuery = commQuery.Where("c.affiliate_user_id IN (?)", model.DB.Model(&model.User{}).Select("id").Where("site_id = ?", *siteID))
+	}
+	var due []model.ReferralCommission
+	if err := commQuery.Order("c.settle_at, c.id").Limit(limit).Scan(&due).Error; err != nil {
 		return 0, err
 	}
 	settled := 0

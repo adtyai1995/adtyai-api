@@ -92,13 +92,10 @@ func ValidateUSDTAddress(network, address string) bool {
 	return ok && pattern.MatchString(strings.TrimSpace(address))
 }
 
-// validReferralQR 只接受本站上传的收款码路径，拒绝 javascript: 和外部链接。
+// validReferralQR checks format only; DB ownership and purpose are enforced by IsOwnedReferralAssetTx inside the transaction.
 func validReferralQR(raw string) bool {
-	raw = strings.TrimSpace(raw)
-	if !strings.HasPrefix(raw, "/api/referral-assets/") || strings.Contains(raw, "://") {
-		return false
-	}
-	return !strings.ContainsAny(raw, "\\\r\n\t ")
+	_, ok := extractReferralAssetName(raw)
+	return ok
 }
 
 // CreateWithdrawal 建提现单。所有去向都在事务里锁佣金账户行；防超提靠条件更新 available_amount >= ?；
@@ -160,6 +157,13 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 	var result *model.ReferralWithdrawal
 	var creditQuota int64
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if withdrawal.AccountType == model.ReferralWithdrawToAlipay || withdrawal.AccountType == model.ReferralWithdrawToWechat {
+			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserId, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
+			if !ok {
+				return common.NewMessage("Upload the payment QR code and enter the payee name")
+			}
+			withdrawal.QRImageURL = canonicalQR
+		}
 		affiliate, err := s.lockAffiliateByUserTx(tx, input.UserId)
 		if err != nil {
 			return err
@@ -626,6 +630,14 @@ func (s *ReferralService) MarkWithdrawalPaid(withdrawalId, adminId int, txnNo, p
 		if peek.AccountType == model.ReferralWithdrawToUSDT && strings.TrimSpace(txnNo) == "" {
 			return common.NewMessage("Enter the transaction hash")
 		}
+		cleanProof := strings.TrimSpace(proofURL)
+		if strings.HasPrefix(cleanProof, "/api/referral-assets/") {
+			canonicalProof, ok := IsOwnedReferralAssetTx(tx, 0, model.ReferralAssetPurposePaymentProof, cleanProof)
+			if !ok {
+				return common.NewMessage("Invalid parameters")
+			}
+			cleanProof = canonicalProof
+		}
 		if err := lockWithdrawalCommissionRowsTx(tx, peek.Id); err != nil {
 			return err
 		}
@@ -646,7 +658,7 @@ func (s *ReferralService) MarkWithdrawalPaid(withdrawalId, adminId int, txnNo, p
 		}
 		if err := tx.Model(&model.ReferralWithdrawal{}).Where("id = ?", withdrawal.Id).Updates(map[string]any{
 			"status": model.ReferralWithdrawalStatusPaid, "paid_at": now, "payment_txn_no": strings.TrimSpace(txnNo),
-			"payment_proof_url": strings.TrimSpace(proofURL), "admin_note": truncateText(note, 1000), "reviewed_by": adminId,
+			"payment_proof_url": cleanProof, "admin_note": truncateText(note, 1000), "reviewed_by": adminId,
 		}).Error; err != nil {
 			return err
 		}

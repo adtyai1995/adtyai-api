@@ -307,6 +307,14 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 			return false, 0, nil, nil, errors.New("team top-up credit is not configured")
 		}
 	}
+	// Serialize personal-customer crediting on the user row before mutating TopUp.Status so concurrent
+	// first-payment eligibility checks (e.g. site invite binding) never observe uncommitted status.
+	var user User
+	if ext.TeamId == 0 {
+		if err := lockForUpdate(tx).First(&user, topUp.UserId).Error; err != nil {
+			return false, 0, nil, nil, err
+		}
+	}
 	if err := tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Updates(map[string]any{
 		"status":        common.TopUpStatusSuccess,
 		"complete_time": now,
@@ -338,10 +346,6 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 		}
 		err = appendAdtyPaymentEventTx(tx, ext, facts.Source, "credited", facts.OperatorId)
 		return false, credited, topUp, ext, err
-	}
-	var user User
-	if err := lockForUpdate(tx).First(&user, topUp.UserId).Error; err != nil {
-		return false, 0, nil, nil, err
 	}
 	before, err := userWalletBalance(user.Quota, user.QuotaPending)
 	if err != nil {

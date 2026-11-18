@@ -149,6 +149,13 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 	}
 	var credit int
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		if method == "alipay" {
+			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserID, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
+			if !ok {
+				return common.NewMessage("Upload the payment QR code and enter the payee name")
+			}
+			row.QRImageURL = canonicalQR
+		}
 		var existing []model.AdtySiteInviteWithdrawal
 		if err := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing).Error; err != nil {
 			return err
@@ -316,6 +323,14 @@ func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, pro
 		if row.Method == "usdt" && txID == "" {
 			return common.NewMessage("Enter the transaction hash")
 		}
+		cleanProof := strings.TrimSpace(proof)
+		if strings.HasPrefix(cleanProof, "/api/referral-assets/") {
+			canonicalProof, ok := IsOwnedReferralAssetTx(tx, 0, model.ReferralAssetPurposePaymentProof, cleanProof)
+			if !ok {
+				return common.NewMessage("Invalid parameters")
+			}
+			cleanProof = canonicalProof
+		}
 		var items []model.AdtySiteInviteWithdrawalItem
 		if err := tx.Where("withdrawal_id = ? AND status = ?", row.Id, model.AdtySiteInviteWithdrawItemFrozen).Find(&items).Error; err != nil {
 			return err
@@ -340,7 +355,7 @@ func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, pro
 		}
 		return tx.Model(&row).Updates(map[string]any{
 			"status": model.AdtySiteInviteWithdrawPaid, "paid_at": time.Now().Unix(), "reviewed_by": ownerID,
-			"tx_id": txID, "proof_note": strings.TrimSpace(proof),
+			"tx_id": txID, "proof_note": cleanProof,
 		}).Error
 	})
 }

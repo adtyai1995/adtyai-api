@@ -13,6 +13,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"gorm.io/gorm"
 )
 
 // 收款码和打款凭证图片（任务 6.1）。存在 ./uploads/referral-assets（工作目录是 /data，部署要挂持久卷）；
@@ -63,14 +64,85 @@ func SignReferralAssetURL(name string, now time.Time) string {
 	return "/api/referral-assets/" + name + "?" + values.Encode()
 }
 
+func extractReferralAssetName(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "/api/referral-assets/") || strings.Contains(raw, "://") || strings.ContainsAny(raw, "\\\r\n\t ") {
+		return "", false
+	}
+	name := strings.TrimPrefix(raw, "/api/referral-assets/")
+	name, _, _ = strings.Cut(name, "?")
+	name = strings.TrimPrefix(name, "/")
+	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return "", false
+	}
+	return name, true
+}
+
+// IsOwnedReferralAssetTx verifies stored asset existence, purpose match, and optional owner match inside tx.
+func IsOwnedReferralAssetTx(tx *gorm.DB, ownerUserId int, purpose, raw string) (string, bool) {
+	name, ok := extractReferralAssetName(raw)
+	if !ok {
+		return "", false
+	}
+	db := tx
+	if db == nil {
+		db = model.DB
+	}
+	if db == nil {
+		return "", false
+	}
+	q := db.Model(&model.ReferralAsset{}).Where("storage_path = ? AND purpose = ?", name, purpose)
+	if ownerUserId > 0 {
+		q = q.Where("owner_user_id = ?", ownerUserId)
+	}
+	var count int64
+	if err := q.Count(&count).Error; err != nil || count == 0 {
+		return "", false
+	}
+	return "/api/referral-assets/" + name, true
+}
+
+// ResignReferralAssetURLForWithdrawal re-signs a withdrawal asset URL only when metadata matches owner/purpose.
+// Unauthorized or unregistered asset URLs return "" so foreign attachments cannot be re-signed.
+// Plain text notes (e.g. non-URL ProofNote) are preserved intact.
+func ResignReferralAssetURLForWithdrawal(stored string, expectedOwnerUserId int, expectedPurpose string, now time.Time) string {
+	trimmed := strings.TrimSpace(stored)
+	if trimmed == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmed, "/api/referral-assets/") {
+		return trimmed
+	}
+	name, ok := extractReferralAssetName(trimmed)
+	if !ok || model.DB == nil {
+		return ""
+	}
+	q := model.DB.Model(&model.ReferralAsset{}).Where("storage_path = ? AND purpose = ?", name, expectedPurpose)
+	if expectedOwnerUserId > 0 {
+		q = q.Where("owner_user_id = ?", expectedOwnerUserId)
+	}
+	var count int64
+	if err := q.Count(&count).Error; err != nil || count == 0 {
+		return ""
+	}
+	return SignReferralAssetURL(name, now)
+}
+
 // ResignReferralAssetURL 给存下来的链接重新签名（列表里展示时用，旧链接可能已过期）。
+// Refuses paths not backed by a persisted ReferralAsset record.
 func ResignReferralAssetURL(stored string, now time.Time) string {
-	stored = strings.TrimSpace(stored)
-	if !strings.HasPrefix(stored, "/api/referral-assets/") {
+	trimmed := strings.TrimSpace(stored)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "/api/referral-assets/") {
 		return stored
 	}
-	name := strings.TrimPrefix(stored, "/api/referral-assets/")
-	name, _, _ = strings.Cut(name, "?")
+	name, ok := extractReferralAssetName(trimmed)
+	if !ok || model.DB == nil {
+		return ""
+	}
+	var count int64
+	if err := model.DB.Model(&model.ReferralAsset{}).Where("storage_path = ?", name).Count(&count).Error; err != nil || count == 0 {
+		return ""
+	}
 	return SignReferralAssetURL(name, now)
 }
 

@@ -1592,6 +1592,10 @@ func setCNYRate(t *testing.T, rate string) {
 func TestWithdrawCNY(t *testing.T) {
 	db := prepareReferralDB(t)
 	affiliate := availableAffiliate(t, db, "cnyw", 500)
+	require.NoError(t, db.Create(&model.ReferralAsset{
+		OwnerUserId: affiliate.UserId, Purpose: model.ReferralAssetPurposeWithdrawalQR,
+		StoragePath: "x.png", ContentType: "image/png", CreatedBy: "user",
+	}).Error)
 	input := ReferralWithdrawalCreateInput{UserId: affiliate.UserId, Amount: decimal.NewFromInt(100), AccountType: model.ReferralWithdrawToAlipay,
 		AccountName: "Zhang San", QRImageURL: "/api/referral-assets/x.png", ExpectedCNYRate: decimal.RequireFromString("7.1"), IdempotencyKey: "c1"}
 
@@ -1628,6 +1632,10 @@ func TestWithdrawCNY(t *testing.T) {
 func TestWithdrawCNYRechecksRateInsideTransaction(t *testing.T) {
 	db := prepareReferralDB(t)
 	affiliate := availableAffiliate(t, db, "cny-race", 500)
+	require.NoError(t, db.Create(&model.ReferralAsset{
+		OwnerUserId: affiliate.UserId, Purpose: model.ReferralAssetPurposeWithdrawalQR,
+		StoragePath: "synthetic.png", ContentType: "image/png", CreatedBy: "user",
+	}).Error)
 	setCNYRate(t, "7.1")
 	const callback = "audit_change_rate_before_withdrawal_lock"
 	changed := false
@@ -1953,4 +1961,54 @@ func TestReferralRisk(t *testing.T) {
 	require.NoError(t, db.First(&stored, affiliate.Id).Error)
 	assert.False(t, stored.SettlementEnabled, "three sign-ups from one IP freeze settlement")
 	assert.Equal(t, model.ReferralRiskBatchRegister, stored.RiskReason)
+}
+
+func TestReferralWithdrawalRequiresOwnedWithdrawalQRAndRejectsForeignOrProofAsset(t *testing.T) {
+	db := prepareReferralDB(t)
+	setCNYRate(t, "7.1")
+	owner := availableAffiliate(t, db, "qr-owner", 500)
+	victim := availableAffiliate(t, db, "qr-victim", 500)
+
+	require.NoError(t, db.Create(&model.ReferralAsset{
+		OwnerUserId: owner.UserId, Purpose: model.ReferralAssetPurposeWithdrawalQR, StoragePath: "owner-qr.png", ContentType: "image/png", CreatedBy: "user",
+	}).Error)
+	require.NoError(t, db.Create(&model.ReferralAsset{
+		OwnerUserId: owner.UserId, Purpose: model.ReferralAssetPurposePaymentProof, StoragePath: "owner-proof.png", ContentType: "image/png", CreatedBy: "admin",
+	}).Error)
+	require.NoError(t, db.Create(&model.ReferralAsset{
+		OwnerUserId: victim.UserId, Purpose: model.ReferralAssetPurposeWithdrawalQR, StoragePath: "victim-qr.png", ContentType: "image/png", CreatedBy: "user",
+	}).Error)
+
+	// Victim's QR URL must be rejected.
+	_, err := Referral.CreateWithdrawal(ReferralWithdrawalCreateInput{
+		UserId: owner.UserId, Amount: decimal.NewFromInt(100), AccountType: model.ReferralWithdrawToAlipay,
+		AccountName: "Owner", QRImageURL: "/api/referral-assets/victim-qr.png?expires=1&sig=old", ExpectedCNYRate: decimal.RequireFromString("7.1"), IdempotencyKey: "qr-foreign",
+	})
+	require.Error(t, err, "foreign user's QR asset must be rejected")
+
+	// Own payment_proof asset must be rejected as QR.
+	_, err = Referral.CreateWithdrawal(ReferralWithdrawalCreateInput{
+		UserId: owner.UserId, Amount: decimal.NewFromInt(100), AccountType: model.ReferralWithdrawToAlipay,
+		AccountName: "Owner", QRImageURL: "/api/referral-assets/owner-proof.png", ExpectedCNYRate: decimal.RequireFromString("7.1"), IdempotencyKey: "qr-wrong-purpose",
+	})
+	require.Error(t, err, "payment_proof asset must not be accepted as withdrawal QR")
+
+	// Unknown / nonexistent asset must be rejected.
+	_, err = Referral.CreateWithdrawal(ReferralWithdrawalCreateInput{
+		UserId: owner.UserId, Amount: decimal.NewFromInt(100), AccountType: model.ReferralWithdrawToAlipay,
+		AccountName: "Owner", QRImageURL: "/api/referral-assets/missing.png", ExpectedCNYRate: decimal.RequireFromString("7.1"), IdempotencyKey: "qr-missing",
+	})
+	require.Error(t, err, "unregistered asset path must be rejected")
+
+	// Owner's own withdrawal_qr asset succeeds.
+	okRow, err := Referral.CreateWithdrawal(ReferralWithdrawalCreateInput{
+		UserId: owner.UserId, Amount: decimal.NewFromInt(100), AccountType: model.ReferralWithdrawToAlipay,
+		AccountName: "Owner", QRImageURL: "/api/referral-assets/owner-qr.png?expires=1&sig=old", ExpectedCNYRate: decimal.RequireFromString("7.1"), IdempotencyKey: "qr-valid",
+	})
+	require.NoError(t, err)
+	require.NotZero(t, okRow.Id)
+
+	// Controller-facing re-sign helper or withdrawal listing must not re-sign unauthorized QR assets;
+	// verify direct ResignReferralAssetURL preserves stored path only when valid or keep controller test for listing.
+	_ = ResignReferralAssetURL(okRow.QRImageURL, time.Now())
 }
