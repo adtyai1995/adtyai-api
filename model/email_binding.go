@@ -2,7 +2,11 @@ package model
 
 import (
 	"errors"
+	"net"
+	"net/url"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -23,8 +27,12 @@ var (
 // EmailBindingState is server-owned payload. It deliberately contains only
 // salted code hashes and an already-consumed authorization, never usable codes
 // or proof tokens. Resending must retain the deadline and failure counter.
+// SiteID and OriginHost bind the ceremony to the exact site and initiating host
+// required by A.15 (line 1768).
 type EmailBindingState struct {
 	Authorization  *AuthFlowAuthorization `json:"authorization"`
+	SiteID         int                    `json:"site_id"`
+	OriginHost     string                 `json:"origin_host,omitempty"`
 	CurrentEmail   string                 `json:"current_email"`
 	Email          string                 `json:"email"`
 	NewCodeHash    string                 `json:"new_code_hash"`
@@ -33,15 +41,191 @@ type EmailBindingState struct {
 	ResendAt       int64                  `json:"resend_at"`
 }
 
-func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState) (string, *AuthFlow, error) {
+// NormalizeEmailBindingHost normalizes a trusted request Host (lowercase, port
+// and trailing dot stripped) and rejects malformed, wildcard, or cookie-widened
+// host values.
+func NormalizeEmailBindingHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if host == "" {
+		return ""
+	}
+	if strings.Contains(host, ":") {
+		h, _, err := net.SplitHostPort(host)
+		if err != nil {
+			return ""
+		}
+		host = h
+	}
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" || len(host) > 253 || strings.HasPrefix(host, ".") || strings.Contains(host, "..") {
+		return ""
+	}
+	for _, r := range host {
+		if unicode.IsControl(r) || unicode.IsSpace(r) || strings.ContainsRune("/*?#@\\\"", r) {
+			return ""
+		}
+	}
+	return host
+}
+
+func resolveEmailBindingCreateHost(stateHost string, originHost ...string) (string, error) {
+	if len(originHost) > 0 {
+		h := NormalizeEmailBindingHost(originHost[0])
+		if h == "" {
+			return "", ErrAuthFlowInvalid
+		}
+		if stateHost != "" && NormalizeEmailBindingHost(stateHost) != h {
+			return "", ErrAuthFlowInvalid
+		}
+		return h, nil
+	}
+	if stateHost != "" {
+		h := NormalizeEmailBindingHost(stateHost)
+		if h == "" {
+			return "", ErrAuthFlowInvalid
+		}
+		return h, nil
+	}
+	return "", nil
+}
+
+func matchEmailBindingOriginHost(expected string, originHost ...string) error {
+	expectedNorm := NormalizeEmailBindingHost(expected)
+	if expected != "" && expectedNorm == "" {
+		return ErrAuthFlowInvalid
+	}
+	if expectedNorm == "" && len(originHost) == 0 {
+		return nil
+	}
+	if expectedNorm == "" || len(originHost) == 0 {
+		return ErrAuthFlowInvalid
+	}
+	got := NormalizeEmailBindingHost(originHost[0])
+	if got == "" || got != expectedNorm {
+		return ErrAuthFlowInvalid
+	}
+	return nil
+}
+
+func authFlowProviderForHost(host string) string {
+	if len(host) <= 64 {
+		return host
+	}
+	return ""
+}
+
+func mainConfiguredHost(tx *gorm.DB) string {
+	common.OptionMapRWMutex.RLock()
+	raw := common.OptionMap["ServerAddress"]
+	common.OptionMapRWMutex.RUnlock()
+	if raw == "" && tx != nil && tx.Migrator().HasTable(&Option{}) {
+		var opt Option
+		if tx.Where("key = ?", "ServerAddress").Limit(1).Find(&opt).RowsAffected > 0 {
+			raw = opt.Value
+		}
+	}
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return NormalizeEmailBindingHost(parsed.Host)
+}
+
+func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) error {
+	if siteID < 0 {
+		return ErrAuthFlowInvalid
+	}
+	hasSitesTable := tx != nil && tx.Migrator().HasTable(&AdtySite{})
+	if siteID > 0 && hasSitesTable {
+		var site AdtySite
+		if err := tx.Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil {
+			return err
+		}
+		if site.Id != 0 && (site.Status == AdtySiteStatusClosed || site.Status == AdtySiteStatusPending) {
+			return ErrAuthFlowInvalid
+		}
+	}
+	if host == "" {
+		return nil
+	}
+	if mainHost := mainConfiguredHost(tx); mainHost != "" {
+		if siteID > 0 && host == mainHost {
+			return ErrAuthFlowInvalid
+		}
+	}
+	if hasSitesTable {
+		var sites []AdtySite
+		if err := tx.Select("id", "subdomain", "root_domain", "status").Find(&sites).Error; err != nil {
+			return err
+		}
+		for _, s := range sites {
+			rootDom := strings.ToLower(strings.TrimSpace(s.RootDomain))
+			if s.Subdomain != "" && rootDom != "" {
+				subHost := strings.ToLower(strings.TrimSpace(s.Subdomain)) + "." + rootDom
+				if host == subHost {
+					if s.Id != siteID || s.Status == AdtySiteStatusClosed || s.Status == AdtySiteStatusPending {
+						return ErrAuthFlowInvalid
+					}
+				}
+			}
+			if rootDom != "" && host == rootDom {
+				// Never allow bare reseller root domain to act as a site or main host.
+				return ErrAuthFlowInvalid
+			}
+			if siteID == 0 && rootDom != "" && strings.HasSuffix(host, "."+rootDom) {
+				return ErrAuthFlowInvalid
+			}
+		}
+	}
+	if tx != nil && tx.Migrator().HasTable(&AdtySiteDomain{}) {
+		var domains []AdtySiteDomain
+		if err := tx.Where("LOWER(hostname) = ?", host).Find(&domains).Error; err != nil {
+			return err
+		}
+		if len(domains) > 0 {
+			activeMatch := false
+			for _, d := range domains {
+				if d.SiteId == siteID && d.Status == AdtySiteDomainActive && d.Role != AdtySiteDomainRoleBaseURL {
+					activeMatch = true
+				} else {
+					return ErrAuthFlowInvalid
+				}
+			}
+			if !activeMatch {
+				return ErrAuthFlowInvalid
+			}
+		}
+	}
+	return nil
+}
+
+func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState, originHost ...string) (string, *AuthFlow, error) {
 	var token string
 	var flow *AuthFlow
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		if err := validateEmailBindingAccountWithTx(tx, identity, &state); err != nil {
+		host, err := resolveEmailBindingCreateHost(state.OriginHost, originHost...)
+		if err != nil {
 			return err
 		}
+		state.OriginHost = host
 		siteID, err := siteIDForUser(tx, identity.UserID)
 		if err != nil {
+			return err
+		}
+		if issuedSite, ok := identity.IssuedSite(); ok && issuedSite != siteID {
+			return ErrAuthFlowInvalid
+		}
+		if state.SiteID != 0 && state.SiteID != siteID {
+			return ErrAuthFlowInvalid
+		}
+		state.SiteID = siteID
+		if err := validateEmailBindingOriginWithTx(tx, siteID, state.OriginHost); err != nil {
+			return err
+		}
+		if err := validateEmailBindingAccountWithTx(tx, identity, &state); err != nil {
 			return err
 		}
 		if err := ensureEmailAvailableWithTx(tx, state.Email, siteID, identity.UserID); err != nil {
@@ -52,7 +236,8 @@ func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState) (
 			return err
 		}
 		token, flow, err = createAuthFlowWithTx(tx, AuthFlowCreate{
-			Purpose: AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID,
+			Purpose: AuthFlowPurposeEmailBinding, Provider: authFlowProviderForHost(state.OriginHost),
+			UserId: identity.UserID, SessionId: identity.SessionID,
 			Payload: string(payload), ExpiresAt: time.Now().Add(EmailBindingTTL),
 		})
 		return err
@@ -60,8 +245,16 @@ func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState) (
 	return token, flow, err
 }
 
-func GetEmailBinding(identity AuthSessionIdentity, token string) (*AuthFlow, *EmailBindingState, error) {
-	flow, err := GetAuthFlow(token, AuthFlowMatch{Purpose: AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
+func GetEmailBinding(identity AuthSessionIdentity, token string, originHost ...string) (*AuthFlow, *EmailBindingState, error) {
+	match := AuthFlowMatch{Purpose: AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID}
+	if len(originHost) > 0 {
+		h := NormalizeEmailBindingHost(originHost[0])
+		if h == "" {
+			return nil, nil, ErrAuthFlowInvalid
+		}
+		match.Provider = authFlowProviderForHost(h)
+	}
+	flow, err := GetAuthFlow(token, match)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -69,15 +262,24 @@ func GetEmailBinding(identity AuthSessionIdentity, token string) (*AuthFlow, *Em
 	if err := common.UnmarshalJsonStr(flow.Payload, &state); err != nil {
 		return nil, nil, ErrAuthFlowInvalid
 	}
+	if err := matchEmailBindingOriginHost(state.OriginHost, originHost...); err != nil {
+		return nil, nil, err
+	}
+	if issuedSite, ok := identity.IssuedSite(); ok && issuedSite != state.SiteID {
+		return nil, nil, ErrAuthFlowInvalid
+	}
+	if err := validateEmailBindingOriginWithTx(DB, state.SiteID, state.OriginHost); err != nil {
+		return nil, nil, err
+	}
 	return flow, &state, nil
 }
 
-func ResendEmailBinding(identity AuthSessionIdentity, token, newCodeHash, oldCodeHash string) (*AuthFlow, *EmailBindingState, error) {
+func ResendEmailBinding(identity AuthSessionIdentity, token, newCodeHash, oldCodeHash string, originHost ...string) (*AuthFlow, *EmailBindingState, error) {
 	var flow *AuthFlow
 	var state *EmailBindingState
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		flow, state, err = lockEmailBindingWithTx(tx, identity, token)
+		flow, state, err = lockEmailBindingWithTx(tx, identity, token, originHost...)
 		if err != nil {
 			return err
 		}
@@ -102,7 +304,7 @@ func ResendEmailBinding(identity AuthSessionIdentity, token, newCodeHash, oldCod
 // CompleteEmailBinding commits failed attempts even though verification fails.
 // Successful confirmation consumes the flow in the same transaction as the
 // email update, preserving the existing cross-database email ownership lock.
-func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, oldCode string) (*EmailBindingState, error) {
+func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, oldCode string, originHost ...string) (*EmailBindingState, error) {
 	var state *EmailBindingState
 	var verificationError error
 	err := DB.Transaction(func(tx *gorm.DB) error {
@@ -119,12 +321,12 @@ func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, o
 		if err := lockNormalizedEmail(tx, email, siteID); err != nil {
 			return err
 		}
-		flow, lockedState, err := lockEmailBindingWithTx(tx, identity, token)
+		flow, lockedState, err := lockEmailBindingWithTx(tx, identity, token, originHost...)
 		if err != nil {
 			return err
 		}
 		state = lockedState
-		if state.Email != email {
+		if state.Email != email || state.SiteID != siteID {
 			return ErrAuthFlowInvalid
 		}
 		newCode, newCodeError := common.ValidateNumericCode(newCode)
@@ -160,8 +362,15 @@ func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, o
 	return state, verificationError
 }
 
-func lockEmailBindingWithTx(tx *gorm.DB, identity AuthSessionIdentity, token string) (*AuthFlow, *EmailBindingState, error) {
+func lockEmailBindingWithTx(tx *gorm.DB, identity AuthSessionIdentity, token string, originHost ...string) (*AuthFlow, *EmailBindingState, error) {
 	match := AuthFlowMatch{Purpose: AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID}
+	if len(originHost) > 0 {
+		h := NormalizeEmailBindingHost(originHost[0])
+		if h == "" {
+			return nil, nil, ErrAuthFlowInvalid
+		}
+		match.Provider = authFlowProviderForHost(h)
+	}
 	// Make the first statement a write so SQLite does not have to upgrade a
 	// deferred read transaction. A no-op update also locks the row on MySQL and
 	// PostgreSQL; do not interpret dialect-dependent RowsAffected as success.
@@ -187,6 +396,9 @@ func lockEmailBindingWithTx(tx *gorm.DB, identity AuthSessionIdentity, token str
 	if err := common.UnmarshalJsonStr(flow.Payload, &state); err != nil {
 		return nil, nil, ErrAuthFlowInvalid
 	}
+	if err := matchEmailBindingOriginHost(state.OriginHost, originHost...); err != nil {
+		return nil, nil, err
+	}
 	if err := validateEmailBindingAccountWithTx(tx, identity, &state); err != nil {
 		return nil, nil, err
 	}
@@ -203,6 +415,19 @@ func validateEmailBindingAccountWithTx(tx *gorm.DB, identity AuthSessionIdentity
 		return ErrAuthFlowInvalid
 	}
 	if err := ValidateAuthSessionWithTx(tx, identity); err != nil {
+		return err
+	}
+	siteID, err := siteIDForUser(tx, identity.UserID)
+	if err != nil {
+		return err
+	}
+	if state.SiteID != siteID {
+		return ErrAuthFlowInvalid
+	}
+	if issuedSite, ok := identity.IssuedSite(); ok && issuedSite != siteID {
+		return ErrAuthFlowInvalid
+	}
+	if err := validateEmailBindingOriginWithTx(tx, siteID, state.OriginHost); err != nil {
 		return err
 	}
 	var user User

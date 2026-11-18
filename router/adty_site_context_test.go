@@ -52,8 +52,12 @@ func newSiteFixture(t *testing.T) *siteFixture {
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
 	cfg.MaxSiteBonusExtra, cfg.TrialGrantMaxUSD, cfg.TrialGrantDailyUSD = new(0.0), new(0.0), new(0.0)
 	oldAddress, oldGenerate := system_setting.ServerAddress, constant.GenerateDefaultToken
+	oldLegal := *adty_setting.GetLegalSetting()
 	system_setting.ServerAddress, constant.GenerateDefaultToken = "https://main.example.com", false
-	t.Cleanup(func() { system_setting.ServerAddress, constant.GenerateDefaultToken = oldAddress, oldGenerate })
+	t.Cleanup(func() {
+		system_setting.ServerAddress, constant.GenerateDefaultToken = oldAddress, oldGenerate
+		*adty_setting.GetLegalSetting() = oldLegal
+	})
 
 	owner := model.User{Username: "site-owner", Password: "x", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1}
 	require.NoError(t, db.Create(&owner).Error)
@@ -812,12 +816,34 @@ func TestCustomDomainApiRoleServesOnlyRelay(t *testing.T) {
 	assert.NotEqual(t, http.StatusForbidden, f.do(t, http.MethodGet, "api.customer-brand.com", "/api/status", "").Code)
 	assert.NotEqual(t, http.StatusNotFound, f.do(t, http.MethodGet, "api.customer-brand.com", "/api/status", "").Code)
 
-	// API 地址域名：relay 放行（不是 403、不是 404；没有带 key 时会是 401 之类）。
-	for _, path := range []string{"/v1/models", "/v1/chat/completions"} {
-		code := f.do(t, http.MethodPost, "api.customer-brand.com", path, "{}").Code
-		assert.NotEqual(t, http.StatusForbidden, code, path)
-		assert.NotEqual(t, http.StatusNotFound, code, path)
+	// API 地址域名：relay 必须命中真实路由（GET /v1/models 与 POST /v1/chat/completions），
+	// 无 Key 时按认证契约返回 401，不能靠 SPA NoRoute 的 200 "index" 充当放行证据。
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/v1/models", ""},
+		{http.MethodPost, "/v1/chat/completions", "{}"},
+	} {
+		resp := f.do(t, tc.method, "api.customer-brand.com", tc.path, tc.body)
+		assert.Equal(t, http.StatusUnauthorized, resp.Code, "%s %s: %s", tc.method, tc.path, resp.Body.String())
+		assert.NotEqual(t, "index", resp.Body.String(), "%s %s must not fall through to SPA NoRoute", tc.method, tc.path)
 	}
+
+	customer := f.user(t, "api-only-relay-user", f.site.Id)
+	require.NoError(t, f.db.Create(&model.Token{
+		UserId: customer.Id, Key: "apionlymodelskey", Status: common.TokenStatusEnabled,
+		ExpiredTime: -1, UnlimitedQuota: true,
+	}).Error)
+	modelsReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	modelsReq.Host = "api.customer-brand.com"
+	modelsReq.Header.Set("Authorization", "Bearer sk-apionlymodelskey")
+	modelsResp := httptest.NewRecorder()
+	f.engine.ServeHTTP(modelsResp, modelsReq)
+	assert.Equal(t, http.StatusOK, modelsResp.Code, modelsResp.Body.String())
+	assert.NotEqual(t, "index", modelsResp.Body.String())
+	assert.Contains(t, modelsResp.Body.String(), `"data"`)
 
 	// API 地址域名仍然属于同一个站（用 relay 路径探测：页面路径在这里本来就会被 Abort）。
 	var captured *model.AdtySite
@@ -873,5 +899,21 @@ func TestStatusServerAddressFollowsCustomDomain(t *testing.T) {
 	for _, host := range []string{"shop.sites.example.com", "shop.customer-brand.com"} {
 		body := f.do(t, http.MethodGet, host, "/api/status", "").Body.String()
 		assert.Contains(t, body, `"server_address":"https://api.customer-brand.com"`, host)
+	}
+}
+
+func TestNewSiteFixtureRestoresLegalSiteAgreementVersion(t *testing.T) {
+	legal := adty_setting.GetLegalSetting()
+	original := *legal
+	t.Cleanup(func() { *legal = original })
+
+	for _, initial := range []int{0, 5} {
+		legal.SiteAgreementVersion = initial
+		t.Run(fmt.Sprintf("initial_%d", initial), func(t *testing.T) {
+			f := newSiteFixture(t)
+			require.NotNil(t, f)
+			assert.Equal(t, 1, adty_setting.GetLegalSetting().SiteAgreementVersion)
+		})
+		assert.Equal(t, initial, adty_setting.GetLegalSetting().SiteAgreementVersion, "newSiteFixture cleanup must restore SiteAgreementVersion")
 	}
 }

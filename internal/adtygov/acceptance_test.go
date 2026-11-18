@@ -153,6 +153,44 @@ func TestOfficialH24GovernanceLanding(t *testing.T) {
 		require.False(t, entry.SmokeClaimed)
 		require.False(t, entry.ScaleClaimed)
 	})
+
+	t.Run("ADTY-24-06 retired inventory matches current source tree", func(t *testing.T) {
+		inv := OfficialRetiredChainInventory()
+		var desktop *RetiredObject
+		for i := range inv.Objects {
+			obj := &inv.Objects[i]
+			for _, rel := range obj.VerifiedAbsent {
+				_, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
+				require.True(t, os.IsNotExist(err), "verified_absent path %s for %s must not exist in current tree", rel, obj.ID)
+			}
+			if obj.ID == "RETIRE-desktop-electron" {
+				desktop = obj
+			}
+		}
+		require.NotNil(t, desktop)
+		require.Contains(t, desktop.RelatedIssues, "ISS-R1-0063")
+		require.Contains(t, desktop.Leftover, "database-step.tsx")
+		require.Contains(t, desktop.Leftover, "window.electron")
+		require.Contains(t, desktop.Leftover, "no live window.electron leftover")
+		require.NotContains(t, desktop.Leftover, "still reads")
+		require.NotContains(t, desktop.Notes, "still reads")
+
+		setupDir := filepath.Join(root, "web", "src", "features", "setup")
+		err := filepath.Walk(setupDir, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil || info.IsDir() {
+				return walkErr
+			}
+			raw, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			text := strings.ToLower(string(raw))
+			require.NotContains(t, text, "window.electron", "%s must not contain window.electron", path)
+			require.NotContains(t, text, "electron", "%s must not reference electron", path)
+			return nil
+		})
+		require.NoError(t, err)
+	})
 }
 
 func repoRoot(t *testing.T) string {

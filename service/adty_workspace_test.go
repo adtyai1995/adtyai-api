@@ -260,9 +260,30 @@ func TestAdtyTicketImageVisibilityFollowsMessage(t *testing.T) {
 
 func TestAdtyTranslationReuseVersionAndNoDebit(t *testing.T) {
 	t.Setenv("CRYPTO_SECRET", "synthetic-encryption-key-for-local-tests-only")
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Fatalf("translation test dialed external network %s", request.URL.String())
+		return nil, errors.New("dial")
+	})
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+
 	db := prepareReferralDialectDB(t, "sqlite")
 	user := referralUser(t, db, "tr-user")
-	require.NoError(t, db.Model(user).Update("quota", 500000).Error)
+	owner := referralUser(t, db, "tr-site-owner")
+	leader := referralUser(t, db, "tr-team-leader")
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "tr-site", Status: model.AdtySiteStatusActive}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, EnsureAdtySiteWallets(site.Id))
+	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).Update("balance", decimal.RequireFromString("300")).Error)
+	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).Update("balance", decimal.RequireFromString("200")).Error)
+	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).Update("balance", decimal.RequireFromString("400")).Error)
+	require.NoError(t, db.Model(user).Updates(map[string]any{"site_id": site.Id, "quota": 500000, "used_quota": 0, "request_count": 0}).Error)
+	require.NoError(t, db.Model(owner).Updates(map[string]any{"quota": 600000, "used_quota": 0, "request_count": 0}).Error)
+	require.NoError(t, db.Model(leader).Updates(map[string]any{"site_id": site.Id, "quota": 700000, "used_quota": 0, "request_count": 0}).Error)
+	createdTeam, err := CreateAdtyTeam(leader.Id, site.Id, "TrDesk", decimal.RequireFromString("1"))
+	require.NoError(t, err)
+	require.NoError(t, CreditAdtyTeam(int64(leader.Id), createdTeam.Team.Id, 800000, "tr-team-seed"))
+
 	calls := 0
 	old := AdtyTranslateFunc
 	AdtyTranslateFunc = func(_, text string) (string, error) {
@@ -274,9 +295,9 @@ func TestAdtyTranslationReuseVersionAndNoDebit(t *testing.T) {
 	}
 	t.Cleanup(func() { AdtyTranslateFunc = old })
 
-	_, err := SaveAdtyTranslationConfig(AdtyTranslationInput{Mode: model.AdtyTranslationModeOwn, BaseURL: "https://api.adty.test/v1/chat/completions", ModelName: "translator", RequestHost: "api.adty.test"})
+	_, err = SaveAdtyTranslationConfig(AdtyTranslationInput{Mode: model.AdtyTranslationModeOwn, BaseURL: "https://api.adty.test/v1/chat/completions", ModelName: "translator", RequestHost: "api.adty.test"})
 	require.ErrorIs(t, err, ErrAdtyTranslationSelf)
-	token := model.Token{UserId: user.Id, Key: "customer-key-secret", Status: common.TokenStatusEnabled}
+	token := model.Token{UserId: user.Id, Key: "customer-key-secret", Status: common.TokenStatusEnabled, RemainQuota: 100000}
 	require.NoError(t, db.Create(&token).Error)
 	_, err = SaveAdtyTranslationConfig(AdtyTranslationInput{Mode: model.AdtyTranslationModeOwn, BaseURL: "https://translator.example/translate", ModelName: "translator", Token: token.Key, RequestHost: "api.adty.test"})
 	require.ErrorIs(t, err, ErrAdtyTranslationSelf)
@@ -285,15 +306,81 @@ func TestAdtyTranslationReuseVersionAndNoDebit(t *testing.T) {
 	assert.NotZero(t, saved.SavedAt)
 	assert.Zero(t, saved.TestedAt)
 
+	assertNoDebitAndNoEvents := func(stage string) {
+		t.Helper()
+		for _, expected := range []struct {
+			id    int
+			quota int
+		}{
+			{user.Id, 500000},
+			{owner.Id, 600000},
+			{leader.Id, 700000},
+		} {
+			var u model.User
+			require.NoError(t, db.First(&u, expected.id).Error, stage)
+			assert.Equal(t, expected.quota, u.Quota, stage)
+			assert.Zero(t, u.UsedQuota, stage)
+			assert.Zero(t, u.RequestCount, stage)
+		}
+		var storedToken model.Token
+		require.NoError(t, db.First(&storedToken, token.Id).Error, stage)
+		assert.Equal(t, 100000, storedToken.RemainQuota, stage)
+		assert.Zero(t, storedToken.UsedQuota, stage)
+
+		var storedTeam model.AdtyTeam
+		require.NoError(t, db.First(&storedTeam, createdTeam.Team.Id).Error, stage)
+		assert.EqualValues(t, 800000, storedTeam.SharedQuota, stage)
+		var teamLedgers int64
+		require.NoError(t, db.Model(&model.AdtyTeamLedger{}).Where("team_id = ?", createdTeam.Team.Id).Count(&teamLedgers).Error, stage)
+		assert.EqualValues(t, 1, teamLedgers, stage)
+
+		for _, w := range []struct {
+			kind    string
+			balance string
+		}{
+			{model.AdtySiteWalletOperating, "300"},
+			{model.AdtySiteWalletEarnings, "200"},
+			{model.AdtySiteWalletMargin, "400"},
+		} {
+			var wallet model.AdtySiteWallet
+			require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, w.kind).First(&wallet).Error, stage)
+			assert.True(t, wallet.Balance.Equal(decimal.RequireFromString(w.balance)), stage)
+			assert.True(t, wallet.FrozenUSD.IsZero(), stage)
+		}
+
+		var balanceLedgers, billingOps, billingMovements, siteEarnings, siteDailies, siteTierEvals, mainCommissions, siteCommissions, consumeLogs int64
+		require.NoError(t, db.Model(&model.AdtyBalanceLedger{}).Count(&balanceLedgers).Error, stage)
+		require.NoError(t, db.Model(&model.BillingOperation{}).Count(&billingOps).Error, stage)
+		require.NoError(t, db.Model(&model.BillingOperationMovement{}).Count(&billingMovements).Error, stage)
+		require.NoError(t, db.Model(&model.AdtySiteEarningEvent{}).Count(&siteEarnings).Error, stage)
+		require.NoError(t, db.Model(&model.AdtySiteEarningDaily{}).Count(&siteDailies).Error, stage)
+		require.NoError(t, db.Model(&model.AdtySiteTierEvaluation{}).Count(&siteTierEvals).Error, stage)
+		require.NoError(t, db.Model(&model.ReferralCommission{}).Count(&mainCommissions).Error, stage)
+		require.NoError(t, db.Model(&model.AdtySiteInviteCommission{}).Count(&siteCommissions).Error, stage)
+		require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeConsume).Count(&consumeLogs).Error, stage)
+		assert.Zero(t, balanceLedgers, stage)
+		assert.Zero(t, billingOps, stage)
+		assert.Zero(t, billingMovements, stage)
+		assert.Zero(t, siteEarnings, stage)
+		assert.Zero(t, siteDailies, stage)
+		assert.Zero(t, siteTierEvals, stage)
+		assert.Zero(t, mainCommissions, stage)
+		assert.Zero(t, siteCommissions, stage)
+		assert.Zero(t, consumeLogs, stage)
+	}
+
 	source := "金额 12.50 USD，订单 A123456，不退款"
-	first, err := TranslateAdtyDynamic("notice:1", source, 0)
+	first, err := TranslateAdtyDynamic("notice:1", source, site.Id)
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtyTranslationReady, first.Status)
 	assert.Equal(t, 1, calls)
-	second, err := TranslateAdtyDynamic("notice:1", source, 0)
+	assertNoDebitAndNoEvents("after first translation success")
+
+	second, err := TranslateAdtyDynamic("notice:1", source, site.Id)
 	require.NoError(t, err)
 	assert.True(t, second.Reused)
 	assert.Equal(t, 1, calls)
+	assertNoDebitAndNoEvents("after cached translation reuse")
 
 	require.NoError(t, EditAdtyTranslation("notice:1", "Human amount 12.50 USD order A123456 is not changed"))
 	require.Error(t, CompleteAdtyTranslationJob("notice:1", 1, "late amount 12.50 USD order A123456 is not applied"))
@@ -301,12 +388,18 @@ func TestAdtyTranslationReuseVersionAndNoDebit(t *testing.T) {
 	require.NoError(t, db.Where("object_key = ?", "notice:1").First(&head).Error)
 	assert.Contains(t, head.English, "Human")
 	assert.True(t, head.HumanEdited)
+	assertNoDebitAndNoEvents("after human edit and stale job rejection")
 
-	failed, err := TranslateAdtyDynamic("notice:2", "失败 12.50 USD 订单 A123456 不退", 0)
+	failed, err := TranslateAdtyDynamic("notice:2", "失败 12.50 USD 订单 A123456 不退", site.Id)
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtyTranslationFailed, failed.Status)
 	assert.Equal(t, AdtyTranslationNotReady, failed.Notice)
 	assert.Empty(t, failed.English)
+	assertNoDebitAndNoEvents("after failed translation")
+
+	usage, err := AdtyTranslationUsageToday()
+	require.NoError(t, err)
+	assert.Equal(t, 2, usage.Calls, "translation calls are tracked under system translation config usage")
 }
 
 func TestAdtyGroupHealthMarksExpiredSamplesStale(t *testing.T) {

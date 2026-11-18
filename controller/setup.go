@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -9,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type Setup struct {
@@ -25,11 +28,85 @@ type SetupRequest struct {
 	DemoSiteEnabled    bool   `json:"DemoSiteEnabled"`
 }
 
-func GetSetup(c *gin.Context) {
-	setup := Setup{
-		Status: constant.Setup,
+var setupCompletionMu sync.Mutex
+
+func getExistingRootUser() (*model.User, error) {
+	if model.DB == nil {
+		return nil, nil
 	}
-	if constant.Setup {
+	var root model.User
+	err := model.DB.Where("role = ?", common.RoleRootUser).Order("id").First(&root).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &root, nil
+}
+
+func getPersistedSetupOptions() (selfUse bool, demoSite bool, ok bool) {
+	if model.DB == nil {
+		return false, false, false
+	}
+	var opts []model.Option
+	if err := model.DB.Where("key IN ?", []string{"SelfUseModeEnabled", "DemoSiteEnabled"}).Find(&opts).Error; err != nil {
+		return false, false, false
+	}
+	var hasSelfUse, hasDemo bool
+	for _, opt := range opts {
+		switch opt.Key {
+		case "SelfUseModeEnabled":
+			hasSelfUse = true
+			selfUse = opt.Value == "true"
+		case "DemoSiteEnabled":
+			hasDemo = true
+			demoSite = opt.Value == "true"
+		}
+	}
+	return selfUse, demoSite, hasSelfUse && hasDemo
+}
+
+func applySetupMemoryOptions(selfUse, demoSite bool) {
+	operation_setting.SelfUseModeEnabled = selfUse
+	operation_setting.DemoSiteEnabled = demoSite
+	common.OptionMapRWMutex.Lock()
+	if common.OptionMap != nil {
+		common.OptionMap["SelfUseModeEnabled"] = boolToString(selfUse)
+		common.OptionMap["DemoSiteEnabled"] = boolToString(demoSite)
+	}
+	common.OptionMapRWMutex.Unlock()
+}
+
+// syncSetupStateFromDB reconciles in-memory setup state with persisted DB state.
+// Setup is only considered complete in DB when a live Root user exists, both
+// operation mode options have been persisted, and the setup completion row exists.
+func syncSetupStateFromDB() bool {
+	if model.DB == nil {
+		return constant.Setup
+	}
+	rootExists := model.RootUserExists()
+	setupRow := model.GetSetup()
+	selfUse, demoSite, optionsOK := getPersistedSetupOptions()
+	if rootExists && setupRow != nil && optionsOK {
+		applySetupMemoryOptions(selfUse, demoSite)
+		constant.Setup = true
+		return true
+	}
+	if rootExists || setupRow != nil {
+		// Half-initialized DB state: never leave in-memory Setup=true blocking recovery.
+		constant.Setup = false
+		return false
+	}
+	return constant.Setup
+}
+
+func GetSetup(c *gin.Context) {
+	completed := syncSetupStateFromDB()
+	setup := Setup{
+		Status: completed,
+	}
+	if completed {
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    setup,
@@ -46,15 +123,11 @@ func GetSetup(c *gin.Context) {
 
 func PostSetup(c *gin.Context) {
 	// The in-memory flag is per process. Another instance, or a restart that
-	// already wrote the setup row, must not accept another anonymous write.
-	if constant.Setup || model.GetSetup() != nil || model.RootUserExists() {
-		constant.Setup = true
+	// already completed all setup records, must not accept another anonymous write.
+	if syncSetupStateFromDB() {
 		common.ApiErrorT(c, "The system is already initialized")
 		return
 	}
-
-	// Check if root user already exists
-	rootExists := model.RootUserExists()
 
 	var req SetupRequest
 	err := c.ShouldBindJSON(&req)
@@ -62,10 +135,26 @@ func PostSetup(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	req.Username = strings.TrimSpace(req.Username)
 
-	// If root doesn't exist, validate and create admin account
-	if !rootExists {
-		req.Username = strings.TrimSpace(req.Username)
+	existingRoot, err := getExistingRootUser()
+	if err != nil {
+		common.ApiErrorT(c, "System error: {{error}}", map[string]any{"error": err.Error()})
+		return
+	}
+
+	if existingRoot != nil {
+		// Root was already committed in an earlier attempt whose trailing option
+		// or setup-row write failed (or by a concurrent winner). Only a retry
+		// presenting the established Root credentials may finish the tail;
+		// never reset Root's password or allow anonymous takeover.
+		if req.Username == "" || req.Username != existingRoot.Username ||
+			req.Password == "" || req.Password != req.ConfirmPassword ||
+			!common.ValidatePasswordAndHash(req.Password, existingRoot.Password) {
+			common.ApiErrorT(c, "The system is already initialized")
+			return
+		}
+	} else {
 		if req.Username == "" {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
@@ -113,37 +202,88 @@ func PostSetup(c *gin.Context) {
 			common.ApiErrorT(c, "Failed to create the administrator account: {{error}}", map[string]any{"error": err.Error()})
 			return
 		}
+		currentRoot, err := getExistingRootUser()
+		if err != nil || currentRoot == nil {
+			errMsg := "root account unavailable"
+			if err != nil {
+				errMsg = err.Error()
+			}
+			common.ApiErrorT(c, "Failed to create the administrator account: {{error}}", map[string]any{"error": errMsg})
+			return
+		}
+		if currentRoot.Username != req.Username || !common.ValidatePasswordAndHash(req.Password, currentRoot.Password) {
+			syncSetupStateFromDB()
+			common.ApiErrorT(c, "The system is already initialized")
+			return
+		}
 	}
 
-	// Set operation modes
-	operation_setting.SelfUseModeEnabled = req.SelfUseModeEnabled
-	operation_setting.DemoSiteEnabled = req.DemoSiteEnabled
+	setupCompletionMu.Lock()
+	defer setupCompletionMu.Unlock()
+
+	if syncSetupStateFromDB() {
+		common.ApiErrorT(c, "The system is already initialized")
+		return
+	}
+
+	prevSelfUse := operation_setting.SelfUseModeEnabled
+	prevDemoSite := operation_setting.DemoSiteEnabled
+	common.OptionMapRWMutex.RLock()
+	prevSelfOpt, hadSelfOpt := common.OptionMap["SelfUseModeEnabled"]
+	prevDemoOpt, hadDemoOpt := common.OptionMap["DemoSiteEnabled"]
+	common.OptionMapRWMutex.RUnlock()
+
+	restoreMemory := func() {
+		operation_setting.SelfUseModeEnabled = prevSelfUse
+		operation_setting.DemoSiteEnabled = prevDemoSite
+		common.OptionMapRWMutex.Lock()
+		if common.OptionMap != nil {
+			if hadSelfOpt {
+				common.OptionMap["SelfUseModeEnabled"] = prevSelfOpt
+			} else {
+				delete(common.OptionMap, "SelfUseModeEnabled")
+			}
+			if hadDemoOpt {
+				common.OptionMap["DemoSiteEnabled"] = prevDemoOpt
+			} else {
+				delete(common.OptionMap, "DemoSiteEnabled")
+			}
+		}
+		common.OptionMapRWMutex.Unlock()
+		constant.Setup = false
+	}
 
 	// Save operation modes to database for persistence
 	err = model.UpdateOption("SelfUseModeEnabled", boolToString(req.SelfUseModeEnabled))
 	if err != nil {
+		restoreMemory()
 		common.ApiErrorT(c, "Failed to save the self-use mode setting: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
 
 	err = model.UpdateOption("DemoSiteEnabled", boolToString(req.DemoSiteEnabled))
 	if err != nil {
+		restoreMemory()
 		common.ApiErrorT(c, "Failed to save the demo site mode setting: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
 
-	// Update setup status
-	constant.Setup = true
+	if model.GetSetup() == nil {
+		setup := model.Setup{
+			Version:       common.Version,
+			InitializedAt: time.Now().Unix(),
+		}
+		err = model.DB.Create(&setup).Error
+		if err != nil {
+			restoreMemory()
+			common.ApiErrorT(c, "Failed to initialize the system: {{error}}", map[string]any{"error": err.Error()})
+			return
+		}
+	}
 
-	setup := model.Setup{
-		Version:       common.Version,
-		InitializedAt: time.Now().Unix(),
-	}
-	err = model.DB.Create(&setup).Error
-	if err != nil {
-		common.ApiErrorT(c, "Failed to initialize the system: {{error}}", map[string]any{"error": err.Error()})
-		return
-	}
+	// Only mark in-memory setup complete after root, options, and setup row are all persisted.
+	applySetupMemoryOptions(req.SelfUseModeEnabled, req.DemoSiteEnabled)
+	constant.Setup = true
 
 	common.ApiSuccessT(c, "System initialized successfully", nil)
 }

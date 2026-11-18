@@ -54,7 +54,7 @@ func ValidateAccountEmail(email string) (string, error) {
 	return email, nil
 }
 
-func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAuthorization, email string, lang string) (*EmailBindingData, error) {
+func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAuthorization, email string, lang string, originHost ...string) (*EmailBindingData, error) {
 	email, err := ValidateAccountEmail(email)
 	if err != nil {
 		return nil, err
@@ -77,7 +77,7 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 		return nil, err
 	}
 	state.NewCodeHash, state.OldCodeHash = codes.NewHash, codes.OldHash
-	token, flow, err := model.CreateEmailBinding(identity, state)
+	token, flow, err := model.CreateEmailBinding(identity, state, originHost...)
 	if err != nil {
 		return nil, err
 	}
@@ -93,8 +93,8 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	return data, nil
 }
 
-func ResendAccountEmailBinding(identity AuthIdentity, token string, lang string) (*EmailBindingData, error) {
-	_, state, err := model.GetEmailBinding(identity, token)
+func ResendAccountEmailBinding(identity AuthIdentity, token string, lang string, originHost ...string) (*EmailBindingData, error) {
+	_, state, err := model.GetEmailBinding(identity, token, originHost...)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func ResendAccountEmailBinding(identity AuthIdentity, token string, lang string)
 	if err != nil {
 		return nil, err
 	}
-	flow, state, err := model.ResendEmailBinding(identity, token, codes.NewHash, codes.OldHash)
+	flow, state, err := model.ResendEmailBinding(identity, token, codes.NewHash, codes.OldHash, originHost...)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +126,8 @@ func ResendAccountEmailBinding(identity AuthIdentity, token string, lang string)
 	return emailBindingData(token, flow, state), nil
 }
 
-func FinishEmailBinding(identity AuthIdentity, token, newCode, oldCode string) (*model.EmailBindingState, error) {
-	_, state, err := model.GetEmailBinding(identity, token)
+func FinishEmailBinding(identity AuthIdentity, token, newCode, oldCode string, originHost ...string) (*model.EmailBindingState, error) {
+	_, state, err := model.GetEmailBinding(identity, token, originHost...)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +141,7 @@ func FinishEmailBinding(identity AuthIdentity, token, newCode, oldCode string) (
 	if _, err := ValidateAccountEmail(state.Email); err != nil {
 		return nil, err
 	}
-	return model.CompleteEmailBinding(identity, token, state.Email, newCode, oldCode)
+	return model.CompleteEmailBinding(identity, token, state.Email, newCode, oldCode, originHost...)
 }
 
 type emailBindingCodes struct {

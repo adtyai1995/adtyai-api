@@ -186,12 +186,12 @@ func OfficialRetiredObjects() []RetiredObject {
 			Status:        RetiredStatusItemizedC2Close,
 			RelatedIssues: []string{"ISS-R1-0063"},
 			KeepList:      "LICENSE, NOTICE, and THIRD-PARTY-LICENSES stay, with factual inventory wording after the electron/ tree was removed. The previously deleted upstream workflow .github/workflows/electron-build.yml stays on the official deleted-paths list.",
-			Leftover:      "web/src/features/setup/components/database-step.tsx still reads a window.electron hook. That leftover is already recorded as a next-round finding from ISS-R1-0063 and is not fixed in this umbrella inventory.",
+			Leftover:      "Historical disposition from ISS-R1-0063: web/src/features/setup/components/database-step.tsx previously read a window.electron hook, which was subsequently removed in frontend slimming; no live window.electron leftover remains in the current source tree.",
 			VerifiedAbsent: []string{
 				"electron/",
 				".github/workflows/electron-build.yml",
 			},
-			Notes: "ISS-R1-0063 removed the leftover electron/ build and publish tree. This inventory does not amend that fix or treat the recorded window.electron hook as in-scope work.",
+			Notes: "ISS-R1-0063 removed the leftover electron/ build and publish tree, and the former window.electron hook in web/src/features/setup/components/database-step.tsx was also removed; historical disposition records are retained without claiming any live leftover.",
 		},
 		{
 			ID:            "RETIRE-site-self-apply",

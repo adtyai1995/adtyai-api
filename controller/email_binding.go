@@ -47,7 +47,7 @@ func EmailBindStart(c *gin.Context) {
 	if authorization == nil {
 		return
 	}
-	data, err := service.StartEmailBinding(identity, authorization, email, service.AccountMailLanguage(c, identity.UserID))
+	data, err := service.StartEmailBinding(identity, authorization, email, service.AccountMailLanguage(c, identity.UserID), emailBindOriginArgs(c)...)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -71,7 +71,7 @@ func EmailBindResend(c *gin.Context) {
 		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
 		return
 	}
-	data, err := service.ResendAccountEmailBinding(identity, request.FlowToken, service.AccountMailLanguage(c, identity.UserID))
+	data, err := service.ResendAccountEmailBinding(identity, request.FlowToken, service.AccountMailLanguage(c, identity.UserID), emailBindOriginArgs(c)...)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -95,7 +95,7 @@ func EmailBind(c *gin.Context) {
 		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
 		return
 	}
-	state, err := service.FinishEmailBinding(identity, request.FlowToken, request.NewCode, request.OldCode)
+	state, err := service.FinishEmailBinding(identity, request.FlowToken, request.NewCode, request.OldCode, emailBindOriginArgs(c)...)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -114,6 +114,24 @@ func EmailBind(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"notification_warning": notificationFailed}})
+}
+
+// emailBindOriginArgs extracts the trusted resolved request Host (site domain,
+// custom alias, or configured main host) so email binding ceremonies remain
+// bound to their initiating host in deployment (ISS-R1-0128 / A.15) without
+// rejecting unconfigured unit-test hosts.
+func emailBindOriginArgs(c *gin.Context) []string {
+	if c == nil || c.Request == nil {
+		return nil
+	}
+	host := model.NormalizeEmailBindingHost(c.Request.Host)
+	if host == "" {
+		return nil
+	}
+	if service.AdtySiteForRequest(c) != nil || service.AdtySiteForHost(host) != nil || service.AdtyIsMainHost(host) {
+		return []string{host}
+	}
+	return nil
 }
 
 // publishUserAuthCache is the cache refresh after a committed email bind.
