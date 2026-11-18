@@ -181,6 +181,7 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.GET("/adty/admin/fund-anomalies", middleware.RootAuth(), controller.GetAdtyFundAnomalies)
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/site-withdrawals/rules", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/site-withdrawals/:id/paying", "scope", "option:write")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/site-withdrawals/:id/recall", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/site-withdrawals/:id/reject", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/site-withdrawals/:id/paid", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/site-referral/cap", "scope", "option:read")
