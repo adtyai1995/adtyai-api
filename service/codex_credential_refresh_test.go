@@ -289,3 +289,152 @@ func TestDiscardedCodexRefreshConnReleasesSessionLock(t *testing.T) {
 	}
 	require.Zero(t, alive, "带锁的连接必须被丢弃（物理会话结束），不能只 Close 还回池")
 }
+
+func TestCodexRefreshDoesNotSelfWaitOnSingleConnPoolOrNChannels(t *testing.T) {
+	// ISS-R1-0177: With PostgreSQL and SQL_MAX_OPEN_CONNS=1 (or N channels with N connections),
+	// RefreshCodexChannelCredential and fetchCodexChannelModels (401 recovery) must reuse the
+	// advisory-lock session connection for channel SELECT/UPDATE and release the lock before
+	// RefreshChannelCache so they never self-deadlock on the connection pool.
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+
+	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":3600}`))
+	}))
+	t.Cleanup(oauthServer.Close)
+	t.Cleanup(SetCodexOAuthTokenURLForTest(oauthServer.URL))
+
+	t.Run("single connection pool with ResetCaches and model discovery 401 retry", func(t *testing.T) {
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
+		t.Cleanup(func() {
+			sqlDB.SetMaxOpenConns(10)
+			sqlDB.SetMaxIdleConns(5)
+		})
+
+		ch := &model.Channel{
+			Name: "codex-single-pool", Type: constant.ChannelTypeCodex, Status: common.ChannelStatusEnabled,
+			Key: `{"access_token":"stale-access","refresh_token":"rt-single","account_id":"acc-1"}`,
+		}
+		require.NoError(t, db.Create(ch).Error)
+
+		modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer fresh-access" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"models":[{"slug":"codex-mini-latest"}]}`))
+		}))
+		t.Cleanup(modelsServer.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		models, err := fetchCodexChannelModels(ctx, ch, modelsServer.URL, modelsServer.Client(), "0.1.0")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"codex-mini-latest"}, models)
+
+		var stored model.Channel
+		require.NoError(t, db.First(&stored, ch.Id).Error)
+		assert.Contains(t, stored.Key, `"access_token":"fresh-access"`)
+	})
+
+	t.Run("N channels concurrently on N connection pool", func(t *testing.T) {
+		const n = 4
+		sqlDB.SetMaxOpenConns(n)
+		sqlDB.SetMaxIdleConns(n)
+		t.Cleanup(func() {
+			sqlDB.SetMaxOpenConns(10)
+			sqlDB.SetMaxIdleConns(5)
+		})
+
+		channels := make([]model.Channel, n)
+		for i := range channels {
+			channels[i] = model.Channel{
+				Name: "codex-n-pool", Type: constant.ChannelTypeCodex, Status: common.ChannelStatusEnabled,
+				Key: `{"access_token":"at-init","refresh_token":"rt-init","account_id":"acc"}`,
+			}
+		}
+		require.NoError(t, db.Create(&channels).Error)
+
+		var wg sync.WaitGroup
+		errCh := make(chan error, n)
+		for i := range channels {
+			id := channels[i].Id
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, _, err := RefreshCodexChannelCredential(ctx, id, CodexCredentialRefreshOptions{ResetCaches: true})
+				errCh <- err
+			}()
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			require.NoError(t, err)
+		}
+	})
+}
+
+func TestCodexRefreshLocalLockAndPostLockDatabaseHonorCallerDeadline(t *testing.T) {
+	// ISS-R1-0177: Waiting on the in-process per-channel lock and post-lock DB Get/Save
+	// must honor caller ctx cancellation/deadline and release the advisory lock afterward.
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Channel{}))
+	channel := &model.Channel{
+		Name: "codex-cancel", Type: constant.ChannelTypeCodex, Status: common.ChannelStatusEnabled,
+		Key: `{"access_token":"at-1","refresh_token":"rt-1","account_id":"acc"}`,
+	}
+	require.NoError(t, db.Create(channel).Error)
+
+	holdStarted := make(chan struct{})
+	releaseHold := make(chan struct{})
+	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-holdStarted:
+		default:
+			close(holdStarted)
+			<-releaseHold
+		}
+		_, _ = w.Write([]byte(`{"access_token":"at-2","refresh_token":"rt-2","expires_in":3600}`))
+	}))
+	t.Cleanup(oauthServer.Close)
+	t.Cleanup(SetCodexOAuthTokenURLForTest(oauthServer.URL))
+
+	holderDone := make(chan error, 1)
+	go func() {
+		_, _, err := RefreshCodexChannelCredential(context.Background(), channel.Id, CodexCredentialRefreshOptions{})
+		holderDone <- err
+	}()
+	<-holdStarted
+
+	// Second caller on the same channel waits on local per-channel lock and exits on ctx deadline.
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancelWait()
+	_, _, err := RefreshCodexChannelCredential(waitCtx, channel.Id, CodexCredentialRefreshOptions{})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	close(releaseHold)
+	require.NoError(t, <-holderDone)
+
+	// Post-lock DB Save cancellation releases the session lock so a subsequent refresh succeeds.
+	const cbName = "test:cancel_codex_save"
+	cancelOnUpdate, doCancel := context.WithCancel(context.Background())
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(cbName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "channels" {
+			doCancel()
+		}
+	}))
+	_, _, err = RefreshCodexChannelCredential(cancelOnUpdate, channel.Id, CodexCredentialRefreshOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+	require.NoError(t, db.Callback().Update().Remove(cbName))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, _, err = RefreshCodexChannelCredential(ctx, channel.Id, CodexCredentialRefreshOptions{})
+	require.NoError(t, err, "session advisory lock must be released after post-lock DB cancellation")
+}

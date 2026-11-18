@@ -7,6 +7,8 @@ package adtylimit
 
 import (
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,6 +33,11 @@ type Store interface {
 	Release(userID int, member string) error
 }
 
+// leaseRenewer 由支持对仍在运行的活跃请求续租的 Store 实现。
+type leaseRenewer interface {
+	Renew(userID int, member string, now time.Time, ttl time.Duration) error
+}
+
 // Reason 是拒绝的原因。
 type Reason string
 
@@ -41,8 +48,117 @@ const (
 	ReasonConcurrency Reason = "concurrency"
 )
 
-// ConcurrencyTTL 是进行中请求的最长登记时间：请求没走到释放（进程崩溃）时，到期自动清掉。
+// ConcurrencyTTL 是进行中请求的单次故障回收租期：请求没走到释放（进程崩溃）时，到期自动清掉；
+// 仍在运行中的长流式/Realtime 请求会在活跃期间持续续租，直到 release 被调用。
 const ConcurrencyTTL = 15 * time.Minute
+
+// ConcurrencyRenewInterval 是后台对活跃请求自动续租的周期。
+const ConcurrencyRenewInterval = ConcurrencyTTL / 3
+
+type activeLeaseKey struct {
+	store  Store
+	userID int
+}
+
+type activeLease struct {
+	id        uint64
+	member    string
+	startedAt time.Time
+	stop      chan struct{}
+}
+
+var (
+	activeLeasesMu  sync.Mutex
+	activeLeaseSeq  atomic.Uint64
+	activeLeasesMap = map[activeLeaseKey]map[uint64]*activeLease{}
+)
+
+func renewActiveUserLeases(store Store, userID int, now time.Time) error {
+	renewer, ok := store.(leaseRenewer)
+	if !ok {
+		return nil
+	}
+	activeLeasesMu.Lock()
+	userLeases := activeLeasesMap[activeLeaseKey{store: store, userID: userID}]
+	members := make([]string, 0, len(userLeases))
+	for _, lease := range userLeases {
+		if !now.Before(lease.startedAt) {
+			members = append(members, lease.member)
+		}
+	}
+	activeLeasesMu.Unlock()
+	for _, member := range members {
+		if err := renewer.Renew(userID, member, now, ConcurrencyTTL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func trackActiveLease(store Store, userID int, member string, now time.Time) func() {
+	id := activeLeaseSeq.Add(1)
+	key := activeLeaseKey{store: store, userID: userID}
+	lease := &activeLease{
+		id:        id,
+		member:    member,
+		startedAt: now,
+		stop:      make(chan struct{}),
+	}
+	activeLeasesMu.Lock()
+	userLeases := activeLeasesMap[key]
+	if userLeases == nil {
+		userLeases = map[uint64]*activeLease{}
+		activeLeasesMap[key] = userLeases
+	}
+	userLeases[id] = lease
+	activeLeasesMu.Unlock()
+
+	if renewer, ok := store.(leaseRenewer); ok {
+		go func(base time.Time) {
+			ticker := time.NewTicker(ConcurrencyRenewInterval)
+			defer ticker.Stop()
+			ticks := time.Duration(0)
+			for {
+				select {
+				case <-lease.stop:
+					return
+				case wallNow := <-ticker.C:
+					ticks += ConcurrencyRenewInterval
+					renewNow := base.Add(ticks)
+					if wallNow.After(renewNow) {
+						renewNow = wallNow
+					}
+					_ = renewer.Renew(userID, member, renewNow, ConcurrencyTTL)
+				}
+			}
+		}(now)
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(lease.stop)
+			shouldRelease := true
+			activeLeasesMu.Lock()
+			if current := activeLeasesMap[key]; current != nil {
+				delete(current, id)
+				for _, other := range current {
+					if other.member == member {
+						shouldRelease = false
+						break
+					}
+				}
+				if len(current) == 0 {
+					delete(activeLeasesMap, key)
+				}
+			}
+			activeLeasesMu.Unlock()
+			if shouldRelease {
+				_ = store.Release(userID, member)
+			}
+		})
+	}
+}
 
 // MinuteOf 是分钟编号，RPM 和 TPM 都按它分桶。
 func MinuteOf(now time.Time) int64 { return now.Unix() / 60 }
@@ -92,5 +208,5 @@ func Check(store Store, userID int, limits Limits, member string, now time.Time)
 	if !ok {
 		return nil, ReasonConcurrency, nil
 	}
-	return func() { _ = store.Release(userID, member) }, ReasonNone, nil
+	return trackActiveLease(store, userID, member, now), ReasonNone, nil
 }

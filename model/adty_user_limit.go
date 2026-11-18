@@ -23,6 +23,9 @@ var AdtyOnConsumeTokens func(userId int, tokens int, withoutToken bool)
 
 // GetAdtyUserLimit 取一个用户的限制；没有设过时返回全部为 -1 的一行。
 func GetAdtyUserLimit(userId int) (AdtyUserLimit, error) {
+	if DB == nil {
+		return AdtyUserLimit{}, gorm.ErrInvalidDB
+	}
 	var rows []AdtyUserLimit
 	if err := DB.Where("user_id = ?", userId).Limit(1).Find(&rows).Error; err != nil {
 		return AdtyUserLimit{}, err

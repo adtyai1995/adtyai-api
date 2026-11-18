@@ -83,7 +83,7 @@ func GetTaskPluginDisabledFactoryKeys() []string {
 	return ParseTaskPluginDisabledFactoryKeys(raw)
 }
 
-func SetTaskPluginDisabledFactoryKeysOption(keys []string) error {
+func NormalizeTaskPluginDisabledFactoryKeys(keys []string) []string {
 	normalized := make([]string, 0, len(keys))
 	seen := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
@@ -98,7 +98,20 @@ func SetTaskPluginDisabledFactoryKeysOption(keys []string) error {
 		normalized = append(normalized, key)
 	}
 	sort.Strings(normalized)
+	return normalized
+}
+
+func EncodeTaskPluginDisabledFactoryKeys(keys []string) (string, error) {
+	normalized := NormalizeTaskPluginDisabledFactoryKeys(keys)
 	encoded, err := common.Marshal(normalized)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func SetTaskPluginDisabledFactoryKeysOption(keys []string) error {
+	encoded, err := EncodeTaskPluginDisabledFactoryKeys(keys)
 	if err != nil {
 		return err
 	}
@@ -106,7 +119,7 @@ func SetTaskPluginDisabledFactoryKeysOption(keys []string) error {
 	if common.OptionMap == nil {
 		common.OptionMap = make(map[string]string)
 	}
-	common.OptionMap[TaskPluginDisabledFactoryKeysKey] = string(encoded)
+	common.OptionMap[TaskPluginDisabledFactoryKeysKey] = encoded
 	common.OptionMapRWMutex.Unlock()
 	return nil
 }

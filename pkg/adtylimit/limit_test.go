@@ -55,13 +55,57 @@ func TestAdtyLimitConcurrency(t *testing.T) {
 	}
 }
 
+func TestAdtyLimitActiveConcurrencySurvivesPastLeaseTTL(t *testing.T) {
+	for name, store := range stores(t) {
+		limits := Limits{Concurrency: 1}
+		releaseA, reason, err := Check(store, 7, limits, "a", minuteStart)
+		require.NoError(t, err, name)
+		require.Equal(t, ReasonNone, reason, name)
+		require.NotNil(t, releaseA, name)
+
+		// Active streaming/Realtime requests remain in-flight past 15m and up to 120m+
+		// until releaseA is called; second Acquire/Check must not evict A.
+		for _, elapsed := range []time.Duration{
+			ConcurrencyTTL + time.Second,
+			2 * ConcurrencyTTL,
+			120 * time.Minute,
+		} {
+			now := minuteStart.Add(elapsed)
+			ok, acquireErr := store.Acquire(7, "b-direct", limits.Concurrency, now, ConcurrencyTTL)
+			require.NoError(t, acquireErr, name)
+			assert.False(t, ok, "%s: active request A still occupies the slot at +%s", name, elapsed)
+
+			_, reason, err = Check(store, 7, limits, "b", now)
+			require.NoError(t, err, name)
+			assert.Equal(t, ReasonConcurrency, reason, "%s: active request A blocks B at +%s", name, elapsed)
+		}
+
+		releaseA()
+
+		releaseC, reason, err := Check(store, 7, limits, "c", minuteStart.Add(120*time.Minute+time.Second))
+		require.NoError(t, err, name)
+		assert.Equal(t, ReasonNone, reason, "%s: releasing A frees the slot", name)
+		require.NotNil(t, releaseC, name)
+		releaseC()
+	}
+}
+
 func TestAdtyLimitConcurrencyExpiredMember(t *testing.T) {
 	for name, store := range stores(t) {
 		limits := Limits{Concurrency: 1}
-		_, reason, _ := Check(store, 7, limits, "crashed", minuteStart)
-		require.Equal(t, ReasonNone, reason, name)
-		_, reason, _ = Check(store, 7, limits, "later", minuteStart.Add(ConcurrencyTTL+time.Second))
-		assert.Equal(t, ReasonNone, reason, "%s: a request never released expires", name)
+		ok, err := store.Acquire(7, "crashed", limits.Concurrency, minuteStart, ConcurrencyTTL)
+		require.NoError(t, err, name)
+		require.True(t, ok, name)
+
+		_, reason, err := Check(store, 7, limits, "before-expiry", minuteStart.Add(ConcurrencyTTL-time.Second))
+		require.NoError(t, err, name)
+		assert.Equal(t, ReasonConcurrency, reason, "%s: unrenewed crashed slot blocks before TTL", name)
+
+		releaseLater, reason, err := Check(store, 7, limits, "later", minuteStart.Add(ConcurrencyTTL+time.Second))
+		require.NoError(t, err, name)
+		assert.Equal(t, ReasonNone, reason, "%s: a crashed slot without active lease expires after ConcurrencyTTL", name)
+		require.NotNil(t, releaseLater, name)
+		releaseLater()
 	}
 }
 

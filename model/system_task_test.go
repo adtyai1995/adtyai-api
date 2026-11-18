@@ -490,3 +490,97 @@ func runUpdateSystemTaskStateIdenticalPayloadKeepsLock(t *testing.T, taskType st
 	require.NotNil(t, finished)
 	assert.Equal(t, SystemTaskStatusSucceeded, finished.Status)
 }
+
+func TestRequestSystemTaskCancelInterleavedWithClaim(t *testing.T) {
+	// ISS-R1-0195: When a task transitions from pending to running between the
+	// initial SELECT and the conditional UPDATE in RequestSystemTaskCancel, the
+	// 0-row CAS must retry against the running state and set cancel_requested=true.
+	truncateTables(t)
+
+	task, err := CreateSystemTask(SystemTaskTypeLogCleanup, testSystemTaskPayload{TargetTimestamp: 1000, BatchSize: 100}, testSystemTaskState{})
+	require.NoError(t, err)
+
+	const cbName = "test:claim_before_pending_cancel_update"
+	inCancel := false
+	interleaved := false
+	require.NoError(t, DB.Callback().Query().After("gorm:query").Register(cbName, func(tx *gorm.DB) {
+		if !inCancel || interleaved || tx.Statement == nil || tx.Statement.Table != "system_tasks" {
+			return
+		}
+		interleaved = true
+		claimedTask, claimed, claimErr := ClaimSystemTask(task.ID, SystemTaskTypeLogCleanup, "runner-race", common.GetTimestamp()+60)
+		require.NoError(t, claimErr)
+		require.True(t, claimed)
+		require.Equal(t, SystemTaskStatusRunning, claimedTask.Status)
+	}))
+	t.Cleanup(func() {
+		_ = DB.Callback().Query().Remove(cbName)
+	})
+
+	inCancel = true
+	cancelled, err := RequestSystemTaskCancel(task.TaskID)
+	inCancel = false
+	require.NoError(t, err)
+	require.True(t, interleaved)
+	require.NotNil(t, cancelled)
+	assert.Equal(t, SystemTaskStatusRunning, cancelled.Status)
+	assert.True(t, cancelled.CancelRequested, "running task must record cancel_requested=true after pending CAS misses")
+
+	flag, err := SystemTaskCancelRequested(task.TaskID)
+	require.NoError(t, err)
+	assert.True(t, flag)
+}
+
+func TestExpireStaleSystemTaskLocksFencedByCurrentLease(t *testing.T) {
+	// ISS-R1-0196: ExpireStaleSystemTaskLocks must fence on the current lease in
+	// system_task_locks so a delayed heartbeat that renewed the lock after the
+	// expired-locks snapshot was read is not overwritten with status=failed.
+	truncateTables(t)
+
+	now := common.GetTimestamp()
+	task, err := CreateSystemTask(SystemTaskTypeLogCleanup, nil, nil)
+	require.NoError(t, err)
+
+	runnerID := "runner-fenced"
+	_, claimed, err := ClaimSystemTask(task.ID, SystemTaskTypeLogCleanup, runnerID, now)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	// Simulate delayed heartbeat that captured oldNow=now before ExpireStaleSystemTaskLocks
+	// scanned at now+1, executing its UPDATE right after the expired-locks SELECT.
+	const cbName = "test:renew_after_expire_scan"
+	renewedInWindow := false
+	require.NoError(t, DB.Callback().Query().After("gorm:query").Register(cbName, func(tx *gorm.DB) {
+		if renewedInWindow || tx.Statement == nil || tx.Statement.Table != "system_task_locks" {
+			return
+		}
+		renewedInWindow = true
+		require.NoError(t, renewSystemTaskLockAt(task.TaskID, runnerID, now, now+600))
+	}))
+	t.Cleanup(func() {
+		_ = DB.Callback().Query().Remove(cbName)
+	})
+
+	require.NoError(t, ExpireStaleSystemTaskLocks(now+1))
+	require.True(t, renewedInWindow)
+	require.NoError(t, DB.Callback().Query().Remove(cbName))
+
+	reloaded, err := GetSystemTaskByTaskID(task.TaskID)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded)
+	assert.Equal(t, SystemTaskStatusRunning, reloaded.Status, "renewed lease must keep task running")
+	assert.NotNil(t, reloaded.ActiveKey, "renewed lease must keep active_key")
+
+	var lock SystemTaskLock
+	require.NoError(t, DB.Where("task_id = ?", task.TaskID).First(&lock).Error)
+	assert.Equal(t, now+600, lock.LockedUntil)
+
+	// Progress update and FinishSystemTask must succeed normally on the renewed lease.
+	require.NoError(t, UpdateSystemTaskState(task.TaskID, runnerID, testSystemTaskState{Progress: 50}))
+	require.NoError(t, FinishSystemTask(task.TaskID, runnerID, SystemTaskStatusSucceeded, map[string]int64{"deleted_count": 5}, ""))
+
+	finished, err := GetSystemTaskByTaskID(task.TaskID)
+	require.NoError(t, err)
+	require.NotNil(t, finished)
+	assert.Equal(t, SystemTaskStatusSucceeded, finished.Status)
+}

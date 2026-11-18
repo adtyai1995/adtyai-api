@@ -53,6 +53,14 @@ func fetchCodexChannelModels(
 	client *http.Client,
 	clientVersion string,
 ) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+	}
 	oauthKey, err := parseCodexOAuthKey(strings.TrimSpace(channel.Key))
 	if err != nil {
 		return nil, err
@@ -66,13 +74,18 @@ func fetchCodexChannelModels(
 		if channel.Id <= 0 {
 			return nil, fmt.Errorf("codex channel credential expired; save the channel before retrying model fetch")
 		}
-		refreshedKey, _, refreshErr := RefreshCodexChannelCredential(
-			ctx,
+		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		refreshedKey, refreshedChannel, refreshErr := RefreshCodexChannelCredential(
+			refreshCtx,
 			channel.Id,
 			CodexCredentialRefreshOptions{ResetCaches: true},
 		)
+		cancel()
 		if refreshErr != nil {
 			return nil, fmt.Errorf("failed to refresh Codex channel credential: %w", refreshErr)
+		}
+		if refreshedChannel != nil {
+			channel.Key = refreshedChannel.Key
 		}
 		statusCode, models, err = FetchCodexModels(ctx, client, baseURL, &CodexOAuthKey{
 			AccessToken: refreshedKey.AccessToken,

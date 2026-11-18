@@ -1612,3 +1612,107 @@ func TestSwitchedOffPluginPricesAreNotPricingIssues(t *testing.T) {
 	require.Contains(t, remove.Body.String(), `"success":true`)
 	assert.Equal(t, []model.ModelPricingIssue{stale("doc-1", key), stale("kling-retired-model", "kling"), stale("retired-model", key)}, readIssues())
 }
+
+func TestSetTaskPluginStatusPublishesOptionMapOnlyAfterPersist(t *testing.T) {
+	// ISS-R1-0199: When persisting factory disable/enable fails in UpdateOption
+	// (FirstOrCreate or Save) or in SetTaskPluginEnabled on an active override,
+	// shared OptionMap, DB, and DefaultRegistry must stay consistent.
+	setupTaskPluginFactoryDisableTest(t)
+	const key = "kling"
+
+	// 1. FirstOrCreate failure when no option row exists yet.
+	const cbCreate = "test:fail_option_create"
+	require.NoError(t, model.DB.Callback().Create().Before("gorm:create").Register(cbCreate, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "options" {
+			_ = tx.AddError(assert.AnError)
+		}
+	}))
+	recorder := postTaskPluginStatus(t, key, "", `{"enabled":false}`)
+	assert.Contains(t, recorder.Body.String(), `"success":false`)
+	require.NoError(t, model.DB.Callback().Create().Remove(cbCreate))
+
+	assert.Empty(t, setting.GetTaskPluginDisabledFactoryKeys(), "OptionMap must not publish disabled key before DB persist succeeds")
+	assert.True(t, taskPluginHasFactory(key))
+	assert.True(t, taskPluginOptionsHasKey(t, key))
+	_, ok := jsplugin.DefaultRegistry.Get(key)
+	assert.True(t, ok)
+
+	// 2. Seed an existing options row `[]`, then fail Save on UpdateOption.
+	require.NoError(t, model.UpdateOption(setting.TaskPluginDisabledFactoryKeysKey, `[]`))
+	const cbUpdate = "test:fail_option_save"
+	require.NoError(t, model.DB.Callback().Update().Before("gorm:update").Register(cbUpdate, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "options" {
+			_ = tx.AddError(assert.AnError)
+		}
+	}))
+	recorder = postTaskPluginStatus(t, key, "", `{"enabled":false}`)
+	assert.Contains(t, recorder.Body.String(), `"success":false`)
+	require.NoError(t, model.DB.Callback().Update().Remove(cbUpdate))
+
+	var stored model.Option
+	require.NoError(t, model.DB.Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).First(&stored).Error)
+	assert.Equal(t, `[]`, stored.Value)
+	assert.Empty(t, setting.GetTaskPluginDisabledFactoryKeys(), "OptionMap must remain consistent with DB and Registry on Save error")
+	assert.True(t, taskPluginHasFactory(key))
+	assert.True(t, taskPluginOptionsHasKey(t, key))
+	_, ok = jsplugin.DefaultRegistry.Get(key)
+	assert.True(t, ok)
+
+	// 3. Retry after removing fault succeeds; then test enable failure on Save keeps disabled state consistent.
+	recorder = postTaskPluginStatus(t, key, "", `{"enabled":false}`)
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+	assert.Equal(t, []string{key}, setting.GetTaskPluginDisabledFactoryKeys())
+	assert.False(t, taskPluginHasFactory(key))
+	_, ok = jsplugin.DefaultRegistry.Get(key)
+	assert.False(t, ok)
+
+	require.NoError(t, model.DB.Callback().Update().Before("gorm:update").Register(cbUpdate, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "options" {
+			_ = tx.AddError(assert.AnError)
+		}
+	}))
+	recorder = postTaskPluginStatus(t, key, "", `{"enabled":true}`)
+	assert.Contains(t, recorder.Body.String(), `"success":false`)
+	require.NoError(t, model.DB.Callback().Update().Remove(cbUpdate))
+
+	require.NoError(t, model.DB.Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).First(&stored).Error)
+	assert.Equal(t, `["kling"]`, stored.Value)
+	assert.Equal(t, []string{key}, setting.GetTaskPluginDisabledFactoryKeys())
+	assert.False(t, taskPluginHasFactory(key))
+	_, ok = jsplugin.DefaultRegistry.Get(key)
+	assert.False(t, ok)
+
+	// Re-enable cleanly, then verify rollback when active override update fails.
+	recorder = postTaskPluginStatus(t, key, "", `{"enabled":true}`)
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+
+	factorySource, err := plugins.Source(key)
+	require.NoError(t, err)
+	factoryVersion := klingFactoryVersion(t)
+	overrideSource := strings.Replace(factorySource, `version: "`+factoryVersion+`"`, `version: "`+factoryVersion+`-override-rollback"`, 1)
+	loaded, err := jsplugin.DefaultRegistry.Register(overrideSource, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister(key) })
+	require.NoError(t, model.SaveTaskPlugin(&model.TaskPlugin{
+		Key: key, APIVersion: loaded.Meta.APIVersion, Version: loaded.Meta.Version,
+		Source: model.LongText(overrideSource), SourceHash: "rollback-hash", Enabled: true,
+	}))
+	require.NoError(t, syncTaskPluginsOnce())
+
+	const cbPluginUpdate = "test:fail_task_plugin_enable_update"
+	require.NoError(t, model.DB.Callback().Update().Before("gorm:update").Register(cbPluginUpdate, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "task_plugins" {
+			_ = tx.AddError(assert.AnError)
+		}
+	}))
+	recorder = postTaskPluginStatus(t, key, "", `{"enabled":false}`)
+	assert.Contains(t, recorder.Body.String(), `"success":false`)
+	require.NoError(t, model.DB.Callback().Update().Remove(cbPluginUpdate))
+
+	require.NoError(t, model.DB.Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).First(&stored).Error)
+	assert.Equal(t, `[]`, stored.Value)
+	assert.Empty(t, setting.GetTaskPluginDisabledFactoryKeys())
+	assert.True(t, taskPluginHasFactory(key))
+	_, ok = jsplugin.DefaultRegistry.Get(key)
+	assert.True(t, ok)
+}

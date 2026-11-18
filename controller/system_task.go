@@ -47,13 +47,26 @@ func CancelSystemTask(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "task not found"})
 			return
 		}
+		if errors.Is(err, model.ErrSystemTaskCancelConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
+	if task == nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "task not found"})
+		return
+	}
+	if task.Status == model.SystemTaskStatusPending || (task.Status == model.SystemTaskStatusRunning && !task.CancelRequested) {
+		common.ApiErrorStatus(c, http.StatusConflict, model.ErrSystemTaskCancelConflict)
+		return
+	}
 	recordManageAudit(c, "system_task.cancel", map[string]any{
-		"task_id": task.TaskID,
-		"type":    task.Type,
-		"status":  task.Status,
+		"task_id":          task.TaskID,
+		"type":             task.Type,
+		"status":           task.Status,
+		"cancel_requested": task.CancelRequested,
 	})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

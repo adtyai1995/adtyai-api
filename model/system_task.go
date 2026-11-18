@@ -26,7 +26,10 @@ const (
 	SystemTaskTypeDataRetention  = "data_retention_cleanup"
 )
 
-var ErrSystemTaskLockLost = errors.New("system task lock lost")
+var (
+	ErrSystemTaskLockLost       = errors.New("system task lock lost")
+	ErrSystemTaskCancelConflict = errors.New("system task cancel state conflict")
+)
 
 type SystemTask struct {
 	ID              int64            `json:"id" gorm:"primary_key"`
@@ -129,17 +132,17 @@ func RequestSystemTaskCancel(taskID string) (*SystemTask, error) {
 	if taskID == "" {
 		return nil, gorm.ErrRecordNotFound
 	}
-	now := common.GetTimestamp()
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	for range 5 {
 		var task SystemTask
-		if err := tx.Where("task_id = ?", taskID).First(&task).Error; err != nil {
-			return err
+		if err := DB.Where("task_id = ?", taskID).First(&task).Error; err != nil {
+			return nil, err
 		}
+		now := common.GetTimestamp()
 		switch task.Status {
 		case SystemTaskStatusSucceeded, SystemTaskStatusFailed, SystemTaskStatusCancelled:
-			return nil
+			return &task, nil
 		case SystemTaskStatusPending:
-			return tx.Model(&SystemTask{}).
+			result := DB.Model(&SystemTask{}).
 				Where("task_id = ? AND status = ?", taskID, SystemTaskStatusPending).
 				Updates(map[string]any{
 					"status":           SystemTaskStatusCancelled,
@@ -147,22 +150,49 @@ func RequestSystemTaskCancel(taskID string) (*SystemTask, error) {
 					"cancel_requested": true,
 					"error":            "cancelled",
 					"updated_at":       now,
-				}).Error
+				})
+			if result.Error != nil {
+				return nil, result.Error
+			}
+			if result.RowsAffected > 0 {
+				return GetSystemTaskByTaskID(taskID)
+			}
 		case SystemTaskStatusRunning:
-			return tx.Model(&SystemTask{}).
+			if task.CancelRequested {
+				return &task, nil
+			}
+			result := DB.Model(&SystemTask{}).
 				Where("task_id = ? AND status = ?", taskID, SystemTaskStatusRunning).
 				Updates(map[string]any{
 					"cancel_requested": true,
 					"updated_at":       now,
-				}).Error
+				})
+			if result.Error != nil {
+				return nil, result.Error
+			}
+			if result.RowsAffected > 0 {
+				return GetSystemTaskByTaskID(taskID)
+			}
 		default:
-			return gorm.ErrRecordNotFound
+			return nil, gorm.ErrRecordNotFound
 		}
-	})
+	}
+	task, err := GetSystemTaskByTaskID(taskID)
 	if err != nil {
 		return nil, err
 	}
-	return GetSystemTaskByTaskID(taskID)
+	if task == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	switch task.Status {
+	case SystemTaskStatusSucceeded, SystemTaskStatusFailed, SystemTaskStatusCancelled:
+		return task, nil
+	case SystemTaskStatusRunning:
+		if task.CancelRequested {
+			return task, nil
+		}
+	}
+	return nil, ErrSystemTaskCancelConflict
 }
 
 func SystemTaskCancelRequested(taskID string) (bool, error) {
@@ -326,26 +356,26 @@ func GetLatestSystemTasks(taskTypes []string) (map[string]*SystemTask, error) {
 func ClaimSystemTask(id int64, taskType string, runnerID string, lockUntil int64) (*SystemTask, bool, error) {
 	now := common.GetTimestamp()
 	var task SystemTask
-	if err := DB.Where("id = ? AND type = ? AND status = ?", id, taskType, SystemTaskStatusPending).First(&task).Error; err != nil {
+	if err := DB.Where("id = ? AND type = ? AND status = ? AND cancel_requested = ?", id, taskType, SystemTaskStatusPending, false).First(&task).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, false, nil
 		}
 		return nil, false, err
 	}
 
-	acquired, expiredTaskID, err := acquireSystemTaskLock(taskType, task.TaskID, runnerID, now, lockUntil)
+	acquired, expiredLock, err := acquireSystemTaskLock(taskType, task.TaskID, runnerID, now, lockUntil)
 	if err != nil || !acquired {
 		return nil, acquired, err
 	}
-	if expiredTaskID != "" && expiredTaskID != task.TaskID {
-		if err := MarkSystemTaskLeaseExpired(expiredTaskID); err != nil {
+	if expiredLock != nil && expiredLock.TaskID != "" && expiredLock.TaskID != task.TaskID {
+		if err := markSystemTaskLeaseExpiredAt(expiredLock.TaskID, expiredLock.LockedBy, now); err != nil {
 			_ = ReleaseSystemTaskLock(task.TaskID, runnerID)
 			return nil, false, err
 		}
 	}
 
 	result := DB.Model(&SystemTask{}).
-		Where("id = ? AND type = ? AND status = ?", id, taskType, SystemTaskStatusPending).
+		Where("id = ? AND type = ? AND status = ? AND cancel_requested = ?", id, taskType, SystemTaskStatusPending, false).
 		Updates(map[string]any{
 			"status":     SystemTaskStatusRunning,
 			"locked_by":  runnerID,
@@ -366,7 +396,7 @@ func ClaimSystemTask(id int64, taskType string, runnerID string, lockUntil int64
 	return &task, true, nil
 }
 
-func acquireSystemTaskLock(taskType string, taskID string, lockedBy string, now int64, lockUntil int64) (bool, string, error) {
+func acquireSystemTaskLock(taskType string, taskID string, lockedBy string, now int64, lockUntil int64) (bool, *SystemTaskLock, error) {
 	lock := &SystemTaskLock{
 		Type:        taskType,
 		TaskID:      taskID,
@@ -375,23 +405,23 @@ func acquireSystemTaskLock(taskType string, taskID string, lockedBy string, now 
 		UpdatedAt:   now,
 	}
 	if err := DB.Create(lock).Error; err == nil {
-		return true, "", nil
+		return true, nil, nil
 	}
 
 	var existing SystemTaskLock
 	err := DB.Where("type = ?", taskType).First(&existing).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, "", nil
+			return false, nil, nil
 		}
-		return false, "", err
+		return false, nil, err
 	}
 	if existing.LockedUntil >= now {
-		return false, "", nil
+		return false, nil, nil
 	}
 
 	result := DB.Model(&SystemTaskLock{}).
-		Where("type = ? AND locked_until < ?", taskType, now).
+		Where("type = ? AND task_id = ? AND locked_by = ? AND locked_until < ?", taskType, existing.TaskID, existing.LockedBy, now).
 		Updates(map[string]any{
 			"task_id":      taskID,
 			"locked_by":    lockedBy,
@@ -399,12 +429,12 @@ func acquireSystemTaskLock(taskType string, taskID string, lockedBy string, now 
 			"updated_at":   now,
 		})
 	if result.Error != nil {
-		return false, "", result.Error
+		return false, nil, result.Error
 	}
 	if result.RowsAffected == 0 {
-		return false, "", nil
+		return false, nil, nil
 	}
-	return true, existing.TaskID, nil
+	return true, &existing, nil
 }
 
 func UpdateSystemTaskState(taskID string, lockedBy string, state any) error {
@@ -446,9 +476,13 @@ func UpdateSystemTaskState(taskID string, lockedBy string, state any) error {
 }
 
 func RenewSystemTaskLock(taskID string, lockedBy string, lockUntil int64) error {
-	now := common.GetTimestamp()
+	return renewSystemTaskLockAt(taskID, lockedBy, common.GetTimestamp(), lockUntil)
+}
+
+func renewSystemTaskLockAt(taskID string, lockedBy string, now int64, lockUntil int64) error {
 	result := DB.Model(&SystemTaskLock{}).
 		Where("task_id = ? AND locked_by = ? AND locked_until >= ?", taskID, lockedBy, now).
+		Where("EXISTS (SELECT 1 FROM system_tasks WHERE system_tasks.task_id = system_task_locks.task_id AND system_tasks.status = ? AND system_tasks.locked_by = ?)", SystemTaskStatusRunning, lockedBy).
 		Updates(map[string]any{
 			"locked_until": lockUntil,
 			"updated_at":   now,
@@ -463,13 +497,22 @@ func RenewSystemTaskLock(taskID string, lockedBy string, lockUntil int64) error 
 }
 
 func MarkSystemTaskLeaseExpired(taskID string) error {
-	result := DB.Model(&SystemTask{}).
-		Where("task_id = ? AND status = ?", taskID, SystemTaskStatusRunning).
+	return markSystemTaskLeaseExpiredAt(taskID, "", common.GetTimestamp())
+}
+
+func markSystemTaskLeaseExpiredAt(taskID string, lockedBy string, now int64) error {
+	query := DB.Model(&SystemTask{}).
+		Where("task_id = ? AND status = ?", taskID, SystemTaskStatusRunning)
+	if lockedBy != "" {
+		query = query.Where("locked_by = ?", lockedBy)
+	}
+	result := query.
+		Where("NOT EXISTS (SELECT 1 FROM system_task_locks WHERE system_task_locks.type = system_tasks.type AND system_task_locks.task_id = system_tasks.task_id AND system_task_locks.locked_by = system_tasks.locked_by AND system_task_locks.locked_until >= ?)", now).
 		Updates(map[string]any{
 			"status":     SystemTaskStatusFailed,
 			"active_key": nil,
 			"error":      "task lease expired",
-			"updated_at": common.GetTimestamp(),
+			"updated_at": now,
 		})
 	return result.Error
 }
@@ -480,7 +523,7 @@ func ExpireStaleSystemTaskLocks(now int64) error {
 		return err
 	}
 	for _, lock := range locks {
-		if err := MarkSystemTaskLeaseExpired(lock.TaskID); err != nil {
+		if err := markSystemTaskLeaseExpiredAt(lock.TaskID, lock.LockedBy, now); err != nil {
 			return err
 		}
 		result := DB.Where("type = ? AND task_id = ? AND locked_by = ? AND locked_until < ?", lock.Type, lock.TaskID, lock.LockedBy, now).

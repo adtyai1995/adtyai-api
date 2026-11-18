@@ -567,20 +567,30 @@ func SetTaskPluginStatus(c *gin.Context) {
 			}
 		}
 	}
-	_, lookupErr := model.GetTaskPluginVersion(key, "")
+	activeOverride, lookupErr := model.GetTaskPluginVersion(key, "")
 	hasActiveOverride := lookupErr == nil
 	if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
 		common.ApiError(c, lookupErr)
 		return
 	}
 	response := gin.H{"plugin_enabled": *request.Enabled, "disabled_channels": disabledChannels, "unbound_channels": unboundChannels}
+	var restoreFactoryOption func()
 	// Switching a key off must silence every layer that can serve it. The
 	// factory built-in goes into the disabled set even when an override row
 	// exists; otherwise the built-in would keep routing the same models (and
 	// blocking same-model uploads) right after the administrator disabled the
 	// plugin. Switching on reverses both layers.
 	if taskPluginFactoryRegistered(key) {
-		keys := setting.GetTaskPluginDisabledFactoryKeys()
+		previousKeys := setting.GetTaskPluginDisabledFactoryKeys()
+		previousEncoded, err := setting.EncodeTaskPluginDisabledFactoryKeys(previousKeys)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		var existingOption model.Option
+		hadOptionRow := model.DB != nil && model.DB.Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).First(&existingOption).Error == nil
+
+		keys := previousKeys
 		if *request.Enabled {
 			next := make([]string, 0, len(keys))
 			for _, item := range keys {
@@ -592,18 +602,29 @@ func SetTaskPluginStatus(c *gin.Context) {
 		} else {
 			keys = append(append([]string{}, keys...), key)
 		}
-		if err := setting.SetTaskPluginDisabledFactoryKeysOption(keys); err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		encoded, err := common.Marshal(setting.GetTaskPluginDisabledFactoryKeys())
+		encoded, err := setting.EncodeTaskPluginDisabledFactoryKeys(keys)
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
-		if err = model.UpdateOption(setting.TaskPluginDisabledFactoryKeysKey, string(encoded)); err != nil {
+		if err = model.UpdateOption(setting.TaskPluginDisabledFactoryKeysKey, encoded); err != nil {
 			common.ApiError(c, err)
 			return
+		}
+		restoreFactoryOption = func() {
+			if hadOptionRow {
+				_ = model.DB.Model(&model.Option{}).Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).Update("value", existingOption.Value).Error
+				restored := setting.ParseTaskPluginDisabledFactoryKeys(existingOption.Value)
+				_ = setting.SetTaskPluginDisabledFactoryKeysOption(restored)
+				jsplugin.DefaultRegistry.SetDisabledFactoryKeys(restored)
+				return
+			}
+			if model.DB != nil {
+				_ = model.DB.Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).Delete(&model.Option{}).Error
+			}
+			restored := setting.ParseTaskPluginDisabledFactoryKeys(previousEncoded)
+			_ = setting.SetTaskPluginDisabledFactoryKeysOption(restored)
+			jsplugin.DefaultRegistry.SetDisabledFactoryKeys(restored)
 		}
 		if !hasActiveOverride {
 			if *request.Enabled {
@@ -613,11 +634,22 @@ func SetTaskPluginStatus(c *gin.Context) {
 			return
 		}
 	}
+	previousOverrideEnabled := false
+	if activeOverride != nil {
+		previousOverrideEnabled = activeOverride.Enabled
+	}
 	if err := model.SetTaskPluginEnabled(key, *request.Enabled); err != nil {
+		if restoreFactoryOption != nil {
+			restoreFactoryOption()
+		}
 		common.ApiError(c, err)
 		return
 	}
 	if err := syncTaskPluginsOnceContext(c.Request.Context()); err != nil {
+		_ = model.SetTaskPluginEnabled(key, previousOverrideEnabled)
+		if restoreFactoryOption != nil {
+			restoreFactoryOption()
+		}
 		common.ApiError(c, err)
 		return
 	}

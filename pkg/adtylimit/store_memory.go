@@ -54,7 +54,24 @@ func (s *MemoryStore) AddTPM(userID int, minute int64, tokens int64) error {
 	return nil
 }
 
+func (s *MemoryStore) Renew(userID int, member string, now time.Time, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	members := s.running[userID]
+	if members == nil {
+		members = map[string]time.Time{}
+		s.running[userID] = members
+	}
+	if next := now.Add(ttl); next.After(members[member]) {
+		members[member] = next
+	}
+	return nil
+}
+
 func (s *MemoryStore) Acquire(userID int, member string, limit int, now time.Time, ttl time.Duration) (bool, error) {
+	if err := renewActiveUserLeases(s, userID, now); err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	members := s.running[userID]

@@ -72,7 +72,7 @@ func GetTaskArtifacts(c *gin.Context) {
 		writeTaskArtifactError(c, http.StatusInternalServerError, "artifact_internal_error", "Failed to query task")
 		return
 	}
-	if !exists || task == nil {
+	if !exists || task == nil || !task.ResultRetrievable() {
 		writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
 		return
 	}
@@ -85,7 +85,7 @@ func GetDashboardTaskArtifacts(c *gin.Context) {
 		writeTaskArtifactError(c, http.StatusInternalServerError, "artifact_internal_error", "Failed to query task")
 		return
 	}
-	if !exists || task == nil {
+	if !exists || task == nil || !task.ResultRetrievable() {
 		writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
 		return
 	}
@@ -94,6 +94,10 @@ func GetDashboardTaskArtifacts(c *gin.Context) {
 
 func writeTaskArtifacts(c *gin.Context, task *model.Task, dashboard bool) {
 	c.Header("Cache-Control", "private, no-store")
+	if task == nil || !task.ResultRetrievable() {
+		writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
+		return
+	}
 	artifacts, err := projectTaskArtifacts(task)
 	if err != nil {
 		writeTaskArtifactProjectionError(c, err)
@@ -253,7 +257,7 @@ func taskHasPluginExecution(task *model.Task) bool {
 }
 
 func legacyVideoAvailable(task *model.Task) bool {
-	if task == nil || task.Status != model.TaskStatusSuccess ||
+	if task == nil || !task.ResultRetrievable() || task.Status != model.TaskStatusSuccess ||
 		taskHasPluginExecution(task) || task.Platform == constant.TaskPlatformSuno ||
 		strings.TrimSpace(task.GetResultURL()) == "" {
 		return false

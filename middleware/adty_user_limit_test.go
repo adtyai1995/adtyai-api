@@ -24,8 +24,21 @@ import (
 type limitFixture struct {
 	engine *gin.Engine
 	store  *adtylimit.MemoryStore
+	mu     sync.Mutex
 	now    time.Time
 	block  chan struct{}
+}
+
+func (f *limitFixture) currentTime() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.now
+}
+
+func (f *limitFixture) addTime(d time.Duration) {
+	f.mu.Lock()
+	f.now = f.now.Add(d)
+	f.mu.Unlock()
 }
 
 func newLimitFixture(t *testing.T, cfg adty_setting.LimitSetting) *limitFixture {
@@ -33,6 +46,9 @@ func newLimitFixture(t *testing.T, cfg adty_setting.LimitSetting) *limitFixture 
 	require.NoError(t, i18n.Init())
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
 	require.NoError(t, db.AutoMigrate(&model.AdtyUserLimit{}))
 	oldDB := model.DB
 	model.DB = db
@@ -42,10 +58,11 @@ func newLimitFixture(t *testing.T, cfg adty_setting.LimitSetting) *limitFixture 
 	t.Cleanup(func() {
 		model.DB = oldDB
 		*setting = saved
+		_ = sqlDB.Close()
 	})
 
 	f := &limitFixture{store: adtylimit.NewMemoryStore(), now: time.Unix(1_700_000_040, 0), block: make(chan struct{})}
-	SetAdtyLimitStoreForTest(t, f.store, func() time.Time { return f.now })
+	SetAdtyLimitStoreForTest(t, f.store, f.currentTime)
 	gin.SetMode(gin.TestMode)
 	f.engine = gin.New()
 	auth := func(c *gin.Context) { c.Set("id", 7); c.Set("token_id", 1); c.Next() }
@@ -92,12 +109,41 @@ func TestUserLimitFailsClosedWhenRedisClientIsMissing(t *testing.T) {
 
 func TestAdtyLimitStoreErrorDoesNotOpenTheRequest(t *testing.T) {
 	f := newLimitFixture(t, adty_setting.LimitSetting{Enabled: true, DefaultRPM: 10, DefaultTPM: 10, DefaultConcurrency: 2})
-	SetAdtyLimitStoreForTest(t, limitErrorStore{}, func() time.Time { return f.now })
+	SetAdtyLimitStoreForTest(t, limitErrorStore{}, f.currentTime)
 	resp := f.do(http.MethodPost, "/v1/chat/completions")
 	assert.Equal(t, http.StatusServiceUnavailable, resp.Code)
 	assert.Contains(t, resp.Body.String(), "rate_limit_unavailable")
 	mj := f.do(http.MethodPost, "/mj/submit/imagine")
 	assert.Equal(t, http.StatusServiceUnavailable, mj.Code)
+}
+
+func TestAdtyUserLimitConfigReadFailureRejectsWith503EvenWhenDefaultsAreUnlimited(t *testing.T) {
+	// ISS-R1-0104: User 7 has dedicated RPM=1 while global defaults are 0 (unlimited).
+	// When adty_user_limits SELECT fails, the request must be rejected with 503
+	// rate_limit_unavailable rather than falling back to unlimited global defaults.
+	f := newLimitFixture(t, adty_setting.LimitSetting{Enabled: true, DefaultRPM: 0, DefaultTPM: 0, DefaultConcurrency: 0})
+	require.NoError(t, model.SaveAdtyUserLimit(model.AdtyUserLimit{UserId: 7, RPM: 1, TPM: -1, Concurrency: -1}))
+
+	assert.Equal(t, http.StatusOK, f.do(http.MethodPost, "/v1/chat/completions").Code)
+	assert.Equal(t, http.StatusTooManyRequests, f.do(http.MethodPost, "/v1/chat/completions").Code)
+
+	f.addTime(time.Minute)
+	require.NoError(t, model.DB.Callback().Query().Before("gorm:query").Register("test:fail_adty_user_limits_select", func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "adty_user_limits" {
+			_ = tx.AddError(assert.AnError)
+		}
+	}))
+	t.Cleanup(func() {
+		_ = model.DB.Callback().Query().Remove("test:fail_adty_user_limits_select")
+	})
+
+	resp := f.do(http.MethodPost, "/v1/chat/completions")
+	assert.Equal(t, http.StatusServiceUnavailable, resp.Code)
+	assert.Contains(t, resp.Body.String(), "rate_limit_unavailable")
+
+	mj := f.do(http.MethodPost, "/mj/submit/imagine")
+	assert.Equal(t, http.StatusServiceUnavailable, mj.Code)
+	assert.Contains(t, mj.Body.String(), `"description"`)
 }
 
 func TestAdtyLimitDisabledPassesAll(t *testing.T) {
@@ -111,7 +157,7 @@ func TestAdtyLimitRPMReturns429WithRetryAfter(t *testing.T) {
 	f := newLimitFixture(t, adty_setting.LimitSetting{Enabled: true, DefaultRPM: 2})
 	assert.Equal(t, http.StatusOK, f.do(http.MethodPost, "/v1/chat/completions").Code)
 	assert.Equal(t, http.StatusOK, f.do(http.MethodPost, "/v1/chat/completions").Code)
-	f.now = f.now.Add(45 * time.Second)
+	f.addTime(45 * time.Second)
 	resp := f.do(http.MethodPost, "/v1/chat/completions")
 	assert.Equal(t, http.StatusTooManyRequests, resp.Code)
 	assert.Equal(t, "15", resp.Header().Get("Retry-After"))
@@ -125,6 +171,14 @@ func TestAdtyLimitConcurrencyThroughMiddleware(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return f.do(http.MethodPost, "/v1/chat/completions").Code == http.StatusTooManyRequests
 	}, time.Second, 5*time.Millisecond, "the second request waits for the first")
+
+	// ISS-R1-0106: Even after 15m+1s and 120m of injected clock progression,
+	// the still-active /v1/slow request keeps holding the concurrency slot.
+	f.addTime(adtylimit.ConcurrencyTTL + time.Second)
+	assert.Equal(t, http.StatusTooManyRequests, f.do(http.MethodPost, "/v1/chat/completions").Code, "active long-running request still holds slot past 15m")
+	f.addTime(120 * time.Minute)
+	assert.Equal(t, http.StatusTooManyRequests, f.do(http.MethodPost, "/v1/chat/completions").Code, "active long-running request still holds slot at 120m+")
+
 	close(f.block)
 	assert.Equal(t, http.StatusOK, <-done)
 	assert.Equal(t, http.StatusOK, f.do(http.MethodPost, "/v1/chat/completions").Code, "the slot is released")

@@ -21,7 +21,15 @@ func NewRedisStore(client *redis.Client) *RedisStore { return &RedisStore{client
 var incrWithTTL = redis.NewScript(`
 local value = redis.call('INCRBY', KEYS[1], ARGV[1])
 if redis.call('TTL', KEYS[1]) < 0 then
-  redis.call('EXPIRE', KEYS[1], ARGV[2])
+  local res = redis.pcall('EXPIRE', KEYS[1], ARGV[2])
+  if type(res) == 'table' and res.err ~= nil then
+    redis.pcall('DEL', KEYS[1])
+    return res
+  end
+  if res ~= 1 or redis.call('TTL', KEYS[1]) <= 0 then
+    redis.pcall('DEL', KEYS[1])
+    return redis.error_reply('ERR failed to set rate limit ttl')
+  end
 end
 return value`)
 
@@ -33,6 +41,11 @@ if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then
 end
 redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
 redis.call('EXPIRE', KEYS[1], ARGV[5])
+return 1`)
+
+var renewScript = redis.NewScript(`
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
 return 1`)
 
 const minuteKeyTTLSeconds = 70
@@ -53,7 +66,15 @@ func (s *RedisStore) AddTPM(userID int, minute int64, tokens int64) error {
 	return incrWithTTL.Run(context.Background(), s.client, []string{tpmKey(userID, minute)}, tokens, minuteKeyTTLSeconds).Err()
 }
 
+func (s *RedisStore) Renew(userID int, member string, now time.Time, ttl time.Duration) error {
+	return renewScript.Run(context.Background(), s.client, []string{concurrencyKey(userID)},
+		now.Add(ttl).UnixMilli(), member, int64(ttl/time.Second)+60).Err()
+}
+
 func (s *RedisStore) Acquire(userID int, member string, limit int, now time.Time, ttl time.Duration) (bool, error) {
+	if err := renewActiveUserLeases(s, userID, now); err != nil {
+		return false, err
+	}
 	result, err := acquireScript.Run(context.Background(), s.client, []string{concurrencyKey(userID)},
 		strconv.FormatInt(now.UnixMilli(), 10), limit, now.Add(ttl).UnixMilli(), member, int64(ttl/time.Second)+60).Int()
 	return result == 1, err

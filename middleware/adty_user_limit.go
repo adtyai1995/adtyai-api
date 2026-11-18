@@ -79,12 +79,12 @@ func SetAdtyLimitStoreForTest(t interface{ Cleanup(func()) }, store adtylimit.St
 }
 
 // adtyEffectiveLimits 是用户自己的限制（-1 跟默认）合上全局默认值。
-func adtyEffectiveLimits(userID int) adtylimit.Limits {
+func adtyEffectiveLimits(userID int) (adtylimit.Limits, error) {
 	cfg := adty_setting.GetLimitSetting()
 	limits := adtylimit.Limits{RPM: cfg.DefaultRPM, TPM: cfg.DefaultTPM, Concurrency: cfg.DefaultConcurrency}
 	own, err := model.GetAdtyUserLimit(userID)
 	if err != nil {
-		return limits
+		return adtylimit.Limits{}, err
 	}
 	if own.RPM >= 0 {
 		limits.RPM = own.RPM
@@ -95,7 +95,16 @@ func adtyEffectiveLimits(userID int) adtylimit.Limits {
 	if own.Concurrency >= 0 {
 		limits.Concurrency = own.Concurrency
 	}
-	return limits
+	return limits, nil
+}
+
+func adtyAbortUnavailable(c *gin.Context, isMJ bool) {
+	message := i18n.T(c, i18n.MsgAdtyLimitUnavailable)
+	if isMJ {
+		abortWithMidjourneyMessage(c, http.StatusServiceUnavailable, http.StatusServiceUnavailable, message)
+		return
+	}
+	abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, "rate_limit_unavailable")
 }
 
 // AdtyUserLimit 是中转接口的按用户限制。midjourney 为真时按 Midjourney 的格式报错。
@@ -115,24 +124,20 @@ func AdtyUserLimit(midjourney ...bool) gin.HandlerFunc {
 		store, err := adtyStore()
 		if err != nil {
 			common.SysError(common.LogText("adty user limit store unavailable user=%d: %s", userID, err.Error()))
-			message := i18n.T(c, i18n.MsgAdtyLimitUnavailable)
-			if isMJ {
-				abortWithMidjourneyMessage(c, http.StatusServiceUnavailable, http.StatusServiceUnavailable, message)
-				return
-			}
-			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, "rate_limit_unavailable")
+			adtyAbortUnavailable(c, isMJ)
 			return
 		}
-		release, reason, err := adtylimit.Check(store, userID, adtyEffectiveLimits(userID), member, now)
+		limits, err := adtyEffectiveLimits(userID)
+		if err != nil {
+			common.SysError(common.LogText("adty user limit config unavailable user=%d: %s", userID, err.Error()))
+			adtyAbortUnavailable(c, isMJ)
+			return
+		}
+		release, reason, err := adtylimit.Check(store, userID, limits, member, now)
 		if err != nil {
 			// A counter outage must not open the RPM/TPM/concurrency gate.
 			common.SysError(common.LogText("adty user limit check failed user=%d: %s", userID, err.Error()))
-			message := i18n.T(c, i18n.MsgAdtyLimitUnavailable)
-			if isMJ {
-				abortWithMidjourneyMessage(c, http.StatusServiceUnavailable, http.StatusServiceUnavailable, message)
-				return
-			}
-			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, "rate_limit_unavailable")
+			adtyAbortUnavailable(c, isMJ)
 			return
 		}
 		if reason != adtylimit.ReasonNone {

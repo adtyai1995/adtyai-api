@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"gorm.io/gorm"
 )
 
 type CodexCredentialRefreshOptions struct {
@@ -36,14 +37,56 @@ var ErrCodexChannelKeyChanged = errors.New("codex channel key changed before it 
 
 // SaveCodexChannelKey 只在密钥仍是读出来的那一版时写入。写入失败或被并发刷新抢走都返回错误。
 func SaveCodexChannelKey(channelID int, oldKey, newKey string) error {
-	result := model.DB.Model(&model.Channel{}).Where("id = ? AND key = ?", channelID, oldKey).Update("key", newKey)
-	if result.Error != nil {
-		return result.Error
+	return SaveCodexChannelKeyContext(context.Background(), channelID, oldKey, newKey)
+}
+
+func SaveCodexChannelKeyContext(ctx context.Context, channelID int, oldKey, newKey string) error {
+	return saveCodexChannelKeyWithDB(ctx, model.DB, channelID, oldKey, newKey)
+}
+
+func saveCodexChannelKeyWithDB(ctx context.Context, db *gorm.DB, channelID int, oldKey, newKey string) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if result.RowsAffected == 0 {
-		return ErrCodexChannelKeyChanged
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return nil
+	if db == nil {
+		db = model.DB
+	}
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.Channel{}).Where("id = ? AND key = ?", channelID, oldKey).Update("key", newKey)
+		if result.Error != nil {
+			return result.Error
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if result.RowsAffected == 0 {
+			return ErrCodexChannelKeyChanged
+		}
+		return nil
+	})
+}
+
+func getCodexChannelByID(ctx context.Context, db *gorm.DB, channelID int) (*model.Channel, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if db == nil {
+		db = model.DB
+	}
+	var ch model.Channel
+	if err := db.WithContext(ctx).First(&ch, "id = ?", channelID).Error; err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &ch, nil
 }
 
 func parseCodexOAuthKey(raw string) (*CodexOAuthKey, error) {
@@ -59,9 +102,25 @@ func parseCodexOAuthKey(raw string) (*CodexOAuthKey, error) {
 
 var codexChannelRefreshLocks sync.Map
 
-func codexChannelRefreshLock(channelID int) *sync.Mutex {
-	value, _ := codexChannelRefreshLocks.LoadOrStore(channelID, &sync.Mutex{})
-	return value.(*sync.Mutex)
+func codexChannelRefreshSemaphore(channelID int) chan struct{} {
+	value, _ := codexChannelRefreshLocks.LoadOrStore(channelID, make(chan struct{}, 1))
+	return value.(chan struct{})
+}
+
+func lockCodexRefreshInProcess(ctx context.Context, channelID int) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("codex channel %d: wait for local credential refresh lock: %w", channelID, err)
+	}
+	sem := codexChannelRefreshSemaphore(channelID)
+	select {
+	case sem <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() { <-sem })
+		}, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("codex channel %d: wait for local credential refresh lock: %w", channelID, ctx.Err())
+	}
 }
 
 func codexRefreshLockKey(channelID int) int64 {
@@ -76,30 +135,31 @@ const (
 	codexRefreshUnlockTimeout = 5 * time.Second
 )
 
-// lockCodexRefreshAcrossProcesses 挡住另一个主进程同时换同一渠道的票。
+// lockCodexRefreshAcrossProcesses 挡住另一个主进程同时换同一渠道的票，并返回绑定在该会话连接上的 *gorm.DB。
 //
 // 拿锁用 pg_try_advisory_lock 而不是 pg_advisory_lock：阻塞型拿锁没有超时，
-// 对方进程卡死但连接还在（锁一直不放）时，本次刷新就永久阻塞在 DB 上，还会连带
-// 占住 per-channel 的 sync.Mutex，把该渠道之后所有刷新和相关 HTTP 请求一起拖死。
-// 这里按 ctx 轮询，调用方的 deadline 到期就返回。
-func lockCodexRefreshAcrossProcesses(ctx context.Context, channelID int) (func(), error) {
+// 对方进程卡死但连接还在（锁一直不放）时，本次刷新就永久阻塞在 DB 上。
+// 拿到锁后，后续渠道读取和 CAS 保存直接复用同一条 sql.Conn，避免在单连接池或 N 渠道占满 N 连接时
+// 因再次向全局连接池借连接而自等待死锁。
+func lockCodexRefreshAcrossProcesses(ctx context.Context, channelID int) (*gorm.DB, func(), error) {
 	if !common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
-		return func() {}, nil
+		sessionDB := model.DB.Session(&gorm.Session{NewDB: true, Context: ctx})
+		return sessionDB, func() {}, nil
 	}
 	sqlDB, err := model.DB.DB()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lockKey := codexRefreshLockKey(channelID)
 	for {
 		var locked bool
 		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", lockKey).Scan(&locked); err != nil {
 			_ = conn.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		if locked {
 			break
@@ -107,19 +167,29 @@ func lockCodexRefreshAcrossProcesses(ctx context.Context, channelID int) (func()
 		select {
 		case <-ctx.Done():
 			_ = conn.Close()
-			return nil, fmt.Errorf("codex channel %d: wait for credential refresh lock: %w", channelID, ctx.Err())
+			return nil, nil, fmt.Errorf("codex channel %d: wait for credential refresh lock: %w", channelID, ctx.Err())
 		case <-time.After(codexRefreshLockPollInterval):
 		}
 	}
-	return func() {
-		unlockCtx, cancel := context.WithTimeout(context.Background(), codexRefreshUnlockTimeout)
-		defer cancel()
-		if _, err := conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1)", lockKey); err != nil {
-			common.SysError(common.LogText("codex refresh: advisory unlock failed for channel %d: %s", channelID, err.Error()))
-			discardCodexRefreshConn(conn)
-		}
-		_ = conn.Close()
-	}, nil
+	sessionDB := model.DB.Session(&gorm.Session{NewDB: true, Context: ctx})
+	sessionDB.ConnPool, sessionDB.Statement.ConnPool = conn, conn
+	var once sync.Once
+	unlock := func() {
+		once.Do(func() {
+			unlockCtx, cancel := context.WithTimeout(context.Background(), codexRefreshUnlockTimeout)
+			defer cancel()
+			var unlocked bool
+			if err := conn.QueryRowContext(unlockCtx, "SELECT pg_advisory_unlock($1)", lockKey).Scan(&unlocked); err != nil || !unlocked {
+				if err != nil {
+					common.SysError(common.LogText("codex refresh: advisory unlock failed for channel %d: %s", channelID, err.Error()))
+				}
+				discardCodexRefreshConn(conn)
+				return
+			}
+			_ = conn.Close()
+		})
+	}
+	return sessionDB, unlock, nil
 }
 
 // discardCodexRefreshConn 让 database/sql 丢掉这条物理连接，而不是还回池里。
@@ -134,16 +204,22 @@ func discardCodexRefreshConn(conn *sql.Conn) {
 }
 
 func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts CodexCredentialRefreshOptions) (*CodexOAuthKey, *model.Channel, error) {
-	lock := codexChannelRefreshLock(channelID)
-	lock.Lock()
-	defer lock.Unlock()
-	unlockDB, err := lockCodexRefreshAcrossProcesses(ctx, channelID)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	unlockLocal, err := lockCodexRefreshInProcess(ctx, channelID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer unlockLocal()
+
+	sessionDB, unlockDB, err := lockCodexRefreshAcrossProcesses(ctx, channelID)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer unlockDB()
 
-	ch, err := model.GetChannelById(channelID, true)
+	ch, err := getCodexChannelByID(ctx, sessionDB, channelID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -194,9 +270,15 @@ func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts Code
 		return nil, nil, err
 	}
 
-	if err := SaveCodexChannelKey(ch.Id, ch.Key, string(encoded)); err != nil {
+	if err := saveCodexChannelKeyWithDB(ctx, sessionDB, ch.Id, ch.Key, string(encoded)); err != nil {
 		return nil, nil, err
 	}
+	ch.Key = string(encoded)
+
+	// Release the session advisory lock and return its connection to the pool
+	// before refreshing channel caches, which queries model.DB.
+	unlockDB()
+	unlockLocal()
 
 	if opts.ResetCaches {
 		_ = model.RefreshChannelCache()

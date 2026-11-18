@@ -78,6 +78,73 @@ func TestCancelSystemTaskStopsPendingCleanup(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, missing.Code)
 }
 
+func TestCancelSystemTaskConcurrentClaimRecordsCancelRequested(t *testing.T) {
+	// ISS-R1-0195: If a runner claims the pending task into running right after
+	// CancelSystemTask's initial read, CancelSystemTask must transition to the
+	// running cancel branch and return cancel_requested=true (never running + cancel_requested=false).
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousRedis := common.RedisEnabled
+	model.DB, model.LOG_DB = db, db
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.RedisEnabled = previousRedis
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&model.SystemTask{}, &model.SystemTaskLock{}, &model.Log{}))
+	task := &model.SystemTask{
+		TaskID:    "cleanup-race",
+		Type:      model.SystemTaskTypeLogCleanup,
+		Status:    model.SystemTaskStatusPending,
+		ActiveKey: common.GetPointer(model.SystemTaskTypeLogCleanup),
+	}
+	require.NoError(t, db.Create(task).Error)
+
+	const cbName = "test:controller_cancel_claim_interleave"
+	inCancel := false
+	interleaved := false
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register(cbName, func(tx *gorm.DB) {
+		if !inCancel || interleaved || tx.Statement == nil || tx.Statement.Table != "system_tasks" {
+			return
+		}
+		interleaved = true
+		_, claimed, claimErr := model.ClaimSystemTask(task.ID, model.SystemTaskTypeLogCleanup, "runner-1", common.GetTimestamp()+60)
+		require.NoError(t, claimErr)
+		require.True(t, claimed)
+	}))
+	t.Cleanup(func() {
+		_ = db.Callback().Query().Remove(cbName)
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/system-task/cleanup-race/cancel", nil)
+	c.Params = gin.Params{{Key: "task_id", Value: "cleanup-race"}}
+	inCancel = true
+	CancelSystemTask(c)
+	inCancel = false
+	require.True(t, interleaved)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var resp struct {
+		Success bool                     `json:"success"`
+		Data    model.SystemTaskResponse `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &resp))
+	assert.True(t, resp.Success)
+	assert.Equal(t, model.SystemTaskStatusRunning, resp.Data.Status)
+	assert.True(t, resp.Data.CancelRequested)
+
+	cancelRequested, err := model.SystemTaskCancelRequested(task.TaskID)
+	require.NoError(t, err)
+	assert.True(t, cancelRequested)
+}
+
 func TestSystemTaskListFiltersAndPaginationResponse(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
