@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -91,10 +92,73 @@ func TestPermissionChangeAuditDiff(t *testing.T) {
 
 func TestPermissionAuditNotWrittenOnRollback(t *testing.T) {
 	db, target := setupAdtyPermissionAudit(t)
-	// 用户名超长让 EditWithTx 之前的校验或事务失败，权限不能变，也不能留下变更审计。
+	require.NoError(t, authz.SetUserPermissions(target.Id, authz.PermissionsMap{"adty_log": {"read": true}}))
+
+	var casbinBefore int64
+	require.NoError(t, db.Model(&model.CasbinRule{}).Count(&casbinBefore).Error)
+
+	// 使用合法用户名进入事务，并在到达 EditWithTx 与 casbin_rule 写入阶段后注入可控存储故障。
+	const updateHook = "adty:perm_rollback_track_user_update"
+	const createHook = "adty:perm_rollback_inject_casbin_failure"
+	var reachedUserEdit, reachedPermissionWrite bool
+	require.NoError(t, db.Callback().Update().After("gorm:update").Register(updateHook, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "users" && tx.Error == nil {
+			reachedUserEdit = true
+		}
+	}))
+	require.NoError(t, db.Callback().Create().After("gorm:create").Register(createHook, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "casbin_rule" && reachedUserEdit {
+			reachedPermissionWrite = true
+			_ = tx.AddError(errors.New("injected in-transaction permission write failure"))
+		}
+	}))
+	t.Cleanup(func() {
+		_ = db.Callback().Update().Remove(updateHook)
+		_ = db.Callback().Create().Remove(createHook)
+	})
+
+	mutatedTarget := target
+	mutatedTarget.Username = "perm-target-2"
+	resp := updateUserPermissionsAsRoot(t, db, mutatedTarget, `{"adty_user":{"read":true},"adty_log":{"read":false}}`)
+	assert.Contains(t, resp.Body.String(), `"success":false`)
+	require.True(t, reachedUserEdit, "must enter transaction and execute EditWithTx")
+	require.True(t, reachedPermissionWrite, "must reach in-transaction permission write phase before rollback")
+
+	var reloaded model.User
+	require.NoError(t, db.First(&reloaded, target.Id).Error)
+	assert.Equal(t, "perm-target", reloaded.Username, "user state must roll back with permission failure")
+
+	var casbinAfter int64
+	require.NoError(t, db.Model(&model.CasbinRule{}).Count(&casbinAfter).Error)
+	assert.Equal(t, casbinBefore, casbinAfter)
+	require.NoError(t, authz.Init(db))
+	assert.False(t, authz.Can(target.Id, common.RoleAdminUser, authz.AdtyUserRead))
+	assert.True(t, authz.Can(target.Id, common.RoleAdminUser, authz.AdtyLogRead))
+
+	var permAuditCount, intentCount int64
+	require.NoError(t, db.Model(&model.AuditLog{}).Where("action = ?", "adty.admin_permissions.update").Count(&permAuditCount).Error)
+	assert.Zero(t, permAuditCount)
+	require.NoError(t, db.Model(&model.AuditIntent{}).Count(&intentCount).Error)
+	assert.Zero(t, intentCount)
+}
+
+func TestPermissionUpdateValidationFailureRejectsBeforeTransaction(t *testing.T) {
+	db, target := setupAdtyPermissionAudit(t)
+	const updateHook = "adty:perm_validate_reject_user_update"
+	var reachedUserEdit bool
+	require.NoError(t, db.Callback().Update().After("gorm:update").Register(updateHook, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "users" {
+			reachedUserEdit = true
+		}
+	}))
+	t.Cleanup(func() {
+		_ = db.Callback().Update().Remove(updateHook)
+	})
+
 	target.Username = strings.Repeat("x", 30)
 	resp := updateUserPermissionsAsRoot(t, db, target, `{"adty_user":{"read":true}}`)
 	assert.Contains(t, resp.Body.String(), `"success":false`)
+	assert.False(t, reachedUserEdit, "pre-validation failure must reject before entering user update transaction")
 	assert.False(t, authz.Can(target.Id, common.RoleAdminUser, authz.AdtyUserRead))
 	var count int64
 	require.NoError(t, db.Model(&model.AuditLog{}).Where("action = ?", "adty.admin_permissions.update").Count(&count).Error)

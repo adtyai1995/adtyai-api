@@ -149,3 +149,98 @@ func TestPriceSnapshotBackfillDoesNotRunDuringMigrate(t *testing.T) {
 	assert.Equal(t, 800, task.Quota)
 	assert.Equal(t, 2.0, task.PrivateData.BillingContext.ModelRatio)
 }
+
+func TestPriceSnapshotBackfillHandlesNonEmptyIncompleteOperationSnapshots(t *testing.T) {
+	db := prepareSiteDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.User{}, &model.Task{}, &model.Channel{}, &model.BillingOperation{}, &model.BillingOperationMovement{}))
+	root := referralUser(t, db, "snap-incomplete-root")
+	require.NoError(t, db.Model(root).Update("role", common.RoleRootUser).Error)
+	_, site := openActiveSite(t, db, "snap-incomplete")
+	customer := siteCustomer(t, db, site, "snap-incomplete-customer")
+
+	validBC, err := common.Marshal(&model.TaskBillingContext{
+		OriginModelName: "snap-incomplete-model",
+		ModelRatio:      2,
+		GroupRatio:      1.5,
+		SiteMarkup:      1.2,
+		SiteCostFactor:  0.8,
+		SiteId:          site.Id,
+	})
+	require.NoError(t, err)
+
+	emptyObjOp := model.BillingOperation{
+		OperationKey: "request:incomplete-empty-json", UserId: customer.Id, Kind: "request",
+		ReservedQuota: 1800, ActualQuota: 1800, AppliedQuota: 1800, State: model.BillingSettled,
+		SiteId: site.Id, SiteMarkup: 1.2, SiteCostFactor: 0.8, CreatedAt: 1_700_000_100,
+		BillingContext: string(validBC),
+		PriceSnapshot:  "{}",
+	}
+	require.NoError(t, db.Create(&emptyObjOp).Error)
+
+	malformedOp := model.BillingOperation{
+		OperationKey: "request:incomplete-malformed-json", UserId: customer.Id, Kind: "request",
+		ReservedQuota: 1800, ActualQuota: 1800, AppliedQuota: 1800, State: model.BillingSettled,
+		SiteId: site.Id, SiteMarkup: 1.2, SiteCostFactor: 0.8, CreatedAt: 1_700_000_101,
+		BillingContext: string(validBC),
+		PriceSnapshot:  "{invalid-json",
+	}
+	require.NoError(t, db.Create(&malformedOp).Error)
+
+	partialOp := model.BillingOperation{
+		OperationKey: "request:incomplete-partial-fields", UserId: customer.Id, Kind: "request",
+		ReservedQuota: 1800, ActualQuota: 1800, AppliedQuota: 1800, State: model.BillingSettled,
+		SiteId: site.Id, SiteMarkup: 1.2, SiteCostFactor: 0.8, CreatedAt: 1_700_000_102,
+		BillingContext: string(validBC),
+		PriceSnapshot:  `{"model_name":"snap-incomplete-model","billing_group":"vip","model_ratio":"2"}`,
+	}
+	require.NoError(t, db.Create(&partialOp).Error)
+
+	incompleteBC, err := common.Marshal(&model.TaskBillingContext{
+		OriginModelName: "snap-unrecoverable-model",
+		ModelRatio:      2,
+	})
+	require.NoError(t, err)
+	unrecoverableOp := model.BillingOperation{
+		OperationKey: "request:incomplete-unrecoverable", UserId: customer.Id, Kind: "request",
+		ReservedQuota: 900, ActualQuota: 900, AppliedQuota: 900, State: model.BillingSettled,
+		SiteId: site.Id, SiteMarkup: 1.2, SiteCostFactor: 0.8, CreatedAt: 1_700_000_103,
+		BillingContext: string(incompleteBC),
+		PriceSnapshot:  `{"model_name":"snap-unrecoverable-model"}`,
+	}
+	require.NoError(t, db.Create(&unrecoverableOp).Error)
+
+	report, err := ApplyPriceSnapshotBackfill(root.Id, 50)
+	require.NoError(t, err)
+	assert.True(t, report.AmountsPreserved)
+	assert.Equal(t, 3, report.FilledOperations)
+	assert.GreaterOrEqual(t, report.Skipped, 1)
+
+	for _, key := range []string{emptyObjOp.OperationKey, malformedOp.OperationKey, partialOp.OperationKey} {
+		var got model.BillingOperation
+		require.NoError(t, db.Where("operation_key = ?", key).First(&got).Error)
+		snap := got.RequestPriceSnapshot()
+		require.NotNil(t, snap, "operation %s should be backfilled to complete snapshot", key)
+		assert.True(t, snap.HasOfficialFields())
+		assert.Equal(t, 1800, got.ReservedQuota)
+		assert.Equal(t, 1800, got.ActualQuota)
+		assert.Equal(t, 1800, got.AppliedQuota)
+	}
+
+	var gotUnrecoverable model.BillingOperation
+	require.NoError(t, db.Where("operation_key = ?", unrecoverableOp.OperationKey).First(&gotUnrecoverable).Error)
+	assert.Nil(t, gotUnrecoverable.RequestPriceSnapshot())
+	assert.Equal(t, 900, gotUnrecoverable.ReservedQuota)
+	var foundSkip bool
+	for _, sample := range report.SkippedSample {
+		if sample.Kind == "billing_operation" && sample.ID == unrecoverableOp.OperationKey {
+			foundSkip = true
+			break
+		}
+	}
+	assert.True(t, foundSkip, "incomplete operation without recoverable pricing must be reported in skipped_sample")
+
+	again, err := ApplyPriceSnapshotBackfill(root.Id, 50)
+	require.NoError(t, err)
+	assert.Equal(t, 0, again.FilledOperations)
+	assert.GreaterOrEqual(t, again.AlreadyComplete, 3)
+}

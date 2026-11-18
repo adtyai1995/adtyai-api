@@ -12,6 +12,7 @@
 - 任务：实施方案里的任务号。
 
 | 上游文件 | 改了什么 | 为什么 | 任务 |
+| --- | --- | --- | --- |
 | `model/user.go` | OAuth 身份与单 Root 索引调用统一条件唯一索引 helper | MySQL 不支持原部分索引语法，不能放弃数据库约束 | R-02 |
 | `model/task_plugin.go` | 活动插件索引调用统一 helper；历史折叠查询引用保留字 key | MySQL 完整启动及单活动版本约束 | R-02 |
 | `model/model_meta.go` | 未删除模型名索引调用统一 helper | 三库保留同名历史和活动名称唯一性 | R-02 |
@@ -62,7 +63,6 @@
 | `i18n/keys_adty.go` | 增加 `adty.limit.unavailable` | 限流存储不可用时给调用方一条可翻译的受控错误 | 审查 v3 |
 | `service/security_verification.go` | 增加 `VerificationScopeAPIKeyRead`，并把它列入无上下文的二次验证范围 | 密钥查看使用独立的二次验证范围 | 审查 v3 |
 | `service/access_token_scope.go` | `api_key.read` 对应访问令牌范围 `api_key:reveal` | 没有该范围的访问令牌不能取得查看密钥的验证 | 审查 v3 |
-| --- | --- | --- | --- |
 | `common/str.go` | 删 `NormalizeBillingPreference` | 删订阅后没有调用方（原来只有 `NewBillingSession` 用它规范扣费偏好） | 1.2 |
 | `controller/access_token_audit_test.go` | `TestAuditRoleSnapshotSurvivesActorChanges`、`TestSecurityAndOperationEventsUseAuditTable` 删 `recordSubscriptionResetUserLogs` 的调用，审计条数 4→3、10→9、10→9 | 这个函数随 `controller/subscription.go` 删了；每次调用写一条审计 | 1.2 |
 | `controller/audit.go` | `auditContentTemplates` 删 `subscription.plan_reset`、`subscription.user_plan_reset`、`subscription.user_quota_reset` | 写这三种审计的订阅管理接口删了 | 1.2 |
@@ -432,7 +432,6 @@
 | `model/user.go`、`controller/user.go`、`web/src/hooks/{use-sidebar-data.ts,use-sidebar-config.ts}`、`web/src/features/{profile/components/sidebar-modules-card.tsx,system-settings/maintenance/config.ts,system-settings/maintenance/sidebar-modules-section.tsx}` | 移除 Playground 菜单和默认开关，管理员旧配置不再呈现该开关 | 历史设置不能重新暴露退役入口 | 全平台验收 A |
 | `web/src/features/dashboard/components/overview/overview-dashboard.tsx`、`web/src/lib/legacy-route.ts`、`web/src/routeTree.gen.ts` | 首次请求快捷入口指向已有 API 文档；旧书签回仪表盘；构建重新生成路由树 | 清除页面、路由及旧链接残留 | 全平台验收 A |
 | `web/src/features/dashboard/components/overview/{overview-dashboard.tsx,__tests__/setup-guide.test.tsx}` | 文档入口使用八语已存在的 `Documentation` 键并补可见文案回归 | 避免未登记的英文键在其他语言界面直接显示 | 全平台验收 A/Q |
-
 | `controller/option.go` | 拒绝退休营销配置，保留充值优惠码布尔键 | 最新产品范围排除独立营销，保留充值与系统通知 | 营销删除 |
 | `router/main.go` | 在插件分发前拒绝退休营销 API | 插件不能恢复已删除的接口 | 营销删除 |
 | `router/web-router.go` | 内部和外置前端模式统一返回退休路径 JSON 404 | 旧 API 不能回退 HTML 或重定向 | 营销删除 |
@@ -717,7 +716,6 @@
 | `web/src/features/auth/secure-verification/types.ts` | `SiteOwnerAction` 加 `voucher.issue`、`voucher.freeze`、`voucher.cancel` | 站长签发、冻结、取消兑换码要二次验证 | 补界面 2026-11-17 |
 | `web/src/features/system-settings/operations/section-registry.tsx` | 运维设置加「分组健康」分区（`GroupHealthSection`） | 分组健康阈值后台可改 | 补界面 2026-11-17 |
 | `web/src/i18n/locales/en.json`、`zh.json` | 追加补界面用到的词条，补上数据保留页缺的中文 | 新界面要有中英文 | 补界面 2026-11-17 |
-
 | `internal/pgtest/pgtest.go` | PostgreSQL 版本要求、实际连接回归及补丁号反钉死门禁对齐 18.x | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
 | `internal/pgtest/pgtest_gate_test.go` | PostgreSQL 版本要求、实际连接回归及补丁号反钉死门禁对齐 18.x | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
 | `internal/pgtest/pgtest_live_test.go` | PostgreSQL 版本要求、实际连接回归及补丁号反钉死门禁对齐 18.x | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
@@ -726,9 +724,7 @@
 | `deploy/adty/docker-compose.yml` | PostgreSQL 镜像对齐 18；Compose 同步官方 18 数据卷挂载并保留旧库迁移警告 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
 | `.github/workflows/ci.yml` | 隔离 PostgreSQL 测试服务镜像由 17 对齐为 18 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
 | `.github/workflows/adty-ghcr.yml` | 隔离 PostgreSQL 测试服务镜像由 17 对齐为 18 | 方案 v2.7 A.21.1 与 0.12.6 明确要求；不操作既有数据卷 | Round 0 / ENV-PG18 |
-
 | `internal/adtygov/inventory.go`、`internal/adtygov/acceptance_test.go`、`internal/adtygov/official_rule_ids.jsonl` | 扩展原有枚举入口，纳入240功能、G/A规则、共享源码/测试/脚本/部署/许可证资产；保留原单元ID并增加正式审查分片；对齐三处规则标题元数据 | 方案0.12.6、3.2.1要求完整冻结分母，不能另写平行枚举器 | Round 0 / R0-DENOMINATOR |
-
 | `internal/adtygov/inventory.go`、`internal/adtygov/acceptance_test.go` | 在原文件单元之外补齐 Go package 与 AST 路由注册组的独立身份、来源摘要和定位；保留原单元 | 方案 3.2.1 明确枚举 package 与 router 注册组，文件覆盖不能代替原生身份 | Round 0 / R0-NATIVE-UNITS |
 | `model/billing_operation.go` | 受理时持久冻结付款种类及原团队；增加预扣、直接扣款、任务调整和恢复结算继承原账户 | 防止 Key 重绑把在途补扣或退款转给另一账户 | ISS-R1-0001 |
 | `model/midjourney.go` | 增加仅内部可见的受理时付款种类和原团队字段 | 任务落库后、实际扣款前重绑也不能改变付款人 | ISS-R1-0001 |

@@ -155,7 +155,7 @@ func backfillHistoricalOperationSnapshots(db *gorm.DB, limit int, dryRun bool, r
 	filledThisPass := 0
 	for filledThisPass < limit {
 		var rows []model.BillingOperation
-		q := db.Where("price_snapshot IS NULL OR price_snapshot = ''")
+		q := db.Model(&model.BillingOperation{})
 		if after != "" {
 			q = q.Where("operation_key > ?", after)
 		}
@@ -295,8 +295,23 @@ func historicalSourceFromOperation(row *model.BillingOperation) (model.Historica
 	if err := common.UnmarshalJsonStr(row.BillingContext, &bc); err != nil {
 		return model.HistoricalPriceSnapshotSource{}, false
 	}
+	existing := row.RequestPriceSnapshot()
+	if existing == nil && row.PriceSnapshot != "" {
+		var partial model.RequestPriceSnapshot
+		if err := common.UnmarshalJsonStr(row.PriceSnapshot, &partial); err == nil {
+			existing = &partial
+		}
+	}
+	if existing == nil {
+		existing = bc.PriceSnapshot
+	}
+	var billingGroup string
+	if existing != nil {
+		billingGroup = existing.BillingGroup
+	}
 	return model.HistoricalPriceSnapshotSource{
 		ModelName:       bc.OriginModelName,
+		BillingGroup:    billingGroup,
 		ModelRatio:      bc.ModelRatio,
 		ModelPrice:      bc.ModelPrice,
 		GroupRatio:      bc.GroupRatio,
@@ -307,7 +322,7 @@ func historicalSourceFromOperation(row *model.BillingOperation) (model.Historica
 		PerCallBilling:  bc.PerCallBilling,
 		Tiered:          bc.TieredSnapshot != nil && bc.TieredSnapshot.BillingMode == "tiered_expr",
 		AcceptedAt:      row.CreatedAt,
-		Existing:        row.RequestPriceSnapshot(),
+		Existing:        existing,
 	}, true
 }
 

@@ -1,6 +1,9 @@
 package service
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"strings"
 	"testing"
@@ -23,27 +26,61 @@ import (
 func TestBillingSessionAlwaysCarriesOperationKey(t *testing.T) {
 	raw, err := os.ReadFile("billing_session.go")
 	require.NoError(t, err)
-	// **先去掉整行注释再数**：构造点本身是代码，而注释里提到 `&BillingSession{}`
-	// 不构成构造点。我第一版没做这一步，于是自己的注释把这条守卫判红了——
-	// 一个「守卫把守卫者的注释当成违例」的假阳性。
 	source := stripLineComments(string(raw))
 
-	// 统计 `&BillingSession{` 的出现次数。构造点每多一处，这条就红。
 	const marker = "&BillingSession{"
 	count := strings.Count(source, marker)
 	assert.Equal(t, 1, count,
 		"BillingSession 的构造点从 1 变成 %d 处：新的构造点若可能不设 operationKey，Settle 的 legacy 分支会静默复活（见 ISS-R4-0046）", count)
 
-	// 唯一那个构造点里必须给 operationKey 赋值。用「构造块内是否出现
-	// operationKey:」判，而不是全文件搜——全文件搜会被 `s.operationKey` 干扰。
-	start := strings.Index(source, marker)
-	require.Positive(t, start)
-	block := source[start:]
-	if end := strings.Index(block, "}"); end > 0 {
-		block = block[:end]
+	litCount, hasOuterOperationKey := inspectBillingSessionLiterals(t, "billing_session.go", string(raw))
+	assert.Equal(t, 1, litCount,
+		"AST 中 BillingSession 复合字面量数量从 1 变成 %d 处", litCount)
+	assert.True(t, hasOuterOperationKey,
+		"构造 BillingSession 时必须在外层 BillingSession 字面量上直接给 operationKey 赋非空值（不能只设内嵌 WalletFunding.operationKey），否则 Settle 会走 legacy 分支")
+}
+
+func TestBillingSessionOperationKeyGuardRejectsInnerOnlyOperationKey(t *testing.T) {
+	innerOnly := `package service
+func newBrokenSession(opKey string) *BillingSession {
+	return &BillingSession{
+		funding: &WalletFunding{
+			operationKey: opKey,
+		},
 	}
-	assert.Contains(t, block, "operationKey:",
-		"构造 BillingSession 时必须设 operationKey，否则 Settle 会走 legacy 分支")
+}
+`
+	litCount, hasOuter := inspectBillingSessionLiterals(t, "synthetic_inner_only.go", innerOnly)
+	assert.Equal(t, 1, litCount)
+	assert.False(t, hasOuter, "仅在内层 WalletFunding 设置 operationKey 时必须判为不满足外层 BillingSession.operationKey 守卫")
+
+	emptyOuter := `package service
+func newEmptyKeySession(opKey string) *BillingSession {
+	return &BillingSession{
+		funding: &WalletFunding{
+			operationKey: opKey,
+		},
+		operationKey: "",
+	}
+}
+`
+	litCount, hasOuter = inspectBillingSessionLiterals(t, "synthetic_empty_outer.go", emptyOuter)
+	assert.Equal(t, 1, litCount)
+	assert.False(t, hasOuter, "外层 BillingSession.operationKey 为空字面量时必须判为不满足守卫")
+
+	validOuter := `package service
+func newValidSession(opKey string) *BillingSession {
+	return &BillingSession{
+		funding: &WalletFunding{
+			operationKey: opKey,
+		},
+		operationKey: opKey,
+	}
+}
+`
+	litCount, hasOuter = inspectBillingSessionLiterals(t, "synthetic_valid_outer.go", validOuter)
+	assert.Equal(t, 1, litCount)
+	assert.True(t, hasOuter)
 }
 
 // 这条钉住「有且只有一处生产构造点」的另一个侧面：包外不能再有
@@ -64,7 +101,57 @@ func TestNoOtherBillingSessionLiteralsInService(t *testing.T) {
 		}
 		assert.NotContains(t, source, "&BillingSession{",
 			"%s 里新增了 BillingSession 构造点：settle 的 legacy 分支会静默复活（见 ISS-R4-0046）", name)
+		litCount, _ := inspectBillingSessionLiterals(t, name, string(raw))
+		assert.Zero(t, litCount,
+			"%s 里新增了 BillingSession 复合字面量：settle 的 legacy 分支会静默复活（见 ISS-R4-0046）", name)
 	}
+}
+
+func inspectBillingSessionLiterals(t *testing.T, filename string, source string) (count int, allCarryOuterOperationKey bool) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, source, 0)
+	require.NoError(t, err)
+
+	allCarryOuterOperationKey = true
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		ident, ok := lit.Type.(*ast.Ident)
+		if !ok || ident.Name != "BillingSession" {
+			return true
+		}
+		count++
+		hasOuter := false
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			keyIdent, ok := kv.Key.(*ast.Ident)
+			if !ok || keyIdent.Name != "operationKey" {
+				continue
+			}
+			if basic, isBasic := kv.Value.(*ast.BasicLit); isBasic && basic.Kind == token.STRING && strings.Trim(basic.Value, "`\"") == "" {
+				continue
+			}
+			if valIdent, isIdent := kv.Value.(*ast.Ident); isIdent && valIdent.Name == "nil" {
+				continue
+			}
+			hasOuter = true
+			break
+		}
+		if !hasOuter {
+			allCarryOuterOperationKey = false
+		}
+		return true
+	})
+	if count == 0 {
+		allCarryOuterOperationKey = false
+	}
+	return count, allCarryOuterOperationKey
 }
 
 // stripLineComments 丢掉整行注释。只处理 `//` 开头的行——本仓库的注释都是整行
