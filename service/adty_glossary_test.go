@@ -126,3 +126,59 @@ func TestAdtyOfficialGlossaryRejectsRewrittenTerms(t *testing.T) {
 	assert.True(t, strings.Contains(strings.ToLower(ready.English), "permanent bonus"))
 	assert.True(t, strings.Contains(strings.ToLower(ready.English), "clawback"))
 }
+
+// ISS-R1-0148: 术语表查询失败时必须 fail-closed 走可重试降级，不得误放行被篡改的受保护术语。
+func TestAdtyGlossaryLookupErrorFailsClosed(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	_, err := SaveAdtyTranslationConfig(AdtyTranslationInput{
+		Mode:      model.AdtyTranslationModeSet,
+		ModelName: "translator",
+		Enabled:   true,
+	})
+	require.NoError(t, err)
+
+	old := AdtyTranslateFunc
+	AdtyTranslateFunc = func(_, _ string) (string, error) {
+		return "Coupon 12.50 USD order A123456 is not refunded", nil
+	}
+	t.Cleanup(func() { AdtyTranslateFunc = old })
+
+	// 制造 adty_glossary_terms 查询错误，同时保留 head/job 表可写。
+	require.NoError(t, db.Migrator().DropTable(&model.AdtyGlossaryTerm{}))
+
+	res, err := TranslateAdtyDynamic("notice:glossary-db-err", "永久赠金 12.50 USD，订单 A123456，不退款", 0)
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtyTranslationFailed, res.Status)
+	assert.Equal(t, AdtyTranslationNotReady, res.Notice)
+	assert.Empty(t, res.English)
+}
+
+// ISS-R1-0153: Root 可在后台列出、新增、修改、删除共享术语表，并实时用于动态翻译校验。
+func TestAdtyGlossaryAdministrationCRUD(t *testing.T) {
+	prepareReferralDialectDB(t, "sqlite")
+
+	created, err := UpsertAdtyGlossaryTerm(0, "算力券", "en", "compute credit")
+	require.NoError(t, err)
+	require.NotZero(t, created.Id)
+	assert.Equal(t, "算力券", created.Source)
+	assert.Equal(t, "en", created.Locale)
+	assert.Equal(t, "compute credit", created.Target)
+
+	updated, err := UpsertAdtyGlossaryTerm(created.Id, "算力券", "en", "compute voucher")
+	require.NoError(t, err)
+	assert.Equal(t, created.Id, updated.Id)
+	assert.Equal(t, "compute voucher", updated.Target)
+
+	list, err := ListAdtyGlossaryTerms("en")
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "compute voucher", list[0].Target)
+
+	assert.False(t, adtyTranslationKeepsGlossary("发放算力券", "Issued coupon"))
+	assert.True(t, adtyTranslationKeepsGlossary("发放算力券", "Issued compute voucher"))
+
+	require.NoError(t, DeleteAdtyGlossaryTerm(created.Id))
+	afterDelete, err := ListAdtyGlossaryTerms("en")
+	require.NoError(t, err)
+	assert.Empty(t, afterDelete)
+}

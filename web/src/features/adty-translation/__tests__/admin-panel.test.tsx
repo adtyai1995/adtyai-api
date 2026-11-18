@@ -196,4 +196,147 @@ describe('TranslationAdminPanel', () => {
       })
     )
   })
+
+  it('lists failed tasks, retries the same object key and version, and saves manual edits', async () => {
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/adty/admin/translation/tasks') {
+        return {
+          data: {
+            success: true,
+            data: {
+              tasks: [
+                {
+                  id: 11,
+                  object_key: 'notice:failed-1',
+                  version: 2,
+                  source: '金额 12.50 USD，不退款',
+                  english: '',
+                  status: 'failed',
+                  notice: '英文译文未就绪',
+                },
+              ],
+            },
+          },
+        }
+      }
+      return okConfig
+    })
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          object_key: 'notice:failed-1',
+          version: 2,
+          status: 'ready',
+          english: 'Amount 12.50 USD is not refunded',
+        },
+      },
+    })
+    const put = vi.spyOn(api, 'put').mockResolvedValue({
+      data: { success: true, data: { edited: true } },
+    })
+
+    render(<TranslationAdminPanel />, { wrapper })
+    expect(await screen.findByText(/notice:failed-1 \(v2\)/)).toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Retry task' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/adty/admin/translation/retry', {
+        object_key: 'notice:failed-1',
+        version: 2,
+      })
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Edit translation' }))
+    const manualBox = await screen.findByLabelText(/Manual English override/)
+    await user.type(manualBox, 'Manual 12.50 USD is not refunded')
+    await user.click(screen.getByRole('button', { name: 'Save translation' }))
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/api/adty/admin/translation/edit', {
+        object_key: 'notice:failed-1',
+        english: 'Manual 12.50 USD is not refunded',
+      })
+    )
+  })
+
+  it('maintains shared glossary terms via list, create, update, and delete', async () => {
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/adty/admin/translation/glossary') {
+        return {
+          data: {
+            success: true,
+            data: {
+              terms: [
+                {
+                  id: 7,
+                  source: '永久赠金',
+                  locale: 'en',
+                  target: 'permanent bonus',
+                },
+              ],
+            },
+          },
+        }
+      }
+      return okConfig
+    })
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        data: { id: 8, source: '算力券', locale: 'en', target: 'compute voucher' },
+      },
+    })
+    const put = vi.spyOn(api, 'put').mockResolvedValue({
+      data: {
+        success: true,
+        data: { id: 7, source: '永久赠金', locale: 'en', target: 'lifetime bonus' },
+      },
+    })
+    const del = vi.spyOn(api, 'delete').mockResolvedValue({
+      data: { success: true, data: { deleted: true } },
+    })
+
+    render(<TranslationAdminPanel />, { wrapper })
+    expect(
+      await screen.findByText(/永久赠金 → permanent bonus \(en\)/)
+    ).toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText('Source term'), '算力券')
+    await user.type(screen.getByLabelText('Target term'), 'compute voucher')
+    await user.click(screen.getByRole('button', { name: 'Save term' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        '/api/adty/admin/translation/glossary',
+        {
+          source: '算力券',
+          locale: 'en',
+          target: 'compute voucher',
+        }
+      )
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Edit term' }))
+    const targetInput = screen.getByLabelText('Target term')
+    expect(targetInput).toHaveValue('permanent bonus')
+    await user.clear(targetInput)
+    await user.type(targetInput, 'lifetime bonus')
+    await user.click(screen.getByRole('button', { name: 'Save term' }))
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(
+        '/api/adty/admin/translation/glossary/7',
+        {
+          source: '永久赠金',
+          locale: 'en',
+          target: 'lifetime bonus',
+        }
+      )
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Delete term' }))
+    await waitFor(() =>
+      expect(del).toHaveBeenCalledWith('/api/adty/admin/translation/glossary/7')
+    )
+  })
 })

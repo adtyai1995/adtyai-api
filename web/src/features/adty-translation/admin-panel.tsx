@@ -64,6 +64,29 @@ type TranslationUsage = {
   cost_usd: string
 }
 
+/** GET /api/adty/admin/translation/tasks (service.AdtyTranslationTaskView). */
+type TranslationTask = {
+  id: number
+  job_id?: number
+  object_key: string
+  version: number
+  source: string
+  english: string
+  status: string
+  human_edited?: boolean
+  model_name?: string
+  notice?: string
+  updated_at?: number
+}
+
+/** GET /api/adty/admin/translation/glossary (model.AdtyGlossaryTerm). */
+type GlossaryTerm = {
+  id: number
+  source: string
+  locale: string
+  target: string
+}
+
 type Draft = {
   mode: string
   protocol: string
@@ -77,6 +100,13 @@ type Draft = {
   daily_quota: string
   retry_limit: string
   enabled: boolean
+}
+
+type GlossaryDraft = {
+  id: number
+  source: string
+  locale: string
+  target: string
 }
 
 const NUMBER_FIELDS = [
@@ -118,6 +148,15 @@ async function readData<T>(
     throw new Error(body.message || fallback)
   }
   return body.data
+}
+
+function extractList<T>(raw: unknown, key: string): T[] {
+  if (Array.isArray(raw)) return raw as T[]
+  if (raw && typeof raw === 'object' && key in raw) {
+    const nested = (raw as Record<string, unknown>)[key]
+    if (Array.isArray(nested)) return nested as T[]
+  }
+  return []
 }
 
 function ConfigGate(props: {
@@ -166,11 +205,47 @@ export function TranslationAdminPanel() {
         t('Failed to load')
       ),
   })
+  const tasksQuery = useQuery({
+    queryKey: ['adty-translation', 'tasks'],
+    queryFn: async () => {
+      const data = await readData<unknown>(
+        api.get('/api/adty/admin/translation/tasks'),
+        t('Failed to load')
+      )
+      return extractList<TranslationTask>(data, 'tasks')
+    },
+  })
+  const glossaryQuery = useQuery({
+    queryKey: ['adty-translation', 'glossary'],
+    queryFn: async () => {
+      const data = await readData<unknown>(
+        api.get('/api/adty/admin/translation/glossary'),
+        t('Failed to load')
+      )
+      return extractList<GlossaryTerm>(data, 'terms')
+    },
+  })
+
   const [draft, setDraft] = useState<Draft>(() => draftOf(undefined))
+  const [objectKey, setObjectKey] = useState('')
   const [source, setSource] = useState('')
   const [result, setResult] = useState('')
+  const [lastTask, setLastTask] = useState<{
+    object_key: string
+    version: number
+    status: string
+  } | null>(null)
+  const [editingTaskKey, setEditingTaskKey] = useState('')
+  const [editingEnglish, setEditingEnglish] = useState('')
+  const [glossaryDraft, setGlossaryDraft] = useState<GlossaryDraft>({
+    id: 0,
+    source: '',
+    locale: 'en',
+    target: '',
+  })
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+
   useEffect(() => {
     if (config.data) setDraft(draftOf(config.data))
   }, [config.data])
@@ -256,29 +331,162 @@ export function TranslationAdminPanel() {
   }
 
   const translate = () => {
+    const targetKey =
+      objectKey.trim() || lastTask?.object_key || 'notice:manual'
+    if (!objectKey.trim()) {
+      setObjectKey(targetKey)
+    }
     setPending(true)
     setError('')
     void api
       .post('/api/adty/admin/translation/run', {
-        object_key: `draft:${Date.now()}`,
+        object_key: targetKey,
         source,
       })
-      .then((response) => {
+      .then(async (response) => {
         const body = response.data as {
           success?: boolean
           message?: string
-          data?: { english?: string; notice?: string; source?: string }
+          data?: {
+            object_key?: string
+            english?: string
+            notice?: string
+            source?: string
+            status?: string
+            version?: number
+          }
         }
         if (!body.success) throw new Error(body.message || t('Failed to save'))
+        const resolvedKey = body.data?.object_key || targetKey
+        const resolvedVersion = body.data?.version || 1
+        const resolvedStatus =
+          body.data?.status || (body.data?.english ? 'ready' : 'failed')
+        setLastTask({
+          object_key: resolvedKey,
+          version: resolvedVersion,
+          status: resolvedStatus,
+        })
         setResult(
           body.data?.english ||
             `${body.data?.source || source}\n${body.data?.notice || t('English is not ready')}`
         )
+        await refresh()
       })
       .catch((cause) =>
         setError(getServerErrorMessage(cause, t('Failed to save')))
       )
       .finally(() => setPending(false))
+  }
+
+  const retryTask = async (targetKey: string, version: number) => {
+    setPending(true)
+    setError('')
+    try {
+      const data = await readData<{
+        object_key?: string
+        english?: string
+        notice?: string
+        source?: string
+        status?: string
+        version?: number
+      }>(
+        api.post('/api/adty/admin/translation/retry', {
+          object_key: targetKey,
+          version,
+        }),
+        t('Failed to save')
+      )
+      setLastTask({
+        object_key: data.object_key || targetKey,
+        version: data.version || version,
+        status: data.status || (data.english ? 'ready' : 'failed'),
+      })
+      setResult(
+        data.english ||
+          `${data.source || source}\n${data.notice || t('English is not ready')}`
+      )
+      await refresh()
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Failed to save')))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const saveManualTranslation = async () => {
+    if (!editingTaskKey || !editingEnglish.trim()) return
+    setPending(true)
+    setError('')
+    try {
+      await readData(
+        api.put('/api/adty/admin/translation/edit', {
+          object_key: editingTaskKey,
+          english: editingEnglish.trim(),
+        }),
+        t('Failed to save')
+      )
+      setEditingTaskKey('')
+      setEditingEnglish('')
+      await refresh()
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Failed to save')))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const saveGlossaryTerm = async () => {
+    const src = glossaryDraft.source.trim()
+    const tgt = glossaryDraft.target.trim()
+    if (!src || !tgt) return
+    setPending(true)
+    setError('')
+    try {
+      if (glossaryDraft.id > 0) {
+        await readData(
+          api.put(`/api/adty/admin/translation/glossary/${glossaryDraft.id}`, {
+            source: src,
+            locale: glossaryDraft.locale,
+            target: tgt,
+          }),
+          t('Failed to save')
+        )
+      } else {
+        await readData(
+          api.post('/api/adty/admin/translation/glossary', {
+            source: src,
+            locale: glossaryDraft.locale,
+            target: tgt,
+          }),
+          t('Failed to save')
+        )
+      }
+      setGlossaryDraft({ id: 0, source: '', locale: 'en', target: '' })
+      await refresh()
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Failed to save')))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const deleteGlossaryTerm = async (id: number) => {
+    setPending(true)
+    setError('')
+    try {
+      await readData(
+        api.delete(`/api/adty/admin/translation/glossary/${id}`),
+        t('Failed to delete')
+      )
+      if (glossaryDraft.id === id) {
+        setGlossaryDraft({ id: 0, source: '', locale: 'en', target: '' })
+      }
+      await refresh()
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Failed to delete')))
+    } finally {
+      setPending(false)
+    }
   }
 
   const time = (value?: number) => (value ? formatTimestamp(value) : t('Never'))
@@ -295,6 +503,9 @@ export function TranslationAdminPanel() {
       />
     </div>
   )
+
+  const tasks = tasksQuery.data ?? []
+  const glossaryTerms = glossaryQuery.data ?? []
 
   return (
     <Card>
@@ -314,6 +525,8 @@ export function TranslationAdminPanel() {
           onRetry={() => {
             void config.refetch()
             void usage.refetch()
+            void tasksQuery.refetch()
+            void glossaryQuery.refetch()
           }}
         >
           <div className='flex flex-col gap-4'>
@@ -357,6 +570,9 @@ export function TranslationAdminPanel() {
                       )
                     : 0}{' '}
                   ms
+                  {usage.data.cost_usd
+                    ? ` · ${t('Estimated cost')} $${usage.data.cost_usd}`
+                    : ''}
                   {draft.daily_quota !== '0'
                     ? ` · ${t('Daily limit')} ${draft.daily_quota}`
                     : ''}
@@ -483,24 +699,231 @@ export function TranslationAdminPanel() {
               </Button>
             </div>
             <div className='flex flex-col gap-2'>
+              <Label htmlFor='translator-object-key'>{t('Object key')}</Label>
+              <Input
+                id='translator-object-key'
+                placeholder='notice:manual'
+                value={objectKey}
+                onChange={(event) => setObjectKey(event.target.value)}
+              />
               <Label htmlFor='translator-source'>{t('Chinese source')}</Label>
               <Textarea
                 id='translator-source'
                 value={source}
                 onChange={(event) => setSource(event.target.value)}
               />
-              <Button
-                type='button'
-                variant='outline'
-                disabled={pending || source.trim() === ''}
-                onClick={translate}
-              >
-                {t('Translate')}
-              </Button>
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  disabled={pending || source.trim() === ''}
+                  onClick={translate}
+                >
+                  {t('Translate')}
+                </Button>
+                {lastTask?.status === 'failed' && (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    disabled={pending}
+                    onClick={() =>
+                      void retryTask(lastTask.object_key, lastTask.version)
+                    }
+                  >
+                    {t('Retry task')}
+                  </Button>
+                )}
+              </div>
               {result && (
                 <p className='text-sm whitespace-pre-wrap'>{result}</p>
               )}
             </div>
+
+            {tasks.length > 0 && (
+              <section
+                aria-label={t('Translation tasks')}
+                className='flex flex-col gap-2 rounded-lg border p-3 text-sm'
+              >
+                <h3 className='font-medium'>{t('Translation tasks')}</h3>
+                <div className='flex flex-col gap-2'>
+                  {tasks.map((task) => (
+                    <div
+                      key={`${task.object_key}-${task.version}`}
+                      className='flex flex-col gap-2 rounded border p-2'
+                    >
+                      <div className='flex flex-wrap items-center justify-between gap-2'>
+                        <span className='font-mono text-xs'>
+                          {task.object_key} (v{task.version}) · {task.status}
+                        </span>
+                        <div className='flex flex-wrap gap-2'>
+                          {task.status === 'failed' && (
+                            <Button
+                              type='button'
+                              size='sm'
+                              variant='outline'
+                              disabled={pending}
+                              onClick={() =>
+                                void retryTask(task.object_key, task.version)
+                              }
+                            >
+                              {t('Retry task')}
+                            </Button>
+                          )}
+                          <Button
+                            type='button'
+                            size='sm'
+                            variant='outline'
+                            disabled={pending}
+                            onClick={() => {
+                              setEditingTaskKey(task.object_key)
+                              setEditingEnglish(task.english || '')
+                            }}
+                          >
+                            {t('Edit translation')}
+                          </Button>
+                        </div>
+                      </div>
+                      <p className='text-muted-foreground text-xs'>
+                        {task.source}
+                      </p>
+                      {task.english && <p className='text-xs'>{task.english}</p>}
+                    </div>
+                  ))}
+                </div>
+                {editingTaskKey && (
+                  <div className='flex flex-col gap-2 pt-2'>
+                    <Label htmlFor='translator-manual-english'>
+                      {t('Manual English override')} ({editingTaskKey})
+                    </Label>
+                    <Textarea
+                      id='translator-manual-english'
+                      value={editingEnglish}
+                      onChange={(event) =>
+                        setEditingEnglish(event.target.value)
+                      }
+                    />
+                    <Button
+                      type='button'
+                      size='sm'
+                      variant='outline'
+                      disabled={pending || editingEnglish.trim() === ''}
+                      onClick={() => void saveManualTranslation()}
+                    >
+                      {t('Save translation')}
+                    </Button>
+                  </div>
+                )}
+              </section>
+            )}
+
+            <section
+              aria-label={t('Glossary')}
+              className='flex flex-col gap-3 rounded-lg border p-3 text-sm'
+            >
+              <h3 className='font-medium'>{t('Glossary')}</h3>
+              <div className='grid gap-2 sm:grid-cols-3'>
+                <div className='flex flex-col gap-1'>
+                  <Label htmlFor='glossary-source'>{t('Source term')}</Label>
+                  <Input
+                    id='glossary-source'
+                    value={glossaryDraft.source}
+                    onChange={(event) =>
+                      setGlossaryDraft((cur) => ({
+                        ...cur,
+                        source: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className='flex flex-col gap-1'>
+                  <Label htmlFor='glossary-target'>{t('Target term')}</Label>
+                  <Input
+                    id='glossary-target'
+                    value={glossaryDraft.target}
+                    onChange={(event) =>
+                      setGlossaryDraft((cur) => ({
+                        ...cur,
+                        target: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className='flex flex-col gap-1'>
+                  <Label htmlFor='glossary-locale'>
+                    {t('Glossary locale')}
+                  </Label>
+                  <NativeSelect
+                    id='glossary-locale'
+                    value={glossaryDraft.locale}
+                    onChange={(event) =>
+                      setGlossaryDraft((cur) => ({
+                        ...cur,
+                        locale: event.target.value,
+                      }))
+                    }
+                  >
+                    <NativeSelectOption value='en'>en</NativeSelectOption>
+                    <NativeSelectOption value='zh-CN'>zh-CN</NativeSelectOption>
+                  </NativeSelect>
+                </div>
+              </div>
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  disabled={
+                    pending ||
+                    glossaryDraft.source.trim() === '' ||
+                    glossaryDraft.target.trim() === ''
+                  }
+                  onClick={() => void saveGlossaryTerm()}
+                >
+                  {t('Save term')}
+                </Button>
+              </div>
+              {glossaryTerms.length > 0 && (
+                <div className='flex flex-col gap-2'>
+                  {glossaryTerms.map((term) => (
+                    <div
+                      key={term.id}
+                      className='flex flex-wrap items-center justify-between gap-2 rounded border p-2'
+                    >
+                      <span>
+                        {term.source} → {term.target} ({term.locale})
+                      </span>
+                      <div className='flex gap-2'>
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          disabled={pending}
+                          onClick={() =>
+                            setGlossaryDraft({
+                              id: term.id,
+                              source: term.source,
+                              locale: term.locale,
+                              target: term.target,
+                            })
+                          }
+                        >
+                          {t('Edit term')}
+                        </Button>
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          disabled={pending}
+                          onClick={() => void deleteGlossaryTerm(term.id)}
+                        >
+                          {t('Delete term')}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
             {error && <p className='text-destructive text-sm'>{error}</p>}
           </div>
         </ConfigGate>

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,6 +87,86 @@ func TestAdtyTranslationDefaultFuncDialsRootConfiguredProvider(t *testing.T) {
 	assert.Equal(t, 7*time.Second, timeout)
 }
 
+// ISS-R1-0143: 平台已有模型模式不依赖独立 API 的 BaseURL，而是解析平台已启用渠道。
+func TestAdtyTranslationPlatformModeResolvesChannelConnection(t *testing.T) {
+	t.Setenv("CRYPTO_SECRET", "synthetic-encryption-key-for-local-tests-only")
+	db := prepareReferralDialectDB(t, "sqlite")
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+
+	var gotPath, gotAPIKey, gotModel string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
+		var body struct {
+			Model string `json:"model"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		gotModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"Amount 12.50 USD order A123456 is not refunded"}]}`))
+	}))
+	defer server.Close()
+
+	oldClient := adtyTranslationHTTPClient
+	adtyTranslationHTTPClient = func(time.Duration) *http.Client {
+		return adtyTestTranslationClient(t, server)
+	}
+	t.Cleanup(func() { adtyTranslationHTTPClient = oldClient })
+
+	baseURL := "https://platform-channel.example"
+	mapping := `{"translator":"claude-3-5-haiku-latest"}`
+	ch := &model.Channel{
+		Name:         "platform-claude",
+		Type:         constant.ChannelTypeAnthropic,
+		Key:          "sk-ant-platform-key",
+		Status:       common.ChannelStatusEnabled,
+		BaseURL:      &baseURL,
+		Models:       "translator",
+		ModelMapping: &mapping,
+		Group:        "default",
+	}
+	require.NoError(t, db.Create(ch).Error)
+	require.NoError(t, db.Create(&model.Ability{
+		Group:     "default",
+		Model:     "translator",
+		ChannelId: ch.Id,
+		Enabled:   true,
+	}).Error)
+
+	// 先保存独立 API，再切到平台模型（BaseURL 传空），验证平台模式能正常通过预检、测试与翻译，且原独立地址在库里不被清空。
+	_, err := SaveAdtyTranslationConfig(AdtyTranslationInput{
+		Mode:      model.AdtyTranslationModeOwn,
+		Protocol:  "openai",
+		BaseURL:   "https://independent.example/v1",
+		ModelName: "translator",
+		Enabled:   true,
+	})
+	require.NoError(t, err)
+
+	view, err := SaveAdtyTranslationConfig(AdtyTranslationInput{
+		Mode:      model.AdtyTranslationModeSet,
+		ModelName: "translator",
+		Enabled:   true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtyTranslationModeSet, view.Mode)
+	assert.Equal(t, "https://independent.example/v1", view.BaseURL)
+
+	require.NoError(t, CheckAdtyTranslationProvider())
+
+	tested, err := TestAdtyTranslation("console.adty.test")
+	require.NoError(t, err)
+	assert.NotZero(t, tested.TestedAt)
+	assert.Equal(t, "/v1/messages", gotPath)
+	assert.Equal(t, "sk-ant-platform-key", gotAPIKey)
+	assert.Equal(t, "claude-3-5-haiku-latest", gotModel)
+
+	res, err := TranslateAdtyDynamic("notice:platform-channel", "金额 12.50 USD，订单 A123456，不退款", 0)
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtyTranslationReady, res.Status)
+	assert.Equal(t, "Amount 12.50 USD order A123456 is not refunded", res.English)
+}
+
 // 外部服务失败时保留中文并标记英文未就绪，且不扣客户余额。
 func TestAdtyTranslationProviderFailureKeepsChineseAndNoDebit(t *testing.T) {
 	t.Setenv("CRYPTO_SECRET", "synthetic-encryption-key-for-local-tests-only")
@@ -105,7 +187,7 @@ func TestAdtyTranslationProviderFailureKeepsChineseAndNoDebit(t *testing.T) {
 	t.Cleanup(func() { adtyTranslationHTTPClient = oldClient })
 
 	require.NoError(t, db.Create(&model.AdtyTranslationConfig{
-		Id: 1, Mode: model.AdtyTranslationModeSet, Protocol: "openai",
+		Id: 1, Mode: model.AdtyTranslationModeOwn, Protocol: "openai",
 		BaseURL: "https://translator.example/v1", ModelName: "translator",
 		TimeoutSec: 5, Enabled: true,
 	}).Error)
@@ -123,6 +205,9 @@ func TestAdtyTranslationProviderFailureKeepsChineseAndNoDebit(t *testing.T) {
 	assert.Equal(t, source, head.Source)
 	assert.Empty(t, head.English)
 
+	var job model.AdtyTranslationJob
+	require.NoError(t, db.Where("object_key = ? AND version = ?", "notice:provider-down", head.Version).First(&job).Error)
+	assert.Equal(t, model.AdtyTranslationFailed, job.Status)
 }
 
 // 配置指回本站（品牌域名、主站域名或分站根域名）时直接拒绝，不发请求、不递归。
@@ -141,7 +226,7 @@ func TestAdtyTranslationProviderRefusesOwnRelay(t *testing.T) {
 	t.Cleanup(func() { adtyTranslationHTTPClient = oldClient })
 
 	require.NoError(t, db.Create(&model.AdtyTranslationConfig{
-		Id: 1, Mode: model.AdtyTranslationModeSet, Protocol: "openai",
+		Id: 1, Mode: model.AdtyTranslationModeOwn, Protocol: "openai",
 		BaseURL: "https://adtyai.com/v1", ModelName: "translator", Enabled: true,
 	}).Error)
 

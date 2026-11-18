@@ -12,12 +12,14 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"gorm.io/gorm"
 )
 
-// 系统翻译的出口实现（ISS-R4-0012）。Root 在后台配好协议、地址和密钥后，
-// 这里按配置真的发一次 HTTP 请求；没配好就老实报错，由调用方保留中文并标记英文未就绪。
+// 系统翻译的出口实现（ISS-R4-0012 / ISS-R1-0143）。Root 在后台配好「平台已有模型」或
+// 「独立翻译 API」后，这里按模式分别解析上游并发起请求；没配好或未启用就老实报错，
+// 由调用方保留中文并标记英文未就绪。
 // 约束：不把翻译请求发回本站中转，不用客户 Key，不扣客户、团队或站长余额。
 const (
 	adtyTranslationProtocolOpenAI    = "openai"
@@ -32,7 +34,15 @@ const (
 		"and keep the original negation. Reply with the English translation only."
 )
 
-var errAdtyTranslationNoReply = common.NewMessage("The translation service did not return English")
+var (
+	errAdtyTranslationNoReply  = common.NewMessage("The translation service did not return English")
+	ErrAdtyTranslationDisabled = common.NewMessage("The translator is not enabled")
+)
+
+// AdtyPlatformChannelTranslateFunc 允许 main.go 或测试在不引入 service -> relay 循环依赖的前提下
+// 接入自定义渠道执行器。为空时默认按 model.Channel / model.Ability 和 common.ChannelType2APIType
+// 直接向渠道上游发起 HTTP 调用。
+var AdtyPlatformChannelTranslateFunc func(channel *model.Channel, modelName, systemPrompt, text string, timeout time.Duration) (string, error)
 
 // adtyTranslationHTTPClient 造一次翻译用的客户端：复用进程的出口连接池，只覆盖超时，
 // 免得慢翻译一直占着调用方的 goroutine。测试替换这里。
@@ -57,17 +67,8 @@ func adtyTranslateViaProvider(modelName, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	protocol, err := adtyTranslationProtocolName(cfg.Protocol)
-	if err != nil {
-		return "", err
-	}
-	endpoint, err := adtyTranslationEndpoint(cfg.BaseURL, protocol)
-	if err != nil {
-		return "", err
-	}
-	token, err := model.OpenAdtyPurposeSecret("translation", cfg.TokenCipher)
-	if err != nil {
-		return "", err
+	if !cfg.Enabled {
+		return "", ErrAdtyTranslationDisabled
 	}
 	if strings.TrimSpace(modelName) == "" {
 		modelName = cfg.ModelName
@@ -77,6 +78,41 @@ func adtyTranslateViaProvider(modelName, text string) (string, error) {
 		return "", ErrAdtyTranslationInvalid
 	}
 
+	switch cfg.Mode {
+	case model.AdtyTranslationModeOwn:
+		protocol, err := adtyTranslationProtocolName(cfg.Protocol)
+		if err != nil {
+			return "", err
+		}
+		endpoint, err := adtyTranslationEndpoint(cfg.BaseURL, protocol)
+		if err != nil {
+			return "", err
+		}
+		token, err := model.OpenAdtyPurposeSecret("translation", cfg.TokenCipher)
+		if err != nil {
+			return "", err
+		}
+		if err := rejectAdtyCustomerToken(token); err != nil {
+			return "", err
+		}
+		return adtyDispatchTranslationHTTP(protocol, endpoint, token, modelName, text, cfg.TimeoutSec)
+
+	case model.AdtyTranslationModeSet:
+		channel, upstreamModel, protocol, endpoint, token, err := resolveAdtyPlatformChannel(modelName, "")
+		if err != nil {
+			return "", err
+		}
+		if AdtyPlatformChannelTranslateFunc != nil {
+			return AdtyPlatformChannelTranslateFunc(channel, upstreamModel, adtyTranslationSystemPrompt, text, adtyTranslationTimeout(cfg.TimeoutSec))
+		}
+		return adtyDispatchTranslationHTTP(protocol, endpoint, token, upstreamModel, text, cfg.TimeoutSec)
+
+	default:
+		return "", ErrAdtyTranslationInvalid
+	}
+}
+
+func adtyDispatchTranslationHTTP(protocol, endpoint, token, modelName, text string, timeoutSec int) (string, error) {
 	payload, err := adtyTranslationPayload(protocol, modelName, text)
 	if err != nil {
 		return "", err
@@ -100,7 +136,7 @@ func adtyTranslateViaProvider(modelName, text string) (string, error) {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	response, err := adtyTranslationHTTPClient(adtyTranslationTimeout(cfg.TimeoutSec)).Do(request)
+	response, err := adtyTranslationHTTPClient(adtyTranslationTimeout(timeoutSec)).Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +152,7 @@ func adtyTranslateViaProvider(modelName, text string) (string, error) {
 }
 
 // CheckAdtyTranslationProvider 在启动时确认「Root 打开了系统翻译」这条链真的能用。
-// 没配或没启用时保持安静；启用但协议、地址不完整时返回原因，由 StartAdty 记一条告警。
+// 没配或没启用时保持安静；启用但模式、渠道或协议地址不完整时返回原因，由 StartAdty 记一条告警。
 func CheckAdtyTranslationProvider() error {
 	cfg, err := loadAdtyTranslationConfig()
 	if err != nil {
@@ -128,12 +164,136 @@ func CheckAdtyTranslationProvider() error {
 	if !cfg.Enabled {
 		return nil
 	}
-	protocol, err := adtyTranslationProtocolName(cfg.Protocol)
-	if err != nil {
+	switch cfg.Mode {
+	case model.AdtyTranslationModeOwn:
+		protocol, err := adtyTranslationProtocolName(cfg.Protocol)
+		if err != nil {
+			return err
+		}
+		_, err = adtyTranslationEndpoint(cfg.BaseURL, protocol)
 		return err
+	case model.AdtyTranslationModeSet:
+		_, _, _, _, _, err := resolveAdtyPlatformChannel(cfg.ModelName, "")
+		return err
+	default:
+		return ErrAdtyTranslationInvalid
 	}
-	_, err = adtyTranslationEndpoint(cfg.BaseURL, protocol)
-	return err
+}
+
+// resolveAdtyPlatformChannel 为「平台已有模型」模式解析已启用的上游渠道，不依赖独立 API 的 BaseURL。
+func resolveAdtyPlatformChannel(modelName, requestHost string) (*model.Channel, string, string, string, string, error) {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" || model.DB == nil {
+		return nil, "", "", "", "", ErrAdtyTranslationInvalid
+	}
+	if !model.DB.Migrator().HasTable(&model.Channel{}) {
+		return nil, "", "", "", "", ErrAdtyTranslationInvalid
+	}
+
+	var selected *model.Channel
+	if model.DB.Migrator().HasTable(&model.Ability{}) {
+		var channelIDs []int
+		err := model.DB.Table("abilities").
+			Select("abilities.channel_id").
+			Joins("JOIN channels ON channels.id = abilities.channel_id").
+			Where("abilities.enabled = ? AND abilities.model = ? AND channels.status = ?", true, modelName, common.ChannelStatusEnabled).
+			Order("COALESCE(abilities.priority, 0) DESC, abilities.weight DESC, channels.id DESC").
+			Pluck("abilities.channel_id", &channelIDs).Error
+		if err == nil {
+			for _, id := range channelIDs {
+				var ch model.Channel
+				if err := model.DB.First(&ch, id).Error; err == nil && ch.Status == common.ChannelStatusEnabled {
+					selected = &ch
+					break
+				}
+			}
+		}
+	}
+
+	if selected == nil {
+		var channels []model.Channel
+		if err := model.DB.Where("status = ?", common.ChannelStatusEnabled).
+			Order("COALESCE(priority, 0) DESC, COALESCE(weight, 0) DESC, id DESC").
+			Find(&channels).Error; err != nil {
+			return nil, "", "", "", "", err
+		}
+		for i := range channels {
+			if _, ok := adtyChannelSupportsModel(&channels[i], modelName); ok {
+				selected = &channels[i]
+				break
+			}
+		}
+	}
+
+	if selected == nil {
+		return nil, "", "", "", "", ErrAdtyTranslationInvalid
+	}
+
+	upstreamModel, _ := adtyChannelSupportsModel(selected, modelName)
+	if upstreamModel == "" {
+		upstreamModel = modelName
+	}
+
+	protocol, err := adtyChannelProtocol(selected.Type)
+	if err != nil {
+		return nil, "", "", "", "", err
+	}
+
+	baseURL := strings.TrimSpace(selected.GetBaseURL())
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(constant.GetChannelBaseURL(selected.Type))
+	}
+	endpoint, err := adtyTranslationEndpoint(baseURL, protocol)
+	if err != nil {
+		return nil, "", "", "", "", err
+	}
+
+	key, _, keyErr := selected.GetNextEnabledKey()
+	if keyErr != nil {
+		return nil, "", "", "", "", ErrAdtyTranslationInvalid
+	}
+	key = strings.TrimSpace(key)
+	if requestHost != "" {
+		if err := rejectAdtyTranslationSelf(baseURL, requestHost, key); err != nil {
+			return nil, "", "", "", "", err
+		}
+	} else if err := rejectAdtyCustomerToken(key); err != nil {
+		return nil, "", "", "", "", err
+	}
+
+	return selected, upstreamModel, protocol, endpoint, key, nil
+}
+
+func adtyChannelSupportsModel(ch *model.Channel, modelName string) (string, bool) {
+	if ch == nil || modelName == "" {
+		return "", false
+	}
+	if rawMapping := strings.TrimSpace(ch.GetModelMapping()); rawMapping != "" {
+		var mapping map[string]string
+		if err := json.Unmarshal([]byte(rawMapping), &mapping); err == nil {
+			if mapped, ok := mapping[modelName]; ok && strings.TrimSpace(mapped) != "" {
+				return strings.TrimSpace(mapped), true
+			}
+		}
+	}
+	for _, item := range ch.GetModels() {
+		item = strings.TrimSpace(item)
+		if item == modelName || item == "*" {
+			return modelName, true
+		}
+	}
+	return "", false
+}
+
+func adtyChannelProtocol(channelType int) (string, error) {
+	apiType, ok := common.ChannelType2APIType(channelType)
+	if !ok && channelType == constant.ChannelTypeTaskPlugin {
+		return "", ErrAdtyTranslationInvalid
+	}
+	if channelType == constant.ChannelTypeAnthropic || apiType == constant.APITypeAnthropic {
+		return adtyTranslationProtocolAnthropic, nil
+	}
+	return adtyTranslationProtocolOpenAI, nil
 }
 
 func adtyTranslationProtocolName(raw string) (string, error) {

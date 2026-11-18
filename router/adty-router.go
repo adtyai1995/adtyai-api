@@ -106,6 +106,14 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/admin/translation/test", "option:write"},
 		{http.MethodPost, "/api/adty/admin/translation/run", "option:write"},
 		{http.MethodGet, "/api/adty/admin/translation/usage", "option:read"},
+		{http.MethodGet, "/api/adty/admin/translation/tasks", "option:read"},
+		{http.MethodPost, "/api/adty/admin/translation/retry", "option:write"},
+		{http.MethodPost, "/api/adty/admin/translation/complete", "option:write"},
+		{http.MethodPut, "/api/adty/admin/translation/edit", "option:write"},
+		{http.MethodGet, "/api/adty/admin/translation/glossary", "option:read"},
+		{http.MethodPost, "/api/adty/admin/translation/glossary", "option:write"},
+		{http.MethodPut, "/api/adty/admin/translation/glossary/:id", "option:write"},
+		{http.MethodDelete, "/api/adty/admin/translation/glossary/:id", "option:write"},
 		{http.MethodGet, "/api/adty/groups/health", "api_key:read"},
 		{http.MethodGet, "/api/adty/admin/group-health", "option:read"},
 		{http.MethodPut, "/api/adty/admin/group-health", "option:write"},
@@ -146,6 +154,14 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	root.POST("/translation/test", controller.PostAdtyTranslationTest)
 	root.POST("/translation/run", controller.PostAdtyTranslationRun)
 	root.GET("/translation/usage", controller.GetAdtyTranslationUsage)
+	root.GET("/translation/tasks", controller.GetAdtyTranslationTasks)
+	root.POST("/translation/retry", controller.PostAdtyTranslationRetry)
+	root.POST("/translation/complete", controller.PostAdtyTranslationComplete)
+	root.PUT("/translation/edit", controller.PutAdtyTranslationEdit)
+	root.GET("/translation/glossary", controller.GetAdtyTranslationGlossary)
+	root.POST("/translation/glossary", controller.PostAdtyTranslationGlossary)
+	root.PUT("/translation/glossary/:id", controller.PutAdtyTranslationGlossary)
+	root.DELETE("/translation/glossary/:id", controller.DeleteAdtyTranslationGlossary)
 	root.GET("/group-health", controller.GetAdtyAdminGroupHealth)
 	root.PUT("/group-health", controller.PutAdtyGroupHealth)
 	root.POST("/group-health/probe", controller.PostAdtyGroupProbe)

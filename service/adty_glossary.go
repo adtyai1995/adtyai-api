@@ -1,9 +1,11 @@
 package service
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/QuantumNous/new-api/model"
+	"gorm.io/gorm"
 )
 
 // AdtyOfficialGlossaryPair is one A.20.2 term in the official languages.
@@ -48,10 +50,99 @@ func SeedAdtyOfficialGlossary() error {
 	return nil
 }
 
-func adtyTranslationKeepsGlossary(source, english string) bool {
+// ListAdtyGlossaryTerms returns configured glossary entries for Root administration.
+func ListAdtyGlossaryTerms(locale string) ([]model.AdtyGlossaryTerm, error) {
+	if model.DB == nil {
+		return nil, ErrAdtyTranslationInvalid
+	}
+	query := model.DB.Model(&model.AdtyGlossaryTerm{})
+	if loc := strings.TrimSpace(locale); loc != "" {
+		query = query.Where("locale = ?", loc)
+	}
 	var terms []model.AdtyGlossaryTerm
-	if err := model.DB.Where("locale = ?", AdtyOfficialGlossaryLocaleEN).Find(&terms).Error; err != nil {
-		return true
+	if err := query.Order("locale ASC, source ASC, id ASC").Find(&terms).Error; err != nil {
+		return nil, err
+	}
+	return terms, nil
+}
+
+// UpsertAdtyGlossaryTerm creates or updates one shared Chinese/English glossary entry.
+func UpsertAdtyGlossaryTerm(id int64, source, locale, target string) (*model.AdtyGlossaryTerm, error) {
+	if model.DB == nil {
+		return nil, ErrAdtyTranslationInvalid
+	}
+	source = strings.TrimSpace(source)
+	locale = strings.TrimSpace(locale)
+	target = strings.TrimSpace(target)
+	if locale == "" {
+		locale = AdtyOfficialGlossaryLocaleEN
+	}
+	if source == "" || target == "" || (locale != AdtyOfficialGlossaryLocaleEN && locale != AdtyOfficialGlossaryLocaleZhCN) {
+		return nil, ErrAdtyTranslationInvalid
+	}
+	if id > 0 {
+		var row model.AdtyGlossaryTerm
+		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyTranslationInvalid
+				}
+				return err
+			}
+			var conflict model.AdtyGlossaryTerm
+			lookup := tx.Where("source = ? AND locale = ? AND id <> ?", source, locale, id).Limit(1).Find(&conflict)
+			if lookup.Error != nil {
+				return lookup.Error
+			}
+			if lookup.RowsAffected > 0 {
+				return ErrAdtyTranslationInvalid
+			}
+			row.Source = source
+			row.Locale = locale
+			row.Target = target
+			return tx.Save(&row).Error
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &row, nil
+	}
+	if err := SaveAdtyGlossaryTerm(source, locale, target); err != nil {
+		return nil, err
+	}
+	var saved model.AdtyGlossaryTerm
+	if err := model.DB.Where("source = ? AND locale = ?", source, locale).First(&saved).Error; err != nil {
+		return nil, err
+	}
+	return &saved, nil
+}
+
+// DeleteAdtyGlossaryTerm removes one glossary entry by ID.
+func DeleteAdtyGlossaryTerm(id int64) error {
+	if model.DB == nil || id <= 0 {
+		return ErrAdtyTranslationInvalid
+	}
+	res := model.DB.Delete(&model.AdtyGlossaryTerm{}, id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrAdtyTranslationInvalid
+	}
+	return nil
+}
+
+func adtyTranslationKeepsGlossary(source, english string) bool {
+	return adtyTranslationKeepsGlossaryWithDB(model.DB, source, english)
+}
+
+func adtyTranslationKeepsGlossaryWithDB(db *gorm.DB, source, english string) bool {
+	if db == nil {
+		return false
+	}
+	var terms []model.AdtyGlossaryTerm
+	if err := db.Where("locale = ?", AdtyOfficialGlossaryLocaleEN).Find(&terms).Error; err != nil {
+		return false
 	}
 	lower := strings.ToLower(english)
 	for _, term := range terms {
