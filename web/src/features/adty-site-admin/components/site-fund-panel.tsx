@@ -210,6 +210,11 @@ export function SiteFundPanel(props: { siteId: number }) {
           ))}
         </ul>
       )}
+      <h3 className='text-sm font-medium'>{t('Financial review history')}</h3>
+      {dispositions.isPending && <LoadingState />}
+      {dispositions.isError && (
+        <ErrorState onRetry={() => void dispositions.refetch()} />
+      )}
       {dispositions.isSuccess && dispositionRows.length === 0 && (
         <p className='text-sm'>{t('No data')}</p>
       )}

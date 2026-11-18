@@ -17,12 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
+import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -30,6 +32,7 @@ import {
   getSiteReports,
   handleSiteReport,
   reviewFlaggedCustomer,
+  SITE_ADMIN_PAGE_SIZE,
   siteAdminKeys,
 } from '../api'
 
@@ -37,14 +40,36 @@ import {
 export function ReviewsPanel() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const [flaggedPage, setFlaggedPage] = useState(1)
+  const [reportsPage, setReportsPage] = useState(1)
   const flagged = useQuery({
-    queryKey: siteAdminKeys.list('flagged', { p: 1 }),
-    queryFn: () => getFlaggedCustomers(1),
+    queryKey: siteAdminKeys.list('flagged', { p: flaggedPage }),
+    queryFn: () => getFlaggedCustomers(flaggedPage),
   })
   const reports = useQuery({
-    queryKey: siteAdminKeys.list('reports', { p: 1 }),
-    queryFn: () => getSiteReports(1),
+    queryKey: siteAdminKeys.list('reports', { p: reportsPage }),
+    queryFn: () => getSiteReports(reportsPage),
   })
+  useEffect(() => {
+    if (!flagged.data) return
+    const maxPage = Math.max(
+      1,
+      Math.ceil((flagged.data.total ?? 0) / SITE_ADMIN_PAGE_SIZE)
+    )
+    if (flaggedPage > maxPage) {
+      setFlaggedPage(maxPage)
+    }
+  }, [flagged.data, flaggedPage])
+  useEffect(() => {
+    if (!reports.data) return
+    const maxPage = Math.max(
+      1,
+      Math.ceil((reports.data.total ?? 0) / SITE_ADMIN_PAGE_SIZE)
+    )
+    if (reportsPage > maxPage) {
+      setReportsPage(maxPage)
+    }
+  }, [reports.data, reportsPage])
   const review = useMutation({
     mutationFn: (userId: number) => reviewFlaggedCustomer(userId, true),
     onSuccess: () => {
@@ -62,8 +87,12 @@ export function ReviewsPanel() {
     },
     onError: (error) => handleServerError(error),
   })
-  const flaggedRows = flagged.data?.items ?? []
-  const reportRows = reports.data?.items ?? []
+  const flaggedRows = Array.isArray(flagged.data?.items)
+    ? flagged.data.items
+    : []
+  const reportRows = Array.isArray(reports.data?.items)
+    ? reports.data.items
+    : []
   const retry = () => {
     void flagged.refetch()
     void reports.refetch()
@@ -101,6 +130,12 @@ export function ReviewsPanel() {
             ))}
           </ul>
         )}
+        <PageSwitcher
+          page={flaggedPage}
+          total={flagged.data?.total ?? 0}
+          pageSize={SITE_ADMIN_PAGE_SIZE}
+          onPageChange={setFlaggedPage}
+        />
       </section>
       <section className='flex flex-col gap-2'>
         <h3 className='text-sm font-medium'>{t('Reports')}</h3>
@@ -125,6 +160,12 @@ export function ReviewsPanel() {
             ))}
           </ul>
         )}
+        <PageSwitcher
+          page={reportsPage}
+          total={reports.data?.total ?? 0}
+          pageSize={SITE_ADMIN_PAGE_SIZE}
+          onPageChange={setReportsPage}
+        />
       </section>
     </div>
   )

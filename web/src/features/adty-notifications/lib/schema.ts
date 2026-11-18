@@ -18,8 +18,44 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
-export const notificationSchema = z
-  .object({
+const baseNotificationObject = z.object({
+  title: z.string().trim().max(120, 'Invalid parameters'),
+  content: z.string().trim().max(10000, 'Invalid parameters'),
+  kind: z.enum(['platform', 'system', 'maintenance', 'rules']),
+  audience: z.enum(['all_users', 'all_sites', 'site']),
+  target_site_id: z.number().int().nonnegative(),
+  business: z.string().trim().max(200, 'Invalid parameters'),
+  sync_telegram: z.boolean(),
+  telegram_channel: z.string().trim().max(128, 'Invalid parameters'),
+})
+
+function refineNotificationTargets(
+  value: z.infer<typeof baseNotificationObject>,
+  ctx: z.RefinementCtx
+) {
+  // 勾了同步但没填频道，排进队列也是一条发不出去的投递，前端先挡住。
+  if (value.sync_telegram && value.telegram_channel === '') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['telegram_channel'],
+      message: 'Enter the Telegram channel',
+    })
+  }
+  if (value.audience === 'site' && value.target_site_id <= 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['target_site_id'],
+      message: 'Select a site',
+    })
+  }
+}
+
+export const notificationDraftSchema = baseNotificationObject.superRefine(
+  refineNotificationTargets
+)
+
+export const notificationSchema = baseNotificationObject
+  .extend({
     title: z
       .string()
       .trim()
@@ -30,30 +66,8 @@ export const notificationSchema = z
       .trim()
       .min(1, 'Content is required')
       .max(10000, 'Invalid parameters'),
-    kind: z.enum(['platform', 'system', 'maintenance', 'rules']),
-    audience: z.enum(['all_users', 'all_sites', 'site']),
-    target_site_id: z.number().int().nonnegative(),
-    business: z.string().trim().max(200, 'Invalid parameters'),
-    sync_telegram: z.boolean(),
-    telegram_channel: z.string().trim().max(128, 'Invalid parameters'),
   })
-  .superRefine((value, ctx) => {
-    // 勾了同步但没填频道，排进队列也是一条发不出去的投递，前端先挡住。
-    if (value.sync_telegram && value.telegram_channel === '') {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['telegram_channel'],
-        message: 'Enter the Telegram channel',
-      })
-    }
-    if (value.audience === 'site' && value.target_site_id <= 0) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['target_site_id'],
-        message: 'Select a site',
-      })
-    }
-  })
+  .superRefine(refineNotificationTargets)
 
 export type NotificationInput = z.infer<typeof notificationSchema>
 export const notificationKindLabels: Record<NotificationInput['kind'], string> =

@@ -52,6 +52,7 @@ import {
 } from '../api'
 import {
   notificationAudienceLabels,
+  notificationDraftSchema,
   notificationKindLabels,
   notificationSchema,
   type NotificationInput,
@@ -127,6 +128,24 @@ export function NotificationEditor(props: {
     if (form.formState.isDirty) setDiscarding(true)
     else props.onClose()
   }
+  const handleDraftSave = () => {
+    form.clearErrors()
+    const raw = form.getValues()
+    const parsed = notificationDraftSchema.safeParse({
+      ...raw,
+      target_site_id: Number(raw.target_site_id),
+    })
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        const field = issue.path[0] as keyof NotificationInput | undefined
+        if (field) {
+          form.setError(field, { type: 'manual', message: issue.message })
+        }
+      }
+      return
+    }
+    save.mutate({ ...parsed.data, draft: true })
+  }
   const errors = form.formState.errors
   let submitLabel = 'Publish notification'
   if (props.row?.status === 'draft') {
@@ -155,9 +174,7 @@ export function NotificationEditor(props: {
                 type='button'
                 variant='secondary'
                 disabled={save.isPending}
-                onClick={form.handleSubmit((input) =>
-                  save.mutate({ ...input, draft: true })
-                )}
+                onClick={handleDraftSave}
               >
                 {t('Save as draft')}
               </Button>
@@ -316,16 +333,20 @@ export function NotificationEditor(props: {
                 </FieldError>
               </Field>
             )}
-            <Field>
+            <Field data-invalid={!!errors.business}>
               <FieldLabel htmlFor={`${id}-business`}>
                 {t('Related business')}
               </FieldLabel>
               <Input
                 id={`${id}-business`}
                 maxLength={200}
+                aria-invalid={!!errors.business}
                 disabled={save.isPending}
                 {...form.register('business')}
               />
+              <FieldError>
+                {errors.business?.message ? t(errors.business.message) : null}
+              </FieldError>
             </Field>
           </FieldGroup>
         </form>

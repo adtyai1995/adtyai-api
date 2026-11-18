@@ -163,6 +163,44 @@ describe('AffiliateProgram', () => {
       '$240.00'
     )
   })
+
+  it('renders ErrorState instead of not-open copy when public settings fail and recovers on Retry', async () => {
+    api.getReferralPublicSettings
+      .mockRejectedValueOnce(new Error('network error'))
+      .mockResolvedValueOnce(openProgram)
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const rootRoute = createRootRoute()
+    const page = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/affiliate',
+      component: AffiliateProgram,
+    })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([page]),
+      history: createMemoryHistory({ initialEntries: ['/affiliate'] }),
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    )
+
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect(
+      screen.queryByText(
+        'The affiliate program is not open yet. Check back soon.'
+      )
+    ).not.toBeInTheDocument()
+
+    await userEvent.setup().click(retry)
+    expect(
+      await screen.findByText(
+        'Earn 12% of every top-up made by the people you invite, for as long as they stay.'
+      )
+    ).toBeVisible()
+  })
 })
 
 describe('estimateCommission', () => {

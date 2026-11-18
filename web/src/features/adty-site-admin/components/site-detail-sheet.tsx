@@ -42,13 +42,16 @@ import {
 } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { getSystemOptions } from '@/features/system-settings/api'
 import { DraftDiscardDialog } from '@/features/system-settings/components/draft-discard-dialog'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
+import { api } from '@/lib/api'
 import { formatQuotaWithCurrency } from '@/lib/currency'
 import { formatTimestampToDate } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -78,7 +81,7 @@ import {
 import { siteNotice } from '../lib/sites'
 import type { AdminSite } from '../types'
 import { CloseSiteDialog } from './close-site-dialog'
-
+import { SwitchRow } from './setting-fields'
 import { SiteFundPanel } from './site-fund-panel'
 import { SiteTierControl } from './site-tier-control'
 import { SiteStatusBadge } from './site-status-badge'
@@ -727,6 +730,120 @@ function RootBalanceRequests(props: { siteId: number }) {
   )
 }
 
+const SITE_BONUS_METHODS: ReadonlyArray<{
+  method: 'alipay' | 'wxpay' | 'usdt'
+  label: string
+}> = [
+  { method: 'alipay', label: 'Alipay' },
+  { method: 'wxpay', label: 'WeChat Pay' },
+  { method: 'usdt', label: 'USDT' },
+]
+
+function parseSiteMethodAuth(
+  raw: string | undefined,
+  siteId: number
+): { valid: boolean; authorized: Set<string> } {
+  if (!raw || raw.trim() === '') {
+    return { valid: true, authorized: new Set() }
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { valid: false, authorized: new Set() }
+    }
+    for (const value of Object.values(parsed as Record<string, unknown>)) {
+      if (
+        value !== null &&
+        (!Array.isArray(value) ||
+          value.some((item) => typeof item !== 'string'))
+      ) {
+        return { valid: false, authorized: new Set() }
+      }
+    }
+    const list = (parsed as Record<string, string[] | null>)[String(siteId)]
+    return {
+      valid: true,
+      authorized: new Set(
+        Array.isArray(list)
+          ? list.map((item) => item.trim().toLowerCase())
+          : []
+      ),
+    }
+  } catch {
+    return { valid: false, authorized: new Set() }
+  }
+}
+
+/** Root-only per-site payment-method gift authorization (ADTY-09-03). */
+export function SiteBonusMethodAuth(props: { siteId: number }) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const isRoot =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const options = useQuery({
+    queryKey: ['system-options'],
+    queryFn: async () => requireServerSuccess(await getSystemOptions()),
+    enabled: isRoot,
+  })
+  const save = useMutation({
+    mutationFn: async (input: {
+      method: 'alipay' | 'wxpay' | 'usdt'
+      allowed: boolean
+    }) => {
+      if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
+        throw new Error(t('No permission to perform this action'))
+      }
+      const res = await api.put<{
+        success: boolean
+        message?: string
+        data?: { site_id: number; allowed: boolean }
+      }>(`/api/adty/admin/sites/${props.siteId}/bonus-methods`, input)
+      return requireServerSuccess(res.data)
+    },
+    onSuccess: () => {
+      toast.success(t('Saved successfully'))
+      void queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+    },
+    onError: (err) => handleServerError(err),
+  })
+  if (!isRoot) return null
+  const optionRows = Array.isArray(options.data?.data) ? options.data.data : []
+  const rawAuth = optionRows.find(
+    (item) => item.key === 'adty_topup_setting.site_method_auth'
+  )?.value
+  const auth = parseSiteMethodAuth(rawAuth, props.siteId)
+  return (
+    <section className='flex flex-col gap-2'>
+      <h3 className='text-sm font-medium'>{t('Bonuses')}</h3>
+      <p className='text-muted-foreground text-sm'>
+        {t(
+          'Your customers get this bonus on top-ups with the chosen payment method. It is paid from your earnings, and only methods the platform authorized for this site are shown.'
+        )}
+      </p>
+      {options.isPending && <LoadingState />}
+      {(options.isError || (options.isSuccess && !auth.valid)) && (
+        <ErrorState onRetry={() => void options.refetch()} />
+      )}
+      {options.isSuccess && (
+        <div className='flex flex-col gap-2'>
+          {SITE_BONUS_METHODS.map((item) => (
+            <SwitchRow
+              key={item.method}
+              label={t(item.label)}
+              checked={auth.valid && auth.authorized.has(item.method)}
+              disabled={!auth.valid || save.isPending}
+              onCheckedChange={(allowed) =>
+                save.mutate({ method: item.method, allowed })
+              }
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 /** Details of one site (task 11.9): info, actions, customers and the audit trail. */
 export function SiteDetailSheet(props: {
   siteId: number | null
@@ -831,6 +948,7 @@ export function SiteDetailSheet(props: {
                 )}
               </section>
               <SiteActions key={site.id} site={site} onDirtyChange={setDirty} />
+              <SiteBonusMethodAuth siteId={site.id} />
               <RootBalanceRequests siteId={site.id} />
               <SiteTierControl key={`${site.id}:${site.tier_mode}:${site.tier_code}`} site={site} />
               <SiteFundPanel siteId={site.id} />

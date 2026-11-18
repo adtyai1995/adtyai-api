@@ -21,6 +21,8 @@ import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { EmptyState } from '@/components/empty-state'
+import { ErrorState } from '@/components/error-state'
 import { RichContent } from '@/components/rich-content'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -67,15 +69,40 @@ function CustomerTermsPanel(props: { version: string }) {
     },
     onError: (err) => handleServerError(err),
   })
-  const text = document.data?.data?.trim() ?? ''
+  const loading = document.isLoading || document.isFetching
+  const failed = document.isError || document.data?.success === false
+  const text = !loading && !failed ? (document.data?.data?.trim() ?? '') : ''
+  const ready =
+    !loading &&
+    !failed &&
+    document.isSuccess &&
+    text !== '' &&
+    props.version.trim() !== ''
 
   return (
     <div className='mx-auto flex w-full max-w-3xl flex-col gap-4 p-4'>
       <p className='text-sm'>{t('Accept the current site customer terms first')}</p>
-      {document.isLoading && <Skeleton className='h-40 w-full' />}
-      {text !== '' && <RichContent content={text} />}
+      {loading && <Skeleton className='h-40 w-full' />}
+      {!loading && failed && (
+        <ErrorState onRetry={() => void document.refetch()} />
+      )}
+      {!loading && !failed && text === '' && (
+        <EmptyState
+          title={t('No data')}
+          action={
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => void document.refetch()}
+            >
+              {t('Retry')}
+            </Button>
+          }
+        />
+      )}
+      {!loading && !failed && text !== '' && <RichContent content={text} />}
       <Button
-        disabled={props.version.trim() === '' || accept.isPending}
+        disabled={!ready || accept.isPending}
         onClick={() => accept.mutate()}
       >
         {t('I agree to the site customer terms')}

@@ -20,6 +20,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
+import { ErrorState } from '@/components/error-state'
 import { PublicLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -66,7 +67,10 @@ export function AffiliateProgram() {
           {settings.isPending && (
             <Skeleton className='mx-auto h-6 w-72' aria-hidden />
           )}
-          {!settings.isPending && open && (
+          {settings.isError && (
+            <ErrorState onRetry={() => void settings.refetch()} />
+          )}
+          {!settings.isPending && !settings.isError && open && (
             <p className='text-muted-foreground mx-auto max-w-2xl text-lg'>
               {t(
                 'Earn {{rate}}% of every top-up made by the people you invite, for as long as they stay.',
@@ -74,15 +78,17 @@ export function AffiliateProgram() {
               )}
             </p>
           )}
-          {!settings.isPending && !open && (
+          {!settings.isPending && !settings.isError && !open && (
             <p className='text-muted-foreground mx-auto max-w-2xl text-lg'>
               {t('The affiliate program is not open yet. Check back soon.')}
             </p>
           )}
-          {open && <div className='flex justify-center'>{cta}</div>}
+          {!settings.isError && open && (
+            <div className='flex justify-center'>{cta}</div>
+          )}
         </section>
 
-        {data !== undefined && rate !== null && (
+        {!settings.isError && data !== undefined && rate !== null && (
           <AffiliateDetails settings={{ ...data, default_rate: rate }} />
         )}
       </div>

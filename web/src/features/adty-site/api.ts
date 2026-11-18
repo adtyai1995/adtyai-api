@@ -65,7 +65,10 @@ export function useApiBaseUrl(): string {
   const { status } = useStatus()
   const serverAddress =
     typeof status?.server_address === 'string' ? status.server_address : ''
-  const candidates = [site.data?.api_base_url ?? '', serverAddress]
+  const isSubsite = Boolean(status?.adty_site ?? status?.data?.adty_site)
+  const candidates = isSubsite
+    ? [serverAddress]
+    : [site.data?.api_base_url ?? '', serverAddress]
   const configured = candidates.map((value) => value.trim()).find(Boolean)
   const origin = typeof window === 'undefined' ? '' : window.location.origin
   return (configured || origin).replace(/\/+$/, '')
