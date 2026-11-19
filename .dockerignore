@@ -14,5 +14,6 @@ docs
 .eslintcache
 .gocache
 /web/node_modules
+/scripts/mail/node_modules
 /web/dist
 !THIRD-PARTY-LICENSES.md

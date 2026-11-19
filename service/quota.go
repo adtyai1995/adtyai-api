@@ -672,10 +672,10 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 		if !quotaReminderDue(userSetting, int64(relayInfo.UserQuota), int64(balanceAfter)) {
 			return
 		}
-		lang := userSetting.Language
+		lang := notifyDeliveryLanguage(userSetting)
 		prompt := i18n.Translate(lang, i18n.MsgNotifyQuotaLowTitle)
 		// 二开：充值链接指向用户所属站点（任务 11.3）
-		content, values := quotaNotifyContent(lang, userSetting.NotifyType, prompt, logger.FormatQuota(balanceAfter), AdtySiteBaseURL(AdtySiteForUser(relayInfo.UserId)))
+		content, values := quotaNotifyContent(lang, userSetting.NotifyType, prompt, logger.FormatQuota(balanceAfter), AdtySitePublicBaseURL(AdtySiteForUser(relayInfo.UserId)))
 		err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values))
 		if err != nil {
 			common.SysError(common.LogText("failed to send quota notify to user %d: %s", relayInfo.UserId, err.Error()))
@@ -708,6 +708,9 @@ func quotaReminderDue(userSetting dto.UserSetting, before int64, after int64) bo
 // link. values stay in the notify payload for webhook receivers.
 func quotaNotifyContent(lang string, notifyType string, prompt string, remaining string, baseURL string) (string, []any) {
 	switch notifyType {
+	case "", dto.NotifyTypeEmail:
+		topUpLink := strings.TrimRight(baseURL, "/") + "/wallet"
+		return i18n.Translate("en", i18n.MsgNotifyQuotaLowGotify, map[string]any{"Prompt": prompt, "Quota": remaining}), []any{prompt, remaining, topUpLink}
 	case dto.NotifyTypeBark:
 		// Bark推送使用简短文本，不支持HTML
 		return i18n.Translate(lang, i18n.MsgNotifyQuotaLowBark, map[string]any{"Prompt": prompt, "Quota": remaining}), []any{prompt, remaining}

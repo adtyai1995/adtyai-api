@@ -101,6 +101,9 @@ func prepareMailDB(t *testing.T) (*gorm.DB, *fakeResendDomains) {
 	db := prepareSiteDB(t)
 	adty_setting.GetResellerSetting().SenderDomainEnabled = true
 	common.OptionMap["ResendApiKey"] = "re_test"
+	previousProvider := common.OptionMap["EmailProvider"]
+	common.OptionMap["EmailProvider"] = "resend"
+	t.Cleanup(func() { common.OptionMap["EmailProvider"] = previousProvider })
 	common.OptionMap["ResendFrom"] = "ADTY AI <noreply@mail.adtyai.com>"
 	oldAddress := system_setting.ServerAddress
 	system_setting.ServerAddress = "https://adtyai.com"
@@ -135,6 +138,35 @@ func TestSenderFallsBackWhenDomainUnverified(t *testing.T) {
 
 	// 主站
 	assert.Equal(t, "ADTY AI <noreply@mail.adtyai.com>", AdtySenderFor(nil))
+}
+
+func TestSenderUsesActualSMTPAddressEvenWithVerifiedDomain(t *testing.T) {
+	db, fake := prepareMailDB(t)
+	owner, site := openActiveSite(t, db, "mailshop")
+	_, err := AddAdtySiteSenderDomain(context.Background(), owner.Id, "mail.shop.example")
+	require.NoError(t, err)
+	fake.set("dom-mail.shop.example", "verified")
+	require.NoError(t, RunAdtySenderDomainCheckOnce(context.Background(), time.Now()))
+	oldFrom := common.SMTPFrom
+	t.Cleanup(func() { common.SMTPFrom = oldFrom })
+	common.SMTPFrom = "accounts@shared.example"
+	for _, provider := range []string{"smtp", ""} {
+		common.OptionMap["EmailProvider"] = provider
+		assert.Equal(t, "mailshop <accounts@shared.example>", AdtySenderFor(site), provider)
+	}
+}
+
+func TestAccountEmailWithoutOwnedLogoKeepsSiteName(t *testing.T) {
+	for _, path := range []string{"", "/uploads/site-assets/site-11-0123456789abcdef0123456789abcdef.png", "https://other.example/logo.png"} {
+		site := &model.AdtySite{Id: 1, Brand: `{"name":"Shop & Co","logo_url":"` + path + `"}`}
+		body := AdtyRenderMail(site, AdtyMailMessage{Title: "Confirm", Intro: "Use <this> & only this", Code: "012345", ActionURL: "javascript:bad", ActionLabel: "Do not show"})
+		assert.Contains(t, body, `lang="en"`)
+		assert.Contains(t, body, "Shop &amp; Co")
+		assert.Contains(t, body, "Use &lt;this&gt; &amp; only this")
+		assert.Contains(t, body, "<strong>012345</strong>")
+		assert.NotContains(t, body, "Do not show")
+		assert.NotContains(t, body, "<img")
+	}
 }
 
 func TestSenderDomainCheckDoesNotOverwriteAChangedRow(t *testing.T) {
@@ -240,7 +272,7 @@ func TestBrandFieldsLengthAndPlainText(t *testing.T) {
 	assert.Equal(t, "<b>Shop</b>", brand.Name)
 	assert.Equal(t, "<script>x</script>", brand.Notice)
 	// 用在邮件 HTML 里时要转义
-	assert.Equal(t, "&lt;b&gt;Shop&lt;/b&gt;", AdtyBrandFor(&model.AdtySite{Subdomain: "s", Brand: `{"name":"<b>Shop</b>"}`}).HTMLName())
+	assert.Contains(t, AdtyRenderMail(&model.AdtySite{Subdomain: "s", Brand: `{"name":"<b>Shop</b>"}`}, AdtyMailMessage{Title: "Account notice"}), "&lt;b&gt;Shop&lt;/b&gt;")
 }
 
 func TestBrandForSiteAndMain(t *testing.T) {
@@ -341,6 +373,49 @@ func TestClosingHookEmailsCustomers(t *testing.T) {
 	assert.Zero(t, batch.FailCount)
 	assert.Equal(t, model.AdtySiteCloseMailRetryComplete, batch.RetryStatus)
 	assert.NotZero(t, batch.SentAt)
+}
+
+func TestCloseMigrationMailExplainsMainSiteSignInInEnglish(t *testing.T) {
+	previous := system_setting.ServerAddress
+	system_setting.ServerAddress = "https://main.example.com"
+	t.Cleanup(func() { system_setting.ServerAddress = previous })
+	site := &model.AdtySite{Brand: `{"name":"Old & Co","support_contact":"help <support@example.com>"}`, CloseExecuteAt: 1_700_000_000}
+	subject, body := renderAdtySiteCloseMigrationMail(site, &model.AdtySiteCloseMailRecipient{Username: "member<1>"})
+	assert.Equal(t, "Old & Co is closing; sign in on the main site", subject)
+	for _, text := range []string{`href="https://main.example.com"`, "member&lt;1&gt;", "help &lt;support@example.com&gt;", adtyMailWhen(site.CloseExecuteAt), "unique username", "password", "orders and balance", "same email", "create new API keys"} {
+		assert.Contains(t, body, text)
+	}
+	assert.NotContains(t, body, "该分站客户")
+}
+
+func TestSitePricingNoticesUseEnglishForChineseAccounts(t *testing.T) {
+	db, _ := prepareMailDB(t)
+	owner, site := openActiveSite(t, db, "pricemail")
+	customer := siteCustomer(t, db, site, "pricemail-customer")
+	require.NoError(t, db.Model(&model.User{}).Where("id IN ?", []int{owner.Id, customer.Id}).Update("setting", `{"language":"zh-CN"}`).Error)
+	type mail struct{ subject, to, body string }
+	var sent []mail
+	previous := AdtySendSiteEmailAsync
+	AdtySendSiteEmailAsync = func(_ *model.AdtySite, subject, to, body string) { sent = append(sent, mail{subject, to, body}) }
+	t.Cleanup(func() { AdtySendSiteEmailAsync = previous })
+	const at = 1_700_000_000
+	adtyNotifySiteMarkupIncrease(site, customer.Id, []model.AdtySitePrice{{Group: "pro", Model: "model<1>", PendingMarkup: *dec("1.4"), PendingAt: at}})
+	site.PendingCostFactor, site.PendingCostFactorAt = dec("0.92"), at
+	adtyNotifySiteCostFactorPending(site)
+	adtyNotifySiteCostFactor(site)
+	require.Len(t, sent, 3)
+	assert.Equal(t, customer.Email, sent[0].to)
+	assert.Contains(t, sent[0].subject, "Prices on pricemail")
+	assert.Contains(t, sent[0].body, `href="https://pricemail.sites.example.com"`)
+	assert.Contains(t, sent[0].body, "pro / model&lt;1&gt; → 1.4")
+	assert.Contains(t, sent[0].body, adtyMailWhen(at))
+	assert.Contains(t, sent[0].body, "current price applies")
+	assert.Equal(t, owner.Email, sent[1].to)
+	assert.Contains(t, sent[1].body, "0.92")
+	assert.Contains(t, sent[1].body, adtyMailWhen(at))
+	assert.Contains(t, sent[1].body, "current factor applies")
+	assert.Equal(t, owner.Email, sent[2].to)
+	assert.Contains(t, sent[2].body, "now 0.8")
 }
 
 func TestClosedSiteDeletesSenderDomain(t *testing.T) {

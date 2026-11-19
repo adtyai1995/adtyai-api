@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -18,7 +17,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
@@ -42,9 +40,6 @@ type AdtySiteBrand struct {
 	SupportContact string `json:"support_contact"`
 	BaseURL        string `json:"base_url"`
 }
-
-// HTMLName 是写进邮件 HTML 的站名。站长填的是纯文本，进 HTML 前要转义。
-func (b AdtySiteBrand) HTMLName() string { return html.EscapeString(b.Name) }
 
 // AdtySiteBrandInput 是站长提交的品牌字段（11.6 的 PUT /api/adty/site/self 用）。
 type AdtySiteBrandInput struct {
@@ -148,7 +143,7 @@ func adtyPlatformSender() (string, string) {
 	common.OptionMapRWMutex.RLock()
 	provider, resendFrom := common.OptionMap["EmailProvider"], common.OptionMap["ResendFrom"]
 	common.OptionMapRWMutex.RUnlock()
-	if provider == "resend" || (provider == "" && resendFrom != "" && common.SMTPFrom == "") {
+	if provider == "resend" {
 		if parsed, err := mail.ParseAddress(strings.TrimSpace(resendFrom)); err == nil {
 			return parsed.Address, provider
 		}
@@ -181,7 +176,7 @@ func adtyFormatSender(name, address string) string {
 func AdtySenderFor(site *model.AdtySite) string {
 	name := AdtyBrandFor(site).Name
 	platform, provider := adtyPlatformSender()
-	if site != nil && resellerSetting().SenderDomainEnabled && provider != "smtp" {
+	if site != nil && resellerSetting().SenderDomainEnabled && provider == "resend" {
 		var domain model.AdtySiteSenderDomain
 		if model.DB.Where("site_id = ? AND status = ?", site.Id, model.AdtySenderDomainVerified).Limit(1).Find(&domain).RowsAffected > 0 {
 			return adtyFormatSender(name, "noreply@"+domain.Domain)
@@ -457,19 +452,6 @@ func adtyMailWhen(unix int64) string {
 	return time.Unix(unix, 0).Format("2006-01-02 15:04 MST")
 }
 
-func adtySendSiteMail(site *model.AdtySite, user *model.User, subjectKey, bodyKey string, args map[string]any) {
-	if user == nil || strings.TrimSpace(user.Email) == "" {
-		return
-	}
-	if AdtySendSiteEmailAsync == nil {
-		return
-	}
-	lang := user.GetSetting().Language
-	subject := i18n.Translate(lang, subjectKey, args)
-	body := "<p>" + html.EscapeString(i18n.Translate(lang, bodyKey, args)) + "</p>"
-	AdtySendSiteEmailAsync(site, subject, user.Email, body)
-}
-
 func adtySiteCustomerUsers(siteId int) []model.User {
 	var users []model.User
 	if err := model.DB.Select("id", "email", "setting", "site_id").Where("site_id = ? AND staff_site_id = 0", siteId).Find(&users).Error; err != nil {
@@ -514,7 +496,7 @@ func AdtySiteCloseMailIdempotencyKey(batchId int64, userId int) string {
 	return fmt.Sprintf("site-close-mail:%d:%d", batchId, userId)
 }
 
-// SendAdtySiteCloseMigrationMail sends the official bilingual (zh-CN + en)
+// SendAdtySiteCloseMigrationMail sends the official English
 // close-migration mail and records the batch inventory required by A.16.2:
 // target site, recipient count, success/fail counts, send time, and retry
 // status. Already successful recipients are not mailed again. A delivery
@@ -1047,25 +1029,25 @@ func adtyCloseMigrationSupportContact(site *model.AdtySite) string {
 func renderAdtySiteCloseMigrationMail(site *model.AdtySite, recipient *model.AdtySiteCloseMailRecipient) (subject, body string) {
 	support := adtyCloseMigrationSupportContact(site)
 	if support == "" {
-		support = "the main site support channel / 主站客服入口"
+		support = "the main site support channel"
 	}
-	args := map[string]any{
-		"SystemName":     AdtyBrandFor(site).Name,
-		"When":           adtyMailWhen(site.CloseExecuteAt),
-		"Link":           AdtySiteBaseURL(nil),
-		"Username":       recipient.Username,
-		"SupportContact": support,
+	name := AdtyBrandFor(site).Name
+	subject = name + " is closing; sign in on the main site"
+	intro := name + " is closing."
+	if when := adtyMailWhen(site.CloseExecuteAt); when != "" {
+		intro = name + " will close on " + when + "."
 	}
-	zhSubject := i18n.Translate("zh-CN", i18n.MsgAdtySiteMigrationMailSubject, args)
-	enSubject := i18n.Translate("en", i18n.MsgAdtySiteMigrationMailSubject, args)
-	subject = zhSubject
-	if enSubject != "" && enSubject != zhSubject {
-		subject = zhSubject + " / " + enSubject
-	}
-	zhBody := html.EscapeString(i18n.Translate("zh-CN", i18n.MsgAdtySiteMigrationMailBody, args))
-	enBody := html.EscapeString(i18n.Translate("en", i18n.MsgAdtySiteMigrationMailBody, args))
-	body = "<p>" + zhBody + "</p><p>" + enBody + "</p>"
-	return subject, body
+	return subject, AdtyRenderMail(site, AdtyMailMessage{
+		Title: subject, Intro: intro,
+		Paragraphs: []string{
+			"Your account will move to the main site only. It cannot be transferred to another site.",
+			"Sign in on the main site with your unique username: " + recipient.Username + ". Use that username to select your account, then verify your password and complete any required verification.",
+			"Your orders and balance stay with this account. They will not be merged with another account that uses the same email address.",
+			"Your API keys from the closing site will be revoked at migration. Your historical records will be kept; create new API keys on the main site.",
+		},
+		ActionLabel: "Sign in on the main site", ActionURL: AdtySiteBaseURL(nil),
+		Footnote: "For support, contact: " + support,
+	})
 }
 
 // adtyNotifySiteClosing 给这个站的客户发官方关站迁移邮件（A.16.2）。
@@ -1108,11 +1090,12 @@ func adtyNotifySiteMarkupIncrease(site *model.AdtySite, userId int, raised []mod
 		return
 	}
 	detail, at := adtyMarkupRaisedDetail(raised)
-	args := map[string]any{
-		"SystemName": AdtyBrandFor(site).Name,
-		"Detail":     detail,
-		"When":       adtyMailWhen(at),
-		"Link":       AdtySiteBaseURL(site),
+	name := AdtyBrandFor(site).Name
+	message := AdtyMailMessage{
+		Title:       "Prices on " + name + " are going up",
+		Intro:       "New pricing: " + detail,
+		Paragraphs:  []string{"The new pricing takes effect on " + adtyMailWhen(at) + ". Until then the current price applies."},
+		ActionLabel: "Sign in", ActionURL: AdtySitePublicBaseURL(site),
 	}
 	var users []model.User
 	if userId > 0 {
@@ -1122,10 +1105,16 @@ func adtyNotifySiteMarkupIncrease(site *model.AdtySite, userId int, raised []mod
 	} else {
 		users = adtySiteCustomerUsers(site.Id)
 	}
-	for _, user := range users {
-		copied := user
-		adtySendSiteMail(site, &copied, i18n.MsgAdtySiteMarkupSubject, i18n.MsgAdtySiteMarkupBody, args)
+	for i := range users {
+		adtySendSitePricingMail(site, &users[i], message)
 	}
+}
+
+func adtySendSitePricingMail(site *model.AdtySite, user *model.User, message AdtyMailMessage) {
+	if user == nil || strings.TrimSpace(user.Email) == "" || AdtySendSiteEmailAsync == nil {
+		return
+	}
+	AdtySendSiteEmailAsync(site, message.Title, user.Email, AdtyRenderMail(site, message))
 }
 
 // NotifySiteOwnersGlobalCostFactorPending tells every open site's owner that a higher global d is scheduled.
@@ -1162,9 +1151,9 @@ func adtyNotifySiteCostFactorPending(site *model.AdtySite) {
 		common.SysError(common.LogText("load site %d owner for pending cost factor mail: %s", site.Id, err.Error()))
 		return
 	}
-	adtySendSiteMail(site, owner, i18n.MsgAdtySiteCostPendingSubject, i18n.MsgAdtySiteCostPendingBody, map[string]any{
-		"Factor": site.PendingCostFactor.String(),
-		"When":   adtyMailWhen(site.PendingCostFactorAt),
+	adtySendSitePricingMail(site, owner, AdtyMailMessage{
+		Title: "Your site cost factor will change",
+		Intro: "Your site cost factor will change to " + site.PendingCostFactor.String() + " on " + adtyMailWhen(site.PendingCostFactorAt) + ". Until then the current factor applies.",
 	})
 }
 
@@ -1182,8 +1171,9 @@ func adtyNotifySiteCostFactor(site *model.AdtySite) {
 	if !ok {
 		factor = decimal.Zero
 	}
-	adtySendSiteMail(site, owner, i18n.MsgAdtySiteCostNowSubject, i18n.MsgAdtySiteCostNowBody, map[string]any{
-		"Factor": factor.String(),
+	adtySendSitePricingMail(site, owner, AdtyMailMessage{
+		Title: "Your site cost factor changed",
+		Intro: "Your site cost factor is now " + factor.String() + ".",
 	})
 }
 
@@ -1218,6 +1208,17 @@ func AdtyPayResultTarget(token string) string {
 	topUp := model.GetTopUpByTradeNo(tradeNo)
 	if topUp == nil {
 		return fallback
+	}
+	ext, err := model.GetAdtyTopupOrder(tradeNo)
+	if err != nil {
+		return fallback
+	}
+	if ext.IsOwnerSelfUse() {
+		site := AdtySiteById(ext.SiteId)
+		if site == nil || site.Status == model.AdtySiteStatusClosed {
+			return fallback
+		}
+		return AdtySitePublicBaseURL(site) + "/site-owner/earnings?trade_no=" + url.QueryEscape(tradeNo)
 	}
 	// 跳回优先用站长的自定义域名：客户是在站长的牌子上付的钱，就该回到站长的站。
 	// 客户在那个域名上本来就登录着，回来直接看到钱包和这笔订单。

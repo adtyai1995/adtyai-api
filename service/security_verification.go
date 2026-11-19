@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"gorm.io/gorm"
@@ -771,7 +769,7 @@ func SetSecurityStepUpEmailSenderForTest(hook func(*model.AdtySite, string, stri
 // IssueSecurityEmailCode sends a purpose-bound, short-lived, single-use email
 // code for an important-operation step-up. site is the current request site
 // (nil is the main site, site ID 0).
-func IssueSecurityEmailCode(identity AuthIdentity, scope string, site *model.AdtySite, lang string) error {
+func IssueSecurityEmailCode(identity AuthIdentity, scope string, site *model.AdtySite, _ string) error {
 	if _, err := RequireVerificationMethod(identity, scope, VerificationMethodEmailCode); err != nil {
 		return err
 	}
@@ -786,11 +784,6 @@ func IssueSecurityEmailCode(identity AuthIdentity, scope string, site *model.Adt
 	if email == "" || !strings.Contains(email, "@") {
 		return ErrVerificationUnavailable
 	}
-	if lang == "" {
-		if setting := user.GetSetting(); setting.Language != "" {
-			lang = setting.Language
-		}
-	}
 	code := common.GenerateVerificationCode(6)
 	siteID := 0
 	if site != nil {
@@ -800,12 +793,13 @@ func IssueSecurityEmailCode(identity AuthIdentity, scope string, site *model.Adt
 	if err := common.RegisterVerificationCodeWithKey(key, code, common.SecurityStepUpPurpose); err != nil {
 		return err
 	}
-	systemName := map[string]any{"SystemName": AdtyBrandFor(site).HTMLName()}
-	subject := i18n.Translate(lang, i18n.MsgAdtySecurityStepUpSubject, systemName)
-	content := fmt.Sprintf("<p>%s</p><p>%s</p><p>%s</p>",
-		i18n.Translate(lang, i18n.MsgAdtySecurityStepUpGreeting, systemName),
-		i18n.Translate(lang, i18n.MsgAdtySecurityStepUpCode, map[string]any{"Code": html.EscapeString(code)}),
-		i18n.Translate(lang, i18n.MsgAdtySecurityStepUpValidity, map[string]any{"Minutes": common.VerificationValidMinutes}))
+	subject := AdtyBrandFor(site).Name + " security verification"
+	content := AdtyRenderMail(site, AdtyMailMessage{
+		Title:    "Confirm a sensitive account action",
+		Intro:    "Enter this code to authorize the action you requested.",
+		Code:     code,
+		Footnote: fmt.Sprintf("This code expires in %d minutes and can be used once. If you did not request this action, ignore this email.", common.VerificationValidMinutes),
+	})
 	if err := sendSecurityStepUpEmail(site, subject, email, content); err != nil {
 		_, _ = common.ConsumeVerificationCodeWithKey(key, code, common.SecurityStepUpPurpose)
 		return ErrSecurityEmailCodeDelivery

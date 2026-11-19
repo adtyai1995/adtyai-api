@@ -1,0 +1,116 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html dir="ltr" lang="en">
+  <head>
+    <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
+    <meta name="x-apple-disable-message-reformatting" />
+    <title>{{.Title}}</title>
+  </head>
+  <body dir="ltr" lang="en" style="background-color:#ffffff;margin:0">
+    <!--$--><!--html--><!--head--><!--body-->
+    <table
+      border="0"
+      width="100%"
+      cellpadding="0"
+      cellspacing="0"
+      role="presentation"
+      align="center">
+      <tbody>
+        <tr>
+          <td
+            dir="ltr"
+            lang="en"
+            style="margin:0;background-color:#ffffff;font-family:Arial, Helvetica, sans-serif">
+            <table
+              align="center"
+              width="100%"
+              border="0"
+              cellpadding="0"
+              cellspacing="0"
+              role="presentation"
+              style="max-width:560px;width:100%;margin:0 auto">
+              <tbody>
+                <tr style="width:100%">
+                  <td>
+                    <table
+                      align="center"
+                      width="100%"
+                      border="0"
+                      cellpadding="0"
+                      cellspacing="0"
+                      role="presentation"
+                      style="table-layout:fixed">
+                      <tbody>
+                        <tr>
+                          <td style="padding:32px 20px">
+                            {{if .LogoURL}}<img
+                              loading="lazy"
+                              alt=""
+                              height="36"
+                              src="{{.LogoURL}}"
+                              style="display:block;outline:none;border:none;text-decoration:none;max-width:100%;object-fit:contain;margin-bottom:12px" />{{end}}
+                            <p
+                              style="font-size:18px;line-height:25px;color:#262b28;margin:0 0 18px;overflow-wrap:anywhere;font-weight:700;margin-bottom:16px;margin-top:0;margin-right:0;margin-left:0">
+                              {{.BrandName}}
+                            </p>
+                            <hr
+                              style="width:100%;border:none;border-color:#d9dedb;border-top:1px solid #eaeaea;margin:0 0 28px" />
+                            <h1
+                              style="color:#15211a;font-size:27px;line-height:34px;margin:0 0 16px;overflow-wrap:anywhere">
+                              {{.Title}}
+                            </h1>
+                            {{with .Intro}}
+                            <p
+                              style="font-size:16px;line-height:25px;color:#262b28;margin:0 0 18px;overflow-wrap:anywhere;margin-top:0;margin-right:0;margin-bottom:18px;margin-left:0">
+                              {{.}}
+                            </p>
+                            {{end}}<!-- -->{{with .Code}}
+                            <p
+                              style="font-size:28px;line-height:40px;color:#262b28;margin:0 0 18px;overflow-wrap:anywhere;font-family:Consolas, Courier, monospace;padding:10px 16px;background-color:#edf4ef;margin-top:0;margin-right:0;margin-bottom:18px;margin-left:0">
+                              <strong>{{.}}</strong>
+                            </p>
+                            {{end}}<!-- -->{{range .Paragraphs}}
+                            <p
+                              style="font-size:16px;line-height:25px;color:#262b28;margin:0 0 18px;overflow-wrap:anywhere;margin-top:0;margin-right:0;margin-bottom:18px;margin-left:0">
+                              {{.}}
+                            </p>
+                            {{end}}<!-- -->{{if .ActionURL}}
+                            <p
+                              style="font-size:16px;line-height:25px;color:#262b28;margin:0 0 18px;overflow-wrap:anywhere;margin-top:0;margin-right:0;margin-bottom:18px;margin-left:0">
+                              <a
+                                href="{{.ActionURL}}"
+                                style="color:#ffffff;text-decoration-line:none;display:inline-block;background-color:#1c5138;border:12px solid #1c5138;border-radius:4px;font-weight:700;text-decoration:none"
+                                target="_blank"
+                                >{{.ActionLabel}}</a
+                              >
+                            </p>
+                            <p
+                              style="font-size:14px;line-height:21px;color:#4c554f;margin:0 0 18px;overflow-wrap:anywhere;margin-top:0;margin-right:0;margin-bottom:18px;margin-left:0">
+                              Or copy this link into your browser:<br /><span
+                                style="word-break:break-all"
+                                >{{.ActionURL}}</span
+                              >
+                            </p>
+                            {{end}}<!-- -->{{with .Footnote}}
+                            <hr
+                              style="width:100%;border:none;border-color:#d9dedb;border-top:1px solid #eaeaea;margin:24px 0 16px" />
+                            <p
+                              style="font-size:14px;line-height:21px;color:#4c554f;margin:0 0 18px;overflow-wrap:anywhere;margin-top:0;margin-right:0;margin-bottom:18px;margin-left:0">
+                              {{.}}
+                            </p>
+                            {{end}}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <!--/$-->
+  </body>
+</html>
+

@@ -60,6 +60,8 @@ type AdtyChannelWatcherOutbox struct {
 	Language     string `json:"language" gorm:"type:varchar(32);not null;default:''"`
 	Title        string `json:"title" gorm:"type:varchar(500);not null"`
 	Content      string `json:"content" gorm:"type:text"`
+	EmailTitle   string `json:"-" gorm:"type:text"`
+	EmailContent string `json:"-" gorm:"type:text"`
 	Status       string `json:"status" gorm:"type:varchar(32);not null;default:'pending';index"`
 	AttemptCount int    `json:"attempt_count" gorm:"not null;default:0"`
 	LastError    string `json:"last_error" gorm:"type:varchar(1000);not null;default:''"`
@@ -219,17 +221,25 @@ func notifyAdminsWithEventID(eventID, notifyType string, receives func(userID, r
 				continue
 			}
 		} else {
+			// Freeze a separate English copy: the in-site notice stays localized,
+			// even when delivery is retried after a notification-channel change.
+			emailTitle, emailContent := "", ""
+			if render != nil {
+				emailTitle, emailContent = render("en")
+			}
 			outbox = AdtyChannelWatcherOutbox{
-				EventId:    eventID,
-				UserId:     user.Id,
-				NotifyType: notifyType,
-				Category:   "model_group_anomaly",
-				Language:   userSetting.Language,
-				Title:      subject,
-				Content:    content,
-				Status:     AdtyWatcherOutboxPending,
-				CreatedAt:  now,
-				UpdatedAt:  now,
+				EventId:      eventID,
+				UserId:       user.Id,
+				NotifyType:   notifyType,
+				Category:     "model_group_anomaly",
+				Language:     userSetting.Language,
+				Title:        subject,
+				Content:      content,
+				EmailTitle:   emailTitle,
+				EmailContent: emailContent,
+				Status:       AdtyWatcherOutboxPending,
+				CreatedAt:    now,
+				UpdatedAt:    now,
 			}
 			if err := model.DB.Create(&outbox).Error; err != nil {
 				continue
@@ -276,7 +286,12 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 		return false
 	}
 
-	subject, content := ResolveAdtyNoticeTemplateForNotify(outbox.NotifyType, liveSetting.Language, outbox.Title, outbox.Content, nil)
+	lang := notifyDeliveryLanguage(liveSetting)
+	baseTitle, baseContent := outbox.Title, outbox.Content
+	if (liveSetting.NotifyType == "" || liveSetting.NotifyType == dto.NotifyTypeEmail) && outbox.EmailTitle != "" {
+		baseTitle, baseContent = outbox.EmailTitle, outbox.EmailContent
+	}
+	subject, content := ResolveAdtyNoticeTemplateForNotify(outbox.NotifyType, lang, baseTitle, baseContent, nil)
 	attempts := outbox.AttemptCount + 1
 	if err := NotifyUser(liveUser.Id, liveUser.Email, liveSetting, dto.NewNotify(outbox.NotifyType, subject, content, nil)); err != nil {
 		common.SysLog(common.LogText("failed to send notice %s to user %d: %s", outbox.NotifyType, liveUser.Id, err.Error()))
@@ -550,6 +565,13 @@ func ListAdtyChannelWatcherNoticesForUser(userID int) ([]AdtyChannelWatcherNotic
 	return rows, err
 }
 
+func notifyDeliveryLanguage(setting dto.UserSetting) string {
+	if setting.NotifyType == "" || setting.NotifyType == dto.NotifyTypeEmail {
+		return "en"
+	}
+	return setting.Language
+}
+
 func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data dto.Notify) error {
 	notifyType := userSetting.NotifyType
 	if notifyType == "" {
@@ -620,7 +642,12 @@ func sendEmailNotify(site *model.AdtySite, userEmail string, data dto.Notify) er
 	if site != nil {
 		title = strings.ReplaceAll(title, common.SystemName, AdtyBrandFor(site).Name)
 	}
-	return AdtySendSiteEmail(site, title, userEmail, content)
+	msg := AdtyMailMessage{Title: title, Paragraphs: strings.Split(content, "\n")}
+	if data.Type == dto.NotifyTypeQuotaExceed && len(data.Values) >= 3 {
+		msg.ActionLabel = "Top up your balance"
+		msg.ActionURL, _ = data.Values[2].(string)
+	}
+	return AdtySendSiteEmail(site, title, userEmail, AdtyRenderMail(site, msg))
 }
 
 func sendBarkNotify(barkURL string, data dto.Notify) error {

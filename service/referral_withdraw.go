@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
@@ -683,21 +682,32 @@ func (s *ReferralService) MarkWithdrawalPaid(withdrawalId, adminId int, txnNo, p
 	return err
 }
 
-// sendReferralWithdrawalEmail 给用户发打款或驳回邮件，按账号语言。失败只记日志。
+func renderReferralWithdrawalMail(site *model.AdtySite, withdrawal *model.ReferralWithdrawal, paid bool, reason string) (subject, body string) {
+	amount := "$" + moneyDec(withdrawal.Amount).StringFixed(2)
+	var message AdtyMailMessage
+	if paid {
+		message.Title = "Your withdrawal of " + amount + " has been paid"
+		message.Intro = "Your commission withdrawal of " + amount + " has been paid."
+		message.Paragraphs = []string{"Reference: " + withdrawal.PaymentTxnNo}
+	} else {
+		message.Title = "Your withdrawal of " + amount + " was rejected"
+		message.Intro = "Your commission withdrawal of " + amount + " was rejected. The amount is available again."
+		message.Paragraphs = []string{"Reason: " + reason}
+	}
+	return message.Title, AdtyRenderMail(site, message)
+}
+
+// sendReferralWithdrawalEmail 给用户发打款或驳回邮件。失败只记日志。
 var sendReferralWithdrawalEmail = func(userId int, withdrawal *model.ReferralWithdrawal, paid bool, reason string) {
 	user, err := model.GetUserById(userId, false)
 	if err != nil || strings.TrimSpace(user.Email) == "" {
 		return
 	}
-	lang := user.GetSetting().Language
-	args := map[string]any{"Amount": moneyDec(withdrawal.Amount).StringFixed(2), "Reason": reason, "Txn": withdrawal.PaymentTxnNo}
-	subjectKey, bodyKey := i18n.MsgAdtyReferralWithdrawRejectedSubject, i18n.MsgAdtyReferralWithdrawRejectedBody
-	if paid {
-		subjectKey, bodyKey = i18n.MsgAdtyReferralWithdrawPaidSubject, i18n.MsgAdtyReferralWithdrawPaidBody
-	}
 	go func() {
 		// 二开：发件人按用户所属站点（任务 11.3）
-		if err := AdtySendSiteEmail(AdtySiteById(user.SiteId), i18n.Translate(lang, subjectKey, args), user.Email, i18n.Translate(lang, bodyKey, args)); err != nil {
+		site := AdtySiteById(user.SiteId)
+		subject, body := renderReferralWithdrawalMail(site, withdrawal, paid, reason)
+		if err := AdtySendSiteEmail(site, subject, user.Email, body); err != nil {
 			common.SysError(common.LogText("referral withdrawal email failed user=%d: %s", userId, err.Error()))
 		}
 	}()

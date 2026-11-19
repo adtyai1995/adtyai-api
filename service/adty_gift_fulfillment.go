@@ -41,7 +41,7 @@ var adtyNotifyGiftFulfillmentPending = func(ext *model.AdtyTopupOrder) {
 	}
 	setting := owner.GetSetting()
 	subject, content := "Gift pending fulfillment", "Order "+tradeNo+" credited the principal, but the site gift is not yet fully guaranteed and cannot be spent."
-	if stringsHasZH(setting.Language) {
+	if stringsHasZH(notifyDeliveryLanguage(setting)) {
 		subject, content = "赠金待履约", "订单 "+tradeNo+" 本金已入账，站长赠金尚未取得足额保障，已记为待履约，暂不可消费。"
 	}
 	if err := NotifyUser(owner.Id, owner.Email, setting, dto.NewNotify(dto.NotifyTypeChannelUpdate, subject, content, nil)); err != nil {
@@ -64,7 +64,7 @@ var adtyNotifyGiftFulfillmentFulfilled = func(row *model.AdtyGiftFulfillment, qu
 	setting := customer.GetSetting()
 	subject := "Gift fulfilled"
 	content := "The site gift for order " + row.TradeNo + " is credited: +" + usd + " USD (" + strconv.FormatInt(quota, 10) + " quota)."
-	if stringsHasZH(setting.Language) {
+	if stringsHasZH(notifyDeliveryLanguage(setting)) {
 		subject = "赠金已履约"
 		content = "订单 " + row.TradeNo + " 的站长赠金已到账：+" + usd + " USD（" + strconv.FormatInt(quota, 10) + " 额度）。"
 	}

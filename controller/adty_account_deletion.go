@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -44,12 +43,13 @@ func SendAccountDeletionCode(c *gin.Context) {
 		return
 	}
 	site := service.AdtySiteForRequest(c)
-	systemName := map[string]any{"SystemName": service.AdtyBrandFor(site).HTMLName()}
-	subject := i18n.T(c, i18n.MsgEmailAccountDeletionSubject, systemName)
-	content := fmt.Sprintf("<p>%s</p><p>%s</p><p>%s</p>",
-		i18n.T(c, i18n.MsgEmailAccountDeletionGreeting, systemName),
-		i18n.T(c, i18n.MsgEmailAccountDeletionCode, map[string]any{"Code": code}),
-		i18n.T(c, i18n.MsgEmailAccountDeletionValidity, map[string]any{"Minutes": common.VerificationValidMinutes}))
+	subject := service.AdtyBrandFor(site).Name + " account deletion confirmation"
+	content := service.AdtyRenderMail(site, service.AdtyMailMessage{
+		Title:    "Confirm account deletion",
+		Intro:    "Enter this code only if you want to delete your account.",
+		Code:     code,
+		Footnote: fmt.Sprintf("This code expires in %d minutes and can be used once. If you did not request account deletion, ignore this email.", common.VerificationValidMinutes),
+	})
 	if err := sendAccountDeletionEmail(site, subject, email, content); err != nil {
 		_, _ = common.ConsumeVerificationCodeWithKey(key, code, common.AccountDeletionPurpose)
 		common.ApiErrorT(c, "Failed to send email")

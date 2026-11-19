@@ -106,6 +106,8 @@ var (
 	}
 	adtySystemEmailKeyPattern  = regexp.MustCompile(`sk-[A-Za-z0-9_-]{6,}`)
 	adtySystemEmailCodePattern = regexp.MustCompile(`\b\d{6}\b`)
+	// Registration codes may contain hex letters and are rendered as standalone text.
+	adtySystemEmailHexCodeText = regexp.MustCompile(`(?i)(>\s*)[0-9a-f]{6}(\s*<)`)
 
 	// AdtySystemEmailSender performs the underlying SMTP/Resend transport call.
 	// Tests may replace it to inject provider failures or inspect deliveries.
@@ -134,6 +136,7 @@ func RedactAdtySystemEmailContent(content string) string {
 		redacted = pat.ReplaceAllString(redacted, "${1}[REDACTED]")
 	}
 	redacted = adtySystemEmailKeyPattern.ReplaceAllString(redacted, "sk-[REDACTED]")
+	redacted = adtySystemEmailHexCodeText.ReplaceAllString(redacted, "${1}[REDACTED_CODE]${2}")
 	redacted = adtySystemEmailCodePattern.ReplaceAllString(redacted, "[REDACTED_CODE]")
 	return redacted
 }
@@ -553,6 +556,7 @@ func enqueueAndDispatchAdtySystemEmail(siteID int, from, subject, to, content st
 	db := model.DB
 	row, err := enqueueAdtySystemEmailOnDB(db, AdtySystemEmailRequest{
 		SiteID:    siteID,
+		Language:  i18n.LangEn,
 		Sender:    from,
 		Recipient: to,
 		Subject:   subject,
@@ -651,16 +655,13 @@ func AdtySendRegisteredReminder(c *gin.Context, email string) bool {
 	}
 	adtyReminderSent.Unlock()
 
-	// 按当前站点上该邮箱账号的语言发；软删除或未注册时用请求语言。
-	lang := i18n.StatedLang(c)
-	if user, err := model.GetUniqueUserByEmail(key, siteID); err == nil {
-		if userLang := user.GetSetting().Language; userLang != "" {
-			lang = userLang
-		}
-	}
-	params := map[string]any{"SystemName": AdtyBrandFor(site).HTMLName()}
-	subject := i18n.Translate(lang, i18n.MsgAdtyEmailRegisteredSubject, params)
-	content := "<p>" + i18n.Translate(lang, i18n.MsgAdtyEmailRegisteredBody, params) + "</p>"
+	subject := "Sign-in help for " + AdtyBrandFor(site).Name
+	content := AdtyRenderMail(site, AdtyMailMessage{
+		Title:      "Sign-in help",
+		Intro:      "Someone requested a sign-up code for this email address.",
+		Paragraphs: []string{"If you already have an account, sign in or reset your password instead."},
+		Footnote:   "If you did not request a code, ignore this email.",
+	})
 	AdtySendSiteEmailAsync(site, subject, key, content)
 	return true
 }

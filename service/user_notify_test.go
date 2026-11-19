@@ -189,6 +189,12 @@ func TestChannelNoticesFollowEachAdministratorsSwitch(t *testing.T) {
 			"channel_test 通道测试完成",
 		},
 	}, received)
+	var notice AdtyChannelWatcherNotice
+	require.NoError(t, database.Where("notify_type = ? AND language = ?", dto.NotifyTypeChannelTest, "zhCN").First(&notice).Error)
+	var outbox AdtyChannelWatcherOutbox
+	require.NoError(t, database.Where("event_id = ? AND user_id = ?", notice.EventId, notice.UserId).First(&outbox).Error)
+	assert.Equal(t, "通道测试完成", notice.Title)
+	assert.Equal(t, "Channel test completed", outbox.EmailTitle)
 }
 
 func TestChannelWatcherDurableOutboxIdempotencyRetryAndPermissionCheck(t *testing.T) {

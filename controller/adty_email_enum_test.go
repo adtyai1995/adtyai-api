@@ -89,6 +89,7 @@ func callEmailHandler(handler gin.HandlerFunc, path string) *httptest.ResponseRe
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, path, nil)
+	c.Request.Header.Set("Accept-Language", "zh-CN")
 	handler(c)
 	return recorder
 }
@@ -168,6 +169,9 @@ func TestVerificationSameResponseForRegisteredEmail(t *testing.T) {
 	require.Len(t, mails, 2)
 	assert.Equal(t, "new@example.com", mails[0].to)
 	assert.Equal(t, "taken@example.com", mails[1].to)
+	assert.Contains(t, mails[0].subject, "email verification")
+	assert.Contains(t, mails[0].content, "verify your email address")
+	assert.Contains(t, mails[1].subject, "Sign-in help")
 	assert.Contains(t, mails[1].content, "sign in or reset your password")
 	assert.False(t, common.VerifyCodeWithKey(model.SiteEmailCodeKey("taken@example.com", 0), "", common.EmailVerificationPurpose))
 	for _, code := range strings.Fields(mails[1].content) {
@@ -213,6 +217,8 @@ func TestResetLinkSingleUse(t *testing.T) {
 	_, after, found := strings.Cut(mails[0].content, "token=")
 	require.True(t, found)
 	token := after[:strings.IndexAny(after, `"&<' `)]
+	assert.Contains(t, mails[0].subject, "password reset")
+	assert.Equal(t, 2, strings.Count(mails[0].content, "/user/reset#email=taken%40example.com&amp;token="+token+"&amp;username=taken"), "the button and the visible fallback must keep the token in the fragment")
 
 	reset := func() string {
 		recorder := httptest.NewRecorder()

@@ -153,7 +153,8 @@ func TestAdtySystemEmailDurableOutboxRetryExpiryRedactionAndRecipientPolicy(t *t
 
 			// 4. 覆盖邮箱绑定、安全通知、订单通知（支持 NotificationEmail）及分站注册验证码入队后进程退出（未派发后台协程）恢复
 			AdtySystemEmailAsyncDispatch = false
-			AdtySendSiteEmailAsync(&site, "Mail Shop Verification", "newcomer@example.com", "<p>Your verification code is <strong>482910</strong></p>")
+			site.Brand = `{"name":"书店"}`
+			AdtySendSiteEmailAsync(&site, "书店 email verification", "newcomer@example.com", AdtyRenderMail(&site, AdtyMailMessage{Title: "Verify your email address", Code: "ab491c"}))
 
 			bindRow, err := EnqueueAdtySystemEmail(AdtySystemEmailRequest{
 				EventKey:       "email-bind:1",
@@ -238,7 +239,9 @@ func TestAdtySystemEmailDurableOutboxRetryExpiryRedactionAndRecipientPolicy(t *t
 			require.NoError(t, db.Where("recipient = ?", "newcomer@example.com").First(&asyncVerifyRow).Error)
 			assert.Equal(t, AdtySystemEmailStatusSent, asyncVerifyRow.Status)
 			assert.Equal(t, site.Id, asyncVerifyRow.SiteId)
-			assert.NotContains(t, asyncVerifyRow.ContentRedacted, "482910")
+			assert.Equal(t, "en", asyncVerifyRow.Language)
+			assert.Equal(t, AdtySystemEmailCategoryVerification, asyncVerifyRow.Category)
+			assert.NotContains(t, asyncVerifyRow.ContentRedacted, "ab491c")
 			assert.Empty(t, asyncVerifyRow.BodyCipher)
 
 			mu.Lock()

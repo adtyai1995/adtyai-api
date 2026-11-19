@@ -1762,6 +1762,29 @@ func TestPayoutDoesNotDeadlockWithRefundLock(t *testing.T) {
 	assert.Equal(t, model.ReferralWithdrawalStatusPaid, stored.Status)
 }
 
+func TestReferralWithdrawalMailIncludesOnlyTheRelevantDetails(t *testing.T) {
+	site := &model.AdtySite{Brand: `{"name":"Shop & Co"}`}
+	w := &model.ReferralWithdrawal{Amount: 25.5, PaymentTxnNo: "tx<123>"}
+	for _, tc := range []struct {
+		paid                 bool
+		status, detail, omit string
+	}{
+		{true, "paid", "Reference: tx&lt;123&gt;", "invalid"},
+		{false, "rejected", "Reason: invalid &lt;name&gt;", "tx&lt;123&gt;"},
+	} {
+		subject, body := renderReferralWithdrawalMail(site, w, tc.paid, "invalid <name>")
+		assert.Contains(t, subject, tc.status)
+		assert.Contains(t, subject, "$25.50")
+		assert.Contains(t, body, "Shop &amp; Co")
+		assert.Contains(t, body, "$25.50")
+		assert.Contains(t, body, tc.detail)
+		assert.NotContains(t, body, tc.omit)
+		if !tc.paid {
+			assert.Contains(t, body, "available again")
+		}
+	}
+}
+
 func TestPendingWithdrawalCannotBeMarkedPaid(t *testing.T) {
 	db := prepareReferralDB(t)
 	affiliate := availableAffiliate(t, db, "pay-pending", 100)

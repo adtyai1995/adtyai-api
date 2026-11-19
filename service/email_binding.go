@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"html"
 	"math/big"
 	"slices"
 	"strings"
@@ -70,7 +69,7 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	if err != nil {
 		return nil, err
 	}
-	state := model.EmailBindingState{Authorization: authorization, CurrentEmail: model.NormalizeEmail(user.Email), Email: email, ResendAt: time.Now().Add(model.EmailBindingResendDelay).Unix()}
+	state := model.EmailBindingState{Authorization: authorization, SiteID: user.SiteId, CurrentEmail: model.NormalizeEmail(user.Email), Email: email, ResendAt: time.Now().Add(model.EmailBindingResendDelay).Unix()}
 	requireOld := state.CurrentEmail != "" && authorization.Method != VerificationMethodTwoFA && authorization.Method != VerificationMethodPasskey
 	codes, err := generateEmailBindingCodes(requireOld)
 	if err != nil {
@@ -81,7 +80,7 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	if err != nil {
 		return nil, err
 	}
-	if err := sendEmailBindingCodes(lang, state, codes); err != nil {
+	if err := sendEmailBindingCodes(state, codes); err != nil {
 		// A partially delivered pair must not leave a usable change request.
 		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
 		return nil, ErrEmailBindingDelivery
@@ -93,7 +92,7 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	return data, nil
 }
 
-func ResendAccountEmailBinding(identity AuthIdentity, token string, lang string, originHost ...string) (*EmailBindingData, error) {
+func ResendAccountEmailBinding(identity AuthIdentity, token string, _ string, originHost ...string) (*EmailBindingData, error) {
 	_, state, err := model.GetEmailBinding(identity, token, originHost...)
 	if err != nil {
 		return nil, err
@@ -119,7 +118,7 @@ func ResendAccountEmailBinding(identity AuthIdentity, token string, lang string,
 	if err != nil {
 		return nil, err
 	}
-	if err := sendEmailBindingCodes(lang, *state, codes); err != nil {
+	if err := sendEmailBindingCodes(*state, codes); err != nil {
 		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
 		return nil, ErrEmailBindingDelivery
 	}
@@ -178,22 +177,29 @@ func generateEmailBindingCodes(requireOld bool) (emailBindingCodes, error) {
 	return codes, nil
 }
 
-func sendEmailBindingCodes(lang string, state model.EmailBindingState, codes emailBindingCodes) error {
-	site := AdtySiteForUser(state.Authorization.UserID) // 二开：站名和发件人按用户所属站点（任务 11.3）
-	subject := i18n.Translate(lang, i18n.MsgEmailBindingSubject, map[string]any{"SystemName": AdtyBrandFor(site).HTMLName()})
-	minutes := map[string]any{"Minutes": int(model.EmailBindingTTL / time.Minute)}
-	content := fmt.Sprintf("<p>%s</p><p>%s</p><p>%s</p>",
-		i18n.Translate(lang, i18n.MsgEmailBindingNewIntro),
-		i18n.Translate(lang, i18n.MsgEmailBindingCode, map[string]any{"Code": html.EscapeString(codes.New)}),
-		i18n.Translate(lang, i18n.MsgEmailBindingNewValidity, minutes))
+func sendEmailBindingCodes(state model.EmailBindingState, codes emailBindingCodes) error {
+	site := AdtySiteById(state.SiteID)
+	if state.SiteID > 0 && !AdtySiteServesCustomers(site) {
+		return ErrEmailBindingDelivery
+	}
+	subject := AdtyBrandFor(site).Name + " email binding confirmation"
+	expiry := fmt.Sprintf("This code expires in %d minutes. ", int(model.EmailBindingTTL/time.Minute))
+	content := AdtyRenderMail(site, AdtyMailMessage{
+		Title:    "Confirm your new email address",
+		Intro:    "Confirm linking this email address to your account.",
+		Code:     codes.New,
+		Footnote: expiry + "If you did not request this change, do not share this code.",
+	})
 	if err := AdtySendSiteEmail(site, subject, state.Email, content); err != nil {
 		return err
 	}
 	if codes.Old != "" {
-		content = fmt.Sprintf("<p>%s</p><p>%s</p><p>%s</p>",
-			i18n.Translate(lang, i18n.MsgEmailBindingOldIntro),
-			i18n.Translate(lang, i18n.MsgEmailBindingCode, map[string]any{"Code": html.EscapeString(codes.Old)}),
-			i18n.Translate(lang, i18n.MsgEmailBindingOldValidity, minutes))
+		content = AdtyRenderMail(site, AdtyMailMessage{
+			Title:    "Confirm your email address change",
+			Intro:    "A change to your account email address was requested. Confirm replacing your current address.",
+			Code:     codes.Old,
+			Footnote: expiry + "If you did not request this change, do not share this code and contact your administrator.",
+		})
 		return AdtySendSiteEmail(site, subject, state.CurrentEmail, content)
 	}
 	return nil

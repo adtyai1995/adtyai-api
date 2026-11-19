@@ -714,10 +714,7 @@ func TestSecurityAccountEmailResendAndAttemptLimit(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrEmailBindingLocked)
 }
 
-// Email binding codes and account security notices are written in the account
-// owner's saved language, else in the language the request states, and quote
-// provider names HTML-escaped.
-func TestSecurityAccountMailsFollowTheOwnersLanguage(t *testing.T) {
+func TestSecurityAccountMailsAreEnglishRegardlessOfLocale(t *testing.T) {
 	user, identity := setupSecurityEnrollmentTest(t)
 	mailbox := newSecurityMailbox(t)
 	mails := func(receiver string) string {
@@ -738,17 +735,19 @@ func TestSecurityAccountMailsFollowTheOwnersLanguage(t *testing.T) {
 	require.NoError(t, err)
 	response := securityEnrollmentRequest("POST", "/api/oauth/email/bind", string(request), "", identity, EmailBind)
 	require.Contains(t, response.Body.String(), `"success":true`)
-	assert.Contains(t, mails("new@example.com"), "请确认将此邮箱地址绑定到您的账户。")
-	assert.Contains(t, mails("new@example.com"), "您的账户安全设置有变动：邮箱地址已确认。")
-	assert.Contains(t, mails("previous@example.com"), "您的账户正在申请更换邮箱地址，请确认替换当前邮箱。")
-	assert.Contains(t, mails("previous@example.com"), "您的账户安全设置有变动：邮箱地址已更换。")
+	assert.Contains(t, mails("new@example.com"), "Confirm linking this email address to your account.")
+	assert.Contains(t, mails("new@example.com"), "Email address confirmed")
+	assert.NotRegexp(t, `\p{Han}`, mails("new@example.com"))
+	assert.Contains(t, mails("previous@example.com"), "Confirm replacing your current address.")
+	assert.Contains(t, mails("previous@example.com"), "Email address changed")
+	assert.NotRegexp(t, `\p{Han}`, mails("previous@example.com"))
 
 	for _, tc := range []struct {
-		name, saved, acceptLanguage, receiver, want string
+		name, saved, acceptLanguage, receiver string
 	}{
-		{"request language when none is saved", "", "zh-TW", "tw@example.com", "您的账户安全设置有变动：已绑定登录账号 &lt;b&gt;Corp&lt;/b&gt;。"},
-		{"saved language over the request", "en", "zh-CN", "en@example.com", "Your account security settings have changed: Login account linked: &lt;b&gt;Corp&lt;/b&gt;."},
-		{"default language when neither states one", "", "", "default@example.com", "Your account security settings have changed: Login account linked: &lt;b&gt;Corp&lt;/b&gt;."},
+		{"Chinese request", "", "zh-TW", "tw@example.com"},
+		{"Chinese preference", "zh-CN", "en", "en@example.com"},
+		{"default", "", "", "default@example.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			saveLanguage(tc.saved)
@@ -759,7 +758,8 @@ func TestSecurityAccountMailsFollowTheOwnersLanguage(t *testing.T) {
 			}
 			lang := service.AccountMailLanguage(c, user.Id)
 			require.NoError(t, service.NotifyAccountSecurityChange(lang, tc.receiver, user.Id, i18n.MsgSecurityEventLoginLinked, map[string]any{"Provider": "<b>Corp</b>"}))
-			assert.Contains(t, mails(tc.receiver), tc.want)
+			assert.Contains(t, mails(tc.receiver), "Login account linked: &lt;b&gt;Corp&lt;/b&gt;")
+			assert.NotRegexp(t, `\p{Han}`, mails(tc.receiver))
 		})
 	}
 }

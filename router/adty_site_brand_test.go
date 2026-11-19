@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/html"
 )
 
 // 站点品牌、邮件链接、支付跳回、分站首页的 SEO（任务 11.3）。用 11.2 的 siteFixture：
@@ -135,9 +136,8 @@ func TestNotificationPublishingIsolation(t *testing.T) {
 	// 原来这里断言 NotContains，那是需求变化前的行为，不是回归。
 	assert.Contains(t, mainInbox, "all_sites message")
 	shopInbox := fmt.Sprint(request(http.MethodGet, shop, inbox, customerOnSite, "", http.StatusOK).Data)
-	// 主站公告**不**同步到分站（老板明确否掉的形态）。这条原来是 Contains，
-	// 改的是需求，不是回归：分站只能看到 all_sites 和自己那条定向公告。
-	assert.NotContains(t, shopInbox, "all_users message")
+	// A.18.2 / features.md:16：Root 发布的 all_users 与 all_sites 均为全平台可见，分站上的有效客户会话也属于全部用户。
+	assert.Contains(t, shopInbox, "all_users message")
 	assert.Contains(t, shopInbox, "all_sites message")
 }
 
@@ -249,13 +249,14 @@ func TestNotificationInboxReadIsolation(t *testing.T) {
 	// 主站账号的会话不能进分站主机（A.4.4 / DEC-023）。原来这里断言 200 再断言收件箱为空，
 	// 那是 Host 绑定之前的预期；现在跨站直接 401，比「进得去但看不到」更严。
 	request(http.MethodGet, "shop.sites.example.com", inbox, a, "", http.StatusUnauthorized)
-	// 分站客户在分站主机上看到的是分站自己的收件箱：主站公告、主站公告的已读状态都不跨站。
+	// 分站客户在分站主机上看到的是分站自己的收件箱：主站 Notice 与其他账号的已读状态都不跨站，
+	// 但 Root 发布的 all_users 平台通知全平台可见。
 	shopUser := f.user(t, "notification-shop", f.site.Id)
 	shopToken := adtySessionOnSite(t, shopUser.Id, f.site.Id)
 	branch := request(http.MethodGet, "shop.sites.example.com", inbox, shopToken, "", http.StatusOK)
 	require.True(t, branch.Success, branch.Message)
 	assert.Empty(t, branch.Data["notice"])
-	assert.Empty(t, branch.Data["announcements"])
+	assert.Len(t, branch.Data["announcements"], 1)
 	assert.Empty(t, branch.Data["read_keys"])
 	assert.False(t, request(http.MethodPost, "shop.sites.example.com", inbox+"/read", shopToken, body, http.StatusOK).Success)
 	edit := `{"revision":1,"title":"Edited announcement","content":"Edited announcement","kind":"system","audience":"all_users"}`
@@ -320,6 +321,26 @@ func newBrandFixture(t *testing.T) *siteFixture {
 	return f
 }
 
+// Read the actual clickable destination, not a matching string in the fallback text.
+func resetMailHref(t *testing.T, body string) string {
+	t.Helper()
+	z := html.NewTokenizer(strings.NewReader(body))
+	for tok := z.Next(); tok != html.ErrorToken; tok = z.Next() {
+		if tok == html.StartTagToken {
+			node := z.Token()
+			if node.Data == "a" {
+				for _, attr := range node.Attr {
+					if attr.Key == "href" && strings.Contains(attr.Val, "/user/reset#") {
+						return attr.Val
+					}
+				}
+			}
+		}
+	}
+	t.Fatal("reset email has no reset button destination")
+	return ""
+}
+
 func TestResetLinkEscapesPlusInEmail(t *testing.T) {
 	f := newBrandFixture(t)
 	sent := captureSiteMail(t)
@@ -328,7 +349,7 @@ func TestResetLinkEscapesPlusInEmail(t *testing.T) {
 	f.do(t, http.MethodGet, "main.example.com", "/api/reset_password?email="+url.QueryEscape("a+b@example.com"), "")
 	mails := sent()
 	require.Len(t, mails, 1)
-	assert.Contains(t, mails[0].content, "/user/reset#email=a%2Bb%40example.com&token=")
+	assert.Contains(t, resetMailHref(t, mails[0].content), "/user/reset#email=a%2Bb%40example.com&token=")
 	assert.NotContains(t, mails[0].content, "email=a+b@")
 }
 
@@ -349,11 +370,11 @@ func TestResetLinkUsesUserSiteNotHost(t *testing.T) {
 
 	mails := sent()
 	require.Len(t, mails, 2)
-	assert.Contains(t, mails[0].content, "https://shop.sites.example.com/user/reset#email=c%40example.com&token=")
+	assert.Contains(t, resetMailHref(t, mails[0].content), "https://shop.sites.example.com/user/reset#email=c%40example.com&token=")
 	assert.NotContains(t, mails[0].content, "SHOP.Sites.Example.com:443")
 	assert.Contains(t, mails[0].subject, "Shop AI")
 	assert.Equal(t, "Shop AI <noreply@mail.adtyai.com>", mails[0].from)
-	assert.Contains(t, mails[1].content, "https://main.example.com/user/reset#email=m%40example.com&token=", "主站用户的链接仍是主站地址")
+	assert.Contains(t, resetMailHref(t, mails[1].content), "https://main.example.com/user/reset#email=m%40example.com&token=", "主站用户的链接仍是主站地址")
 	assert.NotContains(t, mails[1].subject, "Shop AI")
 
 	// 原来的第一段断言是「在主站域名上给分站客户发一封带分站链接的信」。那是按邮箱
@@ -380,6 +401,31 @@ func TestVerificationMailUsesRequestSite(t *testing.T) {
 	assert.Empty(t, mails[1].from, "主站用全局发件人")
 }
 
+func TestCustomerAccountMailUsesOwnLogoAndWebsite(t *testing.T) {
+	f := newBrandFixture(t)
+	sent := captureSiteMail(t)
+	path := fmt.Sprintf("/uploads/site-assets/site-%d-0123456789abcdef0123456789abcdef.png", f.site.Id)
+	require.NoError(t, f.db.Model(f.site).Update("brand", fmt.Sprintf(`{"name":"North & West","logo_url":%q}`, path)).Error)
+	for _, domain := range []model.AdtySiteDomain{
+		{SiteId: f.site.Id, Hostname: "api.north.example", Role: model.AdtySiteDomainRoleBaseURL, Status: model.AdtySiteDomainActive},
+		{SiteId: f.site.Id, Hostname: "www.north.example", Role: model.AdtySiteDomainRoleSite, Status: model.AdtySiteDomainActive},
+	} {
+		require.NoError(t, f.db.Create(&domain).Error)
+	}
+	service.InvalidateAdtySiteCache()
+	customer := f.user(t, "north-customer", f.site.Id)
+	require.NoError(t, f.db.Model(&customer).Update("email", "north@example.org").Error)
+	f.do(t, "GET", "shop.sites.example.com", "/api/reset_password?email=north@example.org", "")
+	mails := sent()
+	require.Len(t, mails, 1)
+	assert.Equal(t, "north@example.org", mails[0].to)
+	assert.Contains(t, mails[0].subject, "North & West")
+	assert.Contains(t, mails[0].content, "North &amp; West")
+	assert.Contains(t, mails[0].content, `src="https://www.north.example`+path+`"`)
+	assert.Contains(t, mails[0].content, `https://www.north.example/user/reset#`)
+	assert.NotContains(t, mails[0].content, "api.north.example")
+}
+
 func TestMailSubjectUsesSiteName(t *testing.T) {
 	f := newBrandFixture(t)
 	sent := captureSiteMail(t)
@@ -396,7 +442,7 @@ func TestMailSubjectUsesSiteName(t *testing.T) {
 
 	mails := sent()
 	require.Len(t, mails, 1)
-	assert.Contains(t, mails[0].subject, "&lt;b&gt;Shop&lt;/b&gt;")
+	assert.Contains(t, mails[0].subject, "<b>Shop</b>", "the subject is plain text")
 	assert.NotContains(t, mails[0].content, "<b>Shop</b>")
 }
 

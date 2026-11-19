@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -193,6 +194,10 @@ func GetNotice(c *gin.Context) {
 }
 
 func GetAbout(c *gin.Context) {
+	if site := service.AdtySiteForRequest(c); site != nil {
+		serveRevalidatedJSON(c, html.EscapeString(service.AdtyBrandFor(site).Tagline))
+		return
+	}
 	common.OptionMapRWMutex.RLock()
 	about := common.OptionMap["About"]
 	common.OptionMapRWMutex.RUnlock()
@@ -253,18 +258,15 @@ func SendEmailVerification(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 		return
 	}
-	// The address may not belong to an account yet, so the mail follows the
-	// request language.
-	// 二开：站名用当前请求的站点（任务 11.3），用户还不存在
+	// Registration happens before an account exists; use the request site.
 	site := service.AdtySiteForRequest(c)
-	systemName := map[string]any{"SystemName": service.AdtyBrandFor(site).HTMLName()}
-	subject := i18n.T(c, i18n.MsgEmailVerificationSubject, systemName)
-	content := fmt.Sprintf("<p>%s</p>"+
-		"<p>%s</p>"+
-		"<p>%s</p>",
-		i18n.T(c, i18n.MsgEmailVerificationGreeting, systemName),
-		i18n.T(c, i18n.MsgEmailVerificationCode, map[string]any{"Code": code}),
-		i18n.T(c, i18n.MsgEmailVerificationValidity, map[string]any{"Minutes": common.VerificationValidMinutes}))
+	subject := service.AdtyBrandFor(site).Name + " email verification"
+	content := service.AdtyRenderMail(site, service.AdtyMailMessage{
+		Title:    "Verify your email address",
+		Intro:    "Enter this code to verify your email address and finish signing up.",
+		Code:     code,
+		Footnote: fmt.Sprintf("This code expires in %d minutes. If you did not request it, ignore this email.", common.VerificationValidMinutes),
+	})
 	// 二开：异步发信，响应时间不暴露邮箱是否存在（任务 7.3）；发件人按站点（任务 11.3）
 	service.AdtySendSiteEmailAsync(site, subject, email, content)
 	c.JSON(http.StatusOK, gin.H{
@@ -288,7 +290,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 	user, err := model.ResolveUserForEmailChallenge(email, username, service.AdtyRequestSiteID(c))
 	switch {
 	case err == nil:
-		_ = sendPasswordResetInstructions(c, user)
+		_ = sendPasswordResetInstructions(user)
 	case errors.Is(err, model.ErrEmailAmbiguous):
 		common.ApiErrorStatus(c, http.StatusOK, common.NewMessage(model.EmailAmbiguousPrompt), gin.H{"code": model.EmailAmbiguousCode})
 		return
@@ -305,32 +307,30 @@ func SendPasswordResetEmail(c *gin.Context) {
 
 // Self-service recovery issues a one-time reset link. No caller, including
 // staff, receives the reset token or chooses the customer's new password.
-func sendPasswordResetInstructions(c *gin.Context, user *model.User) error {
-	email := model.NormalizeEmail(user.Email)
+func sendPasswordResetInstructions(user *model.User) error {
 	current, err := model.GetUserById(user.Id, false)
 	if err != nil || current == nil || current.Id != user.Id || current.Status != common.UserStatusEnabled {
 		return common.NewMessage("Invalid parameters")
 	}
-	email = model.NormalizeEmail(current.Email)
+	email := model.NormalizeEmail(current.Email)
+	site := service.AdtySiteById(current.SiteId)
+	if current.SiteId > 0 && !service.AdtySiteServesCustomers(site) {
+		return common.NewMessage("Site not found")
+	}
 	code := common.GenerateVerificationCode(0)
 	if err := common.RegisterVerificationCodeWithKey(model.PasswordResetCodeKey(current), code, common.PasswordResetPurpose); err != nil {
 		return err
 	}
 	// Derive branding and URL from SQL membership, never from the request Host.
-	site := service.AdtySiteForUser(current.Id)
-	link := fmt.Sprintf("%s/user/reset#email=%s&token=%s&username=%s", service.AdtySiteBaseURL(site), url.QueryEscape(email), url.QueryEscape(code), url.QueryEscape(current.Username))
-	lang := current.GetSetting().Language
-	if lang == "" {
-		lang = i18n.StatedLang(c)
-	}
-	systemName := map[string]any{"SystemName": service.AdtyBrandFor(site).HTMLName()}
-	linkParams := map[string]any{"Link": link}
-	subject := i18n.Translate(lang, i18n.MsgEmailPasswordResetSubject, systemName)
-	content := fmt.Sprintf("<p>%s</p><p>%s</p><p>%s </p><p>%s</p>",
-		i18n.Translate(lang, i18n.MsgEmailPasswordResetGreeting, systemName),
-		i18n.Translate(lang, i18n.MsgEmailPasswordResetLink, linkParams),
-		i18n.Translate(lang, i18n.MsgEmailPasswordResetLinkFallback, linkParams),
-		i18n.Translate(lang, i18n.MsgEmailPasswordResetValidity, map[string]any{"Minutes": common.VerificationValidMinutes}))
+	link := fmt.Sprintf("%s/user/reset#email=%s&token=%s&username=%s", service.AdtySitePublicBaseURL(site), url.QueryEscape(email), url.QueryEscape(code), url.QueryEscape(current.Username))
+	subject := service.AdtyBrandFor(site).Name + " password reset"
+	content := service.AdtyRenderMail(site, service.AdtyMailMessage{
+		Title:       "Reset your password",
+		Intro:       "Use the link below to choose a new password for your account.",
+		ActionLabel: "Reset password",
+		ActionURL:   link,
+		Footnote:    fmt.Sprintf("This link expires in %d minutes. If you did not request a password reset, ignore this email.", common.VerificationValidMinutes),
+	})
 	service.AdtySendSiteEmailAsync(site, subject, email, content)
 	writePasswordResetChallengeAudit(current)
 	return nil
@@ -385,11 +385,7 @@ func ResetPassword(c *gin.Context) {
 	if outcome.UserID > 0 {
 		committed, notificationFailed := outcome.State == model.PasswordResetCommitted, false
 		if committed {
-			lang := outcome.Language
-			if lang == "" {
-				lang = i18n.StatedLang(c)
-			}
-			notificationFailed = service.NotifyAccountSecurityChange(lang, outcome.Email, outcome.UserID, i18n.MsgSecurityEventPasswordUpdated) != nil
+			notificationFailed = service.NotifyAccountSecurityChange(i18n.LangEn, outcome.Email, outcome.UserID, i18n.MsgSecurityEventPasswordUpdated) != nil
 		}
 		c.Set("role", outcome.Role)
 		defer recordUserSecurityAudit(c, outcome.UserID, "user.password_change", map[string]any{

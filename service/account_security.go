@@ -1,36 +1,35 @@
 package service
 
 import (
-	"fmt"
-	"html"
-
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 )
 
-// AccountMailLanguage is the language of mail about a user's account: the
-// language the user saved, else the one the request stated.
-func AccountMailLanguage(c *gin.Context, userId int) string {
-	if lang := model.GetUserLanguage(userId); lang != "" {
-		return i18n.OfficialLanguage(lang)
-	}
-	return i18n.StatedLang(c)
+// AccountMailLanguage is independent of the interface and request languages.
+func AccountMailLanguage(_ *gin.Context, _ int) string {
+	return "en"
 }
 
 // NotifyAccountSecurityChange never includes credentials or tokens. The caller
 // records delivery failure independently from the already-committed change.
-// eventKey names the change; the notice is written in lang (see
-// AccountMailLanguage).
-func NotifyAccountSecurityChange(lang, email string, userID int, eventKey string, eventArgs ...map[string]any) error {
+func NotifyAccountSecurityChange(_ string, email string, userID int, eventKey string, eventArgs ...map[string]any) error {
 	if email == "" {
 		return nil
 	}
-	event := html.EscapeString(i18n.Translate(lang, eventKey, eventArgs...))
-	site := AdtySiteForUser(userID) // 二开：站名和发件人按账号所属站点（任务 11.3）
-	subject := i18n.Translate(lang, i18n.MsgEmailSecurityNoticeSubject, map[string]any{"SystemName": AdtyBrandFor(site).HTMLName()})
-	content := fmt.Sprintf("<p>%s</p><p>%s</p>",
-		i18n.Translate(lang, i18n.MsgEmailSecurityNoticeChanged, map[string]any{"Event": event}),
-		i18n.Translate(lang, i18n.MsgEmailSecurityNoticeAdvice))
+	user, err := model.GetUserById(userID, false)
+	if err != nil {
+		return err
+	}
+	site := AdtySiteById(user.SiteId)
+	if user.SiteId > 0 && !AdtySiteServesCustomers(site) {
+		return ErrAdtySiteNotFound
+	}
+	subject := AdtyBrandFor(site).Name + " account security notification"
+	content := AdtyRenderMail(site, AdtyMailMessage{
+		Title:    "Account security notification",
+		Intro:    "Your account security settings have changed: " + i18n.Translate("en", eventKey, eventArgs...) + ".",
+		Footnote: "If you did not make this change, open your account security settings, revoke other login sessions, and contact your administrator.",
+	})
 	return AdtySendSiteEmail(site, subject, email, content)
 }
