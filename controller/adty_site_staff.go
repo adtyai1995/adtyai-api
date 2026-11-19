@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"gorm.io/gorm"
 	"net/http"
 	"strconv"
 	"strings"
@@ -273,6 +274,7 @@ func PostAdtyStaffBalanceRequest(c *gin.Context) {
 		Direction      string `json:"direction"`
 		AmountUSD      string `json:"amount_usd"`
 		IdempotencyKey string `json:"idempotency_key"`
+		model.AdtyStaffBalanceProvenance
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -287,7 +289,7 @@ func PostAdtyStaffBalanceRequest(c *gin.Context) {
 	if key == "" {
 		key = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	}
-	row, err := service.SubmitAdtyStaffBalanceRequest(c.GetInt("id"), body.CustomerID, body.Direction, amount, key)
+	row, err := service.SubmitAdtyStaffBalanceRequest(c.GetInt("id"), body.CustomerID, body.Direction, amount, key, body.AdtyStaffBalanceProvenance)
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
 			common.ApiErrorT(c, "This request was already used for another operation")
@@ -490,5 +492,97 @@ func GetAdtyStaffCustomerLogs(c *gin.Context) {
 	}
 	page.SetItems(items)
 	page.SetTotal(int(total))
+	common.ApiSuccess(c, page)
+}
+
+// Employee order data uses the unified SQL scope with an explicit minimal
+// projection. Permission to read a recharge never grants financial trace data.
+func GetAdtyStaffCustomerOrders(c *gin.Context) {
+	staff, site, ok := adtyStaffRequest(c, "customers.read")
+	if !ok {
+		return
+	}
+	id, ok := adtyPathId(c)
+	if !ok {
+		return
+	}
+	if _, err := service.GetAdtyOwnerCustomer(site, id); err != nil {
+		adtyOwnerHiddenOrError(c, err)
+		return
+	}
+	var customer model.AdtySiteCustomer
+	if err := model.DB.Where("user_id = ? AND site_id = ?", id, site.Id).First(&customer).Error; err != nil {
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Customer not found"))
+		return
+	}
+	visibility := service.AdtySiteVisibility(site)
+	kinds := []string{}
+	if visibility["customer_topups"] == "on" {
+		kinds = append(kinds, OrderTypeTopup, OrderTypeVoucher)
+	}
+	if visibility["customer_usage"] == "on" {
+		kinds = append(kinds, OrderTypeConsumption)
+	}
+	kind, valid := normalizeUnifiedOrderType(c.Query("order_type"))
+	allowed := kind == "" && len(kinds) > 0
+	for _, grant := range kinds {
+		allowed = allowed || kind == grant
+	}
+	if !valid || !allowed {
+		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyStaffDenied)
+		return
+	}
+	for _, parameter := range []string{"provider", "method", "channel_id", "team_id", "source_type"} {
+		if c.Query(parameter) != "" {
+			common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyStaffDenied)
+			return
+		}
+	}
+	query, ok := adtyUnifiedOrdersQuery(c, &site.Id, &id)
+	if !ok {
+		return
+	}
+	query = query.Where("o.order_type IN ? AND o.create_time >= ?", kinds, customer.JoinedAt)
+	type staffOrder struct {
+		TradeNo     string          `json:"trade_no"`
+		OrderType   string          `json:"order_type"`
+		Status      string          `json:"status"`
+		FaceUSD     decimal.Decimal `json:"face_usd"`
+		CreatedAt   int64           `json:"created_at"`
+		CompletedAt int64           `json:"completed_at"`
+	}
+	tradeNo := c.Param("trade_no")
+	if tradeNo != "" {
+		if len(tradeNo) > 255 || (c.Query("section") != "" && c.Query("section") != "business") {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		query = query.Where("o.trade_no = ?", tradeNo)
+	}
+	page := common.GetPageQuery(c)
+	var total int64
+	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	items := []staffOrder{}
+	if err := query.Select("o.trade_no, o.order_type, o.status, o.face_usd, o.create_time AS created_at, o.complete_time AS completed_at").
+		Order("o.create_time DESC, o.source_type DESC, o.reference DESC").Limit(page.GetPageSize()).Offset(page.GetStartIdx()).Scan(&items).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if tradeNo != "" && (total != 1 || len(items) != 1) {
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Order not found"))
+		return
+	}
+	if !adtyStaffReadAudit(c, staff, "staff.orders.read", id) {
+		return
+	}
+	if tradeNo != "" {
+		common.ApiSuccess(c, gin.H{"order": items[0]})
+		return
+	}
+	page.SetTotal(int(total))
+	page.SetItems(items)
 	common.ApiSuccess(c, page)
 }

@@ -1013,3 +1013,32 @@ func loadLockedUserLogicalQuotaTx(tx *gorm.DB, userID int) (logicalQuota, rawQuo
 	}
 	return int64(bal), int64(user.Quota), int64(user.QuotaPending), nil
 }
+
+// ReduceAdtyAdjustmentBatchTx debits only the approved, named lot. The enclosing
+// wallet transaction rolls back if this lot cannot cover the complete reduction.
+func ReduceAdtyAdjustmentBatchTx(tx *gorm.DB, userID, siteID int, source, kind string, amount int64) error {
+	if amount <= 0 || source == "" || (kind != AdtyFundBatchKindPrincipal && kind != AdtyFundBatchKindBonus && kind != AdtyFundBatchKindExpiringBonus) {
+		return common.NewMessage("A specific available fund batch is required")
+	}
+	var batch AdtyFundBatch
+	if err := lockForUpdate(tx).Where("user_id = ? AND site_id = ? AND source = ? AND kind = ?", userID, siteID, source, kind).First(&batch).Error; err != nil {
+		return err
+	}
+	if batch.Status == AdtyFundBatchStatusExpired || batch.ExpiredAt > 0 || (batch.ExpiresAt != nil && *batch.ExpiresAt <= common.GetTimestamp()) {
+		return ErrAdtyFundBatchShortfall
+	}
+	held, err := outstandingAdtyFundAllocationByBatchTx(tx, userID)
+	if err != nil {
+		return err
+	}
+	if batch.Remaining-held[batch.Id] < amount {
+		return ErrAdtyFundBatchShortfall
+	}
+	if err := deductAdtyFundBatchTx(tx, batch.Id, amount); err != nil {
+		return err
+	}
+	if batch.Kind == AdtyFundBatchKindBonus && !batch.IsExpiringGift() {
+		return adtyNotifyBonusSpentTx(tx, userID, map[string]int64{source: amount})
+	}
+	return nil
+}

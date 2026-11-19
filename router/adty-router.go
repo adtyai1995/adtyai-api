@@ -260,6 +260,10 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/:id/invites/:inviteId/revoke", "scope", "wallet:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/accept", "scope", "wallet:write")
 
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/orders", "scope", "wallet:read")
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/orders/:trade_no", "scope", "wallet:read")
+	apiRouter.GET("/adty/orders", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.GetAdtySelfOrders)
+	apiRouter.GET("/adty/orders/:trade_no", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.GetAdtySelfOrder)
 	topup := apiRouter.Group("/adty/topup", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms())
 	topup.GET("/info", controller.GetAdtyTopUpInfo)
 	topup.POST("/quote", controller.PostAdtyTopUpQuote)
@@ -472,6 +476,17 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/orders", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerOrders}},
 		{http.MethodGet, "/orders/summary", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerOrderSummary}},
 		{http.MethodGet, "/orders/:trade_no", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerOrder}},
+		{http.MethodGet, "/orders/:trade_no/refund-preview", "wallet:read", []gin.HandlerFunc{controller.PreviewAdtyOwnerOrderRefund}},
+		{http.MethodGet, "/orders/:trade_no/refunds", "wallet:read", []gin.HandlerFunc{controller.ListAdtyOwnerOrderManualRefunds}},
+		{http.MethodGet, "/orders/:trade_no/refunds/:refund_id", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerOrderManualRefund}},
+		{http.MethodPost, "/orders/:trade_no/refund", "wallet:write", []gin.HandlerFunc{controller.RefundAdtyOwnerOrder}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/approve", "wallet:write", []gin.HandlerFunc{controller.ApproveAdtyOwnerOrderManualRefund}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/reclaim", "wallet:write", []gin.HandlerFunc{controller.ReclaimAdtyOwnerOrderManualRefund}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/bonus", "wallet:write", []gin.HandlerFunc{controller.PlanAdtyOwnerOrderManualRefundBonus}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/commission", "wallet:write", []gin.HandlerFunc{controller.PlanAdtyOwnerOrderManualRefundCommission}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/payout", "wallet:write", []gin.HandlerFunc{controller.RecordAdtyOwnerOrderManualRefundPayout}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/complete", "wallet:write", []gin.HandlerFunc{controller.CompleteAdtyOwnerOrderManualRefund}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/terminate", "wallet:write", []gin.HandlerFunc{controller.TerminateAdtyOwnerOrderManualRefund}},
 		{http.MethodGet, "/teams", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeams}},
 		{http.MethodPost, "/teams", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeam}},
 		{http.MethodPost, "/team-registrations", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistration}},
@@ -520,6 +535,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/adty/staff/customers", controller.GetAdtyStaffCustomers},
 		{http.MethodGet, "/adty/staff/customers/:id", controller.GetAdtyStaffCustomer},
 		{http.MethodGet, "/adty/staff/customers/:id/topups", controller.GetAdtyStaffCustomerTopUps},
+		{http.MethodGet, "/adty/staff/customers/:id/orders", controller.GetAdtyStaffCustomerOrders},
+		{http.MethodGet, "/adty/staff/customers/:id/orders/:trade_no", controller.GetAdtyStaffCustomerOrders},
 		{http.MethodGet, "/adty/staff/customers/:id/logs", controller.GetAdtyStaffCustomerLogs},
 		{http.MethodPost, "/adty/staff/customers/:id/password-reset", controller.PostAdtyStaffCustomerPasswordReset},
 		{http.MethodPost, "/adty/staff/customers/:id/disable", controller.PostAdtyStaffCustomerDisable},

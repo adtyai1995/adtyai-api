@@ -32,7 +32,9 @@ export function OrderTraceTable(props: { entries: OrderTraceEntry[] }) {
   return (
     <StaticDataTable
       data={props.entries}
-      getRowKey={(entry) => entry.id}
+      getRowKey={(entry) =>
+        `${entry.id}:${entry.reference}:${entry.created_at}`
+      }
       tableProps={{ 'aria-label': t('Trace records') }}
       tableClassName='min-w-[900px]'
       emptyContent={
@@ -49,7 +51,7 @@ export function OrderTraceTable(props: { entries: OrderTraceEntry[] }) {
           header: t('Type'),
           cell: (entry) => (
             <div className='flex flex-col'>
-              <span>{t(entry.kind)}</span>
+              <span>{t(ORDER_TRACE_LABELS[entry.kind] ?? entry.kind)}</span>
               <span className='text-muted-foreground'>
                 {entry.source &&
                   t(ORDER_TRACE_LABELS[entry.source] ?? entry.source)}{' '}
@@ -83,8 +85,9 @@ export function OrderTraceTable(props: { entries: OrderTraceEntry[] }) {
               {entry.pending_delta !== undefined && (
                 <span>
                   {t('Pending')}: {entry.pending_delta} · {t('Available')}:{' '}
-                  {entry.available_delta} · {t('Frozen amount')}: {entry.frozen_delta}{' '}
-                  · {t('Withdrawn')}: {entry.withdrawn_delta}
+                  {entry.available_delta} · {t('Frozen amount')}:{' '}
+                  {entry.frozen_delta} · {t('Withdrawn')}:{' '}
+                  {entry.withdrawn_delta}
                 </span>
               )}
             </div>
@@ -104,6 +107,11 @@ export function OrderTraceTable(props: { entries: OrderTraceEntry[] }) {
               {entry.note && (
                 <p className='text-muted-foreground whitespace-pre-wrap'>
                   {entry.note}
+                </p>
+              )}
+              {entry.proof && (
+                <p className='whitespace-pre-wrap'>
+                  {t('Payment proof')}: {entry.proof}
                 </p>
               )}
             </div>

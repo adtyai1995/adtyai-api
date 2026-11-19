@@ -18,15 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useTranslation } from 'react-i18next'
 
+import { officialCommissionStateLabel } from '@/features/wallet/adty/commission-states'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestamp } from '@/lib/format'
 
-import {
-  officialCommissionStateLabel,
-} from '@/features/wallet/adty/commission-states'
-
 import type { OrderTrace } from '../api'
-import { ORDER_TRACE_LABELS } from '../trace-labels'
+import { ORDER_TRACE_LABELS, UNIFIED_ORDER_LABELS } from '../trace-labels'
 
 export function OrderDetailSummary(props: { detail: OrderTrace }) {
   const { t, i18n } = useTranslation()
@@ -43,6 +40,13 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           ],
           [t('Status'), t(ORDER_TRACE_LABELS[order.status] ?? order.status)],
           [t('Provider'), order.payment_provider],
+          [
+            t('Business'),
+            order.business === 'owner_self_use_topup'
+              ? t('Owner self-use top-up')
+              : t(UNIFIED_ORDER_LABELS[order.order_type] ?? order.order_type),
+          ],
+          [t('Original order'), order.original_trade_no || '-'],
           [
             t('Payment scene'),
             order.payment_scene
@@ -94,12 +98,14 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           )}
           {props.detail.refund.commission?.issued_usd && (
             <p className='tabular-nums'>
-              {t('Issued commission')}: {props.detail.refund.commission.issued_usd} USD
+              {t('Issued commission')}:{' '}
+              {props.detail.refund.commission.issued_usd} USD
             </p>
           )}
           {props.detail.refund.commission?.states?.map((item) => (
             <p key={item.state} className='tabular-nums'>
-              {t(officialCommissionStateLabel(item.state))}: {item.amount_usd} USD
+              {t(officialCommissionStateLabel(item.state))}: {item.amount_usd}{' '}
+              USD
             </p>
           ))}
           {positiveUsd(
@@ -115,7 +121,9 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
               USD
             </p>
           )}
-          {positiveUsd(props.detail.refund.commission?.converted_clawed_usd) && (
+          {positiveUsd(
+            props.detail.refund.commission?.converted_clawed_usd
+          ) && (
             <p className='tabular-nums'>
               {t('Clawback from balance')}:{' '}
               {props.detail.refund.commission?.converted_clawed_usd} USD
@@ -123,19 +131,22 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           )}
           {positiveUsd(props.detail.refund.commission_recovery_usd) && (
             <p className='tabular-nums'>
-              {t('Recovery liability')}: {props.detail.refund.commission_recovery_usd} USD
+              {t('Recovery liability')}:{' '}
+              {props.detail.refund.commission_recovery_usd} USD
             </p>
           )}
           {!props.detail.refund.commission &&
             positiveUsd(props.detail.refund.commission_clawed_usd) && (
               <p className='tabular-nums'>
-                {t('Commission clawback')}: {props.detail.refund.commission_clawed_usd} USD
+                {t('Commission clawback')}:{' '}
+                {props.detail.refund.commission_clawed_usd} USD
               </p>
             )}
           {!props.detail.refund.commission &&
             positiveUsd(props.detail.refund.commission_withdrawn_usd) && (
               <p className='tabular-nums'>
-                {t('Withdrawn commission')}: {props.detail.refund.commission_withdrawn_usd} USD
+                {t('Withdrawn commission')}:{' '}
+                {props.detail.refund.commission_withdrawn_usd} USD
               </p>
             )}
           <p className='text-muted-foreground'>
@@ -155,4 +166,3 @@ function positiveUsd(...values: (string | undefined)[]) {
   }
   return undefined
 }
-

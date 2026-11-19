@@ -874,3 +874,539 @@ func TestExpiringRootGiftRejectsChangedExpiredProofAndAuditFailure(t *testing.T)
 		require.Zero(t, count, "rejected or rolled-back grants leave no monetary facts")
 	}
 }
+
+func TestUnifiedOrdersIncludeScopedConsumptionPG(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	buyerToken := adtySessionToken(t, f.db, "unified-order-customer", common.RoleCommonUser)
+	otherToken := adtySessionToken(t, f.db, "unified-order-other", common.RoleCommonUser)
+	var buyer, other model.User
+	require.NoError(t, f.db.Where("username = ?", "unified-order-customer").First(&buyer).Error)
+	require.NoError(t, f.db.Where("username = ?", "unified-order-other").First(&other).Error)
+	// Read-only fixtures at the same timestamp exercise the true total and
+	// the stable tie-break beyond the first 500 rows.
+	const at = 1_789_000_001
+	ops := make([]model.BillingOperation, 0, 503)
+	for i := range 501 {
+		ops = append(ops, model.BillingOperation{OperationKey: fmt.Sprintf("request:unified-%03d", i),
+			UserId: buyer.Id, Kind: "request", State: model.BillingSettled, AppliedQuota: 500_000, CreatedAt: at})
+	}
+	ops = append(ops,
+		model.BillingOperation{OperationKey: "request:foreign-site", SiteId: 99, UserId: other.Id, Kind: "request", State: model.BillingSettled, AppliedQuota: 500_000, CreatedAt: at},
+		model.BillingOperation{OperationKey: "request:reserved", UserId: buyer.Id, Kind: "request", State: model.BillingReserved, ReservedQuota: 500_000, CreatedAt: at},
+	)
+	require.NoError(t, f.db.CreateInBatches(&ops, 100).Error)
+	seedRouterOrder(t, f.db, buyer.Id, "unified-topup", common.TopUpStatusPending, at)
+	const adminOrders = "/api/user/admin/finance/recharge-audit"
+	const selfOrders = "/api/adty/orders"
+	type row struct {
+		OrderType string `json:"order_type"`
+		TradeNo   string `json:"trade_no"`
+		UserID    int    `json:"user_id"`
+		FaceUSD   string `json:"face_usd"`
+	}
+	type orders struct {
+		Total int   `json:"total"`
+		Items []row `json:"items"`
+	}
+	get := func(path, token string) orders {
+		t.Helper()
+		response := adtyJSON(t, f.engine, http.MethodGet, path, "", token)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		return decodeAdtyData[orders](t, response.Body)
+	}
+
+	first := get(adminOrders+"?order_type=consumption&site_id=0&status=settled&page_size=1", f.root)
+	require.Equal(t, 501, first.Total)
+	require.Equal(t, []row{{OrderType: "consumption", TradeNo: "request:unified-500", UserID: buyer.Id, FaceUSD: "1"}}, first.Items)
+	last := get(adminOrders+"?order_type=consumption&site_id=0&page_size=1&p=501", f.root)
+	require.Equal(t, 501, last.Total)
+	require.Len(t, last.Items, 1)
+	assert.Equal(t, "request:unified-000", last.Items[0].TradeNo)
+	filtered := get(adminOrders+"?site_id=0&keyword=unified-000", f.root)
+	require.Equal(t, 1, filtered.Total)
+	assert.Equal(t, last.Items, filtered.Items)
+	assert.Equal(t, 502, get(adminOrders+"?site_id=0", f.root).Total)
+	self := get(selfOrders+"?order_type=consumption&user_id="+fmt.Sprint(other.Id), buyerToken)
+	assert.Zero(t, self.Total)
+	assert.Equal(t, last.Items, get(selfOrders+"?order_type=consumption&keyword=unified-000", buyerToken).Items)
+
+	const detailQuery = "/request:unified-000?order_type=consumption"
+	type detail struct {
+		Order row `json:"order"`
+	}
+	for _, entry := range []struct{ path, token string }{{adminOrders, f.root}, {selfOrders, buyerToken}} {
+		response := adtyJSON(t, f.engine, http.MethodGet, entry.path+detailQuery, "", entry.token)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		assert.Equal(t, last.Items[0], decodeAdtyData[detail](t, response.Body).Order)
+	}
+	assert.Equal(t, http.StatusNotFound, adtyJSON(t, f.engine, http.MethodGet, selfOrders+detailQuery, "", otherToken).Code)
+	assert.Equal(t, http.StatusForbidden, adtyJSON(t, f.engine, http.MethodGet, adminOrders+detailQuery, "", f.token).Code)
+}
+
+func TestUnifiedOrdersSummaryAcceptsUnifiedFiltersPG(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	seedRouterOrder(t, f.db, 1, "unified-summary-topup", common.TopUpStatusSuccess, 1)
+	seedRouterOrder(t, f.db, 1, "unified-summary-voucher", common.TopUpStatusSuccess, 1)
+	require.NoError(t, f.db.Model(&model.TopUp{}).Where("trade_no = ?", "unified-summary-voucher").Update("payment_provider", model.AdtyVoucherProvider).Error)
+	for _, spec := range []struct {
+		filter string
+		count  int
+	}{{"?status=settled", 0}, {"?order_type=topup&status=settled", 0}, {"?order_type=consumption&status=settled", 0}, {"?order_type=topup", 1}, {"?order_type=voucher", 1}} {
+		response := adtyJSON(t, f.engine, http.MethodGet, "/api/user/admin/finance/recharge-audit/summary"+spec.filter, "", f.root)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		data := decodeAdtyData[struct {
+			Orders int `json:"orders"`
+		}](t, response.Body)
+		assert.Equal(t, spec.count, data.Orders, spec.filter)
+	}
+}
+
+func TestUnifiedOrdersKeepCategoriesWithinOriginalSitePG(t *testing.T) {
+	f := newOwnerFixture(t)
+	buyer := f.customer(t, f.site, "unified-site-buyer", "unified-buyer@example.com")
+	foreign := f.customer(t, f.other, "unified-foreign-buyer", "unified-foreign@example.com")
+	for _, spec := range []struct {
+		user, site int
+		suffix     string
+	}{{buyer.Id, f.site.Id, "mine"}, {foreign.Id, f.other.Id, "foreign"}} {
+		trade := "unified-" + spec.suffix
+		seedRouterOrder(t, f.db, spec.user, trade, common.TopUpStatusPending, 1)
+		require.NoError(t, f.db.Model(&model.AdtyTopupOrder{}).Where("trade_no = ?", trade).Update("site_id", spec.site).Error)
+		voucher := "voucher-" + spec.suffix
+		seedRouterOrder(t, f.db, spec.user, voucher, common.TopUpStatusSuccess, 1)
+		require.NoError(t, f.db.Model(&model.TopUp{}).Where("trade_no = ?", voucher).Update("payment_provider", model.AdtyVoucherProvider).Error)
+		require.NoError(t, f.db.Model(&model.AdtyTopupOrder{}).Where("trade_no = ?", voucher).Update("site_id", spec.site).Error)
+		require.NoError(t, f.db.Create(&model.BillingOperation{OperationKey: "request:" + spec.suffix, UserId: spec.user, SiteId: spec.site,
+			Kind: "request", State: model.BillingSettled, AppliedQuota: 500_000}).Error)
+		require.NoError(t, f.db.Create(&model.AdtyManualRefund{RefundId: "refund-" + spec.suffix, TradeNo: trade,
+			UserId: spec.user, SiteId: spec.site, Status: "submitted", RequestQuota: 500_000, RequestUSD: decimal.NewFromInt(1), Reason: "private-admin-reason"}).Error)
+		require.NoError(t, f.db.Create(&model.AdtySiteWithdrawal{SiteId: spec.site, OwnerUserId: spec.user, Status: "submitted",
+			AmountUSD: decimal.NewFromInt(1), Method: "usdt", ProofNote: "private-proof", IdempotencyKey: "unified-wd-" + spec.suffix}).Error)
+		require.NoError(t, f.db.Create(&model.AdtySiteInviteCommission{SiteId: spec.site, InviterId: spec.user, InviteeId: spec.user, TradeNo: trade,
+			Status: "pending", FaceUSD: decimal.NewFromInt(1), Rate: decimal.RequireFromString("0.1"), AmountUSD: decimal.RequireFromString("0.1")}).Error)
+		require.NoError(t, f.db.Create(&model.AdtyStaffBalanceRequest{SiteId: spec.site, StaffUserId: f.owner.Id, CustomerUserId: spec.user,
+			Direction: "increase", Status: "pending", AmountUSD: decimal.NewFromInt(1)}).Error)
+	}
+	require.NoError(t, model.AdtySetUserSiteTx(f.db, buyer.Id, f.other.Id))
+	type item struct {
+		OrderType  string `json:"order_type"`
+		TradeNo    string `json:"trade_no"`
+		UserID     int    `json:"user_id"`
+		SourceType string `json:"source_type"`
+	}
+	type page struct {
+		Total int
+		Items []item
+	}
+	for _, kind := range []string{"topup", "voucher", "consumption", "refund", "withdrawal", "commission", "staff_adjustment"} {
+		response := f.call(t, http.MethodGet, "/api/adty/site/orders?order_type="+kind, "", "")
+		list := decodeAdtyData[page](t, response.Body)
+		require.Equal(t, 1, list.Total, kind+": "+response.Body.String())
+		require.Len(t, list.Items, 1)
+		assert.Equal(t, kind, list.Items[0].OrderType)
+		assert.Equal(t, buyer.Id, list.Items[0].UserID)
+		assert.NotContains(t, response.Body.String(), "private-")
+		path := "/api/adty/site/orders/" + url.PathEscape(list.Items[0].TradeNo) + "?order_type=" + kind + "&source_type=" + list.Items[0].SourceType
+		detail := f.call(t, http.MethodGet, path, "", "")
+		require.Equal(t, http.StatusOK, detail.Code, kind+": "+detail.Body.String())
+		assert.Contains(t, detail.Body.String(), `"success":true`, kind+": "+detail.Body.String())
+		assert.NotContains(t, detail.Body.String(), "private-")
+		assert.Equal(t, http.StatusNotFound, f.call(t, http.MethodGet, path+"&site_id="+fmt.Sprint(f.other.Id), "", "").Code)
+	}
+	all := decodeAdtyData[page](t, f.call(t, http.MethodGet, "/api/adty/site/orders", "", "").Body)
+	assert.Equal(t, 7, all.Total)
+	assert.Zero(t, decodeAdtyData[page](t, f.call(t, http.MethodGet, "/api/adty/site/orders?site_id="+fmt.Sprint(f.other.Id), "", "").Body).Total)
+}
+
+func TestUnifiedOrdersTraceLinkedFactsPG(t *testing.T) {
+	f := newOwnerFixture(t)
+	buyer := f.customer(t, f.site, "trace-unified", "trace-unified@example.com")
+	const trade = "trace-unified-topup"
+	seedRouterOrder(t, f.db, buyer.Id, trade, common.TopUpStatusSuccess, 1001)
+	require.NoError(t, f.db.Model(&model.AdtyTopupOrder{}).Where("trade_no = ?", trade).Update("site_id", f.site.Id).Error)
+	require.NoError(t, f.db.Create(&model.AdtyFundBatch{UserId: buyer.Id, SiteId: &f.site.Id, Source: trade, Kind: "principal", Original: 500000, Remaining: 400000}).Error)
+	require.NoError(t, f.db.Create(&model.AdtyFundBatch{UserId: buyer.Id, SiteId: &f.site.Id, Source: "unrelated-secret", Kind: "principal", Original: 500000, Remaining: 500000}).Error)
+	refund := model.AdtyManualRefund{RefundId: "trace-unified-refund", TradeNo: trade, UserId: buyer.Id, SiteId: f.site.Id,
+		Status: "completed", RequestUSD: decimal.NewFromInt(1), RequestQuota: 500000, ReclaimIdemKey: "trace-unified-reclaim", PayoutVoucher: "private-payout-voucher"}
+	require.NoError(t, f.db.Create(&refund).Error)
+	key := refund.ReclaimIdemKey
+	require.NoError(t, f.db.Create(&model.AdtyBalanceLedger{UserId: buyer.Id, RefType: "topup", RefId: trade, Type: "refund", DeltaQuota: -100000,
+		IdempotencyKey: &key, Reason: "private-refund-reason"}).Error)
+	otherKey := "trace-unrelated-reclaim"
+	require.NoError(t, f.db.Create(&model.AdtyBalanceLedger{UserId: buyer.Id, RefType: "topup", RefId: trade, Type: "refund", DeltaQuota: -200000,
+		IdempotencyKey: &otherKey, Reason: "unrelated-secret"}).Error)
+	type entry struct {
+		Kind, Reference, Note string
+		DeltaQuota            int64 `json:"delta_quota"`
+	}
+	type trace struct {
+		Total    int
+		Items    []entry
+		Sections []string
+	}
+	get := func(path string) trace {
+		t.Helper()
+		response := f.call(t, http.MethodGet, path, "", "")
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		assert.NotContains(t, response.Body.String(), "unrelated-secret")
+		assert.NotContains(t, response.Body.String(), "private-")
+		return decodeAdtyData[trace](t, response.Body)
+	}
+	funds := get("/api/adty/site/orders/" + trade + "?order_type=topup&section=funds")
+	require.Equal(t, 1, funds.Total)
+	require.Len(t, funds.Items, 1)
+	assert.Equal(t, int64(400000), funds.Items[0].DeltaQuota)
+	refunds := get("/api/adty/site/orders/" + trade + "?order_type=topup&section=refunds")
+	require.Equal(t, 1, refunds.Total)
+	assert.Equal(t, refund.RefundId, refunds.Items[0].Reference)
+	wallet := get("/api/adty/site/orders/" + refund.RefundId + "?order_type=refund&section=wallet")
+	require.Equal(t, 1, wallet.Total)
+	assert.Equal(t, int64(-100000), wallet.Items[0].DeltaQuota)
+}
+
+func TestUnifiedOrdersStaffPermissionIntersectionPG(t *testing.T) {
+	f := newOwnerFixture(t)
+	buyer := f.customer(t, f.site, "orders-staff-buyer", "orders-staff@example.com")
+	foreign := f.customer(t, f.other, "orders-staff-foreign", "orders-foreign@example.com")
+	require.NoError(t, f.db.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", buyer.Id).Update("joined_at", 1000).Error)
+	for _, at := range []int64{999, 1001} {
+		trade := fmt.Sprintf("staff-orders-%d", at)
+		seedRouterOrder(t, f.db, buyer.Id, trade, common.TopUpStatusSuccess, at)
+		require.NoError(t, f.db.Model(&model.TopUp{}).Where("trade_no = ?", trade).Update("create_time", at).Error)
+		require.NoError(t, f.db.Model(&model.AdtyTopupOrder{}).Where("trade_no = ?", trade).Updates(map[string]any{"site_id": f.site.Id, "paid_tx_hash": "private-payment-evidence"}).Error)
+		require.NoError(t, f.db.Create(&model.BillingOperation{OperationKey: fmt.Sprintf("request:staff-%d", at), UserId: buyer.Id, SiteId: f.site.Id, Kind: "request", State: model.BillingSettled, AppliedQuota: 500000, CreatedAt: at}).Error)
+	}
+	grants := []string{"customers.read", "customers.topups"}
+	member, err := service.CreateAdtyStaff(f.owner.Id, f.site.Id, service.AdtyStaffInput{Username: "orders-employee", DisplayName: "Order reader", Password: "orders-employee-password-42", Role: "finance", Permissions: &grants})
+	require.NoError(t, err)
+	login, err := service.CreateLoginSessionOnSite(member.UserId, f.site.Id, "password", "127.0.0.1", "orders-staff")
+	require.NoError(t, err)
+	path := fmt.Sprintf("/api/adty/staff/customers/%d/orders", buyer.Id)
+	list := f.siteJSON(t, http.MethodGet, path, "", login.AccessToken)
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
+	assert.Contains(t, list.Body.String(), `"total":1`)
+	assert.Contains(t, list.Body.String(), "staff-orders-1001")
+	for _, hidden := range []string{"staff-orders-999", "request:staff", "private-payment", "paid_tx_hash", "channel_id"} {
+		assert.NotContains(t, list.Body.String(), hidden)
+	}
+	assert.Equal(t, http.StatusForbidden, f.siteJSON(t, http.MethodGet, path+"?order_type=consumption", "", login.AccessToken).Code)
+	assert.Equal(t, http.StatusNotFound, f.siteJSON(t, http.MethodGet, fmt.Sprintf("/api/adty/staff/customers/%d/orders", foreign.Id), "", login.AccessToken).Code)
+	detail := f.siteJSON(t, http.MethodGet, path+"/staff-orders-1001?order_type=topup", "", login.AccessToken)
+	require.Equal(t, http.StatusOK, detail.Code, detail.Body.String())
+	assert.NotContains(t, detail.Body.String(), "private-payment")
+	assert.Equal(t, http.StatusForbidden, f.siteJSON(t, http.MethodGet, path+"?channel_id=1", "", login.AccessToken).Code)
+	assert.Equal(t, http.StatusNotFound, f.siteJSON(t, http.MethodGet, path+"/staff-orders-999?order_type=topup", "", login.AccessToken).Code)
+	assert.Equal(t, http.StatusForbidden, f.siteJSON(t, http.MethodGet, path+"?order_type=refund", "", login.AccessToken).Code)
+	var readAudits int64
+	require.NoError(t, f.db.Model(&model.AdtySiteAudit{}).Where("operator_id = ? AND action = ?", member.UserId, "staff.orders.read").Count(&readAudits).Error)
+	assert.Equal(t, int64(2), readAudits)
+	require.NoError(t, f.db.Model(&model.AdtySiteStaff{}).Where("id = ?", member.Id).Update("permissions", `["customers.read","customers.usage"]`).Error)
+	usage := f.siteJSON(t, http.MethodGet, path+"?order_type=consumption", "", login.AccessToken)
+	require.Equal(t, http.StatusOK, usage.Code, usage.Body.String())
+	assert.Contains(t, usage.Body.String(), `"total":1`)
+	assert.Contains(t, usage.Body.String(), "request:staff-1001")
+	assert.Equal(t, http.StatusForbidden, f.siteJSON(t, http.MethodGet, path+"?order_type=topup", "", login.AccessToken).Code)
+	require.NoError(t, f.db.Model(&model.AdtySite{}).Where("id = ?", f.site.Id).Update("visibility", `{"customer_usage":"off"}`).Error)
+	assert.Equal(t, http.StatusForbidden, f.siteJSON(t, http.MethodGet, path+"?order_type=consumption", "", login.AccessToken).Code)
+}
+
+func TestUnifiedOrdersWithdrawalAndCommissionLinksPG(t *testing.T) {
+	f := newOwnerFixture(t)
+	root := adtySessionToken(t, f.db, "unified-trace-root", common.RoleRootUser)
+	withdrawal := model.AdtySiteWithdrawal{SiteId: f.site.Id, OwnerUserId: f.owner.Id, AmountUSD: decimal.NewFromInt(1),
+		Status: model.AdtySiteWithdrawPending, IdempotencyKey: "private-withdrawal-key", ProofNote: "private-withdrawal-proof"}
+	require.NoError(t, f.db.Create(&withdrawal).Error)
+	require.NoError(t, f.db.Create(&model.AdtySiteWalletLedger{SiteId: f.site.Id, WalletKind: "earnings", Type: "earning_withdraw_freeze",
+		RefType: "site_withdraw", RefId: withdrawal.IdempotencyKey, IdempotencyKey: "trace-wallet-row", Reason: "private-wallet-reason"}).Error)
+	require.NoError(t, f.db.Create(&model.AdtySiteWalletLedger{SiteId: f.site.Id, WalletKind: "earnings", Type: "earning_withdraw_freeze",
+		RefType: "site_withdraw", RefId: "unrelated-private-key", IdempotencyKey: "trace-unrelated-row"}).Error)
+	commission := model.AdtySiteInviteCommission{SiteId: f.site.Id, InviterId: f.owner.Id, InviteeId: f.owner.Id, TradeNo: "linked-source-topup",
+		AmountUSD: decimal.NewFromInt(1), Status: model.AdtySiteCommissionCovered}
+	require.NoError(t, f.db.Create(&commission).Error)
+	inviteWithdrawal := model.AdtySiteInviteWithdrawal{SiteId: f.site.Id, UserId: f.owner.Id, AmountUSD: decimal.NewFromInt(1),
+		Status: model.AdtySiteInviteWithdrawPending, IdempotencyKey: "private-invite-key"}
+	require.NoError(t, f.db.Create(&inviteWithdrawal).Error)
+	require.NoError(t, f.db.Create(&model.AdtySiteInviteWithdrawalItem{WithdrawalId: inviteWithdrawal.Id, CommissionId: commission.Id, AmountUSD: decimal.NewFromInt(1)}).Error)
+	type trace struct {
+		Total int
+		Items []struct{ Reference string }
+	}
+	const base = "/api/user/admin/finance/recharge-audit/"
+	response := adtyJSON(t, f.engine, http.MethodGet, fmt.Sprintf("%sWD-SITE-%d?order_type=withdrawal&section=site_wallet", base, withdrawal.Id), "", root)
+	data := decodeAdtyData[trace](t, response.Body)
+	require.Equal(t, 1, data.Total, response.Body.String())
+	assert.NotContains(t, response.Body.String(), "private-")
+	response = f.call(t, http.MethodGet, fmt.Sprintf("/api/adty/site/orders/WD-INV-%d?order_type=withdrawal&section=commissions", inviteWithdrawal.Id), "", "")
+	data = decodeAdtyData[trace](t, response.Body)
+	require.Equal(t, 1, data.Total, response.Body.String())
+	require.Len(t, data.Items, 1)
+	assert.Equal(t, "linked-source-topup", data.Items[0].Reference)
+	assert.NotContains(t, response.Body.String(), "private-")
+}
+
+func TestOwnerManualRefundUsesOriginalSiteOrderPG(t *testing.T) {
+	f := newOwnerFixture(t)
+	buyer := f.customer(t, f.site, "owner-refund-buyer", "owner-refund@example.com")
+	foreignBuyer := f.customer(t, f.other, "owner-refund-other", "owner-refund-other@example.com")
+	const trade, foreignTrade, secondTrade = "owner-refund-original", "owner-refund-foreign", "owner-refund-second"
+	seed := func(order string, user, siteID int) {
+		t.Helper()
+		const provider, method = model.PaymentProviderAdtyBEpusdt, "usdt.trc20"
+		require.NoError(t, model.CreateAdtyTopUp(
+			&model.TopUp{TradeNo: order, UserId: user, Amount: 2, Money: 2, Status: common.TopUpStatusPending, PaymentProvider: provider, PaymentMethod: method},
+			&model.AdtyTopupOrder{TradeNo: order, UserId: user, SiteId: siteID, Provider: provider, Method: method,
+				FaceUSD: decimal.NewFromInt(2), CreditQuota: 1_000_000, PayAmount: decimal.NewFromInt(2),
+				PayCurrency: "USDT", PriceSnapshot: decimal.NewFromInt(1)},
+		))
+		replay, err := model.CompleteAdtyTopUp(order, model.AdtyPaymentFacts{Provider: provider, Method: method,
+			PaidAmount: decimal.NewFromInt(2), FiatAmount: decimal.NewFromInt(2), PaidCurrency: "USDT",
+			TxHash: "payment-" + order, Source: model.AdtyPaymentSourceCallback}, "")
+		require.NoError(t, err)
+		require.False(t, replay)
+	}
+	seed(trade, buyer.Id, f.site.Id)
+	seed(secondTrade, buyer.Id, f.site.Id)
+	seed(foreignTrade, foreignBuyer.Id, f.other.Id)
+	const selfUseTrade = "owner-refund-self-use"
+	require.NoError(t, model.CreateAdtyTopUp(
+		&model.TopUp{TradeNo: selfUseTrade, UserId: buyer.Id, Amount: 2, Money: 2, Status: common.TopUpStatusPending, PaymentProvider: model.PaymentProviderAdtyBEpusdt},
+		&model.AdtyTopupOrder{TradeNo: selfUseTrade, UserId: buyer.Id, SiteId: f.site.Id, Business: model.AdtyBusinessOwnerSelfUseTopup,
+			Provider: model.PaymentProviderAdtyBEpusdt, FaceUSD: decimal.NewFromInt(2), CreditQuota: 1_000_000},
+	))
+	assert.Equal(t, http.StatusForbidden, f.call(t, http.MethodGet, "/api/adty/site/orders/"+selfUseTrade+"/refund-preview", "", "").Code)
+	_, selfUseErr := model.ApplyAdtyTopUpManualRefund(selfUseTrade, "unused", f.owner.Id, "self-use-forbidden", decimal.NewFromInt(1), f.site.Id)
+	require.Error(t, selfUseErr, "the transactional owner guard also excludes self-use orders")
+	require.NoError(t, model.AdtySetUserSiteTx(f.db, buyer.Id, f.other.Id))
+	const ownerOrders = "/api/adty/site/orders/"
+	const original = ownerOrders + trade
+	response := f.call(t, http.MethodGet, original+"/refund-preview?refund_usd=1", "", "")
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	preview := decodeAdtyData[model.AdtyTopUpRefundResult](t, response.Body)
+	require.NotNil(t, preview.Facts)
+	assert.Equal(t, f.site.Id, preview.Facts.SiteId)
+	assert.Equal(t, "1", preview.Facts.ForeignReference)
+	assert.Equal(t, "2", preview.Facts.PrincipalRemainingUSD)
+	assert.Nil(t, preview.Ledger)
+	assert.Equal(t, http.StatusNotFound, f.call(t, http.MethodGet, ownerOrders+foreignTrade+"/refund-preview", "", "").Code)
+	plain := adtySessionToken(t, f.db, "owner-refund-non-owner", common.RoleCommonUser)
+	assert.Equal(t, http.StatusForbidden, adtyJSON(t, f.engine, http.MethodGet, original+"/refunds", "", plain).Code)
+	readOnlyToken := createAdtyScopedToken(t, f.owner.Id, "wallet:read")
+	assert.Equal(t, http.StatusForbidden, adtyJSON(t, f.engine, http.MethodPost, original+"/refund", "{}", readOnlyToken).Code)
+
+	const reason = "return one unused dollar"
+	const refundID = "owner-partial-refund"
+	applyBody := func(reason, amount string) string {
+		return fmt.Sprintf(`{"reason":%q,"refund_usd":%q,"idempotency_key":%q}`, reason, amount, refundID)
+	}
+	issueProof := func(op service.VerificationOperation, scope string) string {
+		op.Scope = scope
+		return financeUserProof(t, f.owner, service.VerificationMethodPassword, op)
+	}
+	newApplyProof := func() string {
+		return issueProof(service.AdtyTopUpRefundOperation(trade, reason, "1", nil), "site.order.refund")
+	}
+	for _, tc := range []struct{ path, reason, amount string }{
+		{original, reason, "1.5"},
+		{original, "different reason", "1"},
+		{ownerOrders + secondTrade, reason, "1"},
+	} {
+		res := f.call(t, http.MethodPost, tc.path+"/refund", applyBody(tc.reason, tc.amount), newApplyProof())
+		assert.Equal(t, http.StatusForbidden, res.Code)
+		assert.Contains(t, res.Body.String(), "SECURITY_PROOF_CONTEXT_MISMATCH")
+	}
+	proof := newApplyProof()
+	res := f.call(t, http.MethodPost, original+"/refund", applyBody(reason, "1"), proof)
+	applied := decodeAdtyData[model.AdtyManualRefundResult](t, res.Body)
+	require.NotNil(t, applied.Refund)
+	require.NotNil(t, applied.Occupancy)
+	assert.Equal(t, "submitted", applied.Refund.Status)
+	assert.Equal(t, refundID, applied.Refund.RefundId)
+	assert.Equal(t, int64(500_000), applied.Occupancy.InProgressQuota)
+	assert.Zero(t, applied.Occupancy.CompletedQuota)
+	res = f.call(t, http.MethodPost, original+"/refund", applyBody(reason, "1"), proof)
+	assert.Equal(t, http.StatusForbidden, res.Code)
+	assert.Contains(t, res.Body.String(), "SECURITY_PROOF_CONSUMED")
+
+	stepPath := original + "/refunds/" + refundID + "/"
+	step := func(stepName, body, note string, payout service.AdtyManualRefundStepPayout) model.AdtyManualRefundResult {
+		t.Helper()
+		op := service.AdtyTopUpManualRefundStepOperation(trade, refundID, stepName, note, payout)
+		res := f.call(t, http.MethodPost, stepPath+stepName, body, issueProof(op, "site.order.refund_step"))
+		require.Equal(t, http.StatusOK, res.Code, res.Body.String())
+		return decodeAdtyData[model.AdtyManualRefundResult](t, res.Body)
+	}
+	res = f.call(t, http.MethodPost, stepPath+"approve", "{}", "")
+	assert.Equal(t, http.StatusForbidden, res.Code)
+	assert.Contains(t, res.Body.String(), "SECURITY_PROOF_REQUIRED")
+	approved := step("approve", "{}", "", service.AdtyManualRefundStepPayout{})
+	assert.Equal(t, "approved", approved.Refund.Status)
+	reclaimed := step("reclaim", "{}", "", service.AdtyManualRefundStepPayout{})
+	assert.Equal(t, int64(500_000), reclaimed.Refund.DeductedPrincipalQuota)
+	assert.Nil(t, reclaimed.Ledger)
+	for _, name := range []string{"bonus", "commission"} {
+		assert.Equal(t, "approved", step(name, "{}", "", service.AdtyManualRefundStepPayout{}).Refund.Status)
+	}
+	unknown := step("payout", `{"status":"unknown","idempotency_key":"bank-pending"}`, "", service.AdtyManualRefundStepPayout{Status: "unknown"})
+	assert.Equal(t, int64(500_000), unknown.Occupancy.UnknownQuota)
+	assert.Zero(t, unknown.Occupancy.InProgressQuota)
+	paidAt := common.GetTimestamp()
+	paid := step("payout", fmt.Sprintf(`{"status":"success","currency":"CNY","amount":"7","paid_at":%d,"voucher":"offline-123","idempotency_key":"bank-confirmed"}`, paidAt), "",
+		service.AdtyManualRefundStepPayout{Status: "success", Currency: "CNY", Amount: "7", PaidAt: paidAt, Voucher: "offline-123"})
+	assert.Equal(t, "approved", paid.Refund.Status)
+	assert.Zero(t, paid.Occupancy.CompletedQuota)
+	assert.Equal(t, "CNY", paid.Refund.PayoutCurrency)
+	assert.Equal(t, "7", paid.Refund.PayoutAmount.String())
+	assert.Equal(t, "offline-123", paid.Refund.PayoutVoucher)
+	completed := step("complete", "{}", "", service.AdtyManualRefundStepPayout{})
+	assert.Equal(t, "completed", completed.Refund.Status)
+	assert.Equal(t, int64(500_000), completed.Occupancy.CompletedQuota)
+	assert.Equal(t, int64(500_000), completed.Occupancy.RemainingQuota)
+	assert.Zero(t, completed.Occupancy.InProgressQuota+completed.Occupancy.UnknownQuota)
+	var saved model.AdtyManualRefund
+	require.NoError(t, f.db.Where("refund_id = ?", refundID).First(&saved).Error)
+	assert.Equal(t, f.owner.Id, saved.ApplyOperatorId)
+	assert.Equal(t, f.owner.Id, saved.PayoutOperatorId)
+	assert.Equal(t, f.owner.Id, saved.CompleteOperatorId)
+	var after model.User
+	require.NoError(t, f.db.First(&after, buyer.Id).Error)
+	assert.Equal(t, 2_500_000, after.Quota)
+}
+
+func TestStaffAdjustmentRequiresConcreteProvenancePG(t *testing.T) {
+	f := newOwnerFixture(t)
+	require.NoError(t, f.db.AutoMigrate(&model.AuditIntent{}))
+	buyer := f.customer(t, f.site, "staff-provenance-buyer", "staff-provenance@example.com")
+	staff, err := service.CreateAdtyStaff(f.owner.Id, f.site.Id, service.AdtyStaffInput{Username: "provenance-staff",
+		DisplayName: "Finance", Password: "employee-password-42", Role: "finance"})
+	require.NoError(t, err)
+	login, err := service.CreateLoginSessionOnSite(staff.UserId, f.site.Id, "password", "127.0.0.1", "staff-provenance-test")
+	require.NoError(t, err)
+	body := fmt.Sprintf(`{"customer_id":%d,"direction":"increase","amount_usd":"1","idempotency_key":"staff-provenance-missing"}`, buyer.Id)
+	response := f.siteJSON(t, http.MethodPost, "/api/adty/staff/balance-requests", body, login.AccessToken)
+	require.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
+	var count int64
+	require.NoError(t, f.db.Model(&model.AdtyStaffBalanceRequest{}).Where("staff_user_id = ?", staff.UserId).Count(&count).Error)
+	require.Zero(t, count)
+	const orderRef = "staff-provenance-order"
+	require.NoError(t, model.CreateAdtyTopUp(
+		&model.TopUp{TradeNo: orderRef, UserId: buyer.Id, Amount: 2, Money: 2, Status: common.TopUpStatusPending, PaymentProvider: model.PaymentProviderAdtyBEpusdt},
+		&model.AdtyTopupOrder{TradeNo: orderRef, UserId: buyer.Id, SiteId: f.site.Id, Provider: model.PaymentProviderAdtyBEpusdt,
+			FaceUSD: decimal.NewFromInt(2), CreditQuota: 1_000_000, PayAmount: decimal.NewFromInt(2), PayCurrency: "USDT"},
+	))
+	_, err = model.CompleteAdtyTopUp(orderRef, model.AdtyPaymentFacts{Provider: model.PaymentProviderAdtyBEpusdt,
+		PaidAmount: decimal.NewFromInt(2), FiatAmount: decimal.NewFromInt(2), PaidCurrency: "USDT", Source: model.AdtyPaymentSourceCallback}, "")
+	require.NoError(t, err)
+	makeBody := func(key, reason, order, source, direction, kind, batch string) string {
+		return fmt.Sprintf(`{"customer_id":%d,"direction":%q,"amount_usd":"1","idempotency_key":%q,"reason":%q,"order_ref":%q,"funding_source":%q,"batch_kind":%q,"batch_source":%q}`, buyer.Id, direction, key, reason, order, source, kind, batch)
+	}
+	for _, invalid := range []string{
+		makeBody("missing-reason", "", orderRef, "site_earnings", "increase", "", ""),
+		makeBody("missing-order", "correction", "", "site_earnings", "increase", "", ""),
+		makeBody("fake-order", "correction", "not-an-order", "site_earnings", "increase", "", ""),
+		makeBody("operating-not-source", "correction", orderRef, "operating", "increase", "", ""),
+		makeBody("fifo-not-source", "correction", orderRef, "fifo_batches", "decrease", "principal", orderRef),
+	} {
+		rejected := f.siteJSON(t, http.MethodPost, "/api/adty/staff/balance-requests", invalid, login.AccessToken)
+		require.Contains(t, rejected.Body.String(), `"success":false`, rejected.Body.String())
+	}
+	valid := makeBody("staff-provenance-valid", "correct original order", orderRef, "site_earnings", "increase", "", "")
+	created := f.siteJSON(t, http.MethodPost, "/api/adty/staff/balance-requests", valid, login.AccessToken)
+	request := decodeAdtyData[model.AdtyStaffBalanceRequest](t, created.Body)
+	require.Equal(t, "correct original order", request.Reason)
+	require.Equal(t, orderRef, request.OrderRef)
+	require.Equal(t, staff.UserId, request.StaffUserId)
+	replayed := decodeAdtyData[model.AdtyStaffBalanceRequest](t, f.siteJSON(t, http.MethodPost, "/api/adty/staff/balance-requests", valid, login.AccessToken).Body)
+	require.Equal(t, request.Id, replayed.Id)
+	conflict := f.siteJSON(t, http.MethodPost, "/api/adty/staff/balance-requests", strings.Replace(valid, "correct original order", "changed reason", 1), login.AccessToken)
+	require.Contains(t, conflict.Body.String(), `"success":false`)
+	_, err = service.ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(2),
+		service.AdtySiteWalletChange{Type: "test", RefType: "test", RefID: "staff-source-seed", IdempotencyKey: "staff-source-seed"})
+	require.NoError(t, err)
+	var before model.User
+	require.NoError(t, f.db.First(&before, buyer.Id).Error)
+	require.Error(t, service.ReviewAdtyStaffBalanceRequest(staff.UserId, "member", request.Id, true))
+	require.NoError(t, service.ReviewAdtyStaffBalanceRequest(f.owner.Id, "owner", request.Id, true))
+	var approved model.AdtyStaffBalanceRequest
+	require.NoError(t, f.db.First(&approved, request.Id).Error)
+	require.EqualValues(t, before.Quota+500_000, approved.AfterQuota)
+	require.EqualValues(t, before.Quota, approved.BeforeQuota)
+	require.Positive(t, approved.LedgerId)
+	var ledger model.AdtyBalanceLedger
+	require.NoError(t, f.db.First(&ledger, approved.LedgerId).Error)
+	require.Equal(t, "staff_balance", ledger.RefType)
+	require.Equal(t, fmt.Sprintf("%d", request.Id), ledger.RefId)
+	require.Equal(t, request.Reason, ledger.Reason)
+	require.Error(t, service.ReviewAdtyStaffBalanceRequest(f.owner.Id, "owner", request.Id, true))
+	decreaseBody := makeBody("staff-provenance-decrease", "recover original principal", orderRef, "specified_batch", "decrease", "principal", orderRef)
+	decrease := decodeAdtyData[model.AdtyStaffBalanceRequest](t, f.siteJSON(t, http.MethodPost, "/api/adty/staff/balance-requests", decreaseBody, login.AccessToken).Body)
+	var originalBatch model.AdtyFundBatch
+	require.NoError(t, f.db.Where("user_id = ? AND source = ? AND kind = ?", buyer.Id, orderRef, "principal").First(&originalBatch).Error)
+	require.NoError(t, f.db.Create(&model.AdtyFundAllocation{UserId: buyer.Id, BatchId: originalBatch.Id, OperationId: "staff-source-held", Held: 750_000}).Error)
+	require.ErrorIs(t, service.ReviewAdtyStaffBalanceRequest(f.owner.Id, "owner", decrease.Id, true), model.ErrAdtyFundBatchShortfall)
+	var untouched model.AdtyStaffBalanceRequest
+	require.NoError(t, f.db.First(&untouched, decrease.Id).Error)
+	require.Equal(t, model.AdtyStaffBalancePending, untouched.Status)
+	require.NoError(t, f.db.Model(&model.AdtyFundAllocation{}).Where("operation_id = ?", "staff-source-held").Update("settled", 750_000).Error)
+	require.NoError(t, service.ReviewAdtyStaffBalanceRequest(f.owner.Id, "owner", decrease.Id, true))
+	require.NoError(t, f.db.First(&originalBatch, originalBatch.Id).Error)
+	require.EqualValues(t, 500_000, originalBatch.Remaining)
+	var final model.User
+	require.NoError(t, f.db.First(&final, buyer.Id).Error)
+	require.Equal(t, before.Quota, final.Quota)
+}
+
+func TestDirectAdjustmentRequiresOriginalFinancialReferencePG(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	require.NoError(t, f.db.AutoMigrate(&model.AdtyFinancialAdjustment{}, &model.AuditIntent{}))
+	adtySessionToken(t, f.db, "adjustment-reference-buyer", common.RoleCommonUser)
+	var buyer model.User
+	require.NoError(t, f.db.Where("username = ?", "adjustment-reference-buyer").First(&buyer).Error)
+	body := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":500000,"reason":"correct original order","idempotency_key":"adjustment-reference-missing"}`, buyer.Id)
+	response := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", body, f.root)
+	require.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
+	var after model.User
+	require.NoError(t, f.db.First(&after, buyer.Id).Error)
+	require.Equal(t, buyer.Quota, after.Quota)
+	const orderRef = "adjustment-reference-original"
+	seedRouterOrder(t, f.db, buyer.Id, orderRef, common.TopUpStatusPending, common.GetTimestamp()+900)
+	_, err := model.CompleteAdtyTopUp(orderRef, model.AdtyPaymentFacts{Provider: model.PaymentProviderAdtyBEpusdt, Source: model.AdtyPaymentSourceManual}, "verified original")
+	require.NoError(t, err)
+	var root model.User
+	require.NoError(t, f.db.Where("username = ?", "guard-root").First(&root).Error)
+	makeBody := func(key, order, mode, source, batch string) string {
+		kind := ""
+		if batch != "" {
+			kind = "principal"
+		}
+		return fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":%q,"value":500000,"reason":"correct original order","idempotency_key":%q,"order_ref":%q,"funding_source":%q,"batch_kind":%q,"batch_source":%q,"approver_id":99999,"executor_id":99999,"site_id":99999}`, buyer.Id, mode, key, order, source, kind, batch)
+	}
+	invalid := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", makeBody("bad-original", "nonexistent", "add", "platform_correction", ""), f.root)
+	require.Contains(t, invalid.Body.String(), `"success":false`)
+	validBody := makeBody("adjustment-reference-valid", orderRef, "add", "platform_correction", "")
+	valid := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", validBody, f.root)
+	require.Contains(t, valid.Body.String(), `"success":true`, valid.Body.String())
+	var adjustment model.AdtyFinancialAdjustment
+	require.NoError(t, f.db.Where("idempotency_key = ?", "adjustment-reference-valid").First(&adjustment).Error)
+	require.Equal(t, orderRef, adjustment.OrderRef)
+	require.Equal(t, root.Id, adjustment.ApproverId)
+	require.Equal(t, root.Id, adjustment.ExecutorId)
+	require.Zero(t, adjustment.SiteId)
+	require.EqualValues(t, 500000, adjustment.BalanceAfter-adjustment.BalanceBefore)
+	require.Positive(t, adjustment.LedgerId)
+	var entry model.AdtyBalanceLedger
+	require.NoError(t, f.db.First(&entry, adjustment.LedgerId).Error)
+	require.Equal(t, "financial_adjustment", entry.RefType)
+	require.Equal(t, fmt.Sprintf("%d", adjustment.Id), entry.RefId)
+	require.NotEmpty(t, adjustment.ApprovalRef)
+	var intents int64
+	require.NoError(t, f.db.Model(&model.AuditIntent{}).Where("payload LIKE ?", "%financial_adjustment%").Count(&intents).Error)
+	require.EqualValues(t, 1, intents)
+	require.Contains(t, adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", validBody, f.root).Body.String(), `"success":true`)
+	require.Contains(t, adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", strings.Replace(validBody, "correct original order", "changed reason", 1), f.root).Body.String(), `"success":false`)
+	decrease := makeBody("adjustment-reference-decrease", orderRef, "subtract", "specified_batch", orderRef)
+	require.Contains(t, adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", decrease, f.root).Body.String(), `"success":true`)
+	var reduced model.AdtyFinancialAdjustment
+	require.NoError(t, f.db.Where("idempotency_key = ?", "adjustment-reference-decrease").First(&reduced).Error)
+	require.EqualValues(t, -500000, reduced.DeltaQuota)
+	require.Equal(t, "decrease", reduced.Direction)
+}

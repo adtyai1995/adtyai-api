@@ -18,6 +18,7 @@ func TestCollectAdtyFundAnomaliesDoesNotRestrictFundWrites(t *testing.T) {
 	owner, site := openActiveSite(t, db, "detect-norestrict")
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
 	user, token := floorCustomer(t, db, site, "detect-cust", 10_000)
+	provenance := model.AdtyQuotaAdjustProvenance{OrderRef: financialOriginalForTest(t, db, user.Id), FundingSource: model.AdtyStaffFundingSourceEarnings}
 	require.NoError(t, db.Model(&model.AdtySiteWallet{}).
 		Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).
 		Update("cycle_tier_usd", "100").Error)
@@ -39,7 +40,7 @@ func TestCollectAdtyFundAnomaliesDoesNotRestrictFundWrites(t *testing.T) {
 	require.NoError(t, err)
 
 	root := restrictionRoot(t, db, "detect-root")
-	_, err = model.AdjustUserQuotaWithLedger(user.Id, root.Id, common.RoleRootUser, "add", 100, "unrestricted after detect", "detect-adjust")
+	_, err = model.AdjustUserQuotaWithLedger(user.Id, root.Id, common.RoleRootUser, "add", 100, "unrestricted after detect", "detect-adjust", provenance)
 	require.NoError(t, err)
 
 	ctx, info, _ := floorRelay(t, user, token)
@@ -59,6 +60,11 @@ func TestManualAnomalyReviewRestrictsRelatedFundWritesOnly(t *testing.T) {
 	otherUser, otherToken := floorCustomer(t, db, site, "review-other-cust", 10_000)
 	otherSiteUser := siteCustomer(t, db, otherSite, "review-offsite")
 	require.NoError(t, db.Model(&model.User{}).Where("id = ?", otherSiteUser.Id).Update("quota", 10_000).Error)
+	userSource := model.AdtyQuotaAdjustProvenance{OrderRef: financialOriginalForTest(t, db, user.Id), FundingSource: model.AdtyStaffFundingSourceMargin}
+	otherSource := model.AdtyQuotaAdjustProvenance{OrderRef: financialOriginalForTest(t, db, otherUser.Id), FundingSource: model.AdtyStaffFundingSourceMargin}
+	offsiteSource := model.AdtyQuotaAdjustProvenance{OrderRef: financialOriginalForTest(t, db, otherSiteUser.Id), FundingSource: model.AdtyStaffFundingSourceMargin}
+	require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.NewFromInt(10), "review-margin"))
+	require.NoError(t, OpenAdtyMarginCycle(otherSite.Id, decimal.NewFromInt(10), "review-other-margin"))
 
 	orderRow := openFundAnomaly(t, db, AdtyAnomalyRefundAmountMismatch, site.Id, user.Id, "ORD-RESTRICT")
 	require.NoError(t, ReviewAdtyAnomalyDisposition(orderRow.Id, root.Id, "reviewing", "hold this order"))
@@ -70,7 +76,7 @@ func TestManualAnomalyReviewRestrictsRelatedFundWritesOnly(t *testing.T) {
 	require.NoError(t, creditUserOrder(t, db, user.Id, "ORD-OTHER", 25))
 	require.Equal(t, 10_025, restrictionUserQuota(t, db, user.Id))
 
-	_, err := model.AdjustUserQuotaWithLedger(otherUser.Id, root.Id, common.RoleRootUser, "add", 40, "independent account", "order-other-acct")
+	_, err := model.AdjustUserQuotaWithLedger(otherUser.Id, root.Id, common.RoleRootUser, "add", 40, "independent account", "order-other-acct", otherSource)
 	require.NoError(t, err)
 	_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.RequireFromString("3"), AdtySiteWalletChange{
 		Type: "earning_settlement", IdempotencyKey: "order-unrelated-wallet",
@@ -90,7 +96,7 @@ func TestManualAnomalyReviewRestrictsRelatedFundWritesOnly(t *testing.T) {
 	require.NoError(t, ReviewAdtyAnomalyDisposition(accountRow.Id, root.Id, "reviewing", "hold this account"))
 
 	before := restrictionUserQuota(t, db, user.Id)
-	_, err = model.AdjustUserQuotaWithLedger(user.Id, root.Id, common.RoleRootUser, "add", 80, "blocked account", "acct-adjust")
+	_, err = model.AdjustUserQuotaWithLedger(user.Id, root.Id, common.RoleRootUser, "add", 80, "blocked account", "acct-adjust", userSource)
 	require.ErrorIs(t, err, model.ErrAdtyFundWriteRestricted)
 	require.Equal(t, before, restrictionUserQuota(t, db, user.Id))
 	require.Equal(t, int64(0), adjustLedgerCount(t, db, user.Id, "acct-adjust"))
@@ -105,12 +111,12 @@ func TestManualAnomalyReviewRestrictsRelatedFundWritesOnly(t *testing.T) {
 	require.Nil(t, info2.Billing)
 	require.Equal(t, before, floorBalance(t, user.Id))
 
-	_, err = model.AdjustUserQuotaWithLedger(otherUser.Id, root.Id, common.RoleRootUser, "add", 15, "other account continues", "acct-other-ok")
+	_, err = model.AdjustUserQuotaWithLedger(otherUser.Id, root.Id, common.RoleRootUser, "add", 15, "other account continues", "acct-other-ok", otherSource)
 	require.NoError(t, err)
 	ctx3, info3, _ := floorRelay(t, otherUser, otherToken)
 	info3.RequestId = "acct-other-bill"
 	require.Nil(t, PreConsumeBilling(ctx3, 100, info3))
-	_, err = model.AdjustUserQuotaWithLedger(otherSiteUser.Id, root.Id, common.RoleRootUser, "add", 15, "other site continues", "acct-offsite-ok")
+	_, err = model.AdjustUserQuotaWithLedger(otherSiteUser.Id, root.Id, common.RoleRootUser, "add", 15, "other site continues", "acct-offsite-ok", offsiteSource)
 	require.NoError(t, err)
 
 	siteRow := openFundAnomaly(t, db, AdtyAnomalyBalanceLedgerGap, otherSite.Id, 0, "")
@@ -120,7 +126,7 @@ func TestManualAnomalyReviewRestrictsRelatedFundWritesOnly(t *testing.T) {
 	})
 	require.ErrorIs(t, err, model.ErrAdtyFundWriteRestricted)
 	require.True(t, siteWalletBalance(t, db, otherSite.Id, model.AdtySiteWalletEarnings).IsZero())
-	_, err = model.AdjustUserQuotaWithLedger(otherSiteUser.Id, root.Id, common.RoleRootUser, "add", 20, "site blocked", "site-adjust-blocked")
+	_, err = model.AdjustUserQuotaWithLedger(otherSiteUser.Id, root.Id, common.RoleRootUser, "add", 20, "site blocked", "site-adjust-blocked", offsiteSource)
 	require.ErrorIs(t, err, model.ErrAdtyFundWriteRestricted)
 	_, err = ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.RequireFromString("2"), AdtySiteWalletChange{
 		Type: "earning_settlement", IdempotencyKey: "other-site-wallet-ok",
@@ -134,6 +140,7 @@ func TestClosingAnomalyReviewLiftsFundWriteRestriction(t *testing.T) {
 	_, site := openActiveSite(t, db, "close-scope")
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
 	user, token := floorCustomer(t, db, site, "close-cust", 10_000)
+	provenance := model.AdtyQuotaAdjustProvenance{OrderRef: financialOriginalForTest(t, db, user.Id), FundingSource: model.AdtyStaffFundingSourceEarnings}
 
 	row := openFundAnomaly(t, db, AdtyAnomalyBalanceLedgerGap, site.Id, 0, "")
 	require.NoError(t, ReviewAdtyAnomalyDisposition(row.Id, root.Id, "reviewing", "hold while reviewing"))
@@ -141,7 +148,7 @@ func TestClosingAnomalyReviewLiftsFundWriteRestriction(t *testing.T) {
 		Type: "earning_settlement", IdempotencyKey: "close-wallet-blocked",
 	})
 	require.ErrorIs(t, err, model.ErrAdtyFundWriteRestricted)
-	_, err = model.AdjustUserQuotaWithLedger(user.Id, root.Id, common.RoleRootUser, "add", 30, "blocked while open", "close-adjust-blocked")
+	_, err = model.AdjustUserQuotaWithLedger(user.Id, root.Id, common.RoleRootUser, "add", 30, "blocked while open", "close-adjust-blocked", provenance)
 	require.ErrorIs(t, err, model.ErrAdtyFundWriteRestricted)
 
 	require.NoError(t, ReviewAdtyAnomalyDisposition(row.Id, root.Id, "closed", "cleared"))
@@ -149,7 +156,7 @@ func TestClosingAnomalyReviewLiftsFundWriteRestriction(t *testing.T) {
 		Type: "earning_settlement", IdempotencyKey: "close-wallet-ok",
 	})
 	require.NoError(t, err)
-	_, err = model.AdjustUserQuotaWithLedger(user.Id, root.Id, common.RoleRootUser, "add", 30, "allowed after close", "close-adjust-ok")
+	_, err = model.AdjustUserQuotaWithLedger(user.Id, root.Id, common.RoleRootUser, "add", 30, "allowed after close", "close-adjust-ok", provenance)
 	require.NoError(t, err)
 	ctx, info, _ := floorRelay(t, user, token)
 	info.RequestId = "close-bill-ok"

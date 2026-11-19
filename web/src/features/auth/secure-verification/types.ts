@@ -48,6 +48,8 @@ export type SecurityProofScope =
   | 'admin.user.binding.clear'
   | 'site.owner.manage'
   | 'site.staff.customer.manage'
+  | 'site.order.refund'
+  | 'site.order.refund_step'
   | 'adty.notice.configure'
   // 资金写操作与查询的二次验证 scope（service/adty_topup_verification.go）。
   // 后端早已校验这些字符串，前端联合类型一直没跟上，导致调用点只能报类型错。
@@ -153,6 +155,8 @@ export type VerificationOperation =
       // 这里只声明「这些 scope 允许自由上下文」，字段名不去猜后端校验。
       scope:
         | 'adty.topup.refund'
+        | 'site.order.refund'
+        | 'site.order.refund_step'
         | 'adty.topup.manual_refund_step'
         | 'adty.topup.manual_complete'
         | 'adty.payment_orphan.credit'
@@ -175,6 +179,8 @@ export type VerificationOperation =
         | 'site.staff.customer.manage'
         | 'adty.notice.configure'
         | 'adty.topup.refund'
+        | 'site.order.refund'
+        | 'site.order.refund_step'
         | 'adty.topup.manual_refund_step'
         | 'adty.topup.manual_complete'
         | 'adty.payment_orphan.credit'

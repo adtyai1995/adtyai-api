@@ -47,7 +47,7 @@ func TestStaffBalanceRequestNeedsApproval(t *testing.T) {
 	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
 	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Status: "enabled", Role: "support"}).Error)
 	fundStaffBalanceSite(t, db, site.Id, "gap")
-	request, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-bal-inc-1")
+	request, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-bal-inc-1", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 	require.NoError(t, err)
 	require.Equal(t, model.AdtyStaffBalancePending, request.Status)
 	var before model.User
@@ -59,7 +59,7 @@ func TestStaffBalanceRequestNeedsApproval(t *testing.T) {
 	require.EqualValues(t, before.Quota+1_000_000, after.Quota)
 	require.Error(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", request.Id, true))
 	root := referralUser(t, db, "gap-root")
-	second, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.RequireFromString("1"), "staff-bal-dec-1")
+	second, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.RequireFromString("1"), "staff-bal-dec-1", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceDecrease))
 	require.NoError(t, err)
 	require.NoError(t, ReviewAdtyStaffBalanceRequest(root.Id, "root", second.Id, true))
 }
@@ -342,7 +342,7 @@ func staffBalanceBatchRemaining(t *testing.T, db *gorm.DB, userID int) int64 {
 func staffBalanceLedgers(t *testing.T, db *gorm.DB, userID int) []model.AdtyBalanceLedger {
 	t.Helper()
 	var rows []model.AdtyBalanceLedger
-	require.NoError(t, db.Where("user_id = ?", userID).Order("id").Find(&rows).Error)
+	require.NoError(t, db.Where("user_id = ? AND ref_type = ?", userID, "staff_balance").Order("id").Find(&rows).Error)
 	return rows
 }
 
@@ -386,7 +386,7 @@ func TestStaffBalanceApprovalWritesLedgerAndBatches(t *testing.T) {
 		t.Run(dialect, func(t *testing.T) {
 			db := prepareReferralDialectDB(t, dialect)
 			owner, staffUser, customer, _ := seedStaffBalanceActors(t, db, "staff-book-"+dialect)
-			request, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-book-inc")
+			request, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-book-inc", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 			require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", request.Id, true))
 
@@ -418,12 +418,12 @@ func TestStaffBalanceDeductRefusesInFlightHolds(t *testing.T) {
 		t.Run(dialect, func(t *testing.T) {
 			db := prepareReferralDialectDB(t, dialect)
 			owner, staffUser, customer, _ := seedStaffBalanceActors(t, db, "staff-hold-"+dialect)
-			credit, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-hold-inc")
+			credit, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-hold-inc", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 			require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", credit.Id, true))
 			require.NoError(t, db.Model(customer).Update("quota_pending", -600_000).Error)
 
-			debit, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.RequireFromString("1"), "staff-hold-dec")
+			debit, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.RequireFromString("1"), "staff-hold-dec", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceDecrease))
 			require.NoError(t, err)
 			err = ReviewAdtyStaffBalanceRequest(owner.Id, "owner", debit.Id, true)
 			require.Error(t, err)
@@ -447,19 +447,19 @@ func TestStaffBalanceReviewReplayDoesNotDoubleBook(t *testing.T) {
 		t.Run(dialect, func(t *testing.T) {
 			db := prepareReferralDialectDB(t, dialect)
 			owner, staffUser, customer, _ := seedStaffBalanceActors(t, db, "staff-replay-"+dialect)
-			first, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-replay-inc")
+			first, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-replay-inc", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
-			again, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-replay-inc")
+			again, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-replay-inc", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 			require.Equal(t, first.Id, again.Id)
-			_, err = SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("3"), "staff-replay-inc")
+			_, err = SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("3"), "staff-replay-inc", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.ErrorIs(t, err, model.ErrAdtyIdempotencyConflict)
-			_, err = SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "")
+			_, err = SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.Error(t, err)
 
 			require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", first.Id, true))
 			require.Error(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", first.Id, true))
-			replayed, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-replay-inc")
+			replayed, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-replay-inc", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 			require.Equal(t, first.Id, replayed.Id)
 			require.Equal(t, model.AdtyStaffBalanceApproved, replayed.Status)
@@ -478,10 +478,10 @@ func TestStaffBalanceDecreaseConsumesBatches(t *testing.T) {
 		t.Run(dialect, func(t *testing.T) {
 			db := prepareReferralDialectDB(t, dialect)
 			owner, staffUser, customer, _ := seedStaffBalanceActors(t, db, "staff-dec-"+dialect)
-			credit, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-dec-inc")
+			credit, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-dec-inc", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 			require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", credit.Id, true))
-			debit, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.RequireFromString("1"), "staff-dec-dec")
+			debit, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.RequireFromString("1"), "staff-dec-dec", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceDecrease))
 			require.NoError(t, err)
 			require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", debit.Id, true))
 
@@ -595,14 +595,14 @@ func TestStaffBalanceReviewChecksLiveSiteAndCustomerScope(t *testing.T) {
 			root := referralUser(t, db, "scope-root-"+dialect)
 			require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).Update("balance", decimal.NewFromInt(100)).Error)
 
-			inc0, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "scope-inc-init")
+			inc0, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "scope-inc-init", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 			require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", inc0.Id, true))
 
 			// Case 1: customer migrated to main site -> pending decrease & increase must be refused even for owner/root.
-			decMigrated, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.NewFromInt(1), "scope-dec-migrated")
+			decMigrated, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.NewFromInt(1), "scope-dec-migrated", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceDecrease))
 			require.NoError(t, err)
-			incMigrated, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(1), "scope-inc-migrated")
+			incMigrated, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(1), "scope-inc-migrated", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 			require.NoError(t, db.Model(&model.User{}).Where("id = ?", customer.Id).Update("site_id", 0).Error)
 
@@ -637,10 +637,10 @@ func TestStaffBalanceWorkflowWritesSiteAndOfficialAudit(t *testing.T) {
 			owner, staffUser, customer, site := seedStaffBalanceActors(t, db, "audit-"+dialect)
 			require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).Update("balance", decimal.NewFromInt(100)).Error)
 
-			req, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "audit-inc-1")
+			req, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "audit-inc-1", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 			// Idempotent replay must not emit a duplicate submit audit.
-			_, err = SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "audit-inc-1")
+			_, err = SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.NewFromInt(2), "audit-inc-1", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 			require.NoError(t, err)
 
 			var siteAudits []model.AdtySiteAudit
@@ -670,7 +670,7 @@ func TestStaffBalanceWorkflowWritesSiteAndOfficialAudit(t *testing.T) {
 
 			// Reject also audits even though no financial ledger entry is written.
 			root := referralUser(t, db, "audit-root-"+dialect)
-			req2, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.NewFromInt(1), "audit-dec-2")
+			req2, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.NewFromInt(1), "audit-dec-2", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceDecrease))
 			require.NoError(t, err)
 			require.NoError(t, ReviewAdtyStaffBalanceRequest(root.Id, "root", req2.Id, false))
 			require.NoError(t, model.LOG_DB.Where("object_type = ? AND object_id = ? AND action = ?", "staff_balance_request", strconv.FormatInt(req2.Id, 10), "adty.staff.balance_reject").Find(&officialAudits).Error)

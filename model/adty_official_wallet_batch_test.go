@@ -99,8 +99,9 @@ func TestRefundAdtyTopUpReclaimsOrderBatches(t *testing.T) {
 func TestAdjustUserQuotaWithLedgerMaintainsFundBatches(t *testing.T) {
 	db := prepareAdtyTopUpDB(t)
 	user := seedAdtyTopUpUser(t, db, "adjust-batch", 0)
+	_, _ = adjustmentTestRequest(t, db, user.Id, "add", "")
 
-	added, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "grant", "adjust-add-1")
+	added, err := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "add", 1_000_000, "grant", "adjust-add-1")
 	require.NoError(t, err)
 	require.False(t, added.Replayed)
 	principal, bonus := adtyFundRemainingBySource(t, db, user.Id, adtyAdjustFundSource("adjust-add-1"))
@@ -109,7 +110,7 @@ func TestAdjustUserQuotaWithLedgerMaintainsFundBatches(t *testing.T) {
 	require.EqualValues(t, 1_000_000, userQuota(t, db, user.Id))
 	requireWalletMatchesBatches(t, db, user.Id)
 
-	replay, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "grant", "adjust-add-1")
+	replay, err := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "add", 1_000_000, "grant", "adjust-add-1")
 	require.NoError(t, err)
 	require.True(t, replay.Replayed)
 	var lotCount int64
@@ -117,13 +118,13 @@ func TestAdjustUserQuotaWithLedgerMaintainsFundBatches(t *testing.T) {
 	require.EqualValues(t, 1, lotCount)
 	requireWalletMatchesBatches(t, db, user.Id)
 
-	_, err = AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "subtract", 400_000, "trim", "adjust-sub-1")
+	_, err = adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "subtract", 400_000, "trim", "adjust-sub-1", adtyAdjustFundSource("adjust-add-1"))
 	require.NoError(t, err)
 	_, _, remaining := sumAdtyFundRemaining(t, db, user.Id)
 	require.EqualValues(t, 600_000, remaining)
 	require.EqualValues(t, 600_000, userQuota(t, db, user.Id))
 
-	_, err = AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "override", 0, "clear", "adjust-over-1")
+	_, err = adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "override", 0, "clear", "adjust-over-1", adtyAdjustFundSource("adjust-add-1"))
 	require.NoError(t, err)
 	require.EqualValues(t, 0, userQuota(t, db, user.Id))
 	requireWalletMatchesBatches(t, db, user.Id)
@@ -132,8 +133,9 @@ func TestAdjustUserQuotaWithLedgerMaintainsFundBatches(t *testing.T) {
 func TestAdjustUserQuotaWithLedgerDoesNotFirePrincipalSpentHook(t *testing.T) {
 	db := prepareAdtyTopUpDB(t)
 	user := seedAdtyTopUpUser(t, db, "adjust-quiet-hook", 0)
+	_, _ = adjustmentTestRequest(t, db, user.Id, "add", "")
 
-	_, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "grant", "adjust-quiet-add")
+	_, err := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "add", 1_000_000, "grant", "adjust-quiet-add")
 	require.NoError(t, err)
 
 	prev := AdtyAfterPrincipalSpentTx
@@ -145,7 +147,7 @@ func TestAdjustUserQuotaWithLedgerDoesNotFirePrincipalSpentHook(t *testing.T) {
 	}
 	t.Cleanup(func() { AdtyAfterPrincipalSpentTx = prev })
 
-	_, err = AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "subtract", 400_000, "trim", "adjust-quiet-sub")
+	_, err = adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "subtract", 400_000, "trim", "adjust-quiet-sub", adtyAdjustFundSource("adjust-quiet-add"))
 	require.NoError(t, err)
 	require.Equal(t, 0, called)
 	_, _, remaining := sumAdtyFundRemaining(t, db, user.Id)

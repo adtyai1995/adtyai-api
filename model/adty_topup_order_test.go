@@ -560,15 +560,19 @@ func TestManualRefundAndQuotaAdjustIdempotencyRejectPayloadMutationPG(t *testing
 	_, err = ApplyAdtyTopUpManualRefund("RF-IDEM-PG", "reason-a", 1, "idem-ref-key-1", decimal.NewFromInt(30))
 	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
 
-	adj1, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1")
+	rootID, _ := adjustmentOriginalFixture(t, db, user.Id)
+	provenance := AdtyQuotaAdjustProvenance{OrderRef: "RF-IDEM-PG", FundingSource: AdtyAdjustSourcePlatform}
+	otherRoot := User{Username: "other-adjust-root", Password: "x", Role: common.RoleRootUser, Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(&otherRoot).Error)
+	adj1, err := AdjustUserQuotaWithLedger(user.Id, rootID, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1", provenance)
 	require.NoError(t, err)
 	require.False(t, adj1.Replayed)
-	adjReplay, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1")
+	adjReplay, err := AdjustUserQuotaWithLedger(user.Id, rootID, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1", provenance)
 	require.NoError(t, err)
 	require.True(t, adjReplay.Replayed)
 
-	_, err = AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 1_000_000, "adj-changed", "idem-adj-key-1")
+	_, err = AdjustUserQuotaWithLedger(user.Id, rootID, common.RoleRootUser, "add", 1_000_000, "adj-changed", "idem-adj-key-1", provenance)
 	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
-	_, err = AdjustUserQuotaWithLedger(user.Id, 2, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1")
+	_, err = AdjustUserQuotaWithLedger(user.Id, otherRoot.Id, common.RoleRootUser, "add", 1_000_000, "adj-a", "idem-adj-key-1", provenance)
 	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
 }

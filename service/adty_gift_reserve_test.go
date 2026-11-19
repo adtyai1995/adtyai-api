@@ -706,10 +706,17 @@ func TestAdjustUserQuotaReduceReleasesSiteGiftGuarantee(t *testing.T) {
 	require.NoError(t, err)
 	operatingBefore := mustSiteOperatingWallet(t, db, site.Id)
 
-	adjusted, err := model.AdjustUserQuotaWithLedger(customer.Id, 1, common.RoleRootUser, "subtract", 52_500_000, "trim bonus-backed balance", "gift-adjust-sub-1")
+	rootID := adjustmentRootForTest(t, db)
+	provenance := model.AdtyQuotaAdjustProvenance{OrderRef: ext.TradeNo, FundingSource: model.AdtyAdjustSourceBatch, BatchKind: model.AdtyFundBatchKindPrincipal, BatchSource: ext.TradeNo}
+	principal, err := model.AdjustUserQuotaWithLedger(customer.Id, rootID, common.RoleRootUser, "subtract", 50_000_000, "trim original principal", "gift-adjust-principal-1", provenance)
+	require.NoError(t, err)
+	require.Equal(t, 55_000_000, principal.Before)
+	require.Equal(t, 5_000_000, principal.After)
+	provenance.BatchKind = model.AdtyFundBatchKindBonus
+	adjusted, err := model.AdjustUserQuotaWithLedger(customer.Id, rootID, common.RoleRootUser, "subtract", 2_500_000, "trim bonus-backed balance", "gift-adjust-sub-1", provenance)
 	require.NoError(t, err)
 	require.False(t, adjusted.Replayed)
-	require.Equal(t, 55_000_000, adjusted.Before)
+	require.Equal(t, 5_000_000, adjusted.Before)
 	require.Equal(t, 2_500_000, adjusted.After)
 	require.EqualValues(t, 2_500_000, userQuotaOf(t, db, customer.Id))
 	requirePartialTopupGiftSpendWithoutOperatingDebit(t, db, site.Id, ext.TradeNo, operatingBefore)
@@ -729,7 +736,13 @@ func TestApprovedStaffDecreaseReleasesSiteGiftGuarantee(t *testing.T) {
 	require.NoError(t, err)
 	operatingBefore := mustSiteOperatingWallet(t, db, site.Id)
 
-	request, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.RequireFromString("105"), "gift-staff-dec-1")
+	provenance := model.AdtyStaffBalanceProvenance{Reason: "trim original principal", OrderRef: ext.TradeNo, FundingSource: model.AdtyAdjustSourceBatch, BatchKind: model.AdtyFundBatchKindPrincipal, BatchSource: ext.TradeNo}
+	principal, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.NewFromInt(100), "gift-staff-principal-1", provenance)
+	require.NoError(t, err)
+	require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", principal.Id, true))
+	require.EqualValues(t, 5_000_000, userQuotaOf(t, db, customer.Id))
+	provenance.Reason, provenance.BatchKind = "trim bonus-backed balance", model.AdtyFundBatchKindBonus
+	request, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceDecrease, decimal.NewFromInt(5), "gift-staff-dec-1", provenance)
 	require.NoError(t, err)
 	require.NoError(t, ReviewAdtyStaffBalanceRequest(owner.Id, "owner", request.Id, true))
 	require.EqualValues(t, 2_500_000, userQuotaOf(t, db, customer.Id))

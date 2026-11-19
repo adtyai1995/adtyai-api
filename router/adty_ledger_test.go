@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +17,7 @@ import (
 
 func adjustQuota(t *testing.T, f *adtyGuardFixture, userID int, extra string) (bool, string) {
 	t.Helper()
-	body := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":500%s}`, userID, extra)
+	body := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":500,"order_ref":"ledger-original-%d","funding_source":"platform_correction"%s}`, userID, userID, extra)
 	resp := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", body, f.root)
 	require.Equal(t, http.StatusOK, resp.Code)
 	var envelope struct {
@@ -32,7 +33,12 @@ func ledgerUser(t *testing.T, f *adtyGuardFixture, name string) model.User {
 	adtySessionToken(t, f.db, name, common.RoleCommonUser)
 	var user model.User
 	require.NoError(t, f.db.Where("username = ?", name).First(&user).Error)
-	require.NoError(t, f.db.Model(&user).Update("quota", 1000).Error)
+	trade := fmt.Sprintf("ledger-original-%d", user.Id)
+	amount := decimal.RequireFromString("0.002")
+	require.NoError(t, model.CreateAdtyTopUp(&model.TopUp{UserId: user.Id, TradeNo: trade, PaymentProvider: model.PaymentProviderAdtyBEpusdt, PaymentMethod: "usdt.trc20", Status: common.TopUpStatusPending},
+		&model.AdtyTopupOrder{UserId: user.Id, TradeNo: trade, Provider: model.PaymentProviderAdtyBEpusdt, Method: "usdt.trc20", FaceUSD: amount, CreditQuota: 1000, PayAmount: amount, PayCurrency: "USDT", ExpireAt: common.GetTimestamp() + 900}))
+	_, err := model.CompleteAdtyTopUp(trade, model.AdtyPaymentFacts{Provider: model.PaymentProviderAdtyBEpusdt, Source: model.AdtyPaymentSourceCallback, FiatAmount: amount, PaidAmount: amount, PaidCurrency: "USDT"}, "")
+	require.NoError(t, err)
 	return user
 }
 
@@ -63,10 +69,10 @@ func TestManualAdjustIdempotent(t *testing.T) {
 	require.NoError(t, f.db.First(&stored, user.Id).Error)
 	assert.Equal(t, 1500, stored.Quota, "the retry does not add again")
 	var ledgers, logs int64
-	f.db.Model(&model.AdtyBalanceLedger{}).Where("user_id = ?", user.Id).Count(&ledgers)
+	f.db.Model(&model.AdtyBalanceLedger{}).Where("user_id = ? AND type = ?", user.Id, model.AdtyLedgerTypeManualAdjust).Count(&ledgers)
 	model.LOG_DB.Model(&model.Log{}).Where("user_id = ? AND type = ?", user.Id, model.LogTypeTopup).Count(&logs)
 	assert.EqualValues(t, 1, ledgers)
-	assert.EqualValues(t, 1, logs, "no second user log for the replay")
+	assert.EqualValues(t, 2, logs, "original payment and one adjustment; no second user log for the replay")
 }
 
 func TestManualAdjustIdempotentKeyMismatch(t *testing.T) {
@@ -74,7 +80,7 @@ func TestManualAdjustIdempotentKeyMismatch(t *testing.T) {
 	user := ledgerUser(t, f, "adj-mismatch")
 	ok, _ := adjustQuota(t, f, user.Id, `,"reason":"r","idempotency_key":"k-2"`)
 	require.True(t, ok)
-	body := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":900,"reason":"r","idempotency_key":"k-2"}`, user.Id)
+	body := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":900,"reason":"r","idempotency_key":"k-2","order_ref":"ledger-original-%d","funding_source":"platform_correction"}`, user.Id, user.Id)
 	resp := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", body, f.root)
 	assert.Contains(t, resp.Body.String(), "This request was already used for another operation")
 }
@@ -90,7 +96,7 @@ func TestManualAdjustWritesLedgerWithBalances(t *testing.T) {
 	page := decodeAdtyData[struct {
 		Items []model.AdtyBalanceLedger `json:"items"`
 	}](t, resp.Body)
-	require.Len(t, page.Items, 1)
+	require.Len(t, page.Items, 2, "original payment and manual adjustment")
 	entry := page.Items[0]
 	assert.EqualValues(t, 1000, entry.BalanceBefore)
 	assert.EqualValues(t, 1500, entry.BalanceAfter)
@@ -107,13 +113,14 @@ func TestManualAdjustFloorRejectsNegativeBalance(t *testing.T) {
 	f := newAdtyGuardFixture(t)
 	user := ledgerUser(t, f, "adj-floor")
 
-	subtract := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"subtract","value":1500,"reason":"too much","idempotency_key":"floor-sub"}`, user.Id)
+	provenance := fmt.Sprintf(`,"order_ref":"ledger-original-%d","funding_source":"specified_batch","batch_kind":"principal","batch_source":"ledger-original-%d"`, user.Id, user.Id)
+	subtract := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"subtract","value":1500,"reason":"too much","idempotency_key":"floor-sub"%s}`, user.Id, provenance)
 	subtractResp := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", subtract, f.root)
 	require.Equal(t, http.StatusOK, subtractResp.Code)
 	assert.Contains(t, subtractResp.Body.String(), `"success":false`)
 	assert.Contains(t, subtractResp.Body.String(), "Adjustment cannot make the balance negative")
 
-	override := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"override","value":-1,"reason":"negative set","idempotency_key":"floor-over"}`, user.Id)
+	override := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"override","value":-1,"reason":"negative set","idempotency_key":"floor-over"%s}`, user.Id, provenance)
 	overrideResp := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", override, f.root)
 	require.Equal(t, http.StatusOK, overrideResp.Code)
 	assert.Contains(t, overrideResp.Body.String(), `"success":false`)
@@ -123,10 +130,10 @@ func TestManualAdjustFloorRejectsNegativeBalance(t *testing.T) {
 	require.NoError(t, f.db.First(&stored, user.Id).Error)
 	assert.Equal(t, 1000, stored.Quota)
 	var ledgers int64
-	require.NoError(t, f.db.Model(&model.AdtyBalanceLedger{}).Where("user_id = ?", user.Id).Count(&ledgers).Error)
+	require.NoError(t, f.db.Model(&model.AdtyBalanceLedger{}).Where("user_id = ? AND type = ?", user.Id, model.AdtyLedgerTypeManualAdjust).Count(&ledgers).Error)
 	assert.Zero(t, ledgers, "a rejected adjustment does not write a balance row")
 
-	exact := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"subtract","value":1000,"reason":"to zero","idempotency_key":"floor-zero"}`, user.Id)
+	exact := fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"subtract","value":1000,"reason":"to zero","idempotency_key":"floor-zero"%s}`, user.Id, provenance)
 	exactResp := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", exact, f.root)
 	require.Contains(t, exactResp.Body.String(), `"success":true`)
 	require.NoError(t, f.db.First(&stored, user.Id).Error)
@@ -140,7 +147,7 @@ func TestManualAdjustReasonNotInUserLog(t *testing.T) {
 	require.True(t, ok)
 	logs, _, err := model.GetUserLogs(user.Id, model.LogFilter{Type: model.LogTypeTopup}, 0, 10)
 	require.NoError(t, err)
-	require.Len(t, logs, 1)
+	require.Len(t, logs, 2, "original payment and one adjustment")
 	assert.NotContains(t, logs[0].Other, "internal note for staff")
 	assert.NotContains(t, logs[0].Content, "internal note for staff")
 	var audits []model.AuditLog

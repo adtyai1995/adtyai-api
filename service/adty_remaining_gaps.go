@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -96,7 +95,7 @@ func UpdateAdtyTeamProfile(leaderId int, teamId int64, name string) error {
 
 // SubmitAdtyStaffBalanceRequest records an employee request. It does not change the customer balance.
 // The idempotency key is required so a retried submit cannot create a second booking.
-func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction string, amount decimal.Decimal, idempotencyKey string) (*model.AdtyStaffBalanceRequest, error) {
+func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction string, amount decimal.Decimal, idempotencyKey string, provenance ...model.AdtyStaffBalanceProvenance) (*model.AdtyStaffBalanceRequest, error) {
 	if staffUserID <= 0 || customerUserID <= 0 || !amount.IsPositive() {
 		return nil, common.NewMessage("Invalid parameters")
 	}
@@ -106,6 +105,25 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey == "" || len(idempotencyKey) > 64 {
 		return nil, common.NewMessage("Idempotency key is required")
+	}
+	if len(provenance) != 1 {
+		return nil, common.NewMessage("Adjustment reason, original order and funding source are required")
+	}
+	prov := provenance[0]
+	prov.Reason = strings.TrimSpace(prov.Reason)
+	prov.OrderRef = strings.TrimSpace(prov.OrderRef)
+	prov.FundingSource = strings.TrimSpace(prov.FundingSource)
+	prov.BatchKind, prov.BatchSource = strings.TrimSpace(prov.BatchKind), strings.TrimSpace(prov.BatchSource)
+	if prov.Reason == "" || len([]rune(prov.Reason)) > 200 || len(prov.OrderRef) > 64 || len(prov.BatchSource) > 64 {
+		return nil, common.NewMessage("Adjustment reason, original order and funding source are required")
+	}
+	if direction == model.AdtyStaffBalanceIncrease {
+		if (prov.FundingSource != model.AdtyStaffFundingSourceEarnings && prov.FundingSource != model.AdtyStaffFundingSourceMargin) || prov.BatchKind != "" || prov.BatchSource != "" {
+			return nil, common.NewMessage("Select an authorized funding source")
+		}
+	} else if prov.FundingSource != "specified_batch" || prov.BatchSource == "" ||
+		(prov.BatchKind != model.AdtyFundBatchKindPrincipal && prov.BatchKind != model.AdtyFundBatchKindBonus && prov.BatchKind != model.AdtyFundBatchKindExpiringBonus) {
+		return nil, common.NewMessage("A specific available fund batch is required")
 	}
 	var result *model.AdtyStaffBalanceRequest
 	var officialEntry *model.AuditLog
@@ -129,10 +147,16 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 		if customer.SiteId != staff.SiteId || customer.StaffSiteId != 0 || customer.Status != common.UserStatusEnabled {
 			return common.NewMessage("No permission to perform this action")
 		}
+		if _, err := model.ValidateAdtyAdjustmentOrderTx(tx, customerUserID, prov.OrderRef, &staff.SiteId); err != nil {
+			return err
+		}
 		if existing, err := findAdtyStaffBalanceRequestByIdemKey(tx, idempotencyKey); err != nil {
 			return err
 		} else if existing != nil {
 			if !sameAdtyStaffBalanceRequest(existing, staff.SiteId, staffUserID, customerUserID, direction, amount) {
+				return model.ErrAdtyIdempotencyConflict
+			}
+			if existing.Reason != prov.Reason || existing.OrderRef != prov.OrderRef || existing.FundingSource != prov.FundingSource || existing.BatchKind != prov.BatchKind || existing.BatchSource != prov.BatchSource {
 				return model.ErrAdtyIdempotencyConflict
 			}
 			result = existing
@@ -142,6 +166,8 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 			SiteId: staff.SiteId, StaffUserId: staffUserID, CustomerUserId: customerUserID,
 			Direction: direction, AmountUSD: amount, Status: model.AdtyStaffBalancePending,
 			IdempotencyKey: &idempotencyKey,
+			Reason:         prov.Reason, BusinessRef: prov.OrderRef, OrderRef: prov.OrderRef, FundingSource: prov.FundingSource,
+			BatchKind: prov.BatchKind, BatchSource: prov.BatchSource,
 		}
 		if err := tx.Create(row).Error; err != nil {
 			return err
@@ -161,16 +187,18 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 			"status":          row.Status,
 			"idempotency_key": idempotencyKey,
 			"customer_quota":  customer.Quota,
+			"reason":          row.Reason, "order_ref": row.OrderRef, "funding_source": row.FundingSource,
+			"batch_kind": row.BatchKind, "batch_source": row.BatchSource,
 		}
 		if err := tx.Create(&model.AdtySiteAudit{
 			SiteId: row.SiteId, Action: "staff.balance_request", OperatorId: staffUserID,
-			NewValue: common.GetJsonString(snapshot), Reason: "staff balance request",
+			NewValue: common.GetJsonString(snapshot), Reason: row.Reason,
 		}).Error; err != nil {
 			return err
 		}
 		entry, ok, err := appendStaffBalanceOfficialAuditTx(tx, actor.Id, actor.Username, actor.Role, row.SiteId,
 			strconv.FormatInt(row.Id, 10), "adty.staff.balance_request",
-			fmt.Sprintf("staff_balance:%d", row.Id), nil, snapshot, "staff balance request")
+			fmt.Sprintf("staff_balance:%d", row.Id), nil, snapshot, row.Reason)
 		if err != nil {
 			return err
 		}
@@ -308,6 +336,12 @@ type staffBalanceApplyResult struct {
 }
 
 func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest, reviewerID int) (staffBalanceApplyResult, error) {
+	if row.Reason == "" || row.OrderRef == "" {
+		return staffBalanceApplyResult{}, common.NewMessage("Adjustment reason, original order and funding source are required")
+	}
+	if _, err := model.ValidateAdtyAdjustmentOrderTx(tx, row.CustomerUserId, row.OrderRef, &row.SiteId); err != nil {
+		return staffBalanceApplyResult{}, err
+	}
 	quota, err := common.WalletQuotaFromDecimalStrict(row.AmountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
 	if err != nil {
 		return staffBalanceApplyResult{}, err
@@ -351,9 +385,13 @@ func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest,
 			return staffBalanceApplyResult{}, common.NewMessage("Customer balance is not enough")
 		}
 		applied = -debited
-		if err := model.ConsumeAdtyFundBatchesQuietTx(tx, row.CustomerUserId, debited, before); err != nil {
+		if row.FundingSource != "specified_batch" {
+			return staffBalanceApplyResult{}, common.NewMessage("A specific available fund batch is required")
+		}
+		if err := model.ReduceAdtyAdjustmentBatchTx(tx, row.CustomerUserId, row.SiteId, row.BatchSource, row.BatchKind, debited); err != nil {
 			return staffBalanceApplyResult{}, err
 		}
+		fundingSource = row.FundingSource
 	} else {
 		fundingSource, err = adtyFundStaffBalanceIncreaseTx(tx, row, delta)
 		if err != nil {
@@ -373,7 +411,7 @@ func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest,
 		UserId: row.CustomerUserId, DeltaQuota: applied,
 		BalanceBefore: before, BalanceAfter: before + applied,
 		Type: model.AdtyLedgerTypeManualAdjust, RefType: "staff_balance",
-		RefId: strconv.FormatInt(row.Id, 10), Reason: "staff balance request",
+		RefId: strconv.FormatInt(row.Id, 10), Reason: row.Reason,
 		OperatorId: reviewerID, IdempotencyKey: &key,
 	}
 	if err := model.InsertAdtyLedgerTx(tx, entry); err != nil {
@@ -416,30 +454,26 @@ func adtyFundStaffBalanceIncreaseTx(tx *gorm.DB, row model.AdtyStaffBalanceReque
 	}
 	amountUSD := decimal.NewFromInt(delta).Div(common.QuotaPerUnitDecimal())
 	key := adtyStaffBalanceLedgerKey(row)
-	var fundedKind string
-	for _, kind := range adtyStaffBalanceFundingOrder {
-		_, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, kind, amountUSD.Neg(), AdtySiteWalletChange{
-			Type: "staff_balance", RefType: "staff_balance", RefID: strconv.FormatInt(row.Id, 10),
-			Reason:         "staff balance increase for customer " + strconv.Itoa(row.CustomerUserId),
-			IdempotencyKey: fmt.Sprintf("%s:fund:%s", key, kind),
-		})
-		if err == nil {
-			fundedKind = kind
-			break
-		}
-		if errors.Is(err, ErrAdtySiteWalletInsufficient) {
-			continue
-		}
-		return "", err
+	selectedKind := ""
+	switch row.FundingSource {
+	case model.AdtyStaffFundingSourceEarnings:
+		selectedKind = model.AdtySiteWalletEarnings
+	case model.AdtyStaffFundingSourceMargin:
+		selectedKind = model.AdtySiteWalletMargin
+	default:
+		return "", common.NewMessage("Select an authorized funding source")
 	}
-	if fundedKind == "" {
-		return "", ErrAdtySiteWalletInsufficient
+	if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, selectedKind, amountUSD.Neg(), AdtySiteWalletChange{
+		Type: "staff_balance", RefType: "staff_balance", RefID: strconv.FormatInt(row.Id, 10),
+		Reason: row.Reason, IdempotencyKey: fmt.Sprintf("%s:fund:%s", key, selectedKind),
+	}); err != nil {
+		return "", err
 	}
 	if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, delta, "principal_credit", "staff_balance",
 		strconv.FormatInt(row.Id, 10), key+":operating", false); err != nil {
 		return "", err
 	}
-	return fundedKind, nil
+	return selectedKind, nil
 }
 
 func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestID int64, approve bool) error {
@@ -491,6 +525,7 @@ func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestI
 		reviewedAt := common.GetTimestamp()
 		if err := tx.Model(&row).Updates(map[string]any{
 			"status": status, "reviewer_id": reviewerID, "reviewer_role": reviewerRole, "reviewed_at": reviewedAt,
+			"before_quota": applied.BeforeQuota, "after_quota": applied.AfterQuota, "ledger_id": applied.LedgerID,
 		}).Error; err != nil {
 			return err
 		}
@@ -524,6 +559,7 @@ func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestI
 			"ledger_id":      applied.LedgerID,
 			"funding_source": applied.FundingSource,
 			"reviewed_at":    reviewedAt,
+			"reason":         row.Reason, "order_ref": row.OrderRef, "batch_kind": row.BatchKind, "batch_source": row.BatchSource,
 		}
 		if err := tx.Create(&model.AdtySiteAudit{
 			SiteId: row.SiteId, Action: "staff.balance_review", OperatorId: reviewerID,
@@ -836,4 +872,30 @@ func officialNotificationHideSiteID(c *gin.Context, user *model.User) int {
 		return user.SiteId
 	}
 	return 0
+}
+
+func fundAdtyFinancialAdjustmentTx(tx *gorm.DB, row model.AdtyFinancialAdjustment) error {
+	kind := ""
+	switch row.FundingSource {
+	case model.AdtyStaffFundingSourceEarnings:
+		kind = model.AdtySiteWalletEarnings
+	case model.AdtyStaffFundingSourceMargin:
+		kind = model.AdtySiteWalletMargin
+	default:
+		return common.NewMessage("Select an authorized funding source")
+	}
+	key := fmt.Sprintf("financial-adjustment:%d", row.Id)
+	ref := strconv.FormatInt(row.Id, 10)
+	amount := decimal.NewFromInt(row.DeltaQuota).Div(common.QuotaPerUnitDecimal())
+	if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, kind, amount.Neg(), AdtySiteWalletChange{
+		Type: "financial_adjustment", RefType: "financial_adjustment", RefID: ref,
+		Reason: row.Reason, IdempotencyKey: key + ":fund",
+	}); err != nil {
+		return err
+	}
+	return adtyMoveOperatingPrincipalTx(tx, row.SiteId, row.DeltaQuota, "principal_credit", "financial_adjustment", ref, key+":operating", false)
+}
+
+func init() {
+	model.AdtyFundFinancialAdjustmentTx = fundAdtyFinancialAdjustmentTx
 }

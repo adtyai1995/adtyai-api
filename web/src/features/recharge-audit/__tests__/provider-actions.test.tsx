@@ -438,7 +438,7 @@ it('sends the main site zero and order type filters and displays only matching o
   expect(await screen.findByText('trade-adty_epay-pending')).toBeVisible()
 })
 
-it('uses site-scoped reads and hides global anomalies and all financial actions in owner mode', async () => {
+it('uses site-scoped reads and hides global anomalies while allowing the granted refund action in owner mode', async () => {
   renderAudit(true, true)
   expect(await screen.findByText('trade-adty_epay-success')).toBeVisible()
   await waitFor(() =>
@@ -451,11 +451,12 @@ it('uses site-scoped reads and hides global anomalies and all financial actions 
   expect(
     screen.queryByRole('combobox', { name: 'Site' })
   ).not.toBeInTheDocument()
-  for (const action of ['Complete', 'Query payment', 'Refund']) {
+  for (const action of ['Complete', 'Query payment']) {
     expect(
       screen.queryByRole('button', { name: action })
     ).not.toBeInTheDocument()
   }
+  expect(screen.getByRole('button', { name: 'Refund' })).toBeEnabled()
   expect(
     vi
       .mocked(api.get)

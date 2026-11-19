@@ -1278,6 +1278,7 @@ type ManageRequest struct {
 	// 二开：人工调额的原因（必填）和幂等键（任务 7.2）
 	Reason         string `json:"reason"`
 	IdempotencyKey string `json:"idempotency_key"`
+	model.AdtyQuotaAdjustProvenance
 }
 
 // ManageUser Only admin user can do this

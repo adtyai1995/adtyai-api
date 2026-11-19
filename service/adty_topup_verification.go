@@ -20,6 +20,8 @@ const (
 	VerificationScopeAdtyTopUpQuery            = "adty.topup.query"
 	VerificationScopeAdtySiteEarningReview     = "adty.site_earning.review"
 	VerificationScopeAdtyRootGiftGrant         = "adty.root_gift.grant"
+	VerificationScopeAdtyOwnerOrderRefund      = "site.order.refund"
+	VerificationScopeAdtyOwnerOrderRefundStep  = "site.order.refund_step"
 )
 
 const (
@@ -105,6 +107,9 @@ var adtyTopUpVerificationPermissions = map[string]authz.Permission{
 }
 
 func adtyIsTopUpVerificationScope(scope string) bool {
+	if scope == VerificationScopeAdtyOwnerOrderRefund || scope == VerificationScopeAdtyOwnerOrderRefundStep {
+		return true
+	}
 	_, ok := adtyTopUpVerificationPermissions[scope]
 	return ok
 }
@@ -147,7 +152,7 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 			return nil, false
 		}
 		return context, true
-	case VerificationScopeAdtyTopUpRefund:
+	case VerificationScopeAdtyTopUpRefund, VerificationScopeAdtyOwnerOrderRefund:
 		var context AdtyTopUpRefundContext
 		if common.Unmarshal(raw, &context) != nil || fields["trade_no"] == nil {
 			return nil, false
@@ -196,7 +201,7 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 			return nil, false
 		}
 		return context, true
-	case VerificationScopeAdtyTopUpManualRefundStep:
+	case VerificationScopeAdtyTopUpManualRefundStep, VerificationScopeAdtyOwnerOrderRefundStep:
 		var context AdtyTopUpManualRefundStepContext
 		if common.Unmarshal(raw, &context) != nil || fields["trade_no"] == nil || fields["refund_id"] == nil || fields["step"] == nil {
 			return nil, false
@@ -331,6 +336,18 @@ func AdtyTopUpRefundOperation(tradeNo, reason, refundUSD string, refundQuota *in
 	return VerificationOperation{Scope: VerificationScopeAdtyTopUpRefund, Context: payload}
 }
 
+func AdtyOwnerOrderRefundOperation(tradeNo, reason, refundUSD string, refundQuota *int64) VerificationOperation {
+	op := AdtyTopUpRefundOperation(tradeNo, reason, refundUSD, refundQuota)
+	op.Scope = VerificationScopeAdtyOwnerOrderRefund
+	return op
+}
+
+func AdtyOwnerOrderRefundStepOperation(tradeNo, refundID, step, note string, payout AdtyManualRefundStepPayout) VerificationOperation {
+	op := AdtyTopUpManualRefundStepOperation(tradeNo, refundID, step, note, payout)
+	op.Scope = VerificationScopeAdtyOwnerOrderRefundStep
+	return op
+}
+
 // AdtyTopUpManualCompleteOperation builds the step-up operation for a manual
 // top-up credit. proof is the payment-voucher evidence string.
 func AdtyTopUpManualCompleteOperation(tradeNo, proof, note string) VerificationOperation {
@@ -398,6 +415,8 @@ func AdtySiteEarningReviewOperation(operationKey, originalCharge, reason string)
 }
 
 func init() {
+	accessTokenVerificationScopes[VerificationScopeAdtyOwnerOrderRefund] = "wallet:write"
+	accessTokenVerificationScopes[VerificationScopeAdtyOwnerOrderRefundStep] = "wallet:write"
 	accessTokenVerificationScopes[VerificationScopeAdtyRootGiftGrant] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpRefund] = AccessTokenScopeOf(authz.AdtyFinanceRefund)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpManualComplete] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)

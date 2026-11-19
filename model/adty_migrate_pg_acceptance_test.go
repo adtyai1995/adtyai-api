@@ -383,3 +383,35 @@ func TestExpiringRootGiftMigrationPreservesPermanentLots(t *testing.T) {
 		})
 	}
 }
+
+func TestFinancialAdjustmentProvenanceMigrationPG(t *testing.T) {
+	dsn := requireAdtyOfficialPostgresAcceptanceDSN(t)
+	admin := connectAdtyPostgresAcceptanceInstance(t, dsn)
+	t.Cleanup(func() { require.NoError(t, closeAdtyGorm(admin)) })
+	db := openAdtyThrowawayMigrateDatabase(t, admin, dsn)
+	require.NoError(t, migrateDB())
+	for _, column := range []string{"order_ref", "batch_kind", "batch_source"} {
+		require.NoError(t, db.Migrator().DropColumn(&AdtyStaffBalanceRequest{}, column))
+	}
+	require.NoError(t, db.Migrator().DropTable(&AdtyFinancialAdjustment{}))
+	legacy := AdtyStaffBalanceRequest{SiteId: 7, StaffUserId: 11, CustomerUserId: 12, Direction: AdtyStaffBalanceIncrease, AmountUSD: decimal.NewFromInt(3), Status: AdtyStaffBalancePending, Reason: "legacy correction"}
+	require.NoError(t, db.Omit("OrderRef", "BatchKind", "BatchSource").Create(&legacy).Error)
+	require.NoError(t, migrateDB())
+	var stored AdtyStaffBalanceRequest
+	require.NoError(t, db.First(&stored, legacy.Id).Error)
+	require.Equal(t, legacy.Status, stored.Status)
+	require.Equal(t, legacy.Reason, stored.Reason)
+	require.True(t, legacy.AmountUSD.Equal(stored.AmountUSD))
+	require.Empty(t, stored.OrderRef, "migration cannot invent original order evidence")
+	require.Empty(t, stored.BatchSource)
+	adjustment := AdtyFinancialAdjustment{UserId: 12, SiteId: 7, Mode: "subtract", Direction: AdtyAdjustDirectionDecrease, RequestedValue: 30, DeltaQuota: -30, BalanceBefore: 110, BalanceAfter: 80, RawBefore: 10, RawAfter: -20, OrderRef: "migration-order", FundingSource: AdtyAdjustSourceBatch, BatchKind: AdtyFundBatchKindPrincipal, BatchSource: "migration-order", IdempotencyKey: "migration-adjustment", LedgerId: 45, ApproverId: 11, ExecutorId: 11}
+	require.NoError(t, db.Create(&adjustment).Error)
+	for range 2 {
+		require.NoError(t, migrateDB())
+		var after AdtyFinancialAdjustment
+		require.NoError(t, db.First(&after, adjustment.Id).Error)
+		require.Equal(t, adjustment, after, "repeated startup must preserve financial provenance and balances")
+	}
+	duplicate := AdtyFinancialAdjustment{UserId: 12, Mode: "add", Direction: AdtyAdjustDirectionIncrease, IdempotencyKey: adjustment.IdempotencyKey}
+	require.Error(t, db.Create(&duplicate).Error, "adjustment idempotency remains unique after upgrade")
+}

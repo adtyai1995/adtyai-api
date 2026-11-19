@@ -389,7 +389,7 @@ func GetAdtyTopUpManualRefund(c *gin.Context) {
 	common.ApiSuccess(c, result)
 }
 
-func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refundID string, operatorID int, idemKey string) (*model.AdtyManualRefundResult, error)) {
+func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refundID string, operatorID int, idemKey string, ownerSiteID ...int) (*model.AdtyManualRefundResult, error)) {
 	var body struct {
 		IdempotencyKey string `json:"idempotency_key"`
 		Note           string `json:"note"`

@@ -153,7 +153,8 @@ func adtyIsSiteOwnerScope(scope string) bool {
 }
 
 func adtyIsSiteVerificationScope(scope string) bool {
-	return adtyIsSiteOwnerScope(scope) || scope == VerificationScopeAdtyStaffCustomerManage
+	return adtyIsSiteOwnerScope(scope) || scope == VerificationScopeAdtyStaffCustomerManage ||
+		scope == VerificationScopeAdtyOwnerOrderRefund || scope == VerificationScopeAdtyOwnerOrderRefundStep
 }
 
 // adtyBindSiteOwnerOperation 校验并规范化站长操作的上下文（BindVerificationOperation 调用）。

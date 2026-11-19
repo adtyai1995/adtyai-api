@@ -51,7 +51,7 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 
 	// 二开：原因和幂等键，同一事务写余额流水（任务 7.2）；原因只进审计，不进用户日志。
 	params["reason"] = strings.TrimSpace(req.Reason)
-	adjustment, err := model.AdjustUserQuotaWithLedger(req.Id, c.GetInt("id"), c.GetInt("role"), req.Mode, req.Value, req.Reason, req.IdempotencyKey)
+	adjustment, err := model.AdjustUserQuotaWithLedger(req.Id, c.GetInt("id"), c.GetInt("role"), req.Mode, req.Value, req.Reason, req.IdempotencyKey, req.AdtyQuotaAdjustProvenance)
 	if err != nil {
 		switch {
 		case errors.Is(err, model.ErrAdtyAdjustReasonRequired):
@@ -95,6 +95,10 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 	params["target_username"] = adjustment.Username
 	params["from"] = adjustment.Before
 	params["to"] = adjustment.After
+	params["order_ref"] = adjustment.OrderRef
+	params["adjustment_id"] = adjustment.AdjustmentID
+	params["approval_ref"] = adjustment.ApprovalRef
+	params["ledger_id"] = adjustment.LedgerID
 	if req.Mode != "override" {
 		params["quota"] = req.Value
 	}

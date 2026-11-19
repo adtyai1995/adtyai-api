@@ -22,6 +22,7 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { api as httpApi } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
 import type { RechargeAuditOrder } from '../api'
@@ -30,6 +31,7 @@ import { RechargeAudit } from '../index'
 const api = vi.hoisted(() => ({
   getRechargeAudit: vi.fn(),
   getRechargeAuditSummary: vi.fn(),
+  getOrderTrace: vi.fn(),
   getPaymentOrphans: vi.fn(),
   getSiteEarningReviews: vi.fn().mockResolvedValue({ total: 0, items: [] }),
   previewTopupRefund: vi.fn(),
@@ -41,14 +43,18 @@ const api = vi.hoisted(() => ({
   resolvePaymentOrphan: vi.fn(),
 }))
 vi.mock('../api', () => api)
-vi.mock('@/features/auth/secure-verification/hooks/use-secure-verification', () => ({
-  useSecureVerification: () => ({
-    requestVerification: vi.fn().mockResolvedValue({ proof_token: 'proof' }),
-    dialogProps: { state: { phase: 'idle' } },
-    isActive: false,
-    cancel: vi.fn(),
-  }),
-}))
+const verification = vi.hoisted(() => ({ requestVerification: vi.fn() }))
+vi.mock(
+  '@/features/auth/secure-verification/hooks/use-secure-verification',
+  () => ({
+    useSecureVerification: () => ({
+      requestVerification: verification.requestVerification,
+      dialogProps: { state: { phase: 'idle' } },
+      isActive: false,
+      cancel: vi.fn(),
+    }),
+  })
+)
 vi.mock(
   '@/features/auth/secure-verification/components/secure-verification-dialog',
   () => ({
@@ -95,7 +101,7 @@ const order: RechargeAuditOrder = {
   actions: { complete: false, refund: true, query: false },
 }
 
-function renderPage(permissions: Record<string, boolean>) {
+function renderPage(permissions: Record<string, boolean>, ownerMode?: boolean) {
   useAuthStore.getState().auth.setUser({
     id: 2,
     username: 'finance',
@@ -107,12 +113,16 @@ function renderPage(permissions: Record<string, boolean>) {
   })
   render(
     <QueryClientProvider client={client}>
-      <RechargeAudit />
+      <RechargeAudit
+        ownerMode={ownerMode}
+        ownerSiteId={ownerMode ? 7 : undefined}
+      />
     </QueryClientProvider>
   )
 }
 
 beforeEach(() => {
+  verification.requestVerification.mockResolvedValue({ proof_token: 'proof' })
   api.previewTopupRefund.mockResolvedValue({
     deducted_quota: 50000000,
     bonus_quota: 1250000,
@@ -205,6 +215,76 @@ afterEach(() => {
 })
 
 describe('RechargeAudit', () => {
+  it('filters consumption orders and opens their own business trace', async () => {
+    const consumption = {
+      ...order,
+      order_type: 'consumption',
+      source_type: 'billing',
+      reference: 'request:visible',
+      trade_no: 'request:visible',
+      status: 'settled',
+      has_ext: false,
+      face_usd: '1',
+      amount: 500000,
+      actions: { complete: true, refund: true, query: true },
+    }
+    api.getRechargeAudit.mockResolvedValue({ total: 1, items: [consumption] })
+    api.getOrderTrace.mockResolvedValue({
+      order: consumption,
+      refund: { refunded_at: 0 },
+      section: 'business',
+      sections: ['business', 'wallet', 'funds'],
+      items: [],
+      total: 0,
+    })
+    renderPage({ read: true, refund: true, manual_credit: true })
+    const user = userEvent.setup()
+    const type = await screen.findByRole('combobox', { name: 'Order type' })
+    await user.selectOptions(type, 'consumption')
+    await waitFor(() =>
+      expect(api.getRechargeAudit).toHaveBeenLastCalledWith(
+        expect.objectContaining({ order_type: 'consumption', page: 1 }),
+        undefined
+      )
+    )
+    const table = screen.getByRole('table', { name: 'Order management' })
+    expect(within(table).getByText('API consumption')).toBeVisible()
+    expect(within(table).getByText('$1.00')).toBeVisible()
+    expect(within(table).queryByRole('button', { name: 'Refund' })).toBeNull()
+    await user.click(
+      within(table).getByRole('button', { name: 'request:visible' })
+    )
+    const dialog = await screen.findByRole('dialog', { name: 'Order details' })
+    await within(dialog).findByText('API consumption')
+    expect(api.getOrderTrace).toHaveBeenCalledWith(
+      'request:visible',
+      'payments',
+      1,
+      undefined,
+      'consumption',
+      'billing'
+    )
+    const trace = within(dialog).getByRole('combobox', {
+      name: 'Trace records',
+    })
+    expect(
+      within(trace).queryByRole('option', {
+        name: 'Payment reconciliation events',
+      })
+    ).toBeNull()
+    await user.selectOptions(trace, 'funds')
+    await waitFor(() =>
+      expect(api.getOrderTrace).toHaveBeenLastCalledWith(
+        'request:visible',
+        'funds',
+        1,
+        undefined,
+        'consumption',
+        'billing'
+      )
+    )
+  })
+
   it('shows face value, bonus, payment and channel of each order', async () => {
     renderPage({ read: true })
     expect(await screen.findByText('EPY7001')).toBeVisible()
@@ -255,7 +335,9 @@ describe('RechargeAudit', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Manual refund' })
     await user.type(screen.getByLabelText('Refund amount in USD'), '40')
     await user.type(screen.getByLabelText('Reason (required)'), 'chargeback')
-    await user.click(within(dialog).getByRole('button', { name: 'Apply refund' }))
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Apply refund' })
+    )
     await waitFor(() => expect(api.refundTopup).toHaveBeenCalled())
     expect(api.refundTopup.mock.calls[0][0]).toBe('EPY7001')
     expect(api.refundTopup.mock.calls[0][1]).toBe('chargeback')
@@ -326,7 +408,10 @@ describe('RechargeAudit', () => {
     expect(within(dialog).getByText(/Manual-handling shortfall/)).toBeVisible()
     await user.type(screen.getByLabelText('Offline payout currency'), 'CNY')
     await user.type(screen.getByLabelText('Offline payout amount'), '292')
-    await user.type(screen.getByLabelText('Offline payout voucher'), 'bank-slip-88')
+    await user.type(
+      screen.getByLabelText('Offline payout voucher'),
+      'bank-slip-88'
+    )
     await user.click(
       within(dialog).getByRole('button', { name: 'Record offline payout' })
     )
@@ -398,6 +483,7 @@ describe('RechargeAudit', () => {
         'terminate',
         { idempotency_key: 'refund-2:terminate', note: 'customer withdrew' },
         'proof',
+        false,
       ])
     }
   )
@@ -427,5 +513,149 @@ describe('RechargeAudit', () => {
     await waitFor(() => expect(api.refundTopup).toHaveBeenCalled())
     expect(api.refundTopup.mock.calls[0][0]).toBe('EPY7001')
     expect(api.refundTopup.mock.calls[0][1]).toBe('chargeback')
+  })
+
+  it('uses the owner refund scope and original order when the owner applies', async () => {
+    api.refundTopup.mockResolvedValue({ refund: { refund_id: 'owner-refund' } })
+    const user = userEvent.setup()
+    renderPage({}, true)
+    await user.click(await screen.findByRole('button', { name: 'Refund' }))
+    const dialog = within(
+      await screen.findByRole('dialog', { name: 'Manual refund' })
+    )
+    expect(
+      screen.queryByRole('button', { name: 'Complete' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Query payment' })
+    ).not.toBeInTheDocument()
+    await user.type(
+      dialog.getByLabelText('Reason (required)'),
+      'return unused principal'
+    )
+    await user.type(dialog.getByLabelText('Refund amount in USD'), '40')
+    await waitFor(() =>
+      expect(dialog.getByRole('button', { name: 'Apply refund' })).toBeEnabled()
+    )
+    await user.click(dialog.getByRole('button', { name: 'Apply refund' }))
+    await waitFor(() =>
+      expect(api.refundTopup).toHaveBeenCalledWith(
+        'EPY7001',
+        'return unused principal',
+        expect.any(String),
+        0,
+        '40',
+        'proof',
+        true
+      )
+    )
+    expect(verification.requestVerification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'site.order.refund',
+        context: {
+          trade_no: 'EPY7001',
+          reason: 'return unused principal',
+          refund_usd: '40',
+        },
+      })
+    )
+    expect(api.listTopupManualRefunds).toHaveBeenCalledWith('EPY7001', true)
+    expect(api.previewTopupRefund).toHaveBeenCalledWith('EPY7001', '40', true)
+  })
+
+  it('uses the owner refund step scope to approve the selected application', async () => {
+    api.listTopupManualRefunds.mockResolvedValue({
+      facts: {
+        manual_refunds: [
+          {
+            refund_id: 'owner-refund',
+            status: 'submitted',
+            request_usd: '40',
+            reason: 'return unused principal',
+          },
+        ],
+      },
+    })
+    api.runTopupManualRefundStep.mockResolvedValue({
+      refund: { refund_id: 'owner-refund', status: 'approved' },
+    })
+    const user = userEvent.setup()
+    renderPage({}, true)
+    await user.click(await screen.findByRole('button', { name: 'Refund' }))
+    const dialog = within(
+      await screen.findByRole('dialog', { name: 'Manual refund' })
+    )
+    await user.click(await dialog.findByRole('button', { name: 'Approve' }))
+    await waitFor(() =>
+      expect(api.runTopupManualRefundStep).toHaveBeenCalledWith(
+        'EPY7001',
+        'owner-refund',
+        'approve',
+        { idempotency_key: 'owner-refund:approve' },
+        'proof',
+        true
+      )
+    )
+    expect(verification.requestVerification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'site.order.refund_step',
+        context: expect.objectContaining({
+          trade_no: 'EPY7001',
+          refund_id: 'owner-refund',
+          step: 'approve',
+        }),
+      })
+    )
+  })
+
+  it('uses owner refund endpoints for preview, application, listing and steps', async () => {
+    const actual = await vi.importActual<typeof import('../api')>('../api')
+    const get = vi
+      .spyOn(httpApi, 'get')
+      .mockResolvedValue({ data: { success: true, data: {} } })
+    const post = vi
+      .spyOn(httpApi, 'post')
+      .mockResolvedValue({ data: { success: true, data: {} } })
+    try {
+      await actual.previewTopupRefund('original/order', '40', true)
+      await actual.listTopupManualRefunds('original/order', true)
+      await actual.refundTopup(
+        'original/order',
+        'return',
+        'apply-key',
+        0,
+        '40',
+        'owner-proof',
+        true
+      )
+      await actual.runTopupManualRefundStep(
+        'original/order',
+        'refund/id',
+        'approve',
+        {},
+        'owner-proof',
+        true
+      )
+      expect(get).toHaveBeenCalledWith(
+        '/api/adty/site/orders/original%2Forder/refund-preview',
+        expect.anything()
+      )
+      expect(get).toHaveBeenCalledWith(
+        '/api/adty/site/orders/original%2Forder/refunds'
+      )
+      expect(post).toHaveBeenCalledWith(
+        '/api/adty/site/orders/original%2Forder/refund',
+        expect.objectContaining({ refund_usd: '40' }),
+        { headers: { 'X-Security-Proof': 'owner-proof' } }
+      )
+      expect(post).toHaveBeenCalledWith(
+        '/api/adty/site/orders/original%2Forder/refunds/refund%2Fid/approve',
+        {},
+        { headers: { 'X-Security-Proof': 'owner-proof' } }
+      )
+    } finally {
+      get.mockRestore()
+      post.mockRestore()
+    }
   })
 })

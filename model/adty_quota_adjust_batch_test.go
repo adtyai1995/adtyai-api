@@ -23,16 +23,17 @@ func TestAdjustRejectsSubtractHiddenByPendingBatch(t *testing.T) {
 		Status: common.UserStatusEnabled, Role: common.RoleCommonUser, Quota: 1000,
 	}
 	require.NoError(t, DB.Create(user).Error)
+	_, _ = adjustmentTestRequest(t, db, user.Id, "subtract", "")
 	require.NoError(t, DecreaseUserQuota(user.Id, 900, false))
 
-	_, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "subtract", 500, "pending floor", "pending-floor-1")
+	_, err := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "subtract", 500, "pending floor", "pending-floor-1")
 	require.ErrorIs(t, err, ErrAdtyQuotaFloor)
 
 	var stored User
 	require.NoError(t, DB.First(&stored, user.Id).Error)
 	require.Equal(t, 1000, stored.Quota)
 	var ledgers int64
-	require.NoError(t, DB.Model(&AdtyBalanceLedger{}).Where("user_id = ?", user.Id).Count(&ledgers).Error)
+	require.NoError(t, DB.Model(&AdtyBalanceLedger{}).Where("user_id = ? AND type = ?", user.Id, AdtyLedgerTypeManualAdjust).Count(&ledgers).Error)
 	require.Zero(t, ledgers)
 }
 
@@ -47,12 +48,13 @@ func TestAdjustRejectsOverrideAfterLocalPendingHintIsLost(t *testing.T) {
 		Status: common.UserStatusEnabled, Role: common.RoleCommonUser, Quota: 1000,
 	}
 	require.NoError(t, DB.Create(user).Error)
+	_, _ = adjustmentTestRequest(t, db, user.Id, "override", "")
 	require.NoError(t, DecreaseUserQuota(user.Id, 900, false))
 	batchUpdateLocks[BatchUpdateTypeUserQuota].Lock()
 	batchUpdateStores[BatchUpdateTypeUserQuota] = make(map[int]int)
 	batchUpdateLocks[BatchUpdateTypeUserQuota].Unlock()
 
-	_, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "override", 500, "pending floor", "detached-floor-1")
+	_, err := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "override", 500, "pending floor", "detached-floor-1")
 	require.ErrorIs(t, err, ErrAdtyQuotaFloor)
 
 	var stored User
@@ -62,11 +64,12 @@ func TestAdjustRejectsOverrideAfterLocalPendingHintIsLost(t *testing.T) {
 
 func TestAdjustRejectsSubtractDuringDetachedFlush(t *testing.T) {
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&User{}, &AdtyBalanceLedger{}))
+	require.NoError(t, db.AutoMigrate(&User{}, &Token{}, &AdtyBalanceLedger{}))
 	resetBatchUpdateTestState(t)
 	useUserCacheMiniRedis(t)
 	common.BatchUpdateEnabled = true
 	user := createReserveTestUser(t, 100)
+	_, _ = adjustmentTestRequest(t, db, user.Id, "subtract", "")
 	reserved, err := TryReserveUserQuota(user.Id, 80)
 	require.NoError(t, err)
 	require.True(t, reserved)
@@ -103,7 +106,7 @@ func TestAdjustRejectsSubtractDuringDetachedFlush(t *testing.T) {
 	}
 	adjusted := make(chan error, 1)
 	go func() {
-		_, adjustErr := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "subtract", 50, "detached floor", "detached-real-1")
+		_, adjustErr := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "subtract", 50, "detached floor", "detached-real-1")
 		adjusted <- adjustErr
 	}()
 	var adjustErr error
@@ -118,7 +121,7 @@ func TestAdjustRejectsSubtractDuringDetachedFlush(t *testing.T) {
 	require.ErrorIs(t, adjustErr, ErrAdtyQuotaFloor)
 	require.Equal(t, 20, getUserQuotaFromDB(t, user.Id))
 	var count int64
-	require.NoError(t, db.Model(&AdtyBalanceLedger{}).Where("user_id = ?", user.Id).Count(&count).Error)
+	require.NoError(t, db.Model(&AdtyBalanceLedger{}).Where("user_id = ? AND type = ?", user.Id, AdtyLedgerTypeManualAdjust).Count(&count).Error)
 	require.Zero(t, count)
 }
 
@@ -129,6 +132,7 @@ func TestAdjustRollbackKeepsDurableBalanceAndCacheUnchanged(t *testing.T) {
 	resetBatchUpdateTestState(t)
 	common.BatchUpdateEnabled = true
 	user := createReserveTestUser(t, 1000)
+	_, _ = adjustmentTestRequest(t, db, user.Id, "add", "")
 	require.NoError(t, DecreaseUserQuota(user.Id, 900, false))
 	before, err := GetUserCache(user.Id)
 	require.NoError(t, err)
@@ -141,7 +145,7 @@ func TestAdjustRollbackKeepsDurableBalanceAndCacheUnchanged(t *testing.T) {
 		}
 	}))
 	t.Cleanup(func() { _ = db.Callback().Create().Remove(callback) })
-	_, err = AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 50, "rollback", "rollback-adjust")
+	_, err = adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "add", 50, "rollback", "rollback-adjust")
 	require.ErrorIs(t, err, failure)
 	var stored User
 	require.NoError(t, db.First(&stored, user.Id).Error)
@@ -152,7 +156,7 @@ func TestAdjustRollbackKeepsDurableBalanceAndCacheUnchanged(t *testing.T) {
 	require.Equal(t, 100, after.Quota)
 
 	var count int64
-	require.NoError(t, db.Model(&AdtyBalanceLedger{}).Where("user_id = ?", user.Id).Count(&count).Error)
+	require.NoError(t, db.Model(&AdtyBalanceLedger{}).Where("user_id = ? AND type = ?", user.Id, AdtyLedgerTypeManualAdjust).Count(&count).Error)
 	require.Zero(t, count)
 }
 
@@ -163,14 +167,15 @@ func TestAdjustCommitsOnceWhenMetadataCacheIsUnavailable(t *testing.T) {
 	resetBatchUpdateTestState(t)
 	common.BatchUpdateEnabled = true
 	user := createReserveTestUser(t, 1000)
+	_, _ = adjustmentTestRequest(t, db, user.Id, "add", "")
 	require.NoError(t, DecreaseUserQuota(user.Id, 900, false))
 	_, err := GetUserCache(user.Id)
 	require.NoError(t, err)
 	server.SetError("READONLY")
-	first, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 50, "cache outage", "cache-adjust")
+	first, err := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "add", 50, "cache outage", "cache-adjust")
 	require.NoError(t, err, "cache failures cannot turn a committed amount into a retryable failure")
 	require.Equal(t, 1050, first.After)
-	again, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "add", 50, "cache outage", "cache-adjust")
+	again, err := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "add", 50, "cache outage", "cache-adjust")
 	require.NoError(t, err)
 	require.True(t, again.Replayed)
 	server.SetError("")
@@ -196,7 +201,8 @@ func TestAdjustUsesLogicalBoundsForTransientRawRows(t *testing.T) {
 				user := createReserveTestUser(t, tc.raw)
 				require.NoError(t, db.Model(&User{}).Where("id = ?", user.Id).Update("quota_pending", tc.pending).Error)
 				if withLedger {
-					adjusted, err := AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, tc.mode, tc.value, "logical bound", fmt.Sprintf("logical-%d", user.Id))
+					_, _ = adjustmentTestRequest(t, db, user.Id, tc.mode, "")
+					adjusted, err := adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, tc.mode, tc.value, "logical bound", fmt.Sprintf("logical-%d", user.Id))
 					require.NoError(t, err)
 					require.Equal(t, tc.raw, adjusted.Before)
 					require.Equal(t, tc.after, adjusted.After)
@@ -221,7 +227,8 @@ func TestOverrideRejectsUnrepresentableAuditDelta(t *testing.T) {
 		user := createReserveTestUser(t, math.MinInt)
 		var err error
 		if withLedger {
-			_, err = AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, "override", 0, "extreme legacy debt", fmt.Sprintf("extreme-%d", user.Id))
+			_, _ = adjustmentTestRequest(t, db, user.Id, "add", "")
+			_, err = adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, "override", 0, "extreme legacy debt", fmt.Sprintf("extreme-%d", user.Id))
 		} else {
 			_, err = AdjustUserQuota(user.Id, common.RoleRootUser, "override", 0)
 		}
@@ -250,7 +257,8 @@ func TestAdminAdjustmentNonnegativeBoundaryWithPendingBalance(t *testing.T) {
 				require.NoError(t, db.Model(user).Update("quota_pending", tc.pending).Error)
 				var err error
 				if withLedger {
-					_, err = AdjustUserQuotaWithLedger(user.Id, 1, common.RoleRootUser, tc.mode, tc.value, "admin floor boundary", fmt.Sprintf("boundary-%d", user.Id))
+					_, _ = adjustmentTestRequest(t, db, user.Id, tc.mode, "")
+					_, err = adjustLegacyWalletForTest(t, user.Id, 1, common.RoleRootUser, tc.mode, tc.value, "admin floor boundary", fmt.Sprintf("boundary-%d", user.Id))
 				} else {
 					_, err = AdjustUserQuota(user.Id, common.RoleRootUser, tc.mode, tc.value)
 				}

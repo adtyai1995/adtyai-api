@@ -24,6 +24,16 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 type ApiResponse<T> = { success: boolean; message?: string; data: T }
 
+export type UnifiedOrderType =
+  | 'topup'
+  | 'consumption'
+  | 'voucher'
+  | 'refund'
+  | 'withdrawal'
+  | 'commission'
+  | 'staff_adjustment'
+  | 'other'
+
 export type PageResponse<T> = {
   page: number
   page_size: number
@@ -37,7 +47,12 @@ export type RechargeAuditOrder = {
   username: string
   site_id: number | null
   site_name: string
-  order_type: 'topup'
+  order_type: UnifiedOrderType
+  source_type?: string
+  reference?: string
+  original_trade_no?: string
+  team_id?: number
+  business?: 'wallet_topup' | 'owner_self_use_topup'
   trade_no: string
   payment_method: string
   payment_provider: string
@@ -145,7 +160,7 @@ export type RechargeAuditFilters = {
   provider?: string
   method?: string
   site_id?: number
-  order_type?: 'topup'
+  order_type?: UnifiedOrderType
   page: number
   pageSize: number
 }
@@ -190,6 +205,9 @@ export async function getRechargeAuditSummary(
 }
 
 export type OrderTraceSection =
+  | 'business'
+  | 'funds'
+  | 'refunds'
   | 'payments'
   | 'wallet'
   | 'commissions'
@@ -205,6 +223,7 @@ export type OrderTraceEntry = {
   status: string
   created_at: number
   reference: string
+  proof?: string
   amount?: string
   currency?: string
   delta_quota?: number
@@ -267,14 +286,24 @@ export async function getOrderTrace(
   tradeNo: string,
   section: OrderTraceSection,
   page: number,
-  ownerMode = false
+  ownerMode = false,
+  orderType?: UnifiedOrderType,
+  sourceType?: string
 ) {
   const prefix = ownerMode
     ? '/api/adty/site/orders'
     : '/api/user/admin/finance/recharge-audit'
   const res = await api.get<ApiResponse<OrderTrace>>(
     `${prefix}/${encodeURIComponent(tradeNo)}`,
-    { params: { section, p: page, page_size: 20 } }
+    {
+      params: {
+        section,
+        p: page,
+        page_size: 20,
+        order_type: orderType,
+        source_type: sourceType,
+      },
+    }
   )
   return requireServerSuccess(res.data).data
 }
@@ -477,9 +506,13 @@ export type ManualRefundResult = {
   commission?: CommissionRefundPreview
 }
 
-export async function previewTopupRefund(tradeNo: string, refundUsd?: string) {
+export async function previewTopupRefund(
+  tradeNo: string,
+  refundUsd?: string,
+  ownerMode = false
+) {
   const res = await api.get<ApiResponse<TopupRefundResult>>(
-    `/api/adty/admin/topup/${encodeURIComponent(tradeNo)}/refund-preview`,
+    `${ownerMode ? '/api/adty/site/orders' : '/api/adty/admin/topup'}/${encodeURIComponent(tradeNo)}/refund-preview`,
     { params: refundUsd ? { refund_usd: refundUsd } : undefined }
   )
   return requireServerSuccess(res.data).data
@@ -491,10 +524,11 @@ export async function refundTopup(
   idempotencyKey: string,
   refundQuota: number,
   refundUsd?: string,
-  proofToken?: string
+  proofToken?: string,
+  ownerMode = false
 ) {
   const res = await api.post<ApiResponse<ManualRefundResult>>(
-    `/api/adty/admin/topup/${encodeURIComponent(tradeNo)}/refund`,
+    `${ownerMode ? '/api/adty/site/orders' : '/api/adty/admin/topup'}/${encodeURIComponent(tradeNo)}/refund`,
     {
       reason,
       idempotency_key: idempotencyKey,
@@ -506,9 +540,12 @@ export async function refundTopup(
   return requireServerSuccess(res.data).data
 }
 
-export async function listTopupManualRefunds(tradeNo: string) {
+export async function listTopupManualRefunds(
+  tradeNo: string,
+  ownerMode = false
+) {
   const res = await api.get<ApiResponse<ManualRefundResult>>(
-    `/api/adty/admin/topup/${encodeURIComponent(tradeNo)}/refunds`
+    `${ownerMode ? '/api/adty/site/orders' : '/api/adty/admin/topup'}/${encodeURIComponent(tradeNo)}/refunds`
   )
   return requireServerSuccess(res.data).data
 }
@@ -516,12 +553,20 @@ export async function listTopupManualRefunds(tradeNo: string) {
 export async function runTopupManualRefundStep(
   tradeNo: string,
   refundId: string,
-  step: 'approve' | 'reclaim' | 'bonus' | 'commission' | 'payout' | 'complete' | 'terminate',
+  step:
+    | 'approve'
+    | 'reclaim'
+    | 'bonus'
+    | 'commission'
+    | 'payout'
+    | 'complete'
+    | 'terminate',
   body: Record<string, unknown>,
-  proofToken?: string
+  proofToken?: string,
+  ownerMode = false
 ) {
   const res = await api.post<ApiResponse<ManualRefundResult>>(
-    `/api/adty/admin/topup/${encodeURIComponent(tradeNo)}/refunds/${encodeURIComponent(refundId)}/${step}`,
+    `${ownerMode ? '/api/adty/site/orders' : '/api/adty/admin/topup'}/${encodeURIComponent(tradeNo)}/refunds/${encodeURIComponent(refundId)}/${step}`,
     body,
     proofHeaders(proofToken)
   )
@@ -529,5 +574,7 @@ export async function runTopupManualRefundStep(
 }
 
 function proofHeaders(proofToken?: string) {
-  return proofToken ? { headers: { 'X-Security-Proof': proofToken } } : undefined
+  return proofToken
+    ? { headers: { 'X-Security-Proof': proofToken } }
+    : undefined
 }

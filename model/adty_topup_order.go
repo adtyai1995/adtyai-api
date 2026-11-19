@@ -15,8 +15,10 @@ import (
 
 // Supported providers share frozen order facts and the ADTY settlement ledger.
 const (
-	PaymentProviderAdtyBEpusdt = "bepusdt"
-	PaymentProviderAdtyEpay    = "adty_epay"
+	AdtyBusinessWalletTopup       = "wallet_topup"
+	AdtyBusinessOwnerSelfUseTopup = "owner_self_use_topup"
+	PaymentProviderAdtyBEpusdt    = "bepusdt"
+	PaymentProviderAdtyEpay       = "adty_epay"
 
 	TopUpStatusCanceled = "canceled"
 	TopUpStatusRefunded = "refunded"
@@ -38,6 +40,7 @@ func IsAdtyPaymentProvider(provider string) bool {
 
 // AdtyTopupOrder 是订单事实（任务 3.2），按 trade_no 对应上游的 top_ups，上游表不加字段。
 type AdtyTopupOrder struct {
+	Business              string          `json:"business" gorm:"type:varchar(32);not null;default:'wallet_topup'"`
 	SiteReferralSnapshot  string          `json:"-" gorm:"type:text"`
 	Id                    int64           `json:"id"`
 	TradeNo               string          `json:"trade_no" gorm:"uniqueIndex;type:varchar(64);not null"`
@@ -727,4 +730,8 @@ func ListUserAdtyTopUps(userId int, pageInfo *common.PageInfo) ([]AdtyTopUpView,
 		out = append(out, AdtyTopUpView{TopUp: topUp, Ext: byTradeNo[topUp.TradeNo]})
 	}
 	return out, total, nil
+}
+
+func (order *AdtyTopupOrder) IsOwnerSelfUse() bool {
+	return order != nil && order.Business == AdtyBusinessOwnerSelfUseTopup
 }

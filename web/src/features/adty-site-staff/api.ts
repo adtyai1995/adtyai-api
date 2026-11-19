@@ -40,6 +40,14 @@ export type StaffBalanceRequest = {
   customer_user_id: number
   direction: StaffBalanceDirection
   amount_usd: string
+  reason: string
+  order_ref: string
+  funding_source: string
+  batch_kind: string
+  batch_source: string
+  before_quota?: number
+  after_quota?: number
+  ledger_id?: number
   idempotency_key?: string
   status: 'pending' | 'approved' | 'rejected'
   reviewer_id: number
@@ -86,10 +94,21 @@ export type StaffUsage = {
   prompt_tokens: number
   completion_tokens: number
 }
+export type StaffOrderType = 'topup' | 'voucher' | 'consumption'
+export type StaffOrder = {
+  trade_no: string
+  order_type: StaffOrderType
+  status: string
+  face_usd: string
+  created_at: number
+  completed_at: number
+}
 type Response<T> = { success: boolean; message?: string; data: T }
 export const STAFF_PAGE_SIZE = 20
 
-export async function getStaffBalanceRequests(): Promise<StaffBalanceRequest[]> {
+export async function getStaffBalanceRequests(): Promise<
+  StaffBalanceRequest[]
+> {
   const response = await api.get<Response<{ items?: StaffBalanceRequest[] }>>(
     '/api/adty/staff/balance-requests'
   )
@@ -100,6 +119,11 @@ export async function createStaffBalanceRequest(input: {
   direction: StaffBalanceDirection
   amount_usd: string
   idempotency_key: string
+  reason: string
+  order_ref: string
+  funding_source: string
+  batch_kind: string
+  batch_source: string
 }): Promise<StaffBalanceRequest> {
   const response = await api.post<Response<StaffBalanceRequest>>(
     '/api/adty/staff/balance-requests',
@@ -107,7 +131,9 @@ export async function createStaffBalanceRequest(input: {
   )
   return requireServerSuccess(response.data).data
 }
-export async function getOwnerBalanceRequests(): Promise<StaffBalanceRequest[]> {
+export async function getOwnerBalanceRequests(): Promise<
+  StaffBalanceRequest[]
+> {
   const response = await api.get<Response<{ items?: StaffBalanceRequest[] }>>(
     '/api/adty/site/balance-requests'
   )
@@ -230,4 +256,28 @@ export async function getStaffCustomerRecords(
     params: { p: page, page_size: STAFF_PAGE_SIZE },
   })
   return requireServerSuccess(response.data).data
+}
+
+export async function getStaffCustomerOrders(
+  customerId: number,
+  orderType: StaffOrderType,
+  page: number
+): Promise<OwnerPage<StaffOrder>> {
+  const response = await api.get<Response<OwnerPage<StaffOrder>>>(
+    `/api/adty/staff/customers/${customerId}/orders`,
+    { params: { order_type: orderType, p: page, page_size: STAFF_PAGE_SIZE } }
+  )
+  return requireServerSuccess(response.data).data
+}
+
+export async function getStaffCustomerOrder(
+  customerId: number,
+  orderType: StaffOrderType,
+  tradeNo: string
+): Promise<StaffOrder> {
+  const response = await api.get<Response<{ order: StaffOrder }>>(
+    `/api/adty/staff/customers/${customerId}/orders/${encodeURIComponent(tradeNo)}`,
+    { params: { order_type: orderType } }
+  )
+  return requireServerSuccess(response.data).data.order
 }

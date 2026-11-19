@@ -93,7 +93,10 @@ func TestManualQuotaAdjustDoesNotDebitOperatingWallet(t *testing.T) {
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).First(&wallet).Error)
 	require.True(t, wallet.Balance.Equal(decimal.Zero))
 
-	adjusted, err := model.AdjustUserQuotaWithLedger(customer.Id, 1, common.RoleRootUser, "subtract", 300000, "manual trim", "op-adjust-sub-1")
+	adjusted, err := model.AdjustUserQuotaWithLedger(customer.Id, adjustmentRootForTest(t, db), common.RoleRootUser, "subtract", 300000, "manual trim", "op-adjust-sub-1", model.AdtyQuotaAdjustProvenance{
+		OrderRef: "OP-ADJ-1", FundingSource: model.AdtyAdjustSourceBatch,
+		BatchKind: model.AdtyFundBatchKindPrincipal, BatchSource: "OP-ADJ-1",
+	})
 	require.NoError(t, err)
 	require.Equal(t, 500000, adjusted.Before)
 	require.Equal(t, 200000, adjusted.After)

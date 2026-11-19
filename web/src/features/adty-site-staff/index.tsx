@@ -30,8 +30,8 @@ import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { OwnerCustomer } from '@/features/adty-site-owner/types'
-import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
 import { formatQuota } from '@/lib/format'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -40,10 +40,12 @@ import {
   getStaffSelf,
   STAFF_PAGE_SIZE,
   type StaffCustomerAction,
+  type StaffOrderType,
 } from './api'
 import { StaffBalanceRequestDialog } from './balance-request-dialog'
 import { StaffCustomerActionDialog } from './customer-actions'
 import { StaffRecordsDialog } from './records-dialog'
+import { StaffOrdersDialog } from './staff-orders-dialog'
 
 export function StaffWorkspace() {
   const { t } = useTranslation()
@@ -56,6 +58,10 @@ export function StaffWorkspace() {
   const [balanceCustomer, setBalanceCustomer] = useState<OwnerCustomer | null>(
     null
   )
+  const [orders, setOrders] = useState<{
+    customer: OwnerCustomer
+    version: number
+  } | null>(null)
   const [records, setRecords] = useState<{
     customer: OwnerCustomer
     kind: 'topups' | 'logs'
@@ -68,6 +74,9 @@ export function StaffWorkspace() {
   })
   const grants = self.data?.staff.permissions ?? []
   const canList = grants.includes('customers.read')
+  const orderTypes: StaffOrderType[] = []
+  if (grants.includes('customers.topups')) orderTypes.push('topup', 'voucher')
+  if (grants.includes('customers.usage')) orderTypes.push('consumption')
   const list = useQuery({
     queryKey: [
       'adty-staff',
@@ -137,6 +146,17 @@ export function StaffWorkspace() {
       header: t('Actions'),
       cell: (customer) => (
         <div className='flex flex-wrap gap-1'>
+          {orderTypes.length > 0 && (
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() =>
+                setOrders({ customer, version: self.data?.staff.version ?? 0 })
+              }
+            >
+              {t('Orders')}
+            </Button>
+          )}
           {canList && (
             <Button
               size='sm'
@@ -223,6 +243,19 @@ export function StaffWorkspace() {
                 />
               </>
             )}
+            {orders &&
+              canList &&
+              orderTypes.length > 0 &&
+              orders.version === self.data.staff.version && (
+                <StaffOrdersDialog
+                  key={`${userId}-${orders.version}-${orders.customer.id}`}
+                  userId={userId ?? 0}
+                  staffVersion={orders.version}
+                  customer={orders.customer}
+                  orderTypes={orderTypes}
+                  onClose={() => setOrders(null)}
+                />
+              )}
             {records &&
               canList &&
               grants.includes(

@@ -39,6 +39,7 @@ func TestStaffBalanceIncreaseIsRejectedWithoutSiteFundsPG(t *testing.T) {
 func TestStaffBalanceIncreaseIsFundedBySiteWalletPG(t *testing.T) {
 	db, owner, site, request := newStaffBalanceFundingFixture(t, "funded")
 	pgtest.RecordServerVersion(t, db)
+	originalOperating := mustSiteOperatingWallet(t, db, site.Id).Balance
 
 	const existingOperating = 200
 	const amountUSD = 100
@@ -58,17 +59,19 @@ func TestStaffBalanceIncreaseIsFundedBySiteWalletPG(t *testing.T) {
 
 	var operating model.AdtySiteWallet
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).First(&operating).Error)
-	assert.True(t, operating.Balance.Equal(decimal.NewFromInt(existingOperating+amountUSD)),
+	wantOperating := originalOperating.Add(decimal.NewFromInt(existingOperating + amountUSD))
+	assert.True(t, operating.Balance.Equal(wantOperating),
 		"运营钱包不仅未被当成盈余扣掉，反而增加 $100 以 1:1 背书新客户本金")
-	assert.True(t, ReconcileOperatingWallet(decimal.NewFromInt(existingOperating+amountUSD), operating.Balance).IsZero())
+	assert.True(t, ReconcileOperatingWallet(wantOperating, operating.Balance).IsZero())
 
 	// 客户后续消费 $100 时，运营扣款钩子只消耗刚刚补足的那 $100，原有 $200 客户本金背书分毫不差。
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return model.AdtyAfterPrincipalSpentTx(tx, request.CustomerUserId, "op-spend-after-staff", int64(amountUSD)*500_000)
 	}))
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).First(&operating).Error)
-	assert.True(t, operating.Balance.Equal(decimal.NewFromInt(existingOperating)))
-	assert.True(t, ReconcileOperatingWallet(decimal.NewFromInt(existingOperating), operating.Balance).IsZero())
+	wantOperating = originalOperating.Add(decimal.NewFromInt(existingOperating))
+	assert.True(t, operating.Balance.Equal(wantOperating))
+	assert.True(t, ReconcileOperatingWallet(wantOperating, operating.Balance).IsZero())
 
 	var reviewed model.AdtyStaffBalanceRequest
 	require.NoError(t, db.First(&reviewed, request.Id).Error)
@@ -79,6 +82,7 @@ func TestStaffBalanceIncreaseIsFundedBySiteWalletPG(t *testing.T) {
 func TestStaffBalanceIncreaseRollsBackWhenSiteFundsAreShortPG(t *testing.T) {
 	db, owner, site, request := newStaffBalanceFundingFixture(t, "short")
 	pgtest.RecordServerVersion(t, db)
+	originalOperating := mustSiteOperatingWallet(t, db, site.Id).Balance
 
 	require.NoError(t, fundStaffBalanceWallet(t, site.Id, model.AdtySiteWalletOperating, 500, "short-operating-only"))
 	require.NoError(t, fundStaffBalanceWallet(t, site.Id, model.AdtySiteWalletEarnings, 50, "short-earnings-seed"))
@@ -99,13 +103,15 @@ func TestStaffBalanceIncreaseRollsBackWhenSiteFundsAreShortPG(t *testing.T) {
 
 	var operating model.AdtySiteWallet
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).First(&operating).Error)
-	assert.True(t, operating.Balance.Equal(decimal.NewFromInt(500)), "现有客户运营本金背书分毫不差")
+	assert.True(t, operating.Balance.Equal(originalOperating.Add(decimal.NewFromInt(500))), "现有客户运营本金背书分毫不差")
 }
 
 // 收益不够但保证金超出底线与周期限额足够时，由保证金出资并补足运营钱包，仍尊重 10% 底线。
 func TestStaffBalanceIncreaseFallsBackToMarginRespectingFloorPG(t *testing.T) {
 	db, owner, site, request := newStaffBalanceFundingFixture(t, "margin-fallback")
 	pgtest.RecordServerVersion(t, db)
+	originalOperating := mustSiteOperatingWallet(t, db, site.Id).Balance
+	require.NoError(t, db.Model(&request).Update("funding_source", model.AdtyStaffFundingSourceMargin).Error)
 
 	// $200 required balance / cycle limit reserves $20 (10%) floor; only $180 usable.
 	require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.NewFromInt(200), "margin-cycle-seed"))
@@ -117,13 +123,14 @@ func TestStaffBalanceIncreaseFallsBackToMarginRespectingFloorPG(t *testing.T) {
 
 	var operating model.AdtySiteWallet
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).First(&operating).Error)
-	assert.True(t, operating.Balance.Equal(decimal.NewFromInt(100)))
+	assert.True(t, operating.Balance.Equal(originalOperating.Add(decimal.NewFromInt(100))))
 
 	// A second $100 request only has $80 drawable above $20 floor -> must be rejected.
 	second := model.AdtyStaffBalanceRequest{
 		SiteId: site.Id, StaffUserId: request.StaffUserId, CustomerUserId: request.CustomerUserId,
 		Direction: model.AdtyStaffBalanceIncrease, AmountUSD: decimal.NewFromInt(100),
 		Status: model.AdtyStaffBalancePending,
+		Reason: request.Reason, OrderRef: request.OrderRef, FundingSource: model.AdtyStaffFundingSourceMargin,
 	}
 	require.NoError(t, db.Create(&second).Error)
 	err := ReviewAdtyStaffBalanceRequest(owner.Id, "owner", second.Id, true)
@@ -153,6 +160,7 @@ func newStaffBalanceFundingFixture(t *testing.T, tag string) (*gorm.DB, *model.U
 		SiteId: site.Id, StaffUserId: staff.Id, CustomerUserId: customer.Id,
 		Direction: model.AdtyStaffBalanceIncrease, AmountUSD: decimal.NewFromInt(100),
 		Status: model.AdtyStaffBalancePending,
+		Reason: "reconcile original payment", OrderRef: financialOriginalForTest(t, db, customer.Id), FundingSource: model.AdtyStaffFundingSourceEarnings,
 	}
 	require.NoError(t, db.Create(&request).Error)
 	return db, owner, site, request

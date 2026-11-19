@@ -16,9 +16,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { OrderTraceSection } from './api'
+import type { OrderTraceSection, UnifiedOrderType } from './api'
+
+export const UNIFIED_ORDER_LABELS: Record<UnifiedOrderType, string> = {
+  topup: 'Top-up',
+  consumption: 'API consumption',
+  voucher: 'Voucher top-up',
+  refund: 'Refund',
+  withdrawal: 'Withdrawal',
+  commission: 'Invite commission',
+  staff_adjustment: 'Staff balance adjustment',
+  other: 'Other financial activity',
+}
 
 export const ORDER_TRACE_SECTIONS: Record<OrderTraceSection, string> = {
+  business: 'Business record',
+  funds: 'Principal and gift batches',
+  refunds: 'Manual refund records',
   payments: 'Payment events and queries',
   wallet: 'Wallet credits, adjustments and refunds',
   commissions: 'Commission records',
@@ -55,6 +69,18 @@ export const ORDER_TRACE_LABELS: Record<string, string> = {
   available: 'Available',
   frozen: 'Frozen amount',
   settled: 'Settled',
+  submitted: 'Submitted',
+  approved: 'Approved',
+  completed: 'Completed',
+  terminated: 'Terminated',
+  paying: 'Paying',
+  covered: 'Covered',
+  pending_coverage: 'Pending coverage',
+  principal: 'Principal',
+  bonus: 'Permanent gift',
+  expiring_bonus: 'Expiring gift',
+  active: 'Active',
+  exhausted: 'Exhausted',
   voided: 'Voided',
   clawed_back: 'Clawed back',
   commission_accrue: 'Commission accrued',

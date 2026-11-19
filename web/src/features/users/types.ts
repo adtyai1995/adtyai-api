@@ -146,6 +146,10 @@ export interface ManageUserQuotaPayload {
   /** adty task 7.2: required, at most 200 characters; shown to admins only. */
   reason: string
   idempotency_key: string
+  order_ref: string
+  funding_source: string
+  batch_kind: string
+  batch_source: string
 }
 
 // ============================================================================

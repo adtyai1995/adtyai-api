@@ -56,11 +56,44 @@ function renderDialog(currentQuota = 0, currentLiveQuota?: number) {
   )
 }
 
+async function fillProvenance(user: ReturnType<typeof userEvent.setup>) {
+  const order = screen.getByLabelText('Original order')
+  await user.clear(order)
+  await user.type(order, 'original-paid-order')
+  const batch = screen.queryByLabelText('Batch kind')
+  if (batch) {
+    await user.selectOptions(batch, 'principal')
+    await user.clear(screen.getByLabelText('Batch source'))
+    await user.type(
+      screen.getByLabelText('Batch source'),
+      'original-paid-order'
+    )
+  } else {
+    await user.selectOptions(
+      screen.getByLabelText('Funding source'),
+      'platform_correction'
+    )
+  }
+}
+
 describe('UserQuotaDialog reason (adty task 7.2)', () => {
+  it('requires an original order and an explicit funding source before confirmation', async () => {
+    const user = userEvent.setup()
+    renderDialog()
+    await user.type(screen.getByPlaceholderText(/Enter amount/), '5')
+    await user.type(
+      screen.getByLabelText('Reason (admins only)'),
+      'correct original payment'
+    )
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
+    expect(api.adjustUserQuota).not.toHaveBeenCalled()
+  })
+
   it('keeps Confirm disabled until a reason is entered', async () => {
     const user = userEvent.setup()
     renderDialog()
     await user.type(screen.getByPlaceholderText(/Enter amount/), '5')
+    await fillProvenance(user)
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
     await user.type(screen.getByLabelText('Reason (admins only)'), 'refund')
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled()
@@ -74,12 +107,19 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
     renderDialog()
     await user.type(screen.getByPlaceholderText(/Enter amount/), '5')
     await user.type(screen.getByLabelText('Reason (admins only)'), ' goodwill ')
+    await fillProvenance(user)
     await user.click(screen.getByRole('button', { name: 'Confirm' }))
     await waitFor(() => expect(api.adjustUserQuota).toHaveBeenCalledTimes(1))
     await user.click(screen.getByRole('button', { name: 'Confirm' }))
     await waitFor(() => expect(api.adjustUserQuota).toHaveBeenCalledTimes(2))
     const [first, second] = api.adjustUserQuota.mock.calls.map((c) => c[0])
     expect(first.reason).toBe('goodwill')
+    expect(first).toMatchObject({
+      order_ref: 'original-paid-order',
+      funding_source: 'platform_correction',
+      batch_kind: '',
+      batch_source: '',
+    })
     expect(first.idempotency_key).toBe(second.idempotency_key)
     expect(first.idempotency_key).not.toBe('')
   })
@@ -93,10 +133,12 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
       screen.getByLabelText('Reason (admins only)'),
       'set negative'
     )
+    await fillProvenance(user)
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'Subtract' }))
     await user.clear(screen.getByPlaceholderText(/Enter amount/))
     await user.type(screen.getByPlaceholderText(/Enter amount/), '5')
+    await fillProvenance(user)
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
     expect(api.adjustUserQuota).not.toHaveBeenCalled()
   })
@@ -127,6 +169,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
         screen.getByLabelText('Reason (admins only)'),
         'reconcile'
       )
+      await fillProvenance(user)
 
       const confirm = screen.getByRole('button', { name: 'Confirm' })
       if (blocked) {
@@ -147,6 +190,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
     await user.click(screen.getByRole('button', { name: 'Override' }))
     await user.type(screen.getByPlaceholderText(/Enter amount/), '0.5')
     await user.type(screen.getByLabelText('Reason (admins only)'), 'reconcile')
+    await fillProvenance(user)
 
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
     expect(
@@ -162,6 +206,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
     await user.click(screen.getByRole('button', { name: 'Override' }))
     await user.type(screen.getByPlaceholderText(/Enter amount/), '1')
     await user.type(screen.getByLabelText('Reason (admins only)'), 'reconcile')
+    await fillProvenance(user)
 
     expect(screen.getByText('Current quota: $1 → $0')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Confirm' }))
@@ -170,6 +215,9 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
         expect.objectContaining({
           mode: 'override',
           value: 500_000,
+          funding_source: 'specified_batch',
+          batch_kind: 'principal',
+          batch_source: 'original-paid-order',
         })
       )
     )
@@ -182,6 +230,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
     await user.click(screen.getByRole('button', { name: 'Override' }))
     await user.type(screen.getByPlaceholderText(/Enter amount/), '0')
     await user.type(screen.getByLabelText('Reason (admins only)'), 'reconcile')
+    await fillProvenance(user)
 
     expect(screen.getByText('Current quota: $4 → $2')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Confirm' }))
@@ -201,6 +250,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
     await user.click(screen.getByRole('button', { name: 'Override' }))
     await user.type(screen.getByPlaceholderText(/Enter amount/), '-1')
     await user.type(screen.getByLabelText('Reason (admins only)'), 'reconcile')
+    await fillProvenance(user)
 
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
     expect(api.adjustUserQuota).not.toHaveBeenCalled()
@@ -215,6 +265,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
       screen.getByLabelText('Reason (admins only)'),
       'partial repayment'
     )
+    await fillProvenance(user)
 
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Confirm' }))
@@ -242,6 +293,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
     await user.click(screen.getByRole('button', { name: 'Override' }))
     await user.type(screen.getByPlaceholderText(/Enter amount/), '7')
     await user.type(screen.getByLabelText('Reason (admins only)'), 'reconcile')
+    await fillProvenance(user)
 
     expect(screen.getByText('Current quota: ¥7 → ¥0')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Confirm' }))

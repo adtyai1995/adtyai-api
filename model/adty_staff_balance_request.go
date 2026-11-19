@@ -6,15 +6,20 @@ import (
 )
 
 const (
-	AdtyStaffBalanceIncrease = "increase"
-	AdtyStaffBalanceDecrease = "decrease"
-	AdtyStaffBalancePending  = "pending"
-	AdtyStaffBalanceApproved = "approved"
-	AdtyStaffBalanceRejected = "rejected"
+	AdtyStaffFundingSourceEarnings = "site_earnings"
+	AdtyStaffFundingSourceMargin   = "site_margin"
+	AdtyStaffBalanceIncrease       = "increase"
+	AdtyStaffBalanceDecrease       = "decrease"
+	AdtyStaffBalancePending        = "pending"
+	AdtyStaffBalanceApproved       = "approved"
+	AdtyStaffBalanceRejected       = "rejected"
 )
 
 // AdtyStaffBalanceRequest is an employee request to change a customer balance.
 // It does not move money until a site owner or main-site admin approves it.
+// Per A.4 (line 852) and A.12.4 (lines 1600-1602), both request and approval
+// retain a concrete reason, associated business/order reference, and funding or
+// recovery source (ISS-R1-0088).
 type AdtyStaffBalanceRequest struct {
 	Id             int64           `json:"id"`
 	SiteId         int             `json:"site_id" gorm:"index"`
@@ -22,6 +27,17 @@ type AdtyStaffBalanceRequest struct {
 	CustomerUserId int             `json:"customer_user_id" gorm:"index"`
 	Direction      string          `json:"direction" gorm:"type:varchar(16)"`
 	AmountUSD      decimal.Decimal `json:"amount_usd" gorm:"type:decimal(20,8);not null"`
+	Reason         string          `json:"reason" gorm:"type:text"`
+	BusinessRef    string          `json:"business_ref" gorm:"type:varchar(128);index"`
+	OrderRef       string          `json:"order_ref,omitempty" gorm:"type:varchar(128);index"`
+	FundingSource  string          `json:"funding_source" gorm:"type:varchar(64)"`
+	RecoverySource string          `json:"recovery_source,omitempty" gorm:"type:varchar(64)"`
+	BatchKind      string          `json:"batch_kind,omitempty" gorm:"type:varchar(16)"`
+	BatchSource    string          `json:"batch_source,omitempty" gorm:"type:varchar(64)"`
+	ReviewNote     string          `json:"review_note,omitempty" gorm:"type:text"`
+	BeforeQuota    int64           `json:"before_quota"`
+	AfterQuota     int64           `json:"after_quota"`
+	LedgerId       int64           `json:"ledger_id"`
 	IdempotencyKey *string         `json:"idempotency_key,omitempty" gorm:"type:varchar(64);uniqueIndex"`
 	Status         string          `json:"status" gorm:"type:varchar(16);index"`
 	ReviewerId     int             `json:"reviewer_id"`
@@ -166,3 +182,11 @@ type AdtyGroupConfig struct {
 }
 
 func (AdtyGroupConfig) TableName() string { return "adty_group_configs" }
+
+type AdtyStaffBalanceProvenance struct {
+	Reason        string `json:"reason"`
+	OrderRef      string `json:"order_ref"`
+	FundingSource string `json:"funding_source"`
+	BatchKind     string `json:"batch_kind"`
+	BatchSource   string `json:"batch_source"`
+}

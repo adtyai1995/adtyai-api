@@ -30,6 +30,7 @@ import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { getAdminBusinessTimezone } from '@/features/adty-site-admin/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
@@ -65,6 +66,10 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
   // adty task 7.2: a reason is required; one idempotency key per dialog so a
   // retry after a network failure cannot apply the change twice.
   const [reason, setReason] = useState('')
+  const [orderRef, setOrderRef] = useState('')
+  const [fundingSource, setFundingSource] = useState('')
+  const [batchKind, setBatchKind] = useState('')
+  const [batchSource, setBatchSource] = useState('')
   const [idempotencyKey, setIdempotencyKey] = useState(() =>
     crypto.randomUUID()
   )
@@ -84,6 +89,19 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
   const floorBlocked =
     (mode === 'override' && (overrideQuota < 0 || overrideLiveQuota < 0)) ||
     (mode === 'subtract' && currentLiveQuota - quotaValue < 0)
+  const decreases =
+    mode === 'subtract' ||
+    (mode === 'override' && overrideQuota < props.currentQuota)
+  const provenanceValid =
+    orderRef.trim() !== '' &&
+    orderRef.trim().length <= 64 &&
+    (decreases
+      ? batchKind !== '' && batchSource.trim() !== ''
+      : fundingSource !== '')
+  const amountValid =
+    amount.trim() !== '' &&
+    Number.isFinite(Number(amount)) &&
+    (mode === 'override' ? amountValue >= 0 : amountValue > 0 && quotaValue > 0)
 
   const getPreviewText = () => {
     if (floorBlocked) return t('Adjustment cannot make the balance negative')
@@ -106,11 +124,23 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
     setAmount('')
     setMode('add')
     setReason('')
+    setOrderRef('')
+    setFundingSource('')
+    setBatchKind('')
+    setBatchSource('')
     setIdempotencyKey(crypto.randomUUID())
   }
 
   const handleConfirm = async () => {
-    if (!reasonValid || floorBlocked) return
+    if (
+      loading ||
+      !reasonValid ||
+      floorBlocked ||
+      !provenanceValid ||
+      !amountValid
+    ) {
+      return
+    }
     if (!amount && mode !== 'override') return
     if (quotaValue <= 0 && mode !== 'override') return
 
@@ -125,6 +155,10 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
         value: mode === 'override' ? value : Math.abs(value),
         reason: reason.trim(),
         idempotency_key: idempotencyKey,
+        order_ref: orderRef.trim(),
+        funding_source: decreases ? 'specified_batch' : fundingSource,
+        batch_kind: decreases ? batchKind : '',
+        batch_source: decreases ? batchSource.trim() : '',
       })
       if (result.success) {
         toast.success(t('Quota adjusted successfully'))
@@ -166,7 +200,13 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
           <Button
             variant='brand'
             onClick={handleConfirm}
-            disabled={loading || !reasonValid || floorBlocked}
+            disabled={
+              loading ||
+              !reasonValid ||
+              floorBlocked ||
+              !provenanceValid ||
+              !amountValid
+            }
           >
             {loading ? t('Processing...') : t('Confirm')}
           </Button>
@@ -192,6 +232,9 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
                 onClick={() => {
                   setMode(m)
                   setAmount('')
+                  setFundingSource('')
+                  setBatchKind('')
+                  setBatchSource('')
                 }}
               >
                 {m === 'add' && t('Add')}
@@ -219,6 +262,77 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
           />
         </div>
 
+        <div className='space-y-2'>
+          <Label htmlFor='quota-order-ref'>{t('Original order')}</Label>
+          <Input
+            id='quota-order-ref'
+            value={orderRef}
+            maxLength={64}
+            disabled={loading}
+            onChange={(event) => setOrderRef(event.target.value)}
+          />
+        </div>
+        {decreases ? (
+          <>
+            <div className='space-y-2'>
+              <Label htmlFor='quota-batch-kind'>{t('Batch kind')}</Label>
+              <NativeSelect
+                id='quota-batch-kind'
+                className='w-full'
+                value={batchKind}
+                disabled={loading}
+                onChange={(event) => setBatchKind(event.target.value)}
+              >
+                <NativeSelectOption value=''>
+                  {t('Batch kind')}
+                </NativeSelectOption>
+                <NativeSelectOption value='principal'>
+                  {t('Principal')}
+                </NativeSelectOption>
+                <NativeSelectOption value='bonus'>
+                  {t('Permanent gift')}
+                </NativeSelectOption>
+                <NativeSelectOption value='expiring_bonus'>
+                  {t('Expiring gift')}
+                </NativeSelectOption>
+              </NativeSelect>
+            </div>
+            <div className='space-y-2'>
+              <Label htmlFor='quota-batch-source'>{t('Batch source')}</Label>
+              <Input
+                id='quota-batch-source'
+                value={batchSource}
+                maxLength={64}
+                disabled={loading}
+                onChange={(event) => setBatchSource(event.target.value)}
+              />
+            </div>
+          </>
+        ) : (
+          <div className='space-y-2'>
+            <Label htmlFor='quota-funding-source'>{t('Funding source')}</Label>
+            <NativeSelect
+              id='quota-funding-source'
+              className='w-full'
+              value={fundingSource}
+              disabled={loading}
+              onChange={(event) => setFundingSource(event.target.value)}
+            >
+              <NativeSelectOption value=''>
+                {t('Funding source')}
+              </NativeSelectOption>
+              <NativeSelectOption value='platform_correction'>
+                {t('Platform correction')}
+              </NativeSelectOption>
+              <NativeSelectOption value='site_earnings'>
+                {t('Earnings wallet')}
+              </NativeSelectOption>
+              <NativeSelectOption value='site_margin'>
+                {t('Margin wallet')}
+              </NativeSelectOption>
+            </NativeSelect>
+          </div>
+        )}
         <div className='space-y-2'>
           <Label htmlFor='quota-reason'>{t('Reason (admins only)')}</Label>
           <Textarea

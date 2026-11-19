@@ -28,13 +28,19 @@ import { NativeSelect } from '@/components/ui/native-select'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
-import { getOrderTrace, type OrderTraceSection } from '../api'
+import {
+  getOrderTrace,
+  type OrderTraceSection,
+  type UnifiedOrderType,
+} from '../api'
 import { ORDER_TRACE_SECTIONS } from '../trace-labels'
 import { OrderDetailSummary } from './order-detail-summary'
 import { OrderTraceTable } from './order-trace-table'
 
 export function OrderDetailDialog(props: {
   tradeNo: string
+  orderType?: UnifiedOrderType
+  sourceType?: string
   userId: number
   ownerMode?: boolean
   ownerSiteId?: number
@@ -52,21 +58,29 @@ export function OrderDetailDialog(props: {
       props.ownerSiteId,
       'detail',
       props.tradeNo,
+      props.orderType,
+      props.sourceType,
       section,
       page,
     ],
-    queryFn: () => getOrderTrace(props.tradeNo, section, page, props.ownerMode),
+    queryFn: () =>
+      getOrderTrace(
+        props.tradeNo,
+        section,
+        page,
+        props.ownerMode,
+        props.orderType,
+        props.sourceType
+      ),
   })
   const detail = query.data
   const pages = Math.max(1, Math.ceil((detail?.total ?? 0) / 20))
   const sections = (
-    Object.keys(ORDER_TRACE_SECTIONS) as OrderTraceSection[]
+    detail?.sections ?? (['payments'] as OrderTraceSection[])
   ).filter(
     (value) =>
       !props.ownerMode ||
-      (value !== 'commissions' &&
-        value !== 'commission_movements' &&
-        value !== 'site_wallet')
+      (value !== 'commission_movements' && value !== 'site_wallet')
   )
   return (
     <Dialog
@@ -88,7 +102,7 @@ export function OrderDetailDialog(props: {
         <div className='flex flex-wrap items-center justify-between gap-2'>
           <NativeSelect
             aria-label={t('Trace records')}
-            value={section}
+            value={detail?.section ?? section}
             onChange={(event) => {
               setSection(event.target.value as OrderTraceSection)
               setPage(1)
