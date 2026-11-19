@@ -2,6 +2,8 @@ package controller
 
 import (
 	"errors"
+	"fmt"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,4 +75,45 @@ func TestPaymentScenesConstrainNativeProviderEntries(t *testing.T) {
 	require.NoError(t, db.Model(&model.TopUp{}).Count(&count).Error)
 	require.Zero(t, count, "a denied native call cannot create orders")
 	require.Zero(t, externalCalls)
+}
+
+func TestSiteBonusSaveUsesCurrentDatabaseAuthorization(t *testing.T) {
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Option{}, &model.AuditLog{}, &model.AuditIntent{}, &model.Log{}))
+	require.NoError(t, model.MigrateAdtyTables())
+	owner := model.User{Username: "bonus-owner", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&owner).Error)
+	site := model.AdtySite{OwnerUserId: owner.Id, Status: model.AdtySiteStatusActive, Subdomain: "bonus", RootDomain: "example.com", AgreementVer: service.AdtyCurrentSiteAgreementVersion()}
+	require.NoError(t, db.Create(&site).Error)
+	saved := *adty_setting.GetTopupSetting()
+	oldOptions := common.OptionMap
+	common.OptionMap = map[string]string{}
+	t.Cleanup(func() { *adty_setting.GetTopupSetting() = saved; common.OptionMap = oldOptions })
+	for _, allowed := range []bool{false, true} {
+		rawAuth := `{}`
+		if allowed {
+			rawAuth = fmt.Sprintf(`{"%d":["usdt"]}`, site.Id)
+		}
+		require.NoError(t, db.Save(&model.Option{Key: adty_setting.TopupSettingKeySiteMethodAuth, Value: rawAuth}).Error)
+		adty_setting.GetTopupSetting().SiteMethodAuth = map[int][]string{}
+		if !allowed {
+			adty_setting.GetTopupSetting().SiteMethodAuth[site.Id] = []string{"usdt"}
+		}
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/adty/site/bonus-methods", strings.NewReader(`{"method":"usdt","enabled":true,"rate":"0.05"}`))
+		c.Set("id", owner.Id)
+		c.Set("role", common.RoleCommonUser)
+		PutAdtySiteMethodBonus(c)
+		var result struct{ Success bool }
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
+		require.Equal(t, allowed, result.Success, recorder.Body.String())
+		var count int64
+		require.NoError(t, db.Model(&model.Option{}).Where("key = ?", adty_setting.TopupSettingKeySiteMethodBonus).Count(&count).Error)
+		if allowed {
+			require.EqualValues(t, 1, count)
+		} else {
+			require.Zero(t, count)
+		}
+	}
 }

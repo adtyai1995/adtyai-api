@@ -10,9 +10,10 @@ import (
 
 // 这三个键必须与实际写入 options 表的键一致，否则重启后配置回退。
 const (
-	TopupSettingKeyMethodBonus     = "adty_topup_setting.method_bonus"
-	TopupSettingKeySiteMethodAuth  = "adty_topup_setting.site_method_auth"
-	TopupSettingKeySiteMethodBonus = "adty_topup_setting.site_method_bonus"
+	TopupSettingKeySiteBonusMarginFill = "adty_topup_setting.site_bonus_margin_fill"
+	TopupSettingKeyMethodBonus         = "adty_topup_setting.method_bonus"
+	TopupSettingKeySiteMethodAuth      = "adty_topup_setting.site_method_auth"
+	TopupSettingKeySiteMethodBonus     = "adty_topup_setting.site_method_bonus"
 )
 
 // MethodBonusRule is one site's gift switch and rate for a payment method.
@@ -210,4 +211,114 @@ func SiteMethodBonus(siteID int, method string) (MethodBonusRule, bool) {
 	rules := topupSetting.SiteMethodBonus[siteID]
 	rule, ok := rules[method]
 	return rule, ok
+}
+
+// ParseMainMethodBonus parses the main-site bonus rule for method from raw JSON.
+func ParseMainMethodBonus(rawMethodBonus, method string) (MethodBonusRule, bool, error) {
+	key, err := canonicalBonusMethod(method)
+	if err != nil {
+		return MethodBonusRule{}, false, err
+	}
+	var rules map[string]MethodBonusRule
+	if err := unmarshalBonusSetting(rawMethodBonus, &rules); err != nil {
+		return MethodBonusRule{}, false, err
+	}
+	if rules == nil {
+		return MethodBonusRule{}, false, nil
+	}
+	rule, ok := rules[key]
+	return rule, ok, nil
+}
+
+// ParseSiteMethodBonusAllowed parses whether Root authorized method for siteID from raw JSON.
+func ParseSiteMethodBonusAllowed(rawSiteMethodAuth string, siteID int, method string) (bool, error) {
+	if siteID <= 0 {
+		return false, nil
+	}
+	key, err := canonicalBonusMethod(method)
+	if err != nil {
+		return false, err
+	}
+	var auth map[int][]string
+	if err := unmarshalBonusSetting(rawSiteMethodAuth, &auth); err != nil {
+		return false, err
+	}
+	for _, item := range auth[siteID] {
+		if item == key {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ParseSiteMethodBonus parses a site-owner rule only if Root currently authorizes the method.
+func ParseSiteMethodBonus(rawSiteMethodAuth, rawSiteMethodBonus string, siteID int, method string) (MethodBonusRule, bool, error) {
+	allowed, err := ParseSiteMethodBonusAllowed(rawSiteMethodAuth, siteID, method)
+	if err != nil || !allowed {
+		return MethodBonusRule{}, false, err
+	}
+	key, err := canonicalBonusMethod(method)
+	if err != nil {
+		return MethodBonusRule{}, false, err
+	}
+	var all map[int]map[string]MethodBonusRule
+	if err := unmarshalBonusSetting(rawSiteMethodBonus, &all); err != nil {
+		return MethodBonusRule{}, false, err
+	}
+	if all == nil || all[siteID] == nil {
+		return MethodBonusRule{}, false, nil
+	}
+	rule, ok := all[siteID][key]
+	return rule, ok, nil
+}
+
+// ParseSiteBonusMarginFillAllowed parses whether Root authorized margin fill for siteID.
+func ParseSiteBonusMarginFillAllowed(rawMarginFill string, siteID int) (bool, error) {
+	if siteID <= 0 {
+		return false, nil
+	}
+	var allowed map[int]bool
+	if err := unmarshalBonusSetting(rawMarginFill, &allowed); err != nil {
+		return false, err
+	}
+	return allowed != nil && allowed[siteID], nil
+}
+
+// MergeSiteMethodBonusWithAuth validates a site rule against the authoritative
+// currentAuth JSON read inside the same SQL transaction, and merges it into currentBonus.
+func MergeSiteMethodBonusWithAuth(currentBonus, currentAuth string, siteID int, method string, enabled bool, rate string) (string, error) {
+	if siteID <= 0 {
+		return "", errBonusMethod("site is required")
+	}
+	key, err := canonicalBonusMethod(method)
+	if err != nil {
+		return "", err
+	}
+	allowed, err := ParseSiteMethodBonusAllowed(currentAuth, siteID, key)
+	if err != nil {
+		return "", err
+	}
+	if !allowed {
+		return "", errBonusMethod("payment method is not authorized for this site")
+	}
+	return mergeAuthorizedSiteMethodBonus(currentBonus, siteID, key, enabled, rate)
+}
+
+func mergeAuthorizedSiteMethodBonus(current string, siteID int, key string, enabled bool, rate string) (string, error) {
+	parsed, err := parseBonusRate(rate, enabled)
+	if err != nil {
+		return "", err
+	}
+	var next map[int]map[string]MethodBonusRule
+	if err := unmarshalBonusSetting(current, &next); err != nil {
+		return "", err
+	}
+	if next == nil {
+		next = map[int]map[string]MethodBonusRule{}
+	}
+	if next[siteID] == nil {
+		next[siteID] = map[string]MethodBonusRule{}
+	}
+	next[siteID][key] = MethodBonusRule{Enabled: enabled, Rate: parsed}
+	return marshalBonusSetting(next)
 }

@@ -26,10 +26,15 @@ type adtyMethodBonusBody struct {
 // 合并基准在事务内用行锁从库里读（merge 收到的 current），不取本进程的内存
 // 快照：整串 JSON 覆盖写时，取内存当基准会让另一个副本刚写入的规则被静默抹掉
 // （ISS-R4-0099）。
-func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[string]any, after any, merge func(current string) (string, error)) bool {
+func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[string]any, after any, merge func(current string) (string, error), authorize ...func(*gorm.DB) error) bool {
 	event := prepareManageAuditChange(c, 0, action, params, nil, after, "", "")
 	var value string
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		for _, check := range authorize {
+			if err := check(tx); err != nil {
+				return err
+			}
+		}
 		current, err := model.LockOptionValueTx(tx, key)
 		if err != nil {
 			return err
@@ -116,16 +121,21 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	var authorization string
 	merge := func(current string) (string, error) {
-		return adty_setting.MergeSiteMethodBonus(current, site.Id, body.Method, body.Enabled, body.Rate)
+		return adty_setting.MergeSiteMethodBonusWithAuth(current, authorization, site.Id, body.Method, body.Enabled, body.Rate)
 	}
-	if _, err := merge(""); err != nil {
+	if _, err := adty_setting.MergeMainMethodBonus("", body.Method, body.Enabled, body.Rate); err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteMethodBonus, "adty.topup.site_method_bonus.update",
 		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate, "site_id": site.Id},
-		map[string]any{"method": body.Method, "enabled": body.Enabled}, merge) {
+		map[string]any{"method": body.Method, "enabled": body.Enabled}, merge, func(tx *gorm.DB) error {
+			var err error
+			authorization, err = model.LockOptionValueTx(tx, adty_setting.TopupSettingKeySiteMethodAuth)
+			return err
+		}) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"site_id": site.Id})

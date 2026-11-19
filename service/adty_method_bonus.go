@@ -123,7 +123,7 @@ func SiteBonusEarningCovers(siteID int, bonus decimal.Decimal) error {
 // ReserveAdtySiteGiftTx freezes the site-funded gift from the earning wallet,
 // then from an authorized margin cycle. The reserved amount is the same
 // site-funded total as adtyBonusUSDForSite: the payment-method gift.
-func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder) error {
+func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder, marginAuthorization ...bool) error {
 	if tx == nil || ext == nil || ext.SiteId <= 0 {
 		return nil
 	}
@@ -148,7 +148,11 @@ func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder) error {
 	rest := bonus.Sub(fromEarning)
 	fromMargin := decimal.Zero
 	if rest.IsPositive() {
-		if !adty_setting.SiteBonusMarginFillAllowed(ext.SiteId) {
+		marginAllowed := adty_setting.SiteBonusMarginFillAllowed(ext.SiteId)
+		if len(marginAuthorization) > 0 {
+			marginAllowed = marginAuthorization[0]
+		}
+		if !marginAllowed {
 			return common.NewMessage("Site gift reserve is not covered by the earning wallet")
 		}
 		var margin model.AdtySiteWallet

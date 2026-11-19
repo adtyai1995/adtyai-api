@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"regexp"
 	"slices"
 	"strings"
@@ -375,7 +376,15 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 	method := ext.Method
 	quote := &AdtyQuote{FaceUSD: ext.FaceUSD, PayAmount: ext.PayAmount, PayCurrency: ext.PayCurrency}
 	config := &AdtyPaymentScenes{}
+	bonusValues := map[string]string{}
 	prepare := func(tx *gorm.DB) error {
+		for _, key := range []string{adty_setting.TopupSettingKeyMethodBonus, adty_setting.TopupSettingKeySiteBonusMarginFill, adty_setting.TopupSettingKeySiteMethodAuth, adty_setting.TopupSettingKeySiteMethodBonus} {
+			value, err := model.LockOptionValueTx(tx, key)
+			if err != nil {
+				return err
+			}
+			bonusValues[key] = value
+		}
 		row, err := model.GetAdtyPaymentSceneConfig(tx, true)
 		if err != nil {
 			return err
@@ -426,17 +435,56 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 				return common.NewMessage("This payment method is not available")
 			}
 		}
+		var rule adty_setting.MethodBonusRule
+		authorized, marginAllowed := false, false
+		bonusMethod := AdtyBonusMethod(method)
+		if bonusMethod != "" && ext.TeamId == 0 {
+			if ext.SiteId == 0 {
+				rule, authorized, err = adty_setting.ParseMainMethodBonus(bonusValues[adty_setting.TopupSettingKeyMethodBonus], bonusMethod)
+			} else {
+				rule, authorized, err = adty_setting.ParseSiteMethodBonus(bonusValues[adty_setting.TopupSettingKeySiteMethodAuth], bonusValues[adty_setting.TopupSettingKeySiteMethodBonus], ext.SiteId, bonusMethod)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if ext.SiteId > 0 {
+			marginAllowed, err = adty_setting.ParseSiteBonusMarginFillAllowed(bonusValues[adty_setting.TopupSettingKeySiteBonusMarginFill], ext.SiteId)
+			if err != nil {
+				return err
+			}
+		}
+		ext.BonusMethod, ext.BonusRate, ext.BonusUSD = bonusMethod, decimal.Zero, decimal.Zero
+		if authorized && rule.Enabled {
+			rate, err := decimal.NewFromString(rule.Rate)
+			if err != nil || rate.IsNegative() || rate.GreaterThan(decimal.NewFromInt(1)) {
+				return common.NewMessage("Invalid parameters")
+			}
+			ext.BonusRate, ext.BonusUSD = rate, ext.FaceUSD.Mul(rate).Round(8)
+		}
+		credit, err := common.WalletQuotaFromDecimalStrict(ext.FaceUSD.Add(ext.BonusUSD).Mul(common.QuotaPerUnitDecimal()).Floor())
+		if err != nil || credit <= 0 {
+			return common.NewMessage("Top-up quota exceeds the range the system can represent")
+		}
+		ext.CreditQuota = int64(credit)
 		snapshot, err := common.Marshal(struct {
-			Version  int64                  `json:"version"`
-			Scene    model.AdtyPaymentScene `json:"scene"`
-			UserRole int                    `json:"user_role"`
-			SiteID   int                    `json:"site_id"`
-		}{config.Version, *scene, user.Role, user.SiteId})
+			Version         int64                  `json:"version"`
+			Scene           model.AdtyPaymentScene `json:"scene"`
+			UserRole        int                    `json:"user_role"`
+			SiteID          int                    `json:"site_id"`
+			BonusAuthorized bool                   `json:"bonus_authorized"`
+			BonusEnabled    bool                   `json:"bonus_enabled"`
+			BonusMethod     string                 `json:"bonus_method"`
+			BonusRate       decimal.Decimal        `json:"bonus_rate"`
+			BonusUSD        decimal.Decimal        `json:"bonus_usd"`
+			FaceUSD         decimal.Decimal        `json:"face_usd"`
+			MarginAllowed   bool                   `json:"margin_allowed"`
+		}{config.Version, *scene, user.Role, ext.SiteId, authorized, authorized && rule.Enabled, bonusMethod, ext.BonusRate, ext.BonusUSD, ext.FaceUSD, marginAllowed})
 		if err != nil {
 			return err
 		}
 		ext.PaymentScene, ext.PaymentSceneName, ext.PaymentSceneVersion, ext.PaymentSceneSnapshot = scene.Key, scene.Name, config.Version, string(snapshot)
-		return ReserveAdtySiteGiftTx(tx, ext)
+		return ReserveAdtySiteGiftTx(tx, ext, marginAllowed)
 	}
 	return model.CreateAdtyTopUpWithPolicy(topUp, ext, prepare, validate)
 }

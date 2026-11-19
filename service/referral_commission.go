@@ -94,7 +94,7 @@ func prepareAdtyReferralSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.A
 	}
 	ext.ReferralAffiliateId = affiliateID
 	ext.ReferralRate = rate
-	return nil
+	return PrepareAdtySiteInviteCommissionSnapshotTx(tx, topUp, ext)
 }
 
 // adtyReferralAfterCreditTx 在入账的同一个事务里插一条计佣任务。只用 OnConflict DoNothing，

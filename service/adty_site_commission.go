@@ -184,7 +184,23 @@ func SiteInviteCommissionWithdrawable(row *model.AdtySiteInviteCommission, now t
 // RecordAdtySiteInviteCommissionTx snapshots one site invite commission.
 // It does not spend a wallet. Team top-ups and missing invites record nothing.
 func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, now time.Time) error {
-	if tx == nil || ext == nil || ext.SiteId <= 0 || ext.TeamId > 0 || ext.UserId <= 0 || strings.TrimSpace(ext.TradeNo) == "" || !ext.FaceUSD.IsPositive() {
+	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
+		return nil
+	}
+	if snap, ok, err := loadAdtySiteCommissionOrderSnapshotTx(ext); err != nil {
+		return err
+	} else if ok {
+		if !snap.Eligible || !snap.Enabled || snap.SiteId <= 0 || snap.PayerTeamId > 0 || snap.InviterId <= 0 || snap.InviteeId <= 0 || snap.InviterId == snap.InviteeId || !snap.Rate.IsPositive() || !snap.AmountUSD.IsPositive() {
+			return nil
+		}
+		row := model.AdtySiteInviteCommission{
+			SiteId: snap.SiteId, InviterId: snap.InviterId, InviteeId: snap.InviteeId, TradeNo: ext.TradeNo,
+			FaceUSD: snap.FaceUSD, Rate: snap.Rate, AmountUSD: snap.AmountUSD, Status: model.AdtySiteCommissionPendingCoverage,
+			ObservationDays: snap.ObservationDays, CreatedAt: now.Unix(),
+		}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
+	}
+	if ext.SiteId <= 0 || ext.TeamId > 0 || ext.UserId <= 0 || !ext.FaceUSD.IsPositive() {
 		return nil
 	}
 	var invite model.AdtySiteInvite
@@ -193,6 +209,9 @@ func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, no
 		return lookup.Error
 	}
 	if lookup.RowsAffected == 0 || invite.InviterId == ext.UserId || !invite.Rate.IsPositive() {
+		return nil
+	}
+	if ext.CreatedAt > 0 && invite.CreatedAt > ext.CreatedAt {
 		return nil
 	}
 	var siteRate model.AdtySiteReferralRate
@@ -208,7 +227,7 @@ func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, no
 		return nil
 	}
 	var observationDays int64
-	if policy, err := loadAdtySiteCommissionPolicy(); err == nil {
+	if policy, err := loadAdtySiteCommissionPolicyTx(tx); err == nil {
 		observationDays = policy.Days
 	} else if !errors.Is(err, ErrAdtySiteReferralUnset) {
 		return err
@@ -250,7 +269,7 @@ func ResumeAdtySiteInviteCoverage(siteID int, now time.Time) error {
 }
 
 func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resume bool) error {
-	policy, err := loadAdtySiteCommissionPolicy()
+	policy, err := loadAdtySiteCommissionPolicyTx(tx)
 	if errors.Is(err, ErrAdtySiteReferralUnset) {
 		return nil
 	}
@@ -283,7 +302,12 @@ func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resum
 			return err
 		}
 	}
-	need := row.AmountUSD.Sub(row.CoveredUSD)
+	if !row.AmountUSD.Sub(row.ClawedUSD).IsPositive() {
+		row.Status = model.AdtySiteCommissionClawedBack
+		return tx.Model(&row).Update("status", row.Status).Error
+	}
+	target := siteCommissionNetTargetUSD(&row)
+	need := target.Sub(row.CoveredUSD)
 	if !need.IsPositive() {
 		return markSiteCommissionCovered(tx, &row, now, days)
 	}
@@ -293,15 +317,15 @@ func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resum
 	}
 	row.CoveredUSD = row.CoveredUSD.Add(taken)
 	row.EarningsHoldUSD = row.EarningsHoldUSD.Add(taken)
-	if row.CoveredUSD.LessThan(row.AmountUSD) {
-		marginTaken, err := freezeSiteCommissionMarginTx(tx, row.SiteId, row.AmountUSD.Sub(row.CoveredUSD), row.TradeNo)
+	if row.CoveredUSD.LessThan(target) {
+		marginTaken, err := freezeSiteCommissionMarginTx(tx, row.SiteId, target.Sub(row.CoveredUSD), row.TradeNo)
 		if err != nil {
 			return err
 		}
 		row.CoveredUSD = row.CoveredUSD.Add(marginTaken)
 		row.MarginHoldUSD = row.MarginHoldUSD.Add(marginTaken)
 	}
-	if row.CoveredUSD.LessThan(row.AmountUSD) {
+	if row.CoveredUSD.LessThan(target) {
 		return tx.Model(&row).Updates(map[string]any{
 			"covered_usd": row.CoveredUSD, "earnings_hold_usd": row.EarningsHoldUSD, "margin_hold_usd": row.MarginHoldUSD,
 		}).Error
@@ -406,7 +430,7 @@ func markSiteCommissionCovered(tx *gorm.DB, row *model.AdtySiteInviteCommission,
 	row.Status = model.AdtySiteCommissionCovered
 	row.CoveredAt = now.Unix()
 	row.AvailableAt = now.Unix() + days*86400
-	row.CoveredUSD = row.AmountUSD
+	row.CoveredUSD = siteCommissionNetTargetUSD(row)
 	return tx.Model(row).Updates(map[string]any{
 		"status": row.Status, "covered_at": row.CoveredAt, "available_at": row.AvailableAt, "covered_usd": row.CoveredUSD,
 		"earnings_hold_usd": row.EarningsHoldUSD, "margin_hold_usd": row.MarginHoldUSD,
@@ -516,6 +540,9 @@ func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommiss
 			Type: model.AdtyLedgerTypeCommissionTransfer, RefType: "site_invite", RefId: row.TradeNo,
 			Reason: "site invite commission clawback", IdempotencyKey: &key,
 		}); err != nil {
+			return decimal.Zero, err
+		}
+		if err := reclaimConvertedCommissionFundBatchesTx(tx, row, debited, before); err != nil {
 			return decimal.Zero, err
 		}
 	}
@@ -695,4 +722,196 @@ func ReleaseAdtySiteInviteCommissions(now time.Time) error {
 	return model.DB.Model(&model.AdtySiteInviteCommission{}).
 		Where("status = ? AND available_at > 0 AND available_at <= ?", model.AdtySiteCommissionCovered, now.Unix()).
 		Update("status", model.AdtySiteCommissionAvailable).Error
+}
+
+type adtySiteCommissionOrderSnapshot struct {
+	Captured        bool            `json:"captured"`
+	Eligible        bool            `json:"eligible"`
+	Enabled         bool            `json:"enabled"`
+	SiteId          int             `json:"site_id"`
+	PayerTeamId     int64           `json:"payer_team_id"`
+	InviterId       int             `json:"inviter_id"`
+	InviteeId       int             `json:"invitee_id"`
+	FaceUSD         decimal.Decimal `json:"face_usd"`
+	Rate            decimal.Decimal `json:"rate"`
+	AmountUSD       decimal.Decimal `json:"amount_usd"`
+	ObservationDays int64           `json:"observation_days"`
+	CreatedAt       int64           `json:"created_at"`
+}
+
+func loadAdtySiteCommissionPolicyTx(tx *gorm.DB) (adtySiteCommissionPolicy, error) {
+	var rows []model.Option
+	if err := tx.Where("key IN ?", []string{adtySiteCommissionCapKey, adtySiteCommissionDaysKey}).Find(&rows).Error; err != nil {
+		return adtySiteCommissionPolicy{}, err
+	}
+	values := make(map[string]string, len(rows))
+	for _, r := range rows {
+		values[r.Key] = strings.TrimSpace(r.Value)
+	}
+	capRaw, capOK := values[adtySiteCommissionCapKey]
+	daysRaw, daysOK := values[adtySiteCommissionDaysKey]
+	if !capOK || !daysOK || capRaw == "" || daysRaw == "" {
+		return adtySiteCommissionPolicy{}, ErrAdtySiteReferralUnset
+	}
+	capVal, err := decimal.NewFromString(capRaw)
+	if err != nil || !capVal.IsPositive() {
+		return adtySiteCommissionPolicy{}, ErrAdtySiteReferralUnset
+	}
+	days, err := decimal.NewFromString(daysRaw)
+	if err != nil || !days.Equal(days.Truncate(0)) || !days.IsPositive() {
+		return adtySiteCommissionPolicy{}, ErrAdtySiteReferralUnset
+	}
+	return adtySiteCommissionPolicy{Cap: capVal, Days: days.IntPart()}, nil
+}
+
+// PrepareAdtySiteInviteCommissionSnapshotTx freezes site invite commission eligibility,
+// rate, amount, and observation period at order creation time inside the order transaction.
+func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
+	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
+		return nil
+	}
+	siteID := ext.SiteId
+	userID := ext.UserId
+	if userID <= 0 && topUp != nil {
+		userID = topUp.UserId
+	}
+	if siteID <= 0 {
+		return nil
+	}
+	createdAt := ext.CreatedAt
+	if createdAt <= 0 {
+		createdAt = time.Now().Unix()
+	}
+	snap := adtySiteCommissionOrderSnapshot{
+		Captured:    true,
+		SiteId:      siteID,
+		PayerTeamId: ext.TeamId,
+		InviteeId:   userID,
+		FaceUSD:     ext.FaceUSD,
+		CreatedAt:   createdAt,
+	}
+	if ext.TeamId == 0 && userID > 0 && ext.FaceUSD.IsPositive() {
+		var payer model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").First(&payer, userID).Error; err != nil {
+			return err
+		}
+		if payer.SiteId != siteID {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var invite model.AdtySiteInvite
+		lookup := model.AdtyLockForUpdate(tx).Where("site_id = ? AND invitee_id = ?", siteID, userID).Limit(1).Find(&invite)
+		if lookup.Error != nil {
+			return lookup.Error
+		}
+		if lookup.RowsAffected > 0 && invite.InviterId > 0 && invite.InviterId != userID && invite.Rate.IsPositive() {
+			if ext.CreatedAt <= 0 || invite.CreatedAt <= 0 || invite.CreatedAt <= ext.CreatedAt {
+				snap.InviterId = invite.InviterId
+				snap.Rate = invite.Rate
+			}
+		}
+		var siteRate model.AdtySiteReferralRate
+		rateLookup := model.AdtyLockForUpdate(tx).Where("site_id = ?", siteID).Limit(1).Find(&siteRate)
+		if rateLookup.Error != nil {
+			return rateLookup.Error
+		}
+		snap.Enabled = rateLookup.RowsAffected > 0 && siteRate.Enabled
+		if policy, err := loadAdtySiteCommissionPolicyTx(tx); err == nil {
+			snap.ObservationDays = policy.Days
+		} else if !errors.Is(err, ErrAdtySiteReferralUnset) {
+			return err
+		}
+		if snap.Enabled && snap.InviterId > 0 && snap.Rate.IsPositive() {
+			amount := SiteInviteCommissionUSD(ext.FaceUSD, snap.Rate)
+			if amount.IsPositive() {
+				snap.AmountUSD = amount
+				snap.Eligible = true
+			}
+		}
+	}
+	encoded, err := common.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	ext.SiteReferralSnapshot = string(encoded)
+	return nil
+}
+
+func loadAdtySiteCommissionOrderSnapshotTx(ext *model.AdtyTopupOrder) (adtySiteCommissionOrderSnapshot, bool, error) {
+	if ext == nil || strings.TrimSpace(ext.SiteReferralSnapshot) == "" {
+		return adtySiteCommissionOrderSnapshot{}, false, nil
+	}
+	var snap adtySiteCommissionOrderSnapshot
+	if err := common.UnmarshalJsonStr(ext.SiteReferralSnapshot, &snap); err != nil {
+		return adtySiteCommissionOrderSnapshot{}, false, err
+	}
+	return snap, snap.Captured, nil
+}
+
+func siteCommissionNetTargetUSD(row *model.AdtySiteInviteCommission) decimal.Decimal {
+	if row == nil {
+		return decimal.Zero
+	}
+	target := row.AmountUSD.Sub(row.ClawedUSD).Add(row.RecoveredUSD)
+	if target.IsNegative() {
+		return decimal.Zero
+	}
+	return target
+}
+
+func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, debited, balanceBefore int64) error {
+	if tx == nil || row == nil || debited <= 0 {
+		return nil
+	}
+	var sources []string
+	seen := map[string]struct{}{}
+	addSource := func(src string) {
+		src = strings.TrimSpace(src)
+		if src == "" {
+			return
+		}
+		if _, ok := seen[src]; !ok {
+			seen[src] = struct{}{}
+			sources = append(sources, src)
+		}
+	}
+	cvtPrefix := fmt.Sprintf("site-comm-cvt:%d:", row.Id)
+	var cvtSources []string
+	if err := tx.Model(&model.AdtyFundBatch{}).
+		Where("user_id = ? AND source LIKE ?", row.InviterId, cvtPrefix+"%").
+		Order("id ASC").Pluck("source", &cvtSources).Error; err != nil {
+		return err
+	}
+	for _, src := range cvtSources {
+		addSource(src)
+	}
+	{
+		var items []model.AdtySiteInviteWithdrawalItem
+		if err := tx.Where("commission_id = ? AND status = ?", row.Id, model.AdtySiteInviteWithdrawItemPaid).
+			Order("id ASC").Find(&items).Error; err != nil {
+			return err
+		}
+		for _, item := range items {
+			addSource(fmt.Sprintf("site-invite-wd:%d", item.WithdrawalId))
+		}
+	}
+	left := debited
+	reclaimed := int64(0)
+	for _, src := range sources {
+		if left <= 0 {
+			break
+		}
+		got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, row.InviterId, src, left, 0)
+		if err != nil {
+			return err
+		}
+		reclaimed += got
+		left -= got
+	}
+	if left > 0 {
+		walletBefore := max(balanceBefore-reclaimed, 0)
+		if err := model.ConsumeAdtyFundBatchesQuietTx(tx, row.InviterId, left, walletBefore); err != nil {
+			return err
+		}
+	}
+	return nil
 }
