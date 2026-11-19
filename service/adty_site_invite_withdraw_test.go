@@ -352,3 +352,54 @@ func TestSiteInviteWithdrawalRejectsForeignOrUnregisteredQR(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestSiteInviteWithdrawalToBalanceRequiresIntegralQuota(t *testing.T) {
+	db := prepareReferralDialectDB(t, "postgres")
+	site, _, inviter := availableSiteCommission(t, db, decimal.NewFromInt(2))
+	for i, amount := range []string{"0.000001", "0.000001", "0.00000099"} {
+		_, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
+			UserID: inviter.Id, SiteID: site.Id, Amount: decimal.RequireFromString(amount),
+			Method: "balance", IdempotencyKey: "wd-half-" + strconv.Itoa(i),
+		})
+		require.Error(t, err, "fractional quota must not be rounded into spendable funds")
+	}
+
+	// $0.0000012 at QuotaPerUnit=500000 is 0.6 quota (non-integral) and must be rejected.
+	_, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
+		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.RequireFromString("0.0000012"),
+		Method: "balance", IdempotencyKey: "wd-frac-quota-1",
+	})
+	require.Error(t, err)
+
+	// Sub-8-decimal amounts must also be rejected.
+	_, err = CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
+		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.RequireFromString("0.000002004"),
+		Method: "balance", IdempotencyKey: "wd-sub8-quota-1",
+	})
+	require.Error(t, err)
+
+	var user model.User
+	require.NoError(t, db.First(&user, inviter.Id).Error)
+	require.Equal(t, 0, user.Quota, "rejected non-integral quota transfers must not credit user quota")
+
+	// Exact 1-quota amount ($0.000002 = 1 quota at QuotaPerUnit=500000) succeeds.
+	wd, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
+		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.RequireFromString("0.000002"),
+		Method: "balance", IdempotencyKey: "wd-exact-quota-1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.AdtySiteInviteWithdrawPaid, wd.Status)
+	require.NoError(t, db.First(&user, inviter.Id).Error)
+	require.Equal(t, 1, user.Quota)
+	replay, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
+		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.RequireFromString("0.000002"),
+		Method: "balance", IdempotencyKey: "wd-exact-quota-1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, wd.Id, replay.Id)
+	require.NoError(t, db.First(&user, inviter.Id).Error)
+	require.Equal(t, 1, user.Quota)
+	var rows int64
+	require.NoError(t, db.Model(&model.AdtySiteInviteWithdrawal{}).Where("user_id = ?", inviter.Id).Count(&rows).Error)
+	require.EqualValues(t, 1, rows)
+}

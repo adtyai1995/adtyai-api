@@ -63,7 +63,7 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 	require.True(t, sheet.MarginDeltaUSD.Equal(decimal.NewFromInt(6)))
 	require.True(t, sheet.EarningsDeltaUSD.Equal(decimal.RequireFromString("-0.5")))
 	require.True(t, sheet.EarningsAvailableDeltaUSD.Equal(decimal.RequireFromString("-0.5")))
-	require.True(t, sheet.EarningsFrozenDeltaUSD.Equal(decimal.NewFromInt(3)))
+	require.True(t, sheet.EarningsFrozenDeltaUSD.Equal(decimal.RequireFromString("4.5")), "gift reserve 1.5 plus withdrawal freeze 3, got %s", sheet.EarningsFrozenDeltaUSD)
 	require.True(t, sheet.WithdrawalUSD.Equal(decimal.NewFromInt(3)))
 	require.True(t, sheet.WithdrawalFeeUSD.Equal(decimal.RequireFromString("0.2")))
 	require.True(t, sheet.AdjustmentUSD.Equal(decimal.NewFromInt(-1)))
@@ -191,14 +191,16 @@ func stampSheetFacts(t *testing.T, db *gorm.DB, site, other *model.AdtySite, sta
 		{SiteId: site.Id, UserId: 1, Day: "2026-03-14", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(8), Platform: decimal.NewFromInt(5), Earning: decimal.NewFromInt(3), Status: model.AdtySiteEarningPending},
 		{SiteId: site.Id, UserId: 1, Day: "2026-03-13", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(100), Platform: decimal.NewFromInt(100), Earning: decimal.NewFromInt(100), Status: model.AdtySiteEarningPending},
 		{SiteId: site.Id, UserId: 1, Day: "2026-03-14+1", Kind: model.AdtySiteEarningSkipped, Earning: decimal.NewFromInt(9), Status: model.AdtySiteEarningPending, Reason: model.AdtySiteRiskSelfUse},
-		{SiteId: site.Id, UserId: 2, Day: "2026-03-14", Kind: model.AdtySiteEarningBonus, Earning: decimal.NewFromInt(-2), Status: model.AdtySiteEarningPending},
-		{SiteId: site.Id, UserId: 2, Day: "2026-03-14", Kind: model.AdtySiteEarningBonusReversal, Earning: decimal.RequireFromString("0.5"), Status: model.AdtySiteEarningPending},
+		{SiteId: site.Id, UserId: 2, Day: "2026-03-14", Kind: model.AdtySiteEarningBonus, Earning: decimal.NewFromInt(-99), Status: model.AdtySiteEarningPending},
+		{SiteId: site.Id, UserId: 2, Day: "2026-03-14", Kind: model.AdtySiteEarningBonusReversal, Earning: decimal.NewFromInt(99), Status: model.AdtySiteEarningPending},
 	}).Error)
 	require.NoError(t, db.Create(&model.AdtySiteTrialGrant{SiteId: site.Id, UserId: 1, AmountUSD: decimal.RequireFromString("1.25"), Day: "2026-03-14", IdempotencyKey: "trial-" + strconv.Itoa(site.Id)}).Error)
 	rows := []model.AdtySiteWalletLedger{
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Delta: decimal.NewFromInt(4), Type: "site_earning", IdempotencyKey: "sheet-earn-row-" + strconv.Itoa(site.Id)},
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Delta: decimal.RequireFromString("-1.5"), Type: "gift_reserve", IdempotencyKey: "sheet-reserve-" + strconv.Itoa(site.Id)},
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Delta: decimal.NewFromInt(-3), Type: "earning_withdraw_freeze", IdempotencyKey: "sheet-freeze-" + strconv.Itoa(site.Id)},
+		{SiteId: site.Id, WalletKind: model.AdtySiteWalletOperating, Delta: decimal.NewFromInt(-2), HoldDelta: decimal.NewFromInt(-2), Type: "gift_spend", IdempotencyKey: "sheet-gift-spend-" + strconv.Itoa(site.Id)},
+		{SiteId: site.Id, WalletKind: model.AdtySiteWalletOperating, HoldDelta: decimal.RequireFromString("-0.5"), Type: "gift_release", IdempotencyKey: "sheet-gift-release-" + strconv.Itoa(site.Id)},
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletMargin, Delta: decimal.NewFromInt(6), Type: "margin_cycle_open", IdempotencyKey: "sheet-margin-" + strconv.Itoa(site.Id)},
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletOperating, Delta: decimal.NewFromInt(-1), Type: "adjustment", IdempotencyKey: "sheet-adjust-" + strconv.Itoa(site.Id)},
 	}
@@ -206,6 +208,8 @@ func stampSheetFacts(t *testing.T, db *gorm.DB, site, other *model.AdtySite, sta
 	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Model(&model.AdtySiteWalletLedger{}).Where("idempotency_key = ?", "sheet-earn-row-"+strconv.Itoa(site.Id)).Update("created_at", start+10).Error)
 	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Model(&model.AdtySiteWalletLedger{}).Where("idempotency_key = ?", "sheet-reserve-"+strconv.Itoa(site.Id)).Update("created_at", start+20).Error)
 	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Model(&model.AdtySiteWalletLedger{}).Where("idempotency_key = ?", "sheet-freeze-"+strconv.Itoa(site.Id)).Update("created_at", start+30).Error)
+	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Model(&model.AdtySiteWalletLedger{}).Where("idempotency_key = ?", "sheet-gift-spend-"+strconv.Itoa(site.Id)).Update("created_at", start+35).Error)
+	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Model(&model.AdtySiteWalletLedger{}).Where("idempotency_key = ?", "sheet-gift-release-"+strconv.Itoa(site.Id)).Update("created_at", start+36).Error)
 	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Model(&model.AdtySiteWalletLedger{}).Where("idempotency_key = ?", "sheet-margin-"+strconv.Itoa(site.Id)).Update("created_at", start+40).Error)
 	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Model(&model.AdtySiteWalletLedger{}).Where("idempotency_key = ?", "sheet-adjust-"+strconv.Itoa(site.Id)).Update("created_at", start+5000).Error)
 	require.NoError(t, db.Create(&[]model.AdtySiteInviteCommission{
@@ -241,14 +245,21 @@ func TestSettlementSheetEarningsFrozenDeltaIncludesGiftSpend(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 30, 0, 0, time.UTC)
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC).Unix()
 	suffix := strconv.Itoa(site.Id)
+	// Grant-time bonus daily row must NOT be reported as realized GiftFundingUSD.
+	require.NoError(t, db.Create(&model.AdtySiteEarningDaily{
+		SiteId: site.Id, UserId: 1, Day: "2026-07-20", Kind: model.AdtySiteEarningBonus,
+		Earning: decimal.NewFromInt(-50), Status: model.AdtySiteEarningPending, UpdatedAt: start + 5,
+	}).Error)
 	rows := []model.AdtySiteWalletLedger{
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Type: "gift_reserve", HoldDelta: decimal.NewFromInt(4), IdempotencyKey: "sheet-spend-reserve-" + suffix},
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Type: "gift_release", HoldDelta: decimal.NewFromInt(-1), IdempotencyKey: "sheet-spend-release-" + suffix},
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Type: "gift_spend", Delta: decimal.NewFromInt(-2), HoldDelta: decimal.NewFromInt(-2), IdempotencyKey: "sheet-spend-earn-" + suffix},
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletMargin, Type: "gift_spend", Delta: decimal.NewFromInt(-3), HoldDelta: decimal.NewFromInt(-3), IdempotencyKey: "sheet-spend-margin-" + suffix},
+		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Type: "commission_freeze", HoldDelta: decimal.RequireFromString("1.5"), IdempotencyKey: "sheet-comm-freeze-" + suffix},
+		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Type: "commission_release", HoldDelta: decimal.RequireFromString("-0.5"), IdempotencyKey: "sheet-comm-release-" + suffix},
 	}
 	require.NoError(t, db.Create(&rows).Error)
-	for _, key := range []string{"sheet-spend-reserve-", "sheet-spend-release-", "sheet-spend-earn-", "sheet-spend-margin-"} {
+	for _, key := range []string{"sheet-spend-reserve-", "sheet-spend-release-", "sheet-spend-earn-", "sheet-spend-margin-", "sheet-comm-freeze-", "sheet-comm-release-"} {
 		require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Model(&model.AdtySiteWalletLedger{}).
 			Where("idempotency_key = ?", key+suffix).Update("created_at", start+10).Error)
 	}
@@ -259,9 +270,11 @@ func TestSettlementSheetEarningsFrozenDeltaIncludesGiftSpend(t *testing.T) {
 	var sheet model.AdtySiteSettlementSheet
 	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-07-20").First(&sheet).Error)
 	require.True(t, sheet.GiftReserveUSD.Equal(decimal.NewFromInt(4)))
-	require.True(t, sheet.GiftReleaseUSD.IsZero(), "GiftReleaseUSD is still taken from bonus-reversal earnings, not gift_spend")
-	require.True(t, sheet.EarningsFrozenDeltaUSD.Equal(decimal.NewFromInt(1)), "frozen earnings delta must include gift_spend HoldDelta")
+	require.True(t, sheet.GiftFundingUSD.Equal(decimal.NewFromInt(5)), "GiftFundingUSD must sum actual gift_spend ledgers ($2 + $3), not grant-time bonus rows, got %s", sheet.GiftFundingUSD)
+	require.True(t, sheet.GiftReleaseUSD.Equal(decimal.NewFromInt(1)), "GiftReleaseUSD must include gift_release wallet ledgers, got %s", sheet.GiftReleaseUSD)
 	require.True(t, sheet.EarningsDeltaUSD.Equal(decimal.NewFromInt(-2)))
+	require.True(t, sheet.EarningsFrozenDeltaUSD.Equal(decimal.NewFromInt(2)), "frozen delta = +4 - 1 - 2 + 1.5 - 0.5 = 2, got %s", sheet.EarningsFrozenDeltaUSD)
+	require.True(t, sheet.EarningsAvailableDeltaUSD.Equal(decimal.NewFromInt(-4)), "available delta = balance delta (-2) - frozen delta (2) = -4, got %s", sheet.EarningsAvailableDeltaUSD)
 	require.True(t, sheet.MarginDeltaUSD.Equal(decimal.NewFromInt(-3)))
 }
 
@@ -270,4 +283,36 @@ func mustLoc(t *testing.T, name string) *time.Location {
 	loc, err := time.LoadLocation(name)
 	require.NoError(t, err)
 	return loc
+}
+
+func TestSettlementSheetGiftSourcesAcrossDaysPG(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "sheet-gift-sources")
+	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC).Unix()
+	require.NoError(t, db.Create(&model.AdtySiteEarningDaily{SiteId: site.Id, UserId: 1, Day: "2026-07-20", Kind: model.AdtySiteEarningBonus, Earning: decimal.NewFromInt(-10)}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteEarningDaily{SiteId: site.Id, UserId: 1, Day: "2026-07-21", Kind: model.AdtySiteEarningBonusReversal, Earning: decimal.NewFromInt(99)}).Error)
+	for i, row := range []model.AdtySiteWalletLedger{
+		{WalletKind: model.AdtySiteWalletEarnings, Type: "gift_reserve", HoldDelta: decimal.NewFromInt(6), CreatedAt: start + 1},
+		{WalletKind: model.AdtySiteWalletMargin, Type: "gift_reserve", HoldDelta: decimal.NewFromInt(4), CreatedAt: start + 2},
+		{WalletKind: model.AdtySiteWalletEarnings, Type: "gift_spend", Delta: decimal.NewFromInt(-2), HoldDelta: decimal.NewFromInt(-2), CreatedAt: start + 86401},
+		{WalletKind: model.AdtySiteWalletMargin, Type: "gift_spend", Delta: decimal.NewFromInt(-1), HoldDelta: decimal.NewFromInt(-1), CreatedAt: start + 86402},
+		{WalletKind: model.AdtySiteWalletEarnings, Type: "gift_release", HoldDelta: decimal.NewFromInt(-4), CreatedAt: start + 86403},
+		{WalletKind: model.AdtySiteWalletMargin, Type: "gift_release", HoldDelta: decimal.NewFromInt(-3), CreatedAt: start + 86404},
+	} {
+		row.SiteId = site.Id
+		row.IdempotencyKey = "sheet-source-" + strconv.Itoa(i)
+		require.NoError(t, db.Create(&row).Error)
+	}
+	wallets := snapshotSiteWallets(t, db, site.Id)
+	for range 2 {
+		d1, err := summarizeAdtySiteSettlement(site.Id, "2026-07-20", start, start+86400)
+		require.NoError(t, err)
+		require.Equal(t, "10", d1.GiftReserveUSD.String())
+		require.Equal(t, "0", d1.GiftFundingUSD.String())
+		d2, err := summarizeAdtySiteSettlement(site.Id, "2026-07-21", start+86400, start+172800)
+		require.NoError(t, err)
+		require.Equal(t, "3", d2.GiftFundingUSD.String())
+		require.Equal(t, "7", d2.GiftReleaseUSD.String())
+		require.Equal(t, wallets, snapshotSiteWallets(t, db, site.Id))
+	}
 }

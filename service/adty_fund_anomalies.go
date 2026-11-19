@@ -95,15 +95,16 @@ func detectExistingAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) 
 			}
 		}
 	}
-	// 客户本金必须取逻辑余额（quota + quota_pending），与 model.userWalletBalance 同口径：
-	// 批次扣费在刷新前留在 quota_pending 里，只看 raw quota 会把在途扣费当成资金缺口（ISS-R4-0097）。
-	var quota int64
-	if err := model.DB.Model(&model.User{}).Where("site_id = ?", siteID).Select("COALESCE(SUM(quota + quota_pending), 0)").Scan(&quota).Error; err != nil {
+	// Stored principal lots remain operating liabilities until settlement. Gifts
+	// keep their original backing and are reconciled separately (ISS-R1-0075).
+	principalQuota, giftQuota, lotGap, err := adtySiteCustomerPrincipalAndGiftQuota(siteID)
+	if err != nil {
 		return nil, err
 	}
-	principal := decimal.NewFromInt(quota).Div(common.QuotaPerUnitDecimal())
+	principal := decimal.NewFromInt(principalQuota).Div(common.QuotaPerUnitDecimal())
+	giftUSD := decimal.NewFromInt(giftQuota).Div(common.QuotaPerUnitDecimal())
 	operatingGap := ReconcileOperatingWallet(principal, operating)
-	if !operatingGap.IsZero() {
+	if !operatingGap.IsZero() || lotGap != 0 {
 		balanceGap = 1
 	}
 	var userIDs []int
@@ -139,11 +140,16 @@ func detectExistingAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) 
 		switch kind {
 		case AdtyAnomalyBalanceLedgerGap:
 			item.Difference = operatingGap.String()
+			if operatingGap.IsZero() && lotGap != 0 {
+				item.Difference = decimal.NewFromInt(lotGap).Div(common.QuotaPerUnitDecimal()).String()
+			}
 			item.Evidence = mustAnomalyEvidence(map[string]any{
-				"operating_wallet":   operating.String(),
-				"customer_principal": principal.String(),
-				"operating_gap":      operatingGap.String(),
-				"wallet_mismatches":  walletMismatches,
+				"operating_wallet":     operating.String(),
+				"customer_principal":   principal.String(),
+				"customer_gift":        giftUSD.String(),
+				"fund_batch_gap_quota": lotGap,
+				"operating_gap":        operatingGap.String(),
+				"wallet_mismatches":    walletMismatches,
 			})
 		case AdtyAnomalyOpenShortfallHold:
 			item.Difference = strconv.FormatInt(holds, 10)
@@ -253,9 +259,7 @@ func detectInsufficientGiftGuarantees(siteID int) ([]adtyFundAnomalyItem, error)
 	for _, ext := range orders {
 		tradeNos = append(tradeNos, ext.TradeNo)
 	}
-	var statusByTrade map[string]string
-	var err error
-	statusByTrade, err = loadTopUpStatuses(tradeNos)
+	statusByTrade, err := loadTopUpStatuses(tradeNos)
 	if err != nil {
 		return nil, err
 	}
@@ -263,14 +267,22 @@ func detectInsufficientGiftGuarantees(siteID int) ([]adtyFundAnomalyItem, error)
 	if err != nil {
 		return nil, err
 	}
+	bonusBatchByTrade, err := loadGiftBatchRemainingByTrade(tradeNos)
+	if err != nil {
+		return nil, err
+	}
 	var items []adtyFundAnomalyItem
 	for _, ext := range orders {
-		required := adtyBonusUSDForSite(&ext)
-		if !required.IsPositive() {
-			continue
-		}
 		status := strings.TrimSpace(statusByTrade[ext.TradeNo])
 		if !giftGuaranteeShouldBeHeld(status) {
+			continue
+		}
+		batchInfo, hasBatch := bonusBatchByTrade[ext.TradeNo]
+		required, err := currentRequiredGiftGuaranteeUSD(&ext, status, batchInfo, hasBatch)
+		if err != nil {
+			return nil, err
+		}
+		if !required.IsPositive() {
 			continue
 		}
 		snapshot := ext.GiftReserveEarning.Add(ext.GiftReserveMargin)
@@ -289,7 +301,8 @@ func detectInsufficientGiftGuarantees(siteID int) ([]adtyFundAnomalyItem, error)
 			AccountID:  ext.UserId,
 			Difference: required.Sub(held).String(),
 			Evidence: mustAnomalyEvidence(map[string]any{
-				"status": status, "required_usd": required.String(),
+				"status":           status,
+				"required_usd":     required.String(),
 				"reserved_earning": ext.GiftReserveEarning.String(),
 				"reserved_margin":  ext.GiftReserveMargin.String(),
 				"held_usd":         held.String(),
@@ -357,12 +370,9 @@ func loadGiftHoldByTrade(siteID int, tradeNos []string) (map[string]decimal.Deci
 
 func detectEarningSupplyMismatches(siteID int) ([]adtyFundAnomalyItem, error) {
 	var events []model.AdtySiteEarningEvent
-	if err := model.DB.Where("site_id = ? AND projected = ?", siteID, false).Find(&events).Error; err != nil {
+	if err := model.DB.Where("site_id = ?", siteID).Find(&events).Error; err != nil {
 		return nil, err
 	}
-	// Live split now matches A.10, so unprojected events are not themselves a
-	// formula mismatch. Historical daily rows can still disagree with official
-	// books and are compared below against the official sum of these events.
 	var items []adtyFundAnomalyItem
 	seen := map[string]struct{}{}
 
@@ -373,57 +383,123 @@ func detectEarningSupplyMismatches(siteID int) ([]adtyFundAnomalyItem, error) {
 		return nil, err
 	}
 	type eventSum struct {
-		Quota                                                            int64
-		OfficialPlatform, OfficialEarning, BookedPlatform, BookedEarning decimal.Decimal
+		UserId                            int
+		BaseDay                           string
+		Kind                              string
+		Quota                             int64
+		ProjectedCount                    int
+		OfficialPlatform, OfficialEarning decimal.Decimal
 	}
-	sums := map[string]eventSum{}
+	sumsByKind := map[string]eventSum{}
+	eventDays := map[string]bool{}
+	kindOrder := make([]string, 0, len(events))
 	for _, event := range events {
 		k := decimal.NewFromFloat(event.Markup)
 		if event.Quota == 0 || !k.IsPositive() {
 			continue
 		}
-		d := decimal.NewFromFloat(event.CostFactor)
+		kind, ok := adtyEarningEventKind(event)
+		if !ok {
+			continue
+		}
+		baseDay := normalizeAdtyEarningDay(event.Day)
+		if baseDay == "" {
+			continue
+		}
 		_, officialPlatform, officialEarning := OfficialAdtySupplySplit(int64(event.Quota), k)
-		_, bookedPlatform, bookedEarning := AdtySiteEarningSplit(int64(event.Quota), k, d)
-		key := strconv.Itoa(event.UserId) + "|" + event.Day
-		row := sums[key]
+		var operations []model.BillingOperation
+		if err := model.DB.Where("operation_key = ? AND user_id = ? AND site_id = ?", event.OperationKey, event.UserId, event.SiteId).Limit(1).Find(&operations).Error; err != nil {
+			return nil, err
+		}
+		if len(operations) > 0 {
+			if snapshot := operations[0].RequestPriceSnapshot(); snapshot != nil {
+				group, gOK := model.ParseSnapshotDecimal(snapshot.GroupRatio)
+				cost, cOK := model.ParseSnapshotDecimal(snapshot.SiteCostFactor)
+				billed, bOK := snapshot.BilledGroupRatioDecimal()
+				if !gOK || !cOK || !bOK || !group.IsPositive() || !cost.IsPositive() || !billed.IsPositive() {
+					return nil, model.ErrBillingOperationConflict
+				}
+				revenue := decimal.NewFromInt(int64(event.Quota)).Div(common.QuotaPerUnitDecimal()).Round(8)
+				officialPlatform = decimal.NewFromInt(int64(event.Quota)).Mul(group).Mul(cost).DivRound(billed.Mul(common.QuotaPerUnitDecimal()), 8)
+				officialEarning = revenue.Sub(officialPlatform)
+			}
+		}
+		kindKey := strconv.Itoa(event.UserId) + "|" + baseDay + "|" + kind
+		row, exists := sumsByKind[kindKey]
+		if !exists {
+			row = eventSum{UserId: event.UserId, BaseDay: baseDay, Kind: kind}
+			kindOrder = append(kindOrder, kindKey)
+		}
 		row.Quota += int64(event.Quota)
+		if event.Projected {
+			row.ProjectedCount++
+		}
 		row.OfficialPlatform = row.OfficialPlatform.Add(officialPlatform)
 		row.OfficialEarning = row.OfficialEarning.Add(officialEarning)
-		row.BookedPlatform = row.BookedPlatform.Add(bookedPlatform)
-		row.BookedEarning = row.BookedEarning.Add(bookedEarning)
-		sums[key] = row
+		sumsByKind[kindKey] = row
+		eventDays[strconv.Itoa(event.UserId)+"|"+baseDay] = true
 	}
+
+	type dailyAggregate struct {
+		UserId    int
+		BaseDay   string
+		Kind      string
+		Quota     int64
+		Revenue   decimal.Decimal
+		Platform  decimal.Decimal
+		Earning   decimal.Decimal
+		HasOpSlot bool
+		RawDays   []string
+	}
+	dailyGroups := map[string]*dailyAggregate{}
+	dailyKeys := make([]string, 0, len(dailies))
 	for _, daily := range dailies {
 		if daily.Quota == 0 && daily.Platform.IsZero() && daily.Earning.IsZero() {
 			continue
 		}
-		key := strconv.Itoa(daily.UserId) + "|" + daily.Day
-		sum, ok := sums[key]
+		baseDay := normalizeAdtyEarningDay(daily.Day)
+		if baseDay == "" {
+			continue
+		}
+		key := strconv.Itoa(daily.UserId) + "|" + baseDay + "|" + daily.Kind
+		grp, exists := dailyGroups[key]
+		if !exists {
+			grp = &dailyAggregate{
+				UserId:  daily.UserId,
+				BaseDay: baseDay,
+				Kind:    daily.Kind,
+			}
+			dailyGroups[key] = grp
+			dailyKeys = append(dailyKeys, key)
+		}
+		grp.Quota += daily.Quota
+		grp.Revenue = grp.Revenue.Add(daily.Revenue)
+		grp.Platform = grp.Platform.Add(daily.Platform)
+		grp.Earning = grp.Earning.Add(daily.Earning)
+		if strings.Contains(strings.TrimSpace(daily.Day), "+op") {
+			grp.HasOpSlot = true
+		}
+		grp.RawDays = append(grp.RawDays, daily.Day)
+	}
+
+	matchedKindKeys := map[string]bool{}
+	perUnit := common.QuotaPerUnitDecimal()
+
+	for _, key := range dailyKeys {
+		grp := dailyGroups[key]
+		dayKey := strconv.Itoa(grp.UserId) + "|" + grp.BaseDay
+		sum, ok := sumsByKind[key]
+		if ok {
+			matchedKindKeys[key] = true
+		}
 		if !ok {
-			continue
-		}
-		if daily.Platform.Equal(sum.OfficialPlatform) && daily.Earning.Equal(sum.OfficialEarning) {
-			continue
-		}
-		if daily.Platform.Equal(sum.BookedPlatform) && daily.Earning.Equal(sum.BookedEarning) && sum.OfficialPlatform.Equal(sum.BookedPlatform) {
-			continue
-		}
-		if !daily.Platform.Equal(sum.OfficialPlatform) || !daily.Earning.Equal(sum.OfficialEarning) {
-			ref := "earning-daily:" + daily.Day + ":" + daily.Kind + ":" + strconv.Itoa(daily.UserId)
-			if _, exists := seen[ref]; exists {
+			expectedRev := decimal.NewFromInt(grp.Quota).Div(perUnit).Round(8)
+			expectedEarn := grp.Revenue.Sub(grp.Platform)
+			if !eventDays[dayKey] && !grp.HasOpSlot && grp.Revenue.Equal(expectedRev) && grp.Earning.Equal(expectedEarn) {
 				continue
 			}
-			// If an event-level item already exists for this user/day, skip a
-			// second daily row unless the stored daily also disagrees with both.
-			already := false
-			for _, item := range items {
-				if item.AccountID == daily.UserId {
-					already = true
-					break
-				}
-			}
-			if already && (daily.Platform.Equal(sum.BookedPlatform) && daily.Earning.Equal(sum.BookedEarning)) {
+			ref := "earning-daily:" + grp.BaseDay + ":" + grp.Kind + ":" + strconv.Itoa(grp.UserId)
+			if _, exists := seen[ref]; exists {
 				continue
 			}
 			seen[ref] = struct{}{}
@@ -432,16 +508,95 @@ func detectEarningSupplyMismatches(siteID int) ([]adtyFundAnomalyItem, error) {
 				Ref:        ref,
 				OrderRef:   ref,
 				SiteID:     siteID,
-				AccountID:  daily.UserId,
-				Difference: daily.Earning.Sub(sum.OfficialEarning).Abs().String(),
+				AccountID:  grp.UserId,
+				Difference: grp.Earning.Abs().String(),
 				Evidence: mustAnomalyEvidence(map[string]any{
-					"day": daily.Day, "kind": daily.Kind, "quota": daily.Quota,
-					"booked_platform": daily.Platform.String(), "booked_earning": daily.Earning.String(),
-					"official_platform": sum.OfficialPlatform.String(), "official_earning": sum.OfficialEarning.String(),
-					"reason": "daily earning/supply totals do not match official A.10 books",
+					"day":               grp.BaseDay,
+					"raw_days":          grp.RawDays,
+					"kind":              grp.Kind,
+					"quota":             grp.Quota,
+					"booked_platform":   grp.Platform.String(),
+					"booked_earning":    grp.Earning.String(),
+					"official_platform": "0",
+					"official_earning":  "0",
+					"reason":            "daily earning/supply totals have no matching settled earning events",
 				}),
 			})
+			continue
 		}
+
+		if grp.Quota == sum.Quota && grp.Platform.Equal(sum.OfficialPlatform) && grp.Earning.Equal(sum.OfficialEarning) {
+			continue
+		}
+		ref := "earning-daily:" + grp.BaseDay + ":" + grp.Kind + ":" + strconv.Itoa(grp.UserId)
+		if _, exists := seen[ref]; exists {
+			continue
+		}
+		seen[ref] = struct{}{}
+		diff := grp.Earning.Sub(sum.OfficialEarning).Abs()
+		if diff.IsZero() && !grp.Platform.Equal(sum.OfficialPlatform) {
+			diff = grp.Platform.Sub(sum.OfficialPlatform).Abs()
+		}
+		if diff.IsZero() && grp.Quota != sum.Quota {
+			diff = decimal.NewFromInt(grp.Quota - sum.Quota).Abs().Div(perUnit).Round(8)
+		}
+		items = append(items, adtyFundAnomalyItem{
+			Kind:       AdtyAnomalyEarningSupplyMismatch,
+			Ref:        ref,
+			OrderRef:   ref,
+			SiteID:     siteID,
+			AccountID:  grp.UserId,
+			Difference: diff.String(),
+			Evidence: mustAnomalyEvidence(map[string]any{
+				"day":               grp.BaseDay,
+				"raw_days":          grp.RawDays,
+				"kind":              grp.Kind,
+				"quota":             grp.Quota,
+				"event_quota":       sum.Quota,
+				"booked_platform":   grp.Platform.String(),
+				"booked_earning":    grp.Earning.String(),
+				"official_platform": sum.OfficialPlatform.String(),
+				"official_earning":  sum.OfficialEarning.String(),
+				"reason":            "daily earning/supply totals do not match official A.10 books",
+			}),
+		})
+	}
+
+	// Projected settled events that have no corresponding daily summary row are
+	// also reconciled and flagged as earning/supply mismatches (ISS-R1-0077).
+	for _, kindKey := range kindOrder {
+		sum := sumsByKind[kindKey]
+		if matchedKindKeys[kindKey] || sum.ProjectedCount == 0 {
+			continue
+		}
+		ref := "earning-daily:" + sum.BaseDay + ":" + sum.Kind + ":" + strconv.Itoa(sum.UserId)
+		if _, exists := seen[ref]; exists {
+			continue
+		}
+		seen[ref] = struct{}{}
+		diff := sum.OfficialEarning.Abs()
+		if diff.IsZero() {
+			diff = sum.OfficialPlatform.Abs()
+		}
+		items = append(items, adtyFundAnomalyItem{
+			Kind:       AdtyAnomalyEarningSupplyMismatch,
+			Ref:        ref,
+			OrderRef:   ref,
+			SiteID:     siteID,
+			AccountID:  sum.UserId,
+			Difference: diff.String(),
+			Evidence: mustAnomalyEvidence(map[string]any{
+				"day":               sum.BaseDay,
+				"kind":              sum.Kind,
+				"quota":             0,
+				"event_quota":       sum.Quota,
+				"booked_platform":   "0",
+				"booked_earning":    "0",
+				"official_platform": sum.OfficialPlatform.String(),
+				"official_earning":  sum.OfficialEarning.String(),
+				"reason":            "projected earning events are missing from daily earning/supply summary",
+			}),
+		})
 	}
 	return items, nil
 }
@@ -648,4 +803,206 @@ func mustAnomalyEvidence(fields map[string]any) string {
 		return ""
 	}
 	return string(raw)
+}
+
+// adtySiteCustomerPrincipalAndGiftQuota separates unconsumed customer principal
+// liability from unconsumed gift/bonus quota for siteID (G.3 / A.11 / A.12).
+// Lot remaining includes reservations until settlement. Compare it separately
+// with the logical wallet plus outstanding shares so a gap cannot become principal.
+func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, giftQuota int64, lotGap int64, err error) {
+	type userQuotaRow struct {
+		Id           int `gorm:"column:id"`
+		Quota        int `gorm:"column:quota"`
+		QuotaPending int `gorm:"column:quota_pending"`
+	}
+	var users []userQuotaRow
+	if err := model.DB.Model(&model.User{}).
+		Select("id, quota, quota_pending").
+		Where("site_id = ?", siteID).
+		Find(&users).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	if len(users) == 0 {
+		return 0, 0, 0, nil
+	}
+	userIDs := make([]int, 0, len(users))
+	for _, u := range users {
+		userIDs = append(userIDs, u.Id)
+	}
+
+	type batchSplit struct {
+		principal int64
+		gift      int64
+		hasLots   bool
+	}
+	byUser := make(map[int]batchSplit, len(users))
+	if model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
+		var batches []model.AdtyFundBatch
+		if err := model.DB.Where("user_id IN ? AND (site_id = ? OR site_id IS NULL)", userIDs, siteID).
+			Find(&batches).Error; err != nil {
+			return 0, 0, 0, err
+		}
+		for _, b := range batches {
+			split := byUser[b.UserId]
+			split.hasLots = true
+			switch b.Kind {
+			case model.AdtyFundBatchKindPrincipal:
+				split.principal += b.Remaining
+			case model.AdtyFundBatchKindBonus, model.AdtyFundBatchKindExpiringBonus:
+				split.gift += b.Remaining
+			}
+			byUser[b.UserId] = split
+		}
+	}
+
+	heldByUser := map[int]int64{}
+	if model.DB.Migrator().HasTable(&model.AdtyFundAllocation{}) {
+		var held []struct {
+			UserId int
+			Quota  int64
+		}
+		if err := model.DB.Model(&model.AdtyFundAllocation{}).
+			Select("user_id, COALESCE(SUM(held - settled), 0) AS quota").
+			Where("user_id IN ? AND held > settled", userIDs).Group("user_id").Scan(&held).Error; err != nil {
+			return 0, 0, 0, err
+		}
+		for _, row := range held {
+			heldByUser[row.UserId] = row.Quota
+		}
+	}
+
+	for _, u := range users {
+		logical := int64(u.Quota) + int64(u.QuotaPending)
+		split := byUser[u.Id]
+		if !split.hasLots {
+			// Historical accounts without lots retain the logical-balance fallback.
+			principalQuota += logical
+			continue
+		}
+		// Reservation shares remain in the lots until settlement. Add the held
+		// amount only for the independent lot/wallet check, never as new principal.
+		principalQuota += split.principal
+		giftQuota += split.gift
+		gap := logical + heldByUser[u.Id] - split.principal - split.gift
+		if gap < 0 {
+			gap = -gap
+		}
+		lotGap += gap
+	}
+	return principalQuota, giftQuota, lotGap, nil
+}
+
+type giftBatchRemainingInfo struct {
+	Remaining int64
+	Original  int64
+}
+
+func loadGiftBatchRemainingByTrade(tradeNos []string) (map[string]giftBatchRemainingInfo, error) {
+	out := map[string]giftBatchRemainingInfo{}
+	if len(tradeNos) == 0 || !model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
+		return out, nil
+	}
+	var batches []model.AdtyFundBatch
+	if err := model.DB.Where("source IN ? AND kind IN ?", tradeNos, []string{
+		model.AdtyFundBatchKindBonus,
+		model.AdtyFundBatchKindExpiringBonus,
+	}).Find(&batches).Error; err != nil {
+		return nil, err
+	}
+	for _, b := range batches {
+		info := out[b.Source]
+		info.Remaining += b.Remaining
+		info.Original += b.Original
+		out[b.Source] = info
+	}
+	return out, nil
+}
+
+// currentRequiredGiftGuaranteeUSD computes the current remaining site-funded
+// gift guarantee liability for ext (ISS-R1-0076 / G.9.4 / A.8 / A.12).
+// Already consumed or legitimately reclaimed gift quota no longer requires a
+// frozen guarantee; a fully refunded order with zero remaining gift requires 0.
+func currentRequiredGiftGuaranteeUSD(ext *model.AdtyTopupOrder, status string, batchInfo giftBatchRemainingInfo, hasBatch bool) (decimal.Decimal, error) {
+	if ext == nil {
+		return decimal.Zero, nil
+	}
+	siteBonus := adtyBonusUSDForSite(ext)
+	if !siteBonus.IsPositive() {
+		return decimal.Zero, nil
+	}
+	if status == common.TopUpStatusPending || status == "" {
+		return siteBonus, nil
+	}
+	switch ext.GiftFulfillmentStatus {
+	case model.AdtyGiftFulfillmentPending, model.AdtyGiftFulfillmentPendingReview, model.AdtyGiftFulfillmentCanceled:
+		return decimal.Zero, nil
+	}
+	totalBonusQuota, err := siteGiftBonusQuota(ext)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if totalBonusQuota <= 0 {
+		return decimal.Zero, nil
+	}
+	faceQuota := ext.FaceQuota()
+	if status == model.TopUpStatusRefunded && (ext.RefundQuota == 0 || (faceQuota > 0 && ext.RefundQuota >= faceQuota)) {
+		if !hasBatch || batchInfo.Remaining <= 0 {
+			return decimal.Zero, nil
+		}
+	}
+	if hasBatch {
+		rem := min(batchInfo.Remaining, totalBonusQuota)
+		if rem <= 0 {
+			return decimal.Zero, nil
+		}
+		return adtyProportionalGiftUSD(siteBonus, rem, totalBonusQuota), nil
+	}
+	reclaimedQuota := ext.RefundBonusQuota
+	if model.DB.Migrator().HasTable(&model.AdtyManualRefund{}) {
+		hasRows, _, cumReclaimed, err := adtyCompletedManualRefundBonusStatsTx(model.DB, ext)
+		if err != nil {
+			return decimal.Zero, err
+		}
+		if hasRows && cumReclaimed > reclaimedQuota {
+			reclaimedQuota = cumReclaimed
+		}
+	}
+	if reclaimedQuota <= 0 && ext.RefundQuota > 0 && faceQuota > 0 {
+		whole, _ := decimal.NewFromInt(totalBonusQuota).Mul(decimal.NewFromInt(min(ext.RefundQuota, faceQuota))).QuoRem(decimal.NewFromInt(faceQuota), 0)
+		reclaimedQuota = whole.IntPart()
+	}
+	remainingBonusQuota := totalBonusQuota - reclaimedQuota
+	if remainingBonusQuota <= 0 {
+		return decimal.Zero, nil
+	}
+	required := adtyProportionalGiftUSD(siteBonus, remainingBonusQuota, totalBonusQuota)
+	var spent decimal.Decimal
+	if err := model.DB.Model(&model.AdtySiteWalletLedger{}).
+		Where("site_id = ? AND ref_type = ? AND ref_id = ? AND type = ?", ext.SiteId, "topup", ext.TradeNo, "gift_spend").
+		Select("COALESCE(SUM(-delta), 0)").Scan(&spent).Error; err != nil {
+		return decimal.Zero, err
+	}
+	return decimal.Max(decimal.Zero, required.Sub(spent)), nil
+}
+
+func normalizeAdtyEarningDay(day string) string {
+	day = strings.TrimSpace(day)
+	if base, _, ok := strings.Cut(day, "+"); ok {
+		return strings.TrimSpace(base)
+	}
+	return day
+}
+
+func adtyEarningEventKind(event model.AdtySiteEarningEvent) (string, bool) {
+	if event.ReviewStatus == model.AdtyEarningNeedsReview {
+		return "", false
+	}
+	kind := model.AdtySiteEarningUsage
+	if event.Quota < 0 {
+		kind = model.AdtySiteEarningRefund
+	}
+	if event.ReviewStatus == model.AdtyEarningOriginalSkipped {
+		kind = model.AdtySiteEarningSkipped
+	}
+	return kind, true
 }

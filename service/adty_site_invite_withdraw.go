@@ -89,6 +89,9 @@ type AdtySiteInviteWithdrawalInput struct {
 // Balance completes immediately into quota. External payout methods are Alipay or USDT
 // only (DEC-025); cash methods stay pending for that site's owner.
 func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model.AdtySiteInviteWithdrawal, error) {
+	if !input.Amount.Equal(input.Amount.Round(8)) {
+		return nil, common.NewMessage("Invalid parameters")
+	}
 	amount := input.Amount.Round(8)
 	key := strings.TrimSpace(input.IdempotencyKey)
 	method := strings.TrimSpace(input.Method)
@@ -108,6 +111,14 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 	}
 	switch method {
 	case "balance":
+		exact := amount.Mul(common.QuotaPerUnitDecimal())
+		if !exact.Equal(exact.Floor()) {
+			return nil, common.NewMessage("Invalid parameters")
+		}
+		quota, err := common.WalletQuotaFromDecimalStrict(exact)
+		if err != nil || quota <= 0 {
+			return nil, common.NewMessage("Invalid parameters")
+		}
 		row.Status = model.AdtySiteInviteWithdrawPaid
 		row.PaidAt = time.Now().Unix()
 	case "usdt":

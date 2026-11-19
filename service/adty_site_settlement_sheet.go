@@ -222,12 +222,6 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 			sheet.SupplyCostUSD = sheet.SupplyCostUSD.Add(row.Platform)
 			sheet.SpreadUSD = sheet.SpreadUSD.Add(row.Earning)
 			sheet.IncludedCount++
-		case model.AdtySiteEarningBonus:
-			sheet.GiftFundingUSD = sheet.GiftFundingUSD.Add(row.Earning.Neg())
-			sheet.IncludedCount++
-		case model.AdtySiteEarningBonusReversal:
-			sheet.GiftReleaseUSD = sheet.GiftReleaseUSD.Add(row.Earning)
-			sheet.IncludedCount++
 		}
 	}
 
@@ -255,26 +249,39 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 			if reserved.IsZero() {
 				reserved = row.Delta.Neg()
 			}
-			sheet.GiftReserveUSD = sheet.GiftReserveUSD.Add(reserved)
+			if reserved.IsPositive() {
+				sheet.GiftReserveUSD = sheet.GiftReserveUSD.Add(reserved)
+			}
+		}
+		if row.Type == "gift_spend" {
+			spent := row.Delta.Neg()
+			if !spent.IsPositive() && row.HoldDelta.IsNegative() {
+				spent = row.HoldDelta.Neg()
+			}
+			if spent.IsPositive() {
+				sheet.GiftFundingUSD = sheet.GiftFundingUSD.Add(spent)
+			}
+		}
+		if row.Type == "gift_release" {
+			released := row.HoldDelta.Neg()
+			if !released.IsPositive() && row.Delta.IsPositive() {
+				released = row.Delta
+			}
+			if released.IsPositive() {
+				sheet.GiftReleaseUSD = sheet.GiftReleaseUSD.Add(released)
+			}
 		}
 		switch row.WalletKind {
 		case model.AdtySiteWalletEarnings:
 			sheet.EarningsDeltaUSD = sheet.EarningsDeltaUSD.Add(row.Delta)
-			if row.Type == "earning_withdraw_freeze" || row.Type == "earning_withdraw_release" || row.Type == "earning_withdraw_paid" {
-				if !row.HoldDelta.IsZero() {
-					sheet.EarningsAvailableDeltaUSD = sheet.EarningsAvailableDeltaUSD.Add(row.Delta.Sub(row.HoldDelta))
-					sheet.EarningsFrozenDeltaUSD = sheet.EarningsFrozenDeltaUSD.Add(row.HoldDelta)
-				} else {
-					sheet.EarningsAvailableDeltaUSD = sheet.EarningsAvailableDeltaUSD.Add(row.Delta)
-					if row.Type != "earning_withdraw_paid" {
-						sheet.EarningsFrozenDeltaUSD = sheet.EarningsFrozenDeltaUSD.Add(row.Delta.Neg())
-					}
-				}
+			if !row.HoldDelta.IsZero() {
+				sheet.EarningsAvailableDeltaUSD = sheet.EarningsAvailableDeltaUSD.Add(row.Delta.Sub(row.HoldDelta))
+				sheet.EarningsFrozenDeltaUSD = sheet.EarningsFrozenDeltaUSD.Add(row.HoldDelta)
+			} else if row.Type == "earning_withdraw_freeze" || row.Type == "earning_withdraw_release" || row.Type == "gift_reserve" {
+				sheet.EarningsAvailableDeltaUSD = sheet.EarningsAvailableDeltaUSD.Add(row.Delta)
+				sheet.EarningsFrozenDeltaUSD = sheet.EarningsFrozenDeltaUSD.Add(row.Delta.Neg())
 			} else {
 				sheet.EarningsAvailableDeltaUSD = sheet.EarningsAvailableDeltaUSD.Add(row.Delta)
-				if row.Type == "commission_freeze" || row.Type == "commission_release" || row.Type == "commission_deduct" || isAdtyGiftNetHoldType(row.Type) {
-					sheet.EarningsFrozenDeltaUSD = sheet.EarningsFrozenDeltaUSD.Add(row.HoldDelta)
-				}
 			}
 		case model.AdtySiteWalletMargin:
 			sheet.MarginDeltaUSD = sheet.MarginDeltaUSD.Add(row.Delta)
