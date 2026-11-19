@@ -144,6 +144,8 @@ func TestActiveTeamMembershipUniqueIndexSkipsHistoricalCollisions(t *testing.T) 
 
 	err := EnsureActiveTeamMembershipUniqueIndex(db)
 	require.ErrorIs(t, err, ErrActiveTeamMembershipCollision)
+	err = EnsureActiveTeamMembershipUniqueIndex(db)
+	require.ErrorIs(t, err, ErrActiveTeamMembershipCollision, "a retry must keep failing and must not merge historical rows")
 	assert.False(t, db.Migrator().HasIndex(AdtyTeamMember{}.TableName(), activeTeamMembershipUniqueIndex))
 	assert.True(t, db.Migrator().HasIndex(&AdtyTeamMember{}, "idx_adty_team_member"))
 

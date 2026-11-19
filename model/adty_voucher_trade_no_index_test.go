@@ -82,6 +82,8 @@ func TestAdtyVoucherTradeNoUniqueIndexSkipsHistoricalCollisions(t *testing.T) {
 
 	err := EnsureAdtyVoucherTradeNoUniqueIndex(db)
 	require.ErrorIs(t, err, ErrAdtyVoucherTradeNoCollision)
+	err = EnsureAdtyVoucherTradeNoUniqueIndex(db)
+	require.ErrorIs(t, err, ErrAdtyVoucherTradeNoCollision, "a retry must keep failing and must not merge historical rows")
 	assert.False(t, db.Migrator().HasIndex(AdtyVoucher{}.TableName(), adtyVoucherTradeNoUniqueIndex))
 
 	var stored []AdtyVoucher
