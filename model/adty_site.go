@@ -263,7 +263,7 @@ func (AdtySiteLookup) TableName() string { return "adty_site_lookups" }
 
 // AdtySiteTables 是分站的表，迁移和测试共用。
 func AdtySiteTables() []any {
-	return []any{&AdtySite{}, &AdtySiteInviteCode{}, &AdtySiteAudit{}, &AdtySiteCustomer{}, &AdtyUserSiteMigration{}, &AdtySitePrice{}, &AdtySiteDomain{},
+	return []any{&AdtySite{}, &AdtySiteInviteCode{}, &AdtySiteAudit{}, &AdtySiteCustomer{}, &AdtyUserSiteMigration{}, &AdtySitePrice{}, &AdtySitePriceScope{}, &AdtyPriceRevision{}, &AdtySiteDomain{},
 		&AdtySiteEarningDaily{}, &AdtySiteEarningLine{}, &AdtySiteEarningFact{}, &AdtySiteTrialGrant{}, &AdtySiteReport{}, &AdtySiteLookup{}, &AdtySiteSenderDomain{},
 		&AdtySiteTier{}, &AdtySiteTierEvaluation{}, &AdtySiteWallet{}, &AdtySiteWalletLedger{}, &AdtySiteWithdrawal{}, &AdtySiteStaff{}, &AdtySiteOwnership{},
 		&AdtySiteSettlementSheet{}, &AdtySiteCloseMailBatch{}, &AdtySiteCloseMailRecipient{}}
@@ -447,3 +447,35 @@ type AdtySiteEarningFact struct {
 }
 
 func (AdtySiteEarningFact) TableName() string { return "adty_site_earning_facts" }
+
+// AdtySitePriceScope 持久化每个定价作用域（site_id + user_id）的单调递增版本号，
+// 即使该作用域下的分组或单模型加价行被全部删除，已提交的版本号也不会回退到 0（ISS-R1-0162）。
+type AdtySitePriceScope struct {
+	Id        int   `json:"id"`
+	SiteId    int   `json:"site_id" gorm:"uniqueIndex:ux_site_price_scope"`
+	UserId    int   `json:"user_id" gorm:"uniqueIndex:ux_site_price_scope"`
+	Version   int64 `json:"version"`
+	UpdatedAt int64 `json:"updated_at"`
+}
+
+func (AdtySitePriceScope) TableName() string { return "adty_site_price_scopes" }
+
+// BackfillAdtySitePriceScopes preserves versions from pre-scope price rows.
+// Repeated migration never lowers an existing scope version.
+func BackfillAdtySitePriceScopes(db *gorm.DB) error {
+	var scopes []AdtySitePriceScope
+	if err := db.Model(&AdtySitePrice{}).Select("site_id, user_id, MAX(version) AS version").Group("site_id, user_id").Order("site_id, user_id").Scan(&scopes).Error; err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, scope := range scopes {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&scope).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&AdtySitePriceScope{}).Where("site_id = ? AND user_id = ? AND version < ?", scope.SiteId, scope.UserId, scope.Version).Update("version", scope.Version).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}

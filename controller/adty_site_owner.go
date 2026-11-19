@@ -100,14 +100,10 @@ func GetAdtyOwnerSite(c *gin.Context) {
 	if strings.TrimSpace(site.Brand) != "" {
 		_ = common.UnmarshalJsonStr(site.Brand, &brand)
 	}
-	var prices []model.AdtySitePrice
-	if err := model.DB.Where("site_id = ? AND user_id = 0", site.Id).Order("id").Find(&prices).Error; err != nil {
+	prices, version, err := service.LoadAdtySitePricing(site.Id, 0)
+	if err != nil {
 		common.ApiError(c, err)
 		return
-	}
-	var version int64
-	for _, price := range prices {
-		version = max(version, price.Version)
 	}
 	domains, err := service.ListAdtySiteDomains(c.GetInt("id"))
 	if err != nil {
@@ -373,14 +369,10 @@ func GetAdtyOwnerCustomer(c *gin.Context) {
 		result["tokens"] = tokens
 	}
 	// 客户单独定价和它的版本号（保存时带 expected_version）。
-	var prices []model.AdtySitePrice
-	if err := model.DB.Where("site_id = ? AND user_id = ?", site.Id, id).Order("id").Find(&prices).Error; err != nil {
+	prices, version, err := service.LoadAdtySitePricing(site.Id, id)
+	if err != nil {
 		common.ApiError(c, err)
 		return
-	}
-	var version int64
-	for _, price := range prices {
-		version = max(version, price.Version)
 	}
 	result["prices"], result["pricing_version"] = prices, version
 	common.ApiSuccess(c, result)

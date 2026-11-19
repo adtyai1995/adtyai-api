@@ -452,6 +452,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/close", "wallet:write", []gin.HandlerFunc{controller.RequestAdtySiteClose}},
 		// 改价、改加赠、送试用、删域名要二次验证（任务 11.6）
 		{http.MethodPut, "/pricing", "wallet:write", []gin.HandlerFunc{controller.PutAdtySitePricingWithProof}},
+		{http.MethodGet, "/pricing/history", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerPricingHistory}},
+		{http.MethodGet, "/customers/:id/pricing/history", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerPricingHistory}},
 		{http.MethodPut, "/customers/:id/pricing", "wallet:write", []gin.HandlerFunc{controller.PutAdtySiteCustomerPricingWithProof}},
 		// 自定义域名（任务 11.8）
 		{http.MethodGet, "/domains", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteDomains}},

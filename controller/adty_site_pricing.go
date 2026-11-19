@@ -42,7 +42,7 @@ func saveAdtySitePricing(c *gin.Context, site *model.AdtySite, userId int) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	input := service.AdtySitePricingInput{SiteId: site.Id, UserId: userId, ExpectedVersion: body.ExpectedVersion, GroupMarkups: map[string]decimal.Decimal{}, ModelMarkups: map[string]decimal.Decimal{}}
+	input := service.AdtySitePricingInput{SiteId: site.Id, UserId: userId, ActorId: c.GetInt("id"), ExpectedVersion: body.ExpectedVersion, GroupMarkups: map[string]decimal.Decimal{}, ModelMarkups: map[string]decimal.Decimal{}}
 	if body.DefaultMarkup != nil && strings.TrimSpace(*body.DefaultMarkup) != "" {
 		value, err := decimal.NewFromString(strings.TrimSpace(*body.DefaultMarkup))
 		if err != nil {

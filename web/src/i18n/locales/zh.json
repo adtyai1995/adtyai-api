@@ -1,5 +1,12 @@
 {
   "translation": {
+    "Model price multiplier": "模型价格系数",
+    "Price change history": "价格变更历史",
+    "Effective immediately": "立即生效",
+    "Price activated": "价格已生效",
+    "Override removal activated": "独立加价移除已生效",
+    "Price change": "价格变更",
+    "Effective time": "生效时间",
     "Password updated. Sign in again with your new password.": "密码已更新，请使用新密码重新登录。",
     "Unbind Telegram": "解绑 Telegram",
     "Funding source": "资金来源",

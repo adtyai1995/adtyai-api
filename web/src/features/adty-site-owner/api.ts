@@ -48,6 +48,35 @@ type ApiResponse<T> = { success: boolean; message?: string; data: T }
 const BASE = '/api/adty/site'
 export const OWNER_PAGE_SIZE = 20
 
+export type PriceRevision = {
+  id: number
+  site_id: number
+  user_id: number
+  actor_id: number
+  group: string
+  model: string
+  kind: string
+  action: string
+  version: number
+  before: string
+  after: string
+  effective_at: number
+  created_at: number
+}
+
+export async function getPricingHistory(
+  page: number,
+  customerId?: number
+): Promise<OwnerPage<PriceRevision>> {
+  const path = customerId
+    ? `${BASE}/customers/${customerId}/pricing/history`
+    : `${BASE}/pricing/history`
+  const response = await api.get<ApiResponse<OwnerPage<PriceRevision>>>(path, {
+    params: { p: page, page_size: OWNER_PAGE_SIZE },
+  })
+  return requireServerSuccess(response.data).data
+}
+
 export const siteOwnerKeys = {
   all: ['adty-site-owner'] as const,
   site: ['adty-site-owner', 'site'] as const,
@@ -438,9 +467,12 @@ export async function saveOwnerSiteReferralEnabled(
 }
 
 export async function saveOwnerSiteReferral(rate: string): Promise<void> {
-  const res = await api.put<ApiResponse<{ saved: boolean }>>(`${BASE}/referral`, {
-    rate,
-  })
+  const res = await api.put<ApiResponse<{ saved: boolean }>>(
+    `${BASE}/referral`,
+    {
+      rate,
+    }
+  )
   requireServerSuccess(res.data)
 }
 

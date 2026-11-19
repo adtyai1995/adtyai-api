@@ -1,5 +1,12 @@
 {
   "translation": {
+    "Model price multiplier": "Model price multiplier",
+    "Price change history": "Price change history",
+    "Effective immediately": "Effective immediately",
+    "Price activated": "Price activated",
+    "Override removal activated": "Override removal activated",
+    "Price change": "Price change",
+    "Effective time": "Effective time",
     "Password updated. Sign in again with your new password.": "Password updated. Sign in again with your new password.",
     "Unbind Telegram": "Unbind Telegram",
     "Funding source": "Funding source",

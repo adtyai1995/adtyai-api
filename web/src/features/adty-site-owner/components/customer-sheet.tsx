@@ -57,6 +57,7 @@ import {
 } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
 import { newIdempotencyKey } from '../lib/site-owner'
+import { PricingHistory } from './pricing-history'
 
 /** Customer drawer: profile, requests, top-ups, keys, trial credit, own price and report. */
 export function CustomerSheet(props: {
@@ -123,7 +124,9 @@ export function CustomerSheet(props: {
     onError: (err) => handleServerError(err),
   })
   const customer = detail.data?.customer
-  const ownMarkup = detail.data?.prices?.find((row) => row.group === '' && !row.model)?.markup
+  const ownMarkup = detail.data?.prices?.find(
+    (row) => row.group === '' && !row.model
+  )?.markup
 
   return (
     <Sheet
@@ -247,7 +250,9 @@ export function CustomerSheet(props: {
                       {
                         id: 'bonus-rate',
                         header: t('Bonus rate'),
-                        cell: (row) => <span className='tabular-nums'>{row.bonus_rate}</span>,
+                        cell: (row) => (
+                          <span className='tabular-nums'>{row.bonus_rate}</span>
+                        ),
                       },
                       {
                         id: 'bonus',
@@ -363,6 +368,7 @@ export function CustomerSheet(props: {
                 </Button>
               </div>
             </section>
+            <PricingHistory key={id} customerId={id} />
             <section className='space-y-2' aria-labelledby='report-title'>
               <h3 id='report-title' className='text-sm font-medium'>
                 {t('Report this customer')}

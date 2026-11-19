@@ -56,6 +56,8 @@ export type BillingPluginVariant = {
 }
 
 export type PricingModel = {
+  /** Read-only model/site quote adjustment; never changes the billing expression. */
+  billing_display_multiplier?: string
   billing_plugin_variants?: BillingPluginVariant[]
   // When true, the listed usage schema is plugin-only; ordinary requests pay
   // the model-level price. Used by withBasePricing for display classification.

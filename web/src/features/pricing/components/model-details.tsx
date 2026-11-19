@@ -67,6 +67,7 @@ import { formatBillingCondition } from '../lib/billing-expression/condition-disp
 import {
   formatTaskUsageUnitPrice,
   getDynamicPriceEntries,
+  getBillingDisplayMultiplier,
   getDynamicPriceUnitLabelKey,
   getDynamicPricingSummary,
   getDynamicPricingTiers,
@@ -861,12 +862,7 @@ function ProviderGroupPricingSection(
   )
 
   if (isDynamicPricingModel(props.model)) {
-    const dynamicTiers = props.model.billing_usage_schema
-      ? getTaskPricingDisplayTiers(
-          props.model.billing_expr,
-          props.model.billing_usage_schema
-        )
-      : getDynamicPricingTiers(props.model)
+    const dynamicTiers = getDynamicPricingTiers(props.model)
     const hasRequestPrice = dynamicTiers.some(
       (tier) => !('unitPrices' in tier) && tier.billingUnit === 'request'
     )
@@ -1061,13 +1057,17 @@ function ProviderGroupPricingSection(
                           className: `${thClass} text-right`,
                           cellClassName: 'py-2.5 text-right font-mono',
                           cell: (row) =>
-                            `≈ ${formatTaskUsageUnitPrice(row.total, {
-                              tokenUnit: props.tokenUnit,
-                              showRechargePrice,
-                              priceRate: props.priceRate,
-                              usdExchangeRate: props.usdExchangeRate,
-                              groupRatioMultiplier: ratio,
-                            })}`,
+                            `≈ ${formatTaskUsageUnitPrice(
+                              row.total *
+                                getBillingDisplayMultiplier(props.model),
+                              {
+                                tokenUnit: props.tokenUnit,
+                                showRechargePrice,
+                                priceRate: props.priceRate,
+                                usdExchangeRate: props.usdExchangeRate,
+                                groupRatioMultiplier: ratio,
+                              }
+                            )}`,
                         },
                       ]}
                     />
@@ -1263,6 +1263,12 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
 
           <section className='bg-card space-y-6 rounded-[14px] border p-5'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
+            {props.model.billing_display_multiplier && (
+              <p className='text-muted-foreground text-sm'>
+                {t('Model price multiplier')}:{' '}
+                {props.model.billing_display_multiplier}x
+              </p>
+            )}
             {showBasePrices && (
               <PriceSection
                 model={props.model}
@@ -1275,6 +1281,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
             {isDynamic && !simpleTaskPricing && (
               <DynamicPricingBreakdown
                 billingExpr={props.model.billing_expr}
+                displayMultiplier={props.model.billing_display_multiplier}
                 usageSchema={props.model.billing_usage_schema}
                 taskPriceOptions={{
                   showRechargePrice,

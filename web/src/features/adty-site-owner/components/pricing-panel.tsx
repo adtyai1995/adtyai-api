@@ -35,6 +35,7 @@ import {
   type PendingIncrease,
 } from '../lib/site-owner'
 import type { OwnerSite } from '../types'
+import { PricingHistory } from './pricing-history'
 
 type GroupRow = { key: string; group: string; markup: string }
 type ModelRow = { key: string; model: string; markup: string }
@@ -332,6 +333,7 @@ export function PricingPanel(props: { site: OwnerSite }) {
           {t('Save prices')}
         </Button>
       </div>
+      <PricingHistory />
     </div>
   )
 }

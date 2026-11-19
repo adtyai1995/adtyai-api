@@ -861,15 +861,14 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 	for i := range next.ReservedSubdomains {
 		next.ReservedSubdomains[i] = strings.ToLower(strings.TrimSpace(next.ReservedSubdomains[i]))
 	}
+	nowUnix := time.Now().Unix()
 	baseline := current
 	baseline.MinCostFactor = previousMin
-	if adty_setting.HoldMinCostFactorIncrease(&next, &baseline, time.Now().Unix()) {
+	heldMinIncrease := adty_setting.HoldMinCostFactorIncrease(&next, &baseline, nowUnix)
+	if heldMinIncrease {
 		values["min_cost_factor"] = ""
 		values["pending_min_cost_factor"] = ""
 		values["pending_min_cost_factor_at"] = ""
-		if next.PendingMinCostFactor != nil {
-			service.NotifySiteOwnersGlobalCostFactorPending(decimal.NewFromFloat(*next.PendingMinCostFactor), next.PendingMinCostFactorAt)
-		}
 	}
 	if err := adty_setting.ValidateResellerSetting(&next, adtyResendConfigured()); err != nil {
 		common.ApiError(c, err)
@@ -877,13 +876,11 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 	}
 	previous := current
 	previous.CostFactor = previousCostFactor
-	if adty_setting.HoldGlobalCostFactorIncrease(&next, &previous, time.Now().Unix()) {
+	heldCostIncrease := adty_setting.HoldGlobalCostFactorIncrease(&next, &previous, nowUnix)
+	if heldCostIncrease {
 		values["pending_cost_factor"] = ""
 		values["pending_cost_factor_at"] = ""
 		values["cost_factor"] = ""
-		if next.PendingCostFactor != nil {
-			service.NotifySiteOwnersGlobalCostFactorPending(decimal.NewFromFloat(*next.PendingCostFactor), next.PendingCostFactorAt)
-		}
 	}
 	if len(values) > 0 {
 		normalized, _ := config.ConfigToMap(&next)
@@ -895,6 +892,12 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	}
+	if heldMinIncrease && next.PendingMinCostFactor != nil && *next.PendingMinCostFactor > 0 && next.PendingMinCostFactorAt > 0 {
+		service.NotifySiteOwnersGlobalCostFactorPending(decimal.NewFromFloat(*next.PendingMinCostFactor), next.PendingMinCostFactorAt)
+	}
+	if heldCostIncrease && next.PendingCostFactor != nil && *next.PendingCostFactor > 0 && next.PendingCostFactorAt > 0 {
+		service.NotifySiteOwnersGlobalCostFactorPending(decimal.NewFromFloat(*next.PendingCostFactor), next.PendingCostFactorAt)
 	}
 	service.InvalidateAdtySiteCache()
 	keys := make([]string, 0, len(values))

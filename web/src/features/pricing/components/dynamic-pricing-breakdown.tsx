@@ -50,6 +50,7 @@ import { compileBillingExpression } from '../lib/billing-expression/parser'
 import { isBreakdownTierMatched } from '../lib/breakdown-tier-match'
 import {
   formatTaskUsageUnitPrice,
+  scaleDynamicPricingTiers,
   type DynamicPriceLabelKind,
   type DynamicPriceOptions,
 } from '../lib/dynamic-price'
@@ -63,6 +64,7 @@ import {
 import type { BillingUsageSchema, BillingUsageUnit } from '../types'
 
 type DynamicPricingBreakdownProps = {
+  displayMultiplier?: string
   billingExpr: string | null | undefined
   /**
    * Label of the tier that fired for the current request. When provided,
@@ -281,6 +283,7 @@ function nextOccurrenceKey(
 
 export function DynamicPricingBreakdown({
   billingExpr,
+  displayMultiplier,
   matchedTierLabel,
   matchedBillingUnit,
   matchedFixedPrice,
@@ -330,10 +333,10 @@ export function DynamicPricingBreakdown({
       }
     }
     return {
-      tiers: parsedTiers,
+      tiers: scaleDynamicPricingTiers(parsedTiers, displayMultiplier),
       ruleGroups: parsedRules || [],
     }
-  }, [expr, usageSchema, requestRules])
+  }, [expr, usageSchema, requestRules, displayMultiplier])
 
   const hasTiers = tiers.length > 0
   const hasRules = ruleGroups.length > 0

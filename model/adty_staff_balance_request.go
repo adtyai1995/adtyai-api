@@ -50,13 +50,21 @@ func (AdtyStaffBalanceRequest) TableName() string { return "adty_staff_balance_r
 
 // AdtyPriceRevision records one price change. It is append-only history.
 type AdtyPriceRevision struct {
-	Id        int64  `json:"id"`
-	SiteId    int    `json:"site_id" gorm:"index"`
-	ActorId   int    `json:"actor_id"`
-	Kind      string `json:"kind" gorm:"type:varchar(32);index"`
-	Before    string `json:"before" gorm:"type:varchar(64)"`
-	After     string `json:"after" gorm:"type:varchar(64)"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
+	UserId      int    `json:"user_id" gorm:"index"`
+	Group       string `json:"group" gorm:"type:varchar(64)"`
+	Model       string `json:"model" gorm:"type:varchar(191)"`
+	Action      string `json:"action" gorm:"type:varchar(32)"`
+	Version     int64  `json:"version"`
+	EffectiveAt int64  `json:"effective_at"`
+	BeforeState string `json:"before_state" gorm:"type:text"`
+	AfterState  string `json:"after_state" gorm:"type:text"`
+	Id          int64  `json:"id"`
+	SiteId      int    `json:"site_id" gorm:"index"`
+	ActorId     int    `json:"actor_id"`
+	Kind        string `json:"kind" gorm:"type:varchar(32);index"`
+	Before      string `json:"before" gorm:"type:varchar(64)"`
+	After       string `json:"after" gorm:"type:varchar(64)"`
+	CreatedAt   int64  `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyPriceRevision) TableName() string { return "adty_price_revisions" }
