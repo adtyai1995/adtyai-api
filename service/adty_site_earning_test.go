@@ -1328,3 +1328,290 @@ func TestCustomerRiskReviewPreservesFinanceEarningDisposition(t *testing.T) {
 	assert.False(t, excluded.RiskReleased)
 	assert.Equal(t, model.AdtyEarningOriginalSkipped, excluded.ReviewStatus)
 }
+
+func TestSiteEarningBalancesIgnorePersonalReferralPG(t *testing.T) {
+	db := prepareSiteDB(t)
+	owner, site := openActiveSite(t, db, "wallet-report")
+	_, other := openActiveSite(t, db, "wallet-report-other")
+	affiliate, err := Referral.EnsureAffiliate(owner.Id)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&model.ReferralCommissionAccount{}).Where("affiliate_id = ?", affiliate.Id).Updates(map[string]any{
+		"available_amount": 999, "frozen_amount": 888, "withdrawn_amount": 777,
+	}).Error)
+	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).
+		Updates(map[string]any{"balance": 50, "frozen_usd": 12}).Error)
+	for i, row := range []model.AdtySiteWithdrawal{
+		{SiteId: site.Id, AmountUSD: usd("20"), Status: model.AdtySiteWithdrawPaid},
+		{SiteId: site.Id, AmountUSD: usd("12"), Status: model.AdtySiteWithdrawPending},
+		{SiteId: site.Id, AmountUSD: usd("9"), Status: model.AdtySiteWithdrawRejected},
+		{SiteId: other.Id, AmountUSD: usd("999"), Status: model.AdtySiteWithdrawPaid},
+	} {
+		row.IdempotencyKey = fmt.Sprintf("wallet-report-%d", i)
+		require.NoError(t, db.Create(&row).Error)
+	}
+	result, err := GetAdtySiteBalances(site)
+	require.NoError(t, err)
+	require.Equal(t, "38", result.AvailableUSD.String())
+	require.Equal(t, "12", result.FrozenUSD.String())
+	require.Equal(t, "20", result.WithdrawnUSD.String())
+	require.NoError(t, db.Where("user_id = ?", owner.Id).Delete(&model.ReferralCommissionAccount{}).Error)
+	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).
+		Updates(map[string]any{"balance": -5, "frozen_usd": 2}).Error)
+	result, err = GetAdtySiteBalances(site)
+	require.NoError(t, err)
+	require.Equal(t, "-7", result.AvailableUSD.String())
+	require.Equal(t, "2", result.FrozenUSD.String())
+	require.Equal(t, "20", result.WithdrawnUSD.String())
+}
+
+func TestDurableEarningLinesPreserveFrozenIdentityAndAtomicityPG(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "durable-line-facts")
+	user := siteCustomer(t, db, site, "durable-line-facts-user")
+	snapshot, err := model.EncodeRequestPriceSnapshot(&model.RequestPriceSnapshot{
+		SchemaVersion: model.RequestPriceSnapshotVersion, ModelName: "frozen-model", ModelBasePrice: "1", BillingGroup: "frozen-group",
+		GroupRatio: "1", SiteCostFactor: "1", SiteMarkupRatio: "0.5", BilledGroupRatio: "1.2",
+		TeamApplied: true, TeamPayRatio: "0.8", SupplyPriceFloor: "1", FinalPrice: "1.2",
+		Currency: model.RequestPriceCurrencyUSD, BillingUnit: model.BillingUnitPerCall, AcceptedAt: 1_794_787_200,
+		RuleVersion: model.RequestPriceSnapshotVersion, SupplyCost: "1", SellPrice: "1.5",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, model.DecodeRequestPriceSnapshot(snapshot))
+	for _, op := range []struct {
+		key   string
+		quota int
+		kind  string
+	}{
+		{"request:frozen-line", 60_000_000, "request"}, {"direct:frozen-refund", -30_000_000, "direct"},
+	} {
+		require.NoError(t, db.Create(&model.BillingOperation{OperationKey: op.key, UserId: user.Id, SiteId: site.Id, Kind: op.kind, State: model.BillingSettled, PriceSnapshot: snapshot}).Error)
+		require.NoError(t, db.Create(&model.AdtySiteEarningEvent{OperationKey: op.key, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId,
+			UserId: user.Id, Day: "2026-11-19", Quota: op.quota, Markup: 1.5, CostFactor: 1, CreatedAt: 1_794_787_200}).Error)
+		for range 2 {
+			require.NoError(t, projectAdtySiteEarningEvent(context.Background(), op.key))
+		}
+	}
+	lines, err := ListAdtyOwnerEarningLines(site.Id, 0, 20)
+	require.NoError(t, err)
+	require.Len(t, lines, 2)
+	for _, line := range lines {
+		require.Equal(t, "frozen-model", line.ModelName)
+		require.Equal(t, "frozen-group", line.Group)
+		require.EqualValues(t, 1_794_787_200, line.CreatedAt)
+		if line.Quota > 0 {
+			require.Equal(t, "120", line.Revenue.String())
+			require.Equal(t, "100", line.Platform.String())
+			require.Equal(t, "20", line.Earning.String())
+		} else {
+			require.Equal(t, "-60", line.Revenue.String())
+			require.Equal(t, "-50", line.Platform.String())
+			require.Equal(t, "-10", line.Earning.String())
+		}
+	}
+	raw, err := common.Marshal(lines)
+	require.NoError(t, err)
+	require.NotContains(t, strings.ToLower(string(raw)), "channel")
+	// A detail projection failure must also roll back the daily and wallet writes.
+	key := "request:line-rollback"
+	require.NoError(t, db.Create(&model.BillingOperation{OperationKey: key, UserId: user.Id, SiteId: site.Id, Kind: "request", PriceSnapshot: snapshot}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteEarningEvent{OperationKey: key, SiteId: site.Id, UserId: user.Id, Day: "2026-11-19", Quota: 60_000_000, Markup: 1.5, CostFactor: 1}).Error)
+	before := snapshotSiteWallets(t, db, site.Id)
+	const callback = "test:durable-line-rollback"
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "adty_site_earning_lines" {
+			tx.AddError(fmt.Errorf("detail unavailable"))
+		}
+	}))
+	t.Cleanup(func() { db.Callback().Create().Remove(callback) })
+	require.Error(t, projectAdtySiteEarningEvent(context.Background(), key))
+	require.Equal(t, before, snapshotSiteWallets(t, db, site.Id))
+	var pending model.AdtySiteEarningEvent
+	require.NoError(t, db.Where("operation_key = ?", key).First(&pending).Error)
+	require.False(t, pending.Projected)
+	require.NoError(t, db.Callback().Create().Remove(callback))
+	errors := make(chan error, 6)
+	var workers sync.WaitGroup
+	for range 6 {
+		workers.Go(func() { errors <- projectAdtySiteEarningEvent(context.Background(), key) })
+	}
+	workers.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	lines, err = ListAdtyOwnerEarningLines(site.Id, 0, 20)
+	require.NoError(t, err)
+	require.Len(t, lines, 3)
+	// An intentionally unnamed accepted group must not become the task's later group.
+	require.NoError(t, db.AutoMigrate(&model.Task{}))
+	task := &model.Task{TaskID: model.GenerateTaskID(), UserId: user.Id, Group: "later-group"}
+	require.NoError(t, db.Create(task).Error)
+	unnamed := model.DecodeRequestPriceSnapshot(snapshot)
+	unnamed.BillingGroup = ""
+	emptyGroupSnapshot, err := model.EncodeRequestPriceSnapshot(unnamed)
+	require.NoError(t, err)
+	key = "task:unnamed-frozen-line"
+	require.NoError(t, db.Create(&model.BillingOperation{OperationKey: key, UserId: user.Id, SiteId: site.Id, Kind: "task", ReferenceId: task.ID, PriceSnapshot: emptyGroupSnapshot}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteEarningEvent{OperationKey: key, SiteId: site.Id, UserId: user.Id, Day: "2026-11-19", Quota: 60_000_000, Markup: 1.5, CostFactor: 1}).Error)
+	require.NoError(t, projectAdtySiteEarningEvent(context.Background(), key))
+	lines, err = ListAdtyOwnerEarningLines(site.Id, 0, 20)
+	require.NoError(t, err)
+	require.Len(t, lines, 4)
+	require.Empty(t, lines[0].Group)
+	require.Equal(t, "frozen-model", lines[0].ModelName)
+}
+
+func TestDurableRequestAndTaskRecordModelGroupEarningLinesWithoutChannelDisclosure(t *testing.T) {
+	db := prepareSiteDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Channel{}, &model.Task{}, &model.Midjourney{}, &model.AdtySiteEarningLine{}))
+	_, site := openActiveSite(t, db, "durable-lines")
+	customer := siteCustomer(t, db, site, "durable-lines-customer")
+	sitePrice(t, db, site.Id, 0, "", "1.25")
+	require.NoError(t, db.Model(customer).Update("quota", perUnit("500")).Error)
+
+	// 1. Durable request settlement + consume log records exactly one model/group detail line.
+	c := adtyWalletRelayContext()
+	c.Set(common.RequestIdKey, "req-durable-line-1")
+	AdtyApplySiteMarkup(c, customer.Id, "vip", 1, "gpt-4o")
+	info := adtyWalletRelayInfo(customer.Id, 0, "")
+	info.IsPlayground = true
+	info.OriginModelName = "gpt-4o"
+	info.RequestId = "req-durable-line-1"
+	info.PriceData.ModelRatio = 1
+	info.UsingGroup = "vip"
+	info.UserGroup = "vip"
+	require.Nil(t, PreConsumeBilling(c, int(perUnit("125")), info))
+	require.NoError(t, info.Billing.Settle(int(perUnit("125"))))
+	model.RecordConsumeLog(c, customer.Id, model.RecordConsumeLogParams{
+		ChannelId: 77, ModelName: "gpt-4o", Quota: int(perUnit("125")), Group: "vip",
+	})
+
+	// 2. Durable task settlement + task refund also record model/group detail lines.
+	cTask := adtyWalletRelayContext()
+	AdtyApplySiteMarkup(cTask, customer.Id, "pro", 1, "sora-video")
+	taskInfo := adtyWalletRelayInfo(customer.Id, 0, "")
+	taskInfo.IsPlayground = true
+	taskInfo.OriginModelName = "sora-video"
+	taskInfo.PriceData.ModelRatio = 1
+	taskInfo.UsingGroup = "pro"
+	require.Nil(t, PreConsumeBilling(cTask, int(perUnit("50")), taskInfo))
+	task := &model.Task{
+		TaskID: model.GenerateTaskID(), UserId: customer.Id, ChannelId: 88, Group: "pro",
+		Quota: int(perUnit("50")), Status: model.TaskStatusInProgress,
+		Properties: model.Properties{OriginModelName: "sora-video"},
+	}
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		OriginModelName: "sora-video",
+		SiteId:          site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8,
+	}
+	AttachTaskBillingReservation(taskInfo, task)
+	require.NoError(t, task.Insert())
+	require.NoError(t, taskInfo.Billing.Settle(int(perUnit("50"))))
+	require.True(t, RefundTaskQuota(context.Background(), task, "upstream failed"))
+
+	lines, err := ListAdtyOwnerEarningLines(site.Id, 0, 20)
+	require.NoError(t, err)
+	require.Len(t, lines, 3, "expected 1 request line, 1 task settle line, and 1 task refund line")
+
+	var reqLine *model.AdtySiteEarningLine
+	for i := range lines {
+		if lines[i].RequestId == "req-durable-line-1" {
+			reqLine = &lines[i]
+		}
+	}
+	require.NotNil(t, reqLine)
+	assert.Equal(t, "gpt-4o", reqLine.ModelName)
+	assert.Equal(t, "vip", reqLine.Group)
+	assert.EqualValues(t, perUnit("125"), reqLine.Quota)
+	assert.True(t, reqLine.Revenue.Equal(usd("125")))
+	assert.True(t, reqLine.Platform.Equal(usd("100")))
+	assert.True(t, reqLine.Earning.Equal(usd("25")))
+
+	rawJSON, err := common.Marshal(lines)
+	require.NoError(t, err)
+	assert.NotContains(t, strings.ToLower(string(rawJSON)), "channel", "earning detail lines must not disclose upstream channel fields")
+}
+
+func TestDurableEarningLinesRealtimeAndMidjourneyRecoveryPG(t *testing.T) {
+	db := prepareSiteDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Channel{}, &model.Task{}, &model.Midjourney{}))
+	_, site := openActiveSite(t, db, "line-stream-mj")
+	user := siteCustomer(t, db, site, "line-stream-mj-user")
+	require.NoError(t, db.Model(user).Update("quota", 200_000_000).Error)
+	sitePrice(t, db, site.Id, 0, "", "1.25")
+	seedToken(t, 9997, user.Id, "line-stream", 200_000_000)
+	savedLogs := common.LogConsumeEnabled
+	common.LogConsumeEnabled = false
+	t.Cleanup(func() { common.LogConsumeEnabled = savedLogs })
+	c := adtyWalletRelayContext()
+	AdtyApplySiteMarkup(c, user.Id, "default", 1, "gpt-4o-realtime-preview")
+	info := adtyWalletRelayInfo(user.Id, 9997, "sk-line-stream")
+	info.OriginModelName, info.UsingGroup, info.UserGroup = "gpt-4o-realtime-preview", "default", "default"
+	info.PriceData.ModelRatio = 1
+	require.Nil(t, PreConsumeBilling(c, 0, info))
+	usage := &dto.RealtimeUsage{InputTokens: 200, OutputTokens: 100, TotalTokens: 300}
+	usage.InputTokenDetails.TextTokens, usage.OutputTokenDetails.TextTokens = 200, 100
+	require.NoError(t, PreWssConsumeQuota(c, info, usage))
+	require.Positive(t, info.RealtimeAlreadyCharged)
+	require.NoError(t, SettleBilling(c, info, 0))
+	require.NoError(t, RecoverBillingOperations(context.Background(), 100))
+	lines, err := ListAdtyOwnerEarningLines(site.Id, 0, 50)
+	require.NoError(t, err)
+	require.Len(t, lines, 2, "stream charge and final refund each retain one fact")
+	var netQuota int64
+	netRevenue, netPlatform, netEarning := decimal.Zero, decimal.Zero, decimal.Zero
+	for _, line := range lines {
+		require.Equal(t, "gpt-4o-realtime-preview", line.ModelName)
+		require.Equal(t, "default", line.Group)
+		netQuota += line.Quota
+		netRevenue = netRevenue.Add(line.Revenue)
+		netPlatform = netPlatform.Add(line.Platform)
+		netEarning = netEarning.Add(line.Earning)
+	}
+	require.Zero(t, netQuota)
+	require.True(t, netRevenue.IsZero())
+	require.True(t, netPlatform.IsZero())
+	require.True(t, netEarning.IsZero())
+	var original model.BillingOperation
+	require.NoError(t, db.Where("operation_key = ?", "request:"+info.RequestId).First(&original).Error)
+	require.NotNil(t, original.RequestPriceSnapshot())
+	mjSnapshot := original.RequestPriceSnapshot()
+	mjSnapshot.ModelName, mjSnapshot.BillingGroup = "frozen-mj-model", "frozen-mj-group"
+	encoded, err := model.EncodeRequestPriceSnapshot(mjSnapshot)
+	require.NoError(t, err)
+	task := &model.Midjourney{UserId: user.Id, MjId: "line-mj", Action: "IMAGINE", Quota: 5_000_000,
+		BillingSiteId: site.Id, BillingSiteOwnerUserId: site.OwnerUserId, BillingSiteMarkup: 1.25, BillingSiteCostFactor: .8,
+		BillingPriceSnapshot: encoded, BillingChargePending: true, BillingOperationKey: "mj:line-earning-recovery"}
+	require.NoError(t, db.Create(task).Error)
+	for _, refund := range []bool{false, true} {
+		key, err := model.QueueMidjourneyBillingOperation(task, refund)
+		require.NoError(t, err)
+		op, applied, err := model.ApplyBillingSettlement(key)
+		require.NoError(t, err)
+		require.True(t, applied)
+		if refund {
+			require.Equal(t, model.BillingRefunded, op.State)
+			require.Zero(t, op.AppliedQuota)
+		} else {
+			require.Equal(t, model.BillingSettled, op.State)
+			require.Equal(t, 5_000_000, op.AppliedQuota)
+		}
+		for range 2 {
+			require.NoError(t, projectAdtySiteEarningEvent(context.Background(), key))
+		}
+	}
+	lines, err = ListAdtyOwnerEarningLines(site.Id, 0, 50)
+	require.NoError(t, err)
+	require.Len(t, lines, 4)
+	for _, line := range lines[:2] {
+		require.Equal(t, "frozen-mj-model", line.ModelName)
+		require.Equal(t, "frozen-mj-group", line.Group)
+	}
+	require.Zero(t, lines[0].Quota+lines[1].Quota)
+	require.True(t, lines[0].Revenue.Add(lines[1].Revenue).IsZero())
+	require.True(t, lines[0].Platform.Add(lines[1].Platform).IsZero())
+	require.True(t, lines[0].Earning.Add(lines[1].Earning).IsZero())
+	var logs int64
+	require.NoError(t, db.Model(&model.Log{}).Where("user_id = ?", user.Id).Count(&logs).Error)
+	require.Zero(t, logs)
+}

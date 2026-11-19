@@ -401,7 +401,7 @@ func GetAdtySitesOverview(from, to string) (*AdtySitesOverview, error) {
 type AdtySiteBalances struct {
 	PendingUSD   decimal.Decimal `json:"pending_usd"`
 	SkippedUSD   decimal.Decimal `json:"skipped_usd"`
-	AvailableUSD decimal.Decimal `json:"available_usd"` // 佣金账户的可提现（和 P6 同一个账户，可以为负）
+	AvailableUSD decimal.Decimal `json:"available_usd"` // 站点收益钱包可提现余额（balance - frozen_usd）
 	FrozenUSD    decimal.Decimal `json:"frozen_usd"`
 	WithdrawnUSD decimal.Decimal `json:"withdrawn_usd"`
 }
@@ -409,6 +409,9 @@ type AdtySiteBalances struct {
 // GetAdtySiteBalances 取站长的收益余额。
 func GetAdtySiteBalances(site *model.AdtySite) (*AdtySiteBalances, error) {
 	result := &AdtySiteBalances{}
+	if site == nil || site.Id <= 0 {
+		return result, nil
+	}
 	var sums []struct {
 		Kind  string
 		Total decimal.Decimal
@@ -432,15 +435,24 @@ func GetAdtySiteBalances(site *model.AdtySite) (*AdtySiteBalances, error) {
 			result.PendingUSD = result.PendingUSD.Add(sum.Total)
 		}
 	}
-	var accounts []model.ReferralCommissionAccount
-	if err := model.DB.Where("user_id = ?", site.OwnerUserId).Limit(1).Find(&accounts).Error; err != nil {
+	var wallets []model.AdtySiteWallet
+	if err := model.DB.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).Limit(1).Find(&wallets).Error; err != nil {
 		return nil, err
 	}
-	if len(accounts) > 0 {
-		result.AvailableUSD = moneyDec(accounts[0].AvailableAmount)
-		result.FrozenUSD = moneyDec(accounts[0].FrozenAmount)
-		result.WithdrawnUSD = moneyDec(accounts[0].WithdrawnAmount)
+	if len(wallets) > 0 {
+		result.FrozenUSD = wallets[0].FrozenUSD
+		result.AvailableUSD = wallets[0].Balance.Sub(wallets[0].FrozenUSD)
 	}
+	var withdrawn struct {
+		Total decimal.Decimal
+	}
+	if err := model.DB.Model(&model.AdtySiteWithdrawal{}).
+		Select("COALESCE(SUM(amount_usd), 0) AS total").
+		Where("site_id = ? AND status = ?", site.Id, model.AdtySiteWithdrawPaid).
+		Scan(&withdrawn).Error; err != nil {
+		return nil, err
+	}
+	result.WithdrawnUSD = withdrawn.Total
 	return result, nil
 }
 

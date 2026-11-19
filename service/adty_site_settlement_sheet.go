@@ -208,12 +208,62 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 		}
 	}
 
+	var events []model.AdtySiteEarningEvent
+	if err := model.DB.Where("site_id = ? AND projected = ? AND created_at >= ? AND created_at < ?", siteID, true, start, end).Find(&events).Error; err != nil {
+		return sheet, err
+	}
+	for _, ev := range events {
+		if ev.ReviewStatus == model.AdtyEarningOriginalSkipped || ev.ReviewStatus == model.AdtyEarningNeedsReview {
+			continue
+		}
+		revenue, platform, earning, err := adtyDurableEarningSplitTx(model.DB, &ev)
+		if err != nil {
+			return sheet, err
+		}
+		sheet.ConsumptionUSD = sheet.ConsumptionUSD.Add(revenue)
+		sheet.SupplyCostUSD = sheet.SupplyCostUSD.Add(platform)
+		sheet.SpreadUSD = sheet.SpreadUSD.Add(earning)
+		note(ev.CreatedAt)
+		sheet.IncludedCount++
+	}
+	var facts []model.AdtySiteEarningFact
+	if err := model.DB.Where("site_id = ?", siteID).Find(&facts).Error; err != nil {
+		return sheet, err
+	}
+	factsByDaily := map[int64][]model.AdtySiteEarningFact{}
+	for _, fact := range facts {
+		factsByDaily[fact.DailyId] = append(factsByDaily[fact.DailyId], fact)
+	}
+
 	var earnings []model.AdtySiteEarningDaily
-	if err := model.DB.Where("site_id = ? AND (day = ? OR day LIKE ?)", siteID, day, day+"+%").Find(&earnings).Error; err != nil {
+	if err := model.DB.Where("site_id = ? AND status <> ?", siteID, model.AdtySiteEarningVoid).Find(&earnings).Error; err != nil {
 		return sheet, err
 	}
 	for _, row := range earnings {
-		if adtyEarningDayOf(row.Day) != day {
+		if strings.Contains(row.Day, "+op") {
+			continue
+		}
+		if row.Kind != model.AdtySiteEarningUsage && row.Kind != model.AdtySiteEarningRefund {
+			continue
+		}
+		if recorded, ok := factsByDaily[row.Id]; ok {
+			for _, fact := range recorded {
+				matched, hasTS := inAdtySheetWindow(fact.OccurredAt, row.Day, day, start, end)
+				if !matched {
+					continue
+				}
+				sheet.ConsumptionUSD = sheet.ConsumptionUSD.Add(fact.Revenue)
+				sheet.SupplyCostUSD = sheet.SupplyCostUSD.Add(fact.Platform)
+				sheet.SpreadUSD = sheet.SpreadUSD.Add(fact.Earning)
+				if hasTS {
+					note(fact.OccurredAt)
+				}
+				sheet.IncludedCount++
+			}
+			continue
+		}
+		matched, hasTS := inAdtySheetWindow(row.UpdatedAt, row.Day, day, start, end)
+		if !matched {
 			continue
 		}
 		switch row.Kind {
@@ -221,16 +271,26 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 			sheet.ConsumptionUSD = sheet.ConsumptionUSD.Add(row.Revenue)
 			sheet.SupplyCostUSD = sheet.SupplyCostUSD.Add(row.Platform)
 			sheet.SpreadUSD = sheet.SpreadUSD.Add(row.Earning)
+			if hasTS {
+				note(row.UpdatedAt)
+			}
 			sheet.IncludedCount++
 		}
 	}
 
 	var grants []model.AdtySiteTrialGrant
-	if err := model.DB.Where("site_id = ? AND day = ?", siteID, day).Find(&grants).Error; err != nil {
+	if err := model.DB.Where("site_id = ?", siteID).Find(&grants).Error; err != nil {
 		return sheet, err
 	}
 	for _, row := range grants {
+		matched, hasTS := inAdtySheetWindow(row.CreatedAt, row.Day, day, start, end)
+		if !matched {
+			continue
+		}
 		sheet.TrialExpenseUSD = sheet.TrialExpenseUSD.Add(row.AmountUSD)
+		if hasTS {
+			note(row.CreatedAt)
+		}
 		sheet.IncludedCount++
 	}
 
@@ -406,4 +466,12 @@ func startAdtySiteSettlementSheetTask() {
 			}
 		}
 	}()
+}
+
+func inAdtySheetWindow(ts int64, rowDay, sheetDay string, start, end int64) (matched, hasWindowTS bool) {
+	if ts > 0 {
+		return ts >= start && ts < end, true
+	}
+	// Only timestamp-less historical facts retain their original recorded day.
+	return adtyEarningDayOf(rowDay) == sheetDay, false
 }

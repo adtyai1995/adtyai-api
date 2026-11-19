@@ -76,6 +76,9 @@ func projectAdtySiteEarningEventTx(tx *gorm.DB, event *model.AdtySiteEarningEven
 	}); err != nil {
 		return err
 	}
+	if err := recordDurableAdtySiteEarningLineTx(tx, event, revenue, platform, earning); err != nil {
+		return err
+	}
 	return tx.Model(&model.AdtySiteEarningEvent{}).Where("operation_key = ?", event.OperationKey).Update("projected", true).Error
 }
 

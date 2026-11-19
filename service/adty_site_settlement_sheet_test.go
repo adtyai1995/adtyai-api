@@ -78,7 +78,7 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 
 	require.NoError(t, db.Create(&model.AdtySiteEarningDaily{
 		SiteId: site.Id, UserId: 3, Day: "2026-03-14", Kind: model.AdtySiteEarningUsage,
-		Revenue: decimal.NewFromInt(1), Platform: decimal.Zero, Earning: decimal.NewFromInt(1), Status: model.AdtySiteEarningPending,
+		Revenue: decimal.NewFromInt(1), Platform: decimal.Zero, Earning: decimal.NewFromInt(1), Status: model.AdtySiteEarningPending, UpdatedAt: start + 200,
 	}).Error)
 	again, err := GenerateAdtySiteSettlementSheets(now)
 	require.NoError(t, err)
@@ -112,6 +112,9 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 
 func TestDailySettlementSheetUsesConfiguredTimezoneOrUTC(t *testing.T) {
 	db := prepareSiteDB(t)
+	savedLocal := time.Local
+	time.Local = mustLoc(t, "America/Los_Angeles")
+	t.Cleanup(func() { time.Local = savedLocal })
 	t.Cleanup(func() { _ = db.Delete(&model.Option{Key: adtyBusinessTimezoneKey}).Error })
 	_, site := openActiveSite(t, db, "tz"+strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10))
 	require.Error(t, SaveAdtyBusinessTimezone("Not/AZone"))
@@ -188,13 +191,13 @@ func stampSheetFacts(t *testing.T, db *gorm.DB, site, other *model.AdtySite, sta
 		{TradeNo: "SH-OTHER-" + strconv.Itoa(other.Id), SiteId: other.Id, UserId: 1, FaceUSD: decimal.NewFromInt(500), PaidAmount: decimal.NewFromInt(500), PaidCurrency: "USD"},
 	}).Error)
 	require.NoError(t, db.Create(&[]model.AdtySiteEarningDaily{
-		{SiteId: site.Id, UserId: 1, Day: "2026-03-14", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(8), Platform: decimal.NewFromInt(5), Earning: decimal.NewFromInt(3), Status: model.AdtySiteEarningPending},
-		{SiteId: site.Id, UserId: 1, Day: "2026-03-13", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(100), Platform: decimal.NewFromInt(100), Earning: decimal.NewFromInt(100), Status: model.AdtySiteEarningPending},
+		{SiteId: site.Id, UserId: 1, Day: "2026-03-14", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(8), Platform: decimal.NewFromInt(5), Earning: decimal.NewFromInt(3), Status: model.AdtySiteEarningPending, UpdatedAt: start + 100},
+		{SiteId: site.Id, UserId: 1, Day: "2026-03-13", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(100), Platform: decimal.NewFromInt(100), Earning: decimal.NewFromInt(100), Status: model.AdtySiteEarningPending, UpdatedAt: start - 100},
 		{SiteId: site.Id, UserId: 1, Day: "2026-03-14+1", Kind: model.AdtySiteEarningSkipped, Earning: decimal.NewFromInt(9), Status: model.AdtySiteEarningPending, Reason: model.AdtySiteRiskSelfUse},
 		{SiteId: site.Id, UserId: 2, Day: "2026-03-14", Kind: model.AdtySiteEarningBonus, Earning: decimal.NewFromInt(-99), Status: model.AdtySiteEarningPending},
 		{SiteId: site.Id, UserId: 2, Day: "2026-03-14", Kind: model.AdtySiteEarningBonusReversal, Earning: decimal.NewFromInt(99), Status: model.AdtySiteEarningPending},
 	}).Error)
-	require.NoError(t, db.Create(&model.AdtySiteTrialGrant{SiteId: site.Id, UserId: 1, AmountUSD: decimal.RequireFromString("1.25"), Day: "2026-03-14", IdempotencyKey: "trial-" + strconv.Itoa(site.Id)}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteTrialGrant{SiteId: site.Id, UserId: 1, AmountUSD: decimal.RequireFromString("1.25"), Day: "2026-03-14", IdempotencyKey: "trial-" + strconv.Itoa(site.Id), CreatedAt: start + 100}).Error)
 	rows := []model.AdtySiteWalletLedger{
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Delta: decimal.NewFromInt(4), Type: "site_earning", IdempotencyKey: "sheet-earn-row-" + strconv.Itoa(site.Id)},
 		{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings, Delta: decimal.RequireFromString("-1.5"), Type: "gift_reserve", IdempotencyKey: "sheet-reserve-" + strconv.Itoa(site.Id)},
@@ -315,4 +318,147 @@ func TestSettlementSheetGiftSourcesAcrossDaysPG(t *testing.T) {
 		require.Equal(t, "7", d2.GiftReleaseUSD.String())
 		require.Equal(t, wallets, snapshotSiteWallets(t, db, site.Id))
 	}
+}
+
+func TestSettlementSheetAvailableAndFrozenNetChangesPG(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "net-hold-sheet")
+	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC).Unix()
+	for i, amounts := range []struct{ kind, delta, hold string }{
+		{"gift_reserve", "0", "4"}, {"gift_release", "0", "-1"},
+		{"gift_spend", "-2", "-2"}, {"commission_freeze", "0", "3"},
+		{"commission_release", "0", "-1"}, {"commission_deduct", "-1", "-1"},
+		{"earning_withdraw_freeze", "-5", "0"}, {"earning_withdraw_release", "2", "0"},
+		{"earning_withdraw_paid", "0", "0"},
+	} {
+		require.NoError(t, db.Create(&model.AdtySiteWalletLedger{SiteId: site.Id, WalletKind: model.AdtySiteWalletEarnings,
+			Type: amounts.kind, Delta: decimal.RequireFromString(amounts.delta), HoldDelta: decimal.RequireFromString(amounts.hold),
+			CreatedAt: start + 1, IdempotencyKey: "net-hold-sheet-" + strconv.Itoa(i)}).Error)
+	}
+	sheet, err := summarizeAdtySiteSettlement(site.Id, "2026-07-20", start, start+86400)
+	require.NoError(t, err)
+	require.Equal(t, "-6", sheet.EarningsDeltaUSD.String())
+	require.Equal(t, "5", sheet.EarningsFrozenDeltaUSD.String())
+	require.Equal(t, "-8", sheet.EarningsAvailableDeltaUSD.String(), "net holds change available by delta-hold; legacy withdrawal holds already move delta")
+}
+
+func TestSettlementSheetUsesSavedWindowAcrossDSTAndLegacyPG(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "window-facts-sheet")
+	loc := mustLoc(t, "America/New_York")
+	start := time.Date(2026, 3, 8, 0, 0, 0, 0, loc).Unix()
+	end := time.Date(2026, 3, 9, 0, 0, 0, 0, loc).Unix()
+	require.EqualValues(t, 23*3600, end-start)
+	for i, fact := range []struct {
+		at, quota int64
+		day       string
+	}{
+		{start - 1, 500_000_000, "2026-03-08"}, {start, 62_500_000, "2026-03-07"},
+		{end - 1, -12_500_000, "2026-03-09"}, {end, 500_000_000, "2026-03-08"},
+		{end + 10*86400, 500_000_000, "2026-03-08"},
+	} {
+		require.NoError(t, db.Create(&model.AdtySiteEarningEvent{OperationKey: "sheet-window-" + strconv.Itoa(i),
+			SiteId: site.Id, UserId: 1, Day: fact.day, Quota: int(fact.quota), Markup: 1.25, CostFactor: .8, Projected: true, CreatedAt: fact.at}).Error)
+	}
+	// The operation slot duplicates durable events; unrelated legacy usage is still included.
+	require.NoError(t, db.Create(&[]model.AdtySiteEarningDaily{
+		{SiteId: site.Id, UserId: 1, Day: "2026-03-08+op", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(999), UpdatedAt: start + 100},
+		{SiteId: site.Id, UserId: 2, Day: "2026-03-07", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(10), Platform: decimal.NewFromInt(8), Earning: decimal.NewFromInt(2), UpdatedAt: start + 100},
+		{SiteId: site.Id, UserId: 2, Day: "2026-03-08", Kind: model.AdtySiteEarningRefund, Revenue: decimal.NewFromInt(-5), Platform: decimal.NewFromInt(-4), Earning: decimal.NewFromInt(-1), UpdatedAt: end - 1},
+		{SiteId: site.Id, UserId: 3, Day: "2026-03-08", Kind: model.AdtySiteEarningUsage, Revenue: decimal.NewFromInt(888), UpdatedAt: end},
+	}).Error)
+	require.NoError(t, db.Create(&[]model.AdtySiteTrialGrant{
+		{SiteId: site.Id, UserId: 2, Day: "2026-03-07", AmountUSD: decimal.NewFromInt(3), CreatedAt: start, IdempotencyKey: "window-trial-in"},
+		{SiteId: site.Id, UserId: 3, Day: "2026-03-08", AmountUSD: decimal.NewFromInt(99), CreatedAt: end, IdempotencyKey: "window-trial-out"},
+	}).Error)
+	require.NoError(t, writeAdtySiteSettlementSheet(site.Id, "2026-03-08", start, end, "America/New_York", end+100))
+	// Refresh must use the original saved 23-hour window even if a new timezone is supplied.
+	require.NoError(t, writeAdtySiteSettlementSheet(site.Id, "2026-03-08", start-18000, end-14400, "UTC", end+200))
+	var sheet model.AdtySiteSettlementSheet
+	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-03-08").First(&sheet).Error)
+	require.Equal(t, start, sheet.DayStart)
+	require.Equal(t, end, sheet.DayEnd)
+	require.Equal(t, "America/New_York", sheet.Timezone)
+	require.Equal(t, "105", sheet.ConsumptionUSD.String())
+	require.Equal(t, "84", sheet.SupplyCostUSD.String())
+	require.Equal(t, "21", sheet.SpreadUSD.String())
+	require.Equal(t, "3", sheet.TrialExpenseUSD.String())
+	require.Equal(t, end-1, sheet.EventWatermark)
+}
+
+func TestSettlementSheetLegacyContributionsKeepOriginalOccurrencePG(t *testing.T) {
+	db := prepareSiteDB(t)
+	logDB, err := model.OpenAdtyTestDatabase()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, logDB.Close()) })
+	model.DB = db
+	require.NoError(t, model.LOG_DB.AutoMigrate(&model.Log{}))
+	require.False(t, model.LOG_DB.Migrator().HasTable(&model.AdtySiteEarningFact{}), "financial facts remain in the main database")
+	_, site := openActiveSite(t, db, "legacy-time-facts")
+	user := siteCustomer(t, db, site, "legacy-time-facts-user")
+	start := time.Date(2026, 6, 1, 16, 0, 0, 0, time.UTC).Unix()
+	require.NoError(t, db.Create(&model.AdtySiteEarningDaily{SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId,
+		UserId: user.Id, Day: "2026-06-01", Kind: model.AdtySiteEarningUsage, Status: model.AdtySiteEarningAvailable,
+		Revenue: usd("7"), Platform: usd("5"), Earning: usd("2"), UpdatedAt: start - 2}).Error)
+	for _, entry := range []adtySiteEarningEntry{
+		{SiteId: site.Id, UserId: user.Id, Kind: model.AdtySiteEarningUsage, Quota: 5_000_000, Revenue: usd("10"), Platform: usd("8"), Earning: usd("2"), OccurredAt: start - 1},
+		{SiteId: site.Id, UserId: user.Id, Kind: model.AdtySiteEarningUsage, Quota: 10_000_000, Revenue: usd("20"), Platform: usd("16"), Earning: usd("4"), OccurredAt: start + 1},
+		{SiteId: site.Id, UserId: user.Id, Kind: model.AdtySiteEarningRefund, Quota: -2_500_000, Revenue: usd("-5"), Platform: usd("-4"), Earning: usd("-1"), OccurredAt: start + 2},
+	} {
+		require.NoError(t, upsertAdtySiteEarningTx(db, "2026-06-01", entry))
+	}
+	for _, window := range []struct {
+		from, to                        int64
+		day, revenue, platform, earning string
+	}{
+		{start - 86400, start, "2026-06-01", "17", "13", "4"},
+		{start, start + 86400, "2026-06-02", "15", "12", "3"},
+	} {
+		sheet, err := summarizeAdtySiteSettlement(site.Id, window.day, window.from, window.to)
+		require.NoError(t, err)
+		require.Equal(t, window.revenue, sheet.ConsumptionUSD.String())
+		require.Equal(t, window.platform, sheet.SupplyCostUSD.String())
+		require.Equal(t, window.earning, sheet.SpreadUSD.String())
+	}
+	require.NoError(t, db.AutoMigrate(model.AdtySiteTables()...))
+	require.NoError(t, db.AutoMigrate(model.AdtySiteTables()...))
+	var facts []model.AdtySiteEarningFact
+	require.NoError(t, db.Where("site_id = ?", site.Id).Find(&facts).Error)
+	require.Len(t, facts, 4, "repeat migrations retain the historical baseline and each immutable occurrence fact")
+}
+
+func TestSettlementSheetBusinessTimeWindowFiltersEarningFactsBySavedWindow(t *testing.T) {
+	db := prepareSiteDB(t)
+	t.Cleanup(func() { _ = db.Delete(&model.Option{Key: adtyBusinessTimezoneKey}).Error })
+	_, site := openActiveSite(t, db, "sheettzearn"+strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10))
+	require.NoError(t, SaveAdtyBusinessTimezone("Asia/Shanghai"))
+
+	// Business day 2026-06-01 in Asia/Shanghai (+08:00) spans:
+	// start = 2026-05-31 16:00:00 UTC, end = 2026-06-01 16:00:00 UTC.
+	inWindowUTC := time.Date(2026, 5, 31, 20, 0, 0, 0, time.UTC).Unix()  // 2026-06-01 04:00 CST (in window, server UTC Day="2026-05-31")
+	outWindowUTC := time.Date(2026, 6, 1, 16, 30, 0, 0, time.UTC).Unix() // 2026-06-02 00:30 CST (out of window, server UTC Day="2026-06-01")
+
+	require.NoError(t, db.Create(&[]model.AdtySiteEarningEvent{
+		{
+			OperationKey: "tz-op-in-" + strconv.Itoa(site.Id), SiteId: site.Id, UserId: 1,
+			Day: "2026-05-31", Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8,
+			Projected: true, CreatedAt: inWindowUTC,
+		},
+		{
+			OperationKey: "tz-op-out-" + strconv.Itoa(site.Id), SiteId: site.Id, UserId: 1,
+			Day: "2026-06-01", Quota: int(perUnit("250")), Markup: 1.25, CostFactor: 0.8,
+			Projected: true, CreatedAt: outWindowUTC,
+		},
+	}).Error)
+
+	now := time.Date(2026, 6, 1, 17, 0, 0, 0, time.UTC) // 2026-06-02 01:00 CST -> generates 2026-06-01 sheet
+	_, err := GenerateAdtySiteSettlementSheets(now)
+	require.NoError(t, err)
+
+	var sheet model.AdtySiteSettlementSheet
+	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-06-01").First(&sheet).Error)
+	require.Equal(t, "Asia/Shanghai", sheet.Timezone)
+	require.True(t, sheet.ConsumptionUSD.Equal(decimal.NewFromInt(125)), "only event inside [DayStart, DayEnd) must be counted, got %s", sheet.ConsumptionUSD)
+	require.True(t, sheet.SupplyCostUSD.Equal(decimal.NewFromInt(100)), "got %s", sheet.SupplyCostUSD)
+	require.True(t, sheet.SpreadUSD.Equal(decimal.NewFromInt(25)), "got %s", sheet.SpreadUSD)
 }

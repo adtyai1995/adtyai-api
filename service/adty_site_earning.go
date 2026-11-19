@@ -23,8 +23,15 @@ import (
 // 三项都用 decimal 算；站长收益用「客户付 − 平台收」得出，两项相加正好等于客户付的钱。
 // 记账只累加当天仍待结算的槽位，钩子失败只记日志，不影响请求。
 
-// adtySiteEarningDayFn 是记账用的日期（服务器时区），测试可以替换。
-var adtySiteEarningDayFn = func() string { return time.Now().Format("2006-01-02") }
+// adtySiteEarningDayFn 是记账用的日期（优先按平台业务时区），测试可以替换。
+var adtySiteEarningDayFn = func() string {
+	if model.DB != nil && model.DB.Migrator().HasTable(&model.Option{}) {
+		if loc, _, err := loadAdtyBusinessLocation(); err == nil && loc != nil {
+			return time.Now().In(loc).Format("2006-01-02")
+		}
+	}
+	return time.Now().UTC().Format("2006-01-02")
+}
 
 // adtyEarningFactorsUsable reports whether a stored k/d snapshot can be used
 // to book A.10 books. Markup k may be below 1 and the cost factor d may be
@@ -64,6 +71,7 @@ type adtySiteEarningEntry struct {
 	Revenue         decimal.Decimal
 	Platform        decimal.Decimal
 	Earning         decimal.Decimal
+	OccurredAt      int64
 }
 
 // upsertAdtySiteEarningTx records confirmed site earnings and credits the site
@@ -96,6 +104,34 @@ func upsertAdtySiteEarningTx(tx *gorm.DB, day string, entry adtySiteEarningEntry
 			}
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 				return err
+			}
+			var before []model.AdtySiteEarningDaily
+			if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND site_owner_user_id = ? AND user_id = ? AND day = ? AND kind = ? AND status = ?",
+				entry.SiteId, ownerID, entry.UserId, slot, entry.Kind, rowStatus).Limit(1).Find(&before).Error; err != nil {
+				return err
+			}
+			if len(before) == 0 {
+				continue
+			}
+			if immediateCredit && !strings.Contains(day, "+op") {
+				var count int64
+				if err := tx.Model(&model.AdtySiteEarningFact{}).Where("daily_id = ?", before[0].Id).Count(&count).Error; err != nil {
+					return err
+				}
+				if count == 0 && (!before[0].Revenue.IsZero() || !before[0].Platform.IsZero() || !before[0].Earning.IsZero()) {
+					if err := tx.Create(&model.AdtySiteEarningFact{SiteId: entry.SiteId, DailyId: before[0].Id, OccurredAt: before[0].UpdatedAt,
+						Revenue: before[0].Revenue, Platform: before[0].Platform, Earning: before[0].Earning}).Error; err != nil {
+						return err
+					}
+				}
+				occurredAt := entry.OccurredAt
+				if occurredAt == 0 {
+					occurredAt = now
+				}
+				if err := tx.Create(&model.AdtySiteEarningFact{SiteId: entry.SiteId, DailyId: before[0].Id, OccurredAt: occurredAt,
+					Revenue: entry.Revenue, Platform: entry.Platform, Earning: entry.Earning}).Error; err != nil {
+					return err
+				}
 			}
 			updates := map[string]any{
 				"quota":      gorm.Expr("quota + ?", entry.Quota),
