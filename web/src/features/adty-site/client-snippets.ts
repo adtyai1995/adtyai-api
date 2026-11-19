@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { ADTY_BRAND_NAME, ADTY_BRAND_SLUG } from '@/lib/adty-brand'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 /**
  * Client configuration snippets shown on the console quick-start card
@@ -59,7 +60,9 @@ export function buildClientSnippet(
   model: string,
   labels: ClientSnippetLabels
 ): string {
-  const envKey = `${ADTY_BRAND_SLUG.toUpperCase()}_API_KEY`
+  const tenant = subsiteDocument()
+  const slug = tenant ? `site${tenant.id}` : ADTY_BRAND_SLUG
+  const envKey = `${slug.toUpperCase()}_API_KEY`
   switch (client) {
     case 'claude-code':
       return [
@@ -70,11 +73,11 @@ export function buildClientSnippet(
     case 'codex':
       return [
         '# ~/.codex/config.toml',
-        `model_provider = "${ADTY_BRAND_SLUG}"`,
+        `model_provider = "${slug}"`,
         `model = "${model}"`,
         '',
-        `[model_providers.${ADTY_BRAND_SLUG}]`,
-        `name = "${ADTY_BRAND_NAME}"`,
+        `[model_providers.${slug}]`,
+        `name = ${JSON.stringify(tenant?.name ?? ADTY_BRAND_NAME)}`,
         `base_url = "${baseUrl}/v1"`,
         'wire_api = "responses"',
         `env_key = "${envKey}"`,

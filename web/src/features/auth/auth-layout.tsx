@@ -45,9 +45,10 @@ export function AuthLayout({ children }: AuthLayoutProps) {
         className='absolute top-4 left-4 z-10 flex items-center gap-2 transition-opacity hover:opacity-80 sm:top-8 sm:left-8'
       >
         <div className='relative h-8 w-8'>
-          {loading ? (
+          {loading && (
             <Skeleton className='absolute inset-0 rounded-lg' />
-          ) : (
+          )}
+          {!loading && logo && (
             <img
               src={logo}
               alt={t('Logo')}

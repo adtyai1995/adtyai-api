@@ -28,4 +28,10 @@ func TestSubdomainRejectsPunycodeAndInfrastructureLabels(t *testing.T) {
 	got, err := AdtyNormalizeSubdomain(" Shop ")
 	require.NoError(t, err)
 	require.Equal(t, "shop", got)
+	_, err = AdtyNormalizeSubdomain("api-shop")
+	require.NoError(t, err)
+	for _, label := range []string{"api-s42", "api-s42-1"} {
+		_, err = AdtyNormalizeSubdomain(label)
+		require.ErrorIs(t, err, ErrAdtySiteSubdomainUsed)
+	}
 }

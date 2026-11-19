@@ -15,6 +15,9 @@ import (
 // namespace, not a registered user feature. See internal/adtygov.
 var adtyAPIPathPrefixes = []string{"/api/", "/v1/", "/v1beta/", "/mj/", "/pg/"}
 
+// Dynamic plugin routes use their own Gin tree. A miss must never serve the SPA.
+var AdtyTryAPIPlugin func(*gin.Context) bool
+
 func adtyIsSessionAPI(path string) bool {
 	switch path {
 	case "/api/verification", "/api/reset_password", "/api/user/reset",
@@ -55,7 +58,15 @@ func AdtySiteContext() gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		if service.AdtyIsCustomDomainHost(host) {
+		path := c.Request.URL.Path
+		if adtyIsAPIPath(path) {
+			c.Header("Cache-Control", "private, no-store")
+		}
+		if adtyIsRelayPath(path) && service.AdtySiteForHost(host) != nil && !service.AdtyIsApiOnlyHost(host) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		if service.AdtyIsCustomDomainHost(host) || service.AdtyIsApiOnlyHost(host) {
 			adtyHandleCustomDomain(c, host)
 			return
 		}
@@ -101,9 +112,19 @@ func adtyHandleCustomDomain(c *gin.Context, host string) {
 	// 页面一律 404、账号接口一律 403。站长给客户的「API 地址」打开就只是个 API，
 	// 看不到网站，也拿不到登录页。
 	if service.AdtyIsApiOnlyHost(host) {
+		if !service.AdtySiteServesCustomers(site) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
 		if adtyIsRelayPath(path) || adtyApiOnlyProbePath(path) {
 			c.Next()
 			return
+		}
+		if c.FullPath() == "" && !adtyIsAPIPath(path) && AdtyTryAPIPlugin != nil {
+			c.Header("Cache-Control", "private, no-store")
+			if AdtyTryAPIPlugin(c) {
+				return
+			}
 		}
 		if adtyIsAPIPath(path) {
 			c.AbortWithStatus(http.StatusForbidden)
@@ -189,6 +210,10 @@ func adtyApiOnlyProbePath(path string) bool {
 }
 
 func adtyIsRelayPath(path string) bool {
+	_, rest, hasMode := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	if hasMode && strings.HasPrefix(rest, "mj/") {
+		return true
+	}
 	return strings.HasPrefix(path, "/v1/") || path == "/v1" ||
 		strings.HasPrefix(path, "/v1beta/") || path == "/v1beta" ||
 		strings.HasPrefix(path, "/mj/") || strings.HasPrefix(path, "/pg/")

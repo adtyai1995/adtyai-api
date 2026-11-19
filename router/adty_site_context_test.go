@@ -651,6 +651,9 @@ func TestAPIKeySiteBindingIgnoresForwardedHostAndAllowsOwnCustomDomain(t *testin
 	customer := f.user(t, "token-customer", f.site.Id)
 	require.NoError(t, f.db.Create(&model.Token{UserId: customer.Id, Key: "sitetokenkey", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}).Error)
 	saved := service.AdtyLoadCustomDomains
+	savedRoles := service.AdtyLoadApiOnlyDomains
+	service.AdtyLoadApiOnlyDomains = func() (map[string]bool, error) { return map[string]bool{"api.customer-brand.com": true}, nil }
+	t.Cleanup(func() { service.AdtyLoadApiOnlyDomains = savedRoles; service.InvalidateAdtySiteCache() })
 	service.AdtyLoadCustomDomains = func() (map[string]int, error) {
 		return map[string]int{"api.customer-brand.com": f.site.Id}, nil
 	}
@@ -661,7 +664,8 @@ func TestAPIKeySiteBindingIgnoresForwardedHostAndAllowsOwnCustomDomain(t *testin
 		status int
 	}{
 		{"main.example.com", http.StatusForbidden},
-		{"shop.sites.example.com", http.StatusOK},
+		{"shop.sites.example.com", http.StatusForbidden},
+		{fmt.Sprintf("api-s%d.sites.example.com", f.site.Id), http.StatusOK},
 		{"api.customer-brand.com", http.StatusOK},
 		{"stranger.example.net", http.StatusNotFound},
 		{"gone.sites.example.com", http.StatusForbidden},
@@ -708,7 +712,7 @@ func TestStatusReturnsSiteBrand(t *testing.T) {
 	site := status("shop.sites.example.com")
 	assert.Equal(t, "Shop AI", site["system_name"])
 	assert.Equal(t, "/uploads/site-assets/shop.png", site["logo"])
-	assert.Equal(t, "https://shop.sites.example.com", site["server_address"])
+	assert.Equal(t, fmt.Sprintf("https://api-s%d.sites.example.com", f.site.Id), site["server_address"])
 	assert.Equal(t, false, site["github_oauth"])
 	assert.Equal(t, false, site["oidc_enabled"])
 	assert.Equal(t, false, site["passkey_login"])
@@ -801,6 +805,15 @@ func TestCustomDomainApiRoleServesOnlyRelay(t *testing.T) {
 
 	// 站点域名照常出页面。
 	assert.Equal(t, http.StatusOK, f.do(t, http.MethodGet, "shop.customer-brand.com", "/", "").Code)
+	defaultAPI := fmt.Sprintf("api-s%d.sites.example.com", f.site.Id)
+	for _, web := range []string{"shop.customer-brand.com", "shop.sites.example.com"} {
+		for _, path := range []string{"/v1/models", "/v1/chat/completions", "/fast/mj/submit/imagine", "/v1/tasks"} {
+			assert.Equal(t, http.StatusForbidden, f.do(t, http.MethodPost, web, path, "{}").Code, web+path)
+		}
+	}
+	assert.Equal(t, http.StatusNotFound, f.do(t, http.MethodGet, defaultAPI, "/", "").Code)
+	assert.Equal(t, http.StatusForbidden, f.do(t, http.MethodGet, defaultAPI, "/api/user/self", "").Code)
+	assert.Equal(t, http.StatusUnauthorized, f.do(t, http.MethodGet, defaultAPI, "/v1/models", "").Code)
 
 	// API 地址域名：页面 404。
 	for _, path := range []string{"/", "/pricing", "/docs", "/sign-in", "/wallet"} {
@@ -872,7 +885,8 @@ func TestStatusServerAddressFollowsCustomDomain(t *testing.T) {
 	service.InvalidateAdtySiteCache()
 	platform := f.do(t, http.MethodGet, "shop.sites.example.com", "/api/status", "")
 	require.Equal(t, http.StatusOK, platform.Code, platform.Body.String())
-	assert.Contains(t, platform.Body.String(), `"server_address":"https://shop.sites.example.com"`)
+	dedicatedAddress := fmt.Sprintf(`"server_address":"https://api-s%d.sites.example.com"`, f.site.Id)
+	assert.Contains(t, platform.Body.String(), dedicatedAddress)
 
 	// 只绑了站点域名：显示访客当前这个域名，不是平台子域名。
 	service.AdtyLoadCustomDomains = func() (map[string]int, error) {
@@ -882,7 +896,7 @@ func TestStatusServerAddressFollowsCustomDomain(t *testing.T) {
 	service.InvalidateAdtySiteCache()
 	custom := f.do(t, http.MethodGet, "shop.customer-brand.com", "/api/status", "")
 	require.Equal(t, http.StatusOK, custom.Code, custom.Body.String())
-	assert.Contains(t, custom.Body.String(), `"server_address":"https://shop.customer-brand.com"`)
+	assert.Contains(t, custom.Body.String(), dedicatedAddress)
 	assert.NotContains(t, custom.Body.String(), "shop.sites.example.com")
 
 	// 配了 API 地址域名：不管从哪个入口打开，显示的都是它。
@@ -916,4 +930,47 @@ func TestNewSiteFixtureRestoresLegalSiteAgreementVersion(t *testing.T) {
 		})
 		assert.Equal(t, initial, adty_setting.GetLegalSetting().SiteAgreementVersion, "newSiteFixture cleanup must restore SiteAgreementVersion")
 	}
+}
+
+func TestSubsiteFirstDocumentAndSupport(t *testing.T) {
+	f := newSiteFixture(t)
+	page, err := os.ReadFile("../web/index.html")
+	require.NoError(t, err)
+	probe := gin.New()
+	probe.Use(middleware.AdtySiteContext())
+	SetWebRouter(probe, WebAssets{IndexPage: page}, func(c *gin.Context) { c.Next() })
+	for _, path := range []string{"/", "/sign-in", "/index.html", "/team-register/demo", "/wallet", "/404"} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Host = "shop.sites.example.com"
+		out := httptest.NewRecorder()
+		probe.ServeHTTP(out, req)
+		assert.Equal(t, 200, out.Code, path)
+		assert.Contains(t, out.Body.String(), "Shop AI", path)
+		assert.Contains(t, out.Body.String(), "data-adty-site-id=", path)
+		assert.NotContains(t, out.Body.String(), "<title>ADTY AI", path)
+		assert.NotContains(t, out.Body.String(), `href="/adty-apple-touch-icon.png"`, path)
+		assert.Contains(t, out.Header().Get("Cache-Control"), "no-store", path)
+	}
+	req := httptest.NewRequest("GET", "/site.webmanifest", nil)
+	req.Host = "shop.sites.example.com"
+	manifest := httptest.NewRecorder()
+	probe.ServeHTTP(manifest, req)
+	assert.Equal(t, http.StatusNotFound, manifest.Code)
+	req = httptest.NewRequest("GET", "/mj/missing", nil)
+	req.Host = fmt.Sprintf("api-s%d.sites.example.com", f.site.Id)
+	unknown := httptest.NewRecorder()
+	probe.ServeHTTP(unknown, req)
+	assert.Equal(t, http.StatusNotFound, unknown.Code)
+	assert.NotContains(t, unknown.Body.String(), "<html")
+	cfg := adty_setting.GetSiteSetting()
+	old := *cfg
+	t.Cleanup(func() { *cfg = old })
+	cfg.SupportEmail, cfg.TawkPropertyID = "root@example.test", "main-only-widget"
+	require.NoError(t, f.db.Model(f.site).Update("brand", `{"support_contact":"WeChat: shop-support"}`).Error)
+	service.InvalidateAdtySiteCache()
+	public := f.do(t, "GET", "shop.sites.example.com", "/api/adty/site", "").Body.String()
+	assert.Contains(t, public, `"support_contact":"WeChat: shop-support"`)
+	assert.NotContains(t, f.do(t, "GET", "main.example.com", "/api/adty/site", "").Body.String(), "shop-support")
+	assert.NotContains(t, public, "root@example.test")
+	assert.NotContains(t, public, "main-only-widget")
 }

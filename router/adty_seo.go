@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -100,12 +101,13 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 				body = ""
 			}
 			out := adtyRenderHomePage(indexPage, page, head, body)
+			out = adtyBrandDocument(out, site, false)
 			if head.noindex {
 				c.Header("X-Robots-Tag", "noindex")
 			} else {
 				c.Header("X-Robots-Tag", "index, follow")
 			}
-			c.Header("Cache-Control", "no-cache")
+			c.Header("Cache-Control", "private, no-store")
 			c.Data(http.StatusOK, "text/html; charset=utf-8", out)
 			c.Abort()
 			return
@@ -228,6 +230,44 @@ func adtyRenderHomePage(indexPage []byte, page adtySEOHomeLang, head adtySEOHead
 		out = bytes.Replace(out, []byte(`<div id="root"`), append(prerendered, []byte(`<div id="root"`)...), 1)
 	}
 	return out
+}
+
+// Only server-controlled template markers are replaced. Brand values are data, never markup.
+func adtyBrandDocument(page []byte, site *model.AdtySite, direct bool) []byte {
+	brand := service.AdtyBrandFor(site)
+	esc := html.EscapeString
+	title := brand.Title
+	if title == "" {
+		title = brand.Name
+	}
+	icon := brand.FaviconURL
+	if icon == "" {
+		icon = brand.LogoURL
+	}
+	if icon == "" {
+		icon = "data:,"
+	}
+	block := func(start, end, replacement string) {
+		a, _, ok := bytes.Cut(page, []byte(start))
+		if !ok {
+			return
+		}
+		_, b, ok := bytes.Cut(page[len(a)+len(start):], []byte(end))
+		if !ok {
+			return
+		}
+		page = bytes.Join([][]byte{a, []byte(replacement), b}, nil)
+	}
+	if direct {
+		block(adtySEOHeadStart, adtySEOHeadEnd, `<title>`+esc(title)+`</title><meta name="robots" content="noindex" />`)
+	}
+	icons := `<meta name="title" content="` + esc(title) + `" /><link rel="icon" href="` + esc(icon) + `" />`
+	if icon != "data:," {
+		icons += `<link rel="apple-touch-icon" href="` + esc(icon) + `" />`
+	}
+	block("<!--adty-brand-icons-->", "<!--/adty-brand-icons-->", icons)
+	attrs := `<html data-adty-site-id="` + strconv.Itoa(site.Id) + `" data-site-name="` + esc(brand.Name) + `" data-site-title="` + esc(title) + `" data-site-logo="` + esc(brand.LogoURL) + `" data-site-icon="` + esc(icon) + `" data-site-api="` + esc(service.AdtySiteAPIBaseURL(site)) + `" `
+	return bytes.Replace(page, []byte("<html "), []byte(attrs), 1)
 }
 
 // adtySEOHeadInput 是一页首页头部的内容：主站来自 adty_seo_setting，分站来自站点品牌（任务 11.3）。

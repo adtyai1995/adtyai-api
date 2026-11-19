@@ -25,6 +25,7 @@ import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { ADTY_BRAND_NAME } from '@/lib/adty-brand'
 import { DEFAULT_LOGO } from '@/lib/constants'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
 
 interface FooterLink {
@@ -139,7 +140,7 @@ export function Footer(props: FooterProps) {
     demoSiteEnabled,
   } = useSystemConfig()
 
-  const displayLogo = systemLogo || props.logo || '/logo.png'
+  const displayLogo = systemLogo || (subsiteDocument() ? '' : props.logo || '/logo.png')
   const displayName = systemName || props.name || ADTY_BRAND_NAME
   const isDemoSiteMode = Boolean(demoSiteEnabled)
   const currentYear = new Date().getFullYear()
@@ -156,7 +157,8 @@ export function Footer(props: FooterProps) {
               {/* The default ADTY artwork already carries the wordmark, so the
                   name is not repeated next to it; a site-configured logo keeps
                   the accessible name through `alt`. */}
-              {displayLogo === DEFAULT_LOGO ? (
+              {!displayLogo && <span>{displayName}</span>}
+              {displayLogo === DEFAULT_LOGO && (
                 <>
                   <img
                     src={displayLogo}
@@ -170,7 +172,8 @@ export function Footer(props: FooterProps) {
                     className='dark:block hidden h-7 w-auto max-w-none object-contain'
                   />
                 </>
-              ) : (
+              )}
+              {displayLogo && displayLogo !== DEFAULT_LOGO && (
                 <img
                   src={displayLogo}
                   alt={displayName}

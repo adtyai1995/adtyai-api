@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -63,6 +64,8 @@ type AdtySitePreset struct {
 
 func resellerSetting() *adty_setting.ResellerSetting { return adty_setting.GetResellerSetting() }
 
+var adtyDefaultAPILabel = regexp.MustCompile(`^api-s[1-9][0-9]*(-[1-9][0-9]*)?$`)
+
 // AdtyNormalizeSubdomain 去空白转小写后按 DNS 标签规则、保留名校验。
 // xn-- 是 punycode，不能当站名。CNAME 目标和回源主机名在根域名下的那一段也自动保留。
 func AdtyNormalizeSubdomain(raw string) (string, error) {
@@ -71,7 +74,7 @@ func AdtyNormalizeSubdomain(raw string) (string, error) {
 		return "", ErrAdtySiteSubdomainBad
 	}
 	cfg := resellerSetting()
-	if slices.Contains(cfg.ReservedSubdomains, label) || slices.Contains(adtyInfrastructureLabels(cfg), label) {
+	if adtyDefaultAPILabel.MatchString(label) || slices.Contains(cfg.ReservedSubdomains, label) || slices.Contains(adtyInfrastructureLabels(cfg), label) {
 		return "", ErrAdtySiteSubdomainUsed
 	}
 	return label, nil

@@ -59,7 +59,11 @@ import { API_KEY_STATUS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import { apiKeySchema } from '../types'
 import { useApiKeys } from './api-keys-provider'
 
+import { subsiteDocument } from '@/lib/subsite-document'
+
 function getServerAddress(): string {
+  const tenant = subsiteDocument()
+  if (tenant) return tenant.api
   try {
     const raw = localStorage.getItem('status')
     if (raw) {

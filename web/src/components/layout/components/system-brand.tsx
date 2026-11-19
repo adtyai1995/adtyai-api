@@ -50,10 +50,10 @@ type SystemBrandProps = {
 export function SystemBrand(props: SystemBrandProps) {
   const { t } = useTranslation()
   const { status } = useStatus()
-  const { logo } = useSystemConfig()
+  const { logo, systemName } = useSystemConfig()
 
   const variant = props.variant ?? 'sidebar'
-  const name = status?.system_name || props.defaultName || ADTY_BRAND_NAME
+  const name = status?.system_name || systemName || props.defaultName || ADTY_BRAND_NAME
   const version =
     status?.version || props.defaultVersion || t('Unknown version')
 

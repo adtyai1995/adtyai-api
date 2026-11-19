@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ContentLang } from '@/lib/adty-lang'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 import enAgents from './en/agents.md?raw'
 import enCherryStudio from './en/cherry-studio.md?raw'
@@ -96,5 +97,17 @@ export function getDocMarkdown(slug: DocSlug, lang: ContentLang): string {
 
 /** Replaces {{BASE_URL}} with the site's API address (no trailing slash). */
 export function fillDocPlaceholders(markdown: string, baseUrl: string): string {
-  return markdown.replaceAll('{{BASE_URL}}', baseUrl)
+  const tenant = subsiteDocument()
+  if (!tenant) return markdown.replaceAll('{{BASE_URL}}', () => baseUrl)
+  // Character references keep names literal even inside Markdown tables or links.
+  const displayName = Array.from(tenant.name, (char) => `&#${char.codePointAt(0)};`).join('')
+  const values: Record<string, string> = {
+    '{{BASE_URL}}': baseUrl,
+    'name = "ADTY AI"': `name = ${JSON.stringify(tenant.name)}`,
+    '`ADTY AI`': displayName,
+    'ADTY AI': displayName,
+    adtyai: `site${tenant.id}`,
+    ADTYAI: `SITE${tenant.id}`,
+  }
+  return markdown.replaceAll(/\{\{BASE_URL\}\}|name = "ADTY AI"|`ADTY AI`|ADTY AI|adtyai|ADTYAI/g, (key) => values[key])
 }

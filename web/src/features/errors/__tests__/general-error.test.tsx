@@ -373,3 +373,20 @@ test('the report button stays hidden without a support address', async () => {
   expect(screen.queryByText('Report an issue')).not.toBeInTheDocument()
   expect(document.querySelector('a[href*="github.com"]')).toBeNull()
 })
+
+test('a subsite shows its non-email contact as text alongside its own ticket link', async () => {
+  document.documentElement.dataset.adtySiteId = '42'
+  try {
+    siteApi.get.mockResolvedValue({
+      data: { success: true, data: { support_contact: 'WeChat: shop-support' } },
+    })
+    const router = createTestRouter({ response: { status: 500 } })
+    render(<RouterProvider router={router} />)
+    await screen.findByText('Current page')
+    await act(() => router.navigate({ to: '/wallet' }))
+    expect(await screen.findByText('WeChat: shop-support')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Report an issue' })).toHaveAttribute('href', '/profile#tickets')
+  } finally {
+    delete document.documentElement.dataset.adtySiteId
+  }
+})

@@ -67,15 +67,14 @@ describe('useApiBaseUrl', () => {
     )
   })
 
-  it('falls back to origin on a subsite when status server_address is empty instead of leaking global api_base_url', async () => {
+  it('never advertises the website or global address when a subsite has no API address', async () => {
     http.get.mockResolvedValue(siteResponse('https://main-api.example.com'))
     http.getStatus.mockResolvedValue({
       server_address: '   ',
       adty_site: { id: 3, status: 'active', subdomain: 'sub' },
     })
     const { result } = renderHook(() => useApiBaseUrl(), { wrapper })
-    await waitFor(() => expect(http.getStatus).toHaveBeenCalled())
-    expect(result.current).toBe(window.location.origin)
+    await waitFor(() => expect(result.current).toBe(''))
   })
 
   it('continues to use the global api_base_url on the main site', async () => {

@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -52,7 +53,7 @@ func TestRelaySubmitSurfacesRequireCurrentSiteTerms(t *testing.T) {
 	} {
 		t.Run(route.method+route.path, func(t *testing.T) {
 			request := httptest.NewRequest(route.method, route.path, strings.NewReader(`{"model":"terms-test","input":"test"}`))
-			request.Host = f.site.Subdomain + "." + f.site.RootDomain
+			request.Host = strings.SplitN(service.AdtySiteAPIBaseURL(f.site), "://", 2)[1]
 			request.Header.Set("Authorization", "Bearer sk-"+token.Key)
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()

@@ -33,7 +33,18 @@ describe('useHomePageContent', () => {
   })
 
   afterEach(() => {
+    delete document.documentElement.dataset.adtySiteId
+    localStorage.clear()
     vi.restoreAllMocks()
+  })
+
+  it('does not show a previous custom homepage if a subsite content request fails', async () => {
+    document.documentElement.dataset.adtySiteId = '42'
+    localStorage.setItem('home_page_content', 'Previous tenant')
+    getHomePageContent.mockRejectedValueOnce(new Error('offline'))
+    const { result } = renderHook(() => useHomePageContent())
+    await waitFor(() => expect(result.current.isLoaded).toBe(true))
+    expect(result.current.content).toBe('')
   })
 
   it('fetches home page content and marks isLoaded=true even when localStorage throws SecurityError', async () => {

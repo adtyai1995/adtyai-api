@@ -66,7 +66,7 @@ export function Profile() {
                   onProfileUpdate={refreshProfile}
                 />
                 <TelegramBindCard purpose='user' />
-                <TicketCenter />
+                <div id='tickets'><TicketCenter /></div>
               </div>
 
               <div className='space-y-4 sm:space-y-6 xl:sticky xl:top-6'>

@@ -40,6 +40,7 @@ import { useApiInfo } from '@/features/dashboard/hooks/use-status-data'
 import { useStatus } from '@/hooks/use-status'
 
 import { useApiKeys } from './api-keys-provider'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 export function ApiKeysPrimaryButtons() {
   const { t } = useTranslation()
@@ -54,7 +55,7 @@ export function ApiKeysPrimaryButtons() {
     ? items
     : [
         {
-          url: serverAddress || window.location.origin,
+          url: serverAddress || (subsiteDocument()?.api ?? window.location.origin),
           route: serverAddress ? t('Default API address') : t('Current domain'),
           description: '',
         },

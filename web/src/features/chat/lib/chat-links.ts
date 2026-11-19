@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { API_KEY_STATUS } from '@/features/keys/constants'
 import { ADTY_BRAND_NAME, ADTY_BRAND_SLUG } from '@/lib/adty-brand'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 export type ChatLinkType = 'web' | 'custom-protocol' | 'fluent'
 
@@ -193,7 +194,7 @@ export function resolveChatUrl({
 
   if (url.includes('{aqbotConfig}')) {
     const query = [
-      `name=${encodeURIComponent(ADTY_BRAND_NAME)}`,
+      `name=${encodeURIComponent(subsiteDocument()?.name ?? ADTY_BRAND_NAME)}`,
       `baseurl=${encodeURIComponent(safeServerAddress)}`,
       `apikey=${encodeURIComponent(safeApiKey)}`,
       'type=openai',

@@ -113,7 +113,7 @@ func GetAdtyOwnerSite(c *gin.Context) {
 	cfg := adty_setting.GetResellerSetting()
 	common.ApiSuccess(c, gin.H{
 		"id": site.Id, "status": site.Status, "subdomain": site.Subdomain, "root_domain": site.RootDomain,
-		"host": service.AdtySiteDisplayHost(site), "base_url": service.AdtySiteBaseURL(site),
+		"host": service.AdtySiteDisplayHost(site), "base_url": service.AdtySiteBaseURL(site), "api_base_url": service.AdtySiteAPIBaseURL(site),
 		"cost_factor": d.String(), "markup_min": "0", "markup_max": limit,
 		"markup_increase_delay_hours": cfg.MarkupIncreaseDelayHours, "custom_domain_enabled": cfg.CustomDomainEnabled,
 		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "bonus_methods": service.AdtySiteBonusMethods(site),

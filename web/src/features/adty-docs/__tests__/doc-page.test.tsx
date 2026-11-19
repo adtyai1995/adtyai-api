@@ -53,10 +53,24 @@ function renderDoc(slug: string) {
 }
 
 afterEach(async () => {
+  delete document.documentElement.dataset.adtySiteId
+  delete document.documentElement.dataset.siteName
   await i18next.changeLanguage('en')
 })
 
 describe('DocPage', () => {
+  it('shows the site name as text and keeps the TOML example copyable', async () => {
+    const fields = document.documentElement.dataset
+    fields.adtySiteId = '42'
+    fields.siteName = 'A "North" [Shop](https://other.example)'
+    renderDoc('codex-cli')
+    await screen.findByRole('heading', { level: 1, name: 'Codex CLI' })
+    const article = screen.getByRole('article')
+    expect(article.textContent).toContain(`Add ${fields.siteName} as a provider`)
+    expect(article.textContent).toContain(`name = ${JSON.stringify(fields.siteName)}`)
+    expect(article.textContent).toContain('[model_providers.site42]')
+    expect(article.querySelector('a[href="https://other.example"]')).toBeNull()
+  })
   it('shows the Chinese page when the interface language is zhCN', async () => {
     await i18next.changeLanguage('zhCN')
     renderDoc('quickstart')

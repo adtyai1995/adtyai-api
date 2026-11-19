@@ -18,13 +18,16 @@ import (
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
 type pluginDispatchStateKey struct{}
 
 type pluginDispatchState struct {
+	site       *model.AdtySite
 	generation *jsplugin.RoutingGeneration
 	hit        atomic.Bool
 	writer     *gatedResponseWriter
@@ -82,6 +85,10 @@ func newPluginGenerationBuilder(staticRoutes []gin.RouteInfo, trustedProxies []s
 
 func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, binding jsplugin.RouteBinding) []gin.HandlerFunc {
 	pinRoute := func(c *gin.Context) {
+		if service.AdtySiteForRequest(c) != nil && !service.AdtyIsApiOnlyHost(c.Request.Host) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
 		pinnedGeneration := generation
 		if state, _ := c.Request.Context().Value(pluginDispatchStateKey{}).(*pluginDispatchState); state != nil && state.generation != nil {
 			pinnedGeneration = state.generation
@@ -305,6 +312,9 @@ func importPluginDispatchState() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		state, _ := c.Request.Context().Value(pluginDispatchStateKey{}).(*pluginDispatchState)
 		if state != nil {
+			if state.site != nil {
+				c.Set(service.AdtySiteContextKey, state.site)
+			}
 			if c.FullPath() != "" {
 				state.markHit()
 			}
@@ -360,16 +370,26 @@ func pluginRouteRecovery() gin.HandlerFunc {
 }
 
 func (d *pluginRouteDispatcher) dispatch(c *gin.Context) {
+	if !d.tryDispatch(c) {
+		c.Next()
+	}
+}
+
+func init() {
+	middleware.AdtyTryAPIPlugin = (&pluginRouteDispatcher{registry: jsplugin.DefaultRegistry}).tryDispatch
+}
+
+func (d *pluginRouteDispatcher) tryDispatch(c *gin.Context) bool {
 	generation := d.registry.Generation()
 	if generation == nil || generation.RuntimeHandler() == nil {
-		c.Next()
-		return
+		return false
 	}
 
 	previousTag, hadPreviousTag := c.Get(middleware.RouteTagKey)
 	c.Set(middleware.RouteTagKey, "relay")
 	originalContext := c.Request.Context()
 	state := &pluginDispatchState{
+		site:       service.AdtySiteForRequest(c),
 		generation: generation,
 		requestID:  c.GetString(common.RequestIdKey),
 		language:   c.GetString(string(constant.ContextKeyLanguage)),
@@ -384,7 +404,7 @@ func (d *pluginRouteDispatcher) dispatch(c *gin.Context) {
 			c.Writer.WriteHeaderNow()
 		}
 		c.Abort()
-		return
+		return true
 	}
 
 	c.Request = c.Request.WithContext(originalContext)
@@ -393,7 +413,7 @@ func (d *pluginRouteDispatcher) dispatch(c *gin.Context) {
 	} else {
 		delete(c.Keys, middleware.RouteTagKey)
 	}
-	c.Next()
+	return false
 }
 
 type gatedResponseWriter struct {

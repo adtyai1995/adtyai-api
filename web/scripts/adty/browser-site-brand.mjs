@@ -29,7 +29,6 @@ assert.ok(base && username && password && process.env.ADTY_BROWSER_SQL_DSN)
 assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(base).hostname))
 const browser = await chromium.launch({
   headless: true,
-  args: ['--host-resolver-rules=MAP *.sites.example.test 127.0.0.1'],
   ...(process.env.ADTY_CHROMIUM_PATH
     ? { executablePath: process.env.ADTY_CHROMIUM_PATH }
     : {}),
@@ -88,7 +87,7 @@ try {
   }
   await api(root, 'put', '/api/adty/admin/reseller/settings', {
     enabled: true,
-    root_domains: ['sites.example.test'],
+    root_domains: ['sites.localhost'],
     cost_factor: 0.8,
     min_cost_factor: 0.5,
     max_markup: 3,
@@ -122,7 +121,7 @@ try {
       await api(root, 'post', '/api/adty/admin/sites', {
         user_id: userID,
         subdomain: name,
-        root_domain: 'sites.example.test',
+        root_domain: 'sites.localhost',
       })
     )
   }
@@ -138,9 +137,13 @@ try {
     viewport: { width: 1440, height: 1000 },
   })
   const publicPage = await publicContext.newPage()
+  await publicPage.addInitScript(() => {
+    localStorage.setItem('status', JSON.stringify({ system_name: 'Previous tenant', logo: '/logo.png' }))
+    localStorage.setItem('system-config-storage', JSON.stringify({ state: { config: { systemName: 'Previous tenant', logo: '/logo.png' } }, version: 0 }))
+  })
   publicPage.on('pageerror', (error) => errors.push(error.message))
-  const siteURL = `http://brandowner.sites.example.test:${new URL(base).port}`
-  const otherURL = `http://brandother.sites.example.test:${new URL(base).port}`
+  const siteURL = `http://brandowner.sites.localhost:${new URL(base).port}`
+  const otherURL = `http://brandother.sites.localhost:${new URL(base).port}`
   const image = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv2kAAAAASUVORK5CYII=',
     'base64'
@@ -212,7 +215,15 @@ try {
       await page.getByLabel('Website title', { exact: true }).inputValue(),
       title
     )
+    const first = await publicPage.goto(`${siteURL}/sign-in`)
+    assert.ok((await first.text()).includes(`<title>${title}</title>`))
+    assert.ok(first.headers()['cache-control'].includes('no-store'))
+    await publicPage.getByLabel('Username or Email').waitFor()
+    assert.equal(await publicPage.title(), title)
+    assert.doesNotMatch(await publicPage.locator('body').innerText(), /ADTY AI|Previous tenant/i)
     await publicPage.goto(siteURL)
+    await publicPage.locator('footer').getByText(new RegExp(name)).first().waitFor()
+    assert.doesNotMatch(await publicPage.locator('body').innerText(), /ADTY AI|Previous tenant/i)
     await publicPage.waitForFunction(
       (value) =>
         document.title === value &&
@@ -284,7 +295,7 @@ try {
       (value) =>
         document.title === value &&
         document.querySelector('link[rel~="icon"]')?.getAttribute('href') ===
-          '/favicon.ico',
+          'data:,',
       name
     )
     assert.equal(

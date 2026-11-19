@@ -20,6 +20,7 @@ import { queryOptions, type QueryClient } from '@tanstack/react-query'
 
 import { getStatus } from '@/lib/api'
 import { DEFAULT_SYSTEM_NAME, DEFAULT_LOGO } from '@/lib/constants'
+import { subsiteDocument } from '@/lib/subsite-document'
 import {
   useSystemConfigStore,
   type CurrencyConfig,
@@ -91,12 +92,12 @@ export function mapStatusDataToConfig(
 
   return {
     systemName: (data.system_name as string | undefined) || DEFAULT_SYSTEM_NAME,
-    logo: (data.logo as string | undefined) || DEFAULT_LOGO,
+    logo: (data.logo as string | undefined) || (data.adty_site ? '' : DEFAULT_LOGO),
     siteTitle: (data.site_title as string | undefined) || '',
     favicon:
       (data.favicon as string | undefined) ||
       (data.logo as string | undefined) ||
-      '/favicon.ico',
+      (data.adty_site ? 'data:,' : '/favicon.ico'),
     themeColor: (data.theme_color as string | undefined) || '',
     footerHtml: data.footer_html as string | undefined,
     demoSiteEnabled: data.demo_site_enabled as boolean | undefined,
@@ -110,7 +111,7 @@ export function mapStatusDataToConfig(
 /** Read the last known status from localStorage (survives reload, may be stale). */
 export function readCachedStatus(): StatusData | null {
   try {
-    if (typeof window === 'undefined') return null
+    if (typeof window === 'undefined' || subsiteDocument()) return null
     const raw = window.localStorage.getItem(STATUS_STORAGE_KEY)
     return raw ? (JSON.parse(raw) as StatusData) : null
   } catch {

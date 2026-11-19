@@ -20,17 +20,10 @@ import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { useAdtySite } from '@/features/adty-site/api'
 import { cn } from '@/lib/utils'
-
-// ADTY task 8.9: problems are reported to our support address from the site
-// settings (GET /api/adty/site) instead of the upstream issue tracker. Without
-// a configured address the report button and hint stay hidden.
-function useSupportEmail(): string {
-  const { data } = useAdtySite()
-  return data?.support_email?.trim() ?? ''
-}
+import { subsiteDocument } from '@/lib/subsite-document'
 
 type GeneralErrorProps = React.HTMLAttributes<HTMLDivElement> & {
   minimal?: boolean
@@ -53,7 +46,8 @@ export function GeneralError({
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { history } = useRouter()
-  const supportEmail = useSupportEmail()
+  const { data: site } = useAdtySite()
+  const supportEmail = site?.support_email?.trim()
   useEffect(() => {
     const isNativeModuleLoadError =
       error instanceof TypeError &&
@@ -118,6 +112,11 @@ export function GeneralError({
             })}
           </p>
         )}
+        {!minimal && !supportEmail && site?.support_contact && (
+          <p className='text-muted-foreground max-w-full text-xs break-words'>
+            {site.support_contact}
+          </p>
+        )}
         {!minimal && (
           <div className='mt-6 flex flex-wrap justify-center gap-3'>
             <Button variant='outline' onClick={() => history.go(-1)}>
@@ -130,6 +129,11 @@ export function GeneralError({
               >
                 {t('Report an issue')}
               </Button>
+            )}
+            {!supportEmail && subsiteDocument() && (
+              <a className={buttonVariants({ variant: 'outline' })} href='/profile#tickets'>
+                {t('Report an issue')}
+              </a>
             )}
             <Button variant='brand' onClick={() => navigate({ to: '/' })}>
               {t('Back to Home')}

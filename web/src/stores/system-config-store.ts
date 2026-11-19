@@ -20,6 +20,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 import { DEFAULT_SYSTEM_NAME, DEFAULT_LOGO } from '@/lib/constants'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 export type CurrencyDisplayType = 'USD' | 'CNY' | 'TOKENS' | 'CUSTOM'
 
@@ -97,8 +98,10 @@ export const useSystemConfigStore = create<SystemConfigState>()(
   persist(
     (set) => ({
       config: {
-        systemName: DEFAULT_SYSTEM_NAME,
-        logo: DEFAULT_LOGO,
+        systemName: subsiteDocument()?.name ?? DEFAULT_SYSTEM_NAME,
+        logo: subsiteDocument()?.logo ?? DEFAULT_LOGO,
+        siteTitle: subsiteDocument()?.title,
+        favicon: subsiteDocument()?.icon,
         currency: { ...DEFAULT_CURRENCY_CONFIG },
       },
       loading: true,
@@ -124,6 +127,7 @@ export const useSystemConfigStore = create<SystemConfigState>()(
     }),
     {
       name: 'system-config-storage',
+      skipHydration: Boolean(subsiteDocument()),
       partialize: (state) => ({
         config: state.config,
         loadedLogoUrl: state.loadedLogoUrl,

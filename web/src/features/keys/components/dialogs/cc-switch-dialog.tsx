@@ -29,6 +29,7 @@ import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { getUserModels } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 const APP_CONFIGS = {
   claude: {
@@ -56,6 +57,8 @@ const APP_CONFIGS = {
 type AppType = keyof typeof APP_CONFIGS
 
 function getServerAddress(): string {
+  const tenant = subsiteDocument()
+  if (tenant) return tenant.api
   try {
     const raw = localStorage.getItem('status')
     if (raw) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,14 +30,11 @@ func SetRouter(router *gin.Engine, assets WebAssets) {
 		SetWebRouter(router, assets, pluginDispatcher)
 	} else {
 		frontendBaseUrl = strings.TrimSuffix(frontendBaseUrl, "/")
-		router.NoRoute(
-			rejectRetiredFeaturePath,
-			pluginDispatcher,
-			middleware.RouteTag("web"),
-			middleware.AccessTokenAudit(),
-			func(c *gin.Context) {
+		setWebRouter(router, assets, pluginDispatcher, func(c *gin.Context) {
+			if service.AdtySiteForRequest(c) == nil {
 				c.Redirect(http.StatusMovedPermanently, fmt.Sprintf("%s%s", frontendBaseUrl, c.Request.RequestURI))
-			},
-		)
+				c.Abort()
+			}
+		})
 	}
 }

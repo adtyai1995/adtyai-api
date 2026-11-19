@@ -20,6 +20,7 @@ import { useMemo } from 'react'
 
 import type { SystemStatus } from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 import {
   type ChatPreset,
@@ -28,7 +29,7 @@ import {
 } from '../lib/chat-links'
 
 function getStoredStatusChats(): RawChatConfig {
-  if (typeof window === 'undefined') return undefined
+  if (typeof window === 'undefined' || subsiteDocument()) return undefined
   try {
     const raw = window.localStorage.getItem('status')
     if (!raw) return undefined
@@ -51,7 +52,7 @@ function extractServerAddress(status: SystemStatus | null) {
   }
 
   if (typeof window !== 'undefined') {
-    return window.location.origin
+    return subsiteDocument()?.api ?? window.location.origin
   }
 
   return ''

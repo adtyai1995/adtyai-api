@@ -364,11 +364,13 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - 要先打开 `custom_domain_enabled`（默认关），并填好 `cloudflare_apiToken`（密钥）、`cloudflare_zone_id`、`cname_target`，否则打不开。另有 `cloudflare_account_id`、`fallback_origin`（回源主机名）、`turnstile_widgets`（每个 widget 的 `id`、`site_key`）和 `turnstile_widget_secret`（widget id → secret，密钥）。
 - Cloudflare Token 和 widget secret 在 options 中以 AES-256-GCM 加密；只有部署固定的 `CRYPTO_SECRET` 能解密，数据库备份不包含该 key。历史明文首次读取时在行锁内升级，重复加载保持密文不变。错误 key 或损坏密文会清空本节点此域的运行密钥并记录不含秘密的错误，其余安全设置仍可加载。Root 可替换/清空密钥；空串保存保持旧值，任何角色均不能从接口读到原值或密文。
 - **两种 role**：每个域名带 `role`，建站时用 `POST /api/adty/site/domains {hostname, role}` 指定（`controller/adty_reseller.go:47-52`、`model/adty_site_domain.go:13-28`）：
-  - `role=site`（默认）：站点域名，承接完整页面和账号流程——浏览、注册、登录、充值、密钥、用量都行；只有平台级管理接口（`/api/adty/admin`、`/api/option`、`/api/channel` 等）返回 403（`middleware/adty_site_context.go:115-120,168-179`）。
+  - `role=site`（默认）承接网站、登录、充值、支付返回和账户接口。模型调用在转发与预扣前返回 403。
   - `role=base_url`：API 地址，只放行 relay（`/v1`、`/v1beta`、`/mj`、`/pg`）和探活/元信息接口（`/api/status`、`/api/ready`、`/api/uptime/status`、`/api/ratio_config`、`/api/adty/groups/display`、`/api/adty/site`、`/api/adty/pricing*`）。其他页面一律 404，其他账号接口一律 403（`middleware/adty_site_context.go:100-114,181-196`）。
 - **流程**：站长在站点设置里填子域名（不能是根域名，不能在我们的根域名、主站域名、CNAME 目标、回源主机名下）→ 后端调 Cloudflare 建自定义主机名（HTTP 验证、DV 证书），3 秒后再查一次取验证记录 → 站长中心显示「把这个域名 CNAME 到 `cname_target`」和要加的 TXT 记录 → 主节点每 5 分钟查一次，主机名和证书都是 active 才启用；72 小时还不通标失败，站长重新提交就是重试。
 - **Turnstile**：域名启用后，按 `turnstile_widgets` 的顺序登记进第一个还有空位的 widget（每个 widget 最多 10 个域名）；名额满了域名照常能用，之后每 5 分钟重试登记。`/api/status` 按当前站点返回对应的 site key，校验时用对应的 secret，并核对 Cloudflare 返回的主机名。
-- **`/api/status` 的 `server_address`**：优先返回这个站已启用的 `role=base_url` 域名（专门给客户端复制），没有时用访客当前所在的站点域名，最后回落到平台子域名（`service/adty_site_resolve.go:350-389`）。
+- `/api/status` 的 `server_address` 优先使用本站已激活的 `role=base_url` 域名，否则使用 `api-s<site_id>.<root_domain>`。原有主机名发生冲突时以站长后台返回的地址为准。同站 Key 换入口后继续按原个人、团队或站长自用账户计费。
+- 分站首份 HTML 根据请求主机名提供站名、标题与图标。未配置 Logo 时使用站名。外部客服使用本站联系方式，缺省时通过个人中心的工单联系本站。
+- 切换前在现有版本先绑定独立 API 自定义域名并验证 DNS、TLS、模型列表、流式调用及在途任务查询，再向客户公布 Base URL 和切换日期。使用新默认域名的部署可先将专用主机引流到新版节点，迁移完成后升级网站入口。CDN 保留原始 Host，仅缓存静态资源，账户、支付及模型调用绕过共享缓存，流式接口支持 SSE/WebSocket。
 - 表：`adty_site_domains`（`role` 列）。接口：`GET`、`POST /api/adty/site/domains`，`DELETE /api/adty/site/domains/:id`（要重新验证）。
 - 2026-11-01 还没用真实的 Cloudflare 账号测过，代码按官方 API 文档写，上线前按任务 11.0 实测。
 
@@ -522,9 +524,9 @@ Telegram 通知解绑分别用 `DELETE /api/adty/telegram/me` 和 `DELETE /api/a
 
 **首页 SEO**：
 
-- 8 个首页网址：`/`（英文，另有 x-default 指向它）、`/zh-cn`、`/zh-tw`、`/fr`、`/ja`、`/ko`、`/ru`、`/vi`。用户选过语言、或者已登录且界面不是英文时，打开 `/` 跳到对应语言的首页，原来的查询参数保留；跳转用路由目标，不再把查询参数拼进路径，避免预加载反复请求 `/`。搜索引擎和第一次来的访客看到英文。
-- Go 返回首页时写进标题、描述、canonical（不带查询参数）、8 条 hreflang、Open Graph、Twitter 卡片，只在 `/` 写 WebSite 结构化数据；正文在构建时预渲染进 `web/dist/adty-home.json`，插在 `#root` 前面。
-- 后台「系统设置 → 站点 → Home Page SEO」：`adty_seo_setting.home_title`、`home_description`（按语言，没填用英文的，英文也没填时标题用 ADTY AI）、`og_image`（默认 `/adty-og.png`）。说明写的是 8 个首页网址。一次保存多个字段时，不会因为中途刷新设置把还没保存的草稿覆盖掉；站点设置页也一样。
+- 2 个正式语言首页网址：`/`（英文，另有 x-default 指向它）与 `/zh-cn`（简体中文）。用户选过语言、或者已登录且界面不是英文时，打开 `/` 跳到对应语言的首页，原来的查询参数保留；跳转用路由目标，不再把查询参数拼进路径，避免预加载反复请求 `/`。搜索引擎和第一次来的访客看到英文。
+- Go 返回首页时写进标题、描述、canonical（不带查询参数）、2 个正式语言的 hreflang（含 x-default）、Open Graph、Twitter 卡片，只在 `/` 写 WebSite 结构化数据；正文在构建时预渲染进 `web/dist/adty-home.json`，插在 `#root` 前面。
+- 后台「系统设置 → 站点 → Home Page SEO」：`adty_seo_setting.home_title`、`home_description`（按语言，没填用英文的，英文也没填时标题用 ADTY AI）、`og_image`（默认 `/adty-og.png`）。说明写明作用于 2 个正式语言首页网址（英文 `/` 与简体中文 `/zh-cn`）。一次保存多个字段时，不会因为中途刷新设置把还没保存的草稿覆盖掉；站点设置页也一样。
 - 其余页面一律 noindex。服务器地址（`ServerAddress`）没设或还是 `http://localhost:3000` 时，不写 canonical、hreflang 和结构化数据；请求的域名和服务器地址不同时首页加 noindex。分站见「站长分站」。
 - 落地页保持白底。页面只渲染五段：Hero（首屏）、Migration（迁移说明）、Endpoints（接入地址）、AffiliateBanner（返佣）、ClosingCta（收尾 CTA，标题是「Start with one request. / Decide about the invoice later.」），见 `web/src/features/adty-home/index.tsx:43-51` 和 `web/src/features/adty-home/components/closing-cta.tsx:47-49`。Hero 的「Read the docs」指向 `/docs`；三步、热门模型、卖点、常见问题等旧区块不在当前首页渲染。
 - `/robots.txt` 和 `/sitemap.xml` 都由 Go 返回。主站 robots 屏蔽 `/api/`、`/v1/`、`/pay/`，sitemap 只列允许索引的首页语言网址并附 hreflang；没开 SEO 的分站整站 `Disallow: /`，不列入 sitemap。

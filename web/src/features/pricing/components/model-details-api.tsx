@@ -41,6 +41,7 @@ import { Badge } from '@/components/ui/badge'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useStatus } from '@/hooks/use-status'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 import {
   buildSupportedParameters,
@@ -236,7 +237,7 @@ function CodeSamplesSection(props: {
     if (candidate && typeof candidate === 'string') {
       return candidate.replace(/\/$/, '')
     }
-    if (typeof window !== 'undefined') return window.location.origin
+    if (typeof window !== 'undefined') return subsiteDocument()?.api ?? window.location.origin
     return 'https://api.example.com'
   }, [status])
 

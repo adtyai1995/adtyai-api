@@ -281,6 +281,10 @@ function DomainsCard(props: { site: OwnerSite }) {
           <span className='font-mono'>{props.site.host}</span>{' '}
           <CopyButton value={props.site.base_url} />
         </p>
+        {props.site.api_base_url && <p className='text-sm'>
+          {t('API address')}: <span className='font-mono'>{props.site.api_base_url}</span>{' '}
+          <CopyButton value={props.site.api_base_url} />
+        </p>}
         {!props.site.custom_domain_enabled ? (
           <p className='text-muted-foreground text-sm'>
             {t('Custom domains are not available yet.')}

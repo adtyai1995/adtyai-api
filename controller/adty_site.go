@@ -1,7 +1,11 @@
 package controller
 
 import (
+	"net/mail"
+	"strings"
+
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
@@ -14,13 +18,24 @@ type adtySiteView struct {
 	// 充值接口 /api/adty/topup/info 要登录，访客读不到，所以在这里公开一份。
 	MinTopUp int `json:"min_topup"`
 	// SiteAgreementVersion 是申请开站时必须回传的协议版本。
-	SiteAgreementVersion int `json:"site_agreement_version"`
+	SiteAgreementVersion int    `json:"site_agreement_version"`
+	SupportContact       string `json:"support_contact,omitempty"`
 }
 
 // GetAdtySite 是公开的站点配置（任务 8.3）：首页、文档、快速接入卡、客服和退款政策开关都读它。
 func GetAdtySite(c *gin.Context) {
+	settings := *adty_setting.GetSiteSetting()
+	var contact string
+	if site := service.AdtySiteForRequest(c); site != nil {
+		settings = adty_setting.SiteSetting{APIBaseURL: service.AdtySiteAPIBaseURL(site), RefundPolicyEnabled: settings.RefundPolicyEnabled}
+		contact = strings.TrimSpace(service.AdtyBrandFor(site).SupportContact)
+		if addr, err := mail.ParseAddress(contact); err == nil && addr.Address == contact {
+			settings.SupportEmail = addr.Address
+		}
+	}
 	common.ApiSuccess(c, adtySiteView{
-		SiteSetting:          *adty_setting.GetSiteSetting(),
+		SiteSetting:          settings,
+		SupportContact:       contact,
 		MinTopUp:             operation_setting.MinTopUp,
 		SiteAgreementVersion: adty_setting.GetLegalSetting().SiteAgreementVersion,
 	})

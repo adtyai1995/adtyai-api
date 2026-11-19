@@ -21,11 +21,13 @@ import { useQuery } from '@tanstack/react-query'
 import { useStatus } from '@/hooks/use-status'
 import { api } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 /** Public site settings from GET /api/adty/site (adty task 8.3). */
 export type AdtySite = {
   api_base_url: string
   support_email: string
+  support_contact?: string
   telegram_url: string
   support_hours: string
   tawk_property_id: string
@@ -63,12 +65,14 @@ export function useAdtySite() {
 export function useApiBaseUrl(): string {
   const site = useAdtySite()
   const { status } = useStatus()
+  const tenant = subsiteDocument()
   const serverAddress =
     typeof status?.server_address === 'string' ? status.server_address : ''
   const isSubsite = Boolean(status?.adty_site ?? status?.data?.adty_site)
-  const candidates = isSubsite
-    ? [serverAddress]
-    : [site.data?.api_base_url ?? '', serverAddress]
+  if (tenant || isSubsite) {
+    return ((isSubsite && serverAddress.trim()) || tenant?.api || '').replace(/\/+$/, '')
+  }
+  const candidates = [site.data?.api_base_url ?? '', serverAddress]
   const configured = candidates.map((value) => value.trim()).find(Boolean)
   const origin = typeof window === 'undefined' ? '' : window.location.origin
   return (configured || origin).replace(/\/+$/, '')
