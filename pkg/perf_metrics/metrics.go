@@ -32,6 +32,16 @@ var taskSampleMu sync.Mutex
 // later bucket does not count the same terminal task again.
 var taskSampleNow = time.Now
 
+// SetTaskSampleNowForTest moves the task-sample clock. A nil function restores time.Now.
+// Production sampling does not call this.
+func SetTaskSampleNowForTest(now func() time.Time) {
+	if now == nil {
+		taskSampleNow = time.Now
+		return
+	}
+	taskSampleNow = now
+}
+
 // seriesSchema is a stable client cache/schema marker. Do not change it when
 // hiding fields or making response-only privacy hardening changes.
 const seriesSchema = "dbcd0a3c01b55203"
