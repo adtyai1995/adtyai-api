@@ -1,13 +1,13 @@
 package service
 
 import (
-	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -157,4 +157,46 @@ func TestTeamTopupSubsiteNoGiftQuoteIgnoresPersonalGiftCoverage(t *testing.T) {
 	require.True(t, order.BonusUSD.IsZero())
 	require.True(t, order.BonusRate.IsZero())
 	require.EqualValues(t, 500000, order.CreditQuota)
+}
+
+func TestTeamTopupEndpointIdempotencyAcrossProviders(t *testing.T) {
+	db := prepareReferralDB(t)
+	previousPrice := operation_setting.Price
+	operation_setting.Price = 7.2
+	t.Cleanup(func() { operation_setting.Price = previousPrice })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status_code":200,"message":"success","data":{"trade_id":"tid-team-cross","order_id":"team","amount":"1","actual_amount":"1.01","token":"TAddr","expiration_time":900,"status":1,"payment_url":"https://pay.example/usdt"}}`))
+	}))
+	t.Cleanup(server.Close)
+	cfg := setting.GetBEpusdtSetting()
+	saved := *cfg
+	cfg.Enabled, cfg.BaseURL, cfg.Secret, cfg.TradeTypes = true, server.URL, "team-bepusdt-secret", []string{"usdt.trc20"}
+	t.Cleanup(func() { *cfg = saved })
+
+	seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "team-cross-epay", GatewayURL: "https://pay.example.com", MerchantId: "m-cross",
+		OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"))
+
+	leader := referralUser(t, db, "team-cross-leader")
+	created, err := CreateAdtyTeam(leader.Id, 0, "CrossIdem", decimal.NewFromInt(1))
+	require.NoError(t, err)
+
+	// 1. Start Epay order with idempotency key "shared-key-1"
+	epayOrder, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "shared-key-1", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, model.PaymentProviderAdtyEpay, epayOrder.Provider)
+
+	// 2. Replaying same key with BEpusdt must fail with ErrAdtyTeamInvalid (not create a second order)
+	_, err = StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "usdt.trc20", 0, "shared-key-1", "127.0.0.1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+
+	// 3. Replaying same key with CreateAdtyTeamTopupOrder must also fail with ErrAdtyTeamInvalid
+	_, err = CreateAdtyTeamTopupOrder(leader.Id, created.Team.Id, decimal.NewFromInt(1), "shared-key-1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+
+	var count int64
+	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("team_id = ?", created.Team.Id).Count(&count).Error)
+	require.EqualValues(t, 1, count, "only one team topup order may exist for the shared idempotency key")
 }
