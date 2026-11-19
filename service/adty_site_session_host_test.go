@@ -12,6 +12,31 @@ import (
 
 // 自定义域名承接完整客户端体验：还在服务的站点上可以登录和二次验证，
 // 站点关掉后自定义域名和平台子域名一样拒绝。
+func TestOwnerSelfUseLoginIsLimitedToOwnServingSitePG(t *testing.T) {
+	db := prepareSiteDB(t)
+	owner, site := openActiveSite(t, db, "owner-login")
+	otherOwner, other := openActiveSite(t, db, "other-login")
+	main := referralUser(t, db, "ordinary-main")
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/api/user/login", nil)
+	ctx.Request.Host = site.Subdomain + "." + site.RootDomain
+	ctx.Set(AdtySiteContextKey, site)
+	assert.True(t, AdtySiteLoginAllowed(ctx, owner.Id))
+	assert.False(t, AdtySiteLoginAllowed(ctx, otherOwner.Id))
+	assert.False(t, AdtySiteLoginAllowed(ctx, main.Id))
+	ctx.Request.Host = other.Subdomain + "." + other.RootDomain
+	ctx.Set(AdtySiteContextKey, other)
+	assert.False(t, AdtySiteLoginAllowed(ctx, owner.Id))
+	ctx.Request.Host = site.Subdomain + "." + site.RootDomain
+	ctx.Set(AdtySiteContextKey, site)
+	require.NoError(t, db.Model(site).Update("status", model.AdtySiteStatusClosed).Error)
+	InvalidateAdtySiteCache()
+	assert.False(t, AdtySiteLoginAllowed(ctx, owner.Id))
+	mainCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	mainCtx.Request = httptest.NewRequest("POST", "http://localhost/api/user/login", nil)
+	assert.True(t, AdtySiteLoginAllowed(mainCtx, owner.Id))
+}
+
 func TestAdtySiteSessionIssuedOnServingCustomHost(t *testing.T) {
 	db := prepareSiteDB(t)
 	_, site := openActiveSite(t, db, "sess")

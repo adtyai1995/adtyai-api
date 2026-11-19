@@ -45,6 +45,8 @@ func IsAdtyEpayMethod(method string) bool {
 
 // AdtyQuote 是一笔充值的报价：面额、加赠、入账额度和应付。
 type AdtyQuote struct {
+	Business        string          `json:"business,omitempty"`
+	SiteID          int             `json:"-"`
 	FaceUSD         decimal.Decimal `json:"face_usd"`
 	BonusRate       decimal.Decimal `json:"bonus_rate"` // 百分数，2.5 表示 2.5%
 	BonusUSD        decimal.Decimal `json:"bonus_usd"`
@@ -84,6 +86,10 @@ func AdtyQuoteFor(userGroup string, face int64, method string) (*AdtyQuote, erro
 // AdtyQuoteForSite 算一笔充值的报价；site 是客户所属的分站（主站传 nil），赠金取本站获授权的支付方式规则。
 // TOKENS 显示模式会改变金额含义，这种模式下不报价。
 func AdtyQuoteForSite(site *model.AdtySite, userGroup string, face int64, method string) (*AdtyQuote, error) {
+	return adtyQuoteForSite(site, userGroup, face, method, false)
+}
+
+func adtyQuoteForSite(site *model.AdtySite, userGroup string, face int64, method string, owner bool) (*AdtyQuote, error) {
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		return nil, common.NewMessage("Top-up is unavailable while quota is displayed as tokens")
 	}
@@ -94,7 +100,13 @@ func AdtyQuoteForSite(site *model.AdtySite, userGroup string, face int64, method
 	if face < int64(operation_setting.MinTopUp) || face <= 0 {
 		return nil, common.NewMessage("Top-up amount cannot be less than {{amount}}", map[string]any{"amount": operation_setting.MinTopUp})
 	}
-	quote, err := adtyQuotaQuoteForSite(site, userGroup, decimal.NewFromInt(face), method)
+	var quote *AdtyQuote
+	var err error
+	if owner {
+		quote, err = adtyOwnerQuotaQuote(face)
+	} else {
+		quote, err = adtyQuotaQuoteForSite(site, userGroup, decimal.NewFromInt(face), method)
+	}
 	if err != nil {
 		return nil, err
 	}

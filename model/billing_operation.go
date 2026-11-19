@@ -303,6 +303,9 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 		if err := freezeBillingPayerTx(tx, &result, inserted.RowsAffected == 1); err != nil {
 			return err
 		}
+		if result.PayerKind == BillingPayerOwner && result.SiteId != spec.SiteId {
+			return ErrBillingOperationConflict
+		}
 		snapshotWritten := false
 		if result.SiteId != spec.SiteId || result.SiteMarkup != spec.SiteMarkup || result.SiteCostFactor != spec.SiteCostFactor {
 			result.SiteId, result.SiteMarkup, result.SiteCostFactor = spec.SiteId, spec.SiteMarkup, spec.SiteCostFactor
@@ -395,6 +398,10 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 		if err != nil {
 			return err
 		}
+		balance, err = ownerScopedWallet(tx, &result, balance)
+		if err != nil {
+			return err
+		}
 		if balance < delta {
 			return ErrBillingWalletInsufficient
 		}
@@ -423,7 +430,7 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 		}
 		// 补扣同样要登记分摊：结算时按「预扣 + 补扣」总额扣批次，漏登记会让
 		// 实际消耗大于已登记额度。传累计 target，函数内部只补差额。
-		if err := AllocateAdtyFundAllocationsTx(tx, result.UserId, result.OperationKey, int64(target), int64(balance)); err != nil {
+		if err := AllocateAdtyFundAllocationsTx(withOwnerFundScope(tx, &result), result.UserId, result.OperationKey, int64(target), int64(balance)); err != nil {
 			return err
 		}
 		result.ReservedQuota = target
@@ -755,6 +762,10 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				return err
 			}
 			charged = delta
+			balance, err = ownerScopedWallet(tx, &row, balance)
+			if err != nil {
+				return err
+			}
 			if delta > 0 {
 				charged = max(0, min(balance, delta))
 			}
@@ -785,6 +796,16 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		//   （AdtyAfterPrincipalSpentTx）能扣的上限：站点侧不能比用户真实消耗
 		//   多付钱。
 		settledQuota, settledBalanceBefore := int64(base+charged), int64(balance+base)
+		if row.PayerKind == BillingPayerOwner && row.Kind == "request" && row.StreamWalletQuota > 0 {
+			// Stream child operations already consumed their principal lots.
+			settledQuota = max(0, int64(row.ReservedQuota+charged))
+			settledBalanceBefore = int64(balance + row.ReservedQuota)
+			if returned := -(row.ReservedQuota + charged); returned > 0 {
+				if err := reverseOwnerPrincipalTx(tx, &row, int64(returned)); err != nil {
+					return err
+				}
+			}
+		}
 		if row.Kind == "task" {
 			// balance 是本次补/退之前读到的余额：task 的 base 不是本笔预扣，
 			// 「这笔业务动手之前」的余额就是 balance 本身。
@@ -792,7 +813,11 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		var backedByBatches int64
 		if !teamPaid {
-			if row.Kind == "task" && charged < 0 {
+			if row.PayerKind == BillingPayerOwner && (row.Kind == "task" || row.Kind == "mj_refund") && charged < 0 {
+				if err := reverseOwnerPrincipalTx(tx, &row, int64(-charged)); err != nil {
+					return err
+				}
+			} else if row.Kind == "task" && charged < 0 {
 				if err := ReverseSettledAdtyFundAllocationsTx(tx, row.UserId, row.EarningRootKey, row.OperationKey, int64(-charged)); err != nil {
 					return err
 				}
@@ -801,7 +826,13 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				// 预扣的 base 已经在 PreConsume 阶段扣掉了，若把此刻余额（可能已是 0）
 				// 传给「无批次时补建 legacy 批次」的分支，补出来的批次不够扣本次消耗，
 				// 结算会整笔失败——老用户（升级前就有额度、从来没批次）就再也结不了账。
-				backed, err := SettleAdtyFundAllocationsTx(tx, row.UserId, row.OperationKey, settledQuota, settledBalanceBefore)
+				scoped := withOwnerFundScope(tx, &row)
+				if row.PayerKind == BillingPayerOwner && settledQuota > 0 {
+					if err := AllocateAdtyFundAllocationsTx(scoped, row.UserId, row.OperationKey, settledQuota, settledBalanceBefore); err != nil {
+						return err
+					}
+				}
+				backed, err := SettleAdtyFundAllocationsTx(scoped, row.UserId, row.OperationKey, settledQuota, settledBalanceBefore)
 				if err != nil {
 					return err
 				}
@@ -894,7 +925,7 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				earningQuota = 0
 			}
 		}
-		if row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) && earningQuota != 0 {
+		if row.PayerKind != BillingPayerOwner && row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) && earningQuota != 0 {
 			if err := freezeBillingSiteOwnerTx(tx, &row, false); err != nil {
 				return err
 			}

@@ -95,6 +95,7 @@ export function PaymentSceneEditor(props: {
   useDraftNavigation(form.formState.isDirty)
   const epaySelected = form.watch('providers').includes('adty_epay')
   const selectedSites = form.watch('site_scope') === 'selected'
+  const ownerTopup = form.watch('business') === 'owner_self_use_topup'
   const channels = useQuery({
     queryKey: [...epayChannelsQueryKey, props.userId],
     queryFn: getEpayChannels,
@@ -224,10 +225,26 @@ export function PaymentSceneEditor(props: {
                 </FieldLabel>
                 <NativeSelect
                   id={`${id}-business`}
-                  {...form.register('business')}
+                  {...form.register('business', {
+                    onChange: (event) => {
+                      if (event.target.value !== 'owner_self_use_topup') return
+                      form.setValue('user_types', ['site_owner'], {
+                        shouldDirty: true,
+                      })
+                      if (!selectedSites) {
+                        form.setValue('site_scope', 'all_sites', {
+                          shouldDirty: true,
+                        })
+                        form.setValue('site_ids', [], { shouldDirty: true })
+                      }
+                    },
+                  })}
                 >
                   <NativeSelectOption value='wallet_topup'>
                     {t('Wallet top-up')}
+                  </NativeSelectOption>
+                  <NativeSelectOption value='owner_self_use_topup'>
+                    {t('Owner self-use top-up')}
                   </NativeSelectOption>
                 </NativeSelect>
               </Field>
@@ -253,6 +270,7 @@ export function PaymentSceneEditor(props: {
                     placeholder={t(choice.label)}
                     options={choice.options}
                     selected={form.watch(choice.field)}
+                    disabled={ownerTopup && choice.field === 'user_types'}
                     allowCreate={
                       choice.field === 'methods' ||
                       choice.field === 'currencies'
@@ -315,11 +333,18 @@ export function PaymentSceneEditor(props: {
                       form.setValue('site_ids', [], { shouldDirty: true }),
                   })}
                 >
-                  {Object.entries(sceneAudienceLabels).map(([value, label]) => (
-                    <NativeSelectOption key={value} value={value}>
-                      {t(label)}
-                    </NativeSelectOption>
-                  ))}
+                  {Object.entries(sceneAudienceLabels)
+                    .filter(
+                      ([value]) =>
+                        !ownerTopup ||
+                        value === 'all_sites' ||
+                        value === 'selected'
+                    )
+                    .map(([value, label]) => (
+                      <NativeSelectOption key={value} value={value}>
+                        {t(label)}
+                      </NativeSelectOption>
+                    ))}
                 </NativeSelect>
               </Field>
               {selectedSites && (

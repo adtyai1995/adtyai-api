@@ -213,6 +213,11 @@ func assertOfficialAdtyMigrateIndexes(t *testing.T, db *gorm.DB) {
 		require.True(t, db.Migrator().HasColumn(entity, "site_owner_user_id"), "financial ownership column must exist after official migrate")
 	}
 	require.True(t, db.Migrator().HasColumn(&AdtySite{}, "ownership_version"))
+	require.True(t, db.Migrator().HasColumn(&Token{}, "owner_self_use_site_id"))
+	require.True(t, db.Migrator().HasColumn(&AdtyTopupOrder{}, "business"))
+	for _, column := range []string{"owner_transfer_usd", "owner_self_use_usd", "owner_self_use_cost_usd", "owner_self_use_topup_usd", "owner_self_use_voucher_usd", "owner_self_use_refund_usd"} {
+		require.True(t, db.Migrator().HasColumn(&AdtySiteSettlementSheet{}, column))
+	}
 }
 
 type adtyMigrateSchemaSnapshot struct {
@@ -333,6 +338,29 @@ func TestAdtyPostgreSQLConnectInitAndMigrateAcceptance(t *testing.T) {
 		assertSiteOwnershipLegacyHistoryPreserved(t, db)
 		assertOfficialAdtyMigrateIndexes(t, db)
 		assertAdtyMigrateSchemaUnchanged(t, db, before)
+	})
+
+	t.Run("owner_topup_business_upgrade", func(t *testing.T) {
+		db := openAdtyThrowawayMigrateDatabase(t, admin, dsn)
+		require.NoError(t, migrateDB())
+		legacy := AdtyTopupOrder{TradeNo: "legacy-owner-scene", PaymentScene: "owner_checkout", FaceUSD: decimal.NewFromInt(100), CreditQuota: 50000000}
+		require.NoError(t, db.Create(&legacy).Error)
+		require.NoError(t, db.Migrator().DropColumn(&AdtyTopupOrder{}, "business"))
+		for range 2 {
+			require.NoError(t, migrateDB())
+			var stored AdtyTopupOrder
+			require.NoError(t, db.First(&stored, legacy.Id).Error)
+			require.Equal(t, AdtyBusinessWalletTopup, stored.Business, "legacy scene names cannot reclassify existing money")
+			require.EqualValues(t, 50000000, stored.CreditQuota)
+			require.Equal(t, "100", stored.FaceUSD.String())
+			assertOfficialAdtyMigrateIndexes(t, db)
+		}
+		owner := AdtyTopupOrder{TradeNo: "new-owner-business", Business: AdtyBusinessOwnerSelfUseTopup}
+		require.NoError(t, db.Create(&owner).Error)
+		require.NoError(t, migrateDB())
+		require.NoError(t, db.First(&owner, owner.Id).Error)
+		require.Equal(t, AdtyBusinessOwnerSelfUseTopup, owner.Business)
+		require.Error(t, db.Create(&AdtyTopupOrder{TradeNo: owner.TradeNo}).Error, "trade numbers remain unique after upgrade")
 	})
 }
 

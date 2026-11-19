@@ -125,7 +125,11 @@ func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string,
 		refID = operationKey
 	}
 	// Insufficient cover leaves settlement pending for an authorized adjustment.
-	return adtyMoveOperatingPrincipalTx(tx, siteID, -principalQuota, "principal_consume", "consume", refID, key, false)
+	refType, err := adtyOperatingRefType(tx, operationKey, "consume")
+	if err != nil {
+		return err
+	}
+	return adtyMoveOperatingPrincipalTx(tx, siteID, -principalQuota, "principal_consume", refType, refID, key, false)
 }
 
 func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error {
@@ -145,7 +149,25 @@ func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string
 		key = "operating:refund:" + operationKey
 		refID = operationKey
 	}
-	return adtyMoveOperatingPrincipalTx(tx, siteID, principalQuota, "principal_refund", "refund", refID, key, false)
+	refType, err := adtyOperatingRefType(tx, operationKey, "refund")
+	if err != nil {
+		return err
+	}
+	return adtyMoveOperatingPrincipalTx(tx, siteID, principalQuota, "principal_refund", refType, refID, key, false)
+}
+
+func adtyOperatingRefType(tx *gorm.DB, key, fallback string) (string, error) {
+	if key == "" {
+		return fallback, nil
+	}
+	var op model.BillingOperation
+	if err := tx.Select("payer_kind").Where("operation_key = ?", key).Limit(1).Find(&op).Error; err != nil {
+		return "", err
+	}
+	if op.PayerKind == model.BillingPayerOwner {
+		return model.BillingPayerOwner, nil
+	}
+	return fallback, nil
 }
 
 func adtyMoveOperatingPrincipalTx(tx *gorm.DB, siteID int, quota int64, changeType, refType, refID, key string, allowOverdraft bool) error {

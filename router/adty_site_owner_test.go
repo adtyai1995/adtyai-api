@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
@@ -33,6 +34,61 @@ type ownerFixture struct {
 	owner  model.User
 	token  string
 	other  *model.AdtySite
+}
+
+func TestOwnerSelfUseKeyHostAndAccountBoundaries(t *testing.T) {
+	f := newOwnerFixture(t)
+	login, err := service.CreateLoginSessionOnSite(f.owner.Id, f.site.Id, "password", "127.0.0.1", "owner-self-test")
+	require.NoError(t, err)
+	f.token = login.AccessToken
+	body := `{"name":"self-use","expired_time":-1,"unlimited_quota":true,"owner_self_use_site_id":999,"allow_user_quota_query":true}`
+	created := f.siteJSON(t, http.MethodPost, "/api/adty/site/self-use/keys", body, f.token)
+	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
+	data := decodeAdtyData[struct {
+		Key string
+		Id  int
+	}](t, created.Body)
+	require.NotEmpty(t, data.Key)
+	require.Equal(t, "no-store", created.Header().Get("Cache-Control"))
+	var key model.Token
+	require.NoError(t, f.db.First(&key, data.Id).Error)
+	require.Equal(t, f.site.Id, key.OwnerSelfUseSiteId)
+	require.Equal(t, f.owner.Id, key.UserId)
+	require.False(t, key.AllowUserQuotaQuery, "self-use keys cannot expose the aggregated personal wallet")
+	var audit model.AuditLog
+	require.NoError(t, model.LOG_DB.Where("action = ? AND user_id = ?", "token.create", f.owner.Id).Order("id DESC").First(&audit).Error)
+	encoded, err := common.Marshal(audit)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), data.Key)
+	require.NotContains(t, string(encoded), key.Key)
+	ordinary := f.siteJSON(t, http.MethodPost, "/api/token/", body, f.token)
+	require.Equal(t, http.StatusOK, ordinary.Code)
+	var normal model.Token
+	require.NoError(t, f.db.Where("user_id = ? AND id <> ?", f.owner.Id, key.Id).First(&normal).Error)
+	require.Zero(t, normal.OwnerSelfUseSiteId)
+	f.engine.GET("/v1/owner-self-test-relay", middleware.AdtySiteContext(), middleware.TokenAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	apiURL, err := url.Parse(service.AdtySiteAPIBaseURL(f.site))
+	require.NoError(t, err)
+	require.NotEmpty(t, apiURL.Host)
+	for _, tc := range []struct {
+		host   string
+		status int
+	}{
+		{f.siteHost(), http.StatusForbidden},
+		{apiURL.Host, http.StatusNoContent},
+		{service.AdtySiteDisplayHost(f.other), http.StatusForbidden},
+		{strings.SplitN(system_setting.ServerAddress, "://", 2)[1], http.StatusForbidden},
+	} {
+		rec := adtyJSONOnHost(t, f.engine, tc.host, http.MethodGet, "/v1/owner-self-test-relay", "", data.Key)
+		require.Equal(t, tc.status, rec.Code, rec.Body.String())
+	}
+	rejected := f.siteJSON(t, http.MethodGet, "/api/adty/site/wallets", "", data.Key)
+	require.NotEqual(t, http.StatusOK, rejected.Code)
+	customer := f.customer(t, f.site, "self-key-customer", "self-customer@example.com")
+	session, err := service.CreateLoginSessionOnSite(customer.Id, f.site.Id, "password", "127.0.0.1", "self-key-test")
+	require.NoError(t, err)
+	denied := f.siteJSON(t, http.MethodPost, "/api/adty/site/self-use/keys", body, session.AccessToken)
+	require.Equal(t, http.StatusForbidden, denied.Code)
 }
 
 func TestOwnerStaffLifecycleAndScope(t *testing.T) {
@@ -291,7 +347,7 @@ func newOwnerFixture(t *testing.T) *ownerFixture {
 	disableAdtyRedis(t)
 	db := adtyTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.AuthFlow{}, &model.TwoFA{}, &model.PasskeyCredential{},
-		&model.AuditLog{}, &model.Log{}, &model.Option{}, &model.TopUp{}, &model.UserAccessToken{}, &model.AdtyUserFingerprint{}))
+		&model.AuditIntent{}, &model.AuditLog{}, &model.Log{}, &model.Option{}, &model.TopUp{}, &model.UserAccessToken{}, &model.AdtyUserFingerprint{}))
 	require.NoError(t, model.MigrateAdtyTables())
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}

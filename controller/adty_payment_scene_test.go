@@ -117,3 +117,62 @@ func TestSiteBonusSaveUsesCurrentDatabaseAuthorization(t *testing.T) {
 		}
 	}
 }
+
+func TestOwnerTopupQuoteUsesTrustedRequestSitePG(t *testing.T) {
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}))
+	require.NoError(t, model.MigrateAdtyTables())
+	owner := model.User{Username: "owner-quote", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", Email: "owner-quote@example.com"}
+	require.NoError(t, db.Create(&owner).Error)
+	site := model.AdtySite{OwnerUserId: owner.Id, Status: model.AdtySiteStatusActive, Subdomain: "quote", RootDomain: "example.com"}
+	require.NoError(t, db.Create(&site).Error)
+	sceneTestSetting(t, &common.RedisEnabled, false)
+	sceneTestSetting(t, &operation_setting.GetGeneralSetting().QuotaDisplayType, operation_setting.QuotaDisplayTypeUSD)
+	sceneTestSetting(t, &operation_setting.MinTopUp, 1)
+	sceneTestSetting(t, setting.GetBEpusdtSetting(), setting.BEpusdtSetting{Enabled: true, BaseURL: "https://pay.example", Secret: "synthetic-secret", TradeTypes: []string{"usdt.trc20"}})
+	payload, err := common.Marshal([]model.AdtyPaymentScene{{Key: "owner_checkout", Name: "Owner checkout", Business: "owner_self_use_topup", Enabled: true, Providers: []string{"bepusdt"}, SiteScope: "all_sites", UserTypes: []string{"site_owner"}}})
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&model.AdtyPaymentSceneConfig{}).Where("id = 1").Update("payload", string(payload)).Error)
+	for _, trusted := range []bool{true, false} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/adty/topup/quote", strings.NewReader(`{"business":"owner_self_use_topup","payment_scene":"owner_checkout","amount":100,"method":"usdt.trc20","site_id":1}`))
+		c.Set("id", owner.Id)
+		c.Set("group", "default")
+		if trusted {
+			c.Set(service.AdtySiteContextKey, &site)
+		}
+		PostAdtyTopUpQuote(c)
+		var response struct {
+			Success bool
+			Data    struct {
+				Quote     service.AdtyQuote
+				Available bool
+			}
+		}
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+		require.Equal(t, trusted, response.Success, recorder.Body.String())
+		if trusted {
+			require.EqualValues(t, 50000000, response.Data.Quote.CreditQuota)
+			require.Equal(t, "100", response.Data.Quote.PayAmount.String())
+			require.True(t, response.Data.Available)
+		}
+	}
+}
+
+func TestOwnerTopupHistoryBusinessFilter(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/adty/topup/self?business=owner_self_use_topup", nil)
+	filter, err := parseAdtyTopUpSelfFilter(c)
+	require.NoError(t, err)
+	require.True(t, filter.Active())
+	ordinary := model.AdtyTopUpView{TopUp: model.TopUp{UserId: 7}, Ext: &model.AdtyTopupOrder{Business: "wallet_topup"}}
+	owner := model.AdtyTopUpView{TopUp: model.TopUp{UserId: 7}, Ext: &model.AdtyTopupOrder{Business: "owner_self_use_topup"}}
+	require.False(t, matchAdtyTopUpSelfFilter(7, ordinary, filter))
+	require.True(t, matchAdtyTopUpSelfFilter(7, owner, filter))
+	filter.OwnerSiteID = 12
+	owner.Ext.SiteId = 11
+	require.False(t, matchAdtyTopUpSelfFilter(7, owner, filter))
+	owner.Ext.SiteId = 12
+	require.True(t, matchAdtyTopUpSelfFilter(7, owner, filter))
+}

@@ -588,7 +588,10 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			c.Abort()
 			return
 		}
-		if status := service.AdtyAPIKeyHostStatus(userCache.SiteId, c.Request.Host); status != 0 {
+		if status := service.AdtyAPIKeyHostStatus(userCache.SiteId, c.Request.Host); status != 0 || token.OwnerSelfUseSiteId > 0 {
+			if status == 0 {
+				status = http.StatusForbidden
+			}
 			common.ApiErrorStatus(c, status, errors.New(i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch)))
 			c.Abort()
 			return
@@ -692,12 +695,23 @@ func TokenAuth() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, common.TranslateMessage(c, i18n.MsgAuthUserBanned))
 			return
 		}
-		if status := service.AdtyAPIKeyHostStatus(userCache.SiteId, c.Request.Host); status != 0 {
+		billingSiteID := userCache.SiteId
+		if token.OwnerSelfUseSiteId > 0 {
+			site := service.AdtySiteForHost(c.Request.Host)
+			if site == nil || site.Id != token.OwnerSelfUseSiteId || site.OwnerUserId != token.UserId || site.Status != model.AdtySiteStatusActive {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch), types.ErrorCodeAccessDenied)
+				return
+			}
+			billingSiteID = site.Id
+			c.Set(service.AdtyOwnerSelfUseContextKey, site)
+		}
+		if status := service.AdtyAPIKeyHostStatus(billingSiteID, c.Request.Host); status != 0 {
 			abortWithOpenAiMessage(c, status, i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch), types.ErrorCodeAccessDenied)
 			return
 		}
 
 		userCache.WriteContext(c)
+		common.SetContextKey(c, constant.ContextKeyUserSiteId, billingSiteID)
 
 		userGroup := userCache.Group
 		tokenGroup := token.Group
@@ -716,7 +730,7 @@ func TokenAuth() func(c *gin.Context) {
 			}
 			userGroup = tokenGroup
 		}
-		if userCache.SiteId > 0 && !service.SiteGroupAllowed(userCache.SiteId, userGroup) {
+		if billingSiteID > 0 && !service.SiteGroupAllowed(billingSiteID, userGroup) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthSiteGroupForbidden, map[string]any{"Group": userGroup}))
 			return
 		}

@@ -58,6 +58,10 @@ func QueryAdtyTopUp(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
 		err := service.RecoverAdtyHostedPaymentAs(ctx, ext, c.GetInt("id"))
 		cancel()
+		if errors.Is(err, model.ErrAdtyOwnerTopupReview) {
+			common.ApiErrorT(c, "Payment verified and queued for review. No balance was credited.")
+			return
+		}
 		if err != nil {
 			common.ApiErrorT(c, "Payment query failed. Check the provider console or try again.")
 			return

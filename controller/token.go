@@ -408,6 +408,22 @@ func GetTokenUsage(c *gin.Context) {
 }
 
 func AddToken(c *gin.Context) {
+	addPersonalToken(c, 0)
+}
+
+func AddOwnerSelfUseToken(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	if site.Status != model.AdtySiteStatusActive || service.AdtyRequestSiteID(c) != site.Id {
+		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteNotOwner)
+		return
+	}
+	addPersonalToken(c, site.Id)
+}
+
+func addPersonalToken(c *gin.Context, ownerSite int) {
 	request := tokenRequest{}
 	err := c.ShouldBindJSON(&request)
 	if err != nil {
@@ -450,6 +466,7 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	cleanToken := model.Token{
+		OwnerSelfUseSiteId: ownerSite,
 		UserId:             c.GetInt("id"),
 		Name:               token.Name,
 		Key:                key,
@@ -466,6 +483,10 @@ func AddToken(c *gin.Context) {
 		AutoGroups:         token.AutoGroups,
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
+	if ownerSite > 0 {
+		cleanToken.AllowUserQuotaQuery = false
+		params["site_id"] = ownerSite
+	}
 	event := prepareTokenMutationAudit(c, "token.create", params)
 	err = cleanToken.InsertWithLimitAndKeyLimit(maxTokens, request.keyLimitPatch(), event)
 	if err != nil {
@@ -479,6 +500,11 @@ func AddToken(c *gin.Context) {
 	params["id"] = cleanToken.Id
 	deliverCommittedAudits(c, []model.AuditLog{event})
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
+	if ownerSite > 0 {
+		c.Header("Cache-Control", "no-store")
+		common.ApiSuccess(c, gin.H{"key": "sk-" + key, "id": cleanToken.Id})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

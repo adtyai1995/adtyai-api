@@ -459,7 +459,21 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 				}
 			}
 		}
-		if preConsumedQuota > 0 {
+		if value, ok := c.Get(AdtyOwnerSelfUseContextKey); ok {
+			site, valid := value.(*model.AdtySite)
+			if !valid || site == nil || site.Id <= 0 || site.OwnerUserId != relayInfo.UserId || site.Status != model.AdtySiteStatusActive || relayInfo.TokenId <= 0 || relayInfo.IsPlayground || payerKind != model.BillingPayerPersonal {
+				return nil, types.NewError(model.ErrBillingOperationConflict, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+			}
+			// Even a zero estimate must be admitted against this site's principal.
+			// Reservation rechecks the immutable key binding inside its transaction.
+			principal, err := model.AdtyOwnerPrincipalAvailable(model.DB, relayInfo.UserId, site.Id)
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+			}
+			available = min(available, principal)
+			payerKind = model.BillingPayerOwner
+		}
+		if preConsumedQuota > 0 || payerKind == model.BillingPayerOwner && !relayInfo.PriceData.FreeModel {
 			if holdErr := model.CheckAdtyBillingHoldForPayerTx(model.DB, relayInfo.UserId, payerKind, payerTeamID); holdErr != nil {
 				return nil, types.NewErrorWithStatusCode(holdErr, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 			}

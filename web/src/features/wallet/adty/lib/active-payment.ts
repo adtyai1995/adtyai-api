@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { AdtyMethodKind } from '../types'
+import type { AdtyMethodKind, AdtyOrder } from '../types'
 
 /** The payment the wallet is running: a new order, or an existing one to resume. */
 export type ActivePayment = {
@@ -28,4 +28,13 @@ export type ActivePayment = {
   amount: number
   /** Set when resuming an order that already exists. */
   tradeNo?: string
+}
+
+export function resumePayment(order: AdtyOrder): ActivePayment {
+  return {
+    kind: order.payment_provider === 'bepusdt' ? 'usdt' : 'epay',
+    method: order.payment_method,
+    amount: Number(order.ext?.face_usd ?? order.amount),
+    tradeNo: order.trade_no,
+  }
 }

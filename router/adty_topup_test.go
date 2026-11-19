@@ -1422,3 +1422,139 @@ func TestDirectAdjustmentRequiresOriginalFinancialReferencePG(t *testing.T) {
 	require.EqualValues(t, -500000, reduced.DeltaQuota)
 	require.Equal(t, "decrease", reduced.Direction)
 }
+
+func TestOwnerTopupPaymentRoutesPG(t *testing.T) {
+	for _, provider := range []string{model.PaymentProviderAdtyEpay, model.PaymentProviderAdtyBEpusdt} {
+		t.Run(provider, func(t *testing.T) {
+			f := newOwnerFixture(t)
+			setRouterBonusRates(t)
+			oldRatio := common.TopupGroupRatio2JSONString()
+			require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"default":0.5}`))
+			t.Cleanup(func() { require.NoError(t, common.UpdateTopupGroupRatioByJSONString(oldRatio)) })
+			login, err := service.CreateLoginSessionOnSite(f.owner.Id, f.site.Id, "password", "127.0.0.1", "owner-checkout-test")
+			require.NoError(t, err)
+			mainToken := f.token
+			f.token = login.AccessToken
+			var channel *model.AdtyEpayChannel
+			path, method := "/api/user/bepusdt/pay", "usdt.trc20"
+			if provider == model.PaymentProviderAdtyEpay {
+				gateway := newFakeEpay(t, epayQR)
+				channel = seedRouterEpayChannel(t, "owner-online", gateway.server.URL, model.AdtyEpayOrderModeAPI, 1)
+				path, method = "/api/adty/epay/pay", "alipay"
+			} else {
+				useFakeBEpusdt(t)
+			}
+			// With only the seeded ordinary scene, neither provider may turn a
+			// subsite owner checkout into an ordinary main-wallet order.
+			ordinaryBody := fmt.Sprintf(`{"amount":100,"method":%q,"chain":%q}`, method, method)
+			for _, business := range []string{"", model.AdtyBusinessWalletTopup, model.AdtyBusinessOwnerSelfUseTopup} {
+				request := ordinaryBody
+				if business != "" {
+					request = fmt.Sprintf(`{"business":%q,`, business) + ordinaryBody[1:]
+				}
+				require.Contains(t, f.siteJSON(t, http.MethodPost, path, request, f.token).Body.String(), `"success":false`)
+			}
+			var ordersBeforeMain int64
+			require.NoError(t, f.db.Model(&model.TopUp{}).Where("user_id = ?", f.owner.Id).Count(&ordersBeforeMain).Error)
+			require.Zero(t, ordersBeforeMain)
+			mainOrder := decodeAdtyData[model.AdtyTopUpView](t, adtyJSON(t, f.engine, http.MethodPost, path, ordinaryBody, mainToken).Body)
+			require.Equal(t, model.AdtyBusinessWalletTopup, mainOrder.Ext.Business)
+			require.Equal(t, "0.5", mainOrder.Ext.TopupGroupRatio.String())
+			scenes := []model.AdtyPaymentScene{{Key: "owner_checkout", Name: "Owner checkout", Business: model.AdtyBusinessOwnerSelfUseTopup, Enabled: true, Providers: []string{provider}, SiteScope: "selected", SiteIDs: []int{f.site.Id}, UserTypes: []string{"site_owner"}, MinUSD: decimal.NewFromInt(50), MaxUSD: decimal.NewFromInt(100)}}
+			payload, err := common.Marshal(scenes)
+			require.NoError(t, err)
+			require.NoError(t, f.db.Model(&model.AdtyPaymentSceneConfig{}).Where("id = 1").Update("payload", string(payload)).Error)
+			info := decodeAdtyData[struct {
+				Scenes []service.AdtyPaymentSceneView `json:"scenes"`
+			}](t, f.siteJSON(t, http.MethodGet, "/api/adty/topup/info?business=owner_self_use_topup", "", f.token).Body)
+			require.Len(t, info.Scenes, 1)
+			require.NotEmpty(t, info.Scenes[0].Methods)
+			for _, amount := range []int{49, 101} {
+				body := fmt.Sprintf(`{"business":"owner_self_use_topup","payment_scene":"owner_checkout","amount":%d,"method":%q,"chain":%q}`, amount, method, method)
+				response := f.siteJSON(t, http.MethodPost, path, body, f.token)
+				require.Contains(t, response.Body.String(), `"success":false`)
+			}
+			body := fmt.Sprintf(`{"business":"owner_self_use_topup","payment_scene":"owner_checkout","amount":100,"method":%q,"chain":%q,"site_id":%d}`, method, method, f.other.Id)
+			quote := decodeAdtyData[struct {
+				Quote     service.AdtyQuote
+				Available bool
+			}](t, f.siteJSON(t, http.MethodPost, "/api/adty/topup/quote", body, f.token).Body)
+			require.True(t, quote.Available)
+			require.Equal(t, "1", quote.Quote.TopupGroupRatio.String())
+			require.True(t, quote.Quote.BonusUSD.IsZero())
+			ordinary := model.TopUp{UserId: f.owner.Id, TradeNo: "ordinary-pending", PaymentProvider: provider, Status: common.TopUpStatusPending}
+			require.NoError(t, f.db.Create(&ordinary).Error)
+			require.NoError(t, f.db.Create(&model.AdtyTopupOrder{UserId: f.owner.Id, TradeNo: ordinary.TradeNo, Provider: provider, Business: model.AdtyBusinessWalletTopup, ExpireAt: time.Now().Unix() + 900}).Error)
+			view := decodeAdtyData[model.AdtyTopUpView](t, f.siteJSON(t, http.MethodPost, path, body, f.token).Body)
+			require.NotNil(t, view.Ext)
+			require.Equal(t, model.AdtyBusinessOwnerSelfUseTopup, view.Ext.Business)
+			stored, err := model.GetAdtyTopupOrder(view.TradeNo)
+			require.NoError(t, err)
+			require.Equal(t, f.site.Id, stored.SiteId, "request body cannot choose the credited site")
+			require.EqualValues(t, 50000000, view.Ext.CreditQuota)
+			require.NoError(t, f.db.First(&ordinary, ordinary.Id).Error)
+			require.Equal(t, common.TopUpStatusPending, ordinary.Status)
+			resultURL := service.AdtyPayResultURL(view.TradeNo)
+			parsed, err := url.Parse(resultURL)
+			require.NoError(t, err)
+			target := service.AdtyPayResultTarget(strings.TrimPrefix(parsed.Path, "/pay/result/"))
+			require.Equal(t, service.AdtySitePublicBaseURL(f.site)+"/site-owner/earnings?trade_no="+view.TradeNo, target)
+			require.NoError(t, f.db.Model(&model.AdtyPaymentSceneConfig{}).Where("id = 1").Update("payload", "[]").Error)
+			require.Contains(t, f.siteJSON(t, http.MethodPost, path, body, f.token).Body.String(), `"success":false`, "changed policy applies to the next order")
+			for range 2 {
+				if channel != nil {
+					values := map[string]string{"pid": channel.MerchantId, "out_trade_no": view.TradeNo, "trade_no": view.Ext.GatewayTradeId, "type": "alipay", "money": view.Ext.PayAmount.StringFixed(2), "trade_status": "TRADE_SUCCESS"}
+					require.Equal(t, "success", epayCallback(t, &adtyGuardFixture{engine: f.engine}, channel.Id, channel.MerchantKey, values))
+				} else {
+					response := adtyJSON(t, f.engine, http.MethodPost, "/api/user/bepusdt/notify", notifyFor(view.TradeNo, 2, 100.01, "TAddr"), "")
+					require.Equal(t, "ok", response.Body.String())
+				}
+			}
+			available, err := model.AdtyOwnerPrincipalAvailable(f.db, f.owner.Id, f.site.Id)
+			require.NoError(t, err)
+			require.EqualValues(t, 50000000, available, "frozen order is credited once despite a policy change")
+			history := decodeAdtyData[struct {
+				Total int
+				Items []model.AdtyTopUpView
+			}](t, f.siteJSON(t, http.MethodGet, "/api/adty/topup/self?business=owner_self_use_topup", "", f.token).Body)
+			require.Len(t, history.Items, 1)
+			require.Equal(t, view.TradeNo, history.Items[0].TradeNo)
+			orders := decodeAdtyData[struct {
+				Items []struct {
+					TradeNo  string `json:"trade_no"`
+					Business string `json:"business"`
+					Actions  struct {
+						Refund bool `json:"refund"`
+					} `json:"actions"`
+				}
+			}](t, f.siteJSON(t, http.MethodGet, "/api/adty/site/orders?trade_no="+view.TradeNo, "", f.token).Body)
+			require.Len(t, orders.Items, 1)
+			require.Equal(t, model.AdtyBusinessOwnerSelfUseTopup, orders.Items[0].Business)
+			require.False(t, orders.Items[0].Actions.Refund, "owner customer-refund actions must exclude self-use deposits")
+			for _, suffix := range []string{"refund-preview", "refund", "refunds/example/approve", "refunds/example/reclaim", "refunds/example/bonus", "refunds/example/commission", "refunds/example/payout", "refunds/example/complete", "refunds/example/terminate"} {
+				method := http.MethodPost
+				if suffix == "refund-preview" {
+					method = http.MethodGet
+				}
+				response := f.siteJSON(t, method, "/api/adty/site/orders/"+view.TradeNo+"/"+suffix, `{"refund_usd":"1"}`, f.token)
+				require.Equal(t, http.StatusForbidden, response.Code, suffix+": "+response.Body.String())
+			}
+			require.NoError(t, f.db.Model(&model.AdtyPaymentSceneConfig{}).Where("id = 1").Update("payload", string(payload)).Error)
+			late := decodeAdtyData[model.AdtyTopUpView](t, f.siteJSON(t, http.MethodPost, path, body, f.token).Body)
+			require.NoError(t, f.db.Model(f.site).Update("status", model.AdtySiteStatusClosed).Error)
+			if channel != nil {
+				values := map[string]string{"pid": channel.MerchantId, "out_trade_no": late.TradeNo, "trade_no": late.Ext.GatewayTradeId, "type": "alipay", "money": late.Ext.PayAmount.StringFixed(2), "trade_status": "TRADE_SUCCESS"}
+				require.Equal(t, "success", epayCallback(t, &adtyGuardFixture{engine: f.engine}, channel.Id, channel.MerchantKey, values))
+			} else {
+				response := adtyJSON(t, f.engine, http.MethodPost, "/api/user/bepusdt/notify", notifyFor(late.TradeNo, 2, 100.01, "TAddr"), "")
+				require.Equal(t, "ok", response.Body.String())
+			}
+			available, err = model.AdtyOwnerPrincipalAvailable(f.db, f.owner.Id, f.site.Id)
+			require.NoError(t, err)
+			require.EqualValues(t, 50000000, available)
+			var reviews int64
+			require.NoError(t, f.db.Model(&model.PaymentOrphanEvent{}).Where("reference_id = ? AND status = ?", late.TradeNo, model.PaymentOrphanStatusPendingReview).Count(&reviews).Error)
+			require.Positive(t, reviews, "closed-site late payments remain visible to finance")
+		})
+	}
+}

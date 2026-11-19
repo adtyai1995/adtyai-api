@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 export type AdtyMethodKind = 'usdt' | 'epay'
+export type AdtyTopupBusiness = 'wallet_topup' | 'owner_self_use_topup'
 
 export type AdtyMethod = {
   id: string
@@ -50,6 +51,7 @@ export type AdtyOrderStatus =
   | 'refunded'
 
 export type AdtyOrderExt = {
+  business?: AdtyTopupBusiness
   /** Epay button name at order time, for example Alipay 1. */
   method_label?: string
   payment_scene?: string
@@ -123,6 +125,7 @@ export type AdtyPage<T> = {
 }
 
 export type AdtyTopupHistoryFilters = {
+  business?: AdtyTopupBusiness
   status?: string
   payment_method?: string
   trade_no?: string

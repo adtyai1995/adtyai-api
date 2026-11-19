@@ -172,7 +172,7 @@ func GetAdtySiteStats(siteId int, from, to string) (*AdtySiteStats, error) {
 
 	var orders []model.AdtyTopupOrder
 	credited := adtyCreditedTopUpTrades()
-	if err := model.DB.Select("user_id", "face_usd", "credit_quota", "refund_quota", "created_at").
+	if err := model.DB.Scopes(adtyCustomerTopUpOrders).Select("user_id", "face_usd", "credit_quota", "refund_quota", "created_at").
 		Where("site_id = ? AND created_at >= ? AND created_at <= ? AND trade_no IN (?)", siteId, startUnix, endUnix, credited).
 		Find(&orders).Error; err != nil {
 		return nil, err
@@ -246,7 +246,7 @@ func AdtySitesMonthTotals(siteIds []int, now time.Time) (map[int]AdtySiteMonthTo
 	}
 	var orders []model.AdtyTopupOrder
 	credited := adtyCreditedTopUpTrades()
-	if err := model.DB.Select("site_id", "face_usd", "credit_quota", "refund_quota").Where("site_id IN ? AND created_at >= ? AND trade_no IN (?)", siteIds, monthStart.Unix(), credited).
+	if err := model.DB.Scopes(adtyCustomerTopUpOrders).Select("site_id", "face_usd", "credit_quota", "refund_quota").Where("site_id IN ? AND created_at >= ? AND trade_no IN (?)", siteIds, monthStart.Unix(), credited).
 		Find(&orders).Error; err != nil {
 		return nil, err
 	}
@@ -313,6 +313,11 @@ func adtyHostnameMonthlyFee(count int64) decimal.Decimal {
 	return decimal.NewFromInt(extra).Mul(decimal.RequireFromString(adtyExtraHostnameMonthlyUSD))
 }
 
+func adtyCustomerTopUpOrders(db *gorm.DB) *gorm.DB {
+	return db.Where("COALESCE(business, '') <> ?", model.AdtyBusinessOwnerSelfUseTopup).
+		Where("COALESCE(provider, '') <> ? OR method IN ?", model.AdtyVoucherProvider, []string{model.AdtyVoucherPurposeMainUser, model.AdtyVoucherPurposeSiteCustomer})
+}
+
 // GetAdtySitesOverview 汇总 [from, to] 内所有分站，各项是日汇总的直接合计。
 func GetAdtySitesOverview(from, to string) (*AdtySitesOverview, error) {
 	from, to, err := adtyStatsRange(from, to)
@@ -352,7 +357,7 @@ func GetAdtySitesOverview(from, to string) (*AdtySitesOverview, error) {
 
 	startUnix, endUnix := adtyDayUnix(from, false), adtyDayUnix(to, true)
 	var orders []model.AdtyTopupOrder
-	if err := model.DB.Select("site_id", "face_usd", "credit_quota", "refund_quota").
+	if err := model.DB.Scopes(adtyCustomerTopUpOrders).Select("site_id", "face_usd", "credit_quota", "refund_quota").
 		Where("created_at >= ? AND created_at <= ? AND trade_no IN (?)", startUnix, endUnix, adtyCreditedTopUpTrades()).
 		Find(&orders).Error; err != nil {
 		return nil, err

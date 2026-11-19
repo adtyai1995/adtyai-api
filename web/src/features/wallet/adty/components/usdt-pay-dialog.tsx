@@ -34,10 +34,11 @@ import { formatCountdown, useNowSeconds } from '../lib/countdown'
 import { CHAIN_NAMES } from '../lib/methods'
 import { creditedUsdAmount } from '../lib/money'
 import { clearPendingPayment, savePendingPayment } from '../lib/pending-payment'
-import type { AdtyOrder } from '../types'
+import type { AdtyOrder, AdtyTopupBusiness } from '../types'
 import { ChainIcon } from './chain-icons'
 
 type UsdtPayDialogProps = {
+  business?: AdtyTopupBusiness
   paymentScene?: string
   chain: string
   amount: number
@@ -66,7 +67,12 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
 
   const create = useMutation({
     mutationFn: () =>
-      payWithBEpusdt(props.amount, props.chain, props.paymentScene),
+      payWithBEpusdt(
+        props.amount,
+        props.chain,
+        props.paymentScene,
+        props.business
+      ),
     onSuccess: (order) => {
       setTradeNo(order.trade_no)
       if (order.ext) {

@@ -75,6 +75,8 @@ export function siteWalletKindLabel(t: TFunction, kind: string): string {
 /** Ledger types written by the services that move site wallets. */
 export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
   switch (type) {
+    case 'owner_self_use_transfer':
+      return t('Transfer to personal balance')
     case 'principal_credit':
       return t('Customer top-up principal')
     case 'principal_consume':

@@ -20,6 +20,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { EmptyState } from '@/components/empty-state'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -42,11 +43,12 @@ import { quoteAdtyTopup } from '../api'
 import { bonusRateFor, bonusUsdFor } from '../lib/bonus'
 import { paymentMethodKey } from '../lib/methods'
 import { formatPaymentAmount, formatUsd } from '../lib/money'
-import type { AdtyMethod, AdtyTopupInfo } from '../types'
+import type { AdtyMethod, AdtyTopupBusiness, AdtyTopupInfo } from '../types'
 
 import { PaymentMethodButtons } from './payment-method-buttons'
 
 type AdtyRechargeCardProps = {
+  business?: AdtyTopupBusiness
   info: AdtyTopupInfo | undefined
   loading: boolean
   paying: boolean
@@ -58,13 +60,14 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const tiers = props.info?.tiers ?? []
-  const rates = props.info?.bonus_rates ?? {}
+  const ownerTopup = props.business === 'owner_self_use_topup'
+  const rates = ownerTopup ? {} : (props.info?.bonus_rates ?? {})
   // No bonus tiers in the admin means no bonus at all: show plain amounts.
   const hasBonus = Object.values(rates).some((rate) => rate > 0)
   const [sceneKey, setSceneKey] = useState('wallet_topup')
   const scenes = props.info?.scenes ?? []
   const scene = scenes.find((item) => item.key === sceneKey) ?? scenes[0]
-  const paymentScene = scene?.key ?? 'wallet_topup'
+  const paymentScene = scene?.key ?? (ownerTopup ? '' : 'wallet_topup')
   const minTopup = Math.max(
     props.info?.min_topup ?? 1,
     Number(scene?.min_usd ?? 0)
@@ -74,7 +77,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   const [methodKey, setMethodKey] = useState<string | null>(null)
 
   const methods =
-    props.info?.scenes === undefined
+    !ownerTopup && props.info?.scenes === undefined
       ? (props.info?.methods ?? [])
       : (scene?.methods ?? [])
   const method =
@@ -95,6 +98,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     queryKey: [
       'adty-topup',
       'quote',
+      props.business ?? 'wallet_topup',
       paymentScene,
       amount,
       methodKey,
@@ -104,7 +108,8 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
         amount,
         method?.id ?? '',
         paymentScene,
-        method?.channel_id
+        method?.channel_id,
+        props.business
       ),
     enabled: validAmount && method !== null && method.available,
     meta: { errorToast: false },
@@ -130,6 +135,12 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     )
   }
 
+  if (ownerTopup && !scenes.length) {
+    return (
+      <EmptyState title={t('Online top-up is unavailable for this site.')} />
+    )
+  }
+
   const quotedFaceUsd = quote ? Number(quote.face_usd) : NaN
   const quotedBonusUsd = quote ? Number(quote.bonus_usd) : NaN
   const quotedCreditUsd =
@@ -137,32 +148,26 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
       ? quote.credit_quota / 500_000
       : NaN
   const bonusRate = validAmount ? bonusRateFor(amount, rates) : 0
-  const bonusUsd = validAmount
-    ? quote
-      ? Number.isFinite(quotedBonusUsd) && quotedBonusUsd > 0
-        ? quotedBonusUsd
-        : 0
-      : bonusUsdFor(amount, rates)
-    : 0
-  const totalCreditUsd = validAmount
-    ? quote
-      ? (() => {
-          const faceBase =
-            Number.isFinite(quotedFaceUsd) && quotedFaceUsd > 0
-              ? quotedFaceUsd
-              : amount
-          const facePlusBonus = faceBase + bonusUsd
-          if (
-            Number.isFinite(quotedCreditUsd) &&
-            (!(Number.isFinite(quotedFaceUsd) && quotedFaceUsd > 0) ||
-              Math.abs(quotedCreditUsd - facePlusBonus) < 0.01)
-          ) {
-            return quotedCreditUsd
-          }
-          return facePlusBonus
-        })()
-      : amount + bonusUsd
-    : 0
+  let bonusUsd = 0
+  let totalCreditUsd = amount
+  if (validAmount && !ownerTopup) {
+    if (quote) {
+      if (Number.isFinite(quotedBonusUsd) && quotedBonusUsd > 0) {
+        bonusUsd = quotedBonusUsd
+      }
+      const hasFace = Number.isFinite(quotedFaceUsd) && quotedFaceUsd > 0
+      totalCreditUsd = (hasFace ? quotedFaceUsd : amount) + bonusUsd
+      if (
+        Number.isFinite(quotedCreditUsd) &&
+        (!hasFace || Math.abs(quotedCreditUsd - totalCreditUsd) < 0.01)
+      ) {
+        totalCreditUsd = quotedCreditUsd
+      }
+    } else {
+      bonusUsd = bonusUsdFor(amount, rates)
+      totalCreditUsd += bonusUsd
+    }
+  }
   let creditText = '-'
   if (validAmount && bonusUsd > 0) {
     creditText = t('{{total}} (incl. {{bonus}} bonus)', {
@@ -189,7 +194,16 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t('Add funds')}</CardTitle>
+        <CardTitle>
+          {ownerTopup ? t('Owner self-use top-up') : t('Add funds')}
+        </CardTitle>
+        {ownerTopup && (
+          <CardDescription>
+            {t(
+              'Each $1 adds $1 to your site self-use principal. No bonus applies.'
+            )}
+          </CardDescription>
+        )}
         {hasBonus && (
           <CardDescription>
             {t(

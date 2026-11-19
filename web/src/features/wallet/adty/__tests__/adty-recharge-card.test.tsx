@@ -168,7 +168,8 @@ describe('AdtyRechargeCard', () => {
         100,
         'alipay',
         'wallet_topup',
-        9
+        9,
+        undefined
       )
     )
     const pay = screen.getByRole('button', { name: 'Pay now' })

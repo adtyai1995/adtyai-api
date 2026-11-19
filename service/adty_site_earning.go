@@ -240,6 +240,9 @@ func adtyRecordConsumeEarning(c *gin.Context, userId int, params *model.RecordCo
 	if c.GetBool(adtyDurableBillingContextKey) {
 		return
 	}
+	if _, self := c.Get(AdtyOwnerSelfUseContextKey); self {
+		return
+	}
 	k, d, ok := AdtySiteMarkupFromContext(c)
 	if !ok {
 		return

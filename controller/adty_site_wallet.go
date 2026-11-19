@@ -50,6 +50,76 @@ func GetAdtyOwnerWallets(c *gin.Context) {
 	adtySiteWalletResponse(c, site.Id, false, true)
 }
 
+func PostOwnerPersonalTransfer(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		AmountUSD string `json:"amount_usd"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	if err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	ref, err := service.TransferAdtyEarningsToPersonal(site.Id, c.GetInt("id"), amount, c.GetHeader("Idempotency-Key"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"transfer_id": ref})
+}
+
+func GetOwnerSelfUseBalance(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	q, err := model.AdtyOwnerPrincipalAvailable(model.DB, c.GetInt("id"), site.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"available_usd": service.QuotaToUSD(q)})
+}
+
+func GetOwnerSelfUseUsage(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	page, offset, limit := adtyPage(c)
+	items, total, err := service.ListAdtyOwnerSelfUseUsage(site.Id, c.GetInt("id"), offset, limit)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	page.SetTotal(int(total))
+	page.SetItems(items)
+	common.ApiSuccess(c, page)
+}
+
+func GetOwnerPrincipalTransfers(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	page, offset, limit := adtyPage(c)
+	items, total, err := service.ListAdtyOwnerPrincipalTransfers(site.Id, c.GetInt("id"), offset, limit)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	page.SetTotal(int(total))
+	page.SetItems(items)
+	common.ApiSuccess(c, page)
+}
+
 func GetAdtyOwnerWalletLedger(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {

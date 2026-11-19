@@ -8,6 +8,7 @@ import (
 
 const (
 	BillingPayerPersonal = "personal"
+	BillingPayerOwner    = "owner_self_use"
 	BillingPayerTeam     = "team"
 )
 
@@ -25,7 +26,7 @@ func CaptureBillingPayer(userId, tokenId int) (*BillingOperation, error) {
 // It never means "use this token's present binding".
 func freezeBillingPayerTx(tx *gorm.DB, row *BillingOperation, newAcceptance bool) error {
 	if row.PayerKind != "" {
-		if row.PayerKind == BillingPayerPersonal && row.PayerTeamId == 0 || row.PayerKind == BillingPayerTeam && row.PayerTeamId > 0 {
+		if row.PayerKind == BillingPayerPersonal && row.PayerTeamId == 0 || row.PayerKind == BillingPayerTeam && row.PayerTeamId > 0 || row.PayerKind == BillingPayerOwner && row.SiteId > 0 && row.PayerTeamId == 0 {
 			return nil
 		}
 		return ErrBillingOperationConflict
@@ -53,6 +54,9 @@ func freezeBillingPayerTx(tx *gorm.DB, row *BillingOperation, newAcceptance bool
 				}
 			}
 			row.PayerKind, row.PayerTeamId = root.PayerKind, root.PayerTeamId
+			if row.PayerKind == BillingPayerOwner {
+				row.SiteId = root.SiteId
+			}
 			return freezeBillingPayerTx(tx, row, false)
 		}
 		// Legacy direct chunks may have no request row. Reuse the first
@@ -79,6 +83,9 @@ func freezeBillingPayerTx(tx *gorm.DB, row *BillingOperation, newAcceptance bool
 					}
 				}
 				row.PayerKind, row.PayerTeamId = siblings[0].PayerKind, siblings[0].PayerTeamId
+				if row.PayerKind == BillingPayerOwner {
+					row.SiteId = siblings[0].SiteId
+				}
 				return freezeBillingPayerTx(tx, row, false)
 			}
 		}
@@ -129,6 +136,16 @@ func captureBillingPayerTx(tx *gorm.DB, row *BillingOperation) error {
 	}
 	if token.UserId != row.UserId {
 		return ErrBillingOperationConflict
+	}
+	if token.OwnerSelfUseSiteId > 0 {
+		var site AdtySite
+		if err := tx.Select("id", "owner_user_id", "status").First(&site, token.OwnerSelfUseSiteId).Error; err != nil {
+			return err
+		}
+		if before.Id != 0 || site.OwnerUserId != row.UserId || site.Status != AdtySiteStatusActive || row.SiteId != 0 && row.SiteId != site.Id {
+			return ErrBillingOperationConflict
+		}
+		row.PayerKind, row.SiteId = BillingPayerOwner, site.Id
 	}
 	if hasBindings {
 		var current AdtyTeamKey

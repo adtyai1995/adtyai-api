@@ -12,6 +12,27 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestOwnerTopupPendingDoesNotReplaceOrdinaryOrderPG(t *testing.T) {
+	db := prepareAdtyTopUpDB(t)
+	user := seedAdtyTopUpUser(t, db, "owner-pending", 0)
+	for _, business := range []string{AdtyBusinessWalletTopup, AdtyBusinessOwnerSelfUseTopup} {
+		require.NoError(t, db.Create(&TopUp{UserId: user.Id, TradeNo: business, PaymentProvider: PaymentProviderAdtyBEpusdt, Status: common.TopUpStatusPending}).Error)
+		require.NoError(t, db.Create(&AdtyTopupOrder{UserId: user.Id, TradeNo: business, Provider: PaymentProviderAdtyBEpusdt, Business: business, SiteId: 7, ExpireAt: 100}).Error)
+	}
+	pending, err := GetUserPendingAdtyTopUp(user.Id, 1)
+	require.NoError(t, err)
+	require.Equal(t, AdtyBusinessWalletTopup, pending.TradeNo)
+	trades, err := ListUserPendingAdtyTradeNos(user.Id)
+	require.NoError(t, err)
+	require.Equal(t, []string{AdtyBusinessWalletTopup}, trades)
+	pending, err = GetUserPendingAdtyTopUp(user.Id, 1, 7)
+	require.NoError(t, err)
+	require.Equal(t, AdtyBusinessOwnerSelfUseTopup, pending.TradeNo)
+	trades, err = ListUserPendingAdtyTradeNos(user.Id, 8)
+	require.NoError(t, err)
+	require.Empty(t, trades)
+}
+
 func TestRefundAdtyTopUpDoesNotDebitWhenCacheIsDown(t *testing.T) {
 	db := prepareAdtyTopUpDB(t)
 	server := useUserCacheMiniRedis(t)

@@ -34,9 +34,11 @@ import { detectPayDevice } from '../lib/device'
 import { creditedUsdAmount } from '../lib/money'
 import { clearPendingPayment, savePendingPayment } from '../lib/pending-payment'
 import { isDisplayablePaymentQr, isSafePaymentUrl } from '../lib/safe-url'
-import type { AdtyOrder, AdtyOrderExt } from '../types'
+import type { AdtyOrder, AdtyOrderExt, AdtyTopupBusiness } from '../types'
 
 type EpayPayDialogProps = {
+  gatewayReturn?: boolean
+  business?: AdtyTopupBusiness
   paymentScene?: string
   method: string
   /** Channel picked on the wallet; failures do not switch to another one. */
@@ -89,7 +91,8 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
         props.method,
         props.channelId,
         device,
-        props.paymentScene
+        props.paymentScene,
+        props.business
       ),
     onSuccess: (order) => {
       setTradeNo(order.trade_no)
@@ -138,6 +141,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
   useEffect(() => {
     if (
       device !== 'mobile' ||
+      props.gatewayReturn ||
       !ext ||
       status !== 'pending' ||
       jumpedRef.current === ext.trade_no
@@ -155,7 +159,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
       return
     }
     window.location.assign(target)
-  }, [device, ext, status, navigate])
+  }, [device, ext, status, navigate, props.gatewayReturn])
 
   const { onSettled } = props
   useEffect(() => {
@@ -274,7 +278,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
               </p>
             </>
           )}
-          {device === 'mobile' && !blocked && (
+          {device === 'mobile' && !blocked && !props.gatewayReturn && (
             <p className='text-sm'>
               {t('Opening {{app}}... Come back here after paying.', {
                 app: appName,

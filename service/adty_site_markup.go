@@ -29,6 +29,7 @@ import (
 
 // gin 上下文里记下的仍是存储口径的 k 和供货倍率 d：同一个请求后面的消费日志都从这里取（11.5 的记账）。
 const (
+	AdtyOwnerSelfUseContextKey    = "adty_owner_self_use_site"
 	AdtySiteMarkupContextKey      = "adty_site_markup"
 	AdtyTeamDiscountContextKey    = "adty_team_discount"
 	AdtyTeamPriceBlockedKey       = "adty_team_price_blocked"
@@ -207,6 +208,36 @@ func AdtyBilledGroupRatioFromContext(c *gin.Context) (decimal.Decimal, bool) {
 // AdtyApplySiteMarkupDecimal 按已确认公式用精确十进制计算供货价、售价和团队下限。
 // 返回最终计费分组倍率和存储 k（1 表示加价比例为 0）。
 func AdtyApplySiteMarkupDecimal(c *gin.Context, userId int, group string, groupRatio decimal.Decimal, modelName string) (billed, storedK decimal.Decimal) {
+	if c != nil {
+		if value, ok := c.Get(AdtyOwnerSelfUseContextKey); ok {
+			site, ok := value.(*model.AdtySite)
+			one := decimal.NewFromInt(1)
+			if !ok || site == nil || site.OwnerUserId != userId {
+				c.Set(AdtyTeamPriceBlockedKey, true)
+				return groupRatio, one
+			}
+			d, ok := AdtySiteCostFactor(site)
+			if !ok {
+				c.Set(AdtyTeamPriceBlockedKey, true)
+				return groupRatio, one
+			}
+			price := groupRatio.Mul(d)
+			f := adtyDefaultPriceFactors(group, groupRatio)
+			f.MainSite = false
+			f.SiteId = site.Id
+			f.SiteOwnerUserId = userId
+			f.CostFactor = d
+			f.SupplyPrice = price
+			f.SellPrice = price
+			adtyRememberPriceFactors(c, f)
+			adtyRememberBilledRatio(c, price)
+			c.Set(AdtySiteIdContextKey, site.Id)
+			c.Set(AdtySiteOwnerContextKey, userId)
+			c.Set(AdtySiteMarkupContextKey, float64(1))
+			c.Set(AdtySiteCostFactorContextKey, d.InexactFloat64())
+			return price, one
+		}
+	}
 	marked, storedK := adtyApplySiteMarkupOnlyDecimal(c, userId, group, groupRatio, modelName)
 	billed, storedK = adtyApplyTeamProtocolPriceDecimal(c, userId, groupRatio, marked, storedK)
 	adtyRememberBilledRatio(c, billed)

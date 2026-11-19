@@ -27,6 +27,8 @@ import { CustomerSheet } from '../components/customer-sheet'
 import { EarningToMarginPanel } from '../components/earning-to-margin-panel'
 import { EarningsPanel } from '../components/earnings-panel'
 import { OverviewPanel } from '../components/overview-panel'
+import { OwnerSelfUseHistory } from '../components/owner-self-use-history'
+import { OwnerSelfUsePanel } from '../components/owner-self-use-panel'
 import { OwnerVerificationProvider } from '../components/owner-verification'
 import { PricingPanel } from '../components/pricing-panel'
 import { SiteSettingsPanel } from '../components/site-settings-panel'
@@ -47,6 +49,12 @@ const api = vi.hoisted(() => ({
   getOwnerCustomerLogs: vi.fn(),
   getOwnerCustomerTopUps: vi.fn(),
   grantTrial: vi.fn(),
+  getOwnerWallets: vi.fn(),
+  getSelfUsePrincipal: vi.fn(),
+  transferOwnerPrincipal: vi.fn(),
+  createSelfUseKey: vi.fn(),
+  getOwnerPrincipalTransfers: vi.fn(),
+  getOwnerSelfUseUsage: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api')>()),
@@ -147,6 +155,143 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks()
+})
+
+describe('OwnerSelfUsePanel', () => {
+  beforeEach(() => {
+    api.getOwnerWallets.mockResolvedValue([
+      { id: 1, kind: 'earnings', balance: '100', frozen_usd: '10' },
+    ])
+    api.getSelfUsePrincipal.mockResolvedValue({ available_usd: '0' })
+    api.getOwnerPrincipalTransfers.mockResolvedValue({ items: [], total: 0 })
+    api.getOwnerSelfUseUsage.mockResolvedValue({ items: [], total: 0 })
+  })
+
+  it('confirms the credit and available earnings, reuses a timed-out transfer, and refreshes balances', async () => {
+    api.transferOwnerPrincipal
+      .mockRejectedValueOnce(new Error('timeout'))
+      .mockImplementationOnce(async () => {
+        api.getSelfUsePrincipal.mockResolvedValue({ available_usd: '20' })
+        return { transfer_id: 'owner-receipt' }
+      })
+    render(wrap(<OwnerSelfUsePanel />))
+    const amount = await screen.findByLabelText(
+      'Transfer to personal balance (USD)'
+    )
+    await userEvent.type(amount, '20')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Transfer to personal balance' })
+    )
+    const dialog = screen.getByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Site principal credit')
+    expect(dialog).toHaveTextContent('70')
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: 'Continue' })
+    )
+    await waitFor(() =>
+      expect(api.transferOwnerPrincipal).toHaveBeenCalledTimes(1)
+    )
+    const intent = api.transferOwnerPrincipal.mock.calls[0]?.[1]
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole('button', { name: 'Continue' })
+      ).toBeEnabled()
+    )
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: 'Continue' })
+    )
+    expect(await screen.findByText(/owner-receipt/)).toBeInTheDocument()
+    expect(api.transferOwnerPrincipal).toHaveBeenLastCalledWith('20', intent)
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText('Site self-use principal')
+      ).toHaveTextContent('20')
+    )
+  })
+
+  it('blocks transfers while balances are unavailable and supports retry', async () => {
+    api.getSelfUsePrincipal.mockRejectedValueOnce(new Error('unavailable'))
+    render(wrap(<OwnerSelfUsePanel />))
+    await userEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+    expect(
+      await screen.findByLabelText('Transfer to personal balance (USD)')
+    ).toBeInTheDocument()
+  })
+
+  it('rejects frozen funds and fractional quota amounts, and only displays a key after creation', async () => {
+    api.createSelfUseKey.mockResolvedValue('sk-owner-once')
+    render(wrap(<OwnerSelfUsePanel />))
+    const amount = await screen.findByLabelText(
+      'Transfer to personal balance (USD)'
+    )
+    await userEvent.type(amount, '91')
+    expect(
+      screen.getByRole('button', { name: 'Transfer to personal balance' })
+    ).toBeDisabled()
+    await userEvent.clear(amount)
+    await userEvent.type(amount, '0.000001')
+    expect(
+      screen.getByRole('button', { name: 'Transfer to personal balance' })
+    ).toBeDisabled()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create site self-use key' })
+    )
+    expect(await screen.findByText('sk-owner-once')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByText('sk-owner-once')).not.toBeInTheDocument()
+  })
+})
+
+describe('OwnerSelfUseHistory', () => {
+  it('labels dollar prices with their billing units and does not invent a flat tiered price', async () => {
+    api.getOwnerPrincipalTransfers.mockResolvedValue({ items: [], total: 0 })
+    const item = {
+      request_id: 'owner-request',
+      created_at: 1700000000,
+      model_name: 'owner-model',
+      billing_group: 'default',
+      charged_usd: '0.8',
+      prompt_tokens: 12,
+      completion_tokens: 8,
+    }
+    api.getOwnerSelfUseUsage.mockResolvedValue({
+      items: [
+        {
+          ...item,
+          operation_key: 'token',
+          billing_unit: 'per_million_input_tokens',
+          supply_unit_price: '2.4',
+        },
+        {
+          ...item,
+          operation_key: 'call',
+          billing_unit: 'per_call',
+          supply_unit_price: '0.8',
+        },
+        {
+          ...item,
+          operation_key: 'expression',
+          billing_unit: 'tiered_expr',
+          supply_unit_price: '',
+        },
+      ],
+      total: 3,
+    })
+    render(wrap(<OwnerSelfUseHistory />))
+    const priceCell = await screen.findByRole('cell', {
+      name: /Per 1M input tokens/,
+    })
+    expect(priceCell).toBeVisible()
+    expect(screen.getByRole('table', { name: 'Owner API usage' })).toBeVisible()
+    expect(
+      screen.getByRole('table', { name: 'Owner principal transfers' })
+    ).toBeVisible()
+    expect(screen.getByRole('cell', { name: /Per call/ })).toBeVisible()
+    expect(screen.getByText('Tiered pricing')).toBeVisible()
+    expect(screen.queryByText('per_token')).not.toBeInTheDocument()
+    expect(screen.queryByText('tiered_expr')).not.toBeInTheDocument()
+    expect(priceCell).toHaveTextContent('2.40')
+  })
 })
 
 describe('PricingPanel', () => {

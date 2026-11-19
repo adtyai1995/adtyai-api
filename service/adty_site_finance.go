@@ -728,6 +728,9 @@ func SelectAdtySiteTier(tiers []model.AdtySiteTier, stats AdtySiteTierStats) *mo
 }
 
 func adtySiteTierCountsAsPrincipal(order model.AdtyTopupOrder) bool {
+	if order.IsOwnerSelfUse() {
+		return false
+	}
 	if order.Provider == model.AdtyVoucherProvider {
 		return order.Method == model.AdtyVoucherPurposeSiteCustomer
 	}
@@ -759,6 +762,7 @@ func loadAdtySiteTierStatsTx(tx *gorm.DB, siteID int) (AdtySiteTierStats, error)
 	var billed int64
 	if err := tx.Model(&model.BillingOperation{}).
 		Where("site_id = ? AND state = ? AND kind IN ?", siteID, model.BillingSettled, []string{"request", "task", "mj_charge"}).
+		Where("COALESCE(payer_kind,'') <> ?", model.BillingPayerOwner).
 		Select("COALESCE(SUM(applied_quota), 0)").Scan(&billed).Error; err != nil {
 		return stats, err
 	}

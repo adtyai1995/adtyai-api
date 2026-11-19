@@ -17,19 +17,21 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 const bepusdtTestSecret = "bepusdt-test-secret"
 
 type bepusdtGateway struct {
-	mu            sync.Mutex
-	createStatus  int
-	cancelStatus  int
-	cancelMessage string
-	dropCancel    bool
-	creates       int
-	cancels       []string
-	lastRedirect  string
+	mu                   sync.Mutex
+	createStatus         int
+	cancelStatus         int
+	cancelMessage        string
+	dropCancel           bool
+	creates              int
+	cancels              []string
+	lastRedirect         string
+	beforeCreateResponse func(string)
 }
 
 type bepusdtGatewaySnapshot struct {
@@ -81,6 +83,9 @@ func useFakeBEpusdt(t *testing.T) *bepusdtGateway {
 		if gw.createStatus != 200 {
 			_, _ = w.Write([]byte(`{"status_code":400,"message":"no address","data":null}`))
 			return
+		}
+		if gw.beforeCreateResponse != nil {
+			gw.beforeCreateResponse(body["order_id"].(string))
 		}
 		_, _ = w.Write([]byte(`{"status_code":200,"message":"success","data":{"trade_id":"tid-` + body["order_id"].(string) +
 			`","order_id":"` + body["order_id"].(string) + `","amount":"100","actual_amount":"100.01","token":"TAddr","expiration_time":900,"status":1,"payment_url":""}}`))
@@ -155,6 +160,46 @@ func TestBEpusdtPayCreatesOrderWithBonus(t *testing.T) {
 	assert.Equal(t, "2.5", view.Ext.BonusUSD.String())
 	assert.EqualValues(t, 51_250_000, view.Ext.CreditQuota)
 	assert.Positive(t, view.Ext.ExpireAt)
+}
+
+func TestBEpusdtPayEarlyCallbackPreservesGatewayDetailsAndLockOrder(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	setRouterBonusRates(t)
+	gw := useFakeBEpusdt(t)
+	token, userID := bepusdtBuyer(t, f, "usdt-early-callback")
+	before := quotaOf(t, f, userID)
+	callback := make(chan string, 1)
+	gw.mu.Lock()
+	gw.beforeCreateResponse = func(tradeNo string) {
+		req := httptest.NewRequest(http.MethodPost, "/api/user/bepusdt/notify", strings.NewReader(notifyFor(tradeNo, 2, 100.01, "TAddr")))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		f.engine.ServeHTTP(resp, req)
+		callback <- resp.Body.String()
+	}
+	gw.mu.Unlock()
+	checked, topUpLocked := false, false
+	require.NoError(t, f.db.Callback().Update().Before("gorm:update").Register("bepusdt-response-lock-order", func(tx *gorm.DB) {
+		fields, ok := tx.Statement.Dest.(map[string]any)
+		if !ok || tx.Statement.Table != "adty_topup_orders" || fields["pay_address"] == nil {
+			return
+		}
+		checked = true
+		topUpLocked = f.db.Transaction(func(other *gorm.DB) error {
+			return other.Exec("SELECT id FROM top_ups WHERE user_id = ? FOR UPDATE NOWAIT", userID).Error
+		}) != nil
+	}))
+	t.Cleanup(func() { _ = f.db.Callback().Update().Remove("bepusdt-response-lock-order") })
+	view := payBEpusdt(t, f, token)
+	require.Equal(t, "ok", <-callback)
+	require.True(t, checked)
+	require.True(t, topUpLocked, "response writeback must lock top-up before extension, matching callback order")
+	require.Equal(t, common.TopUpStatusSuccess, view.Status)
+	require.Equal(t, "TAddr", view.Ext.PayAddress)
+	require.Equal(t, "100.01", view.Ext.PayAmount.String())
+	require.Equal(t, "tid-"+view.TradeNo, view.Ext.GatewayTradeId)
+	require.Equal(t, "0xhash", view.Ext.PaidTxHash)
+	require.Equal(t, before+51_250_000, quotaOf(t, f, userID))
 }
 
 // 网关下单失败时订单改成 failed。2026-11-01 取消了支付合规确认，原来「没确认时不下单」那一段删掉了：

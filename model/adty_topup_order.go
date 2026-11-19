@@ -104,6 +104,17 @@ func (AdtyTopupOrder) TableName() string {
 	return "adty_topup_orders"
 }
 
+func (order *AdtyTopupOrder) IsOwnerSelfUse() bool {
+	return order != nil && order.Business == AdtyBusinessOwnerSelfUseTopup
+}
+
+func (order *AdtyTopupOrder) ValidOwnerSelfUseCredit() bool {
+	return order.IsOwnerSelfUse() && order.TeamId == 0 && order.CreditQuota > 0 && order.CreditQuota <= int64(common.MaxWalletQuota) &&
+		order.TopupGroupRatio.Equal(decimal.NewFromInt(1)) && order.BonusUSD.IsZero() && order.BonusRate.IsZero() &&
+		order.FaceUSD.Mul(common.QuotaPerUnitDecimal()).Equal(decimal.NewFromInt(order.CreditQuota)) &&
+		order.ReferralAffiliateId == 0 && order.ReferralRate.IsZero()
+}
+
 // AdtyPaymentFacts 是支付商告诉我们的到账事实。
 type AdtyPaymentFacts struct {
 	Provider, Method string
@@ -127,6 +138,7 @@ var (
 	ErrPaymentAmountMismatch = errors.New("payment amount mismatch")
 	ErrAdtyTopUpNotCancel    = errors.New("adty topup cannot be canceled")
 	ErrAdtyDuplicatePayment  = errors.New("duplicate payment on a completed order")
+	ErrAdtyOwnerTopupReview  = errors.New("owner self-use payment requires review for the original closed site")
 )
 
 // AdtyAfterTopUpCreditedTx 在入账事务里调用（P6 注册返佣计佣任务）。只能做不会失败的写，
@@ -317,6 +329,18 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	if ext.TeamId == 0 {
 		if err := lockForUpdate(tx).First(&user, topUp.UserId).Error; err != nil {
 			return false, 0, nil, nil, err
+		}
+	}
+	if ext.IsOwnerSelfUse() {
+		if !ext.ValidOwnerSelfUseCredit() || ext.SiteId <= 0 || ext.UserId != topUp.UserId || ext.SiteOwnerUserId != topUp.UserId {
+			return false, 0, nil, nil, ErrInvalidTopUpQuota
+		}
+		var site AdtySite
+		if err := lockForUpdate(tx).First(&site, ext.SiteId).Error; err != nil {
+			return false, 0, nil, nil, err
+		}
+		if site.Status == AdtySiteStatusClosed || site.OwnerUserId != ext.SiteOwnerUserId {
+			return false, 0, nil, nil, ErrAdtyOwnerTopupReview
 		}
 	}
 	if err := tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Updates(map[string]any{
@@ -525,14 +549,21 @@ func CancelAdtyTopUp(tradeNo string, userId int) (*AdtyTopupOrder, error) {
 }
 
 // ListUserPendingAdtyTradeNos returns the user's still-payable order numbers.
-func ListUserPendingAdtyTradeNos(userId int) ([]string, error) {
+func ListUserPendingAdtyTradeNos(userId int, ownerSiteID ...int) ([]string, error) {
 	var tradeNos []string
-	err := DB.Table("adty_topup_orders AS a").
+	query := DB.Table("adty_topup_orders AS a").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("a.user_id = ? AND t.status = ?", userId, common.TopUpStatusPending).
-		Order("a.id ASC").
-		Pluck("a.trade_no", &tradeNos).Error
+		Where("a.user_id = ? AND t.status = ?", userId, common.TopUpStatusPending)
+	query = adtyPendingBusinessScope(query, ownerSiteID)
+	err := query.Order("a.id ASC").Pluck("a.trade_no", &tradeNos).Error
 	return tradeNos, err
+}
+
+func adtyPendingBusinessScope(query *gorm.DB, ownerSiteID []int) *gorm.DB {
+	if len(ownerSiteID) > 0 && ownerSiteID[0] > 0 {
+		return query.Where("a.business = ? AND a.site_id = ?", AdtyBusinessOwnerSelfUseTopup, ownerSiteID[0])
+	}
+	return query.Where("COALESCE(a.business, '') <> ?", AdtyBusinessOwnerSelfUseTopup)
 }
 
 // ReplaceAdtyTopUpAfterLock freezes a pending order the user is abandoning by
@@ -686,12 +717,13 @@ func GetUserAdtyTopUp(tradeNo string, userId int) (*AdtyTopUpView, error) {
 }
 
 // GetUserPendingAdtyTopUp 返回本人最新的一笔还没过期的 pending 订单，没有时为 nil。
-func GetUserPendingAdtyTopUp(userId int, now int64) (*AdtyTopUpView, error) {
+func GetUserPendingAdtyTopUp(userId int, now int64, ownerSiteID ...int) (*AdtyTopUpView, error) {
 	var exts []AdtyTopupOrder
-	err := DB.Table("adty_topup_orders AS a").Select("a.*").
+	query := DB.Table("adty_topup_orders AS a").Select("a.*").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("a.user_id = ? AND t.status = ? AND a.expire_at > ?", userId, common.TopUpStatusPending, now).
-		Order("a.id DESC").Limit(1).Scan(&exts).Error
+		Where("a.user_id = ? AND t.status = ? AND a.expire_at > ?", userId, common.TopUpStatusPending, now)
+	query = adtyPendingBusinessScope(query, ownerSiteID)
+	err := query.Order("a.id DESC").Limit(1).Scan(&exts).Error
 	if err != nil || len(exts) == 0 {
 		return nil, err
 	}
@@ -730,8 +762,4 @@ func ListUserAdtyTopUps(userId int, pageInfo *common.PageInfo) ([]AdtyTopUpView,
 		out = append(out, AdtyTopUpView{TopUp: topUp, Ext: byTradeNo[topUp.TradeNo]})
 	}
 	return out, total, nil
-}
-
-func (order *AdtyTopupOrder) IsOwnerSelfUse() bool {
-	return order != nil && order.Business == AdtyBusinessOwnerSelfUseTopup
 }

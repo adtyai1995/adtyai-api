@@ -47,7 +47,11 @@ import {
   ORDER_STATUS_VARIANTS,
 } from '../lib/methods'
 import { formatUsd } from '../lib/money'
-import type { AdtyOrderStatus, AdtyTopupHistoryFilters } from '../types'
+import type {
+  AdtyOrderStatus,
+  AdtyTopupBusiness,
+  AdtyTopupHistoryFilters,
+} from '../types'
 
 const PAGE_SIZE = 10
 const STATUS_OPTIONS = Object.keys(ORDER_STATUS_LABELS) as AdtyOrderStatus[]
@@ -67,7 +71,7 @@ function dateInputToUnixSeconds(
 }
 
 /** The user's own top-up orders with face value, bonus, payment and status. */
-export function AdtyTopupHistory() {
+export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
@@ -80,6 +84,7 @@ export function AdtyTopupHistory() {
   const startTimestamp = dateInputToUnixSeconds(startDate, false)
   const endTimestamp = dateInputToUnixSeconds(endDate, true)
   const filters: AdtyTopupHistoryFilters = {
+    business: props.business,
     ...(status ? { status } : {}),
     ...(paymentMethod ? { payment_method: paymentMethod } : {}),
     ...(tradeNo.trim() ? { trade_no: tradeNo.trim() } : {}),
@@ -107,7 +112,11 @@ export function AdtyTopupHistory() {
   return (
     <Card id='wallet-history' className='scroll-mt-4'>
       <CardHeader>
-        <CardTitle>{t('Top-up history')}</CardTitle>
+        <CardTitle>
+          {props.business === 'owner_self_use_topup'
+            ? t('Owner self-use top-up history')
+            : t('Top-up history')}
+        </CardTitle>
         <CardDescription>
           {t('Orders paid after they expire are still credited.')}
         </CardDescription>

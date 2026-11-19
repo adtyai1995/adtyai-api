@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute, redirect } from '@tanstack/react-router'
+import { z } from 'zod'
 
 import { SiteOwnerCenter } from '@/features/adty-site-owner'
 import {
@@ -28,6 +29,9 @@ import { useAuthStore } from '@/stores/auth-store'
 // The server checks ownership on every request; this only keeps non-owners
 // from landing on an empty page.
 export const Route = createFileRoute('/_authenticated/site-owner/$section')({
+  validateSearch: z.object({
+    trade_no: z.string().trim().min(1).max(64).optional().catch(undefined),
+  }),
   beforeLoad: ({ params }) => {
     if (!isSiteOwnerSection(params.section)) {
       throw redirect({
@@ -44,8 +48,10 @@ export const Route = createFileRoute('/_authenticated/site-owner/$section')({
 
 function SiteOwnerPage() {
   const params = Route.useParams()
+  const { trade_no } = Route.useSearch()
   return (
     <SiteOwnerCenter
+      returnTradeNo={params.section === 'earnings' ? trade_no : undefined}
       section={
         isSiteOwnerSection(params.section)
           ? params.section

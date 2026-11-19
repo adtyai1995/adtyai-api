@@ -51,6 +51,7 @@ func adtyEpayTimeouts() (perChannel, total time.Duration, err error) {
 }
 
 type adtyEpayPayRequest struct {
+	Business          string `json:"business"`
 	PaymentScene      string `json:"payment_scene"`
 	Amount            int64  `json:"amount"`
 	Method            string `json:"method"`
@@ -78,7 +79,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 	if req.Device != "mobile" {
 		req.Device = "pc"
 	}
-	quote, err := service.AdtyQuoteForSite(service.AdtyBillingSiteForUser(c.GetInt("id")), c.GetString("group"), req.Amount, req.Method)
+	quote, err := service.AdtyQuoteForPayment(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Method)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -101,7 +102,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 	if req.ChannelId > 0 {
 		maxAttempts = 1
 	}
-	if err := replaceOtherPendingAdtyOrders(c); err != nil {
+	if err := replaceOtherPendingAdtyOrders(c, quote); err != nil {
 		if errors.Is(err, service.ErrAdtyPaymentDetected) {
 			common.ApiErrorT(c, "A transfer has been detected. Please wait")
 			return

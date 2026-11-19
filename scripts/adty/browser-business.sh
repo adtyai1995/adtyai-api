@@ -26,9 +26,10 @@ case "$adty_browser_scenario" in
     ADTY_BROWSER_SCENARIO=payment-scenes bash "$0"
     ADTY_BROWSER_SCENARIO=site-ownership bash "$0"
     ADTY_BROWSER_SCENARIO=team-lifecycle bash "$0"
+    ADTY_BROWSER_SCENARIO=owner-self-use bash "$0"
     exit 0
     ;;
-  deployment | wallet | site-status | password-reset | user-sites | finance-actions | site-brand | notification-read | notification-publish | unified-orders | order-trace | withdraw-networks | site-staff | payment-scenes | site-ownership | team-lifecycle) ;;
+  deployment | wallet | site-status | password-reset | user-sites | finance-actions | site-brand | notification-read | notification-publish | unified-orders | order-trace | withdraw-networks | site-staff | payment-scenes | site-ownership | owner-self-use | team-lifecycle) ;;
   *) echo 'browser-business: unknown scenario' >&2; exit 2 ;;
 esac
 

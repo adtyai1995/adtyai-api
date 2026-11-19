@@ -122,6 +122,14 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 		return nil, common.NewMessage("Only credited orders can be refunded")
 	}
 	deducted, bonus, refundQuota, amount := adtyRefundFigures(ext, balance, checkin)
+	facts, err := LoadAdtyRefundPageFacts(tradeNo, decimal.Zero)
+	if err != nil {
+		return nil, err
+	}
+	if ext.IsOwnerSelfUse() {
+		refundQuota = facts.RefundRemainingQuota
+		deducted, bonus, amount = refundQuota, 0, adtyRefundAmount(ext, refundQuota, ext.FaceQuota())
+	}
 	result := &AdtyTopUpRefundResult{
 		DeductedQuota: deducted, BonusQuota: bonus, RefundQuota: refundQuota,
 		RefundAmount: amount, Currency: ext.refundCurrency(),
@@ -131,10 +139,6 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 		return nil, err
 	}
 	attachSiteInviteCommissionRefundPreview(result, preview)
-	facts, err := LoadAdtyRefundPageFacts(tradeNo, decimal.Zero)
-	if err != nil {
-		return nil, err
-	}
 	if facts != nil && preview != nil {
 		facts.Commission = preview
 	}

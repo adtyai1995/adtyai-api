@@ -42,6 +42,7 @@ import { EarningsPanel } from './components/earnings-panel'
 import { SettlementSheetPanel } from './components/settlement-sheet-panel'
 import { WithdrawalPanel } from './components/withdrawal-panel'
 import { OverviewPanel } from './components/overview-panel'
+import { OwnerSelfUsePanel } from './components/owner-self-use-panel'
 import { OwnerVerificationProvider } from './components/owner-verification'
 import { PricingPanel } from './components/pricing-panel'
 import { SiteSettingsPanel } from './components/site-settings-panel'
@@ -54,7 +55,10 @@ import { WalletLedgerPanel } from './components/wallet-ledger-panel'
 import { SITE_OWNER_SECTIONS, type SiteOwnerSectionId } from './sections'
 
 /** Site owner center (task 11.6): one page with a tab per section. */
-export function SiteOwnerCenter(props: { section: SiteOwnerSectionId }) {
+export function SiteOwnerCenter(props: {
+  section: SiteOwnerSectionId
+  returnTradeNo?: string
+}) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.auth.user)
@@ -162,6 +166,17 @@ export function SiteOwnerCenter(props: { section: SiteOwnerSectionId }) {
                   <TabsContent value='earnings'>
                     <div className='flex flex-col gap-5'>
                       <EarningsPanel />
+                      <OwnerSelfUsePanel
+                        returnTradeNo={props.returnTradeNo}
+                        onReturnClosed={() =>
+                          void navigate({
+                            to: '/site-owner/$section',
+                            params: { section: 'earnings' },
+                            search: {},
+                            replace: true,
+                          })
+                        }
+                      />
                       <SettlementSheetPanel />
                       <EarningToMarginPanel />
                       <WithdrawalPanel />

@@ -102,7 +102,11 @@ func RecordPaymentOrphanEvent(event *PaymentOrphanEvent) error {
 		}
 		fields := map[string]any{"update_time": now}
 		if stored.ReviewID == 0 && stored.Status == PaymentOrphanStatusPendingReview {
-			fields["reason"], fields["error"], fields["payload"] = event.Reason, event.Error, event.Payload
+			fields["reason"], fields["error"] = event.Reason, event.Error
+			// A later query failure has no new payment evidence.
+			if event.Payload != "" {
+				fields["payload"] = event.Payload
+			}
 			if stored.ReferenceID == "" && event.ReferenceID != "" {
 				fields["reference_id"] = event.ReferenceID
 			}

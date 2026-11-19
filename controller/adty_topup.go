@@ -36,19 +36,23 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	}
 	bonusRates := map[string]float64{}
 	methods := make([]service.AdtyMethodInfo, 0)
-	scenes, err := service.AdtyPaymentScenesForUser(c.GetInt("id"))
+	scenes, err := service.AdtyPaymentScenesForUser(c.GetInt("id"), service.AdtyPaymentScope{Business: c.Query("business"), SiteID: service.AdtyRequestSiteID(c)})
 	if err != nil {
 		writeAdtyTopUpError(c, err)
 		return
 	}
 	for _, scene := range scenes {
-		if scene.Key == "wallet_topup" {
+		if scene.Key == "wallet_topup" || c.Query("business") == model.AdtyBusinessOwnerSelfUseTopup {
 			methods = scene.Methods
 			break
 		}
 	}
 	var pending *model.AdtyTopUpView
-	if view, err := model.GetUserPendingAdtyTopUp(c.GetInt("id"), time.Now().Unix()); err == nil {
+	ownerSiteID := 0
+	if c.Query("business") == model.AdtyBusinessOwnerSelfUseTopup {
+		ownerSiteID = service.AdtyRequestSiteID(c)
+	}
+	if view, err := model.GetUserPendingAdtyTopUp(c.GetInt("id"), time.Now().Unix(), ownerSiteID); err == nil {
 		pending = view
 	}
 	common.ApiSuccess(c, gin.H{
@@ -65,6 +69,7 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 }
 
 type adtyQuoteRequest struct {
+	Business     string `json:"business"`
 	PaymentScene string `json:"payment_scene"`
 	Amount       int64  `json:"amount"`
 	Method       string `json:"method"`
@@ -78,7 +83,7 @@ func PostAdtyTopUpQuote(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	quote, err := service.AdtyQuoteForSite(service.AdtyBillingSiteForUser(c.GetInt("id")), c.GetString("group"), req.Amount, req.Method)
+	quote, err := service.AdtyQuoteForPayment(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Method)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -160,7 +165,15 @@ func FlushAdtyBatchUpdates(c *gin.Context) {
 
 // GetAdtyTopUpPending 返回本人最新一笔还没过期的 pending 订单，没有时 data 为 null。
 func GetAdtyTopUpPending(c *gin.Context) {
-	view, err := model.GetUserPendingAdtyTopUp(c.GetInt("id"), time.Now().Unix())
+	ownerSiteID := 0
+	if c.Query("business") == model.AdtyBusinessOwnerSelfUseTopup {
+		ownerSiteID = service.AdtyRequestSiteID(c)
+		if ownerSiteID <= 0 {
+			common.ApiSuccess(c, nil)
+			return
+		}
+	}
+	view, err := model.GetUserPendingAdtyTopUp(c.GetInt("id"), time.Now().Unix(), ownerSiteID)
 	if err != nil {
 		writeAdtyTopUpError(c, err)
 		return
@@ -171,6 +184,8 @@ func GetAdtyTopUpPending(c *gin.Context) {
 var listUserAdtyTopUpsFn = model.ListUserAdtyTopUps
 
 type adtyTopUpSelfFilter struct {
+	OwnerSiteID    int
+	Business       string
 	Status         string
 	PaymentMethod  string
 	PaymentScene   string
@@ -181,7 +196,7 @@ type adtyTopUpSelfFilter struct {
 }
 
 func (f adtyTopUpSelfFilter) Active() bool {
-	return f.Status != "" ||
+	return f.Business != "" || f.Status != "" ||
 		f.PaymentMethod != "" ||
 		f.PaymentScene != "" ||
 		f.TradeNo != "" ||
@@ -286,6 +301,7 @@ func parseAdtyTopUpSelfFilter(c *gin.Context) (adtyTopUpSelfFilter, error) {
 		return adtyTopUpSelfFilter{}, fmt.Errorf("start timestamp after end timestamp")
 	}
 	return adtyTopUpSelfFilter{
+		Business:       strings.TrimSpace(c.Query("business")),
 		Status:         status,
 		PaymentMethod:  paymentMethod,
 		PaymentScene:   paymentScene,
@@ -297,6 +313,12 @@ func parseAdtyTopUpSelfFilter(c *gin.Context) (adtyTopUpSelfFilter, error) {
 }
 
 func matchAdtyTopUpSelfFilter(userID int, item model.AdtyTopUpView, filter adtyTopUpSelfFilter) bool {
+	if filter.OwnerSiteID != 0 && (item.Ext == nil || item.Ext.SiteId != filter.OwnerSiteID) {
+		return false
+	}
+	if filter.Business != "" && (item.Ext == nil || item.Ext.Business != filter.Business) {
+		return false
+	}
 	raw, err := json.Marshal(item)
 	if err != nil {
 		return false
@@ -440,6 +462,12 @@ func GetAdtyTopUpSelf(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if filter.Business == model.AdtyBusinessOwnerSelfUseTopup {
+		filter.OwnerSiteID = service.AdtyRequestSiteID(c)
+		if filter.OwnerSiteID <= 0 {
+			filter.OwnerSiteID = -1
+		}
+	}
 	if !filter.Active() {
 		items, total, err := listUserAdtyTopUpsFn(userID, pageInfo)
 		if err != nil {
@@ -503,9 +531,13 @@ func newAdtyTradeNo(prefix string, userID int) (string, error) {
 
 // replaceOtherPendingAdtyOrders freezes the user's other payable orders before
 // a new one is created, and asks the gateway to cancel when it can.
-func replaceOtherPendingAdtyOrders(c *gin.Context) error {
+func replaceOtherPendingAdtyOrders(c *gin.Context, quote ...*service.AdtyQuote) error {
 	userID := c.GetInt("id")
-	tradeNos, err := model.ListUserPendingAdtyTradeNos(userID)
+	ownerSiteID := 0
+	if len(quote) > 0 && quote[0] != nil && quote[0].Business == model.AdtyBusinessOwnerSelfUseTopup {
+		ownerSiteID = quote[0].SiteID
+	}
+	tradeNos, err := model.ListUserPendingAdtyTradeNos(userID, ownerSiteID)
 	if err != nil {
 		return err
 	}
@@ -551,6 +583,7 @@ func createAdtyOrder(c *gin.Context, draft adtyOrderDraft) (*model.TopUp, *model
 		Status:          common.TopUpStatusPending,
 	}
 	ext := &model.AdtyTopupOrder{
+		Business:        quote.Business,
 		TradeNo:         tradeNo,
 		UserId:          userID,
 		Provider:        draft.provider,
@@ -569,7 +602,9 @@ func createAdtyOrder(c *gin.Context, draft adtyOrderDraft) (*model.TopUp, *model
 		ChannelId:       draft.channelID,
 		MethodLabel:     draft.methodLabel,
 	}
-	if site := service.AdtyBillingSiteForUser(userID); site != nil {
+	if quote.Business == model.AdtyBusinessOwnerSelfUseTopup {
+		ext.SiteId = quote.SiteID
+	} else if site := service.AdtyBillingSiteForUser(userID); site != nil {
 		ext.SiteId = site.Id // 分站客户的加赠由站长出（任务 11.5）
 	}
 	if err := service.CreateAdtyPaymentOrder(topUp, ext, draft.paymentScene, draft.channel); err != nil {

@@ -63,6 +63,8 @@ const orders = providers.flatMap((provider, index) =>
     site_id: 7 as number | null,
     site_name: 'North Studio',
     order_type: 'topup',
+    business:
+      provider.provider === 'adty_epay' ? 'owner_self_use_topup' : undefined,
     trade_no: `trade-${provider.provider}-${status}`,
     payment_provider: provider.provider,
     payment_method: provider.provider,
@@ -321,6 +323,11 @@ it('shows order site snapshots, explicit unknown ownership, type and completion 
   expect(main.getByText('Main Studio')).toBeVisible()
   expect(main.getByRole('cell', { name: '0' })).toBeVisible()
   expect(main.getByText('Top-up')).toBeVisible()
+  expect(
+    within(
+      screen.getByRole('row', { name: /trade-adty_epay-success/ })
+    ).getByText('Owner self-use top-up')
+  ).toBeVisible()
   const legacy = within(
     screen.getByRole('row', { name: /trade-bepusdt-success/ })
   )
@@ -389,6 +396,7 @@ it('opens order details from the order number and paginates the selected trace s
     await screen.findByRole('dialog', { name: 'Order details' })
   )
   expect(await dialog.findByText('evidence-page-1')).toBeVisible()
+  expect(dialog.getByText('Owner self-use top-up')).toBeVisible()
   expect(
     dialog.getByRole('option', { name: 'Site wallet movements' })
   ).toBeInTheDocument()

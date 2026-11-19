@@ -126,10 +126,13 @@ func allocateAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, 
 		return nil
 	}
 	var batches []AdtyFundBatch
-	if err := tx.Where("user_id = ?", userID).Find(&batches).Error; err != nil {
+	if err := eligibleFundLots(tx, userID).Find(&batches).Error; err != nil {
 		return err
 	}
 	if len(batches) == 0 {
+		if site, _ := tx.Statement.Context.Value(ownerLotScopeKey{}).(int); site > 0 {
+			return ErrBillingWalletInsufficient
+		}
 		// 一条批次都没有的账户（升级前就有额度、退款也不补行）在预扣阶段不登记。
 		// **不要为了「顺手」在这里补建或登记**：那要等退款路径先能释放占用，
 		// 否则会把这些账户也拖进「退款后占用残留」的池子里。他们现在由结算路径的
@@ -212,6 +215,9 @@ func allocateAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, 
 		}
 		remaining -= take
 	}
+	if site, _ := tx.Statement.Context.Value(ownerLotScopeKey{}).(int); site > 0 && remaining > 0 {
+		return ErrBillingWalletInsufficient
+	}
 	if allowLegacyTopUp && remaining > 0 && balanceBefore > 0 {
 		// 批次不足以背书这次预扣。存量用户可能有一部分额度从来没有对应批次
 		// （升级前就在账上，退款也不会补行），所以先把缺的那块补进唯一的
@@ -243,7 +249,7 @@ func allocateAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, 
 				return err
 			}
 			var fresh []AdtyFundBatch
-			if err := tx.Where("user_id = ? AND remaining > 0", userID).Find(&fresh).Error; err != nil {
+			if err := eligibleFundLots(tx, userID).Where("remaining > 0").Find(&fresh).Error; err != nil {
 				return err
 			}
 			pickAdtyFundBatchOrder(fresh)
@@ -609,13 +615,17 @@ func ReverseSettledAdtyFundAllocationsTx(tx *gorm.DB, userID int, sourceOperatio
 	if tx == nil || userID <= 0 || refundQuota <= 0 || sourceOperationID == "" {
 		return nil
 	}
+	return reverseSettledAdtyFundSourcesTx(tx, userID, []string{sourceOperationID}, reverseOperationID, refundQuota)
+}
+
+func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, reverseOperationID string, refundQuota int64) error {
 	if !tx.Migrator().HasTable(&AdtyFundAllocation{}) || !tx.Migrator().HasTable(&AdtyFundBatch{}) {
 		return nil
 	}
 	var shares []AdtyFundAllocation
 	if err := lockForUpdate(tx).
-		Where("user_id = ? AND operation_id = ? AND settled > 0", userID, sourceOperationID).
-		Order("seq DESC").
+		Where("user_id = ? AND operation_id IN ? AND settled > 0", userID, sources).
+		Order("id DESC, seq DESC").
 		Find(&shares).Error; err != nil {
 		return err
 	}

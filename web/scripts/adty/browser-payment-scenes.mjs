@@ -18,12 +18,15 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
-import { createServer } from 'node:http'
 import { join } from 'node:path'
 
 import { chromium } from 'playwright'
+
+import {
+  configureBrowserEpayChannel,
+  startBrowserEpayGateway,
+} from './browser-epay-gateway.mjs'
 
 const base = process.env.ADTY_BROWSER_BASE_URL
 assert.ok(base && process.env.ADTY_BROWSER_SQL_DSN)
@@ -48,51 +51,8 @@ function postgres(query) {
     throw new Error('Isolated PostgreSQL evidence query failed')
   }
 }
-const merchant = 'SCENE_BROWSER'
-const merchantKey = randomBytes(24).toString('hex')
-const orders = new Map()
-let gatewayCalls = 0
-function sign(params) {
-  return createHash('md5')
-    .update(
-      Object.keys(params)
-        .filter(
-          (key) => !['sign', 'sign_type'].includes(key) && params[key] !== ''
-        )
-        .sort()
-        .map((key) => `${key}=${params[key]}`)
-        .join('&') + merchantKey
-    )
-    .digest('hex')
-}
-const gatewayServer = createServer(async (request, response) => {
-  try {
-    assert.equal(new URL(request.url, gateway).pathname, '/mapi.php')
-    let raw = ''
-    for await (const chunk of request) raw += chunk
-    const params = Object.fromEntries(new URLSearchParams(raw))
-    assert.equal(params.pid, merchant)
-    assert.equal(params.sign, sign(params))
-    const order = { ...params, gateway_id: `SCENE_${++gatewayCalls}` }
-    orders.set(params.out_trade_no, order)
-    response.setHeader('Content-Type', 'application/json')
-    response.end(
-      JSON.stringify({
-        code: 1,
-        trade_no: order.gateway_id,
-        payurl: `${gateway}/checkout`,
-      })
-    )
-  } catch {
-    response.statusCode = 400
-    response.end('Synthetic gateway rejected request')
-  }
-})
-await new Promise((resolve, reject) => {
-  gatewayServer.once('error', reject)
-  gatewayServer.listen(0, '127.0.0.1', resolve)
-})
-const gateway = `http://127.0.0.1:${gatewayServer.address().port}`
+const gateway = await startBrowserEpayGateway()
+const { merchant, merchantKey, orders, sign } = gateway
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.ADTY_CHROMIUM_PATH
@@ -179,34 +139,7 @@ try {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor()
   assert.ok(authorization)
-  for (const key of ['ServerAddress', 'CustomCallbackAddress']) {
-    await api('put', '/api/option/', { key, value: base })
-  }
-  const channel = await api('post', '/api/adty/admin/epay/channels', {
-    name: 'Scene browser channel',
-    gateway_url: gateway,
-    merchant_id: merchant,
-    merchant_key: merchantKey,
-    priority: 999,
-    weight: 1,
-    order_mode: 'api',
-    probe_mode: 'off',
-    unpaid_threshold: 100,
-    methods: [
-      {
-        method: 'alipay',
-        type_code: 'alipay',
-        min_cny: '0',
-        max_cny: '10000',
-        daily_limit_cny: '0',
-        enabled: true,
-        return_type: 'payurl',
-      },
-    ],
-  })
-  await api('post', `/api/adty/admin/epay/channels/${channel.id}/status`, {
-    status: 'enabled',
-  })
+  const channel = await configureBrowserEpayChannel(api, base, gateway)
   await page.goto(`${base}/system-settings/billing/payment?tab=general`)
   await page
     .getByRole('button', { name: 'New payment scene', exact: true })
@@ -349,7 +282,7 @@ try {
       assert.equal((await response.json()).success, false)
     }
     assert.equal(postgres('SELECT count(*) FROM top_ups'), count)
-    assert.equal(gatewayCalls, width === 1440 ? 1 : 2)
+    assert.equal(gateway.calls, width === 1440 ? 1 : 2)
     const info = await api('get', '/api/adty/topup/info')
     assert.deepEqual(info.scenes, [])
     assert.deepEqual(info.methods, [])
@@ -429,5 +362,5 @@ try {
   throw error
 } finally {
   await browser.close()
-  await new Promise((resolve) => gatewayServer.close(resolve))
+  await gateway.close()
 }

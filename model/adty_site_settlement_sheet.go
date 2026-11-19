@@ -46,6 +46,12 @@ type AdtySiteSettlementSheet struct {
 	PaidUSD                   decimal.Decimal `json:"paid_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	PaidByCurrency            string          `json:"paid_by_currency" gorm:"type:text"`
 	ConsumptionUSD            decimal.Decimal `json:"consumption_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	OwnerTransferUSD          decimal.Decimal `json:"owner_transfer_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	OwnerSelfUseTopupUSD      decimal.Decimal `json:"owner_self_use_topup_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	OwnerSelfUseVoucherUSD    decimal.Decimal `json:"owner_self_use_voucher_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	OwnerSelfUseRefundUSD     decimal.Decimal `json:"owner_self_use_refund_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	OwnerSelfUseUSD           decimal.Decimal `json:"owner_self_use_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	OwnerSelfUseCostUSD       decimal.Decimal `json:"owner_self_use_cost_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	SupplyCostUSD             decimal.Decimal `json:"supply_cost_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	SpreadUSD                 decimal.Decimal `json:"spread_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	GiftReserveUSD            decimal.Decimal `json:"gift_reserve_usd" gorm:"type:decimal(20,8);not null;default:0"`

@@ -20,6 +20,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestOwnerSelfUseSnapshotUsesSupplyPriceAndFreezesGroupPG(t *testing.T) {
+	db := prepareSiteDB(t)
+	owner, site := openActiveSite(t, db, "self-snapshot")
+	sitePrice(t, db, site.Id, 0, "", "1.5")
+	ctx, info := snapshotRelay(t, owner.Id, "premium", hosttypes.PriceData{ModelPrice: 2, UsePrice: true})
+	ctx.Set(AdtyOwnerSelfUseContextKey, site)
+	billed, storedK := AdtyApplySiteMarkupDecimal(ctx, owner.Id, "premium", decimal.RequireFromString("1.5"), "self-model")
+	require.Equal(t, "1.2", billed.String())
+	require.Equal(t, "1", storedK.String())
+	info.PriceData.GroupRatioInfo.SetBilledGroupRatio(billed)
+	AdtyFreezeRequestPriceSnapshot(ctx, info)
+	snapshot := AdtyFrozenPriceSnapshot(ctx)
+	require.NotNil(t, snapshot)
+	require.Equal(t, "premium", snapshot.BillingGroup)
+	require.Equal(t, "1.5", snapshot.GroupRatio)
+	require.Equal(t, "0.8", snapshot.SiteCostFactor)
+	require.Equal(t, "0", snapshot.SiteMarkupRatio)
+	require.False(t, snapshot.TeamApplied)
+	require.Equal(t, "2.4", snapshot.FinalPrice)
+	require.Equal(t, "2.4", snapshot.SupplyCost)
+	require.Equal(t, "2.4", snapshot.SellPrice)
+	site.CostFactor = decimalPtr("0.6")
+	AdtyApplySiteMarkupDecimal(ctx, owner.Id, "other", decimal.NewFromInt(3), "self-model")
+	AdtyFreezeRequestPriceSnapshot(ctx, info)
+	require.Equal(t, "2.4", AdtyFrozenPriceSnapshot(ctx).FinalPrice)
+	require.Equal(t, "premium", AdtyFrozenPriceSnapshot(ctx).BillingGroup)
+}
+
 func TestRequestPriceSnapshotOfficialFieldsAtReserve(t *testing.T) {
 	db := prepareSiteDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.User{}, &model.BillingOperation{}, &model.BillingOperationMovement{}))

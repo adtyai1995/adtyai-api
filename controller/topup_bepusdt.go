@@ -19,6 +19,7 @@ import (
 // 从旧项目改写（任务 4.2）：按 USD 下单，站内支付窗显示地址和数量，回调以 POST JSON 为准。
 
 type bepusdtPayRequest struct {
+	Business     string `json:"business"`
 	PaymentScene string `json:"payment_scene"`
 	Amount       int64  `json:"amount"`
 	Chain        string `json:"chain"`
@@ -35,7 +36,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 		common.ApiErrorT(c, "This payment method is not available")
 		return
 	}
-	quote, err := service.AdtyQuoteForSite(service.AdtyBillingSiteForUser(c.GetInt("id")), c.GetString("group"), req.Amount, req.Chain)
+	quote, err := service.AdtyQuoteForPayment(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Chain)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -48,7 +49,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if err := replaceOtherPendingAdtyOrders(c); err != nil {
+	if err := replaceOtherPendingAdtyOrders(c, quote); err != nil {
 		if errors.Is(err, service.ErrAdtyPaymentDetected) {
 			common.ApiErrorT(c, "A transfer has been detected. Please wait")
 			return
@@ -90,6 +91,10 @@ func RequestBEpusdtPay(c *gin.Context) {
 	}
 	money, _ := order.ActualAmount.Float64()
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// Match callback/cancel lock order: top-up before its extension.
+		if err := tx.Model(&model.TopUp{}).Where("id = ?", topUp.Id).Update("money", money).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
 			"pay_address":      order.Address,
 			"pay_amount":       order.ActualAmount,
@@ -99,7 +104,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
-		return tx.Model(&model.TopUp{}).Where("id = ?", topUp.Id).Update("money", money).Error
+		return nil
 	}); err != nil {
 		writeAdtyTopUpError(c, err)
 		return
@@ -114,7 +119,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 
 // bepusdtPermanentError 是不会因为重试而好转的错误：进人工审核并回 ok，免得网关一直重发。
 func bepusdtPermanentError(err error) bool {
-	return errors.Is(err, model.ErrPaymentAmountMismatch) ||
+	return errors.Is(err, model.ErrAdtyOwnerTopupReview) || errors.Is(err, model.ErrPaymentAmountMismatch) ||
 		errors.Is(err, model.ErrTopUpNotFound) ||
 		errors.Is(err, model.ErrPaymentMethodMismatch) ||
 		errors.Is(err, model.ErrTopUpStatusInvalid) ||

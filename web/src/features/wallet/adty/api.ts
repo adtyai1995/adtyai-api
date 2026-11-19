@@ -23,6 +23,7 @@ import type {
   AdtyOrder,
   AdtyPage,
   AdtyQuote,
+  AdtyTopupBusiness,
   AdtyTopupHistoryFilters,
   AdtyTopupInfo,
 } from './types'
@@ -38,8 +39,13 @@ export const adtyTopupQueryKeys = {
       : (['adty-topup', 'history', page] as const),
 }
 
-export async function getAdtyTopupInfo(): Promise<AdtyTopupInfo> {
-  const res = await api.get<ApiResponse<AdtyTopupInfo>>('/api/adty/topup/info')
+export async function getAdtyTopupInfo(
+  business?: AdtyTopupBusiness
+): Promise<AdtyTopupInfo> {
+  const res = await api.get<ApiResponse<AdtyTopupInfo>>(
+    '/api/adty/topup/info',
+    { params: { business } }
+  )
   return requireServerSuccess(res.data).data
 }
 
@@ -47,7 +53,8 @@ export async function quoteAdtyTopup(
   amount: number,
   method: string,
   paymentScene = 'wallet_topup',
-  channelId?: number
+  channelId?: number,
+  business?: AdtyTopupBusiness
 ): Promise<{ quote: AdtyQuote; available: boolean }> {
   const res = await api.post<
     ApiResponse<{ quote: AdtyQuote; available: boolean }>
@@ -56,6 +63,7 @@ export async function quoteAdtyTopup(
     method,
     channel_id: channelId,
     payment_scene: paymentScene,
+    business,
   })
   return requireServerSuccess(res.data).data
 }
@@ -86,6 +94,7 @@ export async function getAdtyTopupHistory(
   if (filters?.status && filters.status !== 'all') {
     params.status = filters.status
   }
+  if (filters?.business) params.business = filters.business
   if (filters?.payment_method && filters.payment_method !== 'all') {
     params.payment_method = filters.payment_method
   }

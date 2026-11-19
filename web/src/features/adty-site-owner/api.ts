@@ -217,6 +217,81 @@ export async function transferEarningToMargin(
   requireServerSuccess(res.data)
 }
 
+export async function getSelfUsePrincipal(): Promise<{
+  available_usd: string
+}> {
+  const res = await api.get<ApiResponse<{ available_usd: string }>>(
+    `${BASE}/wallets/self-use`
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function transferOwnerPrincipal(amount: string, intent: string) {
+  const res = await api.post<ApiResponse<{ transfer_id: string }>>(
+    `${BASE}/wallets/earning-to-personal`,
+    { amount_usd: amount },
+    { headers: { 'Idempotency-Key': intent } }
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function createSelfUseKey(name: string): Promise<string> {
+  const res = await api.post<ApiResponse<{ key: string }>>(
+    `${BASE}/self-use/keys`,
+    {
+      name,
+      expired_time: -1,
+      unlimited_quota: true,
+      allow_user_quota_query: false,
+    }
+  )
+  return requireServerSuccess(res.data).data.key
+}
+
+export type OwnerPrincipalTransfer = {
+  transfer_id: string
+  created_at: number
+  amount_usd: string
+  earnings_before: string
+  earnings_after: string
+  personal_before: string
+  personal_after: string
+}
+
+export type OwnerSelfUseUsage = {
+  operation_key: string
+  request_id: string
+  created_at: number
+  model_name: string
+  billing_group: string
+  billing_unit: string
+  supply_unit_price: string
+  charged_usd: string
+  prompt_tokens: number
+  completion_tokens: number
+  usage_facts?: Record<string, number>
+}
+
+export async function getOwnerPrincipalTransfers(
+  page: number
+): Promise<OwnerPage<OwnerPrincipalTransfer>> {
+  const res = await api.get<ApiResponse<OwnerPage<OwnerPrincipalTransfer>>>(
+    `${BASE}/self-use/transfers`,
+    { params: { p: page, page_size: OWNER_PAGE_SIZE } }
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function getOwnerSelfUseUsage(
+  page: number
+): Promise<OwnerPage<OwnerSelfUseUsage>> {
+  const res = await api.get<ApiResponse<OwnerPage<OwnerSelfUseUsage>>>(
+    `${BASE}/self-use/usage`,
+    { params: { p: page, page_size: OWNER_PAGE_SIZE } }
+  )
+  return requireServerSuccess(res.data).data
+}
+
 /** Earnings and margin wallets; the server never returns the operating wallet here. */
 export async function getOwnerWallets(): Promise<SiteWallet[]> {
   const res = await api.get<ApiResponse<SiteWallet[]>>(`${BASE}/wallets`)
@@ -361,6 +436,12 @@ export async function getOwnerEarningLines(): Promise<OwnerEarningLine[]> {
 }
 
 export type SettlementSheet = {
+  owner_self_use_topup_usd?: string
+  owner_self_use_voucher_usd?: string
+  owner_self_use_refund_usd?: string
+  owner_transfer_usd?: string
+  owner_self_use_usd?: string
+  owner_self_use_cost_usd?: string
   id: number
   site_id: number
   business_day: string

@@ -76,6 +76,32 @@ function settlementSheetLines(
   }
   lines.push(
     usd('consumption', t('Customer consumption'), sheet.consumption_usd),
+    usd(
+      'owner-topup',
+      t('Owner self-use top-ups'),
+      sheet.owner_self_use_topup_usd ?? '0'
+    ),
+    usd(
+      'owner-voucher',
+      t('Owner self-use vouchers'),
+      sheet.owner_self_use_voucher_usd ?? '0'
+    ),
+    usd(
+      'owner-refund',
+      t('Owner self-use refunds'),
+      sheet.owner_self_use_refund_usd ?? '0'
+    ),
+    usd(
+      'owner-transfer',
+      t('Transfer to personal balance'),
+      sheet.owner_transfer_usd ?? '0'
+    ),
+    usd('owner-usage', t('Owner API usage'), sheet.owner_self_use_usd ?? '0'),
+    usd(
+      'owner-cost',
+      t('Owner API supply cost'),
+      sheet.owner_self_use_cost_usd ?? '0'
+    ),
     usd('cost', t('Supply cost'), sheet.supply_cost_usd),
     usd('spread', t('Settlement spread'), sheet.spread_usd),
     usd('reserve', t('Gift reserve'), sheet.gift_reserve_usd),

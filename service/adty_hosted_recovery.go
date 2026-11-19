@@ -101,6 +101,18 @@ func RecoverAdtyHostedPaymentAs(ctx context.Context, ext *model.AdtyTopupOrder, 
 		}).Error
 	})
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyOwnerTopupReview) {
+			payload, marshalErr := common.Marshal(facts)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
+				Provider: ext.Provider, EventID: "hosted-query:" + ext.TradeNo, EventType: "payment_query", ReferenceID: ext.TradeNo, SessionID: ext.GatewayTradeId,
+				Reason: "Payment recovery requires reconciliation", Error: err.Error(), Payload: string(payload),
+			}); reviewErr != nil {
+				return reviewErr
+			}
+		}
 		if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "rejected", operatorID); recordErr != nil {
 			return recordErr
 		}
@@ -133,7 +145,7 @@ func recoverAdtyHostedPayments(now int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		err := RecoverAdtyHostedPayment(ctx, &ext)
 		cancel()
-		if err != nil {
+		if err != nil && !errors.Is(err, model.ErrAdtyOwnerTopupReview) {
 			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
 				Provider: ext.Provider, EventID: "hosted-query:" + ext.TradeNo, EventType: "payment_query", ReferenceID: ext.TradeNo, SessionID: ext.GatewayTradeId,
 				Reason: "Payment recovery requires reconciliation", Error: err.Error(),

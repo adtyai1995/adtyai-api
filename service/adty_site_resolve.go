@@ -444,7 +444,8 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 }
 
 // AdtySiteLoginAllowed 是 site_login_only 的检查（11.2）：开着时分站客户只能在自己的分站登录，
-// 主站用户只能在主站登录。只在建会话的入口调用（密码、二次验证、Passkey、第三方登录），API 令牌不受影响。
+// 主站用户只能在主站登录，固定站长也可在本人分站登录。会话仍绑定签发站点。
+// 只在建会话的入口调用（密码、二次验证、Passkey），API 令牌不受影响。
 // 分站功能关着时中间件不识别站点，所有请求都算主站，这里不查库直接放行（上游测试数登录的查询次数）。
 func AdtySiteLoginAllowed(c *gin.Context, userId int) bool {
 	if !adtySessionHostAllowed(c) {
@@ -461,6 +462,9 @@ func AdtySiteLoginAllowed(c *gin.Context, userId int) bool {
 	current := 0
 	if site := AdtySiteForRequest(c); site != nil {
 		current = site.Id
+		if users[0].SiteId == 0 && site.OwnerUserId == userId && AdtySiteServesCustomers(site) {
+			return true
+		}
 	}
 	return users[0].SiteId == current
 }

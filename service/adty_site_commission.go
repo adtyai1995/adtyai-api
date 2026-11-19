@@ -184,6 +184,9 @@ func SiteInviteCommissionWithdrawable(row *model.AdtySiteInviteCommission, now t
 // RecordAdtySiteInviteCommissionTx snapshots one site invite commission.
 // It does not spend a wallet. Team top-ups and missing invites record nothing.
 func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, now time.Time) error {
+	if ext.IsOwnerSelfUse() {
+		return nil
+	}
 	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
 		return nil
 	}
@@ -767,6 +770,9 @@ func loadAdtySiteCommissionPolicyTx(tx *gorm.DB) (adtySiteCommissionPolicy, erro
 // PrepareAdtySiteInviteCommissionSnapshotTx freezes site invite commission eligibility,
 // rate, amount, and observation period at order creation time inside the order transaction.
 func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
+	if ext.IsOwnerSelfUse() {
+		return nil
+	}
 	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
 		return nil
 	}

@@ -4,8 +4,11 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func seedManualRefundOrder(t *testing.T, name, tradeNo string) *User {
@@ -405,4 +408,287 @@ func TestManualRefundSplitFullRefundTailCorrectionPG(t *testing.T) {
 	var bonusLot AdtyFundBatch
 	require.NoError(t, DB.Where("user_id = ? AND source = ? AND kind = ?", user.Id, tradeNo, "bonus").First(&bonusLot).Error)
 	require.Zero(t, bonusLot.Remaining)
+}
+
+const ownerRefundTrade = "online-owner-topup"
+
+func TestOwnerTopupRefundReleaseHonorsWalletLimitPG(t *testing.T) {
+	f := newOwnerRefundFixture(t)
+	const id = "capacity"
+	finance := f.finance.Id
+	_, err := RefundAdtyTopUp(ownerRefundTrade, "apply", finance, id, 5_000_000)
+	require.NoError(t, err)
+	_, err = ApproveAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "", "")
+	require.NoError(t, err)
+	_, err = ReclaimAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "")
+	require.NoError(t, err)
+	_, err = RecordAdtyTopUpManualRefundPayout(ownerRefundTrade, id, finance, "", AdtyManualRefundPayout{Status: AdtyManualRefundPayoutFailed})
+	require.NoError(t, err)
+	// A later legitimate credit uses the capacity freed by reclaim, including
+	// a persistent pending amount not folded into users.quota yet.
+	require.NoError(t, f.db.Model(&f.owner).Updates(map[string]any{"quota": common.MaxWalletQuota - 1, "quota_pending": 1}).Error)
+	_, err = TerminateAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "", "failed")
+	require.ErrorIs(t, err, ErrWalletQuotaLimitExceeded)
+	var row AdtyManualRefund
+	require.NoError(t, f.db.Where("refund_id = ?", id).First(&row).Error)
+	assert.Equal(t, AdtyManualRefundStatusApproved, row.Status)
+	assert.Zero(t, row.TerminatedAt)
+	var share AdtyFundAllocation
+	require.NoError(t, f.db.Where("user_id = ? AND source = ?", f.owner.Id, ownerRefundTrade).First(&share).Error)
+	assert.EqualValues(t, 5_000_000, share.Settled)
+	assert.Equal(t, share.Settled, share.Held)
+	var owner User
+	require.NoError(t, f.db.First(&owner, f.owner.Id).Error)
+	assert.Equal(t, common.MaxWalletQuota, owner.Quota+owner.QuotaPending)
+	var lot AdtyFundBatch
+	require.NoError(t, f.db.First(&lot, f.lot.Id).Error)
+	assert.Zero(t, lot.Remaining)
+	var wallet AdtySiteWallet
+	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, AdtySiteWalletOperating).First(&wallet).Error)
+	assert.True(t, wallet.Balance.IsZero())
+	var n int64
+	require.NoError(t, f.db.Model(&AdtyBalanceLedger{}).Where("ref_id = ?", ownerRefundTrade).Count(&n).Error)
+	assert.EqualValues(t, 1, n)
+	require.NoError(t, f.db.Model(&AdtySiteWalletLedger{}).Where("ref_id = ?", ownerRefundTrade).Count(&n).Error)
+	assert.EqualValues(t, 1, n)
+	// The failed termination is retriable once capacity exists again.
+	require.NoError(t, f.db.Model(&f.owner).Update("quota", common.MaxWalletQuota-5_000_001).Error)
+	_, err = TerminateAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "", "failed")
+	require.NoError(t, err)
+	require.NoError(t, f.db.First(&owner, f.owner.Id).Error)
+	assert.Equal(t, common.MaxWalletQuota, owner.Quota+owner.QuotaPending)
+}
+
+type ownerRefundFixture struct {
+	db             *gorm.DB
+	owner, finance User
+	site           AdtySite
+	key            Token
+	lot            AdtyFundBatch
+}
+
+func newOwnerRefundFixture(t *testing.T) *ownerRefundFixture {
+	t.Helper()
+	db := adtyTestDBWithSchema(t)
+	pgtest.RecordServerVersion(t, db)
+	f := &ownerRefundFixture{db: db, owner: User{Username: "owner", Quota: 5_000_000}, finance: User{Username: "finance", Role: common.RoleAdminUser}}
+	require.NoError(t, db.Create(&f.owner).Error)
+	require.NoError(t, db.Create(&f.finance).Error)
+	f.site = AdtySite{OwnerUserId: f.owner.Id, Status: AdtySiteStatusActive, Subdomain: "owner"}
+	require.NoError(t, db.Create(&f.site).Error)
+	f.key = Token{Key: "self-use", UserId: f.owner.Id, OwnerSelfUseSiteId: f.site.Id, UnlimitedQuota: true}
+	require.NoError(t, db.Create(&f.key).Error)
+	usd := decimal.NewFromInt(10)
+	require.NoError(t, db.Create(&TopUp{TradeNo: ownerRefundTrade, UserId: f.owner.Id, Status: common.TopUpStatusSuccess, PaymentProvider: PaymentProviderAdtyBEpusdt}).Error)
+	require.NoError(t, db.Create(&AdtyTopupOrder{Business: AdtyBusinessOwnerSelfUseTopup, TradeNo: ownerRefundTrade, UserId: f.owner.Id, SiteOwnerUserId: f.owner.Id, SiteId: f.site.Id, Provider: PaymentProviderAdtyBEpusdt, FaceUSD: usd, PayAmount: usd, PaidAmount: usd, PaidCurrency: "USDT", CreditQuota: 5_000_000}).Error)
+	f.lot = AdtyFundBatch{UserId: f.owner.Id, SiteId: &f.site.Id, Source: ownerRefundTrade, Kind: AdtyFundBatchKindPrincipal, Original: 5_000_000, Remaining: 5_000_000}
+	require.NoError(t, db.Create(&f.lot).Error)
+	require.NoError(t, db.Create(&AdtySiteWallet{SiteId: f.site.Id, Kind: AdtySiteWalletOperating, Currency: "USD", Balance: usd}).Error)
+	return f
+}
+
+func (f *ownerRefundFixture) reserve(key string, quota int) error {
+	_, err := ReserveBillingOperation(BillingOperation{OperationKey: "request:" + key, UserId: f.owner.Id, TokenId: f.key.Id, TokenUnlimited: true, SiteId: f.site.Id}, quota)
+	return err
+}
+
+func TestOwnerTopupRefundOnlyOriginalFreePrincipalPG(t *testing.T) {
+	f := newOwnerRefundFixture(t)
+	// $2 consumed, $3 in an actual API reservation, and $8 from another source.
+	require.NoError(t, f.db.Model(&f.lot).Update("remaining", 4_000_000).Error)
+	require.NoError(t, f.db.Model(&f.owner).Update("quota", 8_000_000).Error)
+	require.NoError(t, CreateAdtyFundBatchesWithSiteTx(f.db, f.owner.Id, &f.site.Id, "transfer", 4_000_000, 0))
+	require.NoError(t, f.reserve("prior", 1_500_000))
+	preview, err := PreviewAdtyTopUpRefund(ownerRefundTrade)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2_500_000, preview.RefundQuota)
+	assert.EqualValues(t, 2_500_000, preview.Facts.RefundRemainingQuota)
+	_, err = LoadAdtyRefundPageFacts(ownerRefundTrade, decimal.NewFromInt(6))
+	assert.Error(t, err)
+	_, err = RefundAdtyTopUp(ownerRefundTrade, "legacy", f.finance.Id, "legacy-over", 2_500_001)
+	assert.Error(t, err)
+	_, err = ApplyAdtyTopUpManualRefund(ownerRefundTrade, "manual", f.finance.Id, "manual-over", decimal.NewFromInt(6))
+	assert.Error(t, err)
+	_, err = ApplyAdtyTopUpManualRefund(ownerRefundTrade, "dust", f.finance.Id, "dust-over", decimal.RequireFromString("5.000001"))
+	assert.Error(t, err)
+	var n int64
+	require.NoError(t, f.db.Model(&AdtyManualRefund{}).Count(&n).Error)
+	assert.Zero(t, n)
+}
+
+func TestOwnerTopupRefundStaleApprovalAndShortfallPG(t *testing.T) {
+	f := newOwnerRefundFixture(t)
+	_, err := RefundAdtyTopUp(ownerRefundTrade, "apply", f.finance.Id, "stale", 5_000_000)
+	require.NoError(t, err)
+	require.NoError(t, f.reserve("spent-before-approval", 1))
+	_, err = ApproveAdtyTopUpManualRefund(ownerRefundTrade, "stale", f.finance.Id, "", "")
+	require.Error(t, err)
+	_, err = TerminateAdtyTopUpManualRefund(ownerRefundTrade, "stale", f.finance.Id, "", "refresh")
+	require.NoError(t, err)
+	_, err = RefundAdtyTopUp(ownerRefundTrade, "apply", f.finance.Id, "short", 3_000_000)
+	require.NoError(t, err)
+	_, err = ApproveAdtyTopUpManualRefund(ownerRefundTrade, "short", f.finance.Id, "", "")
+	require.NoError(t, err)
+	require.NoError(t, f.db.Model(&f.lot).Update("remaining", 2_999_999).Error)
+	require.NoError(t, CreateAdtyFundBatchesWithSiteTx(f.db, f.owner.Id, &f.site.Id, "cannot-subsidize", 5_000_000, 0))
+	_, err = ReclaimAdtyTopUpManualRefund(ownerRefundTrade, "short", f.finance.Id, "")
+	require.Error(t, err)
+	_, err = RecordAdtyTopUpManualRefundPayout(ownerRefundTrade, "short", f.finance.Id, "", AdtyManualRefundPayout{Status: AdtyManualRefundPayoutSuccess, Currency: "USDT", Amount: decimal.NewFromInt(6), PaidAt: 1, Voucher: "receipt"})
+	assert.Error(t, err, "a damaged hold cannot authorize an external payout")
+	var row AdtyManualRefund
+	require.NoError(t, f.db.Where("refund_id = ?", "short").First(&row).Error)
+	assert.Zero(t, row.ReclaimedAt)
+	assert.Zero(t, row.ShortfallQuota)
+	var user User
+	require.NoError(t, f.db.First(&user, f.owner.Id).Error)
+	assert.Equal(t, 4_999_999, user.Quota+user.QuotaPending)
+}
+
+func TestOwnerTopupRefundPreservesOrdinaryBalancePG(t *testing.T) {
+	f := newOwnerRefundFixture(t)
+	require.NoError(t, f.db.Model(&f.owner).Update("quota", 5_500_000).Error)
+	require.NoError(t, CreateAdtyFundBatchesWithSiteTx(f.db, f.owner.Id, nil, "personal", 500_000, 0))
+	_, err := RefundAdtyTopUp(ownerRefundTrade, "apply", f.finance.Id, "personal-boundary", 5_000_000)
+	require.NoError(t, err)
+	_, err = ApproveAdtyTopUpManualRefund(ownerRefundTrade, "personal-boundary", f.finance.Id, "", "")
+	require.NoError(t, err)
+	_, err = ReserveBillingOperation(BillingOperation{OperationKey: "ordinary:too-much", UserId: f.owner.Id}, 500_001)
+	require.ErrorIs(t, err, ErrBillingWalletInsufficient)
+	_, err = ReserveBillingOperation(BillingOperation{OperationKey: "ordinary:allowed", UserId: f.owner.Id}, 500_000)
+	require.NoError(t, err)
+	var allocations []AdtyFundAllocation
+	require.NoError(t, f.db.Where("operation_id = ?", "ordinary:allowed").Find(&allocations).Error)
+	require.Len(t, allocations, 1)
+	assert.Equal(t, "personal", allocations[0].Source)
+	_, err = ReclaimAdtyTopUpManualRefund(ownerRefundTrade, "personal-boundary", f.finance.Id, "")
+	require.NoError(t, err)
+}
+
+func TestOwnerTopupRefundTerminationAfterFailedPayoutPG(t *testing.T) {
+	f := newOwnerRefundFixture(t)
+	const id = "failed-payout"
+	finance := f.finance.Id
+	_, err := RefundAdtyTopUp(ownerRefundTrade, "apply", finance, id, 5_000_000)
+	require.NoError(t, err)
+	_, err = ApproveAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "", "")
+	require.NoError(t, err)
+	_, err = ReclaimAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "")
+	require.NoError(t, err)
+	_, err = RecordAdtyTopUpManualRefundPayout(ownerRefundTrade, id, finance, "", AdtyManualRefundPayout{Status: AdtyManualRefundPayoutUnknown})
+	require.NoError(t, err)
+	_, err = TerminateAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "", "unconfirmed")
+	require.Error(t, err)
+	_, err = RecordAdtyTopUpManualRefundPayout(ownerRefundTrade, id, finance, "failed", AdtyManualRefundPayout{Status: AdtyManualRefundPayoutFailed})
+	require.NoError(t, err)
+	for range 2 {
+		_, err = TerminateAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "", "payment failed")
+		require.NoError(t, err)
+	}
+	require.NoError(t, f.reserve("after-failure", 5_000_000))
+	var wallet AdtySiteWallet
+	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, AdtySiteWalletOperating).First(&wallet).Error)
+	assert.Equal(t, "10", wallet.Balance.String())
+}
+
+func TestOwnerTopupRefundHoldsAndReleasesPG(t *testing.T) {
+	f := newOwnerRefundFixture(t)
+	const id = "hold"
+	_, err := RefundAdtyTopUp(ownerRefundTrade, "apply", f.finance.Id, id, 3_000_000)
+	require.NoError(t, err)
+	_, err = ApproveAdtyTopUpManualRefund(ownerRefundTrade, id, f.owner.Id, "", "")
+	assert.Error(t, err, "owner cannot approve their own refund")
+	for range 2 {
+		_, err = ApproveAdtyTopUpManualRefund(ownerRefundTrade, id, f.finance.Id, "", "")
+		require.NoError(t, err)
+	}
+	left, err := AdtyOwnerPrincipalAvailable(f.db, f.owner.Id, f.site.Id)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2_000_000, left)
+	assert.ErrorIs(t, f.reserve("while-held", 2_000_001), ErrBillingWalletInsufficient)
+	_, err = ReserveBillingOperation(BillingOperation{OperationKey: "request:ordinary", UserId: f.owner.Id}, 1)
+	assert.ErrorIs(t, err, ErrBillingWalletInsufficient)
+	ok, err := TryReserveUserQuotaForOperation(f.owner.Id, 1, "request:personal")
+	require.NoError(t, err)
+	assert.False(t, ok, "a refund hold cannot become spendable through a personal key")
+	for range 2 {
+		_, err = TerminateAdtyTopUpManualRefund(ownerRefundTrade, id, f.finance.Id, "", "withdrawn")
+		require.NoError(t, err)
+	}
+	require.NoError(t, f.reserve("released", 5_000_000))
+}
+
+func TestOwnerTopupRefundApprovalRacesAPIPG(t *testing.T) {
+	f := newOwnerRefundFixture(t)
+	_, err := RefundAdtyTopUp(ownerRefundTrade, "apply", f.finance.Id, "race", 5_000_000)
+	require.NoError(t, err)
+	start := make(chan struct{})
+	approved, reserved := make(chan error, 1), make(chan error, 1)
+	go func() {
+		<-start
+		_, err := ApproveAdtyTopUpManualRefund(ownerRefundTrade, "race", f.finance.Id, "", "")
+		approved <- err
+	}()
+	go func() { <-start; reserved <- f.reserve("race", 5_000_000) }()
+	close(start)
+	approvalErr, reserveErr := <-approved, <-reserved
+	require.NotEqual(t, approvalErr == nil, reserveErr == nil, "exactly one can reserve the full lot: approve=%v, API=%v", approvalErr, reserveErr)
+	left, err := AdtyOwnerPrincipalAvailable(f.db, f.owner.Id, f.site.Id)
+	require.NoError(t, err)
+	require.Zero(t, left)
+}
+
+func TestOwnerTopupRefundReclaimsExactHoldAndRecordsPayoutPG(t *testing.T) {
+	f := newOwnerRefundFixture(t)
+	const id = "reclaim"
+	finance := f.finance.Id
+	_, err := RefundAdtyTopUp(ownerRefundTrade, "offline", finance, id, 3_000_000)
+	require.NoError(t, err)
+	_, err = ApproveAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "", "")
+	require.NoError(t, err)
+	// Another source cannot repair a shortage or a changed source site.
+	require.NoError(t, CreateAdtyFundBatchesWithSiteTx(f.db, f.owner.Id, &f.site.Id, "other", 3_000_000, 0))
+	require.NoError(t, f.db.Model(&f.lot).Update("site_id", nil).Error)
+	_, err = ReclaimAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "")
+	assert.Error(t, err, "a moved lot must not produce a debit or a shortfall")
+	require.NoError(t, f.db.Model(&f.lot).Update("site_id", f.site.Id).Error)
+	for range 2 {
+		r, err := ReclaimAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "")
+		require.NoError(t, err)
+		assert.EqualValues(t, 3_000_000, r.Refund.DeductedPrincipalQuota)
+		assert.Zero(t, r.Refund.ShortfallQuota)
+	}
+	_, err = PlanAdtyTopUpManualRefundBonus(ownerRefundTrade, id, finance, "")
+	require.NoError(t, err)
+	_, err = PlanAdtyTopUpManualRefundCommission(ownerRefundTrade, id, finance, "")
+	require.NoError(t, err)
+	_, err = CompleteAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "")
+	require.Error(t, err)
+	payout := AdtyManualRefundPayout{Status: AdtyManualRefundPayoutSuccess, Currency: "USDT", Amount: decimal.NewFromInt(6), PaidAt: common.GetTimestamp(), Voucher: "wire-receipt"}
+	_, err = RecordAdtyTopUpManualRefundPayout(ownerRefundTrade, id, f.owner.Id, "", payout)
+	assert.Error(t, err)
+	_, err = RecordAdtyTopUpManualRefundPayout(ownerRefundTrade, id, finance, "", payout)
+	require.NoError(t, err)
+	for range 2 {
+		r, err := CompleteAdtyTopUpManualRefund(ownerRefundTrade, id, finance, "")
+		require.NoError(t, err)
+		assert.Positive(t, r.Refund.CompletedAt)
+		assert.Equal(t, "6", r.Refund.RequestUSD.String())
+		assert.Equal(t, "wire-receipt", r.Refund.PayoutVoucher)
+	}
+	var wallet AdtySiteWallet
+	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, AdtySiteWalletOperating).First(&wallet).Error)
+	assert.Equal(t, "4", wallet.Balance.String())
+	var entries []AdtySiteWalletLedger
+	require.NoError(t, f.db.Where("wallet_id = ? AND ref_id = ?", wallet.Id, ownerRefundTrade).Find(&entries).Error)
+	if assert.Len(t, entries, 1) {
+		assert.Equal(t, "-6", entries[0].Delta.String())
+	}
+	var lots []AdtyFundBatch
+	require.NoError(t, f.db.Order("id").Find(&lots).Error)
+	require.Len(t, lots, 2)
+	assert.EqualValues(t, 2_000_000, lots[0].Remaining)
+	assert.EqualValues(t, 3_000_000, lots[1].Remaining)
+	var owner User
+	require.NoError(t, f.db.First(&owner, f.owner.Id).Error)
+	assert.Equal(t, 2_000_000, owner.Quota+owner.QuotaPending)
 }

@@ -26,8 +26,12 @@ export function creditedUsdAmount(ext: {
   return total.toFixed(2)
 }
 
-export function formatUsd(value: number, locale: string | undefined): string {
-  return `$${new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)}`
+export function formatUsd(
+  value: number,
+  locale: string | undefined,
+  maximumFractionDigits = 2
+): string {
+  return `$${new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits }).format(value)}`
 }
 
 export function formatPaymentAmount(

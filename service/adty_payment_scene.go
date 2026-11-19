@@ -69,11 +69,15 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 		scene.UserTypes = append([]string{}, scene.UserTypes...)
 		scene.Name = strings.TrimSpace(scene.Name)
 		if !adtySceneKey.MatchString(scene.Key) || seen[scene.Key] || scene.Name == "" || utf8.RuneCountInString(scene.Name) > 120 ||
-			scene.Business != "wallet_topup" || len(scene.Providers) == 0 || len(scene.Providers) > 6 ||
+			!slices.Contains([]string{model.AdtyBusinessWalletTopup, model.AdtyBusinessOwnerSelfUseTopup}, scene.Business) || len(scene.Providers) == 0 || len(scene.Providers) > 6 ||
 			len(scene.Methods) > 100 || len(scene.ChannelIDs) > 1000 || len(scene.SiteIDs) > 1000 || len(scene.Currencies) > 32 || len(scene.UserTypes) > 6 ||
 			!slices.Contains([]string{"all", "main", "all_sites", "selected"}, scene.SiteScope) ||
 			(scene.SiteScope == "selected" && len(scene.SiteIDs) == 0) || (scene.SiteScope != "selected" && len(scene.SiteIDs) != 0) ||
 			scene.MinUSD.IsNegative() || scene.MaxUSD.IsNegative() || (scene.MaxUSD.IsPositive() && scene.MinUSD.GreaterThan(scene.MaxUSD)) {
+			return nil, common.NewMessage("Invalid parameters")
+		}
+		if scene.Business == model.AdtyBusinessOwnerSelfUseTopup &&
+			(!slices.Contains([]string{"all_sites", "selected"}, scene.SiteScope) || len(scene.UserTypes) != 1 || scene.UserTypes[0] != "site_owner") {
 			return nil, common.NewMessage("Invalid parameters")
 		}
 		seen[scene.Key] = true
@@ -227,8 +231,12 @@ func adtyPaymentIdentity(db *gorm.DB, userID int, lock bool) (*model.User, strin
 	return &user, kind, nil
 }
 
-func adtySceneAudience(scene model.AdtyPaymentScene, siteID int, kind string) bool {
-	if !scene.Enabled || scene.Business != "wallet_topup" || (len(scene.UserTypes) > 0 && !slices.Contains(scene.UserTypes, kind)) {
+func adtySceneAudience(scene model.AdtyPaymentScene, siteID int, kind string, business ...string) bool {
+	want := model.AdtyBusinessWalletTopup
+	if len(business) > 0 && business[0] != "" {
+		want = business[0]
+	}
+	if !scene.Enabled || scene.Business != want || (len(scene.UserTypes) > 0 && !slices.Contains(scene.UserTypes, kind)) {
 		return false
 	}
 	switch scene.SiteScope {
@@ -249,7 +257,7 @@ func adtySceneMethod(scene model.AdtyPaymentScene, provider, method, currency st
 		(len(scene.Currencies) == 0 || slices.Contains(scene.Currencies, strings.ToUpper(currency)))
 }
 
-func AdtyPaymentScenesForUser(userID int) ([]AdtyPaymentSceneView, error) {
+func AdtyPaymentScenesForUser(userID int, scope ...AdtyPaymentScope) ([]AdtyPaymentSceneView, error) {
 	config, err := GetAdtyPaymentScenes()
 	if err != nil {
 		return nil, err
@@ -258,9 +266,16 @@ func AdtyPaymentScenesForUser(userID int) ([]AdtyPaymentSceneView, error) {
 	if err != nil {
 		return nil, err
 	}
+	siteID, business, err := adtyPaymentScopeIdentity(model.DB, user, scope, false)
+	if err != nil {
+		return nil, err
+	}
+	if business == model.AdtyBusinessOwnerSelfUseTopup {
+		kind = "site_owner"
+	}
 	views := []AdtyPaymentSceneView{}
 	for _, scene := range config.Scenes {
-		if !adtySceneAudience(scene, user.SiteId, kind) {
+		if !adtySceneAudience(scene, siteID, kind, business) {
 			continue
 		}
 		view := AdtyPaymentSceneView{Key: scene.Key, Name: scene.Name, MinUSD: scene.MinUSD, MaxUSD: scene.MaxUSD, Methods: []AdtyMethodInfo{}}
@@ -337,18 +352,28 @@ func AdtyEpayChannelAllowed(scene *model.AdtyPaymentScene, channelID int) ([]int
 }
 
 func authorizeAdtyPaymentScene(db *gorm.DB, config *AdtyPaymentScenes, userID int, key, provider, method string, quote *AdtyQuote, lockUser bool) (*model.AdtyPaymentScene, *model.User, error) {
-	if key == "" {
-		key = "wallet_topup"
-	}
 	user, kind, err := adtyPaymentIdentity(db, userID, lockUser)
 	if err != nil {
 		return nil, nil, err
+	}
+	if quote == nil {
+		return nil, nil, common.NewMessage("Invalid parameters")
+	}
+	siteID, business, err := adtyPaymentScopeIdentity(db, user, []AdtyPaymentScope{{Business: quote.Business, SiteID: quote.SiteID}}, lockUser)
+	if err != nil {
+		return nil, nil, err
+	}
+	if key == "" {
+		key = business
+	}
+	if business == model.AdtyBusinessOwnerSelfUseTopup {
+		kind = "site_owner"
 	}
 	for _, scene := range config.Scenes {
 		if scene.Key != key {
 			continue
 		}
-		if !adtySceneAudience(scene, user.SiteId, kind) || quote == nil || !quote.FaceUSD.IsPositive() ||
+		if !adtySceneAudience(scene, siteID, kind, business) || !quote.FaceUSD.IsPositive() ||
 			quote.FaceUSD.LessThan(scene.MinUSD) || (scene.MaxUSD.IsPositive() && quote.FaceUSD.GreaterThan(scene.MaxUSD)) ||
 			!adtySceneMethod(scene, provider, method, quote.PayCurrency) {
 			break
@@ -374,7 +399,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		return common.NewMessage("Invalid parameters")
 	}
 	method := ext.Method
-	quote := &AdtyQuote{FaceUSD: ext.FaceUSD, PayAmount: ext.PayAmount, PayCurrency: ext.PayCurrency}
+	quote := &AdtyQuote{Business: ext.Business, SiteID: ext.SiteId, FaceUSD: ext.FaceUSD, PayAmount: ext.PayAmount, PayCurrency: ext.PayCurrency}
 	config := &AdtyPaymentScenes{}
 	bonusValues := map[string]string{}
 	prepare := func(tx *gorm.DB) error {
@@ -412,8 +437,11 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		if err != nil {
 			return err
 		}
-		if user.SiteId != ext.SiteId {
+		if !ext.IsOwnerSelfUse() && user.SiteId != ext.SiteId {
 			return common.NewMessage("This payment method is not available")
+		}
+		if ext.IsOwnerSelfUse() && !ext.ValidOwnerSelfUseCredit() {
+			return common.NewMessage("Invalid parameters")
 		}
 		if err := model.ValidateAdtyTeamTopupCreateTx(tx, ext); err != nil {
 			return err
@@ -441,7 +469,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		var rule adty_setting.MethodBonusRule
 		authorized, marginAllowed := false, false
 		bonusMethod := AdtyBonusMethod(method)
-		if bonusMethod != "" && ext.TeamId == 0 {
+		if bonusMethod != "" && ext.TeamId == 0 && !ext.IsOwnerSelfUse() {
 			if ext.SiteId == 0 {
 				rule, authorized, err = adty_setting.ParseMainMethodBonus(bonusValues[adty_setting.TopupSettingKeyMethodBonus], bonusMethod)
 			} else {

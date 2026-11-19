@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
-import type { AdtyOrder } from './types'
+import type { AdtyOrder, AdtyTopupBusiness } from './types'
 
 type ApiResponse<T> = { success: boolean; message?: string; data: T }
 
@@ -27,11 +27,13 @@ type ApiResponse<T> = { success: boolean; message?: string; data: T }
 export async function payWithBEpusdt(
   amount: number,
   chain: string,
-  paymentScene = 'wallet_topup'
+  paymentScene = 'wallet_topup',
+  business?: AdtyTopupBusiness
 ): Promise<AdtyOrder> {
   const res = await api.post<ApiResponse<AdtyOrder>>('/api/user/bepusdt/pay', {
     amount,
     chain,
+    business,
     payment_scene: paymentScene,
   })
   return requireServerSuccess(res.data).data
@@ -43,12 +45,14 @@ export async function payWithEpay(
   method: string,
   channelId: number | undefined,
   device: 'pc' | 'mobile',
-  paymentScene = 'wallet_topup'
+  paymentScene = 'wallet_topup',
+  business?: AdtyTopupBusiness
 ): Promise<AdtyOrder> {
   const res = await api.post<ApiResponse<AdtyOrder>>('/api/adty/epay/pay', {
     amount,
     method,
     device,
+    business,
     channel_id: channelId,
     payment_scene: paymentScene,
   })

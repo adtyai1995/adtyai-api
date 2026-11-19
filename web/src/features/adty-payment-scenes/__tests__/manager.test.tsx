@@ -207,6 +207,45 @@ it('deletes only after confirmation', async () => {
   expect(writes[0]).toEqual({ expected_version: 3, scenes: [] })
 })
 
+it('restricts an owner self-use scene to site owners on all or selected sub-sites', async () => {
+  const user = userEvent.setup()
+  renderManager()
+  await user.click(
+    await screen.findByRole('button', {
+      name: 'Edit payment scene Wallet top-up',
+    })
+  )
+  const dialog = within(screen.getByRole('dialog'))
+  await user.selectOptions(
+    dialog.getByLabelText('Business'),
+    'owner_self_use_topup'
+  )
+  const scope = dialog.getByLabelText('Site scope')
+  expect(scope).toHaveValue('all_sites')
+  expect(
+    within(scope)
+      .getAllByRole('option')
+      .map((option) => option.textContent)
+  ).toEqual(['All sub-sites', 'Selected sites'])
+  expect(dialog.getByLabelText('User types')).toBeDisabled()
+  const identifier = dialog.getByLabelText('Scene identifier')
+  await user.clear(identifier)
+  await user.type(identifier, 'owner_checkout')
+  await user.click(dialog.getByRole('button', { name: 'Save payment scene' }))
+  await user.click(
+    within(screen.getByRole('alertdialog')).getByRole('button', {
+      name: 'Continue',
+    })
+  )
+  await waitFor(() => expect(writes).toHaveLength(1))
+  expect(writes[0].scenes[0]).toMatchObject({
+    business: 'owner_self_use_topup',
+    site_scope: 'all_sites',
+    user_types: ['site_owner'],
+    site_ids: [],
+  })
+})
+
 it('hides scene management from ordinary administrators', () => {
   useAuthStore.getState().auth.setUser({ id: 2, username: 'admin', role: 10 })
   renderManager()

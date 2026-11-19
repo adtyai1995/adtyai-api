@@ -1,10 +1,13 @@
 package service
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,6 +24,243 @@ type operatingSettleFixture struct {
 	db       *gorm.DB
 	site     *model.AdtySite
 	customer *model.User
+}
+
+func TestOwnerSelfUseZeroEstimateRequiresSitePrincipalPG(t *testing.T) {
+	f := newOperatingSettleFixture(t)
+	owner := f.site.OwnerUserId
+	require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", owner).Update("quota", 50000000).Error)
+	require.NoError(t, model.CreateAdtyFundBatchesWithSiteTx(f.db, owner, model.AdtyFundBatchSiteID(0), "main-funds", 50000000, 0))
+	key := model.Token{Key: "self-empty-site", UserId: owner, OwnerSelfUseSiteId: f.site.Id, UnlimitedQuota: true}
+	require.NoError(t, f.db.Create(&key).Error)
+	ctx, info := snapshotRelay(t, owner, "default", hosttypes.PriceData{ModelPrice: 1, UsePrice: true})
+	ctx.Set(AdtyOwnerSelfUseContextKey, f.site)
+	ctx.Set(AdtySiteIdContextKey, f.site.Id)
+	ctx.Set(AdtySiteMarkupContextKey, float64(1))
+	ctx.Set(AdtySiteCostFactorContextKey, 0.8)
+	info.TokenId, info.TokenUnlimited = key.Id, true
+	session, apiErr := NewBillingSession(ctx, info, 0)
+	require.NotNil(t, apiErr, "main-site funds cannot admit a self-use request with no site principal")
+	require.Nil(t, session)
+}
+
+func TestOwnerSelfUseMixedWalletSupplementCannotUseMainPrincipalPG(t *testing.T) {
+	f := newOperatingSettleFixture(t)
+	owner := f.site.OwnerUserId
+	require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", owner).Update("quota", 50000000).Error)
+	require.NoError(t, model.CreateAdtyFundBatchesWithSiteTx(f.db, owner, model.AdtyFundBatchSiteID(0), "main-funds", 50000000, 0))
+	_, err := ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(100), AdtySiteWalletChange{Type: "fixture", IdempotencyKey: "mixed-earnings"})
+	require.NoError(t, err)
+	_, err = TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(1), "mixed-transfer")
+	require.NoError(t, err)
+	key := model.Token{Key: "mixed-self", UserId: owner, OwnerSelfUseSiteId: f.site.Id, UnlimitedQuota: true}
+	require.NoError(t, f.db.Create(&key).Error)
+	op := model.BillingOperation{OperationKey: "request:mixed-owner", UserId: owner, TokenId: key.Id, TokenUnlimited: true, SiteId: f.site.Id, SiteMarkup: 1, SiteCostFactor: .8}
+	_, err = model.ReserveBillingOperation(op, 500001)
+	require.ErrorIs(t, err, model.ErrBillingWalletInsufficient)
+	_, err = model.ReserveBillingOperation(op, 400000)
+	require.NoError(t, err)
+	f.settle(t, op.OperationKey, 600000)
+	settled, err := model.GetBillingOperation(op.OperationKey)
+	require.NoError(t, err)
+	require.Equal(t, 500000, settled.AppliedQuota)
+	require.Equal(t, 100000, settled.Shortfall)
+	var user model.User
+	require.NoError(t, f.db.First(&user, owner).Error)
+	require.Equal(t, 50000000, user.Quota)
+	var mainLot model.AdtyFundBatch
+	require.NoError(t, f.db.Where("user_id = ? AND source = ?", owner, "main-funds").First(&mainLot).Error)
+	require.EqualValues(t, 50000000, mainLot.Remaining)
+	require.True(t, f.operating(t).IsZero())
+	var earnings model.AdtySiteWallet
+	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, model.AdtySiteWalletEarnings).First(&earnings).Error)
+	require.Equal(t, "99", earnings.Balance.String())
+}
+
+func TestOwnerSelfUsePrincipalCannotPayOrdinaryRequestPG(t *testing.T) {
+	f := newOperatingSettleFixture(t)
+	owner := f.site.OwnerUserId
+	require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", owner).Update("quota", 10000000).Error)
+	require.NoError(t, model.CreateAdtyFundBatchesWithSiteTx(f.db, owner, model.AdtyFundBatchSiteID(f.site.Id), "owner-voucher", 10000000, 0))
+	_, err := model.ReserveBillingOperation(model.BillingOperation{OperationKey: "request:ordinary-owner", UserId: owner}, 400000)
+	require.ErrorIs(t, err, model.ErrBillingWalletInsufficient)
+	reserved, err := model.TryReserveUserQuotaForOperation(owner, 400000, "legacy:ordinary-owner")
+	require.NoError(t, err)
+	require.False(t, reserved, "legacy reservations must not spend owner site principal")
+}
+
+func TestOwnerSelfUseRefundKeepsOriginalPrincipalPG(t *testing.T) {
+	f := newOperatingSettleFixture(t)
+	owner := f.site.OwnerUserId
+	_, err := ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(20), AdtySiteWalletChange{Type: "fixture", IdempotencyKey: "owner-refund-fund"})
+	require.NoError(t, err)
+	_, err = TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(20), "refund-fund")
+	require.NoError(t, err)
+	key := model.Token{Key: "owner-refund", UserId: owner, OwnerSelfUseSiteId: f.site.Id, UnlimitedQuota: true}
+	require.NoError(t, f.db.Create(&key).Error)
+	op := model.BillingOperation{OperationKey: "request:owner-refund", UserId: owner, TokenId: key.Id, TokenUnlimited: true, SiteId: f.site.Id, SiteMarkup: 1, SiteCostFactor: .8}
+	_, err = model.ReserveBillingOperation(op, 400000)
+	require.NoError(t, err)
+	require.NoError(t, f.db.AutoMigrate(&model.Midjourney{}))
+	mj := model.Midjourney{UserId: owner, TokenId: key.Id, Quota: 400000, BillingChargePending: true, BillingOperationKey: op.OperationKey, BillingSiteId: f.site.Id, BillingSiteMarkup: 1, BillingSiteCostFactor: .8, BillingPayerKind: model.BillingPayerOwner}
+	require.NoError(t, f.db.Create(&mj).Error)
+	chargeKey, err := model.QueueMidjourneyBillingOperation(&mj, false)
+	require.NoError(t, err)
+	_, _, err = model.ApplyBillingSettlement(chargeKey)
+	require.NoError(t, err)
+	require.NoError(t, f.db.First(&mj, mj.Id).Error)
+	// Closing the site and deleting the key must not change a historical refund.
+	require.NoError(t, f.db.Delete(&key).Error)
+	require.NoError(t, f.db.Model(f.site).Update("status", model.AdtySiteStatusClosing).Error)
+	refundKey, err := model.QueueMidjourneyBillingOperation(&mj, true)
+	require.NoError(t, err)
+	_, _, err = model.ApplyBillingSettlement(refundKey)
+	require.NoError(t, err)
+	left, err := model.AdtyOwnerPrincipalAvailable(f.db, owner, f.site.Id)
+	require.NoError(t, err)
+	require.EqualValues(t, 10000000, left)
+	require.Equal(t, "20", f.operating(t).String())
+}
+
+func TestOwnerSelfUseTransferAndSettlementPG(t *testing.T) {
+	f := newOperatingSettleFixture(t)
+	owner := f.site.OwnerUserId
+	_, err := ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(100), AdtySiteWalletChange{Type: "fixture", IdempotencyKey: "earn-initial"})
+	require.NoError(t, err)
+	transfer, err := TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(20), "move")
+	require.NoError(t, err)
+	again, err := TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(20), "move")
+	require.NoError(t, err)
+	require.Equal(t, transfer, again)
+	_, err = TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(21), "move")
+	require.Error(t, err)
+	_, err = TransferAdtyEarningsToPersonal(f.site.Id, f.customer.Id, decimal.NewFromInt(20), "other")
+	require.Error(t, err)
+	_, err = TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(81), "overspend")
+	require.Error(t, err)
+	var wallet model.AdtySiteWallet
+	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, model.AdtySiteWalletEarnings).First(&wallet).Error)
+	require.Equal(t, "80", wallet.Balance.String())
+	key := model.Token{Key: "self", UserId: owner, OwnerSelfUseSiteId: f.site.Id, UnlimitedQuota: true}
+	require.NoError(t, f.db.Create(&key).Error)
+	op := model.BillingOperation{OperationKey: "request:owner-self", UserId: owner, TokenId: key.Id, TokenUnlimited: true, SiteId: f.site.Id, SiteMarkup: 1, SiteCostFactor: 0.8}
+	op.PriceSnapshot, err = model.EncodeRequestPriceSnapshot(&model.RequestPriceSnapshot{SchemaVersion: model.RequestPriceSnapshotVersion, ModelName: "self-model", ModelBasePrice: "1", BillingGroup: "default", GroupRatio: "1", SiteCostFactor: "0.8", SiteMarkupRatio: "0", Currency: "USD", AcceptedAt: time.Now().Unix(), RuleVersion: "owner-test", FinalPrice: "0.8", BillingUnit: model.BillingUnitPerCall})
+	require.NoError(t, err)
+	_, err = model.ReserveBillingOperation(op, 10000001)
+	require.ErrorIs(t, err, model.ErrBillingWalletInsufficient)
+	_, err = model.ReserveBillingOperation(op, 500000)
+	require.NoError(t, err)
+	f.settle(t, op.OperationKey, 400000)
+	left, err := model.AdtyOwnerPrincipalAvailable(f.db, owner, f.site.Id)
+	require.NoError(t, err)
+	require.EqualValues(t, 9600000, left)
+	require.Equal(t, "19.2", f.operating(t).String())
+	var count int64
+	require.NoError(t, f.db.Model(&model.AdtySiteEarningEvent{}).Where("operation_key = ?", op.OperationKey).Count(&count).Error)
+	require.Zero(t, count)
+	var entry model.AdtySiteWalletLedger
+	require.NoError(t, f.db.Where("ref_id = ? AND ref_type = ?", op.OperationKey, model.BillingPayerOwner).First(&entry).Error)
+	require.Equal(t, "-0.8", entry.Delta.String())
+	require.NoError(t, f.db.AutoMigrate(&model.TopUp{}))
+	stats, err := ComputeAdtySiteTierStats(f.site.Id)
+	require.NoError(t, err)
+	require.True(t, stats.PrincipalUSD.IsZero())
+	require.True(t, stats.ConsumptionUSD.IsZero())
+	require.NoError(t, f.db.AutoMigrate(&model.TopUp{}))
+	now := time.Now().Unix()
+	sheet, err := summarizeAdtySiteSettlement(f.site.Id, time.Now().Format("2006-01-02"), now-3600, now+3600)
+	require.NoError(t, err)
+	require.Equal(t, "20", sheet.OwnerTransferUSD.String())
+	require.Equal(t, "0.8", sheet.OwnerSelfUseUSD.String())
+	require.Equal(t, "0.8", sheet.OwnerSelfUseCostUSD.String())
+	require.True(t, sheet.ConsumptionUSD.IsZero())
+	require.True(t, sheet.SpreadUSD.IsZero())
+	require.NoError(t, f.db.AutoMigrate(&model.Log{}))
+	require.NoError(t, model.LOG_DB.Create(&model.Log{UserId: owner, RequestId: "owner-self", Type: model.LogTypeConsume, PromptTokens: 12, CompletionTokens: 8}).Error)
+	rows, total, err := ListAdtyOwnerSelfUseUsage(f.site.Id, owner, 0, 20)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Len(t, rows, 1)
+	require.Equal(t, "self-model", rows[0].ModelName)
+	require.Equal(t, "0.8", rows[0].ChargedUSD.String())
+	require.Equal(t, "0.8", rows[0].SupplyUnitPrice)
+	require.Equal(t, 12, rows[0].PromptTokens)
+	transfers, total, err := ListAdtyOwnerPrincipalTransfers(f.site.Id, owner, 0, 20)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Len(t, transfers, 1)
+	require.Equal(t, "100", transfers[0].EarningsBefore.String())
+	require.Equal(t, "80", transfers[0].EarningsAfter.String())
+	require.Equal(t, "0", transfers[0].PersonalBefore.String())
+	require.Equal(t, "20", transfers[0].PersonalAfter.String())
+	_, _, err = ListAdtyOwnerSelfUseUsage(f.site.Id, f.customer.Id, 0, 20)
+	require.ErrorIs(t, err, ErrAdtySiteNotOwner)
+}
+
+func TestOwnerSelfUseTransferFrozenConcurrentAndRollbackPG(t *testing.T) {
+	f := newOperatingSettleFixture(t)
+	owner := f.site.OwnerUserId
+	_, err := ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(100), AdtySiteWalletChange{Type: "fixture", IdempotencyKey: "concurrent-fund"})
+	require.NoError(t, err)
+	err = f.db.Transaction(func(tx *gorm.DB) error {
+		_, err := applyAdtySiteWalletChangeTx(tx, f.site.Id, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{Type: "fixture", HoldDelta: decimal.NewFromInt(80), IdempotencyKey: "concurrent-hold"})
+		return err
+	})
+	require.NoError(t, err)
+	_, err = TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(21), "held")
+	require.ErrorIs(t, err, ErrAdtySiteWalletInsufficient)
+	var user model.User
+	require.NoError(t, f.db.First(&user, owner).Error)
+	require.Zero(t, user.Quota, "the earlier personal credit must roll back")
+	start := make(chan struct{})
+	errs := make([]error, 2)
+	refs := make([]string, 2)
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Go(func() {
+			<-start
+			refs[i], errs[i] = TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(20), "same-intent")
+		})
+	}
+	close(start)
+	wg.Wait()
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
+	require.Equal(t, refs[0], refs[1])
+	require.NoError(t, f.db.First(&user, owner).Error)
+	require.Equal(t, 10000000, user.Quota)
+	var count int64
+	require.NoError(t, f.db.Model(&model.AdtyBalanceLedger{}).Where("ref_id = ?", refs[0]).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+	_, err = TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(1), "exhausted")
+	require.ErrorIs(t, err, ErrAdtySiteWalletInsufficient)
+}
+
+func TestOwnerSelfUseRealtimeCountsPrincipalOncePG(t *testing.T) {
+	f := newOperatingSettleFixture(t)
+	owner := f.site.OwnerUserId
+	_, err := ApplyAdtySiteWalletChange(f.site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(20), AdtySiteWalletChange{Type: "fixture", IdempotencyKey: "stream-fund"})
+	require.NoError(t, err)
+	_, err = TransferAdtyEarningsToPersonal(f.site.Id, owner, decimal.NewFromInt(20), "stream")
+	require.NoError(t, err)
+	key := model.Token{Key: "stream-self", UserId: owner, OwnerSelfUseSiteId: f.site.Id, UnlimitedQuota: true}
+	require.NoError(t, f.db.Create(&key).Error)
+	root := model.BillingOperation{OperationKey: "request:owner-stream", UserId: owner, TokenId: key.Id, TokenUnlimited: true, SiteId: f.site.Id, SiteMarkup: 1, SiteCostFactor: .8}
+	_, err = model.ReserveBillingOperation(root, 0)
+	require.NoError(t, err)
+	chunk := root
+	chunk.OperationKey, chunk.EarningRootKey = "direct:owner-stream:0", root.OperationKey
+	require.NoError(t, model.QueueDirectBillingDelta(chunk, 400000))
+	_, _, err = model.ApplyBillingSettlement(chunk.OperationKey)
+	require.NoError(t, err)
+	require.NoError(t, model.QueueBillingSettlement(root.OperationKey, 300000, false, 400000, 400000))
+	_, _, err = model.ApplyBillingSettlement(root.OperationKey)
+	require.NoError(t, err)
+	left, err := model.AdtyOwnerPrincipalAvailable(f.db, owner, f.site.Id)
+	require.NoError(t, err)
+	require.EqualValues(t, 9700000, left, "final $0.60 charge must refund $0.20 of the $0.80 stream charge")
+	require.Equal(t, "19.4", f.operating(t).String())
 }
 
 // 站内客户的本金：$2（$1 = 500000 quota）。

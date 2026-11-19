@@ -45,6 +45,20 @@ test('official zh and en packs name the A.20.2 glossary terms', () => {
   }
 })
 
+test('owner self-use history labels are present in the loaded translation namespace', () => {
+  for (const [key, chinese] of [
+    ['Owner principal transfers', '收益转入个人余额记录'],
+    ['Earnings balance change', '收益余额变动'],
+    ['Personal balance change', '个人总余额变动'],
+    ['Supply unit price', '供货单价'],
+    ['Actual debit', '实扣金额'],
+    ['Per 1M input tokens', '每百万输入 Token'],
+  ]) {
+    expect(enPack[key]).toBe(key)
+    expect(zhPack[key]).toBe(chinese)
+  }
+})
+
 test('fund and audit copy uses official permanent bonus, frozen amount, manual refund, and commission-state terms', () => {
   expect(enPack['Bonus used']).toBe('Permanent bonus used')
   expect(zhPack['Bonus used']).toBe('已用永久赠金')

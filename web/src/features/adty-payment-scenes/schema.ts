@@ -26,7 +26,7 @@ export const paymentSceneSchema = z
   .object({
     key: z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/, 'Invalid parameters'),
     name: z.string().trim().min(1, 'Required').max(120),
-    business: z.literal('wallet_topup'),
+    business: z.enum(['wallet_topup', 'owner_self_use_topup']),
     enabled: z.boolean(),
     providers: z.array(z.string()).min(1, 'Required').max(6),
     methods: z.array(z.string().min(1).max(255)).max(100),
@@ -41,6 +41,25 @@ export const paymentSceneSchema = z
     max_usd: money,
   })
   .superRefine((scene, context) => {
+    if (scene.business === 'owner_self_use_topup') {
+      if (scene.site_scope !== 'all_sites' && scene.site_scope !== 'selected') {
+        context.addIssue({
+          code: 'custom',
+          path: ['site_scope'],
+          message: 'Invalid parameters',
+        })
+      }
+      if (
+        scene.user_types.length !== 1 ||
+        scene.user_types[0] !== 'site_owner'
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['user_types'],
+          message: 'Invalid parameters',
+        })
+      }
+    }
     if (
       Number(scene.max_usd) > 0 &&
       Number(scene.min_usd) > Number(scene.max_usd)

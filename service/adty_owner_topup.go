@@ -1,0 +1,68 @@
+package service
+
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+)
+
+// SiteID is supplied by trusted host resolution, never a checkout body.
+type AdtyPaymentScope struct {
+	Business string
+	SiteID   int
+}
+
+func adtyPaymentScopeIdentity(db *gorm.DB, user *model.User, scopes []AdtyPaymentScope, lock bool) (int, string, error) {
+	scope := AdtyPaymentScope{Business: model.AdtyBusinessWalletTopup}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	if scope.Business == "" || scope.Business == model.AdtyBusinessWalletTopup {
+		if scope.SiteID > 0 && scope.SiteID != user.SiteId {
+			return 0, "", common.NewMessage("This payment method is not available")
+		}
+		return user.SiteId, model.AdtyBusinessWalletTopup, nil
+	}
+	if scope.Business != model.AdtyBusinessOwnerSelfUseTopup || scope.SiteID <= 0 || user.StaffSiteId != 0 || user.Status != common.UserStatusEnabled {
+		return 0, "", common.NewMessage("This payment method is not available")
+	}
+	var site model.AdtySite
+	q := db
+	if lock {
+		q = model.AdtyLockForUpdate(q)
+	}
+	if err := q.First(&site, scope.SiteID).Error; err != nil {
+		return 0, "", err
+	}
+	if site.OwnerUserId != user.Id || site.Status != model.AdtySiteStatusActive {
+		return 0, "", common.NewMessage("This payment method is not available")
+	}
+	return site.Id, scope.Business, nil
+}
+
+func AdtyQuoteForPayment(userID, requestSiteID int, group, business string, face int64, method string) (*AdtyQuote, error) {
+	user, _, err := adtyPaymentIdentity(model.DB, userID, false)
+	if err != nil {
+		return nil, err
+	}
+	siteID, business, err := adtyPaymentScopeIdentity(model.DB, user, []AdtyPaymentScope{{Business: business, SiteID: requestSiteID}}, false)
+	if err != nil {
+		return nil, err
+	}
+	quote, err := adtyQuoteForSite(AdtyBillingSiteForUser(userID), group, face, method, business == model.AdtyBusinessOwnerSelfUseTopup)
+	if err != nil {
+		return nil, err
+	}
+	quote.Business, quote.SiteID = business, siteID
+	return quote, nil
+}
+
+func adtyOwnerQuotaQuote(face int64) (*AdtyQuote, error) {
+	usd := decimal.NewFromInt(face)
+	quota, err := common.WalletQuotaFromDecimalStrict(usd.Mul(common.QuotaPerUnitDecimal()))
+	if err != nil {
+		return nil, err
+	}
+	return &AdtyQuote{FaceUSD: usd, CreditQuota: int64(quota), TopupGroupRatio: decimal.NewFromInt(1)}, nil
+}

@@ -56,6 +56,18 @@ export type MarginCycleSummary = {
   availableUsd: string
 }
 
+export function ownerTransferPreview(
+  wallet: SiteWallet | undefined,
+  amount: string
+) {
+  if (!wallet || !/^\d{1,20}(\.\d{1,8})?$/.test(amount)) return null
+  const available =
+    parseScaledUsd(wallet.balance) - parseScaledUsd(wallet.frozen_usd)
+  const debit = parseScaledUsd(amount)
+  if (debit <= 0n || debit > available || debit % 200n !== 0n) return null
+  return formatScaledUsd(available - debit)
+}
+
 /**
  * Computes the margin cycle summary (tier, used, 90% limit, and currently
  * available draw) using scaled BigInt arithmetic.

@@ -323,7 +323,7 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 		return 0, err
 	}
 	var rows []AdtyFundBatch
-	if err := tx.Where("user_id = ?", userID).Find(&rows).Error; err != nil {
+	if err := eligibleFundLots(tx, userID).Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	// 批次总量与「这次业务之前」的余额之间的差，是**没有批次背书的额度**：
@@ -350,7 +350,7 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 		}
 	}
 	// 只消费还有剩余的批次；上面补过之后重新读，避免拿旧快照算。
-	if err := tx.Where("user_id = ?", userID).Where("remaining > 0").Find(&rows).Error; err != nil {
+	if err := eligibleFundLots(tx, userID).Where("remaining > 0").Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	if len(rows) == 0 {

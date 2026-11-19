@@ -17,10 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ActivePayment } from '../lib/active-payment'
+import type { AdtyTopupBusiness } from '../types'
 import { EpayPayDialog } from './epay-pay-dialog'
 import { UsdtPayDialog } from './usdt-pay-dialog'
 
 type AdtyPaymentDialogsProps = {
+  gatewayReturn?: boolean
+  business?: AdtyTopupBusiness
   payment: ActivePayment | null
   onClose: () => void
   onSettled: () => Promise<void> | void
@@ -35,6 +38,7 @@ export function AdtyPaymentDialogs(props: AdtyPaymentDialogsProps) {
       <UsdtPayDialog
         key={payment.tradeNo ?? `${payment.method}-${payment.amount}`}
         chain={payment.method}
+        business={props.business}
         paymentScene={payment.paymentScene}
         amount={payment.amount}
         tradeNo={payment.tradeNo}
@@ -51,6 +55,8 @@ export function AdtyPaymentDialogs(props: AdtyPaymentDialogsProps) {
         `${payment.method}-${payment.channelId ?? 0}-${payment.amount}`
       }
       method={payment.method}
+      gatewayReturn={props.gatewayReturn}
+      business={props.business}
       channelId={payment.channelId}
       paymentScene={payment.paymentScene}
       amount={payment.amount}

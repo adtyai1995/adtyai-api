@@ -101,7 +101,7 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 		return nil, err
 	}
 	var user User
-	if err := DB.Select("id", "quota_pending").First(&user, ext.UserId).Error; err != nil {
+	if err := DB.Select("id", "quota", "quota_pending", "checkin_quota").First(&user, ext.UserId).Error; err != nil {
 		return nil, err
 	}
 	if err := adtyRequireManualRefundTable(DB); err != nil {
@@ -113,6 +113,18 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 	}
 	held, unknown := adtySumManualRefundOccupancy(refunds)
 	occupancy := adtyBuildManualRefundOccupancy(&ext, held, unknown)
+	if ext.IsOwnerSelfUse() {
+		balance, err := userWalletBalance(user.Quota, user.QuotaPending)
+		if err != nil {
+			return nil, err
+		}
+		_, available, err := ownerRefundCapacity(DB, &ext, adtySpendableQuota(int64(balance), int64(max(0, user.CheckinQuota))))
+		if err != nil {
+			return nil, err
+		}
+		occupancy.RemainingQuota = ownerRefundApplicationLimit(available, occupancy, refunds)
+		occupancy.RemainingUSD = adtyQuotaUSDString(occupancy.RemainingQuota)
+	}
 	var shortfall int64
 	for _, row := range refunds {
 		shortfall += row.ShortfallQuota
@@ -171,7 +183,7 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 		if err != nil {
 			return nil, err
 		}
-		if requestQuota > occupancy.RemainingQuota {
+		if requestQuota > occupancy.RemainingQuota || (ext.IsOwnerSelfUse() && !requestUSD.Mul(common.QuotaPerUnitDecimal()).Equal(decimal.NewFromInt(requestQuota))) {
 			return nil, common.NewMessage("Refund amount exceeds the remaining principal")
 		}
 		facts.ForeignReference = adtyRefundAmount(&ext, requestQuota, ext.FaceQuota()).String()
@@ -346,7 +358,7 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
 			return err
 		}
@@ -384,6 +396,19 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 		}
 		if requestQuota > occupancy.RemainingQuota {
 			return common.NewMessage("Refund amount exceeds the remaining principal")
+		}
+		if ext.IsOwnerSelfUse() {
+			balance, checkin, err := lockUserQuotaForRefundTx(tx, ext.UserId)
+			if err != nil {
+				return err
+			}
+			_, available, err := ownerRefundCapacity(tx, ext, adtySpendableQuota(balance, checkin))
+			if err != nil {
+				return err
+			}
+			if requestQuota > ownerRefundApplicationLimit(available, occupancy, rows) || !requestUSD.Mul(common.QuotaPerUnitDecimal()).Equal(decimal.NewFromInt(requestQuota)) {
+				return ownerRefundQuotaError()
+			}
 		}
 		now := common.GetTimestamp()
 		row := &AdtyManualRefund{
@@ -427,7 +452,7 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
 			return err
 		}
@@ -453,6 +478,11 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		if err := adtyEnsureCreditedOrder(topUp, ext); err != nil {
 			return err
 		}
+		if ext.IsOwnerSelfUse() {
+			if err := reserveOwnerRefundTx(tx, ext, row); err != nil {
+				return err
+			}
+		}
 		now := common.GetTimestamp()
 		if err := tx.Model(row).Updates(map[string]any{
 			"status":              AdtyManualRefundStatusApproved,
@@ -475,9 +505,9 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 	return result, attachAdtyManualRefundFacts(result, tradeNo, decimal.Zero)
 }
 
-// ReclaimAdtyTopUpManualRefund records internal principal reclaim. Authorized r
-// is not reduced when spendable or remaining principal is short; the gap is
-// persisted as 人工处理差额. Other orders and accounts are not debited.
+// ReclaimAdtyTopUpManualRefund records internal principal reclaim. Customer
+// refunds record a shortage as 人工处理差额. Owner self-use refunds require the
+// exact approved share in full and cannot record a shortage or use other lots.
 func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idemKey string, ownerSiteID ...int) (*AdtyManualRefundResult, error) {
 	refundID, err := adtyNormalizeRefundID(refundID)
 	if err != nil {
@@ -492,7 +522,7 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 	var deducted int64
 	replay := false
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
 			return err
 		}
@@ -531,39 +561,29 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		} else if existing != nil {
 			return ErrAdtyIdempotencyConflict
 		}
-		remainingPrincipal, _, err := adtyOrderLotRemainingTx(tx, topUp.UserId, tradeNo)
-		if err != nil {
-			return err
-		}
 		spendable := adtySpendableQuota(before, checkinQuota)
-		reclaimable := remainingPrincipal
-		if spendable < reclaimable {
-			reclaimable = spendable
-		}
-		if row.RequestQuota < reclaimable {
-			reclaimable = row.RequestQuota
-		}
-		if reclaimable < 0 {
-			reclaimable = 0
-		}
-		consumed := row.RequestQuota - remainingPrincipal
-		if remainingPrincipal > row.RequestQuota {
-			consumed = 0
-		}
-		if consumed < 0 {
-			consumed = 0
-		}
-		shortfall := row.RequestQuota - reclaimable
-		if err := adtyDebitUserQuotaTx(tx, topUp.UserId, reclaimable); err != nil {
-			return err
-		}
-		if reclaimable > 0 {
+		remainingPrincipal, reclaimable := row.RequestQuota, row.RequestQuota
+		if ext.IsOwnerSelfUse() {
+			if err := reclaimOwnerRefundTx(tx, ext, row, spendable, operatorID); err != nil {
+				return err
+			}
+		} else {
+			remainingPrincipal, _, err = adtyOrderLotRemainingTx(tx, topUp.UserId, tradeNo)
+			if err != nil {
+				return err
+			}
+			reclaimable = max(0, min(remainingPrincipal, spendable, row.RequestQuota))
 			if taken, err := ReclaimAdtyFundBatchesBySourceTx(tx, topUp.UserId, tradeNo, reclaimable, 0); err != nil {
 				return err
 			} else if taken != reclaimable {
 				return common.NewMessage("Internal principal reclaim could not be applied to this order")
 			}
 		}
+		if err := adtyDebitUserQuotaTx(tx, topUp.UserId, reclaimable); err != nil {
+			return err
+		}
+		consumed := max(0, row.RequestQuota-remainingPrincipal)
+		shortfall := row.RequestQuota - reclaimable
 		ledger := adtyManualRefundLedger(topUp.UserId, reclaimable, before, tradeNo,
 			row.Reason+" [manual_usd="+row.RequestUSD.String()+" shortfall="+adtyQuotaUSDString(shortfall)+" refund_id="+refundID+"]",
 			operatorID, idemKey)
@@ -726,7 +746,7 @@ func PlanAdtyTopUpManualRefundBonus(tradeNo, refundID string, operatorID int, id
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		_, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+		_, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
 			return err
 		}
@@ -782,7 +802,7 @@ func PlanAdtyTopUpManualRefundCommission(tradeNo, refundID string, operatorID in
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		_, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+		_, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
 			return err
 		}
@@ -869,7 +889,7 @@ func RecordAdtyTopUpManualRefundPayout(tradeNo, refundID string, operatorID int,
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
 			return err
 		}
@@ -893,6 +913,11 @@ func RecordAdtyTopUpManualRefundPayout(tradeNo, refundID string, operatorID int,
 		// 幂等重放分支（PayoutRecordedAt > 0）在上面已经 return，不受影响。
 		if err := adtyEnsureCreditedOrder(topUp, ext); err != nil {
 			return err
+		}
+		if ext.IsOwnerSelfUse() && status != AdtyManualRefundPayoutFailed {
+			if err := confirmOwnerRefundBackingTx(tx, ext, row); err != nil {
+				return err
+			}
 		}
 		now := common.GetTimestamp()
 		if err := tx.Model(row).Updates(map[string]any{
@@ -950,7 +975,7 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 	var committedExt *AdtyTopupOrder
 	replay := false
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
 			return err
 		}
@@ -1007,6 +1032,11 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		}
 		if row.PayoutRecordedAt == 0 || row.PayoutStatus != AdtyManualRefundPayoutSuccess {
 			return common.NewMessage("Offline payout has not been confirmed")
+		}
+		if ext.IsOwnerSelfUse() {
+			if err := confirmOwnerRefundBackingTx(tx, ext, row); err != nil {
+				return err
+			}
 		}
 		var planned, bonusTaken, bonusShortfall int64
 		var ledger *AdtyBalanceLedger
@@ -1127,8 +1157,9 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 }
 
 // TerminateAdtyTopUpManualRefund formally ends a refund after payout failure
-// (or before payout confirmation) and releases H/U. A prior internal reclaim is
-// left in place; this does not invent a reversal credit.
+// (or before payout confirmation) and releases H/U. Owner self-use refunds also
+// release their original share and reverse any internal reclaim atomically.
+// Customer refunds retain their existing internal-reclaim behavior.
 func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idemKey, note string, ownerSiteID ...int) (*AdtyManualRefundResult, error) {
 	refundID, err := adtyNormalizeRefundID(refundID)
 	if err != nil {
@@ -1139,8 +1170,9 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 		return nil, err
 	}
 	var result *AdtyManualRefundResult
+	var releasedUserID int
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		_, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+		_, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
 			return err
 		}
@@ -1168,6 +1200,14 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 		if row.PayoutRecordedAt > 0 && row.PayoutStatus != AdtyManualRefundPayoutFailed {
 			return common.NewMessage("This refund cannot be terminated")
 		}
+		if ext.IsOwnerSelfUse() && row.ApprovedAt > 0 {
+			if err := releaseOwnerRefundTx(tx, ext, row, operatorID, idemKey); err != nil {
+				return err
+			}
+			if row.ReclaimedAt > 0 {
+				releasedUserID = row.UserId
+			}
+		}
 		now := common.GetTimestamp()
 		if err := tx.Model(row).Updates(map[string]any{
 			"status":                AdtyManualRefundStatusTerminated,
@@ -1192,6 +1232,11 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 	})
 	if err != nil {
 		return nil, err
+	}
+	if releasedUserID > 0 {
+		if err := invalidateUserCache(releasedUserID); err != nil {
+			common.SysError(common.LogText("refund cache update failed user_id=%d: %s", releasedUserID, err.Error()))
+		}
 	}
 	return result, attachAdtyManualRefundFacts(result, tradeNo, decimal.Zero)
 }

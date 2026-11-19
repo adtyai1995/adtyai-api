@@ -103,7 +103,18 @@ func detectExistingAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) 
 	}
 	principal := decimal.NewFromInt(principalQuota).Div(common.QuotaPerUnitDecimal())
 	giftUSD := decimal.NewFromInt(giftQuota).Div(common.QuotaPerUnitDecimal())
-	operatingGap := ReconcileOperatingWallet(principal, operating)
+	// Both API and approved refund reservations remain a liability until
+	// settlement/reclaim reduces the original batch and operating balance.
+	var ownerQuota int64
+	if err := model.DB.Table("adty_fund_batches b").
+		Joins("JOIN adty_sites s ON s.id = b.site_id AND s.owner_user_id = b.user_id").
+		Joins("JOIN users u ON u.id = b.user_id").
+		Where("b.site_id = ? AND b.kind = ? AND u.site_id <> ?", siteID, model.AdtyFundBatchKindPrincipal, siteID).
+		Select("COALESCE(SUM(b.remaining),0)").Scan(&ownerQuota).Error; err != nil {
+		return nil, err
+	}
+	ownerPrincipal := decimal.NewFromInt(ownerQuota).Div(common.QuotaPerUnitDecimal())
+	operatingGap := ReconcileOperatingWallet(principal.Add(ownerPrincipal), operating)
 	if !operatingGap.IsZero() || lotGap != 0 {
 		balanceGap = 1
 	}
@@ -146,6 +157,7 @@ func detectExistingAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) 
 			item.Evidence = mustAnomalyEvidence(map[string]any{
 				"operating_wallet":     operating.String(),
 				"customer_principal":   principal.String(),
+				"owner_principal":      ownerPrincipal.String(),
 				"customer_gift":        giftUSD.String(),
 				"fund_batch_gap_quota": lotGap,
 				"operating_gap":        operatingGap.String(),

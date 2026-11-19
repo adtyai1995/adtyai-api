@@ -142,6 +142,12 @@ func writeAdtySiteSettlementSheet(siteID int, day string, start, end int64, time
 			"paid_usd":                     figures.PaidUSD,
 			"paid_by_currency":             figures.PaidByCurrency,
 			"consumption_usd":              figures.ConsumptionUSD,
+			"owner_transfer_usd":           figures.OwnerTransferUSD,
+			"owner_self_use_topup_usd":     figures.OwnerSelfUseTopupUSD,
+			"owner_self_use_voucher_usd":   figures.OwnerSelfUseVoucherUSD,
+			"owner_self_use_refund_usd":    figures.OwnerSelfUseRefundUSD,
+			"owner_self_use_usd":           figures.OwnerSelfUseUSD,
+			"owner_self_use_cost_usd":      figures.OwnerSelfUseCostUSD,
 			"supply_cost_usd":              figures.SupplyCostUSD,
 			"spread_usd":                   figures.SpreadUSD,
 			"gift_reserve_usd":             figures.GiftReserveUSD,
@@ -180,7 +186,7 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 	}
 
 	var topups []model.TopUp
-	if err := model.DB.Where("status = ? AND complete_time >= ? AND complete_time < ?", common.TopUpStatusSuccess, start, end).Find(&topups).Error; err != nil {
+	if err := model.DB.Where("status IN ? AND complete_time >= ? AND complete_time < ?", []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}, start, end).Find(&topups).Error; err != nil {
 		return sheet, err
 	}
 	if len(topups) > 0 {
@@ -196,7 +202,25 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 		}
 		for _, order := range orders {
 			paid := byTrade[order.TradeNo]
-			sheet.TopupFaceUSD = sheet.TopupFaceUSD.Add(order.FaceUSD)
+			if paid.Status == model.TopUpStatusRefunded && !order.IsOwnerSelfUse() {
+				continue
+			}
+			if order.Provider == model.AdtyVoucherProvider {
+				switch order.Method {
+				case model.AdtyVoucherPurposeSiteOwner:
+					sheet.OwnerSelfUseVoucherUSD = sheet.OwnerSelfUseVoucherUSD.Add(order.FaceUSD)
+				case model.AdtyVoucherPurposeSiteCustomer:
+					sheet.TopupFaceUSD = sheet.TopupFaceUSD.Add(order.FaceUSD)
+				}
+				note(paid.CompleteTime)
+				sheet.IncludedCount++
+				continue
+			}
+			if order.IsOwnerSelfUse() {
+				sheet.OwnerSelfUseTopupUSD = sheet.OwnerSelfUseTopupUSD.Add(order.FaceUSD)
+			} else {
+				sheet.TopupFaceUSD = sheet.TopupFaceUSD.Add(order.FaceUSD)
+			}
 			currency := strings.TrimSpace(order.PaidCurrency)
 			if strings.EqualFold(currency, "USD") {
 				sheet.PaidUSD = sheet.PaidUSD.Add(order.PaidAmount)
@@ -207,6 +231,20 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 			sheet.IncludedCount++
 		}
 	}
+
+	ownerTrades := model.DB.Model(&model.AdtyTopupOrder{}).Select("trade_no").Where("site_id = ? AND business = ?", siteID, model.AdtyBusinessOwnerSelfUseTopup)
+	var refunds struct {
+		Amount decimal.Decimal
+		Count  int64
+		Latest int64
+	}
+	if err := model.DB.Model(&model.AdtyManualRefund{}).Where("trade_no IN (?) AND status = ? AND completed_at >= ? AND completed_at < ?", ownerTrades, model.AdtyManualRefundStatusCompleted, start, end).
+		Select("COALESCE(SUM(request_usd),0) AS amount, COUNT(*) AS count, COALESCE(MAX(completed_at),0) AS latest").Scan(&refunds).Error; err != nil {
+		return sheet, err
+	}
+	sheet.OwnerSelfUseRefundUSD = refunds.Amount
+	sheet.IncludedCount += refunds.Count
+	note(refunds.Latest)
 
 	var events []model.AdtySiteEarningEvent
 	if err := model.DB.Where("site_id = ? AND projected = ? AND created_at >= ? AND created_at < ?", siteID, true, start, end).Find(&events).Error; err != nil {
@@ -301,6 +339,13 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 	for _, row := range ledgers {
 		note(row.CreatedAt)
 		sheet.IncludedCount++
+		if row.WalletKind == model.AdtySiteWalletEarnings && row.Type == ownerTransfer {
+			sheet.OwnerTransferUSD = sheet.OwnerTransferUSD.Sub(row.Delta)
+		}
+		if row.WalletKind == model.AdtySiteWalletOperating && row.RefType == model.BillingPayerOwner {
+			sheet.OwnerSelfUseUSD = sheet.OwnerSelfUseUSD.Sub(row.Delta)
+			sheet.OwnerSelfUseCostUSD = sheet.OwnerSelfUseUSD
+		}
 		if row.Type == "adjustment" || row.Type == model.AdtyLedgerTypeManualAdjust {
 			sheet.AdjustmentUSD = sheet.AdjustmentUSD.Add(row.Delta)
 		}
