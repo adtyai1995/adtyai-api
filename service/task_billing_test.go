@@ -42,6 +42,10 @@ func TestMain(m *testing.M) {
 	model.LOG_DB = db
 
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	// This harness opens SQLite directly and does not call InitDB, which is
+	// where production sets the quoted group column. Leave it empty and
+	// QuerySummaryAll emits "AND IN (...)".
+	model.InitColumnNamesForTests()
 	common.RedisEnabled = false
 	common.BatchUpdateEnabled = false
 	common.LogConsumeEnabled = true
