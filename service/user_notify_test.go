@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/glebarez/sqlite"
@@ -414,4 +415,256 @@ func TestChannelStatusEventIDIsStableAndInboxReadsWatcherNotice(t *testing.T) {
 	var still AdtyChannelWatcherOutbox
 	require.NoError(t, database.Where("event_id = ? AND user_id = ?", eventID, root.Id).First(&still).Error)
 	assert.Equal(t, AdtyWatcherOutboxFailed, still.Status)
+}
+
+// ISS-R1-0179: a committed channel status stays after watcher delivery fails,
+// an upstream model observer event is stored as the in-site record with source
+// attribution, and a live ChannelRead revoke stops the current recipient.
+func TestChannelStatusAndUpstreamWatcherKeepCommittedState(t *testing.T) {
+	previousDB := model.DB
+	previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
+	previousNotifyLimit := constant.NotifyLimitCount
+	previousClient, previousWorker := httpClient, system_setting.WorkerUrl
+	previousPermissions := AdtyAdminPermissionsEnabled()
+	fetch := system_setting.GetFetchSetting()
+	previousFetch := *fetch
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.MemoryCacheEnabled, common.RedisEnabled = previousCache, previousRedis
+		constant.NotifyLimitCount = previousNotifyLimit
+		httpClient, system_setting.WorkerUrl = previousClient, previousWorker
+		SetAdtyAdminPermissionsEnabled(previousPermissions)
+		*fetch = previousFetch
+	})
+	SetAdtyAdminPermissionsEnabled(true)
+	loadAdminBaselineForTest(t)
+
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := database.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, database.AutoMigrate(
+		&model.Channel{}, &model.Ability{}, &model.User{},
+		&model.AdtyNotificationPublication{}, &model.AdtyNotificationRead{}, &model.AdtyNotificationHide{},
+	))
+	model.DB = database
+	common.MemoryCacheEnabled, common.RedisEnabled = false, false
+	constant.NotifyLimitCount = 100
+
+	var mutex sync.Mutex
+	failWebhook := true
+	received := map[string][]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mutex.Lock()
+		shouldFail := failWebhook
+		mutex.Unlock()
+		if shouldFail {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		var payload WebhookPayload
+		if err := common.DecodeJson(r.Body, &payload); err == nil {
+			mutex.Lock()
+			recipient := strings.TrimPrefix(r.URL.Path, "/")
+			received[recipient] = append(received[recipient], payload.Type+"|"+payload.Title)
+			mutex.Unlock()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	httpClient, system_setting.WorkerUrl = server.Client(), ""
+	fetch.EnableSSRFProtection = false
+
+	on := true
+	createUser := func(name string, role int, channelOn, upstreamOn bool, language string) model.User {
+		t.Helper()
+		setting, err := common.Marshal(dto.UserSetting{
+			NotifyType:                       dto.NotifyTypeWebhook,
+			WebhookUrl:                       server.URL + "/" + name,
+			ChannelNotifyEnabled:             &channelOn,
+			UpstreamModelUpdateNotifyEnabled: upstreamOn,
+			Language:                         language,
+		})
+		require.NoError(t, err)
+		user := model.User{Username: name, Role: role, Status: common.UserStatusEnabled, Setting: string(setting)}
+		require.NoError(t, database.Create(&user).Error)
+		return user
+	}
+	root := createUser("root", common.RoleRootUser, on, false, "en")
+	keep := createUser("keep", common.RoleAdminUser, on, true, "zhCN")
+	late := createUser("late", common.RoleAdminUser, on, true, "en")
+	never := createUser("never", common.RoleAdminUser, on, true, "en")
+	require.True(t, authz.Can(keep.Id, common.RoleAdminUser, authz.ChannelRead))
+	require.NoError(t, authz.SetUserPermissions(never.Id, authz.PermissionsMap{
+		authz.ResourceChannel: {authz.ActionRead: false},
+	}))
+	require.False(t, authz.Can(never.Id, common.RoleAdminUser, authz.ChannelRead))
+
+	channel := &model.Channel{
+		Name: "committed-status", Key: "fixture-key", Type: 1,
+		Status: common.ChannelStatusEnabled, Group: "default", Models: "kept-model",
+	}
+	require.NoError(t, channel.Insert())
+
+	noticeCount := func(userID int, eventID string) int64 {
+		t.Helper()
+		var count int64
+		require.NoError(t, database.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND event_id = ?", userID, eventID).Count(&count).Error)
+		return count
+	}
+	outboxOf := func(userID int, eventID string) AdtyChannelWatcherOutbox {
+		t.Helper()
+		var row AdtyChannelWatcherOutbox
+		require.NoError(t, database.Where("user_id = ? AND event_id = ?", userID, eventID).First(&row).Error)
+		return row
+	}
+	inboxItem := func(userID int, eventID string) map[string]any {
+		t.Helper()
+		inbox, err := GetAdtyNotificationInbox(userID, nil, 0)
+		require.NoError(t, err)
+		for _, item := range inbox.Announcements {
+			if item["event_id"] == eventID {
+				return item
+			}
+		}
+		t.Fatalf("inbox missing event %s for user %d", eventID, userID)
+		return nil
+	}
+	reload := func() *model.Channel {
+		t.Helper()
+		row, err := model.GetChannelById(channel.Id, true)
+		require.NoError(t, err)
+		return row
+	}
+
+	DisableChannel(types.ChannelError{
+		ChannelId: channel.Id, ChannelName: channel.Name, AutoBan: true,
+	}, "upstream failed")
+	disabled := reload()
+	assert.Equal(t, common.ChannelStatusAutoDisabled, disabled.Status)
+	assert.Equal(t, "kept-model", disabled.Models)
+	var disabledNotice AdtyChannelWatcherNotice
+	require.NoError(t, database.Where("user_id = ? AND notify_type = ?", root.Id, formatNotifyType(channel.Id, common.ChannelStatusAutoDisabled)).First(&disabledNotice).Error)
+	assert.EqualValues(t, 1, noticeCount(root.Id, disabledNotice.EventId))
+	assert.EqualValues(t, 1, noticeCount(keep.Id, disabledNotice.EventId))
+	assert.EqualValues(t, 1, noticeCount(late.Id, disabledNotice.EventId))
+	assert.EqualValues(t, 0, noticeCount(never.Id, disabledNotice.EventId))
+	assert.Equal(t, AdtyWatcherOutboxFailed, outboxOf(root.Id, disabledNotice.EventId).Status)
+	assert.Equal(t, AdtyWatcherOutboxFailed, outboxOf(keep.Id, disabledNotice.EventId).Status)
+	assert.Equal(t, AdtyWatcherOutboxFailed, outboxOf(late.Id, disabledNotice.EventId).Status)
+	var neverOutbox int64
+	require.NoError(t, database.Model(&AdtyChannelWatcherOutbox{}).Where("user_id = ?", never.Id).Count(&neverOutbox).Error)
+	assert.EqualValues(t, 0, neverOutbox)
+	assert.Empty(t, received)
+	disabledItem := inboxItem(keep.Id, disabledNotice.EventId)
+	assert.Equal(t, "channel_watcher", disabledItem["source"])
+	assert.Equal(t, "model_group_anomaly", disabledItem["business"])
+	params := map[string]any{"Name": channel.Name, "Id": channel.Id, "Reason": "upstream failed"}
+	keepDisabled := disabledNoticeFor(t, database, keep.Id, disabledNotice.EventId)
+	assert.Equal(t, "zhCN", keepDisabled.Language)
+	assert.Equal(t, i18n.Translate("zhCN", i18n.MsgChannelNotifyDisabledSubject, params), keepDisabled.Title)
+
+	require.NoError(t, authz.SetUserPermissions(late.Id, authz.PermissionsMap{
+		authz.ResourceChannel: {authz.ActionRead: false},
+	}))
+	require.False(t, authz.Can(late.Id, common.RoleAdminUser, authz.ChannelRead))
+	mutex.Lock()
+	failWebhook = false
+	mutex.Unlock()
+	assert.Equal(t, 2, RetryFailedChannelWatcherNotices())
+	assert.Equal(t, []string{formatNotifyType(channel.Id, common.ChannelStatusAutoDisabled) + "|" + i18n.Translate("en", i18n.MsgChannelNotifyDisabledSubject, params)}, received["root"])
+	assert.Equal(t, []string{formatNotifyType(channel.Id, common.ChannelStatusAutoDisabled) + "|" + i18n.Translate("zhCN", i18n.MsgChannelNotifyDisabledSubject, params)}, received["keep"])
+	assert.Empty(t, received["late"])
+	assert.Empty(t, received["never"])
+	assert.Equal(t, AdtyWatcherOutboxRevoked, outboxOf(late.Id, disabledNotice.EventId).Status)
+	assert.EqualValues(t, 1, noticeCount(late.Id, disabledNotice.EventId))
+	assert.Equal(t, common.ChannelStatusAutoDisabled, reload().Status)
+
+	again := NotifyChannelWatchersWithEventID(disabledNotice.EventId, formatNotifyType(channel.Id, common.ChannelStatusAutoDisabled), func(lang string) (string, string) {
+		return i18n.Translate(lang, i18n.MsgChannelNotifyDisabledSubject, params), "duplicate"
+	})
+	assert.Equal(t, 0, again)
+	assert.Len(t, received["root"], 1)
+	assert.Len(t, received["keep"], 1)
+	assert.EqualValues(t, 1, noticeCount(root.Id, disabledNotice.EventId))
+
+	mutex.Lock()
+	failWebhook = true
+	mutex.Unlock()
+	EnableChannel(channel.Id, "", channel.Name)
+	enabled := reload()
+	assert.Equal(t, common.ChannelStatusEnabled, enabled.Status)
+	assert.Equal(t, "kept-model", enabled.Models)
+	var enabledNotice AdtyChannelWatcherNotice
+	require.NoError(t, database.Where("user_id = ? AND notify_type = ?", root.Id, formatNotifyType(channel.Id, common.ChannelStatusEnabled)).First(&enabledNotice).Error)
+	assert.NotEqual(t, disabledNotice.EventId, enabledNotice.EventId)
+	assert.Equal(t, AdtyWatcherOutboxFailed, outboxOf(root.Id, enabledNotice.EventId).Status)
+	assert.EqualValues(t, 1, noticeCount(keep.Id, enabledNotice.EventId))
+	assert.EqualValues(t, 0, noticeCount(late.Id, enabledNotice.EventId))
+	assert.EqualValues(t, 0, noticeCount(never.Id, enabledNotice.EventId))
+	assert.Equal(t, common.ChannelStatusEnabled, reload().Status)
+
+	mutex.Lock()
+	failWebhook = false
+	mutex.Unlock()
+	assert.Equal(t, 2, RetryFailedChannelWatcherNotices())
+	assert.Equal(t, common.ChannelStatusEnabled, reload().Status)
+	assert.Len(t, received["root"], 2)
+	assert.Len(t, received["keep"], 2)
+
+	eventID := UpstreamModelUpdateEventID(1_700_000_000, 2, 1)
+	mutex.Lock()
+	failWebhook = true
+	receivedBeforeUpstream := map[string]int{}
+	for name, items := range received {
+		receivedBeforeUpstream[name] = len(items)
+	}
+	mutex.Unlock()
+	sent := NotifyUpstreamModelUpdateWatchersWithEventID(eventID, func(lang string) (string, string) {
+		if lang == "zhCN" {
+			return "上游模型变化", "失败渠道 1"
+		}
+		return "upstream model change", "failed channels 1"
+	})
+	assert.Equal(t, 0, sent)
+	assert.Equal(t, common.ChannelStatusEnabled, reload().Status)
+	assert.Equal(t, "kept-model", reload().Models)
+	assert.EqualValues(t, 1, noticeCount(keep.Id, eventID))
+	assert.EqualValues(t, 0, noticeCount(root.Id, eventID))
+	assert.EqualValues(t, 0, noticeCount(late.Id, eventID))
+	assert.EqualValues(t, 0, noticeCount(never.Id, eventID))
+	upstreamNotice := disabledNoticeFor(t, database, keep.Id, eventID)
+	assert.Equal(t, "zhCN", upstreamNotice.Language)
+	assert.Equal(t, "上游模型变化", upstreamNotice.Title)
+	assert.Equal(t, "model_group_anomaly", upstreamNotice.Category)
+	assert.Equal(t, AdtyWatcherOutboxFailed, outboxOf(keep.Id, eventID).Status)
+	upstreamItem := inboxItem(keep.Id, eventID)
+	assert.Equal(t, "channel_watcher", upstreamItem["source"])
+	assert.Equal(t, eventID, upstreamItem["event_id"])
+	assert.Equal(t, dto.NotifyTypeChannelUpdate, upstreamItem["notify_type"])
+
+	mutex.Lock()
+	failWebhook = false
+	mutex.Unlock()
+	assert.Equal(t, 1, RetryFailedChannelWatcherNotices())
+	assert.Equal(t, receivedBeforeUpstream["keep"]+1, len(received["keep"]))
+	assert.Equal(t, receivedBeforeUpstream["root"], len(received["root"]))
+	assert.Equal(t, common.ChannelStatusEnabled, reload().Status)
+	assert.Equal(t, "kept-model", reload().Models)
+	dup := NotifyUpstreamModelUpdateWatchersWithEventID(eventID, func(lang string) (string, string) {
+		return "duplicate upstream", "duplicate body"
+	})
+	assert.Equal(t, 0, dup)
+	assert.Equal(t, receivedBeforeUpstream["keep"]+1, len(received["keep"]))
+	assert.EqualValues(t, 1, noticeCount(keep.Id, eventID))
+	assert.Equal(t, "上游模型变化", disabledNoticeFor(t, database, keep.Id, eventID).Title)
+}
+
+func disabledNoticeFor(t *testing.T, database *gorm.DB, userID int, eventID string) AdtyChannelWatcherNotice {
+	t.Helper()
+	var notice AdtyChannelWatcherNotice
+	require.NoError(t, database.Where("user_id = ? AND event_id = ?", userID, eventID).First(&notice).Error)
+	return notice
 }
