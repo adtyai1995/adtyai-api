@@ -2,9 +2,9 @@ package adty_setting
 
 import "github.com/QuantumNous/new-api/setting/config"
 
-// SEOSetting 是首页 8 个语言网址的标题、描述和分享图（任务 9.3），键名 adty_seo_setting.<json 标签>。
-// HomeTitle、HomeDescription 是「内容语言码（en、zh-CN、zh-TW、fr、ja、ko、ru、vi，约定 E）→ 文本」。
-// 某种语言没填就用 en 的；en 也没填时，标题用站名，描述不写。
+// SEOSetting 是两个正式首页的标题、描述和分享图，键名 adty_seo_setting.<json 标签>。
+// 正式页只有英文 / 和简体中文 /zh-cn。HomeTitle、HomeDescription 的键是 en 与 zh-CN。
+// 某种语言没填就用 en 的；en 也没填时，标题用站名，描述不写。旧语言别名不作为额外首页宣传。
 type SEOSetting struct {
 	HomeTitle       map[string]string `json:"home_title"`
 	HomeDescription map[string]string `json:"home_description"`

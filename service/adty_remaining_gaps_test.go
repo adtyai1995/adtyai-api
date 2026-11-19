@@ -684,7 +684,8 @@ func TestStaffBalanceWorkflowWritesSiteAndOfficialAudit(t *testing.T) {
 }
 
 func TestTodoStateMachinePersistsAndPreservesHistory(t *testing.T) {
-	db := prepareReferralDialectDB(t, "sqlite")
+	db := prepareReferralDB(t)
+	pgtest.RecordServerVersion(t, db)
 	require.NoError(t, model.MigrateAuditLogs())
 	user := referralUser(t, db, "todo-state-user")
 
@@ -699,7 +700,7 @@ func TestTodoStateMachinePersistsAndPreservesHistory(t *testing.T) {
 		Business:      "margin_anomaly",
 		Status:        "published",
 		Revision:      1,
-		ReadKey:       "severe-margin-todo-1",
+		ReadKey:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		PublishedAt:   100,
 		UpdatedAt:     100,
 		UpdatedBy:     1,
@@ -851,7 +852,8 @@ func TestSevereTodoIsProducedBeforeOwnedTransitionAndRejectsForeignKeys(t *testi
 }
 
 func TestBilingualNoticeTemplateManagementAndRendering(t *testing.T) {
-	db := prepareReferralDialectDB(t, "sqlite")
+	db := prepareReferralDB(t)
+	pgtest.RecordServerVersion(t, db)
 	require.NoError(t, model.MigrateAuditLogs())
 	root := referralUser(t, db, "tpl-root")
 	admin := referralUser(t, db, "tpl-admin")

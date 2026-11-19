@@ -500,7 +500,9 @@ func TestOwnerOrdersUseFrozenSiteScope(t *testing.T) {
 	assert.Equal(t, "order-before-move", listed.Items[0].TradeNo)
 	assert.Equal(t, f.site.Id, listed.Items[0].SiteID)
 	assert.False(t, listed.Items[0].Actions.Complete)
-	assert.False(t, listed.Items[0].Actions.Refund)
+	// ISS-R1-0081: refund here is the offline manual action, not a provider refund.
+	// An authorized site owner can start it on this site's paid customer order.
+	assert.True(t, listed.Items[0].Actions.Refund)
 	assert.False(t, listed.Items[0].Actions.Query)
 	for _, suffix := range []string{""} {
 		path := "/api/adty/site/orders" + suffix
