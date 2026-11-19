@@ -754,3 +754,4 @@
 | `web/src/features/security/components/dialogs/change-password-dialog.tsx`、`web/src/features/security/__tests__/account-security.test.tsx`、`web/src/features/profile/types.ts`、`web/src/i18n/locales/en.json`、`zh.json` | 已提交但须重登时清除认证并提示新密码重新登录；补充解绑及重登双语词条 | 页面遵循服务器提交结果，保留既有安全验证和登录跳转 | ISS-R1-0091、ISS-R1-0141 |
 | `model/pricing.go`、`model/adty_migrate.go`、`router/adty-router.go`、`web/src/features/pricing/types.ts`、`lib/dynamic-price.ts`、`components/model-details.tsx`、`components/dynamic-pricing-breakdown.tsx`、`web/src/i18n/locales/en.json`、`zh.json` | 动态金额、插件及示例传播模型展示系数；价格作用域版本迁移与授权历史读取接线，补充双语词条 | 展示与有效模型加价一致，表达式及计费不变；删除后的版本和历史不可丢失 | ISS-R1-0096、ISS-R1-0162、ISS-R1-0169 |
 | `model/adty_migrate.go` | 兑换码订单号和活动团队成员唯一约束碰撞时返回错误，保留全部历史行 | 禁止缺失数据库唯一保证却成功启动；重复迁移可安全拒绝 | ISS-R1-0113 |
+| `web/src/i18n/locales/en.json`、`web/src/i18n/locales/zh.json` | 追加独立团队员工注册、启停、删除和负责人退出的中英文词条 | 团队生命周期入口与服务端真实身份、撤权和保留历史契约一致 | ISS-R1-0118、ISS-R1-0129、ISS-R1-0130、ISS-R1-0161 |

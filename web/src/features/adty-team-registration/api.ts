@@ -125,3 +125,15 @@ export async function completeTeamRegistration(body: {
   )
   return (requireServerSuccess(res.data).data ?? {}) as TeamRegistrationCreated
 }
+
+export async function registerTeamEmployee(body: {
+  code: string
+  username: string
+  password: string
+}): Promise<void> {
+  const res = await api.post<ApiResponse<{ user_id: number }>>(
+    '/api/adty/team-employees/register',
+    body
+  )
+  requireServerSuccess(res.data)
+}

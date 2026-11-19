@@ -26,20 +26,30 @@ import { TeamRegistrationLinksPanel } from './components/team-registration-links
 
 export { TeamRegistrationLinksPanel }
 
-export function TeamRegistrationCompletePage(props: { code: string }) {
+export function TeamRegistrationCompletePage(props: {
+  code: string
+  employee?: boolean
+}) {
   const { t } = useTranslation()
   return (
     <AuthLayout>
       <div className='w-full space-y-8'>
         <div className='space-y-2'>
           <h2 className='text-center text-2xl font-semibold tracking-tight sm:text-left'>
-            {t('Complete team registration')}
+            {props.employee
+              ? t('Register employee')
+              : t('Complete team registration')}
           </h2>
-          <p className='text-muted-foreground text-left text-sm sm:text-base'>
-            {t('Use this link to set a username, password, and team name.')}
-          </p>
+          {!props.employee && (
+            <p className='text-muted-foreground text-left text-sm sm:text-base'>
+              {t('Use this link to set a username, password, and team name.')}
+            </p>
+          )}
         </div>
-        <TeamRegistrationCompleteForm code={props.code} />
+        <TeamRegistrationCompleteForm
+          code={props.code}
+          employee={props.employee}
+        />
       </div>
     </AuthLayout>
   )

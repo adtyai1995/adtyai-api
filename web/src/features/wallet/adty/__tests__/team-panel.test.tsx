@@ -55,8 +55,12 @@ describe('TeamPanel', () => {
     render(<TeamPanel />, { wrapper })
     expect(await screen.findByText('Team')).toBeInTheDocument()
     expect(screen.getByText('Loading...')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Create team' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Join team' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Create team' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Join team' })
+    ).not.toBeInTheDocument()
   })
 
   it('shows an error state when the mine query fails and does not offer create or join', async () => {
@@ -68,11 +72,15 @@ describe('TeamPanel', () => {
       await screen.findByText('Oops! Something went wrong')
     ).toBeInTheDocument()
     expect(screen.getByText('Team')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Create team' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Join team' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Create team' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Join team' })
+    ).not.toBeInTheDocument()
   })
 
-  it('retries the mine query until create and join appear when the user has no team', async () => {
+  it('retries the mine query without exposing Root-only team creation', async () => {
     let failed = true
     mockMineTeamGet(() => {
       if (failed) throw new Error('offline')
@@ -87,8 +95,12 @@ describe('TeamPanel', () => {
         screen.queryByRole('button', { name: 'Retry' })
       ).not.toBeInTheDocument()
     )
-    expect(await screen.findByRole('button', { name: 'Create team' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Join team' })).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Create team' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Join team' })
+    ).toBeInTheDocument()
   })
 
   it('shows team details instead of create or join when the user has a team', async () => {
@@ -111,8 +123,12 @@ describe('TeamPanel', () => {
     expect(await screen.findByText('Alpha')).toBeInTheDocument()
     expect(screen.getByText('Post-discount payment ratio')).toBeInTheDocument()
     expect(screen.queryByText('Discount')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Create team' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Join team' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Create team' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Join team' })
+    ).not.toBeInTheDocument()
   })
 
   it('lets the leader top up through the chosen Epay channel button', async () => {
@@ -192,18 +208,122 @@ describe('TeamPanel', () => {
     )
   })
 
-  it('labels the create-team price as a post-discount payment ratio and defaults to paying the ordinary price', async () => {
+  it('does not let an ordinary account choose its team protocol price', async () => {
     mockMineTeamGet(() => ({
       data: { success: true, data: { team: null } },
     }))
     render(<TeamPanel />, { wrapper })
-    const field = await screen.findByLabelText('Post-discount payment ratio')
-    expect(field).toHaveValue('1')
+    await screen.findByRole('button', { name: 'Join team' })
     expect(
-      screen.getByText(
-        '0.8 means pay 80% of the ordinary price; 1 means pay the ordinary (full) price.'
-      )
-    ).toBeInTheDocument()
+      screen.queryByLabelText('Post-discount payment ratio')
+    ).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Discount')).not.toBeInTheDocument()
+  })
+
+  it('lets a leader create an employee and manage only dedicated employee accounts', async () => {
+    mockMineTeamGet(() => ({
+      data: {
+        success: true,
+        data: {
+          team: {
+            team_id: 3,
+            name: 'Alpha',
+            role: 'leader',
+            discount: '1',
+            shared_quota: 0,
+            status: 'active',
+            members: [
+              {
+                user_id: 11,
+                username: 'employee',
+                role: 'member',
+                status: 'disabled',
+                independent_employee: true,
+              },
+              {
+                user_id: 12,
+                username: 'legacy',
+                role: 'member',
+                status: 'left',
+              },
+              {
+                user_id: 13,
+                username: 'deleted',
+                role: 'member',
+                status: 'deleted',
+                independent_employee: true,
+              },
+            ],
+          },
+        },
+      },
+    }))
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(<TeamPanel />, { wrapper })
+    await user.type(
+      await screen.findByLabelText('Employee username'),
+      'new-employee'
+    )
+    await user.type(
+      screen.getByLabelText('Employee password'),
+      'Employee-password-2026'
+    )
+    await user.click(screen.getByRole('button', { name: 'Create employee' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/adty/teams/3/employees', {
+        username: 'new-employee',
+        password: 'Employee-password-2026',
+      })
+    )
+    expect(screen.getByLabelText('Employee password')).toHaveValue('')
+    await user.click(screen.getByRole('button', { name: 'Enable employee' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/adty/teams/3/members/11/enable')
+    )
+    expect(
+      screen.getAllByRole('button', { name: 'Delete employee' })
+    ).toHaveLength(1)
+    await user.click(screen.getByRole('button', { name: 'Delete employee' }))
+    expect(post).not.toHaveBeenCalledWith('/api/adty/teams/3/members/11/delete')
+    await user.click(screen.getByRole('button', { name: 'Confirm delete' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/adty/teams/3/members/11/delete')
+    )
+  })
+
+  it('offers a copyable employee registration link after issuing an invite', async () => {
+    mockMineTeamGet(() => ({
+      data: {
+        success: true,
+        data: {
+          team: {
+            team_id: 3,
+            name: 'Alpha',
+            role: 'leader',
+            discount: '1',
+            shared_quota: 0,
+            status: 'active',
+          },
+        },
+      },
+    }))
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: { success: true, data: { code: 'a'.repeat(32) } },
+    })
+    const user = userEvent.setup()
+    render(<TeamPanel />, { wrapper })
+    await user.click(
+      await screen.findByRole('button', { name: 'Create invite' })
+    )
+    const link = await screen.findByLabelText('Employee registration link')
+    expect(link).toHaveValue(
+      `${window.location.origin}/team-register/${'a'.repeat(32)}?kind=employee`
+    )
+    expect(
+      screen.getByRole('button', { name: 'Copy employee registration link' })
+    ).toBeEnabled()
   })
 })

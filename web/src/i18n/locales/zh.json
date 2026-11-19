@@ -1,5 +1,14 @@
 {
   "translation": {
+    "Employee username": "员工用户名",
+    "Employee password": "员工密码",
+    "Create employee": "创建员工",
+    "Enable employee": "启用员工",
+    "Delete employee": "删除员工",
+    "Register employee": "注册员工",
+    "Employee registration link": "员工注册链接",
+    "Copy employee registration link": "复制员工注册链接",
+    "Your employee account has been created. You can sign in with this username.": "员工账号已创建，可使用此用户名登录。",
     "Model price multiplier": "模型价格系数",
     "Price change history": "价格变更历史",
     "Effective immediately": "立即生效",

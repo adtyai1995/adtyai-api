@@ -17,9 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
+import { Link } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link } from '@tanstack/react-router'
 
 import { PasswordInput } from '@/components/password-input'
 import { Button } from '@/components/ui/button'
@@ -30,6 +30,7 @@ import { getServerErrorMessage } from '@/lib/server-error-message'
 
 import {
   completeTeamRegistration,
+  registerTeamEmployee,
   TEAM_REGISTRATION_CODE_MIN_LENGTH,
 } from '../api'
 
@@ -43,7 +44,10 @@ function createdTeamName(data: unknown): string {
   return typeof name === 'string' ? name : ''
 }
 
-export function TeamRegistrationCompleteForm(props: { code: string }) {
+export function TeamRegistrationCompleteForm(props: {
+  code: string
+  employee?: boolean
+}) {
   const { t } = useTranslation()
   const code = props.code.trim()
   const invalidLink = code.length < TEAM_REGISTRATION_CODE_MIN_LENGTH
@@ -74,7 +78,13 @@ export function TeamRegistrationCompleteForm(props: { code: string }) {
     return (
       <div className='flex flex-col gap-4'>
         <p className='text-sm'>
-          {t('Your team has been created. You can sign in with this username.')}
+          {props.employee
+            ? t(
+                'Your employee account has been created. You can sign in with this username.'
+              )
+            : t(
+                'Your team has been created. You can sign in with this username.'
+              )}
         </p>
         {createdName !== '' && (
           <p className='text-sm'>
@@ -92,14 +102,16 @@ export function TeamRegistrationCompleteForm(props: { code: string }) {
   }
 
   const submit = async () => {
-    const parsedUsername = usernameSchema('Please enter your username').safeParse(
-      username
-    )
+    const parsedUsername = usernameSchema(
+      'Please enter your username'
+    ).safeParse(username)
     if (!parsedUsername.success) {
-      setError(t(parsedUsername.error.issues[0]?.message || 'Invalid parameters'))
+      setError(
+        t(parsedUsername.error.issues[0]?.message || 'Invalid parameters')
+      )
       return
     }
-    if (name.trim() === '') {
+    if (!props.employee && name.trim() === '') {
       setError(t('Please enter the team name'))
       return
     }
@@ -118,6 +130,17 @@ export function TeamRegistrationCompleteForm(props: { code: string }) {
     setPending(true)
     setError('')
     try {
+      if (props.employee) {
+        await registerTeamEmployee({
+          code,
+          username: parsedUsername.data,
+          password,
+        })
+        setPassword('')
+        setConfirmPassword('')
+        setCreatedName('')
+        return
+      }
       const created = await completeTeamRegistration({
         code,
         username: parsedUsername.data,
@@ -170,21 +193,23 @@ export function TeamRegistrationCompleteForm(props: { code: string }) {
           onChange={(event) => setConfirmPassword(event.target.value)}
         />
       </div>
-      <div className='flex flex-col gap-1'>
-        <Label htmlFor='team-registration-team-name'>{t('Team name')}</Label>
-        <Input
-          id='team-registration-team-name'
-          value={name}
-          maxLength={64}
-          onChange={(event) => setName(event.target.value)}
-        />
-      </div>
+      {!props.employee && (
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor='team-registration-team-name'>{t('Team name')}</Label>
+          <Input
+            id='team-registration-team-name'
+            value={name}
+            maxLength={64}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </div>
+      )}
       {error && <p className='text-destructive text-sm'>{error}</p>}
       {username !== '' && usernameError && (
         <p className='text-muted-foreground text-sm'>{t(usernameError)}</p>
       )}
       <Button type='submit' disabled={pending}>
-        {t('Register team')}
+        {props.employee ? t('Register employee') : t('Register team')}
       </Button>
     </form>
   )

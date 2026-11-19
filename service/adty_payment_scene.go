@@ -415,6 +415,9 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		if user.SiteId != ext.SiteId {
 			return common.NewMessage("This payment method is not available")
 		}
+		if err := model.ValidateAdtyTeamTopupCreateTx(tx, ext); err != nil {
+			return err
+		}
 		// Epay capability is checked on this transaction's locked rows. Its
 		// registry probe uses the global pool and must not run inside it.
 		if ext.Provider != model.PaymentProviderAdtyEpay {

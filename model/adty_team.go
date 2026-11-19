@@ -1,17 +1,23 @@
 package model
 
 import (
+	"errors"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"strings"
 )
 
+var adtyTeamTopupPrefixes = []string{"TTEP", "TTU", "TTEAM"}
+
 const (
-	AdtyTeamStatusActive = "active"
-	AdtyTeamStatusClosed = "closed"
-	AdtyTeamRoleLeader   = "leader"
-	AdtyTeamRoleMember   = "member"
-	AdtyTeamMemberActive = "active"
-	AdtyTeamMemberLeft   = "left"
+	AdtyTeamStatusActive   = "active"
+	AdtyTeamStatusClosed   = "closed"
+	AdtyTeamRoleLeader     = "leader"
+	AdtyTeamRoleMember     = "member"
+	AdtyTeamMemberActive   = "active"
+	AdtyTeamMemberLeft     = "left"
+	AdtyTeamMemberDisabled = "disabled"
+	AdtyTeamMemberDeleted  = "deleted"
 )
 
 // AdtyTeam is one shared-balance team on the main site or a subsite.
@@ -35,12 +41,15 @@ func (AdtyTeam) TableName() string { return "adty_teams" }
 // ux_adty_team_members_one_active_user additionally guarantees at most one active
 // row per user across teams. Left history is outside that index.
 type AdtyTeamMember struct {
-	Id        int64  `json:"id"`
-	TeamId    int64  `json:"team_id" gorm:"uniqueIndex:idx_adty_team_member,priority:1"`
-	UserId    int    `json:"user_id" gorm:"uniqueIndex:idx_adty_team_member,priority:2;index"`
-	Role      string `json:"role" gorm:"type:varchar(16);not null"`
-	Status    string `json:"status" gorm:"type:varchar(16);index;not null"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
+	Id                  int64  `json:"id"`
+	TeamId              int64  `json:"team_id" gorm:"uniqueIndex:idx_adty_team_member,priority:1"`
+	UserId              int    `json:"user_id" gorm:"uniqueIndex:idx_adty_team_member,priority:2;index"`
+	Role                string `json:"role" gorm:"type:varchar(16);not null"`
+	Status              string `json:"status" gorm:"type:varchar(16);index;not null"`
+	IndependentEmployee bool   `json:"independent_employee" gorm:"not null;default:false"`
+	DisabledAuthVersion int64  `json:"-" gorm:"not null;default:0"`
+	DeletedAt           int64  `json:"deleted_at,omitempty" gorm:"not null;default:0"`
+	CreatedAt           int64  `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyTeamMember) TableName() string { return "adty_team_members" }
@@ -267,6 +276,52 @@ func ValidateAdtyTeamTokenTx(tx *gorm.DB, token *Token) error {
 	}
 	if count != 1 {
 		return ErrTokenInvalid
+	}
+	return nil
+}
+
+// AdtyTeamTopupSiblingTradeNos returns all provider-prefix variants sharing the
+// same team+key digest so one endpoint idempotency key cannot create separate
+// orders across Epay, BEpusdt, and direct team top-up paths (ISS-R1-0161).
+func AdtyTeamTopupSiblingTradeNos(tradeNo string) []string {
+	tradeNo = strings.TrimSpace(tradeNo)
+	for _, prefix := range adtyTeamTopupPrefixes {
+		if strings.HasPrefix(tradeNo, prefix) {
+			suffix := strings.TrimPrefix(tradeNo, prefix)
+			if len(suffix) == 20 {
+				return []string{"TTEP" + suffix, "TTU" + suffix, "TTEAM" + suffix}
+			}
+		}
+	}
+	if tradeNo == "" {
+		return nil
+	}
+	return []string{tradeNo}
+}
+
+// ValidateAdtyTeamTopupCreateTx serializes new team checkout requests. Historical
+// orders retain their original financial identity even after the team closes.
+func ValidateAdtyTeamTopupCreateTx(tx *gorm.DB, ext *AdtyTopupOrder) error {
+	if ext == nil || ext.TeamId <= 0 || tx == nil {
+		return nil
+	}
+	if tx.Migrator().HasTable(&AdtyTeam{}) {
+		var team AdtyTeam
+		if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
+			return err
+		}
+		if team.Status != AdtyTeamStatusActive || team.LeaderUserId != ext.UserId {
+			return errors.New("no permission to perform this action")
+		}
+	}
+	if siblings := AdtyTeamTopupSiblingTradeNos(ext.TradeNo); len(siblings) > 0 {
+		var count int64
+		if err := tx.Model(&AdtyTopupOrder{}).Where("trade_no IN ?", siblings).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return ErrAdtyIdempotencyConflict
+		}
 	}
 	return nil
 }

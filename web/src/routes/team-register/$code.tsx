@@ -22,10 +22,19 @@ import { createFileRoute } from '@tanstack/react-router'
 import { TeamRegistrationCompletePage } from '@/features/adty-team-registration'
 
 export const Route = createFileRoute('/team-register/$code')({
+  validateSearch: (search: Record<string, unknown>) => ({
+    kind: search.kind === 'employee' ? 'employee' : undefined,
+  }),
   component: TeamRegistrationCompleteRoute,
 })
 
 function TeamRegistrationCompleteRoute() {
   const { code } = Route.useParams()
-  return <TeamRegistrationCompletePage code={code} />
+  const search = Route.useSearch()
+  return (
+    <TeamRegistrationCompletePage
+      code={code}
+      employee={search.kind === 'employee'}
+    />
+  )
 }

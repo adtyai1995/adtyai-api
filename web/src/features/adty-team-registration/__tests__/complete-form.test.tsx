@@ -27,6 +27,8 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { api } from '@/lib/api'
+
 import { TeamRegistrationCompleteForm } from '../components/team-registration-complete-form'
 
 const teamApi = vi.hoisted(() => ({
@@ -41,10 +43,12 @@ vi.mock('../api', async (importOriginal) => {
   }
 })
 
-async function renderForm(code: string) {
+async function renderForm(code: string, employee = false) {
   const router = createRouter({
     routeTree: createRootRoute({
-      component: () => <TeamRegistrationCompleteForm code={code} />,
+      component: () => (
+        <TeamRegistrationCompleteForm code={code} employee={employee} />
+      ),
     }),
     history: createMemoryHistory({ initialEntries: ['/'] }),
   })
@@ -64,10 +68,40 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  vi.clearAllMocks()
+  vi.restoreAllMocks()
 })
 
 describe('TeamRegistrationCompleteForm', () => {
+  it('registers a dedicated employee without a team name or an existing session', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        data: { user_id: 21, independent_employee: true },
+      },
+    })
+    const user = userEvent.setup()
+    await renderForm('c'.repeat(32), true)
+    expect(screen.queryByLabelText('Team name')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('Username'), 'employee21')
+    await user.type(screen.getByLabelText('Password'), 'Employee-password-2026')
+    await user.type(
+      screen.getByLabelText('Confirm password'),
+      'Employee-password-2026'
+    )
+    await user.click(screen.getByRole('button', { name: 'Register employee' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/adty/team-employees/register', {
+        code: 'c'.repeat(32),
+        username: 'employee21',
+        password: 'Employee-password-2026',
+      })
+    )
+    expect(
+      await screen.findByRole('link', { name: 'Sign in' })
+    ).toHaveAttribute('href', '/sign-in')
+    expect(teamApi.completeTeamRegistration).not.toHaveBeenCalled()
+  })
+
   it('completes registration through a valid link', async () => {
     const user = userEvent.setup()
     teamApi.completeTeamRegistration.mockResolvedValue({

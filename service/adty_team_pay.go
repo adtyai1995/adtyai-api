@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"strconv"
 	"strings"
@@ -25,15 +26,21 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	if len(key) > adtyTeamTopupKeyMaxLen {
 		return nil, ErrAdtyTeamIdempotencyKey
 	}
+	unlock := lockAdtyTeamTopupKey(teamID, key)
+	defer unlock()
 	if IsAdtyUSDTMethod(method) {
+		if channelID > 0 {
+			return nil, ErrAdtyTeamInvalid
+		}
 		return startAdtyTeamBEpusdtTopup(leaderID, teamID, amountUSD, method, key)
 	}
 	if !IsAdtyEpayMethod(method) {
 		return nil, ErrAdtyTeamInvalid
 	}
 	tradeNo := adtyTeamTopupTradeNo("TTEP", teamID, key)
-	existing, conflict, err := adtyClaimTeamTopupReplay(tradeNo, adtyTeamTopupLegacyTradeNo("TTEP", key), func(o *model.AdtyTopupOrder) bool {
-		return o.TeamId == teamID && o.UserId == leaderID && o.FaceUSD.Equal(amountUSD) && o.Method == method &&
+	existing, conflict, err := adtyClaimTeamTopupReplay(tradeNo, adtyTeamTopupLegacyTradeNo("TTEP", key), teamID, func(o *model.AdtyTopupOrder) bool {
+		return o.TeamId == teamID && o.UserId == leaderID && o.FaceUSD.Equal(amountUSD) &&
+			o.Provider == model.PaymentProviderAdtyEpay && o.Method == method &&
 			(channelID <= 0 || o.ChannelId == channelID)
 	})
 	if err != nil {
@@ -55,6 +62,9 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	var leader model.User
 	if err := model.DB.First(&leader, leaderID).Error; err != nil {
 		return nil, err
+	}
+	if leader.SiteId != team.SiteId {
+		return nil, ErrAdtyTeamForbidden
 	}
 	quote, err := adtyTeamQuote(leader.Group, amountUSD.IntPart(), method)
 	if err != nil {
@@ -82,16 +92,17 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 		CreateTime: time.Now().Unix(), Status: common.TopUpStatusPending,
 	}
 	ext := &model.AdtyTopupOrder{
-		TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, Provider: model.PaymentProviderAdtyEpay,
-		Method: method, FaceUSD: quote.FaceUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
+		TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, SiteId: team.SiteId,
+		Provider: model.PaymentProviderAdtyEpay, Method: method,
+		FaceUSD: quote.FaceUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
 		CreditQuota: quote.CreditQuota, PayAmount: quote.PayAmount,
 		PayCurrency: quote.PayCurrency, PriceSnapshot: quote.PriceCNYPerUSD, TopupGroupRatio: quote.TopupGroupRatio,
 		ChannelId: channel.Id, MethodLabel: channelMethod.DisplayName,
 	}
-	if site := AdtyBillingSiteForUser(leaderID); site != nil {
-		ext.SiteId = site.Id
-	}
 	if err := CreateAdtyPaymentOrder(topUp, ext, "wallet_topup", channel); err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			return nil, ErrAdtyTeamInvalid
+		}
 		return nil, err
 	}
 	result, err := CreateAdtyEpayOrder(context.Background(), channel, channelMethod, AdtyEpayCreateRequest{
@@ -115,12 +126,10 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 }
 
 func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Decimal, method, key string) (*model.AdtyTopupOrder, error) {
-	if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(method) {
-		return nil, common.NewMessage("This payment method is not available")
-	}
 	tradeNo := adtyTeamTopupTradeNo("TTU", teamID, key)
-	existing, conflict, err := adtyClaimTeamTopupReplay(tradeNo, adtyTeamTopupLegacyTradeNo("TTU", key), func(o *model.AdtyTopupOrder) bool {
-		return o.TeamId == teamID && o.UserId == leaderID && o.FaceUSD.Equal(amountUSD) && o.Method == method
+	existing, conflict, err := adtyClaimTeamTopupReplay(tradeNo, adtyTeamTopupLegacyTradeNo("TTU", key), teamID, func(o *model.AdtyTopupOrder) bool {
+		return o.TeamId == teamID && o.UserId == leaderID && o.FaceUSD.Equal(amountUSD) &&
+			o.Provider == model.PaymentProviderAdtyBEpusdt && o.Method == method
 	})
 	if err != nil {
 		return nil, err
@@ -130,6 +139,9 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 	}
 	if existing != nil {
 		return existing, nil
+	}
+	if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(method) {
+		return nil, common.NewMessage("This payment method is not available")
 	}
 	var team model.AdtyTeam
 	if err := model.DB.First(&team, teamID).Error; err != nil {
@@ -141,6 +153,9 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 	var leader model.User
 	if err := model.DB.First(&leader, leaderID).Error; err != nil {
 		return nil, err
+	}
+	if leader.SiteId != team.SiteId {
+		return nil, ErrAdtyTeamForbidden
 	}
 	quote, err := adtyTeamQuote(leader.Group, amountUSD.IntPart(), method)
 	if err != nil {
@@ -156,15 +171,16 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 		CreateTime: time.Now().Unix(), Status: common.TopUpStatusPending,
 	}
 	ext := &model.AdtyTopupOrder{
-		TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, Provider: model.PaymentProviderAdtyBEpusdt,
-		Method: method, FaceUSD: quote.FaceUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
+		TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, SiteId: team.SiteId,
+		Provider: model.PaymentProviderAdtyBEpusdt, Method: method,
+		FaceUSD: quote.FaceUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
 		CreditQuota: quote.CreditQuota, PayAmount: quote.PayAmount,
 		PayCurrency: quote.PayCurrency, PriceSnapshot: quote.PriceCNYPerUSD, TopupGroupRatio: quote.TopupGroupRatio,
 	}
-	if site := AdtyBillingSiteForUser(leaderID); site != nil {
-		ext.SiteId = site.Id
-	}
 	if err := CreateAdtyPaymentOrder(topUp, ext, "wallet_topup"); err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			return nil, ErrAdtyTeamInvalid
+		}
 		return nil, err
 	}
 	minutes := 15

@@ -79,7 +79,10 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/teams/:id/topups", "wallet:write"},
 		{http.MethodGet, "/api/adty/teams/:id/topups", "wallet:read"},
 		{http.MethodPost, "/api/adty/teams/:id/leave", "wallet:write"},
+		{http.MethodPost, "/api/adty/teams/:id/employees", "wallet:write"},
+		{http.MethodPost, "/api/adty/teams/:id/members/:userId/enable", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/members/:userId/disable", "wallet:write"},
+		{http.MethodPost, "/api/adty/teams/:id/members/:userId/delete", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/keys", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/keys/:tokenId/revoke", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/transfer", "wallet:write"},
@@ -137,7 +140,10 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/teams/:id/topups", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:pay-team"), controller.PostAdtyTeamTopup)
 	apiRouter.GET("/adty/teams/:id/topups", middleware.UserAuth(), controller.GetAdtyTeamTopups)
 	apiRouter.POST("/adty/teams/:id/leave", middleware.UserAuth(), controller.PostAdtyTeamLeave)
+	apiRouter.POST("/adty/teams/:id/employees", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:team-employee"), middleware.AnonymousRequestBodyLimit(), controller.PostAdtyTeamEmployee)
+	apiRouter.POST("/adty/teams/:id/members/:userId/enable", middleware.UserAuth(), controller.PostAdtyTeamEnableMember)
 	apiRouter.POST("/adty/teams/:id/members/:userId/disable", middleware.UserAuth(), controller.PostAdtyTeamDisableMember)
+	apiRouter.POST("/adty/teams/:id/members/:userId/delete", middleware.UserAuth(), controller.PostAdtyTeamDeleteMember)
 	apiRouter.POST("/adty/teams/:id/keys", middleware.UserAuth(), controller.PostAdtyTeamBindKey)
 	apiRouter.POST("/adty/teams/:id/keys/:tokenId/revoke", middleware.UserAuth(), controller.PostAdtyTeamRevokeKey)
 	apiRouter.POST("/adty/teams/:id/transfer", middleware.UserAuth(), controller.PostAdtyTeamTransfer)
@@ -294,6 +300,7 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.GET("/adty/teams/:id/invites", middleware.UserAuth(), controller.GetAdtyTeamInvites)
 	apiRouter.POST("/adty/teams/:id/invites/:inviteId/revoke", middleware.UserAuth(), controller.PostAdtyTeamRevokeInvite)
 	apiRouter.POST("/adty/teams/accept", middleware.UserAuth(), controller.PostAdtyTeamAccept)
+	apiRouter.POST("/adty/team-employees/register", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.AnonymousRequestBodyLimit(), controller.PostAdtyTeamEmployeeRegistration)
 	apiRouter.POST("/adty/team-registrations/complete", middleware.CriticalRateLimit(), controller.PostAdtyTeamRegistrationComplete)
 }
 

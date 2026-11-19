@@ -1,5 +1,14 @@
 {
   "translation": {
+    "Employee username": "Employee username",
+    "Employee password": "Employee password",
+    "Create employee": "Create employee",
+    "Enable employee": "Enable employee",
+    "Delete employee": "Delete employee",
+    "Register employee": "Register employee",
+    "Employee registration link": "Employee registration link",
+    "Copy employee registration link": "Copy employee registration link",
+    "Your employee account has been created. You can sign in with this username.": "Your employee account has been created. You can sign in with this username.",
     "Model price multiplier": "Model price multiplier",
     "Price change history": "Price change history",
     "Effective immediately": "Effective immediately",

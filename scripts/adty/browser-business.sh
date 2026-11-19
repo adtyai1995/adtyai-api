@@ -25,9 +25,10 @@ case "$adty_browser_scenario" in
     ADTY_BROWSER_SCENARIO=site-staff bash "$0"
     ADTY_BROWSER_SCENARIO=payment-scenes bash "$0"
     ADTY_BROWSER_SCENARIO=site-ownership bash "$0"
+    ADTY_BROWSER_SCENARIO=team-lifecycle bash "$0"
     exit 0
     ;;
-  deployment | wallet | site-status | password-reset | user-sites | finance-actions | site-brand | notification-read | notification-publish | unified-orders | order-trace | withdraw-networks | site-staff | payment-scenes | site-ownership) ;;
+  deployment | wallet | site-status | password-reset | user-sites | finance-actions | site-brand | notification-read | notification-publish | unified-orders | order-trace | withdraw-networks | site-staff | payment-scenes | site-ownership | team-lifecycle) ;;
   *) echo 'browser-business: unknown scenario' >&2; exit 2 ;;
 esac
 
@@ -38,6 +39,12 @@ if [ "$adty_browser_scenario" = site-staff ] && [ -z "${ADTY_BROWSER_STAFF_WIDTH
     ADTY_BROWSER_STAFF_CASE="$adty_staff_case" ADTY_BROWSER_STAFF_WIDTH=1440 bash "$0"
     ADTY_BROWSER_STAFF_CASE="$adty_staff_case" ADTY_BROWSER_STAFF_WIDTH=390 bash "$0"
   done
+  exit 0
+fi
+
+if [ "$adty_browser_scenario" = team-lifecycle ] && [ -z "${ADTY_BROWSER_TEAM_WIDTH:-}" ]; then
+  ADTY_BROWSER_TEAM_WIDTH=1440 bash "$0"
+  ADTY_BROWSER_TEAM_WIDTH=390 bash "$0"
   exit 0
 fi
 

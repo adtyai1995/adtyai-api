@@ -95,8 +95,7 @@ func PostAdtyTeamBindKey(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	_ = id
-	if err := service.BindAdtyTeamKey(c.GetInt("id"), body.TokenId); err != nil {
+	if err := service.BindAdtyTeamKey(c.GetInt("id"), body.TokenId, id); err != nil {
 		common.ApiError(c, err)
 		return
 	}
