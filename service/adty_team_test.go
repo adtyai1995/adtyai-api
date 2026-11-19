@@ -409,7 +409,17 @@ func TestAdtyTeamInviteRevokeTTLAndAuthorization(t *testing.T) {
 
 	requireTeamInviteAudit(t, defaultIssued.Id, "adty.team.invite.create", leader.Id, defaultIssued.Code)
 	requireTeamInviteAudit(t, toRevoke.Id, "adty.team.invite.revoke", leader.Id, toRevoke.Code)
-	requireTeamInviteAudit(t, used.Id, "adty.team.invite.accept", member.Id, used.Code)
+	var acceptLog model.AuditLog
+	require.NoError(t, model.DB.Where("object_type = ? AND object_id = ? AND action = ?", "team_invite", strconv.FormatInt(used.Id, 10), "adty.team.invite.accept").First(&acceptLog).Error)
+	assert.Equal(t, model.AuditResultSuccess, acceptLog.Result)
+	assert.True(t, acceptLog.Success)
+	assert.Equal(t, registered.UserId, acceptLog.UserId, "only the new employee consumes the invite")
+	assert.NotEqual(t, member.Id, acceptLog.UserId)
+	assert.Contains(t, acceptLog.AfterValue, `"used_by":`+strconv.Itoa(registered.UserId))
+	assert.Contains(t, acceptLog.AfterValue, `"independent_employee":true`)
+	assert.NotContains(t, acceptLog.AfterValue, used.Code)
+	assert.NotContains(t, acceptLog.BeforeValue, used.Code)
+	assert.NotContains(t, acceptLog.Content, used.Code)
 }
 
 func requireTeamInviteAudit(t *testing.T, inviteId int64, action string, actorId int, secret string) {
