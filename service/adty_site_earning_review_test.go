@@ -27,7 +27,16 @@ func TestLegacyTaskEarningReviewClosesRefundAfterCustomerTransfer(t *testing.T) 
 				if !released {
 					require.NoError(t, db.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", customer.Id).Update("risk_flag", "self_use").Error)
 				}
-				AdtySiteEarningHook(site.Id, customer.Id, perUnit("125"), 1.25, .8, model.AdtySiteEarningUsage)
+				// Recreate the historical charge's original disposition, rather
+				// than using today's metadata-only policy to build an old task.
+				kind := model.AdtySiteEarningUsage
+				if !released {
+					kind = model.AdtySiteEarningSkipped
+				}
+				require.NoError(t, upsertAdtySiteEarningTx(db, time.Now().Format("2006-01-02"), adtySiteEarningEntry{
+					SiteId: site.Id, SiteOwnerUserId: owner.Id, UserId: customer.Id, Kind: kind,
+					Quota: perUnit("125"), Revenue: usd("125"), Platform: usd("100"), Earning: usd("25"),
+				}))
 				// Transfer clears current risk. It cannot establish how an old site's
 				// particular charge was classified, even with unrelated positive earnings.
 				_, nextSite := openActiveSite(t, db, "legacy-root-next-site")
@@ -89,7 +98,10 @@ func TestLegacyPositiveAdjustmentUsesOneRootReviewThroughRefund(t *testing.T) {
 	customer := siteCustomer(t, db, site, "legacy-positive-customer")
 	require.NoError(t, db.Model(customer).Update("quota", perUnit("275")).Error)
 	require.NoError(t, db.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", customer.Id).Update("risk_flag", "self_use").Error)
-	AdtySiteEarningHook(site.Id, customer.Id, perUnit("125"), 1.25, .8, model.AdtySiteEarningUsage)
+	require.NoError(t, upsertAdtySiteEarningTx(db, time.Now().Format("2006-01-02"), adtySiteEarningEntry{
+		SiteId: site.Id, SiteOwnerUserId: owner.Id, UserId: customer.Id, Kind: model.AdtySiteEarningSkipped,
+		Quota: perUnit("125"), Revenue: usd("125"), Platform: usd("100"), Earning: usd("25"),
+	}))
 	task := siteTask(t, db, customer, site, int(perUnit("125")), 1.25, .8)
 	require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, false))
 	RecalculateTaskQuota(context.Background(), task, int(perUnit("150")), common.NewMessage("extra usage"))

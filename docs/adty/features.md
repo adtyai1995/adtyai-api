@@ -297,7 +297,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - **d（供货倍率）**：管理员设，正数即可，**可以大于 1**，不再要求 ≤ 1（`service/adty_site_markup.go:26,115-137`）。取值：单站 d → 等级/业绩档位的 d → 全局 `cost_factor`；结果低于 `min_cost_factor` 时抬到下限。管理员用 `PUT /api/adty/admin/sites/:id` 改单站 d。
 - **k（站长加价倍率）**：站长设，必须是正数且不超过上限。上限取「单站上限、等级上限、全局 `max_markup`」三者中最小的；实际扣费时还会按当前上限再截一次（`service/adty_site_markup.go:394-431`）。
 - **按模型加价**：同一张定价表 `adty_site_prices` 可以有模型级行。解析顺序：客户+分组 → 客户 → 全站+分组 → 全站 → 1；带模型名的行优先于同层级不带模型的行（`service/adty_site.go:973-1018`）。价格页按模型有效 k 相对同分组通用 k 的比例缩放该模型标价（`service/adty_site_markup.go:930-979`）。
-- **改价**：第一次设置或降价立即生效；涨价写待生效，`markup_increase_delay_hours`（默认 24）小时后由主节点每 5 分钟的任务生效；涨价没生效前又降价，取消待生效值（`service/adty_site_markup.go:433-623,874-897`）。active 站和遗留的 paused 行可以改价，pending、closing、closed 拒绝。保存带版本号，别处改过返回冲突。
+- **改价**：以实际生效价判断涨跌，首次客户覆盖也先继承全站、分组和模型的有效价格。降价立即生效；涨价写待生效，`markup_increase_delay_hours`（默认 24）小时后由主节点每 5 分钟的任务生效，等待期间继续用原继承价；涨价没生效前又降价，取消待生效值。active 站和遗留的 paused 行可以改价，pending、closing、closed 拒绝。保存带版本号，别处改过返回冲突。
 - **团队协议价**：分站团队折后价 = 分站普通售价 × 团队支付比例，最终价不得低于供货价：`max(供货价, 售价 × 比例)`；主站团队没有这个下限（`service/adty_site_markup.go:268-329`）。
 - **扣费与显示**：d、k 只乘进分组倍率，文本、按次、阶梯、图片、任务、Realtime 全走同一入口；两个值只记在日志的 `admin_info`，客户看不到。价格页和分组列表按分站售价显示。
 
@@ -314,10 +314,10 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 ### 收益、冻结、结算、提现
 
-- **记账**：每笔消费按扣费当时的 k 拆：客户付 q（额度按 QuotaPerUnit 折成美元），平台供货成本 = q ÷ k，站长收益 = q − q ÷ k（`service/adty_site_earning.go:35-54`）。d 已经包含在 q 里，不再单独参与拆分；k 小于 1 时收益为负。余额下限生效时按实际扣到的额度记（见「余额下限」）。按「站、客户、日期、类型」累加进日汇总表 `adty_site_earning_daily`，类型有 usage、refund、bonus、bonus_reversal、trial、skipped。渠道测试不记账；关掉消费日志也照样记账。
-- **风控**：客户在分站注册时判一次：和站长 `fingerprint_window_days`（默认 30）天内用过同样的 IP 或设备，标「疑似自用」；和主站某个充过值的用户设备相同，标「疑似主站迁移」。两种检查各有开关（`self_use_check_enabled`、`migration_check_enabled`，默认都开）。被标记、没复核的客户照常扣费，收益记成 skipped、不结算。管理员复核后（`POST /api/adty/admin/sites/customers/:id/review`）之后的消费正常计，还可以把没结算的 skipped 改回 usage。
-- **结算**：每天第一次过 `settle_hour`（默认 4 点，服务器时区）后跑一次。pending 行里，负数随时结；正数要等日期 ≤ 今天 − `freeze_days`（默认 7）（`service/adty_site_settlement_task.go:18-33,120-138`）。站点待审、有结算暂停原因、有未复核的收益事件或消费对账对不上时，正收益继续挂起。未复核的收益事件由财务在充值对账页「待复核的分站收益」里处理：按任务一次决定原始扣费计入或不计入分站收益，必须填理由并重新验证身份（`GET /api/user/admin/finance/site-earning-reviews`、`POST /api/user/admin/finance/site-earning-reviews/resolve`）。汇总后**只记站点收益钱包**（`adty_site_wallets` 的 earnings），流水类型 `site_earning_settlement`；**不再记推广佣金账户 `referral_*`**，避免同一笔钱在两个账户各提一次（`service/adty_site_settlement_task.go:143-184`）。行改成 available。bonus / bonus_reversal 只更新日汇总报表，不再动钱包（赠金保障在充值环节已经冻结）。
-- **算例**（主站基础价 $100、d = 0.7、k = 1.5、冻结 7 天）：客户扣 $105 → 平台 $70、站长 +$35；当天客户充 $100、站点 USDT 加赠 2% → −$2；送试用 $2 → −$2；当天合计 $31，10-08 04:00 后结进收益钱包。
+- **记账**：确认消费与对应收益钱包入账同事务提交，任一步失败均回滚；按原业务操作键幂等，恢复和日结不会再次加钱。完整请求价格快照存在时，平台供货成本按冻结的分组倍率、供货倍率和实际计费倍率从实扣额度拆出，收益为实扣美元减供货成本；团队折扣和供货价下限均保留原供货成本。旧记录无完整快照时沿原 k 拆分，k 小于 1 可产生负收益。退款按原快照冲回。日汇总记录 usage、refund、bonus、bonus_reversal、trial、skipped；关闭消费日志不影响持久化记账。
+- **风控**：注册时可按 IP 或设备标记「疑似自用」「疑似主站迁移」，开关与标记保留用于后台复核，但启发式标记不自动取消已确认消费价差。客户复核不会重复增加已入账收益；可转换历史启发式 skipped 挂账，不能覆盖财务对原任务明确作出的不计收益决定。
+- **结算与日结**：确认的消费和退款价差即时进入本站收益钱包（`adty_site_wallets` 的 earnings），不等 `freeze_days`，不再记推广佣金账户 `referral_*`。每日任务继续对账、处理历史 pending 和补做未投影事件，已即时入账行只校验、不重复加钱；日结单汇总消费、供货成本和退款冲回。缺少原始事实的历史任务仍由财务填理由、重新验证后按原任务复核；不能用客户风控复核绕过。bonus / bonus_reversal 只更新报表，赠金原来源冻结和实际支出沿独立流水处理。
+- **算例**：供货成本 $100、普通售价 $150、团队支付比例 0.8，实扣 $120 → 平台 $100、站长即时 +$20；比例 0.5 时按供货价 $100 实扣，价差为 0。前一笔退款 $60 时沿原快照冲回供货成本 $50、收益 $10，重复恢复和日结不改变净额。
 
 #### 站长收益提现
 

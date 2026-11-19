@@ -295,6 +295,7 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 	discounted := marked.Mul(factorDec)
 	nextDec := discounted
 	var supply decimal.Decimal
+	effectiveK := storedK
 	floorApplied := false
 	// 只有分站团队才有供货价下限；主站团队即使有很深的折扣也不抬价。
 	if team.SiteId > 0 {
@@ -303,12 +304,21 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 				supply = groupRatio.Mul(d)
 				nextDec = decimal.Max(supply, discounted)
 				floorApplied = true
+				if supply.IsPositive() {
+					effectiveK = decimal.Max(decimal.NewFromInt(1), nextDec.Div(supply))
+				} else {
+					effectiveK = decimal.Max(decimal.NewFromInt(1), storedK.Mul(factorDec))
+				}
 			}
 		}
 	}
 	if !adtyDecimalFiniteNonNegative(nextDec) {
 		c.Set(AdtyTeamPriceBlockedKey, true)
 		return marked, storedK
+	}
+	if floorApplied {
+		storedK = effectiveK
+		c.Set(AdtySiteMarkupContextKey, storedK.InexactFloat64())
 	}
 	c.Set(AdtyTeamDiscountContextKey, factorDec.InexactFloat64())
 	factors, ok := adtyPriceFactorsFromContext(c)
@@ -321,6 +331,7 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 	factors.TeamApplied = true
 	factors.TeamPayRatio = factorDec
 	if floorApplied {
+		factors.StoredK = storedK
 		factors.FloorApplied = true
 		factors.SupplyFloor = supply
 	}
@@ -569,7 +580,7 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 				current := decimal.NewFromInt(1)
 				if customerCountPositive(customerCount) {
 					var others []model.AdtySitePrice
-					if err := tx.Where("site_id = ? AND user_id = ?", site.Id, input.UserId).Find(&others).Error; err != nil {
+					if err := tx.Where("site_id = ? AND user_id IN ?", site.Id, []int{0, input.UserId}).Find(&others).Error; err != nil {
 						return err
 					}
 					current = ResolveAdtySiteMarkup(others, input.UserId, group, modelName)

@@ -10,7 +10,7 @@ import (
 // 分站客户的风控（任务 11.5）：客户在分站注册时，复用 6.5 的指纹（adty_user_fingerprints）判断
 //   - 疑似自用：和站长本人 fingerprint_window_days 天内的 IP 或设备哈希相同
 //   - 疑似主站迁移：和主站某个充过值的用户的设备哈希相同
-// 有标记并且没复核过的客户照常扣费，收益记进 skipped（不结算）。判断依据只写进 RiskReason，只给后台看。
+// 标记仅用于后台复核，不自动取消已经确认的消费价差。判断依据只给后台看。
 
 // adtyCheckSiteCustomerRisk 在 AdtyRecordSiteCustomer 里调用（11.2 的注册钩子）。
 func adtyCheckSiteCustomerRisk(siteId, userId int, ipHash, deviceHash string) (flag, reason string) {

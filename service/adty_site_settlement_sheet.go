@@ -217,7 +217,7 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 			continue
 		}
 		switch row.Kind {
-		case model.AdtySiteEarningUsage:
+		case model.AdtySiteEarningUsage, model.AdtySiteEarningRefund:
 			sheet.ConsumptionUSD = sheet.ConsumptionUSD.Add(row.Revenue)
 			sheet.SupplyCostUSD = sheet.SupplyCostUSD.Add(row.Platform)
 			sheet.SpreadUSD = sheet.SpreadUSD.Add(row.Earning)
@@ -227,8 +227,6 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 			sheet.IncludedCount++
 		case model.AdtySiteEarningBonusReversal:
 			sheet.GiftReleaseUSD = sheet.GiftReleaseUSD.Add(row.Earning)
-			sheet.IncludedCount++
-		case model.AdtySiteEarningRefund:
 			sheet.IncludedCount++
 		}
 	}

@@ -36,6 +36,9 @@ var (
 	ErrBillingTokenInsufficient  = errors.New("token quota insufficient")
 )
 
+// AdtyApplySiteEarningTx posts confirmed spread in the charge transaction.
+var AdtyApplySiteEarningTx func(*gorm.DB, *AdtySiteEarningEvent) error
+
 // BillingEarningFactorsUsable reports whether a stored markup k and supply
 // cost factor d can book A.10 earnings or be kept on a pricing snapshot.
 // k may be below 1 and d may be above 1; only non-positive or non-finite
@@ -913,6 +916,11 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 			}
 			if err := tx.Create(&event).Error; err != nil {
 				return err
+			}
+			if AdtyApplySiteEarningTx != nil {
+				if err := AdtyApplySiteEarningTx(tx, &event); err != nil {
+					return err
+				}
 			}
 		}
 		refunding := row.State == BillingRefundPending

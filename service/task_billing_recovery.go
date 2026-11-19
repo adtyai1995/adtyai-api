@@ -49,23 +49,61 @@ func projectAdtySiteEarningEvent(ctx context.Context, key string) error {
 			return nil
 		}
 		event := rows[0]
-		revenue, platform, earning := AdtySiteEarningSplit(int64(event.Quota), decimal.NewFromFloat(event.Markup), decimal.NewFromFloat(event.CostFactor))
-		kind := model.AdtySiteEarningUsage
-		if event.Quota < 0 {
-			kind = model.AdtySiteEarningRefund
-		}
-		if event.ReviewStatus == model.AdtyEarningOriginalSkipped || event.RiskFlag != "" && !event.RiskReleased {
-			kind = model.AdtySiteEarningSkipped
-		}
-		// A separate day slot keeps durable events distinguishable from legacy
-		// log-backed earnings during migration, without changing their kind.
-		if err := upsertAdtySiteEarningTx(tx, event.Day+"+op", adtySiteEarningEntry{SiteId: event.SiteId, SiteOwnerUserId: event.SiteOwnerUserId, UserId: event.UserId,
-			Kind: kind, Reason: event.RiskFlag, Quota: int64(event.Quota), Revenue: revenue, Platform: platform, Earning: earning}); err != nil {
-			return err
-		}
-		return tx.Model(&model.AdtySiteEarningEvent{}).Where("operation_key = ?", key).Update("projected", true).Error
+		return projectAdtySiteEarningEventTx(tx, &event)
 	})
 }
+
+func projectAdtySiteEarningEventTx(tx *gorm.DB, event *model.AdtySiteEarningEvent) error {
+	if event.Projected || event.ReviewStatus == model.AdtyEarningNeedsReview {
+		return nil
+	}
+	revenue, platform, earning, err := adtyDurableEarningSplitTx(tx, event)
+	if err != nil {
+		return err
+	}
+	kind := model.AdtySiteEarningUsage
+	if event.Quota < 0 {
+		kind = model.AdtySiteEarningRefund
+	}
+	// Only an explicit finance disposition can exclude earnings. IP/device
+	// heuristics remain metadata and cannot cancel a confirmed charge's spread.
+	if event.ReviewStatus == model.AdtyEarningOriginalSkipped {
+		kind = model.AdtySiteEarningSkipped
+	}
+	if err := upsertAdtySiteEarningTx(tx, event.Day+"+op", adtySiteEarningEntry{
+		SiteId: event.SiteId, SiteOwnerUserId: event.SiteOwnerUserId, UserId: event.UserId, OperationKey: event.OperationKey,
+		Kind: kind, Reason: event.RiskFlag, Quota: int64(event.Quota), Revenue: revenue, Platform: platform, Earning: earning,
+	}); err != nil {
+		return err
+	}
+	return tx.Model(&model.AdtySiteEarningEvent{}).Where("operation_key = ?", event.OperationKey).Update("projected", true).Error
+}
+
+func adtyDurableEarningSplitTx(tx *gorm.DB, event *model.AdtySiteEarningEvent) (revenue, platform, earning decimal.Decimal, err error) {
+	var operations []model.BillingOperation
+	if err = tx.Where("operation_key = ? AND user_id = ? AND site_id = ?", event.OperationKey, event.UserId, event.SiteId).Limit(1).Find(&operations).Error; err != nil {
+		return
+	}
+	if len(operations) > 0 {
+		if snap := operations[0].RequestPriceSnapshot(); snap != nil {
+			group, groupOK := model.ParseSnapshotDecimal(snap.GroupRatio)
+			cost, costOK := model.ParseSnapshotDecimal(snap.SiteCostFactor)
+			billed, billedOK := snap.BilledGroupRatioDecimal()
+			if !groupOK || !costOK || !billedOK || !group.IsPositive() || !cost.IsPositive() || !billed.IsPositive() {
+				err = model.ErrBillingOperationConflict
+				return
+			}
+			revenue = decimal.NewFromInt(int64(event.Quota)).Div(common.QuotaPerUnitDecimal()).Round(8)
+			platform = decimal.NewFromInt(int64(event.Quota)).Mul(group).Mul(cost).DivRound(billed.Mul(common.QuotaPerUnitDecimal()), 8)
+			earning = revenue.Sub(platform)
+			return
+		}
+	}
+	revenue, platform, earning = AdtySiteEarningSplit(int64(event.Quota), decimal.NewFromFloat(event.Markup), decimal.NewFromFloat(event.CostFactor))
+	return
+}
+
+func init() { model.AdtyApplySiteEarningTx = projectAdtySiteEarningEventTx }
 
 // RecoverBillingOperations retries durable decisions and expires only unbound
 // reservations whose heartbeat has stopped.

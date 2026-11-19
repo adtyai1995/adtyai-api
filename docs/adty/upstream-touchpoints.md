@@ -746,3 +746,4 @@
 | `model/token.go`、`model/billing_operation.go` | 团队 Key 鉴权从数据库复核实时撤权；追加预扣先按用户、团队、Key 取锁，已受理请求继续登记迁移后软删除 Key 的额度事实 | 撤权立即阻断新请求且不回落个人钱包；在途补扣与迁移避免反向取锁，保留原团队付款快照 | ISS-R1-0047、ISS-R1-0052 |
 | `web/src/features/adty-team-registration/components/team-registration-links-panel.tsx`、`__tests__/links-panel.test.tsx` | 仅 Root 显示团队注册链接签发表单；站长保留历史列表与撤销入口 | 对齐 Root 专属建团规则，前端隐藏不能替代服务端拒绝 | ISS-R1-0050 |
 | `controller/token.go`、`model/token.go`、`controller/token_test.go`、`middleware/audit.go` | Key 变更与脱敏审计 intent 同事务，完整 Key 返回前先持久化审计；成功事件去重，失败事件保留持久重投与错误提示；测试夹具补齐公共审计表 | 独立日志库故障时仍可恢复原事件，主库持久化失败时回滚写操作或拒绝放出 Key | ISS-R1-0043 |
+| `model/billing_operation.go` | 在原扣费结算事务内调用收益入账 hook，失败回滚扣费、收益事件及钱包变动 | 确认价差须逐业务即时幂等入账，恢复及日结不得再次增加余额；原付款与快照语义不变 | ISS-R1-0058、ISS-R1-0060 |

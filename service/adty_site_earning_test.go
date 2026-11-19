@@ -173,7 +173,8 @@ func TestDurableTaskRefundKeepsOriginalRiskDispositionAfterReview(t *testing.T) 
 					return task
 				}
 				oldTask := chargeTask("125")
-				require.True(t, earningTotals(t, db, site.Id)[model.AdtySiteEarningSkipped].Equal(usd("25")))
+				require.True(t, earningTotals(t, db, site.Id)[model.AdtySiteEarningUsage].Equal(usd("25")), "risk flag must not cancel confirmed consumption spread")
+				require.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(usd("25")), "confirmed spread must credit site earnings wallet immediately")
 				require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, convert))
 				chargeTask("50") // A new request after review earns independently.
 				remainingEarning := decimal.Zero
@@ -189,22 +190,16 @@ func TestDurableTaskRefundKeepsOriginalRiskDispositionAfterReview(t *testing.T) 
 				require.NoError(t, err)
 				affiliate, err := Referral.EnsureAffiliate(owner.Id)
 				require.NoError(t, err)
-				want := usd("10")
-				if convert {
-					want = want.Add(remainingEarning)
-				}
+				want := usd("10").Add(remainingEarning)
 				// 原断言读 referral 佣金账户，那是 ISS-R4-0111 删掉的双记行为：同一笔收益
 				// 同时进站点收益钱包和佣金账户，站长两本账各提一次。现在收益只进站点钱包。
 				assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(want),
 					"refunds must reverse the original task's earning disposition, without consuming a later task's earnings")
 				assert.Zero(t, account(t, db, affiliate.Id).AvailableAmount,
 					"settlement must not credit the referral account (ISS-R4-0111)")
-				if !convert {
-					assert.True(t, earningTotals(t, db, site.Id)[model.AdtySiteEarningSkipped].Equal(remainingEarning))
-				}
 				var original model.AdtySiteEarningEvent
 				require.NoError(t, db.Where("operation_key = ?", oldTask.PrivateData.BillingOperationKey).First(&original).Error)
-				assert.Equal(t, "self_use", original.RiskFlag, "review preserves the original skipped-earning audit")
+				assert.Equal(t, "self_use", original.RiskFlag, "review preserves the original risk metadata audit")
 				assert.Equal(t, convert, original.RiskReleased)
 			})
 		}
@@ -220,7 +215,9 @@ func TestReviewConvertsZeroNetSkippedEarning(t *testing.T) {
 	AdtySiteEarningHook(site.Id, customer.Id, perUnit("125"), 1.25, 0.8, model.AdtySiteEarningUsage)
 	AdtySiteEarningHook(site.Id, customer.Id, perUnit("125"), 1.25, 0.8, model.AdtySiteEarningRefund)
 	require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, true))
-	assert.True(t, earningTotals(t, db, site.Id)[model.AdtySiteEarningUsage].IsZero())
+	totals := earningTotals(t, db, site.Id)
+	assert.True(t, totals[model.AdtySiteEarningUsage].Add(totals[model.AdtySiteEarningRefund]).IsZero())
+	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).IsZero())
 }
 
 func TestRealtimeRefundKeepsRiskDispositionWithoutInitialEarningEvent(t *testing.T) {
@@ -295,12 +292,14 @@ func TestDurableEarningProjectionRecoversWithoutConsumeLogs(t *testing.T) {
 	saved := common.LogConsumeEnabled
 	common.LogConsumeEnabled = false
 	t.Cleanup(func() { common.LogConsumeEnabled = saved })
-	require.NoError(t, info.Billing.Settle(int(perUnit("125"))))
+	require.Error(t, info.Billing.Settle(int(perUnit("125"))), "earning projection failure rolls back settlement, retaining its retry intent")
 	assert.EqualValues(t, perUnit("75"), getUserQuota(t, customer.Id))
 	var events []model.AdtySiteEarningEvent
 	require.NoError(t, db.Where("site_id = ?", site.Id).Find(&events).Error)
-	require.Len(t, events, 1)
-	assert.False(t, events[0].Projected)
+	require.Empty(t, events, "the uncommitted earning event rolls back with settlement")
+	var operation model.BillingOperation
+	require.NoError(t, db.Where("operation_key = ?", "request:"+info.RequestId).First(&operation).Error)
+	assert.Equal(t, model.BillingSettlePending, operation.State)
 	var dailyRows int64
 	require.NoError(t, db.Model(&model.AdtySiteEarningDaily{}).Where("site_id = ?", site.Id).Count(&dailyRows).Error)
 	assert.Zero(t, dailyRows, "a failed projection must roll back the seed row as well as the aggregate")
@@ -692,11 +691,13 @@ func TestSelfUseFlagSkipsEarning(t *testing.T) {
 
 	consumeOnSite(t, customer, perUnit("125"))
 	totals := earningTotals(t, db, site.Id)
-	assert.True(t, totals[model.AdtySiteEarningSkipped].Equal(usd("25")))
-	assert.True(t, totals[model.AdtySiteEarningUsage].IsZero())
-	var skipped model.AdtySiteEarningDaily
-	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningSkipped).First(&skipped).Error)
-	assert.Equal(t, model.AdtySiteRiskSelfUse, skipped.Reason)
+	assert.True(t, totals[model.AdtySiteEarningUsage].Equal(usd("25")), "risk metadata must not cancel confirmed consumption spread")
+	assert.True(t, totals[model.AdtySiteEarningSkipped].IsZero())
+	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(usd("25")))
+	var usage model.AdtySiteEarningDaily
+	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningUsage).First(&usage).Error)
+	assert.Equal(t, model.AdtySiteRiskSelfUse, usage.Reason)
+	assert.Equal(t, model.AdtySiteEarningAvailable, usage.Status)
 
 	clean := registerSiteCustomer(t, db, site, "clean-customer", "198.51.100.1", "fresh-device")
 	var cleanRow model.AdtySiteCustomer
@@ -707,6 +708,7 @@ func TestSelfUseFlagSkipsEarning(t *testing.T) {
 func TestMigrationFlagSkipsEarning(t *testing.T) {
 	db := prepareSiteDB(t)
 	_, site := openActiveSite(t, db, "migrate")
+	sitePrice(t, db, site.Id, 0, "", "1.25")
 	payer := referralUser(t, db, "main-payer")
 	require.NoError(t, db.Create(&model.TopUp{UserId: payer.Id, Amount: 10, TradeNo: "MAIN-PAID", Status: common.TopUpStatusSuccess}).Error)
 	recordFingerprint(t, db, payer.Id, "192.0.2.10", "payer-device")
@@ -715,10 +717,11 @@ func TestMigrationFlagSkipsEarning(t *testing.T) {
 	require.NoError(t, db.First(&row, customer.Id).Error)
 	assert.Equal(t, model.AdtySiteRiskMigration, row.RiskFlag)
 	consumeOnSite(t, customer, perUnit("10"))
-	var skipped model.AdtySiteEarningDaily
-	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningSkipped).First(&skipped).Error)
-	assert.Equal(t, model.AdtySiteRiskMigration, skipped.Reason)
-	assert.True(t, earningTotals(t, db, site.Id)[model.AdtySiteEarningUsage].IsZero())
+	var usage model.AdtySiteEarningDaily
+	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningUsage).First(&usage).Error)
+	assert.Equal(t, model.AdtySiteRiskMigration, usage.Reason)
+	assert.True(t, earningTotals(t, db, site.Id)[model.AdtySiteEarningUsage].Equal(usd("2")), "migration risk flag must not cancel confirmed spread")
+	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(usd("2")))
 
 	resellerSetting().MigrationCheckEnabled = false
 	other := registerSiteCustomer(t, db, site, "migrated-unchecked", "192.0.2.98", "payer-device")
@@ -749,8 +752,12 @@ func TestSettleAfterFreezeIntoAccount(t *testing.T) {
 	t.Cleanup(func() { adtySiteEarningDayFn = saved })
 	adtySiteEarningDayFn = func() string { return "2026-10-01" }
 	consumeOnSite(t, customer, perUnit("125"))
+	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(usd("25")),
+		"confirmed spread must credit site earnings wallet immediately without freeze_days delay")
+
 	adtySiteEarningDayFn = func() string { return "2026-10-05" }
 	consumeOnSite(t, customer, perUnit("12.5"))
+	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(usd("27.5")))
 
 	day := func(value string) time.Time {
 		parsed, err := time.ParseInLocation("2006-01-02 15:04", value, time.Local)
@@ -759,27 +766,22 @@ func TestSettleAfterFreezeIntoAccount(t *testing.T) {
 	}
 	settled, err := RunAdtySiteSettlementOnce(day("2026-10-07 04:00"))
 	require.NoError(t, err)
-	assert.Zero(t, settled, "freeze_days 7 not reached")
+	assert.Zero(t, settled, "already-settled earnings must not be double-credited by settlement task")
 
-	settled, err = RunAdtySiteSettlementOnce(day("2026-10-08 04:00"))
-	require.NoError(t, err)
-	assert.Equal(t, 1, settled)
 	affiliate, err := Referral.EnsureAffiliate(owner.Id)
 	require.NoError(t, err)
-	// 原断言读 referral 佣金账户（ISS-R4-0111 之前结算会双记一遍），现在只进站点收益钱包。
-	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(usd("25")))
+	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(usd("27.5")))
 	var ledger model.AdtySiteWalletLedger
 	require.NoError(t, db.Where("site_id = ? AND type = ?", site.Id, "site_earning_settlement").First(&ledger).Error)
 	assert.True(t, ledger.Delta.Equal(usd("25")))
 	assert.Zero(t, account(t, db, affiliate.Id).AvailableAmount,
 		"settlement must not credit the referral account (ISS-R4-0111)")
 
-	// 同一天结算后又有消费，记进新的槽位，下次结算再算。
 	adtySiteEarningDayFn = func() string { return "2026-10-01" }
 	consumeOnSite(t, customer, perUnit("12.5"))
 	settled, err = RunAdtySiteSettlementOnce(day("2026-10-13 04:00"))
 	require.NoError(t, err)
-	assert.Equal(t, 1, settled)
+	assert.Zero(t, settled)
 	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(usd("30")),
 		"$25 + $2.5 + $2.5")
 }
@@ -793,9 +795,8 @@ func TestLeftoverPausedSiteStillSettles(t *testing.T) {
 	adtySiteEarningDayFn = func() string { return "2026-09-01" }
 	consumeOnSite(t, customer, perUnit("10"))
 	require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", site.Id).Update("status", model.AdtySiteStatusPaused).Error)
-	settled, err := RunAdtySiteSettlementOnce(time.Date(2026, 10, 1, 4, 0, 0, 0, time.Local))
+	_, err := RunAdtySiteSettlementOnce(time.Date(2026, 10, 1, 4, 0, 0, 0, time.Local))
 	require.NoError(t, err)
-	assert.Equal(t, 1, settled, "leftover paused rows must not freeze settlement")
 	var row model.AdtySiteEarningDaily
 	require.NoError(t, db.Where("site_id = ?", site.Id).First(&row).Error)
 	assert.Equal(t, model.AdtySiteEarningAvailable, row.Status)
@@ -817,7 +818,7 @@ func TestNegativeRowsSettleWithoutFreeze(t *testing.T) {
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningBonus).First(&bonus).Error)
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningUsage).First(&usage).Error)
 	assert.Equal(t, model.AdtySiteEarningAvailable, bonus.Status)
-	assert.Equal(t, model.AdtySiteEarningPending, usage.Status)
+	assert.Equal(t, model.AdtySiteEarningAvailable, usage.Status)
 	affiliate, err := Referral.EnsureAffiliate(owner.Id)
 	require.NoError(t, err)
 	assert.InDelta(t, 0, account(t, db, affiliate.Id).AvailableAmount, 1e-9, "bonus settlement must not reduce the commission book")
@@ -871,37 +872,29 @@ func TestForcedCloseDoesNotVoidOrClawBack(t *testing.T) {
 	db := prepareSiteDB(t)
 	owner, site := openActiveSite(t, db, "clawback")
 	customer := siteCustomer(t, db, site, "clawback-customer")
-	// 必须设价：k=1 时收益恒为 0，而这条用例要验的是「已结算收益不被关站清掉」，
-	// 没有非零收益就什么都验不到（这正是它此前一直红的原因，不是产品缺陷）。
 	sitePrice(t, db, site.Id, 0, "", "1.25")
 	saved := adtySiteEarningDayFn
 	t.Cleanup(func() { adtySiteEarningDayFn = saved })
 	adtySiteEarningDayFn = func() string { return "2026-09-01" }
-	consumeOnSite(t, customer, perUnit("100")) // +$20
-	_, err := RunAdtySiteSettlementOnce(time.Date(2026, 10, 1, 4, 0, 0, 0, time.Local))
-	require.NoError(t, err)
+	consumeOnSite(t, customer, perUnit("100")) // +$20 settled immediately
 	adtySiteEarningDayFn = func() string { return "2026-10-01" }
-	consumeOnSite(t, customer, perUnit("50")) // +$10，还没结算
-	_, err = ScheduleAdtySiteClose(site.Id, 1, AdtySiteClosePlan{ClawBack: true, Immediate: true})
+	consumeOnSite(t, customer, perUnit("50")) // +$10 settled immediately
+	_, err := ScheduleAdtySiteClose(site.Id, 1, AdtySiteClosePlan{ClawBack: true, Immediate: true})
 	require.NoError(t, err)
 	affiliate, err := Referral.EnsureAffiliate(owner.Id)
 	require.NoError(t, err)
-	// **原断言是 `account(affiliate).AvailableAmount == 20`——那条断言的正是
-	// `ISS-R4-0111` 的缺陷行为**（结算把同一笔收益又记进 referral 佣金账户，于是
-	// 站长能在两本账上各提一次）。修掉二次入账之后，收益只落在站点收益钱包里，
-	// 所以这里改为断言钱包金额，并且断言 referral 账户**没有**被记钱。
-	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(decimal.RequireFromString("20")),
+	assert.True(t, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).Equal(decimal.RequireFromString("30")),
 		"已结算收益必须留在站点收益钱包里")
 	assert.Zero(t, account(t, db, affiliate.Id).AvailableAmount,
 		"站点收益不得再记进 referral 佣金账户（ISS-R4-0111）")
-	assert.InDelta(t, 20, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).InexactFloat64(), 1e-9,
+	assert.InDelta(t, 30, siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).InexactFloat64(), 1e-9,
 		"forced close must not deduct settled earnings")
 	var rows []model.AdtySiteEarningDaily
 	require.NoError(t, db.Where("site_id = ? AND kind <> ?", site.Id, model.AdtySiteEarningTrial).Order("id").Find(&rows).Error)
 	require.Len(t, rows, 2)
 	assert.Equal(t, model.AdtySiteEarningAvailable, rows[0].Status)
 	assert.True(t, rows[0].Earning.Equal(decimal.RequireFromString("20")))
-	assert.Equal(t, model.AdtySiteEarningPending, rows[1].Status, "forced close must not void unsettled earnings")
+	assert.Equal(t, model.AdtySiteEarningAvailable, rows[1].Status)
 	assert.True(t, rows[1].Earning.Equal(decimal.RequireFromString("10")))
 	var voided, clawLedgers int64
 	require.NoError(t, db.Model(&model.AdtySiteEarningDaily{}).Where("site_id = ? AND status = ?", site.Id, model.AdtySiteEarningVoid).Count(&voided).Error)
@@ -918,14 +911,11 @@ func TestForcedCloseDoesNotVoidOrClawBack(t *testing.T) {
 	customer2 := siteCustomer(t, db, site2, "claw-debt-customer")
 	sitePrice(t, db, site2.Id, 0, "", "1.25")
 	adtySiteEarningDayFn = func() string { return "2026-09-01" }
-	consumeOnSite(t, customer2, perUnit("500")) // k 默认 1，d 0.8 → +$100
-	_, err = RunAdtySiteSettlementOnce(time.Date(2026, 10, 1, 4, 0, 0, 0, time.Local))
-	require.NoError(t, err)
+	consumeOnSite(t, customer2, perUnit("500")) // k 1.25，d 0.8 → +$100
 	adtySiteEarningDayFn = func() string { return "2026-10-02" }
-	siteTopUp(t, customer2, site2, "EPU-claw-debt", 1500, "10") // bonus −$150，还在冻结期
+	siteTopUp(t, customer2, site2, "EPU-claw-debt", 1500, "10") // bonus −$150，还在 pending
 	affiliate2, err := Referral.EnsureAffiliate(owner2.Id)
 	require.NoError(t, err)
-	// 同上：原断言看的是 referral 账户（0111 的缺陷行为），现在看站点收益钱包。
 	assert.True(t, siteWalletBalance(t, db, site2.Id, model.AdtySiteWalletEarnings).Equal(decimal.RequireFromString("100")))
 	assert.Zero(t, account(t, db, affiliate2.Id).AvailableAmount,
 		"站点收益不得再记进 referral 佣金账户（ISS-R4-0111）")
@@ -1005,9 +995,9 @@ func TestReviewedSkippedDoesNotHoldSettlement(t *testing.T) {
 	var stored model.AdtySite
 	require.NoError(t, db.First(&stored, site.Id).Error)
 	assert.Empty(t, stored.SettleHoldReason)
-	var skipped model.AdtySiteEarningDaily
-	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningSkipped).First(&skipped).Error)
-	assert.Equal(t, model.AdtySiteEarningPending, skipped.Status)
+	var usage model.AdtySiteEarningDaily
+	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningUsage).First(&usage).Error)
+	assert.Equal(t, model.AdtySiteEarningAvailable, usage.Status)
 }
 
 func TestSettlementHoldsWhenUsageDoesNotMatchLogs(t *testing.T) {
@@ -1018,7 +1008,6 @@ func TestSettlementHoldsWhenUsageDoesNotMatchLogs(t *testing.T) {
 	require.NoError(t, db.Model(&model.AdtySiteEarningDaily{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningUsage).
 		Update("earning", usd("99")).Error)
 
-	// FreezeDays 默认是 7，必须走过冻结期，这一天的行才会进对账。
 	due := time.Now().AddDate(0, 0, 10)
 	settled, err := RunAdtySiteSettlementOnce(due)
 	require.NoError(t, err)
@@ -1026,9 +1015,6 @@ func TestSettlementHoldsWhenUsageDoesNotMatchLogs(t *testing.T) {
 	var stored model.AdtySite
 	require.NoError(t, db.First(&stored, site.Id).Error)
 	assert.Contains(t, stored.SettleHoldReason, "do not match consume logs")
-	var row model.AdtySiteEarningDaily
-	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteEarningUsage).First(&row).Error)
-	assert.Equal(t, model.AdtySiteEarningPending, row.Status)
 
 	resumed, err := ResumeAdtySiteSettlement(site.Id, 1, due)
 	require.NoError(t, err)
@@ -1169,4 +1155,176 @@ func TestTaskEarningOwnerSnapshotFailureIsCounted(t *testing.T) {
 	assert.Contains(t, text, fmt.Sprintf("user=%d", customer.Id))
 	assert.Contains(t, text, "kind="+model.AdtySiteEarningUsage)
 	assert.Empty(t, earningTotals(t, db, site.Id), "解析失败不能凭空写收益行")
+}
+
+func TestConfirmedSiteEarningSettlementIsImmediateAndAtomic(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "confirmed-atomic")
+	customer := siteCustomer(t, db, site, "confirmed-atomic-customer")
+	require.NoError(t, db.Model(customer).Update("quota", perUnit("300")).Error)
+	key := "confirmed:immediate"
+	require.NoError(t, model.QueueDirectBillingDelta(model.BillingOperation{OperationKey: key, UserId: customer.Id, SiteId: site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8}, int(perUnit("125"))))
+	fail := true
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register("test:confirmed-earning-failure", func(tx *gorm.DB) {
+		if fail && tx.Statement.Table == "adty_site_wallet_ledgers" {
+			tx.AddError(fmt.Errorf("forced earning ledger failure"))
+		}
+	}))
+	t.Cleanup(func() { db.Callback().Create().Remove("test:confirmed-earning-failure") })
+	_, _, err := model.ApplyBillingSettlement(key)
+	assert.Error(t, err, "wallet posting failure must roll back the original charge")
+	assert.EqualValues(t, perUnit("300"), getUserQuota(t, customer.Id))
+	fail = false
+	_, _, err = model.ApplyBillingSettlement(key)
+	require.NoError(t, err)
+	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
+	assert.EqualValues(t, perUnit("175"), getUserQuota(t, customer.Id))
+	for range 2 {
+		_, _, err = model.ApplyBillingSettlement(key)
+		require.NoError(t, err)
+		require.NoError(t, projectAdtySiteEarningEvent(context.Background(), key))
+		_, err = RunAdtySiteSettlementOnce(time.Now().AddDate(0, 0, 30))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "replay and daily summary cannot credit twice")
+	var count int64
+	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND type = ?", site.Id, "site_earning_settlement").Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+}
+
+func TestRiskMetadataPreservesConfirmedSiteEarning(t *testing.T) {
+	for _, flag := range []string{model.AdtySiteRiskSelfUse, model.AdtySiteRiskMigration} {
+		t.Run(flag, func(t *testing.T) {
+			db := prepareSiteDB(t)
+			_, site := openActiveSite(t, db, "risk-meta")
+			customer := siteCustomer(t, db, site, "risk-meta-customer")
+			require.NoError(t, db.Model(customer).Update("quota", perUnit("300")).Error)
+			require.NoError(t, db.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", customer.Id).Update("risk_flag", flag).Error)
+			key := "risk:confirmed"
+			require.NoError(t, model.QueueDirectBillingDelta(model.BillingOperation{OperationKey: key, UserId: customer.Id, SiteId: site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8}, int(perUnit("125"))))
+			_, _, err := model.ApplyBillingSettlement(key)
+			require.NoError(t, err)
+			require.NoError(t, projectAdtySiteEarningEvent(context.Background(), key))
+			assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
+			assert.Equal(t, "25", earningTotals(t, db, site.Id)[model.AdtySiteEarningUsage].String())
+			var event model.AdtySiteEarningEvent
+			require.NoError(t, db.Where("operation_key = ?", key).First(&event).Error)
+			assert.Equal(t, flag, event.RiskFlag, "risk remains available for defensive review")
+			for _, convert := range []bool{false, true} {
+				require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, convert))
+				assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "risk review cannot create another credit")
+			}
+		})
+	}
+}
+
+func TestTeamEarningUsesFrozenSupplyAndFinalPrice(t *testing.T) {
+	for _, tc := range []struct{ name, final, billed, pay, quota, earning string }{
+		{"discount", "120", "1.2", "0.8", "120", "20"},
+		{"floor", "100", "1", "0.5", "100", "0"},
+		{"refund", "120", "1.2", "0.8", "-60", "-10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := prepareSiteDB(t)
+			_, site := openActiveSite(t, db, "team-frozen")
+			customer := siteCustomer(t, db, site, "team-frozen-customer")
+			snapshot, err := model.EncodeRequestPriceSnapshot(&model.RequestPriceSnapshot{
+				SchemaVersion: model.RequestPriceSnapshotVersion, ModelBasePrice: "100", BillingGroup: "default",
+				GroupRatio: "1", SiteCostFactor: "1", SiteMarkupRatio: "0.5", TeamPayRatio: tc.pay, TeamApplied: true,
+				SupplyCost: "100", SellPrice: "150", SupplyPriceFloor: "100", FinalPrice: tc.final,
+				BilledGroupRatio: tc.billed, StoredMarkupK: "1.5", Currency: "USD", BillingUnit: model.BillingUnitPerCall,
+				AcceptedAt: time.Now().Unix(), RuleVersion: model.RequestPriceSnapshotVersion, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId,
+			})
+			require.NoError(t, err)
+			op := model.BillingOperation{OperationKey: "team:frozen", UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Kind: "request", State: model.BillingSettled, PriceSnapshot: snapshot}
+			require.NoError(t, db.Create(&op).Error)
+			event := model.AdtySiteEarningEvent{OperationKey: op.OperationKey, UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Quota: int(perUnit(tc.quota)), Markup: 1.5, CostFactor: 1, Day: time.Now().Format("2006-01-02")}
+			require.NoError(t, db.Create(&event).Error)
+			for range 2 {
+				require.NoError(t, projectAdtySiteEarningEvent(context.Background(), op.OperationKey))
+			}
+			var row model.AdtySiteEarningDaily
+			require.NoError(t, db.Where("site_id = ?", site.Id).First(&row).Error)
+			assert.Equal(t, tc.earning, row.Earning.String())
+			assert.Equal(t, tc.quota, row.Platform.Add(row.Earning).String())
+			start := time.Now().Truncate(24 * time.Hour).Add(-24 * time.Hour).Unix()
+			sheet, err := summarizeAdtySiteSettlement(site.Id, time.Now().Format("2006-01-02"), start, start+3*86400)
+			require.NoError(t, err)
+			assert.Equal(t, tc.earning, sheet.SpreadUSD.String(), "the daily report uses the same frozen supply cost")
+			assert.Equal(t, tc.quota, sheet.SupplyCostUSD.Add(sheet.SpreadUSD).String())
+		})
+	}
+}
+
+func TestFirstCustomerPricePreservesInheritedEffectiveMarkup(t *testing.T) {
+	for _, tc := range []struct {
+		name, requested, current string
+		pending                  bool
+	}{
+		{"raise", "1.8", "1.5", true}, {"decrease", "1.2", "1.2", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := prepareSiteDB(t)
+			_, site := openActiveSite(t, db, "first-customer-price")
+			sitePrice(t, db, site.Id, 0, "", "1.5")
+			customer := siteCustomer(t, db, site, "first-price-customer")
+			_, err := SaveAdtySitePricing(AdtySitePricingInput{SiteId: site.Id, UserId: customer.Id, DefaultMarkup: dec(tc.requested), ExpectedVersion: 0, Now: time.Now().Unix()})
+			require.NoError(t, err)
+			var row model.AdtySitePrice
+			require.NoError(t, db.Where("site_id = ? AND user_id = ?", site.Id, customer.Id).First(&row).Error)
+			assert.Equal(t, tc.current, row.Markup.String())
+			assert.Equal(t, tc.pending, row.PendingAt > 0)
+		})
+	}
+}
+
+func TestConcurrentIdenticalSiteEarningsKeepBusinessIdentity(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "concurrent-earning")
+	customer := siteCustomer(t, db, site, "concurrent-earning-customer")
+	for i := range 2 {
+		event := model.AdtySiteEarningEvent{OperationKey: fmt.Sprintf("identical:%d", i), UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8, Day: time.Now().Format("2006-01-02")}
+		require.NoError(t, db.Create(&event).Error)
+	}
+	var group sync.WaitGroup
+	errors := make(chan error, 4)
+	for i := range 4 {
+		group.Go(func() { errors <- projectAdtySiteEarningEvent(context.Background(), fmt.Sprintf("identical:%d", i%2)) })
+	}
+	group.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	assert.Equal(t, "50", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
+	var count int64
+	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND type = ?", site.Id, "site_earning_settlement").Count(&count).Error)
+	assert.EqualValues(t, 2, count, "equal amounts from different business operations remain distinct")
+}
+
+func TestCustomerRiskReviewPreservesFinanceEarningDisposition(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "finance-skip-review")
+	customer := siteCustomer(t, db, site, "finance-skip-customer")
+	day := time.Now().Format("2006-01-02")
+	for _, tc := range []struct{ key, status string }{
+		{"legacy-risk", ""}, {"finance-skip", model.AdtyEarningOriginalSkipped},
+	} {
+		event := model.AdtySiteEarningEvent{OperationKey: tc.key, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, UserId: customer.Id,
+			Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8, Day: day, Projected: true, RiskFlag: model.AdtySiteRiskSelfUse, ReviewStatus: tc.status}
+		require.NoError(t, db.Create(&event).Error)
+	}
+	row := model.AdtySiteEarningDaily{SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, UserId: customer.Id, Day: day + "+op",
+		Kind: model.AdtySiteEarningSkipped, Status: model.AdtySiteEarningPending, Reason: model.AdtySiteRiskSelfUse,
+		Quota: perUnit("250"), Revenue: usd("250"), Platform: usd("200"), Earning: usd("50")}
+	require.NoError(t, db.Create(&row).Error)
+	for range 2 {
+		require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, true))
+	}
+	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "only heuristic legacy spread is released once")
+	assert.Equal(t, "25", earningTotals(t, db, site.Id)[model.AdtySiteEarningSkipped].String(), "the explicit finance exclusion remains pending")
+	var excluded model.AdtySiteEarningEvent
+	require.NoError(t, db.Where("operation_key = ?", "finance-skip").First(&excluded).Error)
+	assert.False(t, excluded.RiskReleased)
+	assert.Equal(t, model.AdtyEarningOriginalSkipped, excluded.ReviewStatus)
 }

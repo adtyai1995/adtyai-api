@@ -46,8 +46,8 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 	cutoff := adtySettleCutoffDay(now)
 	var siteIds []int
 	if err := model.DB.Model(&model.AdtySiteEarningDaily{}).Distinct("site_id").
-		Where("status = ? AND kind NOT IN ? AND (earning < 0 OR day <= ?)",
-			model.AdtySiteEarningPending, []string{model.AdtySiteEarningSkipped, model.AdtySiteEarningTrial}, cutoff+"+~").
+		Where("status IN ? AND kind NOT IN ? AND (earning < 0 OR day <= ?)",
+			[]string{model.AdtySiteEarningPending, model.AdtySiteEarningAvailable}, []string{model.AdtySiteEarningSkipped, model.AdtySiteEarningTrial}, cutoff+"+~").
 		Pluck("site_id", &siteIds).Error; err != nil {
 		return 0, err
 	}
@@ -243,7 +243,10 @@ func adtyUsageReconcileMismatch(tx *gorm.DB, siteId int, cutoff string) (bool, s
 			if event.ReviewStatus == model.AdtyEarningNeedsReview {
 				continue
 			}
-			_, _, earning := AdtySiteEarningSplit(int64(event.Quota), decimal.NewFromFloat(event.Markup), decimal.NewFromFloat(event.CostFactor))
+			_, _, earning, err := adtyDurableEarningSplitTx(tx, &event)
+			if err != nil {
+				return false, "", err
+			}
 			expected = expected.Add(earning)
 		}
 		var recorded struct{ Total decimal.Decimal }
