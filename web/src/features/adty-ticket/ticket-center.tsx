@@ -29,6 +29,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 
+import { TicketImage } from './ticket-image'
+
 import {
   TICKET_QUEUES,
   TICKET_STATUS_LABELS,
@@ -100,7 +102,9 @@ export function TicketCenter() {
     queryFn: async () => {
       const response = await api.get('/api/adty/tickets', { params: queue ? { queue } : {} })
       const body = response.data as { success?: boolean; data?: TicketList; message?: string }
-      if (!body.success) throw new Error(body.message || t('Failed to load data'))
+      if (!body.success) {
+        throw new Error(body.message || t('Failed to load data'))
+      }
       return {
         tickets: body.data?.tickets ?? [],
         can_note: Boolean(body.data?.can_note),
@@ -130,7 +134,9 @@ export function TicketCenter() {
     queryFn: async () => {
       const response = await api.get(`/api/adty/tickets/${selected}`)
       const payload = response.data as { success?: boolean; data?: TicketDetail; message?: string }
-      if (!payload.success || !payload.data) throw new Error(payload.message || t('Failed to load data'))
+      if (!payload.success || !payload.data) {
+        throw new Error(payload.message || t('Failed to load data'))
+      }
       return payload.data
     },
   })
@@ -153,7 +159,9 @@ export function TicketCenter() {
         related_ref: related,
       })
       const payload = response.data as { success?: boolean; message?: string; data?: Ticket }
-      if (!payload.success || !payload.data) throw new Error(payload.message || t('Failed to save'))
+      if (!payload.success || !payload.data) {
+        throw new Error(payload.message || t('Failed to save'))
+      }
       setTitle('')
       setBody('')
       setSelected(payload.data.id)
@@ -175,7 +183,9 @@ export function TicketCenter() {
         assignee_id: assigneeId ?? 0,
       })
       const payload = response.data as { success?: boolean; message?: string }
-      if (!payload.success) throw new Error(payload.message || t('Failed to save'))
+      if (!payload.success) {
+        throw new Error(payload.message || t('Failed to save'))
+      }
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -193,7 +203,9 @@ export function TicketCenter() {
         body: reply.trim(),
       })
       const payload = response.data as { success?: boolean; message?: string }
-      if (!payload?.success) throw new Error(payload?.message || t('Failed to save'))
+      if (!payload?.success) {
+        throw new Error(payload?.message || t('Failed to save'))
+      }
       setReply('')
       await refresh()
     } catch (cause) {
@@ -212,7 +224,9 @@ export function TicketCenter() {
         body: note.trim(),
       })
       const payload = response.data as { success?: boolean; message?: string }
-      if (!payload?.success) throw new Error(payload?.message || t('Failed to save'))
+      if (!payload?.success) {
+        throw new Error(payload?.message || t('Failed to save'))
+      }
       setNote('')
       await refresh()
     } catch (cause) {
@@ -232,7 +246,9 @@ export function TicketCenter() {
         visibility: 'public',
       })
       const payload = response.data as { success?: boolean; message?: string }
-      if (!payload?.success) throw new Error(payload?.message || t('Only images are accepted'))
+      if (!payload?.success) {
+        throw new Error(payload?.message || t('Only images are accepted'))
+      }
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Only images are accepted')))
@@ -312,22 +328,16 @@ export function TicketCenter() {
             {(detail.data.images ?? [])
               .filter((image) => image.visibility === 'public' || detail.data.can_note)
               .map((image) => {
-                const href = `/api/adty/tickets/${detail.data.ticket.id}/images/${image.id}`
                 const label = image.object_id
                   ? `${t('Image')} ${image.object_id}`
                   : `${t('Image')} #${image.id}`
                 return (
-                  <div key={image.id} className='flex flex-col gap-1 text-sm'>
-                    <a href={href} target='_blank' rel='noreferrer' className='underline'>
-                      {image.visibility === 'internal' ? `${t('Internal note')}: ` : ''}
-                      {label}
-                    </a>
-                    <img
-                      src={href}
-                      alt={label}
-                      className='max-h-48 max-w-xs rounded border object-contain'
-                    />
-                  </div>
+                  <TicketImage
+                    key={image.id}
+                    ticketID={detail.data.ticket.id}
+                    imageID={image.id}
+                    label={image.visibility === 'internal' ? `${t('Internal note')}: ${label}` : label}
+                  />
                 )
               })}
             {(detail.data.events ?? [])

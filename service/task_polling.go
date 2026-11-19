@@ -790,8 +790,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	return nil
 }
 
-// finalizeTerminalTask 终态统一收尾（状态 CAS 赢家调用，恰好一次）：采样 + 结算 + 失败兜底退款。
-// 待结算恢复重入时，RecordTaskResult 按任务级持久标记去重，只重放计费结算而不重复累计性能样本。
+// finalizeTerminalTask 终态统一收尾：先采样，再结算，失败时再兜底退款。
+// 待结算恢复仍重入本函数，结算不能跳过。去重在 RecordTaskResult 内：
+// 样本提交成功后才写 tasks.perf_sampled_at。标记已成立时，热桶清空或跨桶重放不再累计。
 func finalizeTerminalTask(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
 	// The terminal CAS has committed. Finish its accounting independently of
 	// lease/client cancellation, while keeping completion hooks bounded.

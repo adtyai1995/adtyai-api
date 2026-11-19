@@ -3,9 +3,12 @@ package perfmetrics
 import (
 	"cmp"
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,9 +19,18 @@ import (
 	"github.com/QuantumNous/new-api/setting/perf_metrics_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
+	"gorm.io/gorm"
 )
 
 var hotBuckets sync.Map
+
+// taskSampleMu only serializes the check, record, and mark steps in this process.
+// It does not remember which tasks were sampled. The durable dedup is tasks.perf_sampled_at.
+var taskSampleMu sync.Mutex
+
+// taskSampleNow is the clock for a task sample's bucket. Tests move it to prove a
+// later bucket does not count the same terminal task again.
+var taskSampleNow = time.Now
 
 // seriesSchema is a stable client cache/schema marker. Do not change it when
 // hiding fields or making response-only privacy hardening changes.
@@ -79,21 +91,36 @@ func RecordRelayResult(ctx context.Context, info *relaycommon.RelayInfo, apiErr 
 // transition, after the polling status CAS is won. Latency is the end-to-end
 // task duration (second resolution, unlike the ms-resolution relay samples);
 // throughput is only present when the provider reports tokens.
+//
+// Recovery replays this and still settles billing. Dedup is tasks.perf_sampled_at,
+// written only after the sample commits. A process-local map is not a dedup store.
+// A missing column is logged and not created here; the task is not sampled.
 func RecordTaskResult(task *model.Task, result *relaycommon.TaskInfo) {
 	if task == nil {
+		return
+	}
+	if task.Status != model.TaskStatusSuccess && task.Status != model.TaskStatusFailure {
 		return
 	}
 	modelName := task.Properties.OriginModelName
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.OriginModelName != "" {
 		modelName = bc.OriginModelName
 	}
+	setting := perf_metrics_setting.GetSetting()
+	if !setting.Enabled || modelName == "" {
+		return
+	}
+	group := task.Group
+	if group == "" {
+		group = "default"
+	}
 	endTs := task.FinishTime
 	if endTs <= 0 {
-		endTs = time.Now().Unix()
+		endTs = taskSampleNow().Unix()
 	}
 	sample := Sample{
 		Model:   modelName,
-		Group:   task.Group,
+		Group:   group,
 		Success: task.Status == model.TaskStatusSuccess,
 	}
 	if task.SubmitTime > 0 && endTs > task.SubmitTime {
@@ -107,7 +134,202 @@ func RecordTaskResult(task *model.Task, result *relaycommon.TaskInfo) {
 			sample.GenerationMs = (endTs - genStart) * 1000
 		}
 	}
-	Record(sample)
+	if err := sampleTerminalTaskOnce(task, sample); err != nil {
+		common.SysError(common.LogText("task performance sample was not recorded for %s: %s", taskSampleLogID(task), err.Error()))
+	}
+}
+
+// taskPerfMark is the row lock target. It is not a second schema for the column.
+type taskPerfMark struct {
+	ID            int64 `gorm:"column:id"`
+	PerfSampledAt int64 `gorm:"column:perf_sampled_at"`
+}
+
+type committedTaskSample struct {
+	key          bucketKey
+	sample       Sample
+	redisWritten bool
+}
+
+// writeTaskSampleMark stores the durable marker. model.Task.PerfSampledAt is
+// GORM-readonly, so a field Update would not write it and a later full-row
+// update cannot clear it. Tests replace this to prove a failed write does not
+// keep the sample and does not leave the marker set.
+var writeTaskSampleMark = func(tx *gorm.DB, id int64, sampledAt int64) (int64, error) {
+	res := tx.Exec(`UPDATE tasks SET perf_sampled_at = ? WHERE id = ? AND perf_sampled_at = 0`, sampledAt, id)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
+func taskSampleLogID(task *model.Task) string {
+	if task == nil {
+		return "nil"
+	}
+	if task.ID > 0 {
+		return fmt.Sprintf("id=%d", task.ID)
+	}
+	if tid := strings.TrimSpace(task.TaskID); tid != "" {
+		return "task_id=" + tid
+	}
+	return "unpersisted"
+}
+
+func taskSampleNeedsDurableMark(task *model.Task) bool {
+	if task == nil {
+		return false
+	}
+	if task.ID > 0 || strings.TrimSpace(task.TaskID) != "" {
+		return true
+	}
+	return strings.TrimSpace(task.PrivateData.BillingOperationKey) != ""
+}
+
+func perfSampleColumnError(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("database is unavailable")
+	}
+	if !db.Migrator().HasTable(&model.Task{}) && !db.Migrator().HasTable("tasks") {
+		return errors.New("tasks table is missing")
+	}
+	if db.Migrator().HasColumn(&model.Task{}, "PerfSampledAt") || db.Migrator().HasColumn(&model.Task{}, "perf_sampled_at") {
+		return nil
+	}
+	// The sampling path must not create the column. The formal migration owns that.
+	return errors.New("tasks.perf_sampled_at is missing")
+}
+
+func taskSampleUsesRowLock(tx *gorm.DB) bool {
+	if tx == nil || tx.Dialector == nil || tx.Dialector.Name() == "sqlite" {
+		return false
+	}
+	// AdtyLockForUpdate also skips SQLite by the process-wide database type.
+	// The dialector check covers a sampler test that opens its own SQLite file.
+	return !common.UsingMainDatabase(common.DatabaseTypeSQLite)
+}
+
+func loadTaskPerfMark(tx *gorm.DB, id int64) (taskPerfMark, error) {
+	query := "SELECT id, perf_sampled_at FROM tasks WHERE id = ?"
+	if taskSampleUsesRowLock(tx) {
+		query += " FOR UPDATE"
+	}
+	var mark taskPerfMark
+	err := tx.Raw(query, id).Row().Scan(&mark.ID, &mark.PerfSampledAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return mark, fmt.Errorf("task %d row is missing, refusing to sample without a durable marker", id)
+		}
+		return mark, err
+	}
+	if mark.ID == 0 {
+		return mark, fmt.Errorf("task %d row is missing, refusing to sample without a durable marker", id)
+	}
+	return mark, nil
+}
+
+func sampleTerminalTaskOnce(task *model.Task, sample Sample) error {
+	if !taskSampleNeedsDurableMark(task) {
+		Record(sample)
+		return nil
+	}
+	taskSampleMu.Lock()
+	defer taskSampleMu.Unlock()
+	if task.ID <= 0 {
+		return errors.New("task has no primary key, refusing to sample without a durable marker")
+	}
+	if err := perfSampleColumnError(model.DB); err != nil {
+		return err
+	}
+	var live *committedTaskSample
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		mark, err := loadTaskPerfMark(tx, task.ID)
+		if err != nil {
+			return err
+		}
+		if mark.PerfSampledAt > 0 {
+			task.PerfSampledAt = mark.PerfSampledAt
+			return nil
+		}
+		committed, err := commitTaskSample(sample)
+		if err != nil {
+			return err
+		}
+		live = &committed
+		now := taskSampleNow().Unix()
+		if now <= 0 {
+			now = 1
+		}
+		affected, err := writeTaskSampleMark(tx, mark.ID, now)
+		if err != nil || affected == 0 {
+			undoErr := undoTaskSample(committed)
+			live = nil
+			if err == nil {
+				err = errors.New("perf sample marker was not stored")
+			}
+			if undoErr != nil {
+				return fmt.Errorf("%w; also failed to roll back the sample: %v", err, undoErr)
+			}
+			return err
+		}
+		task.PerfSampledAt = now
+		return nil
+	})
+	if err != nil {
+		task.PerfSampledAt = 0
+		if live != nil {
+			if undoErr := undoTaskSample(*live); undoErr != nil {
+				return fmt.Errorf("%w; also failed to roll back the sample: %v", err, undoErr)
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+func commitTaskSample(sample Sample) (committedTaskSample, error) {
+	setting := perf_metrics_setting.GetSetting()
+	if !setting.Enabled || sample.Model == "" {
+		return committedTaskSample{}, errors.New("performance sampling is disabled")
+	}
+	if sample.Group == "" {
+		sample.Group = "default"
+	}
+	if sample.LatencyMs < 0 {
+		sample.LatencyMs = 0
+	}
+	key := bucketKey{
+		model:    sample.Model,
+		group:    sample.Group,
+		bucketTs: bucketStart(taskSampleNow().Unix()),
+	}
+	wroteRedis := false
+	if common.RedisEnabled {
+		if common.RDB == nil {
+			return committedTaskSample{}, errors.New("redis is enabled but the client is nil")
+		}
+		if err := adjustRedis(key, sample, 1); err != nil {
+			return committedTaskSample{}, err
+		}
+		wroteRedis = true
+	}
+	addHotSample(key, sample)
+	return committedTaskSample{key: key, sample: sample, redisWritten: wroteRedis}, nil
+}
+
+func undoTaskSample(committed committedTaskSample) error {
+	hotErr := subtractHotSample(committed.key, committed.sample)
+	var redisErr error
+	if committed.redisWritten {
+		redisErr = adjustRedis(committed.key, committed.sample, -1)
+	}
+	if hotErr != nil && redisErr != nil {
+		return fmt.Errorf("%v; redis rollback: %v", hotErr, redisErr)
+	}
+	if hotErr != nil {
+		return hotErr
+	}
+	return redisErr
 }
 
 func Record(sample Sample) {
@@ -127,11 +349,45 @@ func Record(sample Sample) {
 		group:    sample.Group,
 		bucketTs: bucketStart(time.Now().Unix()),
 	}
-	actual, _ := hotBuckets.LoadOrStore(key, &atomicBucket{})
-	actual.(*atomicBucket).add(sample)
+	addHotSample(key, sample)
+	// Relay samples stay best-effort. Task samples do not use this path; they
+	// wait for Redis and only then store tasks.perf_sampled_at.
 	gopool.Go(func() {
-		recordRedis(key, sample)
+		_ = adjustRedis(key, sample, 1)
 	})
+}
+
+func addHotSample(key bucketKey, sample Sample) {
+	actual, _ := hotBuckets.LoadOrStore(key, &atomicBucket{})
+	applyHotDelta(actual.(*atomicBucket), sample, 1)
+}
+
+func subtractHotSample(key bucketKey, sample Sample) error {
+	value, ok := hotBuckets.Load(key)
+	if !ok {
+		return fmt.Errorf("hot bucket %s/%s/%d is gone; sample was not rolled back", key.model, key.group, key.bucketTs)
+	}
+	applyHotDelta(value.(*atomicBucket), sample, -1)
+	return nil
+}
+
+// applyHotDelta must match the fields atomicBucket.add counts. Sign is 1 or -1.
+func applyHotDelta(bucket *atomicBucket, sample Sample, sign int64) {
+	bucket.requestCount.Add(sign)
+	if sample.Success {
+		bucket.successCount.Add(sign)
+	}
+	if sample.LatencyMs > 0 {
+		bucket.totalLatencyMs.Add(sample.LatencyMs * sign)
+	}
+	if sample.HasTtft && sample.TtftMs >= 0 {
+		bucket.ttftSumMs.Add(sample.TtftMs * sign)
+		bucket.ttftCount.Add(sign)
+	}
+	if sample.OutputTokens > 0 && sample.GenerationMs > 0 {
+		bucket.outputTokens.Add(sample.OutputTokens * sign)
+		bucket.generationMs.Add(sample.GenerationMs * sign)
+	}
 }
 
 // queryWindow covers the current partial hour plus the preceding complete
@@ -555,32 +811,33 @@ func avgTps(value counters) float64 {
 	return float64(value.outputTokens) / (float64(value.generationMs) / 1000)
 }
 
-func recordRedis(key bucketKey, sample Sample) {
+func adjustRedis(key bucketKey, sample Sample, sign int64) error {
 	if !common.RedisEnabled || common.RDB == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	redisKey := redisBucketKey(key)
 	pipe := common.RDB.TxPipeline()
-	pipe.HIncrBy(ctx, redisKey, "req", 1)
+	pipe.HIncrBy(ctx, redisKey, "req", sign)
 	if sample.Success {
-		pipe.HIncrBy(ctx, redisKey, "ok", 1)
+		pipe.HIncrBy(ctx, redisKey, "ok", sign)
 	}
 	if sample.LatencyMs > 0 {
-		pipe.HIncrBy(ctx, redisKey, "lat", sample.LatencyMs)
+		pipe.HIncrBy(ctx, redisKey, "lat", sample.LatencyMs*sign)
 	}
 	if sample.HasTtft && sample.TtftMs >= 0 {
-		pipe.HIncrBy(ctx, redisKey, "ttft", sample.TtftMs)
-		pipe.HIncrBy(ctx, redisKey, "ttft_n", 1)
+		pipe.HIncrBy(ctx, redisKey, "ttft", sample.TtftMs*sign)
+		pipe.HIncrBy(ctx, redisKey, "ttft_n", sign)
 	}
 	if sample.OutputTokens > 0 && sample.GenerationMs > 0 {
-		pipe.HIncrBy(ctx, redisKey, "out", sample.OutputTokens)
-		pipe.HIncrBy(ctx, redisKey, "gen_ms", sample.GenerationMs)
+		pipe.HIncrBy(ctx, redisKey, "out", sample.OutputTokens*sign)
+		pipe.HIncrBy(ctx, redisKey, "gen_ms", sample.GenerationMs*sign)
 	}
 	pipe.Expire(ctx, redisKey, time.Hour)
-	_, _ = pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func mergeRedisActiveBuckets(merged map[bucketKey]counters, params QueryParams, startTs int64, endTs int64) {

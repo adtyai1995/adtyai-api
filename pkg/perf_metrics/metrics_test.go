@@ -2,9 +2,12 @@ package perfmetrics
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,9 +15,13 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/glebarez/sqlite"
+	"github.com/go-redis/redis/v8"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestClassifyRelayOutcome(t *testing.T) {
@@ -154,6 +161,290 @@ func TestRecordTaskResultSamplesTerminalTasks(t *testing.T) {
 		outputTokens:   5000,
 		generationMs:   100000,
 	}, merged[bucketKey{model: "video-model", group: "a"}])
+}
+
+func TestRecordTaskResultRefusesIdentityWithoutPrimaryKey(t *testing.T) {
+	hotBuckets.Clear()
+	t.Cleanup(func() { hotBuckets.Clear() })
+	now := time.Now().Unix()
+	var logs []string
+	restore := common.SetSysLogSink(func(level, message string) {
+		if level == "ERROR" {
+			logs = append(logs, message)
+		}
+	})
+	defer restore()
+	RecordTaskResult(&model.Task{
+		TaskID:     "task-no-pk",
+		Status:     model.TaskStatusSuccess,
+		Group:      "a",
+		SubmitTime: now - 10,
+		FinishTime: now,
+		Properties: model.Properties{OriginModelName: "video-no-pk"},
+	}, &relaycommon.TaskInfo{TotalTokens: 9})
+	assert.Zero(t, hotCounters(t, "video-no-pk", "a").requestCount)
+	require.NotEmpty(t, logs)
+	assert.Contains(t, strings.Join(logs, "\n"), "task_id=task-no-pk")
+	assert.Contains(t, strings.Join(logs, "\n"), "no primary key")
+}
+
+func TestRecordTaskResultDeduplicatesRecoveredTask(t *testing.T) {
+	db := openTaskSampleDB(t)
+	hotBuckets.Clear()
+	oldNow := taskSampleNow
+	oldRedis, oldClient := common.RedisEnabled, common.RDB
+	common.RedisEnabled, common.RDB = false, nil
+	t.Cleanup(func() {
+		hotBuckets.Clear()
+		taskSampleNow = oldNow
+		common.RedisEnabled, common.RDB = oldRedis, oldClient
+	})
+	firstBucket := time.Unix(1_700_000_000, 0)
+	taskSampleNow = func() time.Time { return firstBucket }
+	now := firstBucket.Unix()
+	task := &model.Task{
+		TaskID:     "task-recover-901",
+		ChannelId:  12,
+		Status:     model.TaskStatusSuccess,
+		Group:      "a",
+		SubmitTime: now - 120,
+		StartTime:  now - 100,
+		FinishTime: now,
+		Data:       json.RawMessage(`{}`),
+		Properties: model.Properties{OriginModelName: "video-recover-model"},
+	}
+	require.NoError(t, db.Create(task).Error)
+	info := &relaycommon.TaskInfo{TotalTokens: 3000}
+	RecordTaskResult(task, info)
+
+	var stored model.Task
+	require.NoError(t, db.First(&stored, task.ID).Error)
+	require.NotZero(t, stored.PerfSampledAt)
+	stale := stored
+	stale.PerfSampledAt = 0
+	stale.FailReason = "stale full-row update"
+	require.NoError(t, db.Model(&model.Task{}).Where("id = ?", task.ID).Select("*").Updates(&stale).Error)
+	var kept model.Task
+	require.NoError(t, db.First(&kept, task.ID).Error)
+	assert.Equal(t, "stale full-row update", kept.FailReason)
+	assert.Equal(t, stored.PerfSampledAt, kept.PerfSampledAt)
+	assert.Equal(t, counters{
+		requestCount:   1,
+		successCount:   1,
+		totalLatencyMs: 120000,
+		outputTokens:   3000,
+		generationMs:   100000,
+	}, hotCounters(t, "video-recover-model", "a"))
+
+	// Recovery reloads the row and must not count again, even if the in-memory copy forgot the marker.
+	replay := stored
+	replay.PerfSampledAt = 0
+	RecordTaskResult(&replay, info)
+	assert.Equal(t, stored.PerfSampledAt, replay.PerfSampledAt)
+	assert.Equal(t, int64(1), hotCounters(t, "video-recover-model", "a").requestCount)
+
+	// A cleared hot bucket and a later time bucket must not count the same terminal task again.
+	hotBuckets.Clear()
+	taskSampleNow = func() time.Time { return firstBucket.Add(2 * time.Hour) }
+	later := replay
+	later.PerfSampledAt = 0
+	RecordTaskResult(&later, info)
+	assert.Equal(t, stored.PerfSampledAt, later.PerfSampledAt)
+	assert.Zero(t, hotCounters(t, "video-recover-model", "a").requestCount)
+	var marked model.Task
+	require.NoError(t, db.First(&marked, task.ID).Error)
+	assert.Equal(t, stored.PerfSampledAt, marked.PerfSampledAt)
+}
+
+func TestRecordTaskResultDoesNotMarkWhenRecordFails(t *testing.T) {
+	db := openTaskSampleDB(t)
+	hotBuckets.Clear()
+	oldNow := taskSampleNow
+	oldWrite := writeTaskSampleMark
+	oldRedis, oldClient := common.RedisEnabled, common.RDB
+	taskSampleNow = func() time.Time { return time.Unix(1_700_003_600, 0) }
+	t.Cleanup(func() {
+		hotBuckets.Clear()
+		taskSampleNow = oldNow
+		writeTaskSampleMark = oldWrite
+		common.RedisEnabled, common.RDB = oldRedis, oldClient
+	})
+	now := taskSampleNow().Unix()
+	task := &model.Task{
+		TaskID:     "task-mark-after-record",
+		ChannelId:  4,
+		Status:     model.TaskStatusFailure,
+		Group:      "a",
+		SubmitTime: now - 60,
+		FinishTime: now,
+		Data:       json.RawMessage(`{}`),
+		Properties: model.Properties{OriginModelName: "video-mark-order"},
+	}
+	require.NoError(t, db.Create(task).Error)
+	info := relaycommon.FailTaskInfo("boom")
+
+	common.RedisEnabled = true
+	common.RDB = redis.NewClient(&redis.Options{
+		Addr:         "127.0.0.1:1",
+		DialTimeout:  50 * time.Millisecond,
+		ReadTimeout:  50 * time.Millisecond,
+		WriteTimeout: 50 * time.Millisecond,
+	})
+	t.Cleanup(func() {
+		if common.RDB != nil {
+			_ = common.RDB.Close()
+		}
+	})
+	var logs []string
+	restore := common.SetSysLogSink(func(level, message string) {
+		if level == "ERROR" {
+			logs = append(logs, message)
+		}
+	})
+	defer restore()
+	RecordTaskResult(task, info)
+	require.NotEmpty(t, logs)
+	assert.Contains(t, logs[len(logs)-1], "id="+fmt.Sprint(task.ID))
+	assert.Zero(t, hotCounters(t, "video-mark-order", "a").requestCount)
+	var unmarked model.Task
+	require.NoError(t, db.First(&unmarked, task.ID).Error)
+	assert.Zero(t, unmarked.PerfSampledAt)
+
+	live := miniredis.RunT(t)
+	require.NoError(t, common.RDB.Close())
+	common.RDB = redis.NewClient(&redis.Options{Addr: live.Addr()})
+	firstKey := redisBucketKey(bucketKey{model: "video-mark-order", group: "a", bucketTs: bucketStart(now)})
+	RecordTaskResult(task, info)
+	assert.Equal(t, counters{requestCount: 1, totalLatencyMs: 60000}, hotCounters(t, "video-mark-order", "a"))
+	require.NoError(t, db.First(&unmarked, task.ID).Error)
+	require.NotZero(t, unmarked.PerfSampledAt)
+	values, err := common.RDB.HGetAll(context.Background(), firstKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "1", values["req"])
+	assert.Empty(t, values["ok"])
+	assert.Equal(t, "60000", values["lat"])
+
+	hotBuckets.Clear()
+	laterAt := time.Unix(now+7200, 0)
+	taskSampleNow = func() time.Time { return laterAt }
+	laterKey := redisBucketKey(bucketKey{model: "video-mark-order", group: "a", bucketTs: bucketStart(laterAt.Unix())})
+	replay := unmarked
+	replay.PerfSampledAt = 0
+	RecordTaskResult(&replay, info)
+	assert.Zero(t, hotCounters(t, "video-mark-order", "a").requestCount)
+	exists, err := common.RDB.Exists(context.Background(), laterKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), exists)
+	values, err = common.RDB.HGetAll(context.Background(), firstKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "1", values["req"])
+
+	writeTaskSampleMark = func(tx *gorm.DB, id int64, sampledAt int64) (int64, error) {
+		return 0, errors.New("marker write failed")
+	}
+	other := &model.Task{
+		TaskID:     "task-mark-write-fails",
+		ChannelId:  4,
+		Status:     model.TaskStatusSuccess,
+		Group:      "a",
+		SubmitTime: now - 30,
+		StartTime:  now - 20,
+		FinishTime: now,
+		Data:       json.RawMessage(`{}`),
+		Properties: model.Properties{OriginModelName: "video-mark-write"},
+	}
+	require.NoError(t, db.Create(other).Error)
+	logs = nil
+	RecordTaskResult(other, &relaycommon.TaskInfo{TotalTokens: 100})
+	require.NotEmpty(t, logs)
+	assert.Contains(t, logs[len(logs)-1], "marker write failed")
+	assert.Zero(t, hotCounters(t, "video-mark-write", "a").requestCount)
+	writeKey := redisBucketKey(bucketKey{model: "video-mark-write", group: "a", bucketTs: bucketStart(taskSampleNow().Unix())})
+	failedValues, err := common.RDB.HGetAll(context.Background(), writeKey).Result()
+	require.NoError(t, err)
+	assert.Contains(t, []string{"", "0"}, failedValues["req"])
+	var notMarked model.Task
+	require.NoError(t, db.First(&notMarked, other.ID).Error)
+	assert.Zero(t, notMarked.PerfSampledAt)
+	writeTaskSampleMark = oldWrite
+	RecordTaskResult(other, &relaycommon.TaskInfo{TotalTokens: 100})
+	assert.Equal(t, int64(1), hotCounters(t, "video-mark-write", "a").requestCount)
+	retriedValues, err := common.RDB.HGetAll(context.Background(), writeKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "1", retriedValues["req"])
+	require.NoError(t, db.First(&notMarked, other.ID).Error)
+	assert.NotZero(t, notMarked.PerfSampledAt)
+}
+
+func TestRecordTaskResultMissingColumnDoesNotAddColumn(t *testing.T) {
+	db := openTaskSampleDB(t)
+	hotBuckets.Clear()
+	oldRedis, oldClient := common.RedisEnabled, common.RDB
+	common.RedisEnabled, common.RDB = false, nil
+	t.Cleanup(func() {
+		hotBuckets.Clear()
+		common.RedisEnabled, common.RDB = oldRedis, oldClient
+	})
+	now := time.Now().Unix()
+	task := &model.Task{
+		TaskID:     "task-missing-column",
+		ChannelId:  9,
+		Status:     model.TaskStatusSuccess,
+		Group:      "a",
+		SubmitTime: now - 10,
+		FinishTime: now,
+		Data:       json.RawMessage(`{}`),
+		Properties: model.Properties{OriginModelName: "video-missing-column"},
+	}
+	require.NoError(t, db.Create(task).Error)
+	require.NoError(t, db.Exec("ALTER TABLE tasks DROP COLUMN perf_sampled_at").Error)
+	require.False(t, db.Migrator().HasColumn(&model.Task{}, "perf_sampled_at"))
+	require.False(t, db.Migrator().HasColumn(&model.Task{}, "PerfSampledAt"))
+
+	var logs []string
+	restore := common.SetSysLogSink(func(level, message string) {
+		if level == "ERROR" {
+			logs = append(logs, message)
+		}
+	})
+	defer restore()
+	RecordTaskResult(task, &relaycommon.TaskInfo{TotalTokens: 40})
+
+	require.False(t, db.Migrator().HasColumn(&model.Task{}, "perf_sampled_at"))
+	require.False(t, db.Migrator().HasColumn(&model.Task{}, "PerfSampledAt"))
+	assert.Zero(t, hotCounters(t, "video-missing-column", "a").requestCount)
+	require.NotEmpty(t, logs)
+	assert.Contains(t, strings.Join(logs, "\n"), "tasks.perf_sampled_at is missing")
+	assert.Contains(t, strings.Join(logs, "\n"), "id="+fmt.Sprint(task.ID))
+}
+
+func openTaskSampleDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "tasks.db")), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	previous := model.DB
+	model.DB = db
+	t.Cleanup(func() { model.DB = previous })
+	require.NoError(t, db.AutoMigrate(&model.Task{}))
+	return db
+}
+
+func hotCounters(t *testing.T, modelName, group string) counters {
+	t.Helper()
+	merged := map[bucketKey]counters{}
+	hotBuckets.Range(func(key, value any) bool {
+		k := key.(bucketKey)
+		if k.model != modelName || k.group != group {
+			return true
+		}
+		k.bucketTs = 0
+		mergeCounters(merged, k, value.(*atomicBucket).snapshot())
+		return true
+	})
+	return merged[bucketKey{model: modelName, group: group}]
 }
 
 // TEST_PERF_MYSQL_DSN / TEST_PERF_POSTGRES_DSN optionally run the aggregation

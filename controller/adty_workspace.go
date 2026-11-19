@@ -1,7 +1,11 @@
 package controller
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -277,17 +281,73 @@ func PostAdtyTicket(c *gin.Context) {
 	common.ApiSuccess(c, ticket)
 }
 
+const AdtyTicketImageGrantTTL = 5 * time.Minute
+
+type adtyTicketDetailResponse struct {
+	*service.AdtyTicketDetail
+	ImageGrants map[int64]string `json:"image_grants,omitempty"`
+}
+
+func adtyTicketImageGrantSecret() []byte {
+	return []byte(strings.TrimSpace(common.CryptoSecret))
+}
+
+func adtyTicketImageGrantMAC(userId int, ticketId, imageId, exp int64) string {
+	mac := hmac.New(sha256.New, adtyTicketImageGrantSecret())
+	_, _ = fmt.Fprintf(mac, "adty-ticket-image\x00%d\x00%d\x00%d\x00%d", userId, ticketId, imageId, exp)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func IssueAdtyTicketImageGrant(userId int, ticketId, imageId, exp int64) (string, error) {
+	now := time.Now().Unix()
+	if userId <= 0 || ticketId <= 0 || imageId <= 0 || exp <= now || exp-now > int64(AdtyTicketImageGrantTTL/time.Second) || len(adtyTicketImageGrantSecret()) == 0 {
+		return "", service.ErrAdtyTicketForbidden
+	}
+	sig := adtyTicketImageGrantMAC(userId, ticketId, imageId, exp)
+	return strconv.FormatInt(exp, 10) + "." + sig, nil
+}
+
+func VerifyAdtyTicketImageGrant(userId int, ticketId, imageId int64, grant string, now int64) bool {
+	if userId <= 0 || ticketId <= 0 || imageId <= 0 || len(grant) > 100 || len(adtyTicketImageGrantSecret()) == 0 {
+		return false
+	}
+	expStr, sigStr, ok := strings.Cut(grant, ".")
+	if !ok || len(sigStr) != sha256.Size*2 {
+		return false
+	}
+	exp, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil || exp <= now || exp-now > int64(AdtyTicketImageGrantTTL/time.Second) {
+		return false
+	}
+	expected := adtyTicketImageGrantMAC(userId, ticketId, imageId, exp)
+	return hmac.Equal([]byte(sigStr), []byte(expected))
+}
+
 func GetAdtyTicket(c *gin.Context) {
 	id, ok := adtyInt64Param(c, "id")
 	if !ok {
 		return
 	}
-	detail, err := service.GetAdtyTicket(c.GetInt("id"), id)
+	userID := c.GetInt("id")
+	detail, err := service.GetAdtyTicket(userID, id)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, detail)
+	exp := time.Now().Add(AdtyTicketImageGrantTTL).Unix()
+	var grants map[int64]string
+	if len(detail.Images) > 0 {
+		grants = make(map[int64]string, len(detail.Images))
+		for _, img := range detail.Images {
+			if grant, err := IssueAdtyTicketImageGrant(userID, id, img.Id, exp); err == nil {
+				grants[img.Id] = grant
+			}
+		}
+	}
+	common.ApiSuccess(c, adtyTicketDetailResponse{
+		AdtyTicketDetail: detail,
+		ImageGrants:      grants,
+	})
 }
 
 func PostAdtyTicketReply(c *gin.Context) {
@@ -382,15 +442,33 @@ func PostAdtyTicketImage(c *gin.Context) {
 		common.ApiErrorT(c, "Only images are accepted")
 		return
 	}
-	image, err := service.AddAdtyTicketImage(c.GetInt("id"), id, body.Visibility, raw)
+	userID := c.GetInt("id")
+	image, err := service.AddAdtyTicketImage(userID, id, body.Visibility, raw)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"id": image.Id, "object_id": image.ObjectId, "mime": image.Mime, "width": image.Width, "height": image.Height})
+	exp := time.Now().Add(AdtyTicketImageGrantTTL).Unix()
+	grant, err := IssueAdtyTicketImageGrant(userID, id, image.Id, exp)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"id":        image.Id,
+		"object_id": image.ObjectId,
+		"mime":      image.Mime,
+		"width":     image.Width,
+		"height":    image.Height,
+		"grant":     grant,
+		"grant_exp": exp,
+	})
 }
 
 func GetAdtyTicketImage(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Referrer-Policy", "no-referrer")
 	id, ok := adtyInt64Param(c, "id")
 	if !ok {
 		return
@@ -399,7 +477,43 @@ func GetAdtyTicketImage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	path, mime, err := service.OpenAdtyTicketImage(c.GetInt("id"), id, imageID)
+	userID := c.GetInt("id")
+	now := time.Now()
+	if c.Query("action") == "grant" {
+		detail, err := service.GetAdtyTicket(userID, id)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		visible := false
+		for _, img := range detail.Images {
+			if img.Id == imageID {
+				visible = true
+				break
+			}
+		}
+		if !visible {
+			common.ApiError(c, service.ErrAdtyTicketForbidden)
+			return
+		}
+		exp := now.Add(AdtyTicketImageGrantTTL).Unix()
+		grant, err := IssueAdtyTicketImageGrant(userID, id, imageID, exp)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, gin.H{
+			"grant":      grant,
+			"expires_at": exp,
+		})
+		return
+	}
+
+	if c.Query("action") != "" || !VerifyAdtyTicketImageGrant(userID, id, imageID, c.GetHeader("X-Ticket-Image-Grant"), now.Unix()) {
+		common.ApiError(c, service.ErrAdtyTicketForbidden)
+		return
+	}
+	path, mime, err := service.OpenAdtyTicketImage(userID, id, imageID)
 	if err != nil {
 		common.ApiError(c, err)
 		return

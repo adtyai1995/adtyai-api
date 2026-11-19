@@ -67,6 +67,7 @@ func TestMain(m *testing.M) {
 		&model.AdtyFundBatch{},
 		&model.AdtyFundAllocation{},
 		&model.AdtyBillingHold{},
+		&model.PerfMetric{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
 	}
@@ -81,6 +82,7 @@ func TestMain(m *testing.M) {
 func truncate(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
+		require.NoError(t, model.DB.Exec("DELETE FROM perf_metrics").Error)
 		require.NoError(t, model.DB.Exec("DELETE FROM adty_fund_allocations").Error)
 		require.NoError(t, model.DB.Exec("DELETE FROM adty_fund_batches").Error)
 		require.NoError(t, model.DB.Exec("DELETE FROM adty_billing_holds").Error)

@@ -16,6 +16,7 @@ import (
 	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/bytedance/gopkg/util/gopool"
@@ -1364,4 +1365,80 @@ func TestUpdateBatchTasksPollClassification(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFinalizeTerminalTaskRecoveryDoesNotDoubleSamplePerfMetrics(t *testing.T) {
+	truncate(t)
+	const userID, tokenID, channelID = 710, 710, 710
+	seedUser(t, userID, 10_000)
+	seedToken(t, tokenID, userID, "sk-perf-once", 10_000)
+	seedTaskPollingChannel(t, channelID, true)
+
+	now := time.Now().Unix()
+	modelName := fmt.Sprintf("kling-perf-once-%d", now)
+	task := makeTask(userID, channelID, 1_000, tokenID, BillingSourceWallet, 0)
+	task.TaskID = "task_perf_once"
+	task.Status = model.TaskStatusSuccess
+	task.Group = "default"
+	task.SubmitTime = now - 30
+	task.StartTime = now - 20
+	task.FinishTime = now
+	task.Properties.OriginModelName = modelName
+	if task.PrivateData.BillingContext != nil {
+		task.PrivateData.BillingContext.OriginModelName = modelName
+	}
+	task.PrivateData.UpstreamTaskID = "upstream_perf_once"
+	seedTaskReservation(t, task)
+	require.NoError(t, model.DB.Create(task).Error)
+
+	var settled int
+	adaptor := &scriptedPollingAdaptor{onComplete: func(context.Context) { settled++ }}
+	result := &relaycommon.TaskInfo{Status: string(model.TaskStatusSuccess), TotalTokens: 200}
+
+	finalizeTerminalTask(context.Background(), adaptor, task, result)
+	var reloaded model.Task
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	require.NotZero(t, reloaded.PerfSampledAt)
+	quotaAfterSample := getUserQuota(t, userID)
+	tokenAfterSample := getTokenRemainQuota(t, tokenID)
+	replay := reloaded
+	replay.PerfSampledAt = 0
+	finalizeTerminalTask(context.Background(), adaptor, &replay, result)
+	var replayed model.Task
+	require.NoError(t, model.DB.First(&replayed, task.ID).Error)
+	assert.Equal(t, reloaded.PerfSampledAt, replayed.PerfSampledAt)
+	assert.Equal(t, reloaded.PerfSampledAt, replay.PerfSampledAt)
+	assert.Equal(t, quotaAfterSample, getUserQuota(t, userID))
+	assert.Equal(t, tokenAfterSample, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, 2, settled)
+
+	stale := replayed
+	stale.PerfSampledAt = 0
+	stale.FailReason = "stale full-row update"
+	_, err := stale.UpdateWithStatus(stale.Status)
+	require.NoError(t, err)
+	var afterStale model.Task
+	require.NoError(t, model.DB.First(&afterStale, task.ID).Error)
+	assert.Equal(t, "stale full-row update", afterStale.FailReason)
+	assert.Equal(t, reloaded.PerfSampledAt, afterStale.PerfSampledAt)
+	assert.Equal(t, quotaAfterSample, getUserQuota(t, userID))
+	assert.Equal(t, tokenAfterSample, getTokenRemainQuota(t, tokenID))
+	afterStale.PerfSampledAt = 0
+	finalizeTerminalTask(context.Background(), adaptor, &afterStale, result)
+	assert.Equal(t, 3, settled)
+	assert.Equal(t, quotaAfterSample, getUserQuota(t, userID))
+	assert.Equal(t, tokenAfterSample, getTokenRemainQuota(t, tokenID))
+
+	summary, err := perfmetrics.QuerySummaryAll(24, []string{"default"}, modelName)
+	require.NoError(t, err)
+	var found *perfmetrics.ModelSummary
+	for i := range summary.Models {
+		if summary.Models[i].ModelName == modelName {
+			found = &summary.Models[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	assert.Equal(t, int64(1), found.RequestCount)
+	assert.Equal(t, 100.0, found.SuccessRate)
 }

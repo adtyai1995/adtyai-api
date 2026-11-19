@@ -19,24 +19,39 @@ For commercial licensing, please contact support@quantumnous.com
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { AxiosAdapter } from 'axios'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { TicketCenter } from '../ticket-center'
+import { TicketImage } from '../ticket-image'
 
 let client: QueryClient
+const originalAdapter = api.defaults.adapter
+const originalAuth = useAuthStore.getState().auth
 
 beforeEach(() => {
   client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
+  vi.stubGlobal(
+    'URL',
+    Object.assign(class extends URL {}, {
+      createObjectURL: vi.fn(() => 'blob:ticket-receipt'),
+      revokeObjectURL: vi.fn(),
+    })
+  )
 })
 
 afterEach(() => {
   cleanup()
   client.clear()
+  api.defaults.adapter = originalAdapter
+  useAuthStore.setState({ auth: originalAuth })
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 function mount() {
@@ -48,9 +63,44 @@ function mount() {
 }
 
 describe('TicketCenter detail images, events, and mutation error handling', () => {
-  it('renders authorized images with private endpoint links and handling events from detail (ISS-R1-0134)', async () => {
+  it('carries the dashboard identity on grant and image requests without putting credentials in preview URLs', async () => {
+    useAuthStore.setState({ auth: { ...originalAuth, accessToken: 'local-ticket-access' } })
+    const adapter = vi.fn<AxiosAdapter>(async (config) => ({
+      data: config.responseType === 'blob'
+        ? new Blob(['receipt'], { type: 'image/png' })
+        : { success: true, data: { grant: 'scoped-ticket-grant', expires_at: 1900000300 } },
+      status: 200, statusText: 'OK', headers: {}, config,
+    }))
+    api.defaults.adapter = adapter
+    const { unmount } = render(
+      <QueryClientProvider client={client}>
+        <TicketImage ticketID={42} imageID={9} label='Receipt' />
+      </QueryClientProvider>
+    )
+    expect(await screen.findByRole('img', { name: 'Receipt' })).toHaveAttribute('src', 'blob:ticket-receipt')
+    expect(adapter).toHaveBeenCalledTimes(2)
+    for (const [config] of adapter.mock.calls) {
+      expect(config.url).toBe('/api/adty/tickets/42/images/9')
+      expect(config.headers.get('Authorization')).toBe('Bearer local-ticket-access')
+    }
+    expect(adapter.mock.calls[1][0].headers.get('X-Ticket-Image-Grant')).toBe('scoped-ticket-grant')
+    expect(screen.getByRole('link', { name: 'Receipt' })).toHaveAttribute('href', 'blob:ticket-receipt')
+    unmount()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:ticket-receipt')
+  })
+
+  it('loads images through a fresh scoped grant, hides internal images, and releases preview bytes on close', async () => {
     const user = userEvent.setup()
-    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    const get = vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
+      if (url === '/api/adty/tickets/42/images/9') {
+        if ((config?.params as { action?: string } | undefined)?.action === 'grant') {
+          return { data: { success: true, data: { grant: 'short-image-grant', expires_at: 1900000300 } } }
+        }
+        if (config?.headers?.['X-Ticket-Image-Grant'] === 'short-image-grant' && config.responseType === 'blob') {
+          return { data: new Blob(['receipt'], { type: 'image/png' }) }
+        }
+        throw new Error('Missing scoped image authorization')
+      }
       if (url === '/api/adty/tickets') {
         return {
           data: {
@@ -99,18 +149,19 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
       return { data: { success: true, data: {} } }
     })
 
-    mount()
+    const { unmount } = mount()
     await user.click(await screen.findByRole('button', { name: /Payment screenshot/i }))
 
     const link = await screen.findByRole('link', {
       name: /Image 0123456789abcdef0123456789abcdef/i,
     })
-    expect(link).toHaveAttribute('href', '/api/adty/tickets/42/images/9')
+    expect(link).toHaveAttribute('href', 'blob:ticket-receipt')
 
     const img = screen.getByRole('img', {
       name: /Image 0123456789abcdef0123456789abcdef/i,
     })
-    expect(img).toHaveAttribute('src', '/api/adty/tickets/42/images/9')
+    expect(img).toHaveAttribute('src', 'blob:ticket-receipt')
+    expect(get).toHaveBeenCalledWith('/api/adty/tickets/42/images/9', expect.objectContaining({ params: { action: 'grant' } }))
 
     // Internal image is not rendered when can_note is false.
     expect(
@@ -120,6 +171,36 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
     // Handling events from detail are rendered.
     expect(screen.getByText(/Event: create · topup/i)).toBeInTheDocument()
     expect(screen.getByText(/Event: status · Ticket status in progress \(in_progress\)/i)).toBeInTheDocument()
+    unmount()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:ticket-receipt')
+  })
+
+  it('shows a failed image load without a raw endpoint link and requests a new grant on retry', async () => {
+    const user = userEvent.setup()
+    let fail = true
+    let grants = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
+      if (url === '/api/adty/tickets') {
+        return { data: { success: true, data: { tickets: [{ id: 42, title: 'Retry receipt', status: 'new' }] } } }
+      }
+      if (url === '/api/adty/tickets/42') {
+        return { data: { success: true, data: { ticket: { id: 42, title: 'Retry receipt', status: 'new' }, messages: [], images: [{ id: 9, visibility: 'public', mime: 'image/png' }], can_note: false, can_manage: false } } }
+      }
+      if (url === '/api/adty/tickets/42/images/9' && (config?.params as { action?: string } | undefined)?.action === 'grant') {
+        grants += 1
+        return { data: { success: true, data: { grant: 'fresh-grant', expires_at: 1900000300 } } }
+      }
+      if (fail) throw new Error('Receipt temporarily unavailable')
+      return { data: new Blob(['receipt'], { type: 'image/png' }) }
+    })
+    mount()
+    await user.click(await screen.findByRole('button', { name: /Retry receipt/i }))
+    expect(await screen.findByText('Receipt temporarily unavailable')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Image #9' })).not.toBeInTheDocument()
+    fail = false
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('link', { name: 'Image #9' })).toHaveAttribute('href', 'blob:ticket-receipt')
+    expect(grants).toBe(2)
   })
 
   it('retains reply and internal note drafts when the server returns success:false and clears only after success (ISS-R1-0135)', async () => {

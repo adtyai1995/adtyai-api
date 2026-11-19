@@ -29,7 +29,10 @@ func TestTeamProfileAndTopupDoNotAddBonus(t *testing.T) {
 	require.Equal(t, "Ops Renamed", team.Name)
 	member := referralUser(t, db, "gap-member")
 	_, err = JoinAdtyTeam(member.Id, created.Team.Id)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	employee, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "gap-emp", "StrongPassword123!", "Gap Emp")
 	require.NoError(t, err)
+	member.Id = employee.UserId
 	require.ErrorIs(t, UpdateAdtyTeamProfile(member.Id, created.Team.Id, "Stolen"), ErrAdtyTeamForbidden)
 	require.NoError(t, db.First(&team, created.Team.Id).Error)
 	require.Equal(t, "Ops Renamed", team.Name)
@@ -678,4 +681,220 @@ func TestStaffBalanceWorkflowWritesSiteAndOfficialAudit(t *testing.T) {
 			require.Equal(t, root.Id, officialAudits[0].UserId)
 		})
 	}
+}
+
+func TestTodoStateMachinePersistsAndPreservesHistory(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	require.NoError(t, model.MigrateAuditLogs())
+	user := referralUser(t, db, "todo-state-user")
+
+	pub := model.AdtyNotificationPublication{
+		IssuerSiteId:  0,
+		PublisherId:   1,
+		PublisherName: "Root",
+		Audience:      "all_users",
+		Kind:          "system",
+		Title:         "Margin anomaly requires action",
+		Content:       "Please replenish margin within 24 hours.",
+		Business:      "margin_anomaly",
+		Status:        "published",
+		Revision:      1,
+		ReadKey:       "severe-margin-todo-1",
+		PublishedAt:   100,
+		UpdatedAt:     100,
+		UpdatedBy:     1,
+	}
+	require.NoError(t, db.Create(&pub).Error)
+	require.NoError(t, db.Create(&model.AdtyAnomalyDisposition{
+		Kind:   "margin_anomaly",
+		Ref:    pub.ReadKey,
+		Status: "open",
+		Note:   "margin below floor",
+	}).Error)
+
+	produced, err := UpsertAdtySevereTodo(user.Id, 0, pub.ReadKey, "", "", "", pub.Id)
+	require.NoError(t, err)
+	require.Equal(t, AdtyTodoStatusPending, produced.Status)
+	require.Equal(t, pub.Id, produced.PublicationId)
+
+	inProgress, err := TransitionAdtyTodo(nil, user.Id, pub.ReadKey, AdtyTodoStatusInProgress, "investigating")
+	require.NoError(t, err)
+	require.Equal(t, AdtyTodoStatusInProgress, inProgress.Status)
+
+	require.NoError(t, CompleteAdtyTodo(user.Id, "todo:"+pub.ReadKey))
+	// Idempotent replay does not duplicate history or error.
+	require.NoError(t, CompleteAdtyTodo(user.Id, pub.ReadKey))
+	// Completed todo cannot transition backward.
+	_, err = TransitionAdtyTodo(nil, user.Id, pub.ReadKey, AdtyTodoStatusPending, "reopen")
+	require.Error(t, err)
+
+	openOnly, err := ListAdtyTodosForUser(user.Id, false)
+	require.NoError(t, err)
+	require.Empty(t, openOnly)
+
+	allTodos, err := ListAdtyTodosForUser(user.Id, true)
+	require.NoError(t, err)
+	require.Len(t, allTodos, 1)
+	require.Equal(t, AdtyTodoStatusCompleted, allTodos[0].Status)
+	require.Positive(t, allTodos[0].CompletedAt)
+
+	history, err := GetAdtyTodoHistory(user.Id, pub.ReadKey)
+	require.NoError(t, err)
+	require.Len(t, history, 3)
+	require.Equal(t, AdtyTodoStatusPending, history[0].ToStatus)
+	require.Equal(t, AdtyTodoStatusInProgress, history[1].ToStatus)
+	require.Equal(t, AdtyTodoStatusCompleted, history[2].ToStatus)
+
+	// Completing a severe todo preserves inbox history (never hides the notification).
+	var hideCount int64
+	require.NoError(t, db.Model(&model.AdtyNotificationHide{}).Where("user_id = ?", user.Id).Count(&hideCount).Error)
+	require.Zero(t, hideCount)
+
+	inbox, err := GetAdtyNotificationInbox(user.Id, nil, 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, inbox.Announcements)
+	detail, ok := AnnouncementDetail(inbox.Announcements, pub.ReadKey)
+	require.True(t, ok)
+	require.Equal(t, AdtyTodoStatusCompleted, detail["todo_status"])
+	require.Equal(t, pub.ReadKey, detail["todo_key"])
+
+	var disp model.AdtyAnomalyDisposition
+	require.NoError(t, db.Where("ref = ?", pub.ReadKey).First(&disp).Error)
+	require.Equal(t, "resolved", disp.Status)
+
+	var todoAudits []model.AuditLog
+	require.NoError(t, model.LOG_DB.Where("action = ? AND object_id = ?", "adty.todo.complete", pub.ReadKey).Find(&todoAudits).Error)
+	require.Len(t, todoAudits, 1)
+}
+
+func TestSevereTodoIsProducedBeforeOwnedTransitionAndRejectsForeignKeys(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	publisher := referralUser(t, db, "todo-publisher")
+	owner := referralUser(t, db, "todo-owner")
+	reader := referralUser(t, db, "todo-reader")
+	stranger := referralUser(t, db, "todo-stranger")
+	siteOwner := referralUser(t, db, "todo-site-owner")
+	site := model.AdtySite{OwnerUserId: siteOwner.Id, Subdomain: "todo-site", Status: model.AdtySiteStatusActive}
+	require.NoError(t, db.Create(&site).Error)
+
+	userNotice, err := SaveAdtyNotificationPublication(publisher.Id, nil, 0, AdtyNotificationInput{
+		Title:        "User margin",
+		Content:      "Replenish the user margin.",
+		Kind:         "system",
+		Audience:     "user",
+		TargetUserId: owner.Id,
+		Business:     "margin_anomaly",
+	}, false)
+	require.NoError(t, err)
+	owned, err := ListAdtyTodosForUser(owner.Id, true)
+	require.NoError(t, err)
+	require.Len(t, owned, 1)
+	require.Equal(t, AdtyTodoStatusPending, owned[0].Status)
+	require.Equal(t, userNotice.ReadKey, owned[0].Key)
+
+	siteNotice, err := SaveAdtyNotificationPublication(publisher.Id, nil, 0, AdtyNotificationInput{
+		Title:        "Site margin",
+		Content:      "Replenish the site margin.",
+		Kind:         "system",
+		Audience:     "site",
+		TargetSiteId: site.Id,
+		Business:     "severe_todo",
+	}, false)
+	require.NoError(t, err)
+	siteTodos, err := ListAdtyTodosForUser(siteOwner.Id, false)
+	require.NoError(t, err)
+	require.Len(t, siteTodos, 1)
+	require.Equal(t, siteNotice.ReadKey, siteTodos[0].Key)
+
+	platform, err := SaveAdtyNotificationPublication(publisher.Id, nil, 0, AdtyNotificationInput{
+		Title:    "Platform margin",
+		Content:  "Visible after the reader opens the inbox.",
+		Kind:     "system",
+		Audience: "all_users",
+		Business: "margin_anomaly",
+	}, false)
+	require.NoError(t, err)
+	beforeInbox, err := ListAdtyTodosForUser(reader.Id, true)
+	require.NoError(t, err)
+	require.Empty(t, beforeInbox)
+	_, err = GetAdtyNotificationInbox(reader.Id, nil, 0)
+	require.NoError(t, err)
+	afterInbox, err := ListAdtyTodosForUser(reader.Id, true)
+	require.NoError(t, err)
+	require.Len(t, afterInbox, 1)
+	require.Equal(t, AdtyTodoStatusPending, afterInbox[0].Status)
+	require.Equal(t, platform.ReadKey, afterInbox[0].Key)
+
+	inProgress, err := MarkAdtyTodoInProgress(owner.Id, userNotice.ReadKey, "investigating")
+	require.NoError(t, err)
+	require.Equal(t, AdtyTodoStatusInProgress, inProgress.Status)
+	_, err = MarkAdtyTodoInProgress(owner.Id, "missing-todo", "")
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+
+	require.Error(t, CompleteAdtyTodo(owner.Id, "   "))
+	require.ErrorIs(t, CompleteAdtyTodo(stranger.Id, "missing-todo"), gorm.ErrRecordNotFound)
+	require.EqualError(t, CompleteAdtyTodo(stranger.Id, userNotice.ReadKey), "Todo item belongs to another account")
+	var strangerCount int64
+	require.NoError(t, db.Model(&AdtyTodoItem{}).Where("user_id = ?", stranger.Id).Count(&strangerCount).Error)
+	require.Zero(t, strangerCount)
+	var missingCount int64
+	require.NoError(t, db.Model(&AdtyTodoItem{}).Where("key = ?", "missing-todo").Count(&missingCount).Error)
+	require.Zero(t, missingCount)
+
+	require.NoError(t, CompleteAdtyTodo(owner.Id, userNotice.ReadKey))
+	history, err := GetAdtyTodoHistory(owner.Id, userNotice.ReadKey)
+	require.NoError(t, err)
+	require.Len(t, history, 3)
+	require.Equal(t, AdtyTodoStatusPending, history[0].ToStatus)
+	require.Equal(t, AdtyTodoStatusInProgress, history[1].ToStatus)
+	require.Equal(t, AdtyTodoStatusCompleted, history[2].ToStatus)
+}
+
+func TestBilingualNoticeTemplateManagementAndRendering(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	require.NoError(t, model.MigrateAuditLogs())
+	root := referralUser(t, db, "tpl-root")
+	admin := referralUser(t, db, "tpl-admin")
+
+	// Non-Root cannot save fixed system templates.
+	_, err := SaveAdtyNoticeTemplate(admin.Id, common.RoleAdminUser, "channel_disabled", "标题", "内容 {{1}}", "Title", "Body {{1}}")
+	require.Error(t, err)
+
+	// Placeholder mismatch between Chinese and English is rejected.
+	_, err = SaveAdtyNoticeTemplate(root.Id, common.RoleRootUser, "channel_disabled", "通道 {{1}} 告警", "原因 {{2}}", "Channel {{1}} alert", "Reason without second placeholder")
+	require.Error(t, err)
+
+	// Root saves valid bilingual template.
+	saved, err := SaveAdtyNoticeTemplate(
+		root.Id,
+		common.RoleRootUser,
+		"channel_disabled",
+		"[自定义] 通道「{{1}}」（#{{2}}）已停用",
+		"通道 {{1}} (#{{2}}) 因 {{3}} 自动停用",
+		`[Custom] Channel "{{1}}" (#{{2}}) disabled`,
+		`Channel {{1}} (#{{2}}) was disabled due to {{3}}`,
+	)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, saved.Revision)
+
+	zhTitle, zhBody, err := RenderAdtyNoticeTemplate("channel_disabled", "zh-CN", nil, "kling-pro", 12, "timeout")
+	require.NoError(t, err)
+	require.Equal(t, "[自定义] 通道「kling-pro」（#12）已停用", zhTitle)
+	require.Equal(t, "通道 kling-pro (#12) 因 timeout 自动停用", zhBody)
+
+	enTitle, enBody, err := RenderAdtyNoticeTemplate("channel_disabled", "en", nil, "kling-pro", 12, "timeout")
+	require.NoError(t, err)
+	require.Equal(t, `[Custom] Channel "kling-pro" (#12) disabled`, enTitle)
+	require.Equal(t, `Channel kling-pro (#12) was disabled due to timeout`, enBody)
+
+	biTitle, biBody, err := RenderAdtyBilingualNotice("channel_disabled", nil, "kling-pro", 12, "timeout")
+	require.NoError(t, err)
+	require.Contains(t, biTitle, zhTitle)
+	require.Contains(t, biTitle, enTitle)
+	require.Contains(t, biBody, zhBody)
+	require.Contains(t, biBody, enBody)
+
+	allTemplates, err := ListAdtyNoticeTemplates()
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(allTemplates), 6)
 }

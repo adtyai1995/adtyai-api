@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -72,6 +73,12 @@ type Task struct {
 	Data                  json.RawMessage `json:"data" gorm:"type:json"`
 	BillingPending        bool            `json:"-" gorm:"index;not null;default:false"`
 	BillingInitialPending bool            `json:"-" gorm:"index;not null;default:false"`
+	// PerfSampledAt is the unix time this terminal task was counted in
+	// performance metrics. Zero means not sampled. The field can be stored on
+	// create, but GORM will not update it, so a later Select("*") update
+	// cannot clear the marker. The sampler writes the column itself, and only
+	// after the sample commits. It does not create the column.
+	PerfSampledAt int64 `json:"-" gorm:"->;<-:create;column:perf_sampled_at;not null;default:0"`
 }
 
 func (t *Task) SetData(data any) {
@@ -700,4 +707,21 @@ func (t *Task) ToOpenAIVideo() *dto.OpenAIVideo {
 		}
 	}
 	return openAIVideo
+}
+
+// EnsureTaskPerfSampledAt adds tasks.perf_sampled_at when the master migration
+// runs. Sampling must not create this column. Call it only after AutoMigrate
+// has included Task. A missing column makes task reads and inserts fail once
+// the field is on the struct, so migration failure must stop startup.
+func EnsureTaskPerfSampledAt(db *gorm.DB) error {
+	if db == nil || !db.Migrator().HasTable(&Task{}) {
+		return nil
+	}
+	if db.Migrator().HasColumn(&Task{}, "PerfSampledAt") || db.Migrator().HasColumn(&Task{}, "perf_sampled_at") {
+		return nil
+	}
+	if err := db.Migrator().AddColumn(&Task{}, "PerfSampledAt"); err != nil {
+		return fmt.Errorf("add tasks.perf_sampled_at: %w", err)
+	}
+	return nil
 }

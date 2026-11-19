@@ -64,21 +64,21 @@ func TestNotificationVisibilityRulePG(t *testing.T) {
 	assert.NotContains(t, mainView, "A 站公告")
 	assert.NotContains(t, mainView, "B 站公告")
 
-	// A 站成员：**看不到主站公告**（老板明确否掉的形态），看得到平台公告和自己的。
+	// A 站成员：all_users 与登录收件箱同一套全平台规则，看得到主站公告、平台公告和自己的。
 	aView := visible(memberA.Id, &siteA)
-	assert.NotContains(t, aView, "主站公告", "主站公告不同步到分站")
+	assert.Contains(t, aView, "主站公告")
 	assert.Contains(t, aView, "平台公告")
 	assert.Contains(t, aView, "A 站公告")
 	assert.NotContains(t, aView, "B 站公告")
 
 	// A 站所有人：同上，多的是管理权限，不是可见范围。
 	ownerView := visible(ownerA.Id, &siteA)
-	assert.NotContains(t, ownerView, "主站公告")
+	assert.Contains(t, ownerView, "主站公告")
 	assert.Contains(t, ownerView, "A 站公告")
 
-	// 只是访问了这个域名、并不属于这个站：要代码又给了它一份站内定向内容。
+	// 只是访问了这个域名、并不属于这个站：平台受众可见，站内定向内容不给。
 	outsiderView := visible(outsider.Id, &siteA)
-	assert.NotContains(t, outsiderView, "主站公告")
+	assert.Contains(t, outsiderView, "主站公告")
 	assert.Contains(t, outsiderView, "平台公告", "平台级公告对所有人可见")
 	assert.NotContains(t, outsiderView, "A 站公告", "不属于这个站就拿不到站内定向内容")
 

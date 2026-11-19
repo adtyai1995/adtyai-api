@@ -139,9 +139,8 @@ func TestLegacyAnnouncementsVisiblePerSitePG(t *testing.T) {
 	require.NoError(t, err)
 	sevenContents := contentsOf(seven)
 	assert.Contains(t, sevenContents, "只给七号站")
-	// 旧公告是 all_users，也就是「主站公告」：分站看不到。这正是老板要的形态，
-	// 也是这次迁移不会污染分站的原因（迁移前它们就已经只有主站可见）。
-	assert.NotContains(t, sevenContents, "欢迎使用", "主站公告不同步到分站")
+	// 旧公告是 all_users。公开列表与登录收件箱使用同一套全平台规则，分站看得到。
+	assert.Contains(t, sevenContents, "欢迎使用")
 	assert.Contains(t, sevenContents, "所有分站", "all_sites 是平台级，分站可见")
 
 	eight, err := model.ListAdtyNotificationsForSite(8, 50)

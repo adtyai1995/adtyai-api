@@ -1,11 +1,11 @@
 package router
 
 import (
-	"github.com/QuantumNous/new-api/service"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
 )
@@ -41,6 +41,8 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/notifications/read", "scope", "profile:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/notifications/hide", "scope", "profile:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/notifications/todo/complete", "scope", "profile:write")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/notifications/todo/in-progress", "scope", "profile:write")
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/notifications/todos", "scope", "profile:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/notifications/announcements/:key", "scope", "profile:read")
 	notifications := apiRouter.Group("/adty/notifications", middleware.UserAuth())
 	notifications.GET("/announcements/:key", controller.GetAdtyAnnouncement)
@@ -48,6 +50,8 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 	notifications.POST("/read", controller.ReadAdtyNotifications)
 	notifications.POST("/hide", controller.PostAdtyNotificationHide)
 	notifications.POST("/todo/complete", controller.PostAdtyNotificationTodoComplete)
+	notifications.POST("/todo/in-progress", controller.PostAdtyNotificationTodoProgress)
+	notifications.GET("/todos", controller.GetAdtyNotificationTodos)
 	for _, route := range []struct{ method, path, scope string }{
 		{http.MethodGet, "", "read"}, {http.MethodPost, "", "write"},
 		{http.MethodPut, "/:id", "write"}, {http.MethodDelete, "/:id", "write"},
@@ -157,6 +161,8 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/site/telegram/bind/confirm", middleware.UserAuth(), controller.PostAdtyTelegramBindConfirm)
 	apiRouter.POST("/adty/telegram/webhook/:purpose/:secret", middleware.CriticalRateLimit(), controller.PostAdtyTelegramWebhook)
 	root := apiRouter.Group("/adty/admin", middleware.RootAuth())
+	root.GET("/notice-templates", controller.GetAdtyNoticeTemplates)
+	root.PUT("/notice-templates/:key", controller.PutAdtyNoticeTemplate)
 	root.GET("/telegram/bots", controller.GetAdtyAdminTelegram)
 	root.PUT("/telegram/bots/:purpose", controller.PutAdtyAdminTelegram)
 	root.POST("/telegram/bots/:purpose/test", controller.PostAdtyAdminTelegramTest)
@@ -176,6 +182,8 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	root.GET("/group-health", controller.GetAdtyAdminGroupHealth)
 	root.PUT("/group-health", controller.PutAdtyGroupHealth)
 	root.POST("/group-health/probe", controller.PostAdtyGroupProbe)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/notice-templates", "scope", "option:read")
+	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/notice-templates/:key", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/data-retention", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/data-retention", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/data-retention/runs", "scope", "option:read")

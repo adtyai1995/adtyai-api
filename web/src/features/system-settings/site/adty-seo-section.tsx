@@ -93,9 +93,9 @@ function LengthHint(props: { value: string; limit: number }) {
 
 /**
  * Home page SEO (adty task 9.3): title and description per language and the
- * share image. The server writes them into the eight home page URLs; a
- * language left empty uses English, and without English the title is the
- * site name.
+ * share image. The server writes them into the two home page URLs (/ and
+ * /zh-cn); a language left empty uses English, and without English the title
+ * is the site name.
  */
 export function AdtySeoSection(props: { defaultValues: AdtySeoDefaults }) {
   const { t } = useTranslation()
@@ -166,7 +166,7 @@ export function AdtySeoSection(props: { defaultValues: AdtySeoDefaults }) {
       />
       <p className='text-muted-foreground max-w-3xl text-sm'>
         {t(
-          'Written into the source of the eight home page URLs for search engines and link previews. A language left empty uses English; without English the title is the site name and there is no description. Other pages are never indexed.'
+          'Written into the source of the two home page URLs (/ for English and /zh-cn for Simplified Chinese) for search engines and link previews. A language left empty uses English; without English the title is the site name and there is no description. Other pages are never indexed.'
         )}
       </p>
       <div className='max-w-3xl space-y-4'>

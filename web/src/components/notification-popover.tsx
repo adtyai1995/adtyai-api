@@ -49,6 +49,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { SevereTodoList } from '@/features/adty-notifications/components/todo-item-card'
 import {
   notificationAudienceLabels,
   notificationKindLabels,
@@ -440,6 +441,7 @@ export function NotificationPopover({
             {t('Latest platform updates and notices')}
           </p>
         </PopoverHeader>
+        {open && onHideAnnouncement ? <SevereTodoList /> : null}
 
         {error ? (
           <ErrorState onRetry={onRetry} className='min-h-48' />

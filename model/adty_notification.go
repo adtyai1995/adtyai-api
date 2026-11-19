@@ -135,10 +135,10 @@ func ImportLegacyAnnouncement(row *AdtyNotificationPublication) (bool, error) {
 
 // ListAdtyNotificationsForSite 返回某个站点上「已发布」的公告，供公开面板读。
 //
-// siteID=0 是主站。可见性与 `adtyVisibleNotificationPublications` 同一套规则，
-// 但这里没有登录用户，所以只按站点判断——这正是分站架构下对的依据。
-// 主站只看到 all_users（以及 all_sites，那本来就包含主站）；分站看到
-// all_users + all_sites + 自己那条。
+// siteID=0 是主站。公开列表没有登录用户，只按站点判断，但 all_users / all_sites / all
+// 与登录收件箱 `adtyVisibleNotificationPublications` 使用同一套全平台规则：
+// 主站和分站都能看到这些平台受众；分站另外看到指向自己的 site 公告。
+// 站内定向（team / user）仍只出现在登录收件箱，不进公开列表。
 func ListAdtyNotificationsForSite(siteID int, limit int) ([]AdtyNotificationPublication, error) {
 	items := []AdtyNotificationPublication{}
 	// 调用方是 `/api/status`——那条路由在服务启动的最前面就会被访问。
@@ -148,13 +148,13 @@ func ListAdtyNotificationsForSite(siteID int, limit int) ([]AdtyNotificationPubl
 		return items, nil
 	}
 	query := DB.Model(&AdtyNotificationPublication{}).Where("status = ?", "published")
-	// 与 `adtyVisibleNotificationPublications` 同一张表：分站看不到 `all_users`。
-	// 两处规则必须一起改，否则公开面板和站内收件箱会给出不同的可见范围。
+	// 与登录收件箱的 platformAudiences 对齐。两处规则必须一起改。
+	platformAudiences := []string{"all_users", "all_sites", "all"}
 	if siteID == 0 {
-		query = query.Where("audience IN ?", []string{"all_users", "all_sites"})
+		query = query.Where("audience IN ?", platformAudiences)
 	} else {
-		query = query.Where("audience = ? OR (audience = ? AND target_site_id = ?)",
-			"all_sites", "site", siteID)
+		query = query.Where("audience IN ? OR (audience = ? AND target_site_id = ?)",
+			platformAudiences, "site", siteID)
 	}
 	err := query.Order("published_at DESC, id DESC").Limit(limit).Find(&items).Error
 	return items, err

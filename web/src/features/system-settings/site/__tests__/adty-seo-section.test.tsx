@@ -72,10 +72,14 @@ describe('home page SEO settings section', () => {
     expect(SITE_SECTION_IDS).toContain('adty-seo')
   })
 
-  it('describes all eight home language URLs', () => {
+  it('describes the two home language URLs', () => {
     renderSection([])
 
-    expect(screen.getByText(/eight home page URLs/)).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        /two home page URLs \(\/ for English and \/zh-cn for Simplified Chinese\)/
+      )
+    ).toBeInTheDocument()
   })
 
   it('reads back the saved English title, description and share image', () => {

@@ -308,7 +308,7 @@ func TestAdtyTelegramBot(purpose string, userId int) error {
 	}
 	// Each test is its own delivery; a fixed key made every test after the first a silent duplicate.
 	eventKey := "telegram-test:" + purpose + ":" + strconv.Itoa(userId) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	return QueueAdtyTelegramNotice(userId, purpose, "测试通知\n\nTest notice", eventKey)
+	return QueueAdtyTelegramNotice(userId, purpose, adtyTelegramSavedOr("telegram_test_notice", "测试通知\n\nTest notice"), eventKey)
 }
 
 func StartAdtyTelegramBind(userId int, purpose string) (string, string, int64, error) {
@@ -362,13 +362,13 @@ func HandleAdtyTelegramUpdate(purpose, secret string, update AdtyTelegramUpdate)
 		return "", ErrAdtyTelegramForbidden
 	}
 	if update.Message == nil || update.Message.Chat.Type != "private" || update.Message.From.Id <= 0 {
-		return adtyTelegramReply, nil
+		return adtyTelegramSavedOr("telegram_bot_reply", adtyTelegramReply), nil
 	}
 	text := strings.TrimSpace(update.Message.Text)
 	code, ok := strings.CutPrefix(text, "/start ")
 	forwarded := update.Message.ForwardFrom != nil || update.Message.ForwardOrigin != nil || update.CallbackQuery != nil
 	if !ok || forwarded || strings.TrimSpace(code) == "" {
-		return adtyTelegramReply, nil
+		return adtyTelegramSavedOr("telegram_bot_reply", adtyTelegramReply), nil
 	}
 	hash := sha256.Sum256([]byte(strings.TrimSpace(code)))
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -385,9 +385,16 @@ func HandleAdtyTelegramUpdate(purpose, secret string, update AdtyTelegramUpdate)
 		}).Error
 	})
 	if err != nil {
-		return adtyTelegramReply, nil
+		return adtyTelegramSavedOr("telegram_bot_reply", adtyTelegramReply), nil
 	}
-	return adtyTelegramStaged, nil
+	return adtyTelegramSavedOr("telegram_bind_staged", adtyTelegramStaged), nil
+}
+
+func adtyTelegramSavedOr(key, fallback string) string {
+	if text, ok := SavedAdtyBilingualNoticeText(key); ok {
+		return text
+	}
+	return fallback
 }
 
 func ConfirmAdtyTelegramBind(userId int, purpose, code string, telegramUserId int64) (*model.AdtyTelegramBinding, error) {

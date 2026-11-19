@@ -43,6 +43,8 @@ var accessTokenExemptRoutes = []string{
 	"POST /api/user/register",
 	// 用注册码完成团队注册，未登录即可调用，同 /api/user/register。
 	"POST /api/adty/team-registrations/complete",
+	// 用邀请码注册独立员工，未登录即可调用，同 /api/user/register。
+	"POST /api/adty/team-employees/register",
 	"GET /api/user/login/encryption-key",
 	"POST /api/user/login",
 	"POST /api/user/login/2fa",

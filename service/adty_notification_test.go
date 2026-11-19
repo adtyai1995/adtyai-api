@@ -105,10 +105,11 @@ func TestGetAdtyNotificationDetailAcrossPagesAndEnforcesVisibility(t *testing.T)
 	require.True(t, ok)
 	assert.Equal(t, fmt.Sprintf("publication:%d", oldest.Id), byReadKey["id"])
 
-	// Subsite reader must NOT be able to read main-site-only all_users announcement via detail key.
-	_, ok, err = GetAdtyNotificationDetail(subReader.Id, &subSite, fmt.Sprintf("publication:%d", oldest.Id))
+	// Root all_users is platform-wide: a subsite reader sees the same announcement as the main-site inbox.
+	bySub, ok, err := GetAdtyNotificationDetail(subReader.Id, &subSite, fmt.Sprintf("publication:%d", oldest.Id))
 	require.NoError(t, err)
-	assert.False(t, ok)
+	require.True(t, ok)
+	assert.Equal(t, "Title 1", bySub["title"])
 
 	// Hiding the announcement hides it from detail lookup for that user.
 	require.NoError(t, db.Create(&model.AdtyNotificationHide{UserId: reader.Id, Key: oldest.ReadKey}).Error)

@@ -75,7 +75,7 @@ func TestPublicAnnouncementsReadFromPublicationsPG(t *testing.T) {
 	siteContents := contentsOfPublic(siteView)
 	assert.Contains(t, siteContents, "A 站内容")
 	assert.Contains(t, siteContents, "平台通知")
-	assert.NotContains(t, siteContents, "主站维护", "主站公告不同步到分站")
+	assert.Contains(t, siteContents, "主站维护", "all_users 在公开列表也是全平台可见")
 }
 
 func contentsOfPublic(rows []AdtyPublicAnnouncement) []string {

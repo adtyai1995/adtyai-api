@@ -327,6 +327,12 @@ func InitResources() error {
 		common.FatalLog(common.LogText("failed to initialize database: %s", err.Error()))
 		return err
 	}
+	if common.IsMasterNode {
+		if err = service.MigrateAdtyOpsClusterTables(model.DB); err != nil {
+			common.FatalLog(common.LogText("failed to migrate ops cluster tables: %s", err.Error()))
+			return err
+		}
+	}
 	// 二开：普通管理员默认没有后台权限，必须在 authz.Init 之前（任务 2.6）
 	middleware.EnableAdtyAdminPermissions()
 	if err = authz.Init(model.DB); err != nil {

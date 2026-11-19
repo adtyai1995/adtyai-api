@@ -2,21 +2,28 @@ package controller
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -24,13 +31,13 @@ import (
 
 func setupControllerTicketTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
-	require.NoError(t, err)
-	oldDB := model.DB
-	model.DB = db
-	t.Cleanup(func() {
-		model.DB = oldDB
-	})
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	require.NotEmpty(t, dsn, "ticket regressions require isolated PostgreSQL")
+	db := modelManagementDB(t, "postgres", dsn)
+	pgtest.RecordServerVersion(t, db)
+	oldSecret := common.CryptoSecret
+	common.CryptoSecret = "local-ticket-regression-signing-key"
+	t.Cleanup(func() { common.CryptoSecret = oldSecret })
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.AdtySite{}, &model.AdtySiteStaff{}, &model.AdtyTeam{}, &model.AdtyTeamMember{},
 		&model.AdtyTicket{}, &model.AdtyTicketMessage{}, &model.AdtyTicketImage{}, &model.AdtyTicketEvent{},
@@ -115,7 +122,144 @@ func TestControllerTicketEndpointsEnforceIdempotencyAndImageAudit(t *testing.T) 
 		{Key: "imageId", Value: strconv.FormatInt(imgRow.Id, 10)},
 	}
 	ctxView.Set("id", userA.Id)
+	grant := controllerTicketImageGrant(t, userA.Id, ticketA.Id, imgRow.Id)
+	ctxView.Request.Header.Set("X-Ticket-Image-Grant", grant)
 	GetAdtyTicketImage(ctxView)
 	assert.Contains(t, recView.Body.String(), `"success":false`)
 	assert.NotEqual(t, "image/png", recView.Header().Get("Content-Type"))
+}
+
+func controllerTicketImageRequest(t *testing.T, userID int, ticketID, imageID int64, query, grant string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/adty/tickets/%d/images/%d%s", ticketID, imageID, query), nil)
+	ctx.Request.Header.Set("X-Ticket-Image-Grant", grant)
+	ctx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(ticketID, 10)}, {Key: "imageId", Value: strconv.FormatInt(imageID, 10)}}
+	ctx.Set("id", userID)
+	GetAdtyTicketImage(ctx)
+	return recorder
+}
+
+func controllerTicketImageGrant(t *testing.T, userID int, ticketID, imageID int64) string {
+	t.Helper()
+	recorder := controllerTicketImageRequest(t, userID, ticketID, imageID, "?action=grant", "")
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Grant     string `json:"grant"`
+			ExpiresAt int64  `json:"expires_at"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response), recorder.Body.String())
+	require.True(t, response.Success, recorder.Body.String())
+	require.NotEmpty(t, response.Data.Grant)
+	assert.Greater(t, response.Data.ExpiresAt, time.Now().Unix())
+	assert.LessOrEqual(t, response.Data.ExpiresAt, time.Now().Unix()+300)
+	assert.Empty(t, recorder.Result().Cookies())
+	assert.Contains(t, recorder.Header().Get("Cache-Control"), "no-store")
+	return response.Data.Grant
+}
+
+func TestTicketImageGrantRequiresCurrentObjectScopedAuthorizationPG(t *testing.T) {
+	db := setupControllerTicketTestDB(t)
+	restore := service.SetAdtyTicketImageDirForTest(t.TempDir())
+	t.Cleanup(restore)
+	users := []model.User{
+		{Username: "grant-customer", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, SiteId: 41, AuthVersion: 1},
+		{Username: "grant-other", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, SiteId: 42, AuthVersion: 1},
+		{Username: "grant-staff", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, StaffSiteId: 41, AuthVersion: 1},
+	}
+	require.NoError(t, db.Create(&users).Error)
+	staff := model.AdtySiteStaff{UserId: users[2].Id, SiteId: 41, Status: "enabled", Role: "support"}
+	require.NoError(t, db.Create(&staff).Error)
+	ticket := model.AdtyTicket{UserId: users[0].Id, SiteId: 41, Title: "Receipt", Status: model.AdtyTicketNew}
+	require.NoError(t, db.Create(&ticket).Error)
+	var encoded bytes.Buffer
+	require.NoError(t, png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	public, err := service.AddAdtyTicketImage(users[0].Id, ticket.Id, model.AdtyTicketVisibilityPublic, encoded.Bytes())
+	require.NoError(t, err)
+	internal, err := service.AddAdtyTicketImage(users[2].Id, ticket.Id, model.AdtyTicketVisibilityNote, encoded.Bytes())
+	require.NoError(t, err)
+
+	t.Run("long_lived_session_without_image_grant_is_rejected", func(t *testing.T) {
+		recorder := controllerTicketImageRequest(t, users[0].Id, ticket.Id, public.Id, "", "")
+		assert.NotEqual(t, "image/png", recorder.Header().Get("Content-Type"))
+		assert.Contains(t, recorder.Body.String(), `"success":false`)
+	})
+	t.Run("visible_image_grant_reads_and_audits", func(t *testing.T) {
+		grant := controllerTicketImageGrant(t, users[0].Id, ticket.Id, public.Id)
+		recorder := controllerTicketImageRequest(t, users[0].Id, ticket.Id, public.Id, "", grant)
+		require.Equal(t, "image/png", recorder.Header().Get("Content-Type"))
+		assert.Equal(t, encoded.Bytes(), recorder.Body.Bytes())
+		assert.Equal(t, "nosniff", recorder.Header().Get("X-Content-Type-Options"))
+		var views int64
+		require.NoError(t, db.Model(&model.AdtyTicketEvent{}).Where("ticket_id = ? AND actor_id = ? AND action = ?", ticket.Id, users[0].Id, "image_view").Count(&views).Error)
+		assert.Equal(t, int64(1), views)
+	})
+	t.Run("grant_cannot_be_used_for_other_identity_or_object", func(t *testing.T) {
+		grant := controllerTicketImageGrant(t, users[2].Id, ticket.Id, internal.Id)
+		for _, input := range []struct {
+			user          int
+			ticket, image int64
+			grant         string
+		}{
+			{users[0].Id, ticket.Id, internal.Id, grant},
+			{users[2].Id, ticket.Id, public.Id, grant},
+			{users[2].Id, ticket.Id + 1, internal.Id, grant},
+			{users[2].Id, ticket.Id, internal.Id, "invalid-grant"},
+		} {
+			recorder := controllerTicketImageRequest(t, input.user, input.ticket, input.image, "", input.grant)
+			assert.Contains(t, recorder.Body.String(), `"success":false`)
+			assert.NotEqual(t, "image/png", recorder.Header().Get("Content-Type"))
+		}
+	})
+	t.Run("invisible_image_cannot_get_a_grant", func(t *testing.T) {
+		for _, input := range []struct {
+			user  int
+			image int64
+		}{{users[0].Id, internal.Id}, {users[1].Id, public.Id}} {
+			recorder := controllerTicketImageRequest(t, input.user, ticket.Id, input.image, "?action=grant", "")
+			assert.Contains(t, recorder.Body.String(), `"success":false`)
+		}
+	})
+	t.Run("revoked_staff_cannot_reuse_unexpired_grant", func(t *testing.T) {
+		grant := controllerTicketImageGrant(t, users[2].Id, ticket.Id, internal.Id)
+		require.NoError(t, db.Model(&staff).Update("status", "disabled").Error)
+		recorder := controllerTicketImageRequest(t, users[2].Id, ticket.Id, internal.Id, "", grant)
+		assert.Contains(t, recorder.Body.String(), `"success":false`)
+		assert.NotEqual(t, "image/png", recorder.Header().Get("Content-Type"))
+	})
+	t.Run("missing_signing_secret_fails_closed", func(t *testing.T) {
+		saved := common.CryptoSecret
+		common.CryptoSecret = ""
+		t.Cleanup(func() { common.CryptoSecret = saved })
+		recorder := controllerTicketImageRequest(t, users[0].Id, ticket.Id, public.Id, "?action=grant", "")
+		assert.Contains(t, recorder.Body.String(), `"success":false`)
+	})
+}
+
+func TestTicketImageGrantRejectsExpiredOrExcessiveLifetimePG(t *testing.T) {
+	db := setupControllerTicketTestDB(t)
+	user := model.User{Username: "expiry-customer", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, AuthVersion: 1}
+	require.NoError(t, db.Create(&user).Error)
+	ticket := model.AdtyTicket{UserId: user.Id, Title: "Expiring image", Status: model.AdtyTicketNew}
+	require.NoError(t, db.Create(&ticket).Error)
+	restore := service.SetAdtyTicketImageDirForTest(t.TempDir())
+	t.Cleanup(restore)
+	var encoded bytes.Buffer
+	require.NoError(t, png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	attachment, err := service.AddAdtyTicketImage(user.Id, ticket.Id, model.AdtyTicketVisibilityPublic, encoded.Bytes())
+	require.NoError(t, err)
+	// Sign explicit expiry values at the external credential boundary, without a clock sleep.
+	for _, offset := range []int64{-1, 3600} {
+		expiry := time.Now().Unix() + offset
+		mac := hmac.New(sha256.New, []byte(common.CryptoSecret))
+		_, err := fmt.Fprintf(mac, "adty-ticket-image\x00%d\x00%d\x00%d\x00%d", user.Id, ticket.Id, attachment.Id, expiry)
+		require.NoError(t, err)
+		grant := strconv.FormatInt(expiry, 10) + "." + hex.EncodeToString(mac.Sum(nil))
+		recorder := controllerTicketImageRequest(t, user.Id, ticket.Id, attachment.Id, "", grant)
+		assert.Contains(t, recorder.Body.String(), `"success":false`)
+		assert.NotEqual(t, "image/png", recorder.Header().Get("Content-Type"))
+	}
 }

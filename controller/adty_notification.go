@@ -68,11 +68,50 @@ func PostAdtyNotificationTodoComplete(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.CompleteAdtyTodo(c.GetInt("id"), body.Key); err != nil {
+	if _, err := service.CompleteAdtyTodoFromRequest(c, c.GetInt("id"), body.Key); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Todo item not found"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"completed": true})
+}
+
+func GetAdtyNotificationTodos(c *gin.Context) {
+	includeCompleted := c.Query("include_completed") == "1" || c.Query("include_completed") == "true"
+	items, err := service.ListAdtyTodosForUser(c.GetInt("id"), includeCompleted)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if items == nil {
+		items = []service.AdtyTodoItem{}
+	}
+	c.Header("Cache-Control", "no-store")
+	common.ApiSuccess(c, items)
+}
+
+func PostAdtyNotificationTodoProgress(c *gin.Context) {
+	var body struct {
+		Key  string `json:"key"`
+		Note string `json:"note"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	item, err := service.MarkAdtyTodoInProgressFromRequest(c, c.GetInt("id"), body.Key, body.Note)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Todo item not found"))
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"status": item.Status, "key": item.Key})
 }
 
 // Root and owner routes select the publishing domain on the server. Request
@@ -151,4 +190,32 @@ func ReadAdtyNotifications(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, nil)
+}
+
+func GetAdtyNoticeTemplates(c *gin.Context) {
+	rows, err := service.ListAdtyNoticeTemplates()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, rows)
+}
+
+func PutAdtyNoticeTemplate(c *gin.Context) {
+	var body struct {
+		TitleZh   string `json:"title_zh"`
+		ContentZh string `json:"content_zh"`
+		TitleEn   string `json:"title_en"`
+		ContentEn string `json:"content_en"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	saved, err := service.SaveAdtyNoticeTemplate(c.GetInt("id"), common.RoleRootUser, c.Param("key"), body.TitleZh, body.ContentZh, body.TitleEn, body.ContentEn)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, saved)
 }

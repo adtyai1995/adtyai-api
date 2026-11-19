@@ -152,6 +152,7 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 		return nil, err
 	}
 	if row.Status == "published" {
+		produceAdtySevereTodosForPublished(&row)
 		applyAdtyNotificationTranslation(&row, sourceContent, issuerID)
 		pushAdtyNotificationToTelegram(&row, issuer)
 	}
@@ -625,10 +626,8 @@ func adtyUserCanReadPublication(user *model.User, pub *model.AdtyNotificationPub
 		return false
 	}
 	switch pub.Audience {
-	case "all_sites":
+	case "all_sites", "all_users", "all":
 		return true
-	case "all_users":
-		return user.SiteId == 0
 	case "site":
 		return user.SiteId == pub.TargetSiteId && pub.TargetSiteId > 0
 	case "user":
@@ -656,14 +655,15 @@ func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gor
 	}
 	query := model.DB.Model(&model.AdtyNotificationPublication{}).Where("status = ?", "published")
 	userTarget := fmt.Sprintf("user:%d", userID)
-	// 可见性规则（老板定，总管 2026-11-15 落成表格）：
+	// 可见性规则（A.18.2 / features.md:16）：
 	//
 	//	audience    主站可见  分站可见
-	//	all_users   ✅        ❌  ← 主站公告**不**同步到分站
-	//	all_sites   ✅        ✅  平台级公告，必须显式选择才会到处跑
+	//	all_users   ✅        ✅  ← Root 发布的全部用户通知全平台可见
+	//	all_sites   ✅        ✅  平台级公告，全平台可见
 	//	site+target 仅 target 是自己时可见
 	//	team+target 仅同站活跃团队成员可见
 	//	user+target 仅同站目标用户本人可见
+	platformAudiences := []string{"all_users", "all_sites", "all"}
 	if site == nil {
 		if user.SiteId == 0 && user.StaffSiteId == 0 {
 			teamTargets, err := adtyUserActiveTeamTargets(userID, 0)
@@ -673,15 +673,15 @@ func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gor
 			if len(teamTargets) > 0 {
 				return query.Where(
 					"audience IN ? OR (audience = ? AND target_site_id = 0 AND target_site_name = ?) OR (audience = ? AND target_site_id = 0 AND target_site_name IN ?)",
-					[]string{"all_users", "all_sites"}, "user", userTarget, "team", teamTargets,
+					platformAudiences, "user", userTarget, "team", teamTargets,
 				), nil
 			}
 			return query.Where(
 				"audience IN ? OR (audience = ? AND target_site_id = 0 AND target_site_name = ?)",
-				[]string{"all_users", "all_sites"}, "user", userTarget,
+				platformAudiences, "user", userTarget,
 			), nil
 		}
-		return query.Where("audience IN ?", []string{"all_users", "all_sites"}), nil
+		return query.Where("audience IN ?", platformAudiences), nil
 	}
 	var current model.AdtySite
 	if err := model.DB.First(&current, site.Id).Error; err != nil {
@@ -689,7 +689,7 @@ func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gor
 	}
 	if user.SiteId != site.Id && current.OwnerUserId != userID {
 		// 只是访问了这个域名、并不属于这个站：平台级公告照常，站内定向内容不给。
-		return query.Where("audience = ?", "all_sites"), nil
+		return query.Where("audience IN ?", platformAudiences), nil
 	}
 	if user.SiteId == site.Id && user.StaffSiteId == 0 {
 		teamTargets, err := adtyUserActiveTeamTargets(userID, site.Id)
@@ -698,16 +698,29 @@ func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gor
 		}
 		if len(teamTargets) > 0 {
 			return query.Where(
-				"audience = ? OR (audience = ? AND target_site_id = ?) OR (audience = ? AND target_site_id = ? AND target_site_name = ?) OR (audience = ? AND target_site_id = ? AND target_site_name IN ?)",
-				"all_sites", "site", site.Id, "user", site.Id, userTarget, "team", site.Id, teamTargets,
+				"audience IN ? OR (audience = ? AND target_site_id = ?) OR (audience = ? AND target_site_id = ? AND target_site_name = ?) OR (audience = ? AND target_site_id = ? AND target_site_name IN ?)",
+				platformAudiences, "site", site.Id, "user", site.Id, userTarget, "team", site.Id, teamTargets,
 			), nil
 		}
 		return query.Where(
-			"audience = ? OR (audience = ? AND target_site_id = ?) OR (audience = ? AND target_site_id = ? AND target_site_name = ?)",
-			"all_sites", "site", site.Id, "user", site.Id, userTarget,
+			"audience IN ? OR (audience = ? AND target_site_id = ?) OR (audience = ? AND target_site_id = ? AND target_site_name = ?)",
+			platformAudiences, "site", site.Id, "user", site.Id, userTarget,
 		), nil
 	}
-	return query.Where("audience = ? OR (audience = ? AND target_site_id = ?)", "all_sites", "site", site.Id), nil
+	return query.Where("audience IN ? OR (audience = ? AND target_site_id = ?)", platformAudiences, "site", site.Id), nil
+}
+
+func adtyTodoSiteID(userID int, site *model.AdtySite) int {
+	if userID > 0 && model.DB != nil {
+		var user model.User
+		if model.DB.Select("id", "site_id").Where("id = ?", userID).Limit(1).Find(&user).RowsAffected > 0 {
+			return user.SiteId
+		}
+	}
+	if site != nil {
+		return site.Id
+	}
+	return 0
 }
 
 func adtyNotificationVersion(source string) string {
@@ -823,12 +836,20 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string) (ma
 		return nil, false, err
 	}
 	if row.Id == 0 {
+		if item, ok := adtyWatcherNoticeDetail(userID, key); ok {
+			return item, true, nil
+		}
 		return nil, false, nil
 	}
 	if adtyIsNotificationKeyHidden(userID, row.ReadKey) || adtyIsNotificationKeyHidden(userID, fmt.Sprintf("publication:%d", row.Id)) {
 		return nil, false, nil
 	}
-	return formatAdtyNotificationItem(row), true, nil
+	if _, err := EnsureAdtySevereTodoForVisiblePublication(userID, adtyTodoSiteID(userID, site), &row); err != nil {
+		common.SysLog(common.LogText("severe todo was not created for visible notice %s: %s", row.ReadKey, err.Error()))
+	}
+	item := formatAdtyNotificationItem(row)
+	RenderAdtyTodoInboxItems(userID, []map[string]any{item})
+	return item, true, nil
 }
 
 func adtyIsNotificationKeyHidden(userID int, key string) bool {
@@ -861,6 +882,7 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int) (Adt
 		return inbox, err
 	}
 	inbox.UnreadPublications = unread
+	firstPage := before <= 0
 	if before > 0 {
 		query = query.Where("id < ?", before)
 		inbox = AdtyNotificationInbox{Announcements: []map[string]any{}, ReadKeys: []string{}, UnreadPublications: unread}
@@ -874,15 +896,30 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int) (Adt
 		rows = rows[:20]
 		inbox.NextBeforeId = rows[19].Id
 	}
-	for _, row := range rows {
+	todoSiteID := adtyTodoSiteID(userID, site)
+	for i := range rows {
+		row := rows[i]
+		if _, err := EnsureAdtySevereTodoForVisiblePublication(userID, todoSiteID, &row); err != nil {
+			common.SysLog(common.LogText("severe todo was not created for visible notice %s: %s", row.ReadKey, err.Error()))
+		}
 		key := row.ReadKey
 		inbox.Announcements = append(inbox.Announcements, formatAdtyNotificationItem(row))
 		keys = append(keys, key)
 	}
+	if firstPage {
+		for _, item := range adtyWatcherNoticeInboxItems(userID) {
+			inbox.Announcements = append(inbox.Announcements, item)
+			if key, _ := item["read_key"].(string); key != "" {
+				keys = append(keys, key)
+			}
+		}
+	}
+	inbox.UnreadPublications += adtyUnreadWatcherNoticeCount(userID, siteID)
 	inbox.ReadKeys, err = model.GetAdtyNotificationReadKeys(userID, siteID, keys)
 	if err != nil {
 		return inbox, err
 	}
+	inbox.Announcements = RenderAdtyTodoInboxItems(userID, inbox.Announcements)
 	return hideAdtyNotifications(userID, inbox)
 }
 
@@ -944,6 +981,9 @@ func MarkAdtyNotificationInboxRead(userID int, site *model.AdtySite, keys []stri
 		return err
 	}
 	for _, key := range publicationKeys {
+		allowed[key] = true
+	}
+	for key := range adtyOwnedWatcherReadKeys(userID, keys) {
 		allowed[key] = true
 	}
 	unique := make(map[string]bool, len(keys))

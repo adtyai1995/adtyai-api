@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { NoticeTemplatesEditor } from '@/features/adty-site-admin/components/notice-templates-editor'
 import { TelegramAdminPanel } from '@/features/adty-telegram/admin-panel'
 import { TranslationAdminPanel } from '@/features/adty-translation/admin-panel'
 
@@ -157,6 +158,11 @@ const OPERATIONS_SECTIONS = [
     id: 'telegram',
     titleKey: 'Telegram bots',
     build: () => <TelegramAdminPanel />,
+  },
+  {
+    id: 'notice-templates',
+    titleKey: 'Fixed notice templates',
+    build: () => <NoticeTemplatesEditor />,
   },
   {
     id: 'translation',
