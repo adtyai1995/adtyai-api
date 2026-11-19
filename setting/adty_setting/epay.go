@@ -2,6 +2,7 @@ package adty_setting
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -21,9 +22,11 @@ type EpaySetting struct {
 
 // 换通道时限的配置键，保存前要校验（controller/option.go）。
 const (
-	EpaySettingKeyChannelTimeout = "adty_epay_setting.channel_timeout_seconds"
-	EpaySettingKeyTotalTimeout   = "adty_epay_setting.total_timeout_seconds"
-	epayMaxTotalTimeoutSeconds   = 30
+	EpaySettingKeyChannelTimeout     = "adty_epay_setting.channel_timeout_seconds"
+	EpaySettingKeyTotalTimeout       = "adty_epay_setting.total_timeout_seconds"
+	DefaultEpayChannelTimeoutSeconds = 5
+	DefaultEpayTotalTimeoutSeconds   = 12
+	epayMaxTotalTimeoutSeconds       = 30
 )
 
 var epaySetting = EpaySetting{
@@ -61,4 +64,60 @@ func ValidateEpayTimeout(key, value string) error {
 		return common.NewMessage("The per-channel timeout must be at least 1 second and not above the total, and the total at most 30 seconds")
 	}
 	return nil
+}
+
+// IsEpayTimeoutKey 判断配置键是否属于易支付换通道时限。
+func IsEpayTimeoutKey(key string) bool {
+	return key == EpaySettingKeyChannelTimeout || key == EpaySettingKeyTotalTimeout
+}
+
+// ValidateEpayTimeoutPair 校验单通道与总时长的配对关系：1 ≤ 单通道 ≤ 总时长 ≤ 30。
+func ValidateEpayTimeoutPair(channelSeconds, totalSeconds int) error {
+	if channelSeconds < 1 || channelSeconds > totalSeconds || totalSeconds > epayMaxTotalTimeoutSeconds {
+		return common.NewMessage("The per-channel timeout must be at least 1 second and not above the total, and the total at most 30 seconds")
+	}
+	return nil
+}
+
+// ValidateEpayTimeoutWithCurrent 基于给定的当前权威键值映射校验单个时限键的写入，并返回校验通过后的 (channel, total)。
+func ValidateEpayTimeoutWithCurrent(key, value string, current map[string]string) (int, int, error) {
+	if !IsEpayTimeoutKey(key) {
+		return 0, 0, common.NewMessage("Invalid parameters")
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, 0, common.NewMessage("Timeouts must be whole seconds")
+	}
+	channel, total := DefaultEpayChannelTimeoutSeconds, DefaultEpayTotalTimeoutSeconds
+	if channel < 1 {
+		channel = DefaultEpayChannelTimeoutSeconds
+	}
+	if total < 1 {
+		total = DefaultEpayTotalTimeoutSeconds
+	}
+	if current != nil {
+		if rawChannel, ok := current[EpaySettingKeyChannelTimeout]; ok && strings.TrimSpace(rawChannel) != "" {
+			parsedChannel, parseErr := strconv.Atoi(strings.TrimSpace(rawChannel))
+			if parseErr != nil {
+				return 0, 0, common.NewMessage("Timeouts must be whole seconds")
+			}
+			channel = parsedChannel
+		}
+		if rawTotal, ok := current[EpaySettingKeyTotalTimeout]; ok && strings.TrimSpace(rawTotal) != "" {
+			parsedTotal, parseErr := strconv.Atoi(strings.TrimSpace(rawTotal))
+			if parseErr != nil {
+				return 0, 0, common.NewMessage("Timeouts must be whole seconds")
+			}
+			total = parsedTotal
+		}
+	}
+	if key == EpaySettingKeyChannelTimeout {
+		channel = seconds
+	} else {
+		total = seconds
+	}
+	if err := ValidateEpayTimeoutPair(channel, total); err != nil {
+		return 0, 0, err
+	}
+	return channel, total, nil
 }

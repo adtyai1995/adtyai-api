@@ -293,7 +293,7 @@ func alipay(returnType string) model.AdtyEpayChannelMethod {
 func prepareEpayDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}, &model.AuditLog{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}, &model.AuditLog{}, &model.Option{}))
 	require.NoError(t, model.MigrateAdtyTables())
 	oldRand := adtyEpayRand
 	adtyEpayRand = func() *rand.Rand { return rand.New(rand.NewPCG(1, 2)) }

@@ -1,5 +1,7 @@
 {
   "translation": {
+    "Password updated. Sign in again with your new password.": "密码已更新，请使用新密码重新登录。",
+    "Unbind Telegram": "解绑 Telegram",
     "Funding source": "资金来源",
     "Batch kind": "批次类型",
     "Batch source": "批次来源",

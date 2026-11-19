@@ -72,6 +72,8 @@
 
 ## USDT（BEpusdt）和易支付多通道
 
+易支付时限的单键保存锁定 SQL 两键，原子校验 1 ≤ 单通道 ≤ 总时长 ≤ 30，默认仍为 5 秒和 12 秒。实际下单读取 SQL 权威时限，非法配置或读取失败拒绝下单。
+
 **USDT**：
 
 - **链**：TRC20、BEP20、Polygon、X Layer（支付方式 `usdt.trc20`、`usdt.bep20`、`usdt.polygon`、`usdt.xlayer`）。只有勾在 `adty_bepusdt.trade_types` 里的链才显示、才能下单，默认只有 TRC20。
@@ -476,6 +478,10 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 ## 登录方式
 
+本人改密已提交后，若缓存发布或会话轮换失败，接口明确返回 `committed=true` 和 `relogin_required=true`；页面提示使用新密码重新登录并清除本地认证。通知邮件失败单独作为警告。
+
+Telegram 通知解绑分别用 `DELETE /api/adty/telegram/me` 和 `DELETE /api/adty/site/telegram`，网站入口只撤销本人对应用途，保留历史并使未用挑战和待发通知失效；解绑与审计同事务，重复解绑安全。
+
 - **账号密码**是唯一的登录凭据（`POST /api/user/login`），没有第三方账号登录。
 - **邮箱验证**用于注册和绑定/改绑邮箱：开启 `EmailVerificationEnabled` 时，注册必须提交邮箱和验证码；绑定邮箱走 `/api/oauth/email/bind/*`。它不是独立的登录方式。
 - **Passkey**：用户可以在个人页注册，之后用 `/api/user/login/passkey/begin|finish` 免密码登录；分站关闭 Passkey（`/api/status` 的 `passkey_login` 为 false）。
@@ -602,6 +608,8 @@ Root 和获授用户读取权限的管理员在统一用户列表、搜索及详
 支付事件追加到 `adty_order_payment_events`：六服务验签后的通知接收、可信查询的未付款/失败/核对拒绝、成功入账和重放。成功及重放与入账共享事务，记录失败则整单回滚；重复通知只入账一次。不保存原始载荷、商户密钥、供应商错误文本或人工凭证。新增记录以前的回调历史不能还原，页面明确提示历史记录可能不完整；现有赠金来源分配及其他资金规则仍按各自未闭事项实施，不用订单追溯替代。
 
 ## 资金与运维补充
+
+系统配置审计保存 SQL 事务内读取的变更前值及提交后的业务值；普通配置、请求策略与模型价格沿用各自写入锁并同事务保存审计意图。秘密键和 JSON 内的秘密只记脱敏配置状态，不记录明文。
 
 ### 日结单
 

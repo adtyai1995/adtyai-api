@@ -934,9 +934,20 @@ func UpdateSelf(c *gin.Context) {
 		passwordRequested = !isString || password != ""
 	}
 	succeeded, notificationFailed := false, false
+	reloginRequired, cacheSyncFailed, sessionRotationFailed := false, false, false
 	if passwordRequested {
 		defer func() {
-			recordUserSecurityAudit(c, c.GetInt("id"), "user.password_change", map[string]any{"success": succeeded, "notification_failed": notificationFailed})
+			params := map[string]any{
+				"success":             succeeded,
+				"committed":           succeeded,
+				"notification_failed": notificationFailed,
+			}
+			if succeeded {
+				params["relogin_required"] = reloginRequired
+				params["cache_sync_failed"] = cacheSyncFailed
+				params["session_rotation_failed"] = sessionRotationFailed
+			}
+			recordUserSecurityAudit(c, c.GetInt("id"), "user.password_change", params)
 		}()
 	}
 	// 检查是否是用户设置更新请求 (sidebar_modules 或 language)
@@ -1040,22 +1051,45 @@ func UpdateSelf(c *gin.Context) {
 		}
 		succeeded = true
 		notificationFailed = service.NotifyAccountSecurityChange(service.AccountMailLanguage(c, current.Id), current.Email, current.Id, i18n.MsgSecurityEventPasswordUpdated) != nil
-		if err := model.PublishUserAuthCache(cleanUser.Id); err != nil {
-			writeSecurityOperationError(c, err)
-			return
-		}
-		bundle, err := service.AdvanceCurrentSessionToUserVersion(identity, "password_changed")
-		if err != nil {
-			writeSecurityOperationError(c, err)
+		cacheErr := model.PublishUserAuthCache(cleanUser.Id)
+		bundle, sessionErr := service.AdvanceCurrentSessionToUserVersion(identity, "password_changed")
+		if cacheErr != nil || sessionErr != nil {
+			cacheSyncFailed = cacheErr != nil
+			sessionRotationFailed = sessionErr != nil
+			reloginRequired = true
+			_, _ = model.RevokeAllUserSessions(cleanUser.Id, "password_changed")
+			service.ClearRefreshCookie(c)
+			setAuthNoStore(c)
+			data := gin.H{
+				"committed":               true,
+				"has_password":            true,
+				"notification_warning":    notificationFailed,
+				"relogin_required":        true,
+				"recovery_required":       true,
+				"outcome":                 "committed_relogin_required",
+				"cache_sync_failed":       cacheSyncFailed,
+				"session_rotation_failed": sessionRotationFailed,
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"success":          true,
+				"committed":        true,
+				"relogin_required": true,
+				"code":             "CREDENTIAL_COMMITTED_RELOGIN_REQUIRED",
+				"message":          "Password updated; please sign in again",
+				"data":             data,
+			})
 			return
 		}
 		data := authRotationData(bundle)
+		data["committed"] = true
 		data["has_password"] = true
 		data["notification_warning"] = notificationFailed
+		data["relogin_required"] = false
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "",
-			"data":    data,
+			"success":   true,
+			"committed": true,
+			"message":   "",
+			"data":      data,
 		})
 		return
 	}

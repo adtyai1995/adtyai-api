@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"gorm.io/gorm/clause"
 	"maps"
 	"math"
 	"slices"
@@ -362,12 +363,31 @@ func requirePositiveOptionFloat(key, value string) error {
 	return nil
 }
 
-// UpdateOptionWithAudit atomically persists an ordinary option and its safe
-// audit snapshot. Specialized policy, Passkey and pricing writers retain their
-// own transaction/locking contracts and must be integrated separately.
-func UpdateOptionWithAudit(key, value string, event AuditLog) error {
-	if IsRequestPolicyOption(key) || IsPasskeyDomainOption(key) || IsModelPricingOption(key) {
+// UpdateOptionWithAudit freezes the optional SQL snapshot inside the writer's
+// transaction. Policy, pricing and group writers retain their existing locks.
+func UpdateOptionWithAudit(key, value string, event AuditLog, snapshot ...func(string) AuditLog) error {
+	if IsPasskeyDomainOption(key) {
 		return errors.New("specialized option requires its own audited transaction")
+	}
+	freeze := func(tx *gorm.DB) error {
+		if len(snapshot) > 0 {
+			seed := Option{Key: key}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
+				return err
+			}
+			before, err := LockOptionValueTx(tx, key)
+			if err != nil {
+				return err
+			}
+			event = snapshot[0](before)
+		}
+		return AppendAuditIntentTx(tx, event)
+	}
+	if IsRequestPolicyOption(key) {
+		return UpdateRequestPolicyOptions(map[string]string{key: value}, freeze)
+	}
+	if IsModelPricingOption(key) {
+		return UpdateModelPricingOptions(map[string]string{key: value}, freeze)
 	}
 	unlock := lockAdtyGroupConfig(key)
 	defer unlock()
@@ -376,10 +396,13 @@ func UpdateOptionWithAudit(key, value string, event AuditLog) error {
 	}
 	values := map[string]string{key: value}
 	if err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := freeze(tx); err != nil {
+			return err
+		}
 		if err := SaveOptionsTx(tx, values); err != nil {
 			return err
 		}
-		return AppendAuditIntentTx(tx, event)
+		return nil
 	}); err != nil {
 		return err
 	}

@@ -28,6 +28,7 @@ import {
 import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import en from '@/i18n/locales/en.json'
@@ -427,6 +428,66 @@ it('regenerates backup codes through scoped verification and keeps the result vi
   await user.click(screen.getByRole('button', { name: 'Done' }))
   expect(close).toHaveBeenCalledWith(false)
   expect(success).toHaveBeenCalledTimes(1)
+})
+
+it('signs out with a committed password message when session recovery is required', async () => {
+  useAuthStore.getState().auth.setUser({ id: 1, username: 'user', role: 1 })
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        scope: 'account.password.change',
+        methods: [{ method: 'password', available: true }],
+        password_encryption_enabled: false,
+      },
+    },
+  })
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        scope: 'account.password.change',
+        method: 'password',
+        proof_token: 'password-proof',
+        expires_at: Math.floor(Date.now() / 1000) + 60,
+      },
+    },
+  })
+  const put = vi.spyOn(api, 'put').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        has_password: true,
+        committed: true,
+        relogin_required: true,
+      },
+    },
+  })
+  const notice = vi.spyOn(toast, 'success')
+  const success = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <ChangePasswordDialog
+      open
+      username='user'
+      onOpenChange={vi.fn()}
+      onSuccess={success}
+    />
+  )
+  await user.type(screen.getByLabelText('Current Password'), 'old-password')
+  await user.type(screen.getByLabelText('New Password'), 'new-password-123')
+  await user.type(
+    screen.getByLabelText('Confirm New Password'),
+    'new-password-123'
+  )
+  await user.click(screen.getByRole('button', { name: 'Change Password' }))
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/sign-in' }))
+  expect(useAuthStore.getState().auth.user).toBeNull()
+  expect(put).toHaveBeenCalledTimes(1)
+  expect(notice).toHaveBeenCalledWith(
+    'Password updated. Sign in again with your new password.'
+  )
+  expect(success).not.toHaveBeenCalled()
 })
 
 it('allows a common new password after verifying the current password once', async () => {

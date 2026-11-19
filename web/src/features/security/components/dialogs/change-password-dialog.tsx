@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useNavigate } from '@tanstack/react-router'
 import { Loader2 } from 'lucide-react'
 import { useEffect } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
@@ -41,6 +42,7 @@ import {
 } from '@/components/ui/form'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import { changeAccountPassword } from '@/features/profile/api'
+import { clearAuthentication } from '@/lib/api'
 import { accountPasswordSchema } from '@/lib/password-policy'
 
 import { useAccountSecurity } from '../../hooks/use-account-security'
@@ -71,6 +73,7 @@ interface ChangePasswordDialogProps {
 }
 
 export function ChangePasswordDialog(props: ChangePasswordDialogProps) {
+  const navigate = useNavigate()
   const { t } = useTranslation()
   const security = useAccountSecurity()
   const hasPassword = props.hasPassword !== false
@@ -146,6 +149,15 @@ export function ChangePasswordDialog(props: ChangePasswordDialogProps) {
     })
     if (!result) return
     form.reset(emptyPasswordForm)
+    if (result.relogin_required) {
+      toast.success(
+        t('Password updated. Sign in again with your new password.')
+      )
+      props.onOpenChange(false)
+      clearAuthentication()
+      navigate({ to: '/sign-in' })
+      return
+    }
     toast.success(
       t(
         hasPassword

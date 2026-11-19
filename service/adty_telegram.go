@@ -490,7 +490,9 @@ func GetAdtyTelegramBind(userId int, purpose string) (*AdtyTelegramBindView, err
 		return view, nil
 	}
 	view.Status = row.Status
-	view.TelegramUserId = row.TelegramUserId
+	if row.Status != "revoked" {
+		view.TelegramUserId = row.TelegramUserId
+	}
 	return view, nil
 }
 

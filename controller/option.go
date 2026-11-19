@@ -3,11 +3,14 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"net/http"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -23,6 +26,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+var optionUpdateCrossKeyMu sync.Mutex
 
 var completionRatioMetaOptionKeys = []string{
 	"ModelPrice",
@@ -77,12 +82,7 @@ func GetOptions(c *gin.Context) {
 			continue
 		}
 		value := common.Interface2String(v)
-		isSensitiveKey := strings.HasSuffix(k, "Token") ||
-			strings.HasSuffix(k, "Secret") ||
-			strings.HasSuffix(k, "Key") ||
-			strings.HasSuffix(k, "secret") ||
-			strings.HasSuffix(k, "api_key")
-		if isSensitiveKey {
+		if isSensitiveOptionKey(k) {
 			continue
 		}
 		options = append(options, &model.Option{
@@ -200,10 +200,7 @@ func UpdateOption(c *gin.Context) {
 		common.ApiError(c, service.ErrAdtyAmountTierRetired)
 		return
 	case adty_setting.EpaySettingKeyChannelTimeout, adty_setting.EpaySettingKeyTotalTimeout:
-		if err := adty_setting.ValidateEpayTimeout(option.Key, option.Value.(string)); err != nil {
-			common.ApiError(c, err)
-			return
-		}
+		// Cross-key validation runs below after locking both SQL rows.
 	default:
 		if strings.HasPrefix(option.Key, "model_deployment.") {
 			common.ApiErrorT(c, "Invalid parameters")
@@ -381,15 +378,66 @@ func UpdateOption(c *gin.Context) {
 		common.ApiSuccess(c, change)
 		return
 	}
-	// Specialized writers keep their validation, lock and transaction boundary.
-	// Ordinary settings persist the key-only audit intent with the option row.
-	durableAudit := !model.IsRequestPolicyOption(option.Key) && !model.IsModelPricingOption(option.Key)
+	valueStr := option.Value.(string)
 	var auditEvent model.AuditLog
-	if durableAudit {
-		auditEvent = prepareManageAudit(c, c.GetInt("id"), "option.update", map[string]any{"key": option.Key})
-		err = model.UpdateOptionWithAudit(option.Key, option.Value.(string), auditEvent)
+	if adty_setting.IsEpayTimeoutKey(option.Key) {
+		var channelSec, totalSec int
+		var values map[string]string
+		err = model.DB.Transaction(func(tx *gorm.DB) error {
+			defaultCh := adty_setting.DefaultEpayChannelTimeoutSeconds
+			defaultTot := adty_setting.DefaultEpayTotalTimeoutSeconds
+			for _, seed := range []model.Option{
+				{Key: adty_setting.EpaySettingKeyChannelTimeout, Value: strconv.Itoa(defaultCh)},
+				{Key: adty_setting.EpaySettingKeyTotalTimeout, Value: strconv.Itoa(defaultTot)},
+			} {
+				if seedErr := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).Create(&seed).Error; seedErr != nil {
+					return seedErr
+				}
+			}
+			lockedChannel, lockErr := model.LockOptionValueTx(tx, adty_setting.EpaySettingKeyChannelTimeout)
+			if lockErr != nil {
+				return lockErr
+			}
+			lockedTotal, lockErr := model.LockOptionValueTx(tx, adty_setting.EpaySettingKeyTotalTimeout)
+			if lockErr != nil {
+				return lockErr
+			}
+			currentLocked := map[string]string{
+				adty_setting.EpaySettingKeyChannelTimeout: lockedChannel,
+				adty_setting.EpaySettingKeyTotalTimeout:   lockedTotal,
+			}
+			var valErr error
+			channelSec, totalSec, valErr = adty_setting.ValidateEpayTimeoutWithCurrent(option.Key, valueStr, currentLocked)
+			if valErr != nil {
+				return valErr
+			}
+			beforeRaw := currentLocked[option.Key]
+			auditBefore := formatOptionAuditValue(option.Key, beforeRaw)
+			auditAfter := formatOptionAuditValue(option.Key, valueStr)
+			auditParams := buildOptionAuditParams(option.Key, beforeRaw, valueStr)
+			auditEvent = prepareManageAuditChange(c, c.GetInt("id"), "option.update", auditParams, auditBefore, auditAfter, "", "")
+			values = map[string]string{
+				adty_setting.EpaySettingKeyChannelTimeout: strconv.Itoa(channelSec),
+				adty_setting.EpaySettingKeyTotalTimeout:   strconv.Itoa(totalSec),
+			}
+			if saveErr := model.SaveOptionsTx(tx, values); saveErr != nil {
+				return saveErr
+			}
+			return model.AppendAuditIntentTx(tx, auditEvent)
+		})
+		if err == nil {
+			err = model.ApplyOptionValues(values)
+		}
 	} else {
-		err = model.UpdateOption(option.Key, option.Value.(string))
+		optionUpdateCrossKeyMu.Lock()
+		defer optionUpdateCrossKeyMu.Unlock()
+		err = model.UpdateOptionWithAudit(option.Key, valueStr, auditEvent, func(beforeRaw string) model.AuditLog {
+			auditBefore := formatOptionAuditValue(option.Key, beforeRaw)
+			auditAfter := formatOptionAuditValue(option.Key, valueStr)
+			auditParams := buildOptionAuditParams(option.Key, beforeRaw, valueStr)
+			auditEvent = prepareManageAuditChange(c, c.GetInt("id"), "option.update", auditParams, auditBefore, auditAfter, "", "")
+			return auditEvent
+		})
 	}
 	if err != nil {
 		if errors.Is(err, system_setting.ErrPasskeyRPIDInvalid) {
@@ -399,14 +447,108 @@ func UpdateOption(c *gin.Context) {
 		}
 		return
 	}
-	// 出于安全考虑只记录被修改的配置项名称，不记录配置值（可能含密钥等敏感信息）。
-	if durableAudit {
-		deliverCommittedAudits(c, []model.AuditLog{auditEvent})
-	} else {
-		recordManageAudit(c, "option.update", map[string]any{"key": option.Key})
-	}
+	deliverCommittedAudits(c, []model.AuditLog{auditEvent})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
 	})
+}
+
+func isSensitiveOptionKey(k string) bool {
+	trimmed := strings.TrimSpace(k)
+	lower := strings.ToLower(trimmed)
+	return lower == "key" || lower == "authorization" || strings.HasSuffix(trimmed, "Token") ||
+		strings.HasSuffix(trimmed, "Secret") ||
+		strings.HasSuffix(trimmed, "Key") ||
+		strings.HasSuffix(trimmed, "Password") ||
+		strings.HasSuffix(lower, "token") ||
+		strings.HasSuffix(lower, "secret") ||
+		strings.HasSuffix(lower, "api_key") ||
+		strings.HasSuffix(lower, "apikey") ||
+		strings.HasSuffix(lower, "private_key") ||
+		strings.HasSuffix(lower, "client_secret") ||
+		strings.HasSuffix(lower, "password") ||
+		strings.HasSuffix(lower, "passwd")
+}
+
+func formatOptionAuditValue(key, raw string) any {
+	if !isSensitiveOptionKey(key) {
+		var value any
+		if common.Unmarshal([]byte(raw), &value) == nil {
+			return redactOptionAuditJSON(value)
+		}
+		return raw
+	}
+	configured := strings.TrimSpace(raw) != ""
+	masked := "unset"
+	status := "empty"
+	if configured {
+		masked = "***"
+		status = "configured"
+	}
+	return map[string]any{
+		"configured": configured,
+		"redacted":   true,
+		"status":     status,
+		"masked":     masked,
+	}
+}
+
+func redactOptionAuditJSON(value any) any {
+	switch object := value.(type) {
+	case map[string]any:
+		for key, field := range object {
+			if isSensitiveOptionKey(key) {
+				object[key] = map[string]any{"redacted": true, "configured": field != nil && fmt.Sprint(field) != ""}
+			} else {
+				object[key] = redactOptionAuditJSON(field)
+			}
+		}
+	case []any:
+		for index, field := range object {
+			object[index] = redactOptionAuditJSON(field)
+		}
+	}
+	return value
+}
+
+func buildOptionAuditParams(key, beforeRaw, afterRaw string) map[string]any {
+	beforeVal := formatOptionAuditValue(key, beforeRaw)
+	afterVal := formatOptionAuditValue(key, afterRaw)
+	if isSensitiveOptionKey(key) {
+		return map[string]any{
+			"key":        key,
+			"sensitive":  true,
+			"configured": strings.TrimSpace(afterRaw) != "",
+			"changed":    beforeRaw != afterRaw,
+			"before":     beforeVal,
+			"after":      afterVal,
+		}
+	}
+	return map[string]any{
+		"key":    key,
+		"before": beforeVal,
+		"after":  afterVal,
+	}
+}
+
+func readAuthoritativeEpayTimeouts() (map[string]string, error) {
+	if model.DB == nil || !model.DB.Migrator().HasTable(&model.Option{}) {
+		return nil, common.NewMessage("Operation failed")
+	}
+	var rows []model.Option
+	if err := model.DB.Where("key IN ?", []string{
+		adty_setting.EpaySettingKeyChannelTimeout,
+		adty_setting.EpaySettingKeyTotalTimeout,
+	}).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.Key] = r.Value
+	}
+	return out, nil
 }

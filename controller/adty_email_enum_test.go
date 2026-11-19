@@ -59,7 +59,7 @@ func emailEnumDB(t *testing.T) *securityMailbox {
 	common.RedisEnabled = false
 	t.Cleanup(func() { common.RedisEnabled = oldRedis })
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.UserAccessToken{}, &model.AuditLog{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.UserAccessToken{}, &model.AuditLog{}, &model.AuditIntent{}))
 	require.NoError(t, db.Create(&model.User{Username: "taken", Password: "hashed-password", Email: "taken@example.com", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}).Error)
 	common.OptionMapRWMutex.Lock()
 	previousProvider, hadProvider := common.OptionMap["EmailProvider"]
@@ -548,6 +548,9 @@ type resetCommitErrorTx struct {
 func (tx *resetCommitErrorTx) Commit() error {
 	if err := tx.Tx.Commit(); err != nil {
 		return err
+	}
+	if *tx.committed {
+		return nil
 	}
 	*tx.committed = true
 	return assert.AnError

@@ -290,6 +290,18 @@ func (p *fakeAdtyProvider) Cancel(ext *model.AdtyTopupOrder) error {
 // AdtyBonusMethod 会把 usdt.trc20 / usdt.bep20 归一成 usdt。
 func setRouterBonusRates(t *testing.T) {
 	t.Helper()
+	common.OptionMapRWMutex.Lock()
+	oldOptions := common.OptionMap
+	common.OptionMap = make(map[string]string, len(oldOptions))
+	for key, value := range oldOptions {
+		common.OptionMap[key] = value
+	}
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = oldOptions
+		common.OptionMapRWMutex.Unlock()
+	})
 	setting := adty_setting.GetTopupSetting()
 	old := setting.MethodBonus
 	t.Cleanup(func() { setting.MethodBonus = old })
@@ -298,7 +310,7 @@ func setRouterBonusRates(t *testing.T) {
 		require.NoError(t, err)
 		value, err := adty_setting.MergeMainMethodBonus(string(base), method, true, "0.025")
 		require.NoError(t, err)
-		require.NoError(t, adty_setting.ApplyMethodBonusOption(adty_setting.TopupSettingKeyMethodBonus, value))
+		require.NoError(t, model.UpdateOption(adty_setting.TopupSettingKeyMethodBonus, value))
 	}
 }
 
