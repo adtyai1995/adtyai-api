@@ -538,24 +538,35 @@ func GetAdtyGroupHealthConfig() (AdtyGroupHealthConfig, error) {
 	return view, nil
 }
 
-func PutAdtyGroupHealthConfig(successMin string, staleSeconds int) error {
+func PutAdtyGroupHealthConfig(successMin string, staleSeconds int, audits ...model.AuditLog) error {
 	value, err := decimal.NewFromString(successMin)
 	if err != nil || value.IsNegative() || value.GreaterThan(decimal.NewFromInt(1)) || staleSeconds < 60 {
 		return ErrAdtyTranslationInvalid
 	}
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var state model.AdtyGroupHealthState
-		found := tx.First(&state, 1)
+		found := model.AdtyLockForUpdate(tx).First(&state, 1)
+		before := map[string]any{"success_min": state.SuccessMin, "stale_seconds": state.StaleSeconds}
 		state.Id = 1
 		state.SuccessMin = successMin
 		state.StaleSeconds = staleSeconds
 		if found.Error == gorm.ErrRecordNotFound {
-			return tx.Create(&state).Error
-		}
-		if found.Error != nil {
+			if err := tx.Create(&state).Error; err != nil {
+				return err
+			}
+		} else if found.Error != nil {
 			return found.Error
+		} else if err := tx.Model(&state).Updates(map[string]any{"success_min": successMin, "stale_seconds": staleSeconds}).Error; err != nil {
+			return err
 		}
-		return tx.Model(&state).Updates(map[string]any{"success_min": successMin, "stale_seconds": staleSeconds}).Error
+		for _, event := range audits {
+			event.BeforeValue = common.GetJsonString(before)
+			event.AfterValue = common.GetJsonString(map[string]any{"success_min": successMin, "stale_seconds": staleSeconds})
+			if err := model.AppendAuditIntentTx(tx, event); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

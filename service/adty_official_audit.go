@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -93,4 +95,11 @@ func writeAdtyMarginWalletOfficialAudit(ledger *model.AdtySiteWalletLedger, chan
 			"cycle_tier": cycleTier.String(),
 		},
 		model.AuditResultSuccess)
+}
+
+// Delivery never changes the outcome of an already committed business transaction.
+func deliverAdtyCommittedAudit(event model.AuditLog) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = model.DeliverAuditIntent(ctx, event.EventId)
 }

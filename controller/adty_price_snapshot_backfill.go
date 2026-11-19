@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -43,21 +44,20 @@ func PostAdtyPriceSnapshotBackfill(c *gin.Context) {
 	var (
 		report *service.PriceSnapshotBackfillReport
 		err    error
+		event  model.AuditLog
 	)
 	if body.DryRun {
 		report, err = service.PreviewPriceSnapshotBackfill(c.GetInt("id"), body.Limit)
 	} else {
-		report, err = service.ApplyPriceSnapshotBackfill(c.GetInt("id"), body.Limit)
+		event = prepareManageAudit(c, 0, "adty.billing.price_snapshot_backfill", map[string]any{"limit": body.Limit})
+		report, err = service.ApplyPriceSnapshotBackfill(c.GetInt("id"), body.Limit, event)
 	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	if !body.DryRun {
-		recordManageAuditFor(c, 0, "adty.billing.price_snapshot_backfill", map[string]any{
-			"filled_tasks": report.FilledTasks, "filled_operations": report.FilledOperations,
-			"skipped": report.Skipped, "amounts_preserved": report.AmountsPreserved,
-		})
+		deliverCommittedAudits(c, []model.AuditLog{event})
 	}
 	common.ApiSuccess(c, report)
 }

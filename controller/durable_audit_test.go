@@ -9,10 +9,13 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -274,4 +277,307 @@ func TestDurableOptionAuditFailureRollsBackMutation(t *testing.T) {
 	var option model.Option
 	require.NoError(t, db.Where("key = ?", "SystemName").Take(&option).Error)
 	assert.Equal(t, "old-brand", option.Value)
+}
+
+func TestWorkspaceConfigurationAuditIsAtomic(t *testing.T) {
+	for _, kind := range []string{"telegram", "translation", "health"} {
+		for _, failure := range []string{"intent", "log_store"} {
+			t.Run(kind+"/"+failure, func(t *testing.T) {
+				t.Setenv("TEST_SECURITY_DIALECT", "postgres")
+				user, identity := setupSecurityEnrollmentTest(t)
+				db := model.DB
+				require.NoError(t, db.Model(user).Update("role", common.RoleRootUser).Error)
+				require.NoError(t, db.AutoMigrate(&model.AdtyTelegramBot{}, &model.AdtyTelegramBinding{}, &model.AdtyTelegramDelivery{}, &model.AdtyTranslationConfig{}, &model.AdtyGroupHealthState{}))
+				require.NoError(t, db.Create(&model.AdtyTelegramBot{Purpose: model.AdtyTelegramPurposeUser, Enabled: false}).Error)
+				require.NoError(t, db.Create(&model.AdtyTranslationConfig{Id: 1, Mode: model.AdtyTranslationModeSet, ModelName: "old-model"}).Error)
+				require.NoError(t, db.Create(&model.AdtyGroupHealthState{Id: 1, SuccessMin: "0.90", StaleSeconds: 120}).Error)
+				logs := model.LOG_DB
+				if failure == "intent" {
+					const callback = "test:workspace-audit-failure"
+					require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+						if tx.Statement.Table == "audit_intents" {
+							tx.AddError(assert.AnError)
+						}
+					}))
+					t.Cleanup(func() { require.NoError(t, db.Callback().Create().Remove(callback)) })
+				} else {
+					model.LOG_DB = nil
+				}
+				handler, path, body, proof := gin.HandlerFunc(PutAdtyGroupHealth), "/api/adty/admin/group-health", `{"success_min":"0.96","stale_seconds":180}`, ""
+				if kind == "telegram" {
+					handler, path, body = PutAdtyAdminTelegram, "/api/adty/admin/telegram/bots/user", `{"enabled":true}`
+					proof = issueSecurityEnrollmentProof(t, identity, service.AdtyNoticeOperation(service.AdtyNoticeActionTelegramSave, model.AdtyTelegramPurposeUser), service.VerificationMethodRootExempt)
+				} else if kind == "translation" {
+					handler, path, body = PutAdtyTranslation, "/api/adty/admin/translation", `{"mode":"platform","model_name":"new-model"}`
+					proof = issueSecurityEnrollmentProof(t, identity, service.AdtyNoticeOperation(service.AdtyNoticeActionTranslation, model.AdtyTranslationModeSet), service.VerificationMethodRootExempt)
+				}
+				response := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(response)
+				c.Request = httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+				c.Request.Header.Set("Content-Type", "application/json")
+				c.Request.Header.Set("X-Security-Proof", proof)
+				c.Set("id", user.Id)
+				c.Set("username", user.Username)
+				c.Set("role", common.RoleRootUser)
+				c.Set("session_id", identity.SessionID)
+				c.Set("auth_version", identity.UserAuthVersion)
+				c.Set("session_version", identity.SessionVersion)
+				c.Params = gin.Params{{Key: "purpose", Value: model.AdtyTelegramPurposeUser}}
+				if kind == "telegram" {
+					PutAdtyAdminTelegram(c)
+				} else {
+					handler(c)
+				}
+				var result struct {
+					Success bool `json:"success"`
+				}
+				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+				assert.Equal(t, failure == "log_store", result.Success, response.Body.String())
+				if failure == "intent" {
+					var bot model.AdtyTelegramBot
+					require.NoError(t, db.First(&bot).Error)
+					assert.False(t, bot.Enabled)
+					var cfg model.AdtyTranslationConfig
+					require.NoError(t, db.First(&cfg).Error)
+					assert.Equal(t, "old-model", cfg.ModelName)
+					var health model.AdtyGroupHealthState
+					require.NoError(t, db.First(&health).Error)
+					assert.Equal(t, "0.90", health.SuccessMin)
+				} else {
+					var intents []model.AuditIntent
+					require.NoError(t, db.Find(&intents).Error)
+					require.Len(t, intents, 1)
+					model.LOG_DB = logs
+					require.NoError(t, model.DeliverAuditIntent(t.Context(), intents[0].EventID))
+					require.NoError(t, model.DeliverAuditIntent(t.Context(), intents[0].EventID))
+					var count int64
+					require.NoError(t, logs.Model(&model.AuditLog{}).Where("event_id = ?", intents[0].EventID).Count(&count).Error)
+					assert.EqualValues(t, 1, count)
+				}
+			})
+		}
+	}
+}
+
+func TestAPIKeyReadRequiresDurableAuditBeforeResponse(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		for _, failure := range []string{"intent", "log_store"} {
+			t.Run(fmt.Sprintf("batch_%t/%s", batch, failure), func(t *testing.T) {
+				t.Setenv("TEST_SECURITY_DIALECT", "postgres")
+				user, identity := setupSecurityEnrollmentTest(t)
+				db, logs := model.DB, model.LOG_DB
+				model.InitColumnNamesForTests()
+				t.Cleanup(model.InitColumnNamesForTests)
+				require.NoError(t, db.AutoMigrate(&model.Token{}))
+				token := model.Token{UserId: user.Id, Name: "audit-key", Key: "audit-secret-never-record", Status: common.TokenStatusEnabled, ExpiredTime: -1}
+				require.NoError(t, db.Create(&token).Error)
+				if failure == "intent" {
+					const callback = "test:key-audit-failure"
+					require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+						if tx.Statement.Table == "audit_intents" {
+							tx.AddError(assert.AnError)
+						}
+					}))
+					t.Cleanup(func() { require.NoError(t, db.Callback().Create().Remove(callback)) })
+				} else {
+					model.LOG_DB = nil
+				}
+				proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: service.VerificationScopeAPIKeyRead}, service.VerificationMethodPassword)
+				path, body, handler := fmt.Sprintf("/api/token/%d/key", token.Id), "", gin.HandlerFunc(GetTokenKey)
+				if batch {
+					path, body, handler = "/api/token/batch/keys", fmt.Sprintf(`{"ids":[%d]}`, token.Id), GetTokenKeysBatch
+				}
+				response := securityEnrollmentRequest(http.MethodPost, path, body, proof, identity, func(c *gin.Context) { c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(token.Id)}}; handler(c) })
+				if failure == "intent" {
+					assert.NotContains(t, response.Body.String(), token.Key)
+					assert.Contains(t, response.Body.String(), `"success":false`)
+				} else {
+					require.Contains(t, response.Body.String(), token.Key)
+					var intents []model.AuditIntent
+					require.NoError(t, db.Find(&intents).Error)
+					require.Len(t, intents, 1)
+					assert.NotContains(t, intents[0].Payload, token.Key)
+					model.LOG_DB = logs
+					require.NoError(t, model.DeliverAuditIntent(t.Context(), intents[0].EventID))
+				}
+			})
+		}
+	}
+}
+
+func TestSensitiveMutationsRequireTransactionAudit(t *testing.T) {
+	for _, action := range []string{"key_create", "key_update", "key_delete", "key_batch_delete", "notification_hide", "voucher_cancel", "voucher_freeze", "snapshot_backfill"} {
+		t.Run(action, func(t *testing.T) {
+			previousRedis := common.RedisEnabled
+			common.RedisEnabled = false
+			t.Cleanup(func() { common.RedisEnabled = previousRedis })
+			db := adtyTestDB(t)
+			require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.AuditLog{}, &model.AuditIntent{}, &model.Task{}, &model.BillingOperation{}))
+			require.NoError(t, model.MigrateAdtyTables())
+			user := model.User{Username: "atomic-audit-owner", Password: "unused", Role: common.RoleRootUser, Status: common.UserStatusEnabled, Group: "default"}
+			require.NoError(t, db.Create(&user).Error)
+			token := model.Token{UserId: user.Id, Name: "before", Key: "retained-secret", Status: common.TokenStatusEnabled, ExpiredTime: -1, Group: "default", UnlimitedQuota: true}
+			require.NoError(t, db.Create(&token).Error)
+			voucher := model.AdtyVoucher{IssuerId: user.Id, CodeHash: "voucher-test-hash", Purpose: model.AdtyVoucherPurposeSiteOwner, TargetSiteId: 7, Status: model.AdtyVoucherStatusPending, SourceKind: model.AdtyVoucherSourcePlatform, AmountUSD: decimal.NewFromInt(1)}
+			require.NoError(t, db.Create(&voucher).Error)
+			require.NoError(t, db.Create(&model.AdtyVoucherLiability{Scope: "main", LimitUSD: decimal.NewFromInt(10), FrozenUSD: decimal.NewFromInt(1)}).Error)
+			task := model.Task{TaskID: "audit-historical-task", UserId: user.Id, Group: "default", Quota: 2400, SubmitTime: 1700000000}
+			task.PrivateData.BillingContext = &model.TaskBillingContext{OriginModelName: "audit-model", ModelRatio: 2, GroupRatio: 1.2, SiteMarkup: 1.25, SiteCostFactor: 0.8}
+			require.NoError(t, db.Create(&task).Error)
+			const callback = "test:all-sensitive-audit-failure"
+			attempted := false
+			require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == "audit_intents" {
+					attempted = true
+					tx.AddError(assert.AnError)
+				}
+			}))
+			t.Cleanup(func() { require.NoError(t, db.Callback().Create().Remove(callback)) })
+			var operationErr error
+			switch action {
+			case "notification_hide":
+				operationErr = service.HideAdtyNotificationForUser(user.Id, "atomic-hide")
+			case "voucher_cancel":
+				operationErr = service.CancelAdtyVoucher(user.Id, voucher.Id)
+			case "voucher_freeze":
+				operationErr = service.FreezeAdtyVoucher(user.Id, voucher.Id)
+			case "snapshot_backfill":
+				_, operationErr = service.ApplyPriceSnapshotBackfill(user.Id, 10)
+			default:
+				method, path, body, handler := http.MethodPost, "/api/token/", `{"name":"new-key","unlimited_quota":true,"group":"default"}`, gin.HandlerFunc(AddToken)
+				if action == "key_update" {
+					method, body, handler = http.MethodPut, fmt.Sprintf(`{"id":%d,"name":"after","unlimited_quota":true,"expired_time":-1,"group":"default"}`, token.Id), UpdateToken
+				}
+				if action == "key_delete" {
+					method, path, body, handler = http.MethodDelete, fmt.Sprintf("/api/token/%d", token.Id), "", DeleteToken
+				}
+				if action == "key_batch_delete" {
+					path, body, handler = "/api/token/batch", fmt.Sprintf(`{"ids":[%d]}`, token.Id), DeleteTokenBatch
+				}
+				response := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(response)
+				c.Request = httptest.NewRequest(method, path, strings.NewReader(body))
+				c.Request.Header.Set("Content-Type", "application/json")
+				c.Set("id", user.Id)
+				c.Set("role", user.Role)
+				c.Set("username", user.Username)
+				c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(token.Id)}}
+				handler(c)
+				assert.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
+			}
+			assert.True(t, attempted, "mandatory audit must use the primary transaction")
+			if action == "notification_hide" || action == "voucher_cancel" || action == "voucher_freeze" || action == "snapshot_backfill" {
+				assert.Error(t, operationErr)
+			}
+			var saved model.Token
+			require.NoError(t, db.First(&saved, token.Id).Error)
+			assert.Equal(t, "before", saved.Name)
+			var count int64
+			require.NoError(t, db.Model(&model.Token{}).Where("user_id = ?", user.Id).Count(&count).Error)
+			assert.EqualValues(t, 1, count)
+			require.NoError(t, db.Model(&model.AdtyNotificationHide{}).Count(&count).Error)
+			assert.Zero(t, count)
+			var savedVoucher model.AdtyVoucher
+			require.NoError(t, db.First(&savedVoucher, voucher.Id).Error)
+			assert.Equal(t, model.AdtyVoucherStatusPending, savedVoucher.Status)
+			require.NoError(t, db.First(&task, task.ID).Error)
+			assert.Nil(t, task.PrivateData.BillingContext.PriceSnapshot)
+		})
+	}
+}
+
+func TestSensitiveAuditRecoveryAndOuterRollback(t *testing.T) {
+	previousRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = previousRedis })
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.AuditLog{}, &model.AuditIntent{}, &model.Task{}, &model.BillingOperation{}))
+	require.NoError(t, model.MigrateAdtyTables())
+	user := model.User{Username: "audit-recovery-root", Password: "unused", Role: common.RoleRootUser, Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+	token := model.Token{UserId: user.Id, Key: "recovery-key-never-in-audit", Name: "before", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true, Group: "default"}
+	require.NoError(t, db.Create(&token).Error)
+	logs := model.LOG_DB
+	model.LOG_DB = nil
+	t.Cleanup(func() { model.LOG_DB = logs })
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("id", user.Id)
+		c.Set("username", user.Username)
+		c.Set("role", user.Role)
+		c.Next()
+	}, middleware.TokenOperationAudit())
+	router.POST("/api/token/", AddToken)
+	router.PUT("/api/token/", UpdateToken)
+	router.DELETE("/api/token/:id", DeleteToken)
+	router.POST("/api/token/batch", DeleteTokenBatch)
+	for _, request := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/token/", `{"name":"created","group":"default","unlimited_quota":true}`},
+		{http.MethodPut, "/api/token/", fmt.Sprintf(`{"id":%d,"name":"updated","group":"default","unlimited_quota":true,"expired_time":-1}`, token.Id)},
+		{http.MethodDelete, fmt.Sprintf("/api/token/%d", token.Id), ""},
+		{http.MethodPost, "/api/token/batch", `{"ids":[99999]}`},
+	} {
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(request.method, request.path, strings.NewReader(request.body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, req)
+		require.Contains(t, response.Body.String(), `"success":true`, response.Body.String())
+	}
+	// Rejected requests also retain a recoverable event.
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/token/", strings.NewReader("invalid-json")))
+	require.Contains(t, response.Body.String(), `"success":false`)
+	require.NoError(t, service.HideAdtyNotificationForUser(user.Id, "recover-hide"))
+	require.NoError(t, service.HideAdtyNotificationForUser(user.Id, "recover-hide"))
+	voucher := model.AdtyVoucher{IssuerId: user.Id, CodeHash: "recovery-voucher", Purpose: model.AdtyVoucherPurposeSiteOwner, SourceKind: model.AdtyVoucherSourcePlatform, TargetSiteId: 7, Status: model.AdtyVoucherStatusPending, AmountUSD: decimal.NewFromInt(1)}
+	require.NoError(t, db.Create(&voucher).Error)
+	require.NoError(t, db.Create(&model.AdtyVoucherLiability{Scope: "main", LimitUSD: decimal.NewFromInt(10), FrozenUSD: decimal.NewFromInt(1)}).Error)
+	require.ErrorIs(t, db.Transaction(func(tx *gorm.DB) error {
+		if err := service.InheritAdtyVouchersOnCloseTx(tx, 7, nil); err != nil {
+			return err
+		}
+		return assert.AnError
+	}), assert.AnError)
+	var phantom int64
+	require.NoError(t, db.Model(&model.AuditIntent{}).Where("payload LIKE ?", "%unused owner or margin voucher revoked on site close%").Count(&phantom).Error)
+	assert.Zero(t, phantom, "outer rollback must remove both status mutation and success audit")
+	require.NoError(t, service.FreezeAdtyVoucher(user.Id, voucher.Id))
+	require.NoError(t, service.CancelAdtyVoucher(user.Id, voucher.Id))
+	_, err := service.PreviewPriceSnapshotBackfill(user.Id, 10)
+	require.NoError(t, err)
+	_, err = service.ApplyPriceSnapshotBackfill(user.Id, 10)
+	require.NoError(t, err)
+	var intents []model.AuditIntent
+	require.NoError(t, db.Find(&intents).Error)
+	require.Len(t, intents, 9, "four Key writes, one rejection, one idempotent hide, freeze, cancel, and one apply")
+	model.LOG_DB = logs
+	for _, intent := range intents {
+		assert.Zero(t, intent.DeliveredAt)
+		assert.NotContains(t, intent.Payload, token.Key)
+		require.NoError(t, model.DeliverAuditIntent(t.Context(), intent.EventID))
+		require.NoError(t, model.DeliverAuditIntent(t.Context(), intent.EventID))
+	}
+	var count int64
+	require.NoError(t, logs.Model(&model.AuditLog{}).Count(&count).Error)
+	assert.EqualValues(t, 9, count)
+}
+
+func TestAuditSuppressionRequiresPersistedIntent(t *testing.T) {
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.AuditIntent{}, &model.AuditLog{}))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/option/", nil)
+	c.Set("id", 1)
+	c.Set("role", common.RoleRootUser)
+	markAuditLogged(c)
+	assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyAuditLogged))
+	event := prepareManageAudit(c, 0, "adty.telegram.save", map[string]any{"purpose": "user"})
+	deliverCommittedAudits(c, []model.AuditLog{event})
+	assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyAuditLogged))
+	var count int64
+	require.NoError(t, db.Model(&model.AuditIntent{}).Count(&count).Error)
+	assert.Zero(t, count, "delivery must never manufacture evidence after a transaction")
+	require.NoError(t, model.AppendAuditIntentTx(db, event))
+	deliverCommittedAudits(c, []model.AuditLog{event})
+	assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyAuditLogged))
 }

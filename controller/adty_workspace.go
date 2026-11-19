@@ -232,12 +232,13 @@ func PutAdtyAdminTelegram(c *gin.Context) {
 	if middleware.RequireSecurityProof(c, service.AdtyNoticeOperation(service.AdtyNoticeActionTelegramSave, purpose)) == nil {
 		return
 	}
-	saved, err := service.SaveAdtyTelegramBot(purpose, body.Token, body.Enabled)
+	event := prepareManageAudit(c, c.GetInt("id"), "adty.telegram.save", map[string]any{"purpose": purpose, "enabled": body.Enabled, "token_changed": body.Token != ""})
+	saved, err := service.SaveAdtyTelegramBot(purpose, body.Token, body.Enabled, event)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "adty.telegram.save", map[string]any{"purpose": purpose, "enabled": body.Enabled, "token_changed": body.Token != ""})
+	deliverCommittedAudits(c, []model.AuditLog{event})
 	common.ApiSuccess(c, saved)
 }
 
@@ -429,12 +430,13 @@ func PutAdtyTranslation(c *gin.Context) {
 		return
 	}
 	body.RequestHost = c.Request.Host
-	view, err := service.SaveAdtyTranslationConfig(body)
+	event := prepareManageAudit(c, c.GetInt("id"), "adty.translation.save", map[string]any{"mode": body.Mode, "model": body.ModelName})
+	view, err := service.SaveAdtyTranslationConfig(body, event)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "adty.translation.save", map[string]any{"mode": body.Mode, "model": body.ModelName})
+	deliverCommittedAudits(c, []model.AuditLog{event})
 	common.ApiSuccess(c, view)
 }
 
@@ -512,11 +514,12 @@ func PutAdtyGroupHealth(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.PutAdtyGroupHealthConfig(body.SuccessMin, body.StaleSeconds); err != nil {
+	event := prepareManageAudit(c, c.GetInt("id"), "adty.group_health.config", map[string]any{"success_min": body.SuccessMin, "stale_seconds": body.StaleSeconds})
+	if err := service.PutAdtyGroupHealthConfig(body.SuccessMin, body.StaleSeconds, event); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "adty.group_health.config", map[string]any{"success_min": body.SuccessMin})
+	deliverCommittedAudits(c, []model.AuditLog{event})
 	common.ApiSuccess(c, gin.H{"saved": true})
 }
 

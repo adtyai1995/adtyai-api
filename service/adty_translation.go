@@ -145,7 +145,7 @@ func GetAdtyTranslationConfig() (*AdtyTranslationView, error) {
 	return adtyTranslationView(row), nil
 }
 
-func SaveAdtyTranslationConfig(input AdtyTranslationInput) (*AdtyTranslationView, error) {
+func SaveAdtyTranslationConfig(input AdtyTranslationInput, audits ...model.AuditLog) (*AdtyTranslationView, error) {
 	input.Mode = strings.TrimSpace(input.Mode)
 	input.Protocol = strings.TrimSpace(input.Protocol)
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
@@ -171,6 +171,10 @@ func SaveAdtyTranslationConfig(input AdtyTranslationInput) (*AdtyTranslationView
 		if lookup.Error != nil && !missing {
 			return lookup.Error
 		}
+		snapshot := func(row model.AdtyTranslationConfig) map[string]any {
+			return map[string]any{"mode": row.Mode, "protocol": row.Protocol, "model_name": row.ModelName, "backup_model": row.BackupModel, "timeout_sec": row.TimeoutSec, "concurrency": row.Concurrency, "max_chars": row.MaxChars, "daily_quota": row.DailyQuota, "retry_limit": row.RetryLimit, "enabled": row.Enabled, "configured": row.TokenCipher != ""}
+		}
+		before := snapshot(saved)
 		saved.Id = 1
 		saved.Mode = input.Mode
 		if input.Mode == model.AdtyTranslationModeOwn {
@@ -205,9 +209,20 @@ func SaveAdtyTranslationConfig(input AdtyTranslationInput) (*AdtyTranslationView
 			saved.TokenMask = adtyMaskTail(input.Token)
 		}
 		if missing {
-			return tx.Create(&saved).Error
+			if err := tx.Create(&saved).Error; err != nil {
+				return err
+			}
+		} else if err := tx.Save(&saved).Error; err != nil {
+			return err
 		}
-		return tx.Save(&saved).Error
+		for _, event := range audits {
+			event.BeforeValue = common.GetJsonString(before)
+			event.AfterValue = common.GetJsonString(snapshot(saved))
+			if err := model.AppendAuditIntentTx(tx, event); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err

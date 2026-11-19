@@ -31,6 +31,7 @@ func AppendAuditIntentTx(tx *gorm.DB, entry AuditLog) error {
 		return errors.New("audit intent requires a prepared event and transaction")
 	}
 	entry.Id = 0
+	redactAuditLog(&entry)
 	payload, err := common.Marshal(entry)
 	if err != nil {
 		return errors.New("audit intent encoding failed")

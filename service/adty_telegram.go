@@ -177,7 +177,7 @@ func adtyCanUseAdminTelegram(tx *gorm.DB, user *model.User) bool {
 	return false
 }
 
-func SaveAdtyTelegramBot(purpose, token string, enabled bool) (*AdtyTelegramSaved, error) {
+func SaveAdtyTelegramBot(purpose, token string, enabled bool, audits ...model.AuditLog) (*AdtyTelegramSaved, error) {
 	if !adtyValidTelegramPurpose(purpose) {
 		return nil, ErrAdtyTelegramInvalid
 	}
@@ -189,6 +189,7 @@ func SaveAdtyTelegramBot(purpose, token string, enabled bool) (*AdtyTelegramSave
 		if lookup.Error != nil {
 			return lookup.Error
 		}
+		before := map[string]any{"enabled": row.Enabled, "bot_id": row.BotId, "configured": row.TokenCipher != ""}
 		secret := ""
 		if token != "" {
 			match := adtyTelegramTokenPattern.FindStringSubmatch(token)
@@ -261,6 +262,13 @@ func SaveAdtyTelegramBot(purpose, token string, enabled bool) (*AdtyTelegramSave
 			return err
 		}
 		saved = &AdtyTelegramSaved{View: view, WebhookSecret: secret}
+		for _, event := range audits {
+			event.BeforeValue = common.GetJsonString(before)
+			event.AfterValue = common.GetJsonString(map[string]any{"enabled": enabled, "bot_id": row.BotId, "configured": row.TokenCipher != ""})
+			if err := model.AppendAuditIntentTx(tx, event); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	return saved, err

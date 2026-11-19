@@ -625,7 +625,7 @@ func AdtyVoucherMarginAuthorized(siteId int) bool {
 }
 
 func FreezeAdtyVoucher(actorId int, voucherId int64) error {
-	var snapshot model.AdtyVoucher
+	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := lockAdtyVoucherUser(tx, actorId)
 		if err != nil {
@@ -649,11 +649,14 @@ func FreezeAdtyVoucher(actorId int, voucherId int64) error {
 		if updated.RowsAffected != 1 {
 			return common.NewMessage("Invalid parameters")
 		}
-		snapshot = voucher
-		return nil
+		event, err = prepareAdtyVoucherStatusAudit(*actor, voucher, "adty.voucher.freeze", "", model.AdtyVoucherStatusPending, model.AdtyVoucherStatusFrozen)
+		if err != nil {
+			return err
+		}
+		return model.AppendAuditIntentTx(tx, event)
 	})
-	if err == nil && snapshot.Id != 0 {
-		writeAdtyVoucherStatusAudit(actorId, snapshot, "adty.voucher.freeze", "", model.AdtyVoucherStatusPending, model.AdtyVoucherStatusFrozen)
+	if err == nil && event.EventId != "" {
+		deliverAdtyCommittedAudit(event)
 	}
 	return err
 }
@@ -686,7 +689,7 @@ func InheritAdtyVouchersOnCloseTx(tx *gorm.DB, siteId int, movedUserIDs []int) e
 }
 
 func CancelAdtyVoucher(actorId int, voucherId int64) error {
-	var snapshot model.AdtyVoucher
+	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := lockAdtyVoucherUser(tx, actorId)
 		if err != nil {
@@ -699,11 +702,18 @@ func CancelAdtyVoucher(actorId int, voucherId int64) error {
 		if actor.Role != common.RoleRootUser && voucher.IssuerId != actor.Id {
 			return common.NewMessage("No permission to perform this action")
 		}
-		snapshot = voucher
-		return cancelAdtyVoucherTx(tx, &voucher)
+		beforeStatus := voucher.Status
+		if err := cancelAdtyVoucherTx(tx, &voucher); err != nil {
+			return err
+		}
+		event, err = prepareAdtyVoucherStatusAudit(*actor, voucher, "adty.voucher.cancel", "", beforeStatus, model.AdtyVoucherStatusCancelled)
+		if err != nil {
+			return err
+		}
+		return model.AppendAuditIntentTx(tx, event)
 	})
-	if err == nil && snapshot.Id != 0 {
-		writeAdtyVoucherStatusAudit(actorId, snapshot, "adty.voucher.cancel", "", snapshot.Status, model.AdtyVoucherStatusCancelled)
+	if err == nil && event.EventId != "" {
+		deliverAdtyCommittedAudit(event)
 	}
 	return err
 }
@@ -720,7 +730,13 @@ func revokeUnusedOwnerAndMarginVouchersOnCloseTx(tx *gorm.DB, siteId int) error 
 		if err := cancelAdtyVoucherTx(tx, &vouchers[i]); err != nil {
 			return err
 		}
-		writeAdtyVoucherStatusAudit(0, before, "adty.voucher.cancel", "unused owner or margin voucher revoked on site close", before.Status, model.AdtyVoucherStatusCancelled)
+		event, err := prepareAdtyVoucherStatusAudit(model.User{}, before, "adty.voucher.cancel", "unused owner or margin voucher revoked on site close", before.Status, model.AdtyVoucherStatusCancelled)
+		if err != nil {
+			return err
+		}
+		if err := model.AppendAuditIntentTx(tx, event); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1143,21 +1159,24 @@ func noteAdtyVoucherGuessRedis(userId int, now int64) error {
 	).Err()
 }
 
-func writeAdtyVoucherStatusAudit(actorId int, voucher model.AdtyVoucher, action, reason, beforeStatus, afterStatus string) {
+func prepareAdtyVoucherStatusAudit(actor model.User, voucher model.AdtyVoucher, action, reason, beforeStatus, afterStatus string) (model.AuditLog, error) {
 	siteID := voucher.TargetSiteId
 	if siteID == 0 {
 		siteID = voucher.SourceSiteId
 	}
-	writeAdtyOfficialAudit(actorId, siteID, "voucher", strconv.FormatInt(voucher.Id, 10), action, reason, "",
-		map[string]any{
+	return model.PrepareOfficialAuditLog(nil, model.OfficialAuditWrite{
+		UserId: actor.Id, Username: actor.Username, ActorRole: actor.Role,
+		SiteID: model.OfficialAuditSiteIDPointer(siteID), ObjectType: "voucher", ObjectID: strconv.FormatInt(voucher.Id, 10),
+		Action: action, Content: action, Reason: reason, Result: model.AuditResultSuccess, Success: true,
+		Before: map[string]any{
 			"voucher_id": voucher.Id, "purpose": voucher.Purpose, "amount_usd": voucher.AmountUSD.String(),
 			"quota": voucher.Quota, "status": beforeStatus, "source_kind": voucher.SourceKind,
 			"source_site_id": voucher.SourceSiteId, "target_site_id": voucher.TargetSiteId,
 		},
-		map[string]any{
+		After: map[string]any{
 			"voucher_id": voucher.Id, "purpose": voucher.Purpose, "amount_usd": voucher.AmountUSD.String(),
 			"quota": voucher.Quota, "status": afterStatus, "source_kind": voucher.SourceKind,
 			"source_site_id": voucher.SourceSiteId, "target_site_id": voucher.TargetSiteId,
 		},
-		model.AuditResultSuccess)
+	})
 }

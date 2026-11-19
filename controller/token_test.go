@@ -173,7 +173,7 @@ func openTokenControllerTestDB(t *testing.T) *gorm.DB {
 func migrateTokenControllerTestDB(t *testing.T, db *gorm.DB) {
 	t.Helper()
 
-	if err := db.AutoMigrate(&model.Token{}, &model.AdtyGroup{}); err != nil {
+	if err := db.AutoMigrate(&model.Token{}, &model.AdtyGroup{}, &model.AuditIntent{}, &model.AuditLog{}); err != nil {
 		t.Fatalf("failed to migrate token table: %v", err)
 	}
 }
@@ -828,7 +828,7 @@ func TestAPITokenAuditDatabaseMatrix(t *testing.T) {
 				db, _ := newAuditTestDatabase(t, database.name, dsn)
 				model.DB = db
 				common.SetDatabaseTypes(database.typ, database.typ)
-				require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.UserAccessToken{}))
+				require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.UserAccessToken{}, &model.AuditIntent{}))
 				// Initialize production column quoting as well as the existing audit table.
 				require.NoError(t, model.InitLogDB())
 				if separateLog {
@@ -1274,4 +1274,3 @@ func TestTokenRateLimitThreeDimensionsCRUDAndAudit(t *testing.T) {
 	assert.Zero(t, cleared.TPM)
 	assert.Zero(t, cleared.Concurrency)
 }
-

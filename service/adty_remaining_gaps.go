@@ -772,16 +772,34 @@ func hideAdtyNotificationForUser(c *gin.Context, userID int, key string) error {
 	if userID <= 0 || key == "" {
 		return common.NewMessage("Invalid parameters")
 	}
-	row := model.AdtyNotificationHide{UserId: userID, Key: key}
-	result := model.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
-	if result.Error != nil {
-		return result.Error
+	var event model.AuditLog
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		row := model.AdtyNotificationHide{UserId: userID, Key: key}
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		var actor model.User
+		if err := tx.First(&actor, userID).Error; err != nil {
+			return err
+		}
+		var err error
+		event, err = model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
+			UserId: userID, Username: actor.Username, ActorRole: actor.Role,
+			SiteID:     model.OfficialAuditSiteIDPointer(officialNotificationHideSiteID(c, &actor)),
+			ObjectType: "notification", ObjectID: key, Action: "adty.notification.hide",
+			Content: "adty.notification.hide", Result: model.AuditResultSuccess, Success: true,
+			Before: map[string]any{"hidden": false}, After: map[string]any{"hidden": true},
+		})
+		if err != nil {
+			return err
+		}
+		return model.AppendAuditIntentTx(tx, event)
+	})
+	if err == nil && event.EventId != "" {
+		deliverAdtyCommittedAudit(event)
 	}
-	if result.RowsAffected == 0 {
-		return nil
-	}
-	writeAdtyNotificationHideAudit(c, userID, key)
-	return nil
+	return err
 }
 
 func writeAdtyNotificationHideAudit(c *gin.Context, userID int, key string) {

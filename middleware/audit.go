@@ -2,7 +2,9 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"strconv"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -221,6 +223,9 @@ func TokenOperationAudit() gin.HandlerFunc {
 		writer := &auditResponseWriter{ResponseWriter: c.Writer, body: bytes.NewBuffer(nil), maxSize: 64 * 1024}
 		c.Writer = writer
 		c.Next()
+		if common.GetContextKeyBool(c, constant.ContextKeyAuditLogged) && common.GetContextKeyBool(c, constant.ContextKeyTokenAuditSucceeded) {
+			return
+		}
 		entry.Status = writer.Status()
 		entry.Success = auditResponseSuccess(entry.Status, writer.body.Bytes())
 		if writer.body.Len() == writer.maxSize {
@@ -255,10 +260,19 @@ func TokenOperationAudit() gin.HandlerFunc {
 // 两处调用点（a.audit 的后台写路由、P.audit 的个人访问令牌请求）以前都是
 // `_ = model.WriteOfficialAuditLog(...)`，全仓 13 个调用点里只有这两处吞错。
 func writeAuditOrLogFailure(c *gin.Context, chain string, userID int, action string, rec model.OfficialAuditWrite) {
-	if err := model.WriteOfficialAuditLog(c, rec); err != nil {
+	entry, err := model.PrepareOfficialAuditLog(c, rec)
+	if err == nil {
+		err = model.AppendAuditIntentTx(model.DB, entry)
+	}
+	if err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err = model.DeliverAuditIntent(ctx, entry.EventId)
+		cancel()
+	}
+	if err != nil {
 		common.SysError(common.LogText(
-			"official audit write failed: chain=%s user_id=%d action=%s route=%s error=%s",
-			chain, userID, action, requestRouteLabel(c), err.Error()))
+			"official audit write failed: chain=%s user_id=%d action=%s route=%s",
+			chain, userID, action, requestRouteLabel(c)))
 	}
 }
 

@@ -43,25 +43,61 @@ func PreviewPriceSnapshotBackfill(actorID int, limit int) (*PriceSnapshotBackfil
 	return runPriceSnapshotBackfill(actorID, limit, true)
 }
 
-func ApplyPriceSnapshotBackfill(actorID int, limit int) (*PriceSnapshotBackfillReport, error) {
-	return runPriceSnapshotBackfill(actorID, limit, false)
+func ApplyPriceSnapshotBackfill(actorID int, limit int, audits ...model.AuditLog) (*PriceSnapshotBackfillReport, error) {
+	return runPriceSnapshotBackfill(actorID, limit, false, audits...)
 }
 
-func runPriceSnapshotBackfill(actorID int, limit int, dryRun bool) (*PriceSnapshotBackfillReport, error) {
+func runPriceSnapshotBackfill(actorID int, limit int, dryRun bool, audits ...model.AuditLog) (*PriceSnapshotBackfillReport, error) {
 	if err := requirePriceSnapshotBackfillRoot(actorID); err != nil {
 		return nil, err
 	}
 	limit = normalizePriceSnapshotBackfillLimit(limit)
 	report := &PriceSnapshotBackfillReport{DryRun: dryRun, Limit: limit, AmountsPreserved: true}
-	if err := backfillHistoricalTaskSnapshots(model.DB, limit, dryRun, report); err != nil {
+	var event model.AuditLog
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var actor model.User
+		if err := model.AdtyLockForUpdate(tx).First(&actor, actorID).Error; err != nil {
+			return err
+		}
+		if actor.Role != common.RoleRootUser || actor.Status != common.UserStatusEnabled || actor.StaffSiteId != 0 {
+			return ErrPriceSnapshotBackfillForbidden
+		}
+		if err := backfillHistoricalTaskSnapshots(tx, limit, dryRun, report); err != nil {
+			return err
+		}
+		if report.filledCount() < limit {
+			if err := backfillHistoricalOperationSnapshots(tx, limit-report.filledCount(), dryRun, report); err != nil {
+				return err
+			}
+		}
+		report.MoreRemain = report.Remaining
+		if dryRun {
+			return nil
+		}
+		var err error
+		event, err = model.PrepareOfficialAuditLog(nil, model.OfficialAuditWrite{
+			UserId: actor.Id, Username: actor.Username, ActorRole: actor.Role, SiteID: model.OfficialAuditSiteIDPointer(0),
+			ObjectType: "billing", ObjectID: "price_snapshot_backfill", Action: "adty.billing.price_snapshot_backfill",
+			Content: "adty.billing.price_snapshot_backfill", Result: model.AuditResultSuccess, Success: true, After: report,
+		})
+		if err != nil {
+			return err
+		}
+		if len(audits) > 0 {
+			event = audits[0]
+			event.UserId = actor.Id
+			event.Username = actor.Username
+			event.ActorRole = actor.Role
+			event.AfterValue = common.GetJsonString(report)
+		}
+		return model.AppendAuditIntentTx(tx, event)
+	})
+	if err != nil {
 		return nil, err
 	}
-	if report.filledCount() < limit {
-		if err := backfillHistoricalOperationSnapshots(model.DB, limit-report.filledCount(), dryRun, report); err != nil {
-			return nil, err
-		}
+	if !dryRun {
+		deliverAdtyCommittedAudit(event)
 	}
-	report.MoreRemain = report.Remaining
 	return report, nil
 }
 

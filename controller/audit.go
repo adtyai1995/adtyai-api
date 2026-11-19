@@ -104,11 +104,63 @@ var auditContentTemplates = map[string]string{
 	"adty.site.customer_review":       "Reviewed flagged site customer ${user_id}",
 	"adty.site.report":                "Handled site report ${report_id} as ${status}",
 	"adty.site.notice_takedown":       "Took down the notice of reseller site ${site_id}",
+	"adty.telegram.save":              "Updated Telegram bot (${purpose})",
+	"adty.telegram.unbind":            "Unbound Telegram notification (${purpose})",
+	"adty.translation.save":           "Updated translation settings (${mode})",
+	"adty.group_health.config":        "Updated group health settings (${success_min})",
+}
+
+const (
+	auditDurablePersistedContextKey = "adty_audit_durable_persisted"
+	auditPreparedEventIDsContextKey = "adty_audit_prepared_event_ids"
+)
+
+func rememberPreparedAuditEvent(c *gin.Context, eventID string) {
+	if c == nil || strings.TrimSpace(eventID) == "" {
+		return
+	}
+	existing, _ := common.GetContextKeyType[[]string](c, auditPreparedEventIDsContextKey)
+	existing = append(existing, eventID)
+	common.SetContextKey(c, auditPreparedEventIDsContextKey, existing)
+}
+
+func hasDurableAuditIntent(eventID string) bool {
+	if strings.TrimSpace(eventID) == "" || model.DB == nil {
+		return false
+	}
+	var count int64
+	if err := model.DB.Model(&model.AuditIntent{}).Where("event_id = ?", eventID).Limit(1).Count(&count).Error; err != nil {
+		return false
+	}
+	return count > 0
+}
+
+func persistAndDeliverAuditEvent(c *gin.Context, event model.AuditLog) bool {
+	if strings.TrimSpace(event.EventId) == "" || model.DB == nil {
+		return false
+	}
+	if !hasDurableAuditIntent(event.EventId) {
+		if err := model.AppendAuditIntentTx(model.DB, event); err != nil {
+			return false
+		}
+	}
+	if c != nil {
+		common.SetContextKey(c, auditDurablePersistedContextKey, true)
+	}
+	markAuditLogged(c)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = model.DeliverAuditIntent(ctx, event.EventId)
+	cancel()
+	return true
 }
 
 func recordPasskeyDomainAudit(c *gin.Context, change *model.PasskeyDomainChange, confirmed bool, err error) {
+	if c == nil {
+		return
+	}
 	confirmed = confirmed && err == nil && change != nil && len(change.RemovedRPIDs) > 0
 	params := map[string]any{"success": err == nil, "confirmed": confirmed}
+	var before, after any
 	if change != nil {
 		params["domains"] = strings.Join(change.RemovedRPIDs, ", ")
 		params["removed_rp_ids"] = change.RemovedRPIDs
@@ -116,6 +168,8 @@ func recordPasskeyDomainAudit(c *gin.Context, change *model.PasskeyDomainChange,
 		params["unknown"] = change.UnknownCredentials
 		params["previous_rp_id"] = change.PreviousRPID
 		params["effective_rp_id"] = change.EffectiveRPID
+		before = change.PreviousRPID
+		after = change.EffectiveRPID
 	}
 	action := "option.passkey_domains"
 	if errors.Is(err, model.ErrPasskeyDomainRemovalConfirmation) {
@@ -125,12 +179,36 @@ func recordPasskeyDomainAudit(c *gin.Context, change *model.PasskeyDomainChange,
 	} else if confirmed && change != nil && len(change.RemovedRPIDs) > 0 {
 		action = "option.passkey_domains_confirmed"
 	}
-	auditInfo := &model.AuditRequestInfo{
-		Method: c.Request.Method, Route: c.FullPath(), Path: c.FullPath(),
-		Status: c.Writer.Status(), Success: err == nil,
+	status := http.StatusOK
+	if c.Writer != nil && c.Writer.Status() > 0 {
+		status = c.Writer.Status()
 	}
-	model.RecordOperationAuditLog(c.GetInt("id"), c.GetInt("role"), auditContentEN(action, params), c.ClientIP(), action, params, auditOperatorInfo(c), auditInfo, c)
-	markAuditLogged(c)
+	var auditInfo *model.AuditRequestInfo
+	if c.Request != nil {
+		auditInfo = &model.AuditRequestInfo{
+			Method: c.Request.Method, Route: c.FullPath(), Path: c.FullPath(),
+			Status: status, Success: err == nil,
+		}
+	}
+	siteID := service.AdtyRequestSiteID(c)
+	if inferred := model.InferOfficialAuditSiteID(c, params); inferred != 0 || params["site_id"] != nil {
+		siteID = inferred
+	}
+	objectType, objectID := model.InferOfficialAuditObject(action, params, strconv.Itoa(c.GetInt("id")), action)
+	entry, prepErr := model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
+		UserId: c.GetInt("id"), Username: c.GetString("username"), ActorRole: c.GetInt("role"),
+		SiteID: model.OfficialAuditSiteIDPointer(siteID), ObjectType: objectType, ObjectID: objectID,
+		Action: action, Category: model.AuditCategoryOperation, Content: auditContentEN(action, params),
+		Before: before, After: after, Reason: model.InferOfficialAuditReason(params),
+		ApprovalRef: model.InferOfficialAuditApprovalRef(params), Result: model.OfficialAuditResult(err == nil),
+		Success: err == nil, Status: status,
+		Other: model.AuditOther{Op: &model.AuditOperation{Action: action, Params: params}, AdminInfo: auditOperatorInfo(c), AuditInfo: auditInfo},
+	})
+	if prepErr != nil {
+		return
+	}
+	rememberPreparedAuditEvent(c, entry.EventId)
+	persistAndDeliverAuditEvent(c, entry)
 }
 
 // auditContentEN 按 action 模板渲染英文兜底文本；未登记的 action 退回 action 本身。
@@ -164,9 +242,25 @@ func auditAuthMethod(c *gin.Context) string {
 	return "session"
 }
 
-// markAuditLogged 标记当前请求已在 handler 内手动记录审计日志，
+// markAuditLogged 标记当前请求已在 handler 内完成持久审计日志落盘，
 // 使鉴权链路中的审计兜底（finishAdminAudit）跳过兜底记录，避免重复。
+// 未证明已写入 AuditIntent 持久层时不会设置 ContextKeyAuditLogged。
 func markAuditLogged(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	if !common.GetContextKeyBool(c, auditDurablePersistedContextKey) {
+		ids, _ := common.GetContextKeyType[[]string](c, auditPreparedEventIDsContextKey)
+		if len(ids) == 0 || model.DB == nil {
+			return
+		}
+		for _, id := range ids {
+			if !hasDurableAuditIntent(id) {
+				return
+			}
+		}
+		common.SetContextKey(c, auditDurablePersistedContextKey, true)
+	}
 	common.SetContextKey(c, constant.ContextKeyAuditLogged, true)
 }
 
@@ -182,12 +276,15 @@ func recordManageAuditFor(c *gin.Context, targetUserId int, action string, param
 	if params == nil {
 		params = map[string]any{}
 	}
-	operatorUserId := c.GetInt("id")
+	operatorUserId := 0
+	if c != nil {
+		operatorUserId = c.GetInt("id")
+	}
 	if _, ok := params["target_user_id"]; !ok && targetUserId > 0 && targetUserId != operatorUserId {
 		params["target_user_id"] = targetUserId
 	}
-	model.RecordOperationAuditLog(operatorUserId, c.GetInt("role"), auditContentEN(action, params), c.ClientIP(), action, params, auditOperatorInfo(c), nil, c)
-	markAuditLogged(c)
+	entry := prepareManageAudit(c, targetUserId, action, params)
+	persistAndDeliverAuditEvent(c, entry)
 }
 
 // prepareManageAudit freezes safe metadata before entering the business
@@ -218,6 +315,7 @@ func prepareManageAudit(c *gin.Context, targetUserID int, action string, params 
 	if err != nil {
 		return model.AuditLog{}
 	}
+	rememberPreparedAuditEvent(c, entry.EventId)
 	return entry
 }
 
@@ -261,41 +359,93 @@ func prepareManageAuditChange(c *gin.Context, targetUserID int, action string, p
 	if err != nil {
 		return model.AuditLog{}
 	}
+	rememberPreparedAuditEvent(c, entry.EventId)
 	return entry
 }
 
 func deliverCommittedAudits(c *gin.Context, events []model.AuditLog) {
-	markAuditLogged(c)
+	if len(events) == 0 || model.DB == nil {
+		return
+	}
+	allPersisted := true
 	for _, event := range events {
+		if strings.TrimSpace(event.EventId) == "" {
+			allPersisted = false
+			continue
+		}
+		if !hasDurableAuditIntent(event.EventId) {
+			allPersisted = false
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = model.DeliverAuditIntent(ctx, event.EventId)
 		cancel()
+	}
+	if allPersisted {
+		if c != nil {
+			common.SetContextKey(c, auditDurablePersistedContextKey, true)
+		}
+		markAuditLogged(c)
 	}
 }
 
 // recordUserSecurityAudit 记录普通用户自己的安全敏感操作（如 passkey 绑定/解绑）。
 // 这类日志没有管理员操作者，不写 admin_info；同时不依赖 AdminAuth/RootAuth 的兜底。
 func recordUserSecurityAudit(c *gin.Context, userId int, action string, params map[string]any) {
+	if c == nil {
+		return
+	}
+	if params == nil {
+		params = map[string]any{}
+	}
 	if code := c.GetString("security_error_code"); code != "" {
-		if params == nil {
-			params = map[string]any{}
-		}
 		params["code"] = code
 	}
 	if c.GetBool("use_access_token") {
-		if params == nil {
-			params = map[string]any{}
-		}
 		params["token_ref"] = c.GetString("access_token_ref")
 	}
+	success := true
 	var auditInfo *model.AuditRequestInfo
-	if success, ok := params["success"].(bool); ok {
-		auditInfo = &model.AuditRequestInfo{
-			Method: c.Request.Method, Route: c.FullPath(), Path: c.FullPath(),
-			Status: c.Writer.Status(), Success: success,
+	status := http.StatusOK
+	if c.Writer != nil && c.Writer.Status() > 0 {
+		status = c.Writer.Status()
+	}
+	if s, ok := params["success"].(bool); ok {
+		success = s
+		if c.Request != nil {
+			auditInfo = &model.AuditRequestInfo{
+				Method: c.Request.Method, Route: c.FullPath(), Path: c.FullPath(),
+				Status: status, Success: success,
+			}
 		}
 	}
-	model.RecordOperationAuditLog(userId, c.GetInt("role"), auditContentEN(action, params), c.ClientIP(), action, params, nil, auditInfo, c)
+	username := c.GetString("username")
+	if username == "" && userId > 0 {
+		username, _ = model.GetUsernameById(userId, false)
+	}
+	siteID := service.AdtyRequestSiteID(c)
+	if inferred := model.InferOfficialAuditSiteID(c, params); inferred != 0 || params["site_id"] != nil {
+		siteID = inferred
+	}
+	objectType, objectID := model.InferOfficialAuditObject(action, params, strconv.Itoa(userId), action)
+	before, after := model.InferOfficialAuditBeforeAfter(params)
+	entry, err := model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
+		UserId: userId, Username: username, ActorRole: c.GetInt("role"),
+		SiteID: model.OfficialAuditSiteIDPointer(siteID), ObjectType: objectType, ObjectID: objectID,
+		Action: action, Category: model.AuditCategorySecurity, Content: auditContentEN(action, params),
+		Before: before, After: after, Reason: model.InferOfficialAuditReason(params),
+		ApprovalRef: model.InferOfficialAuditApprovalRef(params), Result: model.OfficialAuditResult(success),
+		Success: success, Status: status, Ip: c.ClientIP(),
+		Other: model.AuditOther{
+			Op:        &model.AuditOperation{Action: action, Params: params},
+			AuditInfo: auditInfo,
+		},
+	})
+	if err != nil {
+		return
+	}
+	rememberPreparedAuditEvent(c, entry.EventId)
+	persistAndDeliverAuditEvent(c, entry)
 }
 
 func tokenAuditParams(c *gin.Context) model.AuditFields {

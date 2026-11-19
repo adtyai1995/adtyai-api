@@ -309,6 +309,9 @@ func GetTokenKey(c *gin.Context) {
 	}
 	params := tokenAuditParams(c)
 	params["id"], params["name"] = token.Id, token.Name
+	if !persistTokenReadAudit(c, "token.key_view", params) {
+		return
+	}
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{
 		"key": token.GetFullKey(),
@@ -463,7 +466,8 @@ func AddToken(c *gin.Context) {
 		AutoGroups:         token.AutoGroups,
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
-	err = cleanToken.InsertWithLimitAndKeyLimit(maxTokens, request.keyLimitPatch())
+	event := prepareTokenMutationAudit(c, "token.create", params)
+	err = cleanToken.InsertWithLimitAndKeyLimit(maxTokens, request.keyLimitPatch(), event)
 	if err != nil {
 		if errors.Is(err, model.ErrTokenLimit) {
 			common.ApiErrorT(c, "Maximum number of tokens reached ({{max}})", map[string]any{"max": maxTokens})
@@ -473,6 +477,7 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	params["id"] = cleanToken.Id
+	deliverCommittedAudits(c, []model.AuditLog{event})
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -490,11 +495,13 @@ func DeleteToken(c *gin.Context) {
 	}
 	params := tokenAuditParams(c)
 	params["id"], params["name"] = token.Id, token.Name
-	err = token.Delete()
+	event := prepareTokenMutationAudit(c, "token.delete", params)
+	err = token.Delete(event)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	deliverCommittedAudits(c, []model.AuditLog{event})
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -580,12 +587,18 @@ func UpdateToken(c *gin.Context) {
 		}
 		keyLimitPatch = request.keyLimitPatch()
 	}
-	previousLimit, updatedLimit, err := cleanToken.UpdateWithKeyLimit(replaceRemainQuota, keyLimitPatch)
+	action := "token.update"
+	if statusOnly != "" {
+		action = "token.status_update"
+	}
+	event := prepareTokenMutationAudit(c, action, params)
+	previousLimit, updatedLimit, err := cleanToken.UpdateWithKeyLimit(replaceRemainQuota, keyLimitPatch, event)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	params["name"] = cleanToken.Name
+	deliverCommittedAudits(c, []model.AuditLog{event})
 	if statusOnly != "" {
 		params["from"], params["to"] = previous.Status, cleanToken.Status
 	} else {
@@ -656,12 +669,14 @@ func DeleteTokenBatch(c *gin.Context) {
 		return
 	}
 	userId := c.GetInt("id")
-	count, err := model.BatchDeleteTokens(tokenBatch.Ids, userId)
+	event := prepareTokenMutationAudit(c, "token.delete_batch", params)
+	count, err := model.BatchDeleteTokens(tokenBatch.Ids, userId, event)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	params["count"] = count
+	deliverCommittedAudits(c, []model.AuditLog{event})
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -702,6 +717,29 @@ func GetTokenKeysBatch(c *gin.Context) {
 	}
 	params["count"] = len(tokens)
 	params["returned_ids"] = returnedIDs
+	if !persistTokenReadAudit(c, "token.key_view_batch", params) {
+		return
+	}
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{"keys": keysMap})
+}
+
+// Credential access requires durable evidence before the response can expose it.
+func persistTokenReadAudit(c *gin.Context, action string, params model.AuditFields) bool {
+	event := prepareManageAudit(c, c.GetInt("id"), action, map[string]any(params))
+	event.Category = model.AuditCategorySecurity
+	event.Other.AdminInfo = nil
+	if err := model.AppendAuditIntentTx(model.DB, event); err != nil {
+		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Service temporarily unavailable"))
+		return false
+	}
+	deliverCommittedAudits(c, []model.AuditLog{event})
+	return true
+}
+
+func prepareTokenMutationAudit(c *gin.Context, action string, params model.AuditFields) model.AuditLog {
+	event := prepareManageAudit(c, c.GetInt("id"), action, map[string]any(params))
+	event.Category = model.AuditCategorySecurity
+	event.Other.AdminInfo = nil
+	return event
 }

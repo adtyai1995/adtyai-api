@@ -382,7 +382,7 @@ func (token *Token) InsertWithLimit(limit int) error {
 
 // InsertWithLimitAndKeyLimit atomically inserts the token and persists its per-key
 // rate-limit policy in the same transaction so neither commits without the other.
-func (token *Token) InsertWithLimitAndKeyLimit(limit int, keyLimitPatch AdtyKeyLimitPatch) error {
+func (token *Token) InsertWithLimitAndKeyLimit(limit int, keyLimitPatch AdtyKeyLimitPatch, audits ...AuditLog) error {
 	if keyLimitPatch.HasChanges() {
 		if err := EnsureAdtyKeyLimitSchema(DB); err != nil {
 			return err
@@ -412,6 +412,11 @@ func (token *Token) InsertWithLimitAndKeyLimit(limit int, keyLimitPatch AdtyKeyL
 		}
 		if keyLimitPatch.HasChanges() {
 			if _, _, err := ApplyAdtyKeyLimitPatchTx(tx, token.Id, keyLimitPatch); err != nil {
+				return err
+			}
+		}
+		for _, event := range audits {
+			if err := appendTokenMutationAuditTx(tx, event, nil, token); err != nil {
 				return err
 			}
 		}
@@ -474,7 +479,7 @@ func (token *Token) UpdateReplacingRemainQuota() error {
 
 // UpdateWithKeyLimit atomically updates the token metadata and applies any per-key
 // rate-limit policy changes inside one database transaction.
-func (token *Token) UpdateWithKeyLimit(writeRemainQuota bool, keyLimitPatch AdtyKeyLimitPatch) (previousLimit AdtyKeyLimits, updatedLimit AdtyKeyLimits, err error) {
+func (token *Token) UpdateWithKeyLimit(writeRemainQuota bool, keyLimitPatch AdtyKeyLimitPatch, audits ...AuditLog) (previousLimit AdtyKeyLimits, updatedLimit AdtyKeyLimits, err error) {
 	if keyLimitPatch.HasChanges() {
 		if err := EnsureAdtyKeyLimitSchema(DB); err != nil {
 			return previousLimit, updatedLimit, err
@@ -488,6 +493,12 @@ func (token *Token) UpdateWithKeyLimit(writeRemainQuota bool, keyLimitPatch Adty
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
 		"allow_user_quota_query"}
 	err = token.mutateMetadata(func(tx *gorm.DB) error {
+		var before Token
+		if len(audits) > 0 {
+			if err := tx.First(&before, token.Id).Error; err != nil {
+				return err
+			}
+		}
 		if writeRemainQuota {
 			var current Token
 			if err := tx.First(&current, token.Id).Error; err != nil {
@@ -513,6 +524,35 @@ func (token *Token) UpdateWithKeyLimit(writeRemainQuota bool, keyLimitPatch Adty
 				return limitErr
 			}
 		}
+		for _, event := range audits {
+			if event.Other.Op != nil {
+				params := event.Other.Op.Params
+				params["name"] = token.Name
+				if event.Action == "token.status_update" {
+					params["from"], params["to"] = before.Status, token.Status
+				} else {
+					fields := []string{}
+					for _, field := range []struct {
+						name    string
+						changed bool
+					}{
+						{"name", before.Name != token.Name}, {"expired_time", before.ExpiredTime != token.ExpiredTime}, {"remain_quota", writeRemainQuota},
+						{"unlimited_quota", before.UnlimitedQuota != token.UnlimitedQuota}, {"model_limits_enabled", before.ModelLimitsEnabled != token.ModelLimitsEnabled},
+						{"model_limits", before.ModelLimits != token.ModelLimits}, {"allow_ips", (before.AllowIps == nil) != (token.AllowIps == nil) || (before.AllowIps != nil && token.AllowIps != nil && *before.AllowIps != *token.AllowIps)},
+						{"allow_user_quota_query", before.AllowUserQuotaQuery != token.AllowUserQuotaQuery}, {"group", before.Group != token.Group}, {"cross_group_retry", before.CrossGroupRetry != token.CrossGroupRetry}, {"auto_groups", before.AutoGroups != token.AutoGroups},
+						{"rate_limit_per_minute", keyLimitPatch.PerMinute != nil && previousLimit.PerMinute != updatedLimit.PerMinute}, {"rate_limit_tpm", keyLimitPatch.TPM != nil && previousLimit.TPM != updatedLimit.TPM}, {"rate_limit_concurrency", keyLimitPatch.Concurrency != nil && previousLimit.Concurrency != updatedLimit.Concurrency},
+					} {
+						if field.changed {
+							fields = append(fields, field.name)
+						}
+					}
+					params["changed_fields"] = fields
+				}
+			}
+			if err := appendTokenMutationAuditTx(tx, event, &before, token); err != nil {
+				return err
+			}
+		}
 		return nil
 	}, append(groups, token.Group)...)
 	return previousLimit, updatedLimit, err
@@ -525,8 +565,22 @@ func (token *Token) SelectUpdate() (err error) {
 	})
 }
 
-func (token *Token) Delete() (err error) {
-	return token.mutateMetadata(func(tx *gorm.DB) error { return tx.Delete(token).Error })
+func (token *Token) Delete(audits ...AuditLog) (err error) {
+	return token.mutateMetadata(func(tx *gorm.DB) error {
+		var before Token
+		if err := tx.First(&before, token.Id).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(token).Error; err != nil {
+			return err
+		}
+		for _, event := range audits {
+			if err := appendTokenMutationAuditTx(tx, event, &before, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (token *Token) IsModelLimitsEnabled() bool {
@@ -594,7 +648,7 @@ func CountUserTokens(userId int) (int64, error) {
 }
 
 // BatchDeleteTokens 删除指定用户的一组令牌，返回成功删除数量
-func BatchDeleteTokens(ids []int, userId int) (int, error) {
+func BatchDeleteTokens(ids []int, userId int, audits ...AuditLog) (int, error) {
 	if len(ids) == 0 {
 		return 0, common.NewMessage("Token IDs cannot be empty")
 	}
@@ -615,6 +669,17 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 		tx.Rollback()
 		return 0, err
 	}
+	for _, event := range audits {
+		if event.Other.Op != nil {
+			event.Other.Op.Params["count"] = len(tokens)
+		}
+		event.BeforeValue = common.GetJsonString(map[string]any{"count": len(tokens)})
+		event.AfterValue = common.GetJsonString(map[string]any{"count": 0})
+		if err := AppendAuditIntentTx(tx, event); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
 
 	if err := tx.Commit().Error; err != nil {
 		return 0, err
@@ -624,6 +689,28 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	}
 
 	return len(tokens), nil
+}
+
+// Freeze only safe token metadata from the row protected by the mutation lock.
+func appendTokenMutationAuditTx(tx *gorm.DB, event AuditLog, before, after *Token) error {
+	snapshot := func(token *Token) any {
+		if token == nil {
+			return nil
+		}
+		return map[string]any{"id": token.Id, "user_id": token.UserId, "name": token.Name, "status": token.Status, "group": token.Group, "expired_time": token.ExpiredTime, "unlimited_quota": token.UnlimitedQuota, "model_limits_enabled": token.ModelLimitsEnabled, "allow_user_quota_query": token.AllowUserQuotaQuery}
+	}
+	if after != nil && event.Other.Op != nil {
+		event.Other.Op.Params["id"] = after.Id
+	}
+	if before != nil {
+		event.ObjectId = fmt.Sprint(before.Id)
+		event.BeforeValue = common.GetJsonString(snapshot(before))
+	}
+	if after != nil {
+		event.ObjectId = fmt.Sprint(after.Id)
+		event.AfterValue = common.GetJsonString(snapshot(after))
+	}
+	return AppendAuditIntentTx(tx, event)
 }
 
 func GetTokenKeysByIds(ids []int, userId int) ([]Token, error) {
