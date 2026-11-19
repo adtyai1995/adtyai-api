@@ -27,12 +27,16 @@ func TestAdtyTeamActiveMembershipConstraintAndErrorMapping(t *testing.T) {
 	teamB, err := CreateAdtyTeam(leaderB.Id, 0, "Beta", decimal.NewFromInt(1))
 	require.NoError(t, err)
 
-	joined, err := JoinAdtyTeam(member.Id, teamA.Team.Id)
+	_, err = JoinAdtyTeam(member.Id, teamA.Team.Id)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+
+	joined, err := CreateAdtyTeamEmployee(leaderA.Id, teamA.Team.Id, "idx-emp", "StrongPassword123!", "Idx Emp")
 	require.NoError(t, err)
-	assert.Equal(t, teamA.Team.Id, joined.TeamId)
+	member.Id = joined.UserId
+	assertActiveMembershipCount(t, member.Id, 1)
 
 	_, err = JoinAdtyTeam(member.Id, teamB.Team.Id)
-	require.ErrorIs(t, err, ErrAdtyTeamBusy)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
 	assertActiveMembershipCount(t, member.Id, 1)
 
 	// Bypass the service lock and count check: the database must still reject
@@ -46,17 +50,17 @@ func TestAdtyTeamActiveMembershipConstraintAndErrorMapping(t *testing.T) {
 
 	require.NoError(t, LeaveAdtyTeam(member.Id, teamA.Team.Id))
 	assertActiveMembershipCount(t, member.Id, 0)
-	var left int64
-	require.NoError(t, db.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND team_id = ? AND status = ?", member.Id, teamA.Team.Id, model.AdtyTeamMemberLeft).Count(&left).Error)
-	assert.Equal(t, int64(1), left)
+	var left model.AdtyTeamMember
+	require.NoError(t, db.Where("user_id = ? AND team_id = ?", member.Id, teamA.Team.Id).First(&left).Error)
+	assert.Equal(t, model.AdtyTeamMemberDisabled, left.Status)
 
-	rejoined, err := JoinAdtyTeam(member.Id, teamB.Team.Id)
-	require.NoError(t, err)
+	rejoined := model.AdtyTeamMember{TeamId: teamB.Team.Id, UserId: member.Id, Role: model.AdtyTeamRoleMember, Status: model.AdtyTeamMemberActive}
+	require.NoError(t, db.Create(&rejoined).Error)
 	assert.Equal(t, teamB.Team.Id, rejoined.TeamId)
 	assert.Equal(t, model.AdtyTeamMemberActive, rejoined.Status)
 	assertActiveMembershipCount(t, member.Id, 1)
-	require.NoError(t, db.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND team_id = ? AND status = ?", member.Id, teamA.Team.Id, model.AdtyTeamMemberLeft).Count(&left).Error)
-	assert.Equal(t, int64(1), left, "left history on the previous team must remain")
+	require.NoError(t, db.Where("user_id = ? AND team_id = ?", member.Id, teamA.Team.Id).First(&left).Error)
+	assert.Equal(t, model.AdtyTeamMemberDisabled, left.Status, "disabled history on the previous team must remain")
 
 	// Same-team unique index still rejects a second row for the same pair.
 	duplicate := model.AdtyTeamMember{TeamId: teamB.Team.Id, UserId: member.Id, Role: model.AdtyTeamRoleMember, Status: model.AdtyTeamMemberActive}

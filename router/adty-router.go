@@ -276,7 +276,6 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/:id/invites", "scope", "wallet:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/teams/:id/invites", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/:id/invites/:inviteId/revoke", "scope", "wallet:write")
-	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/accept", "scope", "wallet:write")
 
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/orders", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/orders/:trade_no", "scope", "wallet:read")
@@ -307,7 +306,6 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/teams/:id/invites", middleware.UserAuth(), controller.PostAdtyTeamInvite)
 	apiRouter.GET("/adty/teams/:id/invites", middleware.UserAuth(), controller.GetAdtyTeamInvites)
 	apiRouter.POST("/adty/teams/:id/invites/:inviteId/revoke", middleware.UserAuth(), controller.PostAdtyTeamRevokeInvite)
-	apiRouter.POST("/adty/teams/accept", middleware.UserAuth(), controller.PostAdtyTeamAccept)
 	apiRouter.POST("/adty/team-employees/register", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.AnonymousRequestBodyLimit(), controller.PostAdtyTeamEmployeeRegistration)
 	apiRouter.POST("/adty/team-registrations/complete", middleware.CriticalRateLimit(), controller.PostAdtyTeamRegistrationComplete)
 }

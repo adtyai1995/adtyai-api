@@ -296,10 +296,15 @@ func TestDesignatedLeaderMustBeEligibleSameSiteUser(t *testing.T) {
 	code := decodeAdtyData[struct {
 		Code string `json:"code"`
 	}](t, invite.Body).Code
-	accepted := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/teams/accept", fmt.Sprintf(`{"code":%q}`, code), f.memberATok)
-	require.Equal(t, http.StatusOK, accepted.Code, accepted.Body.String())
+	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/teams/accept", fmt.Sprintf(`{"code":%q}`, code), f.memberATok))
+	registered := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/team-employees/register",
+		fmt.Sprintf(`{"code":%q,"username":"already-member","password":"Employee-password-2026"}`, code), "")
+	require.Equal(t, http.StatusOK, registered.Code, registered.Body.String())
+	employee := decodeAdtyData[struct {
+		UserID int `json:"user_id"`
+	}](t, registered.Body)
 	teamAuthRejected(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
-		fmt.Sprintf(`{"name":"Already Member","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, f.memberA.Id), f.rootTok))
+		fmt.Sprintf(`{"name":"Already Member","site_id":%d,"leader_id":%d,"discount":"0.90"}`, f.siteA.Id, employee.UserID), f.rootTok))
 	assert.Equal(t, start+1, f.teamCount(t))
 }
 
@@ -357,10 +362,17 @@ func TestAuthorizedTeamInviteAcceptAndMineStillWork(t *testing.T) {
 	}](t, invite.Body).Code
 	require.NotEmpty(t, code)
 
-	accepted := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/teams/accept", fmt.Sprintf(`{"code":%q}`, code), f.memberATok)
-	require.Equal(t, http.StatusOK, accepted.Code, accepted.Body.String())
+	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/teams/accept", fmt.Sprintf(`{"code":%q}`, code), f.memberATok))
+	registered := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/team-employees/register",
+		fmt.Sprintf(`{"code":%q,"username":"invite-employee","password":"Employee-password-2026"}`, code), "")
+	require.Equal(t, http.StatusOK, registered.Code, registered.Body.String())
+	employeeID := decodeAdtyData[struct {
+		UserID int `json:"user_id"`
+	}](t, registered.Body).UserID
+	var employee model.User
+	require.NoError(t, f.db.First(&employee, employeeID).Error)
 
-	memberMine := f.call(t, http.MethodGet, f.siteAHost(), "/api/adty/teams/mine", "", f.memberATok)
+	memberMine := f.call(t, http.MethodGet, f.siteAHost(), "/api/adty/teams/mine", "", f.session(t, &employee))
 	require.Equal(t, http.StatusOK, memberMine.Code, memberMine.Body.String())
 	assert.Contains(t, memberMine.Body.String(), "Site Desk")
 	assert.Contains(t, memberMine.Body.String(), `"role":"member"`)
@@ -419,15 +431,23 @@ func TestAuthorizedTeamInviteTTLAndRevoke(t *testing.T) {
 	assert.Equal(t, f.leaderA.Id, view.RevokedBy)
 	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/teams/accept",
 		fmt.Sprintf(`{"code":%q}`, revocable.Code), f.memberATok))
+	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/team-employees/register",
+		fmt.Sprintf(`{"code":%q,"username":"revoked-employee","password":"Employee-password-2026"}`, revocable.Code), ""))
 
 	usedInvite := f.call(t, http.MethodPost, f.siteAHost(), fmt.Sprintf("/api/adty/teams/%d/invites", created.Team.Id), "", f.leaderATok)
 	require.Equal(t, http.StatusOK, usedInvite.Code, usedInvite.Body.String())
 	used := decodeAdtyData[service.AdtyTeamInviteIssue](t, usedInvite.Body)
-	accepted := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/teams/accept", fmt.Sprintf(`{"code":%q}`, used.Code), f.memberATok)
-	require.Equal(t, http.StatusOK, accepted.Code, accepted.Body.String())
+	registered := f.call(t, http.MethodPost, f.siteAHost(), "/api/adty/team-employees/register",
+		fmt.Sprintf(`{"code":%q,"username":"used-employee","password":"Employee-password-2026"}`, used.Code), "")
+	require.Equal(t, http.StatusOK, registered.Code, registered.Body.String())
+	employeeID := decodeAdtyData[struct {
+		UserID int `json:"user_id"`
+	}](t, registered.Body).UserID
 	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(),
 		fmt.Sprintf("/api/adty/teams/%d/invites/%d/revoke", created.Team.Id, used.Id), "", f.leaderATok))
-	memberMine := f.call(t, http.MethodGet, f.siteAHost(), "/api/adty/teams/mine", "", f.memberATok)
+	var employee model.User
+	require.NoError(t, f.db.First(&employee, employeeID).Error)
+	memberMine := f.call(t, http.MethodGet, f.siteAHost(), "/api/adty/teams/mine", "", f.session(t, &employee))
 	require.Equal(t, http.StatusOK, memberMine.Code, memberMine.Body.String())
 	assert.Contains(t, memberMine.Body.String(), `"role":"member"`)
 
@@ -472,10 +492,7 @@ func TestTeamRepairEmployeeLifecycleDoesNotMintPersonalFunds(t *testing.T) {
 	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), path, body, f.userATok))
 	rec := f.call(t, http.MethodPost, f.siteAHost(), path, body, f.leaderATok)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	view := decodeAdtyData[struct {
-		UserID      int  `json:"user_id"`
-		Independent bool `json:"independent_employee"`
-	}](t, rec.Body)
+	view := decodeAdtyData[struct { UserID int `json:"user_id"`; Independent bool `json:"independent_employee"` }](t, rec.Body)
 	require.Positive(t, view.UserID)
 	assert.True(t, view.Independent)
 	var user model.User
@@ -521,10 +538,7 @@ func TestTeamRepairAnonymousInviteRegistrationIsSingleUseAndHostBound(t *testing
 	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteBHost(), path, body, ""))
 	registered := f.call(t, http.MethodPost, f.siteAHost(), path, body, "")
 	require.Equal(t, http.StatusOK, registered.Code, registered.Body.String())
-	view := decodeAdtyData[struct {
-		UserID      int  `json:"user_id"`
-		Independent bool `json:"independent_employee"`
-	}](t, registered.Body)
+	view := decodeAdtyData[struct { UserID int `json:"user_id"`; Independent bool `json:"independent_employee"` }](t, registered.Body)
 	require.Positive(t, view.UserID)
 	assert.True(t, view.Independent)
 	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), path, strings.Replace(body, "invited-employee", "replayed-employee", 1), ""))

@@ -193,51 +193,31 @@ func resolveAdtyTeamRegistrationLeader(tx *gorm.DB, siteId int, username, passwo
 	if lookup.Error != nil {
 		return 0, nil, lookup.Error
 	}
-	if lookup.RowsAffected == 0 {
-		if err := common.ValidateNewAccountPassword(password); err != nil {
-			return 0, nil, err
-		}
-		user := &model.User{
-			Username:    username,
-			Password:    password,
-			DisplayName: username,
-			Role:        common.RoleCommonUser,
-			Status:      common.UserStatusEnabled,
-			Group:       "default",
-			AuthVersion: 1,
-			SiteId:      siteId,
-		}
-		if err := user.InsertWithTx(tx, 0); err != nil {
-			if errors.Is(err, model.ErrUsernameAlreadyTaken) || errors.Is(err, model.ErrEmailAlreadyTaken) {
-				return 0, nil, ErrAdtyTeamInvalid
-			}
-			return 0, nil, err
-		}
-		return user.Id, user, nil
-	}
-	if existing.DeletedAt.Valid {
+	if lookup.RowsAffected > 0 {
+		// An existing ordinary account cannot be reused as the team leader.
+		// Do not check the password: this anonymous entrance must not become a password oracle.
 		return 0, nil, ErrAdtyTeamInvalid
 	}
-	if existing.SiteId != siteId || existing.StaffSiteId != 0 || existing.Status != common.UserStatusEnabled {
-		return 0, nil, ErrAdtyTeamForbidden
+	if err := common.ValidateNewAccountPassword(password); err != nil {
+		return 0, nil, err
 	}
-	if existing.Password == "" {
-		return 0, nil, ErrAdtyTeamRegistrationUnverified
+	user := &model.User{
+		Username:    username,
+		Password:    password,
+		DisplayName: username,
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+		SiteId:      siteId,
 	}
-	// 这个入口是匿名的（router 只挂了 IP 级限流），口令校验必须和登录共用同一套
-	// 失败计数与锁定：否则一枚注册链接就是全平台用户名的密码预言机，猜错也不计数
-	// （ISS-R4-0105）。锁上之后连密码正确也返回同一句话，不额外暴露状态。
-	if common.LoginLocked(existing.Username) {
-		return 0, nil, ErrAdtyTeamRegistrationUnverified
-	}
-	if !common.ValidatePasswordAndHash(password, existing.Password) {
-		if err := common.RecordLoginFailure(existing.Username); err != nil {
-			common.SysLog(common.LogText("team registration failure lock unavailable: %s", err.Error()))
+	if err := user.InsertWithTx(tx, 0); err != nil {
+		if errors.Is(err, model.ErrUsernameAlreadyTaken) || errors.Is(err, model.ErrEmailAlreadyTaken) {
+			return 0, nil, ErrAdtyTeamInvalid
 		}
-		return 0, nil, ErrAdtyTeamRegistrationUnverified
+		return 0, nil, err
 	}
-	common.ClearLoginFailures(existing.Username)
-	return existing.Id, nil, nil
+	return user.Id, user, nil
 }
 
 func ListAdtyMainTeamRegistrations(actorId int) ([]AdtyTeamRegistrationView, error) {

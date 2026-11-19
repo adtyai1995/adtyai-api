@@ -59,7 +59,8 @@ func TestFreeRequestViolationFeeKeepsAcceptedPayerPG(t *testing.T) {
 			t.Cleanup(func() { require.NoError(t, opened.Close()) })
 			db := opened.DB
 			require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.Channel{},
-				&model.BillingOperation{}, &model.BillingOperationMovement{}, &model.AuditLog{}))
+				&model.BillingOperation{}, &model.BillingOperationMovement{}, &model.AuditLog{}, &model.AuditIntent{},
+				&model.AdtySiteEarningEvent{}, &model.AdtyFundBatch{}, &model.AdtyFundAllocation{}, &model.AdtyBillingHold{}))
 			require.NoError(t, model.MigrateAdtyTables())
 			users := []model.User{
 				{Username: "free-payer-member", Group: "default", Status: common.UserStatusEnabled, Role: common.RoleCommonUser, Quota: tc.openingQuota},
@@ -73,7 +74,11 @@ func TestFreeRequestViolationFeeKeepsAcceptedPayerPG(t *testing.T) {
 			b, err := service.CreateAdtyTeam(users[2].Id, 0, "Later", decimal.NewFromInt(1))
 			require.NoError(t, err)
 			_, err = service.JoinAdtyTeam(member.Id, a.Team.Id)
+			require.ErrorIs(t, err, service.ErrAdtyTeamForbidden)
+			employee, err := service.CreateAdtyTeamEmployee(users[1].Id, a.Team.Id, "fee-emp", "StrongPassword123!", "Fee Emp")
 			require.NoError(t, err)
+			member.Id = employee.UserId
+			require.NoError(t, db.Model(&model.User{}).Where("id = ?", member.Id).Update("quota", tc.openingQuota).Error)
 			require.NoError(t, service.CreditAdtyTeam(int64(users[1].Id), a.Team.Id, 100_000, "free-original"))
 			require.NoError(t, service.CreditAdtyTeam(int64(users[2].Id), b.Team.Id, 200_000, "free-later"))
 			token := &model.Token{UserId: member.Id, Key: "free-payer-key", Name: "free-payer", Status: common.TokenStatusEnabled,
@@ -92,13 +97,10 @@ func TestFreeRequestViolationFeeKeepsAcceptedPayerPG(t *testing.T) {
 			require.NoError(t, db.First(member, member.Id).Error)
 			require.Equal(t, tc.openingQuota, member.Quota, "free acceptance must not reserve money")
 			if tc.teamPaid {
-				require.NoError(t, service.LeaveAdtyTeam(member.Id, a.Team.Id))
-				_, err = service.JoinAdtyTeam(member.Id, b.Team.Id)
-				require.NoError(t, err)
-				token.Status = common.TokenStatusEnabled
-				require.NoError(t, token.SelectUpdate())
+				require.NoError(t, db.Model(&model.AdtyTeamKey{}).Where("token_id = ?", token.Id).Update("team_id", b.Team.Id).Error)
+			} else {
+				require.NoError(t, service.BindAdtyTeamKey(member.Id, token.Id))
 			}
-			require.NoError(t, service.BindAdtyTeamKey(member.Id, token.Id))
 			apiErr := types.NewError(errors.New("blocked"), types.ErrorCodeViolationFeeGrokCSAM)
 			require.NotNil(t, RefundFailedRequestBilling(ctx, info, apiErr))
 			require.NoError(t, db.First(member, member.Id).Error)

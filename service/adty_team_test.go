@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	hosttypes "github.com/QuantumNous/new-api/types"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,6 +13,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -38,11 +38,14 @@ func TestAdtyTeamSharedBalanceAndSingleMembership(t *testing.T) {
 	require.ErrorIs(t, err, ErrAdtyTeamBusy)
 	_, err = JoinAdtyTeam(other.Id, created.Team.Id)
 	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
-	joined, err := JoinAdtyTeam(member.Id, created.Team.Id)
+	joined, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "ops-emp", "StrongPassword123!", "Ops Emp")
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtyTeamRoleMember, joined.Role)
+	member.Id = joined.UserId
 	_, err = JoinAdtyTeam(member.Id, created.Team.Id)
-	require.ErrorIs(t, err, ErrAdtyTeamBusy)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	_, err = CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "ops-emp", "StrongPassword123!", "Ops Emp")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
 
 	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 1_000_000, "credit-1"))
 	require.ErrorIs(t, CreditAdtyTeam(int64(member.Id), created.Team.Id, 1, "credit-member"), ErrAdtyTeamForbidden)
@@ -73,11 +76,14 @@ func TestAdtyTeamInviteKeyAndCloseKeepSharedBalance(t *testing.T) {
 	require.NoError(t, err)
 	issued, err := CreateAdtyTeamInvite(leader.Id, created.Team.Id, time.Hour)
 	require.NoError(t, err)
-	joined, err := AcceptAdtyTeamInvite(member.Id, issued.Code)
-	require.NoError(t, err)
-	assert.Equal(t, created.Team.Id, joined.TeamId)
 	_, err = AcceptAdtyTeamInvite(member.Id, issued.Code)
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	joined, err := RegisterAdtyTeamEmployee(issued.Code, "invite-employee", "StrongPassword123!", "Invite Employee", 0)
+	require.NoError(t, err)
+	assert.True(t, joined.IndependentEmployee)
+	member.Id = joined.UserId
+	_, err = AcceptAdtyTeamInvite(member.Id, issued.Code)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
 	token := model.Token{UserId: member.Id, Key: "team-key-secret", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
 	require.NoError(t, db.Create(&token).Error)
 	require.NoError(t, BindAdtyTeamKey(member.Id, token.Id))
@@ -128,11 +134,11 @@ func TestAdtyTeamProtocolPriceUsesBoundKey(t *testing.T) {
 	member := referralUser(t, db, "team-price-member")
 	created, err := CreateAdtyTeam(leader.Id, 0, "Price", decimal.RequireFromString("0.50"))
 	require.NoError(t, err)
+	joined, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "price-emp", "StrongPassword123!", "Price Emp")
+	require.NoError(t, err)
+	member.Id = joined.UserId
 	token := model.Token{UserId: member.Id, Key: "team-price-key", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
 	require.NoError(t, db.Create(&token).Error)
-	require.NoError(t, db.Model(member).Update("site_id", 0).Error)
-	_, err = JoinAdtyTeam(member.Id, created.Team.Id)
-	require.NoError(t, err)
 	require.NoError(t, BindAdtyTeamKey(member.Id, token.Id))
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -281,10 +287,10 @@ func TestAdtyTeamCreateRequiresRootOrAuthorizedOwner(t *testing.T) {
 	_, err = CreateAdtySiteTeamByRoot(root.Id, siteA.Id, leaderA.Id, "Already Leader", "0.90")
 	require.ErrorIs(t, err, ErrAdtyTeamBusy)
 
-	busyMember, err := JoinAdtyTeam(memberA.Id, owned.Team.Id)
+	busyMember, err := CreateAdtyTeamEmployee(leaderA.Id, owned.Team.Id, "site-emp", "StrongPassword123!", "Site Emp")
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtyTeamRoleMember, busyMember.Role)
-	_, err = CreateAdtySiteTeamByRoot(root.Id, siteA.Id, memberA.Id, "Already Member", "0.90")
+	_, err = CreateAdtySiteTeamByRoot(root.Id, siteA.Id, busyMember.UserId, "Already Member", "0.90")
 	require.ErrorIs(t, err, ErrAdtyTeamBusy)
 
 	require.NoError(t, SaveAdtyMainTeamAgreementPrice(created.Team.Id, "0.70"))
@@ -340,7 +346,9 @@ func TestAdtyTeamInviteRevokeTTLAndAuthorization(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.Model(&model.AdtyTeamInvite{}).Where("id = ?", expired.Id).Update("expires_at", time.Now().Add(-time.Second).Unix()).Error)
 	_, err = AcceptAdtyTeamInvite(member.Id, expired.Code)
-	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	_, err = RegisterAdtyTeamEmployee(expired.Code, "expired-employee", "StrongPassword123!", "Expired", 0)
+	require.Error(t, err)
 
 	toRevoke, err := CreateAdtyTeamInvite(leader.Id, created.Team.Id, time.Hour)
 	require.NoError(t, err)
@@ -360,23 +368,26 @@ func TestAdtyTeamInviteRevokeTTLAndAuthorization(t *testing.T) {
 	assert.Equal(t, leader.Id, revoked.RevokedBy)
 	assert.NotZero(t, revoked.RevokedAt)
 	_, err = AcceptAdtyTeamInvite(member.Id, toRevoke.Code)
-	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	_, err = RegisterAdtyTeamEmployee(toRevoke.Code, "revoked-employee", "StrongPassword123!", "Revoked", 0)
+	require.Error(t, err)
 	var stillOpen int64
 	require.NoError(t, db.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND status = ?", member.Id, model.AdtyTeamMemberActive).Count(&stillOpen).Error)
 	assert.Zero(t, stillOpen)
 
 	used, err := CreateAdtyTeamInvite(leader.Id, created.Team.Id, time.Hour)
 	require.NoError(t, err)
-	joined, err := AcceptAdtyTeamInvite(member.Id, used.Code)
+	_, err = AcceptAdtyTeamInvite(member.Id, used.Code)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	registered, err := RegisterAdtyTeamEmployee(used.Code, "used-employee", "StrongPassword123!", "Used", 0)
 	require.NoError(t, err)
-	assert.Equal(t, created.Team.Id, joined.TeamId)
 	_, err = RevokeAdtyTeamInvite(leader.Id, created.Team.Id, used.Id)
 	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
 	var membership model.AdtyTeamMember
-	require.NoError(t, db.Where("user_id = ? AND team_id = ?", member.Id, created.Team.Id).First(&membership).Error)
+	require.NoError(t, db.Where("user_id = ? AND team_id = ?", registered.UserId, created.Team.Id).First(&membership).Error)
 	assert.Equal(t, model.AdtyTeamMemberActive, membership.Status)
-	_, err = AcceptAdtyTeamInvite(member.Id, used.Code)
-	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	_, err = AcceptAdtyTeamInvite(registered.UserId, used.Code)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
 
 	listed, err := ListAdtyTeamInvites(leader.Id, created.Team.Id)
 	require.NoError(t, err)
@@ -425,9 +436,10 @@ func TestInheritAdtyTeamsOnCloseRecordsSourceSiteAndKeepsIdentity(t *testing.T) 
 	created, err := CreateAdtyTeam(leader.Id, site.Id, "Migrating", decimal.RequireFromString("0.90"))
 	require.NoError(t, err)
 	teamID := created.Team.Id
-	joined, err := JoinAdtyTeam(member.Id, teamID)
+	joined, err := CreateAdtyTeamEmployee(leader.Id, teamID, "src-emp", "StrongPassword123!", "Src Emp")
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtyTeamRoleMember, joined.Role)
+	member.Id = joined.UserId
 
 	token := model.Token{UserId: member.Id, Key: "team-src-key", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
 	require.NoError(t, db.Create(&token).Error)
@@ -649,8 +661,11 @@ func TestTeamKeyLifecycleRejectsRevokedRemovedAndClosedTeamKeys(t *testing.T) {
 
 			created, err := CreateAdtyTeam(leader.Id, 0, "Lifecycle", decimal.NewFromInt(1))
 			require.NoError(t, err)
-			_, err = JoinAdtyTeam(member.Id, created.Team.Id)
+			empName := map[string]string{"revoked_key": "life-rk", "removed_member": "life-rm", "closed_team": "life-ct"}[tc.name]
+			joined, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, empName, "StrongPassword123!", "Life")
 			require.NoError(t, err)
+			member.Id = joined.UserId
+			require.NoError(t, db.Model(&model.User{}).Where("id = ?", member.Id).Update("quota", 500_000).Error)
 			require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 1_000_000, "init-credit-"+tc.name))
 
 			token := model.Token{
@@ -712,8 +727,9 @@ func TestTeamReservationCumulativeEventIdentitySurvivesInterveningBalanceChange(
 	member := referralUser(t, db, "res-id-member")
 	created, err := CreateAdtyTeam(leader.Id, 0, "ReserveIdentity", decimal.NewFromInt(1))
 	require.NoError(t, err)
-	_, err = JoinAdtyTeam(member.Id, created.Team.Id)
+	joined, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "res-emp", "StrongPassword123!", "Res Emp")
 	require.NoError(t, err)
+	member.Id = joined.UserId
 	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 100_000, "res-id-credit"))
 
 	// First reservation increment on op-1: 20,000 -> team balance becomes 80,000.
@@ -744,6 +760,41 @@ func TestTeamReservationCumulativeEventIdentitySurvivesInterveningBalanceChange(
 	assert.Equal(t, "reserve:request:op-1:40000", ledgers[1].IdempotencyKey)
 }
 
+func TestTeamBindSerializesWithMemberRemovalAndTeamClose(t *testing.T) {
+	db := prepareReferralDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}))
+	leader := referralUser(t, db, "bind-lock-leader")
+	member := referralUser(t, db, "bind-lock-member")
+	created, err := CreateAdtyTeam(leader.Id, 0, "BindLock", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	joined, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "bind-emp", "StrongPassword123!", "Bind Emp")
+	require.NoError(t, err)
+	member.Id = joined.UserId
+
+	tok1 := model.Token{UserId: member.Id, Key: "bind-lock-tok-1", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
+	tok2 := model.Token{UserId: member.Id, Key: "bind-lock-tok-2", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
+	require.NoError(t, db.Create(&tok1).Error)
+	require.NoError(t, db.Create(&tok2).Error)
+
+	// Wrong target team ID must be rejected.
+	require.ErrorIs(t, BindAdtyTeamKey(member.Id, tok1.Id, created.Team.Id+999), ErrAdtyTeamForbidden)
+
+	require.NoError(t, DisableAdtyTeamMember(leader.Id, created.Team.Id, member.Id))
+	require.ErrorIs(t, BindAdtyTeamKey(member.Id, tok1.Id), ErrAdtyTeamForbidden)
+
+	var activeCount int64
+	require.NoError(t, db.Model(&model.AdtyTeamKey{}).Where("team_id = ? AND user_id = ? AND status = ?", created.Team.Id, member.Id, model.AdtyTeamMemberActive).Count(&activeCount).Error)
+	assert.Zero(t, activeCount)
+
+	require.NoError(t, EnableAdtyTeamMember(leader.Id, created.Team.Id, member.Id))
+	require.NoError(t, BindAdtyTeamKey(member.Id, tok1.Id, created.Team.Id))
+
+	require.NoError(t, CloseAdtyTeam(leader.Id, created.Team.Id))
+	require.Error(t, BindAdtyTeamKey(member.Id, tok2.Id))
+	require.NoError(t, db.Model(&model.AdtyTeamKey{}).Where("team_id = ? AND status = ?", created.Team.Id, model.AdtyTeamMemberActive).Count(&activeCount).Error)
+	assert.Zero(t, activeCount)
+}
+
 func TestTeamBindConcurrentRevocationRejectsStaleMembership(t *testing.T) {
 	for _, action := range []string{"remove_member", "close_team"} {
 		t.Run(action, func(t *testing.T) {
@@ -752,8 +803,9 @@ func TestTeamBindConcurrentRevocationRejectsStaleMembership(t *testing.T) {
 			member := referralUser(t, db, "race-member")
 			created, err := CreateAdtyTeam(leader.Id, 0, "ConcurrentBind", decimal.NewFromInt(1))
 			require.NoError(t, err)
-			_, err = JoinAdtyTeam(member.Id, created.Team.Id)
+			joined, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "race-emp", "StrongPassword123!", "Race Emp")
 			require.NoError(t, err)
+			member.Id = joined.UserId
 			token := model.Token{UserId: member.Id, Key: "race-team-key", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
 			require.NoError(t, db.Create(&token).Error)
 
@@ -961,4 +1013,103 @@ func TestClosedTeamPaidTopupFulfillmentPreservesPrincipal(t *testing.T) {
 	err = creditAdtyTeamTopUpTx(db, badTopUp, badExt, 5_000_000)
 	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
 	require.ErrorIs(t, err, model.ErrTopUpStatusInvalid)
+}
+
+func TestIndependentTeamEmployeeLifecycleAndIsolation(t *testing.T) {
+	db := prepareReferralDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.AdtySiteStaff{}))
+	leader := referralUser(t, db, "emp-life-leader")
+	otherLeader := referralUser(t, db, "emp-life-leader2")
+	owner := referralUser(t, db, "emp-life-owner")
+	staff := referralUser(t, db, "emp-life-staff")
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "emp-site", Status: model.AdtySiteStatusActive, CostFactor: decimalPtr("0.80")}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, db.Model(staff).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteStaff{
+		SiteId: site.Id, OwnerUserId: owner.Id, UserId: staff.Id, Username: staff.Username,
+		DisplayName: "Staff", Role: "support", Status: "enabled", Version: 1,
+	}).Error)
+
+	team1, err := CreateAdtyTeam(leader.Id, 0, "EmpTeam1", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	team2, err := CreateAdtyTeam(otherLeader.Id, 0, "EmpTeam2", decimal.NewFromInt(1))
+	require.NoError(t, err)
+
+	// Site owner and site staff cannot join as team employees.
+	_, err = JoinAdtyTeam(owner.Id, team1.Team.Id)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	_, err = JoinAdtyTeam(staff.Id, team1.Team.Id)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+
+	// Leader creates an independent team employee directly.
+	emp1, err := CreateAdtyTeamEmployee(leader.Id, team1.Team.Id, "teamemp01", "StrongPassword123!", "Emp One")
+	require.NoError(t, err)
+	assert.True(t, emp1.IndependentEmployee)
+	assert.Equal(t, model.AdtyTeamMemberActive, emp1.Status)
+
+	// Leader invites and registers a second independent team employee via invite code.
+	invite, err := CreateAdtyTeamInvite(leader.Id, team1.Team.Id, time.Hour)
+	require.NoError(t, err)
+	emp2, err := RegisterAdtyTeamEmployee(invite.Code, "teamemp02", "StrongPassword123!", "Emp Two", 0)
+	require.NoError(t, err)
+	assert.True(t, emp2.IndependentEmployee)
+	assert.Equal(t, model.AdtyTeamMemberActive, emp2.Status)
+
+	tok := model.Token{UserId: emp1.UserId, Key: "emp1-team-key", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
+	require.NoError(t, db.Create(&tok).Error)
+	require.NoError(t, BindAdtyTeamKey(emp1.UserId, tok.Id))
+
+	// Disable/remove emp1: revokes keys, disables login account, and still blocks joining team2.
+	require.NoError(t, DisableAdtyTeamMember(leader.Id, team1.Team.Id, emp1.UserId))
+	var emp1User model.User
+	require.NoError(t, db.First(&emp1User, emp1.UserId).Error)
+	assert.Equal(t, common.UserStatusDisabled, emp1User.Status)
+	_, err = JoinAdtyTeam(emp1.UserId, team2.Team.Id)
+	require.Error(t, err)
+
+	// Re-enable emp1 on team1: user and membership become active again, old key stays disabled.
+	require.NoError(t, EnableAdtyTeamMember(leader.Id, team1.Team.Id, emp1.UserId))
+	require.NoError(t, db.First(&emp1User, emp1.UserId).Error)
+	assert.Equal(t, common.UserStatusEnabled, emp1User.Status)
+	require.NoError(t, db.First(&tok, tok.Id).Error)
+	assert.Equal(t, common.TokenStatusDisabled, tok.Status)
+
+	// Delete emp1: permanently marks deleted, disables user, cannot be re-enabled.
+	require.NoError(t, DeleteAdtyTeamMember(leader.Id, team1.Team.Id, emp1.UserId))
+	require.ErrorIs(t, EnableAdtyTeamMember(leader.Id, team1.Team.Id, emp1.UserId), ErrAdtyTeamForbidden)
+	_, err = JoinAdtyTeam(emp1.UserId, team1.Team.Id)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+}
+
+func TestLeaderLeaveClosesTeamAndPreservesSharedBalance(t *testing.T) {
+	db := prepareReferralDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}))
+	leader := referralUser(t, db, "leader-exit-ld")
+	member := referralUser(t, db, "leader-exit-mem")
+	created, err := CreateAdtyTeam(leader.Id, 0, "LeaderExit", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	joined, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "exit-emp", "StrongPassword123!", "Exit Emp")
+	require.NoError(t, err)
+	member.Id = joined.UserId
+	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 750_000, "leader-exit-credit"))
+
+	tok := model.Token{UserId: member.Id, Key: "leader-exit-key", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
+	require.NoError(t, db.Create(&tok).Error)
+	require.NoError(t, BindAdtyTeamKey(member.Id, tok.Id))
+
+	require.NoError(t, LeaveAdtyTeam(leader.Id, created.Team.Id))
+
+	var team model.AdtyTeam
+	require.NoError(t, db.First(&team, created.Team.Id).Error)
+	assert.Equal(t, model.AdtyTeamStatusClosed, team.Status)
+	assert.NotZero(t, team.ClosedAt)
+	assert.Equal(t, leader.Id, team.LeaderUserId, "leadership must not transfer to another member")
+	assert.EqualValues(t, 750_000, team.SharedQuota, "shared funds must be preserved on closure")
+
+	var activeMembers int64
+	require.NoError(t, db.Model(&model.AdtyTeamMember{}).Where("team_id = ? AND status = ?", team.Id, model.AdtyTeamMemberActive).Count(&activeMembers).Error)
+	assert.Zero(t, activeMembers)
+
+	require.NoError(t, db.First(&tok, tok.Id).Error)
+	assert.Equal(t, common.TokenStatusDisabled, tok.Status)
 }

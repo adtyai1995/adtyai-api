@@ -33,17 +33,17 @@ func TestAdtyTeamRegistrationPasswordGuessesFeedTheLoginLock(t *testing.T) {
 
 	for i := 0; i < common.LoginLockLimit; i++ {
 		_, err := CompleteAdtyTeamRegistration(issued.Code, leader.Username, "WrongPass123", "Lock Desk", nil)
-		require.ErrorIs(t, err, ErrAdtyTeamRegistrationUnverified, "猜错口令只能回同一句话")
+		require.ErrorIs(t, err, ErrAdtyTeamInvalid)
 	}
-	assert.True(t, common.LoginLocked(leader.Username), "猜错必须计入登录侧同一个失败计数")
+	assert.False(t, common.LoginLocked(leader.Username), "已有账号在核验口令前拒绝，不能变成密码预言机")
 
-	// 锁上之后，密码正确也不能过：同一把锁封住这条入口，文案不变。
 	_, err = CompleteAdtyTeamRegistration(issued.Code, leader.Username, "RightPass123", "Lock Desk", nil)
-	require.ErrorIs(t, err, ErrAdtyTeamRegistrationUnverified)
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	var n int64
+	require.NoError(t, db.Model(&model.AdtyTeam{}).Where("leader_user_id = ?", leader.Id).Count(&n).Error)
+	assert.Zero(t, n)
 
-	// 计数清掉（相当于锁定窗口过去）之后，密码正确能过：链接没有被猜错消耗。
-	common.ClearLoginFailures(leader.Username)
-	created, err := CompleteAdtyTeamRegistration(issued.Code, leader.Username, "RightPass123", "Lock Desk", nil)
+	created, err := CompleteAdtyTeamRegistration(issued.Code, teamRegName("fresh"), "RightPass123", "Fresh Desk", nil)
 	require.NoError(t, err)
-	assert.Equal(t, leader.Id, created.Team.LeaderUserId)
+	assert.NotEqual(t, leader.Id, created.Team.LeaderUserId)
 }

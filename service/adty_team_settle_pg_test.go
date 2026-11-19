@@ -37,13 +37,14 @@ func newTeamSettleFixture(t *testing.T, personalQuota int, teamQuota int64) *tea
 	t.Helper()
 	db := prepareReferralDB(t)
 	leader := referralUser(t, db, "team-settle-leader")
-	member := referralUser(t, db, "team-settle-member")
-	require.NoError(t, db.Model(&model.User{}).Where("id = ?", member.Id).Update("quota", personalQuota).Error)
-	member.Quota = personalQuota
 	created, err := CreateAdtyTeam(leader.Id, 0, "Settle", decimal.NewFromInt(1))
 	require.NoError(t, err)
-	_, err = JoinAdtyTeam(member.Id, created.Team.Id)
+	view, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "settle-emp", "StrongPassword123!", "Settle Emp")
 	require.NoError(t, err)
+	var member model.User
+	require.NoError(t, db.First(&member, view.UserId).Error)
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", member.Id).Update("quota", personalQuota).Error)
+	member.Quota = personalQuota
 	token := &model.Token{UserId: member.Id, Key: fmt.Sprintf("team-settle-%d", member.Id), Name: "team-settle",
 		RemainQuota: 100_000_000, UnlimitedQuota: true, Status: common.TokenStatusEnabled, ExpiredTime: -1}
 	require.NoError(t, db.Create(token).Error)
@@ -51,7 +52,7 @@ func newTeamSettleFixture(t *testing.T, personalQuota int, teamQuota int64) *tea
 	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, teamQuota, "team-settle-credit"))
 	var team model.AdtyTeam
 	require.NoError(t, db.First(&team, created.Team.Id).Error)
-	return &teamSettleFixture{db: db, member: member, token: token, team: team}
+	return &teamSettleFixture{db: db, member: &member, token: token, team: team}
 }
 
 func (f *teamSettleFixture) reserve(t *testing.T, key string, quota int) {
@@ -211,20 +212,11 @@ func TestTeamKeyAdmissionUsesSharedBalancePG(t *testing.T) {
 
 func (f *teamSettleFixture) rebind(t *testing.T) model.AdtyTeam {
 	t.Helper()
-	require.NoError(t, LeaveAdtyTeam(f.member.Id, f.team.Id))
 	leader := referralUser(t, f.db, "team-settle-other-leader")
 	created, err := CreateAdtyTeam(leader.Id, 0, "Other", decimal.NewFromInt(1))
 	require.NoError(t, err)
-	invite, err := CreateAdtyTeamInvite(leader.Id, created.Team.Id, time.Hour)
-	require.NoError(t, err)
-	_, err = AcceptAdtyTeamInvite(f.member.Id, invite.Code)
-	require.NoError(t, err)
-	token, err := model.GetTokenById(f.token.Id)
-	require.NoError(t, err)
-	token.Status = common.TokenStatusEnabled
-	require.NoError(t, token.SelectUpdate())
-	require.NoError(t, BindAdtyTeamKey(f.member.Id, f.token.Id))
 	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, 200_000, "other-credit"))
+	require.NoError(t, f.db.Model(&model.AdtyTeamKey{}).Where("token_id = ?", f.token.Id).Update("team_id", created.Team.Id).Error)
 	return created.Team
 }
 

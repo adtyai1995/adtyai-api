@@ -2,7 +2,6 @@ package controller
 
 import (
 	"bytes"
-	"github.com/QuantumNous/new-api/model"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -211,19 +211,90 @@ func PostAdtyTeamRevokeInvite(c *gin.Context) {
 }
 
 func PostAdtyTeamAccept(c *gin.Context) {
+	common.ApiError(c, service.ErrAdtyTeamForbidden)
+}
+
+func PostAdtyTeamEmployeeRegistration(c *gin.Context) {
 	var body struct {
-		Code string `json:"code"`
+		Code        string `json:"code"`
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		DisplayName string `json:"display_name"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	member, err := service.AcceptAdtyTeamInvite(c.GetInt("id"), body.Code)
+	siteID := 0
+	if site := service.AdtySiteForRequest(c); site != nil {
+		if site.Status != model.AdtySiteStatusActive {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		siteID = site.Id
+	}
+	member, err := service.RegisterAdtyTeamEmployee(body.Code, body.Username, body.Password, body.DisplayName, siteID)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, member)
+}
+
+func PostAdtyTeamEmployee(c *gin.Context) {
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	member, err := service.CreateAdtyTeamEmployee(c.GetInt("id"), id, body.Username, body.Password, body.DisplayName)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, member)
+}
+
+func PostAdtyTeamEnableMember(c *gin.Context) {
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	memberID, err := strconv.Atoi(c.Param("userId"))
+	if err != nil || memberID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.EnableAdtyTeamMember(c.GetInt("id"), id, memberID); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"enabled": true})
+}
+
+func PostAdtyTeamDeleteMember(c *gin.Context) {
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	memberID, err := strconv.Atoi(c.Param("userId"))
+	if err != nil || memberID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.DeleteAdtyTeamMember(c.GetInt("id"), id, memberID); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"deleted": true})
 }
 
 func PostAdtyMainTeamRegistration(c *gin.Context) {
@@ -325,87 +396,4 @@ func PostAdtyTeamRegistrationComplete(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, created)
-}
-
-func PostAdtyTeamEmployeeRegistration(c *gin.Context) {
-	var body struct {
-		Code        string `json:"code"`
-		Username    string `json:"username"`
-		Password    string `json:"password"`
-		DisplayName string `json:"display_name"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	siteID := 0
-	if site := service.AdtySiteForRequest(c); site != nil {
-		if site.Status != model.AdtySiteStatusActive {
-			common.ApiErrorT(c, "Invalid parameters")
-			return
-		}
-		siteID = site.Id
-	}
-	member, err := service.RegisterAdtyTeamEmployee(body.Code, body.Username, body.Password, body.DisplayName, siteID)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, member)
-}
-
-func PostAdtyTeamEmployee(c *gin.Context) {
-	id, ok := adtyInt64Param(c, "id")
-	if !ok {
-		return
-	}
-	var body struct {
-		Username    string `json:"username"`
-		Password    string `json:"password"`
-		DisplayName string `json:"display_name"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	member, err := service.CreateAdtyTeamEmployee(c.GetInt("id"), id, body.Username, body.Password, body.DisplayName)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, member)
-}
-
-func PostAdtyTeamEnableMember(c *gin.Context) {
-	id, ok := adtyInt64Param(c, "id")
-	if !ok {
-		return
-	}
-	memberID, err := strconv.Atoi(c.Param("userId"))
-	if err != nil || memberID <= 0 {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.EnableAdtyTeamMember(c.GetInt("id"), id, memberID); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"enabled": true})
-}
-
-func PostAdtyTeamDeleteMember(c *gin.Context) {
-	id, ok := adtyInt64Param(c, "id")
-	if !ok {
-		return
-	}
-	memberID, err := strconv.Atoi(c.Param("userId"))
-	if err != nil || memberID <= 0 {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.DeleteAdtyTeamMember(c.GetInt("id"), id, memberID); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"deleted": true})
 }

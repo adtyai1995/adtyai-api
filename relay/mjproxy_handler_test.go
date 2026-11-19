@@ -54,7 +54,8 @@ func TestMidjourneyPayerIsFrozenBeforeUpstreamPG(t *testing.T) {
 				t.Cleanup(func() { require.NoError(t, opened.Close()) })
 				db := opened.DB
 				require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Midjourney{}, &model.Log{},
-					&model.BillingOperation{}, &model.BillingOperationMovement{}, &model.AuditLog{}))
+					&model.BillingOperation{}, &model.BillingOperationMovement{}, &model.AuditLog{}, &model.AuditIntent{},
+					&model.AdtySiteEarningEvent{}, &model.AdtyFundBatch{}, &model.AdtyFundAllocation{}, &model.AdtyBillingHold{}))
 				require.NoError(t, model.MigrateAdtyTables())
 				users := []model.User{
 					{Username: "mj-payer-member", Group: "default", Status: common.UserStatusEnabled, Role: common.RoleCommonUser, Quota: 500_000},
@@ -68,7 +69,12 @@ func TestMidjourneyPayerIsFrozenBeforeUpstreamPG(t *testing.T) {
 				b, err := service.CreateAdtyTeam(users[2].Id, 0, "Later", decimal.NewFromInt(1))
 				require.NoError(t, err)
 				_, err = service.JoinAdtyTeam(member.Id, a.Team.Id)
+				require.ErrorIs(t, err, service.ErrAdtyTeamForbidden)
+				employee, err := service.CreateAdtyTeamEmployee(users[1].Id, a.Team.Id, "mj-emp", "StrongPassword123!", "Mj Emp")
 				require.NoError(t, err)
+				member.Id = employee.UserId
+				member.Username = employee.Username
+				require.NoError(t, db.Model(&model.User{}).Where("id = ?", member.Id).Update("quota", 500_000).Error)
 				require.NoError(t, service.CreditAdtyTeam(int64(users[1].Id), a.Team.Id, 100_000, "original-credit"))
 				require.NoError(t, service.CreditAdtyTeam(int64(users[2].Id), b.Team.Id, 200_000, "later-credit"))
 				token := &model.Token{UserId: member.Id, Key: "mj-payer-key", Name: "mj-payer", Status: common.TokenStatusEnabled,
@@ -86,17 +92,7 @@ func TestMidjourneyPayerIsFrozenBeforeUpstreamPG(t *testing.T) {
 					case "revoke":
 						changeErr = service.RevokeAdtyTeamKey(member.Id, a.Team.Id, token.Id)
 					case "team_rebind":
-						changeErr = service.LeaveAdtyTeam(member.Id, a.Team.Id)
-						if changeErr == nil {
-							_, changeErr = service.JoinAdtyTeam(member.Id, b.Team.Id)
-						}
-						if changeErr == nil {
-							token.Status = common.TokenStatusEnabled
-							changeErr = token.SelectUpdate()
-						}
-						if changeErr == nil {
-							changeErr = service.BindAdtyTeamKey(member.Id, token.Id)
-						}
+						changeErr = db.Model(&model.AdtyTeamKey{}).Where("token_id = ?", token.Id).Update("team_id", b.Team.Id).Error
 					}
 					mutated <- changeErr
 					w.Header().Set("Content-Type", "application/json")
@@ -160,7 +156,8 @@ func TestMidjourneyCode21DoesNotChargeOrDuplicate(t *testing.T) {
 	t.Cleanup(func() {
 		require.NoError(t, opened.Close())
 	})
-	require.NoError(t, opened.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.Midjourney{}, &model.Log{}, &model.BillingOperation{}, &model.BillingOperationMovement{}, &model.AdtySiteEarningEvent{}))
+	require.NoError(t, opened.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.Midjourney{}, &model.Log{}, &model.BillingOperation{}, &model.BillingOperationMovement{}, &model.AdtySiteEarningEvent{},
+		&model.AdtyFundBatch{}, &model.AdtyFundAllocation{}, &model.AdtyBillingHold{}, &model.AuditLog{}, &model.AuditIntent{}))
 
 	oldRedis := common.RedisEnabled
 	oldBatch := common.BatchUpdateEnabled

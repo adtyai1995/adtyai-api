@@ -110,7 +110,6 @@ export function TeamPanel() {
   const [rename, setRename] = useState('')
   const [topupAmount, setTopupAmount] = useState('')
   const [topupMethodKey, setTopupMethodKey] = useState<string | null>(null)
-  const [invite, setInvite] = useState('')
   const [issued, setIssued] = useState('')
   const [employeeUsername, setEmployeeUsername] = useState('')
   const [employeePassword, setEmployeePassword] = useState('')
@@ -192,27 +191,6 @@ export function TeamPanel() {
       refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
-    } finally {
-      setPending(false)
-    }
-  }
-
-  const accept = async () => {
-    setPending(true)
-    setError('')
-    try {
-      const response = await api.post('/api/adty/teams/accept', {
-        code: invite.trim(),
-      })
-      const body = response.data as { success?: boolean; message?: string }
-      if (!body.success) {
-        setError(t(body.message || 'Invalid parameters'))
-        return
-      }
-      setInvite('')
-      refresh()
-    } catch (cause) {
-      setError(getServerErrorMessage(cause, t('Invalid parameters')))
     } finally {
       setPending(false)
     }
@@ -713,27 +691,6 @@ export function TeamPanel() {
                 }
               >
                 {t('Leave team')}
-              </Button>
-            </div>
-          )}
-          {mine.isSuccess && !team && (
-            <div className='flex flex-col gap-3'>
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor='team-invite'>{t('Invite code')}</Label>
-                <Input
-                  id='team-invite'
-                  value={invite}
-                  autoComplete='off'
-                  onChange={(event) => setInvite(event.target.value)}
-                />
-              </div>
-              <Button
-                type='button'
-                variant='outline'
-                disabled={pending || invite.trim() === ''}
-                onClick={() => void accept()}
-              >
-                {t('Join team')}
               </Button>
             </div>
           )}

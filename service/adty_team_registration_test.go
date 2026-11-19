@@ -156,24 +156,27 @@ func TestAdtyTeamRegistrationExistingIdentityAndDEC022(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = CompleteAdtyTeamRegistration(issued.Code, sameSite.Username, "wrong-password", "Desk", nil)
-	require.ErrorIs(t, err, ErrAdtyTeamRegistrationUnverified)
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
 	var n int64
 	require.NoError(t, db.Model(&model.AdtyTeam{}).Where("leader_user_id = ?", sameSite.Id).Count(&n).Error)
 	assert.Zero(t, n)
 
 	_, err = CompleteAdtyTeamRegistration(issued.Code, otherSite.Username, "password1", "Desk", nil)
-	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
 	require.NoError(t, db.First(otherSite, otherSite.Id).Error)
 	assert.Equal(t, siteB.Id, otherSite.SiteId)
 	require.NoError(t, db.Model(&model.AdtyTeam{}).Where("leader_user_id = ?", otherSite.Id).Count(&n).Error)
 	assert.Zero(t, n)
 
-	created, err := CompleteAdtyTeamRegistration(issued.Code, sameSite.Username, "password1", "Existing Desk", nil)
+	_, err = CompleteAdtyTeamRegistration(issued.Code, sameSite.Username, "password1", "Existing Desk", nil)
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	require.NoError(t, db.Model(&model.AdtyTeam{}).Where("leader_user_id = ?", sameSite.Id).Count(&n).Error)
+	assert.Zero(t, n)
+
+	created, err := CompleteAdtyTeamRegistration(issued.Code, teamRegName("fresh"), "password1", "Fresh Desk", nil)
 	require.NoError(t, err)
-	assert.Equal(t, sameSite.Id, created.Team.LeaderUserId)
+	assert.NotEqual(t, sameSite.Id, created.Team.LeaderUserId)
 	assert.Equal(t, siteA.Id, created.Team.SiteId)
-	require.NoError(t, db.First(sameSite, sameSite.Id).Error)
-	assert.Equal(t, siteA.Id, sameSite.SiteId)
 }
 
 func TestAdtyTeamRegistrationExpiryRevokeAndConcurrency(t *testing.T) {

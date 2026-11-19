@@ -23,7 +23,7 @@ import (
 )
 
 func TestAdtyTeamPageMembersKeysAndFixedLeader(t *testing.T) {
-	db := prepareReferralDialectDB(t, "sqlite")
+	db := prepareReferralDB(t)
 	leader := referralUser(t, db, "team-page-leader")
 	member := referralUser(t, db, "team-page-member")
 	created, err := CreateAdtyTeam(leader.Id, 0, "Desk", decimal.RequireFromString("1"))
@@ -31,7 +31,10 @@ func TestAdtyTeamPageMembersKeysAndFixedLeader(t *testing.T) {
 	issued, err := CreateAdtyTeamInvite(leader.Id, created.Team.Id, time.Hour)
 	require.NoError(t, err)
 	_, err = AcceptAdtyTeamInvite(member.Id, issued.Code)
+	require.ErrorIs(t, err, ErrAdtyTeamForbidden)
+	joined, err := RegisterAdtyTeamEmployee(issued.Code, "page-employee", "StrongPassword123!", "Page Employee", 0)
 	require.NoError(t, err)
+	member.Id = joined.UserId
 	token := model.Token{UserId: member.Id, Name: "member-key", Key: "team-page-secret", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
 	require.NoError(t, db.Create(&token).Error)
 	require.NoError(t, BindAdtyTeamKey(member.Id, token.Id))
@@ -50,13 +53,17 @@ func TestAdtyTeamPageMembersKeysAndFixedLeader(t *testing.T) {
 	assert.Equal(t, member.Id, memberPage.Members[0].UserId)
 
 	require.ErrorIs(t, TransferAdtyTeamLeader(leader.Id, created.Team.Id, member.Id), ErrAdtyTeamLeaderFixed)
-	require.ErrorIs(t, LeaveAdtyTeam(leader.Id, created.Team.Id), ErrAdtyTeamLeaderFixed)
 	require.NoError(t, DisableAdtyTeamMember(leader.Id, created.Team.Id, member.Id))
 	var stored model.Token
 	require.NoError(t, db.First(&stored, token.Id).Error)
 	assert.Equal(t, common.TokenStatusDisabled, stored.Status)
 	var team model.AdtyTeam
 	require.NoError(t, db.First(&team, created.Team.Id).Error)
+	assert.Equal(t, leader.Id, team.LeaderUserId)
+	assert.EqualValues(t, 800000, team.SharedQuota)
+	require.NoError(t, LeaveAdtyTeam(leader.Id, created.Team.Id))
+	require.NoError(t, db.First(&team, created.Team.Id).Error)
+	assert.Equal(t, model.AdtyTeamStatusClosed, team.Status)
 	assert.Equal(t, leader.Id, team.LeaderUserId)
 	assert.EqualValues(t, 800000, team.SharedQuota)
 }
