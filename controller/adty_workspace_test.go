@@ -87,6 +87,12 @@ func TestPostAdtyTeamBindKeyVerifiesRequestedTeamTarget(t *testing.T) {
 	require.NoError(t, db.Model(&model.AdtyTeamKey{}).Where("token_id = ?", token.Id).Count(&boundCount).Error)
 	assert.Zero(t, boundCount)
 
+	// ISS-R1-0118 repro: a positive team id that is not the caller's team must not bind team A.
+	missingResp := callBind(memberA.Id, 999999, token.Id)
+	assert.Equal(t, false, missingResp["success"], missingResp)
+	require.NoError(t, db.Model(&model.AdtyTeamKey{}).Where("token_id = ?", token.Id).Count(&boundCount).Error)
+	assert.Zero(t, boundCount)
+
 	// Binding with the user's actual active team :id succeeds.
 	okResp := callBind(memberA.Id, teamA.Team.Id, token.Id)
 	require.Equal(t, true, okResp["success"], okResp)
@@ -95,6 +101,12 @@ func TestPostAdtyTeamBindKeyVerifiesRequestedTeamTarget(t *testing.T) {
 	assert.Equal(t, teamA.Team.Id, teamKey.TeamId)
 	assert.Equal(t, memberA.Id, teamKey.UserId)
 	assert.Equal(t, model.AdtyTeamMemberActive, teamKey.Status)
+
+	// Replaying the same active binding must not insert a second row.
+	replayResp := callBind(memberA.Id, teamA.Team.Id, token.Id)
+	assert.Equal(t, false, replayResp["success"], replayResp)
+	require.NoError(t, db.Model(&model.AdtyTeamKey{}).Where("token_id = ?", token.Id).Count(&boundCount).Error)
+	assert.EqualValues(t, 1, boundCount)
 }
 
 // workspaceTicketImageGrantAt builds a credential at the verify MAC boundary.
