@@ -3,6 +3,7 @@ package service
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
@@ -199,4 +200,151 @@ func TestTeamTopupEndpointIdempotencyAcrossProviders(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("team_id = ?", created.Team.Id).Count(&count).Error)
 	require.EqualValues(t, 1, count, "only one team topup order may exist for the shared idempotency key")
+}
+
+func TestTeamTopupRejectsWithinProviderMethodChange(t *testing.T) {
+	db := prepareReferralDB(t)
+	previousPrice := operation_setting.Price
+	operation_setting.Price = 7.2
+	t.Cleanup(func() { operation_setting.Price = previousPrice })
+	leader := referralUser(t, db, "team-method-leader")
+	created, err := CreateAdtyTeam(leader.Id, 0, "Method", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "team-methods", GatewayURL: "https://pay.example.com", MerchantId: "m-methods",
+		OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"), model.AdtyEpayChannelMethod{Method: "wxpay", Enabled: true, ReturnType: "submit"})
+
+	order, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "method-key-1", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, "alipay", order.Method)
+
+	_, err = StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "wxpay", 0, "method-key-1", "127.0.0.1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+
+	var count int64
+	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("team_id = ?", created.Team.Id).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+}
+
+func TestTeamTopupBlankMethodDoesNotOpenASecondOrder(t *testing.T) {
+	db := prepareReferralDB(t)
+	previousPrice := operation_setting.Price
+	operation_setting.Price = 7.2
+	t.Cleanup(func() { operation_setting.Price = previousPrice })
+	leader := referralUser(t, db, "team-blank-leader")
+	created, err := CreateAdtyTeam(leader.Id, 0, "Blank", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "team-blank-epay", GatewayURL: "https://pay.example.com", MerchantId: "m-blank",
+		OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"))
+
+	blank, err := CreateAdtyTeamTopupOrder(leader.Id, created.Team.Id, decimal.NewFromInt(1), "blank-key-1")
+	require.NoError(t, err)
+	require.Equal(t, "team", blank.Method)
+	_, err = StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "blank-key-1", "127.0.0.1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+
+	_, err = StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "", 0, "blank-empty", "127.0.0.1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+
+	epayOrder, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "blank-key-2", "127.0.0.1")
+	require.NoError(t, err)
+	_, err = CreateAdtyTeamTopupOrder(leader.Id, created.Team.Id, decimal.NewFromInt(1), "blank-key-2")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	_, err = StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), " ", 0, "blank-key-2", "127.0.0.1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+
+	var count int64
+	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("team_id = ?", created.Team.Id).Count(&count).Error)
+	require.EqualValues(t, 2, count)
+	require.NotEqual(t, blank.TradeNo, epayOrder.TradeNo)
+}
+
+func TestTeamTopupIdempotencyRejectsChannelPinChange(t *testing.T) {
+	db := prepareReferralDB(t)
+	previousPrice := operation_setting.Price
+	operation_setting.Price = 7.2
+	t.Cleanup(func() { operation_setting.Price = previousPrice })
+	leader := referralUser(t, db, "team-pin-leader")
+	created, err := CreateAdtyTeam(leader.Id, 0, "Pin", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	high := seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "team-pin-high", GatewayURL: "https://pay.example.com", MerchantId: "m-high", Priority: 9,
+		OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"))
+	low := seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "team-pin-low", GatewayURL: "https://pay.example.com", MerchantId: "m-low", Priority: 1,
+		OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"))
+
+	auto, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "pin-key-1", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, high.Id, auto.ChannelId)
+	_, err = StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", low.Id, "pin-key-1", "127.0.0.1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	replay, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "pin-key-1", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, auto.TradeNo, replay.TradeNo)
+
+	pinned, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", low.Id, "pin-key-2", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, low.Id, pinned.ChannelId)
+	_, err = StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", high.Id, "pin-key-2", "127.0.0.1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	returned, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "pin-key-2", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, pinned.TradeNo, returned.TradeNo)
+
+	var count int64
+	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("team_id = ?", created.Team.Id).Count(&count).Error)
+	require.EqualValues(t, 2, count)
+}
+
+func TestTeamTopupConcurrentSameKeyReturnsOneOrder(t *testing.T) {
+	db := prepareReferralDB(t)
+	previousPrice := operation_setting.Price
+	operation_setting.Price = 7.2
+	t.Cleanup(func() { operation_setting.Price = previousPrice })
+	leader := referralUser(t, db, "team-conc-leader")
+	created, err := CreateAdtyTeam(leader.Id, 0, "Conc", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "team-conc-epay", GatewayURL: "https://pay.example.com", MerchantId: "m-conc",
+		OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"))
+
+	var wg sync.WaitGroup
+	type call struct {
+		order *model.AdtyTopupOrder
+		err   error
+	}
+	results := make([]call, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			order, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "conc-key-1", "127.0.0.1")
+			results[i] = call{order, err}
+		}(i)
+	}
+	wg.Wait()
+
+	var count int64
+	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("team_id = ?", created.Team.Id).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+	tradeNo := ""
+	for _, result := range results {
+		if result.err != nil {
+			require.ErrorIs(t, result.err, ErrAdtyTeamInvalid)
+			continue
+		}
+		require.NotNil(t, result.order)
+		if tradeNo == "" {
+			tradeNo = result.order.TradeNo
+		}
+		require.Equal(t, tradeNo, result.order.TradeNo)
+	}
+	require.NotEmpty(t, tradeNo)
 }
