@@ -14,8 +14,8 @@ const activeTeamMembershipUniqueIndex = "ux_adty_team_members_one_active_user"
 // EnsureActiveTeamMembershipUniqueIndex installs a partial unique index that
 // allows at most one active membership per user. Historical collisions are
 // left in place and are not merged, deleted, or rewritten; the index is
-// skipped in that case so startup can continue, and new second-team writes
-// must still be rejected at the application layer. Memberships marked left
+// skipped with an error that prevents successful startup without the unique
+// guarantee. Memberships marked left
 // are outside the index and do not block a later active row on another team.
 // idx_adty_team_member on (team_id, user_id) is left unchanged.
 func EnsureActiveTeamMembershipUniqueIndex(db *gorm.DB) error {

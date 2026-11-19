@@ -15,9 +15,9 @@ const adtyVoucherTradeNoUniqueIndex = "ux_adty_vouchers_trade_no"
 // adty_vouchers.trade_no for non-empty values. Empty trade numbers on
 // unredeemed codes stay outside the index so many pending rows can coexist.
 // Historical collisions are left in place and are not merged, deleted, or
-// rewritten; the index is skipped in that case so startup can continue, and
-// new duplicate trade numbers must still be rejected at the application
-// layer. The ordinary trade_no index created by AutoMigrate is left in place.
+// rewritten. A collision returns an error and prevents successful startup
+// without the unique guarantee. The ordinary trade_no index created by
+// AutoMigrate is left in place.
 func EnsureAdtyVoucherTradeNoUniqueIndex(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("voucher trade_no unique index: database is nil")

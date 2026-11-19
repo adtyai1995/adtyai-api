@@ -1,7 +1,6 @@
 package model
 
 import (
-	"errors"
 	"os"
 	"strings"
 	"time"
@@ -64,18 +63,10 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 		return err
 	}
 	if err := EnsureAdtyVoucherTradeNoUniqueIndex(db); err != nil {
-		if errors.Is(err, ErrAdtyVoucherTradeNoCollision) {
-			common.SysError(common.LogText("voucher trade_no unique index skipped: %s", err.Error()))
-		} else {
-			return err
-		}
+		return err
 	}
 	if err := EnsureActiveTeamMembershipUniqueIndex(db); err != nil {
-		if errors.Is(err, ErrActiveTeamMembershipCollision) {
-			common.SysError(common.LogText("active team membership unique index skipped: %s", err.Error()))
-		} else {
-			return err
-		}
+		return err
 	}
 	if err := db.AutoMigrate(&AdtyTelegramBot{}, &AdtyTelegramChallenge{}, &AdtyTelegramBinding{}, &AdtyTelegramDelivery{}, &AdtyTicket{}, &AdtyTicketMessage{}, &AdtyTicketImage{}, &AdtyTicketEvent{}, &AdtyTicketNotice{}, &AdtyTicketPolicy{}, &AdtyTranslationConfig{}, &AdtyTranslationHead{}, &AdtyTranslationJob{}, &AdtyTranslationUsage{}, &AdtyGroupHealthSample{}, &AdtyGroupHealthState{}, &AdtyGroupHealthAlert{}, &AdtyDataRetentionPolicy{}, &AdtyDataRetentionRun{}, &AdtyDataRetentionRunItem{}); err != nil {
 		return err
