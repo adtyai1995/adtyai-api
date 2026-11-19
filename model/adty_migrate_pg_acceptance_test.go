@@ -335,3 +335,51 @@ func TestAdtyPostgreSQLConnectInitAndMigrateAcceptance(t *testing.T) {
 		assertAdtyMigrateSchemaUnchanged(t, db, before)
 	})
 }
+
+func TestExpiringRootGiftMigrationPreservesPermanentLots(t *testing.T) {
+	dsn := requireAdtyOfficialPostgresAcceptanceDSN(t)
+	admin := connectAdtyPostgresAcceptanceInstance(t, dsn)
+	t.Cleanup(func() { require.NoError(t, closeAdtyGorm(admin)) })
+	for _, upgrade := range []bool{false, true} {
+		t.Run(fmt.Sprintf("upgrade_%t", upgrade), func(t *testing.T) {
+			db := openAdtyThrowawayMigrateDatabase(t, admin, dsn)
+			if upgrade {
+				require.NoError(t, db.Exec(`CREATE TABLE adty_fund_batches (id BIGSERIAL PRIMARY KEY, user_id BIGINT, site_id BIGINT, kind VARCHAR(16), source VARCHAR(64), original BIGINT, remaining BIGINT, created_at BIGINT)`).Error)
+				require.NoError(t, db.Exec(`INSERT INTO adty_fund_batches(user_id,site_id,kind,source,original,remaining,created_at) VALUES (700,0,'principal','old-payment',1000,700,100),(700,0,'bonus','old-payment',200,100,100)`).Error)
+			}
+			require.NoError(t, migrateDB())
+			if upgrade {
+				var legacy []AdtyFundBatch
+				require.NoError(t, db.Order("id").Find(&legacy).Error)
+				require.Len(t, legacy, 2)
+				require.EqualValues(t, 700, legacy[0].Remaining)
+				require.EqualValues(t, 100, legacy[1].Remaining)
+				for _, lot := range legacy {
+					require.Nil(t, lot.ExpiresAt)
+					require.False(t, lot.IsExpiringGift())
+					require.Zero(t, lot.ExpiredQuota)
+					require.Equal(t, AdtyFundBatchStatusActive, lot.Status)
+				}
+			}
+			user := User{Username: "gift-migration", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default"}
+			require.NoError(t, db.Create(&user).Error)
+			expires := common.GetTimestamp() + 172800
+			batch, err := GrantAdtyRootExpiringGift(AdtyRootExpiringGiftGrantInput{UserID: user.Id, OperatorID: 1, OperatorRole: common.RoleRootUser, AmountUSD: decimal.NewFromInt(2), ExpiresAt: expires, Reason: "trial", IdempotencyKey: "migration-trial"})
+			require.NoError(t, err)
+			var before []AdtyFundBatch
+			require.NoError(t, db.Order("id").Find(&before).Error)
+			for range 2 {
+				require.NoError(t, migrateDB())
+				var after []AdtyFundBatch
+				require.NoError(t, db.Order("id").Find(&after).Error)
+				require.Equal(t, before, after, "rerunning migration must preserve every funding fact")
+			}
+			require.NoError(t, db.First(batch, batch.Id).Error)
+			require.NotNil(t, batch.ExpiresAt)
+			require.Equal(t, expires, *batch.ExpiresAt)
+			duplicate := *batch
+			duplicate.Id = 0
+			require.Error(t, db.Create(&duplicate).Error, "the source-kind uniqueness constraint must survive upgrade")
+		})
+	}
+}

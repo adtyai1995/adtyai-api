@@ -1,8 +1,12 @@
 package model
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/shopspring/decimal"
+	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -15,25 +19,46 @@ var ErrAdtyFundBatchShortfall = errors.New("fund batches cannot cover the debit"
 // or consumed because the batch table is absent.
 var ErrAdtyFundBatchTableMissing = errors.New("adty fund batch table is missing")
 
+const (
+	AdtyFundBatchKindPrincipal     = "principal"
+	AdtyFundBatchKindBonus         = "bonus"
+	AdtyFundBatchKindExpiringBonus = "expiring_bonus"
+
+	AdtyGiftCategoryPermanent = "permanent_bonus"
+	AdtyGiftCategoryExpiring  = "expiring_bonus"
+
+	AdtyFundBatchStatusActive    = "active"
+	AdtyFundBatchStatusExhausted = "exhausted"
+	AdtyFundBatchStatusExpired   = "expired"
+
+	AdtyLedgerTypeGiftExpire       = "gift_expire"
+	AdtyLedgerTypeRootExpiringGift = "root_expiring_gift"
+)
+
 func adtyFundBatchShortfallError(uncovered int64) error {
 	return fmt.Errorf("%w: uncovered %d", ErrAdtyFundBatchShortfall, uncovered)
 }
 
-// AdtyFundBatch is one recharge principal or permanent bonus lot.
+// AdtyFundBatch is one recharge principal, permanent recharge bonus, or
+// time-limited Root gift lot (DEC-031 / G.3 / A.12).
 //
-// SiteId 是这批额度归属的站（0 是主站）。A.12.1 要求批次自带站点；ISS-R4-0047
-// 本轮只补这一列，出资主体 / 币种 / 关联流水仍未做（见该条 fix_direction）。
+// SiteId 是这批额度归属的站（0 是主站）。A.12.1 要求批次自带站点；
 // 指针为 nil 表示「证不出站点」：历史行与没有订单/凭据可查的补建额度留 NULL，
 // 不写推断值——推断值一旦落库就再也分不清真假。
 type AdtyFundBatch struct {
-	Id        int64  `json:"id"`
-	UserId    int    `json:"user_id" gorm:"uniqueIndex:idx_adty_fund_batch_user_source_kind,priority:1;index"`
-	SiteId    *int   `json:"site_id,omitempty" gorm:"index"`
-	Kind      string `json:"kind" gorm:"type:varchar(16);uniqueIndex:idx_adty_fund_batch_user_source_kind,priority:3;index"`
-	Source    string `json:"source" gorm:"type:varchar(64);uniqueIndex:idx_adty_fund_batch_user_source_kind,priority:2;index"`
-	Original  int64  `json:"original"`
-	Remaining int64  `json:"remaining"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
+	Id           int64  `json:"id"`
+	UserId       int    `json:"user_id" gorm:"uniqueIndex:idx_adty_fund_batch_user_source_kind,priority:1;index"`
+	SiteId       *int   `json:"site_id,omitempty" gorm:"index"`
+	Kind         string `json:"kind" gorm:"type:varchar(16);uniqueIndex:idx_adty_fund_batch_user_source_kind,priority:3;index"`
+	GiftCategory string `json:"gift_category,omitempty" gorm:"type:varchar(32);index"`
+	Source       string `json:"source" gorm:"type:varchar(64);uniqueIndex:idx_adty_fund_batch_user_source_kind,priority:2;index"`
+	Original     int64  `json:"original"`
+	Remaining    int64  `json:"remaining"`
+	ExpiredQuota int64  `json:"expired_quota,omitempty" gorm:"not null;default:0"`
+	ExpiresAt    *int64 `json:"expires_at,omitempty" gorm:"index"`
+	ExpiredAt    int64  `json:"expired_at,omitempty" gorm:"not null;default:0"`
+	Status       string `json:"status,omitempty" gorm:"type:varchar(16);index;not null;default:'active'"`
+	CreatedAt    int64  `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyFundBatch) TableName() string { return "adty_fund_batches" }
@@ -100,10 +125,29 @@ func CreateAdtyFundBatchesWithSiteTx(tx *gorm.DB, userID int, siteID *int, sourc
 	now := common.GetTimestamp()
 	wanted := make([]AdtyFundBatch, 0, 2)
 	if principal > 0 {
-		wanted = append(wanted, AdtyFundBatch{UserId: userID, SiteId: siteID, Kind: "principal", Source: source, Original: principal, Remaining: principal, CreatedAt: now})
+		wanted = append(wanted, AdtyFundBatch{
+			UserId:    userID,
+			SiteId:    siteID,
+			Kind:      AdtyFundBatchKindPrincipal,
+			Source:    source,
+			Original:  principal,
+			Remaining: principal,
+			Status:    AdtyFundBatchStatusActive,
+			CreatedAt: now,
+		})
 	}
 	if bonus > 0 {
-		wanted = append(wanted, AdtyFundBatch{UserId: userID, SiteId: siteID, Kind: "bonus", Source: source, Original: bonus, Remaining: bonus, CreatedAt: now})
+		wanted = append(wanted, AdtyFundBatch{
+			UserId:       userID,
+			SiteId:       siteID,
+			Kind:         AdtyFundBatchKindBonus,
+			GiftCategory: AdtyGiftCategoryPermanent,
+			Source:       source,
+			Original:     bonus,
+			Remaining:    bonus,
+			Status:       AdtyFundBatchStatusActive,
+			CreatedAt:    now,
+		})
 	}
 	if len(wanted) == 0 {
 		return nil
@@ -306,7 +350,7 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 		}
 	}
 	// 只消费还有剩余的批次；上面补过之后重新读，避免拿旧快照算。
-	if err := tx.Where("user_id = ? AND remaining > 0", userID).Find(&rows).Error; err != nil {
+	if err := tx.Where("user_id = ?", userID).Where("remaining > 0").Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	if len(rows) == 0 {
@@ -342,10 +386,10 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 		if err := deductAdtyFundBatchTx(tx, rows[i].Id, take); err != nil {
 			return backed, err
 		}
-		if rows[i].Kind == "principal" && rows[i].Source != "legacy" {
+		if rows[i].Kind == AdtyFundBatchKindPrincipal && rows[i].Source != adtyLegacyBatchSource {
 			principalTaken += take
 		}
-		if rows[i].Kind == "bonus" && rows[i].Source != "" && take > 0 {
+		if !rows[i].IsExpiringGift() && rows[i].Kind == AdtyFundBatchKindBonus && rows[i].Source != "" && take > 0 {
 			bonusBySource[rows[i].Source] += take
 		}
 		amount -= take
@@ -462,9 +506,29 @@ func sortAdtyFundBatches(rows []AdtyFundBatch) {
 	}
 }
 
+// adtyFundBatchLess enforces the DEC-031 / A.12.2 consumption order:
+//  1. Principal lots (FIFO by CreatedAt, Id)
+//  2. Time-limited gift lots (ordered by ExpiresAt ASC, then Id)
+//  3. Permanent recharge bonus lots (FIFO by CreatedAt, Id)
 func adtyFundBatchLess(a, b AdtyFundBatch) bool {
-	if a.Kind != b.Kind {
-		return a.Kind == "principal"
+	rankA := adtyFundBatchOrderRank(a)
+	rankB := adtyFundBatchOrderRank(b)
+	if rankA != rankB {
+		return rankA < rankB
+	}
+	if rankA == 1 {
+		expA := int64(0)
+		if a.ExpiresAt != nil {
+			expA = *a.ExpiresAt
+		}
+		expB := int64(0)
+		if b.ExpiresAt != nil {
+			expB = *b.ExpiresAt
+		}
+		if expA != expB {
+			return expA < expB
+		}
+		return a.Id < b.Id
 	}
 	if a.CreatedAt != b.CreatedAt {
 		return a.CreatedAt < b.CreatedAt
@@ -472,11 +536,14 @@ func adtyFundBatchLess(a, b AdtyFundBatch) bool {
 	return a.Id < b.Id
 }
 
-// AdtyFundBatchKindRemaining is the remaining quota of one lot kind for one user.
+// AdtyFundBatchKindRemaining is the remaining quota of each lot category for one user.
+// Bonus holds permanent recharge gift quota; ExpiringBonus holds time-limited gift quota (DEC-031).
 type AdtyFundBatchKindRemaining struct {
-	Principal int64
-	Bonus     int64
-	HasLots   bool
+	Principal     int64 `json:"principal"`
+	Bonus         int64 `json:"bonus"`
+	ExpiringBonus int64 `json:"expiring_bonus"`
+	NextExpiresAt int64 `json:"next_expires_at,omitempty"`
+	HasLots       bool  `json:"has_lots"`
 }
 
 // SumAdtyFundBatchRemainingByKind totals remaining principal and permanent bonus lots.
@@ -489,7 +556,8 @@ func SumAdtyFundBatchRemainingByKind(userID int) (AdtyFundBatchKindRemaining, er
 	return sums[userID], nil
 }
 
-// SumAdtyFundBatchRemainingByKindForUsers totals remaining principal and bonus lots per user.
+// SumAdtyFundBatchRemainingByKindForUsers totals remaining principal, permanent
+// bonus, and expiring bonus lots per user.
 func SumAdtyFundBatchRemainingByKindForUsers(userIDs []int) (map[int]AdtyFundBatchKindRemaining, error) {
 	out := map[int]AdtyFundBatchKindRemaining{}
 	if DB == nil || len(userIDs) == 0 {
@@ -502,27 +570,31 @@ func SumAdtyFundBatchRemainingByKindForUsers(userIDs []int) (map[int]AdtyFundBat
 	if err := adtyRequireFundBatchTable(DB); err != nil {
 		return nil, err
 	}
-	type kindSum struct {
-		UserId    int    `gorm:"column:user_id"`
-		Kind      string `gorm:"column:kind"`
-		Remaining int64  `gorm:"column:remaining"`
-	}
-	var rows []kindSum
+	var rows []AdtyFundBatch
 	if err := DB.Model(&AdtyFundBatch{}).
-		Select("user_id, kind, COALESCE(SUM(remaining), 0) AS remaining").
-		Where("user_id IN ? AND kind IN ?", ids, []string{"principal", "bonus"}).
-		Group("user_id, kind").
+		Where("user_id IN ? AND kind IN ?", ids, []string{
+			AdtyFundBatchKindPrincipal,
+			AdtyFundBatchKindBonus,
+			AdtyFundBatchKindExpiringBonus,
+		}).
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
 		current := out[row.UserId]
 		current.HasLots = true
-		switch row.Kind {
-		case "principal":
-			current.Principal = row.Remaining
-		case "bonus":
-			current.Bonus = row.Remaining
+		switch {
+		case row.Kind == AdtyFundBatchKindPrincipal:
+			current.Principal += row.Remaining
+		case row.IsExpiringGift():
+			current.ExpiringBonus += row.Remaining
+			if row.Remaining > 0 && row.ExpiresAt != nil && *row.ExpiresAt > 0 {
+				if current.NextExpiresAt == 0 || *row.ExpiresAt < current.NextExpiresAt {
+					current.NextExpiresAt = *row.ExpiresAt
+				}
+			}
+		default:
+			current.Bonus += row.Remaining
 		}
 		out[row.UserId] = current
 	}
@@ -543,4 +615,401 @@ func uniquePositiveIDs(ids []int) []int {
 		out = append(out, id)
 	}
 	return out
+}
+
+// IsExpiringGift reports whether this batch is a time-limited gift lot (DEC-031)
+// rather than principal or permanent recharge bonus.
+func (b AdtyFundBatch) IsExpiringGift() bool {
+	if b.Kind == AdtyFundBatchKindPrincipal {
+		return false
+	}
+	if b.Kind == AdtyFundBatchKindExpiringBonus || b.GiftCategory == AdtyGiftCategoryExpiring {
+		return true
+	}
+	return b.ExpiresAt != nil && *b.ExpiresAt > 0
+}
+
+// CreateAdtyExpiringBonusBatchTx records one time-limited gift lot (DEC-031)
+// distinct from permanent recharge bonus.
+func CreateAdtyExpiringBonusBatchTx(tx *gorm.DB, userID int, siteID *int, source string, bonusQuota int64, expiresAt int64) (*AdtyFundBatch, error) {
+	if tx == nil {
+		return nil, errors.New("transaction is required")
+	}
+	source = strings.TrimSpace(source)
+	if userID <= 0 || source == "" || bonusQuota <= 0 || expiresAt <= 0 {
+		return nil, errors.New("invalid expiring gift batch parameters")
+	}
+	if err := adtyRequireFundBatchTable(tx); err != nil {
+		return nil, err
+	}
+	var existing AdtyFundBatch
+	err := tx.Where("user_id = ? AND source = ? AND kind IN ?", userID, source, []string{AdtyFundBatchKindBonus, AdtyFundBatchKindExpiringBonus}).
+		First(&existing).Error
+	if err == nil {
+		if existing.Original != bonusQuota || existing.ExpiresAt == nil || *existing.ExpiresAt != expiresAt || !existing.IsExpiringGift() {
+			return nil, ErrAdtyIdempotencyConflict
+		}
+		return &existing, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	exp := expiresAt
+	row := AdtyFundBatch{
+		UserId:       userID,
+		SiteId:       siteID,
+		Kind:         AdtyFundBatchKindBonus,
+		GiftCategory: AdtyGiftCategoryExpiring,
+		Source:       source,
+		Original:     bonusQuota,
+		Remaining:    bonusQuota,
+		ExpiresAt:    &exp,
+		Status:       AdtyFundBatchStatusActive,
+		CreatedAt:    common.GetTimestamp(),
+	}
+	createErr := tx.Transaction(func(inner *gorm.DB) error {
+		return inner.Create(&row).Error
+	})
+	if createErr != nil {
+		if isAdtyUniqueViolation(createErr) {
+			if qErr := tx.Where("user_id = ? AND source = ? AND kind IN ?", userID, source, []string{AdtyFundBatchKindBonus, AdtyFundBatchKindExpiringBonus}).
+				First(&existing).Error; qErr == nil {
+				if existing.Original != bonusQuota || existing.ExpiresAt == nil || *existing.ExpiresAt != expiresAt || !existing.IsExpiringGift() {
+					return nil, ErrAdtyIdempotencyConflict
+				}
+				return &existing, nil
+			}
+		}
+		return nil, createErr
+	}
+	return &row, nil
+}
+
+// AdtyRootExpiringGiftGrantInput describes a manual Root expiring gift grant (DEC-031).
+type AdtyRootExpiringGiftGrantInput struct {
+	UserID         int
+	OperatorID     int
+	OperatorRole   int
+	SiteID         *int
+	AmountUSD      decimal.Decimal
+	Quota          int64
+	ExpiresAt      int64
+	Reason         string
+	IdempotencyKey string
+}
+
+// GrantAdtyRootExpiringGift issues a time-limited Root gift lot to a customer
+// in a single database transaction and refreshes the user cache.
+func GrantAdtyRootExpiringGift(input AdtyRootExpiringGiftGrantInput) (*AdtyFundBatch, error) {
+	if DB == nil {
+		return nil, errors.New("database is not initialized")
+	}
+	var batch *AdtyFundBatch
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var txErr error
+		batch, txErr = GrantAdtyRootExpiringGiftTx(tx, input)
+		return txErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = invalidateUserCache(input.UserID)
+	_ = PublishUserAuthCache(input.UserID)
+	return batch, nil
+}
+
+// GrantAdtyRootExpiringGiftTx issues a time-limited Root gift lot inside tx,
+// crediting the customer's wallet and writing an immutable balance ledger entry.
+func GrantAdtyRootExpiringGiftTx(tx *gorm.DB, input AdtyRootExpiringGiftGrantInput) (*AdtyFundBatch, error) {
+	if tx == nil {
+		return nil, errors.New("transaction is required")
+	}
+	if input.OperatorID <= 0 || input.OperatorRole != common.RoleRootUser {
+		return nil, errors.New("only Root can issue expiring gifts")
+	}
+	if input.UserID <= 0 {
+		return nil, errors.New("invalid user id")
+	}
+	if input.ExpiresAt <= 0 {
+		return nil, errors.New("expires_at is required for expiring gift")
+	}
+	idemKey := strings.TrimSpace(input.IdempotencyKey)
+	if idemKey == "" || len(idemKey) > 255 {
+		return nil, errors.New("idempotency key is required")
+	}
+	quota := input.Quota
+	if quota <= 0 && input.AmountUSD.IsPositive() {
+		converted, err := common.WalletQuotaFromDecimalStrict(input.AmountUSD.Mul(common.QuotaPerUnitDecimal()))
+		if err != nil || converted <= 0 {
+			return nil, errors.New("invalid gift amount")
+		}
+		quota = int64(converted)
+	}
+	if quota <= 0 || quota > int64(common.MaxWalletQuota) {
+		return nil, errors.New("gift quota must be positive")
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" {
+		reason = "root expiring gift"
+	}
+	if len(reason) > 1024 {
+		return nil, errors.New("gift reason is too long")
+	}
+	sum := sha256.Sum256([]byte(idemKey))
+	source := fmt.Sprintf("root_gift:%x", sum[:24])
+	// The same user lock serializes grants, charging and expiration. Recheck
+	// idempotency only after acquiring it so a concurrent replay sees the commit.
+	balanceBefore, _, _, err := loadLockedUserLogicalQuotaTx(tx, input.UserID)
+	if err != nil {
+		return nil, err
+	}
+	var customer User
+	if err := tx.Select("id", "site_id", "role").First(&customer, input.UserID).Error; err != nil {
+		return nil, err
+	}
+	if customer.Role >= common.RoleAdminUser || input.SiteID != nil && *input.SiteID != customer.SiteId {
+		return nil, errors.New("gift target must be a customer in the selected site")
+	}
+	siteID := AdtyFundBatchSiteID(customer.SiteId)
+
+	existingLedger, err := FindAdtyBalanceLedgerByKeyTx(tx, source)
+	if err != nil {
+		return nil, err
+	}
+	if existingLedger != nil {
+		if existingLedger.UserId != input.UserID || existingLedger.Type != AdtyLedgerTypeRootExpiringGift || existingLedger.DeltaQuota != quota || existingLedger.Reason != reason || existingLedger.OperatorId != input.OperatorID {
+			return nil, ErrAdtyIdempotencyConflict
+		}
+		return CreateAdtyExpiringBonusBatchTx(tx, input.UserID, siteID, source, quota, input.ExpiresAt)
+	}
+	if input.ExpiresAt <= common.GetTimestamp() {
+		return nil, errors.New("gift expiry must be in the future")
+	}
+	batch, err := CreateAdtyExpiringBonusBatchTx(tx, input.UserID, siteID, source, quota, input.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := AdtyCreditUserQuotaTx(tx, input.UserID, quota); err != nil {
+		return nil, err
+	}
+	ledgerKey := source
+	if err := RecordAdtyBalanceLedgerTx(tx, &AdtyBalanceLedger{
+		UserId:         input.UserID,
+		DeltaQuota:     quota,
+		BalanceBefore:  balanceBefore,
+		BalanceAfter:   balanceBefore + quota,
+		Type:           AdtyLedgerTypeRootExpiringGift,
+		RefType:        "root_gift",
+		RefId:          source,
+		Reason:         reason,
+		OperatorId:     input.OperatorID,
+		IdempotencyKey: &ledgerKey,
+	}); err != nil {
+		return nil, err
+	}
+	return batch, nil
+}
+
+// AdtyGiftExpirationItem summarizes one expired gift batch cleared by the daily task.
+type AdtyGiftExpirationItem struct {
+	BatchID      int64  `json:"batch_id"`
+	UserID       int    `json:"user_id"`
+	Source       string `json:"source"`
+	Original     int64  `json:"original"`
+	Consumed     int64  `json:"consumed"`
+	ExpiredQuota int64  `json:"expired_quota"`
+	LedgerID     int64  `json:"ledger_id"`
+}
+
+// AdtyGiftExpiryMidnightUnix returns the 00:00:00 Unix timestamp of the calendar
+// day containing expiresAtUnix in loc (defaults to time.Local when loc is nil).
+func AdtyGiftExpiryMidnightUnix(expiresAtUnix int64, loc *time.Location) int64 {
+	if loc == nil {
+		loc = time.Local
+	}
+	t := time.Unix(expiresAtUnix, 0).In(loc)
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, loc).Unix()
+}
+
+// ExpireAdtyGiftBatches runs the daily post-midnight expiration sweep at now,
+// clearing unconsumed remaining quota on expired gift batches and recording
+// a gift_expire balance ledger row per batch (DEC-031).
+func ExpireAdtyGiftBatches(now time.Time) ([]AdtyGiftExpirationItem, error) {
+	if DB == nil {
+		return nil, nil
+	}
+	var items []AdtyGiftExpirationItem
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var txErr error
+		items, txErr = ExpireAdtyGiftBatchesTx(tx, now)
+		return txErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	seenUsers := map[int]struct{}{}
+	for _, item := range items {
+		if _, ok := seenUsers[item.UserID]; ok {
+			continue
+		}
+		seenUsers[item.UserID] = struct{}{}
+		_ = invalidateUserCache(item.UserID)
+		_ = PublishUserAuthCache(item.UserID)
+	}
+	return items, nil
+}
+
+// ExpireAdtyGiftBatchesAt runs ExpireAdtyGiftBatches at the given Unix timestamp.
+func ExpireAdtyGiftBatchesAt(nowUnix int64) ([]AdtyGiftExpirationItem, error) {
+	return ExpireAdtyGiftBatches(time.Unix(nowUnix, 0))
+}
+
+// ExpireAdtyGiftBatchesTx clears unconsumed quota on all expiring gift batches
+// whose expiration cutoff has passed as of now inside tx. Already-consumed
+// portions are never cleared again.
+func ExpireAdtyGiftBatchesTx(tx *gorm.DB, now time.Time) ([]AdtyGiftExpirationItem, error) {
+	if tx == nil {
+		return nil, nil
+	}
+	if err := adtyRequireFundBatchTable(tx); err != nil {
+		return nil, err
+	}
+	nowUnix := now.Unix()
+	if err := AdtyFundAllocationTableReady(tx); err != nil {
+		return nil, err
+	}
+	loc := now.Location()
+	var candidates []AdtyFundBatch
+	dayStart := AdtyGiftExpiryMidnightUnix(nowUnix, loc)
+	nextDay := time.Unix(dayStart, 0).In(loc).AddDate(0, 0, 1).Unix()
+	if err := tx.
+		Where("expires_at IS NOT NULL AND expires_at > 0 AND expires_at < ? AND remaining > 0", nextDay).
+		Order("user_id ASC, id ASC").
+		Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+	items := make([]AdtyGiftExpirationItem, 0, len(candidates))
+	for i := range candidates {
+		candidate := candidates[i]
+		balanceBefore, _, _, err := loadLockedUserLogicalQuotaTx(tx, candidate.UserId)
+		if err != nil {
+			return nil, err
+		}
+		var batch AdtyFundBatch
+		if err := lockForUpdate(tx).First(&batch, candidate.Id).Error; err != nil {
+			return nil, err
+		}
+		if !batch.IsExpiringGift() || batch.ExpiresAt == nil || *batch.ExpiresAt <= 0 {
+			continue
+		}
+		midnightCutoff := AdtyGiftExpiryMidnightUnix(*batch.ExpiresAt, loc)
+		if nowUnix < midnightCutoff {
+			continue
+		}
+		heldByBatch, err := outstandingAdtyFundAllocationByBatchTx(tx, batch.UserId)
+		if err != nil {
+			return nil, err
+		}
+		held := heldByBatch[batch.Id]
+		clearQuota := batch.Remaining - held
+		if clearQuota < 0 {
+			clearQuota = 0
+		}
+		consumed := batch.Original - batch.Remaining - batch.ExpiredQuota
+		if consumed < 0 {
+			consumed = 0
+		}
+		if clearQuota == 0 {
+			continue
+		}
+		idemKey := fmt.Sprintf("gift_expire:batch:%d:through:%d", batch.Id, batch.ExpiredQuota+clearQuota)
+
+		var ledgerID int64
+		if clearQuota > 0 {
+			debitQuota := clearQuota
+			if debitQuota > balanceBefore {
+				return nil, ErrAdtyFundBatchShortfall
+			}
+			if _, debited, err := AdtyDebitUserQuotaTx(tx, batch.UserId, debitQuota); err != nil {
+				return nil, err
+			} else if debited != debitQuota {
+				return nil, ErrAdtyFundBatchShortfall
+			}
+			ledger := &AdtyBalanceLedger{
+				UserId:         batch.UserId,
+				DeltaQuota:     -debitQuota,
+				BalanceBefore:  balanceBefore,
+				BalanceAfter:   balanceBefore - debitQuota,
+				Type:           AdtyLedgerTypeGiftExpire,
+				RefType:        "fund_batch",
+				RefId:          fmt.Sprintf("batch:%d|source:%s", batch.Id, batch.Source),
+				Reason:         fmt.Sprintf("expired gift batch %d (source=%s, expired_quota=%d)", batch.Id, batch.Source, clearQuota),
+				IdempotencyKey: &idemKey,
+			}
+			if err := RecordAdtyBalanceLedgerTx(tx, ledger); err != nil {
+				return nil, err
+			}
+			ledgerID = ledger.Id
+		}
+
+		nextRemaining := batch.Remaining - clearQuota
+		nextStatus := AdtyFundBatchStatusExpired
+		if nextRemaining > 0 {
+			nextStatus = AdtyFundBatchStatusActive
+		}
+		if err := tx.Model(&AdtyFundBatch{}).
+			Where("id = ? AND remaining = ?", batch.Id, batch.Remaining).
+			Updates(map[string]any{
+				"remaining":     nextRemaining,
+				"expired_quota": batch.ExpiredQuota + clearQuota,
+				"expired_at":    nowUnix,
+				"status":        nextStatus,
+			}).Error; err != nil {
+			return nil, err
+		}
+		items = append(items, AdtyGiftExpirationItem{
+			BatchID:      batch.Id,
+			UserID:       batch.UserId,
+			Source:       batch.Source,
+			Original:     batch.Original,
+			Consumed:     consumed,
+			ExpiredQuota: clearQuota,
+			LedgerID:     ledgerID,
+		})
+	}
+	return items, nil
+}
+
+func adtyFundBatchOrderRank(row AdtyFundBatch) int {
+	if row.Kind == AdtyFundBatchKindPrincipal {
+		return 0
+	}
+	if row.IsExpiringGift() {
+		return 1
+	}
+	return 2
+}
+
+// FindAdtyBalanceLedgerByKeyTx aliases FindAdtyLedgerByIdemKeyTx.
+func FindAdtyBalanceLedgerByKeyTx(tx *gorm.DB, key string) (*AdtyBalanceLedger, error) {
+	return FindAdtyLedgerByIdemKeyTx(tx, key)
+}
+
+// RecordAdtyBalanceLedgerTx aliases InsertAdtyLedgerTx.
+func RecordAdtyBalanceLedgerTx(tx *gorm.DB, entry *AdtyBalanceLedger) error {
+	return InsertAdtyLedgerTx(tx, entry)
+}
+
+// loadLockedUserLogicalQuotaTx locks the user row and returns logical balance, raw quota, and pending quota.
+func loadLockedUserLogicalQuotaTx(tx *gorm.DB, userID int) (logicalQuota, rawQuota, pendingQuota int64, err error) {
+	var user User
+	if err := lockForUpdate(tx).Select("id", "quota", "quota_pending", "checkin_quota").First(&user, userID).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	bal, err := userWalletBalance(user.Quota, user.QuotaPending)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return int64(bal), int64(user.Quota), int64(user.QuotaPending), nil
 }

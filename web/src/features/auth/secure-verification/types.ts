@@ -58,6 +58,7 @@ export type SecurityProofScope =
   | 'adty.payment_orphan.resolve'
   | 'adty.topup.query'
   | 'adty.site_earning.review'
+  | 'adty.root_gift.grant'
 
 /** Site owner actions that need step-up (service/adty_site_verification.go). */
 export type SiteOwnerAction =
@@ -78,6 +79,16 @@ export type SiteOwnerAction =
 export type AdminUserManageAction = 'disable' | 'enable' | 'promote' | 'demote'
 
 export type VerificationOperation =
+  | {
+      scope: 'adty.root_gift.grant'
+      context: {
+        user_id: number
+        amount_usd: string
+        expires_at: number
+        reason: string
+        idempotency_key: string
+      }
+    }
   | { scope: 'channel.key.read'; context: { channel_id: number } }
   | {
       scope: 'account.binding.bind'
@@ -153,6 +164,7 @@ export type VerificationOperation =
   | {
       scope: Exclude<
         SecurityProofScope,
+        | 'adty.root_gift.grant'
         | 'channel.key.read'
         | 'account.binding.bind'
         | 'access_token.generate'

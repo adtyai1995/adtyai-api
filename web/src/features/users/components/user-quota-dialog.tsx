@@ -16,22 +16,37 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useState } from 'react'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import timezone from 'dayjs/plugin/timezone'
+import utc from 'dayjs/plugin/utc'
+import { useEffect, useRef, useState } from 'react'
+import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Dialog } from '@/components/dialog'
+import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { getAdminBusinessTimezone } from '@/features/adty-site-admin/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
+import dayjs from '@/lib/dayjs'
 import { formatQuota, parseQuotaFromDollars } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
-import { adjustUserQuota } from '../api'
+import { adjustUserQuota, grantExpiringUserGift } from '../api'
+import { USER_ROLE } from '../constants'
+import { rootGiftFormSchema, type RootGiftFormValues } from '../lib/user-form'
 import type { QuotaAdjustMode } from '../types'
+import { useUsers } from './users-provider'
+
+dayjs.extend(utc)
+dayjs.extend(timezone)
 
 interface UserQuotaDialogProps {
   open: boolean
@@ -217,6 +232,188 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
             {t('{{count}}/200, not shown to the user', { count: reasonLength })}
           </p>
         </div>
+      </div>
+    </Dialog>
+  )
+}
+
+export function RootGiftDialog(props: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  userId: number
+  onSuccess: () => void
+}) {
+  const { t } = useTranslation()
+  const role = useAuthStore((state) => state.auth.user?.role)
+  const { requestVerification, verificationActive } = useUsers()
+  const form = useForm<RootGiftFormValues>({
+    resolver: zodResolver(rootGiftFormSchema),
+    mode: 'onChange',
+    defaultValues: { amount: '', date: '', reason: '' },
+  })
+  const date = form.watch('date')
+  const [key, setKey] = useState(() => crypto.randomUUID())
+  const active = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const zone = useQuery({
+    queryKey: ['root-gift-business-timezone'],
+    queryFn: getAdminBusinessTimezone,
+    enabled: props.open && role === USER_ROLE.ROOT,
+  })
+  const businessZone = zone.data?.timezone
+  let expires = 0
+  if (date && businessZone) {
+    try {
+      const midnight = dayjs.tz(date, businessZone).startOf('day')
+      if (midnight.isValid() && midnight.format('YYYY-MM-DD') === date) {
+        expires = midnight.unix()
+      }
+    } catch {
+      expires = 0
+    }
+  }
+  const valid =
+    zone.isSuccess &&
+    form.formState.isValid &&
+    Number.isFinite(expires) &&
+    expires > Date.now() / 1000
+  const grant = useMutation({
+    retry: false,
+    mutationFn: async (values: RootGiftFormValues) => {
+      if (!valid || active.current || role !== USER_ROLE.ROOT) return false
+      active.current = true
+      const input = {
+        user_id: props.userId,
+        amount_usd: values.amount,
+        expires_at: expires,
+        reason: values.reason,
+        idempotency_key: key,
+      }
+      try {
+        const proof = await requestVerification({
+          scope: 'adty.root_gift.grant',
+          context: input,
+          title: t('Grant expiring gift'),
+        })
+        if (
+          !proof ||
+          !mounted.current ||
+          useAuthStore.getState().auth.user?.role !== USER_ROLE.ROOT
+        ) {
+          return false
+        }
+        await grantExpiringUserGift(input, proof.proof_token)
+        return true
+      } finally {
+        active.current = false
+      }
+    },
+    onSuccess: (granted) => {
+      if (!granted || !mounted.current) return
+      toast.success(t('Expiring gift granted'))
+      form.reset()
+      setKey(crypto.randomUUID())
+      props.onOpenChange(false)
+      props.onSuccess()
+    },
+    onError: (error) =>
+      handleServerError(error, t('Failed to grant expiring gift')),
+  })
+  const loading = grant.isPending
+  const confirm = form.handleSubmit((values) => grant.mutate(values))
+  if (role !== USER_ROLE.ROOT) return null
+  return (
+    <Dialog
+      open={props.open && !verificationActive}
+      onOpenChange={(value) => {
+        if (!loading) props.onOpenChange(value)
+      }}
+      title={t('Grant expiring gift')}
+      description={t('Trial gifts cannot be withdrawn or refunded as cash.')}
+      contentHeight='auto'
+      bodyClassName='space-y-4'
+      footer={
+        <>
+          <Button
+            variant='outline'
+            disabled={loading}
+            onClick={() => props.onOpenChange(false)}
+          >
+            {t('Cancel')}
+          </Button>
+          <Button disabled={!valid || loading} onClick={() => void confirm()}>
+            {loading ? t('Processing...') : t('Confirm')}
+          </Button>
+        </>
+      }
+    >
+      {zone.isError && <ErrorState onRetry={() => void zone.refetch()} />}
+      <div className='space-y-2'>
+        <Label htmlFor={`gift-amount-${props.userId}`}>
+          {t('Gift amount (USD)')}
+        </Label>
+        <Input
+          id={`gift-amount-${props.userId}`}
+          type='number'
+          min='0'
+          step='0.000002'
+          {...form.register('amount')}
+          disabled={loading}
+          aria-invalid={!!form.formState.errors.amount}
+        />
+        {form.formState.errors.amount && (
+          <p className='text-destructive text-xs' role='alert'>
+            {t('Invalid parameters')}
+          </p>
+        )}
+      </div>
+      <div className='space-y-2'>
+        <Label htmlFor={`gift-date-${props.userId}`}>{t('Expiry date')}</Label>
+        <Input
+          id={`gift-date-${props.userId}`}
+          type='date'
+          {...form.register('date')}
+          disabled={loading}
+          aria-invalid={
+            !!form.formState.errors.date ||
+            (!!date && expires <= Date.now() / 1000)
+          }
+        />
+        {!!date && expires <= Date.now() / 1000 && (
+          <p className='text-destructive text-xs' role='alert'>
+            {t('Invalid parameters')}
+          </p>
+        )}
+        {businessZone && (
+          <p className='text-muted-foreground text-xs'>
+            {t('Gift expires at 00:00 in {{timezone}} on the selected date.', {
+              timezone: businessZone,
+            })}
+          </p>
+        )}
+      </div>
+      <div className='space-y-2'>
+        <Label htmlFor={`gift-reason-${props.userId}`}>
+          {t('Reason (admins only)')}
+        </Label>
+        <Textarea
+          id={`gift-reason-${props.userId}`}
+          {...form.register('reason')}
+          maxLength={200}
+          disabled={loading}
+          aria-invalid={!!form.formState.errors.reason}
+        />
+        {form.formState.errors.reason && (
+          <p className='text-destructive text-xs' role='alert'>
+            {t('Invalid parameters')}
+          </p>
+        )}
       </div>
     </Dialog>
   )

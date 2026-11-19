@@ -25,8 +25,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as apiModule from '@/lib/api'
 import { formatQuota } from '@/lib/format'
 
+import { WalletLotProjectionLines } from '../components/wallet-lot-projection'
 import { WalletStatsCard } from '../components/wallet-stats-card'
 import { Wallet } from '../index'
+
+it.each([true, false])(
+  'shows expiring gifts separately from permanent gifts, compact=%s',
+  (compact) => {
+    render(
+      <WalletLotProjectionLines
+        compact={compact}
+        projection={{
+          principal_quota: 1_000_000,
+          bonus_quota: 500_000,
+          total_quota: 2_000_000,
+          principal_usd: '2',
+          bonus_usd: '1',
+          total_usd: '4',
+          expiring_bonus_quota: 500_000,
+          expiring_bonus_usd: '1',
+        }}
+      />
+    )
+    expect(screen.getByText(/Expiring bonus/i)).toBeVisible()
+    expect(screen.getByText(/permanent bonus/i)).toBeVisible()
+    expect(screen.getAllByText('$1')).toHaveLength(2)
+    expect(screen.getByText('$2')).toBeVisible()
+  }
+)
 
 beforeEach(() => {
   localStorage.setItem(
@@ -165,15 +191,10 @@ describe('Wallet balance refresh failure handling', () => {
     expect(await screen.findByText(formatQuota(5_000_000))).toBeInTheDocument()
 
     // Trigger balance refresh via voucher redemption; getSelf() fails on call #2
-    await user.type(
-      screen.getByLabelText('Recharge code'),
-      'ABCDEFGH23456789'
-    )
+    await user.type(screen.getByLabelText('Recharge code'), 'ABCDEFGH23456789')
     await user.click(screen.getByRole('button', { name: 'Redeem' }))
 
-    expect(
-      await screen.findByText('Balance unavailable')
-    ).toBeInTheDocument()
+    expect(await screen.findByText('Balance unavailable')).toBeInTheDocument()
     expect(screen.queryByText(formatQuota(5_000_000))).not.toBeInTheDocument()
 
     const retryBtn = await screen.findByRole('button', { name: 'Retry' })
@@ -182,9 +203,7 @@ describe('Wallet balance refresh failure handling', () => {
     await waitFor(() =>
       expect(screen.getByText(formatQuota(10_000_000))).toBeInTheDocument()
     )
-    expect(
-      screen.queryByText('Balance unavailable')
-    ).not.toBeInTheDocument()
+    expect(screen.queryByText('Balance unavailable')).not.toBeInTheDocument()
   })
 
   it('shows unavailable status and retries when getSelf throws a network error', async () => {
@@ -211,9 +230,7 @@ describe('Wallet balance refresh failure handling', () => {
     const user = userEvent.setup()
     render(<Wallet />, { wrapper })
 
-    expect(
-      await screen.findByText('Balance unavailable')
-    ).toBeInTheDocument()
+    expect(await screen.findByText('Balance unavailable')).toBeInTheDocument()
     const retryBtn = await screen.findByRole('button', { name: 'Retry' })
     failed = false
     await user.click(retryBtn)

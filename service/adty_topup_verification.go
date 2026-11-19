@@ -19,6 +19,7 @@ const (
 	VerificationScopeAdtyPaymentOrphanResolve  = "adty.payment_orphan.resolve"
 	VerificationScopeAdtyTopUpQuery            = "adty.topup.query"
 	VerificationScopeAdtySiteEarningReview     = "adty.site_earning.review"
+	VerificationScopeAdtyRootGiftGrant         = "adty.root_gift.grant"
 )
 
 const (
@@ -93,6 +94,7 @@ type AdtySiteEarningReviewContext struct {
 }
 
 var adtyTopUpVerificationPermissions = map[string]authz.Permission{
+	VerificationScopeAdtyRootGiftGrant:         authz.AdtyFinanceManualCredit,
 	VerificationScopeAdtyTopUpRefund:           authz.AdtyFinanceRefund,
 	VerificationScopeAdtyTopUpManualComplete:   authz.AdtyFinanceManualCredit,
 	VerificationScopeAdtyTopUpManualRefundStep: authz.AdtyFinanceRefund,
@@ -108,6 +110,9 @@ func adtyIsTopUpVerificationScope(scope string) bool {
 }
 
 func adtyTopUpVerificationForbidden(identity AuthIdentity, role int, scope string) bool {
+	if scope == VerificationScopeAdtyRootGiftGrant {
+		return role != common.RoleRootUser
+	}
 	permission, ok := adtyTopUpVerificationPermissions[scope]
 	if !ok {
 		return false
@@ -119,6 +124,29 @@ func adtyTopUpVerificationForbidden(identity AuthIdentity, role int, scope strin
 // for BindVerificationOperation.
 func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw json.RawMessage) (any, bool) {
 	switch scope {
+	case VerificationScopeAdtyRootGiftGrant:
+		var context AdtyRootGiftContext
+		if len(fields) != 5 || common.Unmarshal(raw, &context) != nil || context.UserID <= 0 || context.ExpiresAt <= 0 {
+			return nil, false
+		}
+		if len(context.AmountUSD) > 64 {
+			return nil, false
+		}
+		amount, err := decimal.NewFromString(context.AmountUSD)
+		if err != nil || !amount.IsPositive() {
+			return nil, false
+		}
+		quota, err := common.WalletQuotaFromDecimalStrict(amount.Mul(common.QuotaPerUnitDecimal()))
+		if err != nil || quota <= 0 {
+			return nil, false
+		}
+		context.AmountUSD = amount.String()
+		context.Reason = strings.TrimSpace(context.Reason)
+		context.IdempotencyKey = strings.TrimSpace(context.IdempotencyKey)
+		if context.Reason == "" || len(context.Reason) > 1024 || context.IdempotencyKey == "" || len(context.IdempotencyKey) > 255 {
+			return nil, false
+		}
+		return context, true
 	case VerificationScopeAdtyTopUpRefund:
 		var context AdtyTopUpRefundContext
 		if common.Unmarshal(raw, &context) != nil || fields["trade_no"] == nil {
@@ -370,6 +398,7 @@ func AdtySiteEarningReviewOperation(operationKey, originalCharge, reason string)
 }
 
 func init() {
+	accessTokenVerificationScopes[VerificationScopeAdtyRootGiftGrant] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpRefund] = AccessTokenScopeOf(authz.AdtyFinanceRefund)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpManualComplete] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpManualRefundStep] = AccessTokenScopeOf(authz.AdtyFinanceRefund)
@@ -377,4 +406,17 @@ func init() {
 	accessTokenVerificationScopes[VerificationScopeAdtyPaymentOrphanResolve] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpQuery] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
 	accessTokenVerificationScopes[VerificationScopeAdtySiteEarningReview] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
+}
+
+type AdtyRootGiftContext struct {
+	UserID         int    `json:"user_id"`
+	AmountUSD      string `json:"amount_usd"`
+	ExpiresAt      int64  `json:"expires_at"`
+	Reason         string `json:"reason"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func AdtyRootGiftOperation(context AdtyRootGiftContext) VerificationOperation {
+	payload, _ := common.Marshal(context)
+	return VerificationOperation{Scope: VerificationScopeAdtyRootGiftGrant, Context: payload}
 }

@@ -1,5 +1,14 @@
 {
   "translation": {
+    "Grant expiring gift": "Grant expiring gift",
+    "Gift amount (USD)": "Gift amount (USD)",
+    "Expiry date": "Expiry date",
+    "Gift expires at 00:00 in {{timezone}} on the selected date.": "Gift expires at 00:00 in {{timezone}} on the selected date.",
+    "Expiring gift granted": "Expiring gift granted",
+    "Failed to grant expiring gift": "Failed to grant expiring gift",
+    "Trial gifts cannot be withdrawn or refunded as cash.": "Trial gifts cannot be withdrawn or refunded as cash.",
+    "Expiring bonus": "Expiring bonus",
+    "Remaining expiring bonus": "Remaining expiring bonus",
     "revoked": "Credentials revoked",
     "Revoke credentials": "Revoke credentials",
     "Permanently revoke {{name}}? This erases its key and blocks late callbacks and automatic queries. Reconcile old payments manually with evidence. This cannot be undone.": "Permanently revoke {{name}}? This erases its key and blocks late callbacks and automatic queries. Reconcile old payments manually with evidence. This cannot be undone.",

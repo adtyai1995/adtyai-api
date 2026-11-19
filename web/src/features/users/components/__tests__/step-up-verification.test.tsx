@@ -18,7 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Row } from '@tanstack/react-table'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -48,8 +54,20 @@ beforeEach(() => {
   useAuthStore.getState().auth.setUser({ id: 1, username: 'root', role: 100 })
 })
 
-function mockVerification(scope: string, proofToken: string) {
+function mockVerification(
+  scope: string,
+  proofToken: string,
+  timezone = 'Asia/Shanghai'
+) {
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (String(url).endsWith('/business-timezone')) {
+      return {
+        data: {
+          success: true,
+          data: { configured: true, timezone },
+        },
+      }
+    }
     if (url === '/api/verify/methods') {
       return {
         data: {
@@ -111,6 +129,149 @@ afterEach(() => {
   useAuthStore.getState().auth.reset()
   cleanup()
   vi.restoreAllMocks()
+})
+
+it.each([10, 100])(
+  'offers expiring gifts only to Root, role=%s',
+  async (role) => {
+    useAuthStore.getState().auth.setUser({ id: 1, username: 'operator', role })
+    renderInProvider(
+      <DataTableRowActions row={{ original: target } as Row<User>} />
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    if (role === 100) {
+      expect(
+        await screen.findByRole('menuitem', { name: 'Grant expiring gift' })
+      ).toBeVisible()
+    } else {
+      expect(
+        screen.queryByRole('menuitem', { name: 'Grant expiring gift' })
+      ).not.toBeInTheDocument()
+    }
+  }
+)
+
+it('binds the gift user, USD amount, business date, reason and retry key before writing', async () => {
+  const proof = mockVerification('adty.root_gift.grant', 'gift-proof')
+  let attempts = 0
+  const post = vi.spyOn(api, 'post').mockImplementation(async (url) => {
+    if (url === '/api/verify') return proof
+    if (url === '/api/adty/admin/users/2/expiring-gifts') {
+      attempts++
+      return {
+        data: { success: attempts > 1, message: 'Please try again later.' },
+      }
+    }
+    throw new Error('Unexpected request')
+  })
+  renderInProvider(
+    <DataTableRowActions row={{ original: target } as Row<User>} />
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+  await userEvent.click(
+    await screen.findByRole('menuitem', { name: 'Grant expiring gift' })
+  )
+  expect(await screen.findByRole('button', { name: 'Confirm' })).toBeDisabled()
+  await userEvent.type(screen.getByLabelText('Gift amount (USD)'), '2')
+  fireEvent.change(screen.getByLabelText('Expiry date'), {
+    target: { value: '2099-01-02' },
+  })
+  await userEvent.type(screen.getByLabelText('Reason (admins only)'), ' trial ')
+  await screen.findByText(
+    'Gift expires at 00:00 in Asia/Shanghai on the selected date.'
+  )
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled()
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+  expect(attempts).toBe(0)
+  await completeTwoFactorVerification()
+  await waitFor(() => expect(attempts).toBe(1))
+  await userEvent.click(await screen.findByRole('button', { name: 'Confirm' }))
+  await completeTwoFactorVerification()
+  await waitFor(() => expect(attempts).toBe(2))
+  const gifts = post.mock.calls.filter(
+    ([url]) => url === '/api/adty/admin/users/2/expiring-gifts'
+  )
+  const expected = {
+    user_id: 2,
+    amount_usd: '2',
+    expires_at: Date.parse('2099-01-02T00:00:00+08:00') / 1000,
+    reason: 'trial',
+    idempotency_key: expect.any(String),
+  }
+  expect(gifts[0][1]).toEqual(expected)
+  expect(gifts[1][1]).toEqual(gifts[0][1])
+  expect(gifts[0][2]).toMatchObject({
+    headers: { 'X-Security-Proof': 'gift-proof' },
+    singleUseAuthorization: true,
+  })
+  expect(post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'adty.root_gift.grant',
+      context: expected,
+    }),
+    expect.anything()
+  )
+})
+
+it('keeps gift writes disabled when the business timezone cannot be interpreted', async () => {
+  mockVerification('adty.root_gift.grant', 'unused-proof', 'Invalid/Timezone')
+  const post = vi.spyOn(api, 'post')
+  renderInProvider(
+    <DataTableRowActions row={{ original: target } as Row<User>} />
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+  await userEvent.click(
+    await screen.findByRole('menuitem', { name: 'Grant expiring gift' })
+  )
+  await userEvent.type(screen.getByLabelText('Gift amount (USD)'), '2')
+  fireEvent.change(screen.getByLabelText('Expiry date'), {
+    target: { value: '2099-01-02' },
+  })
+  await userEvent.type(screen.getByLabelText('Reason (admins only)'), 'trial')
+  expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
+  expect(screen.getByLabelText('Expiry date')).toHaveAttribute(
+    'aria-invalid',
+    'true'
+  )
+  expect(post).not.toHaveBeenCalled()
+})
+
+it('cancels gift verification without crediting and clears the form after closing', async () => {
+  mockVerification('adty.root_gift.grant', 'unused-proof')
+  const post = vi.spyOn(api, 'post')
+  renderInProvider(
+    <DataTableRowActions row={{ original: target } as Row<User>} />
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+  await userEvent.click(
+    await screen.findByRole('menuitem', { name: 'Grant expiring gift' })
+  )
+  await userEvent.type(screen.getByLabelText('Gift amount (USD)'), '2')
+  fireEvent.change(screen.getByLabelText('Expiry date'), {
+    target: { value: '2099-01-02' },
+  })
+  await userEvent.type(screen.getByLabelText('Reason (admins only)'), 'trial')
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled()
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+  await screen.findByLabelText('Authenticator code or backup code')
+  await userEvent.keyboard('{Escape}')
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+  await userEvent.click(
+    await screen.findByRole('menuitem', { name: 'Grant expiring gift' })
+  )
+  expect(screen.getByLabelText('Gift amount (USD)')).toHaveValue(null)
+  expect(screen.getByLabelText('Reason (admins only)')).toHaveValue('')
+  expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
+  expect(post).not.toHaveBeenCalled()
 })
 
 it('deleting a user sends the request only with a single-use proof for that user', async () => {

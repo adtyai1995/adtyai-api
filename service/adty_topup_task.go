@@ -116,6 +116,7 @@ func StartAdtyTopUpMaintenance() {
 			interval = 5
 		}
 		go func() {
+			RunAdtyTopUpMaintenanceOnce(time.Now().Unix())
 			ticker := time.NewTicker(time.Duration(interval) * time.Second)
 			defer ticker.Stop()
 			for range ticker.C {
@@ -126,5 +127,22 @@ func StartAdtyTopUpMaintenance() {
 }
 
 func init() {
+	RegisterAdtyMaintenanceHook("expire_root_gifts", expireAdtyRootGifts)
 	adtyMasterTasks = append(adtyMasterTasks, StartAdtyTopUpMaintenance)
+}
+
+// Every pass catches up eligible calendar days and any released reservations.
+// Running again within a day is safe because each cleared portion is journaled.
+func expireAdtyRootGifts(now int64) {
+	if model.DB == nil {
+		return
+	}
+	loc, _, err := loadAdtyBusinessLocation()
+	if err != nil {
+		common.SysError(common.LogText("load gift expiry business timezone: %s", err.Error()))
+		return
+	}
+	if _, err := model.ExpireAdtyGiftBatches(time.Unix(now, 0).In(loc)); err != nil {
+		common.SysError(common.LogText("expire Root gift batches: %s", err.Error()))
+	}
 }

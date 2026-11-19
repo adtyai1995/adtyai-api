@@ -50,6 +50,27 @@ export const userFormSchema = z.object({
 
 export type UserFormValues = z.infer<typeof userFormSchema>
 
+export const rootGiftFormSchema = z.object({
+  amount: z
+    .string()
+    .regex(/^[0-9]+(?:[.][0-9]{1,6})?$/, 'Invalid parameters')
+    .refine(
+      (value) =>
+        Number(value) > 0 && Number(value) <= Number.MAX_SAFE_INTEGER / 500_000,
+      'Invalid parameters'
+    ),
+  date: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, 'Invalid parameters'),
+  reason: z
+    .string()
+    .trim()
+    .refine(
+      (value) => [...value].length > 0 && [...value].length <= 200,
+      'Invalid parameters'
+    ),
+})
+
+export type RootGiftFormValues = z.infer<typeof rootGiftFormSchema>
+
 // ============================================================================
 // Form Defaults
 // ============================================================================

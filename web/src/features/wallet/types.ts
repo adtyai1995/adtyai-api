@@ -27,6 +27,9 @@ export type WalletLotProjection = {
   total_quota: number
   principal_usd: string
   bonus_usd: string
+  expiring_bonus_quota?: number
+  expiring_bonus_usd?: string
+  next_expires_at?: number
   total_usd: string
   source?: string
 }

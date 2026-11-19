@@ -27,6 +27,7 @@ import {
   KeyRound,
   ShieldAlert,
   Link2,
+  Gift,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -61,6 +62,7 @@ import {
 import { getUserActionMessage } from '../lib'
 import type { User } from '../types'
 import { UserBindingDialog } from './dialogs/user-binding-dialog'
+import { RootGiftDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
 
 const MANAGE_ACTION_TITLES: Record<AdminUserManageAction, string> = {
@@ -88,6 +90,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const [resetPasskeyOpen, setResetPasskeyOpen] = useState(false)
   const [resetTwoFAOpen, setResetTwoFAOpen] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
+  const [giftOpen, setGiftOpen] = useState(false)
 
   const handleEdit = () => {
     setCurrentRow(user)
@@ -269,6 +272,15 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuShortcut>
         </DropdownMenuItem>
 
+        {operatorIsRoot && !isAdmin && (
+          <DropdownMenuItem onClick={() => setGiftOpen(true)}>
+            {t('Grant expiring gift')}
+            <DropdownMenuShortcut>
+              <Gift size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
+
         <DropdownMenuSeparator />
 
         <DropdownMenuItem
@@ -341,6 +353,15 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         userId={user.id}
         onUnbindSuccess={triggerRefresh}
       />
+      {giftOpen && (
+        <RootGiftDialog
+          key={user.id}
+          open
+          onOpenChange={setGiftOpen}
+          userId={user.id}
+          onSuccess={triggerRefresh}
+        />
+      )}
     </div>
   )
 }

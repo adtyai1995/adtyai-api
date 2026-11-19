@@ -1,5 +1,14 @@
 {
   "translation": {
+    "Grant expiring gift": "发放到期赠金",
+    "Gift amount (USD)": "赠金金额（美元）",
+    "Expiry date": "到期日期",
+    "Gift expires at 00:00 in {{timezone}} on the selected date.": "赠金于所选日期的 {{timezone}} 时区零点到期。",
+    "Expiring gift granted": "到期赠金已发放",
+    "Failed to grant expiring gift": "发放到期赠金失败",
+    "Trial gifts cannot be withdrawn or refunded as cash.": "试用赠金不可提现或折现退款。",
+    "Expiring bonus": "到期赠金",
+    "Remaining expiring bonus": "剩余到期赠金",
     "revoked": "凭据已撤销",
     "Revoke credentials": "撤销凭据",
     "Permanently revoke {{name}}? This erases its key and blocks late callbacks and automatic queries. Reconcile old payments manually with evidence. This cannot be undone.": "确定永久撤销 {{name}} 的凭据？这会清除密钥并阻止迟到回调和自动补查入账。旧单须凭真实凭证人工对账，此操作不可撤销。",

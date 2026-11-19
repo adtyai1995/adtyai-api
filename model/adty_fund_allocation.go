@@ -346,22 +346,9 @@ func outstandingAdtyFundAllocationByBatchTx(tx *gorm.DB, userID int) (map[int64]
 	return out, nil
 }
 
-// pickAdtyFundBatchOrder sorts lots the way A.12.2 consumes them: principal by
-// creation time then id, then bonus by creation time then id.
+// pickAdtyFundBatchOrder shares the canonical principal / expiring / permanent order.
 func pickAdtyFundBatchOrder(rows []AdtyFundBatch) {
-	for i := 1; i < len(rows); i++ {
-		item := rows[i]
-		j := i
-		for j > 0 && adtyFundKindRank(rows[j-1]) > adtyFundKindRank(item) {
-			rows[j] = rows[j-1]
-			j--
-		}
-		for j > 0 && adtyFundKindRank(rows[j-1]) == adtyFundKindRank(item) && !adtyFundBatchLess(rows[j-1], item) {
-			rows[j] = rows[j-1]
-			j--
-		}
-		rows[j] = item
-	}
+	sortAdtyFundBatches(rows)
 }
 
 func adtyFundKindRank(row AdtyFundBatch) int {
@@ -451,7 +438,13 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 			principalSpent += take
 		}
 		if shares[i].Kind == "bonus" && shares[i].Source != "" {
-			bonusBySource[shares[i].Source] += take
+			var batch AdtyFundBatch
+			if err := tx.First(&batch, shares[i].BatchId).Error; err != nil {
+				return 0, err
+			}
+			if !batch.IsExpiringGift() {
+				bonusBySource[shares[i].Source] += take
+			}
 		}
 		// 只消费了一部分时，把这份分摊收窄到实际消耗，held 与 settled 相等，
 		// 未用到的部分随之释放（批次没有扣过它，不需要回补）。
@@ -499,7 +492,13 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 			principalSpent += take
 		}
 		if shares[i].Kind == "bonus" && shares[i].Source != "" {
-			bonusBySource[shares[i].Source] += take
+			var batch AdtyFundBatch
+			if err := tx.First(&batch, shares[i].BatchId).Error; err != nil {
+				return 0, err
+			}
+			if !batch.IsExpiringGift() {
+				bonusBySource[shares[i].Source] += take
+			}
 		}
 		if err := tx.Model(&AdtyFundAllocation{}).
 			Where("id = ? AND held = ?", shares[i].Id, shares[i].Held).

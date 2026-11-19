@@ -43,6 +43,24 @@ function securityProofConfig(proofToken?: string): AxiosRequestConfig {
   }
 }
 
+export async function grantExpiringUserGift(
+  input: {
+    user_id: number
+    amount_usd: string
+    expires_at: number
+    reason: string
+    idempotency_key: string
+  },
+  proofToken: string
+): Promise<void> {
+  const res = await api.post(
+    `/api/adty/admin/users/${input.user_id}/expiring-gifts`,
+    input,
+    securityProofConfig(proofToken)
+  )
+  requireServerSuccess(res.data)
+}
+
 // ============================================================================
 // User Management APIs
 // ============================================================================
@@ -250,4 +268,3 @@ export async function adminClearUserBinding(
   )
   return res.data
 }
-

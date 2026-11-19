@@ -17,17 +17,19 @@ const (
 	WalletLotProjectionSourceLegacy = "legacy_principal"
 )
 
-// WalletLotProjection is the official remaining 本金 and 永久赠金 view of an
-// account's fund lots. It is a projection, not a second wallet. TotalUSD is
-// PrincipalUSD plus BonusUSD from WalletUSDPartsFromQuota (DEC-001).
+// WalletLotProjection splits stored lots into principal, permanent bonus and
+// expiring bonus. All USD amounts use the shared wallet conversion (DEC-001).
 type WalletLotProjection struct {
-	PrincipalQuota int64           `json:"principal_quota"`
-	BonusQuota     int64           `json:"bonus_quota"`
-	TotalQuota     int64           `json:"total_quota"`
-	PrincipalUSD   decimal.Decimal `json:"principal_usd"`
-	BonusUSD       decimal.Decimal `json:"bonus_usd"`
-	TotalUSD       decimal.Decimal `json:"total_usd"`
-	Source         string          `json:"source"`
+	ExpiringBonusQuota int64           `json:"expiring_bonus_quota"`
+	ExpiringBonusUSD   decimal.Decimal `json:"expiring_bonus_usd"`
+	NextExpiresAt      int64           `json:"next_expires_at,omitempty"`
+	PrincipalQuota     int64           `json:"principal_quota"`
+	BonusQuota         int64           `json:"bonus_quota"`
+	TotalQuota         int64           `json:"total_quota"`
+	PrincipalUSD       decimal.Decimal `json:"principal_usd"`
+	BonusUSD           decimal.Decimal `json:"bonus_usd"`
+	TotalUSD           decimal.Decimal `json:"total_usd"`
+	Source             string          `json:"source"`
 }
 
 // ProjectWalletLotsForUser returns the lot remaining projection for one account.
@@ -76,7 +78,13 @@ func ProjectWalletLotsForUsers(users []model.User) (map[int]WalletLotProjection,
 			// quota field carries whenever quota_pending != 0 (ISS-R4-0074), so omit.
 			continue
 		}
-		out[user.Id] = walletLotProjectionFromQuota(sum.Principal, sum.Bonus, WalletLotProjectionSourceBatches)
+		projection := walletLotProjectionFromQuota(sum.Principal, sum.Bonus, WalletLotProjectionSourceBatches)
+		projection.ExpiringBonusQuota = sum.ExpiringBonus
+		projection.ExpiringBonusUSD = WalletUSDPartsFromQuota(0, sum.ExpiringBonus).Bonus
+		projection.NextExpiresAt = sum.NextExpiresAt
+		projection.TotalQuota += sum.ExpiringBonus
+		projection.TotalUSD = WalletUSDPartsFromQuota(sum.Principal, sum.Bonus+sum.ExpiringBonus).Total
+		out[user.Id] = projection
 	}
 	return out, nil
 }

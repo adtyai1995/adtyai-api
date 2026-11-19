@@ -1203,3 +1203,35 @@ func TestRunAdtyTopUpMaintenanceRequiresRemoteUnpaidConfirmBeforeReleasingGift(t
 	require.True(t, earning.FrozenUSD.IsZero())
 	require.True(t, margin.FrozenUSD.IsZero())
 }
+
+func TestExpiringRootGiftMaintenanceUsesBusinessMidnightAndCatchesUp(t *testing.T) {
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Option{}, &model.TopUp{}))
+	require.NoError(t, model.MigrateAdtyTablesOn(db))
+	loc := time.FixedZone("UTC+08", 8*60*60)
+	require.NoError(t, db.Create(&model.Option{Key: "adty.business_timezone", Value: "Asia/Shanghai"}).Error)
+	day := time.Now().In(loc).AddDate(0, 0, 2)
+	midnight := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
+	user := model.User{Username: "gift-maintenance", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+	lot, err := model.GrantAdtyRootExpiringGift(model.AdtyRootExpiringGiftGrantInput{
+		UserID: user.Id, OperatorID: 1, OperatorRole: common.RoleRootUser, Quota: 800,
+		ExpiresAt: midnight.Add(12 * time.Hour).Unix(), Reason: "trial", IdempotencyKey: "maint-expire",
+	})
+	require.NoError(t, err)
+	RunAdtyTopUpMaintenanceOnce(midnight.Add(-time.Second).Unix())
+	require.NoError(t, db.First(lot, lot.Id).Error)
+	require.EqualValues(t, 800, lot.Remaining)
+	// Next run need not be the first tick after midnight (for example after downtime).
+	RunAdtyTopUpMaintenanceOnce(midnight.Add(17 * time.Minute).Unix())
+	require.NoError(t, db.First(lot, lot.Id).Error)
+	require.Zero(t, lot.Remaining)
+	require.EqualValues(t, 800, lot.ExpiredQuota)
+	RunAdtyTopUpMaintenanceOnce(midnight.Add(19 * time.Minute).Unix())
+	var entries []model.AdtyBalanceLedger
+	require.NoError(t, db.Where("user_id = ? AND type = ?", user.Id, model.AdtyLedgerTypeGiftExpire).Find(&entries).Error)
+	require.Len(t, entries, 1)
+	require.EqualValues(t, -800, entries[0].DeltaQuota)
+	require.NoError(t, db.First(&user, user.Id).Error)
+	require.Zero(t, user.Quota)
+}

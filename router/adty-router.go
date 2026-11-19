@@ -1,6 +1,7 @@
 package router
 
 import (
+	"github.com/QuantumNous/new-api/service"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/controller"
@@ -544,6 +545,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	root.PUT("/tiers", controller.PutAdtySiteTiers)
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/bonus-methods", "scope", "option:write")
 	apiRouter.PUT("/adty/admin/bonus-methods", middleware.RootAuth(), controller.PutAdtyMainMethodBonus)
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/users/:id/expiring-gifts", "scope", service.AccessTokenScopeOf(authz.AdtyFinanceManualCredit))
+	apiRouter.POST("/adty/admin/users/:id/expiring-gifts", middleware.RootAuth(), controller.PostAdtyRootExpiringGift)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/wallets", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/wallet-ledgers", "scope", "option:read")
 	rootWallets := apiRouter.Group("/adty/admin/sites", middleware.RootAuth())

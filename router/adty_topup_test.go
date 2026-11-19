@@ -772,3 +772,105 @@ func TestFinanceCreditResolveAndQueryRequireSecurityProof(t *testing.T) {
 	require.Len(t, requirements.Methods, 1)
 	assert.Equal(t, service.VerificationMethodRootExempt, requirements.Methods[0].Method)
 }
+
+func TestExpiringRootGiftRouteRequiresRootBoundProofAndCreditsOnlyGift(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	adtySessionToken(t, f.db, "expiry-buyer", common.RoleCommonUser)
+	var buyer, root model.User
+	require.NoError(t, f.db.Where("username = ?", "expiry-buyer").First(&buyer).Error)
+	require.NoError(t, f.db.Where("username = ?", "guard-root").First(&root).Error)
+	expires := time.Now().Add(48 * time.Hour).Unix()
+	path := fmt.Sprintf("/api/adty/admin/users/%d/expiring-gifts", buyer.Id)
+	body := fmt.Sprintf(`{"amount_usd":"2","expires_at":%d,"reason":"trial","idempotency_key":"root-trial-route"}`, expires)
+	missingProof := adtyJSON(t, f.engine, http.MethodPost, path, body, f.root)
+	require.NotEqual(t, http.StatusNotFound, missingProof.Code, "Root gift route must exist")
+	require.Contains(t, missingProof.Body.String(), `"success":false`)
+	denied := adtyJSON(t, f.engine, http.MethodPost, path, body, f.token)
+	require.Contains(t, denied.Body.String(), `"success":false`)
+	context := fmt.Sprintf(`{"user_id":%d,"amount_usd":"2","expires_at":%d,"reason":"trial","idempotency_key":"root-trial-route"}`, buyer.Id, expires)
+	op := service.VerificationOperation{Scope: "adty.root_gift.grant", Context: []byte(context)}
+	proof := financeUserProof(t, root, service.VerificationMethodRootExempt, op)
+	created := adtyJSONWithProof(t, f.engine, http.MethodPost, path, body, f.root, proof)
+	require.Contains(t, created.Body.String(), `"success":true`, created.Body.String())
+	var stored model.User
+	require.NoError(t, f.db.First(&stored, buyer.Id).Error)
+	require.Equal(t, buyer.Quota+1_000_000, stored.Quota)
+	usedProof := adtyJSONWithProof(t, f.engine, http.MethodPost, path, body, f.root, proof)
+	require.Contains(t, usedProof.Body.String(), `"success":false`, "a consumed proof must not authorize another write")
+	var count int64
+	require.NoError(t, f.db.Model(&model.TopUp{}).Where("user_id = ?", buyer.Id).Count(&count).Error)
+	require.Zero(t, count, "Root gifts do not manufacture paid top-ups")
+	proof = financeUserProof(t, root, service.VerificationMethodRootExempt, op)
+	replay := adtyJSONWithProof(t, f.engine, http.MethodPost, path, body, f.root, proof)
+	require.Contains(t, replay.Body.String(), `"success":true`, replay.Body.String())
+	require.NoError(t, f.db.First(&stored, buyer.Id).Error)
+	require.Equal(t, buyer.Quota+1_000_000, stored.Quota)
+	var lots []model.AdtyFundBatch
+	require.NoError(t, f.db.Where("user_id = ?", buyer.Id).Find(&lots).Error)
+	require.Len(t, lots, 1)
+	require.NotNil(t, lots[0].ExpiresAt)
+	require.Equal(t, expires, *lots[0].ExpiresAt)
+}
+
+func TestExpiringRootGiftRejectsChangedExpiredProofAndAuditFailure(t *testing.T) {
+	f := newAdtyGuardFixture(t)
+	adtySessionToken(t, f.db, "expiry-proof-buyer", common.RoleCommonUser)
+	var buyer, root model.User
+	require.NoError(t, f.db.Where("username = ?", "expiry-proof-buyer").First(&buyer).Error)
+	require.NoError(t, f.db.Where("username = ?", "guard-root").First(&root).Error)
+	expires := time.Now().Add(48 * time.Hour).Unix()
+	input := service.AdtyRootGiftContext{UserID: buyer.Id, AmountUSD: "2", ExpiresAt: expires, Reason: "trial", IdempotencyKey: "proof-bound-gift"}
+	operation := service.AdtyRootGiftOperation(input)
+	path := fmt.Sprintf("/api/adty/admin/users/%d/expiring-gifts", buyer.Id)
+	for _, field := range []string{"amount", "expiry", "reason", "key", "target"} {
+		t.Run(field, func(t *testing.T) {
+			changed := input
+			target := path
+			switch field {
+			case "amount":
+				changed.AmountUSD = "3"
+			case "expiry":
+				changed.ExpiresAt++
+			case "reason":
+				changed.Reason = "another trial"
+			case "key":
+				changed.IdempotencyKey = "another-key"
+			case "target":
+				target = fmt.Sprintf("/api/adty/admin/users/%d/expiring-gifts", root.Id)
+			}
+			body, err := common.Marshal(changed)
+			require.NoError(t, err)
+			proof := financeUserProof(t, root, service.VerificationMethodRootExempt, operation)
+			response := adtyJSONWithProof(t, f.engine, http.MethodPost, target, string(body), f.root, proof)
+			require.Contains(t, response.Body.String(), `"success":false`)
+		})
+	}
+	body, err := common.Marshal(input)
+	require.NoError(t, err)
+	proof := financeUserProof(t, root, service.VerificationMethodRootExempt, operation)
+	require.NoError(t, f.db.Model(&model.AuthFlow{}).Where("purpose = ? AND user_id = ? AND consumed_at IS NULL", model.AuthFlowPurposeSecurityProof, root.Id).Update("expires_at", time.Now().Add(-time.Second)).Error)
+	expired := adtyJSONWithProof(t, f.engine, http.MethodPost, path, string(body), f.root, proof)
+	require.Contains(t, expired.Body.String(), `"success":false`)
+
+	const callback = "test:root-gift-audit-failure"
+	attempted := false
+	require.NoError(t, f.db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "audit_intents" {
+			attempted = true
+			_ = tx.AddError(errors.New("audit unavailable"))
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, f.db.Callback().Create().Remove(callback)) })
+	proof = financeUserProof(t, root, service.VerificationMethodRootExempt, operation)
+	failed := adtyJSONWithProof(t, f.engine, http.MethodPost, path, string(body), f.root, proof)
+	require.Contains(t, failed.Body.String(), `"success":false`)
+	require.True(t, attempted, "exercise the durable audit write inside the grant transaction")
+	var stored model.User
+	require.NoError(t, f.db.First(&stored, buyer.Id).Error)
+	require.Equal(t, buyer.Quota, stored.Quota)
+	for _, row := range []any{&model.AdtyFundBatch{}, &model.AdtyBalanceLedger{}} {
+		var count int64
+		require.NoError(t, f.db.Model(row).Where("user_id = ?", buyer.Id).Count(&count).Error)
+		require.Zero(t, count, "rejected or rolled-back grants leave no monetary facts")
+	}
+}
