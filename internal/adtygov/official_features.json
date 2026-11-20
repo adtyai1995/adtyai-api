@@ -4775,12 +4775,26 @@
           "line": 101
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0602ParseModelAndGroupPG"
+      ],
       "db_money_invariants": [
+        "http_200",
+        "route_post_v1_chat_completions",
+        "parsed_model_ftr-0602-parse",
+        "using_group_default",
+        "body_group_vip_not_selected",
+        "selected_channel_default_group",
+        "role_common_user",
+        "main_site_id_0",
+        "staff_site_id_0",
+        "quota_stays_500000",
+        "zero_billing_operations",
+        "zero_adty_balance_ledgers",
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-06-02",
         "requirement_refs": [
@@ -4807,12 +4821,26 @@
             "line": 101
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0602ParseModelAndGroupPG"
+        ],
         "db_money_invariants": [
+          "http_200",
+          "route_post_v1_chat_completions",
+          "parsed_model_ftr-0602-parse",
+          "using_group_default",
+          "body_group_vip_not_selected",
+          "selected_channel_default_group",
+          "role_common_user",
+          "main_site_id_0",
+          "staff_site_id_0",
+          "quota_stays_500000",
+          "zero_billing_operations",
+          "zero_adty_balance_ledgers",
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -4850,12 +4878,26 @@
           "line": 33
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0603SelectEnabledChannelPG"
+      ],
       "db_money_invariants": [
+        "http_200",
+        "route_post_v1_chat_completions",
+        "using_group_default",
+        "selected_channel_enabled",
+        "disabled_channel_not_selected",
+        "ability_enabled",
+        "role_common_user",
+        "main_site_id_0",
+        "staff_site_id_0",
+        "quota_stays_500000",
+        "zero_billing_operations",
+        "zero_adty_balance_ledgers",
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-06-03",
         "requirement_refs": [
@@ -4885,12 +4927,26 @@
             "line": 33
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0603SelectEnabledChannelPG"
+        ],
         "db_money_invariants": [
+          "http_200",
+          "route_post_v1_chat_completions",
+          "using_group_default",
+          "selected_channel_enabled",
+          "disabled_channel_not_selected",
+          "ability_enabled",
+          "role_common_user",
+          "main_site_id_0",
+          "staff_site_id_0",
+          "quota_stays_500000",
+          "zero_billing_operations",
+          "zero_adty_balance_ledgers",
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
