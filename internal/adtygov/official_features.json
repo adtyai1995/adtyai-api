@@ -9662,14 +9662,17 @@
           "line": 61
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1202CreditOperatingPrincipalPG"
+      ],
       "db_money_invariants": [
-        "site_id>0 且 team_id=0 的充值成功按订单面额额度记 principal_credit，幂等键 operating:topup:{tradeNo}",
-        "TeamId>0 的订单不记经营钱包",
-        "对账负债是客户本金批次加站长本金批次；赠金批次不计入经营钱包负债"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "operating_balance_2_00",
+        "team_order_skips_operating"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-02",
         "requirement_refs": [
@@ -9691,14 +9694,17 @@
             "line": 61
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1202CreditOperatingPrincipalPG"
+        ],
         "db_money_invariants": [
-          "site_id>0 且 team_id=0 的充值成功按订单面额额度记 principal_credit，幂等键 operating:topup:{tradeNo}",
-          "TeamId>0 的订单不记经营钱包",
-          "对账负债是客户本金批次加站长本金批次；赠金批次不计入经营钱包负债"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "operating_balance_2_00",
+          "team_order_skips_operating"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -9729,15 +9735,17 @@
           "line": 173
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1203DebitOperatingPrincipalPG"
+      ],
       "db_money_invariants": [
-        "只按传入的 principalQuota 记 principal_consume，AllowOverdraft=false",
-        "有 operationKey 时幂等键为 operating:consume:{operationKey}",
-        "已打开测试：预扣 300000、结算 300000 时经营钱包从 1 减到 0.4；只结算 120000 时经营钱包为 0.76",
-        "AllowOverdraft=true 的经营钱包扣款仍返回 ErrAdtySiteWalletInsufficient，且不写流水"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "operating_balance_1_00",
+        "principal_consume_key"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-03",
         "requirement_refs": [
@@ -9760,15 +9768,17 @@
             "line": 173
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1203DebitOperatingPrincipalPG"
+        ],
         "db_money_invariants": [
-          "只按传入的 principalQuota 记 principal_consume，AllowOverdraft=false",
-          "有 operationKey 时幂等键为 operating:consume:{operationKey}",
-          "已打开测试：预扣 300000、结算 300000 时经营钱包从 1 减到 0.4；只结算 120000 时经营钱包为 0.76",
-          "AllowOverdraft=true 的经营钱包扣款仍返回 ErrAdtySiteWalletInsufficient，且不写流水"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "operating_balance_1_00",
+          "principal_consume_key"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -10136,14 +10146,18 @@
           "line": 312
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1208MarginSupplementResetsCyclePG"
+      ],
       "db_money_invariants": [
-        "保证金正数入账且 OpenMarginCycle=true 时，CycleUsedUSD 置 0，CycleNumber 加 1，T 取锁定钱包时的 RequiredBalance 或调用方 CycleTier",
-        "收益划转与保证金额度兑换码核销入账都带 OpenMarginCycle=true",
-        "已打开测试：达到 9000 占用且未开新周期时新增动用额为 0；Used 归零且 CycleOpened 后 T=10000 的新增动用额为 9000"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "margin_cycle_used_0",
+        "margin_cycle_number_2",
+        "margin_balance_160"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-08",
         "requirement_refs": [
@@ -10179,14 +10193,18 @@
             "line": 312
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1208MarginSupplementResetsCyclePG"
+        ],
         "db_money_invariants": [
-          "保证金正数入账且 OpenMarginCycle=true 时，CycleUsedUSD 置 0，CycleNumber 加 1，T 取锁定钱包时的 RequiredBalance 或调用方 CycleTier",
-          "收益划转与保证金额度兑换码核销入账都带 OpenMarginCycle=true",
-          "已打开测试：达到 9000 占用且未开新周期时新增动用额为 0；Used 归零且 CycleOpened 后 T=10000 的新增动用额为 9000"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "margin_cycle_used_0",
+          "margin_cycle_number_2",
+          "margin_balance_160"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -10217,15 +10235,17 @@
           "line": 16
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1209OwnerTransfersEarningToMarginPG"
+      ],
       "db_money_invariants": [
-        "金额必须为正，幂等键不能为空，否则返回 ErrAdtySiteWalletInvalidOperation",
-        "同一事务先按 amount 的相反数扣 earnings，再按 amount 给 margin 入账并 OpenMarginCycle=true",
-        "两边幂等键为 site:{siteId}:{key}:earn 与 site:{siteId}:{key}:margin",
-        "已存在保证金流水时不再开启另一个周期"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "earnings_balance_20",
+        "margin_balance_10"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-09",
         "requirement_refs": [
@@ -10248,15 +10268,17 @@
             "line": 16
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1209OwnerTransfersEarningToMarginPG"
+        ],
         "db_money_invariants": [
-          "金额必须为正，幂等键不能为空，否则返回 ErrAdtySiteWalletInvalidOperation",
-          "同一事务先按 amount 的相反数扣 earnings，再按 amount 给 margin 入账并 OpenMarginCycle=true",
-          "两边幂等键为 site:{siteId}:{key}:earn 与 site:{siteId}:{key}:margin",
-          "已存在保证金流水时不再开启另一个周期"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "earnings_balance_20",
+          "margin_balance_10"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -10304,15 +10326,17 @@
           "line": 35
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1210EarningAndSettlementSheetPG"
+      ],
       "db_money_invariants": [
-        "确认的 usage/refund 价差立即入收益钱包，重放沿用 site-earning-op 幂等键",
-        "日结单汇总上一营业日事实，GenerateAdtySiteSettlementSheets 注释写明重跑更新数字、不给钱包入账",
-        "营业日窗口是业务时区当地 0 点到次日 0 点；未配置时区时用 UTC",
-        "已打开测试：收益流水失败时原扣费回滚；重放和日汇总后收益钱包仍为 25，site_earning_settlement 流水只有 1 条"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "earnings_balance_1_25",
+        "settlement_sheet_count_1"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-10",
         "requirement_refs": [
@@ -10352,15 +10376,17 @@
             "line": 35
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1210EarningAndSettlementSheetPG"
+        ],
         "db_money_invariants": [
-          "确认的 usage/refund 价差立即入收益钱包，重放沿用 site-earning-op 幂等键",
-          "日结单汇总上一营业日事实，GenerateAdtySiteSettlementSheets 注释写明重跑更新数字、不给钱包入账",
-          "营业日窗口是业务时区当地 0 点到次日 0 点；未配置时区时用 UTC",
-          "已打开测试：收益流水失败时原扣费回滚；重放和日汇总后收益钱包仍为 25，site_earning_settlement 流水只有 1 条"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "earnings_balance_1_25",
+          "settlement_sheet_count_1"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
