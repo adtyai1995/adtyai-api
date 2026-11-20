@@ -33,7 +33,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Skeleton } from '@/components/ui/skeleton'
-
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 import { getServerErrorMessage } from '@/lib/server-error-message'
@@ -44,7 +43,6 @@ import { bonusRateFor, bonusUsdFor } from '../lib/bonus'
 import { paymentMethodKey } from '../lib/methods'
 import { formatPaymentAmount, formatUsd } from '../lib/money'
 import type { AdtyMethod, AdtyTopupBusiness, AdtyTopupInfo } from '../types'
-
 import { PaymentMethodButtons } from './payment-method-buttons'
 
 type AdtyRechargeCardProps = {
@@ -141,12 +139,12 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     )
   }
 
-  const quotedFaceUsd = quote ? Number(quote.face_usd) : NaN
-  const quotedBonusUsd = quote ? Number(quote.bonus_usd) : NaN
+  const quotedFaceUsd = Number(quote?.face_usd)
+  const quotedBonusUsd = Number(quote?.bonus_usd)
   const quotedCreditUsd =
     quote && Number.isFinite(quote.credit_quota) && quote.credit_quota > 0
       ? quote.credit_quota / 500_000
-      : NaN
+      : Number.NaN
   const bonusRate = validAmount ? bonusRateFor(amount, rates) : 0
   let bonusUsd = 0
   let totalCreditUsd = amount
@@ -354,9 +352,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
               quoteQuery.isFetching ||
               quoteQuery.isError
             }
-            onClick={() =>
-              method && props.onPay(amount, method, paymentScene)
-            }
+            onClick={() => method && props.onPay(amount, method, paymentScene)}
           >
             {props.paying ? t('Processing...') : t('Pay now')}
           </Button>

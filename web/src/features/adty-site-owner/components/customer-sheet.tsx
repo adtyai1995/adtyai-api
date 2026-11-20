@@ -124,9 +124,7 @@ export function CustomerSheet(props: {
     onError: (err) => handleServerError(err),
   })
   const customer = detail.data?.customer
-  const ownMarkup = detail.data?.prices?.find(
-    (row) => row.group === '' && !row.model
-  )?.markup
+  const ownMarkup = detail.data?.prices?.find((row) => row.group === '' && !row.model)?.markup
 
   return (
     <Sheet
@@ -250,9 +248,7 @@ export function CustomerSheet(props: {
                       {
                         id: 'bonus-rate',
                         header: t('Bonus rate'),
-                        cell: (row) => (
-                          <span className='tabular-nums'>{row.bonus_rate}</span>
-                        ),
+                        cell: (row) => <span className='tabular-nums'>{row.bonus_rate}</span>,
                       },
                       {
                         id: 'bonus',

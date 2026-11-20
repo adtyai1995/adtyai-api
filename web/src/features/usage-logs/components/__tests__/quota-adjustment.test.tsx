@@ -22,7 +22,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from '@tanstack/react-table'
-import { act, render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import {
@@ -194,8 +194,12 @@ describe('quota adjustment log localization', () => {
       expect(
         within(screen.getByRole('dialog')).getByText(scenario.english)
       ).toBeInTheDocument()
-      await act(() => i18n.changeLanguage('zh'))
-      expect(screen.getAllByText(scenario.chinese)).toHaveLength(2)
+      // act() never goes idle here: the open details dialog keeps a tracked
+      // update pending in jsdom, so wait for the visible language switch.
+      await i18n.changeLanguage('zh')
+      await waitFor(() => {
+        expect(screen.getAllByText(scenario.chinese)).toHaveLength(2)
+      })
       expect(
         within(screen.getByRole('dialog')).getByText(scenario.chinese)
       ).toBeInTheDocument()

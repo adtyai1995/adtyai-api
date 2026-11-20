@@ -46,22 +46,13 @@ function boundLabel(
 export function TelegramBindCard(props: { purpose: 'user' | 'admin' }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const base =
-    props.purpose === 'admin' ? '/api/adty/site/telegram' : '/api/adty/telegram'
+  const base = props.purpose === 'admin' ? '/api/adty/site/telegram' : '/api/adty/telegram'
   const status = useQuery({
     queryKey: ['adty-telegram', props.purpose],
     queryFn: async () => {
-      const response = await api.get(
-        props.purpose === 'admin' ? base : `${base}/me`
-      )
-      const body = response.data as {
-        success?: boolean
-        data?: BindView
-        message?: string
-      }
-      if (!body.success || !body.data) {
-        throw new Error(body.message || t('Failed to load data'))
-      }
+      const response = await api.get(props.purpose === 'admin' ? base : `${base}/me`)
+      const body = response.data as { success?: boolean; data?: BindView; message?: string }
+      if (!body.success || !body.data) { throw new Error(body.message || t('Failed to load data')) }
       return body.data
     },
   })
@@ -75,14 +66,8 @@ export function TelegramBindCard(props: { purpose: 'user' | 'admin' }) {
     setError('')
     try {
       const response = await api.post(`${base}/bind/start`)
-      const body = response.data as {
-        success?: boolean
-        message?: string
-        data?: { code?: string }
-      }
-      if (!body.success || !body.data?.code) {
-        throw new Error(body.message || t('Failed to save'))
-      }
+      const body = response.data as { success?: boolean; message?: string; data?: { code?: string } }
+      if (!body.success || !body.data?.code) { throw new Error(body.message || t('Failed to save')) }
       setCode(body.data.code)
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -104,9 +89,7 @@ export function TelegramBindCard(props: { purpose: 'user' | 'admin' }) {
       if (!body.success) throw new Error(body.message || t('Failed to save'))
       setCode('')
       setTelegramId('')
-      await queryClient.invalidateQueries({
-        queryKey: ['adty-telegram', props.purpose],
-      })
+      await queryClient.invalidateQueries({ queryKey: ['adty-telegram', props.purpose] })
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
     } finally {
@@ -118,16 +101,12 @@ export function TelegramBindCard(props: { purpose: 'user' | 'admin' }) {
     setPending(true)
     setError('')
     try {
-      const response = await api.delete(
-        props.purpose === 'admin' ? base : `${base}/me`
-      )
+      const response = await api.delete(props.purpose === 'admin' ? base : `${base}/me`)
       const body = response.data as { success?: boolean; message?: string }
       if (!body.success) throw new Error(body.message || t('Failed to save'))
       setCode('')
       setTelegramId('')
-      await queryClient.invalidateQueries({
-        queryKey: ['adty-telegram', props.purpose],
-      })
+      await queryClient.invalidateQueries({ queryKey: ['adty-telegram', props.purpose] })
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
     } finally {
@@ -142,20 +121,12 @@ export function TelegramBindCard(props: { purpose: 'user' | 'admin' }) {
         <div className='flex flex-col gap-1'>
           <h2 className='text-sm font-medium'>{t('Telegram notices')}</h2>
           <p className='text-muted-foreground text-sm'>
-            {t(
-              'This bot only sends notifications. Account changes stay on the website.'
-            )}
+            {t('This bot only sends notifications. Account changes stay on the website.')}
           </p>
         </div>
-        {status.isLoading && (
-          <p className='text-muted-foreground text-sm'>{t('Loading...')}</p>
-        )}
+        {status.isLoading && <p className='text-muted-foreground text-sm'>{t('Loading...')}</p>}
         {status.isError && (
-          <Button
-            type='button'
-            variant='outline'
-            onClick={() => void status.refetch()}
-          >
+          <Button type='button' variant='outline' onClick={() => void status.refetch()}>
             {t('Retry')}
           </Button>
         )}
@@ -164,48 +135,24 @@ export function TelegramBindCard(props: { purpose: 'user' | 'admin' }) {
             <span className='bg-muted mr-2 inline-block size-2 rounded-full align-middle' />
             {boundLabel(bound, status.data.status, t)}
             {status.data.telegram_user_id > 0 && (
-              <span className='text-muted-foreground tabular-nums'>
-                {' '}
-                · {status.data.telegram_user_id}
-              </span>
+              <span className='text-muted-foreground tabular-nums'> · {status.data.telegram_user_id}</span>
             )}
           </p>
         )}
         {bound && (
-          <Button
-            type='button'
-            variant='outline'
-            disabled={pending}
-            onClick={() => void unbind()}
-          >
+          <Button type='button' variant='outline' disabled={pending} onClick={() => void unbind()}>
             {t('Unbind Telegram')}
           </Button>
         )}
         {!bound && (
           <div className='flex flex-col gap-3'>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={pending}
-              onClick={() => void start()}
-            >
+            <Button type='button' variant='outline' disabled={pending} onClick={() => void start()}>
               {t('Start binding')}
             </Button>
-            {code && (
-              <p className='text-sm break-all'>
-                {t('Binding code')}: {code}
-              </p>
-            )}
+            {code && <p className='text-sm break-all'>{t('Binding code')}: {code}</p>}
             <div className='flex flex-col gap-1'>
-              <Label htmlFor={`tg-id-${props.purpose}`}>
-                {t('Telegram user id')}
-              </Label>
-              <Input
-                id={`tg-id-${props.purpose}`}
-                value={telegramId}
-                inputMode='numeric'
-                onChange={(event) => setTelegramId(event.target.value)}
-              />
+              <Label htmlFor={`tg-id-${props.purpose}`}>{t('Telegram user id')}</Label>
+              <Input id={`tg-id-${props.purpose}`} value={telegramId} inputMode='numeric' onChange={(event) => setTelegramId(event.target.value)} />
             </div>
             <Button
               variant='brand'

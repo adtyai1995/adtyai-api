@@ -28,14 +28,17 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { SecureVerificationDialog } from '@/features/auth/secure-verification/components/secure-verification-dialog'
-import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
-import { officialCommissionStateLabel } from '@/features/wallet/adty/commission-states'
+import {
+  officialCommissionStateLabel,
+} from '@/features/wallet/adty/commission-states'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { formatQuota } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
+
+import { SecureVerificationDialog } from '@/features/auth/secure-verification/components/secure-verification-dialog'
+import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
 
 import {
   completeTopupManually,
@@ -215,9 +218,7 @@ export function ManualCompleteDialog(props: OrderActionProps) {
  * Refund: operators apply, approve, record internal reclaim or shortfall,
  * record an offline payout, and complete. External payment is offline only.
  */
-export function RefundDialog(
-  props: OrderActionProps & { ownerMode?: boolean; ownerSiteId?: number }
-) {
+export function RefundDialog(props: OrderActionProps & { ownerMode?: boolean; ownerSiteId?: number }) {
   const { t } = useTranslation()
   const verification = useSecureVerification()
   const userId = useAuthStore((state) => state.auth.user?.id)
@@ -265,24 +266,13 @@ export function RefundDialog(
     enabled: props.order !== null && typedReady,
   })
   const listing = useQuery({
-    queryKey: [
-      'topup-manual-refunds',
-      userId,
-      props.ownerMode === true,
-      props.ownerSiteId,
-      props.order?.trade_no,
-    ],
-    queryFn: () =>
-      listTopupManualRefunds(
-        props.order?.trade_no ?? '',
-        props.ownerMode === true
-      ),
+    queryKey: ['topup-manual-refunds', userId, props.ownerMode === true, props.ownerSiteId, props.order?.trade_no],
+    queryFn: () => listTopupManualRefunds(props.order?.trade_no ?? '', props.ownerMode === true),
     enabled: props.order !== null,
   })
   const facts = listing.data?.facts ?? preview.data?.facts
   const occupancy = listing.data?.occupancy ?? facts?.occupancy
-  const refunds =
-    listing.data?.facts?.manual_refunds ?? facts?.manual_refunds ?? []
+  const refunds = listing.data?.facts?.manual_refunds ?? facts?.manual_refunds ?? []
   const selected =
     refunds.find((row) => row.refund_id === selectedId) ?? refunds[0]
   const firstRefundId = refunds[0]?.refund_id
@@ -334,16 +324,7 @@ export function RefundDialog(
   })
 
   const stepMutation = useMutation({
-    mutationFn: async (
-      step:
-        | 'approve'
-        | 'reclaim'
-        | 'bonus'
-        | 'commission'
-        | 'payout'
-        | 'complete'
-        | 'terminate'
-    ) => {
+    mutationFn: async (step: 'approve' | 'reclaim' | 'bonus' | 'commission' | 'payout' | 'complete' | 'terminate') => {
       if (!selected) throw new Error('cancelled')
       const body: Record<string, unknown> = {
         idempotency_key: `${selected.refund_id}:${step}`,
@@ -353,31 +334,23 @@ export function RefundDialog(
         body.currency = payoutCurrency.trim()
         body.amount = payoutAmount.trim()
         body.voucher = payoutVoucher.trim()
-        body.paid_at = payoutAt.trim()
-          ? Math.floor(new Date(payoutAt).getTime() / 1000)
-          : 0
+        body.paid_at = payoutAt.trim() ? Math.floor(new Date(payoutAt).getTime() / 1000) : 0
       }
       // The proof binds the note, so the body and the proof context carry the same text.
       const note = step === 'terminate' ? terminateNote.trim() : ''
       if (note) body.note = note
       const proof = await verification.requestVerification({
-        scope: props.ownerMode
-          ? 'site.order.refund_step'
-          : 'adty.topup.manual_refund_step',
+        scope: props.ownerMode ? 'site.order.refund_step' : 'adty.topup.manual_refund_step',
         context: {
           trade_no: props.order?.trade_no,
           refund_id: selected.refund_id,
           step,
           note: note || undefined,
           payout_status: step === 'payout' ? payoutStatus : undefined,
-          payout_currency:
-            step === 'payout' ? payoutCurrency.trim() : undefined,
+          payout_currency: step === 'payout' ? payoutCurrency.trim() : undefined,
           payout_amount: step === 'payout' ? payoutAmount.trim() : undefined,
           payout_voucher: step === 'payout' ? payoutVoucher.trim() : undefined,
-          payout_at:
-            step === 'payout' && payoutAt.trim()
-              ? Math.floor(new Date(payoutAt).getTime() / 1000)
-              : undefined,
+          payout_at: step === 'payout' && payoutAt.trim() ? Math.floor(new Date(payoutAt).getTime() / 1000) : undefined,
         },
         title: t('Confirm it is you'),
         description: t('This refund step requires a fresh verification.'),
@@ -413,11 +386,7 @@ export function RefundDialog(
     !applyMutation.isPending &&
     preview.data !== undefined
   const canStep = (ready: boolean) =>
-    !!selected &&
-    ready &&
-    !stepMutation.isPending &&
-    selected.status !== 'completed' &&
-    selected.status !== 'terminated'
+    !!selected && ready && !stepMutation.isPending && selected.status !== 'completed' && selected.status !== 'terminated'
 
   return (
     <Dialog
@@ -471,9 +440,7 @@ export function RefundDialog(
           </div>
           {facts.principal_consumed_usd && (
             <div className='contents'>
-              <dt className='text-muted-foreground'>
-                {t('Consumed principal')}
-              </dt>
+              <dt className='text-muted-foreground'>{t('Consumed principal')}</dt>
               <dd className='text-right tabular-nums'>
                 {facts.principal_consumed_usd} USD
               </dd>
@@ -481,42 +448,28 @@ export function RefundDialog(
           )}
           {facts.principal_remaining_usd && (
             <div className='contents'>
-              <dt className='text-muted-foreground'>
-                {t('Remaining principal')}
-              </dt>
+              <dt className='text-muted-foreground'>{t('Remaining principal')}</dt>
               <dd className='text-right tabular-nums'>
                 {facts.principal_remaining_usd} USD
               </dd>
             </div>
           )}
           <div className='contents'>
-            <dt className='text-muted-foreground'>
-              {t('In-flight precharge')}
-            </dt>
+            <dt className='text-muted-foreground'>{t('In-flight precharge')}</dt>
             <dd className='text-right tabular-nums'>
               {formatQuota(facts.pending_quota)}
             </dd>
           </div>
           <div className='contents'>
-            <dt className='text-muted-foreground'>
-              {t('Completed refund (S)')}
-            </dt>
+            <dt className='text-muted-foreground'>{t('Completed refund (S)')}</dt>
             <dd className='text-right tabular-nums'>
-              {occupancy?.completed_usd ??
-                facts.refund_completed_usd ??
-                facts.cumulative_refund_usd}{' '}
-              USD
+              {occupancy?.completed_usd ?? facts.refund_completed_usd ?? facts.cumulative_refund_usd} USD
             </dd>
           </div>
           <div className='contents'>
-            <dt className='text-muted-foreground'>
-              {t('In-progress refund (H)')}
-            </dt>
+            <dt className='text-muted-foreground'>{t('In-progress refund (H)')}</dt>
             <dd className='text-right tabular-nums'>
-              {occupancy?.in_progress_usd ??
-                facts.refund_in_progress_usd ??
-                '0'}{' '}
-              USD
+              {occupancy?.in_progress_usd ?? facts.refund_in_progress_usd ?? '0'} USD
             </dd>
           </div>
           <div className='contents'>
@@ -528,24 +481,18 @@ export function RefundDialog(
           <div className='contents'>
             <dt className='text-muted-foreground'>{t('Refund occupancy')}</dt>
             <dd className='text-right tabular-nums'>
-              {formatQuota(
-                occupancy?.occupied_quota ?? facts.refund_occupied_quota
-              )}
+              {formatQuota(occupancy?.occupied_quota ?? facts.refund_occupied_quota)}
             </dd>
           </div>
           <div className='contents'>
-            <dt className='text-muted-foreground'>
-              {t('Remaining refund cap')}
-            </dt>
+            <dt className='text-muted-foreground'>{t('Remaining refund cap')}</dt>
             <dd className='text-right tabular-nums'>
               {occupancy?.remaining_usd ?? facts.refund_remaining_usd ?? ''} USD
             </dd>
           </div>
           {(facts.manual_shortfall_usd || facts.manual_shortfall_quota) && (
             <div className='contents'>
-              <dt className='text-muted-foreground'>
-                {t('Manual-handling shortfall')}
-              </dt>
+              <dt className='text-muted-foreground'>{t('Manual-handling shortfall')}</dt>
               <dd className='text-right tabular-nums'>
                 {facts.manual_shortfall_usd} USD
               </dd>
@@ -569,9 +516,7 @@ export function RefundDialog(
           </div>
           {facts.foreign_reference && (
             <div className='contents'>
-              <dt className='text-muted-foreground'>
-                {t('Foreign reference')}
-              </dt>
+              <dt className='text-muted-foreground'>{t('Foreign reference')}</dt>
               <dd className='text-right tabular-nums'>
                 {facts.foreign_reference} {facts.paid_currency}
               </dd>
@@ -613,20 +558,13 @@ export function RefundDialog(
             {refunds.map((row) => (
               <option key={row.refund_id} value={row.refund_id}>
                 {row.refund_id} · {row.request_usd} USD · {row.status}
-                {row.shortfall_quota
-                  ? ` · ${t('shortfall')} ${row.shortfall_usd}`
-                  : ''}
+                {row.shortfall_quota ? ` · ${t('shortfall')} ${row.shortfall_usd}` : ''}
               </option>
             ))}
           </select>
           {selected && (
             <p className='text-muted-foreground text-sm'>
-              {t('Internal reclaim')}:{' '}
-              {selected.reclaimed_at ? t('recorded') : t('pending')}.{' '}
-              {t('Offline payout')}: {selected.payout_status || t('pending')}.{' '}
-              {t('Gift')}: {selected.bonus_at ? t('recorded') : t('pending')}.{' '}
-              {t('Commission')}:{' '}
-              {selected.commission_at ? t('recorded') : t('pending')}.
+              {t('Internal reclaim')}: {selected.reclaimed_at ? t('recorded') : t('pending')}. {t('Offline payout')}: {selected.payout_status || t('pending')}. {t('Gift')}: {selected.bonus_at ? t('recorded') : t('pending')}. {t('Commission')}: {selected.commission_at ? t('recorded') : t('pending')}.
             </p>
           )}
           {selected?.status === 'terminated' && (
@@ -641,68 +579,52 @@ export function RefundDialog(
               </AlertDescription>
             </Alert>
           )}
-          {selected &&
-            selected.status !== 'completed' &&
-            selected.status !== 'terminated' && (
-              <div className='flex flex-wrap gap-2'>
-                <Button
-                  variant='outline'
-                  disabled={!canStep(!selected.approved_at)}
-                  onClick={() => stepMutation.mutate('approve')}
-                >
-                  {t('Approve')}
-                </Button>
-                <Button
-                  variant='outline'
-                  disabled={
-                    !canStep(!!selected.approved_at && !selected.reclaimed_at)
-                  }
-                  onClick={() => stepMutation.mutate('reclaim')}
-                >
-                  {t('Record internal reclaim')}
-                </Button>
-                <Button
-                  variant='outline'
-                  disabled={
-                    !canStep(!!selected.approved_at && !selected.bonus_at)
-                  }
-                  onClick={() => stepMutation.mutate('bonus')}
-                >
-                  {t('Record gift reclaim')}
-                </Button>
-                <Button
-                  variant='outline'
-                  disabled={
-                    !canStep(!!selected.approved_at && !selected.commission_at)
-                  }
-                  onClick={() => stepMutation.mutate('commission')}
-                >
-                  {t('Record commission handling')}
-                </Button>
-                <Button
-                  variant='outline'
-                  disabled={
-                    !canStep(
-                      !!selected.approved_at &&
-                        !!selected.reclaimed_at &&
-                        !!selected.bonus_at &&
-                        !!selected.commission_at &&
-                        selected.payout_status === 'success'
-                    )
-                  }
-                  onClick={() => stepMutation.mutate('complete')}
-                >
-                  {t('Complete refund')}
-                </Button>
-                <Button
-                  variant='destructive'
-                  disabled={!canStep(selected.payout_status !== 'success')}
-                  onClick={() => setTerminateOpen(true)}
-                >
-                  {t('Terminate refund')}
-                </Button>
-              </div>
-            )}
+          {selected && selected.status !== 'completed' && selected.status !== 'terminated' && (
+            <div className='flex flex-wrap gap-2'>
+              <Button
+                variant='outline'
+                disabled={!canStep(!selected.approved_at)}
+                onClick={() => stepMutation.mutate('approve')}
+              >
+                {t('Approve')}
+              </Button>
+              <Button
+                variant='outline'
+                disabled={!canStep(!!selected.approved_at && !selected.reclaimed_at)}
+                onClick={() => stepMutation.mutate('reclaim')}
+              >
+                {t('Record internal reclaim')}
+              </Button>
+              <Button
+                variant='outline'
+                disabled={!canStep(!!selected.approved_at && !selected.bonus_at)}
+                onClick={() => stepMutation.mutate('bonus')}
+              >
+                {t('Record gift reclaim')}
+              </Button>
+              <Button
+                variant='outline'
+                disabled={!canStep(!!selected.approved_at && !selected.commission_at)}
+                onClick={() => stepMutation.mutate('commission')}
+              >
+                {t('Record commission handling')}
+              </Button>
+              <Button
+                variant='outline'
+                disabled={!canStep(!!selected.approved_at && !!selected.reclaimed_at && !!selected.bonus_at && !!selected.commission_at && selected.payout_status === 'success')}
+                onClick={() => stepMutation.mutate('complete')}
+              >
+                {t('Complete refund')}
+              </Button>
+              <Button
+                variant='destructive'
+                disabled={!canStep(selected.payout_status !== 'success')}
+                onClick={() => setTerminateOpen(true)}
+              >
+                {t('Terminate refund')}
+              </Button>
+            </div>
+          )}
           <ConfirmDialog
             open={terminateOpen}
             onOpenChange={setTerminateOpen}
@@ -730,65 +652,54 @@ export function RefundDialog(
               />
             </div>
           </ConfirmDialog>
-          {selected &&
-            selected.status !== 'completed' &&
-            selected.status !== 'terminated' &&
-            !!selected.approved_at && (
-              <div className='space-y-2'>
-                <Label htmlFor='payout-currency'>
-                  {t('Offline payout currency')}
-                </Label>
-                <Input
-                  id='payout-currency'
-                  value={payoutCurrency}
-                  onChange={(event) => setPayoutCurrency(event.target.value)}
-                />
-                <Label htmlFor='payout-amount'>
-                  {t('Offline payout amount')}
-                </Label>
-                <Input
-                  id='payout-amount'
-                  value={payoutAmount}
-                  inputMode='decimal'
-                  onChange={(event) => setPayoutAmount(event.target.value)}
-                />
-                <Label htmlFor='payout-at'>{t('Offline payout time')}</Label>
-                <Input
-                  id='payout-at'
-                  type='datetime-local'
-                  value={payoutAt}
-                  onChange={(event) => setPayoutAt(event.target.value)}
-                />
-                <Label htmlFor='payout-voucher'>
-                  {t('Offline payout voucher')}
-                </Label>
-                <Input
-                  id='payout-voucher'
-                  value={payoutVoucher}
-                  onChange={(event) => setPayoutVoucher(event.target.value)}
-                />
-                <Label htmlFor='payout-status'>
-                  {t('Offline payout status')}
-                </Label>
-                <select
-                  id='payout-status'
-                  className='border-input bg-background h-9 w-full rounded-md border px-3 text-sm'
-                  value={payoutStatus}
-                  onChange={(event) => setPayoutStatus(event.target.value)}
-                >
-                  <option value='success'>{t('Success')}</option>
-                  <option value='unknown'>{t('Unknown')}</option>
-                  <option value='failed'>{t('Failed')}</option>
-                </select>
-                <Button
-                  variant='outline'
-                  disabled={!canStep(!!selected.approved_at)}
-                  onClick={() => stepMutation.mutate('payout')}
-                >
-                  {t('Record offline payout')}
-                </Button>
-              </div>
-            )}
+          {selected && selected.status !== 'completed' && selected.status !== 'terminated' && !!selected.approved_at && (
+            <div className='space-y-2'>
+              <Label htmlFor='payout-currency'>{t('Offline payout currency')}</Label>
+              <Input
+                id='payout-currency'
+                value={payoutCurrency}
+                onChange={(event) => setPayoutCurrency(event.target.value)}
+              />
+              <Label htmlFor='payout-amount'>{t('Offline payout amount')}</Label>
+              <Input
+                id='payout-amount'
+                value={payoutAmount}
+                inputMode='decimal'
+                onChange={(event) => setPayoutAmount(event.target.value)}
+              />
+              <Label htmlFor='payout-at'>{t('Offline payout time')}</Label>
+              <Input
+                id='payout-at'
+                type='datetime-local'
+                value={payoutAt}
+                onChange={(event) => setPayoutAt(event.target.value)}
+              />
+              <Label htmlFor='payout-voucher'>{t('Offline payout voucher')}</Label>
+              <Input
+                id='payout-voucher'
+                value={payoutVoucher}
+                onChange={(event) => setPayoutVoucher(event.target.value)}
+              />
+              <Label htmlFor='payout-status'>{t('Offline payout status')}</Label>
+              <select
+                id='payout-status'
+                className='border-input bg-background h-9 w-full rounded-md border px-3 text-sm'
+                value={payoutStatus}
+                onChange={(event) => setPayoutStatus(event.target.value)}
+              >
+                <option value='success'>{t('Success')}</option>
+                <option value='unknown'>{t('Unknown')}</option>
+                <option value='failed'>{t('Failed')}</option>
+              </select>
+              <Button
+                variant='outline'
+                disabled={!canStep(!!selected.approved_at)}
+                onClick={() => stepMutation.mutate('payout')}
+              >
+                {t('Record offline payout')}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </Dialog>
@@ -811,10 +722,7 @@ function CommissionRefundPreviewDetails(props: {
   const expected = commission
     ? [
         [t('Expected release'), commission.expected_release_usd],
-        [
-          t('Expected clawback from balance'),
-          commission.expected_converted_clawback_usd,
-        ],
+        [t('Expected clawback from balance'), commission.expected_converted_clawback_usd],
         [t('Expected recovery'), commission.expected_withdrawn_recovery_usd],
         [
           t('Expected pending-coverage reduction'),
@@ -847,3 +755,4 @@ function CommissionRefundPreviewDetails(props: {
     </div>
   )
 }
+

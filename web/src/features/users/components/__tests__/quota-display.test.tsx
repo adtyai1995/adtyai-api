@@ -474,6 +474,26 @@ it.each([
   }
 )
 
+async function fillQuotaProvenance(
+  user: ReturnType<typeof userEvent.setup>,
+  scope: Pick<typeof screen, 'getByLabelText' | 'queryByLabelText'>
+) {
+  const order = scope.getByLabelText('Original order')
+  await user.clear(order)
+  await user.type(order, 'original-paid-order')
+  const batch = scope.queryByLabelText('Batch kind')
+  if (batch) {
+    await user.selectOptions(batch, 'principal')
+    await user.clear(scope.getByLabelText('Batch source'))
+    await user.type(scope.getByLabelText('Batch source'), 'original-paid-order')
+  } else {
+    await user.selectOptions(
+      scope.getByLabelText('Funding source'),
+      'platform_correction'
+    )
+  }
+}
+
 it('uses the latest fetched raw balance for override previews before and after a quota refresh', async () => {
   const user = userEvent.setup()
   useAuthStore.getState().auth.setUser({ id: 1, username: 'admin', role: 100 })
@@ -527,6 +547,7 @@ it('uses the latest fetched raw balance for override previews before and after a
     within(dialog).getByLabelText('Reason (admins only)'),
     'reconcile'
   )
+  await fillQuotaProvenance(user, within(dialog))
   await user.click(within(dialog).getByRole('button', { name: 'Confirm' }))
   await waitFor(() =>
     expect(post).toHaveBeenCalledWith(
@@ -661,6 +682,7 @@ it.each([
       within(dialog).getByLabelText('Reason (admins only)'),
       'reconcile'
     )
+    await fillQuotaProvenance(user, within(dialog))
 
     const confirm = within(dialog).getByRole('button', { name: 'Confirm' })
     if (blocked) {

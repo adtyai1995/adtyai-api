@@ -32,9 +32,7 @@ export function OrderTraceTable(props: { entries: OrderTraceEntry[] }) {
   return (
     <StaticDataTable
       data={props.entries}
-      getRowKey={(entry) =>
-        `${entry.id}:${entry.reference}:${entry.created_at}`
-      }
+      getRowKey={(entry) => `${entry.id}:${entry.reference}:${entry.created_at}`}
       tableProps={{ 'aria-label': t('Trace records') }}
       tableClassName='min-w-[900px]'
       emptyContent={
@@ -85,9 +83,8 @@ export function OrderTraceTable(props: { entries: OrderTraceEntry[] }) {
               {entry.pending_delta !== undefined && (
                 <span>
                   {t('Pending')}: {entry.pending_delta} · {t('Available')}:{' '}
-                  {entry.available_delta} · {t('Frozen amount')}:{' '}
-                  {entry.frozen_delta} · {t('Withdrawn')}:{' '}
-                  {entry.withdrawn_delta}
+                  {entry.available_delta} · {t('Frozen amount')}: {entry.frozen_delta}{' '}
+                  · {t('Withdrawn')}: {entry.withdrawn_delta}
                 </span>
               )}
             </div>

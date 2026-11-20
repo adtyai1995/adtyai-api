@@ -1057,17 +1057,13 @@ function ProviderGroupPricingSection(
                           className: `${thClass} text-right`,
                           cellClassName: 'py-2.5 text-right font-mono',
                           cell: (row) =>
-                            `≈ ${formatTaskUsageUnitPrice(
-                              row.total *
-                                getBillingDisplayMultiplier(props.model),
-                              {
-                                tokenUnit: props.tokenUnit,
-                                showRechargePrice,
-                                priceRate: props.priceRate,
-                                usdExchangeRate: props.usdExchangeRate,
-                                groupRatioMultiplier: ratio,
-                              }
-                            )}`,
+                            `≈ ${formatTaskUsageUnitPrice(row.total * getBillingDisplayMultiplier(props.model), {
+                              tokenUnit: props.tokenUnit,
+                              showRechargePrice,
+                              priceRate: props.priceRate,
+                              usdExchangeRate: props.usdExchangeRate,
+                              groupRatioMultiplier: ratio,
+                            })}`,
                         },
                       ]}
                     />
@@ -1265,8 +1261,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
             <SectionTitle>{t('Pricing')}</SectionTitle>
             {props.model.billing_display_multiplier && (
               <p className='text-muted-foreground text-sm'>
-                {t('Model price multiplier')}:{' '}
-                {props.model.billing_display_multiplier}x
+                {t('Model price multiplier')}: {props.model.billing_display_multiplier}x
               </p>
             )}
             {showBasePrices && (

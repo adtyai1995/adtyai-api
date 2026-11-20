@@ -25,8 +25,9 @@ import { SectionPageLayout } from '@/components/layout'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { RechargeAudit } from '@/features/recharge-audit'
 import { TeamRegistrationLinksPanel } from '@/features/adty-team-registration'
+import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
+import { RechargeAudit } from '@/features/recharge-audit'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -35,23 +36,21 @@ import { AgreementPanel } from './components/agreement-panel'
 import { BonusPanel } from './components/bonus-panel'
 import { CommissionWithdrawalPanel } from './components/commission-withdrawal-panel'
 import { CustomersPanel } from './components/customers-panel'
-import { SiteReferralPanel } from './components/site-referral-panel'
-import { SiteTeamDiscountPanel } from './components/site-team-discount-panel'
 import { EarningToMarginPanel } from './components/earning-to-margin-panel'
 import { EarningsPanel } from './components/earnings-panel'
-import { SettlementSheetPanel } from './components/settlement-sheet-panel'
-import { WithdrawalPanel } from './components/withdrawal-panel'
 import { OverviewPanel } from './components/overview-panel'
 import { OwnerSelfUsePanel } from './components/owner-self-use-panel'
 import { OwnerVerificationProvider } from './components/owner-verification'
 import { PricingPanel } from './components/pricing-panel'
+import { SettlementSheetPanel } from './components/settlement-sheet-panel'
+import { SiteReferralPanel } from './components/site-referral-panel'
 import { SiteSettingsPanel } from './components/site-settings-panel'
+import { SiteTeamDiscountPanel } from './components/site-team-discount-panel'
 import { StaffPanel } from './components/staff-panel'
 import { TermsAcceptPanel } from './components/terms-accept-panel'
-import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
-
 import { VoucherPanel } from './components/voucher-panel'
 import { WalletLedgerPanel } from './components/wallet-ledger-panel'
+import { WithdrawalPanel } from './components/withdrawal-panel'
 import { SITE_OWNER_SECTIONS, type SiteOwnerSectionId } from './sections'
 
 /** Site owner center (task 11.6): one page with a tab per section. */
@@ -126,7 +125,7 @@ export function SiteOwnerCenter(props: {
                       underline on the active one (design system §4). */}
                   <TabsList
                     variant='line'
-                    className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 group-data-horizontal/tabs:h-auto [--tab-underline:var(--brand)]'
+                    className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 [--tab-underline:var(--brand)] group-data-horizontal/tabs:h-auto'
                   >
                     {SITE_OWNER_SECTIONS.map((section) => (
                       <TabsTrigger
@@ -141,7 +140,10 @@ export function SiteOwnerCenter(props: {
                   <TabsContent value='overview'>
                     <OverviewPanel />
                   </TabsContent>
-                  <TabsContent value='customers' className='flex flex-col gap-5'>
+                  <TabsContent
+                    value='customers'
+                    className='flex flex-col gap-5'
+                  >
                     <CustomersPanel />
                     <TeamRegistrationLinksPanel actor='owner' />
                     <SiteTeamDiscountPanel />

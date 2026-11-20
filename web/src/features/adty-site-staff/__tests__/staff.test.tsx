@@ -146,16 +146,10 @@ beforeEach(() => {
       orderReads.push({ path, kind, page: config.params?.p })
       if (orderFailure) throw new Error('Order service unavailable')
       const order = {
-        trade_no: `staff-${kind}-order`,
-        order_type: kind,
-        status: 'success',
-        face_usd: '1.25',
-        created_at: 1001,
-        completed_at: 1002,
+        trade_no: `staff-${kind}-order`, order_type: kind, status: 'success',
+        face_usd: '1.25', created_at: 1001, completed_at: 1002,
       }
-      data = path.endsWith('/orders')
-        ? { total: orderTotal, items: orderTotal ? [order] : [] }
-        : { order }
+      data = path.endsWith('/orders') ? { total: orderTotal, items: orderTotal ? [order] : [] } : { order }
     } else if (path.endsWith('/topups')) {
       data = {
         total: 1,
@@ -220,32 +214,14 @@ describe('staff management and workspace', () => {
     const dialog = screen.getByRole('dialog')
     await within(dialog).findByRole('button', { name: 'staff-topup-order' })
     const filter = within(dialog).getByLabelText('Order type')
-    expect(
-      within(filter)
-        .getAllByRole('option')
-        .map((option) => (option as HTMLOptionElement).value)
-    ).toEqual(['topup', 'voucher'])
+    expect(within(filter).getAllByRole('option').map((option) => (option as HTMLOptionElement).value)).toEqual(['topup', 'voucher'])
     await user.selectOptions(filter, 'voucher')
-    await user.click(
-      await within(dialog).findByRole('button', { name: 'staff-voucher-order' })
-    )
+    await user.click(await within(dialog).findByRole('button', { name: 'staff-voucher-order' }))
     await within(dialog).findByText('staff-voucher-order', { selector: 'dd' })
-    expect(orderReads).toContainEqual({
-      path: '/api/adty/staff/customers/20/orders',
-      kind: 'voucher',
-      page: 1,
-    })
-    expect(orderReads).toContainEqual({
-      path: '/api/adty/staff/customers/20/orders/staff-voucher-order',
-      kind: 'voucher',
-      page: undefined,
-    })
-    expect(
-      within(dialog).queryByText('Principal and gift batches')
-    ).not.toBeInTheDocument()
-    expect(
-      within(dialog).queryByText('Financial review history')
-    ).not.toBeInTheDocument()
+    expect(orderReads).toContainEqual({ path: '/api/adty/staff/customers/20/orders', kind: 'voucher', page: 1 })
+    expect(orderReads).toContainEqual({ path: '/api/adty/staff/customers/20/orders/staff-voucher-order', kind: 'voucher', page: undefined })
+    expect(within(dialog).queryByText('Principal and gift batches')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('Financial review history')).not.toBeInTheDocument()
   })
 
   it('limits usage-only staff to consumption orders and removes an open view after revocation', async () => {
@@ -254,25 +230,13 @@ describe('staff management and workspace', () => {
     renderStaff(false)
     await user.click(await screen.findByRole('button', { name: 'Orders' }))
     const dialog = screen.getByRole('dialog')
-    await within(dialog).findByRole('button', {
-      name: 'staff-consumption-order',
-    })
-    expect(
-      within(within(dialog).getByLabelText('Order type')).getAllByRole('option')
-    ).toHaveLength(1)
+    await within(dialog).findByRole('button', { name: 'staff-consumption-order' })
+    expect(within(within(dialog).getByLabelText('Order type')).getAllByRole('option')).toHaveLength(1)
     permissions = ['customers.read']
     staffVersion = 2
-    await act(async () => {
-      await clients[0].invalidateQueries({
-        queryKey: ['adty-staff', 11, 'self'],
-      })
-    })
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    )
-    expect(
-      screen.queryByRole('button', { name: 'Orders' })
-    ).not.toBeInTheDocument()
+    await act(async () => { await clients[0].invalidateQueries({ queryKey: ['adty-staff', 11, 'self'] }) })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Orders' })).not.toBeInTheDocument()
     expect(orderReads.every((read) => read.kind === 'consumption')).toBe(true)
   })
 
@@ -283,28 +247,13 @@ describe('staff management and workspace', () => {
     renderStaff(false)
     await user.click(await screen.findByRole('button', { name: 'Orders' }))
     const dialog = screen.getByRole('dialog')
-    await user.click(
-      await within(dialog).findByRole('button', { name: 'Next' })
-    )
+    await user.click(await within(dialog).findByRole('button', { name: 'Next' }))
     await within(dialog).findByText('2 / 2')
-    expect(orderReads).toContainEqual({
-      path: '/api/adty/staff/customers/20/orders',
-      kind: 'topup',
-      page: 2,
-    })
-    await user.selectOptions(
-      within(dialog).getByLabelText('Order type'),
-      'consumption'
-    )
-    await within(dialog).findByRole('button', {
-      name: 'staff-consumption-order',
-    })
+    expect(orderReads).toContainEqual({ path: '/api/adty/staff/customers/20/orders', kind: 'topup', page: 2 })
+    await user.selectOptions(within(dialog).getByLabelText('Order type'), 'consumption')
+    await within(dialog).findByRole('button', { name: 'staff-consumption-order' })
     expect(within(dialog).getByText('1 / 2')).toBeInTheDocument()
-    expect(orderReads).toContainEqual({
-      path: '/api/adty/staff/customers/20/orders',
-      kind: 'consumption',
-      page: 1,
-    })
+    expect(orderReads).toContainEqual({ path: '/api/adty/staff/customers/20/orders', kind: 'consumption', page: 1 })
   })
 
   it('shows an order query failure and retries to the explicit empty state', async () => {
@@ -320,60 +269,31 @@ describe('staff management and workspace', () => {
     orderTotal = 0
     await user.click(within(dialog).getByRole('button', { name: 'Retry' }))
     await within(dialog).findByText('No records')
-    expect(
-      within(dialog).queryByText('Oops! Something went wrong')
-    ).not.toBeInTheDocument()
-    expect(
-      within(dialog).queryByRole('button', { name: 'Next' })
-    ).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('Oops! Something went wrong')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Next' })).not.toBeInTheDocument()
   })
 
   it('requires concrete provenance before submitting a balance increase', async () => {
     permissions = ['customers.read', 'customers.balance']
     const user = userEvent.setup()
     renderStaff(false)
-    await user.click(
-      await screen.findByRole('button', { name: 'Request balance change' })
-    )
+    await user.click(await screen.findByRole('button', { name: 'Request balance change' }))
     const dialog = screen.getByRole('dialog')
-    await user.selectOptions(
-      within(dialog).getByLabelText('Direction'),
-      'increase'
-    )
+    await user.selectOptions(within(dialog).getByLabelText('Direction'), 'increase')
     await user.type(within(dialog).getByLabelText('Amount'), '2')
     await user.click(within(dialog).getByRole('checkbox'))
-    const submit = within(dialog).getByRole('button', {
-      name: 'Request balance change',
-    })
+    const submit = within(dialog).getByRole('button', { name: 'Request balance change' })
     expect(submit).toBeDisabled()
-    await user.type(
-      within(dialog).getByLabelText('Original order'),
-      'paid-order-20'
-    )
-    await user.type(
-      within(dialog).getByLabelText('Reason'),
-      'Correct original credit'
-    )
-    await user.selectOptions(
-      within(dialog).getByLabelText('Funding source'),
-      'site_earnings'
-    )
+    await user.type(within(dialog).getByLabelText('Original order'), 'paid-order-20')
+    await user.type(within(dialog).getByLabelText('Reason'), 'Correct original credit')
+    await user.selectOptions(within(dialog).getByLabelText('Funding source'), 'site_earnings')
     await user.click(submit)
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    )
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(writes[0]).toMatchObject({
       path: '/api/adty/staff/balance-requests',
-      body: {
-        customer_id: 20,
-        direction: 'increase',
-        amount_usd: '2',
-        reason: 'Correct original credit',
-        order_ref: 'paid-order-20',
-        funding_source: 'site_earnings',
-        batch_kind: '',
-        batch_source: '',
-      },
+      body: { customer_id: 20, direction: 'increase', amount_usd: '2',
+        reason: 'Correct original credit', order_ref: 'paid-order-20',
+        funding_source: 'site_earnings', batch_kind: '', batch_source: '' },
     })
   })
 
@@ -381,43 +301,21 @@ describe('staff management and workspace', () => {
     permissions = ['customers.read', 'customers.balance']
     const user = userEvent.setup()
     renderStaff(false)
-    await user.click(
-      await screen.findByRole('button', { name: 'Request balance change' })
-    )
+    await user.click(await screen.findByRole('button', { name: 'Request balance change' }))
     const dialog = screen.getByRole('dialog')
-    await user.selectOptions(
-      within(dialog).getByLabelText('Direction'),
-      'decrease'
-    )
+    await user.selectOptions(within(dialog).getByLabelText('Direction'), 'decrease')
     await user.type(within(dialog).getByLabelText('Amount'), '1')
-    await user.type(
-      within(dialog).getByLabelText('Original order'),
-      'paid-order-20'
-    )
-    await user.type(
-      within(dialog).getByLabelText('Reason'),
-      'Recover unused credit'
-    )
+    await user.type(within(dialog).getByLabelText('Original order'), 'paid-order-20')
+    await user.type(within(dialog).getByLabelText('Reason'), 'Recover unused credit')
     await user.click(within(dialog).getByRole('checkbox'))
-    const submit = within(dialog).getByRole('button', {
-      name: 'Request balance change',
-    })
+    const submit = within(dialog).getByRole('button', { name: 'Request balance change' })
     expect(submit).toBeDisabled()
-    await user.selectOptions(
-      within(dialog).getByLabelText('Batch kind'),
-      'principal'
-    )
-    await user.type(
-      within(dialog).getByLabelText('Batch source'),
-      'paid-order-20'
-    )
+    await user.selectOptions(within(dialog).getByLabelText('Batch kind'), 'principal')
+    await user.type(within(dialog).getByLabelText('Batch source'), 'paid-order-20')
     await user.click(submit)
     await waitFor(() => expect(writes).toHaveLength(1))
-    expect(writes[0].body).toMatchObject({
-      funding_source: 'specified_batch',
-      batch_kind: 'principal',
-      batch_source: 'paid-order-20',
-    })
+    expect(writes[0].body).toMatchObject({ funding_source: 'specified_batch',
+      batch_kind: 'principal', batch_source: 'paid-order-20' })
   })
 
   it('creates a staff account with explicit read permissions after verification', async () => {

@@ -16,8 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { WalletLotProjection } from '@/features/wallet/types'
 import type { UserPermissions } from '@/stores/auth-store'
+import type { WalletLotProjection } from '@/features/wallet/types'
 
 // ============================================================================
 // Profile Type Definitions

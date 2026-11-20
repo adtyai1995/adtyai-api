@@ -56,7 +56,11 @@ function settlementSheetLines(
   const lines: Line[] = [
     { id: 'day', label: t('Date'), value: sheet.business_day },
     { id: 'zone', label: t('Timezone'), value: sheet.timezone },
-    { id: 'start', label: t('Day start'), value: formatTimestamp(sheet.day_start) },
+    {
+      id: 'start',
+      label: t('Day start'),
+      value: formatTimestamp(sheet.day_start),
+    },
     { id: 'end', label: t('Day end'), value: formatTimestamp(sheet.day_end) },
     usd('topup', t('Top-up'), sheet.topup_face_usd),
     usd('paid', t('Paid in USD'), sheet.paid_usd),

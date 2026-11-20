@@ -28,11 +28,7 @@ import { NativeSelect } from '@/components/ui/native-select'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
-import {
-  getOrderTrace,
-  type OrderTraceSection,
-  type UnifiedOrderType,
-} from '../api'
+import { getOrderTrace, type OrderTraceSection, type UnifiedOrderType } from '../api'
 import { ORDER_TRACE_SECTIONS } from '../trace-labels'
 import { OrderDetailSummary } from './order-detail-summary'
 import { OrderTraceTable } from './order-trace-table'
@@ -63,21 +59,11 @@ export function OrderDetailDialog(props: {
       section,
       page,
     ],
-    queryFn: () =>
-      getOrderTrace(
-        props.tradeNo,
-        section,
-        page,
-        props.ownerMode,
-        props.orderType,
-        props.sourceType
-      ),
+    queryFn: () => getOrderTrace(props.tradeNo, section, page, props.ownerMode, props.orderType, props.sourceType),
   })
   const detail = query.data
   const pages = Math.max(1, Math.ceil((detail?.total ?? 0) / 20))
-  const sections = (
-    detail?.sections ?? (['payments'] as OrderTraceSection[])
-  ).filter(
+  const sections = (detail?.sections ?? ['payments'] as OrderTraceSection[]).filter(
     (value) =>
       !props.ownerMode ||
       (value !== 'commission_movements' && value !== 'site_wallet')

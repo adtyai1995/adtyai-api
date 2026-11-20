@@ -98,9 +98,11 @@ describe('TeamPanel', () => {
     expect(
       screen.queryByRole('button', { name: 'Create team' })
     ).not.toBeInTheDocument()
+    // Logged-in accounts cannot accept an invite. An empty mine result must
+    // not bring the join entrance back.
     expect(
-      screen.getByRole('button', { name: 'Join team' })
-    ).toBeInTheDocument()
+      screen.queryByRole('button', { name: 'Join team' })
+    ).not.toBeInTheDocument()
   })
 
   it('shows team details instead of create or join when the user has a team', async () => {
@@ -213,7 +215,15 @@ describe('TeamPanel', () => {
       data: { success: true, data: { team: null } },
     }))
     render(<TeamPanel />, { wrapper })
-    await screen.findByRole('button', { name: 'Join team' })
+    await waitFor(() =>
+      expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+    )
+    expect(
+      screen.queryByRole('button', { name: 'Join team' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Create team' })
+    ).not.toBeInTheDocument()
     expect(
       screen.queryByLabelText('Post-discount payment ratio')
     ).not.toBeInTheDocument()

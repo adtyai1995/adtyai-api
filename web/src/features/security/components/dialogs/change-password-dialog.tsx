@@ -150,9 +150,7 @@ export function ChangePasswordDialog(props: ChangePasswordDialogProps) {
     if (!result) return
     form.reset(emptyPasswordForm)
     if (result.relogin_required) {
-      toast.success(
-        t('Password updated. Sign in again with your new password.')
-      )
+      toast.success(t('Password updated. Sign in again with your new password.'))
       props.onOpenChange(false)
       clearAuthentication()
       navigate({ to: '/sign-in' })

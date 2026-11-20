@@ -127,11 +127,15 @@ it('issues a main-site user code and shows it once', async () => {
   await user.type(screen.getByLabelText('Reason'), 'promo')
   await user.click(screen.getByRole('button', { name: 'Issue code' }))
   expect(await screen.findByText('VCH-FULL-CODE')).toBeVisible()
-  expect(api.post).toHaveBeenCalledWith('/api/adty/admin/vouchers', {
-    purpose: 'main_user',
-    amount_usd: '5',
-    reason: 'promo',
-  })
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/adty/admin/vouchers',
+    expect.objectContaining({
+      purpose: 'main_user',
+      amount_usd: '5',
+      reason: 'promo',
+      intent_key: expect.stringMatching(/^vch-intent-\S+$/),
+    })
+  )
 })
 
 it('freezes an unredeemed code after confirming and offers nothing on redeemed codes', async () => {

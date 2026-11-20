@@ -64,15 +64,9 @@ async function fillProvenance(user: ReturnType<typeof userEvent.setup>) {
   if (batch) {
     await user.selectOptions(batch, 'principal')
     await user.clear(screen.getByLabelText('Batch source'))
-    await user.type(
-      screen.getByLabelText('Batch source'),
-      'original-paid-order'
-    )
+    await user.type(screen.getByLabelText('Batch source'), 'original-paid-order')
   } else {
-    await user.selectOptions(
-      screen.getByLabelText('Funding source'),
-      'platform_correction'
-    )
+    await user.selectOptions(screen.getByLabelText('Funding source'), 'platform_correction')
   }
 }
 
@@ -81,10 +75,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
     const user = userEvent.setup()
     renderDialog()
     await user.type(screen.getByPlaceholderText(/Enter amount/), '5')
-    await user.type(
-      screen.getByLabelText('Reason (admins only)'),
-      'correct original payment'
-    )
+    await user.type(screen.getByLabelText('Reason (admins only)'), 'correct original payment')
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
     expect(api.adjustUserQuota).not.toHaveBeenCalled()
   })
@@ -114,12 +105,7 @@ describe('UserQuotaDialog reason (adty task 7.2)', () => {
     await waitFor(() => expect(api.adjustUserQuota).toHaveBeenCalledTimes(2))
     const [first, second] = api.adjustUserQuota.mock.calls.map((c) => c[0])
     expect(first.reason).toBe('goodwill')
-    expect(first).toMatchObject({
-      order_ref: 'original-paid-order',
-      funding_source: 'platform_correction',
-      batch_kind: '',
-      batch_source: '',
-    })
+    expect(first).toMatchObject({ order_ref: 'original-paid-order', funding_source: 'platform_correction', batch_kind: '', batch_source: '' })
     expect(first.idempotency_key).toBe(second.idempotency_key)
     expect(first.idempotency_key).not.toBe('')
   })

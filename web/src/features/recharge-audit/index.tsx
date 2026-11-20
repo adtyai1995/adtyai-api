@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
@@ -37,7 +38,6 @@ import {
 } from '@/features/wallet/adty/lib/methods'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import type { AdtyOrderStatus } from '@/features/wallet/adty/types'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { formatTimestamp } from '@/lib/format'
@@ -240,18 +240,14 @@ export function RechargeAudit(props: {
                 onChange={(event) =>
                   setFilters((prev) => ({
                     ...prev,
-                    order_type: (event.target.value || undefined) as
-                      | UnifiedOrderType
-                      | undefined,
+                    order_type: (event.target.value || undefined) as UnifiedOrderType | undefined,
                     page: 1,
                   }))
                 }
               >
                 <option value=''>{t('All order types')}</option>
                 {Object.entries(UNIFIED_ORDER_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {t(label)}
-                  </option>
+                  <option key={value} value={value}>{t(label)}</option>
                 ))}
               </NativeSelect>
               <NativeSelect
@@ -266,22 +262,7 @@ export function RechargeAudit(props: {
                 }
               >
                 <option value=''>{t('All statuses')}</option>
-                {[
-                  ...new Set([
-                    ...STATUSES,
-                    'settled',
-                    'submitted',
-                    'approved',
-                    'rejected',
-                    'paying',
-                    'paid',
-                    'completed',
-                    'terminated',
-                    'available',
-                    'frozen',
-                    'clawed_back',
-                  ]),
-                ].map((status) => (
+                {[...new Set([...STATUSES, 'settled', 'submitted', 'approved', 'rejected', 'paying', 'paid', 'completed', 'terminated', 'available', 'frozen', 'clawed_back'])].map((status) => (
                   <option key={status} value={status}>
                     {t(ORDER_TRACE_LABELS[status] ?? status)}
                   </option>
@@ -307,9 +288,7 @@ export function RechargeAudit(props: {
                   )
                 )}
               </NativeSelect>
-              <Button variant='brand' type='submit'>
-                {t('Search')}
-              </Button>
+              <Button variant='brand' type='submit'>{t('Search')}</Button>
             </form>
 
             {ordersQuery.isError && (
@@ -323,9 +302,7 @@ export function RechargeAudit(props: {
                   tableClassName='min-w-[1400px]'
                   tableProps={{ 'aria-label': t('Order management') }}
                   data={ordersQuery.data?.items ?? []}
-                  getRowKey={(row) =>
-                    [row.source_type, row.order_type, row.trade_no].join(':')
-                  }
+                  getRowKey={(row) => [row.source_type, row.order_type, row.trade_no].join(':')}
                   emptyContent={
                     <EmptyState className='min-h-32' title={t('No orders')} />
                   }
@@ -360,9 +337,7 @@ export function RechargeAudit(props: {
                         if (row.business === 'owner_self_use_topup') {
                           return t('Owner self-use top-up')
                         }
-                        return t(
-                          UNIFIED_ORDER_LABELS[row.order_type] ?? row.order_type
-                        )
+                        return t(UNIFIED_ORDER_LABELS[row.order_type] ?? row.order_type)
                       },
                     },
                     {
@@ -396,7 +371,10 @@ export function RechargeAudit(props: {
                       className: 'text-right',
                       cellClassName: 'text-right tabular-nums',
                       cell: (row) =>
-                        formatUsd(Number(row.face_usd ?? row.amount), locale),
+                        formatUsd(
+                          Number(row.face_usd ?? row.amount),
+                          locale
+                        ),
                     },
                     {
                       id: 'bonus',
@@ -439,9 +417,7 @@ export function RechargeAudit(props: {
                             label={t(
                               ORDER_STATUS_LABELS[
                                 row.status as AdtyOrderStatus
-                              ] ??
-                                ORDER_TRACE_LABELS[row.status] ??
-                                row.status
+                              ] ?? ORDER_TRACE_LABELS[row.status] ?? row.status
                             )}
                             variant={
                               ORDER_STATUS_VARIANTS[
@@ -486,7 +462,7 @@ export function RechargeAudit(props: {
                         </Button>
                       ),
                     },
-                    ...(canComplete || canRefund
+                    ...((canComplete || canRefund)
                       ? [
                           {
                             id: 'actions',

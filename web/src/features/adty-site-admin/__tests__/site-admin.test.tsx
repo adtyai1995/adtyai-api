@@ -1294,7 +1294,7 @@ describe('SiteDetailSheet notice takedown', () => {
   it('does not let adjust disable custom and sender domains', async () => {
     asSiteAdmin(['read', 'adjust'])
     openSheet(withNotice, true)
-    await screen.findByText('custom.example · active')
+    await screen.findByText(/custom\.example · Website · active/)
     expect(
       screen.queryByRole('button', { name: 'Disable' })
     ).not.toBeInTheDocument()

@@ -35,105 +35,32 @@ export function PricingHistory(props: { customerId?: number }) {
   const [open, setOpen] = useState(false)
   const [page, setPage] = useState(1)
   const query = useQuery({
-    queryKey: siteOwnerKeys.list('pricing-history', {
-      customerId: props.customerId ?? 0,
-      page,
-    }),
+    queryKey: siteOwnerKeys.list('pricing-history', { customerId: props.customerId ?? 0, page }),
     queryFn: () => getPricingHistory(page, props.customerId),
     enabled: open,
     meta: { errorToast: false },
   })
-  const labels: Record<string, string> = {
-    immediate: t('Effective immediately'),
-    scheduled: t('Scheduled'),
-    cancelled: t('Cancelled'),
-    deleted: t('Removed'),
-    activated: t('Price activated'),
-    deletion_activated: t('Override removal activated'),
-  }
+  const labels: Record<string, string> = { immediate: t('Effective immediately'), scheduled: t('Scheduled'), cancelled: t('Cancelled'), deleted: t('Removed'), activated: t('Price activated'), deletion_activated: t('Override removal activated') }
   return (
     <section className='space-y-3'>
-      <Button
-        variant='outline'
-        type='button'
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        <History aria-hidden='true' />
-        {t('Price change history')}
-      </Button>
+      <Button variant='outline' type='button' aria-expanded={open} onClick={() => setOpen(!open)}><History aria-hidden='true' />{t('Price change history')}</Button>
       {open && query.isPending && <LoadingState />}
-      {open && query.isError && (
-        <ErrorState
-          description={getServerErrorMessage(
-            query.error,
-            t('Failed to load data')
-          )}
-          onRetry={() => void query.refetch()}
-        />
-      )}
-      {open && query.isSuccess && (
-        <>
-          <StaticDataTable
-            data={query.data.items ?? []}
-            getRowKey={(row) => row.id}
-            columns={[
-              {
-                id: 'time',
-                header: t('Time'),
-                cell: (row) => formatTimestamp(row.created_at),
-              },
-              {
-                id: 'actor',
-                header: t('Operator ID'),
-                cell: (row) => row.actor_id || t('System'),
-              },
-              {
-                id: 'scope',
-                header: t('Scope'),
-                cell: (row) => row.model || row.group || t('Default'),
-              },
-              {
-                id: 'value',
-                header: t('Price change'),
-                cell: (row) => `${row.before} → ${row.after}`,
-              },
-              {
-                id: 'action',
-                header: t('Status'),
-                cell: (row) => labels[row.action] ?? row.action,
-              },
-              {
-                id: 'effective',
-                header: t('Effective time'),
-                cell: (row) =>
-                  row.effective_at ? formatTimestamp(row.effective_at) : '-',
-              },
-            ]}
-          />
-          <div className='flex items-center justify-end gap-2'>
-            <Button
-              size='icon'
-              variant='outline'
-              aria-label={t('Previous page')}
-              disabled={page === 1}
-              onClick={() => setPage(page - 1)}
-            >
-              <ChevronLeft />
-            </Button>
-            <span className='text-muted-foreground text-sm'>{page}</span>
-            <Button
-              size='icon'
-              variant='outline'
-              aria-label={t('Next page')}
-              disabled={page * OWNER_PAGE_SIZE >= query.data.total}
-              onClick={() => setPage(page + 1)}
-            >
-              <ChevronRight />
-            </Button>
-          </div>
-        </>
-      )}
+      {open && query.isError && <ErrorState description={getServerErrorMessage(query.error, t('Failed to load data'))} onRetry={() => void query.refetch()} />}
+      {open && query.isSuccess && <>
+        <StaticDataTable data={query.data.items ?? []} getRowKey={(row) => row.id} columns={[
+          { id: 'time', header: t('Time'), cell: (row) => formatTimestamp(row.created_at) },
+          { id: 'actor', header: t('Operator ID'), cell: (row) => row.actor_id || t('System') },
+          { id: 'scope', header: t('Scope'), cell: (row) => row.model || row.group || t('Default') },
+          { id: 'value', header: t('Price change'), cell: (row) => `${row.before} → ${row.after}` },
+          { id: 'action', header: t('Status'), cell: (row) => labels[row.action] ?? row.action },
+          { id: 'effective', header: t('Effective time'), cell: (row) => row.effective_at ? formatTimestamp(row.effective_at) : '-' },
+        ]} />
+        <div className='flex items-center justify-end gap-2'>
+          <Button size='icon' variant='outline' aria-label={t('Previous page')} disabled={page === 1} onClick={() => setPage(page - 1)}><ChevronLeft /></Button>
+          <span className='text-muted-foreground text-sm'>{page}</span>
+          <Button size='icon' variant='outline' aria-label={t('Next page')} disabled={page * OWNER_PAGE_SIZE >= query.data.total} onClick={() => setPage(page + 1)}><ChevronRight /></Button>
+        </div>
+      </>}
     </section>
   )
 }

@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table'
@@ -38,7 +39,6 @@ import {
   type StaffBalanceRequest,
 } from '@/features/adty-site-staff/api'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -272,28 +272,12 @@ export function StaffPanel(props: { siteId: number }) {
                 id: 'provenance',
                 header: t('Financial provenance'),
                 cell: (row: StaffBalanceRequest) => (
-                  <div className='max-w-72 space-y-1 text-xs break-words'>
-                    <div>
-                      {t('Reason')}: {row.reason || '—'}
-                    </div>
-                    <div>
-                      {t('Original order')}: {row.order_ref || '—'}
-                    </div>
-                    <div>
-                      {t('Funding source')}:{' '}
-                      {staffRequestSourceLabel(row.funding_source, t)}
-                    </div>
-                    {row.batch_source && (
-                      <div>
-                        {t('Batch source')}: {row.batch_source} /{' '}
-                        {row.batch_kind}
-                      </div>
-                    )}
-                    {row.ledger_id ? (
-                      <div>
-                        {t('Ledger ID')}: {row.ledger_id}
-                      </div>
-                    ) : null}
+                  <div className='max-w-72 space-y-1 break-words text-xs'>
+                    <div>{t('Reason')}: {row.reason || '—'}</div>
+                    <div>{t('Original order')}: {row.order_ref || '—'}</div>
+                    <div>{t('Funding source')}: {staffRequestSourceLabel(row.funding_source, t)}</div>
+                    {row.batch_source && <div>{t('Batch source')}: {row.batch_source} / {row.batch_kind}</div>}
+                    {row.ledger_id ? <div>{t('Ledger ID')}: {row.ledger_id}</div> : null}
                   </div>
                 ),
               },

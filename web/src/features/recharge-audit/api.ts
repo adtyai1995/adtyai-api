@@ -295,15 +295,7 @@ export async function getOrderTrace(
     : '/api/user/admin/finance/recharge-audit'
   const res = await api.get<ApiResponse<OrderTrace>>(
     `${prefix}/${encodeURIComponent(tradeNo)}`,
-    {
-      params: {
-        section,
-        p: page,
-        page_size: 20,
-        order_type: orderType,
-        source_type: sourceType,
-      },
-    }
+    { params: { section, p: page, page_size: 20, order_type: orderType, source_type: sourceType } }
   )
   return requireServerSuccess(res.data).data
 }
@@ -506,11 +498,7 @@ export type ManualRefundResult = {
   commission?: CommissionRefundPreview
 }
 
-export async function previewTopupRefund(
-  tradeNo: string,
-  refundUsd?: string,
-  ownerMode = false
-) {
+export async function previewTopupRefund(tradeNo: string, refundUsd?: string, ownerMode = false) {
   const res = await api.get<ApiResponse<TopupRefundResult>>(
     `${ownerMode ? '/api/adty/site/orders' : '/api/adty/admin/topup'}/${encodeURIComponent(tradeNo)}/refund-preview`,
     { params: refundUsd ? { refund_usd: refundUsd } : undefined }
@@ -540,10 +528,7 @@ export async function refundTopup(
   return requireServerSuccess(res.data).data
 }
 
-export async function listTopupManualRefunds(
-  tradeNo: string,
-  ownerMode = false
-) {
+export async function listTopupManualRefunds(tradeNo: string, ownerMode = false) {
   const res = await api.get<ApiResponse<ManualRefundResult>>(
     `${ownerMode ? '/api/adty/site/orders' : '/api/adty/admin/topup'}/${encodeURIComponent(tradeNo)}/refunds`
   )
@@ -553,14 +538,7 @@ export async function listTopupManualRefunds(
 export async function runTopupManualRefundStep(
   tradeNo: string,
   refundId: string,
-  step:
-    | 'approve'
-    | 'reclaim'
-    | 'bonus'
-    | 'commission'
-    | 'payout'
-    | 'complete'
-    | 'terminate',
+  step: 'approve' | 'reclaim' | 'bonus' | 'commission' | 'payout' | 'complete' | 'terminate',
   body: Record<string, unknown>,
   proofToken?: string,
   ownerMode = false
@@ -574,7 +552,5 @@ export async function runTopupManualRefundStep(
 }
 
 function proofHeaders(proofToken?: string) {
-  return proofToken
-    ? { headers: { 'X-Security-Proof': proofToken } }
-    : undefined
+  return proofToken ? { headers: { 'X-Security-Proof': proofToken } } : undefined
 }

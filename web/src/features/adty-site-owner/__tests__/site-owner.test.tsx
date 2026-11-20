@@ -539,7 +539,9 @@ describe('EarningsPanel', () => {
       'Withdraw site earnings using Earnings wallet withdrawal on this tab. A negative balance cannot be withdrawn.'
     )
     expect(guidance).toBeInTheDocument()
-    expect(guidance).toHaveTextContent('A negative balance cannot be withdrawn.')
+    expect(guidance).toHaveTextContent(
+      'A negative balance cannot be withdrawn.'
+    )
     expect(guidance).not.toHaveTextContent('Referral page')
     expect(guidance).not.toHaveTextContent('referral commissions')
     expect(
@@ -763,7 +765,9 @@ describe('EarningToMarginPanel idempotency', () => {
     expect(thirdKey).not.toBe(firstKey)
 
     // If failed then payload changed -> rotates key
-    api.transferEarningToMargin.mockRejectedValueOnce(new Error('network error'))
+    api.transferEarningToMargin.mockRejectedValueOnce(
+      new Error('network error')
+    )
     await userEvent.type(input, '20')
     await userEvent.click(button)
     await waitFor(() =>

@@ -73,12 +73,14 @@ afterEach(() => {
 
 describe('TeamRegistrationCompleteForm', () => {
   it('registers a dedicated employee without a team name or an existing session', async () => {
-    const post = vi.spyOn(api, 'post').mockResolvedValue({
-      data: {
-        success: true,
-        data: { user_id: 21, independent_employee: true },
-      },
-    })
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({
+        data: {
+          success: true,
+          data: { user_id: 21, independent_employee: true },
+        },
+      })
     const user = userEvent.setup()
     await renderForm('c'.repeat(32), true)
     expect(screen.queryByLabelText('Team name')).not.toBeInTheDocument()

@@ -30,8 +30,8 @@ import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { OwnerCustomer } from '@/features/adty-site-owner/types'
-import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
+import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatQuota } from '@/lib/format'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -58,10 +58,7 @@ export function StaffWorkspace() {
   const [balanceCustomer, setBalanceCustomer] = useState<OwnerCustomer | null>(
     null
   )
-  const [orders, setOrders] = useState<{
-    customer: OwnerCustomer
-    version: number
-  } | null>(null)
+  const [orders, setOrders] = useState<{ customer: OwnerCustomer; version: number } | null>(null)
   const [records, setRecords] = useState<{
     customer: OwnerCustomer
     kind: 'topups' | 'logs'
@@ -147,13 +144,7 @@ export function StaffWorkspace() {
       cell: (customer) => (
         <div className='flex flex-wrap gap-1'>
           {orderTypes.length > 0 && (
-            <Button
-              size='sm'
-              variant='outline'
-              onClick={() =>
-                setOrders({ customer, version: self.data?.staff.version ?? 0 })
-              }
-            >
+            <Button size='sm' variant='outline' onClick={() => setOrders({ customer, version: self.data?.staff.version ?? 0 })}>
               {t('Orders')}
             </Button>
           )}
@@ -243,19 +234,16 @@ export function StaffWorkspace() {
                 />
               </>
             )}
-            {orders &&
-              canList &&
-              orderTypes.length > 0 &&
-              orders.version === self.data.staff.version && (
-                <StaffOrdersDialog
-                  key={`${userId}-${orders.version}-${orders.customer.id}`}
-                  userId={userId ?? 0}
-                  staffVersion={orders.version}
-                  customer={orders.customer}
-                  orderTypes={orderTypes}
-                  onClose={() => setOrders(null)}
-                />
-              )}
+            {orders && canList && orderTypes.length > 0 && orders.version === self.data.staff.version && (
+              <StaffOrdersDialog
+                key={`${userId}-${orders.version}-${orders.customer.id}`}
+                userId={userId ?? 0}
+                staffVersion={orders.version}
+                customer={orders.customer}
+                orderTypes={orderTypes}
+                onClose={() => setOrders(null)}
+              />
+            )}
             {records &&
               canList &&
               grants.includes(

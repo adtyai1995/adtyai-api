@@ -19,19 +19,25 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select'
 import type { OwnerCustomer } from '@/features/adty-site-owner/types'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 
-import { createStaffBalanceRequest, type StaffBalanceDirection } from './api'
+import {
+  createStaffBalanceRequest,
+  type StaffBalanceDirection,
+} from './api'
 
 const notice =
   'This request does not change the customer balance until the site owner or Root approves it.'
@@ -65,8 +71,7 @@ export function StaffBalanceRequestDialog(props: {
         idempotency_key: idempotencyKey,
         reason: reason.trim(),
         order_ref: orderRef.trim(),
-        funding_source:
-          direction === 'decrease' ? 'specified_batch' : fundingSource,
+        funding_source: direction === 'decrease' ? 'specified_batch' : fundingSource,
         batch_kind: direction === 'decrease' ? batchKind : '',
         batch_source: direction === 'decrease' ? batchSource.trim() : '',
       })
@@ -83,15 +88,10 @@ export function StaffBalanceRequestDialog(props: {
   const ready =
     (direction === 'increase' || direction === 'decrease') &&
     amount.trim() !== '' &&
-    Number.isFinite(Number(amount)) &&
-    Number(amount) > 0 &&
-    reason.trim() !== '' &&
-    [...reason.trim()].length <= 200 &&
-    orderRef.trim() !== '' &&
-    orderRef.trim().length <= 64 &&
-    (direction === 'increase'
-      ? fundingSource !== ''
-      : batchKind !== '' && batchSource.trim() !== '') &&
+    Number.isFinite(Number(amount)) && Number(amount) > 0 &&
+    reason.trim() !== '' && [...reason.trim()].length <= 200 &&
+    orderRef.trim() !== '' && orderRef.trim().length <= 64 &&
+    (direction === 'increase' ? fundingSource !== '' : batchKind !== '' && batchSource.trim() !== '') &&
     confirmed &&
     !submit.isPending
   return (
@@ -108,127 +108,85 @@ export function StaffBalanceRequestDialog(props: {
         if (!open && !submit.isPending) props.onClose()
       }}
     >
-      <div className='flex flex-col gap-3'>
-        <p className='text-sm break-all'>{props.customer.username}</p>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='staff-balance-direction'>{t('Direction')}</Label>
-          <NativeSelect
-            id='staff-balance-direction'
-            className='w-full'
-            value={direction}
-            onChange={(event) => {
-              setDirection(event.target.value as StaffBalanceDirection | '')
-              setFundingSource('')
-              setBatchKind('')
-              setBatchSource('')
-            }}
-          >
-            <NativeSelectOption value=''>{t('Direction')}</NativeSelectOption>
-            <NativeSelectOption value='increase'>
-              {t('Increase')}
-            </NativeSelectOption>
-            <NativeSelectOption value='decrease'>
-              {t('Decrease')}
-            </NativeSelectOption>
-          </NativeSelect>
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='staff-balance-amount'>{t('Amount')}</Label>
-          <Input
-            id='staff-balance-amount'
-            value={amount}
-            inputMode='decimal'
-            autoComplete='off'
-            onChange={(event) => setAmount(event.target.value)}
-          />
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='staff-balance-order'>{t('Original order')}</Label>
-          <Input
-            id='staff-balance-order'
-            value={orderRef}
-            maxLength={64}
-            onChange={(event) => setOrderRef(event.target.value)}
-          />
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='staff-balance-reason'>{t('Reason')}</Label>
-          <Textarea
-            id='staff-balance-reason'
-            value={reason}
-            maxLength={200}
-            onChange={(event) => setReason(event.target.value)}
-          />
-        </div>
-        {direction === 'increase' && (
+        <div className='flex flex-col gap-3'>
+          <p className='text-sm break-all'>{props.customer.username}</p>
           <div className='flex flex-col gap-1'>
-            <Label htmlFor='staff-balance-source'>{t('Funding source')}</Label>
+            <Label htmlFor='staff-balance-direction'>{t('Direction')}</Label>
             <NativeSelect
-              id='staff-balance-source'
+              id='staff-balance-direction'
               className='w-full'
-              value={fundingSource}
-              onChange={(event) => setFundingSource(event.target.value)}
+              value={direction}
+              onChange={(event) => {
+                setDirection(event.target.value as StaffBalanceDirection | '')
+                setFundingSource('')
+                setBatchKind('')
+                setBatchSource('')
+              }}
             >
-              <NativeSelectOption value=''>
-                {t('Funding source')}
-              </NativeSelectOption>
-              <NativeSelectOption value='site_earnings'>
-                {t('Earnings wallet')}
-              </NativeSelectOption>
-              <NativeSelectOption value='site_margin'>
-                {t('Margin wallet')}
-              </NativeSelectOption>
+              <NativeSelectOption value=''>{t('Direction')}</NativeSelectOption>
+              <NativeSelectOption value='increase'>{t('Increase')}</NativeSelectOption>
+              <NativeSelectOption value='decrease'>{t('Decrease')}</NativeSelectOption>
             </NativeSelect>
           </div>
-        )}
-        {direction === 'decrease' && (
-          <>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='staff-balance-amount'>{t('Amount')}</Label>
+            <Input
+              id='staff-balance-amount'
+              value={amount}
+              inputMode='decimal'
+              autoComplete='off'
+              onChange={(event) => setAmount(event.target.value)}
+            />
+          </div>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='staff-balance-order'>{t('Original order')}</Label>
+            <Input id='staff-balance-order' value={orderRef} maxLength={64}
+              onChange={(event) => setOrderRef(event.target.value)} />
+          </div>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='staff-balance-reason'>{t('Reason')}</Label>
+            <Textarea id='staff-balance-reason' value={reason} maxLength={200}
+              onChange={(event) => setReason(event.target.value)} />
+          </div>
+          {direction === 'increase' && (
             <div className='flex flex-col gap-1'>
-              <Label htmlFor='staff-balance-batch-kind'>
-                {t('Batch kind')}
-              </Label>
-              <NativeSelect
-                id='staff-balance-batch-kind'
-                className='w-full'
-                value={batchKind}
-                onChange={(event) => setBatchKind(event.target.value)}
-              >
-                <NativeSelectOption value=''>
-                  {t('Batch kind')}
-                </NativeSelectOption>
-                <NativeSelectOption value='principal'>
-                  {t('Principal')}
-                </NativeSelectOption>
-                <NativeSelectOption value='bonus'>
-                  {t('Permanent gift')}
-                </NativeSelectOption>
-                <NativeSelectOption value='expiring_bonus'>
-                  {t('Expiring gift')}
-                </NativeSelectOption>
+              <Label htmlFor='staff-balance-source'>{t('Funding source')}</Label>
+              <NativeSelect id='staff-balance-source' className='w-full' value={fundingSource}
+                onChange={(event) => setFundingSource(event.target.value)}>
+                <NativeSelectOption value=''>{t('Funding source')}</NativeSelectOption>
+                <NativeSelectOption value='site_earnings'>{t('Earnings wallet')}</NativeSelectOption>
+                <NativeSelectOption value='site_margin'>{t('Margin wallet')}</NativeSelectOption>
               </NativeSelect>
             </div>
-            <div className='flex flex-col gap-1'>
-              <Label htmlFor='staff-balance-batch-source'>
-                {t('Batch source')}
-              </Label>
-              <Input
-                id='staff-balance-batch-source'
-                value={batchSource}
-                maxLength={64}
-                onChange={(event) => setBatchSource(event.target.value)}
-              />
-            </div>
-          </>
-        )}
-        <Label className='flex items-start gap-2 text-sm'>
-          <Checkbox
-            className='mt-1'
-            checked={confirmed}
-            onCheckedChange={(checked) => setConfirmed(checked === true)}
-          />
-          <span>{t(notice)}</span>
-        </Label>
-      </div>
+          )}
+          {direction === 'decrease' && (
+            <>
+              <div className='flex flex-col gap-1'>
+                <Label htmlFor='staff-balance-batch-kind'>{t('Batch kind')}</Label>
+                <NativeSelect id='staff-balance-batch-kind' className='w-full' value={batchKind}
+                  onChange={(event) => setBatchKind(event.target.value)}>
+                  <NativeSelectOption value=''>{t('Batch kind')}</NativeSelectOption>
+                  <NativeSelectOption value='principal'>{t('Principal')}</NativeSelectOption>
+                  <NativeSelectOption value='bonus'>{t('Permanent gift')}</NativeSelectOption>
+                  <NativeSelectOption value='expiring_bonus'>{t('Expiring gift')}</NativeSelectOption>
+                </NativeSelect>
+              </div>
+              <div className='flex flex-col gap-1'>
+                <Label htmlFor='staff-balance-batch-source'>{t('Batch source')}</Label>
+                <Input id='staff-balance-batch-source' value={batchSource} maxLength={64}
+                  onChange={(event) => setBatchSource(event.target.value)} />
+              </div>
+            </>
+          )}
+          <Label className='flex items-start gap-2 text-sm'>
+            <Checkbox
+              className='mt-1'
+              checked={confirmed}
+              onCheckedChange={(checked) => setConfirmed(checked === true)}
+            />
+            <span>{t(notice)}</span>
+          </Label>
+        </div>
     </Dialog>
   )
 }

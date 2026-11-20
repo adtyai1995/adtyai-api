@@ -64,16 +64,9 @@ export type PriceRevision = {
   created_at: number
 }
 
-export async function getPricingHistory(
-  page: number,
-  customerId?: number
-): Promise<OwnerPage<PriceRevision>> {
-  const path = customerId
-    ? `${BASE}/customers/${customerId}/pricing/history`
-    : `${BASE}/pricing/history`
-  const response = await api.get<ApiResponse<OwnerPage<PriceRevision>>>(path, {
-    params: { p: page, page_size: OWNER_PAGE_SIZE },
-  })
+export async function getPricingHistory(page: number, customerId?: number): Promise<OwnerPage<PriceRevision>> {
+  const path = customerId ? `${BASE}/customers/${customerId}/pricing/history` : `${BASE}/pricing/history`
+  const response = await api.get<ApiResponse<OwnerPage<PriceRevision>>>(path, { params: { p: page, page_size: OWNER_PAGE_SIZE } })
   return requireServerSuccess(response.data).data
 }
 
