@@ -3,6 +3,7 @@ package adty_setting
 import (
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -29,14 +30,19 @@ const (
 	epayMaxTotalTimeoutSeconds       = 30
 )
 
+var (
+	epayTimeoutReaderMu sync.RWMutex
+	epayTimeoutReader   func() (map[string]string, error)
+)
+
 var epaySetting = EpaySetting{
 	UnpaidThreshold:       10,
 	ProbeEnabled:          false,
 	ProbeIntervalMinutes:  5,
 	QueryAfterSeconds:     120,
 	ExpiredQuerySeconds:   24 * 60 * 60,
-	ChannelTimeoutSeconds: 5,
-	TotalTimeoutSeconds:   12,
+	ChannelTimeoutSeconds: DefaultEpayChannelTimeoutSeconds,
+	TotalTimeoutSeconds:   DefaultEpayTotalTimeoutSeconds,
 }
 
 func init() {
@@ -48,27 +54,16 @@ func GetEpaySetting() *EpaySetting {
 	return &epaySetting
 }
 
-// ValidateEpayTimeout 校验换通道时限的一个键：另一个键取当前值，要满足 1 ≤ 单通道 ≤ 总时长 ≤ 30。
-func ValidateEpayTimeout(key, value string) error {
-	seconds, err := strconv.Atoi(value)
-	if err != nil {
-		return common.NewMessage("Timeouts must be whole seconds")
-	}
-	channel, total := epaySetting.ChannelTimeoutSeconds, epaySetting.TotalTimeoutSeconds
-	if key == EpaySettingKeyChannelTimeout {
-		channel = seconds
-	} else {
-		total = seconds
-	}
-	if channel < 1 || channel > total || total > epayMaxTotalTimeoutSeconds {
-		return common.NewMessage("The per-channel timeout must be at least 1 second and not above the total, and the total at most 30 seconds")
-	}
-	return nil
-}
-
 // IsEpayTimeoutKey 判断配置键是否属于易支付换通道时限。
 func IsEpayTimeoutKey(key string) bool {
 	return key == EpaySettingKeyChannelTimeout || key == EpaySettingKeyTotalTimeout
+}
+
+// SetAuthoritativeEpayTimeoutReader 注册用于读取当前权威 SQL 时限配置的函数。
+func SetAuthoritativeEpayTimeoutReader(reader func() (map[string]string, error)) {
+	epayTimeoutReaderMu.Lock()
+	defer epayTimeoutReaderMu.Unlock()
+	epayTimeoutReader = reader
 }
 
 // ValidateEpayTimeoutPair 校验单通道与总时长的配对关系：1 ≤ 单通道 ≤ 总时长 ≤ 30。
@@ -120,4 +115,36 @@ func ValidateEpayTimeoutWithCurrent(key, value string, current map[string]string
 		return 0, 0, err
 	}
 	return channel, total, nil
+}
+
+// SyncEpayTimeouts 将已通过校验的权威单通道与总时长同步到进程内存及 OptionMap。
+func SyncEpayTimeouts(channelSeconds, totalSeconds int) {
+	if ValidateEpayTimeoutPair(channelSeconds, totalSeconds) != nil {
+		return
+	}
+	epaySetting.ChannelTimeoutSeconds = channelSeconds
+	epaySetting.TotalTimeoutSeconds = totalSeconds
+	common.OptionMapRWMutex.Lock()
+	if common.OptionMap != nil {
+		common.OptionMap[EpaySettingKeyChannelTimeout] = strconv.Itoa(channelSeconds)
+		common.OptionMap[EpaySettingKeyTotalTimeout] = strconv.Itoa(totalSeconds)
+	}
+	common.OptionMapRWMutex.Unlock()
+}
+
+// ValidateEpayTimeout 校验换通道时限的一个键：优先使用权威读取器获取另一个键的当前值，满足 1 ≤ 单通道 ≤ 总时长 ≤ 30。
+func ValidateEpayTimeout(key, value string) error {
+	epayTimeoutReaderMu.RLock()
+	reader := epayTimeoutReader
+	epayTimeoutReaderMu.RUnlock()
+	var current map[string]string
+	if reader != nil {
+		loaded, err := reader()
+		if err != nil {
+			return err
+		}
+		current = loaded
+	}
+	_, _, err := ValidateEpayTimeoutWithCurrent(key, value, current)
+	return err
 }
