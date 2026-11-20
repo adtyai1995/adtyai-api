@@ -13636,12 +13636,22 @@
           "line": 87
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1601MainSiteInviteBindPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "one_referral_binding",
+        "invite_code_len_8",
+        "replay_already_bound",
+        "site_owner_since_0",
+        "commission_account_zero_usd",
+        "zero_referral_commissions",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "main_site_id_0"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-16-01",
         "requirement_refs": [
@@ -13711,12 +13721,22 @@
             "line": 87
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1601MainSiteInviteBindPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "one_referral_binding",
+          "invite_code_len_8",
+          "replay_already_bound",
+          "site_owner_since_0",
+          "commission_account_zero_usd",
+          "zero_referral_commissions",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "main_site_id_0"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -14956,16 +14976,24 @@
           "line": 43
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1610OwnerAppliesSiteWithdrawalPG"
+      ],
       "db_money_invariants": [
-        "application writes Rate from the current Root rule and rejects the request when it differs from ExpectedRate",
-        "application freezes earnings HoldDelta by the requested amount and leaves Balance unchanged, ledger type earning_withdraw_freeze",
-        "paid decreases Balance and HoldDelta by the same amount, ledger type earning_withdraw_paid, and stores tx_id plus proof_note",
-        "reject releases the freeze and leaves Balance unchanged",
-        "the same idempotency key returns the original row; a changed account or network returns ErrAdtyIdempotencyConflict"
+        "earnings_balance_stays_50",
+        "frozen_usd_20",
+        "withdraw_amount_20",
+        "fee_usd_1",
+        "net_usd_19",
+        "rate_snapshot_7_20",
+        "payout_cny_136_8",
+        "status_pending",
+        "replay_one_withdrawal",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-16-10",
         "requirement_refs": [
@@ -15047,16 +15075,24 @@
             "line": 43
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1610OwnerAppliesSiteWithdrawalPG"
+        ],
         "db_money_invariants": [
-          "application writes Rate from the current Root rule and rejects the request when it differs from ExpectedRate",
-          "application freezes earnings HoldDelta by the requested amount and leaves Balance unchanged, ledger type earning_withdraw_freeze",
-          "paid decreases Balance and HoldDelta by the same amount, ledger type earning_withdraw_paid, and stores tx_id plus proof_note",
-          "reject releases the freeze and leaves Balance unchanged",
-          "the same idempotency key returns the original row; a changed account or network returns ErrAdtyIdempotencyConflict"
+          "earnings_balance_stays_50",
+          "frozen_usd_20",
+          "withdraw_amount_20",
+          "fee_usd_1",
+          "net_usd_19",
+          "rate_snapshot_7_20",
+          "payout_cny_136_8",
+          "status_pending",
+          "replay_one_withdrawal",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
