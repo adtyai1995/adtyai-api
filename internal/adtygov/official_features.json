@@ -5406,7 +5406,7 @@
       "source_line": 2538,
       "ftr_id": "FTR-058",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.6",
@@ -5439,14 +5439,16 @@
           "line": 25
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0608ToolCallBillingRulesPG"
+      ],
       "db_money_invariants": [
         "CountBillableToolCall 对空函数名直接返回，不计费",
         "模型工具价小于或等于 0 的函数名不计费",
         "SetBillableToolCount 忽略负数计数，0 是有效值并会压过按条计数"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-relay-tool-1a500e1",
+      "na_reason": "空函数名不计费、工具价小于或等于 0 不计费、负数计数被忽略且 0 会压过按条计数，已在 PostgreSQL 18 入账；流式观察和 TextHelper 未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-06-08",
         "requirement_refs": [
@@ -5481,14 +5483,16 @@
             "line": 25
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0608ToolCallBillingRulesPG"
+        ],
         "db_money_invariants": [
           "CountBillableToolCall 对空函数名直接返回，不计费",
           "模型工具价小于或等于 0 的函数名不计费",
           "SetBillableToolCount 忽略负数计数，0 是有效值并会压过按条计数"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-relay-tool-1a500e1",
+        "na_reason": "空函数名不计费、工具价小于或等于 0 不计费、负数计数被忽略且 0 会压过按条计数，已在 PostgreSQL 18 入账；流式观察和 TextHelper 未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -7730,7 +7734,7 @@
       "source_line": 2575,
       "ftr_id": "FTR-086",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.4.11",
@@ -7763,14 +7767,16 @@
           "line": 464
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0906PaymentBonusSnapshotPG"
+      ],
       "db_money_invariants": [
         "CreateAdtyPaymentOrder 在同一 prepare 事务里写入 BonusMethod、BonusRate、BonusUSD=FaceUSD×rate Round(8)，并把开关、比例、面额、赠金和保证金授权放进 PaymentSceneSnapshot，然后调用 ReserveAdtySiteGiftTx；随后 CreateAdtyTopUpWithPolicy 创建扩展行",
         "团队单或站长自用单不走该赠金计算，赠金金额保持 0",
         "已打开测试只断言 CreateBonusOrderSnapshotTx 写入 bonus_usd=10、bonus_method=alipay，撤权后新单赠金为 0，历史单仍保留原 bonus_usd 与 bonus_method；该辅助函数不写 bonus_rate、face_usd 或 JSON 快照"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-bonus-1a500e1",
+      "na_reason": "客户单写入赠金方式、比例、面额、赠金和 JSON 快照，团队单赠金保持 0，已在 PostgreSQL 18 入账；站长自用单未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-09-06",
         "requirement_refs": [
@@ -7805,14 +7811,16 @@
             "line": 464
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0906PaymentBonusSnapshotPG"
+        ],
         "db_money_invariants": [
           "CreateAdtyPaymentOrder 在同一 prepare 事务里写入 BonusMethod、BonusRate、BonusUSD=FaceUSD×rate Round(8)，并把开关、比例、面额、赠金和保证金授权放进 PaymentSceneSnapshot，然后调用 ReserveAdtySiteGiftTx；随后 CreateAdtyTopUpWithPolicy 创建扩展行",
           "团队单或站长自用单不走该赠金计算，赠金金额保持 0",
           "已打开测试只断言 CreateBonusOrderSnapshotTx 写入 bonus_usd=10、bonus_method=alipay，撤权后新单赠金为 0，历史单仍保留原 bonus_usd 与 bonus_method；该辅助函数不写 bonus_rate、face_usd 或 JSON 快照"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-bonus-1a500e1",
+        "na_reason": "客户单写入赠金方式、比例、面额、赠金和 JSON 快照，团队单赠金保持 0，已在 PostgreSQL 18 入账；站长自用单未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -7822,7 +7830,7 @@
       "source_line": 2576,
       "ftr_id": "FTR-087",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.4.8",
@@ -7853,14 +7861,16 @@
           "line": 397
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0907SiteGiftReserveSourcePG"
+      ],
       "db_money_invariants": [
         "ReserveAdtySiteGiftTx 先锁收益钱包，可用额优先冻结；不足部分只有保证金补位授权且不超过 AdtyMarginNewDraw 才冻结保证金，否则拒绝",
         "冻结流水类型 gift_reserve，幂等键为 gift:{trade}:earn 与 gift:{trade}:margin；订单写入 GiftReserveEarning、GiftReserveMargin，来源为 earning、margin 或 earning+margin",
         "已打开测试只覆盖报价：收益不足且未授权补位时拒绝；授权保证金周期后报价成功。没有断言 GiftReserveSource 或冻结流水"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-bonus-1a500e1",
+      "na_reason": "收益优先、授权保证金补位、来源 earning+margin 和 gift_reserve 流水已在 PostgreSQL 18 入账；下单入口未在本测试中调用，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-09-07",
         "requirement_refs": [
@@ -7893,14 +7903,16 @@
             "line": 397
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0907SiteGiftReserveSourcePG"
+        ],
         "db_money_invariants": [
           "ReserveAdtySiteGiftTx 先锁收益钱包，可用额优先冻结；不足部分只有保证金补位授权且不超过 AdtyMarginNewDraw 才冻结保证金，否则拒绝",
           "冻结流水类型 gift_reserve，幂等键为 gift:{trade}:earn 与 gift:{trade}:margin；订单写入 GiftReserveEarning、GiftReserveMargin，来源为 earning、margin 或 earning+margin",
           "已打开测试只覆盖报价：收益不足且未授权补位时拒绝；授权保证金周期后报价成功。没有断言 GiftReserveSource 或冻结流水"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-bonus-1a500e1",
+        "na_reason": "收益优先、授权保证金补位、来源 earning+margin 和 gift_reserve 流水已在 PostgreSQL 18 入账；下单入口未在本测试中调用，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -8142,7 +8154,7 @@
       "source_line": 2579,
       "ftr_id": "FTR-090",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.3.5",
@@ -8178,15 +8190,18 @@
           "line": 986
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0910GiftReclaimIdempotentPG",
+        "TestFTRADTY1609GiftShortfallOnCompletePG"
+      ],
       "db_money_invariants": [
         "CumulativeGiftReclaim = 赠金 × (累计已退本金比例 − 此前已退本金比例)，比例封顶 1，结果 Round(8)",
         "已打开算例：本金 100、赠金 10，先退 40 回收 4，再退 60 回收 6",
         "adtyPlannedBonusQuota 用该累计公式；团队单直接返回 0。完成时按原 tradeNo 回收赠金批次，可回收额低于计划额时记 shortfall",
         "同一 refund id 重放申请、本金回收和完成时返回原流水 id，不另写一笔；改原因或金额复用同一键会报幂等冲突"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-model-refund-1a500e1",
+      "na_reason": "累计赠金公式、团队单计划赠金为 0、同一退款号重放返回原流水且改参冲突、完成时短收回记 shortfall，已在 PostgreSQL 18 入账；不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-09-10",
         "requirement_refs": [
@@ -8224,15 +8239,18 @@
             "line": 986
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0910GiftReclaimIdempotentPG",
+          "TestFTRADTY1609GiftShortfallOnCompletePG"
+        ],
         "db_money_invariants": [
           "CumulativeGiftReclaim = 赠金 × (累计已退本金比例 − 此前已退本金比例)，比例封顶 1，结果 Round(8)",
           "已打开算例：本金 100、赠金 10，先退 40 回收 4，再退 60 回收 6",
           "adtyPlannedBonusQuota 用该累计公式；团队单直接返回 0。完成时按原 tradeNo 回收赠金批次，可回收额低于计划额时记 shortfall",
           "同一 refund id 重放申请、本金回收和完成时返回原流水 id，不另写一笔；改原因或金额复用同一键会报幂等冲突"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-model-refund-1a500e1",
+        "na_reason": "累计赠金公式、团队单计划赠金为 0、同一退款号重放返回原流水且改参冲突、完成时短收回记 shortfall，已在 PostgreSQL 18 入账；不代表最终候选通过"
       }
     },
     {
@@ -14812,7 +14830,7 @@
       "source_line": 2667,
       "ftr_id": "FTR-157",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.14.3",
@@ -14864,14 +14882,16 @@
           "line": 221
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1607ManualPartialRefundApplyPG"
+      ],
       "db_money_invariants": [
         "apply stores RequestUSD and RequestQuota on adty_manual_refunds with status submitted",
         "requestQuota above occupancy.RemainingQuota is rejected with Refund amount exceeds the remaining principal",
         "the apply transaction that was opened does not debit users.quota"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-model-refund-1a500e1",
+      "na_reason": "申请写入 RequestUSD 与 RequestQuota、状态为 submitted、超额拒绝且不扣 users.quota，已在 PostgreSQL 18 入账；管理端页面和退款路由未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-16-07",
         "requirement_refs": [
@@ -14925,14 +14945,16 @@
             "line": 221
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1607ManualPartialRefundApplyPG"
+        ],
         "db_money_invariants": [
           "apply stores RequestUSD and RequestQuota on adty_manual_refunds with status submitted",
           "requestQuota above occupancy.RemainingQuota is rejected with Refund amount exceeds the remaining principal",
           "the apply transaction that was opened does not debit users.quota"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-model-refund-1a500e1",
+        "na_reason": "申请写入 RequestUSD 与 RequestQuota、状态为 submitted、超额拒绝且不扣 users.quota，已在 PostgreSQL 18 入账；管理端页面和退款路由未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -15122,7 +15144,7 @@
       "source_line": 2669,
       "ftr_id": "FTR-159",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.13.5",
@@ -15176,15 +15198,18 @@
           "line": 580
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1609GiftShortfallOnCompletePG",
+        "TestFTRADTY0910GiftReclaimIdempotentPG"
+      ],
       "db_money_invariants": [
         "CumulativeGiftReclaim = gift * (min((refundedBefore+refundNow)/principal, 1) - min(refundedBefore/principal, 1)), Round(8)",
         "complete debits min(planned gift, remaining order gift, spendable quota) and stores bonus_shortfall_quota for the unrecovered part",
         "referralRefundClawback = commission * RefundRatio, RoundFloor(8); partial clawback writes commission_clawback_partial and leaves commission status unchanged",
         "site clawback releases the still-frozen source hold; a withdrawn external part writes adty_commission_recoveries kind=withdrawn and does not debit the site wallet"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-model-refund-1a500e1",
+      "na_reason": "赠金累计公式和完成时按可回收额扣赠金并记 shortfall 已在 PostgreSQL 18 入账；推荐佣金冲回和分站佣金冲回未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-16-09",
         "requirement_refs": [
@@ -15240,15 +15265,18 @@
             "line": 580
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1609GiftShortfallOnCompletePG",
+          "TestFTRADTY0910GiftReclaimIdempotentPG"
+        ],
         "db_money_invariants": [
           "CumulativeGiftReclaim = gift * (min((refundedBefore+refundNow)/principal, 1) - min(refundedBefore/principal, 1)), Round(8)",
           "complete debits min(planned gift, remaining order gift, spendable quota) and stores bonus_shortfall_quota for the unrecovered part",
           "referralRefundClawback = commission * RefundRatio, RoundFloor(8); partial clawback writes commission_clawback_partial and leaves commission status unchanged",
           "site clawback releases the still-frozen source hold; a withdrawn external part writes adty_commission_recoveries kind=withdrawn and does not debit the site wallet"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-model-refund-1a500e1",
+        "na_reason": "赠金累计公式和完成时按可回收额扣赠金并记 shortfall 已在 PostgreSQL 18 入账；推荐佣金冲回和分站佣金冲回未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
