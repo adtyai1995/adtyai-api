@@ -169,6 +169,9 @@ func RedisHSetObj(key string, obj any, expiration time.Duration) error {
 }
 
 func RedisHGetObj(key string, obj any) error {
+	if RDB == nil {
+		return errors.New("redis is not ready")
+	}
 	if DebugEnabled {
 		SysLog(LogText("Redis HGETALL: key=%s", key))
 	}

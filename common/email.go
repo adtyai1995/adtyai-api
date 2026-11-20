@@ -12,13 +12,12 @@ import (
 	"time"
 )
 
-func generateMessageID() (string, error) {
-	split := strings.Split(SMTPFrom, "@")
-	if len(split) < 2 {
+func generateMessageID(from string) (string, error) {
+	split := strings.Split(from, "@")
+	if len(split) < 2 || split[1] == "" {
 		return "", fmt.Errorf("invalid SMTP account")
 	}
-	domain := strings.Split(SMTPFrom, "@")[1]
-	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), GetRandomString(12), domain), nil
+	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), GetRandomString(12), split[1]), nil
 }
 
 func shouldUseSMTPLoginAuth() bool {
@@ -107,10 +106,13 @@ func SendEmailFrom(from string, subject string, receiver string, content string)
 	default:
 		return NewMessage("Email sending method must be SMTP or Resend")
 	}
-	if SMTPFrom == "" { // for compatibility
-		SMTPFrom = SMTPAccount
+	// Compatibility fallback stays local. Publishing it onto SMTPFrom races with
+	// concurrent readers such as adtyPlatformSender while a background send runs.
+	smtpFrom := SMTPFrom
+	if smtpFrom == "" {
+		smtpFrom = SMTPAccount
 	}
-	id, err2 := generateMessageID()
+	id, err2 := generateMessageID(smtpFrom)
 	if err2 != nil {
 		return err2
 	}
@@ -124,7 +126,7 @@ func SendEmailFrom(from string, subject string, receiver string, content string)
 		"Date: %s\r\n"+
 		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
 		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, mime.QEncoding.Encode("utf-8", displayName), SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
+		receiver, mime.QEncoding.Encode("utf-8", displayName), smtpFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
 	auth := getSMTPAuth()
 	addr := fmt.Sprintf("%s:%d", SMTPServer, SMTPPort)
 	to := strings.Split(receiver, ";")
@@ -139,7 +141,7 @@ func SendEmailFrom(from string, subject string, receiver string, content string)
 			return err
 		}
 	}
-	if err = client.Mail(SMTPFrom); err != nil {
+	if err = client.Mail(smtpFrom); err != nil {
 		return err
 	}
 	for _, receiver := range to {
