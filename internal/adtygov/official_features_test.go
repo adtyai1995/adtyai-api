@@ -90,9 +90,7 @@ func TestOfficialFeatureCardsStayNotExecutableUntilEvidence(t *testing.T) {
 		require.Positive(t, feature.SourceLine)
 		_, ok := states[feature.CurrentState]
 		require.True(t, ok, feature.FeatureID)
-		require.Equal(t, "not_executable", feature.ExecutionStatus, feature.FeatureID)
 		require.False(t, feature.ExistenceOnly, feature.FeatureID)
-		require.Empty(t, feature.EvidenceID, feature.FeatureID)
 		require.NotEmpty(t, strings.TrimSpace(feature.NAReason), feature.FeatureID)
 		require.NotNil(t, feature.DesignCard, feature.FeatureID)
 		card := feature.DesignCard
@@ -101,8 +99,15 @@ func TestOfficialFeatureCardsStayNotExecutableUntilEvidence(t *testing.T) {
 		require.Equal(t, feature.RequirementRefs, card.RequirementRefs)
 		require.Equal(t, feature.TestFuncNames, card.TestFuncNames)
 		require.Equal(t, feature.DBMoneyInvariants, card.DBMoneyInvariants)
-		require.Empty(t, card.EvidenceID)
+		require.Equal(t, feature.EvidenceID, card.EvidenceID)
 		require.Equal(t, feature.NAReason, card.NAReason)
+		if feature.EvidenceID == "" {
+			require.Equal(t, "not_executable", feature.ExecutionStatus, feature.FeatureID)
+		} else {
+			require.Equal(t, "executed", feature.ExecutionStatus, feature.FeatureID)
+			require.NotEmpty(t, feature.TestFuncNames, feature.FeatureID)
+			require.True(t, strings.HasPrefix(feature.EvidenceID, "EV-R1-0127-"), feature.FeatureID)
+		}
 		require.NotNil(t, card.SourceSymbols)
 		require.NotNil(t, card.RequirementRefs)
 		require.NotNil(t, card.TestFuncNames)
