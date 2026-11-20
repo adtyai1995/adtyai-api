@@ -142,12 +142,15 @@ async function assertNoMoneyChange(watch: SessionWatch) {
 
 async function assertMainFits(page: Page, maxWidth: number) {
   const viewport = page.viewportSize()
-  expect(viewport).not.toBeNull()
   const box = await page.locator('main').boundingBox()
+  expect(viewport).not.toBeNull()
   expect(box).not.toBeNull()
-  expect(box!.width).toBeLessThanOrEqual(maxWidth)
-  expect(box!.x).toBeGreaterThanOrEqual(0)
-  expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width + 1)
+  if (viewport == null || box == null) {
+    return
+  }
+  expect(box.width).toBeLessThanOrEqual(maxWidth)
+  expect(box.x).toBeGreaterThanOrEqual(0)
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1)
   const fits = await page.evaluate(
     () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
   )
