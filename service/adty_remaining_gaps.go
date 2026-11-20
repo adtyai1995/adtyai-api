@@ -52,13 +52,6 @@ func WalletUSDPartsFromQuota(principalQuota, bonusQuota int64) WalletUSDParts {
 	return WalletUSDParts{Principal: principal, Bonus: bonus, Total: principal.Add(bonus)}
 }
 
-// PersonalOrder is one row a customer can search.
-type PersonalOrder struct {
-	TradeNo string
-	Kind    string
-	Status  string
-}
-
 // HealthSampleStatus is no_sample, stale, or ok.
 func HealthSampleStatus(samples int, updatedAt, now, staleSeconds int64) string {
 	if samples <= 0 || updatedAt <= 0 {
@@ -68,13 +61,6 @@ func HealthSampleStatus(samples int, updatedAt, now, staleSeconds int64) string 
 		return "stale"
 	}
 	return "ok"
-}
-
-// SiteTierRule is one assessment band.
-type SiteTierRule struct {
-	Code     string
-	MinUsers int
-	MinTopup decimal.Decimal
 }
 
 // UpdateAdtyTeamProfile lets the leader rename the team. Discount changes stay on the create path.
@@ -1343,14 +1329,6 @@ func recordAdtyAnomalyDisposition(kind, ref, status, note string, operatorID int
 		return common.NewMessage("Invalid parameters")
 	}
 	return model.DB.Create(&model.AdtyAnomalyDisposition{Kind: kind, Ref: ref, Status: status, Note: note, OperatorId: operatorID}).Error
-}
-
-// RequestPriceSnapshot freezes the accepted model and group price.
-type RequestPriceSnapshot struct {
-	Model    string
-	Group    string
-	UnitUSD  decimal.Decimal
-	FrozenAt int64
 }
 
 // HideAdtyNotificationForUser removes one inbox item for that user only.
