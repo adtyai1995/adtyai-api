@@ -6545,14 +6545,20 @@
           "line": 92
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0804AlipayCNYQuotePG"
+      ],
       "db_money_invariants": [
-        "支付宝走易支付分支：应付人民币 = FaceUSD * Price * TopupGroupRatio，四舍五入到 2 位",
-        "Price 非正时拒绝报价",
-        "已打开的测试源码：面额 100、默认 Price 7.3 时，支付宝应付 730.00 CNY"
+        "face_usd_100",
+        "price_7_3",
+        "alipay_payable_730_00_cny",
+        "credit_quota_50000000",
+        "bonus_usd_0",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-08-04",
         "requirement_refs": [
@@ -6575,14 +6581,20 @@
             "line": 92
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0804AlipayCNYQuotePG"
+        ],
         "db_money_invariants": [
-          "支付宝走易支付分支：应付人民币 = FaceUSD * Price * TopupGroupRatio，四舍五入到 2 位",
-          "Price 非正时拒绝报价",
-          "已打开的测试源码：面额 100、默认 Price 7.3 时，支付宝应付 730.00 CNY"
+          "face_usd_100",
+          "price_7_3",
+          "alipay_payable_730_00_cny",
+          "credit_quota_50000000",
+          "bonus_usd_0",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -6613,13 +6625,20 @@
           "line": 92
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0805WechatCNYQuotePG"
+      ],
       "db_money_invariants": [
-        "微信与支付宝共用易支付人民币公式：FaceUSD * Price * TopupGroupRatio，四舍五入到 2 位",
-        "已打开的测试源码：面额 100、默认 Price 7.3 时，微信应付 730.00 CNY"
+        "face_usd_100",
+        "price_7_3",
+        "wechat_payable_730_00_cny",
+        "credit_quota_50000000",
+        "bonus_usd_0",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-08-05",
         "requirement_refs": [
@@ -6642,13 +6661,20 @@
             "line": 92
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0805WechatCNYQuotePG"
+        ],
         "db_money_invariants": [
-          "微信与支付宝共用易支付人民币公式：FaceUSD * Price * TopupGroupRatio，四舍五入到 2 位",
-          "已打开的测试源码：面额 100、默认 Price 7.3 时，微信应付 730.00 CNY"
+          "face_usd_100",
+          "price_7_3",
+          "wechat_payable_730_00_cny",
+          "credit_quota_50000000",
+          "bonus_usd_0",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -7708,14 +7734,20 @@
           "line": 136
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0908ExpireRemainingGiftAfterMidnightPG"
+      ],
       "db_money_invariants": [
-        "充值赠金批次写入 GiftCategory permanent，不设置 ExpiresAt；到期赠金由单独的 CreateAdtyExpiringBonusBatchTx 写入",
-        "ExpireAdtyGiftBatchesTx 只处理 IsExpiringGift 且已过到期日零点的批次，清零额为 remaining 减在途占用，不重复清已消费部分；流水类型 gift_expire，幂等键 gift_expire:batch:{id}:through:{n}",
-        "已打开测试：零点前清零为空；零点后只清到期批次剩余 300，永久赠金 500 与较晚到期赠金 600 仍在；同刻再扫结果为空"
+        "sweep_before_midnight_empty",
+        "expired_quota_300",
+        "gift_expire_delta_-300",
+        "quota_after_expire_1100",
+        "resweep_empty",
+        "permanent_bonus_500",
+        "later_expiring_600"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-09-08",
         "requirement_refs": [
@@ -7759,14 +7791,20 @@
             "line": 136
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0908ExpireRemainingGiftAfterMidnightPG"
+        ],
         "db_money_invariants": [
-          "充值赠金批次写入 GiftCategory permanent，不设置 ExpiresAt；到期赠金由单独的 CreateAdtyExpiringBonusBatchTx 写入",
-          "ExpireAdtyGiftBatchesTx 只处理 IsExpiringGift 且已过到期日零点的批次，清零额为 remaining 减在途占用，不重复清已消费部分；流水类型 gift_expire，幂等键 gift_expire:batch:{id}:through:{n}",
-          "已打开测试：零点前清零为空；零点后只清到期批次剩余 300，永久赠金 500 与较晚到期赠金 600 仍在；同刻再扫结果为空"
+          "sweep_before_midnight_empty",
+          "expired_quota_300",
+          "gift_expire_delta_-300",
+          "quota_after_expire_1100",
+          "resweep_empty",
+          "permanent_bonus_500",
+          "later_expiring_600"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -7813,14 +7851,19 @@
           "line": 659
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0909ConsumePrincipalThenExpiringGiftPG"
+      ],
       "db_money_invariants": [
-        "adtyFundBatchLess 顺序为本金 FIFO，再按 ExpiresAt 升序消费到期赠金，最后永久赠金 FIFO",
-        "已打开测试消费 1500：本金 1000 先扣完，再扣较早到期赠金 500，永久赠金 500 保持不变，较晚到期赠金仍剩 600",
-        "另一已打开测试只断言较早本金先于较晚本金，赠金批次保持 40；它不覆盖到期赠金与永久赠金的先后"
+        "principal_remaining_0",
+        "permanent_bonus_500",
+        "expiring_bonus_900",
+        "quota_after_debit_1400",
+        "root_expiring_gift_ledgers_2",
+        "zero_gift_expire_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-09-09",
         "requirement_refs": [
@@ -7859,14 +7902,19 @@
             "line": 659
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0909ConsumePrincipalThenExpiringGiftPG"
+        ],
         "db_money_invariants": [
-          "adtyFundBatchLess 顺序为本金 FIFO，再按 ExpiresAt 升序消费到期赠金，最后永久赠金 FIFO",
-          "已打开测试消费 1500：本金 1000 先扣完，再扣较早到期赠金 500，永久赠金 500 保持不变，较晚到期赠金仍剩 600",
-          "另一已打开测试只断言较早本金先于较晚本金，赠金批次保持 40；它不覆盖到期赠金与永久赠金的先后"
+          "principal_remaining_0",
+          "permanent_bonus_500",
+          "expiring_bonus_900",
+          "quota_after_debit_1400",
+          "root_expiring_gift_ledgers_2",
+          "zero_gift_expire_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -9068,12 +9116,20 @@
           "line": 307
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1104SubsiteTeamPriceKeepsSupplyFloorPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "supply_floor_0_80",
+        "discounted_0_60",
+        "final_price_0_80",
+        "team_discount_0_50",
+        "shared_quota_stays_0",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-11-04",
         "requirement_refs": [
@@ -9091,12 +9147,20 @@
             "line": 307
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1104SubsiteTeamPriceKeepsSupplyFloorPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "supply_floor_0_80",
+          "discounted_0_60",
+          "final_price_0_80",
+          "team_discount_0_50",
+          "shared_quota_stays_0",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -9203,12 +9267,20 @@
           "line": 149
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1106MainTeamPriceHasNoSupplyFloorPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "no_supply_floor",
+        "final_price_0_60",
+        "main_site_id_0",
+        "team_discount_0_50",
+        "shared_quota_stays_0",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-11-06",
         "requirement_refs": [
@@ -9231,12 +9303,20 @@
             "line": 149
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1106MainTeamPriceHasNoSupplyFloorPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "no_supply_floor",
+          "final_price_0_60",
+          "main_site_id_0",
+          "team_discount_0_50",
+          "shared_quota_stays_0",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -9544,12 +9624,20 @@
           "line": 16
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1110OwnerListsEarningLinesPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "no_money_change",
+        "model_name_ftr1110-model",
+        "group_default",
+        "hides_channel",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "zero_site_wallet_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-11-10",
         "requirement_refs": [
@@ -9583,12 +9671,20 @@
             "line": 16
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1110OwnerListsEarningLinesPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "no_money_change",
+          "model_name_ftr1110-model",
+          "group_default",
+          "hides_channel",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "zero_site_wallet_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -13824,12 +13920,23 @@
           "line": 45
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1603OwnerBindsDirectInvitePG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "no_money_change",
+        "one_direct_invite",
+        "invite_rate_0_10",
+        "replay_still_one_invite",
+        "earnings_balance_12_50",
+        "zero_topups",
+        "zero_referral_commissions",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "zero_site_wallet_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-16-03",
         "requirement_refs": [
@@ -13889,12 +13996,23 @@
             "line": 45
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1603OwnerBindsDirectInvitePG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "no_money_change",
+          "one_direct_invite",
+          "invite_rate_0_10",
+          "replay_still_one_invite",
+          "earnings_balance_12_50",
+          "zero_topups",
+          "zero_referral_commissions",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "zero_site_wallet_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
