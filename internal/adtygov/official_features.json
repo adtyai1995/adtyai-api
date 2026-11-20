@@ -6789,14 +6789,23 @@
           "line": 70
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0807RootConfiguresAndPicksEpayChannelPG"
+      ],
       "db_money_invariants": [
-        "只从启用、支持该支付方式、单笔金额在范围内、加上本笔不超过当日限额的通道里挑选；没有候选时返回 ErrAdtyEpayNoChannel",
-        "同优先级内按权重随机；调用方可传入 exclude",
-        "单通道超时必须满足 1 <= 单通道 <= 总时长 <= 30 秒"
+        "picked_alipay_channel",
+        "pay_cny_730_00",
+        "min_cny_1_00",
+        "max_cny_1000_00",
+        "return_type_qrcode",
+        "channel_status_enabled",
+        "merchant_key_hidden",
+        "zero_topups",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-08-07",
         "requirement_refs": [
@@ -6823,14 +6832,23 @@
             "line": 70
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0807RootConfiguresAndPicksEpayChannelPG"
+        ],
         "db_money_invariants": [
-          "只从启用、支持该支付方式、单笔金额在范围内、加上本笔不超过当日限额的通道里挑选；没有候选时返回 ErrAdtyEpayNoChannel",
-          "同优先级内按权重随机；调用方可传入 exclude",
-          "单通道超时必须满足 1 <= 单通道 <= 总时长 <= 30 秒"
+          "picked_alipay_channel",
+          "pay_cny_730_00",
+          "min_cny_1_00",
+          "max_cny_1000_00",
+          "return_type_qrcode",
+          "channel_status_enabled",
+          "merchant_key_hidden",
+          "zero_topups",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
