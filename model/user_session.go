@@ -321,6 +321,9 @@ func writeUserSessionCache(entry *userSessionCacheEntry, cacheDeadline time.Time
 	if entry == nil || !common.RedisEnabled {
 		return nil
 	}
+	if common.RDB == nil {
+		return errors.New("redis is not ready")
+	}
 	now := time.Now()
 	sessionExpiresAt := time.Unix(entry.ExpiresAt, 0)
 	sessionTTL := sessionExpiresAt.Sub(now)

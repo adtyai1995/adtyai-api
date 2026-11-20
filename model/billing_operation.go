@@ -36,7 +36,8 @@ var (
 	ErrBillingTokenInsufficient  = errors.New("token quota insufficient")
 )
 
-// AdtyApplySiteEarningTx posts confirmed spread in the charge transaction.
+// The service registers the site-wallet writer so confirmed spread commits
+// with the charge while the model remains independent of the service package.
 var AdtyApplySiteEarningTx func(*gorm.DB, *AdtySiteEarningEvent) error
 
 // BillingEarningFactorsUsable reports whether a stored markup k and supply
@@ -338,7 +339,8 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			if AdtyTeamReserveHook == nil {
 				return ErrBillingOperationConflict
 			}
-			// Serialize with migration before taking team and token locks.
+			// Migration holds user before token and team. Serialize on the user
+			// first, then follow the lifecycle team-before-token order.
 			var user User
 			if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {
 				return err
@@ -349,7 +351,8 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			}
 			var token Token
 			if result.TokenId > 0 {
-				// Accepted requests retain quota accounting after key migration.
+				// Migration may soft-delete the accepted key; its quota facts still
+				// belong to this request and do not authorize a new request.
 				if err := lockForUpdate(tx.Unscoped()).First(&token, result.TokenId).Error; err != nil {
 					return err
 				}

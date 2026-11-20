@@ -172,6 +172,38 @@ type AdtySitePrice struct {
 
 func (AdtySitePrice) TableName() string { return "adty_site_prices" }
 
+// AdtySitePriceScope 持久化每个定价作用域（site_id + user_id）的单调递增版本号，
+// 即使该作用域下的分组或单模型加价行被全部删除，已提交的版本号也不会回退到 0（ISS-R1-0162）。
+type AdtySitePriceScope struct {
+	Id        int   `json:"id"`
+	SiteId    int   `json:"site_id" gorm:"uniqueIndex:ux_site_price_scope"`
+	UserId    int   `json:"user_id" gorm:"uniqueIndex:ux_site_price_scope"`
+	Version   int64 `json:"version"`
+	UpdatedAt int64 `json:"updated_at"`
+}
+
+func (AdtySitePriceScope) TableName() string { return "adty_site_price_scopes" }
+
+// BackfillAdtySitePriceScopes preserves versions from pre-scope price rows.
+// Repeated migration never lowers an existing scope version.
+func BackfillAdtySitePriceScopes(db *gorm.DB) error {
+	var scopes []AdtySitePriceScope
+	if err := db.Model(&AdtySitePrice{}).Select("site_id, user_id, MAX(version) AS version").Group("site_id, user_id").Order("site_id, user_id").Scan(&scopes).Error; err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, scope := range scopes {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&scope).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&AdtySitePriceScope{}).Where("site_id = ? AND user_id = ? AND version < ?", scope.SiteId, scope.UserId, scope.Version).Update("version", scope.Version).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // 站长收益日汇总的类型和状态（11.5）。
 const (
 	AdtySiteEarningUsage         = "usage"
@@ -210,6 +242,20 @@ type AdtySiteEarningDaily struct {
 }
 
 func (AdtySiteEarningDaily) TableName() string { return "adty_site_earning_daily" }
+
+// AdtySiteEarningFact keeps the occurrence time of each legacy aggregate update.
+// Daily rows remain projections; a later update cannot move earlier money to another day.
+type AdtySiteEarningFact struct {
+	Id         int64           `gorm:"primaryKey"`
+	SiteId     int             `gorm:"index"`
+	DailyId    int64           `gorm:"index"`
+	OccurredAt int64           `gorm:"index"`
+	Revenue    decimal.Decimal `gorm:"type:decimal(20,8);not null"`
+	Platform   decimal.Decimal `gorm:"type:decimal(20,8);not null"`
+	Earning    decimal.Decimal `gorm:"type:decimal(20,8);not null"`
+}
+
+func (AdtySiteEarningFact) TableName() string { return "adty_site_earning_facts" }
 
 // AdtySiteTrialGrant 是站长送给客户的试用额度，按幂等键去重，也用来算每天的总额（11.5）。
 type AdtySiteTrialGrant struct {
@@ -432,50 +478,4 @@ var AdtyOnTaskBillingLog func(params *RecordTaskBillingLogParams)
 // AdtyGroupColumn 是带引号的 group 列名（保留字），service 包写原生 Select 时用。
 func AdtyGroupColumn() string {
 	return commonGroupCol
-}
-
-// AdtySiteEarningFact keeps the occurrence time of each legacy aggregate update.
-// Daily rows remain projections; a later update cannot move earlier money to another day.
-type AdtySiteEarningFact struct {
-	Id         int64           `gorm:"primaryKey"`
-	SiteId     int             `gorm:"index"`
-	DailyId    int64           `gorm:"index"`
-	OccurredAt int64           `gorm:"index"`
-	Revenue    decimal.Decimal `gorm:"type:decimal(20,8);not null"`
-	Platform   decimal.Decimal `gorm:"type:decimal(20,8);not null"`
-	Earning    decimal.Decimal `gorm:"type:decimal(20,8);not null"`
-}
-
-func (AdtySiteEarningFact) TableName() string { return "adty_site_earning_facts" }
-
-// AdtySitePriceScope 持久化每个定价作用域（site_id + user_id）的单调递增版本号，
-// 即使该作用域下的分组或单模型加价行被全部删除，已提交的版本号也不会回退到 0（ISS-R1-0162）。
-type AdtySitePriceScope struct {
-	Id        int   `json:"id"`
-	SiteId    int   `json:"site_id" gorm:"uniqueIndex:ux_site_price_scope"`
-	UserId    int   `json:"user_id" gorm:"uniqueIndex:ux_site_price_scope"`
-	Version   int64 `json:"version"`
-	UpdatedAt int64 `json:"updated_at"`
-}
-
-func (AdtySitePriceScope) TableName() string { return "adty_site_price_scopes" }
-
-// BackfillAdtySitePriceScopes preserves versions from pre-scope price rows.
-// Repeated migration never lowers an existing scope version.
-func BackfillAdtySitePriceScopes(db *gorm.DB) error {
-	var scopes []AdtySitePriceScope
-	if err := db.Model(&AdtySitePrice{}).Select("site_id, user_id, MAX(version) AS version").Group("site_id, user_id").Order("site_id, user_id").Scan(&scopes).Error; err != nil {
-		return err
-	}
-	return db.Transaction(func(tx *gorm.DB) error {
-		for _, scope := range scopes {
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&scope).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&AdtySitePriceScope{}).Where("site_id = ? AND user_id = ? AND version < ?", scope.SiteId, scope.UserId, scope.Version).Update("version", scope.Version).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }

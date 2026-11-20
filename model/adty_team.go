@@ -2,12 +2,11 @@ package model
 
 import (
 	"errors"
+	"strings"
+
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
-	"strings"
 )
-
-var adtyTeamTopupPrefixes = []string{"TTEP", "TTU", "TTEAM"}
 
 const (
 	AdtyTeamStatusActive   = "active"
@@ -197,6 +196,86 @@ func AdtyTokenIsTeamKeyTx(tx *gorm.DB, tokenId int) (bool, error) {
 	return count > 0, nil
 }
 
+// ValidateAdtyTeamTokenTx reads current lifecycle state even when token metadata
+// came from a different node's cache. Historical bindings cannot become personal.
+func ValidateAdtyTeamTokenTx(tx *gorm.DB, token *Token) error {
+	if !tx.Migrator().HasTable(&AdtyTeamKey{}) {
+		return nil
+	}
+	var key AdtyTeamKey
+	if err := tx.Where("token_id = ?", token.Id).Limit(1).Find(&key).Error; err != nil {
+		return err
+	}
+	if key.Id == 0 {
+		return nil
+	}
+	if key.Status != AdtyTeamMemberActive || key.UserId != token.UserId || key.TeamId <= 0 {
+		return ErrTokenInvalid
+	}
+	var count int64
+	if err := tx.Model(&AdtyTeam{}).Where("id = ? AND status = ?", key.TeamId, AdtyTeamStatusActive).Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrTokenInvalid
+	}
+	if err := tx.Model(&AdtyTeamMember{}).Where("team_id = ? AND user_id = ? AND status = ?", key.TeamId, token.UserId, AdtyTeamMemberActive).Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrTokenInvalid
+	}
+	return nil
+}
+
+var adtyTeamTopupPrefixes = []string{"TTEP", "TTU", "TTEAM"}
+
+// AdtyTeamTopupSiblingTradeNos returns all provider-prefix variants sharing the
+// same team+key digest so one endpoint idempotency key cannot create separate
+// orders across Epay, BEpusdt, and direct team top-up paths (ISS-R1-0161).
+func AdtyTeamTopupSiblingTradeNos(tradeNo string) []string {
+	tradeNo = strings.TrimSpace(tradeNo)
+	for _, prefix := range adtyTeamTopupPrefixes {
+		if strings.HasPrefix(tradeNo, prefix) {
+			suffix := strings.TrimPrefix(tradeNo, prefix)
+			if len(suffix) == 20 {
+				return []string{"TTEP" + suffix, "TTU" + suffix, "TTEAM" + suffix}
+			}
+		}
+	}
+	if tradeNo == "" {
+		return nil
+	}
+	return []string{tradeNo}
+}
+
+// ValidateAdtyTeamTopupCreateTx serializes new team checkout requests. Historical
+// orders retain their original financial identity even after the team closes.
+func ValidateAdtyTeamTopupCreateTx(tx *gorm.DB, ext *AdtyTopupOrder) error {
+	if ext == nil || ext.TeamId <= 0 || tx == nil {
+		return nil
+	}
+	if tx.Migrator().HasTable(&AdtyTeam{}) {
+		var team AdtyTeam
+		if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
+			return err
+		}
+		if team.Status != AdtyTeamStatusActive || team.LeaderUserId != ext.UserId {
+			return errors.New("no permission to perform this action")
+		}
+	}
+	if siblings := AdtyTeamTopupSiblingTradeNos(ext.TradeNo); len(siblings) > 0 {
+		var count int64
+		if err := tx.Model(&AdtyTopupOrder{}).Where("trade_no IN ?", siblings).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return ErrAdtyIdempotencyConflict
+		}
+	}
+	return nil
+}
+
 // AdtyBeforeUserDeleteHook closes a team when its leader is deleted.
 var AdtyBeforeUserDeleteHook func(tx *gorm.DB, userId int) error
 
@@ -246,82 +325,4 @@ func BackfillAdtyTeamSourceSiteID(db *gorm.DB) error {
 		}
 		return nil
 	})
-}
-
-// ValidateAdtyTeamTokenTx reads current lifecycle state even when token metadata
-// came from a different node's cache. Historical bindings cannot become personal.
-func ValidateAdtyTeamTokenTx(tx *gorm.DB, token *Token) error {
-	if !tx.Migrator().HasTable(&AdtyTeamKey{}) {
-		return nil
-	}
-	var key AdtyTeamKey
-	if err := tx.Where("token_id = ?", token.Id).Limit(1).Find(&key).Error; err != nil {
-		return err
-	}
-	if key.Id == 0 {
-		return nil
-	}
-	if key.Status != AdtyTeamMemberActive || key.UserId != token.UserId || key.TeamId <= 0 {
-		return ErrTokenInvalid
-	}
-	var count int64
-	if err := tx.Model(&AdtyTeam{}).Where("id = ? AND status = ?", key.TeamId, AdtyTeamStatusActive).Count(&count).Error; err != nil {
-		return err
-	}
-	if count != 1 {
-		return ErrTokenInvalid
-	}
-	if err := tx.Model(&AdtyTeamMember{}).Where("team_id = ? AND user_id = ? AND status = ?", key.TeamId, token.UserId, AdtyTeamMemberActive).Count(&count).Error; err != nil {
-		return err
-	}
-	if count != 1 {
-		return ErrTokenInvalid
-	}
-	return nil
-}
-
-// AdtyTeamTopupSiblingTradeNos returns all provider-prefix variants sharing the
-// same team+key digest so one endpoint idempotency key cannot create separate
-// orders across Epay, BEpusdt, and direct team top-up paths (ISS-R1-0161).
-func AdtyTeamTopupSiblingTradeNos(tradeNo string) []string {
-	tradeNo = strings.TrimSpace(tradeNo)
-	for _, prefix := range adtyTeamTopupPrefixes {
-		if strings.HasPrefix(tradeNo, prefix) {
-			suffix := strings.TrimPrefix(tradeNo, prefix)
-			if len(suffix) == 20 {
-				return []string{"TTEP" + suffix, "TTU" + suffix, "TTEAM" + suffix}
-			}
-		}
-	}
-	if tradeNo == "" {
-		return nil
-	}
-	return []string{tradeNo}
-}
-
-// ValidateAdtyTeamTopupCreateTx serializes new team checkout requests. Historical
-// orders retain their original financial identity even after the team closes.
-func ValidateAdtyTeamTopupCreateTx(tx *gorm.DB, ext *AdtyTopupOrder) error {
-	if ext == nil || ext.TeamId <= 0 || tx == nil {
-		return nil
-	}
-	if tx.Migrator().HasTable(&AdtyTeam{}) {
-		var team AdtyTeam
-		if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
-			return err
-		}
-		if team.Status != AdtyTeamStatusActive || team.LeaderUserId != ext.UserId {
-			return errors.New("no permission to perform this action")
-		}
-	}
-	if siblings := AdtyTeamTopupSiblingTradeNos(ext.TradeNo); len(siblings) > 0 {
-		var count int64
-		if err := tx.Model(&AdtyTopupOrder{}).Where("trade_no IN ?", siblings).Count(&count).Error; err != nil {
-			return err
-		}
-		if count > 0 {
-			return ErrAdtyIdempotencyConflict
-		}
-	}
-	return nil
 }

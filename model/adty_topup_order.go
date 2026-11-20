@@ -41,7 +41,6 @@ func IsAdtyPaymentProvider(provider string) bool {
 // AdtyTopupOrder 是订单事实（任务 3.2），按 trade_no 对应上游的 top_ups，上游表不加字段。
 type AdtyTopupOrder struct {
 	Business              string          `json:"business" gorm:"type:varchar(32);not null;default:'wallet_topup'"`
-	SiteReferralSnapshot  string          `json:"-" gorm:"type:text"`
 	Id                    int64           `json:"id"`
 	TradeNo               string          `json:"trade_no" gorm:"uniqueIndex;type:varchar(64);not null"`
 	UserId                int             `json:"user_id" gorm:"index"`
@@ -50,6 +49,7 @@ type AdtyTopupOrder struct {
 	PaymentSceneName      string          `json:"payment_scene_name" gorm:"type:varchar(480)"`
 	PaymentSceneVersion   int64           `json:"payment_scene_version"`
 	PaymentSceneSnapshot  string          `json:"-" gorm:"type:text"`
+	SiteReferralSnapshot  string          `json:"-" gorm:"type:text"`
 	Method                string          `json:"method" gorm:"type:varchar(32)"`
 	BonusMethod           string          `json:"bonus_method" gorm:"type:varchar(16)"`
 	BonusExpiresAt        int64           `json:"bonus_expires_at" gorm:"not null;default:0"`

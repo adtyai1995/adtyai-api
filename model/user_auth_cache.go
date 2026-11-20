@@ -49,6 +49,9 @@ func writeUserCache(user *UserBase, includeQuota bool) error {
 	if user == nil || user.Id <= 0 || !common.RedisEnabled {
 		return nil
 	}
+	if common.RDB == nil {
+		return errors.New("redis is not ready")
+	}
 	user.CacheSchema = userCacheSchemaVersion
 	if user.AuthVersion <= 0 {
 		return fmt.Errorf("invalid user auth version")
@@ -109,6 +112,9 @@ return 1`
 func getUserAuthVersionFloor(userId int) (int64, error) {
 	if !common.RedisEnabled {
 		return 0, nil
+	}
+	if common.RDB == nil {
+		return 0, errors.New("redis is not ready")
 	}
 	values, err := common.RDB.MGet(context.Background(), getUserAuthFenceKey(userId), getUserAuthVersionKey(userId)).Result()
 	if err != nil {

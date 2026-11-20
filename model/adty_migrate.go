@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"time"
@@ -62,25 +63,65 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 	if err := db.AutoMigrate(&AdtyNotificationRead{}, &AdtyNotificationPublication{}, &AdtyVoucher{}, &AdtyVoucherLiability{}, &AdtyVoucherAuthorization{}, &AdtyVoucherCloseGrant{}, &AdtyTeam{}, &AdtyTeamMember{}, &AdtyTeamLedger{}, &AdtyTeamInvite{}, &AdtyTeamRegistrationLink{}, &AdtyTeamKey{}); err != nil {
 		return err
 	}
-	if err := EnsureAdtyVoucherTradeNoUniqueIndex(db); err != nil {
-		return err
-	}
-	if err := EnsureActiveTeamMembershipUniqueIndex(db); err != nil {
-		return err
-	}
+	voucherIndexErr := EnsureAdtyVoucherTradeNoUniqueIndex(db)
+	teamMemberIndexErr := EnsureActiveTeamMembershipUniqueIndex(db)
+	installAdtyUniqueConstraintWriteGates(db, voucherIndexErr, teamMemberIndexErr)
 	if err := db.AutoMigrate(&AdtyTelegramBot{}, &AdtyTelegramChallenge{}, &AdtyTelegramBinding{}, &AdtyTelegramDelivery{}, &AdtyTicket{}, &AdtyTicketMessage{}, &AdtyTicketImage{}, &AdtyTicketEvent{}, &AdtyTicketNotice{}, &AdtyTicketPolicy{}, &AdtyTranslationConfig{}, &AdtyTranslationHead{}, &AdtyTranslationJob{}, &AdtyTranslationUsage{}, &AdtyGroupHealthSample{}, &AdtyGroupHealthState{}, &AdtyGroupHealthAlert{}, &AdtyDataRetentionPolicy{}, &AdtyDataRetentionRun{}, &AdtyDataRetentionRunItem{}); err != nil {
-		return err
+		return errors.Join(voucherIndexErr, teamMemberIndexErr, err)
 	}
 	if err := RemapAdtyTicketLegacyStatuses(db); err != nil {
-		return err
+		return errors.Join(voucherIndexErr, teamMemberIndexErr, err)
 	}
 	if err := BackfillAdtyTicketImageVisibility(db); err != nil {
-		return err
+		return errors.Join(voucherIndexErr, teamMemberIndexErr, err)
 	}
 	if err := migrateAdtyReferralTablesOn(db); err != nil {
-		return err
+		return errors.Join(voucherIndexErr, teamMemberIndexErr, err)
 	}
-	return migrateAdtySiteTablesOn(db)
+	if err := migrateAdtySiteTablesOn(db); err != nil {
+		return errors.Join(voucherIndexErr, teamMemberIndexErr, err)
+	}
+	return errors.Join(voucherIndexErr, teamMemberIndexErr)
+}
+
+const (
+	adtyUniqueConstraintCreateGateCallback = "adty:unique_constraint_write_gate_create"
+	adtyUniqueConstraintUpdateGateCallback = "adty:unique_constraint_write_gate_update"
+)
+
+func installAdtyUniqueConstraintWriteGates(db *gorm.DB, voucherErr, teamMemberErr error) {
+	if db == nil {
+		return
+	}
+	gate := func(tx *gorm.DB) {
+		if tx == nil || tx.Statement == nil {
+			return
+		}
+		table := tx.Statement.Table
+		if table == "" && tx.Statement.Schema != nil {
+			table = tx.Statement.Schema.Table
+		}
+		switch table {
+		case (AdtyVoucher{}).TableName():
+			if voucherErr != nil {
+				_ = tx.AddError(voucherErr)
+			}
+		case (AdtyTeamMember{}).TableName():
+			if teamMemberErr != nil {
+				_ = tx.AddError(teamMemberErr)
+			}
+		}
+	}
+	if db.Callback().Create().Get(adtyUniqueConstraintCreateGateCallback) == nil {
+		_ = db.Callback().Create().Before("gorm:create").Register(adtyUniqueConstraintCreateGateCallback, gate)
+	} else {
+		_ = db.Callback().Create().Replace(adtyUniqueConstraintCreateGateCallback, gate)
+	}
+	if db.Callback().Update().Get(adtyUniqueConstraintUpdateGateCallback) == nil {
+		_ = db.Callback().Update().Before("gorm:update").Register(adtyUniqueConstraintUpdateGateCallback, gate)
+	} else {
+		_ = db.Callback().Update().Replace(adtyUniqueConstraintUpdateGateCallback, gate)
+	}
 }
 
 // migrateAdtySiteTables 建分站的表（P11）。

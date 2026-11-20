@@ -9,6 +9,30 @@ import (
 	"gorm.io/gorm"
 )
 
+// Owner routes pass an explicit site. Recheck the original order and current
+// owner under the same transaction locks as every refund state transition.
+func adtyRequireOwnerRefundScopeTx(tx *gorm.DB, ext *AdtyTopupOrder, operatorID int, ownerSiteID []int) error {
+	if len(ownerSiteID) == 0 {
+		return nil
+	}
+	if len(ownerSiteID) != 1 || ownerSiteID[0] <= 0 || ext.SiteId != ownerSiteID[0] || ext.IsOwnerSelfUse() {
+		return common.NewMessage("No permission to perform this action")
+	}
+	var site AdtySite
+	if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ? AND status IN ?", ownerSiteID[0], operatorID,
+		[]string{AdtySiteStatusActive, AdtySiteStatusPaused}).First(&site).Error; err != nil {
+		return common.NewMessage("No permission to perform this action")
+	}
+	var user User
+	if err := lockForUpdate(tx).Select("id", "status").First(&user, operatorID).Error; err != nil {
+		return err
+	}
+	if user.Status != common.UserStatusEnabled {
+		return common.NewMessage("No permission to perform this action")
+	}
+	return nil
+}
+
 // CumulativeGiftReclaim is this refund's gift recovery:
 // gift * min(cumulativeRefundedPrincipal / originalPrincipal, 1) minus earlier recoveries.
 // cumulativeRefundedPrincipal must be completed refund principal (S) only.
@@ -982,18 +1006,6 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
-		var before, checkinQuota int64
-		if ext.TeamId == 0 {
-			before, checkinQuota, err = lockUserQuotaForRefundTx(tx, topUp.UserId)
-			if err != nil {
-				return err
-			}
-		} else {
-			var team AdtyTeam
-			if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
-				return err
-			}
-		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
 		if err != nil {
 			return err
@@ -1020,6 +1032,18 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		// 本校验不是完成阶段专属：申请、审批、记录打款、完成四个入口各有一份（ISS-R4-0053）。
 		if err := adtyEnsureCreditedOrder(topUp, ext); err != nil {
 			return err
+		}
+		var before, checkinQuota int64
+		if ext.TeamId == 0 {
+			before, checkinQuota, err = lockUserQuotaForRefundTx(tx, topUp.UserId)
+			if err != nil {
+				return err
+			}
+		} else {
+			var team AdtyTeam
+			if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
+				return err
+			}
 		}
 		if row.ReclaimedAt == 0 {
 			return common.NewMessage("Internal principal reclaim has not been recorded")
@@ -1267,28 +1291,4 @@ func GetAdtyTopUpManualRefund(tradeNo, refundID string) (*AdtyManualRefundResult
 		return nil, err
 	}
 	return &AdtyManualRefundResult{Refund: &row, Occupancy: facts.Occupancy, Facts: facts, Commission: facts.Commission}, nil
-}
-
-// Owner routes pass an explicit site. Recheck the original order and current
-// owner under the same transaction locks as every refund state transition.
-func adtyRequireOwnerRefundScopeTx(tx *gorm.DB, ext *AdtyTopupOrder, operatorID int, ownerSiteID []int) error {
-	if len(ownerSiteID) == 0 {
-		return nil
-	}
-	if len(ownerSiteID) != 1 || ownerSiteID[0] <= 0 || ext.SiteId != ownerSiteID[0] || ext.IsOwnerSelfUse() {
-		return common.NewMessage("No permission to perform this action")
-	}
-	var site AdtySite
-	if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ? AND status IN ?", ownerSiteID[0], operatorID,
-		[]string{AdtySiteStatusActive, AdtySiteStatusPaused}).First(&site).Error; err != nil {
-		return common.NewMessage("No permission to perform this action")
-	}
-	var user User
-	if err := lockForUpdate(tx).Select("id", "status").First(&user, operatorID).Error; err != nil {
-		return err
-	}
-	if user.Status != common.UserStatusEnabled {
-		return common.NewMessage("No permission to perform this action")
-	}
-	return nil
 }

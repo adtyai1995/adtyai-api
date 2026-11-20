@@ -2,7 +2,6 @@ package model
 
 import (
 	"errors"
-	"gorm.io/gorm/clause"
 	"maps"
 	"math"
 	"slices"
@@ -20,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Option struct {

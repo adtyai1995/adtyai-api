@@ -2,14 +2,14 @@ package model
 
 import (
 	"errors"
-	"github.com/QuantumNous/new-api/common"
-	"github.com/shopspring/decimal"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -517,6 +517,157 @@ func TestSumFundBatchRemainingByKind(t *testing.T) {
 	require.EqualValues(t, 0, empty.Bonus)
 }
 
+func TestExpiringRootGiftLifecycleOrderDistinctionAndPostMidnightSweep(t *testing.T) {
+	db := openMemoryFundBatchDB(t)
+	require.NoError(t, db.AutoMigrate(&User{}, &AdtyBalanceLedger{}, &AdtyFundAllocation{}))
+	previous := DB
+	DB = db
+	t.Cleanup(func() { DB = previous })
+
+	user := User{Id: 901, Username: "gift_user_901", SiteId: 5, Quota: 1500}
+	require.NoError(t, db.Create(&user).Error)
+
+	// Recharge principal (1000) + permanent recharge bonus (500).
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		return CreateAdtyFundBatchesWithSiteTx(tx, user.Id, AdtyFundBatchSiteID(5), "topup-perm-1", 1000, 500)
+	}))
+
+	loc := time.FixedZone("CST", 8*3600)
+	// Grant rejects an expiry that is already past. Sweep calls pass their own
+	// clock, so these midnights only need to stay in the future and in order.
+	now := time.Now().In(loc)
+	day1 := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).Add(48 * time.Hour)
+	day1Midnight := day1.Unix()
+	day2Midnight := day1.Add(24 * time.Hour).Unix()
+
+	// Non-Root cannot issue expiring gift.
+	_, err := GrantAdtyRootExpiringGift(AdtyRootExpiringGiftGrantInput{
+		UserID:         user.Id,
+		OperatorID:     2,
+		OperatorRole:   common.RoleAdminUser,
+		Quota:          800,
+		ExpiresAt:      day1Midnight,
+		Reason:         "trial",
+		IdempotencyKey: "grant-non-root",
+	})
+	require.Error(t, err)
+
+	// Root issues two expiring gifts: later expiry (600) created first, earlier expiry (800) created second.
+	laterBatch, err := GrantAdtyRootExpiringGift(AdtyRootExpiringGiftGrantInput{
+		UserID:         user.Id,
+		OperatorID:     1,
+		OperatorRole:   common.RoleRootUser,
+		AmountUSD:      decimal.RequireFromString("0.0012"), // 600 quota
+		ExpiresAt:      day2Midnight,
+		Reason:         "trial-day2",
+		IdempotencyKey: "grant-day2",
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 600, laterBatch.Original)
+	require.True(t, laterBatch.IsExpiringGift())
+
+	earlierBatch, err := GrantAdtyRootExpiringGift(AdtyRootExpiringGiftGrantInput{
+		UserID:         user.Id,
+		OperatorID:     1,
+		OperatorRole:   common.RoleRootUser,
+		Quota:          800,
+		ExpiresAt:      day1Midnight,
+		Reason:         "trial-day1",
+		IdempotencyKey: "grant-day1",
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 800, earlierBatch.Original)
+
+	// Idempotent replay returns same batch without double-crediting; conflicting parameters reject.
+	replayed, err := GrantAdtyRootExpiringGift(AdtyRootExpiringGiftGrantInput{
+		UserID:         user.Id,
+		OperatorID:     1,
+		OperatorRole:   common.RoleRootUser,
+		Quota:          800,
+		ExpiresAt:      day1Midnight,
+		Reason:         "trial-day1",
+		IdempotencyKey: "grant-day1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, earlierBatch.Id, replayed.Id)
+
+	_, err = GrantAdtyRootExpiringGift(AdtyRootExpiringGiftGrantInput{
+		UserID:         user.Id,
+		OperatorID:     1,
+		OperatorRole:   common.RoleRootUser,
+		Quota:          900,
+		ExpiresAt:      day1Midnight,
+		Reason:         "trial-day1",
+		IdempotencyKey: "grant-day1",
+	})
+	require.ErrorIs(t, err, ErrAdtyIdempotencyConflict)
+
+	// Balance distinction separates Principal (1000), Permanent Bonus (500), and Expiring Bonus (1400).
+	sum, err := SumAdtyFundBatchRemainingByKind(user.Id)
+	require.NoError(t, err)
+	require.EqualValues(t, 1000, sum.Principal)
+	require.EqualValues(t, 500, sum.Bonus)
+	require.EqualValues(t, 1400, sum.ExpiringBonus)
+	require.EqualValues(t, 1900, sum.TotalBonus())
+	require.EqualValues(t, day1Midnight, sum.NextExpiresAt)
+
+	// Consume 1500 quota: must spend 1000 principal first, then 500 from earlier-expiring gift (day1Midnight),
+	// leaving 300 on earlier-expiring gift, 600 on later-expiring gift, and 500 on permanent recharge bonus.
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		if _, _, err := AdtyDebitUserQuotaTx(tx, user.Id, 1500); err != nil {
+			return err
+		}
+		_, err := ConsumeAdtyFundBatchesInOrderTx(tx, user.Id, 1500, 2900)
+		return err
+	}))
+
+	sumAfterSpend, err := SumAdtyFundBatchRemainingByKind(user.Id)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, sumAfterSpend.Principal)
+	require.EqualValues(t, 500, sumAfterSpend.Bonus, "permanent recharge bonus must remain untouched while expiring gifts remain")
+	require.EqualValues(t, 900, sumAfterSpend.ExpiringBonus, "300 on day1 + 600 on day2")
+
+	// One second before day1 midnight, the daily sweep clears nothing.
+	beforeMidnight := day1.Add(-time.Second)
+	expiredBefore, err := ExpireAdtyGiftBatches(beforeMidnight)
+	require.NoError(t, err)
+	require.Empty(t, expiredBefore)
+
+	// Five minutes after day1 midnight: sweep clears only the unconsumed 300 on earlierBatch.
+	// The 500 already consumed is not cleared again. laterBatch (600) and permanent bonus (500) remain.
+	afterDay1Midnight := day1.Add(5 * time.Minute)
+	expiredDay1, err := ExpireAdtyGiftBatches(afterDay1Midnight)
+	require.NoError(t, err)
+	require.Len(t, expiredDay1, 1)
+	require.Equal(t, earlierBatch.Id, expiredDay1[0].BatchID)
+	require.EqualValues(t, 800, expiredDay1[0].Original)
+	require.EqualValues(t, 500, expiredDay1[0].Consumed)
+	require.EqualValues(t, 300, expiredDay1[0].ExpiredQuota)
+	require.Positive(t, expiredDay1[0].LedgerID)
+
+	// Re-running the sweep at the same timestamp is idempotent.
+	reSweep, err := ExpireAdtyGiftBatches(afterDay1Midnight)
+	require.NoError(t, err)
+	require.Empty(t, reSweep)
+
+	var refreshedUser User
+	require.NoError(t, db.First(&refreshedUser, user.Id).Error)
+	require.EqualValues(t, 1100, refreshedUser.Quota, "600 later expiring gift + 500 permanent bonus")
+
+	var expireLedger AdtyBalanceLedger
+	require.NoError(t, db.First(&expireLedger, expiredDay1[0].LedgerID).Error)
+	require.Equal(t, AdtyLedgerTypeGiftExpire, expireLedger.Type)
+	require.EqualValues(t, -300, expireLedger.DeltaQuota)
+	require.Contains(t, expireLedger.RefId, earlierBatch.Source)
+
+	sumAfterDay1, err := SumAdtyFundBatchRemainingByKind(user.Id)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, sumAfterDay1.Principal)
+	require.EqualValues(t, 500, sumAfterDay1.Bonus)
+	require.EqualValues(t, 600, sumAfterDay1.ExpiringBonus)
+	require.EqualValues(t, day2Midnight, sumAfterDay1.NextExpiresAt)
+}
+
 func expiringGiftPostgres(t *testing.T) (*gorm.DB, User, int64) {
 	t.Helper()
 	opened, err := OpenAdtyTestDatabase()
@@ -544,6 +695,95 @@ func TestExpiringRootGiftRejectsMissingRootIdentity(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&AdtyFundBatch{}).Count(&count).Error)
 	require.Zero(t, count)
+}
+
+func TestExpiringRootGiftRejectsAdministrativeOrWrongSiteTarget(t *testing.T) {
+	db, user, expires := expiringGiftPostgres(t)
+	input := AdtyRootExpiringGiftGrantInput{UserID: user.Id, OperatorID: 1, OperatorRole: common.RoleRootUser, Quota: 1000, ExpiresAt: expires, IdempotencyKey: "target-check"}
+	input.SiteID = AdtyFundBatchSiteID(99)
+	_, err := GrantAdtyRootExpiringGift(input)
+	require.Error(t, err)
+	input.SiteID = nil
+	for _, role := range []int{common.RoleAdminUser, common.RoleRootUser} {
+		require.NoError(t, db.Model(&User{}).Where("id = ?", user.Id).Update("role", role).Error)
+		_, err := GrantAdtyRootExpiringGift(input)
+		require.Error(t, err)
+	}
+	var stored User
+	require.NoError(t, db.First(&stored, user.Id).Error)
+	require.Zero(t, stored.Quota)
+	var count int64
+	require.NoError(t, db.Model(&AdtyFundBatch{}).Count(&count).Error)
+	require.Zero(t, count)
+}
+
+func TestExpiringRootGiftConcurrentSweepAndSettlementPreserveConservation(t *testing.T) {
+	for _, action := range []string{"settle", "release", "refund"} {
+		t.Run(action, func(t *testing.T) {
+			db, user, expires := expiringGiftPostgres(t)
+			batch, err := GrantAdtyRootExpiringGift(AdtyRootExpiringGiftGrantInput{UserID: user.Id, OperatorID: 1, OperatorRole: common.RoleRootUser, Quota: 1000, ExpiresAt: expires, IdempotencyKey: "concurrent-sweep"})
+			require.NoError(t, err)
+			require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+				if _, _, err := AdtyDebitUserQuotaTx(tx, user.Id, 600); err != nil {
+					return err
+				}
+				if err := AllocateAdtyFundAllocationsTx(tx, user.Id, "concurrent-use", 600, 1000); err != nil {
+					return err
+				}
+				if action == "refund" {
+					_, err := SettleAdtyFundAllocationsTx(tx, user.Id, "concurrent-use", 600, 400)
+					return err
+				}
+				return nil
+			}))
+			start := make(chan struct{})
+			errs := make(chan error, 2)
+			var wg sync.WaitGroup
+			wg.Go(func() { <-start; _, err := ExpireAdtyGiftBatches(time.Unix(expires, 0)); errs <- err })
+			wg.Go(func() {
+				<-start
+				errs <- db.Transaction(func(tx *gorm.DB) error {
+					credit := int64(600)
+					if action == "settle" {
+						credit = 350
+					}
+					if _, err := AdtyCreditUserQuotaTx(tx, user.Id, credit); err != nil {
+						return err
+					}
+					switch action {
+					case "settle":
+						_, err := SettleAdtyFundAllocationsTx(tx, user.Id, "concurrent-use", 250, 400)
+						return err
+					case "release":
+						return ReleaseAdtyFundAllocationsTx(tx, user.Id, "concurrent-use")
+					default:
+						return ReverseSettledAdtyFundAllocationsTx(tx, user.Id, "concurrent-use", "concurrent-refund", 600)
+					}
+				})
+			})
+			close(start)
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				require.NoError(t, err)
+			}
+			_, err = ExpireAdtyGiftBatches(time.Unix(expires, 0))
+			require.NoError(t, err)
+			require.NoError(t, db.First(batch, batch.Id).Error)
+			wantExpired := int64(1000)
+			if action == "settle" {
+				wantExpired = 750
+			}
+			require.Equal(t, wantExpired, batch.ExpiredQuota)
+			require.Zero(t, batch.Remaining)
+			var stored User
+			require.NoError(t, db.First(&stored, user.Id).Error)
+			require.Zero(t, stored.Quota)
+			var cleared int64
+			require.NoError(t, db.Model(&AdtyBalanceLedger{}).Select("coalesce(sum(delta_quota),0)").Where("user_id = ? AND type = ?", user.Id, AdtyLedgerTypeGiftExpire).Scan(&cleared).Error)
+			require.Equal(t, -wantExpired, cleared)
+		})
+	}
 }
 
 func TestExpiringRootGiftConcurrentReplayMaintainsConservation(t *testing.T) {
@@ -737,93 +977,4 @@ func TestExpiringRootGiftAllocatesInOrderAndRefundsOriginalLot(t *testing.T) {
 	require.NoError(t, db.First(&paidLots[1], paidLots[1].Id).Error)
 	require.EqualValues(t, 600, later.Remaining)
 	require.EqualValues(t, 500, paidLots[1].Remaining)
-}
-
-func TestExpiringRootGiftRejectsAdministrativeOrWrongSiteTarget(t *testing.T) {
-	db, user, expires := expiringGiftPostgres(t)
-	input := AdtyRootExpiringGiftGrantInput{UserID: user.Id, OperatorID: 1, OperatorRole: common.RoleRootUser, Quota: 1000, ExpiresAt: expires, IdempotencyKey: "target-check"}
-	input.SiteID = AdtyFundBatchSiteID(99)
-	_, err := GrantAdtyRootExpiringGift(input)
-	require.Error(t, err)
-	input.SiteID = nil
-	for _, role := range []int{common.RoleAdminUser, common.RoleRootUser} {
-		require.NoError(t, db.Model(&User{}).Where("id = ?", user.Id).Update("role", role).Error)
-		_, err := GrantAdtyRootExpiringGift(input)
-		require.Error(t, err)
-	}
-	var stored User
-	require.NoError(t, db.First(&stored, user.Id).Error)
-	require.Zero(t, stored.Quota)
-	var count int64
-	require.NoError(t, db.Model(&AdtyFundBatch{}).Count(&count).Error)
-	require.Zero(t, count)
-}
-
-func TestExpiringRootGiftConcurrentSweepAndSettlementPreserveConservation(t *testing.T) {
-	for _, action := range []string{"settle", "release", "refund"} {
-		t.Run(action, func(t *testing.T) {
-			db, user, expires := expiringGiftPostgres(t)
-			batch, err := GrantAdtyRootExpiringGift(AdtyRootExpiringGiftGrantInput{UserID: user.Id, OperatorID: 1, OperatorRole: common.RoleRootUser, Quota: 1000, ExpiresAt: expires, IdempotencyKey: "concurrent-sweep"})
-			require.NoError(t, err)
-			require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-				if _, _, err := AdtyDebitUserQuotaTx(tx, user.Id, 600); err != nil {
-					return err
-				}
-				if err := AllocateAdtyFundAllocationsTx(tx, user.Id, "concurrent-use", 600, 1000); err != nil {
-					return err
-				}
-				if action == "refund" {
-					_, err := SettleAdtyFundAllocationsTx(tx, user.Id, "concurrent-use", 600, 400)
-					return err
-				}
-				return nil
-			}))
-			start := make(chan struct{})
-			errs := make(chan error, 2)
-			var wg sync.WaitGroup
-			wg.Go(func() { <-start; _, err := ExpireAdtyGiftBatches(time.Unix(expires, 0)); errs <- err })
-			wg.Go(func() {
-				<-start
-				errs <- db.Transaction(func(tx *gorm.DB) error {
-					credit := int64(600)
-					if action == "settle" {
-						credit = 350
-					}
-					if _, err := AdtyCreditUserQuotaTx(tx, user.Id, credit); err != nil {
-						return err
-					}
-					switch action {
-					case "settle":
-						_, err := SettleAdtyFundAllocationsTx(tx, user.Id, "concurrent-use", 250, 400)
-						return err
-					case "release":
-						return ReleaseAdtyFundAllocationsTx(tx, user.Id, "concurrent-use")
-					default:
-						return ReverseSettledAdtyFundAllocationsTx(tx, user.Id, "concurrent-use", "concurrent-refund", 600)
-					}
-				})
-			})
-			close(start)
-			wg.Wait()
-			close(errs)
-			for err := range errs {
-				require.NoError(t, err)
-			}
-			_, err = ExpireAdtyGiftBatches(time.Unix(expires, 0))
-			require.NoError(t, err)
-			require.NoError(t, db.First(batch, batch.Id).Error)
-			wantExpired := int64(1000)
-			if action == "settle" {
-				wantExpired = 750
-			}
-			require.Equal(t, wantExpired, batch.ExpiredQuota)
-			require.Zero(t, batch.Remaining)
-			var stored User
-			require.NoError(t, db.First(&stored, user.Id).Error)
-			require.Zero(t, stored.Quota)
-			var cleared int64
-			require.NoError(t, db.Model(&AdtyBalanceLedger{}).Select("coalesce(sum(delta_quota),0)").Where("user_id = ? AND type = ?", user.Id, AdtyLedgerTypeGiftExpire).Scan(&cleared).Error)
-			require.Equal(t, -wantExpired, cleared)
-		})
-	}
 }

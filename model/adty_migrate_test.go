@@ -94,3 +94,106 @@ func TestAdtyDSNAcceptsKeywordPostgreSQL(t *testing.T) {
 		t.Fatal("MySQL DSN was accepted as PostgreSQL")
 	}
 }
+
+func TestMigrateAdtyTablesFailsAndGatesWritesOnUniqueConstraintCollisions(t *testing.T) {
+	db := isolatedMigrationTestDatabase(t, "sqlite")
+	require.NoError(t, db.AutoMigrate(&User{}, &Log{}, &TopUp{}, &AdtyVoucher{}, &AdtyTeam{}, &AdtyTeamMember{}))
+
+	v1 := AdtyVoucher{
+		CodeHash:   "hist-v1",
+		CodeTail:   "1111",
+		Purpose:    AdtyVoucherPurposeMainUser,
+		Status:     AdtyVoucherStatusRedeemed,
+		AmountUSD:  decimal.NewFromInt(5),
+		Quota:      2500000,
+		SourceKind: AdtyVoucherSourcePlatform,
+		TradeNo:    "VCHCOLLISION001",
+	}
+	v2 := AdtyVoucher{
+		CodeHash:   "hist-v2",
+		CodeTail:   "2222",
+		Purpose:    AdtyVoucherPurposeMainUser,
+		Status:     AdtyVoucherStatusRedeemed,
+		AmountUSD:  decimal.NewFromInt(5),
+		Quota:      2500000,
+		SourceKind: AdtyVoucherSourcePlatform,
+		TradeNo:    "VCHCOLLISION001",
+	}
+	require.NoError(t, db.Create(&v1).Error)
+	require.NoError(t, db.Create(&v2).Error)
+
+	teamA := AdtyTeam{Name: "hist-team-a", Status: AdtyTeamStatusActive, Discount: decimal.NewFromInt(1)}
+	teamB := AdtyTeam{Name: "hist-team-b", Status: AdtyTeamStatusActive, Discount: decimal.NewFromInt(1)}
+	require.NoError(t, db.Create(&teamA).Error)
+	require.NoError(t, db.Create(&teamB).Error)
+	m1 := AdtyTeamMember{TeamId: teamA.Id, UserId: 77, Role: AdtyTeamRoleLeader, Status: AdtyTeamMemberActive}
+	m2 := AdtyTeamMember{TeamId: teamB.Id, UserId: 77, Role: AdtyTeamRoleMember, Status: AdtyTeamMemberActive}
+	require.NoError(t, db.Create(&m1).Error)
+	require.NoError(t, db.Create(&m2).Error)
+
+	err := MigrateAdtyTablesOn(db)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAdtyVoucherTradeNoCollision)
+	assert.ErrorIs(t, err, ErrActiveTeamMembershipCollision)
+
+	// Historical rows must remain intact and readable.
+	var vouchers []AdtyVoucher
+	require.NoError(t, db.Order("id ASC").Find(&vouchers).Error)
+	require.Len(t, vouchers, 2)
+	assert.Equal(t, "VCHCOLLISION001", vouchers[0].TradeNo)
+	assert.Equal(t, "VCHCOLLISION001", vouchers[1].TradeNo)
+
+	var members []AdtyTeamMember
+	require.NoError(t, db.Order("id ASC").Find(&members).Error)
+	require.Len(t, members, 2)
+	assert.Equal(t, AdtyTeamMemberActive, members[0].Status)
+	assert.Equal(t, AdtyTeamMemberActive, members[1].Status)
+
+	// Write paths to tables with missing unique constraints must be gated.
+	writeVoucherErr := db.Create(&AdtyVoucher{
+		CodeHash:   "blocked-v3",
+		CodeTail:   "3333",
+		Purpose:    AdtyVoucherPurposeMainUser,
+		Status:     AdtyVoucherStatusPending,
+		AmountUSD:  decimal.NewFromInt(1),
+		Quota:      500000,
+		SourceKind: AdtyVoucherSourcePlatform,
+	}).Error
+	require.ErrorIs(t, writeVoucherErr, ErrAdtyVoucherTradeNoCollision)
+
+	updateVoucherErr := db.Model(&AdtyVoucher{}).Where("id = ?", v1.Id).Update("status", AdtyVoucherStatusCancelled).Error
+	require.ErrorIs(t, updateVoucherErr, ErrAdtyVoucherTradeNoCollision)
+
+	writeMemberErr := db.Create(&AdtyTeamMember{
+		TeamId: teamA.Id,
+		UserId: 88,
+		Role:   AdtyTeamRoleMember,
+		Status: AdtyTeamMemberActive,
+	}).Error
+	require.ErrorIs(t, writeMemberErr, ErrActiveTeamMembershipCollision)
+
+	updateMemberErr := db.Model(&AdtyTeamMember{}).Where("id = ?", m1.Id).Update("role", AdtyTeamRoleMember).Error
+	require.ErrorIs(t, updateMemberErr, ErrActiveTeamMembershipCollision)
+
+	// After historical collisions are remediated, re-running migration installs the unique indexes and lifts the write gate.
+	require.NoError(t, db.Delete(&AdtyVoucher{}, v2.Id).Error)
+	require.NoError(t, db.Delete(&AdtyTeamMember{}, m2.Id).Error)
+	require.NoError(t, MigrateAdtyTablesOn(db))
+
+	require.NoError(t, db.Create(&AdtyVoucher{
+		CodeHash:   "allowed-v3",
+		CodeTail:   "3333",
+		Purpose:    AdtyVoucherPurposeMainUser,
+		Status:     AdtyVoucherStatusRedeemed,
+		AmountUSD:  decimal.NewFromInt(1),
+		Quota:      500000,
+		SourceKind: AdtyVoucherSourcePlatform,
+		TradeNo:    "VCHUNIQUE002",
+	}).Error)
+	require.NoError(t, db.Create(&AdtyTeamMember{
+		TeamId: teamB.Id,
+		UserId: 88,
+		Role:   AdtyTeamRoleMember,
+		Status: AdtyTeamMemberActive,
+	}).Error)
+}
