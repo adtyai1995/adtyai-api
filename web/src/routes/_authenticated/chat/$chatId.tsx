@@ -154,11 +154,14 @@ function ChatRouteComponent() {
   }
 
   return (
+    // Admin-configured preset links follow the custom-home embed sandbox:
+    // scripts, forms, and user-activated popups, without same-origin access.
     <iframe
       src={iframeSrc}
       key={iframeSrc}
       className='h-full w-full border-0'
       allow='camera; microphone'
+      sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-top-navigation-by-user-activation'
       title={`Chat preset: ${preset.name}`}
     />
   )
