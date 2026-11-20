@@ -23614,7 +23614,7 @@
       "source_line": 2754,
       "ftr_id": "FTR-223",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -23672,10 +23672,12 @@
           "line": 109
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2303RedisLimitStorePG"
+      ],
       "db_money_invariants": [],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-mw-2303-22b1335",
+      "na_reason": "Redis 往返、用户限流计数落在 Redis、超额返回 429、存储不可用时 fail-close 且不改额度，已在 PostgreSQL 18 入账；用户额度缓存同步与失效未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-23-03",
         "requirement_refs": [
@@ -23735,10 +23737,12 @@
             "line": 109
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2303RedisLimitStorePG"
+        ],
         "db_money_invariants": [],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-mw-2303-22b1335",
+        "na_reason": "Redis 往返、用户限流计数落在 Redis、超额返回 429、存储不可用时 fail-close 且不改额度，已在 PostgreSQL 18 入账；用户额度缓存同步与失效未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -23850,7 +23854,7 @@
       "source_line": 2756,
       "ftr_id": "FTR-225",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -23896,12 +23900,14 @@
           "line": 315
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2305SiteMailSenderPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-ops-22b1335",
+      "na_reason": "分站发件人选择与拦截后的站点邮件发送已在 PostgreSQL 18 入账，且资金行数不变；管理端邮件配置页与 UpdateOption 未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-23-05",
         "requirement_refs": [
@@ -23949,12 +23955,14 @@
             "line": 315
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2305SiteMailSenderPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-ops-22b1335",
+        "na_reason": "分站发件人选择与拦截后的站点邮件发送已在 PostgreSQL 18 入账，且资金行数不变；管理端邮件配置页与 UpdateOption 未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -23964,7 +23972,7 @@
       "source_line": 2757,
       "ftr_id": "FTR-226",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -24016,12 +24024,14 @@
           "line": 24
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2306RedactAndRequestIDPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-ops-22b1335",
+      "na_reason": "密钥脱敏与带请求号的错误日志已在 PostgreSQL 18 入账，且资金与工单行数不变；日志初始化、请求号中间件和任务轮询脱敏未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-23-06",
         "requirement_refs": [
@@ -24075,12 +24085,14 @@
             "line": 24
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2306RedactAndRequestIDPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-ops-22b1335",
+        "na_reason": "密钥脱敏与带请求号的错误日志已在 PostgreSQL 18 入账，且资金与工单行数不变；日志初始化、请求号中间件和任务轮询脱敏未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
