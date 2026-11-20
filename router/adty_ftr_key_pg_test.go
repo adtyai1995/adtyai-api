@@ -3,6 +3,7 @@ package router
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -89,6 +90,60 @@ func TestFTRADTY0402ListAPIKeysPG(t *testing.T) {
 	var count int64
 	require.NoError(t, f.db.Model(&model.Token{}).Where("user_id = ?", user.Id).Count(&count).Error)
 	assert.EqualValues(t, 1, count)
+	assertFTRQuotaAndNoLedger(t, f, user.Id, ftrSessionQuota)
+}
+
+func ftrCreateKey(t *testing.T, f *siteFixture, accessToken, name string) model.Token {
+	t.Helper()
+	created := ftrAuthed(t, f, http.MethodPost, "/api/token/", `{"name":"`+name+`","expired_time":-1,"unlimited_quota":true,"group":"default"}`, accessToken)
+	require.Contains(t, created.Body.String(), `"success":true`, created.Body.String())
+	var token model.Token
+	require.NoError(t, f.db.Where("name = ?", name).First(&token).Error)
+	require.NotZero(t, token.Id)
+	return token
+}
+
+func TestFTRADTY0408KeyModelLimitPG(t *testing.T) {
+	f := newSiteFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
+	ftrEnsureAuditIntent(t, f)
+	user := f.user(t, "ftr0408key", 0)
+	ftrPinQuota(t, f, user.Id)
+	login := ftrMainLogin(t, f, user.Username)
+	token := ftrCreateKey(t, f, login.Data.AccessToken, "ftr-models")
+
+	body := `{"id":` + strconv.Itoa(token.Id) + `,"name":"ftr-models","expired_time":-1,"unlimited_quota":true,"group":"default","model_limits_enabled":true,"model_limits":"ftr-model"}`
+	updated := ftrAuthed(t, f, http.MethodPut, "/api/token/", body, login.Data.AccessToken)
+	require.Contains(t, updated.Body.String(), `"success":true`, updated.Body.String())
+
+	var stored model.Token
+	require.NoError(t, f.db.First(&stored, token.Id).Error)
+	assert.Equal(t, user.Id, stored.UserId)
+	assert.True(t, stored.ModelLimitsEnabled)
+	assert.Equal(t, "ftr-model", stored.ModelLimits)
+	assertFTRQuotaAndNoLedger(t, f, user.Id, ftrSessionQuota)
+}
+
+func TestFTRADTY0410KeyIPAndRateLimitPG(t *testing.T) {
+	f := newSiteFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
+	ftrEnsureAuditIntent(t, f)
+	user := f.user(t, "ftr0410key", 0)
+	ftrPinQuota(t, f, user.Id)
+	login := ftrMainLogin(t, f, user.Username)
+	token := ftrCreateKey(t, f, login.Data.AccessToken, "ftr-allow")
+
+	body := `{"id":` + strconv.Itoa(token.Id) + `,"name":"ftr-allow","expired_time":-1,"unlimited_quota":true,"group":"default","allow_ips":"203.0.113.10","rate_limit_per_minute":12}`
+	updated := ftrAuthed(t, f, http.MethodPut, "/api/token/", body, login.Data.AccessToken)
+	require.Contains(t, updated.Body.String(), `"success":true`, updated.Body.String())
+
+	var stored model.Token
+	require.NoError(t, f.db.First(&stored, token.Id).Error)
+	require.NotNil(t, stored.AllowIps)
+	assert.Equal(t, "203.0.113.10", *stored.AllowIps)
+	var limit model.AdtyKeyLimit
+	require.NoError(t, f.db.Where("token_id = ?", token.Id).First(&limit).Error)
+	assert.Equal(t, 12, limit.PerMinute)
 	assertFTRQuotaAndNoLedger(t, f, user.Id, ftrSessionQuota)
 }
 
