@@ -26,8 +26,25 @@ type SessionWatch = {
   money: string[]
 }
 
+const LEGAL_TEXT: Record<string, Record<string, string>> = {
+  'user-agreement': {
+    en: 'Main site terms apply to this guest session.',
+    'zh-CN': '主站用户协议适用于本次访客会话。',
+  },
+  'privacy-policy': {
+    en: 'Main site privacy policy applies to this guest session.',
+    'zh-CN': '主站隐私政策适用于本次访客会话。',
+  },
+}
+
 function publicApiBody(url: string): unknown {
-  const path = new URL(url).pathname.replace(/\/+$/, '') || '/'
+  const parsed = new URL(url)
+  const path = parsed.pathname.replace(/\/+$/, '') || '/'
+  const legal = path.match(/^\/api\/adty\/legal\/(user-agreement|privacy-policy)$/)
+  if (legal) {
+    const lang = parsed.searchParams.get('lang') === 'zh-CN' ? 'zh-CN' : 'en'
+    return { success: true, data: LEGAL_TEXT[legal[1]][lang] }
+  }
   // Root beforeLoad redirects to the setup wizard unless data.status is true.
   if (path === '/api/setup') {
     return { success: true, data: { status: true } }
@@ -212,6 +229,58 @@ test('ADTY-22-10 docs and the help entry switch between Chinese and English', as
   await expect(page.getByRole('heading', { level: 1, name: 'FAQ' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Docs', exact: true }).first()).toBeVisible()
   await expect(page).toHaveURL(/\/docs\/faq$/)
+  await assertGuestOnMainSite(page, 'Sign in')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-01-01 home shows the main-site brand to a guest', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openAsMainSiteGuest(page, 'en')
+  await expect(page).toHaveURL(/\/$/)
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'One endpoint. Every model.' }),
+  ).toBeVisible()
+  await expect(page.getByRole('link', { name: 'ADTY AI' }).first()).toBeVisible()
+  await assertGuestOnMainSite(page, 'Sign in')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-01-05 terms page shows the configured agreement', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openAsMainSiteGuest(page, 'en')
+  await page.goto('/user-agreement')
+  await expect(page).toHaveURL(/\/user-agreement$/)
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'User Agreement' }),
+  ).toBeVisible()
+  await expect(
+    page.getByText('Main site terms apply to this guest session.'),
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(
+    page.getByRole('heading', { level: 1, name: '用户协议' }),
+  ).toBeVisible()
+  await expect(page.getByText('主站用户协议适用于本次访客会话。')).toBeVisible()
+  await expect(page).toHaveURL(/\/user-agreement$/)
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-01-06 privacy page shows the configured policy', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openAsMainSiteGuest(page, 'en')
+  await page.goto('/privacy-policy')
+  await expect(page).toHaveURL(/\/privacy-policy$/)
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Privacy Policy' }),
+  ).toBeVisible()
+  await expect(
+    page.getByText('Main site privacy policy applies to this guest session.'),
+  ).toBeVisible()
   await assertGuestOnMainSite(page, 'Sign in')
   await assertNoMoneyChange(watch)
 })
