@@ -6388,14 +6388,17 @@
           "line": 247
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0802FixedQuotaScalePG"
+      ],
       "db_money_invariants": [
-        "唯一合法尺度是 1 USD = 500000 额度；rejectChangedQuotaPerUnit 拒绝不是 500000 的保存值",
-        "已打开的测试源码：把浮点 QuotaPerUnit 改成 1 后，QuotaPerUnitDecimal 仍是 500000；1.25 USD 转为 625000；2 USD 转为 1000000",
-        "加载 250000 不改变运行中的 500000"
+        "fixed_quota_per_unit_500000",
+        "usd_1_25_is_625000",
+        "usd_2_is_1000000",
+        "reject_non_500000"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-08-02",
         "requirement_refs": [
@@ -6423,14 +6426,17 @@
             "line": 247
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0802FixedQuotaScalePG"
+        ],
         "db_money_invariants": [
-          "唯一合法尺度是 1 USD = 500000 额度；rejectChangedQuotaPerUnit 拒绝不是 500000 的保存值",
-          "已打开的测试源码：把浮点 QuotaPerUnit 改成 1 后，QuotaPerUnitDecimal 仍是 500000；1.25 USD 转为 625000；2 USD 转为 1000000",
-          "加载 250000 不改变运行中的 500000"
+          "fixed_quota_per_unit_500000",
+          "usd_1_25_is_625000",
+          "usd_2_is_1000000",
+          "reject_non_500000"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
