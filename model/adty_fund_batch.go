@@ -4,11 +4,11 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"github.com/shopspring/decimal"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -62,6 +62,18 @@ type AdtyFundBatch struct {
 }
 
 func (AdtyFundBatch) TableName() string { return "adty_fund_batches" }
+
+// IsExpiringGift reports whether this batch is a time-limited gift lot (DEC-031)
+// rather than principal or permanent recharge bonus.
+func (b AdtyFundBatch) IsExpiringGift() bool {
+	if b.Kind == AdtyFundBatchKindPrincipal {
+		return false
+	}
+	if b.Kind == AdtyFundBatchKindExpiringBonus || b.GiftCategory == AdtyGiftCategoryExpiring {
+		return true
+	}
+	return b.ExpiresAt != nil && *b.ExpiresAt > 0
+}
 
 // adtyMissingFundBatchKinds 返回 wanted 里按 (user_id, source, kind) 还不存在的那些行——
 // 与唯一索引 idx_adty_fund_batch_user_source_kind 同一个维度。
@@ -181,452 +193,6 @@ func CreateAdtyFundBatchesWithSiteTx(tx *gorm.DB, userID int, siteID *int, sourc
 		return nil
 	}
 	return fmt.Errorf("adty fund batch insert conflicted and %d kind(s) are still missing: %w", len(still), err)
-}
-
-// adtyMoveFundBatchesToSiteTx 把迁移用户的批次一起搬到目标站（ISS-R4-0047）。
-//
-// 站迁移以前不需要碰批次表：那张表里根本没有站点字段。加了 site_id 之后不动它，
-// 迁移完就是「客户在新站、本金挂在旧站」，按站点算本金负债会把两个站同时算错。
-//
-// 只搬 site_id 等于原站的行：NULL 是「当时就证不出站点」的历史行，搬过去只是把
-// 未知换成错的已知。表不存在说明这套库还没建批次表，没有批次可搬，不是错误。
-func adtyMoveFundBatchesToSiteTx(tx *gorm.DB, userIDs []int, fromSite, toSite int) error {
-	if tx == nil || len(userIDs) == 0 || fromSite == toSite {
-		return nil
-	}
-	if !tx.Migrator().HasTable(&AdtyFundBatch{}) {
-		return nil
-	}
-	return tx.Model(&AdtyFundBatch{}).
-		Where("user_id IN ? AND site_id = ?", userIDs, fromSite).
-		Update("site_id", toSite).Error
-}
-
-// adtyLegacyBatchSource 是「没有订单来源的额度」那一条批次的固定 source。
-// 每个用户只有一条（唯一索引 user_id + source + kind），补额度是往上加，
-// 不是新插一行——否则第二次补建就会撞唯一索引。
-const adtyLegacyBatchSource = "legacy"
-
-// ensureAdtyLegacyBatchTx 把「没有批次背书」的额度补进那条 legacy 批次。
-//
-// topUp 是本次要补的额度。已经存在就加在 remaining/original 上（幂等：补过之后
-// 再算一次 short 会是 0）；不存在才新建。
-//
-// 走 SAVEPOINT：并发下两个事务可能同时判断「还没有 legacy 批次」，唯一索引会让
-// 其中一个失败。冲突时重读并补额度，不算错误——否则并发的第二笔扣费会整笔失败。
-func ensureAdtyLegacyBatchTx(tx *gorm.DB, userID int, topUp int64) error {
-	if tx == nil || userID <= 0 || topUp <= 0 {
-		return nil
-	}
-	apply := func(db *gorm.DB) error {
-		result := db.Model(&AdtyFundBatch{}).
-			Where("user_id = ? AND source = ? AND kind = ?", userID, adtyLegacyBatchSource, "principal").
-			Updates(map[string]any{
-				"remaining": gorm.Expr("remaining + ?", topUp),
-				"original":  gorm.Expr("original + ?", topUp),
-			})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected > 0 {
-			return nil
-		}
-		// 补建的是「没有批次背书的额度」，站点无从证明，留 NULL 而不是拿
-		// 用户当前站点顶上。
-		return db.Create(&AdtyFundBatch{
-			UserId: userID, Kind: "principal", Source: adtyLegacyBatchSource,
-			Original: topUp, Remaining: topUp,
-		}).Error
-	}
-	err := tx.Transaction(apply)
-	if err != nil && isAdtyUniqueViolation(err) {
-		// 另一个事务刚建好这一行：补同样的额度，然后照常消费。
-		return tx.Transaction(apply)
-	}
-	return err
-}
-
-// AdtyAfterPrincipalSpentTx runs in the charge transaction after non-legacy
-// principal lots are reduced. Gift consumption does not call it.
-//
-// operationKey 是这笔消费的业务身份：结算路径传 operation key，直接扣费
-// （没有 operation 可言）传空串。实现方用它在站点钱包流水上做幂等键——
-// 同一笔 operation 重放不能把站长该付的钱扣两遍。
-var AdtyAfterPrincipalSpentTx func(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error
-
-// adtyNotifyPrincipalSpentTx hands a charge's non-legacy principal portion to
-// the site side. Every settle exit goes through it, so one settled operation
-// debits the site operating wallet exactly once.
-func adtyNotifyPrincipalSpentTx(tx *gorm.DB, userID int, operationKey string, principalSpent int64) error {
-	if principalSpent <= 0 || AdtyAfterPrincipalSpentTx == nil {
-		return nil
-	}
-	return AdtyAfterPrincipalSpentTx(tx, userID, operationKey, principalSpent)
-}
-
-// AdtyBonusSpend is one source's bonus lot reduction in a usage charge.
-type AdtyBonusSpend struct {
-	Source string
-	Quota  int64
-}
-
-// AdtyAfterBonusSpentTx runs after bonus lots are reduced, both on usage
-// charges and on the quiet path used by official adjustments and staff
-// approvals, so the matching site gift-guarantee can be released. Refunds
-// that reclaim lots by source do not call it.
-var AdtyAfterBonusSpentTx func(tx *gorm.DB, userID int, spends []AdtyBonusSpend) error
-
-func adtyNotifyBonusSpentTx(tx *gorm.DB, userID int, bonusBySource map[string]int64) error {
-	if len(bonusBySource) == 0 || AdtyAfterBonusSpentTx == nil {
-		return nil
-	}
-	spends := make([]AdtyBonusSpend, 0, len(bonusBySource))
-	for source, quota := range bonusBySource {
-		spends = append(spends, AdtyBonusSpend{Source: source, Quota: quota})
-	}
-	return AdtyAfterBonusSpentTx(tx, userID, spends)
-}
-
-// ConsumeAdtyFundBatchesTx spends principal lots before bonus lots.
-// A user with no lots gets one legacy principal lot for the pre-charge balance,
-// then this charge consumes from that lot. If lots still cannot cover the debit,
-// it returns ErrAdtyFundBatchShortfall so the surrounding wallet transaction
-// can roll back.
-func ConsumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int64) error {
-	_, err := consumeAdtyFundBatchesTx(tx, userID, amount, balanceBefore, true, "")
-	return err
-}
-
-// ConsumeAdtyFundBatchesQuietTx spends lots in FIFO order so remaining tracks
-// a non-charge wallet debit. It does not fire the principal-spent hook; that
-// hook is for usage charges, not official adjustments or staff approvals.
-// It does fire the bonus-spent hook so an approved or official reduction that
-// consumes top-up bonus lots can release the corresponding site gift guarantee.
-func ConsumeAdtyFundBatchesQuietTx(tx *gorm.DB, userID int, amount, balanceBefore int64) error {
-	_, err := consumeAdtyFundBatchesTx(tx, userID, amount, balanceBefore, false, "")
-	return err
-}
-
-// consumeAdtyFundBatchesTx returns how much of the debit was backed by lots that
-// existed before any legacy top-up, not how much was debited. The difference is
-// the drift: money that sat on the account with no lot behind it. Callers that
-// only need the error discard it; settlement records it as fund_batch_gap.
-//
-// operationKey is passed through to the principal-spent hook so a settlement
-// whose operation has no shares still debits the site operating wallet exactly
-// once. Direct charges have no operation identity and pass "".
-func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int64, notifyPrincipalSpent bool, operationKey string) (int64, error) {
-	if tx == nil || userID <= 0 || amount <= 0 {
-		return 0, nil
-	}
-	if err := adtyRequireFundBatchTable(tx); err != nil {
-		return 0, err
-	}
-	var rows []AdtyFundBatch
-	if err := eligibleFundLots(tx, userID).Find(&rows).Error; err != nil {
-		return 0, err
-	}
-	// 批次总量与「这次业务之前」的余额之间的差，是**没有批次背书的额度**：
-	// 升级前的余额从来没有对应的行，退款（IncreaseUserQuota）也不会补行。
-	// 这部分要落到那条唯一的 legacy 批次上，否则扣费一定失败。
-	var lotTotal int64
-	// realRemaining 记下**补建之前**每个批次真正有多少额度。补建之后 remaining
-	// 里有一部分是刚凭空写进去的，不能算进「批次背书了多少」。
-	realRemaining := make(map[int64]int64, len(rows))
-	for i := range rows {
-		lotTotal += rows[i].Remaining
-		realRemaining[rows[i].Id] = rows[i].Remaining
-	}
-	if short := balanceBefore - lotTotal; short > 0 {
-		// 补建是必须的：存量用户升级前的额度从来没有对应行，退款
-		// （IncreaseUserQuota）也不会补行，不补建就一笔都扣不出去。
-		//
-		// 但**补建不等于「这批钱有批次背书」**。补出去的那部分正是账本漂移，
-		// 必须由调用方作为 fund_batch_gap 记下来——否则「批次永远等于余额」，
-		// 对账永远读到 0，这一列等于没加。所以返回值报的是补建前的真实覆盖，
-		// 不是实际扣掉的额度。
-		if err := ensureAdtyLegacyBatchTx(tx, userID, short); err != nil {
-			return 0, err
-		}
-	}
-	// 只消费还有剩余的批次；上面补过之后重新读，避免拿旧快照算。
-	if err := eligibleFundLots(tx, userID).Where("remaining > 0").Find(&rows).Error; err != nil {
-		return 0, err
-	}
-	if len(rows) == 0 {
-		return 0, adtyFundBatchShortfallError(amount)
-	}
-	sortAdtyFundBatches(rows)
-	principalTaken := int64(0)
-	taken := int64(0)
-	backed := int64(0)
-	bonusBySource := map[string]int64{}
-	for i := range rows {
-		if amount == 0 {
-			break
-		}
-		take := rows[i].Remaining
-		if take > amount {
-			take = amount
-		}
-		// 本次从这一行扣走的额度里，有多少是补建之前就真在那儿的。
-		// 逐行取 min 而不是「taken - short」：扣费是从真实批次先扣的，
-		// 当本次扣费小于缺口时（比如余额 50、批次 20、只扣 10），
-		// taken - short 会算成 -20，把一次完全有背书的扣费报成漂移。
-		if real := realRemaining[rows[i].Id]; real > 0 {
-			backed += take
-			if take > real {
-				backed -= take - real
-			}
-		}
-		// 扣减交给 deductAdtyFundBatchTx 的同一套三件套（WHERE remaining >= ? +
-		// gorm.Expr("remaining - ?") + RowsAffected 校验）：WHERE 挡「余额不足」，
-		// Expr 挡「丢更新」——不把内存里读到的绝对值写回去。这里不再依赖
-		// 「调用方已锁 users 行」这个未声明的约定，那只是当前的巧合，不是保证。
-		if err := deductAdtyFundBatchTx(tx, rows[i].Id, take); err != nil {
-			return backed, err
-		}
-		if rows[i].Kind == AdtyFundBatchKindPrincipal && rows[i].Source != adtyLegacyBatchSource {
-			principalTaken += take
-		}
-		if !rows[i].IsExpiringGift() && rows[i].Kind == AdtyFundBatchKindBonus && rows[i].Source != "" && take > 0 {
-			bonusBySource[rows[i].Source] += take
-		}
-		amount -= take
-		taken += take
-	}
-	if amount > 0 {
-		return backed, adtyFundBatchShortfallError(amount)
-	}
-	// notifyPrincipalSpent gates only the usage-charge hook. The bonus hook
-	// still runs on the quiet path so manual/staff reductions release the
-	// corresponding site gift-guarantee without debiting the operating wallet.
-	if notifyPrincipalSpent && principalTaken > 0 {
-		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationKey, principalTaken); err != nil {
-			return backed, err
-		}
-	}
-	_ = taken
-	return backed, adtyNotifyBonusSpentTx(tx, userID, bonusBySource)
-}
-
-// ReclaimAdtyFundBatchesBySourceTx reduces remaining on the lots of one credit
-// source. Principal and bonus are reduced independently and capped at each
-// kind's remaining. It does not invent lots when none were recorded.
-func ReclaimAdtyFundBatchesBySourceTx(tx *gorm.DB, userID int, source string, principal, bonus int64) (int64, error) {
-	if tx == nil || userID <= 0 || source == "" || (principal <= 0 && bonus <= 0) {
-		return 0, nil
-	}
-	if err := adtyRequireFundBatchTable(tx); err != nil {
-		return 0, err
-	}
-	var rows []AdtyFundBatch
-	if err := tx.Where("user_id = ? AND source = ? AND remaining > 0", userID, source).Find(&rows).Error; err != nil {
-		return 0, err
-	}
-	heldByBatch, err := outstandingAdtyFundAllocationByBatchTx(tx, userID)
-	if err != nil {
-		return 0, err
-	}
-	taken := int64(0)
-	for i := range rows {
-		var want *int64
-		switch rows[i].Kind {
-		case "principal":
-			want = &principal
-		case "bonus":
-			want = &bonus
-		default:
-			continue
-		}
-		if *want <= 0 {
-			continue
-		}
-		// Never seize balance currently held by in-flight billing allocations (ISS-R1-0012).
-		take := rows[i].Remaining - heldByBatch[rows[i].Id]
-		if take <= 0 {
-			continue
-		}
-		if take > *want {
-			take = *want
-		}
-		// 同上：条件更新 + 原子减法 + RowsAffected 校验，缺一件就分别是
-		// 「扣成负数」或「并发覆盖掉别人已提交的扣减」。
-		if err := deductAdtyFundBatchTx(tx, rows[i].Id, take); err != nil {
-			return taken, err
-		}
-		*want -= take
-		taken += take
-	}
-	return taken, nil
-}
-
-// applyAdtyWalletDebitToBatchesTx keeps the batch ledger in step with a wallet
-// debit. It first reclaims the named source's principal and bonus, then
-// FIFO-consumes any leftover so total remaining tracks the wallet. If lots
-// still cannot cover the debit, consume returns ErrAdtyFundBatchShortfall.
-// A leftover after reclaim does not fire the consumption hook; that hook is
-// for charges.
-func applyAdtyWalletDebitToBatchesTx(tx *gorm.DB, userID int, source string, principal, bonus, deducted, balanceBefore int64) error {
-	if deducted <= 0 {
-		return nil
-	}
-	taken, err := ReclaimAdtyFundBatchesBySourceTx(tx, userID, source, principal, bonus)
-	if err != nil {
-		return err
-	}
-	leftover := deducted - taken
-	if leftover <= 0 {
-		return nil
-	}
-	remainingBefore := balanceBefore - taken
-	if remainingBefore < 0 {
-		remainingBefore = 0
-	}
-	_, err = consumeAdtyFundBatchesTx(tx, userID, leftover, remainingBefore, false, "")
-	return err
-}
-
-func adtyRequireFundBatchTable(tx *gorm.DB) error {
-	if !tx.Migrator().HasTable(&AdtyFundBatch{}) {
-		return ErrAdtyFundBatchTableMissing
-	}
-	return nil
-}
-
-func sortAdtyFundBatches(rows []AdtyFundBatch) {
-	for i := 1; i < len(rows); i++ {
-		item := rows[i]
-		j := i
-		for j > 0 && adtyFundBatchLess(item, rows[j-1]) {
-			rows[j] = rows[j-1]
-			j--
-		}
-		rows[j] = item
-	}
-}
-
-// adtyFundBatchLess enforces the DEC-031 / A.12.2 consumption order:
-//  1. Principal lots (FIFO by CreatedAt, Id)
-//  2. Time-limited gift lots (ordered by ExpiresAt ASC, then Id)
-//  3. Permanent recharge bonus lots (FIFO by CreatedAt, Id)
-func adtyFundBatchLess(a, b AdtyFundBatch) bool {
-	rankA := adtyFundBatchOrderRank(a)
-	rankB := adtyFundBatchOrderRank(b)
-	if rankA != rankB {
-		return rankA < rankB
-	}
-	if rankA == 1 {
-		expA := int64(0)
-		if a.ExpiresAt != nil {
-			expA = *a.ExpiresAt
-		}
-		expB := int64(0)
-		if b.ExpiresAt != nil {
-			expB = *b.ExpiresAt
-		}
-		if expA != expB {
-			return expA < expB
-		}
-		return a.Id < b.Id
-	}
-	if a.CreatedAt != b.CreatedAt {
-		return a.CreatedAt < b.CreatedAt
-	}
-	return a.Id < b.Id
-}
-
-// AdtyFundBatchKindRemaining is the remaining quota of each lot category for one user.
-// Bonus holds permanent recharge gift quota; ExpiringBonus holds time-limited gift quota (DEC-031).
-type AdtyFundBatchKindRemaining struct {
-	Principal     int64 `json:"principal"`
-	Bonus         int64 `json:"bonus"`
-	ExpiringBonus int64 `json:"expiring_bonus"`
-	NextExpiresAt int64 `json:"next_expires_at,omitempty"`
-	HasLots       bool  `json:"has_lots"`
-}
-
-// SumAdtyFundBatchRemainingByKind totals remaining principal and permanent bonus lots.
-// It does not invent lots and does not include promised or not-yet-granted bonus.
-func SumAdtyFundBatchRemainingByKind(userID int) (AdtyFundBatchKindRemaining, error) {
-	sums, err := SumAdtyFundBatchRemainingByKindForUsers([]int{userID})
-	if err != nil {
-		return AdtyFundBatchKindRemaining{}, err
-	}
-	return sums[userID], nil
-}
-
-// SumAdtyFundBatchRemainingByKindForUsers totals remaining principal, permanent
-// bonus, and expiring bonus lots per user.
-func SumAdtyFundBatchRemainingByKindForUsers(userIDs []int) (map[int]AdtyFundBatchKindRemaining, error) {
-	out := map[int]AdtyFundBatchKindRemaining{}
-	if DB == nil || len(userIDs) == 0 {
-		return out, nil
-	}
-	ids := uniquePositiveIDs(userIDs)
-	if len(ids) == 0 {
-		return out, nil
-	}
-	if err := adtyRequireFundBatchTable(DB); err != nil {
-		return nil, err
-	}
-	var rows []AdtyFundBatch
-	if err := DB.Model(&AdtyFundBatch{}).
-		Where("user_id IN ? AND kind IN ?", ids, []string{
-			AdtyFundBatchKindPrincipal,
-			AdtyFundBatchKindBonus,
-			AdtyFundBatchKindExpiringBonus,
-		}).
-		Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		current := out[row.UserId]
-		current.HasLots = true
-		switch {
-		case row.Kind == AdtyFundBatchKindPrincipal:
-			current.Principal += row.Remaining
-		case row.IsExpiringGift():
-			current.ExpiringBonus += row.Remaining
-			if row.Remaining > 0 && row.ExpiresAt != nil && *row.ExpiresAt > 0 {
-				if current.NextExpiresAt == 0 || *row.ExpiresAt < current.NextExpiresAt {
-					current.NextExpiresAt = *row.ExpiresAt
-				}
-			}
-		default:
-			current.Bonus += row.Remaining
-		}
-		out[row.UserId] = current
-	}
-	return out, nil
-}
-
-func uniquePositiveIDs(ids []int) []int {
-	seen := map[int]struct{}{}
-	out := make([]int, 0, len(ids))
-	for _, id := range ids {
-		if id <= 0 {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out
-}
-
-// IsExpiringGift reports whether this batch is a time-limited gift lot (DEC-031)
-// rather than principal or permanent recharge bonus.
-func (b AdtyFundBatch) IsExpiringGift() bool {
-	if b.Kind == AdtyFundBatchKindPrincipal {
-		return false
-	}
-	if b.Kind == AdtyFundBatchKindExpiringBonus || b.GiftCategory == AdtyGiftCategoryExpiring {
-		return true
-	}
-	return b.ExpiresAt != nil && *b.ExpiresAt > 0
 }
 
 // CreateAdtyExpiringBonusBatchTx records one time-limited gift lot (DEC-031)
@@ -981,37 +547,284 @@ func ExpireAdtyGiftBatchesTx(tx *gorm.DB, now time.Time) ([]AdtyGiftExpirationIt
 	return items, nil
 }
 
-func adtyFundBatchOrderRank(row AdtyFundBatch) int {
-	if row.Kind == AdtyFundBatchKindPrincipal {
-		return 0
+// adtyMoveFundBatchesToSiteTx 把迁移用户的批次一起搬到目标站（ISS-R4-0047）。
+//
+// 站迁移以前不需要碰批次表：那张表里根本没有站点字段。加了 site_id 之后不动它，
+// 迁移完就是「客户在新站、本金挂在旧站」，按站点算本金负债会把两个站同时算错。
+//
+// 只搬 site_id 等于原站的行：NULL 是「当时就证不出站点」的历史行，搬过去只是把
+// 未知换成错的已知。表不存在说明这套库还没建批次表，没有批次可搬，不是错误。
+func adtyMoveFundBatchesToSiteTx(tx *gorm.DB, userIDs []int, fromSite, toSite int) error {
+	if tx == nil || len(userIDs) == 0 || fromSite == toSite {
+		return nil
 	}
-	if row.IsExpiringGift() {
-		return 1
+	if !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		return nil
 	}
-	return 2
+	return tx.Model(&AdtyFundBatch{}).
+		Where("user_id IN ? AND site_id = ?", userIDs, fromSite).
+		Update("site_id", toSite).Error
 }
 
-// FindAdtyBalanceLedgerByKeyTx aliases FindAdtyLedgerByIdemKeyTx.
-func FindAdtyBalanceLedgerByKeyTx(tx *gorm.DB, key string) (*AdtyBalanceLedger, error) {
-	return FindAdtyLedgerByIdemKeyTx(tx, key)
+// adtyLegacyBatchSource 是「没有订单来源的额度」那一条批次的固定 source。
+// 每个用户只有一条（唯一索引 user_id + source + kind），补额度是往上加，
+// 不是新插一行——否则第二次补建就会撞唯一索引。
+const adtyLegacyBatchSource = "legacy"
+
+// ensureAdtyLegacyBatchTx 把「没有批次背书」的额度补进那条 legacy 批次。
+//
+// topUp 是本次要补的额度。已经存在就加在 remaining/original 上（幂等：补过之后
+// 再算一次 short 会是 0）；不存在才新建。
+//
+// 走 SAVEPOINT：并发下两个事务可能同时判断「还没有 legacy 批次」，唯一索引会让
+// 其中一个失败。冲突时重读并补额度，不算错误——否则并发的第二笔扣费会整笔失败。
+func ensureAdtyLegacyBatchTx(tx *gorm.DB, userID int, topUp int64) error {
+	if tx == nil || userID <= 0 || topUp <= 0 {
+		return nil
+	}
+	apply := func(db *gorm.DB) error {
+		result := db.Model(&AdtyFundBatch{}).
+			Where("user_id = ? AND source = ? AND kind = ?", userID, adtyLegacyBatchSource, "principal").
+			Updates(map[string]any{
+				"remaining": gorm.Expr("remaining + ?", topUp),
+				"original":  gorm.Expr("original + ?", topUp),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected > 0 {
+			return nil
+		}
+		// 补建的是「没有批次背书的额度」，站点无从证明，留 NULL 而不是拿
+		// 用户当前站点顶上。
+		return db.Create(&AdtyFundBatch{
+			UserId: userID, Kind: "principal", Source: adtyLegacyBatchSource,
+			Original: topUp, Remaining: topUp,
+		}).Error
+	}
+	err := tx.Transaction(apply)
+	if err != nil && isAdtyUniqueViolation(err) {
+		// 另一个事务刚建好这一行：补同样的额度，然后照常消费。
+		return tx.Transaction(apply)
+	}
+	return err
 }
 
-// RecordAdtyBalanceLedgerTx aliases InsertAdtyLedgerTx.
-func RecordAdtyBalanceLedgerTx(tx *gorm.DB, entry *AdtyBalanceLedger) error {
-	return InsertAdtyLedgerTx(tx, entry)
+// AdtyAfterPrincipalSpentTx runs in the charge transaction after non-legacy
+// principal lots are reduced. Gift consumption does not call it.
+//
+// operationKey 是这笔消费的业务身份：结算路径传 operation key，直接扣费
+// （没有 operation 可言）传空串。实现方用它在站点钱包流水上做幂等键——
+// 同一笔 operation 重放不能把站长该付的钱扣两遍。
+var AdtyAfterPrincipalSpentTx func(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error
+
+// adtyNotifyPrincipalSpentTx hands a charge's non-legacy principal portion to
+// the site side. Every settle exit goes through it, so one settled operation
+// debits the site operating wallet exactly once.
+func adtyNotifyPrincipalSpentTx(tx *gorm.DB, userID int, operationKey string, principalSpent int64) error {
+	if principalSpent <= 0 || AdtyAfterPrincipalSpentTx == nil {
+		return nil
+	}
+	return AdtyAfterPrincipalSpentTx(tx, userID, operationKey, principalSpent)
 }
 
-// loadLockedUserLogicalQuotaTx locks the user row and returns logical balance, raw quota, and pending quota.
-func loadLockedUserLogicalQuotaTx(tx *gorm.DB, userID int) (logicalQuota, rawQuota, pendingQuota int64, err error) {
-	var user User
-	if err := lockForUpdate(tx).Select("id", "quota", "quota_pending", "checkin_quota").First(&user, userID).Error; err != nil {
-		return 0, 0, 0, err
+// AdtyBonusSpend is one source's bonus lot reduction in a usage charge.
+type AdtyBonusSpend struct {
+	Source string
+	Quota  int64
+}
+
+// AdtyAfterBonusSpentTx runs after bonus lots are reduced, both on usage
+// charges and on the quiet path used by official adjustments and staff
+// approvals, so the matching site gift-guarantee can be released. Refunds
+// that reclaim lots by source do not call it.
+var AdtyAfterBonusSpentTx func(tx *gorm.DB, userID int, spends []AdtyBonusSpend) error
+
+func adtyNotifyBonusSpentTx(tx *gorm.DB, userID int, bonusBySource map[string]int64) error {
+	if len(bonusBySource) == 0 || AdtyAfterBonusSpentTx == nil {
+		return nil
 	}
-	bal, err := userWalletBalance(user.Quota, user.QuotaPending)
-	if err != nil {
-		return 0, 0, 0, err
+	spends := make([]AdtyBonusSpend, 0, len(bonusBySource))
+	for source, quota := range bonusBySource {
+		spends = append(spends, AdtyBonusSpend{Source: source, Quota: quota})
 	}
-	return int64(bal), int64(user.Quota), int64(user.QuotaPending), nil
+	return AdtyAfterBonusSpentTx(tx, userID, spends)
+}
+
+// ConsumeAdtyFundBatchesTx spends principal lots before bonus lots.
+// A user with no lots gets one legacy principal lot for the pre-charge balance,
+// then this charge consumes from that lot. If lots still cannot cover the debit,
+// it returns ErrAdtyFundBatchShortfall so the surrounding wallet transaction
+// can roll back.
+func ConsumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int64) error {
+	_, err := consumeAdtyFundBatchesTx(tx, userID, amount, balanceBefore, true, "")
+	return err
+}
+
+// ConsumeAdtyFundBatchesQuietTx spends lots in FIFO order so remaining tracks
+// a non-charge wallet debit. It does not fire the principal-spent hook; that
+// hook is for usage charges, not official adjustments or staff approvals.
+// It does fire the bonus-spent hook so an approved or official reduction that
+// consumes top-up bonus lots can release the corresponding site gift guarantee.
+func ConsumeAdtyFundBatchesQuietTx(tx *gorm.DB, userID int, amount, balanceBefore int64) error {
+	_, err := consumeAdtyFundBatchesTx(tx, userID, amount, balanceBefore, false, "")
+	return err
+}
+
+// ConsumeAdtyFundBatchesInOrderTx consumes up to amount in canonical batch order
+// (principal -> expiring bonus by earliest expiry -> permanent bonus) and returns
+// the backed quota consumed.
+func ConsumeAdtyFundBatchesInOrderTx(tx *gorm.DB, userID int, amount, balanceBefore int64) (int64, error) {
+	return consumeAdtyFundBatchesTx(tx, userID, amount, balanceBefore, true, "")
+}
+
+// RestoreAdtyFundBatchesInReverseOrderTx restores up to amount back onto a user's
+// consumed fund batches in reverse consumption order (permanent bonus latest-first,
+// expiring bonus latest-expiry-first, principal latest-first).
+func RestoreAdtyFundBatchesInReverseOrderTx(tx *gorm.DB, userID int, amount int64) (int64, error) {
+	if tx == nil || userID <= 0 || amount <= 0 {
+		return 0, nil
+	}
+	if err := adtyRequireFundBatchTable(tx); err != nil {
+		return 0, err
+	}
+	var rows []AdtyFundBatch
+	if err := lockForUpdate(tx).
+		Where("user_id = ? AND remaining < original AND status <> ?", userID, AdtyFundBatchStatusExpired).
+		Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	sortAdtyFundBatches(rows)
+	restored := int64(0)
+	left := amount
+	for i := len(rows) - 1; i >= 0 && left > 0; i-- {
+		capacity := rows[i].Original - rows[i].Remaining - rows[i].ExpiredQuota
+		if capacity <= 0 {
+			continue
+		}
+		giveBack := min(capacity, left)
+		res := tx.Model(&AdtyFundBatch{}).
+			Where("id = ? AND remaining = ?", rows[i].Id, rows[i].Remaining).
+			Updates(map[string]any{
+				"remaining": gorm.Expr("remaining + ?", giveBack),
+				"status":    AdtyFundBatchStatusActive,
+			})
+		if res.Error != nil {
+			return restored, res.Error
+		}
+		if res.RowsAffected != 1 {
+			return restored, ErrAdtyFundBatchShortfall
+		}
+		restored += giveBack
+		left -= giveBack
+	}
+	return restored, nil
+}
+
+// consumeAdtyFundBatchesTx returns how much of the debit was backed by lots that
+// existed before any legacy top-up, not how much was debited. The difference is
+// the drift: money that sat on the account with no lot behind it. Callers that
+// only need the error discard it; settlement records it as fund_batch_gap.
+//
+// operationKey is passed through to the principal-spent hook so a settlement
+// whose operation has no shares still debits the site operating wallet exactly
+// once. Direct charges have no operation identity and pass "".
+func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int64, notifyPrincipalSpent bool, operationKey string) (int64, error) {
+	if tx == nil || userID <= 0 || amount <= 0 {
+		return 0, nil
+	}
+	if err := adtyRequireFundBatchTable(tx); err != nil {
+		return 0, err
+	}
+	var rows []AdtyFundBatch
+	if err := eligibleFundLots(tx, userID).Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	// 批次总量与「这次业务之前」的余额之间的差，是**没有批次背书的额度**：
+	// 升级前的余额从来没有对应的行，退款（IncreaseUserQuota）也不会补行。
+	// 这部分要落到那条唯一的 legacy 批次上，否则扣费一定失败。
+	var lotTotal int64
+	// realRemaining 记下**补建之前**每个批次真正有多少额度。补建之后 remaining
+	// 里有一部分是刚凭空写进去的，不能算进「批次背书了多少」。
+	realRemaining := make(map[int64]int64, len(rows))
+	for i := range rows {
+		lotTotal += rows[i].Remaining
+		realRemaining[rows[i].Id] = rows[i].Remaining
+	}
+	if short := balanceBefore - lotTotal; short > 0 {
+		// 补建是必须的：存量用户升级前的额度从来没有对应行，退款
+		// （IncreaseUserQuota）也不会补行，不补建就一笔都扣不出去。
+		//
+		// 但**补建不等于「这批钱有批次背书」**。补出去的那部分正是账本漂移，
+		// 必须由调用方作为 fund_batch_gap 记下来——否则「批次永远等于余额」，
+		// 对账永远读到 0，这一列等于没加。所以返回值报的是补建前的真实覆盖，
+		// 不是实际扣掉的额度。
+		if err := ensureAdtyLegacyBatchTx(tx, userID, short); err != nil {
+			return 0, err
+		}
+	}
+	// 只消费还有剩余的批次；上面补过之后重新读，避免拿旧快照算。
+	if err := eligibleFundLots(tx, userID).Where("remaining > 0").Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, adtyFundBatchShortfallError(amount)
+	}
+	sortAdtyFundBatches(rows)
+	principalTaken := int64(0)
+	taken := int64(0)
+	backed := int64(0)
+	bonusBySource := map[string]int64{}
+	for i := range rows {
+		if amount == 0 {
+			break
+		}
+		take := rows[i].Remaining
+		if take > amount {
+			take = amount
+		}
+		// 本次从这一行扣走的额度里，有多少是补建之前就真在那儿的。
+		// 逐行取 min 而不是「taken - short」：扣费是从真实批次先扣的，
+		// 当本次扣费小于缺口时（比如余额 50、批次 20、只扣 10），
+		// taken - short 会算成 -20，把一次完全有背书的扣费报成漂移。
+		if real := realRemaining[rows[i].Id]; real > 0 {
+			backed += take
+			if take > real {
+				backed -= take - real
+			}
+		}
+		// 扣减交给 deductAdtyFundBatchTx 的同一套三件套（WHERE remaining >= ? +
+		// gorm.Expr("remaining - ?") + RowsAffected 校验）：WHERE 挡「余额不足」，
+		// Expr 挡「丢更新」——不把内存里读到的绝对值写回去。这里不再依赖
+		// 「调用方已锁 users 行」这个未声明的约定，那只是当前的巧合，不是保证。
+		if err := deductAdtyFundBatchTx(tx, rows[i].Id, take); err != nil {
+			return backed, err
+		}
+		if rows[i].Kind == AdtyFundBatchKindPrincipal && rows[i].Source != adtyLegacyBatchSource {
+			principalTaken += take
+		}
+		if !rows[i].IsExpiringGift() && rows[i].Kind == AdtyFundBatchKindBonus && rows[i].Source != "" && take > 0 {
+			bonusBySource[rows[i].Source] += take
+		}
+		amount -= take
+		taken += take
+	}
+	if amount > 0 {
+		return backed, adtyFundBatchShortfallError(amount)
+	}
+	// notifyPrincipalSpent gates only the usage-charge hook. The bonus hook
+	// still runs on the quiet path so manual/staff reductions release the
+	// corresponding site gift-guarantee without debiting the operating wallet.
+	if notifyPrincipalSpent && principalTaken > 0 {
+		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationKey, principalTaken); err != nil {
+			return backed, err
+		}
+	}
+	_ = taken
+	return backed, adtyNotifyBonusSpentTx(tx, userID, bonusBySource)
 }
 
 // ReduceAdtyAdjustmentBatchTx debits only the approved, named lot. The enclosing
@@ -1041,4 +854,250 @@ func ReduceAdtyAdjustmentBatchTx(tx *gorm.DB, userID, siteID int, source, kind s
 		return adtyNotifyBonusSpentTx(tx, userID, map[string]int64{source: amount})
 	}
 	return nil
+}
+
+// ReclaimAdtyFundBatchesBySourceTx reduces remaining on the lots of one credit
+// source. Principal and bonus are reduced independently and capped at each
+// kind's remaining. It does not invent lots when none were recorded.
+func ReclaimAdtyFundBatchesBySourceTx(tx *gorm.DB, userID int, source string, principal, bonus int64) (int64, error) {
+	if tx == nil || userID <= 0 || source == "" || (principal <= 0 && bonus <= 0) {
+		return 0, nil
+	}
+	if err := adtyRequireFundBatchTable(tx); err != nil {
+		return 0, err
+	}
+	var rows []AdtyFundBatch
+	if err := tx.Where("user_id = ? AND source = ? AND remaining > 0", userID, source).Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	heldByBatch, err := outstandingAdtyFundAllocationByBatchTx(tx, userID)
+	if err != nil {
+		return 0, err
+	}
+	taken := int64(0)
+	for i := range rows {
+		var want *int64
+		switch rows[i].Kind {
+		case AdtyFundBatchKindPrincipal:
+			want = &principal
+		case AdtyFundBatchKindBonus, AdtyFundBatchKindExpiringBonus:
+			want = &bonus
+		default:
+			continue
+		}
+		if *want <= 0 {
+			continue
+		}
+		// Never seize balance currently held by in-flight billing allocations (ISS-R1-0012).
+		take := rows[i].Remaining - heldByBatch[rows[i].Id]
+		if take <= 0 {
+			continue
+		}
+		if take > *want {
+			take = *want
+		}
+		// 同上：条件更新 + 原子减法 + RowsAffected 校验，缺一件就分别是
+		// 「扣成负数」或「并发覆盖掉别人已提交的扣减」。
+		if err := deductAdtyFundBatchTx(tx, rows[i].Id, take); err != nil {
+			return taken, err
+		}
+		*want -= take
+		taken += take
+	}
+	return taken, nil
+}
+
+// applyAdtyWalletDebitToBatchesTx keeps the batch ledger in step with a wallet
+// debit. It first reclaims the named source's principal and bonus, then
+// FIFO-consumes any leftover so total remaining tracks the wallet. If lots
+// still cannot cover the debit, consume returns ErrAdtyFundBatchShortfall.
+// A leftover after reclaim does not fire the consumption hook; that hook is
+// for charges.
+func applyAdtyWalletDebitToBatchesTx(tx *gorm.DB, userID int, source string, principal, bonus, deducted, balanceBefore int64) error {
+	if deducted <= 0 {
+		return nil
+	}
+	taken, err := ReclaimAdtyFundBatchesBySourceTx(tx, userID, source, principal, bonus)
+	if err != nil {
+		return err
+	}
+	leftover := deducted - taken
+	if leftover <= 0 {
+		return nil
+	}
+	remainingBefore := balanceBefore - taken
+	if remainingBefore < 0 {
+		remainingBefore = 0
+	}
+	_, err = consumeAdtyFundBatchesTx(tx, userID, leftover, remainingBefore, false, "")
+	return err
+}
+
+func adtyRequireFundBatchTable(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		return ErrAdtyFundBatchTableMissing
+	}
+	return nil
+}
+
+func sortAdtyFundBatches(rows []AdtyFundBatch) {
+	for i := 1; i < len(rows); i++ {
+		item := rows[i]
+		j := i
+		for j > 0 && adtyFundBatchLess(item, rows[j-1]) {
+			rows[j] = rows[j-1]
+			j--
+		}
+		rows[j] = item
+	}
+}
+
+func adtyFundBatchOrderRank(row AdtyFundBatch) int {
+	if row.Kind == AdtyFundBatchKindPrincipal {
+		return 0
+	}
+	if row.IsExpiringGift() {
+		return 1
+	}
+	return 2
+}
+
+// adtyFundBatchLess enforces the DEC-031 / A.12.2 consumption order:
+//  1. Principal lots (FIFO by CreatedAt, Id)
+//  2. Time-limited gift lots (ordered by ExpiresAt ASC, then Id)
+//  3. Permanent recharge bonus lots (FIFO by CreatedAt, Id)
+func adtyFundBatchLess(a, b AdtyFundBatch) bool {
+	rankA := adtyFundBatchOrderRank(a)
+	rankB := adtyFundBatchOrderRank(b)
+	if rankA != rankB {
+		return rankA < rankB
+	}
+	if rankA == 1 {
+		expA := int64(0)
+		if a.ExpiresAt != nil {
+			expA = *a.ExpiresAt
+		}
+		expB := int64(0)
+		if b.ExpiresAt != nil {
+			expB = *b.ExpiresAt
+		}
+		if expA != expB {
+			return expA < expB
+		}
+		return a.Id < b.Id
+	}
+	if a.CreatedAt != b.CreatedAt {
+		return a.CreatedAt < b.CreatedAt
+	}
+	return a.Id < b.Id
+}
+
+// AdtyFundBatchKindRemaining is the remaining quota of each lot category for one user.
+// Bonus holds permanent recharge gift quota; ExpiringBonus holds time-limited gift quota (DEC-031).
+type AdtyFundBatchKindRemaining struct {
+	Principal     int64 `json:"principal"`
+	Bonus         int64 `json:"bonus"`
+	ExpiringBonus int64 `json:"expiring_bonus"`
+	NextExpiresAt int64 `json:"next_expires_at,omitempty"`
+	HasLots       bool  `json:"has_lots"`
+}
+
+// TotalBonus returns the combined remaining gift quota (permanent + expiring).
+func (r AdtyFundBatchKindRemaining) TotalBonus() int64 {
+	return r.Bonus + r.ExpiringBonus
+}
+
+// SumAdtyFundBatchRemainingByKind totals remaining principal, permanent bonus,
+// and time-limited gift lots. It does not invent lots and does not include
+// promised or not-yet-granted bonus.
+func SumAdtyFundBatchRemainingByKind(userID int) (AdtyFundBatchKindRemaining, error) {
+	sums, err := SumAdtyFundBatchRemainingByKindForUsers([]int{userID})
+	if err != nil {
+		return AdtyFundBatchKindRemaining{}, err
+	}
+	return sums[userID], nil
+}
+
+// SumAdtyFundBatchRemainingByKindForUsers totals remaining principal, permanent
+// bonus, and expiring bonus lots per user.
+func SumAdtyFundBatchRemainingByKindForUsers(userIDs []int) (map[int]AdtyFundBatchKindRemaining, error) {
+	out := map[int]AdtyFundBatchKindRemaining{}
+	if DB == nil || len(userIDs) == 0 {
+		return out, nil
+	}
+	ids := uniquePositiveIDs(userIDs)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	if err := adtyRequireFundBatchTable(DB); err != nil {
+		return nil, err
+	}
+	var rows []AdtyFundBatch
+	if err := DB.Model(&AdtyFundBatch{}).
+		Where("user_id IN ? AND kind IN ?", ids, []string{
+			AdtyFundBatchKindPrincipal,
+			AdtyFundBatchKindBonus,
+			AdtyFundBatchKindExpiringBonus,
+		}).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		current := out[row.UserId]
+		current.HasLots = true
+		switch {
+		case row.Kind == AdtyFundBatchKindPrincipal:
+			current.Principal += row.Remaining
+		case row.IsExpiringGift():
+			current.ExpiringBonus += row.Remaining
+			if row.Remaining > 0 && row.ExpiresAt != nil && *row.ExpiresAt > 0 {
+				if current.NextExpiresAt == 0 || *row.ExpiresAt < current.NextExpiresAt {
+					current.NextExpiresAt = *row.ExpiresAt
+				}
+			}
+		default:
+			current.Bonus += row.Remaining
+		}
+		out[row.UserId] = current
+	}
+	return out, nil
+}
+
+func uniquePositiveIDs(ids []int) []int {
+	seen := map[int]struct{}{}
+	out := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// FindAdtyBalanceLedgerByKeyTx aliases FindAdtyLedgerByIdemKeyTx.
+func FindAdtyBalanceLedgerByKeyTx(tx *gorm.DB, key string) (*AdtyBalanceLedger, error) {
+	return FindAdtyLedgerByIdemKeyTx(tx, key)
+}
+
+// RecordAdtyBalanceLedgerTx aliases InsertAdtyLedgerTx.
+func RecordAdtyBalanceLedgerTx(tx *gorm.DB, entry *AdtyBalanceLedger) error {
+	return InsertAdtyLedgerTx(tx, entry)
+}
+
+// loadLockedUserLogicalQuotaTx locks the user row and returns logical balance, raw quota, and pending quota.
+func loadLockedUserLogicalQuotaTx(tx *gorm.DB, userID int) (logicalQuota, rawQuota, pendingQuota int64, err error) {
+	var user User
+	if err := lockForUpdate(tx).Select("id", "quota", "quota_pending", "checkin_quota").First(&user, userID).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	bal, err := userWalletBalance(user.Quota, user.QuotaPending)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return int64(bal), int64(user.Quota), int64(user.QuotaPending), nil
 }
