@@ -22,20 +22,46 @@ const (
 // AdtySiteDomain 是站长绑定的一个自定义域名。主机名全局唯一（删除后行保留为 removed，
 // 同一个主机名再加时复用这一行）。
 type AdtySiteDomain struct {
-	Id              int    `json:"id"`
-	SiteId          int    `json:"site_id" gorm:"index"`
-	Hostname        string `json:"hostname" gorm:"uniqueIndex;type:varchar(253)"`
-	Role            string `json:"role" gorm:"type:varchar(16);default:site;index"` // site=站点域名，base_url=API 地址
-	OwnershipToken  string `json:"-" gorm:"type:varchar(64)"`                       // TXT 归属令牌，通过后才在 Cloudflare 建主机名
-	CFHostnameId    string `json:"cf_hostname_id" gorm:"type:varchar(64)"`
-	Status          string `json:"status" gorm:"type:varchar(16);index"`
-	SSLStatus       string `json:"ssl_status" gorm:"type:varchar(32)"`
-	VerifyRecords   string `json:"verify_records" gorm:"type:text"` // 给站长看的 DNS 记录（JSON 数组）
-	TurnstileWidget string `json:"turnstile_widget" gorm:"type:varchar(64)"`
-	LastError       string `json:"last_error" gorm:"type:text"` // 最近一次 Cloudflare 报错，给站长和后台看
-	LastCheckedAt   int64  `json:"last_checked_at"`
-	CreatedAt       int64  `json:"created_at"` // 这次（或重试）开始验证的时间，72 小时超时从这里算
-	UpdatedAt       int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	CFCreateStartedAt int64  `json:"-"`
+	ManagedBy         string `json:"managed_by" gorm:"type:varchar(16);default:owner;index"`
+	DesiredState      string `json:"desired_state" gorm:"type:varchar(20);default:serve;index"`
+	AutomationState   string `json:"automation_state" gorm:"type:varchar(32);default:'';index"`
+	ProviderZone      string `json:"-" gorm:"type:varchar(64)"`
+	DNSRoot           string `json:"-" gorm:"type:varchar(253)"`
+	DNSTarget         string `json:"-" gorm:"type:varchar(253)"`
+	MainlandTarget    string `json:"-" gorm:"type:varchar(253)"`
+	DNSRecords        string `json:"-" gorm:"type:text"`
+	Generation        int64  `json:"-" gorm:"default:1"`
+	LeaseToken        string `json:"-" gorm:"type:varchar(64)"`
+	LeaseUntil        int64  `json:"-" gorm:"default:0;index"`
+	NextRunAt         int64  `json:"next_run_at" gorm:"default:0;index"`
+	Attempts          int    `json:"attempts"`
+	Id                int    `json:"id"`
+	SiteId            int    `json:"site_id" gorm:"index"`
+	Hostname          string `json:"hostname" gorm:"uniqueIndex;type:varchar(253)"`
+	Role              string `json:"role" gorm:"type:varchar(16);default:site;index"` // site=站点域名，base_url=API 地址
+	OwnershipToken    string `json:"-" gorm:"type:varchar(64)"`                       // TXT 归属令牌，通过后才在 Cloudflare 建主机名
+	CFHostnameId      string `json:"cf_hostname_id" gorm:"type:varchar(64)"`
+	Status            string `json:"status" gorm:"type:varchar(16);index"`
+	SSLStatus         string `json:"ssl_status" gorm:"type:varchar(32)"`
+	VerifyRecords     string `json:"verify_records" gorm:"type:text"` // 给站长看的 DNS 记录（JSON 数组）
+	TurnstileWidget   string `json:"turnstile_widget" gorm:"type:varchar(64)"`
+	LastError         string `json:"last_error" gorm:"type:text"` // 最近一次 Cloudflare 报错，给站长和后台看
+	LastCheckedAt     int64  `json:"last_checked_at"`
+	CreatedAt         int64  `json:"created_at"` // 这次（或重试）开始验证的时间，72 小时超时从这里算
+	UpdatedAt         int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 func (AdtySiteDomain) TableName() string { return "adty_site_domains" }
+
+// AdtyDomainCloudResource persists a successful create independently of the
+// caller transaction, so rollback cannot erase the resource needed for cleanup.
+type AdtyDomainCloudResource struct {
+	Id         int
+	DomainId   int    `gorm:"index"`
+	Generation string `gorm:"type:varchar(64);index"`
+	Zone       string `gorm:"type:varchar(64)"`
+	Hostname   string `gorm:"type:varchar(253)"`
+	ResourceID string `gorm:"type:varchar(64);uniqueIndex"`
+	CreatedAt  int64  `gorm:"autoCreateTime"`
+}

@@ -457,6 +457,9 @@ func UpdateOption(c *gin.Context) {
 func isSensitiveOptionKey(k string) bool {
 	trimmed := strings.TrimSpace(k)
 	lower := strings.ToLower(trimmed)
+	if strings.HasSuffix(lower, "aliyun_access_key_id") {
+		return true
+	}
 	return lower == "key" || lower == "authorization" || strings.HasSuffix(trimmed, "Token") ||
 		strings.HasSuffix(trimmed, "Secret") ||
 		strings.HasSuffix(trimmed, "Key") ||

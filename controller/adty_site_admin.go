@@ -352,7 +352,7 @@ func GetAdtyAdminSite(c *gin.Context) {
 		return
 	}
 	var domains []model.AdtySiteDomain
-	if err := model.DB.Where("site_id = ? AND status <> ?", id, model.AdtySiteDomainRemoved).Order("id DESC").Find(&domains).Error; err != nil {
+	if err := model.DB.Where("site_id = ?", id).Order("id DESC").Find(&domains).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -657,6 +657,8 @@ func ResumeAdtySiteSettlement(c *gin.Context) {
 // adtyResellerSettingsView 是后台读到的分站设置：密钥清空，只返回「已配置」；另给出各开关依赖的项是否齐全，
 // 后台在没配好的项旁边显示「未配置」。
 type adtyResellerSettingsView struct {
+	AliyunIDConfigured     bool `json:"aliyun_id_configured"`
+	AliyunSecretConfigured bool `json:"aliyun_secret_configured"`
 	adty_setting.ResellerSetting
 	CloudflareTokenConfigured bool            `json:"cloudflare_token_configured"`
 	WidgetSecretConfigured    map[string]bool `json:"turnstile_secret_configured"`
@@ -723,6 +725,8 @@ func GetAdtyResellerSettings(c *gin.Context) {
 	cfg := *adty_setting.GetResellerSetting()
 	warnings := append(adtyResellerSettingsWarnings(&cfg), adtyClearedSecretWarnings()...)
 	view := adtyResellerSettingsView{
+		AliyunIDConfigured:        cfg.AliyunAccessKeyID != "",
+		AliyunSecretConfigured:    cfg.AliyunAccessKeySecret != "",
 		CloudflareTokenConfigured: strings.TrimSpace(cfg.CloudflareApiToken) != "",
 		WidgetSecretConfigured:    map[string]bool{},
 		CloudflareConfigured:      cfg.CloudflareConfigured(),
@@ -737,6 +741,7 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		view.WidgetSecretConfigured[widget.Id] = strings.TrimSpace(cfg.TurnstileWidgetSecret[widget.Id]) != ""
 	}
 	cfg.CloudflareApiToken, cfg.TurnstileWidgetSecret = "", nil
+	cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret = "", ""
 	view.ResellerSetting = cfg
 	common.ApiSuccess(c, view)
 }
@@ -755,7 +760,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		return
 	}
 	if c.GetInt("role") < common.RoleRootUser {
-		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "clear_secrets"} {
+		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "clear_secrets"} {
 			if _, present := body[key]; present {
 				denyAdtyAdminAction(c)
 				return
@@ -797,7 +802,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		if strings.HasPrefix(text, `"`) && common.Unmarshal(raw, &asString) == nil {
 			text = asString
 		}
-		if (key == adty_setting.ResellerKeyCloudflareTok || key == adty_setting.ResellerKeyWidgetSecret) && (text == "" || text == "null") {
+		if (key == adty_setting.ResellerKeyCloudflareTok || key == adty_setting.ResellerKeyWidgetSecret || key == "aliyun_access_key_id" || key == "aliyun_access_key_Secret") && (text == "" || text == "null") {
 			continue
 		}
 		if key == adty_setting.ResellerKeyWidgetSecret {
@@ -823,7 +828,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 	}
 	for _, key := range clearSecrets {
 		switch key {
-		case adty_setting.ResellerKeyCloudflareTok:
+		case adty_setting.ResellerKeyCloudflareTok, "aliyun_access_key_id", "aliyun_access_key_Secret":
 			values[key] = ""
 		case adty_setting.ResellerKeyWidgetSecret:
 			values[key] = "{}"

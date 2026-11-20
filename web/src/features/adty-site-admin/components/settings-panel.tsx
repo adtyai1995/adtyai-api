@@ -36,6 +36,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import {
   getResellerSettings,
+  checkDomainProvider,
   saveResellerSettings,
   siteAdminKeys,
 } from '../api'
@@ -90,6 +91,15 @@ export function SettingsPanel(props: {
       const permitted = { ...body }
       if (!props.canWriteSecrets || user?.role !== 100) {
         delete permitted.cloudflare_apiToken
+        delete permitted.aliyun_access_key_id
+        delete permitted.aliyun_access_key_Secret
+        delete permitted.domain_automation_enabled
+        delete permitted.aliyun_domain
+        delete permitted.domain_mainland_target
+        delete permitted.cloudflare_zone_id
+        delete permitted.cloudflare_account_id
+        delete permitted.cname_target
+        delete permitted.fallback_origin
         delete permitted.turnstile_widget_secret
         delete permitted.clear_secrets
       }
@@ -100,6 +110,16 @@ export function SettingsPanel(props: {
       toast.success(t('Saved successfully'))
     },
     onError: (err) => handleServerError(err),
+  })
+  const checkProvider = useMutation({
+    mutationFn: checkDomainProvider,
+    onSuccess: () =>
+      toast.success(
+        t(
+          'Provider configuration is readable; write access and public HTTPS still require verification'
+        )
+      ),
+    onError: (error) => handleServerError(error),
   })
 
   useDraftNavigation(
@@ -316,6 +336,62 @@ export function SettingsPanel(props: {
         <legend className='mb-2 text-sm font-medium'>
           {t('Custom domains (Cloudflare for SaaS)')}
         </legend>
+        <div className='flex gap-2 sm:col-span-2'>
+          <Button
+            type='button'
+            variant='outline'
+            disabled={secretsDisabled || checkProvider.isPending}
+            onClick={() => checkProvider.mutate('cloudflare')}
+          >
+            {t('Check Cloudflare')}
+          </Button>
+          <Button
+            type='button'
+            variant='outline'
+            disabled={secretsDisabled || checkProvider.isPending}
+            onClick={() => checkProvider.mutate('aliyun')}
+          >
+            {t('Check AliDNS')}
+          </Button>
+        </div>
+        <SwitchRow
+          label={t('Automate platform domains')}
+          checked={drafts.domain_automation_enabled}
+          disabled={secretsDisabled}
+          onCheckedChange={(value) => set('domain_automation_enabled', value)}
+        />
+        <TextField
+          label={t('AliDNS managed root domain')}
+          value={drafts.aliyun_domain}
+          disabled={secretsDisabled}
+          onChange={(value) => set('aliyun_domain', value)}
+        />
+        <TextField
+          label={t('Mainland CNAME target')}
+          value={drafts.domain_mainland_target}
+          disabled={secretsDisabled}
+          onChange={(value) => set('domain_mainland_target', value)}
+        />
+        <SecretField
+          label={t('AliDNS AccessKey ID')}
+          value={drafts.aliyun_id}
+          configured={!!saved.aliyun_id_configured && !drafts.clear_aliyun}
+          disabled={secretsDisabled}
+          onChange={(value) => set('aliyun_id', value)}
+        />
+        <SecretField
+          label={t('AliDNS AccessKey Secret')}
+          value={drafts.aliyun_secret}
+          configured={!!saved.aliyun_secret_configured && !drafts.clear_aliyun}
+          disabled={secretsDisabled}
+          onChange={(value) => set('aliyun_secret', value)}
+        />
+        <SwitchRow
+          label={t('Remove saved AliDNS credentials')}
+          checked={drafts.clear_aliyun}
+          disabled={secretsDisabled}
+          onCheckedChange={(value) => set('clear_aliyun', value)}
+        />
         <SecretField
           label={t('Cloudflare API token')}
           value={drafts.cloudflare_token}

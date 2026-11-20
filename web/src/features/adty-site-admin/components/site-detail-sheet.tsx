@@ -58,6 +58,7 @@ import {
   adjustSite,
   clearSiteNotice,
   disableSiteDomain,
+  retryDomainAutomation,
   disableSiteSenderDomain,
   getAdminBalanceRequests,
   getSite,
@@ -83,8 +84,8 @@ import type { AdminSite } from '../types'
 import { CloseSiteDialog } from './close-site-dialog'
 import { SwitchRow } from './setting-fields'
 import { SiteFundPanel } from './site-fund-panel'
-import { SiteTierControl } from './site-tier-control'
 import { SiteStatusBadge } from './site-status-badge'
+import { SiteTierControl } from './site-tier-control'
 import { SiteVisibilityEditor } from './site-visibility-editor'
 
 function readAllowedGroups(raw?: string) {
@@ -347,7 +348,9 @@ function SiteActions(props: {
           onChange={(event) => setAllowedGroups(event.target.value)}
         />
         <p className='text-muted-foreground text-xs'>
-          {t('Leave empty to allow every live billing group. Separate group IDs with commas.')}
+          {t(
+            'Leave empty to allow every live billing group. Separate group IDs with commas.'
+          )}
         </p>
       </div>
       <p className='text-muted-foreground text-xs'>
@@ -465,13 +468,8 @@ function SiteActions(props: {
         handleConfirm={() => canDelete && takedown.mutate()}
       />
       {canClose && (
-        <CloseSiteDialog
-          site={site}
-          open={closing}
-          onOpenChange={setClosing}
-        />
+        <CloseSiteDialog site={site} open={closing} onOpenChange={setClosing} />
       )}
-
     </section>
   )
 }
@@ -576,6 +574,13 @@ function SiteDomains(props: {
     },
     onError: (err) => handleServerError(err),
   })
+  const retryDomain = useMutation({
+    mutationFn: retryDomainAutomation,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+    },
+    onError: (error) => handleServerError(error),
+  })
   if (props.domains.length === 0 && props.senders.length === 0) return null
   return (
     <section className='flex flex-col gap-2'>
@@ -586,9 +591,33 @@ function SiteDomains(props: {
           className='flex items-center justify-between gap-2'
         >
           <span className='text-sm break-all'>
-            {domain.hostname} · {domain.status}
+            {domain.hostname} ·{' '}
+            {domain.role === 'base_url' ? t('API address') : t('Website')} ·{' '}
+            {domain.status} · {domain.ssl_status}
+            {domain.automation_state && (
+              <span className='text-muted-foreground block'>
+                {t(`Domain automation: ${domain.automation_state}`)}
+              </span>
+            )}
+            {domain.last_error && (
+              <span className='text-destructive block'>
+                {domain.last_error}
+              </span>
+            )}
           </span>
-          {canDelete && (
+          {user?.role === ROLE.SUPER_ADMIN &&
+            domain.status !== 'removed' &&
+            domain.automation_state && (
+              <Button
+                variant='outline'
+                size='sm'
+                disabled={retryDomain.isPending}
+                onClick={() => retryDomain.mutate(domain.id)}
+              >
+                {t('Retry')}
+              </Button>
+            )}
+          {canDelete && domain.status !== 'removed' && (
             <Button
               variant='outline'
               size='sm'
@@ -627,7 +656,8 @@ function SiteDomains(props: {
 function RootBalanceRequests(props: { siteId: number }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const isRoot = useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const isRoot =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
   const list = useQuery({
     queryKey: siteAdminKeys.list('balance-requests', { siteId: props.siteId }),
     queryFn: () => getAdminBalanceRequests(props.siteId),
@@ -638,7 +668,9 @@ function RootBalanceRequests(props: { siteId: number }) {
       reviewAdminBalanceRequest(input.id, input.approve),
     onSuccess: () =>
       void queryClient.invalidateQueries({
-        queryKey: siteAdminKeys.list('balance-requests', { siteId: props.siteId }),
+        queryKey: siteAdminKeys.list('balance-requests', {
+          siteId: props.siteId,
+        }),
       }),
     onError: (error) => handleServerError(error),
   })
@@ -659,7 +691,9 @@ function RootBalanceRequests(props: { siteId: number }) {
           tableProps={{ 'aria-label': t('Balance requests') }}
           data={list.data}
           getRowKey={(row) => String(row.id)}
-          emptyContent={<EmptyState className='min-h-24' title={t('No data')} />}
+          emptyContent={
+            <EmptyState className='min-h-24' title={t('No data')} />
+          }
           columns={[
             {
               id: 'customer',
@@ -704,7 +738,9 @@ function RootBalanceRequests(props: { siteId: number }) {
                       size='sm'
                       variant='outline'
                       disabled={review.isPending}
-                      onClick={() => review.mutate({ id: row.id, approve: true })}
+                      onClick={() =>
+                        review.mutate({ id: row.id, approve: true })
+                      }
                     >
                       {t('Approve')}
                     </Button>
@@ -712,14 +748,18 @@ function RootBalanceRequests(props: { siteId: number }) {
                       size='sm'
                       variant='outline'
                       disabled={review.isPending}
-                      onClick={() => review.mutate({ id: row.id, approve: false })}
+                      onClick={() =>
+                        review.mutate({ id: row.id, approve: false })
+                      }
                     >
                       {t('Reject')}
                     </Button>
                   </div>
                 ) : (
                   <span className='text-muted-foreground text-xs tabular-nums'>
-                    {row.reviewed_at > 0 ? formatTimestampToDate(row.reviewed_at) : '-'}
+                    {row.reviewed_at > 0
+                      ? formatTimestampToDate(row.reviewed_at)
+                      : '-'}
                   </span>
                 ),
             },
@@ -764,9 +804,7 @@ function parseSiteMethodAuth(
     return {
       valid: true,
       authorized: new Set(
-        Array.isArray(list)
-          ? list.map((item) => item.trim().toLowerCase())
-          : []
+        Array.isArray(list) ? list.map((item) => item.trim().toLowerCase()) : []
       ),
     }
   } catch {
@@ -950,7 +988,10 @@ export function SiteDetailSheet(props: {
               <SiteActions key={site.id} site={site} onDirtyChange={setDirty} />
               <SiteBonusMethodAuth siteId={site.id} />
               <RootBalanceRequests siteId={site.id} />
-              <SiteTierControl key={`${site.id}:${site.tier_mode}:${site.tier_code}`} site={site} />
+              <SiteTierControl
+                key={`${site.id}:${site.tier_mode}:${site.tier_code}`}
+                site={site}
+              />
               <SiteFundPanel siteId={site.id} />
               <SiteDomains
                 siteId={site.id}

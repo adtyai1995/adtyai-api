@@ -3,6 +3,7 @@ package adty_setting
 import (
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,10 +16,15 @@ import (
 // 这些键只能通过分站管理的设置接口改（controller/adty_site_admin.go），通用的 /api/option/ 拒绝写入，
 // 否则绕过下面的校验就能在没设 d 的情况下打开分站。
 type ResellerSetting struct {
-	Enabled            bool     `json:"enabled"`
-	RootDomains        []string `json:"root_domains"`
-	ReservedSubdomains []string `json:"reserved_subdomains"`
-	UnknownHostMode    string   `json:"unknown_host_mode"` // main | reject
+	DomainAutomationEnabled bool     `json:"domain_automation_enabled"`
+	AliyunDomain            string   `json:"aliyun_domain"`
+	AliyunAccessKeyID       string   `json:"aliyun_access_key_id"`
+	AliyunAccessKeySecret   string   `json:"aliyun_access_key_Secret"`
+	DomainMainlandTarget    string   `json:"domain_mainland_target"`
+	Enabled                 bool     `json:"enabled"`
+	RootDomains             []string `json:"root_domains"`
+	ReservedSubdomains      []string `json:"reserved_subdomains"`
+	UnknownHostMode         string   `json:"unknown_host_mode"` // main | reject
 
 	CostFactor             *float64           `json:"cost_factor"` // 全局供货倍率，正数乘数
 	PendingCostFactor      *float64           `json:"pending_cost_factor"`
@@ -232,6 +238,9 @@ func validPositiveMultiplier(value *float64) bool {
 
 // ValidateResellerSetting 检查一份要保存的分站设置。resendConfigured 是上游 ResendApiKey 有没有填。
 func ValidateResellerSetting(s *ResellerSetting, resendConfigured bool) error {
+	if s.DomainAutomationEnabled && (!s.CloudflareConfigured() || !resellerDomainPattern.MatchString(s.AliyunDomain) || !slices.Contains(s.RootDomains, s.AliyunDomain) || strings.TrimSpace(s.AliyunAccessKeyID) == "" || strings.TrimSpace(s.AliyunAccessKeySecret) == "" || !resellerDomainPattern.MatchString(s.DomainMainlandTarget) || !resellerDomainPattern.MatchString(s.CnameTarget) || !resellerDomainPattern.MatchString(s.FallbackOrigin)) {
+		return common.NewMessage("Configure Cloudflare, AliDNS credentials, an allowed root domain and both routing targets before enabling domain automation")
+	}
 	for _, domain := range s.RootDomains {
 		if !resellerDomainPattern.MatchString(domain) {
 			return common.NewMessage("Invalid root domain {{domain}}", map[string]any{"domain": domain})

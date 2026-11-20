@@ -83,6 +83,17 @@ func TestResellerSettingsSaveRules(t *testing.T) {
 	require.NoError(t, f.db.Where(&model.Option{Key: "adty_reseller_setting.cloudflare_apiToken"}).First(&encryptedToken).Error)
 	assert.NotContains(t, encryptedToken.Value, "cf-secret", "Root settings must persist an encrypted token")
 	assert.True(t, strings.HasPrefix(encryptedToken.Value, "adty:secret:v1:"))
+	ali := put(`{"aliyun_access_key_id":"ali-id-test","aliyun_access_key_Secret":"ali-secret-test"}`)
+	require.True(t, ali.Success, ali.Message)
+	assert.Equal(t, "", ali.Data["aliyun_access_key_id"])
+	assert.Equal(t, "", ali.Data["aliyun_access_key_Secret"])
+	assert.Equal(t, true, ali.Data["aliyun_secret_configured"])
+	var encryptedAli model.Option
+	require.NoError(t, f.db.Where(&model.Option{Key: "adty_reseller_setting.aliyun_access_key_Secret"}).First(&encryptedAli).Error)
+	assert.True(t, strings.HasPrefix(encryptedAli.Value, "adty:secret:v1:"))
+	assert.NotContains(t, encryptedAli.Value, "ali-secret-test")
+	require.True(t, put(`{"aliyun_access_key_Secret":""}`).Success)
+	assert.Equal(t, "ali-secret-test", cfg.AliyunAccessKeySecret)
 	view := adtyJSON(t, f.engine, http.MethodGet, "/api/option/", "", f.root)
 	require.Equal(t, http.StatusOK, view.Code)
 	var optionView struct {
@@ -571,6 +582,10 @@ func TestResellerSettingsDelegation(t *testing.T) {
 		service.NotifySiteOwnersGlobalCostFactorPending = func(decimal.Decimal, int64) { notifications++ }
 		t.Cleanup(func() { service.NotifySiteOwnersGlobalCostFactorPending = previousNotify })
 		for _, tc := range []struct{ name, secret string }{
+			{"aliyun_id", `"aliyun_access_key_id":"replacement"`},
+			{"aliyun_secret", `"aliyun_access_key_Secret":"replacement"`},
+			{"provider_zone", `"cloudflare_zone_id":"replacement"`},
+			{"cname_target", `"cname_target":"replacement.example.com"`},
 			{"token", `"cloudflare_apiToken":"replacement"`},
 			{"token_empty", `"cloudflare_apiToken":""`},
 			{"token_null", `"cloudflare_apiToken":null`},

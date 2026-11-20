@@ -73,6 +73,25 @@ const settings: ResellerSettings = {
 }
 
 describe('current reseller settings', () => {
+  it('saves domain automation credentials only when explicitly changed', () => {
+    const saved = {
+      ...settings,
+      aliyun_id_configured: true,
+      aliyun_secret_configured: true,
+    }
+    const drafts = toResellerDrafts(saved)
+    expect(buildResellerUpdate(saved, drafts)).not.toHaveProperty(
+      'aliyun_access_key_Secret'
+    )
+    drafts.aliyun_secret = 'new-secret'
+    drafts.aliyun_id = 'new-id'
+    drafts.domain_automation_enabled = true
+    expect(buildResellerUpdate(saved, drafts)).toMatchObject({
+      aliyun_access_key_Secret: 'new-secret',
+      aliyun_access_key_id: 'new-id',
+      domain_automation_enabled: true,
+    })
+  })
   it('allows enabling sites without a retired amount-tier extra', async () => {
     const client = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },

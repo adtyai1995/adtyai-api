@@ -527,9 +527,26 @@ export async function handleSiteReport(
 }
 
 export type AdminSiteDomain = {
+  role?: string
+  managed_by?: string
+  automation_state?: string
+  ssl_status?: string
+  last_error?: string
   id: number
   hostname: string
   status: string
+}
+
+export async function checkDomainProvider(
+  provider: 'cloudflare' | 'aliyun'
+): Promise<void> {
+  const res = await api.post(`${BASE}/reseller/domains/check/${provider}`)
+  requireServerSuccess(res.data)
+}
+
+export async function retryDomainAutomation(id: number): Promise<void> {
+  const res = await api.post(`${BASE}/sites/domains/${id}/retry`)
+  requireServerSuccess(res.data)
 }
 
 export type AdminSenderDomain = {

@@ -193,6 +193,13 @@ export type TurnstileWidget = { id: string; site_key: string }
  * *_configured flags say whether one is saved.
  */
 export type ResellerSettings = {
+  domain_automation_enabled?: boolean
+  aliyun_domain?: string
+  domain_mainland_target?: string
+  aliyun_access_key_id?: string
+  aliyun_access_key_Secret?: string
+  aliyun_id_configured?: boolean
+  aliyun_secret_configured?: boolean
   enabled: boolean
   root_domains: string[] | null
   reserved_subdomains: string[] | null
@@ -249,7 +256,14 @@ export type ResellerSettingsUpdate = Partial<
     | 'site_customer_terms_version'
     | 'max_site_bonus_extra'
   >
-> & { clear_secrets?: Array<'cloudflare_apiToken' | 'turnstile_widget_secret'> }
+> & {
+  clear_secrets?: Array<
+    | 'cloudflare_apiToken'
+    | 'turnstile_widget_secret'
+    | 'aliyun_access_key_id'
+    | 'aliyun_access_key_Secret'
+  >
+}
 
 export type InviteCode = {
   id: number

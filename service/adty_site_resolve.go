@@ -126,9 +126,26 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 			snapshot.apiOnly[strings.ToLower(host)] = true
 		}
 	}
+	var fixedDomains []model.AdtySiteDomain
+	if err := model.DB.Where("managed_by = ? AND role = ?", "platform", model.AdtySiteDomainRoleBaseURL).Find(&fixedDomains).Error; err != nil {
+		return snapshot
+	}
+	fixedBySite := make(map[int]model.AdtySiteDomain, len(fixedDomains))
+	for _, domain := range fixedDomains {
+		fixedBySite[domain.SiteId] = domain
+	}
 	for i := range sites {
 		site := &sites[i]
 		label := fmt.Sprintf("api-s%d", site.Id)
+		fixed := fixedBySite[site.Id]
+		if fixed.Id > 0 {
+			snapshot.defaultAPI[site.Id] = fixed.Hostname
+			snapshot.apiOnly[fixed.Hostname] = true
+			if fixed.Status == model.AdtySiteDomainActive && fixed.DesiredState != "removed" {
+				snapshot.byHost[fixed.Hostname] = site
+			}
+			continue
+		}
 		for n := 0; ; n++ {
 			candidate := label
 			if n > 0 {
@@ -246,10 +263,29 @@ func AdtySiteForHost(host string) *model.AdtySite {
 		return nil
 	}
 	snapshot := loadAdtySiteSnapshot()
-	if site, ok := snapshot.byCustom[host]; ok {
-		return site
+	site := snapshot.byCustom[host]
+	if site == nil {
+		site = snapshot.byHost[host]
 	}
-	return snapshot.byHost[host]
+	if site == nil {
+		return nil
+	}
+	// Read the authoritative status so a close on another instance wins over
+	// the local branding cache. A database failure must not serve stale business.
+	var current model.AdtySite
+	if err := model.DB.Select("id", "status", "close_transfer_to").First(&current, site.Id).Error; err != nil {
+		return nil
+	}
+	var binding model.AdtySiteDomain
+	if err := model.DB.Where("hostname = ?", host).Limit(1).Find(&binding).Error; err != nil {
+		return nil
+	}
+	if binding.Id > 0 && (binding.SiteId != site.Id || binding.Status != model.AdtySiteDomainActive || binding.DesiredState == "removed" || (binding.Role == model.AdtySiteDomainRoleBaseURL) != snapshot.apiOnly[host]) {
+		return nil
+	}
+	copy := *site
+	copy.Status, copy.CloseTransferTo = current.Status, current.CloseTransferTo
+	return &copy
 }
 
 // AdtyRejectSessionAPIStatus 判断这个 Host 能不能调用登录、注册、验证码和找回密码。
@@ -260,20 +296,14 @@ func AdtyRejectSessionAPIStatus(host string) int {
 	if host == "" || AdtyIsMainHost(host) || !resellerSetting().Enabled {
 		return 0
 	}
-	snapshot := loadAdtySiteSnapshot()
-	if site := snapshot.byCustom[host]; site != nil {
-		if AdtySiteServesCustomers(site) {
-			return 0
-		}
+	site := AdtySiteForHost(host)
+	if site == nil {
+		return http.StatusNotFound
+	}
+	if !AdtySiteServesCustomers(site) || AdtyIsApiOnlyHost(host) {
 		return http.StatusForbidden
 	}
-	if site := snapshot.byHost[host]; site != nil {
-		if site.Status == model.AdtySiteStatusClosed {
-			return http.StatusForbidden
-		}
-		return 0
-	}
-	return http.StatusNotFound
+	return 0
 }
 
 // AdtyRequestSiteID is the current request's site. The main site is 0.

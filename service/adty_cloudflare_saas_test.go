@@ -101,7 +101,7 @@ func (f *fakeCloudflare) serve(w http.ResponseWriter, r *http.Request) {
 			} `json:"ssl"`
 		}
 		require.NoError(f.t, common.Unmarshal(body, &req))
-		assert.Equal(f.t, "http", req.SSL.Method)
+		assert.Contains(f.t, []string{"http", "txt"}, req.SSL.Method)
 		assert.Equal(f.t, "dv", req.SSL.Type)
 		if f.rejectCreateHostname != "" && req.Hostname == f.rejectCreateHostname {
 			w.WriteHeader(http.StatusBadRequest)
@@ -961,15 +961,19 @@ func TestOwnerCannotRemoveOtherSiteDomain(t *testing.T) {
 	assert.ErrorIs(t, RemoveAdtySiteDomain(context.Background(), owner.Id, domain.Id), ErrAdtySiteNotFound)
 }
 
-func TestClosedSiteRemovesItsDomains(t *testing.T) {
+func TestClosedSiteRetainsWebsiteAndQueuesAPICleanup(t *testing.T) {
 	db, fake := prepareDomainDB(t)
 	owner, site := openActiveSite(t, db, "closed")
-	_, err := AddAdtySiteDomain(context.Background(), owner.Id, "api.closed.org")
+	website, err := AddAdtySiteDomain(context.Background(), owner.Id, "www.closed.org")
+	require.NoError(t, err)
+	api, err := AddAdtySiteDomainWithRole(context.Background(), owner.Id, "api.closed.org", model.AdtySiteDomainRoleBaseURL)
 	require.NoError(t, err)
 
 	adtyRemoveDomainsOfClosedSite(site)
 
-	assert.Equal(t, []string{"cf-1"}, fake.deletes)
+	require.NoError(t, RunAdtyDomainAutomationOnce(t.Context(), time.Now()))
+	assert.Equal(t, []string{api.CFHostnameId}, fake.deletes)
+	assert.Contains(t, fake.hostnames, website.CFHostnameId)
 }
 
 // captureSysLogs 用共享的日志 sink 收 common.SysLog / SysError 的输出。

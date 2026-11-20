@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,11 @@ func adtyIsSessionAPI(path string) bool {
 }
 
 func adtyIsAPIPath(path string) bool {
+	if generation := jsplugin.DefaultRegistry.Generation(); generation != nil {
+		if _, found := generation.LookupDeclaredRoute(http.MethodGet, path); found {
+			return true
+		}
+	}
 	if path == "/api" || path == "/v1" || path == "/v1beta" {
 		return true
 	}
@@ -82,10 +88,11 @@ func AdtySiteContext() gin.HandlerFunc {
 		case service.AdtySiteServesCustomers(site):
 			c.Set(service.AdtySiteContextKey, site)
 		case site != nil && site.Status == model.AdtySiteStatusClosed:
-			// 新归属：转给别的站就跳那个站，转回主站就跳主站。ServerAddress 没填时没法跳，当主站处理。
-			target := service.AdtySiteBaseURL(service.AdtySiteById(site.CloseTransferTo))
-			if !api && target != "" {
-				c.Redirect(http.StatusFound, target+c.Request.URL.RequestURI())
+			// Closed websites retain only a redirect to the main-site root.
+			target := service.AdtySiteBaseURL(nil)
+			if !api && target != "" && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) && c.GetHeader("Upgrade") == "" && !service.AdtyIsApiOnlyHost(host) {
+				c.Header("Cache-Control", "no-store")
+				c.Redirect(http.StatusFound, strings.TrimRight(target, "/")+"/")
 				c.Abort()
 				return
 			}
@@ -142,9 +149,10 @@ func adtyHandleCustomDomain(c *gin.Context, host string) {
 	if !service.AdtySiteServesCustomers(site) {
 		// 站点已关停、只是缓存里还留着域名行：页面跳到客户的新归属，接口一律拒绝，
 		// 和平台子域名的关站处理保持一致。
-		if !adtyIsAPIPath(path) {
-			if target := service.AdtySiteBaseURL(service.AdtySiteById(site.CloseTransferTo)); target != "" {
-				c.Redirect(http.StatusFound, target+c.Request.URL.RequestURI())
+		if site.Status == model.AdtySiteStatusClosed && !adtyIsAPIPath(path) && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) && c.GetHeader("Upgrade") == "" {
+			if target := service.AdtySiteBaseURL(nil); target != "" {
+				c.Header("Cache-Control", "no-store")
+				c.Redirect(http.StatusFound, strings.TrimRight(target, "/")+"/")
 				c.Abort()
 				return
 			}

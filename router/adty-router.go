@@ -652,6 +652,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/reseller/usage", authz.AdtySiteRead, controller.GetAdtyResellerUsage},
 		{http.MethodGet, "/reseller/settings", authz.AdtySiteSettingsRead, controller.GetAdtyResellerSettings},
 		{http.MethodPut, "/reseller/settings", authz.AdtySiteSettings, controller.UpdateAdtyResellerSettings},
+		{http.MethodPost, "/reseller/domains/check/:provider", authz.AdtySiteSettings, controller.CheckAdtyDomainProvider},
+		{http.MethodPost, "/sites/domains/:id/retry", authz.AdtySiteSettings, controller.RetryAdtyDomainAutomation},
 	} {
 		handlePermissionRoute(admin, route.method, route.path, route.permission, route.handler)
 	}

@@ -318,6 +318,22 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 	if !cfg.Ready() {
 		return nil, ErrAdtySiteDisabled
 	}
+	if strings.TrimSpace(subdomain) == "" && cfg.DomainAutomationEnabled {
+		for range 20 {
+			n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 48))
+			if err != nil {
+				return nil, err
+			}
+			subdomain = "s" + n.Text(36)
+			var count int64
+			if err := model.DB.Model(&model.AdtySite{}).Where("subdomain = ?", subdomain).Count(&count).Error; err != nil {
+				return nil, err
+			}
+			if count == 0 {
+				break
+			}
+		}
+	}
 	label, err := AdtyNormalizeSubdomain(subdomain)
 	if err != nil {
 		return nil, err
@@ -332,6 +348,9 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 	root := preset.ExplicitRoot
 	if root == "" {
 		root = cfg.RootDomains[0]
+		if cfg.DomainAutomationEnabled {
+			root = cfg.AliyunDomain
+		}
 	} else if !slices.Contains(cfg.RootDomains, root) {
 		return nil, common.NewMessage("Invalid root domain {{domain}}", map[string]any{"domain": root})
 	}
@@ -402,6 +421,9 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 			}
 		}
 		if err := tx.Create(site).Error; err != nil {
+			return err
+		}
+		if err := adtyAllocatePlatformDomainsTx(tx, site); err != nil {
 			return err
 		}
 		if err := ensureAdtySiteWalletsTx(tx, site.Id); err != nil {
@@ -982,6 +1004,9 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		}
 		site.Status, site.ClosedAt, site.CloseTransferTo = model.AdtySiteStatusClosed, now, target
 		closed = site
+		if err := adtyCloseDomainIntentsTx(tx, site.Id); err != nil {
+			return err
+		}
 		return recordSiteAuditTx(tx, site.Id, "close", 0, nil, map[string]any{
 			"transfer_to": target, "customers": len(moved), "archived_memberships": len(moved), "claw_back": false,
 		}, "")

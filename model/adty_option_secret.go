@@ -38,13 +38,14 @@ import (
 const adtySecretPrefix = "adty:secret:v1:"
 
 var adtySecretOptionKeys = []string{
+	adty_setting.ResellerSettingModule + ".aliyun_access_key_Secret",
+	adty_setting.ResellerSettingModule + ".aliyun_access_key_id",
 	adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyCloudflareTok,
 	adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyWidgetSecret,
 }
 
 func isAdtySecretOption(key string) bool {
-	return key == adty_setting.ResellerSettingModule+"."+adty_setting.ResellerKeyCloudflareTok ||
-		key == adty_setting.ResellerSettingModule+"."+adty_setting.ResellerKeyWidgetSecret
+	return slices.Contains(adtySecretOptionKeys, key)
 }
 
 // The deployment key stays outside the database and must survive restarts and restores.
@@ -182,6 +183,8 @@ func OpenAdtyPurposeSecret(purpose, stored string) (string, error) {
 // adtySecretClearedValues 是「这一条读不出来」时写回内存的值：token 是空串，
 // widget secret 是 JSON 对象（配置解析把 `{}` 读成空表）。
 var adtySecretClearedValues = map[string]string{
+	adty_setting.ResellerSettingModule + ".aliyun_access_key_Secret":                 "",
+	adty_setting.ResellerSettingModule + ".aliyun_access_key_id":                     "",
 	adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyCloudflareTok: "",
 	adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyWidgetSecret:  "{}",
 }

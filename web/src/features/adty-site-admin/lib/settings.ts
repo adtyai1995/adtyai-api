@@ -60,6 +60,8 @@ export const CLOUDFLARE_KEYS = [
   'cloudflare_account_id',
   'cname_target',
   'fallback_origin',
+  'aliyun_domain',
+  'domain_mainland_target',
 ] as const
 export type CloudflareKey = (typeof CLOUDFLARE_KEYS)[number]
 
@@ -99,6 +101,10 @@ export type ResellerDrafts = Record<MoneyKey | RuleKey, string> &
   Record<SwitchKey, boolean> &
   Record<CloudflareKey, string> & {
     enabled: boolean
+    domain_automation_enabled: boolean
+    aliyun_id: string
+    aliyun_secret: string
+    clear_aliyun: boolean
     custom_domain_enabled: boolean
     sender_domain_enabled: boolean
     unknown_host_mode: 'main' | 'reject'
@@ -132,6 +138,10 @@ function lines(value: string): string[] {
 export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
   const drafts = {
     enabled: saved.enabled,
+    domain_automation_enabled: saved.domain_automation_enabled ?? false,
+    aliyun_id: '',
+    aliyun_secret: '',
+    clear_aliyun: false,
     custom_domain_enabled: saved.custom_domain_enabled,
     sender_domain_enabled: saved.sender_domain_enabled,
     unknown_host_mode: saved.unknown_host_mode,
@@ -198,6 +208,18 @@ export function buildResellerUpdate(
   drafts: ResellerDrafts
 ): ResellerSettingsUpdate {
   const body: ResellerSettingsUpdate = {}
+  if (
+    drafts.domain_automation_enabled !==
+    (saved.domain_automation_enabled ?? false)
+  ) {
+    body.domain_automation_enabled = drafts.domain_automation_enabled
+  }
+  if (drafts.aliyun_id.trim()) {
+    body.aliyun_access_key_id = drafts.aliyun_id.trim()
+  }
+  if (drafts.aliyun_secret.trim()) {
+    body.aliyun_access_key_Secret = drafts.aliyun_secret.trim()
+  }
   for (const key of MONEY_KEYS) {
     const draft = drafts[key].trim()
     const next = draft === '' ? null : Number(draft)
@@ -251,6 +273,9 @@ export function buildResellerUpdate(
     if (next !== (saved[key] ?? '')) body[key] = next
   }
   const clear: NonNullable<ResellerSettingsUpdate['clear_secrets']> = []
+  if (drafts.clear_aliyun) {
+    clear.push('aliyun_access_key_id', 'aliyun_access_key_Secret')
+  }
   if (drafts.cloudflare_token.trim() !== '') {
     body.cloudflare_apiToken = drafts.cloudflare_token.trim()
   } else if (

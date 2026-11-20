@@ -57,12 +57,7 @@ import {
 import type { AdminSite, SiteStatus } from '../types'
 import { SiteStatusBadge } from './site-status-badge'
 
-const STATUSES: SiteStatus[] = [
-  'pending',
-  'active',
-  'closing',
-  'closed',
-]
+const STATUSES: SiteStatus[] = ['pending', 'active', 'closing', 'closed']
 
 /** Column header that sorts the loaded page; aria-sort sits on the header cell. */
 function SortHeader(props: {
@@ -192,7 +187,9 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
           placeholder={t('Subdomain or owner username')}
           aria-label={t('Search')}
         />
-        <Button variant='brand' type='submit'>{t('Search')}</Button>
+        <Button variant='brand' type='submit'>
+          {t('Search')}
+        </Button>
       </form>
       {canCreate && (
         <form
@@ -218,8 +215,7 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
             value={subdomain}
             onChange={(event) => setSubdomain(event.target.value)}
             aria-label={t('Domain')}
-            placeholder={t('Domain')}
-            required
+            placeholder={t('Leave blank to allocate automatically')}
           />
           <Button variant='brand' type='submit' disabled={openSite.isPending}>
             {t('Open a reseller site')}

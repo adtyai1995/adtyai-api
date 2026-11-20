@@ -484,15 +484,15 @@ func TestClosedSubdomainRedirects(t *testing.T) {
 	f := newSiteFixture(t)
 	resp := f.do(t, http.MethodGet, "gone.sites.example.com", "/wallet?x=1", "")
 	assert.Equal(t, http.StatusFound, resp.Code)
-	assert.Equal(t, "https://main.example.com/wallet?x=1", resp.Header().Get("Location"), "customers inherited by the main site")
+	assert.Equal(t, "https://main.example.com/", resp.Header().Get("Location"), "closed pages do not forward sensitive query parameters")
+	assert.Equal(t, http.StatusForbidden, f.do(t, http.MethodPost, "gone.sites.example.com", "/wallet", "").Code)
 	assert.Equal(t, http.StatusForbidden, f.do(t, http.MethodGet, "gone.sites.example.com", "/api/status", "").Code, "closed sites cannot run API requests as the main site")
 
-	// A historically closed site that already moved customers to another site
-	// still redirects there; new closes always record close_transfer_to = 0.
+	// Historical customer migration targets do not change the retained redirect.
 	require.NoError(t, f.db.Model(&model.AdtySite{}).Where("id = ?", f.closed.Id).Update("close_transfer_to", f.site.Id).Error)
 	service.InvalidateAdtySiteCache()
 	resp = f.do(t, http.MethodGet, "gone.sites.example.com", "/", "")
-	assert.Equal(t, "https://shop.sites.example.com/", resp.Header().Get("Location"), "historical transfers keep their recorded destination")
+	assert.Equal(t, "https://main.example.com/", resp.Header().Get("Location"), "closed entry points redirect only to the platform")
 }
 
 func TestRegisterOnSiteSetsSiteId(t *testing.T) {

@@ -62,6 +62,9 @@ export type SiteDomainRole = 'site' | 'base_url'
 
 /** A custom domain (model.AdtySiteDomain, task 11.8). */
 export type SiteDomain = {
+  managed_by?: 'owner' | 'platform'
+  automation_state?: string
+  desired_state?: string
   id: number
   hostname: string
   role: SiteDomainRole
