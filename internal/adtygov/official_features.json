@@ -340,7 +340,7 @@
       "source_line": 2470,
       "ftr_id": "FTR-005",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.4"
@@ -366,13 +366,13 @@
         }
       ],
       "test_func_names": [
-        "ADTY-01-05 terms page shows the configured agreement"
+        "TestFTRADTY0105UserAgreementPG"
       ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-ctl-22b1335",
+      "na_reason": "服务条款服务端成功路径已在 PostgreSQL 18 入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-01-05",
         "requirement_refs": [
@@ -400,13 +400,13 @@
           }
         ],
         "test_func_names": [
-          "ADTY-01-05 terms page shows the configured agreement"
+          "TestFTRADTY0105UserAgreementPG"
         ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-ctl-22b1335",
+        "na_reason": "服务条款服务端成功路径已在 PostgreSQL 18 入账，不代表最终候选通过"
       }
     },
     {
@@ -416,7 +416,7 @@
       "source_line": 2471,
       "ftr_id": "FTR-006",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [],
       "source_symbols": [
@@ -440,13 +440,13 @@
         }
       ],
       "test_func_names": [
-        "ADTY-01-06 privacy page shows the configured policy"
+        "TestFTRADTY0106PrivacyPolicyPG"
       ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-ctl-22b1335",
+      "na_reason": "隐私政策服务端成功路径已在 PostgreSQL 18 入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-01-06",
         "requirement_refs": [],
@@ -472,13 +472,13 @@
           }
         ],
         "test_func_names": [
-          "ADTY-01-06 privacy page shows the configured policy"
+          "TestFTRADTY0106PrivacyPolicyPG"
         ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-ctl-22b1335",
+        "na_reason": "隐私政策服务端成功路径已在 PostgreSQL 18 入账，不代表最终候选通过"
       }
     },
     {
@@ -1782,7 +1782,7 @@
       "source_line": 2492,
       "ftr_id": "FTR-021",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.5.9",
@@ -1827,14 +1827,16 @@
           "line": 155
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0301SelfQuotaPayloadPG"
+      ],
       "db_money_invariants": [
         "已打开的 GetSelf 读取本人用户并返回整数 quota，函数体内不写余额、不调用 InsertAdtyLedgerTx",
         "已打开的测试：quota 为 1250000；本金剩余 1000000 时 principal_usd 为 2，赠金剩余 250000 时 bonus_usd 为 0.5，合计 2.5",
         "common.QuotaPerUnit 为 500000；headline 用 formatQuota，展示类型可为 USD、CNY、TOKENS、CUSTOM，解析失败才回退 USD"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-ctl-22b1335",
+      "na_reason": "账户额度载荷已在 PostgreSQL 18 入账，页面美元展示未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-03-01",
         "requirement_refs": [
@@ -1881,14 +1883,16 @@
             "line": 155
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0301SelfQuotaPayloadPG"
+        ],
         "db_money_invariants": [
           "已打开的 GetSelf 读取本人用户并返回整数 quota，函数体内不写余额、不调用 InsertAdtyLedgerTx",
           "已打开的测试：quota 为 1250000；本金剩余 1000000 时 principal_usd 为 2，赠金剩余 250000 时 bonus_usd 为 0.5，合计 2.5",
           "common.QuotaPerUnit 为 500000；headline 用 formatQuota，展示类型可为 USD、CNY、TOKENS、CUSTOM，解析失败才回退 USD"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-ctl-22b1335",
+        "na_reason": "账户额度载荷已在 PostgreSQL 18 入账，页面美元展示未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -1898,7 +1902,7 @@
       "source_line": 2493,
       "ftr_id": "FTR-022",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.12.1",
@@ -1938,14 +1942,16 @@
           "line": 30
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0302WalletLotSplitPG"
+      ],
       "db_money_invariants": [
         "有存储批次时投影分别填写 principal、bonus、expiring_bonus；无批次时省略 wallet_lot_projection，不用原始余额冒充本金",
         "已打开的四个 GetSelf 测试只造 principal 与 bonus，没有断言 expiring_bonus_usd",
         "TestGetSelfLotProjectionLeavesSpendAndCreditUnchanged 在 GetSelf 之前消费批次，之后投影等于剩余批次；GetSelf 本身不写批次"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-ctl-surface-22b1335",
+      "na_reason": "账户批次分开展示的服务端成功路径已在 PostgreSQL 18 入账；页面组件未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-03-02",
         "requirement_refs": [
@@ -1987,14 +1993,16 @@
             "line": 30
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0302WalletLotSplitPG"
+        ],
         "db_money_invariants": [
           "有存储批次时投影分别填写 principal、bonus、expiring_bonus；无批次时省略 wallet_lot_projection，不用原始余额冒充本金",
           "已打开的四个 GetSelf 测试只造 principal 与 bonus，没有断言 expiring_bonus_usd",
           "TestGetSelfLotProjectionLeavesSpendAndCreditUnchanged 在 GetSelf 之前消费批次，之后投影等于剩余批次；GetSelf 本身不写批次"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-ctl-surface-22b1335",
+        "na_reason": "账户批次分开展示的服务端成功路径已在 PostgreSQL 18 入账；页面组件未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -3776,7 +3784,7 @@
       "source_line": 2520,
       "ftr_id": "FTR-043",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.6",
@@ -3827,10 +3835,12 @@
           "line": 42
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0503ModelAliasMappingPG"
+      ],
       "db_money_invariants": [],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-ctl-surface-22b1335",
+      "na_reason": "渠道模型映射保存与改写成功路径已在 PostgreSQL 18 入账；AdtyModelAlias 管理面未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-05-03",
         "requirement_refs": [
@@ -3883,10 +3893,12 @@
             "line": 42
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0503ModelAliasMappingPG"
+        ],
         "db_money_invariants": [],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-ctl-surface-22b1335",
+        "na_reason": "渠道模型映射保存与改写成功路径已在 PostgreSQL 18 入账；AdtyModelAlias 管理面未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -8384,7 +8396,7 @@
       "source_line": 2585,
       "ftr_id": "FTR-093",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.15",
@@ -8404,14 +8416,16 @@
           "line": 383
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1003BindSiteDomainPG"
+      ],
       "db_money_invariants": [
         "no_money_change",
         "绑定事务创建或重置 adty_site_domains 待验证行并写站点审计，已打开的函数体没有钱包或余额写入",
         "已被其他站占用且未 removed 的主机名返回 ErrAdtyCustomDomainTaken"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-10-03",
         "requirement_refs": [
@@ -8433,14 +8447,16 @@
             "line": 383
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1003BindSiteDomainPG"
+        ],
         "db_money_invariants": [
           "no_money_change",
           "绑定事务创建或重置 adty_site_domains 待验证行并写站点审计，已打开的函数体没有钱包或余额写入",
           "已被其他站占用且未 removed 的主机名返回 ErrAdtyCustomDomainTaken"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -8450,7 +8466,7 @@
       "source_line": 2586,
       "ftr_id": "FTR-094",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.15",
@@ -8476,14 +8492,16 @@
           "line": 612
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1004VerifyAndUnbindSiteDomainPG"
+      ],
       "db_money_invariants": [
         "主机名与 SSL 都是 active 才把域名状态改成 active；只满足一边保持 pending",
         "已打开测试断言解绑后状态为 removed，活动主机名映射为空",
         "已读的验证更新只改域名状态、证书状态和错误字段；解绑函数后半未读完，因此不把整个解绑写成 no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-10-04",
         "requirement_refs": [
@@ -8511,14 +8529,16 @@
             "line": 612
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1004VerifyAndUnbindSiteDomainPG"
+        ],
         "db_money_invariants": [
           "主机名与 SSL 都是 active 才把域名状态改成 active；只满足一边保持 pending",
           "已打开测试断言解绑后状态为 removed，活动主机名映射为空",
           "已读的验证更新只改域名状态、证书状态和错误字段；解绑函数后半未读完，因此不把整个解绑写成 no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -9098,7 +9118,7 @@
       "source_line": 2597,
       "ftr_id": "FTR-102",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.2.1",
@@ -9133,12 +9153,14 @@
           "line": 596
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1102SiteCustomerPricePG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-11-02",
         "requirement_refs": [
@@ -9175,12 +9197,14 @@
             "line": 596
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1102SiteCustomerPricePG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -9520,7 +9544,7 @@
       "source_line": 2602,
       "ftr_id": "FTR-107",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.2.11",
@@ -9554,12 +9578,14 @@
           "line": 25
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1107FreezeRequestPriceSnapshotPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-11-07",
         "requirement_refs": [
@@ -9595,12 +9621,14 @@
             "line": 25
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1107FreezeRequestPriceSnapshotPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -9610,7 +9638,7 @@
       "source_line": 2603,
       "ftr_id": "FTR-108",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.2.14",
@@ -9637,12 +9665,14 @@
           "line": 12
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1108PriceRevisionHistoryPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-11-08",
         "requirement_refs": [
@@ -9671,12 +9701,14 @@
             "line": 12
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1108PriceRevisionHistoryPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -17898,7 +17930,7 @@
       "source_line": 2696,
       "ftr_id": "FTR-180",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.18.4",
@@ -17978,12 +18010,14 @@
           "line": 46
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestTelegramUnbindRetainsHistoryAndScopePG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-router-1810",
+      "na_reason": "解绑成功路径已在 PostgreSQL 18 入账；绑定与双语通知未在本测试覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-18-10",
         "requirement_refs": [
@@ -18065,12 +18099,14 @@
             "line": 46
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestTelegramUnbindRetainsHistoryAndScopePG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-router-1810",
+        "na_reason": "解绑成功路径已在 PostgreSQL 18 入账；绑定与双语通知未在本测试覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -18438,7 +18474,7 @@
       "source_line": 2703,
       "ftr_id": "FTR-184",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.11",
@@ -18478,12 +18514,14 @@
           "line": 28
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1904TranslationConnectivityPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-19-04",
         "requirement_refs": [
@@ -18525,12 +18563,14 @@
             "line": 28
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1904TranslationConnectivityPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -18540,7 +18580,7 @@
       "source_line": 2704,
       "ftr_id": "FTR-185",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.11",
@@ -18588,12 +18628,14 @@
           "line": 600
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1905TranslateChineseDynamicPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc2-22b1335",
+      "na_reason": "中文动态内容翻译成功路径已在 PostgreSQL 18 入账；页面展示未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-19-05",
         "requirement_refs": [
@@ -18643,12 +18685,14 @@
             "line": 600
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1905TranslateChineseDynamicPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc2-22b1335",
+        "na_reason": "中文动态内容翻译成功路径已在 PostgreSQL 18 入账；页面展示未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -18658,7 +18702,7 @@
       "source_line": 2705,
       "ftr_id": "FTR-186",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.11",
@@ -18699,12 +18743,14 @@
           "line": 53
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1906ReuseSavedTranslationPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc2-22b1335",
+      "na_reason": "相同正文复用已保存译文的成功路径已在 PostgreSQL 18 入账；页面展示未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-19-06",
         "requirement_refs": [
@@ -18747,12 +18793,14 @@
             "line": 53
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1906ReuseSavedTranslationPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc2-22b1335",
+        "na_reason": "相同正文复用已保存译文的成功路径已在 PostgreSQL 18 入账；页面展示未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -20878,7 +20926,7 @@
       "source_line": 2727,
       "ftr_id": "FTR-202",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.21",
@@ -20941,12 +20989,14 @@
           "line": 205
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2102EmailStepUpPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-21-02",
         "requirement_refs": [
@@ -21011,12 +21061,14 @@
             "line": 205
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2102EmailStepUpPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -21336,7 +21388,7 @@
       "source_line": 2731,
       "ftr_id": "FTR-206",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.21",
@@ -21383,12 +21435,14 @@
           "line": 15
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2106OfficialAuditPersistPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-model-2106",
+      "na_reason": "审计落库成功路径已入账，不代表员工余额预约路径或最终候选通过",
       "design_card": {
         "feature_id": "ADTY-21-06",
         "requirement_refs": [
@@ -21437,12 +21491,14 @@
             "line": 15
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2106OfficialAuditPersistPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-model-2106",
+        "na_reason": "审计落库成功路径已入账，不代表员工余额预约路径或最终候选通过"
       }
     },
     {
@@ -21618,7 +21674,7 @@
       "source_line": 2733,
       "ftr_id": "FTR-208",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.21",
@@ -21662,14 +21718,16 @@
           "line": 966
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2108DuplicateCreditAndRefundPG"
+      ],
       "db_money_invariants": [
         "duplicate_credit counts payment events with outcome credited, grouped by trade_no, and flags COUNT greater than 1",
         "duplicate_refund counts payment events with event_type refund.succeeded, grouped by trade_no, and flags COUNT greater than 1",
         "CollectAdtyFundAnomalies records one open disposition per detected kind and ref and does not change site wallet balances"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-21-08",
         "requirement_refs": [
@@ -21715,14 +21773,16 @@
             "line": 966
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2108DuplicateCreditAndRefundPG"
+        ],
         "db_money_invariants": [
           "duplicate_credit counts payment events with outcome credited, grouped by trade_no, and flags COUNT greater than 1",
           "duplicate_refund counts payment events with event_type refund.succeeded, grouped by trade_no, and flags COUNT greater than 1",
           "CollectAdtyFundAnomalies records one open disposition per detected kind and ref and does not change site wallet balances"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -21732,7 +21792,7 @@
       "source_line": 2734,
       "ftr_id": "FTR-209",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.21",
@@ -21776,7 +21836,9 @@
           "line": 328
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2109GiftAndMarginAnomalyPG"
+      ],
       "db_money_invariants": [
         "gift_guarantee_short is recorded when held USD is less than the current remaining gift liability",
         "a remaining bonus lot of 1000000 quota with net hold 0.50 records Difference 1.5",
@@ -21784,8 +21846,8 @@
         "tier 100 with cycle_used_usd 91 records margin_anomaly",
         "detection records a disposition and does not repair wallets"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-22b1335",
+      "na_reason": "本轮隔离运行已入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-21-09",
         "requirement_refs": [
@@ -21831,7 +21893,9 @@
             "line": 328
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2109GiftAndMarginAnomalyPG"
+        ],
         "db_money_invariants": [
           "gift_guarantee_short is recorded when held USD is less than the current remaining gift liability",
           "a remaining bonus lot of 1000000 quota with net hold 0.50 records Difference 1.5",
@@ -21839,8 +21903,8 @@
           "tier 100 with cycle_used_usd 91 records margin_anomaly",
           "detection records a disposition and does not repair wallets"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-22b1335",
+        "na_reason": "本轮隔离运行已入账，不代表最终候选通过"
       }
     },
     {
@@ -21850,7 +21914,7 @@
       "source_line": 2735,
       "ftr_id": "FTR-210",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.21",
@@ -21920,7 +21984,9 @@
           "line": 295
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2110ReviewAnomalyDispositionPG"
+      ],
       "db_money_invariants": [
         "ReviewAdtyAnomalyDisposition does not move wallets or customer quota",
         "status reviewing restricts related fund writes; closed lifts that restriction",
@@ -21928,8 +21994,8 @@
         "a blocked order credit leaves quota at 10000 and writes no ledger row for that order",
         "the review notice opened in notifyAdtyAnomalyDispositionTx is stored with audience user"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc2-22b1335",
+      "na_reason": "异常处置复核与关闭成功路径已在 PostgreSQL 18 入账；复核不改钱包，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-21-10",
         "requirement_refs": [
@@ -22001,7 +22067,9 @@
             "line": 295
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2110ReviewAnomalyDispositionPG"
+        ],
         "db_money_invariants": [
           "ReviewAdtyAnomalyDisposition does not move wallets or customer quota",
           "status reviewing restricts related fund writes; closed lifts that restriction",
@@ -22009,8 +22077,8 @@
           "a blocked order credit leaves quota at 10000 and writes no ledger row for that order",
           "the review notice opened in notifyAdtyAnomalyDispositionTx is stored with audience user"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc2-22b1335",
+        "na_reason": "异常处置复核与关闭成功路径已在 PostgreSQL 18 入账；复核不改钱包，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -23266,7 +23334,7 @@
       "source_line": 2752,
       "ftr_id": "FTR-221",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -23320,14 +23388,16 @@
           "line": 21
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestAdtyPostgreSQLConnectInitAndMigrateAcceptance"
+      ],
       "db_money_invariants": [
         "historical non-empty voucher trade_no collisions are left unchanged; EnsureAdtyVoucherTradeNoUniqueIndex returns an error and does not merge, delete, or rewrite those rows",
         "repeated migrateDB preserves AdtyFinancialAdjustment rows, including BalanceBefore, BalanceAfter, RawBefore and RawAfter",
         "legacy owner_checkout rows keep FaceUSD and CreditQuota; migration must not reclassify existing money"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-model-2301",
+      "na_reason": "初始化与迁移成功路径已在 PostgreSQL 18 入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-23-01",
         "requirement_refs": [
@@ -23383,14 +23453,16 @@
             "line": 21
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestAdtyPostgreSQLConnectInitAndMigrateAcceptance"
+        ],
         "db_money_invariants": [
           "historical non-empty voucher trade_no collisions are left unchanged; EnsureAdtyVoucherTradeNoUniqueIndex returns an error and does not merge, delete, or rewrite those rows",
           "repeated migrateDB preserves AdtyFinancialAdjustment rows, including BalanceBefore, BalanceAfter, RawBefore and RawAfter",
           "legacy owner_checkout rows keep FaceUSD and CreditQuota; migration must not reclassify existing money"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-model-2301",
+        "na_reason": "初始化与迁移成功路径已在 PostgreSQL 18 入账，不代表最终候选通过"
       }
     },
     {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/stretchr/testify/require"
@@ -13,6 +14,7 @@ import (
 
 func TestTelegramUnbindRetainsHistoryAndScopePG(t *testing.T) {
 	f := newOwnerFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
 	require.NoError(t, f.db.AutoMigrate(&model.AuditIntent{}))
 	other := f.customer(t, f.other, "telegram-other", "telegram-other@example.com")
 	customer := f.customer(t, f.site, "telegram-customer", "telegram-customer@example.com")
