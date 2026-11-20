@@ -534,12 +534,15 @@
           "line": 94
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0107AnnouncementListAndDetailPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-01-07",
         "requirement_refs": [
@@ -593,12 +596,15 @@
             "line": 94
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0107AnnouncementListAndDetailPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -14900,12 +14906,15 @@
           "line": 384
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1702OwnerCustomerListPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-17-02",
         "requirement_refs": [
@@ -14953,12 +14962,15 @@
             "line": 384
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1702OwnerCustomerListPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -15021,12 +15033,15 @@
           "line": 25
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1703GlobalOrderListPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-17-03",
         "requirement_refs": [
@@ -15081,12 +15096,15 @@
             "line": 25
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1703GlobalOrderListPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -15138,12 +15156,15 @@
           "line": 181
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1704OwnerSiteOrdersPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-17-04",
         "requirement_refs": [
@@ -15187,12 +15208,15 @@
             "line": 181
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1704OwnerSiteOrdersPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -15368,12 +15392,15 @@
           "line": 237
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1706OrderTypeFilterPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-17-06",
         "requirement_refs": [
@@ -15401,12 +15428,15 @@
             "line": 237
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1706OrderTypeFilterPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -15444,12 +15474,15 @@
           "line": 253
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1707OrderStatusPagePG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-17-07",
         "requirement_refs": [
@@ -15479,12 +15512,15 @@
             "line": 253
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1707OrderStatusPagePG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -16873,12 +16909,15 @@
           "line": 43
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1808SaveUserTelegramBotPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-18-08",
         "requirement_refs": [
@@ -16931,12 +16970,15 @@
             "line": 43
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1808SaveUserTelegramBotPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -16991,12 +17033,15 @@
           "line": 43
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1809SaveAdminTelegramBotPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-18-09",
         "requirement_refs": [
@@ -17043,12 +17088,15 @@
             "line": 43
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1809SaveAdminTelegramBotPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -17299,12 +17347,15 @@
           "line": 12
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1901SaveTranslationConfigPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-19-01",
         "requirement_refs": [
@@ -17365,12 +17416,15 @@
             "line": 12
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1901SaveTranslationConfigPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -17419,12 +17473,15 @@
           "line": 17
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1902SelectTranslationModelPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-19-02",
         "requirement_refs": [
@@ -17465,12 +17522,15 @@
             "line": 17
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1902SelectTranslationModelPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -18413,12 +18473,15 @@
           "line": 191
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2001RecordGroupHealthPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-20-01",
         "requirement_refs": [
@@ -18485,12 +18548,15 @@
             "line": 191
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2001RecordGroupHealthPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -19327,12 +19393,15 @@
           "line": 239
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2008UploadTicketImagePG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-20-08",
         "requirement_refs": [
@@ -19427,12 +19496,15 @@
             "line": 239
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2008UploadTicketImagePG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
