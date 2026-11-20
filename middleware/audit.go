@@ -190,7 +190,7 @@ func TokenOperationAudit() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var action, content string
 		switch c.Request.Method + " " + c.FullPath() {
-		case "POST /api/token/":
+		case "POST /api/token/", "POST /api/adty/site/self-use/keys":
 			action, content = "token.create", "API token creation"
 		case "PUT /api/token/":
 			action, content = "token.update", "API token configuration update"
@@ -261,9 +261,7 @@ func TokenOperationAudit() gin.HandlerFunc {
 // `_ = model.WriteOfficialAuditLog(...)`，全仓 13 个调用点里只有这两处吞错。
 func writeAuditOrLogFailure(c *gin.Context, chain string, userID int, action string, rec model.OfficialAuditWrite) {
 	entry, err := model.PrepareOfficialAuditLog(c, rec)
-	if err == nil {
-		err = model.AppendAuditIntentTx(model.DB, entry)
-	}
+	if err == nil { err = model.AppendAuditIntentTx(model.DB, entry) }
 	if err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err = model.DeliverAuditIntent(ctx, entry.EventId)

@@ -49,15 +49,17 @@ func performHeaderNavRequest(t *testing.T, handler gin.HandlerFunc, authenticate
 
 	var accessToken string
 	if authenticated {
-		previousDB, previousRedis := model.DB, common.RedisEnabled
+		previousDB, previousLogDB, previousRedis := model.DB, model.LOG_DB, common.RedisEnabled
 		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 		require.NoError(t, err)
-		require.NoError(t, db.AutoMigrate(&model.User{}, &model.Option{}))
+		require.NoError(t, db.AutoMigrate(&model.User{}, &model.Option{}, &model.AuditIntent{}, &model.AuditLog{}))
 		model.DB = db
+		model.LOG_DB = db
 		common.RedisEnabled = false
 		require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(time.Now().Unix()))
 		t.Cleanup(func() {
 			model.DB = previousDB
+			model.LOG_DB = previousLogDB
 			common.RedisEnabled = previousRedis
 		})
 		accessToken = "header-nav-pat"
