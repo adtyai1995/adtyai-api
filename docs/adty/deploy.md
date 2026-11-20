@@ -73,8 +73,8 @@ sudo cp .env.example .env && sudo chmod 600 .env
 
 ## 3. 选镜像标签，从 GHCR 拉取
 
-- 生产环境只用 sha 标签，不用 `latest` 或 `main`。`.github/workflows/adty-ghcr.yml` 每次推送 `main` 都会推一个 `ghcr.io/adtyai/adtyai-api:sha-<提交的前 7 位>`。在 GitHub 仓库的 Packages → adtyai-api 里能看到所有标签；也可以在 `main` 上跑 `git rev-parse --short=7 HEAD` 得到。确认这次提交的 Actions 已经跑完、镜像推上去了。
-- 把 `.env` 里的 `ADTY_IMAGE=ghcr.io/adtyai/adtyai-api:sha-xxxxxxx` 换成真实标签，比如 `sha-1a2b3c4`。
+- 生产环境只用 sha 标签，不用 `latest` 或 `main`。`.github/workflows/adty-ghcr.yml` 每次推送 `main` 都会推一个 `ghcr.io/adtyai1995/adtyai-api:sha-<提交的前 7 位>`。在 GitHub 仓库的 Packages → adtyai-api 里能看到所有标签；也可以在 `main` 上跑 `git rev-parse --short=7 HEAD` 得到。确认这次提交的 Actions 已经跑完、镜像推上去了。
+- 把 `.env` 里的 `ADTY_IMAGE=ghcr.io/adtyai1995/adtyai-api:sha-xxxxxxx` 换成真实标签，比如 `sha-1a2b3c4`。
 - 包是公开的：直接拉，不用登录。
 - 包是私有的：用 GitHub 账号建一个只有 `read:packages` 权限的 personal access token (classic)（GitHub 的容器仓库只认 classic 令牌），在服务器上登录一次：
 
@@ -212,7 +212,7 @@ sudo env PGSERVICEFILE=/root/adty-restore.pg_service.conf \
 ```bash
 cd /opt/adtyai
 sudo ./backup.sh                                  # 升级前先备份
-sudo sed -i 's|^ADTY_IMAGE=.*|ADTY_IMAGE=ghcr.io/adtyai/adtyai-api:sha-<新标签>|' .env
+sudo sed -i 's|^ADTY_IMAGE=.*|ADTY_IMAGE=ghcr.io/adtyai1995/adtyai-api:sha-<新标签>|' .env
 sudo docker compose pull adtyai-api
 sudo docker compose up -d adtyai-api
 sudo docker compose ps adtyai-api                 # 等到 healthy

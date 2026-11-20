@@ -7,7 +7,7 @@
 - [ ] 按 [deploy.md](deploy.md) 第 1–4 节起好容器，`docker network inspect` 确认网关和 `TRUSTED_PROXIES` 一致，日志里没有 `TRUSTED_PROXIES is unset`。
 - [ ] 配 Nginx 之前，用 SSH 隧道（`ssh -L 3000:127.0.0.1:3000 <服务器>`）打开 `http://localhost:3000`，完成初始化向导，只建超级管理员。
 - [ ] 建好超级管理员后再按 deploy.md 第 5 节开放 Nginx 和防火墙；之后的后台设置都用正式域名登录后改。
-- [ ] 生产环境用 sha 标签（`ghcr.io/adtyai/adtyai-api:sha-<7 位>`），不跟 `main` 或 `latest`；GHCR 包的可见性和 deploy.md 第 3 节选的拉取方式一致。
+- [ ] 生产环境用 sha 标签（`ghcr.io/adtyai1995/adtyai-api:sha-<7 位>`），不跟 `main` 或 `latest`；GHCR 包的可见性和 deploy.md 第 3 节选的拉取方式一致。
 
 ## 2. 环境变量
 

@@ -1,6 +1,6 @@
 # adtyai-api 工程文档
 
-adtyai-api 是 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的二开，起点是上游 v1.0.0-rc.47，以后持续合并上游的新版本。为了合并顺利，改动尽量放在新文件里，上游文件只加挂载点或做删除（[conventions.md](conventions.md) 的约定 B）。实施方案（代号 WhiteRelay）和设计稿不在仓库里，下文的任务号都指实施方案里的任务。
+adtyai-api 的公开仓库是 [adtyai1995/adtyai-api](https://github.com/adtyai1995/adtyai-api)，容器镜像是 `ghcr.io/adtyai1995/adtyai-api`，创作者只有 adtyai1995。说明文件只有简体中文和英文。工程上仍把改动尽量放在新文件里，已有文件只加挂载点或做删除（[conventions.md](conventions.md) 的约定 B），方便对照历史来源合并。实施方案（代号 WhiteRelay）和设计稿不在仓库里，下文的任务号都指实施方案里的任务。
 
 ## 这个 fork 改了什么
 
@@ -27,7 +27,7 @@ adtyai-api 是 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的
 仓库根目录的 AGENTS.md 保留上游写给 AI 代理的通用规范，并补充本 fork 的站长不可更换、固定额度、支付场景和版本约定。下面四点说明本 fork 的具体约定，合并上游时一起核对：
 
 1. **数据库**：ADTY 的正式运行、部署、资金测试和验收只使用 PostgreSQL。不设最低版本或最高版本；记录实际 `server_version_num`，版本不同不算失败。建议版本为 17，新部署优先使用 17，16、18 或其他版本不排除在验收之外。上游 SQLite、MySQL 兼容代码和已有单测照旧保留，只避免破坏上游资产，不作为验收证据；缺失、未执行或失败不阻塞验收。资金测试使用隔离的 PostgreSQL 和真实 Redis。已有数据目录升级主要版本时，必须另建目录迁移并核对账目，不能直接换镜像启动。
-2. **对外的名字**：AGENTS.md 规定 New API 和 QuantumNous 的名称、标识「任何情况下不得修改」（公开页脚和关于页空状态已列为例外，不显示上游名称、仓库链接或贡献者说明）。本 fork 按执行层决定 21 和任务 8.9，把访客、调用方、上游服务商和浏览器能看到的名字换成了 ADTY AI 或 adtyai（cookie 名、错误类型、本地存储键、网页标题、Logo 等，改了哪些、哪些不改见 conventions.md 和任务 8.9）。LICENSE、NOTICE、THIRD-PARTY-LICENSES.md、源码版权头、Go 模块路径 `github.com/QuantumNous/new-api` 都照旧保留。
+2. **对外的名字**：2026-11-21 用户决定，公开仓库是 https://github.com/adtyai1995/adtyai-api ，镜像是 `ghcr.io/adtyai1995/adtyai-api`，创作者只有 adtyai1995。访客、调用方、上游服务商和浏览器能看到的产品名是 ADTY AI 或 adtyai。公开页脚和关于页空状态不显示旧项目名称、旧仓库链接或贡献者说明。LICENSE、NOTICE、THIRD-PARTY-LICENSES.md、源码版权头、Go 模块路径 `github.com/QuantumNous/new-api` 按许可证和编译需要保留，不把它们写成创作者。哪些不改见 conventions.md。
 3. **docs/adty/ 下的文档**：AGENTS.md 说没有用户明确要求时不要在 `docs/` 下新建文件。`docs/adty/` 下的文档都是按实施方案（约定 A：工程文档放 `docs/adty/`）或用户的要求建的，以后改功能时要同步更新这里的文档。
 4. **语言**：正式语言只有简体中文和英文。仓库里也只保留这两种语言包，其余六种语言的语言包和文档已删除（见 [deleted-features.md](deleted-features.md)）。新的正式文案必须有中文和英文。根目录 AGENTS.md 已按这条同步。
 

@@ -471,3 +471,9 @@ router/adty_promo_test.go
 # 二开代码里的死函数（2026-11-16）
 service/adty_fund_fifo.go
 service/adty_fund_fifo_test.go
+
+# 多语言说明（2026-11-21，正式语言只保留简体中文和英文）
+README.zh_TW.md
+README.fr.md
+README.ja.md
+.github/README.md

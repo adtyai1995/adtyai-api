@@ -45,7 +45,7 @@ git config remote.upstream.tagopt --no-tags
 
    都通过后 `git commit` 完成合并，提交身份按约定 H 写在命令里。
 6. 推送分支：`git push origin merge/<新标签>`，等 CI 跑完。
-7. 在测试环境部署这个分支的镜像，做客户端回归：用 Claude Code、Codex CLI、Cherry Studio 等真实客户端，测流式输出、工具调用、提示缓存命中、思考模式、长上下文和图片输入，都通过再上线（设计稿 §12 第 2 条）。镜像是 `ghcr.io/adtyai/adtyai-api:merge-<新标签>`：`.github/workflows/adty-ghcr.yml` 在 push 到 `merge/*` 分支时也推送，只打这一个标签，不打 sha 和 latest；同一个分支连续推送时只留最新的一次运行。
+7. 在测试环境部署这个分支的镜像，做客户端回归：用 Claude Code、Codex CLI、Cherry Studio 等真实客户端，测流式输出、工具调用、提示缓存命中、思考模式、长上下文和图片输入，都通过再上线（设计稿 §12 第 2 条）。镜像是 `ghcr.io/adtyai1995/adtyai-api:merge-<新标签>`：`.github/workflows/adty-ghcr.yml` 在 push 到 `merge/*` 分支时也推送，只打这一个标签，不打 sha 和 latest；同一个分支连续推送时只留最新的一次运行。
 8. 合并到 main 并推送。CI 推出 `main` 和 `sha-<7 位提交号>` 两个镜像标签，生产环境换成新的 sha 标签；有问题换回上一个 sha 标签。
 
 放弃这次合并：`git merge --abort`，再 `git switch main` 和 `git branch -D merge/<新标签>`。

@@ -444,7 +444,8 @@ P6 移植旧项目前端时，不要把 `?aff=` 和 `features/auth/lib/storage.t
 - `i18n/i18n.go` 只加载 `zh-CN.yaml` 和 `en.yaml`，删除只为读取这些语言包而存在的 `LoadableLanguages`、`TranslateLoadable`、`canonicalLoadableLang`、`loadableLocalizer` 和六个语言常量。文档站 `content/index.ts` 只登记两种语言的页面。
 - 保留语言码归一化：中文变体归简体中文，其余归英文，所以带旧语言码的请求、Cookie 和用户偏好照常工作；`toIntlLocale` 对旧界面码的映射也保留。
 - 保留分组名称、法律页面和首页 SEO 文本里按内容语言码存的键（`model.AdtyContentLangs`、前端 `LEGACY_CONTENT_LANGS`），以及首页旧语言路径（`/fr` 等）到正式语言的处理。
-- 保留根目录的 `README.fr.md`、`README.ja.md`、`README.zh_TW.md`，它们是上游项目说明。
+- 根目录的 `README.fr.md`、`README.ja.md`、`README.zh_TW.md` 已于 2026-11-21 删除。说明文件只保留简体中文和英文，与正式界面语言一致。这三条路径在 [deleted-paths.txt](deleted-paths.txt)，合并时不要带回来。
+- `.github/README.md` 同日删除。GitHub 在该文件存在时会优先展示它，而它仍把本产品写成旧项目。删除后访客看到根目录 `README.md`。该路径已写入 [deleted-paths.txt](deleted-paths.txt)，合并时不要带回来。
 - 这些路径登记在 [deleted-paths.txt](deleted-paths.txt)，合并上游时不带回来。
 
 ## 没有任何引用的前端文件（2026-11-16）

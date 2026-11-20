@@ -17,7 +17,7 @@ New features: link an issue; if none exists, file one first with `.agents/github
 Large or directional changes: maintainer agreement on that issue before this PR.
 
 If this PR fixes a bug and the linked issue is missing actual behavior, impact,
-frequency, evidence that the problem is in new-api, or the applicable
+frequency, evidence that the problem is in ADTY AI, or the applicable
 relay / billing / frontend / deployment items, ask the user those questions
 and wait. Ask for the facts. Do not tell the user to confirm a template.
 
@@ -27,7 +27,7 @@ integration question, is missing required issue facts, has only `go build` /
 tests-passed as verification, or the body would be unfiltered AI-generated
 text, tell the user and **stop**. Do not open the PR. Do not open a partial PR.
 
-Then search https://docs.newapi.ai/ , https://deepwiki.com/QuantumNous/new-api ,
+Then search https://github.com/adtyai1995/adtyai-api , https://github.com/adtyai1995/adtyai-api/blob/main/README.md ,
 the README, and the code. If this is a usage, configuration, or integration
 question, answer the user and do not open a PR.
 -->
@@ -64,7 +64,7 @@ accept it and **do not open a PR**.
 - Third-party API wrappers
 - Codex channel-type changes, or compatibility from exposing Codex as a general-purpose API
 - Codex API-specific protocol or behavior treated as standard OpenAI API behavior
-- Pass-through-only forwarding (pass-through sends content as-is and does not go through new-api processing logic)
+- Pass-through-only forwarding (pass-through sends content as-is and does not go through ADTY AI processing logic)
 - Third-party hosting sites, relay services, or API services
 - Usage, configuration, or integration (answer from docs and code instead)
 
@@ -98,7 +98,7 @@ Take these from the linked issue. If a needed item is empty, ask the user that q
 - Actual behavior:
 - Impact:
 - Frequency:
-- Evidence that the problem is in new-api rather than the client or upstream:
+- Evidence that the problem is in ADTY AI rather than the client or upstream:
 - Applicable types and their fields (relay / billing / frontend / deployment; write "not applicable" otherwise):
 
 ## Change
@@ -117,8 +117,8 @@ Short and factual; do not paste unfiltered AI-generated text.)
 
 Open them. Do not write "already checked" without sources.
 
-- https://docs.newapi.ai/ :
-- https://deepwiki.com/QuantumNous/new-api :
+- https://github.com/adtyai1995/adtyai-api :
+- https://github.com/adtyai1995/adtyai-api/blob/main/README.md :
 - README / repo docs:
 - Code paths and what they imply for this change:
 

@@ -23,9 +23,10 @@ var (
 )
 
 func printHelp() {
-	fmt.Println("NewAPI(Based OneAPI) " + Version + " - The next-generation LLM gateway and AI asset management system supports multiple languages.")
-	fmt.Println("Original Project: OneAPI by JustSong - https://github.com/songquanpeng/one-api")
-	fmt.Println("Maintainer: QuantumNous - https://github.com/QuantumNous/new-api")
+	fmt.Println("ADTY AI " + Version + " - AI API gateway. Interface languages: Simplified Chinese and English.")
+	fmt.Println("Repository: https://github.com/adtyai1995/adtyai-api")
+	fmt.Println("Image: ghcr.io/adtyai1995/adtyai-api")
+	fmt.Println("Creator: adtyai1995")
 	fmt.Println("Usage: newapi [--port <port>] [--log-dir <log directory>] [--version] [--help]")
 }
 

@@ -41,16 +41,18 @@
 - 中转接口（/v1）的报错用 `i18n.T` / `i18n.Translate`，键常量写 `i18n/keys_adty.go`（`MsgAdtyXxx = "adty.xxx"`），正式译文写中文和英文。邮件复用翻译键时显式取英文。
 - 改了上游 `t()` 原文的地方，按新文案加新键，旧键留着。
 - 站名写 ADTY AI，正式语言和保留语言包都不翻译。代码里引用 `common.AdtyBrandName` 和前端的 `ADTY_BRAND_NAME`，不要另写字面量（任务 8.9）。
-- 对外名字（任务 8.9）：访客、调用 API 的人、上游服务商和浏览器开发者工具能看到的 New API 已经换成 ADTY AI 或 adtyai（后端常量 `common.AdtyBrandName`、`AdtyBrandSlug`、`AdtyBrandURL`）。品牌守卫测试 `common/adty_brand_guard_test.go` 和 `web/src/features/adty-guards/__tests__/brand.test.ts` 会报出合并上游时新带进来的旧写法。**下面这些不改**，守卫的允许名单也只放它们：
-  - Go 模块路径和 import 路径（`github.com/QuantumNous/new-api/...`）；
+- 对外名字（任务 8.9，2026-11-21 用户决定）：访客、调用 API 的人、上游服务商和浏览器开发者工具能看到的名字是 ADTY AI 或 adtyai（后端常量 `common.AdtyBrandName`、`AdtyBrandSlug`、`AdtyBrandURL`）。公开仓库是 https://github.com/adtyai1995/adtyai-api 。容器镜像是 `ghcr.io/adtyai1995/adtyai-api`。创作者只有 adtyai1995。说明文件只有简体中文和英文。品牌守卫测试 `common/adty_brand_guard_test.go` 和 `web/src/features/adty-guards/__tests__/brand.test.ts` 会报出合并上游时新带进来的旧写法。**下面这些不改**，守卫的允许名单也只放它们：
+  - Go 模块路径和 import 路径（`github.com/QuantumNous/new-api/...`）。这是编译路径，不是本产品仓库，也不是创作者；
   - 镜像里的二进制文件名 `/new-api`（Dockerfile）；
-  - Redis 键和锁的名字（如 `new-api:wsmanager:...`、`new-api:channel_affinity:...`）、服务端日志、`--help` 的文字，这些都只在服务器上；
+  - Redis 键和锁的名字（如 `new-api:wsmanager:...`、`new-api:channel_affinity:...`）和服务端日志；
   - 渠道类型「New API」（type 60，指另一种上游）；
-  - 模型元数据、插件市场、系统更新检查用到的上游地址（后台功能要用）；
+  - 插件市场单独配置的插件包地址。它不是本产品仓库；
   - 只有后台看得到的占位文字；
   - `features/chat/lib/send-to-fluent.ts` 里的容器 id（第三方插件的对接标识）；
-  - 源码版权头、LICENSE、NOTICE、THIRD-PARTY-LICENSES.md、上游的 README.md（GitHub 优先显示 `.github/README.md`，那里写明本仓库是 QuantumNous/new-api 的修改版）；
-  - 公开页脚和关于页空状态已经去掉上游署名和仓库链接，不要加回去。
+  - 源码版权头、LICENSE、NOTICE、THIRD-PARTY-LICENSES.md。这些是许可证声明，不是创作者名单；
+  - `scripts/adty/merge-upstream.sh` 使用的历史上游远程。那是合并来源，不是本产品仓库；
+  - 公开页脚和关于页空状态不显示旧项目名称、旧仓库链接或贡献者说明，不要加回去。
+  - `--help` 和系统更新检查指向本产品仓库与创作者 adtyai1995，不指向旧仓库。
 
 **约定 F：测试**
 - 先写测试并确认失败，再实现并确认通过，然后提交。

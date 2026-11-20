@@ -1,8 +1,8 @@
 # 宝塔面板部署教程
 
-本文档提供使用宝塔面板 Docker 功能部署 New API 的图文教程。
+本文说明如何用宝塔面板的 Docker 功能部署 ADTY AI。
 
-> 📖 官方文档：[宝塔面板部署](https://docs.newapi.pro/zh/docs/installation/deployment-methods/bt-docker-installation)
+> 正式环境按 [ADTY 部署文档](../adty/deploy.md) 使用镜像 `ghcr.io/adtyai1995/adtyai-api` 的提交摘要标签。仓库地址是 https://github.com/adtyai1995/adtyai-api 。
 
 ***
 
@@ -32,23 +32,15 @@
 
 ***
 
-## 步骤三：安装 New API
+## 步骤三：安装 ADTY AI
 
 > ⚠️ **方法一和方法二只用于本地试用或单机试跑**：不设 `SQL_DSN` 时数据库退回 SQLite，也不会有 Redis，属于单机形态，不能作为生产部署。正式环境必须使用 PostgreSQL + Redis，并配置 `SESSION_COOKIE_SECURE`、`SESSION_COOKIE_TRUSTED_URL`（`deploy/adty/docker-compose.yml` 把 PostgreSQL 和 Redis 都列为必需依赖）。生产按 [ADTY 部署文档](../adty/deploy.md) 的 `deploy/adty/` 编排做，不要用本页的两段示例。
 
-### 方法一：使用宝塔应用商店（仅本地试用）
+### 方法一：不要用应用商店里的旧项目
 
-1. 在宝塔面板 Docker 功能中，点击 **应用商店**
-2. 搜索并找到 **New-API**
-3. 点击 **安装**
-4. 配置以下基本选项：
-   - **容器名称**：可自定义，默认为 `new-api`
-   - **端口映射**：默认为 `3000:3000`
-   - **环境变量**：
-     - `SESSION_SECRET`：会话密钥（**必填**，多机部署时必须一致）
-     - `CRYPTO_SECRET`：加密密钥（使用 Redis 时必填）
-5. 点击 **确认** 开始安装
-6. 等待安装完成后，访问 `http://您的服务器IP:3000` 即可使用
+宝塔应用商店里的 New-API 不是本产品，也不要把它的镜像当作 ADTY AI。本产品的容器镜像是 `ghcr.io/adtyai1995/adtyai-api`，生产标签必须是提交摘要，例如 `ghcr.io/adtyai1995/adtyai-api:sha-1a2b3c4`。本地试用用下面的方法二，从本仓库构建。
+
+本地试用按方法二从本仓库构建。生产按 [ADTY 部署文档](../adty/deploy.md) 填写 `ghcr.io/adtyai1995/adtyai-api` 的提交摘要标签。面板里需要的环境变量是 `SESSION_SECRET`（必填；多机部署时各机必须一致）和 `CRYPTO_SECRET`（使用 Redis 时必填）。容器名可以自定。不要在应用商店搜索或安装 New-API。
 
 ### 方法二：使用 Docker Compose（仅本地试用）
 
@@ -139,10 +131,10 @@ docker compose up -d --build
 
 ## 相关链接
 
-- [官方文档](https://docs.newapi.pro/zh/docs/installation)
-- [环境变量配置](https://docs.newapi.pro/zh/docs/installation/config-maintenance/environment-variables)
-- [常见问题](https://docs.newapi.pro/zh/docs/support/faq)
-- [GitHub 仓库](https://github.com/QuantumNous/new-api)
+- [ADTY 部署文档](../adty/deploy.md)
+- [环境变量示例](../../deploy/adty/.env.example)
+- [功能说明](../adty/features.md)
+- [GitHub 仓库](https://github.com/adtyai1995/adtyai-api)
 
 ***
 

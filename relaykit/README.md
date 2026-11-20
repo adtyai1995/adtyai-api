@@ -2,7 +2,7 @@
 
 RelayKit 是一个 Go 模块，在 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Gemini `generateContent` 四种协议之间转换请求、非流式响应和流式事件。
 
-它从 [new-api](https://github.com/QuantumNous/new-api) 中拆出，模块路径是 `github.com/QuantumNous/new-api/relaykit`，运行时依赖是 uuid、lo、gjson 和 sjson 四个包。它做协议数据的建模和转换，HTTP 收发、SSE 读写、渠道选择、鉴权和计费由宿主程序完成，所以可以嵌进其他 Go 网关或代理。
+它随 [adtyai-api](https://github.com/adtyai1995/adtyai-api) 发布。模块路径仍是 `github.com/QuantumNous/new-api/relaykit`，这是编译路径，不是产品仓库地址。运行时依赖是 uuid、lo、gjson 和 sjson 四个包。它做协议数据的建模和转换，HTTP 收发、SSE 读写、渠道选择、鉴权和计费由宿主程序完成，所以可以嵌进其他 Go 网关或代理。
 
 ## 支持矩阵
 

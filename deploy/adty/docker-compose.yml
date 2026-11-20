@@ -1,7 +1,7 @@
 # ADTY AI 生产环境 compose 文件（任务 10.1），部署步骤见 docs/adty/deploy.md。
 #
 # 把本文件和 .env.example 放到服务器的 /opt/adtyai，cp .env.example .env 后填好密钥。
-# 镜像标签取 .env 里的 ADTY_IMAGE（ghcr.io/adtyai/adtyai-api:sha-xxxxxxx），升级和回滚只改这一项。
+# 镜像标签取 .env 里的 ADTY_IMAGE（ghcr.io/adtyai1995/adtyai-api:sha-xxxxxxx），升级和回滚只改这一项。
 # PostgreSQL 和 Redis 不发布端口；adtyai-api 只绑 127.0.0.1:3000，由本机的 Nginx 转发。
 # Docker 发布的端口不受 ufw 控制，不要再加别的 ports。
 
@@ -15,7 +15,7 @@ x-logging: &default-logging
 
 services:
   adtyai-api:
-    image: ${ADTY_IMAGE:?set ADTY_IMAGE in .env, e.g. ghcr.io/adtyai/adtyai-api:sha-xxxxxxx}
+    image: ${ADTY_IMAGE:?set ADTY_IMAGE in .env, e.g. ghcr.io/adtyai1995/adtyai-api:sha-xxxxxxx}
     container_name: adtyai-api
     restart: always
     command: --log-dir /app/logs

@@ -1,6 +1,6 @@
 # TokenKit
 
-TokenKit 是从 [new-api](https://github.com/QuantumNous/new-api) 中拆分出的独立 Go 模块，用来在不调用上游 API 的情况下，计算或估算大模型请求的 token 数。
+TokenKit 随 [adtyai-api](https://github.com/adtyai1995/adtyai-api) 发布，是用来在不调用上游 API 的情况下计算或估算大模型请求 token 数的独立 Go 模块。模块路径仍是 `github.com/QuantumNous/new-api/tokenkit`，这是编译路径，不是产品仓库地址。
 
 它只做计数，不负责解析请求、下载图片或计费。调用方传入文本，或者图片的尺寸和 detail 设置，TokenKit 返回 token 数。可以脱离 new-api 主模块，嵌入其他 Go 网关、代理或客户端。
 

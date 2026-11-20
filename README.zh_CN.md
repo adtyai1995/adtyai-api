@@ -1,343 +1,208 @@
 <div align="center">
 
-![new-api](/web/public/logo.png)
+# ADTY AI
 
-# New API
+自托管的 AI API 网关，以及主站、分站、团队和资金控制台。
 
-**连接模型、应用与 Agent 的 AI 网关**
-
-<p align="center">
+<p>
   <strong>简体中文</strong> |
-  <a href="./README.zh_TW.md">繁體中文</a> |
-  <a href="./README.md">English</a> |
-  <a href="./README.fr.md">Français</a> |
-  <a href="./README.ja.md">日本語</a>
+  <a href="./README.en.md">English</a>
 </p>
 
-<p align="center">
-  <a href="https://raw.githubusercontent.com/Calcium-Ion/new-api/main/LICENSE">
-    <img src="https://img.shields.io/github/license/Calcium-Ion/new-api?color=brightgreen" alt="license">
-  </a><!--
-  --><a href="https://github.com/Calcium-Ion/new-api/releases/latest">
-    <img src="https://img.shields.io/github/v/release/Calcium-Ion/new-api?color=brightgreen&include_prereleases" alt="release">
-  </a><!--
-  --><a href="https://hub.docker.com/r/CalciumIon/new-api">
-    <img src="https://img.shields.io/badge/docker-dockerHub-blue" alt="docker">
-  </a>
-  <a href="https://atomgit.com/QuantumNous/new-api" target="_blank">
-    <img alt="AtomGit G-Star" src="https://atomgit.com/QuantumNous/new-api/star/badge.svg"/>
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/20180" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/20180" alt="QuantumNous%2Fnew-api | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
-  </a>
-  <br>
-  <a href="https://hellogithub.com/repository/QuantumNous/new-api" target="_blank">
-    <img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=539ac4217e69431684ad4a0bab768811&claim_uid=tbFPfKIDHpc4TzR" alt="Featured｜HelloGitHub" style="width: 250px; height: 54px;" width="250" height="54" />
-  </a><!--
-  -->
-  <a href="https://atomgit.com/QuantumNous/new-api" target="_blank">
-    <img alt="AtomGit G-Star" src="https://atomgit.com/QuantumNous/new-api/star/new_badge.svg" width="250" height="55" />
-  </a>
-</p>
-
-<p align="center">
-  <a href="#screenshots">项目截图</a> •
-  <a href="#capabilities">核心能力</a> •
-  <a href="#quick-start">快速开始</a> •
-  <a href="#deployment">部署运维</a> •
-  <a href="#development">开发扩展</a> •
-  <a href="#documentation">文档社区</a>
+<p>
+  <a href="https://github.com/adtyai1995/adtyai-api">github.com/adtyai1995/adtyai-api</a><br>
+  镜像 <code>ghcr.io/adtyai1995/adtyai-api</code><br>
+  创作者 <a href="https://github.com/adtyai1995">adtyai1995</a><br>
+  许可证 <a href="./LICENSE">GNU AGPL v3</a>
 </p>
 
 </div>
 
----
+本产品只提供简体中文和英文。仓库说明也只有这两份：本文件，以及 [English](./README.en.md)。
 
-## 📝 项目说明
+## 这是什么
 
-New API 是面向应用、Agent 和团队的自托管 AI 网关。将不同厂商的模型服务接入统一入口，在同一套控制台中管理渠道、访问权限、用量与成本。
+ADTY AI 把多家模型服务收成一套调用接口，并用同一套控制台管理谁能调用、按什么价格计费、钱记在哪。客户拿到自己的 API Key，用兼容 OpenAI、Claude、Gemini 的地址调用；平台按实际用量从钱包扣费。Root 可以开分站，分站有固定站长、自己的品牌和售价。团队可以共用一笔余额。员工只能做站长明确授过的事。
 
-你可以用它为团队分配已授权的模型资源，在切换上游时减少客户端改动，或搭建自己的多模型服务。支持接入 OpenAI、Anthropic、Google Gemini、Azure OpenAI、AWS Bedrock、Vertex AI、DeepSeek、通义千问及其他兼容服务。
+正式交付是 Web 控制台和 API 服务。正式业务库是 PostgreSQL，缓存是 Redis。当前持续集成和生产编排示例使用 PostgreSQL 18。
 
-本 ADTY AI 分支增加了 Root 分站管理、版本化支付场景、分站员工授权、通知已读回执和财务订单追溯。站长不可更换。新充值赠金按支付方式比例计算，金额档位赠金不再写入。短差额记在同一账户并暂停该账户新的付费请求。正式运行、部署、资金测试和验收只使用 PostgreSQL。建议版本为 PostgreSQL 17，但不作为验收上限。正式语言为简体中文和英文。当前规则及剩余限制见 [ADTY 工程文档](./docs/adty/README.md)。
+## 仓库、镜像和创作者
 
-镜像版本由 Git 分支和提交生成：`main` 使用 `main-<短 SHA>`，标签构建使用标签名，其他分支使用 `<分支名>-<短 SHA>`，拉取请求使用 `pr-<编号>-<短 SHA>`。仓库里的 `VERSION` 保持为空。[构建工作流](./.github/workflows/adty-ghcr.yml) 将同一版本写入 `VERSION`，供前后端使用。
-
-> [!IMPORTANT]
-> - 本项目仅面向合法授权的 AI API 网关、组织内部鉴权、多模型管理、用量统计、成本核算和私有化部署场景。
-> - 使用者必须合法取得上游 API Key、账号、模型服务或接口权限，并遵守上游服务条款及适用法律法规。
-> - 使用者应确保其使用方式符合上游服务条款及适用法律法规。
-> - 面向公众提供生成式人工智能服务时，使用者应遵守[《生成式人工智能服务管理暂行办法》](http://www.cac.gov.cn/2023-07/13/c_1690898327029107.htm)等监管要求，自行完成所在司法辖区要求的备案、许可、内容安全、实名、日志留存、税务和上游授权等合规义务。
-
-<!-- -->
-
-> [!WARNING]
-> 将本项目作为面向公众的生成式 AI 服务或 API 转售服务运营时，使用者应先完成备案、内容安全、实名、日志留存、税务、支付和上游授权等合规义务。
-
----
-
-<a id="screenshots"></a>
-
-## 项目截图
-
-以下账号、渠道、插件安装状态、用量、价格和费用均为模拟数据，插件市场展示官方目录。点击图片可查看原图。
-
-| 数据看板 | 插件市场 |
+| 项 | 值 |
 | --- | --- |
-| [![数据看板：模拟请求量、费用和性能指标](assets/screenshots/dashboard.zh-CN.jpg)](assets/screenshots/dashboard.zh-CN.jpg) | [![插件市场：官方插件目录与模拟安装状态](assets/screenshots/plugin-marketplace.zh-CN.jpg)](assets/screenshots/plugin-marketplace.zh-CN.jpg) |
-| **模型广场** | **使用日志** |
-| [![模型广场：模拟模型价格与可用状态](assets/screenshots/models.zh-CN.jpg)](assets/screenshots/models.zh-CN.jpg) | [![使用日志：模拟 Token 用量、费用和响应耗时](assets/screenshots/usage-logs.zh-CN.jpg)](assets/screenshots/usage-logs.zh-CN.jpg) |
+| 代码仓库 | https://github.com/adtyai1995/adtyai-api |
+| 容器镜像 | `ghcr.io/adtyai1995/adtyai-api` |
+| 创作者 | [adtyai1995](https://github.com/adtyai1995) |
+| 问题与安全通告 | 本仓库的 Issues 与 Security Advisories |
 
----
+镜像由 [`.github/workflows/adty-ghcr.yml`](./.github/workflows/adty-ghcr.yml) 构建，推送到 `ghcr.io/<仓库所有者>/<仓库名>`。本产品的正式仓库是 `adtyai1995/adtyai-api`，所以正式镜像名是 `ghcr.io/adtyai1995/adtyai-api`。
 
-## 🤝 我们信任的合作伙伴
+生产只用提交摘要标签，例如 `ghcr.io/adtyai1995/adtyai-api:sha-1a2b3c4`。不要把浮动标签当作生产版本。合并分支的检查镜像使用 `ghcr.io/adtyai1995/adtyai-api:merge-<标签>`。本地编排构建的是 `adtyai-api:local`，那不是生产镜像。
 
-<p align="center">
-  <em>排名不分先后</em>
-</p>
+本产品不使用其他代码托管站或旧容器仓库作为镜像源。插件市场如果单独配置了插件包地址，那个地址只提供插件，不是本产品仓库。
 
-<p align="center">
-  <a href="https://www.cherry-ai.com/" target="_blank">
-    <img src="./docs/images/cherry-studio.png" alt="Cherry Studio" height="80" />
-  </a><!--
-  --><a href="https://github.com/iOfficeAI/AionUi/" target="_blank">
-    <img src="./docs/images/aionui.png" alt="Aion UI" height="80" />
-  </a><!--
-  --><a href="https://bda.pku.edu.cn/" target="_blank">
-    <img src="./docs/images/pku.png" alt="北京大学" height="80" />
-  </a><!--
-  --><a href="https://www.aliyun.com/" target="_blank">
-    <img src="./docs/images/aliyun.png" alt="阿里云" height="80" />
-  </a><!--
-  --><a href="https://io.net/" target="_blank">
-    <img src="./docs/images/io-net.png" alt="IO.NET" height="80" />
-  </a>
-</p>
+创作者只有 adtyai1995。不要把其他人或组织写成 ADTY AI 的共同创作者。
 
----
+## 支持的语言
 
-## 🙏 特别鸣谢
+界面、文档、订单和资金说明、表单、错误、系统通知、公告、客服和固定通知模板，只承诺简体中文和英文。
 
-<p align="center">
-  <a href="https://www.jetbrains.com/?from=new-api" target="_blank">
-    <img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.png" alt="JetBrains Logo" width="120" />
-  </a>
-</p>
+- 简体中文：`zh-CN`。浏览器偏好是中文时默认使用。
+- 英文：`en`。其他浏览器偏好默认使用。
+- 用户手动选择优先。
+- 固定通知先写中文，再写英文。
+- 动态中文可以由 Root 配置的翻译任务生成英文。失败时保留中文，并标明英文未就绪。翻译不扣客户、团队或站长余额，也不把请求发回本站中转。
 
-<p align="center">
-  <strong>感谢 <a href="https://www.jetbrains.com/?from=new-api">JetBrains</a> 为本项目提供免费的开源开发许可证</strong>
-</p>
+繁体中文、法语、日语、韩语、俄语、越南语的语言包和说明文件已删除，不出现在语言选择器里，也不作为支持语言。
 
----
+## 谁在用
 
-<a id="capabilities"></a>
+- **客户**：注册、登录、充值、创建 API Key、查看自己的用量和工单。
+- **团队负责人**：管理共享余额、成员和团队 Key。负责人不能更换。
+- **分站站长**：管理本站品牌、售价、客户、收益、保证金和员工。站长由 Root 指定，之后不能更换。
+- **分站员工**：用独立账号进入员工工作区，只能做当前授权允许的事。
+- **Root**：创建分站、配置支付、渠道、模型和全站规则。
+- **普通管理员**：默认没有后台权限。Root 按「区域 · 动作」逐项打开。
 
-## 核心能力
+## 调用模型
 
-| 方向 | 可以做什么 |
-| --- | --- |
-| 模型接入 | 支持 OpenAI Chat Completions、Responses、Anthropic Messages 和 Gemini 协议，以及上游支持的流式输出、工具调用、推理与多模态输入 |
-| 渠道调度 | 配置模型映射、渠道优先级与权重、失败重试、渠道亲和性和多密钥管理 |
-| 用量与成本 | 管理额度、钱包、用量日志、缓存计费，以及基于表达式的阶梯定价 |
-| 访问控制 | 管理用户、分组、细粒度权限和 API Key 限制；支持通行密钥、两步验证、邮箱验证与登录会话管理 |
-| 异步任务 | 通过 JavaScript 插件扩展图片、视频等任务 API，统一查询任务状态和获取产物 |
-| Web 控制台 | 配置渠道与模型、查看用量和审计日志；控制台提供简体中文和英文两种界面语言 |
+平台把上游渠道收成统一入口。渠道、模型、分组和价格在后台配置。分组有稳定 ID，正式显示名只有中文和英文。
 
-### 协议与接口
+客户和兼容客户端可以走聊天补全、Claude、Gemini、嵌入、重排序、图片、音频、异步任务和 Realtime。流式响应在首字出来之前可以发保活，避免长推理被中间层断开。任务插件用 JavaScript 扩展异步任务的计费和轮询。
 
-| 接口类型 | 常用入口 |
-| --- | --- |
-| OpenAI Chat / Responses | `POST /v1/chat/completions`、`POST /v1/responses` |
-| Anthropic Messages | `POST /v1/messages` |
-| Gemini | `POST /v1beta/models/{model}:generateContent`、`POST /v1beta/models/{model}:streamGenerateContent` |
-| Realtime / Responses WebSocket | `GET /v1/realtime`、`GET /v1/responses`（WebSocket 升级） |
-| 图片 / 音频 | `/v1/images/generations`、`/v1/images/edits`、`/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/audio/translations` |
-| 向量 / 重排 | `POST /v1/embeddings`、`POST /v1/rerank` |
-| 任务插件 | `POST /v1/tasks/{pluginKey}`、`GET /v1/tasks/{taskId}`，以及各插件声明的协议路由 |
+每次付费请求先按估算预扣。余额不够就拒绝，请求不会发给上游，钱包也不会变成负数。结算时多退少补；少扣到的差额记在该账户上，并暂停这个账户新的付费请求。免费模型也会记下付款账户，后续违规费沿原账户扣。
 
-[RelayKit](./relaykit/README.md) 提供上述四种文本协议之间的请求、响应和流式转换。实际可用能力取决于渠道、上游模型和转换路径；协议特有的工具与字段可能无法完整映射。WebSocket 同样需要上游与渠道配置支持。
+客户自己的日志不显示渠道、上游密钥和内部倍率。管理员日志仍可查看排障所需的渠道信息。
 
-本 README 描述当前源码的能力，部署时请同时查看所选版本的发布说明。
+创建或编辑 API Key 时，可以看到该分组近 24 小时的请求成功率，以及主动探测可用率。没有样本或采集中断时显示暂无数据，不显示成 100%。健康数据不自动改 Key 的分组，也不暴露上游渠道密钥。
 
-<a id="quick-start"></a>
+可以按用户限制每分钟请求数、每分钟 token 数和并发。也可以按 API Key 限流。开了 Redis 但计数不可用时拒绝请求，不放行。
 
-## 快速开始
+## 账户和密钥
 
-### 使用 Docker 本地体验
+登录凭据是账号和密码。可以开启邮箱验证、Passkey 和 TOTP。敏感操作要按当前策略做二次验证。没有 GitHub、Discord、微信、OIDC 或其他第三方账号登录。Telegram 只用于绑定通知，不能登录、找回密码或操作账户。
 
-本仓库不运行上游镜像，也不使用 SQLite。请用仓库里的 compose 文件在本地构建，并使用 PostgreSQL：
+密码连续错误达到阈值后，一段时间内仍返回同样的错误，不再校验密码。已注册邮箱申请注册验证码时，不发出验证码，避免用接口枚举邮箱。
 
-```bash
-docker compose up --build
+API Key 可以属于个人，也可以绑定团队。绑定团队的 Key 只扣团队共享余额。撤权后，旧 Key 不能改扣个人钱包。
+
+## 充值和支付
+
+钱包页按服务端当前允许的支付场景显示方式和金额。普通充值使用场景 `wallet_topup`。站长自用充值使用 Root 单独开通的场景 `owner_self_use_topup`，没有该场景时不能下单，也不会退回普通充值。
+
+已接入的收款方式：
+
+- 支付宝、微信支付：通过易支付多通道。每个启用通道的每种方式各一个按钮，名称由 Root 设置。客户选中的通道下不了单时，提示更换，不自动换到别的通道。
+- USDT：通过 BEpusdt，可选 TRC20、BEP20、Polygon、X Layer。只有后台勾选的链才会显示。站内支付窗显示收款地址、应付数量和二维码。
+
+每笔订单冻结下单时的场景、通道、显示名称、金额和网关事实。晚到但验签通过的成功回调仍可入账。已经退款的订单再收到成功回调时进入人工审核，不重复入账。
+
+Root 可以按支付方式设置加赠比例。分站要先得到该方式的授权，站长再在授权范围内设置本站比例。加赠需要真实资金保障：优先冻结收益，不足时只有 Root 授权了保证金补位才放行。金额档位赠金已退役。优惠码已删除，报价和下单都不接受。
+
+主动增加额度使用充值额度兑换码。完整码只在生成时返回一次。兑换不加赠，也不计邀请佣金。
+
+退款在充值对账里操作。系统只扣回这笔订单还没花掉的本金，赠金收回但不退现金，余额不会扣成负数。应退金额在后台显示，实际打款在线下完成。
+
+## 资金
+
+内部记账用整数额度，**1 美元 = 500000 额度**。这个比例固定。钱包区分本金、到期赠金和永久赠金。消费先扣本金，再扣先到期的赠金，最后扣永久赠金。退款按原分摊退回。
+
+Root 可以给客户发放有到期日的试用赠金。到期后由主节点清零未使用部分，已消费部分不重复清零。试用赠金不是充值，不计返佣，也不能提现。
+
+人工调额必须填写原因和幂等键。增加和减少都要留下可追溯的资金凭据。非 Root 不能调整同级或更高角色的余额。减少不能把活余额减到 0 以下。
+
+资金流水、订单、退款、兑换、调额和支付异常都可以按权限追溯。站长能看本站订单，看不到全站累计充值汇总，也看不到经营钱包页面。经营钱包仍在后台记账。
+
+## 主站推广
+
+主站用户注册后有邀请链接。返佣只按充值面额计算，不含赠金。退款时按退回本金的比例冲回佣金。成为分站站长后，停止该账号的主站邀请返佣。分站客户不走这条主站返佣。
+
+## 分站
+
+只有 Root 能创建分站，并从主站已有用户里指定一名站长。站长不能更换，也没有移交入口。用户不能自助申请开站。
+
+分站用自己的子域名或已验证的自定义域名。首页可以换成该站的名称和 Logo。网站访问和模型 API 可以分域。
+
+售价由供货倍率和站长加价倍率决定：供货价等于分组倍率乘以供货倍率，售价等于供货价乘以加价倍率。降价立即生效。涨价延迟生效，等待期间仍用旧价。分站团队的折后价不得低于供货价。
+
+站长有收益钱包和保证金钱包。客户消费产生的差价记入收益，冻结后可以提现，或转入本人的本站消费本金。站长也可以在 Root 开通的专用支付场景里给本站消费本金在线充值。那笔充值不加赠、不计邀请佣金，也不产生新的站长收益。
+
+分站客户的一级邀请佣金单独冻结，现金提现只由该站站长审核。
+
+关站由 Root 发起。客户和仍存续的团队迁到主站。历史订单、任务、退款和结算保持原财务归属，不按新站长重算。
+
+## 团队
+
+团队只由 Root 创建。一个团队一名负责人，负责人不能更换。负责人退出或关闭团队时，团队关闭，共享余额保留，团队 Key 停用。
+
+已登录的普通账号不能凭邀请码加入团队。一次性链接只用于注册独立成员。绑定到团队的 Key 只扣共享余额。团队充值记入共享额度，不使用个人赠金规则。分站上的团队价取供货价和「站点售价 × 团队支付比例」里较高的一个。
+
+## 分站员工
+
+站长可以创建员工账号，指定姓名、角色和权限，也可以停用、改密或删除。客服、财务、运营、管理四种角色默认只读。客户安全操作必须单独授权。
+
+员工从现有登录进入员工工作区。每次请求都核对成员身份、站点协议和授权版本。改权限、停用或删除会使旧会话失效。员工不能查看完整客户 Key，不能代客户登录，不能直接退款、提现或改站长资金。调额必须提交申请，写明原因、原订单和资金来源，由站长或 Root 审核后在同一事务里入账。
+
+## 客服、通知和公告
+
+客户可以在站内创建工单、回复，并上传图片。附件只接受经过校验的图片。客服内部备注不会出现在客户接口里。工单可以关联订单号，但不携带完整 Key。
+
+Root 可以发布平台公告、系统通知、维护通知和经营规则调整，范围是全部用户、全部分站或指定分站。站长只能管理本站客户公告。登录用户的已读状态保存在服务端。编辑公告会产生新的未读版本。严重且指定到人的通知可以生成待办。
+
+Telegram 只有两个通知机器人：用户通知和管理通知。令牌只由 Root 保存，加密后脱敏显示。机器人只发通知，不提供改余额、退款或 Key 的命令。
+
+## 后台、审计和部署
+
+Root 可以管理用户、模型、渠道、分组、支付通道、分站、财务和系统设置。普通管理员的侧边栏和接口都按已授予的权限显示。没有权限时返回 403。
+
+重要写操作写入审计。资金和权限变更与审计放在同一事务里。独立日志库中断时保留事件身份，稍后重投，不把未审计的修改留成成功。
+
+生产部署见 [docs/adty/deploy.md](./docs/adty/deploy.md)。编排文件是 `deploy/adty/docker-compose.yml`，镜像标签写在 `.env` 的 `ADTY_IMAGE`。升级和回滚只改这个标签。示例：
+
+```text
+ADTY_IMAGE=ghcr.io/adtyai1995/adtyai-api:sha-1a2b3c4
 ```
 
-`TZ` 和 `TRUSTED_PROXIES` 按你实际所在的网络设置。不要把某个生产主机名或地区时区写进默认启动方式。打开 [http://127.0.0.1:3000](http://127.0.0.1:3000)，按初始化向导创建管理员账号。正式部署看 `deploy/adty`，不是这段快速开始。
+上线前核对：镜像摘要、PostgreSQL 18、Redis、支付回调地址、会话密钥和备份。不要把生产密钥写进仓库。
 
-### 发起第一次请求
-
-1. 新建渠道，填写上游 API Key、可用模型和所属分组，执行渠道测试。
-2. 配置模型价格，确保调用用户有可用额度。
-3. 在控制台创建 API Key，确保它能访问对应分组和模型。
-4. 对于 OpenAI 兼容客户端，将 Base URL 设为 `http://localhost:3000/v1`，密钥使用 **New API 签发的 Key**。
-
-在终端中将 `NEW_API_KEY` 环境变量设为该密钥，查询它可以访问的模型：
+本地编排不是生产部署。在仓库根目录设置 `POSTGRES_PASSWORD` 和 `REDIS_PASSWORD` 后执行：
 
 ```bash
-curl --fail-with-body http://localhost:3000/v1/models \
-  -H "Authorization: Bearer ${NEW_API_KEY}"
+docker compose up -d --build
 ```
 
-然后调用 Responses，将 `your-enabled-model` 替换为已启用且支持该接口的模型名称：
+然后打开 `http://127.0.0.1:3000`。这个编排构建 `adtyai-api:local`，只监听本机 3000 端口。
 
-```bash
-curl --fail-with-body http://localhost:3000/v1/responses \
-  -H "Authorization: Bearer ${NEW_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"your-enabled-model","input":"Hello!"}'
-```
+## 文档
 
-<a id="deployment"></a>
-
-## 部署与运维
-
-### Docker Compose
-
-ADTY AI 的正式部署使用 [deploy/adty/docker-compose.yml](./deploy/adty/docker-compose.yml)，按 [docs/adty/deploy.md](./docs/adty/deploy.md) 操作。不要部署仓库根目录的 compose 文件：它不是生产镜像、网络和密钥配置。
-
-根目录的 [docker-compose.yml](./docker-compose.yml) 只是本地示例。没有设置 `POSTGRES_PASSWORD` 和 `REDIS_PASSWORD` 时它会拒绝启动，并且只把 API 绑定到 `127.0.0.1:3000`。
-
-### 存储与配置
-
-| 组件 | 可选方案 |
+| 文档 | 内容 |
 | --- | --- |
-| 主数据库 | PostgreSQL（生产唯一，不设版本上下限，建议 17）；SQLite、MySQL 仅为上游兼容代码，启动即拒绝 |
-| 独立日志库 | 通过 `LOG_SQL_DSN` 配置，额外支持 ClickHouse |
-| 缓存 | 可选 Redis 与内存缓存；多节点需要共享限流额度时使用共享 Redis |
-| 容器平台 | Linux amd64 / arm64 |
+| [docs/adty/features.md](./docs/adty/features.md) | 每个功能的规则、后台入口、表和接口 |
+| [docs/adty/deploy.md](./docs/adty/deploy.md) | 生产部署、镜像标签、升级和回滚 |
+| [docs/adty/conventions.md](./docs/adty/conventions.md) | 工程约定 |
+| [docs/authentication.md](./docs/authentication.md) | 登录会话 |
+| [docs/plugin-api/v1.md](./docs/plugin-api/v1.md) | 任务插件接口 |
 
-| 环境变量 | 用途 |
-| --- | --- |
-| `SQL_DSN` | 主数据库连接串；未设置时启动失败 |
-| `LOG_SQL_DSN` | 可选的独立日志数据库连接串 |
-| `REDIS_CONN_STRING` | Redis 连接串 |
-| `SESSION_SECRET` | 持久保存的鉴权密钥，所有节点必须一致 |
-| `CRYPTO_SECRET` | 默认使用 `SESSION_SECRET`；共享 Redis 的节点必须使用相同的有效值 |
-| `SESSION_COOKIE_SECURE` | HTTPS 控制台设为 `true`，启用 Secure 刷新 Cookie 和严格的刷新／退出来源校验 |
-| `SESSION_COOKIE_TRUSTED_URL` | Secure 模式必填：以逗号分隔的精确 HTTPS Origin，不含路径或通配符；本地 HTTP 模式不设置 |
-| `TRUSTED_PROXIES` | 可信反向代理 IP/CIDR，或 `none`；按实际网络显式配置 |
+控制台里的接入文档覆盖中文和英文。价格页展示当前站点售价。官方价由后台同步，不在本文写死数字。
 
-完整配置见[环境变量示例](./.env.example)、[环境变量文档](https://docs.newapi.ai/zh/docs/installation/config-maintenance/environment-variables)和[鉴权与登录会话说明](./docs/authentication.md)。容器变量应通过 Compose 的 `environment` 或 `env_file` 注入；只复制 `.env.example` 不会自动将变量传入容器。
+## 明确不提供
 
-正式部署时使用 HTTPS，并配置反向代理支持流式响应与 WebSocket 升级。持久化并备份数据库和挂载数据。多节点必须共用主数据库和鉴权密钥；独立 Redis 或内存限流器会按节点分别计数。不同拓扑下的会话传播行为见鉴权文档。
+- 公开平台状态页
+- 用户中心里的独立消费分析看板
+- 签到奖励、订阅套餐、优惠码
+- 第三方账号登录
+- 模型部署和硬件实例管理
+- 桌面客户端发布
+- 用 Telegram 操作账户、支付或密钥
+- 站长移交
+- 金额档位赠金
 
-从[发布页](https://github.com/QuantumNous/new-api/releases)选择明确的镜像版本，阅读升级说明并先备份再升级。`latest` 会随发布构建变化；已有实例应按实际版本评估迁移与兼容性。
+## 使用边界
 
-<a id="development"></a>
+本项目用于经授权的 AI API 网关、组织内鉴权、多模型管理、用量记录、成本核算和私有部署。调用方必须合法取得上游密钥和接口权限，并遵守上游条款和所在地法律。面向公众提供生成式服务时，运营者自行完成所在地要求的备案、许可、内容安全、实名、日志留存、税务和支付义务。
 
-## 开发与扩展
+## 许可证
 
-后端使用 Go 和 Gin；控制台使用 React 19、TypeScript、Rsbuild、TanStack 与 Tailwind CSS 4。前端依赖和脚本使用 Bun；Go 语言基线见 [go.mod](./go.mod)，容器构建工具链见 [Dockerfile](./Dockerfile)。
+本仓库以 [GNU AGPL v3](./LICENSE) 发布。请同时阅读 [NOTICE](./NOTICE) 和 [THIRD-PARTY-LICENSES.md](./THIRD-PARTY-LICENSES.md)。源码文件中的许可证版权头按许可证保留，它们不是 ADTY AI 的创作者名单。
 
-后端会嵌入 `web/dist`，首次启动前先构建前端：
-
-```bash
-# 仓库根目录
-cd web
-bun install --frozen-lockfile
-bun run build
-cd ..
-go run .
-```
-
-在另一个终端启动前端开发服务器：
-
-```bash
-cd web
-bun run dev -- --port 5173
-```
-
-访问 [http://localhost:5173](http://localhost:5173)，开发服务器会将 API 请求代理到 3000 端口的后端。需要容器化开发后端时，参阅 [docker-compose.dev.yml](./docker-compose.dev.yml) 和 [makefile](./makefile) 中的 `make dev`。
-
-| 目录 | 职责 |
-| --- | --- |
-| `router/`、`middleware/`、`controller/` | HTTP 路由、访问校验与 API 处理 |
-| `relay/` | 上游适配与请求调度 |
-| `service/`、`model/` | 业务逻辑与持久化 |
-| [relaykit/](./relaykit/README.md) | 可独立构建的协议 DTO 与转换 Go 模块 |
-| [plugins/tasks/](./plugins/tasks/) | JavaScript 任务插件；编写方式与宿主边界见 [Task Plugin API v1](./docs/plugin-api/v1.md) |
-| `web/` | Web 控制台，参阅[前端开发约定](./web/AGENTS.md) |
-
-贡献前请阅读 [AGENTS.md](./AGENTS.md)。按改动范围执行检查：Go 模块使用 `make test`；前端在 `web/` 下运行 `bun check -b`、`bun run lint`、`bun run test` 和 `bun run build`。修改 RelayKit 后还必须在 `relaykit/` 下执行 `GOWORK=off go build ./...`。
-
-<a id="documentation"></a>
-
-## 文档与社区
-
-| 资源 | 入口 |
-| --- | --- |
-| 官方文档 | [使用指南](https://docs.newapi.ai/zh/docs) · [安装部署](https://docs.newapi.ai/zh/docs/installation) · [API 参考](https://docs.newapi.ai/zh/docs/api) |
-| 项目导读 | [DeepWiki](https://deepwiki.com/QuantumNous/new-api) |
-| 使用问题与交流 | [常见问题](https://docs.newapi.ai/zh/docs/support/faq) · [社区渠道](https://docs.newapi.ai/zh/docs/support/community-interaction) |
-| 缺陷与功能建议 | [GitHub Issues](https://github.com/QuantumNous/new-api/issues) |
-| 安全漏洞 | 按[安全政策](./.github/SECURITY.md)进行私下报告 |
-
-反馈问题时请附上版本、部署方式、复现步骤及脱敏日志。欢迎贡献文档、翻译、渠道适配和有针对性的回归测试。
-
----
-
-## 🔗 相关项目
-
-### 上游项目
-
-| 项目 | 说明 |
-|------|------|
-| [One API](https://github.com/songquanpeng/one-api) | 原版项目基础 |
-| [Midjourney-Proxy](https://github.com/novicezk/midjourney-proxy) | Midjourney 接口支持 |
-
-### 配套工具
-
-| 项目 | 说明 |
-|------|------|
-| [new-api-key-tool](https://github.com/Calcium-Ion/new-api-key-tool) | Key 额度查询工具 |
-| [new-api-horizon](https://github.com/Calcium-Ion/new-api-horizon) | New API 高性能优化版 |
-
----
-
-## 📜 许可证
-
-本项目采用 [GNU Affero 通用公共许可证 v3.0 (AGPLv3)](./LICENSE) 授权。
-
-根据 AGPLv3 第 7 条，本项目还适用[附加条款](./NOTICE)。修改版本必须在适当法律声明及界面中显著的关于、法律、页脚或署名位置保留作者署名 `Frontend design and development by New API contributors.`，并保留指向原项目 <https://github.com/QuantumNous/new-api> 的可见链接。
-
-本项目为开源项目，在 [One API](https://github.com/songquanpeng/one-api)（MIT 许可证）的基础上进行二次开发。
-
-如果您所在的组织政策不允许使用 AGPLv3 许可的软件，或您希望规避 AGPLv3 的开源义务，请发送邮件至：[support@quantumnous.com](mailto:support@quantumnous.com)
-
-署名及依赖声明见 [NOTICE](./NOTICE) 和[第三方许可证](./THIRD-PARTY-LICENSES.md)。
-
----
-
-## 🌟 Star History
-
-<div align="center">
-
-[![Star History Chart](https://api.star-history.com/svg?repos=Calcium-Ion/new-api&type=Date)](https://star-history.com/#Calcium-Ion/new-api&Date)
-
-</div>
-
----
-
-<div align="center">
-
-### 💖 感谢使用 New API
-
-如果这个项目对你有帮助，欢迎给我们一个 ⭐️ Star！
-
-**[官方文档](https://docs.newapi.ai/zh/docs)** • **[问题反馈](https://github.com/Calcium-Ion/new-api/issues)** • **[最新发布](https://github.com/Calcium-Ion/new-api/releases)**
-
-<sub>Built with ❤️ by QuantumNous</sub>
-
-</div>
+Go 模块路径仍是 `github.com/QuantumNous/new-api`。这是编译和导入用的模块路径，不是本产品的仓库地址，也不是创作者。本产品的仓库地址只以 https://github.com/adtyai1995/adtyai-api 为准。
