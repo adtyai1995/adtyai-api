@@ -8305,14 +8305,15 @@
           "line": 127
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1005OwnerSavesBrandPagePG"
+      ],
       "db_money_invariants": [
-        "no_money_change",
-        "品牌保存只把规范化后的品牌 JSON 写入 adty_sites.brand；标题超过 80 字或主题色不是 #RRGGBB 时拒绝",
-        "Logo 与 Favicon 必须是已上传的站点资源路径；已打开测试保存标题、favicon 和主题色，并忽略请求体中的其他 site_id"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-10-05",
         "requirement_refs": [
@@ -8339,14 +8340,15 @@
             "line": 127
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1005OwnerSavesBrandPagePG"
+        ],
         "db_money_invariants": [
-          "no_money_change",
-          "品牌保存只把规范化后的品牌 JSON 写入 adty_sites.brand；标题超过 80 字或主题色不是 #RRGGBB 时拒绝",
-          "Logo 与 Favicon 必须是已上传的站点资源路径；已打开测试保存标题、favicon 和主题色，并忽略请求体中的其他 site_id"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -9577,15 +9579,16 @@
           "line": 77
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1201OperatingWalletLedgerPG"
+      ],
       "db_money_invariants": [
-        "经营本金美元 = quota / QuotaPerUnit",
-        "同一幂等键且操作字段相同则返回原流水，不追加第二行；字段不同返回 ErrAdtySiteWalletIdempotencyConflict",
-        "kind=operating 时即使 AllowOverdraft=true，扣后可用额低于 0 也在创建流水前返回 ErrAdtySiteWalletInsufficient",
-        "AdtySiteWalletLedger.BeforeUpdate 与 BeforeDelete 返回 ErrAdtySiteWalletLedgerImmutable"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "operating_balance_8_00"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-01",
         "requirement_refs": [
@@ -9620,15 +9623,16 @@
             "line": 77
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1201OperatingWalletLedgerPG"
+        ],
         "db_money_invariants": [
-          "经营本金美元 = quota / QuotaPerUnit",
-          "同一幂等键且操作字段相同则返回原流水，不追加第二行；字段不同返回 ErrAdtySiteWalletIdempotencyConflict",
-          "kind=operating 时即使 AllowOverdraft=true，扣后可用额低于 0 也在创建流水前返回 ErrAdtySiteWalletInsufficient",
-          "AdtySiteWalletLedger.BeforeUpdate 与 BeforeDelete 返回 ErrAdtySiteWalletLedgerImmutable"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "operating_balance_8_00"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -9795,14 +9799,16 @@
           "line": 328
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1204ReconcileOperatingWalletPG"
+      ],
       "db_money_invariants": [
-        "ReconcileOperatingWallet = operatingBalance - customerPrincipal",
-        "已打开的检测把经营余额与客户本金批次加站长本金批次比较，赠金不计入；差额非零时 balanceGap 置 1",
-        "CollectAdtyFundAnomalies 为检出项写 open disposition，注释写明不修钱、不发明容差"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "reconcile_gap_17_50"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-04",
         "requirement_refs": [
@@ -9825,14 +9831,16 @@
             "line": 328
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1204ReconcileOperatingWalletPG"
+        ],
         "db_money_invariants": [
-          "ReconcileOperatingWallet = operatingBalance - customerPrincipal",
-          "已打开的检测把经营余额与客户本金批次加站长本金批次比较，赠金不计入；差额非零时 balanceGap 置 1",
-          "CollectAdtyFundAnomalies 为检出项写 open disposition，注释写明不修钱、不发明容差"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "reconcile_gap_17_50"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -9869,15 +9877,16 @@
           "line": 95
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1205EarningsWalletLedgerPG"
+      ],
       "db_money_invariants": [
-        "收益钱包 kind=earnings，变动锁行并追加不可变流水；重复幂等键返回原流水",
-        "站长查询 kind=operating 时返回 ErrAdtyOperatingWalletHidden",
-        "AllowOverdraft=false 时，扣后可用额 after-frozen 低于下限则拒绝",
-        "已打开测试：AllowOverdraft=true 时收益钱包可记到 -25；确认收益入账路径传入 AllowOverdraft=true"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "earnings_balance_12_50"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-05",
         "requirement_refs": [
@@ -9906,15 +9915,16 @@
             "line": 95
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1205EarningsWalletLedgerPG"
+        ],
         "db_money_invariants": [
-          "收益钱包 kind=earnings，变动锁行并追加不可变流水；重复幂等键返回原流水",
-          "站长查询 kind=operating 时返回 ErrAdtyOperatingWalletHidden",
-          "AllowOverdraft=false 时，扣后可用额 after-frozen 低于下限则拒绝",
-          "已打开测试：AllowOverdraft=true 时收益钱包可记到 -25；确认收益入账路径传入 AllowOverdraft=true"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "earnings_balance_12_50"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -9951,14 +9961,16 @@
           "line": 77
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1206MarginWalletLedgerPG"
+      ],
       "db_money_invariants": [
-        "保证金钱包 kind=margin，与收益钱包共用锁行、幂等和不可变流水",
-        "CycleTierUSD 为正时，扣款下限 = CycleTierUSD - AdtyMarginCycleLimit(CycleTierUSD)",
-        "已打开测试：保证金余额为 0 时扣 1 返回 ErrAdtySiteWalletInsufficient；T=10000 时扣 9000 成功，再扣 1 拒绝"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "margin_balance_40_00"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-06",
         "requirement_refs": [
@@ -9987,14 +9999,16 @@
             "line": 77
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1206MarginWalletLedgerPG"
+        ],
         "db_money_invariants": [
-          "保证金钱包 kind=margin，与收益钱包共用锁行、幂等和不可变流水",
-          "CycleTierUSD 为正时，扣款下限 = CycleTierUSD - AdtyMarginCycleLimit(CycleTierUSD)",
-          "已打开测试：保证金余额为 0 时扣 1 返回 ErrAdtySiteWalletInsufficient；T=10000 时扣 9000 成功，再扣 1 拒绝"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "margin_balance_40_00"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -10031,15 +10045,16 @@
           "line": 162
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1207MarginCycleLimitPG"
+      ],
       "db_money_invariants": [
-        "L = 0.9 × T；K = T - L",
-        "AdtyMarginNewDraw = min(L - U - F - R, B - F - R - K)，结果为负则返回 0；占用已达 L 且未开新周期时返回 0",
-        "实扣把 Frozen 设为 wallet.FrozenUSD，不另传 Reserved",
-        "已打开测试：T=10000、U=8000、F=500、R=200 时新增动用额为 300"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers",
+        "margin_cycle_limit_90_of_100"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-12-07",
         "requirement_refs": [
@@ -10068,15 +10083,16 @@
             "line": 162
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1207MarginCycleLimitPG"
+        ],
         "db_money_invariants": [
-          "L = 0.9 × T；K = T - L",
-          "AdtyMarginNewDraw = min(L - U - F - R, B - F - R - K)，结果为负则返回 0；占用已达 L 且未开新周期时返回 0",
-          "实扣把 Frozen 设为 wallet.FrozenUSD，不另传 Reserved",
-          "已打开测试：T=10000、U=8000、F=500、R=200 时新增动用额为 300"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers",
+          "margin_cycle_limit_90_of_100"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -13848,12 +13864,15 @@
           "line": 45
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1604RootSavesSiteReferralCapPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-16-04",
         "requirement_refs": [
@@ -13913,12 +13932,15 @@
             "line": 45
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1604RootSavesSiteReferralCapPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -18437,12 +18459,15 @@
           "line": 5
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1909TranslationFallbackPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-19-09",
         "requirement_refs": [
@@ -18491,12 +18516,15 @@
             "line": 5
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1909TranslationFallbackPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -18546,12 +18574,15 @@
           "line": 1471
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1910TranslationKeepsFactsPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-19-10",
         "requirement_refs": [
@@ -18593,12 +18624,15 @@
             "line": 1471
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1910TranslationKeepsFactsPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
