@@ -5502,7 +5502,7 @@
       "source_line": 2539,
       "ftr_id": "FTR-059",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.6",
@@ -5540,14 +5540,16 @@
           "line": 32
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0609TaskReserveInsertSettlePG"
+      ],
       "db_money_invariants": [
         "任务插入前先 Reserve；响应尚未写出时余额不足返回 403，不把任务写成已提交",
         "插入成功后调用一次 SettleBilling；注释写明结算不透支",
         "插入失败且响应已写出时仍走 SettleBilling，避免已交给上游的工作没有账务收口"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-ctrl-0609-a59cccb",
+      "na_reason": "响应未写出且补预扣失败时返回 403、不插入任务、额度和令牌退回；插入成功后只结算一次；响应已写出且插入失败时仍结算一次，已在 PostgreSQL 18 入账；RelayTaskSubmit 上游适配器与结果查询未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-06-09",
         "requirement_refs": [
@@ -5587,14 +5589,16 @@
             "line": 32
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0609TaskReserveInsertSettlePG"
+        ],
         "db_money_invariants": [
           "任务插入前先 Reserve；响应尚未写出时余额不足返回 403，不把任务写成已提交",
           "插入成功后调用一次 SettleBilling；注释写明结算不透支",
           "插入失败且响应已写出时仍走 SettleBilling，避免已交给上游的工作没有账务收口"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-ctrl-0609-a59cccb",
+        "na_reason": "响应未写出且补预扣失败时返回 403、不插入任务、额度和令牌退回；插入成功后只结算一次；响应已写出且插入失败时仍结算一次，已在 PostgreSQL 18 入账；RelayTaskSubmit 上游适配器与结果查询未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -5604,7 +5608,7 @@
       "source_line": 2540,
       "ftr_id": "FTR-060",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.6",
@@ -5647,15 +5651,17 @@
           "line": 72
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0610RelayRetryDecisionPG"
+      ],
       "db_money_invariants": [
         "DecideRelayRetry 在无错误、钉住渠道、不可重试错误、重试预算耗尽和 2xx 时停止；渠道错误和命中重试状态码时重试",
         "sweepTimedOutTasks 用 UpdateWithStatus 做 CAS，未赢得更新的任务不退款；旧系统超时任务把 quota 置 0 且不退款",
         "表达式结算失败时保留预扣并返回已接管，避免再全额退款",
         "失败终态在结算未接管时 RefundTaskQuota；RefundFailedRequestBilling 对已结算会话按注释不再退"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-settle-a59cccb",
+      "na_reason": "无错误、钉住渠道、不可重试、预算耗尽和 2xx 停止，渠道错误与 429 重试，已在 PostgreSQL 18 入账；超时清扫、表达式结算失败保留预扣和失败终态退款未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-06-10",
         "requirement_refs": [
@@ -5700,15 +5706,17 @@
             "line": 72
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0610RelayRetryDecisionPG"
+        ],
         "db_money_invariants": [
           "DecideRelayRetry 在无错误、钉住渠道、不可重试错误、重试预算耗尽和 2xx 时停止；渠道错误和命中重试状态码时重试",
           "sweepTimedOutTasks 用 UpdateWithStatus 做 CAS，未赢得更新的任务不退款；旧系统超时任务把 quota 置 0 且不退款",
           "表达式结算失败时保留预扣并返回已接管，避免再全额退款",
           "失败终态在结算未接管时 RefundTaskQuota；RefundFailedRequestBilling 对已结算会话按注释不再退"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-settle-a59cccb",
+        "na_reason": "无错误、钉住渠道、不可重试、预算耗尽和 2xx 停止，渠道错误与 429 重试，已在 PostgreSQL 18 入账；超时清扫、表达式结算失败保留预扣和失败终态退款未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -5718,7 +5726,7 @@
       "source_line": 2544,
       "ftr_id": "FTR-061",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.2.9",
@@ -5740,14 +5748,16 @@
           "line": 86
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0701EstimateBeforePreConsumePG"
+      ],
       "db_money_invariants": [
         "PrepareRequestBilling 先算 QuotaToPreConsume，再调用 PreConsumeBilling；免费模型走 FreezeRequestBillingPayer，预扣额为 0",
         "PreConsumeBilling 拒绝负数预扣额",
         "未配置模型倍率且用户不接受未配置倍率时，ModelPriceHelper 返回错误，不进入预扣"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-relay-0701-a59cccb",
+      "na_reason": "负数预扣被拒绝且不建计费单、额度保持 1000000；免费模型冻结付款人且预扣额为 0、额度不变；未配置倍率且不接受未配置倍率时估价报错并不预扣，已在 PostgreSQL 18 入账；开启 token 统计与分层表达式估价未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-07-01",
         "requirement_refs": [
@@ -5771,14 +5781,16 @@
             "line": 86
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0701EstimateBeforePreConsumePG"
+        ],
         "db_money_invariants": [
           "PrepareRequestBilling 先算 QuotaToPreConsume，再调用 PreConsumeBilling；免费模型走 FreezeRequestBillingPayer，预扣额为 0",
           "PreConsumeBilling 拒绝负数预扣额",
           "未配置模型倍率且用户不接受未配置倍率时，ModelPriceHelper 返回错误，不进入预扣"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-relay-0701-a59cccb",
+        "na_reason": "负数预扣被拒绝且不建计费单、额度保持 1000000；免费模型冻结付款人且预扣额为 0、额度不变；未配置倍率且不接受未配置倍率时估价报错并不预扣，已在 PostgreSQL 18 入账；开启 token 统计与分层表达式估价未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -5960,7 +5972,7 @@
       "source_line": 2547,
       "ftr_id": "FTR-064",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.3.6"
@@ -5985,14 +5997,16 @@
           "line": 861
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0704ReportedUsageCollectionPG"
+      ],
       "db_money_invariants": [
         "已打开的测试源码：BillingUsage 上报 prompt 11、completion 7 时，采集结果用 11/7，不用外层的 1/1",
         "usage 为 nil 时，calculateTextQuotaSummary 回退为估算 prompt tokens，completion 为 0",
         "任务表达式求值失败时保留预扣额度，不把缺失用量当成 0 全退"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-usage-a59cccb",
+      "na_reason": "BillingUsage 上报 11/7 时采集用 11/7 而不是外层 1/1，usage 为空时回退估算 prompt 且 completion 为 0，已在 PostgreSQL 18 入账；任务表达式求值失败保留预扣未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-07-04",
         "requirement_refs": [
@@ -6019,14 +6033,16 @@
             "line": 861
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0704ReportedUsageCollectionPG"
+        ],
         "db_money_invariants": [
           "已打开的测试源码：BillingUsage 上报 prompt 11、completion 7 时，采集结果用 11/7，不用外层的 1/1",
           "usage 为 nil 时，calculateTextQuotaSummary 回退为估算 prompt tokens，completion 为 0",
           "任务表达式求值失败时保留预扣额度，不把缺失用量当成 0 全退"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-usage-a59cccb",
+        "na_reason": "BillingUsage 上报 11/7 时采集用 11/7 而不是外层 1/1，usage 为空时回退估算 prompt 且 completion 为 0，已在 PostgreSQL 18 入账；任务表达式求值失败保留预扣未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -6036,7 +6052,7 @@
       "source_line": 2548,
       "ftr_id": "FTR-065",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.2.11",
@@ -6056,14 +6072,17 @@
           "line": 282
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1107FreezeRequestPriceSnapshotPG",
+        "TestFTRADTY0705ReservePriceSnapshotImmutablePG"
+      ],
       "db_money_invariants": [
         "已有完整快照时 AdtyFreezeRequestPriceSnapshot 不再覆盖",
         "ReserveBillingOperation 只在已保留行的 PriceSnapshot 为空时写入，注释写明 G.2.11 快照一旦写入不可变",
         "已打开的测试开头冻结模型基础价 2、分站加价比例 0.25；结算断言后半未读完"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-price-a59cccb",
+      "na_reason": "已有完整快照不再覆盖，基础价 2 与加价 0.25 在改价后保持不变；空 PriceSnapshot 会补写，已写入的快照不被后一次预扣覆盖，额度只扣一次，已在 PostgreSQL 18 入账；结算是否使用该快照未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-07-05",
         "requirement_refs": [
@@ -6085,14 +6104,17 @@
             "line": 282
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1107FreezeRequestPriceSnapshotPG",
+          "TestFTRADTY0705ReservePriceSnapshotImmutablePG"
+        ],
         "db_money_invariants": [
           "已有完整快照时 AdtyFreezeRequestPriceSnapshot 不再覆盖",
           "ReserveBillingOperation 只在已保留行的 PriceSnapshot 为空时写入，注释写明 G.2.11 快照一旦写入不可变",
           "已打开的测试开头冻结模型基础价 2、分站加价比例 0.25；结算断言后半未读完"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-price-a59cccb",
+        "na_reason": "已有完整快照不再覆盖，基础价 2 与加价 0.25 在改价后保持不变；空 PriceSnapshot 会补写，已写入的快照不被后一次预扣覆盖，额度只扣一次，已在 PostgreSQL 18 入账；结算是否使用该快照未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -6102,7 +6124,7 @@
       "source_line": 2549,
       "ftr_id": "FTR-066",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.3.6"
@@ -6121,15 +6143,17 @@
           "line": 641
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0706SettleDeltaPG"
+      ],
       "db_money_invariants": [
         "SettleBilling 拒绝负数 actualQuota",
         "delta = actualQuota - preConsumed；delta>0 补扣，delta<0 退差额",
         "已打开的测试源码：预扣 10000、结算 7500 后，用户额度从 1000000 变为 992500，令牌已用额度为 7500",
         "个人结算调用 SettleAdtyFundAllocationsTx；注释写明团队 Key 不消费个人批次，gap 记 0"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-settle-a59cccb",
+      "na_reason": "负数结算被拒绝且额度不变，预扣 10000 结算 7500 后额度 992500、令牌已用 7500，已在 PostgreSQL 18 入账；团队 Key 不消费个人批次未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-07-06",
         "requirement_refs": [
@@ -6150,15 +6174,17 @@
             "line": 641
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0706SettleDeltaPG"
+        ],
         "db_money_invariants": [
           "SettleBilling 拒绝负数 actualQuota",
           "delta = actualQuota - preConsumed；delta>0 补扣，delta<0 退差额",
           "已打开的测试源码：预扣 10000、结算 7500 后，用户额度从 1000000 变为 992500，令牌已用额度为 7500",
           "个人结算调用 SettleAdtyFundAllocationsTx；注释写明团队 Key 不消费个人批次，gap 记 0"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-settle-a59cccb",
+        "na_reason": "负数结算被拒绝且额度不变，预扣 10000 结算 7500 后额度 992500、令牌已用 7500，已在 PostgreSQL 18 入账；团队 Key 不消费个人批次未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -6246,7 +6272,7 @@
       "source_line": 2551,
       "ftr_id": "FTR-068",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.3.7"
@@ -6271,14 +6297,16 @@
           "line": 861
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0708FailedRequestRefundOncePG"
+      ],
       "db_money_invariants": [
         "RefundFailedRequestBilling 在失败后调用 Billing.Refund，已结算会话不再退第二次",
         "RefundTaskQuota 以目标额度 0 排队结算，并按 ReservedQuota 记退款日志",
         "任务表达式求值失败时保留预扣，不按失败全额退回"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-relay-refund-a59cccb",
+      "na_reason": "失败请求退款一次后额度回到 1000000、令牌剩余回到 100000；已结算会话再调 RefundFailedRequestBilling 不改额度 992500、不改令牌、不增加流水，已在 PostgreSQL 18 入账；RefundTaskQuota 与表达式求值失败保留预扣未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-07-08",
         "requirement_refs": [
@@ -6305,14 +6333,16 @@
             "line": 861
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0708FailedRequestRefundOncePG"
+        ],
         "db_money_invariants": [
           "RefundFailedRequestBilling 在失败后调用 Billing.Refund，已结算会话不再退第二次",
           "RefundTaskQuota 以目标额度 0 排队结算，并按 ReservedQuota 记退款日志",
           "任务表达式求值失败时保留预扣，不按失败全额退回"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-relay-refund-a59cccb",
+        "na_reason": "失败请求退款一次后额度回到 1000000、令牌剩余回到 100000；已结算会话再调 RefundFailedRequestBilling 不改额度 992500、不改令牌、不增加流水，已在 PostgreSQL 18 入账；RefundTaskQuota 与表达式求值失败保留预扣未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -14674,7 +14704,7 @@
       "source_line": 2666,
       "ftr_id": "FTR-156",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.13.3",
@@ -14738,15 +14768,17 @@
           "line": 385
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1606ReferralAccrualWaitsForSettleAtPG"
+      ],
       "db_money_invariants": [
         "main accrual inserts one ReferralCommission per trade and ledger type commission_accrue into pending; a succeeded or skipped job does not insert a second row",
         "main withdrawable transfer waits until settle_at; settlement moves pending to available with ledger type commission_settle",
         "site credit inserts pending_coverage with OnConflict DoNothing; cover freezes earnings then authorized margin and does not deduct those wallets into an expense",
         "if Root coverage policy is unset or freeze is short, the site row stays pending_coverage and the credit hook returns nil"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-usage-a59cccb",
+      "na_reason": "主站一笔充值只插入一条佣金和一条 commission_accrue，成功任务重放不插第二行，未到 settle_at 保持 pending，到期后转为 available 并写 commission_settle，付款人额度不变，已在 PostgreSQL 18 入账；分站 pending_coverage 与保证金冻结未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-16-06",
         "requirement_refs": [
@@ -14812,15 +14844,17 @@
             "line": 385
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1606ReferralAccrualWaitsForSettleAtPG"
+        ],
         "db_money_invariants": [
           "main accrual inserts one ReferralCommission per trade and ledger type commission_accrue into pending; a succeeded or skipped job does not insert a second row",
           "main withdrawable transfer waits until settle_at; settlement moves pending to available with ledger type commission_settle",
           "site credit inserts pending_coverage with OnConflict DoNothing; cover freezes earnings then authorized margin and does not deduct those wallets into an expense",
           "if Root coverage policy is unset or freeze is short, the site row stays pending_coverage and the credit hook returns nil"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-usage-a59cccb",
+        "na_reason": "主站一笔充值只插入一条佣金和一条 commission_accrue，成功任务重放不插第二行，未到 settle_at 保持 pending，到期后转为 available 并写 commission_settle，付款人额度不变，已在 PostgreSQL 18 入账；分站 pending_coverage 与保证金冻结未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -21558,7 +21592,7 @@
       "source_line": 2732,
       "ftr_id": "FTR-207",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.21",
@@ -21627,15 +21661,17 @@
           "line": 87
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2107BalanceLedgerGapPG"
+      ],
       "db_money_invariants": [
         "site wallet Balance is compared with the sum of AdtySiteWalletLedger.delta; inequality sets balance_ledger_gap",
         "ReconcileOperatingWallet returns operatingBalance minus customerPrincipal; a non-zero result is a fund gap",
         "quota 1000000 with quota_pending 0 and an empty operating wallet is reported as difference -2 and customer_principal 2",
         "CollectAdtyFundAnomalies records an open disposition and does not repair money or apply a write restriction"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-settle-a59cccb",
+      "na_reason": "经营钱包差额 -2、客户本金 2、流水合计写入证据，采集后处置为 open 且收益钱包与客户额度不变，已在 PostgreSQL 18 入账；其他异常种类未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-21-07",
         "requirement_refs": [
@@ -21706,15 +21742,17 @@
             "line": 87
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2107BalanceLedgerGapPG"
+        ],
         "db_money_invariants": [
           "site wallet Balance is compared with the sum of AdtySiteWalletLedger.delta; inequality sets balance_ledger_gap",
           "ReconcileOperatingWallet returns operatingBalance minus customerPrincipal; a non-zero result is a fund gap",
           "quota 1000000 with quota_pending 0 and an empty operating wallet is reported as difference -2 and customer_principal 2",
           "CollectAdtyFundAnomalies records an open disposition and does not repair money or apply a write restriction"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-settle-a59cccb",
+        "na_reason": "经营钱包差额 -2、客户本金 2、流水合计写入证据，采集后处置为 open 且收益钱包与客户额度不变，已在 PostgreSQL 18 入账；其他异常种类未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -23780,7 +23818,7 @@
       "source_line": 2755,
       "ftr_id": "FTR-224",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -23820,12 +23858,14 @@
           "line": 113
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2304TerminalReplayLeavesMoneyOncePG"
+      ],
       "db_money_invariants": [
         "a second finalizeTerminalTask on an already sampled terminal task leaves user quota and token remain unchanged and records RequestCount once"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-task-a59cccb",
+      "na_reason": "已采样的终态任务再次 finalizeTerminalTask 不改变用户额度和令牌剩余，性能汇总 RequestCount 为 1，已在 PostgreSQL 18 入账；StartBillingRecovery、定时任务、RunTaskPollingOnce 与 RecoverBillingOperations 未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-23-04",
         "requirement_refs": [
@@ -23867,12 +23907,14 @@
             "line": 113
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2304TerminalReplayLeavesMoneyOncePG"
+        ],
         "db_money_invariants": [
           "a second finalizeTerminalTask on an already sampled terminal task leaves user quota and token remain unchanged and records RequestCount once"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-task-a59cccb",
+        "na_reason": "已采样的终态任务再次 finalizeTerminalTask 不改变用户额度和令牌剩余，性能汇总 RequestCount 为 1，已在 PostgreSQL 18 入账；StartBillingRecovery、定时任务、RunTaskPollingOnce 与 RecoverBillingOperations 未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -24514,7 +24556,7 @@
       "source_line": 2761,
       "ftr_id": "FTR-230",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -24555,15 +24597,17 @@
           "line": 329
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestAdtyPostgreSQLBillingRecoveryAcceptance"
+      ],
       "db_money_invariants": [
         "an aborted reserve must not debit user quota or token remain, must leave quota_pending at 0, and must not leave a billing operation or movement",
         "a failed settle apply must not write a partial movement, must keep BillingSettlePending, and must leave only the already reserved amount",
         "restart recovery applies a pending settle once: reserved 100 then settle 80 moves quota from 900 to 920, writes one apply movement, and wallet delta -80; a second recovery must not write another movement",
         "an abandoned reservation older than the recovery cutoff is refunded once to the pre-reserve quota and a replay must not emit a second fund-result log"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-svc-2310-a59cccb",
+      "na_reason": "中断预扣不单边扣额度、中断结算不写半截流水、重启后待结算只入账一次、放弃的预扣只退一次，已在 PostgreSQL 18 入账；通知出箱恢复与渠道告警重试未覆盖，当前状态仍为 partial，不代表最终候选通过，也不关闭 ADTY-23-04",
       "design_card": {
         "feature_id": "ADTY-23-10",
         "requirement_refs": [
@@ -24606,15 +24650,17 @@
             "line": 329
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestAdtyPostgreSQLBillingRecoveryAcceptance"
+        ],
         "db_money_invariants": [
           "an aborted reserve must not debit user quota or token remain, must leave quota_pending at 0, and must not leave a billing operation or movement",
           "a failed settle apply must not write a partial movement, must keep BillingSettlePending, and must leave only the already reserved amount",
           "restart recovery applies a pending settle once: reserved 100 then settle 80 moves quota from 900 to 920, writes one apply movement, and wallet delta -80; a second recovery must not write another movement",
           "an abandoned reservation older than the recovery cutoff is refunded once to the pre-reserve quota and a replay must not emit a second fund-result log"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-svc-2310-a59cccb",
+        "na_reason": "中断预扣不单边扣额度、中断结算不写半截流水、重启后待结算只入账一次、放弃的预扣只退一次，已在 PostgreSQL 18 入账；通知出箱恢复与渠道告警重试未覆盖，当前状态仍为 partial，不代表最终候选通过，也不关闭 ADTY-23-04"
       }
     },
     {
