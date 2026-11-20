@@ -11744,15 +11744,17 @@
           "line": 41
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1406StaffSubmitsIncreasePG"
+      ],
       "db_money_invariants": [
-        "SubmitAdtyStaffBalanceRequest 只插入 status 为 pending 的申请和 staff.balance_request 审计，不更新客户 quota，不插入余额流水",
-        "加额出资只接受 site_earnings 或 site_margin；其他来源在提交时拒绝",
-        "同一幂等键、同一金额返回原申请；同一键改金额返回 ErrAdtyIdempotencyConflict",
-        "已打开的测试源码：2 美元加额申请在审批前为 pending；员工以 member 角色审批被拒绝"
+        "quota_unchanged",
+        "earnings_stay_0",
+        "no_new_user_ledger",
+        "staff_balance_request_1"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-14-06",
         "requirement_refs": [
@@ -11788,15 +11790,17 @@
             "line": 41
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1406StaffSubmitsIncreasePG"
+        ],
         "db_money_invariants": [
-          "SubmitAdtyStaffBalanceRequest 只插入 status 为 pending 的申请和 staff.balance_request 审计，不更新客户 quota，不插入余额流水",
-          "加额出资只接受 site_earnings 或 site_margin；其他来源在提交时拒绝",
-          "同一幂等键、同一金额返回原申请；同一键改金额返回 ErrAdtyIdempotencyConflict",
-          "已打开的测试源码：2 美元加额申请在审批前为 pending；员工以 member 角色审批被拒绝"
+          "quota_unchanged",
+          "earnings_stay_0",
+          "no_new_user_ledger",
+          "staff_balance_request_1"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -11828,14 +11832,16 @@
           "line": 40
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1407StaffSubmitsDecreasePG"
+      ],
       "db_money_invariants": [
-        "扣减申请的 FundingSource 必须是 specified_batch，且 BatchKind 为 principal、bonus 或 expiring bonus；提交函数不调用 AdtyDebitUserQuotaTx",
-        "AdtyDebitUserQuotaTx 按 quota 与 quota_pending 的可用余额扣款，可用额不足时 debited 小于请求额，不把余额扣成负数",
-        "已打开的测试源码：2 美元入账后 quota 为 1000000、quota_pending 为 -600000 时，1 美元扣减申请可以提交；审批返回 Customer balance is not enough，quota 仍为 1000000，申请保持 pending，余额流水仍为 1 条"
+        "quota_unchanged",
+        "specified_batch_decrease",
+        "no_new_user_ledger"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-14-07",
         "requirement_refs": [
@@ -11859,14 +11865,16 @@
             "line": 40
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1407StaffSubmitsDecreasePG"
+        ],
         "db_money_invariants": [
-          "扣减申请的 FundingSource 必须是 specified_batch，且 BatchKind 为 principal、bonus 或 expiring bonus；提交函数不调用 AdtyDebitUserQuotaTx",
-          "AdtyDebitUserQuotaTx 按 quota 与 quota_pending 的可用余额扣款，可用额不足时 debited 小于请求额，不把余额扣成负数",
-          "已打开的测试源码：2 美元入账后 quota 为 1000000、quota_pending 为 -600000 时，1 美元扣减申请可以提交；审批返回 Customer balance is not enough，quota 仍为 1000000，申请保持 pending，余额流水仍为 1 条"
+          "quota_unchanged",
+          "specified_batch_decrease",
+          "no_new_user_ledger"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -11910,16 +11918,16 @@
           "line": 304
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1408OwnerApprovesIncreasePG"
+      ],
       "db_money_invariants": [
-        "站长审批要求 reviewerRole 为 owner、站点当前站长匹配且站点为 active；非 pending 再次审批被拒绝",
-        "加额从申请指定的收益或保证金扣出，并向经营钱包记等额本金背书，再给客户入账、写 principal 批次和 manual_adjust 流水，幂等键绑定申请",
-        "扣减调用 AdtyDebitUserQuotaTx，debited 必须等于申请额度，再按指定批次 ReduceAdtyAdjustmentBatchTx",
-        "已打开的测试源码：站长批准 2 美元加额后客户 quota 为 1000000，一条 manual_adjust 流水 delta 1000000、before 0、after 1000000，一条 principal 批次 original 与 remaining 都是 1000000",
-        "已打开的测试源码：客户已迁出、站点 closing/closed、原站长在所有权转移后批准，均被拒绝"
+        "customer_quota_plus_1000000",
+        "earnings_balance_6",
+        "operating_credit_2_00"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-14-08",
         "requirement_refs": [
@@ -11955,16 +11963,16 @@
             "line": 304
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1408OwnerApprovesIncreasePG"
+        ],
         "db_money_invariants": [
-          "站长审批要求 reviewerRole 为 owner、站点当前站长匹配且站点为 active；非 pending 再次审批被拒绝",
-          "加额从申请指定的收益或保证金扣出，并向经营钱包记等额本金背书，再给客户入账、写 principal 批次和 manual_adjust 流水，幂等键绑定申请",
-          "扣减调用 AdtyDebitUserQuotaTx，debited 必须等于申请额度，再按指定批次 ReduceAdtyAdjustmentBatchTx",
-          "已打开的测试源码：站长批准 2 美元加额后客户 quota 为 1000000，一条 manual_adjust 流水 delta 1000000、before 0、after 1000000，一条 principal 批次 original 与 remaining 都是 1000000",
-          "已打开的测试源码：客户已迁出、站点 closing/closed、原站长在所有权转移后批准，均被拒绝"
+          "customer_quota_plus_1000000",
+          "earnings_balance_6",
+          "operating_credit_2_00"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12001,14 +12009,16 @@
           "line": 627
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1409RootApprovesIncreasePG"
+      ],
       "db_money_invariants": [
-        "reviewerRole 为 root 时可以审批；批准仍要求站点为 active，并走 applyApprovedStaffBalanceTx，同一事务写客户额度、批次和流水",
-        "已打开的测试源码：Root 批准扣减申请返回成功；客户迁出或站点 closing 时 Root 批准被拒绝",
-        "已打开的测试源码：Root 拒绝扣减申请写 adty.staff.balance_reject，该分支不调用入账函数"
+        "customer_quota_750000",
+        "earnings_balance_8_50",
+        "operating_credit_1_50"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-14-09",
         "requirement_refs": [
@@ -12037,14 +12047,16 @@
             "line": 627
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1409RootApprovesIncreasePG"
+        ],
         "db_money_invariants": [
-          "reviewerRole 为 root 时可以审批；批准仍要求站点为 active，并走 applyApprovedStaffBalanceTx，同一事务写客户额度、批次和流水",
-          "已打开的测试源码：Root 批准扣减申请返回成功；客户迁出或站点 closing 时 Root 批准被拒绝",
-          "已打开的测试源码：Root 拒绝扣减申请写 adty.staff.balance_reject，该分支不调用入账函数"
+          "customer_quota_750000",
+          "earnings_balance_8_50",
+          "operating_credit_1_50"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12081,14 +12093,16 @@
           "line": 100
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1410ApprovalWritesLedgerAndAuditPG"
+      ],
       "db_money_invariants": [
-        "批准在同一事务写 manual_adjust 流水、before_quota、after_quota、ledger_id，以及站点审计 staff.balance_review 和正式审计 adty.staff.balance_approve",
-        "拒绝不调用 applyApprovedStaffBalanceTx，before_quota 与 after_quota 都取当前客户额度，正式动作为 adty.staff.balance_reject",
-        "已打开的测试源码：同一幂等键重放提交只留下 1 条 staff.balance_request 站点审计；批准后正式审计为 adty.staff.balance_approve，after 含 before_quota 与 after_quota；Root 拒绝写 1 条 adty.staff.balance_reject"
+        "manual_adjust_delta_1500000",
+        "staff_balance_review_1",
+        "official_approve_1"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-14-10",
         "requirement_refs": [
@@ -12117,14 +12131,16 @@
             "line": 100
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1410ApprovalWritesLedgerAndAuditPG"
+        ],
         "db_money_invariants": [
-          "批准在同一事务写 manual_adjust 流水、before_quota、after_quota、ledger_id，以及站点审计 staff.balance_review 和正式审计 adty.staff.balance_approve",
-          "拒绝不调用 applyApprovedStaffBalanceTx，before_quota 与 after_quota 都取当前客户额度，正式动作为 adty.staff.balance_reject",
-          "已打开的测试源码：同一幂等键重放提交只留下 1 条 staff.balance_request 站点审计；批准后正式审计为 adty.staff.balance_approve，after 含 before_quota 与 after_quota；Root 拒绝写 1 条 adty.staff.balance_reject"
+          "manual_adjust_delta_1500000",
+          "staff_balance_review_1",
+          "official_approve_1"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
