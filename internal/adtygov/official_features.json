@@ -7070,14 +7070,15 @@
           "line": 31
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0901RootEnablesMethodBonusPG"
+      ],
       "db_money_invariants": [
-        "PutAdtyMainMethodBonus 经行锁把合并结果写入 options 键 adty_topup_setting.method_bonus，并在同一事务写审计意图；已打开的测试断言 alipay enabled=true、rate=0.02 落库且审计意图为 2",
-        "AdtyPaymentMethodBonus 在支付方式键为空、规则不存在或 Enabled=false 时返回 0 赠金，不在该函数里改客户额度",
-        "该配置写路径只写 options 与审计意图，未看到余额或钱包流水写入"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-09-01",
         "requirement_refs": [
@@ -7113,14 +7114,15 @@
             "line": 31
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0901RootEnablesMethodBonusPG"
+        ],
         "db_money_invariants": [
-          "PutAdtyMainMethodBonus 经行锁把合并结果写入 options 键 adty_topup_setting.method_bonus，并在同一事务写审计意图；已打开的测试断言 alipay enabled=true、rate=0.02 落库且审计意图为 2",
-          "AdtyPaymentMethodBonus 在支付方式键为空、规则不存在或 Enabled=false 时返回 0 赠金，不在该函数里改客户额度",
-          "该配置写路径只写 options 与审计意图，未看到余额或钱包流水写入"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -7165,14 +7167,15 @@
           "line": 397
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0902RootSetsMethodBonusRatePG"
+      ],
       "db_money_invariants": [
-        "parseBonusRate 拒绝负数或大于 1 的比例，接受的是 0 到 1 的小数比例，不是百分数",
-        "AdtyPaymentMethodBonus 与 CreateAdtyPaymentOrder 的赠金美元金额都是面额乘比例后 Round(8)",
-        "已打开的测试把主站 usdt 比例存成 0.02，把 alipay 比例存成 0.02；未在该测试里断言越界比例被拒绝"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-09-02",
         "requirement_refs": [
@@ -7209,14 +7212,15 @@
             "line": 397
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0902RootSetsMethodBonusRatePG"
+        ],
         "db_money_invariants": [
-          "parseBonusRate 拒绝负数或大于 1 的比例，接受的是 0 到 1 的小数比例，不是百分数",
-          "AdtyPaymentMethodBonus 与 CreateAdtyPaymentOrder 的赠金美元金额都是面额乘比例后 Round(8)",
-          "已打开的测试把主站 usdt 比例存成 0.02，把 alipay 比例存成 0.02；未在该测试里断言越界比例被拒绝"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -7253,14 +7257,15 @@
           "line": 29
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0903RootAuthorizesSiteBonusMethodPG"
+      ],
       "db_money_invariants": [
-        "授权写入 options 键 adty_topup_setting.site_method_auth，同一事务写审计意图，不在该函数里改钱包余额",
-        "已打开的测试断言站点 7 的 usdt 授权落库，且 SiteMethodBonusAllowed(7, usdt) 为真",
-        "另一已打开测试先拒绝未授权的站长比例，再在 MergeSiteMethodAuth 允许 alipay 后才能保存"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-09-03",
         "requirement_refs": [
@@ -7289,14 +7294,15 @@
             "line": 29
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0903RootAuthorizesSiteBonusMethodPG"
+        ],
         "db_money_invariants": [
-          "授权写入 options 键 adty_topup_setting.site_method_auth，同一事务写审计意图，不在该函数里改钱包余额",
-          "已打开的测试断言站点 7 的 usdt 授权落库，且 SiteMethodBonusAllowed(7, usdt) 为真",
-          "另一已打开测试先拒绝未授权的站长比例，再在 MergeSiteMethodAuth 允许 alipay 后才能保存"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -7334,14 +7340,15 @@
           "line": 269
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0904OwnerSetsAuthorizedBonusPG"
+      ],
       "db_money_invariants": [
-        "MergeSiteMethodBonusWithAuth 在 SQL 授权不允许时返回错误，不写入站长比例",
-        "已打开的 HTTP 测试：SQL 未授权时 PutAdtySiteMethodBonus 的 success 为 false 且 site_method_bonus 行数为 0；SQL 授权 usdt 后 success 为 true 且该键行数为 1",
-        "撤权后的事务内站长更新被拒绝；该配置写路径写的是 options，不是客户额度"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-09-04",
         "requirement_refs": [
@@ -7371,14 +7378,15 @@
             "line": 269
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0904OwnerSetsAuthorizedBonusPG"
+        ],
         "db_money_invariants": [
-          "MergeSiteMethodBonusWithAuth 在 SQL 授权不允许时返回错误，不写入站长比例",
-          "已打开的 HTTP 测试：SQL 未授权时 PutAdtySiteMethodBonus 的 success 为 false 且 site_method_bonus 行数为 0；SQL 授权 usdt 后 success 为 true 且该键行数为 1",
-          "撤权后的事务内站长更新被拒绝；该配置写路径写的是 options，不是客户额度"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -13553,12 +13561,15 @@
           "line": 54
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1602AdminSavesReferralSettingsPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-16-02",
         "requirement_refs": [
@@ -13623,12 +13634,15 @@
             "line": 54
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1602AdminSavesReferralSettingsPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -16003,10 +16017,15 @@
           "line": 132
         }
       ],
-      "test_func_names": [],
-      "db_money_invariants": [],
+      "test_func_names": [
+        "TestFTRADTY1710RootListsStaffBalanceRequestsPG"
+      ],
+      "db_money_invariants": [
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
+      ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-17-10",
         "requirement_refs": [
@@ -16071,10 +16090,15 @@
             "line": 132
           }
         ],
-        "test_func_names": [],
-        "db_money_invariants": [],
+        "test_func_names": [
+          "TestFTRADTY1710RootListsStaffBalanceRequestsPG"
+        ],
+        "db_money_invariants": [
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
+        ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -20127,12 +20151,15 @@
           "line": 251
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2101PasswordVerificationPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-21-01",
         "requirement_refs": [
@@ -20211,12 +20238,15 @@
             "line": 251
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2101PasswordVerificationPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -20419,12 +20449,15 @@
           "line": 225
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2103RootExemptVerificationPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-21-03",
         "requirement_refs": [
@@ -20471,12 +20504,15 @@
             "line": 225
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2103RootExemptVerificationPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
