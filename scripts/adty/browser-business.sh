@@ -26,10 +26,11 @@ case "$adty_browser_scenario" in
     ADTY_BROWSER_SCENARIO=payment-scenes bash "$0"
     ADTY_BROWSER_SCENARIO=site-ownership bash "$0"
     ADTY_BROWSER_SCENARIO=team-lifecycle bash "$0"
+    ADTY_BROWSER_SCENARIO=ticket-images bash "$0"
     ADTY_BROWSER_SCENARIO=owner-self-use bash "$0"
     exit 0
     ;;
-  deployment | wallet | site-status | password-reset | user-sites | finance-actions | site-brand | notification-read | notification-publish | unified-orders | order-trace | withdraw-networks | site-staff | payment-scenes | site-ownership | owner-self-use | team-lifecycle) ;;
+  deployment | wallet | site-status | password-reset | user-sites | finance-actions | site-brand | notification-read | notification-publish | unified-orders | order-trace | withdraw-networks | site-staff | payment-scenes | site-ownership | owner-self-use | team-lifecycle | ticket-images) ;;
   *) echo 'browser-business: unknown scenario' >&2; exit 2 ;;
 esac
 
@@ -202,7 +203,7 @@ fi
 
 echo "browser-business: PostgreSQL $adty_pg_version, isolated database and Redis instance"
 (cd web && bun run build) >"$adty_tmpdir/frontend-build.log" 2>&1
-echo 'browser-business: production frontend build and eight-language prerender passed'
+echo 'browser-business: production frontend build and Chinese/English prerender passed'
 GOWORK=off go build -o "$adty_tmpdir/new-api" . >"$adty_tmpdir/backend-build.log" 2>&1
 echo 'browser-business: production backend build passed'
 
