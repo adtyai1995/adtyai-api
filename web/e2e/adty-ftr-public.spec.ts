@@ -284,3 +284,136 @@ test('ADTY-01-06 privacy page shows the configured policy', async ({ page }) => 
   await assertGuestOnMainSite(page, 'Sign in')
   await assertNoMoneyChange(watch)
 })
+
+async function openRoleGuide(page: Page) {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openAsMainSiteGuest(page, 'en')
+  await page.goto('/docs/roles')
+  await expect(page).toHaveURL(/\/docs\/roles$/)
+}
+
+test('ADTY-22-01 user role guide shows the wallet and key steps', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await openRoleGuide(page)
+  await expect(page.getByRole('heading', { level: 2, name: 'User' })).toBeVisible()
+  await expect(
+    page.getByText('Create an API key and put the site URL and key in the client.'),
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.locator('html')).toHaveAttribute('lang', /zh/i)
+  await expect(page.getByRole('heading', { level: 2, name: '普通用户' })).toBeVisible()
+  await expect(page.getByText('创建 API Key 后，把站点地址和 Key 配到客户端即可调用。')).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-22-02 team lead guide shows invite and shared balance', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await openRoleGuide(page)
+  await expect(page.getByRole('heading', { level: 2, name: 'Team lead' })).toBeVisible()
+  await expect(
+    page.getByText('Create a team, invite members, set the discount, and issue a team key against the shared balance.'),
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.getByRole('heading', { level: 2, name: '团队负责人' })).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-22-03 team member guide shows one-team membership', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await openRoleGuide(page)
+  await expect(page.getByRole('heading', { level: 2, name: 'Team member' })).toBeVisible()
+  await expect(page.getByText('A person can belong to only one team.')).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.getByRole('heading', { level: 2, name: '团队成员' })).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-22-04 site owner guide shows earnings and closing', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await openRoleGuide(page)
+  await expect(page.getByRole('heading', { level: 2, name: 'Site owner' })).toBeVisible()
+  await expect(page.getByText('Earnings go to the earnings wallet.')).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.getByRole('heading', { level: 2, name: '分站站长' })).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-22-05 site staff guide shows approval before a balance change', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await openRoleGuide(page)
+  await expect(page.getByRole('heading', { level: 2, name: 'Site staff' })).toBeVisible()
+  await expect(
+    page.getByText('A balance change is a request until the owner or a main-site admin approves it.'),
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.getByRole('heading', { level: 2, name: '分站员工' })).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-22-06 main-site admin guide shows ledgered adjustments', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await openRoleGuide(page)
+  await expect(page.getByRole('heading', { level: 2, name: 'Main-site admin' })).toBeVisible()
+  await expect(page.getByText('Do not edit a balance by hand.')).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.getByRole('heading', { level: 2, name: '主站管理员' })).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-22-07 API guide shows the OpenAI-compatible base URL', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openAsMainSiteGuest(page, 'en')
+  await page.goto('/docs/openai-sdk')
+  await expect(page).toHaveURL(/\/docs\/openai-sdk$/)
+  await expect(page.getByRole('heading', { level: 1, name: 'OpenAI SDK' })).toBeVisible()
+  await expect(page.getByText('Any OpenAI SDK works')).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: 'OpenAI SDK' })).toBeVisible()
+  await expect(page.getByText('任何 OpenAI SDK 都能用')).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-22-08 model guide shows alias routing without the channel name', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openAsMainSiteGuest(page, 'en')
+  await page.goto('/docs/models')
+  await expect(page).toHaveURL(/\/docs\/models$/)
+  await expect(page.getByRole('heading', { level: 1, name: 'Models and groups' })).toBeVisible()
+  await expect(page.getByText('Customer logs do not show the upstream channel name.')).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: '模型与分组' })).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})
+
+test('ADTY-22-09 agent guide shows the tool-call loop', async ({ page }) => {
+  const watch = await watchPublicSession(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openAsMainSiteGuest(page, 'en')
+  await page.goto('/docs/agents')
+  await expect(page).toHaveURL(/\/docs\/agents$/)
+  await expect(page.getByRole('heading', { level: 1, name: 'Agents' })).toBeVisible()
+  await expect(page.getByText('Your program owns the agent loop')).toBeVisible()
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: '智能体' })).toBeVisible()
+  await assertGuestOnMainSite(page, '登录')
+  await assertNoMoneyChange(watch)
+})

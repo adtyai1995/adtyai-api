@@ -21347,12 +21347,14 @@
           "line": 659
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-01 user role guide shows the wallet and key steps"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-01",
         "requirement_refs": [
@@ -21407,12 +21409,14 @@
             "line": 659
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-01 user role guide shows the wallet and key steps"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -21463,12 +21467,14 @@
           "line": 23
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-02 team lead guide shows invite and shared balance"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-02",
         "requirement_refs": [
@@ -21511,12 +21517,14 @@
             "line": 23
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-02 team lead guide shows invite and shared balance"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -21567,12 +21575,14 @@
           "line": 23
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-03 team member guide shows one-team membership"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-03",
         "requirement_refs": [
@@ -21615,12 +21625,14 @@
             "line": 23
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-03 team member guide shows one-team membership"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -21671,12 +21683,14 @@
           "line": 23
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-04 site owner guide shows earnings and closing"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-04",
         "requirement_refs": [
@@ -21719,12 +21733,14 @@
             "line": 23
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-04 site owner guide shows earnings and closing"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -21774,12 +21790,14 @@
           "line": 23
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-05 site staff guide shows approval before a balance change"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-05",
         "requirement_refs": [
@@ -21821,12 +21839,14 @@
             "line": 23
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-05 site staff guide shows approval before a balance change"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -21877,12 +21897,14 @@
           "line": 23
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-06 main-site admin guide shows ledgered adjustments"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-06",
         "requirement_refs": [
@@ -21925,12 +21947,14 @@
             "line": 23
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-06 main-site admin guide shows ledgered adjustments"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -22014,12 +22038,14 @@
           "line": 659
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-07 API guide shows the OpenAI-compatible base URL"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-07",
         "requirement_refs": [
@@ -22095,12 +22121,14 @@
             "line": 659
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-07 API guide shows the OpenAI-compatible base URL"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -22156,12 +22184,14 @@
           "line": 23
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-08 model guide shows alias routing without the channel name"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-08",
         "requirement_refs": [
@@ -22209,12 +22239,14 @@
             "line": 23
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-08 model guide shows alias routing without the channel name"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -22278,12 +22310,14 @@
           "line": 23
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "ADTY-22-09 agent guide shows the tool-call loop"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-22-09",
         "requirement_refs": [
@@ -22339,12 +22373,14 @@
             "line": 23
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "ADTY-22-09 agent guide shows the tool-call loop"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
