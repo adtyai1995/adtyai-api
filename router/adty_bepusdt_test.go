@@ -220,6 +220,7 @@ func TestBEpusdtPayHandlesGatewayFailure(t *testing.T) {
 
 func TestBEpusdtNotify(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
 	setRouterBonusRates(t)
 	useFakeBEpusdt(t)
 	token, userID := bepusdtBuyer(t, f, "usdt-notify")

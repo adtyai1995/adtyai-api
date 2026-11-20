@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -110,6 +111,7 @@ func TestAdtyResourcesHaveNoDefaultRoles(t *testing.T) {
 
 func TestAdminHasNoPermissionByDefault(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
 	for _, path := range []string{"/api/channel/", "/api/user/", "/api/user/sites", "/api/log/", "/api/models/"} {
 		resp := adtyJSON(t, f.engine, http.MethodGet, path, "", f.token)
 		assert.Equal(t, http.StatusForbidden, resp.Code, path)
@@ -119,6 +121,7 @@ func TestAdminHasNoPermissionByDefault(t *testing.T) {
 
 func TestGrantAndRevokeTakeEffectImmediately(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
 	pat := createAdtyScopedToken(t, f.admin.Id, "adty_user:read")
 	for _, path := range []string{"/api/user/", "/api/user/sites"} {
 		for _, credential := range []string{f.token, pat} {

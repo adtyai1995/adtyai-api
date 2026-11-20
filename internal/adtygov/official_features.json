@@ -7100,7 +7100,7 @@
       "source_line": 2565,
       "ftr_id": "FTR-079",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.8",
@@ -7132,15 +7132,18 @@
           "line": 132
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestAdtyEpayNotify",
+        "TestBEpusdtNotify"
+      ],
       "db_money_invariants": [
         "易支付回调在签名失败、密钥为空或 pid 不匹配时回 fail，不入账",
         "易支付实付按 2 位小数必须等于订单 PayAmount，否则 ErrPaymentAmountMismatch",
         "BEpusdt 法币金额必须等于面额乘分组充值倍率后四舍五入到 2 位，实付不得小于应付，地址和 trade id 必须与下单一致",
         "已打开的测试源码：改 money 后 EpayVerify 返回 false"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-router-pay-9949bcb",
+      "na_reason": "易支付与 BEpusdt 回调验签、金额不符不入账、正确回调入账已在 PostgreSQL 18 入账，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-08-09",
         "requirement_refs": [
@@ -7174,15 +7177,18 @@
             "line": 132
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestAdtyEpayNotify",
+          "TestBEpusdtNotify"
+        ],
         "db_money_invariants": [
           "易支付回调在签名失败、密钥为空或 pid 不匹配时回 fail，不入账",
           "易支付实付按 2 位小数必须等于订单 PayAmount，否则 ErrPaymentAmountMismatch",
           "BEpusdt 法币金额必须等于面额乘分组充值倍率后四舍五入到 2 位，实付不得小于应付，地址和 trade id 必须与下单一致",
           "已打开的测试源码：改 money 后 EpayVerify 返回 false"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-router-pay-9949bcb",
+        "na_reason": "易支付与 BEpusdt 回调验签、金额不符不入账、正确回调入账已在 PostgreSQL 18 入账，不代表最终候选通过"
       }
     },
     {
@@ -7192,7 +7198,7 @@
       "source_line": 2566,
       "ftr_id": "FTR-080",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.8",
@@ -7218,7 +7224,10 @@
           "line": 54
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestAdtyEpayNotify",
+        "TestBEpusdtNotify"
+      ],
       "db_money_invariants": [
         "订单已是 success 且凭证相同：alreadyDone=true，credited=0",
         "订单已是 success 且凭证不同：返回 ErrAdtyDuplicatePayment",
@@ -7226,8 +7235,8 @@
         "已打开的测试源码：对已完成订单再调 CompleteAdtyTopUp，用户额度不变",
         "BEpusdt 补查只接受 https 且与原下单主机一致的网关"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-router-pay-9949bcb",
+      "na_reason": "重复回调只入账一次已在 PostgreSQL 18 入账；主动补查未在本测试覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-08-10",
         "requirement_refs": [
@@ -7255,7 +7264,10 @@
             "line": 54
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestAdtyEpayNotify",
+          "TestBEpusdtNotify"
+        ],
         "db_money_invariants": [
           "订单已是 success 且凭证相同：alreadyDone=true，credited=0",
           "订单已是 success 且凭证不同：返回 ErrAdtyDuplicatePayment",
@@ -7263,8 +7275,8 @@
           "已打开的测试源码：对已完成订单再调 CompleteAdtyTopUp，用户额度不变",
           "BEpusdt 补查只接受 https 且与原下单主机一致的网关"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-router-pay-9949bcb",
+        "na_reason": "重复回调只入账一次已在 PostgreSQL 18 入账；主动补查未在本测试覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -21196,7 +21208,7 @@
       "source_line": 2729,
       "ftr_id": "FTR-204",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.21",
@@ -21240,12 +21252,15 @@
           "line": 297
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestGrantAndRevokeTakeEffectImmediately",
+        "TestAdminHasNoPermissionByDefault"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-router-pay-9949bcb",
+      "na_reason": "权限默认拒绝、授予后立即生效、撤销后再拒绝已在 PostgreSQL 18 入账；本测试未单列钱包断言，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-21-04",
         "requirement_refs": [
@@ -21291,12 +21306,15 @@
             "line": 297
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestGrantAndRevokeTakeEffectImmediately",
+          "TestAdminHasNoPermissionByDefault"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-router-pay-9949bcb",
+        "na_reason": "权限默认拒绝、授予后立即生效、撤销后再拒绝已在 PostgreSQL 18 入账；本测试未单列钱包断言，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -21306,7 +21324,7 @@
       "source_line": 2730,
       "ftr_id": "FTR-205",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.21",
@@ -21336,12 +21354,14 @@
           "line": 1029
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestSiteContextBySubdomain"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-router-pay-9949bcb",
+      "na_reason": "按主机识别分站的成功路径已在 PostgreSQL 18 入账；团队隔离未在本测试覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-21-05",
         "requirement_refs": [
@@ -21373,12 +21393,14 @@
             "line": 1029
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestSiteContextBySubdomain"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-router-pay-9949bcb",
+        "na_reason": "按主机识别分站的成功路径已在 PostgreSQL 18 入账；团队隔离未在本测试覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -24068,7 +24090,7 @@
       "source_line": 2758,
       "ftr_id": "FTR-227",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -24122,12 +24144,14 @@
           "line": 38
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2307BuildDeployPostgresEvidencePG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-model-infra-22b1335",
+      "na_reason": "构建与部署文件已钉住 PostgreSQL 18，并在隔离 PostgreSQL 18 上入账；未执行实际部署，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-23-07",
         "requirement_refs": [
@@ -24183,12 +24207,14 @@
             "line": 38
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2307BuildDeployPostgresEvidencePG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-model-infra-22b1335",
+        "na_reason": "构建与部署文件已钉住 PostgreSQL 18，并在隔离 PostgreSQL 18 上入账；未执行实际部署，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {
@@ -24316,7 +24342,7 @@
       "source_line": 2760,
       "ftr_id": "FTR-229",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -24369,12 +24395,14 @@
           "line": 24
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY2309OptionSecretRoundTripPG"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-model-infra-22b1335",
+      "na_reason": "选项密钥加密往返与落库不含明文已在 PostgreSQL 18 入账；管理端更新路径未覆盖，当前状态仍为 partial，不代表最终候选通过",
       "design_card": {
         "feature_id": "ADTY-23-09",
         "requirement_refs": [
@@ -24429,12 +24457,14 @@
             "line": 24
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY2309OptionSecretRoundTripPG"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-model-infra-22b1335",
+        "na_reason": "选项密钥加密往返与落库不含明文已在 PostgreSQL 18 入账；管理端更新路径未覆盖，当前状态仍为 partial，不代表最终候选通过"
       }
     },
     {

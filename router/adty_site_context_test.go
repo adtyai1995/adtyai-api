@@ -12,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -133,6 +134,7 @@ func siteOf(t *testing.T, engine *gin.Engine, host string) *model.AdtySite {
 
 func TestSiteContextBySubdomain(t *testing.T) {
 	f := newSiteFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
 	for _, tc := range []struct {
 		host string
 		want int

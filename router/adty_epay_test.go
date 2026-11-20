@@ -13,6 +13,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/controller"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -397,6 +398,7 @@ func TestEpayRevocationRollsBackWhenAuditIntentCannotPersist(t *testing.T) {
 
 func TestAdtyEpayNotify(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
 	setRouterBonusRates(t)
 	gw := newFakeEpay(t, epayQR)
 	one := seedRouterEpayChannel(t, "one", gw.server.URL, model.AdtyEpayOrderModeAPI, 9)
