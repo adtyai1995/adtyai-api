@@ -5825,14 +5825,23 @@
           "line": 25
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0703InsufficientQuotaBlocksUpstreamPG"
+      ],
       "db_money_invariants": [
-        "Relay 在第 166 行若 PrepareRequestBilling 失败则 return，此时尚未进入第 183 行的 getChannel / relayHandler 循环",
-        "余额不足时 PreConsumeBilling 返回 ErrorCodeInsufficientUserQuota 且 HTTP 403",
-        "已打开的测试源码：用户额度 100、预扣 10000 时 Billing 保持 nil"
+        "http_403",
+        "route_post_v1_chat_completions",
+        "role_common_user",
+        "main_site_id_0",
+        "user_quota_stays_100",
+        "token_remain_stays_100000",
+        "upstream_not_called",
+        "zero_billing_operations",
+        "zero_adty_balance_ledgers",
+        "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-07-03",
         "requirement_refs": [
@@ -5853,14 +5862,23 @@
             "line": 25
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0703InsufficientQuotaBlocksUpstreamPG"
+        ],
         "db_money_invariants": [
-          "Relay 在第 166 行若 PrepareRequestBilling 失败则 return，此时尚未进入第 183 行的 getChannel / relayHandler 循环",
-          "余额不足时 PreConsumeBilling 返回 ErrorCodeInsufficientUserQuota 且 HTTP 403",
-          "已打开的测试源码：用户额度 100、预扣 10000 时 Billing 保持 nil"
+          "http_403",
+          "route_post_v1_chat_completions",
+          "role_common_user",
+          "main_site_id_0",
+          "user_quota_stays_100",
+          "token_remain_stays_100000",
+          "upstream_not_called",
+          "zero_billing_operations",
+          "zero_adty_balance_ledgers",
+          "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -6333,13 +6351,23 @@
           "line": 164
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0710TeamKeyPreConsumeDebitsSharedQuotaPG"
+      ],
       "db_money_invariants": [
-        "团队预扣在共享余额不足时返回 ErrBillingWalletInsufficient；关闭团队返回 ErrAdtyTeamClosed；非活动成员返回 ErrAdtyTeamForbidden",
-        "已打开的测试源码：四笔实际消耗合计后，团队共享余额减少该合计，成员个人余额保持 500000，团队流水合计等于余额变化，每笔各有预扣和结算流水"
+        "route_post_v1_chat_completions",
+        "role_common_user",
+        "main_site_id_0",
+        "personal_quota_stays_500000",
+        "shared_quota_after_reserve_90000",
+        "team_reserve_delta_-10000",
+        "payer_kind_team",
+        "reserved_quota_10000",
+        "two_team_ledgers",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-07-10",
         "requirement_refs": [
@@ -6360,13 +6388,23 @@
             "line": 164
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0710TeamKeyPreConsumeDebitsSharedQuotaPG"
+        ],
         "db_money_invariants": [
-          "团队预扣在共享余额不足时返回 ErrBillingWalletInsufficient；关闭团队返回 ErrAdtyTeamClosed；非活动成员返回 ErrAdtyTeamForbidden",
-          "已打开的测试源码：四笔实际消耗合计后，团队共享余额减少该合计，成员个人余额保持 500000，团队流水合计等于余额变化，每笔各有预扣和结算流水"
+          "route_post_v1_chat_completions",
+          "role_common_user",
+          "main_site_id_0",
+          "personal_quota_stays_500000",
+          "shared_quota_after_reserve_90000",
+          "team_reserve_delta_-10000",
+          "payer_kind_team",
+          "reserved_quota_10000",
+          "two_team_ledgers",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
