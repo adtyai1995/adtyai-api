@@ -31,6 +31,11 @@ import { renderAllAdtyHomes } from '../../src/features/adty-home/prerender'
 const out = resolve(import.meta.dirname, '../../dist/adty-home.json')
 const pages = await renderAllAdtyHomes()
 writeFileSync(out, JSON.stringify(pages))
+const sitePages = await renderAllAdtyHomes(true)
+writeFileSync(
+  resolve(import.meta.dirname, '../../dist/adty-site-home.json'),
+  JSON.stringify(sitePages)
+)
 console.log(
   `prerender-home: wrote ${Object.keys(pages).length} languages to dist/adty-home.json`
 )

@@ -60,6 +60,6 @@ export function AdtyLanding() {
   useRemovePrerenderOnMount()
   const user = useAuthStore((state) => state.auth.user)
   const baseUrl = useApiBaseUrl()
-  const data = useLandingData({ signedIn: !!user, userGroup: user?.group })
+  const data = useLandingData()
   return <LandingSections signedIn={!!user} baseUrl={baseUrl} data={data} />
 }

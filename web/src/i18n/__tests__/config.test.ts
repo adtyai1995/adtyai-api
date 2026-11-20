@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 import i18n, {
   loadInterfaceLanguage,
@@ -24,12 +24,15 @@ import i18n, {
 } from '@/i18n/config'
 
 describe('interface language packs', () => {
+  beforeEach(() => window.history.replaceState(null, '', '/sign-in'))
+
   // 正式界面语言只有 en 和 zhCN（conventions.md 约定 E + config.ts 的
   // supportedLngs）。这三个用例原来的样本语言是 fr / ja / ru——那六种是
   // 「留在仓库但不再承诺」的历史包，选它们会被归一化回 en，于是断言
   // 「切到 fr」必然失败。测验的对象因此换成 zhCN：它同样是「非默认的正式
   // 语言」，能真正验证「首屏等包加载」「切换后仍被记住」「只加载一个包」。
   afterEach(async () => {
+    window.history.replaceState(null, '', '/')
     window.localStorage.removeItem('i18nextLng')
     await i18n.changeLanguage('en')
   })

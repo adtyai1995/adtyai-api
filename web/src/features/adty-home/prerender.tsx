@@ -39,13 +39,9 @@ const PRERENDER_BASE_URL = '<BASE_URL>'
 // Same resources as i18n/config.ts, without its browser language detector.
 const resources = { en, zhCN }
 
-/** No server data at build time: prices and figures render as placeholders. */
+/** Referral settings become available when the client mounts. */
 const PRERENDER_DATA: LandingData = {
-  prices: { state: 'loading' },
-  minTopUp: undefined,
-  supportHours: '',
   affiliate: { open: false, rate: null },
-  paymentMethodIds: undefined,
 }
 
 async function createI18n(interfaceLang: string): Promise<I18n> {
@@ -65,15 +61,18 @@ async function createI18n(interfaceLang: string): Promise<I18n> {
  * static header and the landing blocks. The footer is left out: it needs
  * the router and the status API, and the mounted page has it.
  */
-export async function renderAdtyHome(lang: ContentLang): Promise<string> {
+export async function renderAdtyHome(
+  lang: ContentLang,
+  siteTemplate = false
+): Promise<string> {
   const homeLang = HOME_LANGS.find((item) => item.contentLang === lang)
   const instance = await createI18n(homeLang?.interfaceLang ?? 'en')
   return renderToString(
     <I18nextProvider i18n={instance}>
-      <PrerenderHeader />
+      <PrerenderHeader siteTemplate={siteTemplate} />
       <LandingSections
         signedIn={false}
-        baseUrl={PRERENDER_BASE_URL}
+        baseUrl={siteTemplate ? '__ADTY_SITE_API__' : PRERENDER_BASE_URL}
         data={PRERENDER_DATA}
       />
     </I18nextProvider>
@@ -81,10 +80,15 @@ export async function renderAdtyHome(lang: ContentLang): Promise<string> {
 }
 
 /** Official home languages, keyed by content language code. */
-export async function renderAllAdtyHomes(): Promise<Record<string, string>> {
+export async function renderAllAdtyHomes(
+  siteTemplate = false
+): Promise<Record<string, string>> {
   const pages: Record<string, string> = {}
   for (const lang of HOME_LANGS) {
-    pages[lang.contentLang] = await renderAdtyHome(lang.contentLang)
+    pages[lang.contentLang] = await renderAdtyHome(
+      lang.contentLang,
+      siteTemplate
+    )
   }
   return pages
 }

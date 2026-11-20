@@ -29,6 +29,7 @@ const createRoot = ReactDOM.createRoot
 const roots: Root[] = []
 
 beforeEach(() => {
+  window.history.replaceState(null, '', '/sign-in')
   vi.resetModules()
   window.localStorage.clear()
   window.sessionStorage.clear()
@@ -57,7 +58,7 @@ beforeEach(() => {
     const root = createRootRoute({ component: Outlet })
     const home = createRoute({
       getParentRoute: () => root,
-      path: '/',
+      path: '/sign-in',
       component: function ReadyScreen() {
         const { t } = useTranslation()
         return <p>{t('Sign in')}</p>
@@ -80,6 +81,7 @@ afterEach(async () => {
   window.localStorage.clear()
   window.sessionStorage.clear()
   document.body.innerHTML = ''
+  window.history.replaceState(null, '', '/')
 })
 
 test('the first screen uses the saved language after its real pack loads', async () => {

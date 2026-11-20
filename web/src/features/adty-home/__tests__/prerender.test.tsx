@@ -34,6 +34,20 @@ const officialHeroByLang = {
 } as const
 
 describe('home page prerender', () => {
+  it.each(Object.entries(officialHeroByLang))(
+    'renders a complete neutral subsite template in %s',
+    async (lang, title) => {
+      const pages = await renderAllAdtyHomes(true)
+      const html = pages[lang]
+      expect(html).toContain(title)
+      expect(html).toContain('href="/sign-up"')
+      expect(html).toContain('__ADTY_SITE_BRAND__')
+      expect(html).toContain('__ADTY_SITE_API__')
+      expect(html).not.toContain('ADTY AI')
+      expect(html).not.toContain('/logo.png')
+      expect(html).not.toContain('/logo-dark.png')
+    }
+  )
   it('renders only the official home languages', async () => {
     const pages = await renderAllAdtyHomes()
 

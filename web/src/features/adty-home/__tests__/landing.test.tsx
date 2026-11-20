@@ -140,6 +140,17 @@ async function renderHome() {
 }
 
 describe('landing page', () => {
+  it('shows the default landing without fetching prices that are not displayed', async () => {
+    await renderHome()
+    await screen.findByRole('region', {
+      name: 'Invite friends, earn on every top-up',
+    })
+    expect(screen.getByRole('heading', { level: 1 })).toBeVisible()
+    const requests = vi.mocked(api.get).mock.calls.map(([url]) => url)
+    expect(requests).not.toContain('/api/pricing')
+    expect(requests).not.toContain('/api/adty/pricing/official')
+  })
+
   it('renders the hero, the migration block, the endpoints table, the referral strip and the closing card', async () => {
     await renderHome()
 

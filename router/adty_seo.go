@@ -46,9 +46,10 @@ var adtySEOLeftoverHomeLangs = []adtySEOHomeLang{
 }
 
 const (
-	adtySEOHeadStart     = "<!--adty-head-->"
-	adtySEOHeadEnd       = "<!--/adty-head-->"
-	adtySEOPrerenderFile = "web/dist/adty-home.json"
+	adtySEOHeadStart         = "<!--adty-head-->"
+	adtySEOHeadEnd           = "<!--/adty-head-->"
+	adtySEOPrerenderFile     = "web/dist/adty-home.json"
+	adtySEOSitePrerenderFile = "web/dist/adty-site-home.json"
 	// 上游 system_setting.ServerAddress 的默认值，没改过就当没设
 	adtyDefaultServerAddress = "http://localhost:3000"
 )
@@ -58,16 +59,21 @@ const (
 type adtyPrerender struct {
 	once  sync.Once
 	pages map[string]string
+	file  string
 }
 
 func (p *adtyPrerender) load(buildFS fs.FS) map[string]string {
 	p.once.Do(func() {
-		data, err := fs.ReadFile(buildFS, adtySEOPrerenderFile)
+		file := p.file
+		if file == "" {
+			file = adtySEOPrerenderFile
+		}
+		data, err := fs.ReadFile(buildFS, file)
 		if err == nil {
 			err = common.Unmarshal(data, &p.pages)
 		}
 		if err != nil {
-			common.SysError(common.LogText("home page prerender %s unavailable, serving head tags only: %s", adtySEOPrerenderFile, err.Error()))
+			common.SysError(common.LogText("home page prerender %s unavailable, serving head tags only: %s", file, err.Error()))
 		}
 	})
 	return p.pages
@@ -78,7 +84,13 @@ func (p *adtyPrerender) load(buildFS fs.FS) map[string]string {
 // 并在 #root 前插入预渲染的正文（任务 9.3，执行层决定 23）。其余请求原样交给后面的处理。
 // indexPage 用 main.go 注入过统计脚本的那份。
 func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
+	// Capture only persisted completion at router initialization. New installs
+	// use the API fallback until restart; requests never read a mutable flag.
+	if model.IsSetupComplete() {
+		indexPage = bytes.Replace(indexPage, []byte("</head>"), []byte(`<meta name="adty-setup-complete" content="true"></head>`), 1)
+	}
 	prerender := &adtyPrerender{}
+	sitePrerender := &adtyPrerender{file: adtySEOSitePrerenderFile}
 	var warnAddressOnce sync.Once
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
@@ -91,7 +103,7 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 		page = adtyOfficialSEOHomeLang(page)
 
 		// 分站（任务 11.3）：默认 noindex；开了 SeoIndex 才写正式头部，canonical 指向分站自己的地址。
-		// 预渲染的正文是平台的落地页（顶栏写的是平台站名），分站不插正文，只写头部。
+		// 分站使用无平台品牌的模板，逐请求填入自己的品牌和专用 API 地址。
 		if site := service.AdtySiteForRequest(c); site != nil {
 			head := adtySiteSEO(site)
 			brand := service.AdtyBrandFor(site)
@@ -99,6 +111,20 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 			if strings.TrimSpace(brand.Name) == "" {
 				head.noindex = true
 				body = ""
+			} else if template := sitePrerender.load(buildFS)[page.contentLang]; template != "" {
+				brandHTML := "<span>" + html.EscapeString(brand.Name) + "</span>"
+				if brand.LogoURL != "" {
+					brandHTML = `<img src="` + html.EscapeString(brand.LogoURL) + `" alt="` + html.EscapeString(brand.Name) + `" class="h-6 w-auto max-w-none object-contain" />`
+				}
+				apiBase := service.AdtySiteAPIBaseURL(site)
+				if apiBase == "" {
+					apiBase = "<BASE_URL>"
+				}
+				// Single-pass replacement: brand values cannot introduce template slots.
+				body = strings.NewReplacer(
+					"__ADTY_SITE_BRAND__", brandHTML,
+					"__ADTY_SITE_API__", html.EscapeString(apiBase),
+				).Replace(template)
 			}
 			out := adtyRenderHomePage(indexPage, page, head, body)
 			out = adtyBrandDocument(out, site, false)

@@ -19,6 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 
+import {
+  findHomeLangBySegment,
+  HOME_LANG_STORAGE_KEY,
+  officialHomeLangFor,
+} from '@/features/adty-seo/home-langs'
+import { hasSessionHint } from '@/lib/session-hint'
+
 import { bindDocumentLang } from './adty-document-lang'
 import {
   createI18nOptions,
@@ -62,8 +69,25 @@ export function readStoredInterfaceLanguage(): string {
   return toInterfaceLanguage(storedLanguage ?? window.navigator.language)
 }
 
+function readInitialInterfaceLanguage(): string {
+  if (typeof window === 'undefined') return 'en'
+  const path = window.location.pathname.replace(/\/+$/, '')
+  const explicit = findHomeLangBySegment(path.slice(1))
+  if (explicit) return officialHomeLangFor(explicit.interfaceLang).interfaceLang
+  if (path === '') {
+    try {
+      const remembered = window.localStorage.getItem(HOME_LANG_STORAGE_KEY)
+      if (remembered) return officialHomeLangFor(remembered).interfaceLang
+    } catch {
+      // The public home still has a deterministic language without storage.
+    }
+    if (!hasSessionHint()) return 'en'
+  }
+  return readStoredInterfaceLanguage()
+}
+
 i18n.use(initReactI18next).init({
-  ...createI18nOptions(readStoredInterfaceLanguage()),
+  ...createI18nOptions(readInitialInterfaceLanguage()),
   debug: import.meta.env.DEV,
 })
 
@@ -81,7 +105,7 @@ i18n.on('languageChanged', (language) => {
 })
 installInterfaceLanguageNormalization(i18n, loadInterfaceLanguage)
 export function whenInterfaceLanguageReady(): Promise<unknown> {
-  return i18n.changeLanguage(readStoredInterfaceLanguage())
+  return i18n.changeLanguage(readInitialInterfaceLanguage())
 }
 
 // ADTY task 9.2: <html lang> follows the interface language.
