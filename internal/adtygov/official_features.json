@@ -12156,15 +12156,16 @@
           "line": 71
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1501RootIssuesMainUserVoucherPG"
+      ],
       "db_money_invariants": [
-        "purpose=main_user 且发行人 RoleRootUser、SiteId=0、DesignatedOwnerId=0、Source 为空时，同一事务写入 adty_vouchers（source_kind=platform，status=pending）并把 adty_voucher_liabilities.frozen_usd 增加面额",
-        "LimitUSD<=0 或 frozen_usd+spent_usd+面额>LimitUSD 时返回 ErrAdtyVoucherLimit，不插入兑换码",
-        "发行不写用户 quota、不写分站钱包；额度由 adtyVoucherQuota 用 amount*QuotaPerUnitDecimal 经 WalletQuotaFromDecimalStrict 得到整数，已读测试断言 10.50 USD 对应 5250000",
-        "同一 issuer_id+intent_key 重放不第二次冻结负债；参数变化返回 ErrAdtyVoucherIntentConflict"
+        "platform_liability_frozen_5",
+        "issuer_quota_stays_0",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-01",
         "requirement_refs": [
@@ -12220,15 +12221,16 @@
             "line": 71
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1501RootIssuesMainUserVoucherPG"
+        ],
         "db_money_invariants": [
-          "purpose=main_user 且发行人 RoleRootUser、SiteId=0、DesignatedOwnerId=0、Source 为空时，同一事务写入 adty_vouchers（source_kind=platform，status=pending）并把 adty_voucher_liabilities.frozen_usd 增加面额",
-          "LimitUSD<=0 或 frozen_usd+spent_usd+面额>LimitUSD 时返回 ErrAdtyVoucherLimit，不插入兑换码",
-          "发行不写用户 quota、不写分站钱包；额度由 adtyVoucherQuota 用 amount*QuotaPerUnitDecimal 经 WalletQuotaFromDecimalStrict 得到整数，已读测试断言 10.50 USD 对应 5250000",
-          "同一 issuer_id+intent_key 重放不第二次冻结负债；参数变化返回 ErrAdtyVoucherIntentConflict"
+          "platform_liability_frozen_5",
+          "issuer_quota_stays_0",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12291,15 +12293,15 @@
           "line": 121
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1502RootIssuesSiteMarginVoucherPG"
+      ],
       "db_money_invariants": [
-        "purpose=site_margin 只允许 Root，绑定 target_site_id；未传指定站长时快照当前 site.OwnerUserId，与当前站长不一致则拒绝",
-        "发行冻结平台负债 adty_voucher_liabilities，不扣分站保证金钱包",
-        "只有 DesignatedOwnerId 可兑换；兑换后该站 margin 余额增加面额，兑换人 quota 不变，不写 adty_fund_batches，不增加经营钱包",
-        "站点关闭后未兑换保证金码由关站路径取消并释放平台冻结，不转成主站保证金"
+        "margin_balance_4",
+        "user_quota_stays_0"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-02",
         "requirement_refs": [
@@ -12354,15 +12356,15 @@
             "line": 121
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1502RootIssuesSiteMarginVoucherPG"
+        ],
         "db_money_invariants": [
-          "purpose=site_margin 只允许 Root，绑定 target_site_id；未传指定站长时快照当前 site.OwnerUserId，与当前站长不一致则拒绝",
-          "发行冻结平台负债 adty_voucher_liabilities，不扣分站保证金钱包",
-          "只有 DesignatedOwnerId 可兑换；兑换后该站 margin 余额增加面额，兑换人 quota 不变，不写 adty_fund_batches，不增加经营钱包",
-          "站点关闭后未兑换保证金码由关站路径取消并释放平台冻结，不转成主站保证金"
+          "margin_balance_4",
+          "user_quota_stays_0"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12413,15 +12415,15 @@
           "line": 287
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1503MainVoucherAccountLimitPG"
+      ],
       "db_money_invariants": [
-        "main_user 兑换前要求 user.SiteId=0、StaffSiteId=0 且 Role=RoleCommonUser，否则 ErrAdtyVoucherWrongAccount",
-        "资格检查在 status 更新和入账之前；拒绝路径不改兑换码状态、不写 quota、流水或订单",
-        "Root 以 site_customer 发行被拒绝；用途写在行上，兑换人不能改 purpose、target_site_id 或账户类型",
-        "site_margin 若 DesignatedOwnerId<=0 则兑换失败关闭，不入账"
+        "redeem_quota_2500000",
+        "rejected_user_quota_stays_0"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-03",
         "requirement_refs": [
@@ -12464,15 +12466,15 @@
             "line": 287
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1503MainVoucherAccountLimitPG"
+        ],
         "db_money_invariants": [
-          "main_user 兑换前要求 user.SiteId=0、StaffSiteId=0 且 Role=RoleCommonUser，否则 ErrAdtyVoucherWrongAccount",
-          "资格检查在 status 更新和入账之前；拒绝路径不改兑换码状态、不写 quota、流水或订单",
-          "Root 以 site_customer 发行被拒绝；用途写在行上，兑换人不能改 purpose、target_site_id 或账户类型",
-          "site_margin 若 DesignatedOwnerId<=0 则兑换失败关闭，不入账"
+          "redeem_quota_2500000",
+          "rejected_user_quota_stays_0"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12522,15 +12524,15 @@
           "line": 49
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1504OwnerIssuesCustomerVoucherPG"
+      ],
       "db_money_invariants": [
-        "仅当前站长可发行 site_customer；target_site_id 与 source_site_id 固定为该站，默认出资 earnings",
-        "发行只冻结所选钱包 HoldDelta=面额，余额不变；可用不足返回 ErrAdtyVoucherFunds",
-        "本站客户兑换后：来源钱包余额减少面额并释放冻结，用户 quota 增加面额对应整数额度，经营钱包 principal_credit 等额增加一次",
-        "StaffSiteId!=0 或 SiteId!=target_site_id 时拒绝且不入账；关站后仅 close grant 中的原站迁入用户可兑换"
+        "site_customer_pending_10_50",
+        "owner_quota_stays_0"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-04",
         "requirement_refs": [
@@ -12572,15 +12574,15 @@
             "line": 49
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1504OwnerIssuesCustomerVoucherPG"
+        ],
         "db_money_invariants": [
-          "仅当前站长可发行 site_customer；target_site_id 与 source_site_id 固定为该站，默认出资 earnings",
-          "发行只冻结所选钱包 HoldDelta=面额，余额不变；可用不足返回 ErrAdtyVoucherFunds",
-          "本站客户兑换后：来源钱包余额减少面额并释放冻结，用户 quota 增加面额对应整数额度，经营钱包 principal_credit 等额增加一次",
-          "StaffSiteId!=0 或 SiteId!=target_site_id 时拒绝且不入账；关站后仅 close grant 中的原站迁入用户可兑换"
+          "site_customer_pending_10_50",
+          "owner_quota_stays_0"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12624,14 +12626,15 @@
           "line": 122
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1505OwnerIssuesSelfVoucherPG"
+      ],
       "db_money_invariants": [
-        "purpose=site_owner 时 DesignatedOwnerId 写成发行人 id；其他用户兑换返回 ErrAdtyVoucherWrongAccount，不入账",
-        "站长本人兑换与客户码相同：来源冻结转支出，本人 quota 增加，经营钱包等额 principal_credit 一次，不加赠、不写邀请佣金",
-        "目标站已关闭时拒绝兑换；关站事务把未兑换的 site_owner 码取消并释放原冻结，不转成主站本金"
+        "owner_redeem_quota_1000000",
+        "rejected_user_quota_stays_0"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-05",
         "requirement_refs": [
@@ -12667,14 +12670,15 @@
             "line": 122
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1505OwnerIssuesSelfVoucherPG"
+        ],
         "db_money_invariants": [
-          "purpose=site_owner 时 DesignatedOwnerId 写成发行人 id；其他用户兑换返回 ErrAdtyVoucherWrongAccount，不入账",
-          "站长本人兑换与客户码相同：来源冻结转支出，本人 quota 增加，经营钱包等额 principal_credit 一次，不加赠、不写邀请佣金",
-          "目标站已关闭时拒绝兑换；关站事务把未兑换的 site_owner 码取消并释放原冻结，不转成主站本金"
+          "owner_redeem_quota_1000000",
+          "rejected_user_quota_stays_0"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12734,15 +12738,16 @@
           "line": 71
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1506SiteVoucherFreezesEarningsPG"
+      ],
       "db_money_invariants": [
-        "站长发行默认冻结 earnings；也可显式选 margin，但必须 adty_voucher_authorizations.margin_issue 为真，否则拒绝且不冻结",
-        "发行写入 voucher_freeze：delta=0，hold_delta=面额，幂等键 voucher-freeze:<code_hash>；余额不变",
-        "保证金周期档位 CycleTierUSD>0 时，新增冻结不得超过 AdtyMarginNewDraw；AdtyMarginCycleLimit 为档位的 0.9，另外 10% 留在最低可用额",
-        "核销把冻结转为 voucher_spend（余额减少面额且 hold 释放一次）；取消写 voucher_release，只减 hold，不增加余额；重复释放不产生第二笔流水"
+        "earnings_balance_stays_30",
+        "earnings_frozen_10_50",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-06",
         "requirement_refs": [
@@ -12794,15 +12799,16 @@
             "line": 71
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1506SiteVoucherFreezesEarningsPG"
+        ],
         "db_money_invariants": [
-          "站长发行默认冻结 earnings；也可显式选 margin，但必须 adty_voucher_authorizations.margin_issue 为真，否则拒绝且不冻结",
-          "发行写入 voucher_freeze：delta=0，hold_delta=面额，幂等键 voucher-freeze:<code_hash>；余额不变",
-          "保证金周期档位 CycleTierUSD>0 时，新增冻结不得超过 AdtyMarginNewDraw；AdtyMarginCycleLimit 为档位的 0.9，另外 10% 留在最低可用额",
-          "核销把冻结转为 voucher_spend（余额减少面额且 hold 释放一次）；取消写 voucher_release，只减 hold，不增加余额；重复释放不产生第二笔流水"
+          "earnings_balance_stays_30",
+          "earnings_frozen_10_50",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12863,14 +12869,15 @@
           "line": 75
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1507VoucherListShowsTailOnlyPG"
+      ],
       "db_money_invariants": [
-        "列表与发行重放不写用户余额、分站钱包或第二笔负债冻结；已读重放断言 frozen_usd 保持首次发行的面额",
-        "库中只存 code_hash 与 code_tail；AdtyVoucher 没有明文列，CodeHash 的 json 为 -",
-        "首次发行响应带完整 code；同一 intent 重放 Code 为空，只带回 code_tail"
+        "code_tail_only",
+        "issuer_quota_stays_0"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-07",
         "requirement_refs": [
@@ -12923,14 +12930,15 @@
             "line": 75
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1507VoucherListShowsTailOnlyPG"
+        ],
         "db_money_invariants": [
-          "列表与发行重放不写用户余额、分站钱包或第二笔负债冻结；已读重放断言 frozen_usd 保持首次发行的面额",
-          "库中只存 code_hash 与 code_tail；AdtyVoucher 没有明文列，CodeHash 的 json 为 -",
-          "首次发行响应带完整 code；同一 intent 重放 Code 为空，只带回 code_tail"
+          "code_tail_only",
+          "issuer_quota_stays_0"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -12990,16 +12998,15 @@
           "line": 40
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1508VoucherRedeemsOncePG"
+      ],
       "db_money_invariants": [
-        "pending 码在同一事务内改为 redeemed，写入 redeemer_id、trade_no、redeemed_at，并只花费一次来源冻结",
-        "同一兑换人重放返回原 trade_no 且 Replayed=true，quota 与订单行数不增加；其他用户得到 ErrAdtyVoucherUsed",
-        "并发兑换只允许一个成功；已读 PostgreSQL 测试断言用户 quota 合计等于单次面额换算，订单和 voucher 流水各一行",
-        "frozen、cancelled 或已兑换状态在入账前拒绝；兑换路径不写赠金履约，也不写邀请佣金",
-        "兑换码不按时间自动过期；已读状态常量只有 pending、frozen、redeemed、cancelled"
+        "redeem_once_quota_2500000",
+        "other_user_quota_stays_0"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-08",
         "requirement_refs": [
@@ -13051,16 +13058,15 @@
             "line": 40
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1508VoucherRedeemsOncePG"
+        ],
         "db_money_invariants": [
-          "pending 码在同一事务内改为 redeemed，写入 redeemer_id、trade_no、redeemed_at，并只花费一次来源冻结",
-          "同一兑换人重放返回原 trade_no 且 Replayed=true，quota 与订单行数不增加；其他用户得到 ErrAdtyVoucherUsed",
-          "并发兑换只允许一个成功；已读 PostgreSQL 测试断言用户 quota 合计等于单次面额换算，订单和 voucher 流水各一行",
-          "frozen、cancelled 或已兑换状态在入账前拒绝；兑换路径不写赠金履约，也不写邀请佣金",
-          "兑换码不按时间自动过期；已读状态常量只有 pending、frozen、redeemed、cancelled"
+          "redeem_once_quota_2500000",
+          "other_user_quota_stays_0"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -13118,16 +13124,15 @@
           "line": 734
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1509VoucherRedeemWritesOrderPG"
+      ],
       "db_money_invariants": [
-        "核销同一事务写入 adty_topup_orders：provider=adty_voucher，method=purpose，FaceUSD/PayAmount/PaidAmount=面额，CreditQuota=已算定 quota，PaidSource=voucher，SiteId=target_site_id",
-        "同时写 top_ups 兼容行：Amount 为已算定 quota，MoneyExact 为精确面额；Money 的 float 投影不作为入账依据",
-        "非保证金用途另写一条 type=voucher 的余额流水，幂等键 voucher:<trade_no>，以及一笔 principal 资金批次；保证金码写订单但不写用户批次和用户额度",
-        "正式订单或经营流水插入失败时整笔回滚，兑换码保持 pending、trade_no 为空、quota 不变",
-        "站长出资的客户码和本人码在同一事务把经营钱包增加等额本金；重放不第二笔入账。已读测试断言不产生 AdtyGiftFulfillment、ReferralCommission、AdtySiteInviteCommission"
+        "one_voucher_topup_order",
+        "redeem_quota_2500000"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-09",
         "requirement_refs": [
@@ -13177,16 +13182,15 @@
             "line": 734
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1509VoucherRedeemWritesOrderPG"
+        ],
         "db_money_invariants": [
-          "核销同一事务写入 adty_topup_orders：provider=adty_voucher，method=purpose，FaceUSD/PayAmount/PaidAmount=面额，CreditQuota=已算定 quota，PaidSource=voucher，SiteId=target_site_id",
-          "同时写 top_ups 兼容行：Amount 为已算定 quota，MoneyExact 为精确面额；Money 的 float 投影不作为入账依据",
-          "非保证金用途另写一条 type=voucher 的余额流水，幂等键 voucher:<trade_no>，以及一笔 principal 资金批次；保证金码写订单但不写用户批次和用户额度",
-          "正式订单或经营流水插入失败时整笔回滚，兑换码保持 pending、trade_no 为空、quota 不变",
-          "站长出资的客户码和本人码在同一事务把经营钱包增加等额本金；重放不第二笔入账。已读测试断言不产生 AdtyGiftFulfillment、ReferralCommission、AdtySiteInviteCommission"
+          "one_voucher_topup_order",
+          "redeem_quota_2500000"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -13261,16 +13265,16 @@
           "line": 80
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1510CancelUnusedVoucherPG"
+      ],
       "db_money_invariants": [
-        "只有 pending 或 frozen 可取消；取消把状态改为 cancelled 并释放原冻结一次。收益钱包取消只减 hold、不增加余额；平台负债只减 frozen_usd",
-        "第二次取消失败，不产生第二笔 voucher_release；已兑换码不能取消",
-        "关站把未兑换 site_owner 与 site_margin 取消并释放其冻结，不把它们转成主站本金或主站保证金；客户码保持 pending，inherited_by_main=true，原冻结保留",
-        "关站后客户码只允许 adty_voucher_close_grants 中的迁入用户兑换；承接后经营本金仍记原 site_id，不建 site_id=0 的钱包",
-        "站长列表只返回本人 issuer_id 且 source_site_id 为本站的码；Root 列表可按 status 看到 cancelled 历史。非 Root 且非发行人不能取消"
+        "cancelled_releases_hold",
+        "earnings_balance_stays_30",
+        "owner_quota_stays_0"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-15-10",
         "requirement_refs": [
@@ -13337,16 +13341,16 @@
             "line": 80
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1510CancelUnusedVoucherPG"
+        ],
         "db_money_invariants": [
-          "只有 pending 或 frozen 可取消；取消把状态改为 cancelled 并释放原冻结一次。收益钱包取消只减 hold、不增加余额；平台负债只减 frozen_usd",
-          "第二次取消失败，不产生第二笔 voucher_release；已兑换码不能取消",
-          "关站把未兑换 site_owner 与 site_margin 取消并释放其冻结，不把它们转成主站本金或主站保证金；客户码保持 pending，inherited_by_main=true，原冻结保留",
-          "关站后客户码只允许 adty_voucher_close_grants 中的迁入用户兑换；承接后经营本金仍记原 site_id，不建 site_id=0 的钱包",
-          "站长列表只返回本人 issuer_id 且 source_site_id 为本站的码；Root 列表可按 status 看到 cancelled 历史。非 Root 且非发行人不能取消"
+          "cancelled_releases_hold",
+          "earnings_balance_stays_30",
+          "owner_quota_stays_0"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
