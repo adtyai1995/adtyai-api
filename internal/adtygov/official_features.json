@@ -4672,12 +4672,26 @@
           "line": 67
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0601TokenAuthAcceptsEnabledKeyPG"
+      ],
       "db_money_invariants": [
+        "http_200",
+        "route_post_v1_chat_completions",
+        "using_group_default",
+        "role_common_user",
+        "main_site_id_0",
+        "staff_site_id_0",
+        "quota_stays_1000000",
+        "token_status_enabled",
+        "token_remain_stays_1000000",
+        "token_used_stays_0",
+        "zero_billing_operations",
+        "zero_adty_balance_ledgers",
         "no_money_change"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-06-01",
         "requirement_refs": [
@@ -4707,12 +4721,26 @@
             "line": 67
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0601TokenAuthAcceptsEnabledKeyPG"
+        ],
         "db_money_invariants": [
+          "http_200",
+          "route_post_v1_chat_completions",
+          "using_group_default",
+          "role_common_user",
+          "main_site_id_0",
+          "staff_site_id_0",
+          "quota_stays_1000000",
+          "token_status_enabled",
+          "token_remain_stays_1000000",
+          "token_used_stays_0",
+          "zero_billing_operations",
+          "zero_adty_balance_ledgers",
           "no_money_change"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -5707,14 +5735,27 @@
           "line": 282
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0702PersonalPreConsumeReservesQuotaPG"
+      ],
       "db_money_invariants": [
-        "ReserveBillingOperation 拒绝空 operation_key、userId<=0 或 target<0",
-        "已打开的测试源码：用户额度 1000000，预扣 10000 后用户额度为 990000，令牌已用额度为 10000",
-        "团队付款时 SharedQuota < delta 返回 ErrBillingWalletInsufficient，不在该钩子里改扣个人钱包"
+        "route_post_v1_chat_completions",
+        "role_common_user",
+        "main_site_id_0",
+        "quota_after_preconsume_990000",
+        "token_remain_quota_90000",
+        "token_used_quota_10000",
+        "payer_kind_personal",
+        "payer_team_id_0",
+        "reserved_quota_10000",
+        "billing_state_reserved",
+        "one_billing_movement",
+        "wallet_delta_-10000",
+        "token_delta_-10000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-07-02",
         "requirement_refs": [
@@ -5735,14 +5776,27 @@
             "line": 282
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0702PersonalPreConsumeReservesQuotaPG"
+        ],
         "db_money_invariants": [
-          "ReserveBillingOperation 拒绝空 operation_key、userId<=0 或 target<0",
-          "已打开的测试源码：用户额度 1000000，预扣 10000 后用户额度为 990000，令牌已用额度为 10000",
-          "团队付款时 SharedQuota < delta 返回 ErrBillingWalletInsufficient，不在该钩子里改扣个人钱包"
+          "route_post_v1_chat_completions",
+          "role_common_user",
+          "main_site_id_0",
+          "quota_after_preconsume_990000",
+          "token_remain_quota_90000",
+          "token_used_quota_10000",
+          "payer_kind_personal",
+          "payer_team_id_0",
+          "reserved_quota_10000",
+          "billing_state_reserved",
+          "one_billing_movement",
+          "wallet_delta_-10000",
+          "token_delta_-10000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -6043,14 +6097,21 @@
           "line": 300
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0707SettlementReleasesUnusedPreConsumePG"
+      ],
       "db_money_invariants": [
-        "实际费用低于预扣时，SettleBilling 走退差额分支",
-        "已打开的测试源码：用户额度 1000000，预扣 10000，结算 6000 后额度为 994000",
-        "RecalculateTaskQuota 在 actualQuota < 0 时直接返回"
+        "route_post_v1_chat_completions",
+        "role_common_user",
+        "quota_after_settle_994000",
+        "token_remain_quota_94000",
+        "token_used_quota_6000",
+        "payer_kind_personal",
+        "actual_quota_6000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-07-07",
         "requirement_refs": [
@@ -6071,14 +6132,21 @@
             "line": 300
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0707SettlementReleasesUnusedPreConsumePG"
+        ],
         "db_money_invariants": [
-          "实际费用低于预扣时，SettleBilling 走退差额分支",
-          "已打开的测试源码：用户额度 1000000，预扣 10000，结算 6000 后额度为 994000",
-          "RecalculateTaskQuota 在 actualQuota < 0 时直接返回"
+          "route_post_v1_chat_completions",
+          "role_common_user",
+          "quota_after_settle_994000",
+          "token_remain_quota_94000",
+          "token_used_quota_6000",
+          "payer_kind_personal",
+          "actual_quota_6000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -6185,14 +6253,21 @@
           "line": 381
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY0709PersonalConsumeSpendsPrincipalBeforeBonusPG"
+      ],
       "db_money_invariants": [
-        "消费先扣本金批次，再扣赠金批次；批次盖不住时返回 ErrAdtyFundBatchShortfall，外层事务回滚",
-        "已打开的测试源码：花 45 后，较早本金 remaining 0，较晚本金 remaining 5，赠金 remaining 仍为 40",
-        "ApplyBillingSettlement 对个人结算调用 SettleAdtyFundAllocationsTx；团队付款不走个人批次"
+        "role_common_user",
+        "main_site_id_0",
+        "three_fund_batches",
+        "early_principal_remaining_0",
+        "late_principal_remaining_5",
+        "bonus_remaining_40",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-07-09",
         "requirement_refs": [
@@ -6215,14 +6290,21 @@
             "line": 381
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY0709PersonalConsumeSpendsPrincipalBeforeBonusPG"
+        ],
         "db_money_invariants": [
-          "消费先扣本金批次，再扣赠金批次；批次盖不住时返回 ErrAdtyFundBatchShortfall，外层事务回滚",
-          "已打开的测试源码：花 45 后，较早本金 remaining 0，较晚本金 remaining 5，赠金 remaining 仍为 40",
-          "ApplyBillingSettlement 对个人结算调用 SettleAdtyFundAllocationsTx；团队付款不走个人批次"
+          "role_common_user",
+          "main_site_id_0",
+          "three_fund_batches",
+          "early_principal_remaining_0",
+          "late_principal_remaining_5",
+          "bonus_remaining_40",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
