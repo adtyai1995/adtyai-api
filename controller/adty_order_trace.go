@@ -60,9 +60,22 @@ func getAdtyUnifiedOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID *int)
 		return
 	}
 	var orders []rechargeAuditOrder
-	if err := query.Where("o.trade_no = ?", tradeNo).Select(adtyUnifiedOrderSelect).Limit(2).Scan(&orders).Error; err != nil {
+	if err := query.Where("o.trade_no = ?", tradeNo).Select(adtyUnifiedOrderSelect).Limit(8).Scan(&orders).Error; err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	// A refunded top-up is also projected as a legacy refund with the same trade number.
+	// The trace opens the original top-up, which carries payments, wallet rows, and refund facts.
+	if len(orders) > 1 {
+		var topups []rechargeAuditOrder
+		for _, item := range orders {
+			if item.SourceType == "topup" {
+				topups = append(topups, item)
+			}
+		}
+		if len(topups) == 1 {
+			orders = topups
+		}
 	}
 	if len(orders) != 1 {
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Order not found"))

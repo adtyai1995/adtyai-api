@@ -1,12 +1,13 @@
 package controller
 
 import (
-	"github.com/QuantumNous/new-api/middleware"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -100,7 +101,7 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 		}},
 		{from: "adty_site_invite_withdrawals x", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_invite_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-INV-' || CAST(x.id AS TEXT)",
-			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "COALESCE(NULLIF(x.payout_amount, ''), '0')::numeric", "paid_currency": "x.payout_currency",
+			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "CAST(COALESCE(NULLIF(x.payout_amount, ''), '0') AS NUMERIC)", "paid_currency": "x.payout_currency",
 		}},
 		{from: "referral_withdrawals x", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "0", "order_type": "'withdrawal'", "source_type": "'main_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-MAIN-' || CAST(x.id AS TEXT)",
@@ -416,7 +417,7 @@ const rechargeAuditSelect = `t.id, t.user_id, COALESCE(u.username, '') AS userna
 	COALESCE(a.paid_tx_hash, '') AS paid_tx_hash, COALESCE(a.paid_source, '') AS paid_source,
 	COALESCE(a.channel_id, 0) AS channel_id, COALESCE(a.method_label, '') AS method_label`
 
-// GetRechargeAudit 分页列出充值订单，带面额、加赠、应付、实付和异常标记。
+// GetRechargeAudit 分页列出统一财务订单（含充值、API消费、兑换码、退款、提现、佣金及员工调额）。
 func GetRechargeAudit(c *gin.Context) {
 	getRechargeAudit(c, nil)
 }
@@ -429,8 +430,520 @@ func GetAdtyOwnerOrders(c *gin.Context) {
 	}
 }
 
+func enrichTopupAuditOrders(orders []rechargeAuditOrder, ownerSiteID *int, siteNames map[int]string) {
+	channelNames := adtyEpayChannelNames()
+	capabilities := make(map[string]service.AdtyPaymentCapability)
+	for _, capability := range service.AdtyPaymentCapabilities() {
+		capabilities[capability.Provider] = capability
+	}
+	for i := range orders {
+		if ownerSiteID != nil && orders[i].PaidSource == model.AdtyPaymentSourceManual {
+			orders[i].PaidTxHash = ""
+		}
+		if orders[i].OrderType == "" {
+			if orders[i].PaymentProvider == model.AdtyVoucherProvider {
+				orders[i].OrderType = OrderTypeVoucher
+			} else {
+				orders[i].OrderType = OrderTypeTopup
+			}
+		}
+		if orders[i].SiteId != nil {
+			orders[i].SiteName = siteNames[*orders[i].SiteId]
+		}
+		orders[i].Anomaly = rechargeAuditAnomaly(orders[i])
+		orders[i].ChannelName = channelNames[orders[i].ChannelId]
+		capability, supported := capabilities[orders[i].PaymentProvider]
+		if !supported || !orders[i].HasExt {
+			continue
+		}
+		if ownerSiteID != nil {
+			// ISS-R1-0081: An authorized site owner can initiate/manage manual
+			// refunds on original orders belonging to their site.
+			if orders[i].Business != model.AdtyBusinessOwnerSelfUseTopup && orders[i].SiteId != nil && *orders[i].SiteId == *ownerSiteID && orders[i].Status == common.TopUpStatusSuccess {
+				orders[i].Actions.Refund = capability.Refund
+			}
+			continue
+		}
+		switch orders[i].Status {
+		case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled:
+			orders[i].Actions.Complete = capability.Complete
+			orders[i].Actions.Query = capability.Query
+		case common.TopUpStatusSuccess:
+			orders[i].Actions.Refund = capability.Refund
+		}
+	}
+}
+
 func getRechargeAudit(c *gin.Context, ownerSiteID *int) {
 	getAdtyUnifiedOrders(c, ownerSiteID, nil)
+}
+
+func collectNonTopupUnifiedOrders(c *gin.Context, ownerSiteID *int, orderType string) ([]rechargeAuditOrder, error) {
+	var siteFilter *int
+	if ownerSiteID != nil {
+		siteFilter = ownerSiteID
+	} else if raw := strings.TrimSpace(c.Query("site_id")); raw != "" {
+		id, err := strconv.Atoi(raw)
+		if err == nil && id >= 0 {
+			siteFilter = &id
+		}
+	}
+	var userFilter *int
+	if raw := strings.TrimSpace(c.Query("user_id")); raw != "" {
+		if id, err := strconv.Atoi(raw); err == nil {
+			userFilter = &id
+		}
+	}
+	statusFilter := strings.TrimSpace(c.Query("status"))
+	if statusFilter == "all" {
+		statusFilter = ""
+	}
+	providerFilter := strings.TrimSpace(c.Query("provider"))
+	methodFilter := strings.TrimSpace(c.Query("method"))
+	keywordFilter := strings.ToLower(strings.TrimSpace(c.Query("keyword")))
+	startTS, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	endTS, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+
+	want := func(cat string) bool {
+		return orderType == "" || orderType == cat
+	}
+	matchesCommon := func(item rechargeAuditOrder) bool {
+		if siteFilter != nil {
+			if item.SiteId == nil || *item.SiteId != *siteFilter {
+				return false
+			}
+		}
+		if userFilter != nil && item.UserId != *userFilter {
+			return false
+		}
+		if statusFilter != "" && !strings.EqualFold(item.Status, statusFilter) {
+			return false
+		}
+		if providerFilter != "" && !strings.EqualFold(item.PaymentProvider, providerFilter) {
+			return false
+		}
+		if methodFilter != "" && !strings.EqualFold(item.PaymentMethod, methodFilter) {
+			return false
+		}
+		if startTS > 0 && item.CreateTime < startTS {
+			return false
+		}
+		if endTS > 0 && item.CreateTime > endTS {
+			return false
+		}
+		if keywordFilter != "" {
+			if !strings.Contains(strings.ToLower(item.TradeNo), keywordFilter) &&
+				!strings.Contains(strings.ToLower(item.Username), keywordFilter) {
+				return false
+			}
+		}
+		return true
+	}
+
+	userMap := map[int]string{}
+	loadUsernames := func(ids []int) {
+		missing := make([]int, 0, len(ids))
+		for _, id := range ids {
+			if id > 0 {
+				if _, ok := userMap[id]; !ok {
+					missing = append(missing, id)
+				}
+			}
+		}
+		if len(missing) == 0 || !model.DB.Migrator().HasTable(&model.User{}) {
+			return
+		}
+		var rows []struct {
+			Id       int    `gorm:"column:id"`
+			Username string `gorm:"column:username"`
+		}
+		if err := model.DB.Model(&model.User{}).Select("id, username").Where("id IN ?", missing).Find(&rows).Error; err == nil {
+			for _, r := range rows {
+				userMap[r.Id] = r.Username
+			}
+		}
+	}
+
+	var out []rechargeAuditOrder
+	perUnit := common.QuotaPerUnitDecimal()
+
+	// 1. API Consumption (BillingOperation)
+	if want(OrderTypeConsumption) && model.DB.Migrator().HasTable(&model.BillingOperation{}) {
+		q := model.DB.Model(&model.BillingOperation{}).Where("state = ? AND applied_quota > 0", model.BillingSettled)
+		if siteFilter != nil {
+			q = q.Where("site_id = ?", *siteFilter)
+		}
+		if userFilter != nil {
+			q = q.Where("user_id = ?", *userFilter)
+		}
+		var ops []model.BillingOperation
+		if err := q.Order("created_at DESC, operation_key DESC").Limit(500).Find(&ops).Error; err != nil {
+			return nil, err
+		}
+		uIDs := make([]int, 0, len(ops))
+		for _, op := range ops {
+			uIDs = append(uIDs, op.UserId)
+		}
+		loadUsernames(uIDs)
+		for _, op := range ops {
+			sid := op.SiteId
+			appliedQuota := int64(op.AppliedQuota)
+			usd := decimal.NewFromInt(appliedQuota).Div(perUnit).Round(6)
+			f, _ := usd.Float64()
+			item := rechargeAuditOrder{
+				Id:              int(op.ReferenceId),
+				UserId:          op.UserId,
+				Username:        userMap[op.UserId],
+				SiteId:          &sid,
+				OrderType:       OrderTypeConsumption,
+				TradeNo:         op.OperationKey,
+				PaymentMethod:   "api",
+				PaymentProvider: "wallet",
+				Status:          common.TopUpStatusSuccess,
+				CreateTime:      op.CreatedAt,
+				CompleteTime:    op.UpdatedAt,
+				Amount:          appliedQuota,
+				Money:           f,
+				FaceUSD:         usd,
+				CreditQuota:     appliedQuota,
+				PaidAmount:      usd,
+				PaidCurrency:    "USD",
+			}
+			if statusFilter != "" && strings.EqualFold(statusFilter, op.State) {
+				item.Status = op.State
+			}
+			if matchesCommon(item) {
+				out = append(out, item)
+			}
+		}
+	}
+
+	// 2. Voucher (AdtyVoucher)
+	if want(OrderTypeVoucher) && model.DB.Migrator().HasTable(&model.AdtyVoucher{}) {
+		q := model.DB.Model(&model.AdtyVoucher{})
+		if siteFilter != nil {
+			q = q.Where("(source_site_id = ? OR target_site_id = ?)", *siteFilter, *siteFilter)
+		}
+		var vouchers []model.AdtyVoucher
+		if err := q.Order("id DESC").Limit(500).Find(&vouchers).Error; err != nil {
+			return nil, err
+		}
+		uIDs := make([]int, 0, len(vouchers)*2)
+		for _, v := range vouchers {
+			uIDs = append(uIDs, v.RedeemerId, v.IssuerId)
+		}
+		loadUsernames(uIDs)
+		for _, v := range vouchers {
+			uid := v.RedeemerId
+			if uid <= 0 {
+				uid = v.IssuerId
+			}
+			sid := v.SourceSiteId
+			if v.TargetSiteId > 0 && sid == 0 {
+				sid = v.TargetSiteId
+			}
+			tradeNo := strings.TrimSpace(v.TradeNo)
+			if tradeNo == "" {
+				tradeNo = fmt.Sprintf("VOUCHER-%d", v.Id)
+			}
+			f, _ := v.AmountUSD.Float64()
+			item := rechargeAuditOrder{
+				Id:              int(v.Id),
+				UserId:          uid,
+				Username:        userMap[uid],
+				SiteId:          &sid,
+				OrderType:       OrderTypeVoucher,
+				TradeNo:         tradeNo,
+				PaymentMethod:   v.Purpose,
+				PaymentProvider: model.AdtyVoucherProvider,
+				Status:          v.Status,
+				CreateTime:      v.CreatedAt,
+				CompleteTime:    v.RedeemedAt,
+				Amount:          v.Quota,
+				Money:           f,
+				FaceUSD:         v.AmountUSD,
+				CreditQuota:     v.Quota,
+				PaidAmount:      v.AmountUSD,
+				PaidCurrency:    "USD",
+			}
+			if matchesCommon(item) {
+				out = append(out, item)
+			}
+		}
+	}
+
+	// 3. Manual Refund (AdtyManualRefund)
+	if want(OrderTypeRefund) && model.DB.Migrator().HasTable(&model.AdtyManualRefund{}) {
+		q := model.DB.Model(&model.AdtyManualRefund{})
+		if siteFilter != nil {
+			q = q.Where("site_id = ?", *siteFilter)
+		}
+		if userFilter != nil {
+			q = q.Where("user_id = ?", *userFilter)
+		}
+		var refunds []model.AdtyManualRefund
+		if err := q.Order("id DESC").Limit(500).Find(&refunds).Error; err != nil {
+			return nil, err
+		}
+		uIDs := make([]int, 0, len(refunds))
+		for _, r := range refunds {
+			uIDs = append(uIDs, r.UserId)
+		}
+		loadUsernames(uIDs)
+		for _, r := range refunds {
+			sid := r.SiteId
+			f, _ := r.RequestUSD.Float64()
+			item := rechargeAuditOrder{
+				Id:              int(r.Id),
+				UserId:          r.UserId,
+				Username:        userMap[r.UserId],
+				SiteId:          &sid,
+				OrderType:       OrderTypeRefund,
+				TradeNo:         r.RefundId,
+				PaymentMethod:   r.TradeNo,
+				PaymentProvider: "manual_refund",
+				Status:          r.Status,
+				CreateTime:      r.CreatedAt,
+				CompleteTime:    r.CompletedAt,
+				Amount:          r.RequestQuota,
+				Money:           f,
+				FaceUSD:         r.RequestUSD,
+				CreditQuota:     r.RequestQuota,
+				PaidAmount:      r.PayoutAmount,
+				PaidCurrency:    r.PayoutCurrency,
+			}
+			if matchesCommon(item) {
+				out = append(out, item)
+			}
+		}
+	}
+
+	// 4. Withdrawal (AdtySiteWithdrawal & AdtySiteInviteWithdrawal)
+	if want(OrderTypeWithdrawal) {
+		if model.DB.Migrator().HasTable(&model.AdtySiteWithdrawal{}) {
+			q := model.DB.Model(&model.AdtySiteWithdrawal{})
+			if siteFilter != nil {
+				q = q.Where("site_id = ?", *siteFilter)
+			}
+			if userFilter != nil {
+				q = q.Where("owner_user_id = ?", *userFilter)
+			}
+			var withdrawals []model.AdtySiteWithdrawal
+			if err := q.Order("id DESC").Limit(500).Find(&withdrawals).Error; err != nil {
+				return nil, err
+			}
+			uIDs := make([]int, 0, len(withdrawals))
+			for _, w := range withdrawals {
+				uIDs = append(uIDs, w.OwnerUserId)
+			}
+			loadUsernames(uIDs)
+			for _, w := range withdrawals {
+				sid := w.SiteId
+				f, _ := w.AmountUSD.Float64()
+				item := rechargeAuditOrder{
+					Id:              int(w.Id),
+					UserId:          w.OwnerUserId,
+					Username:        userMap[w.OwnerUserId],
+					SiteId:          &sid,
+					OrderType:       OrderTypeWithdrawal,
+					TradeNo:         fmt.Sprintf("WD-SITE-%d", w.Id),
+					PaymentMethod:   w.Method,
+					PaymentProvider: "withdrawal",
+					Status:          w.Status,
+					CreateTime:      w.CreatedAt,
+					CompleteTime:    w.ReviewedAt,
+					Money:           f,
+					FaceUSD:         w.AmountUSD,
+					PaidAmount:      w.NetUSD,
+					PaidCurrency:    "USDT",
+				}
+				if matchesCommon(item) {
+					out = append(out, item)
+				}
+			}
+		}
+		if model.DB.Migrator().HasTable(&model.AdtySiteInviteWithdrawal{}) {
+			q := model.DB.Model(&model.AdtySiteInviteWithdrawal{})
+			if siteFilter != nil {
+				q = q.Where("site_id = ?", *siteFilter)
+			}
+			if userFilter != nil {
+				q = q.Where("user_id = ?", *userFilter)
+			}
+			var invWithdrawals []model.AdtySiteInviteWithdrawal
+			if err := q.Order("id DESC").Limit(500).Find(&invWithdrawals).Error; err != nil {
+				return nil, err
+			}
+			uIDs := make([]int, 0, len(invWithdrawals))
+			for _, w := range invWithdrawals {
+				uIDs = append(uIDs, w.UserId)
+			}
+			loadUsernames(uIDs)
+			for _, w := range invWithdrawals {
+				sid := w.SiteId
+				f, _ := w.AmountUSD.Float64()
+				item := rechargeAuditOrder{
+					Id:              int(w.Id),
+					UserId:          w.UserId,
+					Username:        userMap[w.UserId],
+					SiteId:          &sid,
+					OrderType:       OrderTypeWithdrawal,
+					TradeNo:         fmt.Sprintf("WD-INV-%d", w.Id),
+					PaymentMethod:   w.Method,
+					PaymentProvider: "withdrawal",
+					Status:          w.Status,
+					CreateTime:      w.CreatedAt,
+					CompleteTime:    w.ReviewedAt,
+					Money:           f,
+					FaceUSD:         w.AmountUSD,
+					PaidAmount:      w.NetUSD,
+					PaidCurrency:    "USDT",
+				}
+				if matchesCommon(item) {
+					out = append(out, item)
+				}
+			}
+		}
+	}
+
+	// 5. Commission (AdtySiteInviteCommission & ReferralCommission for main-site admin)
+	if want(OrderTypeCommission) {
+		if model.DB.Migrator().HasTable(&model.AdtySiteInviteCommission{}) {
+			q := model.DB.Model(&model.AdtySiteInviteCommission{})
+			if siteFilter != nil {
+				q = q.Where("site_id = ?", *siteFilter)
+			}
+			if userFilter != nil {
+				q = q.Where("inviter_id = ?", *userFilter)
+			}
+			var comms []model.AdtySiteInviteCommission
+			if err := q.Order("id DESC").Limit(500).Find(&comms).Error; err != nil {
+				return nil, err
+			}
+			uIDs := make([]int, 0, len(comms))
+			for _, cm := range comms {
+				uIDs = append(uIDs, cm.InviterId)
+			}
+			loadUsernames(uIDs)
+			for _, cm := range comms {
+				sid := cm.SiteId
+				f, _ := cm.AmountUSD.Float64()
+				item := rechargeAuditOrder{
+					Id:              int(cm.Id),
+					UserId:          cm.InviterId,
+					Username:        userMap[cm.InviterId],
+					SiteId:          &sid,
+					OrderType:       OrderTypeCommission,
+					TradeNo:         fmt.Sprintf("COM-SITE-%d:%s", cm.Id, cm.TradeNo),
+					PaymentMethod:   "site_invite",
+					PaymentProvider: "commission",
+					Status:          cm.Status,
+					CreateTime:      cm.CreatedAt,
+					CompleteTime:    cm.AvailableAt,
+					Money:           f,
+					FaceUSD:         cm.AmountUSD,
+					PaidAmount:      cm.CoveredUSD,
+					PaidCurrency:    "USD",
+				}
+				if matchesCommon(item) {
+					out = append(out, item)
+				}
+			}
+		}
+		if ownerSiteID == nil && (siteFilter == nil || *siteFilter == 0) && model.DB.Migrator().HasTable(&model.ReferralCommission{}) {
+			q := model.DB.Model(&model.ReferralCommission{})
+			if userFilter != nil {
+				q = q.Where("affiliate_user_id = ?", *userFilter)
+			}
+			var mainComms []model.ReferralCommission
+			if err := q.Order("id DESC").Limit(500).Find(&mainComms).Error; err != nil {
+				return nil, err
+			}
+			uIDs := make([]int, 0, len(mainComms))
+			for _, cm := range mainComms {
+				uIDs = append(uIDs, cm.AffiliateUserId)
+			}
+			loadUsernames(uIDs)
+			for _, cm := range mainComms {
+				mainSite := 0
+				amt := decimal.NewFromFloat(cm.CommissionAmount).Round(6)
+				item := rechargeAuditOrder{
+					Id:              cm.Id,
+					UserId:          cm.AffiliateUserId,
+					Username:        userMap[cm.AffiliateUserId],
+					SiteId:          &mainSite,
+					OrderType:       OrderTypeCommission,
+					TradeNo:         fmt.Sprintf("COM-MAIN-%d:%s", cm.Id, cm.SourceTradeNo),
+					PaymentMethod:   cm.SourceType,
+					PaymentProvider: "commission",
+					Status:          cm.Status,
+					CreateTime:      cm.CreatedAt,
+					CompleteTime:    cm.AvailableAt,
+					Money:           cm.CommissionAmount,
+					FaceUSD:         amt,
+					PaidAmount:      amt,
+					PaidCurrency:    cm.SettlementCurrency,
+				}
+				if matchesCommon(item) {
+					out = append(out, item)
+				}
+			}
+		}
+	}
+
+	// 6. Staff Adjustment (AdtyStaffBalanceRequest)
+	if want(OrderTypeStaffAdjustment) && model.DB.Migrator().HasTable(&model.AdtyStaffBalanceRequest{}) {
+		q := model.DB.Model(&model.AdtyStaffBalanceRequest{})
+		if siteFilter != nil {
+			q = q.Where("site_id = ?", *siteFilter)
+		}
+		if userFilter != nil {
+			q = q.Where("customer_user_id = ?", *userFilter)
+		}
+		var reqs []model.AdtyStaffBalanceRequest
+		if err := q.Order("id DESC").Limit(500).Find(&reqs).Error; err != nil {
+			return nil, err
+		}
+		uIDs := make([]int, 0, len(reqs))
+		for _, r := range reqs {
+			uIDs = append(uIDs, r.CustomerUserId)
+		}
+		loadUsernames(uIDs)
+		for _, r := range reqs {
+			sid := r.SiteId
+			f, _ := r.AmountUSD.Float64()
+			provider := strings.TrimSpace(r.FundingSource)
+			if provider == "" {
+				provider = "staff_balance"
+			}
+			tradeRef := fmt.Sprintf("STAFF-ADJ-%d", r.Id)
+			if strings.TrimSpace(r.BusinessRef) != "" {
+				tradeRef = fmt.Sprintf("STAFF-ADJ-%d:%s", r.Id, strings.TrimSpace(r.BusinessRef))
+			}
+			item := rechargeAuditOrder{
+				Id:              int(r.Id),
+				UserId:          r.CustomerUserId,
+				Username:        userMap[r.CustomerUserId],
+				SiteId:          &sid,
+				OrderType:       OrderTypeStaffAdjustment,
+				TradeNo:         tradeRef,
+				PaymentMethod:   r.Direction,
+				PaymentProvider: provider,
+				Status:          r.Status,
+				CreateTime:      r.CreatedAt,
+				CompleteTime:    r.ReviewedAt,
+				Money:           f,
+				FaceUSD:         r.AmountUSD,
+				PaidAmount:      r.AmountUSD,
+				PaidCurrency:    "USD",
+			}
+			if matchesCommon(item) {
+				out = append(out, item)
+			}
+		}
+	}
+
+	return out, nil
 }
 
 // adtyEpayChannelNames 由 P5 换成通道表的名字；没有通道时是空表。
@@ -745,6 +1258,11 @@ func RefundAdtyOwnerOrder(c *gin.Context) {
 	})
 	adtyOwnerRefundResult(applied, c.GetInt("id"))
 	common.ApiSuccess(c, applied)
+}
+
+// PostAdtyOwnerOrderRefund aliases RefundAdtyOwnerOrder for site-owner routing.
+func PostAdtyOwnerOrderRefund(c *gin.Context) {
+	RefundAdtyOwnerOrder(c)
 }
 
 func writeOwnerManualRefundStep(c *gin.Context, step string, run func(tradeNo, refundID string, operatorID int, idemKey string, ownerSiteID ...int) (*model.AdtyManualRefundResult, error)) {

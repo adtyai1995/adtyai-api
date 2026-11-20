@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +29,11 @@ func TestAdminSiteFieldVisibilityRespectsTokenScope(t *testing.T) {
 	require.NoError(t, err)
 	customer := model.User{Username: "scope-customer", Email: "bob@example.com", Password: "x", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, SiteId: site.Id, Group: "default", AuthVersion: 1}
 	require.NoError(t, f.db.Create(&customer).Error)
-	require.NoError(t, f.db.Model(&model.ReferralCommissionAccount{}).Where("user_id = ?", site.OwnerUserId).Update("withdrawn_amount", 12.5).Error)
+	require.NoError(t, f.db.Create(&model.AdtySiteWithdrawal{
+		SiteId: site.Id, OwnerUserId: site.OwnerUserId, AmountUSD: decimal.RequireFromString("12.5"),
+		FeeUSD: decimal.Zero, NetUSD: decimal.RequireFromString("12.5"), Method: "usdt",
+		Status: model.AdtySiteWithdrawPaid, IdempotencyKey: fmt.Sprintf("scope-wd-%d", site.Id),
+	}).Error)
 
 	f.grant(t, authz.AdtySiteRead, authz.AdtyUserRead, authz.AdtyReferralRead)
 	customersPath := fmt.Sprintf("/api/adty/admin/sites/%d/customers", site.Id)

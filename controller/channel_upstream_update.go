@@ -869,7 +869,7 @@ scanLoop:
 			))
 			return summary, scanErr
 		}
-		service.NotifyUpstreamModelUpdateWatchers(func(lang string) (string, string) {
+		service.NotifyUpstreamModelUpdateWatchersWithEventID(service.UpstreamModelUpdateEventID(now, changedChannels, failedChannels), func(lang string) (string, string) {
 			return i18n.Translate(lang, i18n.MsgChannelUpstreamUpdateNotifySubject),
 				buildUpstreamModelUpdateTaskNotificationContent(
 					lang,

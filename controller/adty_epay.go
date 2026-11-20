@@ -28,17 +28,11 @@ var (
 // adtyEpayTimeouts 返回单通道时限和总时限。
 func adtyEpayTimeouts() (perChannel, total time.Duration, err error) {
 	current, err := readAuthoritativeEpayTimeouts()
-	if err != nil {
-		return 0, 0, err
-	}
+	if err != nil { return 0, 0, err }
 	channelRaw := current[adty_setting.EpaySettingKeyChannelTimeout]
-	if channelRaw == "" {
-		channelRaw = strconv.Itoa(adty_setting.DefaultEpayChannelTimeoutSeconds)
-	}
+	if channelRaw == "" { channelRaw = strconv.Itoa(adty_setting.DefaultEpayChannelTimeoutSeconds) }
 	channelSec, totalSec, err := adty_setting.ValidateEpayTimeoutWithCurrent(adty_setting.EpaySettingKeyChannelTimeout, channelRaw, current)
-	if err != nil {
-		return 0, 0, err
-	}
+	if err != nil { return 0, 0, err }
 	perChannel = time.Duration(channelSec) * time.Second
 	total = time.Duration(totalSec) * time.Second
 	if adtyEpayChannelTimeoutOverride > 0 {
@@ -119,10 +113,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 		exclude[id] = true
 	}
 	channelTimeout, totalTimeout, err := adtyEpayTimeouts()
-	if err != nil {
-		writeAdtyTopUpError(c, err)
-		return
-	}
+	if err != nil { writeAdtyTopUpError(c, err); return }
 	deadline := time.Now().Add(totalTimeout)
 	callback := strings.TrimRight(service.GetCallbackAddress(), "/")
 	for attempt := 0; attempt < maxAttempts && time.Now().Before(deadline); attempt++ {

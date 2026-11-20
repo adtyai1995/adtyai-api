@@ -29,7 +29,7 @@ type topUpProofFixture struct {
 func setupTopUpProofFixture(t *testing.T) *topUpProofFixture {
 	t.Helper()
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.AuthFlow{}, &model.AuditLog{}, &model.Log{}, &model.TopUp{}, &model.TwoFA{}, &model.PasskeyCredential{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.AuthFlow{}, &model.AuditLog{}, &model.AuditIntent{}, &model.Log{}, &model.TopUp{}, &model.TwoFA{}, &model.PasskeyCredential{}))
 	require.NoError(t, model.MigrateAdtyTables())
 	previousRedis := common.RedisEnabled
 	common.RedisEnabled = false

@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -220,12 +221,26 @@ func TestRetiredDeploymentEndpointsReturnNotFound(t *testing.T) {
 	assert.NotContains(t, adtyJSON(t, f.engine, http.MethodGet, "/api/option/", "", f.root).Body.String(), "model_deployment.")
 }
 
+// seedAdtyPermissionQuotaOrder 播种站点 0 的成功原订单。CompleteAdtyTopUp 会入账，拒绝断言前要把 quota 设回 0。
+func seedAdtyPermissionQuotaOrder(t *testing.T, userID int) string {
+	t.Helper()
+	trade := fmt.Sprintf("perm-original-%d", userID)
+	amount := decimal.RequireFromString("0.002")
+	require.NoError(t, model.CreateAdtyTopUp(&model.TopUp{UserId: userID, TradeNo: trade, PaymentProvider: model.PaymentProviderAdtyBEpusdt, PaymentMethod: "usdt.trc20", Status: common.TopUpStatusPending},
+		&model.AdtyTopupOrder{UserId: userID, TradeNo: trade, Provider: model.PaymentProviderAdtyBEpusdt, Method: "usdt.trc20", FaceUSD: amount, CreditQuota: 1000, PayAmount: amount, PayCurrency: "USDT", ExpireAt: common.GetTimestamp() + 900}))
+	_, err := model.CompleteAdtyTopUp(trade, model.AdtyPaymentFacts{Provider: model.PaymentProviderAdtyBEpusdt, Source: model.AdtyPaymentSourceCallback, FiatAmount: amount, PaidAmount: amount, PaidCurrency: "USDT"}, "")
+	require.NoError(t, err)
+	return trade
+}
+
 func TestUserWriteAccessTokenCannotAdjustQuotaOrPromote(t *testing.T) {
 	f := newAdtyGuardFixture(t)
 	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(time.Now().Unix()))
 	f.grant(t, authz.AdtyUserWrite, authz.AdtyUserQuota)
 	target := model.User{Username: "pat-target", Password: "hashed-password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1}
 	require.NoError(t, f.db.Create(&target).Error)
+	trade := seedAdtyPermissionQuotaOrder(t, target.Id)
+	require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", target.Id).Updates(map[string]any{"quota": 0}).Error)
 	raw := createAdtyScopedToken(t, f.admin.Id, "user:write")
 
 	adjust := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":500,"reason":"pat","idempotency_key":"pat-quota-1"}`, target.Id), raw)
@@ -239,8 +254,12 @@ func TestUserWriteAccessTokenCannotAdjustQuotaOrPromote(t *testing.T) {
 	assert.Equal(t, common.RoleCommonUser, stored.Role)
 
 	quotaToken := createAdtyScopedToken(t, f.admin.Id, service.AccessTokenScopeOf(authz.AdtyUserQuota))
-	allowed := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":500,"reason":"pat","idempotency_key":"pat-quota-2"}`, target.Id), quotaToken)
+	before := stored.Quota
+	allowed := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":500,"reason":"pat","idempotency_key":"pat-quota-2","order_ref":%q,"funding_source":%q}`, target.Id, trade, model.AdtyAdjustSourcePlatform), quotaToken)
 	require.Equal(t, http.StatusOK, allowed.Code, allowed.Body.String())
+	assert.Contains(t, allowed.Body.String(), `"success":true`)
+	require.NoError(t, f.db.First(&stored, target.Id).Error)
+	assert.EqualValues(t, before+500, stored.Quota)
 }
 
 func TestFinancePresetCanAdjustQuota(t *testing.T) {
@@ -248,13 +267,17 @@ func TestFinancePresetCanAdjustQuota(t *testing.T) {
 	f.grant(t, authz.AdtyUserRead, authz.AdtyUserQuota)
 	target := model.User{Username: "guard-target", Password: "hashed-password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1}
 	require.NoError(t, f.db.Create(&target).Error)
+	trade := seedAdtyPermissionQuotaOrder(t, target.Id)
+	require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", target.Id).Updates(map[string]any{"quota": 0}).Error)
+	var before model.User
+	require.NoError(t, f.db.First(&before, target.Id).Error)
 
-	adjust := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":500,"reason":"test","idempotency_key":"finance-1"}`, target.Id), f.token)
+	adjust := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":"add","value":500,"reason":"test","idempotency_key":"finance-1","order_ref":%q,"funding_source":%q}`, target.Id, trade, model.AdtyAdjustSourcePlatform), f.token)
 	require.Equal(t, http.StatusOK, adjust.Code, adjust.Body.String())
 	assert.Contains(t, adjust.Body.String(), `"success":true`)
 	var stored model.User
 	require.NoError(t, f.db.First(&stored, target.Id).Error)
-	assert.EqualValues(t, 500, stored.Quota)
+	assert.EqualValues(t, before.Quota+500, stored.Quota)
 
 	disable := adtyJSON(t, f.engine, http.MethodPost, "/api/user/manage", fmt.Sprintf(`{"id":%d,"action":"disable"}`, target.Id), f.token)
 	assert.Equal(t, http.StatusForbidden, disable.Code)

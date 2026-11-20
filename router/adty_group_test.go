@@ -141,7 +141,7 @@ func TestAdtyGroupCreateAndUpdateAudit(t *testing.T) {
 	disableAdtyRedis(t)
 	require.NoError(t, i18n.Init())
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.AuditLog{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.AuditLog{}, &model.AuditIntent{}))
 	require.NoError(t, model.MigrateAdtyTables())
 	clearRouterAdtyGroups(t, db)
 	token := adtySessionToken(t, db, "adty-root3", common.RoleRootUser)
@@ -415,7 +415,7 @@ func disableAdtyRedis(t *testing.T) {
 func TestDeletedGroupNameStillDisplayed(t *testing.T) {
 	disableAdtyRedis(t)
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.Channel{}, &model.Option{}, &model.AuditLog{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.Channel{}, &model.Option{}, &model.AuditLog{}, &model.AuditIntent{}))
 	oldOptions := common.OptionMap
 	common.OptionMap = map[string]string{}
 	t.Cleanup(func() { common.OptionMap = oldOptions })

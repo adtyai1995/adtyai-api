@@ -94,10 +94,14 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodDelete, "/api/adty/telegram/me", "profile:write"},
 		{http.MethodPost, "/api/adty/telegram/bind/start", "profile:write"},
 		{http.MethodPost, "/api/adty/telegram/bind/confirm", "profile:write"},
+		{http.MethodPost, "/api/adty/telegram/unbind", "profile:write"},
+		{http.MethodPost, "/api/adty/telegram/bind/unbind", "profile:write"},
 		{http.MethodGet, "/api/adty/site/telegram", "wallet:read"},
 		{http.MethodDelete, "/api/adty/site/telegram", "wallet:write"},
 		{http.MethodPost, "/api/adty/site/telegram/bind/start", "wallet:write"},
 		{http.MethodPost, "/api/adty/site/telegram/bind/confirm", "wallet:write"},
+		{http.MethodPost, "/api/adty/site/telegram/unbind", "wallet:write"},
+		{http.MethodPost, "/api/adty/site/telegram/bind/unbind", "wallet:write"},
 		{http.MethodGet, "/api/adty/admin/telegram/bots", "option:read"},
 		{http.MethodPut, "/api/adty/admin/telegram/bots/:purpose", "option:write"},
 		{http.MethodPost, "/api/adty/admin/telegram/bots/:purpose/test", "option:write"},
@@ -153,10 +157,14 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/teams/:id/transfer", middleware.UserAuth(), controller.PostAdtyTeamTransfer)
 	apiRouter.GET("/adty/telegram/me", middleware.UserAuth(), controller.GetAdtyTelegramMe)
 	apiRouter.DELETE("/adty/telegram/me", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
+	apiRouter.POST("/adty/telegram/unbind", middleware.UserAuth(), controller.UnbindTelegram)
+	apiRouter.POST("/adty/telegram/bind/unbind", middleware.UserAuth(), controller.UnbindTelegram)
 	apiRouter.POST("/adty/telegram/bind/start", middleware.UserAuth(), controller.PostAdtyTelegramBindStart)
 	apiRouter.POST("/adty/telegram/bind/confirm", middleware.UserAuth(), controller.PostAdtyTelegramBindConfirm)
 	apiRouter.GET("/adty/site/telegram", middleware.UserAuth(), controller.GetAdtyTelegramMe)
 	apiRouter.DELETE("/adty/site/telegram", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
+	apiRouter.POST("/adty/site/telegram/unbind", middleware.UserAuth(), controller.UnbindTelegram)
+	apiRouter.POST("/adty/site/telegram/bind/unbind", middleware.UserAuth(), controller.UnbindTelegram)
 	apiRouter.POST("/adty/site/telegram/bind/start", middleware.UserAuth(), controller.PostAdtyTelegramBindStart)
 	apiRouter.POST("/adty/site/telegram/bind/confirm", middleware.UserAuth(), controller.PostAdtyTelegramBindConfirm)
 	apiRouter.POST("/adty/telegram/webhook/:purpose/:secret", middleware.CriticalRateLimit(), controller.PostAdtyTelegramWebhook)

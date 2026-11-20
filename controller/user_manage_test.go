@@ -25,6 +25,7 @@ import (
 	"github.com/go-redis/redis/v8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -352,6 +353,82 @@ func createQuotaTestOperator(t *testing.T, db *gorm.DB, role int) model.User {
 	return operator
 }
 
+func insertManageJSON(body, fields string) string {
+	trimmed := strings.TrimSpace(body)
+	if fields == "" || !strings.HasSuffix(trimmed, "}") {
+		return body
+	}
+	return trimmed[:len(trimmed)-1] + "," + fields + "}"
+}
+
+func manageQuotaNeedsBatch(mode string, before, value int) bool {
+	switch mode {
+	case "subtract":
+		return true
+	case "override":
+		return value < before
+	default:
+		return false
+	}
+}
+
+func manageQuotaFundingFields(mode string, before, value int, trade string) string {
+	if manageQuotaNeedsBatch(mode, before, value) {
+		return fmt.Sprintf(`"order_ref":%q,"funding_source":%q,"batch_kind":%q,"batch_source":%q`,
+			trade, model.AdtyAdjustSourceBatch, model.AdtyFundBatchKindPrincipal, trade)
+	}
+	return fmt.Sprintf(`"order_ref":%q,"funding_source":%q`, trade, model.AdtyAdjustSourcePlatform)
+}
+
+// seedManageQuotaOrder records a paid main-site order and restores the wallet
+// the test is about to assert. Decreases name the principal lot created here.
+func seedManageQuotaOrder(t *testing.T, db *gorm.DB, userID, restoreQuota int) string {
+	t.Helper()
+	require.Positive(t, userID)
+	require.NoError(t, db.AutoMigrate(
+		&model.TopUp{}, &model.AdtyTopupOrder{}, &model.AdtyFinancialAdjustment{},
+		&model.AdtyFundBatch{}, &model.AdtyFundAllocation{}, &model.AdtyBalanceLedger{}, &model.AuditIntent{},
+	))
+	trade := fmt.Sprintf("manage-original-%d", userID)
+	amount := decimal.RequireFromString("0.01")
+	require.NoError(t, db.Create(&model.TopUp{
+		UserId: userID, TradeNo: trade, PaymentProvider: model.PaymentProviderAdtyBEpusdt,
+		PaymentMethod: "usdt.trc20", Status: common.TopUpStatusSuccess, MoneyExact: amount,
+	}).Error)
+	require.NoError(t, db.Create(&model.AdtyTopupOrder{
+		Business: model.AdtyBusinessWalletTopup, UserId: userID, TradeNo: trade,
+		Provider: model.PaymentProviderAdtyBEpusdt, Method: "usdt.trc20",
+		FaceUSD: amount, CreditQuota: 1000, PayAmount: amount, PayCurrency: "USDT",
+		PaidAmount: amount, PaidCurrency: "USDT",
+	}).Error)
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		return model.CreateAdtyFundBatchesWithSiteTx(tx, userID, model.AdtyFundBatchSiteID(0), trade, int64(common.MaxWalletQuota), 0)
+	}))
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"quota": restoreQuota, "quota_pending": 0,
+	}).Error)
+	return trade
+}
+
+func manageQuotaRequestBody(t *testing.T, db *gorm.DB, userID, before int, mode string, value int) string {
+	t.Helper()
+	trade := seedManageQuotaOrder(t, db, userID, before)
+	return insertManageJSON(
+		fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":%q,"value":%d}`, userID, mode, value),
+		manageQuotaFundingFields(mode, before, value, trade),
+	)
+}
+
+func attachManageQuotaAuditFacts(t *testing.T, db *gorm.DB, userID int, params model.AuditFields) {
+	t.Helper()
+	var row model.AdtyFinancialAdjustment
+	require.NoError(t, db.Where("user_id = ?", userID).Order("id desc").First(&row).Error)
+	params["order_ref"] = row.OrderRef
+	params["adjustment_id"] = row.Id
+	params["approval_ref"] = row.ApprovalRef
+	params["ledger_id"] = row.LedgerId
+}
+
 func TestManageUserQuotaRecordsTopupAndAudit(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode, action, content string
@@ -370,7 +447,7 @@ func TestManageUserQuotaRecordsTopupAndAudit(t *testing.T) {
 			require.NoError(t, db.Create(&user).Error)
 			createQuotaTestOperator(t, db, common.RoleRootUser)
 
-			recorder := performManageUserRequest(t, fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":%q,"value":%d}`, user.Id, tc.mode, tc.value))
+			recorder := performManageUserRequest(t, manageQuotaRequestBody(t, db, user.Id, 1000, tc.mode, tc.value))
 			assert.Equal(t, http.StatusOK, recorder.Code)
 			require.Contains(t, recorder.Body.String(), `"success":true`)
 			require.NoError(t, db.First(&user, user.Id).Error)
@@ -400,6 +477,7 @@ func TestManageUserQuotaRecordsTopupAndAudit(t *testing.T) {
 			params, err := common.Marshal(other.Op.Params)
 			require.NoError(t, err)
 			expectedParams := model.AuditFields{"target_user_id": user.Id, "target_username": user.Username, "mode": tc.mode, "requested_quota": tc.value, "from": 1000, "to": tc.wantQuota}
+			attachManageQuotaAuditFacts(t, db, user.Id, expectedParams)
 			if tc.mode != "override" {
 				expectedParams["quota"] = tc.value
 			}
@@ -450,14 +528,17 @@ func TestManageUserQuotaFailuresDoNotRecordTopup(t *testing.T) {
 			createQuotaTestOperator(t, db, common.RoleRootUser)
 			user := model.User{Username: "quota-owner", Role: common.RoleCommonUser, Quota: 1000}
 			require.NoError(t, db.Create(&user).Error)
+			body := fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":%q,"value":%d}`, user.Id, tc.mode, tc.value)
 			if tc.failUpdate {
+				trade := seedManageQuotaOrder(t, db, user.Id, 1000)
+				body = insertManageJSON(body, manageQuotaFundingFields(tc.mode, 1000, tc.value, trade))
 				require.NoError(t, db.Callback().Update().Before("gorm:update").Register("test:fail_quota_update", func(tx *gorm.DB) {
 					if tx.Statement.Table == "users" {
 						tx.AddError(errors.New("quota update unavailable"))
 					}
 				}))
 			}
-			recorder := performManageUserRequest(t, fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":%q,"value":%d}`, user.Id, tc.mode, tc.value))
+			recorder := performManageUserRequest(t, body)
 			assert.Contains(t, recorder.Body.String(), `"success":false`)
 			require.NoError(t, db.First(&user, user.Id).Error)
 			assert.Equal(t, 1000, user.Quota)
@@ -497,7 +578,7 @@ func TestManageUserQuotaLogFailureKeepsSuccessfulAdjustment(t *testing.T) {
 					tx.AddError(errors.New("quota log unavailable"))
 				}
 			}))
-			recorder := performManageUserRequest(t, fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":"add","value":500}`, user.Id))
+			recorder := performManageUserRequest(t, manageQuotaRequestBody(t, db, user.Id, 1000, "add", 500))
 			assert.Contains(t, recorder.Body.String(), `"success":true`)
 			require.NoError(t, db.First(&user, user.Id).Error)
 			assert.Equal(t, 1500, user.Quota)
@@ -551,9 +632,17 @@ func TestManageUserQuotaTargetsAndWalletBounds(t *testing.T) {
 					}
 				}))
 			}
+			body := fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":%q,"value":%d,"idempotency_key":"bound-%s"}`, tc.targetID, tc.mode, tc.value, tc.name)
+			switch tc.name {
+			case "missing", "deleted", "peer_admin", "higher_role", "read_error":
+				body = insertManageJSON(body, `"order_ref":"manage-unlinked"`)
+			case "add_overflow", "subtract_underflow", "subtract_below_zero", "override_negative":
+				trade := seedManageQuotaOrder(t, db, user.Id, tc.before)
+				body = insertManageJSON(body, manageQuotaFundingFields(tc.mode, tc.before, tc.value, trade))
+			}
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
-			c.Request = httptest.NewRequest(http.MethodPost, "/api/user/manage", strings.NewReader(fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":%q,"value":%d,"idempotency_key":"bound-%s"}`, tc.targetID, tc.mode, tc.value, tc.name)))
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/user/manage", strings.NewReader(body))
 			role := tc.operatorRole
 			if role == 0 {
 				role = common.RoleRootUser
@@ -596,7 +685,7 @@ func TestManageUserQuotaMiddlewareKeepsOneOperationPerRequest(t *testing.T) {
 		body, action string
 		success      bool
 	}{
-		{`{"id":9999,"action":"add_quota","reason":"test","mode":"add","value":100,"idempotency_key":"mw-1"}`, "user.quota_add", true},
+		{insertManageJSON(`{"id":9999,"action":"add_quota","reason":"test","mode":"add","value":100,"idempotency_key":"mw-1"}`, manageQuotaFundingFields("add", 1000, 100, seedManageQuotaOrder(t, db, operator.Id, 1000))), "user.quota_add", true},
 		{`{"id":9999,"action":"add_quota","reason":"test","mode":"subtract","value":0}`, "user.quota_subtract", false},
 		{`{"id":9999,"action":"add_quota","reason":"test","mode":"invalid","value":1}`, "generic", false},
 		{`{"id":`, "generic", false},
@@ -723,6 +812,7 @@ func TestManageUserQuotaPreservesDurableReservations(t *testing.T) {
 			t.Cleanup(func() { _ = common.RDB.Close(); common.RDB = oldRDB })
 			user := model.User{Username: "cached-quota", Quota: tc.before, AuthVersion: 1}
 			require.NoError(t, db.Create(&user).Error)
+			trade := seedManageQuotaOrder(t, db, user.Id, tc.before)
 			cache, err := model.GetUserCache(user.Id)
 			require.NoError(t, err)
 			assert.Equal(t, tc.before, cache.Quota)
@@ -755,7 +845,10 @@ func TestManageUserQuotaPreservesDurableReservations(t *testing.T) {
 					}
 				}))
 			}
-			recorder := performManageUserRequest(t, fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":%q,"value":%d}`, user.Id, tc.mode, tc.value))
+			recorder := performManageUserRequest(t, insertManageJSON(
+				fmt.Sprintf(`{"id":%d,"action":"add_quota","reason":"test","mode":%q,"value":%d}`, user.Id, tc.mode, tc.value),
+				manageQuotaFundingFields(tc.mode, tc.before, tc.value, trade),
+			))
 			if tc.rejectNegative {
 				assert.Contains(t, recorder.Body.String(), "Adjustment cannot make the balance negative")
 				assert.NotContains(t, recorder.Body.String(), `"success":true`)

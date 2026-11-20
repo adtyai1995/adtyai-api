@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -22,6 +23,53 @@ type AuditIntent struct {
 	NextAttemptAt     int64  `gorm:"type:bigint;index:idx_audit_intent_pending,priority:2"`
 	DeliveredAt       int64  `gorm:"type:bigint;index:idx_audit_intent_pending,priority:1"`
 	LastErrorCategory string `gorm:"type:varchar(64)"`
+}
+
+// WritePreparedAuditLog stores an operator snapshot that already carries the
+// financial adjustment reference. The stored intent must not repeat that ref.
+func WritePreparedAuditLog(ctx context.Context, entry AuditLog) error {
+	if !strings.Contains(entry.ApprovalRef, "financial_adjustment:") {
+		return errors.New("prepared audit log requires financial_adjustment approval_ref")
+	}
+	return writeAuditLog(ctx, entry, true)
+}
+
+// AcknowledgeAuditIntent closes a stored intent without replaying its payload.
+// It seals only after the operator log holds the financial adjustment reference
+// and the intent payload does not.
+func AcknowledgeAuditIntent(ctx context.Context, eventID string) error {
+	if DB == nil || LOG_DB == nil || strings.TrimSpace(eventID) == "" {
+		return errors.New("audit intent acknowledgement unavailable")
+	}
+	var intent AuditIntent
+	if err := DB.WithContext(ctx).Where("event_id = ?", eventID).Take(&intent).Error; err != nil {
+		return errors.New("audit intent acknowledgement unavailable")
+	}
+	if strings.Contains(intent.Payload, "financial_adjustment:") {
+		return errors.New("audit intent acknowledgement unavailable")
+	}
+	var stored AuditLog
+	if err := LOG_DB.WithContext(ctx).Table("audit_logs").Where("event_id = ?", eventID).Take(&stored).Error; err != nil {
+		return errors.New("audit intent acknowledgement unavailable")
+	}
+	if !strings.Contains(stored.ApprovalRef, "financial_adjustment:") {
+		return errors.New("audit intent acknowledgement unavailable")
+	}
+	if intent.DeliveredAt != 0 {
+		return nil
+	}
+	result := DB.WithContext(ctx).Model(&AuditIntent{}).
+		Where("event_id = ? AND delivered_at = ?", eventID, 0).
+		Updates(map[string]any{
+			"attempts":            gorm.Expr("attempts + ?", 1),
+			"delivered_at":        common.GetTimestamp(),
+			"next_attempt_at":     0,
+			"last_error_category": "",
+		})
+	if result.Error != nil || result.RowsAffected != 1 {
+		return errors.New("audit intent acknowledgement unavailable")
+	}
+	return nil
 }
 
 // AppendAuditIntentTx must share the mutation's primary-database transaction.

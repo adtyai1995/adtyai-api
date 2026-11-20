@@ -26,7 +26,7 @@ func TestSiteBrandSettingsDatabaseMatrix(t *testing.T) {
 				t.Skip("database DSN not configured")
 			}
 			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
-			require.NoError(t, db.AutoMigrate(&model.AdtySite{}, &model.AdtySitePrice{}, &model.AdtySiteDomain{}))
+			require.NoError(t, db.AutoMigrate(&model.AdtySite{}, &model.AdtySitePrice{}, &model.AdtySitePriceScope{}, &model.AdtyPriceRevision{}, &model.AdtySiteDomain{}))
 			owner := model.User{Username: "brand-owner", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
 			require.NoError(t, db.Create(&owner).Error)
 			site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "brand", RootDomain: "sites.example.test", Status: model.AdtySiteStatusActive, AgreementVer: service.AdtyCurrentSiteAgreementVersion(), Brand: `{"name":"Old name","logo_url":"/uploads/site-assets/old.png"}`}

@@ -36,7 +36,7 @@ func ledgerUser(t *testing.T, f *adtyGuardFixture, name string) model.User {
 	trade := fmt.Sprintf("ledger-original-%d", user.Id)
 	amount := decimal.RequireFromString("0.002")
 	require.NoError(t, model.CreateAdtyTopUp(&model.TopUp{UserId: user.Id, TradeNo: trade, PaymentProvider: model.PaymentProviderAdtyBEpusdt, PaymentMethod: "usdt.trc20", Status: common.TopUpStatusPending},
-		&model.AdtyTopupOrder{UserId: user.Id, TradeNo: trade, Provider: model.PaymentProviderAdtyBEpusdt, Method: "usdt.trc20", FaceUSD: amount, CreditQuota: 1000, PayAmount: amount, PayCurrency: "USDT", ExpireAt: common.GetTimestamp() + 900}))
+		&model.AdtyTopupOrder{UserId: user.Id, TradeNo: trade, Provider: model.PaymentProviderAdtyBEpusdt, Method: "usdt.trc20", FaceUSD: amount, CreditQuota: 1000, PayAmount: amount, PayCurrency: "USDT", ExpireAt: common.GetTimestamp()+900}))
 	_, err := model.CompleteAdtyTopUp(trade, model.AdtyPaymentFacts{Provider: model.PaymentProviderAdtyBEpusdt, Source: model.AdtyPaymentSourceCallback, FiatAmount: amount, PaidAmount: amount, PaidCurrency: "USDT"}, "")
 	require.NoError(t, err)
 	return user

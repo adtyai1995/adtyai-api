@@ -33,7 +33,9 @@ func TestVideoRemixUsesUserLimitBeforeSubmission(t *testing.T) {
 	t.Cleanup(func() {
 		require.NoError(t, opened.Close())
 	})
-	require.NoError(t, opened.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.AdtyUserLimit{}))
+	// Terms lookup fails closed when adty_sites is missing. This user is not an owner;
+	// the table has to exist so that lookup returns not-owner instead of a schema error.
+	require.NoError(t, opened.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.AdtyUserLimit{}, &model.AdtySite{}))
 	oldRedis := common.RedisEnabled
 	oldMemory := common.MemoryCacheEnabled
 	oldRate := setting.ModelRequestRateLimitEnabled

@@ -3,8 +3,6 @@ package controller
 import (
 	"errors"
 	"fmt"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"net/http"
 	"slices"
 	"sort"
@@ -25,9 +23,156 @@ import (
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var optionUpdateCrossKeyMu sync.Mutex
+
+func init() {
+	adty_setting.SetAuthoritativeEpayTimeoutReader(readAuthoritativeEpayTimeouts)
+}
+
+func readAuthoritativeEpayTimeouts() (map[string]string, error) {
+	if model.DB == nil || !model.DB.Migrator().HasTable(&model.Option{}) {
+		return nil, common.NewMessage("Operation failed")
+	}
+	var rows []model.Option
+	if err := model.DB.Where("key IN ?", []string{
+		adty_setting.EpaySettingKeyChannelTimeout,
+		adty_setting.EpaySettingKeyTotalTimeout,
+	}).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.Key] = r.Value
+	}
+	return out, nil
+}
+
+func isSensitiveOptionKey(k string) bool {
+	trimmed := strings.TrimSpace(k)
+	lower := strings.ToLower(trimmed)
+	if strings.HasSuffix(lower, "aliyun_access_key_id") {
+		return true
+	}
+	return lower == "key" || lower == "authorization" || strings.HasSuffix(trimmed, "Token") ||
+		strings.HasSuffix(trimmed, "Secret") ||
+		strings.HasSuffix(trimmed, "Key") ||
+		strings.HasSuffix(trimmed, "Password") ||
+		strings.HasSuffix(lower, "token") ||
+		strings.HasSuffix(lower, "secret") ||
+		strings.HasSuffix(lower, "api_key") ||
+		strings.HasSuffix(lower, "apikey") ||
+		strings.HasSuffix(lower, "private_key") ||
+		strings.HasSuffix(lower, "client_secret") ||
+		strings.HasSuffix(lower, "password") ||
+		strings.HasSuffix(lower, "passwd")
+}
+
+func formatOptionAuditValue(key, raw string) any {
+	if !isSensitiveOptionKey(key) {
+		var value any
+		if common.Unmarshal([]byte(raw), &value) == nil {
+			return redactOptionAuditJSON(value)
+		}
+		return raw
+	}
+	configured := strings.TrimSpace(raw) != ""
+	masked := "unset"
+	status := "empty"
+	if configured {
+		masked = "***"
+		status = "configured"
+	}
+	return map[string]any{
+		"configured": configured,
+		"redacted":   true,
+		"status":     status,
+		"masked":     masked,
+	}
+}
+
+func redactOptionAuditJSON(value any) any {
+ switch object := value.(type) {
+ case map[string]any:
+  for key, field := range object {
+   if isSensitiveOptionKey(key) { object[key] = map[string]any{"redacted": true, "configured": field != nil && fmt.Sprint(field) != ""} } else { object[key] = redactOptionAuditJSON(field) }
+  }
+ case []any:
+  for index, field := range object { object[index] = redactOptionAuditJSON(field) }
+ }
+ return value
+}
+
+func buildOptionAuditParams(key, beforeRaw, afterRaw string) map[string]any {
+	beforeVal := formatOptionAuditValue(key, beforeRaw)
+	afterVal := formatOptionAuditValue(key, afterRaw)
+	if isSensitiveOptionKey(key) {
+		return map[string]any{
+			"key":        key,
+			"sensitive":  true,
+			"configured": strings.TrimSpace(afterRaw) != "",
+			"changed":    beforeRaw != afterRaw,
+			"before":     beforeVal,
+			"after":      afterVal,
+		}
+	}
+	return map[string]any{
+		"key":    key,
+		"before": beforeVal,
+		"after":  afterVal,
+	}
+}
+
+func readOptionFallbackFromMap(key string) string {
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
+	if common.OptionMap == nil {
+		return ""
+	}
+	return common.OptionMap[key]
+}
+
+func readCurrentOptionRawValueLocked(tx *gorm.DB, key string) (string, error) {
+	if tx == nil {
+		return readOptionFallbackFromMap(key), nil
+	}
+	var row model.Option
+	lookup := model.AdtyLockForUpdate(tx).Where(&model.Option{Key: key}).Limit(1).Find(&row)
+	if lookup.Error != nil {
+		return "", lookup.Error
+	}
+	if lookup.RowsAffected == 0 {
+		return readOptionFallbackFromMap(key), nil
+	}
+	return row.Value, nil
+}
+
+func readCurrentOptionRawValue(db *gorm.DB, key string) string {
+	if db != nil && db.Migrator().HasTable(&model.Option{}) {
+		var row model.Option
+		lookup := db.Where(&model.Option{Key: key}).Limit(1).Find(&row)
+		if lookup.Error == nil && lookup.RowsAffected > 0 {
+			return row.Value
+		}
+	}
+	return readOptionFallbackFromMap(key)
+}
+
+func isGroupConfigOptionKey(key string) bool {
+	switch key {
+	case "GroupRatio", "UserUsableGroups", "TopupGroupRatio", "GroupGroupRatio", "AutoGroups",
+		"group_ratio_setting.group_special_usable_group", "ModelRequestRateLimitGroup", model.AdtyGroupModelAllowOption:
+		return true
+	default:
+		return false
+	}
+}
 
 var completionRatioMetaOptionKeys = []string{
 	"ModelPrice",
@@ -452,106 +597,4 @@ func UpdateOption(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-}
-
-func isSensitiveOptionKey(k string) bool {
-	trimmed := strings.TrimSpace(k)
-	lower := strings.ToLower(trimmed)
-	if strings.HasSuffix(lower, "aliyun_access_key_id") {
-		return true
-	}
-	return lower == "key" || lower == "authorization" || strings.HasSuffix(trimmed, "Token") ||
-		strings.HasSuffix(trimmed, "Secret") ||
-		strings.HasSuffix(trimmed, "Key") ||
-		strings.HasSuffix(trimmed, "Password") ||
-		strings.HasSuffix(lower, "token") ||
-		strings.HasSuffix(lower, "secret") ||
-		strings.HasSuffix(lower, "api_key") ||
-		strings.HasSuffix(lower, "apikey") ||
-		strings.HasSuffix(lower, "private_key") ||
-		strings.HasSuffix(lower, "client_secret") ||
-		strings.HasSuffix(lower, "password") ||
-		strings.HasSuffix(lower, "passwd")
-}
-
-func formatOptionAuditValue(key, raw string) any {
-	if !isSensitiveOptionKey(key) {
-		var value any
-		if common.Unmarshal([]byte(raw), &value) == nil {
-			return redactOptionAuditJSON(value)
-		}
-		return raw
-	}
-	configured := strings.TrimSpace(raw) != ""
-	masked := "unset"
-	status := "empty"
-	if configured {
-		masked = "***"
-		status = "configured"
-	}
-	return map[string]any{
-		"configured": configured,
-		"redacted":   true,
-		"status":     status,
-		"masked":     masked,
-	}
-}
-
-func redactOptionAuditJSON(value any) any {
-	switch object := value.(type) {
-	case map[string]any:
-		for key, field := range object {
-			if isSensitiveOptionKey(key) {
-				object[key] = map[string]any{"redacted": true, "configured": field != nil && fmt.Sprint(field) != ""}
-			} else {
-				object[key] = redactOptionAuditJSON(field)
-			}
-		}
-	case []any:
-		for index, field := range object {
-			object[index] = redactOptionAuditJSON(field)
-		}
-	}
-	return value
-}
-
-func buildOptionAuditParams(key, beforeRaw, afterRaw string) map[string]any {
-	beforeVal := formatOptionAuditValue(key, beforeRaw)
-	afterVal := formatOptionAuditValue(key, afterRaw)
-	if isSensitiveOptionKey(key) {
-		return map[string]any{
-			"key":        key,
-			"sensitive":  true,
-			"configured": strings.TrimSpace(afterRaw) != "",
-			"changed":    beforeRaw != afterRaw,
-			"before":     beforeVal,
-			"after":      afterVal,
-		}
-	}
-	return map[string]any{
-		"key":    key,
-		"before": beforeVal,
-		"after":  afterVal,
-	}
-}
-
-func readAuthoritativeEpayTimeouts() (map[string]string, error) {
-	if model.DB == nil || !model.DB.Migrator().HasTable(&model.Option{}) {
-		return nil, common.NewMessage("Operation failed")
-	}
-	var rows []model.Option
-	if err := model.DB.Where("key IN ?", []string{
-		adty_setting.EpaySettingKeyChannelTimeout,
-		adty_setting.EpaySettingKeyTotalTimeout,
-	}).Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	if len(rows) == 0 {
-		return nil, nil
-	}
-	out := make(map[string]string, len(rows))
-	for _, r := range rows {
-		out[r.Key] = r.Value
-	}
-	return out, nil
 }

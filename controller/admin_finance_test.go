@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,31 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+// migrateAdtyUnifiedOrderSources creates every table the unified order UNION
+// reads. A missing source fails the whole list, including callers that only
+// inserted top-ups.
+func migrateAdtyUnifiedOrderSources(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.AutoMigrate(
+		&model.User{},
+		&model.TopUp{},
+		&model.AdtyTopupOrder{},
+		&model.AdtyEpayChannel{},
+		&model.AdtySite{},
+		&model.BillingOperation{},
+		&model.AdtyManualRefund{},
+		&model.AdtySiteWithdrawal{},
+		&model.AdtySiteInviteWithdrawal{},
+		&model.ReferralWithdrawal{},
+		&model.AdtySiteInviteCommission{},
+		&model.ReferralCommission{},
+		&model.AdtyStaffBalanceRequest{},
+		&model.AdtyBalanceLedger{},
+	))
+}
 
 func TestRechargeAuditProviderCapabilitiesDatabaseMatrix(t *testing.T) {
 	providers := []string{model.PaymentProviderAdtyBEpusdt, model.PaymentProviderAdtyEpay}
@@ -24,6 +49,7 @@ func TestRechargeAuditProviderCapabilitiesDatabaseMatrix(t *testing.T) {
 				t.Skip("database DSN not configured")
 			}
 			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			migrateAdtyUnifiedOrderSources(t, db)
 			require.NoError(t, db.AutoMigrate(&model.TopUp{}, &model.AdtyTopupOrder{}, &model.AdtyEpayChannel{}))
 			user := model.User{Username: "audit-provider-buyer", Role: common.RoleCommonUser}
 			require.NoError(t, db.Create(&user).Error)
@@ -121,6 +147,7 @@ func TestRechargeAuditSiteOwnershipDatabaseMatrix(t *testing.T) {
 				t.Skip("database DSN not configured")
 			}
 			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			migrateAdtyUnifiedOrderSources(t, db)
 			require.NoError(t, db.AutoMigrate(&model.TopUp{}, &model.AdtyTopupOrder{}, &model.AdtySite{}, &model.AdtyEpayChannel{}))
 			for _, site := range []model.AdtySite{
 				{Id: 7, Subdomain: "north", RootDomain: "sites.test", Brand: `{"name":"North Studio"}`},
@@ -231,6 +258,7 @@ func TestRechargeAuditOwnerKeywordScopeDatabaseMatrix(t *testing.T) {
 				t.Skip("database DSN not configured")
 			}
 			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			migrateAdtyUnifiedOrderSources(t, db)
 			require.NoError(t, db.AutoMigrate(&model.TopUp{}, &model.AdtyTopupOrder{}, &model.AdtySite{}, &model.AdtyEpayChannel{}))
 			owner := model.User{Username: "keyword-scope-owner", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
 			require.NoError(t, db.Create(&owner).Error)
@@ -308,4 +336,308 @@ func TestRechargeAuditOwnerKeywordScopeDatabaseMatrix(t *testing.T) {
 			assert.Empty(t, ownerList.Data.Items[0].PaidTxHash)
 		})
 	}
+}
+
+func TestUnifiedFinancialOrderCategoriesAndCallerScope(t *testing.T) {
+	db := modelManagementDB(t, "sqlite", "")
+	migrateAdtyUnifiedOrderSources(t, db)
+	require.NoError(t, db.AutoMigrate(
+		&model.TopUp{},
+		&model.AdtyTopupOrder{},
+		&model.AdtySite{},
+		&model.AdtyEpayChannel{},
+		&model.BillingOperation{},
+		&model.AdtyVoucher{},
+		&model.AdtyManualRefund{},
+		&model.AdtySiteWithdrawal{},
+		&model.AdtySiteInviteCommission{},
+		&model.AdtyStaffBalanceRequest{},
+	))
+	owner7 := model.User{Username: "uni-owner-7", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&owner7).Error)
+	site7 := model.AdtySite{
+		Id: 7, OwnerUserId: owner7.Id, Subdomain: "uni-seven", RootDomain: "sites.test",
+		Status: model.AdtySiteStatusActive, AgreementVer: service.AdtyCurrentSiteAgreementVersion(),
+		Brand: `{"name":"Seven Site"}`,
+	}
+	require.NoError(t, db.Create(&site7).Error)
+	site8 := model.AdtySite{
+		Id: 8, OwnerUserId: 999, Subdomain: "uni-eight", RootDomain: "sites.test",
+		Status: model.AdtySiteStatusActive, AgreementVer: service.AdtyCurrentSiteAgreementVersion(),
+		Brand: `{"name":"Eight Site"}`,
+	}
+	require.NoError(t, db.Create(&site8).Error)
+	t.Cleanup(service.InvalidateAdtySiteCache)
+
+	buyer7 := model.User{Username: "uni-buyer-7", Role: common.RoleCommonUser, SiteId: 7}
+	require.NoError(t, db.Create(&buyer7).Error)
+	buyer8 := model.User{Username: "uni-buyer-8", Role: common.RoleCommonUser, SiteId: 8}
+	require.NoError(t, db.Create(&buyer8).Error)
+
+	// 1. Topup
+	require.NoError(t, db.Create(&model.TopUp{
+		TradeNo: "UNI-TOPUP-7", UserId: buyer7.Id, PaymentProvider: model.PaymentProviderAdtyBEpusdt,
+		PaymentMethod: "usdt.trc20", Status: common.TopUpStatusSuccess, Amount: 10, Money: 10, CreateTime: 100,
+	}).Error)
+	require.NoError(t, db.Create(&model.AdtyTopupOrder{
+		TradeNo: "UNI-TOPUP-7", UserId: buyer7.Id, SiteId: 7, Provider: model.PaymentProviderAdtyBEpusdt,
+		Method: "usdt.trc20", FaceUSD: decimal.NewFromInt(10), CreditQuota: 5_000_000,
+	}).Error)
+
+	// 2. API Consumption
+	require.NoError(t, db.Create(&model.BillingOperation{
+		OperationKey: "UNI-CONSUME-7", UserId: buyer7.Id, SiteId: 7,
+		State: model.BillingSettled, AppliedQuota: 500_000, CreatedAt: 101, UpdatedAt: 101,
+	}).Error)
+	require.NoError(t, db.Create(&model.BillingOperation{
+		OperationKey: "UNI-CONSUME-8", UserId: buyer8.Id, SiteId: 8,
+		State: model.BillingSettled, AppliedQuota: 500_000, CreatedAt: 102, UpdatedAt: 102,
+	}).Error)
+
+	// 3. Voucher. Redeemed codes enter the unified list as a top-up whose
+	// provider is adty_voucher, not as a bare adty_vouchers row.
+	require.NoError(t, db.Create(&model.TopUp{
+		TradeNo: "UNI-VOUCHER-7", UserId: buyer7.Id, PaymentProvider: model.AdtyVoucherProvider,
+		PaymentMethod: model.AdtyVoucherPurposeSiteCustomer, Status: common.TopUpStatusSuccess,
+		Amount: 5, Money: 5, CreateTime: 103,
+	}).Error)
+	require.NoError(t, db.Create(&model.AdtyTopupOrder{
+		TradeNo: "UNI-VOUCHER-7", UserId: buyer7.Id, SiteId: 7, Provider: model.AdtyVoucherProvider,
+		Method: model.AdtyVoucherPurposeSiteCustomer, FaceUSD: decimal.NewFromInt(5), CreditQuota: 2_500_000,
+	}).Error)
+
+	// 4. Refund
+	require.NoError(t, db.Create(&model.AdtyManualRefund{
+		RefundId: "UNI-REFUND-7", TradeNo: "UNI-TOPUP-7", UserId: buyer7.Id, SiteId: 7,
+		Status: model.AdtyManualRefundStatusCompleted, RequestUSD: decimal.NewFromInt(2),
+		RequestQuota: 1_000_000, CreatedAt: 104,
+	}).Error)
+
+	// 5. Withdrawal
+	require.NoError(t, db.Create(&model.AdtySiteWithdrawal{
+		SiteId: 7, OwnerUserId: owner7.Id, AmountUSD: decimal.NewFromInt(50),
+		Method: "usdt_trc20", Status: "pending", CreatedAt: 105,
+	}).Error)
+
+	// 6. Commission
+	require.NoError(t, db.Create(&model.AdtySiteInviteCommission{
+		SiteId: 7, InviterId: buyer7.Id, InviteeId: buyer8.Id, TradeNo: "UNI-TOPUP-7",
+		AmountUSD: decimal.NewFromInt(1), Status: "available", CreatedAt: 106,
+	}).Error)
+
+	// 7. Staff adjustment
+	staffKey := "uni-staff-7"
+	require.NoError(t, db.Create(&model.AdtyStaffBalanceRequest{
+		SiteId: 7, StaffUserId: owner7.Id, CustomerUserId: buyer7.Id,
+		Direction: model.AdtyStaffBalanceIncrease, AmountUSD: decimal.NewFromInt(3),
+		Reason: "comp", BusinessRef: "TICKET-7", FundingSource: model.AdtyStaffFundingSourceEarnings,
+		Status: model.AdtyStaffBalanceApproved, IdempotencyKey: &staffKey, CreatedAt: 107,
+	}).Error)
+
+	type orderItem struct {
+		TradeNo   string `json:"trade_no"`
+		OrderType string `json:"order_type"`
+		SiteID    *int   `json:"site_id"`
+	}
+	type listResp struct {
+		Success bool
+		Data    struct {
+			Total int         `json:"total"`
+			Items []orderItem `json:"items"`
+		}
+	}
+
+	// Root sees the seven seeded business categories plus the other site's consumption.
+	var allListed listResp
+	modelManagementRequest(t, GetRechargeAudit, http.MethodGet, "/orders?page_size=50", nil, &allListed)
+	require.True(t, allListed.Success)
+	require.Equal(t, 8, allListed.Data.Total)
+
+	seededCategories := []string{
+		OrderTypeTopup, OrderTypeConsumption, OrderTypeVoucher, OrderTypeRefund,
+		OrderTypeWithdrawal, OrderTypeCommission, OrderTypeStaffAdjustment,
+	}
+	for _, cat := range seededCategories {
+		var filtered listResp
+		modelManagementRequest(t, GetRechargeAudit, http.MethodGet, "/orders?page_size=50&site_id=7&order_type="+cat, nil, &filtered)
+		require.True(t, filtered.Success, cat)
+		require.Equal(t, 1, filtered.Data.Total, "expected 1 item on site 7 for category "+cat)
+		require.Equal(t, cat, filtered.Data.Items[0].OrderType)
+	}
+
+	// Site owner 7 sees only site 7's 7 items across all categories, never site 8's consumption.
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/orders?page_size=50", nil)
+	c.Set("id", owner7.Id)
+	GetAdtyOwnerOrders(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var ownerListed listResp
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &ownerListed))
+	require.True(t, ownerListed.Success)
+	require.Equal(t, 7, ownerListed.Data.Total)
+	for _, item := range ownerListed.Data.Items {
+		require.NotNil(t, item.SiteID)
+		require.Equal(t, 7, *item.SiteID)
+	}
+}
+
+func TestSiteOwnerManualPartialRefundWorkflowAndScopeIsolation(t *testing.T) {
+	common.CryptoSecret = "test-owner-refund-secret-32-bytes!!"
+	db := modelManagementDB(t, "sqlite", "")
+	migrateAdtyUnifiedOrderSources(t, db)
+	require.NoError(t, db.AutoMigrate(
+		&model.TopUp{},
+		&model.AdtyTopupOrder{},
+		&model.AdtySite{},
+		&model.AdtySiteWallet{},
+		&model.AdtySiteWalletLedger{},
+		&model.AdtyBalanceLedger{},
+		&model.AdtyFundBatch{},
+		&model.AdtyFundAllocation{},
+		&model.AdtyManualRefund{},
+		&model.AdtySiteInviteCommission{},
+		&model.AdtyCommissionRecovery{},
+		&model.AdtyBillingHold{},
+		&model.AuditLog{},
+		&model.AuditIntent{},
+		&model.UserSession{},
+		&model.AuthFlow{},
+		&model.TwoFA{},
+		&model.PasskeyCredential{},
+	))
+
+	owner7 := model.User{Username: "rf-owner-7", Password: "owner-refund-password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, AuthVersion: 1}
+	require.NoError(t, db.Create(&owner7).Error)
+	identity, _ := createAccessTokenTestSession(t, owner7.Id, "owner-7-refund")
+	site7 := model.AdtySite{
+		Id: 7, OwnerUserId: owner7.Id, Subdomain: "rf-seven", RootDomain: "sites.test",
+		Status: model.AdtySiteStatusActive, AgreementVer: service.AdtyCurrentSiteAgreementVersion(),
+	}
+	require.NoError(t, db.Create(&site7).Error)
+	require.NoError(t, db.Create(&model.AdtySiteWallet{
+		SiteId: 7, Kind: model.AdtySiteWalletOperating, Balance: decimal.NewFromInt(10),
+	}).Error)
+	t.Cleanup(service.InvalidateAdtySiteCache)
+
+	buyer := model.User{Username: "rf-buyer-7", Role: common.RoleCommonUser, SiteId: 7, Quota: 5_000_000}
+	require.NoError(t, db.Create(&buyer).Error)
+	require.NoError(t, db.Create(&model.AdtyFundBatch{
+		UserId: buyer.Id, SiteId: model.AdtyFundBatchSiteID(7),
+		Kind: model.AdtyFundBatchKindPrincipal, Source: "OWN-RF-7",
+		Original: 5_000_000, Remaining: 5_000_000, Status: model.AdtyFundBatchStatusActive,
+	}).Error)
+
+	require.NoError(t, db.Create(&model.TopUp{
+		TradeNo: "OWN-RF-7", UserId: buyer.Id, PaymentProvider: model.PaymentProviderAdtyBEpusdt,
+		PaymentMethod: "usdt.trc20", Status: common.TopUpStatusSuccess, Amount: 10, Money: 10, CreateTime: 200,
+	}).Error)
+	require.NoError(t, db.Create(&model.AdtyTopupOrder{
+		TradeNo: "OWN-RF-7", UserId: buyer.Id, SiteId: 7, Provider: model.PaymentProviderAdtyBEpusdt,
+		Method: "usdt.trc20", FaceUSD: decimal.NewFromInt(10), CreditQuota: 5_000_000,
+		PayAmount: decimal.NewFromInt(10), PayCurrency: "USDT", PaidAmount: decimal.NewFromInt(10), PaidCurrency: "USDT",
+	}).Error)
+	require.NoError(t, db.Create(&model.TopUp{
+		TradeNo: "OWN-RF-8", UserId: buyer.Id, PaymentProvider: model.PaymentProviderAdtyBEpusdt,
+		PaymentMethod: "usdt.trc20", Status: common.TopUpStatusSuccess, Amount: 10, Money: 10, CreateTime: 201,
+	}).Error)
+	require.NoError(t, db.Create(&model.AdtyTopupOrder{
+		TradeNo: "OWN-RF-8", UserId: buyer.Id, SiteId: 8, Provider: model.PaymentProviderAdtyBEpusdt,
+		Method: "usdt.trc20", FaceUSD: decimal.NewFromInt(10), CreditQuota: 5_000_000,
+		PayAmount: decimal.NewFromInt(10), PayCurrency: "USDT", PaidAmount: decimal.NewFromInt(10), PaidCurrency: "USDT",
+	}).Error)
+
+	// 1. GetAdtyOwnerOrders enables Actions.Refund for own-site success order.
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/orders", nil)
+	c.Set("id", owner7.Id)
+	GetAdtyOwnerOrders(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var ownerOrders struct {
+		Success bool
+		Data    struct {
+			Items []struct {
+				TradeNo string `json:"trade_no"`
+				Actions struct {
+					Complete bool `json:"complete"`
+					Refund   bool `json:"refund"`
+					Query    bool `json:"query"`
+				} `json:"actions"`
+			} `json:"items"`
+		}
+	}
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &ownerOrders))
+	require.Len(t, ownerOrders.Data.Items, 1)
+	require.Equal(t, "OWN-RF-7", ownerOrders.Data.Items[0].TradeNo)
+	require.True(t, ownerOrders.Data.Items[0].Actions.Refund)
+	require.False(t, ownerOrders.Data.Items[0].Actions.Complete)
+	require.False(t, ownerOrders.Data.Items[0].Actions.Query)
+
+	// 2. Owner 7 cannot preview or refund an order belonging to Site 8.
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/orders/OWN-RF-8/refund-preview?refund_usd=4", nil)
+	c.Params = gin.Params{{Key: "trade_no", Value: "OWN-RF-8"}}
+	c.Set("id", owner7.Id)
+	PreviewAdtyOwnerOrderRefund(c)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	// 3. Owner 7 previews partial refund ($4) on own-site order OWN-RF-7.
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/orders/OWN-RF-7/refund-preview?refund_usd=4", nil)
+	c.Params = gin.Params{{Key: "trade_no", Value: "OWN-RF-7"}}
+	c.Set("id", owner7.Id)
+	PreviewAdtyOwnerOrderRefund(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// 4. Submitting RefundAdtyOwnerOrder without security proof fails with 403.
+	bodyBytes, _ := common.Marshal(map[string]any{
+		"reason":          "partial refund requested by buyer",
+		"idempotency_key": "own-rf-apply-1",
+		"refund_usd":      "4",
+	})
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/orders/OWN-RF-7/refund", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "trade_no", Value: "OWN-RF-7"}}
+	c.Set("id", owner7.Id)
+	c.Set("auth_identity", identity)
+	RefundAdtyOwnerOrder(c)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+
+	// 5. Submitting RefundAdtyOwnerOrder with valid security proof succeeds and creates partial refund.
+	op := service.AdtyOwnerOrderRefundOperation("OWN-RF-7", "partial refund requested by buyer", "4", nil)
+	proof := issueSecurityEnrollmentProof(t, identity, op, service.VerificationMethodPassword)
+
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/orders/OWN-RF-7/refund", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("X-Security-Proof", proof)
+	c.Params = gin.Params{{Key: "trade_no", Value: "OWN-RF-7"}}
+	c.Set("id", owner7.Id)
+	c.Set("auth_identity", identity)
+	RefundAdtyOwnerOrder(c)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var applyResp struct {
+		Success bool
+		Data    struct {
+			Refund struct {
+				RefundId     string          `json:"refund_id"`
+				Status       string          `json:"status"`
+				RequestUSD   decimal.Decimal `json:"request_usd"`
+				RequestQuota int64           `json:"request_quota"`
+			} `json:"refund"`
+		}
+	}
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &applyResp))
+	require.True(t, applyResp.Success)
+	require.NotEmpty(t, applyResp.Data.Refund.RefundId)
+	require.Equal(t, model.AdtyManualRefundStatusSubmitted, applyResp.Data.Refund.Status)
+	require.True(t, decimal.NewFromInt(4).Equal(applyResp.Data.Refund.RequestUSD))
+	require.EqualValues(t, 2_000_000, applyResp.Data.Refund.RequestQuota)
 }

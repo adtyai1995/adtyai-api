@@ -192,7 +192,17 @@ func TestCustomDomainServesVerificationAndReset(t *testing.T) {
 		service.AdtyLoadCustomDomains = saved
 		service.InvalidateAdtySiteCache()
 	})
+	// Verification mail is dispatched in the background and reads SMTP globals.
+	// Wait before the next request, and again before this test returns, so those
+	// sends cannot overlap a sender lookup or a later SMTP config change.
+	t.Cleanup(service.WaitAdtySystemEmailAsync)
 	service.InvalidateAdtySiteCache()
+	do := func(method, host, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := f.do(t, method, host, path, body)
+		service.WaitAdtySystemEmailAsync()
+		return response
+	}
 	checks := []struct {
 		method string
 		path   string
@@ -203,13 +213,13 @@ func TestCustomDomainServesVerificationAndReset(t *testing.T) {
 	}
 	for _, check := range checks {
 		// 自定义域名承接完整客户端体验：验证码、找回密码都不再被中间件拒绝。
-		custom := f.do(t, check.method, "api.customer-brand.com", check.path, `{"email":"a@example.com","token":"x","password":"correct-horse-1"}`)
+		custom := do(check.method, "api.customer-brand.com", check.path, `{"email":"a@example.com","token":"x","password":"correct-horse-1"}`)
 		assert.NotEqual(t, http.StatusForbidden, custom.Code, check.path)
 		assert.Empty(t, custom.Header().Get("Location"), check.path)
-		assert.Equal(t, http.StatusNotFound, f.do(t, check.method, "stranger.example.net", check.path, `{}`).Code, check.path)
-		assert.Equal(t, http.StatusForbidden, f.do(t, check.method, "gone.sites.example.com", check.path, `{}`).Code, check.path)
-		assert.NotEqual(t, http.StatusForbidden, f.do(t, check.method, "shop.sites.example.com", check.path, `{}`).Code, check.path)
-		assert.NotEqual(t, http.StatusNotFound, f.do(t, check.method, "main.example.com", check.path, `{}`).Code, check.path)
+		assert.Equal(t, http.StatusNotFound, do(check.method, "stranger.example.net", check.path, `{}`).Code, check.path)
+		assert.Equal(t, http.StatusForbidden, do(check.method, "gone.sites.example.com", check.path, `{}`).Code, check.path)
+		assert.NotEqual(t, http.StatusForbidden, do(check.method, "shop.sites.example.com", check.path, `{}`).Code, check.path)
+		assert.NotEqual(t, http.StatusNotFound, do(check.method, "main.example.com", check.path, `{}`).Code, check.path)
 	}
 }
 
@@ -330,9 +340,17 @@ func TestAPIKeyMustMatchRequestSite(t *testing.T) {
 		return response
 	}
 
-	assert.Equal(t, http.StatusOK, request("shop.sites.example.com", siteKey).Code)
+	// Relay is served on the site API host, not the customer web host.
+	// A key for this site must succeed there and fail everywhere else.
+	service.InvalidateAdtySiteCache()
+	siteAPI := fmt.Sprintf("api-s%d.sites.example.com", f.site.Id)
+	own := request(siteAPI, siteKey)
+	assert.Equal(t, http.StatusOK, own.Code, own.Body.String())
+	assert.Equal(t, http.StatusForbidden, request("shop.sites.example.com", siteKey).Code, "customer web hosts do not serve relay")
 	assert.Equal(t, http.StatusForbidden, request("main.example.com", siteKey).Code)
-	assert.Equal(t, http.StatusOK, request("main.example.com", mainKey).Code)
+	main := request("main.example.com", mainKey)
+	assert.Equal(t, http.StatusOK, main.Code, main.Body.String())
+	assert.Equal(t, http.StatusForbidden, request(siteAPI, mainKey).Code, main.Body.String())
 	assert.Equal(t, http.StatusForbidden, request("shop.sites.example.com", mainKey).Code)
 	assert.Equal(t, http.StatusNotFound, request("stranger.example.net", mainKey).Code)
 }
@@ -384,9 +402,16 @@ func TestClosedSiteRevokesMigratedCustomerKeys(t *testing.T) {
 				f.engine.ServeHTTP(response, req)
 				return response
 			}
+			service.InvalidateAdtySiteCache()
+			siteWeb := service.AdtySiteDisplayHost(f.site)
+			siteAPI := fmt.Sprintf("api-s%d.%s", f.site.Id, strings.ToLower(f.site.RootDomain))
 			for _, path := range []string{"/v1/models", "/api/usage/token/", "/api/log/token"} {
-				response := request(service.AdtySiteDisplayHost(f.site), path, old.Key)
-				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				host := siteWeb
+				if path == "/v1/models" {
+					host = siteAPI
+				}
+				response := request(host, path, old.Key)
+				require.Equal(t, http.StatusOK, response.Code, path+" on "+host+": "+response.Body.String())
 			}
 			staleCache := map[string]string{}
 			if common.RedisEnabled {
@@ -404,7 +429,8 @@ func TestClosedSiteRevokesMigratedCustomerKeys(t *testing.T) {
 			scheduled, err := service.ScheduleAdtySiteClose(f.site.Id, 1, service.AdtySiteClosePlan{Immediate: immediate})
 			require.NoError(t, err)
 			if !immediate {
-				assert.Equal(t, http.StatusOK, request(service.AdtySiteDisplayHost(f.site), "/v1/models", old.Key).Code)
+				closing := request(siteAPI, "/v1/models", old.Key)
+				assert.Equal(t, http.StatusOK, closing.Code, closing.Body.String())
 				require.NoError(t, service.RunAdtySiteCloseOnce(scheduled.CloseExecuteAt))
 			}
 			for _, path := range []string{"/v1/models", "/api/usage/token/", "/api/log/token"} {
@@ -442,25 +468,45 @@ func TestAPIKeyReadOnlyAndCrossSiteHostIsolation(t *testing.T) {
 	customer := f.user(t, "read-only-key-user", f.site.Id)
 	key := "readonlySiteKey"
 	require.NoError(t, f.db.Create(&model.Token{UserId: customer.Id, Key: key, Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}).Error)
-	for _, path := range []string{"/api/usage/token/", "/api/log/token", "/v1/models"} {
-		for _, tc := range []struct {
-			host   string
-			status int
-		}{
-			{service.AdtySiteDisplayHost(f.site), http.StatusOK},
-			{service.AdtySiteDisplayHost(other), http.StatusForbidden},
-			{"main.example.com", http.StatusForbidden},
-			{"stranger.example.net", http.StatusNotFound},
-		} {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
-			req.Host = tc.host
-			req.Header.Set("Authorization", "Bearer "+key)
-			req.Header.Set("X-Forwarded-Host", service.AdtySiteDisplayHost(f.site))
-			response := httptest.NewRecorder()
-			f.engine.ServeHTTP(response, req)
-			assert.Equal(t, tc.status, response.Code, path+" on "+tc.host+": "+response.Body.String())
-		}
+	var quotaBefore int
+	require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", customer.Id).Select("quota").Scan(&quotaBefore).Error)
+	ownWeb := service.AdtySiteDisplayHost(f.site)
+	otherWeb := service.AdtySiteDisplayHost(other)
+	request := func(host, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = host
+		req.Header.Set("Authorization", "Bearer "+key)
+		// A spoofed forwarded host must not move the key onto another site.
+		req.Header.Set("X-Forwarded-Host", ownWeb)
+		response := httptest.NewRecorder()
+		f.engine.ServeHTTP(response, req)
+		return response
 	}
+	for _, path := range []string{"/api/usage/token/", "/api/log/token"} {
+		assert.Equal(t, http.StatusOK, request(ownWeb, path).Code, path+" on own web host")
+		assert.Equal(t, http.StatusForbidden, request(otherWeb, path).Code, path+" on other web host")
+		assert.Equal(t, http.StatusForbidden, request("main.example.com", path).Code, path+" on main host")
+		assert.Equal(t, http.StatusNotFound, request("stranger.example.net", path).Code, path+" on stranger host")
+	}
+	// Customer web hosts do not serve relay. /v1/models is 403 there even for the key's own site.
+	for _, host := range []string{ownWeb, otherWeb} {
+		assert.Equal(t, http.StatusForbidden, request(host, "/v1/models").Code, "/v1/models on "+host)
+	}
+	assert.Equal(t, http.StatusForbidden, request("main.example.com", "/v1/models").Code, "site key must not list models on the main host")
+	assert.Equal(t, http.StatusNotFound, request("stranger.example.net", "/v1/models").Code, "unknown host stays 404")
+
+	service.InvalidateAdtySiteCache()
+	ownAPI := fmt.Sprintf("api-s%d.sites.example.com", f.site.Id)
+	otherAPI := fmt.Sprintf("api-s%d.sites.example.com", other.Id)
+	ownModels := request(ownAPI, "/v1/models")
+	assert.Equal(t, http.StatusOK, ownModels.Code, ownModels.Body.String())
+	assert.Contains(t, ownModels.Body.String(), `"data"`)
+	assert.NotEqual(t, "index", ownModels.Body.String())
+	assert.Equal(t, http.StatusForbidden, request(otherAPI, "/v1/models").Code, "site key must not relay on another site API host")
+	var quotaAfter int
+	require.NoError(t, f.db.Model(&model.User{}).Where("id = ?", customer.Id).Select("quota").Scan(&quotaAfter).Error)
+	assert.Equal(t, quotaBefore, quotaAfter, "read-only key checks must not change the caller quota")
 }
 
 func TestUnknownHostRejectedWhenResellerDisabled(t *testing.T) {

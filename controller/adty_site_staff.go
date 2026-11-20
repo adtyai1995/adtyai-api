@@ -3,7 +3,6 @@ package controller
 import (
 	"encoding/json"
 	"errors"
-	"gorm.io/gorm"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 func GetAdtyOwnerStaff(c *gin.Context) {
@@ -443,58 +443,6 @@ func GetAdtyStaffCustomerTopUps(c *gin.Context) {
 	common.ApiSuccess(c, page)
 }
 
-type adtyStaffUsage struct {
-	Id               int    `json:"id"`
-	CreatedAt        int64  `json:"created_at"`
-	Type             int    `json:"type"`
-	ModelName        string `json:"model_name"`
-	Quota            int    `json:"quota"`
-	PromptTokens     int    `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
-}
-
-func GetAdtyStaffCustomerLogs(c *gin.Context) {
-	staff, site, ok := adtyStaffRequest(c, "customers.usage")
-	if !ok {
-		return
-	}
-	id, ok := adtyPathId(c)
-	if !ok {
-		return
-	}
-	if service.AdtySiteVisibility(site)["request_logs"] != "on" {
-		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteHidden)
-		return
-	}
-	if _, err := service.GetAdtyOwnerCustomer(site, id); err != nil {
-		adtyOwnerHiddenOrError(c, err)
-		return
-	}
-	var customer model.AdtySiteCustomer
-	if err := model.DB.Where("user_id = ? AND site_id = ?", id, staff.SiteId).First(&customer).Error; err != nil {
-		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Customer not found"))
-		return
-	}
-	page, offset, limit := adtyPage(c)
-	query := model.LOG_DB.Model(&model.Log{}).Where("user_id = ? AND created_at >= ? AND type IN ?", id, customer.JoinedAt, []int{model.LogTypeConsume, model.LogTypeRefund})
-	var total int64
-	items := []adtyStaffUsage{}
-	if err := query.Count(&total).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if err := query.Select("id", "created_at", "type", "model_name", "quota", "prompt_tokens", "completion_tokens").Order("id DESC").Offset(offset).Limit(limit).Find(&items).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if !adtyStaffReadAudit(c, staff, "staff.usage.read", id) {
-		return
-	}
-	page.SetItems(items)
-	page.SetTotal(int(total))
-	common.ApiSuccess(c, page)
-}
-
 // Employee order data uses the unified SQL scope with an explicit minimal
 // projection. Permission to read a recharge never grants financial trace data.
 func GetAdtyStaffCustomerOrders(c *gin.Context) {
@@ -584,5 +532,57 @@ func GetAdtyStaffCustomerOrders(c *gin.Context) {
 	}
 	page.SetTotal(int(total))
 	page.SetItems(items)
+	common.ApiSuccess(c, page)
+}
+
+type adtyStaffUsage struct {
+	Id               int    `json:"id"`
+	CreatedAt        int64  `json:"created_at"`
+	Type             int    `json:"type"`
+	ModelName        string `json:"model_name"`
+	Quota            int    `json:"quota"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+}
+
+func GetAdtyStaffCustomerLogs(c *gin.Context) {
+	staff, site, ok := adtyStaffRequest(c, "customers.usage")
+	if !ok {
+		return
+	}
+	id, ok := adtyPathId(c)
+	if !ok {
+		return
+	}
+	if service.AdtySiteVisibility(site)["request_logs"] != "on" {
+		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteHidden)
+		return
+	}
+	if _, err := service.GetAdtyOwnerCustomer(site, id); err != nil {
+		adtyOwnerHiddenOrError(c, err)
+		return
+	}
+	var customer model.AdtySiteCustomer
+	if err := model.DB.Where("user_id = ? AND site_id = ?", id, staff.SiteId).First(&customer).Error; err != nil {
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Customer not found"))
+		return
+	}
+	page, offset, limit := adtyPage(c)
+	query := model.LOG_DB.Model(&model.Log{}).Where("user_id = ? AND created_at >= ? AND type IN ?", id, customer.JoinedAt, []int{model.LogTypeConsume, model.LogTypeRefund})
+	var total int64
+	items := []adtyStaffUsage{}
+	if err := query.Count(&total).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := query.Select("id", "created_at", "type", "model_name", "quota", "prompt_tokens", "completion_tokens").Order("id DESC").Offset(offset).Limit(limit).Find(&items).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !adtyStaffReadAudit(c, staff, "staff.usage.read", id) {
+		return
+	}
+	page.SetItems(items)
+	page.SetTotal(int(total))
 	common.ApiSuccess(c, page)
 }

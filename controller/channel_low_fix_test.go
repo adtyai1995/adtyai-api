@@ -14,7 +14,7 @@ import (
 
 func TestMultiKeyAuditWaitsForSuccess(t *testing.T) {
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.AdtyGroup{}, &model.AuditLog{}, &model.User{}))
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.AdtyGroup{}, &model.AuditLog{}, &model.AuditIntent{}, &model.User{}))
 	previousLog, previousRedis, previousCache := model.LOG_DB, common.RedisEnabled, common.MemoryCacheEnabled
 	model.LOG_DB = db
 	common.RedisEnabled = false

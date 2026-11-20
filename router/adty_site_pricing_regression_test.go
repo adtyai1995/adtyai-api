@@ -24,13 +24,7 @@ func TestSitePricingHistoryOwnerScopePG(t *testing.T) {
 	require.NoError(t, err)
 	response := f.call(t, http.MethodGet, "/api/adty/site/pricing/history?site_id="+fmt.Sprint(f.other.Id), "", "")
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-	var body struct {
-		Success bool `json:"success"`
-		Data    struct {
-			Total int                       `json:"total"`
-			Items []model.AdtyPriceRevision `json:"items"`
-		} `json:"data"`
-	}
+	var body struct { Success bool `json:"success"`; Data struct { Total int `json:"total"`; Items []model.AdtyPriceRevision `json:"items"` } `json:"data"` }
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &body))
 	require.True(t, body.Success)
 	require.Equal(t, 1, body.Data.Total)
@@ -55,18 +49,10 @@ func TestSitePricingDeletedScopeVersionAPIPG(t *testing.T) {
 		deleted, err := service.SaveAdtySitePricing(service.AdtySitePricingInput{SiteId: f.site.Id, UserId: userID, ModelMarkups: map[string]decimal.Decimal{"model": decimal.Zero}, ExpectedVersion: first.Version, Now: 1700000001})
 		require.NoError(t, err)
 		path := "/api/adty/site/self"
-		if userID > 0 {
-			path = fmt.Sprintf("/api/adty/site/customers/%d", userID)
-		}
+		if userID > 0 { path = fmt.Sprintf("/api/adty/site/customers/%d", userID) }
 		response := f.call(t, http.MethodGet, path, "", "")
 		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-		var body struct {
-			Success bool `json:"success"`
-			Data    struct {
-				Version int64                 `json:"pricing_version"`
-				Prices  []model.AdtySitePrice `json:"prices"`
-			} `json:"data"`
-		}
+		var body struct { Success bool `json:"success"`; Data struct { Version int64 `json:"pricing_version"`; Prices []model.AdtySitePrice `json:"prices"` } `json:"data"` }
 		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &body))
 		require.True(t, body.Success, response.Body.String())
 		require.Empty(t, body.Data.Prices)

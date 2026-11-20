@@ -42,11 +42,10 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 			// Failed requests have no committed balance changes to render.
 			content = "Failed user quota adjustment"
 		}
-		model.RecordOperationAuditLog(c.GetInt("id"), c.GetInt("role"), content, c.ClientIP(), action, params,
-			auditOperatorInfo(c), &model.AuditRequestInfo{
-				Method: c.Request.Method, Route: c.FullPath(), Status: c.Writer.Status(), Success: success,
-			}, c)
-		markAuditLogged(c)
+		// params still carry approval_ref for the operator snapshot and the
+		// user log. persistAndDeliverAuditEvent keeps that snapshot and omits
+		// the duplicate financial reference from this operation intent.
+		recordDurableOperationAudit(c, action, content, params, success)
 	}()
 
 	// 二开：原因和幂等键，同一事务写余额流水（任务 7.2）；原因只进审计，不进用户日志。

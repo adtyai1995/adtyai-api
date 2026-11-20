@@ -696,7 +696,11 @@ func TestSiteAdminStatsSortAndReports(t *testing.T) {
 	}).Error)
 	require.NoError(t, f.db.Model(small).Update("earning_hook_failures", 3).Error)
 	require.NoError(t, f.db.Model(big).Update("settle_hold_reason", "usage mismatch").Error)
-	require.NoError(t, f.db.Model(&model.ReferralCommissionAccount{}).Where("user_id = ?", small.OwnerUserId).Update("withdrawn_amount", 12.5).Error)
+	require.NoError(t, f.db.Create(&model.AdtySiteWithdrawal{
+		SiteId: small.Id, OwnerUserId: small.OwnerUserId, AmountUSD: decimal.RequireFromString("12.5"),
+		FeeUSD: decimal.Zero, NetUSD: decimal.RequireFromString("12.5"), Method: "usdt",
+		Status: model.AdtySiteWithdrawPaid, IdempotencyKey: fmt.Sprintf("admin-stats-wd-%d", small.Id),
+	}).Error)
 
 	f.grant(t, authz.AdtySiteRead)
 	list := adtyJSON(t, f.engine, http.MethodGet, "/api/adty/admin/sites?sort=revenue", "", f.token)

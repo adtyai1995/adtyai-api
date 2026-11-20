@@ -851,26 +851,36 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	deliverCommittedAudits(c, auditEvents)
+	var postCommitWarnings []string
 	if authzTouched {
 		if err := authz.ReloadPolicy(); err != nil {
-			common.ApiError(c, err)
-			return
+			postCommitWarnings = append(postCommitWarnings, "policy_reload_failed")
+		} else {
+			authz.NotifyPolicyChanged()
 		}
-		authz.NotifyPolicyChanged()
 	}
 	if updatedUser.AuthVersion > previousAuthVersion {
 		if _, err := model.RevokeAllUserSessions(updatedUser.Id, "admin_user_update"); err != nil {
-			common.ApiError(c, err)
-			return
+			postCommitWarnings = append(postCommitWarnings, "session_revoke_failed")
 		}
 	}
 	if err := model.PublishUserAuthCache(updatedUser.Id); err != nil {
-		common.ApiError(c, err)
+		postCommitWarnings = append(postCommitWarnings, "auth_cache_publish_failed")
+	}
+	if len(postCommitWarnings) > 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success":              true,
+			"committed":            true,
+			"recovery_required":    true,
+			"post_commit_warnings": postCommitWarnings,
+			"message":              "",
+		})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
+		"success":   true,
+		"committed": true,
+		"message":   "",
 	})
 	return
 }
@@ -907,6 +917,9 @@ func AdminClearUserBinding(c *gin.Context) {
 	if err := user.ClearBinding(bindingType); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if bindingType == "telegram" {
+		_ = revokeUserTelegramBindings(user.Id, "")
 	}
 
 	recordManageAuditFor(c, user.Id, "user.binding_clear", map[string]any{
@@ -1419,6 +1432,7 @@ func ManageUser(c *gin.Context) {
 		return
 	}
 	changed := false
+	var postCommitWarnings []string
 	if req.Action == "demote" {
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var txErr error
@@ -1432,10 +1446,10 @@ func ManageUser(c *gin.Context) {
 			return
 		}
 		if err := authz.ReloadPolicy(); err != nil {
-			common.ApiError(c, err)
-			return
+			postCommitWarnings = append(postCommitWarnings, "policy_reload_failed")
+		} else {
+			authz.NotifyPolicyChanged()
 		}
-		authz.NotifyPolicyChanged()
 	} else if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var txErr error
 		changed, txErr = model.ApplyManagedUserAccessTx(tx, &user)
@@ -1446,16 +1460,14 @@ func ManageUser(c *gin.Context) {
 	}
 	if changed {
 		if err := model.PublishUserAuthCache(user.Id); err != nil {
-			common.ApiError(c, err)
-			return
+			postCommitWarnings = append(postCommitWarnings, "auth_cache_publish_failed")
 		}
 		reason := "user_security_changed"
 		if req.Action == "demote" {
 			reason = "admin_demote"
 		}
 		if _, err := model.RevokeAllUserSessions(user.Id, reason); err != nil {
-			common.ApiError(c, err)
-			return
+			postCommitWarnings = append(postCommitWarnings, "session_revoke_failed")
 		}
 	}
 	// Role and status were written by themselves. Publish and revoke already
@@ -1475,11 +1487,17 @@ func ManageUser(c *gin.Context) {
 		Role:   user.Role,
 		Status: user.Status,
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    clearUser,
-	})
+	resp := gin.H{
+		"success":   true,
+		"committed": true,
+		"message":   "",
+		"data":      clearUser,
+	}
+	if len(postCommitWarnings) > 0 {
+		resp["recovery_required"] = true
+		resp["post_commit_warnings"] = postCommitWarnings
+	}
+	c.JSON(http.StatusOK, resp)
 	return
 }
 

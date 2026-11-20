@@ -139,8 +139,9 @@ func persistAndDeliverAuditEvent(c *gin.Context, event model.AuditLog) bool {
 	if strings.TrimSpace(event.EventId) == "" || model.DB == nil {
 		return false
 	}
+	intentEvent, omitFinancialRef := operationIntentWithoutDuplicateFinancialRef(event)
 	if !hasDurableAuditIntent(event.EventId) {
-		if err := model.AppendAuditIntentTx(model.DB, event); err != nil {
+		if err := model.AppendAuditIntentTx(model.DB, intentEvent); err != nil {
 			return false
 		}
 	}
@@ -149,9 +150,51 @@ func persistAndDeliverAuditEvent(c *gin.Context, event model.AuditLog) bool {
 	}
 	markAuditLogged(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if omitFinancialRef {
+		// The in-transaction financial intent already identifies that object.
+		// Keep the link on the operator log, and do not replay the stripped
+		// intent payload over that snapshot.
+		if err := model.WritePreparedAuditLog(ctx, event); err != nil {
+			return false
+		}
+		if err := model.AcknowledgeAuditIntent(ctx, event.EventId); err != nil {
+			return false
+		}
+		return true
+	}
 	_ = model.DeliverAuditIntent(ctx, event.EventId)
-	cancel()
 	return true
+}
+
+// operationIntentWithoutDuplicateFinancialRef copies an operation audit and
+// removes a financial_adjustment approval reference from the intent payload.
+// The returned bool is true only when the copy differs from the operator snapshot.
+func operationIntentWithoutDuplicateFinancialRef(event model.AuditLog) (model.AuditLog, bool) {
+	intent := event
+	omitted := false
+	if strings.Contains(intent.ApprovalRef, "financial_adjustment:") {
+		intent.ApprovalRef = ""
+		omitted = true
+	}
+	if intent.Other.Op == nil || intent.Other.Op.Params == nil {
+		return intent, omitted
+	}
+	raw, ok := intent.Other.Op.Params["approval_ref"]
+	if !ok || !strings.Contains(fmt.Sprint(raw), "financial_adjustment:") {
+		return intent, omitted
+	}
+	op := *intent.Other.Op
+	params := make(model.AuditFields, len(op.Params))
+	for key, value := range op.Params {
+		if key == "approval_ref" {
+			continue
+		}
+		params[key] = value
+	}
+	op.Params = params
+	intent.Other.Op = &op
+	return intent, true
 }
 
 func recordPasskeyDomainAudit(c *gin.Context, change *model.PasskeyDomainChange, confirmed bool, err error) {
@@ -268,6 +311,53 @@ func markAuditLogged(c *gin.Context) {
 // 渠道 / 系统设置 / 兑换码等）。content 由 action+params 自动渲染。
 func recordManageAudit(c *gin.Context, action string, params map[string]any) {
 	recordManageAuditFor(c, c.GetInt("id"), action, params)
+}
+
+// recordDurableOperationAudit persists one official operation audit and only
+// then suppresses the admin-route fallback. A direct audit-log insert does not
+// prove durability, so it must not be used to skip that fallback.
+func recordDurableOperationAudit(c *gin.Context, action, content string, params map[string]any, success bool) {
+	if c == nil {
+		return
+	}
+	if params == nil {
+		params = map[string]any{}
+	}
+	status := http.StatusOK
+	if c.Writer != nil && c.Writer.Status() > 0 {
+		status = c.Writer.Status()
+	}
+	username := c.GetString("username")
+	if username == "" && c.GetInt("id") > 0 {
+		username, _ = model.GetUsernameById(c.GetInt("id"), false)
+	}
+	siteID := service.AdtyRequestSiteID(c)
+	if inferred := model.InferOfficialAuditSiteID(c, params); inferred != 0 || params["site_id"] != nil {
+		siteID = inferred
+	}
+	objectType, objectID := model.InferOfficialAuditObject(action, params, strconv.Itoa(c.GetInt("id")), action)
+	before, after := model.InferOfficialAuditBeforeAfter(params)
+	entry, err := model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
+		UserId: c.GetInt("id"), Username: username, ActorRole: c.GetInt("role"),
+		SiteID: model.OfficialAuditSiteIDPointer(siteID), ObjectType: objectType, ObjectID: objectID,
+		Action: action, Category: model.AuditCategoryOperation, Content: content,
+		Before: before, After: after, Reason: model.InferOfficialAuditReason(params),
+		ApprovalRef: model.InferOfficialAuditApprovalRef(params), Result: model.OfficialAuditResult(success),
+		Success: success, Status: status, Ip: c.ClientIP(),
+		Other: model.AuditOther{
+			Op:        &model.AuditOperation{Action: action, Params: params},
+			AdminInfo: auditOperatorInfo(c),
+			AuditInfo: &model.AuditRequestInfo{
+				Method: c.Request.Method, Route: c.FullPath(), Path: c.FullPath(),
+				Status: status, Success: success,
+			},
+		},
+	})
+	if err != nil {
+		return
+	}
+	rememberPreparedAuditEvent(c, entry.EventId)
+	persistAndDeliverAuditEvent(c, entry)
 }
 
 // recordManageAuditFor 记录一条管理审计日志，日志归属于操作者；targetUserId
