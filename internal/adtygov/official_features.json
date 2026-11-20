@@ -11060,15 +11060,23 @@
           "line": 23
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1306LeaderCreditsAndSpendsSharedQuotaPG"
+      ],
       "db_money_invariants": [
-        "applyAdtyTeamQuotaTx 计算 after = shared_quota + delta；after < 0 返回 ErrAdtyTeamFunds；同一事务更新 shared_quota 并插入 AdtyTeamLedger，记录 delta、before、after，幂等键为 kind:ref，reserve 另加累计目标后缀",
-        "SpendAdtyTeam 在 SharedQuota < 请求额度时返回 ErrAdtyTeamFunds，函数体不改调用者 user.quota",
-        "CreditAdtyTeam 只允许活跃团队负责人入账，quota 必须为正且 ref 非空",
-        "已打开的 TestAdtyTeamInviteKeyAndCloseKeepSharedBalance 源码：CreditAdtyTeam 500000 后预扣 200000，SharedQuota 为 300000，员工个人 Quota 为 0"
+        "shared_quota_after_credit_1000000",
+        "shared_quota_after_spend_750000",
+        "credit_ledger_delta_1000000",
+        "spend_ledger_delta_-250000",
+        "replay_credit_rejected",
+        "replay_spend_rejected",
+        "team_discount_1",
+        "main_site_id_0",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-13-06",
         "requirement_refs": [
@@ -11104,15 +11112,23 @@
             "line": 23
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1306LeaderCreditsAndSpendsSharedQuotaPG"
+        ],
         "db_money_invariants": [
-          "applyAdtyTeamQuotaTx 计算 after = shared_quota + delta；after < 0 返回 ErrAdtyTeamFunds；同一事务更新 shared_quota 并插入 AdtyTeamLedger，记录 delta、before、after，幂等键为 kind:ref，reserve 另加累计目标后缀",
-          "SpendAdtyTeam 在 SharedQuota < 请求额度时返回 ErrAdtyTeamFunds，函数体不改调用者 user.quota",
-          "CreditAdtyTeam 只允许活跃团队负责人入账，quota 必须为正且 ref 非空",
-          "已打开的 TestAdtyTeamInviteKeyAndCloseKeepSharedBalance 源码：CreditAdtyTeam 500000 后预扣 200000，SharedQuota 为 300000，员工个人 Quota 为 0"
+          "shared_quota_after_credit_1000000",
+          "shared_quota_after_spend_750000",
+          "credit_ledger_delta_1000000",
+          "spend_ledger_delta_-250000",
+          "replay_credit_rejected",
+          "replay_spend_rejected",
+          "team_discount_1",
+          "main_site_id_0",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
@@ -11345,12 +11361,22 @@
           "line": 151
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1309LeaderBindsAndRevokesTeamKeyPG"
+      ],
       "db_money_invariants": [
-        "no_money_change"
+        "one_team_key",
+        "replay_bind_rejected",
+        "key_status_left_after_revoke",
+        "token_status_disabled",
+        "token_remain_quota_1000",
+        "shared_quota_stays_0",
+        "zero_team_ledgers",
+        "quota_stays_500000",
+        "zero_adty_balance_ledgers"
       ],
       "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "na_reason": "已有成功路径测试，正式证据尚未入账",
       "design_card": {
         "feature_id": "ADTY-13-09",
         "requirement_refs": [
@@ -11379,12 +11405,22 @@
             "line": 151
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1309LeaderBindsAndRevokesTeamKeyPG"
+        ],
         "db_money_invariants": [
-          "no_money_change"
+          "one_team_key",
+          "replay_bind_rejected",
+          "key_status_left_after_revoke",
+          "token_status_disabled",
+          "token_remain_quota_1000",
+          "shared_quota_stays_0",
+          "zero_team_ledgers",
+          "quota_stays_500000",
+          "zero_adty_balance_ledgers"
         ],
         "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "na_reason": "已有成功路径测试，正式证据尚未入账"
       }
     },
     {
