@@ -20,10 +20,9 @@ import (
 // 汇总后加进站长佣金账户（可以为负），写返佣流水 site_earning，行改成 available。
 // 站点 paused 或对账暂停时只结负数。
 
-// adtySettleCutoffDay 是能结算的最后一天：今天往前 freeze_days 天（至少是昨天）。
+// adtySettleCutoffDay returns the current day (confirmed site earnings settle immediately without freeze_days delay).
 func adtySettleCutoffDay(now time.Time) string {
-	days := max(resellerSetting().FreezeDays, 0)
-	return now.AddDate(0, 0, -max(days, 1)).Format("2006-01-02")
+	return now.Format("2006-01-02")
 }
 
 // adtyEarningDayOf 去掉槽位后缀（"2026-10-31+1" → "2026-10-31"）。
@@ -38,16 +37,20 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 	if err := model.DB.Where("projected = ? AND (review_status <> ? OR review_status IS NULL)", false, model.AdtyEarningNeedsReview).Order("created_at").Limit(1000).Find(&events).Error; err != nil {
 		return 0, err
 	}
+	projectedSites := map[int]struct{}{}
 	for _, event := range events {
 		if err := projectAdtySiteEarningEvent(context.Background(), event.OperationKey); err != nil {
 			return 0, err
+		}
+		if event.SiteId > 0 {
+			projectedSites[event.SiteId] = struct{}{}
 		}
 	}
 	cutoff := adtySettleCutoffDay(now)
 	var siteIds []int
 	if err := model.DB.Model(&model.AdtySiteEarningDaily{}).Distinct("site_id").
-		Where("status IN ? AND kind NOT IN ? AND (earning < 0 OR day <= ?)",
-			[]string{model.AdtySiteEarningPending, model.AdtySiteEarningAvailable}, []string{model.AdtySiteEarningSkipped, model.AdtySiteEarningTrial}, cutoff+"+~").
+		Where("status IN ? AND kind <> ?",
+			[]string{model.AdtySiteEarningPending, model.AdtySiteEarningAvailable}, model.AdtySiteEarningTrial).
 		Pluck("site_id", &siteIds).Error; err != nil {
 		return 0, err
 	}
@@ -76,8 +79,11 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 			}
 			continue
 		}
-		if ok {
-			settled++
+		_, wasProjected := projectedSites[siteId]
+		if ok || wasProjected {
+			if ok {
+				settled++
+			}
 			if err := ResumeAdtySiteInviteCoverage(siteId, now); err != nil {
 				common.SysError(common.LogText("resume site invite coverage failed site=%d: %s", siteId, err.Error()))
 			}
@@ -118,19 +124,15 @@ func settleAdtySite(siteId int, cutoff string, now int64) (bool, error) {
 			}
 		}
 		var rows []model.AdtySiteEarningDaily
-		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status = ? AND kind NOT IN ?",
-			siteId, model.AdtySiteEarningPending, []string{model.AdtySiteEarningSkipped, model.AdtySiteEarningTrial}).
+		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status = ? AND kind <> ?",
+			siteId, model.AdtySiteEarningPending, model.AdtySiteEarningTrial).
 			Find(&rows).Error; err != nil {
 			return err
 		}
 		eligible := make([]model.AdtySiteEarningDaily, 0, len(rows))
 		for _, row := range rows {
 			negative := row.Earning.IsNegative()
-			// 负数不等冻结期。正数要过了 cutoff 才结。
-			if !negative && adtyEarningDayOf(row.Day) > cutoff {
-				continue
-			}
-			// 暂停、待审或对账暂停时只结负收益，正收益留着等恢复。
+			// 待审或对账暂停时只结负收益，正收益留着等恢复。
 			if holdPositive && !negative {
 				continue
 			}

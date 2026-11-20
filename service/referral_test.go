@@ -41,8 +41,8 @@ func prepareReferralDB(t *testing.T) *gorm.DB {
 func prepareReferralDialectDB(t *testing.T, dialect string) *gorm.DB {
 	t.Helper()
 	db := referralOrderMatrixDB(t, dialect)
-	// Notification cleanup owns a permanent pool worker. Start it before
-	// taking the baseline so the first wallet test can drain its transient work.
+	// Notification cleanup is a process-lifetime goroutine, not a pool worker.
+	// Start it before the baseline so it cannot be mistaken for transient work.
 	cleanupOnce.Do(startCleanupTask)
 	workerBaseline := gopool.WorkerCount()
 	oldRedis, oldPerUnit, oldSecret := common.RedisEnabled, common.QuotaPerUnit, common.SessionSecret

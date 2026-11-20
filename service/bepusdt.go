@@ -216,7 +216,8 @@ func CreateBEpusdtOrder(req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
 	}, nil
 }
 
-// CancelBEpusdtOrder 取消等待支付的订单；已检测到转账的订单网关会拒绝。
+// CancelBEpusdtOrder 取消等待支付的订单。只有网关明确说已经检测到转账或已支付时，
+// 才阻止本地取消。网关说订单已取消、连接被断开，或其它非到账错误，都不留下待支付。
 func CancelBEpusdtOrder(tradeId string) error {
 	if strings.TrimSpace(tradeId) == "" {
 		return nil
@@ -225,7 +226,7 @@ func CancelBEpusdtOrder(tradeId string) error {
 	defer cancel()
 	_, err := bepusdtPost(ctx, "/api/v1/order/cancel-transaction", map[string]any{"trade_id": tradeId})
 	if err == nil || !bepusdtPaymentDetected(err) {
-		return err
+		return nil
 	}
 	return fmt.Errorf("%w: %s", ErrAdtyPaymentDetected, err.Error())
 }

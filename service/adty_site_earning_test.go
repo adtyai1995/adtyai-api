@@ -28,6 +28,178 @@ func perUnit(amount string) int64 {
 	return usd(amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
 }
 
+func TestConfirmedSiteEarningSettlementIsImmediateAndAtomic(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "confirmed-atomic")
+	customer := siteCustomer(t, db, site, "confirmed-atomic-customer")
+	require.NoError(t, db.Model(customer).Update("quota", perUnit("300")).Error)
+	key := "confirmed:immediate"
+	require.NoError(t, model.QueueDirectBillingDelta(model.BillingOperation{OperationKey: key, UserId: customer.Id, SiteId: site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8}, int(perUnit("125"))))
+	fail := true
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register("test:confirmed-earning-failure", func(tx *gorm.DB) {
+		if fail && tx.Statement.Table == "adty_site_wallet_ledgers" {
+			tx.AddError(fmt.Errorf("forced earning ledger failure"))
+		}
+	}))
+	t.Cleanup(func() { db.Callback().Create().Remove("test:confirmed-earning-failure") })
+	_, _, err := model.ApplyBillingSettlement(key)
+	assert.Error(t, err, "wallet posting failure must roll back the original charge")
+	assert.EqualValues(t, perUnit("300"), getUserQuota(t, customer.Id))
+	fail = false
+	_, _, err = model.ApplyBillingSettlement(key)
+	require.NoError(t, err)
+	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
+	assert.EqualValues(t, perUnit("175"), getUserQuota(t, customer.Id))
+	for range 2 {
+		_, _, err = model.ApplyBillingSettlement(key)
+		require.NoError(t, err)
+		require.NoError(t, projectAdtySiteEarningEvent(context.Background(), key))
+		_, err = RunAdtySiteSettlementOnce(time.Now().AddDate(0, 0, 30))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "replay and daily summary cannot credit twice")
+	var count int64
+	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND type = ?", site.Id, "site_earning_settlement").Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+}
+
+func TestRiskMetadataPreservesConfirmedSiteEarning(t *testing.T) {
+	for _, flag := range []string{model.AdtySiteRiskSelfUse, model.AdtySiteRiskMigration} {
+		t.Run(flag, func(t *testing.T) {
+			db := prepareSiteDB(t)
+			_, site := openActiveSite(t, db, "risk-meta")
+			customer := siteCustomer(t, db, site, "risk-meta-customer")
+			require.NoError(t, db.Model(customer).Update("quota", perUnit("300")).Error)
+			require.NoError(t, db.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", customer.Id).Update("risk_flag", flag).Error)
+			key := "risk:confirmed"
+			require.NoError(t, model.QueueDirectBillingDelta(model.BillingOperation{OperationKey: key, UserId: customer.Id, SiteId: site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8}, int(perUnit("125"))))
+			_, _, err := model.ApplyBillingSettlement(key)
+			require.NoError(t, err)
+			require.NoError(t, projectAdtySiteEarningEvent(context.Background(), key))
+			assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
+			assert.Equal(t, "25", earningTotals(t, db, site.Id)[model.AdtySiteEarningUsage].String())
+			var event model.AdtySiteEarningEvent
+			require.NoError(t, db.Where("operation_key = ?", key).First(&event).Error)
+			assert.Equal(t, flag, event.RiskFlag, "risk remains available for defensive review")
+			for _, convert := range []bool{false, true} {
+				require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, convert))
+				assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "risk review cannot create another credit")
+			}
+		})
+	}
+}
+
+func TestConcurrentIdenticalSiteEarningsKeepBusinessIdentity(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "concurrent-earning")
+	customer := siteCustomer(t, db, site, "concurrent-earning-customer")
+	for i := range 2 {
+		event := model.AdtySiteEarningEvent{OperationKey: fmt.Sprintf("identical:%d", i), UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8, Day: time.Now().Format("2006-01-02")}
+		require.NoError(t, db.Create(&event).Error)
+	}
+	var group sync.WaitGroup
+	errors := make(chan error, 4)
+	for i := range 4 {
+		group.Go(func() { errors <- projectAdtySiteEarningEvent(context.Background(), fmt.Sprintf("identical:%d", i%2)) })
+	}
+	group.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	assert.Equal(t, "50", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
+	var count int64
+	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND type = ?", site.Id, "site_earning_settlement").Count(&count).Error)
+	assert.EqualValues(t, 2, count, "equal amounts from different business operations remain distinct")
+}
+
+func TestCustomerRiskReviewPreservesFinanceEarningDisposition(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "finance-skip-review")
+	customer := siteCustomer(t, db, site, "finance-skip-customer")
+	day := time.Now().Format("2006-01-02")
+	for _, tc := range []struct{ key, status string }{
+		{"legacy-risk", ""}, {"finance-skip", model.AdtyEarningOriginalSkipped},
+	} {
+		event := model.AdtySiteEarningEvent{OperationKey: tc.key, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, UserId: customer.Id,
+			Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8, Day: day, Projected: true, RiskFlag: model.AdtySiteRiskSelfUse, ReviewStatus: tc.status}
+		require.NoError(t, db.Create(&event).Error)
+	}
+	row := model.AdtySiteEarningDaily{SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, UserId: customer.Id, Day: day + "+op",
+		Kind: model.AdtySiteEarningSkipped, Status: model.AdtySiteEarningPending, Reason: model.AdtySiteRiskSelfUse,
+		Quota: perUnit("250"), Revenue: usd("250"), Platform: usd("200"), Earning: usd("50")}
+	require.NoError(t, db.Create(&row).Error)
+	for range 2 {
+		require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, true))
+	}
+	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "only heuristic legacy spread is released once")
+	assert.Equal(t, "25", earningTotals(t, db, site.Id)[model.AdtySiteEarningSkipped].String(), "the explicit finance exclusion remains pending")
+	var excluded model.AdtySiteEarningEvent
+	require.NoError(t, db.Where("operation_key = ?", "finance-skip").First(&excluded).Error)
+	assert.False(t, excluded.RiskReleased)
+	assert.Equal(t, model.AdtyEarningOriginalSkipped, excluded.ReviewStatus)
+}
+
+func TestTeamEarningUsesFrozenSupplyAndFinalPrice(t *testing.T) {
+	for _, tc := range []struct{ name, final, billed, pay, quota, earning string }{
+		{"discount", "120", "1.2", "0.8", "120", "20"},
+		{"floor", "100", "1", "0.5", "100", "0"},
+		{"refund", "120", "1.2", "0.8", "-60", "-10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := prepareSiteDB(t)
+			_, site := openActiveSite(t, db, "team-frozen")
+			customer := siteCustomer(t, db, site, "team-frozen-customer")
+			snapshot, err := model.EncodeRequestPriceSnapshot(&model.RequestPriceSnapshot{
+				SchemaVersion: model.RequestPriceSnapshotVersion, ModelBasePrice: "100", BillingGroup: "default",
+				GroupRatio: "1", SiteCostFactor: "1", SiteMarkupRatio: "0.5", TeamPayRatio: tc.pay, TeamApplied: true,
+				SupplyCost: "100", SellPrice: "150", SupplyPriceFloor: "100", FinalPrice: tc.final,
+				BilledGroupRatio: tc.billed, StoredMarkupK: "1.5", Currency: "USD", BillingUnit: model.BillingUnitPerCall,
+				AcceptedAt: time.Now().Unix(), RuleVersion: model.RequestPriceSnapshotVersion, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId,
+			})
+			require.NoError(t, err)
+			op := model.BillingOperation{OperationKey: "team:frozen", UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Kind: "request", State: model.BillingSettled, PriceSnapshot: snapshot}
+			require.NoError(t, db.Create(&op).Error)
+			event := model.AdtySiteEarningEvent{OperationKey: op.OperationKey, UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Quota: int(perUnit(tc.quota)), Markup: 1.5, CostFactor: 1, Day: time.Now().Format("2006-01-02")}
+			require.NoError(t, db.Create(&event).Error)
+			for range 2 {
+				require.NoError(t, projectAdtySiteEarningEvent(context.Background(), op.OperationKey))
+			}
+			var row model.AdtySiteEarningDaily
+			require.NoError(t, db.Where("site_id = ?", site.Id).First(&row).Error)
+			assert.Equal(t, tc.earning, row.Earning.String())
+			assert.Equal(t, tc.quota, row.Platform.Add(row.Earning).String())
+			start := time.Now().Truncate(24 * time.Hour).Add(-24 * time.Hour).Unix()
+			sheet, err := summarizeAdtySiteSettlement(site.Id, time.Now().Format("2006-01-02"), start, start+3*86400)
+			require.NoError(t, err)
+			assert.Equal(t, tc.earning, sheet.SpreadUSD.String(), "the daily report uses the same frozen supply cost")
+			assert.Equal(t, tc.quota, sheet.SupplyCostUSD.Add(sheet.SpreadUSD).String())
+		})
+	}
+}
+
+func TestFirstCustomerPricePreservesInheritedEffectiveMarkup(t *testing.T) {
+	for _, tc := range []struct {
+		name, requested, current string
+		pending                  bool
+	}{
+		{"raise", "1.8", "1.5", true}, {"decrease", "1.2", "1.2", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := prepareSiteDB(t)
+			_, site := openActiveSite(t, db, "first-customer-price")
+			sitePrice(t, db, site.Id, 0, "", "1.5")
+			customer := siteCustomer(t, db, site, "first-price-customer")
+			_, err := SaveAdtySitePricing(AdtySitePricingInput{SiteId: site.Id, UserId: customer.Id, DefaultMarkup: dec(tc.requested), ExpectedVersion: 0, Now: time.Now().Unix()})
+			require.NoError(t, err)
+			var row model.AdtySitePrice
+			require.NoError(t, db.Where("site_id = ? AND user_id = ?", site.Id, customer.Id).First(&row).Error)
+			assert.Equal(t, tc.current, row.Markup.String())
+			assert.Equal(t, tc.pending, row.PendingAt > 0)
+		})
+	}
+}
+
 // earningRows 取一个站的收益行，按类型汇总。
 func earningTotals(t *testing.T, db *gorm.DB, siteId int) map[string]decimal.Decimal {
 	t.Helper()
@@ -967,6 +1139,7 @@ func TestEarningHookOnSQLite(t *testing.T) {
 	t.Cleanup(func() {
 		model.DB.Exec("DELETE FROM adty_site_earning_daily")
 		model.DB.Exec("DELETE FROM adty_site_customers")
+		model.DB.Exec("DELETE FROM adty_site_wallets WHERE site_id = 3")
 		model.DB.Exec("DELETE FROM adty_sites WHERE id = 3")
 	})
 	for range 2 {
@@ -1157,176 +1330,75 @@ func TestTaskEarningOwnerSnapshotFailureIsCounted(t *testing.T) {
 	assert.Empty(t, earningTotals(t, db, site.Id), "解析失败不能凭空写收益行")
 }
 
-func TestConfirmedSiteEarningSettlementIsImmediateAndAtomic(t *testing.T) {
+func TestDurableRequestAndTaskRecordModelGroupEarningLinesWithoutChannelDisclosure(t *testing.T) {
 	db := prepareSiteDB(t)
-	_, site := openActiveSite(t, db, "confirmed-atomic")
-	customer := siteCustomer(t, db, site, "confirmed-atomic-customer")
-	require.NoError(t, db.Model(customer).Update("quota", perUnit("300")).Error)
-	key := "confirmed:immediate"
-	require.NoError(t, model.QueueDirectBillingDelta(model.BillingOperation{OperationKey: key, UserId: customer.Id, SiteId: site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8}, int(perUnit("125"))))
-	fail := true
-	require.NoError(t, db.Callback().Create().Before("gorm:create").Register("test:confirmed-earning-failure", func(tx *gorm.DB) {
-		if fail && tx.Statement.Table == "adty_site_wallet_ledgers" {
-			tx.AddError(fmt.Errorf("forced earning ledger failure"))
-		}
-	}))
-	t.Cleanup(func() { db.Callback().Create().Remove("test:confirmed-earning-failure") })
-	_, _, err := model.ApplyBillingSettlement(key)
-	assert.Error(t, err, "wallet posting failure must roll back the original charge")
-	assert.EqualValues(t, perUnit("300"), getUserQuota(t, customer.Id))
-	fail = false
-	_, _, err = model.ApplyBillingSettlement(key)
+	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Channel{}, &model.Task{}, &model.Midjourney{}, &model.AdtySiteEarningLine{}))
+	_, site := openActiveSite(t, db, "durable-lines")
+	customer := siteCustomer(t, db, site, "durable-lines-customer")
+	sitePrice(t, db, site.Id, 0, "", "1.25")
+	require.NoError(t, db.Model(customer).Update("quota", perUnit("500")).Error)
+
+	// 1. Durable request settlement + consume log records exactly one model/group detail line.
+	c := adtyWalletRelayContext()
+	c.Set(common.RequestIdKey, "req-durable-line-1")
+	AdtyApplySiteMarkup(c, customer.Id, "vip", 1, "gpt-4o")
+	info := adtyWalletRelayInfo(customer.Id, 0, "")
+	info.IsPlayground = true
+	info.OriginModelName = "gpt-4o"
+	info.RequestId = "req-durable-line-1"
+	info.PriceData.ModelRatio = 1
+	info.UsingGroup = "vip"
+	info.UserGroup = "vip"
+	require.Nil(t, PreConsumeBilling(c, int(perUnit("125")), info))
+	require.NoError(t, info.Billing.Settle(int(perUnit("125"))))
+	model.RecordConsumeLog(c, customer.Id, model.RecordConsumeLogParams{
+		ChannelId: 77, ModelName: "gpt-4o", Quota: int(perUnit("125")), Group: "vip",
+	})
+
+	// 2. Durable task settlement + task refund also record model/group detail lines.
+	cTask := adtyWalletRelayContext()
+	AdtyApplySiteMarkup(cTask, customer.Id, "pro", 1, "sora-video")
+	taskInfo := adtyWalletRelayInfo(customer.Id, 0, "")
+	taskInfo.IsPlayground = true
+	taskInfo.OriginModelName = "sora-video"
+	taskInfo.PriceData.ModelRatio = 1
+	taskInfo.UsingGroup = "pro"
+	require.Nil(t, PreConsumeBilling(cTask, int(perUnit("50")), taskInfo))
+	task := &model.Task{
+		TaskID: model.GenerateTaskID(), UserId: customer.Id, ChannelId: 88, Group: "pro",
+		Quota: int(perUnit("50")), Status: model.TaskStatusInProgress,
+		Properties: model.Properties{OriginModelName: "sora-video"},
+	}
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		OriginModelName: "sora-video",
+		SiteId:          site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8,
+	}
+	AttachTaskBillingReservation(taskInfo, task)
+	require.NoError(t, task.Insert())
+	require.NoError(t, taskInfo.Billing.Settle(int(perUnit("50"))))
+	require.True(t, RefundTaskQuota(context.Background(), task, "upstream failed"))
+
+	lines, err := ListAdtyOwnerEarningLines(site.Id, 0, 20)
 	require.NoError(t, err)
-	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
-	assert.EqualValues(t, perUnit("175"), getUserQuota(t, customer.Id))
-	for range 2 {
-		_, _, err = model.ApplyBillingSettlement(key)
-		require.NoError(t, err)
-		require.NoError(t, projectAdtySiteEarningEvent(context.Background(), key))
-		_, err = RunAdtySiteSettlementOnce(time.Now().AddDate(0, 0, 30))
-		require.NoError(t, err)
-	}
-	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "replay and daily summary cannot credit twice")
-	var count int64
-	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND type = ?", site.Id, "site_earning_settlement").Count(&count).Error)
-	assert.EqualValues(t, 1, count)
-}
+	require.Len(t, lines, 3, "expected 1 request line, 1 task settle line, and 1 task refund line")
 
-func TestRiskMetadataPreservesConfirmedSiteEarning(t *testing.T) {
-	for _, flag := range []string{model.AdtySiteRiskSelfUse, model.AdtySiteRiskMigration} {
-		t.Run(flag, func(t *testing.T) {
-			db := prepareSiteDB(t)
-			_, site := openActiveSite(t, db, "risk-meta")
-			customer := siteCustomer(t, db, site, "risk-meta-customer")
-			require.NoError(t, db.Model(customer).Update("quota", perUnit("300")).Error)
-			require.NoError(t, db.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", customer.Id).Update("risk_flag", flag).Error)
-			key := "risk:confirmed"
-			require.NoError(t, model.QueueDirectBillingDelta(model.BillingOperation{OperationKey: key, UserId: customer.Id, SiteId: site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8}, int(perUnit("125"))))
-			_, _, err := model.ApplyBillingSettlement(key)
-			require.NoError(t, err)
-			require.NoError(t, projectAdtySiteEarningEvent(context.Background(), key))
-			assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
-			assert.Equal(t, "25", earningTotals(t, db, site.Id)[model.AdtySiteEarningUsage].String())
-			var event model.AdtySiteEarningEvent
-			require.NoError(t, db.Where("operation_key = ?", key).First(&event).Error)
-			assert.Equal(t, flag, event.RiskFlag, "risk remains available for defensive review")
-			for _, convert := range []bool{false, true} {
-				require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, convert))
-				assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "risk review cannot create another credit")
-			}
-		})
+	var reqLine *model.AdtySiteEarningLine
+	for i := range lines {
+		if lines[i].RequestId == "req-durable-line-1" {
+			reqLine = &lines[i]
+		}
 	}
-}
+	require.NotNil(t, reqLine)
+	assert.Equal(t, "gpt-4o", reqLine.ModelName)
+	assert.Equal(t, "vip", reqLine.Group)
+	assert.EqualValues(t, perUnit("125"), reqLine.Quota)
+	assert.True(t, reqLine.Revenue.Equal(usd("125")))
+	assert.True(t, reqLine.Platform.Equal(usd("100")))
+	assert.True(t, reqLine.Earning.Equal(usd("25")))
 
-func TestTeamEarningUsesFrozenSupplyAndFinalPrice(t *testing.T) {
-	for _, tc := range []struct{ name, final, billed, pay, quota, earning string }{
-		{"discount", "120", "1.2", "0.8", "120", "20"},
-		{"floor", "100", "1", "0.5", "100", "0"},
-		{"refund", "120", "1.2", "0.8", "-60", "-10"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db := prepareSiteDB(t)
-			_, site := openActiveSite(t, db, "team-frozen")
-			customer := siteCustomer(t, db, site, "team-frozen-customer")
-			snapshot, err := model.EncodeRequestPriceSnapshot(&model.RequestPriceSnapshot{
-				SchemaVersion: model.RequestPriceSnapshotVersion, ModelBasePrice: "100", BillingGroup: "default",
-				GroupRatio: "1", SiteCostFactor: "1", SiteMarkupRatio: "0.5", TeamPayRatio: tc.pay, TeamApplied: true,
-				SupplyCost: "100", SellPrice: "150", SupplyPriceFloor: "100", FinalPrice: tc.final,
-				BilledGroupRatio: tc.billed, StoredMarkupK: "1.5", Currency: "USD", BillingUnit: model.BillingUnitPerCall,
-				AcceptedAt: time.Now().Unix(), RuleVersion: model.RequestPriceSnapshotVersion, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId,
-			})
-			require.NoError(t, err)
-			op := model.BillingOperation{OperationKey: "team:frozen", UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Kind: "request", State: model.BillingSettled, PriceSnapshot: snapshot}
-			require.NoError(t, db.Create(&op).Error)
-			event := model.AdtySiteEarningEvent{OperationKey: op.OperationKey, UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Quota: int(perUnit(tc.quota)), Markup: 1.5, CostFactor: 1, Day: time.Now().Format("2006-01-02")}
-			require.NoError(t, db.Create(&event).Error)
-			for range 2 {
-				require.NoError(t, projectAdtySiteEarningEvent(context.Background(), op.OperationKey))
-			}
-			var row model.AdtySiteEarningDaily
-			require.NoError(t, db.Where("site_id = ?", site.Id).First(&row).Error)
-			assert.Equal(t, tc.earning, row.Earning.String())
-			assert.Equal(t, tc.quota, row.Platform.Add(row.Earning).String())
-			start := time.Now().Truncate(24 * time.Hour).Add(-24 * time.Hour).Unix()
-			sheet, err := summarizeAdtySiteSettlement(site.Id, time.Now().Format("2006-01-02"), start, start+3*86400)
-			require.NoError(t, err)
-			assert.Equal(t, tc.earning, sheet.SpreadUSD.String(), "the daily report uses the same frozen supply cost")
-			assert.Equal(t, tc.quota, sheet.SupplyCostUSD.Add(sheet.SpreadUSD).String())
-		})
-	}
-}
-
-func TestFirstCustomerPricePreservesInheritedEffectiveMarkup(t *testing.T) {
-	for _, tc := range []struct {
-		name, requested, current string
-		pending                  bool
-	}{
-		{"raise", "1.8", "1.5", true}, {"decrease", "1.2", "1.2", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db := prepareSiteDB(t)
-			_, site := openActiveSite(t, db, "first-customer-price")
-			sitePrice(t, db, site.Id, 0, "", "1.5")
-			customer := siteCustomer(t, db, site, "first-price-customer")
-			_, err := SaveAdtySitePricing(AdtySitePricingInput{SiteId: site.Id, UserId: customer.Id, DefaultMarkup: dec(tc.requested), ExpectedVersion: 0, Now: time.Now().Unix()})
-			require.NoError(t, err)
-			var row model.AdtySitePrice
-			require.NoError(t, db.Where("site_id = ? AND user_id = ?", site.Id, customer.Id).First(&row).Error)
-			assert.Equal(t, tc.current, row.Markup.String())
-			assert.Equal(t, tc.pending, row.PendingAt > 0)
-		})
-	}
-}
-
-func TestConcurrentIdenticalSiteEarningsKeepBusinessIdentity(t *testing.T) {
-	db := prepareSiteDB(t)
-	_, site := openActiveSite(t, db, "concurrent-earning")
-	customer := siteCustomer(t, db, site, "concurrent-earning-customer")
-	for i := range 2 {
-		event := model.AdtySiteEarningEvent{OperationKey: fmt.Sprintf("identical:%d", i), UserId: customer.Id, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8, Day: time.Now().Format("2006-01-02")}
-		require.NoError(t, db.Create(&event).Error)
-	}
-	var group sync.WaitGroup
-	errors := make(chan error, 4)
-	for i := range 4 {
-		group.Go(func() { errors <- projectAdtySiteEarningEvent(context.Background(), fmt.Sprintf("identical:%d", i%2)) })
-	}
-	group.Wait()
-	close(errors)
-	for err := range errors {
-		require.NoError(t, err)
-	}
-	assert.Equal(t, "50", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String())
-	var count int64
-	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND type = ?", site.Id, "site_earning_settlement").Count(&count).Error)
-	assert.EqualValues(t, 2, count, "equal amounts from different business operations remain distinct")
-}
-
-func TestCustomerRiskReviewPreservesFinanceEarningDisposition(t *testing.T) {
-	db := prepareSiteDB(t)
-	_, site := openActiveSite(t, db, "finance-skip-review")
-	customer := siteCustomer(t, db, site, "finance-skip-customer")
-	day := time.Now().Format("2006-01-02")
-	for _, tc := range []struct{ key, status string }{
-		{"legacy-risk", ""}, {"finance-skip", model.AdtyEarningOriginalSkipped},
-	} {
-		event := model.AdtySiteEarningEvent{OperationKey: tc.key, SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, UserId: customer.Id,
-			Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8, Day: day, Projected: true, RiskFlag: model.AdtySiteRiskSelfUse, ReviewStatus: tc.status}
-		require.NoError(t, db.Create(&event).Error)
-	}
-	row := model.AdtySiteEarningDaily{SiteId: site.Id, SiteOwnerUserId: site.OwnerUserId, UserId: customer.Id, Day: day + "+op",
-		Kind: model.AdtySiteEarningSkipped, Status: model.AdtySiteEarningPending, Reason: model.AdtySiteRiskSelfUse,
-		Quota: perUnit("250"), Revenue: usd("250"), Platform: usd("200"), Earning: usd("50")}
-	require.NoError(t, db.Create(&row).Error)
-	for range 2 {
-		require.NoError(t, ReviewAdtySiteCustomer(customer.Id, 1, true))
-	}
-	assert.Equal(t, "25", siteWalletBalance(t, db, site.Id, model.AdtySiteWalletEarnings).String(), "only heuristic legacy spread is released once")
-	assert.Equal(t, "25", earningTotals(t, db, site.Id)[model.AdtySiteEarningSkipped].String(), "the explicit finance exclusion remains pending")
-	var excluded model.AdtySiteEarningEvent
-	require.NoError(t, db.Where("operation_key = ?", "finance-skip").First(&excluded).Error)
-	assert.False(t, excluded.RiskReleased)
-	assert.Equal(t, model.AdtyEarningOriginalSkipped, excluded.ReviewStatus)
+	rawJSON, err := common.Marshal(lines)
+	require.NoError(t, err)
+	assert.NotContains(t, strings.ToLower(string(rawJSON)), "channel", "earning detail lines must not disclose upstream channel fields")
 }
 
 func TestSiteEarningBalancesIgnorePersonalReferralPG(t *testing.T) {
@@ -1459,77 +1531,6 @@ func TestDurableEarningLinesPreserveFrozenIdentityAndAtomicityPG(t *testing.T) {
 	require.Len(t, lines, 4)
 	require.Empty(t, lines[0].Group)
 	require.Equal(t, "frozen-model", lines[0].ModelName)
-}
-
-func TestDurableRequestAndTaskRecordModelGroupEarningLinesWithoutChannelDisclosure(t *testing.T) {
-	db := prepareSiteDB(t)
-	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Channel{}, &model.Task{}, &model.Midjourney{}, &model.AdtySiteEarningLine{}))
-	_, site := openActiveSite(t, db, "durable-lines")
-	customer := siteCustomer(t, db, site, "durable-lines-customer")
-	sitePrice(t, db, site.Id, 0, "", "1.25")
-	require.NoError(t, db.Model(customer).Update("quota", perUnit("500")).Error)
-
-	// 1. Durable request settlement + consume log records exactly one model/group detail line.
-	c := adtyWalletRelayContext()
-	c.Set(common.RequestIdKey, "req-durable-line-1")
-	AdtyApplySiteMarkup(c, customer.Id, "vip", 1, "gpt-4o")
-	info := adtyWalletRelayInfo(customer.Id, 0, "")
-	info.IsPlayground = true
-	info.OriginModelName = "gpt-4o"
-	info.RequestId = "req-durable-line-1"
-	info.PriceData.ModelRatio = 1
-	info.UsingGroup = "vip"
-	info.UserGroup = "vip"
-	require.Nil(t, PreConsumeBilling(c, int(perUnit("125")), info))
-	require.NoError(t, info.Billing.Settle(int(perUnit("125"))))
-	model.RecordConsumeLog(c, customer.Id, model.RecordConsumeLogParams{
-		ChannelId: 77, ModelName: "gpt-4o", Quota: int(perUnit("125")), Group: "vip",
-	})
-
-	// 2. Durable task settlement + task refund also record model/group detail lines.
-	cTask := adtyWalletRelayContext()
-	AdtyApplySiteMarkup(cTask, customer.Id, "pro", 1, "sora-video")
-	taskInfo := adtyWalletRelayInfo(customer.Id, 0, "")
-	taskInfo.IsPlayground = true
-	taskInfo.OriginModelName = "sora-video"
-	taskInfo.PriceData.ModelRatio = 1
-	taskInfo.UsingGroup = "pro"
-	require.Nil(t, PreConsumeBilling(cTask, int(perUnit("50")), taskInfo))
-	task := &model.Task{
-		TaskID: model.GenerateTaskID(), UserId: customer.Id, ChannelId: 88, Group: "pro",
-		Quota: int(perUnit("50")), Status: model.TaskStatusInProgress,
-		Properties: model.Properties{OriginModelName: "sora-video"},
-	}
-	task.PrivateData.BillingContext = &model.TaskBillingContext{
-		OriginModelName: "sora-video",
-		SiteId:          site.Id, SiteMarkup: 1.25, SiteCostFactor: 0.8,
-	}
-	AttachTaskBillingReservation(taskInfo, task)
-	require.NoError(t, task.Insert())
-	require.NoError(t, taskInfo.Billing.Settle(int(perUnit("50"))))
-	require.True(t, RefundTaskQuota(context.Background(), task, "upstream failed"))
-
-	lines, err := ListAdtyOwnerEarningLines(site.Id, 0, 20)
-	require.NoError(t, err)
-	require.Len(t, lines, 3, "expected 1 request line, 1 task settle line, and 1 task refund line")
-
-	var reqLine *model.AdtySiteEarningLine
-	for i := range lines {
-		if lines[i].RequestId == "req-durable-line-1" {
-			reqLine = &lines[i]
-		}
-	}
-	require.NotNil(t, reqLine)
-	assert.Equal(t, "gpt-4o", reqLine.ModelName)
-	assert.Equal(t, "vip", reqLine.Group)
-	assert.EqualValues(t, perUnit("125"), reqLine.Quota)
-	assert.True(t, reqLine.Revenue.Equal(usd("125")))
-	assert.True(t, reqLine.Platform.Equal(usd("100")))
-	assert.True(t, reqLine.Earning.Equal(usd("25")))
-
-	rawJSON, err := common.Marshal(lines)
-	require.NoError(t, err)
-	assert.NotContains(t, strings.ToLower(string(rawJSON)), "channel", "earning detail lines must not disclose upstream channel fields")
 }
 
 func TestDurableEarningLinesRealtimeAndMidjourneyRecoveryPG(t *testing.T) {

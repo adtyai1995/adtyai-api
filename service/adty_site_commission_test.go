@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/QuantumNous/new-api/setting"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -574,6 +574,9 @@ func TestSiteInviteCommissionConvertsAvailableRemainderToInviterQuota(t *testing
 	require.True(t, row.ConvertedClawedUSD.Equal(decimal.NewFromInt(1)))
 	require.NoError(t, db.First(&inviter, invite.InviterId).Error)
 	require.Equal(t, 0, inviter.Quota)
+	require.NoError(t, db.Where("user_id = ? AND source = ?", inviter.Id, "site-comm-cvt:"+strconv.FormatInt(row.Id, 10)+":cvt-1").Find(&convertLots).Error)
+	require.Len(t, convertLots, 1)
+	require.EqualValues(t, 0, convertLots[0].Remaining, "converted commission clawback must reclaim fund batch remaining quota")
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).First(&earning).Error)
 	require.True(t, earning.Balance.Equal(decimal.NewFromInt(2)))
 	require.True(t, earning.FrozenUSD.IsZero())
@@ -1146,6 +1149,46 @@ func TestConvertedSiteCommissionRefundPreservesInFlightLots(t *testing.T) {
 	require.Equal(t, "0.5", recovery.AmountUSD.String())
 }
 
+func TestPaymentOrderBonusUsesCurrentDatabasePolicy(t *testing.T) {
+	db := prepareReferralDialectDB(t, "postgres")
+	require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
+	old := *setting.GetBEpusdtSetting()
+	*setting.GetBEpusdtSetting() = setting.BEpusdtSetting{Enabled: true, BaseURL: "https://bonus.example", Secret: "synthetic-bonus-secret", TradeTypes: []string{"usdt.trc20"}}
+	t.Cleanup(func() { *setting.GetBEpusdtSetting() = old })
+	site, buyer := seedSiteInvite(t, db, decimal.Zero)
+	require.NoError(t, EnsureAdtySiteWallets(site.Id))
+	_, err := ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(20), AdtySiteWalletChange{Type: "earning_settlement", IdempotencyKey: "bonus-earning"})
+	require.NoError(t, err)
+	config, err := GetAdtyPaymentScenes()
+	require.NoError(t, err)
+	key := config.Scenes[0].Key
+	policy := map[string]string{
+		adty_setting.TopupSettingKeySiteMethodAuth:  fmt.Sprintf(`{"%d":["usdt"]}`, site.Id),
+		adty_setting.TopupSettingKeySiteMethodBonus: fmt.Sprintf(`{"%d":{"usdt":{"enabled":true,"rate":"0.05"}}}`, site.Id),
+	}
+	require.NoError(t, model.DB.Transaction(func(tx *gorm.DB) error { return model.SaveOptionsTx(tx, policy) }))
+	for i, want := range []struct {
+		bonus string
+		quota int64
+	}{{"5", 52_500_000}, {"0", 50_000_000}} {
+		top, ext := paymentSceneOrder(buyer.Id, fmt.Sprintf("bonus-%d", i))
+		ext.SiteId, ext.BonusRate, ext.BonusUSD, ext.CreditQuota = site.Id, decimal.RequireFromString("0.99"), decimal.NewFromInt(99), 99_500_000
+		require.NoError(t, CreateAdtyPaymentOrder(top, ext, key))
+		require.Equal(t, want.bonus, ext.BonusUSD.String())
+		require.EqualValues(t, want.quota, ext.CreditQuota)
+		if i == 0 {
+			require.Equal(t, "5", ext.GiftReserveEarning.String())
+			policy[adty_setting.TopupSettingKeySiteMethodAuth] = `{}`
+			require.NoError(t, model.DB.Transaction(func(tx *gorm.DB) error { return model.SaveOptionsTx(tx, policy) }))
+			_, err = model.CompleteAdtyTopUp(top.TradeNo, model.AdtyPaymentFacts{Provider: "bepusdt", PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100), PaidCurrency: "USDT", Source: "callback"}, "")
+			require.NoError(t, err)
+			stored, err := model.GetAdtyTopupOrder(top.TradeNo)
+			require.NoError(t, err)
+			require.Equal(t, "5", stored.BonusUSD.String(), "existing promise survives revocation")
+		}
+	}
+}
+
 func TestSiteReferralOrderPolicySnapshotFrozenAtOrderCreation(t *testing.T) {
 	db := prepareReferralDialectDB(t, "postgres")
 	require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
@@ -1212,46 +1255,6 @@ func TestSiteReferralOrderPolicySnapshotFrozenAtOrderCreation(t *testing.T) {
 	var count2 int64
 	require.NoError(t, db.Model(&model.AdtySiteInviteCommission{}).Where("trade_no = ?", "SNAP-INELIGIBLE-2").Count(&count2).Error)
 	require.Zero(t, count2, "order 2 created before invite binding / while disabled must not earn commission")
-}
-
-func TestPaymentOrderBonusUsesCurrentDatabasePolicy(t *testing.T) {
-	db := prepareReferralDialectDB(t, "postgres")
-	require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
-	old := *setting.GetBEpusdtSetting()
-	*setting.GetBEpusdtSetting() = setting.BEpusdtSetting{Enabled: true, BaseURL: "https://bonus.example", Secret: "synthetic-bonus-secret", TradeTypes: []string{"usdt.trc20"}}
-	t.Cleanup(func() { *setting.GetBEpusdtSetting() = old })
-	site, buyer := seedSiteInvite(t, db, decimal.Zero)
-	require.NoError(t, EnsureAdtySiteWallets(site.Id))
-	_, err := ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(20), AdtySiteWalletChange{Type: "earning_settlement", IdempotencyKey: "bonus-earning"})
-	require.NoError(t, err)
-	config, err := GetAdtyPaymentScenes()
-	require.NoError(t, err)
-	key := config.Scenes[0].Key
-	policy := map[string]string{
-		adty_setting.TopupSettingKeySiteMethodAuth:  fmt.Sprintf(`{"%d":["usdt"]}`, site.Id),
-		adty_setting.TopupSettingKeySiteMethodBonus: fmt.Sprintf(`{"%d":{"usdt":{"enabled":true,"rate":"0.05"}}}`, site.Id),
-	}
-	require.NoError(t, model.DB.Transaction(func(tx *gorm.DB) error { return model.SaveOptionsTx(tx, policy) }))
-	for i, want := range []struct {
-		bonus string
-		quota int64
-	}{{"5", 52_500_000}, {"0", 50_000_000}} {
-		top, ext := paymentSceneOrder(buyer.Id, fmt.Sprintf("bonus-%d", i))
-		ext.SiteId, ext.BonusRate, ext.BonusUSD, ext.CreditQuota = site.Id, decimal.RequireFromString("0.99"), decimal.NewFromInt(99), 99_500_000
-		require.NoError(t, CreateAdtyPaymentOrder(top, ext, key))
-		require.Equal(t, want.bonus, ext.BonusUSD.String())
-		require.EqualValues(t, want.quota, ext.CreditQuota)
-		if i == 0 {
-			require.Equal(t, "5", ext.GiftReserveEarning.String())
-			policy[adty_setting.TopupSettingKeySiteMethodAuth] = `{}`
-			require.NoError(t, model.DB.Transaction(func(tx *gorm.DB) error { return model.SaveOptionsTx(tx, policy) }))
-			_, err = model.CompleteAdtyTopUp(top.TradeNo, model.AdtyPaymentFacts{Provider: "bepusdt", PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100), PaidCurrency: "USDT", Source: "callback"}, "")
-			require.NoError(t, err)
-			stored, err := model.GetAdtyTopupOrder(top.TradeNo)
-			require.NoError(t, err)
-			require.Equal(t, "5", stored.BonusUSD.String(), "existing promise survives revocation")
-		}
-	}
 }
 
 func TestPaymentOrderBonusDatabaseMarginAuthorization(t *testing.T) {

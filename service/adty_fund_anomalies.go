@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -181,6 +180,93 @@ func detectExistingAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) 
 	return items, nil
 }
 
+// adtySiteCustomerPrincipalAndGiftQuota separates unconsumed customer principal
+// liability from unconsumed gift/bonus quota for siteID (G.3 / A.11 / A.12).
+// Lot remaining includes reservations until settlement. Compare it separately
+// with the logical wallet plus outstanding shares so a gap cannot become principal.
+func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, giftQuota int64, lotGap int64, err error) {
+	type userQuotaRow struct {
+		Id           int `gorm:"column:id"`
+		Quota        int `gorm:"column:quota"`
+		QuotaPending int `gorm:"column:quota_pending"`
+	}
+	var users []userQuotaRow
+	if err := model.DB.Model(&model.User{}).
+		Select("id, quota, quota_pending").
+		Where("site_id = ?", siteID).
+		Find(&users).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	if len(users) == 0 {
+		return 0, 0, 0, nil
+	}
+	userIDs := make([]int, 0, len(users))
+	for _, u := range users {
+		userIDs = append(userIDs, u.Id)
+	}
+
+	type batchSplit struct {
+		principal int64
+		gift      int64
+		hasLots   bool
+	}
+	byUser := make(map[int]batchSplit, len(users))
+	if model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
+		var batches []model.AdtyFundBatch
+		if err := model.DB.Where("user_id IN ? AND (site_id = ? OR site_id IS NULL)", userIDs, siteID).
+			Find(&batches).Error; err != nil {
+			return 0, 0, 0, err
+		}
+		for _, b := range batches {
+			split := byUser[b.UserId]
+			split.hasLots = true
+			switch b.Kind {
+			case model.AdtyFundBatchKindPrincipal:
+				split.principal += b.Remaining
+			case model.AdtyFundBatchKindBonus, model.AdtyFundBatchKindExpiringBonus:
+				split.gift += b.Remaining
+			}
+			byUser[b.UserId] = split
+		}
+	}
+
+	heldByUser := map[int]int64{}
+	if model.DB.Migrator().HasTable(&model.AdtyFundAllocation{}) {
+		var held []struct {
+			UserId int
+			Quota  int64
+		}
+		if err := model.DB.Model(&model.AdtyFundAllocation{}).
+			Select("user_id, COALESCE(SUM(held - settled), 0) AS quota").
+			Where("user_id IN ? AND held > settled", userIDs).Group("user_id").Scan(&held).Error; err != nil {
+			return 0, 0, 0, err
+		}
+		for _, row := range held {
+			heldByUser[row.UserId] = row.Quota
+		}
+	}
+
+	for _, u := range users {
+		logical := int64(u.Quota) + int64(u.QuotaPending)
+		split := byUser[u.Id]
+		if !split.hasLots {
+			// Historical accounts without lots retain the logical-balance fallback.
+			principalQuota += logical
+			continue
+		}
+		// Reservation shares remain in the lots until settlement. Add the held
+		// amount only for the independent lot/wallet check, never as new principal.
+		principalQuota += split.principal
+		giftQuota += split.gift
+		gap := logical + heldByUser[u.Id] - split.principal - split.gift
+		if gap < 0 {
+			gap = -gap
+		}
+		lotGap += gap
+	}
+	return principalQuota, giftQuota, lotGap, nil
+}
+
 func adtyDuplicateEventTradeNos(siteID int, outcome, eventType string) ([]string, error) {
 	query := model.DB.Model(&model.AdtyOrderPaymentEvent{}).Where("site_id = ?", siteID)
 	if outcome != "" {
@@ -326,13 +412,102 @@ func detectInsufficientGiftGuarantees(siteID int) ([]adtyFundAnomalyItem, error)
 	return items, nil
 }
 
+type giftBatchRemainingInfo struct {
+	Remaining int64
+	Original  int64
+}
+
+func loadGiftBatchRemainingByTrade(tradeNos []string) (map[string]giftBatchRemainingInfo, error) {
+	out := map[string]giftBatchRemainingInfo{}
+	if len(tradeNos) == 0 || !model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
+		return out, nil
+	}
+	var batches []model.AdtyFundBatch
+	if err := model.DB.Where("source IN ? AND kind IN ?", tradeNos, []string{
+		model.AdtyFundBatchKindBonus,
+		model.AdtyFundBatchKindExpiringBonus,
+	}).Find(&batches).Error; err != nil {
+		return nil, err
+	}
+	for _, b := range batches {
+		info := out[b.Source]
+		info.Remaining += b.Remaining
+		info.Original += b.Original
+		out[b.Source] = info
+	}
+	return out, nil
+}
+
+// currentRequiredGiftGuaranteeUSD computes the current remaining site-funded
+// gift guarantee liability for ext (ISS-R1-0076 / G.9.4 / A.8 / A.12).
+// Already consumed or legitimately reclaimed gift quota no longer requires a
+// frozen guarantee; a fully refunded order with zero remaining gift requires 0.
+func currentRequiredGiftGuaranteeUSD(ext *model.AdtyTopupOrder, status string, batchInfo giftBatchRemainingInfo, hasBatch bool) (decimal.Decimal, error) {
+	if ext == nil {
+		return decimal.Zero, nil
+	}
+	siteBonus := adtyBonusUSDForSite(ext)
+	if !siteBonus.IsPositive() {
+		return decimal.Zero, nil
+	}
+	if status == common.TopUpStatusPending || status == "" {
+		return siteBonus, nil
+	}
+	switch ext.GiftFulfillmentStatus {
+	case model.AdtyGiftFulfillmentPending, model.AdtyGiftFulfillmentPendingReview, model.AdtyGiftFulfillmentCanceled:
+		return decimal.Zero, nil
+	}
+	totalBonusQuota, err := siteGiftBonusQuota(ext)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if totalBonusQuota <= 0 {
+		return decimal.Zero, nil
+	}
+	faceQuota := ext.FaceQuota()
+	if status == model.TopUpStatusRefunded && (ext.RefundQuota == 0 || (faceQuota > 0 && ext.RefundQuota >= faceQuota)) {
+		if !hasBatch || batchInfo.Remaining <= 0 {
+			return decimal.Zero, nil
+		}
+	}
+	if hasBatch {
+		rem := min(batchInfo.Remaining, totalBonusQuota)
+		if rem <= 0 {
+			return decimal.Zero, nil
+		}
+		return adtyProportionalGiftUSD(siteBonus, rem, totalBonusQuota), nil
+	}
+	reclaimedQuota := ext.RefundBonusQuota
+	if model.DB.Migrator().HasTable(&model.AdtyManualRefund{}) {
+		hasRows, _, cumReclaimed, err := adtyCompletedManualRefundBonusStatsTx(model.DB, ext)
+		if err != nil {
+			return decimal.Zero, err
+		}
+		if hasRows && cumReclaimed > reclaimedQuota {
+			reclaimedQuota = cumReclaimed
+		}
+	}
+	if reclaimedQuota <= 0 && ext.RefundQuota > 0 && faceQuota > 0 {
+		whole, _ := decimal.NewFromInt(totalBonusQuota).Mul(decimal.NewFromInt(min(ext.RefundQuota, faceQuota))).QuoRem(decimal.NewFromInt(faceQuota), 0)
+		reclaimedQuota = whole.IntPart()
+	}
+	remainingBonusQuota := totalBonusQuota - reclaimedQuota
+	if remainingBonusQuota <= 0 {
+		return decimal.Zero, nil
+	}
+	required := adtyProportionalGiftUSD(siteBonus, remainingBonusQuota, totalBonusQuota)
+	var spent decimal.Decimal
+	if err := model.DB.Model(&model.AdtySiteWalletLedger{}).
+		Where("site_id = ? AND ref_type = ? AND ref_id = ? AND type = ?", ext.SiteId, "topup", ext.TradeNo, "gift_spend").
+		Select("COALESCE(SUM(-delta), 0)").Scan(&spent).Error; err != nil {
+		return decimal.Zero, err
+	}
+	return decimal.Max(decimal.Zero, required.Sub(spent)), nil
+}
+
 func giftGuaranteeShouldBeHeld(status string) bool {
 	switch status {
 	case common.TopUpStatusPending, common.TopUpStatusSuccess, model.TopUpStatusRefunded, "":
-		// Pending payable orders must keep the reserve. Credited orders keep
-		// the guarantee hold until a later official release or consumption.
-		// An empty status means the extension row was found without a top_ups
-		// row; still inspect the snapshot rather than hide a short reserve.
 		return true
 	default:
 		return false
@@ -378,6 +553,28 @@ func loadGiftHoldByTrade(siteID int, tradeNos []string) (map[string]decimal.Deci
 		counts[row.RefId] = row.Ledgers
 	}
 	return holds, counts, nil
+}
+
+func normalizeAdtyEarningDay(day string) string {
+	day = strings.TrimSpace(day)
+	if base, _, ok := strings.Cut(day, "+"); ok {
+		return strings.TrimSpace(base)
+	}
+	return day
+}
+
+func adtyEarningEventKind(event model.AdtySiteEarningEvent) (string, bool) {
+	if event.ReviewStatus == model.AdtyEarningNeedsReview {
+		return "", false
+	}
+	kind := model.AdtySiteEarningUsage
+	if event.Quota < 0 {
+		kind = model.AdtySiteEarningRefund
+	}
+	if event.ReviewStatus == model.AdtyEarningOriginalSkipped {
+		kind = model.AdtySiteEarningSkipped
+	}
+	return kind, true
 }
 
 func detectEarningSupplyMismatches(siteID int) ([]adtyFundAnomalyItem, error) {
@@ -810,211 +1007,9 @@ func lockAdtyOpenAnomalyDisposition(tx *gorm.DB, kind, ref string) error {
 }
 
 func mustAnomalyEvidence(fields map[string]any) string {
-	raw, err := json.Marshal(fields)
+	raw, err := common.Marshal(fields)
 	if err != nil {
 		return ""
 	}
 	return string(raw)
-}
-
-// adtySiteCustomerPrincipalAndGiftQuota separates unconsumed customer principal
-// liability from unconsumed gift/bonus quota for siteID (G.3 / A.11 / A.12).
-// Lot remaining includes reservations until settlement. Compare it separately
-// with the logical wallet plus outstanding shares so a gap cannot become principal.
-func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, giftQuota int64, lotGap int64, err error) {
-	type userQuotaRow struct {
-		Id           int `gorm:"column:id"`
-		Quota        int `gorm:"column:quota"`
-		QuotaPending int `gorm:"column:quota_pending"`
-	}
-	var users []userQuotaRow
-	if err := model.DB.Model(&model.User{}).
-		Select("id, quota, quota_pending").
-		Where("site_id = ?", siteID).
-		Find(&users).Error; err != nil {
-		return 0, 0, 0, err
-	}
-	if len(users) == 0 {
-		return 0, 0, 0, nil
-	}
-	userIDs := make([]int, 0, len(users))
-	for _, u := range users {
-		userIDs = append(userIDs, u.Id)
-	}
-
-	type batchSplit struct {
-		principal int64
-		gift      int64
-		hasLots   bool
-	}
-	byUser := make(map[int]batchSplit, len(users))
-	if model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
-		var batches []model.AdtyFundBatch
-		if err := model.DB.Where("user_id IN ? AND (site_id = ? OR site_id IS NULL)", userIDs, siteID).
-			Find(&batches).Error; err != nil {
-			return 0, 0, 0, err
-		}
-		for _, b := range batches {
-			split := byUser[b.UserId]
-			split.hasLots = true
-			switch b.Kind {
-			case model.AdtyFundBatchKindPrincipal:
-				split.principal += b.Remaining
-			case model.AdtyFundBatchKindBonus, model.AdtyFundBatchKindExpiringBonus:
-				split.gift += b.Remaining
-			}
-			byUser[b.UserId] = split
-		}
-	}
-
-	heldByUser := map[int]int64{}
-	if model.DB.Migrator().HasTable(&model.AdtyFundAllocation{}) {
-		var held []struct {
-			UserId int
-			Quota  int64
-		}
-		if err := model.DB.Model(&model.AdtyFundAllocation{}).
-			Select("user_id, COALESCE(SUM(held - settled), 0) AS quota").
-			Where("user_id IN ? AND held > settled", userIDs).Group("user_id").Scan(&held).Error; err != nil {
-			return 0, 0, 0, err
-		}
-		for _, row := range held {
-			heldByUser[row.UserId] = row.Quota
-		}
-	}
-
-	for _, u := range users {
-		logical := int64(u.Quota) + int64(u.QuotaPending)
-		split := byUser[u.Id]
-		if !split.hasLots {
-			// Historical accounts without lots retain the logical-balance fallback.
-			principalQuota += logical
-			continue
-		}
-		// Reservation shares remain in the lots until settlement. Add the held
-		// amount only for the independent lot/wallet check, never as new principal.
-		principalQuota += split.principal
-		giftQuota += split.gift
-		gap := logical + heldByUser[u.Id] - split.principal - split.gift
-		if gap < 0 {
-			gap = -gap
-		}
-		lotGap += gap
-	}
-	return principalQuota, giftQuota, lotGap, nil
-}
-
-type giftBatchRemainingInfo struct {
-	Remaining int64
-	Original  int64
-}
-
-func loadGiftBatchRemainingByTrade(tradeNos []string) (map[string]giftBatchRemainingInfo, error) {
-	out := map[string]giftBatchRemainingInfo{}
-	if len(tradeNos) == 0 || !model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
-		return out, nil
-	}
-	var batches []model.AdtyFundBatch
-	if err := model.DB.Where("source IN ? AND kind IN ?", tradeNos, []string{
-		model.AdtyFundBatchKindBonus,
-		model.AdtyFundBatchKindExpiringBonus,
-	}).Find(&batches).Error; err != nil {
-		return nil, err
-	}
-	for _, b := range batches {
-		info := out[b.Source]
-		info.Remaining += b.Remaining
-		info.Original += b.Original
-		out[b.Source] = info
-	}
-	return out, nil
-}
-
-// currentRequiredGiftGuaranteeUSD computes the current remaining site-funded
-// gift guarantee liability for ext (ISS-R1-0076 / G.9.4 / A.8 / A.12).
-// Already consumed or legitimately reclaimed gift quota no longer requires a
-// frozen guarantee; a fully refunded order with zero remaining gift requires 0.
-func currentRequiredGiftGuaranteeUSD(ext *model.AdtyTopupOrder, status string, batchInfo giftBatchRemainingInfo, hasBatch bool) (decimal.Decimal, error) {
-	if ext == nil {
-		return decimal.Zero, nil
-	}
-	siteBonus := adtyBonusUSDForSite(ext)
-	if !siteBonus.IsPositive() {
-		return decimal.Zero, nil
-	}
-	if status == common.TopUpStatusPending || status == "" {
-		return siteBonus, nil
-	}
-	switch ext.GiftFulfillmentStatus {
-	case model.AdtyGiftFulfillmentPending, model.AdtyGiftFulfillmentPendingReview, model.AdtyGiftFulfillmentCanceled:
-		return decimal.Zero, nil
-	}
-	totalBonusQuota, err := siteGiftBonusQuota(ext)
-	if err != nil {
-		return decimal.Zero, err
-	}
-	if totalBonusQuota <= 0 {
-		return decimal.Zero, nil
-	}
-	faceQuota := ext.FaceQuota()
-	if status == model.TopUpStatusRefunded && (ext.RefundQuota == 0 || (faceQuota > 0 && ext.RefundQuota >= faceQuota)) {
-		if !hasBatch || batchInfo.Remaining <= 0 {
-			return decimal.Zero, nil
-		}
-	}
-	if hasBatch {
-		rem := min(batchInfo.Remaining, totalBonusQuota)
-		if rem <= 0 {
-			return decimal.Zero, nil
-		}
-		return adtyProportionalGiftUSD(siteBonus, rem, totalBonusQuota), nil
-	}
-	reclaimedQuota := ext.RefundBonusQuota
-	if model.DB.Migrator().HasTable(&model.AdtyManualRefund{}) {
-		hasRows, _, cumReclaimed, err := adtyCompletedManualRefundBonusStatsTx(model.DB, ext)
-		if err != nil {
-			return decimal.Zero, err
-		}
-		if hasRows && cumReclaimed > reclaimedQuota {
-			reclaimedQuota = cumReclaimed
-		}
-	}
-	if reclaimedQuota <= 0 && ext.RefundQuota > 0 && faceQuota > 0 {
-		whole, _ := decimal.NewFromInt(totalBonusQuota).Mul(decimal.NewFromInt(min(ext.RefundQuota, faceQuota))).QuoRem(decimal.NewFromInt(faceQuota), 0)
-		reclaimedQuota = whole.IntPart()
-	}
-	remainingBonusQuota := totalBonusQuota - reclaimedQuota
-	if remainingBonusQuota <= 0 {
-		return decimal.Zero, nil
-	}
-	required := adtyProportionalGiftUSD(siteBonus, remainingBonusQuota, totalBonusQuota)
-	var spent decimal.Decimal
-	if err := model.DB.Model(&model.AdtySiteWalletLedger{}).
-		Where("site_id = ? AND ref_type = ? AND ref_id = ? AND type = ?", ext.SiteId, "topup", ext.TradeNo, "gift_spend").
-		Select("COALESCE(SUM(-delta), 0)").Scan(&spent).Error; err != nil {
-		return decimal.Zero, err
-	}
-	return decimal.Max(decimal.Zero, required.Sub(spent)), nil
-}
-
-func normalizeAdtyEarningDay(day string) string {
-	day = strings.TrimSpace(day)
-	if base, _, ok := strings.Cut(day, "+"); ok {
-		return strings.TrimSpace(base)
-	}
-	return day
-}
-
-func adtyEarningEventKind(event model.AdtySiteEarningEvent) (string, bool) {
-	if event.ReviewStatus == model.AdtyEarningNeedsReview {
-		return "", false
-	}
-	kind := model.AdtySiteEarningUsage
-	if event.Quota < 0 {
-		kind = model.AdtySiteEarningRefund
-	}
-	if event.ReviewStatus == model.AdtyEarningOriginalSkipped {
-		kind = model.AdtySiteEarningSkipped
-	}
-	return kind, true
 }

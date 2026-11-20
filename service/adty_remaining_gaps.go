@@ -1194,6 +1194,10 @@ func QuotaToUSD(quota int64) decimal.Decimal {
 	return decimal.NewFromInt(quota).Div(common.QuotaPerUnitDecimal())
 }
 
+// errSiteInviteNeedsReview refuses the bind. The anomaly row is written after
+// this transaction rolls back, so the review fact is not discarded with the invite.
+var errSiteInviteNeedsReview = common.NewMessage("This invite needs review")
+
 // BindSiteInviteFromIP records one direct site invite and keeps the client IP hash.
 // It serializes on locked inviter/invitee user rows with first-payment completion
 // so a concurrent paid order cannot leave a post-payment binding.
@@ -1201,7 +1205,7 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 	if siteID <= 0 || inviterID <= 0 || inviteeID <= 0 || inviterID == inviteeID {
 		return common.NewMessage("Invalid parameters")
 	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		firstID, secondID := inviterID, inviteeID
 		if secondID < firstID {
 			firstID, secondID = secondID, firstID
@@ -1256,6 +1260,12 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 			SiteId: siteID, InviterId: inviterID, InviteeId: inviteeID, Rate: rate.Rate, IpHash: strings.TrimSpace(ipHash),
 		}).Error
 	})
+	if err == errSiteInviteNeedsReview {
+		if writeErr := recordSiteInviteBatchAnomaly(siteID, inviterID); writeErr != nil {
+			return writeErr
+		}
+	}
+	return err
 }
 
 func refuseSiteInviteBatchTx(tx *gorm.DB, siteID, inviterID int, ipHash string) error {
@@ -1289,20 +1299,25 @@ func refuseSiteInviteBatchTx(tx *gorm.DB, siteID, inviterID int, ipHash string) 
 	if count+1 < threshold {
 		return nil
 	}
+	return errSiteInviteNeedsReview
+}
+
+// recordSiteInviteBatchAnomaly commits the review fact after the refused bind rolls back.
+func recordSiteInviteBatchAnomaly(siteID, inviterID int) error {
 	ref := strconv.Itoa(siteID)
 	note := "inviter " + strconv.Itoa(inviterID)
-	var existing int64
-	if err := tx.Model(&model.AdtyAnomalyDisposition{}).
-		Where("kind = ? AND ref = ? AND status = ? AND note = ?", "batch_register", ref, "open", note).
-		Count(&existing).Error; err != nil {
-		return err
-	}
-	if existing == 0 {
-		if err := tx.Create(&model.AdtyAnomalyDisposition{Kind: "batch_register", Ref: ref, Status: "open", Note: note}).Error; err != nil {
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var existing int64
+		if err := tx.Model(&model.AdtyAnomalyDisposition{}).
+			Where("kind = ? AND ref = ? AND status = ? AND note = ?", "batch_register", ref, "open", note).
+			Count(&existing).Error; err != nil {
 			return err
 		}
-	}
-	return common.NewMessage("This invite needs review")
+		if existing > 0 {
+			return nil
+		}
+		return tx.Create(&model.AdtyAnomalyDisposition{Kind: "batch_register", Ref: ref, Status: "open", Note: note}).Error
+	})
 }
 
 // SetSiteReferralRate stores the site's one-level invite rate. Rate is a fraction in [0, 1].

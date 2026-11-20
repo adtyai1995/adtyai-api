@@ -206,7 +206,7 @@ func seedTaskReservation(t *testing.T, task *model.Task) {
 func TestTaskReservationFixturesDoNotInheritPriorFundsPG(t *testing.T) {
 	db := prepareReferralDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Task{}, &model.Channel{}, &model.Midjourney{},
-		&model.SystemTask{}, &model.SystemTaskLock{}))
+		&model.SystemTask{}, &model.SystemTaskLock{}, &model.PerfMetric{}))
 	for _, name := range []string{"first_fixture", "reused_user_fixture"} {
 		t.Run(name, func(t *testing.T) {
 			truncate(t)

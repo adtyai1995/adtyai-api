@@ -11,6 +11,29 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestProjectWalletLotsDistinguishesExpiringAndPermanentGifts(t *testing.T) {
+	db := adtyTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.AdtyFundBatch{}))
+	user := createLotUser(t, "three-wallet-lots", 2_000_000)
+	expires := int64(1_900_000_000)
+	require.NoError(t, db.Create([]model.AdtyFundBatch{
+		{UserId: user.Id, Kind: "principal", Source: "paid", Original: 1_000_000, Remaining: 1_000_000},
+		{UserId: user.Id, Kind: "bonus", Source: "paid", Original: 500_000, Remaining: 500_000},
+		{UserId: user.Id, Kind: "bonus", GiftCategory: "expiring_bonus", Source: "trial", Original: 500_000, Remaining: 500_000, ExpiresAt: &expires},
+	}).Error)
+	proj, ok, err := ProjectWalletLotsForUser(user)
+	require.NoError(t, err)
+	require.True(t, ok)
+	encoded, err := common.Marshal(proj)
+	require.NoError(t, err)
+	var fields map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &fields))
+	require.Equal(t, "1", fields["expiring_bonus_usd"])
+	require.Equal(t, "1", fields["bonus_usd"])
+	require.Equal(t, "4", fields["total_usd"])
+	require.EqualValues(t, expires, fields["next_expires_at"])
+}
+
 func TestProjectWalletLotsSeparatesPrincipalAndBonus(t *testing.T) {
 	db := adtyTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.AdtyFundBatch{}))
@@ -181,27 +204,4 @@ func createLotUser(t *testing.T, name string, quota int) *model.User {
 	user := &model.User{Username: name, Password: "hashed-password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1, Email: name + "@example.com", Quota: quota}
 	require.NoError(t, model.DB.Create(user).Error)
 	return user
-}
-
-func TestProjectWalletLotsDistinguishesExpiringAndPermanentGifts(t *testing.T) {
-	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.AdtyFundBatch{}))
-	user := createLotUser(t, "three-wallet-lots", 2_000_000)
-	expires := int64(1_900_000_000)
-	require.NoError(t, db.Create([]model.AdtyFundBatch{
-		{UserId: user.Id, Kind: "principal", Source: "paid", Original: 1_000_000, Remaining: 1_000_000},
-		{UserId: user.Id, Kind: "bonus", Source: "paid", Original: 500_000, Remaining: 500_000},
-		{UserId: user.Id, Kind: "bonus", GiftCategory: "expiring_bonus", Source: "trial", Original: 500_000, Remaining: 500_000, ExpiresAt: &expires},
-	}).Error)
-	proj, ok, err := ProjectWalletLotsForUser(user)
-	require.NoError(t, err)
-	require.True(t, ok)
-	encoded, err := common.Marshal(proj)
-	require.NoError(t, err)
-	var fields map[string]any
-	require.NoError(t, common.Unmarshal(encoded, &fields))
-	require.Equal(t, "1", fields["expiring_bonus_usd"])
-	require.Equal(t, "1", fields["bonus_usd"])
-	require.Equal(t, "4", fields["total_usd"])
-	require.EqualValues(t, expires, fields["next_expires_at"])
 }

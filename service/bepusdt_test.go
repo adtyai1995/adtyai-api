@@ -341,3 +341,18 @@ func TestCancelBEpusdtOrderSigned(t *testing.T) {
 	assert.Equal(t, "tid-1", body["trade_id"])
 	assert.Equal(t, BEpusdtSign(body, "epusdt_password_xasddawqe"), body["signature"])
 }
+
+func TestCancelBEpusdtOrderTreatsAlreadyCanceledAsDone(t *testing.T) {
+	fakeBEpusdt(t, func(string, map[string]any) string {
+		return `{"status_code":400,"message":"order already canceled","data":null}`
+	})
+	require.NoError(t, CancelBEpusdtOrder("tid-1"))
+}
+
+func TestCancelBEpusdtOrderKeepsTransferDetected(t *testing.T) {
+	fakeBEpusdt(t, func(string, map[string]any) string {
+		return `{"status_code":400,"message":"transfer detected","data":null}`
+	})
+	err := CancelBEpusdtOrder("tid-1")
+	require.ErrorIs(t, err, ErrAdtyPaymentDetected)
+}

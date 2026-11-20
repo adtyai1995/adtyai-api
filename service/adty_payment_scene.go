@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"regexp"
 	"slices"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )

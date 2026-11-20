@@ -281,11 +281,40 @@ func TestSettlementSheetEarningsFrozenDeltaIncludesGiftSpend(t *testing.T) {
 	require.True(t, sheet.MarginDeltaUSD.Equal(decimal.NewFromInt(-3)))
 }
 
-func mustLoc(t *testing.T, name string) *time.Location {
-	t.Helper()
-	loc, err := time.LoadLocation(name)
+func TestSettlementSheetBusinessTimeWindowFiltersEarningFactsBySavedWindow(t *testing.T) {
+	db := prepareSiteDB(t)
+	t.Cleanup(func() { _ = db.Delete(&model.Option{Key: adtyBusinessTimezoneKey}).Error })
+	_, site := openActiveSite(t, db, "sheettzearn"+strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10))
+	require.NoError(t, SaveAdtyBusinessTimezone("Asia/Shanghai"))
+
+	// Business day 2026-06-01 in Asia/Shanghai (+08:00) spans:
+	// start = 2026-05-31 16:00:00 UTC, end = 2026-06-01 16:00:00 UTC.
+	inWindowUTC := time.Date(2026, 5, 31, 20, 0, 0, 0, time.UTC).Unix()  // 2026-06-01 04:00 CST (in window, server UTC Day="2026-05-31")
+	outWindowUTC := time.Date(2026, 6, 1, 16, 30, 0, 0, time.UTC).Unix() // 2026-06-02 00:30 CST (out of window, server UTC Day="2026-06-01")
+
+	require.NoError(t, db.Create(&[]model.AdtySiteEarningEvent{
+		{
+			OperationKey: "tz-op-in-" + strconv.Itoa(site.Id), SiteId: site.Id, UserId: 1,
+			Day: "2026-05-31", Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8,
+			Projected: true, CreatedAt: inWindowUTC,
+		},
+		{
+			OperationKey: "tz-op-out-" + strconv.Itoa(site.Id), SiteId: site.Id, UserId: 1,
+			Day: "2026-06-01", Quota: int(perUnit("250")), Markup: 1.25, CostFactor: 0.8,
+			Projected: true, CreatedAt: outWindowUTC,
+		},
+	}).Error)
+
+	now := time.Date(2026, 6, 1, 17, 0, 0, 0, time.UTC) // 2026-06-02 01:00 CST -> generates 2026-06-01 sheet
+	_, err := GenerateAdtySiteSettlementSheets(now)
 	require.NoError(t, err)
-	return loc
+
+	var sheet model.AdtySiteSettlementSheet
+	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-06-01").First(&sheet).Error)
+	require.Equal(t, "Asia/Shanghai", sheet.Timezone)
+	require.True(t, sheet.ConsumptionUSD.Equal(decimal.NewFromInt(125)), "only event inside [DayStart, DayEnd) must be counted, got %s", sheet.ConsumptionUSD)
+	require.True(t, sheet.SupplyCostUSD.Equal(decimal.NewFromInt(100)), "got %s", sheet.SupplyCostUSD)
+	require.True(t, sheet.SpreadUSD.Equal(decimal.NewFromInt(25)), "got %s", sheet.SpreadUSD)
 }
 
 func TestSettlementSheetGiftSourcesAcrossDaysPG(t *testing.T) {
@@ -318,6 +347,13 @@ func TestSettlementSheetGiftSourcesAcrossDaysPG(t *testing.T) {
 		require.Equal(t, "7", d2.GiftReleaseUSD.String())
 		require.Equal(t, wallets, snapshotSiteWallets(t, db, site.Id))
 	}
+}
+
+func mustLoc(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	require.NoError(t, err)
+	return loc
 }
 
 func TestSettlementSheetAvailableAndFrozenNetChangesPG(t *testing.T) {
@@ -425,40 +461,4 @@ func TestSettlementSheetLegacyContributionsKeepOriginalOccurrencePG(t *testing.T
 	var facts []model.AdtySiteEarningFact
 	require.NoError(t, db.Where("site_id = ?", site.Id).Find(&facts).Error)
 	require.Len(t, facts, 4, "repeat migrations retain the historical baseline and each immutable occurrence fact")
-}
-
-func TestSettlementSheetBusinessTimeWindowFiltersEarningFactsBySavedWindow(t *testing.T) {
-	db := prepareSiteDB(t)
-	t.Cleanup(func() { _ = db.Delete(&model.Option{Key: adtyBusinessTimezoneKey}).Error })
-	_, site := openActiveSite(t, db, "sheettzearn"+strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10))
-	require.NoError(t, SaveAdtyBusinessTimezone("Asia/Shanghai"))
-
-	// Business day 2026-06-01 in Asia/Shanghai (+08:00) spans:
-	// start = 2026-05-31 16:00:00 UTC, end = 2026-06-01 16:00:00 UTC.
-	inWindowUTC := time.Date(2026, 5, 31, 20, 0, 0, 0, time.UTC).Unix()  // 2026-06-01 04:00 CST (in window, server UTC Day="2026-05-31")
-	outWindowUTC := time.Date(2026, 6, 1, 16, 30, 0, 0, time.UTC).Unix() // 2026-06-02 00:30 CST (out of window, server UTC Day="2026-06-01")
-
-	require.NoError(t, db.Create(&[]model.AdtySiteEarningEvent{
-		{
-			OperationKey: "tz-op-in-" + strconv.Itoa(site.Id), SiteId: site.Id, UserId: 1,
-			Day: "2026-05-31", Quota: int(perUnit("125")), Markup: 1.25, CostFactor: 0.8,
-			Projected: true, CreatedAt: inWindowUTC,
-		},
-		{
-			OperationKey: "tz-op-out-" + strconv.Itoa(site.Id), SiteId: site.Id, UserId: 1,
-			Day: "2026-06-01", Quota: int(perUnit("250")), Markup: 1.25, CostFactor: 0.8,
-			Projected: true, CreatedAt: outWindowUTC,
-		},
-	}).Error)
-
-	now := time.Date(2026, 6, 1, 17, 0, 0, 0, time.UTC) // 2026-06-02 01:00 CST -> generates 2026-06-01 sheet
-	_, err := GenerateAdtySiteSettlementSheets(now)
-	require.NoError(t, err)
-
-	var sheet model.AdtySiteSettlementSheet
-	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-06-01").First(&sheet).Error)
-	require.Equal(t, "Asia/Shanghai", sheet.Timezone)
-	require.True(t, sheet.ConsumptionUSD.Equal(decimal.NewFromInt(125)), "only event inside [DayStart, DayEnd) must be counted, got %s", sheet.ConsumptionUSD)
-	require.True(t, sheet.SupplyCostUSD.Equal(decimal.NewFromInt(100)), "got %s", sheet.SupplyCostUSD)
-	require.True(t, sheet.SpreadUSD.Equal(decimal.NewFromInt(25)), "got %s", sheet.SpreadUSD)
 }

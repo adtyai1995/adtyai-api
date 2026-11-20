@@ -76,8 +76,10 @@ func TestFundChecksWindowsGlossaryAndEarningView(t *testing.T) {
 	var terms int64
 	require.NoError(t, db.Model(&model.AdtyGlossaryTerm{}).Count(&terms).Error)
 	require.EqualValues(t, 1, terms)
-	require.NoError(t, HideAdtyNotificationForUser(4, "notice-hide"))
-	filtered, err := hideAdtyNotifications(4, AdtyNotificationInbox{Announcements: []map[string]any{{"read_key": "notice-hide"}, {"read_key": "keep"}}})
+	hideUser := referralUser(t, db, "notice-hide-gap")
+	require.NoError(t, model.MigrateAuditLogs())
+	require.NoError(t, HideAdtyNotificationForUser(hideUser.Id, "notice-hide"))
+	filtered, err := hideAdtyNotifications(hideUser.Id, AdtyNotificationInbox{Announcements: []map[string]any{{"read_key": "notice-hide"}, {"read_key": "keep"}}})
 	require.NoError(t, err)
 	require.Len(t, filtered.Announcements, 1)
 	require.Equal(t, "keep", filtered.Announcements[0]["read_key"])
@@ -181,6 +183,8 @@ func TestRemainingPriceCommissionAndIsolation(t *testing.T) {
 	_, err = CreateAdtyTeam(other.Id, 0, "MainAgree", decimal.NewFromInt(1))
 	require.NoError(t, err)
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
+	_, err = UpsertAdtySevereTodo(owner.Id, site.Id, "severe-1", "Severe", "Act on the shortfall", "severe_todo", 0)
+	require.NoError(t, err)
 	require.NoError(t, CompleteAdtyTodo(owner.Id, "severe-1"))
 }
 
@@ -260,10 +264,12 @@ func TestAccountOrdersTranslationAndHealth(t *testing.T) {
 
 func TestPriceRevisionAndBalanceGap(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
-	require.NoError(t, HideAdtyNotificationForUser(9, "notice-1"))
-	require.NoError(t, HideAdtyNotificationForUser(9, "notice-1"))
+	hideUser := referralUser(t, db, "notice-hide-price")
+	require.NoError(t, model.MigrateAuditLogs())
+	require.NoError(t, HideAdtyNotificationForUser(hideUser.Id, "notice-1"))
+	require.NoError(t, HideAdtyNotificationForUser(hideUser.Id, "notice-1"))
 	var hides int64
-	require.NoError(t, db.Model(&model.AdtyNotificationHide{}).Where("user_id = ?", 9).Count(&hides).Error)
+	require.NoError(t, db.Model(&model.AdtyNotificationHide{}).Where("user_id = ?", hideUser.Id).Count(&hides).Error)
 	require.EqualValues(t, 1, hides)
 	var hideAudits int64
 	require.NoError(t, model.LOG_DB.Model(&model.AuditLog{}).Where("action = ? AND object_id = ?", "adty.notification.hide", "notice-1").Count(&hideAudits).Error)

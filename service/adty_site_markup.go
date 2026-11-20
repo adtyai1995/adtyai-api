@@ -2,7 +2,6 @@ package service
 
 import (
 	"errors"
-	"gorm.io/gorm/clause"
 	"math"
 	"sort"
 	"strings"
@@ -12,9 +11,11 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // 分站定价按 G.2：供货价 = 模型基础价格 × 分站供货倍率 × 本次实际计费分组倍率，
@@ -424,6 +425,81 @@ type AdtySitePricingInput struct {
 	Now             int64
 }
 
+func adtyEnsurePricingTables() {
+	if model.DB == nil {
+		return
+	}
+	if !model.DB.Migrator().HasTable(&model.AdtySitePriceScope{}) {
+		_ = model.DB.AutoMigrate(&model.AdtySitePriceScope{})
+	}
+	if !model.DB.Migrator().HasTable(&model.AdtyPriceRevision{}) {
+		_ = model.DB.AutoMigrate(&model.AdtyPriceRevision{})
+	}
+}
+
+func adtyUpsertPriceScopeVersion(tx *gorm.DB, siteId, userId int, version, now int64) error {
+	scope := model.AdtySitePriceScope{SiteId: siteId, UserId: userId, Version: version, UpdatedAt: now}
+	return tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "site_id"}, {Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"version", "updated_at"}),
+	}).Create(&scope).Error
+}
+
+// AdtySitePricingVersion 返回指定站点与客户作用域（userId=0 为全站）当前的持久定价版本号。
+func AdtySitePricingVersion(siteId, userId int) (int64, error) {
+	return adtySitePricingVersionTx(model.DB, siteId, userId)
+}
+
+func adtySitePricingVersionTx(tx *gorm.DB, siteId, userId int) (int64, error) {
+	var version int64
+	if err := tx.Model(&model.AdtySitePrice{}).Where("site_id = ? AND user_id = ?", siteId, userId).Select("COALESCE(MAX(version), 0)").Scan(&version).Error; err != nil {
+		return 0, err
+	}
+	var scope model.AdtySitePriceScope
+	result := tx.Where("site_id = ? AND user_id = ?", siteId, userId).Limit(1).Find(&scope)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return max(version, scope.Version), nil
+}
+
+func adtyPriceRevisionKind(userId int, group, modelName string) string {
+	prefix := ""
+	if userId > 0 {
+		prefix = "customer:"
+	}
+	var kind string
+	switch {
+	case modelName != "":
+		kind = prefix + "model:" + modelName
+	case group != "":
+		kind = prefix + "group:" + group
+	default:
+		if prefix != "" {
+			kind = "customer:default"
+		} else {
+			kind = "default"
+		}
+	}
+	if len(kind) > 32 {
+		kind = kind[:32]
+	}
+	return kind
+}
+
+// ListAdtySitePriceRevisions 按时间顺序返回指定站点的加价变更历史（追加只读）。
+func ListAdtySitePriceRevisions(siteId int) ([]model.AdtyPriceRevision, error) {
+	if model.DB == nil || siteId <= 0 {
+		return nil, nil
+	}
+	adtyEnsurePricingTables()
+	var revisions []model.AdtyPriceRevision
+	if err := model.DB.Where("site_id = ?", siteId).Order("id asc").Find(&revisions).Error; err != nil {
+		return nil, err
+	}
+	return revisions, nil
+}
+
 // AdtySitePricingResult 说明保存后哪些项是立即生效、哪些在等涨价延迟。
 type AdtySitePricingResult struct {
 	Version        int64                 `json:"version"`
@@ -604,12 +680,7 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 			} else if before.PendingAt > 0 {
 				action = "cancelled"
 			}
-			kind := "default"
-			if modelName != "" {
-				kind = "model"
-			} else if group != "" {
-				kind = "group"
-			}
+			kind := adtyPriceRevisionKind(input.UserId, group, modelName)
 			beforeState, encodeErr := common.Marshal(map[string]any{"override": existed, "price": before})
 			if encodeErr != nil {
 				return encodeErr
@@ -644,6 +715,41 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 			}
 			result.Pending[change.group] = at
 		}
+		// A same-save increase is stored as pending, so a later deletion in this
+		// call still sees the old live markup. The revision must record the
+		// requested target, not that stale live value.
+		sameSaveMarkup := map[string]decimal.Decimal{}
+		rememberSameSave := func(group, modelName string, markup decimal.Decimal) {
+			sameSaveMarkup[adtySitePriceKey(group, modelName)] = markup
+		}
+		revisionAfter := func(others []model.AdtySitePrice, group, modelName string, fallback decimal.Decimal) decimal.Decimal {
+			if len(sameSaveMarkup) == 0 {
+				return fallback
+			}
+			overlaid := append([]model.AdtySitePrice(nil), others...)
+			changed := false
+			for i := range overlaid {
+				marked, ok := sameSaveMarkup[adtySitePriceKey(overlaid[i].Group, overlaid[i].Model)]
+				if !ok {
+					continue
+				}
+				overlaid[i].Markup = marked
+				changed = true
+			}
+			if !changed {
+				return fallback
+			}
+			return adtyClampMarkup(&site, ResolveAdtySiteMarkup(overlaid, input.UserId, group, modelName), input.UserId, group)
+		}
+		// Customer overrides are judged against the price already in effect.
+		// Rows created earlier in this same save are not that price: a new
+		// customer default must not hide the site group or model markup.
+		var baseline []model.AdtySitePrice
+		if input.UserId > 0 {
+			if err := tx.Where("site_id = ?", site.Id).Find(&baseline).Error; err != nil {
+				return err
+			}
+		}
 		for _, change := range changes {
 			group, modelName, markup := change.group, change.model, change.markup
 			row, found := existing[adtySitePriceKey(group, modelName)]
@@ -661,7 +767,7 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 					if err := tx.Where("id = ?", row.Id).Delete(&model.AdtySitePrice{}).Error; err != nil {
 						return err
 					}
-					if err := recordRevision(group, modelName, row.Markup.String(), fallback.String()); err != nil {
+					if err := recordRevision(group, modelName, row.Markup.String(), revisionAfter(others, group, modelName, fallback).String()); err != nil {
 						return err
 					}
 					recordImmediate(change)
@@ -697,7 +803,9 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 			}
 			if !found {
 				var others []model.AdtySitePrice
-				if err := tx.Where("site_id = ?", site.Id).Find(&others).Error; err != nil {
+				if input.UserId > 0 {
+					others = baseline
+				} else if err := tx.Where("site_id = ?", site.Id).Find(&others).Error; err != nil {
 					return err
 				}
 				inherited := adtyClampMarkup(&site, ResolveAdtySiteMarkup(others, input.UserId, group, modelName), input.UserId, group)
@@ -714,6 +822,7 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 					if err := recordRevision(group, modelName, inherited.String(), markup.String()); err != nil {
 						return err
 					}
+					rememberSameSave(group, modelName, markup)
 					recordPending(change, now+delay)
 					result.Raised = append(result.Raised, row)
 					continue
@@ -725,6 +834,7 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 				if err := recordRevision(group, modelName, inherited.String(), markup.String()); err != nil {
 					return err
 				}
+				rememberSameSave(group, modelName, markup)
 				recordImmediate(change)
 				continue
 			}
@@ -744,6 +854,7 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 			if err := recordRevision(group, modelName, row.Markup.String(), markup.String()); err != nil {
 				return err
 			}
+			rememberSameSave(group, modelName, markup)
 		}
 		// 没有变更的行也要把版本推上去，这样下次带旧版本保存会冲突。
 		if err := tx.Model(&model.AdtySitePrice{}).Where("site_id = ? AND user_id = ?", site.Id, input.UserId).Update("version", next).Error; err != nil {
@@ -1182,28 +1293,311 @@ func AdtyAdjustPricingForSiteModels(c *gin.Context, group string, pricing []mode
 	return out
 }
 
-func adtyUpsertPriceScopeVersion(tx *gorm.DB, siteId, userId int, version, now int64) error {
-	scope := model.AdtySitePriceScope{SiteId: siteId, UserId: userId, Version: version, UpdatedAt: now}
-	return tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "site_id"}, {Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"version", "updated_at"}),
-	}).Create(&scope).Error
+func adtyScaleBillingExpr(exprStr string, factor decimal.Decimal) string {
+	trimmed := strings.TrimSpace(exprStr)
+	if trimmed == "" || !factor.IsPositive() || factor.Equal(decimal.NewFromInt(1)) {
+		return exprStr
+	}
+	prefix := ""
+	body := trimmed
+	if strings.HasPrefix(trimmed, "v1:") {
+		prefix = "v1:"
+		body = strings.TrimSpace(trimmed[3:])
+	}
+	scaledBody, foundTier := adtyRewriteTierCalls(body, factor)
+	if !foundTier {
+		scaledBody = adtyScaleTierPriceExpr(body, factor)
+	}
+	candidate := prefix + scaledBody
+	if _, err := billingexpr.CompileFromCache(candidate); err != nil {
+		return exprStr
+	}
+	return candidate
 }
 
-// AdtySitePricingVersion 返回指定站点与客户作用域（userId=0 为全站）当前的持久定价版本号。
-func AdtySitePricingVersion(siteId, userId int) (int64, error) {
-	return adtySitePricingVersionTx(model.DB, siteId, userId)
+func adtyIsIdentChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
 }
 
-func adtySitePricingVersionTx(tx *gorm.DB, siteId, userId int) (int64, error) {
-	var version int64
-	if err := tx.Model(&model.AdtySitePrice{}).Where("site_id = ? AND user_id = ?", siteId, userId).Select("COALESCE(MAX(version), 0)").Scan(&version).Error; err != nil {
-		return 0, err
+func adtyScanStringLiteral(s string, start int) int {
+	quote := s[start]
+	for i := start + 1; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++
+			continue
+		}
+		if s[i] == quote {
+			return i + 1
+		}
 	}
-	var scope model.AdtySitePriceScope
-	result := tx.Where("site_id = ? AND user_id = ?", siteId, userId).Limit(1).Find(&scope)
-	if result.Error != nil {
-		return 0, result.Error
+	return len(s)
+}
+
+func adtyFindMatchingParen(s string, openIdx int) int {
+	if openIdx < 0 || openIdx >= len(s) || s[openIdx] != '(' {
+		return -1
 	}
-	return max(version, scope.Version), nil
+	depth := 0
+	for i := openIdx; i < len(s); i++ {
+		ch := s[i]
+		if ch == '"' || ch == '\'' {
+			i = adtyScanStringLiteral(s, i) - 1
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func adtySplitTopLevelComma(s string) (string, string, bool) {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '"' || ch == '\'' {
+			i = adtyScanStringLiteral(s, i) - 1
+			continue
+		}
+		switch ch {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				return s[:i], s[i+1:], true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func adtyRewriteTierCalls(s string, factor decimal.Decimal) (string, bool) {
+	var b strings.Builder
+	found := false
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == '"' || ch == '\'' {
+			next := adtyScanStringLiteral(s, i)
+			b.WriteString(s[i:next])
+			i = next
+			continue
+		}
+		if strings.HasPrefix(s[i:], "tier") && (i == 0 || !adtyIsIdentChar(s[i-1])) {
+			j := i + 4
+			if j >= len(s) || !adtyIsIdentChar(s[j]) {
+				for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+					j++
+				}
+				if j < len(s) && s[j] == '(' {
+					closeIdx := adtyFindMatchingParen(s, j)
+					if closeIdx > j {
+						inner := s[j+1 : closeIdx]
+						if arg0, arg1, ok := adtySplitTopLevelComma(inner); ok {
+							found = true
+							b.WriteString("tier(")
+							b.WriteString(strings.TrimSpace(arg0))
+							b.WriteString(", ")
+							b.WriteString(adtyScaleTierPriceExpr(arg1, factor))
+							b.WriteByte(')')
+							i = closeIdx + 1
+							continue
+						}
+					}
+				}
+			}
+		}
+		b.WriteByte(ch)
+		i++
+	}
+	return b.String(), found
+}
+
+func adtyParsePureDecimal(s string) (decimal.Decimal, bool) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" || strings.ContainsAny(trimmed, " \t\n\r") {
+		return decimal.Zero, false
+	}
+	d, err := decimal.NewFromString(trimmed)
+	if err != nil {
+		return decimal.Zero, false
+	}
+	return d, true
+}
+
+func adtyScaleTierPriceExpr(expr string, factor decimal.Decimal) string {
+	s := strings.TrimSpace(expr)
+	if s == "" {
+		return expr
+	}
+	if s[0] == '(' && adtyFindMatchingParen(s, 0) == len(s)-1 {
+		return "(" + adtyScaleTierPriceExpr(s[1:len(s)-1], factor) + ")"
+	}
+	if strings.HasPrefix(s, "fixed") && (len(s) == 5 || !adtyIsIdentChar(s[5])) {
+		j := 5
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		if j < len(s) && s[j] == '(' && adtyFindMatchingParen(s, j) == len(s)-1 {
+			inner := s[j+1 : len(s)-1]
+			if num, ok := adtyParsePureDecimal(inner); ok {
+				return "fixed(" + num.Mul(factor).String() + ")"
+			}
+		}
+	}
+	if num, ok := adtyParsePureDecimal(s); ok {
+		return num.Mul(factor).String()
+	}
+	if cond, branch1, branch2, ok := adtySplitTopLevelTernary(s); ok {
+		return strings.TrimSpace(cond) + " ? " + adtyScaleTierPriceExpr(branch1, factor) + " : " + adtyScaleTierPriceExpr(branch2, factor)
+	}
+	if terms, ops, ok := adtySplitTopLevelAddSub(s); ok {
+		var b strings.Builder
+		for idx, term := range terms {
+			if idx > 0 {
+				b.WriteByte(' ')
+				b.WriteByte(ops[idx-1])
+				b.WriteByte(' ')
+			}
+			b.WriteString(adtyScaleTierPriceExpr(term, factor))
+		}
+		return b.String()
+	}
+	if lhs, rhs, op, ok := adtySplitLastTopLevelMulDiv(s); ok {
+		lhsTrim := strings.TrimSpace(lhs)
+		rhsTrim := strings.TrimSpace(rhs)
+		if op == '/' {
+			if _, ok := adtyParsePureDecimal(rhsTrim); ok {
+				return adtyScaleTierPriceExpr(lhsTrim, factor) + " / " + rhsTrim
+			}
+		}
+		if op == '*' {
+			if num, ok := adtyParsePureDecimal(rhsTrim); ok {
+				return lhsTrim + " * " + num.Mul(factor).String()
+			}
+			if num, ok := adtyParsePureDecimal(lhsTrim); ok {
+				return num.Mul(factor).String() + " * " + rhsTrim
+			}
+			return adtyScaleTierPriceExpr(lhsTrim, factor) + " * " + rhsTrim
+		}
+	}
+	return "(" + s + ") * " + factor.String()
+}
+
+func adtySplitTopLevelTernary(s string) (string, string, string, bool) {
+	depth := 0
+	qIdx := -1
+	colonDepth := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '"' || ch == '\'' {
+			i = adtyScanStringLiteral(s, i) - 1
+			continue
+		}
+		switch ch {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case '?':
+			if depth == 0 {
+				if qIdx == -1 {
+					qIdx = i
+				} else {
+					colonDepth++
+				}
+			}
+		case ':':
+			if depth == 0 && qIdx != -1 {
+				if colonDepth == 0 {
+					return s[:qIdx], s[qIdx+1 : i], s[i+1:], true
+				}
+				colonDepth--
+			}
+		}
+	}
+	return "", "", "", false
+}
+
+func adtyIsOperatorPrev(s string, idx int) bool {
+	for i := idx - 1; i >= 0; i-- {
+		ch := s[i]
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			continue
+		}
+		switch ch {
+		case '+', '-', '*', '/', '%', '?', ':', '(', '[', ',', '<', '>', '=', '!', '&', '|':
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func adtySplitTopLevelAddSub(s string) ([]string, []byte, bool) {
+	depth := 0
+	var terms []string
+	var ops []byte
+	last := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '"' || ch == '\'' {
+			i = adtyScanStringLiteral(s, i) - 1
+			continue
+		}
+		switch ch {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case '+', '-':
+			if depth == 0 && !adtyIsOperatorPrev(s, i) {
+				terms = append(terms, s[last:i])
+				ops = append(ops, ch)
+				last = i + 1
+			}
+		}
+	}
+	if len(ops) == 0 {
+		return nil, nil, false
+	}
+	terms = append(terms, s[last:])
+	return terms, ops, true
+}
+
+func adtySplitLastTopLevelMulDiv(s string) (string, string, byte, bool) {
+	depth := 0
+	lastIdx := -1
+	var lastOp byte
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '"' || ch == '\'' {
+			i = adtyScanStringLiteral(s, i) - 1
+			continue
+		}
+		switch ch {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case '*', '/':
+			if depth == 0 {
+				lastIdx = i
+				lastOp = ch
+			}
+		}
+	}
+	if lastIdx <= 0 {
+		return "", "", 0, false
+	}
+	return s[:lastIdx], s[lastIdx+1:], lastOp, true
 }

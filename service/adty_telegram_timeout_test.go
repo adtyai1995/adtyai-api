@@ -139,6 +139,7 @@ func TestTelegramDeliveryTaskWarnsWhenBotConfiguredButSenderMissing(t *testing.T
 
 	logged := captureSysLog(t)
 	startAdtyTelegramDeliveryTask()
+	t.Cleanup(stopAdtyTelegramDeliveryTask)
 
 	assert.Contains(t, logged.String(), "bot is configured",
 		"配了 bot 却发不出去时必须留下痕迹，否则「开关没开」和「没消息」同形")
@@ -159,6 +160,7 @@ func TestTelegramDeliveryTaskStaysQuietWhenNoBotConfigured(t *testing.T) {
 
 	logged := captureSysLog(t)
 	startAdtyTelegramDeliveryTask()
+	t.Cleanup(stopAdtyTelegramDeliveryTask)
 
 	assert.NotContains(t, logged.String(), "bot is configured",
 		"没配 bot 就是没打算发 Telegram：这不是异常，不该报警")
@@ -172,6 +174,7 @@ func TestTelegramDeliveryTaskStaysQuietWhenSenderIsSet(t *testing.T) {
 
 	logged := captureSysLog(t)
 	startAdtyTelegramDeliveryTask()
+	t.Cleanup(stopAdtyTelegramDeliveryTask)
 
 	assert.NotContains(t, logged.String(), "telegram delivery is disabled")
 }

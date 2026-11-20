@@ -349,10 +349,10 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 	}
 }
 
-func adtyPublicTelegramEventKey(channel, body string) string {
-	channel, body = strings.TrimSpace(channel), strings.TrimSpace(redactAdtySecrets(strings.TrimSpace(body)))
-	sum := sha256.Sum256([]byte(channel + "\n" + body))
-	return "public:" + hex.EncodeToString(sum[:16])
+// 公告入队的 EventKey 绑公告 id，不绑正文。正文一改哈希就变，
+// 「队列里有没有这条公告」会被误判成没有，编辑就再推一条。
+func adtyPublicNotificationEventKey(id int) string {
+	return fmt.Sprintf("pub:%d:public", id)
 }
 
 func adtyNotificationPrivateRecipientIDs(tx *gorm.DB, row *model.AdtyNotificationPublication) ([]int, error) {
@@ -467,9 +467,8 @@ func adtyNotificationHasTelegramOutbox(tx *gorm.DB, row *model.AdtyNotificationP
 	if channel == "" {
 		return true
 	}
-	eventKey := adtyPublicTelegramEventKey(channel, announceTelegramBodyWithDB(tx, *row))
 	var count int64
-	if err := tx.Model(&model.AdtyTelegramDelivery{}).Where("event_key = ?", eventKey).Count(&count).Error; err != nil {
+	if err := tx.Model(&model.AdtyTelegramDelivery{}).Where("event_key = ?", adtyPublicNotificationEventKey(row.Id)).Count(&count).Error; err != nil {
 		return true
 	}
 	return count > 0
@@ -531,17 +530,17 @@ func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, i
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
-			if !allowRecovery && adtyNotificationHasTelegramOutbox(tx, row) {
-				return nil
-			}
-			if adtyNotificationHasTelegramOutbox(tx, row) {
+			// The slot is already taken. Later edits must not enqueue another
+			// message just because the body changed. Recovery may fill a missing
+			// outbox row, and only that.
+			if !allowRecovery || adtyNotificationHasTelegramOutbox(tx, row) {
 				return nil
 			}
 		}
 		if row.Audience == "team" || row.Audience == "user" {
 			return queueAdtyPrivatePublicationTelegramTx(tx, row)
 		}
-		return queueAdtyPublicTelegramTx(tx, channel, purpose, announceTelegramBodyWithDB(tx, *row), "")
+		return queueAdtyPublicTelegramTx(tx, channel, purpose, announceTelegramBodyWithDB(tx, *row), adtyPublicNotificationEventKey(row.Id))
 	})
 	if err != nil {
 		row.TelegramAt = 0

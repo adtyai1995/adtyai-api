@@ -756,3 +756,378 @@ func TestSiteTeamPriceUsesSupplyFloor(t *testing.T) {
 		assert.True(t, AdtyTeamPriceBlocked(ctx))
 	})
 }
+
+func TestTeamSupplyEarningSnapshotAndSplit(t *testing.T) {
+	db := prepareSiteDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.AdtyTeam{}, &model.AdtyTeamMember{}, &model.AdtyTeamKey{}))
+	_, site := openActiveSite(t, db, "team-earn")
+	sitePrice(t, db, site.Id, 0, "", "1.25")
+
+	t.Run("discounted team charge above supply floor records exact spread over supply", func(t *testing.T) {
+		customer := siteCustomer(t, db, site, "team-earn-above")
+		require.NoError(t, db.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", customer.Id).Update("joined_at", time.Now().Unix()-48*3600).Error)
+		ctx := bindSiteTeamKey(t, db, customer, site.Id, "EarnAbove", "0.90", "team-earn-above-key")
+
+		billedDec, effectiveK := AdtyApplySiteMarkupDecimal(ctx, customer.Id, "default", decimal.NewFromInt(2), "")
+		// supply = 2 * 0.8 = 1.6; retail = 1.6 * 1.25 = 2.0; team billed = 2.0 * 0.90 = 1.8; effectiveK = 1.8 / 1.6 = 1.125
+		assert.True(t, billedDec.Equal(decimal.RequireFromString("1.8")), "got %s", billedDec)
+		assert.True(t, effectiveK.Equal(decimal.RequireFromString("1.125")), "got %s", effectiveK)
+
+		info := &relaycommon.RelayInfo{
+			UserId:          customer.Id,
+			OriginModelName: "gpt-4o",
+			UsingGroup:      "default",
+			StartTime:       time.Now(),
+			PriceData: hosttypes.PriceData{
+				ModelPrice:     1,
+				UsePrice:       true,
+				GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: billedDec.InexactFloat64()},
+			},
+		}
+		info.PriceData.GroupRatioInfo.SetBilledGroupRatio(billedDec)
+		info.PriceData.SetBilledModelPrice(decimal.NewFromInt(1))
+		AdtyFreezeRequestPriceSnapshot(ctx, info)
+		snap := AdtyFrozenPriceSnapshot(ctx)
+		require.NotNil(t, snap)
+		assert.Equal(t, "0.25", snap.SiteMarkupRatio, "retail markup ratio stays preserved in snapshot")
+		assert.Equal(t, "1.125", snap.StoredMarkupK, "stored k reflects team effective ratio against supply")
+		assert.InDelta(t, 1.125, snap.LegacyMarkupFloat(), 1e-12)
+
+		// Quota corresponding to $1.80 settled by team (at QuotaPerUnit = 500,000 => 900,000 quota)
+		const settledQuota = int64(900_000)
+		rev, plat, earn := AdtySiteEarningSplit(settledQuota, decimal.NewFromFloat(snap.LegacyMarkupFloat()), decimal.NewFromFloat(snap.LegacyCostFactorFloat()))
+		assert.True(t, rev.Equal(decimal.RequireFromString("1.8")), "revenue %s", rev)
+		assert.True(t, plat.Equal(decimal.RequireFromString("1.6")), "platform supply cost %s", plat)
+		assert.True(t, earn.Equal(decimal.RequireFromString("0.2")), "owner earning spread %s", earn)
+	})
+
+	t.Run("floored team charge at supply records zero owner spread", func(t *testing.T) {
+		customer := siteCustomer(t, db, site, "team-earn-floor")
+		require.NoError(t, db.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", customer.Id).Update("joined_at", time.Now().Unix()-48*3600).Error)
+		ctx := bindSiteTeamKey(t, db, customer, site.Id, "EarnFloor", "0.70", "team-earn-floor-key")
+
+		billedDec, effectiveK := AdtyApplySiteMarkupDecimal(ctx, customer.Id, "default", decimal.NewFromInt(2), "")
+		// supply = 1.6; discounted = 2.0 * 0.70 = 1.4 < 1.6 => floored at 1.6; effectiveK = 1
+		assert.True(t, billedDec.Equal(decimal.RequireFromString("1.6")), "got %s", billedDec)
+		assert.True(t, effectiveK.Equal(decimal.NewFromInt(1)), "got %s", effectiveK)
+
+		const settledQuota = int64(800_000) // $1.60
+		rev, plat, earn := AdtySiteEarningSplit(settledQuota, effectiveK, decimal.RequireFromString("0.8"))
+		assert.True(t, rev.Equal(decimal.RequireFromString("1.6")))
+		assert.True(t, plat.Equal(decimal.RequireFromString("1.6")))
+		assert.True(t, earn.IsZero(), "spread must be 0 when team charge is floored at supply, got %s", earn)
+	})
+
+	t.Run("due pending markup is clamped to lowered site cap at apply time", func(t *testing.T) {
+		_, capSite := openActiveSite(t, db, "team-due-cap")
+		_ = siteCustomer(t, db, capSite, "team-due-cap-cust")
+		now := time.Now().Unix()
+		res, err := savePricing(t, capSite.Id, 0, "2.4", nil, 0, now)
+		require.NoError(t, err)
+		require.Equal(t, now+24*3600, res.Pending[""])
+
+		require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", capSite.Id).Update("max_markup", decimal.RequireFromString("1.6")).Error)
+		InvalidateAdtySiteCache()
+
+		applied, err := ApplyDueAdtySiteMarkups(now + 24*3600)
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, applied)
+
+		var stored model.AdtySitePrice
+		require.NoError(t, db.Where("site_id = ? AND user_id = 0 AND \"group\" = ?", capSite.Id, "").First(&stored).Error)
+		assert.True(t, stored.Markup.Equal(decimal.RequireFromString("1.6")), "due markup must be clamped to current cap, got %s", stored.Markup)
+	})
+}
+
+func TestSaveCustomerPricingInheritsCurrentSiteMarkup(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "cust-inherit")
+	now := time.Now().Unix()
+
+	// Set initial site-wide defaults before any customers join so they take effect immediately.
+	initial, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          0,
+		DefaultMarkup:   dec("1.5"),
+		GroupMarkups:    map[string]decimal.Decimal{"vip": decimal.RequireFromString("1.8")},
+		ModelMarkups:    map[string]decimal.Decimal{"gpt-4": decimal.RequireFromString("2.0")},
+		ExpectedVersion: 0,
+		Now:             now,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, initial.Version)
+
+	custDecrease := siteCustomer(t, db, site, "cust-decrease")
+	assert.True(t, AdtySiteMarkup(custDecrease.Id, "default", "").Equal(decimal.RequireFromString("1.5")))
+	assert.True(t, AdtySiteMarkup(custDecrease.Id, "vip", "").Equal(decimal.RequireFromString("1.8")))
+	assert.True(t, AdtySiteMarkup(custDecrease.Id, "default", "gpt-4").Equal(decimal.RequireFromString("2.0")))
+
+	// Introducing customer-specific prices lower than inherited site prices is a decrease and must take effect immediately.
+	decreased, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          custDecrease.Id,
+		DefaultMarkup:   dec("1.3"),
+		GroupMarkups:    map[string]decimal.Decimal{"vip": decimal.RequireFromString("1.4")},
+		ModelMarkups:    map[string]decimal.Decimal{"gpt-4": decimal.RequireFromString("1.6")},
+		ExpectedVersion: 0,
+		Now:             now + 10,
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"", "vip"}, decreased.Immediate)
+	assert.Equal(t, []string{"gpt-4"}, decreased.ModelImmediate)
+	assert.Empty(t, decreased.Pending)
+	assert.Empty(t, decreased.ModelPending)
+	assert.Empty(t, decreased.Raised)
+	assert.True(t, AdtySiteMarkup(custDecrease.Id, "default", "").Equal(decimal.RequireFromString("1.3")))
+	assert.True(t, AdtySiteMarkup(custDecrease.Id, "vip", "").Equal(decimal.RequireFromString("1.4")))
+	assert.True(t, AdtySiteMarkup(custDecrease.Id, "default", "gpt-4").Equal(decimal.RequireFromString("1.6")))
+
+	// Introducing customer-specific prices higher than inherited site prices must preserve the inherited price during the delay, not drop to 1.
+	custIncrease := siteCustomer(t, db, site, "cust-increase")
+	increased, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          custIncrease.Id,
+		DefaultMarkup:   dec("1.9"),
+		GroupMarkups:    map[string]decimal.Decimal{"vip": decimal.RequireFromString("2.2")},
+		ModelMarkups:    map[string]decimal.Decimal{"gpt-4": decimal.RequireFromString("2.5")},
+		ExpectedVersion: 0,
+		Now:             now + 20,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, increased.Immediate)
+	assert.Empty(t, increased.ModelImmediate)
+	assert.Equal(t, now+20+24*3600, increased.Pending[""])
+	assert.Equal(t, now+20+24*3600, increased.Pending["vip"])
+	assert.Equal(t, now+20+24*3600, increased.ModelPending["gpt-4"])
+	assert.True(t, AdtySiteMarkup(custIncrease.Id, "default", "").Equal(decimal.RequireFromString("1.5")), "inherited default markup 1.5 must hold during delay")
+	assert.True(t, AdtySiteMarkup(custIncrease.Id, "vip", "").Equal(decimal.RequireFromString("1.8")), "inherited vip markup 1.8 must hold during delay")
+	assert.True(t, AdtySiteMarkup(custIncrease.Id, "default", "gpt-4").Equal(decimal.RequireFromString("2.0")), "inherited model markup 2.0 must hold during delay")
+}
+
+func TestAdjustPricingForSiteModelsScalesDynamicBillingExprAndPluginVariants(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "dyn-expr")
+	customer := siteCustomer(t, db, site, "dyn-expr-customer")
+
+	// Empty-model markup = 1.2, dyn-model markup = 1.5 => factor = 1.5 / 1.2 = 1.25.
+	sitePrice(t, db, site.Id, 0, "", "1.2")
+	siteModelPrice(t, site.Id, 0, "", "dyn-tiered", "1.5")
+	siteModelPrice(t, site.Id, 0, "", "dyn-fixed", "1.5")
+	siteModelPrice(t, site.Id, 0, "", "dyn-usage", "1.5")
+
+	origPricing := []model.Pricing{
+		{
+			ModelName:   "dyn-tiered",
+			ModelPrice:  2,
+			ModelRatio:  ptrFloat(1),
+			BillingMode: "tiered_expr",
+			BillingExpr: `v1:len > 200000 ? tier("gt_200k", p * 4 + c * 12) : tier("lte_200k", p * 2 + c * 6)`,
+			BillingPluginVariants: []model.PricingPluginVariant{
+				{PluginKey: "web_search", BillingMode: "tiered_expr", BillingExpr: `tier("default", fixed(0.02))`},
+			},
+		},
+		{
+			ModelName:   "dyn-fixed",
+			ModelPrice:  0.04,
+			BillingMode: "tiered_expr",
+			BillingExpr: `tier("default", fixed(0.04)) * image_count`,
+		},
+		{
+			ModelName:   "dyn-usage",
+			BillingMode: "tiered_expr",
+			BillingExpr: `tier("default", (u("input_tokens") * 2) / 1000000 + (u("output_tokens") * 8) / 1000000)`,
+		},
+		{
+			ModelName:   "plain-model",
+			BillingMode: "tiered_expr",
+			BillingExpr: `tier("default", p * 2 + c * 6)`,
+		},
+	}
+
+	req, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req.Request = httptest.NewRequest("GET", "/api/pricing", nil)
+	req.Set("id", customer.Id)
+
+	adjusted := AdtyAdjustPricingForSiteModels(req, "default", origPricing)
+	require.Len(t, adjusted, 4)
+
+	// Display uses a read-only 1.25 factor. Raw expressions and plugin variants stay the billing source.
+	assert.Equal(t, origPricing[0].BillingExpr, adjusted[0].BillingExpr)
+	assert.Equal(t, "1.25", adjusted[0].BillingDisplayMultiplier)
+	require.Len(t, adjusted[0].BillingPluginVariants, 1)
+	assert.Equal(t, origPricing[0].BillingPluginVariants[0].BillingExpr, adjusted[0].BillingPluginVariants[0].BillingExpr)
+	assert.Equal(t, `tier("default", fixed(0.02))`, origPricing[0].BillingPluginVariants[0].BillingExpr)
+
+	_, baseTrace, err := billingexpr.RunExpr(adjusted[0].BillingExpr, billingexpr.TokenParams{P: 1000, C: 500, Len: 1000})
+	require.NoError(t, err)
+	displayCost := baseTrace.CostDec.Mul(decimal.RequireFromString(adjusted[0].BillingDisplayMultiplier))
+	assert.True(t, displayCost.Equal(baseTrace.CostDec.Mul(decimal.RequireFromString("1.25"))), "expected %s * 1.25, got %s", baseTrace.CostDec, displayCost)
+
+	assert.Equal(t, `tier("default", fixed(0.04)) * image_count`, adjusted[1].BillingExpr)
+	assert.Equal(t, "1.25", adjusted[1].BillingDisplayMultiplier)
+	assert.True(t, billingexpr.UsesFixedPricing(adjusted[1].BillingExpr))
+
+	assert.Equal(t, origPricing[2].BillingExpr, adjusted[2].BillingExpr)
+	assert.Equal(t, "1.25", adjusted[2].BillingDisplayMultiplier)
+
+	assert.Equal(t, origPricing[3].BillingExpr, adjusted[3].BillingExpr)
+	assert.Empty(t, adjusted[3].BillingDisplayMultiplier)
+}
+
+func TestDeletingLastGroupOrModelMarkupPreservesDurableScopeVersion(t *testing.T) {
+	db := prepareSiteDB(t)
+	_, site := openActiveSite(t, db, "durable-ver")
+	now := time.Now().Unix()
+
+	// 1. Site scope: save only a group markup, then delete that last row.
+	first, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          0,
+		GroupMarkups:    map[string]decimal.Decimal{"vip": decimal.RequireFromString("1.4")},
+		ExpectedVersion: 0,
+		Now:             now,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, first.Version)
+	require.Len(t, first.Prices, 1)
+
+	deleted, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          0,
+		GroupMarkups:    map[string]decimal.Decimal{"vip": decimal.Zero},
+		ExpectedVersion: first.Version,
+		Now:             now + 1,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, deleted.Version)
+	assert.Empty(t, deleted.Prices)
+	version, err := AdtySitePricingVersion(site.Id, 0)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, version)
+
+	// Stale versions 0 and 1 must be rejected after deletion.
+	for _, stale := range []int64{0, 1} {
+		_, err = SaveAdtySitePricing(AdtySitePricingInput{
+			SiteId:          site.Id,
+			UserId:          0,
+			DefaultMarkup:   dec("1.2"),
+			ExpectedVersion: stale,
+			Now:             now + 2,
+		})
+		require.ErrorIs(t, err, ErrAdtySitePricingConflict, "stale version %d must be rejected", stale)
+	}
+
+	// Returned version 2 must authorize the next save.
+	nextSave, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          0,
+		DefaultMarkup:   dec("1.2"),
+		ExpectedVersion: deleted.Version,
+		Now:             now + 3,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, nextSave.Version)
+
+	// 2. Customer scope: save only a model markup, then delete that last row.
+	customer := siteCustomer(t, db, site, "durable-ver-cust")
+	custFirst, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          customer.Id,
+		ModelMarkups:    map[string]decimal.Decimal{"gpt-4": decimal.RequireFromString("1.1")},
+		ExpectedVersion: 0,
+		Now:             now + 4,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, custFirst.Version)
+
+	custDeleted, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          customer.Id,
+		ModelMarkups:    map[string]decimal.Decimal{"gpt-4": decimal.Zero},
+		ExpectedVersion: custFirst.Version,
+		Now:             now + 5,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, custDeleted.Version)
+	assert.Empty(t, custDeleted.Prices)
+
+	_, err = SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          customer.Id,
+		DefaultMarkup:   dec("1.15"),
+		ExpectedVersion: 0,
+		Now:             now + 6,
+	})
+	require.ErrorIs(t, err, ErrAdtySitePricingConflict)
+
+	custNext, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          customer.Id,
+		DefaultMarkup:   dec("1.15"),
+		ExpectedVersion: custDeleted.Version,
+		Now:             now + 6,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, custNext.Version)
+}
+
+func TestSitePriceRevisionHistoryRecordedAndImmutable(t *testing.T) {
+	db := prepareSiteDB(t)
+	owner, site := openActiveSite(t, db, "rev-hist")
+	now := int64(1_700_100_000)
+
+	// 1. Initial site-wide default, group, and model markups.
+	first, err := SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          0,
+		DefaultMarkup:   dec("1.2"),
+		GroupMarkups:    map[string]decimal.Decimal{"vip": decimal.RequireFromString("1.4")},
+		ModelMarkups:    map[string]decimal.Decimal{"gpt-4": decimal.RequireFromString("1.6")},
+		ExpectedVersion: 0,
+		Now:             now,
+	})
+	require.NoError(t, err)
+
+	// 2. Delete model override and update default markup.
+	_, err = SaveAdtySitePricing(AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          0,
+		ActorId:         owner.Id,
+		DefaultMarkup:   dec("1.3"),
+		ModelMarkups:    map[string]decimal.Decimal{"gpt-4": decimal.Zero},
+		ExpectedVersion: first.Version,
+		Now:             now + 60,
+	})
+	require.NoError(t, err)
+
+	revs, err := ListAdtySitePriceRevisions(site.Id)
+	require.NoError(t, err)
+	require.Len(t, revs, 5)
+
+	assert.Equal(t, owner.Id, revs[0].ActorId)
+	assert.Equal(t, "default", revs[0].Kind)
+	assert.Equal(t, "1", revs[0].Before)
+	assert.Equal(t, "1.2", revs[0].After)
+	assert.Equal(t, now, revs[0].CreatedAt)
+
+	assert.Equal(t, "group:vip", revs[1].Kind)
+	assert.Equal(t, "1.2", revs[1].Before)
+	assert.Equal(t, "1.4", revs[1].After)
+
+	assert.Equal(t, "model:gpt-4", revs[2].Kind)
+	assert.Equal(t, "1.2", revs[2].Before)
+	assert.Equal(t, "1.6", revs[2].After)
+
+	assert.Equal(t, "default", revs[3].Kind)
+	assert.Equal(t, "1.2", revs[3].Before)
+	assert.Equal(t, "1.3", revs[3].After)
+	assert.Equal(t, now+60, revs[3].CreatedAt)
+
+	assert.Equal(t, "model:gpt-4", revs[4].Kind)
+	assert.Equal(t, "1.6", revs[4].Before)
+	assert.Equal(t, "1.3", revs[4].After)
+
+	// Revisions are append-only and cannot be mutated or deleted.
+	assert.ErrorIs(t, db.Model(&revs[0]).Update("after", "9.9").Error, model.ErrAdtySiteWalletLedgerImmutable)
+	assert.ErrorIs(t, db.Delete(&revs[0]).Error, model.ErrAdtySiteWalletLedgerImmutable)
+}

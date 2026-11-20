@@ -3,12 +3,12 @@ package service
 import (
 	"crypto/sha256"
 	"fmt"
-	"gorm.io/gorm"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 // RecordAdtySiteEarningLine stores one earning fact with model and billing group.

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -853,6 +854,12 @@ func adtyTelegramSendMessageHTTP(token, chat, text string) error {
 //
 // `RetryAdtyTelegram` 在此之前零生产调用方：入队的行没有任何东西去消费，
 // 队列只增不减。这条任务就是它的出口。
+var (
+	adtyTelegramDeliveryMu   sync.Mutex
+	adtyTelegramDeliveryStop chan struct{}
+	adtyTelegramDeliveryDone chan struct{}
+)
+
 func startAdtyTelegramDeliveryTask() {
 	// 没有发送实现时，这条任务只会把队列一路推到 dead，而且全程没有错误。
 	// 「开关没打开」和「没有消息要发」在外部看起来完全一样，所以必须喊一声。
@@ -865,15 +872,46 @@ func startAdtyTelegramDeliveryTask() {
 		common.SysError(common.LogText(
 			"telegram delivery is disabled but a bot is configured: ADTY_TELEGRAM_ALLOW_NETWORK is not \"1\", so no message can leave this process; queued rows will be marked failed and eventually dead"))
 	}
+	adtyTelegramDeliveryMu.Lock()
+	defer adtyTelegramDeliveryMu.Unlock()
+	if adtyTelegramDeliveryStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	adtyTelegramDeliveryStop = stop
+	adtyTelegramDeliveryDone = done
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			if _, err := RetryAdtyTelegram(); err != nil {
-				common.SysError(common.LogText("telegram delivery task: %s", err.Error()))
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if _, err := RetryAdtyTelegram(); err != nil {
+					common.SysError(common.LogText("telegram delivery task: %s", err.Error()))
+				}
 			}
 		}
 	}()
+}
+
+// stopAdtyTelegramDeliveryTask stops the retry loop started by tests.
+// Production leaves the task running for the process lifetime.
+func stopAdtyTelegramDeliveryTask() {
+	adtyTelegramDeliveryMu.Lock()
+	stop := adtyTelegramDeliveryStop
+	done := adtyTelegramDeliveryDone
+	adtyTelegramDeliveryStop = nil
+	adtyTelegramDeliveryDone = nil
+	adtyTelegramDeliveryMu.Unlock()
+	if stop == nil {
+		return
+	}
+	close(stop)
+	<-done
 }
 
 func init() {

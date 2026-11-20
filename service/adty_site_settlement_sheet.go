@@ -53,6 +53,14 @@ func previousBusinessWindow(now time.Time, loc *time.Location) (day string, star
 	return day, start, end
 }
 
+func inAdtySheetWindow(ts int64, rowDay, sheetDay string, start, end int64) (matched, hasWindowTS bool) {
+	if ts > 0 {
+		return ts >= start && ts < end, true
+	}
+	// Only timestamp-less historical facts retain their original recorded day.
+	return adtyEarningDayOf(rowDay) == sheetDay, false
+}
+
 // GenerateAdtySiteSettlementSheets writes the previous business day's check sheet.
 // A rerun updates that batch's figures and does not credit a wallet.
 // A sheet keeps the timezone and window it was first saved with.
@@ -202,9 +210,6 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 		}
 		for _, order := range orders {
 			paid := byTrade[order.TradeNo]
-			if paid.Status == model.TopUpStatusRefunded && !order.IsOwnerSelfUse() {
-				continue
-			}
 			if order.Provider == model.AdtyVoucherProvider {
 				switch order.Method {
 				case model.AdtyVoucherPurposeSiteOwner:
@@ -404,7 +409,7 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 			sheet.IncludedCount++
 		}
 		if row.Status == model.AdtySiteCommissionPendingCoverage {
-			remainder := row.AmountUSD.Sub(row.CoveredUSD)
+			remainder := row.AmountUSD.Sub(row.ClawedUSD).Sub(row.CoveredUSD).Add(row.RecoveredUSD)
 			if remainder.IsPositive() {
 				sheet.PendingCoverageUSD = sheet.PendingCoverageUSD.Add(remainder)
 			}
@@ -511,12 +516,4 @@ func startAdtySiteSettlementSheetTask() {
 			}
 		}
 	}()
-}
-
-func inAdtySheetWindow(ts int64, rowDay, sheetDay string, start, end int64) (matched, hasWindowTS bool) {
-	if ts > 0 {
-		return ts >= start && ts < end, true
-	}
-	// Only timestamp-less historical facts retain their original recorded day.
-	return adtyEarningDayOf(rowDay) == sheetDay, false
 }

@@ -12,6 +12,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// Delivery never changes the outcome of an already committed business transaction.
+func deliverAdtyCommittedAudit(event model.AuditLog) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = model.DeliverAuditIntent(ctx, event.EventId)
+}
+
 func writeAdtyOfficialAudit(actorId, siteId int, objectType, objectID, action, reason, approvalRef string, before, after any, result string) {
 	objectType = strings.TrimSpace(objectType)
 	objectID = strings.TrimSpace(objectID)
@@ -95,11 +102,4 @@ func writeAdtyMarginWalletOfficialAudit(ledger *model.AdtySiteWalletLedger, chan
 			"cycle_tier": cycleTier.String(),
 		},
 		model.AuditResultSuccess)
-}
-
-// Delivery never changes the outcome of an already committed business transaction.
-func deliverAdtyCommittedAudit(event model.AuditLog) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = model.DeliverAuditIntent(ctx, event.EventId)
 }
