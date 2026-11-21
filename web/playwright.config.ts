@@ -22,6 +22,7 @@ const port = 4173
 const isolatedBaseURL = process.env.ADTY_BROWSER_BASE_URL
 const baseURL = isolatedBaseURL || `http://127.0.0.1:${port}`
 const chromiumPath = isolatedBaseURL && process.env.ADTY_CHROMIUM_PATH
+const seoScenario = process.env.ADTY_BROWSER_SCENARIO === 'ftr-seo'
 const devCommand =
   process.platform === 'win32' ? 'node_modules\\.bin\\rsbuild.exe dev' : 'bun run dev'
 
@@ -40,7 +41,9 @@ export default defineConfig({
   expect: { timeout: 20_000 },
   ...(isolatedBaseURL && {
     testMatch: '**/adty-ftr-public.spec.ts',
-    grep: /\bADTY-(?:01-(?:01|04|10)|22-(?:0[1-9]|10))\b/,
+    grep: seoScenario
+      ? /\bADTY-01-09\b/
+      : /\bADTY-(?:01-(?:01|04|10)|22-(?:0[1-9]|10))\b/,
   }),
   reporter: [
     ['list'],

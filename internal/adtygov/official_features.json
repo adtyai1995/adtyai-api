@@ -740,7 +740,7 @@
       "source_line": 2474,
       "ftr_id": "FTR-009",
       "current_state": "conflict",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.20.1",
@@ -784,10 +784,14 @@
           "line": 39
         }
       ],
-      "test_func_names": [],
-      "db_money_invariants": [],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "test_func_names": [
+        "ADTY-01-09 Root saves bilingual SEO for the public home pages"
+      ],
+      "db_money_invariants": [
+        "no_money_change"
+      ],
+      "evidence_id": "EV-R1-0127-FTR-009-0FEYmEz6",
+      "na_reason": "隔离 PostgreSQL 18.7 和 Chromium 局部回归通过。主站 Root 保存并刷新回读双语 SEO 配置，匿名首页初始 HTML 与配置一致，三条审计落库，资金快照不变。DEC-028 旧语言地址按清理项跟踪。",
       "design_card": {
         "feature_id": "ADTY-01-09",
         "requirement_refs": [
@@ -833,10 +837,14 @@
             "line": 39
           }
         ],
-        "test_func_names": [],
-        "db_money_invariants": [],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "test_func_names": [
+          "ADTY-01-09 Root saves bilingual SEO for the public home pages"
+        ],
+        "db_money_invariants": [
+          "no_money_change"
+        ],
+        "evidence_id": "EV-R1-0127-FTR-009-0FEYmEz6",
+        "na_reason": "隔离 PostgreSQL 18.7 和 Chromium 局部回归通过。主站 Root 保存并刷新回读双语 SEO 配置，匿名首页初始 HTML 与配置一致，三条审计落库，资金快照不变。DEC-028 旧语言地址按清理项跟踪。"
       }
     },
     {

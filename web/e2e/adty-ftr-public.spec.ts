@@ -35,6 +35,7 @@ type SessionWatch = {
 }
 
 const isolatedBaseURL = process.env.ADTY_BROWSER_BASE_URL
+const seoScenario = isolatedBaseURL && process.env.ADTY_BROWSER_SCENARIO === 'ftr-seo'
 const MONEY_TABLES = [
   'adty_teams',
   'adty_site_wallets',
@@ -49,13 +50,34 @@ const MONEY_TABLES = [
   'adty_order_payment_events',
 ]
 
-function moneySnapshot() {
+function readBrowserDatabase(expression: string) {
   const database = process.env.ADTY_BROWSER_DATABASE
   const dsn = process.env.ADTY_BROWSER_SQL_DSN
   if (!dsn || !database || !/^adty_browser_\d+_\d+_\d+$/.test(database)) {
-    throw new Error('Run the public FTR with the isolated browser-business database')
+    throw new Error('Run the FTR with the isolated browser-business database')
   }
+  const sql = `
+    BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+    SELECT ${expression}
+    WHERE current_database() = '${database}';
+    COMMIT;
+  `
+  let output: string
+  try {
+    output = execFileSync(
+      'psql',
+      ['-XqAtw', '-v', 'ON_ERROR_STOP=1', '-d', dsn, '-c', sql],
+      { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim()
+  } catch {
+    // The child process arguments may contain PostgreSQL credentials.
+    throw new Error('Could not read the isolated PostgreSQL database')
+  }
+  expect(output, 'Read from the database created by browser-business').not.toBe('')
+  return JSON.parse(output)
+}
 
+function moneySnapshot() {
   // Hash the ordered PostgreSQL rows before parsing JSON to preserve exact money values.
   const tables = [
     ['users', '(SELECT id, site_id, quota, quota_pending, used_quota, checkin_quota FROM users)'],
@@ -69,29 +91,13 @@ function moneySnapshot() {
       FROM ${source} AS r
     )`,
   )
-  const sql = `
-    BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
-    SELECT jsonb_build_object(
+  const snapshot = readBrowserDatabase(`
+    jsonb_build_object(
       'database', current_database(),
       'serverVersion', current_setting('server_version_num')::integer,
       ${tables.join(',\n')}
     )
-    WHERE current_database() = '${database}';
-    COMMIT;
-  `
-  let output: string
-  try {
-    output = execFileSync(
-      'psql',
-      ['-XqAtw', '-v', 'ON_ERROR_STOP=1', '-d', dsn, '-c', sql],
-      { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] },
-    ).trim()
-  } catch {
-    // The child process arguments may contain PostgreSQL credentials.
-    throw new Error('Could not read balances, ledgers and orders from the isolated PostgreSQL database')
-  }
-  expect(output, 'Read from the database created by browser-business').not.toBe('')
-  const snapshot = JSON.parse(output)
+  `)
   expect(snapshot.serverVersion).toBeGreaterThanOrEqual(180_000)
   expect(snapshot.serverVersion).toBeLessThan(190_000)
   expect(snapshot.users.rows, 'The setup account supplies a balance to compare').toBeGreaterThan(0)
@@ -244,6 +250,112 @@ const test = base.extend<{ watch: SessionWatch }>({
     }
   },
 })
+
+if (seoScenario) {
+  base('ADTY-01-09 Root saves bilingual SEO for the public home pages', async ({
+    page,
+    browser,
+  }, testInfo) => {
+    const username = process.env.ADTY_BROWSER_USERNAME
+    const password = process.env.ADTY_BROWSER_PASSWORD
+    if (!username || !password) throw new Error('The isolated Root account is required')
+    const before = moneySnapshot()
+    const settingsPath = '/system-settings/site/adty-seo'
+    const titles = { en: 'Gateway for teams', 'zh-CN': '团队网关' }
+    const descriptions = { en: 'Manage model access', 'zh-CN': '管理模型接入' }
+    const shareImage = '/adty-seo-browser-share.png'
+    const options = {
+      'adty_seo_setting.home_title': JSON.stringify(titles),
+      'adty_seo_setting.home_description': JSON.stringify(descriptions),
+      'adty_seo_setting.og_image': shareImage,
+    }
+
+    await page.goto('/sign-in')
+    await page.getByLabel('Username or Email').fill(username)
+    await page.getByLabel('Password', { exact: true }).fill(password)
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible()
+
+    await page.goto(settingsPath)
+    for (const [lang, name] of [['en', 'English'], ['zh-CN', '简体中文']] as const) {
+      await page.getByRole('tab', { name, exact: true }).click()
+      await page.locator(`#adty-seo-title-${lang}`).fill(titles[lang])
+      await page.locator(`#adty-seo-description-${lang}`).fill(descriptions[lang])
+    }
+    await page.getByLabel('Share image').fill(shareImage)
+    const writes = Object.entries(options).map(async ([key, value]) => {
+      const response = await page.waitForResponse((candidate) =>
+        new URL(candidate.url()).pathname === '/api/option/' &&
+        candidate.request().method() === 'PUT' &&
+        candidate.request().postDataJSON().key === key,
+      )
+      expect(response.request().postDataJSON()).toEqual({ key, value })
+      expect(response.status()).toBe(200)
+      expect(await response.json()).toMatchObject({ success: true })
+    })
+    await Promise.all([
+      ...writes,
+      page.getByRole('button', { name: 'Save Changes', exact: true }).click(),
+    ])
+
+    await page.reload()
+    for (const [lang, name] of [['en', 'English'], ['zh-CN', '简体中文']] as const) {
+      await page.getByRole('tab', { name, exact: true }).click()
+      await expect(page.locator(`#adty-seo-title-${lang}`)).toHaveValue(titles[lang])
+      await expect(page.locator(`#adty-seo-description-${lang}`)).toHaveValue(descriptions[lang])
+    }
+    await expect(page.getByLabel('Share image')).toHaveValue(shareImage)
+
+    const persisted = readBrowserDatabase(`
+      jsonb_build_object(
+        'options', (
+          SELECT jsonb_object_agg(key, value)
+          FROM options WHERE key LIKE 'adty_seo_setting.%'
+        ),
+        'audits', (
+          SELECT jsonb_agg(
+            jsonb_build_object('key', a.object_id, 'actor', u.username,
+              'role', a.actor_role, 'site', u.site_id, 'success', a.success)
+            ORDER BY a.object_id, a.id
+          )
+          FROM audit_logs a JOIN users u ON u.id = a.user_id
+          WHERE a.action = 'option.update' AND a.object_id LIKE 'adty_seo_setting.%'
+        )
+      )
+    `)
+    expect(persisted.options).toMatchObject(options)
+    expect(persisted.audits).toEqual(
+      Object.keys(options).sort().map((key) => ({
+        key, actor: username, role: 100, site: 0, success: true,
+      })),
+    )
+
+    const guest = await browser.newContext({ baseURL: isolatedBaseURL, javaScriptEnabled: false })
+    try {
+      const home = await guest.newPage()
+      for (const [lang, path] of [['en', '/'], ['zh-CN', '/zh-cn']] as const) {
+        const response = await home.goto(path)
+        expect(response?.status()).toBe(200)
+        await expect(home).toHaveTitle(titles[lang])
+        await expect(home.locator('meta[name="description"]')).toHaveAttribute('content', descriptions[lang])
+        await expect(home.locator('meta[property="og:image"]')).toHaveAttribute('content', isolatedBaseURL + shareImage)
+        await expect(home.locator('link[rel="canonical"]')).toHaveAttribute('href', isolatedBaseURL + path)
+        await expect(home.locator('link[rel="alternate"][hreflang="en"]')).toHaveAttribute('href', isolatedBaseURL + '/')
+        await expect(home.locator('link[rel="alternate"][hreflang="zh-Hans"]')).toHaveAttribute('href', isolatedBaseURL + '/zh-cn')
+        await expect(home.locator('meta[name="robots"][content*="noindex"]')).toHaveCount(0)
+        await expect(home.locator('script[type="application/ld+json"]')).toHaveCount(lang === 'en' ? 1 : 0)
+      }
+    } finally {
+      await guest.close()
+    }
+    const after = moneySnapshot()
+    await testInfo.attach('seo-save-and-readback', {
+      contentType: 'application/json',
+      body: JSON.stringify({ before, after, ...persisted }),
+    })
+    expect(after).toEqual(before)
+  })
+}
 
 async function gotoPublicPage(page: Page, watch: SessionWatch, path: string) {
   const real = watch.real
