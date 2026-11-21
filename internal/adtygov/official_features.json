@@ -854,7 +854,7 @@
       "source_line": 2475,
       "ftr_id": "FTR-010",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.20.3",
@@ -874,8 +874,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-010-dBKxax6t",
+      "na_reason": "真实 Chromium 和隔离 PostgreSQL 18.7 局部回归通过。1280px 验证英文首页与双语文档，390px 验证中文首页、文档及键盘导航，资金快照不变。",
       "design_card": {
         "feature_id": "ADTY-01-10",
         "requirement_refs": [
@@ -897,8 +897,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-010-dBKxax6t",
+        "na_reason": "真实 Chromium 和隔离 PostgreSQL 18.7 局部回归通过。1280px 验证英文首页与双语文档，390px 验证中文首页、文档及键盘导航，资金快照不变。"
       }
     },
     {

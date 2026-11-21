@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { execFileSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { expect, test as base, type Page, type Response } from '@playwright/test'
+import { expect, test as base, type Locator, type Page, type Response } from '@playwright/test'
 
 const MONEY_API =
   /\/api\/(?:user\/(?:topup|self|quota)|topup|token|log\/self|adty\/(?:wallet|payment|topup|billing|ledger|fund|order)|billing)/i
@@ -463,9 +463,9 @@ async function assertNoMoneyChange(watch: SessionWatch) {
   expect(watch.money).toEqual([])
 }
 
-async function assertMainFits(page: Page, maxWidth: number) {
+async function assertContentFits(page: Page, content: Locator, maxWidth: number) {
   const viewport = page.viewportSize()
-  const box = await page.locator('main').boundingBox()
+  const box = await content.boundingBox()
   expect(viewport).not.toBeNull()
   expect(box).not.toBeNull()
   if (viewport == null || box == null) {
@@ -499,28 +499,53 @@ test('ADTY-01-04 help center entry opens the quick start', async ({ page, watch 
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-01-10 public pages stay inside the viewport', async ({ page, watch }) => {
-  await openAsMainSiteGuest(page, watch, 'en')
-
+test('ADTY-01-10 public pages stay inside the viewport', async ({ page, watch }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await gotoPublicPage(page, watch, '/docs/')
+  await openAsMainSiteGuest(page, watch, 'en')
+  const hero = page.getByRole('heading', { level: 1 })
+  const main = page.getByRole('main')
   await expect(
-    page.getByRole('heading', { level: 1, name: 'Quick start' }),
+    page.getByRole('heading', { level: 1, name: 'One endpoint. Every model.' }),
   ).toBeVisible()
-  await assertMainFits(page, 1180)
-  await expect(page.locator('main')).toHaveCSS('padding-left', '40px')
+  await assertContentFits(page, hero, 1180)
+
+  await gotoPublicPage(page, watch, '/docs/')
+  await expect(hero).toHaveText('Quick start')
+  await assertContentFits(page, main, 1180)
+  await expect(main).toHaveCSS('padding-left', '40px')
   await expect(page.getByRole('link', { name: 'Docs', exact: true }).first()).toBeVisible()
+  if (watch.real) {
+    await testInfo.attach('desktop-english-docs', {
+      contentType: 'image/png',
+      body: await page.screenshot(),
+    })
+  }
+
+  await page.getByRole('button', { name: 'Change language' }).first().click()
+  await page.getByRole('menuitem', { name: '简体中文' }).click()
+  await expect(hero).toHaveText('快速开始')
+  await assertContentFits(page, main, 1180)
 
   await page.setViewportSize({ width: 390, height: 844 })
-  await gotoPublicPage(page, watch, '/docs/')
-  await expect(
-    page.getByRole('heading', { level: 1, name: 'Quick start' }),
-  ).toBeVisible()
-  await assertMainFits(page, 390)
-  await expect(page.locator('main')).toHaveCSS('padding-left', '20px')
-  await page.getByRole('button', { name: 'Toggle navigation menu' }).click()
-  await expect(page.getByRole('link', { name: 'Docs', exact: true }).first()).toBeVisible()
-  await assertGuestOnMainSite(page, 'Sign in')
+  await gotoPublicPage(page, watch, '/zh-cn')
+  await expect(page.locator('html')).toHaveAttribute('lang', /zh/i)
+  await expect(hero).toBeVisible()
+  await assertContentFits(page, hero, 390)
+  if (watch.real) {
+    await testInfo.attach('mobile-chinese-home', {
+      contentType: 'image/png',
+      body: await page.screenshot(),
+    })
+  }
+  await page.getByRole('button', { name: '切换导航菜单' }).press('Enter')
+  await assertGuestOnMainSite(page, '登录')
+  const docs = page.getByRole('link', { name: '文档', exact: true }).first()
+  await expect(docs).toBeVisible()
+  await docs.press('Enter')
+  await expect(page).toHaveURL(/\/docs\/?$/)
+  await expect(hero).toHaveText('快速开始')
+  await assertContentFits(page, main, 390)
+  await expect(main).toHaveCSS('padding-left', '20px')
   await assertNoMoneyChange(watch)
 })
 
