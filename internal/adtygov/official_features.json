@@ -7080,7 +7080,7 @@
       "source_line": 2564,
       "ftr_id": "FTR-078",
       "current_state": "conflict",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.8",
@@ -7094,14 +7094,17 @@
           "line": 164
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestBEpusdtPayCreatesOrderWithBonus",
+        "TestCreateBEpusdtOrderJSONTypes"
+      ],
       "db_money_invariants": [
         "未启用的链在下单前拒绝",
         "下单体把 AmountUSD 转成 float64 作为 amount，fiat 为 USD，rate 为字符串 1",
         "已打开的测试源码：100 USD 发出的 amount 是 JSON 数字 100；解析结果地址为 TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t，ActualAmount 为 100.01"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-FTR-078-c510882",
+      "na_reason": "PostgreSQL 18.7 局部回归通过。正常下单后两表同单，付款前状态为待支付，赠金已冻结，余额、流水、资金批次及付款事件无变化。网关使用测试替身。",
       "design_card": {
         "feature_id": "ADTY-08-08",
         "requirement_refs": [
@@ -7117,14 +7120,17 @@
             "line": 164
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestBEpusdtPayCreatesOrderWithBonus",
+          "TestCreateBEpusdtOrderJSONTypes"
+        ],
         "db_money_invariants": [
           "未启用的链在下单前拒绝",
           "下单体把 AmountUSD 转成 float64 作为 amount，fiat 为 USD，rate 为字符串 1",
           "已打开的测试源码：100 USD 发出的 amount 是 JSON 数字 100；解析结果地址为 TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t，ActualAmount 为 100.01"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-FTR-078-c510882",
+        "na_reason": "PostgreSQL 18.7 局部回归通过。正常下单后两表同单，付款前状态为待支付，赠金已冻结，余额、流水、资金批次及付款事件无变化。网关使用测试替身。"
       }
     },
     {
@@ -11202,7 +11208,7 @@
       "source_line": 2626,
       "ftr_id": "FTR-125",
       "current_state": "conflict",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "G.6.1",
@@ -11237,12 +11243,16 @@
           "line": 42
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestFTRADTY1305EmployeeKeepsSingleTeamWithoutBalanceChangePG",
+        "TestActiveTeamMembershipUniqueIndexRejectsSecondActiveRow",
+        "TestActiveTeamMembershipUniqueIndexRejectsConcurrentSecondInsert"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-FTR-125-c510882",
+      "na_reason": "PostgreSQL 18.7 局部回归通过。员工创建和第二团队拒绝后保留唯一活动归属，包含并发唯一约束、创建审计及个人和团队资金不变断言。",
       "design_card": {
         "feature_id": "ADTY-13-05",
         "requirement_refs": [
@@ -11279,12 +11289,16 @@
             "line": 42
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestFTRADTY1305EmployeeKeepsSingleTeamWithoutBalanceChangePG",
+          "TestActiveTeamMembershipUniqueIndexRejectsSecondActiveRow",
+          "TestActiveTeamMembershipUniqueIndexRejectsConcurrentSecondInsert"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-FTR-125-c510882",
+        "na_reason": "PostgreSQL 18.7 局部回归通过。员工创建和第二团队拒绝后保留唯一活动归属，包含并发唯一约束、创建审计及个人和团队资金不变断言。"
       }
     },
     {
@@ -23560,7 +23574,7 @@
       "source_line": 2753,
       "ftr_id": "FTR-222",
       "current_state": "conflict",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.23",
@@ -23609,12 +23623,14 @@
           "line": 30
         }
       ],
-      "test_func_names": [],
+      "test_func_names": [
+        "TestRecordServerVersionOnLivePostgres"
+      ],
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "没有绑定已执行的成功路径测试",
+      "evidence_id": "EV-R1-0127-FTR-222-c510882",
+      "na_reason": "活库执行 SHOW server_version_num 并记录 180007。此证据验证本次运行的 PostgreSQL 版本。",
       "design_card": {
         "feature_id": "ADTY-23-02",
         "requirement_refs": [
@@ -23665,12 +23681,14 @@
             "line": 30
           }
         ],
-        "test_func_names": [],
+        "test_func_names": [
+          "TestRecordServerVersionOnLivePostgres"
+        ],
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "没有绑定已执行的成功路径测试"
+        "evidence_id": "EV-R1-0127-FTR-222-c510882",
+        "na_reason": "活库执行 SHOW server_version_num 并记录 180007。此证据验证本次运行的 PostgreSQL 版本。"
       }
     },
     {
