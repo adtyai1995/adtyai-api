@@ -16,7 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { expect, test, type Page } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
+
+import { expect, test as base, type Page, type Response } from '@playwright/test'
 
 const MONEY_API =
   /\/api\/(?:user\/(?:topup|self|quota)|topup|token|log\/self|adty\/(?:wallet|payment|topup|billing|ledger|fund|order)|billing)/i
@@ -24,6 +27,75 @@ const MONEY_API =
 type SessionWatch = {
   writes: string[]
   money: string[]
+  real?: {
+    responses: Response[]
+    retried: Set<Response>
+    apiBaseURL?: string
+  }
+}
+
+const isolatedBaseURL = process.env.ADTY_BROWSER_BASE_URL
+const MONEY_TABLES = [
+  'adty_teams',
+  'adty_site_wallets',
+  'adty_fund_batches',
+  'adty_fund_allocations',
+  'adty_balance_ledgers',
+  'adty_team_ledgers',
+  'adty_site_wallet_ledgers',
+  'top_ups',
+  'adty_topup_orders',
+  'adty_manual_refunds',
+  'adty_order_payment_events',
+]
+
+function moneySnapshot() {
+  const database = process.env.ADTY_BROWSER_DATABASE
+  const dsn = process.env.ADTY_BROWSER_SQL_DSN
+  if (!dsn || !database || !/^adty_browser_\d+_\d+_\d+$/.test(database)) {
+    throw new Error('Run the public FTR with the isolated browser-business database')
+  }
+
+  // Hash the ordered PostgreSQL rows before parsing JSON to preserve exact money values.
+  const tables = [
+    ['users', '(SELECT id, site_id, quota, quota_pending, used_quota, checkin_quota FROM users)'],
+    ...MONEY_TABLES.map((table) => [table, table]),
+  ].map(
+    ([name, source]) => `'${name}', (
+      SELECT jsonb_build_object(
+        'rows', count(*),
+        'sha256', encode(sha256(convert_to(coalesce(jsonb_agg(r ORDER BY r.id), '[]')::text, 'UTF8')), 'hex')
+      )
+      FROM ${source} AS r
+    )`,
+  )
+  const sql = `
+    BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+    SELECT jsonb_build_object(
+      'database', current_database(),
+      'serverVersion', current_setting('server_version_num')::integer,
+      ${tables.join(',\n')}
+    )
+    WHERE current_database() = '${database}';
+    COMMIT;
+  `
+  let output: string
+  try {
+    output = execFileSync(
+      'psql',
+      ['-XqAtw', '-v', 'ON_ERROR_STOP=1', '-d', dsn, '-c', sql],
+      { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim()
+  } catch {
+    // The child process arguments may contain PostgreSQL credentials.
+    throw new Error('Could not read balances, ledgers and orders from the isolated PostgreSQL database')
+  }
+  expect(output, 'Read from the database created by browser-business').not.toBe('')
+  const snapshot = JSON.parse(output)
+  expect(snapshot.serverVersion).toBeGreaterThanOrEqual(180_000)
+  expect(snapshot.serverVersion).toBeLessThan(190_000)
+  expect(snapshot.users.rows, 'The setup account supplies a balance to compare').toBeGreaterThan(0)
+  return snapshot
 }
 
 const LEGAL_TEXT: Record<string, Record<string, string>> = {
@@ -92,16 +164,35 @@ function publicApiBody(url: string): unknown {
 
 async function watchPublicSession(page: Page): Promise<SessionWatch> {
   const watch: SessionWatch = { writes: [], money: [] }
-  await page.route('**/api/**', async (route) => {
-    const request = route.request()
-    const method = request.method()
-    const url = request.url()
+  function observe(method: string, url: string) {
     if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
       watch.writes.push(`${method} ${url}`)
     }
     if (MONEY_API.test(url)) {
       watch.money.push(`${method} ${url}`)
     }
+  }
+  if (isolatedBaseURL) {
+    const origin = new URL(isolatedBaseURL).origin
+    const real = { responses: [] as Response[], retried: new Set<Response>() }
+    watch.real = real
+    page.on('request', (request) => {
+      const url = new URL(request.url())
+      if (url.origin === origin && url.pathname.startsWith('/api/')) {
+        observe(request.method(), url.pathname)
+      }
+    })
+    page.on('response', (response) => {
+      if (new URL(response.url()).origin === origin) {
+        real.responses.push(response)
+      }
+    })
+    return watch
+  }
+  await page.route('**/api/**', async (route) => {
+    const request = route.request()
+    const url = request.url()
+    observe(request.method(), url)
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -111,7 +202,127 @@ async function watchPublicSession(page: Page): Promise<SessionWatch> {
   return watch
 }
 
-async function openAsMainSiteGuest(page: Page, language: 'en' | 'zhCN') {
+const test = base.extend<{ watch: SessionWatch }>({
+  watch: async ({ page }, use, testInfo) => {
+    const watch = await watchPublicSession(page)
+    if (!watch.real) {
+      await use(watch)
+      return
+    }
+    const before = moneySnapshot()
+    try {
+      await use(watch)
+    } finally {
+      const after = moneySnapshot()
+      const { responses, retried } = watch.real
+      const responseFacts = responses.map((response) => ({
+        method: response.request().method(),
+        path: new URL(response.url()).pathname,
+        status: response.status(),
+        retried: retried.has(response),
+      }))
+      await testInfo.attach('public-session', {
+        contentType: 'application/json',
+        body: JSON.stringify({
+          before,
+          after,
+          writes: watch.writes,
+          money: watch.money,
+          responses: responseFacts.filter(({ path, status }) => path.startsWith('/api/') || status >= 400),
+        }),
+      })
+      expect
+        .soft(after, 'Balances, ledgers and orders before and after the guest scenario')
+        .toEqual(before)
+      expect.soft(
+        responseFacts.filter(({ path, status, retried }) =>
+          status >= 400 && !retried && (path.startsWith('/api/') || status === 429),
+        ),
+        'Public API errors and remaining rate limits',
+      ).toEqual([])
+      await assertNoMoneyChange(watch)
+    }
+  },
+})
+
+async function gotoPublicPage(page: Page, watch: SessionWatch, path: string) {
+  const real = watch.real
+  if (!real) {
+    await page.goto(path)
+    return
+  }
+
+  for (const attempt of [1, 2]) {
+    const start = real.responses.length
+    const document = await page.goto(path)
+    if (document?.status() !== 429) expect(document?.status()).toBe(200)
+    let throttled: Response | undefined
+    let status: Response | undefined
+    let site: Response | undefined
+    await expect
+      .poll(
+        () => {
+          const navigation = real.responses.slice(start)
+          throttled = navigation.find((response) => response.status() === 429)
+          status = navigation.find(
+            (response) => new URL(response.url()).pathname === '/api/status',
+          )
+          site = navigation.find(
+            (response) => new URL(response.url()).pathname === '/api/adty/site',
+          )
+          return Boolean(throttled || (status && site))
+        },
+        { message: 'The page loads public status and site settings from the Go app' },
+      )
+      .toBe(true)
+
+    if (throttled) {
+      expect(attempt, 'Public navigation is still rate limited after retry').toBe(1)
+      // By default the Redis web/API windows expire in no more than 180 seconds.
+      const seconds = Number(throttled.headers()['retry-after'] ?? 1)
+      expect(seconds, 'Redis Retry-After in seconds').toBeGreaterThan(0)
+      expect(seconds, 'Redis Retry-After within the test budget').toBeLessThanOrEqual(180)
+      for (const response of real.responses.slice(start)) {
+        if (response.status() === 429) real.retried.add(response)
+      }
+      await delay(seconds * 1000)
+      continue
+    }
+
+    expect(document?.status()).toBe(200)
+    expect(status?.status()).toBe(200)
+    expect(site?.status()).toBe(200)
+    const statusBody = await status?.json()
+    const siteBody = await site?.json()
+    expect(statusBody).toMatchObject({
+      success: true,
+      data: { system_name: 'ADTY AI', setup: true },
+    })
+    expect(statusBody.data.adty_site).toBeUndefined()
+    expect(siteBody).toMatchObject({
+      success: true,
+      data: { api_base_url: expect.any(String) },
+    })
+    const setup = real.responses.slice(start).find(
+      (response) => new URL(response.url()).pathname === '/api/setup',
+    )
+    if (setup) {
+      expect(setup.status()).toBe(200)
+      expect(await setup.json()).toMatchObject({
+        success: true,
+        data: { status: true },
+      })
+    }
+    real.apiBaseURL = (
+      siteBody.data.api_base_url.trim() ||
+      statusBody.data.server_address?.trim() ||
+      new URL(page.url()).origin
+    ).replace(/\/+$/, '')
+    return
+  }
+}
+
+async function openAsMainSiteGuest(page: Page, watch: SessionWatch, language: 'en' | 'zhCN') {
   await page.addInitScript((stored) => {
     const key = 'i18nextLng'
     // Later navigations must keep the language the switcher wrote.
@@ -119,7 +330,7 @@ async function openAsMainSiteGuest(page: Page, language: 'en' | 'zhCN') {
       window.localStorage.setItem(key, stored)
     }
   }, language)
-  await page.goto('/')
+  await gotoPublicPage(page, watch, '/')
 }
 
 async function assertGuestOnMainSite(page: Page, signIn: string) {
@@ -157,10 +368,9 @@ async function assertMainFits(page: Page, maxWidth: number) {
   expect(fits).toBe(true)
 }
 
-test('ADTY-01-04 help center entry opens the quick start', async ({ page }) => {
-  const watch = await watchPublicSession(page)
+test('ADTY-01-04 help center entry opens the quick start', async ({ page, watch }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
+  await openAsMainSiteGuest(page, watch, 'en')
   await assertGuestOnMainSite(page, 'Sign in')
 
   await page.getByRole('link', { name: 'Docs', exact: true }).first().click()
@@ -177,12 +387,11 @@ test('ADTY-01-04 help center entry opens the quick start', async ({ page }) => {
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-01-10 public pages stay inside the viewport', async ({ page }) => {
-  const watch = await watchPublicSession(page)
-  await openAsMainSiteGuest(page, 'en')
+test('ADTY-01-10 public pages stay inside the viewport', async ({ page, watch }) => {
+  await openAsMainSiteGuest(page, watch, 'en')
 
   await page.setViewportSize({ width: 1280, height: 800 })
-  await page.goto('/docs/')
+  await gotoPublicPage(page, watch, '/docs/')
   await expect(
     page.getByRole('heading', { level: 1, name: 'Quick start' }),
   ).toBeVisible()
@@ -191,7 +400,7 @@ test('ADTY-01-10 public pages stay inside the viewport', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'Docs', exact: true }).first()).toBeVisible()
 
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/docs/')
+  await gotoPublicPage(page, watch, '/docs/')
   await expect(
     page.getByRole('heading', { level: 1, name: 'Quick start' }),
   ).toBeVisible()
@@ -205,11 +414,11 @@ test('ADTY-01-10 public pages stay inside the viewport', async ({ page }) => {
 
 test('ADTY-22-10 docs and the help entry switch between Chinese and English', async ({
   page,
+  watch,
 }) => {
-  const watch = await watchPublicSession(page)
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
-  await page.goto('/docs/')
+  await openAsMainSiteGuest(page, watch, 'en')
+  await page.getByRole('link', { name: 'Docs', exact: true }).first().click()
   await expect(
     page.getByRole('heading', { level: 1, name: 'Quick start' }),
   ).toBeVisible()
@@ -225,7 +434,14 @@ test('ADTY-22-10 docs and the help entry switch between Chinese and English', as
   await expect(page).toHaveURL(/\/docs\/?$/)
   await expect(page.locator('html')).toHaveAttribute('lang', /zh/i)
 
-  await page.goto('/docs/faq')
+  await gotoPublicPage(page, watch, '/zh-cn')
+  await page.getByRole('link', { name: '文档', exact: true }).first().click()
+  await expect(
+    page.getByRole('heading', { level: 1, name: '快速开始' }),
+  ).toBeVisible()
+  await gotoPublicPage(page, watch, '/docs/faq')
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('lang', /zh/i)
   await expect(page.getByRole('heading', { level: 1, name: '常见问题' })).toBeVisible()
   await page.getByRole('button', { name: '更改语言' }).first().click()
   await page.getByRole('menuitem', { name: 'English' }).click()
@@ -236,10 +452,9 @@ test('ADTY-22-10 docs and the help entry switch between Chinese and English', as
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-01-01 home shows the main-site brand to a guest', async ({ page }) => {
-  const watch = await watchPublicSession(page)
+test('ADTY-01-01 home shows the main-site brand to a guest', async ({ page, watch }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
+  await openAsMainSiteGuest(page, watch, 'en')
   await expect(page).toHaveURL(/\/$/)
   await expect(
     page.getByRole('heading', { level: 1, name: 'One endpoint. Every model.' }),
@@ -249,10 +464,9 @@ test('ADTY-01-01 home shows the main-site brand to a guest', async ({ page }) =>
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-01-05 terms page shows the configured agreement', async ({ page }) => {
-  const watch = await watchPublicSession(page)
+test('ADTY-01-05 terms page shows the configured agreement', async ({ page, watch }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
+  await openAsMainSiteGuest(page, watch, 'en')
   await page.goto('/user-agreement')
   await expect(page).toHaveURL(/\/user-agreement$/)
   await expect(
@@ -272,10 +486,9 @@ test('ADTY-01-05 terms page shows the configured agreement', async ({ page }) =>
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-01-06 privacy page shows the configured policy', async ({ page }) => {
-  const watch = await watchPublicSession(page)
+test('ADTY-01-06 privacy page shows the configured policy', async ({ page, watch }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
+  await openAsMainSiteGuest(page, watch, 'en')
   await page.goto('/privacy-policy')
   await expect(page).toHaveURL(/\/privacy-policy$/)
   await expect(
@@ -288,16 +501,15 @@ test('ADTY-01-06 privacy page shows the configured policy', async ({ page }) => 
   await assertNoMoneyChange(watch)
 })
 
-async function openRoleGuide(page: Page) {
+async function openRoleGuide(page: Page, watch: SessionWatch) {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
-  await page.goto('/docs/roles')
+  await openAsMainSiteGuest(page, watch, 'en')
+  await gotoPublicPage(page, watch, '/docs/roles')
   await expect(page).toHaveURL(/\/docs\/roles$/)
 }
 
-test('ADTY-22-01 user role guide shows the wallet and key steps', async ({ page }) => {
-  const watch = await watchPublicSession(page)
-  await openRoleGuide(page)
+test('ADTY-22-01 user role guide shows the wallet and key steps', async ({ page, watch }) => {
+  await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'User' })).toBeVisible()
   await expect(
     page.getByText('Create an API key and put the site URL and key in the client.'),
@@ -311,35 +523,49 @@ test('ADTY-22-01 user role guide shows the wallet and key steps', async ({ page 
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-22-02 team lead guide shows invite and shared balance', async ({ page }) => {
-  const watch = await watchPublicSession(page)
-  await openRoleGuide(page)
+test('ADTY-22-02 team lead guide shows invite and shared balance', async ({ page, watch }) => {
+  await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'Team lead' })).toBeVisible()
+  await expect(page.getByText('Only Root can create a team and appoint its lead.')).toBeVisible()
   await expect(
-    page.getByText('Create a team, invite members, set the discount, and issue a team key against the shared balance.'),
+    page.getByText('The lead can invite members and authorize them to use team API keys.'),
+  ).toBeVisible()
+  await expect(
+    page.getByText("Usage of those keys is charged to the team's shared balance."),
+  ).toBeVisible()
+  await expect(
+    page.getByText('If the lead leaves the team or closes their account, the team enters the closure process.'),
   ).toBeVisible()
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 2, name: '团队负责人' })).toBeVisible()
+  await expect(page.getByText('只有 Root 可以创建团队并指定负责人。')).toBeVisible()
+  await expect(page.getByText('负责人可以邀请成员并授权成员使用团队 API Key。')).toBeVisible()
+  await expect(page.getByText('这些 Key 产生的费用从团队共享余额扣除。')).toBeVisible()
+  await expect(page.getByText('负责人退出团队或注销账号时，团队进入关闭流程。')).toBeVisible()
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-22-03 team member guide shows one-team membership', async ({ page }) => {
-  const watch = await watchPublicSession(page)
-  await openRoleGuide(page)
+test('ADTY-22-03 team member guide shows one-team membership', async ({ page, watch }) => {
+  await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'Team member' })).toBeVisible()
   await expect(page.getByText('A person can belong to only one team.')).toBeVisible()
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 2, name: '团队成员' })).toBeVisible()
+  if (watch.real) {
+    await expect(
+      page.getByText('退出后团队 Key 不再扣你的个人余额'),
+      'A.9.3 charges the shared balance throughout team membership',
+    ).toHaveCount(0)
+  }
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-22-04 site owner guide shows earnings and closing', async ({ page }) => {
-  const watch = await watchPublicSession(page)
-  await openRoleGuide(page)
+test('ADTY-22-04 site owner guide shows earnings and closing', async ({ page, watch }) => {
+  await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'Site owner' })).toBeVisible()
   await expect(page.getByText('Earnings go to the earnings wallet.')).toBeVisible()
   await page.getByRole('button', { name: 'Change language' }).first().click()
@@ -349,9 +575,8 @@ test('ADTY-22-04 site owner guide shows earnings and closing', async ({ page }) 
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-22-05 site staff guide shows approval before a balance change', async ({ page }) => {
-  const watch = await watchPublicSession(page)
-  await openRoleGuide(page)
+test('ADTY-22-05 site staff guide shows approval before a balance change', async ({ page, watch }) => {
+  await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'Site staff' })).toBeVisible()
   await expect(
     page.getByText('A balance change is a request until the owner or a main-site admin approves it.'),
@@ -363,9 +588,8 @@ test('ADTY-22-05 site staff guide shows approval before a balance change', async
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-22-06 main-site admin guide shows ledgered adjustments', async ({ page }) => {
-  const watch = await watchPublicSession(page)
-  await openRoleGuide(page)
+test('ADTY-22-06 main-site admin guide shows ledgered adjustments', async ({ page, watch }) => {
+  await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'Main-site admin' })).toBeVisible()
   await expect(page.getByText('Do not edit a balance by hand.')).toBeVisible()
   await page.getByRole('button', { name: 'Change language' }).first().click()
@@ -375,30 +599,42 @@ test('ADTY-22-06 main-site admin guide shows ledgered adjustments', async ({ pag
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-22-07 API guide shows the OpenAI-compatible base URL', async ({ page }) => {
-  const watch = await watchPublicSession(page)
+test('ADTY-22-07 API guide shows the OpenAI-compatible base URL', async ({ page, watch }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
-  await page.goto('/docs/openai-sdk')
+  await openAsMainSiteGuest(page, watch, 'en')
+  await gotoPublicPage(page, watch, '/docs/openai-sdk')
   await expect(page).toHaveURL(/\/docs\/openai-sdk$/)
   await expect(page.getByRole('heading', { level: 1, name: 'OpenAI SDK' })).toBeVisible()
   await expect(page.getByText('Any OpenAI SDK works')).toBeVisible()
+  const configuredApiBase = process.env.ADTY_BROWSER_DOCS_API_BASE_URL
+  if (watch.real) {
+    expect(configuredApiBase, 'Seed the isolated application with a custom API base URL').toBeTruthy()
+    expect(watch.real.apiBaseURL).toBe(configuredApiBase)
+    await expect(page.getByText(`${watch.real.apiBaseURL}/v1`, { exact: true })).toBeVisible()
+  }
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'OpenAI SDK' })).toBeVisible()
   await expect(page.getByText('任何 OpenAI SDK 都能用')).toBeVisible()
+  if (watch.real) {
+    expect(watch.real.apiBaseURL).toBe(configuredApiBase)
+    await expect(page.getByText(`${watch.real.apiBaseURL}/v1`, { exact: true })).toBeVisible()
+  }
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-22-08 model guide shows alias routing without the channel name', async ({ page }) => {
-  const watch = await watchPublicSession(page)
+test('ADTY-22-08 model guide shows alias routing without the channel name', async ({ page, watch }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
-  await page.goto('/docs/models')
+  await openAsMainSiteGuest(page, watch, 'en')
+  await gotoPublicPage(page, watch, '/docs/models')
   await expect(page).toHaveURL(/\/docs\/models$/)
   await expect(page.getByRole('heading', { level: 1, name: 'Models and groups' })).toBeVisible()
   await expect(page.getByText('Customer logs do not show the upstream channel name.')).toBeVisible()
+  if (watch.real) {
+    await expect(page.getByText('Send the alias or upstream name')).toBeVisible()
+    await expect(page.getByText('the routing group comes from the authenticated API key')).toBeVisible()
+  }
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 1, name: '模型与分组' })).toBeVisible()
@@ -406,14 +642,17 @@ test('ADTY-22-08 model guide shows alias routing without the channel name', asyn
   await assertNoMoneyChange(watch)
 })
 
-test('ADTY-22-09 agent guide shows the tool-call loop', async ({ page }) => {
-  const watch = await watchPublicSession(page)
+test('ADTY-22-09 agent guide shows the tool-call loop', async ({ page, watch }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await openAsMainSiteGuest(page, 'en')
-  await page.goto('/docs/agents')
+  await openAsMainSiteGuest(page, watch, 'en')
+  await gotoPublicPage(page, watch, '/docs/agents')
   await expect(page).toHaveURL(/\/docs\/agents$/)
   await expect(page.getByRole('heading', { level: 1, name: 'Agents' })).toBeVisible()
   await expect(page.getByText('Your program owns the agent loop')).toBeVisible()
+  if (watch.real) {
+    await expect(page.getByText('you send the tool result back on the next request')).toBeVisible()
+    await expect(page.locator('article pre code').filter({ hasText: 'tools=[' })).toBeVisible()
+  }
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 1, name: '智能体' })).toBeVisible()

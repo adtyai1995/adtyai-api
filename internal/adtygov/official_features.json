@@ -10,7 +10,7 @@
       "source_line": 2466,
       "ftr_id": "FTR-001",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.5",
@@ -60,8 +60,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-001-IqplXFQf",
+      "na_reason": "隔离 PostgreSQL 18.7 与生产构建的 Chromium 局部回归通过，公开访客场景资金前后快照一致。",
       "design_card": {
         "feature_id": "ADTY-01-01",
         "requirement_refs": [
@@ -113,8 +113,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-001-IqplXFQf",
+        "na_reason": "隔离 PostgreSQL 18.7 与生产构建的 Chromium 局部回归通过，公开访客场景资金前后快照一致。"
       }
     },
     {
@@ -276,7 +276,7 @@
       "source_line": 2469,
       "ftr_id": "FTR-004",
       "current_state": "implemented",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "A.5"
@@ -301,8 +301,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-004-IqplXFQf",
+      "na_reason": "隔离 PostgreSQL 18.7 与生产构建的 Chromium 局部回归通过，公开访客场景资金前后快照一致。",
       "design_card": {
         "feature_id": "ADTY-01-04",
         "requirement_refs": [
@@ -329,8 +329,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-004-IqplXFQf",
+        "na_reason": "隔离 PostgreSQL 18.7 与生产构建的 Chromium 局部回归通过，公开访客场景资金前后快照一致。"
       }
     },
     {
@@ -22322,7 +22322,7 @@
       "source_line": 2740,
       "ftr_id": "FTR-212",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.22",
@@ -22369,8 +22369,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-212-IqplXFQf",
+      "na_reason": "隔离 PostgreSQL 18.7 与生产构建的 Chromium 局部回归通过，公开访客场景资金前后快照一致。",
       "design_card": {
         "feature_id": "ADTY-22-02",
         "requirement_refs": [
@@ -22419,8 +22419,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-212-IqplXFQf",
+        "na_reason": "隔离 PostgreSQL 18.7 与生产构建的 Chromium 局部回归通过，公开访客场景资金前后快照一致。"
       }
     },
     {
@@ -23286,7 +23286,7 @@
       "source_line": 2748,
       "ftr_id": "FTR-220",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.22",
@@ -23354,8 +23354,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-220-44KOhK5F",
+      "na_reason": "隔离 PostgreSQL 18.7 与生产构建的 Chromium 局部回归通过，公开访客场景资金前后快照一致。",
       "design_card": {
         "feature_id": "ADTY-22-10",
         "requirement_refs": [
@@ -23425,8 +23425,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-220-44KOhK5F",
+        "na_reason": "隔离 PostgreSQL 18.7 与生产构建的 Chromium 局部回归通过，公开访客场景资金前后快照一致。"
       }
     },
     {

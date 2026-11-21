@@ -6,7 +6,7 @@ After registration, open the wallet to see the USD balance, principal, and bonus
 
 ## Team lead
 
-Create a team, invite members, set the discount, and issue a team key against the shared balance. Close or hand over the team before leaving.
+Only Root can create a team and appoint its lead. The lead can invite members and authorize them to use team API keys. Usage of those keys is charged to the team's shared balance. If the lead leaves the team or closes their account, the team enters the closure process.
 
 ## Team member
 

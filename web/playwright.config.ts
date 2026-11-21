@@ -19,7 +19,15 @@ For commercial licensing, please contact support@quantumnous.com
 import { defineConfig, devices } from '@playwright/test'
 
 const port = 4173
-const baseURL = `http://127.0.0.1:${port}`
+const isolatedBaseURL = process.env.ADTY_BROWSER_BASE_URL
+const baseURL = isolatedBaseURL || `http://127.0.0.1:${port}`
+const chromiumPath = isolatedBaseURL && process.env.ADTY_CHROMIUM_PATH
+const devCommand =
+  process.platform === 'win32' ? 'node_modules\\.bin\\rsbuild.exe dev' : 'bun run dev'
+
+if (isolatedBaseURL && !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(isolatedBaseURL).hostname)) {
+  throw new Error('The public FTR requires a local, isolated Go application')
+}
 
 export default defineConfig({
   testDir: './e2e',
@@ -27,11 +35,23 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   forbidOnly: true,
-  timeout: 60_000,
+  // The isolated Redis rate limit can return a Retry-After of up to 180s.
+  timeout: isolatedBaseURL ? 260_000 : 60_000,
   expect: { timeout: 20_000 },
+  ...(isolatedBaseURL && {
+    testMatch: '**/adty-ftr-public.spec.ts',
+    grep: /\bADTY-(?:01-(?:01|04|10)|22-(?:0[1-9]|10))\b/,
+  }),
   reporter: [
     ['list'],
-    ['json', { outputFile: 'e2e-results/adty-ftr-public.json' }],
+    [
+      'json',
+      {
+        outputFile: isolatedBaseURL
+          ? 'e2e-results/adty-ftr-public-real.json'
+          : 'e2e-results/adty-ftr-public.json',
+      },
+    ],
   ],
   use: {
     baseURL,
@@ -39,16 +59,21 @@ export default defineConfig({
     video: 'off',
     screenshot: 'only-on-failure',
   },
-  webServer: {
-    command: `node_modules\\.bin\\rsbuild.exe dev --port ${port} --host 127.0.0.1`,
-    url: baseURL,
-    reuseExistingServer: false,
-    timeout: 180_000,
-  },
+  webServer: isolatedBaseURL
+    ? undefined
+    : {
+        command: `${devCommand} --port ${port} --host 127.0.0.1`,
+        url: baseURL,
+        reuseExistingServer: false,
+        timeout: 180_000,
+      },
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        ...(chromiumPath && { launchOptions: { executablePath: chromiumPath } }),
+      },
     },
   ],
 })

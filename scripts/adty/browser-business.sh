@@ -30,7 +30,7 @@ case "$adty_browser_scenario" in
     ADTY_BROWSER_SCENARIO=owner-self-use bash "$0"
     exit 0
     ;;
-  deployment | wallet | site-status | password-reset | user-sites | finance-actions | site-brand | notification-read | notification-publish | unified-orders | order-trace | withdraw-networks | site-staff | payment-scenes | site-ownership | owner-self-use | team-lifecycle | ticket-images) ;;
+  deployment | wallet | site-status | password-reset | user-sites | finance-actions | site-brand | notification-read | notification-publish | unified-orders | order-trace | withdraw-networks | site-staff | payment-scenes | site-ownership | owner-self-use | team-lifecycle | ticket-images | ftr-public) ;;
   *) echo 'browser-business: unknown scenario' >&2; exit 2 ;;
 esac
 
@@ -206,6 +206,10 @@ echo "browser-business: PostgreSQL $adty_pg_version, isolated database and Redis
 echo 'browser-business: production frontend build and Chinese/English prerender passed'
 GOWORK=off go build -o "$adty_tmpdir/new-api" . >"$adty_tmpdir/backend-build.log" 2>&1
 echo 'browser-business: production backend build passed'
+if [ "$adty_browser_scenario" = ftr-public ]; then
+  adty_build_digest=$(sha256sum <"$adty_tmpdir/new-api")
+  echo "browser-business: embedded frontend and backend SHA-256=${adty_build_digest%% *}"
+fi
 
 # A fresh runtime allows the default ServerAddress host, localhost, before setup.
 export ADTY_BROWSER_BASE_URL="http://localhost:$adty_api_port"
@@ -267,5 +271,35 @@ assert result.get('success'), result.get('message')
 print('browser-business: real PostgreSQL runtime and synthetic root initialized')
 PY
 
-(cd web && node "scripts/adty/browser-$adty_browser_scenario.mjs")
+if [ "$adty_browser_scenario" = ftr-public ]; then
+  export ADTY_BROWSER_DOCS_API_BASE_URL='https://public-ftr.example.invalid'
+  python3 - <<'PY'
+import json
+import os
+from urllib.request import Request, urlopen
+
+base = os.environ['ADTY_BROWSER_BASE_URL']
+
+def request(path, method, payload, headers=None):
+    body = json.dumps(payload).encode()
+    request_headers = {'Content-Type': 'application/json', **(headers or {})}
+    with urlopen(Request(base + path, data=body, headers=request_headers, method=method), timeout=10) as response:
+        result = json.load(response)
+    if not result.get('success'):
+        raise RuntimeError(f'Public documentation fixture failed at {path}')
+    return result.get('data')
+
+login = request('/api/user/login', 'POST', {
+    'username': os.environ['ADTY_BROWSER_USERNAME'],
+    'password': os.environ['ADTY_BROWSER_PASSWORD'],
+})
+request('/api/option/', 'PUT', {
+    'key': 'adty_site_setting.api_base_url',
+    'value': os.environ['ADTY_BROWSER_DOCS_API_BASE_URL'],
+}, {'Authorization': 'Bearer ' + login['access_token']})
+PY
+  (cd web && bun run test:e2e adty-ftr-public.spec.ts "$@")
+else
+  (cd web && node "scripts/adty/browser-$adty_browser_scenario.mjs")
+fi
 echo "browser-business: production $adty_browser_scenario checks passed"
