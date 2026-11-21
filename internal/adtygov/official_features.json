@@ -22868,7 +22868,7 @@
       "source_line": 2745,
       "ftr_id": "FTR-217",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.22",
@@ -22948,8 +22948,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-217-WFoIs9kA",
+      "na_reason": "主站访客的中英文 SDK 文档在 Chromium 局部回归通过。剪贴板中的 Python、Node.js 和环境变量示例使用配置的站点地址及 /v1，密钥使用占位符或环境变量。隔离 PostgreSQL 18.7 的余额、订单和流水前后一致。",
       "design_card": {
         "feature_id": "ADTY-22-07",
         "requirement_refs": [
@@ -23031,8 +23031,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-217-WFoIs9kA",
+        "na_reason": "主站访客的中英文 SDK 文档在 Chromium 局部回归通过。剪贴板中的 Python、Node.js 和环境变量示例使用配置的站点地址及 /v1，密钥使用占位符或环境变量。隔离 PostgreSQL 18.7 的余额、订单和流水前后一致。"
       }
     },
     {

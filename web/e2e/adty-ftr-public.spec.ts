@@ -747,6 +747,63 @@ test('ADTY-22-06 main-site admin guide shows ledgered adjustments', async ({ pag
   await assertNoMoneyChange(watch)
 })
 
+async function assertSdkExamplesCopy(
+  page: Page,
+  apiBaseURL: string,
+  exampleKey: string
+) {
+  const examples = [
+    {
+      language: 'python',
+      baseURL: `base_url="${apiBaseURL}/v1"`,
+      apiKey: `api_key="${exampleKey}"`,
+      exampleKeys: [`"${exampleKey}"`],
+    },
+    {
+      language: 'javascript',
+      baseURL: `baseURL: '${apiBaseURL}/v1'`,
+      apiKey: 'apiKey: process.env.ADTYAI_API_KEY',
+      exampleKeys: [],
+    },
+    {
+      language: 'bash',
+      baseURL: `export OPENAI_BASE_URL="${apiBaseURL}/v1"`,
+      apiKey: `export OPENAI_API_KEY="${exampleKey}"`,
+      exampleKeys: [`"${exampleKey}"`],
+    },
+  ]
+  await page.context().grantPermissions(['clipboard-read'], {
+    origin: new URL(page.url()).origin,
+  })
+  for (const example of examples) {
+    await test.step(`Copy ${example.language} SDK example (${exampleKey})`, async () => {
+      const code = page
+        .locator(`article pre code.language-${example.language}`)
+        .filter({ hasText: example.baseURL })
+      await expect(code).toBeVisible()
+      const displayed = await code.evaluate((element) => {
+        const selection = window.getSelection()
+        if (!selection) throw new Error('The browser did not expose a text selection')
+        const range = document.createRange()
+        range.selectNodeContents(element)
+        selection.removeAllRanges()
+        selection.addRange(range)
+        return element.textContent ?? ''
+      })
+      await page.keyboard.press('ControlOrMeta+c')
+      const readClipboard = () => page.evaluate(() => navigator.clipboard.readText())
+      // Chromium can omit the rendered code block's final newline during copy.
+      await expect
+        .poll(async () => (await readClipboard()).replace(/\n$/, ''))
+        .toBe(displayed.replace(/\n$/, ''))
+      const copied = await readClipboard()
+      expect(copied).toContain(example.apiKey)
+      expect(copied).not.toContain('{{BASE_URL}}')
+      expect(copied.match(/["']sk-[^"'\r\n]+["']/g) ?? []).toEqual(example.exampleKeys)
+    })
+  }
+}
+
 test('ADTY-22-07 API guide shows the OpenAI-compatible base URL', async ({ page, watch }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
   await openAsMainSiteGuest(page, watch, 'en')
@@ -754,11 +811,12 @@ test('ADTY-22-07 API guide shows the OpenAI-compatible base URL', async ({ page,
   await expect(page).toHaveURL(/\/docs\/openai-sdk$/)
   await expect(page.getByRole('heading', { level: 1, name: 'OpenAI SDK' })).toBeVisible()
   await expect(page.getByText('Any OpenAI SDK works')).toBeVisible()
-  const configuredApiBase = process.env.ADTY_BROWSER_DOCS_API_BASE_URL
+  const configuredApiBase = process.env.ADTY_BROWSER_DOCS_API_BASE_URL ?? ''
   if (watch.real) {
     expect(configuredApiBase, 'Seed the isolated application with a custom API base URL').toBeTruthy()
     expect(watch.real.apiBaseURL).toBe(configuredApiBase)
     await expect(page.getByText(`${watch.real.apiBaseURL}/v1`, { exact: true })).toBeVisible()
+    await assertSdkExamplesCopy(page, configuredApiBase, 'sk-your-key')
   }
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
@@ -767,6 +825,7 @@ test('ADTY-22-07 API guide shows the OpenAI-compatible base URL', async ({ page,
   if (watch.real) {
     expect(watch.real.apiBaseURL).toBe(configuredApiBase)
     await expect(page.getByText(`${watch.real.apiBaseURL}/v1`, { exact: true })).toBeVisible()
+    await assertSdkExamplesCopy(page, configuredApiBase, 'sk-你的密钥')
   }
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
