@@ -9,6 +9,9 @@ import (
 	"testing/fstest"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/internal/pgtest"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -279,4 +282,82 @@ func TestMissingPrerenderFileStillServesHead(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "<title>ADTY AI - one key</title>")
 	assert.NotContains(t, rec.Body.String(), "adty-prerender")
+}
+
+func TestFTRADTY0109SavedSEOAppearsOnOfficialHomesPG(t *testing.T) {
+	disableAdtyRedis(t)
+	require.NoError(t, i18n.Init())
+	db := adtyTestDB(t)
+	pgtest.RecordServerVersion(t, db)
+	require.NoError(t, db.AutoMigrate(
+		&model.User{}, &model.UserSession{}, &model.Setup{}, &model.Option{},
+		&model.AuditIntent{}, &model.AuditLog{}, &model.Log{},
+		&model.AdtyBalanceLedger{}, &model.AdtyFundBatch{},
+	))
+	seo := adty_setting.GetSEOSetting()
+	oldSEO, oldAddress, oldOptions := *seo, system_setting.ServerAddress, common.OptionMap
+	t.Cleanup(func() {
+		*seo = oldSEO
+		system_setting.ServerAddress = oldAddress
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = oldOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+	const host = "seo.example.test"
+	system_setting.ServerAddress = "https://" + host
+	model.InitOptionMap()
+	root := adtySessionToken(t, db, "seo-root", common.RoleRootUser)
+	var before model.User
+	require.NoError(t, db.Where("username = ?", "seo-root").First(&before).Error)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	SetApiRouter(engine)
+	engine.NoRoute(AdtySEOHomePages([]byte(seoIndexPage), newSEOFixture().files))
+	settings := []model.Option{
+		{Key: "adty_seo_setting.home_title", Value: `{"en":"Gateway for teams","zh-CN":"团队网关"}`},
+		{Key: "adty_seo_setting.home_description", Value: `{"en":"Manage model access","zh-CN":"管理模型接入"}`},
+		{Key: "adty_seo_setting.og_image", Value: "/images/teams.png"},
+	}
+	for _, setting := range settings {
+		response := adtyJSONOnHost(t, engine, host, http.MethodPut, "/api/option/", mustJSON(t, setting), root)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		decodeAdtyData[any](t, response.Body)
+
+		var persisted model.Option
+		require.NoError(t, db.First(&persisted, &model.Option{Key: setting.Key}).Error)
+		assert.Equal(t, setting.Value, persisted.Value)
+		var audit model.AuditLog
+		require.NoError(t, db.Where("action = ? AND object_id = ?", "option.update", setting.Key).First(&audit).Error)
+		assert.Equal(t, before.Id, audit.UserId)
+		assert.Equal(t, common.RoleRootUser, audit.ActorRole)
+		assert.True(t, audit.Success)
+	}
+
+	*seo = adty_setting.SEOSetting{}
+	model.InitOptionMap()
+	for _, home := range []struct{ path, title, description string }{
+		{"/", "Gateway for teams", "Manage model access"},
+		{"/zh-cn", "团队网关", "管理模型接入"},
+	} {
+		response := adtyJSONOnHost(t, engine, host, http.MethodGet, home.path, "", "")
+		require.Equal(t, http.StatusOK, response.Code, home.path)
+		html := response.Body.String()
+		assert.Contains(t, html, "<title>"+home.title+"</title>")
+		assert.Contains(t, html, `<meta name="description" content="`+home.description+`" />`)
+		assert.Contains(t, html, `<meta property="og:image" content="https://`+host+`/images/teams.png" />`)
+		assert.Contains(t, html, `<link rel="canonical" href="https://`+host+home.path+`" />`)
+		assert.Contains(t, html, `<link rel="alternate" hreflang="en" href="https://`+host+`/" />`)
+		assert.Contains(t, html, `<link rel="alternate" hreflang="zh-Hans" href="https://`+host+`/zh-cn" />`)
+		assert.NotContains(t, html, "noindex")
+		assert.Equal(t, home.path == "/", strings.Contains(html, `type="application/ld+json"`))
+	}
+	var after model.User
+	require.NoError(t, db.First(&after, before.Id).Error)
+	assert.Equal(t, before.Quota, after.Quota)
+	for _, funds := range []any{&model.AdtyBalanceLedger{}, &model.AdtyFundBatch{}} {
+		var count int64
+		require.NoError(t, db.Model(funds).Count(&count).Error)
+		assert.Zero(t, count)
+	}
 }
