@@ -92,10 +92,9 @@ func TestFTRADTY2303RedisLimitStorePG(t *testing.T) {
 	t.Cleanup(func() { *setting = savedSetting })
 
 	previousStore := adtyLimitStore
-	previousOnce := adtyLimitStoreOnce
 	t.Cleanup(func() {
 		adtyLimitStore = previousStore
-		adtyLimitStoreOnce = previousOnce
+		adtyLimitStoreOnce = sync.Once{}
 	})
 	adtyLimitStore = nil
 	adtyLimitStoreOnce = sync.Once{}
