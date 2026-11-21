@@ -648,6 +648,7 @@ async function openRoleGuide(page: Page, watch: SessionWatch) {
 test('ADTY-22-01 user role guide shows the wallet and key steps', async ({ page, watch }) => {
   await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'User' })).toBeVisible()
+  await expect(page.getByText('open the wallet to see the USD balance, principal, and bonus.')).toBeVisible()
   await expect(
     page.getByText('Create an API key and put the site URL and key in the client.'),
   ).toBeVisible()
@@ -655,6 +656,7 @@ test('ADTY-22-01 user role guide shows the wallet and key steps', async ({ page,
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.locator('html')).toHaveAttribute('lang', /zh/i)
   await expect(page.getByRole('heading', { level: 2, name: '普通用户' })).toBeVisible()
+  await expect(page.getByText('在钱包查看美元余额、本金和赠金。')).toBeVisible()
   await expect(page.getByText('创建 API Key 后，把站点地址和 Key 配到客户端即可调用。')).toBeVisible()
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
@@ -704,10 +706,16 @@ test('ADTY-22-03 team member guide shows one-team membership', async ({ page, wa
 test('ADTY-22-04 site owner guide shows earnings and closing', async ({ page, watch }) => {
   await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'Site owner' })).toBeVisible()
+  await expect(page.getByText('Set the brand, retail price, and site gift.')).toBeVisible()
   await expect(page.getByText('Earnings go to the earnings wallet.')).toBeVisible()
+  await expect(page.getByText('Margin draws follow the open cycle.')).toBeVisible()
+  await expect(page.getByText('Finish open orders before closing the site.')).toBeVisible()
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 2, name: '分站站长' })).toBeVisible()
+  await expect(page.getByText('配置品牌、售价和本站赠金。')).toBeVisible()
+  await expect(page.getByText('收益进收益钱包，保证金按周期动用。')).toBeVisible()
+  await expect(page.getByText('关站前先处理未完成订单。')).toBeVisible()
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
 })
@@ -715,12 +723,15 @@ test('ADTY-22-04 site owner guide shows earnings and closing', async ({ page, wa
 test('ADTY-22-05 site staff guide shows approval before a balance change', async ({ page, watch }) => {
   await openRoleGuide(page, watch)
   await expect(page.getByRole('heading', { level: 2, name: 'Site staff' })).toBeVisible()
+  await expect(page.getByText('Work only on customers of this site.')).toBeVisible()
   await expect(
     page.getByText('A balance change is a request until the owner or a main-site admin approves it.'),
   ).toBeVisible()
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 2, name: '分站员工' })).toBeVisible()
+  await expect(page.getByText('只能操作本站客户。')).toBeVisible()
+  await expect(page.getByText('余额调整必须提交申请，站长或主站管理员批准后才入账。')).toBeVisible()
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
 })
@@ -771,10 +782,16 @@ test('ADTY-22-08 model guide shows alias routing without the channel name', asyn
   if (watch.real) {
     await expect(page.getByText('Send the alias or upstream name')).toBeVisible()
     await expect(page.getByText('the routing group comes from the authenticated API key')).toBeVisible()
+    await expect(page.getByText('or the account group when the key is not bound to a specific group')).toBeVisible()
+    await expect(page.getByText('Group ratios are applied on the server.')).toBeVisible()
   }
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 1, name: '模型与分组' })).toBeVisible()
+  await expect(page.getByText('使用别名或上游名')).toBeVisible()
+  await expect(page.getByText('路由分组由已认证的 API 密钥决定')).toBeVisible()
+  await expect(page.getByText('密钥未指定分组时使用账号分组')).toBeVisible()
+  await expect(page.getByText('分组倍率在服务端计算。客户日志不展示上游渠道名。')).toBeVisible()
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
 })
@@ -786,13 +803,20 @@ test('ADTY-22-09 agent guide shows the tool-call loop', async ({ page, watch }) 
   await expect(page).toHaveURL(/\/docs\/agents$/)
   await expect(page.getByRole('heading', { level: 1, name: 'Agents' })).toBeVisible()
   await expect(page.getByText('Your program owns the agent loop')).toBeVisible()
+  const toolExample = page.locator('article pre code').filter({ hasText: 'tools=[' })
   if (watch.real) {
     await expect(page.getByText('you send the tool result back on the next request')).toBeVisible()
-    await expect(page.locator('article pre code').filter({ hasText: 'tools=[' })).toBeVisible()
+    await expect(toolExample).toContainText('"' + watch.real.apiBaseURL + '/v1"')
+    await expect(toolExample).toContainText('api_key="sk-your-key"')
   }
   await page.getByRole('button', { name: 'Change language' }).first().click()
   await page.getByRole('menuitem', { name: '简体中文' }).click()
   await expect(page.getByRole('heading', { level: 1, name: '智能体' })).toBeVisible()
+  await expect(page.getByText('你把工具结果放进下一次请求。')).toBeVisible()
+  if (watch.real) {
+    await expect(toolExample).toContainText('"' + watch.real.apiBaseURL + '/v1"')
+    await expect(toolExample).toContainText('api_key="sk-你的密钥"')
+  }
   await assertGuestOnMainSite(page, '登录')
   await assertNoMoneyChange(watch)
 })

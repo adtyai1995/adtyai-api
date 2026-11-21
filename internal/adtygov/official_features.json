@@ -22198,7 +22198,7 @@
       "source_line": 2739,
       "ftr_id": "FTR-211",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.22",
@@ -22257,8 +22257,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-211-PqCKeHZR",
+      "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖余额、本金、赠金及 API Key 配置，余额、订单及流水快照一致。",
       "design_card": {
         "feature_id": "ADTY-22-01",
         "requirement_refs": [
@@ -22319,8 +22319,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-211-PqCKeHZR",
+        "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖余额、本金、赠金及 API Key 配置，余额、订单及流水快照一致。"
       }
     },
     {
@@ -22546,7 +22546,7 @@
       "source_line": 2742,
       "ftr_id": "FTR-214",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.22",
@@ -22593,8 +22593,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-214-PqCKeHZR",
+      "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖收益钱包、保证金周期及关站前未完成订单处置，余额、订单及流水快照一致。",
       "design_card": {
         "feature_id": "ADTY-22-04",
         "requirement_refs": [
@@ -22643,8 +22643,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-214-PqCKeHZR",
+        "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖收益钱包、保证金周期及关站前未完成订单处置，余额、订单及流水快照一致。"
       }
     },
     {
@@ -22654,7 +22654,7 @@
       "source_line": 2743,
       "ftr_id": "FTR-215",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.22",
@@ -22700,8 +22700,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-215-PqCKeHZR",
+      "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖本站客户范围及余额调整审批，余额、订单及流水快照一致。",
       "design_card": {
         "feature_id": "ADTY-22-05",
         "requirement_refs": [
@@ -22749,8 +22749,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-215-PqCKeHZR",
+        "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖本站客户范围及余额调整审批，余额、订单及流水快照一致。"
       }
     },
     {
@@ -23042,7 +23042,7 @@
       "source_line": 2746,
       "ftr_id": "FTR-218",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.22",
@@ -23094,8 +23094,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-218-PqCKeHZR",
+      "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖模型别名、Key 路由分组、账号分组回退及渠道名隐藏，余额、订单及流水快照一致。",
       "design_card": {
         "feature_id": "ADTY-22-08",
         "requirement_refs": [
@@ -23149,8 +23149,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-218-PqCKeHZR",
+        "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖模型别名、Key 路由分组、账号分组回退及渠道名隐藏，余额、订单及流水快照一致。"
       }
     },
     {
@@ -23160,7 +23160,7 @@
       "source_line": 2747,
       "ftr_id": "FTR-219",
       "current_state": "partial",
-      "execution_status": "not_executable",
+      "execution_status": "executed",
       "existence_only": false,
       "requirement_refs": [
         "H.22",
@@ -23220,8 +23220,8 @@
       "db_money_invariants": [
         "no_money_change"
       ],
-      "evidence_id": "",
-      "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable",
+      "evidence_id": "EV-R1-0127-FTR-219-PqCKeHZR",
+      "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖工具结果回传、站点 API 基址及示例密钥，余额、订单及流水快照一致。",
       "design_card": {
         "feature_id": "ADTY-22-09",
         "requirement_refs": [
@@ -23283,8 +23283,8 @@
         "db_money_invariants": [
           "no_money_change"
         ],
-        "evidence_id": "",
-        "na_reason": "Playwright 标题已绑定，validate.py 不接受该日志格式，本轮未入账，保持 not_executable"
+        "evidence_id": "EV-R1-0127-FTR-219-PqCKeHZR",
+        "na_reason": "Chromium 与隔离 PostgreSQL 18.7 局部回归通过。双语说明涵盖工具结果回传、站点 API 基址及示例密钥，余额、订单及流水快照一致。"
       }
     },
     {
