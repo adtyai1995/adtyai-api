@@ -87,32 +87,17 @@ export async function prepareRootHome(
   return null
 }
 
-export type PreparedLangHome = {
-  lang: HomeLang
-  /** Official path when the requested segment is a leftover unofficial home. */
-  redirectTo?: string
-}
-
-/**
- * beforeLoad of `/$lang`: switches the interface to the official language for
- * the URL and remembers it. Leftover unofficial segments stay registered so
- * old links do not 404, but they resolve to the official language and should
- * redirect to the official home path. Undefined for an unknown segment.
- */
+/** Use and remember the interface language of a supported home URL. */
 export async function prepareLangHome(
   segment: string
-): Promise<PreparedLangHome | undefined> {
-  const requested = findHomeLangBySegment(segment)
-  if (!requested) return undefined
-  const official = officialHomeLangFor(requested.interfaceLang)
-  if (i18next.language !== official.interfaceLang) {
-    await i18next.changeLanguage(official.interfaceLang)
+): Promise<HomeLang | undefined> {
+  const lang = findHomeLangBySegment(segment)
+  if (!lang) return undefined
+  if (i18next.language !== lang.interfaceLang) {
+    await i18next.changeLanguage(lang.interfaceLang)
   }
-  rememberHomeLang(official.interfaceLang)
-  if (requested.segment !== official.segment) {
-    return { lang: official, redirectTo: homePathFor(official.interfaceLang) }
-  }
-  return { lang: official }
+  rememberHomeLang(lang.interfaceLang)
+  return lang
 }
 
 /**

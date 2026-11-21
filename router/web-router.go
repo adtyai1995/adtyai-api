@@ -54,7 +54,7 @@ func setWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher, extern
 		},
 		middleware.GlobalWebRateLimit(frontendFS),
 		middleware.Cache(),
-		// adty 任务 9.3：首页 8 个语言网址写入标题、描述和预渲染正文
+		// Serve SEO metadata and prerendered content for the two official homes.
 		AdtySEOHomePages(assets.IndexPage, assets.BuildFS),
 		func(c *gin.Context) {
 			if site := service.AdtySiteForRequest(c); site != nil && c.Request.URL.Path == "/index.html" {
@@ -85,6 +85,12 @@ func setWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher, extern
 // /marketing has no page and neither plugins nor an external frontend may take
 // it over. This is not a live relay route. See internal/adtygov.
 func rejectRetiredFeaturePath(c *gin.Context) {
+	switch strings.TrimRight(c.Request.URL.Path, "/") {
+	case "/zh-tw", "/fr", "/ja", "/ko", "/ru", "/vi":
+		// DEC-028 retires these exact home paths before the SPA fallback.
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
 	for _, prefix := range []string{"/pg", "/marketing", "/api/adty/marketing", "/api/adty/admin/marketing", "/api/deployments"} {
 		if c.Request.URL.Path == prefix || strings.HasPrefix(c.Request.URL.Path, prefix+"/") {
 			controller.RelayNotFound(c)

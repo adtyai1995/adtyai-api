@@ -34,30 +34,12 @@ export const HOME_LANGS = [
   { segment: 'zh-cn', interfaceLang: 'zhCN', contentLang: 'zh-CN' },
 ] as const satisfies readonly HomeLang[]
 
-/**
- * Leftover unofficial home paths kept so old links do not 404. They are not
- * official product languages and must not be linked from official UI (A.20.1).
- */
-export const LEFTOVER_HOME_LANGS: readonly HomeLang[] = [
-  { segment: 'zh-tw', interfaceLang: 'zhTW', contentLang: 'zh-TW' },
-  { segment: 'fr', interfaceLang: 'fr', contentLang: 'fr' },
-  { segment: 'ja', interfaceLang: 'ja', contentLang: 'ja' },
-  { segment: 'ko', interfaceLang: 'ko', contentLang: 'ko' },
-  { segment: 'ru', interfaceLang: 'ru', contentLang: 'ru' },
-  { segment: 'vi', interfaceLang: 'vi', contentLang: 'vi' },
-]
-
-const REGISTERED_HOME_LANGS: readonly HomeLang[] = [
-  ...HOME_LANGS,
-  ...LEFTOVER_HOME_LANGS,
-]
-
 /** localStorage key of the language picked on the home page. */
 export const HOME_LANG_STORAGE_KEY = 'adtyai:lang'
 
 export function findHomeLangBySegment(segment: string): HomeLang | undefined {
   const lower = segment.toLowerCase()
-  return REGISTERED_HOME_LANGS.find(
+  return HOME_LANGS.find(
     (lang) => lang.segment !== '' && lang.segment === lower
   )
 }
@@ -82,7 +64,7 @@ export function homePathFor(interfaceLang: string | null | undefined): string {
   return lang.segment ? `/${lang.segment}` : '/'
 }
 
-/** True for `/`, official language homes, and leftover unofficial home paths. */
+/** True for the two official home paths. */
 export function isHomePath(pathname: string): boolean {
   const trimmed = pathname.replace(/\/+$/, '')
   if (trimmed === '') return true

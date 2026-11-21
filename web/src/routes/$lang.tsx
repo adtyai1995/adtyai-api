@@ -16,29 +16,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute, notFound, redirect } from '@tanstack/react-router'
+import { createFileRoute, notFound } from '@tanstack/react-router'
 
 import { prepareLangHome } from '@/features/adty-seo/home-language'
 import { Home } from '@/features/home'
 
-/**
- * Official non-English home page is `/zh-cn`. Leftover unofficial segments
- * (`/zh-tw`, `/fr`, `/ja`, `/ko`, `/ru`, `/vi`) stay registered so old links
- * do not 404, but they resolve to the official language and redirect. Any
- * other single segment is a 404. Static routes such as /pricing and /docs
- * win over this one.
- */
+/** The only supported language segment is /zh-cn. */
 export const Route = createFileRoute('/$lang')({
-  beforeLoad: async ({ params, location }) => {
-    const prepared = await prepareLangHome(params.lang)
-    if (!prepared) throw notFound()
-    if (prepared.redirectTo) {
-      throw redirect({
-        to: prepared.redirectTo,
-        search: location.search,
-        replace: true,
-      })
-    }
+  beforeLoad: async ({ params }) => {
+    if (!(await prepareLangHome(params.lang))) throw notFound()
   },
   component: Home,
 })

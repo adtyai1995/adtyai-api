@@ -1,19 +1,19 @@
 package router
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestFTRADTY0108OfficialLanguagePages covers the committed page switch:
-// English / and Simplified Chinese /zh-cn are the official homes. Leftover
-// aliases stay reachable and canonicalize onto those two homes. They are not
-// advertised as extra languages, and they are not turned into 404s.
+// TestFTRADTY0108OfficialLanguagePages covers the two official home URLs.
 func TestFTRADTY0108OfficialLanguagePages(t *testing.T) {
 	en := newSEOFixture().serve(t, "adtyai.com", "/")
 	require.Equal(t, 200, en.Code)
@@ -31,18 +31,18 @@ func TestFTRADTY0108OfficialLanguagePages(t *testing.T) {
 	assert.Contains(t, zh.Body.String(), `<link rel="canonical" href="https://adtyai.com/zh-cn" />`)
 	assert.Contains(t, zh.Body.String(), "<h1>中文首屏</h1>")
 
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	SetWebRouter(engine, WebAssets{IndexPage: []byte(seoIndexPage)}, func(c *gin.Context) { c.Next() })
 	for _, path := range []string{"/zh-tw", "/fr", "/ja", "/ko", "/ru", "/vi"} {
-		rec := newSEOFixture().serve(t, "adtyai.com", path)
-		require.Equal(t, 200, rec.Code, path)
-		body := rec.Body.String()
-		assert.NotContains(t, body, "hreflang=\""+strings.TrimPrefix(path, "/")+"\"", path)
-		assert.NotContains(t, body, "https://adtyai.com"+path+"\"", path)
-		if path == "/zh-tw" {
-			assert.Contains(t, body, `<link rel="canonical" href="https://adtyai.com/zh-cn" />`)
-			assert.Contains(t, body, `<html lang="zh-Hans"`)
-		} else {
-			assert.Contains(t, body, `<link rel="canonical" href="https://adtyai.com/" />`)
-			assert.Contains(t, body, `<html lang="en"`)
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			for _, suffix := range []string{"", "/?ref=test"} {
+				rec := httptest.NewRecorder()
+				engine.ServeHTTP(rec, httptest.NewRequest(method, path+suffix, nil))
+				assert.Equal(t, http.StatusNotFound, rec.Code, "%s %s%s", method, path, suffix)
+				assert.Empty(t, rec.Header().Get("Location"))
+				assert.NotContains(t, rec.Body.String(), `id="root"`)
+			}
 		}
 	}
 }

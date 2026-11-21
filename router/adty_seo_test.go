@@ -37,7 +37,7 @@ const seoIndexPage = `<!doctype html>
 </html>
 `
 
-const seoPrerender = `{"en":"<h1>EN hero</h1>","zh-CN":"<h1>中文首屏</h1>","zh-TW":"<h1>繁體首屏</h1>","fr":"<h1>FR</h1>","ja":"<h1>JA</h1>","ko":"<h1>한국어 첫 화면</h1>","ru":"<h1>RU</h1>","vi":"<h1>VI</h1>"}`
+const seoPrerender = `{"en":"<h1>EN hero</h1>","zh-CN":"<h1>中文首屏</h1>"}`
 
 type seoFixture struct {
 	serverAddress string
@@ -144,27 +144,13 @@ func TestHomePagesSEOHead(t *testing.T) {
 	}
 	rec := newSEOFixture().serve(t, "adtyai.com", "/zh-cn")
 	assert.Contains(t, rec.Body.String(), "<h1>中文首屏</h1>")
-
-	// Leftover unofficial paths stay registered but resolve to official languages.
-	tw := newSEOFixture().serve(t, "adtyai.com", "/zh-tw")
-	require.Equal(t, http.StatusOK, tw.Code)
-	assert.Contains(t, tw.Body.String(), `<html lang="zh-Hans" data-adty-seo="1">`)
-	assert.Contains(t, tw.Body.String(), `<link rel="canonical" href="https://adtyai.com/zh-cn" />`)
-	assert.Contains(t, tw.Body.String(), "<h1>中文首屏</h1>")
-	assert.NotContains(t, tw.Body.String(), `hreflang="zh-Hant"`)
-	ko := newSEOFixture().serve(t, "adtyai.com", "/ko")
-	require.Equal(t, http.StatusOK, ko.Code)
-	assert.Contains(t, ko.Body.String(), `<html lang="en" data-adty-seo="1">`)
-	assert.Contains(t, ko.Body.String(), `<link rel="canonical" href="https://adtyai.com/" />`)
-	assert.Contains(t, ko.Body.String(), "<h1>EN hero</h1>")
-	assert.NotContains(t, ko.Body.String(), "<h1>한국어 첫 화면</h1>")
 }
 
 func TestHomeTitleFallsBackToBrand(t *testing.T) {
 	f := newSEOFixture()
 	f.title = nil
 	f.description = nil
-	body := f.serve(t, "adtyai.com", "/fr").Body.String()
+	body := f.serve(t, "adtyai.com", "/").Body.String()
 
 	assert.Contains(t, body, "<title>"+common.AdtyBrandName+"</title>")
 	assert.NotContains(t, body, `name="description"`)

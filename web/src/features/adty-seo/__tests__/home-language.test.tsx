@@ -35,11 +35,7 @@ import { useAuthStore, type AuthUser } from '@/stores/auth-store'
 
 import { INTERFACE_LANGUAGE_OPTIONS } from '@/i18n/languages'
 
-import {
-  HOME_LANGS,
-  HOME_LANG_STORAGE_KEY,
-  LEFTOVER_HOME_LANGS,
-} from '../home-langs'
+import { HOME_LANGS, HOME_LANG_STORAGE_KEY } from '../home-langs'
 import { useAdtyAfterLanguageChange } from '../home-language'
 import { LanguageHint } from '../language-hint'
 
@@ -262,19 +258,15 @@ describe('home language URLs', () => {
     expect(window.localStorage.getItem(HOME_LANG_STORAGE_KEY)).toBeNull()
   })
 
-  it('resolves leftover unofficial homes to the official language and path', async () => {
-    const tw = renderAt('/zh-tw')
-    await screen.findByText('home zhCN')
-    expect(tw.state.location.pathname).toBe('/zh-cn')
-    expect(window.localStorage.getItem(HOME_LANG_STORAGE_KEY)).toBe('zhCN')
-
-    window.localStorage.clear()
-    await i18next.changeLanguage('en')
-    const fr = renderAt('/fr')
-    await screen.findByText('home en')
-    expect(fr.state.location.pathname).toBe('/')
-    expect(window.localStorage.getItem(HOME_LANG_STORAGE_KEY)).toBe('en')
-  })
+  it.each(['/zh-tw', '/fr', '/ja', '/ko', '/ru', '/vi'])(
+    'shows not found for the retired home %s',
+    async (path) => {
+      const router = renderAt(path)
+      await screen.findByText('not found')
+      expect(router.state.location.pathname).toBe(path)
+      expect(window.localStorage.getItem(HOME_LANG_STORAGE_KEY)).toBeNull()
+    }
+  )
 })
 
 describe('official home language entry points', () => {
@@ -293,9 +285,6 @@ describe('official home language entry points', () => {
     for (const unofficial of ['fr', 'ru', 'ja', 'ko', 'vi', 'zh-tw', 'zhTW', 'zh-TW']) {
       expect(advertised).not.toContain(unofficial)
     }
-    expect(LEFTOVER_HOME_LANGS.map((lang) => lang.segment)).toEqual(
-      expect.arrayContaining(['zh-tw', 'fr', 'ja', 'ko', 'ru', 'vi'])
-    )
   })
 })
 
