@@ -13,6 +13,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -492,7 +493,10 @@ func TestTeamRepairEmployeeLifecycleDoesNotMintPersonalFunds(t *testing.T) {
 	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), path, body, f.userATok))
 	rec := f.call(t, http.MethodPost, f.siteAHost(), path, body, f.leaderATok)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	view := decodeAdtyData[struct { UserID int `json:"user_id"`; Independent bool `json:"independent_employee"` }](t, rec.Body)
+	view := decodeAdtyData[struct {
+		UserID      int  `json:"user_id"`
+		Independent bool `json:"independent_employee"`
+	}](t, rec.Body)
 	require.Positive(t, view.UserID)
 	assert.True(t, view.Independent)
 	var user model.User
@@ -527,6 +531,72 @@ func TestTeamRepairEmployeeLifecycleDoesNotMintPersonalFunds(t *testing.T) {
 	assert.Equal(t, "deleted", member.Status)
 }
 
+func TestFTRADTY1305EmployeeKeepsSingleTeamWithoutBalanceChangePG(t *testing.T) {
+	f := newTeamAuthFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
+	const teamPath = "/api/adty/admin/teams"
+	created := f.decodeCreated(t, f.call(t, http.MethodPost, teamAuthMainHost, teamPath,
+		fmt.Sprintf(`{"name":"Member Desk","site_id":%d,"leader_id":%d}`, f.siteA.Id, f.leaderA.Id), f.rootTok))
+	var teamLedgerBefore []model.AdtyTeamLedger
+	require.NoError(t, f.db.Order("id").Find(&teamLedgerBefore).Error)
+	response := f.call(t, http.MethodPost, f.siteAHost(), fmt.Sprintf("/api/adty/teams/%d/employees", created.Team.Id),
+		`{"username":"single-team-employee","password":"Employee-password-2026","display_name":"Single Team Employee"}`, f.leaderATok)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	employee := decodeAdtyData[service.AdtyTeamMemberView](t, response.Body)
+	require.Positive(t, employee.UserId)
+	assert.True(t, employee.IndependentEmployee)
+	var user model.User
+	require.NoError(t, f.db.First(&user, employee.UserId).Error)
+	assert.Equal(t, f.siteA.Id, user.SiteId)
+	assert.Zero(t, user.Quota)
+	assert.Zero(t, user.QuotaPending)
+	var before []model.AdtyTeamMember
+	require.NoError(t, f.db.Where("user_id = ?", user.Id).Find(&before).Error)
+	require.Len(t, before, 1)
+	assert.Equal(t, created.Team.Id, before[0].TeamId)
+	assert.Equal(t, model.AdtyTeamRoleMember, before[0].Role)
+	assert.Equal(t, model.AdtyTeamMemberActive, before[0].Status)
+	assert.True(t, before[0].IndependentEmployee)
+	var audit model.AuditLog
+	require.NoError(t, f.db.Where("action = ? AND user_id = ?", "adty.team.member.create", f.leaderA.Id).First(&audit).Error)
+	assert.True(t, audit.Success)
+
+	teamCount := f.teamCount(t)
+	second := f.call(t, http.MethodPost, teamAuthMainHost, teamPath,
+		fmt.Sprintf(`{"name":"Second Desk","site_id":%d,"leader_id":%d}`, f.siteA.Id, user.Id), f.rootTok)
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+	require.Contains(t, second.Body.String(), `"success":false`)
+	assert.Equal(t, teamCount, f.teamCount(t))
+	var after []model.AdtyTeamMember
+	require.NoError(t, f.db.Where("user_id = ?", user.Id).Find(&after).Error)
+	assert.Equal(t, before, after)
+	response = f.call(t, http.MethodGet, f.siteAHost(), "/api/adty/teams/mine", "", f.session(t, &user))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	result := decodeAdtyData[struct {
+		Team *service.AdtyTeamMine `json:"team"`
+	}](t, response.Body)
+	mine := result.Team
+	require.NotNil(t, mine)
+	assert.Equal(t, created.Team.Id, mine.TeamId)
+	assert.Equal(t, f.siteA.Id, mine.SiteId)
+	assert.Equal(t, model.AdtyTeamRoleMember, mine.Role)
+
+	var currentUser model.User
+	require.NoError(t, f.db.First(&currentUser, user.Id).Error)
+	assert.Equal(t, user.Quota, currentUser.Quota)
+	assert.Equal(t, user.QuotaPending, currentUser.QuotaPending)
+	var team model.AdtyTeam
+	require.NoError(t, f.db.First(&team, created.Team.Id).Error)
+	assert.Equal(t, created.Team.SharedQuota, team.SharedQuota)
+	assert.Equal(t, team.SharedQuota, mine.SharedQuota)
+	var personalLedger int64
+	require.NoError(t, f.db.Model(&model.AdtyBalanceLedger{}).Where("user_id = ?", user.Id).Count(&personalLedger).Error)
+	assert.Zero(t, personalLedger)
+	var teamLedgerAfter []model.AdtyTeamLedger
+	require.NoError(t, f.db.Order("id").Find(&teamLedgerAfter).Error)
+	assert.Equal(t, teamLedgerBefore, teamLedgerAfter)
+}
+
 func TestTeamRepairAnonymousInviteRegistrationIsSingleUseAndHostBound(t *testing.T) {
 	f := newTeamAuthFixture(t)
 	created := f.decodeCreated(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
@@ -538,7 +608,10 @@ func TestTeamRepairAnonymousInviteRegistrationIsSingleUseAndHostBound(t *testing
 	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteBHost(), path, body, ""))
 	registered := f.call(t, http.MethodPost, f.siteAHost(), path, body, "")
 	require.Equal(t, http.StatusOK, registered.Code, registered.Body.String())
-	view := decodeAdtyData[struct { UserID int `json:"user_id"`; Independent bool `json:"independent_employee"` }](t, registered.Body)
+	view := decodeAdtyData[struct {
+		UserID      int  `json:"user_id"`
+		Independent bool `json:"independent_employee"`
+	}](t, registered.Body)
 	require.Positive(t, view.UserID)
 	assert.True(t, view.Independent)
 	teamAuthRejected(t, f.call(t, http.MethodPost, f.siteAHost(), path, strings.Replace(body, "invited-employee", "replayed-employee", 1), ""))

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/internal/pgtest"
@@ -149,17 +150,72 @@ func TestBEpusdtPayRedirectsThroughSignedResult(t *testing.T) {
 
 func TestBEpusdtPayCreatesOrderWithBonus(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	pgtest.RecordServerVersion(t, f.db)
 	setRouterBonusRates(t)
-	useFakeBEpusdt(t)
-	token, _ := bepusdtBuyer(t, f, "usdt-buyer")
+	gw := useFakeBEpusdt(t)
+	token, userID := bepusdtBuyer(t, f, "usdt-buyer")
+	assertUnpaidFunds := func() {
+		t.Helper()
+		assert.Zero(t, quotaOf(t, f, userID))
+		for _, funds := range []any{&model.AdtyBalanceLedger{}, &model.AdtyFundBatch{}} {
+			var count int64
+			require.NoError(t, f.db.Model(funds).Where("user_id = ?", userID).Count(&count).Error)
+			assert.Zero(t, count)
+		}
+	}
+	assertUnpaidFunds()
+	startedAt := time.Now().Unix()
 	view := payBEpusdt(t, f, token)
+	finishedAt := time.Now().Unix()
 	require.NotNil(t, view.Ext)
 	assert.True(t, strings.HasPrefix(view.TradeNo, "EPU"))
+	assert.Equal(t, common.TopUpStatusPending, view.Status)
 	assert.Equal(t, "TAddr", view.Ext.PayAddress)
 	assert.Equal(t, "100.01", view.Ext.PayAmount.String(), "pay amount comes from the gateway")
 	assert.Equal(t, "2.5", view.Ext.BonusUSD.String())
 	assert.EqualValues(t, 51_250_000, view.Ext.CreditQuota)
-	assert.Positive(t, view.Ext.ExpireAt)
+	assert.Equal(t, 1, gw.snapshot().creates)
+
+	var orders []model.TopUp
+	require.NoError(t, f.db.Where("trade_no = ?", view.TradeNo).Find(&orders).Error)
+	require.Len(t, orders, 1)
+	order := orders[0]
+	assert.Equal(t, userID, order.UserId)
+	assert.Equal(t, model.PaymentProviderAdtyBEpusdt, order.PaymentProvider)
+	assert.Equal(t, "usdt.trc20", order.PaymentMethod)
+	assert.EqualValues(t, 100, order.Amount)
+	assert.InDelta(t, 100.01, order.Money, 0.000001)
+	assert.Equal(t, common.TopUpStatusPending, order.Status)
+	assert.Zero(t, order.CompleteTime)
+
+	var extensions []model.AdtyTopupOrder
+	require.NoError(t, f.db.Where("trade_no = ?", order.TradeNo).Find(&extensions).Error)
+	require.Len(t, extensions, 1)
+	ext := extensions[0]
+	assert.Equal(t, userID, ext.UserId)
+	assert.Zero(t, ext.SiteId)
+	assert.Zero(t, ext.TeamId)
+	assert.Equal(t, order.PaymentProvider, ext.Provider)
+	assert.Equal(t, order.PaymentMethod, ext.Method)
+	assert.Equal(t, model.AdtyBusinessWalletTopup, ext.Business)
+	assert.Equal(t, "100", ext.FaceUSD.String())
+	assert.Equal(t, "0.025", ext.BonusRate.String())
+	assert.Equal(t, "2.5", ext.BonusUSD.String())
+	assert.EqualValues(t, 51_250_000, ext.CreditQuota)
+	assert.Equal(t, "USDT", ext.PayCurrency)
+	assert.Equal(t, "100.01", ext.PayAmount.String())
+	assert.Equal(t, "TAddr", ext.PayAddress)
+	assert.Equal(t, "tid-"+order.TradeNo, ext.GatewayTradeId)
+	assert.Equal(t, view.Ext.ExpireAt, ext.ExpireAt)
+	assert.GreaterOrEqual(t, ext.ExpireAt, startedAt+900)
+	assert.LessOrEqual(t, ext.ExpireAt, finishedAt+900)
+	assert.True(t, ext.PaidAmount.IsZero())
+	assert.Empty(t, ext.PaidSource)
+	assert.Empty(t, ext.PaidTxHash)
+	assertUnpaidFunds()
+	var paymentEvents int64
+	require.NoError(t, f.db.Model(&model.AdtyOrderPaymentEvent{}).Where("trade_no = ?", order.TradeNo).Count(&paymentEvents).Error)
+	assert.Zero(t, paymentEvents)
 }
 
 func TestBEpusdtPayEarlyCallbackPreservesGatewayDetailsAndLockOrder(t *testing.T) {
