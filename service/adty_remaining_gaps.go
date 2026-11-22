@@ -39,6 +39,20 @@ func ListStaffBalanceRequests(siteID int) ([]model.AdtyStaffBalanceRequest, erro
 	return rows, err
 }
 
+func PageStaffBalanceRequests(siteID int, status string, offset, limit int) ([]model.AdtyStaffBalanceRequest, int64, error) {
+	var rows []model.AdtyStaffBalanceRequest
+	var total int64
+	query := model.DB.Model(&model.AdtyStaffBalanceRequest{}).Where("site_id = ?", siteID)
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := query.Order("id DESC").Offset(offset).Limit(limit).Find(&rows).Error
+	return rows, total, err
+}
+
 // WalletUSDParts splits a wallet into principal and permanent bonus for display.
 type WalletUSDParts struct {
 	Principal decimal.Decimal
@@ -1292,7 +1306,7 @@ func refuseSiteInviteBatchTx(tx *gorm.DB, siteID, inviterID int, ipHash string) 
 	since := time.Now().Unix() - hours*3600
 	var count int64
 	if err := tx.Model(&model.AdtySiteInvite{}).
-		Where("inviter_id = ? AND ip_hash = ? AND created_at >= ?", inviterID, ipHash, since).
+		Where("site_id = ? AND inviter_id = ? AND ip_hash = ? AND created_at >= ?", siteID, inviterID, ipHash, since).
 		Count(&count).Error; err != nil {
 		return err
 	}

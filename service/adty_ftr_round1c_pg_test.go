@@ -180,25 +180,26 @@ func TestFTRADTY2009AssignTicketPG(t *testing.T) {
 	db := ftrRound1cTicketDB(t)
 	customer := ftrRound1cUser(t, db, "ftr2009user", common.RoleCommonUser)
 	root := ftrRound1cUser(t, db, "ftr2009root", common.RoleRootUser)
-	first := ftrRound1cUser(t, db, "ftr2009adm1", common.RoleAdminUser)
-	second := ftrRound1cUser(t, db, "ftr2009adm2", common.RoleAdminUser)
+	first := ftrRound1cUser(t, db, "ftr2009adm1", common.RoleCommonUser)
+	second := ftrRound1cUser(t, db, "ftr2009adm2", common.RoleCommonUser)
 	require.Equal(t, common.RoleCommonUser, customer.Role)
 	require.Equal(t, 1, customer.Role)
 	require.Equal(t, common.RoleRootUser, root.Role)
-	require.Equal(t, common.RoleAdminUser, first.Role)
-	require.Equal(t, common.RoleAdminUser, second.Role)
+	require.Equal(t, common.RoleCommonUser, first.Role)
+	require.Equal(t, common.RoleCommonUser, second.Role)
 	require.Equal(t, common.UserStatusEnabled, first.Status)
 	require.Equal(t, common.UserStatusEnabled, second.Status)
 
-	site := model.AdtySite{OwnerUserId: root.Id, Subdomain: "ftr2009", Status: model.AdtySiteStatusActive}
+	site := model.AdtySite{OwnerUserId: root.Id, Subdomain: "ftr2009", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	require.NotZero(t, site.Id)
 	require.NoError(t, db.Model(&model.User{}).Where("id = ?", customer.Id).Update("site_id", site.Id).Error)
 
 	for _, staffUser := range []model.User{first, second} {
+		require.NoError(t, db.Model(&staffUser).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
 		row := model.AdtySiteStaff{
 			SiteId: site.Id, OwnerUserId: root.Id, UserId: staffUser.Id, Username: staffUser.Username,
-			DisplayName: staffUser.Username, Role: "support", Status: "enabled", Permissions: `["customers.read"]`,
+			DisplayName: staffUser.Username, Role: "support", Status: "enabled", Permissions: `["tickets.manage"]`,
 		}
 		require.NoError(t, db.Create(&row).Error)
 		var storedStaff model.AdtySiteStaff
@@ -235,8 +236,8 @@ func TestFTRADTY2009AssignTicketPG(t *testing.T) {
 
 	ftrRound1cNoMoney(t, db, customer.Id, common.RoleCommonUser)
 	ftrRound1cNoMoney(t, db, root.Id, common.RoleRootUser)
-	ftrRound1cNoMoney(t, db, first.Id, common.RoleAdminUser)
-	ftrRound1cNoMoney(t, db, second.Id, common.RoleAdminUser)
+	ftrRound1cNoMoney(t, db, first.Id, common.RoleCommonUser)
+	ftrRound1cNoMoney(t, db, second.Id, common.RoleCommonUser)
 }
 
 // ADTY-19-03: root saves an independent translation endpoint. The token is sealed and not printed.

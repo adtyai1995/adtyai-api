@@ -26,16 +26,44 @@ export const TICKET_STATUS_LABELS: Record<string, string> = {
   closed: 'Ticket status closed',
 }
 
-export type TicketQueueId = 'pending' | 'waiting_user' | 'in_progress' | 'urgent'
+export type TicketQueueId =
+  | 'pending'
+  | 'waiting_user'
+  | 'in_progress'
+  | 'urgent'
+  | 'waiting_internal'
+  | 'resolved'
+  | 'closed'
 
-export const TICKET_QUEUES: { id: TicketQueueId; label: string; badge: keyof TicketBadges }[] = [
+export const TICKET_QUEUES: {
+  id: TicketQueueId
+  label: string
+  badge: keyof TicketBadges
+}[] = [
   { id: 'pending', label: 'Ticket queue pending', badge: 'pending' },
-  { id: 'waiting_user', label: 'Ticket queue waiting user', badge: 'waiting_user' },
-  { id: 'in_progress', label: 'Ticket queue in progress', badge: 'in_progress' },
+  {
+    id: 'waiting_user',
+    label: 'Ticket queue waiting user',
+    badge: 'waiting_user',
+  },
+  {
+    id: 'in_progress',
+    label: 'Ticket queue in progress',
+    badge: 'in_progress',
+  },
+  {
+    id: 'waiting_internal',
+    label: 'Ticket status waiting internal',
+    badge: 'waiting_internal',
+  },
+  { id: 'resolved', label: 'Ticket status resolved', badge: 'resolved' },
+  { id: 'closed', label: 'Ticket status closed', badge: 'closed' },
   { id: 'urgent', label: 'Ticket queue urgent', badge: 'urgent' },
 ]
 
 export type TicketBadges = {
+  resolved: number
+  closed: number
   new: number
   pending_assignment: number
   in_progress: number

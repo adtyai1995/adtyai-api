@@ -15,6 +15,22 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+func GetAdtyMainTeams(c *gin.Context) {
+	page := common.GetPageQuery(c)
+	query := model.DB.Model(&model.AdtyTeam{}).Where("site_id = ?", 0)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var rows []model.AdtyTeam
+	if err := query.Order("id DESC").Offset(page.GetStartIdx()).Limit(page.GetPageSize()).Find(&rows).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"total": total, "items": rows})
+}
+
 func PutAdtyMainTeamAgreementPrice(c *gin.Context) {
 	if c.GetInt("role") != common.RoleRootUser {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))

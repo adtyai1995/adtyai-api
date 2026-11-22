@@ -30,7 +30,7 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { setSiteStatus, siteAdminKeys } from '../api'
+import { setSiteStatus, siteAdminKeys, type AdminSiteDomain } from '../api'
 import type { AdminSite } from '../types'
 
 /**
@@ -39,6 +39,7 @@ import type { AdminSite } from '../types'
  * another site.
  */
 export function CloseSiteDialog(props: {
+  domains: AdminSiteDomain[]
   site: AdminSite
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -49,7 +50,6 @@ export function CloseSiteDialog(props: {
   )
   const id = useId()
   const queryClient = useQueryClient()
-  const [clawBack, setClawBack] = useState(false)
   const [immediate, setImmediate] = useState(false)
   const [reason, setReason] = useState('')
 
@@ -61,7 +61,7 @@ export function CloseSiteDialog(props: {
       return setSiteStatus(props.site.id, {
         status: 'closed',
         transfer_to: 0,
-        claw_back: clawBack,
+        claw_back: false,
         immediate,
         reason: reason.trim(),
       })
@@ -82,7 +82,7 @@ export function CloseSiteDialog(props: {
       onOpenChange={props.onOpenChange}
       title={t('Close {{site}}', { site: props.site.host })}
       description={t(
-        'Customers are told before the site closes. On the day it closes, they are inherited by the main site and the custom and sender domains are removed.'
+        'Customers move to the main site. Retained website domains redirect there. API domains stop accepting requests and enter cleanup. Closing the site preserves its earnings.'
       )}
       footer={
         <>
@@ -91,7 +91,7 @@ export function CloseSiteDialog(props: {
           </Button>
           <Button
             variant='destructive'
-            disabled={close.isPending}
+            disabled={close.isPending || reason.trim() === ''}
             onClick={() => close.mutate()}
           >
             {t('Close site')}
@@ -103,16 +103,12 @@ export function CloseSiteDialog(props: {
         <p className='text-muted-foreground text-sm'>
           {t('All customers of this site will be inherited by the main site.')}
         </p>
-        <div className='flex items-center gap-2'>
-          <Checkbox
-            id={`${id}-claw`}
-            checked={clawBack}
-            onCheckedChange={(value) => setClawBack(value === true)}
-          />
-          <Label htmlFor={`${id}-claw`}>
-            {t('Claw back unsettled and withdrawable earnings')}
-          </Label>
-        </div>
+        <ul className='space-y-1 text-sm'>
+          <li>{props.site.host} · {t('Redirect to main site')}</li>
+          {props.domains.filter(domain => domain.hostname !== props.site.host && domain.status !== 'removed').map(domain => (
+            <li key={domain.id}>{domain.hostname} · {domain.role === 'base_url' ? t('API access ends') : t('Redirect to main site')}</li>
+          ))}
+        </ul>
         <div className='flex items-center gap-2'>
           <Checkbox
             id={`${id}-now`}

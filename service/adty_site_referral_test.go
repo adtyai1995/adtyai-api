@@ -61,16 +61,16 @@ func TestOwnerSiteTeamDiscountFollowsG2Formula(t *testing.T) {
 	require.True(t, stored.Discount.Equal(decimal.RequireFromString("0.60")))
 }
 
-func TestSiteReferralRateStaysUnsetUntilRootSetsCap(t *testing.T) {
+func TestOwnerSiteReferralRateDoesNotRequireGlobalCap(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	owner := referralUser(t, db, "sref-owner")
 	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "sref", Status: model.AdtySiteStatusActive}
 	require.NoError(t, db.Create(&site).Error)
 	err := SaveAdtyOwnerSiteReferralRate(site.Id, owner.Id, "0.05")
-	require.ErrorIs(t, err, ErrAdtySiteReferralUnset)
-
-	require.NoError(t, SaveAdtySiteReferralCap("0.10"))
-	require.Error(t, SaveAdtyOwnerSiteReferralRate(site.Id, owner.Id, "0.11"))
+	require.NoError(t, err)
+	require.ErrorIs(t, SaveAdtySiteReferralCap("0.10"), ErrSiteMarketingOwnerOnly)
+	require.NoError(t, SaveAdtyOwnerSiteReferralRate(site.Id, owner.Id, "1"))
+	require.Error(t, SaveAdtyOwnerSiteReferralRate(site.Id, owner.Id, "1.01"))
 	require.NoError(t, SaveAdtyOwnerSiteReferralRate(site.Id, owner.Id, "0.08"))
 	var stored model.AdtySiteReferralRate
 	require.NoError(t, db.First(&stored, site.Id).Error)
@@ -85,7 +85,6 @@ func TestSiteInviteBindsOnlyNewCustomersOnTheSameSite(t *testing.T) {
 	owner := referralUser(t, db, "sref-bind-owner")
 	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "sref-bind", Status: model.AdtySiteStatusActive}
 	require.NoError(t, db.Create(&site).Error)
-	require.NoError(t, SaveAdtySiteReferralCap("0.20"))
 	require.NoError(t, SaveAdtyOwnerSiteReferralRate(site.Id, owner.Id, "0.05"))
 
 	inviter := referralUser(t, db, "sref-inviter")

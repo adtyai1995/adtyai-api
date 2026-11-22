@@ -31,7 +31,7 @@ var adtySiteEarningDayFn = func() string {
 			return time.Now().In(loc).Format("2006-01-02")
 		}
 	}
-	return time.Now().UTC().Format("2006-01-02")
+	return time.Now().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
 }
 
 var adtyImmediateEarningSeq atomic.Uint64
@@ -643,16 +643,9 @@ var ErrAdtySiteTrialUnavailable = common.NewMessage("Trial credit is not availab
 // GrantAdtySiteTrial 站长给自己站的客户送试用额度（11.5）：当场从站长可提现扣除，给客户加额度，
 // trial 行直接记成已结算，结算任务不再取它。可提现不够就拒绝。幂等键重放直接返回上次的发放。
 func GrantAdtySiteTrial(siteId, customerId int, amountUSD decimal.Decimal, idempotencyKey string) (*model.AdtySiteTrialGrant, error) {
-	cfg := resellerSetting()
-	if cfg.TrialGrantMaxUSD == nil || cfg.TrialGrantDailyUSD == nil {
-		return nil, ErrAdtySiteTrialUnavailable
-	}
 	amount := amountUSD.Round(2)
 	if !amount.IsPositive() {
 		return nil, common.NewMessage("Enter an amount")
-	}
-	if amount.GreaterThan(decimal.NewFromFloat(*cfg.TrialGrantMaxUSD)) {
-		return nil, common.NewMessage("A single trial credit can be at most ${{amount}}", map[string]any{"amount": *cfg.TrialGrantMaxUSD})
 	}
 	key := strings.TrimSpace(idempotencyKey)
 	if key == "" || len(key) > 100 {
@@ -668,6 +661,10 @@ func GrantAdtySiteTrial(siteId, customerId int, amountUSD decimal.Decimal, idemp
 	var grant model.AdtySiteTrialGrant
 	replay := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
+			return err
+		}
 		var existing []model.AdtySiteTrialGrant
 		if err := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing).Error; err != nil {
 			return err
@@ -679,12 +676,15 @@ func GrantAdtySiteTrial(siteId, customerId int, amountUSD decimal.Decimal, idemp
 			grant, replay = existing[0], true
 			return nil
 		}
-		var site model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
-			return err
-		}
 		if site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused {
 			return ErrAdtySiteStatus
+		}
+		policy := site.MarketingPolicy
+		if policy.TrialGrantMaxUSD == nil || policy.TrialGrantDailyUSD == nil {
+			return ErrAdtySiteTrialUnavailable
+		}
+		if amount.GreaterThan(*policy.TrialGrantMaxUSD) {
+			return common.NewMessage("A single trial credit can be at most ${{amount}}", map[string]any{"amount": policy.TrialGrantMaxUSD.String()})
 		}
 		var customers []model.User
 		if err := tx.Select("id", "site_id").Where("id = ? AND site_id = ?", customerId, siteId).Limit(1).Find(&customers).Error; err != nil {
@@ -701,8 +701,8 @@ func GrantAdtySiteTrial(siteId, customerId int, amountUSD decimal.Decimal, idemp
 		if err := tx.Model(&model.AdtySiteTrialGrant{}).Select("COALESCE(SUM(amount_usd),0) AS total").Where("site_id = ? AND day = ?", siteId, day).Scan(&granted).Error; err != nil {
 			return err
 		}
-		if granted.Total.Add(amount).GreaterThan(decimal.NewFromFloat(*cfg.TrialGrantDailyUSD)) {
-			return common.NewMessage("Today's trial credit limit of ${{amount}} has been reached", map[string]any{"amount": *cfg.TrialGrantDailyUSD})
+		if granted.Total.Add(amount).GreaterThan(*policy.TrialGrantDailyUSD) {
+			return common.NewMessage("Today's trial credit limit of ${{amount}} has been reached", map[string]any{"amount": policy.TrialGrantDailyUSD.String()})
 		}
 		debited := tx.Model(&model.ReferralCommissionAccount{}).
 			Where("id = ? AND available_amount >= ?", account.Id, moneyF(amount)).

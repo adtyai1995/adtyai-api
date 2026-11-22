@@ -239,12 +239,7 @@ func GetAdtyOwnerBalanceRequests(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rows, err := service.ListStaffBalanceRequests(site.Id)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	listOwnerBalanceRequestPage(c, site.Id)
 }
 
 func GetAdtyAdminBalanceRequests(c *gin.Context) {
@@ -257,12 +252,17 @@ func GetAdtyAdminBalanceRequests(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	rows, err := service.ListStaffBalanceRequests(siteID)
+	listOwnerBalanceRequestPage(c, siteID)
+}
+
+func listOwnerBalanceRequestPage(c *gin.Context, siteID int) {
+	page := common.GetPageQuery(c)
+	rows, total, err := service.PageStaffBalanceRequests(siteID, c.Query("status"), page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	common.ApiSuccess(c, gin.H{"items": rows, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
 func PostAdtyStaffBalanceRequest(c *gin.Context) {

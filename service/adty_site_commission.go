@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -27,21 +28,22 @@ type adtySiteCommissionPolicy struct {
 }
 
 type adtySiteCommissionOrderSnapshot struct {
-	Captured        bool            `json:"captured"`
-	Eligible        bool            `json:"eligible"`
-	Enabled         bool            `json:"enabled"`
-	SiteId          int             `json:"site_id"`
-	PayerTeamId     int64           `json:"payer_team_id"`
-	InviterId       int             `json:"inviter_id"`
-	InviteeId       int             `json:"invitee_id"`
-	FaceUSD         decimal.Decimal `json:"face_usd"`
-	Rate            decimal.Decimal `json:"rate"`
-	AmountUSD       decimal.Decimal `json:"amount_usd"`
-	ObservationDays int64           `json:"observation_days"`
-	CreatedAt       int64           `json:"created_at"`
+	Captured           bool             `json:"captured"`
+	Eligible           bool             `json:"eligible"`
+	Enabled            bool             `json:"enabled"`
+	SiteId             int              `json:"site_id"`
+	PayerTeamId        int64            `json:"payer_team_id"`
+	InviterId          int              `json:"inviter_id"`
+	InviteeId          int              `json:"invitee_id"`
+	FaceUSD            decimal.Decimal  `json:"face_usd"`
+	Rate               decimal.Decimal  `json:"rate"`
+	AmountUSD          decimal.Decimal  `json:"amount_usd"`
+	PendingCoverageCap *decimal.Decimal `json:"pending_coverage_cap,omitempty"`
+	ObservationDays    int64            `json:"observation_days"`
+	CreatedAt          int64            `json:"created_at"`
 }
 
-func loadAdtySiteCommissionPolicyTx(tx *gorm.DB) (adtySiteCommissionPolicy, error) {
+func loadLegacySiteCommissionPolicyTx(tx *gorm.DB) (adtySiteCommissionPolicy, error) {
 	var rows []model.Option
 	if err := tx.Where("key IN ?", []string{adtySiteCommissionCapKey, adtySiteCommissionDaysKey}).Find(&rows).Error; err != nil {
 		return adtySiteCommissionPolicy{}, err
@@ -60,7 +62,7 @@ func loadAdtySiteCommissionPolicyTx(tx *gorm.DB) (adtySiteCommissionPolicy, erro
 		return adtySiteCommissionPolicy{}, ErrAdtySiteReferralUnset
 	}
 	days, err := decimal.NewFromString(daysRaw)
-	if err != nil || !days.Equal(days.Truncate(0)) || !days.IsPositive() {
+	if err != nil || !days.IsInteger() || !days.IsPositive() || days.GreaterThan(decimal.NewFromInt(math.MaxInt32)) {
 		return adtySiteCommissionPolicy{}, ErrAdtySiteReferralUnset
 	}
 	return adtySiteCommissionPolicy{Cap: capVal, Days: days.IntPart()}, nil
@@ -108,24 +110,27 @@ func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, 
 		if lookup.Error != nil {
 			return lookup.Error
 		}
-		if lookup.RowsAffected > 0 && invite.InviterId > 0 && invite.InviterId != userID && invite.Rate.IsPositive() {
+		if lookup.RowsAffected > 0 && invite.InviterId > 0 && invite.InviterId != userID {
 			if ext.CreatedAt <= 0 || invite.CreatedAt <= 0 || invite.CreatedAt <= ext.CreatedAt {
 				snap.InviterId = invite.InviterId
-				snap.Rate = invite.Rate
 			}
 		}
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+			return err
+		}
 		var siteRate model.AdtySiteReferralRate
-		rateLookup := model.AdtyLockForUpdate(tx).Where("site_id = ?", siteID).Limit(1).Find(&siteRate)
+		rateLookup := tx.Where("site_id = ?", siteID).Limit(1).Find(&siteRate)
 		if rateLookup.Error != nil {
 			return rateLookup.Error
 		}
 		snap.Enabled = rateLookup.RowsAffected > 0 && siteRate.Enabled
-		if policy, err := loadAdtySiteCommissionPolicyTx(tx); err == nil {
-			snap.ObservationDays = policy.Days
-		} else if !errors.Is(err, ErrAdtySiteReferralUnset) {
-			return err
+		snap.Rate = siteRate.Rate
+		snap.PendingCoverageCap = site.MarketingPolicy.PendingCoverageCap
+		if site.MarketingPolicy.ObservationDays != nil {
+			snap.ObservationDays = *site.MarketingPolicy.ObservationDays
 		}
-		if snap.Enabled && snap.InviterId > 0 && snap.Rate.IsPositive() {
+		if snap.Enabled && snap.PendingCoverageCap != nil && site.MarketingPolicy.ObservationDays != nil && snap.InviterId > 0 && snap.Rate.IsPositive() {
 			amount := SiteInviteCommissionUSD(ext.FaceUSD, snap.Rate)
 			if amount.IsPositive() {
 				snap.AmountUSD = amount
@@ -150,67 +155,6 @@ func loadAdtySiteCommissionOrderSnapshotTx(ext *model.AdtyTopupOrder) (adtySiteC
 		return adtySiteCommissionOrderSnapshot{}, false, err
 	}
 	return snap, snap.Captured, nil
-}
-
-// SaveAdtySiteCommissionPolicy stores Root's pending-coverage cap and observation days.
-// Both must be positive. No default is written.
-func SaveAdtySiteCommissionPolicy(capRaw, daysRaw string) error {
-	cap, err := decimal.NewFromString(strings.TrimSpace(capRaw))
-	if err != nil || !cap.IsPositive() {
-		return common.NewMessage("Invalid parameters")
-	}
-	days, err := decimal.NewFromString(strings.TrimSpace(daysRaw))
-	if err != nil || !days.Equal(days.Truncate(0)) || !days.IsPositive() {
-		return common.NewMessage("Invalid parameters")
-	}
-	return model.UpdateOptionsBulk(map[string]string{
-		adtySiteCommissionCapKey:  cap.String(),
-		adtySiteCommissionDaysKey: days.String(),
-	})
-}
-
-// AdtySiteCommissionPolicyView is blank until Root saves both values.
-type AdtySiteCommissionPolicyView struct {
-	Configured         bool   `json:"configured"`
-	PendingCoverageCap string `json:"pending_coverage_cap,omitempty"`
-	ObservationDays    string `json:"observation_days,omitempty"`
-}
-
-// LoadAdtySiteCommissionPolicy reports the saved cap and observation days.
-func LoadAdtySiteCommissionPolicy() (AdtySiteCommissionPolicyView, error) {
-	policy, err := loadAdtySiteCommissionPolicy()
-	if errors.Is(err, ErrAdtySiteReferralUnset) {
-		return AdtySiteCommissionPolicyView{}, nil
-	}
-	if err != nil {
-		return AdtySiteCommissionPolicyView{}, err
-	}
-	return AdtySiteCommissionPolicyView{
-		Configured: true, PendingCoverageCap: policy.Cap.String(), ObservationDays: decimal.NewFromInt(policy.Days).String(),
-	}, nil
-}
-
-func loadAdtySiteCommissionPolicy() (adtySiteCommissionPolicy, error) {
-	capRaw, capOK, err := model.ReadOptionFromDB(adtySiteCommissionCapKey)
-	if err != nil {
-		return adtySiteCommissionPolicy{}, err
-	}
-	daysRaw, daysOK, err := model.ReadOptionFromDB(adtySiteCommissionDaysKey)
-	if err != nil {
-		return adtySiteCommissionPolicy{}, err
-	}
-	if !capOK || !daysOK || strings.TrimSpace(capRaw) == "" || strings.TrimSpace(daysRaw) == "" {
-		return adtySiteCommissionPolicy{}, ErrAdtySiteReferralUnset
-	}
-	cap, err := decimal.NewFromString(strings.TrimSpace(capRaw))
-	if err != nil || !cap.IsPositive() {
-		return adtySiteCommissionPolicy{}, ErrAdtySiteReferralUnset
-	}
-	days, err := decimal.NewFromString(strings.TrimSpace(daysRaw))
-	if err != nil || !days.Equal(days.Truncate(0)) || !days.IsPositive() {
-		return adtySiteCommissionPolicy{}, ErrAdtySiteReferralUnset
-	}
-	return adtySiteCommissionPolicy{Cap: cap, Days: days.IntPart()}, nil
 }
 
 // SaveAdtySiteInviteBatchPolicy stores a separate Root threshold for site invite binds.
@@ -325,7 +269,7 @@ func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, no
 		row := model.AdtySiteInviteCommission{
 			SiteId: snap.SiteId, InviterId: snap.InviterId, InviteeId: snap.InviteeId, TradeNo: ext.TradeNo,
 			FaceUSD: snap.FaceUSD, Rate: snap.Rate, AmountUSD: snap.AmountUSD, Status: model.AdtySiteCommissionPendingCoverage,
-			ObservationDays: snap.ObservationDays, CreatedAt: now.Unix(),
+			PendingCoverageCap: snap.PendingCoverageCap, ObservationDays: snap.ObservationDays, CreatedAt: now.Unix(),
 		}
 		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
 	}
@@ -348,7 +292,7 @@ func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, no
 	if rateLookup.Error != nil {
 		return rateLookup.Error
 	}
-	if rateLookup.RowsAffected == 0 || !siteRate.Enabled {
+	if rateLookup.RowsAffected == 0 || siteRate.LegacyEnabled == nil || !*siteRate.LegacyEnabled {
 		return nil
 	}
 	amount := SiteInviteCommissionUSD(ext.FaceUSD, invite.Rate)
@@ -356,7 +300,9 @@ func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, no
 		return nil
 	}
 	var observationDays int64
-	if policy, err := loadAdtySiteCommissionPolicyTx(tx); err == nil {
+	var pendingCap *decimal.Decimal
+	if policy, err := loadLegacySiteCommissionPolicyTx(tx); err == nil {
+		pendingCap = &policy.Cap
 		observationDays = policy.Days
 	} else if !errors.Is(err, ErrAdtySiteReferralUnset) {
 		return err
@@ -364,7 +310,7 @@ func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, no
 	row := model.AdtySiteInviteCommission{
 		SiteId: ext.SiteId, InviterId: invite.InviterId, InviteeId: ext.UserId, TradeNo: ext.TradeNo,
 		FaceUSD: ext.FaceUSD, Rate: invite.Rate, AmountUSD: amount, Status: model.AdtySiteCommissionPendingCoverage,
-		ObservationDays: observationDays, CreatedAt: now.Unix(),
+		PendingCoverageCap: pendingCap, ObservationDays: observationDays, CreatedAt: now.Unix(),
 	}
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
 }
@@ -409,19 +355,44 @@ func ResumeAdtySiteInviteCoverage(siteID int, now time.Time) error {
 }
 
 func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resume bool) error {
-	policy, err := loadAdtySiteCommissionPolicyTx(tx)
-	if errors.Is(err, ErrAdtySiteReferralUnset) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
 	var row model.AdtySiteInviteCommission
 	if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 		return err
 	}
 	if row.Status != model.AdtySiteCommissionPendingCoverage {
 		return nil
+	}
+	// Serialize the site-wide backlog check with concurrent coverage attempts.
+	var site model.AdtySite
+	if err := model.AdtyLockForUpdate(tx).First(&site, row.SiteId).Error; err != nil {
+		return err
+	}
+	cap := row.PendingCoverageCap
+	days := row.ObservationDays
+	if cap == nil {
+		// Pre-upgrade snapshots did not record a threshold. Preserve the legacy
+		// terms where available. An originally unconfigured hold can be funded
+		// once the owner supplies the missing conditions.
+		legacy, err := loadLegacySiteCommissionPolicyTx(tx)
+		if err == nil {
+			cap = &legacy.Cap
+			if days == 0 {
+				days = legacy.Days
+			}
+		} else if errors.Is(err, ErrAdtySiteReferralUnset) {
+			cap = site.MarketingPolicy.PendingCoverageCap
+			if cap == nil || (days == 0 && site.MarketingPolicy.ObservationDays == nil) {
+				return nil
+			}
+			if days == 0 {
+				days = *site.MarketingPolicy.ObservationDays
+			}
+		} else {
+			return err
+		}
+		if err := tx.Model(&row).Updates(map[string]any{"pending_coverage_cap": cap, "observation_days": days}).Error; err != nil {
+			return err
+		}
 	}
 	if !resume {
 		var pending decimal.Decimal
@@ -430,16 +401,8 @@ func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resum
 			Select("COALESCE(SUM(amount_usd - clawed_usd - covered_usd + recovered_usd), 0)").Scan(&pending).Error; err != nil {
 			return err
 		}
-		if !pending.LessThan(policy.Cap) {
+		if !pending.LessThan(*cap) {
 			return nil
-		}
-	}
-	days := row.ObservationDays
-	if days <= 0 {
-		days = policy.Days
-		row.ObservationDays = days
-		if err := tx.Model(&row).Update("observation_days", days).Error; err != nil {
-			return err
 		}
 	}
 	if !row.AmountUSD.Sub(row.ClawedUSD).IsPositive() {
@@ -474,9 +437,13 @@ func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resum
 }
 
 func freezeSiteCommissionMarginTx(tx *gorm.DB, siteID int, need decimal.Decimal, tradeNo string) (decimal.Decimal, error) {
-	allowedBusiness, err := SiteCommissionMarginAllowed(siteID)
-	if err != nil || !allowedBusiness || !need.IsPositive() {
-		return decimal.Zero, err
+	if !need.IsPositive() {
+		return decimal.Zero, nil
+	}
+	var authorization model.Option
+	lookup := tx.Where("key = ?", commissionMarginOptionKey(siteID)).Limit(1).Find(&authorization)
+	if lookup.Error != nil || strings.TrimSpace(authorization.Value) != "1" {
+		return decimal.Zero, lookup.Error
 	}
 	var wallet model.AdtySiteWallet
 	if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).First(&wallet).Error; err != nil {
@@ -568,6 +535,9 @@ func applySiteCommissionFreezeTx(tx *gorm.DB, siteID int, kind, tradeNo string, 
 
 func markSiteCommissionCovered(tx *gorm.DB, row *model.AdtySiteInviteCommission, now time.Time, days int64) error {
 	row.Status = model.AdtySiteCommissionCovered
+	if days == 0 {
+		row.Status = model.AdtySiteCommissionAvailable
+	}
 	row.CoveredAt = now.Unix()
 	row.AvailableAt = now.Unix() + days*86400
 	row.CoveredUSD = siteCommissionNetTargetUSD(row)

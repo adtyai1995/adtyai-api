@@ -24,20 +24,12 @@ import type {
 } from '../types'
 
 /** Money keys: no built-in value, null until set (convention I). */
-export const MONEY_KEYS = [
-  'cost_factor',
-  'min_cost_factor',
-  'max_markup',
-  'trial_grant_max_usd',
-  'trial_grant_daily_usd',
-] as const
+export const MONEY_KEYS = ['cost_factor', 'min_cost_factor'] as const
 export type MoneyKey = (typeof MONEY_KEYS)[number]
 
 /** Rules with a starting value, editable. */
 export const RULE_KEYS = [
   'markup_increase_delay_hours',
-  'settle_hour',
-  'freeze_days',
   'close_notice_days',
   'fingerprint_window_days',
   'customer_lookup_per_hour',

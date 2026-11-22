@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
+import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
@@ -29,6 +29,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -39,9 +40,70 @@ import {
   saveOwnerSiteReferral,
   saveOwnerSiteReferralEnabled,
   siteOwnerKeys,
+  type SiteMarketingField,
+  type SiteReferralView,
 } from '../api'
 
-/** Owner configuration for one-level site invites. Amounts come from Root and the owner, never from this page. */
+type PolicyField = { key: SiteMarketingField; label: string; integer?: boolean }
+
+function MarketingFields(props: {
+  title: string
+  description: string
+  fields: PolicyField[]
+  policy: SiteReferralView
+}) {
+  const { t } = useTranslation()
+  const client = useQueryClient()
+  const [draft, setDraft] = useState<
+    Partial<Record<SiteMarketingField, string>>
+  >({})
+  const save = useMutation({
+    mutationFn: () => saveOwnerSiteReferral(draft),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      setDraft({})
+      toast.success(t('Saved successfully'))
+    },
+    onError: (error) => handleServerError(error),
+  })
+  return (
+    <form
+      className='space-y-3'
+      onSubmit={(event) => {
+        event.preventDefault()
+        save.mutate()
+      }}
+    >
+      <h3 className='text-sm font-medium'>{props.title}</h3>
+      <p className='text-muted-foreground text-sm'>{props.description}</p>
+      <div className='grid gap-3 sm:grid-cols-3'>
+        {props.fields.map(({ key, label, integer }) => (
+          <div key={key} className='space-y-1'>
+            <Label htmlFor={`site-policy-${key}`}>{label}</Label>
+            <Input
+              id={`site-policy-${key}`}
+              type='number'
+              min='0'
+              step={integer ? '1' : 'any'}
+              value={draft[key] ?? props.policy[key] ?? ''}
+              onChange={(event) =>
+                setDraft({ ...draft, [key]: event.target.value })
+              }
+            />
+          </div>
+        ))}
+      </div>
+      <Button
+        type='submit'
+        variant='outline'
+        disabled={save.isPending || Object.keys(draft).length === 0}
+      >
+        {t('Save')}
+      </Button>
+    </form>
+  )
+}
+
 export function SiteReferralPanel() {
   const { t } = useTranslation()
   const client = useQueryClient()
@@ -53,18 +115,8 @@ export function SiteReferralPanel() {
     queryKey: siteOwnerKeys.list('site-invites', {}),
     queryFn: getOwnerSiteInvites,
   })
-  const [rate, setRate] = useState('')
   const [inviterId, setInviterId] = useState('')
   const [inviteeId, setInviteeId] = useState('')
-  const save = useMutation({
-    mutationFn: () => saveOwnerSiteReferral(rate.trim()),
-    onSuccess: () => {
-      setRate('')
-      void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
-      void invalidateSidebarBadges(client)
-    },
-    onError: (error) => handleServerError(error),
-  })
   const enable = useMutation({
     mutationFn: (enabled: boolean) => saveOwnerSiteReferralEnabled(enabled),
     onSuccess: () => {
@@ -82,8 +134,7 @@ export function SiteReferralPanel() {
     onError: (error) => handleServerError(error),
   })
   const bind = useMutation({
-    mutationFn: () =>
-      bindOwnerSiteInvite(Number(inviterId), Number(inviteeId)),
+    mutationFn: () => bindOwnerSiteInvite(Number(inviterId), Number(inviteeId)),
     onSuccess: () => {
       setInviterId('')
       setInviteeId('')
@@ -115,53 +166,70 @@ export function SiteReferralPanel() {
       </div>
       {rules.isPending && <LoadingState />}
       {rules.isError && <ErrorState onRetry={() => void rules.refetch()} />}
-      {rules.data && !rules.data.cap_configured && (
-        <p className='text-sm'>{t('The referral cap is not configured')}</p>
-      )}
-      {rules.data?.cap_configured && (
-        <div className='flex flex-col gap-3'>
-          <p className='text-sm tabular-nums'>
-            {t('Maximum invite rate')} {rules.data.max_rate}
-          </p>
-          {rules.data.rate_configured && (
-            <p className='text-sm tabular-nums'>
-              {t('Invite rate')} {rules.data.rate}
-            </p>
-          )}
-          {rules.data.rate_configured && (
-            <div className='flex items-center justify-between gap-4'>
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor='site-referral-enabled'>{t('Invite commission')}</Label>
-                <span className='text-muted-foreground text-sm'>
-                  {t('New top-ups do not create commission while this is off.')}
-                </span>
-              </div>
-              <Switch
-                id='site-referral-enabled'
-                checked={rules.data.enabled === true}
-                disabled={enable.isPending}
-                onCheckedChange={(value) => enable.mutate(value)}
-              />
-            </div>
-          )}
-          <div className='flex flex-col gap-1'>
-            <Label htmlFor='site-invite-rate'>{t('Invite rate')}</Label>
-            <Input
-              id='site-invite-rate'
-              value={rate}
-              inputMode='decimal'
-              autoComplete='off'
-              onChange={(event) => setRate(event.target.value)}
+      {rules.data && (
+        <div className='flex flex-col gap-5'>
+          <MarketingFields
+            title={t('Commission coverage')}
+            description={t(
+              'New orders use these terms. Zero observation days makes fully covered commission available immediately.'
+            )}
+            policy={rules.data}
+            fields={[
+              { key: 'rate', label: t('Invite rate (0 to 1)') },
+              {
+                key: 'pending_coverage_cap',
+                label: t('Pending coverage cap (USD)'),
+              },
+              {
+                key: 'observation_days',
+                label: t('Observation days'),
+                integer: true,
+              },
+            ]}
+          />
+          <div className='flex items-center gap-3'>
+            <Switch
+              id='site-referral-enabled'
+              checked={rules.data.enabled === true}
+              disabled={enable.isPending}
+              onCheckedChange={(value) => enable.mutate(value)}
             />
+            <Label htmlFor='site-referral-enabled'>
+              {t('Invite commission')}
+            </Label>
           </div>
-          <Button
-            type='button'
-            variant='outline'
-            disabled={save.isPending || rate.trim() === ''}
-            onClick={() => save.mutate()}
-          >
-            {t('Save')}
-          </Button>
+          <MarketingFields
+            title={t('Invite commission withdrawal')}
+            description={t(
+              'The site owner reviews customer cash withdrawals. Leave all three fields empty to turn off cash withdrawals.'
+            )}
+            policy={rules.data}
+            fields={[
+              { key: 'min_usd', label: t('Minimum withdrawal (USD)') },
+              { key: 'fee_usd', label: t('USDT fee (USD)') },
+              {
+                key: 'cny_rate',
+                label: t('CNY withdrawal rate (1 USD = ? CNY)'),
+              },
+            ]}
+          />
+          <MarketingFields
+            title={t('Trial credit budget')}
+            description={t(
+              'Set both limits to grant trial credit from your withdrawable referral commission.'
+            )}
+            policy={rules.data}
+            fields={[
+              {
+                key: 'trial_grant_max_usd',
+                label: t('Trial credit per grant (USD)'),
+              },
+              {
+                key: 'trial_grant_daily_usd',
+                label: t('Trial credit per day (USD)'),
+              },
+            ]}
+          />
           <div className='grid gap-3 sm:grid-cols-2'>
             <div className='flex flex-col gap-1'>
               <Label htmlFor='site-inviter'>{t('Inviter')}</Label>
@@ -208,16 +276,20 @@ export function SiteReferralPanel() {
             {
               id: 'inviter',
               header: t('Inviter'),
-              cell: (row) => <span className='tabular-nums'>{row.inviter_id}</span>,
+              cell: (row) => (
+                <span className='tabular-nums'>{row.inviter_id}</span>
+              ),
             },
             {
               id: 'invitee',
               header: t('Invitee'),
-              cell: (row) => <span className='tabular-nums'>{row.invitee_id}</span>,
+              cell: (row) => (
+                <span className='tabular-nums'>{row.invitee_id}</span>
+              ),
             },
             {
               id: 'rate',
-              header: t('Invite rate'),
+              header: t('Rate at binding'),
               cell: (row) => <span className='tabular-nums'>{row.rate}</span>,
             },
           ]}

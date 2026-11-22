@@ -32,6 +32,8 @@ import {
   newRowKey,
   pendingIncreases,
   siteMarkups,
+  retailOverrideChanges,
+  validRetailMarkup,
   type PendingIncrease,
 } from '../lib/site-owner'
 import type { OwnerSite } from '../types'
@@ -55,8 +57,6 @@ export function PricingPanel(props: { site: OwnerSite }) {
   const [defaultMarkup, setDefaultMarkup] = useState('')
   const [rows, setRows] = useState<GroupRow[]>([])
   const [modelRows, setModelRows] = useState<ModelRow[]>([])
-  const [removed, setRemoved] = useState<string[]>([])
-  const [removedModels, setRemovedModels] = useState<string[]>([])
   useEffect(() => {
     const current = siteMarkups(props.site.prices)
     setDefaultMarkup(current.defaultMarkup)
@@ -74,44 +74,60 @@ export function PricingPanel(props: { site: OwnerSite }) {
         markup,
       }))
     )
-    setRemoved([])
-    setRemovedModels([])
   }, [props.site.prices])
   const savedMarkups = siteMarkups(props.site.prices)
-  useDraftNavigation(
-    defaultMarkup !== savedMarkups.defaultMarkup ||
-      removed.length > 0 ||
-      removedModels.length > 0 ||
-      JSON.stringify(
-        Object.fromEntries(rows.map((row) => [row.group, row.markup]))
-      ) !== JSON.stringify(savedMarkups.groups) ||
-      JSON.stringify(
-        Object.fromEntries(modelRows.map((row) => [row.model, row.markup]))
-      ) !== JSON.stringify(savedMarkups.models)
+  const groups = retailOverrideChanges(
+    savedMarkups.groups,
+    rows.map((row) => [row.group, row.markup])
   )
+  const models = retailOverrideChanges(
+    savedMarkups.models,
+    modelRows.map((row) => [row.model, row.markup])
+  )
+  const defaultChanged = defaultMarkup !== savedMarkups.defaultMarkup
+  const dirty =
+    defaultChanged ||
+    Object.keys(groups).length > 0 ||
+    Object.keys(models).length > 0
+  const valid =
+    (defaultMarkup === '' || validRetailMarkup(defaultMarkup)) &&
+    rows.every((row) => row.group.trim() && validRetailMarkup(row.markup)) &&
+    modelRows.every(
+      (row) => row.model.trim() && validRetailMarkup(row.markup)
+    ) &&
+    new Set(rows.map((row) => row.group.trim())).size === rows.length &&
+    new Set(modelRows.map((row) => row.model.trim())).size === modelRows.length
+  useDraftNavigation(dirty || !valid)
+  const previews = [
+    ...(defaultChanged
+      ? [
+          {
+            name: t('Default markup'),
+            before: savedMarkups.defaultMarkup || '1',
+            after: defaultMarkup || '1',
+          },
+        ]
+      : []),
+    ...Object.entries(groups).map(([group, value]) => ({
+      name: t('Group: {{group}}', { group }),
+      before: savedMarkups.groups[group] || savedMarkups.defaultMarkup || '1',
+      after: value === '0' ? defaultMarkup || '1' : value,
+    })),
+    ...Object.entries(models).map(([model, value]) => ({
+      name: t('Model: {{model}}', { model }),
+      before: savedMarkups.models[model] || savedMarkups.defaultMarkup || '1',
+      after: value === '0' ? defaultMarkup || '1' : value,
+    })),
+  ]
   const pending = pendingIncreases(props.site.prices)
   const save = useVerifiedOwnerMutation<void>({
     action: 'pricing',
     target: () => 0,
     run: (_vars, proof) => {
-      const groups: Record<string, string> = {}
-      for (const row of rows) {
-        if (row.group.trim() && row.markup) {
-          groups[row.group.trim()] = row.markup
-        }
-      }
-      // "0" asks the server to drop a group's own price.
-      for (const group of removed) groups[group] = '0'
-      const models: Record<string, string> = {}
-      for (const row of modelRows) {
-        if (row.model.trim() && row.markup) {
-          models[row.model.trim()] = row.markup
-        }
-      }
-      for (const model of removedModels) models[model] = '0'
       return savePricing(
         {
-          default_markup: defaultMarkup || undefined,
+          default_markup: defaultChanged && defaultMarkup ? defaultMarkup : undefined,
+          clear_default: defaultChanged && !defaultMarkup ? true : undefined,
           group_markups: groups,
           model_markups: models,
           expected_version: props.site.pricing_version,
@@ -121,30 +137,18 @@ export function PricingPanel(props: { site: OwnerSite }) {
     },
   })
   const closing = props.site.status === 'closing'
-  const markupMin = Number(props.site.markup_min)
-  const markupMinAttr = Number.isFinite(markupMin) ? markupMin : 0
 
   return (
     <div className='flex flex-col gap-4'>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Customers pay the main site price times your markup. Lowering a markup applies at once; raising it applies after {{hours}} hours, and customers are told by email.',
-          { hours: props.site.markup_increase_delay_hours }
+          'Retail price equals supply price times your multiplier. Your supply cost factor is {{cost}}.',
+          { cost: props.site.cost_factor }
         )}
       </p>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Removing an independent model markup restores the global markup immediately.'
-        )}
-      </p>
-      <p className='text-muted-foreground text-sm'>
-        {t(
-          'Allowed markup: {{min}} to {{max}}. Your cost factor is {{cost}}.',
-          {
-            min: props.site.markup_min,
-            max: props.site.markup_max || '—',
-            cost: props.site.cost_factor,
-          }
+          'Saving a price or removing an override takes effect for new requests immediately. Requests and tasks already accepted keep their original price.'
         )}
       </p>
       {closing && (
@@ -155,8 +159,13 @@ export function PricingPanel(props: { site: OwnerSite }) {
         </Alert>
       )}
       {pending.length > 0 && (
-        <section aria-label={t('Pending increases')} className='space-y-1'>
-          <h3 className='text-sm font-medium'>{t('Pending increases')}</h3>
+        <section
+          aria-label={t('Previously scheduled price changes')}
+          className='space-y-1'
+        >
+          <h3 className='text-sm font-medium'>
+            {t('Previously scheduled price changes')}
+          </h3>
           <ul className='text-sm'>
             {pending.map((item) => (
               <li
@@ -166,7 +175,8 @@ export function PricingPanel(props: { site: OwnerSite }) {
                 {t('{{group}}: {{current}} → {{next}} from {{time}}', {
                   group: pendingIncreaseGroupLabel(item, t),
                   current: item.current,
-                  next: item.next,
+                  next:
+                    Number(item.next) > 0 ? item.next : t('Inherited price'),
                   time: formatTimestamp(item.at),
                 })}
               </li>
@@ -178,9 +188,10 @@ export function PricingPanel(props: { site: OwnerSite }) {
         <Label htmlFor='default-markup'>{t('Default markup')}</Label>
         <Input
           id='default-markup'
+          placeholder='1'
           type='number'
-          min={markupMinAttr}
-          step='0.01'
+          min='0.0001'
+          step='0.0001'
           value={defaultMarkup}
           disabled={closing}
           onChange={(event) => setDefaultMarkup(event.target.value)}
@@ -212,8 +223,8 @@ export function PricingPanel(props: { site: OwnerSite }) {
               <Input
                 id={`group-markup-${index}`}
                 type='number'
-                min={markupMinAttr}
-                step='0.01'
+                min='0.0001'
+                step='0.0001'
                 value={row.markup}
                 disabled={closing}
                 onChange={(event) =>
@@ -231,9 +242,6 @@ export function PricingPanel(props: { site: OwnerSite }) {
               variant='outline'
               disabled={closing}
               onClick={() => {
-                if (row.group.trim()) {
-                  setRemoved((prev) => [...prev, row.group.trim()])
-                }
                 setRows((prev) => prev.filter((_, i) => i !== index))
               }}
             >
@@ -281,8 +289,8 @@ export function PricingPanel(props: { site: OwnerSite }) {
               <Input
                 id={`model-markup-${index}`}
                 type='number'
-                min={markupMinAttr}
-                step='0.01'
+                min='0.0001'
+                step='0.0001'
                 value={row.markup}
                 disabled={closing}
                 onChange={(event) =>
@@ -300,9 +308,6 @@ export function PricingPanel(props: { site: OwnerSite }) {
               variant='outline'
               disabled={closing}
               onClick={() => {
-                if (row.model.trim()) {
-                  setRemovedModels((prev) => [...prev, row.model.trim()])
-                }
                 setModelRows((prev) => prev.filter((_, i) => i !== index))
               }}
             >
@@ -324,10 +329,31 @@ export function PricingPanel(props: { site: OwnerSite }) {
           {t('Add model')}
         </Button>
       </section>
+      {valid && previews.length > 0 && (
+        <section className='space-y-2' aria-label={t('Price preview')}>
+          <h3 className='text-sm font-medium'>{t('Price preview')}</h3>
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Example retail prices for a $1 supply price. Each override is shown on its own, with the site default as its fallback.'
+            )}
+          </p>
+          <ul className='space-y-1 text-sm tabular-nums'>
+            {previews.map(({ name, before, after }) => (
+              <li key={name}>
+                {t('{{name}}: {{before}} USD → {{after}} USD', {
+                  name,
+                  before,
+                  after,
+                })}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <div>
         <Button
           variant='brand'
-          disabled={closing || save.isPending}
+          disabled={closing || !dirty || !valid || save.isPending}
           onClick={() => save.mutate()}
         >
           {t('Save prices')}

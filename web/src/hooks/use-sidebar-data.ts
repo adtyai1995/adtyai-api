@@ -42,6 +42,7 @@ import {
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { SidebarBadges, SidebarData } from '@/components/layout/types'
 import {
   ORDER_MANAGEMENT_BADGE_KINDS,
   REFERRAL_ADMIN_BADGE_KINDS,
@@ -51,9 +52,7 @@ import {
   TICKET_BADGE_KINDS,
   useSidebarBadges,
 } from '@/hooks/use-sidebar-badges'
-
-import type { SidebarBadges, SidebarData } from '@/components/layout/types'
-import { ADTY_PERMISSIONS } from '@/lib/adty-permissions'
+import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -100,6 +99,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     mixedLabel,
     failedLabel
   )
+  const platformTickets = useAuthStore(
+    (state) =>
+      canAdmin(state.auth.user, ADTY_PERMISSIONS.TICKET_MANAGE) ||
+      canAdmin(state.auth.user, ADTY_PERMISSIONS.TICKET_MANAGE_ALL)
+  )
   const isSiteOwner = useAuthStore(
     (state) => state.auth.user?.adty_site_owner === true
   )
@@ -115,7 +119,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             id: 'personal',
             title: t('Account'),
             items: [
-              { title: t('Staff workspace'), url: '/site-staff', icon: Users, badge: staffWorkspaceBadge },
+              {
+                title: t('Staff workspace'),
+                url: '/site-staff',
+                icon: Users,
+                badge: staffWorkspaceBadge,
+              },
             ],
           },
         ],
@@ -177,6 +186,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
           title: t('Account'),
           items: [
             {
+              title: t('My team'),
+              url: '/my-team',
+              icon: Users,
+            },
+            {
               title: t('Wallet'),
               url: '/wallet',
               icon: Wallet,
@@ -185,7 +199,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               title: t('Tickets'),
               url: '/profile#tickets',
               icon: LifeBuoy,
-              badge: ticketsBadge,
+              badge: platformTickets || isSiteOwner ? undefined : ticketsBadge,
             },
             {
               title: t('Referral'),
@@ -195,6 +209,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             // adty task 11.6: only site owners see the owner center.
             ...(isSiteOwner
               ? [
+                  {
+                    title: t('Ticket workspace'),
+                    url: '/site-owner/tickets',
+                    icon: LifeBuoy,
+                    badge: ticketsBadge,
+                  },
                   {
                     title: t('Site owner center'),
                     url: '/site-owner/overview',
@@ -220,6 +240,16 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
           id: 'admin',
           title: t('Administration'),
           items: [
+            ...(platformTickets
+              ? [
+                  {
+                    title: t('Ticket workspace'),
+                    url: '/site-admin/tickets',
+                    icon: LifeBuoy,
+                    badge: ticketsBadge,
+                  },
+                ]
+              : []),
             {
               title: t('Channels'),
               url: '/channels',
@@ -285,5 +315,17 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         },
       ],
     }
-  }, [t, staffWorkspaceBadge, ticketsBadge, siteOwnerBadge, referralAdminBadge, resellerSitesBadge, orderManagementBadge, isSiteOwner, isStaff, badges.modelPricing])
+  }, [
+    t,
+    platformTickets,
+    staffWorkspaceBadge,
+    ticketsBadge,
+    siteOwnerBadge,
+    referralAdminBadge,
+    resellerSitesBadge,
+    orderManagementBadge,
+    isSiteOwner,
+    isStaff,
+    badges.modelPricing,
+  ])
 }

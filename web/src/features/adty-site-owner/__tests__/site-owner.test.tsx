@@ -17,6 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterContextProvider,
+} from '@tanstack/react-router'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
@@ -134,12 +140,18 @@ function ownerSite(overrides: Partial<OwnerSite> = {}): OwnerSite {
 }
 
 function wrap(node: ReactNode) {
+  const router = createRouter({
+    routeTree: createRootRoute(),
+    history: createMemoryHistory(),
+  })
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return (
     <QueryClientProvider client={client}>
-      <OwnerVerificationProvider>{node}</OwnerVerificationProvider>
+      <RouterContextProvider router={router}>
+        <OwnerVerificationProvider>{node}</OwnerVerificationProvider>
+      </RouterContextProvider>
     </QueryClientProvider>
   )
 }
@@ -317,7 +329,7 @@ describe('PricingPanel', () => {
     const rows = screen.getAllByTestId('pending-increase')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toHaveTextContent('vip: 1.5 → 2')
-    expect(screen.getByText(/after 24 hours/)).toBeInTheDocument()
+    expect(screen.getByText('Previously scheduled price changes')).toBeInTheDocument()
   })
 
   it('shows no pending section when nothing is waiting', () => {
@@ -331,7 +343,7 @@ describe('PricingPanel', () => {
     })
     render(wrap(<PricingPanel site={ownerSite()} />))
     const field = screen.getByLabelText('Default markup')
-    expect(field).toHaveAttribute('min', '0')
+    expect(field).toHaveAttribute('min', '0.0001')
     await userEvent.clear(field)
     await userEvent.type(field, '0.8')
     await userEvent.click(screen.getByRole('button', { name: 'Save prices' }))
@@ -341,7 +353,7 @@ describe('PricingPanel', () => {
         'proof-k'
       )
     )
-    expect(screen.getByText(/Allowed markup: 0 to 3/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', {name:'Price preview'})).toBeInTheDocument()
   })
 
   it('sends the proof for site-wide pricing with the current version', async () => {
@@ -369,6 +381,8 @@ describe('PricingPanel', () => {
   it('does not save when the owner cancels the verification', async () => {
     verification.requestVerification.mockResolvedValue(null)
     render(wrap(<PricingPanel site={ownerSite()} />))
+    await userEvent.clear(screen.getByLabelText('Default markup'))
+    await userEvent.type(screen.getByLabelText('Default markup'), '1.1')
     await userEvent.click(screen.getByRole('button', { name: 'Save prices' }))
     await waitFor(() =>
       expect(verification.requestVerification).toHaveBeenCalled()
@@ -378,7 +392,6 @@ describe('PricingPanel', () => {
 
   it('does not lock the form for a leftover paused site', () => {
     render(wrap(<PricingPanel site={ownerSite({ status: 'paused' })} />))
-    expect(screen.getByRole('button', { name: 'Save prices' })).toBeEnabled()
     expect(screen.getByLabelText('Default markup')).toBeEnabled()
   })
 
@@ -459,6 +472,10 @@ describe('OverviewPanel', () => {
     })
     render(wrap(<OverviewPanel />))
     expect(await screen.findByText('Customer spend')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Invite commission withdrawal/ }))
+      .toHaveAttribute('href', '/site-owner/commissions#pending')
+    expect(screen.getByRole('link', { name: /Balance requests/ }))
+      .toHaveAttribute('href', '/site-owner/staff#pending')
     expect(screen.getByText('New customers')).toBeInTheDocument()
     expect(screen.getByText('Paying customers')).toBeInTheDocument()
     expect(screen.getByText('$12.00')).toBeInTheDocument()

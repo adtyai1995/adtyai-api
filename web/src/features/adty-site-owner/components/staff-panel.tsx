@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table'
@@ -39,6 +38,7 @@ import {
   type StaffBalanceRequest,
 } from '@/features/adty-site-staff/api'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -74,9 +74,15 @@ export function StaffPanel(props: { siteId: number }) {
     action: 'status' | 'delete'
   } | null>(null)
   const client = useQueryClient()
+  const [requestPage, setRequestPage] = useState(1)
+  const [requestStatus, setRequestStatus] = useState('pending')
   const requests = useQuery({
-    queryKey: siteOwnerKeys.list('balance-requests', { siteId: props.siteId }),
-    queryFn: getOwnerBalanceRequests,
+    queryKey: siteOwnerKeys.list('balance-requests', {
+      siteId: props.siteId,
+      requestPage,
+      requestStatus,
+    }),
+    queryFn: () => getOwnerBalanceRequests(requestPage, requestStatus),
   })
   const review = useMutation({
     mutationFn: (input: { id: number; approve: boolean }) =>
@@ -225,19 +231,37 @@ export function StaffPanel(props: { siteId: number }) {
         </>
       )}
       <div className='flex flex-col gap-2'>
-        <h2 className='text-lg font-medium'>{t('Balance requests')}</h2>
+        <h2 id='pending' className='text-lg font-medium'>
+          {t('Balance requests')}
+        </h2>
         <p className='text-muted-foreground text-sm'>
           {t(
             'This request does not change the customer balance until the site owner or Root approves it.'
           )}
         </p>
+        <select
+          className='w-fit rounded-md border p-2'
+          aria-label={t('Status')}
+          value={requestStatus}
+          onChange={(e) => {
+            setRequestStatus(e.target.value)
+            setRequestPage(1)
+          }}
+        >
+          <option value=''>{t('All statuses')}</option>
+          {(['pending', 'approved', 'rejected'] as const).map((status) => (
+            <option key={status} value={status}>
+              {staffRequestStatusLabel(status, t)}
+            </option>
+          ))}
+        </select>
         {requests.isPending && <Skeleton className='h-24' />}
         {requests.isError && (
           <ErrorState onRetry={() => void requests.refetch()} />
         )}
         {requests.isSuccess && (
           <StaticDataTable
-            data={requests.data}
+            data={requests.data.items}
             getRowKey={(row) => row.id}
             tableProps={{ 'aria-label': t('Balance requests') }}
             emptyContent={<EmptyState title={t('No data')} />}
@@ -272,12 +296,28 @@ export function StaffPanel(props: { siteId: number }) {
                 id: 'provenance',
                 header: t('Financial provenance'),
                 cell: (row: StaffBalanceRequest) => (
-                  <div className='max-w-72 space-y-1 break-words text-xs'>
-                    <div>{t('Reason')}: {row.reason || '—'}</div>
-                    <div>{t('Original order')}: {row.order_ref || '—'}</div>
-                    <div>{t('Funding source')}: {staffRequestSourceLabel(row.funding_source, t)}</div>
-                    {row.batch_source && <div>{t('Batch source')}: {row.batch_source} / {row.batch_kind}</div>}
-                    {row.ledger_id ? <div>{t('Ledger ID')}: {row.ledger_id}</div> : null}
+                  <div className='max-w-72 space-y-1 text-xs break-words'>
+                    <div>
+                      {t('Reason')}: {row.reason || '—'}
+                    </div>
+                    <div>
+                      {t('Original order')}: {row.order_ref || '—'}
+                    </div>
+                    <div>
+                      {t('Funding source')}:{' '}
+                      {staffRequestSourceLabel(row.funding_source, t)}
+                    </div>
+                    {row.batch_source && (
+                      <div>
+                        {t('Batch source')}: {row.batch_source} /{' '}
+                        {row.batch_kind}
+                      </div>
+                    )}
+                    {row.ledger_id ? (
+                      <div>
+                        {t('Ledger ID')}: {row.ledger_id}
+                      </div>
+                    ) : null}
                   </div>
                 ),
               },
@@ -317,6 +357,14 @@ export function StaffPanel(props: { siteId: number }) {
                   ),
               },
             ]}
+          />
+        )}
+        {requests.data && (
+          <PageSwitcher
+            page={requestPage}
+            total={requests.data.total}
+            pageSize={STAFF_PAGE_SIZE}
+            onPageChange={setRequestPage}
           />
         )}
       </div>

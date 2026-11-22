@@ -13,7 +13,7 @@ import (
 
 func TestCollectAdtySidebarBadgesConfirmedKindsAndScopes(t *testing.T) {
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.AdtySite{}, &model.AdtySiteStaff{}, &model.AdtyTeam{}, &model.AdtyTeamMember{}))
+	require.NoError(t, db.AutoMigrate(&model.CasbinRule{}, &model.User{}, &model.AdtySite{}, &model.AdtySiteStaff{}, &model.AdtyTeam{}, &model.AdtyTeamMember{}))
 	require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
 	require.NoError(t, model.MigrateAdtyTables())
 
@@ -21,8 +21,8 @@ func TestCollectAdtySidebarBadgesConfirmedKindsAndScopes(t *testing.T) {
 	admin := badgeTestUser(t, db, "badge-admin", common.RoleAdminUser, 0)
 	ownerA := badgeTestUser(t, db, "badge-owner-a", common.RoleCommonUser, 0)
 	ownerB := badgeTestUser(t, db, "badge-owner-b", common.RoleCommonUser, 0)
-	siteA := model.AdtySite{OwnerUserId: ownerA.Id, Subdomain: "badge-site-a", Status: model.AdtySiteStatusActive}
-	siteB := model.AdtySite{OwnerUserId: ownerB.Id, Subdomain: "badge-site-b", Status: model.AdtySiteStatusActive}
+	siteA := model.AdtySite{OwnerUserId: ownerA.Id, Subdomain: "badge-site-a", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
+	siteB := model.AdtySite{OwnerUserId: ownerB.Id, Subdomain: "badge-site-b", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&siteA).Error)
 	require.NoError(t, db.Create(&siteB).Error)
 	require.NoError(t, db.Model(ownerA).Update("site_id", siteA.Id).Error)
@@ -31,8 +31,10 @@ func TestCollectAdtySidebarBadgesConfirmedKindsAndScopes(t *testing.T) {
 
 	staffA := badgeTestUser(t, db, "badge-staff-a", common.RoleCommonUser, siteA.Id)
 	staffB := badgeTestUser(t, db, "badge-staff-b", common.RoleCommonUser, siteB.Id)
-	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: siteA.Id, OwnerUserId: ownerA.Id, UserId: staffA.Id, Role: "support", Status: "enabled", Permissions: `["customers.read"]`}).Error)
-	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: siteB.Id, OwnerUserId: ownerB.Id, UserId: staffB.Id, Role: "support", Status: "enabled", Permissions: `["customers.read"]`}).Error)
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staffA.Id).Updates(map[string]any{"site_id": siteA.Id, "staff_site_id": siteA.Id}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: siteA.Id, OwnerUserId: ownerA.Id, UserId: staffA.Id, Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`}).Error)
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staffB.Id).Updates(map[string]any{"site_id": siteB.Id, "staff_site_id": siteB.Id}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: siteB.Id, OwnerUserId: ownerB.Id, UserId: staffB.Id, Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`}).Error)
 
 	customerA := badgeTestUser(t, db, "badge-customer-a", common.RoleCommonUser, siteA.Id)
 	customerB := badgeTestUser(t, db, "badge-customer-b", common.RoleCommonUser, siteB.Id)
@@ -205,7 +207,7 @@ func TestCollectAdtySidebarBadgesConfirmedKindsAndScopes(t *testing.T) {
 	require.NoError(t, err)
 	_, leaderPending := leaderCounts[AdtyBadgeTicketsPending]
 	assert.False(t, leaderPending)
-	assert.EqualValues(t, 2, leaderCounts[AdtyBadgeTicketsWaitingUser], "team leader scope includes team_id")
+	assert.EqualValues(t, 1, leaderCounts[AdtyBadgeTicketsWaitingUser], "the account ticket badge covers the leader’s own tickets")
 
 	customerACounts, err := CollectAdtySidebarBadges(customerA.Id, nil)
 	require.NoError(t, err)

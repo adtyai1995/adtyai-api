@@ -2,6 +2,7 @@ package controller
 
 import (
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -31,9 +32,21 @@ func adtyOwnedSite(c *gin.Context) (*model.AdtySite, bool) {
 
 type adtySitePricingBody struct {
 	DefaultMarkup   *string           `json:"default_markup"`
+	ClearDefault    bool              `json:"clear_default"`
 	GroupMarkups    map[string]string `json:"group_markups"` // 值为 "0" 表示删掉这个分组的单独价
 	ModelMarkups    map[string]string `json:"model_markups"` // 值为 "0" 表示删掉这个模型的独立加价
 	ExpectedVersion int64             `json:"expected_version"`
+}
+
+// Limit the plain-decimal representation before parsing externally supplied exponents or coefficients.
+var retailMarkupPattern = regexp.MustCompile(`^(?:[0-9]{1,6}(?:\.[0-9]{0,4})?|\.[0-9]{1,4})$`)
+
+func parseRetailMarkup(raw string) (decimal.Decimal, error) {
+	raw = strings.TrimSpace(raw)
+	if !retailMarkupPattern.MatchString(raw) {
+		return decimal.Zero, common.NewMessage("Enter a positive retail multiplier with up to six integer digits and four decimal places")
+	}
+	return decimal.NewFromString(raw)
 }
 
 func saveAdtySitePricing(c *gin.Context, site *model.AdtySite, userId int) {
@@ -42,27 +55,27 @@ func saveAdtySitePricing(c *gin.Context, site *model.AdtySite, userId int) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	input := service.AdtySitePricingInput{SiteId: site.Id, UserId: userId, ActorId: c.GetInt("id"), ExpectedVersion: body.ExpectedVersion, GroupMarkups: map[string]decimal.Decimal{}, ModelMarkups: map[string]decimal.Decimal{}}
+	input := service.AdtySitePricingInput{SiteId: site.Id, UserId: userId, ClearDefault: body.ClearDefault, ActorId: c.GetInt("id"), ExpectedVersion: body.ExpectedVersion, GroupMarkups: map[string]decimal.Decimal{}, ModelMarkups: map[string]decimal.Decimal{}}
 	if body.DefaultMarkup != nil && strings.TrimSpace(*body.DefaultMarkup) != "" {
-		value, err := decimal.NewFromString(strings.TrimSpace(*body.DefaultMarkup))
+		value, err := parseRetailMarkup(*body.DefaultMarkup)
 		if err != nil {
-			common.ApiErrorT(c, "Invalid parameters")
+			common.ApiError(c, err)
 			return
 		}
 		input.DefaultMarkup = &value
 	}
 	for group, raw := range body.GroupMarkups {
-		value, err := decimal.NewFromString(strings.TrimSpace(raw))
+		value, err := parseRetailMarkup(raw)
 		if err != nil {
-			common.ApiErrorT(c, "Invalid parameters")
+			common.ApiError(c, err)
 			return
 		}
 		input.GroupMarkups[group] = value
 	}
 	for modelName, raw := range body.ModelMarkups {
-		value, err := decimal.NewFromString(strings.TrimSpace(raw))
+		value, err := parseRetailMarkup(raw)
 		if err != nil {
-			common.ApiErrorT(c, "Invalid parameters")
+			common.ApiError(c, err)
 			return
 		}
 		input.ModelMarkups[modelName] = value

@@ -2,6 +2,8 @@
 
 给运营人员和以后接手的开发看：每个功能做什么、规则、后台在哪里设置或操作、默认开还是关、相关的表和接口、已知的限制。内容按代码写（main，2026-11-17），每节末尾是对应的实施方案任务号；代码和方案不一致的地方单独写出来。
 
+站长从首页待办进入本站工单、客户佣金提现与员工调额。团队注册和协议价集中在团队管理，团队成员从「我的团队」办理。Root 从主站用户搜索结果确认固定站长，开站后进入该站详情；关站确认列出域名去向，关站扣回收益为零。
+
 几个通用的说明：
 
 - **额度和美元**：余额沿用上游的额度整数，1 美元 = 500000 额度。这个尺度固定，后台保存 `QuotaPerUnit` 时只接受 500000，已存的其他值加载时不生效。下文的算例都用美元写，括号里是额度。
@@ -13,13 +15,13 @@
 - **菜单折叠**：有子项的父菜单默认折叠，当前路由不会自动展开；点击文字、箭头或键盘操作切换，子项继续标记当前页。复用现有 Sidebar/Collapsible；真实组件回归覆盖通用菜单，生产浏览器覆盖桌面与移动对话预设及无业务写请求。
 - **签到已删除**：签到接口、签到设置和前端入口都已删除（2026-11-16）；旧签到设置书签回到额度设置。历史签到额度、记录及退款来源保护保留。
 - **公告已读角标（N-02）**：登录账号的 Notice 与 announcements 回执保存在服务端，按账号和当前 Host 隔离，同账号其他设备或标签页可在重新读取后同步；按公告内容版本计算，编辑同 ID 公告会重新计为未读。匿名访客仍用本地回执，历史匿名数据不会迁入登录账号。此项只补已读链，不包含 N-01 定向发布或 N-04 业务待办。
-- **定向通知（N-01，部分范围）**：Root 在系统设置→内容→公告的“定向通知”发布平台公告、系统通知、维护通知和经营规则调整；接收范围为全部用户、全部分站、指定单个分站。站长在站长中心→本站设置的“本站公告”管理自己站点的客户公告和经营说明，不能修改 Root 的通知。指定/全部分站的收件同时校验当前 Host 与 SQL 账号归属或站长身份；“全部用户”是 Root 明确授权全平台可见的范围。通知中心 Timeline 展示标题、发布人、类型、接收对象、时间及可选关联业务说明；每页 20 条，支持加载更多，角标包含后续页面未读数。登录账号可以在通知中心把单条公告「隐藏」（`POST /api/adty/notifications/hide`，PAT `profile:write`），只影响自己；隐藏前先记为已读，不会留下未读角标。登录账号才能收到新发布通知，匿名旧公告配置保持原有行为，旧公告开关不控制新发布通知。编辑会产生新的未读版本；版本冲突须重新读取，撤回后不再展示但保留发布及已读历史。表为 `adty_notification_publications`，管理接口分别为 `/api/adty/admin/notifications`（Root，PAT `option:read/write`）与 `/api/adty/site/notifications`（当前站长，PAT `wallet:read/write`）。指定业务范围的收件规则仍待确认，关联说明不构成收件筛选。已发布且判定为严重的指定用户或指定分站通知，会给该用户或该站站长产生真实待办；全部用户和全部分站不在发布时扇出。登录用户在通知中心看到自己未完成的严重待办，可标为进行中或完成（`GET /api/adty/notifications/todos`，PAT `profile:read`；`POST /api/adty/notifications/todo/in-progress` 与 `/todo/complete`，PAT `profile:write`）。进行中和完成只改属于当前用户的已有待办，空键、外键和不存在的待办拒绝，已完成不能退回。外部邮件、短信和推送仍未实现，N-01 不因本批关闭。
+- **定向通知（N-01，部分范围）**：Root 在系统设置→内容→公告的“定向通知”发布平台公告、系统通知、维护通知和经营规则调整；接收范围为全部用户、全部分站、指定单个分站。站长在站长中心→公告管理自己站点的客户公告和经营说明，不能修改 Root 的通知。指定/全部分站的收件同时校验当前 Host 与 SQL 账号归属或站长身份；“全部用户”是 Root 明确授权全平台可见的范围。通知中心 Timeline 展示标题、发布人、类型、接收对象、时间及可选关联业务说明；每页 20 条，支持加载更多，角标包含后续页面未读数。登录账号可以在通知中心把单条公告「隐藏」（`POST /api/adty/notifications/hide`，PAT `profile:write`），只影响自己；隐藏前先记为已读，不会留下未读角标。登录账号才能收到新发布通知，匿名旧公告配置保持原有行为，旧公告开关不控制新发布通知。编辑会产生新的未读版本；版本冲突须重新读取，撤回后不再展示但保留发布及已读历史。表为 `adty_notification_publications`，管理接口分别为 `/api/adty/admin/notifications`（Root，PAT `option:read/write`）与 `/api/adty/site/notifications`（当前站长，PAT `wallet:read/write`）。指定业务范围的收件规则仍待确认，关联说明不构成收件筛选。已发布且判定为严重的指定用户或指定分站通知，会给该用户或该站站长产生真实待办；全部用户和全部分站不在发布时扇出。登录用户在通知中心看到自己未完成的严重待办，可标为进行中或完成（`GET /api/adty/notifications/todos`，PAT `profile:read`；`POST /api/adty/notifications/todo/in-progress` 与 `/todo/complete`，PAT `profile:write`）。进行中和完成只改属于当前用户的已有待办，空键、外键和不存在的待办拒绝，已完成不能退回。外部邮件、短信和推送仍未实现，N-01 不因本批关闭。
 
 目录：充值和加赠 · USDT 和易支付多通道 · 充值退款 · 余额下限 · 推广返佣 · 站长分站 · 分组和后台权限 · 营销模块删除与优惠码退役 · 网页客服、状态页、多语言、首页 SEO · 限流、脱敏和其他安全 · 官方价、接入文档、条款 · 品牌和 Logo。
 
 ## 充值和加赠
 
-- **Root 到期试用赠金（DEC-031）**：用户管理的 Root 行菜单可为普通客户发放美元计价的试用赠金，指定到期日期及管理员原因；后端 `POST /api/adty/admin/users/:id/expiring-gifts` 限 Root，绑定用户、金额、到期时间、原因及幂等键的单次二次验证证明。发放与余额流水、审计意图同事务，重试不重复增加余额，不产生真实充值、返佣或可提现资金。使用现有 `adty_fund_batches` 增加赠金类别、到期时间和累计清零字段；充值赠金的 `expires_at` 保持 NULL。钱包区分本金、到期赠金和永久赠金；消费先本金 FIFO，再按到期时间及批次 ID 消费到期赠金，最后永久赠金 FIFO，退款回原分摊。主节点任务按 Root 业务时区在到期日零点后清零可用余额（未配置时区时用 UTC），记来源批次及清零流水，启动时补扫；已消费部分不再次清零，在途预留释放或退款后由后续补扫处理。消费路径不作到期时钟判断。表单复用现有 Dialog、Input、错误组件及统一二次验证；日期用原生 date Input 保留业务时区的日历日期，避免现有 DateTimePicker 的浏览器本地时区换算以及历史日期 DatePicker 的未来日期限制。
+- **Root 到期试用赠金（DEC-031）**：用户管理的 Root 行菜单可为普通客户发放美元计价的试用赠金，指定到期日期及管理员原因；后端 `POST /api/adty/admin/users/:id/expiring-gifts` 限 Root，绑定用户、金额、到期时间、原因及幂等键的单次二次验证证明。发放与余额流水、审计意图同事务，重试不重复增加余额，不产生真实充值、返佣或可提现资金。使用现有 `adty_fund_batches` 增加赠金类别、到期时间和累计清零字段；充值赠金的 `expires_at` 保持 NULL。钱包区分本金、到期赠金和永久赠金；消费先本金 FIFO，再按到期时间及批次 ID 消费到期赠金，最后永久赠金 FIFO，退款回原分摊。主节点任务按 Root 业务时区在到期日零点后清零可用余额（未配置时区时用 Asia/Shanghai），记来源批次及清零流水，启动时补扫；已消费部分不再次清零，在途预留释放或退款后由后续补扫处理。消费路径不作到期时钟判断。表单复用现有 Dialog、Input、错误组件及统一二次验证；日期用原生 date Input 保留业务时区的日历日期，避免现有 DateTimePicker 的浏览器本地时区换算以及历史日期 DatePicker 的未来日期限制。
 
 **做什么**：用户在钱包页（`/wallet`）选面额、选已配置的支付方式充值，支持 BEpusdt 和易支付。加赠按支付方式配置：主站由 Root 设每种方式的比例；分站要先由 Root 逐站授权支付方式，站长再在授权范围内设本站比例。优惠码已退役，报价和写入一律拒绝；能主动加额度的只有充值额度兑换码（`adty_voucher`）。
 
@@ -245,14 +247,14 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 **规则**：
 
-- **成立**：先冻结本站收益。收益不够时，只在 Root 已授权的保证金周期额度内冻结。两边都不够就保持待覆盖，这时不能转余额，也不能提现。观察期从覆盖完成起算，天数记在佣金行上。
+- **成立**：站长在本站设置一级返佣比例（0–100%）、待覆盖阈值（USD）和观察天数后可开启。每个新订单冻结当时的邀请人、比例、阈值和观察天数。先冻结本站收益。收益不够时，只在 Root 已授权的保证金周期额度内冻结。两边都不够就保持待覆盖，这时不能转余额，也不能提现。观察期从覆盖完成起算，零天表示足额覆盖后立即可用。
 - **转站内余额**：扣掉对应冻结，并在同一事务里按 1 USD = 500000 给邀请人加可消费额度。
 - **现金提现**：可转入余额；外部打款仅为支付宝或 USDT。只提交申请不释放冻结。待审驳回、申请人在主站撤销时限内取消、审核通过后打款失败，冻结都留着。站长标记打款完成后，冻结退回原来的收益或保证金。审核人只是该站站长。
 - **拆开用**：转余额的部分扣冻结，外部打款的部分释放冻结，两边按金额分别记账。
 - **退款**：按已完成本金比例。还冻着的释放；已转余额的冲回用户余额；已外部打款并释放的，不再扣站长，只记追偿。
-- **未设参数**：`adty_site_invite_withdraw.min_usd`、`fee_usd`、`cny_rate` 没保存时，现金方式拒绝。不抄 `adty_site_withdraw.*`，也不调用 `Referral.CreateWithdrawal`。
+- **未设参数**：站长未配置本站最低提现额、USDT 手续费及人民币汇率时，现金方式拒绝。不抄 `adty_site_withdraw.*`，也不调用 `Referral.CreateWithdrawal`。
 
-**后台**：Root 在分站推广设置里保存这三项。站长在站长中心「客户」页审核。客户在钱包页申请。
+**后台**：站长在站长中心「邀请佣金提现」设置本站规则，按状态筛选和分页审核本站客户的申请。客户在钱包页申请。
 
 **表和接口**：`adty_site_invite_commissions`、`adty_site_invite_withdrawals`、`adty_site_invite_withdrawal_items`。客户 `GET`/`POST /api/adty/site-commissions/withdrawals`；站长 `GET /api/adty/site/commission-withdrawals`、`POST /api/adty/site/commission-withdrawals/:id/review`、`POST /api/adty/site/commission-withdrawals/:id/paid`；Root `GET`/`PUT /api/adty/admin/site-invite-withdraw/rules`。
 
@@ -274,14 +276,14 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 **做什么**：用户可以开一个分站（白标），用自己的站名和 Logo 拉客户。客户付「供货价 × (1 + 加价比例)」，平台按供货价收，站长赚差价，收益按消费记账、冻结后可以提现。客户是平台的用户，钱由平台收。
 
-**设置总则**：模块 `adty_reseller_setting`，只能在「分站管理 → 设置」（`/site-admin/settings`）或 `PUT /api/adty/admin/reseller/settings` 改（通用的 `PUT /api/option/` 拒绝这个前缀，防止绕过校验）。五个钱的参数**没有默认值**：`cost_factor`、`min_cost_factor`、`max_markup`、`trial_grant_max_usd`、`trial_grant_daily_usd`。它们都设了、并且 `root_domains` 不为空，总开关 `enabled` 才能打开。退役的 `max_site_bonus_extra` 不显示、不提交，也不阻止开站。
+**设置总则**：模块 `adty_reseller_setting`，只能在「分站管理 → 设置」（`/site-admin/settings`）或 `PUT /api/adty/admin/reseller/settings` 改（通用的 `PUT /api/option/` 拒绝这个前缀，防止绕过校验）。设置供货倍率 `cost_factor`、下限 `min_cost_factor` 和至少一个根域名后即可启用分站。试用额度单独配置。退役的 `max_site_bonus_extra` 不显示、不提交，也不阻止开站。
 
 ### 开站
 
 按最新总方案，只有 Root 能创建分站：
 
 - **Root 直接开**：`POST /api/adty/admin/sites {user_id, subdomain, ...}`，直接开成 active；普通管理员即使有创建权限也不能调用，PAT 还需要 `option:write`。
-- **旧申请处理**：`POST /api/adty/admin/sites/:id/review` 也仅限 Root，PAT 需要 `option:write`，可以同时设 d 和 k 上限。驳回后站点直接关闭，子域名不释放。
+- **旧申请处理**：`POST /api/adty/admin/sites/:id/review` 也仅限 Root，PAT 需要 `option:write`，可以同时设置供货倍率 d。驳回后站点直接关闭，子域名不释放。
 - **自助入口已关闭**：推广页不再显示开站表单，`POST /api/adty/site/apply` 一律返回 403，带邀请码也不能绕过。旧邀请码数据和内部兼容服务仍保留，不再提供用户开站能力。
 - **共同条件**：分站总开关打开；用户是启用状态、不是分站客户；名下没有没关闭的站（待审核的也算）；子域名转小写后符合 DNS 规则（1–63 位、不以连字符开头或结尾）、不在保留名单 `reserved_subdomains`（默认 www、api、admin、pay、mail、news、links、status、docs、app）里、全表唯一（关闭或驳回的站也一直占着）。
 - **开站协议**：内容在 `adty_legal_setting.site_agreement`（多语言条款里填），版本号 `adty_legal_setting.site_agreement_version`；申请时 `agree_version` 必须等于当前版本号。
@@ -301,9 +303,9 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 「分组倍率」是上游按分组算出的基础倍率（主站价 = 基础价 × 分组倍率）。存储字段仍叫 k、按**倍率**保存：**1 表示不加价**，1.2 表示加价 20%；计费时加价比例 = k − 1（`service/adty_site_markup.go:139-142`）。k 小于 1 表示低于供货价卖，收益会是负数。
 
 - **d（供货倍率）**：管理员设，正数即可，**可以大于 1**，不再要求 ≤ 1（`service/adty_site_markup.go:26,115-137`）。取值：单站 d → 等级/业绩档位的 d → 全局 `cost_factor`；结果低于 `min_cost_factor` 时抬到下限。管理员用 `PUT /api/adty/admin/sites/:id` 改单站 d。
-- **k（站长加价倍率）**：站长设，必须是正数且不超过上限。上限取「单站上限、等级上限、全局 `max_markup`」三者中最小的；实际扣费时还会按当前上限再截一次（`service/adty_site_markup.go:394-431`）。
+- **k（站长售价倍率）** 由站长设置，使用正数，精确到四位小数、最多六位整数，乘以供货价得到客户售价。
 - **按模型加价**：同一张定价表 `adty_site_prices` 可以有模型级行。解析顺序：客户+分组 → 客户 → 全站+分组 → 全站 → 1；带模型名的行优先于同层级不带模型的行（`service/adty_site.go:973-1018`）。价格页按模型有效 k 相对同分组通用 k 的比例缩放该模型标价（`service/adty_site_markup.go:930-979`）。
-- **改价**：以实际生效价判断涨跌，首次客户覆盖也先继承全站、分组和模型的有效价格。降价立即生效；涨价写待生效，`markup_increase_delay_hours`（默认 24）小时后由主节点每 5 分钟的任务生效，等待期间继续用原继承价；涨价没生效前又降价，取消待生效值。active 站和遗留的 paused 行可以改价，pending、closing、closed 拒绝。保存带版本号，别处改过返回冲突。
+- **改价** 全站、分组、模型和客户定价提交后，各节点对新请求立即采用新价。移除覆盖后立即继承上一级。已受理的流式请求和异步任务按原快照结算。升级前已通知的待生效调整按原计划执行，重新保存该项会覆盖旧计划。active 站和遗留的 paused 站可改价，保存时核对版本号。
 - **团队协议价**：分站团队折后价 = 分站普通售价 × 团队支付比例，最终价不得低于供货价：`max(供货价, 售价 × 比例)`；主站团队没有这个下限（`service/adty_site_markup.go:268-329`）。
 - **扣费与显示**：d、k 只乘进分组倍率，文本、按次、阶梯、图片、任务、Realtime 全走同一入口；两个值只记在日志的 `admin_info`，客户看不到。价格页和分组列表按分站售价显示。
 
@@ -316,7 +318,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 ### 加赠和试用额度
 
 - **加赠**：按支付方式，不按金额档位。Root 先逐站授权支付方式（`site_method_auth`），站长再在站长中心 → 加赠（`/site-owner/bonus`）设本站比例（`site_method_bonus`，要重新验证身份）。授权、收益保障、赠金冻结和待履约见「充值和加赠」。旧站点金额档位 `adty_sites.bonus_rates` 不再接受新保存（`SaveAdtySiteBonusRates` 返回 `ErrAdtyAmountTierRetired`）。
-- **试用额度**：站长在客户详情里给单个客户送（`POST /api/adty/site/customers/:id/trial`，要重新验证身份），单次不超过 `trial_grant_max_usd`、本站每天合计不超过 `trial_grant_daily_usd`，任一没设就不能送。钱从站长的推广佣金可提现余额里扣（`referral_commission_accounts.available_amount`），不够就拒绝；给客户加额度、写余额流水 `site_trial`，并记一条已结算的 `trial` 日汇总行（只做报表，结算任务不再取它）（`service/adty_site_earning.go:381-506`）。
+- **试用额度**：站长在客户详情里给单个客户送（`POST /api/adty/site/customers/:id/trial`，要重新验证身份），站长可为本站设置单次发放预算和每日合计预算，两项都设置后可发放。这些预算不参与开站校验。钱从站长的推广佣金可提现余额里扣（`referral_commission_accounts.available_amount`），不够就拒绝；给客户加额度、写余额流水 `site_trial`，并记一条已结算的 `trial` 日汇总行（只做报表，结算任务不再取它）（`service/adty_site_earning.go:381-506`）。
 
 ### 收益、冻结、结算、提现
 
@@ -415,7 +417,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 分站管理（`/site-admin/<分区>`），权限按「分站」的 read、create、review、adjust、delete、settings_read、settings 细分：
 
-- 站点列表和明细（状态、站长、域名、d、k 上限、客户），通过或驳回旧申请，改 d 和 k 上限，关站，一键下线公告（`DELETE /api/adty/admin/sites/:id/notice`，只清空公告，写审计）。
+- 站点列表和明细（状态、站长、域名、供货倍率、客户），通过或驳回旧申请，改供货倍率，关站，一键下线公告（`DELETE /api/adty/admin/sites/:id/notice`，只清空公告，写审计）。
 - 设置：`adty_reseller_setting` 的全部填写项（Cloudflare Token 只写不读；没填时显示「未配置」，依赖它的开关打不开），用量卡片（Resend 发件域名按状态计数和最近一次「名额已满」的时间；每个 Turnstile widget 已登记的域名数 / 10，第一个 widget 含主站域名和根域名，剩余少于 5 个时提醒）。
 - 邀请码开站已退役；后台邀请码接口已删除，`adty_site_invite_codes` 历史行保留只读。
 - 分站等级：在「设置」页的「分站等级」分区配置等级（三项累计门槛、拿货系数、倍率上限、保证金要求），在分站详情里把站点固定到某个已启用等级或交回自动考核（`PUT /api/adty/admin/sites/:id/tier`）。
@@ -444,12 +446,12 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 工作区《ADTYAI_分站系统开发规范》是新的业务基线。旧 P11 说明描述的兼容流程已被下面的实现替换；差异和风险清单见 [site-system-implementation.md](site-system-implementation.md)。
 
-- **等级自动考核已实现**：动态等级定义存在 `adty_site_tiers`，Root 用 `GET/PUT /api/adty/admin/reseller/tiers` 管理代码、名称、供货倍率、加价上限和保证金要求，不硬编码等级数值。主节点每小时跑一次自动考核（`service/adty_site_finance.go:795-833`），按 UTC 日期做周期 ID，同一站同一周期重复跑不会重复写等级、保证金要求或预警（`service/adty_site_finance.go:715-784`）。门槛是开站以来累计的三个指标：有效客户数、留存本金、已结算消费；取所有已启用等级里三项都满足的最高档（`service/adty_site_finance.go:580-661`）。手动钉住的站（`tier_mode=manual`）不会被自动考核覆盖；三项都达不到时通知 Root「未达最低档」，只预警、不关站（`service/adty_site_finance.go:766-793`）。界面：Root 在分站后台「设置」页的「分站等级」里新增、编辑、停用等级，按代码保存，不能删除；分站详情的「分站等级」可以把站点固定到某个已启用等级，或改回自动考核（`PUT /api/adty/admin/sites/:id/tier`，Root，PAT `option:write`；改回自动会先清空等级，等下一次整点考核）。
-- **等级落地**：切换等级会在同一事务更新站点的 `tier_cost_factor`、`tier_max_markup` 和保证金钱包的 `required_balance`；保证金要求变更只改应缴额，不会凭空增加余额（`service/adty_site_finance.go:679-698`）。手动等级模式不受旧月度业绩档位和旧延迟生效任务覆盖。
+- **等级自动考核已实现**：动态等级定义存在 `adty_site_tiers`，Root 用 `GET/PUT /api/adty/admin/reseller/tiers` 管理代码、名称、供货倍率和保证金要求，不硬编码等级数值。主节点每小时跑一次自动考核（`service/adty_site_finance.go:795-833`），按 UTC 日期做周期 ID，同一站同一周期重复跑不会重复写等级、保证金要求或预警（`service/adty_site_finance.go:715-784`）。门槛是开站以来累计的三个指标：有效客户数、留存本金、已结算消费；取所有已启用等级里三项都满足的最高档（`service/adty_site_finance.go:580-661`）。手动钉住的站（`tier_mode=manual`）不会被自动考核覆盖；三项都达不到时通知 Root「未达最低档」，只预警、不关站（`service/adty_site_finance.go:766-793`）。界面：Root 在分站后台「设置」页的「分站等级」里新增、编辑、停用等级，按代码保存，不能删除；分站详情的「分站等级」可以把站点固定到某个已启用等级，或改回自动考核（`PUT /api/adty/admin/sites/:id/tier`，Root，PAT `option:write`；改回自动会先清空等级，等下一次整点考核）。
+- **等级落地**：切换等级会在同一事务更新站点的 `tier_cost_factor` 和保证金钱包的 `required_balance`；保证金要求变更只改应缴额，不会凭空增加余额（`service/adty_site_finance.go:679-698`）。手动等级模式不受旧月度业绩档位和旧延迟生效任务覆盖。
 - **三钱包已实现**：`adty_site_wallets`（经营 / 收益 / 保证金）和 `adty_site_wallet_ledgers`。钱包唯一绑定站点和类型，变动在事务内锁钱包并追加含前后余额、业务来源和幂等键的流水；流水禁止通过模型更新或删除，重复幂等键返回原流水。站点查询 `GET /api/adty/site/wallets`、`GET /api/adty/site/wallet-ledgers`（PAT `wallet:read`）；Root 查询 `GET /api/adty/admin/sites/:id/wallets`、`GET /api/adty/admin/sites/:id/wallet-ledgers`（PAT `option:read`），普通管理员不能使用。界面：Root 在分站详情的资金区看三个钱包的余额和流水；站长在「收益」页看收益钱包、保证金钱包的余额（含冻结）和流水，看不到经营钱包；两边都能按钱包筛选、分页。
 - **保证金补充周期**：Root 指定保证金码核销、本站收益划转保证金，每次真实入账都在原资金事务内开启新周期，使用归零，目标取锁定钱包时当前档位；小额补充不要求补满整档，业务重放不再次重置。调档只改当前应缴目标，不能直接扩大原周期。钱包保存周期编号、起点和初始余额；不可变流水保存带版本的周期前后公式快照，旧流水的空快照表示历史未知。旧冻结及订单预留继续承担原来源责任；现有 `frozen_usd` 包含两者，公式快照明确记录其合计，不另造零预留，也不重复扣减。新周期同时受真实资金和周期90%限制，已开启周期的最低保留额取原周期档位的10%，不随当前应缴目标变化；冻结转支出时冻结与余额等额减少，实际使用只增加一次。
 - **经营钱包本金已联动**：客户充值成功时按面额把本金记进经营钱包（`principal_credit`），消费结算时按「站点本金垫付」的部分扣经营钱包（`principal_consume`）。经营钱包禁止透支，内部 `AllowOverdraft` 也不能绕过余额检查。余额不足直接报错，结算事务回滚并保留原预扣及待结算状态；经授权补足资金后按原 operation 重试，不重复扣款（`service/adty_operating_principal.go`、`service/adty_site_finance.go`）。
-- **日结单已实现**：`adty_site_settlement_sheets` 保存每个站每个营业日的核对单，主节点每 10 分钟补齐到昨天，重复跑只刷新数字、不动钱包（`service/adty_site_settlement_sheet.go:56-171,379-395`）。营业日时区由 Root 存 `adty.business_timezone`，没设按 UTC（`service/adty_site_settlement_sheet.go:15-54`）。站长 `GET /api/adty/site/settlement-sheets`，Root 可查全部。
+- **日结单已实现**：`adty_site_settlement_sheets` 保存每个站每个营业日的核对单，主节点每 10 分钟补齐到昨天，重复跑只刷新数字、不动钱包（`service/adty_site_settlement_sheet.go:56-171,379-395`）。营业日时区由 Root 存 `adty.business_timezone`，没设按北京时间零点切日（`service/adty_site_settlement_sheet.go:15-54`）。站长 `GET /api/adty/site/settlement-sheets`，Root 可查全部。
 - **旧站兼容**：查询旧站时缺失的钱包显示零余额，不创建余额或历史流水；收益钱包只投影功能启用后的新结算，不回填旧推广佣金账户。
 - **记账口径**：所有钱包、收益和结算金额按 USD 记账；规范里的人民币保证金示例没有写成美元默认值。`AllowOverdraft` 仍是内部流水选项，不是面向客户的 Root 授权透支产品，且对经营钱包不生效。
 
@@ -477,7 +479,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 | 充值财务 `adty_finance` | `read` 查看订单和充值对账；`manual_credit` 手动补单；`refund` 退款 |
 | 推广返佣 `adty_referral` | `read` 查看；`review` 审核合作伙伴申请和提现；`payout` 标记已打款；`adjust` 调整佣金、冻结结算、比例、停用推广员；`settings_read` 查看设置；`settings` 修改设置（含提现汇率） |
 | 支付通道 `adty_payment` | `read` 查看状态；`operate` 启停和测试 |
-| 分站 `adty_site` | `read` 查看站点、客户、统计；`create` 建站；`review` 审核旧申请、复核风控客户、处理举报；`adjust` 改 d、k 上限、可见范围、关站；`delete` 删除站点附属记录（域名、发件域名、公告）；`settings_read` 查看分站设置；`settings` 修改分站设置 |
+| 分站 `adty_site` | `read` 查看站点、客户、统计；`create` 建站；`review` 审核旧申请、复核风控客户、处理举报；`adjust` 改供货倍率、可见范围、关站；`delete` 删除站点附属记录（域名、发件域名、公告）；`settings_read` 查看分站设置；`settings` 修改分站设置 |
 
 开站、旧申请激活和关站迁移仍只对 Root 开放，拥有 `adty_site:create` 的普通管理员也不能调用。
 
@@ -631,7 +633,7 @@ Root 和获授用户读取权限的管理员在统一用户列表、搜索及详
 
 ### 日结单
 
-每个站每个营业日一张核对单，存 `adty_site_settlement_sheets`。主节点每 10 分钟补齐到昨天，重复跑只刷新数字、不加钱也不扣钱（`service/adty_site_settlement_sheet.go:56-171,379-395`）。营业日时区由 Root 存 `adty.business_timezone`，没设按 UTC；单子保留首次生成时的时区和窗口。内容有充值面额/实付、消费、供货成本、价差、赠金冻结/出资/释放、试用、邀请佣金、待覆盖、钱包增减、提现、财务调整和异常数。站长 `GET /api/adty/site/settlement-sheets`，Root 可查全部。
+每个站每个营业日一张核对单，存 `adty_site_settlement_sheets`。主节点每 10 分钟补齐到昨天，重复跑只刷新数字、不加钱也不扣钱（`service/adty_site_settlement_sheet.go:56-171,379-395`）。营业日时区由 Root 存 `adty.business_timezone`，没设按北京时间零点切日；单子保留首次生成时的时区和窗口。内容有充值面额/实付、消费、供货成本、价差、赠金冻结/出资/释放、试用、邀请佣金、待覆盖、钱包增减、提现、财务调整和异常数。站长 `GET /api/adty/site/settlement-sheets`，Root 可查全部。
 
 ### 资金异常与处置
 

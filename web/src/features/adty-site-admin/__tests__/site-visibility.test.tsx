@@ -254,8 +254,6 @@ it('saves visibility together with changed numeric fields and explicit numeric i
     'off'
   )
   await user.clear(screen.getByLabelText('Cost factor'))
-  await user.clear(screen.getByLabelText('Markup limit'))
-  await user.type(screen.getByLabelText('Markup limit'), '1.5')
   await user.type(
     screen.getByLabelText('Reason'),
     'Combined site policy change'
@@ -263,7 +261,6 @@ it('saves visibility together with changed numeric fields and explicit numeric i
   await user.click(screen.getByRole('button', { name: 'Save site settings' }))
   await waitFor(() =>
     expect(put).toHaveBeenCalledWith('/api/adty/admin/sites/1', {
-      max_markup: '1.5',
       clear: ['cost_factor'],
       visibility: '{"customer_usage":"off"}',
       reason: 'Combined site policy change',

@@ -119,7 +119,7 @@ func workspaceTicketImageGrantAt(userID int, ticketID, imageID, exp int64) strin
 // ISS-R1-0121: Ticket image access requires both a valid short-lived signed grant and live ticket authorization.
 func TestGetAdtyTicketImageRequiresShortGrantAndLiveTicketPermission(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := modelManagementDB(t, "sqlite", "")
+	db := setupControllerTicketTestDB(t)
 	require.NoError(t, model.MigrateAdtyTablesOn(db))
 
 	restoreDir := service.SetAdtyTicketImageDirForTest(t.TempDir())
@@ -134,17 +134,18 @@ func TestGetAdtyTicketImageRequiresShortGrantAndLiveTicketPermission(t *testing.
 	require.NoError(t, db.Create(&customerB).Error)
 	require.NoError(t, db.Create(&staff).Error)
 
-	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "ticket-img-site", RootDomain: "sites.example.test", Status: model.AdtySiteStatusActive}
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "ticket-img-site", RootDomain: "sites.example.test", Status: model.AdtySiteStatusActive, AgreementVer: service.AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	require.NoError(t, db.Model(&customerA).Update("site_id", site.Id).Error)
 	require.NoError(t, db.Model(&customerB).Update("site_id", site.Id).Error)
+	require.NoError(t, db.Model(&staff).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
 	staffRow := model.AdtySiteStaff{
 		SiteId:      site.Id,
 		OwnerUserId: owner.Id,
 		UserId:      staff.Id,
 		Role:        "support",
 		Status:      "enabled",
-		Permissions: `["customers.read"]`,
+		Permissions: `["customers.read","tickets.manage"]`,
 	}
 	require.NoError(t, db.Create(&staffRow).Error)
 
@@ -272,17 +273,17 @@ func TestGetAdtyTicketImageRequiresShortGrantAndLiveTicketPermission(t *testing.
 	assertImage(callGetImage(customerA.Id, ticketA.Id, imageID, "", issuedGrant, ""))
 	assertImage(callGetImage(customerA.Id, ticketA.Id, imageID, "grant=ignored", actionGrant, issuedGrant))
 
-	staffGrantW := callGetImage(staff.Id, ticketA.Id, imageID, "action=grant", "", "")
+	staffGrantW := callGetImage(staff.Id, ticketA.Id, imageID, "action=grant&scope=staff", "", "")
 	var staffGrantEnvelope map[string]any
 	require.NoError(t, common.Unmarshal(staffGrantW.Body.Bytes(), &staffGrantEnvelope), staffGrantW.Body.String())
 	require.Equal(t, true, staffGrantEnvelope["success"], staffGrantEnvelope)
 	staffGrant, _ := staffGrantEnvelope["data"].(map[string]any)["grant"].(string)
 	require.NotEmpty(t, staffGrant)
 	assert.Empty(t, staffGrantW.Result().Cookies())
-	assertImage(callGetImage(staff.Id, ticketA.Id, imageID, "", staffGrant, ""))
+	assertImage(callGetImage(staff.Id, ticketA.Id, imageID, "scope=staff", staffGrant, ""))
 
 	require.NoError(t, db.Model(&model.AdtySiteStaff{}).Where("id = ?", staffRow.Id).Update("status", "disabled").Error)
-	assertDenied(callGetImage(staff.Id, ticketA.Id, imageID, "", staffGrant, ""), "revoked staff must be denied even before short grant expires")
+	assertDenied(callGetImage(staff.Id, ticketA.Id, imageID, "scope=staff", staffGrant, ""), "revoked staff must be denied even before short grant expires")
 
 	var beforeFail int64
 	require.NoError(t, db.Model(&model.AdtyTicketImage{}).Where("ticket_id = ?", ticketA.Id).Count(&beforeFail).Error)

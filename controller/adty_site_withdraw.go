@@ -16,6 +16,10 @@ func GetAdtySiteWithdrawRules(c *gin.Context) {
 	if _, ok := adtyOwnerSiteOr403(c); !ok {
 		return
 	}
+	GetAdtyAdminWithdrawRules(c)
+}
+
+func GetAdtyAdminWithdrawRules(c *gin.Context) {
 	view, err := service.LoadAdtySiteWithdrawRules()
 	if err != nil {
 		common.ApiError(c, err)

@@ -104,6 +104,20 @@ export type AdminBalanceRequest = {
   reviewed_at: number
 }
 
+export async function getAdminWithdrawRules() {
+  const res = await api.get<
+    ApiResponse<
+      Partial<
+        Record<
+          'min_usd' | 'fee_usd' | 'alipay_cny_rate' | 'usdt_usd_rate',
+          string
+        >
+      >
+    >
+  >(`${BASE}/site-withdrawals/rules`)
+  return requireServerSuccess(res.data).data
+}
+
 export async function saveAdminWithdrawRules(body: {
   min_usd: string
   fee_usd: string
@@ -312,16 +326,6 @@ export async function getAdminFundAnomalies(siteId: number): Promise<string[]> {
   return requireServerSuccess(res.data).data.kinds ?? []
 }
 
-export async function getAdminSiteReferralCap(): Promise<{
-  cap_configured: boolean
-  max_rate?: string
-}> {
-  const res = await api.get<
-    ApiResponse<{ cap_configured: boolean; max_rate?: string }>
-  >(`${BASE}/site-referral/cap`)
-  return requireServerSuccess(res.data).data
-}
-
 export async function getAdminBusinessTimezone(): Promise<{
   configured: boolean
   timezone: string
@@ -378,64 +382,6 @@ export async function saveAdminSiteInviteBatchPolicy(
   requireServerSuccess(res.data)
 }
 
-export async function getAdminSiteCommissionPolicy(): Promise<{
-  configured: boolean
-  pending_coverage_cap?: string
-  observation_days?: string
-}> {
-  const res = await api.get<
-    ApiResponse<{
-      configured: boolean
-      pending_coverage_cap?: string
-      observation_days?: string
-    }>
-  >(`${BASE}/site-referral/commission-policy`)
-  return requireServerSuccess(res.data).data
-}
-
-export async function getAdminSiteInviteWithdrawRules(): Promise<{
-  configured: boolean
-  min_usd?: string
-  fee_usd?: string
-  cny_rate?: string
-}> {
-  const res = await api.get<
-    ApiResponse<{
-      configured: boolean
-      min_usd?: string
-      fee_usd?: string
-      cny_rate?: string
-    }>
-  >(`${BASE}/site-invite-withdraw/rules`)
-  return requireServerSuccess(res.data).data
-}
-
-export async function saveAdminSiteInviteWithdrawRules(
-  minUsd: string,
-  feeUsd: string,
-  cnyRate: string
-): Promise<void> {
-  const res = await api.put<ApiResponse<{ saved: boolean }>>(
-    `${BASE}/site-invite-withdraw/rules`,
-    { min_usd: minUsd, fee_usd: feeUsd, cny_rate: cnyRate }
-  )
-  requireServerSuccess(res.data)
-}
-
-export async function saveAdminSiteCommissionPolicy(
-  pendingCoverageCap: string,
-  observationDays: string
-): Promise<void> {
-  const res = await api.put<ApiResponse<{ saved: boolean }>>(
-    `${BASE}/site-referral/commission-policy`,
-    {
-      pending_coverage_cap: pendingCoverageCap,
-      observation_days: observationDays,
-    }
-  )
-  requireServerSuccess(res.data)
-}
-
 export async function getAdminSiteCommissionMargin(
   siteId: number
 ): Promise<{ allowed: boolean }> {
@@ -456,22 +402,17 @@ export async function saveAdminSiteCommissionMargin(
   requireServerSuccess(res.data)
 }
 
-export async function saveAdminSiteReferralCap(maxRate: string): Promise<void> {
-  const res = await api.put<ApiResponse<{ saved: boolean }>>(
-    `${BASE}/site-referral/cap`,
-    { max_rate: maxRate }
-  )
-  requireServerSuccess(res.data)
-}
-
 export async function getAdminBalanceRequests(
-  siteId: number
-): Promise<AdminBalanceRequest[]> {
-  const res = await api.get<ApiResponse<{ items?: AdminBalanceRequest[] }>>(
-    `${BASE}/balance-requests`,
-    { params: { site_id: siteId } }
-  )
-  return requireServerSuccess(res.data).data.items ?? []
+  siteId: number,
+  p: number,
+  status: string
+) {
+  const res = await api.get<
+    ApiResponse<{ items: AdminBalanceRequest[]; total: number }>
+  >(`${BASE}/balance-requests`, {
+    params: { site_id: siteId, p, page_size: SITE_ADMIN_PAGE_SIZE, status },
+  })
+  return requireServerSuccess(res.data).data
 }
 
 export async function reviewAdminBalanceRequest(
@@ -602,7 +543,6 @@ export async function createSite(body: {
   subdomain: string
   root_domain?: string
   cost_factor?: string
-  max_markup?: string
   contact_info?: string
 }): Promise<AdminSite> {
   const res = await api.post<ApiResponse<AdminSite>>(`${BASE}/sites`, body)
@@ -614,7 +554,6 @@ export async function reviewSite(
   body: {
     approve: boolean
     cost_factor?: string
-    max_markup?: string
     note: string
   }
 ): Promise<AdminSite> {
@@ -629,10 +568,9 @@ export async function adjustSite(
   id: number,
   body: {
     cost_factor?: string
-    max_markup?: string
     visibility?: string
     allowed_groups?: string
-    clear?: Array<'cost_factor' | 'max_markup' | 'allowed_groups'>
+    clear?: Array<'cost_factor' | 'allowed_groups'>
     reason: string
   }
 ): Promise<AdminSite> {
@@ -873,7 +811,7 @@ export async function saveAdminVoucherMarginAuthorization(
   requireServerSuccess(res.data)
 }
 
-/** One site level (model.AdtySiteTier). Decimals are strings; empty cost factor or markup uses the default. */
+/** One site level (model.AdtySiteTier). Decimals are strings; an empty cost factor uses the default. */
 export type SiteTier = {
   id?: number
   code: string
@@ -882,7 +820,6 @@ export type SiteTier = {
   min_principal_usd: string
   min_consumption_usd: string
   cost_factor: string | null
-  max_markup: string | null
   deposit_usd: string
   enabled: boolean
   sort_order: number

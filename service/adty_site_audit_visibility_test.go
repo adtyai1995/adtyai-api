@@ -132,8 +132,8 @@ func TestSiteOperationAuditIsPersistedOrLoggedSQLite(t *testing.T) {
 	buffer := logsinktest.Capture(t)
 
 	updated, err := AdjustAdtySite(fx.SiteID, fx.AdminID, AdtySiteAdjust{
-		MaxMarkup: dec("2.00"),
-		Reason:    "align markup with tier",
+		CostFactor: dec("0.6"),
+		Reason:    "lower site supply factor",
 	})
 	require.NoError(t, err, "审计写失败不得回滚业务")
 	require.NotNil(t, updated)
@@ -141,8 +141,8 @@ func TestSiteOperationAuditIsPersistedOrLoggedSQLite(t *testing.T) {
 	// 业务本身必须落库：审计是旁路，它挂了不该把这次调整也带走。
 	var stored model.AdtySite
 	require.NoError(t, model.DB.Where("id = ?", fx.SiteID).Take(&stored).Error)
-	require.NotNil(t, stored.MaxMarkup)
-	assert.True(t, dec("2.00").Equal(*stored.MaxMarkup), "业务改动必须提交")
+	require.NotNil(t, stored.CostFactor)
+	assert.True(t, dec("0.6").Equal(*stored.CostFactor), "业务改动必须提交")
 
 	rows := auditRowsFor(t, model.LOG_DB, fx.SiteID)
 	errLines := errorLines(buffer, "official site audit write failed")
@@ -168,12 +168,12 @@ func TestSiteOperationAuditFailureIsObservableSQLite(t *testing.T) {
 	buffer := logsinktest.Capture(t)
 
 	updated, err := AdjustAdtySite(fx.SiteID, fx.AdminID, AdtySiteAdjust{
-		MaxMarkup: dec("2.50"),
+		CostFactor: dec("0.6"),
 		Reason:    "reverse check",
 	})
 	require.NoError(t, err, "审计写失败不得回滚业务")
 	require.NotNil(t, updated)
-	assert.True(t, dec("2.50").Equal(*updated.MaxMarkup))
+	assert.True(t, dec("0.6").Equal(*updated.CostFactor))
 
 	assert.False(t, model.LOG_DB.Migrator().HasTable("audit_logs"),
 		"反向用例的夹具里没有 audit_logs 表，日志写入必然失败")

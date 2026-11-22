@@ -74,7 +74,7 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
     api.defaults.adapter = adapter
     const { unmount } = render(
       <QueryClientProvider client={client}>
-        <TicketImage ticketID={42} imageID={9} label='Receipt' />
+        <TicketImage scope='personal' ticketID={42} imageID={9} label='Receipt' />
       </QueryClientProvider>
     )
     expect(await screen.findByRole('img', { name: 'Receipt' })).toHaveAttribute('src', 'blob:ticket-receipt')
@@ -161,7 +161,7 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
       name: /Image 0123456789abcdef0123456789abcdef/i,
     })
     expect(img).toHaveAttribute('src', 'blob:ticket-receipt')
-    expect(get).toHaveBeenCalledWith('/api/adty/tickets/42/images/9', expect.objectContaining({ params: { action: 'grant' } }))
+    expect(get).toHaveBeenCalledWith('/api/adty/tickets/42/images/9', expect.objectContaining({ params: { action: 'grant', scope: 'personal' } }))
 
     // Internal image is not rendered when can_note is false.
     expect(
@@ -169,8 +169,8 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
     ).not.toBeInTheDocument()
 
     // Handling events from detail are rendered.
-    expect(screen.getByText(/Event: create · topup/i)).toBeInTheDocument()
-    expect(screen.getByText(/Event: status · Ticket status in progress \(in_progress\)/i)).toBeInTheDocument()
+    expect(screen.getByText(/New ticket · topup/i)).toBeInTheDocument()
+    expect(screen.getByText(/Status · Ticket status in progress/i)).toBeInTheDocument()
     unmount()
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:ticket-receipt')
   })

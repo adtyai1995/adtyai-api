@@ -17,7 +17,7 @@ func TestSiteInviteCashWithdrawalIsReviewedByThatSiteOwner(t *testing.T) {
 	otherOwner := referralUser(t, db, "wd-outsider-"+strconv.Itoa(site.Id))
 	otherSite := &model.AdtySite{OwnerUserId: otherOwner.Id, Subdomain: "wd-out-" + strconv.Itoa(site.Id), RootDomain: "sites.example.com", Status: model.AdtySiteStatusActive}
 	require.NoError(t, db.Create(otherSite).Error)
-	require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0.1", "7"))
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{MinUSD: new("1"), FeeUSD: new("0.1"), CNYRate: new("7")}))
 	row, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
 		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.NewFromInt(2), Method: "usdt",
 		Network: "TRC20", AccountNo: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb", IdempotencyKey: "wd-1",
@@ -55,7 +55,7 @@ func TestSiteInviteCashWithdrawalIsReviewedByThatSiteOwner(t *testing.T) {
 func TestSiteInviteWithdrawalRejectReleasesTheFreeze(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	site, owner, inviter := availableSiteCommission(t, db, decimal.NewFromInt(2))
-	require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0.1", "7"))
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{MinUSD: new("1"), FeeUSD: new("0.1"), CNYRate: new("7")}))
 	row, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
 		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.NewFromInt(2), Method: "alipay",
 		AccountName: "Ada", QRImageURL: "/api/referral-assets/ada.png", ExpectedCNYRate: decimal.NewFromInt(7),
@@ -105,7 +105,7 @@ func TestSiteInviteBalanceWithdrawalCreditsQuotaWithoutWithdrawnCash(t *testing.
 func TestApprovedSiteInviteWithdrawalCanFailWithoutReleasingTheSiteHold(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	site, owner, inviter := availableSiteCommission(t, db, decimal.NewFromInt(2))
-	require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0.1", "7"))
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{MinUSD: new("1"), FeeUSD: new("0.1"), CNYRate: new("7")}))
 	row, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
 		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.NewFromInt(2), Method: "usdt",
 		Network: "TRC20", AccountNo: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb", IdempotencyKey: "wd-fail",
@@ -136,7 +136,7 @@ func TestApprovedSiteInviteWithdrawalCanFailWithoutReleasingTheSiteHold(t *testi
 func TestMixedRefundLeavesTheRemainingSiteHoldAssignable(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	site, owner, inviter := availableSiteCommission(t, db, decimal.NewFromInt(4))
-	require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0", "7"))
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{MinUSD: new("1"), FeeUSD: new("0"), CNYRate: new("7")}))
 	_, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
 		UserID: inviter.Id, SiteID: site.Id, Amount: decimal.NewFromInt(1), Method: "balance",
 		IdempotencyKey: "mix-balance",
@@ -198,9 +198,9 @@ func availableSiteCommission(t *testing.T, db *gorm.DB, amount decimal.Decimal) 
 		Type: "earning_settlement", IdempotencyKey: "wd-earn-" + suffix,
 	})
 	require.NoError(t, err)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "1"))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "1"))
 	face := amount.Mul(decimal.NewFromInt(10))
-	ext := siteInviteOrder(site.Id, invitee.Id, "WD-"+suffix, face)
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "WD-"+suffix, face)
 	var commission model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0)); err != nil {
@@ -225,7 +225,7 @@ func TestSiteInviteWithdrawalRejectsWeChatAndAliases(t *testing.T) {
 		t.Run(dialect, func(t *testing.T) {
 			db := prepareReferralDialectDB(t, dialect)
 			site, _, inviter := availableSiteCommission(t, db, decimal.NewFromInt(4))
-			require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0.1", "7"))
+			require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{MinUSD: new("1"), FeeUSD: new("0.1"), CNYRate: new("7")}))
 			for i, method := range []string{"wechat", "WeChat", "WECHAT", "wxpay", "weixin", "微信", "微信支付"} {
 				_, err := CreateAdtySiteInviteWithdrawal(AdtySiteInviteWithdrawalInput{
 					UserID: inviter.Id, SiteID: site.Id, Amount: decimal.NewFromInt(1), Method: method,
@@ -248,13 +248,13 @@ func TestSiteInviteWithdrawalAllowsOfficialMethodsAndRulesCatalog(t *testing.T) 
 			db := prepareReferralDialectDB(t, dialect)
 			site, _, inviter := availableSiteCommission(t, db, decimal.NewFromInt(6))
 
-			unset, err := LoadAdtySiteInviteWithdrawRules()
+			unset, err := LoadAdtyCustomerSiteInviteWithdrawRules(inviter.Id)
 			require.NoError(t, err)
 			require.False(t, unset.Configured)
 			require.Equal(t, []string{"balance"}, unset.Methods)
 
-			require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0.1", "7"))
-			view, err := LoadAdtySiteInviteWithdrawRules()
+			require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{MinUSD: new("1"), FeeUSD: new("0.1"), CNYRate: new("7")}))
+			view, err := LoadAdtyCustomerSiteInviteWithdrawRules(inviter.Id)
 			require.NoError(t, err)
 			require.True(t, view.Configured)
 			require.Equal(t, []string{"balance", "usdt", "alipay"}, view.Methods)
@@ -298,7 +298,7 @@ func TestHistoricalSiteInviteWeChatWithdrawalCanStillBeReviewedAndPaid(t *testin
 		t.Run(dialect, func(t *testing.T) {
 			db := prepareReferralDialectDB(t, dialect)
 			site, owner, inviter := availableSiteCommission(t, db, decimal.NewFromInt(2))
-			require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0.1", "7"))
+			require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{MinUSD: new("1"), FeeUSD: new("0.1"), CNYRate: new("7")}))
 			historical := &model.AdtySiteInviteWithdrawal{
 				SiteId: site.Id, UserId: inviter.Id, AmountUSD: decimal.NewFromInt(2),
 				NetUSD: decimal.NewFromInt(2), Method: "wechat", Status: model.AdtySiteInviteWithdrawPending,
@@ -326,7 +326,7 @@ func TestSiteInviteWithdrawalRejectsForeignOrUnregisteredQR(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	site, _, inviter := availableSiteCommission(t, db, decimal.NewFromInt(4))
 	stranger := referralUser(t, db, "site-wd-stranger")
-	require.NoError(t, SaveAdtySiteInviteWithdrawRules("1", "0.1", "7"))
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{MinUSD: new("1"), FeeUSD: new("0.1"), CNYRate: new("7")}))
 	require.NoError(t, db.Create(&model.ReferralAsset{
 		OwnerUserId: stranger.Id, Purpose: model.ReferralAssetPurposeWithdrawalQR, StoragePath: "stranger.png", ContentType: "image/png", CreatedBy: "user",
 	}).Error)

@@ -29,6 +29,7 @@ import { Route as errors404RouteImport } from './routes/(errors)/404'
 import { Route as errors500RouteImport } from './routes/(errors)/500'
 import { Route as errors503RouteImport } from './routes/(errors)/503'
 import { Route as AuthenticatedChat2linkRouteImport } from './routes/_authenticated/chat2link'
+import { Route as AuthenticatedMyTeamRouteImport } from './routes/_authenticated/my-team'
 import { Route as AuthenticatedSiteStaffRouteImport } from './routes/_authenticated/site-staff'
 import { Route as AuthenticatedSystemSettingsRouteRouteImport } from './routes/_authenticated/system-settings/route'
 import { Route as AboutIndexRouteImport } from './routes/about/index'
@@ -180,6 +181,11 @@ const errors503Route = errors503RouteImport.update({
 const AuthenticatedChat2linkRoute = AuthenticatedChat2linkRouteImport.update({
   id: '/chat2link',
   path: '/chat2link',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedMyTeamRoute = AuthenticatedMyTeamRouteImport.update({
+  id: '/my-team',
+  path: '/my-team',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedSiteStaffRoute = AuthenticatedSiteStaffRouteImport.update({
@@ -513,6 +519,7 @@ export interface FileRoutesByFullPath {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/chat2link': typeof AuthenticatedChat2linkRoute
+  '/my-team': typeof AuthenticatedMyTeamRoute
   '/site-staff': typeof AuthenticatedSiteStaffRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/r/$code': typeof RCodeRoute
@@ -586,6 +593,7 @@ export interface FileRoutesByTo {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/chat2link': typeof AuthenticatedChat2linkRoute
+  '/my-team': typeof AuthenticatedMyTeamRoute
   '/site-staff': typeof AuthenticatedSiteStaffRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/r/$code': typeof RCodeRoute
@@ -663,6 +671,7 @@ export interface FileRoutesById {
   '/(errors)/500': typeof errors500Route
   '/(errors)/503': typeof errors503Route
   '/_authenticated/chat2link': typeof AuthenticatedChat2linkRoute
+  '/_authenticated/my-team': typeof AuthenticatedMyTeamRoute
   '/_authenticated/site-staff': typeof AuthenticatedSiteStaffRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/r/$code': typeof RCodeRoute
@@ -739,6 +748,7 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/chat2link'
+    | '/my-team'
     | '/site-staff'
     | '/docs/$slug'
     | '/r/$code'
@@ -812,6 +822,7 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/chat2link'
+    | '/my-team'
     | '/site-staff'
     | '/docs/$slug'
     | '/r/$code'
@@ -888,6 +899,7 @@ export interface FileRouteTypes {
     | '/(errors)/500'
     | '/(errors)/503'
     | '/_authenticated/chat2link'
+    | '/_authenticated/my-team'
     | '/_authenticated/site-staff'
     | '/docs/$slug'
     | '/r/$code'
@@ -1108,6 +1120,13 @@ declare module '@tanstack/react-router' {
       path: '/chat2link'
       fullPath: '/chat2link'
       preLoaderRoute: typeof AuthenticatedChat2linkRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/my-team': {
+      id: '/_authenticated/my-team'
+      path: '/my-team'
+      fullPath: '/my-team'
+      preLoaderRoute: typeof AuthenticatedMyTeamRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/site-staff': {
@@ -1581,6 +1600,7 @@ const AuthenticatedSystemSettingsRouteRouteWithChildren =
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedSystemSettingsRouteRoute: typeof AuthenticatedSystemSettingsRouteRouteWithChildren
   AuthenticatedChat2linkRoute: typeof AuthenticatedChat2linkRoute
+  AuthenticatedMyTeamRoute: typeof AuthenticatedMyTeamRoute
   AuthenticatedSiteStaffRoute: typeof AuthenticatedSiteStaffRoute
   AuthenticatedChatChatIdRoute: typeof AuthenticatedChatChatIdRoute
   AuthenticatedDashboardSectionRoute: typeof AuthenticatedDashboardSectionRoute
@@ -1613,6 +1633,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSystemSettingsRouteRoute:
     AuthenticatedSystemSettingsRouteRouteWithChildren,
   AuthenticatedChat2linkRoute: AuthenticatedChat2linkRoute,
+  AuthenticatedMyTeamRoute: AuthenticatedMyTeamRoute,
   AuthenticatedSiteStaffRoute: AuthenticatedSiteStaffRoute,
   AuthenticatedChatChatIdRoute: AuthenticatedChatChatIdRoute,
   AuthenticatedDashboardSectionRoute: AuthenticatedDashboardSectionRoute,

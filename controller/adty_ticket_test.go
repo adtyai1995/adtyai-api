@@ -141,9 +141,13 @@ func controllerTicketImageRequest(t *testing.T, userID int, ticketID, imageID in
 	return recorder
 }
 
-func controllerTicketImageGrant(t *testing.T, userID int, ticketID, imageID int64) string {
+func controllerTicketImageGrant(t *testing.T, userID int, ticketID, imageID int64, scope ...string) string {
 	t.Helper()
-	recorder := controllerTicketImageRequest(t, userID, ticketID, imageID, "?action=grant", "")
+	query := "?action=grant"
+	if len(scope) > 0 {
+		query += "&scope=" + scope[0]
+	}
+	recorder := controllerTicketImageRequest(t, userID, ticketID, imageID, query, "")
 	var response struct {
 		Success bool `json:"success"`
 		Data    struct {
@@ -168,10 +172,13 @@ func TestTicketImageGrantRequiresCurrentObjectScopedAuthorizationPG(t *testing.T
 	users := []model.User{
 		{Username: "grant-customer", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, SiteId: 41, AuthVersion: 1},
 		{Username: "grant-other", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, SiteId: 42, AuthVersion: 1},
-		{Username: "grant-staff", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, StaffSiteId: 41, AuthVersion: 1},
+		{Username: "grant-staff", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, StaffSiteId: 41, SiteId: 41, AuthVersion: 1},
 	}
 	require.NoError(t, db.Create(&users).Error)
-	staff := model.AdtySiteStaff{UserId: users[2].Id, SiteId: 41, Status: "enabled", Role: "support"}
+	owner := model.User{Username: "grant-owner", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&owner).Error)
+	require.NoError(t, db.Create(&model.AdtySite{Id: 41, OwnerUserId: owner.Id, Subdomain: "grant-site", Status: model.AdtySiteStatusActive, AgreementVer: service.AdtyCurrentSiteAgreementVersion()}).Error)
+	staff := model.AdtySiteStaff{UserId: users[2].Id, OwnerUserId: owner.Id, SiteId: 41, Status: "enabled", Role: "support", Permissions: `["tickets.manage"]`}
 	require.NoError(t, db.Create(&staff).Error)
 	ticket := model.AdtyTicket{UserId: users[0].Id, SiteId: 41, Title: "Receipt", Status: model.AdtyTicketNew}
 	require.NoError(t, db.Create(&ticket).Error)
@@ -198,7 +205,7 @@ func TestTicketImageGrantRequiresCurrentObjectScopedAuthorizationPG(t *testing.T
 		assert.Equal(t, int64(1), views)
 	})
 	t.Run("grant_cannot_be_used_for_other_identity_or_object", func(t *testing.T) {
-		grant := controllerTicketImageGrant(t, users[2].Id, ticket.Id, internal.Id)
+		grant := controllerTicketImageGrant(t, users[2].Id, ticket.Id, internal.Id, "staff")
 		for _, input := range []struct {
 			user          int
 			ticket, image int64
@@ -224,9 +231,9 @@ func TestTicketImageGrantRequiresCurrentObjectScopedAuthorizationPG(t *testing.T
 		}
 	})
 	t.Run("revoked_staff_cannot_reuse_unexpired_grant", func(t *testing.T) {
-		grant := controllerTicketImageGrant(t, users[2].Id, ticket.Id, internal.Id)
+		grant := controllerTicketImageGrant(t, users[2].Id, ticket.Id, internal.Id, "staff")
 		require.NoError(t, db.Model(&staff).Update("status", "disabled").Error)
-		recorder := controllerTicketImageRequest(t, users[2].Id, ticket.Id, internal.Id, "", grant)
+		recorder := controllerTicketImageRequest(t, users[2].Id, ticket.Id, internal.Id, "?scope=staff", grant)
 		assert.Contains(t, recorder.Body.String(), `"success":false`)
 		assert.NotEqual(t, "image/png", recorder.Header().Get("Content-Type"))
 	})

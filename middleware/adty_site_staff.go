@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"slices"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -20,7 +21,7 @@ func adtyStaffDashboardAllowed(c *gin.Context, user *model.UserBase, identity se
 		c.Abort()
 		return false
 	}
-	_, site, err := service.AdtyStaffAccess(user.Id, identity.UserAuthVersion, "")
+	staff, site, err := service.AdtyStaffAccess(user.Id, identity.UserAuthVersion, "")
 	if err != nil {
 		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyStaffDenied)
 		c.Abort()
@@ -35,7 +36,10 @@ func adtyStaffDashboardAllowed(c *gin.Context, user *model.UserBase, identity se
 	}
 	allowed := false
 	switch c.Request.Method + " " + c.FullPath() {
-	case "GET /api/adty/staff/self", "GET /api/adty/staff/customers", "GET /api/adty/staff/customers/:id", "GET /api/adty/staff/customers/:id/topups", "GET /api/adty/staff/customers/:id/logs", "GET /api/adty/staff/balance-requests",
+	case "GET /api/adty/tickets", "GET /api/adty/tickets/:id", "GET /api/adty/tickets/:id/images/:imageId",
+		"POST /api/adty/tickets/:id/status", "POST /api/adty/tickets/:id/replies", "POST /api/adty/tickets/:id/notes", "POST /api/adty/tickets/:id/images":
+		allowed = c.Query("scope") == "staff" && slices.Contains(service.AdtyStaffViewOf(*staff).Permissions, service.AdtyStaffTicketManage)
+	case "GET /api/adty/badges", "GET /api/adty/staff/self", "GET /api/adty/staff/customers", "GET /api/adty/staff/customers/:id", "GET /api/adty/staff/customers/:id/topups", "GET /api/adty/staff/customers/:id/logs", "GET /api/adty/staff/balance-requests",
 		"GET /api/adty/staff/customers/:id/orders", "GET /api/adty/staff/customers/:id/orders/:trade_no",
 		"POST /api/adty/staff/customers/:id/password-reset", "POST /api/adty/staff/customers/:id/disable", "POST /api/adty/staff/balance-requests",
 		"GET /api/user/self", "GET /api/verify/methods", "POST /api/verify", "GET /api/user/sessions", "DELETE /api/user/sessions/:sid", "POST /api/user/sessions/revoke-others",

@@ -88,13 +88,16 @@ export const STAFF_WORKSPACE_BADGE_KINDS = ['tickets_pending'] as const
 export const SIDEBAR_BADGE_EXISTING_REFETCH_MS = 5 * 60_000
 
 export async function getSidebarBadges(): Promise<SidebarBadgeCounts> {
-  const res = await api.get<ApiResponse<{ counts: SidebarBadgeCounts }>>(
-    '/api/adty/badges'
-  )
+  const res =
+    await api.get<ApiResponse<{ counts: SidebarBadgeCounts }>>(
+      '/api/adty/badges'
+    )
   return requireServerSuccess(res.data).data.counts ?? {}
 }
 
-export function invalidateSidebarBadges(queryClient: QueryClient): Promise<void> {
+export function invalidateSidebarBadges(
+  queryClient: QueryClient
+): Promise<void> {
   return queryClient.invalidateQueries({ queryKey: sidebarBadgeKeys.all })
 }
 
@@ -128,11 +131,15 @@ export function sidebarBadgeText(
 export function useSidebarBadges(): {
   counts: SidebarBadgeCounts | undefined
   failed: boolean
-  badge: (kinds: readonly string[], mixedLabel: string, failedLabel: string) => string | undefined
+  badge: (
+    kinds: readonly string[],
+    mixedLabel: string,
+    failedLabel: string
+  ) => string | undefined
 } {
   const userID = useAuthStore((state) => state.auth.user?.id ?? 0)
   const query = useQuery({
-    queryKey: sidebarBadgeKeys.all,
+    queryKey: [...sidebarBadgeKeys.all, userID],
     queryFn: getSidebarBadges,
     enabled: userID > 0,
     // Keep the existing referral sidebar cadence so that badge does not go

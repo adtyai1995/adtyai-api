@@ -19,6 +19,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service/authz"
+	"math"
+	"slices"
 	// WebP 只用于解码：注册 "webp" 格式并让 image.Decode 能识别。
 	// 这里显式引入，避免依赖同包其它文件的间接 import。
 	_ "golang.org/x/image/webp"
@@ -45,7 +48,14 @@ type AdtyTicketInput struct {
 	Idempotency  string `json:"-"`
 }
 
+type AdtyTicketAssignee struct {
+	Id          int    `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
 type AdtyTicketDetail struct {
+	Assignees []AdtyTicketAssignee      `json:"assignees,omitempty"`
 	Ticket    model.AdtyTicket          `json:"ticket"`
 	Messages  []model.AdtyTicketMessage `json:"messages"`
 	Images    []model.AdtyTicketImage   `json:"images"`
@@ -61,22 +71,33 @@ type AdtyTicketBadges struct {
 	WaitingUser       int64 `json:"waiting_user"`
 	WaitingInternal   int64 `json:"waiting_internal"`
 	Urgent            int64 `json:"urgent"`
+	Resolved          int64 `json:"resolved"`
+	Closed            int64 `json:"closed"`
 	Pending           int64 `json:"pending"`
 }
 
 type AdtyTicketList struct {
-	Tickets   []model.AdtyTicket `json:"tickets"`
-	CanNote   bool               `json:"can_note"`
-	CanManage bool               `json:"can_manage"`
-	Badges    AdtyTicketBadges   `json:"badges"`
+	Total       int64              `json:"total"`
+	Page        int                `json:"page"`
+	PageSize    int                `json:"page_size"`
+	CanViewTeam bool               `json:"can_view_team"`
+	Tickets     []model.AdtyTicket `json:"tickets"`
+	CanNote     bool               `json:"can_note"`
+	CanManage   bool               `json:"can_manage"`
+	Badges      AdtyTicketBadges   `json:"badges"`
 }
 
 type adtyTicketActor struct {
-	User        model.User
-	Staff       *model.AdtySiteStaff
-	OwnerSiteId int
-	TeamId      int64
-	TeamRole    string
+	Scope        string
+	PlatformMain bool
+	PlatformAll  bool
+	StaffTickets bool
+	User         model.User
+	Staff        *model.AdtySiteStaff
+	OwnerSiteId  int
+	OwnerTickets bool
+	TeamId       int64
+	TeamRole     string
 }
 
 func SetAdtyTicketImageDirForTest(dir string) func() {
@@ -150,7 +171,7 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 	default:
 		return nil, ErrAdtyTicketInvalid
 	}
-	actor, err := loadAdtyTicketActor(userId)
+	actor, err := loadAdtyTicketWorkspace(model.DB, userId, "personal")
 	if err != nil {
 		return nil, err
 	}
@@ -221,46 +242,64 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 }
 
 func ListAdtyTickets(userId int, queue string) (*AdtyTicketList, error) {
-	actor, err := loadAdtyTicketActor(userId)
+	return ListAdtyTicketPage(userId, queue, 1, 100)
+}
+
+func ListAdtyTicketPage(userId int, queue string, page, pageSize int, workspace ...string) (*AdtyTicketList, error) {
+	actor, err := loadAdtyTicketWorkspace(model.DB, userId, workspace...)
 	if err != nil {
 		return nil, err
 	}
-	scope := scopedAdtyTickets(actor)
+	if page < 1 || pageSize < 1 || pageSize > 100 || page > math.MaxInt/pageSize {
+		return nil, ErrAdtyTicketInvalid
+	}
+	scope := scopedAdtyTickets(model.DB, actor)
+	query, err := applyAdtyTicketQueueFilter(scope.Session(&gorm.Session{}), queue)
+	if err != nil {
+		return nil, err
+	}
+	var total int64
+	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return nil, err
+	}
 	var rows []model.AdtyTicket
-	query, err := applyAdtyTicketQueueFilter(scope.Session(&gorm.Session{}).Order("id DESC").Limit(100), queue)
-	if err != nil {
-		return nil, err
-	}
-	if err := query.Find(&rows).Error; err != nil {
+	if err := query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	for i := range rows {
 		rows[i].Status = model.NormalizeAdtyTicketStatus(rows[i].Status, rows[i].AssigneeId)
 	}
-	badges, err := countAdtyTicketBadges(scope.Session(&gorm.Session{}))
+	badges, err := countAdtyTicketBadges(scope)
 	if err != nil {
 		return nil, err
 	}
-	probe := model.AdtyTicket{SiteId: actor.scopeSite()}
-	return &AdtyTicketList{Tickets: rows, CanNote: actor.canNote(probe), CanManage: actor.canManage(probe), Badges: badges}, nil
+	manages := actor.isHandling()
+	return &AdtyTicketList{Tickets: rows, Total: total, Page: page, PageSize: pageSize, CanViewTeam: actor.TeamRole == model.AdtyTeamRoleLeader, CanNote: manages, CanManage: manages, Badges: badges}, nil
 }
 
-func scopedAdtyTickets(actor adtyTicketActor) *gorm.DB {
-	query := model.DB.Model(&model.AdtyTicket{})
-	switch {
-	case actor.User.Role >= common.RoleRootUser:
-	case actor.User.Role >= common.RoleAdminUser:
-		query = query.Where("site_id = ?", 0)
-	case actor.OwnerSiteId > 0:
-		query = query.Where("site_id = ?", actor.OwnerSiteId)
-	case actor.Staff != nil && actor.Staff.Status == "enabled":
-		query = query.Where("site_id = ?", actor.Staff.SiteId)
-	case actor.TeamRole == model.AdtyTeamRoleLeader && actor.TeamId > 0:
-		query = query.Where("user_id = ? OR team_id = ?", actor.User.Id, actor.TeamId)
+// Every operation resolves the requested workspace before applying this same
+// row filter. A handler visiting the account page sees only their public case.
+func scopedAdtyTickets(tx *gorm.DB, actor adtyTicketActor) *gorm.DB {
+	query := tx.Model(&model.AdtyTicket{})
+	switch actor.Scope {
+	case "platform_main":
+		return query.Where("site_id = ?", 0)
+	case "platform":
+		if actor.PlatformAll {
+			return query
+		}
+		return query.Where("site_id = ?", 0)
+	case "owner":
+		return query.Where("site_id = ?", actor.OwnerSiteId)
+	case "staff":
+		return query.Where("site_id = ?", actor.Staff.SiteId)
+	case "participant":
+		return query.Where("user_id = ? OR (team_id = ? AND site_id = ?)", actor.User.Id, actor.TeamId, actor.User.SiteId)
+	case "team":
+		return query.Where("site_id = ? AND team_id = ?", actor.User.SiteId, actor.TeamId)
 	default:
-		query = query.Where("user_id = ?", actor.User.Id)
+		return query.Where("user_id = ?", actor.User.Id)
 	}
-	return query
 }
 
 func applyAdtyTicketQueueFilter(query *gorm.DB, queue string) (*gorm.DB, error) {
@@ -275,6 +314,8 @@ func applyAdtyTicketQueueFilter(query *gorm.DB, queue string) (*gorm.DB, error) 
 	case "in_progress":
 		return query.Where("status = ? OR status = ? OR (status = ? AND assignee_id > 0)",
 			model.AdtyTicketInProgress, model.AdtyTicketLegacyAssigned, model.AdtyTicketLegacyOpen), nil
+	case "waiting_internal", "resolved", "closed":
+		return query.Where("status = ?", queue), nil
 	case "urgent":
 		return query.Where("priority = ? AND status NOT IN ?", model.AdtyTicketPriorityUrgent, []string{model.AdtyTicketResolved, model.AdtyTicketClosed}), nil
 	default:
@@ -310,24 +351,23 @@ func countAdtyTicketBadges(scope *gorm.DB) (AdtyTicketBadges, error) {
 	count(&badges.Urgent, func(q *gorm.DB) *gorm.DB {
 		return q.Where("priority = ? AND status NOT IN ?", model.AdtyTicketPriorityUrgent, []string{model.AdtyTicketResolved, model.AdtyTicketClosed})
 	})
+	count(&badges.Resolved, func(q *gorm.DB) *gorm.DB { return q.Where("status = ?", model.AdtyTicketResolved) })
+	count(&badges.Closed, func(q *gorm.DB) *gorm.DB { return q.Where("status = ?", model.AdtyTicketClosed) })
 	badges.Pending = badges.New + badges.PendingAssignment
 	return badges, err
 }
 
-func GetAdtyTicket(userId int, ticketId int64) (*AdtyTicketDetail, error) {
-	actor, err := loadAdtyTicketActor(userId)
+func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicketDetail, error) {
+	actor, err := loadAdtyTicketWorkspace(model.DB, userId, workspace...)
 	if err != nil {
 		return nil, err
 	}
 	var ticket model.AdtyTicket
-	if err := model.DB.First(&ticket, ticketId).Error; err != nil {
+	if err := scopedAdtyTickets(model.DB, actor).First(&ticket, ticketId).Error; err != nil {
 		return nil, err
 	}
-	if !actor.canRead(ticket) {
-		return nil, ErrAdtyTicketForbidden
-	}
 	visibility := []string{model.AdtyTicketVisibilityPublic}
-	if actor.canNote(ticket) {
+	if actor.isHandling() {
 		visibility = append(visibility, model.AdtyTicketVisibilityNote)
 	}
 	var messages []model.AdtyTicketMessage
@@ -339,56 +379,69 @@ func GetAdtyTicket(userId int, ticketId int64) (*AdtyTicketDetail, error) {
 		return nil, err
 	}
 	var events []model.AdtyTicketEvent
-	if err := model.DB.Where("ticket_id = ?", ticket.Id).Order("id ASC").Find(&events).Error; err != nil {
+	eventQuery := model.DB.Where("ticket_id = ?", ticket.Id)
+	if !actor.isHandling() {
+		eventQuery = eventQuery.Where("action IN ?", []string{"create", "reply", "status", "reopen", "priority", "assign", "transfer"})
+	}
+	if err := eventQuery.Order("id ASC").Find(&events).Error; err != nil {
 		return nil, err
 	}
 	ticket.Status = model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
-	return &AdtyTicketDetail{Ticket: ticket, Messages: messages, Images: images, Events: events, CanNote: actor.canNote(ticket), CanManage: actor.canManage(ticket)}, nil
+	var assignees []AdtyTicketAssignee
+	if actor.isHandling() {
+		assignees, err = adtyTicketAssigneesTx(model.DB, ticket, actor.Scope == "platform" || actor.Scope == "platform_main", 0)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &AdtyTicketDetail{Assignees: assignees, Ticket: ticket, Messages: messages, Images: images, Events: events, CanNote: actor.isHandling(), CanManage: actor.isHandling()}, nil
 }
 
-func ReplyAdtyTicket(userId, ticketId int64, body, idempotency string) (*model.AdtyTicketMessage, error) {
-	return writeAdtyTicketMessage(int(userId), ticketId, body, idempotency, model.AdtyTicketVisibilityPublic)
+func ReplyAdtyTicket(userId, ticketId int64, body, idempotency string, workspace ...string) (*model.AdtyTicketMessage, error) {
+	return writeAdtyTicketMessage(int(userId), ticketId, body, idempotency, model.AdtyTicketVisibilityPublic, workspace...)
 }
 
-func NoteAdtyTicket(userId int, ticketId int64, body, idempotency string) (*model.AdtyTicketMessage, error) {
-	return writeAdtyTicketMessage(userId, ticketId, body, idempotency, model.AdtyTicketVisibilityNote)
+func NoteAdtyTicket(userId int, ticketId int64, body, idempotency string, workspace ...string) (*model.AdtyTicketMessage, error) {
+	return writeAdtyTicketMessage(userId, ticketId, body, idempotency, model.AdtyTicketVisibilityNote, workspace...)
 }
 
-func SetAdtyTicketStatus(userId int, ticketId int64, status, priority string, assigneeId int) error {
+func SetAdtyTicketStatus(userId int, ticketId int64, status, priority string, assigneeId int, workspace ...string) error {
 	if assigneeId < 0 {
 		return ErrAdtyTicketInvalid
 	}
-	actor, err := loadAdtyTicketActor(userId)
-	if err != nil {
-		return err
-	}
+	var err error
 	if err := ensureAdtyTicketNoticeSchema(); err != nil {
 		return err
 	}
 	var statusAudit map[string]any
 	var statusBefore map[string]any
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		var ticket model.AdtyTicket
-		if err := model.AdtyLockForUpdate(tx).First(&ticket, ticketId).Error; err != nil {
+		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
+		if err != nil {
 			return err
 		}
-		if !actor.canRead(ticket) {
-			return ErrAdtyTicketForbidden
+		var ticket model.AdtyTicket
+		if err := scopedAdtyTickets(model.AdtyLockForUpdate(tx), actor).First(&ticket, ticketId).Error; err != nil {
+			return err
 		}
 		current := model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
 		nextAssignee := ticket.AssigneeId
 		if assigneeId > 0 {
-			if !actor.canManage(ticket) {
+			if !actor.isHandling() {
 				return ErrAdtyTicketForbidden
 			}
-			if err := validateAdtyTicketAssigneeTx(tx, ticket, assigneeId); err != nil {
+			eligible, err := adtyTicketAssigneesTx(tx, ticket, actor.Scope == "platform" || actor.Scope == "platform_main", assigneeId)
+			if err != nil {
 				return err
+			}
+			if len(eligible) == 0 {
+				return ErrAdtyTicketInvalid
 			}
 			nextAssignee = assigneeId
 		}
 		nextPriority := ticket.Priority
 		if priority != "" {
-			if !actor.canManage(ticket) {
+			if !actor.isHandling() {
 				return ErrAdtyTicketForbidden
 			}
 			switch priority {
@@ -426,9 +479,6 @@ func SetAdtyTicketStatus(userId int, ticketId int64, status, priority string, as
 		if nextAssignee != ticket.AssigneeId {
 			updates["assignee_id"] = nextAssignee
 		}
-		if err := tx.Model(&ticket).Updates(updates).Error; err != nil {
-			return err
-		}
 		statusBefore = map[string]any{
 			"ticket_id": ticket.Id, "status": current, "priority": ticket.Priority, "assignee_id": ticket.AssigneeId,
 			"site_id": ticket.SiteId, "user_id": ticket.UserId,
@@ -436,6 +486,19 @@ func SetAdtyTicketStatus(userId int, ticketId int64, status, priority string, as
 		statusAudit = map[string]any{
 			"ticket_id": ticket.Id, "status": next, "priority": nextPriority, "assignee_id": nextAssignee,
 			"site_id": ticket.SiteId, "user_id": ticket.UserId, "event": action,
+		}
+		if err := tx.Model(&model.AdtyTicket{}).Where("id = ?", ticket.Id).Updates(updates).Error; err != nil {
+			return err
+		}
+		if nextAssignee != ticket.AssigneeId {
+			assignment := "assign"
+			if ticket.AssigneeId > 0 {
+				assignment = "transfer"
+			}
+			change := strconv.Itoa(ticket.AssigneeId) + " → " + strconv.Itoa(nextAssignee)
+			if err := tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: assignment, Detail: change}).Error; err != nil {
+				return err
+			}
 		}
 		eventAction := action
 		eventDetail := next
@@ -469,12 +532,15 @@ func nextAdtyTicketStatus(tx *gorm.DB, actor adtyTicketActor, ticket model.AdtyT
 	landing := reopenAdtyTicketLanding(nextAssignee)
 	switch requested {
 	case "resolve":
+		if actor.User.Id != ticket.UserId && !actor.isHandling() {
+			return "", ErrAdtyTicketForbidden
+		}
 		if current == model.AdtyTicketClosed {
 			return "", ErrAdtyTicketInvalid
 		}
 		return model.AdtyTicketResolved, nil
 	case "reopen":
-		if ticket.UserId != actor.User.Id && !actor.canManage(ticket) {
+		if ticket.UserId != actor.User.Id && !actor.isHandling() {
 			return "", ErrAdtyTicketForbidden
 		}
 		if current == model.AdtyTicketResolved || current == model.AdtyTicketClosed {
@@ -485,12 +551,12 @@ func nextAdtyTicketStatus(tx *gorm.DB, actor adtyTicketActor, ticket model.AdtyT
 		}
 		return "", ErrAdtyTicketInvalid
 	case "close":
-		if !actor.canManage(ticket) {
+		if !actor.isHandling() {
 			return "", ErrAdtyTicketForbidden
 		}
 		return model.AdtyTicketClosed, nil
 	case model.AdtyTicketWaitingUser, model.AdtyTicketWaitingInternal:
-		if !actor.canManage(ticket) {
+		if !actor.isHandling() {
 			return "", ErrAdtyTicketForbidden
 		}
 		if !canMoveAdtyTicketToWaiting(current) {
@@ -498,7 +564,7 @@ func nextAdtyTicketStatus(tx *gorm.DB, actor adtyTicketActor, ticket model.AdtyT
 		}
 		return requested, nil
 	case model.AdtyTicketInProgress:
-		if !actor.canManage(ticket) {
+		if !actor.isHandling() {
 			return "", ErrAdtyTicketForbidden
 		}
 		if !canAssignAdtyTicket(current) {
@@ -506,7 +572,7 @@ func nextAdtyTicketStatus(tx *gorm.DB, actor adtyTicketActor, ticket model.AdtyT
 		}
 		return model.AdtyTicketInProgress, nil
 	case model.AdtyTicketPendingAssignment:
-		if !actor.canManage(ticket) {
+		if !actor.isHandling() {
 			return "", ErrAdtyTicketForbidden
 		}
 		if nextAssignee > 0 {
@@ -567,14 +633,11 @@ func idempotentAdtyTicketReopen(tx *gorm.DB, ticket model.AdtyTicket, current st
 // message it belongs to. The caller must declare visibility: there is no
 // default, because a default would read as "optional" and silently decide a
 // security question. Internal images require note permission.
-func AddAdtyTicketImage(userId int, ticketId int64, visibility string, data []byte) (*model.AdtyTicketImage, error) {
+func AddAdtyTicketImage(userId int, ticketId int64, visibility string, data []byte, workspace ...string) (*model.AdtyTicketImage, error) {
 	if visibility != model.AdtyTicketVisibilityPublic && visibility != model.AdtyTicketVisibilityNote {
 		return nil, ErrAdtyTicketInvalid
 	}
-	actor, err := loadAdtyTicketActor(userId)
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	policy := adtyTicketPolicy()
 	var stripped []byte
 	var mime string
@@ -601,14 +664,15 @@ func AddAdtyTicketImage(userId int, ticketId int64, visibility string, data []by
 	}
 	var row model.AdtyTicketImage
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		var ticket model.AdtyTicket
-		if err := model.AdtyLockForUpdate(tx).First(&ticket, ticketId).Error; err != nil {
+		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
+		if err != nil {
 			return err
 		}
-		if !actor.canRead(ticket) {
-			return ErrAdtyTicketForbidden
+		var ticket model.AdtyTicket
+		if err := scopedAdtyTickets(model.AdtyLockForUpdate(tx), actor).First(&ticket, ticketId).Error; err != nil {
+			return err
 		}
-		if visibility == model.AdtyTicketVisibilityNote && !actor.canNote(ticket) {
+		if visibility == model.AdtyTicketVisibilityNote && !actor.isHandling() {
 			return ErrAdtyTicketForbidden
 		}
 		if sanitizeErr != nil {
@@ -652,17 +716,14 @@ func AddAdtyTicketImage(userId int, ticketId int64, visibility string, data []by
 	return &row, nil
 }
 
-func OpenAdtyTicketImage(userId int, ticketId, imageId int64) (string, string, error) {
-	actor, err := loadAdtyTicketActor(userId)
+func OpenAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...string) (string, string, error) {
+	actor, err := loadAdtyTicketWorkspace(model.DB, userId, workspace...)
 	if err != nil {
 		return "", "", err
 	}
 	var ticket model.AdtyTicket
-	if err := model.DB.First(&ticket, ticketId).Error; err != nil {
+	if err := scopedAdtyTickets(model.DB, actor).First(&ticket, ticketId).Error; err != nil {
 		return "", "", err
-	}
-	if !actor.canRead(ticket) {
-		return "", "", ErrAdtyTicketForbidden
 	}
 	var imageRow model.AdtyTicketImage
 	if err := model.DB.Where("id = ? AND ticket_id = ?", imageId, ticket.Id).First(&imageRow).Error; err != nil {
@@ -670,7 +731,7 @@ func OpenAdtyTicketImage(userId int, ticketId, imageId int64) (string, string, e
 	}
 	// Same gate as the message list. Anything that is not explicitly public is
 	// treated as internal, so a row that skipped the backfill still fails closed.
-	if imageRow.Visibility != model.AdtyTicketVisibilityPublic && !actor.canNote(ticket) {
+	if imageRow.Visibility != model.AdtyTicketVisibilityPublic && !actor.isHandling() {
 		return "", "", ErrAdtyTicketForbidden
 	}
 	path, err := adtyTicketImageStoragePath(imageRow)
@@ -683,15 +744,12 @@ func OpenAdtyTicketImage(userId int, ticketId, imageId int64) (string, string, e
 	return path, imageRow.Mime, nil
 }
 
-func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visibility string) (*model.AdtyTicketMessage, error) {
+func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visibility string, workspace ...string) (*model.AdtyTicketMessage, error) {
 	body = strings.TrimSpace(redactAdtySecrets(body))
 	if body == "" {
 		return nil, ErrAdtyTicketInvalid
 	}
-	actor, err := loadAdtyTicketActor(userId)
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	if err := ensureAdtyTicketNoticeSchema(); err != nil {
 		return nil, err
 	}
@@ -699,14 +757,15 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 	createdNew := false
 	var ticketSiteID int
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		var ticket model.AdtyTicket
-		if err := model.AdtyLockForUpdate(tx).First(&ticket, ticketId).Error; err != nil {
+		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
+		if err != nil {
 			return err
 		}
-		if !actor.canRead(ticket) {
-			return ErrAdtyTicketForbidden
+		var ticket model.AdtyTicket
+		if err := scopedAdtyTickets(model.AdtyLockForUpdate(tx), actor).First(&ticket, ticketId).Error; err != nil {
+			return err
 		}
-		if visibility == model.AdtyTicketVisibilityNote && !actor.canNote(ticket) {
+		if visibility == model.AdtyTicketVisibilityNote && !actor.isHandling() {
 			return ErrAdtyTicketForbidden
 		}
 		dedupe := ticketMessageDedupe(ticket.Id, actor.User.Id, visibility, idempotency)
@@ -720,7 +779,7 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 				if prior.TicketId != ticket.Id || prior.AuthorId != actor.User.Id || prior.Visibility != visibility {
 					return ErrAdtyTicketForbidden
 				}
-				if prior.Visibility != model.AdtyTicketVisibilityPublic && !actor.canNote(ticket) {
+				if prior.Visibility != model.AdtyTicketVisibilityPublic && !actor.isHandling() {
 					return ErrAdtyTicketForbidden
 				}
 				saved = &prior
@@ -789,21 +848,75 @@ func adtyTicketHandlerTx(tx *gorm.DB, ticket model.AdtyTicket) int {
 	return 0
 }
 
-func validateAdtyTicketAssigneeTx(tx *gorm.DB, ticket model.AdtyTicket, assigneeId int) error {
-	if assigneeId <= 0 {
-		return ErrAdtyTicketInvalid
+// Candidate names are restricted to the handling workspace. The mutation uses
+// the same candidate query with an explicit ID, so grants are rechecked on transfer.
+func adtyTicketAssigneesTx(tx *gorm.DB, ticket model.AdtyTicket, includePlatform bool, id int) ([]AdtyTicketAssignee, error) {
+	userQuery := tx.Model(&model.User{}).Select("id, username, display_name, role, site_id, staff_site_id").Where("status = ?", common.UserStatusEnabled)
+	if id > 0 {
+		userQuery = userQuery.Where("id = ?", id)
 	}
-	target, err := loadAdtyTicketActorTx(tx, assigneeId)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrAdtyTicketInvalid
+	var staff []model.AdtySiteStaff
+	var ownerID int
+	if ticket.SiteId > 0 {
+		var site model.AdtySite
+		if err := tx.Where("id = ? AND status IN ? AND agreement_ver = ?", ticket.SiteId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}, AdtyCurrentSiteAgreementVersion()).Limit(1).Find(&site).Error; err != nil {
+			return nil, err
 		}
+		if site.Id > 0 {
+			ownerID = site.OwnerUserId
+			q := tx.Where("site_id = ? AND owner_user_id = ? AND status = ?", ticket.SiteId, ownerID, "enabled")
+			if id > 0 {
+				q = q.Where("user_id = ?", id)
+			}
+			if err := q.Find(&staff).Error; err != nil {
+				return nil, err
+			}
+		}
+	}
+	localIDs := []int{ownerID}
+	for _, member := range staff {
+		if slices.Contains(AdtyStaffViewOf(member).Permissions, AdtyStaffTicketManage) {
+			localIDs = append(localIDs, member.UserId)
+		}
+	}
+	if includePlatform {
+		userQuery = userQuery.Where("id IN ? OR (role >= ? AND site_id = 0 AND staff_site_id = 0)", localIDs, common.RoleAdminUser)
+	} else {
+		userQuery = userQuery.Where("id IN ?", localIDs)
+	}
+	var users []model.User
+	if err := userQuery.Order("username ASC, id ASC").Find(&users).Error; err != nil {
+		return nil, err
+	}
+	var platformCan func(int, int, authz.Permission) bool
+	if includePlatform && slices.ContainsFunc(users, func(user model.User) bool { return user.Role == common.RoleAdminUser }) {
+		var err error
+		platformCan, err = authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := []AdtyTicketAssignee{}
+	for _, user := range users {
+		local := user.Id == ownerID || (user.Role == common.RoleCommonUser && ticket.SiteId > 0 && user.StaffSiteId == ticket.SiteId && user.SiteId == ticket.SiteId)
+		platform := includePlatform && user.Role >= common.RoleRootUser
+		if platformCan != nil && user.Role == common.RoleAdminUser {
+			platform = platformCan(user.Id, user.Role, authz.AdtyTicketManageAll) || (ticket.SiteId == 0 && platformCan(user.Id, user.Role, authz.AdtyTicketManage))
+		}
+		if !local && !platform {
+			continue
+		}
+		result = append(result, AdtyTicketAssignee{Id: user.Id, Username: user.Username, DisplayName: user.DisplayName})
+	}
+	return result, nil
+}
+
+func validateAdtyTicketAssigneeTx(tx *gorm.DB, ticket model.AdtyTicket, id int) error {
+	eligible, err := adtyTicketAssigneesTx(tx, ticket, true, id)
+	if err != nil {
 		return err
 	}
-	if target.User.Status != common.UserStatusEnabled {
-		return ErrAdtyTicketInvalid
-	}
-	if !target.canManage(ticket) {
+	if id <= 0 || len(eligible) == 0 {
 		return ErrAdtyTicketInvalid
 	}
 	return nil
@@ -818,6 +931,21 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 	if err := tx.First(&actor.User, userId).Error; err != nil {
 		return actor, err
 	}
+	if actor.User.Status != common.UserStatusEnabled {
+		return actor, ErrAdtyTicketForbidden
+	}
+	if actor.User.SiteId == 0 && actor.User.StaffSiteId == 0 && actor.User.Role >= common.RoleAdminUser {
+		if actor.User.Role >= common.RoleRootUser {
+			actor.PlatformAll, actor.PlatformMain = true, true
+		} else {
+			check, err := authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
+			if err != nil {
+				return actor, err
+			}
+			actor.PlatformAll = check(userId, actor.User.Role, authz.AdtyTicketManageAll)
+			actor.PlatformMain = actor.PlatformAll || check(userId, actor.User.Role, authz.AdtyTicketManage)
+		}
+	}
 	var staff model.AdtySiteStaff
 	lookup := tx.Where("user_id = ?", userId).Limit(1).Find(&staff)
 	if lookup.Error != nil {
@@ -825,14 +953,23 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 	}
 	if lookup.RowsAffected > 0 {
 		actor.Staff = &staff
+		if staff.SiteId > 0 && actor.User.StaffSiteId == staff.SiteId && actor.User.SiteId == staff.SiteId && actor.User.Role == common.RoleCommonUser && staff.Status == "enabled" && slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffTicketManage) {
+			var n int64
+			err := tx.Model(&model.AdtySite{}).Where("id = ? AND owner_user_id = ? AND status IN ? AND agreement_ver = ?", staff.SiteId, staff.OwnerUserId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}, AdtyCurrentSiteAgreementVersion()).Count(&n).Error
+			if err != nil {
+				return actor, err
+			}
+			actor.StaffTickets = n == 1
+		}
 	}
 	var site model.AdtySite
-	owned := tx.Where("owner_user_id = ?", userId).Limit(1).Find(&site)
+	owned := tx.Where("owner_user_id = ? AND status IN ?", userId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&site)
 	if owned.Error != nil {
 		return actor, owned.Error
 	}
 	if owned.RowsAffected > 0 {
 		actor.OwnerSiteId = site.Id
+		actor.OwnerTickets = site.AgreementVer == AdtyCurrentSiteAgreementVersion()
 	}
 	var member model.AdtyTeamMember
 	team := tx.Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).Limit(1).Find(&member)
@@ -840,59 +977,120 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 		return actor, team.Error
 	}
 	if team.RowsAffected > 0 {
-		actor.TeamId = member.TeamId
-		actor.TeamRole = member.Role
+		var active int64
+		if err := tx.Model(&model.AdtyTeam{}).Where("id = ? AND site_id = ? AND status = ?", member.TeamId, actor.User.SiteId, model.AdtyTeamStatusActive).Count(&active).Error; err != nil {
+			return actor, err
+		}
+		if active == 1 {
+			actor.TeamId = member.TeamId
+			actor.TeamRole = member.Role
+		}
 	}
 	return actor, nil
 }
 
-func (actor adtyTicketActor) canRead(ticket model.AdtyTicket) bool {
-	if actor.User.Role >= common.RoleRootUser {
-		return true
+// A PAT may only narrow the workspace available to its actual account.
+func AdtyTicketTokenScope(workspace, method string, granted []string) string {
+	switch workspace {
+	case "platform", "platform_main":
+		if AccessTokenScopeGranted(granted, AccessTokenScopeOf(authz.AdtyTicketManageAll)) {
+			return workspace
+		}
+		if AccessTokenScopeGranted(granted, AccessTokenScopeOf(authz.AdtyTicketManage)) {
+			return "platform_main"
+		}
+	case "owner":
+		// The owner workspace uses the existing site-owner PAT scope.
+		scope := "wallet:write"
+		if method == http.MethodGet {
+			scope = "wallet:read"
+		}
+		if AccessTokenScopeGranted(granted, scope) {
+			return workspace
+		}
+	case "staff":
+		// Dedicated staff workspaces require a live browser session.
+	default:
+		return workspace
 	}
-	if actor.User.Role >= common.RoleAdminUser && ticket.SiteId == 0 {
-		return true
-	}
-	if actor.OwnerSiteId > 0 && actor.OwnerSiteId == ticket.SiteId {
-		return true
-	}
-	if actor.Staff != nil && actor.Staff.Status == "enabled" && actor.Staff.SiteId == ticket.SiteId {
-		return true
-	}
-	if ticket.UserId == actor.User.Id {
-		return true
-	}
-	return actor.TeamRole == model.AdtyTeamRoleLeader && actor.TeamId > 0 && actor.TeamId == ticket.TeamId
+	return "denied"
 }
 
-func (actor adtyTicketActor) canNote(ticket model.AdtyTicket) bool {
-	if ticket.UserId == actor.User.Id && actor.User.Role < common.RoleAdminUser && (actor.Staff == nil || actor.Staff.Status != "enabled") && actor.OwnerSiteId != ticket.SiteId {
-		return false
+func loadAdtyTicketWorkspace(tx *gorm.DB, userId int, requested ...string) (adtyTicketActor, error) {
+	if len(requested) > 1 {
+		return adtyTicketActor{}, ErrAdtyTicketInvalid
 	}
-	return actor.canManage(ticket)
+	workspace := ""
+	if len(requested) == 1 {
+		workspace = requested[0]
+	}
+	if (workspace == "staff" || len(requested) == 0) && tx != model.DB {
+		// A staff grant update locks this row before replacing permissions.
+		var membership model.AdtySiteStaff
+		if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id = ?", userId).Limit(1).Find(&membership).Error; err != nil {
+			return adtyTicketActor{}, err
+		}
+	}
+	actor, err := loadAdtyTicketActorTx(tx, userId)
+	if err != nil {
+		return actor, err
+	}
+	// In-process callers predating workspaces use their authorized handling
+	// scope. HTTP always supplies a scope, with an empty value meaning personal.
+	if len(requested) == 0 {
+		switch {
+		case actor.PlatformMain:
+			workspace = "platform"
+		case actor.OwnerTickets:
+			workspace = "owner"
+		case actor.StaffTickets:
+			workspace = "staff"
+		case actor.TeamRole == model.AdtyTeamRoleLeader:
+			workspace = "participant"
+		}
+	}
+	actor.Scope = workspace
+	permitted := false
+	switch workspace {
+	case "denied":
+		return actor, ErrAdtyTicketForbidden
+	case "", "personal":
+		actor.Scope = "personal"
+		permitted = actor.User.StaffSiteId == 0 && actor.Staff == nil
+	case "participant":
+		permitted = len(requested) == 0 && actor.Staff == nil && actor.TeamId > 0 && actor.TeamRole == model.AdtyTeamRoleLeader
+	case "team":
+		permitted = actor.Staff == nil && actor.TeamId > 0 && actor.TeamRole == model.AdtyTeamRoleLeader
+	case "platform", "platform_main":
+		permitted = actor.PlatformMain
+	case "owner":
+		permitted = actor.OwnerTickets
+	case "staff":
+		permitted = actor.StaffTickets
+	default:
+		return actor, ErrAdtyTicketInvalid
+	}
+	if !permitted {
+		return actor, ErrAdtyTicketForbidden
+	}
+	return actor, nil
+}
+
+func (actor adtyTicketActor) isHandling() bool {
+	return actor.Scope == "platform" || actor.Scope == "platform_main" || actor.Scope == "owner" || actor.Scope == "staff"
 }
 
 func (actor adtyTicketActor) canManage(ticket model.AdtyTicket) bool {
-	if actor.User.Role >= common.RoleRootUser {
-		return true
-	}
-	if actor.User.Role >= common.RoleAdminUser && ticket.SiteId == 0 {
-		return true
-	}
-	if actor.OwnerSiteId > 0 && actor.OwnerSiteId == ticket.SiteId {
-		return true
-	}
-	return actor.Staff != nil && actor.Staff.Status == "enabled" && actor.Staff.SiteId == ticket.SiteId
+	return actor.PlatformAll || (actor.PlatformMain && ticket.SiteId == 0) ||
+		(actor.OwnerTickets && actor.OwnerSiteId == ticket.SiteId) || (actor.StaffTickets && actor.Staff.SiteId == ticket.SiteId)
 }
 
-func (actor adtyTicketActor) scopeSite() int {
-	if actor.OwnerSiteId > 0 {
-		return actor.OwnerSiteId
+func (actor adtyTicketActor) canRead(ticket model.AdtyTicket) bool {
+	if actor.Staff != nil || actor.User.StaffSiteId > 0 {
+		return actor.canManage(ticket)
 	}
-	if actor.Staff != nil {
-		return actor.Staff.SiteId
-	}
-	return actor.User.SiteId
+	return ticket.UserId == actor.User.Id || actor.canManage(ticket) ||
+		(actor.TeamRole == model.AdtyTeamRoleLeader && actor.TeamId > 0 && actor.TeamId == ticket.TeamId && actor.User.SiteId == ticket.SiteId)
 }
 
 func ticketCreateDedupe(siteId, userId int, key string) string {

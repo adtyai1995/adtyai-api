@@ -718,6 +718,7 @@ func TestSiteBonusCappedByMainPlusExtra(t *testing.T) {
 func TestTrialGrantLimitsAndLedger(t *testing.T) {
 	db := prepareSiteDB(t)
 	owner, site := openActiveSite(t, db, "trial")
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, owner.Id, AdtySiteMarketingUpdate{TrialGrantMaxUSD: new("5"), TrialGrantDailyUSD: new("20")}))
 	customer := siteCustomer(t, db, site, "trial-customer")
 	stranger := referralUser(t, db, "trial-stranger")
 
@@ -772,7 +773,7 @@ func TestTrialGrantLimitsAndLedger(t *testing.T) {
 	_, err = GrantAdtySiteTrial(site.Id, customer.Id, usd("0.01"), "over-daily")
 	assert.Error(t, err, "trial_grant_daily_usd of $20 is used up")
 
-	resellerSetting().TrialGrantMaxUSD = nil
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, owner.Id, AdtySiteMarketingUpdate{TrialGrantMaxUSD: new("")}))
 	_, err = GrantAdtySiteTrial(site.Id, customer.Id, usd("1"), "unset")
 	assert.ErrorIs(t, err, ErrAdtySiteTrialUnavailable)
 }
@@ -780,6 +781,7 @@ func TestTrialGrantLimitsAndLedger(t *testing.T) {
 func TestLeftoverPausedSiteAllowsTrialGrant(t *testing.T) {
 	db := prepareSiteDB(t)
 	owner, site := openActiveSite(t, db, "trial-paused")
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, owner.Id, AdtySiteMarketingUpdate{TrialGrantMaxUSD: new("5"), TrialGrantDailyUSD: new("20")}))
 	customer := siteCustomer(t, db, site, "trial-paused-customer")
 	affiliate, err := Referral.EnsureAffiliate(owner.Id)
 	require.NoError(t, err)
@@ -801,6 +803,7 @@ func TestLeftoverPausedSiteAllowsTrialGrant(t *testing.T) {
 func TestTrialGrantConcurrentSameKey(t *testing.T) {
 	db := prepareSiteDB(t)
 	owner, site := openActiveSite(t, db, "trial-race")
+	require.NoError(t, SaveAdtyOwnerSiteMarketing(site.Id, owner.Id, AdtySiteMarketingUpdate{TrialGrantMaxUSD: new("5"), TrialGrantDailyUSD: new("20")}))
 	customer := siteCustomer(t, db, site, "trial-race-customer")
 	affiliate, err := Referral.EnsureAffiliate(owner.Id)
 	require.NoError(t, err)

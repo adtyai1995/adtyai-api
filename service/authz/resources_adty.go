@@ -4,6 +4,7 @@ package authz
 // 全部不设 DefaultRoles：普通管理员默认没有权限，由超级管理员逐项开启。
 // 不在 init() 里登记：上游测试对权限矩阵做完全相等比较，只列了上游的三类资源。
 const (
+	ResourceAdtyTicket   = "adty_ticket"
 	ResourceAdtyUser     = "adty_user"
 	ResourceAdtyLog      = "adty_log"
 	ResourceAdtyModel    = "adty_model"
@@ -27,12 +28,14 @@ const (
 )
 
 var (
-	AdtyUserRead   = Permission{Resource: ResourceAdtyUser, Action: ActionRead}
-	AdtyUserCreate = Permission{Resource: ResourceAdtyUser, Action: ActionCreate}
-	AdtyUserWrite  = Permission{Resource: ResourceAdtyUser, Action: ActionWrite}
-	AdtyUserGroup  = Permission{Resource: ResourceAdtyUser, Action: ActionGroup}
-	AdtyUserQuota  = Permission{Resource: ResourceAdtyUser, Action: ActionQuota}
-	AdtyUserDelete = Permission{Resource: ResourceAdtyUser, Action: ActionDelete}
+	AdtyTicketManage    = Permission{Resource: ResourceAdtyTicket, Action: "manage"}
+	AdtyTicketManageAll = Permission{Resource: ResourceAdtyTicket, Action: "manage_all"}
+	AdtyUserRead        = Permission{Resource: ResourceAdtyUser, Action: ActionRead}
+	AdtyUserCreate      = Permission{Resource: ResourceAdtyUser, Action: ActionCreate}
+	AdtyUserWrite       = Permission{Resource: ResourceAdtyUser, Action: ActionWrite}
+	AdtyUserGroup       = Permission{Resource: ResourceAdtyUser, Action: ActionGroup}
+	AdtyUserQuota       = Permission{Resource: ResourceAdtyUser, Action: ActionQuota}
+	AdtyUserDelete      = Permission{Resource: ResourceAdtyUser, Action: ActionDelete}
 
 	AdtyLogRead   = Permission{Resource: ResourceAdtyLog, Action: ActionRead}
 	AdtyLogExport = Permission{Resource: ResourceAdtyLog, Action: ActionExport}
@@ -66,6 +69,13 @@ var (
 )
 
 var adtyResources = []ResourceDefinition{
+	{
+		Resource: ResourceAdtyTicket, LabelKey: "Tickets",
+		Actions: []ActionDefinition{
+			{Action: "manage", LabelKey: "Manage main-site tickets", DescriptionKey: "Handle tickets on the main site."},
+			{Action: "manage_all", LabelKey: "Manage tickets across sites", DescriptionKey: "Handle tickets on the main site and all reseller sites."},
+		},
+	},
 	{
 		Resource: ResourceAdtyUser,
 		LabelKey: "Users",

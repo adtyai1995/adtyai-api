@@ -19,6 +19,7 @@ var ErrAdtySiteWalletLedgerImmutable = errors.New("site wallet ledger is immutab
 // Monetary values are USD and remain configurable instead of being embedded
 // in code so the same table can support future commercial policies.
 type AdtySiteTier struct {
+	MaxMarkup         *decimal.Decimal `json:"-" gorm:"type:decimal(10,4);->"` // historical metadata
 	Id                int64            `json:"id"`
 	Code              string           `json:"code" gorm:"uniqueIndex;type:varchar(32)"`
 	Name              string           `json:"name" gorm:"type:varchar(128)"`
@@ -27,7 +28,6 @@ type AdtySiteTier struct {
 	MinPrincipalUSD   decimal.Decimal  `json:"min_principal_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	MinConsumptionUSD decimal.Decimal  `json:"min_consumption_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	CostFactor        *decimal.Decimal `json:"cost_factor" gorm:"type:decimal(10,6)"`
-	MaxMarkup         *decimal.Decimal `json:"max_markup" gorm:"type:decimal(10,4)"`
 	DepositUSD        decimal.Decimal  `json:"deposit_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	Enabled           bool             `json:"enabled"`
 	SortOrder         int              `json:"sort_order"`

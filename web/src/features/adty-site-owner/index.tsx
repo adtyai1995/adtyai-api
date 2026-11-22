@@ -25,8 +25,10 @@ import { SectionPageLayout } from '@/components/layout'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { NotificationManager } from '@/features/adty-notifications/components/notification-manager'
 import { TeamRegistrationLinksPanel } from '@/features/adty-team-registration'
 import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
+import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { RechargeAudit } from '@/features/recharge-audit'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
 import { useAuthStore } from '@/stores/auth-store'
@@ -69,7 +71,10 @@ export function SiteOwnerCenter(props: {
   })
   const labels: Record<SiteOwnerSectionId, string> = {
     overview: t('Overview'),
+    tickets: t('Ticket workspace'),
     customers: t('Customers'),
+    teams: t('Team management'),
+    commissions: t('Invite commission withdrawal'),
     staff: t('Staff accounts'),
     orders: t('Order management'),
     pricing: t('Pricing'),
@@ -137,6 +142,9 @@ export function SiteOwnerCenter(props: {
                       </TabsTrigger>
                     ))}
                   </TabsList>
+                  <TabsContent value='tickets'>
+                    <TicketCenter scope='owner' />
+                  </TabsContent>
                   <TabsContent value='overview'>
                     <OverviewPanel />
                   </TabsContent>
@@ -145,8 +153,12 @@ export function SiteOwnerCenter(props: {
                     className='flex flex-col gap-5'
                   >
                     <CustomersPanel />
+                  </TabsContent>
+                  <TabsContent value='teams'>
                     <TeamRegistrationLinksPanel actor='owner' />
                     <SiteTeamDiscountPanel />
+                  </TabsContent>
+                  <TabsContent value='commissions'>
                     <SiteReferralPanel />
                     <CommissionWithdrawalPanel />
                   </TabsContent>
@@ -168,20 +180,28 @@ export function SiteOwnerCenter(props: {
                   <TabsContent value='earnings'>
                     <div className='flex flex-col gap-5'>
                       <EarningsPanel />
-                      <OwnerSelfUsePanel
-                        returnTradeNo={props.returnTradeNo}
-                        onReturnClosed={() =>
-                          void navigate({
-                            to: '/site-owner/$section',
-                            params: { section: 'earnings' },
-                            search: {},
-                            replace: true,
-                          })
-                        }
-                      />
-                      <SettlementSheetPanel />
-                      <EarningToMarginPanel />
-                      <WithdrawalPanel />
+                      <section id='self-use'>
+                        <OwnerSelfUsePanel
+                          returnTradeNo={props.returnTradeNo}
+                          onReturnClosed={() =>
+                            void navigate({
+                              to: '/site-owner/$section',
+                              params: { section: 'earnings' },
+                              search: {},
+                              replace: true,
+                            })
+                          }
+                        />
+                      </section>
+                      <section id='settlement'>
+                        <SettlementSheetPanel />
+                      </section>
+                      <section id='margin'>
+                        <EarningToMarginPanel />
+                      </section>
+                      <section id='withdrawal'>
+                        <WithdrawalPanel />
+                      </section>
                       <WalletLedgerPanel />
                     </div>
                   </TabsContent>
@@ -189,6 +209,7 @@ export function SiteOwnerCenter(props: {
                     <VoucherPanel siteId={site.data.id} />
                   </TabsContent>
                   <TabsContent value='notices'>
+                    <NotificationManager mode='owner' siteId={site.data.id} />
                     <TelegramBindCard purpose='admin' />
                   </TabsContent>
                   <TabsContent value='agreement'>

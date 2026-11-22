@@ -37,7 +37,7 @@ const settings: ResellerSettings = {
   cost_factor: 0.8,
   min_cost_factor: 0.5,
   cost_factor_tiers: [],
-  max_markup: 3,
+
   max_site_bonus_extra: null,
   trial_grant_max_usd: 5,
   trial_grant_daily_usd: 20,
@@ -73,6 +73,18 @@ const settings: ResellerSettings = {
 }
 
 describe('current reseller settings', () => {
+  it('ignores generated row keys and displays server warnings', async () => {
+    const saved = {...settings, cost_factor_tiers:[{min_monthly_usd:0,cost_factor:0.8}], turnstile_widgets:[{id:'w1',site_key:'key'}],settings_warnings:['Warning from server']}
+    expect(buildResellerUpdate(saved,toResellerDrafts(saved))).toEqual({})
+    const client=new QueryClient({defaultOptions:{queries:{staleTime:Infinity,retry:false}}})
+    client.setQueryData(siteAdminKeys.settings,saved)
+    const view=render(<QueryClientProvider client={client}><SettingsPanel section='supply' canWrite canWriteSecrets /></QueryClientProvider>)
+    try {
+      expect(await screen.findByText('Warning from server')).toBeInTheDocument()
+      expect(screen.getByRole('button',{name:'Save'})).toBeDisabled()
+    } finally {view.unmount();client.clear()}
+  })
+
   it('saves domain automation credentials only when explicitly changed', () => {
     const saved = {
       ...settings,
@@ -99,7 +111,7 @@ describe('current reseller settings', () => {
     client.setQueryData(siteAdminKeys.settings, settings)
     const view = render(
       <QueryClientProvider client={client}>
-        <SettingsPanel canWrite canWriteSecrets />
+        <SettingsPanel section='supply' canWrite canWriteSecrets />
       </QueryClientProvider>
     )
     try {

@@ -17,6 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterContextProvider,
+} from '@tanstack/react-router'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -119,6 +125,10 @@ it.each([
     ready: 'No data yet',
   },
 ])('recovers $name from a failed GET with an explicit retry', async (entry) => {
+  const router = createRouter({
+    routeTree: createRootRoute(),
+    history: createMemoryHistory(),
+  })
   let failed = true
   vi.spyOn(api, 'get').mockImplementation(async () => {
     if (failed) throw new Error('offline')
@@ -129,7 +139,9 @@ it.each([
   })
   render(
     <QueryClientProvider client={client}>
-      <OwnerVerificationProvider>{entry.node}</OwnerVerificationProvider>
+      <RouterContextProvider router={router}>
+        <OwnerVerificationProvider>{entry.node}</OwnerVerificationProvider>
+      </RouterContextProvider>
     </QueryClientProvider>
   )
   const retry = await screen.findByRole('button', { name: 'Retry' })

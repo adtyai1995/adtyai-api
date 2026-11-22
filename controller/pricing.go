@@ -54,8 +54,6 @@ func GetPricing(c *gin.Context) {
 			}
 		}
 	}
-
-	service.AdtyApplySitePricing(c, groupRatio) // 二开：分站价格（任务 11.4）
 	usableGroup = service.GetUserUsableGroups(group)
 	pricing = filterPricingByUsableGroups(pricing, usableGroup)
 	// Display lists are only valid for one group. If the public price page
@@ -67,7 +65,11 @@ func GetPricing(c *gin.Context) {
 			adjustGroup = requested
 		}
 	}
-	pricing = service.AdtyAdjustPricingForSiteModels(c, adjustGroup, pricing)
+	pricing, err := service.AdtySitePriceList(c, groupRatio, adjustGroup, pricing)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := usableGroup[group]; !ok {

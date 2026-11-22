@@ -19,9 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import type { SiteOwnerAction } from '@/features/auth/secure-verification'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { siteOwnerKeys } from '../api'
@@ -53,6 +53,9 @@ export function useVerifiedOwnerMutation<TVars>(options: {
       if (!done) return
       toast.success(options.successMessage ?? t('Saved successfully'))
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      if (options.action === 'pricing') {
+        void queryClient.invalidateQueries({ queryKey: ['pricing'] })
+      }
       void invalidateSidebarBadges(queryClient)
       options.onSuccess?.()
     },

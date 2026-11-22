@@ -93,9 +93,6 @@ export type OwnerSite = {
   base_url: string
   api_base_url?: string
   cost_factor: string
-  markup_min: string
-  markup_max: string
-  markup_increase_delay_hours: number
   custom_domain_enabled: boolean
   sender_domain_enabled: boolean
   brand: SiteBrand

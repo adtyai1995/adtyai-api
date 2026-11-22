@@ -257,8 +257,19 @@ func PostAdtyAdminTelegramTest(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"tested": true})
 }
 
+// Browser requests use the selected workspace. Scoped dashboard tokens also
+// need its management grant, in addition to the route's profile read/write scope.
+func adtyRequestedTicketScope(c *gin.Context) string {
+	scope := c.Query("scope")
+	if _, token := c.Get("access_token_legacy"); token {
+		return service.AdtyTicketTokenScope(scope, c.Request.Method, c.GetStringSlice("access_token_scopes"))
+	}
+	return scope
+}
+
 func GetAdtyTickets(c *gin.Context) {
-	list, err := service.ListAdtyTickets(c.GetInt("id"), c.Query("queue"))
+	page := common.GetPageQuery(c)
+	list, err := service.ListAdtyTicketPage(c.GetInt("id"), c.Query("queue"), page.Page, page.PageSize, adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -329,7 +340,7 @@ func GetAdtyTicket(c *gin.Context) {
 		return
 	}
 	userID := c.GetInt("id")
-	detail, err := service.GetAdtyTicket(userID, id)
+	detail, err := service.GetAdtyTicket(userID, id, adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -362,7 +373,7 @@ func PostAdtyTicketReply(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	message, err := service.ReplyAdtyTicket(int64(c.GetInt("id")), id, body.Body, c.GetHeader("Idempotency-Key"))
+	message, err := service.ReplyAdtyTicket(int64(c.GetInt("id")), id, body.Body, c.GetHeader("Idempotency-Key"), adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -382,7 +393,7 @@ func PostAdtyTicketNote(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	message, err := service.NoteAdtyTicket(c.GetInt("id"), id, body.Body, c.GetHeader("Idempotency-Key"))
+	message, err := service.NoteAdtyTicket(c.GetInt("id"), id, body.Body, c.GetHeader("Idempotency-Key"), adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -404,7 +415,7 @@ func PostAdtyTicketStatus(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SetAdtyTicketStatus(c.GetInt("id"), id, body.Status, body.Priority, body.AssigneeId); err != nil {
+	if err := service.SetAdtyTicketStatus(c.GetInt("id"), id, body.Status, body.Priority, body.AssigneeId, adtyRequestedTicketScope(c)); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -443,7 +454,7 @@ func PostAdtyTicketImage(c *gin.Context) {
 		return
 	}
 	userID := c.GetInt("id")
-	image, err := service.AddAdtyTicketImage(userID, id, body.Visibility, raw)
+	image, err := service.AddAdtyTicketImage(userID, id, body.Visibility, raw, adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -480,7 +491,7 @@ func GetAdtyTicketImage(c *gin.Context) {
 	userID := c.GetInt("id")
 	now := time.Now()
 	if c.Query("action") == "grant" {
-		detail, err := service.GetAdtyTicket(userID, id)
+		detail, err := service.GetAdtyTicket(userID, id, adtyRequestedTicketScope(c))
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -513,7 +524,7 @@ func GetAdtyTicketImage(c *gin.Context) {
 		common.ApiError(c, service.ErrAdtyTicketForbidden)
 		return
 	}
-	path, mime, err := service.OpenAdtyTicketImage(userID, id, imageID)
+	path, mime, err := service.OpenAdtyTicketImage(userID, id, imageID, adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return

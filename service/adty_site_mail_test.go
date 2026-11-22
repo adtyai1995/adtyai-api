@@ -399,7 +399,7 @@ func TestSitePricingNoticesUseEnglishForChineseAccounts(t *testing.T) {
 	AdtySendSiteEmailAsync = func(_ *model.AdtySite, subject, to, body string) { sent = append(sent, mail{subject, to, body}) }
 	t.Cleanup(func() { AdtySendSiteEmailAsync = previous })
 	const at = 1_700_000_000
-	adtyNotifySiteMarkupIncrease(site, customer.Id, []model.AdtySitePrice{{Group: "pro", Model: "model<1>", PendingMarkup: *dec("1.4"), PendingAt: at}})
+	adtyNotifySiteMarkupIncrease(site, customer.Id, []model.AdtySitePrice{{Group: "pro", Model: "model<1>", Markup: *dec("1.4"), UpdatedAt: at}})
 	site.PendingCostFactor, site.PendingCostFactorAt = dec("0.92"), at
 	adtyNotifySiteCostFactorPending(site)
 	adtyNotifySiteCostFactor(site)
@@ -409,7 +409,7 @@ func TestSitePricingNoticesUseEnglishForChineseAccounts(t *testing.T) {
 	assert.Contains(t, sent[0].body, `href="https://pricemail.sites.example.com"`)
 	assert.Contains(t, sent[0].body, "pro / model&lt;1&gt; → 1.4")
 	assert.Contains(t, sent[0].body, adtyMailWhen(at))
-	assert.Contains(t, sent[0].body, "current price applies")
+	assert.Contains(t, sent[0].body, "Previously accepted requests and tasks keep their original price")
 	assert.Equal(t, owner.Email, sent[1].to)
 	assert.Contains(t, sent[1].body, "0.92")
 	assert.Contains(t, sent[1].body, adtyMailWhen(at))

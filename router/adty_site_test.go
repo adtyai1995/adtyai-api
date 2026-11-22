@@ -58,8 +58,7 @@ func TestResellerSettingsSaveRules(t *testing.T) {
 	unset := put(`{"enabled":true,"root_domains":["sites.example.com"]}`)
 	assert.False(t, unset.Success, "money settings are unset")
 	assert.NotContains(t, unset.Message, "extra bonus", "the error must not ask for a retired setting")
-	saved := put(`{"enabled":true,"root_domains":["Sites.Example.com"],"cost_factor":0.8,"min_cost_factor":0.5,"max_markup":3,
-		"trial_grant_max_usd":5,"trial_grant_daily_usd":20}`)
+	saved := put(`{"enabled":true,"root_domains":["Sites.Example.com"],"cost_factor":0.8,"min_cost_factor":0.5}`)
 	require.True(t, saved.Success, saved.Message)
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, []string{"sites.example.com"}, cfg.RootDomains)

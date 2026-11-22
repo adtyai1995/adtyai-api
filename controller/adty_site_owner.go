@@ -89,12 +89,6 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		return
 	}
 	d, _ := service.AdtySiteCostFactor(site)
-	limit := ""
-	if site.MaxMarkup != nil {
-		limit = site.MaxMarkup.String()
-	} else if cfg := adty_setting.GetResellerSetting(); cfg.MaxMarkup != nil {
-		limit = decimal.NewFromFloat(*cfg.MaxMarkup).String()
-	}
 	// 站长编辑用的原始品牌字段（站名没填时为空，不像 AdtyBrandFor 那样回退成子域名）。
 	var brand service.AdtySiteBrandInput
 	if strings.TrimSpace(site.Brand) != "" {
@@ -114,8 +108,8 @@ func GetAdtyOwnerSite(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"id": site.Id, "status": site.Status, "subdomain": site.Subdomain, "root_domain": site.RootDomain,
 		"host": service.AdtySiteDisplayHost(site), "base_url": service.AdtySiteBaseURL(site), "api_base_url": service.AdtySiteAPIBaseURL(site),
-		"cost_factor": d.String(), "markup_min": "0", "markup_max": limit,
-		"markup_increase_delay_hours": cfg.MarkupIncreaseDelayHours, "custom_domain_enabled": cfg.CustomDomainEnabled,
+		"cost_factor":           d.String(),
+		"custom_domain_enabled": cfg.CustomDomainEnabled,
 		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "bonus_methods": service.AdtySiteBonusMethods(site),
 		"seo_index": site.SeoIndex, "agreement_version": site.AgreementVer, "agreement_at": site.AgreementAt,
 		"close_requested_at": site.CloseRequestedAt,

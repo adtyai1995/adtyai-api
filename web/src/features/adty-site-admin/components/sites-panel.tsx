@@ -36,6 +36,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { searchUsers } from '@/features/users/api'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -57,7 +58,12 @@ import {
 import type { AdminSite, SiteStatus } from '../types'
 import { SiteStatusBadge } from './site-status-badge'
 
-const STATUSES: SiteStatus[] = ['pending', 'active', 'closing', 'closed']
+const STATUSES: SiteStatus[] = [
+  'pending',
+  'active',
+  'closing',
+  'closed',
+]
 
 /** Column header that sorts the loaded page; aria-sort sits on the header cell. */
 function SortHeader(props: {
@@ -104,10 +110,27 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<SiteSort>(DEFAULT_SITE_SORT)
   const [ownerId, setOwnerId] = useState('')
+  const [ownerKeyword, setOwnerKeyword] = useState('')
+  const [confirmed, setConfirmed] = useState(false)
   const [subdomain, setSubdomain] = useState('')
   const canCreate =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
   const queryClient = useQueryClient()
+  const candidates = useQuery({
+    queryKey: ['site-owner-candidates', ownerKeyword.trim()],
+    queryFn: async () => {
+      const result = await searchUsers({
+        keyword: ownerKeyword.trim(),
+        site_id: 0,
+        p: 1,
+        page_size: 20,
+      })
+      if (!result.success) throw new Error(result.message)
+      return result.data?.items ?? []
+    },
+    enabled: canCreate && ownerKeyword.trim() !== '',
+  })
+  const owner = candidates.data?.find((item) => String(item.id) === ownerId)
   const params = {
     p: page,
     status,
@@ -130,7 +153,10 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
         subdomain: subdomain.trim(),
       })
     },
-    onSuccess: () => {
+    onSuccess: (site) => {
+      setConfirmed(false)
+      setOwnerKeyword('')
+      props.onOpenSite(site)
       setOwnerId('')
       setSubdomain('')
       toast.success(t('Site opened'))
@@ -197,19 +223,55 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
           aria-label={t('Open a reseller site')}
           onSubmit={(event) => {
             event.preventDefault()
-            if (!canCreate) return
+            if (!canCreate || !confirmed || !owner) return
             openSite.mutate()
           }}
         >
           <Input
-            className='w-32'
-            inputMode='numeric'
-            value={ownerId}
-            onChange={(event) => setOwnerId(event.target.value)}
-            aria-label={t('User ID')}
-            placeholder={t('User ID')}
-            required
+            className='w-48'
+            value={ownerKeyword}
+            aria-label={t('Search main-site users')}
+            placeholder={t('Search main-site users')}
+            onChange={(event) => {
+              setOwnerKeyword(event.target.value)
+              setOwnerId('')
+              setConfirmed(false)
+            }}
           />
+          {candidates.isError && (
+            <ErrorState onRetry={() => void candidates.refetch()} />
+          )}
+          <NativeSelect
+            value={ownerId}
+            aria-label={t('Owner')}
+            required
+            onChange={(event) => {
+              setOwnerId(event.target.value)
+              setConfirmed(false)
+            }}
+          >
+            <NativeSelectOption value=''>
+              {t('Select owner')}
+            </NativeSelectOption>
+            {candidates.data?.map((item) => (
+              <NativeSelectOption key={item.id} value={String(item.id)}>
+                {item.username} (#{item.id})
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          {owner && (
+            <label className='flex items-center gap-2 text-sm'>
+              <input
+                type='checkbox'
+                checked={confirmed}
+                onChange={(event) => setConfirmed(event.target.checked)}
+              />
+              {t('Confirm site owner {{name}} (#{{id}})', {
+                name: owner.username,
+                id: owner.id,
+              })}
+            </label>
+          )}
           <Input
             className='w-48'
             value={subdomain}
@@ -217,7 +279,11 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
             aria-label={t('Domain')}
             placeholder={t('Leave blank to allocate automatically')}
           />
-          <Button variant='brand' type='submit' disabled={openSite.isPending}>
+          <Button
+            variant='brand'
+            type='submit'
+            disabled={!owner || !confirmed || openSite.isPending}
+          >
             {t('Open a reseller site')}
           </Button>
         </form>
@@ -239,7 +305,6 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
               <TableHead>{t('Owner')}</TableHead>
               <TableHead>{t('Status')}</TableHead>
               <TableHead className='text-right'>{t('Cost factor')}</TableHead>
-              <TableHead className='text-right'>{t('Markup limit')}</TableHead>
               <TableHead
                 className='text-right'
                 aria-sort={ariaSort(sort, 'customers')}
@@ -303,7 +368,7 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
           <TableBody>
             {rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={13}>
+                <TableCell colSpan={12}>
                   <EmptyState className='min-h-32' title={t('No data')} />
                 </TableCell>
               </TableRow>
@@ -319,9 +384,6 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
                   </TableCell>
                   <TableCell className='text-right tabular-nums'>
                     {row.cost_factor ?? row.tier_cost_factor ?? t('Global')}
-                  </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {row.max_markup ?? t('Global')}
                   </TableCell>
                   <TableCell className='text-right tabular-nums'>
                     {formatNumber(row.customers, locale)}

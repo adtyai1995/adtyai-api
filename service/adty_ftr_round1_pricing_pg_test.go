@@ -27,15 +27,15 @@ func TestFTRADTY1102SiteCustomerPricePG(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Positive(t, saved.Version)
-	require.Contains(t, saved.ModelPending, "ftr-1102-model")
+	require.Contains(t, saved.ModelImmediate, "ftr-1102-model")
 
 	var row model.AdtySitePrice
 	require.NoError(t, db.Where("site_id = ? AND user_id = ? AND model = ?", site.Id, customer.Id, "ftr-1102-model").First(&row).Error)
 	require.Equal(t, customer.Id, row.UserId)
 	delay := int64(adty_setting.GetResellerSetting().MarkupIncreaseDelayHours) * 3600
-	require.True(t, row.Markup.Equal(decimal.NewFromInt(1)))
-	require.True(t, row.PendingMarkup.Equal(decimal.RequireFromString("1.4")))
-	require.Equal(t, now+delay, row.PendingAt)
+	require.True(t, row.Markup.Equal(decimal.RequireFromString("1.4")))
+	require.True(t, row.PendingMarkup.IsZero())
+	require.Zero(t, row.PendingAt)
 
 	prices, version, err := LoadAdtySitePricing(site.Id, customer.Id)
 	require.NoError(t, err)
@@ -44,7 +44,7 @@ func TestFTRADTY1102SiteCustomerPricePG(t *testing.T) {
 
 	applied, err := ApplyDueAdtySiteMarkups(now + delay)
 	require.NoError(t, err)
-	require.EqualValues(t, 1, applied)
+	require.Zero(t, applied)
 	require.NoError(t, db.First(&row, row.Id).Error)
 	require.True(t, row.Markup.Equal(decimal.RequireFromString("1.4")))
 	require.True(t, row.PendingMarkup.IsZero())

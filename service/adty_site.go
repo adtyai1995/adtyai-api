@@ -52,8 +52,8 @@ const (
 
 // AdtySitePreset 是开站时预设的单站 d 和 k 上限（管理员直接开或邀请码带的），空就用全局。
 type AdtySitePreset struct {
+	MaxMarkup     *decimal.Decimal // Deprecated: owners control retail pricing.
 	CostFactor    *decimal.Decimal
-	MaxMarkup     *decimal.Decimal
 	ContactInfo   string
 	AgreementVer  string
 	InviteCodeId  int
@@ -246,8 +246,8 @@ func acceptCustomerSiteTerms(userId int, version string) error {
 	})
 }
 
-// validateSitePreset 检查预设的供货倍率和存储 k 上限：供货倍率必须为正且不低于下限，k 上限必须为正且不超过全局上限。
-func validateSitePreset(costFactor, maxMarkup *decimal.Decimal) error {
+// validateSitePreset checks a site supply factor against the configured floor.
+func validateSitePreset(costFactor *decimal.Decimal) error {
 	cfg := resellerSetting()
 	if costFactor != nil {
 		if !costFactor.IsPositive() {
@@ -255,11 +255,6 @@ func validateSitePreset(costFactor, maxMarkup *decimal.Decimal) error {
 		}
 		if cfg.MinCostFactor != nil && costFactor.LessThan(decimal.NewFromFloat(*cfg.MinCostFactor)) {
 			return common.NewMessage("The cost factor cannot be below the minimum cost factor")
-		}
-	}
-	if maxMarkup != nil {
-		if !maxMarkup.IsPositive() || (cfg.MaxMarkup != nil && maxMarkup.GreaterThan(decimal.NewFromFloat(*cfg.MaxMarkup))) {
-			return common.NewMessage("The markup limit must be greater than 0 and at most the global limit")
 		}
 	}
 	return nil
@@ -338,7 +333,7 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateSitePreset(preset.CostFactor, preset.MaxMarkup); err != nil {
+	if err := validateSitePreset(preset.CostFactor); err != nil {
 		return nil, err
 	}
 	currentVer := AdtyCurrentSiteAgreementVersion()
@@ -364,7 +359,7 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 	now := time.Now().Unix()
 	site := &model.AdtySite{
 		OwnerUserId: userId, Subdomain: label, RootDomain: root, Status: status,
-		CostFactor: preset.CostFactor, MaxMarkup: preset.MaxMarkup, ContactInfo: truncateText(preset.ContactInfo, 500),
+		CostFactor: preset.CostFactor, ContactInfo: truncateText(preset.ContactInfo, 500),
 		OpenedBy: openedBy, AgreementVer: strings.TrimSpace(preset.AgreementVer),
 	}
 	if site.AgreementVer != "" {
@@ -430,7 +425,7 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 			return err
 		}
 		return recordSiteAuditTx(tx, site.Id, "open", preset.OperatorId, nil, map[string]any{
-			"opened_by": openedBy, "status": status, "subdomain": label, "cost_factor": site.CostFactor, "max_markup": site.MaxMarkup,
+			"opened_by": openedBy, "status": status, "subdomain": label, "cost_factor": site.CostFactor,
 			"invite_code_id": preset.InviteCodeId,
 		}, "")
 	}, txOptions...)
@@ -493,12 +488,12 @@ func ApplyAdtySite(userId int, subdomain, contactInfo, agreeVersion, inviteCode 
 }
 
 // ReviewAdtySiteApplication 通过或驳回开站申请。通过时写 SiteOwnerSince，可以同时设单站 d 和 k 上限。
-func ReviewAdtySiteApplication(siteId, adminId int, approve bool, costFactor, maxMarkup *decimal.Decimal, note string) (*model.AdtySite, error) {
+func ReviewAdtySiteApplication(siteId, adminId int, approve bool, costFactor, _ *decimal.Decimal, note string) (*model.AdtySite, error) {
 	if approve && !resellerSetting().Ready() {
 		return nil, ErrAdtySiteDisabled
 	}
 	if approve {
-		if err := validateSitePreset(costFactor, maxMarkup); err != nil {
+		if err := validateSitePreset(costFactor); err != nil {
 			return nil, err
 		}
 	}
@@ -520,9 +515,6 @@ func ReviewAdtySiteApplication(siteId, adminId int, approve bool, costFactor, ma
 			updates["status"] = model.AdtySiteStatusActive
 			if costFactor != nil {
 				updates["cost_factor"] = *costFactor
-			}
-			if maxMarkup != nil {
-				updates["max_markup"] = *maxMarkup
 			}
 			if err := markAffiliateSiteOwnerTx(tx, site.OwnerUserId, time.Now().Unix()); err != nil {
 				return err
@@ -566,10 +558,10 @@ func GetAdtySite(siteId int) (*model.AdtySite, error) {
 
 // AdtySiteAdjust 是管理员对单站的调整；字段为 nil 表示不改，Clear* 改回「用全局」。
 type AdtySiteAdjust struct {
+	MaxMarkup          *decimal.Decimal // Deprecated: ignored for retail pricing.
+	ClearMaxMarkup     bool             // Deprecated: ignored for retail pricing.
 	CostFactor         *decimal.Decimal
 	ClearCostFactor    bool
-	MaxMarkup          *decimal.Decimal
-	ClearMaxMarkup     bool
 	Visibility         *string
 	AllowedGroups      *string
 	ClearAllowedGroups bool
@@ -578,7 +570,7 @@ type AdtySiteAdjust struct {
 
 // AdjustAdtySite 改单站 d、k 上限、可见范围。改 d 的通知站长由 11.9 的通知接上（AdtyOnSiteCostFactorChanged）。
 func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite, error) {
-	if err := validateSitePreset(adjust.CostFactor, adjust.MaxMarkup); err != nil {
+	if err := validateSitePreset(adjust.CostFactor); err != nil {
 		return nil, err
 	}
 	if adjust.Visibility != nil && strings.TrimSpace(*adjust.Visibility) != "" {
@@ -603,7 +595,7 @@ func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite
 		if site.Status == model.AdtySiteStatusClosed {
 			return ErrAdtySiteStatus
 		}
-		old := map[string]any{"cost_factor": site.CostFactor, "max_markup": site.MaxMarkup, "visibility": site.Visibility}
+		old := map[string]any{"cost_factor": site.CostFactor, "visibility": site.Visibility}
 		updates := map[string]any{}
 		var pendingNotice *decimal.Decimal
 		var pendingAt int64
@@ -628,12 +620,6 @@ func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite
 				updates["pending_cost_factor"] = gorm.Expr("NULL")
 				updates["pending_cost_factor_at"] = 0
 			}
-		}
-		switch {
-		case adjust.ClearMaxMarkup:
-			updates["max_markup"] = nil
-		case adjust.MaxMarkup != nil:
-			updates["max_markup"] = *adjust.MaxMarkup
 		}
 		if adjust.Visibility != nil {
 			updates["visibility"] = strings.TrimSpace(*adjust.Visibility)

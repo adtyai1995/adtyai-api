@@ -98,15 +98,21 @@ func formatOptionAuditValue(key, raw string) any {
 }
 
 func redactOptionAuditJSON(value any) any {
- switch object := value.(type) {
- case map[string]any:
-  for key, field := range object {
-   if isSensitiveOptionKey(key) { object[key] = map[string]any{"redacted": true, "configured": field != nil && fmt.Sprint(field) != ""} } else { object[key] = redactOptionAuditJSON(field) }
-  }
- case []any:
-  for index, field := range object { object[index] = redactOptionAuditJSON(field) }
- }
- return value
+	switch object := value.(type) {
+	case map[string]any:
+		for key, field := range object {
+			if isSensitiveOptionKey(key) {
+				object[key] = map[string]any{"redacted": true, "configured": field != nil && fmt.Sprint(field) != ""}
+			} else {
+				object[key] = redactOptionAuditJSON(field)
+			}
+		}
+	case []any:
+		for index, field := range object {
+			object[index] = redactOptionAuditJSON(field)
+		}
+	}
+	return value
 }
 
 func buildOptionAuditParams(key, beforeRaw, afterRaw string) map[string]any {
@@ -360,7 +366,7 @@ func UpdateOption(c *gin.Context) {
 			common.ApiErrorT(c, "Referral settings can only be changed on the referral settings page")
 			return
 		}
-		if strings.HasPrefix(option.Key, "adty_marketing_setting.") {
+		if strings.HasPrefix(option.Key, "adty_marketing_setting.") || strings.HasPrefix(option.Key, "adty_site_referral.") || strings.HasPrefix(option.Key, "adty_site_invite_withdraw.") {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}

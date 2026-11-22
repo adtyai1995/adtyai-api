@@ -41,9 +41,9 @@ func canWithEnforcer(e *casbin.SyncedEnforcer, userID int, systemRole int, permi
 	return false
 }
 
-// CapabilitiesInTx reads the transaction's persisted policy, including its own
-// writes, without reloading or publishing the process-wide authorization state.
-func CapabilitiesInTx(tx *gorm.DB, userID, systemRole int) (PermissionsMap, error) {
+// PermissionCheckerInTx resolves grants from the transaction's persisted policy.
+// Callers may restrict the query to one resource when evaluating many candidates.
+func PermissionCheckerInTx(tx *gorm.DB) (func(int, int, Permission) bool, error) {
 	m, err := casbinmodel.NewModelFromString(modelText)
 	if err != nil {
 		return nil, err
@@ -52,11 +52,23 @@ func CapabilitiesInTx(tx *gorm.DB, userID, systemRole int) (PermissionsMap, erro
 	if err != nil {
 		return nil, err
 	}
+	return func(userID, role int, permission Permission) bool {
+		return canWithEnforcer(e, userID, role, permission)
+	}, nil
+}
+
+// CapabilitiesInTx reads the transaction's persisted policy, including its own
+// writes, without reloading or publishing the process-wide authorization state.
+func CapabilitiesInTx(tx *gorm.DB, userID, systemRole int) (PermissionsMap, error) {
+	check, err := PermissionCheckerInTx(tx)
+	if err != nil {
+		return nil, err
+	}
 	result := make(PermissionsMap, len(registry))
 	for _, resource := range registry {
 		actions := make(map[string]bool, len(resource.Actions))
 		for _, action := range resource.Actions {
-			actions[action.Action] = canWithEnforcer(e, userID, systemRole, Permission{Resource: resource.Resource, Action: action.Action})
+			actions[action.Action] = check(userID, systemRole, Permission{Resource: resource.Resource, Action: action.Action})
 		}
 		result[resource.Resource] = actions
 	}

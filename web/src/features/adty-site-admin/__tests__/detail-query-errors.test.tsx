@@ -37,7 +37,6 @@ afterEach(() => {
 // 这不是产品缺陷，是选择器不够具体。
 it.each([
   ['Cost factor', 'site-cost-factor'],
-  ['Markup limit', 'site-max-markup'],
   ['Reason', 'site-reason'],
 ])(
   'confirms before closing site management with an edited %s',

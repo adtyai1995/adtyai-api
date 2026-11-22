@@ -17,25 +17,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { CopyButton } from '@/components/copy-button'
 import { ErrorState } from '@/components/error-state'
+import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { usdtNetworkLabel } from '@/features/referral/lib/address'
 import {
   WITHDRAWAL_STATUS_LABELS,
   WITHDRAWAL_TARGET_LABELS,
 } from '@/features/referral/lib/labels'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
   getOwnerCommissionWithdrawals,
+  OWNER_PAGE_SIZE,
   markOwnerCommissionWithdrawalPaid,
   reviewOwnerCommissionWithdrawal,
   siteOwnerKeys,
@@ -44,14 +47,18 @@ import {
 
 function methodLabel(method: string): string {
   if (method in WITHDRAWAL_TARGET_LABELS) {
-    return WITHDRAWAL_TARGET_LABELS[method as keyof typeof WITHDRAWAL_TARGET_LABELS]
+    return WITHDRAWAL_TARGET_LABELS[
+      method as keyof typeof WITHDRAWAL_TARGET_LABELS
+    ]
   }
   return method
 }
 
 function statusLabel(status: string): string {
   if (status in WITHDRAWAL_STATUS_LABELS) {
-    return WITHDRAWAL_STATUS_LABELS[status as keyof typeof WITHDRAWAL_STATUS_LABELS]
+    return WITHDRAWAL_STATUS_LABELS[
+      status as keyof typeof WITHDRAWAL_STATUS_LABELS
+    ]
   }
   return status
 }
@@ -65,7 +72,11 @@ function Payee(props: { row: SiteInviteCommissionWithdrawal }) {
         <span>{usdtNetworkLabel(row.network)}</span>
         <div className='flex items-center gap-1'>
           <span className='font-mono text-sm break-all'>{row.account_no}</span>
-          <CopyButton value={row.account_no} size='icon' aria-label={t('Copy address')} />
+          <CopyButton
+            value={row.account_no}
+            size='icon'
+            aria-label={t('Copy address')}
+          />
         </div>
       </div>
     )
@@ -90,7 +101,10 @@ function Payee(props: { row: SiteInviteCommissionWithdrawal }) {
   )
 }
 
-function ReviewRow(props: { row: SiteInviteCommissionWithdrawal; onDone: () => void }) {
+function ReviewRow(props: {
+  row: SiteInviteCommissionWithdrawal
+  onDone: () => void
+}) {
   const { t } = useTranslation()
   const row = props.row
   const [reason, setReason] = useState('')
@@ -107,7 +121,8 @@ function ReviewRow(props: { row: SiteInviteCommissionWithdrawal; onDone: () => v
     onError: (err) => handleServerError(err),
   })
   const pay = useMutation({
-    mutationFn: () => markOwnerCommissionWithdrawalPaid(row.id, txId.trim(), proof.trim()),
+    mutationFn: () =>
+      markOwnerCommissionWithdrawalPaid(row.id, txId.trim(), proof.trim()),
     onSuccess: () => {
       toast.success(t('Marked as paid'))
       setTxId('')
@@ -119,10 +134,17 @@ function ReviewRow(props: { row: SiteInviteCommissionWithdrawal; onDone: () => v
   return (
     <li className='flex flex-col gap-2 text-sm'>
       <p className='tabular-nums'>
-        {row.username || row.user_id} · {row.amount_usd} USD · {t(methodLabel(row.method))} ·{' '}
-        {t(statusLabel(row.status))}
-        {row.payout_amount !== '' && ` · ${row.payout_amount} ${row.payout_currency}`}
+        #{row.id} · {row.username || row.user_id} · {row.amount_usd} USD ·{' '}
+        {t(methodLabel(row.method))} · {t(statusLabel(row.status))}
+        {row.payout_amount !== '' &&
+          ` · ${row.payout_amount} ${row.payout_currency}`}
       </p>
+      {row.method === 'usdt' && (
+        <p>
+          {t('USDT fee (USD)')} {row.fee_usd} · {t('Net amount')} {row.net_usd}{' '}
+          USD
+        </p>
+      )}
       <Payee row={row} />
       {row.status === 'pending' && row.method !== 'balance' && (
         <div className='flex flex-col gap-2'>
@@ -163,7 +185,9 @@ function ReviewRow(props: { row: SiteInviteCommissionWithdrawal; onDone: () => v
         >
           {row.method === 'usdt' && (
             <div className='flex flex-col gap-2'>
-              <Label htmlFor={`commission-tx-${row.id}`}>{t('Transaction hash')}</Label>
+              <Label htmlFor={`commission-tx-${row.id}`}>
+                {t('Transaction hash')}
+              </Label>
               <Input
                 id={`commission-tx-${row.id}`}
                 value={txId}
@@ -174,7 +198,9 @@ function ReviewRow(props: { row: SiteInviteCommissionWithdrawal; onDone: () => v
             </div>
           )}
           <div className='flex flex-col gap-2'>
-            <Label htmlFor={`commission-proof-${row.id}`}>{t('Proof note')}</Label>
+            <Label htmlFor={`commission-proof-${row.id}`}>
+              {t('Proof note')}
+            </Label>
             <Input
               id={`commission-proof-${row.id}`}
               value={proof}
@@ -214,37 +240,91 @@ function ReviewRow(props: { row: SiteInviteCommissionWithdrawal; onDone: () => v
 export function CommissionWithdrawalPanel() {
   const { t } = useTranslation()
   const client = useQueryClient()
+  const [page, setPage] = useState(1)
+  useEffect(() => {
+    if (window.location.hash === '#pending')
+      document.getElementById('pending')?.scrollIntoView()
+  }, [])
+  const [status, setStatus] = useState(() =>
+    window.location.hash === '#pending' ? 'pending' : 'actionable'
+  )
   const list = useQuery({
-    queryKey: siteOwnerKeys.list('commission-withdrawals', {}),
-    queryFn: getOwnerCommissionWithdrawals,
+    queryKey: siteOwnerKeys.list('commission-withdrawals', { page, status }),
+    queryFn: () => getOwnerCommissionWithdrawals(page, status),
   })
+  // A decision can remove the last request on the current filtered page.
+  const total = list.data?.total
+  useEffect(() => {
+    if (total === undefined) return
+    const lastPage = Math.max(1, Math.ceil(total / OWNER_PAGE_SIZE))
+    if (page > lastPage) setPage(lastPage)
+  }, [page, total])
   const refresh = () => {
     void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
     void invalidateSidebarBadges(client)
   }
 
   return (
-    <section className='flex flex-col gap-4' aria-label={t('Invite commission withdrawal')}>
+    <section
+      id='pending'
+      className='flex flex-col gap-4'
+      aria-label={t('Invite commission withdrawal')}
+    >
       <div className='flex flex-col gap-1'>
-        <h2 className='text-sm font-medium'>{t('Invite commission withdrawal')}</h2>
+        <h2 className='text-sm font-medium'>
+          {t('Invite commission withdrawal')}
+        </h2>
         <p className='text-muted-foreground text-sm'>
           {t('The site owner reviews cash withdrawals of invite commission.')}
         </p>
         <p className='text-muted-foreground text-sm'>
           {t(
-            'A transfer to balance deducts the site hold. External payout releases it after payment is complete.'
+            'The platform or its authorized payer pays the customer offline. Recording payment releases the site’s hold.'
           )}
         </p>
       </div>
+      <div className='flex items-center gap-2'>
+        <Label htmlFor='commission-status'>{t('Status')}</Label>
+        <select
+          id='commission-status'
+          className='bg-background h-9 rounded-md border px-3'
+          value={status}
+          onChange={(event) => {
+            setStatus(event.target.value)
+            setPage(1)
+          }}
+        >
+          <option value='actionable'>{t('Awaiting review or payment')}</option>
+          <option value=''>{t('All')}</option>
+          {['pending', 'approved', 'paid', 'rejected', 'canceled'].map(
+            (value) => (
+              <option key={value} value={value}>
+                {t(statusLabel(value))}
+              </option>
+            )
+          )}
+        </select>
+      </div>
+      {list.isPending && <LoadingState />}
       {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
-      {list.isSuccess && list.data.length === 0 && (
-        <p className='text-muted-foreground text-sm'>{t('No withdrawals yet')}</p>
+      {list.isSuccess && list.data.items.length === 0 && (
+        <p className='text-muted-foreground text-sm'>
+          {t('No withdrawals yet')}
+        </p>
       )}
       <ul className='flex flex-col gap-4'>
-        {(list.data ?? []).map((row) => (
+        {(list.data?.items ?? []).map((row) => (
           <ReviewRow key={row.id} row={row} onDone={refresh} />
         ))}
       </ul>
+      {list.data && (
+        <PageSwitcher
+          page={page}
+          total={list.data.total}
+          pageSize={OWNER_PAGE_SIZE}
+          onPageChange={setPage}
+        />
+      )}
     </section>
   )
 }

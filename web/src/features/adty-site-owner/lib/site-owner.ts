@@ -126,12 +126,7 @@ export function pendingIncreases(
   prices: SitePrice[] | null | undefined
 ): PendingIncrease[] {
   return (prices ?? [])
-    .filter(
-      (price) =>
-        price.user_id === 0 &&
-        Number(price.pending_markup) > 0 &&
-        price.pending_at > 0
-    )
+    .filter((price) => price.user_id === 0 && price.pending_at > 0)
     .map((price) => ({
       group: price.group,
       model: price.model || undefined,
@@ -161,8 +156,8 @@ export function siteMarkups(prices: SitePrice[] | null | undefined): {
   models: Record<string, string>
 } {
   let defaultMarkup = ''
-  const groups: Record<string, string> = {}
-  const models: Record<string, string> = {}
+  const groups: Record<string, string> = Object.create(null)
+  const models: Record<string, string> = Object.create(null)
   for (const price of prices ?? []) {
     if (price.user_id !== 0) continue
     const model = (price.model ?? '').trim()
@@ -174,6 +169,30 @@ export function siteMarkups(prices: SitePrice[] | null | undefined): {
     else groups[price.group] = price.markup
   }
   return { defaultMarkup, groups, models }
+}
+
+/** Only send changed overrides. Missing saved keys explicitly resume inheritance. */
+export function retailOverrideChanges(
+  saved: Record<string, string>,
+  rows: [string, string][]
+): Record<string, string> {
+  const current = new Map(
+    rows.map(([key, value]) => [key.trim(), value] as const)
+  )
+  const changes = new Map<string, string>()
+  for (const key of Object.keys(saved)) {
+    if (!current.has(key)) changes.set(key, '0')
+  }
+  for (const [key, value] of current) {
+    if (key && saved[key] !== value) changes.set(key, value)
+  }
+  return Object.fromEntries(changes)
+}
+
+export function validRetailMarkup(value: string): boolean {
+  return (
+    /^(?:\d{1,6}(?:\.\d{0,4})?|\.\d{1,4})$/.test(value) && Number(value) > 0
+  )
 }
 
 /** A fresh idempotency key for one trial grant. */

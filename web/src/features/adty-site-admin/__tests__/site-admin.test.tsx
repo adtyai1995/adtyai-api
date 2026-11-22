@@ -72,7 +72,6 @@ const api = vi.hoisted(() => ({
   disableSiteSenderDomain: vi.fn(),
   getAdminBalanceRequests: vi.fn(),
   reviewAdminBalanceRequest: vi.fn(),
-  getAdminSiteReferralCap: vi.fn(),
   getAdminSiteInviteBatchPolicy: vi.fn(async () => ({ configured: false })),
   saveAdminSiteInviteBatchPolicy: vi.fn(),
   getAdminBusinessTimezone: vi.fn(async () => ({
@@ -81,7 +80,6 @@ const api = vi.hoisted(() => ({
   })),
   getAdminSettlementSheets: vi.fn(async () => []),
   saveAdminBusinessTimezone: vi.fn(),
-  saveAdminSiteReferralCap: vi.fn(),
   getAdminFundAnomalies: vi.fn(),
   getAdminSiteWallets: vi.fn(),
   getAdminAnomalyDispositions: vi.fn(),
@@ -89,6 +87,7 @@ const api = vi.hoisted(() => ({
   issueAdminMarginVoucher: vi.fn(),
   saveAdminWithdrawRules: vi.fn(),
 }))
+vi.mock('@/features/users/api', async (original) => ({...await original<typeof import('@/features/users/api')>(), searchUsers: vi.fn(async () => ({success:true, data:{items:[{id:15,username:'station-owner'}]}}))}))
 vi.mock('../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api')>()),
   ...api,
@@ -124,7 +123,7 @@ function site(overrides: Partial<AdminSite>): AdminSite {
     host: 'alpha.sites.example',
     status: 'active',
     cost_factor: null,
-    max_markup: null,
+
     tier_cost_factor: null,
     tier_month: '',
     visibility: '',
@@ -153,7 +152,7 @@ const settings: ResellerSettings = {
   cost_factor: null,
   min_cost_factor: null,
   cost_factor_tiers: [],
-  max_markup: null,
+
   max_site_bonus_extra: null,
   trial_grant_max_usd: null,
   trial_grant_daily_usd: null,
@@ -235,7 +234,7 @@ function pausedMutationClient() {
 }
 
 async function renderSiteSettingsPage(
-  section: 'settings' = 'settings',
+  section: 'settings' | 'domains' = 'domains',
   client?: QueryClient
 ) {
   vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
@@ -243,7 +242,7 @@ async function renderSiteSettingsPage(
     routeTree: createRootRoute({
       component: () => <SiteAdmin section={section} />,
     }),
-    history: createMemoryHistory({ initialEntries: ['/site-admin/settings'] }),
+    history: createMemoryHistory({ initialEntries: ['/site-admin/domains'] }),
   })
   await router.load()
   return renderWith(<RouterProvider router={router} />, client)
@@ -260,8 +259,7 @@ function siteNames(): string[] {
 beforeEach(() => {
   asRoot()
   api.getPausedSiteRepairs.mockResolvedValue([])
-  api.getAdminBalanceRequests.mockResolvedValue([])
-  api.getAdminSiteReferralCap.mockResolvedValue({ cap_configured: false })
+  api.getAdminBalanceRequests.mockResolvedValue({items:[],total:0})
   api.getAdminFundAnomalies.mockResolvedValue([])
   api.getAdminSiteWallets.mockResolvedValue([])
   api.getAdminAnomalyDispositions.mockResolvedValue([])
@@ -359,7 +357,10 @@ describe('site list', () => {
     )
     await screen.findByText('beta.sites.example')
 
-    await user.type(screen.getByRole('textbox', { name: 'User ID' }), '15')
+    await user.type(screen.getByRole('textbox', { name: 'Search main-site users' }), 'station')
+    await screen.findByRole('option', { name: 'station-owner (#15)' })
+    await user.selectOptions(screen.getByRole('combobox', {name:'Owner'}), '15')
+    await user.click(screen.getByRole('checkbox', {name:/Confirm site owner/}))
     await user.type(screen.getByRole('textbox', { name: 'Domain' }), 'shop')
     await user.click(
       screen.getByRole('button', { name: 'Open a reseller site' })
@@ -601,13 +602,13 @@ describe('overview and reviews', () => {
 describe('close site dialog', () => {
   it('removes the close confirmation when Root is downgraded', async () => {
     renderWith(
-      <CloseSiteDialog
+      <CloseSiteDialog domains={[]}
         site={site({ id: 1 })}
         open
         onOpenChange={() => undefined}
       />
     )
-    expect(screen.getByRole('button', { name: 'Close site' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Close site' })).toBeDisabled()
     act(() => asSiteAdmin(['read', 'adjust']))
     expect(
       screen.queryByRole('button', { name: 'Close site' })
@@ -618,13 +619,14 @@ describe('close site dialog', () => {
   it('rejects a queued closure after Root downgrade and unmount', async () => {
     const paused = pausedMutationClient()
     const view = renderWith(
-      <CloseSiteDialog
+      <CloseSiteDialog domains={[]}
         site={site({ id: 1 })}
         open
         onOpenChange={() => undefined}
       />,
       paused.client
     )
+    await userEvent.type(screen.getByLabelText('Reason'), 'owner request')
     await userEvent.click(screen.getByRole('button', { name: 'Close site' }))
     await waitFor(() => expect(paused.entered).toHaveBeenCalledTimes(1))
     act(() => {
@@ -640,7 +642,7 @@ describe('close site dialog', () => {
     const user = userEvent.setup()
     api.setSiteStatus.mockResolvedValue(site({ status: 'closing' }))
     renderWith(
-      <CloseSiteDialog
+      <CloseSiteDialog domains={[]}
         site={site({ id: 1 })}
         open
         onOpenChange={() => undefined}
@@ -650,7 +652,7 @@ describe('close site dialog', () => {
     expect(
       screen.queryByRole('radio', { name: 'Move to another site' })
     ).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Close site' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Close site' })).toBeDisabled()
     await user.type(screen.getByLabelText('Reason'), 'owner request')
     await user.click(screen.getByRole('button', { name: 'Close site' }))
 
@@ -671,17 +673,15 @@ describe('reseller settings', () => {
     api.getResellerSettings.mockResolvedValue(settings)
   })
 
-  it('shows A.10 cost-factor and markup-limit labels and accepts values outside the old k>=1 and d<=1 bounds', async () => {
+  it('accepts supply costs above one and omits the retired retail limit', async () => {
     const user = userEvent.setup()
     api.saveResellerSettings.mockResolvedValue(settings)
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='supply' canWrite canWriteSecrets />)
 
     const costFactor = await screen.findByLabelText(
       'Cost factor d (greater than 0)'
     )
-    const markupLimit = screen.getByLabelText(
-      'Markup limit k (greater than 0, at most 100)'
-    )
+    expect(screen.queryByLabelText(/Markup limit/)).not.toBeInTheDocument()
     expect(
       screen.queryByLabelText('Cost factor d (0 to 1)')
     ).not.toBeInTheDocument()
@@ -691,14 +691,11 @@ describe('reseller settings', () => {
 
     await user.clear(costFactor)
     await user.type(costFactor, '1.5')
-    await user.clear(markupLimit)
-    await user.type(markupLimit, '0.9')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
       expect(api.saveResellerSettings).toHaveBeenCalledWith({
         cost_factor: 1.5,
-        max_markup: 0.9,
       })
     )
   })
@@ -710,7 +707,7 @@ describe('reseller settings', () => {
       invite_code_enabled: true,
     })
     api.saveResellerSettings.mockResolvedValue(settings)
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='policies' canWrite canWriteSecrets />)
 
     expect(
       await screen.findByRole('switch', { name: 'Check for self-use' })
@@ -735,7 +732,7 @@ describe('reseller settings', () => {
     api.getResellerSettings.mockRejectedValueOnce(
       new Error('Synthetic settings failure')
     )
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='domains' canWrite canWriteSecrets />)
     await userEvent.click(await screen.findByRole('button', { name: 'Retry' }))
     expect(
       await screen.findByLabelText('Root domains (one per line)')
@@ -769,7 +766,7 @@ describe('reseller settings', () => {
     const router = createRouter({
       routeTree: root.addChildren([route]),
       history: createMemoryHistory({
-        initialEntries: ['/site-admin/settings'],
+        initialEntries: ['/site-admin/domains'],
       }),
     })
     renderWith(<RouterProvider router={router} />)
@@ -868,9 +865,9 @@ describe('reseller settings', () => {
     api.getResellerUsage.mockRejectedValue(new Error('Forbidden'))
     await renderSiteSettingsPage()
 
-    expect(await screen.findByLabelText('Freeze days')).toBeEnabled()
+    expect(await screen.findByLabelText('Custom domains per site')).toBeEnabled()
     expect(screen.getByLabelText('Cloudflare API token')).toBeDisabled()
-    expect(screen.getByRole('tab', { name: 'Settings' })).toHaveAttribute(
+    expect(screen.getByRole('tab', { name: 'Domains' })).toHaveAttribute(
       'aria-selected',
       'true'
     )
@@ -880,8 +877,8 @@ describe('reseller settings', () => {
   it('opens a read-only settings page with settings_read and no write grant', async () => {
     asSiteAdmin(['settings_read'])
     await renderSiteSettingsPage()
-    expect(await screen.findByLabelText('Freeze days')).toBeDisabled()
-    expect(screen.getByRole('tab', { name: 'Settings' })).toHaveAttribute(
+    expect(await screen.findByLabelText('Custom domains per site')).toBeDisabled()
+    expect(screen.getByRole('tab', { name: 'Domains' })).toHaveAttribute(
       'aria-selected',
       'true'
     )
@@ -892,7 +889,7 @@ describe('reseller settings', () => {
   it('rejects direct form submission by a read-only settings admin', async () => {
     asSiteAdmin(['settings_read'])
     await renderSiteSettingsPage()
-    const field = await screen.findByLabelText('Freeze days')
+    const field = await screen.findByLabelText('Custom domains per site')
     const form = field.closest('form')
     if (!form) throw new Error('Settings form is missing')
     fireEvent.submit(form)
@@ -903,7 +900,7 @@ describe('reseller settings', () => {
   it('rejects settings submission after write is revoked with a dirty form', async () => {
     asSiteAdmin(['settings_read', 'settings'])
     await renderSiteSettingsPage()
-    const field = await screen.findByLabelText('Freeze days')
+    const field = await screen.findByLabelText('Custom domains per site')
     await userEvent.clear(field)
     await userEvent.type(field, '11')
     act(() => asSiteAdmin(['settings_read']))
@@ -916,7 +913,7 @@ describe('reseller settings', () => {
   })
 
   it('disables custom domains until Cloudflare is configured and says why', async () => {
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='domains' canWrite canWriteSecrets />)
 
     const custom = await screen.findByRole('switch', { name: 'Custom domains' })
     expect(custom).toHaveAttribute('aria-disabled', 'true')
@@ -929,7 +926,7 @@ describe('reseller settings', () => {
 
   it('enables custom domains once the token, zone ID and CNAME target are typed', async () => {
     const user = userEvent.setup()
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='domains' canWrite canWriteSecrets />)
     await screen.findByRole('switch', { name: 'Custom domains' })
 
     await user.type(screen.getByLabelText('Cloudflare API token'), 'cf-token')
@@ -945,7 +942,7 @@ describe('reseller settings', () => {
   })
 
   it('disables sender domains while the Resend API key is missing', async () => {
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='domains' canWrite canWriteSecrets />)
 
     expect(
       await screen.findByRole('switch', { name: 'Site owner sender domains' })
@@ -958,7 +955,7 @@ describe('reseller settings', () => {
   })
 
   it('disables the master switch while money settings are unset', async () => {
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='supply' canWrite canWriteSecrets />)
 
     expect(
       await screen.findByRole('switch', { name: 'Reseller sites' })
@@ -972,7 +969,7 @@ describe('reseller settings', () => {
       cloudflare_token_configured: true,
       turnstile_secret_configured: { w1: true },
     })
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='domains' canWrite canWriteSecrets />)
 
     const token = await screen.findByLabelText('Cloudflare API token')
     expect(token).toHaveValue('')
@@ -987,17 +984,17 @@ describe('reseller settings', () => {
   it('sends only a typed secret and the changed keys', async () => {
     const user = userEvent.setup()
     api.saveResellerSettings.mockResolvedValue(settings)
-    renderWith(<SettingsPanel canWrite canWriteSecrets />)
+    renderWith(<SettingsPanel section='domains' canWrite canWriteSecrets />)
     await screen.findByLabelText('Cloudflare API token')
 
     await user.type(screen.getByLabelText('Secret of widget 1'), 'sec-1')
-    await user.clear(screen.getByLabelText('Freeze days'))
-    await user.type(screen.getByLabelText('Freeze days'), '10')
+    await user.clear(screen.getByLabelText('Custom domains per site'))
+    await user.type(screen.getByLabelText('Custom domains per site'), '10')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
       expect(api.saveResellerSettings).toHaveBeenCalledWith({
-        freeze_days: 10,
+        max_custom_domains_per_site: 10,
         turnstile_widget_secret: { w1: 'sec-1' },
       })
     )
@@ -1016,7 +1013,7 @@ describe('reseller settings', () => {
     })
     const view = render(
       <QueryClientProvider client={client}>
-        <SettingsPanel canWrite canWriteSecrets />
+        <SettingsPanel section='domains' canWrite canWriteSecrets />
       </QueryClientProvider>
     )
     const widgetSecret = await screen.findByLabelText('Secret of widget 1')
@@ -1024,12 +1021,12 @@ describe('reseller settings', () => {
     await user.click(
       screen.getByRole('checkbox', { name: 'Remove the saved token' })
     )
-    await user.clear(screen.getByLabelText('Freeze days'))
-    await user.type(screen.getByLabelText('Freeze days'), '10')
+    await user.clear(screen.getByLabelText('Custom domains per site'))
+    await user.type(screen.getByLabelText('Custom domains per site'), '10')
 
     view.rerender(
       <QueryClientProvider client={client}>
-        <SettingsPanel canWrite canWriteSecrets={false} />
+        <SettingsPanel section='domains' canWrite canWriteSecrets={false} />
       </QueryClientProvider>
     )
 
@@ -1038,11 +1035,11 @@ describe('reseller settings', () => {
     expect(
       screen.getByRole('checkbox', { name: 'Remove the saved token' })
     ).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByLabelText('Freeze days')).toBeEnabled()
+    expect(screen.getByLabelText('Custom domains per site')).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
-      expect(api.saveResellerSettings).toHaveBeenCalledWith({ freeze_days: 10 })
+      expect(api.saveResellerSettings).toHaveBeenCalledWith({ max_custom_domains_per_site: 10 })
     )
   })
 
@@ -1084,7 +1081,7 @@ describe('reseller settings', () => {
           },
         },
       })
-      await renderSiteSettingsPage('settings', client)
+      await renderSiteSettingsPage('domains', client)
       const token = await screen.findByLabelText('Cloudflare API token')
       if (mode === 'replace') {
         fireEvent.change(token, { target: { value: 'queued-root-token' } })
@@ -1096,7 +1093,7 @@ describe('reseller settings', () => {
       fireEvent.change(screen.getByLabelText('Secret of widget 1'), {
         target: { value: 'queued-widget-secret' },
       })
-      const field = screen.getByLabelText('Freeze days')
+      const field = screen.getByLabelText('Custom domains per site')
       fireEvent.change(field, { target: { value: '23' } })
       const form = field.closest('form')
       if (!form) throw new Error('Settings form is missing')
@@ -1108,7 +1105,7 @@ describe('reseller settings', () => {
         resume()
       })
       await waitFor(() => expect(client.isMutating()).toBe(0))
-      expect(api.saveResellerSettings).toHaveBeenCalledWith({ freeze_days: 23 })
+      expect(api.saveResellerSettings).toHaveBeenCalledWith({ max_custom_domains_per_site: 23 })
     }
   )
 })
@@ -1159,7 +1156,7 @@ describe('SiteDetailSheet notice takedown', () => {
   }
 
   it('lets Root approve a pending staff balance request for the open site', async () => {
-    api.getAdminBalanceRequests.mockResolvedValue([
+    api.getAdminBalanceRequests.mockResolvedValue({total:1,items:[
       {
         id: 4,
         site_id: 1,
@@ -1173,7 +1170,7 @@ describe('SiteDetailSheet notice takedown', () => {
         created_at: 1,
         reviewed_at: 0,
       },
-    ])
+    ]})
     openSheet(site({}))
     const table = await screen.findByRole('table', { name: 'Balance requests' })
     expect(within(table).getByText('1.50')).toBeInTheDocument()
@@ -1183,7 +1180,7 @@ describe('SiteDetailSheet notice takedown', () => {
     await waitFor(() =>
       expect(api.reviewAdminBalanceRequest).toHaveBeenCalledWith(4, true)
     )
-    expect(api.getAdminBalanceRequests).toHaveBeenCalledWith(1)
+    expect(api.getAdminBalanceRequests).toHaveBeenCalledWith(1,1,'pending')
   })
 
   it('takes the notice down after confirming', async () => {
@@ -1356,8 +1353,8 @@ describe('queued Site settings and invite authority', () => {
   it('rejects a queued settings write after revocation and unmount', async () => {
     asSiteAdmin(['settings_read', 'settings'])
     const paused = pausedMutationClient()
-    const view = await renderSiteSettingsPage('settings', paused.client)
-    const field = await screen.findByLabelText('Freeze days')
+    const view = await renderSiteSettingsPage('domains', paused.client)
+    const field = await screen.findByLabelText('Custom domains per site')
     fireEvent.change(field, { target: { value: '19' } })
     const form = field.closest('form')
     if (!form) throw new Error('Settings form is missing')
@@ -1376,14 +1373,14 @@ describe('queued Site settings and invite authority', () => {
 
   it('strips queued Root secrets after a downgrade and unmount in the same update', async () => {
     const paused = pausedMutationClient()
-    const view = await renderSiteSettingsPage('settings', paused.client)
+    const view = await renderSiteSettingsPage('domains', paused.client)
     fireEvent.change(await screen.findByLabelText('Cloudflare API token'), {
       target: { value: 'queued-token' },
     })
     fireEvent.change(screen.getByLabelText('Secret of widget 1'), {
       target: { value: 'queued-widget' },
     })
-    const field = screen.getByLabelText('Freeze days')
+    const field = screen.getByLabelText('Custom domains per site')
     fireEvent.change(field, { target: { value: '29' } })
     const form = field.closest('form')
     if (!form) throw new Error('Settings form is missing')
@@ -1397,7 +1394,7 @@ describe('queued Site settings and invite authority', () => {
       paused.resume()
     })
     await waitFor(() => expect(paused.client.isMutating()).toBe(0))
-    expect(api.saveResellerSettings).toHaveBeenCalledWith({ freeze_days: 29 })
+    expect(api.saveResellerSettings).toHaveBeenCalledWith({ max_custom_domains_per_site: 29 })
   })
 })
 

@@ -145,11 +145,12 @@ func TestAdtyTicketNotesImagesAndRemovedStaff(t *testing.T) {
 	t.Cleanup(restore)
 	customer := referralUser(t, db, "ticket-customer")
 	owner := referralUser(t, db, "ticket-owner")
-	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "ticket-site", Status: model.AdtySiteStatusActive}
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "ticket-site", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	require.NoError(t, db.Model(customer).Updates(map[string]any{"site_id": site.Id, "quota": 500000}).Error)
 	staffUser := referralUser(t, db, "ticket-staff")
-	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Role: "support", Status: "enabled", Permissions: `["customers.read"]`}).Error)
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staffUser.Id).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`}).Error)
 
 	ticket, err := CreateAdtyTicket(customer.Id, AdtyTicketInput{Type: "billing", Title: "Charge", Body: "api_key=sk-livesecretvalue please", RelatedRef: "T100001", Idempotency: "same"})
 	require.NoError(t, err)
@@ -199,11 +200,12 @@ func TestAdtyTicketImageVisibilityFollowsMessage(t *testing.T) {
 	t.Cleanup(restore)
 	customer := referralUser(t, db, "ticket-image-customer")
 	owner := referralUser(t, db, "ticket-image-owner")
-	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "ticket-image-site", Status: model.AdtySiteStatusActive}
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "ticket-image-site", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
 	staff := referralUser(t, db, "ticket-image-staff")
-	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staff.Id, Role: "support", Status: "enabled", Permissions: `["customers.read"]`}).Error)
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staff.Id).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staff.Id, Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`}).Error)
 
 	ticket, err := CreateAdtyTicket(customer.Id, AdtyTicketInput{Type: "billing", Title: "Charge", Body: "see screenshot", Idempotency: "image-visibility"})
 	require.NoError(t, err)

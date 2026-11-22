@@ -55,6 +55,7 @@ let staffVersion: number
 let orderReads: { path: string; kind: unknown; page?: number }[]
 let orderTotal: number
 let orderFailure: boolean
+let requestStatus: 'approved' | 'rejected' | 'pending' | undefined
 let clients: QueryClient[] = []
 beforeEach(() => {
   members = []
@@ -65,6 +66,7 @@ beforeEach(() => {
   orderReads = []
   orderTotal = 1
   orderFailure = false
+  requestStatus = undefined
   verification.request.mockResolvedValue({ proof_token: 'single-use-proof' })
   useAuthStore.getState().auth.setBundle({
     user: { id: 11, username: 'staff', role: 1, staff_site_id: 7 },
@@ -90,7 +92,9 @@ beforeEach(() => {
       const body =
         typeof config.data === 'string' ? JSON.parse(config.data) : config.data
       writes.push({ path, body, proof: config.headers.get('X-Security-Proof') })
-      if (config.method === 'post') {
+      if (path === '/api/adty/site/balance-requests/42/review') {
+        requestStatus = body.approve ? 'approved' : 'rejected'
+      } else if (config.method === 'post') {
         members = [
           {
             ...body,
@@ -165,7 +169,20 @@ beforeEach(() => {
     } else if (path.endsWith('/staff/audits')) {
       data = { total: 0, items: [] }
     } else if (path.endsWith('/balance-requests')) {
-      data = { items: [] }
+      const items = requestStatus && config.params?.status === requestStatus
+        ? [{
+            id: 42,
+            customer_user_id: 20,
+            direction: 'increase',
+            amount_usd: '2',
+            status: requestStatus,
+            order_ref: 'paid-order-20',
+            reason: 'Correct credit',
+            funding_source: 'site_earnings',
+            reviewed_at: requestStatus === 'pending' ? 0 : 1000,
+          }]
+        : []
+      data = { total: items.length, items }
     } else {
       data = { total: members.length, items: members }
     }
@@ -316,6 +333,28 @@ describe('staff management and workspace', () => {
     await waitFor(() => expect(writes).toHaveLength(1))
     expect(writes[0].body).toMatchObject({ funding_source: 'specified_batch',
       batch_kind: 'principal', batch_source: 'paid-order-20' })
+  })
+
+  it.each([
+    { button: 'Approve', status: 'approved', approve: true },
+    { button: 'Reject', status: 'rejected', approve: false },
+  ])('lets the owner select $button and refreshes the pending list', async (action) => {
+    requestStatus = 'pending'
+    const user = userEvent.setup()
+    renderStaff()
+    const table = await screen.findByRole('table', { name: 'Balance requests' })
+    expect(await within(table).findByText(/paid-order-20/)).toBeVisible()
+    await user.click(within(table).getByRole('button', { name: action.button }))
+    expect(await within(table).findByText('No data')).toBeVisible()
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toMatchObject({
+      path: '/api/adty/site/balance-requests/42/review',
+      body: { approve: action.approve },
+    })
+    await user.selectOptions(screen.getByLabelText('Status'), action.status)
+    const reviewed = await screen.findByRole('table', { name: 'Balance requests' })
+    expect(await within(reviewed).findByText(/paid-order-20/)).toBeVisible()
+    expect(within(reviewed).queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('creates a staff account with explicit read permissions after verification', async () => {

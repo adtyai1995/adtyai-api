@@ -54,7 +54,6 @@ export type AdminSite = {
   status: SiteStatus
   settle_hold_reason?: string
   cost_factor: string | null
-  max_markup: string | null
   tier_cost_factor: string | null
   tier_month: string
   /** Assigned site level code; empty while no level applies. */
@@ -207,7 +206,6 @@ export type ResellerSettings = {
   cost_factor: number | null
   min_cost_factor: number | null
   cost_factor_tiers: CostTier[] | null
-  max_markup: number | null
   /** Retired amount-tier setting, returned only for historical compatibility. */
   max_site_bonus_extra: number | null
   trial_grant_max_usd: number | null
@@ -238,6 +236,7 @@ export type ResellerSettings = {
   turnstile_secret_configured: Record<string, boolean> | null
   cloudflare_configured: boolean
   resend_configured: boolean
+  settings_warnings?: string[]
   money_configured: boolean
   site_agreement_version: number
   site_customer_terms_version: number
@@ -272,7 +271,6 @@ export type InviteCode = {
   used_count: number
   expire_at: number
   cost_factor: string | null
-  max_markup: string | null
   note: string
   created_by: number
   created_at: number
@@ -283,6 +281,5 @@ export type InviteCodeInput = {
   max_uses: number
   expire_at: number
   cost_factor?: string
-  max_markup?: string
   note: string
 }

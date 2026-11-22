@@ -64,9 +64,16 @@ export type PriceRevision = {
   created_at: number
 }
 
-export async function getPricingHistory(page: number, customerId?: number): Promise<OwnerPage<PriceRevision>> {
-  const path = customerId ? `${BASE}/customers/${customerId}/pricing/history` : `${BASE}/pricing/history`
-  const response = await api.get<ApiResponse<OwnerPage<PriceRevision>>>(path, { params: { p: page, page_size: OWNER_PAGE_SIZE } })
+export async function getPricingHistory(
+  page: number,
+  customerId?: number
+): Promise<OwnerPage<PriceRevision>> {
+  const path = customerId
+    ? `${BASE}/customers/${customerId}/pricing/history`
+    : `${BASE}/pricing/history`
+  const response = await api.get<ApiResponse<OwnerPage<PriceRevision>>>(path, {
+    params: { p: page, page_size: OWNER_PAGE_SIZE },
+  })
   return requireServerSuccess(response.data).data
 }
 
@@ -378,13 +385,16 @@ export type SiteInviteCommissionWithdrawal = {
   reject_reason: string
 }
 
-export async function getOwnerCommissionWithdrawals(): Promise<
-  SiteInviteCommissionWithdrawal[]
-> {
+export async function getOwnerCommissionWithdrawals(
+  page: number,
+  status: string
+) {
   const res = await api.get<
-    ApiResponse<{ items?: SiteInviteCommissionWithdrawal[] }>
-  >(`${BASE}/commission-withdrawals`)
-  return requireServerSuccess(res.data).data.items ?? []
+    ApiResponse<{ items: SiteInviteCommissionWithdrawal[]; total: number }>
+  >(`${BASE}/commission-withdrawals`, {
+    params: { p: page, page_size: OWNER_PAGE_SIZE, status },
+  })
+  return requireServerSuccess(res.data).data
 }
 
 export async function reviewOwnerCommissionWithdrawal(
@@ -483,8 +493,13 @@ export async function getOwnerEarnings(
 }
 
 export type SiteReferralView = {
-  cap_configured: boolean
-  max_rate?: string
+  pending_coverage_cap: string | null
+  observation_days: number | null
+  min_usd: string | null
+  fee_usd: string | null
+  cny_rate: string | null
+  trial_grant_max_usd: string | null
+  trial_grant_daily_usd: string | null
   rate_configured: boolean
   rate?: string
   enabled?: boolean
@@ -540,12 +555,17 @@ export async function saveOwnerSiteReferralEnabled(
   requireServerSuccess(res.data)
 }
 
-export async function saveOwnerSiteReferral(rate: string): Promise<void> {
+export type SiteMarketingField = Exclude<
+  keyof SiteReferralView,
+  'rate_configured' | 'enabled'
+>
+
+export async function saveOwnerSiteReferral(
+  fields: Partial<Record<SiteMarketingField, string>>
+): Promise<void> {
   const res = await api.put<ApiResponse<{ saved: boolean }>>(
     `${BASE}/referral`,
-    {
-      rate,
-    }
+    fields
   )
   requireServerSuccess(res.data)
 }
@@ -655,6 +675,7 @@ export async function reportCustomer(
 export async function savePricing(
   body: {
     default_markup?: string
+    clear_default?: boolean
     group_markups?: Record<string, string>
     model_markups?: Record<string, string>
     expected_version: number

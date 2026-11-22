@@ -49,7 +49,6 @@ type Draft = {
   min_principal_usd: string
   min_consumption_usd: string
   cost_factor: string
-  max_markup: string
   deposit_usd: string
   sort_order: string
   enabled: boolean
@@ -62,7 +61,6 @@ const EMPTY_DRAFT: Draft = {
   min_principal_usd: '0',
   min_consumption_usd: '0',
   cost_factor: '',
-  max_markup: '',
   deposit_usd: '0',
   sort_order: '0',
   enabled: true,
@@ -79,7 +77,6 @@ function draftOf(tier: SiteTier): Draft {
     min_principal_usd: tier.min_principal_usd,
     min_consumption_usd: tier.min_consumption_usd,
     cost_factor: tier.cost_factor ?? '',
-    max_markup: tier.max_markup ?? '',
     deposit_usd: tier.deposit_usd,
     sort_order: String(tier.sort_order),
     enabled: tier.enabled,
@@ -99,9 +96,7 @@ function draftReady(draft: Draft) {
       draft.min_consumption_usd,
       draft.deposit_usd,
     ].every((value) => DECIMAL.test(value.trim())) &&
-    [draft.cost_factor, draft.max_markup].every(
-      (value) => value.trim() === '' || DECIMAL.test(value.trim())
-    )
+    (draft.cost_factor.trim() === '' || DECIMAL.test(draft.cost_factor.trim()))
   )
 }
 
@@ -134,7 +129,6 @@ export function SiteTiersPanel() {
         min_principal_usd: draft.min_principal_usd.trim(),
         min_consumption_usd: draft.min_consumption_usd.trim(),
         cost_factor: draft.cost_factor.trim() || null,
-        max_markup: draft.max_markup.trim() || null,
         deposit_usd: draft.deposit_usd.trim(),
         sort_order: Number(draft.sort_order.trim()),
         enabled: draft.enabled,
@@ -238,12 +232,6 @@ export function SiteTiersPanel() {
               cell: (row) => row.cost_factor ?? t('Default'),
             },
             {
-              id: 'markup',
-              header: t('Markup limit'),
-              cellClassName: 'tabular-nums',
-              cell: (row) => row.max_markup ?? t('Default'),
-            },
-            {
               id: 'deposit',
               header: t('Margin requirement'),
               cellClassName: 'tabular-nums',
@@ -287,7 +275,7 @@ export function SiteTiersPanel() {
         }}
         title={editing?.isNew ? t('Add level') : t('Edit level')}
         description={t(
-          'Saving updates sites already on this level at once: their cost factor, markup limit and margin requirement follow the level.'
+          'Saving updates the supply cost factor and margin requirement for sites on this level.'
         )}
         contentHeight='auto'
         bodyClassName='grid gap-3 sm:grid-cols-2'
@@ -321,9 +309,6 @@ export function SiteTiersPanel() {
         })}
         {field('deposit_usd', t('Margin requirement (USD)'), { decimal: true })}
         {field('cost_factor', t('Cost factor (empty uses the default)'), {
-          decimal: true,
-        })}
-        {field('max_markup', t('Markup limit k (empty uses the default)'), {
           decimal: true,
         })}
         {field('sort_order', t('Sort order'))}

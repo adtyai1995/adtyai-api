@@ -30,6 +30,7 @@ export type StaffPermission =
   | 'customers.balance'
   | 'customers.topups'
   | 'customers.usage'
+  | 'tickets.manage'
   | 'customers.disable'
 export type StaffCustomerAction = 'disable'
 export type StaffBalanceDirection = 'increase' | 'decrease'
@@ -106,7 +107,9 @@ export type StaffOrder = {
 type Response<T> = { success: boolean; message?: string; data: T }
 export const STAFF_PAGE_SIZE = 20
 
-export async function getStaffBalanceRequests(): Promise<StaffBalanceRequest[]> {
+export async function getStaffBalanceRequests(): Promise<
+  StaffBalanceRequest[]
+> {
   const response = await api.get<Response<{ items?: StaffBalanceRequest[] }>>(
     '/api/adty/staff/balance-requests'
   )
@@ -129,11 +132,13 @@ export async function createStaffBalanceRequest(input: {
   )
   return requireServerSuccess(response.data).data
 }
-export async function getOwnerBalanceRequests(): Promise<StaffBalanceRequest[]> {
-  const response = await api.get<Response<{ items?: StaffBalanceRequest[] }>>(
-    '/api/adty/site/balance-requests'
-  )
-  return requireServerSuccess(response.data).data.items ?? []
+export async function getOwnerBalanceRequests(p: number, status: string) {
+  const response = await api.get<
+    Response<{ items: StaffBalanceRequest[]; total: number }>
+  >('/api/adty/site/balance-requests', {
+    params: { p, status, page_size: STAFF_PAGE_SIZE },
+  })
+  return requireServerSuccess(response.data).data
 }
 export async function reviewOwnerBalanceRequest(
   id: number,
@@ -255,7 +260,9 @@ export async function getStaffCustomerRecords(
 }
 
 export async function getStaffCustomerOrders(
-  customerId: number, orderType: StaffOrderType, page: number
+  customerId: number,
+  orderType: StaffOrderType,
+  page: number
 ): Promise<OwnerPage<StaffOrder>> {
   const response = await api.get<Response<OwnerPage<StaffOrder>>>(
     `/api/adty/staff/customers/${customerId}/orders`,
@@ -265,7 +272,9 @@ export async function getStaffCustomerOrders(
 }
 
 export async function getStaffCustomerOrder(
-  customerId: number, orderType: StaffOrderType, tradeNo: string
+  customerId: number,
+  orderType: StaffOrderType,
+  tradeNo: string
 ): Promise<StaffOrder> {
   const response = await api.get<Response<{ order: StaffOrder }>>(
     `/api/adty/staff/customers/${customerId}/orders/${encodeURIComponent(tradeNo)}`,

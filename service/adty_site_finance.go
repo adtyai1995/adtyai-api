@@ -608,12 +608,6 @@ func ValidateAdtySiteTier(tier model.AdtySiteTier) error {
 		tier.CostFactor.GreaterThanOrEqual(decimal.New(1, 4)) || !tier.CostFactor.Equal(tier.CostFactor.Truncate(6))) {
 		return ErrAdtySiteTierInvalid
 	}
-	// MaxMarkup is still stored as the historical k cap (加价比例 = k-1). It must be
-	// positive so that 1+加价比例 stays positive; the old k>=1 floor is not required.
-	if tier.MaxMarkup != nil && (!tier.MaxMarkup.IsPositive() ||
-		tier.MaxMarkup.GreaterThanOrEqual(decimal.New(1, 6)) || !tier.MaxMarkup.Equal(tier.MaxMarkup.Truncate(4))) {
-		return ErrAdtySiteTierInvalid
-	}
 	return nil
 }
 
@@ -648,7 +642,7 @@ func SaveAdtySiteTiers(tiers []model.AdtySiteTier) error {
 				"name": input.Name, "min_monthly_usd": input.MinMonthlyUSD,
 				"min_effective_users": input.MinEffectiveUsers, "min_principal_usd": input.MinPrincipalUSD,
 				"min_consumption_usd": input.MinConsumptionUSD, "cost_factor": input.CostFactor,
-				"max_markup": input.MaxMarkup, "deposit_usd": input.DepositUSD, "enabled": input.Enabled,
+				"deposit_usd": input.DepositUSD, "enabled": input.Enabled,
 				"sort_order": input.SortOrder,
 			}).Error; err != nil {
 				return err
@@ -656,7 +650,7 @@ func SaveAdtySiteTiers(tiers []model.AdtySiteTier) error {
 			// Fixed mode fixes the assigned level, not an obsolete copy of
 			// that level's Root-managed financial terms.
 			if err := tx.Model(&model.AdtySite{}).Where("tier_code = ?", input.Code).Updates(map[string]any{
-				"tier_cost_factor": input.CostFactor, "tier_max_markup": input.MaxMarkup,
+				"tier_cost_factor":         input.CostFactor,
 				"pending_tier_cost_factor": nil, "pending_tier_cost_factor_at": 0,
 			}).Error; err != nil {
 				return err
@@ -795,11 +789,9 @@ func applyAdtySiteTierAssignmentTx(tx *gorm.DB, siteID int, selected *model.Adty
 	if selected != nil {
 		updates["tier_code"] = selected.Code
 		updates["tier_cost_factor"] = selected.CostFactor
-		updates["tier_max_markup"] = selected.MaxMarkup
 		required = selected.DepositUSD
 	} else {
 		updates["tier_cost_factor"] = nil
-		updates["tier_max_markup"] = nil
 	}
 	if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).
 		Update("required_balance", required).Error; err != nil {
@@ -971,14 +963,12 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 		}
 		if selected == nil {
 			updates["tier_cost_factor"] = nil
-			updates["tier_max_markup"] = nil
 			if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).
 				Update("required_balance", decimal.Zero).Error; err != nil {
 				return err
 			}
 		} else {
 			updates["tier_cost_factor"] = selected.CostFactor
-			updates["tier_max_markup"] = selected.MaxMarkup
 			if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).
 				Update("required_balance", selected.DepositUSD).Error; err != nil {
 				return err

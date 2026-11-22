@@ -221,13 +221,13 @@ func TestOpenSiteRequiresSettings(t *testing.T) {
 		resend  bool
 		wantErr bool
 	}{
-		{"enabled without money settings", func(s *adty_setting.ResellerSetting) { s.MaxMarkup = nil }, false, true},
+		{"enabled without supply cost", func(s *adty_setting.ResellerSetting) { s.CostFactor = nil }, false, true},
 		{"enabled without root domain", func(s *adty_setting.ResellerSetting) { s.RootDomains = nil }, false, true},
 		{"cost factor above 1 is allowed", func(s *adty_setting.ResellerSetting) { s.CostFactor = new(1.2) }, false, false},
 		{"cost factor below minimum", func(s *adty_setting.ResellerSetting) { s.CostFactor = new(0.4) }, false, true},
 		{"cost factor not positive", func(s *adty_setting.ResellerSetting) { s.CostFactor = new(0.0) }, false, true},
 		{"markup limit below 1 is allowed", func(s *adty_setting.ResellerSetting) { s.MaxMarkup = new(0.9) }, false, false},
-		{"markup limit not positive", func(s *adty_setting.ResellerSetting) { s.MaxMarkup = new(0.0) }, false, true},
+		{"retired markup limit ignored", func(s *adty_setting.ResellerSetting) { s.MaxMarkup = new(0.0) }, false, false},
 		{"custom domains without Cloudflare", func(s *adty_setting.ResellerSetting) { s.CustomDomainEnabled = true }, false, true},
 		{"custom domains with Cloudflare", func(s *adty_setting.ResellerSetting) {
 			s.CustomDomainEnabled, s.CloudflareApiToken, s.CloudflareZoneId, s.CnameTarget = true, "tok", "zone", "customers.sites.example.com"
@@ -331,7 +331,7 @@ func TestOpenSiteByApplyThenApprove(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtySiteStatusActive, approved.Status)
 	assert.True(t, approved.CostFactor.Equal(decimal.RequireFromString("0.7")))
-	assert.True(t, approved.MaxMarkup.Equal(decimal.NewFromInt(2)))
+	assert.Nil(t, approved.MaxMarkup)
 	_, err = ReviewAdtySiteApplication(site.Id, 1, true, nil, nil, "")
 	assert.ErrorIs(t, err, ErrAdtySiteStatus)
 
@@ -355,8 +355,9 @@ func TestOpenSiteByAdmin(t *testing.T) {
 	owner := referralUser(t, db, "admin-opened")
 	_, err := OpenAdtySite(owner.Id, "low", model.AdtySiteOpenedByAdmin, AdtySitePreset{CostFactor: dec("0.4")})
 	assert.Error(t, err, "below min_cost_factor")
-	_, err = OpenAdtySite(owner.Id, "high", model.AdtySiteOpenedByAdmin, AdtySitePreset{MaxMarkup: dec("5")})
-	assert.Error(t, err, "above max_markup")
+	legacyOwner := referralUser(t, db, "legacy-cap-owner")
+	_, err = OpenAdtySite(legacyOwner.Id, "high", model.AdtySiteOpenedByAdmin, AdtySitePreset{MaxMarkup: dec("5")})
+	require.NoError(t, err)
 
 	site, err := OpenAdtySite(owner.Id, "admin-site", model.AdtySiteOpenedByAdmin, AdtySitePreset{CostFactor: dec("0.6"), OperatorId: 9})
 	require.NoError(t, err)

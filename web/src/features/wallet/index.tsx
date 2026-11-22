@@ -26,7 +26,6 @@ import { getSelf } from '@/lib/api'
 
 import { AdtyOnlineTopup } from './adty/components/adty-online-topup'
 import { SiteCommissionPanel } from './adty/site-commission-panel'
-import { TeamPanel } from './adty/team-panel'
 import { VoucherRedeemCard } from './adty/voucher-redeem-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
 import type { UserWalletData } from './types'
@@ -101,7 +100,6 @@ export function Wallet(props: WalletProps) {
           />
           {userError && <ErrorState onRetry={() => void fetchUser()} />}
           <VoucherRedeemCard onRedeemed={() => void fetchUser()} />
-          <TeamPanel />
           <SiteCommissionPanel onConverted={() => void fetchUser()} />
           <AdtyOnlineTopup onSettled={fetchUser} />
         </div>

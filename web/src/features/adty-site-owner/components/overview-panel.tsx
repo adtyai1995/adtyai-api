@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 
@@ -31,6 +32,7 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
+import { useSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
@@ -50,6 +52,24 @@ export function OverviewPanel() {
     queryKey: siteOwnerKeys.list('earnings', { p: 1, kind: '' }),
     queryFn: () => getOwnerEarnings(1, ''),
   })
+  const { counts, failed } = useSidebarBadges()
+  const tasks = [
+    {
+      kind: 'tickets_pending',
+      section: 'tickets',
+      label: t('Ticket workspace'),
+    },
+    {
+      kind: 'invite_withdrawals_pending',
+      section: 'commissions',
+      label: t('Invite commission withdrawal'),
+    },
+    {
+      kind: 'staff_balance_pending',
+      section: 'staff',
+      label: t('Balance requests'),
+    },
+  ]
   const balances = earnings.data?.balances
   const total = stats.data?.total
   const money = (value: string | undefined) =>
@@ -77,6 +97,41 @@ export function OverviewPanel() {
   return (
     <div className='flex flex-col gap-4'>
       {(stats.isError || earnings.isError) && <ErrorState onRetry={retry} />}
+      <section className='grid gap-2'>
+        <h2 className='font-medium'>{t('Pending tasks')}</h2>
+        <div className='flex flex-wrap gap-4'>
+          {tasks.map((task) => (
+            <Link
+              key={task.kind}
+              to='/site-owner/$section'
+              params={{ section: task.section }}
+              hash='pending'
+              className='underline'
+            >
+              {task.label} ({failed || !counts ? '—' : (counts[task.kind] ?? 0)}
+              )
+            </Link>
+          ))}
+        </div>
+      </section>
+      <nav aria-label={t('Earnings')} className='flex flex-wrap gap-4'>
+        {[
+          ['self-use', t('Owner self-use')],
+          ['withdrawal', t('Withdrawals')],
+          ['margin', t('Transfer earnings to margin')],
+          ['settlement', t('Settlement sheet')],
+        ].map(([hash, label]) => (
+          <Link
+            key={hash}
+            to='/site-owner/$section'
+            params={{ section: 'earnings' }}
+            hash={hash}
+            className='underline'
+          >
+            {label}
+          </Link>
+        ))}
+      </nav>
       <OwnerStatGrid
         label={t('Earnings')}
         items={[

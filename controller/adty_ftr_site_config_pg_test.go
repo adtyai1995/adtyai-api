@@ -57,8 +57,8 @@ func TestFTRADTY1005OwnerSavesBrandPagePG(t *testing.T) {
 	assert.Zero(t, ledgers)
 }
 
-// ADTY-16-04: Root stores the site invite commission cap through PUT /api/adty/admin/site-referral/cap.
-func TestFTRADTY1604RootSavesSiteReferralCapPG(t *testing.T) {
+// ADTY-16-04: The retired Root site invite commission cap rejects writes through PUT /api/adty/admin/site-referral/cap.
+func TestFTRADTY1604RootCannotSetSiteReferralCapPG(t *testing.T) {
 	db := ftrAccountDB(t)
 	ftrPinProcessOptions(t)
 	root := model.User{
@@ -75,13 +75,11 @@ func TestFTRADTY1604RootSavesSiteReferralCapPG(t *testing.T) {
 	ctx.Set("username", root.Username)
 	PutAdtySiteReferralCap(ctx)
 	body := rec.Body.String()
-	require.Equal(t, http.StatusOK, rec.Code, body)
-	require.Contains(t, body, `"success":true`, body)
-	assert.Contains(t, body, `"saved":true`)
-
-	var stored model.Option
-	require.NoError(t, db.Where("key = ?", "adty_site_referral.max_rate").First(&stored).Error)
-	assert.Equal(t, "0.15", stored.Value)
+	require.Equal(t, http.StatusGone, rec.Code, body)
+	require.Contains(t, body, `"success":false`)
+	var count int64
+	require.NoError(t, db.Model(&model.Option{}).Where("key = ?", "adty_site_referral.max_rate").Count(&count).Error)
+	require.Zero(t, count)
 	ftrAssertQuotaAndNoLedger(t, db, root.Id, ftrAccountQuota)
 	var ledgers int64
 	require.NoError(t, db.Model(&model.AdtyBalanceLedger{}).Count(&ledgers).Error)

@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 // 主站的分站管理（任务 11.9 的后端）。全部用 handlePermissionRoute 按「分站」权限注册（router/adty-router.go）。
@@ -40,14 +41,13 @@ func parseOptionalDecimal(raw *string) (*decimal.Decimal, error) {
 	return &value, nil
 }
 
-// adtySiteAdminView 是后台列表和明细里的一行：站点加站长、客户数、本月数字和生效的 d、k 上限。
+// adtySiteAdminView 是后台列表和明细里的一行：站点加站长、客户数、本月数字和生效的 d。
 type adtySiteAdminView struct {
 	model.AdtySite
 	OwnerUsername       string `json:"owner_username"`
 	Host                string `json:"host"`
 	Customers           int64  `json:"customers"`
 	EffectiveCostFactor string `json:"effective_cost_factor"` // 当前生效的 d（单站 > 档位 > 全局，不低于下限）
-	EffectiveMaxMarkup  string `json:"effective_max_markup"`
 	service.AdtySiteMonthTotals
 }
 
@@ -85,19 +85,12 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 	if err != nil {
 		return nil, err
 	}
-	globalMax := ""
-	if cfg := adty_setting.GetResellerSetting(); cfg.MaxMarkup != nil {
-		globalMax = decimal.NewFromFloat(*cfg.MaxMarkup).String()
-	}
 	views := make([]adtySiteAdminView, 0, len(sites))
 	for _, site := range sites {
 		view := adtySiteAdminView{AdtySite: site, OwnerUsername: names[site.OwnerUserId], Host: service.AdtySiteDisplayHost(&site),
-			Customers: counts[site.Id], AdtySiteMonthTotals: totals[site.Id], EffectiveMaxMarkup: globalMax}
+			Customers: counts[site.Id], AdtySiteMonthTotals: totals[site.Id]}
 		if d, ok := service.AdtySiteCostFactor(&site); ok {
 			view.EffectiveCostFactor = d.String()
-		}
-		if site.MaxMarkup != nil {
-			view.EffectiveMaxMarkup = site.MaxMarkup.String()
 		}
 		views = append(views, view)
 	}
@@ -127,7 +120,7 @@ var adtySiteSortKeys = map[string]func(a, b adtySiteAdminView) int{
 
 // GetAdtyAdminSites 列出分站（分站·查看）：按状态、子域名或站长用户名筛选；带客户数、本月充值、消费、
 // 平台收入、站长收益和比上月的增长；sort 可按 id、customers、topup、revenue、earning、growth 排序，order=asc|desc。
-// 本月数字要从日汇总算，分站数量有限，所以先取出筛选后的站点（最多 5000 个），排序后再分页。
+// 本月数字要从日汇总算，分站数量有限，所以先取出筛选后的站点，排序后再分页。
 func GetAdtyAdminSites(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	query := model.DB.Model(&model.AdtySite{})
@@ -148,18 +141,50 @@ func GetAdtyAdminSites(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	var sites []model.AdtySite
-	if err := query.Order("id DESC").Limit(5000).Find(&sites).Error; err != nil {
-		common.ApiError(c, err)
+	ascending := c.Query("order") == "asc"
+	if c.DefaultQuery("sort", "id") == "id" {
+		var count int64
+		if err := query.Count(&count).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		order := "id DESC"
+		if ascending {
+			order = "id ASC"
+		}
+		var sites []model.AdtySite
+		if err := query.Order(order).Offset(pageInfo.GetStartIdx()).Limit(pageInfo.GetPageSize()).Find(&sites).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		views, err := buildSiteAdminViews(sites)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		pageInfo.SetTotal(int(count))
+		pageInfo.SetItems(views)
+		common.ApiSuccess(c, pageInfo)
 		return
 	}
-	views, err := buildSiteAdminViews(sites)
+	var views []adtySiteAdminView
+	var batch []model.AdtySite
+	// Bound each aggregate's IN list even when many sites match the filter.
+	err := query.FindInBatches(&batch, 500, func(_ *gorm.DB, _ int) error {
+		part, err := buildSiteAdminViews(batch)
+		if err == nil {
+			views = append(views, part...)
+		}
+		return err
+	}).Error
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	ascending := c.Query("order") == "asc"
 	slices.SortStableFunc(views, func(a, b adtySiteAdminView) int {
+		if compare(a, b) == 0 {
+			return cmp.Compare(b.Id, a.Id)
+		}
 		if ascending {
 			return compare(a, b)
 		}
@@ -418,28 +443,26 @@ func GetAdtyAdminSiteCustomers(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
-// CreateAdtyAdminSite 是管理员直接开站（分站·调整）：{user_id, subdomain, root_domain?, cost_factor?, max_markup?, contact_info?}。
+// CreateAdtyAdminSite 是管理员直接开站（分站·调整）：{user_id, subdomain, root_domain?, cost_factor?, contact_info?}。
 func CreateAdtyAdminSite(c *gin.Context) {
 	var body struct {
 		UserId      int     `json:"user_id"`
 		Subdomain   string  `json:"subdomain"`
 		RootDomain  string  `json:"root_domain"`
 		CostFactor  *string `json:"cost_factor"`
-		MaxMarkup   *string `json:"max_markup"`
 		ContactInfo string  `json:"contact_info"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil || body.UserId <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	costFactor, err1 := parseOptionalDecimal(body.CostFactor)
-	maxMarkup, err2 := parseOptionalDecimal(body.MaxMarkup)
-	if err1 != nil || err2 != nil {
+	costFactor, err := parseOptionalDecimal(body.CostFactor)
+	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	site, err := service.OpenAdtySite(body.UserId, body.Subdomain, model.AdtySiteOpenedByAdmin, service.AdtySitePreset{
-		CostFactor: costFactor, MaxMarkup: maxMarkup, ContactInfo: body.ContactInfo, OperatorId: c.GetInt("id"),
+		CostFactor: costFactor, ContactInfo: body.ContactInfo, OperatorId: c.GetInt("id"),
 		ExplicitRoot: strings.ToLower(strings.TrimSpace(body.RootDomain)),
 	})
 	if err != nil {
@@ -450,7 +473,7 @@ func CreateAdtyAdminSite(c *gin.Context) {
 	common.ApiSuccess(c, site)
 }
 
-// ReviewAdtyAdminSite 通过或驳回开站申请（分站·审核）：{approve, cost_factor?, max_markup?, note}。
+// ReviewAdtyAdminSite 通过或驳回开站申请（分站·审核）：{approve, cost_factor?, note}。
 func ReviewAdtyAdminSite(c *gin.Context) {
 	id, ok := siteIdParam(c)
 	if !ok {
@@ -459,24 +482,22 @@ func ReviewAdtyAdminSite(c *gin.Context) {
 	var body struct {
 		Approve    bool    `json:"approve"`
 		CostFactor *string `json:"cost_factor"`
-		MaxMarkup  *string `json:"max_markup"`
 		Note       string  `json:"note"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	var costFactor, maxMarkup *decimal.Decimal
+	var costFactor *decimal.Decimal
 	if body.Approve {
-		var err1, err2 error
-		costFactor, err1 = parseOptionalDecimal(body.CostFactor)
-		maxMarkup, err2 = parseOptionalDecimal(body.MaxMarkup)
-		if err1 != nil || err2 != nil {
+		var err error
+		costFactor, err = parseOptionalDecimal(body.CostFactor)
+		if err != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
 	}
-	site, err := service.ReviewAdtySiteApplication(id, c.GetInt("id"), body.Approve, costFactor, maxMarkup, body.Note)
+	site, err := service.ReviewAdtySiteApplication(id, c.GetInt("id"), body.Approve, costFactor, nil, body.Note)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -485,7 +506,7 @@ func ReviewAdtyAdminSite(c *gin.Context) {
 	common.ApiSuccess(c, site)
 }
 
-// AdjustAdtyAdminSite 改单站 d、k 上限、可见范围（分站·调整）。clear 列出要改回「用全局」的项：cost_factor、max_markup。
+// AdjustAdtyAdminSite 改单站 d、可见范围（分站·调整）。clear 列出要改回「用全局」的项：cost_factor。
 func AdjustAdtyAdminSite(c *gin.Context) {
 	id, ok := siteIdParam(c)
 	if !ok {
@@ -493,7 +514,6 @@ func AdjustAdtyAdminSite(c *gin.Context) {
 	}
 	var body struct {
 		CostFactor    *string  `json:"cost_factor"`
-		MaxMarkup     *string  `json:"max_markup"`
 		Visibility    *string  `json:"visibility"`
 		AllowedGroups *string  `json:"allowed_groups"`
 		Clear         []string `json:"clear"`
@@ -503,21 +523,19 @@ func AdjustAdtyAdminSite(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	costFactor, err1 := parseOptionalDecimal(body.CostFactor)
-	maxMarkup, err2 := parseOptionalDecimal(body.MaxMarkup)
-	if err1 != nil || err2 != nil {
+	costFactor, err := parseOptionalDecimal(body.CostFactor)
+	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	for _, key := range body.Clear {
-		if key != "cost_factor" && key != "max_markup" && key != "allowed_groups" {
+		if key != "cost_factor" && key != "allowed_groups" {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
 	}
 	site, err := service.AdjustAdtySite(id, c.GetInt("id"), service.AdtySiteAdjust{
 		CostFactor: costFactor, ClearCostFactor: slices.Contains(body.Clear, "cost_factor"),
-		MaxMarkup: maxMarkup, ClearMaxMarkup: slices.Contains(body.Clear, "max_markup"),
 		Visibility: body.Visibility, AllowedGroups: body.AllowedGroups,
 		ClearAllowedGroups: slices.Contains(body.Clear, "allowed_groups"), Reason: body.Reason,
 	})
@@ -755,6 +773,12 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	for _, key := range []string{"trial_grant_max_usd", "trial_grant_daily_usd"} {
+		if _, present := body[key]; present {
+			common.ApiErrorT(c, "Trial credit budgets are managed by the site owner")
+			return
+		}
+	}
 	if _, present := body["max_site_bonus_extra"]; present {
 		common.ApiError(c, service.ErrAdtyAmountTierRetired)
 		return
@@ -776,16 +800,6 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		delete(body, "clear_secrets")
 	}
 	current := *adty_setting.GetResellerSetting()
-	var previousCostFactor *float64
-	if current.CostFactor != nil {
-		copied := *current.CostFactor
-		previousCostFactor = &copied
-	}
-	var previousMin *float64
-	if current.MinCostFactor != nil {
-		copied := *current.MinCostFactor
-		previousMin = &copied
-	}
 	known, err := config.ConfigToMap(&current)
 	if err != nil {
 		common.ApiError(c, err)
@@ -837,10 +851,9 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 			return
 		}
 	}
-	next := current
-	// 切片和 map 要换成新的，不能和当前设置共享底层数组。
-	next.RootDomains, next.ReservedSubdomains, next.CostFactorTiers = nil, nil, nil
-	next.Visibility, next.TurnstileWidgets, next.TurnstileWidgetSecret = nil, nil, nil
+	// Decode the complete candidate into fresh storage. Pointer-valued money
+	// fields must not alias the live configuration before persistence succeeds.
+	var next adty_setting.ResellerSetting
 	merged := map[string]string{}
 	for key, value := range known {
 		merged[key] = value
@@ -852,7 +865,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	// UpdateConfigFromMap 遇到解析不了的值会静默跳过，这里逐项比对，防止写进去的字符串和生效的值不一致。
+	// Verify the effective value after decoding and normalization.
 	parsed, _ := config.ConfigToMap(&next)
 	for key, value := range values {
 		if !adtyConfigValueEqual(parsed[key], value) {
@@ -867,21 +880,17 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		next.ReservedSubdomains[i] = strings.ToLower(strings.TrimSpace(next.ReservedSubdomains[i]))
 	}
 	nowUnix := time.Now().Unix()
-	baseline := current
-	baseline.MinCostFactor = previousMin
-	heldMinIncrease := adty_setting.HoldMinCostFactorIncrease(&next, &baseline, nowUnix)
+	heldMinIncrease := adty_setting.HoldMinCostFactorIncrease(&next, &current, nowUnix)
 	if heldMinIncrease {
 		values["min_cost_factor"] = ""
 		values["pending_min_cost_factor"] = ""
 		values["pending_min_cost_factor_at"] = ""
 	}
-	if err := adty_setting.ValidateResellerSetting(&next, adtyResendConfigured()); err != nil {
+	if err := adty_setting.ValidateResellerPatch(&next, adtyResendConfigured(), values); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	previous := current
-	previous.CostFactor = previousCostFactor
-	heldCostIncrease := adty_setting.HoldGlobalCostFactorIncrease(&next, &previous, nowUnix)
+	heldCostIncrease := adty_setting.HoldGlobalCostFactorIncrease(&next, &current, nowUnix)
 	if heldCostIncrease {
 		values["pending_cost_factor"] = ""
 		values["pending_cost_factor_at"] = ""

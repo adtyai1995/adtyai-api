@@ -13,9 +13,10 @@ import (
 )
 
 const adtyBusinessTimezoneKey = "adty.business_timezone"
+const defaultBusinessTimezone = "Asia/Shanghai"
 
 // SaveAdtyBusinessTimezone stores the Root business-day timezone.
-// An empty value clears it. An unset value means UTC. Invalid names are refused.
+// An empty value clears it. An unset value uses the China business day. Invalid names are refused.
 func SaveAdtyBusinessTimezone(raw string) error {
 	name := strings.TrimSpace(raw)
 	if name == "" {
@@ -35,7 +36,7 @@ func loadAdtyBusinessLocation() (*time.Location, string, error) {
 	}
 	name := strings.TrimSpace(raw)
 	if !ok || name == "" {
-		return time.UTC, "UTC", nil
+		name = defaultBusinessTimezone
 	}
 	loc, err := time.LoadLocation(name)
 	if err != nil {
@@ -463,14 +464,14 @@ func summarizeAdtySiteSettlement(siteID int, day string, start, end int64) (mode
 	return sheet, nil
 }
 
-// AdtyBusinessTimezoneView is UTC until Root saves a timezone.
+// AdtyBusinessTimezoneView uses Asia/Shanghai until Root saves a timezone.
 type AdtyBusinessTimezoneView struct {
 	Configured bool   `json:"configured"`
 	Timezone   string `json:"timezone"`
 }
 
 // LoadAdtyBusinessTimezone reports the saved business-day timezone.
-// An unset value is UTC and is not presented as a saved zone.
+// An unset value uses Asia/Shanghai and is not presented as a saved zone.
 func LoadAdtyBusinessTimezone() (AdtyBusinessTimezoneView, error) {
 	raw, ok, err := model.ReadOptionFromDB(adtyBusinessTimezoneKey)
 	if err != nil {
@@ -478,7 +479,7 @@ func LoadAdtyBusinessTimezone() (AdtyBusinessTimezoneView, error) {
 	}
 	name := strings.TrimSpace(raw)
 	if !ok || name == "" {
-		return AdtyBusinessTimezoneView{Timezone: "UTC"}, nil
+		return AdtyBusinessTimezoneView{Timezone: defaultBusinessTimezone}, nil
 	}
 	return AdtyBusinessTimezoneView{Configured: true, Timezone: name}, nil
 }

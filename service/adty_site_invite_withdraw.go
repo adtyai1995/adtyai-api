@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -11,65 +12,6 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
-
-const (
-	adtySiteInviteWithdrawMinKey  = "adty_site_invite_withdraw.min_usd"
-	adtySiteInviteWithdrawFeeKey  = "adty_site_invite_withdraw.fee_usd"
-	adtySiteInviteWithdrawRateKey = "adty_site_invite_withdraw.cny_rate"
-)
-
-// SaveAdtySiteInviteWithdrawRules stores this product's own min, USDT fee, and CNY rate.
-// All three must be positive. Empty values clear them. No default is written.
-func SaveAdtySiteInviteWithdrawRules(minRaw, feeRaw, rateRaw string) error {
-	minRaw, feeRaw, rateRaw = strings.TrimSpace(minRaw), strings.TrimSpace(feeRaw), strings.TrimSpace(rateRaw)
-	if minRaw == "" && feeRaw == "" && rateRaw == "" {
-		return model.UpdateOptionsBulk(map[string]string{
-			adtySiteInviteWithdrawMinKey: "", adtySiteInviteWithdrawFeeKey: "", adtySiteInviteWithdrawRateKey: "",
-		})
-	}
-	minUSD, err := decimal.NewFromString(minRaw)
-	if err != nil || !minUSD.IsPositive() {
-		return common.NewMessage("Invalid parameters")
-	}
-	fee, err := decimal.NewFromString(feeRaw)
-	if err != nil || fee.IsNegative() {
-		return common.NewMessage("Invalid parameters")
-	}
-	rate, err := decimal.NewFromString(rateRaw)
-	if err != nil || !rate.IsPositive() {
-		return common.NewMessage("Invalid parameters")
-	}
-	return model.UpdateOptionsBulk(map[string]string{
-		adtySiteInviteWithdrawMinKey: minUSD.String(), adtySiteInviteWithdrawFeeKey: fee.String(), adtySiteInviteWithdrawRateKey: rate.String(),
-	})
-}
-
-type siteInviteWithdrawRules struct {
-	Min, Fee, Rate decimal.Decimal
-	Ready          bool
-}
-
-func loadSiteInviteWithdrawRules() (siteInviteWithdrawRules, error) {
-	minRaw, minOK, err := model.ReadOptionFromDB(adtySiteInviteWithdrawMinKey)
-	if err != nil {
-		return siteInviteWithdrawRules{}, err
-	}
-	feeRaw, feeOK, err := model.ReadOptionFromDB(adtySiteInviteWithdrawFeeKey)
-	if err != nil {
-		return siteInviteWithdrawRules{}, err
-	}
-	rateRaw, rateOK, err := model.ReadOptionFromDB(adtySiteInviteWithdrawRateKey)
-	if err != nil {
-		return siteInviteWithdrawRules{}, err
-	}
-	minUSD, err1 := decimal.NewFromString(strings.TrimSpace(minRaw))
-	fee, err2 := decimal.NewFromString(strings.TrimSpace(feeRaw))
-	rate, err3 := decimal.NewFromString(strings.TrimSpace(rateRaw))
-	if !minOK || !feeOK || !rateOK || err1 != nil || err2 != nil || err3 != nil || !minUSD.IsPositive() || fee.IsNegative() || !rate.IsPositive() {
-		return siteInviteWithdrawRules{}, nil
-	}
-	return siteInviteWithdrawRules{Min: minUSD, Fee: fee, Rate: rate, Ready: true}, nil
-}
 
 // AdtySiteInviteWithdrawalInput is one site-customer commission withdrawal request.
 type AdtySiteInviteWithdrawalInput struct {
@@ -105,85 +47,87 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 		SiteId: input.SiteID, UserId: input.UserID, AmountUSD: amount, NetUSD: amount,
 		Method: method, Status: model.AdtySiteInviteWithdrawPending, IdempotencyKey: key,
 	}
-	rules, err := loadSiteInviteWithdrawRules()
-	if err != nil {
-		return nil, err
-	}
-	switch method {
-	case "balance":
-		exact := amount.Mul(common.QuotaPerUnitDecimal())
-		if !exact.Equal(exact.Floor()) {
-			return nil, common.NewMessage("Invalid parameters")
-		}
-		quota, err := common.WalletQuotaFromDecimalStrict(exact)
-		if err != nil || quota <= 0 {
-			return nil, common.NewMessage("Invalid parameters")
-		}
-		row.Status = model.AdtySiteInviteWithdrawPaid
-		row.PaidAt = time.Now().Unix()
-	case "usdt":
-		if !rules.Ready {
-			return nil, common.NewMessage("This withdrawal method is not available")
-		}
-		if amount.LessThan(rules.Min) {
-			return nil, common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": rules.Min.String()})
-		}
-		network := strings.ToUpper(strings.TrimSpace(input.Network))
-		if !ValidateUSDTAddress(network, input.AccountNo) {
-			return nil, common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
-		}
-		net := amount.Sub(rules.Fee)
-		if !net.IsPositive() {
-			return nil, common.NewMessage("The amount must be larger than the network fee")
-		}
-		row.Network, row.AccountNo, row.FeeUSD, row.NetUSD = network, strings.TrimSpace(input.AccountNo), rules.Fee, net
-	case "alipay":
-		if !rules.Ready {
-			return nil, common.NewMessage("This withdrawal method is not available")
-		}
-		if amount.LessThan(rules.Min) {
-			return nil, common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": rules.Min.String()})
-		}
-		if !validReferralQR(input.QRImageURL) || strings.TrimSpace(input.AccountName) == "" {
-			return nil, common.NewMessage("Upload the payment QR code and enter the payee name")
-		}
-		if !rules.Rate.Equal(input.ExpectedCNYRate) {
-			return nil, &RateChangedError{Change: ReferralRateChange{Rate: rules.Rate.String(), CNYAmount: amount.Mul(rules.Rate).Round(2).StringFixed(2)}}
-		}
-		row.AccountName = strings.TrimSpace(input.AccountName)
-		row.QRImageURL = strings.TrimSpace(input.QRImageURL)
-		row.Rate = rules.Rate.String()
-		row.PayoutAmount = amount.Mul(rules.Rate).Round(2).StringFixed(2)
-		row.PayoutCurrency = "CNY"
-	default:
-		return nil, common.NewMessage("Unsupported withdrawal method")
-	}
 	var credit int
-	err = model.DB.Transaction(func(tx *gorm.DB) error {
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var user model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").First(&user, input.UserID).Error; err != nil {
+			return err
+		}
+		if user.SiteId != input.SiteID {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var existing model.AdtySiteInviteWithdrawal
+		lookup := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing)
+		if lookup.Error != nil {
+			return lookup.Error
+		}
+		if lookup.RowsAffected > 0 {
+			if existing.SiteId != input.SiteID || existing.UserId != input.UserID || existing.Method != method || !existing.AmountUSD.Equal(amount) {
+				return model.ErrAdtyIdempotencyConflict
+			}
+			row = &existing
+			return nil
+		}
+		var site model.AdtySite
+		if err := tx.First(&site, input.SiteID).Error; err != nil {
+			return err
+		}
+		policy := site.MarketingPolicy
+		switch method {
+		case "balance":
+			exact := amount.Mul(common.QuotaPerUnitDecimal())
+			if !exact.Equal(exact.Floor()) {
+				return common.NewMessage("Invalid parameters")
+			}
+			quota, err := common.WalletQuotaFromDecimalStrict(exact)
+			if err != nil || quota <= 0 {
+				return common.NewMessage("Invalid parameters")
+			}
+			row.Status = model.AdtySiteInviteWithdrawPaid
+			row.PaidAt = time.Now().Unix()
+		case "usdt":
+			if policy.MinUSD == nil || policy.FeeUSD == nil || policy.CNYRate == nil {
+				return common.NewMessage("This withdrawal method is not available")
+			}
+			if amount.LessThan(*policy.MinUSD) {
+				return common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": policy.MinUSD.String()})
+			}
+			network := strings.ToUpper(strings.TrimSpace(input.Network))
+			if !ValidateUSDTAddress(network, input.AccountNo) {
+				return common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
+			}
+			net := amount.Sub(*policy.FeeUSD)
+			if !net.IsPositive() {
+				return common.NewMessage("The amount must be larger than the network fee")
+			}
+			row.Network, row.AccountNo, row.FeeUSD, row.NetUSD = network, strings.TrimSpace(input.AccountNo), *policy.FeeUSD, net
+		case "alipay":
+			if policy.MinUSD == nil || policy.FeeUSD == nil || policy.CNYRate == nil {
+				return common.NewMessage("This withdrawal method is not available")
+			}
+			if amount.LessThan(*policy.MinUSD) {
+				return common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": policy.MinUSD.String()})
+			}
+			if !validReferralQR(input.QRImageURL) || strings.TrimSpace(input.AccountName) == "" {
+				return common.NewMessage("Upload the payment QR code and enter the payee name")
+			}
+			if !policy.CNYRate.Equal(input.ExpectedCNYRate) {
+				return &RateChangedError{Change: ReferralRateChange{Rate: policy.CNYRate.String(), CNYAmount: amount.Mul(*policy.CNYRate).Round(2).StringFixed(2)}}
+			}
+			row.AccountName = strings.TrimSpace(input.AccountName)
+			row.QRImageURL = strings.TrimSpace(input.QRImageURL)
+			row.Rate = policy.CNYRate.String()
+			row.PayoutAmount = amount.Mul(*policy.CNYRate).Round(2).StringFixed(2)
+			row.PayoutCurrency = "CNY"
+		default:
+			return common.NewMessage("Unsupported withdrawal method")
+		}
 		if method == "alipay" {
 			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserID, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
 			if !ok {
 				return common.NewMessage("Upload the payment QR code and enter the payee name")
 			}
 			row.QRImageURL = canonicalQR
-		}
-		var existing []model.AdtySiteInviteWithdrawal
-		if err := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing).Error; err != nil {
-			return err
-		}
-		if len(existing) > 0 {
-			if existing[0].UserId != input.UserID || existing[0].Method != method || !existing[0].AmountUSD.Equal(amount) {
-				return model.ErrAdtyIdempotencyConflict
-			}
-			row = &existing[0]
-			return nil
-		}
-		var user model.User
-		if err := tx.First(&user, input.UserID).Error; err != nil {
-			return err
-		}
-		if user.SiteId != input.SiteID {
-			return common.NewMessage("No permission to perform this action")
 		}
 		if err := tx.Create(row).Error; err != nil {
 			return err
@@ -376,7 +320,7 @@ func requireSiteInviteWithdrawOwner(tx *gorm.DB, ownerID, siteID int) error {
 	if err := tx.First(&site, siteID).Error; err != nil {
 		return err
 	}
-	if site.OwnerUserId != ownerID {
+	if site.OwnerUserId != ownerID || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing) {
 		return common.NewMessage("No permission to perform this action")
 	}
 	return nil
@@ -435,7 +379,7 @@ func releaseSiteInviteWithdrawalTx(tx *gorm.DB, row *model.AdtySiteInviteWithdra
 	return nil
 }
 
-// AdtySiteInviteWithdrawRulesView is blank for cash methods until Root saves min, fee, and rate.
+// AdtySiteInviteWithdrawRulesView is blank for cash methods until the owner saves min, fee, and rate.
 type AdtySiteInviteWithdrawRulesView struct {
 	Configured bool     `json:"configured"`
 	MinUSD     string   `json:"min_usd,omitempty"`
@@ -446,17 +390,28 @@ type AdtySiteInviteWithdrawRulesView struct {
 
 // LoadAdtySiteInviteWithdrawRules reports the separate site-invite withdrawal rules.
 func LoadAdtySiteInviteWithdrawRules() (AdtySiteInviteWithdrawRulesView, error) {
-	rules, err := loadSiteInviteWithdrawRules()
-	if err != nil {
-		return AdtySiteInviteWithdrawRulesView{}, err
-	}
+	return AdtySiteInviteWithdrawRulesView{}, ErrSiteMarketingOwnerOnly
+}
+
+func LoadAdtyCustomerSiteInviteWithdrawRules(userID int) (AdtySiteInviteWithdrawRulesView, error) {
 	view := AdtySiteInviteWithdrawRulesView{Methods: adtySiteInviteWithdrawMethods(false)}
-	if !rules.Ready {
+	var user model.User
+	if err := model.DB.Select("site_id").First(&user, userID).Error; err != nil {
+		return view, err
+	}
+	if user.SiteId <= 0 {
 		return view, nil
 	}
-	view.Configured = true
-	view.MinUSD, view.FeeUSD, view.CNYRate = rules.Min.String(), rules.Fee.String(), rules.Rate.String()
-	view.Methods = adtySiteInviteWithdrawMethods(true)
+	var site model.AdtySite
+	if err := model.DB.First(&site, user.SiteId).Error; err != nil {
+		return view, err
+	}
+	policy := site.MarketingPolicy
+	if policy.MinUSD != nil && policy.FeeUSD != nil && policy.CNYRate != nil {
+		view.Configured = true
+		view.MinUSD, view.FeeUSD, view.CNYRate = policy.MinUSD.String(), policy.FeeUSD.String(), policy.CNYRate.String()
+		view.Methods = adtySiteInviteWithdrawMethods(true)
+	}
 	return view, nil
 }
 
@@ -468,14 +423,27 @@ func ListAdtySiteInviteWithdrawals(userID int) ([]model.AdtySiteInviteWithdrawal
 }
 
 // ListAdtyOwnerSiteInviteWithdrawals returns withdrawals for the owner's site.
-func ListAdtyOwnerSiteInviteWithdrawals(ownerID int) ([]model.AdtySiteInviteWithdrawal, error) {
-	var site model.AdtySite
-	if err := model.DB.Where("owner_user_id = ?", ownerID).First(&site).Error; err != nil {
-		return nil, err
+func ListAdtyOwnerSiteInviteWithdrawals(siteID int, status string, page *common.PageInfo) ([]model.AdtySiteInviteWithdrawal, int64, error) {
+	if page == nil || page.PageSize < 1 || page.PageSize > 100 || page.Page < 1 || page.Page > math.MaxInt/page.PageSize {
+		return nil, 0, common.NewMessage("Invalid parameters")
+	}
+	query := model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id = ?", siteID)
+	switch status {
+	case "":
+	case "actionable":
+		query = query.Where("status IN ?", []string{model.AdtySiteInviteWithdrawPending, model.AdtySiteInviteWithdrawApproved})
+	case model.AdtySiteInviteWithdrawPending, model.AdtySiteInviteWithdrawApproved, model.AdtySiteInviteWithdrawPaid, model.AdtySiteInviteWithdrawCanceled, model.AdtySiteInviteWithdrawRejected:
+		query = query.Where("status = ?", status)
+	default:
+		return nil, 0, common.NewMessage("Invalid parameters")
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
 	}
 	var rows []model.AdtySiteInviteWithdrawal
-	err := model.DB.Where("site_id = ?", site.Id).Order("id DESC").Find(&rows).Error
-	return rows, err
+	err := query.Order("id DESC").Offset(page.GetStartIdx()).Limit(page.PageSize).Find(&rows).Error
+	return rows, total, err
 }
 
 // CancelAdtySiteInviteWithdrawal lets the applicant cancel a pending request inside the main-site cancel window.
@@ -500,7 +468,7 @@ func CancelAdtySiteInviteWithdrawal(userID int, withdrawalID int64, now int64) e
 }
 
 // adtySiteInviteWithdrawMethods is the official catalog for this path.
-// Transfer-to-balance stays available even before Root saves cash rules.
+// Transfer-to-balance stays available even before the site owner saves cash rules.
 // External payout is only Alipay or USDT (DEC-025); WeChat is not offered.
 func adtySiteInviteWithdrawMethods(configured bool) []string {
 	if !configured {

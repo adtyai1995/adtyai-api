@@ -69,6 +69,7 @@ export function StaffDialog(props: {
           'customers.topups',
           'customers.usage',
           'customers.disable',
+          'tickets.manage',
         ])
       ),
     })
@@ -92,6 +93,7 @@ export function StaffDialog(props: {
           permission === 'customers.balance' ||
           permission === 'customers.topups' ||
           permission === 'customers.usage' ||
+          permission === 'tickets.manage' ||
           permission === 'customers.disable'
       ),
     },
@@ -126,6 +128,7 @@ export function StaffDialog(props: {
     onSuccess: props.onClose,
   })
   const permissionOptions: { value: StaffPermission; label: string }[] = [
+    { value: 'tickets.manage', label: t('Manage site tickets') },
     { value: 'customers.read', label: t('View customer list') },
     { value: 'customers.balance', label: t('View customer balances') },
     { value: 'customers.topups', label: t('View customer recharges') },

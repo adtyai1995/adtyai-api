@@ -135,6 +135,9 @@ func migrateAdtySiteTablesOn(db *gorm.DB) error {
 	if err := db.AutoMigrate(AdtySiteTables()...); err != nil {
 		return err
 	}
+	if err := backfillAdtySiteMarketingPolicies(db); err != nil {
+		return err
+	}
 	if err := EnsureAdtySitePriceUniqueIndex(db); err != nil {
 		return err
 	}

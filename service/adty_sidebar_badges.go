@@ -72,7 +72,7 @@ type AdtyReferralAdminBadges struct {
 // cannot learn that work exists outside their scope (EMP-017). Any query
 // failure is returned to the caller; the map must not be treated as a
 // successful empty result.
-func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite) (map[string]int64, error) {
+func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScopes ...[]string) (map[string]int64, error) {
 	if userID <= 0 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
@@ -117,7 +117,7 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite) (map[stri
 	if err := collectAdtyStaffBalanceBadge(counts, actor); err != nil {
 		return nil, err
 	}
-	if err := collectAdtyTicketBadgesInto(counts, actor); err != nil {
+	if err := collectAdtyTicketBadgesInto(counts, actor, tokenScopes...); err != nil {
 		return nil, err
 	}
 	if err := collectAdtyPaymentOrphanBadge(counts, actor); err != nil {
@@ -361,26 +361,34 @@ func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor
 	return nil
 }
 
-func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor) error {
-	badges, err := countAdtyTicketBadges(scopedAdtyTickets(actor).Session(&gorm.Session{}))
+func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor, tokenScopes ...[]string) error {
+	switch {
+	case actor.PlatformMain:
+		actor.Scope = "platform"
+	case actor.OwnerTickets:
+		actor.Scope = "owner"
+	case actor.StaffTickets:
+		actor.Scope = "staff"
+	case actor.Staff != nil || actor.User.StaffSiteId > 0:
+		return nil
+	default:
+		actor.Scope = "personal"
+	}
+	if len(tokenScopes) > 0 {
+		actor.Scope = AdtyTicketTokenScope(actor.Scope, "GET", tokenScopes[0])
+		if actor.Scope == "denied" {
+			actor.Scope = "personal"
+		}
+	}
+	badges, err := countAdtyTicketBadges(scopedAdtyTickets(model.DB, actor))
 	if err != nil {
 		return err
 	}
-	if adtyTicketActorCanManage(actor) {
+	if actor.isHandling() {
 		counts[AdtyBadgeTicketsPending] = badges.Pending
 	}
 	counts[AdtyBadgeTicketsWaitingUser] = badges.WaitingUser
 	return nil
-}
-
-func adtyTicketActorCanManage(actor adtyTicketActor) bool {
-	if actor.User.Role >= common.RoleAdminUser {
-		return true
-	}
-	if actor.OwnerSiteId > 0 {
-		return true
-	}
-	return actor.Staff != nil && actor.Staff.Status == "enabled"
 }
 
 func collectAdtyPaymentOrphanBadge(counts map[string]int64, actor adtyTicketActor) error {

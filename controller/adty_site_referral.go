@@ -15,36 +15,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func GetAdtySiteReferralCap(c *gin.Context) {
-	if c.GetInt("role") != common.RoleRootUser {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-		return
-	}
-	view, err := service.LoadAdtySiteReferralCap()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, view)
-}
-
+// Retired global site marketing writes return the addressable owner policy error.
 func PutAdtySiteReferralCap(c *gin.Context) {
-	if c.GetInt("role") != common.RoleRootUser {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-		return
-	}
-	var body struct {
-		MaxRate string `json:"max_rate"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.SaveAdtySiteReferralCap(body.MaxRate); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"saved": true})
+	common.ApiErrorStatus(c, http.StatusGone, service.ErrSiteMarketingOwnerOnly)
 }
 
 func GetAdtySiteInviteBatchPolicy(c *gin.Context) {
@@ -74,39 +47,6 @@ func PutAdtySiteInviteBatchPolicy(c *gin.Context) {
 		return
 	}
 	if err := service.SaveAdtySiteInviteBatchPolicy(body.Threshold, body.WindowHours); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"saved": true})
-}
-
-func GetAdtySiteCommissionPolicy(c *gin.Context) {
-	if c.GetInt("role") != common.RoleRootUser {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-		return
-	}
-	view, err := service.LoadAdtySiteCommissionPolicy()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, view)
-}
-
-func PutAdtySiteCommissionPolicy(c *gin.Context) {
-	if c.GetInt("role") != common.RoleRootUser {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-		return
-	}
-	var body struct {
-		PendingCoverageCap string `json:"pending_coverage_cap"`
-		ObservationDays    string `json:"observation_days"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.SaveAdtySiteCommissionPolicy(body.PendingCoverageCap, body.ObservationDays); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -185,18 +125,12 @@ func PutAdtyOwnerSiteReferral(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var body struct {
-		Rate string `json:"rate"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+	var body service.AdtySiteMarketingUpdate
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil || body == (service.AdtySiteMarketingUpdate{}) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveAdtyOwnerSiteReferralRate(site.Id, c.GetInt("id"), body.Rate); err != nil {
-		if errors.Is(err, service.ErrAdtySiteReferralUnset) {
-			common.ApiErrorT(c, "The referral cap is not configured")
-			return
-		}
+	if err := service.SaveAdtyOwnerSiteMarketing(site.Id, c.GetInt("id"), body); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -243,7 +177,7 @@ func PostAdtySiteCommissionConvert(c *gin.Context) {
 }
 
 func GetAdtySiteInviteWithdrawRules(c *gin.Context) {
-	view, err := service.LoadAdtySiteInviteWithdrawRules()
+	view, err := service.LoadAdtyCustomerSiteInviteWithdrawRules(c.GetInt("id"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -324,10 +258,12 @@ func PostAdtySiteInviteWithdrawalCancel(c *gin.Context) {
 }
 
 func GetAdtyOwnerSiteInviteWithdrawals(c *gin.Context) {
-	if _, ok := adtyOwnerSiteOr403(c); !ok {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
 		return
 	}
-	rows, err := service.ListAdtyOwnerSiteInviteWithdrawals(c.GetInt("id"))
+	page := common.GetPageQuery(c)
+	rows, total, err := service.ListAdtyOwnerSiteInviteWithdrawals(site.Id, c.Query("status"), page)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -346,7 +282,9 @@ func GetAdtyOwnerSiteInviteWithdrawals(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": presentAdtySiteInviteWithdrawals(rows, names)})
+	page.SetTotal(int(total))
+	page.SetItems(presentAdtySiteInviteWithdrawals(rows, names))
+	common.ApiSuccess(c, page)
 }
 
 func PostAdtyOwnerSiteInviteWithdrawalReview(c *gin.Context) {
@@ -397,35 +335,6 @@ func PostAdtyOwnerSiteInviteWithdrawalPaid(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"paid": true})
 }
 
-func GetAdtyAdminSiteInviteWithdrawRules(c *gin.Context) {
-	if c.GetInt("role") != common.RoleRootUser {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-		return
-	}
-	GetAdtySiteInviteWithdrawRules(c)
-}
-
-func PutAdtySiteInviteWithdrawRules(c *gin.Context) {
-	if c.GetInt("role") != common.RoleRootUser {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-		return
-	}
-	var body struct {
-		MinUSD  string `json:"min_usd"`
-		FeeUSD  string `json:"fee_usd"`
-		CNYRate string `json:"cny_rate"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.SaveAdtySiteInviteWithdrawRules(body.MinUSD, body.FeeUSD, body.CNYRate); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"saved": true})
-}
-
 type adtySiteInviteWithdrawalItem struct {
 	model.AdtySiteInviteWithdrawal
 	Username string `json:"username,omitempty"`
@@ -473,7 +382,7 @@ func PutAdtyOwnerSiteReferralEnabled(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SetAdtyOwnerSiteReferralEnabled(site.Id, c.GetInt("id"), *body.Enabled); err != nil {
+	if err := service.SaveAdtyOwnerSiteMarketing(site.Id, c.GetInt("id"), service.AdtySiteMarketingUpdate{Enabled: body.Enabled}); err != nil {
 		common.ApiError(c, err)
 		return
 	}

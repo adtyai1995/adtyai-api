@@ -21,11 +21,10 @@ import {
   CardStaggerContainer,
   CardStaggerItem,
 } from '@/components/page-transition'
-import { useStatus } from '@/hooks/use-status'
-import { useAuthStore } from '@/stores/auth-store'
-
 import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
 import { TicketCenter } from '@/features/adty-ticket/ticket-center'
+import { useStatus } from '@/hooks/use-status'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { LanguagePreferencesCard } from './components/language-preferences-card'
 import { ProfileHeader } from './components/profile-header'
@@ -66,7 +65,7 @@ export function Profile() {
                   onProfileUpdate={refreshProfile}
                 />
                 <TelegramBindCard purpose='user' />
-                <div id='tickets'><TicketCenter /></div>
+                <TicketCenter scope='personal' />
               </div>
 
               <div className='space-y-4 sm:space-y-6 xl:sticky xl:top-6'>

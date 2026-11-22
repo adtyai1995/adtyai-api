@@ -102,9 +102,8 @@ func TestSitePricingActivationAuditAndRollbackPG(t *testing.T) {
 			if remove {
 				next = decimal.Zero
 			}
-			scheduled, err := SaveAdtySitePricing(AdtySitePricingInput{SiteId: site.Id, GroupMarkups: map[string]decimal.Decimal{"vip": next}, ExpectedVersion: initial.Version, Now: 1700000001})
-			require.NoError(t, err)
-			require.EqualValues(t, 1700003601, scheduled.Pending["vip"])
+			// This change was already announced by a pre-upgrade server.
+			require.NoError(t, db.Model(&model.AdtySitePrice{}).Where("site_id = ? AND "+model.AdtyGroupColumn()+" = ?", site.Id, "vip").Updates(map[string]any{"pending_markup": next, "pending_at": 1700003601}).Error)
 			changed, err := ApplyDueAdtySiteMarkups(1700003600)
 			require.NoError(t, err)
 			require.Zero(t, changed)
@@ -115,7 +114,7 @@ func TestSitePricingActivationAuditAndRollbackPG(t *testing.T) {
 			var unchanged model.AdtySitePrice
 			require.NoError(t, db.Where("site_id = ? AND "+model.AdtyGroupColumn()+" = ?", site.Id, "vip").First(&unchanged).Error)
 			require.Equal(t, "1.1", unchanged.Markup.String())
-			require.Equal(t, scheduled.Version, unchanged.Version)
+			require.Equal(t, initial.Version, unchanged.Version)
 			require.NoError(t, db.AutoMigrate(&model.AdtyPriceRevision{}))
 			changed, err = ApplyDueAdtySiteMarkups(1700003601)
 			require.NoError(t, err)
@@ -136,7 +135,7 @@ func TestSitePricingActivationAuditAndRollbackPG(t *testing.T) {
 			require.EqualValues(t, 1700003601, before.PendingAt)
 			_, version, err := LoadAdtySitePricing(site.Id, 0)
 			require.NoError(t, err)
-			require.Equal(t, scheduled.Version+1, version)
+			require.Equal(t, initial.Version+1, version)
 			changed, err = ApplyDueAdtySiteMarkups(1700003602)
 			require.NoError(t, err)
 			require.Zero(t, changed)
@@ -188,7 +187,7 @@ func TestSitePricingCancelledRaiseAndConcurrentSavePG(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 3, total)
 	require.Len(t, history, 1)
-	require.Equal(t, "cancelled", history[0].Action)
+	require.Equal(t, "immediate", history[0].Action)
 	require.NoError(t, db.Migrator().DropTable(&model.AdtySitePriceScope{}))
 	_, _, err = LoadAdtySitePricing(site.Id, 0)
 	require.Error(t, err, "a failed version read must not be returned as version zero")

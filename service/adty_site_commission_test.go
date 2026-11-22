@@ -26,8 +26,8 @@ func TestSiteCommissionFreezeBlocksALaterEarningsDebit(t *testing.T) {
 		Type: "earning_settlement", IdempotencyKey: "earn-block",
 	})
 	require.NoError(t, err)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "1"))
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-BLOCK", decimal.NewFromInt(30))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "1"))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-BLOCK", decimal.NewFromInt(30))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1, 0)); err != nil {
 			return err
@@ -56,15 +56,15 @@ func TestSiteInviteCommissionKeepsObservationDaysFromRecordTime(t *testing.T) {
 		Type: "earning_settlement", IdempotencyKey: "earn-snapshot",
 	})
 	require.NoError(t, err)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-DAYS", decimal.NewFromInt(30))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-DAYS", decimal.NewFromInt(30))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0))
 	}))
 	var row model.AdtySiteInviteCommission
 	require.NoError(t, db.Where("trade_no = ?", "SITE-DAYS").First(&row).Error)
 	require.Equal(t, int64(7), row.ObservationDays)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "30"))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "30"))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return CoverAdtySiteInviteCommissionTx(tx, row.Id, time.Unix(1_700_000_100, 0))
 	}))
@@ -73,7 +73,7 @@ func TestSiteInviteCommissionKeepsObservationDaysFromRecordTime(t *testing.T) {
 	require.Equal(t, int64(1_700_000_100+7*86400), row.AvailableAt)
 }
 
-func TestSiteInviteCommissionStaysPendingUntilRootConfiguresCoverage(t *testing.T) {
+func TestLegacySiteInviteCommissionStaysPendingUntilOwnerConfiguresCoverage(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	site, invitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
@@ -82,7 +82,11 @@ func TestSiteInviteCommissionStaysPendingUntilRootConfiguresCoverage(t *testing.
 	})
 	require.NoError(t, err)
 
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-1", decimal.NewFromInt(30))
+	// Before site-specific policies, an eligible order could freeze its
+	// beneficiary and rate while its legacy coverage conditions were unset.
+	require.NoError(t, db.Model(site).Updates(map[string]any{"pending_coverage_cap": nil, "observation_days": nil}).Error)
+	require.NoError(t, db.Model(&model.AdtySiteReferralRate{}).Where("site_id = ?", site.Id).Update("legacy_enabled", true).Error)
+	ext := &model.AdtyTopupOrder{TradeNo: "SITE-1", UserId: invitee.Id, SiteId: site.Id, FaceUSD: decimal.NewFromInt(30)}
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0))
 	}))
@@ -95,7 +99,7 @@ func TestSiteInviteCommissionStaysPendingUntilRootConfiguresCoverage(t *testing.
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).First(&wallet).Error)
 	require.True(t, wallet.Balance.Equal(decimal.NewFromInt(20)), "unset coverage rules must not spend earnings")
 
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return CoverAdtySiteInviteCommissionTx(tx, row.Id, time.Unix(1_700_000_100, 0))
 	}))
@@ -132,13 +136,19 @@ func seedSiteInvite(t *testing.T, db *gorm.DB, rate decimal.Decimal) (*model.Adt
 		SiteId: site.Id, InviterId: inviter.Id, InviteeId: invitee.Id, Rate: rate,
 	}).Error)
 	require.NoError(t, db.Create(&model.AdtySiteReferralRate{SiteId: site.Id, Rate: rate, Enabled: true}).Error)
+	require.NoError(t, setInviteCoverageForTest(site, "100", "7"))
 	return site, invitee
 }
 
-func siteInviteOrder(siteID, inviteeID int, tradeNo string, face decimal.Decimal) *model.AdtyTopupOrder {
-	return &model.AdtyTopupOrder{
-		TradeNo: tradeNo, UserId: inviteeID, SiteId: siteID, FaceUSD: face, TeamId: 0,
-	}
+func setInviteCoverageForTest(site *model.AdtySite, cap, days string) error {
+	return SaveAdtyOwnerSiteMarketing(site.Id, site.OwnerUserId, AdtySiteMarketingUpdate{PendingCoverageCap: &cap, ObservationDays: &days})
+}
+
+func siteInviteOrder(t *testing.T, siteID, inviteeID int, tradeNo string, face decimal.Decimal) *model.AdtyTopupOrder {
+	t.Helper()
+	ext := &model.AdtyTopupOrder{TradeNo: tradeNo, UserId: inviteeID, SiteId: siteID, FaceUSD: face}
+	require.NoError(t, model.DB.Transaction(func(tx *gorm.DB) error { return PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, ext) }))
+	return ext
 }
 
 func TestSiteInviteCommissionMarginFillsShortfallOnlyAfterRootAuthorizesThatBusiness(t *testing.T) {
@@ -151,9 +161,9 @@ func TestSiteInviteCommissionMarginFillsShortfallOnlyAfterRootAuthorizesThatBusi
 	require.NoError(t, err)
 	require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.NewFromInt(100), "commission-margin-cycle"))
 	adty_setting.AuthorizeSiteBonusMarginFill(site.Id, true)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
 
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-M", decimal.NewFromInt(30))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-M", decimal.NewFromInt(30))
 	var row model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0)); err != nil {
@@ -197,7 +207,7 @@ func TestSiteInviteCommissionMarginFillsShortfallOnlyAfterRootAuthorizesThatBusi
 	require.True(t, margin.Balance.Equal(decimal.NewFromInt(100)))
 	require.True(t, margin.FrozenUSD.Equal(decimal.NewFromInt(2)))
 
-	extBoth := siteInviteOrder(site.Id, invitee.Id, "SITE-M2", decimal.NewFromInt(30))
+	extBoth := siteInviteOrder(t, site.Id, invitee.Id, "SITE-M2", decimal.NewFromInt(30))
 	var both model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, extBoth, time.Unix(1_700_000_400, 0)); err != nil {
@@ -231,10 +241,10 @@ func TestSiteInviteCommissionMarginStopsAtTheOpenCycle(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.NewFromInt(100), "cycle-room"))
 	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).Update("cycle_used_usd", "89").Error)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
 	require.NoError(t, AuthorizeAdtySiteCommissionMargin(site.Id, true))
 
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-CYCLE", decimal.NewFromInt(30))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-CYCLE", decimal.NewFromInt(30))
 	var row model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0)); err != nil {
@@ -275,10 +285,10 @@ func TestSiteInviteCommissionRefundClawsBackByCompletedPrincipalRatio(t *testing
 	})
 	require.NoError(t, err)
 	require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.NewFromInt(100), "claw-cycle"))
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
 	require.NoError(t, AuthorizeAdtySiteCommissionMargin(site.Id, true))
 
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-CLAW", decimal.NewFromInt(30))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-CLAW", decimal.NewFromInt(30))
 	ext.CreditQuota = 30 * 500000
 	var row model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
@@ -444,8 +454,8 @@ func TestWithdrawnSiteInviteCommissionRefundRecordsLiabilityWithoutDebitingQuota
 		Type: "earning_settlement", IdempotencyKey: "earn-withdrawn-" + strconv.Itoa(site.Id),
 	})
 	require.NoError(t, err)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-WD-"+strconv.Itoa(site.Id), decimal.NewFromInt(30))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-WD-"+strconv.Itoa(site.Id), decimal.NewFromInt(30))
 	ext.CreditQuota = 30 * 500000
 	var row model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
@@ -489,8 +499,8 @@ func TestSiteInviteCommissionRefundCancelsUncoveredAmountWithoutMovingWallets(t 
 	require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
 	site, invitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-OPEN", decimal.NewFromInt(30))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-OPEN", decimal.NewFromInt(30))
 	ext.CreditQuota = 30 * 500000
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1, 0))
@@ -522,8 +532,8 @@ func TestSiteInviteCommissionConvertsAvailableRemainderToInviterQuota(t *testing
 		Type: "earning_settlement", IdempotencyKey: "earn-convert",
 	})
 	require.NoError(t, err)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-CVT", decimal.NewFromInt(30))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-CVT", decimal.NewFromInt(30))
 	var row model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0)); err != nil {
@@ -590,10 +600,10 @@ func TestResumeSiteInviteCoverageFundsOriginalRowsInOrder(t *testing.T) {
 		Type: "earning_settlement", IdempotencyKey: "earn-resume",
 	})
 	require.NoError(t, err)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("2", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "2", "7"))
 
-	older := siteInviteOrder(site.Id, invitee.Id, "SITE-OLD", decimal.NewFromInt(30))
-	newer := siteInviteOrder(site.Id, invitee.Id, "SITE-NEW", decimal.NewFromInt(30))
+	older := siteInviteOrder(t, site.Id, invitee.Id, "SITE-OLD", decimal.NewFromInt(30))
+	newer := siteInviteOrder(t, site.Id, invitee.Id, "SITE-NEW", decimal.NewFromInt(30))
 	var oldRow, newRow model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, older, time.Unix(1_700_000_000, 0)); err != nil {
@@ -643,9 +653,9 @@ func TestResumeSiteInviteCoverageCompletesPartialFreezeAfterTopUp(t *testing.T) 
 		Type: "earning_settlement", IdempotencyKey: "earn-partial",
 	})
 	require.NoError(t, err)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
 
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-PARTIAL", decimal.NewFromInt(30))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-PARTIAL", decimal.NewFromInt(30))
 	var row model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0)); err != nil {
@@ -712,10 +722,10 @@ func TestResumeSiteInviteCoverageCompletesPartialMarginFreezeAfterTopUp(t *testi
 	require.NoError(t, err)
 	require.NoError(t, OpenAdtyMarginCycle(site.Id, decimal.NewFromInt(100), "margin-partial-cycle"))
 	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).Update("cycle_used_usd", "89").Error)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("10", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "10", "7"))
 	require.NoError(t, AuthorizeAdtySiteCommissionMargin(site.Id, true))
 
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-MPART", decimal.NewFromInt(30))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-MPART", decimal.NewFromInt(30))
 	var row model.AdtySiteInviteCommission
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		if err := RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0)); err != nil {
@@ -766,7 +776,7 @@ func TestSiteReferralOffDoesNotRecordCommissionOnThatSite(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	site, invitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
 	require.NoError(t, SetAdtyOwnerSiteReferralEnabled(site.Id, site.OwnerUserId, false))
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-OFF", decimal.NewFromInt(30))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-OFF", decimal.NewFromInt(30))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1, 0))
 	}))
@@ -775,7 +785,7 @@ func TestSiteReferralOffDoesNotRecordCommissionOnThatSite(t *testing.T) {
 	require.Zero(t, count)
 
 	other, otherInvitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
-	otherOrder := siteInviteOrder(other.Id, otherInvitee.Id, "SITE-ON", decimal.NewFromInt(20))
+	otherOrder := siteInviteOrder(t, other.Id, otherInvitee.Id, "SITE-ON", decimal.NewFromInt(20))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return RecordAdtySiteInviteCommissionTx(tx, otherOrder, time.Unix(2, 0))
 	}))
@@ -784,18 +794,19 @@ func TestSiteReferralOffDoesNotRecordCommissionOnThatSite(t *testing.T) {
 	require.Equal(t, other.Id, otherRow.SiteId)
 
 	require.NoError(t, SetAdtyOwnerSiteReferralEnabled(site.Id, site.OwnerUserId, true))
+	ext = siteInviteOrder(t, site.Id, invitee.Id, "SITE-REENABLED", decimal.NewFromInt(30))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(3, 0))
 	}))
 	var restored model.AdtySiteInviteCommission
-	require.NoError(t, db.Where("trade_no = ?", "SITE-OFF").First(&restored).Error)
+	require.NoError(t, db.Where("trade_no = ?", "SITE-REENABLED").First(&restored).Error)
 	require.Equal(t, site.Id, restored.SiteId)
 }
 
 func TestInviterSeesPendingSiteCommissionBeforeItIsWithdrawable(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	site, invitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
-	ext := siteInviteOrder(site.Id, invitee.Id, "SITE-SEE", decimal.NewFromInt(30))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "SITE-SEE", decimal.NewFromInt(30))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1_700_000_000, 0))
 	}))
@@ -834,8 +845,9 @@ func TestBindSiteInviteRejectsCrossSiteAndPaidCustomers(t *testing.T) {
 func TestSiteInviteCommissionIgnoresTeamTopups(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	site, invitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
-	ext := siteInviteOrder(site.Id, invitee.Id, "TEAM-1", decimal.NewFromInt(10))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, "TEAM-1", decimal.NewFromInt(10))
 	ext.TeamId = 9
+	require.NoError(t, PrepareAdtySiteInviteCommissionSnapshotTx(db, nil, ext))
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
 		return RecordAdtySiteInviteCommissionTx(tx, ext, time.Unix(1, 0))
 	}))
@@ -867,7 +879,7 @@ func TestRefundPreviewItemizesSplitCommissionToMatchAfterRefundSplitter(t *testi
 	require.NoError(t, db.Create(&row).Error)
 	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).
 		Update("frozen_usd", decimal.NewFromInt(4)).Error)
-	ext := siteInviteOrder(site.Id, invitee.Id, trade, decimal.NewFromInt(100))
+	ext := siteInviteOrder(t, site.Id, invitee.Id, trade, decimal.NewFromInt(100))
 	ext.CreditQuota = 100 * 500000
 	ext.RefundQuota = 100 * 500000
 
@@ -935,7 +947,7 @@ func TestConvertedSiteCommissionClawbackReclaimsFundBatches(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(&model.AdtySiteInviteWithdrawal{}, &model.AdtySiteInviteWithdrawalItem{}))
 	site, invitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
-	require.NoError(t, SaveAdtySiteCommissionPolicy("100", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "100", "7"))
 
 	var invite model.AdtySiteInvite
 	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, invitee.Id).First(&invite).Error)
@@ -1037,7 +1049,7 @@ func TestPendingSiteCommissionCoverageUsesPostRefundNetEntitlement(t *testing.T)
 			require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
 			site, invitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
 			require.NoError(t, EnsureAdtySiteWallets(site.Id))
-			require.NoError(t, SaveAdtySiteCommissionPolicy("100", "7"))
+			require.NoError(t, setInviteCoverageForTest(site, "100", "7"))
 
 			var invite model.AdtySiteInvite
 			require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, invitee.Id).First(&invite).Error)
@@ -1105,7 +1117,7 @@ func TestConvertedSiteCommissionRefundPreservesInFlightLots(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
 	site, buyer := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
-	require.NoError(t, SaveAdtySiteCommissionPolicy("100", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "100", "7"))
 	paidSiteCommissionOrderForTest(t, site.Id, buyer.Id, "inflight-claw")
 	_, err := ApplyAdtySiteWalletChange(site.Id, model.AdtySiteWalletEarnings, decimal.NewFromInt(10), AdtySiteWalletChange{Type: "earning_settlement", IdempotencyKey: "inflight-earning"})
 	require.NoError(t, err)
@@ -1194,7 +1206,7 @@ func TestSiteReferralOrderPolicySnapshotFrozenAtOrderCreation(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(model.ReferralTables()...))
 	site, invitee := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
-	require.NoError(t, SaveAdtySiteCommissionPolicy("100", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "100", "7"))
 
 	var invite model.AdtySiteInvite
 	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, invitee.Id).First(&invite).Error)
@@ -1211,9 +1223,9 @@ func TestSiteReferralOrderPolicySnapshotFrozenAtOrderCreation(t *testing.T) {
 	))
 
 	// Mutate rate (10% -> 2%), disable site referral, and change observation days (7 -> 30) BEFORE payment completes.
-	require.NoError(t, db.Model(&model.AdtySiteInvite{}).Where("id = ?", invite.Id).Update("rate", decimal.RequireFromString("0.02")).Error)
+	require.NoError(t, SaveAdtyOwnerSiteReferralRate(site.Id, site.OwnerUserId, "0.02"))
 	require.NoError(t, db.Model(&model.AdtySiteReferralRate{}).Where("site_id = ?", site.Id).Update("enabled", false).Error)
-	require.NoError(t, SaveAdtySiteCommissionPolicy("100", "30"))
+	require.NoError(t, setInviteCoverageForTest(site, "100", "30"))
 
 	// 2. Second order created while referral is disabled for a customer who has no invite yet.
 	uninvited := referralUser(t, db, "snap-uninvited")
@@ -1395,7 +1407,7 @@ func TestPaymentOrderWaitsForBonusAuthorizationCommit(t *testing.T) {
 func TestSiteReferralSnapshotMigrationPreservesOrders(t *testing.T) {
 	db := prepareReferralDialectDB(t, "postgres")
 	site, buyer := seedSiteInvite(t, db, decimal.RequireFromString("0.10"))
-	require.NoError(t, SaveAdtySiteCommissionPolicy("100", "7"))
+	require.NoError(t, setInviteCoverageForTest(site, "100", "7"))
 	// Simulate a pre-column pending order in this test's isolated PostgreSQL schema.
 	require.NoError(t, db.Migrator().DropColumn(&model.AdtyTopupOrder{}, "SiteReferralSnapshot"))
 	legacy := model.AdtyTopupOrder{TradeNo: "legacy-snapshot-migration", UserId: buyer.Id, SiteId: site.Id, FaceUSD: decimal.NewFromInt(17), CreditQuota: 8_500_000}

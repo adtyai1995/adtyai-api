@@ -29,6 +29,8 @@ import { ROLE } from './roles'
 export type AdtyPermission = { resource: string; action: string }
 
 export const ADTY_PERMISSIONS = {
+  TICKET_MANAGE: { resource: 'adty_ticket', action: 'manage' },
+  TICKET_MANAGE_ALL: { resource: 'adty_ticket', action: 'manage_all' },
   USER_READ: { resource: 'adty_user', action: 'read' },
   USER_CREATE: { resource: 'adty_user', action: 'create' },
   USER_WRITE: { resource: 'adty_user', action: 'write' },
@@ -87,6 +89,7 @@ export type AdtyPermissionPreset = {
 }
 
 const SUPPORT: AdtyPermission[] = [
+  ADTY_PERMISSIONS.TICKET_MANAGE,
   ADTY_PERMISSIONS.USER_READ,
   ADTY_PERMISSIONS.LOG_READ,
   ADTY_PERMISSIONS.FINANCE_READ,

@@ -28,17 +28,20 @@ const (
 // AdtySite 是一个分站。一个用户同时最多一个没关闭的站：开站事务里先锁用户行再查，不靠唯一索引（关闭的站保留存档）。
 // 子域名全局唯一，关站后保留，用来把老链接跳到客户的新归属。
 type AdtySite struct {
-	Id               int              `json:"id"`
-	OwnerUserId      int              `json:"owner_user_id" gorm:"index"`
-	OwnershipVersion int64            `json:"ownership_version" gorm:"not null;default:0"`
-	Subdomain        string           `json:"subdomain" gorm:"uniqueIndex;type:varchar(63)"`
-	RootDomain       string           `json:"root_domain" gorm:"type:varchar(253)"`
-	Status           string           `json:"status" gorm:"type:varchar(16);index"`
-	CostFactor       *decimal.Decimal `json:"cost_factor" gorm:"type:decimal(10,6)"` // 单站 d；空就用档位或全局
+	MaxMarkup                  *decimal.Decimal        `json:"-" gorm:"type:decimal(10,4);->"` // historical metadata
+	TierMaxMarkup              *decimal.Decimal        `json:"-" gorm:"type:decimal(10,4);->"`
+	MarketingPolicy            AdtySiteMarketingPolicy `json:"-" gorm:"embedded"`
+	MarketingPolicyInitialized bool                    `json:"-"`
+	Id                         int                     `json:"id"`
+	OwnerUserId                int                     `json:"owner_user_id" gorm:"index"`
+	OwnershipVersion           int64                   `json:"ownership_version" gorm:"not null;default:0"`
+	Subdomain                  string                  `json:"subdomain" gorm:"uniqueIndex;type:varchar(63)"`
+	RootDomain                 string                  `json:"root_domain" gorm:"type:varchar(253)"`
+	Status                     string                  `json:"status" gorm:"type:varchar(16);index"`
+	CostFactor                 *decimal.Decimal        `json:"cost_factor" gorm:"type:decimal(10,6)"` // 单站 d；空就用档位或全局
 	// 平台提高 d 先记在这里，到点才写入 CostFactor。降低立即写 CostFactor 并清空这两列。
 	PendingCostFactor   *decimal.Decimal `json:"pending_cost_factor" gorm:"type:decimal(10,6)"`
 	PendingCostFactorAt int64            `json:"pending_cost_factor_at" gorm:"index"`
-	MaxMarkup           *decimal.Decimal `json:"max_markup" gorm:"type:decimal(10,4)"` // 单站 k 上限；空就用全局
 	TierCostFactor      *decimal.Decimal `json:"tier_cost_factor" gorm:"type:decimal(10,6)"`
 	// 业绩档位算出的更高 d 先记在这里，到点才写入 TierCostFactor。降低立即写入并清空这两列。
 	PendingTierCostFactor   *decimal.Decimal `json:"pending_tier_cost_factor" gorm:"type:decimal(10,6)"`
@@ -47,7 +50,6 @@ type AdtySite struct {
 	TierCode                string           `json:"tier_code" gorm:"type:varchar(32);index"`
 	TierMode                string           `json:"tier_mode" gorm:"type:varchar(16)"`
 	TierUpdatedAt           int64            `json:"tier_updated_at"`
-	TierMaxMarkup           *decimal.Decimal `json:"tier_max_markup" gorm:"type:decimal(10,4)"`
 	Visibility              string           `json:"visibility" gorm:"type:text"`
 	AllowedGroups           string           `json:"allowed_groups" gorm:"type:text"`
 	Brand                   string           `json:"brand" gorm:"type:text"`
@@ -75,15 +77,32 @@ type AdtySite struct {
 
 func (AdtySite) TableName() string { return "adty_sites" }
 
-// AdtySiteInviteCode 是开站邀请码：有效就直接开成 active，并用码上预设的 d 和 k 上限。
+// New sites configure their own policies. Upgraded rows are initialized once
+// from the settings in force before the site-specific fields existed.
+func (s *AdtySite) BeforeCreate(tx *gorm.DB) error {
+	s.MarketingPolicyInitialized = true
+	return nil
+}
+
+type AdtySiteMarketingPolicy struct {
+	PendingCoverageCap *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
+	ObservationDays    *int64           `json:"observation_days"`
+	MinUSD             *decimal.Decimal `json:"min_usd" gorm:"column:invite_withdraw_min;type:decimal(20,8)"`
+	FeeUSD             *decimal.Decimal `json:"fee_usd" gorm:"column:invite_withdraw_fee;type:decimal(20,8)"`
+	CNYRate            *decimal.Decimal `json:"cny_rate" gorm:"column:invite_withdraw_cny_rate;type:decimal(20,8)"`
+	TrialGrantMaxUSD   *decimal.Decimal `json:"trial_grant_max_usd" gorm:"type:decimal(20,8)"`
+	TrialGrantDailyUSD *decimal.Decimal `json:"trial_grant_daily_usd" gorm:"type:decimal(20,8)"`
+}
+
+// AdtySiteInviteCode 是开站邀请码：有效就直接开成 active，并用码上预设的供货倍率。
 type AdtySiteInviteCode struct {
+	MaxMarkup  *decimal.Decimal `json:"-" gorm:"type:decimal(10,4);->"` // historical metadata
 	Id         int              `json:"id"`
 	Code       string           `json:"code" gorm:"uniqueIndex;type:varchar(32)"`
 	MaxUses    int              `json:"max_uses"` // 0 不限
 	UsedCount  int              `json:"used_count"`
 	ExpireAt   int64            `json:"expire_at"` // 0 不过期
 	CostFactor *decimal.Decimal `json:"cost_factor" gorm:"type:decimal(10,6)"`
-	MaxMarkup  *decimal.Decimal `json:"max_markup" gorm:"type:decimal(10,4)"`
 	Note       string           `json:"note" gorm:"type:text"`
 	CreatedBy  int              `json:"created_by"`
 	CreatedAt  int64            `json:"created_at" gorm:"autoCreateTime"`

@@ -46,6 +46,9 @@ describe('ticket status labels and queues', () => {
       'pending',
       'waiting_user',
       'in_progress',
+      'waiting_internal',
+      'resolved',
+      'closed',
       'urgent',
     ])
   })

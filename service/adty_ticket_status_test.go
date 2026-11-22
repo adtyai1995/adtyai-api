@@ -17,11 +17,12 @@ func TestAdtyTicketOfficialStatusMachineAndWorkbenchQueues(t *testing.T) {
 
 	customer := ticketTestUser(t, db, "st-customer", common.RoleCommonUser)
 	owner := ticketTestUser(t, db, "st-owner", common.RoleCommonUser)
-	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "ticket-status-site", Status: model.AdtySiteStatusActive}
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "ticket-status-site", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
 	staff := ticketTestUser(t, db, "st-staff", common.RoleCommonUser)
-	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staff.Id, Role: "support", Status: "enabled", Permissions: `["customers.read"]`}).Error)
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staff.Id).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staff.Id, Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`}).Error)
 
 	created, err := CreateAdtyTicket(customer.Id, AdtyTicketInput{Type: "billing", Title: "Invoice", Body: "Please check the charge", Idempotency: "create-1"})
 	require.NoError(t, err)

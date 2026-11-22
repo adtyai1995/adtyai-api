@@ -56,7 +56,7 @@ func TestFTRADTY1605OrderFreezesInviteCommissionSnapshotPG(t *testing.T) {
 		common.OptionMap = map[string]string{}
 	}
 	common.OptionMapRWMutex.Unlock()
-	require.NoError(t, SaveAdtySiteCommissionPolicy("100", "7"))
+	require.NoError(t, setInviteCoverageForTest(&site, "100", "7"))
 	require.NoError(t, db.Create(&model.AdtySiteReferralRate{
 		SiteId: site.Id, Rate: decimal.RequireFromString("0.10"), Enabled: true,
 	}).Error)
@@ -80,9 +80,9 @@ func TestFTRADTY1605OrderFreezesInviteCommissionSnapshotPG(t *testing.T) {
 	}
 	require.NoError(t, model.CreateAdtyTopUp(topUp, ext))
 
-	require.NoError(t, db.Model(&model.AdtySiteInvite{}).Where("id = ?", invite.Id).Update("rate", decimal.RequireFromString("0.20")).Error)
-	var live model.AdtySiteInvite
-	require.NoError(t, db.First(&live, invite.Id).Error)
+	require.NoError(t, SaveAdtyOwnerSiteReferralRate(site.Id, owner.Id, "0.20"))
+	var live model.AdtySiteReferralRate
+	require.NoError(t, db.First(&live, site.Id).Error)
 	assert.True(t, live.Rate.Equal(decimal.RequireFromString("0.20")))
 
 	stored, err := model.GetAdtyTopupOrder(tradeNo)

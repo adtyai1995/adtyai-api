@@ -15,10 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// 站长收益结算（任务 11.5）：主节点每天 settle_hour 点跑一次。
-// pending 且不是 skipped、trial 的行：负数下一次就入账；正数要满 freeze_days。
-// 汇总后加进站长佣金账户（可以为负），写返佣流水 site_earning，行改成 available。
-// 站点 paused 或对账暂停时只结负数。
+// 主节点按业务日结算已确认的站长收益；待核查的正收益保留至复核。
 
 // adtySettleCutoffDay returns the current day (confirmed site earnings settle immediately without freeze_days delay).
 func adtySettleCutoffDay(now time.Time) string {
@@ -265,7 +262,11 @@ func adtyUsageReconcileMismatch(tx *gorm.DB, siteId int, cutoff string) (bool, s
 	if model.LOG_DB == nil {
 		return false, "", nil
 	}
-	end, err := time.ParseInLocation("2006-01-02", cutoff, time.Local)
+	loc, _, err := loadAdtyBusinessLocation()
+	if err != nil {
+		return false, "", err
+	}
+	end, err := time.ParseInLocation("2006-01-02", cutoff, loc)
 	if err != nil {
 		return false, "", err
 	}
@@ -428,15 +429,21 @@ func init() {
 	adtyMasterTasks = append(adtyMasterTasks, startAdtySiteSettlementTask)
 }
 
-// startAdtySiteSettlementTask 每 10 分钟看一次：到了 settle_hour 点、今天还没跑过就结算一次。
+// startAdtySiteSettlementTask 每 10 分钟检查一次业务日期，跨日或服务启动后补跑当日结算。
 func startAdtySiteSettlementTask() {
 	go func() {
 		lastRun := ""
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for now := range ticker.C {
+			loc, _, err := loadAdtyBusinessLocation()
+			if err != nil {
+				common.SysError(common.LogText("site settlement: %s", err.Error()))
+				continue
+			}
+			now = now.In(loc)
 			today := now.Format("2006-01-02")
-			if lastRun == today || now.Hour() < resellerSetting().SettleHour {
+			if lastRun == today {
 				continue
 			}
 			if _, err := RunAdtySiteSettlementOnce(now); err != nil {

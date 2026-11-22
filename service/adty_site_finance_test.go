@@ -623,8 +623,7 @@ func TestAdtySiteTierDefinitionChangesReachExistingAssignments(t *testing.T) {
 		require.NotNil(t, current)
 		require.NotNil(t, current.TierCostFactor)
 		assert.Equal(t, "0.6", current.TierCostFactor.String())
-		require.NotNil(t, current.TierMaxMarkup)
-		assert.Equal(t, "1.5", current.TierMaxMarkup.String())
+		assert.Nil(t, current.TierMaxMarkup)
 		var margin model.AdtySiteWallet
 		require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).First(&margin).Error)
 		assert.Equal(t, "20", margin.RequiredBalance.String())
@@ -636,8 +635,6 @@ func TestAdtySiteTierRejectsValuesRoundedByDatabase(t *testing.T) {
 	for _, tier := range []model.AdtySiteTier{
 		{Code: "precision", Name: "Precision", CostFactor: dec("0.0000001")},
 		{Code: "precision", Name: "Precision", CostFactor: dec("0.1234567")},
-		{Code: "precision", Name: "Precision", MaxMarkup: dec("1.00001")},
-		{Code: "precision", Name: "Precision", MaxMarkup: dec("1000000")},
 		{Code: "precision", Name: "Precision", MinMonthlyUSD: decimal.RequireFromString("0.000000001")},
 		{Code: "precision", Name: "Precision", DepositUSD: decimal.RequireFromString("1000000000000")},
 	} {
@@ -654,7 +651,7 @@ func TestAdtySiteTierAcceptsConfirmedSupplyAndMarkupMeanings(t *testing.T) {
 		assert.NoError(t, ValidateAdtySiteTier(tier), "%+v", tier)
 	}
 	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", CostFactor: dec("0")}), ErrAdtySiteTierInvalid)
-	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", MaxMarkup: dec("0")}), ErrAdtySiteTierInvalid)
+	assert.NoError(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "legacy", Name: "Legacy", MaxMarkup: dec("0")}))
 	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", CostFactor: dec("10000")}), ErrAdtySiteTierInvalid)
 }
 
@@ -713,8 +710,7 @@ func TestAdtySiteTierAssignmentUsesCurrentDefinition(t *testing.T) {
 			}
 			require.NotNil(t, current.TierCostFactor)
 			assert.Equal(t, "0.6", current.TierCostFactor.String())
-			require.NotNil(t, current.TierMaxMarkup)
-			assert.Equal(t, "1.5", current.TierMaxMarkup.String())
+			assert.Nil(t, current.TierMaxMarkup)
 			var margin model.AdtySiteWallet
 			require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).First(&margin).Error)
 			assert.Equal(t, "20", margin.RequiredBalance.String())

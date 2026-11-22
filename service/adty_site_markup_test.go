@@ -412,69 +412,40 @@ func savePricing(t *testing.T, siteId, userId int, def string, groups map[string
 	return SaveAdtySitePricing(input)
 }
 
-func TestMarkupReadClampsToCurrentLimit(t *testing.T) {
+func TestMarkupReadIgnoresRetiredLimits(t *testing.T) {
 	db := prepareSiteDB(t)
 	_, site := openActiveSite(t, db, "cap-read")
 	customer := siteCustomer(t, db, site, "cap-read-customer")
 	sitePrice(t, db, site.Id, 0, "", "2.5")
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.RequireFromString("2.5")))
-
 	resellerSetting().MaxMarkup = new(1.5)
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.RequireFromString("1.5")), "global cap is lower than the stored price")
-
-	require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", site.Id).Update("max_markup", decimal.RequireFromString("2")).Error)
+	require.NoError(t, db.Exec("UPDATE adty_sites SET max_markup = 1.2 WHERE id = ?", site.Id).Error)
 	InvalidateAdtySiteCache()
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.RequireFromString("1.5")), "the lower of the site cap and the global cap wins")
-
-	require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", site.Id).Update("max_markup", decimal.RequireFromString("1.2")).Error)
-	InvalidateAdtySiteCache()
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	ratio, k := AdtyApplySiteMarkup(ctx, customer.Id, "default", 2, "")
-	assert.InDelta(t, 1.2, k, 1e-9)
-	assert.InDelta(t, 1.92, ratio, 1e-9)
+	ratio, k := AdtyApplySiteMarkup(nil, customer.Id, "default", 2, "")
+	assert.InDelta(t, 2.5, k, 1e-9)
+	assert.InDelta(t, 4, ratio, 1e-9)
 }
 
-func TestMarkupIncreaseDelayed(t *testing.T) {
+func TestMarkupIncreaseAppliesAtSave(t *testing.T) {
 	db := prepareSiteDB(t)
 	_, site := openActiveSite(t, db, "raise")
 	customer := siteCustomer(t, db, site, "raise-customer")
 	now := time.Now().Unix()
 	first, err := savePricing(t, site.Id, 0, "1.2", nil, 0, now)
 	require.NoError(t, err)
-	assert.Equal(t, now+24*3600, first.Pending[""], "the first price waits when the site already has customers")
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.NewFromInt(1)))
-	appliedNow, err := ApplyDueAdtySiteMarkups(now + 24*3600)
-	require.NoError(t, err)
-	assert.EqualValues(t, 1, appliedNow)
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.RequireFromString("1.2")))
-	var afterFirst model.AdtySitePrice
-	require.NoError(t, db.Where("site_id = ? AND user_id = 0 AND \"group\" = ?", site.Id, "").First(&afterFirst).Error)
-	assert.Greater(t, afterFirst.Version, first.Version)
-
+	assert.Empty(t, first.Pending)
+	assert.Equal(t, "1.2", AdtySiteMarkup(customer.Id, "default", "").String())
 	var notified []model.AdtySitePrice
 	saved := AdtyOnSiteMarkupIncrease
 	AdtyOnSiteMarkupIncrease = func(_ *model.AdtySite, _ int, raised []model.AdtySitePrice) { notified = raised }
 	t.Cleanup(func() { AdtyOnSiteMarkupIncrease = saved })
-	raised, err := savePricing(t, site.Id, 0, "1.8", nil, afterFirst.Version, now)
+	raised, err := savePricing(t, site.Id, 0, "1.8", nil, first.Version, now)
 	require.NoError(t, err)
-	assert.Equal(t, now+24*3600, raised.Pending[""])
-	require.Len(t, notified, 1, "customers are told about the increase")
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.RequireFromString("1.2")), "the old price holds during the delay")
-
-	applied, err := ApplyDueAdtySiteMarkups(now + 24*3600 - 1)
-	require.NoError(t, err)
-	assert.Zero(t, applied)
-	applied, err = ApplyDueAdtySiteMarkups(now + 24*3600)
-	require.NoError(t, err)
-	assert.EqualValues(t, 1, applied)
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.RequireFromString("1.8")))
-	var stored model.AdtySitePrice
-	require.NoError(t, db.Where("site_id = ? AND user_id = 0 AND \"group\" = ?", site.Id, "").First(&stored).Error)
-	assert.Greater(t, stored.Version, raised.Version, "taking effect moves the pricing version")
-	_, err = savePricing(t, site.Id, 0, "1.2", nil, raised.Version, now+24*3600)
+	require.Len(t, notified, 1)
+	assert.Equal(t, "1.8", notified[0].Markup.String())
+	assert.Equal(t, "1.8", AdtySiteMarkup(customer.Id, "default", "").String())
+	assert.Equal(t, first.Version+1, raised.Version)
+	_, err = savePricing(t, site.Id, 0, "1.2", nil, first.Version, now+10)
 	require.ErrorIs(t, err, ErrAdtySitePricingConflict)
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.RequireFromString("1.8")))
 }
 
 func TestMarkupDecreaseImmediate(t *testing.T) {
@@ -516,7 +487,7 @@ func TestMarkupBounds(t *testing.T) {
 		value string
 		ok    bool
 	}{
-		{"-0.1", false}, {"0.99", true}, {"1", true}, {"3", true}, {"3.01", false},
+		{"-0.1", false}, {"0.99", true}, {"1", true}, {"3", true}, {"3.01", true}, {"1000000", false}, {"0.00001", false},
 	} {
 		var version int64
 		var rows []model.AdtySitePrice
@@ -531,11 +502,7 @@ func TestMarkupBounds(t *testing.T) {
 			assert.Error(t, err, tc.value)
 		}
 	}
-	require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", site.Id).Update("max_markup", decimal.NewFromInt(2)).Error)
-	_, err := savePricing(t, site.Id, 0, "2.5", nil, 0, 0)
-	assert.Error(t, err, "the per-site limit applies")
-
-	_, err = SetAdtySiteStatus(site.Id, 1, model.AdtySiteStatusPaused, "")
+	_, err := SetAdtySiteStatus(site.Id, 1, model.AdtySiteStatusPaused, "")
 	assert.ErrorIs(t, err, ErrAdtySitePauseRetired)
 	var still model.AdtySite
 	require.NoError(t, db.First(&still, site.Id).Error)
@@ -818,24 +785,18 @@ func TestTeamSupplyEarningSnapshotAndSplit(t *testing.T) {
 		assert.True(t, earn.IsZero(), "spread must be 0 when team charge is floored at supply, got %s", earn)
 	})
 
-	t.Run("due pending markup is clamped to lowered site cap at apply time", func(t *testing.T) {
+	t.Run("legacy schedule uses the announced multiplier", func(t *testing.T) {
 		_, capSite := openActiveSite(t, db, "team-due-cap")
-		_ = siteCustomer(t, db, capSite, "team-due-cap-cust")
 		now := time.Now().Unix()
-		res, err := savePricing(t, capSite.Id, 0, "2.4", nil, 0, now)
+		legacy := model.AdtySitePrice{SiteId: capSite.Id, Markup: decimal.NewFromInt(1), PendingMarkup: decimal.RequireFromString("2.4"), PendingAt: now + 3600}
+		require.NoError(t, db.Create(&legacy).Error)
+		require.NoError(t, db.Exec("UPDATE adty_sites SET max_markup = 1.6 WHERE id = ?", capSite.Id).Error)
+		applied, err := ApplyDueAdtySiteMarkups(now + 3600)
 		require.NoError(t, err)
-		require.Equal(t, now+24*3600, res.Pending[""])
-
-		require.NoError(t, db.Model(&model.AdtySite{}).Where("id = ?", capSite.Id).Update("max_markup", decimal.RequireFromString("1.6")).Error)
-		InvalidateAdtySiteCache()
-
-		applied, err := ApplyDueAdtySiteMarkups(now + 24*3600)
-		require.NoError(t, err)
-		assert.EqualValues(t, 1, applied)
-
+		require.EqualValues(t, 1, applied)
 		var stored model.AdtySitePrice
-		require.NoError(t, db.Where("site_id = ? AND user_id = 0 AND \"group\" = ?", capSite.Id, "").First(&stored).Error)
-		assert.True(t, stored.Markup.Equal(decimal.RequireFromString("1.6")), "due markup must be clamped to current cap, got %s", stored.Markup)
+		require.NoError(t, db.First(&stored, legacy.Id).Error)
+		assert.Equal(t, "2.4", stored.Markup.String())
 	})
 }
 
@@ -882,7 +843,7 @@ func TestSaveCustomerPricingInheritsCurrentSiteMarkup(t *testing.T) {
 	assert.True(t, AdtySiteMarkup(custDecrease.Id, "vip", "").Equal(decimal.RequireFromString("1.4")))
 	assert.True(t, AdtySiteMarkup(custDecrease.Id, "default", "gpt-4").Equal(decimal.RequireFromString("1.6")))
 
-	// Introducing customer-specific prices higher than inherited site prices must preserve the inherited price during the delay, not drop to 1.
+	// Introducing customer-specific prices higher than inherited site prices must apply at commit.
 	custIncrease := siteCustomer(t, db, site, "cust-increase")
 	increased, err := SaveAdtySitePricing(AdtySitePricingInput{
 		SiteId:          site.Id,
@@ -894,14 +855,13 @@ func TestSaveCustomerPricingInheritsCurrentSiteMarkup(t *testing.T) {
 		Now:             now + 20,
 	})
 	require.NoError(t, err)
-	assert.Empty(t, increased.Immediate)
-	assert.Empty(t, increased.ModelImmediate)
-	assert.Equal(t, now+20+24*3600, increased.Pending[""])
-	assert.Equal(t, now+20+24*3600, increased.Pending["vip"])
-	assert.Equal(t, now+20+24*3600, increased.ModelPending["gpt-4"])
-	assert.True(t, AdtySiteMarkup(custIncrease.Id, "default", "").Equal(decimal.RequireFromString("1.5")), "inherited default markup 1.5 must hold during delay")
-	assert.True(t, AdtySiteMarkup(custIncrease.Id, "vip", "").Equal(decimal.RequireFromString("1.8")), "inherited vip markup 1.8 must hold during delay")
-	assert.True(t, AdtySiteMarkup(custIncrease.Id, "default", "gpt-4").Equal(decimal.RequireFromString("2.0")), "inherited model markup 2.0 must hold during delay")
+	assert.ElementsMatch(t, []string{"", "vip"}, increased.Immediate)
+	assert.Equal(t, []string{"gpt-4"}, increased.ModelImmediate)
+	assert.Empty(t, increased.Pending)
+	assert.Empty(t, increased.ModelPending)
+	assert.Equal(t, "1.9", AdtySiteMarkup(custIncrease.Id, "default", "").String())
+	assert.Equal(t, "2.2", AdtySiteMarkup(custIncrease.Id, "vip", "").String())
+	assert.Equal(t, "2.5", AdtySiteMarkup(custIncrease.Id, "default", "gpt-4").String())
 }
 
 func TestAdjustPricingForSiteModelsScalesDynamicBillingExprAndPluginVariants(t *testing.T) {
@@ -1111,11 +1071,11 @@ func TestSitePriceRevisionHistoryRecordedAndImmutable(t *testing.T) {
 	assert.Equal(t, now, revs[0].CreatedAt)
 
 	assert.Equal(t, "group:vip", revs[1].Kind)
-	assert.Equal(t, "1.2", revs[1].Before)
+	assert.Equal(t, "1", revs[1].Before)
 	assert.Equal(t, "1.4", revs[1].After)
 
 	assert.Equal(t, "model:gpt-4", revs[2].Kind)
-	assert.Equal(t, "1.2", revs[2].Before)
+	assert.Equal(t, "1", revs[2].Before)
 	assert.Equal(t, "1.6", revs[2].After)
 
 	assert.Equal(t, "default", revs[3].Kind)

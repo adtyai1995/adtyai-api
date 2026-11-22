@@ -56,7 +56,7 @@ import {
   siteOwnerKeys,
 } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
-import { newIdempotencyKey } from '../lib/site-owner'
+import { newIdempotencyKey, validRetailMarkup } from '../lib/site-owner'
 import { PricingHistory } from './pricing-history'
 
 /** Customer drawer: profile, requests, top-ups, keys, trial credit, own price and report. */
@@ -101,13 +101,14 @@ export function CustomerSheet(props: {
       setTrialAmount('')
     },
   })
-  const price = useVerifiedOwnerMutation<string>({
+  const price = useVerifiedOwnerMutation<string | null>({
     action: 'pricing',
     target: () => id,
     run: (value, proof) =>
       savePricing(
         {
-          default_markup: value,
+          default_markup: value ?? undefined,
+          clear_default: value === null || undefined,
           expected_version: detail.data?.pricing_version ?? 0,
         },
         proof,
@@ -124,7 +125,9 @@ export function CustomerSheet(props: {
     onError: (err) => handleServerError(err),
   })
   const customer = detail.data?.customer
-  const ownMarkup = detail.data?.prices?.find((row) => row.group === '' && !row.model)?.markup
+  const ownMarkup = detail.data?.prices?.find(
+    (row) => row.group === '' && !row.model
+  )?.markup
 
   return (
     <Sheet
@@ -248,7 +251,9 @@ export function CustomerSheet(props: {
                       {
                         id: 'bonus-rate',
                         header: t('Bonus rate'),
-                        cell: (row) => <span className='tabular-nums'>{row.bonus_rate}</span>,
+                        cell: (row) => (
+                          <span className='tabular-nums'>{row.bonus_rate}</span>
+                        ),
                       },
                       {
                         id: 'bonus',
@@ -349,19 +354,28 @@ export function CustomerSheet(props: {
                   <Input
                     id='own-markup'
                     type='number'
-                    min={0}
-                    step='0.01'
+                    min='0.0001'
+                    step='0.0001'
                     value={markup}
                     onChange={(event) => setMarkup(event.target.value)}
                   />
                 </div>
                 <Button
                   variant='outline'
-                  disabled={!markup || price.isPending}
+                  disabled={!validRetailMarkup(markup) || price.isPending}
                   onClick={() => price.mutate(markup)}
                 >
                   {t('Save')}
                 </Button>
+                {ownMarkup && (
+                  <Button
+                    variant='outline'
+                    disabled={price.isPending}
+                    onClick={() => price.mutate(null)}
+                  >
+                    {t('Use site default')}
+                  </Button>
+                )}
               </div>
             </section>
             <PricingHistory key={id} customerId={id} />

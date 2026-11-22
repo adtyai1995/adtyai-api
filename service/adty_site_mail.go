@@ -1072,13 +1072,10 @@ func adtyMarkupRaisedDetail(raised []model.AdtySitePrice) (string, int64) {
 		if modelName := strings.TrimSpace(row.Model); modelName != "" {
 			group = group + " / " + modelName
 		}
-		next := row.PendingMarkup
-		if next.IsZero() && row.Markup.IsPositive() {
-			next = row.Markup
-		}
+		next := row.Markup
 		parts = append(parts, group+" → "+next.String())
-		if row.PendingAt > at {
-			at = row.PendingAt
+		if row.UpdatedAt > at {
+			at = row.UpdatedAt
 		}
 	}
 	return strings.Join(parts, "; "), at
@@ -1092,9 +1089,9 @@ func adtyNotifySiteMarkupIncrease(site *model.AdtySite, userId int, raised []mod
 	detail, at := adtyMarkupRaisedDetail(raised)
 	name := AdtyBrandFor(site).Name
 	message := AdtyMailMessage{
-		Title:       "Prices on " + name + " are going up",
+		Title:       "Prices on " + name + " have increased",
 		Intro:       "New pricing: " + detail,
-		Paragraphs:  []string{"The new pricing takes effect on " + adtyMailWhen(at) + ". Until then the current price applies."},
+		Paragraphs:  []string{"The new pricing applies to requests accepted from " + adtyMailWhen(at) + ". Previously accepted requests and tasks keep their original price."},
 		ActionLabel: "Sign in", ActionURL: AdtySitePublicBaseURL(site),
 	}
 	var users []model.User

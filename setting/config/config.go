@@ -115,7 +115,10 @@ func configToMap(config any) (map[string]string, error) {
 
 		// 获取json标签作为键名
 		key := fieldType.Tag.Get("json")
-		if key == "" || key == "-" {
+		if key == "-" {
+			continue
+		}
+		if key == "" {
 			key = fieldType.Name
 		}
 
@@ -186,7 +189,10 @@ func updateConfigFromMap(config any, configMap map[string]string) error {
 
 		// 获取json标签作为键名
 		key := fieldType.Tag.Get("json")
-		if key == "" || key == "-" {
+		if key == "-" {
+			continue
+		}
+		if key == "" {
 			key = fieldType.Name
 		}
 
@@ -309,7 +315,10 @@ func ValidateConfigValue(config any, key, value string) error {
 			continue
 		}
 		jsonKey := fieldType.Tag.Get("json")
-		if jsonKey == "" || jsonKey == "-" {
+		if jsonKey == "-" {
+			continue
+		}
+		if jsonKey == "" {
 			jsonKey = fieldType.Name
 		}
 		if jsonKey != key {

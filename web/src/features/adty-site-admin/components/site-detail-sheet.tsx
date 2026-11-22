@@ -121,6 +121,7 @@ function Info(props: { label: string; value: string }) {
 
 /** Review, adjust and status actions of one site, by permission. */
 function SiteActions(props: {
+  domains: AdminSiteDomain[]
   site: AdminSite
   onDirtyChange: (dirty: boolean) => void
 }) {
@@ -133,7 +134,6 @@ function SiteActions(props: {
   const canDelete = canAdmin(user, ADTY_PERMISSIONS.SITE_DELETE)
   const site = props.site
   const [costFactor, setCostFactor] = useState(site.cost_factor ?? '')
-  const [maxMarkup, setMaxMarkup] = useState(site.max_markup ?? '')
   const [visibility, setVisibility] = useState(() =>
     readSiteVisibility(site.visibility)
   )
@@ -148,11 +148,6 @@ function SiteActions(props: {
     setCostFactor((current) =>
       current === (previous.cost_factor ?? '')
         ? (site.cost_factor ?? '')
-        : current
-    )
-    setMaxMarkup((current) =>
-      current === (previous.max_markup ?? '')
-        ? (site.max_markup ?? '')
         : current
     )
     const previousVisibility = readSiteVisibility(previous.visibility)
@@ -180,12 +175,10 @@ function SiteActions(props: {
   )
   const adjustmentDirty =
     costFactor.trim() !== (site.cost_factor ?? '') ||
-    maxMarkup.trim() !== (site.max_markup ?? '') ||
     allowedGroups.trim() !== readAllowedGroups(site.allowed_groups) ||
     visibilityChanged
   const dirty =
     costFactor !== (site.cost_factor ?? '') ||
-    maxMarkup !== (site.max_markup ?? '') ||
     allowedGroups !== readAllowedGroups(site.allowed_groups) ||
     reason !== '' ||
     visibilityChanged
@@ -210,7 +203,6 @@ function SiteActions(props: {
       return reviewSite(site.id, {
         approve,
         cost_factor: costFactor.trim() || undefined,
-        max_markup: maxMarkup.trim() || undefined,
         note: reason.trim(),
       })
     },
@@ -228,14 +220,10 @@ function SiteActions(props: {
         throw new Error(t('No permission to perform this action'))
       }
       const body: Parameters<typeof adjustSite>[1] = { reason: reason.trim() }
-      const clear: Array<'cost_factor' | 'max_markup' | 'allowed_groups'> = []
+      const clear: Array<'cost_factor' | 'allowed_groups'> = []
       if (costFactor.trim() !== (site.cost_factor ?? '')) {
         if (costFactor.trim() === '') clear.push('cost_factor')
         else body.cost_factor = costFactor.trim()
-      }
-      if (maxMarkup.trim() !== (site.max_markup ?? '')) {
-        if (maxMarkup.trim() === '') clear.push('max_markup')
-        else body.max_markup = maxMarkup.trim()
       }
       if (visibilityChanged) {
         body.visibility = serializeSiteVisibility(visibility)
@@ -257,7 +245,6 @@ function SiteActions(props: {
     },
     onSuccess: (updated) => {
       setCostFactor(updated.cost_factor ?? '')
-      setMaxMarkup(updated.max_markup ?? '')
       setAllowedGroups(readAllowedGroups(updated.allowed_groups))
       setVisibility(readSiteVisibility(updated.visibility))
       queryClient.setQueryData<Awaited<ReturnType<typeof getSite>>>(
@@ -325,16 +312,6 @@ function SiteActions(props: {
             placeholder={t('Global')}
             disabled={(!canReview && !canAdjust) || !editable || busy}
             onChange={(event) => setCostFactor(event.target.value)}
-          />
-        </div>
-        <div className='space-y-1'>
-          <Label htmlFor='site-max-markup'>{t('Markup limit')}</Label>
-          <Input
-            id='site-max-markup'
-            value={maxMarkup}
-            placeholder={t('Global')}
-            disabled={(!canReview && !canAdjust) || !editable || busy}
-            onChange={(event) => setMaxMarkup(event.target.value)}
           />
         </div>
       </div>
@@ -468,7 +445,12 @@ function SiteActions(props: {
         handleConfirm={() => canDelete && takedown.mutate()}
       />
       {canClose && (
-        <CloseSiteDialog site={site} open={closing} onOpenChange={setClosing} />
+        <CloseSiteDialog
+          domains={props.domains}
+          site={site}
+          open={closing}
+          onOpenChange={setClosing}
+        />
       )}
     </section>
   )
@@ -658,9 +640,15 @@ function RootBalanceRequests(props: { siteId: number }) {
   const queryClient = useQueryClient()
   const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const [page, setPage] = useState(1)
+  const [status, setStatus] = useState('pending')
   const list = useQuery({
-    queryKey: siteAdminKeys.list('balance-requests', { siteId: props.siteId }),
-    queryFn: () => getAdminBalanceRequests(props.siteId),
+    queryKey: siteAdminKeys.list('balance-requests', {
+      siteId: props.siteId,
+      page,
+      status,
+    }),
+    queryFn: () => getAdminBalanceRequests(props.siteId, page, status),
     enabled: isRoot,
   })
   const review = useMutation({
@@ -683,13 +671,27 @@ function RootBalanceRequests(props: { siteId: number }) {
           'This request does not change the customer balance until the site owner or Root approves it.'
         )}
       </p>
+      <select
+        className='w-fit rounded-md border p-2'
+        value={status}
+        aria-label={t('Status')}
+        onChange={(event) => {
+          setStatus(event.target.value)
+          setPage(1)
+        }}
+      >
+        <option value=''>{t('All statuses')}</option>
+        <option value='pending'>{t('Pending')}</option>
+        <option value='approved'>{t('Approved')}</option>
+        <option value='rejected'>{t('Rejected')}</option>
+      </select>
       {list.isPending && <LoadingState />}
       {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
       {list.isSuccess && (
         <StaticDataTable
           tableClassName='min-w-[640px]'
           tableProps={{ 'aria-label': t('Balance requests') }}
-          data={list.data}
+          data={list.data.items}
           getRowKey={(row) => String(row.id)}
           emptyContent={
             <EmptyState className='min-h-24' title={t('No data')} />
@@ -764,6 +766,14 @@ function RootBalanceRequests(props: { siteId: number }) {
                 ),
             },
           ]}
+        />
+      )}
+      {list.data && (
+        <PageSwitcher
+          page={page}
+          pageSize={SITE_ADMIN_PAGE_SIZE}
+          total={list.data.total}
+          onPageChange={setPage}
         />
       )}
     </section>
@@ -946,10 +956,6 @@ export function SiteDetailSheet(props: {
                       : '-'
                   }
                 />
-                <Info
-                  label={t('Markup limit')}
-                  value={site.max_markup ?? t('Global')}
-                />
                 <Info label={t('Owner contact')} value={site.contact_info} />
                 {site.close_execute_at > 0 && (
                   <Info
@@ -985,7 +991,12 @@ export function SiteDetailSheet(props: {
                   </dl>
                 )}
               </section>
-              <SiteActions key={site.id} site={site} onDirtyChange={setDirty} />
+              <SiteActions
+                domains={query.data?.domains ?? []}
+                key={site.id}
+                site={site}
+                onDirtyChange={setDirty}
+              />
               <SiteBonusMethodAuth siteId={site.id} />
               <RootBalanceRequests siteId={site.id} />
               <SiteTierControl

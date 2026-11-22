@@ -16,6 +16,7 @@ import (
 // 这些键只能通过分站管理的设置接口改（controller/adty_site_admin.go），通用的 /api/option/ 拒绝写入，
 // 否则绕过下面的校验就能在没设 d 的情况下打开分站。
 type ResellerSetting struct {
+	MaxMarkup               *float64 `json:"-"` // Deprecated Go field; excluded from configuration and retail pricing.
 	DomainAutomationEnabled bool     `json:"domain_automation_enabled"`
 	AliyunDomain            string   `json:"aliyun_domain"`
 	AliyunAccessKeyID       string   `json:"aliyun_access_key_id"`
@@ -33,7 +34,6 @@ type ResellerSetting struct {
 	PendingMinCostFactor   *float64           `json:"pending_min_cost_factor"`
 	PendingMinCostFactorAt int64              `json:"pending_min_cost_factor_at"`
 	CostFactorTiers        []ResellerCostTier `json:"cost_factor_tiers"`
-	MaxMarkup              *float64           `json:"max_markup"`           // 存储 k 的上限，加价比例 = k-1，0 < k ≤ 100
 	MaxSiteBonusExtra      *float64           `json:"max_site_bonus_extra"` // 已退役；只保留历史读取，不参与报价、开站或现行设置校验
 	TrialGrantMaxUSD       *float64           `json:"trial_grant_max_usd"`
 	TrialGrantDailyUSD     *float64           `json:"trial_grant_daily_usd"`
@@ -139,8 +139,7 @@ func GetResellerSetting() *ResellerSetting {
 
 // ResellerMoneyConfigured 说明开分站要的金额参数是否都设了（档位可以为空）。
 func (s *ResellerSetting) ResellerMoneyConfigured() bool {
-	return s.CostFactor != nil && s.MinCostFactor != nil && s.MaxMarkup != nil &&
-		s.TrialGrantMaxUSD != nil && s.TrialGrantDailyUSD != nil
+	return s.CostFactor != nil && s.MinCostFactor != nil
 }
 
 // Ready 说明分站功能可用：总开关开着，金额参数和根域名都已设置。
@@ -238,83 +237,108 @@ func validPositiveMultiplier(value *float64) bool {
 
 // ValidateResellerSetting 检查一份要保存的分站设置。resendConfigured 是上游 ResendApiKey 有没有填。
 func ValidateResellerSetting(s *ResellerSetting, resendConfigured bool) error {
-	if s.DomainAutomationEnabled && (!s.CloudflareConfigured() || !resellerDomainPattern.MatchString(s.AliyunDomain) || !slices.Contains(s.RootDomains, s.AliyunDomain) || strings.TrimSpace(s.AliyunAccessKeyID) == "" || strings.TrimSpace(s.AliyunAccessKeySecret) == "" || !resellerDomainPattern.MatchString(s.DomainMainlandTarget) || !resellerDomainPattern.MatchString(s.CnameTarget) || !resellerDomainPattern.MatchString(s.FallbackOrigin)) {
+	return ValidateResellerPatch(s, resendConfigured, nil)
+}
+
+// ValidateResellerPatch validates the fields being saved and all of their
+// dependencies. Passing nil checks the entire configuration.
+func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed map[string]string) error {
+	touches := func(keys ...string) bool {
+		if changed == nil {
+			return true
+		}
+		for _, key := range keys {
+			if _, ok := changed[key]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	if touches("domain_automation_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "aliyun_domain", "root_domains", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_mainland_target", "cname_target", "fallback_origin") && s.DomainAutomationEnabled && (!s.CloudflareConfigured() || !resellerDomainPattern.MatchString(s.AliyunDomain) || !slices.Contains(s.RootDomains, s.AliyunDomain) || strings.TrimSpace(s.AliyunAccessKeyID) == "" || strings.TrimSpace(s.AliyunAccessKeySecret) == "" || !resellerDomainPattern.MatchString(s.DomainMainlandTarget) || !resellerDomainPattern.MatchString(s.CnameTarget) || !resellerDomainPattern.MatchString(s.FallbackOrigin)) {
 		return common.NewMessage("Configure Cloudflare, AliDNS credentials, an allowed root domain and both routing targets before enabling domain automation")
 	}
 	for _, domain := range s.RootDomains {
-		if !resellerDomainPattern.MatchString(domain) {
+		if touches("root_domains", "enabled") && !resellerDomainPattern.MatchString(domain) {
 			return common.NewMessage("Invalid root domain {{domain}}", map[string]any{"domain": domain})
 		}
 	}
 	for _, label := range s.ReservedSubdomains {
-		if !ResellerLabelPattern.MatchString(label) {
+		if touches("reserved_subdomains") && !ResellerLabelPattern.MatchString(label) {
 			return common.NewMessage("Invalid subdomain {{subdomain}}", map[string]any{"subdomain": label})
 		}
 	}
-	if s.UnknownHostMode != ResellerUnknownHostMain && s.UnknownHostMode != ResellerUnknownHostReject {
+	if touches("unknown_host_mode") && s.UnknownHostMode != ResellerUnknownHostMain && s.UnknownHostMode != ResellerUnknownHostReject {
 		return common.NewMessage("Invalid parameters")
 	}
-	if s.CostFactor != nil && !validPositiveMultiplier(s.CostFactor) {
+	if touches("cost_factor", "min_cost_factor", "enabled") && s.CostFactor != nil && !validPositiveMultiplier(s.CostFactor) {
 		return common.NewMessage("The cost factor must be greater than 0")
 	}
-	if s.MinCostFactor != nil && !validPositiveMultiplier(s.MinCostFactor) {
+	if touches("min_cost_factor", "cost_factor", "enabled") && s.MinCostFactor != nil && !validPositiveMultiplier(s.MinCostFactor) {
 		return common.NewMessage("The cost factor must be greater than 0")
 	}
-	if s.PendingCostFactor != nil && !validPositiveMultiplier(s.PendingCostFactor) {
+	if touches("cost_factor", "pending_cost_factor") && s.PendingCostFactor != nil && !validPositiveMultiplier(s.PendingCostFactor) {
 		return common.NewMessage("The cost factor must be greater than 0")
 	}
-	if s.PendingMinCostFactor != nil && !validPositiveMultiplier(s.PendingMinCostFactor) {
+	if touches("min_cost_factor", "pending_min_cost_factor") && s.PendingMinCostFactor != nil && !validPositiveMultiplier(s.PendingMinCostFactor) {
 		return common.NewMessage("The cost factor must be greater than 0")
 	}
-	if s.CostFactor != nil && s.MinCostFactor != nil && *s.CostFactor < *s.MinCostFactor {
+	if touches("cost_factor", "min_cost_factor", "enabled") && s.CostFactor != nil && s.MinCostFactor != nil && *s.CostFactor < *s.MinCostFactor {
 		return common.NewMessage("The cost factor cannot be below the minimum cost factor")
 	}
 	for _, tier := range s.CostFactorTiers {
 		factor := tier.CostFactor
-		if tier.MinMonthlyUSD < 0 || !validPositiveMultiplier(&factor) || (s.MinCostFactor != nil && factor < *s.MinCostFactor) {
+		if touches("min_cost_factor", "cost_factor_tiers", "enabled") && (tier.MinMonthlyUSD < 0 || !validPositiveMultiplier(&factor) || (s.MinCostFactor != nil && factor < *s.MinCostFactor)) {
 			return common.NewMessage("Each tier needs a monthly amount of at least 0 and a cost factor not below the minimum")
 		}
 	}
-	if s.MaxMarkup != nil && (math.IsNaN(*s.MaxMarkup) || math.IsInf(*s.MaxMarkup, 0) || *s.MaxMarkup <= 0 || *s.MaxMarkup > 100) {
-		return common.NewMessage("The markup limit must be greater than 0 and at most 100")
-	}
 	for _, value := range []*float64{s.TrialGrantMaxUSD, s.TrialGrantDailyUSD} {
-		if value != nil && (math.IsNaN(*value) || *value < 0) {
+		if touches("trial_grant_max_usd", "trial_grant_daily_usd") && value != nil && (math.IsNaN(*value) || *value < 0) {
 			return common.NewMessage("Trial credit limits cannot be negative")
 		}
 	}
-	if s.MarkupIncreaseDelayHours < 0 || s.SettleHour < 0 || s.SettleHour > 23 || s.FreezeDays < 0 || s.CloseNoticeDays < 0 ||
-		s.FingerprintWindowDays < 1 || s.CustomerLookupPerHour < 0 || s.MaxCustomDomainsPerSite < 0 || s.CustomDomainCreatesPerHour < 0 {
-		return common.NewMessage("Invalid parameters")
+	for _, rule := range []struct {
+		key        string
+		value, min int
+	}{
+		{"markup_increase_delay_hours", s.MarkupIncreaseDelayHours, 0}, {"close_notice_days", s.CloseNoticeDays, 0}, {"fingerprint_window_days", s.FingerprintWindowDays, 1},
+		{"customer_lookup_per_hour", s.CustomerLookupPerHour, 0}, {"max_custom_domains_per_site", s.MaxCustomDomainsPerSite, 0}, {"custom_domain_creates_per_hour", s.CustomDomainCreatesPerHour, 0},
+		{"settle_hour", s.SettleHour, 0}, {"freeze_days", s.FreezeDays, 0},
+	} {
+		if touches(rule.key) && (rule.value < rule.min || (rule.key == "settle_hour" && rule.value > 23)) {
+			return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": rule.key})
+		}
 	}
 	for key, value := range s.Visibility {
+		if !touches("visibility") {
+			break
+		}
 		def, ok := ResellerVisibilityKeys[key]
 		if !ok {
-			return common.NewMessage("Invalid parameters")
+			return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "visibility." + key})
 		}
 		allowed := value == "on" || value == "off"
 		if def == "masked" {
 			allowed = value == "masked" || value == "full"
 		}
 		if !allowed {
-			return common.NewMessage("Invalid parameters")
+			return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "visibility." + key})
 		}
 	}
 	for _, widget := range s.TurnstileWidgets {
-		if strings.TrimSpace(widget.Id) == "" || strings.TrimSpace(widget.SiteKey) == "" {
+		if touches("turnstile_widgets") && (strings.TrimSpace(widget.Id) == "" || strings.TrimSpace(widget.SiteKey) == "") {
 			return common.NewMessage("Each Turnstile widget needs an ID and a site key")
 		}
 	}
-	if s.Enabled && !s.ResellerMoneyConfigured() {
-		return common.NewMessage("Set the cost factor, its minimum, the markup limit and the trial credit limits before turning reseller sites on")
+	if touches("enabled", "cost_factor", "min_cost_factor") && s.Enabled && !s.ResellerMoneyConfigured() {
+		return common.NewMessage("Set the supply cost factor and its minimum before turning reseller sites on")
 	}
-	if s.Enabled && len(s.RootDomains) == 0 {
+	if touches("enabled", "root_domains") && s.Enabled && len(s.RootDomains) == 0 {
 		return common.NewMessage("Add at least one root domain before turning reseller sites on")
 	}
-	if s.CustomDomainEnabled && !s.CloudflareConfigured() {
+	if touches("custom_domain_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "cname_target") && s.CustomDomainEnabled && !s.CloudflareConfigured() {
 		return common.NewMessage("Fill in the Cloudflare API token, zone ID and CNAME target before turning custom domains on")
 	}
-	if s.SenderDomainEnabled && !resendConfigured {
+	if touches("sender_domain_enabled") && s.SenderDomainEnabled && !resendConfigured {
 		return common.NewMessage("Fill in the Resend API key under email settings before turning sender domains on")
 	}
 	return nil

@@ -66,8 +66,7 @@ sudo cp .env.example .env && sudo chmod 600 .env
 | 键 | 说明 |
 | --- | --- |
 | `adty_site_withdraw.min_usd`、`fee_usd`、`alipay_cny_rate`、`usdt_usd_rate` | 站长收益提现的最低额、手续费、人民币和 USDT 汇率。任一未设或非正数，站长的现金提现全部被拒绝（`service/adty_site_withdraw.go:15-18`） |
-| `adty.business_timezone` | 业务日切时区，写 IANA 名（如 `Asia/Shanghai`）；不设按 UTC 切日，决定日结单落在哪一天（`service/adty_site_settlement_sheet.go:15`） |
-| `adty_site_referral.pending_coverage_cap`、`observation_days` | 分站客户一级邀请佣金的待覆盖额上限和观察天数。不配时佣金永远停在「待覆盖」，既不冻结本站收益也不转余额；两个都必须是正数，观察天数决定冻结多久后转成可提现（`service/adty_site_commission.go:54-87`） |
+| `adty.business_timezone` | 业务日切时区，写 IANA 名（如 `Asia/Shanghai`）；未配置时按北京时间零点切日，已有单据保留原时区和期间，决定日结单落在哪一天（`service/adty_site_settlement_sheet.go:15`） |
 | `adty_site_referral.batch_register_threshold`、`batch_register_window_hours` | 批量注册风控的触发人数和统计窗口（小时），不配就不启用。注意键名里是 `batch_register_window_hours`（`service/adty_site_commission.go:20-21`） |
 | `adty_reseller_setting.max_custom_domains_per_site`、`custom_domain_creates_per_hour` | 每个站点最多绑几个自定义域名、每小时最多创建几次；不配时用代码内默认值 2 和 3（`setting/adty_setting/reseller.go:117-118`） |
 

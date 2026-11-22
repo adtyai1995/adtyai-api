@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -10,58 +12,35 @@ import (
 	"gorm.io/gorm"
 )
 
-const adtySiteReferralCapKey = "adty_site_referral.max_rate"
+var ErrAdtySiteReferralUnset = errors.New("site commission policy is not configured")
 
-var ErrAdtySiteReferralUnset = errors.New("site referral cap is not configured")
-
-// AdtySiteReferralView is what the owner page may show. Unset values stay blank.
 type AdtySiteReferralView struct {
-	CapConfigured  bool   `json:"cap_configured"`
-	MaxRate        string `json:"max_rate,omitempty"`
+	model.AdtySiteMarketingPolicy
 	RateConfigured bool   `json:"rate_configured"`
 	Rate           string `json:"rate,omitempty"`
 	Enabled        bool   `json:"enabled"`
 }
 
-// SaveAdtySiteReferralCap stores Root's maximum one-level site invite rate.
-// The value is a fraction. Empty, zero, or a value above 1 is refused. No default is written.
-func SaveAdtySiteReferralCap(raw string) error {
-	trimmed := strings.TrimSpace(raw)
-	value, err := decimal.NewFromString(trimmed)
-	if err != nil || !value.IsPositive() || value.GreaterThan(decimal.NewFromInt(1)) {
-		return common.NewMessage("Invalid parameters")
-	}
-	return model.UpdateOptionsBulk(map[string]string{adtySiteReferralCapKey: trimmed})
+type AdtySiteMarketingUpdate struct {
+	Rate               *string `json:"rate"`
+	Enabled            *bool   `json:"enabled"`
+	PendingCoverageCap *string `json:"pending_coverage_cap"`
+	ObservationDays    *string `json:"observation_days"`
+	MinUSD             *string `json:"min_usd"`
+	FeeUSD             *string `json:"fee_usd"`
+	CNYRate            *string `json:"cny_rate"`
+	TrialGrantMaxUSD   *string `json:"trial_grant_max_usd"`
+	TrialGrantDailyUSD *string `json:"trial_grant_daily_usd"`
 }
 
-// LoadAdtySiteReferralCap returns Root's saved cap. An unset cap stays blank.
-func LoadAdtySiteReferralCap() (AdtySiteReferralView, error) {
-	view := AdtySiteReferralView{}
-	raw, _, err := loadAdtySiteReferralCap()
-	if errors.Is(err, ErrAdtySiteReferralUnset) {
-		return view, nil
-	}
-	if err != nil {
-		return view, err
-	}
-	view.CapConfigured = true
-	view.MaxRate = raw
-	return view, nil
-}
+var siteMarketingDecimal = regexp.MustCompile(`^(?:[0-9]{1,12}(?:\.[0-9]{0,8})?|\.[0-9]{1,8})$`)
 
-func loadAdtySiteReferralCap() (string, decimal.Decimal, error) {
-	raw, ok, err := model.ReadOptionFromDB(adtySiteReferralCapKey)
-	if err != nil {
-		return "", decimal.Zero, err
+func parseSiteMarketingDecimal(raw string) (decimal.Decimal, error) {
+	raw = strings.TrimSpace(raw)
+	if !siteMarketingDecimal.MatchString(raw) {
+		return decimal.Zero, common.NewMessage("Invalid parameters")
 	}
-	if !ok || strings.TrimSpace(raw) == "" {
-		return "", decimal.Zero, ErrAdtySiteReferralUnset
-	}
-	value, err := decimal.NewFromString(strings.TrimSpace(raw))
-	if err != nil || !value.IsPositive() || value.GreaterThan(decimal.NewFromInt(1)) {
-		return "", decimal.Zero, ErrAdtySiteReferralUnset
-	}
-	return strings.TrimSpace(raw), value, nil
+	return decimal.NewFromString(raw)
 }
 
 func lockOwnerSite(siteID, ownerID int) (*model.AdtySite, error) {
@@ -78,64 +57,129 @@ func lockOwnerSite(siteID, ownerID int) (*model.AdtySite, error) {
 	return &site, nil
 }
 
-// SaveAdtyOwnerSiteReferralRate stores the site rate only when it is within Root's cap.
-func SaveAdtyOwnerSiteReferralRate(siteID, ownerID int, raw string) error {
-	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
-		return err
-	}
-	_, cap, err := loadAdtySiteReferralCap()
-	if err != nil {
-		return err
-	}
-	trimmed := strings.TrimSpace(raw)
-	value, err := decimal.NewFromString(trimmed)
-	if err != nil || value.IsNegative() || value.GreaterThan(cap) {
-		return common.NewMessage("Invalid parameters")
-	}
-	return SetSiteReferralRate(siteID, value)
+// SaveAdtyOwnerSiteMarketing updates only the fields submitted by the owner.
+func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpdate) error {
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+			return err
+		}
+		if site.OwnerUserId != ownerID || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused) {
+			return common.NewMessage("No permission to perform this action")
+		}
+		policy := site.MarketingPolicy
+		updates := map[string]any{}
+		for _, field := range []struct {
+			input     *string
+			dest      **decimal.Decimal
+			column    string
+			allowZero bool
+		}{
+			{input.PendingCoverageCap, &policy.PendingCoverageCap, "pending_coverage_cap", false},
+			{input.MinUSD, &policy.MinUSD, "invite_withdraw_min", false},
+			{input.FeeUSD, &policy.FeeUSD, "invite_withdraw_fee", true},
+			{input.CNYRate, &policy.CNYRate, "invite_withdraw_cny_rate", false},
+			{input.TrialGrantMaxUSD, &policy.TrialGrantMaxUSD, "trial_grant_max_usd", true},
+			{input.TrialGrantDailyUSD, &policy.TrialGrantDailyUSD, "trial_grant_daily_usd", true},
+		} {
+			if field.input == nil {
+				continue
+			}
+			if strings.TrimSpace(*field.input) == "" {
+				*field.dest = nil
+				updates[field.column] = nil
+				continue
+			}
+			value, err := parseSiteMarketingDecimal(*field.input)
+			if err != nil || (!field.allowZero && value.IsZero()) {
+				return common.NewMessage("Invalid parameters")
+			}
+			*field.dest = &value
+			updates[field.column] = value
+		}
+		if input.ObservationDays != nil {
+			raw := strings.TrimSpace(*input.ObservationDays)
+			policy.ObservationDays = nil
+			if raw != "" {
+				days, err := strconv.ParseInt(raw, 10, 32)
+				if err != nil || days < 0 {
+					return common.NewMessage("Invalid parameters")
+				}
+				policy.ObservationDays = &days
+			}
+			updates["observation_days"] = policy.ObservationDays
+		}
+		if input.MinUSD != nil || input.FeeUSD != nil || input.CNYRate != nil {
+			if (policy.MinUSD == nil) != (policy.FeeUSD == nil) || (policy.MinUSD == nil) != (policy.CNYRate == nil) {
+				return common.NewMessage("Set the minimum, fee and exchange rate together to enable cash withdrawals")
+			}
+		}
+		var rate model.AdtySiteReferralRate
+		lookup := tx.Where("site_id = ?", siteID).Limit(1).Find(&rate)
+		if lookup.Error != nil {
+			return lookup.Error
+		}
+		if input.Rate != nil {
+			value, err := parseSiteMarketingDecimal(*input.Rate)
+			if err != nil || value.GreaterThan(decimal.NewFromInt(1)) || !value.Equal(value.Round(6)) {
+				return common.NewMessage("Enter an invite rate between 0 and 1 with up to six decimal places")
+			}
+			rate.Rate = value
+		}
+		if input.Enabled != nil {
+			rate.Enabled = *input.Enabled
+		}
+		if (input.Enabled != nil || input.Rate != nil || input.PendingCoverageCap != nil || input.ObservationDays != nil) && rate.Enabled &&
+			((lookup.RowsAffected == 0 && input.Rate == nil) || policy.PendingCoverageCap == nil || policy.ObservationDays == nil) {
+			return common.NewMessage("Set an invite rate, pending coverage cap and observation days before enabling commissions")
+		}
+		if len(updates) > 0 {
+			if err := tx.Model(&site).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		if input.Rate != nil || input.Enabled != nil {
+			if lookup.RowsAffected == 0 && input.Rate == nil {
+				return nil
+			}
+			rate.SiteId = siteID
+			return tx.Save(&rate).Error
+		}
+		return nil
+	})
 }
 
-// LoadAdtyOwnerSiteReferral returns the saved cap and site rate. It does not invent either.
+// Legacy callers receive the same migration message as the retired HTTP endpoints.
+var ErrSiteMarketingOwnerOnly = common.NewMessage("Site marketing rules are managed by the site owner")
+
+func SaveAdtySiteReferralCap(string) error                         { return ErrSiteMarketingOwnerOnly }
+func SaveAdtySiteCommissionPolicy(string, string) error            { return ErrSiteMarketingOwnerOnly }
+func SaveAdtySiteInviteWithdrawRules(string, string, string) error { return ErrSiteMarketingOwnerOnly }
+
+func SaveAdtyOwnerSiteReferralRate(siteID, ownerID int, rate string) error {
+	return SaveAdtyOwnerSiteMarketing(siteID, ownerID, AdtySiteMarketingUpdate{Rate: &rate})
+}
+func SetAdtyOwnerSiteReferralEnabled(siteID, ownerID int, enabled bool) error {
+	return SaveAdtyOwnerSiteMarketing(siteID, ownerID, AdtySiteMarketingUpdate{Enabled: &enabled})
+}
+
 func LoadAdtyOwnerSiteReferral(siteID, ownerID int) (AdtySiteReferralView, error) {
-	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
+	site, err := lockOwnerSite(siteID, ownerID)
+	if err != nil {
 		return AdtySiteReferralView{}, err
 	}
-	view := AdtySiteReferralView{}
-	if raw, _, err := loadAdtySiteReferralCap(); err == nil {
-		view.CapConfigured = true
-		view.MaxRate = raw
-	} else if !errors.Is(err, ErrAdtySiteReferralUnset) {
-		return view, err
-	}
+	view := AdtySiteReferralView{AdtySiteMarketingPolicy: site.MarketingPolicy}
 	var row model.AdtySiteReferralRate
-	err := model.DB.First(&row, siteID).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return view, nil
+	lookup := model.DB.Where("site_id = ?", siteID).Limit(1).Find(&row)
+	if lookup.Error != nil {
+		return view, lookup.Error
 	}
-	if err != nil {
-		return view, err
+	if lookup.RowsAffected > 0 {
+		view.RateConfigured = true
+		view.Rate = row.Rate.String()
+		view.Enabled = row.Enabled
 	}
-	view.RateConfigured = true
-	view.Rate = row.Rate.String()
-	view.Enabled = row.Enabled
 	return view, nil
-}
-
-// SetAdtyOwnerSiteReferralEnabled turns one site's invite commission on or off.
-// It does not change another site and does not invent a rate.
-func SetAdtyOwnerSiteReferralEnabled(siteID, ownerID int, enabled bool) error {
-	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
-		return err
-	}
-	var row model.AdtySiteReferralRate
-	err := model.DB.First(&row, siteID).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return common.NewMessage("Invalid parameters")
-	}
-	if err != nil {
-		return err
-	}
-	return model.DB.Model(&row).Update("enabled", enabled).Error
 }
 
 // BindAdtyOwnerSiteInvite records one direct invite on the owner's site.

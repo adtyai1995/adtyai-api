@@ -23,8 +23,8 @@ import { useTranslation } from 'react-i18next'
 import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TeamRegistrationLinksPanel } from '@/features/adty-team-registration'
+import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
-import { USER_ROLE } from '@/features/users/constants'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -34,13 +34,13 @@ import { OverviewPanel } from './components/overview-panel'
 import { PausedSiteRepairPanel } from './components/paused-site-repair-panel'
 import { ReviewsPanel } from './components/reviews-panel'
 import { SettingsPanel } from './components/settings-panel'
-import { SiteTiersPanel } from './components/site-tiers-panel'
-import { SiteWithdrawalsPanel } from './components/site-withdrawals-panel'
-import { VoucherAdminPanel } from './components/voucher-admin-panel'
 import { SiteDetailSheet } from './components/site-detail-sheet'
 import { SiteReferralCapPanel } from './components/site-referral-cap-panel'
+import { SiteTiersPanel } from './components/site-tiers-panel'
+import { SiteWithdrawalsPanel } from './components/site-withdrawals-panel'
 import { SitesPanel } from './components/sites-panel'
 import { UsagePanel } from './components/usage-panel'
+import { VoucherAdminPanel } from './components/voucher-admin-panel'
 import { WithdrawRulesPanel } from './components/withdraw-rules-panel'
 import {
   canOpenSiteAdminSection,
@@ -59,8 +59,12 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
   const labels: Record<SiteAdminSectionId, string> = {
     sites: t('Sites'),
     overview: t('Overview'),
+    tickets: t('Ticket workspace'),
     reviews: t('Risk reviews and reports'),
-    settings: t('Settings'),
+    settings: t('Supply settings'),
+    teams: t('Team management'),
+    domains: t('Domains'),
+    policies: t('Access and risk'),
     withdrawals: t('Withdrawals'),
     vouchers: t('Recharge codes'),
   }
@@ -90,7 +94,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
           >
             <TabsList
               variant='line'
-              className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 group-data-horizontal/tabs:h-auto [--tab-underline:var(--brand)]'
+              className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 [--tab-underline:var(--brand)] group-data-horizontal/tabs:h-auto'
             >
               {visible.map((section) => (
                 <TabsTrigger
@@ -105,28 +109,46 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
             <TabsContent value='sites' className='min-w-0'>
               <SitesPanel onOpenSite={(site) => setOpenSite(site.id)} />
             </TabsContent>
+            <TabsContent value='tickets'>
+              <TicketCenter scope='platform' />
+            </TabsContent>
             <TabsContent value='overview'>
               <OverviewPanel />
+              <BusinessTimezonePanel />
             </TabsContent>
             <TabsContent value='reviews'>
               <ReviewsPanel />
             </TabsContent>
             <TabsContent value='settings' className='flex flex-col gap-5'>
-              <SiteReferralCapPanel />
-              <BusinessTimezonePanel />
-              <WithdrawRulesPanel />
-              <SiteTiersPanel />
-              {user?.role === USER_ROLE.ROOT && (
-                <TeamRegistrationLinksPanel actor='root' />
-              )}
-              <MainTeamPricePanel />
-              {canAdmin(user, ADTY_PERMISSIONS.SITE_READ) && <UsagePanel />}
               <SettingsPanel
+                section='supply'
                 canWrite={canSettings}
                 canWriteSecrets={canWriteSecrets}
               />
+              <SiteTiersPanel />
+            </TabsContent>
+            <TabsContent value='domains' className='flex flex-col gap-5'>
+              <SettingsPanel
+                section='domains'
+                canWrite={canSettings}
+                canWriteSecrets={canWriteSecrets}
+              />
+              {canAdmin(user, ADTY_PERMISSIONS.SITE_READ) && <UsagePanel />}
+            </TabsContent>
+            <TabsContent value='policies' className='flex flex-col gap-5'>
+              <SettingsPanel
+                section='policies'
+                canWrite={canSettings}
+                canWriteSecrets={canWriteSecrets}
+              />
+              <SiteReferralCapPanel />
+            </TabsContent>
+            <TabsContent value='teams' className='flex flex-col gap-5'>
+              <TeamRegistrationLinksPanel actor='root' />
+              <MainTeamPricePanel />
             </TabsContent>
             <TabsContent value='withdrawals'>
+              <WithdrawRulesPanel />
               <SiteWithdrawalsPanel />
             </TabsContent>
             <TabsContent value='vouchers'>

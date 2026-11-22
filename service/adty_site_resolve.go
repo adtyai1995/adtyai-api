@@ -66,13 +66,11 @@ func AdtySiteNames(siteIDs []int) (map[int]string, error) {
 	return names, nil
 }
 
-// InvalidateAdtySiteCache 在站点或自定义域名变更后调用，下次读取时重建。定价缓存一起清：
-// 关站转移客户时会同时写定价。
+// InvalidateAdtySiteCache 在站点或自定义域名变更后调用，下次读取时重建。
 func InvalidateAdtySiteCache() {
 	adtySiteCacheMu.Lock()
 	adtySiteCache = nil
 	adtySiteCacheMu.Unlock()
-	InvalidateAdtySitePriceCache()
 }
 
 func adtySiteCacheTTL() time.Duration {

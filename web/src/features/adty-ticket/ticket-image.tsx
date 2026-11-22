@@ -30,13 +30,22 @@ import {
 } from '@/lib/server-error-message'
 
 export function TicketImage(props: {
+  scope: string
+  userId?: number
   ticketID: number
   imageID: number
   label: string
 }) {
   const { t } = useTranslation()
   const query = useQuery({
-    queryKey: ['adty-tickets', 'image', props.ticketID, props.imageID],
+    queryKey: [
+      'adty-tickets',
+      props.userId,
+      props.scope,
+      'image',
+      props.ticketID,
+      props.imageID,
+    ],
     queryFn: async ({ signal }) => {
       const path = `/api/adty/tickets/${props.ticketID}/images/${props.imageID}`
       const authorized = await api.get<{
@@ -44,7 +53,7 @@ export function TicketImage(props: {
         message?: string
         data?: { grant: string; expires_at: number }
       }>(path, {
-        params: { action: 'grant' },
+        params: { action: 'grant', scope: props.scope },
         signal,
         disableDuplicate: true,
         skipErrorHandler: true,
@@ -54,6 +63,7 @@ export function TicketImage(props: {
         throw new Error(t('Failed to load data'))
       }
       const response = await api.get<Blob>(path, {
+        params: { scope: props.scope },
         headers: { 'X-Ticket-Image-Grant': grant },
         responseType: 'blob',
         signal,
@@ -61,7 +71,11 @@ export function TicketImage(props: {
         skipErrorHandler: true,
         skipBusinessError: true,
       })
-      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(response.data.type)) {
+      if (
+        !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(
+          response.data.type
+        )
+      ) {
         if (response.data.type.includes('json')) {
           const failure: unknown = JSON.parse(await response.data.text())
           throw createServerError(failure, t('Failed to load data'))
@@ -74,7 +88,9 @@ export function TicketImage(props: {
     retry: false,
     meta: { errorToast: false },
   })
-  const [preview, setPreview] = useState<{ blob: Blob; src: string } | null>(null)
+  const [preview, setPreview] = useState<{ blob: Blob; src: string } | null>(
+    null
+  )
   const [failed, setFailed] = useState<Blob | null>(null)
   useEffect(() => {
     if (!query.data) return
@@ -82,15 +98,20 @@ export function TicketImage(props: {
     setPreview({ blob: query.data, src })
     return () => URL.revokeObjectURL(src)
   }, [query.data])
-  const unavailable = query.isError || (query.data !== undefined && failed === query.data)
-  const src = !unavailable && preview?.blob === query.data ? preview?.src : undefined
+  const unavailable =
+    query.isError || (query.data !== undefined && failed === query.data)
+  const src =
+    !unavailable && preview?.blob === query.data ? preview?.src : undefined
   let content = <LoadingState className='h-full min-h-0' size='sm' />
   if (unavailable) {
     content = (
       <ErrorState
         className='min-h-0 p-3'
         title={t('Failed to load data')}
-        description={getServerErrorMessage(query.error, t('Failed to load data'))}
+        description={getServerErrorMessage(
+          query.error,
+          t('Failed to load data')
+        )}
         onRetry={() => void query.refetch()}
       />
     )
@@ -107,7 +128,12 @@ export function TicketImage(props: {
   return (
     <div className='flex min-w-0 flex-col gap-1 text-sm'>
       {src ? (
-        <a href={src} target='_blank' rel='noreferrer' className='break-all underline'>
+        <a
+          href={src}
+          target='_blank'
+          rel='noreferrer'
+          className='break-all underline'
+        >
           {props.label}
         </a>
       ) : (

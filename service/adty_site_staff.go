@@ -19,8 +19,10 @@ var (
 	ErrAdtyStaffCustomerPasswordReset = common.NewMessage("Staff cannot reset a customer's password")
 )
 
+const AdtyStaffTicketManage = "tickets.manage"
+
 var adtyStaffReadPermissions = []string{"customers.read", "customers.balance", "customers.topups", "customers.usage"}
-var adtyStaffPermissions = append(slices.Clone(adtyStaffReadPermissions), "customers.disable")
+var adtyStaffPermissions = append(slices.Clone(adtyStaffReadPermissions), "customers.disable", AdtyStaffTicketManage)
 
 type AdtyStaffInput struct {
 	Username        string    `json:"username"`

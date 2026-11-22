@@ -25,8 +25,8 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 	require.NoError(t, err)
 
 	now := time.Date(2026, 3, 15, 0, 30, 0, 0, time.UTC)
-	start := time.Date(2026, 3, 14, 0, 0, 0, 0, time.UTC).Unix()
-	end := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC).Unix()
+	start := time.Date(2026, 3, 14, 0, 0, 0, 0, mustLoc(t, "Asia/Shanghai")).Unix()
+	end := time.Date(2026, 3, 15, 0, 0, 0, 0, mustLoc(t, "Asia/Shanghai")).Unix()
 	stampSheetFacts(t, db, site, other, start)
 
 	var ledgersBefore int64
@@ -40,7 +40,7 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 
 	var sheet model.AdtySiteSettlementSheet
 	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-03-14").First(&sheet).Error)
-	require.Equal(t, "UTC", sheet.Timezone)
+	require.Equal(t, "Asia/Shanghai", sheet.Timezone)
 	require.Equal(t, start, sheet.DayStart)
 	require.Equal(t, end, sheet.DayEnd)
 	require.Equal(t, "site-settlement:"+strconv.Itoa(site.Id)+":2026-03-14", sheet.BatchId)
@@ -91,12 +91,12 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Count(&ledgersAfter).Error)
 	require.Equal(t, ledgersBefore, ledgersAfter)
 
-	require.NoError(t, SaveAdtyBusinessTimezone("Asia/Shanghai"))
+	require.NoError(t, SaveAdtyBusinessTimezone("UTC"))
 	_, err = GenerateAdtySiteSettlementSheets(now)
 	require.NoError(t, err)
 	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-03-14").First(&refreshed).Error)
 	require.Equal(t, start, refreshed.DayStart)
-	require.Equal(t, "UTC", refreshed.Timezone)
+	require.Equal(t, "Asia/Shanghai", refreshed.Timezone)
 
 	require.Error(t, db.Model(&model.AdtySiteSettlementSheet{}).Where("id = ?", sheet.Id).Update("batch_id", "rewritten").Error)
 	require.Error(t, db.Delete(&model.AdtySiteSettlementSheet{}, sheet.Id).Error)
@@ -110,7 +110,7 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 	require.GreaterOrEqual(t, len(all), 2)
 }
 
-func TestDailySettlementSheetUsesConfiguredTimezoneOrUTC(t *testing.T) {
+func TestDailySettlementSheetUsesShanghaiByDefaultAndPreservesExplicitTimezone(t *testing.T) {
 	db := prepareSiteDB(t)
 	savedLocal := time.Local
 	time.Local = mustLoc(t, "America/Los_Angeles")
@@ -118,7 +118,7 @@ func TestDailySettlementSheetUsesConfiguredTimezoneOrUTC(t *testing.T) {
 	t.Cleanup(func() { _ = db.Delete(&model.Option{Key: adtyBusinessTimezoneKey}).Error })
 	_, site := openActiveSite(t, db, "tz"+strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10))
 	require.Error(t, SaveAdtyBusinessTimezone("Not/AZone"))
-	require.NoError(t, SaveAdtyBusinessTimezone("Asia/Shanghai"))
+	require.NoError(t, SaveAdtyBusinessTimezone(""))
 
 	now := time.Date(2026, 6, 1, 16, 30, 0, 0, time.UTC) // 2026-06-02 00:30 in Shanghai
 	inside := time.Date(2026, 6, 1, 15, 59, 0, 0, time.UTC).Unix()
@@ -136,7 +136,7 @@ func TestDailySettlementSheetUsesConfiguredTimezoneOrUTC(t *testing.T) {
 	require.Equal(t, time.Date(2026, 6, 1, 0, 0, 0, 0, mustLoc(t, "Asia/Shanghai")).Unix(), sheet.DayStart)
 	require.True(t, sheet.TopupFaceUSD.Equal(decimal.NewFromInt(4)))
 
-	require.NoError(t, SaveAdtyBusinessTimezone(""))
+	require.NoError(t, SaveAdtyBusinessTimezone("UTC"))
 	_, err = GenerateAdtySiteSettlementSheets(time.Date(2026, 6, 3, 0, 30, 0, 0, time.UTC))
 	require.NoError(t, err)
 	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-06-01").First(&sheet).Error)
@@ -168,7 +168,7 @@ func TestSettlementSheetCatchUpFillsMissingDaysWithoutRewritingExisting(t *testi
 	for _, day := range []string{"2026-04-02", "2026-04-03", "2026-04-04"} {
 		var row model.AdtySiteSettlementSheet
 		require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, day).First(&row).Error)
-		require.Equal(t, "UTC", row.Timezone)
+		require.Equal(t, "Asia/Shanghai", row.Timezone)
 		require.Equal(t, "site-settlement:"+strconv.Itoa(site.Id)+":"+day, row.BatchId)
 	}
 	var after int64

@@ -1,3 +1,7 @@
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -16,10 +20,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-
+import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -27,34 +28,54 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { saveAdminWithdrawRules } from '../api'
+import { getAdminWithdrawRules, saveAdminWithdrawRules } from '../api'
 
 /** Root enters every withdrawal figure. The form does not suggest a minimum, fee, or rate. */
 export function WithdrawRulesPanel() {
   const { t } = useTranslation()
-  const isRoot = useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
-  const [minUsd, setMinUsd] = useState('')
-  const [feeUsd, setFeeUsd] = useState('')
-  const [alipayRate, setAlipayRate] = useState('')
-  const [usdtRate, setUsdtRate] = useState('')
+  const isRoot =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const current = useQuery({
+    queryKey: ['admin-site-withdraw-rules'],
+    queryFn: getAdminWithdrawRules,
+    enabled: isRoot,
+  })
+  const [minUsd, setMinUsd] = useState<string>()
+  const [feeUsd, setFeeUsd] = useState<string>()
+  const [alipayRate, setAlipayRate] = useState<string>()
+  const [usdtRate, setUsdtRate] = useState<string>()
   const save = useMutation({
     mutationFn: () =>
       saveAdminWithdrawRules({
-        min_usd: minUsd.trim(),
-        fee_usd: feeUsd.trim(),
-        alipay_cny_rate: alipayRate.trim(),
-        usdt_usd_rate: usdtRate.trim(),
+        min_usd: (minUsd ?? current.data?.min_usd ?? '').trim(),
+        fee_usd: (feeUsd ?? current.data?.fee_usd ?? '').trim(),
+        alipay_cny_rate: (
+          alipayRate ??
+          current.data?.alipay_cny_rate ??
+          ''
+        ).trim(),
+        usdt_usd_rate: (usdtRate ?? current.data?.usdt_usd_rate ?? '').trim(),
       }),
-    onSuccess: () => {
-      setMinUsd('')
-      setFeeUsd('')
-      setAlipayRate('')
-      setUsdtRate('')
+    onSuccess: async () => {
+      await current.refetch()
+      setMinUsd(undefined)
+      setFeeUsd(undefined)
+      setAlipayRate(undefined)
+      setUsdtRate(undefined)
     },
     onError: (error) => handleServerError(error),
   })
   if (!isRoot) return null
-  const ready = [minUsd, feeUsd, alipayRate, usdtRate].every((value) => value.trim() !== '')
+  if (current.isError)
+    return <ErrorState onRetry={() => void current.refetch()} />
+  const ready =
+    current.isSuccess &&
+    [
+      minUsd ?? current.data.min_usd,
+      feeUsd ?? current.data.fee_usd,
+      alipayRate ?? current.data.alipay_cny_rate,
+      usdtRate ?? current.data.usdt_usd_rate,
+    ].every((value) => !!value?.trim())
   return (
     <section className='flex flex-col gap-3'>
       <h2 className='text-sm font-medium'>{t('Withdrawal rules')}</h2>
@@ -64,22 +85,47 @@ export function WithdrawRulesPanel() {
       <div className='grid gap-3 sm:grid-cols-2'>
         <div className='flex flex-col gap-1'>
           <Label htmlFor='withdraw-min'>{t('Minimum amount')}</Label>
-          <Input id='withdraw-min' value={minUsd} inputMode='decimal' onChange={(event) => setMinUsd(event.target.value)} />
+          <Input
+            id='withdraw-min'
+            value={minUsd ?? current.data?.min_usd ?? ''}
+            inputMode='decimal'
+            onChange={(event) => setMinUsd(event.target.value)}
+          />
         </div>
         <div className='flex flex-col gap-1'>
           <Label htmlFor='withdraw-fee'>{t('Fee')}</Label>
-          <Input id='withdraw-fee' value={feeUsd} inputMode='decimal' onChange={(event) => setFeeUsd(event.target.value)} />
+          <Input
+            id='withdraw-fee'
+            value={feeUsd ?? current.data?.fee_usd ?? ''}
+            inputMode='decimal'
+            onChange={(event) => setFeeUsd(event.target.value)}
+          />
         </div>
         <div className='flex flex-col gap-1'>
           <Label htmlFor='withdraw-alipay'>{t('Alipay CNY rate')}</Label>
-          <Input id='withdraw-alipay' value={alipayRate} inputMode='decimal' onChange={(event) => setAlipayRate(event.target.value)} />
+          <Input
+            id='withdraw-alipay'
+            value={alipayRate ?? current.data?.alipay_cny_rate ?? ''}
+            inputMode='decimal'
+            onChange={(event) => setAlipayRate(event.target.value)}
+          />
         </div>
         <div className='flex flex-col gap-1'>
           <Label htmlFor='withdraw-usdt'>{t('USDT USD rate')}</Label>
-          <Input id='withdraw-usdt' value={usdtRate} inputMode='decimal' onChange={(event) => setUsdtRate(event.target.value)} />
+          <Input
+            id='withdraw-usdt'
+            value={usdtRate ?? current.data?.usdt_usd_rate ?? ''}
+            inputMode='decimal'
+            onChange={(event) => setUsdtRate(event.target.value)}
+          />
         </div>
       </div>
-      <Button type='button' variant='outline' disabled={save.isPending || !ready} onClick={() => save.mutate()}>
+      <Button
+        type='button'
+        variant='outline'
+        disabled={save.isPending || !ready}
+        onClick={() => save.mutate()}
+      >
         {t('Save')}
       </Button>
     </section>

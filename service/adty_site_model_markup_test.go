@@ -76,10 +76,10 @@ func TestPerModelMarkupBillingDisplayAndDeleteRestore(t *testing.T) {
 		ModelMarkups: map[string]decimal.Decimal{"gpt-4": decimal.RequireFromString("1.5")},
 	})
 	require.NoError(t, err)
-	require.Contains(t, saved.ModelPending, "gpt-4")
+	require.Contains(t, saved.ModelImmediate, "gpt-4")
 	applied, err := ApplyDueAdtySiteMarkups(now + 48*3600)
 	require.NoError(t, err)
-	assert.EqualValues(t, 1, applied)
+	assert.Zero(t, applied)
 
 	assert.True(t, AdtySiteMarkup(customer.Id, "default", "").Equal(decimal.RequireFromString("1.2")))
 	assert.True(t, AdtySiteMarkup(customer.Id, "default", "claude-3").Equal(decimal.RequireFromString("1.2")), "models without an override inherit global")
@@ -179,7 +179,7 @@ func TestSaveAdtySitePricingRejectsInvalidModelNameAndDoesNotTouchCostFactor(t *
 	assert.Equal(t, cost, after.CostFactor)
 }
 
-func TestPerModelMarkupIncreaseStillUsesExistingDelay(t *testing.T) {
+func TestPerModelMarkupIncreaseAppliesAtCommit(t *testing.T) {
 	db := prepareSiteDB(t)
 	_, site := openActiveSite(t, db, "model-delay")
 	customer := siteCustomer(t, db, site, "model-delay-customer")
@@ -196,8 +196,8 @@ func TestPerModelMarkupIncreaseStillUsesExistingDelay(t *testing.T) {
 		ModelMarkups: map[string]decimal.Decimal{"gpt-4": decimal.RequireFromString("1.5")},
 	})
 	require.NoError(t, err)
-	require.Contains(t, raised.ModelPending, "gpt-4")
-	assert.True(t, AdtySiteMarkup(customer.Id, "default", "gpt-4").Equal(decimal.RequireFromString("1.2")), "a higher per-model markup waits for the existing delay")
+	require.Contains(t, raised.ModelImmediate, "gpt-4")
+	assert.True(t, AdtySiteMarkup(customer.Id, "default", "gpt-4").Equal(decimal.RequireFromString("1.5")), "new requests use the saved model markup")
 	_ = first
 }
 

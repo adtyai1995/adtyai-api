@@ -20,13 +20,13 @@ func TestAdtyTicketCreateIdempotencyScopedByActorAndSite(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 
 	ownerA := referralUser(t, db, "idem-owner-a")
-	siteA := model.AdtySite{OwnerUserId: ownerA.Id, Subdomain: "idem-site-a", Status: model.AdtySiteStatusActive}
+	siteA := model.AdtySite{OwnerUserId: ownerA.Id, Subdomain: "idem-site-a", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&siteA).Error)
 	userA := referralUser(t, db, "idem-user-a")
 	require.NoError(t, db.Model(userA).Update("site_id", siteA.Id).Error)
 
 	ownerB := referralUser(t, db, "idem-owner-b")
-	siteB := model.AdtySite{OwnerUserId: ownerB.Id, Subdomain: "idem-site-b", Status: model.AdtySiteStatusActive}
+	siteB := model.AdtySite{OwnerUserId: ownerB.Id, Subdomain: "idem-site-b", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&siteB).Error)
 	userB := referralUser(t, db, "idem-user-b")
 	require.NoError(t, db.Model(userB).Update("site_id", siteB.Id).Error)
@@ -94,13 +94,14 @@ func TestAdtyTicketMessageIdempotencySeparatesActorAndVisibility(t *testing.T) {
 
 	customer := referralUser(t, db, "msg-idem-customer")
 	owner := referralUser(t, db, "msg-idem-owner")
-	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "msg-idem-site", Status: model.AdtySiteStatusActive}
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "msg-idem-site", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
 	staff := referralUser(t, db, "msg-idem-staff")
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staff.Id).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
 	require.NoError(t, db.Create(&model.AdtySiteStaff{
 		SiteId: site.Id, OwnerUserId: owner.Id, UserId: staff.Id,
-		Role: "support", Status: "enabled", Permissions: `["customers.read"]`,
+		Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`,
 	}).Error)
 
 	ticket, err := CreateAdtyTicket(customer.Id, AdtyTicketInput{
@@ -178,30 +179,33 @@ func TestAdtyTicketAssigneeMustBeActiveAuthorizedSupportInScope(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 
 	ownerA := referralUser(t, db, "assign-owner-a")
-	siteA := model.AdtySite{OwnerUserId: ownerA.Id, Subdomain: "assign-site-a", Status: model.AdtySiteStatusActive}
+	siteA := model.AdtySite{OwnerUserId: ownerA.Id, Subdomain: "assign-site-a", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&siteA).Error)
 	customerA := referralUser(t, db, "assign-customer-a")
 	require.NoError(t, db.Model(customerA).Update("site_id", siteA.Id).Error)
 	staffA := referralUser(t, db, "assign-staff-a")
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staffA.Id).Updates(map[string]any{"site_id": siteA.Id, "staff_site_id": siteA.Id}).Error)
 	require.NoError(t, db.Create(&model.AdtySiteStaff{
 		SiteId: siteA.Id, OwnerUserId: ownerA.Id, UserId: staffA.Id,
-		Role: "support", Status: "enabled", Permissions: `["customers.read"]`,
+		Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`,
 	}).Error)
 	disabledStaffA := referralUser(t, db, "assign-disabled-staff-a")
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", disabledStaffA.Id).Updates(map[string]any{"site_id": siteA.Id, "staff_site_id": siteA.Id}).Error)
 	require.NoError(t, db.Create(&model.AdtySiteStaff{
 		SiteId: siteA.Id, OwnerUserId: ownerA.Id, UserId: disabledStaffA.Id,
-		Role: "support", Status: "disabled", Permissions: `["customers.read"]`,
+		Role: "support", Status: "disabled", Permissions: `["customers.read","tickets.manage"]`,
 	}).Error)
 
 	ownerB := referralUser(t, db, "assign-owner-b")
-	siteB := model.AdtySite{OwnerUserId: ownerB.Id, Subdomain: "assign-site-b", Status: model.AdtySiteStatusActive}
+	siteB := model.AdtySite{OwnerUserId: ownerB.Id, Subdomain: "assign-site-b", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&siteB).Error)
 	customerB := referralUser(t, db, "assign-customer-b")
 	require.NoError(t, db.Model(customerB).Update("site_id", siteB.Id).Error)
 	staffB := referralUser(t, db, "assign-staff-b")
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staffB.Id).Updates(map[string]any{"site_id": siteB.Id, "staff_site_id": siteB.Id}).Error)
 	require.NoError(t, db.Create(&model.AdtySiteStaff{
 		SiteId: siteB.Id, OwnerUserId: ownerB.Id, UserId: staffB.Id,
-		Role: "support", Status: "enabled", Permissions: `["customers.read"]`,
+		Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`,
 	}).Error)
 
 	ticket, err := CreateAdtyTicket(customerA.Id, AdtyTicketInput{
@@ -312,14 +316,15 @@ func TestAdtyTicketEventsPersistNoticesAndOutboxAtomicallyAndRecover(t *testing.
 	db := prepareReferralDialectDB(t, "sqlite")
 
 	owner := referralUser(t, db, "outbox-owner")
-	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "outbox-site", Status: model.AdtySiteStatusActive}
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "outbox-site", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	customer := referralUser(t, db, "outbox-customer")
 	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
 	staff := referralUser(t, db, "outbox-staff")
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staff.Id).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
 	require.NoError(t, db.Create(&model.AdtySiteStaff{
 		SiteId: site.Id, OwnerUserId: owner.Id, UserId: staff.Id,
-		Role: "support", Status: "enabled", Permissions: `["customers.read"]`,
+		Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`,
 	}).Error)
 
 	// 1. Create produces in-site notices and Telegram outbox rows for customer and site owner.
