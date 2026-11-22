@@ -5,7 +5,7 @@
 # Local only:
 #   1. export POSTGRES_PASSWORD and REDIS_PASSWORD
 #   2. docker compose up -d
-#   3. Open http://127.0.0.1:3000
+#   3. Open http://localhost:3000
 #
 # Using MySQL instead of PostgreSQL:
 #   1. Comment out the postgres service and SQL_DSN line 15
@@ -15,13 +15,16 @@
 #
 # ⚠️  IMPORTANT: Change all default passwords before deploying to production!
 
-version: '3.4' # For compatibility with older Docker versions
+# Compose derives container, volume, and network names from this project name.
+# Upgrading an existing stack? Look up its Compose project before starting:
+#   docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' new-api
+# If it differs from adtyai-api, reuse it with -p or COMPOSE_PROJECT_NAME to keep its database volume.
+name: adtyai-api
 
 services:
   new-api:
     image: adtyai-api:local
     build: .
-    container_name: new-api
     restart: always
     command: --log-dir /app/logs
     ports:
@@ -36,7 +39,7 @@ services:
 #      - LOG_SQL_DSN=clickhouse://default:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@clickhouse:9000/new_api_logs # OPTIONAL: Use ClickHouse for logs only; also uncomment clickhouse in depends_on and the clickhouse service below
 #      - LOG_SQL_CLICKHOUSE_TTL_DAYS=0 # OPTIONAL: ClickHouse log retention days. Unset or 0 disables automatic deletion; set to e.g. 30 to keep 30 days
       - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
-      - TZ=UTC
+      - TZ=Asia/Shanghai
       - TRUSTED_PROXIES=none
       - ERROR_LOG_ENABLED=true # 是否启用错误日志记录 (Whether to enable error log recording)
       - BATCH_UPDATE_ENABLED=true  # 是否启用批量更新 (Whether to enable batch update)
@@ -60,10 +63,14 @@ services:
 #      - UMAMI_SCRIPT_URL=https://analytics.umami.is/script.js  # Umami 脚本 URL，默认为官方地址 (Umami Script URL, defaults to official URL)
 
     depends_on:
-      - redis
-      - postgres
-#      - mysql  # Uncomment if using MySQL
-#      - clickhouse  # Uncomment if using ClickHouse for LOG_SQL_DSN
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+#      mysql:
+#        condition: service_started
+#      clickhouse:
+#        condition: service_started
     networks:
       - new-api-network
     healthcheck:
@@ -74,9 +81,16 @@ services:
 
   redis:
     image: redis:7.4.4-alpine
-    container_name: redis
     restart: always
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
+    environment:
+      TZ: Asia/Shanghai
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-e", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
       - new-api-network
 
@@ -84,12 +98,18 @@ services:
     # PostgreSQL 18 uses /var/lib/postgresql/18/docker under this volume.
     # Existing 17.x data requires migration to a new volume and reconciliation first.
     image: postgres:18
-    container_name: postgres
     restart: always
+    command: ["postgres", "-c", "timezone=Asia/Shanghai", "-c", "log_timezone=Asia/Shanghai"]
     environment:
+      TZ: Asia/Shanghai
       POSTGRES_USER: root
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: new-api
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     volumes:
       - pg_data:/var/lib/postgresql
     networks:
@@ -99,11 +119,11 @@ services:
 
 #  mysql:
 #    image: mysql:8.2
-#    container_name: mysql
 #    restart: always
 #    environment:
 #      MYSQL_ROOT_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}  # ⚠️ IMPORTANT: Change this password in production!
 #      MYSQL_DATABASE: new-api
+#      TZ: Asia/Shanghai
 #    volumes:
 #      - mysql_data:/var/lib/mysql
 #    networks:
@@ -113,13 +133,13 @@ services:
 
 #  clickhouse:
 #    image: clickhouse/clickhouse-server:24.8
-#    container_name: clickhouse
 #    restart: always
 #    environment:
 #      CLICKHOUSE_DB: new_api_logs
 #      CLICKHOUSE_USER: default
 #      CLICKHOUSE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}  # ⚠️ IMPORTANT: Change this password in production!
 #      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+#      TZ: Asia/Shanghai
 #    volumes:
 #      - clickhouse_data:/var/lib/clickhouse
 #    networks:

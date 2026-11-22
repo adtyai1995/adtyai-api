@@ -22,6 +22,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestPprofListenAddrIsLoopback(t *testing.T) {
@@ -45,7 +48,6 @@ func TestRunnableEntrypointsDoNotUseFloatingUpstreamImages(t *testing.T) {
 	forbidden := []string{
 		"calciumion/new-api",
 		":latest",
-		"TZ=Asia/Shanghai",
 		"redis:7-alpine",
 		"image: redis:7\n",
 		"image: redis:7\r",
@@ -60,6 +62,10 @@ func TestRunnableEntrypointsDoNotUseFloatingUpstreamImages(t *testing.T) {
 			if strings.Contains(text, needle) {
 				t.Fatalf("%s still contains %q", name, needle)
 			}
+		}
+		// The default stack pins China time. Other entrypoints must not copy that default.
+		if name != "docker-compose.yml" && strings.Contains(text, "TZ=Asia/Shanghai") {
+			t.Fatalf("%s still contains %q", name, "TZ=Asia/Shanghai")
 		}
 	}
 	for _, name := range []string{"Dockerfile", "Dockerfile.dev"} {
@@ -96,4 +102,51 @@ func TestRootComposeDoesNotPublishExampleSecrets(t *testing.T) {
 			t.Fatalf("%s publishes port 3000 on every interface", name)
 		}
 	}
+}
+
+func TestRootComposeProjectSettings(t *testing.T) {
+	body, err := os.ReadFile("docker-compose.yml")
+	require.NoError(t, err)
+	var compose struct {
+		Name     string
+		Services map[string]struct {
+			ContainerName string `yaml:"container_name"`
+			Command       any
+			Environment   any
+			Networks      []string
+		}
+		Networks map[string]struct {
+			Name     string
+			Driver   string
+			External bool
+		}
+		Volumes map[string]struct{ Name string }
+	}
+	require.NoError(t, yaml.Unmarshal(body, &compose))
+	require.Equal(t, "adtyai-api", compose.Name)
+	require.Len(t, compose.Networks, 1)
+	network := compose.Networks["new-api-network"]
+	require.Equal(t, "bridge", network.Driver)
+	require.Empty(t, network.Name)
+	require.False(t, network.External)
+	require.Contains(t, compose.Volumes, "pg_data")
+	require.Empty(t, compose.Volumes["pg_data"].Name)
+
+	for _, name := range []string{"new-api", "postgres", "redis"} {
+		service := compose.Services[name]
+		require.Empty(t, service.ContainerName, name)
+		require.Equal(t, []string{"new-api-network"}, service.Networks, name)
+		switch env := service.Environment.(type) {
+		case map[string]any:
+			require.Equal(t, "Asia/Shanghai", env["TZ"], name)
+		case []any:
+			require.Contains(t, env, "TZ=Asia/Shanghai", name)
+		default:
+			t.Fatalf("docker-compose.yml: missing environment for %s", name)
+		}
+	}
+	postgres := compose.Services["postgres"]
+	require.IsType(t, []any{}, postgres.Command)
+	require.Contains(t, postgres.Command, "timezone=Asia/Shanghai")
+	require.Contains(t, postgres.Command, "log_timezone=Asia/Shanghai")
 }

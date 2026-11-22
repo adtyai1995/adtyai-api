@@ -171,7 +171,9 @@ The root compose file is not the production deployment. From the repository root
 docker compose up -d --build
 ```
 
-Open `http://127.0.0.1:3000`. That compose file builds `adtyai-api:local` and publishes port 3000 on the local interface only.
+Open `http://localhost:3000`. That compose file builds `adtyai-api:local` and publishes port 3000 on the local interface only.
+
+The default Compose project name is `adtyai-api`. If an existing stack uses a different project name, use `docker compose -p <previous-project>` when upgrading to retain its PostgreSQL volume. Run `docker compose ls --all` to find the previous project name.
 
 ## Documentation
 

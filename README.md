@@ -171,7 +171,9 @@ ADTY_IMAGE=ghcr.io/adtyai1995/adtyai-api:sha-1a2b3c4
 docker compose up -d --build
 ```
 
-然后打开 `http://127.0.0.1:3000`。这个编排构建 `adtyai-api:local`，只监听本机 3000 端口。
+然后打开 `http://localhost:3000`。这个编排构建 `adtyai-api:local`，只监听本机 3000 端口。
+
+默认 Compose 项目名为 `adtyai-api`。如果旧实例使用其他项目名，升级时用 `docker compose -p <原项目名>` 继续使用现有 PostgreSQL 数据卷。原项目名可以用 `docker compose ls --all` 查看。
 
 ## 文档
 
