@@ -51,6 +51,10 @@ var skipInventoryDirNames = map[string]bool{
 
 // EnumerateUnits walks the product repository and emits current review units.
 func EnumerateUnits(root string) ([]Unit, error) {
+	return enumerateUnits(root, nil)
+}
+
+func enumerateUnits(root string, scope *gitPlanScope) ([]Unit, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -83,14 +87,20 @@ func EnumerateUnits(root string) ([]Unit, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if scope != nil && rel != "." && !scope.paths[rel] {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			name := d.Name()
-			if rel != "." && (skipInventoryDirNames[name] ||
+			if scope == nil && rel != "." && (skipInventoryDirNames[name] ||
 				(strings.HasPrefix(name, ".") && rel != ".github" && rel != ".agents")) {
 				return fs.SkipDir
 			}
 			if isFeatureDir(rel) {
-				unit, err := featureDirUnit(root, rel)
+				unit, err := featureDirUnit(root, rel, scope)
 				if err != nil {
 					return err
 				}
@@ -165,6 +175,15 @@ func EnumerateUnits(root string) ([]Unit, error) {
 			SourceHash: fmt.Sprintf("sha256:%x", h.Sum(nil)), State: "pending"}); err != nil {
 			return nil, err
 		}
+	}
+	if scope != nil {
+		for _, unit := range scope.additional {
+			if err := add(unit); err != nil {
+				return nil, err
+			}
+		}
+		sort.Slice(units, func(i, j int) bool { return units[i].UnitID < units[j].UnitID })
+		return units, nil
 	}
 	features, err := OfficialFeatures()
 	if err != nil {
@@ -338,8 +357,8 @@ func isMigrationPath(rel string) bool {
 	return strings.Contains(base, "migrate") || strings.Contains(base, "migration")
 }
 
-func featureDirUnit(root, rel string) (Unit, error) {
-	sum, err := hashTree(filepath.Join(root, filepath.FromSlash(rel)))
+func featureDirUnit(root, rel string, scope *gitPlanScope) (Unit, error) {
+	sum, err := hashTree(filepath.Join(root, filepath.FromSlash(rel)), rel, scope)
 	if err != nil {
 		return Unit{}, err
 	}
@@ -368,21 +387,30 @@ func hashFile(path string) (string, error) {
 	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
 }
 
-func hashTree(dir string) (string, error) {
+func hashTree(dir, featurePath string, scope *gitPlanScope) (string, error) {
 	h := sha256.New()
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.IsDir() {
-			if skipInventoryDirNames[d.Name()] {
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		if scope != nil && !scope.paths[filepath.ToSlash(filepath.Join(featurePath, rel))] {
+			if d.IsDir() {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
+		if d.IsDir() {
+			if scope == nil && skipInventoryDirNames[d.Name()] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("inventory requires explicit review of symlink scope: %s", path)
 		}
 		sum, err := hashFile(path)
 		if err != nil {

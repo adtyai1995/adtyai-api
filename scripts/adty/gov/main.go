@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -27,15 +28,25 @@ func main() {
 func run(cmd string, args []string) error {
 	switch cmd {
 	case "enumerate-units":
-		root, output := flagRootOutput(args)
-		if root == "" {
-			wd, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-			root = wd
+		flags := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		root := flags.String("root", ".", "source worktree root")
+		plan := flags.String("plan", "", "current unified plan")
+		var output string
+		flags.StringVar(&output, "o", "", "output JSONL")
+		flags.StringVar(&output, "output", "", "output JSONL")
+		if err := flags.Parse(args); err != nil {
+			return err
 		}
-		units, err := adtygov.EnumerateUnits(root)
+		if flags.NArg() != 0 {
+			return fmt.Errorf("unexpected enumerate-units arguments: %v", flags.Args())
+		}
+		var units []adtygov.Unit
+		var err error
+		if *plan != "" {
+			units, err = adtygov.EnumeratePlanUnits(*root, *plan)
+		} else {
+			units, err = adtygov.EnumerateUnits(*root)
+		}
 		if err != nil {
 			return err
 		}
@@ -140,7 +151,7 @@ ADTY-24-06 is landed as an inventory and is not claimed closed.
 Does not claim ADTY-24-06, 24-09, or 24-10 closed, and does not run Phase D or smoke/scale.
 
 Commands:
-  enumerate-units [--root DIR] [-o FILE]   ADTY-24-01 current-tree units.jsonl
+  enumerate-units [--root DIR] [--plan PLAN] [-o FILE]   With --plan: authoritative Git worktree and current G/A/H definitions. Without: legacy inventory.
   map-rules [-o FILE]                      ADTY-24-02 official G/A rule mappings
   review-checks                            ADTY-24-03 official checks.yaml
   review-record [--run-id ID] [-o FILE]    ADTY-24-03 recorded, not-executed run

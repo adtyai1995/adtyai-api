@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,11 +90,7 @@ func connectAdtyPostgresAcceptanceInstance(t *testing.T, dsn string) *gorm.DB {
 	require.NotEmpty(t, current)
 	require.False(t, adtyThrowawayPostgresNamePattern.MatchString(current), "admin DSN must not already point at a throwaway database")
 
-	var versionNum, version string
-	require.NoError(t, admin.Raw("SHOW server_version_num").Scan(&versionNum).Error)
-	require.NoError(t, admin.Raw("SHOW server_version").Scan(&version).Error)
-	require.NotEmpty(t, versionNum, "live server_version_num must be recorded as evidence")
-	t.Logf("ADTY-23-02 evidence only (not a pass/fail condition): server_version_num=%s server_version=%s driver=%s", versionNum, version, admin.Dialector.Name())
+	pgtest.RecordServerVersion(t, admin)
 	return admin
 }
 

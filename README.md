@@ -24,7 +24,7 @@
 
 ADTY AI 把多家模型服务收成一套调用接口，并用同一套控制台管理谁能调用、按什么价格计费、钱记在哪。客户拿到自己的 API Key，用兼容 OpenAI、Claude、Gemini 的地址调用；平台按实际用量从钱包扣费。Root 可以开分站，分站有固定站长、自己的品牌和售价。团队可以共用一笔余额。员工只能做站长明确授过的事。
 
-正式交付是 Web 控制台和 API 服务。正式业务库是 PostgreSQL，缓存是 Redis。当前持续集成和生产编排示例使用 PostgreSQL 18。
+正式交付是 Web 控制台和 API 服务。正式业务库和单设的日志库都使用 PostgreSQL 18.x，缓存是 Redis。持续集成和生产编排也使用 PostgreSQL 18。
 
 ## 仓库、镜像和创作者
 
@@ -38,6 +38,8 @@ ADTY AI 把多家模型服务收成一套调用接口，并用同一套控制台
 镜像由 [`.github/workflows/adty-ghcr.yml`](./.github/workflows/adty-ghcr.yml) 构建，推送到 `ghcr.io/<仓库所有者>/<仓库名>`。本产品的正式仓库是 `adtyai1995/adtyai-api`，所以正式镜像名是 `ghcr.io/adtyai1995/adtyai-api`。
 
 生产只用提交摘要标签，例如 `ghcr.io/adtyai1995/adtyai-api:sha-1a2b3c4`。不要把浮动标签当作生产版本。合并分支的检查镜像使用 `ghcr.io/adtyai1995/adtyai-api:merge-<标签>`。本地编排构建的是 `adtyai-api:local`，那不是生产镜像。
+
+前后端共用 GHCR 构建时生成的 `VERSION`。`main` 使用 `main-<短 SHA>`，标签构建使用标签名，其他分支使用 `<分支名>-<短 SHA>`，拉取请求使用 `pr-<编号>-<短 SHA>`。
 
 本产品不使用其他代码托管站或旧容器仓库作为镜像源。插件市场如果单独配置了插件包地址，那个地址只提供插件，不是本产品仓库。
 
@@ -173,7 +175,9 @@ docker compose up -d --build
 
 然后打开 `http://localhost:3000`。这个编排构建 `adtyai-api:local`，只监听本机 3000 端口。
 
-默认 Compose 项目名为 `adtyai-api`。如果旧实例使用其他项目名，升级时用 `docker compose -p <原项目名>` 继续使用现有 PostgreSQL 数据卷。原项目名可以用 `docker compose ls --all` 查看。
+默认 Compose 项目名为 `adtyai-api`，容器名带项目名前缀（如 `adtyai-api-new-api-1`），各项目有独立的桥接网络（默认是 `adtyai-api_new-api-network`）。API、Redis 和 PostgreSQL 默认使用中国标准时间 `Asia/Shanghai`。
+
+如果旧实例使用其他项目名，升级时用 `docker compose -p <原项目名>` 继续使用该项目的 PostgreSQL 数据卷。原项目名可以用 `docker compose ls --all` 查看。
 
 ## 文档
 

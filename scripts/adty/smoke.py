@@ -7,6 +7,8 @@ ADTY_SMOKE_DATABASE（adty_smoke_ 或 adty_browser_ 开头的独立库），
 ADTY_SMOKE_REDIS_PORT，ADTY_SMOKE_ROOT_USERNAME，ADTY_SMOKE_ROOT_PASSWORD，
 ADTY_SMOKE_SOURCE_COMMIT，ADTY_SMOKE_SOURCE_SNAPSHOT_ID，ADTY_SMOKE_BUILD_ID。
 ADTY_SMOKE_ARTIFACT_DIR 指向仓库外且尚不存在的本轮目录。
+ADTY_SMOKE_SERVICE_MANIFEST 指向隔离服务启动记录，包含相同源码/构建身份、
+base_url、pid、executable_sha256、frontend_build_sha256。
 分站参数、注册方式和 Root 账号由隔离环境通过现有正式入口预先准备。
 脚本不改安全开关，不启用支付通道，不调用外部网关，不清理失败现场。
 """
@@ -20,6 +22,7 @@ from pathlib import Path
 import re
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -62,6 +65,33 @@ def local_origin(value):
             or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
         raise SmokeFailure("隔离 API 必须是无凭据的本机 HTTP(S) Origin")
     return value.rstrip("/")
+
+
+def owns_listener(process, base):
+    address = urllib.parse.urlsplit(base)
+    port = address.port or (443 if address.scheme == "https" else 80)
+    addresses = set()
+    for family, _, _, _, endpoint in socket.getaddrinfo(address.hostname, port, type=socket.SOCK_STREAM):
+        addresses.add(socket.inet_pton(family, endpoint[0]))
+    sockets = set()
+    for descriptor in (process / "fd").iterdir():
+        try:
+            target = os.readlink(descriptor)
+        except FileNotFoundError:
+            continue
+        if match := re.fullmatch(r"socket:\[(\d+)\]", target):
+            sockets.add(match[1])
+    for table in ("tcp", "tcp6"):
+        for line in (process / "net" / table).read_text().splitlines()[1:]:
+            cells = line.split()
+            if cells[3] != "0A" or cells[9] not in sockets:
+                continue
+            host_hex, port_hex = cells[1].split(":")
+            host = b"".join(int(host_hex[i:i + 8], 16).to_bytes(4, sys.byteorder)
+                            for i in range(0, len(host_hex), 8))
+            if int(port_hex, 16) == port and host in addresses:
+                return True
+    return False
 
 
 def run_steps(steps, directory):
@@ -151,6 +181,54 @@ class Runtime:
             result = subprocess.run(command, cwd=self.repo / module, stdout=output, stderr=subprocess.STDOUT)
         return {"command": command, "module": module, "exit_code": result.returncode,
                 "log": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    def lint(self):
+        report = self.artifacts / "S-04-oxlint.json"
+        result = self.command("S-04", ["node", "scripts/adty/ratchet.mjs", "lint", "--report", str(report.resolve())])
+        if report.is_file():
+            result.update(report=report.name, report_sha256=hashlib.sha256(report.read_bytes()).hexdigest())
+        elif result["exit_code"] == 0:
+            raise SmokeFailure("S-04 缺少本次 oxlint 原始诊断")
+        return result
+
+    def frontend_build(self):
+        result = self.command("S-03", ["bun", "run", "build"], "web")
+        if result["exit_code"]:
+            return result
+        dist = self.repo / "web" / "dist"
+        index = dist / "index.html"
+        if not index.is_file() or not index.stat().st_size:
+            raise SmokeFailure("S-03 缺少实际前端入口")
+        digest = hashlib.sha256()
+        for path in sorted(p for p in dist.rglob("*") if p.is_file()):
+            digest.update(path.relative_to(dist).as_posix().encode() + b"\0")
+            with path.open("rb") as source:
+                digest.update(hashlib.file_digest(source, "sha256").digest())
+        self.frontend_sha256 = digest.hexdigest()
+        return {**result, "frontend_build_sha256": self.frontend_sha256}
+
+    def candidate_health(self, identity):
+        manifest_path = os.environ.get("ADTY_SMOKE_SERVICE_MANIFEST")
+        if not manifest_path:
+            raise SmokeFailure("缺少隔离服务启动记录 ADTY_SMOKE_SERVICE_MANIFEST")
+        manifest = json.loads(Path(manifest_path).read_bytes())
+        base = local_origin(self.base)
+        if (any(manifest.get(k) != v for k, v in identity.items()) or manifest.get("base_url") != base
+                or manifest.get("frontend_build_sha256") != self.frontend_sha256):
+            raise SmokeFailure("服务启动记录与当前候选或前端构建不一致")
+        pid = manifest.get("pid")
+        if type(pid) is not int or pid <= 0:
+            raise SmokeFailure("隔离服务 PID 无效")
+        process = Path("/proc") / str(pid)
+        with (process / "exe").open("rb") as executable:
+            actual = hashlib.file_digest(executable, "sha256").hexdigest()
+        if actual != manifest.get("executable_sha256"):
+            raise SmokeFailure("隔离进程可执行文件与启动记录不一致")
+        if not owns_listener(process, base):
+            raise SmokeFailure("隔离服务进程未监听记录中的本机地址和端口")
+        self.health()
+        return {**identity, "pid": pid, "base_url": base, "executable_sha256": actual,
+                "frontend_build_sha256": self.frontend_sha256}
 
     def postgres_ready(self):
         if not re.fullmatch(r"adty_(smoke|browser)_[a-z0-9_]+", self.database) or not self.dsn:
@@ -291,7 +369,7 @@ def main():
     parser.add_argument("--list", action="store_true", help="仅列出 S-01—S-10，不执行，不记通过")
     args = parser.parse_args()
     if args.list:
-        print("S-01 go build ./...\nS-02 go vet ./...\nS-03 bun run build\nS-04 bun run lint\nS-05 PostgreSQL 18 SELECT 1\nS-06 Redis PING\nS-07 GET /api/health\nS-08 注册/登录/刷新/登出\nS-09 Root 创建分站并核对数据库\nS-10 保存易支付通道并核对数据库")
+        print("S-03 bun run build\nS-01 go build ./...\nS-02 go vet ./...\nS-04 node scripts/adty/ratchet.mjs lint\nS-05 PostgreSQL 18 SELECT 1\nS-06 Redis PING\nS-07 GET /api/health\nS-08 注册/登录/刷新/登出\nS-09 Root 创建分站并核对数据库\nS-10 保存易支付通道并核对数据库")
         return 0
     repo = Path(__file__).resolve().parents[2]
     if repo.is_relative_to(Path("/mnt")) or os.name != "posix":
@@ -308,13 +386,13 @@ def main():
     directory.mkdir(parents=True)
     runtime = Runtime(repo, directory)
     steps = [
+        ("S-03", runtime.frontend_build),
         ("S-01", lambda: runtime.command("S-01", ["go", "build", "./..."])),
         ("S-02", lambda: runtime.command("S-02", ["go", "vet", "./..."])),
-        ("S-03", lambda: runtime.command("S-03", ["bun", "run", "build"], "web")),
-        ("S-04", lambda: runtime.command("S-04", ["bun", "run", "lint"], "web")),
+        ("S-04", runtime.lint),
         ("S-05", lambda: runtime.timed(runtime.postgres_ready, 10)),
         ("S-06", lambda: runtime.timed(runtime.redis_ready, 5)),
-        ("S-07", lambda: runtime.timed(runtime.health, 10)),
+        ("S-07", lambda: runtime.timed(lambda: runtime.candidate_health(identity), 10)),
         ("S-08", lambda: runtime.timed(runtime.auth_lifecycle, 30)),
         ("S-09", lambda: runtime.timed(runtime.create_site, 15)),
         ("S-10", lambda: runtime.timed(runtime.save_epay, 10)),

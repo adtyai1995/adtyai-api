@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -25,9 +24,7 @@ import (
 // 这些用例验的不是「今天坏了」，而是「把未声明的约定换成数据库自己的保证」。
 
 func TestConsumeFundBatchesTakesExactlyTheRemainingLot(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&AdtyFundBatch{}))
+	db := openAdtyFundBatchAtomicPG(t)
 	require.NoError(t, db.Create(&AdtyFundBatch{
 		UserId: 2601, Kind: "principal", Source: "exact", Original: 100, Remaining: 100,
 	}).Error)
@@ -41,7 +38,7 @@ func TestConsumeFundBatchesTakesExactlyTheRemainingLot(t *testing.T) {
 	require.EqualValues(t, 0, lot.Remaining)
 
 	// 再扣 1：批次已空、余额也是 0，必须报 shortfall，不能扣成 -1。
-	err = db.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		return ConsumeAdtyFundBatchesTx(tx, 2601, 1, 0)
 	})
 	require.ErrorIs(t, err, ErrAdtyFundBatchShortfall)
@@ -50,9 +47,7 @@ func TestConsumeFundBatchesTakesExactlyTheRemainingLot(t *testing.T) {
 }
 
 func TestReclaimFundBatchesTakesExactlyTheRemainingLot(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&AdtyFundBatch{}))
+	db := openAdtyFundBatchAtomicPG(t)
 	require.NoError(t, db.Create([]AdtyFundBatch{
 		{UserId: 2602, Kind: "principal", Source: "order-exact", Original: 80, Remaining: 80},
 		{UserId: 2602, Kind: "bonus", Source: "order-exact", Original: 20, Remaining: 20},

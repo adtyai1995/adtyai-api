@@ -12,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -165,10 +166,7 @@ func TestAdtyPostgreSQLCloseMigrationMatrixAcceptance(t *testing.T) {
 	require.NotEmpty(t, current)
 	require.False(t, model.OfficialThrowawayPostgresName(current), "admin DSN must not already point at a throwaway database")
 
-	versionNum, version, err := model.OfficialPostgresServerVersion(admin)
-	require.NoError(t, err)
-	require.NotEmpty(t, versionNum, "live server_version_num must be recorded as evidence")
-	t.Logf("A.16.7 evidence only (not a pass/fail condition): server_version_num=%s server_version=%s driver=%s", versionNum, version, admin.Dialector.Name())
+	pgtest.RecordServerVersion(t, admin)
 	t.Cleanup(func() {
 		require.NoError(t, model.CloseOfficialGorm(admin))
 	})

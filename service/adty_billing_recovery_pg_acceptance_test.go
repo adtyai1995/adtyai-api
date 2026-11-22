@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/internal/pgtest"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -77,10 +78,7 @@ func TestAdtyPostgreSQLBillingRecoveryAcceptance(t *testing.T) {
 	require.False(t, model.OfficialThrowawayPostgresName(current), "admin DSN must not already point at a throwaway database")
 	require.NotEqual(t, "", current)
 
-	versionNum, version, err := model.OfficialPostgresServerVersion(admin)
-	require.NoError(t, err)
-	require.NotEmpty(t, versionNum, "live server_version_num must be recorded as evidence")
-	t.Logf("ADTY-23-10 evidence only (not a pass/fail condition): server_version_num=%s server_version=%s driver=%s", versionNum, version, admin.Dialector.Name())
+	pgtest.RecordServerVersion(t, admin)
 	t.Cleanup(func() {
 		require.NoError(t, model.CloseOfficialGorm(admin))
 	})

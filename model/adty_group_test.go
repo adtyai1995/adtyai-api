@@ -115,17 +115,17 @@ func TestCIWorkflowRunsPostgreSQL(t *testing.T) {
 		for _, name := range fixture.jobs {
 			job, ok := workflow.Jobs[name]
 			require.True(t, ok, "%s/%s", fixture.file, name)
-			require.Contains(t, []string{"postgres:17", "postgres:18"}, job.Services["postgres"].Image, "%s/%s", fixture.file, name)
+			require.Equal(t, "postgres:18", job.Services["postgres"].Image, "%s/%s", fixture.file, name)
 			require.NotEmpty(t, job.Env["ADTY_TEST_PG_DSN"], "%s/%s", fixture.file, name)
 		}
 	}
 	for _, fixture := range []struct {
-		file   string
-		images []string
+		file  string
+		image string
 	}{
-		{"docker-compose.yml", []string{"postgres:17", "postgres:18"}},
-		{"docker-compose.dev.yml", []string{"postgres:17-alpine", "postgres:18-alpine"}},
-		{"deploy/adty/docker-compose.yml", []string{"postgres:17", "postgres:18"}},
+		{"docker-compose.yml", "postgres:18"},
+		{"docker-compose.dev.yml", "postgres:18-alpine"},
+		{"deploy/adty/docker-compose.yml", "postgres:18"},
 	} {
 		data, err := os.ReadFile("../" + fixture.file)
 		require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestCIWorkflowRunsPostgreSQL(t *testing.T) {
 			Services map[string]struct{ Image string }
 		}
 		require.NoError(t, yaml.Unmarshal(data, &compose))
-		require.Contains(t, fixture.images, compose.Services["postgres"].Image, fixture.file)
+		require.Equal(t, fixture.image, compose.Services["postgres"].Image, fixture.file)
 	}
 }
 

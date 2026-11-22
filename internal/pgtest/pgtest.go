@@ -42,7 +42,7 @@ func RecordServerVersion(t testing.TB, db *gorm.DB) string {
 		t.Fatalf("this suite targets PostgreSQL %d (its expectations are written for %d.x); live server is %s (%s)",
 			RequiredPostgresMajor, RequiredPostgresMajor, versionNum, version)
 	}
-	t.Logf("evidence only (not a pass/fail condition): server_version_num=%s server_version=%s major=%d",
+	t.Logf("PostgreSQL 18 required, patch level is evidence only: server_version_num=%s server_version=%s major=%d",
 		versionNum, version, num/10000)
 	return versionNum
 }

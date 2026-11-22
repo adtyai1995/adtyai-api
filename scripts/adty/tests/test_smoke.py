@@ -111,6 +111,67 @@ class SmokeContractTests(unittest.TestCase):
         self.assertIn("adty_pg_version / 10000", script)
         self.assertIn("-ne 18", script)
 
+    def test_lint_uses_root_ratchet_and_keeps_diagnostics(self):
+        from unittest.mock import patch
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runtime = self.smoke.Runtime(root, root)
+            raw = b'{"diagnostics": [], "number_of_files": 12}'
+
+            def run(case_id, command):
+                self.assertEqual("S-04", case_id)
+                self.assertEqual(["node", "scripts/adty/ratchet.mjs", "lint", "--report"], command[:-1])
+                Path(command[-1]).write_bytes(raw)
+                return {"exit_code": 0}
+
+            with patch.object(runtime, "command", side_effect=run):
+                result = runtime.lint()
+            self.assertEqual(raw, (root / result["report"]).read_bytes())
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), result["report_sha256"])
+
+    def test_frontend_build_requires_real_dist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = self.smoke.Runtime(root, root)
+            runtime.command = lambda *args: {"exit_code": 0}
+            with self.assertRaises(self.smoke.SmokeFailure):
+                runtime.frontend_build()
+            entry = root / "web" / "dist" / "index.html"
+            entry.parent.mkdir(parents=True)
+            entry.write_text("<main>fixture</main>", encoding="utf-8")
+            first = runtime.frontend_build()["frontend_build_sha256"]
+            entry.write_text("<main>updated</main>", encoding="utf-8")
+            self.assertNotEqual(first, runtime.frontend_build()["frontend_build_sha256"])
+
+    def test_health_rejects_service_from_different_frontend_build(self):
+        import json
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = self.smoke.Runtime(root, root)
+            runtime.base = "http://127.0.0.1:3000"
+            runtime.frontend_sha256 = "current"
+            manifest = root / "service.json"
+            manifest.write_text(json.dumps({"build_id": "fixture", "base_url": runtime.base,
+                                            "frontend_build_sha256": "previous"}), encoding="utf-8")
+            with patch.dict("os.environ", {"ADTY_SMOKE_SERVICE_MANIFEST": str(manifest)}):
+                with self.assertRaises(self.smoke.SmokeFailure):
+                    runtime.candidate_health({"build_id": "fixture"})
+
+    def test_listener_belongs_to_the_declared_process(self):
+        import os
+        import socket
+        if not Path("/proc/self/net/tcp").is_file():
+            self.skipTest("requires Linux procfs")
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            base = "http://127.0.0.1:" + str(listener.getsockname()[1])
+            process = Path("/proc") / str(os.getpid())
+            self.assertFalse(self.smoke.owns_listener(process, base))
+            listener.listen()
+            self.assertTrue(self.smoke.owns_listener(process, base))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

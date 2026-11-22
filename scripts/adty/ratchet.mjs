@@ -15,7 +15,7 @@ const webDir = path.join(repoRoot, 'web')
 const lintListPath = path.join(scriptDir, 'baseline-lint.txt')
 const copyrightListPath = path.join(scriptDir, 'baseline-copyright.txt')
 const updateCommand = 'node scripts/adty/ratchet.mjs --update'
-const usage = '用法：node scripts/adty/ratchet.mjs lint | copyright | --update'
+const usage = '用法：node scripts/adty/ratchet.mjs lint [--report <path>] | copyright | --update'
 
 function fail(message) {
   console.error(`ratchet.mjs: ${message}`)
@@ -60,8 +60,11 @@ function runWebScript(args) {
 }
 
 // lint 的 error 按文件计数，warning 不算
-function lintErrors() {
+function lintErrors(reportPath) {
   const run = runWebScript(['lint', '--format=json'])
+  if (reportPath) {
+    writeFileSync(reportPath, run.stdout)
+  }
   let report
   try {
     report = JSON.parse(run.stdout)
@@ -179,9 +182,9 @@ function errorOffset(d) {
   return d.labels?.[0]?.span?.offset ?? 0
 }
 
-function checkLint() {
+function checkLint(reportPath) {
   const allowed = readList(lintListPath, parseLintLine)
-  const { counts, errors, warnings, checkedFiles } = lintErrors()
+  const { counts, errors, warnings, checkedFiles } = lintErrors(reportPath)
   console.log(
     `lint：oxlint 检查了 ${checkedFiles} 个文件，${counts.size} 个文件有 error，共 ${errors.length} 个，` +
       `另有 ${warnings} 个 warning（不算）；清单记了 ${allowed.size} 个文件、${sum(allowed.values())} 个 error`
@@ -265,8 +268,11 @@ function update() {
 
 const commands = { lint: checkLint, copyright: checkCopyright, '--update': update }
 const args = process.argv.slice(2)
-if (args.length !== 1 || !Object.hasOwn(commands, args[0])) {
+if (args.length === 3 && args[0] === 'lint' && args[1] === '--report' && args[2]) {
+  checkLint(args[2])
+} else if (args.length === 1 && Object.hasOwn(commands, args[0])) {
+  commands[args[0]]()
+} else {
   console.error(usage)
   process.exit(2)
 }
-commands[args[0]]()
