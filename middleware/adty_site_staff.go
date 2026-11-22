@@ -43,7 +43,7 @@ func adtyStaffDashboardAllowed(c *gin.Context, user *model.UserBase, identity se
 		"GET /api/adty/staff/customers/:id/orders", "GET /api/adty/staff/customers/:id/orders/:trade_no",
 		"POST /api/adty/staff/customers/:id/password-reset", "POST /api/adty/staff/customers/:id/disable", "POST /api/adty/staff/balance-requests",
 		"GET /api/user/self", "GET /api/verify/methods", "POST /api/verify", "GET /api/user/sessions", "DELETE /api/user/sessions/:sid", "POST /api/user/sessions/revoke-others",
-		"GET /api/adty/notifications", "POST /api/adty/notifications/read":
+		"GET /api/adty/notifications", "POST /api/adty/notifications/read", "GET /api/adty/notifications/announcements/:key", "POST /api/adty/notifications/hide":
 		allowed = true
 	}
 	if !allowed {

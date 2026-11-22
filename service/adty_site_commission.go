@@ -440,6 +440,11 @@ func freezeSiteCommissionMarginTx(tx *gorm.DB, siteID int, need decimal.Decimal,
 	if !need.IsPositive() {
 		return decimal.Zero, nil
 	}
+	if err := ReviewAdtyPooledSiteFinance(tx, siteID); errors.Is(err, ErrAdtyOwnerWalletReview) {
+		return decimal.Zero, nil
+	} else if err != nil {
+		return decimal.Zero, err
+	}
 	var authorization model.Option
 	lookup := tx.Where("key = ?", commissionMarginOptionKey(siteID)).Limit(1).Find(&authorization)
 	if lookup.Error != nil || strings.TrimSpace(authorization.Value) != "1" {
@@ -472,6 +477,30 @@ func freezeSiteCommissionSourceTx(tx *gorm.DB, siteID int, kind string, need dec
 		return decimal.Zero, err
 	}
 	take := wallet.Balance.Sub(wallet.FrozenUSD)
+	if err := ReviewAdtyPooledSiteFinance(tx, siteID); errors.Is(err, ErrAdtyOwnerWalletReview) {
+		var order model.AdtyTopupOrder
+		result := tx.Where("site_id = ? AND trade_no = ?", siteID, tradeNo).Limit(1).Find(&order)
+		if result.Error != nil {
+			return decimal.Zero, result.Error
+		}
+		if result.RowsAffected == 0 {
+			return decimal.Zero, nil
+		}
+		owner, err := model.ResolveAdtySiteFinancialOwnerTx(tx, siteID, order.SiteOwnerUserId)
+		if err != nil {
+			return decimal.Zero, err
+		}
+		available, _, err := ownerEarningsWalletTx(tx, siteID, owner, &wallet)
+		if errors.Is(err, ErrAdtyOwnerWalletReview) {
+			return decimal.Zero, nil
+		}
+		if err != nil {
+			return decimal.Zero, err
+		}
+		take = decimal.Min(take, available)
+	} else if err != nil {
+		return decimal.Zero, err
+	}
 	if take.GreaterThan(need) {
 		take = need
 	}

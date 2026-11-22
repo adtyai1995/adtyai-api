@@ -102,6 +102,9 @@ function Payee(props: { row: SiteInviteCommissionWithdrawal }) {
 }
 
 function ReviewRow(props: {
+  closed?: boolean
+  canReview?: boolean
+  canPay?: boolean
   row: SiteInviteCommissionWithdrawal
   onDone: () => void
 }) {
@@ -112,7 +115,15 @@ function ReviewRow(props: {
   const [proof, setProof] = useState('')
   const review = useMutation({
     mutationFn: (approve: boolean) =>
-      reviewOwnerCommissionWithdrawal(row.id, approve, reason),
+      props.closed
+        ? reviewOwnerCommissionWithdrawal(
+            row.id,
+            approve,
+            reason,
+            true,
+            row.status === 'approved'
+          )
+        : reviewOwnerCommissionWithdrawal(row.id, approve, reason),
     onSuccess: () => {
       toast.success(t('Saved successfully'))
       setReason('')
@@ -122,7 +133,14 @@ function ReviewRow(props: {
   })
   const pay = useMutation({
     mutationFn: () =>
-      markOwnerCommissionWithdrawalPaid(row.id, txId.trim(), proof.trim()),
+      props.closed
+        ? markOwnerCommissionWithdrawalPaid(
+            row.id,
+            txId.trim(),
+            proof.trim(),
+            true
+          )
+        : markOwnerCommissionWithdrawalPaid(row.id, txId.trim(), proof.trim()),
     onSuccess: () => {
       toast.success(t('Marked as paid'))
       setTxId('')
@@ -134,6 +152,11 @@ function ReviewRow(props: {
   return (
     <li className='flex flex-col gap-2 text-sm'>
       <p className='tabular-nums'>
+        {props.closed && (
+          <>
+            {t('Site')} #{row.site_id} ·{' '}
+          </>
+        )}
         #{row.id} · {row.username || row.user_id} · {row.amount_usd} USD ·{' '}
         {t(methodLabel(row.method))} · {t(statusLabel(row.status))}
         {row.payout_amount !== '' &&
@@ -163,41 +186,43 @@ function ReviewRow(props: {
           )}
         </p>
       )}
-      {row.status === 'pending' && row.method !== 'balance' && (
-        <div className='flex flex-col gap-2'>
-          <Label htmlFor={`commission-reject-${row.id}`}>{t('Reason')}</Label>
-          <Input
-            id={`commission-reject-${row.id}`}
-            value={reason}
-            autoComplete='off'
-            onChange={(event) => setReason(event.target.value)}
-          />
-          <div className='flex flex-wrap gap-2'>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={review.isPending}
-              onClick={() => review.mutate(true)}
-            >
-              {t('Approve')}
-            </Button>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={review.isPending}
-              onClick={() => review.mutate(false)}
-            >
-              {t('Reject')}
-            </Button>
+      {props.canReview !== false &&
+        row.status === 'pending' &&
+        row.method !== 'balance' && (
+          <div className='flex flex-col gap-2'>
+            <Label htmlFor={`commission-reject-${row.id}`}>{t('Reason')}</Label>
+            <Input
+              id={`commission-reject-${row.id}`}
+              value={reason}
+              autoComplete='off'
+              onChange={(event) => setReason(event.target.value)}
+            />
+            <div className='flex flex-wrap gap-2'>
+              <Button
+                type='button'
+                variant='outline'
+                disabled={review.isPending}
+                onClick={() => review.mutate(true)}
+              >
+                {t('Approve')}
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                disabled={review.isPending}
+                onClick={() => review.mutate(false)}
+              >
+                {t('Reject')}
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
       {row.status === 'approved' && (
         <form
           className='flex flex-col gap-2'
           onSubmit={(event) => {
             event.preventDefault()
-            pay.mutate()
+            if (props.canPay !== false) pay.mutate()
           }}
         >
           {(row.method === 'usdt' || row.method === 'alipay') && (
@@ -242,14 +267,16 @@ function ReviewRow(props: {
             <Button
               type='submit'
               variant='outline'
-              disabled={pay.isPending || !txId.trim()}
+              disabled={props.canPay === false || pay.isPending || !txId.trim()}
             >
               {t('Mark as paid')}
             </Button>
             <Button
               type='button'
               variant='outline'
-              disabled={review.isPending || !reason.trim()}
+              disabled={
+                props.canPay === false || review.isPending || !reason.trim()
+              }
               onClick={() => review.mutate(false)}
             >
               {t('Confirm failed payout')}
@@ -261,8 +288,10 @@ function ReviewRow(props: {
   )
 }
 
-/** The site owner reviews customer invite-commission withdrawals. Root does not. */
-export function CommissionWithdrawalPanel() {
+/** The site owner reviews customer invite-commission withdrawals. The platform handles closed sites. */
+export function CommissionWithdrawalPanel(
+  props: { closed?: boolean; canReview?: boolean; canPay?: boolean } = {}
+) {
   const { t } = useTranslation()
   const client = useQueryClient()
   const [page, setPage] = useState(1)
@@ -275,8 +304,15 @@ export function CommissionWithdrawalPanel() {
     window.location.hash === '#pending' ? 'pending' : 'actionable'
   )
   const list = useQuery({
-    queryKey: siteOwnerKeys.list('commission-withdrawals', { page, status }),
-    queryFn: () => getOwnerCommissionWithdrawals(page, status),
+    queryKey: siteOwnerKeys.list('commission-withdrawals', {
+      page,
+      status,
+      closed: props.closed,
+    }),
+    queryFn: () =>
+      props.closed
+        ? getOwnerCommissionWithdrawals(page, status, true)
+        : getOwnerCommissionWithdrawals(page, status),
   })
   // A decision can remove the last request on the current filtered page.
   const total = list.data?.total
@@ -298,10 +334,16 @@ export function CommissionWithdrawalPanel() {
     >
       <div className='flex flex-col gap-1'>
         <h2 className='text-sm font-medium'>
-          {t('Invite commission withdrawal')}
+          {props.closed
+            ? t('Closed-site commission withdrawals')
+            : t('Invite commission withdrawal')}
         </h2>
         <p className='text-muted-foreground text-sm'>
-          {t('The site owner reviews cash withdrawals of invite commission.')}
+          {props.closed
+            ? t('Process withdrawals for closed sites.')
+            : t(
+                'The site owner reviews cash withdrawals of invite commission.'
+              )}
         </p>
         <p className='text-muted-foreground text-sm'>
           {t(
@@ -340,7 +382,7 @@ export function CommissionWithdrawalPanel() {
       )}
       <ul className='flex flex-col gap-4'>
         {(list.data?.items ?? []).map((row) => (
-          <ReviewRow key={row.id} row={row} onDone={refresh} />
+          <ReviewRow {...props} key={row.id} row={row} onDone={refresh} />
         ))}
       </ul>
       {list.data && (

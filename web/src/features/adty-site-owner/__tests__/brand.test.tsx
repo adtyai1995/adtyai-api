@@ -40,9 +40,6 @@ const site: OwnerSite = {
   host: 'shop.sites.example.test',
   base_url: 'https://shop.sites.example.test',
   cost_factor: '0.8',
-  markup_min: '0',
-  markup_max: '3',
-  markup_increase_delay_hours: 24,
   custom_domain_enabled: false,
   sender_domain_enabled: false,
   brand: {
@@ -55,7 +52,7 @@ const site: OwnerSite = {
   bonus_methods: [],
   seo_index: false,
   agreement_version: '1',
-  agreement_at: 1,
+  agreement_at: 1, close_execute_at: 0,
   prices: [],
   pricing_version: 1,
   domains: [],

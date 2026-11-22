@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -84,7 +85,12 @@ func TestTeamTopupUsesOnlyTheChosenEpayChannel(t *testing.T) {
 func TestTeamTopupStartsExistingBEpusdtWithoutGift(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"status_code":200,"message":"success","data":{"trade_id":"tid-team","order_id":"team","amount":"1","actual_amount":"1.01","token":"TAddr","expiration_time":900,"status":1,"payment_url":"https://pay.example/usdt"}}`))
+		var req map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 200, "data": map[string]any{
+			"trade_id": "tid-team", "order_id": req["order_id"], "trade_type": req["trade_type"], "fiat": "USD", "amount": req["amount"],
+			"actual_amount": "1.01", "token": "TAddr", "expiration_time": 900, "status": 1, "payment_url": "https://pay.example/usdt",
+		}})
 	}))
 	t.Cleanup(server.Close)
 	cfg := setting.GetBEpusdtSetting()
@@ -240,9 +246,12 @@ func TestTeamTopupBlankMethodDoesNotOpenASecondOrder(t *testing.T) {
 		OrderMode: model.AdtyEpayOrderModeSubmit,
 	}, alipay("submit"))
 
-	blank, err := CreateAdtyTeamTopupOrder(leader.Id, created.Team.Id, decimal.NewFromInt(1), "blank-key-1")
-	require.NoError(t, err)
-	require.Equal(t, "team", blank.Method)
+	_, err = CreateAdtyTeamTopupOrder(leader.Id, created.Team.Id, decimal.NewFromInt(1), "blank-key-1")
+	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
+	// A historically recorded channel-less order still owns its key.
+	blank := model.AdtyTopupOrder{TradeNo: adtyTeamTopupTradeNo("TTEAM", created.Team.Id, "blank-key-1"),
+		TeamId: created.Team.Id, UserId: leader.Id, Provider: model.PaymentProviderAdtyEpay, Method: "team", FaceUSD: decimal.NewFromInt(1)}
+	require.NoError(t, db.Create(&blank).Error)
 	_, err = StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "blank-key-1", "127.0.0.1")
 	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
 

@@ -928,9 +928,11 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 		return inbox, err
 	}
 	var unreadTickets int64
+	var visibleTicketKeys []string
+	ticketReceipts := model.DB.Model(&model.AdtyNotificationRead{}).Where("user_id=?", userID)
 	hidden := model.DB.Model(&model.AdtyNotificationHide{}).Select("key").Where("user_id = ?", userID)
 	ticketQuery = ticketQuery.Where("read_key NOT IN (?)", hidden)
-	if err := ticketQuery.Session(&gorm.Session{}).Where("read_key NOT IN (?)", receipts).Count(&unreadTickets).Error; err != nil {
+	if err := ticketQuery.Session(&gorm.Session{}).Where("read_key NOT IN (?)", ticketReceipts.Session(&gorm.Session{}).Select("read_key")).Count(&unreadTickets).Error; err != nil {
 		return inbox, err
 	}
 	inbox.UnreadPublications += unreadTickets
@@ -947,7 +949,7 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 			inbox.NextTicketBeforeId = notices[19].Id
 		}
 		for _, n := range notices {
-			keys = append(keys, n.ReadKey)
+			visibleTicketKeys = append(visibleTicketKeys, n.ReadKey)
 			inbox.Announcements = append(inbox.Announcements, formatTicketInboxNotice(n, handlerScope))
 		}
 	}
@@ -964,6 +966,13 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 	inbox.ReadKeys, err = model.GetAdtyNotificationReadKeys(userID, siteID, keys)
 	if err != nil {
 		return inbox, err
+	}
+	if len(visibleTicketKeys) > 0 {
+		var ticketRead []string
+		if err := ticketReceipts.Where("read_key IN ?", visibleTicketKeys).Distinct().Pluck("read_key", &ticketRead).Error; err != nil {
+			return inbox, err
+		}
+		inbox.ReadKeys = append(inbox.ReadKeys, ticketRead...)
 	}
 	inbox.Announcements = RenderAdtyTodoInboxItems(userID, inbox.Announcements)
 	return hideAdtyNotifications(userID, inbox)

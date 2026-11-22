@@ -237,32 +237,32 @@ func SearchUserTokens(userId int, keyword string, token string, offset int, limi
 	return tokens, total, nil
 }
 
+func (token *Token) EffectiveStatus(now int64) int {
+	if token.Status != common.TokenStatusEnabled {
+		return token.Status
+	}
+	if token.ExpiredTime != -1 && token.ExpiredTime < now {
+		return common.TokenStatusExpired
+	}
+	if !token.UnlimitedQuota {
+		remain, _ := TokenQuotaForBilling(token)
+		if remain <= 0 {
+			return common.TokenStatusExhausted
+		}
+	}
+	return token.Status
+}
+
 func ValidateUserToken(key string) (token *Token, err error) {
 	if key == "" {
 		return nil, ErrTokenNotProvided
 	}
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
-		if token.Status == common.TokenStatusExhausted ||
-			token.Status == common.TokenStatusExpired ||
-			token.Status != common.TokenStatusEnabled {
-			return token, ErrTokenInvalid
-		}
-		if token.ExpiredTime != -1 && token.ExpiredTime < common.GetTimestamp() {
-			if !common.RedisEnabled {
-				token.Status = common.TokenStatusExpired
-				err := token.SelectUpdate()
-				if err != nil {
-					common.SysLog(common.LogText("failed to update token status%s", err.Error()))
-				}
-			}
-			return token, ErrTokenInvalid
-		}
-		if !token.UnlimitedQuota && token.RemainQuota <= 0 {
-			if !common.RedisEnabled {
-				token.Status = common.TokenStatusExhausted
-				err := token.SelectUpdate()
-				if err != nil {
+		if effective := token.EffectiveStatus(common.GetTimestamp()); effective != common.TokenStatusEnabled {
+			if !common.RedisEnabled && token.Status != effective {
+				token.Status = effective
+				if err := token.SelectUpdate(); err != nil {
 					common.SysLog(common.LogText("failed to update token status%s", err.Error()))
 				}
 			}
@@ -371,7 +371,11 @@ func (token *Token) Insert() error {
 		if err := lockAssignableAdtyGroupsTx(tx, append(groups, token.Group)); err != nil {
 			return err
 		}
-		return insertAdtyEmployeeTokenTx(tx, token)
+		member, err := lockAdtyTokenMembershipTx(tx, token)
+		if err != nil {
+			return err
+		}
+		return insertAdtyEmployeeTokenTx(tx, token, member)
 	})
 }
 
@@ -397,6 +401,10 @@ func (token *Token) InsertWithLimitAndKeyLimit(limit int, keyLimitPatch AdtyKeyL
 		if err := lockAssignableAdtyGroupsTx(tx, append(groups, token.Group)); err != nil {
 			return err
 		}
+		member, err := lockAdtyTokenMembershipTx(tx, token)
+		if err != nil {
+			return err
+		}
 		var owner User
 		if err := lockForUpdate(tx).Select("id").First(&owner, token.UserId).Error; err != nil {
 			return err
@@ -408,7 +416,7 @@ func (token *Token) InsertWithLimitAndKeyLimit(limit int, keyLimitPatch AdtyKeyL
 		if count >= int64(limit) {
 			return ErrTokenLimit
 		}
-		if err := insertAdtyEmployeeTokenTx(tx, token); err != nil {
+		if err := insertAdtyEmployeeTokenTx(tx, token, member); err != nil {
 			return err
 		}
 		if keyLimitPatch.HasChanges() {

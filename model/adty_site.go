@@ -62,6 +62,7 @@ type AdtySite struct {
 	ReviewNote              string           `json:"review_note" gorm:"type:text"`
 	// 关站：站长申请时写 CloseRequestedAt；管理员定下客户去向后状态改 closing，到 CloseExecuteAt 由主节点执行。
 	CloseRequestedAt int64  `json:"close_requested_at"`
+	CloseMailBatchId int64  `json:"close_mail_batch_id,omitempty" gorm:"-"`
 	CloseExecuteAt   int64  `json:"close_execute_at" gorm:"index"`
 	CloseTransferTo  int    `json:"close_transfer_to"` // 新关站只记 0（由主站继承）；历史已转到其他站的已关闭行可能仍非 0
 	CloseClawBack    bool   `json:"close_claw_back"`
@@ -329,9 +330,9 @@ func (AdtySiteLookup) TableName() string { return "adty_site_lookups" }
 // AdtySiteTables 是分站的表，迁移和测试共用。
 func AdtySiteTables() []any {
 	return []any{&AdtySite{}, &AdtySiteInviteCode{}, &AdtySiteAudit{}, &AdtySiteCustomer{}, &AdtyUserSiteMigration{}, &AdtySitePrice{}, &AdtySitePriceScope{}, &AdtyPriceRevision{}, &AdtySiteDomain{},
-		&AdtySiteEarningDaily{}, &AdtySiteEarningLine{}, &AdtySiteEarningFact{}, &AdtySiteTrialGrant{}, &AdtySiteReport{}, &AdtySiteLookup{}, &AdtySiteSenderDomain{},
+		&AdtySiteEarningDaily{}, &AdtySiteEarningLine{}, &AdtySiteEarningFact{}, &AdtySiteTrialGrant{}, &AdtySiteReport{}, &AdtySiteLookup{}, &AdtySiteSenderDomain{}, &AdtySenderDomainCleanup{},
 		&AdtySiteTier{}, &AdtySiteTierEvaluation{}, &AdtySiteWallet{}, &AdtySiteWalletLedger{}, &AdtySiteWithdrawal{}, &AdtySitePayoutAttempt{}, &AdtySiteStaff{}, &AdtySiteOwnership{},
-		&AdtySiteSettlementSheet{}, &AdtySettlementCoverageAdjustment{}, &AdtySiteCloseMailBatch{}, &AdtySiteCloseMailRecipient{}, &AdtyDomainCloudResource{}}
+		&AdtySiteSettlementSheet{}, &AdtySettlementCoverageAdjustment{}, &AdtySettlementRevision{}, &AdtySettlementScan{}, &AdtySiteCloseMailBatch{}, &AdtySiteCloseMailRecipient{}, &AdtyDomainCloudResource{}}
 }
 
 // AdtySetUsersSiteTx 把 fromSite 的客户全部改到 toSite（0 是主站），同事务撤销旧Key。

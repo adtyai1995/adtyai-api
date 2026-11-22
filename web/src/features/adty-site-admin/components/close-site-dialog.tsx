@@ -53,6 +53,9 @@ export function CloseSiteDialog(props: {
   const [immediate, setImmediate] = useState(false)
   const [reason, setReason] = useState('')
 
+  const revising=props.site.status==='closing'
+  const [deadline,setDeadline]=useState('')
+  const executeAt=Date.parse(deadline)/1000
   const close = useMutation({
     mutationFn: () => {
       if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
@@ -62,7 +65,8 @@ export function CloseSiteDialog(props: {
         status: 'closed',
         transfer_to: 0,
         claw_back: false,
-        immediate,
+        immediate: !revising && immediate,
+        ...(revising ? {execute_at:executeAt,expected_execute_at:props.site.close_execute_at} : {}),
         reason: reason.trim(),
       })
     },
@@ -80,7 +84,7 @@ export function CloseSiteDialog(props: {
     <Dialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={t('Close {{site}}', { site: props.site.host })}
+      title={revising?t('Reschedule closure'):t('Close {{site}}', { site: props.site.host })}
       description={t(
         'Customers move to the main site. Retained website domains redirect there. API domains stop accepting requests and enter cleanup. Closing the site preserves its earnings.'
       )}
@@ -91,10 +95,10 @@ export function CloseSiteDialog(props: {
           </Button>
           <Button
             variant='destructive'
-            disabled={close.isPending || reason.trim() === ''}
+            disabled={close.isPending || reason.trim() === '' || (revising && !(executeAt>Date.now()/1000))}
             onClick={() => close.mutate()}
           >
-            {t('Close site')}
+            {revising?t('Reschedule closure'):t('Close site')}
           </Button>
         </>
       }
@@ -109,7 +113,7 @@ export function CloseSiteDialog(props: {
             <li key={domain.id}>{domain.hostname} · {domain.role === 'base_url' ? t('API access ends') : t('Redirect to main site')}</li>
           ))}
         </ul>
-        <div className='flex items-center gap-2'>
+        {revising ? <Label>{t('Closes on')} <input type='datetime-local' value={deadline} onChange={event=>setDeadline(event.target.value)} /></Label> : <div className='flex items-center gap-2'>
           <Checkbox
             id={`${id}-now`}
             checked={immediate}
@@ -118,7 +122,7 @@ export function CloseSiteDialog(props: {
           <Label htmlFor={`${id}-now`}>
             {t('Close now without the notice period')}
           </Label>
-        </div>
+        </div>}
         <div className='space-y-1'>
           <Label htmlFor={`${id}-reason`}>{t('Reason')}</Label>
           <Textarea

@@ -40,6 +40,8 @@ func IsAdtyPaymentProvider(provider string) bool {
 
 // AdtyTopupOrder 是订单事实（任务 3.2），按 trade_no 对应上游的 top_ups，上游表不加字段。
 type AdtyTopupOrder struct {
+	CheckoutStage         string          `json:"checkout_stage,omitempty" gorm:"type:varchar(16);not null;default:''"`
+	CheckoutGateway       string          `json:"-" gorm:"type:text"`
 	Business              string          `json:"business" gorm:"type:varchar(32);not null;default:'wallet_topup'"`
 	Id                    int64           `json:"id"`
 	TradeNo               string          `json:"trade_no" gorm:"uniqueIndex;type:varchar(64);not null"`

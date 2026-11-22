@@ -129,7 +129,7 @@ export type VerificationOperation =
     }
   | {
       scope: 'site.owner.manage'
-      context: { action: SiteOwnerAction; target: number }
+      context: { action: SiteOwnerAction; target: number; request?: object }
     }
   | {
       scope: 'site.staff.customer.manage'

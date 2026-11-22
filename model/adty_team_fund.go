@@ -36,7 +36,7 @@ func ApplyAdtyTeamFundMovementTx(tx *gorm.DB, team *AdtyTeam, kind, ref string, 
 	root := ref
 	var op BillingOperation
 	if kind != "spend" {
-		if err := tx.Select("earning_root_key", "kind").Where("operation_key = ?", ref).Limit(1).Find(&op).Error; err != nil {
+		if err := tx.Select("earning_root_key", "kind", "stream_wallet_quota").Where("operation_key = ?", ref).Limit(1).Find(&op).Error; err != nil {
 			return err
 		}
 		if op.EarningRootKey != "" {
@@ -49,6 +49,11 @@ func ApplyAdtyTeamFundMovementTx(tx *gorm.DB, team *AdtyTeam, kind, ref string, 
 		q := tx.Where("team_id = ? AND quota > returned", team.Id)
 		if op.Kind == "task" || op.Kind == "mj_refund" {
 			q = q.Where("root_key = ?", root)
+		} else if op.Kind == "request" && op.StreamWalletQuota > 0 {
+			// The request settles its own reservation and the direct stream
+			// charges already included in its cumulative wallet amount.
+			chunks := tx.Model(&BillingOperation{}).Select("operation_key").Where("kind = ? AND earning_root_key = ? AND payer_team_id = ?", "direct", root, team.Id)
+			q = q.Where("(operation_key = ? OR operation_key IN (?))", ref, chunks)
 		} else {
 			q = q.Where("operation_key = ?", ref)
 		}
@@ -153,4 +158,41 @@ func reclaimAdtyTeamLotTx(tx *gorm.DB, team *AdtyTeam, tradeNo string, requested
 		}
 	}
 	return available, nil
+}
+
+// The caller holds the original order and refund locks. Release exactly the
+// amount the reclaim step actually deducted, including for a closed team.
+func releaseAdtyTeamRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRefund, operatorID int) error {
+	var team AdtyTeam
+	if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
+		return err
+	}
+	amount := row.DeductedPrincipalQuota
+	key := "refund_release:" + row.RefundId
+	var prior AdtyTeamLedger
+	result := tx.Where("idempotency_key = ?", key).Limit(1).Find(&prior)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		if prior.TeamId != team.Id || prior.DeltaQuota != amount || prior.RefId != row.RefundId {
+			return ErrBillingOperationConflict
+		}
+		return nil
+	}
+	lot := tx.Model(&AdtyTeamFundLot{}).Where("team_id = ? AND kind = 'topup' AND source = ? AND reclaimed >= ?", team.Id, ext.TradeNo, amount).
+		Updates(map[string]any{"available": gorm.Expr("available + ?", amount), "reclaimed": gorm.Expr("reclaimed - ?", amount)})
+	if lot.Error != nil {
+		return lot.Error
+	}
+	if lot.RowsAffected != 1 || team.SharedQuota > common.MaxWalletQuota-amount {
+		return ErrBillingOperationConflict
+	}
+	after := team.SharedQuota + amount
+	if err := tx.Model(&team).UpdateColumn("shared_quota", after).Error; err != nil {
+		return err
+	}
+	return tx.Create(&AdtyTeamLedger{TeamId: team.Id, RefId: row.RefundId, Type: "refund_release",
+		ActorUserId: operatorID, IdempotencyKey: key,
+		DeltaQuota: amount, BalanceBefore: after - amount, BalanceAfter: after}).Error
 }

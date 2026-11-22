@@ -258,29 +258,34 @@ func validateUnboundTeamEmployeeTx(tx *gorm.DB, userID int) error {
 	return nil
 }
 
-// Issue a dedicated employee's key and its team binding in one transaction.
-func insertAdtyEmployeeTokenTx(tx *gorm.DB, token *Token) error {
+// Lifecycle mutations take team, membership, then user locks. Key issuance
+// uses the same order before checking the per-user key count.
+func lockAdtyTokenMembershipTx(tx *gorm.DB, token *Token) (*AdtyTeamMember, error) {
 	member, err := independentTeamEmployeeTx(tx, token.UserId)
-	if err != nil {
-		return err
-	}
-	if member == nil {
-		return tx.Create(token).Error
+	if err != nil || member == nil {
+		return member, err
 	}
 	var team AdtyTeam
 	if err := lockForUpdate(tx).First(&team, member.TeamId).Error; err != nil {
-		return err
+		return nil, err
 	}
 	if err := lockForUpdate(tx).First(member, member.Id).Error; err != nil {
-		return err
+		return nil, err
 	}
 	if team.Status != AdtyTeamStatusActive || member.Status != AdtyTeamMemberActive || token.OwnerSelfUseSiteId != 0 {
-		return ErrTokenInvalid
+		return nil, ErrTokenInvalid
 	}
+	return member, nil
+}
+
+func insertAdtyEmployeeTokenTx(tx *gorm.DB, token *Token, member *AdtyTeamMember) error {
 	if err := tx.Create(token).Error; err != nil {
 		return err
 	}
-	return tx.Create(&AdtyTeamKey{TokenId: token.Id, TeamId: team.Id, UserId: token.UserId, Status: AdtyTeamMemberActive}).Error
+	if member == nil {
+		return nil
+	}
+	return tx.Create(&AdtyTeamKey{TokenId: token.Id, TeamId: member.TeamId, UserId: token.UserId, Status: AdtyTeamMemberActive}).Error
 }
 
 var adtyTeamTopupPrefixes = []string{"TTEP", "TTU", "TTEAM"}

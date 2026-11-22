@@ -30,7 +30,7 @@ type OwnerVerifyContext = {
    * Asks the owner to verify for one sensitive action on one target and
    * returns the single-use proof token, or null when the owner cancels.
    */
-  verify: (action: SiteOwnerAction, target: number) => Promise<string | null>
+  verify: (action: SiteOwnerAction, target: number, request?: object) => Promise<string | null>
   verifying: boolean
 }
 
@@ -44,10 +44,10 @@ export function OwnerVerificationProvider(props: {
   const verification = useSecureVerification()
   const requestVerification = verification.requestVerification
   const verify = useCallback(
-    async (action: SiteOwnerAction, target: number) => {
+    async (action: SiteOwnerAction, target: number, request?: object) => {
       const proof = await requestVerification({
         scope: 'site.owner.manage',
-        context: { action, target },
+        context: { action, target, ...(request ? {request} : {}) },
         title: t('Confirm it is you'),
         description: t('Sensitive site changes require a fresh verification.'),
       })

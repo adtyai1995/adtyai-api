@@ -615,7 +615,7 @@ func adtyAuthorizeTelegramEventAccess(row *model.AdtyTelegramDelivery, user *mod
 			if !actor.canManage(ticket) {
 				return false
 			}
-		} else if ticket.UserId != user.Id && !(actor.TeamId > 0 && actor.TeamId == ticket.TeamId && (ticket.TeamShared || actor.TeamRole == model.AdtyTeamRoleLeader)) {
+		} else if !actor.canReadOwnTicket(ticket) {
 			return false
 		}
 		if len(parts) >= 4 && parts[2] == "msg" {

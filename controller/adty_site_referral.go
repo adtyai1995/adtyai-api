@@ -177,7 +177,8 @@ func PostAdtySiteCommissionConvert(c *gin.Context) {
 }
 
 func GetAdtySiteInviteWithdrawRules(c *gin.Context) {
-	view, err := service.LoadAdtyCustomerSiteInviteWithdrawRules(c.GetInt("id"))
+	source, _ := strconv.Atoi(c.Query("site_id"))
+	view, err := service.LoadAdtyCustomerSiteInviteWithdrawRules(c.GetInt("id"), source)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -187,6 +188,7 @@ func GetAdtySiteInviteWithdrawRules(c *gin.Context) {
 
 func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 	var body struct {
+		SiteID          int    `json:"site_id"`
 		AmountUSD       string `json:"amount_usd"`
 		Method          string `json:"method"`
 		Network         string `json:"network"`
@@ -212,13 +214,8 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 			return
 		}
 	}
-	var user model.User
-	if err := model.DB.Select("site_id").First(&user, c.GetInt("id")).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	row, err := service.CreateAdtySiteInviteWithdrawal(service.AdtySiteInviteWithdrawalInput{
-		UserID: c.GetInt("id"), SiteID: user.SiteId, Amount: amount, Method: body.Method,
+		UserID: c.GetInt("id"), SiteID: body.SiteID, Amount: amount, Method: body.Method,
 		Network: body.Network, AccountNo: body.AccountNo, AccountName: body.AccountName,
 		QRImageURL: body.QRImageURL, ExpectedCNYRate: expected,
 		IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")),
@@ -264,6 +261,14 @@ func GetAdtyOwnerSiteInviteWithdrawals(c *gin.Context) {
 	}
 	page := common.GetPageQuery(c)
 	rows, total, err := service.ListAdtyOwnerSiteInviteWithdrawals(site.Id, c.Query("status"), page)
+	presentCommissionPage(c, page, rows, total, err)
+}
+func GetClosedSiteInviteWithdrawals(c *gin.Context) {
+	page := common.GetPageQuery(c)
+	rows, total, err := service.ListClosedSiteInviteWithdrawals(c.Query("status"), page)
+	presentCommissionPage(c, page, rows, total, err)
+}
+func presentCommissionPage(c *gin.Context, page *common.PageInfo, rows []model.AdtySiteInviteWithdrawal, total int64, err error) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -291,6 +296,12 @@ func PostAdtyOwnerSiteInviteWithdrawalReview(c *gin.Context) {
 	if _, ok := adtyOwnerSiteOr403(c); !ok {
 		return
 	}
+	processSiteWithdrawalReview(c, service.ReviewAdtySiteInviteWithdrawal)
+}
+func PostClosedSiteInviteWithdrawalReview(c *gin.Context) {
+	processSiteWithdrawalReview(c, service.ReviewClosedAdtySiteInviteWithdrawal)
+}
+func processSiteWithdrawalReview(c *gin.Context, process func(int, int64, bool, string) error) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -304,7 +315,7 @@ func PostAdtyOwnerSiteInviteWithdrawalReview(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.ReviewAdtySiteInviteWithdrawal(c.GetInt("id"), id, body.Approve, body.Reason); err != nil {
+	if err := process(c.GetInt("id"), id, body.Approve, body.Reason); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -315,6 +326,15 @@ func PostAdtyOwnerSiteInviteWithdrawalPaid(c *gin.Context) {
 	if _, ok := adtyOwnerSiteOr403(c); !ok {
 		return
 	}
+	processSiteWithdrawalPaid(c, service.MarkAdtySiteInviteWithdrawalPaid)
+}
+func PostClosedSiteInviteWithdrawalFailed(c *gin.Context) {
+	processSiteWithdrawalReview(c, service.ConfirmClosedSiteInvitePayoutFailure)
+}
+func PostClosedSiteInviteWithdrawalPaid(c *gin.Context) {
+	processSiteWithdrawalPaid(c, service.MarkClosedAdtySiteInviteWithdrawalPaid)
+}
+func processSiteWithdrawalPaid(c *gin.Context, process func(int, int64, string, string) error) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -328,7 +348,7 @@ func PostAdtyOwnerSiteInviteWithdrawalPaid(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.MarkAdtySiteInviteWithdrawalPaid(c.GetInt("id"), id, body.TxID, body.Proof); err != nil {
+	if err := process(c.GetInt("id"), id, body.TxID, body.Proof); err != nil {
 		common.ApiError(c, err)
 		return
 	}

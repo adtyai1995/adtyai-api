@@ -39,7 +39,7 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 	amount := input.Amount.Round(8)
 	key := strings.TrimSpace(input.IdempotencyKey)
 	method := strings.TrimSpace(input.Method)
-	if input.UserID <= 0 || input.SiteID <= 0 || !amount.IsPositive() || key == "" || len(key) > 128 {
+	if input.UserID <= 0 || input.SiteID < 0 || !amount.IsPositive() || key == "" || len(key) > 128 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
 	if isAdtySiteInviteWeChatMethod(method) {
@@ -55,24 +55,31 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").First(&user, input.UserID).Error; err != nil {
 			return err
 		}
-		if user.SiteId != input.SiteID {
-			return common.NewMessage("No permission to perform this action")
-		}
 		var existing model.AdtySiteInviteWithdrawal
 		lookup := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing)
 		if lookup.Error != nil {
 			return lookup.Error
 		}
 		if lookup.RowsAffected > 0 {
+			if input.SiteID == 0 && existing.UserId == input.UserID {
+				input.SiteID = existing.SiteId
+			}
 			requested := existing.RequestedUSD
 			if !requested.IsPositive() {
 				requested = existing.AmountUSD
 			}
-			if existing.SiteId != input.SiteID || existing.UserId != input.UserID || existing.Method != method || !requested.Equal(amount) {
+			if existing.SiteId != input.SiteID || existing.UserId != input.UserID || existing.Method != method || !requested.Equal(amount) || !sameSiteInviteDestination(tx, &existing, input) {
 				return model.ErrAdtyIdempotencyConflict
 			}
 			row = &existing
 			return nil
+		}
+		if input.SiteID == 0 {
+			input.SiteID = user.SiteId
+		}
+		row.SiteId = input.SiteID
+		if err := authorizeCommissionSource(tx, input.UserID, user.SiteId, input.SiteID); err != nil {
+			return err
 		}
 		var site model.AdtySite
 		if err := tx.First(&site, input.SiteID).Error; err != nil {
@@ -174,6 +181,33 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 	return row, nil
 }
 
+func authorizeCommissionSource(tx *gorm.DB, userID, currentSite, source int) error {
+	if source > 0 && currentSite == source {
+		return nil
+	}
+	var count int64
+	err := tx.Model(&model.AdtySiteInviteCommission{}).Where("inviter_id = ? AND site_id = ? AND site_id IN (?)", userID, source, tx.Model(&model.AdtySite{}).Select("id").Where("status = ?", model.AdtySiteStatusClosed)).Count(&count).Error
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return common.NewMessage("No permission to perform this action")
+	}
+	return nil
+}
+func sameSiteInviteDestination(tx *gorm.DB, row *model.AdtySiteInviteWithdrawal, input AdtySiteInviteWithdrawalInput) bool {
+	switch row.Method {
+	case "usdt":
+		return row.Network == strings.ToUpper(strings.TrimSpace(input.Network)) && row.AccountNo == strings.TrimSpace(input.AccountNo)
+	case "alipay":
+		qr, ok := IsOwnedReferralAssetTx(tx, input.UserID, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
+		rate, err := decimal.NewFromString(row.Rate)
+		return ok && row.QRImageURL == qr && row.AccountName == strings.TrimSpace(input.AccountName) && err == nil && rate.Equal(input.ExpectedCNYRate)
+	default:
+		return row.Method == "balance"
+	}
+}
+
 func allocateSiteInviteWithdrawalTx(tx *gorm.DB, withdrawal *model.AdtySiteInviteWithdrawal, toBalance bool) error {
 	var rows []model.AdtySiteInviteCommission
 	if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND inviter_id = ?", withdrawal.SiteId, withdrawal.UserId).Order("id").Find(&rows).Error; err != nil {
@@ -253,13 +287,28 @@ func siteInviteCommissionFree(row *model.AdtySiteInviteCommission) decimal.Decim
 // ReviewAdtySiteInviteWithdrawal approves or rejects a pending cash withdrawal.
 // Only the owner of that withdrawal's site may review it.
 func ReviewAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string) error {
+	return reviewSiteInviteWithdrawal(ownerID, withdrawalID, approve, reason, false, "")
+}
+func ReviewClosedAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string) error {
+	return reviewSiteInviteWithdrawal(ownerID, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
+}
+func ConfirmClosedSiteInvitePayoutFailure(actor int, id int64, approve bool, reason string) error {
+	if approve {
+		return common.NewMessage("Invalid parameters")
+	}
+	return reviewSiteInviteWithdrawal(actor, id, false, reason, true, model.AdtySiteInviteWithdrawApproved)
+}
+func reviewSiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string, platform bool, requiredStatus string) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteInviteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).First(&row, withdrawalID).Error; err != nil {
 			return err
 		}
-		if err := requireSiteInviteWithdrawOwner(tx, ownerID, row.SiteId); err != nil {
+		if err := requireSiteInviteProcessor(tx, ownerID, row.SiteId, platform); err != nil {
 			return err
+		}
+		if requiredStatus != "" && row.Status != requiredStatus {
+			return common.NewMessage("Only pending withdrawals can be reviewed")
 		}
 		if row.Method == "balance" || (approve && row.Status != model.AdtySiteInviteWithdrawPending) || (!approve && row.Status != model.AdtySiteInviteWithdrawPending && row.Status != model.AdtySiteInviteWithdrawApproved) {
 			return common.NewMessage("Only pending withdrawals can be reviewed")
@@ -288,13 +337,19 @@ func ReviewAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve boo
 // MarkAdtySiteInviteWithdrawalPaid records the owner's offline payment.
 // It moves the freeze to withdrawn commission and does not credit quota.
 func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, proof string) error {
+	return paySiteInviteWithdrawal(ownerID, withdrawalID, txID, proof, false)
+}
+func MarkClosedAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, proof string) error {
+	return paySiteInviteWithdrawal(ownerID, withdrawalID, txID, proof, true)
+}
+func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string, platform bool) error {
 	txID = strings.TrimSpace(txID)
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteInviteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).First(&row, withdrawalID).Error; err != nil {
 			return err
 		}
-		if err := requireSiteInviteWithdrawOwner(tx, ownerID, row.SiteId); err != nil {
+		if err := requireSiteInviteProcessor(tx, ownerID, row.SiteId, platform); err != nil {
 			return err
 		}
 		if row.Status == model.AdtySiteInviteWithdrawPaid && row.Method != "balance" && row.TxID == txID && row.ProofNote == strings.TrimSpace(proof) {
@@ -364,10 +419,16 @@ func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, pro
 	})
 }
 
-func requireSiteInviteWithdrawOwner(tx *gorm.DB, ownerID, siteID int) error {
+func requireSiteInviteProcessor(tx *gorm.DB, ownerID, siteID int, platform bool) error {
 	var site model.AdtySite
-	if err := tx.First(&site, siteID).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
 		return err
+	}
+	if platform {
+		if site.Status == model.AdtySiteStatusClosed && ownerID > 0 {
+			return nil
+		}
+		return common.NewMessage("No permission to perform this action")
 	}
 	if site.OwnerUserId != ownerID || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing) {
 		return common.NewMessage("No permission to perform this action")
@@ -485,11 +546,17 @@ func LoadAdtySiteInviteWithdrawRules() (AdtySiteInviteWithdrawRulesView, error) 
 	return AdtySiteInviteWithdrawRulesView{}, ErrSiteMarketingOwnerOnly
 }
 
-func LoadAdtyCustomerSiteInviteWithdrawRules(userID int) (AdtySiteInviteWithdrawRulesView, error) {
+func LoadAdtyCustomerSiteInviteWithdrawRules(userID int, requested ...int) (AdtySiteInviteWithdrawRulesView, error) {
 	view := AdtySiteInviteWithdrawRulesView{Methods: adtySiteInviteWithdrawMethods(false)}
 	var user model.User
 	if err := model.DB.Select("site_id").First(&user, userID).Error; err != nil {
 		return view, err
+	}
+	if len(requested) > 0 && requested[0] > 0 {
+		if err := authorizeCommissionSource(model.DB, userID, user.SiteId, requested[0]); err != nil {
+			return view, err
+		}
+		user.SiteId = requested[0]
 	}
 	if user.SiteId <= 0 {
 		return view, nil
@@ -516,10 +583,15 @@ func ListAdtySiteInviteWithdrawals(userID int) ([]model.AdtySiteInviteWithdrawal
 
 // ListAdtyOwnerSiteInviteWithdrawals returns withdrawals for the owner's site.
 func ListAdtyOwnerSiteInviteWithdrawals(siteID int, status string, page *common.PageInfo) ([]model.AdtySiteInviteWithdrawal, int64, error) {
+	return pageCommissionWithdrawals(model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id = ?", siteID), status, page)
+}
+func ListClosedSiteInviteWithdrawals(status string, page *common.PageInfo) ([]model.AdtySiteInviteWithdrawal, int64, error) {
+	return pageCommissionWithdrawals(model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id IN (?)", model.DB.Model(&model.AdtySite{}).Select("id").Where("status = ?", model.AdtySiteStatusClosed)), status, page)
+}
+func pageCommissionWithdrawals(query *gorm.DB, status string, page *common.PageInfo) ([]model.AdtySiteInviteWithdrawal, int64, error) {
 	if page == nil || page.PageSize < 1 || page.PageSize > 100 || page.Page < 1 || page.Page > math.MaxInt/page.PageSize {
 		return nil, 0, common.NewMessage("Invalid parameters")
 	}
-	query := model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id = ?", siteID)
 	switch status {
 	case "":
 	case "actionable":

@@ -376,40 +376,19 @@ func AdtySitePublicBaseURL(site *model.AdtySite) string {
 // 按创建顺序取第一个。API 地址域名（role=base_url）不能拿来当跳回地址——那种域名不给人看页面。
 // 没有已激活的站点域名时返回空，调用方退回平台子域名。
 func adtyPreferredCustomHost(siteId int) string {
-	if siteId <= 0 || model.DB == nil {
-		return ""
-	}
-	var domains []model.AdtySiteDomain
-	if err := model.DB.Where("site_id = ? AND status = ? AND role = ?",
-		siteId, model.AdtySiteDomainActive, model.AdtySiteDomainRoleSite).
-		Order("id").Find(&domains).Error; err != nil {
-		return ""
-	}
-	for _, domain := range domains {
-		if host := strings.ToLower(strings.TrimSpace(domain.Hostname)); host != "" {
-			return host
-		}
-	}
-	return ""
+	return adtyAdvertisedDomain(siteId, model.AdtySiteDomainRoleSite)
 }
 
-// adtyBaseURLHostForSite 从缓存中按域名字典序选取已激活的自定义 API 地址。
-func adtyBaseURLHostForSite(snapshot *adtySiteSnapshot, siteId int) string {
-	if snapshot == nil || siteId <= 0 {
+func adtyAdvertisedDomain(siteID int, role string) string {
+	if siteID <= 0 || model.DB == nil {
 		return ""
 	}
-	best := ""
-	for host, site := range snapshot.byCustom {
-		if site == nil || site.Id != siteId || !snapshot.apiOnly[host] {
-			continue
-		}
-		// byCustom 是 map，遍历顺序不固定，拿不到域名行的创建顺序；
-		// 取主机名字典序最小的那个，保证同一份缓存下多次请求结果一致。
-		if best == "" || host < best {
-			best = host
-		}
+	var binding model.AdtySiteDomain
+	err := model.DB.Select("hostname").Where("site_id = ? AND role = ? AND managed_by <> ? AND status = ? AND desired_state = ? AND automation_state IN ?", siteID, role, "platform", model.AdtySiteDomainActive, "serve", []string{"", "ready"}).Order("id").Limit(1).Find(&binding).Error
+	if err != nil {
+		return ""
 	}
-	return best
+	return strings.ToLower(strings.TrimSpace(binding.Hostname))
 }
 
 // AdtySiteAPIBaseURL 返回客户调用模型的专用地址，优先使用已激活的自定义 API 域名。
@@ -418,7 +397,7 @@ func AdtySiteAPIBaseURL(site *model.AdtySite) string {
 		return strings.TrimRight(system_setting.ServerAddress, "/")
 	}
 	snapshot := loadAdtySiteSnapshot()
-	if host := adtyBaseURLHostForSite(snapshot, site.Id); host != "" {
+	if host := adtyAdvertisedDomain(site.Id, model.AdtySiteDomainRoleBaseURL); host != "" {
 		return adtyScheme() + "://" + host
 	}
 	if host := snapshot.defaultAPI[site.Id]; host != "" {

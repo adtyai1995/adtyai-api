@@ -3,6 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http/httptest"
 
 	"fmt"
 	"image"
@@ -17,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -59,7 +63,7 @@ func TestAdtyTicketWorkspacesPostgres(t *testing.T) {
 	defer restore()
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.AdtySite{}, &model.AdtySiteStaff{}, &model.AdtyTeam{}, &model.AdtyTeamMember{},
 		&model.AdtyTicket{}, &model.AdtyTicketMessage{}, &model.AdtyTicketEvent{}, &model.AdtyTicketImage{}, &model.AdtyTicketPolicy{}, &model.AdtyTicketNotice{},
-		&model.AdtyTopupOrder{}, &model.AdtyManualRefund{}, &model.AdtyBalanceLedger{}, &model.AdtyVoucher{}, &model.AdtyTeamKey{}, &model.Log{}, &model.BillingOperation{}, &model.AdtyNotificationPublication{}, &model.AdtyNotificationRead{}, &model.AdtyNotificationHide{}, &model.AdtyGlossaryTerm{}, &model.AdtyTranslationUsage{}, &model.AdtyTranslationConfig{}, &model.AdtyTranslationHead{}, &model.AdtyTranslationJob{}, &model.AdtyTelegramBot{}, &model.AdtyTelegramBinding{}, &model.AdtyTelegramDelivery{}, &model.CasbinRule{}, &model.AuditIntent{}, &model.AuditLog{}))
+		&model.AdtyTopupOrder{}, &model.AdtyManualRefund{}, &model.AdtyBalanceLedger{}, &model.AdtyVoucher{}, &model.AdtyTeamKey{}, &model.Log{}, &model.BillingOperation{}, &model.AdtyNotificationPublication{}, &model.AdtyNotificationRead{}, &model.AdtyNotificationHide{}, &model.AdtyGlossaryTerm{}, &model.AdtyTranslationUsage{}, &model.AdtyTranslationConfig{}, &model.AdtyTranslationHead{}, &model.AdtyTranslationJob{}, &model.AdtyTelegramBot{}, &model.AdtyTelegramChallenge{}, &model.AdtyTelegramBinding{}, &model.AdtyTelegramDelivery{}, &model.CasbinRule{}, &model.AuditIntent{}, &model.AuditLog{}))
 	authz.AdtyRegisterResources()
 	const (
 		owner     = 1
@@ -283,6 +287,21 @@ func TestAdtyTicketWorkspacesPostgres(t *testing.T) {
 		require.NoError(t, err)
 	})
 	t.Run("only authorized records may be linked", func(t *testing.T) {
+		for _, item := range []struct {
+			ref      string
+			payer    int64
+			audience string
+		}{{"personal-request", 0, "personal"}, {"team-request", team.Id, "team"}} {
+			require.NoError(t, db.Create(&model.BillingOperation{Kind: "request", OperationKey: "request:" + item.ref, UserId: customer, PayerTeamId: item.payer}).Error)
+			audience, err := AdtyTicketRequestAudience(customer, item.ref)
+			require.NoError(t, err)
+			require.Equal(t, item.audience, audience)
+			tk, err := CreateAdtyTicket(customer, AdtyTicketInput{Title: "Usage", Body: "Question", RelatedKind: "request", RelatedRef: item.ref, Audience: audience})
+			require.NoError(t, err)
+			require.Equal(t, item.payer, tk.TeamId)
+			_, err = AdtyTicketRequestAudience(other, item.ref)
+			require.Error(t, err)
+		}
 		personal := model.AdtyTopupOrder{TradeNo: "private-order", UserId: other, SiteId: 12, RefundedAt: 1}
 		shared := model.AdtyTopupOrder{TradeNo: "team-order", UserId: customer, TeamId: team.Id, SiteId: site.Id}
 		require.NoError(t, db.Create(&personal).Error)
@@ -420,6 +439,155 @@ func TestAdtyTicketWorkspacesPostgres(t *testing.T) {
 		require.Positive(t, rootNotices)
 	})
 
+	t.Run("R23 departed creator loses team access and deliveries", func(t *testing.T) {
+		tk, err := CreateAdtyTicket(customer, AdtyTicketInput{Audience: "team", Title: "Shared", Body: "Private material"})
+		require.NoError(t, err)
+		im, err := AddAdtyTicketImage(leader, tk.Id, "public", img.Bytes(), "team")
+		require.NoError(t, err)
+		member := db.Model(&model.AdtyTeamMember{}).Where("user_id=?", customer)
+		require.NoError(t, member.Update("status", "removed").Error)
+		defer member.Update("status", "active")
+		_, err = ReplyAdtyTicket(staff, tk.Id, "Follow up", "departed", "staff")
+		require.NoError(t, err)
+		_, err = GetAdtyTicket(customer, tk.Id, "personal")
+		require.Error(t, err)
+		_, _, err = OpenAdtyTicketImage(customer, tk.Id, im.Id, "personal")
+		require.Error(t, err)
+		var notices int64
+		require.NoError(t, db.Model(&model.AdtyTicketNotice{}).Where("ticket_id=? AND user_id=? AND action='reply'", tk.Id, customer).Count(&notices).Error)
+		require.Zero(t, notices)
+		_, err = GetAdtyTicket(customer, first.Id, "personal")
+		require.NoError(t, err)
+	})
+	t.Run("R23 public screenshot reopens the queue once", func(t *testing.T) {
+		tk, err := CreateAdtyTicket(customer, AdtyTicketInput{Title: "Screenshot", Body: "Request"})
+		require.NoError(t, err)
+		_, err = ReplyAdtyTicket(staff, tk.Id, "Please attach a screenshot", "ask", "staff")
+		require.NoError(t, err)
+		file, err := AttachAdtyTicketImageWithKey(customer, tk.Id, 0, "public", img.Bytes(), "file-op", "personal")
+		require.NoError(t, err)
+		retried, err := AttachAdtyTicketImageWithKey(customer, tk.Id, 0, "public", img.Bytes(), "file-op", "personal")
+		require.NoError(t, err)
+		require.Equal(t, file.Id, retried.Id)
+		require.NoError(t, err)
+		d, err := GetAdtyTicket(customer, tk.Id, "personal")
+		require.NoError(t, err)
+		require.Equal(t, model.AdtyTicketPendingAssignment, d.Ticket.Status)
+		require.NotZero(t, file.Id)
+		var n int64
+		require.NoError(t, db.Model(&model.AdtyTicketNotice{}).Where("ticket_id=? AND action=? AND user_id=?", tk.Id, "image_upload", owner).Count(&n).Error)
+		require.EqualValues(t, 1, n)
+	})
+	t.Run("R23 retention keeps fixed recipient inbox history", func(t *testing.T) {
+		tk, err := CreateAdtyTicket(customer, AdtyTicketInput{Title: "Confidential", Body: "private body"})
+		require.NoError(t, err)
+		var notice model.AdtyTicketNotice
+		require.NoError(t, db.Where("ticket_id=? AND user_id=?", tk.Id, customer).First(&notice).Error)
+		require.NoError(t, MarkAdtyNotificationInboxRead(customer, &site, []string{notice.ReadKey}))
+		require.NoError(t, SetAdtyTicketStatus(owner, tk.Id, "close", "", 0, "owner"))
+		removed, _, err := deleteOneExpiredSupportTicket(context.Background(), tk.Id, time.Now().Unix()+1)
+		require.NoError(t, err)
+		require.True(t, removed)
+		item, ok, err := GetAdtyNotificationDetail(customer, &site, notice.ReadKey)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Empty(t, item["ticket_path"])
+		require.NotContains(t, item["content"], "private body")
+		inbox, err := GetAdtyNotificationInbox(customer, &site, 0)
+		require.NoError(t, err)
+		require.Contains(t, inbox.ReadKeys, notice.ReadKey)
+		require.NoError(t, HideAdtyNotificationForUser(customer, notice.ReadKey))
+		_, ok, err = GetAdtyNotificationDetail(customer, &site, notice.ReadKey)
+		require.NoError(t, err)
+		require.False(t, ok)
+	})
+	t.Run("R23 historical roles are verified from ticket events", func(t *testing.T) {
+		tk, err := CreateAdtyTicket(customer, AdtyTicketInput{Title: "Legacy", Body: "Hi"})
+		require.NoError(t, err)
+		reply, err := ReplyAdtyTicket(staff, tk.Id, "客服回复", "old", "staff")
+		require.NoError(t, err)
+		_, err = ReplyAdtyTicket(customer, tk.Id, "客户回复", "answer", "personal")
+		require.NoError(t, err)
+		_, err = NoteAdtyTicket(staff, tk.Id, "备注", "old-note", "staff")
+		require.NoError(t, err)
+		require.NoError(t, db.Where("object_key=?", ticketTranslationKey(reply.Id)).Delete(&model.AdtyTranslationHead{}).Error)
+		require.NoError(t, db.Where("object_key=?", ticketTranslationKey(reply.Id)).Delete(&model.AdtyTranslationJob{}).Error)
+		require.NoError(t, db.Model(&model.AdtyTicketMessage{}).Where("ticket_id=?", tk.Id).Update("author_role", "").Error)
+		require.NoError(t, backfillTicketReplyTranslations())
+		d, err := GetAdtyTicket(customer, tk.Id, "personal")
+		require.NoError(t, err)
+		require.Len(t, d.Messages, 3)
+		require.Equal(t, "customer", d.Messages[0].AuthorRole)
+		require.Equal(t, "support", d.Messages[1].AuthorRole)
+		require.Equal(t, model.AdtyTranslationPending, d.Messages[1].TranslationStatus)
+		require.Equal(t, "customer", d.Messages[2].AuthorRole)
+		d, err = GetAdtyTicket(owner, tk.Id, "owner")
+		require.NoError(t, err)
+		require.Equal(t, "support", d.Messages[3].AuthorRole)
+		unknown := model.AdtyTicketMessage{TicketId: tk.Id, AuthorId: other, Visibility: "public", Body: "历史记录", Dedupe: "unattributed-archive"}
+		require.NoError(t, db.Create(&unknown).Error)
+		require.NoError(t, backfillTicketReplyTranslations())
+		d, err = GetAdtyTicket(customer, tk.Id, "personal")
+		require.NoError(t, err)
+		require.Equal(t, "unconfirmed", d.Messages[len(d.Messages)-1].AuthorRole)
+		require.Empty(t, d.Messages[len(d.Messages)-1].TranslationStatus)
+	})
+	t.Run("R23 staff opens and hides only a visible receipt", func(t *testing.T) {
+		tk, err := CreateAdtyTicket(customer, AdtyTicketInput{Title: "Receipt", Body: "Request"})
+		require.NoError(t, err)
+		require.NoError(t, SetAdtyTicketStatus(owner, tk.Id, "", "", staff, "owner"))
+		var mine, another model.AdtyTicketNotice
+		require.NoError(t, db.Where("ticket_id=? AND user_id=?", tk.Id, staff).First(&mine).Error)
+		require.NoError(t, db.Where("ticket_id=? AND user_id=?", tk.Id, owner).First(&another).Error)
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Set(AdtySiteContextKey, &site)
+		ctx.Request = httptest.NewRequest("POST", "/api/adty/notifications/hide", nil)
+		_, ok, err := GetAdtyNotificationDetail(staff, &site, mine.ReadKey)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Error(t, HideAdtyNotificationForUserFromRequest(ctx, staff, another.ReadKey))
+		require.NoError(t, HideAdtyNotificationForUserFromRequest(ctx, staff, mine.ReadKey))
+		_, ok, err = GetAdtyNotificationDetail(staff, &site, mine.ReadKey)
+		require.NoError(t, err)
+		require.False(t, ok)
+	})
+	t.Run("R23 main support bot bind delivery and permission revocation", func(t *testing.T) {
+		t.Setenv("CRYPTO_SECRET", strings.Repeat("t", 32))
+		require.NoError(t, CheckAdtyPlatformTicketAccess(admin))
+		require.Error(t, CheckAdtyPlatformTicketAccess(mainUser))
+		token, err := model.SealAdtyPurposeSecret("telegram:admin", "test-token")
+		require.NoError(t, err)
+		secret := sha256.Sum256([]byte("test-webhook"))
+		bot := model.AdtyTelegramBot{Purpose: "admin", Username: "test_bot", IdentityHash: "test-identity", Enabled: true, TokenCipher: token, WebhookHash: hex.EncodeToString(secret[:])}
+		require.NoError(t, db.Create(&bot).Error)
+		code, _, _, err := StartAdtyTelegramBind(admin, "admin")
+		require.NoError(t, err)
+		message := AdtyTelegramMessage{Text: "/start " + code}
+		message.Chat.Type = "private"
+		message.From.Id = 12345
+		_, err = HandleAdtyTelegramUpdate("admin", "test-webhook", AdtyTelegramUpdate{Message: &message})
+		require.NoError(t, err)
+		_, err = ConfirmAdtyTelegramBind(admin, "admin", code, message.From.Id)
+		require.NoError(t, err)
+		tk, err := CreateAdtyTicket(mainUser, AdtyTicketInput{Title: "Unassigned", Body: "Request"})
+		require.NoError(t, err)
+		var notice model.AdtyTicketNotice
+		require.NoError(t, db.Where("ticket_id=? AND user_id=?", tk.Id, admin).First(&notice).Error)
+		var delivery model.AdtyTelegramDelivery
+		require.NoError(t, db.Where("event_key=?", notice.EventKey).First(&delivery).Error)
+		require.Equal(t, model.AdtyTelegramDeliveryWait, delivery.Status)
+		_, chat, skip, fail := authorizeAndResolveAdtyTelegramDelivery(&delivery)
+		require.Equal(t, "12345", chat)
+		require.Empty(t, skip)
+		require.Empty(t, fail)
+		require.NoError(t, db.Model(&rule).Update("v2", "read").Error)
+		defer db.Model(&rule).Update("v2", "manage_all")
+		require.Error(t, CheckAdtyPlatformTicketAccess(admin))
+		_, chat, skip, fail = authorizeAndResolveAdtyTelegramDelivery(&delivery)
+		require.Empty(t, chat)
+		require.Equal(t, "business access revoked", skip)
+		require.Empty(t, fail)
+	})
 	require.NoError(t, db.Delete(&rule).Error)
 	_, _, err = OpenAdtyTicketImage(admin, first.Id, attachment.Id, "platform")
 	require.Error(t, err)
@@ -429,10 +597,25 @@ func TestAdtyTicketWorkspacesPostgres(t *testing.T) {
 	require.Error(t, SetAdtyTicketStatus(owner, first.Id, "", "", staff, "owner"))
 
 	t.Run("main site inherits handling and the same team retains its history", func(t *testing.T) {
-		require.NoError(t, model.TransferAdtyTicketsToMain(db, db.Model(&model.AdtySite{}).Select("id").Where("id=?", site.Id)))
+		var readNotice model.AdtyTicketNotice
+		require.NoError(t, db.Where("user_id=? AND ticket_id=?", customer, first.Id).First(&readNotice).Error)
+		require.NoError(t, MarkAdtyNotificationInboxRead(customer, &site, []string{readNotice.ReadKey}))
+		for i := 0; i < 2; i++ {
+			require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return transferSiteTicketsToMainTx(tx, site.Id) }))
+		}
+		var handoffs int64
+		require.NoError(t, db.Model(&model.AdtyTicketNotice{}).Where("action='site_handoff' AND ticket_id=? AND user_id=?", first.Id, root).Count(&handoffs).Error)
+		require.EqualValues(t, 1, handoffs)
 		require.NoError(t, db.Model(&team).Update("site_id", 0).Error)
 		require.NoError(t, db.Model(&model.User{}).Where("id IN ?", []int{leader, customer}).Update("site_id", 0).Error)
 		require.NoError(t, db.Model(&site).Update("status", model.AdtySiteStatusClosed).Error)
+		inbox, err := GetAdtyNotificationInbox(customer, nil, 0)
+		require.NoError(t, err)
+		for !slices.Contains(inbox.ReadKeys, readNotice.ReadKey) && inbox.NextTicketBeforeId > 0 {
+			inbox, err = GetAdtyNotificationInbox(customer, nil, -1, inbox.NextTicketBeforeId)
+			require.NoError(t, err)
+		}
+		require.Contains(t, inbox.ReadKeys, readNotice.ReadKey)
 		require.NoError(t, db.Create(&model.CasbinRule{Ptype: "p", V0: authz.UserSubject(admin), V1: authz.ResourceAdtyTicket, V2: "manage", V3: "allow"}).Error)
 		shared, err := ListAdtyTicketPage(leader, "", 1, 20, "team")
 		require.NoError(t, err)

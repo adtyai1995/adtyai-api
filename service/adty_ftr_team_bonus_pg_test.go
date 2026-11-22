@@ -17,6 +17,7 @@ import (
 // The team order stores bonus 0 and does not credit shared quota.
 func TestFTRADTY1308TeamTopupSkipsMethodBonusPG(t *testing.T) {
 	db := ftrRound1PG(t)
+	channel := seedTeamCheckoutChannel(t, db)
 	require.NoError(t, db.AutoMigrate(&model.TopUp{}, &model.AdtyTopupOrder{}, &model.AdtyTeamLedger{}))
 	require.True(t, common.QuotaPerUnitDecimal().Equal(decimal.NewFromInt(500000)))
 	require.Equal(t, 7.3, operation_setting.Price)
@@ -48,7 +49,7 @@ func TestFTRADTY1308TeamTopupSkipsMethodBonusPG(t *testing.T) {
 
 	createdTeam, err := CreateAdtyTeam(leader.Id, 0, "ftr1308", decimal.NewFromInt(1))
 	require.NoError(t, err)
-	order, err := CreateAdtyTeamTopupOrder(leader.Id, createdTeam.Team.Id, decimal.NewFromInt(100), "ftr1308-key")
+	order, err := StartAdtyTeamTopupPayment(leader.Id, createdTeam.Team.Id, decimal.NewFromInt(100), "alipay", channel.Id, "ftr1308-key", "127.0.0.1")
 	require.NoError(t, err)
 	require.NotNil(t, order)
 	stored, err := model.GetAdtyTopupOrder(order.TradeNo)

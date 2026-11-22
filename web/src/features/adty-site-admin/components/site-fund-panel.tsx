@@ -63,26 +63,10 @@ export function SiteFundPanel(props: { siteId: number }) {
     createVoucherIssuanceIntentKey()
   )
   const [reconciled, setReconciled] = useState<AdminVoucherIssued | null>(null)
-  const [note, setNote] = useState('')
   const wallets = useQuery({
     queryKey: siteAdminKeys.list('wallets', { siteId: props.siteId }),
     queryFn: () => getAdminSiteWallets(props.siteId),
     enabled: isRoot,
-  })
-  const dispositions = useQuery({
-    queryKey: siteAdminKeys.list('dispositions', { siteId: props.siteId }),
-    queryFn: () => getAdminAnomalyDispositions(props.siteId),
-    enabled: isRoot,
-  })
-  const review = useMutation({
-    mutationFn: (input: { id: number; status: 'reviewing' | 'closed' }) =>
-      reviewAdminAnomalyDisposition(input.id, input.status, note.trim()),
-    onSuccess: () => {
-      setNote('')
-      void client.invalidateQueries({ queryKey: siteAdminKeys.all })
-      void invalidateSidebarBadges(client)
-    },
-    onError: (error) => handleServerError(error),
   })
   const anomalies = useQuery({
     queryKey: siteAdminKeys.list('fund-anomalies', { siteId: props.siteId }),
@@ -158,11 +142,6 @@ export function SiteFundPanel(props: { siteId: number }) {
   // 缓存里可能留着旧形状的响应；列表只认数组，其它一律当空，否则 `.map` 会让整页白屏。
   const walletRows = Array.isArray(wallets.data) ? wallets.data : []
   const anomalyKinds = Array.isArray(anomalies.data) ? anomalies.data : []
-  // 异常处置列表同样是「成功但形状不可信」的高危点：崩了站长就看不出哪笔资金
-  // 异常还没处置完，所以和 wallets/anomalies 一样只认数组。
-  const dispositionRows = Array.isArray(dispositions.data)
-    ? dispositions.data
-    : []
   return (
     <section className='flex flex-col gap-3'>
       <h3 className='text-sm font-medium'>{t('Wallets')}</h3>
@@ -240,54 +219,7 @@ export function SiteFundPanel(props: { siteId: number }) {
           ))}
         </ul>
       )}
-      <h3 className='text-sm font-medium'>{t('Financial review history')}</h3>
-      {dispositions.isPending && <LoadingState />}
-      {dispositions.isError && (
-        <ErrorState onRetry={() => void dispositions.refetch()} />
-      )}
-      {dispositions.isSuccess && dispositionRows.length === 0 && (
-        <p className='text-sm'>{t('No data')}</p>
-      )}
-      {dispositions.isSuccess && dispositionRows.length > 0 && (
-        <div className='flex flex-col gap-2'>
-          <Label htmlFor='anomaly-note'>{t('Note')}</Label>
-          <Input id='anomaly-note' value={note} onChange={(event) => setNote(event.target.value)} />
-          {dispositionRows.map((row) => (
-            <div key={row.id} className='flex flex-wrap items-center gap-2 text-sm'>
-              <span className='font-mono text-xs'>{row.kind}</span>
-              <span>{row.status}</span>
-              {row.difference ? <span className='tabular-nums'>{row.difference}</span> : null}
-              {row.account_id ? <span>{row.account_id}</span> : null}
-              {row.order_ref ? <span className='font-mono text-xs'>{row.order_ref}</span> : null}
-              {row.evidence ? (
-                <span className='text-muted-foreground text-xs break-all'>{row.evidence}</span>
-              ) : null}
-              {row.status !== 'closed' && (
-                <>
-                  <Button
-                    type='button'
-                    size='sm'
-                    variant='outline'
-                    disabled={review.isPending}
-                    onClick={() => review.mutate({ id: row.id, status: 'reviewing' })}
-                  >
-                    {t('Mark reviewing')}
-                  </Button>
-                  <Button
-                    type='button'
-                    size='sm'
-                    variant='outline'
-                    disabled={review.isPending || note.trim() === ''}
-                    onClick={() => review.mutate({ id: row.id, status: 'closed' })}
-                  >
-                    {t('Close')}
-                  </Button>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      <FundReviewPanel siteId={props.siteId} />
       <h3 className='text-sm font-medium'>{t('Issue margin code')}</h3>
       <p className='text-muted-foreground text-sm'>
         {t('Only the site owner can redeem a margin code.')}
@@ -363,6 +295,87 @@ export function SiteFundPanel(props: { siteId: number }) {
         </div>
       )}
       {code && <p className='text-sm break-all'>{code}</p>}
+    </section>
+  )
+}
+
+export function FundReviewPanel(props: { siteId: number }) {
+  const { t } = useTranslation()
+  const client = useQueryClient()
+  const isRoot = useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const [note, setNote] = useState('')
+  const dispositions = useQuery({
+    queryKey: siteAdminKeys.list('dispositions', { siteId: props.siteId }),
+    queryFn: () => getAdminAnomalyDispositions(props.siteId),
+    enabled: isRoot,
+  })
+  const review = useMutation({
+    mutationFn: (input: { id: number; status: 'reviewing' | 'closed' }) =>
+      reviewAdminAnomalyDisposition(input.id, input.status, note.trim()),
+    onSuccess: () => {
+      setNote('')
+      void client.invalidateQueries({ queryKey: siteAdminKeys.all })
+      void invalidateSidebarBadges(client)
+    },
+    onError: (error) => handleServerError(error),
+  })
+  // 异常处置列表同样是「成功但形状不可信」的高危点：崩了站长就看不出哪笔资金
+  // 异常还没处置完，所以和 wallets/anomalies 一样只认数组。
+  const dispositionRows = Array.isArray(dispositions.data)
+    ? dispositions.data
+    : []
+  if (!isRoot) return null
+  return (
+    <section className='flex flex-col gap-2'>
+      <h3 className='text-sm font-medium'>{t('Financial review history')}</h3>
+      {dispositions.isPending && <LoadingState />}
+      {dispositions.isError && (
+        <ErrorState onRetry={() => void dispositions.refetch()} />
+      )}
+      {dispositions.isSuccess && dispositionRows.length === 0 && (
+        <p className='text-sm'>{t('No data')}</p>
+      )}
+      {dispositions.isSuccess && dispositionRows.length > 0 && (
+        <div className='flex flex-col gap-2'>
+          <Label htmlFor='anomaly-note'>{t('Note')}</Label>
+          <Input id='anomaly-note' value={note} onChange={(event) => setNote(event.target.value)} />
+          {dispositionRows.map((row) => (
+            <div key={row.id} className='flex flex-wrap items-center gap-2 text-sm'>
+              <span className='font-mono text-xs'>{row.kind}</span>
+              <span>{row.status}</span>
+              {row.difference ? <span className='tabular-nums'>{row.difference}</span> : null}
+              {row.team_id ? <span>{t('Team')} #{row.team_id}</span> : null}
+              {row.account_id ? <span>{row.account_id}</span> : null}
+              {row.order_ref ? <span className='font-mono text-xs'>{row.order_ref}</span> : null}
+              {row.evidence ? (
+                <span className='text-muted-foreground text-xs break-all'>{row.evidence}</span>
+              ) : null}
+              {row.status !== 'closed' && (
+                <>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={review.isPending}
+                    onClick={() => review.mutate({ id: row.id, status: 'reviewing' })}
+                  >
+                    {t('Mark reviewing')}
+                  </Button>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={review.isPending || note.trim() === ''}
+                    onClick={() => review.mutate({ id: row.id, status: 'closed' })}
+                  >
+                    {t('Close')}
+                  </Button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   )
 }

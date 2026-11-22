@@ -264,7 +264,7 @@ func DeleteTelegramBinding(c *gin.Context) {
 // DELETE /api/adty/site/telegram. It revokes through the service ledger path
 // and must not live at the retired controller/telegram.go path.
 func DeleteAdtyTelegramBinding(c *gin.Context) {
-	purpose := model.AdtyTelegramPurposeUser
+	purpose := c.DefaultQuery("purpose", model.AdtyTelegramPurposeUser)
 	if strings.Contains(c.FullPath(), "/site/") {
 		if _, ok := adtyOwnerSiteOr403(c); !ok {
 			return

@@ -735,7 +735,15 @@ func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64, cutoff i
 		if err := tx.Where("object_key IN (?)", translations).Delete(&model.AdtyTranslationHead{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("ticket_id = ?", ticketID).Delete(&model.AdtyTicketNotice{}).Error; err != nil {
+		var snapshotTeamID int64
+		if ticket.TeamShared {
+			snapshotTeamID = ticket.TeamId
+		}
+		if err := tx.Model(&model.AdtyTicketNotice{}).Where("ticket_id = ?", ticketID).Updates(map[string]any{
+			"expired_at": time.Now().Unix(), "snapshot_team_id": snapshotTeamID, "site_id": ticket.HandlingSite(),
+			"purpose": gorm.Expr("CASE WHEN COALESCE(purpose,'') <> '' THEN purpose WHEN user_id=? THEN ? ELSE ? END", ticket.UserId, model.AdtyTelegramPurposeUser, model.AdtyTelegramPurposeAdmin),
+			"title":   "", "content": "", "telegram_pending": false,
+		}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("ticket_id = ?", ticketID).Delete(&model.AdtyTicketMessage{}).Error; err != nil {

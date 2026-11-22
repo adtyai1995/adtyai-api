@@ -426,6 +426,7 @@ func (AdtySiteInvite) TableName() string { return "adty_site_invites" }
 // original review columns. CreatedAt is the discovery time; OperatorId and
 // Status/Note are the handler and disposition result after review.
 type AdtyAnomalyDisposition struct {
+	TeamId     int64  `json:"team_id,omitempty" gorm:"not null;default:0"`
 	Id         int64  `json:"id"`
 	Kind       string `json:"kind" gorm:"type:varchar(32);index"`
 	Ref        string `json:"ref" gorm:"type:varchar(128);index"`

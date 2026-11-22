@@ -28,6 +28,7 @@ const bepusdtTimeoutSeconds = 900
 
 // BEpusdtCreateRequest 是下单参数。
 type BEpusdtCreateRequest struct {
+	VerifyOrder bool
 	OrderID     string
 	AmountUSD   decimal.Decimal
 	TradeType   string
@@ -190,6 +191,10 @@ func CreateBEpusdtOrder(req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
 		return nil, err
 	}
 	var parsed struct {
+		OrderID        string          `json:"order_id"`
+		TradeType      string          `json:"trade_type"`
+		Fiat           string          `json:"fiat"`
+		Money          json.RawMessage `json:"amount"`
 		TradeId        string          `json:"trade_id"`
 		ActualAmount   json.RawMessage `json:"actual_amount"`
 		Token          string          `json:"token"`
@@ -198,6 +203,12 @@ func CreateBEpusdtOrder(req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
 	}
 	if err := common.Unmarshal(data, &parsed); err != nil {
 		return nil, err
+	}
+	if req.VerifyOrder {
+		money, err := decimalFromJSON(parsed.Money)
+		if err != nil || !money.Equal(req.AmountUSD) || parsed.Fiat != "USD" || parsed.OrderID != req.OrderID || parsed.TradeType != req.TradeType {
+			return nil, fmt.Errorf("bepusdt returned a different order")
+		}
 	}
 	actual, err := decimalFromJSON(parsed.ActualAmount)
 	if err != nil || !actual.IsPositive() || parsed.Token == "" || parsed.TradeId == "" {

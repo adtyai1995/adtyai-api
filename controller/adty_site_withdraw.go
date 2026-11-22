@@ -16,6 +16,20 @@ func GetAdtySiteWithdrawRules(c *gin.Context) {
 	if _, ok := adtyOwnerAccountingSite(c); !ok {
 		return
 	}
+	if raw, ok := c.GetQuery("amount_usd"); ok {
+		amount, err := decimal.NewFromString(raw)
+		if err != nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		payout, err := service.QuoteSiteWithdrawal(amount, c.Query("method"))
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, gin.H{"payout_amount": payout.String()})
+		return
+	}
 	GetAdtyAdminWithdrawRules(c)
 }
 
@@ -33,12 +47,15 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rows, err := service.ListAdtySiteWithdrawals(site.Id, c.GetInt("id"))
+	page, offset, limit := adtyPage(c)
+	rows, total, err := service.PageAdtySiteWithdrawals(site.Id, c.GetInt("id"), c.Query("status"), c.Query("number"), offset, limit)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	page.SetTotal(int(total))
+	page.SetItems(rows)
+	common.ApiSuccess(c, page)
 }
 
 func PostAdtySiteWithdrawal(c *gin.Context) {
@@ -47,12 +64,13 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		return
 	}
 	var body struct {
-		AmountUSD    string `json:"amount_usd"`
-		Method       string `json:"method"`
-		Network      string `json:"network"`
-		AccountNo    string `json:"account_no"`
-		AccountName  string `json:"account_name"`
-		ExpectedRate string `json:"expected_rate"`
+		AmountUSD      string           `json:"amount_usd"`
+		Method         string           `json:"method"`
+		Network        string           `json:"network"`
+		AccountNo      string           `json:"account_no"`
+		AccountName    string           `json:"account_name"`
+		ExpectedRate   string           `json:"expected_rate"`
+		ExpectedPayout *decimal.Decimal `json:"expected_payout"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -70,7 +88,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 	}
 	row, err := service.CreateAdtySiteWithdrawal(service.AdtySiteWithdrawInput{
 		SiteID: site.Id, OwnerID: c.GetInt("id"), AmountUSD: amount, Method: body.Method, Network: body.Network,
-		AccountNo: body.AccountNo, AccountName: body.AccountName, ExpectedRate: expected,
+		AccountNo: body.AccountNo, AccountName: body.AccountName, ExpectedRate: expected, ExpectedPayout: body.ExpectedPayout,
 		IdempotencyKey: c.GetHeader("Idempotency-Key"),
 	})
 	if err != nil {

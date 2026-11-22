@@ -33,8 +33,6 @@ import {
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import {
-  resetStaffPassword,
-  saveStaffAccount,
   type StaffAccount,
   type StaffPermission,
   type StaffRole,
@@ -106,9 +104,9 @@ export function StaffDialog(props: {
   const save = useVerifiedOwnerMutation<Values>({
     action,
     target: () => props.staff?.id ?? props.siteId,
-    run: async (values, proof) => {
+    staffRequest: (values) => {
       if (props.mode === 'password' && props.staff) {
-        return resetStaffPassword(props.staff, values.password, proof)
+        return { password: values.password, expected_version: props.staff.version }
       }
       const input = {
         display_name: values.display_name,
@@ -118,13 +116,9 @@ export function StaffDialog(props: {
         expected_version: props.staff?.version,
       }
       if (props.mode === 'create') {
-        return saveStaffAccount(
-          null,
-          { ...input, username: values.username, password: values.password },
-          proof
-        )
+        return { ...input, username:values.username,password:values.password }
       }
-      return saveStaffAccount(props.staff?.id ?? null, input, proof)
+      return input
     },
     onSuccess: props.onClose,
   })

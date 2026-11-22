@@ -74,11 +74,19 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 	if err := db.Model(&AdtyTeamInvite{}).Where("purpose = '' AND used_at = 0 AND revoked_at = 0").Update("revoked_at", time.Now().Unix()).Error; err != nil {
 		return err
 	}
+	// Repair the scope on previous releases' team anomalies from the original
+	// order. Preserve their disposition, operator and review notes.
+	if err := db.Exec(`UPDATE adty_anomaly_dispositions SET
+		site_id = o.site_id, team_id = o.team_id, order_ref = o.trade_no, account_id = o.user_id
+		FROM adty_topup_orders o WHERE adty_anomaly_dispositions.ref = o.trade_no AND o.team_id > 0
+		AND adty_anomaly_dispositions.team_id = 0 AND adty_anomaly_dispositions.kind IN ('closed_team_topup', 'team_principal_review')`).Error; err != nil {
+		return err
+	}
 	// Historical team balances cannot identify which recharge survived. Surface
 	// each paid legacy order once in the existing reconciliation work queue.
 	if db.Migrator().HasTable(&TopUp{}) {
-		if err := db.Exec(`INSERT INTO adty_anomaly_dispositions (kind,ref,order_ref,site_id,account_id,status,note,created_at)
-          SELECT 'team_principal_review',o.trade_no,o.trade_no,o.site_id,o.user_id,'open','Historical team principal requires order-level review',?
+		if err := db.Exec(`INSERT INTO adty_anomaly_dispositions (kind,ref,order_ref,site_id,team_id,account_id,status,note,created_at)
+          SELECT 'team_principal_review',o.trade_no,o.trade_no,o.site_id,o.team_id,o.user_id,'open','Historical team principal requires order-level review',?
           FROM adty_topup_orders o JOIN top_ups t ON t.trade_no=o.trade_no
           WHERE o.team_id>0 AND t.status=? AND NOT EXISTS (SELECT 1 FROM adty_team_fund_lots l WHERE l.team_id=o.team_id AND l.kind='topup' AND l.source=o.trade_no)
           AND NOT EXISTS (SELECT 1 FROM adty_anomaly_dispositions a WHERE a.kind='team_principal_review' AND a.ref=o.trade_no)`, time.Now().Unix(), common.TopUpStatusSuccess).Error; err != nil {
@@ -157,7 +165,12 @@ func migrateAdtySiteTablesOn(db *gorm.DB) error {
 	if err := db.AutoMigrate(AdtySiteTables()...); err != nil {
 		return err
 	}
-	// Pre-attempt recalls left a reviewer and reason on a pending withdrawal.
+	// The replacement unique index includes the notice revision. Historical rows
+ // are revision one and retain their original batch and provider keys.
+ if db.Migrator().HasIndex(&AdtySiteCloseMailBatch{},"idx_adty_site_close_mail_batches_site_id"){
+ if err:=db.Migrator().DropIndex(&AdtySiteCloseMailBatch{},"idx_adty_site_close_mail_batches_site_id");err!=nil{return err}
+ }
+ // Pre-attempt recalls left a reviewer and reason on a pending withdrawal.
 	// Keep these holds until the original external result is reconciled.
 	if err := db.Model(&AdtySiteWithdrawal{}).Where("attempt_number = 0 AND attempt_open = ? AND (status = ? OR (status = ? AND reviewed_at > 0 AND proof_note <> ''))", false, AdtySiteWithdrawPaying, AdtySiteWithdrawPending).Where("NOT EXISTS (?)", db.Model(&AdtySitePayoutAttempt{}).Select("1").Where("withdrawal_id = adty_site_withdrawals.id")).Update("attempt_open", true).Error; err != nil {
 		return err

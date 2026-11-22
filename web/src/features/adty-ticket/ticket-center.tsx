@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -70,6 +70,7 @@ const eventLabels: Record<string, string> = {
   note: 'Internal note',
   assign: 'Assign ticket',
   transfer: 'Transfer ticket',
+  site_handoff: 'Transferred to main-site support',
   status: 'Status',
   priority: 'Priority',
   reopen: 'Reopen ticket',
@@ -223,19 +224,57 @@ function TicketWorkspace({
   const [selected, setSelected] = useState<number | null>(null)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
-  const [reply, setReply] = useState('')
-  const [note, setNote] = useState('')
+  const draftKey = JSON.stringify([userId, scope, selected])
+  const [drafts, setDrafts] = useState<
+    Record<string, { reply?: string; note?: string }>
+  >({})
+  const reply = drafts[draftKey]?.reply ?? ''
+  const note = drafts[draftKey]?.note ?? ''
+  function updateDraft(field: 'reply' | 'note', value: string) {
+    setDrafts((previous) => ({
+      ...previous,
+      [draftKey]: { ...previous[draftKey], [field]: value },
+    }))
+  }
   const [assignee, setAssignee] = useState('')
   const [related, setRelated] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+
+  const selectTicket = useCallback((id: number | null) => {
+    setSelected(id)
+    setAssignee('')
+    setImageMessage(0)
+    setError('')
+  }, [])
+
+  const requestRef = relatedKind === 'request' ? related.trim() : ''
+  const requestAudience = useQuery({
+    queryKey: ['ticket-request-audience', userId, requestRef],
+    enabled: Boolean(requestRef && userId),
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const { data } = await api.get('/api/adty/tickets/request-audience', {
+        params: { ref: requestRef },
+        signal,
+      })
+      if (
+        !data.success ||
+        !['personal', 'team'].includes(data.data?.audience)
+      ) {
+        throw new Error(data.message || t('Failed to load data'))
+      }
+      return data.data.audience as 'personal' | 'team'
+    },
+  })
+  const resolvedAudience = requestRef ? requestAudience.data : audience
 
   useEffect(() => {
     function readLink() {
       const hash = window.location.hash
       const match = /^#case-(\d+)$/.exec(hash)
       const source = ticketDraftLink(hash)
-      if (match) setSelected(Number(match[1]))
+      if (match) selectTicket(Number(match[1]))
       if (source) {
         setRelatedKind(source.kind)
         setRelated(source.ref)
@@ -253,7 +292,7 @@ function TicketWorkspace({
     readLink()
     window.addEventListener('hashchange', readLink)
     return () => window.removeEventListener('hashchange', readLink)
-  }, [])
+  }, [selectTicket])
 
   const detail = useQuery({
     queryKey: ['adty-tickets', userId, scope, 'detail', selected],
@@ -290,7 +329,7 @@ function TicketWorkspace({
         title: title.trim(),
         body: body.trim(),
         priority,
-        audience,
+        audience: resolvedAudience,
         related_kind: related.trim() ? relatedKind : '',
         related_ref: relatedKind ? related.trim() : '',
       }
@@ -371,7 +410,7 @@ function TicketWorkspace({
         {
           params: { scope },
           headers: headers(
-            'reply',
+            `${draftKey}:reply`,
             JSON.stringify([selected, scope, reply.trim()])
           ),
         }
@@ -380,8 +419,8 @@ function TicketWorkspace({
       if (!payload?.success) {
         throw new Error(payload?.message || t('Failed to save'))
       }
-      attempts.current.delete('reply')
-      setReply('')
+      attempts.current.delete(`${draftKey}:reply`)
+      updateDraft('reply', '')
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -403,7 +442,7 @@ function TicketWorkspace({
         {
           params: { scope },
           headers: headers(
-            'note',
+            `${draftKey}:note`,
             JSON.stringify([selected, scope, note.trim()])
           ),
         }
@@ -412,8 +451,8 @@ function TicketWorkspace({
       if (!payload?.success) {
         throw new Error(payload?.message || t('Failed to save'))
       }
-      attempts.current.delete('note')
-      setNote('')
+      attempts.current.delete(`${draftKey}:note`)
+      updateDraft('note', '')
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -427,6 +466,13 @@ function TicketWorkspace({
     setPending(true)
     setError('')
     try {
+      const digest = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(encodedData)
+      )
+      const hash = Array.from(new Uint8Array(digest), (b) =>
+        b.toString(16).padStart(2, '0')
+      ).join('')
       const response = await api.post(
         `/api/adty/tickets/${selected}/images`,
         {
@@ -435,7 +481,10 @@ function TicketWorkspace({
           visibility: detail.data?.messages.find((m) => m.id === imageMessage)
             ?.visibility,
         },
-        { params: { scope } }
+        {
+          params: { scope },
+          headers: { 'Idempotency-Key': `image:${imageMessage}:${hash}` },
+        }
       )
       const payload = response.data as { success?: boolean; message?: string }
       if (!payload?.success) {
@@ -449,14 +498,6 @@ function TicketWorkspace({
     }
   }
 
-  function selectTicket(id: number | null) {
-    setSelected(id)
-    setReply('')
-    setNote('')
-    setAssignee('')
-    setImageMessage(0)
-    setError('')
-  }
   function changeQueue(next: TicketQueueId | '') {
     setQueue(next)
     setPage(1)
@@ -703,11 +744,13 @@ function TicketWorkspace({
                       {
                         customer: 'Customer',
                         staff: 'Support staff',
+                        support: 'Support staff',
                         owner: 'Site owner',
                         platform: 'Platform support',
                         platform_main: 'Platform support',
                       } as Record<string, string>
-                    )[message.author_role ?? ''] ?? 'User'
+                    )[message.author_role ?? ''] ??
+                      'Historical author role unconfirmed'
                   )}{' '}
                   #{message.author_id} ·{' '}
                   {formatDateTimeObject(new Date(message.created_at * 1000))}
@@ -782,7 +825,9 @@ function TicketWorkspace({
               <NativeSelect
                 aria-label={t('Common replies')}
                 value=''
-                onChange={(event) => setReply(t(event.target.value))}
+                onChange={(event) =>
+                  updateDraft('reply', t(event.target.value))
+                }
               >
                 <NativeSelectOption value=''>
                   {t('Common replies')}
@@ -802,7 +847,7 @@ function TicketWorkspace({
               disabled={terminal}
               aria-label={t('Reply')}
               value={reply}
-              onChange={(event) => setReply(event.target.value)}
+              onChange={(event) => updateDraft('reply', event.target.value)}
             />
             <Button
               type='button'
@@ -816,7 +861,7 @@ function TicketWorkspace({
                 <Textarea
                   aria-label={t('Internal note')}
                   value={note}
-                  onChange={(event) => setNote(event.target.value)}
+                  onChange={(event) => updateDraft('note', event.target.value)}
                 />
                 <Button
                   type='button'
@@ -1000,6 +1045,7 @@ function TicketWorkspace({
               disabled={terminal || pending || !imageMessage}
               onChange={(event) => {
                 const file = event.target.files?.[0]
+                event.target.value = ''
                 if (!file || selected === null) return
                 if (file.size > (list.data?.imagePolicy?.max_bytes ?? 0)) {
                   setError(t('Image exceeds the size limit'))
@@ -1024,10 +1070,23 @@ function TicketWorkspace({
             <Label htmlFor='ticket-audience'>{t('Ticket audience')}</Label>
             <NativeSelect
               id='ticket-audience'
-              value={audience}
-              disabled={type === 'account' || relatedKind.startsWith('team_')}
+              value={resolvedAudience ?? ''}
+              disabled={
+                type === 'account' ||
+                Boolean(requestRef) ||
+                relatedKind.startsWith('team_')
+              }
               onChange={(e) => setAudience(e.target.value)}
             >
+              {requestRef && !resolvedAudience && (
+                <NativeSelectOption value=''>
+                  {t(
+                    requestAudience.isError
+                      ? 'Failed to load data'
+                      : 'Loading...'
+                  )}
+                </NativeSelectOption>
+              )}
               <NativeSelectOption value='personal'>
                 {t('Only me and authorized support')}
               </NativeSelectOption>
@@ -1121,7 +1180,8 @@ function TicketWorkspace({
                 pending ||
                 title.trim() === '' ||
                 body.trim() === '' ||
-                Boolean(relatedKind && !related.trim())
+                Boolean(relatedKind && !related.trim()) ||
+                !resolvedAudience
               }
               onClick={() => void create()}
             >

@@ -114,7 +114,8 @@ export async function getOwnerSite(): Promise<OwnerSite> {
 
 /** Brand and the SEO switch do not need verification. */
 export async function saveOwnerSite(body: {
-  brand?: SiteBrand
+  brand?: Partial<SiteBrand>
+  expected_brand?: Partial<SiteBrand>
   seo_index?: boolean
 }): Promise<OwnerSite> {
   const res = await api.put<ApiResponse<OwnerSite>>(`${BASE}/self`, body)
@@ -196,14 +197,36 @@ export async function getSiteWithdrawRules(
   return requireServerSuccess(res.data).data
 }
 
-export async function getSiteWithdrawals(
+export async function getSiteWithdrawalQuote(
+  amount: string,
+  method: string,
   siteId?: number
-): Promise<SiteWithdrawal[]> {
-  const res = await api.get<ApiResponse<{ items: SiteWithdrawal[] }>>(
-    `${BASE}/withdrawals`,
-    { params: archivedQuery(siteId) }
+) {
+  const res = await api.get<ApiResponse<{ payout_amount: string }>>(
+    `${BASE}/withdrawals/rules`,
+    { params: { ...archivedQuery(siteId), amount_usd: amount, method } }
   )
-  return requireServerSuccess(res.data).data.items ?? []
+  return requireServerSuccess(res.data).data.payout_amount
+}
+
+export async function getSiteWithdrawals(
+  siteId?: number,
+  page = 1,
+  status = '',
+  number = ''
+) {
+  const res = await api.get<
+    ApiResponse<{ items: SiteWithdrawal[]; total: number }>
+  >(`${BASE}/withdrawals`, {
+    params: {
+      ...archivedQuery(siteId),
+      p: page,
+      page_size: OWNER_PAGE_SIZE,
+      status,
+      number,
+    },
+  })
+  return requireServerSuccess(res.data).data
 }
 
 export async function createSiteWithdrawal(
@@ -213,6 +236,7 @@ export async function createSiteWithdrawal(
     network: string
     account_no: string
     account_name: string
+    expected_payout?: string
     expected_rate: string
     idempotencyKey: string
   },
@@ -227,6 +251,7 @@ export async function createSiteWithdrawal(
       account_no: body.account_no,
       account_name: body.account_name,
       expected_rate: body.expected_rate,
+      expected_payout: body.expected_payout,
     },
     {
       params: archivedQuery(siteId),
@@ -402,6 +427,7 @@ export async function cancelSiteWithdrawal(
 }
 
 export type SiteInviteCommissionWithdrawal = {
+  site_id?: number
   id: number
   user_id: number
   username?: string
@@ -421,13 +447,20 @@ export type SiteInviteCommissionWithdrawal = {
   reject_reason: string
 }
 
+function commissionPath(closed: boolean) {
+  return closed
+    ? '/api/user/admin/referral/closed-site-withdrawals'
+    : `${BASE}/commission-withdrawals`
+}
+
 export async function getOwnerCommissionWithdrawals(
   page: number,
-  status: string
+  status: string,
+  closed = false
 ) {
   const res = await api.get<
     ApiResponse<{ items: SiteInviteCommissionWithdrawal[]; total: number }>
-  >(`${BASE}/commission-withdrawals`, {
+  >(`${commissionPath(closed)}`, {
     params: { p: page, page_size: OWNER_PAGE_SIZE, status },
   })
   return requireServerSuccess(res.data).data
@@ -436,10 +469,12 @@ export async function getOwnerCommissionWithdrawals(
 export async function reviewOwnerCommissionWithdrawal(
   id: number,
   approve: boolean,
-  reason: string
+  reason: string,
+  closed = false,
+  failedPayout = false
 ): Promise<void> {
   const res = await api.post<ApiResponse<{ reviewed: boolean }>>(
-    `${BASE}/commission-withdrawals/${id}/review`,
+    `${commissionPath(closed)}/${id}/${failedPayout ? 'failed' : 'review'}`,
     { approve, reason }
   )
   requireServerSuccess(res.data)
@@ -448,10 +483,11 @@ export async function reviewOwnerCommissionWithdrawal(
 export async function markOwnerCommissionWithdrawalPaid(
   id: number,
   txId: string,
-  proof: string
+  proof: string,
+  closed = false
 ): Promise<void> {
   const res = await api.post<ApiResponse<{ paid: boolean }>>(
-    `${BASE}/commission-withdrawals/${id}/paid`,
+    `${commissionPath(closed)}/${id}/paid`,
     { tx_id: txId, proof }
   )
   requireServerSuccess(res.data)
@@ -475,6 +511,13 @@ export async function getOwnerEarningLines(): Promise<OwnerEarningLine[]> {
 }
 
 export type SettlementSheet = {
+  revisions?: {
+    id: number
+    before: SettlementSheet
+    after: SettlementSheet
+    sources: string[]
+    created_at: number
+  }[]
   owner_self_use_topup_usd?: string
   owner_self_use_voucher_usd?: string
   owner_self_use_refund_usd?: string

@@ -47,7 +47,7 @@ func adtyCloseDomainIntentsTx(tx *gorm.DB, siteID int) error {
 		if role == model.AdtySiteDomainRoleBaseURL {
 			desired = "removed"
 		}
-		if err := tx.Model(&model.AdtySiteDomain{}).Where("site_id = ? AND role = ? AND status <> ? AND desired_state <> ?", siteID, role, model.AdtySiteDomainRemoved, desired).Updates(map[string]any{"desired_state": desired, "automation_state": "queued", "next_run_at": 0, "generation": gorm.Expr("generation + 1")}).Error; err != nil {
+		if err := tx.Model(&model.AdtySiteDomain{}).Where("site_id = ? AND role = ? AND status <> ? AND desired_state NOT IN ?", siteID, role, model.AdtySiteDomainRemoved, []string{desired, "removed"}).Updates(map[string]any{"desired_state": desired, "automation_state": "queued", "next_run_at": 0, "generation": gorm.Expr("generation + 1")}).Error; err != nil {
 			return err
 		}
 	}
@@ -132,6 +132,11 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 	}
 	if row.DNSRoot != "" && row.DNSRoot != cfg.AliyunDomain {
 		return fmt.Errorf("Stored DNS root differs; restore DNS configuration before continuing")
+	}
+	if row.DesiredState == "redirect_only" && row.TurnstileWidget != "" {
+		if err := releaseRedirectWidget(ctx, row); err != nil {
+			return err
+		}
 	}
 	var records []AdtyDNSRecord
 	if row.DNSRecords != "" {
@@ -356,21 +361,41 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			}
 		}
 	}
-	// Activate routing for the probe, but publish readiness only after it passes.
-	result := model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Updates(map[string]any{"status": status, "automation_state": "validating", "ssl_status": detail.SSL.Status, "verify_records": verify})
+	// Keep an unverified serving host out of the route table.
+	if status == model.AdtySiteDomainActive && row.DesiredState == "serve" {
+		if err := adtyProbeDomainHTTPS(ctx, row); err != nil {
+			result := model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Updates(map[string]any{"status": model.AdtySiteDomainPending, "ssl_status": detail.SSL.Status, "verify_records": verify})
+			return errors.Join(err, result.Error)
+		}
+	}
+	result := model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Updates(map[string]any{"status": status, "automation_state": state, "ssl_status": detail.SSL.Status, "verify_records": verify})
 	if result.Error != nil {
 		return result.Error
 	}
-	if result.RowsAffected == 0 {
+	if result.RowsAffected != 1 {
 		return fmt.Errorf("Domain intent changed during reconciliation")
 	}
-	if status == model.AdtySiteDomainActive {
+	if state == "redirect_only" {
 		InvalidateAdtySiteCache()
-		if err := adtyProbeDomainHTTPS(ctx, row); err != nil {
+		return adtyProbeDomainHTTPS(ctx, row)
+	}
+	return nil
+}
+
+func releaseRedirectWidget(ctx context.Context, row *model.AdtySiteDomain) error {
+	cfg := resellerSetting()
+	if cfg.CloudflareAccountId == "" {
+		return fmt.Errorf("Restore the Turnstile account to release the hostname")
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := adtyTurnstileRemoveDomain(ctx, tx, row.TurnstileWidget, row.Hostname); err != nil {
 			return err
 		}
+		return tx.Model(&model.AdtySiteDomain{}).Where("id = ? AND lease_token = ?", row.Id, row.LeaseToken).Update("turnstile_widget", "").Error
+	}); err != nil {
+		return err
 	}
-	return model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Update("automation_state", state).Error
+	return nil
 }
 
 // CheckAdtyDomainProvider only reads provider configuration; it does not claim

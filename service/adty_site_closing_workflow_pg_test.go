@@ -52,6 +52,9 @@ func TestClosingSiteOperations(t *testing.T) {
 	require.NoError(t, err)
 	defer pg.Close()
 
+	previousRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	defer func() { common.RedisEnabled = previousRedis }()
 	previousDB, previousType := model.DB, common.MainDatabaseType()
 	model.DB = db
 	common.SetMainDatabaseType(common.DatabaseTypePostgreSQL)

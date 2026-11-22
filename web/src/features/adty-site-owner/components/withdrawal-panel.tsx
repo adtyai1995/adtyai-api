@@ -26,9 +26,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { siteWithdrawalStatusLabel } from '@/features/adty-ledger/site-wallet-labels'
+import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
+  OWNER_PAGE_SIZE,
+  getSiteWithdrawalQuote,
   cancelSiteWithdrawal,
   createSiteWithdrawal,
   getSiteWithdrawals,
@@ -47,9 +50,17 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
     queryKey: siteOwnerKeys.list('withdraw-rules', { siteId }),
     queryFn: () => getSiteWithdrawRules(siteId),
   })
+  const [page, setPage] = useState(1)
+  const [status, setStatus] = useState('')
+  const [number, setNumber] = useState('')
   const list = useQuery({
-    queryKey: siteOwnerKeys.list('withdrawals', { siteId }),
-    queryFn: () => getSiteWithdrawals(siteId),
+    queryKey: siteOwnerKeys.list('withdrawals', {
+      siteId,
+      page,
+      status,
+      number,
+    }),
+    queryFn: () => getSiteWithdrawals(siteId, page, status, number),
   })
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState<'alipay' | 'usdt'>('alipay')
@@ -59,6 +70,21 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
   const [confirmed, setConfirmed] = useState(false)
   const submitIntentRef = useRef<{ payload: string; key: string } | null>(null)
 
+  const quote = useQuery({
+    queryKey: siteOwnerKeys.list('withdrawal-quote', {
+      siteId,
+      amount,
+      method,
+      fee: rules.data?.fee_usd,
+      rate:
+        method === 'usdt'
+          ? rules.data?.usdt_usd_rate
+          : rules.data?.alipay_cny_rate,
+    }),
+    enabled: !!rules.data?.configured && Number(amount) > 0,
+    retry: false,
+    queryFn: () => getSiteWithdrawalQuote(amount, method, siteId),
+  })
   const submit = useMutation({
     mutationFn: () => {
       const rate =
@@ -73,6 +99,7 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
         account_no: accountNo,
         account_name: accountName,
         expected_rate: rate,
+        expected_payout: quote.data,
       }
       const serialized = JSON.stringify(payload)
       if (submitIntentRef.current?.payload !== serialized) {
@@ -97,7 +124,12 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
       setConfirmed(false)
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
     },
-    onError: (err) => handleServerError(err),
+    onError: (err) => {
+      handleServerError(err)
+      setConfirmed(false)
+      void quote.refetch()
+      void rules.refetch()
+    },
   })
   const cancel = useMutation({
     mutationFn: (id: number) => cancelSiteWithdrawal(id, siteId),
@@ -146,9 +178,18 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
       {configured && (
         <form
           className='flex flex-col gap-4'
+          onChange={(event) => {
+            if (
+              !(
+                event.target instanceof HTMLInputElement &&
+                event.target.type === 'checkbox'
+              )
+            )
+              setConfirmed(false)
+          }}
           onSubmit={(event) => {
             event.preventDefault()
-            if (!confirmed) return
+            if (!confirmed || !quote.data) return
             submit.mutate()
           }}
         >
@@ -222,6 +263,13 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
               />
             </div>
           </div>
+          {quote.data && (
+            <p>
+              {t('Payout amount')} · {quote.data}{' '}
+              {method === 'alipay' ? 'CNY' : 'USDT'}
+            </p>
+          )}
+          {quote.isError && <ErrorState onRetry={() => void quote.refetch()} />}
           <label className='flex items-start gap-2 text-sm'>
             <input
               type='checkbox'
@@ -237,7 +285,7 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
             <Button
               variant='brand'
               type='submit'
-              disabled={!confirmed || submit.isPending}
+              disabled={!confirmed || !quote.data || submit.isPending}
             >
               {t('Submit withdrawal')}
             </Button>
@@ -248,20 +296,44 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
         className='flex flex-col gap-2'
         aria-label={t('Withdrawal history')}
       >
+        <Label htmlFor='withdraw-number'>{t('Order number')}</Label>
+        <Input
+          id='withdraw-number'
+          value={number}
+          onChange={(e) => {
+            setNumber(e.target.value)
+            setPage(1)
+          }}
+        />
+        <NativeSelect
+          aria-label={t('Status')}
+          value={status}
+          onChange={(e) => {
+            setStatus(e.target.value)
+            setPage(1)
+          }}
+        >
+          <NativeSelectOption value=''>{t('All')}</NativeSelectOption>
+          {['pending', 'paying', 'paid', 'rejected', 'cancelled'].map((x) => (
+            <NativeSelectOption key={x} value={x}>
+              {siteWithdrawalStatusLabel(t, x)}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
         {list.isPending && <LoadingState />}
         {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
-        {list.isSuccess && (list.data ?? []).length === 0 && (
+        {list.isSuccess && (list.data?.items ?? []).length === 0 && (
           <EmptyState className='min-h-24' title={t('No withdrawals yet')} />
         )}
-        {list.isSuccess && (list.data ?? []).length > 0 && (
+        {list.isSuccess && (list.data?.items ?? []).length > 0 && (
           <ul className='flex flex-col gap-2'>
-            {(list.data ?? []).map((row) => (
+            {(list.data?.items ?? []).map((row) => (
               <li
                 key={row.id}
                 className='flex flex-wrap items-center justify-between gap-2 text-sm tabular-nums'
               >
                 <span>
-                  {row.amount_usd} USD · {row.method} ·{' '}
+                  WD-SITE-{row.id} · {row.amount_usd} USD · {row.method} ·{' '}
                   {siteWithdrawalStatusLabel(t, row.status)}
                 </span>
                 {row.status === 'pending' && !row.attempt_open && (
@@ -278,6 +350,14 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
               </li>
             ))}
           </ul>
+        )}
+        {list.data && (
+          <PageSwitcher
+            page={page}
+            pageSize={OWNER_PAGE_SIZE}
+            total={list.data.total}
+            onPageChange={setPage}
+          />
         )}
       </section>
     </section>

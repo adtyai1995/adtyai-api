@@ -268,6 +268,7 @@ export type AnomalyDisposition = {
   note: string
   operator_id: number
   site_id?: number
+  team_id?: number
   account_id?: number
   order_ref?: string
   difference?: string
@@ -878,4 +879,15 @@ export async function setSiteTierAssignment(
     { code, mode }
   )
   requireServerSuccess(res.data)
+}
+
+export type CloseMailRecipient = {id:number; email:string;status:string;attempt_count:number;last_error:string}
+type CloseMailBatch={id:number;revision:number;execute_at:number;retry_status:string}
+export async function getCloseMail(siteId:number,batch:number,page:number) {
+  const res=await api.get<ApiResponse<{batches:CloseMailBatch[];recipients:CloseMailRecipient[];batch_id:number;total:number}>>(`${BASE}/sites/${siteId}/close-mail`,{params:{batch:batch||undefined,p:page,page_size:20}})
+  return requireServerSuccess(res.data).data
+}
+export async function resolveCloseMail(siteId:number,row:CloseMailRecipient,decision:string,reason:string) {
+ const res=await api.post<ApiResponse<null>>(`${BASE}/sites/${siteId}/close-mail`,{recipient_id:row.id,attempt:row.attempt_count,decision,reason})
+ requireServerSuccess(res.data)
 }

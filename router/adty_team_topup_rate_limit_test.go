@@ -29,9 +29,11 @@ func TestTeamTopupOrderRateLimited(t *testing.T) {
 	created := f.decodeCreated(t, f.call(t, http.MethodPost, teamAuthMainHost, "/api/adty/admin/teams",
 		fmt.Sprintf(`{"name":"Limit Desk","leader_id":%d,"discount":"0.80"}`, f.mainLeader.Id), f.rootTok))
 
+	channel := seedRouterEpayChannel(t, "limited-team", "https://pay.example.test", model.AdtyEpayOrderModeSubmit, 1)
+	body := fmt.Sprintf(`{"amount_usd":"10","method":"alipay","channel_id":%d}`, channel.Id)
 	post := func(key string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost,
-			fmt.Sprintf("/api/adty/teams/%d/topups", created.Team.Id), strings.NewReader(`{"amount_usd":"1"}`))
+			fmt.Sprintf("/api/adty/teams/%d/topups", created.Team.Id), strings.NewReader(body))
 		req.Host = teamAuthMainHost
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+f.mainLeaderTok)
@@ -43,7 +45,8 @@ func TestTeamTopupOrderRateLimited(t *testing.T) {
 
 	for i := 0; i < common.CriticalRateLimitNum; i++ {
 		rec := post(fmt.Sprintf("team-limit-%d", i))
-		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "order %d: %s", i+1, rec.Body.String())
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Contains(t, rec.Body.String(), `"success":true`, "order %d: %s", i+1, rec.Body.String())
 	}
 	blocked := post("team-limit-blocked")
 	require.Equal(t, http.StatusTooManyRequests, blocked.Code, blocked.Body.String())

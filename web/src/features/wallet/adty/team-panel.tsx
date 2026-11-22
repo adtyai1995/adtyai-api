@@ -56,6 +56,12 @@ type TeamKey = {
   name: string
   user_id: number
   status: string
+  binding_status?: string
+}
+
+const teamKeyStatusLabels: Record<string, string> = {
+  active: 'Active', disabled: 'Disabled', expired: 'Expired',
+  exhausted: 'Exhausted', deleted: 'Deleted', left: 'Revoked',
 }
 
 type TeamMine = {
@@ -356,16 +362,40 @@ export function TeamPanel() {
               {pendingOrders.isError && (
                 <ErrorState onRetry={() => void pendingOrders.refetch()} />
               )}
-              {pendingOrders.data?.map((order) => (
-                <Button
-                  key={order.trade_no}
-                  type='button'
-                  variant='outline'
-                  onClick={() => setCheckout(order)}
-                >
-                  {t('Continue payment')} · {order.trade_no}
-                </Button>
-              ))}
+              {pendingOrders.data?.map((order) => {
+                const hasCheckout = Boolean(
+                  order.pay_address || order.pay_url || order.qr_code || order.url_scheme
+                )
+                if (!hasCheckout && (!order.method || order.method === 'team' || (order.provider === 'adty_epay' && !order.channel_id))) {
+                  return (
+                    <p key={order.trade_no} className='text-sm text-muted-foreground'>
+                      {order.trade_no} · {t('This order has no payment channel')}
+                    </p>
+                  )
+                }
+                return (
+                  <Button
+                    key={order.trade_no}
+                    type='button'
+                    variant='outline'
+                    disabled={pending}
+                    onClick={() => {
+                      if (hasCheckout) {
+                        setCheckout(order)
+                        return
+                      }
+                      void run(async () => {
+                        const response = await api.post(
+                          `/api/adty/teams/${team.team_id}/topups/${encodeURIComponent(order.trade_no)}/resume`
+                        )
+                        setCheckout(requireServerSuccess(response.data).data as AdtyOrderExt)
+                      })
+                    }}
+                  >
+                    {t('Continue payment')} · {order.trade_no}
+                  </Button>
+                )
+              })}
               <div className='flex flex-col gap-1'>
                 <Label htmlFor='team-invite-ttl'>{t('Validity (hours)')}</Label>
                 <Input
@@ -603,9 +633,9 @@ export function TeamPanel() {
                     className='flex items-center justify-between gap-3 text-sm'
                   >
                     <span className='min-w-0 truncate tabular-nums'>
-                      {key.name || key.token_id} · {key.status}
+                      {key.name || key.token_id} · {t(teamKeyStatusLabels[key.status] ?? key.status)}
                     </span>
-                    {key.status === 'active' && (
+                    {(key.binding_status ?? key.status) === 'active' && key.status !== 'deleted' && (
                       <Button
                         type='button'
                         variant='outline'

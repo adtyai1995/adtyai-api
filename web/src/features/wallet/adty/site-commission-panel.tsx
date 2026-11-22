@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
@@ -39,6 +39,7 @@ import {
 import { SiteInviteWithdrawPanel } from './site-invite-withdraw-panel'
 
 export type SiteCommission = {
+  site_id?: number
   id: number
   trade_no: string
   status: string
@@ -66,11 +67,15 @@ async function listSiteCommissions(): Promise<SiteCommission[]> {
   return requireServerSuccess(res.data).data.items ?? []
 }
 
-async function convertSiteCommission(id: number, amount: string): Promise<void> {
+async function convertSiteCommission(
+  id: number,
+  amount: string,
+  key: string
+): Promise<void> {
   const res = await api.post<ApiResponse<{ converted: boolean }>>(
     `/api/adty/site-commissions/${id}/convert`,
     { amount_usd: amount },
-    { headers: { 'Idempotency-Key': crypto.randomUUID() } }
+    { headers: { 'Idempotency-Key': key } }
   )
   requireServerSuccess(res.data)
 }
@@ -98,7 +103,9 @@ export function SiteCommissionPanel(props: { onConverted: () => void }) {
           row={row}
           onConverted={() => {
             props.onConverted()
-            void client.invalidateQueries({ queryKey: ['adty-site-commissions'] })
+            void client.invalidateQueries({
+              queryKey: ['adty-site-commissions'],
+            })
           }}
         />
       ))}
@@ -107,7 +114,9 @@ export function SiteCommissionPanel(props: { onConverted: () => void }) {
           rows={rows.data}
           onChanged={() => {
             props.onConverted()
-            void client.invalidateQueries({ queryKey: ['adty-site-commissions'] })
+            void client.invalidateQueries({
+              queryKey: ['adty-site-commissions'],
+            })
           }}
         />
       )}
@@ -115,12 +124,22 @@ export function SiteCommissionPanel(props: { onConverted: () => void }) {
   )
 }
 
-function CommissionRow(props: { row: SiteCommission; onConverted: () => void }) {
+function CommissionRow(props: {
+  row: SiteCommission
+  onConverted: () => void
+}) {
   const { t } = useTranslation()
   const [amount, setAmount] = useState('')
+  const intent = useRef<{ amount: string; key: string } | null>(null)
   const convert = useMutation({
-    mutationFn: () => convertSiteCommission(props.row.id, amount.trim()),
+    mutationFn: () => {
+      const value = amount.trim()
+      if (intent.current?.amount !== value)
+        intent.current = { amount: value, key: crypto.randomUUID() }
+      return convertSiteCommission(props.row.id, value, intent.current.key)
+    },
     onSuccess: () => {
+      intent.current = null
       setAmount('')
       props.onConverted()
     },
@@ -143,7 +162,8 @@ function CommissionRow(props: { row: SiteCommission; onConverted: () => void }) 
         <ul className='text-sm tabular-nums'>
           {states.map((item) => (
             <li key={item.state}>
-              {t(officialCommissionStateLabel(item.state))}: {item.amount_usd} USD
+              {t(officialCommissionStateLabel(item.state))}: {item.amount_usd}{' '}
+              USD
             </li>
           ))}
         </ul>
@@ -160,7 +180,9 @@ function CommissionRow(props: { row: SiteCommission; onConverted: () => void }) 
       {canConvertCommissionToBalance(props.row.status) && (
         <>
           <div className='flex flex-col gap-1'>
-            <Label htmlFor={`site-commission-${props.row.id}`}>{t('Amount')}</Label>
+            <Label htmlFor={`site-commission-${props.row.id}`}>
+              {t('Amount')}
+            </Label>
             <Input
               id={`site-commission-${props.row.id}`}
               value={amount}
@@ -182,5 +204,3 @@ function CommissionRow(props: { row: SiteCommission; onConverted: () => void }) 
     </div>
   )
 }
-
-

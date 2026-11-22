@@ -27,3 +27,11 @@ type AdtySiteSenderDomain struct {
 }
 
 func (AdtySiteSenderDomain) TableName() string { return "adty_site_sender_domains" }
+
+// Retain the old remote ID until deletion, independently of the current sender.
+type AdtySenderDomainCleanup struct {
+	RemoteID  string `gorm:"primaryKey;type:varchar(128)"`
+	SiteID    int    `gorm:"index"`
+	RetryAt   int64  `gorm:"index"`
+	LastError string
+}

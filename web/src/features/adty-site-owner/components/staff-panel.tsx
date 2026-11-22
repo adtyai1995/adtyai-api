@@ -27,12 +27,10 @@ import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
-  deleteStaffAccount,
   getOwnerBalanceRequests,
   getStaffAccounts,
   getStaffAudits,
   reviewOwnerBalanceRequest,
-  saveStaffAccount,
   STAFF_PAGE_SIZE,
   type StaffAccount,
   type StaffBalanceRequest,
@@ -104,24 +102,16 @@ export function StaffPanel(props: { siteId: number; closing?: boolean }) {
   const changeStatus = useVerifiedOwnerMutation<StaffAccount>({
     action: 'staff.update',
     target: (staff) => staff.id,
-    run: (staff, proof) =>
-      saveStaffAccount(
-        staff.id,
-        {
-          display_name: staff.display_name,
-          role: staff.role,
-          permissions: staff.permissions,
-          status: staff.status === 'enabled' ? 'disabled' : 'enabled',
-          expected_version: staff.version,
-        },
-        proof
-      ),
+    staffRequest: (staff) => ({
+      display_name: staff.display_name, role: staff.role, permissions: staff.permissions,
+      status: staff.status === 'enabled' ? 'disabled' : 'enabled', expected_version: staff.version,
+    }),
     onSuccess: () => setConfirming(null),
   })
   const remove = useVerifiedOwnerMutation<StaffAccount>({
     action: 'staff.delete',
     target: (staff) => staff.id,
-    run: deleteStaffAccount,
+    staffRequest: (staff) => ({ expected_version:staff.version }),
     onSuccess: () => setConfirming(null),
   })
   const roleLabels = {

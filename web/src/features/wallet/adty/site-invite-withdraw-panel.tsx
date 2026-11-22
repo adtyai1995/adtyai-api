@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -56,6 +56,7 @@ type WithdrawRules = {
 }
 
 type SiteInviteWithdrawal = {
+  site_id?: number
   id: number
   amount_usd: string
   fee_usd: string
@@ -82,9 +83,10 @@ type RateChange = { rate: string; cnyAmount: string }
 const METHODS = ['balance', 'usdt', 'alipay'] as const
 type Method = (typeof METHODS)[number]
 
-async function loadRules(): Promise<WithdrawRules> {
+async function loadRules(siteId: number): Promise<WithdrawRules> {
   const res = await api.get<ApiResponse<WithdrawRules>>(
-    '/api/adty/site-commissions/withdrawals/rules'
+    '/api/adty/site-commissions/withdrawals/rules',
+    { params: { site_id: siteId } }
   )
   return requireServerSuccess(res.data).data
 }
@@ -97,6 +99,7 @@ async function loadWithdrawals(): Promise<SiteInviteWithdrawal[]> {
 }
 
 async function createWithdrawal(body: {
+  siteId: number
   amount: string
   method: Method
   network: string
@@ -106,17 +109,19 @@ async function createWithdrawal(body: {
   expectedRate: string
   idempotencyKey: string
 }): Promise<{ kind: 'ok' } | ({ kind: 'rate_changed' } & RateChange)> {
-  const res = await api.post<ApiResponse<{ rate?: string; cny_amount?: string }>>(
+  const res = await api.post<
+    ApiResponse<{ rate?: string; cny_amount?: string }>
+  >(
     '/api/adty/site-commissions/withdrawals',
     {
       amount_usd: body.amount,
+      site_id: body.siteId,
       method: body.method,
       network: body.method === 'usdt' ? body.network : '',
       account_no: body.method === 'usdt' ? body.accountNo : '',
       account_name: body.method === 'alipay' ? body.accountName : '',
       qr_image_url: body.method === 'alipay' ? body.qrUrl : '',
-      expected_cny_rate:
-        body.method === 'alipay' ? body.expectedRate : '',
+      expected_cny_rate: body.method === 'alipay' ? body.expectedRate : '',
     },
     { headers: { 'Idempotency-Key': body.idempotencyKey } }
   )
@@ -139,7 +144,11 @@ async function cancelWithdrawal(id: number): Promise<void> {
 }
 
 function freeAmount(row: SiteCommission, nowSeconds: number): number {
-  if (row.status !== 'available' || !row.available_at || row.available_at > nowSeconds) {
+  if (
+    row.status !== 'available' ||
+    !row.available_at ||
+    row.available_at > nowSeconds
+  ) {
     return 0
   }
   const hold =
@@ -150,14 +159,18 @@ function freeAmount(row: SiteCommission, nowSeconds: number): number {
 
 function methodLabel(method: string): string {
   if (method in WITHDRAWAL_TARGET_LABELS) {
-    return WITHDRAWAL_TARGET_LABELS[method as keyof typeof WITHDRAWAL_TARGET_LABELS]
+    return WITHDRAWAL_TARGET_LABELS[
+      method as keyof typeof WITHDRAWAL_TARGET_LABELS
+    ]
   }
   return method
 }
 
 function statusLabel(status: string): string {
   if (status in WITHDRAWAL_STATUS_LABELS) {
-    return WITHDRAWAL_STATUS_LABELS[status as keyof typeof WITHDRAWAL_STATUS_LABELS]
+    return WITHDRAWAL_STATUS_LABELS[
+      status as keyof typeof WITHDRAWAL_STATUS_LABELS
+    ]
   }
   return status
 }
@@ -167,12 +180,45 @@ export function SiteInviteWithdrawPanel(props: {
   rows: SiteCommission[]
   onChanged: () => void
 }) {
+  const { t } = useTranslation()
+  const sites = [...new Set(props.rows.map((row) => row.site_id ?? 0))]
+  const [selected, setSelected] = useState(sites[0])
+  const current = sites.includes(selected) ? selected : sites[0]
+  return (
+    <>
+      {sites.some((id) => id > 0) && (
+        <NativeSelect
+          aria-label={t('Site')}
+          value={current}
+          onChange={(e) => setSelected(Number(e.target.value))}
+        >
+          {sites.map((id) => (
+            <NativeSelectOption key={id} value={id}>
+              {t('Site')} #{id}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      )}
+      <SiteWithdrawForm
+        key={current}
+        siteId={current ?? 0}
+        rows={props.rows.filter((row) => (row.site_id ?? 0) === current)}
+        onChanged={props.onChanged}
+      />
+    </>
+  )
+}
+function SiteWithdrawForm(props: {
+  siteId: number
+  rows: SiteCommission[]
+  onChanged: () => void
+}) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const client = useQueryClient()
   const rules = useQuery({
-    queryKey: ['adty-site-invite-withdraw-rules'],
-    queryFn: loadRules,
+    queryKey: ['adty-site-invite-withdraw-rules', props.siteId],
+    queryFn: () => loadRules(props.siteId),
   })
   const history = useQuery({
     queryKey: ['adty-site-invite-withdrawals'],
@@ -187,7 +233,7 @@ export function SiteInviteWithdrawPanel(props: {
   const [expectedRate, setExpectedRate] = useState('')
   const [confirmingUsdt, setConfirmingUsdt] = useState(false)
   const [rateChange, setRateChange] = useState<RateChange | null>(null)
-  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
+  const intent = useRef<{ body: string; key: string } | null>(null)
 
   const available = props.rows.reduce(
     (sum, row) => sum + freeAmount(row, Math.floor(Date.now() / 1000)),
@@ -198,7 +244,8 @@ export function SiteInviteWithdrawPanel(props: {
   const minimum = Number(rules.data?.min_usd || 0)
   const rate = expectedRate || rules.data?.cny_rate || ''
   const isCny = method === 'alipay'
-  const cnyAmount = isCny && value > 0 && rate !== '' ? (value * Number(rate)).toFixed(2) : ''
+  const cnyAmount =
+    isCny && value > 0 && rate !== '' ? (value * Number(rate)).toFixed(2) : ''
   const net = usdtNetAmount(value, fee)
   const cashReady = rules.data?.configured === true
 
@@ -207,9 +254,14 @@ export function SiteInviteWithdrawPanel(props: {
     if (!(value > 0)) return t('Enter a withdrawal amount')
     if (value > available) return t('Not enough withdrawable commission')
     if (method !== 'balance') {
-      if (!cashReady) return t('Cash withdrawal stays off until the minimum, fee, and CNY rate are saved.')
+      if (!cashReady)
+        return t(
+          'Cash withdrawal stays off until the minimum, fee, and CNY rate are saved.'
+        )
       if (value < minimum) {
-        return t('The minimum withdrawal is ${{amount}}', { amount: rules.data?.min_usd })
+        return t('The minimum withdrawal is ${{amount}}', {
+          amount: rules.data?.min_usd,
+        })
       }
     }
     if (method === 'usdt') {
@@ -230,7 +282,9 @@ export function SiteInviteWithdrawPanel(props: {
 
   const refresh = () => {
     props.onChanged()
-    void client.invalidateQueries({ queryKey: ['adty-site-invite-withdrawals'] })
+    void client.invalidateQueries({
+      queryKey: ['adty-site-invite-withdrawals'],
+    })
   }
   const reset = () => {
     setAmount('')
@@ -239,20 +293,25 @@ export function SiteInviteWithdrawPanel(props: {
     setQrUrl('')
     setNetwork('')
     setRateChange(null)
-    setIdempotencyKey(crypto.randomUUID())
+    intent.current = null
   }
   const submit = useMutation({
-    mutationFn: (nextRate: string) =>
-      createWithdrawal({
+    mutationFn: (nextRate: string) => {
+      const body = {
+        siteId: props.siteId,
         amount: amount.trim(),
         method,
-        network,
-        accountNo: address.trim(),
-        accountName: payee.trim(),
-        qrUrl,
-        expectedRate: nextRate,
-        idempotencyKey,
-      }),
+        network: method === 'usdt' ? network : '',
+        accountNo: method === 'usdt' ? address.trim() : '',
+        accountName: isCny ? payee.trim() : '',
+        qrUrl: isCny ? qrUrl : '',
+        expectedRate: isCny ? nextRate : '',
+      }
+      const signature = JSON.stringify(body)
+      if (intent.current?.body !== signature)
+        intent.current = { body: signature, key: crypto.randomUUID() }
+      return createWithdrawal({ ...body, idempotencyKey: intent.current.key })
+    },
     onSuccess: (result) => {
       if (result.kind === 'rate_changed') {
         setExpectedRate(result.rate)
@@ -260,7 +319,9 @@ export function SiteInviteWithdrawPanel(props: {
         return
       }
       toast.success(
-        method === 'balance' ? t('Transferred to your balance') : t('Withdrawal submitted')
+        method === 'balance'
+          ? t('Transferred to your balance')
+          : t('Withdrawal submitted')
       )
       reset()
       refresh()
@@ -288,9 +349,14 @@ export function SiteInviteWithdrawPanel(props: {
   }
 
   return (
-    <div className='flex flex-col gap-4' aria-label={t('Invite commission withdrawal')}>
+    <div
+      className='flex flex-col gap-4'
+      aria-label={t('Invite commission withdrawal')}
+    >
       <div className='flex flex-col gap-1'>
-        <h3 className='text-sm font-medium'>{t('Invite commission withdrawal')}</h3>
+        <h3 className='text-sm font-medium'>
+          {t('Invite commission withdrawal')}
+        </h3>
         <p className='text-muted-foreground text-sm'>
           {t('The site owner reviews cash withdrawals of invite commission.')}
         </p>
@@ -300,13 +366,17 @@ export function SiteInviteWithdrawPanel(props: {
           )}
         </p>
         <p className='text-sm tabular-nums'>
-          {t('Withdrawable: {{amount}}', { amount: formatUsd(available, locale) })}
+          {t('Withdrawable: {{amount}}', {
+            amount: formatUsd(available, locale),
+          })}
         </p>
       </div>
       {rules.isError && <ErrorState onRetry={() => void rules.refetch()} />}
       {rules.data && !cashReady && (
         <p className='text-muted-foreground text-sm'>
-          {t('Cash withdrawal stays off until the minimum, fee, and CNY rate are saved.')}
+          {t(
+            'Cash withdrawal stays off until the minimum, fee, and CNY rate are saved.'
+          )}
         </p>
       )}
       {cashReady && (
@@ -329,7 +399,9 @@ export function SiteInviteWithdrawPanel(props: {
           <legend className='text-sm font-medium'>{t('Withdraw to')}</legend>
           <div className='grid grid-cols-2 gap-2'>
             {METHODS.map((item) => {
-              const enabled = item === 'balance' || rules.data?.methods.includes(item) === true
+              const enabled =
+                item === 'balance' ||
+                rules.data?.methods.includes(item) === true
               return (
                 <Button
                   key={item}
@@ -374,7 +446,9 @@ export function SiteInviteWithdrawPanel(props: {
         {method === 'usdt' && cashReady && (
           <>
             <div className='flex flex-col gap-2'>
-              <Label htmlFor='site-invite-withdraw-network'>{t('Network')}</Label>
+              <Label htmlFor='site-invite-withdraw-network'>
+                {t('Network')}
+              </Label>
               <NativeSelect
                 id='site-invite-withdraw-network'
                 value={network}
@@ -383,7 +457,9 @@ export function SiteInviteWithdrawPanel(props: {
                   setAddress('')
                 }}
               >
-                <NativeSelectOption value=''>{t('Choose a network')}</NativeSelectOption>
+                <NativeSelectOption value=''>
+                  {t('Choose a network')}
+                </NativeSelectOption>
                 {USDT_NETWORKS.map((item) => (
                   <NativeSelectOption key={item} value={item}>
                     {usdtNetworkLabel(item)}
@@ -392,7 +468,9 @@ export function SiteInviteWithdrawPanel(props: {
               </NativeSelect>
             </div>
             <div className='flex flex-col gap-2'>
-              <Label htmlFor='site-invite-withdraw-address'>{t('USDT address')}</Label>
+              <Label htmlFor='site-invite-withdraw-address'>
+                {t('USDT address')}
+              </Label>
               <Input
                 id='site-invite-withdraw-address'
                 value={address}
@@ -418,7 +496,9 @@ export function SiteInviteWithdrawPanel(props: {
               })}
             </p>
             <div className='flex flex-col gap-2'>
-              <Label htmlFor='site-invite-withdraw-payee'>{t('Payee name')}</Label>
+              <Label htmlFor='site-invite-withdraw-payee'>
+                {t('Payee name')}
+              </Label>
               <Input
                 id='site-invite-withdraw-payee'
                 value={payee}
@@ -427,7 +507,9 @@ export function SiteInviteWithdrawPanel(props: {
               />
             </div>
             <div className='flex flex-col gap-2'>
-              <Label htmlFor='site-invite-withdraw-qr'>{t('Payment QR code')}</Label>
+              <Label htmlFor='site-invite-withdraw-qr'>
+                {t('Payment QR code')}
+              </Label>
               <Input
                 id='site-invite-withdraw-qr'
                 type='file'
@@ -457,7 +539,10 @@ export function SiteInviteWithdrawPanel(props: {
             type='submit'
             variant='outline'
             disabled={
-              amount.trim() === '' || error !== '' || submit.isPending || upload.isPending
+              amount.trim() === '' ||
+              error !== '' ||
+              submit.isPending ||
+              upload.isPending
             }
           >
             {t('Submit withdrawal')}
@@ -472,8 +557,15 @@ export function SiteInviteWithdrawPanel(props: {
             className='flex flex-wrap items-center justify-between gap-2 text-sm tabular-nums'
           >
             <span>
-              {row.amount_usd} USD · {t(methodLabel(row.method))} · {t(statusLabel(row.status))}
-              {row.payout_amount !== '' && ` · ${row.payout_amount} ${row.payout_currency}`}
+              {row.site_id && (
+                <>
+                  {t('Site')} #{row.site_id} ·{' '}
+                </>
+              )}
+              {row.amount_usd} USD · {t(methodLabel(row.method))} ·{' '}
+              {t(statusLabel(row.status))}
+              {row.payout_amount !== '' &&
+                ` · ${row.payout_amount} ${row.payout_currency}`}
               {row.reject_reason !== '' && ` · ${row.reject_reason}`}
             </span>
             {row.status === 'pending' && row.method !== 'balance' && (
@@ -497,13 +589,18 @@ export function SiteInviteWithdrawPanel(props: {
         desc={
           <div className='flex flex-col gap-2 text-sm'>
             <p>
-              {usdtNetworkLabel(network)} · <span className='font-mono break-all'>{address}</span>
+              {usdtNetworkLabel(network)} ·{' '}
+              <span className='font-mono break-all'>{address}</span>
             </p>
-            <p>{t('Network fee {{fee}} USD. You receive {{net}} USD.', {
-              fee: rules.data?.fee_usd,
-              net: net.toFixed(2),
-            })}</p>
-            <p className='text-destructive'>{t('A wrong network or address cannot be recovered.')}</p>
+            <p>
+              {t('Network fee {{fee}} USD. You receive {{net}} USD.', {
+                fee: rules.data?.fee_usd,
+                net: net.toFixed(2),
+              })}
+            </p>
+            <p className='text-destructive'>
+              {t('A wrong network or address cannot be recovered.')}
+            </p>
           </div>
         }
         confirmText={t('Confirm')}

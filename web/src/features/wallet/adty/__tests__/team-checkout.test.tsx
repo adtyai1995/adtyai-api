@@ -70,3 +70,25 @@ it.each([
   expect(api.post).not.toHaveBeenCalled()
   client.clear()
 })
+
+it('resumes a recoverable order by its original number and shows legacy orders as unavailable', async () => {
+  const order = { trade_no: 'TEAM-GAP', provider: 'adty_epay', method: 'alipay', channel_id: 9, face_usd: '20', pay_amount: '140' }
+  const recovered = { ...order, qr_code: 'recovered-qr' }
+  const answers: Record<string, unknown> = {
+    '/api/adty/teams/mine': { team: { team_id: 10, role: 'leader', name: 'Finance', discount: '1', shared_quota: 0, status: 'active' } },
+    '/api/adty/topup/info': { methods: [], scenes: [] },
+    '/api/adty/teams/10/invites': { items: [] },
+    '/api/adty/teams/10/topups': { items: [order, { trade_no: 'LEGACY', method: 'team', channel_id: 0 }] },
+    '/api/adty/topup/orders/TEAM-GAP': { trade_no: order.trade_no, status: 'pending', payment_method: 'alipay', ext: recovered },
+  }
+  api.get.mockImplementation(async (url) => ({ data: { success: true, data: answers[url] } }))
+  api.post.mockResolvedValue({ data: { success: true, data: recovered } })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><TeamPanel /></QueryClientProvider>)
+  expect(await screen.findByText(/LEGACY.*This order has no payment channel/)).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /LEGACY/ })).toBeNull()
+  fireEvent.click(await screen.findByRole('button', { name: /Continue payment.*TEAM-GAP/ }))
+  expect((await screen.findByTestId('epay-qr')).getAttribute('data-value')).toBe('recovered-qr')
+  expect(api.post).toHaveBeenCalledWith('/api/adty/teams/10/topups/TEAM-GAP/resume')
+  client.clear()
+})

@@ -79,8 +79,8 @@ func creditAdtyTeamTopUpTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopup
 		}
 		if existing == 0 {
 			if err := tx.Create(&model.AdtyAnomalyDisposition{
-				Kind:   "closed_team_topup",
-				Ref:    ext.TradeNo,
+				Kind: "closed_team_topup",
+				Ref:  ext.TradeNo, OrderRef: ext.TradeNo, TeamId: team.Id, SiteId: ext.SiteId, AccountId: topUp.UserId,
 				Status: "open",
 				Note:   fmt.Sprintf("team %d closed before paid topup callback credited %d quota", team.Id, principal),
 			}).Error; err != nil {
@@ -138,10 +138,11 @@ type AdtyTeamMemberView struct {
 }
 
 type AdtyTeamKeyView struct {
-	TokenId int    `json:"token_id"`
-	Name    string `json:"name"`
-	UserId  int    `json:"user_id"`
-	Status  string `json:"status"`
+	BindingStatus string `json:"binding_status"`
+	TokenId       int    `json:"token_id"`
+	Name          string `json:"name"`
+	UserId        int    `json:"user_id"`
+	Status        string `json:"status"`
 }
 
 type AdtyTeamMine struct {
@@ -252,22 +253,41 @@ func fillAdtyTeamPage(page *AdtyTeamMine, membership model.AdtyTeamMember) error
 	for _, key := range keys {
 		tokenIds = append(tokenIds, key.TokenId)
 	}
-	tokenNames := map[int]string{}
+	credentials := map[int]model.Token{}
 	if len(tokenIds) > 0 {
 		var tokens []model.Token
-		if err := model.DB.Select("id", "name").Where("id IN ?", tokenIds).Find(&tokens).Error; err != nil {
+		if err := model.DB.Unscoped().Select("id", "name", "status", "deleted_at", "expired_time", "remain_quota", "unlimited_quota", "quota_pending", "used_quota").Where("id IN ?", tokenIds).Find(&tokens).Error; err != nil {
 			return err
 		}
 		for _, token := range tokens {
-			tokenNames[token.Id] = token.Name
+			credentials[token.Id] = token
 		}
 	}
 	for _, key := range keys {
 		page.Keys = append(page.Keys, AdtyTeamKeyView{
-			TokenId: key.TokenId, Name: tokenNames[key.TokenId], UserId: key.UserId, Status: key.Status,
+			TokenId: key.TokenId, Name: credentials[key.TokenId].Name, UserId: key.UserId, Status: teamKeyStatus(key, credentials[key.TokenId]), BindingStatus: key.Status,
 		})
 	}
 	return nil
+}
+
+func teamKeyStatus(key model.AdtyTeamKey, token model.Token) string {
+	switch {
+	case token.Id == 0 || token.DeletedAt.Valid:
+		return "deleted"
+	case key.Status != model.AdtyTeamMemberActive:
+		return key.Status
+	}
+	switch token.EffectiveStatus(common.GetTimestamp()) {
+	case common.TokenStatusExpired:
+		return "expired"
+	case common.TokenStatusExhausted:
+		return "exhausted"
+	case common.TokenStatusEnabled:
+		return key.Status
+	default:
+		return "disabled"
+	}
 }
 
 // TransferAdtyTeamLeader is refused. Closing a team does not appoint a new leader.
@@ -985,8 +1005,8 @@ func adtyClaimTeamTopupReplay(newTradeNo, legacyTradeNo string, teamID int64, sa
 	return nil, false, nil
 }
 
-// CreateAdtyTeamTopupOrder records a leader top-up with no payment-method gift.
-// It does not credit the team until payment completion.
+// CreateAdtyTeamTopupOrder preserves replay of historical channel-less orders.
+// New checkouts require an explicit payment method.
 func CreateAdtyTeamTopupOrder(leaderID int, teamID int64, amountUSD decimal.Decimal, key string) (*model.AdtyTopupOrder, error) {
 	key = strings.TrimSpace(key)
 	if leaderID <= 0 || teamID <= 0 || !amountUSD.IsPositive() || key == "" {
@@ -995,69 +1015,16 @@ func CreateAdtyTeamTopupOrder(leaderID int, teamID int64, amountUSD decimal.Deci
 	if len(key) > adtyTeamTopupKeyMaxLen {
 		return nil, ErrAdtyTeamIdempotencyKey
 	}
-	quota, err := common.WalletQuotaFromDecimalStrict(amountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
-	if err != nil || quota <= 0 {
-		return nil, ErrAdtyTeamInvalid
-	}
-	unlock := lockAdtyTeamTopupKey(teamID, key)
-	defer unlock()
-	tradeNo := adtyTeamTopupTradeNo("TTEAM", teamID, key)
-	existing, conflict, err := adtyClaimTeamTopupReplay(tradeNo, adtyTeamTopupLegacyTradeNo("TTEAM", key), teamID, func(o *model.AdtyTopupOrder) bool {
-		return o.TeamId == teamID && o.UserId == leaderID && o.FaceUSD.Equal(amountUSD) && o.Method == "team"
+	existing, conflict, err := adtyClaimTeamTopupReplay(adtyTeamTopupTradeNo("TTEAM", teamID, key), adtyTeamTopupLegacyTradeNo("TTEAM", key), teamID, func(order *model.AdtyTopupOrder) bool {
+		return order.TeamId == teamID && order.UserId == leaderID && order.FaceUSD.Equal(amountUSD) && order.Method == "team"
 	})
 	if err != nil {
 		return nil, err
 	}
-	if conflict {
+	if conflict || existing == nil {
 		return nil, ErrAdtyTeamInvalid
 	}
-	if existing != nil {
-		return existing, nil
-	}
-	return createAdtyTeamTopupOrder(leaderID, teamID, amountUSD, int64(quota), tradeNo)
-}
-
-func createAdtyTeamTopupOrder(leaderID int, teamID int64, amountUSD decimal.Decimal, quota int64, tradeNo string) (*model.AdtyTopupOrder, error) {
-	var created *model.AdtyTopupOrder
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		var team model.AdtyTeam
-		if err := model.AdtyLockForUpdate(tx).First(&team, teamID).Error; err != nil {
-			return err
-		}
-		if team.Status != model.AdtyTeamStatusActive || team.LeaderUserId != leaderID {
-			return ErrAdtyTeamForbidden
-		}
-		topUp := &model.TopUp{
-			UserId: leaderID, Amount: amountUSD.IntPart(), Money: 0, TradeNo: tradeNo,
-			PaymentMethod: "team", PaymentProvider: model.PaymentProviderAdtyEpay,
-			CreateTime: common.GetTimestamp(), Status: common.TopUpStatusPending,
-		}
-		if err := tx.Create(topUp).Error; err != nil {
-			return err
-		}
-		ext := &model.AdtyTopupOrder{
-			TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, SiteId: team.SiteId,
-			Provider: model.PaymentProviderAdtyEpay, Method: "team",
-			FaceUSD: amountUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
-			CreditQuota: quota, PayAmount: amountUSD, PayCurrency: "USD",
-			TopupGroupRatio: decimal.NewFromInt(1),
-		}
-		if err := model.ValidateAdtyTeamTopupCreateTx(tx, ext); err != nil {
-			if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-				return ErrAdtyTeamInvalid
-			}
-			return err
-		}
-		if err := tx.Create(ext).Error; err != nil {
-			if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-				return ErrAdtyTeamInvalid
-			}
-			return err
-		}
-		created = ext
-		return nil
-	})
-	return created, err
+	return existing, nil
 }
 
 func ListAdtyTeamTopups(leaderID int, teamID int64, pendingOnly ...bool) ([]model.AdtyTopupOrder, error) {

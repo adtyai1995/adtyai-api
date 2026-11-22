@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -91,6 +92,36 @@ func TestResellerSettingsRollbackAndFullSiteRanking(t *testing.T) {
 	adty_setting.GetResellerSetting().SenderDomainEnabled = true
 	require.True(t, save(`{"cost_factor":0.7}`))
 	assertCost("0.7")
+	t.Run("cancelled or failed price increases survive retries", func(t *testing.T) {
+		for _, field := range []string{"cost_factor", "min_cost_factor"} {
+			set := func(value float64) { require.True(t, save(fmt.Sprintf(`{"%s":%g}`, field, value))) }
+			apply := service.ApplyDueGlobalCostFactor
+			if field == "min_cost_factor" {
+				apply = service.ApplyDueMinCostFactor
+			}
+			get := func() float64 {
+				if field == "min_cost_factor" {
+					return *adty_setting.GetResellerSetting().MinCostFactor
+				}
+				return *adty_setting.GetResellerSetting().CostFactor
+			}
+			future := time.Now().Add(72 * time.Hour).Unix()
+			set(0.5)
+			set(1.2)
+			set(0.4)
+			require.NoError(t, apply(future))
+			require.Equal(t, 0.4, get())
+			set(1.2)
+			require.NoError(t, conn.Exec("ALTER TABLE options ADD CONSTRAINT fail_due CHECK (key <> '"+adty_setting.ResellerSettingModule+"."+field+"' OR value <> '1.2')").Error)
+			require.Error(t, apply(future))
+			require.Equal(t, 0.4, get())
+			require.NoError(t, conn.Exec("ALTER TABLE options DROP CONSTRAINT fail_due").Error)
+			require.NoError(t, apply(future))
+			require.Equal(t, 1.2, get())
+			require.NoError(t, apply(future+1))
+			require.Equal(t, 1.2, get())
+		}
+	})
 	// A dirty draft can change an unrelated option without undoing a concurrent edit.
 	_, observed, err := resellerSettingsSnapshot(conn)
 	require.NoError(t, err)
@@ -134,7 +165,7 @@ func TestResellerSettingsRollbackAndFullSiteRanking(t *testing.T) {
 		}
 	}
 	t.Run("historical accounting only returns personal rows and counts", func(t *testing.T) {
-		require.NoError(t, conn.AutoMigrate(&model.AdtySiteEarningLine{}, &model.AdtySiteWallet{}, &model.AdtySiteWalletLedger{}, &model.AdtySiteWithdrawal{}, &model.AdtySiteSettlementSheet{}, &model.AdtyVoucher{}, &model.BillingOperation{}, &model.AdtyManualRefund{}, &model.AdtySiteInviteWithdrawal{}, &model.ReferralWithdrawal{}, &model.AdtySiteInviteCommission{}, &model.ReferralCommission{}, &model.AdtyStaffBalanceRequest{}, &model.AdtyBalanceLedger{}))
+		require.NoError(t, conn.AutoMigrate(&model.AdtySiteEarningLine{}, &model.AdtySiteWallet{}, &model.AdtySiteWalletLedger{}, &model.AdtySiteWithdrawal{}, &model.AdtySiteSettlementSheet{}, &model.AdtySettlementRevision{}, &model.AdtyVoucher{}, &model.BillingOperation{}, &model.AdtyManualRefund{}, &model.AdtySiteInviteWithdrawal{}, &model.ReferralWithdrawal{}, &model.AdtySiteInviteCommission{}, &model.ReferralCommission{}, &model.AdtyStaffBalanceRequest{}, &model.AdtyBalanceLedger{}))
 		require.NoError(t, conn.Create(&model.AdtySiteOwnership{SiteId: archived.Id, OldOwnerUserId: 2, NewOwnerUserId: 1, Version: 1}).Error)
 		require.NoError(t, conn.Create(&model.AdtySiteSettlementSheet{SiteId: archived.Id, BusinessDay: "2026-11-12", BatchId: "mixed-sheet", ConsumptionUSD: decimal.NewFromInt(8800)}).Error)
 		for owner, customer := range map[int]int{0: 9801, 2: 9802, 1: 9803} {

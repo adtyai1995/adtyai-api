@@ -126,8 +126,10 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 		return nil, err
 	}
 	var user User
-	if err := DB.Select("id", "quota", "quota_pending", "checkin_quota").First(&user, ext.UserId).Error; err != nil {
-		return nil, err
+	if ext.TeamId == 0 {
+		if err := DB.Select("id", "quota", "quota_pending", "checkin_quota").First(&user, ext.UserId).Error; err != nil {
+			return nil, err
+		}
 	}
 	if err := adtyRequireManualRefundTable(DB); err != nil {
 		return nil, err
@@ -1232,6 +1234,12 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 		}
 		held, unknown := adtySumManualRefundOccupancy(rows)
 		if row.Status == AdtyManualRefundStatusTerminated {
+			// Older releases closed the refund without reversing the reclaim.
+			if ext.TeamId > 0 && row.DeductedPrincipalQuota > 0 {
+				if err := releaseAdtyTeamRefundTx(tx, ext, row, operatorID); err != nil {
+					return err
+				}
+			}
 			result = adtyManualRefundView(row, adtyBuildManualRefundOccupancy(ext, held, unknown), nil)
 			return nil
 		}
@@ -1246,6 +1254,11 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 		}
 		if row.PayoutRecordedAt > 0 && row.PayoutStatus != AdtyManualRefundPayoutFailed {
 			return common.NewMessage("This refund cannot be terminated")
+		}
+		if ext.TeamId > 0 && row.DeductedPrincipalQuota > 0 {
+			if err := releaseAdtyTeamRefundTx(tx, ext, row, operatorID); err != nil {
+				return err
+			}
 		}
 		if ext.IsOwnerSelfUse() && row.ApprovedAt > 0 {
 			if err := releaseOwnerRefundTx(tx, ext, row, operatorID, idemKey); err != nil {

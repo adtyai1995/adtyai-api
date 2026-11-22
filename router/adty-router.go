@@ -81,6 +81,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/teams/:id/close", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/profile", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/topups", "wallet:write"},
+		{http.MethodPost, "/api/adty/teams/:id/topups/:trade_no/resume", "wallet:write"},
 		{http.MethodGet, "/api/adty/teams/:id/topups", "wallet:read"},
 		{http.MethodPost, "/api/adty/teams/:id/leave", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/employees", "wallet:write"},
@@ -108,6 +109,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/telegram/webhook/:purpose/:secret", "session"},
 		{http.MethodGet, "/api/adty/badges", "profile:read"},
 		{http.MethodGet, "/api/adty/tickets", "profile:read"},
+		{http.MethodGet, "/api/adty/tickets/request-audience", "profile:read"},
 		{http.MethodPost, "/api/adty/tickets", "profile:write"},
 		{http.MethodGet, "/api/adty/tickets/:id", "profile:read"},
 		{http.MethodPost, "/api/adty/tickets/:id/replies", "profile:write"},
@@ -147,6 +149,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	// Idempotency-Key 决定，换一个 key 就是一张新单。必须和 epay/pay 一样按用户限速
 	// （ISS-R4-0127）。
 	apiRouter.POST("/adty/teams/:id/topups", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:pay-team"), controller.PostAdtyTeamTopup)
+	apiRouter.POST("/adty/teams/:id/topups/:trade_no/resume", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:pay-team"), controller.ResumeAdtyTeamTopup)
 	apiRouter.GET("/adty/teams/:id/topups", middleware.UserAuth(), controller.GetAdtyTeamTopups)
 	apiRouter.POST("/adty/teams/:id/leave", middleware.UserAuth(), controller.PostAdtyTeamLeave)
 	apiRouter.POST("/adty/teams/:id/employees", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:team-employee"), middleware.AnonymousRequestBodyLimit(), controller.PostAdtyTeamEmployee)
@@ -202,6 +205,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	root.GET("/data-retention/runs", controller.GetAdtyDataRetentionRuns)
 	apiRouter.GET("/adty/badges", middleware.UserAuth(), controller.GetAdtySidebarBadges)
 	apiRouter.GET("/adty/tickets", middleware.UserAuth(), controller.GetAdtyTickets)
+	apiRouter.GET("/adty/tickets/request-audience", middleware.UserAuth(), controller.GetAdtyTicketRequestAudience)
 	apiRouter.POST("/adty/tickets", middleware.UserAuth(), controller.PostAdtyTicket)
 	apiRouter.GET("/adty/tickets/:id", middleware.UserAuth(), controller.GetAdtyTicket)
 	apiRouter.POST("/adty/tickets/:id/replies", middleware.UserAuth(), controller.PostAdtyTicketReply)
@@ -419,6 +423,10 @@ func registerAdtyReferralRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/audit-logs", authz.AdtyReferralRead, controller.GetReferralAdminAuditLogs},
 		{http.MethodGet, "/withdrawals", authz.AdtyReferralRead, controller.GetAdminReferralWithdrawals},
 		{http.MethodPost, "/affiliates/:user_id/partner", authz.AdtyReferralReview, controller.ReviewReferralPartner},
+		{http.MethodGet, "/closed-site-withdrawals", authz.AdtyReferralRead, controller.GetClosedSiteInviteWithdrawals},
+		{http.MethodPost, "/closed-site-withdrawals/:id/review", authz.AdtyReferralReview, controller.PostClosedSiteInviteWithdrawalReview},
+		{http.MethodPost, "/closed-site-withdrawals/:id/failed", authz.AdtyReferralPayout, controller.PostClosedSiteInviteWithdrawalFailed},
+		{http.MethodPost, "/closed-site-withdrawals/:id/paid", authz.AdtyReferralPayout, controller.PostClosedSiteInviteWithdrawalPaid},
 		{http.MethodPost, "/withdrawals/:id/review", authz.AdtyReferralReview, controller.ReviewReferralWithdrawal},
 		{http.MethodPost, "/withdrawals/:id/pay", authz.AdtyReferralPayout, controller.PayReferralWithdrawal},
 		{http.MethodPost, "/upload", authz.AdtyReferralPayout, controller.UploadReferralAsset},
@@ -606,6 +614,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootWallets.PUT("/:id/bonus-methods", controller.PutAdtySiteBonusMethodAuth)
 	rootWallets.GET("/:id/commission-margin", controller.GetAdtySiteCommissionMargin)
 	rootWallets.PUT("/:id/commission-margin", controller.PutAdtySiteCommissionMargin)
+	rootWallets.GET("/:id/close-mail", controller.GetAdtyAdminCloseMail)
+	rootWallets.POST("/:id/close-mail", controller.ResolveAdtyAdminCloseMail)
 	rootWallets.GET("/:id/wallets", controller.GetAdtyAdminSiteWallets)
 	rootWallets.GET("/:id/wallet-ledgers", controller.GetAdtyAdminSiteWalletLedger)
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/sites/:id/tier", "scope", "option:write")

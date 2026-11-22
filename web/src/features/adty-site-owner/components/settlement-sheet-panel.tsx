@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
@@ -146,24 +147,55 @@ function settlementSheetLines(
 export function SettlementSheetLines({ sheet }: { sheet: SettlementSheet }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
-  const lines = settlementSheetLines(t, sheet, locale)
+  const [selected, setSelected] = useState('latest')
+  const revisions = sheet.revisions ?? []
+  const revision =
+    selected === 'latest'
+      ? revisions[revisions.length - 1]
+      : revisions.find((r) => String(r.id) === selected)
+  const lines = settlementSheetLines(t, revision?.after ?? sheet, locale)
   return (
-    <dl className='grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 text-sm'>
-      {lines.map((line) => (
-        <div key={line.id} className='contents'>
-          <dt className='text-muted-foreground'>{line.label}</dt>
-          <dd
-            className={cn(
-              'text-right tabular-nums',
-              isNegativeAmount(line.raw) && 'text-destructive'
-            )}
-            data-negative={isNegativeAmount(line.raw) ? 'true' : undefined}
+    <>
+      {revisions.length > 0 && (
+        <label>
+          {t('Statement version')}{' '}
+          <select
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
           >
-            {line.value}
-          </dd>
-        </div>
-      ))}
-    </dl>
+            <option value='latest'>{t('Latest')}</option>
+            <option value='original'>{t('Original')}</option>
+            {revisions.map((r) => (
+              <option key={r.id} value={r.id}>
+                #{r.id} · {formatTimestamp(r.created_at)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {revision && (
+        <details>
+          <summary>{t('Source records')}</summary>
+          {revision.sources.join(', ')}
+        </details>
+      )}
+      <dl className='grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 text-sm'>
+        {lines.map((line) => (
+          <div key={line.id} className='contents'>
+            <dt className='text-muted-foreground'>{line.label}</dt>
+            <dd
+              className={cn(
+                'text-right tabular-nums',
+                isNegativeAmount(line.raw) && 'text-destructive'
+              )}
+              data-negative={isNegativeAmount(line.raw) ? 'true' : undefined}
+            >
+              {line.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </>
   )
 }
 
@@ -174,7 +206,9 @@ export function SettlementSheetPanel({ siteId }: { siteId?: number }) {
     queryKey: siteOwnerKeys.list('settlement-sheets', { siteId }),
     queryFn: () => getOwnerSettlementSheets(siteId),
   })
-  const sheet = query.data?.[0]
+  const [day, setDay] = useState('')
+  const sheet =
+    query.data?.find((s) => s.business_day === day) ?? query.data?.[0]
 
   return (
     <section className='flex flex-col gap-3'>
@@ -195,7 +229,20 @@ export function SettlementSheetPanel({ siteId }: { siteId?: number }) {
       )}
       {sheet && (
         <>
-          <SettlementSheetLines sheet={sheet} />
+          {(query.data?.length ?? 0) > 1 && (
+            <select
+              aria-label={t('Date')}
+              value={sheet.business_day}
+              onChange={(e) => setDay(e.target.value)}
+            >
+              {query.data?.map((s) => (
+                <option key={s.id} value={s.business_day}>
+                  {s.business_day}
+                </option>
+              ))}
+            </select>
+          )}
+          <SettlementSheetLines key={sheet.id} sheet={sheet} />
           <p className='text-muted-foreground text-sm'>
             {t(
               'Settlement spread is the recorded usage difference. It is not earnings after gifts or commissions.'

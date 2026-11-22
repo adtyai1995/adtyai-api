@@ -30,7 +30,8 @@ func adtyTicketInboxQuery(userID int, site *model.AdtySite) (*gorm.DB, string, e
 	case actor.StaffTickets && host == actor.Staff.SiteId:
 		handlerScope = "staff"
 	}
-	customerTickets := model.DB.Model(&model.AdtyTicket{}).Select("id").Where("user_id = ?", userID)
+	actor.Scope = "personal"
+	customerTickets := scopedAdtyTickets(model.DB, actor).Select("id")
 	if actor.User.StaffSiteId != 0 || actor.Staff != nil || host != actor.User.SiteId {
 		customerTickets = customerTickets.Where("1=0")
 	}
@@ -42,12 +43,35 @@ func adtyTicketInboxQuery(userID int, site *model.AdtySite) (*gorm.DB, string, e
 		handled := scopedAdtyTickets(model.DB, actor).Select("id")
 		customer = customer.Or("ticket_id IN (?) AND COALESCE(purpose,'') IN ?", handled, []string{"", model.AdtyTelegramPurposeAdmin})
 	}
+	// Expiry removes the case and every attachment. Snapshot authorization
+	// uses the fixed recipient, purpose, handling site and explicit team.
+	if host == actor.User.SiteId && actor.User.StaffSiteId == 0 && actor.Staff == nil {
+		customer = customer.Or("expired_at > 0 AND purpose=? AND (snapshot_team_id=0 OR snapshot_team_id=?)", model.AdtyTelegramPurposeUser, actor.TeamId)
+	}
+	if handlerScope != "" {
+		archived := model.DB.Where("expired_at > 0 AND purpose=?", model.AdtyTelegramPurposeAdmin)
+		switch handlerScope {
+		case "owner":
+			archived = archived.Where("site_id=?", actor.OwnerSiteId)
+		case "staff":
+			archived = archived.Where("site_id=?", actor.Staff.SiteId)
+		case "platform":
+			if !actor.PlatformAll {
+				archived = archived.Where("site_id=0")
+			}
+		}
+		customer = customer.Or(archived)
+	}
 	return q.Where(customer), handlerScope, nil
 }
 
 const ticketInboxColumns = "adty_ticket_notices.*, (SELECT t.user_id FROM adty_tickets t WHERE t.id=adty_ticket_notices.ticket_id) AS ticket_owner_id"
 
 func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) map[string]any {
+	if row.ExpiredAt > 0 {
+		return map[string]any{"id": fmt.Sprintf("ticket-notice:%d", row.Id), "read_key": row.ReadKey, "title": fmt.Sprintf("工单 #%d / Ticket #%d", row.TicketId, row.TicketId),
+			"content": "工单正文和附件已到期清理。\n\nThe ticket and its attachments have expired.", "publishDate": time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339)}
+	}
 	path := "/profile"
 	if row.Purpose == model.AdtyTelegramPurposeAdmin || (row.Purpose == "" && row.UserId != row.TicketOwnerID) {
 		switch handlerScope {

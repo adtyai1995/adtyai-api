@@ -370,11 +370,15 @@ func CollectAdtyFundAnomalies(siteID int) ([]string, error) {
 // ListAdtyAnomalyDispositions returns review rows for one site. It does not create any.
 // Rows recorded with SiteId are listed directly. Legacy rows used the site id as Ref.
 func ListAdtyAnomalyDispositions(siteID int) ([]model.AdtyAnomalyDisposition, error) {
-	if siteID <= 0 {
+	if siteID < 0 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
 	var rows []model.AdtyAnomalyDisposition
-	err := model.DB.Where("site_id = ? OR (site_id = 0 AND ref = ?)", siteID, strconv.Itoa(siteID)).
+	scope := model.DB.Where("site_id = ? AND team_id > 0", 0)
+	if siteID > 0 {
+		scope = model.DB.Where("site_id = ? OR (site_id = 0 AND team_id = 0 AND ref = ?)", siteID, strconv.Itoa(siteID))
+	}
+	err := scope.
 		Order("id desc").Limit(50).Find(&rows).Error
 	return rows, err
 }
@@ -456,7 +460,7 @@ func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDispositio
 
 func resolveAdtyAnomalyDispositionRecipientTx(tx *gorm.DB, row model.AdtyAnomalyDisposition, operatorID int) (recipientID, targetSiteID int, includeInternalNote bool) {
 	siteID := row.SiteId
-	if siteID <= 0 {
+	if siteID <= 0 && row.TeamId == 0 {
 		if parsed, err := strconv.Atoi(strings.TrimSpace(row.Ref)); err == nil && parsed > 0 {
 			siteID = parsed
 		}

@@ -112,6 +112,14 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 		if err != nil {
 			return err
 		}
+		if ext.TeamId > 0 {
+			var lot AdtyTeamFundLot
+			if err := tx.Where("team_id = ? AND kind = 'topup' AND source = ?", ext.TeamId, ext.TradeNo).Limit(1).Find(&lot).Error; err != nil {
+				return err
+			}
+			balance = lot.Available
+			return nil
+		}
 		balance, checkin, err = lockUserQuotaForRefundTx(tx, topUp.UserId)
 		return err
 	})

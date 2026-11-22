@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -97,17 +97,13 @@ function BrandCard(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [brand, setBrand] = useState<SiteBrand>(props.site.brand)
-  const previousServerBrand = useRef(props.site.brand)
-  useDraftNavigation(JSON.stringify(brand) !== JSON.stringify(props.site.brand))
-  useEffect(() => {
-    const previous = previousServerBrand.current
-    previousServerBrand.current = props.site.brand
-    setBrand((draft) =>
-      JSON.stringify(draft) === JSON.stringify(previous)
-        ? props.site.brand
-        : draft
-    )
-  }, [props.site.brand])
+  const [baseline,setBaseline]=useState(props.site.brand)
+  const changed=(Object.keys(brand) as (keyof SiteBrand)[]).filter(key=>(brand[key]??'')!==(baseline[key]??''))
+  const conflicts=changed.filter(key=>baseline[key]!==props.site.brand[key] && brand[key]!==props.site.brand[key])
+  useDraftNavigation(changed.length>0)
+  useEffect(()=>{
+    if (!changed.length) {setBrand(props.site.brand);setBaseline(props.site.brand)}
+  },[props.site.brand,changed.length])
   const upload = useMutation({
     mutationFn: async (input: {
       key: 'logo_url' | 'favicon_url'
@@ -141,13 +137,19 @@ function BrandCard(props: { site: OwnerSite }) {
     onError: (err) => handleServerError(err),
   })
   const save = useMutation({
-    mutationFn: () => saveOwnerSite({ brand }),
-    onSuccess: () => {
+    mutationFn: () => saveOwnerSite({
+      brand: Object.fromEntries(changed.map(key=>[key,brand[key]??''])),
+      expected_brand:Object.fromEntries(changed.map(key=>[key,baseline[key]??''])),
+    }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(siteOwnerKeys.site,updated)
+      setBaseline(updated.brand)
+      setBrand(updated.brand)
       toast.success(t('Saved successfully'))
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
       void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
     },
-    onError: (err) => handleServerError(err),
+    onError: (err) => {handleServerError(err);void queryClient.invalidateQueries({queryKey:siteOwnerKeys.all})},
   })
   const field = (
     key: keyof typeof BRAND_LIMITS,
@@ -220,6 +222,13 @@ function BrandCard(props: { site: OwnerSite }) {
         <CardTitle>{t('Brand')}</CardTitle>
       </CardHeader>
       <CardContent className='grid gap-3'>
+        {conflicts.length>0 && <div role="alert">
+          {conflicts.map(key=><p key={key}>{key} · {t('Current value')}: {props.site.brand[key]} · {t('Previous value')}: {baseline[key]}</p>)}
+          <Button variant="outline" onClick={()=>{
+            setBrand({...props.site.brand,...Object.fromEntries(changed.map(key=>[key,brand[key]]))})
+            setBaseline(props.site.brand)
+          }}>{t('Keep my changes')}</Button>
+        </div>}
         {field('name', t('Site name'))}
         {field('title', t('Website title'))}
         {field('theme_color', t('Theme color'))}
@@ -234,7 +243,7 @@ function BrandCard(props: { site: OwnerSite }) {
         <div>
           <Button
             variant='brand'
-            disabled={save.isPending}
+            disabled={save.isPending || !changed.length || conflicts.length>0}
             onClick={() => save.mutate()}
           >
             {t('Save brand')}

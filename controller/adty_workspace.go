@@ -160,6 +160,13 @@ func PostAdtyTelegramBindStart(c *gin.Context) {
 		}
 		purpose = model.AdtyTelegramPurposeAdmin
 	}
+	if !strings.Contains(c.FullPath(), "/site/") && c.Query("purpose") == model.AdtyTelegramPurposeAdmin {
+		if err := service.CheckAdtyPlatformTicketAccess(c.GetInt("id")); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		purpose = model.AdtyTelegramPurposeAdmin
+	}
 	code, username, expires, err := service.StartAdtyTelegramBind(c.GetInt("id"), purpose)
 	if err != nil {
 		common.ApiError(c, err)
@@ -265,6 +272,15 @@ func adtyRequestedTicketScope(c *gin.Context) string {
 		return service.AdtyTicketTokenScope(scope, c.Request.Method, c.GetStringSlice("access_token_scopes"))
 	}
 	return scope
+}
+
+func GetAdtyTicketRequestAudience(c *gin.Context) {
+	audience, err := service.AdtyTicketRequestAudience(c.GetInt("id"), c.Query("ref"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"audience": audience})
 }
 
 func GetAdtyTickets(c *gin.Context) {
@@ -453,7 +469,7 @@ func PostAdtyTicketImage(c *gin.Context) {
 		return
 	}
 	userID := c.GetInt("id")
-	image, err := service.AttachAdtyTicketImage(userID, id, body.MessageID, body.Visibility, raw, adtyRequestedTicketScope(c))
+	image, err := service.AttachAdtyTicketImageWithKey(userID, id, body.MessageID, body.Visibility, raw, c.GetHeader("Idempotency-Key"), adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return

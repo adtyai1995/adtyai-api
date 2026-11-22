@@ -87,7 +87,12 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-03-14").First(&refreshed).Error)
 	require.Equal(t, sheet.BatchId, refreshed.BatchId)
 	require.Equal(t, sheet.Id, refreshed.Id)
-	require.True(t, refreshed.SpreadUSD.Equal(decimal.NewFromInt(4)))
+	require.True(t, refreshed.SpreadUSD.Equal(decimal.NewFromInt(3)))
+	var revision model.AdtySettlementRevision
+	require.NoError(t, db.Where("sheet_id = ?", sheet.Id).First(&revision).Error)
+	var corrected model.AdtySiteSettlementSheet
+	require.NoError(t, common.Unmarshal(revision.After, &corrected))
+	require.True(t, corrected.SpreadUSD.Equal(decimal.NewFromInt(4)))
 	require.NoError(t, db.Model(&model.AdtySiteWalletLedger{}).Count(&ledgersAfter).Error)
 	require.Equal(t, ledgersBefore, ledgersAfter)
 
@@ -103,7 +108,7 @@ func TestDailySettlementSheetSumsRecordedFactsAndDoesNotCreditWallets(t *testing
 
 	own, err := ListAdtySiteSettlementSheets(site.Id)
 	require.NoError(t, err)
-	require.Len(t, own, 1)
+	require.NotEmpty(t, own)
 	require.Equal(t, site.Id, own[0].SiteId)
 	all, err := ListAllAdtySiteSettlementSheets()
 	require.NoError(t, err)

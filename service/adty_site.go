@@ -15,7 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
-	"github.com/QuantumNous/new-api/setting/config"
+
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -721,51 +721,47 @@ func ApplyDueAdtySiteTierCostFactors(now int64) (int64, error) {
 
 // ApplyDueMinCostFactor writes a scheduled higher floor once it is due.
 func ApplyDueMinCostFactor(now int64) error {
-	cfg := adty_setting.GetResellerSetting()
-	if cfg.PendingMinCostFactor == nil || cfg.PendingMinCostFactorAt <= 0 || cfg.PendingMinCostFactorAt > now {
-		return nil
-	}
-	factor := *cfg.PendingMinCostFactor
-	cfg.MinCostFactor = &factor
-	cfg.PendingMinCostFactor = nil
-	cfg.PendingMinCostFactorAt = 0
-	mapped, err := config.ConfigToMap(cfg)
-	if err != nil {
-		return err
-	}
-	options := map[string]string{}
-	for _, key := range []string{"min_cost_factor", "pending_min_cost_factor", "pending_min_cost_factor_at"} {
-		options[adty_setting.ResellerSettingModule+"."+key] = mapped[key]
-	}
-	if err := model.UpdateOptionsBulk(options); err != nil {
-		return err
-	}
-	InvalidateAdtySiteCache()
-	return nil
+	return applyDueResellerFactor("min_cost_factor", now)
 }
 
-// ApplyDueGlobalCostFactor writes a scheduled higher global d once it is due.
 func ApplyDueGlobalCostFactor(now int64) error {
-	cfg := adty_setting.GetResellerSetting()
-	if cfg.PendingCostFactor == nil || cfg.PendingCostFactorAt <= 0 || cfg.PendingCostFactorAt > now {
-		return nil
-	}
-	factor := *cfg.PendingCostFactor
-	cfg.CostFactor = &factor
-	cfg.PendingCostFactor = nil
-	cfg.PendingCostFactorAt = 0
-	mapped, err := config.ConfigToMap(cfg)
+	return applyDueResellerFactor("cost_factor", now)
+}
+
+func applyDueResellerFactor(key string, now int64) error {
+	model.ResellerWriteMu.Lock()
+	defer model.ResellerWriteMu.Unlock()
+	pending := "pending_" + key
+	at := pending + "_at"
+	committed := map[string]string{}
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := model.LockResellerOptionsTx(tx); err != nil {
+			return err
+		}
+		prefix := adty_setting.ResellerSettingModule + "."
+		var rows []model.Option
+		if err := tx.Where(tx.Statement.Quote("key")+" IN ?", []string{prefix + key, prefix + pending, prefix + at}).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			committed[row.Key] = row.Value
+		}
+		deadline, _ := strconv.ParseInt(committed[prefix+at], 10, 64)
+		amount := committed[prefix+pending]
+		if deadline <= 0 || deadline > now || amount == "" || amount == "null" {
+			return nil
+		}
+		committed[prefix+key] = amount
+		committed[prefix+pending] = "null"
+		committed[prefix+at] = "0"
+		return model.SaveOptionsTx(tx, committed)
+	})
 	if err != nil {
 		return err
 	}
-	options := map[string]string{}
-	for _, key := range []string{"cost_factor", "pending_cost_factor", "pending_cost_factor_at"} {
-		options[adty_setting.ResellerSettingModule+"."+key] = mapped[key]
-	}
-	if err := model.UpdateOptionsBulk(options); err != nil {
+	if err := model.ApplyOptionValues(committed); err != nil {
 		return err
 	}
-	InvalidateAdtySiteCache()
 	return nil
 }
 
@@ -865,10 +861,12 @@ func RequestAdtySiteClose(ownerUserId int, reason string) (*model.AdtySite, erro
 
 // AdtySiteClosePlan 是管理员定下的关站方式。
 type AdtySiteClosePlan struct {
-	TransferTo int  // 只能是 0（主站）；非 0 会被拒绝，不会改写后继续关站
-	ClawBack   bool // 兼容字段：G.7 / SITE-010 不允许因关站作废或扣回收益，传入也会被忽略
-	Immediate  bool // 不等 close_notice_days，立即执行（例如违规）
-	Reason     string
+	ExecuteAt         int64 // Explicit revised deadline; zero requests the original notice.
+	ExpectedExecuteAt int64
+	TransferTo        int  // 只能是 0（主站）；非 0 会被拒绝，不会改写后继续关站
+	ClawBack          bool // 兼容字段：G.7 / SITE-010 不允许因关站作废或扣回收益，传入也会被忽略
+	Immediate         bool // 不等 close_notice_days，立即执行（例如违规）
+	Reason            string
 }
 
 // ScheduleAdtySiteClose 把站点改成 closing，close_transfer_to 只记 0（由主站继承），
@@ -881,6 +879,8 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 	now := time.Now().Unix()
 	immediate := plan.Immediate
 	wasPending := false
+	replay := false
+	var receipt model.AdtySiteCloseMailBatch
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
@@ -892,17 +892,37 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 		if requiredStatus != "" && site.Status != requiredStatus {
 			return ErrAdtySitePausedRepair
 		}
-		if site.Status == model.AdtySiteStatusClosed {
+		if plan.TransferTo != 0 {
+			return ErrAdtySiteTransfer
+		}
+		if site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusClosed {
+			q := tx.Where("site_id = ?", siteId)
+			if plan.ExecuteAt == 0 {
+				q = q.Where("revision = 1")
+			} else {
+				q = q.Where("execute_at = ? AND previous_execute_at = ?", plan.ExecuteAt, plan.ExpectedExecuteAt)
+			}
+			if err := q.Limit(1).Find(&receipt).Error; err != nil {
+				return err
+			}
+			if plan.ExecuteAt == 0 || receipt.Id != 0 {
+				replay = true
+				return nil
+			}
+			if site.Status == model.AdtySiteStatusClosed || plan.ExpectedExecuteAt != site.CloseExecuteAt || plan.ExecuteAt <= now || strings.TrimSpace(plan.Reason) == "" || immediate {
+				return ErrAdtySiteStatus
+			}
+		} else if plan.ExecuteAt != 0 {
 			return ErrAdtySiteStatus
 		}
 		if site.Status == model.AdtySiteStatusPending {
 			wasPending = true
 			immediate = true
 		}
-		if plan.TransferTo != 0 {
-			return ErrAdtySiteTransfer
-		}
 		executeAt := now + int64(max(resellerSetting().CloseNoticeDays, 0))*86400
+		if plan.ExecuteAt > 0 {
+			executeAt = plan.ExecuteAt
+		}
 		if immediate {
 			executeAt = now
 		}
@@ -924,15 +944,42 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 			}
 		}
 		if !wasPending {
-			batch := model.AdtySiteCloseMailBatch{SiteId: site.Id, RetryStatus: model.AdtySiteCloseMailRetryNone, CreatedAt: now, UpdatedAt: now}
-			if err := tx.Where("site_id = ?", site.Id).FirstOrCreate(&batch).Error; err != nil {
+			var last model.AdtySiteCloseMailBatch
+			if err := tx.Where("site_id = ?", site.Id).Order("revision DESC").Limit(1).Find(&last).Error; err != nil {
 				return err
 			}
+			batch := model.AdtySiteCloseMailBatch{SiteId: site.Id, Revision: last.Revision + 1, PreviousExecuteAt: site.CloseExecuteAt, ExecuteAt: executeAt, RetryStatus: model.AdtySiteCloseMailRetryNone, CreatedAt: now, UpdatedAt: now}
+			if last.Id != 0 {
+				if err := tx.Model(&last).Updates(map[string]any{"retry_status": "superseded"}).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Create(&batch).Error; err != nil {
+				return err
+			}
+			receipt = batch
 		}
-		return recordSiteAuditTx(tx, site.Id, "close_schedule", adminId, map[string]any{"status": site.Status}, updates, plan.Reason)
+		action := "close_schedule"
+		if plan.ExecuteAt > 0 {
+			action = "close_reschedule"
+		}
+		return recordSiteAuditTx(tx, site.Id, action, adminId, map[string]any{"status": site.Status, "close_execute_at": site.CloseExecuteAt}, updates, plan.Reason)
 	})
 	if err != nil {
 		return nil, err
+	}
+	result := func() (*model.AdtySite, error) {
+		site, err := GetAdtySite(siteId)
+		if err == nil {
+			site.CloseMailBatchId = receipt.Id
+			if receipt.ExecuteAt > 0 {
+				site.CloseExecuteAt = receipt.ExecuteAt
+			}
+		}
+		return site, err
+	}
+	if replay {
+		return result()
 	}
 	InvalidateAdtySiteCache()
 	if AdtyOnSiteClosing != nil && !wasPending {
@@ -945,7 +992,7 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 			return nil, err
 		}
 	}
-	return GetAdtySite(siteId)
+	return result()
 }
 
 // AdtyOnSiteClosing 在站点进入 closing 后调用，11.3 用它给客户发关站通知邮件（按站点品牌）。
@@ -982,7 +1029,7 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		if err := InheritAdtyVouchersOnCloseTx(tx, site.Id, moved); err != nil {
 			return err
 		}
-		if err := model.TransferAdtyTicketsToMain(tx, tx.Model(&model.AdtySite{}).Select("id").Where("id = ?", site.Id)); err != nil {
+		if err := transferSiteTicketsToMainTx(tx, site.Id); err != nil {
 			return err
 		}
 		if err := InheritAdtyTeamsOnCloseTx(tx, site.Id); err != nil {

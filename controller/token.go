@@ -140,6 +140,7 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	}
 	maskedToken := *token
 	maskedToken.Key = token.GetMaskedKey()
+	maskedToken.Status = token.EffectiveStatus(common.GetTimestamp())
 	autoGroups, err := token.GetAutoGroups()
 	if err != nil {
 		common.SysError(common.LogText("failed to parse auto groups for token %d: %v", token.Id, err))
@@ -309,7 +310,9 @@ func GetTokenKey(c *gin.Context) {
 	}
 	params := tokenAuditParams(c)
 	params["id"], params["name"] = token.Id, token.Name
-	if !persistTokenReadAudit(c, "token.key_view", params) { return }
+	if !persistTokenReadAudit(c, "token.key_view", params) {
+		return
+	}
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{
 		"key": token.GetFullKey(),
@@ -612,7 +615,9 @@ func UpdateToken(c *gin.Context) {
 		keyLimitPatch = request.keyLimitPatch()
 	}
 	action := "token.update"
-	if statusOnly != "" { action = "token.status_update" }
+	if statusOnly != "" {
+		action = "token.status_update"
+	}
 	event := prepareTokenMutationAudit(c, action, params)
 	previousLimit, updatedLimit, err := cleanToken.UpdateWithKeyLimit(replaceRemainQuota, keyLimitPatch, event)
 	if err != nil {
@@ -739,7 +744,9 @@ func GetTokenKeysBatch(c *gin.Context) {
 	}
 	params["count"] = len(tokens)
 	params["returned_ids"] = returnedIDs
-	if !persistTokenReadAudit(c, "token.key_view_batch", params) { return }
+	if !persistTokenReadAudit(c, "token.key_view_batch", params) {
+		return
+	}
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{"keys": keysMap})
 }

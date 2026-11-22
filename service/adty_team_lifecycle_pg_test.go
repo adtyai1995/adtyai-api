@@ -62,9 +62,10 @@ func TestTeamLifecycleAndOriginalPrincipal(t *testing.T) {
 	common.RedisEnabled = false
 	defer func() { common.RedisEnabled = oldRedis }()
 	oldLog := model.LOG_DB
-	model.LOG_DB = db
+	t.Setenv("LOG_SQL_DSN", "")
+	require.NoError(t, model.InitLogDB())
 	defer func() { model.LOG_DB = oldLog }()
-	require.NoError(t, db.AutoMigrate(&model.AuditIntent{}, &model.AuditLog{}))
+	require.NoError(t, db.AutoMigrate(&model.AuditIntent{}, &model.AuditLog{}, &model.Log{}, &model.UserAccessToken{}, &model.UserSession{}, &model.ExternalIdentityClaim{}))
 	root := model.User{Username: "root_test", Role: common.RoleRootUser, Status: common.UserStatusEnabled}
 	require.NoError(t, db.Create(&root).Error)
 	owner := model.User{Username: "owner_test", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
@@ -140,7 +141,7 @@ func TestTeamLifecycleAndOriginalPrincipal(t *testing.T) {
 	const unit = 500000
 	credit := func(trade string, n int) {
 		order := model.TopUp{TradeNo: trade, UserId: leader.Id, Status: common.TopUpStatusSuccess}
-		ext := model.AdtyTopupOrder{TradeNo: trade, TeamId: teamID, UserId: leader.Id, FaceUSD: decimal.NewFromInt(int64(n)), Provider: model.PaymentProviderAdtyEpay, CreditQuota: int64(n * unit)}
+		ext := model.AdtyTopupOrder{TradeNo: trade, TeamId: teamID, UserId: leader.Id, FaceUSD: decimal.NewFromInt(int64(n)), Provider: model.PaymentProviderAdtyEpay, Method: "alipay", PayAmount: decimal.NewFromInt(int64(n * 7)), PaidAmount: decimal.NewFromInt(int64(n * 7)), PayCurrency: "CNY", PaidCurrency: "CNY", CreditQuota: int64(n * unit)}
 		require.NoError(t, db.Create(&order).Error)
 		require.NoError(t, db.Create(&ext).Error)
 		require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return creditAdtyTeamTopUpTx(tx, &order, &ext, int64(n*unit)) }))
@@ -155,6 +156,66 @@ func TestTeamLifecycleAndOriginalPrincipal(t *testing.T) {
 		op, _, err := model.ApplyBillingSettlement(key)
 		require.NoError(t, err)
 		return op
+	}
+	credit("ORDER_T", 100)
+	original := "refund-termination"
+	_, err = model.ApplyAdtyTopUpManualRefund("ORDER_T", "team refund", root.Id, original, decimal.NewFromInt(40))
+	require.NoError(t, err)
+	_, err = model.ApproveAdtyTopUpManualRefund("ORDER_T", original, root.Id, "approve-t", "reviewed")
+	require.NoError(t, err)
+	_, err = model.ReclaimAdtyTopUpManualRefund("ORDER_T", original, root.Id, "reclaim-t")
+	require.NoError(t, err)
+	_, err = model.RecordAdtyTopUpManualRefundPayout("ORDER_T", original, root.Id, "payout-t", model.AdtyManualRefundPayout{Status: model.AdtyManualRefundPayoutFailed})
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		_, err = model.TerminateAdtyTopUpManualRefund("ORDER_T", original, root.Id, "terminate-t", "failed")
+		require.NoError(t, err)
+	}
+	facts, err := model.LoadAdtyRefundPageFacts("ORDER_T", decimal.Zero)
+	require.NoError(t, err)
+	require.Equal(t, "100", facts.PrincipalRemainingUSD)
+	require.NoError(t, db.First(&stored, teamID).Error)
+	require.EqualValues(t, 100*unit, stored.SharedQuota)
+	var reversals int64
+	require.NoError(t, db.Model(&model.AdtyTeamLedger{}).Where("ref_id = ? AND delta_quota = ?", original, 40*unit).Count(&reversals).Error)
+	require.EqualValues(t, 1, reversals)
+	reserve("request:clear", &token, 100)
+	settle("request:clear", 100)
+	for _, split := range []bool{false, true} {
+		trade := fmt.Sprintf("STREAM_%t", split)
+		if split {
+			credit(trade, 25)
+			credit(trade+"_B", 75)
+		} else {
+			credit(trade, 100)
+		}
+		rootKey := "request:" + trade
+		reserve(rootKey, &token, 0)
+		for i, qty := range []int{18, 12} {
+			child := model.BillingOperation{OperationKey: fmt.Sprintf("direct:%s:%d", trade, i), EarningRootKey: rootKey, UserId: token.UserId, TokenId: token.Id, TokenUnlimited: true}
+			require.NoError(t, model.QueueDirectBillingDelta(child, qty*unit))
+			_, _, err := model.ApplyBillingSettlement(child.OperationKey)
+			require.NoError(t, err)
+		}
+		require.NoError(t, model.QueueBillingSettlement(rootKey, 20*unit, false, 30*unit, 0))
+		for i := 0; i < 2; i++ {
+			_, _, err := model.ApplyBillingSettlement(rootKey)
+			require.NoError(t, err)
+		}
+		facts, err := model.LoadAdtyRefundPageFacts(trade, decimal.Zero)
+		require.NoError(t, err)
+		if split {
+			require.Equal(t, "5", facts.PrincipalRemainingUSD)
+			facts, err = model.LoadAdtyRefundPageFacts(trade+"_B", decimal.Zero)
+			require.NoError(t, err)
+			require.Equal(t, "75", facts.PrincipalRemainingUSD)
+		} else {
+			require.Equal(t, "80", facts.PrincipalRemainingUSD)
+		}
+		require.NoError(t, db.First(&stored, teamID).Error)
+		require.EqualValues(t, 80*unit, stored.SharedQuota)
+		reserve(rootKey+"-clear", &token, 80)
+		settle(rootKey+"-clear", 80)
 	}
 	credit("ORDER_A", 100)
 	reserve("request:first", &token, 100)
@@ -186,6 +247,105 @@ func TestTeamLifecycleAndOriginalPrincipal(t *testing.T) {
 	require.NoError(t, db.Model(&token).Update("status", common.TokenStatusEnabled).Error)
 	require.Error(t, BindAdtyTeamKey(token.UserId, token.Id, teamID))
 	require.Error(t, model.ValidateAdtyTeamTokenTx(db, &token))
-	require.NoError(t, CloseAdtyTeam(leader.Id, teamID))
+	for _, state := range []string{"disabled", "expired", "deleted"} {
+		key := model.Token{UserId: employee.UserId, Key: "state-" + state, Name: "retained-" + state, Status: common.TokenStatusEnabled, UnlimitedQuota: true, ExpiredTime: -1}
+		require.NoError(t, key.InsertWithLimit(30))
+		switch state {
+		case "disabled":
+			key.Status = common.TokenStatusDisabled
+			require.NoError(t, key.SelectUpdate())
+		case "expired":
+			require.NoError(t, db.Model(&key).Update("expired_time", common.GetTimestamp()-5).Error)
+		case "deleted":
+			require.NoError(t, key.Delete())
+		}
+		page, err := GetAdtyTeamMine(leader.Id)
+		require.NoError(t, err)
+		var matched bool
+		for _, row := range page.Keys {
+			if row.TokenId == key.Id {
+				require.Equal(t, key.Name, row.Name)
+				require.Equal(t, state, row.Status)
+				matched = true
+			}
+		}
+		require.True(t, matched)
+		_, err = model.ValidateUserToken(key.Key)
+		require.Error(t, err)
+	}
+	t.Run("recover-checkout", func(t *testing.T) { testTeamCheckoutRecovery(t, db, teamID, leader.Id) })
+	for _, action := range []string{"disable", "leave", "close"} {
+		staff, err := CreateAdtyTeamEmployee(leader.Id, teamID, "race"+action, "Somepassword123!", action)
+		require.NoError(t, err)
+		old := model.Token{Key: "old-" + action, UserId: staff.UserId, UnlimitedQuota: true, ExpiredTime: -1}
+		require.NoError(t, old.InsertWithLimit(30))
+		start := make(chan struct{})
+		result := make(chan error, 8)
+		for i := 0; i < 8; i++ {
+			go func(n int) {
+				<-start
+				key := model.Token{Key: fmt.Sprintf("%s-%d", action, n), UserId: staff.UserId, UnlimitedQuota: true, ExpiredTime: -1}
+				result <- key.InsertWithLimit(30)
+			}(i)
+		}
+		close(start)
+		switch action {
+		case "disable":
+			err = DisableAdtyTeamMember(leader.Id, teamID, staff.UserId)
+		case "leave":
+			err = LeaveAdtyTeam(staff.UserId, teamID)
+		case "close":
+			err = CloseAdtyTeam(leader.Id, teamID)
+		}
+		require.NoError(t, err)
+		for i := 0; i < 8; i++ {
+			if err := <-result; err != nil {
+				require.ErrorIs(t, err, model.ErrTokenInvalid)
+			}
+		}
+		var keys []model.Token
+		require.NoError(t, db.Where("user_id = ?", staff.UserId).Find(&keys).Error)
+		for _, key := range keys {
+			_, err := model.ValidateUserToken(key.Key)
+			require.Error(t, err)
+		}
+	}
+	late := model.AdtyTopupOrder{TradeNo: "LATE", SiteId: site.Id, TeamId: teamID, UserId: leader.Id}
+	require.NoError(t, db.Create(&late).Error)
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		return creditAdtyTeamTopUpTx(tx, &model.TopUp{UserId: leader.Id}, &late, unit)
+	}))
+	mainOrder := model.AdtyTopupOrder{TradeNo: "LEGACY_MAIN", TeamId: teamID, UserId: leader.Id}
+	require.NoError(t, db.Create(&mainOrder).Error)
+	require.NoError(t, db.Create(&model.TopUp{TradeNo: mainOrder.TradeNo, UserId: leader.Id, Status: common.TopUpStatusSuccess}).Error)
+	require.NoError(t, model.MigrateAdtyTablesOn(db))
+	for _, tt := range []struct {
+		site        int
+		trade, kind string
+	}{{site.Id, "LATE", "closed_team_topup"}, {0, "LEGACY_MAIN", "team_principal_review"}} {
+		rows, err := ListAdtyAnomalyDispositions(tt.site)
+		require.NoError(t, err)
+		var found bool
+		for _, row := range rows {
+			if row.OrderRef == tt.trade {
+				require.Equal(t, teamID, row.TeamId)
+				require.Equal(t, tt.kind, row.Kind)
+				require.Equal(t, "open", row.Status)
+				found = true
+			}
+		}
+		require.True(t, found)
+	}
+	for _, trade := range []string{"ORDER_A", "ORDER_B"} {
+		_, err = model.TerminateAdtyTopUpManualRefund(trade, "refund-"+trade, root.Id, "stop-"+trade, "abandoned")
+		require.NoError(t, err)
+	}
+	_, err = model.DeleteUserById(leader.Id)
+	require.NoError(t, err)
+	preview, err := model.PreviewAdtyTopUpRefund("ORDER_T")
+	require.NoError(t, err)
+	require.Equal(t, "0", preview.Facts.PrincipalRemainingUSD)
+	require.Len(t, preview.Facts.ManualRefunds, 1)
+	require.Equal(t, model.AdtyManualRefundStatusTerminated, preview.Facts.ManualRefunds[0].Status)
 	require.Error(t, model.ValidateAdtyTeamTokenTx(db, &leaderToken))
 }

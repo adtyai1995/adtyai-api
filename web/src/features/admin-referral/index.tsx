@@ -20,15 +20,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { CommissionWithdrawalPanel } from '@/features/adty-site-owner/components/commission-withdrawal-panel'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { formatNumber } from '@/lib/format'
@@ -155,7 +156,7 @@ export function AdminReferral() {
               <div className='flex flex-wrap items-center justify-between gap-2'>
                 <TabsList
                   variant='line'
-                  className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 group-data-horizontal/tabs:h-auto [--tab-underline:var(--brand)]'
+                  className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 [--tab-underline:var(--brand)] group-data-horizontal/tabs:h-auto'
                 >
                   <TabsTrigger
                     value='withdrawals'
@@ -217,6 +218,11 @@ export function AdminReferral() {
               </div>
               <TabsContent value='withdrawals'>
                 <WithdrawalPanel canReview={canReview} canPayout={canPayout} />
+                <CommissionWithdrawalPanel
+                  closed
+                  canReview={canReview}
+                  canPay={canPayout}
+                />
               </TabsContent>
               <TabsContent value='partners'>
                 <AffiliatePanel

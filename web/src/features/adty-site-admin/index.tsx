@@ -23,12 +23,14 @@ import { useTranslation } from 'react-i18next'
 import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TeamRegistrationLinksPanel } from '@/features/adty-team-registration'
+import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
 import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { BusinessTimezonePanel } from './components/business-timezone-panel'
+import { FundReviewPanel } from './components/site-fund-panel'
 import { MainTeamPricePanel } from './components/main-team-price-panel'
 import { OverviewPanel } from './components/overview-panel'
 import { PausedSiteRepairPanel } from './components/paused-site-repair-panel'
@@ -111,6 +113,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
             </TabsContent>
             <TabsContent value='tickets'>
               <TicketCenter scope='platform' />
+              <TelegramBindCard purpose='admin' platformSupport />
             </TabsContent>
             <TabsContent value='overview'>
               <OverviewPanel />
@@ -146,6 +149,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
             <TabsContent value='teams' className='flex flex-col gap-5'>
               <TeamRegistrationLinksPanel actor='root' />
               <MainTeamPricePanel />
+              <FundReviewPanel siteId={0} />
             </TabsContent>
             <TabsContent value='withdrawals'>
               <WithdrawRulesPanel />

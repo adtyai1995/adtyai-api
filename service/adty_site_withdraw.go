@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ type AdtySiteWithdrawRules struct {
 }
 
 type AdtySiteWithdrawInput struct {
+	ExpectedPayout *decimal.Decimal
 	SiteID         int
 	OwnerID        int
 	AmountUSD      decimal.Decimal
@@ -151,6 +153,27 @@ func ListAdtySiteWithdrawals(siteID, ownerID int) ([]model.AdtySiteWithdrawal, e
 	return rows, err
 }
 
+func PageAdtySiteWithdrawals(siteID, ownerID int, status, number string, offset, limit int) ([]model.AdtySiteWithdrawal, int64, error) {
+	q := model.DB.Model(&model.AdtySiteWithdrawal{}).Scopes(model.AdtyWithdrawalOwnerScope(siteID, ownerID))
+	if status != "" {
+		q = q.Where("status = ?", status)
+	}
+	if number != "" {
+		id, err := strconv.ParseInt(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(number)), "WD-SITE-"), 10, 64)
+		if err != nil || id <= 0 {
+			return nil, 0, common.NewMessage("Invalid parameters")
+		}
+		q = q.Where("id = ?", id)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []model.AdtySiteWithdrawal
+	err := q.Order("id DESC").Offset(offset).Limit(limit).Find(&rows).Error
+	return rows, total, err
+}
+
 // AdtySiteWithdrawalAdminRow is one withdrawal in Root's review list. The
 // subdomain lets the reviewer tell sites apart without opening each one.
 type AdtySiteWithdrawalAdminRow struct {
@@ -200,13 +223,48 @@ func ListAdtySiteWithdrawalsForAdmin(status string, offset, limit int) ([]AdtySi
 	return items, total, nil
 }
 
+func siteWithdrawalPayout(net, rate decimal.Decimal, method string) decimal.Decimal {
+	precision := int32(2)
+	if method == "usdt" {
+		precision = 6
+	}
+	return net.Mul(rate).Round(precision)
+}
+
+func QuoteSiteWithdrawal(amount decimal.Decimal, method string) (decimal.Decimal, error) {
+	var payout decimal.Decimal
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
+		if err != nil {
+			return err
+		}
+		if !amount.Equal(amount.Round(8)) || amount.LessThan(cfg.Min) || !amount.GreaterThan(cfg.Fee) {
+			return common.NewMessage("Invalid parameters")
+		}
+		rate := cfg.AlipayCNYRate
+		switch method {
+		case "usdt":
+			rate = cfg.USDTUSDRate
+		case "alipay":
+		default:
+			return common.NewMessage("Unsupported withdrawal method")
+		}
+		payout = siteWithdrawalPayout(amount.Sub(cfg.Fee), rate, method)
+		if !payout.IsPositive() {
+			return common.NewMessage("The payout amount is too small")
+		}
+		return nil
+	})
+	return payout, err
+}
+
 func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithdrawal, error) {
 	method := strings.ToLower(strings.TrimSpace(input.Method))
 	if method != "alipay" && method != "usdt" {
 		return nil, common.NewMessage("Unsupported withdrawal method")
 	}
 	amount := input.AmountUSD
-	if !amount.IsPositive() {
+	if !amount.IsPositive() || !amount.Equal(amount.Round(8)) {
 		return nil, common.NewMessage("Enter a withdrawal amount")
 	}
 	key := strings.TrimSpace(input.IdempotencyKey)
@@ -226,13 +284,6 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 	accountName := strings.TrimSpace(input.AccountName)
 	var created *model.AdtySiteWithdrawal
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
-		if err != nil {
-			return err
-		}
-		if amount.LessThan(cfg.Min) || !amount.GreaterThan(cfg.Fee) {
-			return common.NewMessage("The amount is below the configured withdrawal minimum")
-		}
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).First(&site, input.SiteID).Error; err != nil {
 			return err
@@ -245,8 +296,6 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 			if count == 0 || input.OwnerID <= 0 {
 				return ErrAdtySiteNotOwner
 			}
-		} else if site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosed {
-			return common.NewMessage("No permission to perform this action")
 		}
 		var existing []model.AdtySiteWithdrawal
 		if err := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing).Error; err != nil {
@@ -257,6 +306,10 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 			if err != nil {
 				return err
 			}
+			existingPayout, payoutErr := decimal.NewFromString(existing[0].PayoutAmount)
+			if input.ExpectedPayout != nil && (payoutErr != nil || !input.ExpectedPayout.Equal(existingPayout)) {
+				return model.ErrAdtyIdempotencyConflict
+			}
 			existingRate, rateErr := decimal.NewFromString(existing[0].Rate)
 			if existing[0].SiteId != input.SiteID || existingOwner != input.OwnerID ||
 				!existing[0].AmountUSD.Equal(amount) || existing[0].Method != method ||
@@ -266,6 +319,17 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 			}
 			created = &existing[0]
 			return nil
+		}
+		currentOwner := site.OwnerUserId == input.OwnerID
+		if currentOwner && site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosed {
+			return common.NewMessage("No permission to perform this action")
+		}
+		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
+		if err != nil {
+			return err
+		}
+		if amount.LessThan(cfg.Min) || !amount.GreaterThan(cfg.Fee) {
+			return common.NewMessage("The amount is below the configured withdrawal minimum")
 		}
 		rate := cfg.AlipayCNYRate
 		rateRaw := cfg.AlipayCNYRaw
@@ -279,7 +343,13 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 			return &RateChangedError{Change: ReferralRateChange{Rate: rate.String(), UpdatedAt: time.Now().Unix()}}
 		}
 		net := amount.Sub(cfg.Fee)
-		payout := net.Mul(rate)
+		payout := siteWithdrawalPayout(net, rate, method)
+		if !payout.IsPositive() {
+			return common.NewMessage("The payout amount is too small")
+		}
+		if input.ExpectedPayout != nil && !input.ExpectedPayout.Equal(payout) {
+			return common.NewMessage("Withdrawal quote changed. Confirm the updated amount.")
+		}
 		// ISS-R1-0018: freeze earnings on application without decrementing Balance until paid.
 		if _, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
 			Type: "earning_withdraw_freeze", HoldDelta: amount, IdempotencyKey: "site-withdraw:" + key, OperatorID: input.OwnerID, RefType: "site_withdraw", RefID: key,

@@ -48,7 +48,8 @@ describe('WithdrawalPanel', () => {
     let historyState: 'pending' | 'error' | 'empty' = 'pending'
     const pending: { resolve?: (value: unknown) => void } = {}
 
-    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
+      if(config?.params && typeof config.params === 'object' && 'amount_usd' in config.params) return { data: {success:true,data:{payout_amount:'134.90'}} }
       if (url === '/api/adty/site/withdrawals/rules') {
         return { data: { success: true, data: configuredRules } }
       }
@@ -112,7 +113,8 @@ describe('WithdrawalPanel', () => {
   })
 
   it('reuses the same Idempotency-Key on retry with the same payload and rotates on payload change or success', async () => {
-    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
+      if(config?.params && typeof config.params === 'object' && 'amount_usd' in config.params) return { data: {success:true,data:{payout_amount:'134.90'}} }
       if (url === '/api/adty/site/withdrawals/rules') {
         return { data: { success: true, data: configuredRules } }
       }
@@ -171,7 +173,8 @@ describe('WithdrawalPanel', () => {
     )?.headers?.['Idempotency-Key']
     expect(key1).toBeTruthy()
 
-    // Retry same payload after failure -> reuses key1
+    // Confirm the refreshed quote and retry the same request.
+    await user.click(checkbox)
     await user.click(submitBtn)
     await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(2))
     const key2 = (
@@ -204,6 +207,7 @@ describe('WithdrawalPanel', () => {
 
     await user.clear(amountInput)
     await user.type(amountInput, '35')
+    await user.click(checkbox)
     await user.click(submitBtn)
     await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(5))
     const key5 = (

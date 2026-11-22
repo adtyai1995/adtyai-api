@@ -31,7 +31,7 @@ afterEach(() => vi.restoreAllMocks())
 
 it('opens read-only history and retries a failed history query', async () => {
   const get = vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('history unavailable')).mockResolvedValue({ data: { success: true, data: { total: 1, items: [{ id: 1, site_id: 7, user_id: 0, actor_id: 41, kind: 'model', model: 'long/model-name', group: '', action: 'scheduled', before: '1.2', after: '1.5', version: 4, effective_at: 1700086400, created_at: 1700000000 }] } } })
-  const site: OwnerSite = { id: 7, status: 'active', prices: [], pricing_version: 4, markup_min: '0', markup_max: '3', cost_factor: '0.8', markup_increase_delay_hours: 24, subdomain: 'sample', root_domain: 'example.test', host: 'sample.example.test', base_url: 'https://sample.example.test', custom_domain_enabled: false, sender_domain_enabled: false, brand: { name: '', logo_url: '', tagline: '', notice: '', support_contact: '' }, bonus_methods: [], seo_index: false, agreement_version: '1', agreement_at: 0, domains: [], visibility: {} }
+  const site: OwnerSite = { id: 7, status: 'active', prices: [], pricing_version: 4, cost_factor: '0.8', subdomain: 'sample', root_domain: 'example.test', host: 'sample.example.test', base_url: 'https://sample.example.test', custom_domain_enabled: false, sender_domain_enabled: false, brand: { name: '', logo_url: '', tagline: '', notice: '', support_contact: '' }, bonus_methods: [], seo_index: false, agreement_version: '1', agreement_at: 0, close_execute_at: 0, domains: [], visibility: {} }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<QueryClientProvider client={client}><PricingPanel site={site} /></QueryClientProvider>)
   const user = userEvent.setup()

@@ -134,7 +134,7 @@ func GetAdtyAnomalyDispositions(c *gin.Context) {
 		return
 	}
 	siteID, err := strconv.Atoi(c.Query("site_id"))
-	if err != nil || siteID <= 0 {
+	if err != nil || siteID < 0 {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}

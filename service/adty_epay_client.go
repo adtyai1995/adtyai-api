@@ -28,6 +28,8 @@ type AdtyEpayCreateRequest struct {
 type AdtyEpayCreateResult struct{ Mode, QRCode, PayURL, URLScheme, GatewayTradeNo string }
 
 // AdtyEpayQueryResult 是查单结果。查单返回没有签名，只对 https 网关当真。
+var errEpayOrderAbsent = fmt.Errorf("epay order was not found")
+
 type AdtyEpayQueryResult struct {
 	Paid           bool
 	MoneyCNY       decimal.Decimal
@@ -256,6 +258,7 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 	}
 	var parsed struct {
 		Code       json.RawMessage `json:"code"`
+		Msg        string          `json:"msg"`
 		Status     json.RawMessage `json:"status"`
 		Money      json.RawMessage `json:"money"`
 		Type       string          `json:"type"`
@@ -267,6 +270,10 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 		return nil, fmt.Errorf("epay query returned non-JSON")
 	}
 	if strings.Trim(strings.TrimSpace(string(parsed.Code)), `"`) != "1" {
+		msg := strings.ToLower(parsed.Msg)
+		if strings.Contains(msg, "订单不存在") || strings.Contains(msg, "订单号不存在") || strings.Contains(msg, "order not found") {
+			return nil, errEpayOrderAbsent
+		}
 		return nil, fmt.Errorf("epay order query did not succeed")
 	}
 	result := &AdtyEpayQueryResult{TypeCode: parsed.Type, GatewayTradeNo: parsed.TradeNo, OutTradeNo: parsed.OutTradeNo,

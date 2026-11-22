@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
+
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -558,11 +558,13 @@ func SetAdtyAdminSiteStatus(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Status     string `json:"status"`
-		TransferTo *int   `json:"transfer_to"`
-		ClawBack   bool   `json:"claw_back"`
-		Immediate  bool   `json:"immediate"`
-		Reason     string `json:"reason"`
+		ExecuteAt         int64  `json:"execute_at"`
+		ExpectedExecuteAt int64  `json:"expected_execute_at"`
+		Status            string `json:"status"`
+		TransferTo        *int   `json:"transfer_to"`
+		ClawBack          bool   `json:"claw_back"`
+		Immediate         bool   `json:"immediate"`
+		Reason            string `json:"reason"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -588,7 +590,7 @@ func SetAdtyAdminSiteStatus(c *gin.Context) {
 			transferTo = *body.TransferTo
 		}
 		site, err = service.ScheduleAdtySiteClose(id, c.GetInt("id"), service.AdtySiteClosePlan{
-			TransferTo: transferTo, ClawBack: body.ClawBack, Immediate: body.Immediate, Reason: body.Reason,
+			ExecuteAt: body.ExecuteAt, ExpectedExecuteAt: body.ExpectedExecuteAt, TransferTo: transferTo, ClawBack: body.ClawBack, Immediate: body.Immediate, Reason: body.Reason,
 		})
 	default:
 		common.ApiErrorT(c, "Invalid parameters")
@@ -740,8 +742,6 @@ func adtyClearedSecretWarnings() []string {
 	return warnings
 }
 
-var resellerPatchMu sync.Mutex
-
 func resellerSettingsSnapshot(db *gorm.DB) (adty_setting.ResellerSetting, map[string]string, error) {
 	var cfg adty_setting.ResellerSetting
 	defaults, err := config.ConfigToMap(adty_setting.GetResellerSetting())
@@ -844,13 +844,11 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 	options := map[string]string{}
 	// Serialize commit and publication on this node. The database lock also
 	// serializes a patch with writers on other nodes before resolving dependencies.
-	resellerPatchMu.Lock()
-	defer resellerPatchMu.Unlock()
+	model.ResellerWriteMu.Lock()
+	defer model.ResellerWriteMu.Unlock()
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		if tx.Dialector.Name() == "postgres" {
-			if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", adty_setting.ResellerSettingModule).Error; err != nil {
-				return err
-			}
+		if err := model.LockResellerOptionsTx(tx); err != nil {
+			return err
 		}
 		current, observed, err := resellerSettingsSnapshot(tx)
 		if err != nil {
@@ -862,7 +860,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		}
 
 		for key, raw := range body {
-			if _, ok := known[key]; !ok {
+			if _, ok := known[key]; !ok || strings.HasPrefix(key, "pending_") {
 				return common.NewMessage("Invalid parameters")
 			}
 			text := strings.TrimSpace(string(raw))
@@ -935,8 +933,12 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 			next.ReservedSubdomains[i] = strings.ToLower(strings.TrimSpace(next.ReservedSubdomains[i]))
 		}
 		nowUnix := time.Now().Unix()
-		heldMinIncrease = adty_setting.HoldMinCostFactorIncrease(&next, &current, nowUnix)
-		if heldMinIncrease {
+		if _, changed := values["min_cost_factor"]; changed {
+			heldMinIncrease = adty_setting.HoldMinCostFactorIncrease(&next, &current, nowUnix)
+			if next.MinCostFactor == nil {
+				next.PendingMinCostFactor = nil
+				next.PendingMinCostFactorAt = 0
+			}
 			values["min_cost_factor"] = ""
 			values["pending_min_cost_factor"] = ""
 			values["pending_min_cost_factor_at"] = ""
@@ -944,8 +946,12 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		if err := adty_setting.ValidateResellerPatch(&next, adtyResendConfigured(), values); err != nil {
 			return err
 		}
-		heldCostIncrease = adty_setting.HoldGlobalCostFactorIncrease(&next, &current, nowUnix)
-		if heldCostIncrease {
+		if _, changed := values["cost_factor"]; changed {
+			heldCostIncrease = adty_setting.HoldGlobalCostFactorIncrease(&next, &current, nowUnix)
+			if next.CostFactor == nil {
+				next.PendingCostFactor = nil
+				next.PendingCostFactorAt = 0
+			}
 			values["pending_cost_factor"] = ""
 			values["pending_cost_factor_at"] = ""
 			values["cost_factor"] = ""
@@ -1051,4 +1057,63 @@ func GetAdtyResellerUsage(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, usage)
+}
+
+func GetAdtyAdminCloseMail(c *gin.Context) {
+	id, ok := siteIdParam(c)
+	if !ok {
+		return
+	}
+	var batches []model.AdtySiteCloseMailBatch
+	if err := model.DB.Where("site_id = ?", id).Order("revision DESC").Find(&batches).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var batchID int64
+	if len(batches) > 0 {
+		batchID = batches[0].Id
+	}
+	if raw := c.Query("batch"); raw != "" {
+		var err error
+		batchID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	page := common.GetPageQuery(c)
+	var rows []model.AdtySiteCloseMailRecipient
+	var total int64
+	q := model.DB.Model(&model.AdtySiteCloseMailRecipient{}).Where("site_id = ? AND batch_id = ?", id, batchID)
+	if err := q.Count(&total).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := q.Order("CASE status WHEN 'review' THEN 0 WHEN 'failed' THEN 1 WHEN 'sending' THEN 2 WHEN 'pending' THEN 3 ELSE 4 END,id").Offset(page.GetStartIdx()).Limit(page.GetPageSize()).Find(&rows).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"batches": batches, "batch_id": batchID, "recipients": rows, "total": total})
+}
+
+func ResolveAdtyAdminCloseMail(c *gin.Context) {
+	id, ok := siteIdParam(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		RecipientID int64  `json:"recipient_id"`
+		Attempt     int    `json:"attempt"`
+		Decision    string `json:"decision"`
+		Reason      string `json:"reason"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.ResolveAdtyCloseMailRecipient(id, c.GetInt("id"), req.RecipientID, req.Attempt, req.Decision, req.Reason); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, nil)
 }

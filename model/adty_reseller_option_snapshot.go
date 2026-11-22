@@ -4,10 +4,21 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"gorm.io/gorm"
 )
+
+// ResellerWriteMu orders commit and publication of reseller settings within a node.
+var ResellerWriteMu sync.Mutex
+
+func LockResellerOptionsTx(tx *gorm.DB) error {
+	if tx.Dialector.Name() == "postgres" {
+		return tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", adty_setting.ResellerSettingModule).Error
+	}
+	return nil
+}
 
 // ResellerOptionSnapshot reads one database snapshot, including an opaque change
 // token for encrypted credentials without exposing their values to the client.

@@ -43,6 +43,7 @@ import { EarningToMarginPanel } from './components/earning-to-margin-panel'
 import { EarningsPanel } from './components/earnings-panel'
 import { OverviewPanel } from './components/overview-panel'
 import { OwnerSelfUsePanel } from './components/owner-self-use-panel'
+import { toIntlLocale } from '@/i18n/languages'
 import { OwnerVerificationProvider } from './components/owner-verification'
 import { PricingPanel } from './components/pricing-panel'
 import { SettlementSheetPanel } from './components/settlement-sheet-panel'
@@ -120,7 +121,7 @@ export function SiteOwnerCenter(props: {
                       {site.data.close_execute_at > 0 && (
                         <p>
                           {t('Closes on')} ·{' '}
-                          {new Intl.DateTimeFormat(i18n.resolvedLanguage, {
+                          {new Intl.DateTimeFormat(toIntlLocale(i18n.resolvedLanguage || i18n.language), {
                             dateStyle: 'medium',
                             timeStyle: 'long',
                             timeZone: 'Asia/Shanghai',

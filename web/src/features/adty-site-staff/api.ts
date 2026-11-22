@@ -181,30 +181,16 @@ export async function saveStaffAccount(
       : await api.put<Response<StaffAccount>>(path, input, config)
   return requireServerSuccess(response.data).data
 }
-export async function resetStaffPassword(
-  staff: StaffAccount,
-  password: string,
-  proof: string
-): Promise<void> {
-  const response = await api.put<Response<StaffAccount>>(
-    `/api/adty/site/staff/${staff.id}/password`,
-    { password, expected_version: staff.version },
-    { headers: { 'X-Security-Proof': proof } }
-  )
-  requireServerSuccess(response.data)
-}
-export async function deleteStaffAccount(
-  staff: StaffAccount,
-  proof: string
-): Promise<void> {
-  const response = await api.delete<Response<StaffAccount>>(
-    `/api/adty/site/staff/${staff.id}`,
-    {
-      data: { expected_version: staff.version },
-      headers: { 'X-Security-Proof': proof },
-    }
-  )
-  requireServerSuccess(response.data)
+export async function submitStaffRequest(action: string, target: number, input: StaffInput, proof: string) {
+  if (action === 'staff.create' || action === 'staff.update') {
+    return saveStaffAccount(action === 'staff.create' ? null : target,input,proof)
+  }
+  const headers={ 'X-Security-Proof': proof }
+  const path=`/api/adty/site/staff/${target}`
+  const response=action==='staff.password'
+    ? await api.put<Response<StaffAccount>>(`${path}/password`,input,{headers})
+    : await api.delete<Response<StaffAccount>>(path,{data:input,headers})
+  return requireServerSuccess(response.data).data
 }
 export async function getStaffSelf(): Promise<{
   staff: StaffAccount

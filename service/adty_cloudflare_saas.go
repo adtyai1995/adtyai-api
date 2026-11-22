@@ -649,11 +649,24 @@ func RemoveAdtySiteDomainByAdmin(ctx context.Context, domainId int) error {
 
 // removeAdtySiteDomain 从 Turnstile widget 和 Cloudflare 删掉，行改成 removed。
 func removeAdtySiteDomain(ctx context.Context, domain *model.AdtySiteDomain) error {
-	if domain.AutomationState != "" {
-		return model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND site_id = ?", domain.Id, domain.SiteId).Updates(map[string]any{"desired_state": "removed", "automation_state": "queued", "generation": gorm.Expr("generation + 1"), "next_run_at": 0}).Error
-	}
-	err := adtyWithDomainLifecycle(ctx, domain, func(tx *gorm.DB, current *model.AdtySiteDomain) error {
-		return removeAdtySiteDomainLocked(ctx, tx, current)
+	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.AdtySiteDomain
+		if err := adtyLockDomainRow(tx, domain.Id, &current); err != nil {
+			return err
+		}
+		if current.SiteId != domain.SiteId || current.Hostname != domain.Hostname || current.OwnershipToken != domain.OwnershipToken {
+			return ErrAdtySiteNotFound
+		}
+		if current.Status == model.AdtySiteDomainRemoved {
+			return nil
+		}
+		if current.AutomationState != "" {
+			if current.DesiredState == "removed" || current.Status == model.AdtySiteDomainRemoved {
+				return nil
+			}
+			return tx.Model(&current).Updates(map[string]any{"desired_state": "removed", "automation_state": "queued", "generation": gorm.Expr("generation + 1"), "next_run_at": 0}).Error
+		}
+		return removeAdtySiteDomainLocked(ctx, tx, &current)
 	})
 	if err == nil {
 		InvalidateAdtySiteCache()
@@ -796,6 +809,10 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 				changed = true
 				return adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{"status": model.AdtySiteDomainPending, "ssl_status": detail.SSL.Status, "verify_records": verifyRecordsFor(domain.Hostname, cfg.CnameTarget, detail), "last_checked_at": now.Unix(), "created_at": now.Unix()}).Error
 			}
+			if err := adtyProbeDomainHTTPS(ctx, domain); err != nil {
+				changed = true
+				return adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{"status": model.AdtySiteDomainPending, "last_error": err.Error(), "created_at": now.Unix()}).Error
+			}
 			return adtyAssignCheckedDomainTurnstile(ctx, tx, domain)
 		}
 		if domain.Status != model.AdtySiteDomainPending {
@@ -833,7 +850,11 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 				updates["last_error"] = fmt.Sprintf("cloudflare %d", apiErr.Code)
 			}
 		case detail.Status == "active" && detail.SSL.Status == "active":
-			updates["status"], updates["ssl_status"], updates["last_error"] = model.AdtySiteDomainActive, detail.SSL.Status, ""
+			if err := adtyProbeDomainHTTPS(ctx, domain); err != nil {
+				updates["last_error"] = err.Error()
+			} else {
+				updates["status"], updates["ssl_status"], updates["last_error"] = model.AdtySiteDomainActive, detail.SSL.Status, ""
+			}
 		default:
 			updates["ssl_status"] = detail.SSL.Status
 			updates["verify_records"] = verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail)

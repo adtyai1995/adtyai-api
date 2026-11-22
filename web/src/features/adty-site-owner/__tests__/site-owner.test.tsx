@@ -110,14 +110,12 @@ function ownerSite(overrides: Partial<OwnerSite> = {}): OwnerSite {
   return {
     id: 7,
     status: 'active',
+    close_execute_at: 0,
     subdomain: 'shop',
     root_domain: 'sites.example',
     host: 'shop.sites.example',
     base_url: 'https://shop.sites.example',
     cost_factor: '0.8',
-    markup_min: '0',
-    markup_max: '3',
-    markup_increase_delay_hours: 24,
     custom_domain_enabled: false,
     sender_domain_enabled: false,
     brand: {
@@ -508,7 +506,7 @@ describe('EarningsPanel', () => {
       total: 2,
       items: [
         {
-          day: '2026-10-01',
+          id: 1, day: '2026-10-01',
           user_id: 5,
           kind: 'usage',
           revenue_usd: '125',
@@ -517,7 +515,7 @@ describe('EarningsPanel', () => {
           settled_at: 1_700_000_000,
         },
         {
-          day: '2026-10-01+1',
+          id: 2, day: '2026-10-01+1',
           user_id: 5,
           kind: 'bonus',
           revenue_usd: '0',

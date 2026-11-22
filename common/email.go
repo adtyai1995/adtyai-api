@@ -3,14 +3,19 @@ package common
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"mime"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"slices"
 	"strings"
 	"time"
 )
+
+// ErrSMTPDeliveryUnknown marks a lost acknowledgement after DATA was transmitted.
+var ErrSMTPDeliveryUnknown = errors.New("SMTP delivery outcome unknown")
 
 func generateMessageID(from string) (string, error) {
 	split := strings.Split(from, "@")
@@ -159,11 +164,15 @@ func SendEmailFrom(from string, subject string, receiver string, content string)
 	}
 	err = w.Close()
 	if err != nil {
-		return err
+		var rejected *textproto.Error
+		if errors.As(err, &rejected) {
+			return err
+		}
+		return errors.Join(ErrSMTPDeliveryUnknown, err)
 	}
 	err = client.Quit()
 	if err != nil {
-		SysError(LogText("failed to send email to %s: %v", receiver, err))
+		SysError(LogText("SMTP QUIT failed after delivery acknowledgement: %v", err))
 	}
-	return err
+	return nil
 }

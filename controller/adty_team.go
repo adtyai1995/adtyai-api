@@ -76,16 +76,21 @@ func PostAdtyTeamTopup(c *gin.Context) {
 		return
 	}
 	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	if method := strings.TrimSpace(body.Method); method != "" {
-		order, err := service.StartAdtyTeamTopupPayment(c.GetInt("id"), id, amount, method, body.ChannelId, key, c.ClientIP())
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		common.ApiSuccess(c, order)
+	order, err := service.StartAdtyTeamTopupPayment(c.GetInt("id"), id, amount, body.Method, body.ChannelId, key, c.ClientIP())
+	if err != nil {
+		common.ApiError(c, err)
 		return
 	}
-	order, err := service.CreateAdtyTeamTopupOrder(c.GetInt("id"), id, amount, key)
+	common.ApiSuccess(c, order)
+}
+
+func ResumeAdtyTeamTopup(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	order, err := service.ResumeAdtyTeamTopupPayment(c.GetInt("id"), id, c.Param("trade_no"), c.ClientIP())
 	if err != nil {
 		common.ApiError(c, err)
 		return

@@ -81,6 +81,7 @@ import {
 } from '../lib/site-visibility'
 import { siteNotice } from '../lib/sites'
 import type { AdminSite } from '../types'
+import { getCloseMail, resolveCloseMail, type CloseMailRecipient } from '../api'
 import { CloseSiteDialog } from './close-site-dialog'
 import { SwitchRow } from './setting-fields'
 import { SiteFundPanel } from './site-fund-panel'
@@ -407,13 +408,13 @@ function SiteActions(props: {
             {t('Take down notice')}
           </Button>
         )}
-        {canClose && editable && (
+        {canClose && site.status !== 'closed' && (
           <Button
             variant='destructive'
             disabled={busy}
             onClick={() => setClosing(true)}
           >
-            {t('Close site')}
+            {site.status==='closing'?t('Reschedule closure'):t('Close site')}
           </Button>
         )}
         {canReview && ['active', 'paused'].includes(site.status) && (
@@ -422,6 +423,7 @@ function SiteActions(props: {
           </p>
         )}
       </div>
+      {canClose && (site.status==='closing'||site.status==='closed') && <CloseMailPanel key={site.id} siteId={site.id}/>}
       {notice && (
         <div className='space-y-1'>
           <span className='text-muted-foreground text-xs'>
@@ -454,6 +456,34 @@ function SiteActions(props: {
       )}
     </section>
   )
+}
+
+function CloseMailPanel({siteId}:{siteId:number}){
+ const {t}=useTranslation()
+ const [page,setPage]=useState(1)
+ const [batch,setBatch]=useState(0)
+ const [reason,setReason]=useState('')
+ const query=useQuery({queryKey:siteAdminKeys.list('close-mail',{siteId,batch,page}),queryFn:()=>getCloseMail(siteId,batch,page),refetchInterval:30000})
+ const resolve=useMutation({mutationFn:({row,decision}:{row:CloseMailRecipient;decision:string})=>resolveCloseMail(siteId,row,decision,reason),onSuccess:()=>{setReason('');void query.refetch()},onError:(error)=>handleServerError(error)})
+ if(query.isError)return <ErrorState onRetry={()=>void query.refetch()}/>
+ const data=query.data
+ return <section className="space-y-2">
+ <h3>{t('Closure notification delivery')}</h3>
+ {data && <>
+ <select aria-label={t('Notification batch')} value={data.batch_id} onChange={e=>{setBatch(Number(e.target.value));setPage(1)}}>
+ {data.batches.map(b=><option key={b.id} value={b.id}>#{b.id} · {formatTimestampToDate(b.execute_at)} · {b.retry_status}</option>)}
+ </select>
+ <Label>{t('Reconciliation note')}<Input value={reason} onChange={e=>setReason(e.target.value)}/></Label>
+ {data.recipients.map(row=><div key={row.id} className="space-x-2 text-sm">
+ <span>{row.email} · {row.status} · {t('Attempts')} {row.attempt_count} {row.last_error}</span>
+ {(row.status==='failed'||row.status==='review')&&data.batches.find(b=>b.id===data.batch_id)?.retry_status!=='superseded' && <>
+ <Button variant="outline" disabled={resolve.isPending||!reason.trim()} onClick={()=>resolve.mutate({row,decision:'retry'})}>{t('Retry')}</Button>
+ <Button variant="outline" disabled={resolve.isPending||!reason.trim()} onClick={()=>resolve.mutate({row,decision:'delivered'})}>{t('Confirm delivered')}</Button>
+ </>}
+ </div>)}
+ {data.total>20 && <div><Button disabled={page===1} onClick={()=>setPage(page-1)}>{t('Previous')}</Button><Button disabled={20*page>=data.total} onClick={()=>setPage(page+1)}>{t('Next')}</Button></div>}
+ </>}
+ </section>
 }
 
 function SiteCustomers(props: { siteId: number }) {

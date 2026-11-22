@@ -166,9 +166,10 @@ func PutAdtyOwnerSite(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Brand      *service.AdtySiteBrandInput `json:"brand"`
-		BonusRates *map[int]float64            `json:"bonus_rates"`
-		SeoIndex   *bool                       `json:"seo_index"`
+		Brand         map[string]string `json:"brand"`
+		ExpectedBrand map[string]string `json:"expected_brand"`
+		BonusRates    *map[int]float64  `json:"bonus_rates"`
+		SeoIndex      *bool             `json:"seo_index"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -191,32 +192,9 @@ func PutAdtyOwnerSite(c *gin.Context) {
 			return
 		}
 	}
-	updates := map[string]any{}
-	if body.Brand != nil {
-		// 品牌字段的校验和整理在 11.3 的 NormalizeAdtySiteBrand：纯文本、字数上限、Logo 只能是本站上传的图片。
-		brand, err := service.NormalizeAdtySiteBrand(*body.Brand)
-		if err != nil {
+	if body.Brand != nil || body.SeoIndex != nil {
+		if err := service.SaveAdtyBrandPatch(site.Id, c.GetInt("id"), body.Brand, body.ExpectedBrand, body.SeoIndex); err != nil {
 			common.ApiError(c, err)
-			return
-		}
-		encoded, err := common.Marshal(brand)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		updates["brand"] = string(encoded)
-	}
-	if body.SeoIndex != nil {
-		updates["seo_index"] = *body.SeoIndex
-	}
-	if len(updates) > 0 {
-		result := model.DB.Model(&model.AdtySite{}).Where("id = ? AND status <> ?", site.Id, model.AdtySiteStatusClosing).Updates(updates)
-		if result.Error != nil {
-			common.ApiError(c, result.Error)
-			return
-		}
-		if result.RowsAffected == 0 {
-			common.ApiError(c, service.ErrAdtySiteClosing)
 			return
 		}
 		service.InvalidateAdtySiteCache()

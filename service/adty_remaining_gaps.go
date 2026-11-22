@@ -1368,6 +1368,16 @@ func HideAdtyNotificationForUser(userID int, key string) error {
 // HideAdtyNotificationForUserFromRequest is the request-scoped hide path so
 // the official audit can use the site already resolved for this request.
 func HideAdtyNotificationForUserFromRequest(c *gin.Context, userID int, key string) error {
+	if adtyIsNotificationKeyHidden(userID, key) {
+		return nil
+	}
+	_, visible, err := GetAdtyNotificationDetail(userID, AdtySiteForRequest(c), key)
+	if err != nil {
+		return err
+	}
+	if !visible {
+		return gorm.ErrRecordNotFound
+	}
 	return hideAdtyNotificationForUser(c, userID, key)
 }
 

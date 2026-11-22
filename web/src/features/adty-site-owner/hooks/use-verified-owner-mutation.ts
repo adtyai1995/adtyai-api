@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import type { SiteOwnerAction } from '@/features/auth/secure-verification'
+import { submitStaffRequest, type StaffInput } from '@/features/adty-site-staff/api'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -35,7 +36,8 @@ import { useOwnerVerification } from '../components/owner-verification'
 export function useVerifiedOwnerMutation<TVars>(options: {
   action: SiteOwnerAction
   target: (vars: TVars) => number
-  run: (vars: TVars, proof: string) => Promise<unknown>
+  run?: (vars: TVars, proof: string) => Promise<unknown>
+  staffRequest?: (vars: TVars) => StaffInput
   successMessage?: string
   onSuccess?: () => void
 }) {
@@ -44,9 +46,13 @@ export function useVerifiedOwnerMutation<TVars>(options: {
   const owner = useOwnerVerification()
   return useMutation({
     mutationFn: async (vars: TVars) => {
-      const proof = await owner.verify(options.action, options.target(vars))
+      const target = options.target(vars)
+      const request = options.staffRequest && structuredClone(options.staffRequest(vars))
+      const proof = await owner.verify(options.action, target, request)
       if (!proof) return false
-      await options.run(vars, proof)
+      if (request) await submitStaffRequest(options.action,target,request,proof)
+      else if (options.run) await options.run(vars, proof)
+      else throw new Error('Missing verified action')
       return true
     },
     onSuccess: (done) => {

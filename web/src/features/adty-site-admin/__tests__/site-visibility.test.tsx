@@ -38,7 +38,6 @@ function site(id = 1, visibility = ''): AdminSite {
     owner_username: 'owner',
     status: 'active',
     cost_factor: '0.5',
-    max_markup: '2',
     tier_cost_factor: null,
     tier_month: '',
     visibility,

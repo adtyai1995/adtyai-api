@@ -11,18 +11,27 @@ import (
 	"gorm.io/gorm"
 )
 
+func seedTeamCheckoutChannel(t *testing.T, db *gorm.DB) *model.AdtyEpayChannel {
+	t.Helper()
+	require.NoError(t, db.AutoMigrate(&model.Option{}))
+	return seedEpayChannel(t, db, model.AdtyEpayChannel{
+		Name: "Team checkout", GatewayURL: "https://pay.example.test", MerchantId: "merchant", OrderMode: model.AdtyEpayOrderModeSubmit,
+	}, alipay("submit"))
+}
+
 func TestTeamTopupOrderCreditsPrincipalWithoutGift(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
+	channel := seedTeamCheckoutChannel(t, db)
 	leader := referralUser(t, db, "team-topup-leader")
 	created, err := CreateAdtyTeam(leader.Id, 0, "Topup", decimal.NewFromInt(1))
 	require.NoError(t, err)
-	order, err := CreateAdtyTeamTopupOrder(leader.Id, created.Team.Id, decimal.NewFromInt(1), "team-pay-1")
+	order, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, "team-pay-1", "127.0.0.1")
 	require.NoError(t, err)
 	require.True(t, order.BonusUSD.IsZero())
 	require.True(t, order.BonusRate.IsZero())
 	require.EqualValues(t, 500000, order.CreditQuota)
 
-	replay, err := CreateAdtyTeamTopupOrder(leader.Id, created.Team.Id, decimal.NewFromInt(1), "team-pay-1")
+	replay, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, "team-pay-1", "127.0.0.1")
 	require.NoError(t, err)
 	require.Equal(t, order.TradeNo, replay.TradeNo)
 
@@ -57,6 +66,7 @@ func TestTeamTopupOrderCreditsPrincipalWithoutGift(t *testing.T) {
 // 否则 B 团队只会拿到 Invalid parameters，且查不出自己撞的是 A 团队的单号。
 func TestTeamTopupIdempotencyKeyIsScopedToTeam(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
+	channel := seedTeamCheckoutChannel(t, db)
 	leaderA := referralUser(t, db, "team-key-a")
 	teamA, err := CreateAdtyTeam(leaderA.Id, 0, "KeyA", decimal.NewFromInt(1))
 	require.NoError(t, err)
@@ -65,21 +75,21 @@ func TestTeamTopupIdempotencyKeyIsScopedToTeam(t *testing.T) {
 	require.NoError(t, err)
 
 	const key = "shared-client-key"
-	first, err := CreateAdtyTeamTopupOrder(leaderA.Id, teamA.Team.Id, decimal.NewFromInt(1), key)
+	first, err := StartAdtyTeamTopupPayment(leaderA.Id, teamA.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, key, "127.0.0.1")
 	require.NoError(t, err)
 
-	second, err := CreateAdtyTeamTopupOrder(leaderB.Id, teamB.Team.Id, decimal.NewFromInt(1), key)
+	second, err := StartAdtyTeamTopupPayment(leaderB.Id, teamB.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, key, "127.0.0.1")
 	require.NoError(t, err, "另一个团队用同一个 key 不能被 A 团队的单号挡住")
 	require.NotEqual(t, first.TradeNo, second.TradeNo)
 	require.Equal(t, teamB.Team.Id, second.TeamId)
 
 	// 同团队同 key 同参数：仍然是同一张单。
-	replay, err := CreateAdtyTeamTopupOrder(leaderA.Id, teamA.Team.Id, decimal.NewFromInt(1), key)
+	replay, err := StartAdtyTeamTopupPayment(leaderA.Id, teamA.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, key, "127.0.0.1")
 	require.NoError(t, err)
 	require.Equal(t, first.TradeNo, replay.TradeNo)
 
 	// 同团队同 key 改金额：是调用方换了参数，必须拒绝而不是新建同号单。
-	_, err = CreateAdtyTeamTopupOrder(leaderA.Id, teamA.Team.Id, decimal.NewFromInt(2), key)
+	_, err = StartAdtyTeamTopupPayment(leaderA.Id, teamA.Team.Id, decimal.NewFromInt(2), "alipay", channel.Id, key, "127.0.0.1")
 	require.ErrorIs(t, err, ErrAdtyTeamInvalid)
 }
 
@@ -87,6 +97,7 @@ func TestTeamTopupIdempotencyKeyIsScopedToTeam(t *testing.T) {
 // 别的团队用同一个 key 则直接建自己的单，不再被挡住。
 func TestTeamTopupReplaysLegacyTradeNoOnlyForSameTeam(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
+	channel := seedTeamCheckoutChannel(t, db)
 	leaderA := referralUser(t, db, "team-legacy-a")
 	teamA, err := CreateAdtyTeam(leaderA.Id, 0, "LegacyA", decimal.NewFromInt(1))
 	require.NoError(t, err)
@@ -107,7 +118,7 @@ func TestTeamTopupReplaysLegacyTradeNoOnlyForSameTeam(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, legacyNo, replay.TradeNo, "同团队的重放必须回到升级前那张单")
 
-	fresh, err := CreateAdtyTeamTopupOrder(leaderB.Id, teamB.Team.Id, decimal.NewFromInt(1), key)
+	fresh, err := StartAdtyTeamTopupPayment(leaderB.Id, teamB.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, key, "127.0.0.1")
 	require.NoError(t, err)
 	require.NotEqual(t, legacyNo, fresh.TradeNo, "不能把别的团队的老单当成自己的重放")
 	require.Equal(t, teamB.Team.Id, fresh.TeamId)
@@ -116,13 +127,14 @@ func TestTeamTopupReplaysLegacyTradeNoOnlyForSameTeam(t *testing.T) {
 // 幂等键是客户端自由文本，必须限长（与仓库内其它幂等键一致，取 64）。
 func TestTeamTopupRejectsOverlongIdempotencyKey(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
+	channel := seedTeamCheckoutChannel(t, db)
 	leader := referralUser(t, db, "team-key-long")
 	team, err := CreateAdtyTeam(leader.Id, 0, "KeyLong", decimal.NewFromInt(1))
 	require.NoError(t, err)
 
-	_, err = CreateAdtyTeamTopupOrder(leader.Id, team.Team.Id, decimal.NewFromInt(1), strings.Repeat("k", adtyTeamTopupKeyMaxLen+1))
+	_, err = StartAdtyTeamTopupPayment(leader.Id, team.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, strings.Repeat("k", adtyTeamTopupKeyMaxLen+1), "127.0.0.1")
 	require.ErrorIs(t, err, ErrAdtyTeamIdempotencyKey)
 
-	_, err = CreateAdtyTeamTopupOrder(leader.Id, team.Team.Id, decimal.NewFromInt(1), strings.Repeat("k", adtyTeamTopupKeyMaxLen))
+	_, err = StartAdtyTeamTopupPayment(leader.Id, team.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, strings.Repeat("k", adtyTeamTopupKeyMaxLen), "127.0.0.1")
 	require.NoError(t, err, "64 个字符是允许的上限")
 }

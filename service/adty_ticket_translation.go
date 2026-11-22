@@ -12,8 +12,16 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+func ticketSupportAuthor(role string) bool {
+	switch role {
+	case "owner", "staff", "platform", "platform_main", "support":
+		return true
+	}
+	return false
+}
+
 func reserveTicketTranslationTx(tx *gorm.DB, msg model.AdtyTicketMessage, siteID int) error {
-	if msg.Visibility != model.AdtyTicketVisibilityPublic || msg.AuthorRole == "" || msg.AuthorRole == "customer" || !adtyContainsChinese(msg.Body) {
+	if msg.Visibility != model.AdtyTicketVisibilityPublic || !ticketSupportAuthor(msg.AuthorRole) || !adtyContainsChinese(msg.Body) {
 		return nil
 	}
 	sum := sha256.Sum256([]byte(msg.Body))
@@ -30,11 +38,32 @@ func reserveTicketTranslationTx(tx *gorm.DB, msg model.AdtyTicketMessage, siteID
 // Existing replies from before reservations were transactional can lack a
 // translation head. Repair them in bounded pages, once on worker startup.
 func backfillTicketReplyTranslations() error {
+	// A reply's current author permissions cannot establish their old role.
+	// Typed recipient records tie a message to a specific event. Older
+	// personal cases also identify the two sides by their creator.
+	if err := model.DB.Exec(`UPDATE adty_ticket_messages AS m SET author_role=CASE
+		WHEN m.visibility='internal' AND EXISTS (SELECT 1 FROM adty_ticket_events e
+		  WHERE e.ticket_id=m.ticket_id AND e.action='note' AND e.actor_id=m.author_id) THEN 'support'
+		WHEN m.visibility='public' AND m.id=(SELECT MIN(f.id) FROM adty_ticket_messages f WHERE f.ticket_id=m.ticket_id)
+		  AND m.author_id=t.user_id AND EXISTS (SELECT 1 FROM adty_ticket_events e WHERE e.ticket_id=t.id AND e.action='create' AND e.actor_id=t.user_id) THEN 'customer'
+		WHEN m.visibility='public' AND EXISTS (SELECT 1 FROM adty_ticket_notices n JOIN adty_ticket_events e ON e.id=n.event_id
+		  WHERE e.ticket_id=m.ticket_id AND n.ticket_id=m.ticket_id AND e.action='reply' AND e.actor_id=m.author_id AND n.actor_id=m.author_id
+		  AND n.event_key IN ('ticket:'||t.id||':msg:'||m.id, 'ticket:'||t.id||':msg:'||m.id||':to:'||n.user_id)
+		  AND (n.purpose='admin' OR (COALESCE(n.purpose,'')='' AND COALESCE(t.team_id,0)=0 AND m.author_id=t.user_id))) THEN 'customer'
+		WHEN m.visibility='public' AND EXISTS (SELECT 1 FROM adty_ticket_notices n JOIN adty_ticket_events e ON e.id=n.event_id
+		  WHERE e.ticket_id=m.ticket_id AND n.ticket_id=m.ticket_id AND e.action='reply' AND e.actor_id=m.author_id AND n.actor_id=m.author_id
+		  AND n.event_key IN ('ticket:'||t.id||':msg:'||m.id, 'ticket:'||t.id||':msg:'||m.id||':to:'||n.user_id)
+		  AND (n.purpose='user' OR (COALESCE(n.purpose,'')='' AND COALESCE(t.team_id,0)=0 AND m.author_id<>t.user_id AND n.user_id=t.user_id))) THEN 'support'
+		WHEN m.visibility='public' AND COALESCE(t.team_id,0)=0 AND m.author_id<>t.user_id AND EXISTS
+		  (SELECT 1 FROM adty_ticket_events e WHERE e.ticket_id=m.ticket_id AND e.action='reply' AND e.actor_id=m.author_id AND e.created_at=m.created_at) THEN 'support'
+		ELSE 'unconfirmed' END FROM adty_tickets t WHERE t.id=m.ticket_id AND COALESCE(m.author_role,'')='' `).Error; err != nil {
+		return err
+	}
 	var after int64
 	for {
 		var ids []int64
 		err := model.DB.Model(&model.AdtyTicketMessage{}).
-			Where("id > ? AND visibility=? AND author_role IN ?", after, model.AdtyTicketVisibilityPublic, []string{"owner", "staff", "platform", "platform_main"}).
+			Where("id > ? AND visibility=? AND author_role IN ?", after, model.AdtyTicketVisibilityPublic, []string{"owner", "staff", "platform", "platform_main", "support"}).
 			Where("NOT EXISTS (SELECT 1 FROM adty_translation_heads h WHERE h.object_key='ticket-reply:' || CAST(adty_ticket_messages.id AS TEXT))").
 			Order("id").Limit(200).Pluck("id", &ids).Error
 		if err != nil || len(ids) == 0 {

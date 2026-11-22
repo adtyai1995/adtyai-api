@@ -937,15 +937,16 @@ func TestTeamRepairSameTopupKeyIsIndependentAcrossTeamsAndLegacyOrders(t *testin
 	require.NoError(t, err)
 	second, err := service.CreateAdtyTeam(f.mainUser.Id, 0, "Second checkout", decimal.NewFromInt(1))
 	require.NoError(t, err)
+	channel := seedRouterEpayChannel(t, "independent-team-checkout", "https://pay.example.test", model.AdtyEpayOrderModeSubmit, 1)
 	const key = "shared-key-across-teams"
 	legacy := &model.AdtyTopupOrder{TradeNo: "TTEP" + common.Sha1([]byte(key))[:20], TeamId: first.Team.Id, UserId: f.mainLeader.Id,
 		Provider: model.PaymentProviderAdtyEpay, Method: "alipay", FaceUSD: decimal.NewFromInt(100)}
 	require.NoError(t, f.db.Create(legacy).Error)
-	created, err := service.CreateAdtyTeamTopupOrder(f.mainUser.Id, second.Team.Id, decimal.NewFromInt(100), key)
+	created, err := service.StartAdtyTeamTopupPayment(f.mainUser.Id, second.Team.Id, decimal.NewFromInt(100), "alipay", channel.Id, key, "127.0.0.1")
 	require.NoError(t, err)
 	assert.Equal(t, second.Team.Id, created.TeamId)
 	assert.NotEqual(t, legacy.TradeNo, created.TradeNo)
-	replayed, err := service.CreateAdtyTeamTopupOrder(f.mainUser.Id, second.Team.Id, decimal.NewFromInt(100), key)
+	replayed, err := service.StartAdtyTeamTopupPayment(f.mainUser.Id, second.Team.Id, decimal.NewFromInt(100), "alipay", channel.Id, key, "127.0.0.1")
 	require.NoError(t, err)
 	assert.Equal(t, created.TradeNo, replayed.TradeNo)
 	_, err = service.CreateAdtyTeamTopupOrder(f.mainLeader.Id, first.Team.Id, decimal.NewFromInt(100), key)

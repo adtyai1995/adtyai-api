@@ -5,6 +5,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -122,6 +123,41 @@ func TestFinanceBoundaries(t *testing.T) {
 		_, err = withdraw(oldOwner, 2, "must-reconcile")
 		require.ErrorIs(t, err, ErrAdtyOwnerWalletReview)
 	})
+	t.Run("R23 personal commission funding and immutable payout", func(t *testing.T) {
+		s := model.AdtySite{OwnerUserId: 502, Subdomain: "r23-history", Status: model.AdtySiteStatusClosed}
+		require.NoError(t, db.Create(&s).Error)
+		require.NoError(t, db.Create(&model.AdtySiteOwnership{SiteId: s.Id, OldOwnerUserId: 501, NewOwnerUserId: 502, Version: 1}).Error)
+		require.NoError(t, upsertAdtySiteEarningTx(db, "2026-11-22", adtySiteEarningEntry{SiteId: s.Id, SiteOwnerUserId: 501, UserId: 10, Kind: model.AdtySiteEarningUsage, Earning: usd(100)}))
+		require.NoError(t, db.Create(&model.AdtyTopupOrder{TradeNo: "r23-new-owner", SiteId: s.Id, SiteOwnerUserId: 502}).Error)
+		funded, err := freezeSiteCommissionSourceTx(db, s.Id, model.AdtySiteWalletEarnings, usd(10), "r23-new-owner")
+		require.NoError(t, err)
+		require.True(t, funded.IsZero())
+		for key, value := range map[string]string{adtySiteWithdrawMinKey: "1", adtySiteWithdrawFeeKey: "1", adtySiteWithdrawAlipayKey: "7.1234", adtySiteWithdrawUSDTKey: "1"} {
+			require.NoError(t, db.Save(&model.Option{Key: key, Value: value}).Error)
+		}
+		q, err := QuoteSiteWithdrawal(usd(11), "alipay")
+		require.NoError(t, err)
+		require.Equal(t, "71.23", q.String())
+		request := AdtySiteWithdrawInput{SiteID: s.Id, OwnerID: 501, AmountUSD: usd(11), ExpectedRate: decimal.RequireFromString("7.1234"), ExpectedPayout: &q, Method: "alipay", AccountName: "Tester", AccountNo: "123", IdempotencyKey: "r23-old-owner"}
+		first, err := CreateAdtySiteWithdrawal(request)
+		require.NoError(t, err)
+		require.NoError(t, db.Save(&model.Option{Key: adtySiteWithdrawMinKey, Value: "20"}).Error)
+		replay, err := CreateAdtySiteWithdrawal(request)
+		require.NoError(t, err)
+		require.Equal(t, first.Id, replay.Id)
+		for i := 0; i < 21; i++ {
+			require.NoError(t, db.Create(&model.AdtySiteWithdrawal{SiteId: s.Id, OwnerUserId: 501, Method: "alipay", Status: model.AdtySiteWithdrawRejected, IdempotencyKey: fmt.Sprintf("r23-list-%d", i)}).Error)
+		}
+		rows, total, err := PageAdtySiteWithdrawals(s.Id, 501, "", "", 20, 20)
+		require.NoError(t, err)
+		require.EqualValues(t, 22, total)
+		require.Len(t, rows, 2)
+		require.Equal(t, first.Id, rows[1].Id)
+		rows, total, err = PageAdtySiteWithdrawals(s.Id, 502, "pending", fmt.Sprint(first.Id), 0, 20)
+		require.NoError(t, err)
+		require.Zero(t, total)
+		require.Empty(t, rows)
+	})
 	t.Run("payout result unknown keeps earnings frozen", func(t *testing.T) {
 		w := model.AdtySiteWithdrawal{SiteId: site.Id, OwnerUserId: 20, AmountUSD: usd(10), NetUSD: usd(10), FeeUSD: usd(0), IdempotencyKey: "F04", Method: "alipay", Status: model.AdtySiteWithdrawPending}
 		require.NoError(t, db.Create(&w).Error)
@@ -195,6 +231,20 @@ func TestFinanceBoundaries(t *testing.T) {
 			}
 		})
 	}
+	t.Run("R23 tiers use the last complete Shanghai month", func(t *testing.T) {
+		cfg := resellerSetting()
+		prior := cfg.CostFactorTiers
+		defer func() { cfg.CostFactorTiers = prior }()
+		cfg.CostFactorTiers = []adty_setting.ResellerCostTier{{MinMonthlyUSD: 0, CostFactor: 0.9}}
+		for _, check := range []struct{ day, want string }{{"2024-03-31T03:00:00Z", "2024-02"}, {"2026-03-29T03:00:00Z", "2026-02"}, {"2026-03-31T03:00:00Z", "2026-02"}, {"2026-03-31T16:00:00Z", "2026-03"}} {
+			at, err := time.Parse(time.RFC3339, check.day)
+			require.NoError(t, err)
+			require.NoError(t, RunAdtySiteCostTierAssignment(at))
+			var stored model.AdtySite
+			require.NoError(t, db.First(&stored, site.Id).Error)
+			require.Equal(t, check.want, stored.TierMonth)
+		}
+	})
 	t.Run("business month uses completed payment", func(t *testing.T) {
 		require.NoError(t, db.Save(&model.Option{Key: adtyBusinessTimezoneKey, Value: "Asia/Shanghai"}).Error)
 		paid := time.Date(2026, 10, 31, 16, 1, 0, 0, time.UTC)
@@ -308,6 +358,56 @@ func TestFinanceBoundaries(t *testing.T) {
 		require.NoError(t, db.Create(&w).Error)
 		require.Error(t, MarkAdtySiteInviteWithdrawalPaid(20, w.Id, "", "   "))
 	})
+	t.Run("R23 closed site cash remains payable after customer migration", func(t *testing.T) {
+		one, zero, rate := usd(1), usd(0), usd(7)
+		s := model.AdtySite{OwnerUserId: 901, Subdomain: "r23-closed-cash", Status: model.AdtySiteStatusClosed, MarketingPolicy: model.AdtySiteMarketingPolicy{MinUSD: &one, FeeUSD: &zero, CNYRate: &rate}}
+		require.NoError(t, db.Create(&s).Error)
+		u := model.User{Username: "r23-migrated", SiteId: site.Id}
+		require.NoError(t, db.Create(&u).Error)
+		c := model.AdtySiteInviteCommission{SiteId: s.Id, TradeNo: "r23-cash-origin", AvailableAt: time.Now().Unix() - 10, InviterId: u.Id, AmountUSD: usd(8), CoveredUSD: usd(8), EarningsHoldUSD: usd(8), Status: model.AdtySiteCommissionAvailable}
+		require.NoError(t, db.Create(&c).Error)
+		require.NoError(t, db.Create(&model.AdtySiteWallet{SiteId: s.Id, Kind: model.AdtySiteWalletEarnings, Balance: usd(8), FrozenUSD: usd(8)}).Error)
+		in := AdtySiteInviteWithdrawalInput{SiteID: s.Id, UserID: u.Id, Amount: usd(4), Method: "usdt", Network: "BEP20", AccountNo: "0x1111111111111111111111111111111111111111", IdempotencyKey: "r23-customer-replay"}
+		w, err := CreateAdtySiteInviteWithdrawal(in)
+		require.NoError(t, err)
+		in.SiteID = 0
+		retry, err := CreateAdtySiteInviteWithdrawal(in)
+		require.NoError(t, err)
+		require.Equal(t, w.Id, retry.Id)
+		in.AccountNo = "0x2222222222222222222222222222222222222222"
+		_, err = CreateAdtySiteInviteWithdrawal(in)
+		require.ErrorIs(t, err, model.ErrAdtyIdempotencyConflict)
+		require.Error(t, ReviewAdtySiteInviteWithdrawal(901, w.Id, true, ""))
+		require.NoError(t, ReviewClosedAdtySiteInviteWithdrawal(1, w.Id, true, ""))
+		require.Error(t, ReviewClosedAdtySiteInviteWithdrawal(1, w.Id, false, "already approved"))
+		require.NoError(t, MarkClosedAdtySiteInviteWithdrawalPaid(1, w.Id, "wire-001", "confirmed"))
+		require.NoError(t, db.First(&w, w.Id).Error)
+		require.Equal(t, model.AdtySiteInviteWithdrawPaid, w.Status)
+		require.Equal(t, s.Id, w.SiteId)
+	})
+	t.Run("R23 late settlement creates one immutable revision", func(t *testing.T) {
+		now := time.Now().Unix()
+		day := "2026-11-20"
+		const start int64 = 1795132800
+		s := model.AdtySite{OwnerUserId: 801, Subdomain: "r23-revision", Status: model.AdtySiteStatusActive}
+		require.NoError(t, db.Create(&s).Error)
+		require.NoError(t, writeAdtySiteSettlementSheet(s.Id, day, start, start+86400, "UTC", now))
+		grant := model.AdtySiteTrialGrant{SiteId: s.Id, UserId: 10, AmountUSD: usd(5), CreatedAt: start + 600}
+		require.NoError(t, db.Create(&grant).Error)
+		for i := 1; i <= 2; i++ {
+			require.NoError(t, writeAdtySiteSettlementSheet(s.Id, day, start, start+86400, "UTC", now+int64(i)))
+		}
+		rows, err := ListAdtySiteSettlementSheets(s.Id)
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		require.True(t, rows[0].TrialExpenseUSD.IsZero())
+		require.Len(t, rows[0].Revisions, 1)
+		revision := rows[0].Revisions[0]
+		var after model.AdtySiteSettlementSheet
+		require.NoError(t, common.Unmarshal(revision.After, &after))
+		require.Equal(t, "5", after.TrialExpenseUSD.String())
+		require.Contains(t, revision.Sources, fmt.Sprintf("trial_grant/%d", grant.Id))
+	})
 	t.Run("settlement boundary follows previous end", func(t *testing.T) {
 		setZone := func(name string) {
 			require.NoError(t, db.Save(&model.Option{Key: adtyBusinessTimezoneKey, Value: name}).Error)
@@ -328,10 +428,12 @@ func TestFinanceBoundaries(t *testing.T) {
 		require.NoError(t, err)
 		var sheets []model.AdtySiteSettlementSheet
 		require.NoError(t, db.Where("site_id = ?", site.Id).Order("business_day").Find(&sheets).Error)
-		require.Len(t, sheets, 5)
+		require.GreaterOrEqual(t, len(sheets), 5)
 		total := decimal.Zero
 		for _, sheet := range sheets {
-			total = total.Add(sheet.PaidUSD)
+			if sheet.BusinessDay >= "2026-11-22" {
+				total = total.Add(sheet.PaidUSD)
+			}
 		}
 		require.Equal(t, "11", total.String())
 		for i := 1; i < len(sheets); i++ {

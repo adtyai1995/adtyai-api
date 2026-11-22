@@ -82,18 +82,19 @@ func (AdtyTicketMessage) TableName() string { return "adty_ticket_messages" }
 // Visibility mirrors AdtyTicketMessage: an image uploaded for an internal note is
 // internal and never reaches a customer, in the detail list or by direct id.
 type AdtyTicketImage struct {
-	Id         int64  `json:"id"`
-	ObjectId   string `json:"object_id" gorm:"type:varchar(64);index"`
-	TicketId   int64  `json:"ticket_id" gorm:"index"`
-	MessageId  int64  `json:"message_id" gorm:"index"`
-	Visibility string `json:"visibility" gorm:"type:varchar(16);index"`
-	Mime       string `json:"mime" gorm:"type:varchar(32)"`
-	Size       int    `json:"size"`
-	Width      int    `json:"width"`
-	Height     int    `json:"height"`
-	SHA256     string `json:"sha256" gorm:"type:varchar(64)"`
-	Storage    string `json:"-" gorm:"type:varchar(128)"`
-	CreatedAt  int64  `json:"created_at" gorm:"autoCreateTime"`
+	UploadKey  *string `json:"-" gorm:"uniqueIndex;type:char(64)"`
+	Id         int64   `json:"id"`
+	ObjectId   string  `json:"object_id" gorm:"type:varchar(64);index"`
+	TicketId   int64   `json:"ticket_id" gorm:"index"`
+	MessageId  int64   `json:"message_id" gorm:"index"`
+	Visibility string  `json:"visibility" gorm:"type:varchar(16);index"`
+	Mime       string  `json:"mime" gorm:"type:varchar(32)"`
+	Size       int     `json:"size"`
+	Width      int     `json:"width"`
+	Height     int     `json:"height"`
+	SHA256     string  `json:"sha256" gorm:"type:varchar(64)"`
+	Storage    string  `json:"-" gorm:"type:varchar(128)"`
+	CreatedAt  int64   `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyTicketImage) TableName() string { return "adty_ticket_images" }
@@ -101,6 +102,8 @@ func (AdtyTicketImage) TableName() string { return "adty_ticket_images" }
 // AdtyTicketNotice is an authoritative in-site notification record produced from
 // a ticket event (create, public reply, or status/reopen transition).
 type AdtyTicketNotice struct {
+	ExpiredAt       int64  `json:"-" gorm:"default:0"`
+	SnapshotTeamId  int64  `json:"-" gorm:"default:0"`
 	TelegramPending bool   `json:"-" gorm:"index;default:false"`
 	TicketOwnerID   int    `json:"-" gorm:"column:ticket_owner_id;->;-:migration"`
 	Id              int64  `json:"id"`

@@ -65,6 +65,16 @@ func AdtySiteContext() gin.HandlerFunc {
 			return
 		}
 		path := c.Request.URL.Path
+		if c.Request.Method == http.MethodGet && path == service.AdtyDomainProbePath {
+			c.Header("Cache-Control", "no-store")
+			identity, err := service.AdtyDomainProbeForHost(host)
+			if err != nil {
+				c.AbortWithStatus(http.StatusNotFound)
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusOK, identity)
+			return
+		}
 		if adtyIsAPIPath(path) {
 			c.Header("Cache-Control", "private, no-store")
 		}

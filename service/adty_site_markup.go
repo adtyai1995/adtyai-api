@@ -858,7 +858,7 @@ func AssignAdtySiteCostTiers(month string, revenue map[int]decimal.Decimal) ([]m
 	}
 	var sites []model.AdtySite
 	if err := model.DB.Where("status IN ?", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).
-		Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").Find(&sites).Error; err != nil {
+		Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").Where("tier_month IS NULL OR tier_month <> ?", month).Find(&sites).Error; err != nil {
 		return nil, err
 	}
 	var changed []model.AdtySite
@@ -894,9 +894,14 @@ func AssignAdtySiteCostTiers(month string, revenue map[int]decimal.Decimal) ([]m
 			updates["pending_tier_cost_factor"] = gorm.Expr("NULL")
 			updates["pending_tier_cost_factor_at"] = 0
 		}
-		if err := model.DB.Model(&model.AdtySite{}).Where("id = ?", site.Id).
-			Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").Updates(updates).Error; err != nil {
-			return nil, err
+		updated := model.DB.Model(&model.AdtySite{}).Where("id = ?", site.Id).
+			Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").
+			Where("tier_month IS NULL OR tier_month <> ?", month).Updates(updates)
+		if updated.Error != nil {
+			return nil, updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			continue
 		}
 		if raise {
 			notice := site
@@ -1029,10 +1034,16 @@ func RunAdtySiteCostTierAssignment(now time.Time) error {
 	if len(resellerSetting().CostFactorTiers) == 0 {
 		return nil
 	}
-	month := now.AddDate(0, -1, 0).Format("2006-01")
+	loc, _, err := loadAdtyBusinessLocation()
+	if err != nil {
+		return err
+	}
+	local := now.In(loc)
+	month := time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, -1, 0).Format("2006-01")
 	var pending int64
-	err := model.DB.Model(&model.AdtySite{}).
-		Where("status IN ? AND tier_month <> ?", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}, month).
+	err = model.DB.Model(&model.AdtySite{}).
+		Where("(tier_mode = '' OR tier_mode IS NULL) AND (tier_code = '' OR tier_code IS NULL)").
+		Where("status IN ? AND (tier_month <> ? OR tier_month IS NULL)", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}, month).
 		Count(&pending).Error
 	if err != nil || pending == 0 {
 		return err
