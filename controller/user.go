@@ -584,31 +584,32 @@ func buildSelfUserData(user *model.User) map[string]any {
 		required, version = false, "" // Staff use the dedicated workspace's site agreement gate.
 	}
 	data := map[string]any{
-		"id":                  user.Id,
-		"username":            user.Username,
-		"display_name":        user.DisplayName,
-		"has_password":        user.HasPassword,
-		"role":                user.Role,
-		"status":              user.Status,
-		"email":               user.Email,
-		"github_id":           user.GitHubId,
-		"discord_id":          user.DiscordId,
-		"oidc_id":             user.OidcId,
-		"wechat_id":           user.WeChatId,
-		"telegram_id":         user.TelegramId,
-		"group":               user.Group,
-		"quota":               user.ToBaseUser().Quota,
-		"used_quota":          user.UsedQuota,
-		"request_count":       user.RequestCount,
-		"linux_do_id":         user.LinuxDOId,
-		"setting":             user.Setting,
-		"stripe_customer":     user.StripeCustomer,
-		"sidebar_modules":     userSetting.SidebarModules, // 正确提取sidebar_modules字段
-		"permissions":         permissions,
-		"adty_site_owner":     service.AdtyIsSiteOwner(user.Id), // 二开：侧边栏只对站长显示站长中心（任务 11.6）
-		"staff_site_id":       user.StaffSiteId,
-		"site_terms_required": required,
-		"site_terms_version":  version,
+		"id":                       user.Id,
+		"username":                 user.Username,
+		"display_name":             user.DisplayName,
+		"has_password":             user.HasPassword,
+		"role":                     user.Role,
+		"status":                   user.Status,
+		"email":                    user.Email,
+		"github_id":                user.GitHubId,
+		"discord_id":               user.DiscordId,
+		"oidc_id":                  user.OidcId,
+		"wechat_id":                user.WeChatId,
+		"telegram_id":              user.TelegramId,
+		"group":                    user.Group,
+		"quota":                    user.ToBaseUser().Quota,
+		"used_quota":               user.UsedQuota,
+		"request_count":            user.RequestCount,
+		"linux_do_id":              user.LinuxDOId,
+		"setting":                  user.Setting,
+		"stripe_customer":          user.StripeCustomer,
+		"sidebar_modules":          userSetting.SidebarModules, // 正确提取sidebar_modules字段
+		"permissions":              permissions,
+		"adty_archived_site_owner": service.AdtyHasArchivedSite(user.Id),
+		"adty_site_owner":          service.AdtyIsSiteOwner(user.Id), // 二开：侧边栏只对站长显示站长中心（任务 11.6）
+		"staff_site_id":            user.StaffSiteId,
+		"site_terms_required":      required,
+		"site_terms_version":       version,
 	}
 	attachWalletLotProjection(data, user)
 	return data

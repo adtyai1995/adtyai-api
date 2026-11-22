@@ -29,7 +29,7 @@ func readOption(db *gorm.DB, key string, lock bool) (string, bool, error) {
 	if lock {
 		query = lockForUpdate(db)
 	}
-	if err := query.Where(commonKeyCol+" = ?", key).Limit(1).Find(&options).Error; err != nil {
+	if err := query.Where(db.Statement.Quote("key")+" = ?", key).Limit(1).Find(&options).Error; err != nil {
 		return "", false, err
 	}
 	if len(options) == 0 {

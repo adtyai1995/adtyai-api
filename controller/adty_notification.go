@@ -17,12 +17,20 @@ func GetAdtyNotifications(c *gin.Context) {
 	if raw := c.Query("before_id"); raw != "" {
 		var err error
 		before, err = strconv.Atoi(raw)
-		if err != nil || before <= 0 {
+		if err != nil || before < -1 {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
 	}
-	inbox, err := service.GetAdtyNotificationInbox(c.GetInt("id"), service.AdtySiteForRequest(c), before)
+	ticketBefore, err := strconv.ParseInt(c.DefaultQuery("ticket_before", "0"), 10, 64)
+	if err != nil || ticketBefore < -1 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if before > 0 && c.Query("ticket_before") == "" {
+		ticketBefore = -1
+	}
+	inbox, err := service.GetAdtyNotificationInbox(c.GetInt("id"), service.AdtySiteForRequest(c), before, ticketBefore)
 	if err != nil {
 		common.ApiError(c, err)
 		return

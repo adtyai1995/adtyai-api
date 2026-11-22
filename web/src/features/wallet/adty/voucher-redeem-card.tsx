@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -78,14 +79,25 @@ export function VoucherRedeemCard(props: { onRedeemed: () => void }) {
               onChange={(event) => setCode(event.target.value)}
             />
           </div>
-          <Button type='button' disabled={pending || code.trim() === ''} onClick={() => void submit()}>
+          <Button
+            type='button'
+            disabled={pending || code.trim() === ''}
+            onClick={() => void submit()}
+          >
             {t('Redeem')}
           </Button>
         </div>
         {error && <p className='text-destructive text-sm'>{error}</p>}
         {tradeNo && (
           <p className='text-sm'>
-            {t('Redeemed as order {{trade}}', { trade: tradeNo })}
+            {t('Redeemed as order {{trade}}', { trade: tradeNo })}{' '}
+            <Link
+              to='/profile'
+              hash={`ticket:voucher:${encodeURIComponent(tradeNo)}`}
+              className='underline'
+            >
+              {t('Submit ticket')}
+            </Link>
           </p>
         )}
       </CardContent>

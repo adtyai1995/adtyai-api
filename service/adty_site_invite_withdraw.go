@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -44,7 +46,7 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 		return nil, common.NewMessage("Unsupported withdrawal method")
 	}
 	row := &model.AdtySiteInviteWithdrawal{
-		SiteId: input.SiteID, UserId: input.UserID, AmountUSD: amount, NetUSD: amount,
+		SiteId: input.SiteID, UserId: input.UserID, RequestedUSD: amount, AmountUSD: amount, NetUSD: amount,
 		Method: method, Status: model.AdtySiteInviteWithdrawPending, IdempotencyKey: key,
 	}
 	var credit int
@@ -62,7 +64,11 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 			return lookup.Error
 		}
 		if lookup.RowsAffected > 0 {
-			if existing.SiteId != input.SiteID || existing.UserId != input.UserID || existing.Method != method || !existing.AmountUSD.Equal(amount) {
+			requested := existing.RequestedUSD
+			if !requested.IsPositive() {
+				requested = existing.AmountUSD
+			}
+			if existing.SiteId != input.SiteID || existing.UserId != input.UserID || existing.Method != method || !requested.Equal(amount) {
 				return model.ErrAdtyIdempotencyConflict
 			}
 			row = &existing
@@ -155,7 +161,7 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 				return err
 			}
 			// 邀请佣金转到余额的批次记在佣金所属站（row.SiteId）。
-			return model.CreateAdtyFundBatchesWithSiteTx(tx, input.UserID, model.AdtyFundBatchSiteID(row.SiteId), ref, int64(quota), 0)
+			return nil
 		}
 		return nil
 	})
@@ -202,6 +208,19 @@ func allocateSiteInviteWithdrawalTx(tx *gorm.DB, withdrawal *model.AdtySiteInvit
 			return err
 		}
 		if toBalance {
+			// Cumulative integer allocation preserves the exact transferred quota.
+			before := withdrawal.AmountUSD.Sub(left).Mul(common.QuotaPerUnitDecimal()).Floor()
+			after := withdrawal.AmountUSD.Sub(left).Add(take).Mul(common.QuotaPerUnitDecimal()).Floor()
+			quota, err := common.WalletQuotaFromDecimalStrict(after.Sub(before))
+			if err != nil {
+				return err
+			}
+			if quota > 0 {
+				source := fmt.Sprintf("site-comm-wd:%d:%d", rows[i].Id, withdrawal.Id)
+				if err := model.CreateAdtyFundBatchesWithSiteTx(tx, withdrawal.UserId, model.AdtyFundBatchSiteID(withdrawal.SiteId), source, int64(quota), 0); err != nil {
+					return err
+				}
+			}
 			if err := consumeSiteCommissionHoldTx(tx, &rows[i], take, false, "wd:"+strconv.FormatInt(withdrawal.Id, 10)); err != nil {
 				return err
 			}
@@ -245,6 +264,12 @@ func ReviewAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve boo
 		if row.Method == "balance" || (approve && row.Status != model.AdtySiteInviteWithdrawPending) || (!approve && row.Status != model.AdtySiteInviteWithdrawPending && row.Status != model.AdtySiteInviteWithdrawApproved) {
 			return common.NewMessage("Only pending withdrawals can be reviewed")
 		}
+		if approve && !row.NetUSD.IsPositive() {
+			return common.NewMessage("The amount must be larger than the network fee")
+		}
+		if !approve && row.Status == model.AdtySiteInviteWithdrawApproved && strings.TrimSpace(reason) == "" {
+			return common.NewMessage("Enter the failed payout reference")
+		}
 		if approve {
 			return tx.Model(&row).Updates(map[string]any{
 				"status": model.AdtySiteInviteWithdrawApproved, "reviewed_by": ownerID, "reviewed_at": time.Now().Unix(),
@@ -272,6 +297,9 @@ func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, pro
 		if err := requireSiteInviteWithdrawOwner(tx, ownerID, row.SiteId); err != nil {
 			return err
 		}
+		if row.Status == model.AdtySiteInviteWithdrawPaid && row.Method != "balance" && row.TxID == txID && row.ProofNote == strings.TrimSpace(proof) {
+			return nil
+		}
 		if row.Status != model.AdtySiteInviteWithdrawApproved {
 			return common.NewMessage("This withdrawal cannot be marked as paid")
 		}
@@ -280,15 +308,30 @@ func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, pro
 		}
 		cleanProof := strings.TrimSpace(proof)
 		if strings.HasPrefix(cleanProof, "/api/referral-assets/") {
-			canonicalProof, ok := IsOwnedReferralAssetTx(tx, 0, model.ReferralAssetPurposePaymentProof, cleanProof)
+			canonicalProof, ok := IsOwnedReferralAssetTx(tx, ownerID, model.ReferralAssetPurposePaymentProof, cleanProof)
 			if !ok {
 				return common.NewMessage("Invalid parameters")
 			}
 			cleanProof = canonicalProof
 		}
+		if row.Method == "alipay" && txID == "" && !strings.HasPrefix(cleanProof, "/api/referral-assets/") {
+			return common.NewMessage("Enter the payout reference")
+		}
+		reference := txID
+		if reference == "" {
+			reference = cleanProof
+		}
+		receiptKey := fmt.Sprintf("%x", sha256.Sum256([]byte(row.Method+"|"+row.Network+"|"+reference)))
 		var items []model.AdtySiteInviteWithdrawalItem
 		if err := tx.Where("withdrawal_id = ? AND status = ?", row.Id, model.AdtySiteInviteWithdrawItemFrozen).Find(&items).Error; err != nil {
 			return err
+		}
+		allocated := decimal.Zero
+		for _, item := range items {
+			allocated = allocated.Add(item.AmountUSD)
+		}
+		if !allocated.IsPositive() || !allocated.Equal(row.AmountUSD) {
+			return common.NewMessage("This withdrawal cannot be marked as paid")
 		}
 		for _, item := range items {
 			var commission model.AdtySiteInviteCommission
@@ -298,9 +341,15 @@ func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, pro
 			if err := consumeSiteCommissionHoldTx(tx, &commission, item.AmountUSD, true, "paid:"+strconv.FormatInt(row.Id, 10)+":"+strconv.FormatInt(item.Id, 10)); err != nil {
 				return err
 			}
+			if item.RefundUSD.IsPositive() {
+				if err := tx.Create(&model.AdtyCommissionRecovery{SiteId: row.SiteId, CommissionId: commission.Id, TradeNo: commission.TradeNo, AmountUSD: item.RefundUSD, Kind: "withdrawn", Status: "open", IdempotencyKey: fmt.Sprintf("payout-refund:%d", item.Id)}).Error; err != nil {
+					return err
+				}
+			}
 			if err := tx.Model(&commission).Updates(map[string]any{
-				"frozen_usd":    gorm.Expr("frozen_usd - ?", item.AmountUSD),
-				"withdrawn_usd": gorm.Expr("withdrawn_usd + ?", item.AmountUSD),
+				"frozen_usd":              gorm.Expr("frozen_usd - ?", item.AmountUSD),
+				"withdrawn_usd":           gorm.Expr("withdrawn_usd + ?", item.AmountUSD),
+				"pending_payout_claw_usd": gorm.Expr("pending_payout_claw_usd - ?", item.RefundUSD),
 			}).Error; err != nil {
 				return err
 			}
@@ -310,7 +359,7 @@ func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, pro
 		}
 		return tx.Model(&row).Updates(map[string]any{
 			"status": model.AdtySiteInviteWithdrawPaid, "paid_at": time.Now().Unix(), "reviewed_by": ownerID,
-			"tx_id": txID, "proof_note": cleanProof,
+			"tx_id": txID, "proof_note": cleanProof, "receipt_key": receiptKey,
 		}).Error
 	})
 }
@@ -326,17 +375,17 @@ func requireSiteInviteWithdrawOwner(tx *gorm.DB, ownerID, siteID int) error {
 	return nil
 }
 
-func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySiteInviteCommission, amount decimal.Decimal) error {
-	if !amount.IsPositive() || !commission.FrozenUSD.IsPositive() {
-		return nil
+// Only the affected commission item can be resized. Approved amounts keep their
+// original payable value until the owner reconciles the external result.
+func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySiteInviteCommission, amount decimal.Decimal) (decimal.Decimal, error) {
+	left := decimal.Min(amount, commission.FrozenUSD.Sub(commission.PendingPayoutClawUSD))
+	deferred := decimal.Zero
+	if !left.IsPositive() {
+		return deferred, nil
 	}
 	var items []model.AdtySiteInviteWithdrawalItem
 	if err := tx.Where("commission_id = ? AND status = ?", commission.Id, model.AdtySiteInviteWithdrawItemFrozen).Order("id").Find(&items).Error; err != nil {
-		return err
-	}
-	left := amount
-	if left.GreaterThan(commission.FrozenUSD) {
-		left = commission.FrozenUSD
+		return deferred, err
 	}
 	for _, item := range items {
 		if !left.IsPositive() {
@@ -344,22 +393,53 @@ func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySite
 		}
 		var withdrawal model.AdtySiteInviteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).First(&withdrawal, item.WithdrawalId).Error; err != nil {
-			return err
+			return deferred, err
 		}
-		if withdrawal.Status != model.AdtySiteInviteWithdrawPending && withdrawal.Status != model.AdtySiteInviteWithdrawApproved {
+		take := decimal.Min(left, item.AmountUSD.Sub(item.RefundUSD))
+		if !take.IsPositive() {
 			continue
 		}
-		if err := releaseSiteInviteWithdrawalTx(tx, &withdrawal); err != nil {
-			return err
+		if withdrawal.Status == model.AdtySiteInviteWithdrawApproved {
+			if err := tx.Model(&item).Update("refund_usd", item.RefundUSD.Add(take)).Error; err != nil {
+				return deferred, err
+			}
+			deferred = deferred.Add(take)
+		} else if withdrawal.Status == model.AdtySiteInviteWithdrawPending {
+			remaining := item.AmountUSD.Sub(take)
+			changes := map[string]any{"amount_usd": remaining, "released_usd": gorm.Expr("released_usd + ?", take)}
+			if remaining.IsZero() {
+				changes["status"] = model.AdtySiteInviteWithdrawItemReleased
+			}
+			if err := tx.Model(&item).Updates(changes).Error; err != nil {
+				return deferred, err
+			}
+			gross := withdrawal.AmountUSD.Sub(take)
+			changes = map[string]any{"amount_usd": gross, "net_usd": decimal.Max(gross.Sub(withdrawal.FeeUSD), decimal.Zero)}
+			if !withdrawal.RequestedUSD.IsPositive() {
+				changes["requested_usd"] = withdrawal.AmountUSD
+			}
+			if withdrawal.Method == "alipay" {
+				rate, err := decimal.NewFromString(withdrawal.Rate)
+				if err != nil {
+					return deferred, err
+				}
+				changes["payout_amount"] = gross.Mul(rate).StringFixed(2)
+			}
+			if gross.IsZero() {
+				changes["status"] = model.AdtySiteInviteWithdrawCanceled
+			}
+			if err := tx.Model(&withdrawal).Updates(changes).Error; err != nil {
+				return deferred, err
+			}
+			if err := tx.Model(commission).Update("frozen_usd", gorm.Expr("frozen_usd - ?", take)).Error; err != nil {
+				return deferred, err
+			}
+		} else {
+			continue
 		}
-		if err := tx.Model(&withdrawal).Updates(map[string]any{
-			"status": model.AdtySiteInviteWithdrawCanceled, "reject_reason": "refund released the freeze",
-		}).Error; err != nil {
-			return err
-		}
-		left = left.Sub(item.AmountUSD)
+		left = left.Sub(take)
 	}
-	return nil
+	return deferred, nil
 }
 
 func releaseSiteInviteWithdrawalTx(tx *gorm.DB, row *model.AdtySiteInviteWithdrawal) error {
@@ -368,6 +448,18 @@ func releaseSiteInviteWithdrawalTx(tx *gorm.DB, row *model.AdtySiteInviteWithdra
 		return err
 	}
 	for _, item := range items {
+		if item.RefundUSD.IsPositive() {
+			var commission model.AdtySiteInviteCommission
+			if err := model.AdtyLockForUpdate(tx).First(&commission, item.CommissionId).Error; err != nil {
+				return err
+			}
+			if err := consumeSiteCommissionHoldTx(tx, &commission, item.RefundUSD, true, fmt.Sprintf("failed-payout:%d", item.Id)); err != nil {
+				return err
+			}
+			if err := tx.Model(&commission).Updates(map[string]any{"pending_payout_claw_usd": gorm.Expr("pending_payout_claw_usd - ?", item.RefundUSD), "recovered_usd": gorm.Expr("recovered_usd + ?", item.RefundUSD)}).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Model(&model.AdtySiteInviteCommission{}).Where("id = ?", item.CommissionId).
 			Update("frozen_usd", gorm.Expr("frozen_usd - ?", item.AmountUSD)).Error; err != nil {
 			return err

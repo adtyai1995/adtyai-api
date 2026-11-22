@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -52,11 +53,43 @@ func adtySitePriceKey(group, modelName string) string {
 	return group + "" + adtyNormalizeSitePriceModel(modelName)
 }
 
-// Read the committed overrides at admission. A process-local TTL could charge an old price on another node.
 func adtySitePrices(siteID, userID int) ([]model.AdtySitePrice, error) {
 	var rows []model.AdtySitePrice
 	err := model.DB.Where("site_id = ? AND user_id IN ?", siteID, []int{0, userID}).Order("id").Find(&rows).Error
 	return rows, err
+}
+
+// Load the price rows and both scope counters in one statement so a concurrent
+// edit cannot pair an old price with a new revision. The site anchors the joins
+// even after the last override is deleted.
+func adtyAdmittedSitePrice(siteID, userID int, group, modelName string) (model.AdtySitePrice, string, error) {
+	var rows []struct {
+		model.AdtySitePrice
+		SiteVersion     int64
+		CustomerVersion int64
+	}
+	err := model.DB.Model(&model.AdtySite{}).
+		Select("prices.*, COALESCE(site_scope.version, 0) AS site_version, COALESCE(customer_scope.version, 0) AS customer_version").
+		Joins("LEFT JOIN adty_site_price_scopes AS site_scope ON site_scope.site_id = adty_sites.id AND site_scope.user_id = 0").
+		Joins("LEFT JOIN adty_site_price_scopes AS customer_scope ON customer_scope.site_id = adty_sites.id AND customer_scope.user_id = ?", userID).
+		Joins("LEFT JOIN adty_site_prices AS prices ON prices.site_id = adty_sites.id AND prices.user_id IN ?", []int{0, userID}).
+		Where("adty_sites.id = ?", siteID).Order("prices.id").Scan(&rows).Error
+	if err != nil {
+		return model.AdtySitePrice{}, "", err
+	}
+	if len(rows) == 0 {
+		return model.AdtySitePrice{}, "", gorm.ErrRecordNotFound
+	}
+	prices := make([]model.AdtySitePrice, len(rows))
+	for i, row := range rows {
+		prices[i] = row.AdtySitePrice
+	}
+	selected := resolveAdtySitePrice(prices, userID, group, modelName)
+	revision := fmt.Sprintf("site:%d:v%d:user:%d:row:%d:v%d", siteID, rows[0].SiteVersion, selected.UserId, selected.Id, selected.Version)
+	if rows[0].CustomerVersion != 0 {
+		revision += fmt.Sprintf(":customer:%d:v%d", userID, rows[0].CustomerVersion)
+	}
+	return selected, revision, nil
 }
 
 // AdtyBillingSiteForUser 是用户所属、并且按分站价扣费的站点：active、paused、closing 都按分站价，
@@ -243,7 +276,7 @@ func adtyApplySiteMarkupOnlyDecimal(c *gin.Context, userId int, group string, gr
 	}
 	factors.MainSite = false
 	factors.SiteId = site.Id
-	prices, err := adtySitePrices(site.Id, userId)
+	selected, revision, err := adtyAdmittedSitePrice(site.Id, userId, group, modelName)
 	if err != nil {
 		if c != nil {
 			c.Set(AdtyTeamPriceBlockedKey, true)
@@ -251,7 +284,8 @@ func adtyApplySiteMarkupOnlyDecimal(c *gin.Context, userId int, group string, gr
 		common.SysError(common.LogText("load adty site prices failed: %s", err.Error()))
 		return groupRatio, one
 	}
-	kDec := ResolveAdtySiteMarkup(prices, userId, group, modelName)
+	factors.RuleVersion = revision
+	kDec := selected.Markup
 	kUsed := adtyValidStoredMarkup(kDec, userId, group)
 	k := kUsed.InexactFloat64()
 	d, dOK := AdtySiteCostFactor(site)
@@ -302,15 +336,20 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 	}
 	var binding model.AdtyTeamKey
 	lookup := model.DB.Where("token_id = ? AND user_id = ? AND status = ?", tokenId, userId, model.AdtyTeamMemberActive).Limit(1).Find(&binding)
-	if lookup.Error != nil || lookup.RowsAffected == 0 {
+	if lookup.Error != nil {
+		c.Set(AdtyTeamPriceBlockedKey, true)
+		return marked, storedK
+	}
+	if lookup.RowsAffected == 0 {
 		return marked, storedK
 	}
 	var team model.AdtyTeam
-	if err := model.DB.First(&team, binding.TeamId).Error; err != nil || team.Status != model.AdtyTeamStatusActive || !team.Discount.IsPositive() {
+	if err := model.DB.First(&team, binding.TeamId).Error; err != nil || team.Status != model.AdtyTeamStatusActive {
+		c.Set(AdtyTeamPriceBlockedKey, true)
 		return marked, storedK
 	}
 	factorDec := team.Discount
-	if !factorDec.IsPositive() || factorDec.GreaterThan(decimal.NewFromInt(1)) || adtyDecimalFloatInvalid(factorDec) {
+	if !adtySiteTeamPayRatioConfigValid(factorDec) || adtyDecimalFloatInvalid(factorDec) {
 		c.Set(AdtyTeamPriceBlockedKey, true)
 		return marked, storedK
 	}
@@ -321,17 +360,23 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 	floorApplied := false
 	// 只有分站团队才有供货价下限；主站团队即使有很深的折扣也不抬价。
 	if team.SiteId > 0 {
-		if site := AdtyBillingSiteForUser(userId); site != nil {
-			if d, ok := AdtySiteCostFactor(site); ok && groupRatio.IsPositive() {
-				supply = groupRatio.Mul(d)
-				nextDec = decimal.Max(supply, discounted)
-				floorApplied = true
-				if supply.IsPositive() {
-					effectiveK = decimal.Max(decimal.NewFromInt(1), nextDec.Div(supply))
-				} else {
-					effectiveK = decimal.Max(decimal.NewFromInt(1), storedK.Mul(factorDec))
-				}
-			}
+		var site model.AdtySite
+		if err := model.DB.First(&site, team.SiteId).Error; err != nil || !AdtySiteServesCustomers(&site) {
+			c.Set(AdtyTeamPriceBlockedKey, true)
+			return marked, storedK
+		}
+		d, ok := AdtySiteCostFactor(&site)
+		if !ok {
+			c.Set(AdtyTeamPriceBlockedKey, true)
+			return marked, storedK
+		}
+		supply = groupRatio.Mul(d)
+		nextDec = decimal.Max(supply, discounted)
+		floorApplied = true
+		if supply.IsPositive() {
+			effectiveK = decimal.Max(decimal.NewFromInt(1), nextDec.Div(supply))
+		} else {
+			effectiveK = decimal.Max(decimal.NewFromInt(1), storedK.Mul(factorDec))
 		}
 	}
 	if !adtyDecimalFiniteNonNegative(nextDec) {
@@ -371,7 +416,7 @@ func AdtyTeamPriceBlocked(c *gin.Context) bool {
 // 计费按 G.2：最终价 = max(分站供货价, 分站普通售价×折后支付比例)，折后价低于供货价时抬到供货价。
 // 因此配置时不得把支付比例本身和供货倍率比较后拒绝；仅拒绝非正或大于 1 的比例。
 func adtySiteTeamPayRatioConfigValid(ratio decimal.Decimal) bool {
-	return ratio.IsPositive() && !ratio.GreaterThan(decimal.NewFromInt(1))
+	return ratio.IsPositive() && !ratio.GreaterThan(decimal.NewFromInt(1)) && ratio.Equal(ratio.Truncate(4))
 }
 
 // AdtyApplySiteMarkupHook 是 HandleGroupRatio 调用的入口（relay/helper/price.go），测试可以替换。

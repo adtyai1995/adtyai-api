@@ -203,7 +203,7 @@ func upsertAdtySiteEarningTx(tx *gorm.DB, day string, entry adtySiteEarningEntry
 	})
 }
 
-func upsertAdtySiteEarningLineTx(tx *gorm.DB, siteID, userID int, modelName, group, requestID string, quota int64, k, d float64) error {
+func upsertAdtySiteEarningLineTx(tx *gorm.DB, siteID, ownerID, userID int, modelName, group, requestID string, quota int64, k, d float64) error {
 	if tx == nil || siteID <= 0 || userID <= 0 || quota == 0 || !adtyEarningFactorsUsable(k, d) {
 		return nil
 	}
@@ -219,7 +219,7 @@ func upsertAdtySiteEarningLineTx(tx *gorm.DB, siteID, userID int, modelName, gro
 	}
 	if requestID != "" {
 		var existing model.AdtySiteEarningLine
-		res := tx.Where("site_id = ? AND user_id = ? AND request_id = ?", siteID, userID, requestID).Limit(1).Find(&existing)
+		res := tx.Where("site_id = ? AND site_owner_user_id = ? AND user_id = ? AND request_id = ?", siteID, ownerID, userID, requestID).Limit(1).Find(&existing)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -246,7 +246,7 @@ func upsertAdtySiteEarningLineTx(tx *gorm.DB, siteID, userID int, modelName, gro
 	decK := decimal.NewFromFloat(k).Round(6)
 	decD := decimal.NewFromFloat(d).Round(6)
 	revenue, platform, earning := AdtySiteEarningSplit(quota, decK, decD)
-	line := model.AdtySiteEarningLine{
+	line := model.AdtySiteEarningLine{SiteOwnerUserId: ownerID,
 		SiteId:     siteID,
 		UserId:     userID,
 		ModelName:  modelName,
@@ -342,7 +342,7 @@ func recordDurableEventEarningLineTx(tx *gorm.DB, event *model.AdtySiteEarningEv
 			}
 		}
 	}
-	return upsertAdtySiteEarningLineTx(tx, entry.SiteId, entry.UserId, modelName, group, requestID, int64(event.Quota), event.Markup, event.CostFactor)
+	return upsertAdtySiteEarningLineTx(tx, entry.SiteId, event.SiteOwnerUserId, entry.UserId, modelName, group, requestID, int64(event.Quota), event.Markup, event.CostFactor)
 }
 
 // adtySiteCustomerRisk 取客户的风控状态（仅作审计与管理侧标记，不再自动取消站长消费价差）。
@@ -415,13 +415,13 @@ func adtyRecordConsumeEarning(c *gin.Context, userId int, params *model.RecordCo
 		reqID = strings.TrimPrefix(strings.TrimSpace(c.GetString(adtyBillingOperationContextKey)), "request:")
 	}
 	if c.GetBool(adtyDurableBillingContextKey) {
-		if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteID, userId, params.ModelName, params.Group, reqID, charged, k, d); lineErr != nil {
+		if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteID, c.GetInt(AdtySiteOwnerContextKey), userId, params.ModelName, params.Group, reqID, charged, k, d); lineErr != nil {
 			common.SysError(common.LogText("record site earning line failed site=%d user=%d: %s", siteID, userId, lineErr.Error()))
 		}
 		return
 	}
 	AdtySiteEarningHook(siteID, userId, charged, k, d, model.AdtySiteEarningUsage, c.GetInt(AdtySiteOwnerContextKey))
-	if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteID, userId, params.ModelName, params.Group, reqID, charged, k, d); lineErr != nil {
+	if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteID, c.GetInt(AdtySiteOwnerContextKey), userId, params.ModelName, params.Group, reqID, charged, k, d); lineErr != nil {
 		common.SysError(common.LogText("record site earning line failed site=%d user=%d: %s", siteID, userId, lineErr.Error()))
 	}
 }
@@ -464,6 +464,7 @@ func adtyRecordTaskBillingEarning(params *model.RecordTaskBillingLogParams) {
 		if op.PayerKind == model.BillingPayerOwner {
 			return
 		}
+		adminInfo["site_owner_user_id"] = op.SiteOwnerUserId
 	}
 	k, _ := adminInfo["site_markup"].(float64)
 	d, _ := adminInfo["site_cost_factor"].(float64)
@@ -493,8 +494,9 @@ func adtyRecordTaskBillingEarning(params *model.RecordTaskBillingLogParams) {
 		lineQuota = -quota
 	}
 	if adminInfo["billing_operation_key"] != nil {
+		ownerID := adtyAnyInt(adminInfo["site_owner_user_id"])
 		opKey := strings.TrimSpace(fmt.Sprint(adminInfo["billing_operation_key"]))
-		if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteId, params.UserId, params.ModelName, params.Group, opKey, lineQuota, k, d); lineErr != nil {
+		if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteId, ownerID, params.UserId, params.ModelName, params.Group, opKey, lineQuota, k, d); lineErr != nil {
 			common.SysError(common.LogText("record site earning line failed site=%d user=%d: %s", siteId, params.UserId, lineErr.Error()))
 		}
 		return
@@ -512,7 +514,7 @@ func adtyRecordTaskBillingEarning(params *model.RecordTaskBillingLogParams) {
 		return
 	}
 	AdtySiteEarningHook(siteId, params.UserId, quota, k, d, kind, ownerID)
-	if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteId, params.UserId, params.ModelName, params.Group, "", lineQuota, k, d); lineErr != nil {
+	if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteId, ownerID, params.UserId, params.ModelName, params.Group, "", lineQuota, k, d); lineErr != nil {
 		common.SysError(common.LogText("record site earning line failed site=%d user=%d: %s", siteId, params.UserId, lineErr.Error()))
 	}
 }

@@ -54,12 +54,13 @@ import {
   notificationAudienceLabels,
   notificationKindLabels,
 } from '@/features/adty-notifications/lib/schema'
-import { getAnnouncementColorClass } from '@/lib/colors'
 import { getAnnouncementDetail } from '@/lib/api'
+import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
 interface AnnouncementItem {
+  ticket_path?: string
   id?: number | string
   type?: string
   content?: string
@@ -175,10 +176,16 @@ function AnnouncementDetailButton(props: { readKey: string }) {
     queryFn: () => getAnnouncementDetail(props.readKey),
     enabled: open,
   })
-  const content = typeof detail.data?.content === 'string' ? detail.data.content : ''
+  const content =
+    typeof detail.data?.content === 'string' ? detail.data.content : ''
   return (
     <>
-      <Button type='button' size='sm' variant='outline' onClick={() => setOpen(true)}>
+      <Button
+        type='button'
+        size='sm'
+        variant='outline'
+        onClick={() => setOpen(true)}
+      >
         {t('Details')}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -187,7 +194,9 @@ function AnnouncementDetailButton(props: { readKey: string }) {
             <DialogTitle>{t('Details')}</DialogTitle>
           </DialogHeader>
           {detail.isPending && <p className='text-sm'>{t('Loading...')}</p>}
-          {detail.isError && <ErrorState onRetry={() => void detail.refetch()} />}
+          {detail.isError && (
+            <ErrorState onRetry={() => void detail.refetch()} />
+          )}
           {detail.isSuccess && <RichContent breaks content={content} />}
         </DialogContent>
       </Dialog>
@@ -340,6 +349,17 @@ function AnnouncementsContent({
                       <RichContent breaks content={item.content || ''} />
                     </div>
 
+                    {item.ticket_path &&
+                      /^\/(profile|site-admin\/tickets|site-owner\/tickets|site-staff)#case-\d+$/.test(
+                        item.ticket_path
+                      ) && (
+                        <a
+                          href={item.ticket_path}
+                          className='text-primary text-sm underline'
+                        >
+                          {t('Open ticket')}
+                        </a>
+                      )}
                     {item.extra ? (
                       <div className='text-muted-foreground text-xs'>
                         <RichContent breaks content={item.extra} />

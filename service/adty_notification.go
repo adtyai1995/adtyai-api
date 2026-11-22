@@ -21,6 +21,7 @@ type AdtyNotificationInbox struct {
 	NoticeKey          string           `json:"notice_key"`
 	Announcements      []map[string]any `json:"announcements"`
 	ReadKeys           []string         `json:"read_keys"`
+	NextTicketBeforeId int64            `json:"next_ticket_before_id"`
 	NextBeforeId       int              `json:"next_before_id"`
 	UnreadPublications int64            `json:"unread_publications"`
 }
@@ -835,6 +836,17 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string) (ma
 		return nil, false, err
 	}
 	if row.Id == 0 {
+		ticketQuery, scope, err := adtyTicketInboxQuery(userID, site)
+		if err != nil {
+			return nil, false, err
+		}
+		var notice model.AdtyTicketNotice
+		if err := ticketQuery.Select(ticketInboxColumns).Where("read_key = ?", key).Limit(1).Find(&notice).Error; err != nil {
+			return nil, false, err
+		}
+		if notice.Id > 0 && !adtyIsNotificationKeyHidden(userID, notice.ReadKey) {
+			return formatTicketInboxNotice(notice, scope), true, nil
+		}
 		if item, ok := adtyWatcherNoticeDetail(userID, key); ok {
 			return item, true, nil
 		}
@@ -862,7 +874,7 @@ func adtyIsNotificationKeyHidden(userID int, key string) bool {
 	return count > 0
 }
 
-func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int) (AdtyNotificationInbox, error) {
+func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, ticketCursors ...int64) (AdtyNotificationInbox, error) {
 	inbox, keys, err := adtyCurrentNotificationInbox(site)
 	if err != nil {
 		return inbox, err
@@ -881,8 +893,14 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int) (Adt
 		return inbox, err
 	}
 	inbox.UnreadPublications = unread
-	firstPage := before <= 0
-	if before > 0 {
+	var ticketBefore int64
+	if len(ticketCursors) > 0 {
+		ticketBefore = ticketCursors[0]
+	} else if before != 0 {
+		ticketBefore = -1
+	}
+	firstPage := before == 0 && ticketBefore == 0
+	if before != 0 {
 		query = query.Where("id < ?", before)
 		inbox = AdtyNotificationInbox{Announcements: []map[string]any{}, ReadKeys: []string{}, UnreadPublications: unread}
 		keys = []string{}
@@ -905,6 +923,35 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int) (Adt
 		inbox.Announcements = append(inbox.Announcements, formatAdtyNotificationItem(row))
 		keys = append(keys, key)
 	}
+	ticketQuery, handlerScope, err := adtyTicketInboxQuery(userID, site)
+	if err != nil {
+		return inbox, err
+	}
+	var unreadTickets int64
+	hidden := model.DB.Model(&model.AdtyNotificationHide{}).Select("key").Where("user_id = ?", userID)
+	ticketQuery = ticketQuery.Where("read_key NOT IN (?)", hidden)
+	if err := ticketQuery.Session(&gorm.Session{}).Where("read_key NOT IN (?)", receipts).Count(&unreadTickets).Error; err != nil {
+		return inbox, err
+	}
+	inbox.UnreadPublications += unreadTickets
+	if ticketBefore >= 0 {
+		if ticketBefore > 0 {
+			ticketQuery = ticketQuery.Where("id < ?", ticketBefore)
+		}
+		var notices []model.AdtyTicketNotice
+		if err := ticketQuery.Select(ticketInboxColumns).Order("id DESC").Limit(21).Find(&notices).Error; err != nil {
+			return inbox, err
+		}
+		if len(notices) > 20 {
+			notices = notices[:20]
+			inbox.NextTicketBeforeId = notices[19].Id
+		}
+		for _, n := range notices {
+			keys = append(keys, n.ReadKey)
+			inbox.Announcements = append(inbox.Announcements, formatTicketInboxNotice(n, handlerScope))
+		}
+	}
+
 	if firstPage {
 		for _, item := range adtyWatcherNoticeInboxItems(userID) {
 			inbox.Announcements = append(inbox.Announcements, item)
@@ -980,6 +1027,17 @@ func MarkAdtyNotificationInboxRead(userID int, site *model.AdtySite, keys []stri
 		return err
 	}
 	for _, key := range publicationKeys {
+		allowed[key] = true
+	}
+	ticketQuery, _, err := adtyTicketInboxQuery(userID, site)
+	if err != nil {
+		return err
+	}
+	var ticketKeys []string
+	if err := ticketQuery.Where("read_key IN ?", keys).Pluck("read_key", &ticketKeys).Error; err != nil {
+		return err
+	}
+	for _, key := range ticketKeys {
 		allowed[key] = true
 	}
 	for key := range adtyOwnedWatcherReadKeys(userID, keys) {

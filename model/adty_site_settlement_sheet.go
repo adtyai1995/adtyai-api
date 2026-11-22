@@ -59,6 +59,7 @@ type AdtySiteSettlementSheet struct {
 	GiftReleaseUSD            decimal.Decimal `json:"gift_release_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	TrialExpenseUSD           decimal.Decimal `json:"trial_expense_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	CommissionUSD             decimal.Decimal `json:"commission_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	PendingCoverageUnverified bool            `json:"pending_coverage_unverified" gorm:"not null;default:false"`
 	PendingCoverageUSD        decimal.Decimal `json:"pending_coverage_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	MarginDeltaUSD            decimal.Decimal `json:"margin_delta_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	EarningsDeltaUSD          decimal.Decimal `json:"earnings_delta_usd" gorm:"type:decimal(20,8);not null;default:0"`
@@ -87,4 +88,13 @@ func (sheet *AdtySiteSettlementSheet) BeforeUpdate(tx *gorm.DB) error {
 
 func (AdtySiteSettlementSheet) BeforeDelete(*gorm.DB) error {
 	return ErrAdtySettlementSheetImmutable
+}
+
+type AdtySettlementCoverageAdjustment struct {
+	Id             int64
+	SheetId        int64           `gorm:"index"`
+	BeforeUSD      decimal.Decimal `gorm:"type:decimal(20,8);not null"`
+	AfterUSD       decimal.Decimal `gorm:"type:decimal(20,8);not null"`
+	EventWatermark int64
+	CreatedAt      int64
 }

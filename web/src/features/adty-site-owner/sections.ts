@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 /** Sections of /site-owner/$section (task 11.6). */
 export const SITE_OWNER_SECTIONS = [
   'overview',
+  'history',
   'customers',
   'tickets',
   'teams',

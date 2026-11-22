@@ -25,35 +25,55 @@ const (
 
 // AdtyTicket is one support case. Related fields are investigation hints, never a full key or upstream secret.
 type AdtyTicket struct {
-	Id           int64  `json:"id"`
-	SiteId       int    `json:"site_id" gorm:"index"`
-	UserId       int    `json:"user_id" gorm:"index"`
-	TeamId       int64  `json:"team_id" gorm:"index"`
-	Type         string `json:"type" gorm:"type:varchar(32)"`
-	Title        string `json:"title" gorm:"type:varchar(120)"`
-	Priority     string `json:"priority" gorm:"type:varchar(16);index"`
-	Status       string `json:"status" gorm:"type:varchar(24);index"`
-	AssigneeId   int    `json:"assignee_id" gorm:"index"`
-	RelatedKind  string `json:"related_kind" gorm:"type:varchar(32)"`
-	RelatedRef   string `json:"related_ref" gorm:"type:varchar(64)"`
-	RelatedModel string `json:"related_model" gorm:"type:varchar(80)"`
-	RelatedGroup string `json:"related_group" gorm:"type:varchar(64)"`
-	RelatedError string `json:"related_error" gorm:"type:varchar(64)"`
-	CreatedAt    int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt    int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	Id             int64  `json:"id"`
+	SiteId         int    `json:"site_id" gorm:"index"`
+	HandlingSiteId *int   `json:"handling_site_id" gorm:"index"`
+	UserId         int    `json:"user_id" gorm:"index"`
+	TeamShared     bool   `json:"team_shared" gorm:"default:false"`
+	TeamId         int64  `json:"team_id" gorm:"index"`
+	Type           string `json:"type" gorm:"type:varchar(32)"`
+	Title          string `json:"title" gorm:"type:varchar(120)"`
+	Priority       string `json:"priority" gorm:"type:varchar(16);index"`
+	Status         string `json:"status" gorm:"type:varchar(24);index"`
+	AssigneeId     int    `json:"assignee_id" gorm:"index"`
+	RelatedKind    string `json:"related_kind" gorm:"type:varchar(32)"`
+	RelatedRef     string `json:"related_ref" gorm:"type:varchar(64)"`
+	RelatedModel   string `json:"related_model" gorm:"type:varchar(80)"`
+	RelatedGroup   string `json:"related_group" gorm:"type:varchar(64)"`
+	RelatedError   string `json:"related_error" gorm:"type:varchar(64)"`
+	CreatedAt      int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt      int64  `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
+func (t AdtyTicket) HandlingSite() int {
+	if t.HandlingSiteId != nil {
+		return *t.HandlingSiteId
+	}
+	return t.SiteId
+}
+
+// TransferAdtyTicketsToMain moves handling authority while retaining the original site.
+func TransferAdtyTicketsToMain(tx *gorm.DB, sites *gorm.DB) error {
+	return tx.Model(&AdtyTicket{}).Where("site_id IN (?) AND handling_site_id IS NULL", sites).
+		UpdateColumns(map[string]any{"handling_site_id": 0, "assignee_id": 0,
+			"status": gorm.Expr("CASE WHEN status IN ? THEN status ELSE ? END",
+				[]string{AdtyTicketClosed, AdtyTicketResolved}, AdtyTicketPendingAssignment)}).Error
 }
 
 func (AdtyTicket) TableName() string { return "adty_tickets" }
 
 // AdtyTicketMessage is a public reply or an internal note. Customer responses omit internal rows.
 type AdtyTicketMessage struct {
-	Id         int64  `json:"id"`
-	TicketId   int64  `json:"ticket_id" gorm:"index"`
-	AuthorId   int    `json:"author_id"`
-	Visibility string `json:"visibility" gorm:"type:varchar(16);index"`
-	Body       string `json:"body" gorm:"type:text"`
-	Dedupe     string `json:"-" gorm:"uniqueIndex;type:varchar(160)"`
-	CreatedAt  int64  `json:"created_at" gorm:"autoCreateTime"`
+	Id                int64  `json:"id"`
+	TicketId          int64  `json:"ticket_id" gorm:"index"`
+	AuthorId          int    `json:"author_id"`
+	AuthorRole        string `json:"author_role" gorm:"type:varchar(24)"`
+	English           string `json:"english,omitempty" gorm:"-"`
+	TranslationStatus string `json:"translation_status,omitempty" gorm:"-"`
+	Visibility        string `json:"visibility" gorm:"type:varchar(16);index"`
+	Body              string `json:"body" gorm:"type:text"`
+	Dedupe            string `json:"-" gorm:"uniqueIndex;type:varchar(160)"`
+	CreatedAt         int64  `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyTicketMessage) TableName() string { return "adty_ticket_messages" }
@@ -81,18 +101,21 @@ func (AdtyTicketImage) TableName() string { return "adty_ticket_images" }
 // AdtyTicketNotice is an authoritative in-site notification record produced from
 // a ticket event (create, public reply, or status/reopen transition).
 type AdtyTicketNotice struct {
-	Id        int64  `json:"id"`
-	EventKey  string `json:"event_key" gorm:"uniqueIndex;type:varchar(128);not null"`
-	TicketId  int64  `json:"ticket_id" gorm:"index;not null"`
-	EventId   int64  `json:"event_id" gorm:"index"`
-	SiteId    int    `json:"site_id" gorm:"index"`
-	UserId    int    `json:"user_id" gorm:"index;not null"`
-	ActorId   int    `json:"actor_id"`
-	Action    string `json:"action" gorm:"type:varchar(32);index"`
-	Title     string `json:"title" gorm:"type:varchar(120)"`
-	Content   string `json:"content" gorm:"type:text"`
-	ReadKey   string `json:"read_key" gorm:"uniqueIndex;type:char(64);not null"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
+	TelegramPending bool   `json:"-" gorm:"index;default:false"`
+	TicketOwnerID   int    `json:"-" gorm:"column:ticket_owner_id;->;-:migration"`
+	Id              int64  `json:"id"`
+	Purpose         string `json:"-" gorm:"type:varchar(16)"`
+	EventKey        string `json:"event_key" gorm:"uniqueIndex;type:varchar(128);not null"`
+	TicketId        int64  `json:"ticket_id" gorm:"index;not null"`
+	EventId         int64  `json:"event_id" gorm:"index"`
+	SiteId          int    `json:"site_id" gorm:"index"`
+	UserId          int    `json:"user_id" gorm:"index;not null"`
+	ActorId         int    `json:"actor_id"`
+	Action          string `json:"action" gorm:"type:varchar(32);index"`
+	Title           string `json:"title" gorm:"type:varchar(120)"`
+	Content         string `json:"content" gorm:"type:text"`
+	ReadKey         string `json:"read_key" gorm:"uniqueIndex;type:char(64);not null"`
+	CreatedAt       int64  `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyTicketNotice) TableName() string { return "adty_ticket_notices" }

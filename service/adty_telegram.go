@@ -615,25 +615,8 @@ func adtyAuthorizeTelegramEventAccess(row *model.AdtyTelegramDelivery, user *mod
 			if !actor.canManage(ticket) {
 				return false
 			}
-			// If the recipient is not Root and not the owner of the ticket's site
-			// (e.g. a staff handler), require that the ticket is still assigned to them,
-			// or if a ticket has an explicit assignee different from a non-Root handler,
-			// only the current handler/owner should receive the admin notice.
-			handlerID := adtyTicketHandlerTx(model.DB, ticket)
-			if actor.User.Role < common.RoleRootUser && actor.OwnerSiteId != ticket.SiteId {
-				if ticket.AssigneeId != user.Id {
-					return false
-				}
-			} else if ticket.AssigneeId > 0 && ticket.AssigneeId != user.Id && handlerID != user.Id && actor.OwnerSiteId != ticket.SiteId {
-				return false
-			}
-		} else {
-			if ticket.UserId != user.Id && !(actor.TeamRole == model.AdtyTeamRoleLeader && actor.TeamId > 0 && actor.TeamId == ticket.TeamId) {
-				return false
-			}
-			if ticket.SiteId != user.SiteId {
-				return false
-			}
+		} else if ticket.UserId != user.Id && !(actor.TeamId > 0 && actor.TeamId == ticket.TeamId && (ticket.TeamShared || actor.TeamRole == model.AdtyTeamRoleLeader)) {
+			return false
 		}
 		if len(parts) >= 4 && parts[2] == "msg" {
 			msgID, err := strconv.ParseInt(parts[3], 10, 64)

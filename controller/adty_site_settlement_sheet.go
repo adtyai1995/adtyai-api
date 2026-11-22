@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -42,8 +43,12 @@ func PutAdtyBusinessTimezone(c *gin.Context) {
 }
 
 func GetAdtyOwnerSettlementSheets(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
+	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
+		return
+	}
+	if err := service.ReviewAdtyPooledSiteFinance(model.DB, site.Id); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	rows, err := service.ListAdtySiteSettlementSheets(site.Id)

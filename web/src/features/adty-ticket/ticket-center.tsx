@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -30,9 +30,19 @@ import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { api } from '@/lib/api'
 import { getServerErrorMessage } from '@/lib/server-error-message'
+import { formatDateTimeObject } from '@/lib/time'
 import { useAuthStore } from '@/stores/auth-store'
 
+import {
+  ticketDraftLink,
+  ticketOperationKey,
+  ticketRelations,
+} from './ticket-draft'
 import { TicketImage } from './ticket-image'
+import {
+  TicketImagePolicySettings,
+  type TicketPolicy,
+} from './ticket-image-policy'
 import {
   TICKET_QUEUES,
   TICKET_STATUS_LABELS,
@@ -85,6 +95,11 @@ type Ticket = {
 }
 
 type TicketMessage = {
+  author_id: number
+  author_role?: string
+  created_at: number
+  english?: string
+  translation_status?: string
   id: number
   visibility: string
   body: string
@@ -124,6 +139,7 @@ type TicketDetail = {
 }
 
 type TicketList = {
+  image_policy: TicketPolicy
   tickets?: Ticket[]
   total: number
   can_view_team: boolean
@@ -158,7 +174,16 @@ function TicketWorkspace({
   const [page, setPage] = useState(1)
   const [type, setType] = useState('other')
   const [priority, setPriority] = useState('normal')
-  const [internalImage, setInternalImage] = useState(false)
+  const [imageMessage, setImageMessage] = useState(0)
+  const [audience, setAudience] = useState('personal')
+  const [relatedKind, setRelatedKind] = useState('')
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState('')
+  const attempts = useRef(new Map<string, { key: string; value: string }>())
+  const headers = (action: string, value: string) => ({
+    'Idempotency-Key': ticketOperationKey(attempts.current, action, value),
+  })
+  const isRoot = useAuthStore((state) => state.auth.user?.role === 100)
   const pageSize = 20
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -169,12 +194,12 @@ function TicketWorkspace({
           ?.id ?? '')
   )
   const list = useQuery({
-    queryKey: ['adty-tickets', userId, scope, queue, page],
+    queryKey: ['adty-tickets', userId, scope, queue, page, filter],
     retry: false,
     refetchInterval: 30_000,
     queryFn: async () => {
       const response = await api.get('/api/adty/tickets', {
-        params: { scope, queue, p: page, page_size: pageSize },
+        params: { scope, queue, q: filter, p: page, page_size: pageSize },
       })
       const body = response.data as {
         success?: boolean
@@ -187,6 +212,7 @@ function TicketWorkspace({
       return {
         tickets: body.data?.tickets ?? [],
         total: body.data?.total ?? 0,
+        imagePolicy: body.data?.image_policy,
         canViewTeam: Boolean(body.data?.can_view_team),
         can_note: Boolean(body.data?.can_note),
         can_manage: Boolean(body.data?.can_manage),
@@ -205,8 +231,28 @@ function TicketWorkspace({
   const [pending, setPending] = useState(false)
 
   useEffect(() => {
-    const hash = window.location.hash.replace('#', '')
-    if (hash.startsWith('ticket-')) setRelated(hash.slice('ticket-'.length))
+    function readLink() {
+      const hash = window.location.hash
+      const match = /^#case-(\d+)$/.exec(hash)
+      const source = ticketDraftLink(hash)
+      if (match) setSelected(Number(match[1]))
+      if (source) {
+        setRelatedKind(source.kind)
+        setRelated(source.ref)
+        setType(
+          source.kind === 'request' || source.kind === 'team_key'
+            ? 'api'
+            : 'billing'
+        )
+        setAudience(source.kind.startsWith('team_') ? 'team' : 'personal')
+      }
+      if (match || source) {
+        document.querySelector('#tickets')?.scrollIntoView()
+      }
+    }
+    readLink()
+    window.addEventListener('hashchange', readLink)
+    return () => window.removeEventListener('hashchange', readLink)
   }, [])
 
   const detail = useQuery({
@@ -239,13 +285,17 @@ function TicketWorkspace({
     setPending(true)
     setError('')
     try {
-      const response = await api.post('/api/adty/tickets', {
+      const draft = {
         type,
         title: title.trim(),
         body: body.trim(),
         priority,
-        related_kind: related ? 'topup' : '',
-        related_ref: related,
+        audience,
+        related_kind: related.trim() ? relatedKind : '',
+        related_ref: relatedKind ? related.trim() : '',
+      }
+      const response = await api.post('/api/adty/tickets', draft, {
+        headers: headers('create', JSON.stringify(draft)),
       })
       const payload = response.data as {
         success?: boolean
@@ -255,8 +305,17 @@ function TicketWorkspace({
       if (!payload.success || !payload.data) {
         throw new Error(payload.message || t('Failed to save'))
       }
+      attempts.current.delete('create')
       setTitle('')
       setBody('')
+      setRelated('')
+      setRelatedKind('')
+      setAudience('personal')
+      setType('other')
+      setPriority('normal')
+      if (ticketDraftLink(window.location.hash)) {
+        window.history.replaceState(window.history.state, '', '#tickets')
+      }
       setPage(1)
       setQueue('')
       setScope('personal')
@@ -309,12 +368,19 @@ function TicketWorkspace({
         {
           body: reply.trim(),
         },
-        { params: { scope } }
+        {
+          params: { scope },
+          headers: headers(
+            'reply',
+            JSON.stringify([selected, scope, reply.trim()])
+          ),
+        }
       )
       const payload = response.data as { success?: boolean; message?: string }
       if (!payload?.success) {
         throw new Error(payload?.message || t('Failed to save'))
       }
+      attempts.current.delete('reply')
       setReply('')
       await refresh()
     } catch (cause) {
@@ -334,12 +400,19 @@ function TicketWorkspace({
         {
           body: note.trim(),
         },
-        { params: { scope } }
+        {
+          params: { scope },
+          headers: headers(
+            'note',
+            JSON.stringify([selected, scope, note.trim()])
+          ),
+        }
       )
       const payload = response.data as { success?: boolean; message?: string }
       if (!payload?.success) {
         throw new Error(payload?.message || t('Failed to save'))
       }
+      attempts.current.delete('note')
       setNote('')
       await refresh()
     } catch (cause) {
@@ -358,7 +431,9 @@ function TicketWorkspace({
         `/api/adty/tickets/${selected}/images`,
         {
           data: encodedData,
-          visibility: internalImage ? 'internal' : 'public',
+          message_id: imageMessage,
+          visibility: detail.data?.messages.find((m) => m.id === imageMessage)
+            ?.visibility,
         },
         { params: { scope } }
       )
@@ -379,7 +454,7 @@ function TicketWorkspace({
     setReply('')
     setNote('')
     setAssignee('')
-    setInternalImage(false)
+    setImageMessage(0)
     setError('')
   }
   function changeQueue(next: TicketQueueId | '') {
@@ -390,6 +465,49 @@ function TicketWorkspace({
   const badges = list.isSuccess ? list.data.badges : undefined
   const canManage = list.isSuccess && list.data.can_manage
 
+  async function exportTickets() {
+    setPending(true)
+    setError('')
+    try {
+      const rows: Ticket[] = []
+      let before = 0
+      for (;;) {
+        const response = await api.get('/api/adty/tickets', {
+          params: {
+            scope,
+            queue,
+            q: filter,
+            p: 1,
+            page_size: 100,
+            before_id: before,
+          },
+        })
+        if (!response.data.success) {
+          throw new Error(response.data.message || t('Failed to load data'))
+        }
+        const batch = (response.data.data as TicketList).tickets ?? []
+        rows.push(...batch)
+        const last = batch.at(-1)
+        if (batch.length < 100 || !last) break
+        before = last.id
+      }
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' })
+      )
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'tickets.json'
+      link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Failed to load data')))
+    } finally {
+      setPending(false)
+    }
+  }
+  const terminal =
+    detail.data?.ticket.status === 'closed' ||
+    detail.data?.ticket.status === 'resolved'
   return (
     <Card id='tickets'>
       <CardContent className='flex flex-col gap-4 py-4'>
@@ -419,6 +537,41 @@ function TicketWorkspace({
               ))}
             </div>
           )}
+        {workspace === 'platform' && isRoot && list.data?.imagePolicy && (
+          <TicketImagePolicySettings
+            policy={list.data.imagePolicy}
+            onSaved={refresh}
+          />
+        )}
+        <form
+          className='flex flex-wrap gap-2'
+          onSubmit={(event) => {
+            event.preventDefault()
+            setFilter(search.trim())
+            setPage(1)
+            selectTicket(null)
+          }}
+        >
+          <Input
+            aria-label={t('Ticket or business number')}
+            placeholder={t('Ticket or business number')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <Button type='submit' variant='outline'>
+            {t('Search')}
+          </Button>
+          {canManage && (
+            <Button
+              type='button'
+              variant='outline'
+              disabled={pending}
+              onClick={() => void exportTickets()}
+            >
+              {t('Export tickets')}
+            </Button>
+          )}
+        </form>
         {canManage && badges && (
           <div className='flex flex-col gap-2'>
             <div className='flex flex-wrap gap-2'>
@@ -476,7 +629,8 @@ function TicketWorkspace({
               onClick={() => selectTicket(ticket.id)}
             >
               <span className='min-w-0 truncate'>
-                {ticket.title} · {t(ticketTypes[ticket.type] ?? 'Other')}
+                #{ticket.id} · {ticket.title} ·{' '}
+                {t(ticketTypes[ticket.type] ?? 'Other')}
               </span>
               <span className='text-muted-foreground shrink-0'>
                 {t(ticketStatusLabel(ticket.status, ticket.assignee_id))}
@@ -516,16 +670,16 @@ function TicketWorkspace({
                   'Normal'
               )}
             </p>
-            {[
-              detail.data.ticket.related_ref,
-              detail.data.ticket.related_model,
-              detail.data.ticket.related_group,
-              detail.data.ticket.related_error,
-            ]
-              .filter(Boolean)
-              .map((value, index) => (
-                <p className='text-sm break-all' key={index}>
-                  {value}
+            {Object.entries({
+              [t('Business reference')]: detail.data.ticket.related_ref,
+              [t('Model')]: detail.data.ticket.related_model,
+              [t('Group')]: detail.data.ticket.related_group,
+              [t('Error')]: detail.data.ticket.related_error,
+            })
+              .filter(([, value]) => value)
+              .map(([label, value]) => (
+                <p className='text-sm break-all' key={label}>
+                  {label} · {value}
                 </p>
               ))}
             {detail.data.can_manage && (
@@ -541,36 +695,64 @@ function TicketWorkspace({
               </p>
             )}
             {detail.data.messages.map((message) => (
-              <p key={message.id} className='text-sm whitespace-pre-wrap'>
-                {message.visibility === 'internal'
-                  ? `${t('Internal note')}: `
-                  : ''}
-                {message.body}
-              </p>
+              <div key={message.id} className='grid gap-1 border-b py-2'>
+                <p className='text-muted-foreground text-xs'>
+                  #{message.id} ·{' '}
+                  {t(
+                    (
+                      {
+                        customer: 'Customer',
+                        staff: 'Support staff',
+                        owner: 'Site owner',
+                        platform: 'Platform support',
+                        platform_main: 'Platform support',
+                      } as Record<string, string>
+                    )[message.author_role ?? ''] ?? 'User'
+                  )}{' '}
+                  #{message.author_id} ·{' '}
+                  {formatDateTimeObject(new Date(message.created_at * 1000))}
+                </p>
+                <p className='text-sm whitespace-pre-wrap'>
+                  {message.visibility === 'internal' &&
+                    `${t('Internal note')} · `}
+                  {message.body}
+                </p>
+                {message.english && (
+                  <p lang='en' className='text-sm whitespace-pre-wrap'>
+                    {message.english}
+                  </p>
+                )}
+                {message.translation_status && !message.english && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('English is not ready')}
+                  </p>
+                )}
+                {detail.data.images
+                  ?.filter((image) => image.message_id === message.id)
+                  .map((image) => (
+                    <TicketImage
+                      key={image.id}
+                      ticketID={detail.data.ticket.id}
+                      imageID={image.id}
+                      scope={scope}
+                      userId={userId}
+                      label={`${t('Image')} #${image.id}`}
+                    />
+                  ))}
+              </div>
             ))}
-            {(detail.data.images ?? [])
-              .filter(
-                (image) => image.visibility === 'public' || detail.data.can_note
-              )
-              .map((image) => {
-                const label = image.object_id
-                  ? `${t('Image')} ${image.object_id}`
-                  : `${t('Image')} #${image.id}`
-                return (
-                  <TicketImage
-                    key={image.id}
-                    ticketID={detail.data.ticket.id}
-                    imageID={image.id}
-                    scope={scope}
-                    userId={userId}
-                    label={
-                      image.visibility === 'internal'
-                        ? `${t('Internal note')}: ${label}`
-                        : label
-                    }
-                  />
-                )
-              })}
+            {detail.data.images
+              ?.filter((image) => !image.message_id)
+              .map((image) => (
+                <TicketImage
+                  key={image.id}
+                  ticketID={detail.data.ticket.id}
+                  imageID={image.id}
+                  scope={scope}
+                  userId={userId}
+                  label={`${t('Image')} #${image.id}`}
+                />
+              ))}
             {(detail.data.events ?? [])
               .filter(
                 (event) => event.action !== 'note' || detail.data.can_note
@@ -578,13 +760,16 @@ function TicketWorkspace({
               .map((event) => {
                 let detailLabel = ''
                 if (event.detail) {
-                  detailLabel = TICKET_STATUS_LABELS[
-                    normalizeTicketStatus(event.detail)
-                  ]
-                    ? `${t(ticketStatusLabel(event.detail))}`
-                    : event.action === 'priority'
-                      ? t(ticketPriorities[event.detail] ?? event.detail)
-                      : event.detail
+                  detailLabel = event.detail
+                  if (
+                    TICKET_STATUS_LABELS[normalizeTicketStatus(event.detail)]
+                  ) {
+                    detailLabel = t(ticketStatusLabel(event.detail))
+                  } else if (event.action === 'priority') {
+                    detailLabel = t(
+                      ticketPriorities[event.detail] ?? event.detail
+                    )
+                  }
                 }
                 return (
                   <p key={event.id} className='text-muted-foreground text-xs'>
@@ -593,14 +778,35 @@ function TicketWorkspace({
                   </p>
                 )
               })}
+            {detail.data.can_manage && !terminal && (
+              <NativeSelect
+                aria-label={t('Common replies')}
+                value=''
+                onChange={(event) => setReply(t(event.target.value))}
+              >
+                <NativeSelectOption value=''>
+                  {t('Common replies')}
+                </NativeSelectOption>
+                {[
+                  'Please share the request ID and time.',
+                  'We are checking your order.',
+                  'Please confirm whether the issue is resolved.',
+                ].map((key) => (
+                  <NativeSelectOption key={key} value={key}>
+                    {t(key)}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            )}
             <Textarea
+              disabled={terminal}
               aria-label={t('Reply')}
               value={reply}
               onChange={(event) => setReply(event.target.value)}
             />
             <Button
               type='button'
-              disabled={pending || reply.trim() === ''}
+              disabled={terminal || pending || reply.trim() === ''}
               onClick={() => void submitReply()}
             >
               {t('Reply')}
@@ -615,7 +821,7 @@ function TicketWorkspace({
                 <Button
                   type='button'
                   variant='outline'
-                  disabled={pending || note.trim() === ''}
+                  disabled={terminal || pending || note.trim() === ''}
                   onClick={() => void submitNote()}
                 >
                   {t('Internal note')}
@@ -761,41 +967,53 @@ function TicketWorkspace({
                   </Button>
                 </div>
               )}
-            {detail.data.can_note && (
-              <>
-                <Label htmlFor='ticket-image-visibility'>
-                  {t('Image visibility')}
-                </Label>
-                <NativeSelect
-                  id='ticket-image-visibility'
-                  value={internalImage ? 'internal' : 'public'}
-                  onChange={(event) =>
-                    setInternalImage(event.target.value === 'internal')
-                  }
-                >
-                  <NativeSelectOption value='public'>
-                    {t('Public reply')}
+            <Label htmlFor='ticket-image-message'>
+              {t('Attach image to message')}
+            </Label>
+            <NativeSelect
+              id='ticket-image-message'
+              disabled={terminal}
+              value={imageMessage}
+              onChange={(event) => setImageMessage(Number(event.target.value))}
+            >
+              <NativeSelectOption value={0}>
+                {t('Select a message')}
+              </NativeSelectOption>
+              {detail.data.messages
+                .filter((m) => m.author_id === userId)
+                .map((m) => (
+                  <NativeSelectOption value={m.id} key={m.id}>
+                    #{m.id} ·{' '}
+                    {m.visibility === 'internal' && `${t('Internal note')} · `}
+                    {m.body.slice(0, 60)}
                   </NativeSelectOption>
-                  <NativeSelectOption value='internal'>
-                    {t('Internal note')}
-                  </NativeSelectOption>
-                </NativeSelect>
-              </>
-            )}
-            <Label htmlFor='ticket-image'>{t('Image')}</Label>
+                ))}
+            </NativeSelect>
+            <Label htmlFor='ticket-image'>
+              {t('Image')} · {t('Upload limit (bytes)')}{' '}
+              {list.data.imagePolicy?.max_bytes}
+            </Label>
             <Input
               id='ticket-image'
               type='file'
               accept='image/png,image/jpeg,image/gif,image/webp'
-              disabled={pending}
+              disabled={terminal || pending || !imageMessage}
               onChange={(event) => {
                 const file = event.target.files?.[0]
                 if (!file || selected === null) return
-                const reader = new FileReader()
-                reader.onload = () => {
-                  const value = String(reader.result || '')
-                  void uploadImage(value.slice(value.indexOf(',') + 1))
+                if (file.size > (list.data?.imagePolicy?.max_bytes ?? 0)) {
+                  setError(t('Image exceeds the size limit'))
+                  return
                 }
+                const reader = new FileReader()
+                reader.addEventListener(
+                  'load',
+                  () => {
+                    const value = String(reader.result || '')
+                    void uploadImage(value.slice(value.indexOf(',') + 1))
+                  },
+                  { once: true }
+                )
                 reader.readAsDataURL(file)
               }}
             />
@@ -803,11 +1021,34 @@ function TicketWorkspace({
         )}
         {workspace === 'personal' && (
           <>
+            <Label htmlFor='ticket-audience'>{t('Ticket audience')}</Label>
+            <NativeSelect
+              id='ticket-audience'
+              value={audience}
+              disabled={type === 'account' || relatedKind.startsWith('team_')}
+              onChange={(e) => setAudience(e.target.value)}
+            >
+              <NativeSelectOption value='personal'>
+                {t('Only me and authorized support')}
+              </NativeSelectOption>
+              {list.data?.canViewTeam && (
+                <NativeSelectOption value='team'>
+                  {t('My team and authorized support')}
+                </NativeSelectOption>
+              )}
+            </NativeSelect>
             <Label htmlFor='ticket-type'>{t('Issue type')}</Label>
             <NativeSelect
               id='ticket-type'
               value={type}
-              onChange={(event) => setType(event.target.value)}
+              onChange={(event) => {
+                setType(event.target.value)
+                if (event.target.value === 'account') {
+                  setAudience('personal')
+                  setRelatedKind('')
+                  setRelated('')
+                }
+              }}
             >
               {Object.entries(ticketTypes).map(([value, label]) => (
                 <NativeSelectOption value={value} key={value}>
@@ -839,14 +1080,49 @@ function TicketWorkspace({
               value={body}
               onChange={(event) => setBody(event.target.value)}
             />
-            {related && (
-              <p className='text-muted-foreground text-sm tabular-nums'>
-                {related}
-              </p>
+            <Label htmlFor='ticket-related-kind'>{t('Related business')}</Label>
+            <NativeSelect
+              id='ticket-related-kind'
+              value={relatedKind}
+              onChange={(e) => {
+                const kind = e.target.value
+                setRelatedKind(kind)
+                setRelated('')
+                if (kind.startsWith('team_')) {
+                  setAudience('team')
+                  if (type === 'account') setType('billing')
+                } else if (['topup', 'refund'].includes(kind)) {
+                  setAudience('personal')
+                }
+              }}
+            >
+              <NativeSelectOption value=''>{t('None')}</NativeSelectOption>
+              {Object.entries(ticketRelations)
+                .filter(
+                  ([kind]) =>
+                    !kind.startsWith('team_') || list.data?.canViewTeam
+                )
+                .map(([kind, label]) => (
+                  <NativeSelectOption key={kind} value={kind}>
+                    {t(label)}
+                  </NativeSelectOption>
+                ))}
+            </NativeSelect>
+            {relatedKind && (
+              <Input
+                aria-label={t('Business reference')}
+                value={related}
+                onChange={(e) => setRelated(e.target.value)}
+              />
             )}
             <Button
               type='button'
-              disabled={pending || title.trim() === '' || body.trim() === ''}
+              disabled={
+                pending ||
+                title.trim() === '' ||
+                body.trim() === '' ||
+                Boolean(relatedKind && !related.trim())
+              }
               onClick={() => void create()}
             >
               {t('New ticket')}

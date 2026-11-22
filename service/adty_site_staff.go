@@ -75,22 +75,22 @@ func adtyStaffGrants(role string, custom *[]string) ([]string, error) {
 
 // Recheck ownership inside the mutation transaction, including account status,
 // the current agreement and site state. A cached HTTP precheck is insufficient.
-func adtyStaffOwnerTx(tx *gorm.DB, ownerID, siteID int) error {
+func adtyStaffOwnerTx(tx *gorm.DB, ownerID, siteID int, allowClosing bool) (*model.AdtySite, error) {
 	var owner model.User
 	if err := model.AdtyLockForUpdate(tx).First(&owner, ownerID).Error; err != nil {
-		return err
+		return nil, err
 	}
 	if owner.Status != common.UserStatusEnabled || owner.StaffSiteId != 0 {
-		return ErrAdtyStaffDenied
+		return nil, ErrAdtyStaffDenied
 	}
 	var site model.AdtySite
 	if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
-		return err
+		return nil, err
 	}
-	if site.OwnerUserId != ownerID || site.AgreementVer != AdtyCurrentSiteAgreementVersion() || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing) {
-		return ErrAdtyStaffDenied
+	if site.OwnerUserId != ownerID || site.AgreementVer != AdtyCurrentSiteAgreementVersion() || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && (!allowClosing || site.Status != model.AdtySiteStatusClosing)) {
+		return nil, ErrAdtyStaffDenied
 	}
-	return nil
+	return &site, nil
 }
 
 func CreateAdtyStaff(ownerID, siteID int, input AdtyStaffInput) (*AdtyStaffView, error) {
@@ -111,7 +111,7 @@ func CreateAdtyStaff(ownerID, siteID int, input AdtyStaffInput) (*AdtyStaffView,
 	}
 	var staff model.AdtySiteStaff
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := adtyStaffOwnerTx(tx, ownerID, siteID); err != nil {
+		if _, err := adtyStaffOwnerTx(tx, ownerID, siteID, false); err != nil {
 			return err
 		}
 		// Global login names cannot be reassigned, including deleted accounts
@@ -157,7 +157,8 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 	}
 	var staff model.AdtySiteStaff
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := adtyStaffOwnerTx(tx, ownerID, siteID); err != nil {
+		site, err := adtyStaffOwnerTx(tx, ownerID, siteID, action == AdtySiteOwnerActionStaffDelete || action == AdtySiteOwnerActionStaffUpdate)
+		if err != nil {
 			return err
 		}
 		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND site_id = ? AND owner_user_id = ? AND status <> ?", staffID, siteID, ownerID, "deleted").First(&staff).Error; err != nil {
@@ -180,6 +181,16 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 			grants, err := adtyStaffGrants(input.Role, input.Permissions)
 			if err != nil {
 				return err
+			}
+			if site.Status == model.AdtySiteStatusClosing {
+				if input.Status == "enabled" && staff.Status != "enabled" {
+					return ErrAdtyStaffDenied
+				}
+				for _, grant := range grants {
+					if !slices.Contains(before.Permissions, grant) {
+						return ErrAdtyStaffDenied
+					}
+				}
 			}
 			staff.DisplayName, staff.Role, staff.Permissions, staff.Status = input.DisplayName, input.Role, common.GetJsonString(grants), input.Status
 			userUpdates["display_name"] = staff.DisplayName
@@ -266,15 +277,9 @@ func ManageAdtyStaffCustomer(userID int, authVersion int64, customerID int, acti
 	}
 	var customer model.User
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := adtyStaffOwnerTx(tx, membership.OwnerUserId, membership.SiteId); err != nil {
+		site, err := adtyStaffOwnerTx(tx, membership.OwnerUserId, membership.SiteId, false)
+		if err != nil {
 			return err
-		}
-		var site model.AdtySite
-		if err := tx.First(&site, membership.SiteId).Error; err != nil {
-			return err
-		}
-		if site.Status == model.AdtySiteStatusClosing {
-			return ErrAdtyStaffDenied
 		}
 		var staff model.AdtySiteStaff
 		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND owner_user_id = ? AND status = ?", membership.Id, site.OwnerUserId, "enabled").First(&staff).Error; err != nil {

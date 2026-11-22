@@ -216,6 +216,12 @@ func adtySiteWalletResponse(c *gin.Context, siteID int, ledger bool, hideOperati
 		}
 		data, err = gin.H{"total": total, "items": items, "page": page.GetPage(), "page_size": page.GetPageSize()}, queryErr
 	} else {
+		if hideOperating {
+			if err := service.ReviewAdtyPooledSiteFinance(model.DB, siteID); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 		wallets, queryErr := service.ListAdtySiteWallets(siteID)
 		if queryErr == nil && hideOperating {
 			visible := make([]model.AdtySiteWallet, 0, len(wallets))

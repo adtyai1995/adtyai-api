@@ -750,6 +750,9 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 					// 重试，也不能挑一个钱包去扣。
 					return ErrBillingOperationConflict
 				}
+				if err := tx.Model(&AdtyTeamFundAllocation{}).Where("team_id = ? AND operation_key = ? AND reserved = ?", row.PayerTeamId, row.OperationKey, true).Update("reserved", false).Error; err != nil {
+					return err
+				}
 				charged = applied
 			} else if delta != 0 {
 				// 团队 Key 却没有结算钩子（构建缺了 service 的注册）：不能退回个人钱包。

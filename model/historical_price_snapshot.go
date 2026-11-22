@@ -87,7 +87,7 @@ func BuildHistoricalRequestPriceSnapshot(src HistoricalPriceSnapshotSource) (*Re
 		Currency:         RequestPriceCurrencyUSD,
 		BillingUnit:      unit,
 		AcceptedAt:       src.AcceptedAt,
-		RuleVersion:      RequestPriceSnapshotVersion,
+		RuleVersion:      "historical:unversioned",
 		SiteId:           src.SiteId,
 		SiteOwnerUserId:  src.SiteOwnerUserId,
 		MainSite:         mainSite,

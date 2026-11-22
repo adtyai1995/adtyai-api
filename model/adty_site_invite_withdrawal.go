@@ -20,6 +20,7 @@ type AdtySiteInviteWithdrawal struct {
 	Id             int64           `json:"id"`
 	SiteId         int             `json:"site_id" gorm:"index"`
 	UserId         int             `json:"user_id" gorm:"index"`
+	RequestedUSD   decimal.Decimal `json:"requested_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	AmountUSD      decimal.Decimal `json:"amount_usd" gorm:"type:decimal(20,8);not null"`
 	FeeUSD         decimal.Decimal `json:"fee_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	NetUSD         decimal.Decimal `json:"net_usd" gorm:"type:decimal(20,8);not null"`
@@ -36,6 +37,7 @@ type AdtySiteInviteWithdrawal struct {
 	ReviewedBy     int             `json:"reviewed_by"`
 	ReviewedAt     int64           `json:"reviewed_at"`
 	PaidAt         int64           `json:"paid_at"`
+	ReceiptKey     *string         `json:"-" gorm:"size:64;uniqueIndex"`
 	TxID           string          `json:"tx_id" gorm:"type:varchar(128)"`
 	ProofNote      string          `json:"proof_note" gorm:"type:varchar(255)"`
 	RejectReason   string          `json:"reject_reason" gorm:"type:varchar(255)"`
@@ -47,6 +49,8 @@ func (AdtySiteInviteWithdrawal) TableName() string { return "adty_site_invite_wi
 // AdtySiteInviteWithdrawalItem ties a withdrawal to the commission rows it holds.
 type AdtySiteInviteWithdrawalItem struct {
 	Id           int64           `json:"id"`
+	ReleasedUSD  decimal.Decimal `json:"released_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	RefundUSD    decimal.Decimal `json:"refund_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	WithdrawalId int64           `json:"withdrawal_id" gorm:"index"`
 	CommissionId int64           `json:"commission_id" gorm:"index"`
 	AmountUSD    decimal.Decimal `json:"amount_usd" gorm:"type:decimal(20,8);not null"`

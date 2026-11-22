@@ -371,7 +371,7 @@ func (token *Token) Insert() error {
 		if err := lockAssignableAdtyGroupsTx(tx, append(groups, token.Group)); err != nil {
 			return err
 		}
-		return tx.Create(token).Error
+		return insertAdtyEmployeeTokenTx(tx, token)
 	})
 }
 
@@ -408,7 +408,7 @@ func (token *Token) InsertWithLimitAndKeyLimit(limit int, keyLimitPatch AdtyKeyL
 		if count >= int64(limit) {
 			return ErrTokenLimit
 		}
-		if err := tx.Create(token).Error; err != nil {
+		if err := insertAdtyEmployeeTokenTx(tx, token); err != nil {
 			return err
 		}
 		if keyLimitPatch.HasChanges() {
@@ -494,6 +494,11 @@ func (token *Token) UpdateWithKeyLimit(writeRemainQuota bool, keyLimitPatch Adty
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
 		"allow_user_quota_query"}
 	err = token.mutateMetadata(func(tx *gorm.DB) error {
+		if token.Status == common.TokenStatusEnabled {
+			if err := ValidateAdtyTeamTokenTx(tx, token); err != nil {
+				return err
+			}
+		}
 		var before Token
 		if len(audits) > 0 {
 			if err := tx.First(&before, token.Id).Error; err != nil {

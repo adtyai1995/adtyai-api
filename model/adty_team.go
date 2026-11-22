@@ -21,16 +21,18 @@ const (
 
 // AdtyTeam is one shared-balance team on the main site or a subsite.
 type AdtyTeam struct {
-	Id           int64           `json:"id"`
-	SiteId       int             `json:"site_id" gorm:"index"`
-	SourceSiteId int             `json:"source_site_id" gorm:"index;not null;default:0;column:source_site_id"` // 关站迁入主站时记下原分站；0 表示不是迁入团队或历史未回填。历史主站团队仅在来源已独立记录时由 BackfillAdtyTeamSourceSiteID 补写
-	LeaderUserId int             `json:"leader_user_id" gorm:"index"`
-	Name         string          `json:"name" gorm:"type:varchar(64);not null"`
-	Discount     decimal.Decimal `json:"discount" gorm:"type:decimal(10,4);not null"`
-	Status       string          `json:"status" gorm:"type:varchar(16);index;not null"`
-	SharedQuota  int64           `json:"shared_quota"`
-	CreatedAt    int64           `json:"created_at" gorm:"autoCreateTime"`
-	ClosedAt     int64           `json:"closed_at"`
+	CreateKey         *string         `json:"-" gorm:"uniqueIndex;type:varchar(64)"`
+	CreateFingerprint string          `json:"-" gorm:"type:varchar(64)"`
+	Id                int64           `json:"id"`
+	SiteId            int             `json:"site_id" gorm:"index"`
+	SourceSiteId      int             `json:"source_site_id" gorm:"index;not null;default:0;column:source_site_id"` // 关站迁入主站时记下原分站；0 表示不是迁入团队或历史未回填。历史主站团队仅在来源已独立记录时由 BackfillAdtyTeamSourceSiteID 补写
+	LeaderUserId      int             `json:"leader_user_id" gorm:"index"`
+	Name              string          `json:"name" gorm:"type:varchar(64);not null"`
+	Discount          decimal.Decimal `json:"discount" gorm:"type:decimal(10,4);not null"`
+	Status            string          `json:"status" gorm:"type:varchar(16);index;not null"`
+	SharedQuota       int64           `json:"shared_quota"`
+	CreatedAt         int64           `json:"created_at" gorm:"autoCreateTime"`
+	ClosedAt          int64           `json:"closed_at"`
 }
 
 func (AdtyTeam) TableName() string { return "adty_teams" }
@@ -77,7 +79,11 @@ const (
 )
 
 // AdtyTeamInvite is a one-time, expiring join credential. The plaintext is not stored.
+const AdtyTeamEmployeeInvitePurpose = "employee_registration"
+
 type AdtyTeamInvite struct {
+	SiteId    int    `json:"site_id" gorm:"not null;default:0"`
+	Purpose   string `json:"purpose" gorm:"type:varchar(32);not null;default:''"`
 	Id        int64  `json:"id"`
 	TeamId    int64  `json:"team_id" gorm:"index"`
 	CodeHash  string `json:"-" gorm:"uniqueIndex;type:varchar(64);not null"`
@@ -207,7 +213,7 @@ func ValidateAdtyTeamTokenTx(tx *gorm.DB, token *Token) error {
 		return err
 	}
 	if key.Id == 0 {
-		return nil
+		return validateUnboundTeamEmployeeTx(tx, token.UserId)
 	}
 	if key.Status != AdtyTeamMemberActive || key.UserId != token.UserId || key.TeamId <= 0 {
 		return ErrTokenInvalid
@@ -226,6 +232,55 @@ func ValidateAdtyTeamTokenTx(tx *gorm.DB, token *Token) error {
 		return ErrTokenInvalid
 	}
 	return nil
+}
+
+// Independent staff accounts retain their team identity after disablement or closure.
+func independentTeamEmployeeTx(tx *gorm.DB, userID int) (*AdtyTeamMember, error) {
+	if !tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		return nil, nil
+	}
+	var member AdtyTeamMember
+	result := tx.Where("user_id = ? AND independent_employee = ?", userID, true).Order("id desc").Limit(1).Find(&member)
+	if result.Error != nil || result.RowsAffected == 0 {
+		return nil, result.Error
+	}
+	return &member, nil
+}
+
+func validateUnboundTeamEmployeeTx(tx *gorm.DB, userID int) error {
+	member, err := independentTeamEmployeeTx(tx, userID)
+	if err != nil {
+		return err
+	}
+	if member != nil {
+		return ErrTokenInvalid
+	}
+	return nil
+}
+
+// Issue a dedicated employee's key and its team binding in one transaction.
+func insertAdtyEmployeeTokenTx(tx *gorm.DB, token *Token) error {
+	member, err := independentTeamEmployeeTx(tx, token.UserId)
+	if err != nil {
+		return err
+	}
+	if member == nil {
+		return tx.Create(token).Error
+	}
+	var team AdtyTeam
+	if err := lockForUpdate(tx).First(&team, member.TeamId).Error; err != nil {
+		return err
+	}
+	if err := lockForUpdate(tx).First(member, member.Id).Error; err != nil {
+		return err
+	}
+	if team.Status != AdtyTeamStatusActive || member.Status != AdtyTeamMemberActive || token.OwnerSelfUseSiteId != 0 {
+		return ErrTokenInvalid
+	}
+	if err := tx.Create(token).Error; err != nil {
+		return err
+	}
+	return tx.Create(&AdtyTeamKey{TokenId: token.Id, TeamId: team.Id, UserId: token.UserId, Status: AdtyTeamMemberActive}).Error
 }
 
 var adtyTeamTopupPrefixes = []string{"TTEP", "TTU", "TTEAM"}

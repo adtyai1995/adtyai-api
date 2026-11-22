@@ -150,7 +150,10 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 		Joins("LEFT JOIN top_ups t ON o.source_type = 'topup' AND t.trade_no = o.reference").
 		Joins("LEFT JOIN adty_topup_orders a ON o.source_type = 'topup' AND a.trade_no = o.reference")
 	if ownerSiteID != nil {
-		query = query.Where("o.site_id = ?", *ownerSiteID)
+		ownWithdrawals := model.DB.Model(&model.AdtySiteWithdrawal{}).Select("id").Scopes(model.AdtyWithdrawalOwnerScope(*ownerSiteID, c.GetInt("id")))
+		query = query.Where("o.site_id = ?", *ownerSiteID).
+			Where("(o.source_type <> 'site_withdrawal' OR o.id IN (?))", ownWithdrawals).
+			Where("(o.source_type <> 'topup' OR COALESCE(a.business,'') <> ? OR o.user_id = ?)", model.AdtyBusinessOwnerSelfUseTopup, c.GetInt("id"))
 	}
 	if selfUserID != nil {
 		query = query.Where("o.user_id = ?", *selfUserID)

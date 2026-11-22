@@ -62,7 +62,7 @@ function staffRequestStatusLabel(
   return t('Rejected')
 }
 
-export function StaffPanel(props: { siteId: number }) {
+export function StaffPanel(props: { siteId: number; closing?: boolean }) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const [editing, setEditing] = useState<{
@@ -141,6 +141,7 @@ export function StaffPanel(props: { siteId: number }) {
         <h2 className='text-lg font-medium'>{t('Staff accounts')}</h2>
         <Button
           variant='brand'
+          disabled={props.closing}
           onClick={() => setEditing({ mode: 'create', staff: null })}
         >
           {t('Create staff account')}
@@ -199,6 +200,7 @@ export function StaffPanel(props: { siteId: number }) {
                     <Button
                       size='sm'
                       variant='outline'
+                      disabled={props.closing}
                       onClick={() => setEditing({ mode: 'password', staff })}
                     >
                       {t('Reset staff password')}
@@ -206,6 +208,7 @@ export function StaffPanel(props: { siteId: number }) {
                     <Button
                       size='sm'
                       variant='outline'
+                      disabled={props.closing && staff.status !== 'enabled'}
                       onClick={() => setConfirming({ staff, action: 'status' })}
                     >
                       {staff.status === 'enabled' ? t('Disable') : t('Enable')}
@@ -372,6 +375,7 @@ export function StaffPanel(props: { siteId: number }) {
         <StaffDialog
           siteId={props.siteId}
           staff={editing.staff}
+          closing={props.closing}
           mode={editing.mode}
           onClose={() => setEditing(null)}
         />

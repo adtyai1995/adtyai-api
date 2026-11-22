@@ -118,9 +118,16 @@ export function useNotifications() {
   )
   const inbox = useInfiniteQuery({
     queryKey: inboxKey,
-    initialPageParam: 0,
-    queryFn: ({ pageParam }) => getNotificationInbox(pageParam),
-    getNextPageParam: (page) => page.next_before_id || undefined,
+    initialPageParam: { before: 0, tickets: 0 },
+    queryFn: ({ pageParam }) =>
+      getNotificationInbox(pageParam.before, pageParam.tickets),
+    getNextPageParam: (page) =>
+      page.next_before_id || page.next_ticket_before_id
+        ? {
+            before: page.next_before_id || -1,
+            tickets: page.next_ticket_before_id || -1,
+          }
+        : undefined,
     enabled: userID > 0,
     staleTime: 30_000,
     refetchInterval: 30_000,
@@ -139,7 +146,7 @@ export function useNotifications() {
               page.announcements
                 .filter(
                   (item) =>
-                    String(item.id).startsWith('publication:') &&
+                    /^(publication|ticket-notice):/.test(String(item.id)) &&
                     input.keys.includes(String(item.read_key)) &&
                     !page.read_keys.includes(String(item.read_key))
                 )
@@ -230,7 +237,7 @@ export function useNotifications() {
         if (userID > 0) {
           if (
             firstPage?.unread_publications !== undefined &&
-            String(item.id).startsWith('publication:')
+            /^(publication|ticket-notice):/.test(String(item.id))
           ) {
             return false
           }

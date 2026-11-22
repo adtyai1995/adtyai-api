@@ -75,19 +75,18 @@ export interface NotificationInbox {
   notice_key: string
   announcements: Record<string, unknown>[]
   read_keys: string[]
+  next_ticket_before_id?: number
   next_before_id?: number
   unread_publications?: number
 }
 
 export async function getNotificationInbox(
-  beforeId = 0
+  beforeId = 0,
+  ticketBefore = 0
 ): Promise<NotificationInbox> {
-  const response =
-    beforeId > 0
-      ? await api.get('/api/adty/notifications', {
-          params: { before_id: beforeId },
-        })
-      : await api.get('/api/adty/notifications')
+  const response = await api.get('/api/adty/notifications', {
+    params: { before_id: beforeId, ticket_before: ticketBefore },
+  })
   return requireServerSuccess(response.data).data as NotificationInbox
 }
 

@@ -224,13 +224,26 @@ func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string
 }
 
 // ListAdtyOwnerSiteTeams returns active teams on the owner's site.
-func ListAdtyOwnerSiteTeams(siteID, ownerID int) ([]model.AdtyTeam, error) {
+func ListAdtyOwnerSiteTeams(siteID, ownerID, offset, limit int, search string) ([]model.AdtyTeam, int64, error) {
 	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	q := model.DB.Model(&model.AdtyTeam{}).Where("site_id = ? AND status = ?", siteID, model.AdtyTeamStatusActive)
+	if search = strings.TrimSpace(search); search != "" {
+		name := "%" + strings.ToLower(search) + "%"
+		if id, err := strconv.ParseInt(strings.TrimPrefix(search, "#"), 10, 64); err == nil {
+			q = q.Where("(id = ? OR LOWER(name) LIKE ?)", id, name)
+		} else {
+			q = q.Where("LOWER(name) LIKE ?", name)
+		}
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
 	}
 	var rows []model.AdtyTeam
-	err := model.DB.Where("site_id = ? AND status = ?", siteID, model.AdtyTeamStatusActive).Order("id desc").Limit(50).Find(&rows).Error
-	return rows, err
+	err := q.Order("id desc").Offset(offset).Limit(limit).Find(&rows).Error
+	return rows, total, err
 }
 
 // ListAdtySiteInvites returns the owner's direct site invites. It does not create any.

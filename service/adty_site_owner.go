@@ -49,6 +49,19 @@ func AdtyIsSiteOwner(userId int) bool {
 	return count > 0
 }
 
+// ArchivedAdtyOwnerSites limits the accounting selector to a closed current
+// site or a site the caller formerly owned. It never grants management access.
+func ArchivedAdtyOwnerSites(tx *gorm.DB, ownerID int) *gorm.DB {
+	former := tx.Model(&model.AdtySiteOwnership{}).Select("site_id").Where("old_owner_user_id = ?", ownerID)
+	return tx.Model(&model.AdtySite{}).Where("((owner_user_id = ? AND status = ?) OR (owner_user_id <> ? AND id IN (?)))", ownerID, model.AdtySiteStatusClosed, ownerID, former)
+}
+
+// AdtyHasArchivedSite controls the historical finance entry independently of new site enrollment.
+func AdtyHasArchivedSite(userID int) bool {
+	var count int64
+	return userID > 0 && ArchivedAdtyOwnerSites(model.DB, userID).Count(&count).Error == nil && count > 0
+}
+
 // AdtySiteVisibility 是这个站长能看到的范围：全局默认 adty_reseller_setting.visibility，站点的 Visibility 逐项覆盖（只有管理员能改）。
 // 没设的项用 11.7 的初始值。
 func AdtySiteVisibility(site *model.AdtySite) map[string]string {
@@ -375,7 +388,7 @@ func ListAdtyOwnerCustomerTopUps(site *model.AdtySite, userId, offset, limit int
 	if _, err := GetAdtyOwnerCustomer(site, userId); err != nil {
 		return nil, 0, err
 	}
-	query := model.DB.Model(&model.AdtyTopupOrder{}).Where("user_id = ? AND site_id = ?", userId, site.Id)
+	query := model.DB.Model(&model.AdtyTopupOrder{}).Where("user_id = ?", userId).Scopes(model.AdtyFinancialOwnerScope(site.Id, site.OwnerUserId))
 	since, err := adtyOwnerJoinedAt(userId)
 	if err != nil {
 		return nil, 0, err

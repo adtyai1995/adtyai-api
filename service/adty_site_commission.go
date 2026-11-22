@@ -563,12 +563,6 @@ func adtySiteInviteCommissionAfterRefundTx(tx *gorm.DB, ext *model.AdtyTopupOrde
 	if !thisClaw.IsPositive() {
 		return nil
 	}
-	if err := releaseSiteInviteCommissionFreezeTx(tx, &row, thisClaw); err != nil {
-		return err
-	}
-	if err := tx.First(&row, row.Id).Error; err != nil {
-		return err
-	}
 	withdrawnLive, err := model.SiteInviteCommissionWithdrawnLive(tx, row.Id, row.WithdrawnUSD)
 	if err != nil {
 		return err
@@ -576,6 +570,17 @@ func adtySiteInviteCommissionAfterRefundTx(tx *gorm.DB, ext *model.AdtyTopupOrde
 	releaseAmt, convertedAmt, withdrawnAmt, pendingAmt, _ := model.SiteInviteCommissionRefundParts(row, withdrawnLive, ext.RefundQuota, ext.FaceQuota())
 	parts := []decimal.Decimal{releaseAmt, convertedAmt, withdrawnAmt, pendingAmt}
 	target := row.ClawedUSD.Add(parts[0]).Add(parts[1]).Add(parts[2]).Add(parts[3])
+	deferred, err := releaseSiteInviteCommissionFreezeTx(tx, &row, releaseAmt)
+	if err != nil {
+		return err
+	}
+	row.PendingPayoutClawUSD = row.PendingPayoutClawUSD.Add(deferred)
+	parts[0] = parts[0].Sub(deferred)
+	if pendingAmt.IsPositive() {
+		if err := tx.Create(&model.AdtyCommissionCoverageCancellation{SiteId: row.SiteId, CommissionId: row.Id, ClawedAfter: target, AmountUSD: pendingAmt}).Error; err != nil {
+			return err
+		}
+	}
 	if parts[0].IsPositive() {
 		if err := consumeSiteCommissionHoldTx(tx, &row, parts[0], true, "refund:"+target.String()); err != nil {
 			return err
@@ -612,7 +617,7 @@ func adtySiteInviteCommissionAfterRefundTx(tx *gorm.DB, ext *model.AdtyTopupOrde
 	row.ClawedUSD = target
 	row.RecoveryUSD = row.RecoveryUSD.Add(shortfall)
 	updates := map[string]any{
-		"clawed_usd": row.ClawedUSD, "recovered_usd": row.RecoveredUSD, "recovery_usd": row.RecoveryUSD,
+		"pending_payout_claw_usd": row.PendingPayoutClawUSD, "clawed_usd": row.ClawedUSD, "recovered_usd": row.RecoveredUSD, "recovery_usd": row.RecoveryUSD,
 		"earnings_hold_usd": row.EarningsHoldUSD, "margin_hold_usd": row.MarginHoldUSD,
 		"converted_clawed_usd": row.ConvertedClawedUSD,
 	}
@@ -629,16 +634,30 @@ func splitDecimalByWeights(total decimal.Decimal, weights []decimal.Decimal) []d
 
 func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, amount, clawedAfter decimal.Decimal) (decimal.Decimal, error) {
 	exact := amount.Mul(common.QuotaPerUnitDecimal())
-	if !exact.Equal(exact.Floor()) {
-		return amount, nil
-	}
-	quota, err := common.WalletQuotaFromDecimalStrict(exact)
-	if err != nil || quota <= 0 {
-		return amount, nil
-	}
-	before, debited, err := model.AdtyDebitUserQuotaTx(tx, row.InviterId, int64(quota))
+	quota, err := common.WalletQuotaFromDecimalStrict(exact.Floor())
 	if err != nil {
 		return decimal.Zero, err
+	}
+	if quota == 0 {
+		return amount, nil
+	}
+	var user model.User
+	if err := model.AdtyLockForUpdate(tx).First(&user, row.InviterId).Error; err != nil {
+		return decimal.Zero, err
+	}
+	found, err := reclaimConvertedCommissionFundBatchesTx(tx, row, int64(quota))
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if found == 0 {
+		return amount, nil
+	}
+	before, debited, err := model.AdtyDebitUserQuotaTx(tx, row.InviterId, found)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if debited != found {
+		return decimal.Zero, model.ErrAdtyFundBatchShortfall
 	}
 	if debited > 0 {
 		key := "sic-claw:" + strconv.FormatInt(row.Id, 10) + ":" + clawedAfter.String()
@@ -652,9 +671,7 @@ func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommiss
 		}); err != nil {
 			return decimal.Zero, err
 		}
-		if err := reclaimConvertedCommissionFundBatchesTx(tx, row, debited, before); err != nil {
-			return decimal.Zero, err
-		}
+
 	}
 	debitedUSD := decimal.NewFromInt(debited).Div(common.QuotaPerUnitDecimal())
 	shortfall := amount.Sub(debitedUSD)
@@ -664,62 +681,56 @@ func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommiss
 	return shortfall, nil
 }
 
-func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, debited, balanceBefore int64) error {
-	if tx == nil || row == nil || debited <= 0 {
-		return nil
-	}
+func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, wanted int64) (int64, error) {
 	var sources []string
-	seen := map[string]struct{}{}
-	addSource := func(src string) {
-		src = strings.TrimSpace(src)
-		if src == "" {
-			return
-		}
-		if _, ok := seen[src]; !ok {
-			seen[src] = struct{}{}
-			sources = append(sources, src)
-		}
+	if err := tx.Model(&model.AdtyFundBatch{}).Where("user_id = ? AND (source LIKE ? OR source LIKE ?)", row.InviterId, fmt.Sprintf("site-comm-cvt:%d:%%", row.Id), fmt.Sprintf("site-comm-wd:%d:%%", row.Id)).Order("id").Pluck("source", &sources).Error; err != nil {
+		return 0, err
 	}
-	cvtPrefix := fmt.Sprintf("site-comm-cvt:%d:", row.Id)
-	var cvtSources []string
-	if err := tx.Model(&model.AdtyFundBatch{}).
-		Where("user_id = ? AND source LIKE ?", row.InviterId, cvtPrefix+"%").
-		Order("id ASC").Pluck("source", &cvtSources).Error; err != nil {
-		return err
-	}
-	for _, src := range cvtSources {
-		addSource(src)
-	}
-	{
-		var items []model.AdtySiteInviteWithdrawalItem
-		if err := tx.Where("commission_id = ? AND status = ?", row.Id, model.AdtySiteInviteWithdrawItemPaid).
-			Order("id ASC").Find(&items).Error; err != nil {
-			return err
+	left := wanted
+	for _, source := range sources {
+		got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, row.InviterId, source, left, 0)
+		if err != nil {
+			return 0, err
 		}
-		for _, item := range items {
-			addSource(fmt.Sprintf("site-invite-wd:%d", item.WithdrawalId))
+		left -= got
+		if left == 0 {
+			return wanted, nil
 		}
 	}
-	left := debited
-	reclaimed := int64(0)
-	for _, src := range sources {
-		if left <= 0 {
+	// Older balance transfers shared a lot across several commissions. Preserve
+	// any remaining quota that could belong to another commission.
+	var items []model.AdtySiteInviteWithdrawalItem
+	if err := tx.Where("commission_id = ? AND status = ?", row.Id, model.AdtySiteInviteWithdrawItemPaid).Find(&items).Error; err != nil {
+		return 0, err
+	}
+	for _, item := range items {
+		source := fmt.Sprintf("site-invite-wd:%d", item.WithdrawalId)
+		var lot model.AdtyFundBatch
+		res := tx.Where("user_id = ? AND source = ? AND kind = ?", row.InviterId, source, model.AdtyFundBatchKindPrincipal).Limit(1).Find(&lot)
+		if res.Error != nil {
+			return 0, res.Error
+		}
+		if res.RowsAffected == 0 {
+			continue
+		}
+		own, err := common.WalletQuotaFromDecimalStrict(item.AmountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
+		if err != nil {
+			return 0, err
+		}
+		provable := lot.Remaining - max(lot.Original-int64(own), 0)
+		if provable <= 0 {
+			continue
+		}
+		got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, row.InviterId, source, min(provable, left), 0)
+		if err != nil {
+			return 0, err
+		}
+		left -= got
+		if left == 0 {
 			break
 		}
-		got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, row.InviterId, src, left, 0)
-		if err != nil {
-			return err
-		}
-		reclaimed += got
-		left -= got
 	}
-	if left > 0 {
-		walletBefore := max(balanceBefore-reclaimed, 0)
-		if err := model.ConsumeAdtyFundBatchesQuietTx(tx, row.InviterId, left, walletBefore); err != nil {
-			return err
-		}
-	}
-	return nil
+	return wanted - left, nil
 }
 
 // consumeSiteCommissionHoldTx settles a frozen hold. release returns it to the

@@ -47,11 +47,11 @@ func ComputeTieredQuotaWithRequest(snap *BillingSnapshot, params TokenParams, re
 	if snap.TaskUsageBilling && UsesFixedPricingByHash(snap.ExprString, snap.ExprHash) {
 		return TieredResult{}, fmt.Errorf("fixed pricing is not supported for task usage expressions")
 	}
-	if request.AcceptedAt.IsZero() && request.AcceptedUnix == 0 && snap != nil && snap.AcceptedAt > 0 {
+	if snap != nil && snap.AcceptedAt > 0 {
 		request.AcceptedUnix = snap.AcceptedAt
 		request.AcceptedAt = time.Unix(snap.AcceptedAt, 0).UTC()
 	}
-	if request.BusinessTimezone == "" && snap != nil && snap.BusinessTimezone != "" {
+	if snap != nil && snap.BusinessTimezone != "" {
 		request.BusinessTimezone = snap.BusinessTimezone
 	}
 	_, trace, err := RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, params, request)

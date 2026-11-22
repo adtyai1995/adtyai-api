@@ -136,7 +136,11 @@ export function EarningsPanel() {
           },
           {
             label: t('Withdrawable'),
-            value: money(balances?.available_usd),
+            value: balances?.requires_review
+              ? t(
+                  'Contact the platform to reconcile this historical site account'
+                )
+              : money(balances?.available_usd),
             negative: isNegativeAmount(balances?.available_usd),
           },
           { label: t('Withdrawn'), value: money(balances?.withdrawn_usd) },

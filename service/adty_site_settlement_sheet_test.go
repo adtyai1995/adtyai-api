@@ -144,7 +144,7 @@ func TestDailySettlementSheetUsesShanghaiByDefaultAndPreservesExplicitTimezone(t
 	var utcSheet model.AdtySiteSettlementSheet
 	require.NoError(t, db.Where("site_id = ? AND business_day = ?", site.Id, "2026-06-02").First(&utcSheet).Error)
 	require.Equal(t, "UTC", utcSheet.Timezone)
-	require.Equal(t, time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC).Unix(), utcSheet.DayStart)
+	require.Equal(t, outside, utcSheet.DayStart, "the transition period begins at the prior Shanghai close")
 }
 
 func TestSettlementSheetCatchUpFillsMissingDaysWithoutRewritingExisting(t *testing.T) {

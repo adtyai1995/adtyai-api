@@ -32,7 +32,10 @@ func ListAdtyOwnerPrincipalTransfers(siteID, ownerID, offset, limit int) ([]Adty
 	if site.OwnerUserId != ownerID {
 		return nil, 0, ErrAdtySiteNotOwner
 	}
-	q := model.DB.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND wallet_kind = ? AND type = ?", siteID, model.AdtySiteWalletEarnings, ownerTransfer)
+	if err := ReviewAdtyPooledSiteFinance(model.DB, siteID); err != nil {
+		return nil, 0, err
+	}
+	q := model.DB.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND wallet_kind = ? AND type = ? AND operator_id = ?", siteID, model.AdtySiteWalletEarnings, ownerTransfer, ownerID)
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -74,7 +77,7 @@ func ListAdtyOwnerSelfUseUsage(siteID, ownerID, offset, limit int) ([]AdtyOwnerS
 	if site.OwnerUserId != ownerID {
 		return nil, 0, ErrAdtySiteNotOwner
 	}
-	q := model.DB.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND wallet_kind = ? AND ref_type = ?", siteID, model.AdtySiteWalletOperating, model.BillingPayerOwner)
+	q := model.DB.Model(&model.AdtySiteWalletLedger{}).Where("site_id = ? AND wallet_kind = ? AND ref_type = ?", siteID, model.AdtySiteWalletOperating, model.BillingPayerOwner).Where("ref_id IN (?)", model.DB.Model(&model.BillingOperation{}).Select("operation_key").Where("site_id = ? AND user_id = ? AND payer_kind = ?", siteID, ownerID, model.BillingPayerOwner))
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err

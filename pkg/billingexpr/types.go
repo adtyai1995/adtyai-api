@@ -96,6 +96,7 @@ type BillingSnapshot struct {
 	UsageFacts                map[string]any `json:"usage_facts,omitempty"`
 	AcceptedAt                int64          `json:"accepted_at,omitempty"`
 	BusinessTimezone          string         `json:"business_timezone,omitempty"`
+	AcceptedLocal             string         `json:"accepted_local,omitempty"`
 }
 
 // TieredResult holds everything needed after running tiered settlement.

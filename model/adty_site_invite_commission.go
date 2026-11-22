@@ -5,6 +5,7 @@ import (
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -27,30 +28,31 @@ const (
 // AdtySiteInviteCommission is one site invite commission for one top-up.
 // The original order fixes its terms. Observation starts at full coverage.
 type AdtySiteInviteCommission struct {
-	Id                 int64            `json:"id"`
-	SiteId             int              `json:"site_id" gorm:"index"`
-	InviterId          int              `json:"inviter_id" gorm:"index"`
-	InviteeId          int              `json:"invitee_id" gorm:"index"`
-	TradeNo            string           `json:"trade_no" gorm:"type:varchar(64);uniqueIndex"`
-	FaceUSD            decimal.Decimal  `json:"face_usd" gorm:"type:decimal(20,8);not null"`
-	Rate               decimal.Decimal  `json:"rate" gorm:"type:decimal(10,6);not null"`
-	AmountUSD          decimal.Decimal  `json:"amount_usd" gorm:"type:decimal(20,8);not null"`
-	CoveredUSD         decimal.Decimal  `json:"covered_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	EarningsHoldUSD    decimal.Decimal  `json:"earnings_hold_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	MarginHoldUSD      decimal.Decimal  `json:"margin_hold_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	ConvertedClawedUSD decimal.Decimal  `json:"converted_clawed_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	ClawedUSD          decimal.Decimal  `json:"clawed_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	RecoveredUSD       decimal.Decimal  `json:"recovered_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	ConvertedUSD       decimal.Decimal  `json:"converted_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	WithdrawnUSD       decimal.Decimal  `json:"withdrawn_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	FrozenUSD          decimal.Decimal  `json:"frozen_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	RecoveryUSD        decimal.Decimal  `json:"recovery_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	Status             string           `json:"status" gorm:"type:varchar(24);index"`
-	PendingCoverageCap *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
-	ObservationDays    int64            `json:"observation_days"`
-	CoveredAt          int64            `json:"covered_at"`
-	AvailableAt        int64            `json:"available_at"`
-	CreatedAt          int64            `json:"created_at" gorm:"autoCreateTime"`
+	Id                   int64            `json:"id"`
+	SiteId               int              `json:"site_id" gorm:"index"`
+	InviterId            int              `json:"inviter_id" gorm:"index"`
+	InviteeId            int              `json:"invitee_id" gorm:"index"`
+	TradeNo              string           `json:"trade_no" gorm:"type:varchar(64);uniqueIndex"`
+	FaceUSD              decimal.Decimal  `json:"face_usd" gorm:"type:decimal(20,8);not null"`
+	Rate                 decimal.Decimal  `json:"rate" gorm:"type:decimal(10,6);not null"`
+	AmountUSD            decimal.Decimal  `json:"amount_usd" gorm:"type:decimal(20,8);not null"`
+	PendingPayoutClawUSD decimal.Decimal  `json:"pending_payout_claw_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	CoveredUSD           decimal.Decimal  `json:"covered_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	EarningsHoldUSD      decimal.Decimal  `json:"earnings_hold_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	MarginHoldUSD        decimal.Decimal  `json:"margin_hold_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	ConvertedClawedUSD   decimal.Decimal  `json:"converted_clawed_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	ClawedUSD            decimal.Decimal  `json:"clawed_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	RecoveredUSD         decimal.Decimal  `json:"recovered_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	ConvertedUSD         decimal.Decimal  `json:"converted_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	WithdrawnUSD         decimal.Decimal  `json:"withdrawn_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	FrozenUSD            decimal.Decimal  `json:"frozen_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	RecoveryUSD          decimal.Decimal  `json:"recovery_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	Status               string           `json:"status" gorm:"type:varchar(24);index"`
+	PendingCoverageCap   *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
+	ObservationDays      int64            `json:"observation_days"`
+	CoveredAt            int64            `json:"covered_at"`
+	AvailableAt          int64            `json:"available_at"`
+	CreatedAt            int64            `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtySiteInviteCommission) TableName() string { return "adty_site_invite_commissions" }
@@ -169,7 +171,7 @@ func siteInviteCommissionConvertedLive(row AdtySiteInviteCommission) decimal.Dec
 }
 
 func siteInviteCommissionHoldUSD(row AdtySiteInviteCommission) decimal.Decimal {
-	hold := row.EarningsHoldUSD.Add(row.MarginHoldUSD)
+	hold := row.EarningsHoldUSD.Add(row.MarginHoldUSD).Sub(row.PendingPayoutClawUSD)
 	if hold.IsNegative() {
 		return decimal.Zero
 	}
@@ -348,3 +350,43 @@ type AdtyCommissionRecovery struct {
 }
 
 func (AdtyCommissionRecovery) TableName() string { return "adty_commission_recoveries" }
+
+// This part of a refund cancels uncovered commission and has no wallet movement.
+type AdtyCommissionCoverageCancellation struct {
+	Id           int64
+	CommissionId int64           `gorm:"index;uniqueIndex:idx_commission_cancel_total"`
+	SiteId       int             `gorm:"index"`
+	AmountUSD    decimal.Decimal `gorm:"type:decimal(20,8);not null"`
+	ClawedAfter  decimal.Decimal `gorm:"type:decimal(20,8);not null;uniqueIndex:idx_commission_cancel_total"`
+	Undated      bool            `gorm:"not null;default:false"`
+	CreatedAt    int64
+}
+
+// Old partial refunds recorded cumulative amounts without a dated event for the
+// uncovered part. Carry the provable amount forward from migration and flag
+// earlier reports that cannot be reconstructed from dated records.
+func backfillCommissionCoverageCancellations(db *gorm.DB, now int64) error {
+	var rows []AdtySiteInviteCommission
+	if err := db.Where("clawed_usd > 0").Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		withdrawn, err := SiteInviteCommissionWithdrawnLive(db, row.Id, row.WithdrawnUSD)
+		if err != nil {
+			return err
+		}
+		var known decimal.Decimal
+		if err := db.Model(&AdtyCommissionCoverageCancellation{}).Where("commission_id = ?", row.Id).Select("COALESCE(SUM(amount_usd),0)").Scan(&known).Error; err != nil {
+			return err
+		}
+		missing := row.ClawedUSD.Sub(row.RecoveredUSD).Sub(row.ConvertedClawedUSD).Sub(row.WithdrawnUSD.Sub(withdrawn)).Sub(row.PendingPayoutClawUSD).Sub(known)
+		if !missing.IsPositive() {
+			continue
+		}
+		event := AdtyCommissionCoverageCancellation{SiteId: row.SiteId, CommissionId: row.Id, ClawedAfter: row.ClawedUSD, AmountUSD: missing, Undated: true, CreatedAt: now}
+		if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&event).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}

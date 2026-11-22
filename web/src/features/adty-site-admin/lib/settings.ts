@@ -297,3 +297,21 @@ export function buildResellerUpdate(
   if (clear.length > 0) body.clear_secrets = clear
   return body
 }
+
+// Refresh untouched inputs while retaining the operator's in-progress values.
+// Tier and widget row keys are local React identities generated for each draft.
+export function mergeResellerDrafts(
+  previous: ResellerSettings,
+  draft: ResellerDrafts,
+  latest: ResellerSettings
+): ResellerDrafts {
+  const before = toResellerDrafts(previous)
+  const next = toResellerDrafts(latest)
+  const valueOf = (value: unknown) =>
+    JSON.stringify(value, (key, entry) => (key === 'key' ? undefined : entry))
+  const changed = Object.entries(draft).filter(
+    ([name, value]) =>
+      valueOf(value) !== valueOf(before[name as keyof ResellerDrafts])
+  )
+  return { ...next, ...Object.fromEntries(changed) }
+}

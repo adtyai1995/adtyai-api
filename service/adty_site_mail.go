@@ -346,24 +346,44 @@ func RemoveAdtySiteSenderDomain(ctx context.Context, ownerUserId int) error {
 // DisableAdtySiteSenderDomain 从 Resend 删掉站点的发件域名，回退到平台发件地址。operatorId 是停用的管理员（站长自己删时为 0）。
 func DisableAdtySiteSenderDomain(ctx context.Context, siteId, operatorId int) error {
 	var row model.AdtySiteSenderDomain
-	if model.DB.Where("site_id = ?", siteId).Limit(1).Find(&row).RowsAffected == 0 || row.Status == model.AdtySenderDomainDisabled {
+	lookup := model.DB.Where("site_id = ?", siteId).Limit(1).Find(&row)
+	if lookup.Error != nil {
+		return lookup.Error
+	}
+	if lookup.RowsAffected == 0 || row.Status == model.AdtySenderDomainDisabled {
 		return nil
 	}
 	if row.ResendDomainId != "" {
 		if err := AdtyResend.DeleteDomain(ctx, row.ResendDomainId); err != nil {
 			var apiErr *AdtyResendError
 			if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
-				return adtyResendUserError(err)
+				failure := adtyResendUserError(err)
+				if storeErr := model.DB.Model(&model.AdtySiteSenderDomain{}).Where("site_id = ? AND resend_domain_id = ?", siteId, row.ResendDomainId).Updates(map[string]any{
+					"status": model.AdtySenderDomainRemoving, "disabled_by": operatorId, "cleanup_error": failure.Error(), "retry_at": time.Now().Add(10 * time.Minute).Unix(),
+				}).Error; storeErr != nil {
+					return storeErr
+				}
+				return failure
 			}
 		}
 	}
-	return model.DB.Model(&model.AdtySiteSenderDomain{}).Where("site_id = ?", siteId).Updates(map[string]any{
-		"status": model.AdtySenderDomainDisabled, "disabled_by": operatorId, "last_checked_at": time.Now().Unix(),
+	return model.DB.Model(&model.AdtySiteSenderDomain{}).Where("site_id = ? AND resend_domain_id = ?", siteId, row.ResendDomainId).Updates(map[string]any{
+		"status": model.AdtySenderDomainDisabled, "disabled_by": operatorId, "cleanup_error": "", "retry_at": 0, "last_checked_at": time.Now().Unix(),
 	}).Error
 }
 
 // RunAdtySenderDomainCheckOnce 查一遍 pending 的发件域名，Resend 说 verified 就启用，failed 就标失败。
 func RunAdtySenderDomainCheckOnce(ctx context.Context, now time.Time) error {
+	var cleanup []model.AdtySiteSenderDomain
+	closedSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status = ?", model.AdtySiteStatusClosed)
+	if err := model.DB.Where("status <> ? AND retry_at <= ? AND (status = ? OR site_id IN (?))", model.AdtySenderDomainDisabled, now.Unix(), model.AdtySenderDomainRemoving, closedSites).Find(&cleanup).Error; err != nil {
+		return err
+	}
+	for _, row := range cleanup {
+		if err := DisableAdtySiteSenderDomain(ctx, row.SiteId, row.DisabledBy); err != nil {
+			common.SysError(common.LogText("sender domain cleanup site %d: %s", row.SiteId, err.Error()))
+		}
+	}
 	var rows []model.AdtySiteSenderDomain
 	if err := model.DB.Where("status = ?", model.AdtySenderDomainPending).Find(&rows).Error; err != nil {
 		return err
@@ -433,7 +453,7 @@ func startAdtySiteCloseMailRetryTask() {
 
 func init() {
 	adtyMasterTasks = append(adtyMasterTasks, startAdtySenderDomainTask, startAdtySiteCloseMailRetryTask)
-	AdtyOnSiteClosing = adtyNotifySiteClosing
+	// The close transaction queues the mail batch. The retry worker dispatches it.
 	AdtyOnSiteMarkupIncrease = adtyNotifySiteMarkupIncrease
 	AdtyOnSiteCostFactorChanged = adtyNotifySiteCostFactor
 	previous := AdtyOnSiteClosed
@@ -1032,20 +1052,22 @@ func renderAdtySiteCloseMigrationMail(site *model.AdtySite, recipient *model.Adt
 		support = "the main site support channel"
 	}
 	name := AdtyBrandFor(site).Name
-	subject = name + " is closing; sign in on the main site"
+	subject = name + " 即将关闭，请登录主站 / Site closure and main-site sign-in"
 	intro := name + " is closing."
 	if when := adtyMailWhen(site.CloseExecuteAt); when != "" {
 		intro = name + " will close on " + when + "."
 	}
 	return subject, AdtyRenderMail(site, AdtyMailMessage{
-		Title: subject, Intro: intro,
+		Title: subject, Intro: "分站关闭时间 / Site closure: " + adtyMailWhen(site.CloseExecuteAt) + ". " + intro,
 		Paragraphs: []string{
+			"您的账号将迁入主站。请使用原用户名 " + recipient.Username + " 登录主站并完成验证。",
+			"您的订单和余额仍归原账号。分站 API Key 将被撤销，请在主站重新创建。客服联系方式：" + support,
 			"Your account will move to the main site only. It cannot be transferred to another site.",
 			"Sign in on the main site with your unique username: " + recipient.Username + ". Use that username to select your account, then verify your password and complete any required verification.",
 			"Your orders and balance stay with this account. They will not be merged with another account that uses the same email address.",
 			"Your API keys from the closing site will be revoked at migration. Your historical records will be kept; create new API keys on the main site.",
 		},
-		ActionLabel: "Sign in on the main site", ActionURL: AdtySiteBaseURL(nil),
+		ActionLabel: "登录主站 / Sign in on the main site", ActionURL: AdtySiteBaseURL(nil),
 		Footnote: "For support, contact: " + support,
 	})
 }

@@ -308,11 +308,21 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
                   <code className='font-mono text-xs'>{row.trade_no}</code>
                   <Link
                     to='/profile'
-                    hash={`ticket-${row.trade_no}`}
+                    hash={`ticket:${row.ext?.team_id ? 'team_order' : 'topup'}:${encodeURIComponent(row.trade_no)}`}
                     className='text-muted-foreground text-xs'
                   >
                     {t('Submit ticket')}
                   </Link>
+                  {(row.status === 'refunded' ||
+                    (row.ext?.refunded_at ?? 0) > 0) && (
+                    <Link
+                      to='/profile'
+                      hash={`ticket:${row.ext?.team_id ? 'team_refund' : 'refund'}:${encodeURIComponent(row.trade_no)}`}
+                      className='text-muted-foreground text-xs'
+                    >
+                      {t('Refund inquiry')}
+                    </Link>
+                  )}
                 </span>
               ),
             },

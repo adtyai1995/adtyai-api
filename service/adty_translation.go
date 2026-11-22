@@ -338,6 +338,9 @@ func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslatio
 }
 
 func executeAdtyReservedTranslation(objectKey, source string, siteId, version int, hash string) (*AdtyTranslationResult, error) {
+	if adtyTextHasSecret(source) {
+		return fallbackAdtyTranslation(objectKey, source, siteId, version, hash, "")
+	}
 	cfg, err := loadAdtyTranslationConfig()
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -373,6 +376,13 @@ func executeAdtyReservedTranslation(objectKey, source string, siteId, version in
 		found := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).Limit(1).Find(&current)
 		if found.Error != nil {
 			return found.Error
+		}
+		// A retention cleanup or another worker may have completed the same
+		// ticket translation while the provider was running.
+		if strings.HasPrefix(objectKey, "ticket-reply:") && (found.RowsAffected == 0 || current.Status != model.AdtyTranslationPending) {
+			saved = current
+			superseded = found.RowsAffected == 0 || current.Status != model.AdtyTranslationReady
+			return nil
 		}
 		if found.RowsAffected > 0 && current.HumanEdited && current.Version == version && current.SourceHash == hash {
 			_ = upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
@@ -465,6 +475,10 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 		}
 		if head.HumanEdited || head.Version != version {
 			return ErrAdtyTranslationInvalid
+		}
+		if strings.HasPrefix(objectKey, "ticket-reply:") && head.Status == model.AdtyTranslationPending {
+			reused = &AdtyTranslationResult{ObjectKey: head.ObjectKey, Source: head.Source, Version: head.Version, Status: head.Status, Notice: head.Notice, Reused: true}
+			return nil
 		}
 		if head.Status == model.AdtyTranslationReady && head.English != "" {
 			reused = &AdtyTranslationResult{
@@ -927,6 +941,10 @@ func fallbackAdtyTranslation(objectKey, source string, siteId, version int, hash
 		found := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).Limit(1).Find(&current)
 		if found.Error != nil {
 			return found.Error
+		}
+		if strings.HasPrefix(objectKey, "ticket-reply:") && (found.RowsAffected == 0 || current.Status != model.AdtyTranslationPending || current.Version != version || current.SourceHash != hash) {
+			head = current
+			return nil
 		}
 		if err := upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
 			ObjectKey:  objectKey,

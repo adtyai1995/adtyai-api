@@ -19,7 +19,11 @@ func RecordAdtySiteEarningLine(siteID, userID int, modelName, group, requestID s
 		return common.NewMessage("Invalid parameters")
 	}
 	revenue, platform, earning := AdtySiteEarningSplit(quota, decimal.NewFromFloat(k), decimal.NewFromFloat(d))
-	row := model.AdtySiteEarningLine{
+	ownerID, err := model.CurrentAdtySiteFinancialOwnerTx(model.DB, siteID)
+	if err != nil {
+		return err
+	}
+	row := model.AdtySiteEarningLine{SiteOwnerUserId: ownerID,
 		SiteId: siteID, UserId: userID, ModelName: modelName, Group: group, RequestId: requestID,
 		Quota: quota, Markup: decimal.NewFromFloat(k), CostFactor: decimal.NewFromFloat(d),
 		Revenue: revenue, Platform: platform, Earning: earning,
@@ -29,6 +33,14 @@ func RecordAdtySiteEarningLine(siteID, userID int, modelName, group, requestID s
 
 // ListAdtyOwnerEarningLines returns recent earning facts for one site.
 func ListAdtyOwnerEarningLines(siteID, offset, limit int) ([]model.AdtySiteEarningLine, error) {
+	ownerID, err := model.CurrentAdtySiteFinancialOwnerTx(model.DB, siteID)
+	if err != nil {
+		return nil, err
+	}
+	return ListAdtyFinancialOwnerEarningLines(siteID, ownerID, offset, limit)
+}
+
+func ListAdtyFinancialOwnerEarningLines(siteID, ownerID, offset, limit int) ([]model.AdtySiteEarningLine, error) {
 	if siteID <= 0 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
@@ -39,7 +51,7 @@ func ListAdtyOwnerEarningLines(siteID, offset, limit int) ([]model.AdtySiteEarni
 		offset = 0
 	}
 	var rows []model.AdtySiteEarningLine
-	err := model.DB.Where("site_id = ?", siteID).Order("id DESC").Offset(offset).Limit(limit).Find(&rows).Error
+	err := model.DB.Scopes(model.AdtyFinancialOwnerScope(siteID, ownerID)).Order("id DESC").Offset(offset).Limit(limit).Find(&rows).Error
 	return rows, err
 }
 
@@ -109,7 +121,7 @@ func recordDurableAdtySiteEarningLineTx(tx *gorm.DB, event *model.AdtySiteEarnin
 	}
 	// The caller holds this event's row lock and commits Projected atomically.
 	// Request IDs alone are not unique across independent billing operations.
-	return tx.Create(&model.AdtySiteEarningLine{SiteId: event.SiteId, UserId: event.UserId,
+	return tx.Create(&model.AdtySiteEarningLine{SiteId: event.SiteId, SiteOwnerUserId: event.SiteOwnerUserId, UserId: event.UserId,
 		ModelName: strings.TrimSpace(modelName), Group: group, RequestId: requestID, Quota: int64(event.Quota),
 		Markup: decimal.NewFromFloat(event.Markup), CostFactor: decimal.NewFromFloat(event.CostFactor),
 		Revenue: revenue, Platform: platform, Earning: earning, CreatedAt: event.CreatedAt}).Error

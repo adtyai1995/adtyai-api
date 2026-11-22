@@ -115,6 +115,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/tickets/:id/status", "profile:write"},
 		{http.MethodPost, "/api/adty/tickets/:id/images", "profile:write"},
 		{http.MethodGet, "/api/adty/tickets/:id/images/:imageId", "profile:read"},
+		{http.MethodPut, "/api/adty/admin/ticket-image-policy", "option:write"},
 		{http.MethodGet, "/api/adty/admin/translation", "option:read"},
 		{http.MethodPut, "/api/adty/admin/translation", "option:write"},
 		{http.MethodPost, "/api/adty/admin/translation/test", "option:write"},
@@ -169,6 +170,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/site/telegram/bind/confirm", middleware.UserAuth(), controller.PostAdtyTelegramBindConfirm)
 	apiRouter.POST("/adty/telegram/webhook/:purpose/:secret", middleware.CriticalRateLimit(), controller.PostAdtyTelegramWebhook)
 	root := apiRouter.Group("/adty/admin", middleware.RootAuth())
+	root.PUT("/ticket-image-policy", controller.PutAdtyTicketImagePolicy)
 	root.GET("/notice-templates", controller.GetAdtyNoticeTemplates)
 	root.PUT("/notice-templates/:key", controller.PutAdtyNoticeTemplate)
 	root.GET("/telegram/bots", controller.GetAdtyAdminTelegram)
@@ -479,6 +481,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		// 站长中心（任务 11.6、11.7）。接受协议不走站长中心的协议门。
 		{http.MethodPost, "/terms/accept", "profile:write", []gin.HandlerFunc{controller.AcceptAdtySiteTerms}},
 		{http.MethodGet, "/self", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSite}},
+		{http.MethodGet, "/archived-sites", "wallet:read", []gin.HandlerFunc{controller.GetAdtyArchivedOwnerSites}},
 		{http.MethodPut, "/self", "wallet:write", []gin.HandlerFunc{controller.PutAdtyOwnerSite}},
 		{http.MethodGet, "/stats", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerStats}},
 		{http.MethodGet, "/earnings", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerEarnings}},

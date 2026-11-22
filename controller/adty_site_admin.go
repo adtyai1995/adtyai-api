@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -686,11 +687,12 @@ type adtyResellerSettingsView struct {
 	TurnstileConfigured bool `json:"turnstile_configured"`
 	// SettingsWarnings 是「保存成功了、但有一处配置不会生效」的可见提示。
 	// 空数组表示没有。**它不是拒绝理由**——每一项都说明「功能降级到什么程度」。
-	SettingsWarnings         []string `json:"settings_warnings"`
-	ResendConfigured         bool     `json:"resend_configured"`
-	MoneyConfigured          bool     `json:"money_configured"`
-	SiteAgreementVersion     int      `json:"site_agreement_version"`
-	SiteCustomerTermsVersion int      `json:"site_customer_terms_version"`
+	FieldVersions            map[string]string `json:"field_versions"`
+	SettingsWarnings         []string          `json:"settings_warnings"`
+	ResendConfigured         bool              `json:"resend_configured"`
+	MoneyConfigured          bool              `json:"money_configured"`
+	SiteAgreementVersion     int               `json:"site_agreement_version"`
+	SiteCustomerTermsVersion int               `json:"site_customer_terms_version"`
 }
 
 // adtyResellerSettingsWarnings 列出「保存是成功的，但这几项不会生效」的地方。
@@ -738,11 +740,40 @@ func adtyClearedSecretWarnings() []string {
 	return warnings
 }
 
+var resellerPatchMu sync.Mutex
+
+func resellerSettingsSnapshot(db *gorm.DB) (adty_setting.ResellerSetting, map[string]string, error) {
+	var cfg adty_setting.ResellerSetting
+	defaults, err := config.ConfigToMap(adty_setting.GetResellerSetting())
+	if err != nil {
+		return cfg, nil, err
+	}
+	values, versions, err := model.ResellerOptionSnapshot(db)
+	if err != nil {
+		return cfg, nil, err
+	}
+	for key, value := range values {
+		if _, known := defaults[key]; known {
+			// A malformed legacy option must not prevent unrelated settings or its own replacement.
+			if err := config.ValidateConfigValue(&cfg, key, value); err == nil {
+				defaults[key] = value
+			}
+		}
+	}
+	err = config.UpdateConfigFromMap(&cfg, defaults)
+	return cfg, versions, err
+}
+
 // GetAdtyResellerSettings 读分站设置（分站·设置）。
 func GetAdtyResellerSettings(c *gin.Context) {
-	cfg := *adty_setting.GetResellerSetting()
+	cfg, versions, err := resellerSettingsSnapshot(model.DB)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	warnings := append(adtyResellerSettingsWarnings(&cfg), adtyClearedSecretWarnings()...)
 	view := adtyResellerSettingsView{
+		FieldVersions:             versions,
 		AliyunIDConfigured:        cfg.AliyunAccessKeyID != "",
 		AliyunSecretConfigured:    cfg.AliyunAccessKeySecret != "",
 		CloudflareTokenConfigured: strings.TrimSpace(cfg.CloudflareApiToken) != "",
@@ -799,113 +830,142 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		}
 		delete(body, "clear_secrets")
 	}
-	current := *adty_setting.GetResellerSetting()
-	known, err := config.ConfigToMap(&current)
+	var expected map[string]string
+	if raw, ok := body["expected_versions"]; ok {
+		if err := common.Unmarshal(raw, &expected); err != nil || expected == nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		delete(body, "expected_versions")
+	}
+	var next adty_setting.ResellerSetting
+	var heldMinIncrease, heldCostIncrease bool
+	values := map[string]string{}
+	options := map[string]string{}
+	// Serialize commit and publication on this node. The database lock also
+	// serializes a patch with writers on other nodes before resolving dependencies.
+	resellerPatchMu.Lock()
+	defer resellerPatchMu.Unlock()
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if tx.Dialector.Name() == "postgres" {
+			if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", adty_setting.ResellerSettingModule).Error; err != nil {
+				return err
+			}
+		}
+		current, observed, err := resellerSettingsSnapshot(tx)
+		if err != nil {
+			return err
+		}
+		known, err := config.ConfigToMap(&current)
+		if err != nil {
+			return err
+		}
+
+		for key, raw := range body {
+			if _, ok := known[key]; !ok {
+				return common.NewMessage("Invalid parameters")
+			}
+			text := strings.TrimSpace(string(raw))
+			var asString string
+			if strings.HasPrefix(text, `"`) && common.Unmarshal(raw, &asString) == nil {
+				text = asString
+			}
+			if (key == adty_setting.ResellerKeyCloudflareTok || key == adty_setting.ResellerKeyWidgetSecret || key == "aliyun_access_key_id" || key == "aliyun_access_key_Secret") && (text == "" || text == "null") {
+				continue
+			}
+			if key == adty_setting.ResellerKeyWidgetSecret {
+				// 只合并给出的 widget，其余 secret 保留。
+				merged := map[string]string{}
+				for id, secret := range current.TurnstileWidgetSecret {
+					merged[id] = secret
+				}
+				incoming := map[string]string{}
+				if err := common.UnmarshalJsonStr(text, &incoming); err != nil {
+					return common.NewMessage("Invalid parameters")
+				}
+				for id, secret := range incoming {
+					if strings.TrimSpace(secret) != "" {
+						merged[id] = strings.TrimSpace(secret)
+					}
+				}
+				encoded, _ := common.Marshal(merged)
+				text = string(encoded)
+			}
+			values[key] = text
+		}
+		for _, key := range clearSecrets {
+			switch key {
+			case adty_setting.ResellerKeyCloudflareTok, "aliyun_access_key_id", "aliyun_access_key_Secret":
+				values[key] = ""
+			case adty_setting.ResellerKeyWidgetSecret:
+				values[key] = "{}"
+			default:
+				return common.NewMessage("Invalid parameters")
+			}
+		}
+		for key := range values {
+			if expected != nil && expected[key] != observed[key] {
+				return common.NewMessage("Setting changed since editing began: {{key}}", map[string]any{"key": key})
+			}
+		}
+		// Decode the complete candidate into fresh storage. Pointer-valued money
+		// fields must not alias the live configuration before persistence succeeds.
+
+		merged := map[string]string{}
+		for key, value := range known {
+			merged[key] = value
+		}
+		for key, value := range values {
+			merged[key] = value
+		}
+		if err := config.UpdateConfigFromMap(&next, merged); err != nil {
+			return err
+		}
+		// Verify the effective value after decoding and normalization.
+		parsed, _ := config.ConfigToMap(&next)
+		for key, value := range values {
+			if !adtyConfigValueEqual(parsed[key], value) {
+				return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": key})
+			}
+		}
+		for i := range next.RootDomains {
+			next.RootDomains[i] = strings.ToLower(strings.TrimSpace(next.RootDomains[i]))
+		}
+		for i := range next.ReservedSubdomains {
+			next.ReservedSubdomains[i] = strings.ToLower(strings.TrimSpace(next.ReservedSubdomains[i]))
+		}
+		nowUnix := time.Now().Unix()
+		heldMinIncrease = adty_setting.HoldMinCostFactorIncrease(&next, &current, nowUnix)
+		if heldMinIncrease {
+			values["min_cost_factor"] = ""
+			values["pending_min_cost_factor"] = ""
+			values["pending_min_cost_factor_at"] = ""
+		}
+		if err := adty_setting.ValidateResellerPatch(&next, adtyResendConfigured(), values); err != nil {
+			return err
+		}
+		heldCostIncrease = adty_setting.HoldGlobalCostFactorIncrease(&next, &current, nowUnix)
+		if heldCostIncrease {
+			values["pending_cost_factor"] = ""
+			values["pending_cost_factor_at"] = ""
+			values["cost_factor"] = ""
+		}
+		if len(values) > 0 {
+			normalized, _ := config.ConfigToMap(&next)
+
+			for key := range values {
+				options[adty_setting.ResellerSettingModule+"."+key] = normalized[key]
+			}
+			return model.SaveOptionsTx(tx, options)
+		}
+		return nil
+	})
+	if err == nil {
+		err = model.ApplyOptionValues(options)
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
-	}
-	values := map[string]string{}
-	for key, raw := range body {
-		if _, ok := known[key]; !ok {
-			common.ApiErrorT(c, "Invalid parameters")
-			return
-		}
-		text := strings.TrimSpace(string(raw))
-		var asString string
-		if strings.HasPrefix(text, `"`) && common.Unmarshal(raw, &asString) == nil {
-			text = asString
-		}
-		if (key == adty_setting.ResellerKeyCloudflareTok || key == adty_setting.ResellerKeyWidgetSecret || key == "aliyun_access_key_id" || key == "aliyun_access_key_Secret") && (text == "" || text == "null") {
-			continue
-		}
-		if key == adty_setting.ResellerKeyWidgetSecret {
-			// 只合并给出的 widget，其余 secret 保留。
-			merged := map[string]string{}
-			for id, secret := range current.TurnstileWidgetSecret {
-				merged[id] = secret
-			}
-			incoming := map[string]string{}
-			if err := common.UnmarshalJsonStr(text, &incoming); err != nil {
-				common.ApiErrorT(c, "Invalid parameters")
-				return
-			}
-			for id, secret := range incoming {
-				if strings.TrimSpace(secret) != "" {
-					merged[id] = strings.TrimSpace(secret)
-				}
-			}
-			encoded, _ := common.Marshal(merged)
-			text = string(encoded)
-		}
-		values[key] = text
-	}
-	for _, key := range clearSecrets {
-		switch key {
-		case adty_setting.ResellerKeyCloudflareTok, "aliyun_access_key_id", "aliyun_access_key_Secret":
-			values[key] = ""
-		case adty_setting.ResellerKeyWidgetSecret:
-			values[key] = "{}"
-		default:
-			common.ApiErrorT(c, "Invalid parameters")
-			return
-		}
-	}
-	// Decode the complete candidate into fresh storage. Pointer-valued money
-	// fields must not alias the live configuration before persistence succeeds.
-	var next adty_setting.ResellerSetting
-	merged := map[string]string{}
-	for key, value := range known {
-		merged[key] = value
-	}
-	for key, value := range values {
-		merged[key] = value
-	}
-	if err := config.UpdateConfigFromMap(&next, merged); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	// Verify the effective value after decoding and normalization.
-	parsed, _ := config.ConfigToMap(&next)
-	for key, value := range values {
-		if !adtyConfigValueEqual(parsed[key], value) {
-			common.ApiErrorT(c, "Invalid value for {{key}}", map[string]any{"key": key})
-			return
-		}
-	}
-	for i := range next.RootDomains {
-		next.RootDomains[i] = strings.ToLower(strings.TrimSpace(next.RootDomains[i]))
-	}
-	for i := range next.ReservedSubdomains {
-		next.ReservedSubdomains[i] = strings.ToLower(strings.TrimSpace(next.ReservedSubdomains[i]))
-	}
-	nowUnix := time.Now().Unix()
-	heldMinIncrease := adty_setting.HoldMinCostFactorIncrease(&next, &current, nowUnix)
-	if heldMinIncrease {
-		values["min_cost_factor"] = ""
-		values["pending_min_cost_factor"] = ""
-		values["pending_min_cost_factor_at"] = ""
-	}
-	if err := adty_setting.ValidateResellerPatch(&next, adtyResendConfigured(), values); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	heldCostIncrease := adty_setting.HoldGlobalCostFactorIncrease(&next, &current, nowUnix)
-	if heldCostIncrease {
-		values["pending_cost_factor"] = ""
-		values["pending_cost_factor_at"] = ""
-		values["cost_factor"] = ""
-	}
-	if len(values) > 0 {
-		normalized, _ := config.ConfigToMap(&next)
-		options := make(map[string]string, len(values))
-		for key := range values {
-			options[adty_setting.ResellerSettingModule+"."+key] = normalized[key]
-		}
-		if err := model.UpdateOptionsBulk(options); err != nil {
-			common.ApiError(c, err)
-			return
-		}
 	}
 	if heldMinIncrease && next.PendingMinCostFactor != nil && *next.PendingMinCostFactor > 0 && next.PendingMinCostFactorAt > 0 {
 		service.NotifySiteOwnersGlobalCostFactorPending(decimal.NewFromFloat(*next.PendingMinCostFactor), next.PendingMinCostFactorAt)

@@ -44,6 +44,7 @@ import {
   buildResellerUpdate,
   cloudflareReady,
   missingMoneyKeys,
+  mergeResellerDrafts,
   newRowKey,
   MONEY_KEYS,
   RULE_KEYS,
@@ -79,18 +80,33 @@ export function SettingsPanel(props: {
   const saved = query.data
   const [drafts, setDrafts] = useState<ResellerDrafts | null>(null)
 
-  const baseline = useRef(saved)
+  const [baseline, setBaseline] = useState(saved)
+  const edited = useRef(false)
   useEffect(() => {
-    const previous = baseline.current
-    baseline.current = saved
-    if (saved)
-      setDrafts((draft) =>
-        previous &&
-        draft &&
-        Object.keys(buildResellerUpdate(previous, draft)).length
-          ? draft
-          : toResellerDrafts(saved)
-      )
+    if (!saved) return
+    if (edited.current && baseline && drafts && baseline !== saved) {
+      const changes = buildResellerUpdate(baseline, drafts)
+      const dirtyKeys = [
+        ...Object.keys(changes),
+        ...(changes.clear_secrets ?? []),
+      ]
+      const mergedBase = {
+        ...saved,
+        field_versions: { ...saved.field_versions },
+      }
+      for (const key of dirtyKeys) {
+        if (key in baseline)
+          Object.assign(mergedBase, {
+            [key]: baseline[key as keyof typeof baseline],
+          })
+        mergedBase.field_versions[key] = baseline.field_versions?.[key] ?? ''
+      }
+      setBaseline(mergedBase)
+      setDrafts(mergeResellerDrafts(baseline, drafts, saved))
+    } else if (!edited.current) {
+      setBaseline(saved)
+      setDrafts(toResellerDrafts(saved))
+    }
   }, [saved])
 
   const save = useMutation({
@@ -114,14 +130,22 @@ export function SettingsPanel(props: {
         delete permitted.turnstile_widget_secret
         delete permitted.clear_secrets
       }
-      return saveResellerSettings(permitted)
+      return saveResellerSettings({
+        ...permitted,
+        expected_versions: baseline?.field_versions,
+      })
     },
     onSuccess: (next) => {
+      edited.current = false
+      setBaseline(next)
       setDrafts(toResellerDrafts(next))
       queryClient.setQueryData(siteAdminKeys.settings, next)
       toast.success(t('Saved successfully'))
     },
-    onError: (err) => handleServerError(err),
+    onError: (err) => {
+      handleServerError(err)
+      void query.refetch()
+    },
   })
   const checkProvider = useMutation({
     mutationFn: checkDomainProvider,
@@ -135,19 +159,30 @@ export function SettingsPanel(props: {
   })
 
   useDraftNavigation(
-    !!saved &&
+    !!baseline &&
       !!drafts &&
-      Object.keys(buildResellerUpdate(saved, drafts)).length > 0
+      Object.keys(buildResellerUpdate(baseline, drafts)).length > 0
   )
-  if (query.isError) return <ErrorState onRetry={() => void query.refetch()} />
-  if (!saved || !drafts) return <LoadingState />
+  if (query.isError && !saved)
+    return <ErrorState onRetry={() => void query.refetch()} />
+  if (!baseline || !saved || !drafts) return <LoadingState />
 
   const disabled = !props.canWrite || save.isPending
   const secretsDisabled = disabled || !props.canWriteSecrets
   const set = <K extends keyof ResellerDrafts>(
     key: K,
     value: ResellerDrafts[K]
-  ) => setDrafts((prev) => (prev ? { ...prev, [key]: value } : prev))
+  ) => {
+    edited.current = true
+    setDrafts((prev) => (prev ? { ...prev, [key]: value } : prev))
+  }
+  const patch = buildResellerUpdate(baseline, drafts)
+  const changedKeys = [...Object.keys(patch), ...(patch.clear_secrets ?? [])]
+  const conflicts = changedKeys.filter(
+    (key) =>
+      (saved.field_versions?.[key] ?? '') !==
+      (baseline.field_versions?.[key] ?? '')
+  )
 
   const missingMoney = missingMoneyKeys(drafts)
   const rootsSet = drafts.root_domains.trim() !== ''
@@ -192,10 +227,51 @@ export function SettingsPanel(props: {
       className='flex max-w-3xl flex-col gap-6'
       onSubmit={(event) => {
         event.preventDefault()
-        if (disabled) return
-        save.mutate(buildResellerUpdate(saved, drafts))
+        if (disabled || conflicts.length) return
+        save.mutate(buildResellerUpdate(baseline, drafts))
       }}
     >
+      {conflicts.length > 0 && (
+        <div role='alert'>
+          <p>
+            {t('These settings have changed')} · {conflicts.join(', ')}
+          </p>
+          {conflicts
+            .filter(
+              (key) =>
+                key in saved &&
+                !key.toLowerCase().includes('secret') &&
+                !key.toLowerCase().includes('token')
+            )
+            .map((key) => (
+              <p key={key}>
+                {key} · {t('Current value')}{' '}
+                {JSON.stringify(saved[key as keyof typeof saved])}
+              </p>
+            ))}
+          <Button
+            type='button'
+            variant='outline'
+            onClick={() => {
+              setDrafts(mergeResellerDrafts(baseline, drafts, saved))
+              setBaseline(saved)
+            }}
+          >
+            {t('Keep my changes')}
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            onClick={() => {
+              edited.current = false
+              setBaseline(saved)
+              setDrafts(toResellerDrafts(saved))
+            }}
+          >
+            {t('Discard changes')}
+          </Button>
+        </div>
+      )}
       {(saved.settings_warnings ?? []).map((warning) => (
         <p key={warning} role='status' className='text-warning text-sm'>
           {t(warning)}
@@ -696,7 +772,8 @@ export function SettingsPanel(props: {
             type='submit'
             disabled={
               save.isPending ||
-              Object.keys(buildResellerUpdate(saved, drafts)).length === 0
+              conflicts.length > 0 ||
+              Object.keys(buildResellerUpdate(baseline, drafts)).length === 0
             }
           >
             {t('Save')}

@@ -406,12 +406,13 @@ func GetAdtyOwnerSiteTeams(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rows, err := service.ListAdtyOwnerSiteTeams(site.Id, c.GetInt("id"))
+	page := common.GetPageQuery(c)
+	rows, total, err := service.ListAdtyOwnerSiteTeams(site.Id, c.GetInt("id"), page.GetStartIdx(), page.GetPageSize(), c.Query("q"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	common.ApiSuccess(c, gin.H{"items": rows, "total": total})
 }
 
 func PutAdtyOwnerSiteTeamDiscount(c *gin.Context) {
@@ -435,7 +436,7 @@ func PutAdtyOwnerSiteTeamDiscount(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"updated": true})
+	common.ApiSuccess(c, gin.H{"updated": true, "discount": decimal.RequireFromString(strings.TrimSpace(body.Discount)).String()})
 }
 
 func GetAdtyOwnerSiteInvites(c *gin.Context) {

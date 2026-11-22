@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import { siteAdminKeys } from '../api'
@@ -73,6 +73,42 @@ const settings: ResellerSettings = {
 }
 
 describe('current reseller settings', () => {
+  it('retains a dirty field through a refresh and exposes a same-field conflict', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    })
+    const initial = { ...settings, field_versions: { cost_factor: '1', min_cost_factor: '1' } }
+    client.setQueryData(siteAdminKeys.settings, initial)
+    const view = render(
+      <QueryClientProvider client={client}>
+        <SettingsPanel section='supply' canWrite canWriteSecrets />
+      </QueryClientProvider>
+    )
+    try {
+      const cost = await screen.findByLabelText('Cost factor d (greater than 0)')
+      fireEvent.change(cost, { target: { value: '0.9' } })
+      const latest = { ...initial, min_cost_factor: 0.4, field_versions: { ...initial.field_versions, min_cost_factor: '2' } }
+      await act(async () => { client.setQueryData(siteAdminKeys.settings, latest) })
+      expect(await screen.findByDisplayValue('0.4')).toBeDefined()
+      expect((cost as HTMLInputElement).value).toBe('0.9')
+      expect(screen.queryByRole('alert')).toBeNull()
+      await act(async () => {
+        client.setQueryData(siteAdminKeys.settings, {
+          ...latest, cost_factor: 0.7, field_versions: { ...latest.field_versions, cost_factor: '2' },
+        })
+      })
+      const conflict = await screen.findByRole('alert')
+      expect(conflict.textContent).toContain('0.7')
+      expect((cost as HTMLInputElement).value).toBe('0.9')
+      fireEvent.click(screen.getByRole('button', { name: 'Keep my changes' }))
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect((cost as HTMLInputElement).value).toBe('0.9')
+    } finally {
+      view.unmount()
+      client.clear()
+    }
+  })
+
   it('ignores generated row keys and displays server warnings', async () => {
     const saved = {...settings, cost_factor_tiers:[{min_monthly_usd:0,cost_factor:0.8}], turnstile_widgets:[{id:'w1',site_key:'key'}],settings_warnings:['Warning from server']}
     expect(buildResellerUpdate(saved,toResellerDrafts(saved))).toEqual({})

@@ -44,6 +44,7 @@ import { staffRolePermissions } from '@/features/adty-site-staff/lib/permissions
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
 
 export function StaffDialog(props: {
+  closing?: boolean
   siteId: number
   staff: StaffAccount | null
   mode: 'create' | 'edit' | 'password'
@@ -216,6 +217,7 @@ export function StaffDialog(props: {
                 <FieldLabel htmlFor='staff-role'>{t('Staff role')}</FieldLabel>
                 <NativeSelect
                   id='staff-role'
+                  disabled={props.closing}
                   {...form.register('role', {
                     onChange: (event) =>
                       form.setValue(
@@ -249,6 +251,10 @@ export function StaffDialog(props: {
                         <Checkbox
                           id={`staff-${option.value}`}
                           checked={field.value.includes(option.value)}
+                          disabled={
+                            props.closing &&
+                            !props.staff?.permissions.includes(option.value)
+                          }
                           onCheckedChange={(checked) =>
                             field.onChange(
                               checked

@@ -57,11 +57,33 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 	if err := seedAdtyPaymentScenesOn(db); err != nil {
 		return err
 	}
-	if err := db.AutoMigrate(&AdtyGroup{}, &AdtyTopupOrder{}, &AdtyOrderPaymentEvent{}, &PaymentOrphanEvent{}, &PaymentOrphanReview{}, &AdtyBalanceLedger{}, &AdtyFinancialAdjustment{}, &BillingOperation{}, &BillingOperationMovement{}, &AdtySiteEarningEvent{}, &AdtyEpayChannel{}, &AdtyEpayChannelMethod{}, &AdtyUserFingerprint{}, &AdtyUserLimit{}, &AdtyOfficialPrice{}, &AdtyBillingHold{}, &AdtyFundBatch{}, &AdtyFundAllocation{}, &AdtyGiftFulfillment{}, &AdtyManualRefund{}, &AdtyStaffBalanceRequest{}, &AdtyPriceRevision{}, &AdtyNotificationHide{}, &AdtyGlossaryTerm{}, &AdtySiteReferralRate{}, &AdtySiteInvite{}, &AdtySiteInviteCommission{}, &AdtyCommissionRecovery{}, &AdtySiteInviteWithdrawal{}, &AdtySiteInviteWithdrawalItem{}, &AdtyAnomalyDisposition{}, &AdtyEmailChange{}, &AdtyAccountClosure{}, &AdtyNoticeTemplate{}, &AdtyKeyLimit{}, &AdtyModelAlias{}, &AdtyGroupConfig{}); err != nil {
+	if err := db.AutoMigrate(&AdtyGroup{}, &AdtyTopupOrder{}, &AdtyOrderPaymentEvent{}, &PaymentOrphanEvent{}, &PaymentOrphanReview{}, &AdtyBalanceLedger{}, &AdtyFinancialAdjustment{}, &BillingOperation{}, &BillingOperationMovement{}, &AdtySiteEarningEvent{}, &AdtyEpayChannel{}, &AdtyEpayChannelMethod{}, &AdtyUserFingerprint{}, &AdtyUserLimit{}, &AdtyOfficialPrice{}, &AdtyBillingHold{}, &AdtyFundBatch{}, &AdtyFundAllocation{}, &AdtyGiftFulfillment{}, &AdtyManualRefund{}, &AdtyStaffBalanceRequest{}, &AdtyPriceRevision{}, &AdtyNotificationHide{}, &AdtyGlossaryTerm{}, &AdtySiteReferralRate{}, &AdtySiteInvite{}, &AdtySiteInviteCommission{}, &AdtyCommissionRecovery{}, &AdtyCommissionCoverageCancellation{}, &AdtySiteInviteWithdrawal{}, &AdtySiteInviteWithdrawalItem{}, &AdtyAnomalyDisposition{}, &AdtyEmailChange{}, &AdtyAccountClosure{}, &AdtyNoticeTemplate{}, &AdtyKeyLimit{}, &AdtyModelAlias{}, &AdtyGroupConfig{}); err != nil {
 		return err
 	}
-	if err := db.AutoMigrate(&AdtyNotificationRead{}, &AdtyNotificationPublication{}, &AdtyVoucher{}, &AdtyVoucherLiability{}, &AdtyVoucherAuthorization{}, &AdtyVoucherCloseGrant{}, &AdtyTeam{}, &AdtyTeamMember{}, &AdtyTeamLedger{}, &AdtyTeamInvite{}, &AdtyTeamRegistrationLink{}, &AdtyTeamKey{}); err != nil {
+	if err := db.AutoMigrate(&AdtyNotificationRead{}, &AdtyNotificationPublication{}, &AdtyVoucher{}, &AdtyVoucherLiability{}, &AdtyVoucherAuthorization{}, &AdtyVoucherCloseGrant{}, &AdtyTeam{}, &AdtyTeamMember{}, &AdtyTeamLedger{}, &AdtyTeamFundLot{}, &AdtyTeamFundAllocation{}, &AdtyTeamInvite{}, &AdtyTeamRegistrationLink{}, &AdtyTeamKey{}); err != nil {
 		return err
+	}
+	// A surviving subsite team has never migrated; its original invite scope
+	// is recoverable. For teams already on main, pre-binding credentials
+	// without evidence must be reissued.
+	if err := db.Exec(`UPDATE adty_team_invites SET site_id=(SELECT site_id FROM adty_teams WHERE id=adty_team_invites.team_id), purpose=?
+       WHERE purpose='' AND used_at=0 AND revoked_at=0 AND EXISTS
+       (SELECT 1 FROM adty_teams t WHERE t.id=adty_team_invites.team_id AND t.site_id>0 AND t.status=?)`, AdtyTeamEmployeeInvitePurpose, AdtyTeamStatusActive).Error; err != nil {
+		return err
+	}
+	if err := db.Model(&AdtyTeamInvite{}).Where("purpose = '' AND used_at = 0 AND revoked_at = 0").Update("revoked_at", time.Now().Unix()).Error; err != nil {
+		return err
+	}
+	// Historical team balances cannot identify which recharge survived. Surface
+	// each paid legacy order once in the existing reconciliation work queue.
+	if db.Migrator().HasTable(&TopUp{}) {
+		if err := db.Exec(`INSERT INTO adty_anomaly_dispositions (kind,ref,order_ref,site_id,account_id,status,note,created_at)
+          SELECT 'team_principal_review',o.trade_no,o.trade_no,o.site_id,o.user_id,'open','Historical team principal requires order-level review',?
+          FROM adty_topup_orders o JOIN top_ups t ON t.trade_no=o.trade_no
+          WHERE o.team_id>0 AND t.status=? AND NOT EXISTS (SELECT 1 FROM adty_team_fund_lots l WHERE l.team_id=o.team_id AND l.kind='topup' AND l.source=o.trade_no)
+          AND NOT EXISTS (SELECT 1 FROM adty_anomaly_dispositions a WHERE a.kind='team_principal_review' AND a.ref=o.trade_no)`, time.Now().Unix(), common.TopUpStatusSuccess).Error; err != nil {
+			return err
+		}
 	}
 	voucherIndexErr := EnsureAdtyVoucherTradeNoUniqueIndex(db)
 	teamMemberIndexErr := EnsureActiveTeamMembershipUniqueIndex(db)
@@ -81,7 +103,7 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 	if err := migrateAdtySiteTablesOn(db); err != nil {
 		return errors.Join(voucherIndexErr, teamMemberIndexErr, err)
 	}
-	return errors.Join(voucherIndexErr, teamMemberIndexErr)
+	return errors.Join(voucherIndexErr, teamMemberIndexErr, TransferAdtyTicketsToMain(db, db.Model(&AdtySite{}).Select("id").Where("status = ?", AdtySiteStatusClosed)))
 }
 
 const (
@@ -133,6 +155,14 @@ func migrateAdtySiteTablesOn(db *gorm.DB) error {
 	// AutoMigrate creates the new owner-aware unique index before we remove
 	// the old constraint. A failed migration therefore never loses uniqueness.
 	if err := db.AutoMigrate(AdtySiteTables()...); err != nil {
+		return err
+	}
+	// Pre-attempt recalls left a reviewer and reason on a pending withdrawal.
+	// Keep these holds until the original external result is reconciled.
+	if err := db.Model(&AdtySiteWithdrawal{}).Where("attempt_number = 0 AND attempt_open = ? AND (status = ? OR (status = ? AND reviewed_at > 0 AND proof_note <> ''))", false, AdtySiteWithdrawPaying, AdtySiteWithdrawPending).Where("NOT EXISTS (?)", db.Model(&AdtySitePayoutAttempt{}).Select("1").Where("withdrawal_id = adty_site_withdrawals.id")).Update("attempt_open", true).Error; err != nil {
+		return err
+	}
+	if err := backfillCommissionCoverageCancellations(db, time.Now().Unix()); err != nil {
 		return err
 	}
 	if err := backfillAdtySiteMarketingPolicies(db); err != nil {

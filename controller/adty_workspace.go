@@ -269,7 +269,12 @@ func adtyRequestedTicketScope(c *gin.Context) string {
 
 func GetAdtyTickets(c *gin.Context) {
 	page := common.GetPageQuery(c)
-	list, err := service.ListAdtyTicketPage(c.GetInt("id"), c.Query("queue"), page.Page, page.PageSize, adtyRequestedTicketScope(c))
+	before, err := strconv.ParseInt(c.DefaultQuery("before_id", "0"), 10, 64)
+	if err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	list, err := service.SearchAdtyTicketPage(c.GetInt("id"), c.Query("queue"), c.Query("q"), before, page.Page, page.PageSize, adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -428,22 +433,16 @@ func PostAdtyTicketImage(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Data string `json:"data"`
+		Data      string `json:"data"`
+		MessageID int64  `json:"message_id"`
 		// Visibility has no default: an upload must say whether the image
 		// belongs to a public reply or an internal note.
 		Visibility string `json:"visibility"`
 	}
-	// 请求体上限必须在这里，不能只靠 service 层那个 2MiB 检查。
-	//
-	// `common.DecodeJson(c.Request.Body, …)` 会把整个 body 读进内存，然后
-	// base64 解码又拷一份——**2MiB 的检查在两跳之后**。100MiB 的 body 到这里
-	// 的峰值约 175MiB（原始 + JSON 字符串 + 解码缓冲），而 `/api` 组没有
-	// `MaxBytesReader`（全仓只有 4 处逐接口加过），`DecompressRequestMiddleware`
-	// 也只装在 relay 路由上。
-	//
-	// 4MiB = 2MiB 图片的 base64 上界（4/3 展开 ≈ 2.8MiB）加 JSON 包装余量。
-	// 上限放在解码之前，超出的请求在读取阶段就被截断，不会先占满内存再被拒。
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<20)
+	// Base64 expansion and the metadata envelope use the same byte policy
+	// reported to the frontend. Limit the stream before reading the JSON.
+	limit := base64.StdEncoding.EncodedLen(service.AdtyTicketImageMaxBytes()) + 1024
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(limit))
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -454,7 +453,7 @@ func PostAdtyTicketImage(c *gin.Context) {
 		return
 	}
 	userID := c.GetInt("id")
-	image, err := service.AddAdtyTicketImage(userID, id, body.Visibility, raw, adtyRequestedTicketScope(c))
+	image, err := service.AttachAdtyTicketImage(userID, id, body.MessageID, body.Visibility, raw, adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -673,4 +672,17 @@ func PostAdtyGroupProbe(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"recorded": true})
+}
+
+func PutAdtyTicketImagePolicy(c *gin.Context) {
+	var policy model.AdtyTicketPolicy
+	if err := common.DecodeJson(c.Request.Body, &policy); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.SaveAdtyTicketImagePolicy(policy); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"updated": true})
 }

@@ -26,21 +26,30 @@ import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { validTeamDiscount } from '@/features/adty-team-registration/discount'
+import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { handleServerError } from '@/lib/handle-server-error'
 
-import { getOwnerSiteTeams, saveOwnerSiteTeamDiscount, siteOwnerKeys } from '../api'
+import {
+  getOwnerSiteTeams,
+  saveOwnerSiteTeamDiscount,
+  siteOwnerKeys,
+} from '../api'
 
 /** Owner sets a site team discount. The saved discount is shown; no rate is suggested. */
 export function SiteTeamDiscountPanel() {
   const { t } = useTranslation()
   const client = useQueryClient()
+  const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
   const teams = useQuery({
-    queryKey: siteOwnerKeys.list('site-teams', {}),
-    queryFn: getOwnerSiteTeams,
+    queryKey: siteOwnerKeys.list('site-teams', { page, search }),
+    queryFn: () => getOwnerSiteTeams(page, search),
   })
   const [drafts, setDrafts] = useState<Record<number, string>>({})
   const save = useMutation({
-    mutationFn: (teamId: number) => saveOwnerSiteTeamDiscount(teamId, drafts[teamId] ?? ''),
+    mutationFn: (teamId: number) =>
+      saveOwnerSiteTeamDiscount(teamId, drafts[teamId] ?? ''),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
     },
@@ -51,39 +60,60 @@ export function SiteTeamDiscountPanel() {
       <div className='flex flex-col gap-1'>
         <h2 className='text-sm font-medium'>{t('Team discount')}</h2>
         <p className='text-muted-foreground text-sm'>
-          {t('A site team discount cannot go below the site supply price. Shared balance is not changed.')}
+          {t(
+            'A site team discount cannot go below the site supply price. Shared balance is not changed.'
+          )}
         </p>
       </div>
+      <Label htmlFor='owner-team-search'>{t('Search teams')}</Label>
+      <Input
+        id='owner-team-search'
+        value={search}
+        onChange={(event) => {
+          setSearch(event.target.value)
+          setPage(1)
+        }}
+      />
       {teams.isPending && <LoadingState />}
       {teams.isError && <ErrorState onRetry={() => void teams.refetch()} />}
-      {teams.isSuccess && teams.data.length === 0 && <EmptyState title={t('No data')} />}
+      {teams.isSuccess && teams.data.items.length === 0 && (
+        <EmptyState title={t('No data')} />
+      )}
       {teams.isSuccess &&
-        teams.data.map((team) => {
+        teams.data.items.map((team) => {
           const value = drafts[team.id] ?? ''
           return (
             <div key={team.id} className='flex flex-col gap-2'>
               <p className='text-sm'>
-                {team.name} · <span className='tabular-nums'>{team.discount}</span>
+                {team.name} ·{' '}
+                <span className='tabular-nums'>{team.discount}</span>
               </p>
               <div className='flex flex-col gap-1'>
-                <Label htmlFor={`team-discount-${team.id}`}>{t('Post-discount payment ratio')}</Label>
+                <Label htmlFor={`team-discount-${team.id}`}>
+                  {t('Post-discount payment ratio')}
+                </Label>
                 <Input
                   id={`team-discount-${team.id}`}
                   value={value}
                   inputMode='decimal'
                   autoComplete='off'
                   onChange={(event) =>
-                    setDrafts((current) => ({ ...current, [team.id]: event.target.value }))
+                    setDrafts((current) => ({
+                      ...current,
+                      [team.id]: event.target.value,
+                    }))
                   }
                 />
                 <p className='text-muted-foreground text-sm'>
-                  {t('0.8 means pay 80% of the ordinary price; 1 means pay the ordinary (full) price.')}
+                  {t(
+                    '0.8 means pay 80% of the ordinary price; 1 means pay the ordinary (full) price.'
+                  )}
                 </p>
               </div>
               <Button
                 type='button'
                 variant='outline'
-                disabled={save.isPending || value.trim() === ''}
+                disabled={save.isPending || !validTeamDiscount(value)}
                 onClick={() => save.mutate(team.id)}
               >
                 {t('Save')}
@@ -91,6 +121,12 @@ export function SiteTeamDiscountPanel() {
             </div>
           )
         })}
+      <PageSwitcher
+        page={page}
+        total={teams.data?.total ?? 0}
+        pageSize={20}
+        onPageChange={setPage}
+      />
     </section>
   )
 }

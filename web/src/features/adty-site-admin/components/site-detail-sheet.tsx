@@ -617,7 +617,17 @@ function SiteDomains(props: {
           className='flex items-center justify-between gap-2'
         >
           <span className='text-sm break-all'>
-            {sender.domain} · {sender.status}
+            {sender.domain} · {t(sender.status)}
+            {sender.cleanup_error && (
+              <span className='block'>
+                {t('Cleanup failed')} · {t(sender.cleanup_error)}
+              </span>
+            )}
+            {!!sender.retry_at && (
+              <span className='block'>
+                {t('Next retry')} · {formatTimestampToDate(sender.retry_at)}
+              </span>
+            )}
           </span>
           {canDelete && (
             <Button
@@ -626,7 +636,8 @@ function SiteDomains(props: {
               disabled={disableSender.isPending}
               onClick={() => disableSender.mutate()}
             >
-              {t('Disable')} {t('Sender domain')}
+              {sender.status === 'removing' ? t('Retry') : t('Disable')}{' '}
+              {t('Sender domain')}
             </Button>
           )}
         </div>

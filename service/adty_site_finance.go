@@ -119,6 +119,9 @@ func ListAdtyOwnerSiteWalletLedger(siteID int, kind string, offset, limit int) (
 	if kind == model.AdtySiteWalletOperating {
 		return nil, 0, ErrAdtyOperatingWalletHidden
 	}
+	if err := ReviewAdtyPooledSiteFinance(model.DB, siteID); err != nil {
+		return nil, 0, err
+	}
 	return listAdtySiteWalletLedger(siteID, kind, offset, limit, true)
 }
 
@@ -205,6 +208,25 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		SiteID: siteID, OrderRef: change.RefID,
 	}); err != nil {
 		return nil, err
+	}
+	// Personal withdrawals and transfers may use only this owner's share
+	// of a historical site's earnings. The wallet lock serializes every hold.
+	if kind == model.AdtySiteWalletEarnings && (change.Type == "earning_withdraw_freeze" || change.Type == ownerTransfer || change.Type == "earning_to_margin" || change.Type == "voucher_freeze") {
+		ownerID := change.OperatorID
+		if ownerID == 0 {
+			var err error
+			ownerID, err = model.CurrentAdtySiteFinancialOwnerTx(tx, siteID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		available, _, err := ownerEarningsWalletTx(tx, siteID, ownerID, &wallet)
+		if err != nil {
+			return nil, err
+		}
+		if available.LessThan(change.HoldDelta.Sub(delta)) {
+			return nil, ErrAdtySiteWalletInsufficient
+		}
 	}
 	before := wallet.Balance
 	after := before.Add(delta)

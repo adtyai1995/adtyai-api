@@ -32,9 +32,9 @@ import { payWithEpay } from '../api-pay'
 import { formatCountdown, useNowSeconds } from '../lib/countdown'
 import { detectPayDevice } from '../lib/device'
 import { creditedUsdAmount } from '../lib/money'
+import { qrContent, mobileTarget } from '../lib/payment-links'
 import { clearPendingPayment, savePendingPayment } from '../lib/pending-payment'
-import { isDisplayablePaymentQr, isSafePaymentUrl } from '../lib/safe-url'
-import type { AdtyOrder, AdtyOrderExt, AdtyTopupBusiness } from '../types'
+import type { AdtyOrder, AdtyTopupBusiness } from '../types'
 
 type EpayPayDialogProps = {
   gatewayReturn?: boolean
@@ -50,21 +50,6 @@ type EpayPayDialogProps = {
   /** Injected in tests; defaults to the browser. */
   device?: 'pc' | 'mobile'
   navigate?: (url: string) => void
-}
-
-/** QR content for desktop: the gateway QR code, otherwise the payment link. */
-function qrContent(ext: AdtyOrderExt): string {
-  if (isDisplayablePaymentQr(ext.qr_code)) return ext.qr_code
-  if (isSafePaymentUrl(ext.pay_url)) return ext.pay_url
-  return ''
-}
-
-/** Link for phones, tried in the order qrcode → payurl → urlscheme. */
-function mobileTarget(ext: AdtyOrderExt): string {
-  for (const candidate of [ext.qr_code, ext.pay_url, ext.url_scheme]) {
-    if (candidate && isSafePaymentUrl(candidate)) return candidate
-  }
-  return ''
 }
 
 /** Alipay / WeChat payment: QR code on desktop, jump to the app on phones. */
@@ -151,7 +136,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
     jumpedRef.current = ext.trade_no
     const target = mobileTarget(ext)
     if (!target) {
-      setBlocked(true)
+      setBlocked(!qrContent(ext))
       return
     }
     if (navigate) {
@@ -225,6 +210,11 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
         )
       }
     >
+      {tradeNo && (
+        <p className='text-sm break-all'>
+          {t('Order number')} · {tradeNo}
+        </p>
+      )}
       {!ext && (
         <p className='text-muted-foreground text-sm'>
           {t('Creating the order...')}
@@ -264,7 +254,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
               amount: creditedUsdAmount(ext),
             })}
           </p>
-          {device === 'pc' && qr && (
+          {(device === 'pc' || !mobileTarget(ext)) && qr && (
             <>
               <div
                 className='rounded-lg bg-white p-3'
@@ -278,13 +268,16 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
               </p>
             </>
           )}
-          {device === 'mobile' && !blocked && !props.gatewayReturn && (
-            <p className='text-sm'>
-              {t('Opening {{app}}... Come back here after paying.', {
-                app: appName,
-              })}
-            </p>
-          )}
+          {device === 'mobile' &&
+            mobileTarget(ext) &&
+            !blocked &&
+            !props.gatewayReturn && (
+              <p className='text-sm'>
+                {t('Opening {{app}}... Come back here after paying.', {
+                  app: appName,
+                })}
+              </p>
+            )}
           <p className='text-sm'>
             {t('Time left')}:{' '}
             <span className='font-mono font-semibold'>

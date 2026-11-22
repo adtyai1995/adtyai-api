@@ -1,3 +1,5 @@
+import i18next from 'i18next'
+
 import type { SiteWalletLedgerPage } from '@/features/adty-ledger/site-wallet-labels'
 import type {
   VoucherIssued,
@@ -491,6 +493,8 @@ export async function retryDomainAutomation(id: number): Promise<void> {
 }
 
 export type AdminSenderDomain = {
+  cleanup_error?: string
+  retry_at?: number
   site_id: number
   domain: string
   status: string
@@ -632,11 +636,29 @@ export async function getResellerUsage(): Promise<ResellerUsage> {
   return requireServerSuccess(res.data).data
 }
 
+function readResellerSettings(
+  response: ApiResponse<ResellerSettings>,
+  status: number
+) {
+  if (
+    typeof response !== 'object' ||
+    !response ||
+    typeof response.success !== 'boolean'
+  ) {
+    throw new Error(
+      i18next.t('Settings response could not be read (HTTP {{status}})', {
+        status,
+      })
+    )
+  }
+  return requireServerSuccess(response).data
+}
+
 export async function getResellerSettings(): Promise<ResellerSettings> {
   const res = await api.get<ApiResponse<ResellerSettings>>(
     `${BASE}/reseller/settings`
   )
-  return requireServerSuccess(res.data).data
+  return readResellerSettings(res.data, res.status)
 }
 
 export async function saveResellerSettings(
@@ -646,11 +668,13 @@ export async function saveResellerSettings(
     `${BASE}/reseller/settings`,
     body
   )
-  return requireServerSuccess(res.data).data
+  return readResellerSettings(res.data, res.status)
 }
 
 /** One site earnings withdrawal in Root's review list. Amounts are USD. */
 export type AdminSiteWithdrawal = {
+  attempt_number: number
+  attempt_open: boolean
   id: number
   site_id: number
   owner_user_id: number
@@ -687,27 +711,33 @@ export async function getAdminSiteWithdrawals(
   return requireServerSuccess(res.data).data
 }
 
-export async function markSiteWithdrawalPaying(id: number): Promise<void> {
+export async function markSiteWithdrawalPaying(
+  id: number,
+  attempt: number
+): Promise<void> {
   const res = await api.post<ApiResponse<unknown>>(
-    `${BASE}/site-withdrawals/${id}/paying`
+    `${BASE}/site-withdrawals/${id}/paying`,
+    { attempt_number: attempt }
   )
   requireServerSuccess(res.data)
 }
 
 export async function recallSiteWithdrawal(
   id: number,
-  reason: string
+  reason: string,
+  attempt: number,
+  reference = ''
 ): Promise<void> {
   const res = await api.post<ApiResponse<unknown>>(
     `${BASE}/site-withdrawals/${id}/recall`,
-    { reason }
+    { reason, attempt_number: attempt, tx_id: reference }
   )
   requireServerSuccess(res.data)
 }
 
 export async function markSiteWithdrawalPaid(
   id: number,
-  body: { tx_id: string; proof: string }
+  body: { tx_id: string; proof: string; attempt_number: number }
 ): Promise<void> {
   const res = await api.post<ApiResponse<unknown>>(
     `${BASE}/site-withdrawals/${id}/paid`,

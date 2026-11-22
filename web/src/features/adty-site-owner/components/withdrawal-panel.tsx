@@ -40,16 +40,16 @@ import { newIdempotencyKey } from '../lib/site-owner'
 const NETWORKS = ['TRC20', 'BEP20', 'POLYGON', 'XLAYER'] as const
 
 /** Owner request against the site earnings wallet. Amounts come from Root rules, not from this page. */
-export function WithdrawalPanel() {
+export function WithdrawalPanel({ siteId }: { siteId?: number }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const rules = useQuery({
-    queryKey: siteOwnerKeys.list('withdraw-rules', {}),
-    queryFn: getSiteWithdrawRules,
+    queryKey: siteOwnerKeys.list('withdraw-rules', { siteId }),
+    queryFn: () => getSiteWithdrawRules(siteId),
   })
   const list = useQuery({
-    queryKey: siteOwnerKeys.list('withdrawals', {}),
-    queryFn: getSiteWithdrawals,
+    queryKey: siteOwnerKeys.list('withdrawals', { siteId }),
+    queryFn: () => getSiteWithdrawals(siteId),
   })
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState<'alipay' | 'usdt'>('alipay')
@@ -81,10 +81,13 @@ export function WithdrawalPanel() {
           key: newIdempotencyKey(),
         }
       }
-      return createSiteWithdrawal({
-        ...payload,
-        idempotencyKey: submitIntentRef.current.key,
-      })
+      return createSiteWithdrawal(
+        {
+          ...payload,
+          idempotencyKey: submitIntentRef.current.key,
+        },
+        siteId
+      )
     },
     onSuccess: () => {
       submitIntentRef.current = null
@@ -97,7 +100,7 @@ export function WithdrawalPanel() {
     onError: (err) => handleServerError(err),
   })
   const cancel = useMutation({
-    mutationFn: cancelSiteWithdrawal,
+    mutationFn: (id: number) => cancelSiteWithdrawal(id, siteId),
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all }),
     onError: (err) => handleServerError(err),
@@ -108,9 +111,14 @@ export function WithdrawalPanel() {
     method === 'usdt' ? rules.data?.usdt_usd_rate : rules.data?.alipay_cny_rate
 
   return (
-    <section className='flex flex-col gap-4' aria-label={t('Earnings wallet withdrawal')}>
+    <section
+      className='flex flex-col gap-4'
+      aria-label={t('Earnings wallet withdrawal')}
+    >
       <div className='flex flex-col gap-1'>
-        <h2 className='text-sm font-medium'>{t('Earnings wallet withdrawal')}</h2>
+        <h2 className='text-sm font-medium'>
+          {t('Earnings wallet withdrawal')}
+        </h2>
         <p className='text-muted-foreground text-sm'>
           {t(
             'This request freezes the site earnings wallet. Referral commission withdrawals stay on the Referral page.'
@@ -126,7 +134,9 @@ export function WithdrawalPanel() {
         </p>
       </div>
       {rules.isError && (
-        <p className='text-destructive text-sm'>{t('Could not load withdrawal rules')}</p>
+        <p className='text-destructive text-sm'>
+          {t('Could not load withdrawal rules')}
+        </p>
       )}
       {rules.data && !configured && (
         <p className='text-muted-foreground text-sm'>
@@ -169,7 +179,9 @@ export function WithdrawalPanel() {
                   setMethod(event.target.value === 'usdt' ? 'usdt' : 'alipay')
                 }
               >
-                <NativeSelectOption value='alipay'>{t('Alipay')}</NativeSelectOption>
+                <NativeSelectOption value='alipay'>
+                  {t('Alipay')}
+                </NativeSelectOption>
                 <NativeSelectOption value='usdt'>USDT</NativeSelectOption>
               </NativeSelect>
             </div>
@@ -217,7 +229,9 @@ export function WithdrawalPanel() {
               checked={confirmed}
               onChange={(event) => setConfirmed(event.target.checked)}
             />
-            <span>{t('I confirm the payee details before this request is frozen.')}</span>
+            <span>
+              {t('I confirm the payee details before this request is frozen.')}
+            </span>
           </label>
           <div>
             <Button
@@ -250,7 +264,7 @@ export function WithdrawalPanel() {
                   {row.amount_usd} USD · {row.method} ·{' '}
                   {siteWithdrawalStatusLabel(t, row.status)}
                 </span>
-                {row.status === 'pending' && (
+                {row.status === 'pending' && !row.attempt_open && (
                   <Button
                     type='button'
                     size='sm'

@@ -156,6 +156,7 @@ export type SiteWithdrawRules = {
 }
 
 export type SiteWithdrawal = {
+  attempt_open?: boolean
   id: number
   amount_usd: string
   fee_usd: string
@@ -167,29 +168,56 @@ export type SiteWithdrawal = {
   payout_currency: string
 }
 
-export async function getSiteWithdrawRules(): Promise<SiteWithdrawRules> {
+function archivedQuery(siteId?: number) {
+  return { archived_site_id: siteId }
+}
+
+export async function getArchivedSites() {
+  const res = await api.get<
+    ApiResponse<
+      {
+        id: number
+        subdomain: string
+        root_domain: string
+        closed_at: number
+      }[]
+    >
+  >(`${BASE}/archived-sites`)
+  return requireServerSuccess(res.data).data ?? []
+}
+
+export async function getSiteWithdrawRules(
+  siteId?: number
+): Promise<SiteWithdrawRules> {
   const res = await api.get<ApiResponse<SiteWithdrawRules>>(
-    `${BASE}/withdrawals/rules`
+    `${BASE}/withdrawals/rules`,
+    { params: archivedQuery(siteId) }
   )
   return requireServerSuccess(res.data).data
 }
 
-export async function getSiteWithdrawals(): Promise<SiteWithdrawal[]> {
+export async function getSiteWithdrawals(
+  siteId?: number
+): Promise<SiteWithdrawal[]> {
   const res = await api.get<ApiResponse<{ items: SiteWithdrawal[] }>>(
-    `${BASE}/withdrawals`
+    `${BASE}/withdrawals`,
+    { params: archivedQuery(siteId) }
   )
   return requireServerSuccess(res.data).data.items ?? []
 }
 
-export async function createSiteWithdrawal(body: {
-  amount_usd: string
-  method: string
-  network: string
-  account_no: string
-  account_name: string
-  expected_rate: string
-  idempotencyKey: string
-}): Promise<SiteWithdrawal> {
+export async function createSiteWithdrawal(
+  body: {
+    amount_usd: string
+    method: string
+    network: string
+    account_no: string
+    account_name: string
+    expected_rate: string
+    idempotencyKey: string
+  },
+  siteId?: number
+): Promise<SiteWithdrawal> {
   const res = await api.post<ApiResponse<SiteWithdrawal>>(
     `${BASE}/withdrawals`,
     {
@@ -200,7 +228,10 @@ export async function createSiteWithdrawal(body: {
       account_name: body.account_name,
       expected_rate: body.expected_rate,
     },
-    { headers: { 'Idempotency-Key': body.idempotencyKey } }
+    {
+      params: archivedQuery(siteId),
+      headers: { 'Idempotency-Key': body.idempotencyKey },
+    }
   )
   return requireServerSuccess(res.data).data
 }
@@ -358,9 +389,14 @@ export async function cancelOwnerVoucher(
   requireServerSuccess(res.data)
 }
 
-export async function cancelSiteWithdrawal(id: number): Promise<void> {
+export async function cancelSiteWithdrawal(
+  id: number,
+  siteId?: number
+): Promise<void> {
   const res = await api.post<ApiResponse<unknown>>(
-    `${BASE}/withdrawals/${id}/cancel`
+    `${BASE}/withdrawals/${id}/cancel`,
+    undefined,
+    { params: archivedQuery(siteId) }
   )
   requireServerSuccess(res.data)
 }
@@ -464,6 +500,7 @@ export type SettlementSheet = {
   gift_release_usd: string
   trial_expense_usd: string
   commission_usd: string
+  pending_coverage_unverified?: boolean
   pending_coverage_usd: string
   margin_delta_usd: string
   earnings_delta_usd: string
@@ -475,19 +512,28 @@ export type SettlementSheet = {
   anomaly_count: number
 }
 
-export async function getOwnerSettlementSheets(): Promise<SettlementSheet[]> {
+export async function getOwnerSettlementSheets(
+  siteId?: number
+): Promise<SettlementSheet[]> {
   const res = await api.get<ApiResponse<SettlementSheet[]>>(
-    `${BASE}/settlement-sheets`
+    `${BASE}/settlement-sheets`,
+    { params: archivedQuery(siteId) }
   )
   return requireServerSuccess(res.data).data ?? []
 }
 
 export async function getOwnerEarnings(
   p: number,
-  kind: string
+  kind: string,
+  siteId?: number
 ): Promise<OwnerEarnings> {
   const res = await api.get<ApiResponse<OwnerEarnings>>(`${BASE}/earnings`, {
-    params: { p, page_size: OWNER_PAGE_SIZE, kind: kind || undefined },
+    params: {
+      ...archivedQuery(siteId),
+      p,
+      page_size: OWNER_PAGE_SIZE,
+      kind: kind || undefined,
+    },
   })
   return requireServerSuccess(res.data).data
 }
@@ -522,11 +568,11 @@ export type OwnerSiteTeam = {
   status: string
 }
 
-export async function getOwnerSiteTeams(): Promise<OwnerSiteTeam[]> {
-  const res = await api.get<ApiResponse<{ items?: OwnerSiteTeam[] }>>(
-    `${BASE}/teams`
-  )
-  return requireServerSuccess(res.data).data.items ?? []
+export async function getOwnerSiteTeams(page: number, search: string) {
+  const res = await api.get<
+    ApiResponse<{ items: OwnerSiteTeam[]; total: number }>
+  >(`${BASE}/teams`, { params: { p: page, page_size: 20, q: search } })
+  return requireServerSuccess(res.data).data
 }
 
 export async function saveOwnerSiteTeamDiscount(

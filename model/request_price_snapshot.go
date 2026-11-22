@@ -37,6 +37,8 @@ type RequestPriceSnapshot struct {
 	Currency             string `json:"currency"`
 	BillingUnit          string `json:"billing_unit"`
 	AcceptedAt           int64  `json:"accepted_at"`
+	BusinessTimezone     string `json:"business_timezone,omitempty"`
+	AcceptedLocal        string `json:"accepted_local,omitempty"`
 	RuleVersion          string `json:"rule_version"`
 	SupplyCost           string `json:"supply_cost"`
 	SellPrice            string `json:"sell_price"`

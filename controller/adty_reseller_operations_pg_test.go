@@ -52,7 +52,7 @@ func TestResellerSettingsRollbackAndFullSiteRanking(t *testing.T) {
 		model.DB, model.LOG_DB, common.OptionMap = origDB, origLog, origMap
 		*adty_setting.GetResellerSetting() = prior
 	}()
-	require.NoError(t, conn.AutoMigrate(&model.AdtySite{}, &model.AdtySiteEarningDaily{}, &model.User{}, &model.AdtyTopupOrder{}, &model.TopUp{}, &model.Option{}, &model.Log{}, &model.AuditIntent{}, &model.AuditLog{}))
+	require.NoError(t, conn.AutoMigrate(&model.AdtySite{}, &model.AdtySiteOwnership{}, &model.AdtySiteEarningDaily{}, &model.User{}, &model.AdtyTopupOrder{}, &model.TopUp{}, &model.Option{}, &model.Log{}, &model.AuditIntent{}, &model.AuditLog{}))
 	cfg := adty_setting.DefaultResellerSetting()
 	cost := 0.8
 	cfg.CostFactor = &cost
@@ -69,7 +69,10 @@ func TestResellerSettingsRollbackAndFullSiteRanking(t *testing.T) {
 			Success bool
 			Message string
 		}
-		require.NoError(t, common.Unmarshal(w.Body.Bytes(), &resp))
+		if err := common.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Errorf("decode settings response: %v", err)
+			return false
+		}
 		t.Logf("save success=%t feedback=%s", resp.Success, resp.Message)
 		return resp.Success
 	}
@@ -88,12 +91,132 @@ func TestResellerSettingsRollbackAndFullSiteRanking(t *testing.T) {
 	adty_setting.GetResellerSetting().SenderDomainEnabled = true
 	require.True(t, save(`{"cost_factor":0.7}`))
 	assertCost("0.7")
+	// A dirty draft can change an unrelated option without undoing a concurrent edit.
+	_, observed, err := resellerSettingsSnapshot(conn)
+	require.NoError(t, err)
+	oldVersions, err := common.Marshal(observed)
+	require.NoError(t, err)
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	for _, patch := range []string{`{"root_domains":["first.example"],"expected_versions":%s}`, `{"close_notice_days":8,"expected_versions":%s}`} {
+		go func(body string) {
+			<-start
+			results <- save(body)
+		}(fmt.Sprintf(patch, oldVersions))
+	}
+	close(start)
+	first, second := <-results, <-results
+	require.True(t, first && second)
+	require.False(t, save(fmt.Sprintf(`{"root_domains":["stale.example"],"expected_versions":%s}`, oldVersions)))
+	current, _, err := resellerSettingsSnapshot(conn)
+	require.NoError(t, err)
+	require.Equal(t, []string{"first.example"}, current.RootDomains)
+	require.Equal(t, 8, current.CloseNoticeDays)
 	sites := make([]model.AdtySite, 5001)
 	for i := range sites {
 		sites[i] = model.AdtySite{OwnerUserId: i + 1, Subdomain: fmt.Sprintf("shop-%04d", i), RootDomain: "sites.example.test", Status: model.AdtySiteStatusActive}
 	}
 	require.NoError(t, conn.CreateInBatches(&sites, 100).Error)
 	require.NoError(t, conn.Create(&model.AdtySiteEarningDaily{SiteId: sites[0].Id, Kind: model.AdtySiteEarningUsage, Day: time.Now().Format("2006-01-02"), Earning: decimal.NewFromInt(50), Status: model.AdtySiteEarningAvailable}).Error)
+	archived := model.AdtySite{OwnerUserId: 1, Subdomain: "archived-store", RootDomain: "sites.example.test", Status: model.AdtySiteStatusClosed}
+	require.NoError(t, conn.Create(&archived).Error)
+	for _, userID := range []int{1, 2} {
+		w := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(w)
+		ctx.Set("id", userID)
+		ctx.Request = httptest.NewRequest("GET", fmt.Sprintf("/api/adty/site/earnings?archived_site_id=%d", archived.Id), nil)
+		historical, allowed := adtyOwnerAccountingSite(ctx)
+		require.Equal(t, userID == 1, allowed)
+		if allowed {
+			require.Equal(t, archived.Id, historical.Id)
+		} else {
+			require.Equal(t, 403, w.Code)
+		}
+	}
+	t.Run("historical accounting only returns personal rows and counts", func(t *testing.T) {
+		require.NoError(t, conn.AutoMigrate(&model.AdtySiteEarningLine{}, &model.AdtySiteWallet{}, &model.AdtySiteWalletLedger{}, &model.AdtySiteWithdrawal{}, &model.AdtySiteSettlementSheet{}, &model.AdtyVoucher{}, &model.BillingOperation{}, &model.AdtyManualRefund{}, &model.AdtySiteInviteWithdrawal{}, &model.ReferralWithdrawal{}, &model.AdtySiteInviteCommission{}, &model.ReferralCommission{}, &model.AdtyStaffBalanceRequest{}, &model.AdtyBalanceLedger{}))
+		require.NoError(t, conn.Create(&model.AdtySiteOwnership{SiteId: archived.Id, OldOwnerUserId: 2, NewOwnerUserId: 1, Version: 1}).Error)
+		require.NoError(t, conn.Create(&model.AdtySiteSettlementSheet{SiteId: archived.Id, BusinessDay: "2026-11-12", BatchId: "mixed-sheet", ConsumptionUSD: decimal.NewFromInt(8800)}).Error)
+		for owner, customer := range map[int]int{0: 9801, 2: 9802, 1: 9803} {
+			require.NoError(t, conn.Create(&model.AdtySiteWithdrawal{SiteId: archived.Id, OwnerUserId: owner, IdempotencyKey: fmt.Sprint("archived-", owner), Status: model.AdtySiteWithdrawCancelled}).Error)
+			require.NoError(t, conn.Create(&model.AdtySiteEarningDaily{SiteId: archived.Id, SiteOwnerUserId: owner, UserId: customer, Kind: model.AdtySiteEarningUsage, Day: "2026-11-12", Status: model.AdtySiteEarningPending, Earning: decimal.NewFromInt(3)}).Error)
+			require.NoError(t, conn.Create(&model.AdtySiteEarningLine{SiteId: archived.Id, SiteOwnerUserId: owner, UserId: customer, ModelName: "model"}).Error)
+		}
+		for _, owner := range []int{1, 2, 3} {
+			get := func(h gin.HandlerFunc) *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(w)
+				ctx.Set("id", owner)
+				ctx.Request = httptest.NewRequest("GET", fmt.Sprintf("/?archived_site_id=%d", archived.Id), nil)
+				h(ctx)
+				return w
+			}
+			w := get(GetAdtyOwnerEarnings)
+			if owner == 3 {
+				require.Equal(t, 403, w.Code)
+				require.Equal(t, 403, get(GetAdtyOwnerEarningLines).Code)
+				require.Equal(t, 403, get(GetAdtyOwnerSettlementSheets).Code)
+				continue
+			}
+			var result struct {
+				Success bool
+				Data    struct {
+					Balances struct {
+						Pending string `json:"pending_usd"`
+					}
+					Page struct {
+						Total int
+						Items []adtyOwnerEarningRow
+					}
+				}
+			}
+			require.NoError(t, common.Unmarshal(w.Body.Bytes(), &result))
+			require.True(t, result.Success, w.Body.String())
+			want := map[int][]int{1: {9803}, 2: {9802, 9801}}[owner]
+			require.Equal(t, len(want), result.Data.Page.Total)
+			require.Len(t, result.Data.Page.Items, len(want))
+			for _, item := range result.Data.Page.Items {
+				require.Contains(t, want, item.UserId)
+			}
+			require.Equal(t, decimal.NewFromInt(int64(len(want)*3)).String(), result.Data.Balances.Pending)
+			var lines struct {
+				Success bool
+				Data    []model.AdtySiteEarningLine
+			}
+			w = get(GetAdtyOwnerEarningLines)
+			require.NoError(t, common.Unmarshal(w.Body.Bytes(), &lines))
+			require.True(t, lines.Success, w.Body.String())
+			require.Len(t, lines.Data, len(want))
+			for _, item := range lines.Data {
+				require.Contains(t, want, item.UserId)
+			}
+			w = get(func(ctx *gin.Context) { getAdtyUnifiedOrders(ctx, &archived.Id, nil) })
+			var orders struct {
+				Success bool
+				Data    struct {
+					Total int
+					Items []rechargeAuditOrder
+				}
+			}
+			require.NoError(t, common.Unmarshal(w.Body.Bytes(), &orders))
+			require.True(t, orders.Success, w.Body.String())
+			require.Equal(t, len(want), orders.Data.Total)
+			require.Len(t, orders.Data.Items, len(want))
+			for _, item := range orders.Data.Items {
+				require.True(t, item.UserId == owner || owner == 2 && item.UserId == 0)
+			}
+			w = get(GetAdtyOwnerSettlementSheets)
+			require.Contains(t, w.Body.String(), "Contact the platform")
+			require.NotContains(t, w.Body.String(), "8800")
+		}
+		w := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(w)
+		ctx.Set("role", common.RoleRootUser)
+		ctx.Request = httptest.NewRequest("GET", fmt.Sprintf("/?site_id=%d", archived.Id), nil)
+		GetAdtyAdminSettlementSheets(ctx)
+		require.Contains(t, w.Body.String(), "8800")
+	})
+	require.NoError(t, conn.Delete(&archived).Error)
 	for _, query := range []string{"sort=earning&order=desc&p=1&page_size=1", "sort=id&order=desc&p=5001&page_size=1"} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)

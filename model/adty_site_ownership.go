@@ -47,6 +47,26 @@ func ResolveAdtySiteFinancialOwnerTx(tx *gorm.DB, siteID, frozenOwnerID int) (in
 	return CurrentAdtySiteFinancialOwnerTx(tx, siteID)
 }
 
+// AdtyFinancialOwnerScope applies the same legacy rule in both row and aggregate queries.
+func AdtyFinancialOwnerScope(siteID, ownerID int) func(*gorm.DB) *gorm.DB {
+	return adtyFinancialOwnerScope("site_owner_user_id", siteID, ownerID)
+}
+
+func AdtyWithdrawalOwnerScope(siteID, ownerID int) func(*gorm.DB) *gorm.DB {
+	return adtyFinancialOwnerScope("owner_user_id", siteID, ownerID)
+}
+
+func adtyFinancialOwnerScope(column string, siteID, ownerID int) func(*gorm.DB) *gorm.DB {
+	return func(q *gorm.DB) *gorm.DB {
+		if ownerID <= 0 || siteID <= 0 {
+			return q.Where("1 = 0")
+		}
+		// Keep the lookup inside the SQL statement. GORM also applies this
+		// scope when composing nested queries without executing them.
+		return q.Where("site_id = ? AND ("+column+" = ? OR ("+column+" = 0 AND ? = COALESCE((SELECT old_owner_user_id FROM adty_site_ownerships WHERE site_id = ? ORDER BY version LIMIT 1), (SELECT owner_user_id FROM adty_sites WHERE id = ?))))", siteID, ownerID, ownerID, siteID, siteID)
+	}
+}
+
 // freezeBillingSiteOwnerTx binds adjustments to their original operation or
 // event. Legacy rows have zero snapshots; only a newly accepted root may use
 // current management ownership.

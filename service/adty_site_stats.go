@@ -39,26 +39,38 @@ type AdtySiteStats struct {
 }
 
 // adtyStatsRange 规范化日期范围：默认最近 30 天，最长 366 天。
-func adtyStatsRange(from, to string) (string, string, error) {
-	now := time.Now()
+func adtyStatsRange(from, to string, loc *time.Location) (string, string, error) {
+	now := time.Now().In(loc)
 	if to == "" {
 		to = now.Format("2006-01-02")
 	}
 	if from == "" {
 		from = now.AddDate(0, 0, -29).Format("2006-01-02")
 	}
-	start, err1 := time.ParseInLocation("2006-01-02", from, time.Local)
-	end, err2 := time.ParseInLocation("2006-01-02", to, time.Local)
+	start, err1 := time.ParseInLocation("2006-01-02", from, loc)
+	end, err2 := time.ParseInLocation("2006-01-02", to, loc)
 	if err1 != nil || err2 != nil || end.Before(start) || end.Sub(start) > 366*24*time.Hour {
 		return "", "", common.NewMessage("Invalid date range")
 	}
 	return from, to, nil
 }
 
-// adtyCreditedTopUpTrades 是已经入过账的订单号：成功的，以及退过款的。
-// 退款会把状态改成 refunded，经营数据不能因此把整笔充值额丢掉。
-func adtyCreditedTopUpTrades() *gorm.DB {
-	return model.DB.Model(&model.TopUp{}).Select("trade_no").Where("status IN ?", []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded})
+type adtyCreditedCustomerOrder struct {
+	model.AdtyTopupOrder
+	CompleteTime int64
+}
+
+func adtyCreditedCustomerOrders(siteIDs []int, start, end int64, scopes ...func(*gorm.DB) *gorm.DB) ([]adtyCreditedCustomerOrder, error) {
+	q := model.DB.Model(&model.AdtyTopupOrder{}).Scopes(adtyCustomerTopUpOrders).
+		Select("adty_topup_orders.*, top_ups.complete_time").
+		Joins("JOIN top_ups ON top_ups.trade_no = adty_topup_orders.trade_no").
+		Where("top_ups.status IN ? AND top_ups.complete_time >= ? AND top_ups.complete_time <= ?", []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}, start, end)
+	if len(siteIDs) > 0 {
+		q = q.Where("adty_topup_orders.site_id IN ?", siteIDs)
+	}
+	var orders []adtyCreditedCustomerOrder
+	err := q.Scopes(scopes...).Scan(&orders).Error
+	return orders, err
 }
 
 // adtyRetainedTopUpUSD 是这笔订单还留在充值额里的面额。
@@ -74,8 +86,8 @@ func adtyRetainedTopUpUSD(order *model.AdtyTopupOrder) decimal.Decimal {
 	return order.FaceUSD.Mul(kept)
 }
 
-func adtyDayUnix(day string, endOfDay bool) int64 {
-	parsed, _ := time.ParseInLocation("2006-01-02", day, time.Local)
+func adtyDayUnix(day string, endOfDay bool, loc *time.Location) int64 {
+	parsed, _ := time.ParseInLocation("2006-01-02", day, loc)
 	if endOfDay {
 		return parsed.AddDate(0, 0, 1).Unix() - 1
 	}
@@ -83,13 +95,13 @@ func adtyDayUnix(day string, endOfDay bool) int64 {
 }
 
 // adtySiteEarningSums 按日期汇总收益行：siteIds 为空表示全部分站。
-func adtySiteEarningRows(siteIds []int, from, to string) ([]model.AdtySiteEarningDaily, error) {
+func adtySiteEarningRows(siteIds []int, from, to string, scopes ...func(*gorm.DB) *gorm.DB) ([]model.AdtySiteEarningDaily, error) {
 	query := model.DB.Where("day >= ? AND day <= ? AND status <> ?", from, to+"+~", model.AdtySiteEarningVoid)
 	if len(siteIds) > 0 {
 		query = query.Where("site_id IN ?", siteIds)
 	}
 	var rows []model.AdtySiteEarningDaily
-	err := query.Find(&rows).Error
+	err := query.Scopes(scopes...).Find(&rows).Error
 	return rows, err
 }
 
@@ -129,7 +141,19 @@ func adtyAddDayStats(total *AdtySiteDayStats, day AdtySiteDayStats) {
 
 // GetAdtySiteStats 是一个站在 [from, to] 的经营数据（站长中心和后台明细共用）。
 func GetAdtySiteStats(siteId int, from, to string) (*AdtySiteStats, error) {
-	from, to, err := adtyStatsRange(from, to)
+	return getAdtySiteStats(siteId, from, to, nil)
+}
+
+func GetAdtyOwnerStats(siteID, ownerID int, from, to string) (*AdtySiteStats, error) {
+	return getAdtySiteStats(siteID, from, to, model.AdtyFinancialOwnerScope(siteID, ownerID))
+}
+
+func getAdtySiteStats(siteId int, from, to string, scope func(*gorm.DB) *gorm.DB) (*AdtySiteStats, error) {
+	loc, _, err := loadAdtyBusinessLocation()
+	if err != nil {
+		return nil, err
+	}
+	from, to, err = adtyStatsRange(from, to, loc)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +165,11 @@ func GetAdtySiteStats(siteId int, from, to string) (*AdtySiteStats, error) {
 		return days[day]
 	}
 	active := map[string]map[int]bool{}
-	rows, err := adtySiteEarningRows([]int{siteId}, from, to)
+	var scopes []func(*gorm.DB) *gorm.DB
+	if scope != nil {
+		scopes = append(scopes, scope)
+	}
+	rows, err := adtySiteEarningRows([]int{siteId}, from, to, scopes...)
 	if err != nil {
 		return nil, err
 	}
@@ -161,30 +189,27 @@ func GetAdtySiteStats(siteId int, from, to string) (*AdtySiteStats, error) {
 		dayOf(day).ActiveCustomer = int64(len(users))
 	}
 
-	startUnix, endUnix := adtyDayUnix(from, false), adtyDayUnix(to, true)
+	startUnix, endUnix := adtyDayUnix(from, false, loc), adtyDayUnix(to, true, loc)
 	var joined []model.AdtySiteCustomer
 	if err := model.DB.Select("user_id", "joined_at").Where("site_id = ? AND joined_at >= ? AND joined_at <= ?", siteId, startUnix, endUnix).Find(&joined).Error; err != nil {
 		return nil, err
 	}
 	for _, customer := range joined {
-		dayOf(time.Unix(customer.JoinedAt, 0).Format("2006-01-02")).NewCustomers++
+		dayOf(time.Unix(customer.JoinedAt, 0).In(loc).Format("2006-01-02")).NewCustomers++
 	}
 
-	var orders []model.AdtyTopupOrder
-	credited := adtyCreditedTopUpTrades()
-	if err := model.DB.Scopes(adtyCustomerTopUpOrders).Select("user_id", "face_usd", "credit_quota", "refund_quota", "created_at").
-		Where("site_id = ? AND created_at >= ? AND created_at <= ? AND trade_no IN (?)", siteId, startUnix, endUnix, credited).
-		Find(&orders).Error; err != nil {
+	orders, err := adtyCreditedCustomerOrders([]int{siteId}, startUnix, endUnix, scopes...)
+	if err != nil {
 		return nil, err
 	}
 	payers := map[string]map[int]bool{}
 	allPayers := map[int]bool{}
 	for _, order := range orders {
-		kept := adtyRetainedTopUpUSD(&order)
+		kept := adtyRetainedTopUpUSD(&order.AdtyTopupOrder)
 		if !kept.IsPositive() {
 			continue
 		}
-		day := time.Unix(order.CreatedAt, 0).Format("2006-01-02")
+		day := time.Unix(order.CompleteTime, 0).In(loc).Format("2006-01-02")
 		stats := dayOf(day)
 		stats.TopUpUSD = stats.TopUpUSD.Add(kept)
 		if payers[day] == nil {
@@ -224,7 +249,12 @@ func AdtySitesMonthTotals(siteIds []int, now time.Time) (map[int]AdtySiteMonthTo
 	if len(siteIds) == 0 {
 		return result, nil
 	}
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	loc, _, err := loadAdtyBusinessLocation()
+	if err != nil {
+		return nil, err
+	}
+	now = now.In(loc)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
 	lastStart := monthStart.AddDate(0, -1, 0)
 	rows, err := adtySiteEarningRows(siteIds, lastStart.Format("2006-01-02"), now.Format("2006-01-02"))
 	if err != nil {
@@ -244,14 +274,12 @@ func AdtySitesMonthTotals(siteIds []int, now time.Time) (map[int]AdtySiteMonthTo
 		}
 		result[row.SiteId] = totals
 	}
-	var orders []model.AdtyTopupOrder
-	credited := adtyCreditedTopUpTrades()
-	if err := model.DB.Scopes(adtyCustomerTopUpOrders).Select("site_id", "face_usd", "credit_quota", "refund_quota").Where("site_id IN ? AND created_at >= ? AND trade_no IN (?)", siteIds, monthStart.Unix(), credited).
-		Find(&orders).Error; err != nil {
+	orders, err := adtyCreditedCustomerOrders(siteIds, monthStart.Unix(), now.Unix())
+	if err != nil {
 		return nil, err
 	}
 	for _, order := range orders {
-		kept := adtyRetainedTopUpUSD(&order)
+		kept := adtyRetainedTopUpUSD(&order.AdtyTopupOrder)
 		if !kept.IsPositive() {
 			continue
 		}
@@ -320,7 +348,11 @@ func adtyCustomerTopUpOrders(db *gorm.DB) *gorm.DB {
 
 // GetAdtySitesOverview 汇总 [from, to] 内所有分站，各项是日汇总的直接合计。
 func GetAdtySitesOverview(from, to string) (*AdtySitesOverview, error) {
-	from, to, err := adtyStatsRange(from, to)
+	loc, _, err := loadAdtyBusinessLocation()
+	if err != nil {
+		return nil, err
+	}
+	from, to, err = adtyStatsRange(from, to, loc)
 	if err != nil {
 		return nil, err
 	}
@@ -355,15 +387,13 @@ func GetAdtySitesOverview(from, to string) (*AdtySitesOverview, error) {
 	result.SiteRevenueUSD, result.SitePlatformUSD, result.SiteEarningUSD = total.RevenueUSD, total.PlatformUSD, total.EarningUSD
 	result.SiteSkippedUSD, result.SiteBonusUSD = total.SkippedUSD, total.BonusUSD
 
-	startUnix, endUnix := adtyDayUnix(from, false), adtyDayUnix(to, true)
-	var orders []model.AdtyTopupOrder
-	if err := model.DB.Scopes(adtyCustomerTopUpOrders).Select("site_id", "face_usd", "credit_quota", "refund_quota").
-		Where("created_at >= ? AND created_at <= ? AND trade_no IN (?)", startUnix, endUnix, adtyCreditedTopUpTrades()).
-		Find(&orders).Error; err != nil {
+	startUnix, endUnix := adtyDayUnix(from, false, loc), adtyDayUnix(to, true, loc)
+	orders, err := adtyCreditedCustomerOrders(nil, startUnix, endUnix)
+	if err != nil {
 		return nil, err
 	}
 	for _, order := range orders {
-		kept := adtyRetainedTopUpUSD(&order)
+		kept := adtyRetainedTopUpUSD(&order.AdtyTopupOrder)
 		if order.SiteId > 0 {
 			result.SiteTopUpUSD = result.SiteTopUpUSD.Add(kept)
 		} else {
@@ -404,61 +434,70 @@ func GetAdtySitesOverview(from, to string) (*AdtySitesOverview, error) {
 
 // AdtySiteBalances 是站长中心收益页顶部的数字：待结算、可提现、已提现、风控不计。
 type AdtySiteBalances struct {
-	PendingUSD   decimal.Decimal `json:"pending_usd"`
-	SkippedUSD   decimal.Decimal `json:"skipped_usd"`
-	AvailableUSD decimal.Decimal `json:"available_usd"` // 站点收益钱包可提现余额（balance - frozen_usd）
-	FrozenUSD    decimal.Decimal `json:"frozen_usd"`
-	WithdrawnUSD decimal.Decimal `json:"withdrawn_usd"`
+	RequiresReview bool            `json:"requires_review,omitempty"`
+	PendingUSD     decimal.Decimal `json:"pending_usd"`
+	SkippedUSD     decimal.Decimal `json:"skipped_usd"`
+	AvailableUSD   decimal.Decimal `json:"available_usd"` // 站点收益钱包可提现余额（balance - frozen_usd）
+	FrozenUSD      decimal.Decimal `json:"frozen_usd"`
+	WithdrawnUSD   decimal.Decimal `json:"withdrawn_usd"`
 }
 
-// GetAdtySiteBalances 取站长的收益余额。
+// GetAdtySiteBalances retains the administrative site totals.
 func GetAdtySiteBalances(site *model.AdtySite) (*AdtySiteBalances, error) {
+	return getAdtySiteBalances(site, 0)
+}
+
+func GetAdtyOwnerBalances(site *model.AdtySite, ownerID int) (*AdtySiteBalances, error) {
+	if ownerID <= 0 {
+		return nil, ErrAdtySiteNotOwner
+	}
+	return getAdtySiteBalances(site, ownerID)
+}
+
+func getAdtySiteBalances(site *model.AdtySite, ownerID int) (*AdtySiteBalances, error) {
 	result := &AdtySiteBalances{}
 	if site == nil || site.Id <= 0 {
 		return result, nil
+	}
+	q := model.DB.Model(&model.AdtySiteEarningDaily{}).Where("site_id = ? AND status = ?", site.Id, model.AdtySiteEarningPending)
+	withdrawals := model.DB.Model(&model.AdtySiteWithdrawal{}).Where("site_id = ? AND status = ?", site.Id, model.AdtySiteWithdrawPaid)
+	if ownerID > 0 {
+		q = q.Scopes(model.AdtyFinancialOwnerScope(site.Id, ownerID))
+		withdrawals = withdrawals.Scopes(model.AdtyWithdrawalOwnerScope(site.Id, ownerID))
 	}
 	var sums []struct {
 		Kind  string
 		Total decimal.Decimal
 	}
-	legacyOwnerID, err := model.ResolveAdtySiteFinancialOwnerTx(model.DB, site.Id, 0)
-	if err != nil {
-		return nil, err
-	}
-	ownerIDs := []int{site.OwnerUserId}
-	if legacyOwnerID == site.OwnerUserId {
-		ownerIDs = append(ownerIDs, 0)
-	}
-	if err := model.DB.Model(&model.AdtySiteEarningDaily{}).Select("kind, COALESCE(SUM(earning),0) AS total").
-		Where("site_id = ? AND site_owner_user_id IN ? AND status = ?", site.Id, ownerIDs, model.AdtySiteEarningPending).Group("kind").Scan(&sums).Error; err != nil {
+	if err := q.Select("kind, SUM(earning) AS total").Group("kind").Scan(&sums).Error; err != nil {
 		return nil, err
 	}
 	for _, sum := range sums {
 		if sum.Kind == model.AdtySiteEarningSkipped {
-			result.SkippedUSD = result.SkippedUSD.Add(sum.Total)
+			result.SkippedUSD = sum.Total
 		} else {
 			result.PendingUSD = result.PendingUSD.Add(sum.Total)
 		}
 	}
-	var wallets []model.AdtySiteWallet
-	if err := model.DB.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).Limit(1).Find(&wallets).Error; err != nil {
+	if err := withdrawals.Select("COALESCE(SUM(amount_usd),0)").Scan(&result.WithdrawnUSD).Error; err != nil {
 		return nil, err
 	}
-	if len(wallets) > 0 {
-		result.FrozenUSD = wallets[0].FrozenUSD
-		result.AvailableUSD = wallets[0].Balance.Sub(wallets[0].FrozenUSD)
-	}
-	var withdrawn struct {
-		Total decimal.Decimal
-	}
-	if err := model.DB.Model(&model.AdtySiteWithdrawal{}).
-		Select("COALESCE(SUM(amount_usd), 0) AS total").
-		Where("site_id = ? AND status = ?", site.Id, model.AdtySiteWithdrawPaid).
-		Scan(&withdrawn).Error; err != nil {
+	var wallet model.AdtySiteWallet
+	if err := model.DB.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).Limit(1).Find(&wallet).Error; err != nil {
 		return nil, err
 	}
-	result.WithdrawnUSD = withdrawn.Total
-	return result, nil
+	result.AvailableUSD, result.FrozenUSD = wallet.Balance.Sub(wallet.FrozenUSD), wallet.FrozenUSD
+	if ownerID <= 0 {
+		return result, nil
+	}
+	available, frozen, err := ownerEarningsWalletTx(model.DB, site.Id, ownerID, &wallet)
+	if err == ErrAdtyOwnerWalletReview {
+		result.RequiresReview = true
+		result.AvailableUSD, result.FrozenUSD = decimal.Zero, decimal.Zero
+		return result, nil
+	}
+	result.AvailableUSD, result.FrozenUSD = available, frozen
+	return result, err
 }
 
 // AdtySiteUsageRow 是按模型或分组的一行消费（客户扣费额度和美元）。
@@ -486,6 +525,10 @@ func GetAdtySiteUsageBreakdown(siteId int, from, to string) (*AdtySiteUsageBreak
 	if len(userIds) == 0 {
 		return result, nil
 	}
+	loc, _, err := loadAdtyBusinessLocation()
+	if err != nil {
+		return nil, err
+	}
 	perUnit := common.QuotaPerUnitDecimal()
 	for _, column := range []string{"model_name", "group"} {
 		quoted := column
@@ -498,7 +541,7 @@ func GetAdtySiteUsageBreakdown(siteId int, from, to string) (*AdtySiteUsageBreak
 			Requests int64
 		}
 		if err := model.LOG_DB.Model(&model.Log{}).Select(quoted+" AS key, COALESCE(SUM(quota),0) AS quota, COUNT(*) AS requests").
-			Where("type = ? AND user_id IN ? AND created_at >= ? AND created_at <= ?", model.LogTypeConsume, userIds, adtyDayUnix(from, false), adtyDayUnix(to, true)).
+			Where("type = ? AND user_id IN ? AND created_at >= ? AND created_at <= ?", model.LogTypeConsume, userIds, adtyDayUnix(from, false, loc), adtyDayUnix(to, true, loc)).
 			Group(quoted).Order("quota DESC").Limit(100).Scan(&rows).Error; err != nil {
 			return nil, err
 		}

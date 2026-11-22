@@ -101,6 +101,7 @@ export type OwnerSite = {
   seo_index: boolean
   agreement_version: string
   agreement_at: number
+  close_execute_at: number
   close_requested_at?: number
   prices: SitePrice[] | null
   pricing_version: number
@@ -139,6 +140,7 @@ export type EarningKind =
   | 'skipped'
 
 export type EarningRow = {
+  id: number
   day: string
   user_id: number
   kind: EarningKind
@@ -150,6 +152,7 @@ export type EarningRow = {
 }
 
 export type SiteBalances = {
+  requires_review?: boolean
   pending_usd: string
   skipped_usd: string
   available_usd: string

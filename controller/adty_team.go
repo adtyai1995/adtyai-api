@@ -52,7 +52,7 @@ func PutAdtyMainTeamAgreementPrice(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"updated": true})
+	common.ApiSuccess(c, gin.H{"updated": true, "discount": decimal.RequireFromString(strings.TrimSpace(body.Discount)).String()})
 }
 
 func PostAdtyTeamTopup(c *gin.Context) {
@@ -99,7 +99,7 @@ func GetAdtyTeamTopups(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	rows, err := service.ListAdtyTeamTopups(c.GetInt("id"), id)
+	rows, err := service.ListAdtyTeamTopups(c.GetInt("id"), id, c.Query("status") == "pending")
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -126,7 +126,7 @@ func PostAdtyMainTeam(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	created, err := service.CreateAdtySiteTeamByRoot(c.GetInt("id"), body.SiteId, body.LeaderId, body.Name, body.Discount)
+	created, err := service.CreateAdtySiteTeamByRoot(c.GetInt("id"), body.SiteId, body.LeaderId, body.Name, body.Discount, c.GetHeader("Idempotency-Key"))
 	if err != nil {
 		common.ApiError(c, err)
 		return

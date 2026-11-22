@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -31,11 +31,17 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { teamRegistrationUrl } from '@/features/adty-team-registration/api'
 import { api } from '@/lib/api'
-import { getServerErrorMessage } from '@/lib/server-error-message'
+import {
+  getServerErrorMessage,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 
 import { adtyTopupQueryKeys, getAdtyTopupInfo } from './api'
+import { EpayPayDialog } from './components/epay-pay-dialog'
 import { PaymentMethodButtons } from './components/payment-method-buttons'
+import { UsdtPayDialog } from './components/usdt-pay-dialog'
 import { paymentMethodKey } from './lib/methods'
+import type { AdtyOrderExt } from './types'
 
 type TeamMember = {
   user_id: number
@@ -128,6 +134,21 @@ export function TeamPanel() {
   const refresh = () =>
     void queryClient.invalidateQueries({ queryKey: ['adty-team'] })
   const team = mine.data
+  const [checkout, setCheckout] = useState<AdtyOrderExt | null>(null)
+  const attempt = useRef({ body: '', key: '' })
+  const pendingOrders = useQuery({
+    queryKey: ['adty-team', 'pending-orders', team?.team_id],
+    enabled: team?.role === 'leader',
+    queryFn: async () => {
+      const { data } = await api.get<{
+        success: boolean
+        data: { items: AdtyOrderExt[] }
+      }>(`/api/adty/teams/${team?.team_id}/topups`, {
+        params: { status: 'pending' },
+      })
+      return requireServerSuccess(data).data.items ?? []
+    },
+  })
   const employeeLink = issued
     ? `${teamRegistrationUrl(issued)}?kind=employee`
     : ''
@@ -255,10 +276,11 @@ export function TeamPanel() {
                       `/api/adty/teams/${team.team_id}/profile`,
                       { name: rename.trim() }
                     )
-                    if (!response.data?.success)
-                      {throw new Error(
+                    if (!response.data?.success) {
+                      throw new Error(
                         response.data?.message || 'Failed to save'
-                      )}
+                      )
+                    }
                   })
                 }
               >
@@ -297,6 +319,14 @@ export function TeamPanel() {
                 onClick={() =>
                   void run(async () => {
                     if (!topupMethod) return
+                    const body = JSON.stringify([
+                      team.team_id,
+                      topupAmount.trim(),
+                      topupMethodKey,
+                    ])
+                    if (attempt.current.body !== body) {
+                      attempt.current = { body, key: crypto.randomUUID() }
+                    }
                     const response = await api.post(
                       `/api/adty/teams/${team.team_id}/topups`,
                       {
@@ -304,22 +334,38 @@ export function TeamPanel() {
                         method: topupMethod.id,
                         channel_id: topupMethod.channel_id,
                       },
-                      { headers: { 'Idempotency-Key': crypto.randomUUID() } }
+                      { headers: { 'Idempotency-Key': attempt.current.key } }
                     )
-                    if (!response.data?.success)
-                      {throw new Error(
+                    if (!response.data?.success) {
+                      throw new Error(
                         response.data?.message || 'Failed to save'
-                      )}
-                    const payURL = response.data?.data?.pay_url
-                    if (typeof payURL === 'string' && payURL !== '') {
-                      window.location.assign(payURL)
+                      )
                     }
+                    const order = response.data.data as AdtyOrderExt
+                    if (!order?.trade_no) {
+                      throw new Error('Order number not provided')
+                    }
+                    setCheckout(order)
+                    attempt.current = { body: '', key: '' }
                     setTopupAmount('')
                   })
                 }
               >
                 {t('Team top-up')}
               </Button>
+              {pendingOrders.isError && (
+                <ErrorState onRetry={() => void pendingOrders.refetch()} />
+              )}
+              {pendingOrders.data?.map((order) => (
+                <Button
+                  key={order.trade_no}
+                  type='button'
+                  variant='outline'
+                  onClick={() => setCheckout(order)}
+                >
+                  {t('Continue payment')} · {order.trade_no}
+                </Button>
+              ))}
               <div className='flex flex-col gap-1'>
                 <Label htmlFor='team-invite-ttl'>{t('Validity (hours)')}</Label>
                 <Input
@@ -390,10 +436,11 @@ export function TeamPanel() {
                             const response = await api.post(
                               `/api/adty/teams/${team.team_id}/invites/${row.id}/revoke`
                             )
-                            if (!response.data?.success)
-                              {throw new Error(
+                            if (!response.data?.success) {
+                              throw new Error(
                                 response.data?.message || 'Failed to save'
-                              )}
+                              )
+                            }
                           })
                         }
                       >
@@ -424,10 +471,11 @@ export function TeamPanel() {
                           password: employeePassword,
                         }
                       )
-                      if (!response.data?.success)
-                        {throw new Error(
+                      if (!response.data?.success) {
+                        throw new Error(
                           response.data?.message || 'Failed to save'
-                        )}
+                        )
+                      }
                       setEmployeeUsername('')
                       setEmployeePassword('')
                     })
@@ -491,10 +539,11 @@ export function TeamPanel() {
                             const response = await api.post(
                               `/api/adty/teams/${team.team_id}/members/${member.user_id}/disable`
                             )
-                            if (!response.data?.success)
-                              {throw new Error(
+                            if (!response.data?.success) {
+                              throw new Error(
                                 response.data?.message || 'Failed to save'
-                              )}
+                              )
+                            }
                           })
                         }
                       >
@@ -514,10 +563,11 @@ export function TeamPanel() {
                               const response = await api.post(
                                 `/api/adty/teams/${team.team_id}/members/${member.user_id}/enable`
                               )
-                              if (!response.data?.success)
-                                {throw new Error(
+                              if (!response.data?.success) {
+                                throw new Error(
                                   response.data?.message || 'Failed to save'
-                                )}
+                                )
+                              }
                             })
                           }
                         >
@@ -566,10 +616,11 @@ export function TeamPanel() {
                             const response = await api.post(
                               `/api/adty/teams/${team.team_id}/keys/${key.token_id}/revoke`
                             )
-                            if (!response.data?.success)
-                              {throw new Error(
+                            if (!response.data?.success) {
+                              throw new Error(
                                 response.data?.message || 'Failed to save'
-                              )}
+                              )
+                            }
                           })
                         }
                       >
@@ -598,10 +649,11 @@ export function TeamPanel() {
                       `/api/adty/teams/${team.team_id}/keys`,
                       { token_id: Number(tokenId) }
                     )
-                    if (!response.data?.success)
-                      {throw new Error(
+                    if (!response.data?.success) {
+                      throw new Error(
                         response.data?.message || 'Failed to save'
-                      )}
+                      )
+                    }
                     setTokenId('')
                   })
                 }
@@ -621,10 +673,11 @@ export function TeamPanel() {
                     const response = await api.post(
                       `/api/adty/teams/${team.team_id}/close`
                     )
-                    if (!response.data?.success)
-                      {throw new Error(
+                    if (!response.data?.success) {
+                      throw new Error(
                         response.data?.message || 'Failed to save'
-                      )}
+                      )
+                    }
                     setConfirmClose(false)
                   })
                 }}
@@ -654,10 +707,11 @@ export function TeamPanel() {
                       `/api/adty/teams/${team.team_id}/keys`,
                       { token_id: Number(tokenId) }
                     )
-                    if (!response.data?.success)
-                      {throw new Error(
+                    if (!response.data?.success) {
+                      throw new Error(
                         response.data?.message || 'Failed to save'
-                      )}
+                      )
+                    }
                     setTokenId('')
                   })
                 }
@@ -673,10 +727,11 @@ export function TeamPanel() {
                     const response = await api.post(
                       `/api/adty/teams/${team.team_id}/leave`
                     )
-                    if (!response.data?.success)
-                      {throw new Error(
+                    if (!response.data?.success) {
+                      throw new Error(
                         response.data?.message || 'Failed to save'
-                      )}
+                      )
+                    }
                   })
                 }
               >
@@ -691,6 +746,33 @@ export function TeamPanel() {
           )}
         </CardContent>
       </Card>
+      {checkout &&
+        (checkout.method.startsWith('usdt.') ? (
+          <UsdtPayDialog
+            key={checkout.trade_no}
+            tradeNo={checkout.trade_no}
+            chain={checkout.method}
+            amount={Number(checkout.face_usd)}
+            onClose={() => {
+              setCheckout(null)
+              refresh()
+            }}
+            onChangeChain={() => setCheckout(null)}
+            onSettled={refresh}
+          />
+        ) : (
+          <EpayPayDialog
+            key={checkout.trade_no}
+            tradeNo={checkout.trade_no}
+            method={checkout.method}
+            amount={Number(checkout.face_usd)}
+            onClose={() => {
+              setCheckout(null)
+              refresh()
+            }}
+            onSettled={refresh}
+          />
+        ))}
       <ConfirmDialog
         open={deleteEmployee !== null}
         onOpenChange={(open) => {
@@ -708,8 +790,9 @@ export function TeamPanel() {
             const response = await api.post(
               `/api/adty/teams/${team.team_id}/members/${userId}/delete`
             )
-            if (!response.data?.success)
-              {throw new Error(response.data?.message || 'Failed to save')}
+            if (!response.data?.success) {
+              throw new Error(response.data?.message || 'Failed to save')
+            }
             setDeleteEmployee(null)
           })
         }}

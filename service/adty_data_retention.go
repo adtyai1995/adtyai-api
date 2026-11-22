@@ -726,6 +726,18 @@ func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64, cutoff i
 		if err := tx.Where("ticket_id = ?", ticketID).Delete(&model.AdtyTicketImage{}).Error; err != nil {
 			return err
 		}
+		// The translation index also stores the full reply. Remove its copies
+		// in the same transaction as the source message.
+		translations := tx.Model(&model.AdtyTicketMessage{}).Select("'ticket-reply:' || CAST(id AS TEXT)").Where("ticket_id = ?", ticketID)
+		if err := tx.Where("object_key IN (?)", translations).Delete(&model.AdtyTranslationJob{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("object_key IN (?)", translations).Delete(&model.AdtyTranslationHead{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("ticket_id = ?", ticketID).Delete(&model.AdtyTicketNotice{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("ticket_id = ?", ticketID).Delete(&model.AdtyTicketMessage{}).Error; err != nil {
 			return err
 		}

@@ -923,6 +923,12 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 				return err
 			}
 		}
+		if !wasPending {
+			batch := model.AdtySiteCloseMailBatch{SiteId: site.Id, RetryStatus: model.AdtySiteCloseMailRetryNone, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Where("site_id = ?", site.Id).FirstOrCreate(&batch).Error; err != nil {
+				return err
+			}
+		}
 		return recordSiteAuditTx(tx, site.Id, "close_schedule", adminId, map[string]any{"status": site.Status}, updates, plan.Reason)
 	})
 	if err != nil {
@@ -976,6 +982,9 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		if err := InheritAdtyVouchersOnCloseTx(tx, site.Id, moved); err != nil {
 			return err
 		}
+		if err := model.TransferAdtyTicketsToMain(tx, tx.Model(&model.AdtySite{}).Select("id").Where("id = ?", site.Id)); err != nil {
+			return err
+		}
 		if err := InheritAdtyTeamsOnCloseTx(tx, site.Id); err != nil {
 			return err
 		}
@@ -1015,9 +1024,13 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 // 站点级（或更不具体的）单模型不会被更具体但空模型的客户/分组行盖掉。
 // modelName 为空时只使用空模型默认行，不计单模型行。
 func ResolveAdtySiteMarkup(prices []model.AdtySitePrice, userId int, group, modelName string) decimal.Decimal {
+	return resolveAdtySitePrice(prices, userId, group, modelName).Markup
+}
+
+func resolveAdtySitePrice(prices []model.AdtySitePrice, userId int, group, modelName string) model.AdtySitePrice {
 	modelName = adtyNormalizeSitePriceModel(modelName)
 	bestModelRank, bestEmptyRank := 0, 0
-	var bestModel, bestEmpty decimal.Decimal
+	var bestModel, bestEmpty model.AdtySitePrice
 	for _, price := range prices {
 		if !price.Markup.IsPositive() {
 			continue
@@ -1043,13 +1056,13 @@ func ResolveAdtySiteMarkup(prices []model.AdtySitePrice, userId int, group, mode
 		if rowModel != "" {
 			if rank >= bestModelRank {
 				bestModelRank = rank
-				bestModel = price.Markup
+				bestModel = price
 			}
 			continue
 		}
 		if rank >= bestEmptyRank {
 			bestEmptyRank = rank
-			bestEmpty = price.Markup
+			bestEmpty = price
 		}
 	}
 	if bestModelRank > 0 {
@@ -1058,7 +1071,7 @@ func ResolveAdtySiteMarkup(prices []model.AdtySitePrice, userId int, group, mode
 	if bestEmptyRank > 0 {
 		return bestEmpty
 	}
-	return decimal.NewFromInt(1)
+	return model.AdtySitePrice{Markup: decimal.NewFromInt(1)}
 }
 
 // RunAdtySiteCloseOnce 执行所有到期的关站，并由主节点任务回补已关站、仍占用冻结的站长自用/保证金未兑码。

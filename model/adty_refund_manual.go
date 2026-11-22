@@ -76,37 +76,38 @@ func ManualRefundUSDQuota(faceUSD, occupiedUSD, requestUSD decimal.Decimal) (int
 // AdtyRefundPageFacts is the recorded refund-page check. Amounts come from the
 // order and its fund lots. A blank lot field means that lot was not recorded.
 type AdtyRefundPageFacts struct {
-	TradeNo               string                           `json:"trade_no"`
-	SiteId                int                              `json:"site_id"`
-	UserId                int                              `json:"user_id"`
-	FaceUSD               string                           `json:"face_usd"`
-	PayCurrency           string                           `json:"pay_currency"`
-	PaidAmount            string                           `json:"paid_amount"`
-	PaidCurrency          string                           `json:"paid_currency"`
-	OrderRate             string                           `json:"order_rate"`
-	PrincipalConsumedUSD  string                           `json:"principal_consumed_usd,omitempty"`
-	PrincipalRemainingUSD string                           `json:"principal_remaining_usd,omitempty"`
-	PendingQuota          int64                            `json:"pending_quota"`
-	RefundOccupiedQuota   int64                            `json:"refund_occupied_quota"`
-	RefundCompletedQuota  int64                            `json:"refund_completed_quota"`
-	RefundInProgressQuota int64                            `json:"refund_in_progress_quota"`
-	RefundUnknownQuota    int64                            `json:"refund_unknown_quota"`
-	RefundRemainingQuota  int64                            `json:"refund_remaining_quota"`
-	RefundCompletedUSD    string                           `json:"refund_completed_usd,omitempty"`
-	RefundInProgressUSD   string                           `json:"refund_in_progress_usd,omitempty"`
-	RefundUnknownUSD      string                           `json:"refund_unknown_usd,omitempty"`
-	RefundRemainingUSD    string                           `json:"refund_remaining_usd,omitempty"`
-	ManualShortfallQuota  int64                            `json:"manual_shortfall_quota"`
-	ManualShortfallUSD    string                           `json:"manual_shortfall_usd,omitempty"`
-	BonusUSD              string                           `json:"bonus_usd"`
-	BonusUsedQuota        int64                            `json:"bonus_used_quota"`
-	BonusRemainingQuota   int64                            `json:"bonus_remaining_quota"`
-	CumulativeRefundUSD   string                           `json:"cumulative_refund_usd"`
-	ForeignReference      string                           `json:"foreign_reference,omitempty"`
-	RefundProof           string                           `json:"refund_proof,omitempty"`
-	Commission            *AdtySiteCommissionRefundPreview `json:"commission,omitempty"`
-	ManualRefunds         []AdtyManualRefund               `json:"manual_refunds,omitempty"`
-	Occupancy             *AdtyManualRefundOccupancy       `json:"occupancy,omitempty"`
+	TeamPrincipalReviewRequired bool                             `json:"team_principal_review_required,omitempty"`
+	TradeNo                     string                           `json:"trade_no"`
+	SiteId                      int                              `json:"site_id"`
+	UserId                      int                              `json:"user_id"`
+	FaceUSD                     string                           `json:"face_usd"`
+	PayCurrency                 string                           `json:"pay_currency"`
+	PaidAmount                  string                           `json:"paid_amount"`
+	PaidCurrency                string                           `json:"paid_currency"`
+	OrderRate                   string                           `json:"order_rate"`
+	PrincipalConsumedUSD        string                           `json:"principal_consumed_usd,omitempty"`
+	PrincipalRemainingUSD       string                           `json:"principal_remaining_usd,omitempty"`
+	PendingQuota                int64                            `json:"pending_quota"`
+	RefundOccupiedQuota         int64                            `json:"refund_occupied_quota"`
+	RefundCompletedQuota        int64                            `json:"refund_completed_quota"`
+	RefundInProgressQuota       int64                            `json:"refund_in_progress_quota"`
+	RefundUnknownQuota          int64                            `json:"refund_unknown_quota"`
+	RefundRemainingQuota        int64                            `json:"refund_remaining_quota"`
+	RefundCompletedUSD          string                           `json:"refund_completed_usd,omitempty"`
+	RefundInProgressUSD         string                           `json:"refund_in_progress_usd,omitempty"`
+	RefundUnknownUSD            string                           `json:"refund_unknown_usd,omitempty"`
+	RefundRemainingUSD          string                           `json:"refund_remaining_usd,omitempty"`
+	ManualShortfallQuota        int64                            `json:"manual_shortfall_quota"`
+	ManualShortfallUSD          string                           `json:"manual_shortfall_usd,omitempty"`
+	BonusUSD                    string                           `json:"bonus_usd"`
+	BonusUsedQuota              int64                            `json:"bonus_used_quota"`
+	BonusRemainingQuota         int64                            `json:"bonus_remaining_quota"`
+	CumulativeRefundUSD         string                           `json:"cumulative_refund_usd"`
+	ForeignReference            string                           `json:"foreign_reference,omitempty"`
+	RefundProof                 string                           `json:"refund_proof,omitempty"`
+	Commission                  *AdtySiteCommissionRefundPreview `json:"commission,omitempty"`
+	ManualRefunds               []AdtyManualRefund               `json:"manual_refunds,omitempty"`
+	Occupancy                   *AdtyManualRefundOccupancy       `json:"occupancy,omitempty"`
 }
 
 // LoadAdtyRefundPageFacts reads the order, its fund lots, the customer's
@@ -175,31 +176,52 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 		ManualRefunds:         refunds,
 		Occupancy:             occupancy,
 	}
-	var lots []AdtyFundBatch
-	if err := DB.Where("user_id = ? AND source = ?", ext.UserId, tradeNo).Find(&lots).Error; err != nil {
-		return nil, err
-	}
-	var principalOriginal, principalRemaining, bonusOriginal, bonusRemaining int64
-	var sawPrincipal, sawBonus bool
-	for _, lot := range lots {
-		switch lot.Kind {
-		case "principal":
-			principalOriginal += lot.Original
-			principalRemaining += lot.Remaining
-			sawPrincipal = true
-		case "bonus":
-			bonusOriginal += lot.Original
-			bonusRemaining += lot.Remaining
-			sawBonus = true
+	if ext.TeamId > 0 {
+		var lot AdtyTeamFundLot
+		q := DB.Where("team_id = ? AND kind = ? AND source = ?", ext.TeamId, "topup", tradeNo).Limit(1).Find(&lot)
+		if q.Error != nil {
+			return nil, q.Error
+		}
+		if q.RowsAffected > 0 {
+			held, err := adtyTeamLotReserved(DB, lot.Id)
+			if err != nil {
+				return nil, err
+			}
+			facts.PendingQuota = held
+			facts.PrincipalConsumedUSD = adtyQuotaUSDString(lot.Original - lot.Available - lot.Reclaimed - held)
+			facts.PrincipalRemainingUSD = adtyQuotaUSDString(lot.Available)
+		} else {
+			facts.PendingQuota = 0
+			facts.TeamPrincipalReviewRequired = true
 		}
 	}
-	if sawPrincipal {
-		facts.PrincipalConsumedUSD = decimal.NewFromInt(principalOriginal - principalRemaining).Div(common.QuotaPerUnitDecimal()).String()
-		facts.PrincipalRemainingUSD = decimal.NewFromInt(principalRemaining).Div(common.QuotaPerUnitDecimal()).String()
-	}
-	if sawBonus {
-		facts.BonusUsedQuota = bonusOriginal - bonusRemaining
-		facts.BonusRemainingQuota = bonusRemaining
+	if ext.TeamId == 0 {
+		var lots []AdtyFundBatch
+		if err := DB.Where("user_id = ? AND source = ?", ext.UserId, tradeNo).Find(&lots).Error; err != nil {
+			return nil, err
+		}
+		var principalOriginal, principalRemaining, bonusOriginal, bonusRemaining int64
+		var sawPrincipal, sawBonus bool
+		for _, lot := range lots {
+			switch lot.Kind {
+			case "principal":
+				principalOriginal += lot.Original
+				principalRemaining += lot.Remaining
+				sawPrincipal = true
+			case "bonus":
+				bonusOriginal += lot.Original
+				bonusRemaining += lot.Remaining
+				sawBonus = true
+			}
+		}
+		if sawPrincipal {
+			facts.PrincipalConsumedUSD = decimal.NewFromInt(principalOriginal - principalRemaining).Div(common.QuotaPerUnitDecimal()).String()
+			facts.PrincipalRemainingUSD = decimal.NewFromInt(principalRemaining).Div(common.QuotaPerUnitDecimal()).String()
+		}
+		if sawBonus {
+			facts.BonusUsedQuota = bonusOriginal - bonusRemaining
+			facts.BonusRemainingQuota = bonusRemaining
+		}
 	}
 	previewQuota := ext.RefundQuota
 	if requestUSD.IsPositive() {
@@ -680,9 +702,10 @@ func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID st
 	if dupRes.RowsAffected > 0 {
 		return nil, false, ErrAdtyIdempotencyConflict
 	}
-	remainingOrder := max(ext.FaceQuota()-ext.RefundQuota, int64(0))
-	availTeam := max(team.SharedQuota, int64(0))
-	reclaimablePrincipal := min(remainingOrder, availTeam)
+	reclaimablePrincipal, err := reclaimAdtyTeamLotTx(tx, &team, ext.TradeNo, row.RequestQuota)
+	if err != nil {
+		return nil, false, err
+	}
 	reclaimable := min(row.RequestQuota, reclaimablePrincipal)
 	consumed := max(row.RequestQuota-reclaimablePrincipal, int64(0))
 	shortfall := row.RequestQuota - reclaimable

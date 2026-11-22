@@ -23,6 +23,7 @@ import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { siteWalletKindLabel } from '@/features/adty-ledger/site-wallet-labels'
 import { SiteWalletLedger } from '@/features/adty-ledger/site-wallet-ledger'
+import { getServerErrorMessage } from '@/lib/server-error-message'
 
 import { getOwnerWalletLedger, getOwnerWallets, siteOwnerKeys } from '../api'
 import { marginCycleSummary } from '../lib/site-owner'
@@ -52,7 +53,12 @@ export function WalletLedgerPanel() {
         </p>
       </div>
       {wallets.isPending && <LoadingState />}
-      {wallets.isError && <ErrorState onRetry={() => void wallets.refetch()} />}
+      {wallets.isError && (
+        <ErrorState
+          description={getServerErrorMessage(wallets.error)}
+          onRetry={() => void wallets.refetch()}
+        />
+      )}
       {rows.length > 0 && (
         <OwnerStatGrid
           label={t('Wallets')}

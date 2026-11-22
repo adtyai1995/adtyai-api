@@ -1,6 +1,9 @@
 package service
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"github.com/QuantumNous/new-api/common"
 	"time"
 
 	"github.com/QuantumNous/new-api/model"
@@ -56,6 +59,7 @@ func clonePriceData(price hosttypes.PriceData) hosttypes.PriceData {
 // adtyPriceFactors holds the exact decimal ratios captured while applying the
 // official G.2 formula, in group-ratio space (multipliers on the model base).
 type adtyPriceFactors struct {
+	RuleVersion     string
 	BillingGroup    string
 	GroupRatio      decimal.Decimal
 	StoredK         decimal.Decimal
@@ -201,6 +205,16 @@ func buildRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo) *mod
 	freeModel := price.FreeModel ||
 		(price.UsePrice && base.IsZero() && price.HasBilledModelPrice()) ||
 		(!price.UsePrice && base.IsZero() && price.HasBilledModelRatio())
+	ruleVersion := factors.RuleVersion
+	if ruleVersion == "" {
+		ruleVersion = "platform"
+	}
+	if tiered := info.TieredBillingSnapshot; tiered != nil {
+		ruleVersion += ":expr:" + tiered.ExprHash
+		if tiered.AcceptedAt != 0 {
+			acceptedAt = tiered.AcceptedAt
+		}
+	}
 	snap := &model.RequestPriceSnapshot{
 		SchemaVersion:    model.RequestPriceSnapshotVersion,
 		ModelName:        modelName,
@@ -213,7 +227,7 @@ func buildRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo) *mod
 		Currency:         model.RequestPriceCurrencyUSD,
 		BillingUnit:      unit,
 		AcceptedAt:       acceptedAt,
-		RuleVersion:      model.RequestPriceSnapshotVersion,
+		RuleVersion:      ruleVersion,
 		SupplyCost:       supplyCost,
 		SellPrice:        sellPrice,
 		SiteId:           factors.SiteId,
@@ -222,6 +236,10 @@ func buildRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo) *mod
 		FreeModel:        freeModel,
 		BilledGroupRatio: finalRatio.String(),
 		StoredMarkupK:    factors.StoredK.String(),
+	}
+	if tiered := info.TieredBillingSnapshot; tiered != nil {
+		snap.BusinessTimezone = tiered.BusinessTimezone
+		snap.AcceptedLocal = tiered.AcceptedLocal
 	}
 	if factors.TeamApplied {
 		snap.TeamApplied = true
@@ -247,6 +265,15 @@ func buildRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo) *mod
 	if audioCompletion := price.BilledAudioCompletionRatio(); (price.HasBilledAudioCompletionRatio() && !audioCompletion.IsZero()) || price.AudioCompletionRatio != 0 {
 		snap.AudioCompletionRatio = audioCompletion.String()
 	}
+	// A model/base, supply or team change can also affect the effective price.
+	// Fingerprint the frozen pricing inputs independently of request identity.
+	terms := *snap
+	terms.AcceptedAt = 0
+	terms.AcceptedLocal = ""
+	if encoded, err := common.Marshal(terms); err == nil {
+		snap.RuleVersion = fmt.Sprintf("%s:%x", ruleVersion, sha256.Sum256(encoded))
+	}
+
 	return snap
 }
 

@@ -236,6 +236,7 @@ export type ResellerSettings = {
   turnstile_secret_configured: Record<string, boolean> | null
   cloudflare_configured: boolean
   resend_configured: boolean
+  field_versions?: Record<string, string>
   settings_warnings?: string[]
   money_configured: boolean
   site_agreement_version: number
@@ -256,6 +257,7 @@ export type ResellerSettingsUpdate = Partial<
     | 'max_site_bonus_extra'
   >
 > & {
+  expected_versions?: Record<string, string>
   clear_secrets?: Array<
     | 'cloudflare_apiToken'
     | 'turnstile_widget_secret'

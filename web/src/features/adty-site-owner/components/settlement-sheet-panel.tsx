@@ -25,6 +25,7 @@ import { ErrorState } from '@/components/error-state'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
+import { getServerErrorMessage } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 import {
@@ -113,7 +114,13 @@ function settlementSheetLines(
     usd('release', t('Gift release'), sheet.gift_release_usd),
     usd('trial', t('Trial expense'), sheet.trial_expense_usd),
     usd('commission', t('Commission'), sheet.commission_usd),
-    usd('pending', t('Pending coverage'), sheet.pending_coverage_usd),
+    sheet.pending_coverage_unverified
+      ? {
+          id: 'pending',
+          label: t('Pending coverage'),
+          value: t('Historical amount requires verification'),
+        }
+      : usd('pending', t('Pending coverage'), sheet.pending_coverage_usd),
     usd('margin', t('Margin change'), sheet.margin_delta_usd),
     usd('earnings', t('Earnings change'), sheet.earnings_delta_usd),
     usd('available', t('Available change'), sheet.earnings_available_delta_usd),
@@ -161,11 +168,11 @@ export function SettlementSheetLines({ sheet }: { sheet: SettlementSheet }) {
 }
 
 /** Previous-day check sheet. It lists recorded lines and does not credit earnings. */
-export function SettlementSheetPanel() {
+export function SettlementSheetPanel({ siteId }: { siteId?: number }) {
   const { t } = useTranslation()
   const query = useQuery({
-    queryKey: siteOwnerKeys.list('settlement-sheets', {}),
-    queryFn: getOwnerSettlementSheets,
+    queryKey: siteOwnerKeys.list('settlement-sheets', { siteId }),
+    queryFn: () => getOwnerSettlementSheets(siteId),
   })
   const sheet = query.data?.[0]
 
@@ -177,7 +184,12 @@ export function SettlementSheetPanel() {
           'This sheet checks the previous business day. It does not add earnings.'
         )}
       </p>
-      {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
+      {query.isError && (
+        <ErrorState
+          description={getServerErrorMessage(query.error)}
+          onRetry={() => void query.refetch()}
+        />
+      )}
       {query.isSuccess && !sheet && (
         <EmptyState className='min-h-24' title={t('No settlement sheet yet')} />
       )}

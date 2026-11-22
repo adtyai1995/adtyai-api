@@ -110,7 +110,7 @@ func captureBillingPayerTx(tx *gorm.DB, row *BillingOperation) error {
 	}
 	row.PayerKind, row.PayerTeamId = BillingPayerPersonal, 0
 	if row.TokenId <= 0 {
-		return nil
+		return validateUnboundTeamEmployeeTx(tx, row.UserId)
 	}
 	var before AdtyTeamKey
 	hasBindings := tx.Migrator().HasTable(&AdtyTeamKey{})
@@ -136,6 +136,9 @@ func captureBillingPayerTx(tx *gorm.DB, row *BillingOperation) error {
 	}
 	if token.UserId != row.UserId {
 		return ErrBillingOperationConflict
+	}
+	if err := ValidateAdtyTeamTokenTx(tx, &token); err != nil {
+		return err
 	}
 	if token.OwnerSelfUseSiteId > 0 {
 		var site AdtySite

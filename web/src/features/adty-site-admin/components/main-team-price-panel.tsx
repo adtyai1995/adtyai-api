@@ -6,6 +6,14 @@ import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { validTeamDiscount } from '@/features/adty-team-registration/discount'
+import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { api } from '@/lib/api'
+import { handleServerError } from '@/lib/handle-server-error'
+import { ROLE } from '@/lib/roles'
+import { requireServerSuccess } from '@/lib/server-error-message'
+import { useAuthStore } from '@/stores/auth-store'
+
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -24,12 +32,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { PageSwitcher } from '@/features/referral/components/page-switcher'
-import { api } from '@/lib/api'
-import { handleServerError } from '@/lib/handle-server-error'
-import { ROLE } from '@/lib/roles'
-import { requireServerSuccess } from '@/lib/server-error-message'
-import { useAuthStore } from '@/stores/auth-store'
+import { CreateTeamForm } from './create-team-form'
 
 /** Root sets a main-site team discount. The form does not suggest a floor. */
 export function MainTeamPricePanel() {
@@ -78,6 +81,7 @@ export function MainTeamPricePanel() {
   if (!isRoot) return null
   return (
     <section className='flex flex-col gap-3'>
+      <CreateTeamForm />
       <h2 className='text-sm font-medium'>{t('Agreement price')}</h2>
       <p className='text-muted-foreground text-sm'>
         {t(
@@ -145,7 +149,7 @@ export function MainTeamPricePanel() {
       <Button
         type='button'
         variant='outline'
-        disabled={save.isPending || !selected || discount.trim() === ''}
+        disabled={save.isPending || !selected || !validTeamDiscount(discount)}
         onClick={() => save.mutate()}
       >
         {t('Save')}

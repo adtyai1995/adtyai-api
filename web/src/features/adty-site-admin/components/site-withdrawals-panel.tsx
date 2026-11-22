@@ -62,7 +62,7 @@ type Action =
   | { kind: 'paying'; row: AdminSiteWithdrawal }
   | { kind: 'paid'; row: AdminSiteWithdrawal }
   | { kind: 'reject'; row: AdminSiteWithdrawal }
-  | { kind: 'recall'; row: AdminSiteWithdrawal }
+  | { kind: 'recall' | 'failed'; row: AdminSiteWithdrawal }
 
 function statusVariant(status: string) {
   if (status === 'paid') return 'success' as const
@@ -99,15 +99,23 @@ export function SiteWithdrawalsPanel() {
   }
   const mutation = useMutation({
     mutationFn: async (next: Action) => {
-      if (next.kind === 'paying') return markSiteWithdrawalPaying(next.row.id)
+      if (next.kind === 'paying') {
+        return markSiteWithdrawalPaying(next.row.id, next.row.attempt_number)
+      }
       if (next.kind === 'paid') {
         return markSiteWithdrawalPaid(next.row.id, {
+          attempt_number: next.row.attempt_number,
           tx_id: txId.trim(),
           proof: proof.trim(),
         })
       }
-      if (next.kind === 'recall') {
-        return recallSiteWithdrawal(next.row.id, reason.trim())
+      if (next.kind === 'recall' || next.kind === 'failed') {
+        return recallSiteWithdrawal(
+          next.row.id,
+          reason.trim(),
+          next.row.attempt_number,
+          next.kind === 'failed' ? txId.trim() : ''
+        )
       }
       return rejectSiteWithdrawal(next.row.id, reason.trim())
     },
@@ -117,6 +125,7 @@ export function SiteWithdrawalsPanel() {
         paid: t('Payout recorded'),
         reject: t('Withdrawal rejected'),
         recall: t('Withdrawal recalled to pending'),
+        failed: t('Payout failure recorded'),
       }
       toast.success(done[next.kind])
       setAction(null)
@@ -140,6 +149,14 @@ export function SiteWithdrawalsPanel() {
         ),
         submitText: t('Record payout'),
         variant: 'brand' as const,
+      }
+    }
+    if (action?.kind === 'failed') {
+      return {
+        title: t('Confirm failed payout'),
+        description: t('Enter the failed payout reference'),
+        submitText: t('Confirm failed payout'),
+        variant: 'destructive' as const,
       }
     }
     if (action?.kind === 'recall') {
@@ -299,7 +316,7 @@ export function SiteWithdrawalsPanel() {
                   cellClassName: 'text-right',
                   cell: (row) => (
                     <div className='flex justify-end gap-1'>
-                      {row.status === 'pending' && (
+                      {row.status === 'pending' && !row.attempt_open && (
                         <Button
                           size='sm'
                           variant='outline'
@@ -308,7 +325,7 @@ export function SiteWithdrawalsPanel() {
                           {t('Mark paying')}
                         </Button>
                       )}
-                      {row.status === 'paying' && (
+                      {(row.status === 'paying' || row.attempt_open) && (
                         <>
                           <Button
                             size='sm'
@@ -319,14 +336,22 @@ export function SiteWithdrawalsPanel() {
                           <Button
                             size='sm'
                             variant='outline'
-                            onClick={() => open({ kind: 'recall', row })}
+                            onClick={() => open({ kind: 'failed', row })}
                           >
-                            {t('Recall to pending')}
+                            {t('Confirm failed payout')}
                           </Button>
+                          {row.status === 'paying' && (
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              onClick={() => open({ kind: 'recall', row })}
+                            >
+                              {t('Recall to pending')}
+                            </Button>
+                          )}
                         </>
                       )}
-                      {(row.status === 'pending' ||
-                        row.status === 'paying') && (
+                      {row.status === 'pending' && !row.attempt_open && (
                         <Button
                           size='sm'
                           variant='outline'
@@ -366,6 +391,7 @@ export function SiteWithdrawalsPanel() {
         open={
           action?.kind === 'paid' ||
           action?.kind === 'reject' ||
+          action?.kind === 'failed' ||
           action?.kind === 'recall'
         }
         onOpenChange={(value) => {
@@ -388,7 +414,8 @@ export function SiteWithdrawalsPanel() {
               variant={dialogConfig.variant}
               disabled={
                 mutation.isPending ||
-                (action?.kind === 'paid' ? !paidReady : reason.trim() === '')
+                (action?.kind === 'paid' ? !paidReady : reason.trim() === '') ||
+                (action?.kind === 'failed' && !txId.trim())
               }
               onClick={() => action && mutation.mutate(action)}
             >
@@ -402,6 +429,18 @@ export function SiteWithdrawalsPanel() {
             {action.row.subdomain || `#${action.row.site_id}`} ·{' '}
             {action.row.payout_amount} {action.row.payout_currency}
           </p>
+        )}
+        {action?.kind === 'failed' && (
+          <div className='space-y-2'>
+            <Label htmlFor='site-withdraw-failure-ref'>
+              {t('Failed payout reference')}
+            </Label>
+            <Input
+              id='site-withdraw-failure-ref'
+              value={txId}
+              onChange={(e) => setTxId(e.target.value)}
+            />
+          </div>
         )}
         {action?.kind === 'paid' ? (
           <>

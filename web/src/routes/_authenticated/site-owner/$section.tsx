@@ -39,7 +39,12 @@ export const Route = createFileRoute('/_authenticated/site-owner/$section')({
         params: { section: SITE_OWNER_DEFAULT_SECTION },
       })
     }
-    if (useAuthStore.getState().auth.user?.adty_site_owner !== true) {
+    const user = useAuthStore.getState().auth.user
+    if (
+      !(params.section === 'history'
+        ? user?.adty_archived_site_owner
+        : user?.adty_site_owner)
+    ) {
       throw redirect({ to: '/403' })
     }
   },

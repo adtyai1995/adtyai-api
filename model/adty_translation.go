@@ -33,6 +33,7 @@ func (AdtyTranslationConfig) TableName() string { return "adty_translation_confi
 
 // AdtyTranslationHead is the current English for one dynamic object. A late job cannot overwrite a newer version.
 type AdtyTranslationHead struct {
+	LeaseUntil  int64  `json:"-" gorm:"not null;default:0"`
 	Id          int64  `json:"id"`
 	ObjectKey   string `json:"object_key" gorm:"uniqueIndex;type:varchar(160)"`
 	SiteId      int    `json:"site_id" gorm:"index"`

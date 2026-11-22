@@ -91,32 +91,9 @@ func CheckAdtyBillingHoldForPayerTx(tx *gorm.DB, userID int, payerKind string, p
 	hasOpTable := tx.Migrator().HasTable(&BillingOperation{})
 
 	if payerKind == BillingPayerTeam && payerTeamID > 0 {
-		if hasOpTable {
-			var ops []BillingOperation
-			if err := tx.Select("operation_key", "user_id", "shortfall").
-				Where("payer_kind = ? AND payer_team_id = ? AND state = ? AND shortfall > 0", BillingPayerTeam, payerTeamID, BillingSettled).
-				Find(&ops).Error; err != nil {
-				return err
-			}
-			for _, op := range ops {
-				if !hasHoldTable {
-					return ErrAdtyUserPaidPaused
-				}
-				reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
-				var resolved int64
-				if err := tx.Model(&AdtyBillingHold{}).
-					Where("request_id IN ? AND status = ?", []string{reqID, op.OperationKey}, AdtyBillingHoldResolved).
-					Count(&resolved).Error; err != nil {
-					return err
-				}
-				if resolved == 0 {
-					return ErrAdtyUserPaidPaused
-				}
-			}
-		}
+		// A team shortfall is reviewed on its originating request (DEC-003).
 		return nil
 	}
-
 	if hasHoldTable {
 		var openHolds []AdtyBillingHold
 		if err := tx.Where("user_id = ? AND status = ?", userID, AdtyBillingHoldOpen).Find(&openHolds).Error; err != nil {

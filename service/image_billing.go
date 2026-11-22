@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -31,6 +32,11 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		request := billingexpr.RequestInput{}
 		if info.BillingRequestInput != nil {
 			request = *info.BillingRequestInput
+		}
+		if snap.AcceptedAt > 0 {
+			request.AcceptedAt = time.Unix(snap.AcceptedAt, 0).UTC()
+			request.AcceptedUnix = snap.AcceptedAt
+			request.BusinessTimezone = snap.BusinessTimezone
 		}
 		request.ImageCount = &count
 		cost, trace, runErr := billingexpr.RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, billingexpr.TokenParams{

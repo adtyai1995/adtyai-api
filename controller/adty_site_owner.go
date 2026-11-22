@@ -39,6 +39,46 @@ func adtyOwnerSiteOr403(c *gin.Context) (*model.AdtySite, bool) {
 	return site, true
 }
 
+// Only historical accounting endpoints opt in to selecting a closed site.
+func adtyOwnerAccountingSite(c *gin.Context) (*model.AdtySite, bool) {
+	raw, provided := c.GetQuery("archived_site_id")
+	if !provided {
+		return adtyOwnerSiteOr403(c)
+	}
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return nil, false
+	}
+	var site model.AdtySite
+	result := service.ArchivedAdtyOwnerSites(model.DB, c.GetInt("id")).Where("id = ?", id).Limit(1).Find(&site)
+	if result.Error != nil {
+		common.ApiError(c, result.Error)
+		return nil, false
+	}
+	if result.RowsAffected == 0 {
+		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteNotOwner)
+		return nil, false
+	}
+	return &site, true
+}
+
+func GetAdtyArchivedOwnerSites(c *gin.Context) {
+	type archivedSite struct {
+		Id         int    `json:"id"`
+		Subdomain  string `json:"subdomain"`
+		RootDomain string `json:"root_domain"`
+		ClosedAt   int64  `json:"closed_at"`
+	}
+	var rows []archivedSite
+	err := service.ArchivedAdtyOwnerSites(model.DB, c.GetInt("id")).Select("id, subdomain, root_domain, closed_at").Order("closed_at DESC, id DESC").Find(&rows).Error
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, rows)
+}
+
 // AcceptAdtySiteTerms 接受当前开站协议：POST /api/adty/site/terms/accept。不走站长中心的协议门。
 func AcceptAdtySiteTerms(c *gin.Context) {
 	var body struct {
@@ -112,8 +152,8 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		"custom_domain_enabled": cfg.CustomDomainEnabled,
 		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "bonus_methods": service.AdtySiteBonusMethods(site),
 		"seo_index": site.SeoIndex, "agreement_version": site.AgreementVer, "agreement_at": site.AgreementAt,
-		"close_requested_at": site.CloseRequestedAt,
-		"prices":             prices, "pricing_version": version, "domains": domains, "visibility": service.AdtySiteVisibility(site),
+		"close_requested_at": site.CloseRequestedAt, "close_execute_at": site.CloseExecuteAt,
+		"prices": prices, "pricing_version": version, "domains": domains, "visibility": service.AdtySiteVisibility(site),
 	})
 }
 
@@ -191,7 +231,7 @@ func GetAdtyOwnerStats(c *gin.Context) {
 	if !ok {
 		return
 	}
-	stats, err := service.GetAdtySiteStats(site.Id, c.Query("from"), c.Query("to"))
+	stats, err := service.GetAdtyOwnerStats(site.Id, c.GetInt("id"), c.Query("from"), c.Query("to"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -246,6 +286,7 @@ func adtyOwnerVisibleStats(stats *service.AdtySiteStats) adtyOwnerStats {
 
 // adtyOwnerEarningRow 是站长看到的一条收益：skipped 只给原因类别（self_use | migration），不给判断依据。
 type adtyOwnerEarningRow struct {
+	Id        int64           `json:"id"`
 	Day       string          `json:"day"`
 	UserId    int             `json:"user_id"`
 	Kind      string          `json:"kind"`
@@ -258,12 +299,12 @@ type adtyOwnerEarningRow struct {
 
 // GetAdtyOwnerEarnings 是收益流水：GET /api/adty/site/earnings?kind&p&page_size，带待结算、可提现、已提现。
 func GetAdtyOwnerEarnings(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
+	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
 		return
 	}
 	pageInfo, offset, limit := adtyPage(c)
-	query := model.DB.Model(&model.AdtySiteEarningDaily{}).Where("site_id = ?", site.Id)
+	query := model.DB.Model(&model.AdtySiteEarningDaily{}).Scopes(model.AdtyFinancialOwnerScope(site.Id, c.GetInt("id")))
 	if kind := strings.TrimSpace(c.Query("kind")); kind != "" {
 		query = query.Where("kind = ?", kind)
 	}
@@ -279,10 +320,10 @@ func GetAdtyOwnerEarnings(c *gin.Context) {
 	}
 	items := make([]adtyOwnerEarningRow, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, adtyOwnerEarningRow{Day: row.Day, UserId: row.UserId, Kind: row.Kind, Reason: row.Reason,
+		items = append(items, adtyOwnerEarningRow{Id: row.Id, Day: row.Day, UserId: row.UserId, Kind: row.Kind, Reason: row.Reason,
 			Revenue: row.Revenue, Earning: row.Earning, Status: row.Status, SettledAt: row.SettledAt})
 	}
-	balances, err := service.GetAdtySiteBalances(site)
+	balances, err := service.GetAdtyOwnerBalances(site, c.GetInt("id"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -295,12 +336,12 @@ func GetAdtyOwnerEarnings(c *gin.Context) {
 // GetAdtyOwnerEarningLines lists per-request earnings with model and billing group.
 // The response has no upstream channel fields.
 func GetAdtyOwnerEarningLines(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
+	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
 		return
 	}
 	_, offset, limit := adtyPage(c)
-	rows, err := service.ListAdtyOwnerEarningLines(site.Id, offset, limit)
+	rows, err := service.ListAdtyFinancialOwnerEarningLines(site.Id, c.GetInt("id"), offset, limit)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -502,7 +543,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 	switch c.Query("kind") {
 	case "earnings":
 		var total int64
-		earnings := model.DB.Model(&model.AdtySiteEarningDaily{}).Where("site_id = ?", site.Id)
+		earnings := model.DB.Model(&model.AdtySiteEarningDaily{}).Scopes(model.AdtyFinancialOwnerScope(site.Id, c.GetInt("id")))
 		if err := earnings.Count(&total).Error; err != nil {
 			common.ApiError(c, err)
 			return
@@ -511,7 +552,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 			return
 		}
 		var rows []model.AdtySiteEarningDaily
-		if err := model.DB.Where("site_id = ?", site.Id).Order("day, id").Find(&rows).Error; err != nil {
+		if err := earnings.Order("day, id").Find(&rows).Error; err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -520,7 +561,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 			fmt.Fprintf(&b, "%s,%d,%s,%s,%s,%s,%s\n", row.Day, row.UserId, row.Kind, row.Reason, row.Revenue.StringFixed(2), row.Earning.StringFixed(2), row.Status)
 		}
 	case "stats":
-		stats, err := service.GetAdtySiteStats(site.Id, c.Query("from"), c.Query("to"))
+		stats, err := service.GetAdtyOwnerStats(site.Id, c.GetInt("id"), c.Query("from"), c.Query("to"))
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -550,7 +591,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 			Earning decimal.Decimal
 		}
 		if err := model.DB.Model(&model.AdtySiteEarningDaily{}).Select("user_id, COALESCE(SUM(revenue),0) AS revenue, COALESCE(SUM(earning),0) AS earning").
-			Where("site_id = ? AND status <> ?", site.Id, model.AdtySiteEarningVoid).Group("user_id").Scan(&sums).Error; err != nil {
+			Scopes(model.AdtyFinancialOwnerScope(site.Id, c.GetInt("id"))).Where("status <> ?", model.AdtySiteEarningVoid).Group("user_id").Scan(&sums).Error; err != nil {
 			common.ApiError(c, err)
 			return
 		}

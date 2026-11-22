@@ -30,6 +30,8 @@ type AdtySiteWithdrawal struct {
 	IdempotencyKey string          `json:"-" gorm:"uniqueIndex;type:varchar(128)"`
 	TxID           string          `json:"tx_id" gorm:"type:varchar(128)"`
 	ProofNote      string          `json:"proof_note" gorm:"type:varchar(255)"`
+	AttemptOpen    bool            `json:"attempt_open" gorm:"not null;default:false"`
+	AttemptNumber  int             `json:"attempt_number" gorm:"not null;default:0"`
 	ReviewerId     int             `json:"reviewer_id"`
 	ReviewedAt     int64           `json:"reviewed_at"`
 	PaidAt         int64           `json:"paid_at"`
@@ -37,3 +39,21 @@ type AdtySiteWithdrawal struct {
 }
 
 func (AdtySiteWithdrawal) TableName() string { return "adty_site_withdrawals" }
+
+// One attempt stays attached to its withdrawal even when a verified failure is retried.
+type AdtySitePayoutAttempt struct {
+	Id           int64
+	WithdrawalId int64           `gorm:"uniqueIndex:idx_site_payout_attempt"`
+	Number       int             `gorm:"uniqueIndex:idx_site_payout_attempt"`
+	Status       string          `gorm:"size:16"`
+	AmountUSD    decimal.Decimal `gorm:"type:decimal(20,8);not null"`
+	StartedBy    int
+	CreatedAt    int64
+	RecalledBy   int
+	RecalledAt   int64
+	RecallReason string `gorm:"size:255"`
+	ResolvedBy   int
+	ResolvedAt   int64
+	Reference    string `gorm:"size:128"`
+	Proof        string `gorm:"size:255"`
+}

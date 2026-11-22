@@ -13,7 +13,7 @@ import (
 )
 
 func GetAdtySiteWithdrawRules(c *gin.Context) {
-	if _, ok := adtyOwnerSiteOr403(c); !ok {
+	if _, ok := adtyOwnerAccountingSite(c); !ok {
 		return
 	}
 	GetAdtyAdminWithdrawRules(c)
@@ -29,7 +29,7 @@ func GetAdtyAdminWithdrawRules(c *gin.Context) {
 }
 
 func GetAdtySiteWithdrawals(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
+	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
 		return
 	}
@@ -42,7 +42,7 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 }
 
 func PostAdtySiteWithdrawal(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
+	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
 		return
 	}
@@ -81,7 +81,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 }
 
 func PostAdtySiteWithdrawalCancel(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
+	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
 		return
 	}
@@ -150,9 +150,10 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 		return
 	}
 	var body struct {
-		Reason string `json:"reason"`
-		TxID   string `json:"tx_id"`
-		Proof  string `json:"proof"`
+		Attempt int    `json:"attempt_number"`
+		Reason  string `json:"reason"`
+		TxID    string `json:"tx_id"`
+		Proof   string `json:"proof"`
 	}
 	// A malformed body must not fall through with zero values: reject can release
 	// frozen earnings, so an unreadable request is refused instead of executed
@@ -165,14 +166,18 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 	var err error
 	switch action {
 	case "paying":
-		err = service.MarkAdtySiteWithdrawalPaying(id, c.GetInt("id"))
+		err = service.MarkAdtySiteWithdrawalPaying(id, c.GetInt("id"), body.Attempt)
 	case "recall":
 		reason := strings.TrimSpace(body.Reason)
 		if reason == "" {
 			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Recall reason is required"))
 			return
 		}
-		err = service.RecallAdtySiteWithdrawalToPending(id, c.GetInt("id"), reason)
+		if body.TxID != "" {
+			err = service.ConfirmAdtySiteWithdrawalFailed(id, c.GetInt("id"), body.Attempt, reason, body.TxID)
+		} else {
+			err = service.RecallAdtySiteWithdrawalToPending(id, c.GetInt("id"), reason, body.Attempt)
+		}
 	case "reject":
 		reason := strings.TrimSpace(body.Reason)
 		if reason == "" {
@@ -181,7 +186,7 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 		}
 		err = service.RejectAdtySiteWithdrawal(id, c.GetInt("id"), reason)
 	default:
-		err = service.MarkAdtySiteWithdrawalPaid(id, c.GetInt("id"), body.TxID, body.Proof)
+		err = service.MarkAdtySiteWithdrawalPaid(id, c.GetInt("id"), body.TxID, body.Proof, body.Attempt)
 	}
 	if err != nil {
 		common.ApiError(c, err)

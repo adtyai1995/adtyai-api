@@ -83,20 +83,8 @@ export function OverviewPanel() {
     revenue: Number(day.revenue_usd),
     earning: Number(day.earning_usd),
   }))
-  const retry = () => {
-    void stats.refetch()
-    void earnings.refetch()
-  }
-  if ((stats.isError && !stats.data) || (earnings.isError && !earnings.data)) {
-    return <ErrorState onRetry={retry} />
-  }
-  if (stats.isPending || earnings.isPending) {
-    return <LoadingState />
-  }
-
   return (
     <div className='flex flex-col gap-4'>
-      {(stats.isError || earnings.isError) && <ErrorState onRetry={retry} />}
       <section className='grid gap-2'>
         <h2 className='font-medium'>{t('Pending tasks')}</h2>
         <div className='flex flex-wrap gap-4'>
@@ -132,41 +120,55 @@ export function OverviewPanel() {
           </Link>
         ))}
       </nav>
-      <OwnerStatGrid
-        label={t('Earnings')}
-        items={[
-          {
-            label: t('Pending settlement'),
-            value: money(balances?.pending_usd),
-            negative: isNegativeAmount(balances?.pending_usd),
-          },
-          {
-            label: t('Withdrawable'),
-            value: money(balances?.available_usd),
-            negative: isNegativeAmount(balances?.available_usd),
-          },
-          { label: t('Withdrawn'), value: money(balances?.withdrawn_usd) },
-          {
-            label: t('Last 30 days'),
-            value: money(total?.earning_usd),
-            negative: isNegativeAmount(total?.earning_usd),
-          },
-        ]}
-      />
-      <OwnerStatGrid
-        label={t('Last 30 days')}
-        items={[
-          {
-            label: t('New customers'),
-            value: formatNumber(total?.new_customers ?? 0, locale),
-          },
-          {
-            label: t('Paying customers'),
-            value: formatNumber(total?.paid_customers ?? 0, locale),
-          },
-          { label: t('Customer spend'), value: money(total?.revenue_usd) },
-        ]}
-      />
+      {earnings.isError && (
+        <ErrorState onRetry={() => void earnings.refetch()} />
+      )}
+      {earnings.isPending && <LoadingState />}
+      {balances && (
+        <OwnerStatGrid
+          label={t('Earnings')}
+          items={[
+            {
+              label: t('Pending settlement'),
+              value: money(balances?.pending_usd),
+              negative: isNegativeAmount(balances?.pending_usd),
+            },
+            {
+              label: t('Withdrawable'),
+              value: balances?.requires_review
+                ? t(
+                    'Contact the platform to reconcile this historical site account'
+                  )
+                : money(balances?.available_usd),
+              negative: isNegativeAmount(balances?.available_usd),
+            },
+            { label: t('Withdrawn'), value: money(balances?.withdrawn_usd) },
+            {
+              label: t('Last 30 days'),
+              value: money(total?.earning_usd),
+              negative: isNegativeAmount(total?.earning_usd),
+            },
+          ]}
+        />
+      )}
+      {stats.isError && <ErrorState onRetry={() => void stats.refetch()} />}
+      {stats.isPending && <LoadingState />}
+      {total && (
+        <OwnerStatGrid
+          label={t('Last 30 days')}
+          items={[
+            {
+              label: t('New customers'),
+              value: formatNumber(total?.new_customers ?? 0, locale),
+            },
+            {
+              label: t('Paying customers'),
+              value: formatNumber(total?.paid_customers ?? 0, locale),
+            },
+            { label: t('Customer spend'), value: money(total?.revenue_usd) },
+          ]}
+        />
+      )}
       {Number(balances?.skipped_usd ?? 0) !== 0 && (
         <Alert>
           <AlertDescription>
@@ -177,32 +179,33 @@ export function OverviewPanel() {
           </AlertDescription>
         </Alert>
       )}
-      {series.length === 0 ? (
-        <EmptyState className='min-h-48' title={t('No data yet')} />
-      ) : (
-        <ChartContainer config={chartConfig} className='h-64 w-full'>
-          <AreaChart data={series} accessibilityLayer>
-            <CartesianGrid vertical={false} />
-            <XAxis dataKey='day' tickLine={false} axisLine={false} />
-            <YAxis tickLine={false} axisLine={false} width={48} />
-            <ChartTooltip content={<ChartTooltipContent />} />
-            <Area
-              dataKey='revenue'
-              type='monotone'
-              fill='var(--color-revenue)'
-              stroke='var(--color-revenue)'
-              fillOpacity={0.2}
-            />
-            <Area
-              dataKey='earning'
-              type='monotone'
-              fill='var(--color-earning)'
-              stroke='var(--color-earning)'
-              fillOpacity={0.3}
-            />
-          </AreaChart>
-        </ChartContainer>
-      )}
+      {stats.data &&
+        (series.length === 0 ? (
+          <EmptyState className='min-h-48' title={t('No data yet')} />
+        ) : (
+          <ChartContainer config={chartConfig} className='h-64 w-full'>
+            <AreaChart data={series} accessibilityLayer>
+              <CartesianGrid vertical={false} />
+              <XAxis dataKey='day' tickLine={false} axisLine={false} />
+              <YAxis tickLine={false} axisLine={false} width={48} />
+              <ChartTooltip content={<ChartTooltipContent />} />
+              <Area
+                dataKey='revenue'
+                type='monotone'
+                fill='var(--color-revenue)'
+                stroke='var(--color-revenue)'
+                fillOpacity={0.2}
+              />
+              <Area
+                dataKey='earning'
+                type='monotone'
+                fill='var(--color-earning)'
+                stroke='var(--color-earning)'
+                fillOpacity={0.3}
+              />
+            </AreaChart>
+          </ChartContainer>
+        ))}
     </div>
   )
 }

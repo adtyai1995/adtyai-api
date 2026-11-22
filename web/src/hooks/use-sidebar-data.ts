@@ -104,6 +104,9 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
       canAdmin(state.auth.user, ADTY_PERMISSIONS.TICKET_MANAGE) ||
       canAdmin(state.auth.user, ADTY_PERMISSIONS.TICKET_MANAGE_ALL)
   )
+  const hasArchivedSite = useAuthStore(
+    (state) => state.auth.user?.adty_archived_site_owner === true
+  )
   const isSiteOwner = useAuthStore(
     (state) => state.auth.user?.adty_site_owner === true
   )
@@ -207,6 +210,15 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               icon: Gift,
             },
             // adty task 11.6: only site owners see the owner center.
+            ...(hasArchivedSite
+              ? [
+                  {
+                    title: t('Historical site accounts'),
+                    url: '/site-owner/history',
+                    icon: Store,
+                  },
+                ]
+              : []),
             ...(isSiteOwner
               ? [
                   {
@@ -214,6 +226,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
                     url: '/site-owner/tickets',
                     icon: LifeBuoy,
                     badge: ticketsBadge,
+                  },
+                  {
+                    title: t('Team management'),
+                    url: '/site-owner/teams',
+                    icon: Users,
                   },
                   {
                     title: t('Site owner center'),
@@ -276,6 +293,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               requiredPermission: ADTY_PERMISSIONS.REFERRAL_READ,
             },
             {
+              title: t('Team management'),
+              url: '/site-admin/teams',
+              icon: Users,
+              requiredRole: ROLE.SUPER_ADMIN,
+            },
+            {
               title: t('Reseller sites'),
               url: '/site-admin/sites',
               activeUrls: ['/site-admin'],
@@ -325,6 +348,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     resellerSitesBadge,
     orderManagementBadge,
     isSiteOwner,
+    hasArchivedSite,
     isStaff,
     badges.modelPricing,
   ])

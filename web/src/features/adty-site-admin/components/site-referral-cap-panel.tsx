@@ -39,19 +39,24 @@ export function SiteReferralCapPanel() {
   const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
   const client = useQueryClient()
-  const [batchThreshold, setBatchThreshold] = useState('')
-  const [batchWindow, setBatchWindow] = useState('')
+  const [thresholdDraft, setBatchThreshold] = useState<string | null>(null)
+  const [windowDraft, setBatchWindow] = useState<string | null>(null)
   const batch = useQuery({
     queryKey: siteAdminKeys.list('site-invite-batch-policy', {}),
     queryFn: getAdminSiteInviteBatchPolicy,
     enabled: isRoot,
   })
+  const batchThreshold = thresholdDraft ?? batch.data?.threshold ?? ''
+  const batchWindow = windowDraft ?? batch.data?.window_hours ?? ''
   const saveBatch = useMutation({
-    mutationFn: () =>
-      saveAdminSiteInviteBatchPolicy(batchThreshold.trim(), batchWindow.trim()),
+    mutationFn: (disable: boolean) =>
+      saveAdminSiteInviteBatchPolicy(
+        disable ? '' : batchThreshold.trim(),
+        disable ? '' : batchWindow.trim()
+      ),
     onSuccess: () => {
-      setBatchThreshold('')
-      setBatchWindow('')
+      setBatchThreshold(null)
+      setBatchWindow(null)
       void client.invalidateQueries({ queryKey: siteAdminKeys.all })
     },
     onError: (error) => handleServerError(error),
@@ -61,9 +66,7 @@ export function SiteReferralCapPanel() {
     <section className='flex flex-col gap-3'>
       <h2 className='text-sm font-medium'>{t('Batch registration review')}</h2>
       <p className='text-muted-foreground text-sm'>
-        {t(
-          'Same-IP binds at this count enter review. Leave both fields empty to leave the check off.'
-        )}
+        {t('Same-IP binds at this count enter review.')}
       </p>
       {batch.isError && <ErrorState onRetry={() => void batch.refetch()} />}
       {batch.data && !batch.data.configured && (
@@ -99,12 +102,26 @@ export function SiteReferralCapPanel() {
         variant='outline'
         disabled={
           saveBatch.isPending ||
-          (batchThreshold.trim() === '') !== (batchWindow.trim() === '')
+          !batch.isSuccess ||
+          !batchThreshold.trim() ||
+          !batchWindow.trim() ||
+          (batchThreshold.trim() === batch.data?.threshold &&
+            batchWindow.trim() === batch.data?.window_hours)
         }
-        onClick={() => saveBatch.mutate()}
+        onClick={() => saveBatch.mutate(false)}
       >
         {t('Save')}
       </Button>
+      {batch.isSuccess && batch.data.configured && (
+        <Button
+          type='button'
+          variant='outline'
+          disabled={saveBatch.isPending}
+          onClick={() => saveBatch.mutate(true)}
+        >
+          {t('Disable rule')}
+        </Button>
+      )}
     </section>
   )
 }

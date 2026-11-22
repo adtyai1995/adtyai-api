@@ -147,7 +147,7 @@ func LoadAdtySiteWithdrawRules() (AdtySiteWithdrawRulesView, error) {
 
 func ListAdtySiteWithdrawals(siteID, ownerID int) ([]model.AdtySiteWithdrawal, error) {
 	var rows []model.AdtySiteWithdrawal
-	err := model.DB.Where("site_id = ? AND owner_user_id = ?", siteID, ownerID).Order("id desc").Limit(20).Find(&rows).Error
+	err := model.DB.Scopes(model.AdtyWithdrawalOwnerScope(siteID, ownerID)).Order("id desc").Limit(20).Find(&rows).Error
 	return rows, err
 }
 
@@ -237,7 +237,15 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		if err := model.AdtyLockForUpdate(tx).First(&site, input.SiteID).Error; err != nil {
 			return err
 		}
-		if site.OwnerUserId != input.OwnerID || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused) {
+		if site.OwnerUserId != input.OwnerID {
+			var count int64
+			if err := ArchivedAdtyOwnerSites(tx, input.OwnerID).Where("id = ?", site.Id).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 || input.OwnerID <= 0 {
+				return ErrAdtySiteNotOwner
+			}
+		} else if site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosed {
 			return common.NewMessage("No permission to perform this action")
 		}
 		var existing []model.AdtySiteWithdrawal
@@ -245,8 +253,12 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 			return err
 		}
 		if len(existing) > 0 {
+			existingOwner, err := model.ResolveAdtySiteFinancialOwnerTx(tx, existing[0].SiteId, existing[0].OwnerUserId)
+			if err != nil {
+				return err
+			}
 			existingRate, rateErr := decimal.NewFromString(existing[0].Rate)
-			if existing[0].SiteId != input.SiteID || existing[0].OwnerUserId != input.OwnerID ||
+			if existing[0].SiteId != input.SiteID || existingOwner != input.OwnerID ||
 				!existing[0].AmountUSD.Equal(amount) || existing[0].Method != method ||
 				existing[0].Network != input.Network || existing[0].AccountNo != accountNo ||
 				existing[0].AccountName != accountName || rateErr != nil || !existingRate.Equal(input.ExpectedRate) {
@@ -289,24 +301,33 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 	return created, err
 }
 
-func MarkAdtySiteWithdrawalPaying(id int64, reviewerID int) error {
+func MarkAdtySiteWithdrawalPaying(id int64, reviewerID int, expected ...int) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 			return err
 		}
-		if row.Status != model.AdtySiteWithdrawPending {
+		previous := 0
+		if len(expected) > 0 {
+			previous = expected[0]
+		}
+		if row.Status == model.AdtySiteWithdrawPaying && row.AttemptNumber == previous+1 {
+			return nil
+		}
+		if row.Status != model.AdtySiteWithdrawPending || row.AttemptNumber != previous || row.AttemptOpen {
 			return ErrAdtySiteWithdrawLocked
 		}
-		return tx.Model(&row).Updates(map[string]any{
-			"status": model.AdtySiteWithdrawPaying, "reviewer_id": reviewerID, "reviewed_at": time.Now().Unix(),
-		}).Error
+		now := time.Now().Unix()
+		attempt := model.AdtySitePayoutAttempt{WithdrawalId: row.Id, Number: previous + 1, AmountUSD: row.AmountUSD, Status: "unknown", StartedBy: reviewerID, CreatedAt: now}
+		if err := tx.Create(&attempt).Error; err != nil {
+			return err
+		}
+		return tx.Model(&row).Updates(map[string]any{"status": model.AdtySiteWithdrawPaying, "attempt_number": attempt.Number, "attempt_open": true, "reviewer_id": reviewerID, "reviewed_at": now}).Error
 	})
 }
 
-// RecallAdtySiteWithdrawalToPending returns a paying withdrawal to pending review
-// per DEC-030 (ISS-R1-0070), preserving the frozen earnings hold and recording reason.
-func RecallAdtySiteWithdrawalToPending(id int64, reviewerID int, reason string) error {
+// Recall changes the review state while the outstanding attempt keeps the hold.
+func RecallAdtySiteWithdrawalToPending(id int64, reviewerID int, reason string, expected ...int) error {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return common.NewMessage("Recall reason is required")
@@ -316,16 +337,62 @@ func RecallAdtySiteWithdrawalToPending(id int64, reviewerID int, reason string) 
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 			return err
 		}
+		if len(expected) > 0 && expected[0] != row.AttemptNumber {
+			return ErrAdtySiteWithdrawLocked
+		}
+		if row.Status == model.AdtySiteWithdrawPending && row.AttemptOpen && row.ProofNote == reason {
+			return nil
+		}
 		if row.Status != model.AdtySiteWithdrawPaying {
 			return ErrAdtySiteWithdrawLocked
 		}
-		return tx.Model(&row).Updates(map[string]any{
-			"status": model.AdtySiteWithdrawPending, "reviewer_id": reviewerID, "reviewed_at": time.Now().Unix(), "proof_note": reason,
-		}).Error
+		now := time.Now().Unix()
+		if row.AttemptNumber > 0 {
+			if err := tx.Model(&model.AdtySitePayoutAttempt{}).Where("withdrawal_id = ? AND number = ? AND status = ?", row.Id, row.AttemptNumber, "unknown").Updates(map[string]any{"recalled_by": reviewerID, "recalled_at": now, "recall_reason": reason}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Model(&row).Updates(map[string]any{"status": model.AdtySiteWithdrawPending, "attempt_open": true, "reviewer_id": reviewerID, "reviewed_at": time.Now().Unix(), "proof_note": reason}).Error
 	})
 }
 
-func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string) error {
+func ConfirmAdtySiteWithdrawalFailed(id int64, reviewerID, attempt int, reason, reference string) error {
+	reason, reference = strings.TrimSpace(reason), strings.TrimSpace(reference)
+	if reason == "" || reference == "" {
+		return common.NewMessage("Enter the failed payout reference")
+	}
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var row model.AdtySiteWithdrawal
+		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
+			return err
+		}
+		if (row.Status != model.AdtySiteWithdrawPaying && !(row.Status == model.AdtySiteWithdrawPending && row.AttemptOpen)) || attempt != row.AttemptNumber {
+			return ErrAdtySiteWithdrawLocked
+		}
+		if err := resolveSitePayoutAttempt(tx, &row, reviewerID, "failed", reference, reason); err != nil {
+			return err
+		}
+		return tx.Model(&row).Updates(map[string]any{"status": model.AdtySiteWithdrawPending, "attempt_open": false, "reviewer_id": reviewerID, "reviewed_at": time.Now().Unix(), "proof_note": reason}).Error
+	})
+}
+
+func resolveSitePayoutAttempt(tx *gorm.DB, row *model.AdtySiteWithdrawal, reviewerID int, status, reference, proof string) error {
+	now := time.Now().Unix()
+	if row.AttemptNumber == 0 {
+		// An old paying withdrawal predates attempt numbering.
+		return tx.Create(&model.AdtySitePayoutAttempt{WithdrawalId: row.Id, Number: 0, AmountUSD: row.AmountUSD, Status: status, StartedBy: row.ReviewerId, CreatedAt: row.ReviewedAt, ResolvedBy: reviewerID, ResolvedAt: now, Reference: reference, Proof: proof}).Error
+	}
+	res := tx.Model(&model.AdtySitePayoutAttempt{}).Where("withdrawal_id = ? AND number = ? AND status = ?", row.Id, row.AttemptNumber, "unknown").Updates(map[string]any{"status": status, "resolved_by": reviewerID, "resolved_at": now, "reference": reference, "proof": proof})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return ErrAdtySiteWithdrawLocked
+	}
+	return nil
+}
+
+func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string, attempt ...int) error {
 	txID = strings.TrimSpace(txID)
 	proof = strings.TrimSpace(proof)
 	if txID == "" && proof == "" {
@@ -336,11 +403,24 @@ func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string) er
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 			return err
 		}
-		if row.Status != model.AdtySiteWithdrawPaying {
+		number := 0
+		if len(attempt) > 0 {
+			number = attempt[0]
+		}
+		if number != row.AttemptNumber {
+			return ErrAdtySiteWithdrawLocked
+		}
+		if row.Status == model.AdtySiteWithdrawPaid && row.TxID == txID && row.ProofNote == proof {
+			return nil
+		}
+		if row.Status != model.AdtySiteWithdrawPaying && !(row.Status == model.AdtySiteWithdrawPending && row.AttemptOpen) {
 			return ErrAdtySiteWithdrawLocked
 		}
 		if row.Method == "usdt" && txID == "" {
 			return common.NewMessage("Enter the payout reference")
+		}
+		if err := resolveSitePayoutAttempt(tx, &row, reviewerID, "paid", txID, proof); err != nil {
+			return err
 		}
 		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, model.AdtySiteWalletEarnings, row.AmountUSD.Neg(), AdtySiteWalletChange{
 			Type: "earning_withdraw_paid", HoldDelta: row.AmountUSD.Neg(), IdempotencyKey: "site-withdraw-paid:" + row.IdempotencyKey,
@@ -349,7 +429,7 @@ func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string) er
 			return err
 		}
 		return tx.Model(&row).Updates(map[string]any{
-			"status": model.AdtySiteWithdrawPaid, "reviewer_id": reviewerID, "tx_id": txID, "proof_note": proof, "paid_at": time.Now().Unix(),
+			"status": model.AdtySiteWithdrawPaid, "attempt_open": false, "reviewer_id": reviewerID, "tx_id": txID, "proof_note": proof, "paid_at": time.Now().Unix(),
 		}).Error
 	})
 }
@@ -364,7 +444,7 @@ func RejectAdtySiteWithdrawal(id int64, reviewerID int, reason string) error {
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 			return err
 		}
-		if row.Status != model.AdtySiteWithdrawPending && row.Status != model.AdtySiteWithdrawPaying {
+		if row.Status != model.AdtySiteWithdrawPending || row.AttemptOpen {
 			return ErrAdtySiteWithdrawLocked
 		}
 		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
@@ -384,10 +464,14 @@ func releaseAdtySiteWithdrawal(id int64, siteID, ownerID int, status string, own
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 			return err
 		}
-		if row.SiteId != siteID || (ownerOnly && row.OwnerUserId != ownerID) {
+		frozenOwner, err := model.ResolveAdtySiteFinancialOwnerTx(tx, row.SiteId, row.OwnerUserId)
+		if err != nil {
+			return err
+		}
+		if row.SiteId != siteID || (ownerOnly && frozenOwner != ownerID) {
 			return common.NewMessage("No permission to perform this action")
 		}
-		if row.Status != model.AdtySiteWithdrawPending {
+		if row.Status != model.AdtySiteWithdrawPending || row.AttemptOpen {
 			return ErrAdtySiteWithdrawLocked
 		}
 		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{

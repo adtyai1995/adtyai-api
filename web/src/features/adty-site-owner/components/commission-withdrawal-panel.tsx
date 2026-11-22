@@ -146,6 +146,23 @@ function ReviewRow(props: {
         </p>
       )}
       <Payee row={row} />
+      {row.status === 'paid' && row.tx_id && (
+        <p>
+          {t('Transfer reference')} {row.tx_id}
+        </p>
+      )}
+      {row.status === 'paid' && row.proof_note && (
+        <p>
+          {t('Proof note')}{' '}
+          {row.proof_note.startsWith('/api/referral-assets/') ? (
+            <a href={row.proof_note} target='_blank' rel='noreferrer'>
+              {t('Payment proof')}
+            </a>
+          ) : (
+            row.proof_note
+          )}
+        </p>
+      )}
       {row.status === 'pending' && row.method !== 'balance' && (
         <div className='flex flex-col gap-2'>
           <Label htmlFor={`commission-reject-${row.id}`}>{t('Reason')}</Label>
@@ -183,10 +200,12 @@ function ReviewRow(props: {
             pay.mutate()
           }}
         >
-          {row.method === 'usdt' && (
+          {(row.method === 'usdt' || row.method === 'alipay') && (
             <div className='flex flex-col gap-2'>
               <Label htmlFor={`commission-tx-${row.id}`}>
-                {t('Transaction hash')}
+                {row.method === 'usdt'
+                  ? t('Transaction hash')
+                  : t('Transfer reference')}
               </Label>
               <Input
                 id={`commission-tx-${row.id}`}
@@ -209,7 +228,9 @@ function ReviewRow(props: {
             />
           </div>
           <div className='flex flex-col gap-2'>
-            <Label htmlFor={`commission-fail-${row.id}`}>{t('Reason')}</Label>
+            <Label htmlFor={`commission-fail-${row.id}`}>
+              {t('Failed payout reference')}
+            </Label>
             <Input
               id={`commission-fail-${row.id}`}
               value={reason}
@@ -218,16 +239,20 @@ function ReviewRow(props: {
             />
           </div>
           <div className='flex flex-wrap gap-2'>
-            <Button type='submit' variant='outline' disabled={pay.isPending}>
+            <Button
+              type='submit'
+              variant='outline'
+              disabled={pay.isPending || !txId.trim()}
+            >
               {t('Mark as paid')}
             </Button>
             <Button
               type='button'
               variant='outline'
-              disabled={review.isPending}
+              disabled={review.isPending || !reason.trim()}
               onClick={() => review.mutate(false)}
             >
-              {t('Reject')}
+              {t('Confirm failed payout')}
             </Button>
           </div>
         </form>
@@ -242,8 +267,9 @@ export function CommissionWithdrawalPanel() {
   const client = useQueryClient()
   const [page, setPage] = useState(1)
   useEffect(() => {
-    if (window.location.hash === '#pending')
-      document.getElementById('pending')?.scrollIntoView()
+    if (window.location.hash === '#pending') {
+      document.querySelector('#pending')?.scrollIntoView()
+    }
   }, [])
   const [status, setStatus] = useState(() =>
     window.location.hash === '#pending' ? 'pending' : 'actionable'

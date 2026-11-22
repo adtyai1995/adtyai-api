@@ -51,6 +51,7 @@ export interface AuthUser {
   sidebar_modules?: string
   permissions?: UserPermissions
   /** adty: the user owns an active, paused or closing reseller site (task 11.6). */
+  adty_archived_site_owner?: boolean
   adty_site_owner?: boolean
   /** Dedicated employee identity; never grants owner or administrator authority. */
   staff_site_id?: number

@@ -35,6 +35,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import { getOwnerSite, siteOwnerKeys } from './api'
 import { AgreementPanel } from './components/agreement-panel'
+import { ArchivedAccountsPanel } from './components/archived-accounts-panel'
 import { BonusPanel } from './components/bonus-panel'
 import { CommissionWithdrawalPanel } from './components/commission-withdrawal-panel'
 import { CustomersPanel } from './components/customers-panel'
@@ -60,17 +61,18 @@ export function SiteOwnerCenter(props: {
   section: SiteOwnerSectionId
   returnTradeNo?: string
 }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.auth.user)
   const termsRequired = user?.site_terms_required === true
   const site = useQuery({
     queryKey: siteOwnerKeys.site,
     queryFn: getOwnerSite,
-    enabled: !termsRequired,
+    enabled: !termsRequired && props.section !== 'history',
   })
   const labels: Record<SiteOwnerSectionId, string> = {
     overview: t('Overview'),
+    history: t('Historical site accounts'),
     tickets: t('Ticket workspace'),
     customers: t('Customers'),
     teams: t('Team management'),
@@ -86,6 +88,7 @@ export function SiteOwnerCenter(props: {
     agreement: t('Site agreement'),
   }
 
+  if (props.section === 'history') return <ArchivedAccountsPanel />
   return (
     <OwnerVerificationProvider>
       <DraftNavigationProvider>
@@ -114,6 +117,18 @@ export function SiteOwnerCenter(props: {
                       {t(
                         'Your site is closing. Customers will be emailed before it closes.'
                       )}
+                      {site.data.close_execute_at > 0 && (
+                        <p>
+                          {t('Closes on')} ·{' '}
+                          {new Intl.DateTimeFormat(i18n.resolvedLanguage, {
+                            dateStyle: 'medium',
+                            timeStyle: 'long',
+                            timeZone: 'Asia/Shanghai',
+                          }).format(
+                            new Date(site.data.close_execute_at * 1000)
+                          )}
+                        </p>
+                      )}
                     </AlertDescription>
                   </Alert>
                 )}
@@ -132,7 +147,10 @@ export function SiteOwnerCenter(props: {
                     variant='line'
                     className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 [--tab-underline:var(--brand)] group-data-horizontal/tabs:h-auto'
                   >
-                    {SITE_OWNER_SECTIONS.map((section) => (
+                    {SITE_OWNER_SECTIONS.filter(
+                      (section) =>
+                        section !== 'history' || user?.adty_archived_site_owner
+                    ).map((section) => (
                       <TabsTrigger
                         key={section}
                         value={section}
@@ -172,7 +190,10 @@ export function SiteOwnerCenter(props: {
                     <BonusPanel site={site.data} />
                   </TabsContent>
                   <TabsContent value='staff'>
-                    <StaffPanel siteId={site.data.id} />
+                    <StaffPanel
+                      siteId={site.data.id}
+                      closing={site.data.status === 'closing'}
+                    />
                   </TabsContent>
                   <TabsContent value='settings'>
                     <SiteSettingsPanel site={site.data} />
