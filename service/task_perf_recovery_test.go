@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,8 @@ import (
 )
 
 const failBillingCreateHook = "adty_test_fail_task_billing_create"
+
+var perfRecoveryTestSequence atomic.Uint64
 
 // quotaPollingAdaptor counts completion adjustments without changing the shared poll double.
 type quotaPollingAdaptor struct {
@@ -78,6 +81,8 @@ type perfRecoveryEnv struct {
 func newPerfRecoveryEnv(t *testing.T, id int, modelName string) *perfRecoveryEnv {
 	t.Helper()
 	truncate(t)
+	// The in-process perf buckets outlive both database fixtures.
+	modelName = fmt.Sprintf("%s-%d", modelName, perfRecoveryTestSequence.Add(1))
 	started := time.Now()
 	when := started
 	env := &perfRecoveryEnv{

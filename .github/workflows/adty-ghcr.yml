@@ -47,6 +47,17 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # middleware rate-limit evidence dials this port. InitRedisClient exits the
+      # test process when the ping fails, so the service has to be up first.
+      redis:
+        image: redis:7.4.4-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       # 同 ci.yml，去掉了 repository（push 事件里它是空的）
@@ -100,7 +111,7 @@ jobs:
         run: make test
 
       - name: Test main package deployment constraints
-        run: go test -count=1 -run 'TestPprofListenAddrIsLoopback|TestRootComposeDoesNotPublishExampleSecrets|TestRunnableEntrypointsDoNotUseFloatingUpstreamImages' .
+        run: go test -count=1 -run 'TestPprofListenAddrIsLoopback|TestRootCompose|TestRunnableEntrypointsDoNotUseFloatingUpstreamImages' .
 
       - name: Scan Go modules for known vulnerabilities
         run: |

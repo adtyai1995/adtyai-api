@@ -670,9 +670,7 @@ func TestModelPriceHelperDeepSeekThinkingTailsBillAtBase(t *testing.T) {
 	t.Cleanup(func() { settings.ThinkingModelBlacklist = originalBlacklist })
 	settings.ThinkingModelBlacklist = append(originalBlacklist, "deepseek-v4-pro-max")
 
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	ctx.Set("group", "default")
+	// Each model is priced as a separate request with its own frozen snapshot.
 	for origin, base := range map[string]string{
 		"deepseek-flash-none":           "deepseek-flash",
 		"deepseek-flash-low":            "deepseek-flash",
@@ -682,6 +680,9 @@ func TestModelPriceHelperDeepSeekThinkingTailsBillAtBase(t *testing.T) {
 		"deepseek-flash-max@effort:low": "deepseek-flash",
 		"deepseek-v4-pro@thinking:off":  "deepseek-v4-pro",
 	} {
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		ctx.Set("group", "default")
 		info := &relaycommon.RelayInfo{
 			OriginModelName: origin, UserGroup: "default", UsingGroup: "default",
 			BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)},
@@ -689,11 +690,15 @@ func TestModelPriceHelperDeepSeekThinkingTailsBillAtBase(t *testing.T) {
 		_, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
 		require.NoError(t, err, origin)
 		assert.Equal(t, base, info.BillingModelName, origin)
-		expression, _ := billing_setting.GetBuiltinBillingExpr(base)
+		expression, ok := billing_setting.GetBuiltinBillingExpr(base)
+		require.True(t, ok, base)
 		require.NotNil(t, info.TieredBillingSnapshot, origin)
 		assert.Equal(t, expression, info.TieredBillingSnapshot.ExprString, origin)
 	}
 
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Set("group", "default")
 	info := &relaycommon.RelayInfo{OriginModelName: "deepseek-v4-pro-max", UserGroup: "default", UsingGroup: "default"}
 	_, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
 	require.Error(t, err)

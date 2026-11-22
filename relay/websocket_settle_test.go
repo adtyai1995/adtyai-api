@@ -26,6 +26,8 @@ import (
 )
 
 func TestWssHelperSettlementFailureRemainsPendingUntilRecovery(t *testing.T) {
+	poolDrained := func() bool { return gopool.WorkerCount() == 0 }
+	require.Eventually(t, poolDrained, 5*time.Second, time.Millisecond)
 	opened, err := model.OpenAdtyTestDatabase()
 	if errors.Is(err, model.ErrAdtyTestDSNUnset) {
 		t.Skip("ADTY_TEST_PG_DSN is unset")
@@ -40,11 +42,11 @@ func TestWssHelperSettlementFailureRemainsPendingUntilRecovery(t *testing.T) {
 	user := model.User{Username: "ws-settle-failure", Password: "x", Group: "default", Quota: 1_000_000,
 		Status: common.UserStatusEnabled, Role: common.RoleCommonUser}
 	require.NoError(t, opened.DB.Create(&user).Error)
-	// The process-wide notification cleaner owns one permanent pool worker.
+	// The notification cleaner runs outside the pool.
 	_, err = service.CheckNotificationLimit(user.Id, "ws-settle-test")
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		require.Eventually(t, func() bool { return gopool.WorkerCount() == 1 }, 5*time.Second, time.Millisecond)
+		require.Eventually(t, poolDrained, 5*time.Second, time.Millisecond)
 	})
 	token := model.Token{UserId: user.Id, Key: "ws-settle-failure", RemainQuota: 1_000_000, Status: common.TokenStatusEnabled}
 	require.NoError(t, opened.DB.Create(&token).Error)
