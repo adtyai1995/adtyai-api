@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type AdtyEpayCreateResult struct{ Mode, QRCode, PayURL, URLScheme, GatewayTradeN
 var errEpayOrderAbsent = fmt.Errorf("epay order was not found")
 
 type AdtyEpayQueryResult struct {
+	PaidAt         int64
 	Paid           bool
 	MoneyCNY       decimal.Decimal
 	TypeCode       string
@@ -259,6 +261,7 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 	var parsed struct {
 		Code       json.RawMessage `json:"code"`
 		Msg        string          `json:"msg"`
+		PaidAt     json.RawMessage `json:"endtime"`
 		Status     json.RawMessage `json:"status"`
 		Money      json.RawMessage `json:"money"`
 		Type       string          `json:"type"`
@@ -278,7 +281,14 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 	}
 	result := &AdtyEpayQueryResult{TypeCode: parsed.Type, GatewayTradeNo: parsed.TradeNo, OutTradeNo: parsed.OutTradeNo,
 		MerchantId: strings.Trim(strings.TrimSpace(string(parsed.MerchantId)), `"`)}
-	result.Paid = strings.Trim(strings.TrimSpace(string(parsed.Status)), `"`) == "1"
+	switch strings.Trim(strings.TrimSpace(string(parsed.Status)), `"`) {
+	case "1":
+		result.Paid = true
+	case "0":
+	default:
+		return nil, fmt.Errorf("epay returned unknown payment status")
+	}
+	result.PaidAt = AdtyEpayPaidTime(strings.Trim(string(parsed.PaidAt), `"`))
 	if money := strings.Trim(strings.TrimSpace(string(parsed.Money)), `"`); money != "" {
 		if value, err := decimal.NewFromString(money); err == nil {
 			result.MoneyCNY = value
@@ -330,4 +340,16 @@ func adtyEpayGet(ctx context.Context, target string) ([]byte, error) {
 		return nil, fmt.Errorf("epay http %d", resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// Accept an absolute gateway timestamp only. An offset-free clock reading
+// cannot establish payment order across gateways in different time zones.
+func AdtyEpayPaidTime(value string) int64 {
+	if n, err := strconv.ParseInt(value, 10, 64); err == nil && n > 0 && n <= time.Now().Unix() {
+		return n
+	}
+	if dt, err := time.Parse(time.RFC3339, value); err == nil && dt.Unix() > 0 && !dt.After(time.Now()) {
+		return dt.Unix()
+	}
+	return 0
 }

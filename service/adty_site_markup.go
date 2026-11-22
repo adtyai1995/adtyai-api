@@ -997,7 +997,13 @@ func adtyOnConsumeLog(c *gin.Context, userId int, params *model.RecordConsumeLog
 		if params.Other == nil {
 			params.Other = model.NewLogOther()
 		}
-		params.Other.SetAdmin("billing_operation_key", c.GetString(adtyBillingOperationContextKey))
+		key := c.GetString(adtyBillingOperationContextKey)
+		params.Other.SetAdmin("billing_operation_key", key)
+		if value, ok := c.Get(usageBillingContextKey); ok {
+			if op, ok := value.(*model.BillingOperation); ok && op.OperationKey == key && op.UserId == userId {
+				stampRequestUsageOwner(params.Other, op)
+			}
+		}
 	}
 	if AdtyRecordConsumeEarning != nil {
 		AdtyRecordConsumeEarning(c, userId, params)

@@ -36,7 +36,8 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	}
 	bonusRates := map[string]float64{}
 	methods := make([]service.AdtyMethodInfo, 0)
-	scenes, err := service.AdtyPaymentScenesForUser(c.GetInt("id"), service.AdtyPaymentScope{Business: c.Query("business"), SiteID: service.AdtyRequestSiteID(c)})
+	teamID, _ := strconv.ParseInt(c.Query("team_id"), 10, 64)
+	scenes, err := service.AdtyPaymentScenesForUser(c.GetInt("id"), service.AdtyPaymentScope{TeamID: teamID, Business: c.Query("business"), SiteID: service.AdtyRequestSiteID(c)})
 	if err != nil {
 		writeAdtyTopUpError(c, err)
 		return
@@ -52,8 +53,10 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	if c.Query("business") == model.AdtyBusinessOwnerSelfUseTopup {
 		ownerSiteID = service.AdtyRequestSiteID(c)
 	}
-	if view, err := model.GetUserPendingAdtyTopUp(c.GetInt("id"), time.Now().Unix(), ownerSiteID); err == nil {
-		pending = view
+	if c.Query("business") != model.AdtyBusinessTeamTopup {
+		if view, err := model.GetUserPendingAdtyTopUp(c.GetInt("id"), time.Now().Unix(), ownerSiteID); err == nil {
+			pending = view
+		}
 	}
 	common.ApiSuccess(c, gin.H{
 		"tiers":              tiers,

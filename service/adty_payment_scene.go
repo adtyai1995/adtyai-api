@@ -69,12 +69,24 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 		scene.UserTypes = append([]string{}, scene.UserTypes...)
 		scene.Name = strings.TrimSpace(scene.Name)
 		if !adtySceneKey.MatchString(scene.Key) || seen[scene.Key] || scene.Name == "" || utf8.RuneCountInString(scene.Name) > 120 ||
-			!slices.Contains([]string{model.AdtyBusinessWalletTopup, model.AdtyBusinessOwnerSelfUseTopup}, scene.Business) || len(scene.Providers) == 0 || len(scene.Providers) > 6 ||
+			!slices.Contains([]string{model.AdtyBusinessWalletTopup, model.AdtyBusinessTeamTopup, model.AdtyBusinessOwnerSelfUseTopup}, scene.Business) || len(scene.Providers) == 0 || len(scene.Providers) > 6 ||
 			len(scene.Methods) > 100 || len(scene.ChannelIDs) > 1000 || len(scene.SiteIDs) > 1000 || len(scene.Currencies) > 32 || len(scene.UserTypes) > 6 ||
 			!slices.Contains([]string{"all", "main", "all_sites", "selected"}, scene.SiteScope) ||
 			(scene.SiteScope == "selected" && len(scene.SiteIDs) == 0) || (scene.SiteScope != "selected" && len(scene.SiteIDs) != 0) ||
 			scene.MinUSD.IsNegative() || scene.MaxUSD.IsNegative() || (scene.MaxUSD.IsPositive() && scene.MinUSD.GreaterThan(scene.MaxUSD)) {
 			return nil, common.NewMessage("Invalid parameters")
+		}
+		if len(scene.TeamIDs) > 1000 || len(scene.TeamIDs) > 0 && scene.Business != model.AdtyBusinessTeamTopup {
+			return nil, common.NewMessage("Invalid parameters")
+		}
+		if len(scene.TeamIDs) > 0 {
+			var count int64
+			if err := model.DB.Model(&model.AdtyTeam{}).Where("id IN ?", scene.TeamIDs).Count(&count).Error; err != nil {
+				return nil, err
+			}
+			if count != int64(len(scene.TeamIDs)) {
+				return nil, common.NewMessage("Invalid parameters")
+			}
 		}
 		if scene.Business == model.AdtyBusinessOwnerSelfUseTopup &&
 			(!slices.Contains([]string{"all_sites", "selected"}, scene.SiteScope) || len(scene.UserTypes) != 1 || scene.UserTypes[0] != "site_owner") {
@@ -252,6 +264,35 @@ func adtySceneAudience(scene model.AdtyPaymentScene, siteID int, kind string, bu
 	return false
 }
 
+// An explicit team policy for this site and payer replaces wallet inheritance,
+// including when Root has disabled every applicable team rule.
+func adtyScopedScenes(scenes []model.AdtyPaymentScene, business string, site int, kind string, teamID int64) ([]model.AdtyPaymentScene, string) {
+	if business != model.AdtyBusinessTeamTopup {
+		return scenes, business
+	}
+	var scoped []model.AdtyPaymentScene
+	for _, scene := range scenes {
+		if len(scene.TeamIDs) > 0 && !slices.Contains(scene.TeamIDs, teamID) {
+			continue
+		}
+		enabled := scene.Enabled
+		scene.Enabled = true
+		if adtySceneAudience(scene, site, kind, business) {
+			scene.Enabled = enabled
+			scoped = append(scoped, scene)
+		}
+	}
+	if len(scoped) > 0 {
+		return scoped, business
+	}
+	for _, scene := range scenes {
+		if scene.Key == model.AdtyBusinessWalletTopup {
+			return []model.AdtyPaymentScene{scene}, model.AdtyBusinessWalletTopup
+		}
+	}
+	return nil, business
+}
+
 func adtySceneMethod(scene model.AdtyPaymentScene, provider, method, currency string) bool {
 	return slices.Contains(scene.Providers, provider) && (len(scene.Methods) == 0 || slices.Contains(scene.Methods, method)) &&
 		(len(scene.Currencies) == 0 || slices.Contains(scene.Currencies, strings.ToUpper(currency)))
@@ -274,7 +315,12 @@ func AdtyPaymentScenesForUser(userID int, scope ...AdtyPaymentScope) ([]AdtyPaym
 		kind = "site_owner"
 	}
 	views := []AdtyPaymentSceneView{}
-	for _, scene := range config.Scenes {
+	var teamID int64
+	if len(scope) > 0 {
+		teamID = scope[0].TeamID
+	}
+	scenes, business := adtyScopedScenes(config.Scenes, business, siteID, kind, teamID)
+	for _, scene := range scenes {
 		if !adtySceneAudience(scene, siteID, kind, business) {
 			continue
 		}
@@ -359,17 +405,18 @@ func authorizeAdtyPaymentScene(db *gorm.DB, config *AdtyPaymentScenes, userID in
 	if quote == nil {
 		return nil, nil, common.NewMessage("Invalid parameters")
 	}
-	siteID, business, err := adtyPaymentScopeIdentity(db, user, []AdtyPaymentScope{{Business: quote.Business, SiteID: quote.SiteID}}, lockUser)
+	siteID, business, err := adtyPaymentScopeIdentity(db, user, []AdtyPaymentScope{{Business: quote.Business, SiteID: quote.SiteID, TeamID: quote.TeamID}}, lockUser)
 	if err != nil {
 		return nil, nil, err
 	}
+	scenes, business := adtyScopedScenes(config.Scenes, business, siteID, kind, quote.TeamID)
 	if key == "" {
 		key = business
 	}
 	if business == model.AdtyBusinessOwnerSelfUseTopup {
 		kind = "site_owner"
 	}
-	for _, scene := range config.Scenes {
+	for _, scene := range scenes {
 		if scene.Key != key {
 			continue
 		}
@@ -399,7 +446,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		return common.NewMessage("Invalid parameters")
 	}
 	method := ext.Method
-	quote := &AdtyQuote{Business: ext.Business, SiteID: ext.SiteId, FaceUSD: ext.FaceUSD, PayAmount: ext.PayAmount, PayCurrency: ext.PayCurrency}
+	quote := &AdtyQuote{TeamID: ext.TeamId, Business: ext.Business, SiteID: ext.SiteId, FaceUSD: ext.FaceUSD, PayAmount: ext.PayAmount, PayCurrency: ext.PayCurrency}
 	config := &AdtyPaymentScenes{}
 	bonusValues := map[string]string{}
 	prepare := func(tx *gorm.DB) error {

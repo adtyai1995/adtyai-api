@@ -221,6 +221,11 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 		if result.RowsAffected != 1 {
 			return ErrAdtyStaffConflict
 		}
+		if staff.Status != "enabled" || !slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffTicketManage) {
+			if err := releaseStaffTicketsTx(tx, staff, ownerID); err != nil {
+				return err
+			}
+		}
 		return recordSiteAuditTx(tx, siteID, action, ownerID, before, AdtyStaffViewOf(staff), "")
 	})
 	if err != nil {

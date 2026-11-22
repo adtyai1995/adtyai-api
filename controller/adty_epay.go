@@ -28,11 +28,17 @@ var (
 // adtyEpayTimeouts 返回单通道时限和总时限。
 func adtyEpayTimeouts() (perChannel, total time.Duration, err error) {
 	current, err := readAuthoritativeEpayTimeouts()
-	if err != nil { return 0, 0, err }
+	if err != nil {
+		return 0, 0, err
+	}
 	channelRaw := current[adty_setting.EpaySettingKeyChannelTimeout]
-	if channelRaw == "" { channelRaw = strconv.Itoa(adty_setting.DefaultEpayChannelTimeoutSeconds) }
+	if channelRaw == "" {
+		channelRaw = strconv.Itoa(adty_setting.DefaultEpayChannelTimeoutSeconds)
+	}
 	channelSec, totalSec, err := adty_setting.ValidateEpayTimeoutWithCurrent(adty_setting.EpaySettingKeyChannelTimeout, channelRaw, current)
-	if err != nil { return 0, 0, err }
+	if err != nil {
+		return 0, 0, err
+	}
 	perChannel = time.Duration(channelSec) * time.Second
 	total = time.Duration(totalSec) * time.Second
 	if adtyEpayChannelTimeoutOverride > 0 {
@@ -104,16 +110,15 @@ func RequestAdtyEpayPay(c *gin.Context) {
 		writeAdtyTopUpError(c, err)
 		return
 	}
-	minutes := adty_setting.GetTopupSetting().EpayOrderMinutes
-	if minutes <= 0 {
-		minutes = 10
-	}
 	exclude := map[int]bool{}
 	for _, id := range req.ExcludeChannelIds {
 		exclude[id] = true
 	}
 	channelTimeout, totalTimeout, err := adtyEpayTimeouts()
-	if err != nil { writeAdtyTopUpError(c, err); return }
+	if err != nil {
+		writeAdtyTopUpError(c, err)
+		return
+	}
 	deadline := time.Now().Add(totalTimeout)
 	callback := strings.TrimRight(service.GetCallbackAddress(), "/")
 	for attempt := 0; attempt < maxAttempts && time.Now().Before(deadline); attempt++ {
@@ -128,7 +133,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 			provider:     model.PaymentProviderAdtyEpay,
 			method:       req.Method,
 			quote:        quote,
-			expireAt:     time.Now().Unix() + int64(minutes*60),
+			expireAt:     service.AdtyEpayExpiry(time.Now().Unix()),
 			channelID:    channel.Id,
 			channel:      channel,
 			methodLabel:  method.DisplayName,
@@ -288,7 +293,9 @@ func completeAdtyEpayCallback(channel *model.AdtyEpayChannel, tradeNo string, pa
 	}
 	LockOrder(tradeNo)
 	defer UnlockOrder(tradeNo)
+	paidAt := service.AdtyEpayPaidTime(params["endtime"])
 	_, err = model.CompleteAdtyTopUp(tradeNo, model.AdtyPaymentFacts{
+		PaidAt: paidAt, PaidTimeVerified: paidAt > 0,
 		Provider:       model.PaymentProviderAdtyEpay,
 		Method:         ext.Method,
 		PaidAmount:     money,

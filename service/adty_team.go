@@ -67,7 +67,7 @@ func creditAdtyTeamTopUpTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopup
 	if team.LeaderUserId != topUp.UserId || (team.Status != model.AdtyTeamStatusActive && team.Status != model.AdtyTeamStatusClosed) {
 		return errors.Join(ErrAdtyTeamForbidden, model.ErrTopUpStatusInvalid)
 	}
-	if err := applyAdtyTeamQuotaTx(tx, &team, principal, "topup", ext.TradeNo, topUp.UserId); err != nil {
+	if err := applyAdtyTeamQuotaTx(tx, &team, principal, "topup", ext.TradeNo, topUp.UserId, ext.TeamPaymentEffectiveAt); err != nil {
 		return err
 	}
 	if team.Status == model.AdtyTeamStatusClosed && adtyTeamTableReadyFor(tx, &model.AdtyAnomalyDisposition{}) {
@@ -855,9 +855,19 @@ func CreateAdtyTeam(leaderId, siteId int, name string, discount decimal.Decimal)
 	return created, err
 }
 
+func validateAdtyTeamName(name string) error {
+	if name == "" || utf8.RuneCountInString(name) > 64 {
+		return common.NewMessage("Team name must contain 1 to 64 characters")
+	}
+	return nil
+}
+
 func createAdtyTeamTx(tx *gorm.DB, leaderId, siteId int, name string, discount decimal.Decimal) (*AdtyTeamCreated, error) {
 	name = strings.TrimSpace(name)
-	if leaderId <= 0 || siteId < 0 || name == "" || len(name) > 64 || utf8.RuneCountInString(name) > 64 || !adtySiteTeamPayRatioConfigValid(discount) {
+	if err := validateAdtyTeamName(name); err != nil {
+		return nil, err
+	}
+	if leaderId <= 0 || siteId < 0 || !adtySiteTeamPayRatioConfigValid(discount) {
 		return nil, ErrAdtyTeamInvalid
 	}
 	leader, err := lockAdtyTeamUser(tx, leaderId)
@@ -1813,7 +1823,7 @@ func adtyTeamPriorReservedQuotaTx(tx *gorm.DB, teamId int64, ref string) (int64,
 	return sum, nil
 }
 
-func applyAdtyTeamQuotaTx(tx *gorm.DB, team *model.AdtyTeam, delta int64, kind, ref string, actor int) error {
+func applyAdtyTeamQuotaTx(tx *gorm.DB, team *model.AdtyTeam, delta int64, kind, ref string, actor int, effectiveAt ...int64) error {
 	before := team.SharedQuota
 	after := before + delta
 	if after < 0 {
@@ -1827,7 +1837,7 @@ func applyAdtyTeamQuotaTx(tx *gorm.DB, team *model.AdtyTeam, delta int64, kind, 
 		}
 		discriminator = priorReserved - delta
 	}
-	if err := model.ApplyAdtyTeamFundMovementTx(tx, team, kind, ref, delta); err != nil {
+	if err := model.ApplyAdtyTeamFundMovementTx(tx, team, kind, ref, delta, effectiveAt...); err != nil {
 		return err
 	}
 	if err := tx.Model(team).Update("shared_quota", after).Error; err != nil {

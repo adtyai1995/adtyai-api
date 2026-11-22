@@ -186,6 +186,21 @@ func GetAdtySiteInviteWithdrawRules(c *gin.Context) {
 	common.ApiSuccess(c, view)
 }
 
+func GetAdtySiteInviteWithdrawalQuote(c *gin.Context) {
+	source, err := strconv.Atoi(c.DefaultQuery("site_id", "0"))
+	amount, parseErr := decimal.NewFromString(c.Query("amount_usd"))
+	if err != nil || source < 0 || parseErr != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	quote, err := service.QuoteAdtySiteInviteWithdrawal(c.GetInt("id"), source, amount, c.Query("method"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, quote)
+}
+
 func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 	var body struct {
 		SiteID          int    `json:"site_id"`
@@ -195,6 +210,7 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 		AccountNo       string `json:"account_no"`
 		AccountName     string `json:"account_name"`
 		QRImageURL      string `json:"qr_image_url"`
+		ExpectedQuoteID string `json:"expected_quote_id"`
 		ExpectedCNYRate string `json:"expected_cny_rate"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
@@ -217,10 +233,15 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 	row, err := service.CreateAdtySiteInviteWithdrawal(service.AdtySiteInviteWithdrawalInput{
 		UserID: c.GetInt("id"), SiteID: body.SiteID, Amount: amount, Method: body.Method,
 		Network: body.Network, AccountNo: body.AccountNo, AccountName: body.AccountName,
-		QRImageURL: body.QRImageURL, ExpectedCNYRate: expected,
+		QRImageURL: body.QRImageURL, ExpectedCNYRate: expected, ExpectedQuoteID: body.ExpectedQuoteID, RequireQuote: true,
 		IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")),
 	})
 	if err != nil {
+		var quote *service.SiteInviteQuoteChanged
+		if errors.As(err, &quote) {
+			common.ApiErrorStatus(c, http.StatusOK, common.NewMessage(quote.Error()), gin.H{"code": "quote_changed", "data": quote.Quote})
+			return
+		}
 		var changed *service.RateChangedError
 		if errors.As(err, &changed) {
 			common.ApiErrorStatus(c, http.StatusOK, common.NewMessage("The exchange rate has changed. Confirm the new amount"), gin.H{"code": "rate_changed", "data": changed.Change})
@@ -229,7 +250,7 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, row)
+	common.ApiSuccess(c, presentAdtySiteInviteWithdrawals([]model.AdtySiteInviteWithdrawal{*row}, nil)[0])
 }
 
 func GetAdtySiteInviteWithdrawals(c *gin.Context) {
@@ -357,7 +378,9 @@ func processSiteWithdrawalPaid(c *gin.Context, process func(int, int64, string, 
 
 type adtySiteInviteWithdrawalItem struct {
 	model.AdtySiteInviteWithdrawal
-	Username string `json:"username,omitempty"`
+	CanCancel    bool   `json:"can_cancel"`
+	CancelReason string `json:"cancel_reason"`
+	Username     string `json:"username,omitempty"`
 }
 
 func presentAdtySiteInviteWithdrawals(rows []model.AdtySiteInviteWithdrawal, names map[int]string) []adtySiteInviteWithdrawalItem {
@@ -366,7 +389,8 @@ func presentAdtySiteInviteWithdrawals(rows []model.AdtySiteInviteWithdrawal, nam
 	for i, row := range rows {
 		row.QRImageURL = service.ResignReferralAssetURLForWithdrawal(row.QRImageURL, row.UserId, model.ReferralAssetPurposeWithdrawalQR, now)
 		row.ProofNote = service.ResignReferralAssetURLForWithdrawal(row.ProofNote, 0, model.ReferralAssetPurposePaymentProof, now)
-		item := adtySiteInviteWithdrawalItem{AdtySiteInviteWithdrawal: row}
+		state := service.SiteInviteCancellation(&row, now.Unix())
+		item := adtySiteInviteWithdrawalItem{AdtySiteInviteWithdrawal: row, CanCancel: state.CanCancel, CancelReason: state.CancelReason}
 		if names != nil {
 			item.Username = names[row.UserId]
 		}

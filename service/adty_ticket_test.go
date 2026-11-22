@@ -14,9 +14,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// ISS-R1-0053: Idempotency keys on CreateAdtyTicket are scoped by site and actor,
+// Creation retries are scoped to the actor,
 // and stored responses are authorized before returning.
-func TestAdtyTicketCreateIdempotencyScopedByActorAndSite(t *testing.T) {
+func TestAdtyTicketCreateIdempotencySeparatesActorsAcrossSites(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
 
 	ownerA := referralUser(t, db, "idem-owner-a")
@@ -31,6 +31,7 @@ func TestAdtyTicketCreateIdempotencyScopedByActorAndSite(t *testing.T) {
 	userB := referralUser(t, db, "idem-user-b")
 	require.NoError(t, db.Model(userB).Update("site_id", siteB.Id).Error)
 
+	require.NoError(t, db.Create(&[]model.AdtyTopupOrder{{UserId: userA.Id, TradeNo: "ORDER-A-SECRET"}, {UserId: userB.Id, TradeNo: "REF-B"}}).Error)
 	ticketA, err := CreateAdtyTicket(userA.Id, AdtyTicketInput{
 		Type:        "billing",
 		Title:       "Site A private title",
@@ -58,7 +59,7 @@ func TestAdtyTicketCreateIdempotencyScopedByActorAndSite(t *testing.T) {
 		Type:        "api",
 		Title:       "Site B title",
 		Body:        "Site B body",
-		RelatedKind: "api",
+		RelatedKind: "topup",
 		RelatedRef:  "REF-B",
 		Idempotency: "shared-1",
 	})
@@ -238,7 +239,7 @@ func TestAdtyTicketAssigneeMustBeActiveAuthorizedSupportInScope(t *testing.T) {
 	reply, err := ReplyAdtyTicket(int64(customerA.Id), ticket.Id, "follow up after staff removal", "assign-reply-1")
 	require.NoError(t, err)
 	var delivery model.AdtyTelegramDelivery
-	require.NoError(t, db.Where("event_key = ?", "ticket:"+strconv.FormatInt(ticket.Id, 10)+":msg:"+strconv.FormatInt(reply.Id, 10)).First(&delivery).Error)
+	require.NoError(t, db.Where("event_key = ?", ticketNoticeKey(ticket.Id, reply.Id)+":to:"+strconv.Itoa(ownerA.Id)).First(&delivery).Error)
 	assert.Equal(t, ownerA.Id, delivery.UserId)
 }
 
@@ -262,9 +263,9 @@ func TestAdtyTicketImageQuotaSerializationAndRandomObjectId(t *testing.T) {
 	require.NoError(t, err)
 
 	sample := tinyPNG(t)
-	first, err := AddAdtyTicketImage(customer.Id, ticket.Id, model.AdtyTicketVisibilityPublic, sample)
+	first, err := AttachAdtyTicketImageWithKey(customer.Id, ticket.Id, 0, model.AdtyTicketVisibilityPublic, sample, "file-1")
 	require.NoError(t, err)
-	second, err := AddAdtyTicketImage(customer.Id, ticket.Id, model.AdtyTicketVisibilityPublic, sample)
+	second, err := AttachAdtyTicketImageWithKey(customer.Id, ticket.Id, 0, model.AdtyTicketVisibilityPublic, sample, "file-2")
 	require.NoError(t, err)
 
 	// Both uploads of identical image bytes receive distinct 32-char hex random ObjectIds and Storage paths.
@@ -279,7 +280,7 @@ func TestAdtyTicketImageQuotaSerializationAndRandomObjectId(t *testing.T) {
 	assert.NotContains(t, first.Storage, strconv.FormatInt(ticket.Id, 10)+"-")
 
 	// Third upload exceeds MaxCount=2 and is rejected inside the locked transaction.
-	_, err = AddAdtyTicketImage(customer.Id, ticket.Id, model.AdtyTicketVisibilityPublic, sample)
+	_, err = AttachAdtyTicketImageWithKey(customer.Id, ticket.Id, 0, model.AdtyTicketVisibilityPublic, sample, "file-3")
 	require.ErrorIs(t, err, ErrAdtyTicketImage)
 
 	// Raising MaxCount but setting a tight MaxTotal enforces total byte budget inside the transaction.
@@ -287,7 +288,7 @@ func TestAdtyTicketImageQuotaSerializationAndRandomObjectId(t *testing.T) {
 		"max_count": 6,
 		"max_total": first.Size + second.Size + 1,
 	}).Error)
-	_, err = AddAdtyTicketImage(customer.Id, ticket.Id, model.AdtyTicketVisibilityPublic, sample)
+	_, err = AttachAdtyTicketImageWithKey(customer.Id, ticket.Id, 0, model.AdtyTicketVisibilityPublic, sample, "file-3")
 	require.ErrorIs(t, err, ErrAdtyTicketImage)
 
 	detail, err := GetAdtyTicket(customer.Id, ticket.Id)
@@ -333,8 +334,8 @@ func TestAdtyTicketEventsPersistNoticesAndOutboxAtomicallyAndRecover(t *testing.
 	})
 	require.NoError(t, err)
 
-	createUserKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":create:user"
-	createAdminKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":create"
+	createUserKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":create:to:" + strconv.Itoa(customer.Id)
+	createAdminKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":create:to:" + strconv.Itoa(owner.Id)
 	var createUserNotice model.AdtyTicketNotice
 	require.NoError(t, db.Where("event_key = ?", createUserKey).First(&createUserNotice).Error)
 	assert.Equal(t, customer.Id, createUserNotice.UserId)
@@ -350,8 +351,9 @@ func TestAdtyTicketEventsPersistNoticesAndOutboxAtomicallyAndRecover(t *testing.
 	require.NoError(t, SetAdtyTicketStatus(owner.Id, ticket.Id, "", "", staff.Id))
 	var statusEvent model.AdtyTicketEvent
 	require.NoError(t, db.Where("ticket_id = ? AND action = ?", ticket.Id, "status").Order("id DESC").First(&statusEvent).Error)
-	statusCustomerKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":event:" + strconv.FormatInt(statusEvent.Id, 10)
-	statusAdminKey := statusCustomerKey + ":admin"
+	statusKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":event:" + strconv.FormatInt(statusEvent.Id, 10)
+	statusCustomerKey := statusKey + ":to:" + strconv.Itoa(customer.Id)
+	statusAdminKey := statusKey + ":to:" + strconv.Itoa(staff.Id)
 
 	var statusCustomerNotice model.AdtyTicketNotice
 	require.NoError(t, db.Where("event_key = ?", statusCustomerKey).First(&statusCustomerNotice).Error)
@@ -360,37 +362,36 @@ func TestAdtyTicketEventsPersistNoticesAndOutboxAtomicallyAndRecover(t *testing.
 	require.NoError(t, db.Where("event_key = ?", statusAdminKey).First(&statusStaffNotice).Error)
 	assert.Equal(t, staff.Id, statusStaffNotice.UserId)
 
-	// 3. If Telegram outbox DB write fails during ReplyAdtyTicket, the reply transaction rolls back.
+	// A Telegram insert failure leaves the reply and recipient snapshot committed.
 	const failOutboxCB = "test:fail_telegram_delivery_insert"
 	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(failOutboxCB, func(tx *gorm.DB) {
 		if tx.Statement != nil && tx.Statement.Schema != nil && tx.Statement.Schema.Table == "adty_telegram_deliveries" {
 			_ = tx.AddError(errors.New("telegram outbox write failed"))
 		}
 	}))
-	_, err = ReplyAdtyTicket(int64(customer.Id), ticket.Id, "should rollback on outbox failure", "outbox-reply-fail")
-	require.Error(t, err)
+	reply, err := ReplyAdtyTicket(int64(customer.Id), ticket.Id, "delivery temporarily unavailable", "outbox-reply")
 	require.NoError(t, db.Callback().Create().Remove(failOutboxCB))
-
-	var rolledBackCount int64
-	require.NoError(t, db.Model(&model.AdtyTicketMessage{}).Where("ticket_id = ? AND body LIKE ?", ticket.Id, "%should rollback%").Count(&rolledBackCount).Error)
-	assert.Zero(t, rolledBackCount, "reply message must not commit when outbox write fails")
-
-	// Normal reply succeeds and writes both in-site notice and Telegram outbox.
-	reply, err := ReplyAdtyTicket(int64(customer.Id), ticket.Id, "normal reply", "outbox-reply-ok")
 	require.NoError(t, err)
-	replyKey := "ticket:" + strconv.FormatInt(ticket.Id, 10) + ":msg:" + strconv.FormatInt(reply.Id, 10)
-
-	// 4. Simulate missing notices/outbox rows and verify SyncAdtyTicketEventNotices recovers them.
-	require.NoError(t, db.Where("ticket_id = ?", ticket.Id).Delete(&model.AdtyTicketNotice{}).Error)
-	require.NoError(t, db.Where("event_key LIKE ?", "ticket:"+strconv.FormatInt(ticket.Id, 10)+":%").Delete(&model.AdtyTelegramDelivery{}).Error)
-
+	key := ticketNoticeKey(ticket.Id, reply.Id) + ":to:" + strconv.Itoa(staff.Id)
+	var pending model.AdtyTicketNotice
+	require.NoError(t, db.Where("event_key=?", key).First(&pending).Error)
+	require.True(t, pending.TelegramPending)
+	require.Equal(t, staff.Id, pending.UserId)
+	var count int64
+	require.NoError(t, db.Model(&model.AdtyTelegramDelivery{}).Where("event_key=?", key).Count(&count).Error)
+	require.Zero(t, count)
+	retried, err := ReplyAdtyTicket(int64(customer.Id), ticket.Id, "delivery temporarily unavailable", "outbox-reply")
+	require.NoError(t, err)
+	require.Equal(t, reply.Id, retried.Id)
 	recovered, err := SyncAdtyTicketEventNotices()
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, recovered, 6)
-
-	var recoveredReplyDelivery model.AdtyTelegramDelivery
-	require.NoError(t, db.Where("event_key = ?", replyKey).First(&recoveredReplyDelivery).Error)
-	assert.Equal(t, staff.Id, recoveredReplyDelivery.UserId)
+	require.Equal(t, 1, recovered)
+	recovered, err = SyncAdtyTicketEventNotices()
+	require.NoError(t, err)
+	require.Zero(t, recovered)
+	var delivery model.AdtyTelegramDelivery
+	require.NoError(t, db.Where("event_key=?", key).First(&delivery).Error)
+	require.Equal(t, staff.Id, delivery.UserId)
 
 	customerNotices, err := ListAdtyTicketNoticesForUser(customer.Id, site.Id, 10)
 	require.NoError(t, err)

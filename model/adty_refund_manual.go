@@ -75,7 +75,16 @@ func ManualRefundUSDQuota(faceUSD, occupiedUSD, requestUSD decimal.Decimal) (int
 
 // AdtyRefundPageFacts is the recorded refund-page check. Amounts come from the
 // order and its fund lots. A blank lot field means that lot was not recorded.
+type AdtyRefundTeamRelease struct {
+	LedgerID  int64  `json:"ledger_id"`
+	AmountUSD string `json:"amount_usd"`
+}
 type AdtyRefundPageFacts struct {
+	TeamID             int64                            `json:"team_id,omitempty"`
+	TeamLotID          int64                            `json:"team_lot_id,omitempty"`
+	TeamReleases       map[string]AdtyRefundTeamRelease `json:"team_releases,omitempty"`
+	TeamReleaseReviews map[string]bool                  `json:"team_release_reviews,omitempty"`
+
 	TeamPrincipalReviewRequired bool                             `json:"team_principal_review_required,omitempty"`
 	TradeNo                     string                           `json:"trade_no"`
 	SiteId                      int                              `json:"site_id"`
@@ -179,12 +188,38 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 		Occupancy:             occupancy,
 	}
 	if ext.TeamId > 0 {
+		facts.TeamID = ext.TeamId
+		ids := make([]string, 0, len(refunds))
+		for _, row := range refunds {
+			if row.Status == AdtyManualRefundStatusTerminated {
+				ids = append(ids, row.RefundId)
+			}
+		}
+		if len(ids) > 0 {
+			var ledgers []AdtyTeamLedger
+			if err := DB.Where("team_id=? AND type=? AND ref_id IN ?", ext.TeamId, "refund_release", ids).Find(&ledgers).Error; err != nil {
+				return nil, err
+			}
+			facts.TeamReleases = map[string]AdtyRefundTeamRelease{}
+			for _, entry := range ledgers {
+				facts.TeamReleases[entry.RefId] = AdtyRefundTeamRelease{entry.Id, adtyQuotaUSDString(entry.DeltaQuota)}
+			}
+			var reviews []string
+			if err := DB.Model(&AdtyAnomalyDisposition{}).Where("team_id=? AND kind=? AND ref IN ? AND status<>?", ext.TeamId, "team_refund_release_review", ids, "closed").Pluck("ref", &reviews).Error; err != nil {
+				return nil, err
+			}
+			facts.TeamReleaseReviews = map[string]bool{}
+			for _, id := range reviews {
+				facts.TeamReleaseReviews[id] = true
+			}
+		}
 		var lot AdtyTeamFundLot
 		q := DB.Where("team_id = ? AND kind = ? AND source = ?", ext.TeamId, "topup", tradeNo).Limit(1).Find(&lot)
 		if q.Error != nil {
 			return nil, q.Error
 		}
 		if q.RowsAffected > 0 {
+			facts.TeamLotID = lot.Id
 			held, err := adtyTeamLotReserved(DB, lot.Id)
 			if err != nil {
 				return nil, err

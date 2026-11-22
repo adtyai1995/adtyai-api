@@ -9,6 +9,7 @@ import (
 
 // SiteID is supplied by trusted host resolution, never a checkout body.
 type AdtyPaymentScope struct {
+	TeamID   int64
 	Business string
 	SiteID   int
 }
@@ -17,6 +18,20 @@ func adtyPaymentScopeIdentity(db *gorm.DB, user *model.User, scopes []AdtyPaymen
 	scope := AdtyPaymentScope{Business: model.AdtyBusinessWalletTopup}
 	if len(scopes) > 0 {
 		scope = scopes[0]
+	}
+	if scope.Business == model.AdtyBusinessTeamTopup {
+		var team model.AdtyTeam
+		q := db
+		if lock {
+			q = model.AdtyLockForUpdate(db)
+		}
+		if scope.TeamID <= 0 || (scope.SiteID > 0 && scope.SiteID != user.SiteId) {
+			return 0, "", ErrAdtyTeamForbidden
+		}
+		if err := q.Where("id=? AND site_id=? AND leader_user_id=? AND status=?", scope.TeamID, user.SiteId, user.Id, model.AdtyTeamStatusActive).First(&team).Error; err != nil {
+			return 0, "", ErrAdtyTeamForbidden
+		}
+		return team.SiteId, scope.Business, nil
 	}
 	if scope.Business == "" || scope.Business == model.AdtyBusinessWalletTopup {
 		if scope.SiteID > 0 && scope.SiteID != user.SiteId {

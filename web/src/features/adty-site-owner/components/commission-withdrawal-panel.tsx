@@ -27,12 +27,14 @@ import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { adminReferralKeys } from '@/features/admin-referral/api'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { usdtNetworkLabel } from '@/features/referral/lib/address'
 import {
   WITHDRAWAL_STATUS_LABELS,
   WITHDRAWAL_TARGET_LABELS,
 } from '@/features/referral/lib/labels'
+import { WithdrawalCancellation } from '@/features/wallet/adty/withdrawal-cancellation'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -164,10 +166,28 @@ function ReviewRow(props: {
       </p>
       {row.method === 'usdt' && (
         <p>
-          {t('USDT fee (USD)')} {row.fee_usd} · {t('Net amount')} {row.net_usd}{' '}
-          USD
+          {t('USDT fee (USD)')} {row.fee_usd}
         </p>
       )}
+      <WithdrawalCancellation state={row} />
+      {[
+        [
+          t('Legacy decision record'),
+          row.legacy_decision_by,
+          row.legacy_decision_at,
+        ],
+        [t('Withdrawal reviewer'), row.reviewed_by, row.reviewed_at],
+        [t('Payment recorded by'), row.paid_by, row.paid_at],
+        [t('Failed payout recorded by'), row.failure_by, row.failure_at],
+      ].map(([label, actor, at]) =>
+        at ? (
+          <p key={label}>
+            {label} {actor ? `#${actor}` : t('Unknown')} ·{' '}
+            {new Date(Number(at) * 1000).toLocaleString()}
+          </p>
+        ) : null
+      )}
+      {row.failure_at ? <p>{row.reject_reason}</p> : null}
       <Payee row={row} />
       {row.status === 'paid' && row.tx_id && (
         <p>
@@ -237,7 +257,7 @@ function ReviewRow(props: {
                 value={txId}
                 autoComplete='off'
                 onChange={(event) => setTxId(event.target.value)}
-                required
+                required={row.method === 'usdt'}
               />
             </div>
           )}
@@ -267,7 +287,13 @@ function ReviewRow(props: {
             <Button
               type='submit'
               variant='outline'
-              disabled={props.canPay === false || pay.isPending || !txId.trim()}
+              disabled={
+                props.canPay === false ||
+                pay.isPending ||
+                (!txId.trim() &&
+                  (row.method !== 'alipay' ||
+                    !proof.trim().startsWith('/api/referral-assets/')))
+              }
             >
               {t('Mark as paid')}
             </Button>
@@ -290,7 +316,12 @@ function ReviewRow(props: {
 
 /** The site owner reviews customer invite-commission withdrawals. The platform handles closed sites. */
 export function CommissionWithdrawalPanel(
-  props: { closed?: boolean; canReview?: boolean; canPay?: boolean } = {}
+  props: {
+    closed?: boolean
+    canReview?: boolean
+    canPay?: boolean
+    status?: string
+  } = {}
 ) {
   const { t } = useTranslation()
   const client = useQueryClient()
@@ -300,9 +331,10 @@ export function CommissionWithdrawalPanel(
       document.querySelector('#pending')?.scrollIntoView()
     }
   }, [])
-  const [status, setStatus] = useState(() =>
+  const [ownStatus, setStatus] = useState(() =>
     window.location.hash === '#pending' ? 'pending' : 'actionable'
   )
+  const status = props.status ?? ownStatus
   const list = useQuery({
     queryKey: siteOwnerKeys.list('commission-withdrawals', {
       page,
@@ -323,6 +355,9 @@ export function CommissionWithdrawalPanel(
   }, [page, total])
   const refresh = () => {
     void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
+    if (props.closed) {
+      void client.invalidateQueries({ queryKey: adminReferralKeys.badges })
+    }
     void invalidateSidebarBadges(client)
   }
 
@@ -351,28 +386,32 @@ export function CommissionWithdrawalPanel(
           )}
         </p>
       </div>
-      <div className='flex items-center gap-2'>
-        <Label htmlFor='commission-status'>{t('Status')}</Label>
-        <select
-          id='commission-status'
-          className='bg-background h-9 rounded-md border px-3'
-          value={status}
-          onChange={(event) => {
-            setStatus(event.target.value)
-            setPage(1)
-          }}
-        >
-          <option value='actionable'>{t('Awaiting review or payment')}</option>
-          <option value=''>{t('All')}</option>
-          {['pending', 'approved', 'paid', 'rejected', 'canceled'].map(
-            (value) => (
-              <option key={value} value={value}>
-                {t(statusLabel(value))}
-              </option>
-            )
-          )}
-        </select>
-      </div>
+      {props.status === undefined && (
+        <div className='flex items-center gap-2'>
+          <Label htmlFor='commission-status'>{t('Status')}</Label>
+          <select
+            id='commission-status'
+            className='bg-background h-9 rounded-md border px-3'
+            value={status}
+            onChange={(event) => {
+              setStatus(event.target.value)
+              setPage(1)
+            }}
+          >
+            <option value='actionable'>
+              {t('Awaiting review or payment')}
+            </option>
+            <option value=''>{t('All')}</option>
+            {['pending', 'approved', 'paid', 'rejected', 'canceled'].map(
+              (value) => (
+                <option key={value} value={value}>
+                  {t(statusLabel(value))}
+                </option>
+              )
+            )}
+          </select>
+        </div>
+      )}
       {list.isPending && <LoadingState />}
       {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
       {list.isSuccess && list.data.items.length === 0 && (

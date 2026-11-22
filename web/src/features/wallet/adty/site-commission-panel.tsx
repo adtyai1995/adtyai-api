@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
@@ -37,6 +37,8 @@ import {
   type OfficialCommissionStateAmount,
 } from './commission-states'
 import { SiteInviteWithdrawPanel } from './site-invite-withdraw-panel'
+import { useWithdrawalIntent } from './use-withdrawal-intent'
+import { WithdrawalRecovery } from './withdrawal-recovery'
 
 export type SiteCommission = {
   site_id?: number
@@ -130,16 +132,19 @@ function CommissionRow(props: {
 }) {
   const { t } = useTranslation()
   const [amount, setAmount] = useState('')
-  const intent = useRef<{ amount: string; key: string } | null>(null)
+  const intent = useWithdrawalIntent(
+    `/api/adty/site-commissions/${props.row.id}/convert`,
+    props.row.site_id ?? 0
+  )
   const convert = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const value = amount.trim()
-      if (intent.current?.amount !== value)
-        intent.current = { amount: value, key: crypto.randomUUID() }
-      return convertSiteCommission(props.row.id, value, intent.current.key)
+      const key = await intent.prepare({ amount: value, method: 'balance' })
+      if (!key) return
+      await convertSiteCommission(props.row.id, value, key)
+      intent.accept(key)
     },
     onSuccess: () => {
-      intent.current = null
       setAmount('')
       props.onConverted()
     },
@@ -177,30 +182,37 @@ function CommissionRow(props: {
           ))}
         </ul>
       )}
-      {canConvertCommissionToBalance(props.row.status) && (
-        <>
-          <div className='flex flex-col gap-1'>
-            <Label htmlFor={`site-commission-${props.row.id}`}>
-              {t('Amount')}
-            </Label>
-            <Input
-              id={`site-commission-${props.row.id}`}
-              value={amount}
-              inputMode='decimal'
-              autoComplete='off'
-              onChange={(event) => setAmount(event.target.value)}
-            />
-          </div>
-          <Button
-            type='button'
-            variant='outline'
-            disabled={convert.isPending || amount.trim() === ''}
-            onClick={() => convert.mutate()}
-          >
-            {t('Convert commission to balance')}
-          </Button>
-        </>
-      )}
+      <WithdrawalRecovery
+        intent={intent}
+        busy={convert.isPending}
+        onReset={() => setAmount('')}
+        onRecovered={props.onConverted}
+      />
+      {!intent.saved?.accepted &&
+        canConvertCommissionToBalance(props.row.status) && (
+          <>
+            <div className='flex flex-col gap-1'>
+              <Label htmlFor={`site-commission-${props.row.id}`}>
+                {t('Amount')}
+              </Label>
+              <Input
+                id={`site-commission-${props.row.id}`}
+                value={amount}
+                inputMode='decimal'
+                autoComplete='off'
+                onChange={(event) => setAmount(event.target.value)}
+              />
+            </div>
+            <Button
+              type='button'
+              variant='outline'
+              disabled={convert.isPending || amount.trim() === ''}
+              onClick={() => convert.mutate()}
+            >
+              {t('Convert commission to balance')}
+            </Button>
+          </>
+        )}
     </div>
   )
 }

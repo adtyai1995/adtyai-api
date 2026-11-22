@@ -78,6 +78,11 @@ export function CloseSiteDialog(props: {
     onError: (err) => handleServerError(err),
   })
 
+  const domainAction = (domain: AdminSiteDomain) => {
+    if (domain.close_action === 'redirect_only') return t('Redirect to main site')
+    if (domain.role === 'base_url') return t('API access ends')
+    return t('Domain removal')
+  }
   if (!canClose) return null
 
   return (
@@ -108,9 +113,9 @@ export function CloseSiteDialog(props: {
           {t('All customers of this site will be inherited by the main site.')}
         </p>
         <ul className='space-y-1 text-sm'>
-          <li>{props.site.host} · {t('Redirect to main site')}</li>
-          {props.domains.filter(domain => domain.hostname !== props.site.host && domain.status !== 'removed').map(domain => (
-            <li key={domain.id}>{domain.hostname} · {domain.role === 'base_url' ? t('API access ends') : t('Redirect to main site')}</li>
+          {!props.domains.some(domain => domain.hostname === props.site.host) && <li>{props.site.host} · {t('Redirect to main site')}</li>}
+          {props.domains.filter(domain => domain.status !== 'removed').map(domain => (
+            <li key={domain.id}>{domain.hostname} · {domainAction(domain)}</li>
           ))}
         </ul>
         {revising ? <Label>{t('Closes on')} <input type='datetime-local' value={deadline} onChange={event=>setDeadline(event.target.value)} /></Label> : <div className='flex items-center gap-2'>

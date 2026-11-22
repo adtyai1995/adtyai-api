@@ -301,15 +301,21 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/vouchers/redeem", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:voucher-redeem"), controller.PostAdtyVoucherRedeem)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals/rules", "scope", "wallet:read")
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals/quote", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-commissions/withdrawals", "scope", "wallet:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-commissions/withdrawals/:id/cancel", "scope", "wallet:write")
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals/by-key", "scope", "wallet:read")
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/:id/convert/by-key", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-commissions/:id/convert", "scope", "wallet:write")
 	apiRouter.GET("/adty/site-commissions", middleware.UserAuth(), controller.GetAdtySiteCommissions)
 	apiRouter.GET("/adty/site-commissions/withdrawals/rules", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawRules)
+	apiRouter.GET("/adty/site-commissions/withdrawals/quote", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawalQuote)
 	apiRouter.GET("/adty/site-commissions/withdrawals", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawals)
 	apiRouter.POST("/adty/site-commissions/withdrawals", middleware.UserAuth(), controller.PostAdtySiteInviteWithdrawal)
 	apiRouter.POST("/adty/site-commissions/withdrawals/:id/cancel", middleware.UserAuth(), controller.PostAdtySiteInviteWithdrawalCancel)
+	apiRouter.GET("/adty/site-commissions/withdrawals/by-key", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawalByKey)
+	apiRouter.GET("/adty/site-commissions/:id/convert/by-key", middleware.UserAuth(), controller.GetAdtySiteCommissionConversionByKey)
 	apiRouter.POST("/adty/site-commissions/:id/convert", middleware.UserAuth(), controller.PostAdtySiteCommissionConvert)
 	apiRouter.GET("/adty/teams/mine", middleware.UserAuth(), controller.GetAdtyTeamMine)
 	apiRouter.POST("/adty/teams", middleware.UserAuth(), controller.PostAdtyTeam)
@@ -489,6 +495,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		// 站长中心（任务 11.6、11.7）。接受协议不走站长中心的协议门。
 		{http.MethodPost, "/terms/accept", "profile:write", []gin.HandlerFunc{controller.AcceptAdtySiteTerms}},
 		{http.MethodGet, "/self", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSite}},
+		{http.MethodGet, "/archived-sites/:site_id/domains", "wallet:read", []gin.HandlerFunc{controller.GetAdtyArchivedWebsiteDomains}},
+		{http.MethodDelete, "/archived-sites/:site_id/domains/:id", "wallet:write", []gin.HandlerFunc{controller.DeleteAdtyArchivedWebsiteDomain}},
 		{http.MethodGet, "/archived-sites", "wallet:read", []gin.HandlerFunc{controller.GetAdtyArchivedOwnerSites}},
 		{http.MethodPut, "/self", "wallet:write", []gin.HandlerFunc{controller.PutAdtyOwnerSite}},
 		{http.MethodGet, "/stats", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerStats}},
@@ -508,6 +516,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/self-use/transfers", "wallet:read", []gin.HandlerFunc{controller.GetOwnerPrincipalTransfers}},
 		{http.MethodPost, "/self-use/keys", "api_key:write", []gin.HandlerFunc{middleware.TokenOperationAudit(), middleware.UserCriticalRateLimit("CT:owner-key"), controller.AddOwnerSelfUseToken}},
 		{http.MethodGet, "/withdrawals/rules", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteWithdrawRules}},
+		{http.MethodGet, "/withdrawals/by-key", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteWithdrawalByKey}},
 		{http.MethodGet, "/withdrawals", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteWithdrawals}},
 		{http.MethodPost, "/withdrawals", "wallet:write", []gin.HandlerFunc{controller.PostAdtySiteWithdrawal}},
 		{http.MethodPost, "/withdrawals/:id/cancel", "wallet:write", []gin.HandlerFunc{controller.PostAdtySiteWithdrawalCancel}},
@@ -597,6 +606,10 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/reseller/tiers", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/reseller/tiers", "scope", "option:write")
 	root := apiRouter.Group("/adty/admin/reseller", middleware.RootAuth())
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/reseller/tiers", "scope", "option:write")
+	middleware.DeclareAdtyAccessTokenRoute("PATCH", "/api/adty/admin/reseller/tiers", "scope", "option:write")
+	root.PATCH("/tiers", controller.PutAdtySiteTiers)
+	root.POST("/tiers", controller.PutAdtySiteTiers)
 	root.GET("/tiers", controller.GetAdtySiteTiers)
 	root.PUT("/tiers", controller.PutAdtySiteTiers)
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/bonus-methods", "scope", "option:write")
@@ -614,6 +627,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootWallets.PUT("/:id/bonus-methods", controller.PutAdtySiteBonusMethodAuth)
 	rootWallets.GET("/:id/commission-margin", controller.GetAdtySiteCommissionMargin)
 	rootWallets.PUT("/:id/commission-margin", controller.PutAdtySiteCommissionMargin)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/close-mail", "scope", "option:read")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/close-mail", "scope", "option:write")
 	rootWallets.GET("/:id/close-mail", controller.GetAdtyAdminCloseMail)
 	rootWallets.POST("/:id/close-mail", controller.ResolveAdtyAdminCloseMail)
 	rootWallets.GET("/:id/wallets", controller.GetAdtyAdminSiteWallets)

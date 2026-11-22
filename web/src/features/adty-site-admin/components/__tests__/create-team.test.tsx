@@ -45,7 +45,13 @@ it('creates a team with the selected site and its existing leader', async () => 
   fireEvent.change(screen.getByLabelText('Site'), { target: { value: '41' } })
   await screen.findByRole('option', { name: /Leader A/ })
   fireEvent.change(screen.getByLabelText('Leader'), { target: { value: '9' } })
-  fireEvent.change(screen.getByLabelText('Team name'), {
+  const nameInput=screen.getByLabelText('Team name')
+  fireEvent.change(nameInput,{target:{value:'𠮷'.repeat(65)}})
+  expect(screen.getByRole('button',{name:'Create team'})).toBeDisabled()
+  expect(screen.getByRole('alert')).toHaveTextContent('Team name')
+  fireEvent.change(nameInput,{target:{value:'𠮷'.repeat(64)}})
+  expect(screen.getByRole('button',{name:'Create team'})).toBeEnabled()
+  fireEvent.change(nameInput, {
     target: { value: 'Finance' },
   })
   fireEvent.click(screen.getByRole('button', { name: 'Create team' }))

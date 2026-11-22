@@ -260,7 +260,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
 		if effective := token.EffectiveStatus(common.GetTimestamp()); effective != common.TokenStatusEnabled {
-			if !common.RedisEnabled && token.Status != effective {
+			if !common.RedisEnabled && effective == common.TokenStatusExpired && token.Status != effective {
 				token.Status = effective
 				if err := token.SelectUpdate(); err != nil {
 					common.SysLog(common.LogText("failed to update token status%s", err.Error()))

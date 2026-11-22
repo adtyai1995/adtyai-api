@@ -55,6 +55,7 @@ describe('SiteFundPanel anomaly dispositions', () => {
           data: {
             success: true,
             data: {
+              total: 1,
               items: [
                 {
                   id: 42,
@@ -99,7 +100,7 @@ describe('SiteFundPanel anomaly dispositions', () => {
     ).not.toBeInTheDocument()
     expect(get).toHaveBeenCalledWith(
       '/api/adty/admin/fund-anomalies/dispositions',
-      { params: { site_id: 1 } }
+      { params: { site_id: 1, p: 1, page_size: 20, status: '', kind: '', order_ref: '' } }
     )
     client.clear()
   })

@@ -89,6 +89,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     mixedLabel,
     failedLabel
   )
+  const reviewWork = (sidebarBadges.counts?.referral_withdrawals_pending ?? 0) > 0
+  const payoutWork = (sidebarBadges.counts?.referral_withdrawals_approved ?? 0) > 0
+  let withdrawalFilter: 'actionable' | 'pending' | 'approved' | undefined
+  if (reviewWork && payoutWork) withdrawalFilter = 'actionable'
+  else if (reviewWork) withdrawalFilter = 'pending'
+  else if (payoutWork) withdrawalFilter = 'approved'
   const resellerSitesBadge = sidebarBadges.badge(
     RESELLER_SITES_BADGE_KINDS,
     mixedLabel,
@@ -290,6 +296,10 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               url: '/admin-referral',
               icon: HandCoins,
               badge: referralAdminBadge,
+              linkOptions: withdrawalFilter ? {
+                to: '/admin-referral',
+                search: { withdrawals: withdrawalFilter },
+              } : undefined,
               requiredPermission: ADTY_PERMISSIONS.REFERRAL_READ,
             },
             {
@@ -345,6 +355,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     ticketsBadge,
     siteOwnerBadge,
     referralAdminBadge,
+    withdrawalFilter,
     resellerSitesBadge,
     orderManagementBadge,
     isSiteOwner,

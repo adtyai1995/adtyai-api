@@ -95,12 +95,8 @@ func SendEmailFrom(from string, subject string, receiver string, content string)
 	resendKey := OptionMap["ResendApiKey"]
 	resendFrom := OptionMap["ResendFrom"]
 	OptionMapRWMutex.RUnlock()
-	displayName := SystemName
 	if from != "" {
 		resendFrom = from
-		if parsed, err := mail.ParseAddress(from); err == nil && parsed.Name != "" {
-			displayName = parsed.Name
-		}
 	}
 	// One selector controls delivery. Never fall back to a second provider:
 	// a failed response does not prove that the first provider did not send.
@@ -110,6 +106,15 @@ func SendEmailFrom(from string, subject string, receiver string, content string)
 	case "", "smtp": // Preserve existing installations without a selector.
 	default:
 		return NewMessage("Email sending method must be SMTP or Resend")
+	}
+	return SendSMTPEmailFrom(from, subject, receiver, content)
+}
+
+// SendSMTPEmailFrom uses the transport frozen on a claimed delivery attempt.
+func SendSMTPEmailFrom(from, subject, receiver, content string) error {
+	displayName := SystemName
+	if parsed, err := mail.ParseAddress(from); err == nil && parsed.Name != "" {
+		displayName = parsed.Name
 	}
 	// Compatibility fallback stays local. Publishing it onto SMTPFrom races with
 	// concurrent readers such as adtyPlatformSender while a background send runs.

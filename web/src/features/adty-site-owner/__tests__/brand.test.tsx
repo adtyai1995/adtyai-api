@@ -118,8 +118,8 @@ it('saves an independent favicon, website title and theme through the real brand
         title: 'Shop Workspace',
         theme_color: '#225588',
         favicon_url: '/uploads/site-assets/icon.webp',
-        logo_url: '/uploads/site-assets/logo.png',
       }),
+      expected_brand: {title:'',theme_color:'',favicon_url:''},
     })
   )
   expect(post).toHaveBeenCalledWith('/api/adty/site/logo', expect.any(FormData))
@@ -184,4 +184,20 @@ it('applies site branding independently from the logo and keeps the site color a
     'content',
     '#020817'
   )
+})
+
+it('keeps notice edits made while a previous save is waiting', async () => {
+  const user = userEvent.setup()
+  let finish!: () => void
+  vi.spyOn(api, 'put').mockImplementationOnce(() =>
+    new Promise(resolve => { finish = () => resolve({data:{success:true,data:{...site,brand:{...site.brand, notice:'first'}}}}) })
+  )
+  render(<QueryClientProvider client={client}><OwnerVerificationProvider><SiteSettingsPanel site={site}/></OwnerVerificationProvider></QueryClientProvider>)
+  const notice = screen.getByLabelText('Notice')
+  await user.type(notice,'first')
+  await user.click(screen.getByRole('button', {name:'Save brand'}))
+  await user.type(notice,' draft')
+  await act(async () => finish())
+  expect(notice).toHaveValue('first draft')
+  expect(screen.getByRole('button', {name:'Save brand'})).toBeEnabled()
 })

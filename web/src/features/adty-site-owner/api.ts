@@ -173,6 +173,16 @@ function archivedQuery(siteId?: number) {
   return { archived_site_id: siteId }
 }
 
+export async function getArchivedWebsiteDomains(siteId: number) {
+  const res = await api.get<ApiResponse<{id:number; hostname:string}[]>>(`${BASE}/archived-sites/${siteId}/domains`)
+  return requireServerSuccess(res.data).data ?? []
+}
+
+export async function removeArchivedDomain(siteId: number,id: number,proof: string) {
+  const res = await api.delete<ApiResponse<unknown>>(`${BASE}/archived-sites/${siteId}/domains/${id}`, proofHeaders(proof))
+  requireServerSuccess(res.data)
+}
+
 export async function getArchivedSites() {
   const res = await api.get<
     ApiResponse<
@@ -231,6 +241,7 @@ export async function getSiteWithdrawals(
 
 export async function createSiteWithdrawal(
   body: {
+    site_id: number
     amount_usd: string
     method: string
     network: string
@@ -245,6 +256,7 @@ export async function createSiteWithdrawal(
   const res = await api.post<ApiResponse<SiteWithdrawal>>(
     `${BASE}/withdrawals`,
     {
+      site_id: body.site_id,
       amount_usd: body.amount_usd,
       method: body.method,
       network: body.network,
@@ -431,6 +443,17 @@ export type SiteInviteCommissionWithdrawal = {
   id: number
   user_id: number
   username?: string
+  legacy_decision_by?: number
+  legacy_decision_at?: number
+  reviewed_by?: number
+  reviewed_at?: number
+  paid_by?: number
+  paid_at?: number
+  failure_by?: number
+  failure_at?: number
+  can_cancel: boolean
+  cancel_deadline: number
+  cancel_reason: string
   amount_usd: string
   fee_usd: string
   net_usd: string
@@ -510,7 +533,11 @@ export async function getOwnerEarningLines(): Promise<OwnerEarningLine[]> {
   return requireServerSuccess(res.data).data ?? []
 }
 
+export type SettlementSummary = Pick<SettlementSheet,'id'|'site_id'|'business_day'>
+export type SettlementPage = {items:SettlementSummary[];total:number}
 export type SettlementSheet = {
+  generated_at?: number
+  legacy_coverage?: {id:number;created_at:number;before_usd:string;after_usd:string}[]
   revisions?: {
     id: number
     before: SettlementSheet
@@ -555,14 +582,15 @@ export type SettlementSheet = {
   anomaly_count: number
 }
 
-export async function getOwnerSettlementSheets(
-  siteId?: number
-): Promise<SettlementSheet[]> {
-  const res = await api.get<ApiResponse<SettlementSheet[]>>(
-    `${BASE}/settlement-sheets`,
-    { params: archivedQuery(siteId) }
-  )
-  return requireServerSuccess(res.data).data ?? []
+export async function getOwnerSettlementSheets(p:number, day:string,siteId?:number):Promise<SettlementPage> {
+ const res=await api.get<ApiResponse<SettlementPage>>(`${BASE}/settlement-sheets`,{params:{p,page_size:20,business_day:day||undefined,...archivedQuery(siteId)}})
+ return requireServerSuccess(res.data).data ?? {items:[],total:0}
+}
+export async function getOwnerSettlementDetail(id:number,siteId?:number):Promise<SettlementSheet> {
+ const res=await api.get<ApiResponse<SettlementSheet>>(`${BASE}/settlement-sheets`,{params:{sheet_id:id,...archivedQuery(siteId)}})
+ const sheet = requireServerSuccess(res.data).data
+  if (!sheet) throw new Error('Settlement sheet is missing')
+  return sheet
 }
 
 export async function getOwnerEarnings(
@@ -583,6 +611,7 @@ export async function getOwnerEarnings(
 
 export type SiteReferralView = {
   pending_coverage_cap: string | null
+  cancel_window_minutes?: number | null
   observation_days: number | null
   min_usd: string | null
   fee_usd: string | null

@@ -101,11 +101,14 @@ function PayeeCell(props: { row: ReferralWithdrawal }) {
 export function WithdrawalPanel(props: {
   canReview: boolean
   canPayout: boolean
+  status?: string
+  onStatusChange?: (status: string) => void
 }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
-  const [status, setStatus] = useState('pending')
+  const [ownStatus, setOwnStatus] = useState('pending')
+  const status = props.status ?? ownStatus
   const [page, setPage] = useState(1)
   const [rejecting, setRejecting] = useState<ReferralWithdrawal | null>(null)
   const [paying, setPaying] = useState<ReferralWithdrawal | null>(null)
@@ -167,10 +170,14 @@ export function WithdrawalPanel(props: {
         aria-label={t('Status')}
         value={status}
         onChange={(event) => {
-          setStatus(event.target.value)
+          const changeStatus = props.onStatusChange ?? setOwnStatus
+          changeStatus(event.target.value)
           setPage(1)
         }}
       >
+        {props.canReview && props.canPayout && (
+          <option value='actionable'>{t('Awaiting review or payment')}</option>
+        )}
         <option value=''>{t('All statuses')}</option>
         {Object.entries(WITHDRAWAL_STATUS_LABELS).map(([value, label]) => (
           <option key={value} value={value}>

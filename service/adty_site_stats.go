@@ -500,64 +500,6 @@ func getAdtySiteBalances(site *model.AdtySite, ownerID int) (*AdtySiteBalances, 
 	return result, err
 }
 
-// AdtySiteUsageRow 是按模型或分组的一行消费（客户扣费额度和美元）。
-type AdtySiteUsageRow struct {
-	Key      string          `json:"key"`
-	Quota    int64           `json:"quota"`
-	USD      decimal.Decimal `json:"usd"`
-	Requests int64           `json:"requests"`
-}
-
-// AdtySiteUsageBreakdown 是后台明细里按模型、按分组的消费。
-type AdtySiteUsageBreakdown struct {
-	ByModel []AdtySiteUsageRow `json:"by_model"`
-	ByGroup []AdtySiteUsageRow `json:"by_group"`
-}
-
-// GetAdtySiteUsageBreakdown 从消费日志按模型、分组汇总这个站现有客户在 [from, to] 的消费（后台用，站长看不到渠道）。
-// 关掉消费日志时这里为空；收益和总额以日汇总为准。客户转走后不再算进原来的站。
-func GetAdtySiteUsageBreakdown(siteId int, from, to string) (*AdtySiteUsageBreakdown, error) {
-	var userIds []int
-	if err := model.DB.Model(&model.User{}).Where("site_id = ?", siteId).Pluck("id", &userIds).Error; err != nil {
-		return nil, err
-	}
-	result := &AdtySiteUsageBreakdown{ByModel: []AdtySiteUsageRow{}, ByGroup: []AdtySiteUsageRow{}}
-	if len(userIds) == 0 {
-		return result, nil
-	}
-	loc, _, err := loadAdtyBusinessLocation()
-	if err != nil {
-		return nil, err
-	}
-	perUnit := common.QuotaPerUnitDecimal()
-	for _, column := range []string{"model_name", "group"} {
-		quoted := column
-		if column == "group" {
-			quoted = model.AdtyGroupColumn()
-		}
-		var rows []struct {
-			Key      string
-			Quota    int64
-			Requests int64
-		}
-		if err := model.LOG_DB.Model(&model.Log{}).Select(quoted+" AS key, COALESCE(SUM(quota),0) AS quota, COUNT(*) AS requests").
-			Where("type = ? AND user_id IN ? AND created_at >= ? AND created_at <= ?", model.LogTypeConsume, userIds, adtyDayUnix(from, false, loc), adtyDayUnix(to, true, loc)).
-			Group(quoted).Order("quota DESC").Limit(100).Scan(&rows).Error; err != nil {
-			return nil, err
-		}
-		items := make([]AdtySiteUsageRow, 0, len(rows))
-		for _, row := range rows {
-			items = append(items, AdtySiteUsageRow{Key: row.Key, Quota: row.Quota, Requests: row.Requests, USD: decimal.NewFromInt(row.Quota).Div(perUnit).Round(2)})
-		}
-		if column == "model_name" {
-			result.ByModel = items
-		} else {
-			result.ByGroup = items
-		}
-	}
-	return result, nil
-}
-
 // AdtyMonthlySeries 把按天的数据合成按月（2026-10）。付费和活跃客户数是按天去重的，不能相加，按月序列里不给（为 0）；
 // 整段时间的去重人数看 AdtySiteStats.Total。
 func AdtyMonthlySeries(series []AdtySiteDayStats) []AdtySiteDayStats {

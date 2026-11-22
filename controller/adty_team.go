@@ -62,9 +62,10 @@ func PostAdtyTeamTopup(c *gin.Context) {
 		return
 	}
 	var body struct {
-		AmountUSD string `json:"amount_usd"`
-		Method    string `json:"method"`
-		ChannelId int    `json:"channel_id"` // 易支付：负责人选的通道，0 表示自动挑
+		PaymentScene string `json:"payment_scene"`
+		AmountUSD    string `json:"amount_usd"`
+		Method       string `json:"method"`
+		ChannelId    int    `json:"channel_id"` // 易支付：负责人选的通道，0 表示自动挑
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -76,7 +77,7 @@ func PostAdtyTeamTopup(c *gin.Context) {
 		return
 	}
 	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	order, err := service.StartAdtyTeamTopupPayment(c.GetInt("id"), id, amount, body.Method, body.ChannelId, key, c.ClientIP())
+	order, err := service.StartAdtyTeamTopupPayment(c.GetInt("id"), id, amount, body.Method, body.ChannelId, key, c.ClientIP(), body.PaymentScene)
 	if err != nil {
 		common.ApiError(c, err)
 		return

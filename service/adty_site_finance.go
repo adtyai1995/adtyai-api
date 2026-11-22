@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -370,17 +371,36 @@ func CollectAdtyFundAnomalies(siteID int) ([]string, error) {
 // ListAdtyAnomalyDispositions returns review rows for one site. It does not create any.
 // Rows recorded with SiteId are listed directly. Legacy rows used the site id as Ref.
 func ListAdtyAnomalyDispositions(siteID int) ([]model.AdtyAnomalyDisposition, error) {
-	if siteID < 0 {
-		return nil, common.NewMessage("Invalid parameters")
+	rows, _, err := PageAdtyAnomalyDispositions(siteID, "", "", "", 0, 50)
+	return rows, err
+}
+
+func PageAdtyAnomalyDispositions(siteID int, status, order, kind string, offset, limit int) ([]model.AdtyAnomalyDisposition, int64, error) {
+	if siteID < 0 || offset < 0 || limit < 1 || (status != "" && status != "open" && status != "reviewing" && status != "closed") {
+		return nil, 0, common.NewMessage("Invalid parameters")
+	}
+	q := model.DB.Model(&model.AdtyAnomalyDisposition{})
+	if siteID == 0 {
+		q = q.Where("site_id = 0 AND team_id > 0")
+	} else {
+		q = q.Where("(site_id = ? OR (site_id = 0 AND team_id = 0 AND ref = ?))", siteID, strconv.Itoa(siteID))
+	}
+	if status != "" {
+		q = q.Where("status = ?", status)
+	}
+	if order = strings.TrimSpace(order); order != "" {
+		q = q.Where("order_ref = ?", order)
+	}
+	if kind = strings.TrimSpace(kind); kind != "" {
+		q = q.Where("kind = ?", kind)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
 	}
 	var rows []model.AdtyAnomalyDisposition
-	scope := model.DB.Where("site_id = ? AND team_id > 0", 0)
-	if siteID > 0 {
-		scope = model.DB.Where("site_id = ? OR (site_id = 0 AND team_id = 0 AND ref = ?)", siteID, strconv.Itoa(siteID))
-	}
-	err := scope.
-		Order("id desc").Limit(50).Find(&rows).Error
-	return rows, err
+	err := q.Order("CASE status WHEN 'open' THEN 0 WHEN 'reviewing' THEN 1 ELSE 2 END, CASE WHEN status = 'closed' THEN -id ELSE id END").Offset(offset).Limit(min(limit, 100)).Find(&rows).Error
+	return rows, total, err
 }
 
 // ReviewAdtyAnomalyDisposition records a Root review. It does not move wallets or customer quota.
@@ -617,7 +637,7 @@ func ApplyAdtySiteWalletChange(siteID int, kind string, delta decimal.Decimal, c
 }
 
 func ValidateAdtySiteTier(tier model.AdtySiteTier) error {
-	if strings.TrimSpace(tier.Code) == "" || len(strings.TrimSpace(tier.Code)) > 32 || strings.TrimSpace(tier.Name) == "" {
+	if strings.TrimSpace(tier.Code) == "" || utf8.RuneCountInString(strings.TrimSpace(tier.Code)) > 32 || strings.TrimSpace(tier.Name) == "" {
 		return ErrAdtySiteTierInvalid
 	}
 	if tier.SortOrder < 0 || tier.MinEffectiveUsers < 0 {
@@ -641,6 +661,14 @@ func ValidateAdtySiteTier(tier model.AdtySiteTier) error {
 // does not delete omitted rows, so a partial admin update cannot silently
 // remove a level that is still assigned to a site.
 func SaveAdtySiteTiers(tiers []model.AdtySiteTier) error {
+	return saveAdtySiteTiers(tiers, false)
+}
+
+func UpdateAdtySiteTiers(tiers []model.AdtySiteTier) error {
+	return saveAdtySiteTiers(tiers, true)
+}
+
+func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		seen := map[string]struct{}{}
 		for _, input := range tiers {
@@ -659,6 +687,9 @@ func SaveAdtySiteTiers(tiers []model.AdtySiteTier) error {
 				return find.Error
 			}
 			if find.RowsAffected == 0 {
+				if existingOnly {
+					return ErrAdtySiteTierNotFound
+				}
 				if err := tx.Create(&input).Error; err != nil {
 					return err
 				}
@@ -695,6 +726,29 @@ func SaveAdtySiteTiers(tiers []model.AdtySiteTier) error {
 	}
 	return err
 }
+
+// CreateAdtySiteTiers reserves each code atomically before it can be assigned.
+func CreateAdtySiteTiers(tiers []model.AdtySiteTier) error {
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		for _, tier := range tiers {
+			tier.Id = 0
+			tier.Name, tier.Code = strings.TrimSpace(tier.Name), strings.TrimSpace(tier.Code)
+			if err := ValidateAdtySiteTier(tier); err != nil {
+				return err
+			}
+			result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoNothing: true}).Create(&tier)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return ErrAdtySiteTierConflict
+			}
+		}
+		return nil
+	})
+}
+
+var ErrAdtySiteTierConflict = common.NewMessage("This level code already exists")
 
 func ListAdtySiteTiers() ([]model.AdtySiteTier, error) {
 	var tiers []model.AdtySiteTier

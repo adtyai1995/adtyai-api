@@ -897,6 +897,11 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 		}
 		if site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusClosed {
 			q := tx.Where("site_id = ?", siteId)
+			// Before the first reschedule the locked site still contains the original
+			// deadline. Later revisions carry the prior deadline explicitly.
+			if err := model.BackfillAdtyCloseMailDeadline(tx, site.Id); err != nil {
+				return err
+			}
 			if plan.ExecuteAt == 0 {
 				q = q.Where("revision = 1")
 			} else {
@@ -972,7 +977,7 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 		site, err := GetAdtySite(siteId)
 		if err == nil {
 			site.CloseMailBatchId = receipt.Id
-			if receipt.ExecuteAt > 0 {
+			if receipt.Id > 0 {
 				site.CloseExecuteAt = receipt.ExecuteAt
 			}
 		}

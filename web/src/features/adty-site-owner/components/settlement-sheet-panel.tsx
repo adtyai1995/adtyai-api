@@ -16,13 +16,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQuery } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
@@ -31,6 +33,8 @@ import { cn } from '@/lib/utils'
 
 import {
   getOwnerSettlementSheets,
+  getOwnerSettlementDetail,
+  type SettlementPage,
   siteOwnerKeys,
   type SettlementSheet,
 } from '../api'
@@ -153,6 +157,7 @@ export function SettlementSheetLines({ sheet }: { sheet: SettlementSheet }) {
     selected === 'latest'
       ? revisions[revisions.length - 1]
       : revisions.find((r) => String(r.id) === selected)
+  const generatedAt = revision?.created_at || sheet.generated_at
   const lines = settlementSheetLines(t, revision?.after ?? sheet, locale)
   return (
     <>
@@ -164,7 +169,11 @@ export function SettlementSheetLines({ sheet }: { sheet: SettlementSheet }) {
             onChange={(e) => setSelected(e.target.value)}
           >
             <option value='latest'>{t('Latest')}</option>
-            <option value='original'>{t('Original')}</option>
+            <option value='original'>
+              {sheet.legacy_coverage?.length
+                ? t('Recorded statement')
+                : t('Original')}
+            </option>
             {revisions.map((r) => (
               <option key={r.id} value={r.id}>
                 #{r.id} · {formatTimestamp(r.created_at)}
@@ -172,6 +181,25 @@ export function SettlementSheetLines({ sheet }: { sheet: SettlementSheet }) {
             ))}
           </select>
         </label>
+      )}
+      {generatedAt ? (
+        <p>
+          {t('Generated at')} ·{' '}
+          {formatTimestamp(generatedAt)}
+        </p>
+      ) : null}
+      {!!sheet.legacy_coverage?.length && (
+        <details>
+          <summary>{t('Historical coverage adjustments')}</summary>
+          <ul>
+            {sheet.legacy_coverage.map((a) => (
+              <li key={a.id}>
+                {formatTimestamp(a.created_at)} · {t('Pending coverage')} USD{' '}
+                {a.before_usd} → {a.after_usd}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {revision && (
         <details>
@@ -201,54 +229,126 @@ export function SettlementSheetLines({ sheet }: { sheet: SettlementSheet }) {
 
 /** Previous-day check sheet. It lists recorded lines and does not credit earnings. */
 export function SettlementSheetPanel({ siteId }: { siteId?: number }) {
-  const { t } = useTranslation()
-  const query = useQuery({
-    queryKey: siteOwnerKeys.list('settlement-sheets', { siteId }),
-    queryFn: () => getOwnerSettlementSheets(siteId),
-  })
-  const [day, setDay] = useState('')
-  const sheet =
-    query.data?.find((s) => s.business_day === day) ?? query.data?.[0]
+  return (
+    <SettlementBrowser
+      scope={siteOwnerKeys.list('settlement-sheets', { siteId })}
+      siteId={siteId}
+      list={getOwnerSettlementSheets}
+      detail={getOwnerSettlementDetail}
+    />
+  )
+}
 
+type BrowserProps = {
+  scope: readonly unknown[]
+  siteId?: number
+  admin?: boolean
+  list: (page: number, day: string, siteId?: number) => Promise<SettlementPage>
+  detail: (id: number, siteId?: number) => Promise<SettlementSheet>
+}
+
+export function SettlementBrowser({
+  scope,
+  siteId,
+  admin,
+  list,
+  detail,
+}: BrowserProps) {
+  const { t } = useTranslation()
+  const [page, setPage] = useState(1)
+  const [day, setDay] = useState('')
+  const [filter, setFilter] = useState('')
+  const [selected, setSelected] = useState(0)
+  const site = admin ? (filter ? Number(filter) : undefined) : siteId
+  const query = useQuery({
+    queryKey: [...scope, 'page', site, page, day],
+    queryFn: () => list(page, day, site),
+  })
+  const rows = query.data?.items ?? []
+  const current = rows.find((row) => row.id === selected) ?? rows[0]
+  const item = useQuery({
+    queryKey: [...scope, 'detail', site, current?.id],
+    queryFn: current ? () => detail(current.id, site) : skipToken,
+  })
   return (
     <section className='flex flex-col gap-3'>
       <h2 className='text-sm font-medium'>{t('Settlement sheet')}</h2>
-      <p className='text-muted-foreground text-sm'>
-        {t(
-          'This sheet checks the previous business day. It does not add earnings.'
+      <div className='flex flex-wrap gap-2'>
+        <label>
+          {t('Date')}
+          <Input
+            type='date'
+            value={day}
+            onChange={(e) => {
+              setDay(e.target.value)
+              setPage(1)
+            }}
+          />
+        </label>
+        {admin && (
+          <label>
+            {t('Site ID')}
+            <Input
+              type='number'
+              min={1}
+              value={filter}
+              onChange={(e) => {
+                setFilter(e.target.value)
+                setPage(1)
+              }}
+            />
+          </label>
         )}
-      </p>
+      </div>
       {query.isError && (
         <ErrorState
           description={getServerErrorMessage(query.error)}
           onRetry={() => void query.refetch()}
         />
       )}
-      {query.isSuccess && !sheet && (
+      {query.isSuccess && rows.length === 0 && (
         <EmptyState className='min-h-24' title={t('No settlement sheet yet')} />
       )}
-      {sheet && (
-        <>
-          {(query.data?.length ?? 0) > 1 && (
-            <select
-              aria-label={t('Date')}
-              value={sheet.business_day}
-              onChange={(e) => setDay(e.target.value)}
-            >
-              {query.data?.map((s) => (
-                <option key={s.id} value={s.business_day}>
-                  {s.business_day}
-                </option>
-              ))}
-            </select>
-          )}
-          <SettlementSheetLines key={sheet.id} sheet={sheet} />
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'Settlement spread is the recorded usage difference. It is not earnings after gifts or commissions.'
-            )}
-          </p>
-        </>
+      {current && (
+        <select
+          aria-label={t('Settlement sheet')}
+          value={current.id}
+          onChange={(e) => setSelected(Number(e.target.value))}
+        >
+          {rows.map((row) => (
+            <option key={row.id} value={row.id}>
+              {admin ? t('Site ID') + ' ' + row.site_id + ' · ' : ''}
+              {row.business_day}
+            </option>
+          ))}
+        </select>
+      )}
+      {item.isError && (
+        <ErrorState
+          description={getServerErrorMessage(item.error)}
+          onRetry={() => void item.refetch()}
+        />
+      )}
+      {current && item.data && (
+        <SettlementSheetLines key={current.id} sheet={item.data} />
+      )}
+      {((query.data?.total ?? 0) > 20 || page > 1) && (
+        <div className='flex gap-2'>
+          <Button
+            variant='outline'
+            disabled={page === 1}
+            onClick={() => setPage(page - 1)}
+          >
+            {t('Previous page')}
+          </Button>
+          <Button
+            variant='outline'
+            disabled={page * 20 >= (query.data?.total ?? 0)}
+            onClick={() => setPage(page + 1)}
+          >
+            {t('Next page')}
+          </Button>
+        </div>
       )}
     </section>
   )

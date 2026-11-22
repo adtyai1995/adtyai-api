@@ -785,6 +785,7 @@ func collectNonTopupUnifiedOrders(c *gin.Context, ownerSiteID *int, orderType st
 			for _, w := range invWithdrawals {
 				sid := w.SiteId
 				f, _ := w.AmountUSD.Float64()
+				paidAmount, _ := decimal.NewFromString(w.PayoutAmount)
 				item := rechargeAuditOrder{
 					Id:              int(w.Id),
 					UserId:          w.UserId,
@@ -796,11 +797,11 @@ func collectNonTopupUnifiedOrders(c *gin.Context, ownerSiteID *int, orderType st
 					PaymentProvider: "withdrawal",
 					Status:          w.Status,
 					CreateTime:      w.CreatedAt,
-					CompleteTime:    w.ReviewedAt,
+					CompleteTime:    w.PaidAt,
 					Money:           f,
 					FaceUSD:         w.AmountUSD,
-					PaidAmount:      w.NetUSD,
-					PaidCurrency:    "USDT",
+					PaidAmount:      paidAmount,
+					PaidCurrency:    w.PayoutCurrency,
 				}
 				if matchesCommon(item) {
 					out = append(out, item)

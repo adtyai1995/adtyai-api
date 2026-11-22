@@ -2,6 +2,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
+import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
 import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
@@ -10,6 +12,8 @@ import { PageSwitcher } from '@/features/referral/components/page-switcher'
 
 import {
   getArchivedSites,
+  getArchivedWebsiteDomains,
+  removeArchivedDomain,
   getOwnerEarnings,
   siteOwnerKeys,
   OWNER_PAGE_SIZE,
@@ -87,6 +91,15 @@ function ArchiveLedger({ siteId }: { siteId: number }) {
   )
 }
 
+function ArchivedDomains({siteId}: {siteId:number}) {
+ const {t} = useTranslation()
+ const domains = useQuery({queryKey:siteOwnerKeys.list('archived-domains',{siteId}),queryFn:()=>getArchivedWebsiteDomains(siteId)})
+ const remove = useVerifiedOwnerMutation<number>({action:'domain.delete',target:id=>id,run:(id,proof)=>removeArchivedDomain(siteId,id,proof),successMessage:t('Deleted successfully')})
+ if (domains.isError) return <ErrorState onRetry={()=>void domains.refetch()} />
+ if (!domains.data?.length) return null
+ return <section><h2>{t('Custom domains')}</h2><ul>{domains.data.map(domain=><li key={domain.id} className='flex items-center gap-3'>{domain.hostname}<Button variant='outline' disabled={remove.isPending} onClick={()=>remove.mutate(domain.id)}>{t('Remove domain')}</Button></li>)}</ul></section>
+}
+
 export function ArchivedAccountsPanel() {
   const { t } = useTranslation()
   const [selected, setSelected] = useState(0)
@@ -117,8 +130,9 @@ export function ArchivedAccountsPanel() {
                 </NativeSelectOption>
               ))}
             </NativeSelect>
+            <ArchivedDomains siteId={siteId} />
             <ArchiveLedger siteId={siteId} />
-            <WithdrawalPanel siteId={siteId} />
+            <WithdrawalPanel key={siteId} siteId={siteId} />
             <SettlementSheetPanel siteId={siteId} />
           </div>
         )}

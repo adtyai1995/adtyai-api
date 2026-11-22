@@ -670,6 +670,7 @@ describe('Brand logo', () => {
         brand: expect.objectContaining({
           logo_url: '/uploads/site-assets/site-7-abc.png',
         }),
+        expected_brand: expect.objectContaining({ logo_url: '' }),
       })
     )
   })

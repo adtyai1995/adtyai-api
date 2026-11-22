@@ -31,8 +31,6 @@ const (
 	dataRetentionSkipDeidentify   = "de-identification is not implemented for this category; no automatic deletion was performed"
 )
 
-var errTicketImageDeleteFailed = errors.New("ticket image file delete failed")
-
 // DataRetentionCategoryView is the Root admin representation of one category.
 type DataRetentionCategoryView struct {
 	Category         string   `json:"category"`
@@ -637,6 +635,16 @@ func deleteExpiredSupportTickets(ctx context.Context, cutoff int64, limit int) (
 	if model.DB == nil {
 		return 0, 1, fmt.Errorf("database unavailable")
 	}
+	// Process the durable file queue even if a different ticket prevents this
+	// run from expiring more cases.
+	defer func() {
+		fileFailures, cleanupErr := cleanExpiredTicketImages(ctx, limit)
+		failed += fileFailures
+		if cleanupErr != nil {
+			failed++
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
 	var lastID int64
 	for {
 		if err := ctx.Err(); err != nil {
@@ -707,23 +715,9 @@ func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64, cutoff i
 		if closedAt >= cutoff {
 			return nil
 		}
-		var images []model.AdtyTicketImage
-		if err := tx.Where("ticket_id = ?", ticketID).Order("id").Find(&images).Error; err != nil {
-			return err
-		}
-		for _, image := range images {
-			path, err := adtyTicketImageFilePath(image.Storage)
-			if err != nil {
-				return errTicketImageDeleteFailed
-			}
-			if path == "" {
-				continue
-			}
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return errTicketImageDeleteFailed
-			}
-		}
-		if err := tx.Where("ticket_id = ?", ticketID).Delete(&model.AdtyTicketImage{}).Error; err != nil {
+		// Keep each storage name as a durable deletion job. Files remain intact
+		// until the transaction removing the ticket and its evidence commits.
+		if err := tx.Model(&model.AdtyTicketImage{}).Where("ticket_id=?", ticketID).UpdateColumn("delete_pending", true).Error; err != nil {
 			return err
 		}
 		// The translation index also stores the full reply. Remove its copies
@@ -758,13 +752,39 @@ func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64, cutoff i
 		deleted = true
 		return nil
 	})
-	if errors.Is(txErr, errTicketImageDeleteFailed) {
-		return false, true, nil
-	}
 	if txErr != nil {
 		return false, false, txErr
 	}
 	return deleted, false, nil
+}
+
+// A crash after unlink is harmless: an absent file also completes the job.
+func cleanExpiredTicketImages(ctx context.Context, limit int) (int64, error) {
+	var after, failed int64
+	for {
+		var images []model.AdtyTicketImage
+		db := model.DB.WithContext(ctx)
+		if err := db.Where("delete_pending=? AND id>?", true, after).Order("id").Limit(limit).Find(&images).Error; err != nil {
+			return failed, err
+		}
+		for _, image := range images {
+			after = image.Id
+			path, err := adtyTicketImageStoragePath(image)
+			if err == nil && path != "" {
+				err = os.Remove(path)
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				failed++
+				continue
+			}
+			if err := db.Where("id=? AND delete_pending=?", image.Id, true).Delete(&model.AdtyTicketImage{}).Error; err != nil {
+				return failed, err
+			}
+		}
+		if len(images) < limit {
+			return failed, nil
+		}
+	}
 }
 
 func drainRetentionBatches(ctx context.Context, fn func() (int64, error)) (int64, error) {

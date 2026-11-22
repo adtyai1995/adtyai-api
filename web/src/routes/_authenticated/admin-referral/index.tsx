@@ -16,18 +16,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { createFileRoute, redirect, useRouterState } from '@tanstack/react-router'
 
 import { AdminReferral } from '@/features/admin-referral'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/admin-referral/')({
+  validateSearch: (search): { withdrawals?: 'pending' | 'approved' | 'actionable' } => {
+    const status = search.withdrawals
+    if (status === 'pending' || status === 'approved' || status === 'actionable') {
+      return { withdrawals: status }
+    }
+    return {}
+  },
   beforeLoad: () => {
     const { auth } = useAuthStore.getState()
     if (!canAdmin(auth.user, ADTY_PERMISSIONS.REFERRAL_READ)) {
       throw redirect({ to: '/403' })
     }
   },
-  component: AdminReferral,
+  component: ReferralPage,
 })
+
+function ReferralPage() {
+  const { withdrawals } = Route.useSearch()
+  const entry = useRouterState({ select: (state) => state.location.state.__TSR_key })
+  return <AdminReferral key={entry} initialStatus={withdrawals} />
+}

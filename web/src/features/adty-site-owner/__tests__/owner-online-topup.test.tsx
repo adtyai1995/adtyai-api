@@ -26,7 +26,10 @@ import type { AdtyTopupInfo } from '@/features/wallet/adty/types'
 import { api } from '@/lib/api'
 
 import { OwnerSelfUsePanel } from '../components/owner-self-use-panel'
-import { SettlementSheetPanel } from '../components/settlement-sheet-panel'
+import {
+  SettlementBrowser,
+  SettlementSheetPanel,
+} from '../components/settlement-sheet-panel'
 
 const business = 'owner_self_use_topup'
 const usdt = { id: 'usdt.trc20', kind: 'usdt' as const, available: true }
@@ -91,15 +94,19 @@ beforeEach(() => {
         data = []
         break
       case '/api/adty/site/settlement-sheets':
-        data = [
-          {
-            business_day: '2026-11-18',
-            topup_face_usd: '45',
-            owner_self_use_topup_usd: '100',
-            owner_self_use_refund_usd: '9.5',
-            owner_self_use_voucher_usd: '20',
-          },
-        ]
+        data = config.params.sheet_id
+          ? {
+              id: 1,
+              business_day: '2026-11-18',
+              topup_face_usd: '45',
+              owner_self_use_topup_usd: '100',
+              owner_self_use_refund_usd: '9.5',
+              owner_self_use_voucher_usd: '20',
+            }
+          : {
+              items: [{ id: 1, business_day: '2026-11-18', site_id: 7 }],
+              total: 1,
+            }
         break
       case '/api/adty/site/self-use/transfers':
       case '/api/adty/site/self-use/usage':
@@ -272,4 +279,60 @@ it('reports owner online principal, vouchers and refunds separately from custome
     const line = await screen.findByText(label)
     expect(line.nextElementSibling).toHaveTextContent(amount)
   }
+})
+
+it('opens the latest revision for each selected statement and lists earlier coverage changes', async () => {
+  const user = userEvent.setup()
+  const summary = (id: number) => ({
+    id,
+    site_id: 8,
+    business_day: '2026-11-' + id,
+  })
+  const sheet = (id: number, amount: string) =>
+    ({
+      ...summary(id),
+      topup_face_usd: amount,
+    }) as import('../api').SettlementSheet
+  render(
+    <QueryClientProvider client={client}>
+      <SettlementBrowser
+        admin
+        scope={['statement-test']}
+        list={async () => ({ items: [summary(1), summary(2)], total: 2 })}
+        detail={async (id) => ({
+          ...sheet(id, '1'),
+          legacy_coverage: [
+            { id: 1, created_at: 1, before_usd: '10', after_usd: '7' },
+          ],
+          revisions: [
+            {
+              id: id + 10,
+              before: sheet(id, '1'),
+              after: sheet(id, String(id + 2)),
+              created_at: 99,
+              sources: [],
+            },
+          ],
+        })}
+      />
+    </QueryClientProvider>
+  )
+  await user.selectOptions(
+    await screen.findByLabelText(/Statement version/),
+    'original'
+  )
+  expect(screen.getByText('Top-up').nextElementSibling).toHaveTextContent(
+    '$1.00'
+  )
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Settlement sheet' }),
+    '2'
+  )
+  await waitFor(() =>
+    expect(screen.getByText('Top-up').nextElementSibling).toHaveTextContent(
+      '$4.00'
+    )
+  )
+  expect(screen.getByLabelText(/Statement version/)).toHaveValue('latest')
+  expect(screen.getByText(/USD 10 → 7/)).toBeInTheDocument()
 })

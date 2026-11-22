@@ -94,7 +94,7 @@ try {
     await preview.evaluate((element) => element.decode())
     assert.equal(await preview.evaluate((element) => element.naturalWidth), 320)
     assert.ok((await preview.getAttribute('src')).startsWith('blob:'))
-    assert.ok(imageRequests.some((request) => request.url.searchParams.get('action') === 'grant'))
+    assert.equal(imageRequests.filter((request) => request.url.searchParams.get('action') === 'grant').length, 0)
     assert.ok(imageRequests.some((request) => request.headers['x-ticket-image-grant']))
     assert.ok(imageRequests.every((request) => request.headers.authorization && !request.url.searchParams.has('grant')))
     await preview.scrollIntoViewIfNeeded()

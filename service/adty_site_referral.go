@@ -22,15 +22,16 @@ type AdtySiteReferralView struct {
 }
 
 type AdtySiteMarketingUpdate struct {
-	Rate               *string `json:"rate"`
-	Enabled            *bool   `json:"enabled"`
-	PendingCoverageCap *string `json:"pending_coverage_cap"`
-	ObservationDays    *string `json:"observation_days"`
-	MinUSD             *string `json:"min_usd"`
-	FeeUSD             *string `json:"fee_usd"`
-	CNYRate            *string `json:"cny_rate"`
-	TrialGrantMaxUSD   *string `json:"trial_grant_max_usd"`
-	TrialGrantDailyUSD *string `json:"trial_grant_daily_usd"`
+	Rate                *string `json:"rate"`
+	Enabled             *bool   `json:"enabled"`
+	PendingCoverageCap  *string `json:"pending_coverage_cap"`
+	CancelWindowMinutes *string `json:"cancel_window_minutes"`
+	ObservationDays     *string `json:"observation_days"`
+	MinUSD              *string `json:"min_usd"`
+	FeeUSD              *string `json:"fee_usd"`
+	CNYRate             *string `json:"cny_rate"`
+	TrialGrantMaxUSD    *string `json:"trial_grant_max_usd"`
+	TrialGrantDailyUSD  *string `json:"trial_grant_daily_usd"`
 }
 
 var siteMarketingDecimal = regexp.MustCompile(`^(?:[0-9]{1,12}(?:\.[0-9]{0,8})?|\.[0-9]{1,8})$`)
@@ -96,6 +97,18 @@ func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpda
 			}
 			*field.dest = &value
 			updates[field.column] = value
+		}
+		if input.CancelWindowMinutes != nil {
+			raw := strings.TrimSpace(*input.CancelWindowMinutes)
+			if raw == "" {
+				updates["invite_cancel_window_minutes"] = nil
+			} else {
+				minutes, err := strconv.ParseUint(raw, 10, 31)
+				if err != nil {
+					return common.NewMessage("Invalid parameters")
+				}
+				updates["invite_cancel_window_minutes"] = minutes
+			}
 		}
 		if input.ObservationDays != nil {
 			raw := strings.TrimSpace(*input.ObservationDays)

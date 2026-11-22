@@ -152,7 +152,8 @@ func TestAdtyTicketNotesImagesAndRemovedStaff(t *testing.T) {
 	require.NoError(t, db.Model(&model.User{}).Where("id = ?", staffUser.Id).Updates(map[string]any{"site_id": site.Id, "staff_site_id": site.Id}).Error)
 	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Role: "support", Status: "enabled", Permissions: `["customers.read","tickets.manage"]`}).Error)
 
-	ticket, err := CreateAdtyTicket(customer.Id, AdtyTicketInput{Type: "billing", Title: "Charge", Body: "api_key=sk-livesecretvalue please", RelatedRef: "T100001", Idempotency: "same"})
+	require.NoError(t, db.Create(&model.AdtyTopupOrder{UserId: customer.Id, TradeNo: "T100001"}).Error)
+	ticket, err := CreateAdtyTicket(customer.Id, AdtyTicketInput{Type: "billing", Title: "Charge", Body: "api_key=sk-livesecretvalue please", RelatedKind: "topup", RelatedRef: "T100001", Idempotency: "same"})
 	require.NoError(t, err)
 	again, err := CreateAdtyTicket(customer.Id, AdtyTicketInput{Type: "billing", Title: "Charge", Body: "again", Idempotency: "same"})
 	require.NoError(t, err)

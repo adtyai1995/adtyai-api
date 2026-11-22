@@ -56,6 +56,7 @@ function mount(scope: 'platform' | 'personal') {
         success: true,
         data: {
           ticket: { id, title: `Case ${id}`, status: 'new', type: 'api' },
+          actions: ['reply','note'],
           messages: [],
           events: [],
           can_manage: true,

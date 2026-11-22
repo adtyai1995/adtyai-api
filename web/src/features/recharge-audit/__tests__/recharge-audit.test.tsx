@@ -393,6 +393,18 @@ describe('RechargeAudit', () => {
   })
 
   it.each([
+    [true,'Returned 40 USD to team 8, lot 3, ledger 42.'],
+    [false,'This team recharge requires historical principal review'],
+  ])('shows the original team refund ledger when evidence exists (%s)',async(released,expected)=>{
+    api.listTopupManualRefunds.mockResolvedValue({facts:{
+      trade_no:'EPY7001',team_id:8,team_lot_id:3,team_releases:released?{'refund-2':{ledger_id:42,amount_usd:'40'}}:{},
+      manual_refunds:[{refund_id:'refund-2',trade_no:'EPY7001',status:'terminated',deducted_principal_quota:20000000,request_usd:'40',request_quota:20000000}]
+    }})
+    renderPage({read:true,refund:true})
+    await userEvent.setup().click(await screen.findByRole('button',{name:'Refund'}))
+    expect(await screen.findByText(String(expected))).toBeVisible()
+  })
+  it.each([
     ['failed', true],
     ['success', false],
   ])(

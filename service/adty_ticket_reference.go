@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/QuantumNous/new-api/common"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/model"
@@ -97,11 +98,15 @@ func AdtyTicketRequestAudience(userID int, ref string) (string, error) {
 }
 
 func ticketRequestPayer(tx *gorm.DB, actor adtyTicketActor, ref string) (int64, error) {
+	return ticketRequestSnapshot(tx, actor, ref, nil)
+}
+
+func ticketRequestSnapshot(tx *gorm.DB, actor adtyTicketActor, ref string, ticket *model.AdtyTicket) (int64, error) {
 	if ref == "" || len(ref) > 64 {
 		return 0, ErrAdtyTicketInvalid
 	}
 	var op model.BillingOperation
-	found := tx.Select("user_id", "payer_team_id").Where("kind=? AND operation_key IN ?", "request", []string{"request:" + ref, ref}).Order("operation_key DESC").Limit(1).Find(&op)
+	found := tx.Select("user_id", "payer_team_id", "created_at", "billing_context", "price_snapshot").Where("kind=? AND operation_key IN ?", "request", []string{"request:" + ref, ref}).Order("operation_key DESC").Limit(1).Find(&op)
 	if found.Error != nil {
 		return 0, found.Error
 	}
@@ -114,17 +119,66 @@ func ticketRequestPayer(tx *gorm.DB, actor adtyTicketActor, ref string) (int64, 
 		} else if !own {
 			return 0, ErrAdtyTicketInvalid
 		}
-		return op.PayerTeamId, nil
+		if ticket == nil {
+			return op.PayerTeamId, nil
+		}
 	}
-	if model.LOG_DB == nil {
+	ownerID := actor.User.Id
+	if found.RowsAffected > 0 {
+		ownerID = op.UserId
+	}
+	var log model.Log
+	if model.LOG_DB != nil {
+		if err := model.LOG_DB.Select("model_name", "group", "created_at", "type", "other", "id").Where("user_id=? AND request_id=?", ownerID, ref).Order("id DESC").Limit(1).Find(&log).Error; err != nil {
+			return 0, err
+		}
+	}
+	if log.Id == 0 && found.RowsAffected == 0 {
 		return 0, ErrAdtyTicketInvalid
 	}
-	var count int64
-	if err := model.LOG_DB.Model(&model.Log{}).Where("user_id=? AND request_id=?", actor.User.Id, ref).Count(&count).Error; err != nil {
-		return 0, err
+	if ticket != nil {
+		ticket.RelatedAt = op.CreatedAt
+		var bc model.TaskBillingContext
+		_ = common.UnmarshalJsonStr(op.BillingContext, &bc)
+		ticket.RelatedModel, ticket.RelatedGroup, ticket.RelatedError = bc.OriginModelName, "", ""
+		var snap model.RequestPriceSnapshot
+		_ = common.UnmarshalJsonStr(op.PriceSnapshot, &snap)
+		if snap.ModelName != "" {
+			ticket.RelatedModel = snap.ModelName
+		}
+		ticket.RelatedGroup = snap.BillingGroup
+		if snap.AcceptedAt > 0 {
+			ticket.RelatedAt = snap.AcceptedAt
+		}
+		if log.Id > 0 {
+			if log.CreatedAt > 0 {
+				ticket.RelatedAt = log.CreatedAt
+			}
+			if log.ModelName != "" {
+				ticket.RelatedModel = log.ModelName
+			}
+			if log.Group != "" {
+				ticket.RelatedGroup = log.Group
+			}
+			if log.Type == model.LogTypeError {
+				var classification struct {
+					ErrorType string `json:"error_type"`
+				}
+				_ = common.UnmarshalJsonStr(log.Other, &classification)
+				ticket.RelatedError = classification.ErrorType
+				if ticket.RelatedError == "" {
+					ticket.RelatedError = "request_error"
+				}
+			}
+		}
+		ticket.RelatedModel = boundedTicketHint(ticket.RelatedModel, 80)
+		ticket.RelatedGroup = boundedTicketHint(ticket.RelatedGroup, 64)
+		ticket.RelatedError = boundedTicketHint(ticket.RelatedError, 64)
 	}
-	if count == 0 {
-		return 0, ErrAdtyTicketInvalid
-	}
-	return 0, nil
+	return op.PayerTeamId, nil
+}
+
+func boundedTicketHint(value string, limit int) string {
+	chars := []rune(redactAdtySecrets(value))
+	return string(chars[:min(len(chars), limit)])
 }

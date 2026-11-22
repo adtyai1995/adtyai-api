@@ -189,7 +189,7 @@ func TestAdtyResellerSettingDefaults(t *testing.T) {
 	assert.Nil(t, cfg.MaxSiteBonusExtra)
 	assert.Nil(t, cfg.TrialGrantMaxUSD)
 	assert.Nil(t, cfg.TrialGrantDailyUSD)
-	assert.Equal(t, adty_setting.ResellerUnknownHostMain, cfg.UnknownHostMode)
+	assert.Equal(t, adty_setting.ResellerUnknownHostReject, cfg.UnknownHostMode)
 	assert.Equal(t, 24, cfg.MarkupIncreaseDelayHours)
 	assert.Equal(t, 4, cfg.SettleHour)
 	assert.Equal(t, 7, cfg.FreezeDays)

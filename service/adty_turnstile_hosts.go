@@ -171,8 +171,8 @@ type AdtyTurnstileChoice struct {
 	Secret  string
 }
 
-// AdtyTurnstileFor 按当前站点和请求的域名选 widget：自定义域名用它登记进的 widget；平台子域名用
-// turnstile_widgets 的第一个；主站（site 为 nil）用上游的设置。
+// AdtyTurnstileFor selects the widget bound to either kind of website.
+// A legacy platform hostname without an explicit binding inherits the root-domain widget.
 func AdtyTurnstileFor(site *model.AdtySite, requestHost string) AdtyTurnstileChoice {
 	if site == nil {
 		return AdtyTurnstileChoice{}
@@ -182,16 +182,10 @@ func AdtyTurnstileFor(site *model.AdtySite, requestHost string) AdtyTurnstileCho
 		return AdtyTurnstileChoice{}
 	}
 	widgetId := cfg.TurnstileWidgets[0].Id
-	host := strings.ToLower(requestHost)
-	if h, _, ok := strings.Cut(host, ":"); ok {
-		host = h
-	}
-	if !strings.EqualFold(host, AdtySiteDisplayHost(site)) {
-		var domain model.AdtySiteDomain
-		if model.DB.Select("turnstile_widget").Where("hostname = ? AND site_id = ? AND status = ?", host, site.Id, model.AdtySiteDomainActive).
-			Limit(1).Find(&domain).RowsAffected > 0 && domain.TurnstileWidget != "" {
-			widgetId = domain.TurnstileWidget
-		}
+	host := AdtyNormalizeHost(requestHost)
+	var domain model.AdtySiteDomain
+	if model.DB.Select("turnstile_widget").Where("hostname = ? AND site_id = ? AND role = ? AND status = ?", host, site.Id, model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive).Limit(1).Find(&domain).RowsAffected > 0 && domain.TurnstileWidget != "" {
+		widgetId = domain.TurnstileWidget
 	}
 	for _, widget := range cfg.TurnstileWidgets {
 		if widget.Id == widgetId {

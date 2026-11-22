@@ -852,11 +852,16 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 	if err != nil || quota <= 0 {
 		return common.NewMessage("Invalid parameters")
 	}
-	ref := "site-comm-cvt:" + strconv.FormatInt(commissionID, 10) + ":" + key
+	ref := siteCommissionConversionKey(commissionID, key)
 	if len(ref) > 64 {
 		return common.NewMessage("Invalid parameters")
 	}
+	credited := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		var row model.AdtySiteInviteCommission
+		if err := model.AdtyLockForUpdate(tx).Where("inviter_id = ?", inviterID).First(&row, commissionID).Error; err != nil {
+			return err
+		}
 		existing, err := model.FindAdtyLedgerByIdemKeyTx(tx, ref)
 		if err != nil {
 			return err
@@ -867,11 +872,7 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 			}
 			return nil
 		}
-		var row model.AdtySiteInviteCommission
-		if err := model.AdtyLockForUpdate(tx).First(&row, commissionID).Error; err != nil {
-			return err
-		}
-		if row.InviterId != inviterID || !SiteInviteCommissionWithdrawable(&row, time.Now()) {
+		if !SiteInviteCommissionWithdrawable(&row, time.Now()) {
 			return common.NewMessage("No permission to perform this action")
 		}
 		remaining := siteInviteCommissionFree(&row)
@@ -896,6 +897,7 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 		if err := model.CreateAdtyFundBatchesWithSiteTx(tx, inviterID, model.AdtyFundBatchSiteID(row.SiteId), ref, int64(quota), 0); err != nil {
 			return err
 		}
+		credited = true
 		return tx.Model(&row).Updates(map[string]any{
 			"converted_usd":     row.ConvertedUSD.Add(amount),
 			"earnings_hold_usd": row.EarningsHoldUSD, "margin_hold_usd": row.MarginHoldUSD,
@@ -904,7 +906,9 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 	if err != nil {
 		return err
 	}
-	model.AdtySyncCreditUserQuotaCache(inviterID, int64(quota), "site invite commission")
+	if credited {
+		model.AdtySyncCreditUserQuotaCache(inviterID, int64(quota), "site invite commission")
+	}
 	return nil
 }
 

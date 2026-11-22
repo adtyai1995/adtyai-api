@@ -38,7 +38,7 @@ func referralPage(c *gin.Context, query *gorm.DB, out any) bool {
 // GetReferralAdminBadges 是侧边栏「推广管理」旁的待处理数：合作伙伴申请 + 待审核提现 + 待打款提现。
 // 计数按调用者的角色与站点过滤：Root 全局，非 Root 管理员只看主站，不再做未过滤的全局合计。
 func GetReferralAdminBadges(c *gin.Context) {
-	badges, err := service.CollectAdtyReferralAdminBadges(c.GetInt("id"))
+	badges, err := service.CollectAdtyReferralAdminBadges(c.GetInt("id"), referralBadgeTokenScopes(c)...)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -451,7 +451,9 @@ func GetAdminReferralWithdrawals(c *gin.Context) {
 		return
 	}
 	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralWithdrawal{}), "user_id", siteID)
-	if status := strings.TrimSpace(c.Query("status")); status != "" {
+	if status := strings.TrimSpace(c.Query("status")); status == "actionable" {
+		query = query.Where("status IN ?", []string{model.ReferralWithdrawalStatusPending, model.ReferralWithdrawalStatusApproved})
+	} else if status != "" {
 		query = query.Where("status = ?", status)
 	}
 	pageInfo := common.GetPageQuery(c)

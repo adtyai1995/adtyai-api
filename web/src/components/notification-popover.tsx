@@ -350,11 +350,22 @@ function AnnouncementsContent({
                     </div>
 
                     {item.ticket_path &&
-                      /^\/(profile|site-admin\/tickets|site-owner\/tickets|site-staff)#case-\d+$/.test(
+                      /^\/(profile|site-admin\/tickets|site-owner\/tickets|site-staff)#case-\d+(?:-team)?$/.test(
                         item.ticket_path
                       ) && (
                         <a
                           href={item.ticket_path}
+                          onClick={(event) => {
+                            const { pathname, hash } = event.currentTarget
+                            if (
+                              pathname === location.pathname &&
+                              hash === location.hash
+                            ) {
+                              window.dispatchEvent(
+                                new HashChangeEvent('hashchange')
+                              )
+                            }
+                          }}
                           className='text-primary text-sm underline'
                         >
                           {t('Open ticket')}

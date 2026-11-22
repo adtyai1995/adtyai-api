@@ -93,6 +93,19 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 			return err
 		}
 	}
+	if err := backfillAdtyTerminatedTeamRefunds(db); err != nil {
+		return err
+	}
+	if db.Migrator().HasTable(&TopUp{}) {
+		if err := db.Exec(`UPDATE adty_team_fund_lots SET effective_at=COALESCE(NULLIF((SELECT t.complete_time FROM top_ups t WHERE t.trade_no=adty_team_fund_lots.source AND adty_team_fund_lots.kind='topup'),0),(SELECT MIN(l.created_at) FROM adty_team_ledgers l WHERE l.team_id=adty_team_fund_lots.team_id AND l.type=adty_team_fund_lots.kind AND l.ref_id=adty_team_fund_lots.source),0) WHERE effective_at=0`).Error; err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasTable(&Token{}) {
+		if err := db.Model(&Token{}).Where("status=?", common.TokenStatusExhausted).UpdateColumn("status", common.TokenStatusEnabled).Error; err != nil {
+			return err
+		}
+	}
 	voucherIndexErr := EnsureAdtyVoucherTradeNoUniqueIndex(db)
 	teamMemberIndexErr := EnsureActiveTeamMembershipUniqueIndex(db)
 	installAdtyUniqueConstraintWriteGates(db, voucherIndexErr, teamMemberIndexErr)
@@ -166,13 +179,30 @@ func migrateAdtySiteTablesOn(db *gorm.DB) error {
 		return err
 	}
 	// The replacement unique index includes the notice revision. Historical rows
- // are revision one and retain their original batch and provider keys.
- if db.Migrator().HasIndex(&AdtySiteCloseMailBatch{},"idx_adty_site_close_mail_batches_site_id"){
- if err:=db.Migrator().DropIndex(&AdtySiteCloseMailBatch{},"idx_adty_site_close_mail_batches_site_id");err!=nil{return err}
- }
- // Pre-attempt recalls left a reviewer and reason on a pending withdrawal.
+	// are revision one and retain their original batch and provider keys.
+	if db.Migrator().HasIndex(&AdtySiteCloseMailBatch{}, "idx_adty_site_close_mail_batches_site_id") {
+		if err := db.Migrator().DropIndex(&AdtySiteCloseMailBatch{}, "idx_adty_site_close_mail_batches_site_id"); err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasTable(&Option{}) {
+		if err := db.Model(&Option{}).Where(&Option{Key: "adty_reseller_setting.unknown_host_mode"}).Where("value <> ?", "reject").Update("value", "reject").Error; err != nil {
+			return err
+		}
+	}
+	// Bind reused legacy host rows to their latest recorded domain-create actor.
+	if err := db.Exec(`UPDATE adty_site_domains SET bound_by = (SELECT a.operator_id FROM adty_site_audits a WHERE a.site_id = adty_site_domains.site_id AND a.action = 'domain_create' AND a.new_value = adty_site_domains.hostname AND a.created_at = adty_site_domains.created_at ORDER BY a.id DESC LIMIT 1) WHERE COALESCE(bound_by,0) = 0 AND managed_by <> 'platform' AND EXISTS (SELECT 1 FROM adty_site_audits a WHERE a.site_id = adty_site_domains.site_id AND a.action = 'domain_create' AND a.new_value = adty_site_domains.hostname AND a.created_at = adty_site_domains.created_at)`).Error; err != nil {
+		return err
+	}
+	if err := BackfillAdtyCloseMailDeadline(db, 0); err != nil {
+		return err
+	}
+	// Pre-attempt recalls left a reviewer and reason on a pending withdrawal.
 	// Keep these holds until the original external result is reconciled.
 	if err := db.Model(&AdtySiteWithdrawal{}).Where("attempt_number = 0 AND attempt_open = ? AND (status = ? OR (status = ? AND reviewed_at > 0 AND proof_note <> ''))", false, AdtySiteWithdrawPaying, AdtySiteWithdrawPending).Where("NOT EXISTS (?)", db.Model(&AdtySitePayoutAttempt{}).Select("1").Where("withdrawal_id = adty_site_withdrawals.id")).Update("attempt_open", true).Error; err != nil {
+		return err
+	}
+	if err := backfillSiteInviteWithdrawals(db); err != nil {
 		return err
 	}
 	if err := backfillCommissionCoverageCancellations(db, time.Now().Unix()); err != nil {

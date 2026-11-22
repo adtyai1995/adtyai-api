@@ -10,7 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/setting/adty_setting"
+
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -25,6 +25,8 @@ type AdtySiteInviteWithdrawalInput struct {
 	AccountNo       string
 	AccountName     string
 	QRImageURL      string
+	ExpectedQuoteID string
+	RequireQuote    bool
 	ExpectedCNYRate decimal.Decimal
 	IdempotencyKey  string
 }
@@ -68,7 +70,7 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 			if !requested.IsPositive() {
 				requested = existing.AmountUSD
 			}
-			if existing.SiteId != input.SiteID || existing.UserId != input.UserID || existing.Method != method || !requested.Equal(amount) || !sameSiteInviteDestination(tx, &existing, input) {
+			if existing.SiteId != input.SiteID || existing.UserId != input.UserID || existing.Method != method || !requested.Equal(amount) || (input.ExpectedQuoteID != "" && existing.QuoteID != input.ExpectedQuoteID) || !sameSiteInviteDestination(tx, &existing, input) {
 				return model.ErrAdtyIdempotencyConflict
 			}
 			row = &existing
@@ -85,7 +87,8 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 		if err := tx.First(&site, input.SiteID).Error; err != nil {
 			return err
 		}
-		policy := site.MarketingPolicy
+		row.CreatedAt = time.Now().Unix()
+		row.CancelDeadline = siteInviteCancelDeadline(row.CreatedAt, site.MarketingPolicy.CancelWindowMinutes)
 		switch method {
 		case "balance":
 			exact := amount.Mul(common.QuotaPerUnitDecimal())
@@ -98,40 +101,32 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 			}
 			row.Status = model.AdtySiteInviteWithdrawPaid
 			row.PaidAt = time.Now().Unix()
-		case "usdt":
-			if policy.MinUSD == nil || policy.FeeUSD == nil || policy.CNYRate == nil {
-				return common.NewMessage("This withdrawal method is not available")
+		case "usdt", "alipay":
+			quote, err := siteInviteQuote(&site, amount, method)
+			if err != nil {
+				return err
 			}
-			if amount.LessThan(*policy.MinUSD) {
-				return common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": policy.MinUSD.String()})
+			if (input.RequireQuote || input.ExpectedQuoteID != "") && input.ExpectedQuoteID != quote.QuoteID {
+				return &SiteInviteQuoteChanged{Quote: quote}
 			}
-			network := strings.ToUpper(strings.TrimSpace(input.Network))
-			if !ValidateUSDTAddress(network, input.AccountNo) {
-				return common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
+			row.FeeUSD, row.NetUSD = quote.FeeUSD, amount.Sub(quote.FeeUSD)
+			row.QuoteID, row.Rate = quote.QuoteID, quote.Rate.String()
+			row.PayoutAmount, row.PayoutCurrency = quote.PayoutAmount, quote.PayoutCurrency
+			if method == "usdt" {
+				network := strings.ToUpper(strings.TrimSpace(input.Network))
+				if !ValidateUSDTAddress(network, input.AccountNo) {
+					return common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
+				}
+				row.Network, row.AccountNo = network, strings.TrimSpace(input.AccountNo)
+			} else {
+				if !validReferralQR(input.QRImageURL) || strings.TrimSpace(input.AccountName) == "" {
+					return common.NewMessage("Upload the payment QR code and enter the payee name")
+				}
+				if input.ExpectedQuoteID == "" && !quote.Rate.Equal(input.ExpectedCNYRate) {
+					return &RateChangedError{Change: ReferralRateChange{Rate: quote.Rate.String(), CNYAmount: quote.PayoutAmount}}
+				}
+				row.AccountName = strings.TrimSpace(input.AccountName)
 			}
-			net := amount.Sub(*policy.FeeUSD)
-			if !net.IsPositive() {
-				return common.NewMessage("The amount must be larger than the network fee")
-			}
-			row.Network, row.AccountNo, row.FeeUSD, row.NetUSD = network, strings.TrimSpace(input.AccountNo), *policy.FeeUSD, net
-		case "alipay":
-			if policy.MinUSD == nil || policy.FeeUSD == nil || policy.CNYRate == nil {
-				return common.NewMessage("This withdrawal method is not available")
-			}
-			if amount.LessThan(*policy.MinUSD) {
-				return common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": policy.MinUSD.String()})
-			}
-			if !validReferralQR(input.QRImageURL) || strings.TrimSpace(input.AccountName) == "" {
-				return common.NewMessage("Upload the payment QR code and enter the payee name")
-			}
-			if !policy.CNYRate.Equal(input.ExpectedCNYRate) {
-				return &RateChangedError{Change: ReferralRateChange{Rate: policy.CNYRate.String(), CNYAmount: amount.Mul(*policy.CNYRate).Round(2).StringFixed(2)}}
-			}
-			row.AccountName = strings.TrimSpace(input.AccountName)
-			row.QRImageURL = strings.TrimSpace(input.QRImageURL)
-			row.Rate = policy.CNYRate.String()
-			row.PayoutAmount = amount.Mul(*policy.CNYRate).Round(2).StringFixed(2)
-			row.PayoutCurrency = "CNY"
 		default:
 			return common.NewMessage("Unsupported withdrawal method")
 		}
@@ -202,7 +197,7 @@ func sameSiteInviteDestination(tx *gorm.DB, row *model.AdtySiteInviteWithdrawal,
 	case "alipay":
 		qr, ok := IsOwnedReferralAssetTx(tx, input.UserID, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
 		rate, err := decimal.NewFromString(row.Rate)
-		return ok && row.QRImageURL == qr && row.AccountName == strings.TrimSpace(input.AccountName) && err == nil && rate.Equal(input.ExpectedCNYRate)
+		return ok && row.QRImageURL == qr && row.AccountName == strings.TrimSpace(input.AccountName) && err == nil && (input.ExpectedQuoteID != "" || rate.Equal(input.ExpectedCNYRate))
 	default:
 		return row.Method == "balance"
 	}
@@ -307,13 +302,16 @@ func reviewSiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, r
 		if err := requireSiteInviteProcessor(tx, ownerID, row.SiteId, platform); err != nil {
 			return err
 		}
+		if !approve && row.Status == model.AdtySiteInviteWithdrawRejected && row.FailureAt > 0 && row.FailureBy == ownerID && row.RejectReason == strings.TrimSpace(reason) && requiredStatus != model.AdtySiteInviteWithdrawPending {
+			return nil
+		}
 		if requiredStatus != "" && row.Status != requiredStatus {
 			return common.NewMessage("Only pending withdrawals can be reviewed")
 		}
 		if row.Method == "balance" || (approve && row.Status != model.AdtySiteInviteWithdrawPending) || (!approve && row.Status != model.AdtySiteInviteWithdrawPending && row.Status != model.AdtySiteInviteWithdrawApproved) {
 			return common.NewMessage("Only pending withdrawals can be reviewed")
 		}
-		if approve && !row.NetUSD.IsPositive() {
+		if approve && !payableSiteInviteWithdrawal(&row) {
 			return common.NewMessage("The amount must be larger than the network fee")
 		}
 		if !approve && row.Status == model.AdtySiteInviteWithdrawApproved && strings.TrimSpace(reason) == "" {
@@ -327,10 +325,13 @@ func reviewSiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, r
 		if err := releaseSiteInviteWithdrawalTx(tx, &row); err != nil {
 			return err
 		}
-		return tx.Model(&row).Updates(map[string]any{
-			"status": model.AdtySiteInviteWithdrawRejected, "reviewed_by": ownerID, "reviewed_at": time.Now().Unix(),
-			"reject_reason": strings.TrimSpace(reason),
-		}).Error
+		changes := map[string]any{"status": model.AdtySiteInviteWithdrawRejected, "reject_reason": strings.TrimSpace(reason)}
+		if row.Status == model.AdtySiteInviteWithdrawApproved {
+			changes["failure_by"], changes["failure_at"] = ownerID, time.Now().Unix()
+		} else {
+			changes["reviewed_by"], changes["reviewed_at"] = ownerID, time.Now().Unix()
+		}
+		return tx.Model(&row).Updates(changes).Error
 	})
 }
 
@@ -352,15 +353,6 @@ func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string
 		if err := requireSiteInviteProcessor(tx, ownerID, row.SiteId, platform); err != nil {
 			return err
 		}
-		if row.Status == model.AdtySiteInviteWithdrawPaid && row.Method != "balance" && row.TxID == txID && row.ProofNote == strings.TrimSpace(proof) {
-			return nil
-		}
-		if row.Status != model.AdtySiteInviteWithdrawApproved {
-			return common.NewMessage("This withdrawal cannot be marked as paid")
-		}
-		if row.Method == "usdt" && txID == "" {
-			return common.NewMessage("Enter the transaction hash")
-		}
 		cleanProof := strings.TrimSpace(proof)
 		if strings.HasPrefix(cleanProof, "/api/referral-assets/") {
 			canonicalProof, ok := IsOwnedReferralAssetTx(tx, ownerID, model.ReferralAssetPurposePaymentProof, cleanProof)
@@ -368,6 +360,15 @@ func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string
 				return common.NewMessage("Invalid parameters")
 			}
 			cleanProof = canonicalProof
+		}
+		if row.Status == model.AdtySiteInviteWithdrawPaid && row.Method != "balance" && row.TxID == txID && row.ProofNote == cleanProof {
+			return nil
+		}
+		if row.Status != model.AdtySiteInviteWithdrawApproved || !payableSiteInviteWithdrawal(&row) {
+			return common.NewMessage("This withdrawal cannot be marked as paid")
+		}
+		if row.Method == "usdt" && txID == "" {
+			return common.NewMessage("Enter the transaction hash")
 		}
 		if row.Method == "alipay" && txID == "" && !strings.HasPrefix(cleanProof, "/api/referral-assets/") {
 			return common.NewMessage("Enter the payout reference")
@@ -413,7 +414,7 @@ func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string
 			}
 		}
 		return tx.Model(&row).Updates(map[string]any{
-			"status": model.AdtySiteInviteWithdrawPaid, "paid_at": time.Now().Unix(), "reviewed_by": ownerID,
+			"status": model.AdtySiteInviteWithdrawPaid, "paid_at": time.Now().Unix(), "paid_by": ownerID,
 			"tx_id": txID, "proof_note": cleanProof, "receipt_key": receiptKey,
 		}).Error
 	})
@@ -479,12 +480,15 @@ func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySite
 			if !withdrawal.RequestedUSD.IsPositive() {
 				changes["requested_usd"] = withdrawal.AmountUSD
 			}
-			if withdrawal.Method == "alipay" {
+			if withdrawal.Method == "alipay" || withdrawal.Method == "usdt" {
 				rate, err := decimal.NewFromString(withdrawal.Rate)
+				if withdrawal.Method == "usdt" {
+					rate, err = decimal.NewFromInt(1), nil
+				}
 				if err != nil {
 					return deferred, err
 				}
-				changes["payout_amount"] = gross.Mul(rate).StringFixed(2)
+				changes["payout_amount"] = siteInvitePayable(gross, withdrawal.FeeUSD, rate, withdrawal.Method)
 			}
 			if gross.IsZero() {
 				changes["status"] = model.AdtySiteInviteWithdrawCanceled
@@ -586,7 +590,14 @@ func ListAdtyOwnerSiteInviteWithdrawals(siteID int, status string, page *common.
 	return pageCommissionWithdrawals(model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id = ?", siteID), status, page)
 }
 func ListClosedSiteInviteWithdrawals(status string, page *common.PageInfo) ([]model.AdtySiteInviteWithdrawal, int64, error) {
-	return pageCommissionWithdrawals(model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id IN (?)", model.DB.Model(&model.AdtySite{}).Select("id").Where("status = ?", model.AdtySiteStatusClosed)), status, page)
+	return pageCommissionWithdrawals(closedSiteInviteWithdrawalQuery(status), status, page)
+}
+func closedSiteInviteWithdrawalQuery(status string) *gorm.DB {
+	query := model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id IN (?)", model.DB.Model(&model.AdtySite{}).Select("id").Where("status = ?", model.AdtySiteStatusClosed))
+	if status == "actionable" || status == model.AdtySiteInviteWithdrawPending || status == model.AdtySiteInviteWithdrawApproved {
+		return query.Where("method <> ?", "balance")
+	}
+	return query
 }
 func pageCommissionWithdrawals(query *gorm.DB, status string, page *common.PageInfo) ([]model.AdtySiteInviteWithdrawal, int64, error) {
 	if page == nil || page.PageSize < 1 || page.PageSize > 100 || page.Page < 1 || page.Page > math.MaxInt/page.PageSize {
@@ -612,17 +623,13 @@ func pageCommissionWithdrawals(query *gorm.DB, status string, page *common.PageI
 
 // CancelAdtySiteInviteWithdrawal lets the applicant cancel a pending request inside the main-site cancel window.
 func CancelAdtySiteInviteWithdrawal(userID int, withdrawalID int64, now int64) error {
-	window := int64(max(adty_setting.GetReferralSetting().CancelWindowMinutes, 0)) * 60
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteInviteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND user_id = ?", withdrawalID, userID).First(&row).Error; err != nil {
 			return err
 		}
-		if row.Status != model.AdtySiteInviteWithdrawPending {
-			return common.NewMessage("Only pending withdrawals can be canceled")
-		}
-		if now-row.CreatedAt > window {
-			return common.NewMessage("The cancel window has passed")
+		if state := SiteInviteCancellation(&row, now); !state.CanCancel {
+			return common.NewMessage(state.CancelReason)
 		}
 		if err := releaseSiteInviteWithdrawalTx(tx, &row); err != nil {
 			return err

@@ -34,7 +34,22 @@ func PutAdtySiteTiers(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveAdtySiteTiers(*body.Tiers); err != nil {
+	save := service.SaveAdtySiteTiers
+	if c.Request.Method == http.MethodPatch {
+		save = service.UpdateAdtySiteTiers
+	}
+	if c.Request.Method == http.MethodPost {
+		save = service.CreateAdtySiteTiers
+	}
+	if err := save(*body.Tiers); err != nil {
+		if errors.Is(err, service.ErrAdtySiteTierNotFound) {
+			common.ApiErrorT(c, "This level does not exist or is disabled")
+			return
+		}
+		if errors.Is(err, service.ErrAdtySiteTierConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
 		if err == service.ErrAdtySiteTierInvalid {
 			common.ApiErrorT(c, "Invalid parameters")
 			return

@@ -451,7 +451,7 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 			return err
 		}
 		domain = model.AdtySiteDomain{
-			SiteId: site.Id, Hostname: host, Role: role, OwnershipToken: token, Status: model.AdtySiteDomainPending,
+			SiteId: site.Id, BoundBy: ownerUserId, Hostname: host, Role: role, OwnershipToken: token, Status: model.AdtySiteDomainPending,
 			ManagedBy: "owner", DesiredState: "serve", ProviderZone: cfg.CloudflareZoneId, DNSTarget: cfg.CnameTarget,
 			VerifyRecords: adtyOwnershipRecords(host, token, strings.TrimSpace(cfg.CnameTarget)),
 			LastCheckedAt: now, CreatedAt: now,
@@ -466,7 +466,7 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 		} else {
 			domain.Id = existing.Id
 			if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", existing.Id).Updates(map[string]any{
-				"site_id": site.Id, "role": role, "ownership_token": token, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
+				"site_id": site.Id, "bound_by": ownerUserId, "role": role, "ownership_token": token, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
 				"ssl_status": "", "verify_records": domain.VerifyRecords, "turnstile_widget": "",
 				"last_error": "", "last_checked_at": now, "created_at": now,
 				"managed_by": "owner", "desired_state": "serve", "automation_state": domain.AutomationState, "provider_zone": cfg.CloudflareZoneId, "dns_root": "", "dns_target": cfg.CnameTarget, "dns_records": "", "mainland_target": "", "lease_token": "", "lease_until": 0, "next_run_at": 0, "attempts": 0, "cf_create_started_at": 0, "generation": gorm.Expr("generation + 1"),
@@ -622,6 +622,34 @@ func adtyAttachCustomHostnameLocked(ctx context.Context, tx *gorm.DB, domain *mo
 	return result.Error
 }
 
+// Archived domains are limited to the external websites bound by the requesting owner.
+// A legacy site with a recorded owner change needs affirmative evidence of the binding owner.
+func adtyArchivedWebsiteDomains(db *gorm.DB, ownerID, siteID int) *gorm.DB {
+	sites := db.Model(&model.AdtySite{}).Select("id").Where("id = ? AND status = ?", siteID, model.AdtySiteStatusClosed)
+	unchanged := db.Model(&model.AdtySite{}).Select("id").Where("id = ? AND owner_user_id = ?", siteID, ownerID).
+		Where("NOT EXISTS (?)", db.Model(&model.AdtySiteOwnership{}).Select("1").Where("site_id = ?", siteID))
+	return db.Model(&model.AdtySiteDomain{}).Where("site_id IN (?) AND role = ? AND managed_by <> ?", sites, model.AdtySiteDomainRoleSite, "platform").
+		Where("(bound_by = ? OR (COALESCE(bound_by,0) = 0 AND site_id IN (?)))", ownerID, unchanged)
+}
+
+func ListAdtyArchivedWebsiteDomains(ownerID, siteID int) ([]model.AdtySiteDomain, error) {
+	var rows []model.AdtySiteDomain
+	err := adtyArchivedWebsiteDomains(model.DB, ownerID, siteID).Where("status <> ? AND desired_state <> ?", model.AdtySiteDomainRemoved, "removed").Order("id").Find(&rows).Error
+	return rows, err
+}
+
+func RemoveAdtyArchivedWebsiteDomain(ctx context.Context, ownerID, siteID, domainID int) error {
+	var domain model.AdtySiteDomain
+	lookup := adtyArchivedWebsiteDomains(model.DB, ownerID, siteID).Where("id = ?", domainID).Limit(1).Find(&domain)
+	if lookup.Error != nil {
+		return lookup.Error
+	}
+	if lookup.RowsAffected == 0 {
+		return ErrAdtySiteNotFound
+	}
+	return removeAdtySiteDomain(ctx, &domain)
+}
+
 // RemoveAdtySiteDomain 是站长删除自己站上的域名。
 func RemoveAdtySiteDomain(ctx context.Context, ownerUserId, domainId int) error {
 	site, err := adtyOwnerSite(ownerUserId)
@@ -744,6 +772,18 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 }
 
 func adtyAssignCheckedDomainTurnstile(ctx context.Context, tx *gorm.DB, domain *model.AdtySiteDomain) error {
+	if domain.Role == model.AdtySiteDomainRoleBaseURL {
+		if domain.TurnstileWidget == "" {
+			return nil
+		}
+		if resellerSetting().CloudflareAccountId == "" {
+			return ErrAdtyCloudflareFailed
+		}
+		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
+			return err
+		}
+		return adtyDomainSnapshotQuery(tx, domain).Update("turnstile_widget", "").Error
+	}
 	if domain.Status != model.AdtySiteDomainActive || domain.TurnstileWidget != "" {
 		return nil
 	}
@@ -770,8 +810,8 @@ func RunAdtySiteDomainCheckOnce(ctx context.Context, now time.Time) error {
 		return nil
 	}
 	var domains []model.AdtySiteDomain
-	if err := model.DB.Where("automation_state = ?", "").Where("status IN ?",
-		[]string{model.AdtySiteDomainPending, model.AdtySiteDomainActive}).Find(&domains).Error; err != nil {
+	if err := model.DB.Where("automation_state = ?", "").Where("(status IN ? OR (role = ? AND turnstile_widget <> ''))",
+		[]string{model.AdtySiteDomainPending, model.AdtySiteDomainActive}, model.AdtySiteDomainRoleBaseURL).Find(&domains).Error; err != nil {
 		return err
 	}
 	changed := false
@@ -798,6 +838,10 @@ func RunAdtySiteDomainCheckOnce(ctx context.Context, now time.Time) error {
 
 func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain, now time.Time) (changed bool, err error) {
 	err = adtyWithDomainLifecycle(ctx, snapshot, func(tx *gorm.DB, domain *model.AdtySiteDomain) error {
+		// Free legacy API allocations even if TLS verification now fails.
+		if domain.Role == model.AdtySiteDomainRoleBaseURL && domain.TurnstileWidget != "" {
+			return adtyAssignCheckedDomainTurnstile(ctx, tx, domain)
+		}
 		cfg := resellerSetting()
 		zone := strings.TrimSpace(cfg.CloudflareZoneId)
 		if domain.Status == model.AdtySiteDomainActive {

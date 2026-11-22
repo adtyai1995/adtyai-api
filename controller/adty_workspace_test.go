@@ -293,6 +293,7 @@ func TestGetAdtyTicketImageRequiresShortGrantAndLiveTicketPermission(t *testing.
 	failW := httptest.NewRecorder()
 	failC, _ := gin.CreateTestContext(failW)
 	failC.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/adty/tickets/%d/images", ticketA.Id), strings.NewReader(uploadBody))
+	failC.Request.Header.Set("Idempotency-Key", "new-upload-without-signing-secret")
 	failC.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", ticketA.Id)}}
 	failC.Set("id", customerA.Id)
 	PostAdtyTicketImage(failC)

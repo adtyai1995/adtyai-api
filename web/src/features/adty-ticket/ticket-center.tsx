@@ -87,6 +87,8 @@ type Ticket = {
   related_ref?: string
   related_model?: string
   related_group?: string
+  related_at?: number
+  team_shared?: boolean
   related_error?: string
   id: number
   title: string
@@ -130,6 +132,9 @@ type TicketEvent = {
 }
 
 type TicketDetail = {
+  actions: string[]
+  image_grants?: Record<number, string>
+  image_grants_exp?: number
   ticket: Ticket
   assignees?: { id: number; username: string; display_name: string }[]
   messages: TicketMessage[]
@@ -173,6 +178,7 @@ function TicketWorkspace({
 }) {
   const [scope, setScope] = useState(workspace)
   const [page, setPage] = useState(1)
+  const createVersion = useRef(0)
   const [type, setType] = useState('other')
   const [priority, setPriority] = useState('normal')
   const [imageMessage, setImageMessage] = useState(0)
@@ -236,6 +242,13 @@ function TicketWorkspace({
       [draftKey]: { ...previous[draftKey], [field]: value },
     }))
   }
+  function clearSubmitted(field: 'reply' | 'note', submitted: string) {
+    setDrafts((previous) =>
+      previous[draftKey]?.[field] === submitted
+        ? { ...previous, [draftKey]: { ...previous[draftKey], [field]: '' } }
+        : previous
+    )
+  }
   const [assignee, setAssignee] = useState('')
   const [related, setRelated] = useState('')
   const [error, setError] = useState('')
@@ -268,14 +281,47 @@ function TicketWorkspace({
     },
   })
   const resolvedAudience = requestRef ? requestAudience.data : audience
+  const relatedTickets = useQuery({
+    queryKey: [
+      'adty-tickets',
+      userId,
+      resolvedAudience,
+      'related',
+      relatedKind,
+      related.trim(),
+    ],
+    enabled:
+      workspace === 'personal' &&
+      Boolean(relatedKind && related.trim() && resolvedAudience),
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const { data } = await api.get('/api/adty/tickets', {
+        params: {
+          scope: resolvedAudience,
+          related_kind: relatedKind,
+          related_ref: related.trim(),
+        },
+        signal,
+      })
+      if (!data.success) {
+        throw new Error(data.message || t('Failed to load data'))
+      }
+      return (data.data?.tickets ?? []) as Ticket[]
+    },
+  })
 
   useEffect(() => {
     function readLink() {
       const hash = window.location.hash
-      const match = /^#case-(\d+)$/.exec(hash)
+      const match = /^#case-(\d+)(-team)?$/.exec(hash)
       const source = ticketDraftLink(hash)
-      if (match) selectTicket(Number(match[1]))
+      if (match) {
+        if (workspace === 'personal') setScope(match[2] ? 'team' : 'personal')
+        setPage(1)
+        selectTicket(Number(match[1]))
+      }
       if (source) {
+        createVersion.current++
         setRelatedKind(source.kind)
         setRelated(source.ref)
         setType(
@@ -292,7 +338,7 @@ function TicketWorkspace({
     readLink()
     window.addEventListener('hashchange', readLink)
     return () => window.removeEventListener('hashchange', readLink)
-  }, [selectTicket])
+  }, [selectTicket, workspace])
 
   const detail = useQuery({
     queryKey: ['adty-tickets', userId, scope, 'detail', selected],
@@ -321,6 +367,7 @@ function TicketWorkspace({
   }
 
   const create = async () => {
+    const submittedVersion = createVersion.current
     setPending(true)
     setError('')
     try {
@@ -345,19 +392,21 @@ function TicketWorkspace({
         throw new Error(payload.message || t('Failed to save'))
       }
       attempts.current.delete('create')
-      setTitle('')
-      setBody('')
-      setRelated('')
-      setRelatedKind('')
-      setAudience('personal')
-      setType('other')
-      setPriority('normal')
-      if (ticketDraftLink(window.location.hash)) {
-        window.history.replaceState(window.history.state, '', '#tickets')
+      if (submittedVersion === createVersion.current) {
+        setTitle('')
+        setBody('')
+        setRelated('')
+        setRelatedKind('')
+        setAudience('personal')
+        setType('other')
+        setPriority('normal')
+        if (ticketDraftLink(window.location.hash)) {
+          window.history.replaceState(window.history.state, '', '#tickets')
+        }
       }
       setPage(1)
       setQueue('')
-      setScope('personal')
+      setScope(resolvedAudience === 'team' ? 'team' : 'personal')
       selectTicket(payload.data.id)
       await refresh()
     } catch (cause) {
@@ -376,14 +425,29 @@ function TicketWorkspace({
     setPending(true)
     setError('')
     try {
+      const closure =
+        [...(detail.data?.events ?? [])]
+          .reverse()
+          .find(
+            (event) =>
+              event.action === 'status' &&
+              ['closed', 'resolved'].includes(event.detail ?? '')
+          )?.id ?? 0
       const response = await api.post(
         `/api/adty/tickets/${selected}/status`,
         {
           status,
+          closure_event_id: status === 'reopen' ? closure : undefined,
           assignee_id: assigneeId ?? 0,
           priority: nextPriority,
         },
-        { params: { scope } }
+        {
+          params: { scope },
+          headers:
+            status === 'reopen'
+              ? headers(`reopen:${selected}`, String(closure))
+              : undefined,
+        }
       )
       const payload = response.data as { success?: boolean; message?: string }
       if (!payload.success) {
@@ -420,7 +484,7 @@ function TicketWorkspace({
         throw new Error(payload?.message || t('Failed to save'))
       }
       attempts.current.delete(`${draftKey}:reply`)
-      updateDraft('reply', '')
+      clearSubmitted('reply', reply)
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -452,7 +516,7 @@ function TicketWorkspace({
         throw new Error(payload?.message || t('Failed to save'))
       }
       attempts.current.delete(`${draftKey}:note`)
-      updateDraft('note', '')
+      clearSubmitted('note', note)
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -546,6 +610,8 @@ function TicketWorkspace({
       setPending(false)
     }
   }
+  const allowed = (action: string) =>
+    detail.data?.actions?.includes(action) === true
   const terminal =
     detail.data?.ticket.status === 'closed' ||
     detail.data?.ticket.status === 'resolved'
@@ -716,6 +782,11 @@ function TicketWorkspace({
               [t('Model')]: detail.data.ticket.related_model,
               [t('Group')]: detail.data.ticket.related_group,
               [t('Error')]: detail.data.ticket.related_error,
+              [t('Request time')]:
+                detail.data.ticket.related_at &&
+                formatDateTimeObject(
+                  new Date(detail.data.ticket.related_at * 1000)
+                ),
             })
               .filter(([, value]) => value)
               .map(([label, value]) => (
@@ -771,29 +842,41 @@ function TicketWorkspace({
                   </p>
                 )}
                 {detail.data.images
-                  ?.filter((image) => image.message_id === message.id)
+                  ?.filter(
+                    (image) =>
+                      image.message_id === message.id &&
+                      (detail.data.can_note || image.visibility === 'public')
+                  )
                   .map((image) => (
                     <TicketImage
                       key={image.id}
                       ticketID={detail.data.ticket.id}
                       imageID={image.id}
+                      grant={detail.data.image_grants?.[image.id]}
+                      expiresAt={detail.data.image_grants_exp}
                       scope={scope}
                       userId={userId}
-                      label={`${t('Image')} #${image.id}`}
+                      label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
                     />
                   ))}
               </div>
             ))}
             {detail.data.images
-              ?.filter((image) => !image.message_id)
+              ?.filter(
+                (image) =>
+                  !image.message_id &&
+                  (detail.data.can_note || image.visibility === 'public')
+              )
               .map((image) => (
                 <TicketImage
                   key={image.id}
                   ticketID={detail.data.ticket.id}
                   imageID={image.id}
+                  grant={detail.data.image_grants?.[image.id]}
+                  expiresAt={detail.data.image_grants_exp}
                   scope={scope}
                   userId={userId}
-                  label={`${t('Image')} #${image.id}`}
+                  label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
                 />
               ))}
             {(detail.data.events ?? [])
@@ -821,7 +904,7 @@ function TicketWorkspace({
                   </p>
                 )
               })}
-            {detail.data.can_manage && !terminal && (
+            {detail.data.can_manage && allowed('reply') && (
               <NativeSelect
                 aria-label={t('Common replies')}
                 value=''
@@ -843,20 +926,24 @@ function TicketWorkspace({
                 ))}
               </NativeSelect>
             )}
-            <Textarea
-              disabled={terminal}
-              aria-label={t('Reply')}
-              value={reply}
-              onChange={(event) => updateDraft('reply', event.target.value)}
-            />
-            <Button
-              type='button'
-              disabled={terminal || pending || reply.trim() === ''}
-              onClick={() => void submitReply()}
-            >
-              {t('Reply')}
-            </Button>
-            {detail.data.can_note && (
+            {allowed('reply') && (
+              <>
+                <Textarea
+                  disabled={terminal}
+                  aria-label={t('Reply')}
+                  value={reply}
+                  onChange={(event) => updateDraft('reply', event.target.value)}
+                />
+                <Button
+                  type='button'
+                  disabled={terminal || pending || reply.trim() === ''}
+                  onClick={() => void submitReply()}
+                >
+                  {t('Reply')}
+                </Button>
+              </>
+            )}
+            {allowed('note') && (
               <>
                 <Textarea
                   aria-label={t('Internal note')}
@@ -875,35 +962,42 @@ function TicketWorkspace({
             )}
             {detail.data.can_manage && (
               <>
-                <Label htmlFor='ticket-assignee'>{t('Ticket assignee')}</Label>
-                <NativeSelect
-                  id='ticket-assignee'
-                  value={
-                    assignee || String(detail.data.ticket.assignee_id || '')
-                  }
-                  onChange={(event) => setAssignee(event.target.value)}
-                >
-                  <NativeSelectOption value=''>
-                    {t('Unassigned')}
-                  </NativeSelectOption>
-                  {(detail.data.ticket.assignee_id ?? 0) > 0 &&
-                    !detail.data.assignees?.some(
-                      (handler) => handler.id === detail.data.ticket.assignee_id
-                    ) && (
-                      <NativeSelectOption
-                        value={detail.data.ticket.assignee_id}
-                        disabled
-                      >
-                        #{detail.data.ticket.assignee_id}
+                {allowed('assign') && (
+                  <>
+                    <Label htmlFor='ticket-assignee'>
+                      {t('Ticket assignee')}
+                    </Label>
+                    <NativeSelect
+                      id='ticket-assignee'
+                      value={
+                        assignee || String(detail.data.ticket.assignee_id || '')
+                      }
+                      onChange={(event) => setAssignee(event.target.value)}
+                    >
+                      <NativeSelectOption value=''>
+                        {t('Unassigned')}
                       </NativeSelectOption>
-                    )}
-                  {detail.data.assignees?.map((handler) => (
-                    <NativeSelectOption key={handler.id} value={handler.id}>
-                      {handler.display_name || handler.username} ·{' '}
-                      {handler.username} (#{handler.id})
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
+                      {(detail.data.ticket.assignee_id ?? 0) > 0 &&
+                        !detail.data.assignees?.some(
+                          (handler) =>
+                            handler.id === detail.data.ticket.assignee_id
+                        ) && (
+                          <NativeSelectOption
+                            value={detail.data.ticket.assignee_id}
+                            disabled
+                          >
+                            #{detail.data.ticket.assignee_id}
+                          </NativeSelectOption>
+                        )}
+                      {detail.data.assignees?.map((handler) => (
+                        <NativeSelectOption key={handler.id} value={handler.id}>
+                          {handler.display_name || handler.username} ·{' '}
+                          {handler.username} (#{handler.id})
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </>
+                )}
                 <Label htmlFor='ticket-current-priority'>{t('Priority')}</Label>
                 <NativeSelect
                   id='ticket-current-priority'
@@ -920,98 +1014,50 @@ function TicketWorkspace({
                   ))}
                 </NativeSelect>
                 <div className='flex flex-wrap gap-2'>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending || !/^\d+$/.test(assignee.trim())}
-                    onClick={() =>
-                      void updateStatus('', Number(assignee.trim()))
-                    }
-                  >
-                    {detail.data.ticket.assignee_id
-                      ? t('Transfer ticket')
-                      : t('Assign ticket')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus('pending_assignment')}
-                  >
-                    {t('Ticket status pending assignment')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus('in_progress')}
-                  >
-                    {t('Ticket status in progress')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus('waiting_user')}
-                  >
-                    {t('Ticket status waiting user')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus('waiting_internal')}
-                  >
-                    {t('Ticket status waiting internal')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus('resolve')}
-                  >
-                    {t('Ticket status resolved')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus('close')}
-                  >
-                    {t('Ticket status closed')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus('reopen')}
-                  >
-                    {t('Reopen ticket')}
-                  </Button>
+                  {allowed('assign') && (
+                    <Button
+                      type='button'
+                      variant='outline'
+                      disabled={pending || !/^\d+$/.test(assignee.trim())}
+                      onClick={() =>
+                        void updateStatus('', Number(assignee.trim()))
+                      }
+                    >
+                      {detail.data.ticket.assignee_id
+                        ? t('Transfer ticket')
+                        : t('Assign ticket')}
+                    </Button>
+                  )}
                 </div>
               </>
             )}
-            {!detail.data.can_manage &&
-              detail.data.ticket.user_id === userId && (
-                <div className='flex flex-wrap gap-2'>
+            <div className='flex flex-wrap gap-2'>
+              {Object.entries({
+                pending_assignment: 'Ticket status pending assignment',
+                in_progress: 'Ticket status in progress',
+                waiting_user: 'Ticket status waiting user',
+                waiting_internal: 'Ticket status waiting internal',
+                resolve: detail.data.can_manage
+                  ? 'Ticket status resolved'
+                  : 'Confirm ticket resolved',
+                close: 'Ticket status closed',
+                reopen: detail.data.can_manage
+                  ? 'Reopen ticket'
+                  : 'Request ticket continue',
+              })
+                .filter(([action]) => allowed(action))
+                .map(([action, label]) => (
                   <Button
+                    key={action}
                     type='button'
                     variant='outline'
                     disabled={pending}
-                    onClick={() => void updateStatus('resolve')}
+                    onClick={() => void updateStatus(action)}
                   >
-                    {t('Confirm ticket resolved')}
+                    {t(label)}
                   </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus('reopen')}
-                  >
-                    {t('Request ticket continue')}
-                  </Button>
-                </div>
-              )}
+                ))}
+            </div>
             <Label htmlFor='ticket-image-message'>
               {t('Attach image to message')}
             </Label>
@@ -1066,7 +1112,12 @@ function TicketWorkspace({
           </div>
         )}
         {workspace === 'personal' && (
-          <>
+          <div
+            className='flex flex-col gap-2'
+            onChangeCapture={() => {
+              createVersion.current++
+            }}
+          >
             <Label htmlFor='ticket-audience'>{t('Ticket audience')}</Label>
             <NativeSelect
               id='ticket-audience'
@@ -1174,6 +1225,24 @@ function TicketWorkspace({
                 onChange={(e) => setRelated(e.target.value)}
               />
             )}
+            {Boolean(relatedTickets.data?.length) && (
+              <div className='flex flex-col items-start gap-1'>
+                <p>{t('Open tickets for this reference')}</p>
+                {relatedTickets.data?.map((ticket) => (
+                  <Button
+                    type='button'
+                    variant='link'
+                    key={ticket.id}
+                    onClick={() => {
+                      setScope(ticket.team_shared ? 'team' : 'personal')
+                      selectTicket(ticket.id)
+                    }}
+                  >
+                    #{ticket.id} · {ticket.title}
+                  </Button>
+                ))}
+              </div>
+            )}
             <Button
               type='button'
               disabled={
@@ -1187,7 +1256,7 @@ function TicketWorkspace({
             >
               {t('New ticket')}
             </Button>
-          </>
+          </div>
         )}
         {error && <p className='text-destructive text-sm'>{error}</p>}
       </CardContent>

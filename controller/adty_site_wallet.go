@@ -138,12 +138,13 @@ func GetAdtyAnomalyDispositions(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	rows, err := service.ListAdtyAnomalyDispositions(siteID)
+	page := common.GetPageQuery(c)
+	rows, total, err := service.PageAdtyAnomalyDispositions(siteID, c.Query("status"), c.Query("order_ref"), c.Query("kind"), page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	common.ApiSuccess(c, gin.H{"items": rows, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
 func PostAdtyAnomalyDispositionReview(c *gin.Context) {

@@ -337,7 +337,7 @@ func TestDataRetentionClearsLeftoverCancelledProfileWithoutDeletingFacts(t *test
 
 func TestDataRetentionDeletesClosedTicketsAfterFloorAndKeepsOpenOrFailedFiles(t *testing.T) {
 	setupDataRetentionTestDB(t)
-	require.NoError(t, model.DB.AutoMigrate(&model.AdtyTicket{}, &model.AdtyTicketMessage{}, &model.AdtyTicketImage{}, &model.AdtyTicketEvent{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.AdtyTicket{}, &model.AdtyTicketMessage{}, &model.AdtyTicketImage{}, &model.AdtyTicketEvent{}, &model.AdtyTicketNotice{}, &model.AdtyTranslationJob{}, &model.AdtyTranslationHead{}))
 	now := time.Now()
 	imageDir := t.TempDir()
 	restore := SetAdtyTicketImageDirForTest(imageDir)
@@ -369,7 +369,7 @@ func TestDataRetentionDeletesClosedTicketsAfterFloorAndKeepsOpenOrFailedFiles(t 
 	}
 	assert.Contains(t, byCategory[model.DataRetentionCategorySupportTickets].Rule, "safety floor 90 days")
 	assert.Empty(t, byCategory[model.DataRetentionCategorySupportTickets].SkipReason)
-	assert.EqualValues(t, 2, byCategory[model.DataRetentionCategorySupportTickets].DeleteCount)
+	assert.EqualValues(t, 3, byCategory[model.DataRetentionCategorySupportTickets].DeleteCount)
 	assert.EqualValues(t, 1, byCategory[model.DataRetentionCategorySupportTickets].FailureCount)
 
 	assert.NoFileExists(t, filepath.Join(imageDir, oldImage.Storage))
@@ -388,7 +388,7 @@ func TestDataRetentionDeletesClosedTicketsAfterFloorAndKeepsOpenOrFailedFiles(t 
 	assert.Zero(t, resolvedLeft)
 	assert.EqualValues(t, 1, recentLeft)
 	assert.EqualValues(t, 1, openLeft)
-	assert.EqualValues(t, 1, failedLeft)
+	assert.Zero(t, failedLeft)
 	assert.EqualValues(t, 1, failedImages)
 }
 

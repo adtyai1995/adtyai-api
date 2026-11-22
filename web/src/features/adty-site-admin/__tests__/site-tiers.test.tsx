@@ -90,7 +90,7 @@ it('is hidden from admins who are not Root', () => {
 
 it('lists levels and adds a new one by code', async () => {
   const put = vi
-    .spyOn(api, 'put')
+    .spyOn(api, 'post')
     .mockResolvedValue({ data: { success: true, data: tiers } })
   wrap(<SiteTiersPanel />)
   const table = await screen.findByRole('table', { name: 'Site levels' })
@@ -119,7 +119,6 @@ it('lists levels and adds a new one by code', async () => {
           min_principal_usd: '0',
           min_consumption_usd: '0',
           cost_factor: null,
-          max_markup: null,
           deposit_usd: '0',
           sort_order: 0,
           enabled: true,
@@ -163,4 +162,19 @@ it('pins a site to an enabled level and offers disabled levels nowhere', async (
       mode: 'manual',
     })
   )
+})
+
+it('accepts 32 Unicode code points and explains an overlong level code', async () => {
+  wrap(<SiteTiersPanel/>)
+  const user=userEvent.setup()
+  await user.click(await screen.findByRole('button',{name:'Add level'}))
+  const code=screen.getByLabelText('Level code')
+  await user.type(screen.getByLabelText('Level name'),'Standard')
+  await user.type(code,`${'站'.repeat(31)}🙂`)
+  const save=screen.getByRole('button',{name:'Save'})
+  expect(save).toBeEnabled()
+  await user.type(code,'x')
+  expect(save).toBeDisabled()
+  expect(code).toHaveAttribute('aria-invalid','true')
+  expect(code).toHaveAccessibleDescription('Level codes can contain up to 32 characters.')
 })

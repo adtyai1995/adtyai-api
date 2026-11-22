@@ -16,57 +16,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-
-import { EmptyState } from '@/components/empty-state'
-import { ErrorState } from '@/components/error-state'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { SettlementSheetLines } from '@/features/adty-site-owner/components/settlement-sheet-panel'
+import { SettlementBrowser } from '@/features/adty-site-owner/components/settlement-sheet-panel'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { getAdminSettlementSheets, siteAdminKeys } from '../api'
+import {
+  getAdminSettlementSheets,
+  getAdminSettlementDetail,
+  siteAdminKeys,
+} from '../api'
 
-/** Root business-day clock and the check sheets it produces. */
 export function BusinessTimezonePanel() {
-  const { t } = useTranslation()
   const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
-  const [selected, setSelected] = useState('')
-  const sheets = useQuery({
-    queryKey: siteAdminKeys.list('settlement-sheets', {}),
-    queryFn: () => getAdminSettlementSheets(),
-    enabled: isRoot,
-  })
   if (!isRoot) return null
-  const rows = sheets.data ?? []
-  const current = rows.find((row) => String(row.id) === selected) ?? rows[0]
-
   return (
-    <section className='flex flex-col gap-3'>
-      <h2 className='text-sm font-medium'>{t('Settlement sheet')}</h2>
-      {sheets.isError && <ErrorState onRetry={() => void sheets.refetch()} />}
-      {sheets.isSuccess && rows.length === 0 && (
-        <EmptyState className='min-h-24' title={t('No settlement sheet yet')} />
-      )}
-      {rows.length > 0 && current && (
-        <>
-          <NativeSelect
-            aria-label={t('Settlement sheet')}
-            value={String(current.id)}
-            onChange={(event) => setSelected(event.target.value)}
-          >
-            {rows.map((row) => (
-              <NativeSelectOption key={row.id} value={String(row.id)}>
-                {t('Site ID')} {row.site_id} {row.business_day}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-          <SettlementSheetLines sheet={current} />
-        </>
-      )}
-    </section>
+    <SettlementBrowser
+      admin
+      scope={siteAdminKeys.list('settlement-sheets', {})}
+      list={getAdminSettlementSheets}
+      detail={getAdminSettlementDetail}
+    />
   )
 }

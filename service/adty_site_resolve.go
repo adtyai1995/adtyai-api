@@ -137,9 +137,9 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 		label := fmt.Sprintf("api-s%d", site.Id)
 		fixed := fixedBySite[site.Id]
 		if fixed.Id > 0 {
-			snapshot.defaultAPI[site.Id] = fixed.Hostname
 			snapshot.apiOnly[fixed.Hostname] = true
-			if fixed.Status == model.AdtySiteDomainActive && fixed.DesiredState != "removed" {
+			if fixed.Status == model.AdtySiteDomainActive && fixed.DesiredState == "serve" {
+				snapshot.defaultAPI[site.Id] = fixed.Hostname
 				snapshot.byHost[fixed.Hostname] = site
 			}
 			continue
@@ -400,7 +400,7 @@ func AdtySiteAPIBaseURL(site *model.AdtySite) string {
 	if host := adtyAdvertisedDomain(site.Id, model.AdtySiteDomainRoleBaseURL); host != "" {
 		return adtyScheme() + "://" + host
 	}
-	if host := snapshot.defaultAPI[site.Id]; host != "" {
+	if host := snapshot.defaultAPI[site.Id]; host != "" && AdtySiteForHost(host) != nil {
 		return adtyScheme() + "://" + host
 	}
 	return ""

@@ -74,7 +74,7 @@ describe('SiteBonusMethodAuth', () => {
       if (path.endsWith('/stats')) {
         return { data: { success: true, data: { stats: { total: {} } } } }
       }
-      if (path.endsWith('/customers')) {
+      if (path.endsWith('/customers') || path.endsWith('/balance-requests')) {
         return { data: { success: true, data: { items: [], total: 0 } } }
       }
       return {

@@ -94,7 +94,7 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 		task.BillingChannelId = relayInfo.ChannelId
 	}
 	if len(contexts) > 0 && contexts[0] != nil && model.DB != nil {
-		if err := reserveMidjourneyTaskBilling(relayInfo, task, quota); err != nil {
+		if err := reserveMidjourneyTaskBilling(relayInfo, task, quota, contexts[0]); err != nil {
 			return false, err
 		}
 	}
@@ -115,7 +115,7 @@ func ReserveMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	return true, nil
 }
 
-func reserveMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.Midjourney, quota int) error {
+func reserveMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.Midjourney, quota int, contexts ...*gin.Context) error {
 	spec := model.BillingOperation{
 		OperationKey:   task.BillingOperationKey,
 		UserId:         task.UserId,
@@ -134,6 +134,9 @@ func reserveMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 		task.BillingChargePending = false
 		task.BillingOperationKey = ""
 		return err
+	}
+	if len(contexts) > 0 && contexts[0] != nil {
+		contexts[0].Set(usageBillingContextKey, row)
 	}
 	task.BillingTokenQuota = row.TokenReservedQuota
 	return nil

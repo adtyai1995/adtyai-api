@@ -78,7 +78,8 @@ const api = vi.hoisted(() => ({
     configured: false,
     timezone: 'UTC',
   })),
-  getAdminSettlementSheets: vi.fn(async () => []),
+  getAdminSettlementSheets: vi.fn(async () => ({items:[],total:0})),
+  getAdminSettlementDetail: vi.fn(),
   saveAdminBusinessTimezone: vi.fn(),
   getAdminFundAnomalies: vi.fn(),
   getAdminSiteWallets: vi.fn(),
@@ -600,6 +601,16 @@ describe('overview and reviews', () => {
 })
 
 describe('close site dialog', () => {
+  it('shows each domain disposition returned by the closure preview', () => {
+    renderWith(<CloseSiteDialog site={site({id: 1})} open onOpenChange={() => {}} domains={[
+      {id: 10, hostname:'retained.example',role:'site',status:'active',close_action:'redirect_only'},
+      {id: 11, hostname:'leaving.example',role:'site',status:'active',close_action:'removed'},
+      {id: 12, hostname:'api.example',role:'base_url',status:'active',close_action:'removed'},
+    ]}/>)
+    expect(screen.getByText(/retained.example/)).toHaveTextContent('Redirect to main site')
+    expect(screen.getByText(/leaving.example/)).toHaveTextContent('Domain removal')
+    expect(screen.getByText(/api.example/)).toHaveTextContent('API access ends')
+  })
   it('removes the close confirmation when Root is downgraded', async () => {
     renderWith(
       <CloseSiteDialog domains={[]}
@@ -1148,12 +1159,26 @@ describe('SiteDetailSheet notice takedown', () => {
           topup_usd: '0',
         },
       },
-      breakdown: {},
+      breakdown: {
+        by_model: [{ key: 'original-model', requests: 1, quota: 120, usd: '0.00024' }],
+        by_group: [{ key: 'original-group', requests: 1, quota: 120, usd: '0.00024' }],
+        by_payer: [{ key: 'team', requests: 1, quota: 120, usd: '0.00024' }],
+        unverified: { requests: 2, quota: 9 },
+        unknown_site: { requests: 3, quota: 14 },
+      },
       monthly: [],
       withdrawn_usd: '12.5',
     })
     renderWith(<SiteDetailSheet siteId={target.id} onOpenChange={() => {}} />)
   }
+
+  it('shows verified request breakdowns separately from records with incomplete ownership', async () => {
+    openSheet(site({}))
+    expect(await screen.findByText('original-model')).toBeInTheDocument()
+    expect(screen.getByText('original-group')).toBeInTheDocument()
+    expect(screen.getByText('Unverified payer for this site')).toBeInTheDocument()
+    expect(screen.getByText('Unknown site across all consumption logs')).toBeInTheDocument()
+  })
 
   it('lets Root approve a pending staff balance request for the open site', async () => {
     api.getAdminBalanceRequests.mockResolvedValue({total:1,items:[

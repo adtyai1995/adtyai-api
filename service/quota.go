@@ -648,6 +648,9 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 	if applyErr != nil {
 		return result, applyErr
 	}
+	if len(contexts) > 0 && contexts[0] != nil {
+		contexts[0].Set(usageBillingContextKey, op)
+	}
 	relayInfo.BillingDirectSequence++
 	result.FundingApplied, result.TokenApplied, result.Shortfall = true, spec.TokenId > 0, op.Shortfall
 	result.TokenCharged = op.TokenAppliedQuota

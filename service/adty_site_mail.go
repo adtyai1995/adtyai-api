@@ -349,6 +349,22 @@ func AddAdtySiteSenderDomain(ctx context.Context, ownerUserId int, rawDomain str
 	if created.Status == "verified" {
 		row.Status = model.AdtySenderDomainVerified
 	}
+	if created.ID == "" {
+		return nil, ErrAdtySenderDomainInvalid
+	}
+	// Stage the new ID independently so a failed binding transaction leaves a cleanup job.
+	job := model.AdtySenderDomainCleanup{SiteID: site.Id, RemoteID: created.ID, RetryAt: now + 600}
+	staged := model.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&job)
+	if staged.Error != nil {
+		// Retry the journal before releasing anything. Its worker checks the live binding.
+		if err := model.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&job).Error; err != nil {
+			return nil, errors.Join(staged.Error, err)
+		}
+		return nil, staged.Error
+	}
+	if staged.RowsAffected == 0 {
+		return nil, errors.New("Sender domain creation is already being reconciled")
+	}
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var locked model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).First(&locked, site.Id).Error; err != nil {
@@ -356,6 +372,15 @@ func AddAdtySiteSenderDomain(ctx context.Context, ownerUserId int, rawDomain str
 		}
 		if locked.OwnerUserId != ownerUserId || (locked.Status != model.AdtySiteStatusActive && locked.Status != model.AdtySiteStatusPaused) {
 			return ErrAdtySiteClosing
+		}
+		// Claim the staged resource under the same site lock as the cleanup worker.
+		// Deleting the job rolls back if any subsequent binding write fails.
+		remove := tx.Where("remote_id = ? AND site_id = ?", created.ID, site.Id).Delete(&model.AdtySenderDomainCleanup{})
+		if remove.Error != nil {
+			return remove.Error
+		}
+		if remove.RowsAffected != 1 {
+			return errors.New("Sender domain creation expired")
 		}
 		var prior model.AdtySiteSenderDomain
 		lookup := model.AdtyLockForUpdate(tx).Where("site_id = ?", site.Id).Limit(1).Find(&prior)
@@ -373,8 +398,11 @@ func AddAdtySiteSenderDomain(ctx context.Context, ownerUserId int, rawDomain str
 		return tx.Create(&row).Error
 	})
 	if err != nil {
-		if delErr := deleteSenderDomainIfPresent(ctx, created.ID); delErr != nil {
-			common.SysError(common.LogText("roll back new sender domain for site %d failed", site.Id))
+		if updateErr := model.DB.Model(&job).Update("retry_at", now).Error; updateErr != nil {
+			return nil, errors.Join(err, updateErr)
+		}
+		if cleanupErr := cleanReplacedSenderDomains(ctx, now, site.Id); cleanupErr != nil {
+			return nil, errors.Join(err, cleanupErr)
 		}
 		return nil, err
 	}
@@ -445,13 +473,27 @@ func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) erro
 		return err
 	}
 	for _, row := range rows {
-		if err := deleteSenderDomainIfPresent(ctx, row.RemoteID); err != nil {
-			if err := model.DB.Model(&row).Updates(map[string]any{"retry_at": now + 600, "last_error": err.Error()}).Error; err != nil {
+		if err := model.DB.Transaction(func(tx *gorm.DB) error {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).First(&site, row.SiteID).Error; err != nil {
 				return err
 			}
-			continue
-		}
-		if err := model.DB.Delete(&row).Error; err != nil {
+			var job model.AdtySenderDomainCleanup
+			lookup := model.AdtyLockForUpdate(tx).Where("remote_id = ? AND retry_at <= ?", row.RemoteID, now).Limit(1).Find(&job)
+			if lookup.Error != nil || lookup.RowsAffected == 0 {
+				return lookup.Error
+			}
+			var bound int64
+			if err := tx.Model(&model.AdtySiteSenderDomain{}).Where("resend_domain_id = ? AND status <> ?", job.RemoteID, model.AdtySenderDomainDisabled).Count(&bound).Error; err != nil {
+				return err
+			}
+			if bound == 0 {
+				if err := deleteSenderDomainIfPresent(ctx, job.RemoteID); err != nil {
+					return tx.Model(&job).Updates(map[string]any{"retry_at": now + 600, "last_error": err.Error()}).Error
+				}
+			}
+			return tx.Delete(&job).Error
+		}); err != nil {
 			return err
 		}
 	}
@@ -868,29 +910,44 @@ func sendAdtySiteCloseMigrationMailWithOptions(site *model.AdtySite, retryOnly b
 			continue
 		}
 		subject, body := renderAdtySiteCloseMigrationMail(site, claimed)
-		deliverErr := deliverAdtySiteCloseMail(site, claimed, subject, body)
+		messageID, deliverErr := deliverAdtySiteCloseMail(site, claimed, subject, body)
 		finishedAt := time.Now().Unix()
 		nextStatus := model.AdtySiteCloseMailSuccess
 		lastError := ""
 		if deliverErr != nil {
 			nextStatus = model.AdtySiteCloseMailFailed
-			if errors.Is(deliverErr, common.ErrSMTPDeliveryUnknown) {
+			if adtyCloseMailOutcomeUnknown(claimed.Provider, deliverErr) {
 				nextStatus = "review"
 			}
 			lastError = truncateText(deliverErr.Error(), 1000)
 		}
-		if err := model.DB.Model(&model.AdtySiteCloseMailRecipient{}).
-			Where("id = ? AND status = ? AND attempt_count = ?", claimed.Id, AdtySiteCloseMailSending, claimed.AttemptCount).
-			Updates(map[string]any{
-				"status": nextStatus, "lease_until": 0,
-				"last_error":      lastError,
-				"last_attempt_at": finishedAt,
-				"updated_at":      finishedAt,
-			}).Error; err != nil {
+		if err := model.DB.Transaction(func(tx *gorm.DB) error {
+			update := tx.Model(&model.AdtySiteCloseMailRecipient{}).Where("id = ? AND status = ? AND attempt_count = ?", claimed.Id, AdtySiteCloseMailSending, claimed.AttemptCount).
+				Updates(map[string]any{"status": nextStatus, "lease_until": 0, "last_error": lastError, "last_attempt_at": finishedAt, "updated_at": finishedAt})
+			if update.Error != nil {
+				return update.Error
+			}
+			return tx.Model(&model.AdtySiteCloseMailAttempt{}).Where("recipient_id = ? AND number = ?", claimed.Id, claimed.AttemptCount).Updates(map[string]any{"outcome": nextStatus, "finished_at": finishedAt, "provider_message_id": messageID}).Error
+		}); err != nil {
 			return err
 		}
 	}
 	return refreshAdtySiteCloseMailBatchCounts(batch.Id, time.Now().Unix())
+}
+
+// Resend can accept a message before a connection or response-body failure.
+func adtyCloseMailOutcomeUnknown(provider string, err error) bool {
+	if provider != "resend" {
+		return errors.Is(err, common.ErrSMTPDeliveryUnknown)
+	}
+	if errors.Is(err, ErrAdtyResendNotConfigured) {
+		return false
+	}
+	var apiErr *AdtyResendError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= 500 || apiErr.StatusCode == http.StatusRequestTimeout
+	}
+	return true
 }
 
 func claimAdtySiteCloseMailRecipient(recipientId int64, attemptAt int64, maxAttempts int, includeSending bool) (*model.AdtySiteCloseMailRecipient, bool, error) {
@@ -917,9 +974,22 @@ func claimAdtySiteCloseMailRecipient(recipientId int64, attemptAt int64, maxAtte
 		if adtyUsesDefaultDeliverSiteEmail() && adtyIsResendActive() && AdtyResend != nil {
 			provider = "resend"
 		}
+		if row.Status == model.AdtySiteCloseMailFailed && row.Provider == "resend" {
+			// Older versions classified lost acknowledgements as ordinary failures.
+			var prior model.AdtySiteCloseMailAttempt
+			if err := tx.Where("recipient_id = ? AND number = ?", row.Id, row.AttemptCount).Limit(1).Find(&prior).Error; err != nil {
+				return err
+			}
+			if prior.Id == 0 || prior.Outcome != model.AdtySiteCloseMailFailed {
+				return tx.Model(&row).Updates(map[string]any{"status": "review", "last_error": "Delivery outcome unknown. Reconcile with the mail provider.", "lease_until": 0}).Error
+			}
+		}
 		if row.Status == AdtySiteCloseMailSending {
 			if row.LeaseUntil > attemptAt || (row.LeaseUntil == 0 && row.LastAttemptAt > attemptAt-600) {
 				return nil
+			}
+			if err := tx.Model(&model.AdtySiteCloseMailAttempt{}).Where("recipient_id = ? AND number = ? AND outcome = ?", row.Id, row.AttemptCount, AdtySiteCloseMailSending).Update("outcome", "review").Error; err != nil {
+				return err
 			}
 			if row.Provider != "resend" || provider != "resend" || row.FirstAttemptAt <= 0 || attemptAt-row.FirstAttemptAt >= 86400 || (maxAttempts > 0 && row.AttemptCount >= maxAttempts+row.RetryAllowance) {
 				return tx.Model(&row).Updates(map[string]any{"status": "review", "last_error": "Delivery outcome unknown. Reconcile with the mail provider.", "lease_until": 0}).Error
@@ -945,6 +1015,9 @@ func claimAdtySiteCloseMailRecipient(recipientId int64, attemptAt int64, maxAtte
 		}
 		if res.RowsAffected == 0 {
 			return nil
+		}
+		if err := tx.Create(&model.AdtySiteCloseMailAttempt{RecipientID: row.Id, Number: nextAttempt, Provider: provider, StartedAt: attemptAt, Outcome: AdtySiteCloseMailSending}).Error; err != nil {
+			return err
 		}
 		row.Provider = provider
 		row.Status = AdtySiteCloseMailSending
@@ -977,27 +1050,26 @@ func adtyIsResendActive() bool {
 	apiKey := strings.TrimSpace(common.OptionMap["ResendApiKey"])
 	resendFrom := strings.TrimSpace(common.OptionMap["ResendFrom"])
 	common.OptionMapRWMutex.RUnlock()
-	if apiKey == "" {
-		return false
-	}
-	return provider == "resend" || (provider == "" && resendFrom != "" && common.SMTPFrom == "")
+	return provider == "resend" || (provider == "" && apiKey != "" && resendFrom != "" && common.SMTPFrom == "")
 }
 
-func deliverAdtySiteCloseMail(site *model.AdtySite, recipient *model.AdtySiteCloseMailRecipient, subject, body string) error {
+func deliverAdtySiteCloseMail(site *model.AdtySite, recipient *model.AdtySiteCloseMailRecipient, subject, body string) (string, error) {
 	if AdtyDeliverSiteEmail == nil {
-		return errors.New("mail delivery function is nil")
+		return "", errors.New("mail delivery function is nil")
 	}
 	if recipient.Provider == "resend" {
-		_, err := AdtyResend.SendEmail(context.Background(), AdtyResendEmail{
+		return AdtyResend.SendEmail(context.Background(), AdtyResendEmail{
 			From:           AdtySenderFor(site),
 			To:             []string{recipient.Email},
 			Subject:        subject,
 			HTML:           body,
 			IdempotencyKey: AdtySiteCloseMailIdempotencyKey(recipient.BatchId, recipient.UserId),
 		})
-		return err
 	}
-	return AdtyDeliverSiteEmail(site, subject, recipient.Email, body)
+	if adtyUsesDefaultDeliverSiteEmail() {
+		return "", common.SendSMTPEmailFrom(AdtySenderFor(site), subject, recipient.Email, body)
+	}
+	return "", AdtyDeliverSiteEmail(site, subject, recipient.Email, body)
 }
 
 func loadOrCreateAdtySiteCloseMailBatch(siteId int, now int64) (*model.AdtySiteCloseMailBatch, error) {

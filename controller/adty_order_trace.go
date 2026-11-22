@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -153,7 +154,17 @@ func getAdtyUnifiedOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID *int)
 			entries[i].BalanceBefore, entries[i].BalanceAfter = nil, nil
 		}
 	}
-	common.ApiSuccess(c, gin.H{"order": order, "refund": gin.H{"refunded_at": 0, "refund_quota": 0, "refund_amount": "0", "currency": ""},
+	var cancellation *service.SiteInviteCancelState
+	if order.SourceType == "site_invite_withdrawal" {
+		var row model.AdtySiteInviteWithdrawal
+		if err := model.DB.Select("status", "method", "cancel_deadline").Where("id = ? AND user_id = ? AND site_id = ?", order.Reference, order.UserId, order.SiteId).First(&row).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		state := service.SiteInviteCancellation(&row, time.Now().Unix())
+		cancellation = &state
+	}
+	common.ApiSuccess(c, gin.H{"order": order, "cancellation": cancellation, "refund": gin.H{"refunded_at": 0, "refund_quota": 0, "refund_amount": "0", "currency": ""},
 		"section": section, "sections": sections, "items": entries, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 

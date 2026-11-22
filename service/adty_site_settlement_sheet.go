@@ -2,7 +2,9 @@ package service
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const adtyBusinessTimezoneKey = "adty.business_timezone"
@@ -124,6 +127,7 @@ func CatchUpAdtySiteSettlementSheets(now time.Time) (int, error) {
 		return 0, err
 	}
 	written := 0
+	var failures []error
 	for _, site := range sites {
 		count := 0
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -131,49 +135,93 @@ func CatchUpAdtySiteSettlementSheets(now time.Time) (int, error) {
 			if err := model.AdtyLockForUpdate(tx).Select("id").First(&locked, site.Id).Error; err != nil {
 				return err
 			}
-			var latest model.AdtySiteSettlementSheet
-			res := tx.Where("site_id = ?", site.Id).Order("business_day DESC").Limit(1).Find(&latest)
-			if res.Error != nil {
-				return res.Error
+			scan := model.AdtySettlementScan{SiteId: site.Id}
+			if err := tx.Where("site_id = ?", site.Id).Limit(1).Find(&scan).Error; err != nil {
+				return err
 			}
-			cursor, windowStart := start, start.Unix()
-			if res.RowsAffected == 0 {
-				first, err := firstAdtySettlementDay(tx, site.Id, start, loc)
-				if err != nil {
-					return err
-				}
-				cursor, windowStart = first, first.Unix()
+			var cursor time.Time
+			var err error
+			if scan.NextDay == "" {
+				cursor, err = firstAdtySettlementDay(tx, site.Id, start, loc)
+			} else {
+				cursor, err = time.ParseInLocation("2006-01-02", scan.NextDay, loc)
 			}
-			if res.RowsAffected > 0 && latest.BusinessDay < day {
-				prev, err := time.ParseInLocation("2006-01-02", latest.BusinessDay, loc)
-				if err != nil {
-					return err
-				}
-				cursor, windowStart = prev.AddDate(0, 0, 1), latest.DayEnd
-			} else if res.RowsAffected > 0 && latest.BusinessDay > day {
-				return nil
+			if err != nil {
+				return err
 			}
-			for !cursor.After(start) && count < 31 {
+			if cursor.After(start) {
+				cursor = start
+			}
+			const daysPerRun = 31
+			lastInclusive := cursor.AddDate(0, 0, daysPerRun-1)
+			if start.Before(lastInclusive) {
+				lastInclusive = start
+			}
+			var sealedDays []string
+			if err := tx.Model(&model.AdtySiteSettlementSheet{}).Where("site_id = ? AND business_day BETWEEN ? AND ?", site.Id, cursor.Format("2006-01-02"), lastInclusive.Format("2006-01-02")).Pluck("business_day", &sealedDays).Error; err != nil {
+				return err
+			}
+			sealed := make(map[string]bool, len(sealedDays))
+			for _, existing := range sealedDays {
+				sealed[existing] = true
+			}
+			for !cursor.After(lastInclusive) {
+				current := cursor.Format("2006-01-02")
 				next := cursor.AddDate(0, 0, 1)
-				if next.Unix() > windowStart {
-					if err := writeAdtySiteSettlementSheetTx(tx, site.Id, cursor.Format("2006-01-02"), windowStart, next.Unix(), zone, now.Unix()); err != nil {
+				if !sealed[current] || current == day {
+					if err := writeAdtyCatchUpDay(tx, site.Id, cursor, zone, now.Unix()); err != nil {
 						return err
 					}
 					count++
-					windowStart = next.Unix()
 				}
 				cursor = next
 			}
-			// Also revisit one older sealed interval per pass. Late postings may
-			// refer to any prior day, including one before a timezone change.
+			// Keep yesterday available while older gaps are filled across runs.
+			if !cursor.After(start) {
+				if err := writeAdtyCatchUpDay(tx, site.Id, start, zone, now.Unix()); err != nil {
+					return err
+				}
+				count++
+			}
+			scan.NextDay = cursor.Format("2006-01-02")
+			scan.LastError = ""
+			if err := tx.Save(&scan).Error; err != nil {
+				return err
+			}
 			return revisitAdtySettlement(tx, site.Id, day, now.Unix())
 		})
 		if err != nil {
-			return written, err
+			failures = append(failures, fmt.Errorf("site %d: %w", site.Id, err))
+			state := model.AdtySettlementScan{SiteId: site.Id, LastError: err.Error()}
+			if writeErr := model.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "site_id"}}, DoUpdates: clause.AssignmentColumns([]string{"last_error"})}).Create(&state).Error; writeErr != nil {
+				failures = append(failures, writeErr)
+			}
+			continue
 		}
 		written += count
 	}
-	return written, nil
+	return written, errors.Join(failures...)
+}
+
+func writeAdtyCatchUpDay(tx *gorm.DB, siteID int, date time.Time, zone string, generatedAt int64) error {
+	day := date.Format("2006-01-02")
+	next := date.AddDate(0, 0, 1)
+	begin, end := date.Unix(), next.Unix()
+	var adjacent []model.AdtySiteSettlementSheet
+	if err := tx.Select("business_day", "day_start", "day_end").Where("site_id=? AND business_day IN ?", siteID, []string{date.AddDate(0, 0, -1).Format("2006-01-02"), next.Format("2006-01-02")}).Find(&adjacent).Error; err != nil {
+		return err
+	}
+	for _, sealed := range adjacent {
+		if sealed.BusinessDay < day {
+			begin = sealed.DayEnd
+		} else {
+			end = sealed.DayStart
+		}
+	}
+	if begin >= end {
+		return fmt.Errorf("invalid settlement interval for site %d day %s", siteID, day)
+	}
+	return writeAdtySiteSettlementSheetTx(tx, siteID, day, begin, end, zone, generatedAt)
 }
 
 func firstAdtySettlementDay(tx *gorm.DB, siteID int, yesterday time.Time, loc *time.Location) (time.Time, error) {
@@ -322,7 +370,7 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 	}
 
 	var topups []model.TopUp
-	if err := tx.Where("status IN ? AND complete_time >= ? AND complete_time < ?", []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}, start, end).Find(&topups).Error; err != nil {
+	if err := tx.Where("trade_no IN (?)", tx.Model(&model.AdtyTopupOrder{}).Select("trade_no").Where("site_id=?", siteID)).Where("status IN ? AND complete_time >= ? AND complete_time < ?", []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}, start, end).Find(&topups).Error; err != nil {
 		return sheet, err
 	}
 	if len(topups) > 0 {
@@ -396,18 +444,22 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 		record("earning_event", ev.OperationKey)
 		sheet.IncludedCount++
 	}
-	var facts []model.AdtySiteEarningFact
-	if err := tx.Where("site_id = ?", siteID).Find(&facts).Error; err != nil {
+	dayMatch := "(day = ? OR day LIKE ?)"
+	legacyWindow := "((updated_at>=? AND updated_at<?) OR (updated_at=0 AND " + dayMatch + "))"
+	allFacts := tx.Model(&model.AdtySiteEarningFact{}).Select("daily_id").Where("site_id=?", siteID)
+	datedFacts := tx.Model(&model.AdtySiteEarningFact{}).Select("daily_id").Where("site_id=? AND occurred_at>=? AND occurred_at<?", siteID, start, end)
+	undatedFacts := tx.Model(&model.AdtySiteEarningFact{}).Select("daily_id").Where("site_id=? AND occurred_at=0", siteID)
+	var earnings []model.AdtySiteEarningDaily
+	if err := tx.Where("site_id=? AND status<>? AND kind IN ?", siteID, model.AdtySiteEarningVoid, []string{model.AdtySiteEarningUsage, model.AdtySiteEarningRefund}).Where("id IN (?) OR (id IN (?) AND "+dayMatch+") OR (id NOT IN (?) AND "+legacyWindow+")", datedFacts, undatedFacts, day, day+"+%", allFacts, start, end, day, day+"+%").Find(&earnings).Error; err != nil {
 		return sheet, err
 	}
 	factsByDaily := map[int64][]model.AdtySiteEarningFact{}
-	for _, fact := range facts {
-		factsByDaily[fact.DailyId] = append(factsByDaily[fact.DailyId], fact)
-	}
-
-	var earnings []model.AdtySiteEarningDaily
-	if err := tx.Where("site_id = ? AND status <> ?", siteID, model.AdtySiteEarningVoid).Find(&earnings).Error; err != nil {
+	var facts []model.AdtySiteEarningFact
+	if err := tx.Where("site_id=? AND ((occurred_at>=? AND occurred_at<?) OR (occurred_at=0 AND daily_id IN (?)))", siteID, start, end, tx.Model(&model.AdtySiteEarningDaily{}).Select("id").Where("site_id=? AND "+dayMatch, siteID, day, day+"+%")).Find(&facts).Error; err != nil {
 		return sheet, err
+	}
+	for _, f := range facts {
+		factsByDaily[f.DailyId] = append(factsByDaily[f.DailyId], f)
 	}
 	for _, row := range earnings {
 		if strings.Contains(row.Day, "+op") {
@@ -451,7 +503,7 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 	}
 
 	var grants []model.AdtySiteTrialGrant
-	if err := tx.Where("site_id = ?", siteID).Find(&grants).Error; err != nil {
+	if err := tx.Where("site_id=? AND ((created_at>=? AND created_at<?) OR (created_at=0 AND "+dayMatch+"))", siteID, start, end, day, day+"+%").Find(&grants).Error; err != nil {
 		return sheet, err
 	}
 	for _, row := range grants {
@@ -530,7 +582,7 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 	}
 
 	var commissions []model.AdtySiteInviteCommission
-	if err := tx.Where("site_id = ? AND created_at > 0 AND created_at < ?", siteID, end).Find(&commissions).Error; err != nil {
+	if err := tx.Where("site_id = ? AND created_at > 0 AND created_at < ? AND (created_at >= ? OR covered_at = 0 OR covered_at >= ?)", siteID, end, start, end).Find(&commissions).Error; err != nil {
 		return sheet, err
 	}
 	var freezes []struct {
@@ -593,29 +645,16 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 		sheet.IncludedCount++
 	}
 
-	var trades []string
-	if err := tx.Model(&model.AdtyTopupOrder{}).Where("site_id = ?", siteID).Pluck("trade_no", &trades).Error; err != nil {
-		return sheet, err
-	}
-	tradeSet := make(map[string]struct{}, len(trades))
-	for _, trade := range trades {
-		tradeSet[trade] = struct{}{}
-	}
 	var anomalies []model.AdtyAnomalyDisposition
-	if err := tx.Where("created_at >= ? AND created_at < ?", start, end).Find(&anomalies).Error; err != nil {
+	if err := tx.Where("created_at>=? AND created_at<?", start, end).Where("site_id=? OR (site_id=0 AND (ref=? OR ref IN (?)))", siteID, strconv.Itoa(siteID), tx.Model(&model.AdtyTopupOrder{}).Select("trade_no").Where("site_id=?", siteID)).Find(&anomalies).Error; err != nil {
 		return sheet, err
 	}
-	siteRef := strconv.Itoa(siteID)
 	for _, row := range anomalies {
-		_, byTrade := tradeSet[row.Ref]
-		if row.SiteId == siteID || (row.SiteId == 0 && (row.Ref == siteRef || byTrade)) {
-			sheet.AnomalyCount++
-			record("anomaly", row.Id)
-			note(row.CreatedAt)
-			sheet.IncludedCount++
-		}
+		sheet.AnomalyCount++
+		record("anomaly", row.Id)
+		note(row.CreatedAt)
+		sheet.IncludedCount++
 	}
-
 	if len(paidByCurrency) > 0 {
 		encoded := make(map[string]string, len(paidByCurrency))
 		for currency, amount := range paidByCurrency {
@@ -665,6 +704,49 @@ func ListAllAdtySiteSettlementSheets() ([]model.AdtySiteSettlementSheet, error) 
 	var rows []model.AdtySiteSettlementSheet
 	err := model.DB.Preload("Revisions", func(db *gorm.DB) *gorm.DB { return db.Order("id") }).Order("business_day DESC, id DESC").Find(&rows).Error
 	return rows, err
+}
+
+type SettlementSheetSummary struct {
+	Id          int64  `json:"id"`
+	SiteId      int    `json:"site_id"`
+	BusinessDay string `json:"business_day"`
+}
+
+func scopedSettlementSheets(siteID int) *gorm.DB {
+	query := model.DB.Model(&model.AdtySiteSettlementSheet{})
+	if siteID > 0 {
+		return query.Where("site_id = ?", siteID)
+	}
+	return query
+}
+
+func PageSettlementSheets(siteID int, day string, page *common.PageInfo) error {
+	if page == nil || page.PageSize < 1 || page.Page < 1 || page.Page > math.MaxInt/page.PageSize {
+		return common.NewMessage("Invalid parameters")
+	}
+	query := scopedSettlementSheets(siteID)
+	if day != "" {
+		if _, err := time.Parse("2006-01-02", day); err != nil {
+			return common.NewMessage("Invalid parameters")
+		}
+		query = query.Where("business_day = ?", day)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return err
+	}
+	var rows []SettlementSheetSummary
+	err := query.Select("id", "site_id", "business_day").Order("business_day DESC,id DESC").Offset(page.GetStartIdx()).Limit(page.PageSize).Find(&rows).Error
+	page.SetItems(rows)
+	page.SetTotal(int(total))
+	return err
+}
+
+func GetSettlementSheet(siteID int, id int64) (model.AdtySiteSettlementSheet, error) {
+	var row model.AdtySiteSettlementSheet
+	ordered := func(db *gorm.DB) *gorm.DB { return db.Order("id") }
+	err := scopedSettlementSheets(siteID).Preload("Revisions", ordered).Preload("LegacyCoverage", ordered).First(&row, id).Error
+	return row, err
 }
 
 func init() {

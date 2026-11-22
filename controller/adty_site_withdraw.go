@@ -64,6 +64,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		return
 	}
 	var body struct {
+		SiteID         int              `json:"site_id"`
 		AmountUSD      string           `json:"amount_usd"`
 		Method         string           `json:"method"`
 		Network        string           `json:"network"`
@@ -73,6 +74,10 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		ExpectedPayout *decimal.Decimal `json:"expected_payout"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if body.SiteID != 0 && body.SiteID != site.Id {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}

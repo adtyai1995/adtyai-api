@@ -407,6 +407,46 @@ export function RefundDialog(
     },
   })
 
+  const teamRefund = Boolean(facts?.team_id ?? props.order?.team_id)
+  const ownerRefund = props.order?.business === 'owner_self_use_topup'
+  const release = selected && facts?.team_releases?.[selected.refund_id]
+  const releaseReview =
+    selected && facts?.team_release_reviews?.[selected.refund_id]
+  let terminationDescription = t(
+    'Terminating releases the refund occupancy. Principal already taken back is not returned to the customer.'
+  )
+  let terminationResult = t(
+    'This refund was terminated. Principal already taken back is not returned.'
+  )
+  if (teamRefund) {
+    terminationDescription = t(
+      'Termination returns deducted principal to the original team and recharge lot.'
+    )
+    terminationResult = t('No team principal was deducted.')
+    if (
+      releaseReview ||
+      (selected?.deducted_principal_quota && (!release || !facts?.team_lot_id))
+    ) {
+      terminationResult = t(
+        'This team recharge requires historical principal review'
+      )
+    } else if (release) {
+      terminationResult = t(
+        'Returned {{amount}} USD to team {{team}}, lot {{lot}}, ledger {{ledger}}.',
+        {
+          amount: release.amount_usd,
+          team: facts?.team_id,
+          lot: facts?.team_lot_id,
+          ledger: release.ledger_id,
+        }
+      )
+    }
+  } else if (ownerRefund) {
+    terminationDescription = t(
+      'Termination releases the owner refund reservation.'
+    )
+    terminationResult = t('Owner refund reservation released.')
+  }
   const canApply =
     reason.trim() !== '' &&
     typedReady &&
@@ -637,9 +677,7 @@ export function RefundDialog(
           {selected?.status === 'terminated' && (
             <Alert>
               <AlertDescription>
-                {t(
-                  'This refund was terminated. Principal already taken back is not returned.'
-                )}
+                {terminationResult}
                 {selected.terminate_note
                   ? ` ${t('Note')}: ${selected.terminate_note}`
                   : ''}
@@ -712,9 +750,7 @@ export function RefundDialog(
             open={terminateOpen}
             onOpenChange={setTerminateOpen}
             title={t('Terminate refund')}
-            desc={t(
-              'Terminating releases the refund occupancy. Principal already taken back is not returned to the customer.'
-            )}
+            desc={terminationDescription}
             confirmText={t('Terminate refund')}
             destructive
             handleConfirm={() => {

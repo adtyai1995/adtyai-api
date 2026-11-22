@@ -41,12 +41,16 @@ func adtyAllocatePlatformDomainsTx(tx *gorm.DB, site *model.AdtySite) error {
 	return nil
 }
 
+func AdtyDomainCloseAction(row model.AdtySiteDomain) string {
+	if row.Status == model.AdtySiteDomainRemoved || row.DesiredState == "removed" || row.Role == model.AdtySiteDomainRoleBaseURL {
+		return "removed"
+	}
+	return "redirect_only"
+}
+
 func adtyCloseDomainIntentsTx(tx *gorm.DB, siteID int) error {
 	for _, role := range []string{model.AdtySiteDomainRoleSite, model.AdtySiteDomainRoleBaseURL} {
-		desired := "redirect_only"
-		if role == model.AdtySiteDomainRoleBaseURL {
-			desired = "removed"
-		}
+		desired := AdtyDomainCloseAction(model.AdtySiteDomain{Role: role})
 		if err := tx.Model(&model.AdtySiteDomain{}).Where("site_id = ? AND role = ? AND status <> ? AND desired_state NOT IN ?", siteID, role, model.AdtySiteDomainRemoved, []string{desired, "removed"}).Updates(map[string]any{"desired_state": desired, "automation_state": "queued", "next_run_at": 0, "generation": gorm.Expr("generation + 1")}).Error; err != nil {
 			return err
 		}
@@ -133,7 +137,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 	if row.DNSRoot != "" && row.DNSRoot != cfg.AliyunDomain {
 		return fmt.Errorf("Stored DNS root differs; restore DNS configuration before continuing")
 	}
-	if row.DesiredState == "redirect_only" && row.TurnstileWidget != "" {
+	if (row.DesiredState == "redirect_only" || row.Role == model.AdtySiteDomainRoleBaseURL) && row.TurnstileWidget != "" {
 		if err := releaseRedirectWidget(ctx, row); err != nil {
 			return err
 		}

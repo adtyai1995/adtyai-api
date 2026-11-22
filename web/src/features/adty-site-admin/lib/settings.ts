@@ -99,7 +99,6 @@ export type ResellerDrafts = Record<MoneyKey | RuleKey, string> &
     clear_aliyun: boolean
     custom_domain_enabled: boolean
     sender_domain_enabled: boolean
-    unknown_host_mode: 'main' | 'reject'
     /** One per line. */
     root_domains: string
     reserved_subdomains: string
@@ -136,7 +135,6 @@ export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
     clear_aliyun: false,
     custom_domain_enabled: saved.custom_domain_enabled,
     sender_domain_enabled: saved.sender_domain_enabled,
-    unknown_host_mode: saved.unknown_host_mode,
     root_domains: (saved.root_domains ?? []).join('\n'),
     reserved_subdomains: (saved.reserved_subdomains ?? []).join('\n'),
     tiers: (saved.cost_factor_tiers ?? []).map((tier) => ({
@@ -231,9 +229,7 @@ export function buildResellerUpdate(
   ] as const) {
     if (drafts[key] !== saved[key]) body[key] = drafts[key]
   }
-  if (drafts.unknown_host_mode !== saved.unknown_host_mode) {
-    body.unknown_host_mode = drafts.unknown_host_mode
-  }
+
   const roots = lines(drafts.root_domains)
   if (!sameList(roots, saved.root_domains ?? [])) body.root_domains = roots
   const reserved = lines(drafts.reserved_subdomains)

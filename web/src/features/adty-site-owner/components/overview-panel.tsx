@@ -120,8 +120,11 @@ export function OverviewPanel() {
           </Link>
         ))}
       </nav>
-      {earnings.isError && (
-        <ErrorState onRetry={() => void earnings.refetch()} />
+      {(earnings.isError || stats.isError) && (
+        <ErrorState onRetry={() => {
+          if (earnings.isError) void earnings.refetch()
+          if (stats.isError) void stats.refetch()
+        }} />
       )}
       {earnings.isPending && <LoadingState />}
       {balances && (
@@ -151,8 +154,7 @@ export function OverviewPanel() {
           ]}
         />
       )}
-      {stats.isError && <ErrorState onRetry={() => void stats.refetch()} />}
-      {stats.isPending && <LoadingState />}
+      {stats.isPending && !earnings.isPending && <LoadingState />}
       {total && (
         <OwnerStatGrid
           label={t('Last 30 days')}

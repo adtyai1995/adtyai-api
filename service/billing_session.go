@@ -283,6 +283,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		s.syncRelayInfo()
 		c.Set(adtyDurableBillingContextKey, true)
 		c.Set(adtyBillingOperationContextKey, s.operationKey)
+		c.Set(usageBillingContextKey, row)
 		activeBillingReservations.Store(s.operationKey, struct{}{})
 		if c.Request != nil {
 			context.AfterFunc(c.Request.Context(), func() { activeBillingReservations.Delete(s.operationKey) })

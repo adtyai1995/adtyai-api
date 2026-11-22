@@ -118,6 +118,8 @@ export type SiteDayStats = {
   topup_usd: string
 }
 
+type UsageTotal = { requests: number; quota: number }
+type UsageRow = UsageTotal & { key: string; usd: string }
 export type SiteStatsResponse = {
   stats: {
     from: string
@@ -125,7 +127,13 @@ export type SiteStatsResponse = {
     total: SiteDayStats
     series: SiteDayStats[]
   }
-  breakdown: unknown
+  breakdown: {
+    by_model: UsageRow[]
+    by_group: UsageRow[]
+    by_payer: UsageRow[]
+    unverified: UsageTotal
+    unknown_site: UsageTotal
+  }
   monthly: unknown
   withdrawn_usd?: string
 }

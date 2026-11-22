@@ -21,6 +21,7 @@ type AdtyPaymentScene struct {
 	ChannelIDs []int           `json:"channel_ids"`
 	Currencies []string        `json:"currencies"`
 	SiteScope  string          `json:"site_scope"`
+	TeamIDs    []int64         `json:"team_ids,omitempty"`
 	SiteIDs    []int           `json:"site_ids"`
 	UserTypes  []string        `json:"user_types"`
 	MinUSD     decimal.Decimal `json:"min_usd"`

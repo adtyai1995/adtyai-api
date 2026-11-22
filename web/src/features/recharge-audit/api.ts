@@ -52,7 +52,7 @@ export type RechargeAuditOrder = {
   reference?: string
   original_trade_no?: string
   team_id?: number
-  business?: 'wallet_topup' | 'owner_self_use_topup'
+  business?: 'wallet_topup' | 'team_topup' | 'owner_self_use_topup'
   trade_no: string
   payment_method: string
   payment_provider: string
@@ -265,6 +265,7 @@ export type CommissionRefundPreview = {
 }
 
 export type OrderTrace = PageResponse<OrderTraceEntry> & {
+  cancellation?: {can_cancel:boolean; cancel_deadline:number; cancel_reason:string} | null
   order: RechargeAuditOrder
   refund: {
     refunded_at: number
@@ -423,6 +424,10 @@ export type TopupRefundResult = {
 }
 
 export type RefundPageFacts = {
+  team_id?: number
+  team_lot_id?: number
+  team_releases?: Record<string, { ledger_id: number; amount_usd: string }>
+  team_release_reviews?: Record<string, boolean>
   trade_no: string
   site_id: number
   user_id: number

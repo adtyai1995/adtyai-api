@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -31,7 +31,6 @@ import { uploadReferralAsset } from '@/features/referral/api'
 import {
   isValidUsdtAddress,
   USDT_NETWORKS,
-  usdtNetAmount,
   usdtNetworkLabel,
   type UsdtNetwork,
 } from '@/features/referral/lib/address'
@@ -46,6 +45,9 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type { SiteCommission } from './site-commission-panel'
+import { useWithdrawalIntent } from './use-withdrawal-intent'
+import { WithdrawalCancellation } from './withdrawal-cancellation'
+import { WithdrawalRecovery } from './withdrawal-recovery'
 
 type WithdrawRules = {
   configured: boolean
@@ -66,6 +68,9 @@ type SiteInviteWithdrawal = {
   account_no: string
   account_name: string
   status: string
+  can_cancel: boolean
+  cancel_deadline: number
+  cancel_reason: string
   payout_amount: string
   payout_currency: string
   reject_reason: string
@@ -78,7 +83,13 @@ type ApiResponse<T> = {
   data: T
 }
 
-type RateChange = { rate: string; cnyAmount: string }
+type Quote = {
+  quote_id: string
+  rate: string
+  fee_usd: string
+  payout_amount: string
+  payout_currency: string
+}
 
 const METHODS = ['balance', 'usdt', 'alipay'] as const
 type Method = (typeof METHODS)[number]
@@ -106,12 +117,10 @@ async function createWithdrawal(body: {
   accountNo: string
   accountName: string
   qrUrl: string
-  expectedRate: string
+  expectedQuoteId: string
   idempotencyKey: string
-}): Promise<{ kind: 'ok' } | ({ kind: 'rate_changed' } & RateChange)> {
-  const res = await api.post<
-    ApiResponse<{ rate?: string; cny_amount?: string }>
-  >(
+}): Promise<{ kind: 'ok' } | { kind: 'quote_changed'; quote: Quote }> {
+  const res = await api.post<ApiResponse<Quote>>(
     '/api/adty/site-commissions/withdrawals',
     {
       amount_usd: body.amount,
@@ -121,16 +130,12 @@ async function createWithdrawal(body: {
       account_no: body.method === 'usdt' ? body.accountNo : '',
       account_name: body.method === 'alipay' ? body.accountName : '',
       qr_image_url: body.method === 'alipay' ? body.qrUrl : '',
-      expected_cny_rate: body.method === 'alipay' ? body.expectedRate : '',
+      expected_quote_id: body.expectedQuoteId,
     },
     { headers: { 'Idempotency-Key': body.idempotencyKey } }
   )
-  if (res.data.success === false && res.data.code === 'rate_changed') {
-    return {
-      kind: 'rate_changed',
-      rate: res.data.data?.rate ?? '',
-      cnyAmount: res.data.data?.cny_amount ?? '',
-    }
+  if (res.data.success === false && res.data.code === 'quote_changed') {
+    return { kind: 'quote_changed', quote: res.data.data }
   }
   requireServerSuccess(res.data)
   return { kind: 'ok' }
@@ -230,23 +235,20 @@ function SiteWithdrawForm(props: {
   const [address, setAddress] = useState('')
   const [payee, setPayee] = useState('')
   const [qrUrl, setQrUrl] = useState('')
-  const [expectedRate, setExpectedRate] = useState('')
-  const [confirmingUsdt, setConfirmingUsdt] = useState(false)
-  const [rateChange, setRateChange] = useState<RateChange | null>(null)
-  const intent = useRef<{ body: string; key: string } | null>(null)
+  const [confirmation, setConfirmation] = useState<Quote | null>(null)
+  const [quoteChanged, setQuoteChanged] = useState(false)
+  const intent = useWithdrawalIntent(
+    '/api/adty/site-commissions/withdrawals',
+    props.siteId
+  )
 
   const available = props.rows.reduce(
     (sum, row) => sum + freeAmount(row, Math.floor(Date.now() / 1000)),
     0
   )
   const value = Number(amount)
-  const fee = Number(rules.data?.fee_usd || 0)
   const minimum = Number(rules.data?.min_usd || 0)
-  const rate = expectedRate || rules.data?.cny_rate || ''
   const isCny = method === 'alipay'
-  const cnyAmount =
-    isCny && value > 0 && rate !== '' ? (value * Number(rate)).toFixed(2) : ''
-  const net = usdtNetAmount(value, fee)
   const cashReady = rules.data?.configured === true
 
   const validate = (): string => {
@@ -254,10 +256,11 @@ function SiteWithdrawForm(props: {
     if (!(value > 0)) return t('Enter a withdrawal amount')
     if (value > available) return t('Not enough withdrawable commission')
     if (method !== 'balance') {
-      if (!cashReady)
+      if (!cashReady) {
         return t(
           'Cash withdrawal stays off until the minimum, fee, and CNY rate are saved.'
         )
+      }
       if (value < minimum) {
         return t('The minimum withdrawal is ${{amount}}', {
           amount: rules.data?.min_usd,
@@ -271,7 +274,6 @@ function SiteWithdrawForm(props: {
           network: usdtNetworkLabel(network),
         })
       }
-      if (net <= 0) return t('The amount must be larger than the network fee')
     }
     if (isCny && (qrUrl === '' || payee.trim() === '')) {
       return t('Upload the payment QR code and enter the payee name')
@@ -292,11 +294,11 @@ function SiteWithdrawForm(props: {
     setPayee('')
     setQrUrl('')
     setNetwork('')
-    setRateChange(null)
-    intent.current = null
+    setConfirmation(null)
+    setQuoteChanged(false)
   }
   const submit = useMutation({
-    mutationFn: (nextRate: string) => {
+    mutationFn: async (confirmedQuote: Quote | null) => {
       const body = {
         siteId: props.siteId,
         amount: amount.trim(),
@@ -305,17 +307,27 @@ function SiteWithdrawForm(props: {
         accountNo: method === 'usdt' ? address.trim() : '',
         accountName: isCny ? payee.trim() : '',
         qrUrl: isCny ? qrUrl : '',
-        expectedRate: isCny ? nextRate : '',
+        expectedQuoteId: confirmedQuote?.quote_id ?? '',
       }
-      const signature = JSON.stringify(body)
-      if (intent.current?.body !== signature)
-        intent.current = { body: signature, key: crypto.randomUUID() }
-      return createWithdrawal({ ...body, idempotencyKey: intent.current.key })
+      const key = await intent.prepare({
+        amount: body.amount,
+        method,
+        quote: body.expectedQuoteId,
+      })
+      if (!key) return { kind: 'recovered' as const }
+      const result = await createWithdrawal({ ...body, idempotencyKey: key })
+      if (result.kind === 'ok') intent.accept(key)
+      return result
     },
     onSuccess: (result) => {
-      if (result.kind === 'rate_changed') {
-        setExpectedRate(result.rate)
-        setRateChange(result)
+      if (result.kind === 'quote_changed') {
+        setQuoteChanged(true)
+        setConfirmation(result.quote)
+        return
+      }
+      if (result.kind === 'recovered') {
+        reset()
+        refresh()
         return
       }
       toast.success(
@@ -335,17 +347,43 @@ function SiteWithdrawForm(props: {
   })
   const cancel = useMutation({
     mutationFn: cancelWithdrawal,
-    onSuccess: refresh,
+    onSettled: refresh,
     onError: (err) => handleServerError(err),
   })
 
+  const quote = useMutation({
+    mutationFn: async () => {
+      if (intent.saved && (await intent.check())) return null
+      const res = await api.get<ApiResponse<Quote>>(
+        '/api/adty/site-commissions/withdrawals/quote',
+        {
+          params: { site_id: props.siteId, amount_usd: amount.trim(), method },
+        }
+      )
+      return requireServerSuccess(res.data).data
+    },
+    onSuccess: (value) => {
+      if (!value) {
+        reset()
+        refresh()
+        return
+      }
+      setQuoteChanged(false)
+      setConfirmation(value)
+    },
+    onError: (err) => handleServerError(err),
+  })
+  const confirmationTitle =
+    method === 'usdt'
+      ? t('Confirm the USDT withdrawal')
+      : t('Invite commission withdrawal')
   const onSubmit = () => {
     if (error || amount.trim() === '') return
-    if (method === 'usdt') {
-      setConfirmingUsdt(true)
+    if (method !== 'balance') {
+      quote.mutate()
       return
     }
-    submit.mutate(rate)
+    submit.mutate(null)
   }
 
   return (
@@ -388,167 +426,170 @@ function SiteWithdrawForm(props: {
           })}
         </p>
       )}
-      <form
-        className='flex flex-col gap-4'
-        onSubmit={(event) => {
-          event.preventDefault()
-          onSubmit()
-        }}
-      >
-        <fieldset className='flex flex-col gap-2'>
-          <legend className='text-sm font-medium'>{t('Withdraw to')}</legend>
-          <div className='grid grid-cols-2 gap-2'>
-            {METHODS.map((item) => {
-              const enabled =
-                item === 'balance' ||
-                rules.data?.methods.includes(item) === true
-              return (
-                <Button
-                  key={item}
-                  type='button'
-                  variant='outline'
-                  disabled={!enabled}
-                  aria-pressed={method === item}
-                  className={method === item ? 'border-foreground' : ''}
-                  onClick={() => {
-                    setMethod(item)
-                    if (item === 'alipay') {
-                      setExpectedRate(rules.data?.cny_rate ?? '')
-                    }
-                  }}
-                >
-                  {t(methodLabel(item))}
-                  {!enabled && (
-                    <span className='text-muted-foreground ml-1 text-xs'>
-                      {t('Not available yet')}
-                    </span>
-                  )}
-                </Button>
-              )
-            })}
-          </div>
-        </fieldset>
-        <div className='flex flex-col gap-2'>
-          <Label htmlFor='site-invite-withdraw-amount'>{t('Amount USD')}</Label>
-          <Input
-            id='site-invite-withdraw-amount'
-            value={amount}
-            inputMode='decimal'
-            autoComplete='off'
-            onChange={(event) => setAmount(event.target.value)}
-          />
-          {method === 'balance' && (
-            <p className='text-muted-foreground text-sm'>
-              {t('Credited to your balance right away, no fee.')}
-            </p>
-          )}
-        </div>
-        {method === 'usdt' && cashReady && (
-          <>
+      <WithdrawalRecovery
+        intent={intent}
+        busy={submit.isPending}
+        onReset={reset}
+        onRecovered={refresh}
+      />
+      {!intent.saved?.accepted && (
+        <form
+          className='flex flex-col gap-4'
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSubmit()
+          }}
+        >
+          <fieldset
+            disabled={quote.isPending || submit.isPending}
+            className='flex flex-col gap-4'
+          >
+            <fieldset className='flex flex-col gap-2'>
+              <legend className='text-sm font-medium'>
+                {t('Withdraw to')}
+              </legend>
+              <div className='grid grid-cols-2 gap-2'>
+                {METHODS.map((item) => {
+                  const enabled =
+                    item === 'balance' ||
+                    rules.data?.methods.includes(item) === true
+                  return (
+                    <Button
+                      key={item}
+                      type='button'
+                      variant='outline'
+                      disabled={!enabled}
+                      aria-pressed={method === item}
+                      className={method === item ? 'border-foreground' : ''}
+                      onClick={() => {
+                        setMethod(item)
+                      }}
+                    >
+                      {t(methodLabel(item))}
+                      {!enabled && (
+                        <span className='text-muted-foreground ml-1 text-xs'>
+                          {t('Not available yet')}
+                        </span>
+                      )}
+                    </Button>
+                  )
+                })}
+              </div>
+            </fieldset>
             <div className='flex flex-col gap-2'>
-              <Label htmlFor='site-invite-withdraw-network'>
-                {t('Network')}
-              </Label>
-              <NativeSelect
-                id='site-invite-withdraw-network'
-                value={network}
-                onChange={(event) => {
-                  setNetwork(event.target.value as UsdtNetwork | '')
-                  setAddress('')
-                }}
-              >
-                <NativeSelectOption value=''>
-                  {t('Choose a network')}
-                </NativeSelectOption>
-                {USDT_NETWORKS.map((item) => (
-                  <NativeSelectOption key={item} value={item}>
-                    {usdtNetworkLabel(item)}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            </div>
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor='site-invite-withdraw-address'>
-                {t('USDT address')}
+              <Label htmlFor='site-invite-withdraw-amount'>
+                {t('Amount USD')}
               </Label>
               <Input
-                id='site-invite-withdraw-address'
-                value={address}
+                id='site-invite-withdraw-amount'
+                value={amount}
+                inputMode='decimal'
                 autoComplete='off'
-                disabled={network === ''}
-                onChange={(event) => setAddress(event.target.value)}
+                onChange={(event) => setAmount(event.target.value)}
               />
-            </div>
-            <p className='text-muted-foreground text-sm tabular-nums'>
-              {t('Network fee {{fee}} USD. You receive {{net}} USD.', {
-                fee: rules.data?.fee_usd,
-                net: Number.isFinite(net) ? net.toFixed(2) : '0.00',
-              })}
-            </p>
-          </>
-        )}
-        {isCny && cashReady && (
-          <>
-            <p className='text-sm tabular-nums'>
-              {t('1 USD = {{rate}} CNY. You receive ¥{{cny}}.', {
-                rate,
-                cny: cnyAmount || '0.00',
-              })}
-            </p>
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor='site-invite-withdraw-payee'>
-                {t('Payee name')}
-              </Label>
-              <Input
-                id='site-invite-withdraw-payee'
-                value={payee}
-                autoComplete='name'
-                onChange={(event) => setPayee(event.target.value)}
-              />
-            </div>
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor='site-invite-withdraw-qr'>
-                {t('Payment QR code')}
-              </Label>
-              <Input
-                id='site-invite-withdraw-qr'
-                type='file'
-                accept='image/png,image/jpeg,image/webp'
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) upload.mutate(file)
-                }}
-              />
-              {qrUrl !== '' && (
-                <img
-                  src={qrUrl}
-                  alt={t('Payment QR code')}
-                  className='h-40 w-40 rounded-lg border object-contain'
-                />
+              {method === 'balance' && (
+                <p className='text-muted-foreground text-sm'>
+                  {t('Credited to your balance right away, no fee.')}
+                </p>
               )}
             </div>
-          </>
-        )}
-        {error !== '' && (
-          <p className='text-destructive text-sm' role='alert'>
-            {error}
-          </p>
-        )}
-        <div>
-          <Button
-            type='submit'
-            variant='outline'
-            disabled={
-              amount.trim() === '' ||
-              error !== '' ||
-              submit.isPending ||
-              upload.isPending
-            }
-          >
-            {t('Submit withdrawal')}
-          </Button>
-        </div>
-      </form>
+            {method === 'usdt' && cashReady && (
+              <>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='site-invite-withdraw-network'>
+                    {t('Network')}
+                  </Label>
+                  <NativeSelect
+                    id='site-invite-withdraw-network'
+                    value={network}
+                    onChange={(event) => {
+                      setNetwork(event.target.value as UsdtNetwork | '')
+                      setAddress('')
+                    }}
+                  >
+                    <NativeSelectOption value=''>
+                      {t('Choose a network')}
+                    </NativeSelectOption>
+                    {USDT_NETWORKS.map((item) => (
+                      <NativeSelectOption key={item} value={item}>
+                        {usdtNetworkLabel(item)}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='site-invite-withdraw-address'>
+                    {t('USDT address')}
+                  </Label>
+                  <Input
+                    id='site-invite-withdraw-address'
+                    value={address}
+                    autoComplete='off'
+                    disabled={network === ''}
+                    onChange={(event) => setAddress(event.target.value)}
+                  />
+                </div>
+              </>
+            )}
+            {isCny && cashReady && (
+              <>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='site-invite-withdraw-payee'>
+                    {t('Payee name')}
+                  </Label>
+                  <Input
+                    id='site-invite-withdraw-payee'
+                    value={payee}
+                    autoComplete='name'
+                    onChange={(event) => setPayee(event.target.value)}
+                  />
+                </div>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='site-invite-withdraw-qr'>
+                    {t('Payment QR code')}
+                  </Label>
+                  <Input
+                    id='site-invite-withdraw-qr'
+                    type='file'
+                    accept='image/png,image/jpeg,image/webp'
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) upload.mutate(file)
+                    }}
+                  />
+                  {qrUrl !== '' && (
+                    <img
+                      src={qrUrl}
+                      alt={t('Payment QR code')}
+                      className='h-40 w-40 rounded-lg border object-contain'
+                    />
+                  )}
+                </div>
+              </>
+            )}
+            {error !== '' && (
+              <p className='text-destructive text-sm' role='alert'>
+                {error}
+              </p>
+            )}
+            <div>
+              <Button
+                type='submit'
+                variant='outline'
+                disabled={
+                  amount.trim() === '' ||
+                  error !== '' ||
+                  quote.isPending ||
+                  submit.isPending ||
+                  upload.isPending
+                }
+              >
+                {t('Submit withdrawal')}
+              </Button>
+            </div>
+          </fieldset>
+        </form>
+      )}
       {history.isError && <ErrorState onRetry={() => void history.refetch()} />}
       <ul className='flex flex-col gap-2'>
         {(history.data ?? []).map((row) => (
@@ -568,65 +609,58 @@ function SiteWithdrawForm(props: {
                 ` · ${row.payout_amount} ${row.payout_currency}`}
               {row.reject_reason !== '' && ` · ${row.reject_reason}`}
             </span>
-            {row.status === 'pending' && row.method !== 'balance' && (
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                disabled={cancel.isPending}
-                onClick={() => cancel.mutate(row.id)}
-              >
-                {t('Cancel')}
-              </Button>
-            )}
+            <WithdrawalCancellation
+              state={row}
+              busy={cancel.isPending}
+              onCancel={() => cancel.mutate(row.id)}
+            />
           </li>
         ))}
       </ul>
       <ConfirmDialog
-        open={confirmingUsdt}
-        onOpenChange={setConfirmingUsdt}
-        title={t('Confirm the USDT withdrawal')}
+        open={confirmation !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmation(null)
+        }}
+        title={
+          quoteChanged
+            ? t('Withdrawal quote changed. Confirm the updated amount.')
+            : confirmationTitle
+        }
         desc={
           <div className='flex flex-col gap-2 text-sm'>
+            {method === 'usdt' ? (
+              <>
+                <p>
+                  {usdtNetworkLabel(network)} ·{' '}
+                  <span className='font-mono break-all'>{address}</span>
+                </p>
+                <p>
+                  {t('USDT fee (USD)')} {confirmation?.fee_usd}
+                </p>
+                <p className='text-destructive'>
+                  {t('A wrong network or address cannot be recovered.')}
+                </p>
+              </>
+            ) : (
+              <p>
+                {payee} ·{' '}
+                {t('1 USD = {{rate}} CNY. You receive ¥{{cny}}.', {
+                  rate: confirmation?.rate,
+                  cny: confirmation?.payout_amount,
+                })}
+              </p>
+            )}
             <p>
-              {usdtNetworkLabel(network)} ·{' '}
-              <span className='font-mono break-all'>{address}</span>
-            </p>
-            <p>
-              {t('Network fee {{fee}} USD. You receive {{net}} USD.', {
-                fee: rules.data?.fee_usd,
-                net: net.toFixed(2),
-              })}
-            </p>
-            <p className='text-destructive'>
-              {t('A wrong network or address cannot be recovered.')}
+              {t('Payout amount')} {confirmation?.payout_amount}{' '}
+              {confirmation?.payout_currency}
             </p>
           </div>
         }
         confirmText={t('Confirm')}
         isLoading={submit.isPending}
         handleConfirm={() => {
-          setConfirmingUsdt(false)
-          submit.mutate(rate)
-        }}
-      />
-      <ConfirmDialog
-        open={rateChange !== null}
-        onOpenChange={(open) => {
-          if (!open) setRateChange(null)
-        }}
-        title={t('The exchange rate has changed. Confirm the new amount')}
-        desc={t('1 USD = {{rate}} CNY. You receive ¥{{cny}}.', {
-          rate: rateChange?.rate ?? '',
-          cny: rateChange?.cnyAmount ?? '',
-        })}
-        confirmText={t('Confirm')}
-        isLoading={submit.isPending}
-        handleConfirm={() => {
-          const next = rateChange?.rate ?? ''
-          setRateChange(null)
-          setExpectedRate(next)
-          submit.mutate(next)
+          if (confirmation) submit.mutate(confirmation)
         }}
       />
     </div>

@@ -22,6 +22,8 @@ const (
 // AdtySiteDomain 是站长绑定的一个自定义域名。主机名全局唯一（删除后行保留为 removed，
 // 同一个主机名再加时复用这一行）。
 type AdtySiteDomain struct {
+	BoundBy           int    `json:"-" gorm:"default:0"`
+	CloseAction       string `json:"close_action,omitempty" gorm:"-"`
 	CFCreateStartedAt int64  `json:"-"`
 	ManagedBy         string `json:"managed_by" gorm:"type:varchar(16);default:owner;index"`
 	DesiredState      string `json:"desired_state" gorm:"type:varchar(20);default:serve;index"`

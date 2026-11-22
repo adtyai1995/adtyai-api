@@ -284,6 +284,15 @@ func GetAdtyTicketRequestAudience(c *gin.Context) {
 }
 
 func GetAdtyTickets(c *gin.Context) {
+	if kind := c.Query("related_kind"); kind != "" {
+		tickets, err := service.RelatedOpenAdtyTickets(c.GetInt("id"), adtyRequestedTicketScope(c), kind, c.Query("related_ref"))
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, gin.H{"tickets": tickets})
+		return
+	}
 	page := common.GetPageQuery(c)
 	before, err := strconv.ParseInt(c.DefaultQuery("before_id", "0"), 10, 64)
 	if err != nil {
@@ -317,7 +326,8 @@ const AdtyTicketImageGrantTTL = 5 * time.Minute
 
 type adtyTicketDetailResponse struct {
 	*service.AdtyTicketDetail
-	ImageGrants map[int64]string `json:"image_grants,omitempty"`
+	ImageGrantsExp int64            `json:"image_grants_exp,omitempty"`
+	ImageGrants    map[int64]string `json:"image_grants,omitempty"`
 }
 
 func adtyTicketImageGrantSecret() []byte {
@@ -379,6 +389,7 @@ func GetAdtyTicket(c *gin.Context) {
 	common.ApiSuccess(c, adtyTicketDetailResponse{
 		AdtyTicketDetail: detail,
 		ImageGrants:      grants,
+		ImageGrantsExp:   exp,
 	})
 }
 
@@ -428,15 +439,16 @@ func PostAdtyTicketStatus(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Status     string `json:"status"`
-		Priority   string `json:"priority"`
-		AssigneeId int    `json:"assignee_id"`
+		Status         string `json:"status"`
+		Priority       string `json:"priority"`
+		ClosureEventId int64  `json:"closure_event_id"`
+		AssigneeId     int    `json:"assignee_id"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SetAdtyTicketStatus(c.GetInt("id"), id, body.Status, body.Priority, body.AssigneeId, adtyRequestedTicketScope(c)); err != nil {
+	if err := service.SetAdtyTicketStatusWithKey(c.GetInt("id"), id, body.Status, body.Priority, body.AssigneeId, c.GetHeader("Idempotency-Key"), body.ClosureEventId, adtyRequestedTicketScope(c)); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -506,20 +518,8 @@ func GetAdtyTicketImage(c *gin.Context) {
 	userID := c.GetInt("id")
 	now := time.Now()
 	if c.Query("action") == "grant" {
-		detail, err := service.GetAdtyTicket(userID, id, adtyRequestedTicketScope(c))
-		if err != nil {
+		if _, err := service.AuthorizedAdtyTicketImage(userID, id, imageID, adtyRequestedTicketScope(c)); err != nil {
 			common.ApiError(c, err)
-			return
-		}
-		visible := false
-		for _, img := range detail.Images {
-			if img.Id == imageID {
-				visible = true
-				break
-			}
-		}
-		if !visible {
-			common.ApiError(c, service.ErrAdtyTicketForbidden)
 			return
 		}
 		exp := now.Add(AdtyTicketImageGrantTTL).Unix()

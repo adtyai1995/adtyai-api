@@ -15,14 +15,20 @@ func GetAdtySidebarBadges(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	var tokenScopes [][]string
-	if _, token := c.Get("access_token_legacy"); token {
-		tokenScopes = append(tokenScopes, c.GetStringSlice("access_token_scopes"))
-	}
-	counts, err := service.CollectAdtySidebarBadges(userID, service.AdtySiteForRequest(c), tokenScopes...)
+	counts, err := service.CollectAdtySidebarBadges(userID, service.AdtySiteForRequest(c), referralBadgeTokenScopes(c)...)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"counts": counts})
+}
+
+func referralBadgeTokenScopes(c *gin.Context) [][]string {
+	if legacy, token := c.Get("access_token_legacy"); token {
+		if legacy == true {
+			return [][]string{nil}
+		}
+		return [][]string{c.GetStringSlice("access_token_scopes")}
+	}
+	return nil
 }

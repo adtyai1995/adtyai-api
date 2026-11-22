@@ -47,51 +47,66 @@ func runAdtyEpayFollowUpQueries(now int64) {
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
 		Where(`a.provider = ? AND a.created_at <= ? AND a.last_query_at <= ? AND (
 			(t.status = ? AND (a.expire_at > ? OR (a.expire_at <= ? AND a.expire_at > ?))) OR
-			(t.status = ? AND a.expire_at <= ? AND a.expire_at > ?)
+			(t.status = ? AND a.expire_at <= ? AND a.expire_at > ?) OR
+      (a.team_id>0 AND t.status IN ? AND (a.expire_at=0 OR (a.expire_at<=? AND a.last_query_at<a.expire_at)))
 		)`,
 			model.PaymentProviderAdtyEpay, now-after, now-60,
 			common.TopUpStatusPending, now, now, now-grace,
-			common.TopUpStatusExpired, now, now-grace).
-		Order("a.id").Limit(50).Scan(&exts).Error
+			common.TopUpStatusExpired, now, now-grace, []string{common.TopUpStatusPending, common.TopUpStatusExpired}, now).
+		Order("a.last_query_at, a.id").Limit(50).Scan(&exts).Error
 	if err != nil {
 		common.SysError(common.LogText("epay follow-up query scan: %s", err.Error()))
 		return
 	}
 	for _, ext := range exts {
-		_ = model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"last_query_at": now})
-		channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
-		if err != nil {
-			continue
-		}
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(channel.GatewayURL)), "https://") {
-			// 查单结果没有签名，http 网关只等回调。
-			continue
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		facts, err := (adtyEpayProvider{}).Query(ctx, &ext)
 		cancel()
+		legacy := ext.TeamId > 0 && ext.ExpireAt == 0
+		deadline := ext.ExpireAt
+		if legacy {
+			deadline = AdtyEpayExpiry(ext.CreatedAt)
+		}
+		if errors.Is(err, errEpayOrderAbsent) {
+			err = nil
+		}
+		finalTeamCheck := ext.TeamId > 0 && (legacy || now >= deadline)
+		if err != nil && finalTeamCheck {
+			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{Provider: ext.Provider, EventType: "team_payment_query", ReferenceID: ext.TradeNo, SessionID: ext.GatewayTradeId, Reason: "Team payment could not be verified", Error: err.Error()}); reviewErr != nil {
+				continue
+			}
+		}
+		update := map[string]any{"last_query_at": now}
+		if legacy {
+			update["expire_at"] = deadline
+		}
 		if err != nil || facts == nil {
 			outcome := "unpaid"
 			if err != nil {
 				outcome = "failed"
-				if errors.Is(err, model.ErrPaymentMethodMismatch) {
+				if !finalTeamCheck && errors.Is(err, model.ErrPaymentMethodMismatch) {
 					adtyQueuePaymentReview(ext.TradeNo, ext.GatewayTradeId, err.Error())
 				}
 			}
 			if recordErr := model.RecordAdtyPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, outcome, 0); recordErr != nil {
 				common.SysError("payment attempt history could not be recorded")
+				continue
 			}
-			continue
+		} else {
+			if _, err = model.CompleteAdtyTopUp(ext.TradeNo, *facts, ""); err != nil {
+				common.SysLog(common.LogText("epay follow-up credit failed trade_no=%s: %s", ext.TradeNo, err.Error()))
+				if reviewErr := adtyQueuePaymentReview(ext.TradeNo, facts.GatewayTradeId, err.Error()); reviewErr != nil {
+					continue
+				}
+			}
 		}
-		_, err = model.CompleteAdtyTopUp(ext.TradeNo, *facts, "")
-		if err != nil {
-			common.SysLog(common.LogText("epay follow-up credit failed trade_no=%s: %s", ext.TradeNo, err.Error()))
-			adtyQueuePaymentReview(ext.TradeNo, facts.GatewayTradeId, err.Error())
+		if err := model.UpdateAdtyTopupOrderFields(ext.TradeNo, update); err != nil {
+			common.SysError(common.LogText("epay follow-up checkpoint failed trade_no=%s: %s", ext.TradeNo, err.Error()))
 		}
 	}
 }
 
-func adtyQueuePaymentReview(tradeNo, sessionID, cause string) {
+func adtyQueuePaymentReview(tradeNo, sessionID, cause string) error {
 	if err := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
 		Provider:    model.PaymentProviderAdtyEpay,
 		EventType:   "payment_query",
@@ -101,7 +116,9 @@ func adtyQueuePaymentReview(tradeNo, sessionID, cause string) {
 		Error:       cause,
 	}); err != nil {
 		common.SysError(common.LogText("record payment review failed trade_no=%s: %s", tradeNo, err.Error()))
+		return err
 	}
+	return nil
 }
 
 // adtyEpayUnpaidThreshold 是通道的阈值；通道上为 0 时用全局值，全局也为 0 时不转维护。
@@ -310,7 +327,7 @@ func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*
 	}
 	return &model.AdtyPaymentFacts{
 		Provider: ext.Provider, Method: ext.Method, PaidAmount: result.MoneyCNY, PaidCurrency: "CNY",
-		GatewayTradeId: result.GatewayTradeNo, TxHash: result.GatewayTradeNo, Source: model.AdtyPaymentSourceQuery,
+		PaidAt: result.PaidAt, PaidTimeVerified: result.PaidAt > 0, GatewayTradeId: result.GatewayTradeNo, TxHash: result.GatewayTradeNo, Source: model.AdtyPaymentSourceQuery,
 	}, nil
 }
 

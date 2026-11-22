@@ -79,6 +79,37 @@ func GetAdtyArchivedOwnerSites(c *gin.Context) {
 	common.ApiSuccess(c, rows)
 }
 
+func GetAdtyArchivedWebsiteDomains(c *gin.Context) {
+	siteID, err := strconv.Atoi(c.Param("site_id"))
+	if err != nil || siteID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	rows, err := service.ListAdtyArchivedWebsiteDomains(c.GetInt("id"), siteID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, rows)
+}
+
+func DeleteAdtyArchivedWebsiteDomain(c *gin.Context) {
+	siteID, err := strconv.Atoi(c.Param("site_id"))
+	if err != nil || siteID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	id, ok := adtyPathId(c)
+	if !ok || !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionDomain, id) {
+		return
+	}
+	if err := service.RemoveAdtyArchivedWebsiteDomain(c.Request.Context(), c.GetInt("id"), siteID, id); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, nil)
+}
+
 // AcceptAdtySiteTerms 接受当前开站协议：POST /api/adty/site/terms/accept。不走站长中心的协议门。
 func AcceptAdtySiteTerms(c *gin.Context) {
 	var body struct {

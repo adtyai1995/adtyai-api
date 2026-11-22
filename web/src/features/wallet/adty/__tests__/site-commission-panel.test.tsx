@@ -23,8 +23,12 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 
-import { SiteCommissionPanel, type SiteCommission } from '../site-commission-panel'
+import {
+  SiteCommissionPanel,
+  type SiteCommission,
+} from '../site-commission-panel'
 
 const availableRow: SiteCommission = {
   id: 7,
@@ -41,14 +45,19 @@ const availableRow: SiteCommission = {
   available_at: 0,
 }
 
-function mockSiteCommissionGet(handler: (url: string) => unknown | Promise<unknown>) {
+function mockSiteCommissionGet(
+  handler: (url: string) => unknown | Promise<unknown>
+) {
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
     const path = String(url)
     if (path === '/api/adty/site-commissions') {
       return handler(path)
     }
     return {
-      data: { success: true, data: { items: [], methods: [], configured: false } },
+      data: {
+        success: true,
+        data: { items: [], methods: [], configured: false },
+      },
     }
   })
 }
@@ -63,6 +72,8 @@ function wrapper(props: { children: ReactNode }) {
 }
 
 afterEach(() => {
+  localStorage.clear()
+  useAuthStore.getState().auth.reset()
   vi.restoreAllMocks()
 })
 
@@ -119,10 +130,88 @@ describe('SiteCommissionPanel', () => {
       name: 'Convert commission to balance',
     })
     expect(convert).toBeDisabled()
-    await userEvent.setup().type(
-      screen.getByLabelText('Amount'),
-      '1.00'
-    )
+    await userEvent.setup().type(screen.getByLabelText('Amount'), '1.00')
     expect(convert).toBeEnabled()
   })
+
+  it.each(['single', 'aggregate'])(
+    'checks the %s transfer before retrying and preserves its key after a failed lookup',
+    async (kind) => {
+      useAuthStore
+        .getState()
+        .auth.setUser({ id: 9, username: 'customer', role: 1 })
+      const isSingle = kind === 'single'
+      const path = isSingle
+        ? '/api/adty/site-commissions/7/convert'
+        : '/api/adty/site-commissions/withdrawals'
+      let lookupFails = true
+      const lookups: string[] = []
+      vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
+        if (url === `${path  }/by-key`) {
+          lookups.push(String(config?.headers?.['Idempotency-Key']))
+          if (lookupFails) throw new Error('offline')
+          return { data: { success: true, data: { id: 0 } } }
+        }
+        const row = {
+          ...availableRow,
+          site_id: 7,
+          available_at: 1,
+          earnings_hold_usd: '10',
+        }
+        return {
+          data: {
+            success: true,
+            data:
+              url === '/api/adty/site-commissions'
+                ? { items: [row] }
+                : { items: [], configured: false, methods: [] },
+          },
+        }
+      })
+      const posts: string[] = []
+      vi.spyOn(api, 'post').mockImplementation(async (url, _body, config) => {
+        expect(url).toBe(path)
+        posts.push(String(config?.headers?.['Idempotency-Key']))
+        if (posts.length === 1) throw new Error('response lost')
+        return { data: { success: true, data: { id: 15, converted: true } } }
+      })
+      const open = () =>
+        render(<SiteCommissionPanel onConverted={() => {}} />, { wrapper })
+      const view = open()
+      const user = userEvent.setup()
+      const submit = async () =>
+        user.click(
+          await screen.findByRole('button', {
+            name: isSingle
+              ? 'Convert commission to balance'
+              : 'Submit withdrawal',
+          })
+        )
+      const fill = async () =>
+        user.type(
+          await screen.findByLabelText(isSingle ? 'Amount' : 'Amount USD'),
+          '1'
+        )
+      await fill()
+      await submit()
+      await screen.findByRole('button', { name: 'Check previous request' })
+      view.unmount()
+      open()
+      await fill()
+      await submit()
+      await waitFor(() => expect(lookups).toEqual([posts[0]]))
+      expect(posts).toHaveLength(1)
+      lookupFails = false
+      await submit()
+      await screen.findByRole('button', { name: 'Start a new request' })
+      expect(posts).toEqual([lookups[0], lookups[0]])
+      await user.click(
+        screen.getByRole('button', { name: 'Start a new request' })
+      )
+      await fill()
+      await submit()
+      await waitFor(() => expect(posts).toHaveLength(3))
+      expect(posts[2]).not.toBe(posts[0])
+    }
+  )
 })

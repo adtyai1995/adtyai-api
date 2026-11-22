@@ -87,7 +87,7 @@ function draftReady(draft: Draft) {
   const code = draft.code.trim()
   return (
     code !== '' &&
-    code.length <= 32 &&
+    [...code].length <= 32 &&
     draft.name.trim() !== '' &&
     INTEGER.test(draft.min_effective_users.trim()) &&
     INTEGER.test(draft.sort_order.trim()) &&
@@ -121,7 +121,7 @@ export function SiteTiersPanel() {
     enabled: isRoot,
   })
   const save = useMutation({
-    mutationFn: (draft: Draft) =>
+    mutationFn: ({draft, isNew}: {draft: Draft; isNew: boolean}) =>
       saveSiteTier({
         code: draft.code.trim(),
         name: draft.name.trim(),
@@ -132,7 +132,7 @@ export function SiteTiersPanel() {
         deposit_usd: draft.deposit_usd.trim(),
         sort_order: Number(draft.sort_order.trim()),
         enabled: draft.enabled,
-      }),
+      }, isNew),
     onSuccess: () => {
       toast.success(t('Saved successfully'))
       setEditing(null)
@@ -158,9 +158,12 @@ export function SiteTiersPanel() {
         id={`site-tier-${key}`}
         value={draft?.[key] ?? ''}
         readOnly={options.readOnly}
+        aria-describedby={key === 'code' ? 'site-tier-code-limit' : undefined}
+        aria-invalid={key === 'code' && [...(draft?.code.trim() ?? '')].length > 32}
         inputMode={options.decimal ? 'decimal' : undefined}
         onChange={(event) => setDraft({ [key]: event.target.value })}
       />
+      {key === 'code' && <p id='site-tier-code-limit' className='text-muted-foreground text-xs'>{t('Level codes can contain up to 32 characters.')}</p>}
     </div>
   )
 
@@ -291,7 +294,7 @@ export function SiteTiersPanel() {
             <Button
               variant='brand'
               disabled={!draft || !draftReady(draft) || save.isPending}
-              onClick={() => draft && save.mutate(draft)}
+              onClick={() => editing && save.mutate(editing)}
             >
               {t('Save')}
             </Button>

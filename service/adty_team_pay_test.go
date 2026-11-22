@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
+	"context"
+	"errors"
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
@@ -39,6 +43,7 @@ func TestTeamTopupStartsEpayWithoutGift(t *testing.T) {
 	require.Contains(t, order.PayURL, "https://pay.example.com/submit.php")
 	require.Equal(t, model.PaymentProviderAdtyEpay, order.Provider)
 	require.Equal(t, "alipay", order.Method)
+	require.Greater(t, order.ExpireAt, order.CreatedAt)
 
 	replay, err := StartAdtyTeamTopupPayment(leader.Id, created.Team.Id, decimal.NewFromInt(1), "alipay", 0, "team-epay-1", "127.0.0.1")
 	require.NoError(t, err)
@@ -356,4 +361,166 @@ func TestTeamTopupConcurrentSameKeyReturnsOneOrder(t *testing.T) {
 		require.Equal(t, tradeNo, result.order.TradeNo)
 	}
 	require.NotEmpty(t, tradeNo)
+}
+
+func TestTeamUnicodeNameLength(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	leader := referralUser(t, db, "team-name")
+	name := strings.Repeat("组", 64)
+	team, err := CreateAdtyTeam(leader.Id, 0, name, decimal.NewFromInt(1))
+	require.NoError(t, err)
+	require.NoError(t, UpdateAdtyTeamProfile(leader.Id, team.Team.Id, strings.Repeat("𠮷", 64)))
+	require.Error(t, UpdateAdtyTeamProfile(leader.Id, team.Team.Id, name+"a"))
+}
+
+func TestTeamQuotaReturnsAfterTemporaryExhaustion(t *testing.T) {
+	db := prepareReferralDB(t)
+	leader := referralUser(t, db, "team-key-quota")
+	team, err := CreateAdtyTeam(leader.Id, 0, "Team", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	require.NoError(t, CreditAdtyTeam(int64(leader.Id), team.Team.Id, 100, "key-test"))
+	token := model.Token{UserId: leader.Id, Key: "team-exhaustion", Status: common.TokenStatusEnabled, ExpiredTime: -1, RemainQuota: 50}
+	require.NoError(t, token.InsertWithLimit(10))
+	require.NoError(t, BindAdtyTeamKey(leader.Id, token.Id, team.Team.Id))
+	_, err = model.ReserveBillingOperation(model.BillingOperation{OperationKey: "request:key-exhaustion", TokenId: token.Id, UserId: leader.Id}, 50)
+	require.NoError(t, err)
+	_, err = model.ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, model.ErrTokenInvalid)
+	require.NoError(t, model.QueueBillingSettlement("request:key-exhaustion", 20, false))
+	_, _, err = model.ApplyBillingSettlement("request:key-exhaustion")
+	require.NoError(t, err)
+	validated, err := model.ValidateUserToken(token.Key)
+	require.NoError(t, err)
+	require.Equal(t, 30, validated.RemainQuota)
+	require.NoError(t, db.Model(&token).Update("status", common.TokenStatusDisabled).Error)
+	_, err = model.ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, model.ErrTokenInvalid)
+}
+
+func TestTeamScopedSceneAndHistoricalReplay(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	leader := referralUser(t, db, "team-scene")
+	team, err := CreateAdtyTeam(leader.Id, 0, "Policy", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "scope", GatewayURL: "https://pay.example.com", MerchantId: "m", OrderMode: model.AdtyEpayOrderModeSubmit}, alipay("submit"))
+	amount := decimal.NewFromInt(2)
+	previous, err := StartAdtyTeamTopupPayment(leader.Id, team.Team.Id, amount, "alipay", 0, "old", "")
+	require.NoError(t, err)
+	require.Equal(t, "wallet_topup", previous.PaymentScene)
+	config, err := GetAdtyPaymentScenes()
+	require.NoError(t, err)
+	custom := config.Scenes[0]
+	custom.Business, custom.Key, custom.Name, custom.MaxUSD = model.AdtyBusinessTeamTopup, "team_custom", "Team custom", decimal.NewFromInt(1)
+	custom.TeamIDs = []int64{team.Team.Id}
+	scenes := append(config.Scenes, custom)
+	bytes, err := json.Marshal(scenes)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&model.AdtyPaymentSceneConfig{}).Where("id=1").Update("payload", string(bytes)).Error)
+	_, err = StartAdtyTeamTopupPayment(leader.Id, team.Team.Id, amount, "alipay", 0, "new", "", "team_custom")
+	require.Error(t, err)
+	_, err = StartAdtyTeamTopupPayment(leader.Id, team.Team.Id, amount, "alipay", 0, "bypass", "", "wallet_topup")
+	require.Error(t, err)
+	order, err := StartAdtyTeamTopupPayment(leader.Id, team.Team.Id, decimal.NewFromInt(1), "alipay", 0, "new-valid", "", "team_custom")
+	require.NoError(t, err)
+	require.Equal(t, "team_custom", order.PaymentScene)
+	require.Contains(t, order.PaymentSceneSnapshot, "team_custom")
+	replay, err := StartAdtyTeamTopupPayment(leader.Id, team.Team.Id, amount, "alipay", 0, "old", "", "wallet_topup")
+	require.NoError(t, err)
+	require.Equal(t, previous.TradeNo, replay.TradeNo)
+	personalPending, err := model.ListUserPendingAdtyTradeNos(leader.Id)
+	require.NoError(t, err)
+	require.Empty(t, personalPending, "opening a personal payment cannot replace a pending team order")
+	outsider := referralUser(t, db, "team-outsider")
+	otherTeam, err := CreateAdtyTeam(outsider.Id, 0, "Other", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	other, err := StartAdtyTeamTopupPayment(outsider.Id, otherTeam.Team.Id, amount, "alipay", 0, "other-team", "", "wallet_topup")
+	require.NoError(t, err)
+	require.Equal(t, "wallet_topup", other.PaymentScene)
+
+}
+
+func TestTeamHistoricalEpayQuery(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	leader := referralUser(t, db, "team-old-epay")
+	team, err := CreateAdtyTeam(leader.Id, 0, "Team", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	channel := seedEpayChannel(t, db, model.AdtyEpayChannel{Name: "historical", GatewayURL: "https://pay.example.com", MerchantId: "m", OrderMode: model.AdtyEpayOrderModeSubmit}, alipay("submit"))
+	now := common.GetTimestamp()
+	results := map[string]string{}
+	for _, state := range []string{"paid", "unpaid", "unknown"} {
+		order, err := StartAdtyTeamTopupPayment(leader.Id, team.Team.Id, decimal.NewFromInt(1), "alipay", channel.Id, state, "")
+		require.NoError(t, err)
+		require.NoError(t, db.Model(order).Updates(map[string]any{"expire_at": 0, "created_at": now - 86400}).Error)
+		results[order.TradeNo] = state
+	}
+	orig := adtyEpayQuery
+	t.Cleanup(func() { adtyEpayQuery = orig })
+	adtyEpayQuery = func(_ context.Context, _ *model.AdtyEpayChannel, trade string) (*AdtyEpayQueryResult, error) {
+		if results[trade] == "unknown" {
+			return nil, errors.New("no response")
+		}
+		var ext model.AdtyTopupOrder
+		require.NoError(t, db.Where("trade_no=?", trade).First(&ext).Error)
+		return &AdtyEpayQueryResult{Paid: results[trade] == "paid", MoneyCNY: ext.PayAmount, TypeCode: "alipay", GatewayTradeNo: "gateway-" + trade, OutTradeNo: trade, MerchantId: "m"}, nil
+	}
+	for i := 0; i < 2; i++ {
+		runAdtyEpayFollowUpQueries(now)
+		_, err := model.ExpireAdtyTopUps(now, 100)
+		require.NoError(t, err)
+	}
+	for trade, state := range results {
+		if state == "paid" {
+			require.Equal(t, common.TopUpStatusSuccess, topUpStatusOf(t, db, trade))
+		} else if state == "unpaid" {
+			require.Equal(t, common.TopUpStatusExpired, topUpStatusOf(t, db, trade))
+		}
+		if state == "unknown" {
+			require.Equal(t, common.TopUpStatusPending, topUpStatusOf(t, db, trade))
+			var count int64
+			require.NoError(t, db.Model(&model.PaymentOrphanEvent{}).Where("reference_id=?", trade).Count(&count).Error)
+			require.EqualValues(t, 1, count)
+		}
+	}
+	var stored model.AdtyTeam
+	require.NoError(t, db.First(&stored, team.Team.Id).Error)
+	require.EqualValues(t, 500000, stored.SharedQuota)
+}
+
+func TestTeamAnomalyPageOlderOpen(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	require.NoError(t, db.Create(&model.AdtyAnomalyDisposition{TeamId: 1, SiteId: 7, Ref: "old", OrderRef: "order-old", Kind: "team_principal_review", Status: "open"}).Error)
+	for i := 0; i < 55; i++ {
+		require.NoError(t, db.Create(&model.AdtyAnomalyDisposition{SiteId: 7, TeamId: 2, Kind: "closed_team_topup", Status: "closed"}).Error)
+	}
+	rows, total, err := PageAdtyAnomalyDispositions(7, "", "", "", 0, 20)
+	require.NoError(t, err)
+	require.EqualValues(t, 56, total)
+	require.Equal(t, "old", rows[0].Ref)
+	rows, total, err = PageAdtyAnomalyDispositions(7, "open", "order-old", "team_principal_review", 0, 20)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Len(t, rows, 1)
+	rows, _, err = PageAdtyAnomalyDispositions(7, "closed", "", "", 40, 20)
+	require.NoError(t, err)
+	require.Len(t, rows, 15)
+}
+
+func TestTeamLotFIFOUsesVerifiedTimeAndOrderIdentifier(t *testing.T) {
+	db := prepareReferralDialectDB(t, "sqlite")
+	leader := referralUser(t, db, "team-fifo")
+	team, err := CreateAdtyTeam(leader.Id, 0, "FIFO", decimal.NewFromInt(1))
+	require.NoError(t, err)
+	for _, item := range []struct {
+		trade string
+		paid  int64
+	}{{"B", 20}, {"Z", 10}, {"A", 20}} {
+		require.NoError(t, applyAdtyTeamQuotaTx(db, &team.Team, 10, "topup", item.trade, leader.Id, item.paid))
+	}
+	require.NoError(t, applyAdtyTeamQuotaTx(db, &team.Team, -15, "spend", "fifo", leader.Id))
+	var lots []model.AdtyTeamFundLot
+	require.NoError(t, db.Where("team_id=?", team.Team.Id).Order("source").Find(&lots).Error)
+	require.Len(t, lots, 3)
+	require.EqualValues(t, 5, lots[0].Available)
+	require.EqualValues(t, 10, lots[1].Available)
+	require.Zero(t, lots[2].Available)
 }

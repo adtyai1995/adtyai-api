@@ -80,7 +80,10 @@ func HealthSampleStatus(samples int, updatedAt, now, staleSeconds int64) string 
 // UpdateAdtyTeamProfile lets the leader rename the team. Discount changes stay on the create path.
 func UpdateAdtyTeamProfile(leaderId int, teamId int64, name string) error {
 	name = strings.TrimSpace(name)
-	if teamId <= 0 || name == "" || len(name) > 64 {
+	if err := validateAdtyTeamName(name); err != nil {
+		return err
+	}
+	if teamId <= 0 {
 		return ErrAdtyTeamInvalid
 	}
 	return model.DB.Transaction(func(tx *gorm.DB) error {

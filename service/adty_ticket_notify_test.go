@@ -73,7 +73,7 @@ func ticketNoticeKey(ticketId, messageId int64) string {
 func assertTicketNoticeCount(t *testing.T, db *gorm.DB, ticketId, messageId int64, want int64) {
 	t.Helper()
 	var got int64
-	require.NoError(t, db.Model(&model.AdtyTelegramDelivery{}).Where("event_key = ?", ticketNoticeKey(ticketId, messageId)).Count(&got).Error)
+	require.NoError(t, db.Model(&model.AdtyTelegramDelivery{}).Where("event_key LIKE ?", ticketNoticeKey(ticketId, messageId)+":to:%").Count(&got).Error)
 	assert.EqualValues(t, want, got)
 }
 
@@ -81,6 +81,6 @@ func requireTicketNotice(t *testing.T, db *gorm.DB, ticketId, messageId int64) m
 	t.Helper()
 	assertTicketNoticeCount(t, db, ticketId, messageId, 1)
 	var row model.AdtyTelegramDelivery
-	require.NoError(t, db.Where("event_key = ?", ticketNoticeKey(ticketId, messageId)).First(&row).Error)
+	require.NoError(t, db.Where("event_key LIKE ?", ticketNoticeKey(ticketId, messageId)+":to:%").First(&row).Error)
 	return row
 }

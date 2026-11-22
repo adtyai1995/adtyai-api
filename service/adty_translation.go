@@ -499,6 +499,7 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 			"source_hash": head.SourceHash,
 			"status":      model.AdtyTranslationPending,
 			"notice":      AdtyTranslationNotReady,
+			"lease_until": 0,
 		}).Error; err != nil {
 			return err
 		}
@@ -517,6 +518,9 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 		return reused, nil
 	}
 
+	if strings.HasPrefix(objectKey, "ticket-reply:") {
+		return &AdtyTranslationResult{ObjectKey: objectKey, Source: head.Source, Version: version, Status: model.AdtyTranslationPending, Notice: AdtyTranslationNotReady}, nil
+	}
 	cfg, err := loadAdtyTranslationConfig()
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

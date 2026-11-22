@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -97,13 +97,20 @@ function BrandCard(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [brand, setBrand] = useState<SiteBrand>(props.site.brand)
+  const [acknowledged,setAcknowledged] = useState<{previous: SiteBrand; current: SiteBrand} | null>(null)
+  const observed = acknowledged?.previous === props.site.brand ? acknowledged.current : props.site.brand
+  const edits = useRef<Partial<Record<keyof SiteBrand,number>>>({})
+  const editBrand = (patch: Partial<SiteBrand>) => {
+    for (const key of Object.keys(patch) as (keyof SiteBrand)[]) edits.current[key] = (edits.current[key] ?? 0) + 1
+    setBrand(current => ({...current, ...patch}))
+  }
   const [baseline,setBaseline]=useState(props.site.brand)
   const changed=(Object.keys(brand) as (keyof SiteBrand)[]).filter(key=>(brand[key]??'')!==(baseline[key]??''))
-  const conflicts=changed.filter(key=>baseline[key]!==props.site.brand[key] && brand[key]!==props.site.brand[key])
+  const conflicts=changed.filter(key=>baseline[key]!==observed[key] && brand[key]!==observed[key])
   useDraftNavigation(changed.length>0)
   useEffect(()=>{
-    if (!changed.length) {setBrand(props.site.brand);setBaseline(props.site.brand)}
-  },[props.site.brand,changed.length])
+    if (!changed.length) {setBrand(observed);setBaseline(observed)}
+  },[observed,changed.length])
   const upload = useMutation({
     mutationFn: async (input: {
       key: 'logo_url' | 'favicon_url'
@@ -126,25 +133,28 @@ function BrandCard(props: { site: OwnerSite }) {
       }
       return { key: input.key, url, faviconUrl }
     },
-    onSuccess: ({ key, url, faviconUrl }) =>
-      setBrand((prev) => ({
-        ...prev,
-        [key]: url,
-        ...(key === 'logo_url' && faviconUrl && !prev.favicon_url
-          ? { favicon_url: faviconUrl }
-          : {}),
-      })),
+    onSuccess: ({ key, url, faviconUrl }) => {
+      edits.current[key] = (edits.current[key] ?? 0) + 1
+      if (faviconUrl) edits.current.favicon_url = (edits.current.favicon_url ?? 0) + 1
+      setBrand(prev => ({ ...prev, [key]: url, ...(key === 'logo_url' && faviconUrl && !prev.favicon_url ? { favicon_url: faviconUrl } : {}) }))
+    },
     onError: (err) => handleServerError(err),
   })
   const save = useMutation({
-    mutationFn: () => saveOwnerSite({
+    mutationFn: (_submitted: typeof edits.current) => saveOwnerSite({
       brand: Object.fromEntries(changed.map(key=>[key,brand[key]??''])),
       expected_brand:Object.fromEntries(changed.map(key=>[key,baseline[key]??''])),
     }),
-    onSuccess: (updated) => {
+    onSuccess: (updated, submitted) => {
       queryClient.setQueryData(siteOwnerKeys.site,updated)
+      setAcknowledged({previous:props.site.brand,current:updated.brand})
       setBaseline(updated.brand)
-      setBrand(updated.brand)
+      setBrand(current => ({
+        ...updated.brand,
+        ...Object.fromEntries((Object.keys(edits.current) as (keyof SiteBrand)[])
+          .filter(key => edits.current[key] !== submitted[key])
+          .map(key => [key,current[key]])),
+      }))
       toast.success(t('Saved successfully'))
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
       void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
@@ -163,7 +173,7 @@ function BrandCard(props: { site: OwnerSite }) {
       value: brand[key] ?? '',
       placeholder: key === 'theme_color' ? '#RRGGBB' : undefined,
       onChange: (event: { target: { value: string } }) =>
-        setBrand((prev) => ({ ...prev, [key]: event.target.value })),
+        editBrand({ [key]: event.target.value }),
     }
     return (
       <div className='space-y-2'>
@@ -208,7 +218,7 @@ function BrandCard(props: { site: OwnerSite }) {
           <Button
             size='sm'
             variant='outline'
-            onClick={() => setBrand((prev) => ({ ...prev, [key]: '' }))}
+            onClick={() => editBrand({ [key]: '' })}
           >
             {removeLabel}
           </Button>
@@ -223,10 +233,10 @@ function BrandCard(props: { site: OwnerSite }) {
       </CardHeader>
       <CardContent className='grid gap-3'>
         {conflicts.length>0 && <div role="alert">
-          {conflicts.map(key=><p key={key}>{key} · {t('Current value')}: {props.site.brand[key]} · {t('Previous value')}: {baseline[key]}</p>)}
+          {conflicts.map(key=><p key={key}>{key} · {t('Current value')}: {observed[key]} · {t('Previous value')}: {baseline[key]}</p>)}
           <Button variant="outline" onClick={()=>{
-            setBrand({...props.site.brand,...Object.fromEntries(changed.map(key=>[key,brand[key]]))})
-            setBaseline(props.site.brand)
+            setBrand({...observed,...Object.fromEntries(changed.map(key=>[key,brand[key]]))})
+            setBaseline(observed)
           }}>{t('Keep my changes')}</Button>
         </div>}
         {field('name', t('Site name'))}
@@ -244,7 +254,7 @@ function BrandCard(props: { site: OwnerSite }) {
           <Button
             variant='brand'
             disabled={save.isPending || !changed.length || conflicts.length>0}
-            onClick={() => save.mutate()}
+            onClick={() => save.mutate({...edits.current})}
           >
             {t('Save brand')}
           </Button>

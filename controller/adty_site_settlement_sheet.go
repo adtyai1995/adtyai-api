@@ -51,12 +51,7 @@ func GetAdtyOwnerSettlementSheets(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	rows, err := service.ListAdtySiteSettlementSheets(site.Id)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, rows)
+	serveSettlementSheets(c, site.Id)
 }
 
 func GetAdtyAdminSettlementSheets(c *gin.Context) {
@@ -64,7 +59,43 @@ func GetAdtyAdminSettlementSheets(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}
-	siteID, _ := strconv.Atoi(c.Query("site_id"))
+	siteID := 0
+	if raw := c.Query("site_id"); raw != "" {
+		id, err := strconv.Atoi(raw)
+		if err != nil || id <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		siteID = id
+	}
+	serveSettlementSheets(c, siteID)
+}
+
+func serveSettlementSheets(c *gin.Context, siteID int) {
+	if raw, ok := c.GetQuery("sheet_id"); ok {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		row, err := service.GetSettlementSheet(siteID, id)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, row)
+		return
+	}
+	if c.Query("p") != "" || c.Query("business_day") != "" || c.Query("page_size") != "" {
+		page := common.GetPageQuery(c)
+		if err := service.PageSettlementSheets(siteID, c.Query("business_day"), page); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, page)
+		return
+	}
+	// Earlier API clients expect an array when pagination is omitted.
 	if siteID > 0 {
 		rows, err := service.ListAdtySiteSettlementSheets(siteID)
 		if err != nil {

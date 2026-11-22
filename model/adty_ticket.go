@@ -29,6 +29,8 @@ type AdtyTicket struct {
 	SiteId         int    `json:"site_id" gorm:"index"`
 	HandlingSiteId *int   `json:"handling_site_id" gorm:"index"`
 	UserId         int    `json:"user_id" gorm:"index"`
+	ContactId      int    `json:"-"`
+	RelatedAt      int64  `json:"related_at,omitempty"`
 	TeamShared     bool   `json:"team_shared" gorm:"default:false"`
 	TeamId         int64  `json:"team_id" gorm:"index"`
 	Type           string `json:"type" gorm:"type:varchar(32)"`
@@ -82,19 +84,20 @@ func (AdtyTicketMessage) TableName() string { return "adty_ticket_messages" }
 // Visibility mirrors AdtyTicketMessage: an image uploaded for an internal note is
 // internal and never reaches a customer, in the detail list or by direct id.
 type AdtyTicketImage struct {
-	UploadKey  *string `json:"-" gorm:"uniqueIndex;type:char(64)"`
-	Id         int64   `json:"id"`
-	ObjectId   string  `json:"object_id" gorm:"type:varchar(64);index"`
-	TicketId   int64   `json:"ticket_id" gorm:"index"`
-	MessageId  int64   `json:"message_id" gorm:"index"`
-	Visibility string  `json:"visibility" gorm:"type:varchar(16);index"`
-	Mime       string  `json:"mime" gorm:"type:varchar(32)"`
-	Size       int     `json:"size"`
-	Width      int     `json:"width"`
-	Height     int     `json:"height"`
-	SHA256     string  `json:"sha256" gorm:"type:varchar(64)"`
-	Storage    string  `json:"-" gorm:"type:varchar(128)"`
-	CreatedAt  int64   `json:"created_at" gorm:"autoCreateTime"`
+	DeletePending bool    `json:"-" gorm:"index;default:false"`
+	UploadKey     *string `json:"-" gorm:"uniqueIndex;type:char(64)"`
+	Id            int64   `json:"id"`
+	ObjectId      string  `json:"object_id" gorm:"type:varchar(64);index"`
+	TicketId      int64   `json:"ticket_id" gorm:"index"`
+	MessageId     int64   `json:"message_id" gorm:"index"`
+	Visibility    string  `json:"visibility" gorm:"type:varchar(16);index"`
+	Mime          string  `json:"mime" gorm:"type:varchar(32)"`
+	Size          int     `json:"size"`
+	Width         int     `json:"width"`
+	Height        int     `json:"height"`
+	SHA256        string  `json:"sha256" gorm:"type:varchar(64)"`
+	Storage       string  `json:"-" gorm:"type:varchar(128)"`
+	CreatedAt     int64   `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyTicketImage) TableName() string { return "adty_ticket_images" }
@@ -102,35 +105,38 @@ func (AdtyTicketImage) TableName() string { return "adty_ticket_images" }
 // AdtyTicketNotice is an authoritative in-site notification record produced from
 // a ticket event (create, public reply, or status/reopen transition).
 type AdtyTicketNotice struct {
-	ExpiredAt       int64  `json:"-" gorm:"default:0"`
-	SnapshotTeamId  int64  `json:"-" gorm:"default:0"`
-	TelegramPending bool   `json:"-" gorm:"index;default:false"`
-	TicketOwnerID   int    `json:"-" gorm:"column:ticket_owner_id;->;-:migration"`
-	Id              int64  `json:"id"`
-	Purpose         string `json:"-" gorm:"type:varchar(16)"`
-	EventKey        string `json:"event_key" gorm:"uniqueIndex;type:varchar(128);not null"`
-	TicketId        int64  `json:"ticket_id" gorm:"index;not null"`
-	EventId         int64  `json:"event_id" gorm:"index"`
-	SiteId          int    `json:"site_id" gorm:"index"`
-	UserId          int    `json:"user_id" gorm:"index;not null"`
-	ActorId         int    `json:"actor_id"`
-	Action          string `json:"action" gorm:"type:varchar(32);index"`
-	Title           string `json:"title" gorm:"type:varchar(120)"`
-	Content         string `json:"content" gorm:"type:text"`
-	ReadKey         string `json:"read_key" gorm:"uniqueIndex;type:char(64);not null"`
-	CreatedAt       int64  `json:"created_at" gorm:"autoCreateTime"`
+	ExpiredAt        int64  `json:"-" gorm:"default:0"`
+	SnapshotTeamId   int64  `json:"-" gorm:"default:0"`
+	TelegramPending  bool   `json:"-" gorm:"index;default:false"`
+	TicketTeamShared bool   `json:"-" gorm:"column:ticket_team_shared;->;-:migration"`
+	TicketOwnerID    int    `json:"-" gorm:"column:ticket_owner_id;->;-:migration"`
+	Id               int64  `json:"id"`
+	Purpose          string `json:"-" gorm:"type:varchar(16)"`
+	EventKey         string `json:"event_key" gorm:"uniqueIndex;type:varchar(128);not null"`
+	TicketId         int64  `json:"ticket_id" gorm:"index;not null"`
+	EventId          int64  `json:"event_id" gorm:"index"`
+	SiteId           int    `json:"site_id" gorm:"index"`
+	UserId           int    `json:"user_id" gorm:"index;not null"`
+	ActorId          int    `json:"actor_id"`
+	Action           string `json:"action" gorm:"type:varchar(32);index"`
+	Title            string `json:"title" gorm:"type:varchar(120)"`
+	Content          string `json:"content" gorm:"type:text"`
+	ReadKey          string `json:"read_key" gorm:"uniqueIndex;type:char(64);not null"`
+	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyTicketNotice) TableName() string { return "adty_ticket_notices" }
 
 // AdtyTicketEvent is an append-only handling record. It does not grant money or key permissions.
 type AdtyTicketEvent struct {
-	Id        int64  `json:"id"`
-	TicketId  int64  `json:"ticket_id" gorm:"index"`
-	ActorId   int    `json:"actor_id"`
-	Action    string `json:"action" gorm:"type:varchar(32)"`
-	Detail    string `json:"detail" gorm:"type:varchar(160)"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
+	OperationKey   *string `json:"-" gorm:"uniqueIndex;type:char(64)"`
+	ClosureEventId int64   `json:"-"`
+	Id             int64   `json:"id"`
+	TicketId       int64   `json:"ticket_id" gorm:"index"`
+	ActorId        int     `json:"actor_id"`
+	Action         string  `json:"action" gorm:"type:varchar(32)"`
+	Detail         string  `json:"detail" gorm:"type:varchar(160)"`
+	CreatedAt      int64   `json:"created_at" gorm:"autoCreateTime"`
 }
 
 func (AdtyTicketEvent) TableName() string { return "adty_ticket_events" }

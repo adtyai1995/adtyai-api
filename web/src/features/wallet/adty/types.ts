@@ -17,7 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 export type AdtyMethodKind = 'usdt' | 'epay'
-export type AdtyTopupBusiness = 'wallet_topup' | 'owner_self_use_topup'
+export type AdtyTopupBusiness =
+  | 'wallet_topup'
+  | 'team_topup'
+  | 'owner_self_use_topup'
 
 export type AdtyMethod = {
   id: string

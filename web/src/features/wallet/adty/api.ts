@@ -40,11 +40,12 @@ export const adtyTopupQueryKeys = {
 }
 
 export async function getAdtyTopupInfo(
-  business?: AdtyTopupBusiness
+  business?: AdtyTopupBusiness,
+  teamId?: number
 ): Promise<AdtyTopupInfo> {
   const res = await api.get<ApiResponse<AdtyTopupInfo>>(
     '/api/adty/topup/info',
-    { params: { business } }
+    { params: { business, team_id: teamId } }
   )
   return requireServerSuccess(res.data).data
 }

@@ -198,6 +198,9 @@ beforeEach(() => {
         },
       }
     }
+    if (url.endsWith('/closed-site-withdrawals')) {
+      return { data: { success: true, data: { items: [], total: 0 } } }
+    }
     return { data: { success: true, data: {} } }
   })
   api.reviewWithdrawal.mockResolvedValue(undefined)
@@ -255,6 +258,31 @@ afterEach(() => {
 })
 
 describe('WithdrawalPanel', () => {
+  it.each([
+    ['review', 'pending'],
+    ['payout', 'approved'],
+  ])('opens both withdrawal lists at the %s badge filter', async (permission, status) => {
+    asAdmin({ read: true, [permission]: true })
+    render(<AdminReferral />, { wrapper })
+    await waitFor(() => expect(http.get).toHaveBeenCalledWith(
+      '/api/user/admin/referral/closed-site-withdrawals',
+      { params: expect.objectContaining({ status }) },
+    ))
+    expect(api.getAdminWithdrawals).toHaveBeenCalledWith(expect.objectContaining({ status }))
+  })
+
+  it('opens the approved badge for a dual-role operator and shares later changes with both tables', async () => {
+    asAdmin({ read: true, review: true, payout: true })
+    render(<AdminReferral initialStatus='approved' />, { wrapper })
+    const select = await screen.findByRole('combobox', { name: 'Status' })
+    expect(select).toHaveValue('approved')
+    await userEvent.selectOptions(select, 'paid')
+    await waitFor(() => expect(http.get).toHaveBeenCalledWith(
+      '/api/user/admin/referral/closed-site-withdrawals', { params: expect.objectContaining({ status: 'paid' }) },
+    ))
+    expect(api.getAdminWithdrawals).toHaveBeenCalledWith(expect.objectContaining({ status: 'paid' }))
+  })
+
   it('shows the chain, address and the exact amount to pay', async () => {
     asAdmin({ read: true, review: true, payout: true })
     render(<WithdrawalPanel canReview canPayout />, { wrapper })

@@ -16,8 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { webcrypto } from 'node:crypto'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AxiosAdapter } from 'axios'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -33,6 +34,7 @@ const originalAdapter = api.defaults.adapter
 const originalAuth = useAuthStore.getState().auth
 
 beforeEach(() => {
+  vi.stubGlobal('crypto', webcrypto)
   client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
@@ -89,14 +91,14 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:ticket-receipt')
   })
 
-  it('loads images through a fresh scoped grant, hides internal images, and releases preview bytes on close', async () => {
+  it('uses detail grants for all public images, hides internal images, and releases previews on close', async () => {
     const user = userEvent.setup()
     const get = vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
-      if (url === '/api/adty/tickets/42/images/9') {
+      if (url === '/api/adty/tickets/42/images/9' || url === '/api/adty/tickets/42/images/11') {
         if ((config?.params as { action?: string } | undefined)?.action === 'grant') {
           return { data: { success: true, data: { grant: 'short-image-grant', expires_at: 1900000300 } } }
         }
-        if (config?.headers?.['X-Ticket-Image-Grant'] === 'short-image-grant' && config.responseType === 'blob') {
+        if (config?.headers?.['X-Ticket-Image-Grant'] === (url.endsWith('/9') ? 'short-image-grant' : 'second-image-grant') && config.responseType === 'blob') {
           return { data: new Blob(['receipt'], { type: 'image/png' }) }
         }
         throw new Error('Missing scoped image authorization')
@@ -120,6 +122,8 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
             data: {
               ticket: { id: 42, title: 'Payment screenshot', status: 'in_progress', assignee_id: 7 },
               messages: [{ id: 1, visibility: 'public', body: 'Attached my receipt' }],
+              image_grants: { 9: 'short-image-grant', 11: 'second-image-grant' },
+              image_grants_exp: 2100000000,
               images: [
                 {
                   id: 9,
@@ -129,6 +133,7 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
                   width: 100,
                   height: 80,
                 },
+                { id: 11, visibility: 'public', mime: 'image/png' },
                 {
                   id: 10,
                   object_id: 'fedcba9876543210fedcba9876543210',
@@ -161,7 +166,11 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
       name: /Image 0123456789abcdef0123456789abcdef/i,
     })
     expect(img).toHaveAttribute('src', 'blob:ticket-receipt')
-    expect(get).toHaveBeenCalledWith('/api/adty/tickets/42/images/9', expect.objectContaining({ params: { action: 'grant', scope: 'personal' } }))
+    expect(get).not.toHaveBeenCalledWith('/api/adty/tickets/42/images/9', expect.objectContaining({ params: { action: 'grant', scope: 'personal' } }))
+
+    expect(await screen.findByRole('img',{name:'Image #11'})).toBeInTheDocument()
+    expect(get.mock.calls.filter(([url])=>url==='/api/adty/tickets/42')).toHaveLength(1)
+    expect(get.mock.calls.filter(([url])=>url.includes('/images/'))).toHaveLength(2)
 
     // Internal image is not rendered when can_note is false.
     expect(
@@ -203,6 +212,32 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
     expect(grants).toBe(2)
   })
 
+  it('keeps edits typed during a reply and reads notification links in their authorized workspace',async ()=>{
+    const user=userEvent.setup()
+    useAuthStore.getState().auth.setUser({id:7, username:'participant',role:1})
+    const get=vi.spyOn(api,'get').mockImplementation(async(url, config)=>{
+      const scope=(config?.params as {scope?:string})?.scope
+      const tk={id:scope==='team'?72:71,title:scope==='team'?'Shared issue':'Personal issue',status:'new'}
+      if(url==='/api/adty/tickets')return {data:{success:true,data:{tickets:[tk],can_view_team:true}}}
+      if(url===`/api/adty/tickets/${tk.id}`)return {data:{success:true,data:{ticket:tk,messages:[],actions:['reply'],can_note:false,can_manage:false}}}
+      throw new Error('Unexpected ticket scope')
+    })
+    let finish: (()=>void)|undefined
+    vi.spyOn(api,'post').mockImplementationOnce(()=>new Promise(resolve=>{finish=()=>resolve({data:{success:true}})}))
+    mount()
+    await user.click(await screen.findByRole('button',{name:/Personal issue/}))
+    const box=await screen.findByRole('textbox',{name:'Reply'})
+    await user.type(box,'First')
+    await user.click(screen.getByRole('button',{name:'Reply'}))
+    await user.clear(box);await user.type(box,'Next')
+    act(()=>{window.history.replaceState({},'','#case-72-team');window.dispatchEvent(new Event('hashchange'))})
+    await waitFor(()=>expect(get).toHaveBeenCalledWith('/api/adty/tickets/72',{params:{scope:'team'}}))
+    await act(async()=>finish?.())
+    act(()=>{window.history.replaceState({},'','#case-71');window.dispatchEvent(new Event('hashchange'))})
+    expect(await screen.findByRole('textbox',{name:'Reply'})).toHaveValue('Next')
+    window.history.replaceState({},'','#tickets')
+  })
+
   it('retains reply and internal note drafts when the server returns success:false and clears only after success (ISS-R1-0135)', async () => {
     const user = userEvent.setup()
     vi.spyOn(api, 'get').mockImplementation(async (url) => {
@@ -211,6 +246,7 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
           data: {
             success: true,
             data: {
+              image_policy: { max_bytes: 2048 },
               tickets: [{ id: 11, title: 'Quota question', status: 'in_progress', assignee_id: 3 }],
               can_note: true,
               can_manage: true,
@@ -223,8 +259,9 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
           data: {
             success: true,
             data: {
+              actions: ['reply','note'],
               ticket: { id: 11, title: 'Quota question', status: 'in_progress', assignee_id: 3 },
-              messages: [{ id: 1, visibility: 'public', body: 'Initial body' }],
+              messages: [{ id: 1, author_id: 123, visibility: 'public', body: 'Initial body' }],
               images: [],
               events: [],
               can_note: true,
@@ -236,6 +273,7 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
       return { data: { success: true, data: {} } }
     })
 
+    useAuthStore.getState().auth.setUser({ id: 123, username: 'handler', role: 1 })
     const post = vi
       .spyOn(api, 'post')
       .mockResolvedValueOnce({
@@ -283,7 +321,8 @@ describe('TicketCenter detail images, events, and mutation error handling', () =
     await waitFor(() => expect(noteBox).toHaveValue(''))
 
     // Image upload returning HTTP 200 with success:false reports error.
-    const fileInput = screen.getByLabelText('Image')
+    await user.selectOptions(screen.getByLabelText('Attach image to message'), '1')
+    const fileInput = screen.getByLabelText(/^Image ·/)
     const file = new File(['fake'], 'bad.png', { type: 'image/png' })
     await user.upload(fileInput, file)
     expect(await screen.findByText('Only images are accepted')).toBeInTheDocument()

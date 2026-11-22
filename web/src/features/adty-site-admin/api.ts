@@ -23,7 +23,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { SettlementSheet } from '@/features/adty-site-owner/api'
+import type {
+  SettlementSheet,
+  SettlementPage,
+} from '@/features/adty-site-owner/api'
 import { api } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -300,13 +303,21 @@ export async function getAdminSiteWalletLedger(
 }
 
 export async function getAdminAnomalyDispositions(
-  siteId: number
-): Promise<AnomalyDisposition[]> {
-  const res = await api.get<ApiResponse<{ items?: AnomalyDisposition[] }>>(
-    `${BASE}/fund-anomalies/dispositions`,
-    { params: { site_id: siteId } }
-  )
-  return requireServerSuccess(res.data).data.items ?? []
+  siteId: number,
+  filters: {
+    status: string
+    kind: string
+    order_ref: string
+    p: number
+    page_size: number
+  }
+): Promise<{ items: AnomalyDisposition[]; total: number }> {
+  const res = await api.get<
+    ApiResponse<{ items: AnomalyDisposition[]; total: number }>
+  >(`${BASE}/fund-anomalies/dispositions`, {
+    params: { site_id: siteId, ...filters },
+  })
+  return requireServerSuccess(res.data).data
 }
 
 export async function reviewAdminAnomalyDisposition(
@@ -350,13 +361,34 @@ export async function saveAdminBusinessTimezone(
 }
 
 export async function getAdminSettlementSheets(
+  p: number,
+  day: string,
   siteId?: number
-): Promise<SettlementSheet[]> {
-  const res = await api.get<ApiResponse<SettlementSheet[]>>(
+): Promise<SettlementPage> {
+  const res = await api.get<ApiResponse<SettlementPage>>(
     `${BASE}/settlement-sheets`,
-    { params: siteId ? { site_id: siteId } : undefined }
+    {
+      params: {
+        p,
+        page_size: 20,
+        business_day: day || undefined,
+        site_id: siteId,
+      },
+    }
   )
-  return listOrEmpty(requireServerSuccess(res.data).data)
+  return requireServerSuccess(res.data).data ?? { items: [], total: 0 }
+}
+export async function getAdminSettlementDetail(
+  id: number,
+  siteId?: number
+): Promise<SettlementSheet> {
+  const res = await api.get<ApiResponse<SettlementSheet>>(
+    `${BASE}/settlement-sheets`,
+    { params: { sheet_id: id, site_id: siteId } }
+  )
+  const sheet = requireServerSuccess(res.data).data
+  if (!sheet) throw new Error('Settlement sheet is missing')
+  return sheet
 }
 
 export async function getAdminSiteInviteBatchPolicy(): Promise<{
@@ -471,6 +503,7 @@ export async function handleSiteReport(
 }
 
 export type AdminSiteDomain = {
+  close_action?: 'removed' | 'redirect_only'
   role?: string
   managed_by?: string
   automation_state?: string
@@ -861,11 +894,17 @@ export async function getSiteTiers(): Promise<SiteTier[]> {
   return listOrEmpty(requireServerSuccess(res.data).data)
 }
 
-/** Upserts one level by code; omitted levels are left unchanged, never deleted. */
-export async function saveSiteTier(tier: SiteTier): Promise<SiteTier[]> {
-  const res = await api.put<ApiResponse<SiteTier[]>>(`${BASE}/reseller/tiers`, {
-    tiers: [tier],
-  })
+/** Create and edit have separate conflict and missing-level semantics. */
+export async function saveSiteTier(
+  tier: SiteTier,
+  create: boolean
+): Promise<SiteTier[]> {
+  const res = await api[create ? 'post' : 'patch']<ApiResponse<SiteTier[]>>(
+    `${BASE}/reseller/tiers`,
+    {
+      tiers: [tier],
+    }
+  )
   return listOrEmpty(requireServerSuccess(res.data).data)
 }
 
@@ -881,13 +920,46 @@ export async function setSiteTierAssignment(
   requireServerSuccess(res.data)
 }
 
-export type CloseMailRecipient = {id:number; email:string;status:string;attempt_count:number;last_error:string}
-type CloseMailBatch={id:number;revision:number;execute_at:number;retry_status:string}
-export async function getCloseMail(siteId:number,batch:number,page:number) {
-  const res=await api.get<ApiResponse<{batches:CloseMailBatch[];recipients:CloseMailRecipient[];batch_id:number;total:number}>>(`${BASE}/sites/${siteId}/close-mail`,{params:{batch:batch||undefined,p:page,page_size:20}})
+export type CloseMailRecipient = {
+  attempts?: {number:number; provider:string; outcome:string; started_at:number;provider_message_id?:string}[]
+  id: number
+  email: string
+  status: string
+  attempt_count: number
+  last_error: string
+}
+type CloseMailBatch = {
+  id: number
+  revision: number
+  execute_at: number
+  retry_status: string
+}
+export async function getCloseMail(
+  siteId: number,
+  batch: number,
+  page: number
+) {
+  const res = await api.get<
+    ApiResponse<{
+      batches: CloseMailBatch[]
+      recipients: CloseMailRecipient[]
+      batch_id: number
+      total: number
+    }>
+  >(`${BASE}/sites/${siteId}/close-mail`, {
+    params: { batch: batch || undefined, p: page, page_size: 20 },
+  })
   return requireServerSuccess(res.data).data
 }
-export async function resolveCloseMail(siteId:number,row:CloseMailRecipient,decision:string,reason:string) {
- const res=await api.post<ApiResponse<null>>(`${BASE}/sites/${siteId}/close-mail`,{recipient_id:row.id,attempt:row.attempt_count,decision,reason})
- requireServerSuccess(res.data)
+export async function resolveCloseMail(
+  siteId: number,
+  row: CloseMailRecipient,
+  decision: string,
+  reason: string
+) {
+  const res = await api.post<ApiResponse<null>>(
+    `${BASE}/sites/${siteId}/close-mail`,
+    { recipient_id: row.id, attempt: row.attempt_count, decision, reason }
+  )
+  requireServerSuccess(res.data)
 }

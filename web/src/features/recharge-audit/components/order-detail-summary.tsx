@@ -25,6 +25,7 @@ import {
   officialCommissionStateLabel,
 } from '@/features/wallet/adty/commission-states'
 
+import { WithdrawalCancellation } from '@/features/wallet/adty/withdrawal-cancellation'
 import type { OrderTrace } from '../api'
 import { ORDER_TRACE_LABELS, UNIFIED_ORDER_LABELS } from '../trace-labels'
 
@@ -32,6 +33,9 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const order = props.detail.order
+  const payable = order.has_ext
+    ? `${order.pay_amount} ${order.pay_currency} / ${order.paid_amount} ${order.paid_currency}`
+    : t('Missing order details')
   return (
     <>
       <dl className='grid grid-cols-1 gap-3 text-sm break-words sm:grid-cols-3'>
@@ -53,9 +57,9 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           ],
           [
             t('Payable / paid'),
-            order.has_ext
-              ? `${order.pay_amount} ${order.pay_currency} / ${order.paid_amount} ${order.paid_currency}`
-              : t('Missing order details'),
+            props.detail.cancellation && order.paid_currency
+              ? `${order.paid_amount} ${order.paid_currency}`
+              : payable,
           ],
           [
             t('Order bonus snapshot'),
@@ -75,6 +79,7 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           </div>
         ))}
       </dl>
+      {props.detail.cancellation && <WithdrawalCancellation state={props.detail.cancellation} />}
       {order.paid_tx_hash && (
         <p className='text-sm break-all'>
           {t('Payment proof')}: {order.paid_tx_hash}

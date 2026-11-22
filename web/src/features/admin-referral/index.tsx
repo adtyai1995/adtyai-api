@@ -51,8 +51,39 @@ import {
 import { SettingsPanel } from './components/settings-panel'
 import { WithdrawalPanel } from './components/withdrawal-panel'
 
+type ReferralEntry = { initialStatus?: 'pending' | 'approved' | 'actionable' }
+
+function WithdrawalWork(props: ReferralEntry & { canReview: boolean; canPayout: boolean }) {
+  const { canReview, canPayout } = props
+  const [status, setStatus] = useState(() => {
+    if (props.initialStatus === 'pending' && canReview) return 'pending'
+    if (props.initialStatus === 'approved' && canPayout) return 'approved'
+    if (canReview && canPayout) return 'actionable'
+    if (canReview) return 'pending'
+    if (canPayout) return 'approved'
+    return ''
+  })
+  return (
+    <>
+      <WithdrawalPanel
+        key={`platform-${status}`}
+        {...props}
+        status={status}
+        onStatusChange={setStatus}
+      />
+      <CommissionWithdrawalPanel
+        key={`closed-${status}`}
+        closed
+        status={status}
+        canReview={canReview}
+        canPay={canPayout}
+      />
+    </>
+  )
+}
+
 /** Referral admin (adty task 6.7): overview, pending reviews, affiliates, withdrawals, settings. */
-export function AdminReferral() {
+export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
   const { t, i18n } = useTranslation()
   const [settingsVisited, setSettingsVisited] = useState(false)
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
@@ -217,11 +248,11 @@ export function AdminReferral() {
                 )}
               </div>
               <TabsContent value='withdrawals'>
-                <WithdrawalPanel canReview={canReview} canPayout={canPayout} />
-                <CommissionWithdrawalPanel
-                  closed
+                <WithdrawalWork
+                  key={`${canReview}-${canPayout}-${initialStatus ?? ""}`}
+                  initialStatus={initialStatus}
                   canReview={canReview}
-                  canPay={canPayout}
+                  canPayout={canPayout}
                 />
               </TabsContent>
               <TabsContent value='partners'>

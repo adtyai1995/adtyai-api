@@ -26,7 +26,7 @@ export const paymentSceneSchema = z
   .object({
     key: z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/, 'Invalid parameters'),
     name: z.string().trim().min(1, 'Required').max(120),
-    business: z.enum(['wallet_topup', 'owner_self_use_topup']),
+    business: z.enum(['wallet_topup', 'team_topup', 'owner_self_use_topup']),
     enabled: z.boolean(),
     providers: z.array(z.string()).min(1, 'Required').max(6),
     methods: z.array(z.string().min(1).max(255)).max(100),
@@ -35,6 +35,7 @@ export const paymentSceneSchema = z
       .array(z.string().regex(/^[A-Z][A-Z0-9]{1,15}$/, 'Invalid parameters'))
       .max(32),
     site_scope: z.enum(['all', 'main', 'all_sites', 'selected']),
+    team_ids: z.array(z.number().int().positive()).max(1000).optional(),
     site_ids: z.array(z.number().int().positive()).max(1000),
     user_types: z.array(z.string()).max(6),
     min_usd: money,

@@ -109,7 +109,7 @@ func DefaultResellerSetting() ResellerSetting {
 	return ResellerSetting{
 		RootDomains:                []string{},
 		ReservedSubdomains:         []string{"www", "api", "admin", "pay", "mail", "news", "links", "status", "docs", "app"},
-		UnknownHostMode:            ResellerUnknownHostMain,
+		UnknownHostMode:            ResellerUnknownHostReject,
 		CostFactorTiers:            []ResellerCostTier{},
 		MarkupIncreaseDelayHours:   24,
 		SettleHour:                 4,

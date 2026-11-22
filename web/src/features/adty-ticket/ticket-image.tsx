@@ -33,6 +33,8 @@ export function TicketImage(props: {
   scope: string
   userId?: number
   ticketID: number
+  grant?: string
+  expiresAt?: number
   imageID: number
   label: string
 }) {
@@ -48,17 +50,20 @@ export function TicketImage(props: {
     ],
     queryFn: async ({ signal }) => {
       const path = `/api/adty/tickets/${props.ticketID}/images/${props.imageID}`
-      const authorized = await api.get<{
-        success: boolean
-        message?: string
-        data?: { grant: string; expires_at: number }
-      }>(path, {
-        params: { action: 'grant', scope: props.scope },
-        signal,
-        disableDuplicate: true,
-        skipErrorHandler: true,
-      })
-      const grant = requireServerSuccess(authorized.data).data?.grant
+      let grant = props.grant
+      if (!grant || (props.expiresAt ?? 0) * 1000 <= Date.now() + 1000) {
+        const authorized = await api.get<{
+          success: boolean
+          message?: string
+          data?: { grant: string; expires_at: number }
+        }>(path, {
+          params: { action: 'grant', scope: props.scope },
+          signal,
+          disableDuplicate: true,
+          skipErrorHandler: true,
+        })
+        grant = requireServerSuccess(authorized.data).data?.grant
+      }
       if (!grant) {
         throw new Error(t('Failed to load data'))
       }

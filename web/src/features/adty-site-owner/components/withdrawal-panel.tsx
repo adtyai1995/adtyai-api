@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
@@ -27,6 +27,8 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { siteWithdrawalStatusLabel } from '@/features/adty-ledger/site-wallet-labels'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { useWithdrawalIntent } from '@/features/wallet/adty/use-withdrawal-intent'
+import { WithdrawalRecovery } from '@/features/wallet/adty/withdrawal-recovery'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -38,12 +40,17 @@ import {
   getSiteWithdrawRules,
   siteOwnerKeys,
 } from '../api'
-import { newIdempotencyKey } from '../lib/site-owner'
 
 const NETWORKS = ['TRC20', 'BEP20', 'POLYGON', 'XLAYER'] as const
 
 /** Owner request against the site earnings wallet. Amounts come from Root rules, not from this page. */
-export function WithdrawalPanel({ siteId }: { siteId?: number }) {
+export function WithdrawalPanel({
+  siteId,
+  activeSiteId,
+}: {
+  siteId?: number
+  activeSiteId?: number
+}) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const rules = useQuery({
@@ -67,8 +74,13 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
   const [network, setNetwork] = useState<(typeof NETWORKS)[number]>('TRC20')
   const [accountNo, setAccountNo] = useState('')
   const [accountName, setAccountName] = useState('')
-  const [confirmed, setConfirmed] = useState(false)
-  const submitIntentRef = useRef<{ payload: string; key: string } | null>(null)
+  const [confirmedQuote, setConfirmedQuote] = useState('')
+  const originalSite = siteId ?? activeSiteId ?? 0
+  const intent = useWithdrawalIntent(
+    '/api/adty/site/withdrawals',
+    originalSite,
+    !!siteId
+  )
 
   const quote = useQuery({
     queryKey: siteOwnerKeys.list('withdrawal-quote', {
@@ -85,8 +97,29 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
     retry: false,
     queryFn: () => getSiteWithdrawalQuote(amount, method, siteId),
   })
+  const quoteSignature = quote.data
+    ? JSON.stringify([
+        originalSite,
+        amount,
+        method,
+        rules.data?.fee_usd,
+        method === 'usdt'
+          ? rules.data?.usdt_usd_rate
+          : rules.data?.alipay_cny_rate,
+        quote.data,
+      ])
+    : ''
+  const confirmed = !!quoteSignature && confirmedQuote === quoteSignature
+  const reset = () => {
+    setConfirmedQuote('')
+    setAmount('')
+    setAccountNo('')
+    setAccountName('')
+  }
+  const refresh = () =>
+    void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
   const submit = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const rate =
         method === 'usdt'
           ? rules.data?.usdt_usd_rate
@@ -101,32 +134,25 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
         expected_rate: rate,
         expected_payout: quote.data,
       }
-      const serialized = JSON.stringify(payload)
-      if (submitIntentRef.current?.payload !== serialized) {
-        submitIntentRef.current = {
-          payload: serialized,
-          key: newIdempotencyKey(),
-        }
-      }
-      return createSiteWithdrawal(
-        {
-          ...payload,
-          idempotencyKey: submitIntentRef.current.key,
-        },
+      const key = await intent.prepare({
+        amount,
+        method,
+        quote: quoteSignature,
+      })
+      if (!key) return
+      const row = await createSiteWithdrawal(
+        { ...payload, site_id: originalSite, idempotencyKey: key },
         siteId
       )
+      intent.accept(key, row.id)
     },
     onSuccess: () => {
-      submitIntentRef.current = null
-      setAmount('')
-      setAccountNo('')
-      setAccountName('')
-      setConfirmed(false)
-      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      reset()
+      refresh()
     },
     onError: (err) => {
       handleServerError(err)
-      setConfirmed(false)
+      setConfirmedQuote('')
       void quote.refetch()
       void rules.refetch()
     },
@@ -175,7 +201,13 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
           {t('Root has not set the withdrawal minimum, fee, or exchange rate.')}
         </p>
       )}
-      {configured && (
+      <WithdrawalRecovery
+        intent={intent}
+        busy={submit.isPending}
+        onReset={reset}
+        onRecovered={refresh}
+      />
+      {configured && !intent.saved?.accepted && (
         <form
           className='flex flex-col gap-4'
           onChange={(event) => {
@@ -185,7 +217,7 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
                 event.target.type === 'checkbox'
               )
             )
-              setConfirmed(false)
+              {setConfirmedQuote('')}
           }}
           onSubmit={(event) => {
             event.preventDefault()
@@ -275,7 +307,9 @@ export function WithdrawalPanel({ siteId }: { siteId?: number }) {
               type='checkbox'
               className='mt-1'
               checked={confirmed}
-              onChange={(event) => setConfirmed(event.target.checked)}
+              onChange={(event) =>
+                setConfirmedQuote(event.target.checked ? quoteSignature : '')
+              }
             />
             <span>
               {t('I confirm the payee details before this request is frozen.')}

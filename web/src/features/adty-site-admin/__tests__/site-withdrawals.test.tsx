@@ -57,6 +57,8 @@ const rows = [
     payout_amount: '19',
     payout_currency: 'USDT',
     status: 'paying',
+    attempt_number: 3,
+    attempt_open: true,
   },
   {
     ...base,
@@ -70,6 +72,8 @@ const rows = [
     payout_amount: '63',
     payout_currency: 'CNY',
     status: 'pending',
+    attempt_number: 0,
+    attempt_open: false,
   },
 ]
 
@@ -123,7 +127,8 @@ it('marks a pending request as paying after confirming', async () => {
   await user.click(within(confirm).getByRole('button', { name: 'Mark paying' }))
   await waitFor(() =>
     expect(post).toHaveBeenCalledWith(
-      '/api/adty/admin/site-withdrawals/2/paying'
+      '/api/adty/admin/site-withdrawals/2/paying',
+      { attempt_number: 0 }
     )
   )
 })
@@ -146,6 +151,7 @@ it('requires the transaction hash before recording a USDT payout', async () => {
     expect(post).toHaveBeenCalledWith(
       '/api/adty/admin/site-withdrawals/1/paid',
       {
+        attempt_number: 3,
         tx_id: '0xabc',
         proof: 'paid',
       }
@@ -194,7 +200,7 @@ it('recalls a paying withdrawal back to pending with a required reason', async (
   await waitFor(() =>
     expect(post).toHaveBeenCalledWith(
       '/api/adty/admin/site-withdrawals/1/recall',
-      { reason: 'bank bounce' }
+      { reason: 'bank bounce', attempt_number: 3, tx_id: '' }
     )
   )
 })

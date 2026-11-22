@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 )
@@ -8,13 +9,14 @@ import (
 // Available excludes both consumed and reserved quota. Top-up lots retain their
 // original trade number even after a team moves to another site.
 type AdtyTeamFundLot struct {
-	Id        int64
-	TeamId    int64  `gorm:"uniqueIndex:ux_team_lot_source,priority:1"`
-	Kind      string `gorm:"type:varchar(16);uniqueIndex:ux_team_lot_source,priority:2"`
-	Source    string `gorm:"type:varchar(191);uniqueIndex:ux_team_lot_source,priority:3"`
-	Original  int64
-	Available int64
-	Reclaimed int64
+	Id          int64
+	TeamId      int64  `gorm:"uniqueIndex:ux_team_lot_source,priority:1"`
+	Kind        string `gorm:"type:varchar(16);uniqueIndex:ux_team_lot_source,priority:2"`
+	Source      string `gorm:"type:varchar(191);uniqueIndex:ux_team_lot_source,priority:3"`
+	Original    int64
+	Available   int64
+	EffectiveAt int64 `gorm:"not null;default:0"`
+	Reclaimed   int64
 }
 
 type AdtyTeamFundAllocation struct {
@@ -29,9 +31,13 @@ type AdtyTeamFundAllocation struct {
 }
 
 // Callers hold the team row lock. All lot changes commit with the balance and ledger.
-func ApplyAdtyTeamFundMovementTx(tx *gorm.DB, team *AdtyTeam, kind, ref string, delta int64) error {
+func ApplyAdtyTeamFundMovementTx(tx *gorm.DB, team *AdtyTeam, kind, ref string, delta int64, effectiveAt ...int64) error {
 	if kind == "topup" || kind == "credit" {
-		return tx.Create(&AdtyTeamFundLot{TeamId: team.Id, Kind: kind, Source: ref, Original: delta, Available: delta}).Error
+		at := common.GetTimestamp()
+		if len(effectiveAt) > 0 && effectiveAt[0] > 0 {
+			at = effectiveAt[0]
+		}
+		return tx.Create(&AdtyTeamFundLot{TeamId: team.Id, Kind: kind, Source: ref, Original: delta, Available: delta, EffectiveAt: at}).Error
 	}
 	root := ref
 	var op BillingOperation
@@ -100,7 +106,7 @@ func ApplyAdtyTeamFundMovementTx(tx *gorm.DB, team *AdtyTeam, kind, ref string, 
 	}
 	for left > 0 {
 		var lots []AdtyTeamFundLot
-		if err := tx.Where("team_id = ? AND available > 0", team.Id).Order("id").Limit(64).Find(&lots).Error; err != nil {
+		if err := tx.Where("team_id = ? AND available > 0", team.Id).Order("effective_at, source, id").Limit(64).Find(&lots).Error; err != nil {
 			return err
 		}
 		if len(lots) == 0 {
@@ -168,24 +174,42 @@ func releaseAdtyTeamRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRe
 		return err
 	}
 	amount := row.DeductedPrincipalQuota
+	var debits []AdtyTeamLedger
+	if err := tx.Where("type = ? AND ref_id = ?", "manual_refund", row.RefundId).Limit(2).Find(&debits).Error; err != nil {
+		return err
+	}
+	if amount <= 0 || len(debits) != 1 || debits[0].TeamId != team.Id || debits[0].DeltaQuota != -amount || debits[0].BalanceBefore-debits[0].BalanceAfter != amount || debits[0].IdempotencyKey != "manual_refund:"+row.ReclaimIdemKey {
+		return ErrBillingOperationConflict
+	}
 	key := "refund_release:" + row.RefundId
-	var prior AdtyTeamLedger
-	result := tx.Where("idempotency_key = ?", key).Limit(1).Find(&prior)
+	var releases []AdtyTeamLedger
+	result := tx.Where("idempotency_key = ? OR (type = ? AND ref_id = ?)", key, "refund_release", row.RefundId).Limit(2).Find(&releases)
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected > 0 {
-		if prior.TeamId != team.Id || prior.DeltaQuota != amount || prior.RefId != row.RefundId {
+		prior := releases[0]
+		if len(releases) != 1 || prior.Type != "refund_release" || prior.BalanceAfter-prior.BalanceBefore != amount || prior.TeamId != team.Id || prior.DeltaQuota != amount || prior.RefId != row.RefundId {
+			return ErrBillingOperationConflict
+		}
+		var lotCount int64
+		if err := tx.Model(&AdtyTeamFundLot{}).Where("team_id=? AND kind='topup' AND source=?", team.Id, ext.TradeNo).Count(&lotCount).Error; err != nil {
+			return err
+		}
+		if lotCount != 1 {
 			return ErrBillingOperationConflict
 		}
 		return nil
+	}
+	if team.SharedQuota > common.MaxWalletQuota-amount {
+		return ErrBillingOperationConflict
 	}
 	lot := tx.Model(&AdtyTeamFundLot{}).Where("team_id = ? AND kind = 'topup' AND source = ? AND reclaimed >= ?", team.Id, ext.TradeNo, amount).
 		Updates(map[string]any{"available": gorm.Expr("available + ?", amount), "reclaimed": gorm.Expr("reclaimed - ?", amount)})
 	if lot.Error != nil {
 		return lot.Error
 	}
-	if lot.RowsAffected != 1 || team.SharedQuota > common.MaxWalletQuota-amount {
+	if lot.RowsAffected != 1 {
 		return ErrBillingOperationConflict
 	}
 	after := team.SharedQuota + amount
@@ -195,4 +219,64 @@ func releaseAdtyTeamRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRe
 	return tx.Create(&AdtyTeamLedger{TeamId: team.Id, RefId: row.RefundId, Type: "refund_release",
 		ActorUserId: operatorID, IdempotencyKey: key,
 		DeltaQuota: amount, BalanceBefore: after - amount, BalanceAfter: after}).Error
+}
+
+// Scan by primary key so inconclusive cases do not block later repairs.
+func backfillAdtyTerminatedTeamRefunds(db *gorm.DB) error {
+	var cursor int64
+	for {
+		var rows []AdtyManualRefund
+		if err := db.Where("id > ? AND status = ?", cursor, AdtyManualRefundStatusTerminated).
+			Where("EXISTS (SELECT 1 FROM adty_topup_orders o WHERE o.trade_no=adty_manual_refunds.trade_no AND o.team_id>0)").
+			Order("id").Limit(100).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, candidate := range rows {
+			err := db.Transaction(func(tx *gorm.DB) error {
+				var ext AdtyTopupOrder
+				if err := AdtyLockForUpdate(tx).Where("trade_no = ?", candidate.TradeNo).First(&ext).Error; err != nil {
+					return err
+				}
+				var row AdtyManualRefund
+				if err := AdtyLockForUpdate(tx).First(&row, candidate.Id).Error; err != nil {
+					return err
+				}
+				if row.Status != AdtyManualRefundStatusTerminated || ext.TeamId == 0 {
+					return nil
+				}
+				var reviewed int64
+				if err := tx.Model(&AdtyAnomalyDisposition{}).Where("kind=? AND ref=?", "team_refund_release_review", row.RefundId).Count(&reviewed).Error; err != nil {
+					return err
+				}
+				if reviewed > 0 {
+					return nil
+				}
+				if row.DeductedPrincipalQuota == 0 {
+					var ledgerCount int64
+					if err := tx.Model(&AdtyTeamLedger{}).Where("type IN ? AND ref_id=?", []string{"manual_refund", "refund_release"}, row.RefundId).Count(&ledgerCount).Error; err != nil {
+						return err
+					}
+					if ledgerCount == 0 && (row.ReclaimedAt == 0 || row.ShortfallQuota == row.RequestQuota) {
+						return nil
+					}
+				} else {
+					err := releaseAdtyTeamRefundTx(tx, &ext, &row, row.TerminateOperatorId)
+					if err == nil {
+						return nil
+					}
+					if !errors.Is(err, ErrBillingOperationConflict) && !errors.Is(err, gorm.ErrRecordNotFound) {
+						return err
+					}
+				}
+				return tx.Create(&AdtyAnomalyDisposition{Kind: "team_refund_release_review", Ref: row.RefundId, OrderRef: ext.TradeNo, SiteId: ext.SiteId, TeamId: ext.TeamId, AccountId: ext.UserId, Status: "open", Note: "Verify original team refund debit, lot and release before returning principal"}).Error
+			})
+			if err != nil {
+				return err
+			}
+			cursor = candidate.Id
+		}
+		if len(rows) < 100 {
+			return nil
+		}
+	}
 }

@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
+  act,
   cleanup,
   render,
   screen,
@@ -26,11 +27,14 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { WithdrawalPanel } from '../components/withdrawal-panel'
 
 afterEach(() => {
   cleanup()
+  localStorage.clear()
+  useAuthStore.getState().auth.reset()
   vi.restoreAllMocks()
 })
 
@@ -49,7 +53,12 @@ describe('WithdrawalPanel', () => {
     const pending: { resolve?: (value: unknown) => void } = {}
 
     vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
-      if(config?.params && typeof config.params === 'object' && 'amount_usd' in config.params) return { data: {success:true,data:{payout_amount:'134.90'}} }
+      if (
+        config?.params &&
+        typeof config.params === 'object' &&
+        'amount_usd' in config.params
+      )
+        {return { data: { success: true, data: { payout_amount: '134.90' } } }}
       if (url === '/api/adty/site/withdrawals/rules') {
         return { data: { success: true, data: configuredRules } }
       }
@@ -112,108 +121,115 @@ describe('WithdrawalPanel', () => {
     client.clear()
   })
 
-  it('reuses the same Idempotency-Key on retry with the same payload and rotates on payload change or success', async () => {
+  it('recovers the accepted withdrawal after a lost response and a site switch without another freeze', async () => {
+    useAuthStore.getState().auth.setUser({ id: 9, username: 'owner', role: 1 })
+    let acceptedKey = ''
     vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
-      if(config?.params && typeof config.params === 'object' && 'amount_usd' in config.params) return { data: {success:true,data:{payout_amount:'134.90'}} }
-      if (url === '/api/adty/site/withdrawals/rules') {
-        return { data: { success: true, data: configuredRules } }
+      const params = config?.params as
+        | { archived_site_id?: number; amount_usd?: string }
+        | undefined
+      if (url.endsWith('/by-key')) {
+        expect(config?.headers?.['Idempotency-Key']).toBe(acceptedKey)
+        expect(params?.archived_site_id).toBe(7)
+        return { data: { success: true, data: { id: 83 } } }
       }
+      if (params?.amount_usd)
+        {return { data: { success: true, data: { payout_amount: '134.9' } } }}
+      if (url.endsWith('/rules'))
+        {return { data: { success: true, data: configuredRules } }}
       return { data: { success: true, data: { items: [] } } }
     })
-
-    let postCount = 0
-    const postSpy = vi.spyOn(api, 'post').mockImplementation(async () => {
-      postCount += 1
-      if (postCount === 1 || postCount === 4) {
-        throw new Error('ambiguous network timeout')
-      }
-      return {
-        data: {
-          success: true,
-          data: {
-            id: postCount,
-            amount_usd: '20',
-            fee_usd: '1',
-            method: 'alipay',
-            network: '',
-            status: 'pending',
-            rate: '7.1',
-            payout_amount: '134.9',
-            payout_currency: 'CNY',
-          },
-        },
-      }
+    const post = vi
+      .spyOn(api, 'post')
+      .mockImplementation(async (_url, _body, config) => {
+        acceptedKey = String(config?.headers?.['Idempotency-Key'])
+        throw new Error('response lost')
+      })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
     })
+    const panel = (siteId: number) => (
+      <QueryClientProvider client={client}>
+        <WithdrawalPanel key={siteId} siteId={siteId} />
+      </QueryClientProvider>
+    )
+    const view = render(panel(7))
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText('Amount USD'), '20')
+    await user.type(screen.getByLabelText('Account'), 'private-account')
+    await user.type(screen.getByLabelText('Payee name'), 'Private Payee')
+    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: 'Submit withdrawal' }))
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(JSON.stringify(localStorage)).not.toMatch(
+      /private-account|Private Payee/
+    )
+    view.rerender(panel(8))
+    expect(screen.queryByText('Check previous request')).not.toBeInTheDocument()
+    view.rerender(panel(7))
+    await user.click(
+      await screen.findByRole('button', { name: 'Check previous request' })
+    )
+    expect(await screen.findByText(/#83/)).toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(1)
+    await user.click(
+      screen.getByRole('button', { name: 'Start a new request' })
+    )
+    expect(screen.getByLabelText('Account')).toHaveValue('')
+    expect(screen.getByRole('checkbox')).not.toBeChecked()
+    client.clear()
+  })
 
+  it('requires a fresh confirmation when a background quote refresh changes the payout', async () => {
+    useAuthStore.getState().auth.setUser({ id: 9, username: 'owner', role: 1 })
+    let fee = '1'
+    vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
+      const params = config?.params as { amount_usd?: string } | undefined
+      if (params?.amount_usd)
+        {return {
+          data: {
+            success: true,
+            data: { payout_amount: fee === '1' ? '134.9' : '127.8' },
+          },
+        }}
+      if (url.endsWith('/rules'))
+        {return {
+          data: { success: true, data: { ...configuredRules, fee_usd: fee } },
+        }}
+      return { data: { success: true, data: { items: [] } } }
+    })
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true, data: { id: 81 } } })
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
     render(
       <QueryClientProvider client={client}>
-        <WithdrawalPanel />
+        <WithdrawalPanel activeSiteId={7} />
       </QueryClientProvider>
     )
-
     const user = userEvent.setup()
-    const amountInput = await screen.findByLabelText('Amount USD')
-    const accountInput = screen.getByLabelText('Account')
-    const nameInput = screen.getByLabelText('Payee name')
+    await user.type(await screen.findByLabelText('Amount USD'), '20')
+    await user.type(screen.getByLabelText('Account'), 'acc')
+    await user.type(screen.getByLabelText('Payee name'), 'Alice')
+    await screen.findByText(/134.9 CNY/)
     const checkbox = screen.getByRole('checkbox')
-    const submitBtn = screen.getByRole('button', { name: 'Submit withdrawal' })
-
-    await user.type(amountInput, '20')
-    await user.type(accountInput, 'acc-1')
-    await user.type(nameInput, 'Alice')
     await user.click(checkbox)
-    await user.click(submitBtn)
-
-    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(1))
-    const key1 = (
-      postSpy.mock.calls[0]?.[2] as { headers?: Record<string, string> }
-    )?.headers?.['Idempotency-Key']
-    expect(key1).toBeTruthy()
-
-    // Confirm the refreshed quote and retry the same request.
+    const submit = screen.getByRole('button', { name: 'Submit withdrawal' })
+    expect(submit).toBeEnabled()
+    fee = '2'
+    await act(async () => {
+      await client.invalidateQueries()
+    })
+    await screen.findByText(/127.8 CNY/)
+    expect(checkbox).not.toBeChecked()
+    expect(submit).toBeDisabled()
     await user.click(checkbox)
-    await user.click(submitBtn)
-    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(2))
-    const key2 = (
-      postSpy.mock.calls[1]?.[2] as { headers?: Record<string, string> }
-    )?.headers?.['Idempotency-Key']
-    expect(key2).toBe(key1)
-
-    // After success, submitting same payload again -> rotates key
-    await user.type(amountInput, '20')
-    await user.type(accountInput, 'acc-1')
-    await user.type(nameInput, 'Alice')
-    await user.click(checkbox)
-    await user.click(submitBtn)
-    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(3))
-    const key3 = (
-      postSpy.mock.calls[2]?.[2] as { headers?: Record<string, string> }
-    )?.headers?.['Idempotency-Key']
-    expect(key3).not.toBe(key1)
-
-    // Submit and fail, then change payload -> rotates key
-    await user.type(amountInput, '30')
-    await user.type(accountInput, 'acc-1')
-    await user.type(nameInput, 'Alice')
-    await user.click(checkbox)
-    await user.click(submitBtn)
-    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(4))
-    const key4 = (
-      postSpy.mock.calls[3]?.[2] as { headers?: Record<string, string> }
-    )?.headers?.['Idempotency-Key']
-
-    await user.clear(amountInput)
-    await user.type(amountInput, '35')
-    await user.click(checkbox)
-    await user.click(submitBtn)
-    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(5))
-    const key5 = (
-      postSpy.mock.calls[4]?.[2] as { headers?: Record<string, string> }
-    )?.headers?.['Idempotency-Key']
-    expect(key5).not.toBe(key4)
+    await user.click(submit)
+    expect(await screen.findByText(/#81/)).toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0][1]).toMatchObject({ expected_payout: '127.8' })
     client.clear()
   })
 })

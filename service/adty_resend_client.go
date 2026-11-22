@@ -160,6 +160,9 @@ type AdtyResendEmail struct {
 func (c *AdtyResendClient) SendEmail(ctx context.Context, email AdtyResendEmail) (string, error) {
 	var out adtyResendID
 	err := c.do(ctx, http.MethodPost, "/emails", email, email.IdempotencyKey, &out)
+	if err == nil && strings.TrimSpace(out.ID) == "" {
+		err = errors.New("Resend acknowledgement is missing its message ID")
+	}
 	return out.ID, err
 }
 

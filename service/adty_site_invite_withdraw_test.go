@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func TestSiteInviteBalanceWithdrawalCreditsQuotaWithoutWithdrawnCash(t *testing.
 	require.NoError(t, db.First(inviter, inviter.Id).Error)
 	require.Equal(t, 750000, inviter.Quota)
 	var withdrawLots []model.AdtyFundBatch
-	require.NoError(t, db.Where("user_id = ? AND source = ?", inviter.Id, "site-invite-wd:"+strconv.FormatInt(row.Id, 10)).Find(&withdrawLots).Error)
+	require.NoError(t, db.Where("user_id = ? AND source = ?", inviter.Id, fmt.Sprintf("site-comm-wd:%d:%d", commission.Id, row.Id)).Find(&withdrawLots).Error)
 	require.Len(t, withdrawLots, 1)
 	require.Equal(t, "principal", withdrawLots[0].Kind)
 	require.EqualValues(t, 750000, withdrawLots[0].Remaining)

@@ -122,6 +122,7 @@ function NavBadge({ children }: { children: ReactNode }) {
  */
 function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
   const { isMobile, setOpenMobile } = useSidebar()
+  const linkProps = { preload: isMobile ? false as const : undefined, onClick: () => setOpenMobile(false) }
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
@@ -129,11 +130,9 @@ function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
         tooltip={item.title}
         title={item.title}
         render={
-          <Link
-            to={item.url}
-            preload={isMobile ? false : undefined}
-            onClick={() => setOpenMobile(false)}
-          />
+          item.linkOptions
+            ? <Link {...item.linkOptions} {...linkProps} />
+            : <Link to={item.url} {...linkProps} />
         }
       >
         {item.icon && <item.icon className='shrink-0' />}

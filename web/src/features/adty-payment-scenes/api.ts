@@ -30,6 +30,7 @@ export type PaymentScene = {
   channel_ids: number[]
   currencies: string[]
   site_scope: 'all' | 'main' | 'all_sites' | 'selected'
+  team_ids?: number[]
   site_ids: number[]
   user_types: string[]
   min_usd: string

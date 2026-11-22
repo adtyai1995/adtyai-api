@@ -89,7 +89,7 @@ export function SiteOwnerCenter(props: {
     agreement: t('Site agreement'),
   }
 
-  if (props.section === 'history') return <ArchivedAccountsPanel />
+  if (props.section === 'history') return <OwnerVerificationProvider><ArchivedAccountsPanel /></OwnerVerificationProvider>
   return (
     <OwnerVerificationProvider>
       <DraftNavigationProvider>
@@ -222,7 +222,7 @@ export function SiteOwnerCenter(props: {
                         <EarningToMarginPanel />
                       </section>
                       <section id='withdrawal'>
-                        <WithdrawalPanel />
+                        <WithdrawalPanel key={site.data.id} activeSiteId={site.data.id} />
                       </section>
                       <WalletLedgerPanel />
                     </div>

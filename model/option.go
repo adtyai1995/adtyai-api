@@ -570,6 +570,9 @@ func ApplyOptionValues(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if key == "adty_reseller_setting.unknown_host_mode" {
+		value = "reject"
+	}
 	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)

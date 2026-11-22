@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
@@ -28,6 +27,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { siteWalletKindLabel } from '@/features/adty-ledger/site-wallet-labels'
 import { SiteWalletLedger } from '@/features/adty-ledger/site-wallet-ledger'
+import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -54,7 +55,8 @@ import { SwitchRow } from './setting-fields'
 /** Root sees the site anomaly scan and can issue a margin code. Amounts are typed, not suggested. */
 export function SiteFundPanel(props: { siteId: number }) {
   const { t } = useTranslation()
-  const isRoot = useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const isRoot =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
   const client = useQueryClient()
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
@@ -206,7 +208,9 @@ export function SiteFundPanel(props: { siteId: number }) {
       )}
       <h3 className='text-sm font-medium'>{t('Fund anomalies')}</h3>
       {anomalies.isPending && <LoadingState />}
-      {anomalies.isError && <ErrorState onRetry={() => void anomalies.refetch()} />}
+      {anomalies.isError && (
+        <ErrorState onRetry={() => void anomalies.refetch()} />
+      )}
       {anomalies.isSuccess && anomalyKinds.length === 0 && (
         <p className='text-sm'>{t('No data')}</p>
       )}
@@ -227,11 +231,20 @@ export function SiteFundPanel(props: { siteId: number }) {
       <div className='grid gap-3 sm:grid-cols-2'>
         <div className='flex flex-col gap-1'>
           <Label htmlFor='margin-code-amount'>{t('Amount')}</Label>
-          <Input id='margin-code-amount' value={amount} inputMode='decimal' onChange={(event) => setAmount(event.target.value)} />
+          <Input
+            id='margin-code-amount'
+            value={amount}
+            inputMode='decimal'
+            onChange={(event) => setAmount(event.target.value)}
+          />
         </div>
         <div className='flex flex-col gap-1'>
           <Label htmlFor='margin-code-reason'>{t('Reason')}</Label>
-          <Input id='margin-code-reason' value={reason} onChange={(event) => setReason(event.target.value)} />
+          <Input
+            id='margin-code-reason'
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+          />
         </div>
       </div>
       <Button
@@ -302,11 +315,20 @@ export function SiteFundPanel(props: { siteId: number }) {
 export function FundReviewPanel(props: { siteId: number }) {
   const { t } = useTranslation()
   const client = useQueryClient()
-  const isRoot = useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const isRoot =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
   const [note, setNote] = useState('')
+  const [page, setPage] = useState(1)
+  const [status, setStatus] = useState('')
+  const [kind, setKind] = useState('')
+  const [order, setOrder] = useState('')
+  const filters = { status, kind, order_ref: order, p: page, page_size: 20 }
   const dispositions = useQuery({
-    queryKey: siteAdminKeys.list('dispositions', { siteId: props.siteId }),
-    queryFn: () => getAdminAnomalyDispositions(props.siteId),
+    queryKey: siteAdminKeys.list('dispositions', {
+      siteId: props.siteId,
+      ...filters,
+    }),
+    queryFn: () => getAdminAnomalyDispositions(props.siteId, filters),
     enabled: isRoot,
   })
   const review = useMutation({
@@ -321,13 +343,45 @@ export function FundReviewPanel(props: { siteId: number }) {
   })
   // 异常处置列表同样是「成功但形状不可信」的高危点：崩了站长就看不出哪笔资金
   // 异常还没处置完，所以和 wallets/anomalies 一样只认数组。
-  const dispositionRows = Array.isArray(dispositions.data)
-    ? dispositions.data
+  const dispositionRows = Array.isArray(dispositions.data?.items)
+    ? dispositions.data.items
     : []
   if (!isRoot) return null
   return (
     <section className='flex flex-col gap-2'>
       <h3 className='text-sm font-medium'>{t('Financial review history')}</h3>
+      <Label htmlFor='disposition-status'>{t('Status')}</Label>
+      <select
+        id='disposition-status'
+        value={status}
+        onChange={(e) => {
+          setStatus(e.target.value)
+          setPage(1)
+        }}
+      >
+        <option value=''>{t('All')}</option>
+        <option value='open'>{t('Open')}</option>
+        <option value='reviewing'>{t('Reviewing')}</option>
+        <option value='closed'>{t('Closed')}</option>
+      </select>
+      <Label htmlFor='disposition-order'>{t('Order number')}</Label>
+      <Input
+        id='disposition-order'
+        value={order}
+        onChange={(e) => {
+          setOrder(e.target.value)
+          setPage(1)
+        }}
+      />
+      <Label htmlFor='disposition-kind'>{t('Anomaly type')}</Label>
+      <Input
+        id='disposition-kind'
+        value={kind}
+        onChange={(e) => {
+          setKind(e.target.value)
+          setPage(1)
+        }}
+      />
       {dispositions.isPending && <LoadingState />}
       {dispositions.isError && (
         <ErrorState onRetry={() => void dispositions.refetch()} />
@@ -335,20 +389,43 @@ export function FundReviewPanel(props: { siteId: number }) {
       {dispositions.isSuccess && dispositionRows.length === 0 && (
         <p className='text-sm'>{t('No data')}</p>
       )}
+      <PageSwitcher
+        page={page}
+        pageSize={20}
+        total={dispositions.data?.total ?? 0}
+        onPageChange={setPage}
+      />
       {dispositions.isSuccess && dispositionRows.length > 0 && (
         <div className='flex flex-col gap-2'>
           <Label htmlFor='anomaly-note'>{t('Note')}</Label>
-          <Input id='anomaly-note' value={note} onChange={(event) => setNote(event.target.value)} />
+          <Input
+            id='anomaly-note'
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+          />
           {dispositionRows.map((row) => (
-            <div key={row.id} className='flex flex-wrap items-center gap-2 text-sm'>
+            <div
+              key={row.id}
+              className='flex flex-wrap items-center gap-2 text-sm'
+            >
               <span className='font-mono text-xs'>{row.kind}</span>
               <span>{row.status}</span>
-              {row.difference ? <span className='tabular-nums'>{row.difference}</span> : null}
-              {row.team_id ? <span>{t('Team')} #{row.team_id}</span> : null}
+              {row.difference ? (
+                <span className='tabular-nums'>{row.difference}</span>
+              ) : null}
+              {row.team_id ? (
+                <span>
+                  {t('Team')} #{row.team_id}
+                </span>
+              ) : null}
               {row.account_id ? <span>{row.account_id}</span> : null}
-              {row.order_ref ? <span className='font-mono text-xs'>{row.order_ref}</span> : null}
+              {row.order_ref ? (
+                <span className='font-mono text-xs'>{row.order_ref}</span>
+              ) : null}
               {row.evidence ? (
-                <span className='text-muted-foreground text-xs break-all'>{row.evidence}</span>
+                <span className='text-muted-foreground text-xs break-all'>
+                  {row.evidence}
+                </span>
               ) : null}
               {row.status !== 'closed' && (
                 <>
@@ -356,8 +433,10 @@ export function FundReviewPanel(props: { siteId: number }) {
                     type='button'
                     size='sm'
                     variant='outline'
-                    disabled={review.isPending}
-                    onClick={() => review.mutate({ id: row.id, status: 'reviewing' })}
+                    disabled={review.isPending || row.status === 'reviewing'}
+                    onClick={() =>
+                      review.mutate({ id: row.id, status: 'reviewing' })
+                    }
                   >
                     {t('Mark reviewing')}
                   </Button>
@@ -366,7 +445,9 @@ export function FundReviewPanel(props: { siteId: number }) {
                     size='sm'
                     variant='outline'
                     disabled={review.isPending || note.trim() === ''}
-                    onClick={() => review.mutate({ id: row.id, status: 'closed' })}
+                    onClick={() =>
+                      review.mutate({ id: row.id, status: 'closed' })
+                    }
                   >
                     {t('Close')}
                   </Button>

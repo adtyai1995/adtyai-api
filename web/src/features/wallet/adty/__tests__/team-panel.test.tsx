@@ -133,6 +133,32 @@ describe('TeamPanel', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('lets a member revoke their own bound key', async () => {
+    mockMineTeamGet(() => ({
+      data: {
+        success: true,
+        data: {
+          team: {
+            team_id: 3,
+            name: 'Alpha',
+            role: 'member',
+            discount: '1',
+            shared_quota: 1,
+            keys: [{ token_id: 7, name: 'My key', status: 'active' }],
+          },
+        },
+      },
+    }))
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true } })
+    render(<TeamPanel />, { wrapper })
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Revoke key' }))
+    expect(post).toHaveBeenCalledWith('/api/adty/teams/3/keys/7/revoke')
+  })
+
   it('lets the leader top up through the chosen Epay channel button', async () => {
     vi.spyOn(api, 'get').mockImplementation(async (url) => {
       const path = String(url)
@@ -204,7 +230,12 @@ describe('TeamPanel', () => {
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith(
         '/api/adty/teams/3/topups',
-        { amount_usd: '10', method: 'alipay', channel_id: 9 },
+        {
+          amount_usd: '10',
+          payment_scene: 'wallet_topup',
+          method: 'alipay',
+          channel_id: 9,
+        },
         expect.anything()
       )
     )

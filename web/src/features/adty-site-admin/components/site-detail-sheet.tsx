@@ -57,6 +57,9 @@ import { useAuthStore } from '@/stores/auth-store'
 import {
   adjustSite,
   clearSiteNotice,
+  getCloseMail,
+  resolveCloseMail,
+  type CloseMailRecipient,
   disableSiteDomain,
   retryDomainAutomation,
   disableSiteSenderDomain,
@@ -80,8 +83,7 @@ import {
   validSiteVisibility,
 } from '../lib/site-visibility'
 import { siteNotice } from '../lib/sites'
-import type { AdminSite } from '../types'
-import { getCloseMail, resolveCloseMail, type CloseMailRecipient } from '../api'
+import type { AdminSite, SiteStatsResponse } from '../types'
 import { CloseSiteDialog } from './close-site-dialog'
 import { SwitchRow } from './setting-fields'
 import { SiteFundPanel } from './site-fund-panel'
@@ -109,6 +111,46 @@ function balanceRequestStatusLabel(
   if (status === 'pending') return t('Pending')
   if (status === 'approved') return t('Approved')
   return t('Rejected')
+}
+
+function RequestUsage({ stats, breakdown }: SiteStatsResponse) {
+  const { t } = useTranslation()
+  const payerLabels: Record<string, string> = { team: t('Team'), owner_self_use: t('Owner self-use'), personal: t('Personal') }
+  const dimensions = [
+    { label: t('Model'), rows: breakdown.by_model ?? [] },
+    { label: t('Group'), rows: breakdown.by_group ?? [] },
+    { label: t('Payer'), rows: (breakdown.by_payer ?? []).map((row) => ({
+      ...row, key: payerLabels[row.key] ?? row.key,
+    })) },
+  ]
+  const missing = [
+    { label: t('Unverified payer for this site'), ...breakdown.unverified },
+    { label: t('Unknown site across all consumption logs'), ...breakdown.unknown_site },
+  ]
+  return (
+    <section className='flex flex-col gap-2'>
+      <h3 className='text-sm font-medium'>{t('Request usage')} · {stats.from} – {stats.to}</h3>
+      {dimensions.map(({ label, rows }) => (
+        <StaticDataTable
+          key={label}
+          tableProps={{ 'aria-label': label }}
+          data={rows}
+          getRowKey={(row) => row.key}
+          emptyContent={<EmptyState title={t('No data')} />}
+          columns={[
+            { id: 'key', header: label, cell: (row) => row.key || '—' },
+            { id: 'requests', header: t('Requests'), cell: (row) => row.requests },
+            { id: 'quota', header: t('Quota'), cell: (row) => row.quota },
+          ]}
+        />
+      ))}
+      {missing.filter((row) => row.requests > 0).map((row) => (
+        <div key={row.label} className='text-muted-foreground text-sm'>
+          <span>{row.label}</span> · {t('Requests')} {row.requests} · {t('Quota')} {row.quota}
+        </div>
+      ))}
+    </section>
+  )
 }
 
 function Info(props: { label: string; value: string }) {
@@ -471,11 +513,14 @@ function CloseMailPanel({siteId}:{siteId:number}){
  <h3>{t('Closure notification delivery')}</h3>
  {data && <>
  <select aria-label={t('Notification batch')} value={data.batch_id} onChange={e=>{setBatch(Number(e.target.value));setPage(1)}}>
- {data.batches.map(b=><option key={b.id} value={b.id}>#{b.id} · {formatTimestampToDate(b.execute_at)} · {b.retry_status}</option>)}
+ {data.batches.map(b=><option key={b.id} value={b.id}>#{b.id} · {b.execute_at > 0 ? formatTimestampToDate(b.execute_at) : t('Unknown')} · {b.retry_status}</option>)}
  </select>
  <Label>{t('Reconciliation note')}<Input value={reason} onChange={e=>setReason(e.target.value)}/></Label>
  {data.recipients.map(row=><div key={row.id} className="space-x-2 text-sm">
  <span>{row.email} · {row.status} · {t('Attempts')} {row.attempt_count} {row.last_error}</span>
+ {row.attempts?.length ? <details><summary>{t('Delivery attempts')}</summary><ul>{row.attempts.map(attempt =>
+   <li key={attempt.number}>#{attempt.number} · {attempt.provider} · {attempt.outcome} · {formatTimestampToDate(attempt.started_at)} {attempt.provider_message_id}</li>
+ )}</ul></details> : null}
  {(row.status==='failed'||row.status==='review')&&data.batches.find(b=>b.id===data.batch_id)?.retry_status!=='superseded' && <>
  <Button variant="outline" disabled={resolve.isPending||!reason.trim()} onClick={()=>resolve.mutate({row,decision:'retry'})}>{t('Retry')}</Button>
  <Button variant="outline" disabled={resolve.isPending||!reason.trim()} onClick={()=>resolve.mutate({row,decision:'delivered'})}>{t('Confirm delivered')}</Button>
@@ -1032,6 +1077,7 @@ export function SiteDetailSheet(props: {
                   </dl>
                 )}
               </section>
+              {statsQuery.data?.breakdown && <RequestUsage {...statsQuery.data} />}
               <SiteActions
                 domains={query.data?.domains ?? []}
                 key={site.id}

@@ -32,8 +32,11 @@ func adtyTicketInboxQuery(userID int, site *model.AdtySite) (*gorm.DB, string, e
 	}
 	actor.Scope = "personal"
 	customerTickets := scopedAdtyTickets(model.DB, actor).Select("id")
+	if actor.TeamId > 0 {
+		customerTickets = customerTickets.Or("team_id=? AND team_shared=?", actor.TeamId, true)
+	}
 	if actor.User.StaffSiteId != 0 || actor.Staff != nil || host != actor.User.SiteId {
-		customerTickets = customerTickets.Where("1=0")
+		customerTickets = model.DB.Model(&model.AdtyTicket{}).Select("id").Where("1=0")
 	}
 	// A pre-upgrade notice lacked a purpose. The original recipient's id still
 	// limits visibility, and its public wording contains no internal content.
@@ -65,7 +68,7 @@ func adtyTicketInboxQuery(userID int, site *model.AdtySite) (*gorm.DB, string, e
 	return q.Where(customer), handlerScope, nil
 }
 
-const ticketInboxColumns = "adty_ticket_notices.*, (SELECT t.user_id FROM adty_tickets t WHERE t.id=adty_ticket_notices.ticket_id) AS ticket_owner_id"
+const ticketInboxColumns = "adty_ticket_notices.*, (SELECT t.user_id FROM adty_tickets t WHERE t.id=adty_ticket_notices.ticket_id) AS ticket_owner_id, (SELECT t.team_shared FROM adty_tickets t WHERE t.id=adty_ticket_notices.ticket_id) AS ticket_team_shared"
 
 func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) map[string]any {
 	if row.ExpiredAt > 0 {
@@ -83,6 +86,10 @@ func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) ma
 			path = "/site-staff"
 		}
 	}
+	link := path + "#case-" + strconv.FormatInt(row.TicketId, 10)
+	if path == "/profile" && row.TicketTeamShared {
+		link += "-team"
+	}
 	return map[string]any{"id": fmt.Sprintf("ticket-notice:%d", row.Id), "read_key": row.ReadKey, "title": row.Title, "content": row.Content,
-		"ticket_path": path + "#case-" + strconv.FormatInt(row.TicketId, 10), "publishDate": time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339)}
+		"ticket_path": link, "publishDate": time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339)}
 }

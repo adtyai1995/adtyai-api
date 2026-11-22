@@ -49,6 +49,8 @@ func TestSiteOwnerWithdrawalFreezesEarningsAndRejectsRelease(t *testing.T) {
 
 	require.NoError(t, MarkAdtySiteWithdrawalPaying(row.Id, 1))
 	require.ErrorIs(t, CancelAdtySiteWithdrawal(site.Id, owner.Id, row.Id), ErrAdtySiteWithdrawLocked)
+	require.ErrorIs(t, RejectAdtySiteWithdrawal(row.Id, 1, "bad account"), ErrAdtySiteWithdrawLocked)
+	require.NoError(t, ConfirmAdtySiteWithdrawalFailed(row.Id, 1, 1, "bad account", "bank-rejection-1"))
 	require.NoError(t, RejectAdtySiteWithdrawal(row.Id, 1, "bad account"))
 	require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).First(&earning).Error)
 	require.True(t, earning.Balance.Equal(decimal.RequireFromString("50")))

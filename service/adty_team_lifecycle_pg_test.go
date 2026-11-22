@@ -167,6 +167,13 @@ func TestTeamLifecycleAndOriginalPrincipal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = model.RecordAdtyTopUpManualRefundPayout("ORDER_T", original, root.Id, "payout-t", model.AdtyManualRefundPayout{Status: model.AdtyManualRefundPayoutFailed})
 	require.NoError(t, err)
+	require.NoError(t, db.Model(&model.AdtyManualRefund{}).Where("refund_id = ?", original).Update("status", model.AdtyManualRefundStatusTerminated).Error)
+	for i := 0; i < 2; i++ {
+		require.NoError(t, model.MigrateAdtyTablesOn(db))
+	}
+	var repaired model.AdtyTeam
+	require.NoError(t, db.First(&repaired, teamID).Error)
+	require.EqualValues(t, 100*unit, repaired.SharedQuota)
 	for i := 0; i < 2; i++ {
 		_, err = model.TerminateAdtyTopUpManualRefund("ORDER_T", original, root.Id, "terminate-t", "failed")
 		require.NoError(t, err)
@@ -179,6 +186,22 @@ func TestTeamLifecycleAndOriginalPrincipal(t *testing.T) {
 	var reversals int64
 	require.NoError(t, db.Model(&model.AdtyTeamLedger{}).Where("ref_id = ? AND delta_quota = ?", original, 40*unit).Count(&reversals).Error)
 	require.EqualValues(t, 1, reversals)
+	require.EqualValues(t, "40", facts.TeamReleases[original].AmountUSD)
+	require.Positive(t, facts.TeamLotID)
+	// A historical amount without a corresponding debit cannot be returned.
+	orphanOrder := model.AdtyTopupOrder{TradeNo: "ORDER_T_MISSING", TeamId: teamID, UserId: leader.Id}
+	require.NoError(t, db.Create(&orphanOrder).Error)
+	missing := model.AdtyManualRefund{TradeNo: orphanOrder.TradeNo, RefundId: "missing-team-refund-debit", Status: model.AdtyManualRefundStatusTerminated, RequestQuota: unit, DeductedPrincipalQuota: unit, ReclaimedAt: 1}
+	require.NoError(t, db.Create(&missing).Error)
+	for i := 0; i < 2; i++ {
+		require.NoError(t, model.MigrateAdtyTablesOn(db))
+	}
+	var reviews int64
+	require.NoError(t, db.Model(&model.AdtyAnomalyDisposition{}).Where("kind=? AND ref=? AND team_id=?", "team_refund_release_review", missing.RefundId, teamID).Count(&reviews).Error)
+	require.EqualValues(t, 1, reviews)
+	require.NoError(t, db.First(&stored, teamID).Error)
+	require.EqualValues(t, 100*unit, stored.SharedQuota)
+
 	reserve("request:clear", &token, 100)
 	settle("request:clear", 100)
 	for _, split := range []bool{false, true} {

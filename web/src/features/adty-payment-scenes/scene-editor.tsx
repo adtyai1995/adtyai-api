@@ -227,6 +227,9 @@ export function PaymentSceneEditor(props: {
                   id={`${id}-business`}
                   {...form.register('business', {
                     onChange: (event) => {
+                      if (event.target.value !== 'team_topup') {
+                        form.setValue('team_ids', [])
+                      }
                       if (event.target.value !== 'owner_self_use_topup') return
                       form.setValue('user_types', ['site_owner'], {
                         shouldDirty: true,
@@ -242,6 +245,9 @@ export function PaymentSceneEditor(props: {
                 >
                   <NativeSelectOption value='wallet_topup'>
                     {t('Wallet top-up')}
+                  </NativeSelectOption>
+                  <NativeSelectOption value='team_topup'>
+                    {t('Team top-up')}
                   </NativeSelectOption>
                   <NativeSelectOption value='owner_self_use_topup'>
                     {t('Owner self-use top-up')}
@@ -347,6 +353,29 @@ export function PaymentSceneEditor(props: {
                     ))}
                 </NativeSelect>
               </Field>
+              {form.watch('business') === 'team_topup' && (
+                <Field data-invalid={!!errors.team_ids}>
+                  <FieldLabel htmlFor={`${id}-team-ids`}>
+                    {t('Team IDs (empty for all teams)')}
+                  </FieldLabel>
+                  <MultiSelect
+                    id={`${id}-team-ids`}
+                    placeholder={t('Team IDs (empty for all teams)')}
+                    allowCreate
+                    options={[]}
+                    selected={(form.watch('team_ids') ?? []).map(String)}
+                    onChange={(values) =>
+                      form.setValue('team_ids', values.map(Number), {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      })
+                    }
+                  />
+                  <FieldError>
+                    {errors.team_ids && t('Invalid parameters')}
+                  </FieldError>
+                </Field>
+              )}
               {selectedSites && (
                 <Field data-invalid={!!errors.site_ids}>
                   <FieldLabel htmlFor={`${id}-sites`}>

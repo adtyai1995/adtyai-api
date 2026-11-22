@@ -107,6 +107,21 @@ function sidebarFor(
 // ADTY task 8.2: group ids stay general/chat/personal/admin (module switches
 // and the admin-only filter key on them); only titles and order change.
 describe('sidebar groups', () => {
+  it.each([
+    [1, 0, 'pending'],
+    [0, 1, 'approved'],
+    [1, 1, 'actionable'],
+  ])('links review count %i and payout count %i to the matching withdrawal filter', (review, payout, status) => {
+    vi.spyOn(sidebarBadges, 'useSidebarBadges').mockReturnValue({
+      counts: { referral_withdrawals_pending: Number(review), referral_withdrawals_approved: Number(payout) },
+      failed: false,
+      badge: () => '1',
+    })
+    const { result } = sidebarFor()
+    const link = result.current.flatMap((group) => group.items).find((item) => item.title === 'Referral admin')
+    expect(link).toMatchObject({ linkOptions: { to: '/admin-referral', search: { withdrawals: status } } })
+  })
+
   it('shows only the staff workspace for a dedicated employee account', () => {
     const { result } = sidebarFor(undefined, undefined, true, false, true)
     expect(
@@ -134,6 +149,7 @@ describe('sidebar groups', () => {
       'Models',
       'Users',
       'Referral admin',
+      'Team management',
       'Reseller sites',
       'Order management',
       'System Info',
@@ -155,9 +171,12 @@ describe('site owner center entry', () => {
     // （`use-sidebar-data.ts` 的 personal 分组）。它不是「Referral 消失」，
     // 而是断言漏了这个新项。
     expect(accountTitles(true)).toEqual([
+      'My team',
       'Wallet',
       'Tickets',
       'Referral',
+      'Ticket workspace',
+      'Team management',
       'Site owner center',
       'Profile',
       'Security & Access',
@@ -194,6 +213,7 @@ describe('security sidebar visibility', () => {
         .find((group) => group.id === 'personal')
         ?.items.map((item) => item.title)
     ).toEqual([
+      'My team',
       'Wallet',
       'Tickets',
       'Referral',

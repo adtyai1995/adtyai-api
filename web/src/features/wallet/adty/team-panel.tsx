@@ -60,8 +60,12 @@ type TeamKey = {
 }
 
 const teamKeyStatusLabels: Record<string, string> = {
-  active: 'Active', disabled: 'Disabled', expired: 'Expired',
-  exhausted: 'Exhausted', deleted: 'Deleted', left: 'Revoked',
+  active: 'Active',
+  disabled: 'Disabled',
+  expired: 'Expired',
+  exhausted: 'Exhausted',
+  deleted: 'Deleted',
+  left: 'Revoked',
 }
 
 type TeamMine = {
@@ -109,17 +113,19 @@ export function TeamPanel() {
       return body.data?.team ?? null
     },
   })
+  const [sceneKey, setSceneKey] = useState('')
   const topupInfo = useQuery({
-    queryKey: adtyTopupQueryKeys.info,
-    queryFn: () => getAdtyTopupInfo(),
+    queryKey: [...adtyTopupQueryKeys.info, 'team_topup', mine.data?.team_id],
+    queryFn: () => getAdtyTopupInfo('team_topup', mine.data?.team_id),
+    enabled: mine.data?.role === 'leader',
   })
-  const topupMethods = (
-    topupInfo.data?.scenes?.find((scene) => scene.key === 'wallet_topup')
-      ?.methods ??
-    topupInfo.data?.methods ??
-    []
-  ).filter((method) => method.face_usd === undefined)
+  const scenes = topupInfo.data?.scenes ?? []
+  const scene = scenes.find((item) => item.key === sceneKey) ?? scenes[0]
+  const topupMethods = (scene?.methods ?? []).filter(
+    (method) => method.kind === 'epay' || method.kind === 'usdt'
+  )
   const [rename, setRename] = useState('')
+  const nameTooLong = [...rename.trim()].length > 64
   const [topupAmount, setTopupAmount] = useState('')
   const [topupMethodKey, setTopupMethodKey] = useState<string | null>(null)
 
@@ -266,15 +272,27 @@ export function TeamPanel() {
                 <Label htmlFor='team-rename'>{t('Team name')}</Label>
                 <Input
                   id='team-rename'
+                  aria-invalid={nameTooLong}
+                  aria-describedby={
+                    nameTooLong ? 'team-rename-error' : undefined
+                  }
                   value={rename}
                   onChange={(event) => setRename(event.target.value)}
                 />
+                {nameTooLong && (
+                  <p id='team-rename-error' role='alert'>
+                    {t('Team name must contain 1 to 64 characters')}
+                  </p>
+                )}
               </div>
               <Button
                 type='button'
                 variant='outline'
                 disabled={
-                  pending || rename.trim() === '' || rename.trim() === team.name
+                  pending ||
+                  rename.trim() === '' ||
+                  rename.trim() === team.name ||
+                  nameTooLong
                 }
                 onClick={() =>
                   void run(async () => {
@@ -303,6 +321,27 @@ export function TeamPanel() {
                 />
               </div>
               <div className='flex flex-col gap-1'>
+                {scenes.length > 0 && (
+                  <>
+                    <Label htmlFor='team-payment-scene'>
+                      {t('Payment scene')}
+                    </Label>
+                    <select
+                      id='team-payment-scene'
+                      value={scene?.key}
+                      onChange={(e) => {
+                        setSceneKey(e.target.value)
+                        setTopupMethodKey(null)
+                      }}
+                    >
+                      {scenes.map((item) => (
+                        <option key={item.key} value={item.key}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
                 <Label>{t('Payment method')}</Label>
                 <PaymentMethodButtons
                   methods={topupMethods}
@@ -320,7 +359,13 @@ export function TeamPanel() {
                 type='button'
                 variant='outline'
                 disabled={
-                  pending || topupAmount.trim() === '' || topupMethod === null
+                  pending ||
+                  !Number.isSafeInteger(Number(topupAmount)) ||
+                  Number(topupAmount) <= 0 ||
+                  Number(topupAmount) < Number(scene?.min_usd ?? 0) ||
+                  (Number(scene?.max_usd) > 0 &&
+                    Number(topupAmount) > Number(scene?.max_usd)) ||
+                  topupMethod === null
                 }
                 onClick={() =>
                   void run(async () => {
@@ -328,6 +373,7 @@ export function TeamPanel() {
                     const body = JSON.stringify([
                       team.team_id,
                       topupAmount.trim(),
+                      scene?.key,
                       topupMethodKey,
                     ])
                     if (attempt.current.body !== body) {
@@ -337,6 +383,7 @@ export function TeamPanel() {
                       `/api/adty/teams/${team.team_id}/topups`,
                       {
                         amount_usd: topupAmount.trim(),
+                        payment_scene: scene?.key,
                         method: topupMethod.id,
                         channel_id: topupMethod.channel_id,
                       },
@@ -364,12 +411,24 @@ export function TeamPanel() {
               )}
               {pendingOrders.data?.map((order) => {
                 const hasCheckout = Boolean(
-                  order.pay_address || order.pay_url || order.qr_code || order.url_scheme
+                  order.pay_address ||
+                  order.pay_url ||
+                  order.qr_code ||
+                  order.url_scheme
                 )
-                if (!hasCheckout && (!order.method || order.method === 'team' || (order.provider === 'adty_epay' && !order.channel_id))) {
+                if (
+                  !hasCheckout &&
+                  (!order.method ||
+                    order.method === 'team' ||
+                    (order.provider === 'adty_epay' && !order.channel_id))
+                ) {
                   return (
-                    <p key={order.trade_no} className='text-sm text-muted-foreground'>
-                      {order.trade_no} · {t('This order has no payment channel')}
+                    <p
+                      key={order.trade_no}
+                      className='text-muted-foreground text-sm'
+                    >
+                      {order.trade_no} ·{' '}
+                      {t('This order has no payment channel')}
                     </p>
                   )
                 }
@@ -388,7 +447,10 @@ export function TeamPanel() {
                         const response = await api.post(
                           `/api/adty/teams/${team.team_id}/topups/${encodeURIComponent(order.trade_no)}/resume`
                         )
-                        setCheckout(requireServerSuccess(response.data).data as AdtyOrderExt)
+                        setCheckout(
+                          requireServerSuccess(response.data)
+                            .data as AdtyOrderExt
+                        )
                       })
                     }}
                   >
@@ -620,46 +682,6 @@ export function TeamPanel() {
                   </div>
                 ))}
               </div>
-              <div className='flex flex-col gap-2'>
-                <h3 className='text-sm font-medium'>{t('Team keys')}</h3>
-                {(team.keys ?? []).length === 0 && (
-                  <p className='text-muted-foreground text-sm'>
-                    {t('No team keys')}
-                  </p>
-                )}
-                {(team.keys ?? []).map((key) => (
-                  <div
-                    key={key.token_id}
-                    className='flex items-center justify-between gap-3 text-sm'
-                  >
-                    <span className='min-w-0 truncate tabular-nums'>
-                      {key.name || key.token_id} · {t(teamKeyStatusLabels[key.status] ?? key.status)}
-                    </span>
-                    {(key.binding_status ?? key.status) === 'active' && key.status !== 'deleted' && (
-                      <Button
-                        type='button'
-                        variant='outline'
-                        size='sm'
-                        disabled={pending}
-                        onClick={() =>
-                          void run(async () => {
-                            const response = await api.post(
-                              `/api/adty/teams/${team.team_id}/keys/${key.token_id}/revoke`
-                            )
-                            if (!response.data?.success) {
-                              throw new Error(
-                                response.data?.message || 'Failed to save'
-                              )
-                            }
-                          })
-                        }
-                      >
-                        {t('Revoke key')}
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
               <div className='flex flex-col gap-1'>
                 <Label htmlFor='leader-token'>{t('Token id')}</Label>
                 <Input
@@ -767,6 +789,50 @@ export function TeamPanel() {
               >
                 {t('Leave team')}
               </Button>
+            </div>
+          )}
+          {team && (
+            <div className='flex flex-col gap-2'>
+              <h3 className='text-sm font-medium'>{t('Team keys')}</h3>
+              {(team.keys ?? []).length === 0 && (
+                <p className='text-muted-foreground text-sm'>
+                  {t('No team keys')}
+                </p>
+              )}
+              {(team.keys ?? []).map((key) => (
+                <div
+                  key={key.token_id}
+                  className='flex items-center justify-between gap-3 text-sm'
+                >
+                  <span className='min-w-0 truncate tabular-nums'>
+                    {key.name || key.token_id} ·{' '}
+                    {t(teamKeyStatusLabels[key.status] ?? key.status)}
+                  </span>
+                  {(key.binding_status ?? key.status) === 'active' &&
+                    key.status !== 'deleted' && (
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        disabled={pending}
+                        onClick={() =>
+                          void run(async () => {
+                            const response = await api.post(
+                              `/api/adty/teams/${team.team_id}/keys/${key.token_id}/revoke`
+                            )
+                            if (!response.data?.success) {
+                              throw new Error(
+                                response.data?.message || 'Failed to save'
+                              )
+                            }
+                          })
+                        }
+                      >
+                        {t('Revoke key')}
+                      </Button>
+                    )}
+                </div>
+              ))}
             </div>
           )}
           {error && (

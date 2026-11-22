@@ -461,6 +461,9 @@ func adtyRecordTaskBillingEarning(params *model.RecordTaskBillingLogParams) {
 			common.SysError(common.LogText("task earning payer snapshot failed: %s", err.Error()))
 			return
 		}
+		if op.UserId == params.UserId && op.TokenId == params.TokenId {
+			stampRequestUsageOwner(params.Other, op)
+		}
 		if op.PayerKind == model.BillingPayerOwner {
 			return
 		}

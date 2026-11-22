@@ -87,7 +87,7 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 	}
 	counts[AdtyBadgeNotificationUnread] = unread
 
-	if err := collectAdtyReferralAdminBadgeCounts(counts, actor); err != nil {
+	if err := collectAdtyReferralAdminBadgeCounts(counts, actor, tokenScopes...); err != nil {
 		return nil, err
 	}
 	if actor.User.Role >= common.RoleRootUser {
@@ -131,7 +131,7 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 // admin is limited to main-site users. Callers without referral-admin
 // standing receive an authorization error rather than a global or leaked
 // count.
-func CollectAdtyReferralAdminBadges(userID int) (AdtyReferralAdminBadges, error) {
+func CollectAdtyReferralAdminBadges(userID int, tokenScopes ...[]string) (AdtyReferralAdminBadges, error) {
 	var out AdtyReferralAdminBadges
 	if userID <= 0 {
 		return out, common.NewMessage("Invalid parameters")
@@ -140,11 +140,15 @@ func CollectAdtyReferralAdminBadges(userID int) (AdtyReferralAdminBadges, error)
 	if err != nil {
 		return out, err
 	}
-	siteID, ok := referralAdminSiteScope(actor)
+	_, ok := referralAdminSiteScope(actor)
 	if !ok {
 		return out, ErrAdtyTicketForbidden
 	}
-	return countAdtyReferralAdminBadges(siteID)
+	counts := map[string]int64{}
+	if err := collectAdtyReferralAdminBadgeCounts(counts, actor, tokenScopes...); err != nil {
+		return out, err
+	}
+	return AdtyReferralAdminBadges{Partners: counts[AdtyBadgeReferralPartners], PendingWithdrawals: counts[AdtyBadgeReferralWithdrawalsPending], ApprovedWithdrawals: counts[AdtyBadgeReferralWithdrawalsApproved], FrozenCommissions: counts[AdtyBadgeReferralCommissionsFrozen]}, nil
 }
 
 // AdtyReferralOverview is the referral admin overview totals, in the same
@@ -205,22 +209,46 @@ func countAdtyReferralOverview(siteID *int) (AdtyReferralOverview, error) {
 	return out, nil
 }
 
-func collectAdtyReferralAdminBadgeCounts(counts map[string]int64, actor adtyTicketActor) error {
+func collectAdtyReferralAdminBadgeCounts(counts map[string]int64, actor adtyTicketActor, tokenScopes ...[]string) error {
 	siteID, ok := referralAdminSiteScope(actor)
-	if !ok {
+	can := func(p authz.Permission) bool {
+		return AdtyAdminRoleCan(actor.User.Id, actor.User.Role, p) && (len(tokenScopes) == 0 || AccessTokenScopeGranted(tokenScopes[0], AccessTokenScopeOf(p)))
+	}
+	if !ok || !can(authz.AdtyReferralRead) {
 		return nil
 	}
-	if AdtyAdminPermissionsEnabled() && actor.User.Role < common.RoleRootUser && !AdtyAdminRoleCan(actor.User.Id, actor.User.Role, authz.AdtyReferralRead) {
-		return nil
+	if can(authz.AdtyReferralReview) {
+		partners, err := countScoped(scopeReferralUserQuery(model.DB.Model(&model.ReferralAffiliate{}).Where("partner_status = ?", model.ReferralPartnerStatusPending), "user_id", siteID))
+		if err != nil {
+			return err
+		}
+		counts[AdtyBadgeReferralPartners] = partners
 	}
-	badges, err := countAdtyReferralAdminBadges(siteID)
+	for _, duty := range []struct {
+		permission    authz.Permission
+		status, badge string
+	}{
+		{authz.AdtyReferralReview, model.ReferralWithdrawalStatusPending, AdtyBadgeReferralWithdrawalsPending},
+		{authz.AdtyReferralPayout, model.ReferralWithdrawalStatusApproved, AdtyBadgeReferralWithdrawalsApproved},
+	} {
+		if !can(duty.permission) {
+			continue
+		}
+		platform, err := countScoped(scopeReferralUserQuery(model.DB.Model(&model.ReferralWithdrawal{}).Where("status = ?", duty.status), "user_id", siteID))
+		if err != nil {
+			return err
+		}
+		closed, err := countScoped(closedSiteInviteWithdrawalQuery(duty.status).Where("status = ?", duty.status))
+		if err != nil {
+			return err
+		}
+		counts[duty.badge] = platform + closed
+	}
+	frozen, err := countScoped(scopeReferralUserQuery(model.DB.Model(&model.ReferralCommission{}).Where("status = ?", model.ReferralCommissionStatusFrozen), "affiliate_user_id", siteID))
 	if err != nil {
 		return err
 	}
-	counts[AdtyBadgeReferralPartners] = badges.Partners
-	counts[AdtyBadgeReferralWithdrawalsPending] = badges.PendingWithdrawals
-	counts[AdtyBadgeReferralWithdrawalsApproved] = badges.ApprovedWithdrawals
-	counts[AdtyBadgeReferralCommissionsFrozen] = badges.FrozenCommissions
+	counts[AdtyBadgeReferralCommissionsFrozen] = frozen
 	return nil
 }
 
@@ -314,25 +342,6 @@ func EnsureAdtyReferralTradeScope(siteID *int, tradeNo string) error {
 		return err
 	}
 	return EnsureAdtyReferralTargetUserScope(siteID, aff.UserId)
-}
-
-func countAdtyReferralAdminBadges(siteID *int) (AdtyReferralAdminBadges, error) {
-	var out AdtyReferralAdminBadges
-	var err error
-	out.Partners, err = countScoped(scopeReferralUserQuery(model.DB.Model(&model.ReferralAffiliate{}).Where("partner_status = ?", model.ReferralPartnerStatusPending), "user_id", siteID))
-	if err != nil {
-		return out, err
-	}
-	out.PendingWithdrawals, err = countScoped(scopeReferralUserQuery(model.DB.Model(&model.ReferralWithdrawal{}).Where("status = ?", model.ReferralWithdrawalStatusPending), "user_id", siteID))
-	if err != nil {
-		return out, err
-	}
-	out.ApprovedWithdrawals, err = countScoped(scopeReferralUserQuery(model.DB.Model(&model.ReferralWithdrawal{}).Where("status = ?", model.ReferralWithdrawalStatusApproved), "user_id", siteID))
-	if err != nil {
-		return out, err
-	}
-	out.FrozenCommissions, err = countScoped(scopeReferralUserQuery(model.DB.Model(&model.ReferralCommission{}).Where("status = ?", model.ReferralCommissionStatusFrozen), "affiliate_user_id", siteID))
-	return out, err
 }
 
 func scopeReferralUserQuery(query *gorm.DB, userColumn string, siteID *int) *gorm.DB {

@@ -382,6 +382,9 @@ func GetAdtyAdminSite(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	for i := range domains {
+		domains[i].CloseAction = service.AdtyDomainCloseAction(domains[i])
+	}
 	var senders []model.AdtySiteSenderDomain
 	if err := model.DB.Where("site_id = ? AND status <> ?", id, model.AdtySenderDomainDisabled).Find(&senders).Error; err != nil {
 		common.ApiError(c, err)
@@ -760,6 +763,7 @@ func resellerSettingsSnapshot(db *gorm.DB) (adty_setting.ResellerSetting, map[st
 			}
 		}
 	}
+	defaults["unknown_host_mode"] = adty_setting.ResellerUnknownHostReject
 	err = config.UpdateConfigFromMap(&cfg, defaults)
 	return cfg, versions, err
 }
@@ -803,6 +807,14 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
+	}
+	if value, ok := body["unknown_host_mode"]; ok {
+		var legacy string
+		if common.Unmarshal(value, &legacy) != nil || (legacy != "main" && legacy != "reject") {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		body["unknown_host_mode"] = common.RawMessage(`"reject"`)
 	}
 	for _, key := range []string{"trial_grant_max_usd", "trial_grant_daily_usd"} {
 		if _, present := body[key]; present {
@@ -1092,6 +1104,23 @@ func GetAdtyAdminCloseMail(c *gin.Context) {
 	if err := q.Order("CASE status WHEN 'review' THEN 0 WHEN 'failed' THEN 1 WHEN 'sending' THEN 2 WHEN 'pending' THEN 3 ELSE 4 END,id").Offset(page.GetStartIdx()).Limit(page.GetPageSize()).Find(&rows).Error; err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if len(rows) > 0 {
+		ids := make([]int64, len(rows))
+		byID := make(map[int64]*model.AdtySiteCloseMailRecipient, len(rows))
+		for i := range rows {
+			ids[i] = rows[i].Id
+			byID[rows[i].Id] = &rows[i]
+		}
+		var attempts []model.AdtySiteCloseMailAttempt
+		if err := model.DB.Where("recipient_id IN ?", ids).Order("recipient_id,number").Find(&attempts).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		for _, attempt := range attempts {
+			row := byID[attempt.RecipientID]
+			row.Attempts = append(row.Attempts, attempt)
+		}
 	}
 	common.ApiSuccess(c, gin.H{"batches": batches, "batch_id": batchID, "recipients": rows, "total": total})
 }

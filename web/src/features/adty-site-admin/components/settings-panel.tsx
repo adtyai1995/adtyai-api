@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -82,7 +82,7 @@ export function SettingsPanel(props: {
 
   const [baseline, setBaseline] = useState(saved)
   const edited = useRef(false)
-  useEffect(() => {
+  const mergeSavedFields = useEffectEvent(() => {
     if (!saved) return
     if (edited.current && baseline && drafts && baseline !== saved) {
       const changes = buildResellerUpdate(baseline, drafts)
@@ -95,10 +95,11 @@ export function SettingsPanel(props: {
         field_versions: { ...saved.field_versions },
       }
       for (const key of dirtyKeys) {
-        if (key in baseline)
+        if (key in baseline) {
           Object.assign(mergedBase, {
             [key]: baseline[key as keyof typeof baseline],
           })
+        }
         mergedBase.field_versions[key] = baseline.field_versions?.[key] ?? ''
       }
       setBaseline(mergedBase)
@@ -107,7 +108,8 @@ export function SettingsPanel(props: {
       setBaseline(saved)
       setDrafts(toResellerDrafts(saved))
     }
-  }, [saved])
+  })
+  useEffect(() => { mergeSavedFields() }, [saved])
 
   const save = useMutation({
     mutationFn: (body: ResellerSettingsUpdate) => {
@@ -163,8 +165,9 @@ export function SettingsPanel(props: {
       !!drafts &&
       Object.keys(buildResellerUpdate(baseline, drafts)).length > 0
   )
-  if (query.isError && !saved)
+  if (query.isError && !saved) {
     return <ErrorState onRetry={() => void query.refetch()} />
+  }
   if (!baseline || !saved || !drafts) return <LoadingState />
 
   const disabled = !props.canWrite || save.isPending
@@ -405,25 +408,7 @@ export function SettingsPanel(props: {
             />
           </div>
           <div className='space-y-2'>
-            <Label htmlFor='reseller-unknown-host'>{t('Unknown host')}</Label>
-            <NativeSelect
-              id='reseller-unknown-host'
-              value={drafts.unknown_host_mode}
-              disabled={disabled}
-              onChange={(event) =>
-                set(
-                  'unknown_host_mode',
-                  event.target.value as ResellerDrafts['unknown_host_mode']
-                )
-              }
-            >
-              <NativeSelectOption value='main'>
-                {t('Serve the main site')}
-              </NativeSelectOption>
-              <NativeSelectOption value='reject'>
-                {t('Return 404')}
-              </NativeSelectOption>
-            </NativeSelect>
+            <p>{t('Unknown host')} · {t('Return 404')}</p>
           </div>
         </fieldset>
       )}
@@ -735,13 +720,15 @@ export function SettingsPanel(props: {
         </summary>
         <div className='mt-3 grid gap-3 sm:grid-cols-2'>
           {RULE_KEYS.filter((key) => {
-            if (key === 'markup_increase_delay_hours')
+            if (key === 'markup_increase_delay_hours') {
               return props.section === 'supply'
+            }
             if (
               key === 'max_custom_domains_per_site' ||
               key === 'custom_domain_creates_per_hour'
-            )
+            ) {
               return props.section === 'domains'
+            }
             return props.section === 'policies'
           }).map((key) => (
             <TextField

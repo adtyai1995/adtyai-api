@@ -201,12 +201,13 @@ export function SiteReferralPanel() {
           <MarketingFields
             title={t('Invite commission withdrawal')}
             description={t(
-              'The site owner reviews customer cash withdrawals. Leave all three fields empty to turn off cash withdrawals.'
+              'Set the minimum, fee and exchange rate together to enable cash withdrawals'
             )}
             policy={rules.data}
             fields={[
               { key: 'min_usd', label: t('Minimum withdrawal (USD)') },
               { key: 'fee_usd', label: t('USDT fee (USD)') },
+              { key: 'cancel_window_minutes', label: t('Cancel window (minutes)'), integer: true },
               {
                 key: 'cny_rate',
                 label: t('CNY withdrawal rate (1 USD = ? CNY)'),

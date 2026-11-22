@@ -18,6 +18,7 @@ export function CreateTeamForm() {
   const [site, setSite] = useState(0)
   const [leader, setLeader] = useState('')
   const [name, setName] = useState('')
+  const nameTooLong = [...name.trim()].length > 64
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const attempt = useRef({ body: '', key: '' })
@@ -131,15 +132,21 @@ export function CreateTeamForm() {
       <Label htmlFor='new-team-name'>{t('Team name')}</Label>
       <Input
         id='new-team-name'
+        aria-invalid={nameTooLong}
+        aria-describedby={nameTooLong ? 'new-team-name-error' : undefined}
         required
-        maxLength={64}
         value={name}
         onChange={(event) => setName(event.target.value)}
       />
+      {nameTooLong && (
+        <p id='new-team-name-error' role='alert'>
+          {t('Team name must contain 1 to 64 characters')}
+        </p>
+      )}
       <Button
         type='button'
         onClick={() => create.mutate()}
-        disabled={create.isPending || !leader || !name.trim()}
+        disabled={create.isPending || !leader || !name.trim() || nameTooLong}
       >
         {t('Create team')}
       </Button>

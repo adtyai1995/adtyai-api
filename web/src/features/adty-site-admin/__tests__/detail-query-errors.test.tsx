@@ -62,7 +62,9 @@ it.each([
         sender_domains: [],
         audits: [],
       }
-      if (path.endsWith('/stats')) data = { stats: { total: {} } }
+      if (path === '/api/option/' || path.endsWith('/tiers')) data = []
+      else if (path.endsWith('/balance-requests') || path.endsWith('/dispositions')) data = {items: [], total: 0}
+      else if (path.endsWith('/stats')) data = { stats: { total: {} } }
       else if (path.endsWith('/customers')) data = { items: [], total: 0 }
       return { data: { success: true, data } }
     })
@@ -125,7 +127,9 @@ it.each(['stats', 'customers'])(
         sender_domains: [],
         audits: [],
       }
-      if (path.endsWith('/stats')) data = { stats: { total: {} } }
+      if (path === '/api/option/' || path.endsWith('/tiers')) data = []
+      else if (path.endsWith('/balance-requests') || path.endsWith('/dispositions')) data = {items: [], total: 0}
+      else if (path.endsWith('/stats')) data = { stats: { total: {} } }
       else if (path.endsWith('/customers') || path.endsWith('/sites')) {
         data = { items: [], total: 0 }
       }

@@ -45,6 +45,7 @@ func IsAdtyEpayMethod(method string) bool {
 
 // AdtyQuote 是一笔充值的报价：面额、加赠、入账额度和应付。
 type AdtyQuote struct {
+	TeamID          int64           `json:"-"`
 	Business        string          `json:"business,omitempty"`
 	SiteID          int             `json:"-"`
 	FaceUSD         decimal.Decimal `json:"face_usd"`
