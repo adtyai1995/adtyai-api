@@ -70,9 +70,9 @@
 - 每个任务至少一个提交，一个提交只做一件事。
 
 **约定 H：开发环境（v2.5：仓库在 Windows，WSL 只用来测试）**
-- 仓库放在 Windows 上的一个目录里（下文的「Windows 仓库」），WSL 里经 `/mnt/c/` 下的对应路径访问同一个目录。改代码、git、推送都在 Windows 上做，用 Windows 的 git 和 gh（gh 已经用 adtyai 账号登录）。设计文档放在 Windows 上仓库以外的目录里，不进仓库。派出去的子代理同样遵守。
+- 仓库放在 Windows 上的一个目录里（下文的「Windows 仓库」），WSL 里经 `/mnt/c/` 下的对应路径访问同一个目录。改代码、git、推送都在 Windows 上做，用 Windows 的 git 和 gh（gh 使用 adtyai1995 账号登录）。设计文档放在 Windows 上仓库以外的目录里，不进仓库。派出去的子代理同样遵守。
 - 换行：克隆时设 `core.autocrlf=false`、`core.eol=lf`（只写进这个仓库自己的 .git/config），工作区的文件和仓库里的字节完全一样，都是 LF。Windows 上 git 的系统默认是 `autocrlf=true`，不改的话，没写明换行的文件（测试数据、Dockerfile、.txt）会变成 CRLF，到了 WSL 里测试会失败。编辑器和代理的文件工具都保持 LF；不要用 PowerShell 的 Out-File、Set-Content 写仓库文件。
-- 提交身份只在命令里指定：`git -c user.name=adtyai -c user.email=342593550+adtyai@users.noreply.github.com commit …`，不改 git 配置（Windows 的全局身份是你的另一个账号）。
+- 仓库局部提交身份固定为 `adtyai1995 <358059270+adtyai1995@users.noreply.github.com>`（写入本仓库 `.git/config` 或通过 `git -c user.name=adtyai1995 -c user.email=358059270+adtyai1995@users.noreply.github.com commit …` 指定，不改 Windows 全局 git 配置）。
 - WSL（实测）：WSL2，发行版 `Debian`（Debian 13），systemd 已开，16 核、15 GiB 内存。只用来装依赖、构建、测试；WSL 里只跑只读的 git 命令（`git log`、`git diff`），暂存、提交都在 Windows 上做。
 - 测试副本：WSL 里的 `~/adtyai/mirror/main` 是仓库的副本。`node_modules`（1.6 GB）和 `web/dist` 只放在副本里，Windows 仓库里不放：从 WSL 读写 /mnt/c 很慢（[Microsoft 文档](https://learn.microsoft.com/windows/wsl/filesystems)）。每次运行前用 rsync 把 Windows 仓库同步过去：跳过 .git、node_modules、web/dist，Windows 上删掉的文件副本里也删。
 - 怎么跑：命令写成 bash 脚本，`wsl.exe -d Debian -- bash -l ~/adtyai/bin/wrun.sh <任务名>`。它先同步副本、确认测试用的 PostgreSQL 已启动，再在副本目录里运行，输出写进日志文件。`-l` 让 bash 读 `~/.profile`，PATH 和环境变量都写在那里。check.sh 拒绝在 /mnt 下运行，防止依赖装进 Windows 仓库。
