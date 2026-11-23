@@ -150,22 +150,35 @@ export function SiteTiersPanel() {
   const field = (
     key: keyof Omit<Draft, 'enabled'>,
     label: string,
-    options: { decimal?: boolean; readOnly?: boolean } = {}
-  ) => (
-    <div className='flex flex-col gap-1'>
-      <Label htmlFor={`site-tier-${key}`}>{label}</Label>
-      <Input
-        id={`site-tier-${key}`}
-        value={draft?.[key] ?? ''}
-        readOnly={options.readOnly}
-        aria-describedby={key === 'code' ? 'site-tier-code-limit' : undefined}
-        aria-invalid={key === 'code' && [...(draft?.code.trim() ?? '')].length > 32}
-        inputMode={options.decimal ? 'decimal' : undefined}
-        onChange={(event) => setDraft({ [key]: event.target.value })}
-      />
-      {key === 'code' && <p id='site-tier-code-limit' className='text-muted-foreground text-xs'>{t('Level codes can contain up to 32 characters.')}</p>}
-    </div>
-  )
+    options: { decimal?: boolean; readOnly?: boolean; hint?: string } = {}
+  ) => {
+    const hintText =
+      key === 'code'
+        ? t('Level codes can contain up to 32 characters.')
+        : options.hint
+    const hintId = hintText ? `site-tier-${key}-hint` : undefined
+    return (
+      <div className='flex flex-col gap-1'>
+        <Label htmlFor={`site-tier-${key}`}>{label}</Label>
+        <Input
+          id={`site-tier-${key}`}
+          value={draft?.[key] ?? ''}
+          readOnly={options.readOnly}
+          aria-describedby={hintId}
+          aria-invalid={
+            key === 'code' && [...(draft?.code.trim() ?? '')].length > 32
+          }
+          inputMode={options.decimal ? 'decimal' : undefined}
+          onChange={(event) => setDraft({ [key]: event.target.value })}
+        />
+        {hintText && (
+          <p id={hintId} className='text-muted-foreground text-xs'>
+            {hintText}
+          </p>
+        )}
+      </div>
+    )
+  }
 
   return (
     <section className='flex flex-col gap-3'>
@@ -220,7 +233,7 @@ export function SiteTiersPanel() {
                     {t('Effective customers')} ≥ {row.min_effective_users}
                   </span>
                   <span>
-                    {t('Retained principal')} ≥ {row.min_principal_usd} USD
+                    {t('Customer net top-up principal')} ≥ {row.min_principal_usd} USD
                   </span>
                   <span>
                     {t('Settled consumption')} ≥ {row.min_consumption_usd} USD
@@ -303,25 +316,57 @@ export function SiteTiersPanel() {
       >
         {field('code', t('Level code'), { readOnly: !editing?.isNew })}
         {field('name', t('Level name'))}
-        {field('min_effective_users', t('Minimum effective customers'))}
-        {field('min_principal_usd', t('Minimum retained principal (USD)'), {
-          decimal: true,
-        })}
-        {field('min_consumption_usd', t('Minimum settled consumption (USD)'), {
-          decimal: true,
-        })}
-        {field('deposit_usd', t('Margin requirement (USD)'), { decimal: true })}
-        {field('cost_factor', t('Cost factor (empty uses the default)'), {
-          decimal: true,
-        })}
         {field('sort_order', t('Sort order'))}
-        <div className='sm:col-span-2'>
-          <SwitchRow
-            label={t('Enabled')}
-            checked={draft?.enabled === true}
-            onCheckedChange={(value) => setDraft({ enabled: value })}
-          />
+        <div className='flex items-end'>
+          <div className='w-full'>
+            <SwitchRow
+              label={t('Enabled')}
+              checked={draft?.enabled === true}
+              onCheckedChange={(value) => setDraft({ enabled: value })}
+            />
+          </div>
         </div>
+        <div className='border-t pt-3 sm:col-span-2'>
+          <h3 className='text-sm font-medium'>
+            {t('Upgrade thresholds (cumulative customer metrics)')}
+          </h3>
+          <p className='text-muted-foreground mt-0.5 text-xs'>
+            {t(
+              'All three lifetime customer metrics must be met to qualify automatically. Enter 0 to skip a threshold.'
+            )}
+          </p>
+        </div>
+        {field('min_effective_users', t('Minimum effective customers'))}
+        {field(
+          'min_principal_usd',
+          t('Minimum customer net top-up principal (USD)'),
+          {
+            decimal: true,
+            hint: t(
+              'Customer top-up principal minus refunds (not owner margin).'
+            ),
+          }
+        )}
+        {field(
+          'min_consumption_usd',
+          t('Minimum customer settled consumption (USD)'),
+          {
+            decimal: true,
+          }
+        )}
+        <div className='border-t pt-3 sm:col-span-2'>
+          <h3 className='text-sm font-medium'>
+            {t('Level pricing and owner margin')}
+          </h3>
+        </div>
+        {field('cost_factor', t('Supply cost factor (empty uses default)'), {
+          decimal: true,
+          hint: t('Supply cost = main site standard price × cost factor.'),
+        })}
+        {field('deposit_usd', t('Owner margin requirement (USD)'), {
+          decimal: true,
+          hint: t('Deposit target required in the owner margin wallet.'),
+        })}
       </Dialog>
     </section>
   )

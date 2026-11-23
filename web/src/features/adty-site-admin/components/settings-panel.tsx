@@ -194,8 +194,16 @@ export function SettingsPanel(props: {
   const cfReady = cloudflareReady(saved, drafts)
 
   const moneyLabels: Record<MoneyKey, string> = {
-    cost_factor: t('Cost factor d (greater than 0)'),
-    min_cost_factor: t('Minimum cost factor'),
+    cost_factor: t('Default cost factor d (fallback, greater than 0)'),
+    min_cost_factor: t('Minimum cost factor floor'),
+  }
+  const moneyHints: Record<MoneyKey, string> = {
+    cost_factor: t(
+      'Supply cost = main site standard price × d (e.g. 0.8 = 80%). Site levels override this default.'
+    ),
+    min_cost_factor: t(
+      'Hard floor across all site levels and single-site overrides; must be <= default cost factor.'
+    ),
   }
   const ruleLabels: Record<RuleKey, string> = {
     markup_increase_delay_hours: t('Supply cost increase delay (hours)'),
@@ -317,76 +325,91 @@ export function SettingsPanel(props: {
               value={drafts[key]}
               disabled={disabled}
               onChange={(value) => set(key, value)}
-            />
-          ))}
-          <div className='space-y-2 sm:col-span-2'>
-            <Label>{t('Cost factor tiers by last month customer spend')}</Label>
-            {drafts.tiers.map((tier, index) => (
-              <div key={tier.key} className='flex items-end gap-2'>
-                <TextField
-                  type='number'
-                  label={t('From (USD per month)')}
-                  value={tier.min_monthly_usd}
-                  disabled={disabled}
-                  onChange={(value) =>
-                    set(
-                      'tiers',
-                      drafts.tiers.map((item, i) =>
-                        i === index ? { ...item, min_monthly_usd: value } : item
-                      )
-                    )
-                  }
-                />
-                <TextField
-                  type='number'
-                  label={t('Cost factor')}
-                  value={tier.cost_factor}
-                  disabled={disabled}
-                  onChange={(value) =>
-                    set(
-                      'tiers',
-                      drafts.tiers.map((item, i) =>
-                        i === index ? { ...item, cost_factor: value } : item
-                      )
-                    )
-                  }
-                />
-                <Button
-                  type='button'
-                  variant='ghost'
-                  size='icon'
-                  disabled={disabled}
-                  aria-label={t('Remove tier {{n}}', { n: index + 1 })}
-                  onClick={() =>
-                    set(
-                      'tiers',
-                      drafts.tiers.filter((_, i) => i !== index)
-                    )
-                  }
-                >
-                  <Trash2 aria-hidden />
-                </Button>
-              </div>
-            ))}
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              disabled={disabled}
-              onClick={() =>
-                set('tiers', [
-                  ...drafts.tiers,
-                  { key: newRowKey(), min_monthly_usd: '', cost_factor: '' },
-                ])
-              }
             >
-              <Plus aria-hidden />
-              {t('Add tier')}
-            </Button>
-            <p className='text-muted-foreground text-xs'>
-              {t('Leave empty to use the global cost factor for every site.')}
-            </p>
-          </div>
+              <p className='text-muted-foreground text-xs'>{moneyHints[key]}</p>
+            </TextField>
+          ))}
+          <details
+            open={drafts.tiers.length > 0}
+            className='rounded-lg border p-3 sm:col-span-2'
+          >
+            <summary className='cursor-pointer text-sm font-medium'>
+              {t(
+                'Legacy fallback: cost factor tiers by last month customer spend (optional)'
+              )}
+            </summary>
+            <div className='mt-3 space-y-2'>
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Only applies to sites with no site level assigned. Leave empty if you manage cost factors via Site levels below.'
+                )}
+              </p>
+              {drafts.tiers.map((tier, index) => (
+                <div key={tier.key} className='flex items-end gap-2'>
+                  <TextField
+                    type='number'
+                    label={t('From (USD per month)')}
+                    value={tier.min_monthly_usd}
+                    disabled={disabled}
+                    onChange={(value) =>
+                      set(
+                        'tiers',
+                        drafts.tiers.map((item, i) =>
+                          i === index
+                            ? { ...item, min_monthly_usd: value }
+                            : item
+                        )
+                      )
+                    }
+                  />
+                  <TextField
+                    type='number'
+                    label={t('Cost factor')}
+                    value={tier.cost_factor}
+                    disabled={disabled}
+                    onChange={(value) =>
+                      set(
+                        'tiers',
+                        drafts.tiers.map((item, i) =>
+                          i === index ? { ...item, cost_factor: value } : item
+                        )
+                      )
+                    }
+                  />
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='icon'
+                    disabled={disabled}
+                    aria-label={t('Remove tier {{n}}', { n: index + 1 })}
+                    onClick={() =>
+                      set(
+                        'tiers',
+                        drafts.tiers.filter((_, i) => i !== index)
+                      )
+                    }
+                  >
+                    <Trash2 aria-hidden />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                disabled={disabled}
+                onClick={() =>
+                  set('tiers', [
+                    ...drafts.tiers,
+                    { key: newRowKey(), min_monthly_usd: '', cost_factor: '' },
+                  ])
+                }
+              >
+                <Plus aria-hidden />
+                {t('Add tier')}
+              </Button>
+            </div>
+          </details>
         </fieldset>
       )}
 
@@ -547,6 +570,11 @@ export function SettingsPanel(props: {
           )}
           <div className='space-y-2 sm:col-span-2'>
             <Label>{t('Turnstile widgets')}</Label>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Optional Cloudflare Turnstile captcha pool for custom or automated site domains (up to 10 domains per widget). Leave empty if not using custom domain captcha yet.'
+              )}
+            </p>
             {drafts.widgets.map((widget, index) => (
               <div
                 key={widget.key}
@@ -626,9 +654,11 @@ export function SettingsPanel(props: {
               <Plus aria-hidden />
               {t('Add widget')}
             </Button>
-            {drafts.widgets.length === 0 && (
-              <p className='text-warning text-xs'>{t('Not configured')}</p>
-            )}
+            {drafts.widgets.length === 0 &&
+              (drafts.custom_domain_enabled ||
+                drafts.domain_automation_enabled) && (
+                <p className='text-warning text-xs'>{t('Not configured')}</p>
+              )}
           </div>
         </fieldset>
       )}
