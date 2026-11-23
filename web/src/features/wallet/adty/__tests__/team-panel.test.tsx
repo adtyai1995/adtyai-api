@@ -144,6 +144,7 @@ describe('TeamPanel', () => {
             role: 'member',
             discount: '1',
             shared_quota: 1,
+            status: 'active',
             keys: [{ token_id: 7, name: 'My key', status: 'active' }],
           },
         },

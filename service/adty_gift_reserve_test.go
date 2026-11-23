@@ -728,6 +728,7 @@ func TestApprovedStaffDecreaseReleasesSiteGiftGuarantee(t *testing.T) {
 	staffUser := referralUser(t, db, "gift-staff-dec-staff")
 	require.NoError(t, db.Create(&model.AdtySiteStaff{
 		SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Status: "enabled", Role: "support",
+		Permissions: `["customers.read","customers.balance_request"]`,
 	}).Error)
 	_, err := model.CompleteAdtyTopUp(ext.TradeNo, model.AdtyPaymentFacts{
 		Provider: model.PaymentProviderAdtyBEpusdt, PaidAmount: decimal.NewFromInt(100), FiatAmount: decimal.NewFromInt(100),

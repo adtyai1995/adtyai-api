@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -20,6 +21,7 @@ import (
 func TestFTRADTY1101RootAdjustsSiteCostFactorPG(t *testing.T) {
 	db := ftrAccountDB(t)
 	ftrEnableReseller(t)
+	adty_setting.GetResellerSetting().MarkupIncreaseDelayHours = 24
 	root := model.User{
 		Username: "ftr1101-root", Password: "hashed-password", Role: common.RoleRootUser,
 		Status: common.UserStatusEnabled, Group: "default", Quota: ftrAccountQuota,

@@ -38,6 +38,7 @@ func TestUpdateAdtyResellerSettingsSendsPendingCostFactorNoticeOnlyAfterCommit(t
 	costFactor := 0.80
 	settings := adty_setting.DefaultResellerSetting()
 	settings.RootDomains = []string{"sites.example.test"}
+	settings.MarkupIncreaseDelayHours = 24
 	settings.MinCostFactor, settings.CostFactor = &minFactor, &costFactor
 	*adty_setting.GetResellerSetting() = settings
 

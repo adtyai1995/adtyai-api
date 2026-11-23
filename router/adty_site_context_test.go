@@ -48,6 +48,7 @@ func newSiteFixture(t *testing.T) *siteFixture {
 		&model.TwoFABackupCode{}, &model.PasskeyCredential{}, &model.AuditLog{}, &model.Log{}, &model.Option{}, &model.TopUp{},
 		&model.UserAccessToken{}, &model.Channel{}, &model.Ability{}))
 	require.NoError(t, model.MigrateAdtyTables())
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -948,6 +949,10 @@ func TestStatusServerAddressFollowsCustomDomain(t *testing.T) {
 	assert.NotContains(t, custom.Body.String(), "shop.sites.example.com")
 
 	// 配了 API 地址域名：不管从哪个入口打开，显示的都是它。
+	require.NoError(t, f.db.Create(&model.AdtySiteDomain{
+		SiteId: f.site.Id, Hostname: "api.customer-brand.com",
+		Role: model.AdtySiteDomainRoleBaseURL, Status: model.AdtySiteDomainActive, DesiredState: "serve",
+	}).Error)
 	service.AdtyLoadCustomDomains = func() (map[string]int, error) {
 		return map[string]int{
 			"shop.customer-brand.com": f.site.Id,

@@ -34,6 +34,9 @@ func prepareSiteDB(t *testing.T) *gorm.DB {
 	cfg.MaxSiteBonusExtra, cfg.TrialGrantMaxUSD, cfg.TrialGrantDailyUSD = new(2.0), new(5.0), new(20.0)
 	cfg.InviteCodeEnabled = true
 	adty_setting.GetLegalSetting().SiteAgreementVersion = 3
+	require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{{
+		Code: "default", Name: "Default", CostFactor: dec("0.8"), DepositUSD: decimal.Zero, Enabled: true, SortOrder: 0,
+	}}))
 	InvalidateAdtySiteCache()
 	return db
 }
@@ -90,6 +93,7 @@ func siteCustomer(t *testing.T, db *gorm.DB, site *model.AdtySite, name string) 
 
 func TestRaisingSiteCostFactorWaitsAndLoweringAppliesNow(t *testing.T) {
 	db := prepareSiteDB(t)
+	adty_setting.GetResellerSetting().MarkupIncreaseDelayHours = 24
 	require.NoError(t, i18n.Init())
 	var sent []string
 	oldSend := AdtySendSiteEmailAsync
@@ -190,7 +194,7 @@ func TestAdtyResellerSettingDefaults(t *testing.T) {
 	assert.Nil(t, cfg.TrialGrantMaxUSD)
 	assert.Nil(t, cfg.TrialGrantDailyUSD)
 	assert.Equal(t, adty_setting.ResellerUnknownHostReject, cfg.UnknownHostMode)
-	assert.Equal(t, 24, cfg.MarkupIncreaseDelayHours)
+	assert.Equal(t, 0, cfg.MarkupIncreaseDelayHours)
 	assert.Equal(t, 4, cfg.SettleHour)
 	assert.Equal(t, 7, cfg.FreezeDays)
 	assert.Equal(t, 7, cfg.CloseNoticeDays)
@@ -211,9 +215,13 @@ func TestAdtyResellerSettingDefaults(t *testing.T) {
 func TestOpenSiteRequiresSettings(t *testing.T) {
 	db := prepareSiteDB(t)
 	owner := referralUser(t, db, "needs-settings")
-	adty_setting.GetResellerSetting().CostFactor = nil
+	adty_setting.GetResellerSetting().RootDomains = nil
 	_, err := OpenAdtySite(owner.Id, "needs", model.AdtySiteOpenedByAdmin, AdtySitePreset{})
 	assert.ErrorIs(t, err, ErrAdtySiteDisabled)
+	adty_setting.GetResellerSetting().RootDomains = []string{"sites.example.com"}
+	require.NoError(t, db.Where("1 = 1").Delete(&model.AdtySiteTier{}).Error)
+	_, err = OpenAdtySite(owner.Id, "needs", model.AdtySiteOpenedByAdmin, AdtySitePreset{})
+	assert.ErrorContains(t, err, "Configure at least one enabled site level")
 
 	cases := []struct {
 		name    string
@@ -221,7 +229,7 @@ func TestOpenSiteRequiresSettings(t *testing.T) {
 		resend  bool
 		wantErr bool
 	}{
-		{"enabled without supply cost", func(s *adty_setting.ResellerSetting) { s.CostFactor = nil }, false, true},
+		{"enabled without supply cost", func(s *adty_setting.ResellerSetting) { s.CostFactor = nil }, false, false},
 		{"enabled without root domain", func(s *adty_setting.ResellerSetting) { s.RootDomains = nil }, false, true},
 		{"cost factor above 1 is allowed", func(s *adty_setting.ResellerSetting) { s.CostFactor = new(1.2) }, false, false},
 		{"cost factor below minimum", func(s *adty_setting.ResellerSetting) { s.CostFactor = new(0.4) }, false, true},
@@ -277,7 +285,7 @@ func TestSubdomainRules(t *testing.T) {
 		{"dash-", ErrAdtySiteSubdomainBad},
 		{"under_score", ErrAdtySiteSubdomainBad},
 		{"dot.ted", ErrAdtySiteSubdomainBad},
-		{"", ErrAdtySiteSubdomainBad},
+		{"bad space", ErrAdtySiteSubdomainBad},
 		{"a234567890123456789012345678901234567890123456789012345678901234", ErrAdtySiteSubdomainBad},
 		{"  Good-Name1 ", nil},
 	} {
@@ -290,6 +298,10 @@ func TestSubdomainRules(t *testing.T) {
 		require.NoError(t, err, tc.subdomain)
 		assert.Equal(t, "good-name1", site.Subdomain)
 	}
+	autoOwner := referralUser(t, db, "sub-auto-"+time.Now().Format("150405.000000000"))
+	autoSite, err := OpenAdtySite(autoOwner.Id, "", model.AdtySiteOpenedByAdmin, AdtySitePreset{})
+	require.NoError(t, err)
+	assert.NotEmpty(t, autoSite.Subdomain)
 }
 
 func TestApplyRejectsUnpublishedAgreement(t *testing.T) {
@@ -353,8 +365,11 @@ func TestOpenSiteByApplyThenApprove(t *testing.T) {
 func TestOpenSiteByAdmin(t *testing.T) {
 	db := prepareSiteDB(t)
 	owner := referralUser(t, db, "admin-opened")
-	_, err := OpenAdtySite(owner.Id, "low", model.AdtySiteOpenedByAdmin, AdtySitePreset{CostFactor: dec("0.4")})
-	assert.Error(t, err, "below min_cost_factor")
+	_, err := OpenAdtySite(owner.Id, "non-positive", model.AdtySiteOpenedByAdmin, AdtySitePreset{CostFactor: dec("0")})
+	assert.Error(t, err, "non-positive cost_factor must be rejected")
+	lowOwner := referralUser(t, db, "low-factor-owner")
+	_, err = OpenAdtySite(lowOwner.Id, "low", model.AdtySiteOpenedByAdmin, AdtySitePreset{CostFactor: dec("0.4")})
+	require.NoError(t, err, "global min_cost_factor floor is retired")
 	legacyOwner := referralUser(t, db, "legacy-cap-owner")
 	_, err = OpenAdtySite(legacyOwner.Id, "high", model.AdtySiteOpenedByAdmin, AdtySitePreset{MaxMarkup: dec("5")})
 	require.NoError(t, err)

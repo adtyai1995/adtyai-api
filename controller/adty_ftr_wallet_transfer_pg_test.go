@@ -32,8 +32,9 @@ func TestFTRADTY1209OwnerTransfersEarningToMarginPG(t *testing.T) {
 		Type: "ftr_seed", Reason: "FTR 1209 earnings", IdempotencyKey: "ftr1209-seed",
 	})
 	require.NoError(t, err)
+	factor := decimal.RequireFromString("0.8")
 	require.NoError(t, service.SaveAdtySiteTiers([]model.AdtySiteTier{{
-		Code: "ftr1209", Name: "FTR 1209", DepositUSD: decimal.NewFromInt(100), Enabled: true,
+		Code: "ftr1209", Name: "FTR 1209", CostFactor: &factor, DepositUSD: decimal.NewFromInt(100), Enabled: true,
 	}}))
 	_, err = service.SetAdtySiteTier(site.Id, "ftr1209", service.AdtySiteTierModeManual, 100)
 	require.NoError(t, err)

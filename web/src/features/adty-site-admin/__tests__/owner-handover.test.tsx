@@ -91,7 +91,7 @@ it('Root sees that a site owner cannot be replaced and no handover is posted', a
 
 it('an administrator does not see the owner replacement notice', async () => {
   setup(10)
-  await screen.findByText('alpha.example')
+  await screen.findAllByText('alpha.example')
   expect(
     screen.queryByText('Site owners cannot be replaced')
   ).not.toBeInTheDocument()

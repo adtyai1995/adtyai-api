@@ -31,6 +31,10 @@ func ftrEnableReseller(t *testing.T) {
 	cfg.MaxMarkup = new(3.0)
 	cfg.TrialGrantMaxUSD = new(5.0)
 	cfg.TrialGrantDailyUSD = new(20.0)
+	factor := decimal.RequireFromString("0.8")
+	require.NoError(t, service.SaveAdtySiteTiers([]model.AdtySiteTier{{
+		Code: "ftr-default", Name: "FTR Default", CostFactor: &factor, Enabled: true, SortOrder: 1,
+	}}))
 	service.InvalidateAdtySiteCache()
 }
 
@@ -90,8 +94,8 @@ func TestFTRADTY1008RootSavesSiteTiersPG(t *testing.T) {
 	ctx, rec := newAuthenticatedContext(t, http.MethodPut, "/api/adty/admin/reseller/tiers", map[string]any{
 		"tiers": []map[string]any{{
 			"code": "ftr1008", "name": "FTR 1008", "enabled": true, "sort_order": 1,
-			"min_effective_users": 1, "min_monthly_usd": "0", "min_principal_usd": "0",
-			"min_consumption_usd": "0", "deposit_usd": "0",
+			"cost_factor": "0.8", "min_effective_users": 0, "min_monthly_usd": "0",
+			"min_principal_usd": "100", "min_consumption_usd": "0", "deposit_usd": "0",
 		}},
 	}, root.Id)
 	ctx.Set("role", root.Role)
@@ -106,7 +110,7 @@ func TestFTRADTY1008RootSavesSiteTiersPG(t *testing.T) {
 	require.NoError(t, db.Where("code = ?", "ftr1008").First(&stored).Error)
 	assert.Equal(t, "FTR 1008", stored.Name)
 	assert.True(t, stored.Enabled)
-	assert.Equal(t, int64(1), stored.MinEffectiveUsers)
+	assert.True(t, stored.MinPrincipalUSD.Equal(decimal.NewFromInt(100)))
 	assert.True(t, stored.DepositUSD.IsZero())
 	ftrAssertQuotaAndNoLedger(t, db, root.Id, ftrAccountQuota)
 	var ledgers int64

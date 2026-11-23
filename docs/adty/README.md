@@ -1,48 +1,42 @@
 # adtyai-api 工程文档
 
-adtyai-api 的公开仓库是 [adtyai1995/adtyai-api](https://github.com/adtyai1995/adtyai-api)，容器镜像是 `ghcr.io/adtyai1995/adtyai-api`，创作者只有 adtyai1995。说明文件只有简体中文和英文。工程上仍把改动尽量放在新文件里，已有文件只加挂载点或做删除（[conventions.md](conventions.md) 的约定 B），方便对照历史来源合并。实施方案（代号 WhiteRelay）和设计稿不在仓库里，下文的任务号都指实施方案里的任务。
+adtyai-api 的公开仓库是 [adtyai1995/adtyai-api](https://github.com/adtyai1995/adtyai-api)，容器镜像是 `ghcr.io/adtyai1995/adtyai-api`，唯一创作者为 `adtyai1995`。对外产品说明仅保留简体中文与英文（根目录 `README.md`、`README.zh_CN.md`、`README.en.md`）。工程上仍尽量把自研改动收敛在独立文件里，已有上游文件仅保留最小挂载点或按清单删除（见 [conventions.md](conventions.md) 约定 B）。
 
-## 这个 fork 改了什么
+## 当前产品能力与改造摘要
 
-最初实施方案 P0–P12 已于 2026-11-01 完成阶段交付，后续全平台规格仍有未闭环项，真实 Cloudflare、Resend 账号联调仍留到上线前。下列说明已同步到 2026-11-17 的实现；每个功能的规则、后台入口、算例和当前限制见 [features.md](features.md)。
+下列说明已同步至最新执行基线；详细规则、后台入口、数据表与算例见 [features.md](features.md)。
 
-- **删掉的功能**：上游的订阅、兑换码（连同它的「购买链接」设置 TopUpLink）、上游邀请奖励，以及 Playground、模型部署管理和独立营销中心，前后端整条删掉，删除单独提交。2026-11-16 的瘦身又删了：第三方登录（GitHub、Discord、LinuxDO、微信、OIDC、自定义 OAuth、Telegram 登录）连同 OAuth 框架；Stripe、Creem、Waffo、Waffo Pancake 四家托管支付和上游单通道易支付的入口、旧设置；签到；支付合规确认；优惠码（后台和下单流程）；公开状态页；繁体中文、法语、日语、韩语、俄语、越南语六种语言包；103 个没有引用的前端文件和 11 个依赖（含 `react-icons`）；后台邀请码接口；二开代码里不可达的函数。删了什么记在 deleted-features.md；整个删掉的文件和目录另记在 deleted-paths.txt，合并上游的脚本（任务 1.7）和守卫测试（任务 1.6）读它，防止合并上游时把删掉的东西带回来。
-- **上游的发布工作流**：docker-build、docker-image-branch、electron-build、release、sync-release-to-gitcode 五个 workflow 删掉（也在 deleted-paths.txt 里），镜像只由 `.github/workflows/adty-ghcr.yml` 构建，`ci.yml` 保留。本地的 712 个上游标签已经删掉（清单备份在仓库外的 `adtyai-api-upstream-tags-backup.txt`），`upstream` 远程设了 `tagopt --no-tags`，合并脚本把上游标签取到 `refs/upstream-tags/`，见 [upstream-merge.md](upstream-merge.md)。
-- **充值**：统一接入易支付和 BEpusdt；BEpusdt 支持 TRC20、BEP20、Polygon、X Layer。Root 配置版本化支付场景，按服务、方式、通道、金额、币种、站点及用户身份限制实际下单，钱包只显示当前可用选项。易支付按通道平铺：每个启用通道的每种方式各一个按钮，名字用 Root 设的显示名称（如「支付宝1」）；客户选哪个就只走哪个通道，下不了单就提示换一个，不自动换通道；订单保存下单时的显示名称（`method_label`），多个易支付商户也能对账。订单记在 `adty_topup_orders`，冻结场景及网关事实，面额和加赠按现有规则入账、算佣金、写流水；已冻结订单的可信晚到回调不受后续停用影响。BEpusdt 还支持可信查询和回调丢失恢复。新订单赠金按支付方式比例快照计算，金额档位赠金不再写入。最低充值额等和钱有关的参数都在后台设置，没有内置值。
-- **充值退款**：后台「充值对账」里的一个操作。只退没花掉的本金，赠金收回不退：按用户当前余额扣回这笔订单还剩的额度，余额最多扣到 0；按退掉的本金占本金的比例处理佣金。主站推广佣金按该比例扣回。分站邀请佣金按同一比例：还冻着的释放回原来源，已转余额的冲回用户余额，已外部打款的只记追偿。分站订单里站长出的加赠只按收回的部分还给站长。真正把钱退给用户在线下做，后台显示应退多少。
-- **余额下限**：不允许透支。每个钱包请求都先预扣，余额不够直接拒绝（403），上游收不到请求；结算时实际费用比预扣多，最多扣到 0。没扣到的差额记入同一账户的短差额挂账，并暂停该账户新的付费请求；日志仍写 `admin_info.shortfall_quota`（只有管理员看得到）。上游原来余额够多时跳过预扣的「信任额度」对钱包不再生效。
-- **推广返佣**：从旧项目移植（表 `referral_*`，接口 `/api/user/referral/*` 等），返佣比例沿用百分数，注册即有推广链接，只按充值面额计佣；订单里存返佣快照；退款时按退掉的本金比例扣回佣金。站长和分站客户不计邀请返佣，分站客户也不能成为推广员。后台有提现审核、合作伙伴申请、推广员、计佣任务（失败的可以重新执行）、佣金流水、后台操作记录和设置。
-- **后台分权**：普通管理员默认没有任何后台权限，由超级管理员逐项开启、随时可以关；系统设置、易支付通道的新增和密钥、管理员任免只有超级管理员能做。
-- **站长分站（P11）**：正式分站由 Root 从主站已有用户创建，站长不可更换，转让入口必须拒绝。关站由 Root 发起，客户和存续团队迁入主站。站长界面只显示收益和保证金；经营钱包继续记账，但不展示，站长充值汇总返回 403。历史订单、异步任务、退款、结算和追回按原操作冻结的财务归属处理，不能按当前站长重算。分站客户的一级邀请佣金单独冻结，现金提现由该站站长审核；验收门仍未关闭。Root 后台：分站详情看三个钱包的余额和流水、把站点固定到某个等级或交回自动考核、授权站长用保证金发兑换码；「提现」分区审核站长收益提现；「兑换码」分区管主站发行额度、签发主站用户码、冻结或取消任何兑换码；设置页配置分站等级。站长中心：收益页看收益钱包、保证金钱包的余额和流水；充值码页签发、冻结、取消兑换码，每次都要重新验证身份。
-- **营销与兑换码**：独立营销中心、群发及营销自动邮件、营销同意和偏好、注册来源采集及统计已删除。优惠码已整条删除，报价和下单不再接受优惠码。充值额度只使用一种兑换码。关站、涨价等业务系统邮件保留。
-- **员工、通知和财务**：分站员工有独立工作区和明确的只读或客户安全操作授权，权限由服务端逐次核对，撤权立即使旧会话失效；客户调额资金规则仍待补齐。通知支持发布、版本化已读回执，指定业务范围及部分角色角标仍未完成。用户可按站点筛选，财务可查看统一订单和冻结详情、追溯关联资金链，并按授权补查、人工补单、处理孤儿支付、退款（可终止）和复核历史任务的分站收益；这些资金写操作都要重新验证身份。登录用户可以在通知中心隐藏单条公告，也可以把未完成的严重待办标为进行中或完成。
-- **数据库**：正式运行、部署、资金测试和验收只使用 PostgreSQL，不使用 SQLite 或 MySQL。主库和单设的日志库均使用 PostgreSQL 18.x；验收逐连接核对 180000 <= server_version_num < 190000。缓存用 Redis。ADTY 启动时主库或日志库不是 PostgreSQL 就直接退出。仓库保留上游 SQLite、MySQL 兼容代码和已有单测，只用于避免破坏上游资产，不作为验收证据；这些测试缺失、未执行或失败，不阻塞验收。已有数据目录升级主要版本时，必须另建目录迁移并核对账目，不能直接换镜像启动，见 [deploy.md](deploy.md)。
-- **本地编排**：仓库根目录 `docker-compose.yml` 默认使用项目名 `adtyai-api`，容器名和桥接网络按项目隔离。API、Redis 和 PostgreSQL 默认使用 `Asia/Shanghai`。旧实例沿用原项目名时会继续挂载原 PostgreSQL 数据卷。
-- **版本号**：`.github/workflows/adty-ghcr.yml` 在镜像构建时生成 `VERSION`，前后端共用；`main` 为 `main-<短 SHA>`，标签构建为标签名，其他分支为 `<分支名>-<短 SHA>`，拉取请求为 `pr-<编号>-<短 SHA>`。仓库内空的 `VERSION` 是构建占位，web 的 `package.json` 版本独立维护；上游 v1.0.0-rc.47 只表示二开起点。
-- **名字、Logo 和语言**：访客、调用 API 的人、上游服务商和浏览器开发者工具能看到的 New API，都换成 ADTY AI 或 adtyai。正式语言只有简体中文和英文；站名 ADTY AI 不翻译。另外六种语言的语言包和文档站内容已于 2026-11-16 删除。Logo 换成「层叠网关」一套（`web/public` 下的图标、manifest、分享图），原稿和生成脚本在仓库外的 `adtyai-logo` 目录（`source/build.py`）。Go 模块路径不改；LICENSE、NOTICE、THIRD-PARTY-LICENSES.md 和上游源文件头都保留（AGPL）；公开页脚和关于页空状态不显示上游名称、仓库链接或贡献者说明。
-- **首页**：正式语言首页只有两个。`/` 是英文，x-default 也指向它；`/zh-cn` 是简体中文。标题、描述和正文写进这两个网址的网页源码，sitemap 和 hreflang 只列这两个正式语言。`/zh-tw`、`/fr`、`/ja`、`/ko`、`/ru`、`/vi` 只作为旧链接别名保留，不作为正式语言宣传，打开后归到对应正式语言。其余页面一律 noindex。
-- **其他**：白色主题；按用户限 RPM、TPM、并发，开了 Redis 但计数不可用时拒绝而不放行；客户能看到的日志和任务不露渠道和倍率；人工调额留痕，且不能把余额调成负数；防邮箱枚举，验证码写不进共享存储时不发信；密码连续错误 8 次后锁定 15 分钟；主站发布了协议或隐私政策后，注册必须接受并留下系统日志；所有流式格式在等首字时都能发保活；分组有固定 ID，正式显示名只有简体中文和英文；官方价每天从 models.dev 同步，价格页显示节省比例；接入文档、推广计划、中英文条款和退款政策。统一工单和两个 Telegram 通知机器人是客服与提醒入口；机器人可以在运维设置里发送测试。Root 还可以在运维设置维护固定通知模板的中英文。运维设置里还能配置系统翻译（测试连接、今日用量）、分组健康阈值，数据保留页能看最近的清理记录。不建设公开平台服务状态页，也不把外部客服挂件或 Telegram OAuth 当成通知绑定或工单系统。
+- **精简与移除项**：已整条删除上游订阅、旧版兑换码与 TopUpLink、旧版邀请奖励、Playground、模型部署管理、独立营销中心、第三方 OAuth 登录（GitHub、Discord、LinuxDO、微信、OIDC、自定义 OAuth、Telegram 登录）、Stripe/Creem/Waffo/旧版单通道易支付、签到、优惠码、金额档位赠金、公开状态页、六种非正式语言包，以及模型广场官方价展示、后台官方价与历史价格快照回填入口、分站开站协议、分站全局默认供货折扣/下限与旧版月消费分档。历史删除记录见 [deleted-features.md](deleted-features.md) 与 [deleted-paths.txt](deleted-paths.txt)。
+- **发布工作流与版本**：镜像仅由 `.github/workflows/adty-ghcr.yml` 在双架构测试全绿后构建并推送至 `ghcr.io/adtyai1995/adtyai-api`（PR 门禁为 `.github/workflows/ci.yml`）。前后端共用构建期写入的 `VERSION`（`main-<短 SHA>`、标签名、`<分支名>-<短 SHA>` 或 `pr-<编号>-<短 SHA>`）。
+- **多通道支付与场景**：统一接入易支付多通道（后台「计费与支付 → 支付网关 → Epay」顶部直接内嵌通道管理，客户端按通道平铺显示且失败不自动切通道）与 BEpusdt USDT（TRC20、BEP20、Polygon、X Layer）。Root 配置版本化支付场景，覆盖普通充值（`wallet_topup`）、站长自用充值（`owner_self_use_topup`）、站长保证金在线充值（`owner_margin_topup`）与团队充值；订单冻结场景、通道、显示名称（`method_label`）及网关事实，支持可信晚到回调入账与主动补查。
+- **零透支账本与退款**：内部固定 `1 USD = 500,000` 整数额度，钱包按「本金 → 先到期赠金 → 永久赠金」顺序扣费。付费请求严格预扣、拒绝透支，结算少扣记短差额挂账并暂停付费请求。人工退款仅扣回未消费本金并收回赠金，不退现不扣负，按退本比例冲回主站或分站邀请佣金，实际打款线下完成。
+- **分站经营与等级供货**：仅 Root 可通过前置就绪检查卡片与独立「开设分站」弹窗为合格主站用户（排除已有站、分站员工、独立团队员工）建站，支持 `Idempotency-Key` 幂等防重与自动/自定义子域名；站长固定不可移交，开站无需签署开站协议。供货折扣完全由已启用「分站等级」决定，等级仅按客户累计净充值本金（扣退款）自动升降级，供货涨价延迟默认 `0` 小时（实时生效并立即通知），站长零售调价即时生效。站长中心展示收益与保证金钱包（隐藏经营钱包），支持 Root 直接补缴与站长在线充值保证金；分站客户支持独立一级邀请链接（`?site_invite=`）、首单前补绑与 `/referral` 分站视图。
+- **团队与非团队隔离**：Root「团队管理」（`/admin-teams`）与站长「团队管理」（`/site-owner/teams`）为独立入口；主站手动创建团队固定归属主站（`site_id = 0`）并支持填写「团队供货折扣」。服务端下发 `adty_has_team`，非团队账号隐藏侧边栏「我的团队」入口及全部团队信息并拦截直达 `/my-team`。活跃团队负责人可重置独立员工密码并立即吊销旧会话；关团后保留共享余额与负责人只读回显。
+- **分站员工与权限**：员工登录进入 `/site-staff`，四类默认角色均只读，客户调额申请（`customers.balance_request`）与客户安全操作默认关闭且须显式授权；改权、停用或删除立即失效旧会话；禁止员工查看完整客户 Key、重置客户密码、代登录或直接操作资金。
+- **工单管理、通知与 Telegram 机器人**：平台「工单管理」（`/admin-tickets`）、站长「工单管理」（`/site-owner/tickets`）、员工工作区与客户入口（`/profile#tickets`）共用同一工单数据流，支持多图批量上传、额度预检、私有鉴权与崩溃安全审计删图。后台「系统设置 → 运营 → Telegram 机器人」以用户机器人/管理机器人双独立卡片管理 Token、启停开关、测试与 Webhook URL，并在同页承载平台管理机器人绑定卡片。
+- **数据库与本地编排**：正式运行、部署、资金测试与验收仅使用 **PostgreSQL 18.x**（主业务库与独立日志库）和 **Redis**。根目录 `docker-compose.yml` 默认项目名 `adtyai-api`、服务默认中国标准时间 `Asia/Shanghai`；生产部署见 [deploy.md](deploy.md)。
+- **控制台与双语体验**：正式语言仅简体中文（`/zh-cn`）与英文（`/`，`x-default`）；全站标题、表单标签、表头、页签与导航名称均支持选中复制；系统设置页按内容自然滚动且仅模型计价区采用视口分栏滚动。
 
-## 和 AGENTS.md 不一致的地方
+## 与 AGENTS.md 的补充约定
 
-仓库根目录的 AGENTS.md 保留上游写给 AI 代理的通用规范，并补充本 fork 的站长不可更换、固定额度、支付场景和版本约定。下面四点说明本 fork 的具体约定，合并上游时一起核对：
+根目录 `AGENTS.md` 保留仓库通用工程规范，下列四项为 ADTY 明确执行的口径：
 
-1. **数据库**：ADTY 的正式运行、部署、资金测试和验收只使用 PostgreSQL。主库和单设的日志库均使用 PostgreSQL 18.x；验收逐连接核对 180000 <= server_version_num < 190000。上游 SQLite、MySQL 兼容代码和已有单测照旧保留，只避免破坏上游资产，不作为验收证据；缺失、未执行或失败不阻塞验收。资金测试使用隔离的 PostgreSQL 和真实 Redis。已有数据目录升级主要版本时，必须另建目录迁移并核对账目，不能直接换镜像启动。
-2. **对外的名字**：2026-11-21 用户决定，公开仓库是 https://github.com/adtyai1995/adtyai-api ，镜像是 `ghcr.io/adtyai1995/adtyai-api`，创作者只有 adtyai1995。访客、调用方、上游服务商和浏览器能看到的产品名是 ADTY AI 或 adtyai。公开页脚和关于页空状态不显示旧项目名称、旧仓库链接或贡献者说明。LICENSE、NOTICE、THIRD-PARTY-LICENSES.md、源码版权头、Go 模块路径 `github.com/QuantumNous/new-api` 按许可证和编译需要保留，不把它们写成创作者。哪些不改见 conventions.md。
-3. **docs/adty/ 下的文档**：AGENTS.md 说没有用户明确要求时不要在 `docs/` 下新建文件。`docs/adty/` 下的文档都是按实施方案（约定 A：工程文档放 `docs/adty/`）或用户的要求建的，以后改功能时要同步更新这里的文档。
-4. **语言**：正式语言只有简体中文和英文。仓库里也只保留这两种语言包，其余六种语言的语言包和文档已删除（见 [deleted-features.md](deleted-features.md)）。新的正式文案必须有中文和英文。根目录 AGENTS.md 已按这条同步。
+1. **数据库**：正式运行、部署、资金测试与验收统一使用 PostgreSQL 18.x 与 Redis；上游 SQLite/MySQL 兼容代码与旧单测仅作资产保留，不作为验收依据。
+2. **对外身份**：公开仓库固定为 https://github.com/adtyai1995/adtyai-api ，容器镜像固定为 `ghcr.io/adtyai1995/adtyai-api`，唯一创作者为 `adtyai1995`。`LICENSE`、`NOTICE`、`THIRD-PARTY-LICENSES.md`、源码版权头及 Go 模块路径 `github.com/QuantumNous/new-api` 仅按许可证和编译要求保留。
+3. **`docs/adty/` 文档**：工程文档统一放在 `docs/adty/`，随功能变更同步更新。
+4. **语言范围**：仅简体中文与英文，所有新增正式界面文案与固定模板均需齐备中英文。
 
-## 各个文档的用途
+## 文档索引
 
-- `README.md`：本文件，说明这个 fork 改了什么、各个文档的用途、和 AGENTS.md 不一致的地方。
-- [features.md](features.md)：功能说明，给运营人员和接手的开发看。每个功能写做什么、规则、后台在哪里设置或操作、默认开还是关、相关的表和接口、已知的限制；涉及钱的都有算例。
-- [conventions.md](conventions.md)：全局约定 A–I（代码放哪、怎么改上游文件、钱、权限和密钥、文案和语言、测试、提交、开发环境、已确认产品边界），每个任务都遵守。约定 I 与旧句子冲突时以约定 I 为准。
-- [upstream-touchpoints.md](upstream-touchpoints.md)：改过的上游文件。每改一个上游文件记一行：文件、改了什么、为什么（约定 B）；合并上游时对照它解决冲突。
-- [deleted-features.md](deleted-features.md)：删掉的功能，按功能列出删掉的文件、路由、表和列、配置项、前端目录和提交，以及有意保留的东西和理由。
-- [deleted-paths.txt](deleted-paths.txt)：整个删掉的文件和目录，一行一个。合并上游的脚本（任务 1.7）和守卫测试（任务 1.6）读它。
-- [upstream-merge.md](upstream-merge.md)：合并上游新版本的流程（实施方案第七节），以及合并脚本 `scripts/adty/merge-upstream.sh` 怎么处理冲突、什么情况下不跑。
-- [deploy.md](deploy.md)：生产部署（任务 10.1、11.11）：`deploy/adty/` 下的 compose、Nginx、Cloudflare 网段和防火墙脚本、备份脚本怎么用，Cloudflare 面板怎么设，分站的泛解析和 Cloudflare for SaaS，真实 IP 验证，升级和回滚。
-- [launch-checklist.md](launch-checklist.md)：上线检查清单（任务 10.2、11.11）。上线前逐条打勾：环境变量、后台设置、支付和推广实测、分站和营销、浏览器和客户端回归、备份演练、SEO。
-- [baseline.md](baseline.md)：上游基线（任务 0.3）。记录上游 v1.0.0-rc.47 原样不改时 `scripts/adty/check.sh` 每一步的结果；这里记下的上游失败不算新失败（约定 F）。
+- `README.md`：本文件，概括产品改造现状与文档索引。
+- [features.md](features.md)：功能规格、后台入口、数据表、接口与算例。
+- [conventions.md](conventions.md)：工程约定 A–I（代码边界、资金安全、权限、双语、测试、提交身份与产品边界）。
+- [upstream-touchpoints.md](upstream-touchpoints.md)：修改过的上游文件清单。
+- [deleted-features.md](deleted-features.md)：删除功能清单与保留项说明。
+- [deleted-paths.txt](deleted-paths.txt)：已删除文件/目录清单（供合并与守卫检查读取）。
+- [upstream-merge.md](upstream-merge.md)：上游合并流程与脚本说明。
+- [deploy.md](deploy.md)：生产部署、镜像标签、Nginx/Cloudflare、备份与回滚指南。
+- [launch-checklist.md](launch-checklist.md)：上线前核查清单。
+- [baseline.md](baseline.md)：上游基线记录。
 
-`docs/` 整个目录不进 Docker 镜像（`.dockerignore` 里的 `docs` 一行）。
+`docs/` 目录通过 `.dockerignore` 排除在生产镜像之外。

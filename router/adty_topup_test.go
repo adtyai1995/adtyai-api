@@ -126,8 +126,8 @@ func TestUnifiedOrdersKeepCategoriesWithinOriginalSitePG(t *testing.T) {
 			Kind: "request", State: model.BillingSettled, AppliedQuota: 500_000}).Error)
 		require.NoError(t, f.db.Create(&model.AdtyManualRefund{RefundId: "refund-" + spec.suffix, TradeNo: trade,
 			UserId: spec.user, SiteId: spec.site, Status: "submitted", RequestQuota: 500_000, RequestUSD: decimal.NewFromInt(1), Reason: "private-admin-reason"}).Error)
-		require.NoError(t, f.db.Create(&model.AdtySiteWithdrawal{SiteId: spec.site, OwnerUserId: spec.user, Status: "submitted",
-			AmountUSD: decimal.NewFromInt(1), Method: "usdt", ProofNote: "private-proof", IdempotencyKey: "unified-wd-" + spec.suffix}).Error)
+		require.NoError(t, f.db.Create(&model.AdtySiteInviteWithdrawal{SiteId: spec.site, UserId: spec.user, Status: "submitted",
+			AmountUSD: decimal.NewFromInt(1), NetUSD: decimal.NewFromInt(1), Method: "usdt", PayoutAmount: "1", PayoutCurrency: "USDT", ProofNote: "private-proof", IdempotencyKey: "unified-wd-" + spec.suffix}).Error)
 		require.NoError(t, f.db.Create(&model.AdtySiteInviteCommission{SiteId: spec.site, InviterId: spec.user, InviteeId: spec.user, TradeNo: trade,
 			Status: "pending", FaceUSD: decimal.NewFromInt(1), Rate: decimal.RequireFromString("0.1"), AmountUSD: decimal.RequireFromString("0.1")}).Error)
 		require.NoError(t, f.db.Create(&model.AdtyStaffBalanceRequest{SiteId: spec.site, StaffUserId: f.owner.Id, CustomerUserId: spec.user,
@@ -423,7 +423,7 @@ func TestStaffAdjustmentRequiresConcreteProvenancePG(t *testing.T) {
 	require.NoError(t, f.db.AutoMigrate(&model.AuditIntent{}))
 	buyer := f.customer(t, f.site, "staff-provenance-buyer", "staff-provenance@example.com")
 	staff, err := service.CreateAdtyStaff(f.owner.Id, f.site.Id, service.AdtyStaffInput{Username: "provenance-staff",
-		DisplayName: "Finance", Password: "employee-password-42", Role: "finance"})
+		DisplayName: "Finance", Password: "employee-password-42", Role: "finance", Permissions: &[]string{"customers.read", "customers.balance_request"}})
 	require.NoError(t, err)
 	login, err := service.CreateLoginSessionOnSite(staff.UserId, f.site.Id, "password", "127.0.0.1", "staff-provenance-test")
 	require.NoError(t, err)

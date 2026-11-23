@@ -103,10 +103,20 @@ it('lists levels and adds a new one by code', async () => {
   expect(save).toBeDisabled()
   await user.type(within(dialog).getByLabelText('Level code'), 'silver')
   await user.type(within(dialog).getByLabelText('Level name'), 'Silver')
-  await user.clear(within(dialog).getByLabelText('Minimum effective customers'))
+  await user.clear(
+    within(dialog).getByLabelText(
+      'Minimum customer net top-up principal (USD)'
+    )
+  )
   await user.type(
-    within(dialog).getByLabelText('Minimum effective customers'),
-    '5'
+    within(dialog).getByLabelText(
+      'Minimum customer net top-up principal (USD)'
+    ),
+    '50'
+  )
+  await user.type(
+    within(dialog).getByLabelText('Supply discount (required, greater than 0)'),
+    '0.8'
   )
   await user.click(save)
   await waitFor(() =>
@@ -115,10 +125,10 @@ it('lists levels and adds a new one by code', async () => {
         {
           code: 'silver',
           name: 'Silver',
-          min_effective_users: 5,
-          min_principal_usd: '0',
+          min_effective_users: 0,
+          min_principal_usd: '50',
           min_consumption_usd: '0',
-          cost_factor: null,
+          cost_factor: '0.8',
           deposit_usd: '0',
           sort_order: 0,
           enabled: true,
@@ -168,9 +178,13 @@ it('accepts 32 Unicode code points and explains an overlong level code', async (
   wrap(<SiteTiersPanel/>)
   const user=userEvent.setup()
   await user.click(await screen.findByRole('button',{name:'Add level'}))
-  const code=screen.getByLabelText('Level code')
-  await user.type(screen.getByLabelText('Level name'),'Standard')
-  await user.type(code,`${'站'.repeat(31)}🙂`)
+  const code = screen.getByLabelText('Level code')
+  await user.type(screen.getByLabelText('Level name'), 'Standard')
+  await user.type(
+    screen.getByLabelText('Supply discount (required, greater than 0)'),
+    '0.8'
+  )
+  await user.type(code, `${'站'.repeat(31)}🙂`)
   const save=screen.getByRole('button',{name:'Save'})
   expect(save).toBeEnabled()
   await user.type(code,'x')

@@ -50,6 +50,9 @@ func newSiteOwnershipFixture(t *testing.T, dialect string) siteOwnershipFixture 
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
 	cfg.MaxSiteBonusExtra, cfg.TrialGrantMaxUSD, cfg.TrialGrantDailyUSD = new(0.0), new(5.0), new(10.0)
+	require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{{
+		Code: "default", Name: "Default", CostFactor: dec("0.8"), DepositUSD: decimal.Zero, Enabled: true,
+	}}))
 	f := siteOwnershipFixture{db: db, root: referralUser(t, db, "handover-root"), old: referralUser(t, db, "handover-old"), next: referralUser(t, db, "handover-next")}
 	require.NoError(t, db.Model(f.root).Update("role", common.RoleRootUser).Error)
 	f.site = model.AdtySite{OwnerUserId: f.old.Id, Subdomain: "handover-site", RootDomain: "sites.example.com", Status: model.AdtySiteStatusActive,

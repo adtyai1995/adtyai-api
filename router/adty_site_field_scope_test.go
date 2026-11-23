@@ -18,6 +18,7 @@ import (
 // 只勾 adty_site:read 的令牌不能读到客户邮箱原文和站长提现额。
 func TestAdminSiteFieldVisibilityRespectsTokenScope(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)

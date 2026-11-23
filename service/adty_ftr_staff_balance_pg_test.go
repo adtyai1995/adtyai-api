@@ -29,6 +29,7 @@ func ftrStaffBalanceDB(t *testing.T, tag string) (*gorm.DB, *model.User, *model.
 	customer.SiteId = site.Id
 	require.NoError(t, db.Create(&model.AdtySiteStaff{
 		SiteId: site.Id, OwnerUserId: owner.Id, UserId: staff.Id, Status: "enabled", Role: "support",
+		Permissions: `["customers.read","customers.balance_request"]`,
 	}).Error)
 	require.NoError(t, EnsureAdtySiteWallets(site.Id))
 	trade := financialOriginalForTest(t, db, customer.Id)

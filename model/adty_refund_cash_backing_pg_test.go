@@ -294,6 +294,9 @@ func TestAdtyTeamCashTopUpManualRefundReclaimsSharedQuotaPG(t *testing.T) {
 		FaceUSD: decimal.NewFromInt(100), CreditQuota: 50_000_000, TeamId: team.Id,
 		PayAmount: decimal.NewFromInt(100), PayCurrency: "USDT", PaidAmount: decimal.NewFromInt(100), PaidCurrency: "USDT",
 	}).Error)
+	require.NoError(t, db.Create(&AdtyTeamFundLot{
+		TeamId: team.Id, Kind: "topup", Source: tradeNo, Original: 50_000_000, Available: 50_000_000, EffectiveAt: common.GetTimestamp(),
+	}).Error)
 
 	// Partial $40 cash refund on real team order reclaims 20,000,000 from team SharedQuota.
 	r1, err := completeManualRefundForTest(t, tradeNo, "team partial refund", root.Id, "team-cash-r1", decimal.NewFromInt(40))
@@ -321,6 +324,7 @@ func TestAdtyTeamCashTopUpManualRefundReclaimsSharedQuotaPG(t *testing.T) {
 
 	// Team spends 20,000,000 (leaving 10,000,000), then refunds remaining $60 (30,000,000): shortfall 20,000,000.
 	require.NoError(t, db.Model(&AdtyTeam{}).Where("id = ?", team.Id).Update("shared_quota", 10_000_000).Error)
+	require.NoError(t, db.Model(&AdtyTeamFundLot{}).Where("team_id = ? AND kind = ? AND source = ?", team.Id, "topup", tradeNo).Update("available", 10_000_000).Error)
 	r2, err := completeManualRefundForTest(t, tradeNo, "team remainder refund", root.Id, "team-cash-r2", decimal.NewFromInt(60))
 	require.NoError(t, err)
 	require.EqualValues(t, 10_000_000, r2.Refund.DeductedPrincipalQuota)

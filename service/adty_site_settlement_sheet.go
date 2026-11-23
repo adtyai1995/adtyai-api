@@ -74,7 +74,7 @@ func FreezeAdtyBillingClock(input *billingexpr.RequestInput, snapshot *billingex
 	input.AcceptedUnix = input.AcceptedAt.Unix()
 	if input.BusinessTimezone == "" {
 		zone := defaultBusinessTimezone
-		if model.DB != nil {
+		if model.DB != nil && model.DB.Migrator().HasTable(&model.Option{}) {
 			_, name, err := loadAdtyBusinessLocation()
 			if err != nil {
 				return "", err

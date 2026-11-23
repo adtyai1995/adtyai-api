@@ -366,6 +366,12 @@ type AdtyCommissionCoverageCancellation struct {
 // uncovered part. Carry the provable amount forward from migration and flag
 // earlier reports that cannot be reconstructed from dated records.
 func backfillCommissionCoverageCancellations(db *gorm.DB, now int64) error {
+	if !db.Migrator().HasTable(&AdtySiteInviteCommission{}) {
+		return nil
+	}
+	if err := db.AutoMigrate(&AdtySiteInviteCommission{}, &AdtyCommissionRecovery{}, &AdtyCommissionCoverageCancellation{}); err != nil {
+		return err
+	}
 	var rows []AdtySiteInviteCommission
 	if err := db.Where("clawed_usd > 0").Find(&rows).Error; err != nil {
 		return err

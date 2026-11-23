@@ -1261,7 +1261,7 @@ func adtyTicketAssigneesTx(tx *gorm.DB, ticket model.AdtyTicket, includePlatform
 		return nil, err
 	}
 	var platformCan func(int, int, authz.Permission) bool
-	if includePlatform && slices.ContainsFunc(users, func(user model.User) bool { return user.Role == common.RoleAdminUser }) {
+	if includePlatform && slices.ContainsFunc(users, func(user model.User) bool { return user.Role == common.RoleAdminUser }) && tx.Migrator().HasTable(&model.CasbinRule{}) {
 		var err error
 		platformCan, err = authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
 		if err != nil {
@@ -1314,7 +1314,7 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 	if actor.User.SiteId == 0 && actor.User.StaffSiteId == 0 && actor.User.Role >= common.RoleAdminUser {
 		if actor.User.Role >= common.RoleRootUser {
 			actor.PlatformAll, actor.PlatformMain = true, true
-		} else {
+		} else if tx.Migrator().HasTable(&model.CasbinRule{}) {
 			check, err := authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
 			if err != nil {
 				return actor, err
@@ -1323,44 +1323,51 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 			actor.PlatformMain = actor.PlatformAll || check(userId, actor.User.Role, authz.AdtyTicketManage)
 		}
 	}
-	var staff model.AdtySiteStaff
-	lookup := tx.Where("user_id = ?", userId).Limit(1).Find(&staff)
-	if lookup.Error != nil {
-		return actor, lookup.Error
-	}
-	if lookup.RowsAffected > 0 {
-		actor.Staff = &staff
-		if staff.SiteId > 0 && actor.User.StaffSiteId == staff.SiteId && actor.User.SiteId == staff.SiteId && actor.User.Role == common.RoleCommonUser && staff.Status == "enabled" && slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffTicketManage) {
-			var staffSite model.AdtySite
-			res := tx.Model(&model.AdtySite{}).Where("id = ? AND owner_user_id = ? AND status IN ?", staff.SiteId, staff.OwnerUserId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&staffSite)
-			if res.Error != nil {
-				return actor, res.Error
+	hasSiteTable := tx.Migrator().HasTable(&model.AdtySite{})
+	if tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+		var staff model.AdtySiteStaff
+		lookup := tx.Where("user_id = ?", userId).Limit(1).Find(&staff)
+		if lookup.Error != nil {
+			return actor, lookup.Error
+		}
+		if lookup.RowsAffected > 0 {
+			actor.Staff = &staff
+			if hasSiteTable && staff.SiteId > 0 && actor.User.StaffSiteId == staff.SiteId && actor.User.SiteId == staff.SiteId && actor.User.Role == common.RoleCommonUser && staff.Status == "enabled" && slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffTicketManage) {
+				var staffSite model.AdtySite
+				res := tx.Model(&model.AdtySite{}).Where("id = ? AND owner_user_id = ? AND status IN ?", staff.SiteId, staff.OwnerUserId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&staffSite)
+				if res.Error != nil {
+					return actor, res.Error
+				}
+				actor.StaffTickets = res.RowsAffected == 1 && AdtySiteAgreementAccepted(staffSite.AgreementVer)
 			}
-			actor.StaffTickets = res.RowsAffected == 1 && AdtySiteAgreementAccepted(staffSite.AgreementVer)
 		}
 	}
-	var site model.AdtySite
-	owned := tx.Where("owner_user_id = ? AND status IN ?", userId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&site)
-	if owned.Error != nil {
-		return actor, owned.Error
-	}
-	if owned.RowsAffected > 0 {
-		actor.OwnerSiteId = site.Id
-		actor.OwnerTickets = AdtySiteAgreementAccepted(site.AgreementVer)
-	}
-	var member model.AdtyTeamMember
-	team := tx.Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).Limit(1).Find(&member)
-	if team.Error != nil {
-		return actor, team.Error
-	}
-	if team.RowsAffected > 0 {
-		var active int64
-		if err := tx.Model(&model.AdtyTeam{}).Where("id = ? AND site_id = ? AND status = ?", member.TeamId, actor.User.SiteId, model.AdtyTeamStatusActive).Count(&active).Error; err != nil {
-			return actor, err
+	if hasSiteTable {
+		var site model.AdtySite
+		owned := tx.Where("owner_user_id = ? AND status IN ?", userId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&site)
+		if owned.Error != nil {
+			return actor, owned.Error
 		}
-		if active == 1 {
-			actor.TeamId = member.TeamId
-			actor.TeamRole = member.Role
+		if owned.RowsAffected > 0 {
+			actor.OwnerSiteId = site.Id
+			actor.OwnerTickets = AdtySiteAgreementAccepted(site.AgreementVer)
+		}
+	}
+	if tx.Migrator().HasTable(&model.AdtyTeamMember{}) && tx.Migrator().HasTable(&model.AdtyTeam{}) {
+		var member model.AdtyTeamMember
+		team := tx.Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).Limit(1).Find(&member)
+		if team.Error != nil {
+			return actor, team.Error
+		}
+		if team.RowsAffected > 0 {
+			var active int64
+			if err := tx.Model(&model.AdtyTeam{}).Where("id = ? AND site_id = ? AND status = ?", member.TeamId, actor.User.SiteId, model.AdtyTeamStatusActive).Count(&active).Error; err != nil {
+				return actor, err
+			}
+			if active == 1 {
+				actor.TeamId = member.TeamId
+				actor.TeamRole = member.Role
+			}
 		}
 	}
 	return actor, nil

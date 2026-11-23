@@ -77,32 +77,52 @@ describe('current reseller settings', () => {
     const client = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
     })
-    const initial = { ...settings, field_versions: { cost_factor: '1', min_cost_factor: '1' } }
+    const initial = {
+      ...settings,
+      field_versions: {
+        max_custom_domains_per_site: '1',
+        custom_domain_creates_per_hour: '1',
+      },
+    }
     client.setQueryData(siteAdminKeys.settings, initial)
     const view = render(
       <QueryClientProvider client={client}>
-        <SettingsPanel section='supply' canWrite canWriteSecrets />
+        <SettingsPanel section='domains' canWrite canWriteSecrets />
       </QueryClientProvider>
     )
     try {
-      const cost = await screen.findByLabelText('Cost factor d (greater than 0)')
-      fireEvent.change(cost, { target: { value: '0.9' } })
-      const latest = { ...initial, min_cost_factor: 0.4, field_versions: { ...initial.field_versions, min_cost_factor: '2' } }
-      await act(async () => { client.setQueryData(siteAdminKeys.settings, latest) })
-      expect(await screen.findByDisplayValue('0.4')).toBeDefined()
-      expect((cost as HTMLInputElement).value).toBe('0.9')
+      const maxDomains = await screen.findByLabelText('Custom domains per site')
+      fireEvent.change(maxDomains, { target: { value: '5' } })
+      const latest = {
+        ...initial,
+        custom_domain_creates_per_hour: 6,
+        field_versions: {
+          ...initial.field_versions,
+          custom_domain_creates_per_hour: '2',
+        },
+      }
+      await act(async () => {
+        client.setQueryData(siteAdminKeys.settings, latest)
+      })
+      expect(await screen.findByDisplayValue('6')).toBeDefined()
+      expect((maxDomains as HTMLInputElement).value).toBe('5')
       expect(screen.queryByRole('alert')).toBeNull()
       await act(async () => {
         client.setQueryData(siteAdminKeys.settings, {
-          ...latest, cost_factor: 0.7, field_versions: { ...latest.field_versions, cost_factor: '2' },
+          ...latest,
+          max_custom_domains_per_site: 4,
+          field_versions: {
+            ...latest.field_versions,
+            max_custom_domains_per_site: '2',
+          },
         })
       })
       const conflict = await screen.findByRole('alert')
-      expect(conflict.textContent).toContain('0.7')
-      expect((cost as HTMLInputElement).value).toBe('0.9')
+      expect(conflict.textContent).toContain('4')
+      expect((maxDomains as HTMLInputElement).value).toBe('5')
       fireEvent.click(screen.getByRole('button', { name: 'Keep my changes' }))
       expect(screen.queryByRole('alert')).toBeNull()
-      expect((cost as HTMLInputElement).value).toBe('0.9')
+      expect((maxDomains as HTMLInputElement).value).toBe('5')
     } finally {
       view.unmount()
       client.clear()

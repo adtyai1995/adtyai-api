@@ -74,7 +74,7 @@ func TestSiteOwnerWithdrawalPaidKeepsFreezeAndRecordsProof(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, MarkAdtySiteWithdrawalPaying(row.Id, 9))
-	require.NoError(t, MarkAdtySiteWithdrawalPaid(row.Id, 9, "txid-1", "manual payout"))
+	require.NoError(t, MarkAdtySiteWithdrawalPaid(row.Id, 9, "txid-1", "manual payout", 1))
 	var saved model.AdtySiteWithdrawal
 	require.NoError(t, db.First(&saved, row.Id).Error)
 	require.Equal(t, "paid", saved.Status)

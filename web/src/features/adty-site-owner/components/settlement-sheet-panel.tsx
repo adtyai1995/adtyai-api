@@ -155,7 +155,7 @@ export function SettlementSheetLines({ sheet }: { sheet: SettlementSheet }) {
   const revisions = sheet.revisions ?? []
   const revision =
     selected === 'latest'
-      ? revisions[revisions.length - 1]
+      ? revisions.at(-1)
       : revisions.find((r) => String(r.id) === selected)
   const generatedAt = revision?.created_at || sheet.generated_at
   const lines = settlementSheetLines(t, revision?.after ?? sheet, locale)
@@ -259,7 +259,10 @@ export function SettlementBrowser({
   const [day, setDay] = useState('')
   const [filter, setFilter] = useState('')
   const [selected, setSelected] = useState(0)
-  const site = admin ? (filter ? Number(filter) : undefined) : siteId
+  let site = siteId
+  if (admin) {
+    site = filter ? Number(filter) : undefined
+  }
   const query = useQuery({
     queryKey: [...scope, 'page', site, page, day],
     queryFn: () => list(page, day, site),

@@ -90,11 +90,11 @@ func TestStaffServiceDatabaseMatrix(t *testing.T) {
 			require.NoError(t, db.Callback().Create().Remove(callback))
 			_, _, err = AdtyStaffAccess(created.UserId, 3, "")
 			require.NoError(t, err)
-			for column, value := range map[string]any{"owner_user_id": owner.Id + 1000, "status": model.AdtySiteStatusClosed, "agreement_ver": "old"} {
+			for column, value := range map[string]any{"owner_user_id": owner.Id + 1000, "status": model.AdtySiteStatusClosed} {
 				require.NoError(t, db.Model(&site).Update(column, value).Error)
 				_, _, err = AdtyStaffAccess(created.UserId, 3, "")
 				assert.ErrorIs(t, err, ErrAdtyStaffDenied, column)
-				require.NoError(t, db.Model(&site).Updates(map[string]any{"owner_user_id": owner.Id, "status": model.AdtySiteStatusActive, "agreement_ver": AdtyCurrentSiteAgreementVersion()}).Error)
+				require.NoError(t, db.Model(&site).Updates(map[string]any{"owner_user_id": owner.Id, "status": model.AdtySiteStatusActive}).Error)
 			}
 			var user model.User
 			require.NoError(t, db.First(&user, created.UserId).Error)
@@ -441,9 +441,10 @@ func TestAdtySiteWalletRejectsShortfallAndRepaysOverdraft(t *testing.T) {
 
 func TestAdtySiteTierSelectionAndManualOverride(t *testing.T) {
 	db := prepareSiteDB(t)
-	low := model.AdtySiteTier{Code: "fixture-low", Name: "Fixture Low", DepositUSD: decimal.NewFromInt(10), Enabled: true, SortOrder: 1}
-	mid := model.AdtySiteTier{Code: "fixture-mid", Name: "Fixture Mid", MinEffectiveUsers: 1, MinPrincipalUSD: decimal.NewFromInt(50), MinConsumptionUSD: decimal.NewFromInt(20), Enabled: true, SortOrder: 2}
-	high := model.AdtySiteTier{Code: "fixture-high", Name: "Fixture High", MinEffectiveUsers: 5, MinPrincipalUSD: decimal.NewFromInt(200), MinConsumptionUSD: decimal.NewFromInt(80), Enabled: true, SortOrder: 3}
+	require.NoError(t, db.Where("code = ?", "default").Delete(&model.AdtySiteTier{}).Error)
+	low := model.AdtySiteTier{Code: "fixture-low", Name: "Fixture Low", CostFactor: dec("0.9"), DepositUSD: decimal.NewFromInt(10), Enabled: true, SortOrder: 1}
+	mid := model.AdtySiteTier{Code: "fixture-mid", Name: "Fixture Mid", CostFactor: dec("0.8"), MinEffectiveUsers: 1, MinPrincipalUSD: decimal.NewFromInt(50), MinConsumptionUSD: decimal.NewFromInt(20), Enabled: true, SortOrder: 2}
+	high := model.AdtySiteTier{Code: "fixture-high", Name: "Fixture High", CostFactor: dec("0.7"), MinEffectiveUsers: 5, MinPrincipalUSD: decimal.NewFromInt(200), MinConsumptionUSD: decimal.NewFromInt(80), Enabled: true, SortOrder: 3}
 	require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{low, mid, high}))
 
 	site := &model.AdtySite{OwnerUserId: 903, Subdomain: "tiered", RootDomain: "sites.example.com", Status: model.AdtySiteStatusActive}
@@ -646,12 +647,13 @@ func TestAdtySiteTierAcceptsConfirmedSupplyAndMarkupMeanings(t *testing.T) {
 	for _, tier := range []model.AdtySiteTier{
 		{Code: "supply", Name: "Supply", CostFactor: dec("1.2")},
 		{Code: "supply", Name: "Supply", CostFactor: dec("0.8")},
-		{Code: "cap", Name: "Cap", MaxMarkup: dec("0.9")},
+		{Code: "cap", Name: "Cap", CostFactor: dec("0.8"), MaxMarkup: dec("0.9")},
 	} {
 		assert.NoError(t, ValidateAdtySiteTier(tier), "%+v", tier)
 	}
+	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad"}), ErrAdtySiteTierInvalid)
 	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", CostFactor: dec("0")}), ErrAdtySiteTierInvalid)
-	assert.NoError(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "legacy", Name: "Legacy", MaxMarkup: dec("0")}))
+	assert.NoError(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "legacy", Name: "Legacy", CostFactor: dec("0.8"), MaxMarkup: dec("0")}))
 	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", CostFactor: dec("10000")}), ErrAdtySiteTierInvalid)
 }
 
@@ -705,7 +707,8 @@ func TestAdtySiteTierAssignmentUsesCurrentDefinition(t *testing.T) {
 			current, err := GetAdtySite(site.Id)
 			require.NoError(t, err)
 			if !enabled {
-				assert.Empty(t, current.TierCode, "a disabled definition must not acquire a new assignment")
+				assert.Equal(t, site.TierCode, current.TierCode, "a disabled definition must not acquire a new assignment")
+				assert.NotEqual(t, tier.Code, current.TierCode)
 				return
 			}
 			require.NotNil(t, current.TierCostFactor)

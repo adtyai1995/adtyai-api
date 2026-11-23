@@ -70,19 +70,22 @@ func TestMidjourneyPayerIsFrozenBeforeUpstreamPG(t *testing.T) {
 				require.NoError(t, err)
 				_, err = service.JoinAdtyTeam(member.Id, a.Team.Id)
 				require.ErrorIs(t, err, service.ErrAdtyTeamForbidden)
-				employee, err := service.CreateAdtyTeamEmployee(users[1].Id, a.Team.Id, "mj-emp", "StrongPassword123!", "Mj Emp")
-				require.NoError(t, err)
-				member.Id = employee.UserId
-				member.Username = employee.Username
+				if change == "personal_bind" {
+					// Team leaders can hold an unbound personal key and bind it to their team mid-flight;
+					// independent team employees always auto-bind new keys to their team on Insert.
+					member = &users[1]
+				} else {
+					employee, err := service.CreateAdtyTeamEmployee(users[1].Id, a.Team.Id, "mj-emp", "StrongPassword123!", "Mj Emp")
+					require.NoError(t, err)
+					member.Id = employee.UserId
+					member.Username = employee.Username
+				}
 				require.NoError(t, db.Model(&model.User{}).Where("id = ?", member.Id).Update("quota", 500_000).Error)
 				require.NoError(t, service.CreditAdtyTeam(int64(users[1].Id), a.Team.Id, 100_000, "original-credit"))
 				require.NoError(t, service.CreditAdtyTeam(int64(users[2].Id), b.Team.Id, 200_000, "later-credit"))
 				token := &model.Token{UserId: member.Id, Key: "mj-payer-key", Name: "mj-payer", Status: common.TokenStatusEnabled,
 					RemainQuota: 1_000_000, UnlimitedQuota: true, ExpiredTime: -1}
 				require.NoError(t, token.Insert())
-				if change != "personal_bind" {
-					require.NoError(t, service.BindAdtyTeamKey(member.Id, token.Id))
-				}
 				mutated := make(chan error, 1)
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					var changeErr error

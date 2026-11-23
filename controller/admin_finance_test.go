@@ -29,6 +29,7 @@ func migrateAdtyUnifiedOrderSources(t *testing.T, db *gorm.DB) {
 		&model.AdtyTopupOrder{},
 		&model.AdtyEpayChannel{},
 		&model.AdtySite{},
+		&model.AdtySiteOwnership{},
 		&model.BillingOperation{},
 		&model.AdtyManualRefund{},
 		&model.AdtySiteWithdrawal{},

@@ -32,8 +32,6 @@ func TestAdtyTicketWorkspacesPostgres(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set ADTY_TEST_PG_DSN to an isolated PostgreSQL 18.x database URL")
 	}
-	uri, err := url.Parse(dsn)
-	require.NoError(t, err)
 	base, err := gorm.Open(postgres.Open(dsn))
 	require.NoError(t, err)
 	basePool, err := base.DB()
@@ -47,10 +45,18 @@ func TestAdtyTicketWorkspacesPostgres(t *testing.T) {
 	schema := fmt.Sprintf("ticket_workspaces_%d", time.Now().UnixNano())
 	require.NoError(t, base.Exec("CREATE SCHEMA "+schema).Error)
 	defer base.Exec("DROP SCHEMA " + schema + " CASCADE")
-	params := uri.Query()
-	params.Set("search_path", schema)
-	uri.RawQuery = params.Encode()
-	db, err := gorm.Open(postgres.Open(uri.String()))
+	schemaDSN := dsn
+	if strings.Contains(dsn, "://") {
+		uri, err := url.Parse(dsn)
+		require.NoError(t, err)
+		params := uri.Query()
+		params.Set("search_path", schema)
+		uri.RawQuery = params.Encode()
+		schemaDSN = uri.String()
+	} else {
+		schemaDSN += " search_path=" + schema
+	}
+	db, err := gorm.Open(postgres.Open(schemaDSN))
 	require.NoError(t, err)
 	pool, err := db.DB()
 	require.NoError(t, err)

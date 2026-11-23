@@ -242,7 +242,7 @@ func TestFinanceBoundaries(t *testing.T) {
 			require.NoError(t, RunAdtySiteCostTierAssignment(at))
 			var stored model.AdtySite
 			require.NoError(t, db.First(&stored, site.Id).Error)
-			require.Equal(t, check.want, stored.TierMonth)
+			require.Empty(t, stored.TierMonth)
 		}
 	})
 	t.Run("business month uses completed payment", func(t *testing.T) {

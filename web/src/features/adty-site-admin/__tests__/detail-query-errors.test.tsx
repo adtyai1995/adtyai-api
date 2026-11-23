@@ -143,7 +143,7 @@ it.each(['stats', 'customers'])(
         <SiteDetailSheet siteId={1} onOpenChange={() => {}} />
       </QueryClientProvider>
     )
-    await screen.findByText('alpha.example')
+    await screen.findAllByText('alpha.example')
     const retry = await screen.findByRole('button', { name: 'Retry' })
     const before = requests.mock.calls.length
     failed = false

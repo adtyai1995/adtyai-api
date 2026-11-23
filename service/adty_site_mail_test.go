@@ -381,7 +381,7 @@ func TestCloseMigrationMailExplainsMainSiteSignInInEnglish(t *testing.T) {
 	t.Cleanup(func() { system_setting.ServerAddress = previous })
 	site := &model.AdtySite{Brand: `{"name":"Old & Co","support_contact":"help <support@example.com>"}`, CloseExecuteAt: 1_700_000_000}
 	subject, body := renderAdtySiteCloseMigrationMail(site, &model.AdtySiteCloseMailRecipient{Username: "member<1>"})
-	assert.Equal(t, "Old & Co is closing; sign in on the main site", subject)
+	assert.Equal(t, "Old & Co 即将关闭，请登录主站 / Site closure and main-site sign-in", subject)
 	for _, text := range []string{`href="https://main.example.com"`, "member&lt;1&gt;", "help &lt;support@example.com&gt;", adtyMailWhen(site.CloseExecuteAt), "unique username", "password", "orders and balance", "same email", "create new API keys"} {
 		assert.Contains(t, body, text)
 	}
@@ -577,10 +577,16 @@ func TestSiteCloseMailExclusiveRecipientClaimBatchStatusAndResendIdempotency(t *
 	require.NoError(t, db.First(&refreshed, batch.Id).Error)
 	assert.Equal(t, model.AdtySiteCloseMailRetryRetryable, refreshed.RetryStatus)
 
-	// Mark u1 as already in-flight ('sending'): normal retry must not double-send to u1, and batch stays retryable.
+	// Mark u1 as an active in-flight Resend attempt ('sending'): normal retry must not double-send to u1, and batch stays retryable.
 	require.NoError(t, db.Model(&model.AdtySiteCloseMailRecipient{}).
 		Where("batch_id = ? AND user_id = ?", batch.Id, u1.Id).
-		Update("status", AdtySiteCloseMailSending).Error)
+		Updates(map[string]any{
+			"status":           AdtySiteCloseMailSending,
+			"provider":         "resend",
+			"first_attempt_at": now - 10,
+			"last_attempt_at":  now - 10,
+			"lease_until":      now + 600,
+		}).Error)
 
 	var idempotencyKeys []string
 	var deliveredTo []string
@@ -610,7 +616,10 @@ func TestSiteCloseMailExclusiveRecipientClaimBatchStatusAndResendIdempotency(t *
 	require.NoError(t, db.First(&refreshed, batch.Id).Error)
 	assert.Equal(t, model.AdtySiteCloseMailRetryRetryable, refreshed.RetryStatus, "batch with sending recipient must remain retryable")
 
-	// Root manual retry with includeSending=true can reclaim a stuck sending recipient and complete the batch.
+	// Once u1's Resend lease expires, Root manual retry with includeSending=true can reclaim it and complete the batch.
+	require.NoError(t, db.Model(&model.AdtySiteCloseMailRecipient{}).
+		Where("batch_id = ? AND user_id = ?", batch.Id, u1.Id).
+		Updates(map[string]any{"first_attempt_at": now - 700, "last_attempt_at": now - 700, "lease_until": now - 100}).Error)
 	_, err = RetryAdtySiteCloseMigrationMailByRoot(site.Id, 0, true, "reclaim stuck sending")
 	require.NoError(t, err)
 	assert.Equal(t, []string{u2.Email, u1.Email}, deliveredTo)

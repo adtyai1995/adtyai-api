@@ -48,7 +48,7 @@ func TestStaffBalanceRequestNeedsApproval(t *testing.T) {
 	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "gap-site", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
-	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Status: "enabled", Role: "support"}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Status: "enabled", Role: "support", Permissions: `["customers.read","customers.balance_request"]`}).Error)
 	fundStaffBalanceSite(t, db, site.Id, "gap")
 	request, err := SubmitAdtyStaffBalanceRequest(staffUser.Id, customer.Id, model.AdtyStaffBalanceIncrease, decimal.RequireFromString("2"), "staff-bal-inc-1", staffProvenanceForTest(t, customer.Id, model.AdtyStaffBalanceIncrease))
 	require.NoError(t, err)
@@ -197,6 +197,9 @@ func TestSiteRegisterDocsAndRollback(t *testing.T) {
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
 	cfg.MaxSiteBonusExtra, cfg.TrialGrantMaxUSD, cfg.TrialGrantDailyUSD = new(0.0), new(5.0), new(10.0)
+	require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{{
+		Code: "default", Name: "Default", CostFactor: dec("0.8"), DepositUSD: decimal.Zero, Enabled: true,
+	}}))
 	owner := referralUser(t, db, "open-owner")
 	_, err := Referral.EnsureAffiliate(owner.Id)
 	require.NoError(t, err)
@@ -326,7 +329,16 @@ func TestHideAdtyNotificationWritesOfficialAuditOnce(t *testing.T) {
 	require.Equal(t, "published", still.Status)
 	require.Equal(t, publication.ReadKey, still.ReadKey)
 
-	requestSite := model.AdtySite{Id: site.Id + 100}
+	otherOwner := referralUser(t, db, "notice-hide-req-owner")
+	requestSite := model.AdtySite{Id: site.Id + 100, OwnerUserId: otherOwner.Id, Subdomain: "notice-hide-req-site", Status: model.AdtySiteStatusActive}
+	require.NoError(t, db.Create(&requestSite).Error)
+	ctxPub := model.AdtyNotificationPublication{
+		IssuerSiteId: 0, PublisherId: 1, PublisherName: "Root",
+		Audience: "all_users", Kind: "notice", Title: "Platform notice", Content: "window",
+		Business: "ops", Status: "published", Revision: 1,
+		ReadKey: "notice-audit-ctx", PublishedAt: 1, UpdatedAt: 1, UpdatedBy: 1,
+	}
+	require.NoError(t, db.Create(&ctxPub).Error)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set(AdtySiteContextKey, &requestSite)
@@ -363,7 +375,7 @@ func seedStaffBalanceActors(t *testing.T, db *gorm.DB, prefix string) (owner, st
 	site = model.AdtySite{OwnerUserId: owner.Id, Subdomain: prefix + "-site", Status: model.AdtySiteStatusActive, AgreementVer: AdtyCurrentSiteAgreementVersion()}
 	require.NoError(t, db.Create(&site).Error)
 	require.NoError(t, db.Model(customer).Update("site_id", site.Id).Error)
-	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Status: "enabled", Role: "support"}).Error)
+	require.NoError(t, db.Create(&model.AdtySiteStaff{SiteId: site.Id, OwnerUserId: owner.Id, UserId: staffUser.Id, Status: "enabled", Role: "support", Permissions: `["customers.read","customers.balance_request"]`}).Error)
 	fundStaffBalanceSite(t, db, site.Id, prefix)
 	return owner, staffUser, customer, site
 }

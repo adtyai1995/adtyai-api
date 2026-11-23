@@ -13,8 +13,11 @@ import (
 
 func TestOwnerEarningLineShowsModelAndGroupWithoutChannel(t *testing.T) {
 	db := prepareReferralDialectDB(t, "sqlite")
-	require.NoError(t, RecordAdtySiteEarningLine(7, 9, "gpt-test", "vip", "req-1", 500000, 1.25, 0.8))
-	rows, err := ListAdtyOwnerEarningLines(7, 0, 10)
+	owner := referralUser(t, db, "earning-line-owner")
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "earning-line", Status: model.AdtySiteStatusActive}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, RecordAdtySiteEarningLine(site.Id, 9, "gpt-test", "vip", "req-1", 500000, 1.25, 0.8))
+	rows, err := ListAdtyOwnerEarningLines(site.Id, 0, 10)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, "gpt-test", rows[0].ModelName)

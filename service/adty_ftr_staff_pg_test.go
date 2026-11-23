@@ -31,7 +31,7 @@ func TestFTRADTY1009EvaluateSiteTierPG(t *testing.T) {
 	site := ftrStaffSite(t, db, owner.Id, "ftr1009")
 	require.NoError(t, db.AutoMigrate(&model.TopUp{}))
 	require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{{
-		Code: "ftr1009", Name: "FTR 1009", Enabled: true, SortOrder: 1,
+		Code: "ftr1009", Name: "FTR 1009", CostFactor: dec("0.8"), Enabled: true, SortOrder: 1,
 		MinEffectiveUsers: 0, DepositUSD: decimal.Zero,
 	}}))
 

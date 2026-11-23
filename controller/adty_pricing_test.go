@@ -185,6 +185,10 @@ func TestGetPricingUsesSameEffectiveMarkupAsBillingWhenGroupEmptyCoexists(t *tes
 	bonusExtra, trialMax, trialDaily := 2.0, 5.0, 20.0
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = &costFactor, &minCostFactor, &maxMarkup
 	cfg.MaxSiteBonusExtra, cfg.TrialGrantMaxUSD, cfg.TrialGrantDailyUSD = &bonusExtra, &trialMax, &trialDaily
+	tierFactor := decimal.RequireFromString("0.8")
+	require.NoError(t, service.SaveAdtySiteTiers([]model.AdtySiteTier{{
+		Code: "pricing-default", Name: "Pricing Default", CostFactor: &tierFactor, Enabled: true, SortOrder: 1,
+	}}))
 	service.InvalidateAdtySiteCache()
 
 	owner := model.User{Username: "price-scope-owner", Password: "hashed-password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1, Email: "price-scope-owner@example.com"}

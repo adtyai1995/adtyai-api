@@ -149,7 +149,7 @@ func TestDomainAutomationCloseWinsLateActivation(t *testing.T) {
 	old := adtyProbeDomainHTTPS
 	t.Cleanup(func() { adtyProbeDomainHTTPS = old })
 	adtyProbeDomainHTTPS = func(context.Context, *model.AdtySiteDomain) error { return adtyCloseDomainIntentsTx(db, site.Id) }
-	require.NoError(t, adtyReconcileDomain(t.Context(), &domain))
+	require.ErrorContains(t, adtyReconcileDomain(t.Context(), &domain), "Domain intent changed")
 	var current model.AdtySiteDomain
 	require.NoError(t, db.First(&current, domain.Id).Error)
 	require.Equal(t, "redirect_only", current.DesiredState)

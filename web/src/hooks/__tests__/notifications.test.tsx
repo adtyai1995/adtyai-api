@@ -124,7 +124,7 @@ describe('account notification receipts', () => {
     expect(panel.result.current.hasMore).toBe(false)
     expect(panel.result.current.unreadCount).toBe(22)
     expect(get).toHaveBeenLastCalledWith('/api/adty/notifications', {
-      params: { before_id: 12 },
+      params: { before_id: 12, ticket_before: -1 },
     })
   })
 

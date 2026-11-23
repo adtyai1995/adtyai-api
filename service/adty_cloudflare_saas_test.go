@@ -208,10 +208,11 @@ func prepareDomainDB(t *testing.T) (*gorm.DB, *fakeCloudflare) {
 	fake.widgets["w-platform"] = []string{"adtyai.com", "sites.example.com"}
 	fake.widgets["w-two"] = []string{}
 
-	oldClient, oldWait, oldSleep, oldLookup := AdtyCloudflare, adtyCustomHostnameRecordDelay, adtyCloudflareSleep, adtyLookupOwnershipTXT
+	oldClient, oldWait, oldSleep, oldLookup, oldProbe := AdtyCloudflare, adtyCustomHostnameRecordDelay, adtyCloudflareSleep, adtyLookupOwnershipTXT, adtyProbeDomainHTTPS
 	AdtyCloudflare = &AdtyCloudflareClient{BaseURL: server.URL, HTTP: server.Client(), Token: func() string { return "cf-token" }}
 	adtyCustomHostnameRecordDelay = 0
 	adtyCloudflareSleep = func(time.Duration) {}
+	adtyProbeDomainHTTPS = func(context.Context, *model.AdtySiteDomain) error { return nil }
 	// 默认测试里 TXT 已经配好，这样原来的建主机名用例仍然一次完成。
 	adtyLookupOwnershipTXT = func(_ context.Context, name string) ([]string, error) {
 		host := strings.TrimPrefix(name, "_cf-custom-hostname.")
@@ -222,7 +223,7 @@ func prepareDomainDB(t *testing.T) (*gorm.DB, *fakeCloudflare) {
 		return []string{row.OwnershipToken}, nil
 	}
 	t.Cleanup(func() {
-		AdtyCloudflare, adtyCustomHostnameRecordDelay, adtyCloudflareSleep, adtyLookupOwnershipTXT = oldClient, oldWait, oldSleep, oldLookup
+		AdtyCloudflare, adtyCustomHostnameRecordDelay, adtyCloudflareSleep, adtyLookupOwnershipTXT, adtyProbeDomainHTTPS = oldClient, oldWait, oldSleep, oldLookup, oldProbe
 	})
 	require.NoError(t, db.AutoMigrate(&model.AdtySiteDomain{}, &model.AdtySiteAudit{}))
 	return db, fake
@@ -464,7 +465,7 @@ func TestStaleDomainRemovalDoesNotTouchReassignedOwner(t *testing.T) {
 	reassigned, err := AddAdtySiteDomain(context.Background(), second.Id, original.Hostname)
 	require.NoError(t, err)
 	require.NotEqual(t, stale.OwnershipToken, reassigned.OwnershipToken)
-	require.NoError(t, removeAdtySiteDomain(context.Background(), &stale))
+	require.ErrorIs(t, removeAdtySiteDomain(context.Background(), &stale), ErrAdtySiteNotFound)
 	var saved model.AdtySiteDomain
 	require.NoError(t, db.First(&saved, reassigned.Id).Error)
 	assert.Equal(t, secondSite.Id, saved.SiteId)

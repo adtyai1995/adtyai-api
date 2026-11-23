@@ -37,11 +37,17 @@ func TestResellerSettingsRollbackAndFullSiteRanking(t *testing.T) {
 	require.NoError(t, db.Exec("CREATE SCHEMA "+schema).Error)
 	defer db.Exec("DROP SCHEMA " + schema + " CASCADE")
 	parsed, err := url.Parse(dsn)
-	require.NoError(t, err)
-	params := parsed.Query()
-	params.Set("search_path", schema)
-	parsed.RawQuery = params.Encode()
-	conn, err := gorm.Open(postgres.Open(parsed.String()))
+	schemaDSN := dsn
+	if strings.Contains(dsn, "://") {
+		require.NoError(t, err)
+		params := parsed.Query()
+		params.Set("search_path", schema)
+		parsed.RawQuery = params.Encode()
+		schemaDSN = parsed.String()
+	} else {
+		schemaDSN += " search_path=" + schema
+	}
+	conn, err := gorm.Open(postgres.Open(schemaDSN))
 	require.NoError(t, err)
 	scopedPool, err := conn.DB()
 	require.NoError(t, err)
@@ -53,8 +59,11 @@ func TestResellerSettingsRollbackAndFullSiteRanking(t *testing.T) {
 		model.DB, model.LOG_DB, common.OptionMap = origDB, origLog, origMap
 		*adty_setting.GetResellerSetting() = prior
 	}()
-	require.NoError(t, conn.AutoMigrate(&model.AdtySite{}, &model.AdtySiteOwnership{}, &model.AdtySiteEarningDaily{}, &model.User{}, &model.AdtyTopupOrder{}, &model.TopUp{}, &model.Option{}, &model.Log{}, &model.AuditIntent{}, &model.AuditLog{}))
+	require.NoError(t, conn.AutoMigrate(&model.AdtySite{}, &model.AdtySiteTier{}, &model.AdtySiteDomain{}, &model.AdtySiteOwnership{}, &model.AdtySiteEarningDaily{}, &model.User{}, &model.AdtyTopupOrder{}, &model.TopUp{}, &model.Option{}, &model.Log{}, &model.AuditIntent{}, &model.AuditLog{}))
+	tierCost := decimal.RequireFromString("0.8")
+	require.NoError(t, conn.Create(&model.AdtySiteTier{Code: "standard", Name: "Standard", CostFactor: &tierCost, Enabled: true, SortOrder: 1}).Error)
 	cfg := adty_setting.DefaultResellerSetting()
+	cfg.MarkupIncreaseDelayHours = 24
 	cost := 0.8
 	cfg.CostFactor = &cost
 	*adty_setting.GetResellerSetting() = cfg

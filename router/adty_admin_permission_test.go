@@ -106,7 +106,7 @@ func TestAdtyResourcesHaveNoDefaultRoles(t *testing.T) {
 			adty = append(adty, resource.Resource)
 		}
 	}
-	assert.ElementsMatch(t, []string{"adty_user", "adty_log", "adty_model", "adty_finance", "adty_referral", "adty_payment", "adty_site"}, adty)
+	assert.ElementsMatch(t, []string{"adty_ticket", "adty_user", "adty_log", "adty_model", "adty_finance", "adty_referral", "adty_payment", "adty_site"}, adty)
 }
 
 func TestAdminHasNoPermissionByDefault(t *testing.T) {

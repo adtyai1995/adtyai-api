@@ -258,8 +258,7 @@ func TestOwnerTopupDailySettlementSeparatesCashPG(t *testing.T) {
 	var paid map[string]string
 	require.NoError(t, common.UnmarshalJsonStr(sheet.PaidByCurrency, &paid))
 	require.Equal(t, "100", paid["USDT"], "a later refund cannot erase the original receipt")
-	day := time.Now().Format("2006-01-02")
-	stats, err := GetAdtySiteStats(site.Id, day, day)
+	stats, err := GetAdtySiteStats(site.Id, "1970-01-01", "1970-01-01")
 	require.NoError(t, err)
 	require.Equal(t, "30", stats.Total.TopUpUSD.String(), "only the customer voucher belongs in customer performance")
 }

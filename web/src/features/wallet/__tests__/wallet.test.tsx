@@ -29,6 +29,28 @@ import { WalletLotProjectionLines } from '../components/wallet-lot-projection'
 import { WalletStatsCard } from '../components/wallet-stats-card'
 import { Wallet } from '../index'
 
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return {
+    ...actual,
+    Link: ({
+      children,
+      to,
+      hash,
+      ...rest
+    }: {
+      children?: ReactNode
+      to?: string
+      hash?: string
+      [key: string]: unknown
+    }) => (
+      <a href={`${to ?? ''}${hash ? `#${hash}` : ''}`} {...rest}>
+        {children}
+      </a>
+    ),
+  }
+})
+
 it.each([true, false])(
   'shows expiring gifts separately from permanent gifts, compact=%s',
   (compact) => {

@@ -75,18 +75,20 @@ func TestFreeRequestViolationFeeKeepsAcceptedPayerPG(t *testing.T) {
 			require.NoError(t, err)
 			_, err = service.JoinAdtyTeam(member.Id, a.Team.Id)
 			require.ErrorIs(t, err, service.ErrAdtyTeamForbidden)
-			employee, err := service.CreateAdtyTeamEmployee(users[1].Id, a.Team.Id, "fee-emp", "StrongPassword123!", "Fee Emp")
-			require.NoError(t, err)
-			member.Id = employee.UserId
+			if tc.teamPaid {
+				employee, err := service.CreateAdtyTeamEmployee(users[1].Id, a.Team.Id, "fee-emp", "StrongPassword123!", "Fee Emp")
+				require.NoError(t, err)
+				member.Id = employee.UserId
+			} else {
+				// Team leaders can hold an unbound personal key and bind it to their team after acceptance.
+				member = &users[1]
+			}
 			require.NoError(t, db.Model(&model.User{}).Where("id = ?", member.Id).Update("quota", tc.openingQuota).Error)
 			require.NoError(t, service.CreditAdtyTeam(int64(users[1].Id), a.Team.Id, 100_000, "free-original"))
 			require.NoError(t, service.CreditAdtyTeam(int64(users[2].Id), b.Team.Id, 200_000, "free-later"))
 			token := &model.Token{UserId: member.Id, Key: "free-payer-key", Name: "free-payer", Status: common.TokenStatusEnabled,
 				RemainQuota: 1_000_000, UnlimitedQuota: true, ExpiredTime: -1}
 			require.NoError(t, token.Insert())
-			if tc.teamPaid {
-				require.NoError(t, service.BindAdtyTeamKey(member.Id, token.Id))
-			}
 			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 			info := &relaycommon.RelayInfo{UserId: member.Id, TokenId: token.Id, TokenKey: token.Key,

@@ -66,8 +66,9 @@ export function WithdrawRulesPanel() {
     onError: (error) => handleServerError(error),
   })
   if (!isRoot) return null
-  if (current.isError)
+  if (current.isError) {
     return <ErrorState onRetry={() => void current.refetch()} />
+  }
   const ready =
     current.isSuccess &&
     [

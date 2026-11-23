@@ -259,7 +259,7 @@ func TestBillingPayerSnapshotKeepsPersonalWalletAfterBindingPG(t *testing.T) {
 	f := newTeamSettleFixture(t, 500_000, 100_000)
 	f.token = &model.Token{UserId: f.member.Id, Key: "personal-before-bind", Name: "personal",
 		RemainQuota: 1_000_000, UnlimitedQuota: true, Status: common.TokenStatusEnabled, ExpiredTime: -1}
-	require.NoError(t, f.token.Insert())
+	require.NoError(t, f.db.Create(f.token).Error)
 	const key = "request:personal-before-bind"
 	f.reserve(t, key, 50_000)
 	require.EqualValues(t, 450_000, f.personalQuota(t))
@@ -369,7 +369,7 @@ func TestBillingPayerSnapshotRecoversLegacyReservationPG(t *testing.T) {
 			if tc.personal {
 				f.token = &model.Token{UserId: f.member.Id, Key: "legacy-personal", RemainQuota: 1_000_000,
 					UnlimitedQuota: true, Status: common.TokenStatusEnabled, ExpiredTime: -1}
-				require.NoError(t, f.token.Insert())
+				require.NoError(t, f.db.Create(f.token).Error)
 			}
 			const key = "request:legacy-payer"
 			f.reserve(t, key, 50_000)

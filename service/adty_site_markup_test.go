@@ -301,7 +301,7 @@ func TestCostFactorResolveOrder(t *testing.T) {
 		{"site override", model.AdtySite{CostFactor: dec("0.6"), TierCostFactor: dec("0.7")}, "0.6"},
 		{"tier", model.AdtySite{TierCostFactor: dec("0.7")}, "0.7"},
 		{"global", model.AdtySite{}, "0.8"},
-		{"below the minimum uses the minimum", model.AdtySite{CostFactor: dec("0.3")}, "0.5"},
+		{"below retired global minimum is honored", model.AdtySite{CostFactor: dec("0.3")}, "0.3"},
 		{"above 1 is honored", model.AdtySite{CostFactor: dec("1.2")}, "1.2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -312,7 +312,7 @@ func TestCostFactorResolveOrder(t *testing.T) {
 	}
 	cfg.CostFactorTiers = nil
 	got, _ := AdtySiteCostFactor(&model.AdtySite{TierCostFactor: dec("0.7")})
-	assert.True(t, got.Equal(decimal.RequireFromString("0.8")), "tiers switched off fall back to the global d")
+	assert.True(t, got.Equal(decimal.RequireFromString("0.7")), "site level tier cost factor applies independently of legacy cost_factor_tiers")
 	cfg.CostFactor = nil
 	_, ok := AdtySiteCostFactor(&model.AdtySite{})
 	assert.False(t, ok)
@@ -325,21 +325,20 @@ func TestMonthlyTierAssignment(t *testing.T) {
 
 	changed, err := AssignAdtySiteCostTiers("2026-10", map[int]decimal.Decimal{site.Id: decimal.NewFromInt(900)})
 	require.NoError(t, err)
-	assert.Empty(t, changed, "no tiers configured: nothing is written")
+	assert.Empty(t, changed, "legacy monthly tier assignment is retired")
 	stored, _ := GetAdtySite(site.Id)
-	assert.Nil(t, stored.TierCostFactor)
+	require.NotNil(t, stored.TierCostFactor)
+	assert.True(t, stored.TierCostFactor.Equal(decimal.RequireFromString("0.8")))
 	assert.Empty(t, stored.TierMonth)
 
 	cfg.CostFactorTiers = []adty_setting.ResellerCostTier{{MinMonthlyUSD: 0, CostFactor: 0.8}, {MinMonthlyUSD: 500, CostFactor: 0.75}, {MinMonthlyUSD: 1000, CostFactor: 0.7}}
 	changed, err = AssignAdtySiteCostTiers("2026-10", map[int]decimal.Decimal{site.Id: decimal.NewFromInt(900)})
 	require.NoError(t, err)
-	require.Len(t, changed, 1)
+	assert.Empty(t, changed)
 	stored, _ = GetAdtySite(site.Id)
 	require.NotNil(t, stored.TierCostFactor)
-	assert.True(t, stored.TierCostFactor.Equal(decimal.RequireFromString("0.75")), "$900 lands in the $500 tier")
-	assert.Equal(t, "2026-10", stored.TierMonth)
-	d, _ := AdtySiteCostFactor(stored)
-	assert.True(t, d.Equal(decimal.RequireFromString("0.75")))
+	assert.True(t, stored.TierCostFactor.Equal(decimal.RequireFromString("0.8")))
+	assert.Empty(t, stored.TierMonth)
 }
 
 func TestHigherTierCostFactorWaits(t *testing.T) {
@@ -349,25 +348,14 @@ func TestHigherTierCostFactorWaits(t *testing.T) {
 	cfg.CostFactorTiers = []adty_setting.ResellerCostTier{{MinMonthlyUSD: 0, CostFactor: 0.9}}
 	t.Cleanup(func() { cfg.CostFactorTiers = nil })
 
-	_, err := AssignAdtySiteCostTiers("2026-10", map[int]decimal.Decimal{site.Id: decimal.NewFromInt(10)})
+	changed, err := AssignAdtySiteCostTiers("2026-10", map[int]decimal.Decimal{site.Id: decimal.NewFromInt(10)})
 	require.NoError(t, err)
+	assert.Empty(t, changed)
 	stored, err := GetAdtySite(site.Id)
 	require.NoError(t, err)
 	current, ok := AdtySiteCostFactor(stored)
 	require.True(t, ok)
-	assert.True(t, current.Equal(decimal.RequireFromString("0.8")), "a higher tier d must not bill immediately, got %s", current)
-	require.NotNil(t, stored.PendingTierCostFactor)
-	assert.True(t, stored.PendingTierCostFactor.Equal(decimal.RequireFromString("0.9")))
-	assert.Greater(t, stored.PendingTierCostFactorAt, time.Now().Unix())
-
-	applied, err := ApplyDueAdtySiteTierCostFactors(stored.PendingTierCostFactorAt)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), applied)
-	stored, err = GetAdtySite(site.Id)
-	require.NoError(t, err)
-	current, ok = AdtySiteCostFactor(stored)
-	require.True(t, ok)
-	assert.True(t, current.Equal(decimal.RequireFromString("0.9")))
+	assert.True(t, current.Equal(decimal.RequireFromString("0.8")), "got %s", current)
 	assert.Nil(t, stored.PendingTierCostFactor)
 }
 
@@ -387,8 +375,8 @@ func TestScheduledCostTierUsesLastMonthRevenue(t *testing.T) {
 	stored, err := GetAdtySite(site.Id)
 	require.NoError(t, err)
 	require.NotNil(t, stored.TierCostFactor)
-	assert.True(t, stored.TierCostFactor.Equal(decimal.RequireFromString("0.72")))
-	assert.Equal(t, month, stored.TierMonth)
+	assert.True(t, stored.TierCostFactor.Equal(decimal.RequireFromString("0.8")))
+	assert.Empty(t, stored.TierMonth)
 
 	want := reflect.ValueOf(startAdtySiteCostTierTask).Pointer()
 	scheduled := false

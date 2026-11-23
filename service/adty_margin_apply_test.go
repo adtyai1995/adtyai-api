@@ -20,7 +20,7 @@ import (
 func setAdtyMarginTargetForTest(t *testing.T, siteID int, amount decimal.Decimal) {
 	t.Helper()
 	code := "margin-target-" + strconv.Itoa(siteID)
-	require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{{Code: code, Name: "Margin target", DepositUSD: amount, Enabled: true}}))
+	require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{{Code: code, Name: "Margin target", CostFactor: dec("0.8"), DepositUSD: amount, Enabled: true}}))
 	_, err := SetAdtySiteTier(siteID, code, AdtySiteTierModeManual, 100)
 	require.NoError(t, err)
 }
@@ -63,7 +63,7 @@ func TestAdtyMarginSupplementStartsCurrentTierCycle(t *testing.T) {
 				}
 				var before model.AdtySiteWallet
 				require.NoError(t, db.Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).First(&before).Error)
-				require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{{Code: "cycle-current", Name: "Cycle current", DepositUSD: decimal.NewFromInt(120), Enabled: true}}))
+				require.NoError(t, SaveAdtySiteTiers([]model.AdtySiteTier{{Code: "cycle-current", Name: "Cycle current", CostFactor: dec("0.8"), DepositUSD: decimal.NewFromInt(120), Enabled: true}}))
 				_, err := SetAdtySiteTier(site.Id, "cycle-current", AdtySiteTierModeManual, 100)
 				require.NoError(t, err)
 				var afterTier model.AdtySiteWallet

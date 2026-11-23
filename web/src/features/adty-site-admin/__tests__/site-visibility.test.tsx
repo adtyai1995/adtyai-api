@@ -214,7 +214,7 @@ it('does not carry one site visibility draft into another site', async () => {
       <SiteDetailSheet siteId={2} onOpenChange={onOpenChange} />
     </QueryClientProvider>
   )
-  await screen.findByText('site2.example')
+  await screen.findAllByText('site2.example')
   expect(screen.getByLabelText('Customer API keys')).toHaveValue('')
   await user.keyboard('{Escape}')
   await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))

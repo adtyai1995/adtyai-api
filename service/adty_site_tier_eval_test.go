@@ -172,6 +172,7 @@ func TestAdtySiteTierConsumptionCountsOnlySettledBilledAmounts(t *testing.T) {
 
 func TestAdtySiteTierPromotionDemotionPinAndIdempotency(t *testing.T) {
 	db := prepareSiteDB(t)
+	require.NoError(t, db.Where("code = ?", "default").Delete(&model.AdtySiteTier{}).Error)
 	saveFixtureAdtySiteTiers(t)
 	_, site := openActiveSite(t, db, "tier-eval")
 
@@ -181,14 +182,14 @@ func TestAdtySiteTierPromotionDemotionPinAndIdempotency(t *testing.T) {
 	}
 	lead := users[0]
 
-	// Two of the mid-grade thresholds are met (users and principal); consumption stays on low.
-	require.NoError(t, insertAdtySiteTierTopUp(db, site.Id, lead.Id, "eval-prin-1", model.PaymentProviderAdtyBEpusdt, adtySiteTierUSD("80"), 0, common.TopUpStatusSuccess))
+	// Principal $50 meets eval-low ($10) and stays below eval-mid ($80).
+	require.NoError(t, insertAdtySiteTierTopUp(db, site.Id, lead.Id, "eval-prin-1", model.PaymentProviderAdtyBEpusdt, adtySiteTierUSD("50"), 0, common.TopUpStatusSuccess))
 	require.NoError(t, insertAdtySiteTierBilling(db, site.Id, lead.Id, "eval-cons-low", model.BillingSettled, "request", 5))
 
 	stats, err := ComputeAdtySiteTierStats(site.Id)
 	require.NoError(t, err)
 	assert.EqualValues(t, 5, stats.EffectiveUsers)
-	assert.True(t, stats.PrincipalUSD.Equal(adtySiteTierUSD("80")), stats.PrincipalUSD)
+	assert.True(t, stats.PrincipalUSD.Equal(adtySiteTierUSD("50")), stats.PrincipalUSD)
 	assert.True(t, stats.ConsumptionUSD.Equal(adtySiteTierUSD("5")), stats.ConsumptionUSD)
 
 	first, err := EvaluateAdtySiteTierAt(site.Id, 1_800_000_000, "eval-period-low")
@@ -202,8 +203,8 @@ func TestAdtySiteTierPromotionDemotionPinAndIdempotency(t *testing.T) {
 	assert.True(t, margin.RequiredBalance.Equal(adtySiteTierUSD("15")))
 	assert.True(t, margin.CycleTierUSD.IsZero(), "grade assignment must not open a margin cycle")
 
-	// Meeting all three mid and high thresholds jumps across mid to high in one evaluation.
-	require.NoError(t, insertAdtySiteTierTopUp(db, site.Id, lead.Id, "eval-prin-2", model.PaymentProviderAdtyBEpusdt, adtySiteTierUSD("70"), 0, common.TopUpStatusSuccess))
+	// Additional $100 net principal ($150 total) jumps across mid ($80) to high ($150) in one evaluation.
+	require.NoError(t, insertAdtySiteTierTopUp(db, site.Id, lead.Id, "eval-prin-2", model.PaymentProviderAdtyBEpusdt, adtySiteTierUSD("100"), 0, common.TopUpStatusSuccess))
 	require.NoError(t, insertAdtySiteTierBilling(db, site.Id, lead.Id, "eval-cons-high", model.BillingSettled, "task", 85))
 	jumped, err := EvaluateAdtySiteTierAt(site.Id, 1_800_000_100, "eval-period-jump")
 	require.NoError(t, err)
@@ -236,11 +237,11 @@ func TestAdtySiteTierPromotionDemotionPinAndIdempotency(t *testing.T) {
 	assert.Equal(t, "eval-high", restored.TierCode)
 	assert.Equal(t, AdtySiteTierModeAuto, restored.TierMode)
 
-	// Demote by disabling users and refunding principal so only the low grade still qualifies.
+	// Demote by refunding principal ($100) so only the low grade ($50 net >= $10) still qualifies.
 	for _, user := range users[1:] {
 		require.NoError(t, db.Model(user).Update("status", common.UserStatusDisabled).Error)
 	}
-	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("trade_no = ?", "eval-prin-2").Update("refund_quota", adtySiteTierQuota("70")).Error)
+	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("trade_no = ?", "eval-prin-2").Update("refund_quota", adtySiteTierQuota("100")).Error)
 	require.NoError(t, db.Model(&model.TopUp{}).Where("trade_no = ?", "eval-prin-2").Update("status", model.TopUpStatusRefunded).Error)
 	require.NoError(t, db.Model(&model.BillingOperation{}).Where("operation_key = ?", "eval-cons-high").Update("state", model.BillingRefunded).Error)
 
@@ -258,11 +259,12 @@ func TestAdtySiteTierPromotionDemotionPinAndIdempotency(t *testing.T) {
 	assert.True(t, margin.CycleTierUSD.Equal(cycleBefore), "a grade change must not rewrite the current margin cycle cap")
 	assert.Equal(t, 0, warnings)
 
-	// Falling below every configured grade warns Root and leaves the site open.
-	require.NoError(t, db.Model(&model.BillingOperation{}).Where("operation_key = ?", "eval-cons-low").Update("state", model.BillingCanceled).Error)
+	// Falling below every configured grade ($0 net principal < $10) falls back to the lowest enabled grade, warns Root, and leaves the site open.
+	require.NoError(t, db.Model(&model.AdtyTopupOrder{}).Where("trade_no = ?", "eval-prin-1").Update("refund_quota", adtySiteTierQuota("50")).Error)
+	require.NoError(t, db.Model(&model.TopUp{}).Where("trade_no = ?", "eval-prin-1").Update("status", model.TopUpStatusRefunded).Error)
 	failed, err := EvaluateAdtySiteTierAt(site.Id, 1_800_000_700, "eval-period-warn")
 	require.NoError(t, err)
-	assert.Empty(t, failed.TierCode)
+	assert.Equal(t, "eval-low", failed.TierCode)
 	assert.Equal(t, model.AdtySiteStatusActive, failed.Status)
 	assert.Equal(t, 1, warnings)
 	var warningRows int64
@@ -274,7 +276,7 @@ func TestAdtySiteTierPromotionDemotionPinAndIdempotency(t *testing.T) {
 	requiredBefore := margin.RequiredBalance
 	replay, err := EvaluateAdtySiteTierAt(site.Id, 1_800_000_800, "eval-period-warn")
 	require.NoError(t, err)
-	assert.Empty(t, replay.TierCode)
+	assert.Equal(t, "eval-low", replay.TierCode)
 	assert.Equal(t, updatedAt, replay.TierUpdatedAt)
 	assert.Equal(t, 1, warnings, "re-running the same period must not notify again")
 	require.NoError(t, db.Model(&model.AdtySiteTierEvaluation{}).Where("site_id = ? AND period_id = ?", site.Id, "eval-period-warn").Count(&warningRows).Error)
@@ -287,24 +289,24 @@ func TestAdtySiteTierPromotionDemotionPinAndIdempotency(t *testing.T) {
 }
 
 func TestSelectAdtySiteTierIgnoresMonthlySpendAndPartialMatches(t *testing.T) {
-	low := model.AdtySiteTier{Code: "sel-low", Name: "Sel Low", Enabled: true, SortOrder: 1}
-	mid := model.AdtySiteTier{Code: "sel-mid", Name: "Sel Mid", MinEffectiveUsers: 4, MinPrincipalUSD: adtySiteTierUSD("20"), MinConsumptionUSD: adtySiteTierUSD("10"), Enabled: true, SortOrder: 2, MinMonthlyUSD: adtySiteTierUSD("10000")}
-	high := model.AdtySiteTier{Code: "sel-high", Name: "Sel High", MinEffectiveUsers: 8, MinPrincipalUSD: adtySiteTierUSD("40"), MinConsumptionUSD: adtySiteTierUSD("30"), Enabled: true, SortOrder: 3}
-	disabled := model.AdtySiteTier{Code: "sel-off", Name: "Sel Off", Enabled: false, SortOrder: 9}
+	low := model.AdtySiteTier{Code: "sel-low", Name: "Sel Low", CostFactor: dec("0.9"), Enabled: true, SortOrder: 1}
+	mid := model.AdtySiteTier{Code: "sel-mid", Name: "Sel Mid", CostFactor: dec("0.8"), MinEffectiveUsers: 4, MinPrincipalUSD: adtySiteTierUSD("20"), MinConsumptionUSD: adtySiteTierUSD("10"), Enabled: true, SortOrder: 2, MinMonthlyUSD: adtySiteTierUSD("10000")}
+	high := model.AdtySiteTier{Code: "sel-high", Name: "Sel High", CostFactor: dec("0.7"), MinEffectiveUsers: 8, MinPrincipalUSD: adtySiteTierUSD("40"), MinConsumptionUSD: adtySiteTierUSD("30"), Enabled: true, SortOrder: 3}
+	disabled := model.AdtySiteTier{Code: "sel-off", Name: "Sel Off", CostFactor: dec("0.6"), Enabled: false, SortOrder: 9}
 	tiers := []model.AdtySiteTier{low, mid, high, disabled}
 
-	// Two of three mid thresholds are met, so the site stays on low.
-	selected := SelectAdtySiteTier(tiers, AdtySiteTierStats{EffectiveUsers: 4, PrincipalUSD: adtySiteTierUSD("20"), ConsumptionUSD: adtySiteTierUSD("9")})
+	// Principal below mid ($19 < $20) stays on low even when users and consumption are high.
+	selected := SelectAdtySiteTier(tiers, AdtySiteTierStats{EffectiveUsers: 10, PrincipalUSD: adtySiteTierUSD("19"), ConsumptionUSD: adtySiteTierUSD("100")})
 	require.NotNil(t, selected)
 	assert.Equal(t, "sel-low", selected.Code)
 
-	// All mid thresholds are met; monthly spend is irrelevant.
-	selected = SelectAdtySiteTier(tiers, AdtySiteTierStats{EffectiveUsers: 4, PrincipalUSD: adtySiteTierUSD("20"), ConsumptionUSD: adtySiteTierUSD("10")})
+	// Meeting mid's MinPrincipalUSD ($20) selects mid regardless of monthly spend, users, or consumption.
+	selected = SelectAdtySiteTier(tiers, AdtySiteTierStats{EffectiveUsers: 0, PrincipalUSD: adtySiteTierUSD("20"), ConsumptionUSD: adtySiteTierUSD("0")})
 	require.NotNil(t, selected)
 	assert.Equal(t, "sel-mid", selected.Code)
 
-	// All high thresholds are met, so the selection jumps over mid.
-	selected = SelectAdtySiteTier(tiers, AdtySiteTierStats{EffectiveUsers: 8, PrincipalUSD: adtySiteTierUSD("40"), ConsumptionUSD: adtySiteTierUSD("30")})
+	// Meeting high's MinPrincipalUSD ($40) jumps over mid.
+	selected = SelectAdtySiteTier(tiers, AdtySiteTierStats{EffectiveUsers: 0, PrincipalUSD: adtySiteTierUSD("40"), ConsumptionUSD: adtySiteTierUSD("0")})
 	require.NotNil(t, selected)
 	assert.Equal(t, "sel-high", selected.Code)
 
@@ -313,8 +315,8 @@ func TestSelectAdtySiteTierIgnoresMonthlySpendAndPartialMatches(t *testing.T) {
 }
 
 func TestValidateAdtySiteTierRejectsIllegalLifetimeThresholds(t *testing.T) {
-	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", MinEffectiveUsers: -1}), ErrAdtySiteTierInvalid)
-	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", MinPrincipalUSD: decimal.RequireFromString("-0.01")}), ErrAdtySiteTierInvalid)
-	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", MinConsumptionUSD: decimal.RequireFromString("0.000000001")}), ErrAdtySiteTierInvalid)
-	assert.NoError(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "ok", Name: "Ok", MinEffectiveUsers: 0, MinPrincipalUSD: decimal.Zero, MinConsumptionUSD: decimal.Zero}))
+	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", CostFactor: dec("0.8"), MinEffectiveUsers: -1}), ErrAdtySiteTierInvalid)
+	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", CostFactor: dec("0.8"), MinPrincipalUSD: decimal.RequireFromString("-0.01")}), ErrAdtySiteTierInvalid)
+	assert.ErrorIs(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "bad", Name: "Bad", CostFactor: dec("0.8"), MinConsumptionUSD: decimal.RequireFromString("0.000000001")}), ErrAdtySiteTierInvalid)
+	assert.NoError(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: "ok", Name: "Ok", CostFactor: dec("0.8"), MinEffectiveUsers: 0, MinPrincipalUSD: decimal.Zero, MinConsumptionUSD: decimal.Zero}))
 }

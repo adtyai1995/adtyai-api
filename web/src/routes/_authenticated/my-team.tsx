@@ -26,7 +26,11 @@ import { useAuthStore } from '@/stores/auth-store'
 export const Route = createFileRoute('/_authenticated/my-team')({
   beforeLoad: () => {
     if (useAuthStore.getState().auth.user?.adty_has_team !== true) {
-      throw redirect({ to: '/dashboard/overview', replace: true })
+      throw redirect({
+        to: '/dashboard/$section',
+        params: { section: 'overview' },
+        replace: true,
+      })
     }
   },
   component: MyTeam,

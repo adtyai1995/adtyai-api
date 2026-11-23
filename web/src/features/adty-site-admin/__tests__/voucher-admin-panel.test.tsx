@@ -394,8 +394,15 @@ describe('VoucherAdminPanel and SiteFundPanel reconciliation', () => {
     const user = userEvent.setup()
     render(<SiteFundPanel siteId={5} />, { wrapper })
 
-    await user.type(await screen.findByLabelText('Amount'), '30')
-    await user.type(screen.getByLabelText('Reason'), 'margin-hold')
+    const amountField = await waitFor(() => {
+      const element = document.querySelector('#margin-code-amount')
+      if (!element) throw new Error('margin-code-amount not mounted')
+      return element
+    })
+    const reasonField = document.querySelector('#margin-code-reason')
+    if (!reasonField) throw new Error('margin-code-reason not mounted')
+    await user.type(amountField, '30')
+    await user.type(reasonField, 'margin-hold')
 
     const issueBtn = screen.getByRole('button', { name: 'Issue margin code' })
     await user.click(issueBtn)

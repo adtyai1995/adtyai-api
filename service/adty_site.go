@@ -480,12 +480,14 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 		if targetUser.SiteId > 0 {
 			return ErrAdtySiteCustomer
 		}
-		var empCount int64
-		if err := tx.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", userId, true).Count(&empCount).Error; err != nil {
-			return err
-		}
-		if empCount > 0 {
-			return common.NewMessage("Independent team employee accounts cannot own a site")
+		if adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{}) {
+			var empCount int64
+			if err := tx.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", userId, true).Count(&empCount).Error; err != nil {
+				return err
+			}
+			if empCount > 0 {
+				return common.NewMessage("Independent team employee accounts cannot own a site")
+			}
 		}
 		var owned int64
 		if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status <> ?", userId, model.AdtySiteStatusClosed).Count(&owned).Error; err != nil {

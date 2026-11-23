@@ -877,6 +877,11 @@ func TestRefundPreviewItemizesSplitCommissionToMatchAfterRefundSplitter(t *testi
 		Status: model.AdtySiteCommissionAvailable,
 	}
 	require.NoError(t, db.Create(&row).Error)
+	require.NoError(t, db.Create(&model.AdtyFundBatch{
+		UserId: invite.InviterId, SiteId: model.AdtyFundBatchSiteID(site.Id),
+		Kind: model.AdtyFundBatchKindPrincipal, Source: fmt.Sprintf("site-comm-cvt:%d:seed", row.Id),
+		Original: 3 * 500000, Remaining: 3 * 500000, Status: model.AdtyFundBatchStatusActive,
+	}).Error)
 	require.NoError(t, db.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletEarnings).
 		Update("frozen_usd", decimal.NewFromInt(4)).Error)
 	ext := siteInviteOrder(t, site.Id, invitee.Id, trade, decimal.NewFromInt(100))
@@ -992,12 +997,12 @@ func TestConvertedSiteCommissionClawbackReclaimsFundBatches(t *testing.T) {
 	const callback = "test:commission-claw-batch-failure"
 	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
 		if tx.Statement.Table == (model.AdtyFundBatch{}).TableName() {
-			var count int64
-			check := tx.Session(&gorm.Session{NewDB: true}).Model(&model.AdtyBalanceLedger{}).
-				Where("user_id = ? AND reason = ?", invite.InviterId, "site invite commission clawback").Count(&count)
+			var remaining int64
+			check := tx.Session(&gorm.Session{NewDB: true}).Model(&model.AdtyFundBatch{}).
+				Where("user_id = ?", invite.InviterId).Select("COALESCE(SUM(remaining), 0)").Scan(&remaining)
 			if check.Error != nil {
 				tx.AddError(check.Error)
-			} else if count > 0 {
+			} else if remaining < 1_250_000 {
 				tx.AddError(injected)
 			}
 		}

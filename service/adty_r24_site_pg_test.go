@@ -20,8 +20,8 @@ import (
 
 func TestR24SiteTierCodeBoundary(t *testing.T) {
 	for _, code := range []string{strings.Repeat("站", 32), strings.Repeat("a", 31) + "🙂"} {
-		require.NoError(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: code, Name: "Standard"}))
-		require.Error(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: code + "b", Name: "Standard"}))
+		require.NoError(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: code, Name: "Standard", CostFactor: dec("0.8")}))
+		require.Error(t, ValidateAdtySiteTier(model.AdtySiteTier{Code: code + "b", Name: "Standard", CostFactor: dec("0.8")}))
 	}
 }
 
@@ -129,7 +129,7 @@ func TestR24SiteHistoricalRemoval(t *testing.T) {
 
 func TestR24SiteDuplicateCreationPreservesAssignedTerms(t *testing.T) {
 	db := r23SiteDB(t)
-	tier := model.AdtySiteTier{Code: "standard", Name: "Standard", DepositUSD: decimal.NewFromInt(51), Enabled: true}
+	tier := model.AdtySiteTier{Code: "standard", Name: "Standard", CostFactor: dec("0.8"), DepositUSD: decimal.NewFromInt(51), Enabled: true}
 	require.NoError(t, CreateAdtySiteTiers([]model.AdtySiteTier{tier}))
 	site := model.AdtySite{OwnerUserId: 77, Subdomain: "test", RootDomain: "example.test", TierCode: tier.Code}
 	require.NoError(t, db.Create(&site).Error)

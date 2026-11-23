@@ -17,9 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Toaster } from 'sonner'
+import { toast, Toaster } from 'sonner'
 import { afterEach, expect, test, vi } from 'vitest'
 
 import {
@@ -35,6 +42,8 @@ vi.mock('@/lib/lobe-icon', () => ({ getLobeIcon: () => null }))
 
 const clients: QueryClient[] = []
 afterEach(() => {
+  toast.dismiss()
+  cleanup()
   for (const client of clients) client.clear()
   clients.length = 0
   localStorage.removeItem('task-plugins-view-mode')

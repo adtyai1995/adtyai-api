@@ -17,7 +17,7 @@ func TestRootPinsASiteLevelAndHandsItBack(t *testing.T) {
 	root := adtySessionToken(t, f.db, "tier-root", common.RoleRootUser)
 	saved := adtyJSON(t, f.engine, http.MethodPut, "/api/adty/admin/reseller/tiers",
 		`{"tiers":[{"code":"gold","name":"Gold","min_effective_users":10,"min_principal_usd":"100","min_consumption_usd":"50","cost_factor":"0.7","max_markup":"2.5","deposit_usd":"30","enabled":true,"sort_order":1},`+
-			`{"code":"retired","name":"Retired","deposit_usd":"0","enabled":false}]}`, root)
+			`{"code":"retired","name":"Retired","cost_factor":"0.8","deposit_usd":"0","enabled":false}]}`, root)
 	require.Contains(t, saved.Body.String(), `"success":true`, saved.Body.String())
 
 	path := fmt.Sprintf("/api/adty/admin/sites/%d/tier", f.site.Id)
@@ -42,7 +42,8 @@ func TestRootPinsASiteLevelAndHandsItBack(t *testing.T) {
 	require.Contains(t, auto.Body.String(), `"success":true`, auto.Body.String())
 	var handedBack model.AdtySite
 	require.NoError(t, f.db.First(&handedBack, f.site.Id).Error)
-	assert.Equal(t, "", handedBack.TierCode)
+	assert.Equal(t, "standard", handedBack.TierCode)
 	assert.Equal(t, "auto", handedBack.TierMode)
-	assert.Nil(t, handedBack.TierCostFactor)
+	require.NotNil(t, handedBack.TierCostFactor)
+	assert.True(t, handedBack.TierCostFactor.Equal(decimal.RequireFromString("0.8")))
 }

@@ -87,6 +87,8 @@ const api = vi.hoisted(() => ({
   reviewAdminAnomalyDisposition: vi.fn(),
   issueAdminMarginVoucher: vi.fn(),
   saveAdminWithdrawRules: vi.fn(),
+  getSiteOwnerCandidates: vi.fn(),
+  getSiteTiers: vi.fn(),
 }))
 vi.mock('@/features/users/api', async (original) => ({...await original<typeof import('@/features/users/api')>(), searchUsers: vi.fn(async () => ({success:true, data:{items:[{id:15,username:'station-owner'}]}}))}))
 vi.mock('../api', async (importOriginal) => ({
@@ -264,6 +266,26 @@ beforeEach(() => {
   api.getAdminFundAnomalies.mockResolvedValue([])
   api.getAdminSiteWallets.mockResolvedValue([])
   api.getAdminAnomalyDispositions.mockResolvedValue([])
+  api.getSiteOwnerCandidates.mockResolvedValue({
+    page: 1,
+    page_size: 20,
+    total: 1,
+    items: [{ id: 15, username: 'station-owner', display_name: '', email: '' }],
+  })
+  api.getSiteTiers.mockResolvedValue([
+    {
+      id: 1,
+      code: 'standard',
+      name: 'Standard',
+      min_effective_users: 0,
+      min_principal_usd: '0',
+      min_consumption_usd: '0',
+      cost_factor: '0.8',
+      deposit_usd: '0',
+      enabled: true,
+      sort_order: 0,
+    },
+  ])
   teamRegistrationApi.listTeamRegistrations.mockResolvedValue([])
 })
 
@@ -349,6 +371,12 @@ describe('site list', () => {
   })
 
   it('opens a site through the create API', async () => {
+    api.getResellerSettings.mockResolvedValue({
+      ...settings,
+      enabled: true,
+      money_configured: true,
+      tier_configured: true,
+    })
     const user = userEvent.setup()
     renderWith(
       <>
@@ -358,19 +386,34 @@ describe('site list', () => {
     )
     await screen.findByText('beta.sites.example')
 
-    await user.type(screen.getByRole('textbox', { name: 'Search main-site users' }), 'station')
-    await screen.findByRole('option', { name: 'station-owner (#15)' })
-    await user.selectOptions(screen.getByRole('combobox', {name:'Owner'}), '15')
-    await user.click(screen.getByRole('checkbox', {name:/Confirm site owner/}))
-    await user.type(screen.getByRole('textbox', { name: 'Domain' }), 'shop')
     await user.click(
-      screen.getByRole('button', { name: 'Open a reseller site' })
+      await screen.findByRole('button', { name: 'Open a reseller site' })
+    )
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Open a reseller site',
+    })
+    await user.click(
+      await within(dialog).findByRole('option', { name: /station-owner/ })
+    )
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Custom subdomain' })
+    )
+    await user.type(within(dialog).getByLabelText('Subdomain label'), 'shop')
+    await user.click(
+      within(dialog).getByRole('checkbox', { name: /Confirm site owner/ })
+    )
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Confirm and open site' })
     )
     await waitFor(() =>
-      expect(api.createSite).toHaveBeenCalledWith({
-        user_id: 15,
-        subdomain: 'shop',
-      })
+      expect(api.createSite).toHaveBeenCalledWith(
+        {
+          user_id: 15,
+          subdomain: 'shop',
+          root_domain: 'sites.example',
+        },
+        expect.any(String)
+      )
     )
   })
 
@@ -417,10 +460,10 @@ describe('site list', () => {
       .map((option) => option.textContent ?? '')
     expect(labels).toEqual([
       'All statuses',
-      'Pending review',
       'Active',
       'Closing',
       'Closed',
+      'Pending review',
     ])
     expect(labels).not.toContain('Paused')
   })
@@ -684,29 +727,30 @@ describe('reseller settings', () => {
     api.getResellerSettings.mockResolvedValue(settings)
   })
 
-  it('accepts supply costs above one and omits the retired retail limit', async () => {
+  it('omits retired global cost factor and retail limits and saves supply delay', async () => {
     const user = userEvent.setup()
     api.saveResellerSettings.mockResolvedValue(settings)
     renderWith(<SettingsPanel section='supply' canWrite canWriteSecrets />)
 
-    const costFactor = await screen.findByLabelText(
-      'Cost factor d (greater than 0)'
-    )
+    await screen.findByRole('switch', { name: 'Reseller sites' })
+    expect(
+      screen.queryByLabelText('Cost factor d (greater than 0)')
+    ).not.toBeInTheDocument()
     expect(screen.queryByLabelText(/Markup limit/)).not.toBeInTheDocument()
     expect(
       screen.queryByLabelText('Cost factor d (0 to 1)')
     ).not.toBeInTheDocument()
-    expect(
-      screen.queryByLabelText('Markup limit k (1 to 100)')
-    ).not.toBeInTheDocument()
 
-    await user.clear(costFactor)
-    await user.type(costFactor, '1.5')
+    const delay = screen.getByLabelText(
+      'Supply price increase delay (hours, 0 = immediate)'
+    )
+    await user.clear(delay)
+    await user.type(delay, '0')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
       expect(api.saveResellerSettings).toHaveBeenCalledWith({
-        cost_factor: 1.5,
+        markup_increase_delay_hours: 0,
       })
     )
   })
@@ -965,13 +1009,17 @@ describe('reseller settings', () => {
     ).toBeInTheDocument()
   })
 
-  it('disables the master switch while money settings are unset', async () => {
+  it('disables the master switch until a site level with supply discount is ready', async () => {
     renderWith(<SettingsPanel section='supply' canWrite canWriteSecrets />)
 
     expect(
       await screen.findByRole('switch', { name: 'Reseller sites' })
     ).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getAllByText('Not configured').length).toBeGreaterThan(0)
+    expect(
+      screen.getByText(
+        'Add at least one enabled site level with a supply discount below first.'
+      )
+    ).toBeInTheDocument()
   })
 
   it('never shows saved secrets and marks them as configured', async () => {
@@ -1238,7 +1286,9 @@ describe('SiteDetailSheet notice takedown', () => {
       permissions: { admin_permissions: { adty_site: { read: true } } },
     })
     openSheet(withNotice)
-    expect(await screen.findByText('alpha.sites.example')).toBeInTheDocument()
+    expect(
+      (await screen.findAllByText('alpha.sites.example')).length
+    ).toBeGreaterThan(0)
     expect(
       screen.queryByRole('button', { name: 'Take down notice' })
     ).not.toBeInTheDocument()
@@ -1316,7 +1366,7 @@ describe('SiteDetailSheet notice takedown', () => {
   it('does not let adjust disable custom and sender domains', async () => {
     asSiteAdmin(['read', 'adjust'])
     openSheet(withNotice, true)
-    await screen.findByText(/custom\.example · Website · active/)
+    await screen.findByText('custom.example')
     expect(
       screen.queryByRole('button', { name: 'Disable' })
     ).not.toBeInTheDocument()

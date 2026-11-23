@@ -36,6 +36,18 @@ func withResellerSetting(t *testing.T) *adty_setting.ResellerSetting {
 	return cfg
 }
 
+func seedReadyAdtySiteTier(t *testing.T) {
+	t.Helper()
+	factor := decimal.RequireFromString("0.8")
+	require.NoError(t, service.SaveAdtySiteTiers([]model.AdtySiteTier{{
+		Code:       "standard",
+		Name:       "Standard",
+		CostFactor: &factor,
+		Enabled:    true,
+		SortOrder:  1,
+	}}))
+}
+
 type apiEnvelope struct {
 	Success bool           `json:"success"`
 	Message string         `json:"message"`
@@ -56,8 +68,9 @@ func TestResellerSettingsSaveRules(t *testing.T) {
 	}
 
 	unset := put(`{"enabled":true,"root_domains":["sites.example.com"]}`)
-	assert.False(t, unset.Success, "money settings are unset")
+	assert.False(t, unset.Success, "site level with supply discount is unset")
 	assert.NotContains(t, unset.Message, "extra bonus", "the error must not ask for a retired setting")
+	seedReadyAdtySiteTier(t)
 	saved := put(`{"enabled":true,"root_domains":["Sites.Example.com"],"cost_factor":0.8,"min_cost_factor":0.5}`)
 	require.True(t, saved.Success, saved.Message)
 	assert.True(t, cfg.Enabled)
@@ -66,7 +79,7 @@ func TestResellerSettingsSaveRules(t *testing.T) {
 	assert.EqualValues(t, 0.8, *cfg.CostFactor)
 	assert.Equal(t, true, saved.Data["money_configured"])
 
-	assert.False(t, put(`{"cost_factor":null}`).Success, "cannot clear d while the feature is on")
+	assert.False(t, put(`{"cost_factor":0}`).Success, "non-positive cost factor is rejected")
 	assert.False(t, put(`{"cost_factor":"abc"}`).Success, "unparseable values are rejected, not silently dropped")
 	assert.False(t, put(`{"unknown_key":1}`).Success)
 
@@ -135,9 +148,10 @@ func TestResellerSettingsSaveRules(t *testing.T) {
 		pendingFactors = append(pendingFactors, value)
 	}
 	t.Cleanup(func() { service.NotifySiteOwnersGlobalCostFactorPending = previousNotify })
+	require.True(t, put(`{"markup_increase_delay_hours":24}`).Success)
 	raised := put(`{"cost_factor":0.9}`)
 	require.True(t, raised.Success, raised.Message)
-	require.NotEmpty(t, pendingFactors, "a higher global d is delayed and site owners are notified")
+	require.NotEmpty(t, pendingFactors, "a higher global d is delayed when delay > 0 and site owners are notified")
 	assert.InDelta(t, 0.9, pendingFactors[0], 0.000001)
 	assert.EqualValues(t, 0.8, *cfg.CostFactor)
 
@@ -236,6 +250,7 @@ func TestSelfServiceSiteApplicationIsDisabled(t *testing.T) {
 
 func TestOnlyRootCanCreateAdtySite(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -288,6 +303,7 @@ func TestSiteOwnerHandoverRequiresRootAndPreservesAgreementBoundary(t *testing.T
 
 func TestOnlyRootCanActivateLegacySiteApplication(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -315,6 +331,7 @@ func TestOnlyRootCanCloseAdtySite(t *testing.T) {
 		for _, immediate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("transfer=%q/immediate=%t", transferBody, immediate), func(t *testing.T) {
 				f := newAdtyGuardFixture(t)
+				seedReadyAdtySiteTier(t)
 				cfg := withResellerSetting(t)
 				cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 				cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -431,6 +448,7 @@ func TestOnlyRootCanCloseAdtySite(t *testing.T) {
 
 func TestSiteAdminPermissions(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -468,8 +486,8 @@ func TestSiteAdminPermissions(t *testing.T) {
 	adjust := fmt.Sprintf("/api/adty/admin/sites/%d", siteID)
 	assert.Equal(t, http.StatusForbidden, adtyJSON(t, f.engine, http.MethodPut, adjust, `{"cost_factor":"0.7"}`, f.token).Code, "create cannot replace adjust")
 	f.grant(t, authz.AdtySiteRead, authz.AdtySiteAdjust)
-	low := adtyJSON(t, f.engine, http.MethodPut, adjust, `{"cost_factor":"0.4"}`, f.token)
-	assert.Contains(t, low.Body.String(), "The cost factor cannot be below the minimum cost factor")
+	low := adtyJSON(t, f.engine, http.MethodPut, adjust, `{"cost_factor":"0"}`, f.token)
+	assert.Contains(t, low.Body.String(), "The cost factor must be greater than 0")
 	ok := adtyJSON(t, f.engine, http.MethodPut, adjust, `{"cost_factor":"0.7","reason":"volume"}`, f.token)
 	assert.Contains(t, ok.Body.String(), `"success":true`, ok.Body.String())
 	deniedPause := adtyJSON(t, f.engine, http.MethodPut, adjust+"/status", `{"status":"paused"}`, f.token)
@@ -500,6 +518,7 @@ func TestSiteAdminPermissions(t *testing.T) {
 
 func TestResellerSettingsDelegation(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -661,6 +680,7 @@ func TestResellerSettingsDelegation(t *testing.T) {
 // 分站管理的经营数据、排序、风控复核和举报（任务 11.9 后端）。
 func TestSiteAdminStatsSortAndReports(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -767,6 +787,7 @@ func TestSiteAdminStatsSortAndReports(t *testing.T) {
 // 一键下线公告（任务 11.3、11.9）：要分站·调整权限；只清空公告，其余品牌字段不动；写审计。
 func TestSiteNoticeTakedown(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -857,6 +878,7 @@ func TestResellerUsage(t *testing.T) {
 
 func TestRootPausedSiteRepairIsManualAndRejectedForNonRoot(t *testing.T) {
 	f := newAdtyGuardFixture(t)
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)

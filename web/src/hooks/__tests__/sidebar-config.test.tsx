@@ -73,7 +73,8 @@ function sidebarFor(
   user?: object,
   canConfigure = true,
   siteOwner = false,
-  staff = false
+  staff = false,
+  hasTeam = false
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -88,6 +89,7 @@ function sidebarFor(
     permissions: { sidebar_settings: canConfigure },
     sidebar_modules: user ? JSON.stringify(user) : '',
     adty_site_owner: siteOwner,
+    adty_has_team: hasTeam,
     staff_site_id: staff ? 7 : 0,
   })
   function Wrapper(props: { children: ReactNode }) {
@@ -167,20 +169,31 @@ describe('site owner center entry', () => {
       ?.items.map((item) => item.title)
 
   it('shows Site owner center after Referral for a site owner', () => {
-    // Tickets 是后加的入口，位置在 Wallet 之后、Referral 之前
-    // （`use-sidebar-data.ts` 的 personal 分组）。它不是「Referral 消失」，
-    // 而是断言漏了这个新项。
     expect(accountTitles(true)).toEqual([
-      'My team',
       'Wallet',
       'Tickets',
       'Referral',
-      'Ticket workspace',
+      'Ticket management',
       'Team management',
       'Site owner center',
       'Profile',
       'Security & Access',
     ])
+  })
+
+  it('shows My team only for accounts that belong to a team', () => {
+    expect(accountTitles(false)).not.toContain('My team')
+    const teamAccount = sidebarFor(
+      undefined,
+      undefined,
+      true,
+      false,
+      false,
+      true
+    )
+      .result.current.find((group) => group.id === 'personal')
+      ?.items.map((item) => item.title)
+    expect(teamAccount).toContain('My team')
   })
 
   it('hides Site owner center from users without a site', () => {
@@ -213,7 +226,6 @@ describe('security sidebar visibility', () => {
         .find((group) => group.id === 'personal')
         ?.items.map((item) => item.title)
     ).toEqual([
-      'My team',
       'Wallet',
       'Tickets',
       'Referral',

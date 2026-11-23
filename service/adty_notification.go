@@ -836,16 +836,18 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string) (ma
 		return nil, false, err
 	}
 	if row.Id == 0 {
-		ticketQuery, scope, err := adtyTicketInboxQuery(userID, site)
-		if err != nil {
-			return nil, false, err
-		}
-		var notice model.AdtyTicketNotice
-		if err := ticketQuery.Select(ticketInboxColumns).Where("read_key = ?", key).Limit(1).Find(&notice).Error; err != nil {
-			return nil, false, err
-		}
-		if notice.Id > 0 && !adtyIsNotificationKeyHidden(userID, notice.ReadKey) {
-			return formatTicketInboxNotice(notice, scope), true, nil
+		if adtyTicketInboxTablesReady() {
+			ticketQuery, scope, err := adtyTicketInboxQuery(userID, site)
+			if err != nil {
+				return nil, false, err
+			}
+			var notice model.AdtyTicketNotice
+			if err := ticketQuery.Select(ticketInboxColumns).Where("read_key = ?", key).Limit(1).Find(&notice).Error; err != nil {
+				return nil, false, err
+			}
+			if notice.Id > 0 && !adtyIsNotificationKeyHidden(userID, notice.ReadKey) {
+				return formatTicketInboxNotice(notice, scope), true, nil
+			}
 		}
 		if item, ok := adtyWatcherNoticeDetail(userID, key); ok {
 			return item, true, nil
@@ -861,6 +863,12 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string) (ma
 	item := formatAdtyNotificationItem(row)
 	RenderAdtyTodoInboxItems(userID, []map[string]any{item})
 	return item, true, nil
+}
+
+func adtyTicketInboxTablesReady() bool {
+	return model.DB != nil &&
+		model.DB.Migrator().HasTable(&model.AdtyTicketNotice{}) &&
+		model.DB.Migrator().HasTable(&model.AdtyTicket{})
 }
 
 func adtyIsNotificationKeyHidden(userID int, key string) bool {
@@ -923,34 +931,38 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 		inbox.Announcements = append(inbox.Announcements, formatAdtyNotificationItem(row))
 		keys = append(keys, key)
 	}
-	ticketQuery, handlerScope, err := adtyTicketInboxQuery(userID, site)
-	if err != nil {
-		return inbox, err
-	}
-	var unreadTickets int64
 	var visibleTicketKeys []string
 	ticketReceipts := model.DB.Model(&model.AdtyNotificationRead{}).Where("user_id=?", userID)
-	hidden := model.DB.Model(&model.AdtyNotificationHide{}).Select("key").Where("user_id = ?", userID)
-	ticketQuery = ticketQuery.Where("read_key NOT IN (?)", hidden)
-	if err := ticketQuery.Session(&gorm.Session{}).Where("read_key NOT IN (?)", ticketReceipts.Session(&gorm.Session{}).Select("read_key")).Count(&unreadTickets).Error; err != nil {
-		return inbox, err
-	}
-	inbox.UnreadPublications += unreadTickets
-	if ticketBefore >= 0 {
-		if ticketBefore > 0 {
-			ticketQuery = ticketQuery.Where("id < ?", ticketBefore)
-		}
-		var notices []model.AdtyTicketNotice
-		if err := ticketQuery.Select(ticketInboxColumns).Order("id DESC").Limit(21).Find(&notices).Error; err != nil {
+	if adtyTicketInboxTablesReady() {
+		ticketQuery, handlerScope, err := adtyTicketInboxQuery(userID, site)
+		if err != nil {
 			return inbox, err
 		}
-		if len(notices) > 20 {
-			notices = notices[:20]
-			inbox.NextTicketBeforeId = notices[19].Id
+		var unreadTickets int64
+		if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
+			hidden := model.DB.Model(&model.AdtyNotificationHide{}).Select("key").Where("user_id = ?", userID)
+			ticketQuery = ticketQuery.Where("read_key NOT IN (?)", hidden)
 		}
-		for _, n := range notices {
-			visibleTicketKeys = append(visibleTicketKeys, n.ReadKey)
-			inbox.Announcements = append(inbox.Announcements, formatTicketInboxNotice(n, handlerScope))
+		if err := ticketQuery.Session(&gorm.Session{}).Where("read_key NOT IN (?)", ticketReceipts.Session(&gorm.Session{}).Select("read_key")).Count(&unreadTickets).Error; err != nil {
+			return inbox, err
+		}
+		inbox.UnreadPublications += unreadTickets
+		if ticketBefore >= 0 {
+			if ticketBefore > 0 {
+				ticketQuery = ticketQuery.Where("id < ?", ticketBefore)
+			}
+			var notices []model.AdtyTicketNotice
+			if err := ticketQuery.Select(ticketInboxColumns).Order("id DESC").Limit(21).Find(&notices).Error; err != nil {
+				return inbox, err
+			}
+			if len(notices) > 20 {
+				notices = notices[:20]
+				inbox.NextTicketBeforeId = notices[19].Id
+			}
+			for _, n := range notices {
+				visibleTicketKeys = append(visibleTicketKeys, n.ReadKey)
+				inbox.Announcements = append(inbox.Announcements, formatTicketInboxNotice(n, handlerScope))
+			}
 		}
 	}
 
@@ -1038,16 +1050,18 @@ func MarkAdtyNotificationInboxRead(userID int, site *model.AdtySite, keys []stri
 	for _, key := range publicationKeys {
 		allowed[key] = true
 	}
-	ticketQuery, _, err := adtyTicketInboxQuery(userID, site)
-	if err != nil {
-		return err
-	}
-	var ticketKeys []string
-	if err := ticketQuery.Where("read_key IN ?", keys).Pluck("read_key", &ticketKeys).Error; err != nil {
-		return err
-	}
-	for _, key := range ticketKeys {
-		allowed[key] = true
+	if adtyTicketInboxTablesReady() {
+		ticketQuery, _, err := adtyTicketInboxQuery(userID, site)
+		if err != nil {
+			return err
+		}
+		var ticketKeys []string
+		if err := ticketQuery.Where("read_key IN ?", keys).Pluck("read_key", &ticketKeys).Error; err != nil {
+			return err
+		}
+		for _, key := range ticketKeys {
+			allowed[key] = true
+		}
 	}
 	for key := range adtyOwnedWatcherReadKeys(userID, keys) {
 		allowed[key] = true

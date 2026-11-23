@@ -149,7 +149,7 @@ func TestRootRecallsPayingSiteWithdrawalToPending(t *testing.T) {
 	require.NotEqual(t, http.StatusOK, recOwner.Code)
 
 	// Root recalls paying -> pending with reason.
-	recOK := adtyJSON(t, f.engine, http.MethodPost, fmt.Sprintf("/api/adty/admin/site-withdrawals/%d/recall", row.Id), `{"reason":"bank details check"}`, root)
+	recOK := adtyJSON(t, f.engine, http.MethodPost, fmt.Sprintf("/api/adty/admin/site-withdrawals/%d/recall", row.Id), `{"reason":"bank details check","attempt_number":1}`, root)
 	require.Equal(t, http.StatusOK, recOK.Code, recOK.Body.String())
 	require.Contains(t, recOK.Body.String(), `"success":true`)
 
@@ -163,9 +163,10 @@ func TestRootRecallsPayingSiteWithdrawalToPending(t *testing.T) {
 	assert.True(t, wallet.Balance.Equal(decimal.NewFromInt(50)), "recall preserves Balance")
 	assert.True(t, wallet.FrozenUSD.Equal(decimal.NewFromInt(20)), "recall preserves FrozenUSD")
 
-	// Can re-mark paying and complete paid after recall.
-	require.NoError(t, service.MarkAdtySiteWithdrawalPaying(row.Id, 1))
-	require.NoError(t, service.MarkAdtySiteWithdrawalPaid(row.Id, 1, "alipay-ref-99", "completed after recall"))
+	// Can confirm failure, re-mark paying, and complete paid after recall.
+	require.NoError(t, service.ConfirmAdtySiteWithdrawalFailed(row.Id, 1, 1, "bank returned", "bank-fail-1"))
+	require.NoError(t, service.MarkAdtySiteWithdrawalPaying(row.Id, 1, 1))
+	require.NoError(t, service.MarkAdtySiteWithdrawalPaid(row.Id, 1, "alipay-ref-99", "completed after recall", 2))
 	require.NoError(t, f.db.Where("site_id = ? AND kind = ?", f.site.Id, model.AdtySiteWalletEarnings).First(&wallet).Error)
 	assert.True(t, wallet.Balance.Equal(decimal.NewFromInt(30)))
 	assert.True(t, wallet.FrozenUSD.IsZero())

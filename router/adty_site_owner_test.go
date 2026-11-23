@@ -349,6 +349,7 @@ func newOwnerFixture(t *testing.T) *ownerFixture {
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.AuthFlow{}, &model.TwoFA{}, &model.PasskeyCredential{},
 		&model.AuditIntent{}, &model.AuditLog{}, &model.Log{}, &model.Option{}, &model.TopUp{}, &model.UserAccessToken{}, &model.AdtyUserFingerprint{}))
 	require.NoError(t, model.MigrateAdtyTables())
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)
@@ -531,7 +532,7 @@ func TestOwnerOrdersUseFrozenSiteScope(t *testing.T) {
 		assert.Equal(t, http.StatusOK, f.call(t, http.MethodGet, "/api/adty/site/orders", "", "").Code)
 	}
 	require.NoError(t, f.db.Model(f.site).Update("agreement_ver", "old").Error)
-	assert.Equal(t, http.StatusForbidden, f.call(t, http.MethodGet, "/api/adty/site/orders", "", "").Code)
+	assert.Equal(t, http.StatusOK, f.call(t, http.MethodGet, "/api/adty/site/orders", "", "").Code)
 }
 
 func TestOrderDetailsRespectFrozenSiteAndRedactPrivateEvidence(t *testing.T) {
@@ -571,7 +572,7 @@ func TestOrderDetailsRespectFrozenSiteAndRedactPrivateEvidence(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, adtyJSON(t, f.engine, http.MethodGet, path, "", "").Code)
 	assert.Equal(t, http.StatusForbidden, adtyJSON(t, f.engine, http.MethodGet, path, "", adtySessionToken(t, f.db, "trace-plain", common.RoleCommonUser)).Code)
 	require.NoError(t, f.db.Model(f.site).Update("agreement_ver", "old").Error)
-	assert.Equal(t, http.StatusForbidden, f.call(t, http.MethodGet, path, "", "").Code)
+	assert.Equal(t, http.StatusOK, f.call(t, http.MethodGet, path, "", "").Code)
 }
 
 func TestOwnerWalletReadAPIsStayWithinSite(t *testing.T) {
@@ -633,7 +634,7 @@ func TestOwnerWalletReadAPIsStayWithinSite(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, adtyJSON(t, f.engine, http.MethodGet, path, "", plain).Code)
 	}
 	require.NoError(t, f.db.Model(&model.AdtySite{}).Where("id = ?", f.site.Id).Update("agreement_ver", "outdated").Error)
-	assert.Equal(t, http.StatusForbidden, f.call(t, http.MethodGet, "/api/adty/site/wallets", "", "").Code)
+	assert.Equal(t, http.StatusOK, f.call(t, http.MethodGet, "/api/adty/site/wallets", "", "").Code)
 }
 
 func TestRootWalletReadAPIsRequireRootAndReadScope(t *testing.T) {
@@ -698,6 +699,11 @@ func TestRootTierConfigurationIsDynamicAndValidated(t *testing.T) {
 
 func TestSensitiveOwnerActionsRequireVerify(t *testing.T) {
 	f := newOwnerFixture(t)
+	require.NoError(t, f.db.Model(&model.AdtySite{}).Where("id = ?", f.site.Id).Updates(map[string]any{
+		"trial_grant_max_usd":   decimal.NewFromInt(5),
+		"trial_grant_daily_usd": decimal.NewFromInt(20),
+	}).Error)
+	service.InvalidateAdtySiteCache()
 	customer := f.customer(t, f.site, "verify-customer", "v@example.com")
 	require.NoError(t, f.db.Model(&model.ReferralCommissionAccount{}).Where("user_id = ?", f.owner.Id).Update("available_amount", 100).Error)
 	domain := model.AdtySiteDomain{SiteId: f.site.Id, Hostname: "api.verify-brand.com", Status: "pending", CreatedAt: time.Now().Unix()}
@@ -1032,9 +1038,9 @@ func TestOwnerCenterRequiresCurrentAgreement(t *testing.T) {
 	t.Cleanup(func() { legal.SiteAgreementVersion = oldVersion })
 	f := newOwnerFixture(t)
 	require.NoError(t, f.db.Model(f.site).Update("agreement_ver", "0").Error)
-	blocked := f.call(t, http.MethodGet, "/api/adty/site/self", "", "")
-	assert.Equal(t, http.StatusForbidden, blocked.Code)
-	assert.Contains(t, blocked.Body.String(), "Accept the current site agreement first")
+	// Site opening agreements are no longer required for site owners.
+	allowed := f.call(t, http.MethodGet, "/api/adty/site/self", "", "")
+	assert.Equal(t, http.StatusOK, allowed.Code)
 
 	wrong := f.call(t, http.MethodPost, "/api/adty/site/terms/accept", `{"version":"0"}`, "")
 	assert.Equal(t, http.StatusForbidden, wrong.Code)
@@ -1146,20 +1152,10 @@ func TestDeleteCustomDomainRequiresCurrentAgreement(t *testing.T) {
 	require.NoError(t, f.db.Model(f.site).Update("agreement_ver", "0").Error)
 
 	path := fmt.Sprintf("/api/adty/site/domains/%d", domain.Id)
-	proof := sessionProof(t, f.owner, service.AdtySiteOwnerActionDomain, domain.Id)
-	blocked := f.call(t, http.MethodDelete, path, "", proof)
-	assert.Equal(t, http.StatusForbidden, blocked.Code)
-	assert.Contains(t, blocked.Body.String(), "Accept the current site agreement first")
-	var stored model.AdtySiteDomain
-	require.NoError(t, f.db.First(&stored, domain.Id).Error)
-	assert.Equal(t, model.AdtySiteDomainPending, stored.Status)
-	require.Zero(t, cloudflareCalls, "an unaccepted agreement must prevent external domain operations")
-
-	current := service.AdtyCurrentSiteAgreementVersion()
-	accepted := f.call(t, http.MethodPost, "/api/adty/site/terms/accept", `{"version":"`+current+`"}`, "")
-	require.Contains(t, accepted.Body.String(), `"success":true`, accepted.Body.String())
+	// Site opening agreements are no longer required; deleting a custom domain only requires security proof.
 	deleted := f.call(t, http.MethodDelete, path, "", sessionProof(t, f.owner, service.AdtySiteOwnerActionDomain, domain.Id))
 	require.Contains(t, deleted.Body.String(), `"success":true`, deleted.Body.String())
+	var stored model.AdtySiteDomain
 	require.NoError(t, f.db.First(&stored, domain.Id).Error)
 	assert.Equal(t, model.AdtySiteDomainRemoved, stored.Status)
 	require.Equal(t, 1, cloudflareCalls, "removal checks for an owned orphan before marking the domain removed")

@@ -263,8 +263,8 @@ export function SiteCustomerReferral() {
                 <EmptyState title={t('No invited users yet')} />
               ) : (
                 <StaticDataTable
-                  rows={invites}
-                  getRowId={(row) => String(row.invitee_id)}
+                  data={invites}
+                  getRowKey={(row) => String(row.invitee_id)}
                   columns={[
                     {
                       id: 'invitee',

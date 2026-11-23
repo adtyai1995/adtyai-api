@@ -395,7 +395,10 @@ func TestReferralSnapshotSeesSiteOpeningAfterDailyCapRead(t *testing.T) {
 				reseller.MaxSiteBonusExtra, reseller.TrialGrantMaxUSD, reseller.TrialGrantDailyUSD = new(2.0), new(5.0), new(20.0)
 				require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.AdtyTopupOrder{},
 					&model.ReferralAffiliate{}, &model.ReferralBinding{}, &model.AdtyEpayChannelMethod{},
-					&model.AdtySite{}, &model.AdtySiteWallet{}, &model.AdtySiteAudit{}))
+					&model.AdtySite{}, &model.AdtySiteTier{}, &model.AdtySiteWallet{}, &model.AdtySiteAudit{}))
+				require.NoError(t, db.Create(&model.AdtySiteTier{
+					Code: "default", Name: "Default", CostFactor: dec("0.8"), DepositUSD: decimal.Zero, Enabled: true,
+				}).Error)
 				inviter, payer := referralUser(t, db, "opening-inviter"), referralUser(t, db, "opening-payer")
 				affiliate := &model.ReferralAffiliate{UserId: inviter.Id, Status: model.ReferralAffiliateStatusApproved, InviteCode: "opening-inviter"}
 				require.NoError(t, db.Create(affiliate).Error)
@@ -577,7 +580,10 @@ func TestOpeningSiteAndCommissionTransferUseCompatibleLockOrder(t *testing.T) {
 					&model.ReferralCommissionAccount{}, &model.ReferralCommission{}, &model.ReferralWithdrawal{},
 					&model.ReferralWithdrawalItem{}, &model.ReferralCommissionLedger{}, &model.AdtyBalanceLedger{},
 					&model.AdtyFundBatch{}, &model.AdtyFundAllocation{}, &model.AdtyBillingHold{},
-					&model.AdtySite{}, &model.AdtySiteWallet{}, &model.AdtySiteAudit{}))
+					&model.AdtySite{}, &model.AdtySiteTier{}, &model.AdtySiteWallet{}, &model.AdtySiteAudit{}))
+				require.NoError(t, db.Create(&model.AdtySiteTier{
+					Code: "default", Name: "Default", CostFactor: dec("0.8"), DepositUSD: decimal.Zero, Enabled: true,
+				}).Error)
 			}
 			openingSiteAndCommissionTransfer(t, db, dialect)
 			disabled := referralUser(t, db, "disabled-opening")

@@ -134,48 +134,18 @@ describe('official price savings', () => {
     ).toBeNull()
   })
 
-  it('shows the official price and an 80% saving when the site charges $3 against $15', () => {
-    render(
-      <PricingTable models={[pricingModel()]} officialPrices={officialPrices} />
-    )
-    const row = screen.getByRole('row', { name: /site-model/ })
-    expect(cellOf(row, 'Official Price')).toHaveTextContent('$15')
-    expect(cellOf(row, 'Official Price')).toHaveTextContent('$75')
-    expect(cellOf(row, 'Savings')).toHaveTextContent('80%')
+  it('omits Official Price and Savings columns from the pricing table', () => {
+    render(<PricingTable models={[pricingModel()]} />)
+    const headers = screen
+      .getAllByRole('columnheader')
+      .map((cell) => cell.textContent)
+    expect(headers).not.toContain('Official Price')
+    expect(headers).not.toContain('Savings')
   })
 
-  it('leaves the official price and savings empty for a model without an official price', () => {
-    render(
-      <PricingTable
-        models={[pricingModel({ model_name: 'unlisted-model' })]}
-        officialPrices={officialPrices}
-      />
-    )
-    const row = screen.getByRole('row', { name: /unlisted-model/ })
-    expect(cellOf(row, 'Official Price')).toHaveTextContent(/^$/)
-    expect(cellOf(row, 'Savings')).toHaveTextContent(/^$/)
-  })
-
-  it('shows a dash instead of a negative saving when the site price is higher', () => {
-    render(
-      <PricingTable
-        models={[pricingModel({ model_ratio: 10 })]}
-        officialPrices={officialPrices}
-      />
-    )
-    const row = screen.getByRole('row', { name: /site-model/ })
-    expect(cellOf(row, 'Savings')).toHaveTextContent('—')
-  })
-
-  it('shows the saving on the model card when an official price is passed', () => {
-    render(
-      <ModelCard
-        model={pricingModel()}
-        onClick={vi.fn()}
-        officialPrice={officialPrices['site-model']}
-      />
-    )
-    expect(screen.getByText('Save 80%')).toBeVisible()
+  it('does not show official-price savings badges on the model card', () => {
+    render(<ModelCard model={pricingModel()} onClick={vi.fn()} />)
+    expect(screen.queryByText(/Save /i)).not.toBeInTheDocument()
   })
 })
 

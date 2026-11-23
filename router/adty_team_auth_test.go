@@ -54,6 +54,7 @@ func newTeamAuthFixture(t *testing.T) *teamAuthFixture {
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.AuthFlow{}, &model.TwoFA{}, &model.PasskeyCredential{},
 		&model.AuditLog{}, &model.AuditIntent{}, &model.Log{}, &model.Option{}, &model.TopUp{}, &model.UserAccessToken{}, &model.AdtyUserFingerprint{}))
 	require.NoError(t, model.MigrateAdtyTables())
+	seedReadyAdtySiteTier(t)
 	cfg := withResellerSetting(t)
 	cfg.Enabled, cfg.RootDomains = true, []string{"sites.example.com"}
 	cfg.CostFactor, cfg.MinCostFactor, cfg.MaxMarkup = new(0.8), new(0.5), new(3.0)

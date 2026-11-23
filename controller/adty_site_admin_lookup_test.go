@@ -17,7 +17,7 @@ import (
 func TestAdminSiteSearchKeepsUsernameCase(t *testing.T) {
 	require.NoError(t, i18n.Init())
 	db := adtyTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.AdtySite{}, &model.AdtySiteEarningDaily{}, &model.AdtyTopupOrder{}, &model.TopUp{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Option{}, &model.AdtySite{}, &model.AdtySiteDomain{}, &model.AdtySiteEarningDaily{}, &model.AdtyTopupOrder{}, &model.TopUp{}))
 	owner := &model.User{Username: "OwnerMix", Password: "hashed-password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default"}
 	require.NoError(t, db.Create(owner).Error)
 	require.NoError(t, db.Create(&model.AdtySite{OwnerUserId: owner.Id, Subdomain: "mixsite", RootDomain: "example.com", Status: model.AdtySiteStatusActive}).Error)

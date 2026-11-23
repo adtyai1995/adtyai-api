@@ -291,7 +291,7 @@ describe('staff management and workspace', () => {
   })
 
   it('requires concrete provenance before submitting a balance increase', async () => {
-    permissions = ['customers.read', 'customers.balance']
+    permissions = ['customers.read', 'customers.balance', 'customers.balance_request']
     const user = userEvent.setup()
     renderStaff(false)
     await user.click(await screen.findByRole('button', { name: 'Request balance change' }))
@@ -315,7 +315,7 @@ describe('staff management and workspace', () => {
   })
 
   it('requires an explicit batch for a balance reduction', async () => {
-    permissions = ['customers.read', 'customers.balance']
+    permissions = ['customers.read', 'customers.balance', 'customers.balance_request']
     const user = userEvent.setup()
     renderStaff(false)
     await user.click(await screen.findByRole('button', { name: 'Request balance change' }))
