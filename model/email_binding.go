@@ -114,24 +114,31 @@ func authFlowProviderForHost(host string) string {
 	return ""
 }
 
-func mainConfiguredHost(tx *gorm.DB) string {
-	common.OptionMapRWMutex.RLock()
-	raw := common.OptionMap["ServerAddress"]
-	common.OptionMapRWMutex.RUnlock()
-	if raw == "" && tx != nil && tx.Migrator().HasTable(&Option{}) {
-		var opt Option
-		if tx.Where("key = ?", "ServerAddress").Limit(1).Find(&opt).RowsAffected > 0 {
-			raw = opt.Value
+func mainConfiguredHosts(tx *gorm.DB) []string {
+	keys := []string{"ServerAddress", "adty_site_setting.api_base_url"}
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		common.OptionMapRWMutex.RLock()
+		raw := common.OptionMap[key]
+		common.OptionMapRWMutex.RUnlock()
+		if raw == "" && tx != nil && tx.Migrator().HasTable(&Option{}) {
+			var opt Option
+			if tx.Where("key = ?", key).Limit(1).Find(&opt).RowsAffected > 0 {
+				raw = opt.Value
+			}
+		}
+		if raw == "" {
+			continue
+		}
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			continue
+		}
+		if h := NormalizeEmailBindingHost(parsed.Host); h != "" {
+			out = append(out, h)
 		}
 	}
-	if raw == "" {
-		return ""
-	}
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return ""
-	}
-	return NormalizeEmailBindingHost(parsed.Host)
+	return out
 }
 
 func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) error {
@@ -151,7 +158,7 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 	if host == "" {
 		return nil
 	}
-	if mainHost := mainConfiguredHost(tx); mainHost != "" {
+	for _, mainHost := range mainConfiguredHosts(tx) {
 		if siteID > 0 && host == mainHost {
 			return ErrAuthFlowInvalid
 		}
@@ -188,7 +195,7 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 		if len(domains) > 0 {
 			activeMatch := false
 			for _, d := range domains {
-				if d.SiteId == siteID && d.Status == AdtySiteDomainActive && d.Role != AdtySiteDomainRoleBaseURL {
+				if d.SiteId == siteID && d.Status == AdtySiteDomainActive && d.DesiredState != "removed" {
 					activeMatch = true
 				} else {
 					return ErrAuthFlowInvalid

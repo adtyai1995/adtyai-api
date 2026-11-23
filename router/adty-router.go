@@ -550,6 +550,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/teams", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeams}},
 		{http.MethodGet, "/teams/:id", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeam}},
 		{http.MethodGet, "/teams/:id/ledgers", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamLedger}},
+		{http.MethodPost, "/teams/:id/balance", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-team-balance"), controller.PostAdtyOwnerSiteTeamBalance}},
 		{http.MethodPost, "/teams", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeam}},
 		{http.MethodPost, "/team-registrations", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistration}},
 		{http.MethodGet, "/team-registrations", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamRegistrations}},
@@ -569,6 +570,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/customers/:id", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerCustomer}},
 		{http.MethodGet, "/customers/:id/logs", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerCustomerLogs}},
 		{http.MethodGet, "/customers/:id/topups", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerCustomerTopUps}},
+		{http.MethodPost, "/customers/:id/balance", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-customer-balance"), controller.PostAdtyOwnerCustomerBalance}},
 		{http.MethodPost, "/customers/:id/trial", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-trial"), controller.PostAdtyOwnerTrial}},
 		{http.MethodPost, "/report", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-report"), controller.PostAdtyOwnerReport}},
 		{http.MethodGet, "/export", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerExport}},
@@ -653,6 +655,10 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootWallets.POST("/:id/margin", controller.PostAdtyAdminSiteMargin)
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/sites/:id/tier", "scope", "option:write")
 	rootWallets.PUT("/:id/tier", controller.PutAdtySiteTierAssignment)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/tier-principal", "scope", "option:read")
+	rootWallets.GET("/:id/tier-principal", controller.GetAdtyAdminSiteTierPrincipal)
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/tier-principal", "scope", "option:write")
+	rootWallets.POST("/:id/tier-principal", controller.PostAdtyAdminSiteTierPrincipal)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites", "scope", "option:write")
 	rootWallets.POST("", controller.CreateAdtyAdminSite)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/review", "scope", "option:write")

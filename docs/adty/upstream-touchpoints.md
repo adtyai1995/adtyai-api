@@ -756,3 +756,4 @@
 | `model/adty_migrate.go` | 兑换码订单号和活动团队成员唯一约束碰撞时返回错误，保留全部历史行 | 禁止缺失数据库唯一保证却成功启动；重复迁移可安全拒绝 | ISS-R1-0113 |
 | `web/src/i18n/locales/en.json`、`web/src/i18n/locales/zh.json` | 追加独立团队员工注册、启停、删除和负责人退出的中英文词条 | 团队生命周期入口与服务端真实身份、撤权和保留历史契约一致 | ISS-R1-0118、ISS-R1-0129、ISS-R1-0130、ISS-R1-0161 |
 | `scripts/adty/browser-business.sh` | 沿用隔离 PostgreSQL/Redis 浏览器 runner，接入工单图片短时授权场景 | 同一真实前后端验证桌面和移动预览、身份与授权请求头及查看审计 | ISS-R1-0121 |
+| `controller/misc.go`、`controller/option.go`、`middleware/auth.go`、`model/email_binding.go`、`router/plugin-router.go`、`router/web-router.go` | 主站/分站双域名彻底分离（`ServerAddress` 网站域名 403 拒绝模型中转，`api_base_url` / 分站 `base_url` 同时支持模型中转与完整首页/控制台/邮箱绑定；校验 Tawk.to ID 格式与主站双域名分离） | 统一主站与分站双域名边界并保留上游文件最小改动 | R-31 |

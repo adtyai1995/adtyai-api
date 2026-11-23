@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -45,12 +45,18 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { getOwnerWallets, siteOwnerKeys } from '@/features/adty-site-owner/api'
+import { OwnerFundingPreviewBox } from '@/features/adty-site-owner/components/owner-funding-preview'
+import { useVerifiedOwnerMutation } from '@/features/adty-site-owner/hooks/use-verified-owner-mutation'
+import { computeOwnerFundingPreview } from '@/features/adty-site-owner/lib/funding-preview'
+import { newIdempotencyKey } from '@/features/adty-site-owner/lib/site-owner'
 import { validTeamDiscount } from '@/features/adty-team-registration/discount'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatQuota, formatTimestamp, formatTimestampToDate } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
+  creditOwnerTeamBalance,
   getAdminTeam,
   listAdminTeamLedger,
   saveTeamDiscount,
@@ -94,9 +100,13 @@ export function TeamDetailSheet(props: {
             {team ? `${team.name} #${team.id}` : t('Team details')}
           </SheetTitle>
           <SheetDescription>
-            {t(
-              'Members and team keys are managed by the team leader. This page is read-only except for the discount.'
-            )}
+            {props.scope === 'owner'
+              ? t(
+                  'Members and team keys are managed by the team leader. You can adjust the agreement discount or add shared balance here.'
+                )
+              : t(
+                  'Members and team keys are managed by the team leader. This page is read-only except for the discount.'
+                )}
           </SheetDescription>
         </SheetHeader>
         <div className='flex flex-col gap-5 px-4 pb-6'>
@@ -112,6 +122,9 @@ export function TeamDetailSheet(props: {
                 scope={props.scope}
                 team={team}
               />
+              {props.scope === 'owner' && team.status === 'active' && (
+                <OwnerTeamBalanceCredit key={`credit-${team.id}`} team={team} />
+              )}
               <Tabs defaultValue='members'>
                 <TabsList>
                   <TabsTrigger value='members'>
@@ -267,6 +280,109 @@ function TeamDiscountEditor(props: {
           </p>
         )
       )}
+    </section>
+  )
+}
+
+/**
+ * Isolated child component so useVerifiedOwnerMutation is only invoked under
+ * OwnerVerificationProvider (never in the Root /admin-teams view).
+ */
+function OwnerTeamBalanceCredit(props: { team: TeamAdminDetail }) {
+  const { t } = useTranslation()
+  const client = useQueryClient()
+  const [amount, setAmount] = useState('')
+  const [reason, setReason] = useState('')
+  const intentRef = useRef<{ payload: string; key: string } | null>(null)
+  const wallets = useQuery({
+    queryKey: siteOwnerKeys.list('wallets', {}),
+    queryFn: getOwnerWallets,
+  })
+  const walletRows = Array.isArray(wallets.data) ? wallets.data : []
+  const preview = computeOwnerFundingPreview(walletRows, amount)
+  const credit = useVerifiedOwnerMutation<{
+    amount: string
+    reason: string
+    key: string
+  }>({
+    action: 'team.balance',
+    target: () => props.team.id,
+    run: (vars, proof) =>
+      creditOwnerTeamBalance(
+        props.team.id,
+        { amount_usd: vars.amount, reason: vars.reason },
+        vars.key,
+        proof
+      ),
+    successMessage: t('Shared balance added'),
+    onSuccess: () => {
+      intentRef.current = null
+      setAmount('')
+      setReason('')
+      void client.invalidateQueries({ queryKey: teamAdminKeys.all })
+    },
+  })
+  return (
+    <section className='flex flex-col gap-2'>
+      <h3 className='text-sm font-medium'>{t('Add shared balance')}</h3>
+      <div className='grid gap-2 sm:grid-cols-2'>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor={`team-credit-amount-${props.team.id}`}>
+            {t('Amount (USD)')}
+          </Label>
+          <Input
+            id={`team-credit-amount-${props.team.id}`}
+            inputMode='decimal'
+            autoComplete='off'
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+          />
+        </div>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor={`team-credit-reason-${props.team.id}`}>
+            {t('Reason')}
+          </Label>
+          <Input
+            id={`team-credit-reason-${props.team.id}`}
+            maxLength={200}
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        </div>
+      </div>
+      <OwnerFundingPreviewBox wallets={walletRows} amount={amount} />
+      <div>
+        <Button
+          type='button'
+          variant='brand'
+          disabled={
+            credit.isPending ||
+            !preview.valid ||
+            (wallets.isSuccess && !preview.sufficient) ||
+            reason.trim() === ''
+          }
+          onClick={() => {
+            const trimmedAmount = amount.trim()
+            const trimmedReason = reason.trim()
+            const payload = `${props.team.id}:${trimmedAmount}:${trimmedReason}`
+            if (intentRef.current?.payload !== payload) {
+              intentRef.current = { payload, key: newIdempotencyKey() }
+            }
+            credit.mutate({
+              amount: trimmedAmount,
+              reason: trimmedReason,
+              key: intentRef.current.key,
+            })
+          }}
+        >
+          {t('Add shared balance')}
+        </Button>
+      </div>
+      <p className='text-muted-foreground text-xs'>
+        {t(
+          'Funded automatically from available earnings first, then excess margin above the level deposit floor. Does not count toward site-level cumulative customer recharge.'
+        )}
+      </p>
     </section>
   )
 }

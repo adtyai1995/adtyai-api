@@ -40,9 +40,29 @@ type AdtySiteWalletChange struct {
 	IdempotencyKey   string
 	AllowOverdraft   bool
 	OpenMarginCycle  bool
+	MarginExcessOnly bool
 	CycleTier        decimal.Decimal
 	ReleaseCycleUsed decimal.Decimal
 	HoldDelta        decimal.Decimal
+}
+
+// AdtyOwnerFundingSplit records the earnings-first + excess-margin breakdown
+// of one site-owner-funded operation.
+type AdtyOwnerFundingSplit struct {
+	EarningsUSD decimal.Decimal `json:"earnings_usd"`
+	MarginUSD   decimal.Decimal `json:"margin_usd"`
+	TotalUSD    decimal.Decimal `json:"total_usd"`
+}
+
+func (s AdtyOwnerFundingSplit) SourceKind() string {
+	switch {
+	case s.EarningsUSD.IsPositive() && s.MarginUSD.IsPositive():
+		return model.AdtyVoucherSourceMixed
+	case s.MarginUSD.IsPositive():
+		return model.AdtyVoucherSourceMargin
+	default:
+		return model.AdtyVoucherSourceEarnings
+	}
 }
 
 func adtySiteWalletKinds() []string {
@@ -212,7 +232,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	}
 	// Personal withdrawals and transfers may use only this owner's share
 	// of a historical site's earnings. The wallet lock serializes every hold.
-	if kind == model.AdtySiteWalletEarnings && (change.Type == "earning_withdraw_freeze" || change.Type == ownerTransfer || change.Type == "earning_to_margin" || change.Type == "voucher_freeze") {
+	if kind == model.AdtySiteWalletEarnings && (change.Type == "earning_withdraw_freeze" || change.Type == ownerTransfer || change.Type == "earning_to_margin" || change.Type == "voucher_freeze" || change.Type == "owner_customer_balance" || change.Type == "owner_team_balance" || change.Type == "staff_balance") {
 		ownerID := change.OperatorID
 		if ownerID == 0 {
 			var err error
@@ -235,39 +255,59 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	if !validAdtySiteWalletAmount(after) || frozenAfter.IsNegative() || !validAdtySiteWalletAmount(frozenAfter) {
 		return nil, ErrAdtySiteWalletInvalidOperation
 	}
-	minimum := decimal.Zero
-	if kind == model.AdtySiteWalletMargin {
-		minimum = wallet.RequiredBalance
-		if wallet.CycleTierUSD.IsPositive() {
-			minimum = wallet.CycleTierUSD.Sub(AdtyMarginCycleLimit(wallet.CycleTierUSD))
-		}
-	}
-	if (delta.IsNegative() || change.HoldDelta.IsPositive()) &&
-		(kind == model.AdtySiteWalletOperating || !change.AllowOverdraft) && after.Sub(frozenAfter).LessThan(minimum) {
-		return nil, ErrAdtySiteWalletInsufficient
-	}
 	cycleUsed := wallet.CycleUsedUSD
 	cycleTier := wallet.CycleTierUSD
-	if kind == model.AdtySiteWalletMargin && delta.IsNegative() && cycleTier.IsPositive() && !change.AllowOverdraft {
-		newDraw := delta.Abs()
-		if change.HoldDelta.IsNegative() {
-			consumed := decimal.Min(change.HoldDelta.Abs(), newDraw)
-			newDraw = newDraw.Sub(consumed)
-		}
-		allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
-			TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD,
-		})
-		if newDraw.GreaterThan(allowed) {
+	if kind == model.AdtySiteWalletMargin && change.MarginExcessOnly {
+		// Excess-margin funding (owner manual customer/team balance top-up,
+		// approved staff balance increase, and site vouchers) preserves 100%
+		// of the site level's required margin floor while allowing 100% of
+		// excess balance above that floor without consuming the 90% gift/commission cycle.
+		if after.IsNegative() || after.Sub(frozenAfter).IsNegative() {
 			return nil, ErrAdtySiteWalletInsufficient
 		}
-		cycleUsed = cycleUsed.Add(delta.Abs())
-	}
-	if kind == model.AdtySiteWalletMargin && delta.IsZero() && change.HoldDelta.IsPositive() && cycleTier.IsPositive() && !change.AllowOverdraft {
-		allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
-			TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD,
-		})
-		if change.HoldDelta.GreaterThan(allowed) {
+		netNewUse := change.HoldDelta.Sub(delta)
+		if netNewUse.IsPositive() && !change.AllowOverdraft {
+			floor, err := adtyMarginRequiredFloorTx(tx, siteID, &wallet)
+			if err != nil {
+				return nil, err
+			}
+			if after.Sub(frozenAfter).LessThan(floor) {
+				return nil, ErrAdtySiteWalletInsufficient
+			}
+		}
+	} else {
+		minimum := decimal.Zero
+		if kind == model.AdtySiteWalletMargin {
+			minimum = wallet.RequiredBalance
+			if wallet.CycleTierUSD.IsPositive() {
+				minimum = wallet.CycleTierUSD.Sub(AdtyMarginCycleLimit(wallet.CycleTierUSD))
+			}
+		}
+		if (delta.IsNegative() || change.HoldDelta.IsPositive()) &&
+			(kind == model.AdtySiteWalletOperating || !change.AllowOverdraft) && after.Sub(frozenAfter).LessThan(minimum) {
 			return nil, ErrAdtySiteWalletInsufficient
+		}
+		if kind == model.AdtySiteWalletMargin && delta.IsNegative() && cycleTier.IsPositive() && !change.AllowOverdraft {
+			newDraw := delta.Abs()
+			if change.HoldDelta.IsNegative() {
+				consumed := decimal.Min(change.HoldDelta.Abs(), newDraw)
+				newDraw = newDraw.Sub(consumed)
+			}
+			allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
+				TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD,
+			})
+			if newDraw.GreaterThan(allowed) {
+				return nil, ErrAdtySiteWalletInsufficient
+			}
+			cycleUsed = cycleUsed.Add(delta.Abs())
+		}
+		if kind == model.AdtySiteWalletMargin && delta.IsZero() && change.HoldDelta.IsPositive() && cycleTier.IsPositive() && !change.AllowOverdraft {
+			allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
+				TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD,
+			})
+			if change.HoldDelta.GreaterThan(allowed) {
+				return nil, ErrAdtySiteWalletInsufficient
+			}
 		}
 	}
 	if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.OpenMarginCycle {
@@ -632,15 +672,14 @@ func CreditAdtySiteMarginByRoot(siteID, rootUserID int, amount decimal.Decimal, 
 			ledger = &existing
 			return nil
 		}
-		if !margin.RequiredBalance.IsPositive() {
+		if !margin.RequiredBalance.IsPositive() && strings.TrimSpace(site.TierCode) != "" {
 			var tier model.AdtySiteTier
-			if err := tx.Where("code = ? AND enabled = ?", site.TierCode, true).First(&tier).Error; err != nil || !tier.DepositUSD.IsPositive() {
-				return common.NewMessage("Margin tier is not configured")
+			if err := tx.Where("code = ? AND enabled = ?", site.TierCode, true).First(&tier).Error; err == nil && tier.DepositUSD.IsPositive() {
+				if err := tx.Model(&margin).Update("required_balance", tier.DepositUSD).Error; err != nil {
+					return err
+				}
+				margin.RequiredBalance = tier.DepositUSD
 			}
-			if err := tx.Model(&margin).Update("required_balance", tier.DepositUSD).Error; err != nil {
-				return err
-			}
-			margin.RequiredBalance = tier.DepositUSD
 		}
 		var err error
 		ledger, err = applyAdtySiteWalletChangeTx(tx, siteID, model.AdtySiteWalletMargin, amount, AdtySiteWalletChange{
@@ -878,11 +917,14 @@ func ListAdtySiteTiers() ([]model.AdtySiteTier, error) {
 }
 
 // AdtySiteTierStats is the lifetime snapshot used to choose a site grade.
-// Only cumulative net customer top-up principal (PrincipalUSD) gates upgrade/downgrade.
+// Only cumulative effective customer top-up principal (PrincipalUSD = max(0,
+// OnlinePrincipalUSD + AdjustmentUSD)) gates upgrade/downgrade.
 type AdtySiteTierStats struct {
-	EffectiveUsers int64
-	PrincipalUSD   decimal.Decimal
-	ConsumptionUSD decimal.Decimal
+	EffectiveUsers     int64           `json:"effective_users"`
+	OnlinePrincipalUSD decimal.Decimal `json:"online_principal_usd"`
+	AdjustmentUSD      decimal.Decimal `json:"adjustment_usd"`
+	PrincipalUSD       decimal.Decimal `json:"principal_usd"`
+	ConsumptionUSD     decimal.Decimal `json:"consumption_usd"`
 }
 
 func (stats AdtySiteTierStats) Meets(tier model.AdtySiteTier) bool {
@@ -915,8 +957,14 @@ func SelectAdtySiteTier(tiers []model.AdtySiteTier, stats AdtySiteTierStats) *mo
 	return selected
 }
 
-func adtySiteTierCountsAsPrincipal(order model.AdtyTopupOrder) bool {
+func adtySiteTierCountsAsPrincipal(order model.AdtyTopupOrder, ownerUserID int) bool {
+	// Completely exclude all owner recharges/transfers (margin top-up, owner
+	// self-use API top-up, margin vouchers, owner vouchers, or any order placed
+	// by the site owner themselves).
 	if order.IsOwnerBusiness() {
+		return false
+	}
+	if ownerUserID > 0 && order.UserId == ownerUserID {
 		return false
 	}
 	if order.Provider == model.AdtyVoucherProvider {
@@ -927,6 +975,10 @@ func adtySiteTierCountsAsPrincipal(order model.AdtyTopupOrder) bool {
 
 func loadAdtySiteTierStatsTx(tx *gorm.DB, siteID int) (AdtySiteTierStats, error) {
 	var stats AdtySiteTierStats
+	var site model.AdtySite
+	if err := tx.Select("id", "owner_user_id", "tier_principal_adjustment_usd").Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil {
+		return stats, err
+	}
 	if err := tx.Model(&model.User{}).
 		Where("site_id = ? AND status = ? AND staff_site_id = 0", siteID, common.UserStatusEnabled).
 		Count(&stats.EffectiveUsers).Error; err != nil {
@@ -940,12 +992,18 @@ func loadAdtySiteTierStatsTx(tx *gorm.DB, siteID int) (AdtySiteTierStats, error)
 	}
 	principal := decimal.Zero
 	for i := range orders {
-		if !adtySiteTierCountsAsPrincipal(orders[i]) {
+		if !adtySiteTierCountsAsPrincipal(orders[i], site.OwnerUserId) {
 			continue
 		}
 		principal = principal.Add(adtyRetainedTopUpUSD(&orders[i]))
 	}
-	stats.PrincipalUSD = principal
+	stats.OnlinePrincipalUSD = principal
+	stats.AdjustmentUSD = site.TierPrincipalAdjustmentUSD
+	effective := principal.Add(site.TierPrincipalAdjustmentUSD)
+	if effective.IsNegative() {
+		effective = decimal.Zero
+	}
+	stats.PrincipalUSD = effective
 
 	var billed int64
 	if err := tx.Model(&model.BillingOperation{}).

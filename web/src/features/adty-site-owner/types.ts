@@ -39,6 +39,8 @@ export type SiteBrand = {
   tagline: string
   notice: string
   support_contact: string
+  tawk_property_id?: string
+  tawk_widget_id?: string
 }
 
 /** One site price row (model.AdtySitePrice). Decimals are strings. */
@@ -55,8 +57,9 @@ export type SitePrice = {
 }
 
 /**
- * What a custom domain is for. `site` serves the whole site; `base_url` serves
- * only the relay so the address given to a customer is a pure API endpoint.
+ * What a custom domain is for. `site` serves web pages, sign-in and console
+ * (rejecting model API calls); `base_url` serves model API calls and also
+ * allows opening the site homepage and console.
  */
 export type SiteDomainRole = 'site' | 'base_url'
 

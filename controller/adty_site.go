@@ -25,10 +25,17 @@ type adtySiteView struct {
 // GetAdtySite 是公开的站点配置（任务 8.3）：首页、文档、快速接入卡、客服和退款政策开关都读它。
 func GetAdtySite(c *gin.Context) {
 	settings := *adty_setting.GetSiteSetting()
+	settings.APIBaseURL = service.AdtySiteAPIBaseURL(nil)
 	var contact string
 	if site := service.AdtySiteForRequest(c); site != nil {
-		settings = adty_setting.SiteSetting{APIBaseURL: service.AdtySiteAPIBaseURL(site), RefundPolicyEnabled: settings.RefundPolicyEnabled}
-		contact = strings.TrimSpace(service.AdtyBrandFor(site).SupportContact)
+		brand := service.AdtyBrandFor(site)
+		settings = adty_setting.SiteSetting{
+			APIBaseURL:          service.AdtySiteAPIBaseURL(site),
+			TawkPropertyID:      brand.TawkPropertyID,
+			TawkWidgetID:        brand.TawkWidgetID,
+			RefundPolicyEnabled: settings.RefundPolicyEnabled,
+		}
+		contact = strings.TrimSpace(brand.SupportContact)
 		if addr, err := mail.ParseAddress(contact); err == nil && addr.Address == contact {
 			settings.SupportEmail = addr.Address
 		}

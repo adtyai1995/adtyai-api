@@ -184,7 +184,7 @@ func AdtyTurnstileFor(site *model.AdtySite, requestHost string) AdtyTurnstileCho
 	widgetId := cfg.TurnstileWidgets[0].Id
 	host := AdtyNormalizeHost(requestHost)
 	var domain model.AdtySiteDomain
-	if model.DB.Select("turnstile_widget").Where("hostname = ? AND site_id = ? AND role = ? AND status = ?", host, site.Id, model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive).Limit(1).Find(&domain).RowsAffected > 0 && domain.TurnstileWidget != "" {
+	if model.DB.Select("turnstile_widget").Where("hostname = ? AND site_id = ? AND role IN ? AND status = ?", host, site.Id, []string{model.AdtySiteDomainRoleSite, model.AdtySiteDomainRoleBaseURL}, model.AdtySiteDomainActive).Limit(1).Find(&domain).RowsAffected > 0 && domain.TurnstileWidget != "" {
 		widgetId = domain.TurnstileWidget
 	}
 	for _, widget := range cfg.TurnstileWidgets {

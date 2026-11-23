@@ -162,7 +162,7 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 }
 
 // AdtyIsApiOnlyHost 识别本站默认 API 域名和已激活的 API 自定义域名。
-// 这类主机只放行 relay，页面和账号接口都拒绝。
+// 这类主机既放行模型中转 API，也允许打开本站首页并完整登录、操作控制台。
 func AdtyIsApiOnlyHost(host string) bool {
 	host = AdtyNormalizeHost(host)
 	if host == "" {
@@ -211,13 +211,69 @@ func hostOfURL(raw string) string {
 	return AdtyNormalizeHost(parsed.Host)
 }
 
-// AdtyIsMainHost 说明这是不是主站自己的主机名：ServerAddress 和接入地址 api_base_url。
-func AdtyIsMainHost(host string) bool {
+// ValidateMainSiteDomainSeparation enforces that the main site's website host
+// (ServerAddress) and dedicated API host (adty_site_setting.api_base_url) are
+// strictly distinct whenever APIBaseURL is configured.
+func ValidateMainSiteDomainSeparation(serverAddress, apiBaseURL string) error {
+	apiRaw := strings.TrimSpace(apiBaseURL)
+	if apiRaw == "" {
+		return nil
+	}
+	parsedAPI, err := url.Parse(apiRaw)
+	if err != nil || (parsedAPI.Scheme != "http" && parsedAPI.Scheme != "https") || AdtyNormalizeHost(parsedAPI.Host) == "" {
+		return common.NewMessage("Enter a full URL starting with http:// or https://")
+	}
+	siteHost := hostOfURL(serverAddress)
+	apiHost := AdtyNormalizeHost(parsedAPI.Host)
+	if siteHost != "" && apiHost == siteHost {
+		return common.NewMessage("API base URL must use a different domain from the website server address")
+	}
+	return nil
+}
+
+// AdtyIsMainSiteHost 识别主站网站/首页域名（ServerAddress）。
+// 主站网站域名只提供网页与控制台，禁止调用 AI 模型中转 API。
+func AdtyIsMainSiteHost(host string) bool {
 	host = AdtyNormalizeHost(host)
 	if host == "" {
 		return false
 	}
-	return host == hostOfURL(system_setting.ServerAddress) || host == hostOfURL(adty_setting.GetSiteSetting().APIBaseURL)
+	siteHost := hostOfURL(system_setting.ServerAddress)
+	return siteHost != "" && host == siteHost
+}
+
+// AdtyIsMainAPIHost 识别主站专用 API 调用域名（adty_site_setting.api_base_url）。
+// 主站 API 域名与主站网站域名分离时，既提供全部 AI 模型中转 API，也允许完整打开首页与控制台。
+func AdtyIsMainAPIHost(host string) bool {
+	host = AdtyNormalizeHost(host)
+	if host == "" {
+		return false
+	}
+	apiHost := hostOfURL(adty_setting.GetSiteSetting().APIBaseURL)
+	return apiHost != "" && host == apiHost
+}
+
+// AdtyIsMainHost 说明这是不是主站自己的主机名：主站网站域名（ServerAddress）或主站 API 域名（api_base_url）。
+func AdtyIsMainHost(host string) bool {
+	return AdtyIsMainSiteHost(host) || AdtyIsMainAPIHost(host)
+}
+
+// AdtyHostAllowsRelay 判断该 Host 是否允许调用 AI 模型中转 API（主站与分站统一规则）：
+//   - 网站/首页域名绝对禁止调用模型中转 API；
+//   - 主站仅当配置了独立于 ServerAddress 的 api_base_url 时，由该 API 域名承接模型中转；
+//   - 分站仅由本站默认 API 域名（api-s<id>.<root>）或已激活的 role=base_url 自定义 API 域名承接。
+func AdtyHostAllowsRelay(host string) bool {
+	host = AdtyNormalizeHost(host)
+	if host == "" {
+		return false
+	}
+	if AdtyIsMainHost(host) {
+		return AdtyIsMainAPIHost(host) && !AdtyIsMainSiteHost(host)
+	}
+	if !resellerSetting().Enabled || !AdtyIsApiOnlyHost(host) {
+		return false
+	}
+	return AdtySiteServesCustomers(AdtySiteForHost(host))
 }
 
 // AdtyAPIKeyHostStatus checks the key owner's site against the trusted request
@@ -298,7 +354,7 @@ func AdtyRejectSessionAPIStatus(host string) int {
 	if site == nil {
 		return http.StatusNotFound
 	}
-	if !AdtySiteServesCustomers(site) || AdtyIsApiOnlyHost(host) {
+	if !AdtySiteServesCustomers(site) {
 		return http.StatusForbidden
 	}
 	return 0
@@ -391,10 +447,16 @@ func adtyAdvertisedDomain(siteID int, role string) string {
 	return strings.ToLower(strings.TrimSpace(binding.Hostname))
 }
 
-// AdtySiteAPIBaseURL 返回客户调用模型的专用地址，优先使用已激活的自定义 API 域名。
+// AdtySiteAPIBaseURL 返回客户调用模型的专用地址。
+// 主站只返回独立配置的 api_base_url（未配置时为空，不回退到禁止调用模型的 ServerAddress）；
+// 分站优先返回已激活的自定义 API 域名，其次返回就绪的平台默认 API 域名。
 func AdtySiteAPIBaseURL(site *model.AdtySite) string {
 	if site == nil {
-		return strings.TrimRight(system_setting.ServerAddress, "/")
+		apiBase := strings.TrimRight(strings.TrimSpace(adty_setting.GetSiteSetting().APIBaseURL), "/")
+		if apiBase == "" || hostOfURL(apiBase) == hostOfURL(system_setting.ServerAddress) {
+			return ""
+		}
+		return apiBase
 	}
 	snapshot := loadAdtySiteSnapshot()
 	if host := adtyAdvertisedDomain(site.Id, model.AdtySiteDomainRoleBaseURL); host != "" {

@@ -60,13 +60,14 @@ export function buildClientSnippet(
   model: string,
   labels: ClientSnippetLabels
 ): string {
+  const effectiveBaseUrl = baseUrl.trim() || '<BASE_URL>'
   const tenant = subsiteDocument()
   const slug = tenant ? `site${tenant.id}` : ADTY_BRAND_SLUG
   const envKey = `${slug.toUpperCase()}_API_KEY`
   switch (client) {
     case 'claude-code':
       return [
-        `export ANTHROPIC_BASE_URL=${baseUrl}`,
+        `export ANTHROPIC_BASE_URL=${effectiveBaseUrl}`,
         `export ANTHROPIC_AUTH_TOKEN=${API_KEY_PLACEHOLDER}`,
         'claude',
       ].join('\n')
@@ -78,7 +79,7 @@ export function buildClientSnippet(
         '',
         `[model_providers.${slug}]`,
         `name = ${JSON.stringify(tenant?.name ?? ADTY_BRAND_NAME)}`,
-        `base_url = "${baseUrl}/v1"`,
+        `base_url = "${effectiveBaseUrl}/v1"`,
         'wire_api = "responses"',
         `env_key = "${envKey}"`,
         '',
@@ -88,7 +89,7 @@ export function buildClientSnippet(
       return [
         'from openai import OpenAI',
         '',
-        `client = OpenAI(base_url="${baseUrl}/v1", api_key="${API_KEY_PLACEHOLDER}")`,
+        `client = OpenAI(base_url="${effectiveBaseUrl}/v1", api_key="${API_KEY_PLACEHOLDER}")`,
         'resp = client.chat.completions.create(',
         `    model="${model}",`,
         '    messages=[{"role": "user", "content": "Hello"}],',
@@ -99,7 +100,7 @@ export function buildClientSnippet(
       // Cherry Studio appends /v1 to an OpenAI-type address itself.
       return [
         `${labels.provider}: OpenAI`,
-        `${labels.address}: ${baseUrl}`,
+        `${labels.address}: ${effectiveBaseUrl}`,
         `${labels.key}: ${API_KEY_PLACEHOLDER}`,
         `${labels.model}: ${model}`,
       ].join('\n')

@@ -511,6 +511,21 @@ func UpdateOption(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	case "ServerAddress":
+		if err = service.ValidateMainSiteDomainSeparation(option.Value.(string), adty_setting.GetSiteSetting().APIBaseURL); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	case "adty_site_setting.api_base_url":
+		if err = service.ValidateMainSiteDomainSeparation(system_setting.ServerAddress, option.Value.(string)); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	case "adty_site_setting.tawk_property_id", "adty_site_setting.tawk_widget_id":
+		if err = service.ValidateAdtyTawkID(option.Value.(string)); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	case "console_setting.uptime_kuma_groups":
 		err = console_setting.ValidateConsoleSettings(option.Value.(string), "UptimeKumaGroups")
 		if err != nil {
@@ -524,6 +539,9 @@ func UpdateOption(c *gin.Context) {
 			writePasskeyDomainSettingsError(c, updateErr)
 			recordPasskeyDomainAudit(c, change, false, updateErr)
 			return
+		}
+		if option.Key == "ServerAddress" {
+			service.InvalidateAdtySiteCache()
 		}
 		recordPasskeyDomainAudit(c, change, false, nil)
 		common.ApiSuccess(c, change)
@@ -597,6 +615,9 @@ func UpdateOption(c *gin.Context) {
 			common.ApiError(c, err)
 		}
 		return
+	}
+	if option.Key == "adty_site_setting.api_base_url" {
+		service.InvalidateAdtySiteCache()
 	}
 	deliverCommittedAudits(c, []model.AuditLog{auditEvent})
 	c.JSON(http.StatusOK, gin.H{

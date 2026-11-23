@@ -391,7 +391,13 @@ export async function getOwnerVouchers(
 }
 
 export async function issueOwnerVoucher(
-  body: { purpose: string; amount_usd: string; source: string; reason: string },
+  body: {
+    purpose: string
+    amount_usd: string
+    source?: string
+    reason: string
+    intent_key?: string
+  },
   proof: string
 ): Promise<VoucherIssued> {
   const res = await api.post<ApiResponse<VoucherIssued>>(
@@ -733,6 +739,38 @@ export async function getOwnerCustomerTopUps(
   const res = await api.get<ApiResponse<OwnerPage<OwnerTopUp>>>(
     `${BASE}/customers/${id}/topups`,
     { params: { p, page_size: OWNER_PAGE_SIZE } }
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export type OwnerCustomerBalanceResult = {
+  customer_id: number
+  amount_usd: string
+  quota: number
+  balance_before: number
+  balance_after: number
+  earnings_usd: string
+  margin_usd: string
+  ledger_id: number
+  replayed?: boolean
+}
+
+/** Proof: action `customer.balance`, target = customer id. */
+export async function creditOwnerCustomerBalance(
+  id: number,
+  body: { amount_usd: string; reason: string },
+  idempotencyKey: string,
+  proof: string
+): Promise<OwnerCustomerBalanceResult> {
+  const res = await api.post<ApiResponse<OwnerCustomerBalanceResult>>(
+    `${BASE}/customers/${id}/balance`,
+    { ...body, idempotency_key: idempotencyKey },
+    {
+      headers: {
+        'X-Security-Proof': proof,
+        'Idempotency-Key': idempotencyKey,
+      },
+    }
   )
   return requireServerSuccess(res.data).data
 }

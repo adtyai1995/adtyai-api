@@ -44,12 +44,10 @@ import {
   getAdminSiteCommissionMargin,
   getAdminSiteWalletLedger,
   getAdminSiteWallets,
-  getAdminVoucherMarginAuthorization,
   issueAdminMarginVoucher,
   resetVoucherIssuanceIntent,
   reviewAdminAnomalyDisposition,
   saveAdminSiteCommissionMargin,
-  saveAdminVoucherMarginAuthorization,
   siteAdminKeys,
 } from '../api'
 import { SwitchRow } from './setting-fields'
@@ -125,19 +123,6 @@ export function SiteFundPanel(props: { siteId: number }) {
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: siteAdminKeys.all })
       void invalidateSidebarBadges(client)
-    },
-    onError: (error) => handleServerError(error),
-  })
-  const voucherMargin = useQuery({
-    queryKey: siteAdminKeys.list('voucher-margin', { siteId: props.siteId }),
-    queryFn: () => getAdminVoucherMarginAuthorization(props.siteId),
-    enabled: isRoot,
-  })
-  const saveVoucherMargin = useMutation({
-    mutationFn: (allowed: boolean) =>
-      saveAdminVoucherMarginAuthorization(props.siteId, allowed),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: siteAdminKeys.all })
     },
     onError: (error) => handleServerError(error),
   })
@@ -231,20 +216,6 @@ export function SiteFundPanel(props: { siteId: number }) {
           onCheckedChange={(value) => saveMargin.mutate(value)}
         />
       )}
-      {voucherMargin.isError && (
-        <ErrorState onRetry={() => void voucherMargin.refetch()} />
-      )}
-      {voucherMargin.isSuccess && (
-        <SwitchRow
-          label={t('Issue recharge codes from margin')}
-          hint={t(
-            'Lets the site owner freeze margin to issue recharge codes, besides earnings.'
-          )}
-          checked={voucherMargin.data?.allowed === true}
-          disabled={saveVoucherMargin.isPending}
-          onCheckedChange={(value) => saveVoucherMargin.mutate(value)}
-        />
-      )}
       <h3 className='text-sm font-medium'>{t('Fund anomalies')}</h3>
       {anomalies.isPending && <LoadingState />}
       {anomalies.isError && (
@@ -266,7 +237,7 @@ export function SiteFundPanel(props: { siteId: number }) {
       <h3 className='text-sm font-medium'>{t('Direct margin credit')}</h3>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet.'
+          'Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet. Excess margin above the site level deposit floor can also be used by the owner for manual customer/team balance credits and recharge codes.'
         )}
       </p>
       <div className='grid gap-3 sm:grid-cols-2'>

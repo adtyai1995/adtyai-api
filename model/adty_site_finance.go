@@ -14,6 +14,12 @@ const (
 )
 
 var ErrAdtySiteWalletLedgerImmutable = errors.New("site wallet ledger is immutable")
+var ErrAdtySiteTierPrincipalAdjustmentImmutable = errors.New("site tier principal adjustment is immutable")
+
+const (
+	AdtyTierPrincipalAdjustModeDelta    = "delta"
+	AdtyTierPrincipalAdjustModeSetTotal = "set_total"
+)
 
 // AdtySiteTier is a root-managed, data-driven site level definition.
 // Monetary values are USD and remain configurable instead of being embedded
@@ -54,6 +60,38 @@ type AdtySiteTierEvaluation struct {
 }
 
 func (AdtySiteTierEvaluation) TableName() string { return "adty_site_tier_evaluations" }
+
+// AdtySiteTierPrincipalAdjustment is an immutable Root adjustment to a site's
+// tier-evaluation cumulative customer recharge total (e.g. offline large transfers).
+// It affects tier qualification only and never modifies any wallet or user quota.
+type AdtySiteTierPrincipalAdjustment struct {
+	Id                int64           `json:"id"`
+	SiteId            int             `json:"site_id" gorm:"index;not null"`
+	Mode              string          `json:"mode" gorm:"type:varchar(16);not null"`
+	DeltaUSD          decimal.Decimal `json:"delta_usd" gorm:"type:decimal(20,8);not null"`
+	OnlineBeforeUSD   decimal.Decimal `json:"online_before_usd" gorm:"type:decimal(20,8);not null"`
+	AdjustBeforeUSD   decimal.Decimal `json:"adjust_before_usd" gorm:"type:decimal(20,8);not null"`
+	AdjustAfterUSD    decimal.Decimal `json:"adjust_after_usd" gorm:"type:decimal(20,8);not null"`
+	EffectiveAfterUSD decimal.Decimal `json:"effective_after_usd" gorm:"type:decimal(20,8);not null"`
+	TierBefore        string          `json:"tier_before" gorm:"type:varchar(32)"`
+	TierAfter         string          `json:"tier_after" gorm:"type:varchar(32)"`
+	Reason            string          `json:"reason" gorm:"type:varchar(500);not null"`
+	OperatorId        int             `json:"operator_id" gorm:"index;not null"`
+	IdempotencyKey    string          `json:"-" gorm:"uniqueIndex;type:varchar(128);not null"`
+	CreatedAt         int64           `json:"created_at" gorm:"autoCreateTime;index"`
+}
+
+func (AdtySiteTierPrincipalAdjustment) TableName() string {
+	return "adty_site_tier_principal_adjustments"
+}
+
+func (AdtySiteTierPrincipalAdjustment) BeforeUpdate(*gorm.DB) error {
+	return ErrAdtySiteTierPrincipalAdjustmentImmutable
+}
+
+func (AdtySiteTierPrincipalAdjustment) BeforeDelete(*gorm.DB) error {
+	return ErrAdtySiteTierPrincipalAdjustmentImmutable
+}
 
 type AdtySiteWallet struct {
 	Id              int64            `json:"id"`

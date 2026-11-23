@@ -59,8 +59,9 @@ export function useAdtySite() {
 }
 
 /**
- * The API address customers configure: the site setting, else the server
- * address from /api/status, else the current origin. No trailing slash.
+ * The dedicated API calling address customers configure: never falls back to
+ * the website/home domain origin because website domains reject relay calls.
+ * No trailing slash.
  */
 export function useApiBaseUrl(): string {
   const site = useAdtySite()
@@ -70,10 +71,12 @@ export function useApiBaseUrl(): string {
     typeof status?.server_address === 'string' ? status.server_address : ''
   const isSubsite = Boolean(status?.adty_site ?? status?.data?.adty_site)
   if (tenant || isSubsite) {
-    return ((isSubsite && serverAddress.trim()) || tenant?.api || '').replace(/\/+$/, '')
+    return ((isSubsite && serverAddress.trim()) || tenant?.api || '').replace(
+      /\/+$/,
+      ''
+    )
   }
   const candidates = [site.data?.api_base_url ?? '', serverAddress]
-  const configured = candidates.map((value) => value.trim()).find(Boolean)
-  const origin = typeof window === 'undefined' ? '' : window.location.origin
-  return (configured || origin).replace(/\/+$/, '')
+  const configured = candidates.map((value) => value.trim()).find(Boolean) ?? ''
+  return configured.replace(/\/+$/, '')
 }

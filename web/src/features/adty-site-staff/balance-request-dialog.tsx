@@ -53,7 +53,6 @@ export function StaffBalanceRequestDialog(props: {
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
   const [orderRef, setOrderRef] = useState('')
-  const [fundingSource, setFundingSource] = useState('')
   const [batchKind, setBatchKind] = useState('')
   const [batchSource, setBatchSource] = useState('')
   const [confirmed, setConfirmed] = useState(false)
@@ -71,7 +70,7 @@ export function StaffBalanceRequestDialog(props: {
         idempotency_key: idempotencyKey,
         reason: reason.trim(),
         order_ref: orderRef.trim(),
-        funding_source: direction === 'decrease' ? 'specified_batch' : fundingSource,
+        funding_source: direction === 'decrease' ? 'specified_batch' : 'auto',
         batch_kind: direction === 'decrease' ? batchKind : '',
         batch_source: direction === 'decrease' ? batchSource.trim() : '',
       })
@@ -91,7 +90,7 @@ export function StaffBalanceRequestDialog(props: {
     Number.isFinite(Number(amount)) && Number(amount) > 0 &&
     reason.trim() !== '' && [...reason.trim()].length <= 200 &&
     orderRef.trim() !== '' && orderRef.trim().length <= 64 &&
-    (direction === 'increase' ? fundingSource !== '' : batchKind !== '' && batchSource.trim() !== '') &&
+    (direction === 'increase' || (batchKind !== '' && batchSource.trim() !== '')) &&
     confirmed &&
     !submit.isPending
   return (
@@ -118,7 +117,6 @@ export function StaffBalanceRequestDialog(props: {
               value={direction}
               onChange={(event) => {
                 setDirection(event.target.value as StaffBalanceDirection | '')
-                setFundingSource('')
                 setBatchKind('')
                 setBatchSource('')
               }}
@@ -149,15 +147,11 @@ export function StaffBalanceRequestDialog(props: {
               onChange={(event) => setReason(event.target.value)} />
           </div>
           {direction === 'increase' && (
-            <div className='flex flex-col gap-1'>
-              <Label htmlFor='staff-balance-source'>{t('Funding source')}</Label>
-              <NativeSelect id='staff-balance-source' className='w-full' value={fundingSource}
-                onChange={(event) => setFundingSource(event.target.value)}>
-                <NativeSelectOption value=''>{t('Funding source')}</NativeSelectOption>
-                <NativeSelectOption value='site_earnings'>{t('Earnings wallet')}</NativeSelectOption>
-                <NativeSelectOption value='site_margin'>{t('Margin wallet')}</NativeSelectOption>
-              </NativeSelect>
-            </div>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Funded automatically from site earnings first, then excess margin above the level deposit floor.'
+              )}
+            </p>
           )}
           {direction === 'decrease' && (
             <>

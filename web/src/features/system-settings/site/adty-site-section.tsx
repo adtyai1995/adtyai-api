@@ -40,6 +40,8 @@ const TEXT_FIELDS: Array<{ field: TextField; kind: 'url' | 'email' | 'text' }> =
     { field: 'tawk_widget_id', kind: 'text' },
   ]
 
+const TAWK_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value)
@@ -99,7 +101,7 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
   }
   const hints: Partial<Record<TextField, string>> = {
     api_base_url: t(
-      'The address customers put in their clients, without /v1. Empty uses the server address.'
+      'Dedicated API calling URL without /v1. Must use a different hostname from the main website domain (website domain rejects model API calls; API domain serves both model APIs and the web console).'
     ),
     support_hours: t('Shown on the home page next to the payment methods.'),
     tawk_widget_id: t('Live chat appears when both Tawk.to IDs are set.'),
@@ -118,6 +120,14 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
     }
     if (item.kind === 'email' && !/^[^\s@]+@[^\s@]+$/.test(value)) {
       errors[item.field] = t('Enter a valid email address')
+    }
+    if (
+      (item.field === 'tawk_property_id' || item.field === 'tawk_widget_id') &&
+      !TAWK_ID_PATTERN.test(value)
+    ) {
+      errors[item.field] = t(
+        'Tawk.to IDs may only contain letters, digits, hyphens and underscores (up to 64 characters).'
+      )
     }
   }
 

@@ -54,6 +54,7 @@ export type SiteWallet = {
   currency?: string
   balance: string
   frozen_usd?: string
+  required_balance?: string
   cycle_tier_usd?: string
   cycle_used_usd?: string
 }
@@ -113,6 +114,12 @@ export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
       return t('Recharge code cancelled')
     case 'voucher_spend':
       return t('Recharge code redeemed')
+    case 'owner_customer_balance':
+      return t('Manual customer balance credit')
+    case 'owner_team_balance':
+      return t('Manual team balance credit')
+    case 'staff_balance':
+      return t('Staff balance request approved')
     default:
       return type
   }

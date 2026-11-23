@@ -156,3 +156,34 @@ export async function saveTeamDiscount(
   })
   requireServerSuccess(res.data)
 }
+
+export type OwnerTeamBalanceResult = {
+  team_id: number
+  amount_usd: string
+  quota: number
+  shared_quota_before: number
+  shared_quota_after: number
+  earnings_usd: string
+  margin_usd: string
+  replayed?: boolean
+}
+
+/** Proof: action `team.balance`, target = team id. */
+export async function creditOwnerTeamBalance(
+  id: number,
+  body: { amount_usd: string; reason: string },
+  idempotencyKey: string,
+  proof: string
+): Promise<OwnerTeamBalanceResult> {
+  const res = await api.post<ApiResponse<OwnerTeamBalanceResult>>(
+    `/api/adty/site/teams/${id}/balance`,
+    { ...body, idempotency_key: idempotencyKey },
+    {
+      headers: {
+        'X-Security-Proof': proof,
+        'Idempotency-Key': idempotencyKey,
+      },
+    }
+  )
+  return requireServerSuccess(res.data).data
+}

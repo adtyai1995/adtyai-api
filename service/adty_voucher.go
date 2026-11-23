@@ -93,6 +93,9 @@ type AdtyVoucherIssued struct {
 	CodeTail          string          `json:"code_tail"`
 	Purpose           string          `json:"purpose"`
 	Status            string          `json:"status,omitempty"`
+	SourceKind        string          `json:"source_kind,omitempty"`
+	FrozenEarningsUSD decimal.Decimal `json:"frozen_earnings_usd"`
+	FrozenMarginUSD   decimal.Decimal `json:"frozen_margin_usd"`
 	TargetSiteId      int             `json:"target_site_id,omitempty"`
 	DesignatedOwnerId int             `json:"designated_owner_id,omitempty"`
 	AmountUSD         decimal.Decimal `json:"amount_usd"`
@@ -238,24 +241,25 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 			if input.DesignatedOwnerId != 0 && input.DesignatedOwnerId != site.OwnerUserId {
 				return common.NewMessage("Invalid parameters")
 			}
-			source := input.Source
-			if source == "" {
-				source = model.AdtyVoucherSourceEarnings
-			}
-			if source != model.AdtyVoucherSourceEarnings && source != model.AdtyVoucherSourceMargin {
+			switch input.Source {
+			case "", "auto", model.AdtyVoucherSourceEarnings, model.AdtyVoucherSourceMargin:
+			default:
 				return common.NewMessage("Invalid parameters")
 			}
-			if source == model.AdtyVoucherSourceMargin && !adtyVoucherMarginAuthorized(tx, site.Id) {
-				return common.NewMessage("No permission to perform this action")
+			split, err := adtyFreezeOwnerAutoFundingTx(tx, site.Id, issuer.Id, input.AmountUSD, hash[:16], "voucher issuance freeze", "voucher-freeze:"+hash, "voucher-freeze:"+hash+":margin")
+			if err != nil {
+				if errors.Is(err, ErrAdtySiteWalletInsufficient) {
+					return ErrAdtyVoucherFunds
+				}
+				return err
 			}
-			row.SourceKind = source
+			row.SourceKind = split.SourceKind()
+			row.FrozenEarningsUSD = split.EarningsUSD
+			row.FrozenMarginUSD = split.MarginUSD
 			row.SourceSiteId = site.Id
 			row.TargetSiteId = site.Id
 			if input.Purpose == model.AdtyVoucherPurposeSiteOwner {
 				row.DesignatedOwnerId = issuer.Id
-			}
-			if err := freezeAdtyVoucherWalletTx(tx, site.Id, source, input.AmountUSD, hash); err != nil {
-				return err
 			}
 		default:
 			return common.NewMessage("Invalid parameters")
@@ -265,6 +269,7 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 		}
 		issued = &AdtyVoucherIssued{
 			Id: row.Id, Code: code, CodeTail: tail, Purpose: row.Purpose, Status: row.Status,
+			SourceKind: row.SourceKind, FrozenEarningsUSD: row.FrozenEarningsUSD, FrozenMarginUSD: row.FrozenMarginUSD,
 			TargetSiteId: row.TargetSiteId, DesignatedOwnerId: row.DesignatedOwnerId,
 			AmountUSD: row.AmountUSD, Quota: row.Quota, IntentKey: input.IntentKey,
 		}
@@ -286,7 +291,8 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 			nil,
 			map[string]any{
 				"voucher_id": issued.Id, "purpose": issued.Purpose, "amount_usd": issued.AmountUSD.String(),
-				"quota": issued.Quota, "status": model.AdtyVoucherStatusPending, "source": input.Source,
+				"quota": issued.Quota, "status": model.AdtyVoucherStatusPending, "source": issued.SourceKind,
+				"frozen_earnings_usd": issued.FrozenEarningsUSD.String(), "frozen_margin_usd": issued.FrozenMarginUSD.String(),
 				"site_id": siteID, "target_site_id": issued.TargetSiteId, "designated_owner_id": issued.DesignatedOwnerId,
 				"code_tail": issued.CodeTail, "intent_key": input.IntentKey,
 			},
@@ -316,6 +322,9 @@ func findAdtyVoucherIssueReplayTx(tx *gorm.DB, issuerId int, input AdtyVoucherIs
 		CodeTail:          existing.CodeTail,
 		Purpose:           existing.Purpose,
 		Status:            existing.Status,
+		SourceKind:        existing.SourceKind,
+		FrozenEarningsUSD: existing.FrozenEarningsUSD,
+		FrozenMarginUSD:   existing.FrozenMarginUSD,
 		TargetSiteId:      existing.TargetSiteId,
 		DesignatedOwnerId: existing.DesignatedOwnerId,
 		AmountUSD:         existing.AmountUSD,
@@ -347,11 +356,12 @@ func adtyVoucherIntentMatches(existing model.AdtyVoucher, input AdtyVoucherIssue
 		if input.SiteId <= 0 || existing.TargetSiteId != input.SiteId || existing.SourceSiteId != input.SiteId {
 			return false
 		}
-		source := input.Source
-		if source == "" {
-			source = model.AdtyVoucherSourceEarnings
+		switch input.Source {
+		case "", "auto", model.AdtyVoucherSourceEarnings, model.AdtyVoucherSourceMargin:
+			return true
+		default:
+			return false
 		}
-		return existing.SourceKind == source
 	default:
 		return false
 	}
@@ -944,46 +954,82 @@ func releaseAdtyVoucherLiabilityTx(tx *gorm.DB, amount decimal.Decimal) error {
 	return tx.Model(row).Update("frozen_usd", row.FrozenUSD.Sub(amount)).Error
 }
 
-func freezeAdtyVoucherWalletTx(tx *gorm.DB, siteId int, kind string, amount decimal.Decimal, hash string) error {
-	if err := ensureAdtySiteWalletsTx(tx, siteId); err != nil {
-		return err
+func adtyVoucherFrozenSplit(voucher *model.AdtyVoucher) (earnUSD, marginUSD decimal.Decimal, legacySingleMargin bool) {
+	if voucher.FrozenEarningsUSD.IsPositive() || voucher.FrozenMarginUSD.IsPositive() {
+		return voucher.FrozenEarningsUSD, voucher.FrozenMarginUSD, false
 	}
-	_, err := applyAdtySiteWalletChangeTx(tx, siteId, kind, decimal.Zero, AdtySiteWalletChange{
-		Type: "voucher_freeze", RefType: "voucher", RefID: hash[:16], Reason: "voucher issuance freeze", IdempotencyKey: "voucher-freeze:" + hash,
-		HoldDelta: amount,
-	})
-	if err == ErrAdtySiteWalletInsufficient {
-		return ErrAdtyVoucherFunds
+	if voucher.SourceKind == model.AdtyVoucherSourceMargin {
+		return decimal.Zero, voucher.AmountUSD, true
 	}
-	return err
+	return voucher.AmountUSD, decimal.Zero, false
 }
 
 func releaseAdtyVoucherSourceTx(tx *gorm.DB, voucher *model.AdtyVoucher) error {
 	if voucher.SourceKind == model.AdtyVoucherSourcePlatform {
 		return releaseAdtyVoucherLiabilityTx(tx, voucher.AmountUSD)
 	}
-	_, err := applyAdtySiteWalletChangeTx(tx, voucher.SourceSiteId, voucher.SourceKind, decimal.Zero, AdtySiteWalletChange{
-		Type: "voucher_release", RefType: "voucher", RefID: voucher.CodeHash[:16], Reason: "voucher cancellation release", IdempotencyKey: "voucher-release:" + voucher.CodeHash,
-		HoldDelta: voucher.AmountUSD.Neg(),
-	})
-	if err == ErrAdtySiteWalletInsufficient {
-		return ErrAdtyVoucherFunds
+	earnUSD, marginUSD, legacySingleMargin := adtyVoucherFrozenSplit(voucher)
+	if earnUSD.IsPositive() {
+		if _, err := applyAdtySiteWalletChangeTx(tx, voucher.SourceSiteId, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
+			Type: "voucher_release", RefType: "voucher", RefID: voucher.CodeHash[:16], Reason: "voucher cancellation release", IdempotencyKey: "voucher-release:" + voucher.CodeHash,
+			HoldDelta: earnUSD.Neg(),
+		}); err != nil {
+			if errors.Is(err, ErrAdtySiteWalletInsufficient) {
+				return ErrAdtyVoucherFunds
+			}
+			return err
+		}
 	}
-	return err
+	if marginUSD.IsPositive() {
+		marginKey := "voucher-release:" + voucher.CodeHash + ":margin"
+		if legacySingleMargin {
+			marginKey = "voucher-release:" + voucher.CodeHash
+		}
+		if _, err := applyAdtySiteWalletChangeTx(tx, voucher.SourceSiteId, model.AdtySiteWalletMargin, decimal.Zero, AdtySiteWalletChange{
+			Type: "voucher_release", RefType: "voucher", RefID: voucher.CodeHash[:16], Reason: "voucher cancellation release", IdempotencyKey: marginKey,
+			HoldDelta: marginUSD.Neg(), MarginExcessOnly: !legacySingleMargin,
+		}); err != nil {
+			if errors.Is(err, ErrAdtySiteWalletInsufficient) {
+				return ErrAdtyVoucherFunds
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func spendAdtyVoucherSourceTx(tx *gorm.DB, voucher *model.AdtyVoucher) error {
 	if voucher.SourceKind == model.AdtyVoucherSourcePlatform {
 		return spendAdtyVoucherLiabilityTx(tx, voucher.AmountUSD)
 	}
-	_, err := applyAdtySiteWalletChangeTx(tx, voucher.SourceSiteId, voucher.SourceKind, voucher.AmountUSD.Neg(), AdtySiteWalletChange{
-		Type: "voucher_spend", RefType: "voucher", RefID: voucher.CodeHash[:16], Reason: "voucher redeem spend", IdempotencyKey: "voucher-spend:" + voucher.CodeHash,
-		HoldDelta: voucher.AmountUSD.Neg(),
-	})
-	if err == ErrAdtySiteWalletInsufficient {
-		return ErrAdtyVoucherFunds
+	earnUSD, marginUSD, legacySingleMargin := adtyVoucherFrozenSplit(voucher)
+	if earnUSD.IsPositive() {
+		if _, err := applyAdtySiteWalletChangeTx(tx, voucher.SourceSiteId, model.AdtySiteWalletEarnings, earnUSD.Neg(), AdtySiteWalletChange{
+			Type: "voucher_spend", RefType: "voucher", RefID: voucher.CodeHash[:16], Reason: "voucher redeem spend", IdempotencyKey: "voucher-spend:" + voucher.CodeHash,
+			HoldDelta: earnUSD.Neg(),
+		}); err != nil {
+			if errors.Is(err, ErrAdtySiteWalletInsufficient) {
+				return ErrAdtyVoucherFunds
+			}
+			return err
+		}
 	}
-	return err
+	if marginUSD.IsPositive() {
+		marginKey := "voucher-spend:" + voucher.CodeHash + ":margin"
+		if legacySingleMargin {
+			marginKey = "voucher-spend:" + voucher.CodeHash
+		}
+		if _, err := applyAdtySiteWalletChangeTx(tx, voucher.SourceSiteId, model.AdtySiteWalletMargin, marginUSD.Neg(), AdtySiteWalletChange{
+			Type: "voucher_spend", RefType: "voucher", RefID: voucher.CodeHash[:16], Reason: "voucher redeem spend", IdempotencyKey: marginKey,
+			HoldDelta: marginUSD.Neg(), MarginExcessOnly: !legacySingleMargin,
+		}); err != nil {
+			if errors.Is(err, ErrAdtySiteWalletInsufficient) {
+				return ErrAdtyVoucherFunds
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func creditAdtyVoucherMarginTx(tx *gorm.DB, siteId int, amount decimal.Decimal, trade string) error {
@@ -997,10 +1043,10 @@ func creditAdtyVoucherMarginTx(tx *gorm.DB, siteId int, amount decimal.Decimal, 
 	return err
 }
 
+// adtyVoucherMarginAuthorized always returns true under the unified automatic
+// funding rule (earnings first, excess margin above tier floor second).
 func adtyVoucherMarginAuthorized(tx *gorm.DB, siteId int) bool {
-	var row model.AdtyVoucherAuthorization
-	lookup := tx.Where("site_id = ?", siteId).Limit(1).Find(&row)
-	return lookup.Error == nil && lookup.RowsAffected == 1 && row.MarginIssue
+	return siteId > 0
 }
 
 func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.AdtyVoucher) error {

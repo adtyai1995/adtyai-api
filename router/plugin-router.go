@@ -85,8 +85,14 @@ func newPluginGenerationBuilder(staticRoutes []gin.RouteInfo, trustedProxies []s
 
 func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, binding jsplugin.RouteBinding) []gin.HandlerFunc {
 	pinRoute := func(c *gin.Context) {
-		if service.AdtySiteForRequest(c) != nil && !service.AdtyIsApiOnlyHost(c.Request.Host) {
-			c.AbortWithStatus(http.StatusForbidden)
+		if !service.AdtyHostAllowsRelay(c.Request.Host) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": gin.H{
+					"message": "Model API requests are not allowed on the website domain; use the API domain instead",
+					"type":    "invalid_request_error",
+					"code":    "api_domain_required",
+				},
+			})
 			return
 		}
 		pinnedGeneration := generation

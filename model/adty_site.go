@@ -44,24 +44,25 @@ type AdtySite struct {
 	PendingCostFactorAt int64            `json:"pending_cost_factor_at" gorm:"index"`
 	TierCostFactor      *decimal.Decimal `json:"tier_cost_factor" gorm:"type:decimal(10,6)"`
 	// 业绩档位算出的更高 d 先记在这里，到点才写入 TierCostFactor。降低立即写入并清空这两列。
-	PendingTierCostFactor   *decimal.Decimal `json:"pending_tier_cost_factor" gorm:"type:decimal(10,6)"`
-	PendingTierCostFactorAt int64            `json:"pending_tier_cost_factor_at" gorm:"index"`
-	TierMonth               string           `json:"tier_month" gorm:"type:varchar(7)"`
-	TierCode                string           `json:"tier_code" gorm:"type:varchar(32);index"`
-	TierMode                string           `json:"tier_mode" gorm:"type:varchar(16)"`
-	TierUpdatedAt           int64            `json:"tier_updated_at"`
-	Visibility              string           `json:"visibility" gorm:"type:text"`
-	AllowedGroups           string           `json:"allowed_groups" gorm:"type:text"`
-	Brand                   string           `json:"brand" gorm:"type:text"`
-	BonusRates              string           `json:"bonus_rates" gorm:"type:text"`
-	SeoIndex                bool             `json:"seo_index"`
-	AgreementVer            string           `json:"agreement_ver" gorm:"type:varchar(32)"`
-	AgreementAt             int64            `json:"agreement_at"`
-	ContactInfo             string           `json:"contact_info" gorm:"type:text"`
-	OpenedBy                string           `json:"opened_by" gorm:"type:varchar(16)"`
-	OpenKey                 *string          `json:"-" gorm:"uniqueIndex;type:varchar(64)"`
-	OpenFingerprint         string           `json:"-" gorm:"type:varchar(64)"`
-	ReviewNote              string           `json:"review_note" gorm:"type:text"`
+	PendingTierCostFactor      *decimal.Decimal `json:"pending_tier_cost_factor" gorm:"type:decimal(10,6)"`
+	PendingTierCostFactorAt    int64            `json:"pending_tier_cost_factor_at" gorm:"index"`
+	TierMonth                  string           `json:"tier_month" gorm:"type:varchar(7)"`
+	TierCode                   string           `json:"tier_code" gorm:"type:varchar(32);index"`
+	TierMode                   string           `json:"tier_mode" gorm:"type:varchar(16)"`
+	TierUpdatedAt              int64            `json:"tier_updated_at"`
+	TierPrincipalAdjustmentUSD decimal.Decimal  `json:"tier_principal_adjustment_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	Visibility                 string           `json:"visibility" gorm:"type:text"`
+	AllowedGroups              string           `json:"allowed_groups" gorm:"type:text"`
+	Brand                      string           `json:"brand" gorm:"type:text"`
+	BonusRates                 string           `json:"bonus_rates" gorm:"type:text"`
+	SeoIndex                   bool             `json:"seo_index"`
+	AgreementVer               string           `json:"agreement_ver" gorm:"type:varchar(32)"`
+	AgreementAt                int64            `json:"agreement_at"`
+	ContactInfo                string           `json:"contact_info" gorm:"type:text"`
+	OpenedBy                   string           `json:"opened_by" gorm:"type:varchar(16)"`
+	OpenKey                    *string          `json:"-" gorm:"uniqueIndex;type:varchar(64)"`
+	OpenFingerprint            string           `json:"-" gorm:"type:varchar(64)"`
+	ReviewNote                 string           `json:"review_note" gorm:"type:text"`
 	// 关站：站长申请时写 CloseRequestedAt；管理员定下客户去向后状态改 closing，到 CloseExecuteAt 由主节点执行。
 	CloseRequestedAt int64  `json:"close_requested_at"`
 	CloseMailBatchId int64  `json:"close_mail_batch_id,omitempty" gorm:"-"`
@@ -88,14 +89,14 @@ func (s *AdtySite) BeforeCreate(tx *gorm.DB) error {
 }
 
 type AdtySiteMarketingPolicy struct {
-	PendingCoverageCap *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
-	CancelWindowMinutes *int64 `json:"cancel_window_minutes" gorm:"column:invite_cancel_window_minutes"`
-	ObservationDays    *int64           `json:"observation_days"`
-	MinUSD             *decimal.Decimal `json:"min_usd" gorm:"column:invite_withdraw_min;type:decimal(20,8)"`
-	FeeUSD             *decimal.Decimal `json:"fee_usd" gorm:"column:invite_withdraw_fee;type:decimal(20,8)"`
-	CNYRate            *decimal.Decimal `json:"cny_rate" gorm:"column:invite_withdraw_cny_rate;type:decimal(20,8)"`
-	TrialGrantMaxUSD   *decimal.Decimal `json:"trial_grant_max_usd" gorm:"type:decimal(20,8)"`
-	TrialGrantDailyUSD *decimal.Decimal `json:"trial_grant_daily_usd" gorm:"type:decimal(20,8)"`
+	PendingCoverageCap  *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
+	CancelWindowMinutes *int64           `json:"cancel_window_minutes" gorm:"column:invite_cancel_window_minutes"`
+	ObservationDays     *int64           `json:"observation_days"`
+	MinUSD              *decimal.Decimal `json:"min_usd" gorm:"column:invite_withdraw_min;type:decimal(20,8)"`
+	FeeUSD              *decimal.Decimal `json:"fee_usd" gorm:"column:invite_withdraw_fee;type:decimal(20,8)"`
+	CNYRate             *decimal.Decimal `json:"cny_rate" gorm:"column:invite_withdraw_cny_rate;type:decimal(20,8)"`
+	TrialGrantMaxUSD    *decimal.Decimal `json:"trial_grant_max_usd" gorm:"type:decimal(20,8)"`
+	TrialGrantDailyUSD  *decimal.Decimal `json:"trial_grant_daily_usd" gorm:"type:decimal(20,8)"`
 }
 
 // AdtySiteInviteCode 是开站邀请码：有效就直接开成 active，并用码上预设的供货倍率。
@@ -137,14 +138,14 @@ const (
 // AdtySiteCustomer 是分站客户，和 users.site_id 同步写（11.2 注册、11.1 关站继承）。
 // 风控标记和复核在 11.5，条款勾选在 11.7。关站迁入主站时归档（保留原 site_id 和 user_id），不删除。
 type AdtySiteCustomer struct {
-	UserId              int    `json:"user_id" gorm:"primaryKey;autoIncrement:false"`
-	SiteId              int    `json:"site_id" gorm:"index"`
-	Status              string `json:"status" gorm:"type:varchar(16);index;not null;default:active"`
-	ArchivedAt          int64  `json:"archived_at"`
-	RiskFlag            string `json:"risk_flag" gorm:"type:varchar(16)"` // 空 | self_use | migration
-	RiskReason          string `json:"-" gorm:"type:text"`                // 只给后台看
-	Reviewed            bool   `json:"reviewed"`
-	EarningRiskReleased bool   `json:"-"` // only an explicit review converting skipped earnings releases old charges
+	UserId              int     `json:"user_id" gorm:"primaryKey;autoIncrement:false"`
+	SiteId              int     `json:"site_id" gorm:"index"`
+	Status              string  `json:"status" gorm:"type:varchar(16);index;not null;default:active"`
+	ArchivedAt          int64   `json:"archived_at"`
+	RiskFlag            string  `json:"risk_flag" gorm:"type:varchar(16)"` // 空 | self_use | migration
+	RiskReason          string  `json:"-" gorm:"type:text"`                // 只给后台看
+	Reviewed            bool    `json:"reviewed"`
+	EarningRiskReleased bool    `json:"-"` // only an explicit review converting skipped earnings releases old charges
 	TermsVersion        string  `json:"terms_version" gorm:"type:varchar(32)"`
 	TermsAt             int64   `json:"terms_at"`
 	JoinedAt            int64   `json:"joined_at"`
@@ -335,7 +336,7 @@ func (AdtySiteLookup) TableName() string { return "adty_site_lookups" }
 func AdtySiteTables() []any {
 	return []any{&AdtySite{}, &AdtySiteInviteCode{}, &AdtySiteAudit{}, &AdtySiteCustomer{}, &AdtyUserSiteMigration{}, &AdtySitePrice{}, &AdtySitePriceScope{}, &AdtyPriceRevision{}, &AdtySiteDomain{},
 		&AdtySiteEarningDaily{}, &AdtySiteEarningLine{}, &AdtySiteEarningFact{}, &AdtySiteTrialGrant{}, &AdtySiteReport{}, &AdtySiteLookup{}, &AdtySiteSenderDomain{}, &AdtySenderDomainCleanup{},
-		&AdtySiteTier{}, &AdtySiteTierEvaluation{}, &AdtySiteWallet{}, &AdtySiteWalletLedger{}, &AdtySiteWithdrawal{}, &AdtySitePayoutAttempt{}, &AdtySiteStaff{}, &AdtySiteOwnership{},
+		&AdtySiteTier{}, &AdtySiteTierEvaluation{}, &AdtySiteTierPrincipalAdjustment{}, &AdtySiteWallet{}, &AdtySiteWalletLedger{}, &AdtySiteWithdrawal{}, &AdtySitePayoutAttempt{}, &AdtySiteStaff{}, &AdtySiteOwnership{},
 		&AdtySiteSettlementSheet{}, &AdtySettlementCoverageAdjustment{}, &AdtySettlementRevision{}, &AdtySettlementScan{}, &AdtySiteCloseMailBatch{}, &AdtySiteCloseMailRecipient{}, &AdtySiteCloseMailAttempt{}, &AdtyDomainCloudResource{}}
 }
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -124,7 +125,13 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 		return nil, common.NewMessage("Adjustment reason, original order and funding source are required")
 	}
 	if direction == model.AdtyStaffBalanceIncrease {
-		if (prov.FundingSource != model.AdtyStaffFundingSourceEarnings && prov.FundingSource != model.AdtyStaffFundingSourceMargin) || prov.BatchKind != "" || prov.BatchSource != "" {
+		switch prov.FundingSource {
+		case "", model.AdtyStaffFundingSourceAuto, model.AdtyStaffFundingSourceEarnings, model.AdtyStaffFundingSourceMargin:
+			prov.FundingSource = model.AdtyStaffFundingSourceAuto
+		default:
+			return nil, common.NewMessage("Select an authorized funding source")
+		}
+		if prov.BatchKind != "" || prov.BatchSource != "" {
 			return nil, common.NewMessage("Select an authorized funding source")
 		}
 	} else if prov.FundingSource != "specified_batch" || prov.BatchSource == "" ||
@@ -342,6 +349,8 @@ type staffBalanceApplyResult struct {
 	BeforeQuota   int64
 	AfterQuota    int64
 	FundingSource string
+	EarningsUSD   decimal.Decimal
+	MarginUSD     decimal.Decimal
 }
 
 func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest, reviewerID int) (staffBalanceApplyResult, error) {
@@ -384,6 +393,7 @@ func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest,
 	}
 	var before, applied int64
 	var fundingSource string
+	var split AdtyOwnerFundingSplit
 	if row.Direction == model.AdtyStaffBalanceDecrease {
 		var debited int64
 		before, debited, err = model.AdtyDebitUserQuotaTx(tx, row.CustomerUserId, delta)
@@ -402,10 +412,11 @@ func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest,
 		}
 		fundingSource = row.FundingSource
 	} else {
-		fundingSource, err = adtyFundStaffBalanceIncreaseTx(tx, row, delta)
+		split, err = adtyFundStaffBalanceIncreaseTx(tx, row, delta)
 		if err != nil {
 			return staffBalanceApplyResult{}, err
 		}
+		fundingSource = split.SourceKind()
 		before, err = model.AdtyCreditUserQuotaTx(tx, row.CustomerUserId, delta)
 		if err != nil {
 			return staffBalanceApplyResult{}, err
@@ -431,6 +442,8 @@ func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest,
 		BeforeQuota:   before,
 		AfterQuota:    before + applied,
 		FundingSource: fundingSource,
+		EarningsUSD:   split.EarningsUSD,
+		MarginUSD:     split.MarginUSD,
 	}, nil
 }
 
@@ -438,51 +451,50 @@ func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest,
 // Site owners review their own site. Root reviews any site. Approval changes the customer quota once
 // through the official credit or debit path, writing the ledger and fund batches.
 // adtyStaffBalanceFundingOrder 是「员工加款从哪儿出钱」的顺序：
-// 只允许从站点自有盈余（已结算收益）或可用保证金（受 10% 底线与 90% 周期上限约束）出资；
+// 优先扣站点可支配收益，不足部分自动从超出当前站点等级所需保证金底线的溢余保证金中补足；
 // 运营钱包是现有客户本金的 1:1 托管准备金，绝不可当成站长可支配盈余花费。
 var adtyStaffBalanceFundingOrder = []string{
 	model.AdtySiteWalletEarnings,
 	model.AdtySiteWalletMargin,
 }
 
-// adtyFundStaffBalanceIncreaseTx 从收益或保证金扣出站方出资，并同步向运营钱包入账等额本金背书。
-func adtyFundStaffBalanceIncreaseTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest, delta int64) (string, error) {
+// adtyFundStaffBalanceIncreaseTx 按「收益优先 + 超额保证金自动补足」扣出站方出资，并同步向运营钱包入账等额本金背书。
+func adtyFundStaffBalanceIncreaseTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest, delta int64) (AdtyOwnerFundingSplit, error) {
 	if delta <= 0 {
-		return "", common.NewMessage("Invalid parameters")
+		return AdtyOwnerFundingSplit{}, common.NewMessage("Invalid parameters")
 	}
 	if row.SiteId <= 0 {
-		return "", common.NewMessage("This request has no site to fund it")
+		return AdtyOwnerFundingSplit{}, common.NewMessage("This request has no site to fund it")
 	}
 	var customer model.User
 	if err := tx.Select("id", "site_id", "staff_site_id").First(&customer, row.CustomerUserId).Error; err != nil {
-		return "", err
+		return AdtyOwnerFundingSplit{}, err
 	}
 	// 客户必须还在这个站点下：站点换了之后，旧站点不该继续为他的加款出钱。
 	if customer.SiteId != row.SiteId || customer.StaffSiteId != 0 {
-		return "", common.NewMessage("No permission to perform this action")
+		return AdtyOwnerFundingSplit{}, common.NewMessage("No permission to perform this action")
+	}
+	switch row.FundingSource {
+	case "", model.AdtyStaffFundingSourceAuto, model.AdtyStaffFundingSourceEarnings, model.AdtyStaffFundingSourceMargin:
+	default:
+		return AdtyOwnerFundingSplit{}, common.NewMessage("Select an authorized funding source")
 	}
 	amountUSD := decimal.NewFromInt(delta).Div(common.QuotaPerUnitDecimal())
 	key := adtyStaffBalanceLedgerKey(row)
-	selectedKind := ""
-	switch row.FundingSource {
-	case model.AdtyStaffFundingSourceEarnings:
-		selectedKind = model.AdtySiteWalletEarnings
-	case model.AdtyStaffFundingSourceMargin:
-		selectedKind = model.AdtySiteWalletMargin
-	default:
-		return "", common.NewMessage("Select an authorized funding source")
-	}
-	if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, selectedKind, amountUSD.Neg(), AdtySiteWalletChange{
-		Type: "staff_balance", RefType: "staff_balance", RefID: strconv.FormatInt(row.Id, 10),
-		Reason: row.Reason, IdempotencyKey: fmt.Sprintf("%s:fund:%s", key, selectedKind),
-	}); err != nil {
-		return "", err
+	// Pass operatorID=0 so earnings attribution always uses the site's current
+	// financial owner even when Root approves the request.
+	split, err := adtyDebitOwnerAutoFundingTx(tx, row.SiteId, 0, amountUSD, "staff_balance", "staff_balance", strconv.FormatInt(row.Id, 10), row.Reason, key+":fund")
+	if err != nil {
+		if errors.Is(err, ErrAdtySiteWalletInsufficient) {
+			return AdtyOwnerFundingSplit{}, ErrAdtyOwnerAutoFundingShortfall
+		}
+		return AdtyOwnerFundingSplit{}, err
 	}
 	if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, delta, "principal_credit", "staff_balance",
 		strconv.FormatInt(row.Id, 10), key+":operating", false); err != nil {
-		return "", err
+		return AdtyOwnerFundingSplit{}, err
 	}
-	return selectedKind, nil
+	return split, nil
 }
 
 func fundAdtyFinancialAdjustmentTx(tx *gorm.DB, row model.AdtyFinancialAdjustment) error {
@@ -593,6 +605,8 @@ func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestI
 			"after_quota":    applied.AfterQuota,
 			"ledger_id":      applied.LedgerID,
 			"funding_source": applied.FundingSource,
+			"earnings_usd":   applied.EarningsUSD.String(),
+			"margin_usd":     applied.MarginUSD.String(),
 			"reviewed_at":    reviewedAt,
 			"reason":         row.Reason, "order_ref": row.OrderRef, "batch_kind": row.BatchKind, "batch_source": row.BatchSource,
 		}

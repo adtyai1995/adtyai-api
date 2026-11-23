@@ -98,7 +98,7 @@ func GetStatus(c *gin.Context) {
 		"system_name":        common.SystemName,
 		"logo":               common.Logo,
 		"footer_html":        common.Footer,
-		"server_address":     system_setting.ServerAddress,
+		"server_address":     service.AdtySiteAPIBaseURL(nil),
 		"turnstile_check":    common.TurnstileCheckEnabled,
 		"turnstile_site_key": turnstileSiteKey,
 		"docs_link":          operation_setting.GetGeneralSetting().DocsLink,

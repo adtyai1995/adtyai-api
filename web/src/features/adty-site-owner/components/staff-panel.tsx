@@ -45,6 +45,9 @@ import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
 import { StaffDialog } from './staff-dialog'
 
 function staffRequestSourceLabel(source: string, t: (key: string) => string) {
+  if (source === 'auto' || source === 'mixed') {
+    return t('Earnings + excess margin')
+  }
   if (source === 'site_earnings') return t('Earnings wallet')
   if (source === 'site_margin') return t('Margin wallet')
   if (source === 'specified_batch') return t('Specified batch')

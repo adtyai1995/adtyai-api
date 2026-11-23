@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -100,6 +101,65 @@ func GetAdtyOwnerSiteTeamLedger(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"total": total, "items": rows})
+}
+
+// PostAdtyOwnerSiteTeamBalance lets an active site owner directly add shared
+// balance to an active team on their site (earnings first, then excess margin
+// above the site level's required deposit floor). Requires step-up verification.
+func PostAdtyOwnerSiteTeamBalance(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		AmountUSD      string `json:"amount_usd"`
+		Reason         string `json:"reason"`
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	if err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	idemKey := strings.TrimSpace(body.IdempotencyKey)
+	if hdr := strings.TrimSpace(c.GetHeader("Idempotency-Key")); hdr != "" {
+		if idemKey != "" && idemKey != hdr {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		idemKey = hdr
+	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionTeamBalance, int(id)) {
+		return
+	}
+	res, err := service.CreditAdtySiteTeamBalanceByOwner(site.Id, c.GetInt("id"), id, amount, body.Reason, idemKey)
+	if err != nil {
+		switch {
+		case errors.Is(err, model.ErrAdtyIdempotencyConflict):
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+		default:
+			common.ApiError(c, err)
+		}
+		return
+	}
+	if !res.Replayed {
+		recordUserSecurityAudit(c, c.GetInt("id"), "adty.site.team_balance_credit", map[string]any{
+			"site_id":      site.Id,
+			"team_id":      id,
+			"amount_usd":   res.AmountUSD.String(),
+			"earnings_usd": res.EarningsUSD.String(),
+			"margin_usd":   res.MarginUSD.String(),
+		})
+	}
+	common.ApiSuccess(c, res)
 }
 
 func PutAdtyMainTeamAgreementPrice(c *gin.Context) {

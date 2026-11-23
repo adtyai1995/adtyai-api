@@ -27,6 +27,8 @@ export type Voucher = {
   amount_usd: string
   quota: number
   source_kind: string
+  frozen_earnings_usd?: string
+  frozen_margin_usd?: string
   source_site_id: number
   target_site_id: number
   issuer_id: number
@@ -50,6 +52,9 @@ export type VoucherIssued = {
   code: string
   code_tail: string
   purpose: string
+  source_kind?: string
+  frozen_earnings_usd?: string
+  frozen_margin_usd?: string
   amount_usd: string
   quota: number
 }
@@ -100,6 +105,8 @@ export function voucherSourceLabel(t: TFunction, source: string): string {
       return t('Earnings wallet')
     case 'margin':
       return t('Margin wallet')
+    case 'mixed':
+      return t('Earnings + excess margin')
     default:
       return source
   }

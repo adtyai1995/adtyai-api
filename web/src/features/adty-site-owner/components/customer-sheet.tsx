@@ -47,16 +47,20 @@ import { formatQuota, formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
+  creditOwnerCustomerBalance,
   getOwnerCustomer,
   getOwnerCustomerLogs,
   getOwnerCustomerTopUps,
+  getOwnerWallets,
   grantTrial,
   reportCustomer,
   savePricing,
   siteOwnerKeys,
 } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
+import { computeOwnerFundingPreview } from '../lib/funding-preview'
 import { newIdempotencyKey, validRetailMarkup } from '../lib/site-owner'
+import { OwnerFundingPreviewBox } from './owner-funding-preview'
 import { PricingHistory } from './pricing-history'
 
 /** Customer drawer: profile, requests, top-ups, keys, trial credit, own price and report. */
@@ -67,16 +71,52 @@ export function CustomerSheet(props: {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const id = props.customerId ?? 0
+  const [creditAmount, setCreditAmount] = useState('')
+  const [creditReason, setCreditReason] = useState('')
   const [trialAmount, setTrialAmount] = useState('')
   const [markup, setMarkup] = useState('')
   const [reason, setReason] = useState('')
   const [discarding, setDiscarding] = useState(false)
-  const dirty = trialAmount !== '' || markup !== '' || reason !== ''
+  const dirty =
+    creditAmount !== '' ||
+    creditReason !== '' ||
+    trialAmount !== '' ||
+    markup !== '' ||
+    reason !== ''
   useDraftNavigation(dirty)
   const detail = useQuery({
     queryKey: siteOwnerKeys.list('customer', { id }),
     queryFn: () => getOwnerCustomer(id),
     enabled: id > 0,
+  })
+  const wallets = useQuery({
+    queryKey: siteOwnerKeys.list('wallets', {}),
+    queryFn: getOwnerWallets,
+    enabled: id > 0,
+  })
+  const walletRows = Array.isArray(wallets.data) ? wallets.data : []
+  const creditPreview = computeOwnerFundingPreview(walletRows, creditAmount)
+  const creditIntentRef = useRef<{ payload: string; key: string } | null>(null)
+  const creditBalance = useVerifiedOwnerMutation<{
+    amount: string
+    reason: string
+    key: string
+  }>({
+    action: 'customer.balance',
+    target: () => id,
+    run: (vars, proof) =>
+      creditOwnerCustomerBalance(
+        id,
+        { amount_usd: vars.amount, reason: vars.reason },
+        vars.key,
+        proof
+      ),
+    successMessage: t('Balance added'),
+    onSuccess: () => {
+      creditIntentRef.current = null
+      setCreditAmount('')
+      setCreditReason('')
+    },
   })
   const logs = useQuery({
     queryKey: siteOwnerKeys.list('customer-logs', { id }),
@@ -305,6 +345,72 @@ export function CustomerSheet(props: {
                 )}
               </TabsContent>
             </Tabs>
+            <section
+              className='space-y-2'
+              aria-labelledby='manual-balance-title'
+            >
+              <h3 id='manual-balance-title' className='text-sm font-medium'>
+                {t('Add balance')}
+              </h3>
+              <div className='grid gap-2 sm:grid-cols-2'>
+                <div className='space-y-1'>
+                  <Label htmlFor='credit-balance-amount'>
+                    {t('Amount (USD)')}
+                  </Label>
+                  <Input
+                    id='credit-balance-amount'
+                    inputMode='decimal'
+                    value={creditAmount}
+                    onChange={(event) => setCreditAmount(event.target.value)}
+                  />
+                </div>
+                <div className='space-y-1'>
+                  <Label htmlFor='credit-balance-reason'>{t('Reason')}</Label>
+                  <Input
+                    id='credit-balance-reason'
+                    maxLength={200}
+                    value={creditReason}
+                    onChange={(event) => setCreditReason(event.target.value)}
+                  />
+                </div>
+              </div>
+              <OwnerFundingPreviewBox
+                wallets={walletRows}
+                amount={creditAmount}
+              />
+              <Button
+                variant='brand'
+                disabled={
+                  creditBalance.isPending ||
+                  !creditPreview.valid ||
+                  (wallets.isSuccess && !creditPreview.sufficient) ||
+                  creditReason.trim() === ''
+                }
+                onClick={() => {
+                  const trimmedAmount = creditAmount.trim()
+                  const trimmedReason = creditReason.trim()
+                  const payload = `${id}:${trimmedAmount}:${trimmedReason}`
+                  if (creditIntentRef.current?.payload !== payload) {
+                    creditIntentRef.current = {
+                      payload,
+                      key: newIdempotencyKey(),
+                    }
+                  }
+                  creditBalance.mutate({
+                    amount: trimmedAmount,
+                    reason: trimmedReason,
+                    key: creditIntentRef.current.key,
+                  })
+                }}
+              >
+                {t('Add balance')}
+              </Button>
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Funded automatically from available earnings first, then excess margin above the level deposit floor. Does not count toward site-level cumulative customer recharge.'
+                )}
+              </p>
+            </section>
             <section className='space-y-2' aria-labelledby='trial-title'>
               <h3 id='trial-title' className='text-sm font-medium'>
                 {t('Send trial credit')}
@@ -404,7 +510,10 @@ export function CustomerSheet(props: {
         open={discarding}
         onOpenChange={setDiscarding}
         onDiscard={() => {
+          creditIntentRef.current = null
           trialIntentRef.current = null
+          setCreditAmount('')
+          setCreditReason('')
           setTrialAmount('')
           setMarkup('')
           setReason('')

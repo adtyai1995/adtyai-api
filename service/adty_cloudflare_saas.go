@@ -772,18 +772,6 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 }
 
 func adtyAssignCheckedDomainTurnstile(ctx context.Context, tx *gorm.DB, domain *model.AdtySiteDomain) error {
-	if domain.Role == model.AdtySiteDomainRoleBaseURL {
-		if domain.TurnstileWidget == "" {
-			return nil
-		}
-		if resellerSetting().CloudflareAccountId == "" {
-			return ErrAdtyCloudflareFailed
-		}
-		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
-			return err
-		}
-		return adtyDomainSnapshotQuery(tx, domain).Update("turnstile_widget", "").Error
-	}
 	if domain.Status != model.AdtySiteDomainActive || domain.TurnstileWidget != "" {
 		return nil
 	}
@@ -810,8 +798,8 @@ func RunAdtySiteDomainCheckOnce(ctx context.Context, now time.Time) error {
 		return nil
 	}
 	var domains []model.AdtySiteDomain
-	if err := model.DB.Where("automation_state = ?", "").Where("(status IN ? OR (role = ? AND turnstile_widget <> ''))",
-		[]string{model.AdtySiteDomainPending, model.AdtySiteDomainActive}, model.AdtySiteDomainRoleBaseURL).Find(&domains).Error; err != nil {
+	if err := model.DB.Where("automation_state = ?", "").Where("status IN ?",
+		[]string{model.AdtySiteDomainPending, model.AdtySiteDomainActive}).Find(&domains).Error; err != nil {
 		return err
 	}
 	changed := false
@@ -838,10 +826,6 @@ func RunAdtySiteDomainCheckOnce(ctx context.Context, now time.Time) error {
 
 func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain, now time.Time) (changed bool, err error) {
 	err = adtyWithDomainLifecycle(ctx, snapshot, func(tx *gorm.DB, domain *model.AdtySiteDomain) error {
-		// Free legacy API allocations even if TLS verification now fails.
-		if domain.Role == model.AdtySiteDomainRoleBaseURL && domain.TurnstileWidget != "" {
-			return adtyAssignCheckedDomainTurnstile(ctx, tx, domain)
-		}
 		cfg := resellerSetting()
 		zone := strings.TrimSpace(cfg.CloudflareZoneId)
 		if domain.Status == model.AdtySiteDomainActive {

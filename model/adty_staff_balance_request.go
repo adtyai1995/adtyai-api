@@ -18,6 +18,7 @@ const (
 	AdtyStaffBalanceApproved = "approved"
 	AdtyStaffBalanceRejected = "rejected"
 
+	AdtyStaffFundingSourceAuto     = "auto"
 	AdtyStaffFundingSourceEarnings = "site_earnings"
 	AdtyStaffFundingSourceMargin   = "site_margin"
 	AdtyStaffFundingSourcePlatform = "platform"
@@ -94,6 +95,9 @@ func (r *AdtyStaffBalanceRequest) NormalizeProvenance() {
 	}
 	if r.OrderRef == "" && r.BusinessRef != "" {
 		r.OrderRef = r.BusinessRef
+	}
+	if r.Direction == AdtyStaffBalanceIncrease && r.FundingSource == "" {
+		r.FundingSource = AdtyStaffFundingSourceAuto
 	}
 	if r.Direction == AdtyStaffBalanceDecrease {
 		if r.FundingSource == "" && r.RecoverySource != "" {

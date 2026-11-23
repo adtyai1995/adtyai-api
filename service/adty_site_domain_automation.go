@@ -137,7 +137,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 	if row.DNSRoot != "" && row.DNSRoot != cfg.AliyunDomain {
 		return fmt.Errorf("Stored DNS root differs; restore DNS configuration before continuing")
 	}
-	if (row.DesiredState == "redirect_only" || row.Role == model.AdtySiteDomainRoleBaseURL) && row.TurnstileWidget != "" {
+	if row.DesiredState == "redirect_only" && row.TurnstileWidget != "" {
 		if err := releaseRedirectWidget(ctx, row); err != nil {
 			return err
 		}

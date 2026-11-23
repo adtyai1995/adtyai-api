@@ -42,6 +42,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { adtySiteQueryKey } from '@/features/adty-site/api'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { handleServerError } from '@/lib/handle-server-error'
 import { toSquareIconFile } from '@/lib/square-icon'
@@ -78,6 +79,8 @@ const BRAND_LIMITS: Record<
   support_contact: 200,
   title: 80,
   theme_color: 7,
+  tawk_property_id: 64,
+  tawk_widget_id: 64,
 }
 
 function domainVariant(status: SiteDomain['status']) {
@@ -157,6 +160,7 @@ function BrandCard(props: { site: OwnerSite }) {
       }))
       toast.success(t('Saved successfully'))
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      void queryClient.invalidateQueries({ queryKey: adtySiteQueryKey })
       void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
     },
     onError: (err) => {handleServerError(err);void queryClient.invalidateQueries({queryKey:siteOwnerKeys.all})},
@@ -245,6 +249,13 @@ function BrandCard(props: { site: OwnerSite }) {
         {field('tagline', t('Tagline'))}
         {field('notice', t('Notice'), true)}
         {field('support_contact', t('Support contact'))}
+        <div className='grid gap-3 sm:grid-cols-2'>
+          {field('tawk_property_id', t('Tawk.to property ID'))}
+          {field('tawk_widget_id', t('Tawk.to widget ID'))}
+        </div>
+        <p className='text-muted-foreground text-xs'>
+          {t('Live chat appears when both Tawk.to IDs are set.')}
+        </p>
         {imageField('logo_url', t('Logo'), t('Remove logo'))}
         {imageField('favicon_url', t('Favicon'), t('Remove favicon'))}
         <p className='text-muted-foreground text-xs'>
@@ -400,10 +411,10 @@ function DomainsCard(props: { site: OwnerSite }) {
             <p className='text-muted-foreground text-xs'>
               {role === 'base_url'
                 ? t(
-                    'An API address only answers /v1 calls. Opening it in a browser shows nothing, and signing in does not work on it.'
+                    'An API address answers model API calls and also opens your site homepage and console. Search engines do not index it.'
                   )
                 : t(
-                    'A site domain serves the whole site: pages, sign-in and top-up. This is the address your customers visit.'
+                    'A site domain serves web pages, sign-in and console, and rejects model API calls.'
                   )}
             </p>
           </>

@@ -27,23 +27,26 @@ const (
 
 // 站长敏感操作的种类。
 const (
-	AdtySiteOwnerActionPricing       = "pricing"       // target：0 是全站定价，否则是客户 id
-	AdtySiteOwnerActionBonus         = "bonus"         // target：站点 id
-	AdtySiteOwnerActionTrial         = "trial"         // target：客户 id
-	AdtySiteOwnerActionDomain        = "domain.delete" // target：自定义域名 id
-	AdtySiteOwnerActionSender        = "sender.delete" // target：站点 id
-	AdtySiteOwnerActionStaffCreate   = "staff.create"  // target: site ID
-	AdtySiteOwnerActionStaffUpdate   = "staff.update"  // target: membership ID
-	AdtySiteOwnerActionStaffPassword = "staff.password"
-	AdtySiteOwnerActionStaffDelete   = "staff.delete"
-	AdtySiteOwnerActionVoucherIssue  = "voucher.issue"  // target: site ID
-	AdtySiteOwnerActionVoucherFreeze = "voucher.freeze" // target: voucher ID
-	AdtySiteOwnerActionVoucherCancel = "voucher.cancel" // target: voucher ID
+	AdtySiteOwnerActionPricing         = "pricing"       // target：0 是全站定价，否则是客户 id
+	AdtySiteOwnerActionBonus           = "bonus"         // target：站点 id
+	AdtySiteOwnerActionTrial           = "trial"         // target：客户 id
+	AdtySiteOwnerActionDomain          = "domain.delete" // target：自定义域名 id
+	AdtySiteOwnerActionSender          = "sender.delete" // target：站点 id
+	AdtySiteOwnerActionStaffCreate     = "staff.create"  // target: site ID
+	AdtySiteOwnerActionStaffUpdate     = "staff.update"  // target: membership ID
+	AdtySiteOwnerActionStaffPassword   = "staff.password"
+	AdtySiteOwnerActionStaffDelete     = "staff.delete"
+	AdtySiteOwnerActionVoucherIssue    = "voucher.issue"    // target: site ID
+	AdtySiteOwnerActionVoucherFreeze   = "voucher.freeze"   // target: voucher ID
+	AdtySiteOwnerActionVoucherCancel   = "voucher.cancel"   // target: voucher ID
+	AdtySiteOwnerActionCustomerBalance = "customer.balance" // target: customer user ID
+	AdtySiteOwnerActionTeamBalance     = "team.balance"     // target: team ID
 )
 
 var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionTrial, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender,
 	AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete,
-	AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel}
+	AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel,
+	AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance}
 
 // AdtySiteOwnerContext 是 proof 绑定的操作：哪种操作、对哪个目标，员工写操作还会绑定请求体摘要。
 type AdtySiteOwnerContext struct {

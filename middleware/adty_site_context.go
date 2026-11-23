@@ -47,16 +47,34 @@ func adtyIsAPIPath(path string) bool {
 	return strings.Contains(path, "/mj/")
 }
 
-// AdtySiteContext 按请求的 Host 识别当前分站（任务 11.2），放进 c.Set("adty_site", site)；主站或查不到时不放。
+func adtyAbortRelayOnWebHost(c *gin.Context) {
+	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+		"error": gin.H{
+			"message": "Model API requests are not allowed on the website domain; use the API domain instead",
+			"type":    "invalid_request_error",
+			"code":    "api_domain_required",
+		},
+	})
+}
+
+// AdtySiteContext 按请求的 Host 识别当前主站/分站（任务 11.2），放进 c.Set("adty_site", site)；主站或查不到时不放。
 // 只认站点表（带缓存），不信任 X-Forwarded-Host 之类的头（执行层决定 28）。分站关闭时仅主站 Host 可用。
-//   - active、paused、closing 的站照常识别；pending 的站还没开，当作查不到。
-//   - closed 的站：页面请求 302 到客户的新归属，接口请求拒绝。
+// 主站与分站统一双域名规则：
+//   - 网站/首页域名：承接网页与控制台，禁止调用 AI 模型中转 API（403）；
+//   - API 调用域名：承接全部 AI 模型中转 API，同时也允许打开本站首页并完整登录操作控制台；
+//   - active、paused、closing 的分站照常识别；pending 的站还没开，当作查不到；
+//   - closed 的分站：网站页面请求 302 到主站首页，接口与 API 域名请求拒绝；
 //   - 查不到的 Host：所有请求返回 404，不回退到主站。
 func AdtySiteContext() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := adty_setting.GetResellerSetting()
 		host := service.AdtyNormalizeHost(c.Request.Host)
+		path := c.Request.URL.Path
 		if service.AdtyIsMainHost(host) {
+			if adtyIsRelayPath(path) && !service.AdtyHostAllowsRelay(host) {
+				adtyAbortRelayOnWebHost(c)
+				return
+			}
 			c.Next()
 			return
 		}
@@ -64,7 +82,6 @@ func AdtySiteContext() gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		path := c.Request.URL.Path
 		if c.Request.Method == http.MethodGet && path == service.AdtyDomainProbePath {
 			c.Header("Cache-Control", "no-store")
 			identity, err := service.AdtyDomainProbeForHost(host)
@@ -78,22 +95,22 @@ func AdtySiteContext() gin.HandlerFunc {
 		if adtyIsAPIPath(path) {
 			c.Header("Cache-Control", "private, no-store")
 		}
-		if adtyIsRelayPath(path) && service.AdtySiteForHost(host) != nil && !service.AdtyIsApiOnlyHost(host) {
-			c.AbortWithStatus(http.StatusForbidden)
+		if adtyIsRelayPath(path) && service.AdtySiteForHost(host) != nil && !service.AdtyHostAllowsRelay(host) {
+			adtyAbortRelayOnWebHost(c)
 			return
 		}
 		if service.AdtyIsCustomDomainHost(host) || service.AdtyIsApiOnlyHost(host) {
 			adtyHandleCustomDomain(c, host)
 			return
 		}
-		if adtyIsSessionAPI(c.Request.URL.Path) {
+		if adtyIsSessionAPI(path) {
 			if status := service.AdtyRejectSessionAPIStatus(host); status != 0 {
 				c.AbortWithStatus(status)
 				return
 			}
 		}
 		site := service.AdtySiteForHost(host)
-		api := adtyIsAPIPath(c.Request.URL.Path)
+		api := adtyIsAPIPath(path)
 		switch {
 		case service.AdtySiteServesCustomers(site):
 			c.Set(service.AdtySiteContextKey, site)
@@ -125,41 +142,11 @@ func adtyHandleCustomDomain(c *gin.Context, host string) {
 	}
 	c.Set(service.AdtySiteContextKey, site)
 	path := c.Request.URL.Path
-	// API 地址域名（role=base_url）：只放行 relay（/v1、/v1beta、/mj、/pg）和几个探活接口，
-	// 页面一律 404、账号接口一律 403。站长给客户的「API 地址」打开就只是个 API，
-	// 看不到网站，也拿不到登录页。
-	if service.AdtyIsApiOnlyHost(host) {
-		if !service.AdtySiteServesCustomers(site) {
-			c.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-		if adtyIsRelayPath(path) || adtyApiOnlyProbePath(path) {
-			c.Next()
-			return
-		}
-		if c.FullPath() == "" && !adtyIsAPIPath(path) && AdtyTryAPIPlugin != nil {
-			c.Header("Cache-Control", "private, no-store")
-			if AdtyTryAPIPlugin(c) {
-				return
-			}
-		}
-		if adtyIsAPIPath(path) {
-			c.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-		c.AbortWithStatus(http.StatusNotFound)
-		return
-	}
-	// 站点域名（role=site）承接完整的客户端体验（登录、注册、充值、用量、令牌），
-	// 只有平台级管理接口仍被拒绝。
-	if adtyCustomDomainAdminAPI(path) {
-		c.AbortWithStatus(http.StatusForbidden)
-		return
-	}
+	isAPIHost := service.AdtyIsApiOnlyHost(host)
+	isCustom := service.AdtyIsCustomDomainHost(host)
 	if !service.AdtySiteServesCustomers(site) {
-		// 站点已关停、只是缓存里还留着域名行：页面跳到客户的新归属，接口一律拒绝，
-		// 和平台子域名的关站处理保持一致。
-		if site.Status == model.AdtySiteStatusClosed && !adtyIsAPIPath(path) && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) && c.GetHeader("Upgrade") == "" {
+		// 已关停的站点域名仅保留页面 302 跳转主站；已关停的 API 域名一律 403 拒绝。
+		if !isAPIHost && site.Status == model.AdtySiteStatusClosed && !adtyIsAPIPath(path) && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) && c.GetHeader("Upgrade") == "" {
 			if target := service.AdtySiteBaseURL(nil); target != "" {
 				c.Header("Cache-Control", "no-store")
 				c.Redirect(http.StatusFound, strings.TrimRight(target, "/")+"/")
@@ -169,6 +156,19 @@ func adtyHandleCustomDomain(c *gin.Context, host string) {
 		}
 		c.AbortWithStatus(http.StatusForbidden)
 		return
+	}
+	// 自定义域名（网站域名或自定义 API 域名）以及平台 API 域名均拒绝平台级管理接口，
+	// 但承接完整的本站客户端体验（首页、登录、注册、充值、用量、令牌等）；
+	// API 域名同时放行全部模型中转 API 与插件路由。
+	if (isCustom && adtyCustomDomainAdminAPI(path)) || (!isCustom && adtyPlatformSubdomainAdminAPI(path)) {
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
+	if adtyIsSessionAPI(path) {
+		if status := service.AdtyRejectSessionAPIStatus(host); status != 0 {
+			c.AbortWithStatus(status)
+			return
+		}
 	}
 	c.Next()
 }
@@ -199,14 +199,10 @@ func AdtyRequireCurrentSiteTerms() gin.HandlerFunc {
 	}
 }
 
-// adtyCustomDomainAdminAPI 是自定义域名上仍然拒绝的平台级管理接口。
-// 其余 /api 路径都按客户端体验放行（登录、注册、充值、用量、令牌等）。
-//
-// /api/oauth 下现在只剩邮箱绑定（第三方登录已删除），它在自定义域名上仍按原规则拒绝。
-func adtyCustomDomainAdminAPI(path string) bool {
+func adtyPlatformSubdomainAdminAPI(path string) bool {
 	prefixes := []string{
 		"/api/adty/admin", "/api/channel", "/api/option", "/api/deployments",
-		"/api/adty/marketing/admin", "/api/oauth",
+		"/api/adty/marketing/admin",
 	}
 	for _, prefix := range prefixes {
 		if path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(path, prefix) {
@@ -216,15 +212,15 @@ func adtyCustomDomainAdminAPI(path string) bool {
 	return false
 }
 
-// adtyApiOnlyProbePath 是 API 地址域名上仍然放行的探活/元信息接口：客户端调 /v1 之前
-// 会先看服务是否在线、有哪些模型分组，这些不带账号状态，放行没有风险。
-func adtyApiOnlyProbePath(path string) bool {
-	switch path {
-	case "/api/status", "/api/ready", "/api/health", "/api/uptime/status", "/api/ratio_config",
-		"/api/adty/groups/display", "/api/adty/site":
+// adtyCustomDomainAdminAPI 是自定义域名上仍然拒绝的平台级管理接口。
+// 其余 /api 路径都按客户端体验放行（登录、注册、充值、用量、令牌等）。
+//
+// /api/oauth 下现在只剩邮箱绑定（第三方登录已删除），它在自定义域名上仍按原规则拒绝。
+func adtyCustomDomainAdminAPI(path string) bool {
+	if adtyPlatformSubdomainAdminAPI(path) {
 		return true
 	}
-	return strings.HasPrefix(path, "/api/adty/pricing")
+	return path == "/api/oauth" || strings.HasPrefix(path, "/api/oauth/")
 }
 
 func adtyIsRelayPath(path string) bool {
@@ -234,5 +230,6 @@ func adtyIsRelayPath(path string) bool {
 	}
 	return strings.HasPrefix(path, "/v1/") || path == "/v1" ||
 		strings.HasPrefix(path, "/v1beta/") || path == "/v1beta" ||
-		strings.HasPrefix(path, "/mj/") || strings.HasPrefix(path, "/pg/")
+		strings.HasPrefix(path, "/mj/") || strings.HasPrefix(path, "/pg/") ||
+		strings.HasPrefix(path, "/dashboard/billing/")
 }

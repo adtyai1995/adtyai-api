@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
@@ -34,46 +34,69 @@ import {
   cancelOwnerVoucher,
   freezeOwnerVoucher,
   getOwnerVouchers,
+  getOwnerWallets,
   issueOwnerVoucher,
   siteOwnerKeys,
 } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
+import { computeOwnerFundingPreview } from '../lib/funding-preview'
+import { newIdempotencyKey } from '../lib/site-owner'
+import { OwnerFundingPreviewBox } from './owner-funding-preview'
 
 const PAGE_SIZE = 20
 
 /**
- * Recharge codes funded by the site: issuing freezes the amount in the chosen
- * wallet, freezing stops redemption, cancelling releases the amount. Every
- * write asks the owner to verify first.
+ * Recharge codes funded automatically from site earnings first and excess
+ * margin above the level deposit floor second. Every write asks the owner to
+ * verify first.
  */
 export function VoucherPanel(props: { siteId: number }) {
   const { t } = useTranslation()
   const [purpose, setPurpose] = useState('site_customer')
-  const [source, setSource] = useState('earnings')
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
   const [code, setCode] = useState('')
+  const [issuedSplit, setIssuedSplit] = useState<{
+    earnings: string
+    margin: string
+  } | null>(null)
   const [page, setPage] = useState(1)
+  const intentRef = useRef<{ payload: string; key: string } | null>(null)
   const list = useQuery({
     queryKey: siteOwnerKeys.list('vouchers', { page }),
     queryFn: () => getOwnerVouchers(page, PAGE_SIZE),
     placeholderData: keepPreviousData,
   })
-  const marginAllowed = list.data?.margin_allowed === true
-  const issue = useVerifiedOwnerMutation<void>({
+  const wallets = useQuery({
+    queryKey: siteOwnerKeys.list('wallets', {}),
+    queryFn: getOwnerWallets,
+  })
+  const walletRows = Array.isArray(wallets.data) ? wallets.data : []
+  const preview = computeOwnerFundingPreview(walletRows, amount)
+  const issue = useVerifiedOwnerMutation<{
+    purpose: string
+    amount: string
+    reason: string
+    intentKey: string
+  }>({
     action: 'voucher.issue',
     target: () => props.siteId,
-    run: async (_vars, proof) => {
+    run: async (vars, proof) => {
       const issued = await issueOwnerVoucher(
         {
-          purpose,
-          amount_usd: amount.trim(),
-          source: marginAllowed ? source : 'earnings',
-          reason: reason.trim(),
+          purpose: vars.purpose,
+          amount_usd: vars.amount,
+          reason: vars.reason,
+          intent_key: vars.intentKey,
         },
         proof
       )
       setCode(issued.code)
+      setIssuedSplit({
+        earnings: issued.frozen_earnings_usd ?? '0',
+        margin: issued.frozen_margin_usd ?? '0',
+      })
+      intentRef.current = null
       setAmount('')
       setReason('')
     },
@@ -100,14 +123,26 @@ export function VoucherPanel(props: { siteId: number }) {
         onSubmit={(event) => {
           event.preventDefault()
           setCode('')
-          issue.mutate()
+          setIssuedSplit(null)
+          const trimmedAmount = amount.trim()
+          const trimmedReason = reason.trim()
+          const payload = `${purpose}:${trimmedAmount}:${trimmedReason}`
+          if (intentRef.current?.payload !== payload) {
+            intentRef.current = { payload, key: newIdempotencyKey() }
+          }
+          issue.mutate({
+            purpose,
+            amount: trimmedAmount,
+            reason: trimmedReason,
+            intentKey: intentRef.current.key,
+          })
         }}
       >
         <div className='flex flex-col gap-1'>
           <h2 className='text-sm font-medium'>{t('Recharge codes')}</h2>
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Issuing a code freezes the same amount in the wallet it is funded from. The full code is shown once.'
+              'Issuing a code automatically freezes available earnings first and excess margin above the level floor second. The full code is shown once.'
             )}
           </p>
         </div>
@@ -122,19 +157,6 @@ export function VoucherPanel(props: { siteId: number }) {
             <option value='site_owner'>{t('My spending principal')}</option>
           </NativeSelect>
         </div>
-        {marginAllowed && (
-          <div className='flex flex-col gap-1'>
-            <Label htmlFor='voucher-source'>{t('Funded from')}</Label>
-            <NativeSelect
-              id='voucher-source'
-              value={source}
-              onChange={(event) => setSource(event.target.value)}
-            >
-              <option value='earnings'>{t('Earnings wallet')}</option>
-              <option value='margin'>{t('Margin wallet')}</option>
-            </NativeSelect>
-          </div>
-        )}
         <div className='flex flex-col gap-1'>
           <Label htmlFor='voucher-amount'>{t('Amount (USD)')}</Label>
           <Input
@@ -144,6 +166,7 @@ export function VoucherPanel(props: { siteId: number }) {
             onChange={(event) => setAmount(event.target.value)}
           />
         </div>
+        <OwnerFundingPreviewBox wallets={walletRows} amount={amount} />
         <div className='flex flex-col gap-1'>
           <Label htmlFor='voucher-reason'>{t('Reason')}</Label>
           <Input
@@ -156,20 +179,36 @@ export function VoucherPanel(props: { siteId: number }) {
           variant='brand'
           type='submit'
           disabled={
-            issue.isPending || amount.trim() === '' || reason.trim() === ''
+            issue.isPending ||
+            !preview.valid ||
+            (wallets.isSuccess && !preview.sufficient) ||
+            reason.trim() === ''
           }
         >
           {t('Issue code')}
         </Button>
         {code && (
-          <div className='flex items-center gap-2 text-sm'>
-            <span>{t('Voucher code')}:</span>
-            <code className='font-mono break-all'>{code}</code>
-            <CopyButton
-              value={code}
-              size='icon'
-              aria-label={t('Copy voucher code')}
-            />
+          <div className='flex flex-col gap-1 text-sm'>
+            <div className='flex items-center gap-2'>
+              <span>{t('Voucher code')}:</span>
+              <code className='font-mono break-all'>{code}</code>
+              <CopyButton
+                value={code}
+                size='icon'
+                aria-label={t('Copy voucher code')}
+              />
+            </div>
+            {issuedSplit && (
+              <p className='text-muted-foreground text-xs tabular-nums'>
+                {t(
+                  'Frozen split: Earnings ${{earnings}} + Excess margin ${{margin}}',
+                  {
+                    earnings: issuedSplit.earnings,
+                    margin: issuedSplit.margin,
+                  }
+                )}
+              </p>
+            )}
           </div>
         )}
       </form>

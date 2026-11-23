@@ -588,6 +588,10 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			c.Abort()
 			return
 		}
+		if !service.AdtyHostAllowsRelay(c.Request.Host) {
+			abortWithOpenAiMessage(c, http.StatusForbidden, "Model API requests are not allowed on the website domain; use the API domain instead", types.ErrorCodeAccessDenied)
+			return
+		}
 		if status := service.AdtyAPIKeyHostStatus(userCache.SiteId, c.Request.Host); status != 0 || token.OwnerSelfUseSiteId > 0 {
 			if status == 0 {
 				status = http.StatusForbidden
@@ -704,6 +708,10 @@ func TokenAuth() func(c *gin.Context) {
 			}
 			billingSiteID = site.Id
 			c.Set(service.AdtyOwnerSelfUseContextKey, site)
+		}
+		if !service.AdtyHostAllowsRelay(c.Request.Host) {
+			abortWithOpenAiMessage(c, http.StatusForbidden, "Model API requests are not allowed on the website domain; use the API domain instead", types.ErrorCodeAccessDenied)
+			return
 		}
 		if status := service.AdtyAPIKeyHostStatus(billingSiteID, c.Request.Host); status != 0 {
 			abortWithOpenAiMessage(c, status, i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch), types.ErrorCodeAccessDenied)

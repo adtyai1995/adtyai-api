@@ -3,12 +3,14 @@ package controller
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 type adtySiteTierBatchRequest struct {
@@ -90,5 +92,104 @@ func PutAdtySiteTierAssignment(c *gin.Context) {
 	default:
 		recordManageAudit(c, "adty.site.tier", map[string]any{"site_id": siteID, "code": site.TierCode, "mode": site.TierMode})
 		common.ApiSuccess(c, site)
+	}
+}
+
+// GetAdtyAdminSiteTierPrincipal returns the tier-evaluation customer recharge
+// breakdown (online customer net recharge + Root manual adjustment = effective
+// total) and paged adjustment history for one site.
+func GetAdtyAdminSiteTierPrincipal(c *gin.Context) {
+	siteID, ok := siteIdParam(c)
+	if !ok {
+		return
+	}
+	site, err := service.GetAdtySite(siteID)
+	if err != nil {
+		if errors.Is(err, service.ErrAdtySiteNotFound) {
+			common.ApiErrorStatus(c, http.StatusNotFound, err)
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	stats, err := service.ComputeAdtySiteTierStats(siteID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	pageInfo, offset, limit := adtyPage(c)
+	items, total, err := service.ListAdtySiteTierPrincipalAdjustments(siteID, offset, limit)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"site_id":                 siteID,
+		"tier_code":               site.TierCode,
+		"tier_mode":               site.TierMode,
+		"online_principal_usd":    stats.OnlinePrincipalUSD.String(),
+		"adjustment_usd":          stats.AdjustmentUSD.String(),
+		"effective_principal_usd": stats.PrincipalUSD.String(),
+		"items":                   items,
+		"total":                   total,
+		"page":                    pageInfo.GetPage(),
+		"page_size":               pageInfo.GetPageSize(),
+	})
+}
+
+// PostAdtyAdminSiteTierPrincipal lets Root adjust a site's tier-evaluation
+// cumulative customer recharge total (delta or set_total) with reason and
+// idempotency key, without changing any wallet or customer balance.
+func PostAdtyAdminSiteTierPrincipal(c *gin.Context) {
+	siteID, ok := siteIdParam(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Mode           string `json:"mode"`
+		AmountUSD      string `json:"amount_usd"`
+		Reason         string `json:"reason"`
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	if err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	idemKey := strings.TrimSpace(body.IdempotencyKey)
+	if hdr := strings.TrimSpace(c.GetHeader("Idempotency-Key")); hdr != "" {
+		if idemKey != "" && idemKey != hdr {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		idemKey = hdr
+	}
+	res, err := service.AdjustAdtySiteTierPrincipal(siteID, c.GetInt("id"), body.Mode, amount, body.Reason, idemKey)
+	switch {
+	case errors.Is(err, service.ErrAdtySiteNotFound):
+		common.ApiErrorStatus(c, http.StatusNotFound, err)
+	case errors.Is(err, model.ErrAdtyIdempotencyConflict):
+		common.ApiErrorStatus(c, http.StatusConflict, err)
+	case errors.Is(err, service.ErrAdtySiteTierInvalid):
+		common.ApiErrorT(c, "Invalid parameters")
+	case err != nil:
+		common.ApiError(c, err)
+	default:
+		if !res.Replayed {
+			recordManageAudit(c, "adty.site.tier_principal_adjust", map[string]any{
+				"site_id":             siteID,
+				"mode":                res.Adjustment.Mode,
+				"delta_usd":           res.Adjustment.DeltaUSD.String(),
+				"effective_after_usd": res.Adjustment.EffectiveAfterUSD.String(),
+				"tier_before":         res.Adjustment.TierBefore,
+				"tier_after":          res.Adjustment.TierAfter,
+				"adjustment_id":       res.Adjustment.Id,
+			})
+		}
+		common.ApiSuccess(c, res)
 	}
 }

@@ -21,6 +21,7 @@ const (
 	AdtyVoucherSourcePlatform = "platform"
 	AdtyVoucherSourceEarnings = "earnings"
 	AdtyVoucherSourceMargin   = "margin"
+	AdtyVoucherSourceMixed    = "mixed"
 
 	AdtyVoucherProvider   = "adty_voucher"
 	AdtyLedgerTypeVoucher = "voucher"
@@ -36,6 +37,8 @@ type AdtyVoucher struct {
 	AmountUSD         decimal.Decimal `json:"amount_usd" gorm:"type:decimal(20,8);not null"`
 	Quota             int64           `json:"quota"`
 	SourceKind        string          `json:"source_kind" gorm:"type:varchar(16);not null"`
+	FrozenEarningsUSD decimal.Decimal `json:"frozen_earnings_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	FrozenMarginUSD   decimal.Decimal `json:"frozen_margin_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	SourceSiteId      int             `json:"source_site_id" gorm:"index"`
 	TargetSiteId      int             `json:"target_site_id" gorm:"index"`
 	DesignatedOwnerId int             `json:"designated_owner_id" gorm:"index"`

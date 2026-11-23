@@ -143,6 +143,9 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 		// 分站使用无平台品牌的模板，逐请求填入自己的品牌和专用 API 地址。
 		if site := service.AdtySiteForRequest(c); site != nil {
 			head := adtySiteSEO(site)
+			if service.AdtyIsApiOnlyHost(c.Request.Host) {
+				head.noindex = true
+			}
 			siteIndex := indexPage
 			brand := service.AdtyBrandFor(site)
 			body := "<main><h1>" + html.EscapeString(brand.Name) + "</h1></main>"
@@ -452,12 +455,14 @@ func adtySEOImageURL(image string, base *url.URL) string {
 	return base.String() + image
 }
 
-// AdtyRobotsTxt 按站点返回 /robots.txt（任务 11.3）：没开 SEO 的分站整站 Disallow；主站和开了 SEO 的分站
-// 只屏蔽接口。站点由 11.2 的 AdtySiteContext 放进上下文。
+// AdtyRobotsTxt 按站点返回 /robots.txt（任务 11.3）：没开 SEO 的分站、主站/分站 API 域名整站 Disallow；
+// 主站网站域名和开了 SEO 的分站网站域名只屏蔽接口。站点由 11.2 的 AdtySiteContext 放进上下文。
 func AdtyRobotsTxt() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		body := "User-agent: *\nDisallow: /api/\nDisallow: /v1/\nDisallow: /pay/\n"
-		if site := service.AdtySiteForRequest(c); site != nil && !site.SeoIndex {
+		site := service.AdtySiteForRequest(c)
+		isAPIHost := service.AdtyIsApiOnlyHost(c.Request.Host) || (site == nil && service.AdtyIsMainAPIHost(c.Request.Host) && !service.AdtyIsMainSiteHost(c.Request.Host))
+		if isAPIHost || (site != nil && !site.SeoIndex) {
 			body = "User-agent: *\nDisallow: /\n"
 		} else if base := adtySitemapBase(c); base != "" {
 			body += "Sitemap: " + base + "/sitemap.xml\n"
@@ -478,7 +483,12 @@ func AdtySitemap() gin.HandlerFunc {
 }
 
 func adtySitemapBase(c *gin.Context) string {
-	if site := service.AdtySiteForRequest(c); site != nil {
+	site := service.AdtySiteForRequest(c)
+	isAPIHost := service.AdtyIsApiOnlyHost(c.Request.Host) || (site == nil && service.AdtyIsMainAPIHost(c.Request.Host) && !service.AdtyIsMainSiteHost(c.Request.Host))
+	if isAPIHost {
+		return ""
+	}
+	if site != nil {
 		if !site.SeoIndex {
 			return ""
 		}

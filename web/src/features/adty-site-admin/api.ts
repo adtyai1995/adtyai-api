@@ -32,6 +32,8 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   AdminSite,
+  AdminSiteTierPrincipalAdjustResult,
+  AdminSiteTierPrincipalView,
   ResellerSettings,
   ResellerUsage,
   ResellerSettingsUpdate,
@@ -43,6 +45,7 @@ import type {
   SiteStatsResponse,
   SiteStatusChange,
   SitesOverview,
+  TierPrincipalAdjustMode,
 } from './types'
 
 type ApiResponse<T> = { success: boolean; message?: string; data: T }
@@ -977,6 +980,36 @@ export async function setSiteTierAssignment(
     { code, mode }
   )
   requireServerSuccess(res.data)
+}
+
+export async function getAdminSiteTierPrincipal(
+  siteId: number,
+  page = 1,
+  pageSize = 10
+): Promise<AdminSiteTierPrincipalView> {
+  const res = await api.get<ApiResponse<AdminSiteTierPrincipalView>>(
+    `${BASE}/sites/${siteId}/tier-principal`,
+    { params: { p: page, page_size: pageSize } }
+  )
+  const data = requireServerSuccess(res.data).data
+  return { ...data, items: listOrEmpty(data.items) }
+}
+
+export async function adjustAdminSiteTierPrincipal(
+  siteId: number,
+  body: {
+    mode: TierPrincipalAdjustMode
+    amount_usd: string
+    reason: string
+  },
+  idempotencyKey: string
+): Promise<AdminSiteTierPrincipalAdjustResult> {
+  const res = await api.post<ApiResponse<AdminSiteTierPrincipalAdjustResult>>(
+    `${BASE}/sites/${siteId}/tier-principal`,
+    { ...body, idempotency_key: idempotencyKey },
+    { headers: { 'Idempotency-Key': idempotencyKey } }
+  )
+  return requireServerSuccess(res.data).data
 }
 
 export type CloseMailRecipient = {

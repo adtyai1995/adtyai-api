@@ -38,6 +38,8 @@ type AdtySiteBrand struct {
 	Tagline        string `json:"tagline"`
 	Notice         string `json:"notice"`
 	SupportContact string `json:"support_contact"`
+	TawkPropertyID string `json:"tawk_property_id"`
+	TawkWidgetID   string `json:"tawk_widget_id"`
 	BaseURL        string `json:"base_url"`
 }
 
@@ -51,6 +53,8 @@ type AdtySiteBrandInput struct {
 	Tagline        string `json:"tagline"`
 	Notice         string `json:"notice"`
 	SupportContact string `json:"support_contact"`
+	TawkPropertyID string `json:"tawk_property_id"`
+	TawkWidgetID   string `json:"tawk_widget_id"`
 }
 
 // 品牌字段的字数上限（按字符数，不是字节）。
@@ -59,13 +63,31 @@ const (
 	adtyBrandTaglineMax = 80
 	adtyBrandNoticeMax  = 500
 	adtyBrandSupportMax = 200
+	adtyTawkIDMax       = 64
 	// AdtySiteAssetPrefix 是站长上传的 Logo 的地址前缀（文件在 /data/uploads/site-assets）。
 	AdtySiteAssetPrefix = "/uploads/site-assets/"
 )
 
 var ErrAdtySiteBrandInvalid = common.NewMessage("Site name up to 40 characters, tagline up to 80, notice up to 500 and support contact up to 200; the logo must be an uploaded image")
 
-var adtyBrandColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+var (
+	adtyBrandColor  = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+	adtyTawkIDRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
+
+// ValidateAdtyTawkID validates a Tawk.to property or widget identifier.
+// Empty values are allowed (disabling live chat); non-empty values must be
+// plain safe token characters to prevent script URL injection.
+func ValidateAdtyTawkID(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	if len(trimmed) > adtyTawkIDMax || !adtyTawkIDRegex.MatchString(trimmed) {
+		return common.NewMessage("Tawk.to ID must contain only letters, numbers, hyphens, or underscores")
+	}
+	return nil
+}
 
 // adtyPlainText 去掉控制字符和首尾空白；HTML 原样保留为文本，前端按纯文本渲染，进邮件时转义。
 func adtyPlainText(value string, keepNewlines bool) string {
@@ -92,12 +114,20 @@ func NormalizeAdtySiteBrand(input AdtySiteBrandInput) (AdtySiteBrandInput, error
 		Title:          adtyPlainText(input.Title, false),
 		FaviconURL:     strings.TrimSpace(input.FaviconURL),
 		ThemeColor:     strings.TrimSpace(input.ThemeColor),
+		TawkPropertyID: strings.TrimSpace(input.TawkPropertyID),
+		TawkWidgetID:   strings.TrimSpace(input.TawkWidgetID),
 	}
 	if utf8.RuneCountInString(out.Title) > 80 {
 		return out, common.NewMessage("Website title must be at most 80 characters")
 	}
 	if out.ThemeColor != "" && !adtyBrandColor.MatchString(out.ThemeColor) {
 		return out, common.NewMessage("Theme color must use #RRGGBB")
+	}
+	if err := ValidateAdtyTawkID(out.TawkPropertyID); err != nil {
+		return out, err
+	}
+	if err := ValidateAdtyTawkID(out.TawkWidgetID); err != nil {
+		return out, err
 	}
 	if utf8.RuneCountInString(out.Name) > adtyBrandNameMax || utf8.RuneCountInString(out.Tagline) > adtyBrandTaglineMax ||
 		utf8.RuneCountInString(out.Notice) > adtyBrandNoticeMax || utf8.RuneCountInString(out.SupportContact) > adtyBrandSupportMax {
@@ -139,7 +169,11 @@ func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string,
 					return err
 				}
 			}
-			values := map[string]*string{"name": &brand.Name, "title": &brand.Title, "tagline": &brand.Tagline, "notice": &brand.Notice, "support_contact": &brand.SupportContact, "logo_url": &brand.LogoURL, "favicon_url": &brand.FaviconURL, "theme_color": &brand.ThemeColor}
+			values := map[string]*string{
+				"name": &brand.Name, "title": &brand.Title, "tagline": &brand.Tagline, "notice": &brand.Notice,
+				"support_contact": &brand.SupportContact, "logo_url": &brand.LogoURL, "favicon_url": &brand.FaviconURL,
+				"theme_color": &brand.ThemeColor, "tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
+			}
 			for key, value := range fields {
 				dest, ok := values[key]
 				if !ok {
@@ -181,7 +215,8 @@ func AdtyBrandFor(site *model.AdtySite) AdtySiteBrand {
 	return AdtySiteBrand{
 		Name: name, LogoURL: strings.TrimSpace(brand.LogoURL), Tagline: brand.Tagline, Notice: brand.Notice,
 		Title: brand.Title, FaviconURL: strings.TrimSpace(brand.FaviconURL), ThemeColor: strings.TrimSpace(brand.ThemeColor),
-		SupportContact: brand.SupportContact, BaseURL: AdtySiteBaseURL(site),
+		SupportContact: brand.SupportContact, TawkPropertyID: strings.TrimSpace(brand.TawkPropertyID),
+		TawkWidgetID: strings.TrimSpace(brand.TawkWidgetID), BaseURL: AdtySiteBaseURL(site),
 	}
 }
 

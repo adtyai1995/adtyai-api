@@ -508,6 +508,68 @@ func PostAdtyOwnerTrial(c *gin.Context) {
 	common.ApiSuccess(c, grant)
 }
 
+// PostAdtyOwnerCustomerBalance 站长给本站客户手动增加余额：
+// POST /api/adty/site/customers/:id/balance {amount_usd, reason, idempotency_key?}，需二次验证。
+// 优先扣站点可用收益，不足部分自动从超出等级要求保证金底线的溢余保证金中补足。
+func PostAdtyOwnerCustomerBalance(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	id, ok := adtyPathId(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		AmountUSD      string `json:"amount_usd"`
+		Reason         string `json:"reason"`
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	if err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	idemKey := strings.TrimSpace(body.IdempotencyKey)
+	if hdr := strings.TrimSpace(c.GetHeader("Idempotency-Key")); hdr != "" {
+		if idemKey != "" && idemKey != hdr {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		idemKey = hdr
+	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionCustomerBalance, id) {
+		return
+	}
+	res, err := service.CreditAdtySiteCustomerBalanceByOwner(site.Id, c.GetInt("id"), id, amount, body.Reason, idemKey)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAdtySiteCustomerNotFound):
+			common.ApiErrorStatus(c, http.StatusNotFound, err)
+		case errors.Is(err, model.ErrAdtyIdempotencyConflict):
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+		default:
+			common.ApiError(c, err)
+		}
+		return
+	}
+	if !res.Replayed {
+		recordUserSecurityAudit(c, c.GetInt("id"), "adty.site.customer_balance_credit", map[string]any{
+			"site_id":      site.Id,
+			"customer_id":  id,
+			"amount_usd":   res.AmountUSD.String(),
+			"earnings_usd": res.EarningsUSD.String(),
+			"margin_usd":   res.MarginUSD.String(),
+			"ledger_id":    res.LedgerID,
+		})
+	}
+	common.ApiSuccess(c, res)
+}
+
 // PostAdtyOwnerReport 举报客户：POST /api/adty/site/report {user_id, reason}。
 func PostAdtyOwnerReport(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)

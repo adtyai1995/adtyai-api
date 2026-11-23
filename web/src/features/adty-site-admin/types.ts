@@ -299,3 +299,40 @@ export type InviteCodeInput = {
   cost_factor?: string
   note: string
 }
+
+export type TierPrincipalAdjustMode = 'delta' | 'set_total'
+
+export type TierPrincipalAdjustment = {
+  id: number
+  site_id: number
+  mode: TierPrincipalAdjustMode
+  delta_usd: string
+  online_before_usd: string
+  adjust_before_usd: string
+  adjust_after_usd: string
+  effective_after_usd: string
+  tier_before: string
+  tier_after: string
+  reason: string
+  operator_id: number
+  created_at: number
+}
+
+export type AdminSiteTierPrincipalView = {
+  site_id: number
+  tier_code: string
+  tier_mode: string
+  online_principal_usd: string
+  adjustment_usd: string
+  effective_principal_usd: string
+  items: TierPrincipalAdjustment[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type AdminSiteTierPrincipalAdjustResult = {
+  adjustment: TierPrincipalAdjustment
+  site: AdminSite
+  replayed?: boolean
+}

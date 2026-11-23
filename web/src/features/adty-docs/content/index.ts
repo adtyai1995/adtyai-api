@@ -97,12 +97,15 @@ export function getDocMarkdown(slug: DocSlug, lang: ContentLang): string {
 
 /** Replaces {{BASE_URL}} with the site's API address (no trailing slash). */
 export function fillDocPlaceholders(markdown: string, baseUrl: string): string {
+  const effectiveBaseUrl = baseUrl.trim() || '<BASE_URL>'
   const tenant = subsiteDocument()
-  if (!tenant) return markdown.replaceAll('{{BASE_URL}}', () => baseUrl)
+  if (!tenant) {
+    return markdown.replaceAll('{{BASE_URL}}', () => effectiveBaseUrl)
+  }
   // Character references keep names literal even inside Markdown tables or links.
   const displayName = Array.from(tenant.name, (char) => `&#${char.codePointAt(0)};`).join('')
   const values: Record<string, string> = {
-    '{{BASE_URL}}': baseUrl,
+    '{{BASE_URL}}': effectiveBaseUrl,
     'name = "ADTY AI"': `name = ${JSON.stringify(tenant.name)}`,
     '`ADTY AI`': displayName,
     'ADTY AI': displayName,
