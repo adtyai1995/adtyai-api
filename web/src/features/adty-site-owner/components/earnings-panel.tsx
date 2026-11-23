@@ -43,7 +43,7 @@ import {
   siteOwnerKeys,
   type ExportKind,
 } from '../api'
-import { isNegativeAmount } from '../lib/site-owner'
+import { earningKindLabel, isNegativeAmount } from '../lib/site-owner'
 import type { EarningKind, EarningRow } from '../types'
 import { OwnerStatGrid } from './stat-grid'
 
@@ -56,22 +56,8 @@ const EARNING_KINDS: EarningKind[] = [
   'skipped',
 ]
 
-/** Literal t() calls so the key scanner sees every label. */
 function kindLabel(t: TFunction, kind: EarningKind): string {
-  switch (kind) {
-    case 'usage':
-      return t('Usage')
-    case 'refund':
-      return t('Refund')
-    case 'bonus':
-      return t('Bonus you paid')
-    case 'bonus_reversal':
-      return t('Bonus returned')
-    case 'trial':
-      return t('Trial credit')
-    case 'skipped':
-      return t('Not counted')
-  }
+  return earningKindLabel(t, kind)
 }
 
 function reasonLabel(t: TFunction, reason: string): string {

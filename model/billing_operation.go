@@ -864,13 +864,20 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		//   （AdtyAfterPrincipalSpentTx）能扣的上限：站点侧不能比用户真实消耗
 		//   多付钱。
 		settledQuota, settledBalanceBefore := int64(base+charged), int64(balance+base)
-		if row.PayerKind == BillingPayerOwner && row.Kind == "request" && row.StreamWalletQuota > 0 {
-			// Stream child operations already consumed their principal lots.
+		if !teamPaid && row.Kind == "request" && row.StreamWalletQuota > 0 {
+			// Stream child operations (direct:*) already consumed their fund batches and
+			// debited operating principal; only settle the incremental delta above StreamWalletQuota.
 			settledQuota = max(0, int64(row.ReservedQuota+charged))
 			settledBalanceBefore = int64(balance + row.ReservedQuota)
 			if returned := -(row.ReservedQuota + charged); returned > 0 {
-				if err := reverseOwnerPrincipalTx(tx, &row, int64(returned)); err != nil {
-					return err
+				if row.PayerKind == BillingPayerOwner {
+					if err := reverseOwnerPrincipalTx(tx, &row, int64(returned)); err != nil {
+						return err
+					}
+				} else {
+					if err := reversePersonalStreamAllocationsTx(tx, &row, int64(returned)); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -885,7 +892,7 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				if err := reverseOwnerPrincipalTx(tx, &row, int64(-charged)); err != nil {
 					return err
 				}
-			} else if row.Kind == "task" && charged < 0 {
+			} else if (row.Kind == "task" || row.Kind == "mj_refund") && charged < 0 {
 				if err := ReverseSettledAdtyFundAllocationsTx(tx, row.UserId, row.EarningRootKey, row.OperationKey, int64(-charged)); err != nil {
 					return err
 				}
@@ -895,7 +902,7 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				// 传给「无批次时补建 legacy 批次」的分支，补出来的批次不够扣本次消耗，
 				// 结算会整笔失败——老用户（升级前就有额度、从来没批次）就再也结不了账。
 				scoped := withOwnerFundScope(tx, &row)
-				if row.PayerKind == BillingPayerOwner && settledQuota > 0 {
+				if (row.PayerKind == BillingPayerOwner || row.Kind == "direct") && settledQuota > 0 {
 					if err := AllocateAdtyFundAllocationsTx(scoped, row.UserId, row.OperationKey, settledQuota, settledBalanceBefore); err != nil {
 						return err
 					}
@@ -1029,6 +1036,11 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		if err := tx.Save(&row).Error; err != nil {
 			return err
+		}
+		if row.Shortfall > 0 && tx.Migrator().HasTable(&AdtyBillingHold{}) {
+			if err := UpsertAdtyBillingHoldForOperationTx(tx, &row); err != nil {
+				return err
+			}
 		}
 		applied = true
 		return nil

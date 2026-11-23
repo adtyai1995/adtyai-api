@@ -73,12 +73,10 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 	}
 	// 二开：分站客户乘上站长倍率 k（任务 11.4）；渠道测试不乘，也不记站长收益
 	if !relayInfo.IsChannelTest {
-		groupRatioInfo.GroupRatio, groupRatioInfo.SiteMarkup = service.AdtyApplySiteMarkupHook(ctx, relayInfo.UserId, relayInfo.UsingGroup, groupRatioInfo.GroupRatio, relayInfo.OriginModelName)
-		if billed, found := service.AdtyBilledGroupRatioFromContext(ctx); found {
-			groupRatioInfo.SetBilledGroupRatio(billed)
-		} else {
-			groupRatioInfo.SetBilledGroupRatio(decimal.NewFromFloat(groupRatioInfo.GroupRatio))
-		}
+		billedDec, storedKDec := service.AdtyApplySiteMarkupDecimalHook(ctx, relayInfo.UserId, relayInfo.UsingGroup, groupRatioInfo.BilledGroupRatio(), relayInfo.OriginModelName)
+		groupRatioInfo.GroupRatio = billedDec.InexactFloat64()
+		groupRatioInfo.SiteMarkup = storedKDec.InexactFloat64()
+		groupRatioInfo.SetBilledGroupRatio(billedDec)
 	}
 
 	return groupRatioInfo

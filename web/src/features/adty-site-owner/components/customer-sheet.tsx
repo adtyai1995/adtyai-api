@@ -40,7 +40,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { DraftDiscardDialog } from '@/features/system-settings/components/draft-discard-dialog'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
+import { ORDER_STATUS_LABELS } from '@/features/wallet/adty/lib/methods'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
+import type { AdtyOrderStatus } from '@/features/wallet/adty/types'
 import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatQuota, formatTimestamp } from '@/lib/format'
@@ -294,7 +296,12 @@ export function CustomerSheet(props: {
                       {
                         id: 'status',
                         header: t('Status'),
-                        cell: (row) => row.status,
+                        cell: (row) =>
+                          t(
+                            ORDER_STATUS_LABELS[
+                              row.status as AdtyOrderStatus
+                            ] ?? row.status
+                          ),
                       },
                     ]}
                   />

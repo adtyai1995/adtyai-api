@@ -26,7 +26,6 @@ export type LegalDoc =
   | 'user-agreement'
   | 'privacy-policy'
   | 'refund-policy'
-  | 'site-agreement'
   | 'site-customer-terms'
 
 // adty: one endpoint for all documents, in the reader's language. The server

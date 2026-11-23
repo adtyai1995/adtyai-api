@@ -238,6 +238,9 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 	if err := model.PublishUserAuthCache(staff.UserId); err != nil {
 		common.SysError("Failed to publish staff auth cache")
 	}
+	if _, err := model.RevokeAllUserSessions(staff.UserId, "staff_"+action); err != nil {
+		common.SysError("Failed to revoke staff sessions")
+	}
 	view := AdtyStaffViewOf(staff)
 	return &view, nil
 }
@@ -331,6 +334,9 @@ func ManageAdtyStaffCustomer(userID int, authVersion int64, customerID int, acti
 	if action == AdtyStaffActionCustomerDisable {
 		if err := model.PublishUserAuthCache(customerID); err != nil {
 			common.SysError("Failed to publish disabled customer auth cache")
+		}
+		if _, err := model.RevokeAllUserSessions(customerID, "staff_customer_disabled"); err != nil {
+			common.SysError("Failed to revoke disabled customer sessions")
 		}
 	}
 	return &customer, nil

@@ -10,6 +10,7 @@ import (
 )
 
 type RawMessage = json.RawMessage
+type Number = json.Number
 
 // hostJSONCodec is the single place where the host chooses its JSON engine.
 // Swap the implementation here (for example to sonic.ConfigStd) and every

@@ -220,8 +220,6 @@ export type ResellerSettings = {
   cost_factor_tiers: CostTier[] | null
   /** Retired amount-tier setting, returned only for historical compatibility. */
   max_site_bonus_extra: number | null
-  trial_grant_max_usd: number | null
-  trial_grant_daily_usd: number | null
   markup_increase_delay_hours: number
   settle_hour: number
   freeze_days: number
@@ -252,7 +250,6 @@ export type ResellerSettings = {
   settings_warnings?: string[]
   money_configured: boolean
   tier_configured?: boolean
-  site_agreement_version: number
   site_customer_terms_version: number
 }
 
@@ -266,7 +263,6 @@ export type ResellerSettingsUpdate = Partial<
     | 'resend_configured'
     | 'money_configured'
     | 'tier_configured'
-    | 'site_agreement_version'
     | 'site_customer_terms_version'
     | 'max_site_bonus_extra'
   >

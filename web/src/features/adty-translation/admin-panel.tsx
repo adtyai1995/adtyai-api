@@ -36,6 +36,22 @@ import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 
+function translationTaskStatusLabel(
+  status: string,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'ready':
+      return t('Ready')
+    case 'failed':
+      return t('Failed')
+    case 'pending':
+      return t('Pending')
+    default:
+      return status
+  }
+}
+
 /** GET /api/adty/admin/translation (service.AdtyTranslationView). */
 type TranslationView = {
   mode: string
@@ -753,7 +769,8 @@ export function TranslationAdminPanel() {
                     >
                       <div className='flex flex-wrap items-center justify-between gap-2'>
                         <span className='font-mono text-xs'>
-                          {task.object_key} (v{task.version}) · {task.status}
+                          {task.object_key} (v{task.version}) ·{' '}
+                          {translationTaskStatusLabel(task.status, t)}
                         </span>
                         <div className='flex flex-wrap gap-2'>
                           {task.status === 'failed' && (

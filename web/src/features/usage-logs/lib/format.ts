@@ -466,6 +466,7 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'user.2fa_disable_self': 'Disabled two-factor authentication',
   'user.2fa_backup_codes': 'Regenerated two-factor backup codes',
   'user.security_verify': 'Completed security verification',
+  'user.security_verify_failed': 'Security verification failed',
   'user.password_change': 'Account password change',
   'user.binding_start': 'Account binding request',
   'user.binding_bind': 'Account binding',
@@ -540,6 +541,9 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'adty.payment_orphan.resolve': 'Resolved payment event {{id}} as {{status}}',
   'adty.topup.manual_complete': 'Completed top-up {{trade_no}} manually',
   'adty.topup.refund': 'Refunded top-up {{trade_no}}',
+  'adty.gift.fulfillment.review':
+    'Reviewed gift fulfillment {{trade_no}} ({{action}})',
+  'adty.team.discount.update': 'Updated team discount',
   'adty.epay_channel.create': 'Created payment channel {{name}} (ID: {{id}})',
   'adty.epay_channel.update': 'Updated payment channel {{name}} (ID: {{id}})',
   'adty.epay_channel.delete': 'Deleted payment channel {{id}}',
@@ -547,9 +551,6 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'adty.epay_channel.test': 'Tested payment channel {{id}}',
   'adty.epay_channel.maintenance':
     'Payment channel {{id}} moved to maintenance',
-  'adty.official_price.update': 'Updated official price of {{model}}',
-  'adty.official_price.sync':
-    'Synced official prices ({{updated}} models updated)',
   'adty.user.limits':
     'Set request limits: RPM {{rpm}}, TPM {{tpm}}, concurrency {{concurrency}}',
   'adty.referral.settings': 'Updated referral settings',

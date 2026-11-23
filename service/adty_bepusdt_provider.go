@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -125,8 +124,8 @@ func (adtyBEpusdtProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder)
 			OrderID      string          `json:"order_id"`
 			TradeType    string          `json:"trade_type"`
 			Status       *int            `json:"status"`
-			Money        json.RawMessage `json:"money"`
-			ActualAmount json.RawMessage `json:"actual_amount"`
+			Money        common.RawMessage `json:"money"`
+			ActualAmount common.RawMessage `json:"actual_amount"`
 			Token        string          `json:"token"`
 			Fiat         string          `json:"fiat"`
 		} `json:"data"`

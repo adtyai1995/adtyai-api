@@ -306,7 +306,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 		groupRatioInfo := helper.HandleGroupRatio(c, info)
 		beforeGroupDec := trace.CostDec.Mul(common.QuotaPerUnitDecimal())
-		groupRatioDec := decimal.NewFromFloat(groupRatioInfo.GroupRatio)
+		groupRatioDec := groupRatioInfo.BilledGroupRatio()
 		quota, clamp := common.QuotaFromDecimalChecked(beforeGroupDec.Mul(groupRatioDec))
 		noteTaskQuotaClamp(info, clamp)
 		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, GroupRatioInfo: groupRatioInfo}
@@ -320,7 +320,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			EstimatedQuotaBeforeGroup: beforeGroupDec.InexactFloat64(),
 			EstimatedQuotaAfterGroup:  quota,
 			EstimatedTier:             trace.MatchedTier,
-			QuotaPerUnit:              common.QuotaPerUnit,
+			QuotaPerUnit:              float64(common.FixedQuotaPerUnit),
 			ExprVersion:               billingexpr.ExprVersion(exprStr),
 			TaskUsageBilling:          true,
 			UsageFacts:                facts,
@@ -356,10 +356,15 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
-	// 6. 将 OtherRatios 应用到基础额度（饱和转换，防止溢出成负数）
+	// 6. 将 OtherRatios 应用到基础额度（精确十进制 + 饱和转换，防止双舍入与溢出）
 	if info.TieredBillingSnapshot == nil && !common.StringsContains(constant.TaskPricePatches, modelName) {
-		quotaWithRatios := info.PriceData.ApplyOtherRatiosToFloat(float64(info.PriceData.Quota))
-		quota, clamp := common.QuotaFromFloatChecked(quotaWithRatios)
+		var baseDec decimal.Decimal
+		if info.PriceData.UsePrice {
+			baseDec = info.PriceData.BilledModelPrice().Mul(common.QuotaPerUnitDecimal()).Mul(info.PriceData.GroupRatioInfo.BilledGroupRatio())
+		} else {
+			baseDec = decimal.NewFromInt(int64(info.PriceData.Quota))
+		}
+		quota, clamp := common.QuotaFromDecimalChecked(info.PriceData.ApplyOtherRatiosToDecimal(baseDec))
 		info.PriceData.Quota = quota
 		noteTaskQuotaClamp(info, clamp)
 	}
@@ -503,18 +508,21 @@ func IsAmbiguousTaskSubmitTransportError(err error) bool {
 		strings.Contains(msg, "timeout")
 }
 
-// recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
+// recalcQuotaFromRatios 根据 adjustedRatios 用精确十进制重新计算 quota。
 // 公式: baseQuota × ∏(ratio) — 其中 baseQuota 是不含 OtherRatios 的基础额度。
 func recalcQuotaFromRatios(info *relaycommon.RelayInfo, ratios map[string]float64) (int, bool) {
-	// 从 PriceData 获取不含 OtherRatios 的基础价格
-	baseQuota := info.PriceData.RemoveOtherRatiosFromFloat(float64(info.PriceData.Quota))
+	var baseDec decimal.Decimal
+	if info.PriceData.UsePrice {
+		baseDec = info.PriceData.BilledModelPrice().Mul(common.QuotaPerUnitDecimal()).Mul(info.PriceData.GroupRatioInfo.BilledGroupRatio())
+	} else {
+		baseDec = decimal.NewFromFloat(info.PriceData.RemoveOtherRatiosFromFloat(float64(info.PriceData.Quota)))
+	}
 	priceData := info.PriceData
 	if !priceData.ReplaceOtherRatios(ratios) {
 		return 0, false
 	}
-	// 应用新的 ratios
-	result := priceData.ApplyOtherRatiosToFloat(baseQuota)
-	quota, clamp := common.QuotaFromFloatChecked(result)
+	resultDec := priceData.ApplyOtherRatiosToDecimal(baseDec)
+	quota, clamp := common.QuotaFromDecimalChecked(resultDec)
 	noteTaskQuotaClamp(info, clamp)
 	return quota, true
 }
@@ -583,9 +591,9 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		return
 	}
 
-	// OpenAI Video API 格式: 走各 adaptor 的 ConvertToOpenAIVideo
+	// OpenAI Video API 格式: 走各 adaptor 的 ConvertToOpenAIVideo（优先按任务冻结插件获取）
 	if isOpenAIVideoAPI {
-		adaptor := GetTaskAdaptor(originTask.Platform)
+		adaptor := GetTaskAdaptorForTask(originTask, originTask.Platform)
 		if adaptor == nil {
 			taskResp = service.TaskErrorWrapperLocal(errors.New("task_not_supported"), "invalid_channel_id", http.StatusBadRequest)
 			return
@@ -636,7 +644,7 @@ func tryRealtimeFetch(ctx context.Context, task *model.Task, isOpenAIVideoAPI bo
 		baseURL = channelModel.GetBaseURL()
 	}
 	proxy := channelModel.GetSetting().Proxy
-	adaptor := GetTaskAdaptor(constant.TaskPlatform(strconv.Itoa(channelModel.Type)))
+	adaptor := GetTaskAdaptorForTask(task, constant.TaskPlatform(strconv.Itoa(channelModel.Type)))
 	if adaptor == nil {
 		return nil
 	}

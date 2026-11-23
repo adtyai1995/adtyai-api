@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -113,12 +112,29 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 	form.Set("sign_type", "MD5")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adtyEpayEndpoint(channel, "/mapi.php"), strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("epay mapi request failed")
 	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := adtyEpayHTTPClient().Do(httpReq)
+	// R2-026: Disable redirects and enforce verified TLS on mapi.php order creation.
+	baseClient := adtyVerifiedPaymentClientFromContext(ctx)
+	if baseClient == nil {
+		baseClient = adtyEpayHTTPClient()
+	}
+	var mapiClient http.Client
+	if baseClient != nil {
+		mapiClient = *baseClient
+	}
+	if strings.EqualFold(httpReq.URL.Scheme, "https") {
+		verifiedTransport, vErr := cloneAdtyVerifiedPaymentTransport(mapiClient.Transport)
+		if vErr != nil {
+			return nil, vErr
+		}
+		mapiClient.Transport = verifiedTransport
+	}
+	mapiClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := mapiClient.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("epay mapi request failed")
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -126,12 +142,12 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 		return nil, err
 	}
 	var parsed struct {
-		Code      json.RawMessage `json:"code"`
-		Msg       string          `json:"msg"`
-		TradeNo   string          `json:"trade_no"`
-		PayURL    string          `json:"payurl"`
-		QRCode    string          `json:"qrcode"`
-		URLScheme string          `json:"urlscheme"`
+		Code      common.RawMessage `json:"code"`
+		Msg       string            `json:"msg"`
+		TradeNo   string            `json:"trade_no"`
+		PayURL    string            `json:"payurl"`
+		QRCode    string            `json:"qrcode"`
+		URLScheme string            `json:"urlscheme"`
 	}
 	if err := common.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("epay mapi returned non-JSON (http %d)", resp.StatusCode)
@@ -229,7 +245,7 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 	values.Set("out_trade_no", outTradeNo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, adtyEpayEndpoint(channel, "/api.php")+"?"+values.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("epay query request failed")
 	}
 	// Merchant credentials are in the query. Never forward them to a redirect,
 	// including an HTTPS gateway redirecting its order lookup to plain HTTP.
@@ -251,7 +267,8 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		// R2-026: Never return raw *url.Error containing ?key=<MerchantKey>.
+		return nil, fmt.Errorf("epay query request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -262,15 +279,15 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 		return nil, err
 	}
 	var parsed struct {
-		Code       json.RawMessage `json:"code"`
-		Msg        string          `json:"msg"`
-		PaidAt     json.RawMessage `json:"endtime"`
-		Status     json.RawMessage `json:"status"`
-		Money      json.RawMessage `json:"money"`
-		Type       string          `json:"type"`
-		TradeNo    string          `json:"trade_no"`
-		OutTradeNo string          `json:"out_trade_no"`
-		MerchantId json.RawMessage `json:"pid"`
+		Code       common.RawMessage `json:"code"`
+		Msg        string            `json:"msg"`
+		PaidAt     common.RawMessage `json:"endtime"`
+		Status     common.RawMessage `json:"status"`
+		Money      common.RawMessage `json:"money"`
+		Type       string            `json:"type"`
+		TradeNo    string            `json:"trade_no"`
+		OutTradeNo string            `json:"out_trade_no"`
+		MerchantId common.RawMessage `json:"pid"`
 	}
 	if err := common.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("epay query returned non-JSON")
@@ -332,7 +349,7 @@ func ProbeAdtyEpayChannel(ctx context.Context, channel *model.AdtyEpayChannel) e
 func adtyEpayGet(ctx context.Context, target string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("epay request failed")
 	}
 	baseClient := adtyVerifiedPaymentClientFromContext(ctx)
 	if baseClient == nil {
@@ -349,7 +366,8 @@ func adtyEpayGet(ctx context.Context, target string) ([]byte, error) {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		// R2-026: Scrub *url.Error so ?key=<MerchantKey> never leaks in errors/logs.
+		return nil, fmt.Errorf("epay request failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

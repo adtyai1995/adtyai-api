@@ -72,18 +72,21 @@ func Login(c *gin.Context) {
 			return
 		}
 	}
+	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if adtyLoginLocked(username) {
+	siteID := service.AdtyRequestSiteID(c)
+	candID, hasCand := model.LookupLoginCandidateUserID(username, siteID)
+	if adtyLoginLocked(username) || (hasCand && adtyLoginLocked(common.LoginLockUserKey(candID))) {
 		common.ApiError(c, adtyLoginFailureResponse())
 		return
 	}
 	user := model.User{
 		Username: username,
 		Password: password,
-		SiteId:   service.AdtyRequestSiteID(c),
+		SiteId:   siteID,
 	}
 	err = user.ValidateAndFill()
 	if err != nil {
@@ -99,11 +102,20 @@ func Login(c *gin.Context) {
 			if err := adtyRecordLoginFailure(username); err != nil {
 				common.SysLog(common.LogText("login failure lock unavailable: %s", err.Error()))
 			}
+			if hasCand {
+				if err := adtyRecordLoginFailure(common.LoginLockUserKey(candID)); err != nil {
+					common.SysLog(common.LogText("login failure lock unavailable: %s", err.Error()))
+				}
+			}
 			common.ApiError(c, adtyLoginFailureResponse())
 		}
 		return
 	}
 	adtyClearLoginFailures(username)
+	adtyClearLoginFailures(common.LoginLockUserKey(user.Id))
+	if user.Username != "" {
+		adtyClearLoginFailures(user.Username)
+	}
 
 	setupLogin(&user, c)
 }
@@ -839,10 +851,14 @@ func GetUserModels(c *gin.Context) {
 			groupsToQuery = []string{group}
 		}
 	}
+	siteID := service.AdtyRequestSiteID(c)
+	if siteID == 0 {
+		siteID = user.SiteId
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    service.GetGroupsEnabledModels(groupsToQuery),
+		"data":    service.GetSiteAllowedGroupModels(siteID, groupsToQuery),
 	})
 }
 
@@ -1017,7 +1033,10 @@ func AdminClearUserBinding(c *gin.Context) {
 		return
 	}
 	if bindingType == "telegram" {
-		_ = service.RevokeAllAdtyTelegramBindings(user.Id)
+		if err := service.RevokeAllAdtyTelegramBindings(user.Id); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
 
 	recordManageAuditFor(c, user.Id, "user.binding_clear", map[string]any{
@@ -1125,6 +1144,7 @@ func UpdateSelf(c *gin.Context) {
 		return
 	}
 
+	user.Username = strings.TrimSpace(user.Username)
 	if err := common.Validate.StructExcept(&user, "Password"); err != nil {
 		common.ApiErrorT(c, "Invalid input")
 		return

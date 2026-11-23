@@ -840,52 +840,6 @@ func ApplyDueAdtySiteTierCostFactors(now int64) (int64, error) {
 	return applied, nil
 }
 
-// ApplyDueMinCostFactor writes a scheduled higher floor once it is due.
-func ApplyDueMinCostFactor(now int64) error {
-	return applyDueResellerFactor("min_cost_factor", now)
-}
-
-func ApplyDueGlobalCostFactor(now int64) error {
-	return applyDueResellerFactor("cost_factor", now)
-}
-
-func applyDueResellerFactor(key string, now int64) error {
-	model.ResellerWriteMu.Lock()
-	defer model.ResellerWriteMu.Unlock()
-	pending := "pending_" + key
-	at := pending + "_at"
-	committed := map[string]string{}
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := model.LockResellerOptionsTx(tx); err != nil {
-			return err
-		}
-		prefix := adty_setting.ResellerSettingModule + "."
-		var rows []model.Option
-		if err := tx.Where(tx.Statement.Quote("key")+" IN ?", []string{prefix + key, prefix + pending, prefix + at}).Find(&rows).Error; err != nil {
-			return err
-		}
-		for _, row := range rows {
-			committed[row.Key] = row.Value
-		}
-		deadline, _ := strconv.ParseInt(committed[prefix+at], 10, 64)
-		amount := committed[prefix+pending]
-		if deadline <= 0 || deadline > now || amount == "" || amount == "null" {
-			return nil
-		}
-		committed[prefix+key] = amount
-		committed[prefix+pending] = "null"
-		committed[prefix+at] = "0"
-		return model.SaveOptionsTx(tx, committed)
-	})
-	if err != nil {
-		return err
-	}
-	if err := model.ApplyOptionValues(committed); err != nil {
-		return err
-	}
-	return nil
-}
-
 // AdtyOnSiteCostFactorChanged 在管理员改了单站 d 之后调用（11.9 的站内信和邮件通知挂在这里）。
 var AdtyOnSiteCostFactorChanged func(site *model.AdtySite)
 

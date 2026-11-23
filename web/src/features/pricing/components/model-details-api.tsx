@@ -40,8 +40,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useApiBaseUrl } from '@/features/adty-site/api'
 import { useStatus } from '@/hooks/use-status'
-import { subsiteDocument } from '@/lib/subsite-document'
 
 import {
   buildSupportedParameters,
@@ -227,19 +227,20 @@ function CodeSamplesSection(props: {
 }) {
   const { t } = useTranslation()
   const { status } = useStatus()
+  const apiBaseUrl = useApiBaseUrl()
 
   const baseUrl = useMemo(() => {
+    if (apiBaseUrl) return apiBaseUrl.replace(/\/$/, '')
     const candidate =
       (status as Record<string, unknown> | null)?.server_address ??
       (status as Record<string, unknown> | null)?.serverAddress ??
       (status?.data as Record<string, unknown> | undefined)?.server_address ??
       (status?.data as Record<string, unknown> | undefined)?.serverAddress
-    if (candidate && typeof candidate === 'string') {
-      return candidate.replace(/\/$/, '')
+    if (candidate && typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim().replace(/\/$/, '')
     }
-    if (typeof window !== 'undefined') return subsiteDocument()?.api ?? window.location.origin
     return 'https://api.example.com'
-  }, [status])
+  }, [apiBaseUrl, status])
 
   const endpoints = useMemo(() => {
     const types = props.model.supported_endpoint_types || []

@@ -372,7 +372,7 @@ export function SitesPanel(props: {
                     <SiteStatusBadge status={row.status} />
                   </TableCell>
                   <TableCell className='text-right tabular-nums'>
-                    {row.cost_factor ?? row.tier_cost_factor ?? t('Global')}
+                    {row.cost_factor ?? row.tier_cost_factor ?? t('Follow site level')}
                   </TableCell>
                   <TableCell className='text-right tabular-nums'>
                     {formatNumber(row.customers, locale)}

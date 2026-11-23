@@ -371,6 +371,7 @@ var accessTokenLegacyActionScopes = map[string]map[string]string{
 	"GET /api/data/":                                 {"adty_log:read": "log:read"},
 	"GET /api/data/users":                            {"adty_log:read": "log:read"},
 	"GET /api/data/flow":                             {"adty_log:read": "log:read"},
+	"GET /api/data/flow/self":                        {"adty_log:read": "log:read"},
 	"GET /api/mj/":                                   {"adty_log:read": "log:read"},
 	"GET /api/task":                                  {"adty_log:read": "log:read"},
 	"GET /api/user/topup":                            {"adty_finance:read": "billing:read"},
@@ -450,6 +451,37 @@ func AccessTokenVerificationScope(verificationScope string) (scope string, liste
 	}
 	scope, listed = accessTokenVerificationScopes[verificationScope]
 	return scope, listed
+}
+
+// requireAccessTokenVerificationScopeForOperation enforces exact per-action PAT
+// scope binding for multi-action verification scopes such as site.owner.manage (R2-004).
+func requireAccessTokenVerificationScopeForOperation(identity AuthIdentity, op VerificationOperation) error {
+	tokenID, ok := model.ParseAccessTokenSessionID(identity.SessionID)
+	if !ok {
+		return nil
+	}
+	if op.Scope != VerificationScopeAdtySiteOwnerManage {
+		return requireAccessTokenVerificationScope(identity, op.Scope)
+	}
+	var ctx AdtySiteOwnerContext
+	if err := common.Unmarshal(op.Context, &ctx); err != nil {
+		return ErrVerificationContextInvalid
+	}
+	required := adtySiteOwnerActionAccessTokenScope(ctx)
+	if required == "" {
+		return ErrVerificationForbidden
+	}
+	token, err := model.GetUserAccessToken(identity.UserID, tokenID)
+	if errors.Is(err, model.ErrAccessTokenNotFound) {
+		return ErrAuthTokenInvalid
+	}
+	if err != nil {
+		return err
+	}
+	if !AccessTokenScopeGranted(token.GetScopes(), required) {
+		return ErrVerificationForbidden
+	}
+	return nil
 }
 
 // requireAccessTokenVerificationScope rejects a step-up request from a PAT

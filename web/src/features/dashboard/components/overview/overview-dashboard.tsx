@@ -48,6 +48,7 @@ import {
 } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
+import { useApiBaseUrl } from '@/features/adty-site/api'
 import { getApiKeys } from '@/features/keys/api'
 import type { ApiKey } from '@/features/keys/types'
 import { fetchTokenKeyWithSecurityProof } from '@/features/tokens/key-reveal-proof'
@@ -58,7 +59,6 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { MOTION_TRANSITION } from '@/lib/motion'
 import { ROLE } from '@/lib/roles'
 import { requireServerSuccess } from '@/lib/server-error-message'
-import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -144,15 +144,9 @@ function saveSetupGuideExpanded(expanded: boolean): void {
   )
 }
 
-function getCurrentOrigin(): string {
-  if (typeof window === 'undefined') return ''
-  return subsiteDocument()?.api ?? window.location.origin
-}
-
-function normalizeEndpoint(sourceUrl?: string): string {
-  const fallback = `${getCurrentOrigin()}/v1/chat/completions`
-  const trimmed = sourceUrl?.trim()
-  if (!trimmed) return fallback
+function normalizeEndpoint(sourceUrl?: string, apiBaseUrl?: string): string {
+  const trimmed = sourceUrl?.trim() || apiBaseUrl?.trim() || ''
+  if (!trimmed) return ''
 
   const withoutTrailingSlash = trimmed.replace(/\/+$/, '')
   if (withoutTrailingSlash.endsWith('/v1/chat/completions')) {
@@ -558,11 +552,15 @@ export function OverviewDashboard() {
     [canSeeChannels, quickActions]
   )
 
+  const apiBaseUrl = useApiBaseUrl()
   const heroSignals = useMemo<HeroSignal[]>(
     () => [
       {
         label: t('Route active'),
-        value: apiInfoItems.length > 0 ? t('Online') : t('Current domain'),
+        value:
+          apiInfoItems.length > 0 || apiBaseUrl
+            ? t('Online')
+            : t('Not configured'),
         icon: RadioTower,
         tone: 'info',
       },
@@ -579,17 +577,17 @@ export function OverviewDashboard() {
         tone: 'chart-4',
       },
     ],
-    [apiInfoItems.length, modelsQuery.data, preferredKey, t]
+    [apiBaseUrl, apiInfoItems.length, modelsQuery.data, preferredKey, t]
   )
 
   const requestExample = useMemo<RequestExample>(() => {
-    const endpoint = normalizeEndpoint(apiInfoItems[0]?.url)
+    const endpoint = normalizeEndpoint(apiInfoItems[0]?.url, apiBaseUrl)
     const model = modelsQuery.data?.[0] ?? 'gpt-4o-mini'
     const keyName = preferredKey?.name ?? t('No API key yet')
-    const ready = Boolean(preferredKey?.id && model)
+    const ready = Boolean(preferredKey?.id && model && endpoint)
 
     return {
-      endpoint,
+      endpoint: endpoint || t('API address is not configured yet'),
       model,
       keyName,
       keyId: preferredKey?.id,
@@ -598,7 +596,7 @@ export function OverviewDashboard() {
         : 'sk-...',
       ready,
     }
-  }, [apiInfoItems, modelsQuery.data, preferredKey, t])
+  }, [apiBaseUrl, apiInfoItems, modelsQuery.data, preferredKey, t])
 
   const completedStepCount = startSteps.filter((step) => step.completed).length
   const setupComplete = completedStepCount === startSteps.length

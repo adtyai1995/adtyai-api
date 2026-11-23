@@ -583,7 +583,11 @@ func HardDeleteUserById(id int) (int64, error) {
 }
 
 func (user *User) prepareForInsert(tx *gorm.DB) error {
+	user.Username = strings.TrimSpace(user.Username)
 	user.Email = NormalizeEmail(user.Email)
+	if user.Username == "" {
+		return common.NewMessage("Invalid parameters")
+	}
 	if err := ensureEmailAvailableWithTx(tx, user.Email, user.SiteId, 0); err != nil {
 		return err
 	}
@@ -773,11 +777,13 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 		}
 	}
 	newUser := *user
+	newUser.Username = strings.TrimSpace(newUser.Username)
+	user.Username = newUser.Username
 	current := User{}
 	if err = tx.First(&current, user.Id).Error; err != nil {
 		return err
 	}
-	if strings.TrimSpace(newUser.Username) != "" {
+	if newUser.Username != "" {
 		if err = EnsureUsernameAvailableWithTx(tx, newUser.Username, user.Id); err != nil {
 			return err
 		}
@@ -895,6 +901,11 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	}
 
 	newUser := *user
+	newUser.Username = strings.TrimSpace(newUser.Username)
+	user.Username = newUser.Username
+	if newUser.Username == "" {
+		return common.NewMessage("Invalid parameters")
+	}
 	updates := map[string]any{
 		"username":     newUser.Username,
 		"display_name": newUser.DisplayName,
@@ -1181,12 +1192,35 @@ func userOwnsOpenSite(tx *gorm.DB, userId int) (bool, error) {
 	return count > 0, err
 }
 
+// LookupLoginCandidateUserID resolves an unambiguous existing user ID for a login
+// identifier (username or site-scoped email) purely to share canonical uid:<id>
+// brute-force lockout counters across aliases without leaking existence (R2-007).
+func LookupLoginCandidateUserID(identifier string, siteID int) (int, bool) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" || DB == nil {
+		return 0, false
+	}
+	var ids []int
+	if strings.Contains(identifier, "@") {
+		norm := NormalizeEmail(identifier)
+		if err := DB.Model(&User{}).Where("site_id = ? AND LOWER(email) = ?", siteID, norm).Limit(2).Pluck("id", &ids).Error; err == nil && len(ids) == 1 {
+			return ids[0], true
+		}
+	}
+	ids = nil
+	if err := DB.Model(&User{}).Where("LOWER(username) = ?", NormalizeUsername(identifier)).Limit(2).Pluck("id", &ids).Error; err == nil && len(ids) == 1 {
+		return ids[0], true
+	}
+	return 0, false
+}
+
 func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
 	if user.Id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
 	var nextAuthVersion int64
 	var revokedAccessTokens int64
+	var disabledEmployeeIDs []int
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		if identity != nil {
 			if err := ValidateAuthSessionWithTx(tx, *identity); err != nil {
@@ -1211,9 +1245,11 @@ func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
 			return err
 		}
 		if AdtyBeforeUserDeleteHook != nil {
-			if err := AdtyBeforeUserDeleteHook(tx, user.Id); err != nil {
+			ids, err := AdtyBeforeUserDeleteHook(tx, user.Id)
+			if err != nil {
 				return err
 			}
+			disabledEmployeeIDs = append(disabledEmployeeIDs, ids...)
 		}
 		nextAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
@@ -1245,6 +1281,15 @@ func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
 	if err := invalidateUserCache(user.Id); err != nil {
 		common.SysError(common.LogText("failed to invalidate user cache after deleting user %d: %v", user.Id, err))
 	}
+	for _, empID := range disabledEmployeeIDs {
+		if empID <= 0 || empID == user.Id {
+			continue
+		}
+		_ = PublishUserAuthCache(empID)
+		_, _ = RevokeAllUserSessions(empID, "team_closed")
+		_ = InvalidateUserTokensCache(empID)
+		_ = invalidateUserCache(empID)
+	}
 	return revokedAccessTokens, nil
 }
 
@@ -1255,6 +1300,7 @@ func (user *User) HardDelete() (int64, error) {
 	var tokens []Token
 	var deletedAuthVersion int64
 	var revokedAccessTokens int64
+	var disabledEmployeeIDs []int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		ownsSite, err := userOwnsOpenSite(tx, user.Id)
 		if err != nil {
@@ -1267,9 +1313,11 @@ func (user *User) HardDelete() (int64, error) {
 			return err
 		}
 		if AdtyBeforeUserDeleteHook != nil {
-			if err := AdtyBeforeUserDeleteHook(tx, user.Id); err != nil {
+			ids, err := AdtyBeforeUserDeleteHook(tx, user.Id)
+			if err != nil {
 				return err
 			}
+			disabledEmployeeIDs = append(disabledEmployeeIDs, ids...)
 		}
 		deletedAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
@@ -1300,6 +1348,15 @@ func (user *User) HardDelete() (int64, error) {
 	}
 	if err := invalidateUserCache(user.Id); err != nil {
 		common.SysError(common.LogText("failed to invalidate user cache after hard deleting user %d: %v", user.Id, err))
+	}
+	for _, empID := range disabledEmployeeIDs {
+		if empID <= 0 || empID == user.Id {
+			continue
+		}
+		_ = PublishUserAuthCache(empID)
+		_, _ = RevokeAllUserSessions(empID, "team_closed")
+		_ = InvalidateUserTokensCache(empID)
+		_ = invalidateUserCache(empID)
 	}
 	return revokedAccessTokens, nil
 }

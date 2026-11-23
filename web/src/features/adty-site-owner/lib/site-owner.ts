@@ -16,9 +16,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { TFunction } from 'i18next'
+
 import type { SiteWallet } from '@/features/adty-ledger/site-wallet-labels'
 
-import type { SenderDnsRecord, SitePrice } from '../types'
+import type { EarningKind, SenderDnsRecord, SitePrice } from '../types'
+
+/** Literal t() calls so the key scanner sees every label. */
+export function earningKindLabel(t: TFunction, kind: EarningKind): string {
+  switch (kind) {
+    case 'usage':
+      return t('Usage')
+    case 'refund':
+      return t('Refund')
+    case 'bonus':
+      return t('Bonus you paid')
+    case 'bonus_reversal':
+      return t('Bonus returned')
+    case 'trial':
+      return t('Trial credit')
+    case 'skipped':
+      return t('Not counted')
+  }
+}
 
 const USD_SCALE = 8
 const USD_SCALE_FACTOR = 10n ** BigInt(USD_SCALE)
@@ -75,12 +95,17 @@ export function ownerTransferPreview(
 export function marginCycleSummary(
   wallet: Pick<
     SiteWallet,
-    'balance' | 'frozen_usd' | 'cycle_tier_usd' | 'cycle_used_usd'
+    | 'balance'
+    | 'frozen_usd'
+    | 'excess_frozen_usd'
+    | 'cycle_tier_usd'
+    | 'cycle_used_usd'
   >
 ): MarginCycleSummary {
   const tier = parseScaledUsd(wallet.cycle_tier_usd)
   const used = parseScaledUsd(wallet.cycle_used_usd)
   const frozen = parseScaledUsd(wallet.frozen_usd)
+  const excessFrozen = parseScaledUsd(wallet.excess_frozen_usd)
   const balance = parseScaledUsd(wallet.balance)
 
   if (tier <= 0n) {
@@ -95,7 +120,7 @@ export function marginCycleSummary(
   const limit90 = (tier * 9n) / 10n
   const floor10 = tier - limit90
   const capRoom = limit90 - used - frozen
-  const cashRoom = balance - frozen - floor10
+  const cashRoom = balance - frozen - excessFrozen - floor10
   const minRoom = capRoom < cashRoom ? capRoom : cashRoom
   const available = minRoom > 0n ? minRoom : 0n
 

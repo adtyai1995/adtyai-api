@@ -31,7 +31,7 @@ var (
 	ErrAdtyTelegramUnverified = common.NewMessage("Bot identity is not verified")
 	ErrAdtyTelegramPrivate    = common.NewMessage("Private notices stay in a private chat")
 	adtyTelegramTokenPattern  = regexp.MustCompile(`^(\d{6,12}):[A-Za-z0-9_-]{20,}$`)
-	adtyTelegramPrivateWords  = regexp.MustCompile(`(?i)(订单|退款|保证金|兑换码|refund|deposit|voucher|order)`)
+	adtyTelegramPrivateWords  = regexp.MustCompile(`(?i)(订单|退款|保证金|兑换码|\b(?:refund|deposit|voucher|order)\b)`)
 )
 
 // AdtyTelegramGetMe verifies a bot token. The default does not dial Telegram.
@@ -161,6 +161,26 @@ func adtyCanUseAdminTelegram(tx *gorm.DB, user *model.User) bool {
 	ok, _ := adtyTelegramAdminAccess(tx, user)
 	return ok
 }
+// CheckAdtyTelegramAdminAccess verifies whether userID (Root, platform ticket
+// admin, site owner, or ticket-handling site staff) may bind the Admin Bot (R2-054).
+func CheckAdtyTelegramAdminAccess(userID int) error {
+	if model.DB == nil || userID <= 0 {
+		return ErrAdtyTelegramForbidden
+	}
+	var user model.User
+	if err := model.DB.First(&user, userID).Error; err != nil {
+		return ErrAdtyTelegramForbidden
+	}
+	ok, err := adtyTelegramAdminAccess(model.DB, &user)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrAdtyTelegramForbidden
+	}
+	return nil
+}
+
 func adtyTelegramAdminAccess(tx *gorm.DB, user *model.User) (bool, error) {
 	if user == nil || user.Id <= 0 || user.Status != common.UserStatusEnabled {
 		return false, nil
@@ -974,7 +994,8 @@ func adtyTelegramSendMessageHTTP(token, chat, text string) error {
 	endpoint := adtyTelegramAPIBase + "/bot" + token + "/sendMessage"
 	response, err := adtyTelegramHTTP.PostForm(endpoint, payload)
 	if err != nil {
-		return err
+		// R2-026: Never return raw *url.Error which embeds /bot<TOKEN>/sendMessage.
+		return common.NewMessage("Telegram send failed")
 	}
 	defer response.Body.Close()
 	var body struct {

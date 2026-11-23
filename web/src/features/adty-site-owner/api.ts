@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import i18next from 'i18next'
+
 import type {
   SiteWallet,
   SiteWalletLedgerPage,
@@ -101,13 +103,6 @@ export async function requestSiteClose(
     ApiResponse<{ id: number; close_requested_at: number }>
   >(`${BASE}/close`, { reason })
   return requireServerSuccess(res.data).data
-}
-
-export async function acceptSiteTerms(version: string): Promise<void> {
-  const res = await api.post<ApiResponse<unknown>>(`${BASE}/terms/accept`, {
-    version,
-  })
-  requireServerSuccess(res.data)
 }
 
 export async function getOwnerSite(): Promise<OwnerSite> {
@@ -382,14 +377,14 @@ export async function getOwnerWalletLedger(
   return requireServerSuccess(res.data).data
 }
 
-/** Codes this owner issued from the site's wallets, and whether margin may fund new ones. */
+/** Codes this owner issued from the site's wallets. */
 export async function getOwnerVouchers(
   page: number,
   pageSize: number
-): Promise<VoucherPage & { margin_allowed: boolean }> {
-  const res = await api.get<
-    ApiResponse<VoucherPage & { margin_allowed: boolean }>
-  >(`${BASE}/vouchers`, { params: { p: page, page_size: pageSize } })
+): Promise<VoucherPage> {
+  const res = await api.get<ApiResponse<VoucherPage>>(`${BASE}/vouchers`, {
+    params: { p: page, page_size: pageSize },
+  })
   return requireServerSuccess(res.data).data
 }
 
@@ -598,7 +593,7 @@ export async function getOwnerSettlementSheets(p:number, day:string,siteId?:numb
 export async function getOwnerSettlementDetail(id:number,siteId?:number):Promise<SettlementSheet> {
  const res=await api.get<ApiResponse<SettlementSheet>>(`${BASE}/settlement-sheets`,{params:{sheet_id:id,...archivedQuery(siteId)}})
  const sheet = requireServerSuccess(res.data).data
-  if (!sheet) throw new Error('Settlement sheet is missing')
+  if (!sheet) throw new Error(i18next.t('Settlement sheet is missing'))
   return sheet
 }
 
@@ -625,8 +620,6 @@ export type SiteReferralView = {
   min_usd: string | null
   fee_usd: string | null
   cny_rate: string | null
-  trial_grant_max_usd: string | null
-  trial_grant_daily_usd: string | null
   rate_configured: boolean
   rate?: string
   enabled?: boolean

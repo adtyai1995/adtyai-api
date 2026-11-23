@@ -121,6 +121,22 @@ export function SettingsPanel(props: { canWrite: boolean }) {
       onSubmit={(event) => {
         event.preventDefault()
         if (disabled) return
+        const minDraft = drafts.partner_min_rate.trim()
+        const maxDraft = drafts.partner_max_rate.trim()
+        const effectiveMin = minDraft === '' ? null : Number(minDraft)
+        const effectiveMax = maxDraft === '' ? null : Number(maxDraft)
+        if (
+          effectiveMin !== null &&
+          effectiveMax !== null &&
+          Number.isFinite(effectiveMin) &&
+          Number.isFinite(effectiveMax) &&
+          effectiveMin > effectiveMax
+        ) {
+          toast.error(
+            t('Minimum partner rate cannot exceed maximum partner rate')
+          )
+          return
+        }
         save.mutate(buildSettingsUpdate(saved, drafts, enabled))
       }}
     >

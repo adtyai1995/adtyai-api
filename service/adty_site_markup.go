@@ -209,7 +209,7 @@ func AdtyBilledGroupRatioFromContext(c *gin.Context) (decimal.Decimal, bool) {
 // AdtyApplySiteMarkupDecimal 按已确认公式用精确十进制计算供货价、售价和团队下限。
 // 返回最终计费分组倍率和存储 k（1 表示加价比例为 0）。
 func AdtyApplySiteMarkupDecimal(c *gin.Context, userId int, group string, groupRatio decimal.Decimal, modelName string) (billed, storedK decimal.Decimal) {
-	if snap := AdtyFrozenPriceSnapshot(c); snap != nil {
+	if snap := AdtyFrozenPriceSnapshot(c); snap != nil && (snap.BillingGroup == "" || snap.BillingGroup == group) {
 		if billed, ok := snap.BilledGroupRatioDecimal(); ok {
 			k, ok := model.ParseSnapshotDecimal(snap.StoredMarkupK)
 			if !ok {
@@ -308,6 +308,9 @@ func adtyApplySiteMarkupOnlyDecimal(c *gin.Context, userId int, group string, gr
 	}
 	marked, storedK, ok := adtySiteOrdinarySellRatioDec(groupRatio, kUsed, d, userId, group)
 	if !ok {
+		if c != nil {
+			c.Set(AdtyTeamPriceBlockedKey, true)
+		}
 		adtyRememberPriceFactors(c, factors)
 		return marked, storedK
 	}
@@ -418,8 +421,11 @@ func adtySiteTeamPayRatioConfigValid(ratio decimal.Decimal) bool {
 	return ratio.IsPositive() && !ratio.GreaterThan(decimal.NewFromInt(1)) && ratio.Equal(ratio.Truncate(4))
 }
 
-// AdtyApplySiteMarkupHook 是 HandleGroupRatio 调用的入口（relay/helper/price.go），测试可以替换。
+// AdtyApplySiteMarkupHook 是兼容保留的浮点入口；财务权威入口为 AdtyApplySiteMarkupDecimalHook。
 var AdtyApplySiteMarkupHook = AdtyApplySiteMarkup
+
+// AdtyApplySiteMarkupDecimalHook 是 HandleGroupRatio 调用的精确十进制入口（relay/helper/price.go）。
+var AdtyApplySiteMarkupDecimalHook = AdtyApplySiteMarkupDecimal
 
 // AdtySiteMarkupFromContext 取同一个请求里记下的 k 和 d；没有时 ok 为 false。
 func AdtySiteMarkupFromContext(c *gin.Context) (k, d float64, ok bool) {
@@ -1001,14 +1007,8 @@ func startAdtySiteMarkupTask() {
 			if _, err := ApplyDueAdtySiteCostFactors(time.Now().Unix()); err != nil {
 				common.SysError(common.LogText("apply site cost factors: %s", err.Error()))
 			}
-			if err := ApplyDueGlobalCostFactor(time.Now().Unix()); err != nil {
-				common.SysError(common.LogText("apply global cost factor: %s", err.Error()))
-			}
 			if _, err := ApplyDueAdtySiteTierCostFactors(time.Now().Unix()); err != nil {
 				common.SysError(common.LogText("apply site tier cost factors: %s", err.Error()))
-			}
-			if err := ApplyDueMinCostFactor(time.Now().Unix()); err != nil {
-				common.SysError(common.LogText("apply minimum cost factor: %s", err.Error()))
 			}
 		}
 	}()

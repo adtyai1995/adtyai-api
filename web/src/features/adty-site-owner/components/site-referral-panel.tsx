@@ -214,23 +214,6 @@ export function SiteReferralPanel() {
               },
             ]}
           />
-          <MarketingFields
-            title={t('Trial credit budget')}
-            description={t(
-              'Set both limits to grant trial credit from your withdrawable referral commission.'
-            )}
-            policy={rules.data}
-            fields={[
-              {
-                key: 'trial_grant_max_usd',
-                label: t('Trial credit per grant (USD)'),
-              },
-              {
-                key: 'trial_grant_daily_usd',
-                label: t('Trial credit per day (USD)'),
-              },
-            ]}
-          />
           <div className='grid gap-3 sm:grid-cols-2'>
             <div className='flex flex-col gap-1'>
               <Label htmlFor='site-inviter'>{t('Inviter')}</Label>

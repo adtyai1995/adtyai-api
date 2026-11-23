@@ -707,7 +707,7 @@ func AdtyHealthWindowStarts(now time.Time) []int64 {
 // SaveAdtyGlossaryTerm stores one source/target pair for a locale.
 func SaveAdtyGlossaryTerm(source, locale, target string) error {
 	source, locale, target = strings.TrimSpace(source), strings.TrimSpace(locale), strings.TrimSpace(target)
-	if source == "" || locale == "" || target == "" {
+	if locale == "" || validateAdtyGlossaryPair(source, target) != nil {
 		return common.NewMessage("Invalid parameters")
 	}
 	row := model.AdtyGlossaryTerm{Source: source, Locale: locale, Target: target}

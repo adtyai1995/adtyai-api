@@ -93,12 +93,17 @@ func creditAdtyTeamTopUpTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopup
 
 // SaveAdtyMainTeamAgreementPrice sets a main-site team discount. Subsite teams are rejected.
 // There is no supply-price floor. The discount must be greater than zero and at most 1.
-func SaveAdtyMainTeamAgreementPrice(teamID int64, raw string) error {
+func SaveAdtyMainTeamAgreementPrice(teamID int64, raw string, actorIDs ...int) error {
 	value, err := decimal.NewFromString(strings.TrimSpace(raw))
 	if teamID <= 0 || err != nil || !adtySiteTeamPayRatioConfigValid(value) {
 		return ErrAdtyTeamInvalid
 	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	actorID := 0
+	if len(actorIDs) > 0 {
+		actorID = actorIDs[0]
+	}
+	var event model.AuditLog
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var team model.AdtyTeam
 		if err := model.AdtyLockForUpdate(tx).First(&team, teamID).Error; err != nil {
 			return err
@@ -106,8 +111,20 @@ func SaveAdtyMainTeamAgreementPrice(teamID int64, raw string) error {
 		if team.SiteId != 0 || team.Status != model.AdtyTeamStatusActive {
 			return ErrAdtyTeamForbidden
 		}
-		return tx.Model(&team).Update("discount", value).Error
+		before := team.Discount.String()
+		if err := tx.Model(&team).Update("discount", value).Error; err != nil {
+			return err
+		}
+		event, err = appendAdtyTeamAuditTx(tx, actorID, 0, "team", strconv.FormatInt(teamID, 10), "adty.team.discount.update",
+			map[string]any{"team_id": teamID, "before": before},
+			map[string]any{"team_id": teamID, "before": before, "after": value.String()})
+		return err
 	})
+	if err != nil {
+		return err
+	}
+	deliverAdtyCommittedAudit(event)
+	return nil
 }
 
 var (
@@ -535,18 +552,31 @@ func ResetAdtyTeamEmployeePassword(leaderId int, teamId int64, memberUserId int,
 		if lookup.RowsAffected == 0 || !member.IndependentEmployee || member.Role == model.AdtyTeamRoleLeader || member.Status == model.AdtyTeamMemberDeleted || member.DeletedAt != 0 {
 			return ErrAdtyTeamForbidden
 		}
-		user, err := lockAdtyTeamUser(tx, memberUserId)
-		if err != nil {
+		// R2-031: Allow resetting password for disabled (non-deleted) independent employees too.
+		var user model.User
+		if err := model.AdtyLockForUpdate(tx).First(&user, memberUserId).Error; err != nil {
 			return err
 		}
 		if user.SiteId != team.SiteId || user.StaffSiteId != 0 || user.Role != common.RoleCommonUser {
 			return ErrAdtyTeamForbidden
 		}
-		if _, err := model.IncrementUserAuthVersionWithTx(tx, memberUserId); err != nil {
+		nextVersion, err := model.IncrementUserAuthVersionWithTx(tx, memberUserId)
+		if err != nil {
 			return err
 		}
-		if err := tx.Model(&model.User{}).Where("id = ?", memberUserId).Update("password", hash).Error; err != nil {
+		if _, err := model.DeleteUserAccessTokensWithTx(tx, memberUserId); err != nil {
 			return err
+		}
+		if err := tx.Model(&model.User{}).Where("id = ?", memberUserId).Updates(map[string]any{
+			"password":     hash,
+			"access_token": "",
+		}).Error; err != nil {
+			return err
+		}
+		if member.Status == model.AdtyTeamMemberDisabled {
+			if err := tx.Model(&member).Update("disabled_auth_version", nextVersion).Error; err != nil {
+				return err
+			}
 		}
 		event, err = appendAdtyTeamAuditTx(tx, leaderId, team.SiteId, "team_member", strconv.Itoa(memberUserId), "adty.team.member.password_reset",
 			map[string]any{"team_id": teamId, "user_id": memberUserId},
@@ -718,7 +748,13 @@ func disableIndependentTeamEmployeeUserTx(tx *gorm.DB, userId int) error {
 	if _, err := model.IncrementUserAuthVersionWithTx(tx, userId); err != nil {
 		return err
 	}
-	if err := tx.Model(&model.User{}).Where("id = ?", userId).Update("status", common.UserStatusDisabled).Error; err != nil {
+	if _, err := model.DeleteUserAccessTokensWithTx(tx, userId); err != nil {
+		return err
+	}
+	if err := tx.Model(&model.User{}).Where("id = ?", userId).Updates(map[string]any{
+		"status":       common.UserStatusDisabled,
+		"access_token": "",
+	}).Error; err != nil {
 		return err
 	}
 	return nil
@@ -750,6 +786,7 @@ func LeaveAdtyTeam(userId int, teamId int64) error {
 	var closedByLeader bool
 	var siteID int
 	var disabledEmployeeIDs []int
+	var keyOwnerIDs []int
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		team, err := lockActiveTeam(tx, teamId)
 		if err != nil {
@@ -758,7 +795,7 @@ func LeaveAdtyTeam(userId int, teamId int64) error {
 		siteID = team.SiteId
 		if team.LeaderUserId == userId {
 			closedByLeader = true
-			disabledEmployeeIDs, err = closeAdtyTeamTx(tx, team)
+			disabledEmployeeIDs, keyOwnerIDs, err = closeAdtyTeamTx(tx, team)
 			return err
 		}
 		var member model.AdtyTeamMember
@@ -797,6 +834,17 @@ func LeaveAdtyTeam(userId int, teamId int64) error {
 		revokeTeamEmployeeSessionsBestEffort(disabledEmployeeIDs, reason)
 	}
 	_ = model.InvalidateUserTokensCache(userId)
+	seen := map[int]struct{}{userId: {}}
+	for _, uid := range keyOwnerIDs {
+		if uid <= 0 {
+			continue
+		}
+		if _, dup := seen[uid]; dup {
+			continue
+		}
+		seen[uid] = struct{}{}
+		_ = model.InvalidateUserTokensCache(uid)
+	}
 	if closedByLeader {
 		writeAdtyTeamAudit(userId, siteID, "team", strconv.FormatInt(teamId, 10), "adty.team.close",
 			map[string]any{"team_id": teamId, "status": model.AdtyTeamStatusActive},
@@ -1229,6 +1277,7 @@ func SpendAdtyTeam(userId int, quota int64, ref string) error {
 func CloseAdtyTeam(leaderId int, teamId int64) error {
 	var siteID int
 	var disabledEmployeeIDs []int
+	var keyOwnerIDs []int
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		team, err := lockActiveTeam(tx, teamId)
 		if err != nil {
@@ -1238,7 +1287,7 @@ func CloseAdtyTeam(leaderId int, teamId int64) error {
 			return ErrAdtyTeamForbidden
 		}
 		siteID = team.SiteId
-		disabledEmployeeIDs, err = closeAdtyTeamTx(tx, team)
+		disabledEmployeeIDs, keyOwnerIDs, err = closeAdtyTeamTx(tx, team)
 		return err
 	})
 	if err != nil {
@@ -1247,37 +1296,51 @@ func CloseAdtyTeam(leaderId int, teamId int64) error {
 	if len(disabledEmployeeIDs) > 0 {
 		revokeTeamEmployeeSessionsBestEffort(disabledEmployeeIDs, "team_closed")
 	}
+	// R2-010: Invalidate cached API tokens for ALL disabled team key owners (including leaderId).
+	invalidateSeen := map[int]struct{}{leaderId: {}}
+	_ = model.InvalidateUserTokensCache(leaderId)
+	for _, uid := range keyOwnerIDs {
+		if uid <= 0 {
+			continue
+		}
+		if _, dup := invalidateSeen[uid]; dup {
+			continue
+		}
+		invalidateSeen[uid] = struct{}{}
+		_ = model.InvalidateUserTokensCache(uid)
+	}
 	writeAdtyTeamAudit(leaderId, siteID, "team", strconv.FormatInt(teamId, 10), "adty.team.close",
 		map[string]any{"team_id": teamId, "status": model.AdtyTeamStatusActive},
 		map[string]any{"team_id": teamId, "status": model.AdtyTeamStatusClosed, "result": model.AuditResultSuccess})
 	return nil
 }
 
-func closeAdtyTeamTx(tx *gorm.DB, team *model.AdtyTeam) ([]int, error) {
+func closeAdtyTeamTx(tx *gorm.DB, team *model.AdtyTeam) ([]int, []int, error) {
 	var members []model.AdtyTeamMember
 	if err := model.AdtyLockForUpdate(tx).Where("team_id = ? AND status = ?", team.Id, model.AdtyTeamMemberActive).Find(&members).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	disabledEmployeeIDs := make([]int, 0)
 	for _, member := range members {
 		if member.IndependentEmployee && member.Role != model.AdtyTeamRoleLeader {
 			if err := disableIndependentTeamEmployeeUserTx(tx, member.UserId); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			disabledEmployeeIDs = append(disabledEmployeeIDs, member.UserId)
 		}
 	}
 	if err := tx.Model(&model.AdtyTeamMember{}).Where("team_id = ? AND status = ?", team.Id, model.AdtyTeamMemberActive).
 		Update("status", model.AdtyTeamMemberLeft).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := disableAdtyTeamKeysTx(tx, team.Id); err != nil {
-		return nil, err
+	keyOwnerIDs, err := disableAdtyTeamKeysTx(tx, team.Id)
+	if err != nil {
+		return nil, nil, err
 	}
 	if err := tx.Model(team).Updates(map[string]any{"status": model.AdtyTeamStatusClosed, "closed_at": time.Now().Unix()}).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return disabledEmployeeIDs, nil
+	return disabledEmployeeIDs, keyOwnerIDs, nil
 }
 
 func lockAdtyTeamUser(tx *gorm.DB, id int) (*model.User, error) {
@@ -1679,7 +1742,7 @@ func InheritAdtyTeamsOnCloseTx(tx *gorm.DB, siteId int) error {
 		if err := tx.Model(&model.AdtyTeamInvite{}).Where("team_id = ? AND used_at = 0 AND revoked_at = 0", team.Id).Update("revoked_at", time.Now().Unix()).Error; err != nil {
 			return err
 		}
-		if err := disableAdtyTeamKeysTx(tx, team.Id); err != nil {
+		if _, err := disableAdtyTeamKeysTx(tx, team.Id); err != nil {
 			return err
 		}
 		updates := map[string]any{"site_id": 0}
@@ -1916,21 +1979,21 @@ func AdtyIndependentTeamEmployeeSet(userIDs []int) (map[int]bool, error) {
 	return res, nil
 }
 
-func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) error {
+func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) ([]int, error) {
 	if !adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) {
-		return nil
+		return nil, nil
 	}
 	var team model.AdtyTeam
 	lookup := model.AdtyLockForUpdate(tx).Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusActive).Limit(1).Find(&team)
 	if lookup.Error != nil {
-		return lookup.Error
+		return nil, lookup.Error
 	}
 	if lookup.RowsAffected == 0 {
-		return nil
+		return nil, nil
 	}
-	disabledIDs, err := closeAdtyTeamTx(tx, &team)
+	disabledIDs, keyOwnerIDs, err := closeAdtyTeamTx(tx, &team)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(disabledIDs) > 0 && adtyTeamTableReadyFor(tx, &model.UserSession{}) {
 		now := time.Now().Unix()
@@ -1941,10 +2004,13 @@ func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) error {
 				"revoked_at":     now,
 				"revoked_reason": "team_closed",
 			}).Error; err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	combined := make([]int, 0, len(disabledIDs)+len(keyOwnerIDs))
+	combined = append(combined, disabledIDs...)
+	combined = append(combined, keyOwnerIDs...)
+	return combined, nil
 }
 
 func disableAdtyTeamMemberKeysTx(tx *gorm.DB, teamId int64, userId int) error {
@@ -1969,26 +2035,31 @@ func disableAdtyTeamMemberKeysTx(tx *gorm.DB, teamId int64, userId int) error {
 	return tx.Model(&model.AdtyTeamKey{}).Where("team_id = ? AND user_id = ?", teamId, userId).Update("status", model.AdtyTeamMemberLeft).Error
 }
 
-func disableAdtyTeamKeysTx(tx *gorm.DB, teamId int64) error {
+func disableAdtyTeamKeysTx(tx *gorm.DB, teamId int64) ([]int, error) {
 	var keys []model.AdtyTeamKey
 	if err := model.AdtyLockForUpdate(tx).Where("team_id = ? AND status = ?", teamId, model.AdtyTeamMemberActive).Find(&keys).Error; err != nil {
-		return err
+		return nil, err
 	}
 	if len(keys) == 0 {
-		return nil
+		return nil, nil
 	}
 	ids := make([]int, 0, len(keys))
+	owners := make([]int, 0, len(keys))
 	for _, key := range keys {
 		ids = append(ids, key.TokenId)
+		owners = append(owners, key.UserId)
 	}
 	var lockedTokens []model.Token
 	if err := model.AdtyLockForUpdate(tx).Select("id").Where("id IN ?", ids).Find(&lockedTokens).Error; err != nil {
-		return err
+		return nil, err
 	}
 	if err := tx.Model(&model.Token{}).Where("id IN ?", ids).Update("status", common.TokenStatusDisabled).Error; err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Model(&model.AdtyTeamKey{}).Where("team_id = ?", teamId).Update("status", model.AdtyTeamMemberLeft).Error
+	if err := tx.Model(&model.AdtyTeamKey{}).Where("team_id = ?", teamId).Update("status", model.AdtyTeamMemberLeft).Error; err != nil {
+		return nil, err
+	}
+	return owners, nil
 }
 
 // joinAdtyTeamTx is closed. Ordinary accounts must not become team members.

@@ -241,13 +241,18 @@ func AdtyRequireCurrentSiteTerms() gin.HandlerFunc {
 }
 
 func adtyPlatformSubdomainAdminAPI(path string) bool {
+	// R2-003: Never block self audit logs on subsites, and use exact platform admin prefixes.
+	if path == "/api/audit/self" {
+		return false
+	}
 	prefixes := []string{
 		"/api/adty/admin", "/api/adty/marketing/admin",
 		"/api/channel", "/api/option", "/api/deployments",
 		"/api/user/admin", "/api/authz", "/api/audit",
-		"/api/performance", "/api/ratio_sync", "/api/task_plugins",
-		"/api/system_task", "/api/system_info", "/api/vendors",
-		"/api/prefill_group", "/api/setup",
+		"/api/performance", "/api/ratio_sync",
+		"/api/plugin/task", "/api/task_plugin_options",
+		"/api/system-task", "/api/system-info", "/api/vendors",
+		"/api/group", "/api/prefill_group", "/api/setup",
 	}
 	for _, prefix := range prefixes {
 		if path == prefix || strings.HasPrefix(path, prefix+"/") {

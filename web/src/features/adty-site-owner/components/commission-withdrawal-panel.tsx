@@ -36,6 +36,7 @@ import {
 } from '@/features/referral/lib/labels'
 import { WithdrawalCancellation } from '@/features/wallet/adty/withdrawal-cancellation'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
+import { formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -183,7 +184,7 @@ function ReviewRow(props: {
         at ? (
           <p key={label}>
             {label} {actor ? `#${actor}` : t('Unknown')} ·{' '}
-            {new Date(Number(at) * 1000).toLocaleString()}
+            {formatTimestamp(Number(at))}
           </p>
         ) : null
       )}

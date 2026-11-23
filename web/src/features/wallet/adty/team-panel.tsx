@@ -741,6 +741,7 @@ export function TeamPanel() {
                               size='sm'
                               disabled={pending}
                               onClick={() => {
+                                setError('')
                                 setResetPassword('')
                                 setResetMember(member)
                               }}
@@ -752,7 +753,10 @@ export function TeamPanel() {
                               variant='outline'
                               size='sm'
                               disabled={pending}
-                              onClick={() => setDeleteEmployee(member)}
+                              onClick={() => {
+                                setError('')
+                                setDeleteEmployee(member)
+                              }}
                             >
                               {t('Delete employee')}
                             </Button>
@@ -956,6 +960,7 @@ export function TeamPanel() {
           if (!open && !pending) {
             setResetMember(null)
             setResetPassword('')
+            setError('')
           }
         }}
         title={t('Reset employee password')}
@@ -1003,22 +1008,32 @@ export function TeamPanel() {
           </>
         }
       >
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='team-employee-reset-password'>
-            {t('New password')}
-          </Label>
-          <PasswordInput
-            id='team-employee-reset-password'
-            autoComplete='new-password'
-            value={resetPassword}
-            onChange={(event) => setResetPassword(event.target.value)}
-          />
+        <div className='flex flex-col gap-2'>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='team-employee-reset-password'>
+              {t('New password')}
+            </Label>
+            <PasswordInput
+              id='team-employee-reset-password'
+              autoComplete='new-password'
+              value={resetPassword}
+              onChange={(event) => setResetPassword(event.target.value)}
+            />
+          </div>
+          {error && (
+            <p role='alert' className='text-destructive text-sm'>
+              {error}
+            </p>
+          )}
         </div>
       </Dialog>
       <ConfirmDialog
         open={deleteEmployee !== null}
         onOpenChange={(open) => {
-          if (!open && !pending) setDeleteEmployee(null)
+          if (!open && !pending) {
+            setDeleteEmployee(null)
+            setError('')
+          }
         }}
         title={t('Delete employee')}
         desc={deleteEmployee?.username || String(deleteEmployee?.user_id ?? '')}
@@ -1038,7 +1053,13 @@ export function TeamPanel() {
             setDeleteEmployee(null)
           })
         }}
-      />
+      >
+        {error && (
+          <p role='alert' className='text-destructive text-sm'>
+            {error}
+          </p>
+        )}
+      </ConfirmDialog>
     </>
   )
 }

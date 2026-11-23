@@ -1801,6 +1801,7 @@ func SyncAdtyTicketEventNotices() (int, error) {
 		return 0, err
 	}
 	recovered := 0
+	var firstErr error
 	for _, id := range ids {
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var row model.AdtyTicketNotice
@@ -1809,6 +1810,12 @@ func SyncAdtyTicketEventNotices() (int, error) {
 				return found.Error
 			}
 			if err := queueAdtyTicketTelegramNoticeTx(tx, row.UserId, row.Purpose, row.Content, row.EventKey, row.CreatedAt); err != nil {
+				// R2-057: Permanent invalid-parameter errors must clear telegram_pending
+				// so one malformed row never head-of-line blocks the entire batch.
+				if errors.Is(err, ErrAdtyTelegramInvalid) {
+					common.SysError(common.LogText("ticket notice %d skipped permanently: %s", row.Id, err.Error()))
+					return tx.Model(&row).Update("telegram_pending", false).Error
+				}
 				return err
 			}
 			if err := tx.Model(&row).Update("telegram_pending", false).Error; err != nil {
@@ -1818,10 +1825,13 @@ func SyncAdtyTicketEventNotices() (int, error) {
 			return nil
 		})
 		if err != nil {
-			return recovered, err
+			common.SysError(common.LogText("sync ticket event notice %d failed (continuing batch): %s", id, err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return recovered, nil
+	return recovered, firstErr
 }
 
 // The site-close transaction freezes recipients while it moves the queue.

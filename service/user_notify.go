@@ -560,12 +560,13 @@ func adtyWatcherNoticeDetail(userID int, key string) (map[string]any, bool) {
 	if userID <= 0 || key == "" || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return nil, false
 	}
+	stripped := strings.TrimPrefix(key, "watcher:")
 	var notice AdtyChannelWatcherNotice
-	res := model.DB.Where("user_id = ? AND (read_key = ? OR event_id = ?)", userID, key, key).Order("id DESC").Limit(1).Find(&notice)
+	res := model.DB.Where("user_id = ? AND (read_key = ? OR read_key = ? OR event_id = ? OR event_id = ?)", userID, key, stripped, key, stripped).Order("id DESC").Limit(1).Find(&notice)
 	if res.Error != nil || res.RowsAffected == 0 || notice.Id == 0 {
 		return nil, false
 	}
-	if adtyIsNotificationKeyHidden(userID, notice.ReadKey) {
+	if adtyIsNotificationKeyHidden(userID, notice.ReadKey) || adtyIsNotificationKeyHidden(userID, "watcher:"+notice.EventId) {
 		return nil, false
 	}
 	if _, err := UpsertAdtySevereTodo(userID, adtyTodoSiteID(userID, nil), notice.ReadKey, notice.Title, notice.Content, notice.Category, 0); err != nil {

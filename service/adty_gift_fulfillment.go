@@ -1014,3 +1014,110 @@ func applySiteGiftSpendForSourceTx(tx *gorm.DB, userID int, tradeNo string, take
 	}
 	return nil
 }
+
+// ListAdtyGiftFulfillments returns gift fulfillment records for Root finance review (R2-039).
+func ListAdtyGiftFulfillments(status string, siteID int, pageInfo *common.PageInfo) ([]model.AdtyGiftFulfillment, int64, error) {
+	if model.DB == nil {
+		return nil, 0, common.NewMessage("Database is unavailable")
+	}
+	if !model.DB.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+		return []model.AdtyGiftFulfillment{}, 0, nil
+	}
+	q := model.DB.Model(&model.AdtyGiftFulfillment{})
+	status = strings.TrimSpace(status)
+	if status != "" && status != "all" {
+		switch status {
+		case model.AdtyGiftFulfillmentPendingReview, model.AdtyGiftFulfillmentPending, model.AdtyGiftFulfillmentFulfilled, model.AdtyGiftFulfillmentCanceled:
+			q = q.Where("status = ?", status)
+		default:
+			return nil, 0, common.NewMessage("Invalid parameters")
+		}
+	}
+	if siteID > 0 {
+		q = q.Where("site_id = ?", siteID)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []model.AdtyGiftFulfillment
+	if pageInfo == nil {
+		pageInfo = &common.PageInfo{Page: 1, PageSize: 20}
+	}
+	if err := q.Order("id DESC").Offset(pageInfo.GetStartIdx()).Limit(pageInfo.PageSize).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
+}
+
+// ReviewAdtyGiftFulfillment resolves a pending_review gift fulfillment record (R2-039).
+// action="approve" transitions pending_review -> pending and immediately attempts fulfillment.
+// action="reject" transitions pending_review -> canceled and syncs adty_topup_orders.
+func ReviewAdtyGiftFulfillment(id int64, action, note string, operatorID int) (*model.AdtyGiftFulfillment, bool, error) {
+	if model.DB == nil || id <= 0 || operatorID <= 0 {
+		return nil, false, common.NewMessage("Invalid parameters")
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	note = strings.TrimSpace(note)
+	if action != "approve" && action != "reject" {
+		return nil, false, common.NewMessage("Invalid parameters")
+	}
+	if action == "reject" && note == "" {
+		return nil, false, common.NewMessage("Please enter a review reason")
+	}
+	var row model.AdtyGiftFulfillment
+	var beforeStatus string
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.NewMessage("Order not found")
+			}
+			return err
+		}
+		if row.Status != model.AdtyGiftFulfillmentPendingReview {
+			return common.NewMessage("Only pending review records can be reviewed")
+		}
+		beforeStatus = row.Status
+		nextStatus := model.AdtyGiftFulfillmentPending
+		nextReason := "approved by root review"
+		if note != "" {
+			nextReason = note
+		}
+		if action == "reject" {
+			nextStatus = model.AdtyGiftFulfillmentCanceled
+		}
+		if err := tx.Model(&row).Updates(map[string]any{
+			"status": nextStatus,
+			"reason": nextReason,
+		}).Error; err != nil {
+			return err
+		}
+		row.Status = nextStatus
+		row.Reason = nextReason
+		if err := tx.Model(&model.AdtyTopupOrder{}).
+			Where("trade_no = ?", row.TradeNo).
+			Update("gift_fulfillment_status", nextStatus).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	fulfilled := false
+	if action == "approve" {
+		done, fErr := fulfillPendingAdtyGiftFulfillment(row.TradeNo)
+		if fErr != nil && !errors.Is(fErr, errGiftGuaranteeShort) && !errors.Is(fErr, ErrAdtySiteWalletInsufficient) {
+			common.SysLog(common.LogText("gift fulfillment: post-approve fulfill %s: %s", row.TradeNo, fErr.Error()))
+		}
+		fulfilled = done
+		var refreshed model.AdtyGiftFulfillment
+		if err := model.DB.First(&refreshed, row.Id).Error; err == nil {
+			row = refreshed
+		}
+	}
+	writeAdtyGiftOfficialAudit(operatorID, row.SiteId, row.TradeNo, "adty.gift.fulfillment.review", note,
+		map[string]any{"id": row.Id, "status": beforeStatus},
+		map[string]any{"id": row.Id, "trade_no": row.TradeNo, "action": action, "status": row.Status, "fulfilled": fulfilled})
+	return &row, fulfilled, nil
+}

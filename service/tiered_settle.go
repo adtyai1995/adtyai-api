@@ -188,17 +188,20 @@ func refreshTieredBillingGroup(relayInfo *relaycommon.RelayInfo) (*billingexpr.B
 	}
 
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
-	if snap.GroupRatio == groupRatio {
+	billedGroupRatio := relayInfo.PriceData.GroupRatioInfo.BilledGroupRatio()
+	billedGroupRatioStr := billedGroupRatio.String()
+	if snap.GroupRatio == groupRatio && snap.GroupRatioDecimal == billedGroupRatioStr {
 		return snap, nil
 	}
 
 	estimatedQuota, err := common.QuotaFromDecimalStrict(
-		decimal.NewFromFloat(snap.EstimatedQuotaBeforeGroup).Mul(relayInfo.PriceData.GroupRatioInfo.BilledGroupRatio()),
+		decimal.NewFromFloat(snap.EstimatedQuotaBeforeGroup).Mul(billedGroupRatio),
 	)
 	if err != nil {
 		return nil, err
 	}
 	snap.GroupRatio = groupRatio
+	snap.GroupRatioDecimal = billedGroupRatioStr
 	snap.EstimatedQuotaAfterGroup = estimatedQuota
 	return snap, nil
 }

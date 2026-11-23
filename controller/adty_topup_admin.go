@@ -580,10 +580,61 @@ func writeAdtyFinanceError(c *gin.Context, err error) {
 	case errors.Is(err, model.ErrTopUpStatusInvalid):
 		common.ApiErrorT(c, "The order status does not allow this operation")
 	case errors.Is(err, model.ErrAdtyIdempotencyConflict):
-		common.ApiErrorT(c, "This request was already used for another operation")
+		common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 	case errors.Is(err, model.ErrAdtyManualRefundTableMissing):
 		common.ApiErrorT(c, "Manual refund records are unavailable")
 	default:
 		common.ApiError(c, err)
 	}
+}
+
+// GetAdtyGiftFulfillments lists site gift fulfillment records for Root review (R2-039).
+func GetAdtyGiftFulfillments(c *gin.Context) {
+	pageInfo := common.GetPageQuery(c)
+	siteID := 0
+	if raw := strings.TrimSpace(c.Query("site_id")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		siteID = v
+	}
+	rows, total, err := service.ListAdtyGiftFulfillments(c.Query("status"), siteID, pageInfo)
+	if err != nil {
+		writeAdtyFinanceError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"items":     rows,
+		"total":     total,
+		"page":      pageInfo.Page,
+		"page_size": pageInfo.PageSize,
+	})
+}
+
+// PostAdtyGiftFulfillmentReview resolves a pending_review gift fulfillment record (R2-039).
+func PostAdtyGiftFulfillmentReview(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var body struct {
+		Action string `json:"action"`
+		Note   string `json:"note"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	row, fulfilled, err := service.ReviewAdtyGiftFulfillment(id, body.Action, body.Note, c.GetInt("id"))
+	if err != nil {
+		writeAdtyFinanceError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"item":      row,
+		"fulfilled": fulfilled,
+	})
 }

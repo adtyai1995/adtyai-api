@@ -63,21 +63,26 @@ func adtyOperatingPrincipalAllocBySiteTx(tx *gorm.DB, userID int, operationKey s
 	if tx == nil || userID <= 0 || operationKey == "" || !tx.Migrator().HasTable(&model.AdtyFundAllocation{}) {
 		return nil, false, nil
 	}
-	allocKeys := []string{operationKey}
-	var ops []model.BillingOperation
-	if tx.Migrator().HasTable(&model.BillingOperation{}) {
+	// R2-014: Always match the exact operation_id first so task upward adjustments
+	// never inherit the root operation's site allocation before their own.
+	var allocs []model.AdtyFundAllocation
+	if err := tx.Select("batch_id", "kind", "source", "held", "settled").
+		Where("user_id = ? AND operation_id = ? AND kind = ? AND source <> ?", userID, operationKey, "principal", "legacy").
+		Order("id ASC").Find(&allocs).Error; err != nil {
+		return nil, false, err
+	}
+	if len(allocs) == 0 && tx.Migrator().HasTable(&model.BillingOperation{}) {
+		var ops []model.BillingOperation
 		if err := tx.Select("operation_key", "earning_root_key").Where("operation_key = ?", operationKey).Limit(1).Find(&ops).Error; err != nil {
 			return nil, false, err
 		}
 		if len(ops) > 0 && ops[0].EarningRootKey != "" && ops[0].EarningRootKey != operationKey {
-			allocKeys = append(allocKeys, ops[0].EarningRootKey)
+			if err := tx.Select("batch_id", "kind", "source", "held", "settled").
+				Where("user_id = ? AND operation_id = ? AND kind = ? AND source <> ?", userID, ops[0].EarningRootKey, "principal", "legacy").
+				Order("id ASC").Find(&allocs).Error; err != nil {
+				return nil, false, err
+			}
 		}
-	}
-	var allocs []model.AdtyFundAllocation
-	if err := tx.Select("batch_id", "kind", "source", "held", "settled").
-		Where("user_id = ? AND operation_id IN ? AND kind = ? AND source <> ?", userID, allocKeys, "principal", "legacy").
-		Order("id ASC").Find(&allocs).Error; err != nil {
-		return nil, false, err
 	}
 	if len(allocs) == 0 {
 		return nil, false, nil
@@ -226,111 +231,40 @@ func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string,
 	return adtyMoveOperatingPrincipalTx(tx, siteID, -principalQuota, "principal_consume", refType, refID, key, false)
 }
 
-func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error {
-	if tx == nil || userID <= 0 || principalQuota <= 0 {
+func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string, bySite map[int]int64) error {
+	if tx == nil || userID <= 0 || len(bySite) == 0 {
 		return nil
 	}
 	refType, err := adtyOperatingRefType(tx, operationKey, "refund")
 	if err != nil {
 		return err
 	}
-	// Prefer exact mirror of previously debited operating wallet ledger rows for this operation.
-	if operationKey != "" && tx.Migrator().HasTable(&model.AdtySiteWalletLedger{}) {
-		refKeys := []string{operationKey}
-		if tx.Migrator().HasTable(&model.BillingOperation{}) {
-			var ops []model.BillingOperation
-			if err := tx.Select("earning_root_key").Where("operation_key = ?", operationKey).Limit(1).Find(&ops).Error; err != nil {
-				return err
-			}
-			if len(ops) > 0 && ops[0].EarningRootKey != "" && ops[0].EarningRootKey != operationKey {
-				refKeys = append(refKeys, ops[0].EarningRootKey)
-			}
-		}
-		var debits []model.AdtySiteWalletLedger
-		if err := tx.Select("site_id", "delta").
-			Where("wallet_type = ? AND type = ? AND ref_id IN ? AND delta < 0", model.AdtySiteWalletOperating, "principal_consume", refKeys).
-			Order("site_id ASC, id ASC").Find(&debits).Error; err != nil {
-			return err
-		}
-		if len(debits) > 0 {
-			bySite := map[int]int64{}
-			for _, d := range debits {
-				if d.SiteId <= 0 {
-					continue
-				}
-				q := d.Delta.Abs().Mul(common.QuotaPerUnitDecimal()).Round(0).IntPart()
-				if q > 0 {
-					bySite[d.SiteId] += q
-				}
-			}
-			siteIDs := make([]int, 0, len(bySite))
-			for sid := range bySite {
-				siteIDs = append(siteIDs, sid)
-			}
-			sort.Ints(siteIDs)
-			remaining := principalQuota
-			for _, sid := range siteIDs {
-				if remaining <= 0 {
-					break
-				}
-				take := min(bySite[sid], remaining)
-				if take <= 0 {
-					continue
-				}
-				key := "operating:refund:" + operationKey
-				if len(siteIDs) > 1 {
-					key = fmt.Sprintf("operating:refund:%s:s%d", operationKey, sid)
-				}
-				if err := adtyMoveOperatingPrincipalTx(tx, sid, take, "principal_refund", refType, operationKey, key, false); err != nil {
-					return err
-				}
-				remaining -= take
-			}
-			return nil
-		}
-	}
-	bySite, found, err := adtyOperatingPrincipalAllocBySiteTx(tx, userID, operationKey, principalQuota)
-	if err != nil {
-		return err
-	}
-	if found {
-		if len(bySite) == 0 {
-			return nil
-		}
-		siteIDs := make([]int, 0, len(bySite))
-		for sid := range bySite {
+	siteIDs := make([]int, 0, len(bySite))
+	for sid, q := range bySite {
+		if sid > 0 && q > 0 {
 			siteIDs = append(siteIDs, sid)
 		}
-		sort.Ints(siteIDs)
-		for _, sid := range siteIDs {
-			q := bySite[sid]
-			if q <= 0 {
-				continue
-			}
-			key := "operating:refund:" + operationKey
+	}
+	if len(siteIDs) == 0 {
+		return nil
+	}
+	sort.Ints(siteIDs)
+	for _, sid := range siteIDs {
+		q := bySite[sid]
+		key := "operating:refund:" + common.GetUUID()
+		refID := key
+		if operationKey != "" {
+			key = "operating:refund:" + operationKey
 			if len(siteIDs) > 1 {
 				key = fmt.Sprintf("operating:refund:%s:s%d", operationKey, sid)
 			}
-			if err := adtyMoveOperatingPrincipalTx(tx, sid, q, "principal_refund", refType, operationKey, key, false); err != nil {
-				return err
-			}
+			refID = operationKey
 		}
-		return nil
+		if err := adtyMoveOperatingPrincipalTx(tx, sid, q, "principal_refund", refType, refID, key, false); err != nil {
+			return err
+		}
 	}
-	siteID, err := adtyResolveOperatingPrincipalSiteIDTx(tx, userID, operationKey)
-	if err != nil {
-		return err
-	}
-	if siteID <= 0 {
-		return nil
-	}
-	key := "operating:refund:" + common.GetUUID()
-	refID := key
-	if operationKey != "" {
-		key = "operating:refund:" + operationKey
-		refID = operationKey
-	}
-	return adtyMoveOperatingPrincipalTx(tx, siteID, principalQuota, "principal_refund", refType, refID, key, false)
+	return nil
 }
 
 func adtyOperatingRefType(tx *gorm.DB, key, fallback string) (string, error) {

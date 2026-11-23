@@ -161,7 +161,7 @@ func PostAdtyTelegramBindStart(c *gin.Context) {
 		purpose = model.AdtyTelegramPurposeAdmin
 	}
 	if !strings.Contains(c.FullPath(), "/site/") && c.Query("purpose") == model.AdtyTelegramPurposeAdmin {
-		if err := service.CheckAdtyPlatformTicketAccess(c.GetInt("id")); err != nil {
+		if err := service.CheckAdtyTelegramAdminAccess(c.GetInt("id")); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -195,7 +195,7 @@ func PostAdtyTelegramBindConfirm(c *gin.Context) {
 		body.Purpose = model.AdtyTelegramPurposeUser
 	}
 	if !strings.Contains(c.FullPath(), "/site/") && body.Purpose == model.AdtyTelegramPurposeAdmin {
-		if err := service.CheckAdtyPlatformTicketAccess(c.GetInt("id")); err != nil {
+		if err := service.CheckAdtyTelegramAdminAccess(c.GetInt("id")); err != nil {
 			common.ApiError(c, err)
 			return
 		}

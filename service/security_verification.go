@@ -368,8 +368,15 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 }
 
 func GetVerificationRequirements(identity AuthIdentity, scope string) (*VerificationRequirements, error) {
+	return GetVerificationRequirementsForSite(identity, scope, 0)
+}
+
+func GetVerificationRequirementsForSite(identity AuthIdentity, scope string, siteID int) (*VerificationRequirements, error) {
 	if scope == VerificationScopeLogin {
 		return nil, ErrProofScope
+	}
+	if siteID > 0 && scope == VerificationScopePasskeyRegister {
+		return nil, ErrVerificationForbidden
 	}
 	state, err := model.GetUserVerificationState(identity.UserID)
 	if err != nil {
@@ -424,6 +431,18 @@ func GetVerificationRequirements(identity AuthIdentity, scope string) (*Verifica
 		return nil, err
 	}
 	requirements := &VerificationRequirements{Scope: scope, Methods: methods, PasswordEncryptionEnabled: common.PasswordLoginEncryptionEnabled}
+	if siteID > 0 {
+		// R2-028: Passkeys are main-site only; never offer passkey step-up on subsites.
+		filtered := make([]VerificationMethodOption, 0, len(methods))
+		for _, opt := range methods {
+			if opt.Method == VerificationMethodPasskey {
+				continue
+			}
+			filtered = append(filtered, opt)
+		}
+		methods = filtered
+		requirements.Methods = methods
+	}
 	for i := range methods {
 		if methods[i].Method == VerificationMethodPassword && !common.PasswordLoginEnabled {
 			switch scope {
@@ -543,6 +562,9 @@ func ConsumeOperationProof(raw string, identity AuthIdentity, operation Verifica
 	if err := ValidateStepUpIdentity(identity); err != nil {
 		return nil, err
 	}
+	if err := requireAccessTokenVerificationScopeForOperation(identity, operation); err != nil {
+		return nil, err
+	}
 	if _, err := RequireVerificationMethod(identity, binding.Scope, claims.Method); err != nil {
 		return nil, err
 	}
@@ -583,6 +605,9 @@ func ValidateFlowAuthorization(identity AuthIdentity, operation VerificationOper
 	if err := ValidateStepUpIdentity(identity); err != nil {
 		return err
 	}
+	if err := requireAccessTokenVerificationScopeForOperation(identity, operation); err != nil {
+		return err
+	}
 	_, err = RequireVerificationMethod(identity, binding.Scope, authorization.Method)
 	return err
 }
@@ -601,8 +626,15 @@ type VerificationInput struct {
 }
 
 func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*SecurityProof, error) {
-	binding, err := BindVerificationOperation(VerificationOperation{Scope: input.Scope, Context: input.Context})
+	op := VerificationOperation{Scope: input.Scope, Context: input.Context}
+	binding, err := BindVerificationOperation(op)
 	if err != nil {
+		return nil, err
+	}
+	if input.SiteID > 0 && (input.Method == VerificationMethodPasskey || input.Scope == VerificationScopePasskeyRegister) {
+		return nil, ErrVerificationForbidden
+	}
+	if err := requireAccessTokenVerificationScopeForOperation(identity, op); err != nil {
 		return nil, err
 	}
 	if _, err := RequireVerificationMethod(identity, input.Scope, input.Method); err != nil {
@@ -624,23 +656,25 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 		if err != nil {
 			return nil, err
 		}
-		// R1-017: Share login password lockout across /api/verify so it cannot be
-		// abused as an unthrottled password brute-force oracle.
-		if common.LoginLocked(user.Username) {
-			return nil, ErrVerificationFailed
+		// R1-017 / R2-007: Share canonical uid:<userID> password lockout across Login,
+		// /api/verify, and ChangeUserPassword so username/email aliases cannot bypass it.
+		uidKey := common.LoginLockUserKey(user.Id)
+		if common.LoginLocked(uidKey) || common.LoginLocked(user.Username) {
+			return nil, ErrVerificationLocked
 		}
 		password := input.Password
 		if common.PasswordLoginEncryptionEnabled {
 			password, err = common.DecryptPassword(input.PasswordEncrypted, input.EncryptionKeyID)
 			if err != nil {
-				_ = common.RecordLoginFailure(user.Username)
+				_ = common.RecordLoginFailure(uidKey)
 				return nil, ErrVerificationFailed
 			}
 		}
 		if password == "" || user.Password == "" || !common.ValidatePasswordAndHash(password, user.Password) {
-			_ = common.RecordLoginFailure(user.Username)
+			_ = common.RecordLoginFailure(uidKey)
 			return nil, ErrVerificationFailed
 		}
+		common.ClearLoginFailures(uidKey)
 		common.ClearLoginFailures(user.Username)
 	case VerificationMethodTwoFA:
 		if input.Scope == VerificationScopeTwoFABackupCodes {

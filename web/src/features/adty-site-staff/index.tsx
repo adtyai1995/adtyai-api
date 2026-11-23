@@ -30,6 +30,7 @@ import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { OwnerCustomer } from '@/features/adty-site-owner/types'
+import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
 import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
@@ -220,7 +221,10 @@ export function StaffWorkspace() {
               {t('Refresh')}
             </Button>
             {grants.includes('tickets.manage') && (
-              <TicketCenter key={self.data.staff.version} scope='staff' />
+              <>
+                <TelegramBindCard purpose='admin' platformSupport />
+                <TicketCenter key={self.data.staff.version} scope='staff' />
+              </>
             )}
             {!canList && !grants.includes('tickets.manage') && (
               <EmptyState

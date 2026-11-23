@@ -183,7 +183,7 @@ func PutAdtyMainTeamAgreementPrice(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveAdtyMainTeamAgreementPrice(id, body.Discount); err != nil {
+	if err := service.SaveAdtyMainTeamAgreementPrice(id, body.Discount, c.GetInt("id")); err != nil {
 		common.ApiError(c, err)
 		return
 	}

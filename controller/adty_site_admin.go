@@ -3,6 +3,7 @@ package controller
 import (
 	"cmp"
 	"errors"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -117,13 +118,16 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 	}
 	views := make([]adtySiteAdminView, 0, len(sites))
 	for _, site := range sites {
-		apiHost := apiHosts[site.Id]
-		if apiHost == "" {
-			if rawAPI := strings.TrimSpace(service.AdtySiteAPIBaseURL(&site)); rawAPI != "" {
-				if parsed, parseErr := url.Parse(rawAPI); parseErr == nil && parsed.Host != "" {
-					apiHost = parsed.Host
-				}
+		// R2-044: Prefer live active API host from AdtySiteAPIBaseURL first,
+		// falling back to pending/failed base_url DB rows only when no live host exists.
+		apiHost := ""
+		if rawAPI := strings.TrimSpace(service.AdtySiteAPIBaseURL(&site)); rawAPI != "" {
+			if parsed, parseErr := url.Parse(rawAPI); parseErr == nil && parsed.Host != "" {
+				apiHost = parsed.Host
 			}
+		}
+		if apiHost == "" {
+			apiHost = apiHosts[site.Id]
 		}
 		view := adtySiteAdminView{AdtySite: site, OwnerUsername: names[site.OwnerUserId], Host: service.AdtySiteDisplayHost(&site),
 			ApiHost: apiHost, Customers: counts[site.Id], AdtySiteMonthTotals: totals[site.Id]}
@@ -853,10 +857,26 @@ func adtyClearedSecretWarnings() []string {
 	}
 	warnings := make([]string, 0, len(cleared))
 	for _, key := range cleared {
-		warnings = append(warnings,
-			"Stored credential "+key+" could not be decrypted and has been cleared: re-enter it. The other credential is unaffected.")
+		// R2-060: Map raw DB option keys to structured warning codes so raw DB
+		// keys never leak into admin UI banners.
+		warnings = append(warnings, "cleared_secret:"+adtyFriendlySecretCode(key))
 	}
 	return warnings
+}
+
+func adtyFriendlySecretCode(key string) string {
+	switch key {
+	case adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyCloudflareTok:
+		return "cloudflare_api_token"
+	case adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyWidgetSecret:
+		return "turnstile_widget_secrets"
+	case adty_setting.ResellerSettingModule + ".aliyun_access_key_id":
+		return "aliyun_access_key_id"
+	case adty_setting.ResellerSettingModule + ".aliyun_access_key_Secret":
+		return "aliyun_access_key_secret"
+	default:
+		return "credential"
+	}
 }
 
 func resellerSettingsSnapshot(db *gorm.DB) (adty_setting.ResellerSetting, map[string]string, error) {
@@ -938,7 +958,13 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 	}
 	for _, key := range []string{"trial_grant_max_usd", "trial_grant_daily_usd"} {
 		if _, present := body[key]; present {
-			common.ApiErrorT(c, "Trial credit budgets are managed by the site owner")
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Trial credit budgets have been retired"))
+			return
+		}
+	}
+	for _, key := range []string{"cost_factor", "min_cost_factor", "cost_factor_tiers", "invite_code_enabled"} {
+		if _, present := body[key]; present {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This legacy reseller setting has been retired"))
 			return
 		}
 	}
@@ -971,7 +997,6 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		delete(body, "expected_versions")
 	}
 	var next adty_setting.ResellerSetting
-	var heldMinIncrease, heldCostIncrease bool
 	values := map[string]string{}
 	options := map[string]string{}
 	// Serialize commit and publication on this node. The database lock also
@@ -1064,17 +1089,6 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		for i := range next.ReservedSubdomains {
 			next.ReservedSubdomains[i] = strings.ToLower(strings.TrimSpace(next.ReservedSubdomains[i]))
 		}
-		nowUnix := time.Now().Unix()
-		if _, changed := values["min_cost_factor"]; changed {
-			heldMinIncrease = adty_setting.HoldMinCostFactorIncrease(&next, &current, nowUnix)
-			if next.MinCostFactor == nil {
-				next.PendingMinCostFactor = nil
-				next.PendingMinCostFactorAt = 0
-			}
-			values["min_cost_factor"] = ""
-			values["pending_min_cost_factor"] = ""
-			values["pending_min_cost_factor_at"] = ""
-		}
 		if err := adty_setting.ValidateResellerPatch(&next, adtyResendConfigured(), values); err != nil {
 			return err
 		}
@@ -1086,16 +1100,6 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 			if !hasTier {
 				return common.NewMessage("Configure at least one enabled site level with a supply discount before turning reseller sites on")
 			}
-		}
-		if _, changed := values["cost_factor"]; changed {
-			heldCostIncrease = adty_setting.HoldGlobalCostFactorIncrease(&next, &current, nowUnix)
-			if next.CostFactor == nil {
-				next.PendingCostFactor = nil
-				next.PendingCostFactorAt = 0
-			}
-			values["pending_cost_factor"] = ""
-			values["pending_cost_factor_at"] = ""
-			values["cost_factor"] = ""
 		}
 		if len(values) > 0 {
 			normalized, _ := config.ConfigToMap(&next)
@@ -1113,12 +1117,6 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
-	}
-	if heldMinIncrease && next.PendingMinCostFactor != nil && *next.PendingMinCostFactor > 0 && next.PendingMinCostFactorAt > 0 {
-		service.NotifySiteOwnersGlobalCostFactorPending(decimal.NewFromFloat(*next.PendingMinCostFactor), next.PendingMinCostFactorAt)
-	}
-	if heldCostIncrease && next.PendingCostFactor != nil && *next.PendingCostFactor > 0 && next.PendingCostFactorAt > 0 {
-		service.NotifySiteOwnersGlobalCostFactorPending(decimal.NewFromFloat(*next.PendingCostFactor), next.PendingCostFactorAt)
 	}
 	service.InvalidateAdtySiteCache()
 	keys := make([]string, 0, len(values))

@@ -25,8 +25,6 @@ func GetAdtyLegal(c *gin.Context) {
 		localized, fallback = texts.PrivacyPolicy, upstream.PrivacyPolicy
 	case "refund-policy":
 		localized = texts.RefundPolicy
-	case "site-agreement":
-		localized = texts.SiteAgreement
 	case "site-customer-terms":
 		localized = texts.SiteCustomerTerms
 	default:

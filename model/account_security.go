@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -18,6 +19,8 @@ var (
 // ChangeUserPassword rechecks the authorized session, password state and current
 // password under the same user lock as the credential update. Only self-profile
 // fields are accepted; a stale snapshot cannot restore roles or account status.
+var ErrPasswordVerificationLocked = errors.New("Too many failed attempts. Please try again later.")
+
 func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPassword bool) error {
 	hash, err := common.HashAccountPassword(update.Password)
 	if err != nil {
@@ -35,21 +38,27 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 			return ErrAccountPasswordState
 		}
 		if !firstPassword {
-			if common.LoginLocked(current.Username) {
-				return common.NewMessage("Too many failed attempts. Please try again later.")
+			uidKey := common.LoginLockUserKey(current.Id)
+			if common.LoginLocked(uidKey) || common.LoginLocked(current.Username) {
+				return ErrPasswordVerificationLocked
 			}
 			if !common.ValidatePasswordAndHash(update.OriginalPassword, current.Password) {
-				_ = common.RecordLoginFailure(current.Username)
+				_ = common.RecordLoginFailure(uidKey)
 				return ErrCurrentPasswordInvalid
 			}
+			common.ClearLoginFailures(uidKey)
 			common.ClearLoginFailures(current.Username)
 		}
 		if current.Password != "" && common.ValidatePasswordAndHash(update.Password, current.Password) {
 			return common.ErrAccountPasswordSame
 		}
 		changes := map[string]any{"password": hash}
-		if update.Username != "" {
-			changes["username"] = update.Username
+		trimmedUsername := strings.TrimSpace(update.Username)
+		if trimmedUsername != "" {
+			if err := EnsureUsernameAvailableWithTx(tx, trimmedUsername, identity.UserID); err != nil {
+				return err
+			}
+			changes["username"] = trimmedUsername
 		}
 		if update.DisplayName != "" {
 			changes["display_name"] = update.DisplayName
@@ -61,6 +70,9 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 			return err
 		}
 		if err := tx.Model(&User{}).Where("id = ?", identity.UserID).Updates(changes).Error; err != nil {
+			if isUsernameUniqueViolation(err) {
+				return ErrUsernameAlreadyTaken
+			}
 			return err
 		}
 		return tx.First(update, identity.UserID).Error

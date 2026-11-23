@@ -1033,7 +1033,7 @@ func (a *TaskAdaptor) ParseBatchResult(pollCtx context.Context, tasks []*model.T
 				info.PluginState = pluginState
 			}
 		}
-		if hasCompletionUsage {
+		if hasCompletionUsage && model.TaskStatus(info.Status) == model.TaskStatusSuccess {
 			usageBody := item.Data
 			if usageBody == nil {
 				usageBody = jsonValue(item)
@@ -1114,7 +1114,7 @@ func (a *TaskAdaptor) ParseTaskResult(pollCtx context.Context, task *model.Task,
 	}
 	// The raw polling response only exists at this boundary. Capture upstream
 	// units here so the host settlement path can consume them from TaskInfo.
-	if a.hasHook(pollCtx, "extractUsageOnComplete") {
+	if a.hasHook(pollCtx, "extractUsageOnComplete") && model.TaskStatus(result.Status) == model.TaskStatusSuccess {
 		facts, hookErr := a.plugin.Engine.Call(pluginruntime.WithFetcher(pollCtx, a.hookFetcher(baseURL, proxy)), "extractUsageOnComplete", ctx, jsonValue(result), input)
 		if hookErr == nil {
 			upstreamModel, _ := ctx["upstreamModel"].(string)

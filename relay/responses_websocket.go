@@ -310,7 +310,19 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				}
 				billingPrepared = true
 			} else {
+				prevGroup := info.UsingGroup
+				if autoGroup := common.GetContextKeyString(c, appconstant.ContextKeyAutoGroup); autoGroup != "" {
+					info.UsingGroup = autoGroup
+				}
 				info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+				if service.AdtyTeamPriceBlocked(c) {
+					return types.NewErrorWithStatusCode(service.ErrAdtyTeamInvalid, types.ErrorCodeModelPriceError, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+				}
+				if info.UsingGroup != prevGroup {
+					if err := helper.RefreshPriceDataForSelectedGroup(c, info); err != nil {
+						return types.NewErrorWithStatusCode(err, types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+					}
+				}
 				if apiErr = service.PrepareTieredBillingForSelectedGroup(c, info); apiErr != nil {
 					return apiErr
 				}

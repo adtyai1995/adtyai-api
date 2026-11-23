@@ -53,6 +53,7 @@ func RecordAdtyBillingHold(userID int, requestID string, shortfall int) error {
 // RecordAdtyBillingHoldTx 在调用方的事务里写一条短差额挂账：差额与扣款必须同生共死，
 // 分开写会出现「款扣了、挂账没落」这种对账再也修不回来的状态。
 // 表不在就返回错误由调用方决定，这里不吞。
+// 同一 request_id 出现累计更高短差额时（如 Realtime WSS 多分片 + 终结欠费）单调更新为最新总额（R2-016）。
 func RecordAdtyBillingHoldTx(tx *gorm.DB, userID int, requestID string, shortfall int) error {
 	if userID <= 0 || shortfall <= 0 {
 		return nil
@@ -64,7 +65,50 @@ func RecordAdtyBillingHoldTx(tx *gorm.DB, userID int, requestID string, shortfal
 		requestID = common.NewRequestId()
 	}
 	row := AdtyBillingHold{UserId: userID, RequestId: requestID, ShortfallQuota: shortfall, Status: AdtyBillingHoldOpen}
-	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "request_id"}}, DoNothing: true}).Create(&row).Error
+	if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "request_id"}}, DoNothing: true}).Create(&row).Error; err != nil {
+		return err
+	}
+	var existing AdtyBillingHold
+	if err := lockForUpdate(tx).Where("request_id = ?", requestID).First(&existing).Error; err != nil {
+		return err
+	}
+	if shortfall > existing.ShortfallQuota {
+		return tx.Model(&existing).Updates(map[string]any{
+			"shortfall_quota": shortfall,
+			"status":          AdtyBillingHoldOpen,
+		}).Error
+	}
+	return nil
+}
+
+// UpsertAdtyBillingHoldForOperationTx aggregates all settled shortfall across a
+// request's operations (root + Realtime direct:* chunks) and atomically upserts
+// the corresponding AdtyBillingHold row inside the settlement transaction (R2-016).
+func UpsertAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation) error {
+	if tx == nil || op == nil || op.UserId <= 0 || op.Shortfall <= 0 {
+		return nil
+	}
+	reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
+	if reqID == "" {
+		reqID = op.OperationKey
+	}
+	totalShortfall := op.Shortfall
+	if tx.Migrator().HasTable(&BillingOperation{}) && reqID != "" {
+		rootKey := "request:" + reqID
+		directPrefix := "direct:" + reqID + ":%"
+		var sum int64
+		if err := tx.Model(&BillingOperation{}).
+			Select("COALESCE(SUM(shortfall), 0)").
+			Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR operation_key LIKE ? OR earning_root_key IN ?)",
+				op.UserId, BillingSettled, reqID, rootKey, directPrefix, []string{reqID, rootKey}).
+			Scan(&sum).Error; err != nil {
+			return err
+		}
+		if int(sum) > totalShortfall {
+			totalShortfall = int(sum)
+		}
+	}
+	return RecordAdtyBillingHoldTx(tx, op.UserId, reqID, totalShortfall)
 }
 
 func billingHoldRequestIDFromOperationKey(opKey string) string {
@@ -164,21 +208,19 @@ func BackfillMissingAdtyBillingHolds(ctx context.Context, limit int) error {
 		Find(&ops).Error; err != nil {
 		return err
 	}
+	seen := map[string]struct{}{}
 	for _, op := range ops {
 		reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
 		if reqID == "" {
 			reqID = op.OperationKey
 		}
-		var count int64
-		if err := DB.WithContext(ctx).Model(&AdtyBillingHold{}).
-			Where("request_id IN ?", []string{reqID, op.OperationKey}).
-			Count(&count).Error; err != nil {
-			return err
-		}
-		if count > 0 {
+		if _, dup := seen[reqID]; dup {
 			continue
 		}
-		if err := RecordAdtyBillingHoldTx(DB.WithContext(ctx), op.UserId, reqID, op.Shortfall); err != nil {
+		seen[reqID] = struct{}{}
+		if err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return UpsertAdtyBillingHoldForOperationTx(tx, &op)
+		}); err != nil {
 			return err
 		}
 	}

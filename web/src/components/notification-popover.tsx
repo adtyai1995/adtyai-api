@@ -64,9 +64,12 @@ interface AnnouncementItem {
   id?: number | string
   type?: string
   content?: string
+  content_en?: string
+  english?: string
   extra?: string
   publishDate?: string | Date
   title?: string
+  title_en?: string
   publisher_name?: string
   kind?: keyof typeof notificationKindLabels
   audience?: keyof typeof notificationAudienceLabels
@@ -169,15 +172,32 @@ function AnnouncementDot({ type }: { type?: string }) {
 }
 
 function AnnouncementDetailButton(props: { readKey: string }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const isEnglish = !(i18n.resolvedLanguage || i18n.language || '')
+    .toLowerCase()
+    .startsWith('zh')
   const [open, setOpen] = useState(false)
   const detail = useQuery({
     queryKey: ['adty-announcement', props.readKey],
     queryFn: () => getAnnouncementDetail(props.readKey),
     enabled: open,
   })
+  const detailTitleEn =
+    typeof detail.data?.title_en === 'string'
+      ? detail.data.title_en.trim()
+      : ''
+  const detailTitleRaw =
+    typeof detail.data?.title === 'string' ? detail.data.title.trim() : ''
+  const detailTitle = (isEnglish && detailTitleEn) || detailTitleRaw || t('Details')
+  let detailContentEn = ''
+  if (typeof detail.data?.content_en === 'string') {
+    detailContentEn = detail.data.content_en.trim()
+  } else if (typeof detail.data?.english === 'string') {
+    detailContentEn = detail.data.english.trim()
+  }
   const content =
-    typeof detail.data?.content === 'string' ? detail.data.content : ''
+    (isEnglish && detailContentEn) ||
+    (typeof detail.data?.content === 'string' ? detail.data.content : '')
   return (
     <>
       <Button
@@ -191,7 +211,7 @@ function AnnouncementDetailButton(props: { readKey: string }) {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t('Details')}</DialogTitle>
+            <DialogTitle>{detailTitle}</DialogTitle>
           </DialogHeader>
           {detail.isPending && <p className='text-sm'>{t('Loading...')}</p>}
           {detail.isError && (
@@ -284,12 +304,14 @@ function AnnouncementsContent({
   announcements,
   loading,
   t,
+  isEnglish,
   onHide,
   hiding,
 }: {
   announcements: AnnouncementItem[]
   loading: boolean
   t: TFunction
+  isEnglish: boolean
   onHide?: (readKey: string) => void
   hiding?: string
 }) {
@@ -324,15 +346,22 @@ function AnnouncementsContent({
             ? formatDateTimeObject(publishDate)
             : ''
 
+          const displayTitle =
+            (isEnglish && item.title_en?.trim()) || item.title
+          const displayContent =
+            (isEnglish && (item.content_en?.trim() || item.english?.trim())) ||
+            item.content ||
+            ''
+
           return (
             <div key={announcementKey}>
               <div className='py-3'>
                 <div className='flex items-start gap-3'>
                   <AnnouncementDot type={item.type} />
                   <div className='flex min-w-0 flex-1 flex-col gap-2'>
-                    {item.title && (
+                    {displayTitle && (
                       <div className='text-sm font-semibold break-words'>
-                        {item.title}
+                        {displayTitle}
                       </div>
                     )}
                     {item.kind && item.audience && (
@@ -346,7 +375,7 @@ function AnnouncementsContent({
                       </div>
                     )}
                     <div className='text-sm'>
-                      <RichContent breaks content={item.content || ''} />
+                      <RichContent breaks content={displayContent} />
                     </div>
 
                     {item.ticket_path &&
@@ -437,7 +466,10 @@ export function NotificationPopover({
   onHideAnnouncement,
   hidingAnnouncement,
 }: NotificationPopoverProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const isEnglish = !(i18n.resolvedLanguage || i18n.language || '')
+    .toLowerCase()
+    .startsWith('zh')
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger
@@ -501,6 +533,7 @@ export function NotificationPopover({
                 announcements={announcements}
                 loading={loading}
                 t={t}
+                isEnglish={isEnglish}
                 onHide={onHideAnnouncement}
                 hiding={hidingAnnouncement}
               />

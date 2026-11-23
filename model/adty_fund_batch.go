@@ -426,7 +426,7 @@ func ExpireAdtyGiftBatches(now time.Time) ([]AdtyGiftExpirationItem, error) {
 		return nil, err
 	}
 	loc := now.Location()
-	if loc == nil || loc == time.Local {
+	if loc == nil || loc == time.Local || loc == time.UTC {
 		loc = AdtyBusinessLocation(DB)
 		now = now.In(loc)
 	}
@@ -584,7 +584,7 @@ func ExpireAdtyGiftBatchesTx(tx *gorm.DB, now time.Time) ([]AdtyGiftExpirationIt
 		return nil, err
 	}
 	loc := now.Location()
-	if loc == nil || loc == time.Local {
+	if loc == nil || loc == time.Local || loc == time.UTC {
 		loc = AdtyBusinessLocation(tx)
 		now = now.In(loc)
 	}
@@ -904,17 +904,27 @@ func ReduceAdtyAdjustmentBatchTx(tx *gorm.DB, userID, siteID int, source, kind s
 		return common.NewMessage("A specific available fund batch is required")
 	}
 	var batch AdtyFundBatch
-	q := lockForUpdate(tx).Where("user_id = ? AND site_id = ? AND source = ?", userID, siteID, source)
-	if kind == AdtyFundBatchKindExpiringBonus {
+	q := lockForUpdate(tx).Where("user_id = ? AND source = ?", userID, source)
+	if siteID == 0 {
+		q = q.Where("(site_id = 0 OR site_id IS NULL)")
+	} else {
+		q = q.Where("site_id = ?", siteID)
+	}
+	switch kind {
+	case AdtyFundBatchKindExpiringBonus:
 		// Expiring gifts are created with kind='bonus' and gift_category='expiring_bonus' (R1-029).
 		q = q.Where("((kind = ? AND gift_category = ?) OR kind = ?)", AdtyFundBatchKindBonus, AdtyGiftCategoryExpiring, AdtyFundBatchKindExpiringBonus)
-	} else {
+	case AdtyFundBatchKindBonus:
+		q = q.Where("kind = ? AND (gift_category IS NULL OR gift_category <> ?)", AdtyFundBatchKindBonus, AdtyGiftCategoryExpiring)
+	default:
 		q = q.Where("kind = ?", kind)
 	}
 	if err := q.First(&batch).Error; err != nil {
 		return err
 	}
-	if batch.Status == AdtyFundBatchStatusExpired || batch.ExpiredAt > 0 || (batch.ExpiresAt != nil && *batch.ExpiresAt <= common.GetTimestamp()) {
+	nowUnix := common.GetTimestamp()
+	if batch.Status == AdtyFundBatchStatusExpired || batch.ExpiredAt > 0 ||
+		(batch.ExpiresAt != nil && *batch.ExpiresAt > 0 && nowUnix >= AdtyGiftExpiryMidnightUnix(*batch.ExpiresAt, AdtyBusinessLocation(tx))) {
 		return ErrAdtyFundBatchShortfall
 	}
 	held, err := outstandingAdtyFundAllocationByBatchTx(tx, userID)

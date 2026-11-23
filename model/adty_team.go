@@ -336,8 +336,9 @@ func ValidateAdtyTeamTopupCreateTx(tx *gorm.DB, ext *AdtyTopupOrder) error {
 	return nil
 }
 
-// AdtyBeforeUserDeleteHook closes a team when its leader is deleted.
-var AdtyBeforeUserDeleteHook func(tx *gorm.DB, userId int) error
+// AdtyBeforeUserDeleteHook closes a team when its leader is deleted and returns
+// the user IDs of any independent team employees disabled during closure (R2-010).
+var AdtyBeforeUserDeleteHook func(tx *gorm.DB, userId int) ([]int, error)
 
 // BackfillAdtyTeamSourceSiteID 为已迁入主站（site_id=0）且 source_site_id 仍为空的历史团队补写来源站（A.16.4 / G.7.2）。
 // 只使用已核销的团队注册链接上独立记下的非零 SiteId 和 TeamId；同一团队若出现多个不同来源则视为不明确，不回填。

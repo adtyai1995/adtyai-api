@@ -56,6 +56,14 @@ var adtyTranslationHTTPClient = func(timeout time.Duration) *http.Client {
 	}
 	client := *base
 	client.Timeout = timeout
+	// R2-026: Disable redirects to prevent SSRF bypass, HTTPS downgrade, and
+	// upstream API key (Authorization / x-api-key) exfiltration; enforce verified TLS.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	if verifiedTransport, err := cloneAdtyVerifiedPaymentTransport(client.Transport); err == nil {
+		client.Transport = verifiedTransport
+	}
 	return &client
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -36,6 +37,10 @@ func GetAdtySiteWithdrawRules(c *gin.Context) {
 func GetAdtyAdminWithdrawRules(c *gin.Context) {
 	view, err := service.LoadAdtySiteWithdrawRules()
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -50,6 +55,10 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 	page, offset, limit := adtyPage(c)
 	rows, total, err := service.PageAdtySiteWithdrawals(site.Id, c.GetInt("id"), c.Query("status"), c.Query("number"), offset, limit)
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -97,6 +106,10 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		IdempotencyKey: c.GetHeader("Idempotency-Key"),
 	})
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -141,6 +154,10 @@ func GetAdtyAdminSiteWithdrawals(c *gin.Context) {
 	page := common.GetPageQuery(c)
 	items, total, err := service.ListAdtySiteWithdrawalsForAdmin(strings.TrimSpace(c.Query("status")), page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -212,6 +229,10 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 		err = service.MarkAdtySiteWithdrawalPaid(id, c.GetInt("id"), body.TxID, body.Proof, body.Attempt)
 	}
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

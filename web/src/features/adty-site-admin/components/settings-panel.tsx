@@ -57,6 +57,109 @@ import {
 import type { ResellerSettingsUpdate } from '../types'
 import { SecretField, SwitchRow, TextField } from './setting-fields'
 
+function resellerFieldLabel(key: string, t: (k: string) => string): string {
+  switch (key) {
+    case 'enabled':
+      return t('Reseller sites')
+    case 'root_domains':
+      return t('Root domains')
+    case 'reserved_subdomains':
+      return t('Reserved subdomains')
+    case 'unknown_host_mode':
+      return t('Unknown host handling')
+    case 'markup_increase_delay_hours':
+      return t('Supply price increase delay (hours, 0 = immediate)')
+    case 'close_notice_days':
+      return t('Close notice days')
+    case 'fingerprint_window_days':
+      return t('Fingerprint window (days)')
+    case 'customer_lookup_per_hour':
+      return t('Customer lookups per hour')
+    case 'max_custom_domains_per_site':
+      return t('Custom domains per site')
+    case 'custom_domain_creates_per_hour':
+      return t('Custom domains added per hour')
+    case 'site_login_only':
+      return t('Site customers sign in only on their site')
+    case 'custom_domain_enabled':
+      return t('Custom domains')
+    case 'sender_domain_enabled':
+      return t('Site owner sender domains')
+    case 'self_use_check_enabled':
+      return t('Check for self-use')
+    case 'migration_check_enabled':
+      return t('Check for main site migration')
+    case 'visibility':
+      return t('What site owners can see by default')
+    case 'domain_automation_enabled':
+      return t('Domain automation')
+    case 'aliyun_domain':
+      return t('Aliyun root domain')
+    case 'domain_mainland_target':
+      return t('Mainland target')
+    case 'aliyun_access_key_id':
+      return t('Aliyun AccessKey ID')
+    case 'aliyun_access_key_Secret':
+      return t('Aliyun AccessKey Secret')
+    case 'cloudflare_apiToken':
+      return t('Cloudflare API token')
+    case 'cloudflare_zone_id':
+      return t('Cloudflare zone ID')
+    case 'cloudflare_account_id':
+      return t('Cloudflare account ID')
+    case 'cname_target':
+      return t('CNAME target')
+    case 'fallback_origin':
+      return t('Fallback origin')
+    case 'turnstile_widgets':
+      return t('Turnstile widgets')
+    case 'turnstile_widget_secret':
+      return t('Turnstile widget secrets')
+    default:
+      return key
+  }
+}
+
+function resellerWarningText(warning: string, t: (k: string) => string): string {
+  switch (warning) {
+    case 'cleared_secret:cloudflare_api_token':
+      return t(
+        'Cloudflare API token could not be decrypted and was cleared; please re-enter it.'
+      )
+    case 'cleared_secret:turnstile_widget_secrets':
+      return t(
+        'Turnstile widget secrets could not be decrypted and were cleared; please re-enter them.'
+      )
+    case 'cleared_secret:aliyun_access_key_id':
+      return t(
+        'Aliyun AccessKey ID could not be decrypted and was cleared; please re-enter it.'
+      )
+    case 'cleared_secret:aliyun_access_key_secret':
+      return t(
+        'Aliyun AccessKey Secret could not be decrypted and was cleared; please re-enter it.'
+      )
+    case 'cleared_secret:credential':
+      return t(
+        'A saved credential could not be decrypted and was cleared; please re-enter it.'
+      )
+    case 'Custom domains are on but Turnstile is not configured (account id or widgets missing): new domains will not be registered for human verification.':
+      return t(
+        'Custom domains are on but Turnstile is not configured (account id or widgets missing): new domains will not be registered for human verification.'
+      )
+    case 'Sender domains are on but the Resend API key is empty: sender domains cannot be verified.':
+      return t(
+        'Sender domains are on but the Resend API key is empty: sender domains cannot be verified.'
+      )
+    default:
+      if (warning.startsWith('cleared_secret:')) {
+        return t(
+          'A saved credential could not be decrypted and was cleared; please re-enter it.'
+        )
+      }
+      return t(warning)
+  }
+}
+
 /**
  * Every adty_reseller_setting key (task 11.9, convention I). Money keys show
  * "Not configured" until set and keep the master switch off; custom and
@@ -235,7 +338,8 @@ export function SettingsPanel(props: {
       {conflicts.length > 0 && (
         <div role='alert'>
           <p>
-            {t('These settings have changed')} · {conflicts.join(', ')}
+            {t('These settings have changed')} ·{' '}
+            {conflicts.map((key) => resellerFieldLabel(key, t)).join(', ')}
           </p>
           {conflicts
             .filter(
@@ -246,7 +350,7 @@ export function SettingsPanel(props: {
             )
             .map((key) => (
               <p key={key}>
-                {key} · {t('Current value')}{' '}
+                {resellerFieldLabel(key, t)} · {t('Current value')}{' '}
                 {JSON.stringify(saved[key as keyof typeof saved])}
               </p>
             ))}
@@ -275,7 +379,7 @@ export function SettingsPanel(props: {
       )}
       {(saved.settings_warnings ?? []).map((warning) => (
         <p key={warning} role='status' className='text-warning text-sm'>
-          {t(warning)}
+          {resellerWarningText(warning, t)}
         </p>
       ))}
       {props.section === 'supply' && (

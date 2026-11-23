@@ -200,7 +200,7 @@ export function WithdrawalPanel({
         </p>
         <p className='text-muted-foreground text-sm'>
           {t(
-            'Customer invite commission withdrawals are reviewed on the Customers tab.'
+            'Customer invite commission withdrawals are reviewed on the Invite commission withdrawal tab.'
           )}
         </p>
         <p className='text-muted-foreground text-sm'>

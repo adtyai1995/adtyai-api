@@ -329,7 +329,7 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 			}
 			var marginBooked decimal.Decimal
 			if err := model.DB.Model(&model.AdtySiteWalletLedger{}).
-				Where("site_id = ? AND wallet_type = ? AND ref_type = ? AND ref_id = ? AND delta > 0",
+				Where("site_id = ? AND wallet_kind = ? AND ref_type = ? AND ref_id = ? AND delta > 0",
 					siteID, model.AdtySiteWalletMargin, "topup", row.TradeNo).
 				Select("COALESCE(SUM(delta), 0)").Scan(&marginBooked).Error; err != nil {
 				return nil, err
@@ -990,7 +990,11 @@ func refundOccupancyMismatch(siteID int, ext *model.AdtyTopupOrder, rows []model
 			}
 		}
 	}
-	occupied := completed + held + unknown
+	extOffset, _ := model.AdtyExternalRefundOffsetTx(model.DB, ext)
+	if extOffset < 0 {
+		extOffset = 0
+	}
+	occupied := completed + held + unknown + extOffset
 	face := ext.FaceQuota()
 	if occupied <= face {
 		return adtyFundAnomalyItem{}, false
@@ -1005,8 +1009,8 @@ func refundOccupancyMismatch(siteID int, ext *model.AdtyTopupOrder, rows []model
 		Difference: decimal.NewFromInt(gap).Div(common.QuotaPerUnitDecimal()).String(),
 		Evidence: mustAnomalyEvidence(map[string]any{
 			"face_quota": face, "completed_s": completed, "in_progress_h": held,
-			"unknown_u": unknown, "occupied": occupied,
-			"reason": "refunded, occupied, or unknown amounts exceed the authorized remaining principal",
+			"unknown_u": unknown, "external_offset_x": extOffset, "occupied": occupied,
+			"reason": "refunded, occupied, unknown, or external offset amounts exceed the authorized remaining principal",
 		}),
 	}, true
 }

@@ -343,9 +343,28 @@ func AdtyStaffCustomerOperation(action string, target int) VerificationOperation
 	return VerificationOperation{Scope: VerificationScopeAdtyStaffCustomerManage, Context: payload}
 }
 
+func adtySiteOwnerActionAccessTokenScope(ctx AdtySiteOwnerContext) string {
+	switch ctx.Action {
+	case AdtySiteOwnerActionCustomerBalance:
+		return AccessTokenResourceSiteOwnerCustomer + ":write"
+	case AdtySiteOwnerActionPricing:
+		if ctx.Target > 0 {
+			return AccessTokenResourceSiteOwnerCustomer + ":write"
+		}
+		return AccessTokenResourceSiteOwnerSetting + ":write"
+	case AdtySiteOwnerActionBonus, AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel:
+		return AccessTokenResourceSiteOwnerOrder + ":write"
+	case AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionTeamBalance:
+		return AccessTokenResourceSiteOwnerSetting + ":write"
+	default:
+		// staff.* and staff.balance_review require a browser session, never a PAT (R2-004).
+		return ""
+	}
+}
+
 func init() {
-	// R1-016: Site owner step-up proofs require dedicated site_owner_*:write scopes,
-	// never personal wallet:write.
+	// R1-016 / R2-004: Site owner step-up proofs require dedicated site_owner_*:write scopes,
+	// resolved per action/target during verification and consumption.
 	accessTokenVerificationScopes[VerificationScopeAdtySiteOwnerManage] = AccessTokenResourceSiteOwnerSetting + ":write"
 	// Staff customer security actions require a browser session, never a PAT.
 	accessTokenVerificationScopes[VerificationScopeAdtyStaffCustomerManage] = ""

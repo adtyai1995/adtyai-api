@@ -48,6 +48,7 @@ import {
   SecureVerificationDialog,
   useSecureVerification,
 } from '@/features/auth/secure-verification'
+import { useStatus } from '@/hooks/use-status'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestampRelative } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -58,6 +59,8 @@ interface PasskeyCardProps {
 }
 
 export function PasskeyCard({ loading: pageLoading }: PasskeyCardProps) {
+  const { status: systemStatus } = useStatus()
+  const passkeyLoginAllowed = systemStatus?.passkey_login !== false
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -204,7 +207,7 @@ export function PasskeyCard({ loading: pageLoading }: PasskeyCardProps) {
                 </div>
               </div>
 
-              {!enabled && (
+              {!enabled && passkeyLoginAllowed && (
                 <Button
                   variant='brand'
                   className='w-full sm:w-auto xl:w-full 2xl:w-auto'
@@ -216,6 +219,11 @@ export function PasskeyCard({ loading: pageLoading }: PasskeyCardProps) {
                   )}
                   {t('Enable Passkey')}
                 </Button>
+              )}
+              {!enabled && !passkeyLoginAllowed && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('Passkey is only available on the main site')}
+                </p>
               )}
             </div>
 

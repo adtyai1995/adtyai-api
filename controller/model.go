@@ -248,7 +248,11 @@ func ListModels(c *gin.Context, modelType int) {
 			tokenModelLimit = map[string]bool{}
 		}
 	}
-	models := service.GetGroupsEnabledModels(ownerGroups)
+	siteID := service.AdtyRequestSiteID(c)
+	if siteID == 0 {
+		siteID = common.GetContextKeyInt(c, constant.ContextKeyUserSiteId)
+	}
+	models := service.GetSiteAllowedGroupModels(siteID, ownerGroups)
 	for _, modelName := range models {
 		if modelLimitEnable {
 			matchingName := ratio_setting.RoutingMatchModelName(modelName)
@@ -374,7 +378,11 @@ func requesterCanSeeModel(c *gin.Context, modelName string) (bool, error) {
 			tokenModelLimit = map[string]bool{}
 		}
 	}
-	for _, name := range service.GetGroupsEnabledModels(groups.ownerGroups) {
+	siteID := service.AdtyRequestSiteID(c)
+	if siteID == 0 {
+		siteID = common.GetContextKeyInt(c, constant.ContextKeyUserSiteId)
+	}
+	for _, name := range service.GetSiteAllowedGroupModels(siteID, groups.ownerGroups) {
 		if name != modelName {
 			continue
 		}

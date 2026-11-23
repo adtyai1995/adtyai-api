@@ -237,7 +237,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	}
 	// Personal withdrawals and transfers may use only this owner's share
 	// of a historical site's earnings. The wallet lock serializes every hold.
-	if kind == model.AdtySiteWalletEarnings && (change.Type == "earning_withdraw_freeze" || change.Type == ownerTransfer || change.Type == "earning_to_margin" || change.Type == "voucher_freeze" || change.Type == "owner_customer_balance" || change.Type == "owner_team_balance" || change.Type == "staff_balance") {
+	if kind == model.AdtySiteWalletEarnings && (change.Type == "earning_withdraw_freeze" || change.Type == ownerTransfer || change.Type == "earning_to_margin" || change.Type == "voucher_freeze" || change.Type == "owner_customer_balance" || change.Type == "owner_team_balance" || change.Type == "staff_balance" || change.Type == "financial_adjustment") {
 		ownerID := change.OperatorID
 		if ownerID == 0 {
 			var err error

@@ -17,6 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useLocation } from '@tanstack/react-router'
+import { useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { CommandMenu } from '@/components/command-menu'
 import { AnimatedOutlet } from '@/components/page-transition'
@@ -25,6 +27,12 @@ import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { LayoutProvider } from '@/context/layout-provider'
 import { SearchProvider } from '@/context/search-provider'
 import { CustomerTermsGate } from '@/features/adty-site/customer-terms-gate'
+import {
+  SecureVerificationDialog,
+  useSecureVerification,
+} from '@/features/auth/secure-verification'
+import { setApiKeySecurityProofRequester } from '@/features/tokens/key-reveal-proof'
+import { useStatus } from '@/hooks/use-status'
 import { getCookie } from '@/lib/cookies'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
@@ -38,12 +46,42 @@ type AuthenticatedLayoutProps = {
 }
 
 export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
-  const defaultOpen = getCookie('sidebar_state') !== 'false'
+  const { t } = useTranslation()
+  const { status } = useStatus()
+  const sidebarCookie = getCookie('sidebar_state')
+  const defaultOpen =
+    sidebarCookie !== undefined
+      ? sidebarCookie !== 'false'
+      : !status?.default_collapse_sidebar
   const pathname = useLocation({ select: (location) => location.pathname })
   // Nested workspaces (System settings) carry longer section names, so their
   // drill-in navigation gets a wider rail (design system §3: 240px).
   const wideSidebar = resolveSidebarView(pathname) !== null
   const signedIn = useAuthStore((s) => !!s.auth.user)
+  const { requestVerification, dialogProps } = useSecureVerification()
+
+  // R2-011: Register global single-use api_key.read step-up requester so Quick Start,
+  // Overview, and Chat key reveals consistently prompt SecureVerificationDialog.
+  useEffect(() => {
+    if (!signedIn) {
+      setApiKeySecurityProofRequester(null)
+      return
+    }
+    setApiKeySecurityProofRequester(async ({ scope }) => {
+      const proof = await requestVerification({
+        scope,
+        title: t('Verify your identity'),
+        description: t(
+          'Viewing or copying a full API key requires security verification.'
+        ),
+      })
+      return proof?.proof_token ?? null
+    })
+    return () => {
+      setApiKeySecurityProofRequester(null)
+    }
+  }, [signedIn, requestVerification, t])
+
   // Unmount pages on sign-out, otherwise their queries refetch and toast "Session expired!" / "invalid access token"
   if (!signedIn) return null
 
@@ -79,6 +117,7 @@ export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
           </div>
         </SidebarProvider>
         <CommandMenu />
+        <SecureVerificationDialog {...dialogProps} />
       </SearchProvider>
     </LayoutProvider>
   )

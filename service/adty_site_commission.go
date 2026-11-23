@@ -700,7 +700,7 @@ func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommiss
 	if err := model.AdtyLockForUpdate(tx).First(&user, row.InviterId).Error; err != nil {
 		return decimal.Zero, err
 	}
-	found, err := reclaimConvertedCommissionFundBatchesTx(tx, row, int64(quota))
+	found, siteFound, err := reclaimConvertedCommissionFundBatchesTx(tx, row, int64(quota))
 	if err != nil {
 		return decimal.Zero, err
 	}
@@ -726,16 +726,19 @@ func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommiss
 		}); err != nil {
 			return decimal.Zero, err
 		}
-		// R1-008: Reclaimed converted commission principal must symmetrically debit
-		// the site's operating wallet and return the recovered funds to the original
-		// funding wallet(s) (earnings/margin) in the same transaction.
+		// R2-022 & R2-024: Return recovered funds to funding wallets (earnings/margin)
+		// BEFORE debiting operating (canonical wallet lock order), and only debit
+		// operating for batches actually belonging to row.SiteId (never site_id=0
+		// batches converted after site close).
 		if row.SiteId > 0 {
-			if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, -debited, "principal_clawback", "site_invite", row.TradeNo, "operating:"+key, false); err != nil {
-				return decimal.Zero, err
-			}
 			debitedUSD := decimal.NewFromInt(debited).Div(common.QuotaPerUnitDecimal())
 			if err := refundClawedSiteCommissionToFundingWalletsTx(tx, row, debitedUSD, clawedAfter); err != nil {
 				return decimal.Zero, err
+			}
+			if siteFound > 0 {
+				if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, -siteFound, "principal_clawback", "site_invite", row.TradeNo, "operating:"+key, false); err != nil {
+					return decimal.Zero, err
+				}
 			}
 		}
 	}
@@ -801,41 +804,52 @@ func refundClawedSiteCommissionToFundingWalletsTx(tx *gorm.DB, row *model.AdtySi
 	return nil
 }
 
-func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, wanted int64) (int64, error) {
-	var sources []string
-	if err := tx.Model(&model.AdtyFundBatch{}).Where("user_id = ? AND (source LIKE ? OR source LIKE ?)", row.InviterId, fmt.Sprintf("site-comm-cvt:%d:%%", row.Id), fmt.Sprintf("site-comm-wd:%d:%%", row.Id)).Order("id").Pluck("source", &sources).Error; err != nil {
-		return 0, err
+func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, wanted int64) (total int64, siteTotal int64, err error) {
+	var batches []model.AdtyFundBatch
+	if err := tx.Select("id", "source", "site_id").
+		Where("user_id = ? AND (source LIKE ? OR source LIKE ?)", row.InviterId, fmt.Sprintf("site-comm-cvt:%d:%%", row.Id), fmt.Sprintf("site-comm-wd:%d:%%", row.Id)).
+		Order("id").Find(&batches).Error; err != nil {
+		return 0, 0, err
 	}
+	seen := map[string]struct{}{}
 	left := wanted
-	for _, source := range sources {
-		got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, row.InviterId, source, left, 0)
+	for _, b := range batches {
+		if _, ok := seen[b.Source]; ok {
+			continue
+		}
+		seen[b.Source] = struct{}{}
+		got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, row.InviterId, b.Source, left, 0)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		left -= got
+		total += got
+		if row.SiteId > 0 && b.SiteId != nil && *b.SiteId == row.SiteId {
+			siteTotal += got
+		}
 		if left == 0 {
-			return wanted, nil
+			return total, siteTotal, nil
 		}
 	}
 	// Older balance transfers shared a lot across several commissions. Preserve
 	// any remaining quota that could belong to another commission.
 	var items []model.AdtySiteInviteWithdrawalItem
 	if err := tx.Where("commission_id = ? AND status = ?", row.Id, model.AdtySiteInviteWithdrawItemPaid).Find(&items).Error; err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	for _, item := range items {
 		source := fmt.Sprintf("site-invite-wd:%d", item.WithdrawalId)
 		var lot model.AdtyFundBatch
 		res := tx.Where("user_id = ? AND source = ? AND kind = ?", row.InviterId, source, model.AdtyFundBatchKindPrincipal).Limit(1).Find(&lot)
 		if res.Error != nil {
-			return 0, res.Error
+			return 0, 0, res.Error
 		}
 		if res.RowsAffected == 0 {
 			continue
 		}
 		own, err := common.WalletQuotaFromDecimalStrict(item.AmountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		provable := lot.Remaining - max(lot.Original-int64(own), 0)
 		if provable <= 0 {
@@ -843,14 +857,33 @@ func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInv
 		}
 		got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, row.InviterId, source, min(provable, left), 0)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		left -= got
+		total += got
+		if row.SiteId > 0 && lot.SiteId != nil && *lot.SiteId == row.SiteId {
+			siteTotal += got
+		}
 		if left == 0 {
 			break
 		}
 	}
-	return wanted - left, nil
+	return total, siteTotal, nil
+}
+
+func adtySiteIsClosedTx(tx *gorm.DB, siteID int) (bool, error) {
+	if tx == nil || siteID <= 0 {
+		return true, nil
+	}
+	var site model.AdtySite
+	res := tx.Select("id", "status").Where("id = ?", siteID).Limit(1).Find(&site)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return true, nil
+	}
+	return site.Status == model.AdtySiteStatusClosed, nil
 }
 
 // consumeSiteCommissionHoldTx settles a frozen hold. release returns it to the
@@ -989,12 +1022,21 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 		}); err != nil {
 			return err
 		}
-		// 转化到余额的批次记在佣金行所属站（row.SiteId），同时向该站 operating 钱包入账等额本金背书（R1-008）。
-		if err := model.CreateAdtyFundBatchesWithSiteTx(tx, inviterID, model.AdtyFundBatchSiteID(row.SiteId), ref, int64(quota), 0); err != nil {
+		// R2-024: Closed sites migrated their customers to site_id=0; tag converted batches
+		// to site_id=0 and never credit a closed site's operating wallet.
+		siteClosed, err := adtySiteIsClosedTx(tx, row.SiteId)
+		if err != nil {
 			return err
 		}
-		if row.SiteId > 0 {
-			if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, int64(quota), "principal_credit", "site_invite", row.TradeNo, "operating:"+ref, false); err != nil {
+		batchSiteID := row.SiteId
+		if siteClosed {
+			batchSiteID = 0
+		}
+		if err := model.CreateAdtyFundBatchesWithSiteTx(tx, inviterID, model.AdtyFundBatchSiteID(batchSiteID), ref, int64(quota), 0); err != nil {
+			return err
+		}
+		if batchSiteID > 0 {
+			if err := adtyMoveOperatingPrincipalTx(tx, batchSiteID, int64(quota), "principal_credit", "site_invite", row.TradeNo, "operating:"+ref, false); err != nil {
 				return err
 			}
 		}

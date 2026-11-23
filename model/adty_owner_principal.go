@@ -44,6 +44,43 @@ func reverseOwnerPrincipalTx(tx *gorm.DB, op *BillingOperation, amount int64) er
 	return reverseSettledAdtyFundSourcesTx(tx, op.UserId, keys, op.OperationKey, amount)
 }
 
+// reversePersonalStreamAllocationsTx reverses already-settled shares from a personal
+// request's Realtime WSS child stream operations (direct:*) and root operation when
+// final settlement returns quota below StreamWalletQuota (R2-002).
+func reversePersonalStreamAllocationsTx(tx *gorm.DB, op *BillingOperation, amount int64) error {
+	if tx == nil || op == nil || amount <= 0 {
+		return nil
+	}
+	root := op.EarningRootKey
+	if root == "" {
+		root = op.OperationKey
+	}
+	var sources []BillingOperation
+	if err := tx.Select("operation_key").
+		Where("user_id = ? AND (operation_key = ? OR earning_root_key = ?)", op.UserId, root, root).
+		Order("created_at DESC, operation_key DESC").
+		Find(&sources).Error; err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(sources)+1)
+	seen := map[string]struct{}{}
+	for _, s := range sources {
+		if s.OperationKey != "" {
+			if _, ok := seen[s.OperationKey]; !ok {
+				seen[s.OperationKey] = struct{}{}
+				keys = append(keys, s.OperationKey)
+			}
+		}
+	}
+	if _, ok := seen[root]; !ok && root != "" {
+		keys = append(keys, root)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return reverseSettledAdtyFundSourcesTx(tx, op.UserId, keys, op.OperationKey, amount)
+}
+
 func eligibleFundLots(tx *gorm.DB, userID int) *gorm.DB {
 	q := tx.Where("user_id = ?", userID)
 	id, ok := tx.Statement.Context.Value(ownerLotScopeKey{}).(int)

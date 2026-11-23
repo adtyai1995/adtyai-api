@@ -87,6 +87,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     (customAmount === '' ? 0 : Number(customAmount))
   const validAmount =
     Number.isFinite(amount) &&
+    Number.isInteger(amount) &&
     (fixedAmount !== undefined ? amount > 0 : amount >= minTopup) &&
     amount >= Number(scene?.min_usd ?? 0) &&
     (Number(scene?.max_usd ?? 0) <= 0 || amount <= Number(scene?.max_usd))
@@ -266,9 +267,9 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
             <Input
               id={`${sceneSelectId}-amount`}
               type='number'
-              inputMode='decimal'
+              inputMode='numeric'
               min={minTopup}
-              step='0.01'
+              step='1'
               value={fixedAmount ?? customAmount}
               disabled={fixedAmount !== undefined}
               placeholder={t('At least ${{amount}}', { amount: minTopup })}

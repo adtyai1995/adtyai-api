@@ -120,12 +120,6 @@ export function CCSwitchDialog(props: Props) {
     }
     const tenant = subsiteDocument()
     if (tenant) return normalizeBaseUrl(tenant.api)
-    if (status?.server_address === '' || status?.data?.server_address === '') {
-      return ''
-    }
-    if (typeof window !== 'undefined') {
-      return normalizeBaseUrl(window.location.origin)
-    }
     return ''
   }, [props.endpoint, apiBaseUrl, status])
 

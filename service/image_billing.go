@@ -54,7 +54,7 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		if trace.BillingUnit != billingexpr.BillingUnitRequest && snap.PreConsumeMultiplier != 0 {
 			beforeGroupDec = beforeGroupDec.Mul(decimal.NewFromFloat(snap.PreConsumeMultiplier))
 		}
-		groupRatioDec := decimal.NewFromFloat(info.PriceData.GroupRatioInfo.GroupRatio)
+		groupRatioDec := info.PriceData.GroupRatioInfo.BilledGroupRatio()
 		quota, err = common.QuotaFromDecimalStrict(beforeGroupDec.Mul(groupRatioDec))
 		if err == nil {
 			snap.EstimatedImageCount = trace.ImageCount
@@ -76,12 +76,9 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		info.PriceData.AddOtherRatio("n", float64(quantity))
 		baseDec := decimal.NewFromFloat(info.ImageQuotaBeforeGroup)
 		if info.PriceData.UsePrice {
-			baseDec = decimal.NewFromFloat(info.PriceData.ModelPrice).Mul(common.QuotaPerUnitDecimal())
+			baseDec = info.PriceData.BilledModelPrice().Mul(common.QuotaPerUnitDecimal())
 		}
-		totalDec := baseDec.Mul(decimal.NewFromFloat(info.PriceData.GroupRatioInfo.GroupRatio))
-		for _, r := range info.PriceData.OtherRatios() {
-			totalDec = totalDec.Mul(decimal.NewFromFloat(r))
-		}
+		totalDec := info.PriceData.ApplyOtherRatiosToDecimal(baseDec.Mul(info.PriceData.GroupRatioInfo.BilledGroupRatio()))
 		quota, err = common.QuotaFromDecimalStrict(totalDec)
 	}
 	if err != nil {

@@ -188,7 +188,7 @@ func buildRealtimeTieredParams(relayInfo *relaycommon.RelayInfo, usage *dto.Real
 }
 
 func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage) error {
-	if relayInfo.UsePrice {
+	if relayInfo.PriceData.UsePrice {
 		return nil
 	}
 	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
@@ -247,7 +247,7 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 				AudioTokens: audioOutTokens,
 			},
 			ModelName:  modelName,
-			UsePrice:   relayInfo.UsePrice,
+			UsePrice:   relayInfo.PriceData.UsePrice,
 			ModelRatio: modelRatio,
 			GroupRatio: actualGroupRatio,
 		}
@@ -442,7 +442,10 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
-	logModel := modelName
+	logModel := relayInfo.OriginModelName
+	if logModel == "" {
+		logModel = modelName
+	}
 	logContent = append(logContent, extraContent...)
 	other := GenerateWssOtherInfo(ctx, relayInfo, usage, modelRatio, groupRatio,
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)

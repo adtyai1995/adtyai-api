@@ -65,6 +65,34 @@ function staffRequestStatusLabel(
   return t('Rejected')
 }
 
+function staffBatchKindLabel(kind: string, t: (key: string) => string) {
+  switch (kind) {
+    case 'principal':
+      return t('Principal')
+    case 'bonus':
+      return t('Bonus')
+    case 'expiring_bonus':
+      return t('Expiring bonus')
+    default:
+      return kind
+  }
+}
+
+function staffBatchSourceLabel(source: string, t: (key: string) => string) {
+  switch (source) {
+    case 'principal_batch':
+      return t('Principal batch')
+    case 'bonus_batch':
+      return t('Bonus batch')
+    case 'fifo_batches':
+      return t('FIFO batches')
+    case 'legacy':
+      return t('Legacy balance')
+    default:
+      return source
+  }
+}
+
 export function StaffPanel(props: { siteId: number; closing?: boolean }) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
@@ -321,8 +349,11 @@ export function StaffPanel(props: { siteId: number; closing?: boolean }) {
                     </div>
                     {row.batch_source && (
                       <div>
-                        {t('Batch source')}: {row.batch_source} /{' '}
-                        {row.batch_kind}
+                        {t('Batch source')}:{' '}
+                        {staffBatchSourceLabel(row.batch_source, t)}
+                        {row.batch_kind
+                          ? ` / ${staffBatchKindLabel(row.batch_kind, t)}`
+                          : ''}
                       </div>
                     )}
                     {row.ledger_id ? (

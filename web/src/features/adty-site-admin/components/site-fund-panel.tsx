@@ -232,6 +232,9 @@ export function SiteFundPanel(props: { siteId: number }) {
               {Number(wallet.frozen_usd) > 0
                 ? ` · ${t('Frozen')} ${wallet.frozen_usd}`
                 : ''}
+              {Number(wallet.excess_frozen_usd) > 0
+                ? ` · ${t('Excess frozen')} ${wallet.excess_frozen_usd}`
+                : ''}
               {wallet.kind === 'margin' && wallet.cycle_tier_usd
                 ? ` · ${wallet.cycle_used_usd}/${wallet.cycle_tier_usd}`
                 : ''}
@@ -371,30 +374,32 @@ export function SiteFundPanel(props: { siteId: number }) {
             )}
           </p>
           <div className='flex flex-wrap gap-2'>
-            {reconciled.status !== 'cancelled' && reconciled.id > 0 ? (
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                disabled={cancelReconciled.isPending}
-                onClick={() => cancelReconciled.mutate(reconciled.id)}
-              >
-                {t('Cancel code and replace')}
-              </Button>
-            ) : (
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                onClick={() => {
-                  setReconciled(null)
-                  resetVoucherIssuanceIntent(intentKey)
-                  setIntentKey(createVoucherIssuanceIntentKey())
-                }}
-              >
-                {t('Prepare replacement code')}
-              </Button>
-            )}
+            {reconciled.id > 0 &&
+              (!reconciled.status ||
+                reconciled.status === 'pending' ||
+                reconciled.status === 'frozen') && (
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={cancelReconciled.isPending}
+                  onClick={() => cancelReconciled.mutate(reconciled.id)}
+                >
+                  {t('Cancel code and replace')}
+                </Button>
+              )}
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                setReconciled(null)
+                resetVoucherIssuanceIntent(intentKey)
+                setIntentKey(createVoucherIssuanceIntentKey())
+              }}
+            >
+              {t('Prepare replacement code')}
+            </Button>
           </div>
         </div>
       )}

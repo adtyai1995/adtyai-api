@@ -11,6 +11,39 @@ import (
 
 const groupModelAllowOption = "GroupModelAllow"
 
+// GetSiteAllowedGroupModels returns enabled models callable across the given
+// groups for siteID, enforcing SiteGroupAllowed, GroupModelAllowed, and
+// CatalogModelCallable (R2-009).
+func GetSiteAllowedGroupModels(siteID int, groups []string) []string {
+	seenGroup := make(map[string]struct{}, len(groups))
+	seenModel := make(map[string]struct{})
+	result := make([]string, 0)
+	for _, g := range groups {
+		g = strings.TrimSpace(g)
+		if g == "" || g == "auto" {
+			continue
+		}
+		if _, dup := seenGroup[g]; dup {
+			continue
+		}
+		seenGroup[g] = struct{}{}
+		if !SiteGroupAllowed(siteID, g) {
+			continue
+		}
+		for _, modelName := range model.GetGroupEnabledModels(g) {
+			if _, dup := seenModel[modelName]; dup {
+				continue
+			}
+			if !GroupModelAllowed(g, modelName) || !model.CatalogModelCallable(modelName) {
+				continue
+			}
+			seenModel[modelName] = struct{}{}
+			result = append(result, modelName)
+		}
+	}
+	return result
+}
+
 // SelectedBillingGroupAllowed reports whether a resolved concrete billing group
 // satisfies both the current site group allow-list and the requested model's
 // group allow-list. Unlike pre-selection checks, it rejects empty or unresolved

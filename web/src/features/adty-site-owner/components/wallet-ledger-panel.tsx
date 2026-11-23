@@ -74,6 +74,14 @@ export function WalletLedgerPanel() {
                 label: `${label} · ${t('Frozen')}`,
                 value: `${wallet.frozen_usd || '0'} USD`,
               },
+              ...(Number(wallet.excess_frozen_usd) > 0
+                ? [
+                    {
+                      label: `${label} · ${t('Excess frozen')}`,
+                      value: `${wallet.excess_frozen_usd} USD`,
+                    },
+                  ]
+                : []),
             ]
             if (wallet.kind !== 'margin') return base
             const cycle = marginCycleSummary(wallet)

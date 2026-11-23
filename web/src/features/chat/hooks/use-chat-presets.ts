@@ -76,16 +76,6 @@ function extractServerAddress(
     return normalizeBaseUrl(tenant.api)
   }
 
-  const explicitEmptyServerAddress =
-    status?.server_address === '' || status?.data?.server_address === ''
-  if (explicitEmptyServerAddress) {
-    return ''
-  }
-
-  if (typeof window !== 'undefined') {
-    return normalizeBaseUrl(window.location.origin)
-  }
-
   return ''
 }
 

@@ -186,7 +186,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/data/users":                       accessTokenScopeRule("log:read"),
 	"GET /api/data/self":                        accessTokenScopeRule("usage:read"),
 	"GET /api/data/flow":                        accessTokenScopeRule("log:read"),
-	"GET /api/data/flow/self":                   accessTokenScopeRule("usage:read"),
+	"GET /api/data/flow/self":                   accessTokenScopeRule("log:read"),
 
 	// router/api-router.go: /api/group, /api/prefill_group
 	"GET /api/group/":               accessTokenScopeRule("group:read"),
@@ -262,6 +262,7 @@ var adtyAccessTokenActionRoutes = map[string]string{
 	"GET /api/data/":                              "adty_log:read",
 	"GET /api/data/users":                         "adty_log:read",
 	"GET /api/data/flow":                          "adty_log:read",
+	"GET /api/data/flow/self":                     "adty_log:read",
 	"GET /api/mj/":                                "adty_log:read",
 	"GET /api/task":                               "adty_log:read",
 	"GET /api/user/topup":                         "adty_finance:read",

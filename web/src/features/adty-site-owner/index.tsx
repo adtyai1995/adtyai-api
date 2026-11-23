@@ -89,7 +89,6 @@ export function SiteOwnerCenter(props: {
     earnings: t('Earnings'),
     vouchers: t('Recharge codes'),
     notices: t('Notices'),
-    agreement: t('Site agreement'),
   }
 
   if (props.section === 'history') return <OwnerVerificationProvider><ArchivedAccountsPanel /></OwnerVerificationProvider>
@@ -135,7 +134,7 @@ export function SiteOwnerCenter(props: {
                 {props.section === 'teams' && <OwnerTeamAdmin />}
                 {!standalone && (
                 <Tabs
-                  value={props.section === 'agreement' ? 'overview' : props.section}
+                  value={props.section}
                   onValueChange={(value) =>
                     void navigate({
                       to: '/site-owner/$section',
@@ -151,7 +150,6 @@ export function SiteOwnerCenter(props: {
                   >
                     {SITE_OWNER_SECTIONS.filter(
                       (section) =>
-                        section !== 'agreement' &&
                         (section !== 'history' || user?.adty_archived_site_owner) &&
                         !SITE_OWNER_STANDALONE_SECTIONS.includes(section)
                     ).map((section) => (

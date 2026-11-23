@@ -314,7 +314,7 @@ func SumAdtyFundAllocationHeld(userID int) (principal, bonus int64, err error) {
 	}
 	if err := DB.Model(&AdtyFundAllocation{}).
 		Select("kind, coalesce(sum(held - settled),0) as held").
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND held > settled", userID).
 		Group("kind").
 		Scan(&rows).Error; err != nil {
 		return 0, 0, err
@@ -597,26 +597,49 @@ func ReleaseAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string) e
 		return nil
 	}
 	return tx.Model(&AdtyFundAllocation{}).
-		Where("user_id = ? AND operation_id = ? AND held > 0", userID, operationID).
-		Update("held", 0).Error
+		Where("user_id = ? AND operation_id = ? AND held > settled", userID, operationID).
+		Update("held", gorm.Expr("settled")).Error
 }
 
 // AdtyAfterPrincipalRefundedTx runs inside the settlement transaction when a
-// settled task charge is adjusted downward or refunded, crediting the reversed
-// non-legacy principal share back to the site operating wallet.
-var AdtyAfterPrincipalRefundedTx func(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error
+// settled charge is adjusted downward or refunded, crediting each subsite's
+// exact reversed non-legacy principal share back to its operating wallet.
+var AdtyAfterPrincipalRefundedTx func(tx *gorm.DB, userID int, operationKey string, bySite map[int]int64) error
 
-func adtyNotifyPrincipalRefundedTx(tx *gorm.DB, userID int, operationKey string, principalRefunded int64) error {
-	if principalRefunded <= 0 || AdtyAfterPrincipalRefundedTx == nil {
+func adtyNotifyPrincipalRefundedTx(tx *gorm.DB, userID int, operationKey string, bySite map[int]int64) error {
+	if len(bySite) == 0 || AdtyAfterPrincipalRefundedTx == nil {
 		return nil
 	}
-	return AdtyAfterPrincipalRefundedTx(tx, userID, operationKey, principalRefunded)
+	return AdtyAfterPrincipalRefundedTx(tx, userID, operationKey, bySite)
+}
+
+func adtyResolveFundBatchSiteIDTx(tx *gorm.DB, batch *AdtyFundBatch) (int, error) {
+	if batch == nil {
+		return 0, nil
+	}
+	if batch.SiteId != nil {
+		if *batch.SiteId > 0 {
+			return *batch.SiteId, nil
+		}
+		return 0, nil
+	}
+	if batch.Source == "" || !tx.Migrator().HasTable(&AdtyTopupOrder{}) {
+		return 0, nil
+	}
+	var orders []AdtyTopupOrder
+	if err := tx.Select("site_id").Where("trade_no = ? AND site_id > 0", batch.Source).Limit(1).Find(&orders).Error; err != nil {
+		return 0, err
+	}
+	if len(orders) > 0 && orders[0].SiteId > 0 {
+		return orders[0].SiteId, nil
+	}
+	return 0, nil
 }
 
 // ReverseSettledAdtyFundAllocationsTx reverses up to refundQuota of already-settled
 // shares on sourceOperationID (in reverse allocation order, bonus before principal),
 // restores the corresponding AdtyFundBatch.Remaining, and credits the reversed
-// non-legacy principal portion back to the site operating wallet.
+// non-legacy principal portion back to each originating subsite's operating wallet.
 func ReverseSettledAdtyFundAllocationsTx(tx *gorm.DB, userID int, sourceOperationID, reverseOperationID string, refundQuota int64) error {
 	if tx == nil || userID <= 0 || refundQuota <= 0 || sourceOperationID == "" {
 		return nil
@@ -636,7 +659,7 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 		return err
 	}
 	left := refundQuota
-	principalRefunded := int64(0)
+	principalBySite := map[int]int64{}
 	for i := range shares {
 		if left <= 0 {
 			break
@@ -658,9 +681,21 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 			return err
 		}
 		if shares[i].Kind == "principal" && shares[i].Source != "legacy" {
-			principalRefunded += giveBack
+			var batches []AdtyFundBatch
+			if err := tx.Select("id", "site_id", "source").Where("id = ?", shares[i].BatchId).Limit(1).Find(&batches).Error; err != nil {
+				return err
+			}
+			if len(batches) > 0 {
+				siteID, err := adtyResolveFundBatchSiteIDTx(tx, &batches[0])
+				if err != nil {
+					return err
+				}
+				if siteID > 0 {
+					principalBySite[siteID] += giveBack
+				}
+			}
 		}
 		left -= giveBack
 	}
-	return adtyNotifyPrincipalRefundedTx(tx, userID, reverseOperationID, principalRefunded)
+	return adtyNotifyPrincipalRefundedTx(tx, userID, reverseOperationID, principalBySite)
 }

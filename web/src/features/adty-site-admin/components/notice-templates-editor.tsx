@@ -52,6 +52,53 @@ function sameText(left: string, right: string) {
   return left.trim() === right.trim()
 }
 
+function noticeTemplateKeyLabel(key: string, t: (k: string) => string): string {
+  switch (key) {
+    case 'channel_disabled':
+      return t('Channel disabled notice')
+    case 'channel_enabled':
+      return t('Channel enabled notice')
+    case 'channel_test':
+      return t('Channel test completed notice')
+    case 'channel_update':
+      return t('Upstream model update notice')
+    case 'quota_exceed':
+      return t('Low balance reminder')
+    case 'telegram_bind_confirm':
+      return t('Telegram binding confirmed')
+    case 'telegram_unbind_confirm':
+      return t('Telegram unbound notice')
+    case 'site_close_migration':
+      return t('Subsite closure and main-site takeover notice')
+    case 'telegram_bot_reply':
+      return t('Telegram bot auto-reply')
+    case 'telegram_bind_staged':
+      return t('Telegram binding request received')
+    case 'telegram_test_notice':
+      return t('Telegram test notice')
+    default:
+      return key
+  }
+}
+
+function noticeTemplateCategoryLabel(
+  category: string,
+  t: (k: string) => string
+): string {
+  switch (category) {
+    case 'channel':
+      return t('Channel')
+    case 'wallet':
+      return t('Wallet')
+    case 'telegram':
+      return t('Telegram')
+    case 'site':
+      return t('Site')
+    default:
+      return category
+  }
+}
+
 function NoticeTemplateRow(props: { row: NoticeTemplate }) {
   const { t } = useTranslation()
   const base = useId()
@@ -90,10 +137,10 @@ function NoticeTemplateRow(props: { row: NoticeTemplate }) {
   return (
     <fieldset className='space-y-3 border-t pt-4' disabled={save.isPending}>
       <legend className='text-sm font-medium'>
-        {props.row.key}
+        {noticeTemplateKeyLabel(props.row.key, t)}
         <span className='text-muted-foreground ml-2 font-normal'>
-          {props.row.category}
-          {props.row.revision ? ` · ${props.row.revision}` : ''}
+          {noticeTemplateCategoryLabel(props.row.category, t)}
+          {props.row.revision ? ` · v${props.row.revision}` : ''}
         </span>
       </legend>
       <div className='grid gap-3 md:grid-cols-2'>

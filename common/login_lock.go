@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,15 @@ var (
 	loginFailuresMu sync.Mutex
 	loginFailures   = map[string]loginFailure{}
 )
+
+// LoginLockUserKey returns the canonical per-account lockout key so username
+// and email logins, /api/verify, and password change share one counter (R2-007).
+func LoginLockUserKey(userID int) string {
+	if userID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("uid:%d", userID)
+}
 
 func loginLockKey(username string) string {
 	return strings.ToLower(strings.TrimSpace(username))

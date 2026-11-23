@@ -72,7 +72,7 @@ func PostAdtyAdminSiteMargin(c *gin.Context) {
 	ledger, err := service.CreditAdtySiteMarginByRoot(id, c.GetInt("id"), amount, body.Reason, key)
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorT(c, "This request was already used for another operation")
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)

@@ -249,6 +249,18 @@ function BrandCard(props: { site: OwnerSite }) {
       )}
     </div>
   )
+  const brandFieldLabels: Record<keyof SiteBrand, string> = {
+    name: t('Site name'),
+    title: t('Website title'),
+    theme_color: t('Theme color'),
+    tagline: t('Tagline'),
+    notice: t('Notice'),
+    support_contact: t('Support contact'),
+    tawk_property_id: t('Tawk.to property ID'),
+    tawk_widget_id: t('Tawk.to widget ID'),
+    logo_url: t('Logo'),
+    favicon_url: t('Favicon'),
+  }
   return (
     <Card>
       <CardHeader>
@@ -256,7 +268,7 @@ function BrandCard(props: { site: OwnerSite }) {
       </CardHeader>
       <CardContent className='grid gap-3'>
         {conflicts.length>0 && <div role="alert">
-          {conflicts.map(key=><p key={key}>{key} · {t('Current value')}: {observed[key]} · {t('Previous value')}: {baseline[key]}</p>)}
+          {conflicts.map(key=><p key={key}>{brandFieldLabels[key] ?? key} · {t('Current value')}: {observed[key]} · {t('Previous value')}: {baseline[key]}</p>)}
           <Button variant="outline" onClick={()=>{
             setBrand({...observed,...Object.fromEntries(changed.map(key=>[key,brand[key]]))})
             setBaseline(observed)

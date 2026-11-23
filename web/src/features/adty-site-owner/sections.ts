@@ -32,7 +32,6 @@ export const SITE_OWNER_SECTIONS = [
   'earnings',
   'vouchers',
   'notices',
-  'agreement',
 ] as const
 
 export type SiteOwnerSectionId = (typeof SITE_OWNER_SECTIONS)[number]

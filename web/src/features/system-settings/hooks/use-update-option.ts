@@ -20,6 +20,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { toast } from 'sonner'
 
+import { adtySiteQueryKey } from '@/features/adty-site/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -75,6 +76,8 @@ const STATUS_RELATED_KEYS = new Set([
   'general_setting.custom_currency_exchange_rate',
   'oidc.display_name',
   'ServerAddress',
+  'adty_site_setting.api_base_url',
+  'DefaultCollapseSidebar',
   'passkey.enabled',
   'passkey.rp_id',
   'passkey.legacy_rp_ids',
@@ -127,6 +130,10 @@ export function useUpdateOption() {
           queryKey: ['system-options'],
           refetchType: 'none',
         })
+
+        if (variables.key.startsWith('adty_site_setting.')) {
+          queryClient.invalidateQueries({ queryKey: adtySiteQueryKey })
+        }
 
         // If updating frontend-display-related config, also refresh status
         if (STATUS_RELATED_KEYS.has(variables.key)) {

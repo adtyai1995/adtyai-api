@@ -169,8 +169,12 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 			}); err != nil {
 				return err
 			}
-			// 邀请佣金转到余额的批次记在佣金所属站（row.SiteId），同时向 operating 钱包入账等额本金背书（R1-008）。
-			if row.SiteId > 0 {
+			// R2-024: Only credit operating wallet if the site is not closed.
+			siteClosed, err := adtySiteIsClosedTx(tx, row.SiteId)
+			if err != nil {
+				return err
+			}
+			if row.SiteId > 0 && !siteClosed {
 				if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, int64(quota), "principal_credit", "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), "operating:"+ref, false); err != nil {
 					return err
 				}
@@ -216,6 +220,14 @@ func sameSiteInviteDestination(tx *gorm.DB, row *model.AdtySiteInviteWithdrawal,
 }
 
 func allocateSiteInviteWithdrawalTx(tx *gorm.DB, withdrawal *model.AdtySiteInviteWithdrawal, toBalance bool) error {
+	siteClosed := false
+	if toBalance {
+		var err error
+		siteClosed, err = adtySiteIsClosedTx(tx, withdrawal.SiteId)
+		if err != nil {
+			return err
+		}
+	}
 	var rows []model.AdtySiteInviteCommission
 	if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND inviter_id = ?", withdrawal.SiteId, withdrawal.UserId).Order("id").Find(&rows).Error; err != nil {
 		return err
@@ -258,7 +270,11 @@ func allocateSiteInviteWithdrawalTx(tx *gorm.DB, withdrawal *model.AdtySiteInvit
 			}
 			if quota > 0 {
 				source := fmt.Sprintf("site-comm-wd:%d:%d", rows[i].Id, withdrawal.Id)
-				if err := model.CreateAdtyFundBatchesWithSiteTx(tx, withdrawal.UserId, model.AdtyFundBatchSiteID(withdrawal.SiteId), source, int64(quota), 0); err != nil {
+				batchSiteID := withdrawal.SiteId
+				if siteClosed {
+					batchSiteID = 0
+				}
+				if err := model.CreateAdtyFundBatchesWithSiteTx(tx, withdrawal.UserId, model.AdtyFundBatchSiteID(batchSiteID), source, int64(quota), 0); err != nil {
 					return err
 				}
 			}
@@ -305,15 +321,58 @@ func ConfirmClosedSiteInvitePayoutFailure(actor int, id int64, approve bool, rea
 	}
 	return reviewSiteInviteWithdrawal(actor, id, false, reason, true, model.AdtySiteInviteWithdrawApproved)
 }
+// lockSiteInviteWithdrawalCanonicalTx acquires locks in canonical global order
+// (AdtySite -> AdtySiteInviteCommission(id ASC) -> AdtySiteInviteWithdrawal)
+// after a non-locking pre-read to eliminate AB-BA deadlocks with refund clawbacks (R2-022).
+func lockSiteInviteWithdrawalCanonicalTx(tx *gorm.DB, withdrawalID int64, ownerID int, platform bool, checkUserID int) (*model.AdtySiteInviteWithdrawal, error) {
+	var stub model.AdtySiteInviteWithdrawal
+	if err := tx.Select("id", "site_id", "user_id").First(&stub, withdrawalID).Error; err != nil {
+		return nil, err
+	}
+	if checkUserID > 0 && stub.UserId != checkUserID {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var commIDs []int64
+	if err := tx.Model(&model.AdtySiteInviteWithdrawalItem{}).
+		Where("withdrawal_id = ?", withdrawalID).
+		Distinct("commission_id").
+		Order("commission_id ASC").
+		Pluck("commission_id", &commIDs).Error; err != nil {
+		return nil, err
+	}
+	if ownerID > 0 {
+		if err := requireSiteInviteProcessor(tx, ownerID, stub.SiteId, platform); err != nil {
+			return nil, err
+		}
+	}
+	if len(commIDs) > 0 {
+		var lockedComms []model.AdtySiteInviteCommission
+		if err := model.AdtyLockForUpdate(tx).Where("id IN ?", commIDs).Order("id ASC").Find(&lockedComms).Error; err != nil {
+			return nil, err
+		}
+	}
+	var row model.AdtySiteInviteWithdrawal
+	q := model.AdtyLockForUpdate(tx)
+	if checkUserID > 0 {
+		q = q.Where("id = ? AND user_id = ?", withdrawalID, checkUserID)
+		if err := q.First(&row).Error; err != nil {
+			return nil, err
+		}
+	} else {
+		if err := q.First(&row, withdrawalID).Error; err != nil {
+			return nil, err
+		}
+	}
+	return &row, nil
+}
+
 func reviewSiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string, platform bool, requiredStatus string) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
-		var row model.AdtySiteInviteWithdrawal
-		if err := model.AdtyLockForUpdate(tx).First(&row, withdrawalID).Error; err != nil {
+		lockedRow, err := lockSiteInviteWithdrawalCanonicalTx(tx, withdrawalID, ownerID, platform, 0)
+		if err != nil {
 			return err
 		}
-		if err := requireSiteInviteProcessor(tx, ownerID, row.SiteId, platform); err != nil {
-			return err
-		}
+		row := *lockedRow
 		if !approve && row.Status == model.AdtySiteInviteWithdrawRejected && row.FailureAt > 0 && row.FailureBy == ownerID && row.RejectReason == strings.TrimSpace(reason) && requiredStatus != model.AdtySiteInviteWithdrawPending {
 			return nil
 		}
@@ -358,13 +417,11 @@ func MarkClosedAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txI
 func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string, platform bool) error {
 	txID = strings.TrimSpace(txID)
 	return model.DB.Transaction(func(tx *gorm.DB) error {
-		var row model.AdtySiteInviteWithdrawal
-		if err := model.AdtyLockForUpdate(tx).First(&row, withdrawalID).Error; err != nil {
+		lockedRow, err := lockSiteInviteWithdrawalCanonicalTx(tx, withdrawalID, ownerID, platform, 0)
+		if err != nil {
 			return err
 		}
-		if err := requireSiteInviteProcessor(tx, ownerID, row.SiteId, platform); err != nil {
-			return err
-		}
+		row := *lockedRow
 		cleanProof := strings.TrimSpace(proof)
 		if strings.HasPrefix(cleanProof, "/api/referral-assets/") {
 			canonicalProof, ok := IsOwnedReferralAssetTx(tx, ownerID, model.ReferralAssetPurposePaymentProof, cleanProof)
@@ -641,10 +698,11 @@ func pageCommissionWithdrawals(query *gorm.DB, status string, page *common.PageI
 // CancelAdtySiteInviteWithdrawal lets the applicant cancel a pending request inside the main-site cancel window.
 func CancelAdtySiteInviteWithdrawal(userID int, withdrawalID int64, now int64) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
-		var row model.AdtySiteInviteWithdrawal
-		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND user_id = ?", withdrawalID, userID).First(&row).Error; err != nil {
+		lockedRow, err := lockSiteInviteWithdrawalCanonicalTx(tx, withdrawalID, 0, false, userID)
+		if err != nil {
 			return err
 		}
+		row := *lockedRow
 		if state := SiteInviteCancellation(&row, now); !state.CanCancel {
 			return common.NewMessage(state.CancelReason)
 		}

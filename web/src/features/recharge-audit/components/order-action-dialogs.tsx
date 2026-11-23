@@ -447,10 +447,10 @@ export function RefundDialog(
   const releaseReview =
     selected && facts?.team_release_reviews?.[selected.refund_id]
   let terminationDescription = t(
-    'Terminating releases the refund occupancy. Principal already taken back is not returned to the customer.'
+    'Terminating releases the refund occupancy and restores any reclaimed customer principal and subsite operating wallet balance.'
   )
   let terminationResult = t(
-    'This refund was terminated. Principal already taken back is not returned.'
+    'This refund was terminated. Any reclaimed customer principal and subsite operating wallet balance has been restored.'
   )
   if (teamRefund) {
     terminationDescription = t(

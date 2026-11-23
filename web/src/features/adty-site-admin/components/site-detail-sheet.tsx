@@ -515,9 +515,11 @@ function closeMailBatchStatusLabel(
     case 'sending':
     case 'running':
       return t('Sending')
+    case 'complete':
     case 'completed':
     case 'done':
       return t('Completed')
+    case 'retryable':
     case 'retry':
     case 'retrying':
       return t('Retrying')
@@ -525,6 +527,9 @@ function closeMailBatchStatusLabel(
       return t('Failed')
     case 'superseded':
       return t('Superseded')
+    case 'none':
+    case '':
+      return '-'
     default:
       return status
   }
@@ -538,6 +543,9 @@ function closeMailRecipientStatusLabel(
     case 'pending':
     case 'queued':
       return t('Pending')
+    case 'sending':
+      return t('Sending')
+    case 'success':
     case 'sent':
     case 'delivered':
     case 'confirmed':
@@ -660,12 +668,16 @@ function siteAuditActionLabel(
       return t('Request to close this site')
     case 'close_schedule':
       return t('Schedule close')
+    case 'close_reschedule':
+      return t('Reschedule close')
     case 'close':
       return t('Close')
     case 'notice_takedown':
       return t('Take down notice')
     case 'customer_review':
       return t('Review this customer')
+    case 'customer_terms_recover':
+      return t('Recover customer terms')
     case 'earning_review':
       return t('Review earnings')
     case 'margin.root_credit':
@@ -684,6 +696,8 @@ function siteAuditActionLabel(
       return t('Confirm delivered')
     case 'report_resolved':
       return t('Resolve report')
+    case 'report_dismissed':
+      return t('Dismiss report')
     case 'staff.create':
       return t('Create staff account')
     case 'staff.update':
@@ -694,6 +708,10 @@ function siteAuditActionLabel(
       return t('Delete staff account')
     case 'staff.customer.disable':
       return t('Disable customer')
+    case 'staff.balance_request':
+      return t('Request balance change')
+    case 'staff.balance_review':
+      return t('Review balance request')
     default:
       return action
   }

@@ -496,8 +496,8 @@ func verifyTrustedBonusSiteTx(tx *gorm.DB, siteID int) error {
 		return nil
 	}
 	var row struct {
-		Id     int `gorm:"column:id"`
-		Status int `gorm:"column:status"`
+		Id     int    `gorm:"column:id"`
+		Status string `gorm:"column:status"`
 	}
 	res := tx.Table("adty_sites").Select("id, status").Where("id = ?", siteID).Limit(1).Find(&row)
 	if res.Error != nil {
@@ -506,7 +506,7 @@ func verifyTrustedBonusSiteTx(tx *gorm.DB, siteID int) error {
 	if res.RowsAffected == 0 || row.Id <= 0 {
 		return errBonusMethod("site does not exist")
 	}
-	if row.Status != 1 {
+	if strings.TrimSpace(row.Status) != "active" {
 		return errBonusMethod("site is not active")
 	}
 	return nil

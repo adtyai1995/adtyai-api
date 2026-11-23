@@ -41,6 +41,7 @@ import type { AdtyOrderStatus } from '@/features/wallet/adty/types'
 import { toIntlLocale } from '@/i18n/languages'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { formatTimestamp } from '@/lib/format'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -56,6 +57,7 @@ import {
   RefundDialog,
 } from './components/order-action-dialogs'
 import { OrderDetailDialog } from './components/order-detail-dialog'
+import { GiftFulfillmentsPanel } from './components/gift-fulfillments-panel'
 import { PaymentOrphanPanel } from './components/payment-orphan-panel'
 import { SiteEarningReviewPanel } from './components/site-earning-review-panel'
 import { ORDER_TRACE_LABELS, UNIFIED_ORDER_LABELS } from './trace-labels'
@@ -546,6 +548,9 @@ export function RechargeAudit(props: {
         {!props.ownerMode && <PaymentOrphanPanel canCredit={canComplete} />}
         {!props.ownerMode && (
           <SiteEarningReviewPanel canResolve={canComplete} />
+        )}
+        {!props.ownerMode && user?.role === ROLE.SUPER_ADMIN && (
+          <GiftFulfillmentsPanel />
         )}
       </div>
       {viewing &&

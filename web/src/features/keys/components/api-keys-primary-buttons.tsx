@@ -36,30 +36,29 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from '@/components/ui/popover'
+import { useApiBaseUrl } from '@/features/adty-site/api'
 import { useApiInfo } from '@/features/dashboard/hooks/use-status-data'
 import { useStatus } from '@/hooks/use-status'
 
 import { useApiKeys } from './api-keys-provider'
-import { subsiteDocument } from '@/lib/subsite-document'
 
 export function ApiKeysPrimaryButtons() {
   const { t } = useTranslation()
   const { setOpen } = useApiKeys()
-  const { status, loading } = useStatus()
+  const { loading } = useStatus()
   const { items } = useApiInfo()
-  const serverAddress =
-    (typeof status?.server_address === 'string' &&
-      status.server_address.trim()) ||
-    ''
-  const addresses = items.length
-    ? items
-    : [
-        {
-          url: serverAddress || (subsiteDocument()?.api ?? window.location.origin),
-          route: serverAddress ? t('Default API address') : t('Current domain'),
-          description: '',
-        },
-      ]
+  const apiBaseUrl = useApiBaseUrl()
+  let addresses = items
+  if (addresses.length === 0 && apiBaseUrl) {
+    addresses = [
+      {
+        url: apiBaseUrl,
+        route: t('Default API address'),
+        description: '',
+        color: '',
+      },
+    ]
+  }
 
   return (
     <div className='flex flex-wrap gap-2'>
@@ -74,9 +73,15 @@ export function ApiKeysPrimaryButtons() {
           className='max-h-[min(28rem,var(--available-height))] w-96 max-w-[calc(100vw-2rem)] overflow-y-auto'
         >
           <PopoverTitle>{t('API Addresses')}</PopoverTitle>
-          {loading ? (
+          {loading && (
             <LoadingState inline size='sm' message={t('Loading...')} />
-          ) : (
+          )}
+          {!loading && addresses.length === 0 && (
+            <p className='text-muted-foreground py-2 text-xs'>
+              {t('API address is not configured yet')}
+            </p>
+          )}
+          {!loading && addresses.length > 0 && (
             <ItemGroup>
               {addresses.map((address) => (
                 <Item

@@ -54,8 +54,9 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 		common.SysError(common.LogText("release site invite commissions: %s", err.Error()))
 	}
 	verifyExpiredOrdersUnpaidBeforeExpire(now)
-	for {
-		expired, err := model.ExpireAdtyTopUps(now, 200)
+	var cursorExpireAt, cursorID int64
+	for page := 0; page < 50; page++ {
+		expired, scanned, nextExpireAt, nextID, err := model.ExpireAdtyTopUpsAfter(now, cursorExpireAt, cursorID, 200)
 		if len(expired) > 0 && AdtyExpiredHook != nil {
 			AdtyExpiredHook(expired)
 		}
@@ -63,9 +64,10 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 			common.SysError(common.LogText("expire adty topups: %s", err.Error()))
 			break
 		}
-		if len(expired) < 200 {
+		if scanned < 200 || (nextExpireAt == cursorExpireAt && nextID == cursorID) {
 			break
 		}
+		cursorExpireAt, cursorID = nextExpireAt, nextID
 	}
 }
 
@@ -82,7 +84,7 @@ func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no AND t.user_id = a.user_id AND t.payment_provider = a.provider").
 		Where("t.status = ? AND a.expire_at > 0 AND a.expire_at <= ? AND (a.last_query_at < a.expire_at OR a.last_query_at <= ?)",
 			common.TopUpStatusPending, cutoff, now-60).
-		Order("a.expire_at asc, a.id asc").Limit(200).Scan(&orders).Error
+		Order("a.last_query_at asc, a.expire_at asc, a.id asc").Limit(200).Scan(&orders).Error
 	if err != nil {
 		common.SysError(common.LogText("list adty pre-expire query orders: %s", err.Error()))
 		return

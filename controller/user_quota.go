@@ -55,7 +55,7 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 		return
 	}
 	if requireAdminUserProof(c, service.VerificationScopeAdminUserQuota, service.AdminUserContext{UserID: req.Id}) == nil {
-		skipAdtyQuotaAudit = true
+		params["failure_reason"] = "security_proof_required"
 		return
 	}
 
@@ -75,7 +75,7 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 			common.ApiErrorT(c, "Invalid idempotency key")
 		case errors.Is(err, model.ErrAdtyIdempotencyConflict):
 			params["failure_reason"] = "idempotency_conflict"
-			common.ApiErrorT(c, "This request was already used for another operation")
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 		case errors.Is(err, model.ErrInvalidUserQuotaAdjustment):
 			params["failure_reason"] = "invalid_parameters"
 			if (req.Mode == "add" || req.Mode == "subtract") && req.Value <= 0 {

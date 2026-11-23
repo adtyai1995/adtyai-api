@@ -21,6 +21,12 @@ import { fetchTokenKey } from '@/features/keys/api'
 export const API_KEY_READ_SCOPE = 'api_key.read' as const
 export const SECURITY_PROOF_HEADER = 'X-Security-Proof' as const
 export const SECURITY_PROOF_REQUIRED_CODE = 'SECURITY_PROOF_REQUIRED' as const
+const SECURITY_PROOF_RETRY_CODES = new Set([
+  'SECURITY_PROOF_REQUIRED',
+  'SECURITY_PROOF_CONSUMED',
+  'SECURITY_PROOF_EXPIRED',
+  'SECURITY_PROOF_INVALID',
+])
 
 export interface ApiKeySecurityProofContext {
   scope: typeof API_KEY_READ_SCOPE
@@ -43,16 +49,15 @@ export interface TokenKeyRevealResult {
   data?: { key: string }
 }
 
-let cachedApiKeyReadProof: string | null = null
+// R2-011: api_key.read proofs are strictly single-use on the backend and must never be cached across calls.
 let registeredProofRequester: ApiKeySecurityProofRequester | null = null
 
-export function setApiKeyReadSecurityProof(proof: string | null): void {
-  const trimmed = proof?.trim() ?? ''
-  cachedApiKeyReadProof = trimmed.length > 0 ? trimmed : null
+export function setApiKeyReadSecurityProof(_proof: string | null): void {
+  // No-op retained for backward export compatibility; single-use proofs are not cached.
 }
 
 export function getApiKeyReadSecurityProof(): string | null {
-  return cachedApiKeyReadProof
+  return null
 }
 
 export function setApiKeySecurityProofRequester(
@@ -68,12 +73,13 @@ export function getApiKeySecurityProofRequester(): ApiKeySecurityProofRequester 
 export function isSecurityProofRequired(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false
   const record = value as Record<string, unknown>
-  if (record.code === SECURITY_PROOF_REQUIRED_CODE) return true
-  if (
-    typeof record.message === 'string' &&
-    record.message.includes(SECURITY_PROOF_REQUIRED_CODE)
-  ) {
+  if (typeof record.code === 'string' && SECURITY_PROOF_RETRY_CODES.has(record.code)) {
     return true
+  }
+  if (typeof record.message === 'string') {
+    for (const code of SECURITY_PROOF_RETRY_CODES) {
+      if (record.message.includes(code)) return true
+    }
   }
   const response = record.response as Record<string, unknown> | undefined
   if (response && typeof response === 'object') {
@@ -93,27 +99,27 @@ function buildProofRequestConfig(proof: string | null) {
 }
 
 /**
- * Fetches an unmasked API key with `api_key.read` step-up security proof
- * enforcement so cross-feature shortcuts (Quick Start CC Switch, Quick Start
- * curl copy, and Chat active key link) attach `X-Security-Proof` consistently
- * with `/keys`.
+ * Fetches an unmasked API key with single-use `api_key.read` step-up security
+ * proof enforcement so cross-feature shortcuts (Quick Start CC Switch, Quick
+ * Start curl copy, and Chat active key link) attach a fresh `X-Security-Proof`
+ * consistently with `/keys`.
  */
 export async function fetchTokenKeyWithSecurityProof(
   tokenId: number,
   options?: FetchTokenKeyWithProofOptions
 ): Promise<TokenKeyRevealResult> {
   const requester = options?.requestProof ?? registeredProofRequester
-  let proof = options?.proof?.trim() || cachedApiKeyReadProof
+  let proof = options?.proof?.trim() || null
   let requestedFreshProof = false
 
   if (!proof && requester) {
     requestedFreshProof = true
     const acquired = await requester({ scope: API_KEY_READ_SCOPE, tokenId })
     const trimmed = acquired?.trim() || null
-    if (trimmed) {
-      cachedApiKeyReadProof = trimmed
-      proof = trimmed
+    if (!trimmed) {
+      return { success: false, code: SECURITY_PROOF_REQUIRED_CODE, message: '' }
     }
+    proof = trimmed
   }
 
   const executeWithProof = async (
@@ -133,24 +139,20 @@ export async function fetchTokenKeyWithSecurityProof(
       requester &&
       !requestedFreshProof
     ) {
-      cachedApiKeyReadProof = null
       const retryProof = (
         await requester({ scope: API_KEY_READ_SCOPE, tokenId })
       )?.trim()
       if (retryProof) {
-        cachedApiKeyReadProof = retryProof
         return await executeWithProof(retryProof)
       }
     }
     return result
   } catch (error) {
     if (isSecurityProofRequired(error) && requester && !requestedFreshProof) {
-      cachedApiKeyReadProof = null
       const retryProof = (
         await requester({ scope: API_KEY_READ_SCOPE, tokenId })
       )?.trim()
       if (retryProof) {
-        cachedApiKeyReadProof = retryProof
         return await executeWithProof(retryProof)
       }
     }

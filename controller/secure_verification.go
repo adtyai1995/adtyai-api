@@ -24,7 +24,7 @@ func GetVerificationMethods(c *gin.Context) {
 		writeAccountStatusError(c, http.StatusUnauthorized, "The current sign-in method does not support security verification")
 		return
 	}
-	requirements, err := service.GetVerificationRequirements(identity, c.Query("scope"))
+	requirements, err := service.GetVerificationRequirementsForSite(identity, c.Query("scope"), service.AdtyRequestSiteID(c))
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -75,6 +75,9 @@ func writeSecurityOperationError(c *gin.Context, err error) {
 		code, message = "EMAIL_ADDRESS_REJECTED", err.Error()
 	case errors.Is(err, model.ErrEmailAlreadyTaken):
 		code, message = "EMAIL_ALREADY_TAKEN", "This email address is already in use."
+	case errors.Is(err, model.ErrUsernameAlreadyTaken):
+		status = http.StatusConflict
+		code, message = "USERNAME_ALREADY_TAKEN", "Username already exists or has been deleted"
 	case errors.Is(err, service.ErrEmailBindingDelivery):
 		code, message = "EMAIL_BINDING_DELIVERY_FAILED", err.Error()
 	case errors.Is(err, model.ErrEmailBindingCodeInvalid):
@@ -101,8 +104,9 @@ func writeSecurityOperationError(c *gin.Context, err error) {
 		code, message = "SECURITY_ACTION_FORBIDDEN", service.ErrVerificationForbidden.Error()
 	case errors.Is(err, service.ErrVerificationFailed), errors.As(err, &protocolError):
 		code, message = "SECURITY_VERIFICATION_FAILED", service.ErrVerificationFailed.Error()
-	case errors.Is(err, service.ErrVerificationLocked):
-		code, message = "SECURITY_VERIFICATION_LOCKED", service.ErrVerificationLocked.Error()
+	case errors.Is(err, service.ErrVerificationLocked), errors.Is(err, model.ErrPasswordVerificationLocked):
+		status = http.StatusTooManyRequests
+		code, message = "SECURITY_VERIFICATION_LOCKED", err.Error()
 	case errors.Is(err, service.ErrVerificationCodeLocked):
 		code, message = "SECURITY_EMAIL_CODE_LOCKED", service.ErrVerificationCodeLocked.Error()
 	case errors.Is(err, service.ErrVerificationUnavailable):
@@ -183,12 +187,14 @@ func UniversalVerify(c *gin.Context) {
 	request.SiteID = service.AdtyRequestSiteID(c)
 	proof, err := service.VerifySecurityInput(identity, request)
 	if err != nil {
-		// R1-017: Record redacted failure audit for security verification attempts.
-		recordUserSecurityAudit(c, identity.UserID, "user.security_verify_failed", map[string]any{
-			"method": request.Method,
-			"scope":  request.Scope,
-		})
+		// R2-005: Write error response first so status and security_error_code are
+		// captured accurately on the redacted failure audit event.
 		writeSecurityOperationError(c, err)
+		recordUserSecurityAudit(c, identity.UserID, "user.security_verify_failed", map[string]any{
+			"method":  request.Method,
+			"scope":   request.Scope,
+			"success": false,
+		})
 		return
 	}
 	recordUserSecurityAudit(c, identity.UserID, "user.security_verify", map[string]any{"method": proof.Method, "scope": proof.Scope})

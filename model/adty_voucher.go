@@ -70,15 +70,6 @@ type AdtyVoucherLiability struct {
 
 func (AdtyVoucherLiability) TableName() string { return "adty_voucher_liabilities" }
 
-// AdtyVoucherAuthorization records whether a site may freeze margin to issue codes.
-type AdtyVoucherAuthorization struct {
-	SiteId      int   `json:"site_id" gorm:"uniqueIndex"`
-	MarginIssue bool  `json:"margin_issue"`
-	UpdatedAt   int64 `json:"updated_at" gorm:"autoUpdateTime"`
-}
-
-func (AdtyVoucherAuthorization) TableName() string { return "adty_voucher_authorizations" }
-
 // AdtyVoucherCloseGrant keeps the original site audience after the site closes.
 type AdtyVoucherCloseGrant struct {
 	Id     int64 `json:"id"`

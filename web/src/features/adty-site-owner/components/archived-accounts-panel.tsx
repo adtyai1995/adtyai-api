@@ -36,6 +36,7 @@ import {
   siteOwnerKeys,
   OWNER_PAGE_SIZE,
 } from '../api'
+import { earningKindLabel } from '../lib/site-owner'
 import { SettlementSheetPanel } from './settlement-sheet-panel'
 import { WithdrawalPanel } from './withdrawal-panel'
 
@@ -93,7 +94,7 @@ function ArchiveLedger({ siteId }: { siteId: number }) {
           {(data.page.items ?? []).map((row) => (
             <tr key={row.id}>
               <td>{row.day}</td>
-              <td>{t(row.kind)}</td>
+              <td>{earningKindLabel(t, row.kind)}</td>
               <td>{row.earning_usd}</td>
             </tr>
           ))}

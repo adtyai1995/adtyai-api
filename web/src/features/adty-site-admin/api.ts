@@ -262,6 +262,7 @@ export type AdminWallet = {
   kind: string
   balance: string
   frozen_usd?: string
+  excess_frozen_usd?: string
   cycle_tier_usd: string
   cycle_used_usd: string
 }
@@ -415,7 +416,7 @@ export async function getAdminSettlementDetail(
     { params: { sheet_id: id, site_id: siteId } }
   )
   const sheet = requireServerSuccess(res.data).data
-  if (!sheet) throw new Error('Settlement sheet is missing')
+  if (!sheet) throw new Error(i18next.t('Settlement sheet is missing'))
   return sheet
 }
 

@@ -160,9 +160,13 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
   })
 
   const cancelOrder = async () => {
-    if (tradeNo) await cancel.mutateAsync(tradeNo)
-    clearPendingPayment(window.localStorage)
-    props.onClose()
+    try {
+      if (tradeNo) await cancel.mutateAsync(tradeNo)
+      clearPendingPayment(window.localStorage)
+      props.onClose()
+    } catch (error) {
+      handleServerError(error)
+    }
   }
 
   const appName = props.method === 'wxpay' ? t('WeChat') : t('Alipay')

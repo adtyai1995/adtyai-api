@@ -365,7 +365,7 @@ export function OpenSiteDialog(props: {
               <dd className='tabular-nums'>
                 {createdSite.effective_cost_factor ||
                   createdSite.cost_factor ||
-                  t('Global')}
+                  t('Follow site level')}
               </dd>
             </div>
             <div className='flex flex-col gap-0.5'>

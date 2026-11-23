@@ -415,8 +415,8 @@ func AdtySiteEarningReviewOperation(operationKey, originalCharge, reason string)
 }
 
 func init() {
-	accessTokenVerificationScopes[VerificationScopeAdtyOwnerOrderRefund] = "wallet:write"
-	accessTokenVerificationScopes[VerificationScopeAdtyOwnerOrderRefundStep] = "wallet:write"
+	accessTokenVerificationScopes[VerificationScopeAdtyOwnerOrderRefund] = AccessTokenResourceSiteOwnerOrder + ":write"
+	accessTokenVerificationScopes[VerificationScopeAdtyOwnerOrderRefundStep] = AccessTokenResourceSiteOwnerOrder + ":write"
 	accessTokenVerificationScopes[VerificationScopeAdtyRootGiftGrant] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpRefund] = AccessTokenScopeOf(authz.AdtyFinanceRefund)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpManualComplete] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)

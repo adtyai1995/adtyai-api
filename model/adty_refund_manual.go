@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -30,6 +31,10 @@ func adtyRequireOwnerRefundScopeTx(tx *gorm.DB, ext *AdtyTopupOrder, operatorID 
 		return common.NewMessage("No permission to perform this action")
 	}
 	return nil
+}
+
+func AdtyExternalRefundOffsetTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error) {
+	return adtyExternalRefundOffsetTx(tx, ext)
 }
 
 func adtyComputeManualRefundOccupancyTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraHeld int64) (*AdtyManualRefundOccupancy, error) {
@@ -474,9 +479,9 @@ func adtyOrderLotRemainingTx(tx *gorm.DB, userID int, tradeNo string) (principal
 			continue
 		}
 		switch lot.Kind {
-		case "principal":
+		case AdtyFundBatchKindPrincipal:
 			principal += avail
-		case "bonus":
+		case AdtyFundBatchKindBonus, AdtyFundBatchKindExpiringBonus:
 			bonus += avail
 		}
 	}
@@ -805,6 +810,9 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
 		}
+		if occupancy.OccupiedQuota > occupancy.FaceQuota {
+			return common.NewMessage("Refund amount exceeds the remaining principal")
+		}
 		if existing, err := FindAdtyLedgerByIdemKeyTx(tx, idemKey); err != nil {
 			return err
 		} else if existing != nil {
@@ -907,6 +915,9 @@ func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID st
 	}
 	if err := adtyRequireApprovedManualRefund(row); err != nil {
 		return nil, false, err
+	}
+	if occupancy.OccupiedQuota > occupancy.FaceQuota {
+		return nil, false, common.NewMessage("Refund amount exceeds the remaining principal")
 	}
 	teamKey := "manual_refund:" + idemKey
 	var dup AdtyTeamLedger
@@ -1060,6 +1071,9 @@ func PlanAdtyTopUpManualRefundBonus(tradeNo, refundID string, operatorID int, id
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
 		}
+		if occupancy.OccupiedQuota > occupancy.FaceQuota {
+			return common.NewMessage("Refund amount exceeds the remaining principal")
+		}
 		planned, err := adtyPlannedBonusQuotaTx(tx, ext, rows, row.RefundId, row.RequestQuota, row.RequestUSD)
 		if err != nil {
 			return err
@@ -1120,6 +1134,9 @@ func PlanAdtyTopUpManualRefundCommission(tradeNo, refundID string, operatorID in
 		}
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
+		}
+		if occupancy.OccupiedQuota > occupancy.FaceQuota {
+			return common.NewMessage("Refund amount exceeds the remaining principal")
 		}
 		preview, err := LoadSiteInviteCommissionRefundPreview(tx, tradeNo, ext.RefundQuota+row.RequestQuota, ext.FaceQuota())
 		if err != nil {
@@ -1357,9 +1374,31 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		}
 		var before, checkinQuota int64
 		if ext.TeamId == 0 {
+			// R2-022: Pre-read commission inviter_id and lock [invitee, inviter] in strict
+			// ascending user_id order to prevent AB-BA deadlocks with commission clawback.
+			var inviterID int
+			if tx.Migrator().HasTable(&AdtySiteInviteCommission{}) {
+				var commStub AdtySiteInviteCommission
+				if err := tx.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&commStub).Error; err != nil {
+					return err
+				}
+				inviterID = commStub.InviterId
+			}
+			if inviterID > 0 && inviterID < topUp.UserId {
+				var inviter User
+				if err := AdtyLockForUpdate(tx).Select("id").First(&inviter, inviterID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+			}
 			before, checkinQuota, err = lockUserQuotaForRefundTx(tx, topUp.UserId)
 			if err != nil {
 				return err
+			}
+			if inviterID > topUp.UserId {
+				var inviter User
+				if err := AdtyLockForUpdate(tx).Select("id").First(&inviter, inviterID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
 			}
 		} else {
 			var team AdtyTeam

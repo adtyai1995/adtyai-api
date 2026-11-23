@@ -106,6 +106,39 @@ func (r *tokenRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func validateTokenKeyLimits(c *gin.Context, r tokenRequest) bool {
+	if (r.RateLimitPerMinute != nil && *r.RateLimitPerMinute < 0) ||
+		(r.RateLimitTPM != nil && *r.RateLimitTPM < 0) ||
+		(r.RateLimitConcurrency != nil && *r.RateLimitConcurrency < 0) {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+		return false
+	}
+	return true
+}
+
+func validatePersonalTokenGroup(c *gin.Context, siteID int, group string) bool {
+	if group == "" {
+		return true
+	}
+	userGroup, err := getTokenRequestUserGroup(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	if group == "auto" {
+		if _, ok := service.GetUserUsableGroups(userGroup)["auto"]; !ok {
+			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
+			return false
+		}
+		return true
+	}
+	if !service.IsUserSelectableGroup(userGroup, group) || !service.SiteGroupAllowed(siteID, group) {
+		common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
+		return false
+	}
+	return true
+}
+
 func (r tokenRequest) keyLimitPatch() model.AdtyKeyLimitPatch {
 	return model.AdtyKeyLimitPatch{
 		PerMinute:   r.RateLimitPerMinute,
@@ -497,15 +530,17 @@ func addPersonalToken(c *gin.Context, ownerSite int) {
 	if ownerSite > 0 {
 		siteID = ownerSite
 	}
+	if !validateTokenKeyLimits(c, request) {
+		return
+	}
+	if !validatePersonalTokenGroup(c, siteID, token.Group) {
+		return
+	}
 	if token.Group == "auto" {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 			return
 		}
 	} else {
-		if token.Group != "" && !service.SiteGroupAllowed(siteID, token.Group) {
-			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": token.Group})
-			return
-		}
 		token.CrossGroupRetry = false
 		_ = token.SetAutoGroups(nil)
 	}
@@ -662,8 +697,10 @@ func UpdateToken(c *gin.Context) {
 		if cleanToken.OwnerSelfUseSiteId > 0 {
 			cleanToken.AllowUserQuotaQuery = false
 		}
-		if token.Group != "" && token.Group != "auto" && !service.SiteGroupAllowed(siteID, token.Group) {
-			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": token.Group})
+		if !validateTokenKeyLimits(c, request) {
+			return
+		}
+		if !validatePersonalTokenGroup(c, siteID, token.Group) {
 			return
 		}
 		cleanToken.Group = token.Group

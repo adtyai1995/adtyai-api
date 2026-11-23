@@ -13,7 +13,27 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const maxExprExponent = 32
+const (
+	maxExprExponent           = 32
+	maxExprIntermediateDigits = 64
+	maxExprAbsExp             = 64
+)
+
+func checkExprDecimalBounds(d decimal.Decimal) (decimal.Decimal, error) {
+	if d.IsZero() {
+		return d, nil
+	}
+	exp := int(d.Exponent())
+	coeffDigits := len(d.Coefficient().String())
+	if d.IsNegative() && coeffDigits > 0 {
+		coeffDigits--
+	}
+	// Magnitude = coeffDigits + exp (approx log10(|d|) + 1); cap both magnitude and precision.
+	if coeffDigits > maxExprIntermediateDigits*2 || exp > maxExprAbsExp || exp < -maxExprAbsExp || coeffDigits+exp > maxExprAbsExp {
+		return decimal.Zero, errNonFiniteExpr
+	}
+	return d, nil
+}
 
 var errNonFiniteExpr = errors.New("expr result must be finite and non-negative")
 
@@ -236,12 +256,12 @@ func evalArithmetic(op string, left, right any) (any, error) {
 	case "-":
 		return ld.Sub(rd), nil
 	case "*":
-		return ld.Mul(rd), nil
+		return checkExprDecimalBounds(ld.Mul(rd))
 	case "/":
 		if rd.IsZero() {
 			return nil, errNonFiniteExpr
 		}
-		return ld.Div(rd), nil
+		return checkExprDecimalBounds(ld.Div(rd))
 	case "%":
 		if rd.IsZero() {
 			return nil, errNonFiniteExpr
@@ -254,7 +274,23 @@ func evalArithmetic(op string, left, right any) (any, error) {
 		if ld.IsZero() && rd.IsNegative() {
 			return nil, errNonFiniteExpr
 		}
-		return ld.Pow(rd), nil
+		if _, err := checkExprDecimalBounds(ld); err != nil {
+			return nil, err
+		}
+		// Pre-check estimated magnitude before calling Pow to avoid huge big.Int allocation
+		// on chained powers like ((((2**32)**32)**32)**32) (R2-038).
+		expInt := rd.IntPart()
+		if !ld.IsZero() && !ld.Abs().Equal(decimal.NewFromInt(1)) && expInt != 0 {
+			f, _ := ld.Abs().Float64()
+			if math.IsInf(f, 0) || math.IsNaN(f) || f <= 0 {
+				return nil, errNonFiniteExpr
+			}
+			estLog10 := math.Abs(float64(expInt) * math.Log10(f))
+			if math.IsInf(estLog10, 0) || math.IsNaN(estLog10) || estLog10 > float64(maxExprAbsExp) {
+				return nil, errNonFiniteExpr
+			}
+		}
+		return checkExprDecimalBounds(ld.Pow(rd))
 	default:
 		return nil, fmt.Errorf("expr run error: unsupported operator %q", op)
 	}

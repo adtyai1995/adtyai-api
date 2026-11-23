@@ -347,12 +347,22 @@ func UpdateOption(c *gin.Context) {
 		"TelegramOAuthEnabled", "telegram.client_id", "telegram.client_secret":
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
-	case adty_setting.TopupSettingKeyBonusRates:
+	case adty_setting.TopupSettingKeyBonusRates, "payment_setting.amount_discount":
 		common.ApiError(c, service.ErrAdtyAmountTierRetired)
+		return
+	case adty_setting.TopupSettingKeyMethodBonus,
+		adty_setting.TopupSettingKeySiteMethodAuth,
+		adty_setting.TopupSettingKeySiteMethodBonus,
+		adty_setting.TopupSettingKeySiteBonusMarginFill:
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Bonus method settings can only be updated via the dedicated bonus methods API"))
 		return
 	case adty_setting.EpaySettingKeyChannelTimeout, adty_setting.EpaySettingKeyTotalTimeout:
 		// Cross-key validation runs below after locking both SQL rows.
 	default:
+		if strings.HasPrefix(option.Key, "adty_legal_setting.site_agreement") {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+			return
+		}
 		if strings.HasPrefix(option.Key, "model_deployment.") {
 			common.ApiErrorT(c, "Invalid parameters")
 			return

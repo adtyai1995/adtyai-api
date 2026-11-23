@@ -147,47 +147,6 @@ func (s *ResellerSetting) Ready() bool {
 	return s.Enabled && len(s.RootDomains) > 0
 }
 
-// HoldGlobalCostFactorIncrease keeps the current global d when the requested
-// value is higher and a positive delay is configured. Delay <= 0 applies
-// immediately (real-time).
-func HoldGlobalCostFactorIncrease(next, previous *ResellerSetting, now int64) bool {
-	if next == nil || previous == nil || next.CostFactor == nil || previous.CostFactor == nil {
-		return false
-	}
-	delay := next.MarkupIncreaseDelayHours
-	if *next.CostFactor <= *previous.CostFactor || delay <= 0 {
-		next.PendingCostFactor = nil
-		next.PendingCostFactorAt = 0
-		return false
-	}
-	pending := *next.CostFactor
-	next.PendingCostFactor = &pending
-	next.PendingCostFactorAt = now + int64(delay)*3600
-	kept := *previous.CostFactor
-	next.CostFactor = &kept
-	return true
-}
-
-// HoldMinCostFactorIncrease keeps the current floor when the requested floor is
-// higher and a positive delay is configured. Delay <= 0 applies immediately.
-func HoldMinCostFactorIncrease(next, previous *ResellerSetting, now int64) bool {
-	if next == nil || previous == nil || next.MinCostFactor == nil || previous.MinCostFactor == nil {
-		return false
-	}
-	delay := next.MarkupIncreaseDelayHours
-	if *next.MinCostFactor <= *previous.MinCostFactor || delay <= 0 {
-		next.PendingMinCostFactor = nil
-		next.PendingMinCostFactorAt = 0
-		return false
-	}
-	pending := *next.MinCostFactor
-	next.PendingMinCostFactor = &pending
-	next.PendingMinCostFactorAt = now + int64(delay)*3600
-	kept := *previous.MinCostFactor
-	next.MinCostFactor = &kept
-	return true
-}
-
 // CloudflareConfigured 说明**自定义域名**要的三项都填了。
 //
 // 这三项是 DNS 记录那一路的全部输入（token 用来调 API、zone 决定写哪个区、

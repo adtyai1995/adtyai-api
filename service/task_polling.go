@@ -281,7 +281,7 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 	return summary
 }
 
-// DispatchPlatformUpdate 按平台分发轮询更新
+// DispatchPlatformUpdate 按平台分发轮询更新，并按每个任务实际绑定的适配器 FetchMode 分区（R2-035）。
 func DispatchPlatformUpdate(ctx context.Context, platform constant.TaskPlatform, taskChannelM map[int][]string, taskM map[string]*model.Task) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -291,38 +291,43 @@ func DispatchPlatformUpdate(ctx context.Context, platform constant.TaskPlatform,
 		return
 	}
 	adaptor := GetTaskAdaptorFunc(platform)
-	if batchAdaptor, ok := adaptor.(BatchTaskPollingAdaptor); ok && batchAdaptor.FetchMode() == "batch" {
-		if err := UpdateBatchTasks(ctx, batchAdaptor, taskChannelM, taskM); err != nil {
-			common.SysLog(common.LogText("UpdateBatchTasks fail: %s", err))
-		}
-		return
-	}
-	if adaptor == nil && GetTaskAdaptorForTaskFunc != nil {
-		hasBatch := false
-		for _, taskIds := range taskChannelM {
-			for _, id := range taskIds {
-				if t := taskM[id]; t != nil && t.PrivateData.Execution != nil && t.PrivateData.Execution.TaskPlugin != nil {
-					if pinned := GetTaskAdaptorForTaskFunc(t, t.Platform); pinned != nil {
-						if pb, ok := pinned.(BatchTaskPollingAdaptor); ok && pb.FetchMode() == "batch" {
-							hasBatch = true
-							break
-						}
+	defaultBatchAdaptor, defaultIsBatch := adaptor.(BatchTaskPollingAdaptor)
+	defaultIsBatch = defaultIsBatch && defaultBatchAdaptor.FetchMode() == "batch"
+
+	batchTaskChannelM := make(map[int][]string)
+	singleTaskChannelM := make(map[int][]string)
+	for channelID, taskIds := range taskChannelM {
+		for _, id := range taskIds {
+			isBatch := defaultIsBatch
+			if t := taskM[id]; t != nil && t.PrivateData.Execution != nil && t.PrivateData.Execution.TaskPlugin != nil && GetTaskAdaptorForTaskFunc != nil {
+				if pinned := GetTaskAdaptorForTaskFunc(t, t.Platform); pinned != nil {
+					if pb, ok := pinned.(BatchTaskPollingAdaptor); ok && pb.FetchMode() == "batch" {
+						isBatch = true
+					} else {
+						isBatch = false
 					}
 				}
 			}
-			if hasBatch {
-				break
+			if isBatch {
+				batchTaskChannelM[channelID] = append(batchTaskChannelM[channelID], id)
+			} else {
+				singleTaskChannelM[channelID] = append(singleTaskChannelM[channelID], id)
 			}
-		}
-		if hasBatch {
-			if err := UpdateBatchTasks(ctx, nil, taskChannelM, taskM); err != nil {
-				common.SysLog(common.LogText("UpdateBatchTasks fail: %s", err))
-			}
-			return
 		}
 	}
-	if err := UpdateVideoTasks(ctx, platform, taskChannelM, taskM); err != nil {
-		common.SysLog(common.LogText("UpdateVideoTasks fail: %s", err))
+	if len(batchTaskChannelM) > 0 {
+		var passBatch BatchTaskPollingAdaptor
+		if defaultIsBatch {
+			passBatch = defaultBatchAdaptor
+		}
+		if err := UpdateBatchTasks(ctx, passBatch, batchTaskChannelM, taskM); err != nil {
+			common.SysLog(common.LogText("UpdateBatchTasks fail: %s", err))
+		}
+	}
+	if len(singleTaskChannelM) > 0 {
+		if err := UpdateVideoTasks(ctx, platform, singleTaskChannelM, taskM); err != nil {
+			common.SysLog(common.LogText("UpdateVideoTasks fail: %s", err))
+		}
 	}
 }
 
@@ -612,11 +617,15 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 	}
 	adaptor := GetTaskAdaptorFunc(platform)
 	if adaptor != nil {
+		chBaseURL := cacheGetChannel.GetBaseURL()
+		if chBaseURL == "" {
+			chBaseURL = constant.GetChannelBaseURL(cacheGetChannel.Type)
+		}
 		info := &relaycommon.RelayInfo{}
 		info.ChannelMeta = &relaycommon.ChannelMeta{
 			ChannelType:     cacheGetChannel.Type,
 			ChannelId:       cacheGetChannel.Id,
-			ChannelBaseUrl:  cacheGetChannel.GetBaseURL(),
+			ChannelBaseUrl:  chBaseURL,
 			ChannelSetting:  cacheGetChannel.GetSetting(),
 			HeadersOverride: cacheGetChannel.GetHeaderOverride(),
 		}
@@ -669,7 +678,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 				ChannelMeta: &relaycommon.ChannelMeta{
 					ChannelType:     ch.Type,
 					ChannelId:       ch.Id,
-					ChannelBaseUrl:  ch.GetBaseURL(),
+					ChannelBaseUrl:  baseURL,
 					ChannelSetting:  ch.GetSetting(),
 					HeadersOverride: ch.GetHeaderOverride(),
 				},

@@ -257,32 +257,34 @@ export function VoucherAdminPanel() {
               )}
             </p>
             <div className='flex flex-wrap gap-2'>
-              {reconciled.status !== 'cancelled' && reconciled.id > 0 ? (
-                <Button
-                  type='button'
-                  size='sm'
-                  variant='outline'
-                  disabled={change.isPending}
-                  onClick={() =>
-                    change.mutate({ kind: 'cancel', id: reconciled.id })
-                  }
-                >
-                  {t('Cancel code and replace')}
-                </Button>
-              ) : (
-                <Button
-                  type='button'
-                  size='sm'
-                  variant='outline'
-                  onClick={() => {
-                    setReconciled(null)
-                    resetVoucherIssuanceIntent(intentKey)
-                    setIntentKey(createVoucherIssuanceIntentKey())
-                  }}
-                >
-                  {t('Prepare replacement code')}
-                </Button>
-              )}
+              {reconciled.id > 0 &&
+                (!reconciled.status ||
+                  reconciled.status === 'pending' ||
+                  reconciled.status === 'frozen') && (
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={change.isPending}
+                    onClick={() =>
+                      change.mutate({ kind: 'cancel', id: reconciled.id })
+                    }
+                  >
+                    {t('Cancel code and replace')}
+                  </Button>
+                )}
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() => {
+                  setReconciled(null)
+                  resetVoucherIssuanceIntent(intentKey)
+                  setIntentKey(createVoucherIssuanceIntentKey())
+                }}
+              >
+                {t('Prepare replacement code')}
+              </Button>
             </div>
           </div>
         )}

@@ -6,7 +6,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/shopspring/decimal"
 )
@@ -56,27 +55,6 @@ type AdtyQuote struct {
 	PayCurrency     string          `json:"pay_currency"`      // USDT | CNY
 	PriceCNYPerUSD  decimal.Decimal `json:"price_cny_per_usd"` // 只有易支付用
 	TopupGroupRatio decimal.Decimal `json:"topup_group_ratio"`
-}
-
-// AdtyBonusFor 取「不超过面额的最大档位」的加赠比例，低于最小档不加赠。加赠保留 8 位小数。
-func AdtyBonusFor(face int64) (rate, bonus decimal.Decimal) {
-	return adtyBonusFromRates(adty_setting.GetTopupSetting().BonusRates, face)
-}
-
-// adtyBonusFromRates 只保留历史档位兼容计算。新订单赠金不走这里。
-func adtyBonusFromRates(rates map[int]float64, face int64) (rate, bonus decimal.Decimal) {
-	best := int64(-1)
-	for tier, tierRate := range rates {
-		if int64(tier) <= face && int64(tier) > best && tierRate > 0 {
-			best = int64(tier)
-			rate = decimal.NewFromFloat(tierRate)
-		}
-	}
-	if best < 0 {
-		return decimal.Zero, decimal.Zero
-	}
-	bonus = decimal.NewFromInt(face).Mul(rate).Div(decimal.NewFromInt(100)).Round(8)
-	return rate, bonus
 }
 
 // AdtyQuoteFor 给一个分组的主站用户算一笔充值的报价。

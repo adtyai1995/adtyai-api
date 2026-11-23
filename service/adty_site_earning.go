@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -530,26 +529,6 @@ func adtyBonusUSDForSite(ext *model.AdtyTopupOrder) decimal.Decimal {
 	return decimal.Max(ext.BonusUSD, decimal.Zero)
 }
 
-// adtySiteBonusCapAmount 是一笔分站充值允许的加赠上限（美元）：
-// 面额 ×（主站同档比例 + max_site_bonus_extra）÷ 100。max_site_bonus_extra 没设按 0。
-//
-// 面额按美元小数收：分站订单可能带小数面额（AdtyHostedQuoteForSite 把额度按每美元额度
-// 换回美元），档位查表仍按整数面额取不超过它的最大档，与 AdtyBonusFor 的口径一致。
-func adtySiteBonusCapAmount(faceUSD decimal.Decimal) decimal.Decimal {
-	extra := decimal.Zero
-	if value := resellerSetting().MaxSiteBonusExtra; value != nil {
-		extra = decimal.NewFromFloat(*value)
-	}
-	mainRate, _ := AdtyBonusFor(faceUSD.IntPart())
-	return faceUSD.Mul(mainRate.Add(extra)).Div(decimal.NewFromInt(100)).Round(8)
-}
-
-// adtySiteBonusWithinCap 判断一笔分站充值的加赠合计（站点档位加赠 + 站长出资的优惠加赠）
-// 是否落在 adtySiteBonusCapAmount 之内。报价时执行（adtyQuotaQuoteForSite），超出则拒绝报价。
-func adtySiteBonusWithinCap(faceUSD decimal.Decimal, totalBonus decimal.Decimal) bool {
-	return !totalBonus.GreaterThan(adtySiteBonusCapAmount(faceUSD))
-}
-
 // adtySiteBonusAfterCreditTx 在入账事务里记下站长出资的加赠（负数日汇总），供报表使用。
 // 分站赠金保障在下单时已冻结，付款后转为保障冻结，实际支出仍为 0；不得在这里再扣钱包。
 // 只用 OnConflict DoUpdate 写，不做可能失败的查询（审阅重点 10）。
@@ -612,26 +591,6 @@ func adtySiteBonusAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 		}
 	}
 	return releaseUnusedSiteGiftGuaranteeTx(tx, ext)
-}
-
-// ValidateAdtySiteBonusRates 检查站长要保存的加赠档位：每一档不能超过「主站同档比例 + max_site_bonus_extra」。
-// 主站同档按 AdtyBonusFor 取（不超过这个面额的最高档）。max_site_bonus_extra 没设就是 0。
-func ValidateAdtySiteBonusRates(rates map[int]float64) error {
-	extra := 0.0
-	if value := resellerSetting().MaxSiteBonusExtra; value != nil {
-		extra = *value
-	}
-	for tier, rate := range rates {
-		if tier <= 0 || rate < 0 || rate > 100 || math.IsNaN(rate) {
-			return common.NewMessage("Bonus rate for {{tier}} must be between 0 and 100", map[string]any{"tier": tier})
-		}
-		mainRate, _ := AdtyBonusFor(int64(tier))
-		limit := mainRate.Add(decimal.NewFromFloat(extra))
-		if decimal.NewFromFloat(rate).GreaterThan(limit) {
-			return common.NewMessage("The bonus for ${{tier}} can be at most {{max}}%", map[string]any{"tier": tier, "max": limit.String()})
-		}
-	}
-	return nil
 }
 
 // ErrAdtyAmountTierRetired is returned when a caller tries to save the retired amount-tier gift.

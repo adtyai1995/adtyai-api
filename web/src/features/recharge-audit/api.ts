@@ -390,6 +390,50 @@ export async function resolveSiteEarningReview(
   requireServerSuccess(res.data)
 }
 
+export type GiftFulfillmentStatus =
+  | 'pending_review'
+  | 'pending'
+  | 'fulfilled'
+  | 'canceled'
+
+export type GiftFulfillment = {
+  id: number
+  trade_no: string
+  user_id: number
+  site_id: number
+  bonus_usd: string
+  bonus_quota: number
+  original_source: string
+  original_earning: string
+  original_margin: string
+  status: GiftFulfillmentStatus | string
+  reason: string
+  created_at: number
+  updated_at: number
+}
+
+export async function getAdminGiftFulfillments(
+  status: string,
+  page: number,
+  pageSize = 20
+) {
+  const res = await api.get<ApiResponse<PageResponse<GiftFulfillment>>>(
+    '/api/adty/admin/gift-fulfillments',
+    { params: { status: status || undefined, p: page, page_size: pageSize } }
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function reviewAdminGiftFulfillment(
+  id: number,
+  body: { action: 'approve' | 'reject'; note: string }
+) {
+  const res = await api.post<
+    ApiResponse<{ item: GiftFulfillment; fulfilled: boolean }>
+  >(`/api/adty/admin/gift-fulfillments/${id}/review`, body)
+  return requireServerSuccess(res.data).data
+}
+
 export async function completeTopupManually(
   tradeNo: string,
   proof: string,

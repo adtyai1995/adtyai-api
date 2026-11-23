@@ -63,6 +63,9 @@ func lockOwnerSite(siteID, ownerID int) (*model.AdtySite, error) {
 
 // SaveAdtyOwnerSiteMarketing updates only the fields submitted by the owner.
 func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpdate) error {
+	if input.TrialGrantMaxUSD != nil || input.TrialGrantDailyUSD != nil {
+		return common.NewMessage("Trial credit budgets have been retired")
+	}
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
@@ -83,8 +86,6 @@ func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpda
 			{input.MinUSD, &policy.MinUSD, "invite_withdraw_min", false},
 			{input.FeeUSD, &policy.FeeUSD, "invite_withdraw_fee", true},
 			{input.CNYRate, &policy.CNYRate, "invite_withdraw_cny_rate", false},
-			{input.TrialGrantMaxUSD, &policy.TrialGrantMaxUSD, "trial_grant_max_usd", true},
-			{input.TrialGrantDailyUSD, &policy.TrialGrantDailyUSD, "trial_grant_daily_usd", true},
 		} {
 			if field.input == nil {
 				continue
@@ -227,7 +228,8 @@ func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string
 	if teamID <= 0 || err != nil || !adtySiteTeamPayRatioConfigValid(value) {
 		return common.NewMessage("Invalid parameters")
 	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	var event model.AuditLog
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var team model.AdtyTeam
 		if err := model.AdtyLockForUpdate(tx).First(&team, teamID).Error; err != nil {
 			return err
@@ -235,8 +237,20 @@ func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string
 		if team.SiteId != siteID || team.Status != model.AdtyTeamStatusActive {
 			return common.NewMessage("No permission to perform this action")
 		}
-		return tx.Model(&team).Update("discount", value).Error
+		before := team.Discount.String()
+		if err := tx.Model(&team).Update("discount", value).Error; err != nil {
+			return err
+		}
+		event, err = appendAdtyTeamAuditTx(tx, ownerID, siteID, "team", strconv.FormatInt(teamID, 10), "adty.team.discount.update",
+			map[string]any{"team_id": teamID, "before": before},
+			map[string]any{"team_id": teamID, "before": before, "after": value.String()})
+		return err
 	})
+	if err != nil {
+		return err
+	}
+	deliverAdtyCommittedAudit(event)
+	return nil
 }
 
 // ListAdtyOwnerSiteTeams returns active teams on the owner's site.

@@ -734,18 +734,32 @@ type ExpiredAdtyTopUp struct {
 
 // ExpireAdtyTopUps 把到期的 pending 订单改成 expired，并在同一事务里释放赠金冻结。
 func ExpireAdtyTopUps(now int64, limit int) ([]ExpiredAdtyTopUp, error) {
+	expired, _, _, _, err := ExpireAdtyTopUpsAfter(now, 0, 0, limit)
+	return expired, err
+}
+
+// ExpireAdtyTopUpsAfter scans expired pending orders using a (expire_at, id) keyset
+// cursor so unconfirmable head-of-line orders never starve newer orders (R2-040).
+func ExpireAdtyTopUpsAfter(now, cursorExpireAt, cursorID int64, limit int) ([]ExpiredAdtyTopUp, int, int64, int64, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	var candidates []AdtyTopupOrder
-	err := DB.Table("adty_topup_orders AS a").Select("a.trade_no").
-		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("t.status = ? AND a.expire_at > 0 AND a.expire_at < ?", common.TopUpStatusPending, now).
-		Order("a.expire_at").Limit(limit).
-		Scan(&candidates).Error
-	if err != nil || len(candidates) == 0 {
-		return nil, err
+	var candidates []struct {
+		Id       int64
+		TradeNo  string
+		ExpireAt int64
 	}
+	q := DB.Table("adty_topup_orders AS a").Select("a.id, a.trade_no, a.expire_at").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("t.status = ? AND a.expire_at > 0 AND a.expire_at < ?", common.TopUpStatusPending, now)
+	if cursorExpireAt > 0 || cursorID > 0 {
+		q = q.Where("(a.expire_at > ? OR (a.expire_at = ? AND a.id > ?))", cursorExpireAt, cursorExpireAt, cursorID)
+	}
+	err := q.Order("a.expire_at ASC, a.id ASC").Limit(limit).Scan(&candidates).Error
+	if err != nil || len(candidates) == 0 {
+		return nil, 0, cursorExpireAt, cursorID, err
+	}
+	last := candidates[len(candidates)-1]
 	out := make([]ExpiredAdtyTopUp, 0, len(candidates))
 	for _, candidate := range candidates {
 		var expired *ExpiredAdtyTopUp
@@ -778,13 +792,13 @@ func ExpireAdtyTopUps(now int64, limit int) ([]ExpiredAdtyTopUp, error) {
 			return nil
 		})
 		if err != nil {
-			return out, err
+			return out, len(candidates), last.ExpireAt, last.Id, err
 		}
 		if expired != nil {
 			out = append(out, *expired)
 		}
 	}
-	return out, nil
+	return out, len(candidates), last.ExpireAt, last.Id, nil
 }
 
 // AdtyTopUpView 是用户和后台看到的一笔订单：top_ups 加扩展行。

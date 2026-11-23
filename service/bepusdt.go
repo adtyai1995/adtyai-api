@@ -6,7 +6,6 @@ import (
 	"crypto/md5"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -123,10 +122,10 @@ func bepusdtSignedBody(body map[string]any, secret string) ([]byte, error) {
 type bepusdtResponse struct {
 	StatusCode int             `json:"status_code"`
 	Message    string          `json:"message"`
-	Data       json.RawMessage `json:"data"`
+	Data       common.RawMessage `json:"data"`
 }
 
-func bepusdtPost(ctx context.Context, path string, body map[string]any) (json.RawMessage, error) {
+func bepusdtPost(ctx context.Context, path string, body map[string]any) (common.RawMessage, error) {
 	cfg := setting.GetBEpusdtSetting()
 	if !setting.BEpusdtConfigured() {
 		return nil, errBEpusdtNotConfigured
@@ -194,9 +193,9 @@ func CreateBEpusdtOrder(req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
 		OrderID        string          `json:"order_id"`
 		TradeType      string          `json:"trade_type"`
 		Fiat           string          `json:"fiat"`
-		Money          json.RawMessage `json:"amount"`
-		TradeId        string          `json:"trade_id"`
-		ActualAmount   json.RawMessage `json:"actual_amount"`
+		Money          common.RawMessage `json:"amount"`
+		TradeId        string            `json:"trade_id"`
+		ActualAmount   common.RawMessage `json:"actual_amount"`
 		Token          string          `json:"token"`
 		ExpirationTime int64           `json:"expiration_time"`
 		PaymentURL     string          `json:"payment_url"`
@@ -227,8 +226,10 @@ func CreateBEpusdtOrder(req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
 	}, nil
 }
 
-// CancelBEpusdtOrder 取消等待支付的订单。只有网关明确说已经检测到转账或已支付时，
-// 才阻止本地取消。网关说订单已取消、连接被断开，或其它非到账错误，都不留下待支付。
+// CancelBEpusdtOrder 取消等待支付的订单。
+// 仅当网关成功取消、或明确返回「已取消/已过期/不存在」时返回 nil；
+// 检测到已转账/已支付时返回 ErrAdtyPaymentDetected；
+// 其余网络超时、5xx 或未知网关错误原样返回，禁止本地误取消并释放分站保障预留（A.8 / R2-019）。
 func CancelBEpusdtOrder(tradeId string) error {
 	if strings.TrimSpace(tradeId) == "" {
 		return nil
@@ -236,10 +237,28 @@ func CancelBEpusdtOrder(tradeId string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, err := bepusdtPost(ctx, "/api/v1/order/cancel-transaction", map[string]any{"trade_id": tradeId})
-	if err == nil || !bepusdtPaymentDetected(err) {
+	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: %s", ErrAdtyPaymentDetected, err.Error())
+	if bepusdtPaymentDetected(err) {
+		return fmt.Errorf("%w: %s", ErrAdtyPaymentDetected, err.Error())
+	}
+	if bepusdtAlreadyCanceled(err) {
+		return nil
+	}
+	return err
+}
+
+func bepusdtAlreadyCanceled(err error) bool {
+	var gateway BEpusdtGatewayError
+	if !errors.As(err, &gateway) {
+		return false
+	}
+	lower := strings.ToLower(gateway.Message)
+	if strings.Contains(lower, "cancel") || strings.Contains(lower, "expired") || strings.Contains(lower, "not found") || strings.Contains(lower, "not exist") {
+		return true
+	}
+	return strings.Contains(gateway.Message, "已取消") || strings.Contains(gateway.Message, "已过期") || strings.Contains(gateway.Message, "不存在") || strings.Contains(gateway.Message, "已关闭")
 }
 
 // bepusdtPaymentDetected 只认网关原文里的到账说法。状态码本身分不清已支付、已取消和网关故障。
@@ -256,7 +275,7 @@ func bepusdtPaymentDetected(err error) bool {
 }
 
 // decimalFromJSON 接受 JSON 字符串或数字。
-func decimalFromJSON(raw json.RawMessage) (decimal.Decimal, error) {
+func decimalFromJSON(raw common.RawMessage) (decimal.Decimal, error) {
 	text := strings.TrimSpace(string(raw))
 	text = strings.Trim(text, `"`)
 	return decimal.NewFromString(text)
@@ -269,7 +288,7 @@ func AdtyDecimalFromAny(value any) (decimal.Decimal, error) {
 		return decimal.NewFromString(strconv.FormatFloat(typed, 'f', -1, 64))
 	case string:
 		return decimal.NewFromString(strings.TrimSpace(typed))
-	case json.Number:
+	case common.Number:
 		return decimal.NewFromString(typed.String())
 	}
 	return decimal.Zero, fmt.Errorf("not a number: %v", value)

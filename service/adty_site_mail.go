@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -135,17 +136,35 @@ func NormalizeAdtySiteBrand(input AdtySiteBrandInput) (AdtySiteBrandInput, error
 	}
 	if out.LogoURL != "" {
 		name, ok := strings.CutPrefix(out.LogoURL, AdtySiteAssetPrefix)
-		if !ok || name == "" || strings.ContainsAny(name, "/\\?#:") || strings.Contains(name, "..") {
+		if !ok || !adtySiteAssetName.MatchString(name) {
 			return out, ErrAdtySiteBrandInvalid
 		}
 	}
 	if out.FaviconURL != "" {
 		name, ok := strings.CutPrefix(out.FaviconURL, AdtySiteAssetPrefix)
-		if !ok || name == "" || strings.ContainsAny(name, "/\\?#:") || strings.Contains(name, "..") {
+		if !ok || !adtySiteAssetName.MatchString(name) {
 			return out, common.NewMessage("Favicon must be an uploaded site image")
 		}
 	}
 	return out, nil
+}
+
+func validateAdtySiteOwnedAsset(siteID int, urlPath string, invalidErr error) error {
+	if urlPath == "" {
+		return nil
+	}
+	name, ok := strings.CutPrefix(urlPath, AdtySiteAssetPrefix)
+	if !ok || !adtySiteAssetName.MatchString(name) {
+		return invalidErr
+	}
+	expectedPrefix := "site-" + strconv.Itoa(siteID) + "-"
+	if !strings.HasPrefix(name, expectedPrefix) {
+		return invalidErr
+	}
+	if _, _, err := OpenAdtySiteAsset(name); err != nil {
+		return invalidErr
+	}
+	return nil
 }
 
 // SaveAdtyBrandPatch checks only edited fields while holding the site's row lock.
@@ -188,6 +207,18 @@ func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string,
 			normalized, err := NormalizeAdtySiteBrand(brand)
 			if err != nil {
 				return err
+			}
+			// R2-045: Enforce site-<siteID>- ownership & file existence whenever
+			// logo_url or favicon_url is modified.
+			if _, changed := fields["logo_url"]; changed {
+				if err := validateAdtySiteOwnedAsset(siteID, normalized.LogoURL, ErrAdtySiteBrandInvalid); err != nil {
+					return err
+				}
+			}
+			if _, changed := fields["favicon_url"]; changed {
+				if err := validateAdtySiteOwnedAsset(siteID, normalized.FaviconURL, common.NewMessage("Favicon must be an uploaded site image")); err != nil {
+					return err
+				}
 			}
 			raw, err := common.Marshal(normalized)
 			if err != nil {
@@ -1392,30 +1423,6 @@ func adtySendSitePricingMail(site *model.AdtySite, user *model.User, message Adt
 		return
 	}
 	AdtySendSiteEmailAsync(site, message.Title, user.Email, AdtyRenderMail(site, message))
-}
-
-// NotifySiteOwnersGlobalCostFactorPending tells every open site's owner that a higher global d is scheduled.
-// The controller assigns this after holding the increase. Tests replace it.
-var NotifySiteOwnersGlobalCostFactorPending = func(factor decimal.Decimal, at int64) {
-	notifySiteOwnersGlobalCostFactorPending(factor, at)
-}
-
-func notifySiteOwnersGlobalCostFactorPending(factor decimal.Decimal, at int64) {
-	if !factor.IsPositive() || model.DB == nil {
-		return
-	}
-	var sites []model.AdtySite
-	err := model.DB.Where("status IN ?", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Find(&sites).Error
-	if err != nil {
-		common.SysError(common.LogText("list sites for global cost factor notice: %s", err.Error()))
-		return
-	}
-	for i := range sites {
-		site := sites[i]
-		site.PendingCostFactor = &factor
-		site.PendingCostFactorAt = at
-		adtyNotifySiteCostFactorPending(&site)
-	}
 }
 
 // adtyNotifySiteCostFactorPending 在提高 d 写入待生效时通知站长，不把新系数当成已经生效。

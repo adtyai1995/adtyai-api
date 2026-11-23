@@ -927,6 +927,9 @@ func (s *ReferralService) SaveReferralSettings(values map[string]string, rawRate
 	}
 	written := map[string]string{}
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := validatePartnerRateBoundsTx(tx, values); err != nil {
+			return err
+		}
 		if err := referralProgramCanStayOn(tx, values); err != nil {
 			return err
 		}
@@ -955,6 +958,53 @@ func (s *ReferralService) SaveReferralSettings(values map[string]string, rawRate
 		return err
 	}
 	return refreshReferralGateOptions()
+}
+
+// validatePartnerRateBoundsTx validates effective partner_min_rate <= partner_max_rate
+// inside the transaction by merging partial updates against stored DB values (R2-049).
+func validatePartnerRateBoundsTx(tx *gorm.DB, values map[string]string) error {
+	const minKey = "adty_referral_setting.partner_min_rate"
+	const maxKey = "adty_referral_setting.partner_max_rate"
+	_, hasMinUpdate := values[minKey]
+	_, hasMaxUpdate := values[maxKey]
+	if !hasMinUpdate && !hasMaxUpdate {
+		return nil
+	}
+	resolve := func(key string) (decimal.Decimal, bool, error) {
+		raw, ok := values[key]
+		if !ok {
+			var opt model.Option
+			res := tx.Where("key = ?", key).Limit(1).Find(&opt)
+			if res.Error != nil {
+				return decimal.Zero, false, res.Error
+			}
+			if res.RowsAffected == 0 {
+				return decimal.Zero, false, nil
+			}
+			raw = opt.Value
+		}
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.EqualFold(trimmed, "null") {
+			return decimal.Zero, false, nil
+		}
+		val, err := decimal.NewFromString(trimmed)
+		if err != nil {
+			return decimal.Zero, false, common.NewMessage("Invalid parameters")
+		}
+		return val, true, nil
+	}
+	effMin, minSet, err := resolve(minKey)
+	if err != nil {
+		return err
+	}
+	effMax, maxSet, err := resolve(maxKey)
+	if err != nil {
+		return err
+	}
+	if minSet && maxSet && effMin.GreaterThan(effMax) {
+		return common.NewMessage("Invalid parameters")
+	}
+	return nil
 }
 
 // refreshReferralGateOptions 把库里的默认比例和开关写回本进程，避免别的进程刚改过、这里还是旧值。

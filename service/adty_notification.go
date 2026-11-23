@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AdtyNotificationInbox struct {
@@ -662,7 +664,26 @@ func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, i
 			}
 		} else {
 			if err := queueAdtyPublicTelegramTx(tx, channel, purpose, announceTelegramBodyWithDB(tx, *row), adtyPublicNotificationEventKey(row.Id)); err != nil {
-				return err
+				// R2-055: Permanent content/configuration rejections must persist a skipped
+				// outbox row and mark telegram_outbox_seeded_at instead of retrying every minute for 7 days.
+				if errors.Is(err, ErrAdtyTelegramPrivate) || errors.Is(err, ErrAdtyTelegramInvalid) {
+					lastErr := err.Error()
+					if len(lastErr) > 128 {
+						lastErr = lastErr[:128]
+					}
+					skipRow := model.AdtyTelegramDelivery{
+						Public:    true,
+						Purpose:   purpose,
+						Channel:   channel,
+						EventKey:  adtyPublicNotificationEventKey(row.Id),
+						Body:      "",
+						Status:    model.AdtyTelegramDeliverySkip,
+						LastError: lastErr,
+					}
+					_ = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "event_key"}}, DoNothing: true}).Create(&skipRow).Error
+				} else {
+					return err
+				}
 			}
 		}
 		if hasSeededCol {
@@ -1050,16 +1071,18 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 	if site != nil {
 		siteID = site.Id
 	}
-	unreadPubQuery := query.Session(&gorm.Session{}).Where(
-		"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.site_id = ? AND r.read_key = adty_notification_publications.read_key)",
-		userID, siteID,
-	)
-	if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
-		unreadPubQuery = unreadPubQuery.Where(
+	hasHideTable := model.DB.Migrator().HasTable(&model.AdtyNotificationHide{})
+	if hasHideTable {
+		// R2-052: Apply hide exclusion BEFORE Limit(21) so hidden items never cause short/empty pages.
+		query = query.Where(
 			"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h.key = adty_notification_publications.read_key OR h.key = 'publication:' || CAST(adty_notification_publications.id AS TEXT)))",
 			userID,
 		)
 	}
+	unreadPubQuery := query.Session(&gorm.Session{}).Where(
+		"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.site_id = ? AND r.read_key = adty_notification_publications.read_key)",
+		userID, siteID,
+	)
 	var unread int64
 	if err := unreadPubQuery.Count(&unread).Error; err != nil {
 		return inbox, err
@@ -1163,10 +1186,13 @@ func hideAdtyNotifications(userID int, inbox AdtyNotificationInbox) (AdtyNotific
 	if userID <= 0 || model.DB == nil || len(inbox.Announcements) == 0 {
 		return inbox, nil
 	}
-	keys := make([]string, 0, len(inbox.Announcements))
+	keys := make([]string, 0, len(inbox.Announcements)*2)
 	for _, item := range inbox.Announcements {
 		if key, ok := item["read_key"].(string); ok && key != "" {
 			keys = append(keys, key)
+		}
+		if idKey, ok := item["id"].(string); ok && idKey != "" {
+			keys = append(keys, idKey)
 		}
 	}
 	if len(keys) == 0 {
@@ -1186,7 +1212,8 @@ func hideAdtyNotifications(userID int, inbox AdtyNotificationInbox) (AdtyNotific
 	visible := inbox.Announcements[:0]
 	for _, item := range inbox.Announcements {
 		key, _ := item["read_key"].(string)
-		if !skip[key] {
+		idKey, _ := item["id"].(string)
+		if !skip[key] && !skip[idKey] {
 			visible = append(visible, item)
 		}
 	}

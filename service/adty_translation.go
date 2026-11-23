@@ -938,25 +938,6 @@ func calculateAdtyTranslationCostUSD(modelName, source, english string) decimal.
 		}
 	}
 
-	if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyOfficialPrice{}) {
-		var official model.AdtyOfficialPrice
-		if err := model.DB.Where("model_name = ?", strings.TrimSpace(modelName)).Limit(1).Find(&official).Error; err == nil && official.ModelName != "" && official.HasAnyPrice() {
-			cost := decimal.Zero
-			if official.PerCall != nil {
-				cost = cost.Add(*official.PerCall)
-			}
-			if official.InputPerMTok != nil {
-				cost = cost.Add(decimal.NewFromInt(int64(inTokens)).Mul(*official.InputPerMTok).Div(decimal.NewFromInt(1_000_000)))
-			}
-			if official.OutputPerMTok != nil {
-				cost = cost.Add(decimal.NewFromInt(int64(outTokens)).Mul(*official.OutputPerMTok).Div(decimal.NewFromInt(1_000_000)))
-			}
-			if cost.GreaterThan(decimal.Zero) {
-				return cost
-			}
-		}
-	}
-
 	if modelPrice, ok := ratio_setting.GetModelPriceDecimal(modelName, false); ok && modelPrice.GreaterThan(decimal.Zero) {
 		return modelPrice
 	}

@@ -210,7 +210,7 @@
 
 - 使用 Rsbuild，配置见 `rsbuild.config.ts`；脚本以 `package.json` 为准（如 `bun run dev`、`bun run build`、`bun run typecheck`、`bun run lint`、`bun run format`），包管理见 [3.15 依赖管理](#315-依赖管理)。
 - 代码分割与懒加载策略见 [3.4 性能](#34-性能)；资源使用合适格式与压缩，环境变量用 `.env` 且以 `VITE_` 前缀，不在代码中硬编码；例外是 `rsbuild.config.ts` 还读无前缀的 `PUBLIC_CDN_URL`（静态资源前缀）。
-- **发布前**：执行 typecheck、lint、format 检查，完成生产构建并检查产物体积与环境变量配置；CI 另外跑 `node scripts/adty/i18n-check.mjs` 和 `bun run browser:smoke`（用 Chromium 对生产构建做冒烟），发布前按这两条一起对齐。
+- **发布前**：执行 typecheck、lint、format 检查，完成生产构建并检查产物体积与环境变量配置；CI 另外跑 `node scripts/adty/i18n-check.mjs` 与版权头检查（`node scripts/adty/ratchet.mjs copyright`），发布前按这两条一起对齐。
 - **版本号**：由 `../.github/workflows/adty-ghcr.yml` 在构建时写入根目录 `VERSION`，前后端使用同一值；`main` 使用 `main-<短 SHA>`，标签构建使用标签名，其他分支使用 `<分支名>-<短 SHA>`，拉取请求使用 `pr-<编号>-<短 SHA>`。仓库里的 `VERSION` 保持为空。`package.json` 的包版本不代表镜像发布版本。
 
 ---

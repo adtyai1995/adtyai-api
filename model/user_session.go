@@ -213,9 +213,13 @@ func CountActiveUserSessions(userID int, now int64) (int64, error) {
 	if now <= 0 {
 		now = time.Now().Unix()
 	}
+	var user User
+	if err := DB.Select("auth_version").First(&user, userID).Error; err != nil {
+		return 0, err
+	}
 	var count int64
 	err := DB.Model(&UserSession{}).
-		Where("user_id = ? AND status = ? AND expires_at > ?", userID, UserSessionStatusActive, now).
+		Where("user_id = ? AND status = ? AND expires_at > ? AND user_auth_version = ?", userID, UserSessionStatusActive, now, user.AuthVersion).
 		Count(&count).Error
 	return count, err
 }

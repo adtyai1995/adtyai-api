@@ -211,17 +211,8 @@ func PutAdtyOwnerSite(c *gin.Context) {
 		return
 	}
 	if body.BonusRates != nil {
-		if err := service.ValidateAdtySiteBonusRates(*body.BonusRates); err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionBonus, site.Id) {
-			return
-		}
-		if err := service.SaveAdtySiteBonusRates(site.Id, *body.BonusRates); err != nil {
-			common.ApiError(c, err)
-			return
-		}
+		common.ApiError(c, service.ErrAdtyAmountTierRetired)
+		return
 	}
 	if body.Brand != nil || body.SeoIndex != nil {
 		if err := service.SaveAdtyBrandPatch(site.Id, c.GetInt("id"), body.Brand, body.ExpectedBrand, body.SeoIndex); err != nil {
@@ -645,7 +636,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 			if i, ok := byUser[user.Id]; ok {
 				revenue, earning = sums[i].Revenue, sums[i].Earning
 			}
-			fmt.Fprintf(&b, "%d,%s,%s,%d,%s,%s\n", user.Id, adtyCSVField(user.Username), adtyCSVField(service.AdtyOwnerVisibleEmail(user.Email, service.AdtySiteVisibility(site))), user.CreatedAt,
+			fmt.Fprintf(&b, "%d,%s,%s,%d,%s,%s\n", user.Id, adtyCSVField(user.Username), adtyCSVField(service.AdtyMaskEmail(user.Email)), user.CreatedAt,
 				revenue.StringFixed(2), earning.StringFixed(2))
 		}
 	default:
