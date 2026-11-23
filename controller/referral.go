@@ -308,7 +308,7 @@ func writeReferralError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrReferralWithdrawUnavailable):
 		common.ApiErrorT(c, "This withdrawal method is not available yet")
 	case errors.Is(err, model.ErrAdtyIdempotencyConflict):
-		common.ApiErrorT(c, "This request was already used for another operation")
+		common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 	default:
 		common.ApiError(c, err)
 	}

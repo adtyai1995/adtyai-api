@@ -22,10 +22,6 @@ import type {
   TurnstileWidget,
 } from '../types'
 
-/** Money keys: no built-in value, null until set (convention I). */
-export const MONEY_KEYS = ['cost_factor', 'min_cost_factor'] as const
-export type MoneyKey = (typeof MONEY_KEYS)[number]
-
 /** Rules with a starting value, editable. */
 export const RULE_KEYS = [
   'markup_increase_delay_hours',
@@ -74,21 +70,14 @@ export type WidgetDraft = TurnstileWidget & {
   secret: string
 }
 
-export type TierDraft = {
-  /** Stable React key of the row. */
-  key: string
-  min_monthly_usd: string
-  cost_factor: string
-}
-
 let rowKey = 0
-/** A new React key for a tier or widget row. */
+/** A new React key for a widget row. */
 export function newRowKey(): string {
   rowKey += 1
   return `row-${rowKey}`
 }
 
-export type ResellerDrafts = Record<MoneyKey | RuleKey, string> &
+export type ResellerDrafts = Record<RuleKey, string> &
   Record<SwitchKey, boolean> &
   Record<CloudflareKey, string> & {
     enabled: boolean
@@ -101,7 +90,6 @@ export type ResellerDrafts = Record<MoneyKey | RuleKey, string> &
     /** One per line. */
     root_domains: string
     reserved_subdomains: string
-    tiers: TierDraft[]
     visibility: Record<VisibilityKey, string>
     /** New token; empty keeps the saved one. */
     cloudflare_token: string
@@ -136,11 +124,6 @@ export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
     sender_domain_enabled: saved.sender_domain_enabled,
     root_domains: (saved.root_domains ?? []).join('\n'),
     reserved_subdomains: (saved.reserved_subdomains ?? []).join('\n'),
-    tiers: (saved.cost_factor_tiers ?? []).map((tier) => ({
-      key: newRowKey(),
-      min_monthly_usd: String(tier.min_monthly_usd),
-      cost_factor: String(tier.cost_factor),
-    })),
     visibility: { ...VISIBILITY_DEFAULTS, ...saved.visibility },
     cloudflare_token: '',
     clear_cloudflare_token: false,
@@ -150,18 +133,10 @@ export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
       secret: '',
     })),
   } as ResellerDrafts
-  for (const key of MONEY_KEYS) {
-    drafts[key] = saved[key] === null ? '' : String(saved[key])
-  }
   for (const key of RULE_KEYS) drafts[key] = String(saved[key])
   for (const key of SWITCH_KEYS) drafts[key] = saved[key]
   for (const key of CLOUDFLARE_KEYS) drafts[key] = saved[key] ?? ''
   return drafts
-}
-
-/** Money keys still unset after these drafts; supply discounts are configured per site level. */
-export function missingMoneyKeys(_drafts: ResellerDrafts): MoneyKey[] {
-  return []
 }
 
 /**

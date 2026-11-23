@@ -14,7 +14,7 @@ import (
 // ApplyAdtySite rejects the retired self-service application endpoint.
 // Root creates sites by selecting an existing main-site user in the admin API.
 func ApplyAdtySite(c *gin.Context) {
-	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"success": false, "message": "Unauthorized, insufficient privileges"})
+	common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Unauthorized, insufficient privileges"))
 }
 
 // RequestAdtySiteClose 站长申请关站：POST /api/adty/site/close {reason}。客户去向由管理员定。

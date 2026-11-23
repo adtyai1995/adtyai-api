@@ -351,15 +351,15 @@ func GetTokenAutoGroups(c *gin.Context) {
 }
 
 func GetTokenKey(c *gin.Context) {
-	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeAPIKeyRead}) == nil {
-		return
-	}
 	id, err := strconv.Atoi(c.Param("id"))
-	userId := c.GetInt("id")
-	if err != nil {
-		common.ApiError(c, err)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if middleware.RequireSecurityProof(c, service.APIKeyReadOperation(id)) == nil {
+		return
+	}
+	userId := c.GetInt("id")
 	token, err := model.GetTokenByIds(id, userId)
 	if err != nil {
 		common.ApiError(c, err)
@@ -814,15 +814,11 @@ func DeleteTokenBatch(c *gin.Context) {
 }
 
 func GetTokenKeysBatch(c *gin.Context) {
-	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeAPIKeyRead}) == nil {
-		return
-	}
 	tokenBatch := TokenBatch{}
 	if err := c.ShouldBindJSON(&tokenBatch); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	params := tokenBatchAuditParams(c, tokenBatch.Ids)
 	if len(tokenBatch.Ids) == 0 {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -831,6 +827,10 @@ func GetTokenKeysBatch(c *gin.Context) {
 		common.ApiErrorT(c, "Too many items in batch request, maximum is {{max}}", map[string]any{"max": maxTokenBatchSize})
 		return
 	}
+	if middleware.RequireSecurityProof(c, service.APIKeyReadBatchOperation(tokenBatch.Ids)) == nil {
+		return
+	}
+	params := tokenBatchAuditParams(c, tokenBatch.Ids)
 	userId := c.GetInt("id")
 	tokens, err := model.GetTokenKeysByIds(tokenBatch.Ids, userId)
 	if err != nil {

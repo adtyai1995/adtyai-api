@@ -308,7 +308,7 @@ export function RefundDialog(
     }
     setPayoutIdempotencyKey(
       needsPayoutRetryKey
-        ? `${selectedRefundId}:payout:${crypto.randomUUID()}`
+        ? `payout:${crypto.randomUUID()}`
         : `${selectedRefundId}:payout`
     )
   }, [selectedRefundId, needsPayoutRetryKey])
@@ -881,7 +881,7 @@ export function RefundDialog(
                         onClick={() => {
                           setPayoutConflict(false)
                           setPayoutIdempotencyKey(
-                            `${selected.refund_id}:payout:${crypto.randomUUID()}`
+                            `payout:${crypto.randomUUID()}`
                           )
                         }}
                       >

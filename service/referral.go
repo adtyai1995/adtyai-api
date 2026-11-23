@@ -169,6 +169,11 @@ func (s *ReferralService) EnsureAffiliate(userId int) (*model.ReferralAffiliate,
 	if users[0].SiteId > 0 {
 		return nil, ErrReferralSiteCustomer
 	}
+	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userId); empErr != nil {
+		return nil, empErr
+	} else if isEmp {
+		return nil, common.NewMessage("Team employee accounts cannot participate in referral programs")
+	}
 	var existing []model.ReferralAffiliate
 	if err := model.DB.Where("user_id = ?", userId).Limit(1).Find(&existing).Error; err != nil {
 		return nil, err

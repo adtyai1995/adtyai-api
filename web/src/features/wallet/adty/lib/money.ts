@@ -17,13 +17,38 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 // formatNumber has no fixed-fraction option; USD amounts always show 2 decimals.
-/** Face plus bonus, the dollars the user is told they receive. */
+export function isGiftBonusWithheld(status?: string): boolean {
+  return (
+    status === 'pending' || status === 'pending_review' || status === 'canceled'
+  )
+}
+
+export function giftFulfillmentStatusLabelKey(status?: string): string | null {
+  switch (status) {
+    case 'pending':
+      return 'Bonus pending fulfillment'
+    case 'pending_review':
+      return 'Bonus pending review'
+    case 'canceled':
+      return 'Bonus not granted'
+    case 'fulfilled':
+      return 'Bonus fulfilled'
+    default:
+      return null
+  }
+}
+
+/** Face plus bonus actually credited (withheld bonuses are excluded until fulfilled). */
 export function creditedUsdAmount(ext: {
   face_usd: string
   bonus_usd: string
+  gift_fulfillment_status?: string
 }): string {
-  const total = Number(ext.face_usd) + Number(ext.bonus_usd)
-  return total.toFixed(2)
+  const face = Number(ext.face_usd)
+  const bonus = isGiftBonusWithheld(ext.gift_fulfillment_status)
+    ? 0
+    : Number(ext.bonus_usd)
+  return (face + bonus).toFixed(2)
 }
 
 export function formatUsd(

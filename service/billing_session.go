@@ -214,6 +214,17 @@ func (s *BillingSession) ReserveBeforeSubmit(targetQuota int) error {
 	return s.reserve(targetQuota, true)
 }
 
+func wrapDurableReserveError(err error) *types.NewAPIError {
+	code, status := types.ErrorCodeUpdateDataError, http.StatusInternalServerError
+	if errors.Is(err, model.ErrBillingWalletInsufficient) {
+		code, status = types.ErrorCodeInsufficientUserQuota, http.StatusForbidden
+	}
+	if errors.Is(err, model.ErrBillingTokenInsufficient) {
+		code, status = types.ErrorCodePreConsumeTokenQuotaFailed, http.StatusForbidden
+	}
+	return types.NewErrorWithStatusCode(err, code, status, types.ErrOptionWithSkipRetry())
+}
+
 func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -223,7 +234,7 @@ func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) er
 		}
 		row, err := model.ReserveBillingOperation(s.durableSpec(), targetQuota)
 		if err != nil {
-			return err
+			return wrapDurableReserveError(err)
 		}
 		s.preConsumedQuota, s.tokenConsumed = row.ReservedQuota, row.TokenReservedQuota
 		s.syncRelayInfo()
@@ -270,14 +281,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 	if s.operationKey != "" {
 		row, err := model.ReserveBillingOperation(s.durableSpec(), quota)
 		if err != nil {
-			code, status := types.ErrorCodeUpdateDataError, http.StatusInternalServerError
-			if errors.Is(err, model.ErrBillingWalletInsufficient) {
-				code, status = types.ErrorCodeInsufficientUserQuota, http.StatusForbidden
-			}
-			if errors.Is(err, model.ErrBillingTokenInsufficient) {
-				code, status = types.ErrorCodePreConsumeTokenQuotaFailed, http.StatusForbidden
-			}
-			return types.NewErrorWithStatusCode(err, code, status, types.ErrOptionWithSkipRetry())
+			return wrapDurableReserveError(err)
 		}
 		s.preConsumedQuota, s.tokenConsumed = row.ReservedQuota, row.TokenReservedQuota
 		s.syncRelayInfo()
@@ -473,6 +477,17 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			}
 			available = min(available, principal)
 			payerKind = model.BillingPayerOwner
+		} else if payerKind == model.BillingPayerPersonal {
+			// R3-007: Exclude owner self-use site principal from ordinary personal wallet admission
+			// even when preConsumedQuota == 0.
+			scoped, scopeErr := model.AdtyOwnerScopedWallet(model.DB, &model.BillingOperation{
+				UserId:    relayInfo.UserId,
+				PayerKind: model.BillingPayerPersonal,
+			}, userQuota)
+			if scopeErr != nil {
+				return nil, types.NewError(scopeErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+			}
+			available = int64(scoped)
 		}
 		_ = payerKind
 		_ = payerTeamID

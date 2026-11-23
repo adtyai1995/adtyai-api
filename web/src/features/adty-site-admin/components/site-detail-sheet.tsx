@@ -1007,15 +1007,14 @@ function RootBalanceRequests(props: { siteId: number }) {
     queryFn: () => getAdminBalanceRequests(props.siteId, page, status),
     enabled: isRoot,
   })
+  const [reviewNote, setReviewNote] = useState('')
   const review = useMutation({
     mutationFn: (input: { id: number; approve: boolean }) =>
-      reviewAdminBalanceRequest(input.id, input.approve),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: siteAdminKeys.list('balance-requests', {
-          siteId: props.siteId,
-        }),
-      }),
+      reviewAdminBalanceRequest(input.id, input.approve, reviewNote.trim()),
+    onSuccess: () => {
+      setReviewNote('')
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+    },
     onError: (error) => handleServerError(error),
   })
   if (!isRoot) return null
@@ -1027,25 +1026,34 @@ function RootBalanceRequests(props: { siteId: number }) {
           'This request does not change the customer balance until the site owner or Root approves it.'
         )}
       </p>
-      <select
-        className='w-fit rounded-md border p-2'
-        value={status}
-        aria-label={t('Status')}
-        onChange={(event) => {
-          setStatus(event.target.value)
-          setPage(1)
-        }}
-      >
-        <option value=''>{t('All statuses')}</option>
-        <option value='pending'>{t('Pending')}</option>
-        <option value='approved'>{t('Approved')}</option>
-        <option value='rejected'>{t('Rejected')}</option>
-      </select>
+      <div className='flex flex-wrap items-center gap-2'>
+        <select
+          className='w-fit rounded-md border p-2'
+          value={status}
+          aria-label={t('Status')}
+          onChange={(event) => {
+            setStatus(event.target.value)
+            setPage(1)
+          }}
+        >
+          <option value=''>{t('All statuses')}</option>
+          <option value='pending'>{t('Pending')}</option>
+          <option value='approved'>{t('Approved')}</option>
+          <option value='rejected'>{t('Rejected')}</option>
+        </select>
+        <Input
+          className='max-w-xs'
+          value={reviewNote}
+          placeholder={t('Optional review note')}
+          aria-label={t('Optional review note')}
+          onChange={(event) => setReviewNote(event.target.value)}
+        />
+      </div>
       {list.isPending && <LoadingState />}
       {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
       {list.isSuccess && (
         <StaticDataTable
-          tableClassName='min-w-[640px]'
+          tableClassName='min-w-[780px]'
           tableProps={{ 'aria-label': t('Balance requests') }}
           data={list.data.items}
           getRowKey={(row) => String(row.id)}
@@ -1078,6 +1086,43 @@ function RootBalanceRequests(props: { siteId: number }) {
               header: t('Amount'),
               cell: (row: AdminBalanceRequest) => (
                 <span className='tabular-nums'>{row.amount_usd}</span>
+              ),
+            },
+            {
+              id: 'provenance',
+              header: t('Provenance'),
+              cell: (row: AdminBalanceRequest) => (
+                <div className='flex max-w-xs flex-col gap-0.5 text-xs'>
+                  {row.reason && <span className='break-all'>{row.reason}</span>}
+                  {row.funding_source && (
+                    <span className='text-muted-foreground'>
+                      {t('Funding source')}: {row.funding_source}
+                    </span>
+                  )}
+                  {row.order_ref && (
+                    <span className='text-muted-foreground font-mono'>
+                      {t('Order ref')}: {row.order_ref}
+                    </span>
+                  )}
+                  {(row.batch_kind || row.batch_source) && (
+                    <span className='text-muted-foreground font-mono'>
+                      {[row.batch_kind, row.batch_source]
+                        .filter(Boolean)
+                        .join(' / ')}
+                    </span>
+                  )}
+                  {row.ledger_id ? (
+                    <span className='text-muted-foreground font-mono'>
+                      #{row.ledger_id}
+                    </span>
+                  ) : null}
+                  {!row.reason &&
+                    !row.funding_source &&
+                    !row.order_ref &&
+                    !row.batch_kind &&
+                    !row.batch_source &&
+                    !row.ledger_id && <span>-</span>}
+                </div>
               ),
             },
             {

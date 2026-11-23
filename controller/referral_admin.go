@@ -307,24 +307,35 @@ func UpdateReferralAffiliate(c *gin.Context) {
 			updates["site_owner_since"] = 0
 		case "adjust":
 			key := strings.TrimSpace(body.IdempotencyKey)
-			if body.Amount.IsZero() || strings.TrimSpace(body.Reason) == "" || key == "" || len(key) > 80 || strings.ContainsAny(key, " \t\r\n") {
+			if body.Amount.IsZero() || !body.Amount.Equal(body.Amount.Truncate(2)) || strings.TrimSpace(body.Reason) == "" || key == "" || len(key) > 80 || strings.ContainsAny(key, " \t\r\n") {
+				return common.NewMessage("Enter an amount, a reason, and an idempotency key")
+			}
+			delta := body.Amount.Round(2)
+			if delta.IsZero() {
 				return common.NewMessage("Enter an amount, a reason, and an idempotency key")
 			}
 			ref := "admin-adjust:" + strconv.Itoa(adminID) + ":" + key
-			var seen int64
-			if err := tx.Model(&model.ReferralCommissionLedger{}).Where("external_ref_id = ?", ref).Count(&seen).Error; err != nil {
+			var prior []model.ReferralCommissionLedger
+			if err := tx.Where("external_ref_id = ?", ref).Limit(1).Find(&prior).Error; err != nil {
 				return err
 			}
-			if seen == 0 {
-				var acc model.ReferralCommissionAccount
-				if err := model.AdtyLockForUpdate(tx).Where("affiliate_id = ?", affiliate.Id).First(&acc).Error; err != nil {
-					return err
+			if len(prior) > 0 {
+				if prior[0].AffiliateId != affiliate.Id || !decimal.NewFromFloat(prior[0].DeltaAvailable).Round(2).Equal(delta) {
+					return model.ErrAdtyIdempotencyConflict
 				}
-				if err := service.AdjustAccountTx(tx, &acc, decimal.Zero, body.Amount.Round(2), decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
-					Type: "admin_adjust", RefType: "admin", RefId: fmt.Sprint(adminID), ExternalRefId: ref, Remark: strings.TrimSpace(body.Reason), Operator: fmt.Sprint(adminID),
-				}); err != nil {
-					return err
-				}
+				return nil
+			}
+			var acc model.ReferralCommissionAccount
+			if err := model.AdtyLockForUpdate(tx).Where("affiliate_id = ?", affiliate.Id).First(&acc).Error; err != nil {
+				return err
+			}
+			if decimal.NewFromFloat(acc.AvailableAmount).Add(delta).IsNegative() {
+				return service.ErrReferralInsufficient
+			}
+			if err := service.AdjustAccountTx(tx, &acc, decimal.Zero, delta, decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
+				Type: "admin_adjust", RefType: "admin", RefId: fmt.Sprint(adminID), ExternalRefId: ref, Remark: strings.TrimSpace(body.Reason), Operator: fmt.Sprint(adminID),
+			}); err != nil {
+				return err
 			}
 		default:
 			return common.NewMessage("Invalid parameters")

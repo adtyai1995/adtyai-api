@@ -39,19 +39,26 @@ const adtyBalanceQueryKey = ['adty-topup', 'balance'] as const
  */
 export function BalanceChip() {
   const { t, i18n } = useTranslation()
-  const sessionQuota = useAuthStore((state) => state.auth.user?.quota)
+  const user = useAuthStore((state) => state.auth.user)
+  const isSiteStaff = (user?.staff_site_id ?? 0) > 0
+  const sessionQuota = user?.quota
   const balanceQuery = useQuery({
     queryKey: adtyBalanceQueryKey,
     queryFn: async () => {
       const response = requireServerSuccess(await getSelf())
       return Number(response.data?.quota ?? 0)
     },
+    enabled: !isSiteStaff,
     // Payment settlement already invalidates this key. Do not refetch on
     // every tab focus: that redraws the header while the admin is working.
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     meta: { errorToast: false },
   })
+
+  if (isSiteStaff) {
+    return null
+  }
 
   const quota = balanceQuery.data ?? sessionQuota
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)

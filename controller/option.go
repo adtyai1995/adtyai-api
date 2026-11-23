@@ -224,12 +224,28 @@ func buildCompletionRatioMetaValue(optionValues map[string]string) string {
 	return string(jsonBytes)
 }
 
+func isRetiredOptionKey(k string) bool {
+	switch k {
+	case "payment_setting.amount_discount",
+		"adty_topup_setting.bonus_rates",
+		"adty_reseller_setting.max_site_bonus_extra",
+		"adty_reseller_setting.invite_code_enabled":
+		return true
+	}
+	return strings.HasPrefix(k, "adty_legal_setting.site_agreement") ||
+		strings.HasPrefix(k, "adty_reseller_setting.cost_factor") ||
+		strings.HasPrefix(k, "adty_reseller_setting.pending_cost_factor") ||
+		strings.HasPrefix(k, "adty_reseller_setting.min_cost_factor") ||
+		strings.HasPrefix(k, "adty_reseller_setting.pending_min_cost_factor") ||
+		strings.HasPrefix(k, "adty_reseller_setting.trial_grant_")
+}
+
 func GetOptions(c *gin.Context) {
 	var options []*model.Option
 	optionValues := make(map[string]string)
 	common.OptionMapRWMutex.Lock()
 	for k, v := range common.OptionMap {
-		if strings.HasPrefix(k, "model_deployment.") || k == "theme.frontend" || k == "billing_setting.billing_mode" || k == "billing_setting.billing_expr" || k == "ResendKeyConfigured" {
+		if strings.HasPrefix(k, "model_deployment.") || k == "theme.frontend" || k == "billing_setting.billing_mode" || k == "billing_setting.billing_expr" || k == "ResendKeyConfigured" || isRetiredOptionKey(k) {
 			continue
 		}
 		value := common.Interface2String(v)

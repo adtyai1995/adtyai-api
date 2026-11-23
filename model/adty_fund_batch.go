@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -705,15 +706,52 @@ type AdtyBonusSpend struct {
 // that reclaim lots by source do not call it.
 var AdtyAfterBonusSpentTx func(tx *gorm.DB, userID int, spends []AdtyBonusSpend) error
 
+// AdtyAfterBonusRefundedTx runs inside the settlement transaction when a
+// settled non-expiring bonus share is reversed (e.g. failed task refund or
+// downward Realtime WSS settlement), restoring prior gift_spend on the
+// originating site's Earnings/Margin wallets (R3-004).
+var AdtyAfterBonusRefundedTx func(tx *gorm.DB, userID int, operationKey string, refunds []AdtyBonusSpend) error
+
 func adtyNotifyBonusSpentTx(tx *gorm.DB, userID int, bonusBySource map[string]int64) error {
 	if len(bonusBySource) == 0 || AdtyAfterBonusSpentTx == nil {
 		return nil
 	}
-	spends := make([]AdtyBonusSpend, 0, len(bonusBySource))
-	for source, quota := range bonusBySource {
-		spends = append(spends, AdtyBonusSpend{Source: source, Quota: quota})
+	sources := make([]string, 0, len(bonusBySource))
+	for source := range bonusBySource {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	spends := make([]AdtyBonusSpend, 0, len(sources))
+	for _, source := range sources {
+		if quota := bonusBySource[source]; quota > 0 {
+			spends = append(spends, AdtyBonusSpend{Source: source, Quota: quota})
+		}
+	}
+	if len(spends) == 0 {
+		return nil
 	}
 	return AdtyAfterBonusSpentTx(tx, userID, spends)
+}
+
+func adtyNotifyBonusRefundedTx(tx *gorm.DB, userID int, operationKey string, bonusBySource map[string]int64) error {
+	if len(bonusBySource) == 0 || AdtyAfterBonusRefundedTx == nil {
+		return nil
+	}
+	sources := make([]string, 0, len(bonusBySource))
+	for source := range bonusBySource {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	refunds := make([]AdtyBonusSpend, 0, len(sources))
+	for _, source := range sources {
+		if quota := bonusBySource[source]; quota > 0 {
+			refunds = append(refunds, AdtyBonusSpend{Source: source, Quota: quota})
+		}
+	}
+	if len(refunds) == 0 {
+		return nil
+	}
+	return AdtyAfterBonusRefundedTx(tx, userID, operationKey, refunds)
 }
 
 // ConsumeAdtyFundBatchesTx spends principal lots before bonus lots.

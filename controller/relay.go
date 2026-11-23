@@ -590,6 +590,11 @@ func executeTaskSubmissionWith(
 				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", channelErr.StatusCode)
 				break
 			}
+			if snapErr := service.SyncBillingGroupSnapshot(relayInfo); snapErr != nil {
+				logger.LogError(c, snapErr.Error())
+				taskErr = service.TaskErrorWrapperLocal(snapErr.Err, string(snapErr.GetErrorCode()), snapErr.StatusCode)
+				break
+			}
 		}
 		diagnostics.attempt(retryParam.GetRetry()+1, channel, relayInfo.LockedChannel != nil)
 
@@ -608,13 +613,15 @@ func executeTaskSubmissionWith(
 
 		stage = "submit"
 		result, taskErr = submit(c, relayInfo)
+		if taskErr == nil {
+			// R3-011: Once upstream accepted the task, do not abort or refund even if
+			// the client disconnected right after acceptance; persist and settle durably.
+			diagnostics.attemptSucceeded(retryParam.GetRetry()+1, result)
+			break
+		}
 		if requestErr := c.Request.Context().Err(); requestErr != nil {
 			diagnostics.cancelled("after_submit", retryParam.GetRetry()+1)
 			taskErr = service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
-			break
-		}
-		if taskErr == nil {
-			diagnostics.attemptSucceeded(retryParam.GetRetry()+1, result)
 			break
 		}
 
@@ -657,33 +664,19 @@ func executeTaskSubmissionWith(
 		diagnostics.failed("submit", "missing_result", taskErr, false)
 		return nil, taskErr
 	}
-	if requestErr := c.Request.Context().Err(); requestErr != nil {
-		diagnostics.cancelled("before_reserve", retryParam.GetRetry()+1)
-		return nil, service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
-	}
-
-	// Reserve any submit-time upward billing adjustment before persistence.
-	// This keeps insertion failures fully refundable while ensuring settlement
-	// after the barrier normally has a zero positive delta. A relayed event
-	// stream is still billed when this reserve fails: settlement goes through
-	// SettleBilling (max deduct to 0, never overdraft).
+	// R3-011: Upstream has already accepted this billable task (result != nil).
+	// Attempt to reserve any submit-time upward adjustment, but NEVER abort or
+	// refund 100% if upward reserve fails or the client disconnected — persist
+	// the task with context.WithoutCancel and let SettleBilling apply DEC-003
+	// (cap wallet debit at 0 and record shortfall hold) so vendor cost is accounted.
 	if relayInfo.Billing != nil {
 		stage = "reserve"
 		diagnostics.reserve("reserve_start", result.Quota)
 		if reserveErr := relayInfo.Billing.Reserve(result.Quota); reserveErr != nil {
-			common.SysError(common.LogText("reserve adjusted task billing error: %s", reserveErr.Error()))
-			if !c.Writer.Written() {
-				taskErr = service.TaskErrorWrapperLocal(errors.New("insufficient quota for adjusted task cost"), string(types.ErrorCodeInsufficientUserQuota), http.StatusForbidden)
-				diagnostics.failed("reserve", "insufficient_quota", taskErr, false)
-				return nil, taskErr
-			}
+			common.SysError(common.LogText("reserve adjusted task billing error after upstream acceptance (continuing to persist and settle via DEC-003): %s", reserveErr.Error()))
 		} else {
 			diagnostics.reserve("reserve_complete", result.Quota)
 		}
-	}
-	if requestErr := c.Request.Context().Err(); requestErr != nil {
-		diagnostics.cancelled("before_insert", retryParam.GetRetry()+1)
-		return nil, service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
 	}
 
 	stage = "insert"
@@ -753,7 +746,8 @@ func executeTaskSubmissionWith(
 	}
 	service.AttachTaskBillingReservation(relayInfo, task)
 	diagnostics.insertStart(task)
-	if insertErr := task.InsertWithContext(c.Request.Context(), insertOmits...); insertErr != nil {
+	persistCtx := context.WithoutCancel(c.Request.Context())
+	if insertErr := task.InsertWithContext(persistCtx, insertOmits...); insertErr != nil {
 		common.SysError(common.LogText("insert task error: %s", insertErr.Error()))
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
 		diagnostics.failed("insert", "database_error", taskErr, false)

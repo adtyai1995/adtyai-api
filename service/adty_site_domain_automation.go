@@ -488,7 +488,7 @@ func CheckAdtyDomainProvider(ctx context.Context, provider string) error {
 	case "cloudflare":
 		zoneID := strings.TrimSpace(cfg.CloudflareZoneId)
 		if !adtyCloudflareZoneIDPattern.MatchString(zoneID) {
-			return fmt.Errorf("Invalid Cloudflare zone ID")
+			return common.NewMessage("Invalid Cloudflare zone ID")
 		}
 		var fallback struct {
 			Origin string `json:"origin"`
@@ -498,10 +498,10 @@ func CheckAdtyDomainProvider(ctx context.Context, provider string) error {
 			return err
 		}
 		if fallback.Origin != cfg.FallbackOrigin || fallback.Status != "active" {
-			return fmt.Errorf("Cloudflare fallback origin is not active or does not match configuration")
+			return common.NewMessage("Cloudflare fallback origin is not active or does not match configuration")
 		}
 		return nil
 	default:
-		return fmt.Errorf("Unknown domain provider")
+		return common.NewMessage("Unknown domain provider")
 	}
 }

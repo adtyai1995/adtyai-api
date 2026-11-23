@@ -85,9 +85,10 @@ type BillingSnapshot struct {
 	GroupRatioDecimal         string         `json:"group_ratio_decimal,omitempty"`
 	EstimatedPromptTokens     int            `json:"estimated_prompt_tokens"`
 	EstimatedCompletionTokens int            `json:"estimated_completion_tokens"`
-	PreConsumeMultiplier      float64        `json:"pre_consume_multiplier,omitempty"` // Reservation only; zero in older snapshots means 1.
-	EstimatedQuotaBeforeGroup float64        `json:"estimated_quota_before_group"`
-	EstimatedQuotaAfterGroup  int            `json:"estimated_quota_after_group"`
+	PreConsumeMultiplier             float64        `json:"pre_consume_multiplier,omitempty"` // Reservation only; zero in older snapshots means 1.
+	EstimatedQuotaBeforeGroup        float64        `json:"estimated_quota_before_group"`
+	EstimatedQuotaBeforeGroupDecimal string         `json:"estimated_quota_before_group_decimal,omitempty"`
+	EstimatedQuotaAfterGroup         int            `json:"estimated_quota_after_group"`
 	EstimatedTier             string         `json:"estimated_tier"`
 	EstimatedBillingUnit      BillingUnit    `json:"estimated_billing_unit,omitempty"`
 	EstimatedFixedPrice       *float64       `json:"estimated_fixed_price,omitempty"`

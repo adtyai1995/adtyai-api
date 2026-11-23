@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/service"
@@ -84,6 +85,15 @@ func AdtySiteContext() gin.HandlerFunc {
 		// R1-013: Always allow container-local loopback health/readiness probes even
 		// when ServerAddress is set to a production domain.
 		if (path == "/api/ready" || path == "/api/health") && adtyIsLoopbackRemoteAddr(c.Request.RemoteAddr) {
+			c.Next()
+			return
+		}
+		// R3-025: Allow host-local backup flush calls (which arrive via Docker bridge
+		// gateway with Host=127.0.0.1/localhost and no X-Forwarded-For); public Nginx
+		// server blocks explicitly return 404 for this path.
+		if method == http.MethodPost && path == "/api/adty/internal/flush-batch" &&
+			(adtyIsLoopbackRemoteAddr(c.Request.RemoteAddr) ||
+				((host == "127.0.0.1" || host == "localhost" || host == "::1") && strings.TrimSpace(c.GetHeader("X-Forwarded-For")) == "")) {
 			c.Next()
 			return
 		}
@@ -222,18 +232,14 @@ func AdtyRequireCurrentSiteTerms() gin.HandlerFunc {
 		}
 		required, _, err := service.AdtySiteTermsStatusWithError(userID)
 		if err != nil {
-			// R1-062: Distinguish database/lookup failures (503) from genuinely unaccepted terms (403).
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-				"success": false,
-				"message": "Service temporarily unavailable, please retry later",
-			})
+			// R1-062 / R3-068: Distinguish database/lookup failures (503) with i18n message_key.
+			common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Service temporarily unavailable, please retry later"))
+			c.Abort()
 			return
 		}
 		if required {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"message": "Accept the current site customer terms first",
-			})
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Accept the current site customer terms first"))
+			c.Abort()
 			return
 		}
 		c.Next()

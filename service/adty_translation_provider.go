@@ -70,6 +70,10 @@ var adtyTranslationHTTPClient = func(timeout time.Duration) *http.Client {
 // adtyTranslateViaProvider 是生产用的 AdtyTranslateFunc 实现：每次调用读一次 Root 配置，
 // 所以后台改完配置立刻生效，不用重启。
 func adtyTranslateViaProvider(modelName, text string) (string, error) {
+	return adtyTranslateViaProviderWithOptions(modelName, text, false)
+}
+
+func adtyTranslateViaProviderWithOptions(modelName, text string, allowDisabled bool) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", ErrAdtyTranslationInvalid
@@ -78,7 +82,7 @@ func adtyTranslateViaProvider(modelName, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !cfg.Enabled {
+	if !allowDisabled && !cfg.Enabled {
 		return "", ErrAdtyTranslationDisabled
 	}
 	if strings.TrimSpace(modelName) == "" {

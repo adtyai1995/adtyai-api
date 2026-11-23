@@ -81,16 +81,13 @@ func shouldChargeViolationFee(err *types.NewAPIError) bool {
 	return HasCSAMViolationMarker(err)
 }
 
-func calcViolationFeeQuota(amount, groupRatio float64) int {
-	if amount <= 0 {
-		return 0
-	}
-	if groupRatio <= 0 {
+func calcViolationFeeQuota(amount float64, groupRatio decimal.Decimal) int {
+	if amount <= 0 || !groupRatio.IsPositive() {
 		return 0
 	}
 	quota := common.QuotaFromDecimal(decimal.NewFromFloat(amount).
-		Mul(decimal.NewFromFloat(common.QuotaPerUnit)).
-		Mul(decimal.NewFromFloat(groupRatio)).
+		Mul(common.QuotaPerUnitDecimal()).
+		Mul(groupRatio).
 		Round(0))
 	if quota <= 0 {
 		return 0
@@ -114,8 +111,9 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 		return false, nil
 	}
 
+	groupRatioDec := relayInfo.PriceData.GroupRatioInfo.BilledGroupRatio()
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
-	feeQuota := calcViolationFeeQuota(settings.ViolationDeductionAmount, groupRatio)
+	feeQuota := calcViolationFeeQuota(settings.ViolationDeductionAmount, groupRatioDec)
 	if feeQuota <= 0 {
 		return false, nil
 	}

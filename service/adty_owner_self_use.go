@@ -175,7 +175,7 @@ func TransferAdtyEarningsToPersonal(siteID, ownerID int, usd decimal.Decimal, in
 		}
 		if prior != nil {
 			if prior.UserId != ownerID || prior.DeltaQuota != int64(quota) {
-				return ErrAdtySiteWalletInvalidOperation
+				return model.ErrAdtyIdempotencyConflict
 			}
 			return nil
 		}

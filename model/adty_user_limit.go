@@ -21,6 +21,10 @@ func (AdtyUserLimit) TableName() string { return "adty_user_limits" }
 // 放在 model 包里，避免 model 反过来依赖限流包。
 var AdtyOnConsumeTokens func(userId int, tokens int, withoutToken bool)
 
+// AdtyOnConsumeKeyTokens records per-key TPM usage inside RecordConsumeLog
+// even when LogConsumeEnabled is disabled (R3-023).
+var AdtyOnConsumeKeyTokens func(tokenID int, tokens int)
+
 // GetAdtyUserLimit 取一个用户的限制；没有设过时返回全部为 -1 的一行。
 func GetAdtyUserLimit(userId int) (AdtyUserLimit, error) {
 	if DB == nil {

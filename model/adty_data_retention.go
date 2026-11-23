@@ -358,7 +358,7 @@ func DeleteInactiveUserSessionsForRetention(now int64, retentionDays int) (int64
 				UserSessionStatusRevoked,
 				cutoff,
 			).
-			Order("id").Limit(userSessionCleanupScanLimit).Pluck("sid", &sids).Error; err != nil {
+			Order("created_at, sid").Limit(userSessionCleanupScanLimit).Pluck("sid", &sids).Error; err != nil {
 			return deleted, err
 		}
 		if len(sids) == 0 {

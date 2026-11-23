@@ -36,6 +36,10 @@ func PostAdtyEarningToMargin(c *gin.Context) {
 		return
 	}
 	if err := service.TransferAdtyEarningToMargin(site.Id, c.GetInt("id"), amount, "earn-margin:"+key); err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) || errors.Is(err, service.ErrAdtySiteWalletIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -114,6 +118,10 @@ func PostOwnerPersonalTransfer(c *gin.Context) {
 	}
 	ref, err := service.TransferAdtyEarningsToPersonal(site.Id, c.GetInt("id"), amount, c.GetHeader("Idempotency-Key"))
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) || errors.Is(err, service.ErrAdtySiteWalletIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

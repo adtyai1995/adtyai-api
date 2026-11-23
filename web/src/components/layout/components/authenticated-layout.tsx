@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useLocation } from '@tanstack/react-router'
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CommandMenu } from '@/components/command-menu'
@@ -48,11 +48,28 @@ type AuthenticatedLayoutProps = {
 export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
   const { t } = useTranslation()
   const { status } = useStatus()
-  const sidebarCookie = getCookie('sidebar_state')
-  const defaultOpen =
-    sidebarCookie !== undefined
-      ? sidebarCookie !== 'false'
-      : !status?.default_collapse_sidebar
+  const hasSidebarCookieRef = useRef(getCookie('sidebar_state') !== undefined)
+  const userToggledSidebarRef = useRef(false)
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    const cookieVal = getCookie('sidebar_state')
+    if (cookieVal !== undefined) {
+      return cookieVal !== 'false'
+    }
+    return !status?.default_collapse_sidebar
+  })
+  useEffect(() => {
+    if (
+      status &&
+      !hasSidebarCookieRef.current &&
+      !userToggledSidebarRef.current
+    ) {
+      setSidebarOpen(!status.default_collapse_sidebar)
+    }
+  }, [status])
+  const handleSidebarOpenChange = (nextOpen: boolean) => {
+    userToggledSidebarRef.current = true
+    setSidebarOpen(nextOpen)
+  }
   const pathname = useLocation({ select: (location) => location.pathname })
   // Nested workspaces (System settings) carry longer section names, so their
   // drill-in navigation gets a wider rail (design system §3: 240px).
@@ -60,16 +77,16 @@ export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
   const signedIn = useAuthStore((s) => !!s.auth.user)
   const { requestVerification, dialogProps } = useSecureVerification()
 
-  // R2-011: Register global single-use api_key.read step-up requester so Quick Start,
-  // Overview, and Chat key reveals consistently prompt SecureVerificationDialog.
+  // R2-011 / R3-050: Register global single-use api_key.read step-up requester bound to token_id.
   useEffect(() => {
     if (!signedIn) {
       setApiKeySecurityProofRequester(null)
       return
     }
-    setApiKeySecurityProofRequester(async ({ scope }) => {
+    setApiKeySecurityProofRequester(async ({ scope, tokenId }) => {
       const proof = await requestVerification({
         scope,
+        context: { token_id: tokenId },
         title: t('Verify your identity'),
         description: t(
           'Viewing or copying a full API key requires security verification.'
@@ -89,7 +106,8 @@ export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
     <LayoutProvider>
       <SearchProvider>
         <SidebarProvider
-          defaultOpen={defaultOpen}
+          open={sidebarOpen}
+          onOpenChange={handleSidebarOpenChange}
           className='flex-col'
           style={
             wideSidebar

@@ -485,7 +485,7 @@ func GetAdtySiteSenderDomain(ownerUserId int) (*model.AdtySiteSenderDomain, erro
 		return nil, err
 	}
 	var row model.AdtySiteSenderDomain
-	if model.DB.Where("site_id = ? AND status <> ?", site.Id, model.AdtySenderDomainDisabled).Limit(1).Find(&row).RowsAffected == 0 {
+	if model.DB.Where("site_id = ? AND (status <> ? OR disabled_by > 0)", site.Id, model.AdtySenderDomainDisabled).Limit(1).Find(&row).RowsAffected == 0 {
 		return nil, nil
 	}
 	return &row, nil
@@ -1346,16 +1346,45 @@ func renderAdtySiteCloseMigrationMail(site *model.AdtySite, recipient *model.Adt
 	if when := adtyMailWhen(site.CloseExecuteAt); when != "" {
 		intro = name + " will close on " + when + "."
 	}
+	paragraphs := []string{
+		"您的账号将迁入主站。请使用原用户名 " + recipient.Username + " 登录主站并完成验证。",
+		"您的订单和余额仍归原账号。分站 API Key 将被撤销，请在主站重新创建。客服联系方式：" + support,
+		"Your account will move to the main site only. It cannot be transferred to another site.",
+		"Sign in on the main site with your unique username: " + recipient.Username + ". Use that username to select your account, then verify your password and complete any required verification.",
+		"Your orders and balance stay with this account. They will not be merged with another account that uses the same email address.",
+		"Your API keys from the closing site will be revoked at migration. Your historical records will be kept; create new API keys on the main site.",
+	}
+	if tpl, customized, err := GetAdtyNoticeTemplate("site_close_migration"); err == nil && customized && tpl != nil {
+		vars := map[string]string{
+			"site_name": name,
+			"username":  recipient.Username,
+			"support":   support,
+		}
+		zhTitle := strings.TrimSpace(applyAdtyNoticeVars(tpl.TitleZh, vars, name))
+		enTitle := strings.TrimSpace(applyAdtyNoticeVars(tpl.TitleEn, vars, name))
+		zhBody := strings.TrimSpace(applyAdtyNoticeVars(tpl.ContentZh, vars, name))
+		enBody := strings.TrimSpace(applyAdtyNoticeVars(tpl.ContentEn, vars, name))
+		if zhTitle != "" && enTitle != "" {
+			subject = zhTitle + " / " + enTitle
+		} else if zhTitle != "" {
+			subject = zhTitle
+		} else if enTitle != "" {
+			subject = enTitle
+		}
+		customLead := make([]string, 0, 2)
+		if zhBody != "" {
+			customLead = append(customLead, zhBody)
+		}
+		if enBody != "" {
+			customLead = append(customLead, enBody)
+		}
+		if len(customLead) > 0 {
+			paragraphs = append(customLead, paragraphs...)
+		}
+	}
 	return subject, AdtyRenderMail(site, AdtyMailMessage{
 		Title: subject, Intro: "分站关闭时间 / Site closure: " + adtyMailWhen(site.CloseExecuteAt) + ". " + intro,
-		Paragraphs: []string{
-			"您的账号将迁入主站。请使用原用户名 " + recipient.Username + " 登录主站并完成验证。",
-			"您的订单和余额仍归原账号。分站 API Key 将被撤销，请在主站重新创建。客服联系方式：" + support,
-			"Your account will move to the main site only. It cannot be transferred to another site.",
-			"Sign in on the main site with your unique username: " + recipient.Username + ". Use that username to select your account, then verify your password and complete any required verification.",
-			"Your orders and balance stay with this account. They will not be merged with another account that uses the same email address.",
-			"Your API keys from the closing site will be revoked at migration. Your historical records will be kept; create new API keys on the main site.",
-		},
+		Paragraphs:  paragraphs,
 		ActionLabel: "登录主站 / Sign in on the main site", ActionURL: AdtySiteBaseURL(nil),
 		Footnote: "For support, contact: " + support,
 	})

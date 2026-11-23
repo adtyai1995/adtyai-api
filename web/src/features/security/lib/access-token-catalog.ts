@@ -22,6 +22,7 @@ import type { AccessTokenCatalog, AccessTokenGroup } from '../api'
 
 const GROUP_LABELS: Record<AccessTokenGroup, string> = {
   personal: 'Personal',
+  owner: 'Site Owner',
   admin: 'Administration',
   system: 'System',
 }

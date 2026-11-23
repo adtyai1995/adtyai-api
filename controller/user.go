@@ -1696,7 +1696,8 @@ func UpdateUserSetting(c *gin.Context) {
 			return
 		}
 		// 验证URL格式
-		if _, err := url.ParseRequestURI(req.WebhookUrl); err != nil {
+		parsedWebhook, err := url.ParseRequestURI(req.WebhookUrl)
+		if err != nil || (parsedWebhook.Scheme != "http" && parsedWebhook.Scheme != "https") || strings.TrimSpace(parsedWebhook.Host) == "" {
 			common.ApiErrorT(c, "Invalid Webhook URL")
 			return
 		}
@@ -1718,12 +1719,13 @@ func UpdateUserSetting(c *gin.Context) {
 			return
 		}
 		// 验证URL格式
-		if _, err := url.ParseRequestURI(req.BarkUrl); err != nil {
+		parsedBark, err := url.ParseRequestURI(req.BarkUrl)
+		if err != nil {
 			common.ApiErrorT(c, "Invalid Bark push URL")
 			return
 		}
-		// 检查是否是HTTP或HTTPS
-		if !strings.HasPrefix(req.BarkUrl, "https://") && !strings.HasPrefix(req.BarkUrl, "http://") {
+		// 检查是否是HTTP或HTTPS且包含有效主机
+		if (parsedBark.Scheme != "http" && parsedBark.Scheme != "https") || strings.TrimSpace(parsedBark.Host) == "" {
 			common.ApiErrorT(c, "URL must start with http:// or https://")
 			return
 		}
@@ -1740,12 +1742,13 @@ func UpdateUserSetting(c *gin.Context) {
 			return
 		}
 		// 验证URL格式
-		if _, err := url.ParseRequestURI(req.GotifyUrl); err != nil {
+		parsedGotify, err := url.ParseRequestURI(req.GotifyUrl)
+		if err != nil {
 			common.ApiErrorT(c, "Invalid Gotify server URL")
 			return
 		}
-		// 检查是否是HTTP或HTTPS
-		if !strings.HasPrefix(req.GotifyUrl, "https://") && !strings.HasPrefix(req.GotifyUrl, "http://") {
+		// 检查是否是HTTP或HTTPS且包含有效主机
+		if (parsedGotify.Scheme != "http" && parsedGotify.Scheme != "https") || strings.TrimSpace(parsedGotify.Host) == "" {
 			common.ApiErrorT(c, "URL must start with http:// or https://")
 			return
 		}

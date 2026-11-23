@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -319,6 +320,9 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 			}
 			cycleUsed = cycleUsed.Add(delta.Abs())
 		}
+		if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.Type == "gift_spend" && cycleUsed.IsPositive() {
+			cycleUsed = decimal.Max(decimal.Zero, cycleUsed.Sub(delta))
+		}
 		if kind == model.AdtySiteWalletMargin && delta.IsZero() && change.HoldDelta.IsPositive() && cycleTier.IsPositive() && !change.AllowOverdraft {
 			allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
 				TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD, ExcessFrozen: wallet.ExcessFrozenUSD,
@@ -564,7 +568,6 @@ func resolveAdtyAnomalyDispositionRecipientTx(tx *gorm.DB, row model.AdtyAnomaly
 		var sites []model.AdtySite
 		if err := tx.Select("id", "owner_user_id").Where("id = ?", siteID).Limit(1).Find(&sites).Error; err == nil && len(sites) > 0 && sites[0].OwnerUserId > 0 {
 			recipientID = sites[0].OwnerUserId
-			includeInternalNote = true
 		}
 	}
 	if recipientID <= 0 && row.AccountId > 0 {
@@ -762,8 +765,11 @@ func ApplyAdtySiteWalletChange(siteID int, kind string, delta decimal.Decimal, c
 		if adtyUniqueViolation(err) {
 			var existing model.AdtySiteWalletLedger
 			lookup := model.DB.Where("idempotency_key = ?", change.IdempotencyKey).Limit(1).Find(&existing)
-			if lookup.Error == nil && lookup.RowsAffected > 0 && sameAdtySiteWalletOperation(&existing, siteID, kind, delta, change) {
-				return &existing, nil
+			if lookup.Error == nil && lookup.RowsAffected > 0 {
+				if sameAdtySiteWalletOperation(&existing, siteID, kind, delta, change) {
+					return &existing, nil
+				}
+				return nil, ErrAdtySiteWalletIdempotencyConflict
 			}
 		}
 		return nil, err
@@ -893,6 +899,25 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 				Where("kind = ? AND site_id IN (?)", model.AdtySiteWalletMargin, sites).
 				Update("required_balance", input.DepositUSD).Error; err != nil {
 				return err
+			}
+		}
+		// R3-026: Never allow disabling the last ready site tier while reseller is enabled
+		// or non-closed subsites exist, which would wipe tier_cost_factor and brick billing.
+		hasReady, err := HasReadyAdtySiteTier(tx)
+		if err != nil {
+			return err
+		}
+		if !hasReady {
+			var openSites int64
+			if tx.Migrator().HasTable(&model.AdtySite{}) {
+				if err := tx.Model(&model.AdtySite{}).
+					Where("status <> ?", model.AdtySiteStatusClosed).
+					Count(&openSites).Error; err != nil {
+					return err
+				}
+			}
+			if adty_setting.GetResellerSetting().Enabled || openSites > 0 {
+				return common.NewMessage("Keep at least one enabled site level with a positive supply discount while reseller sites are active")
 			}
 		}
 		return nil
@@ -1116,6 +1141,10 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 		var tiers []model.AdtySiteTier
 		if err := tx.Where("enabled = ?", true).Find(&tiers).Error; err != nil {
 			return err
+		}
+		// R3-026: Bail out without wiping existing site tier assignment if no enabled tiers exist.
+		if len(tiers) == 0 {
+			return nil
 		}
 		selected := SelectAdtySiteTier(tiers, stats)
 		warn = selected == nil && len(tiers) > 0

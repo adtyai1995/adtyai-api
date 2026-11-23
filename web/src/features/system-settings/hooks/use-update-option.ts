@@ -64,6 +64,29 @@ const STATUS_RELATED_KEYS = new Set([
   'HeaderNavModules',
   'SidebarModulesAdmin',
   'Notice',
+  'SystemName',
+  'Logo',
+  'Footer',
+  'HomePageContent',
+  'About',
+  'TurnstileCheckEnabled',
+  'TurnstileSiteKey',
+  'EmailVerificationEnabled',
+  'RegisterEnabled',
+  'PasswordLoginEnabled',
+  'PasswordRegisterEnabled',
+  'EmailDomainRestrictionEnabled',
+  'EmailDomainWhitelist',
+  'TopUpLink',
+  'QuotaForNewUser',
+  'QuotaForInviter',
+  'QuotaForInvitee',
+  'UserAgreementEnabled',
+  'PrivacyPolicyEnabled',
+  'adty_legal_setting.site_customer_terms_version',
+  'adty_legal_setting.user_agreement_enabled',
+  'adty_legal_setting.privacy_policy_enabled',
+  'adty_site_setting.refund_policy_enabled',
   'LogConsumeEnabled',
   'log_setting.user_export_enabled',
   'log_setting.max_range_days',
@@ -143,6 +166,10 @@ export function useUpdateOption() {
           } catch {
             /* empty */
           }
+        }
+        if (variables.key === 'Notice') {
+          queryClient.invalidateQueries({ queryKey: ['notice'] })
+          queryClient.invalidateQueries({ queryKey: ['adty-notifications'] })
         }
 
         toast.success(i18next.t('Setting updated successfully'))

@@ -131,7 +131,7 @@ BACKUP_REMOTE=backup@backup-host:/srv/backup/adtyai/
 
 网段脚本的行为：从 https://www.cloudflare.com/ips-v4 和 https://www.cloudflare.com/ips-v6 下载（两个文件结尾都没有换行，脚本不会漏掉最后一行），每行都校验是合法的 IPv4 或 IPv6 网段，数量不能太少；然后替换 include 文件并 `nginx -t`，不通过就换回旧文件。下载失败、校验不过、`nginx -t` 不过时都保留旧文件、不 reload、退出码非 0，日志里能看到原因。网段没变时不 reload Nginx，但照样刷新一遍 ufw。
 
-`robots.txt` 和 `sitemap.xml` 都由应用生成，Nginx 不用配：`router/adty-router.go:615-616` 挂了 `GET /robots.txt` 和 `GET /sitemap.xml`，`router/adty_seo.go` 按主站/分站生成（主站和开了 SEO 的分站只屏蔽 `/api/`、`/v1/`、`/pay/`，没开 SEO 的分站整站不收录、robots 里也不给 sitemap；sitemap 只列首页的正式语言网址）。`deploy/adty/nginx.conf` 里没有任何 sitemap 配置。
+`robots.txt` 和 `sitemap.xml` 都由应用生成，Nginx 不用配：`router/adty-router.go:723-724` 挂了 `GET /robots.txt` 和 `GET /sitemap.xml`，`router/adty_seo.go` 按主站/分站生成（主站和开了 SEO 的分站只屏蔽 `/api/`、`/v1/`、`/pay/`，没开 SEO 的分站整站不收录、robots 里也不给 sitemap；sitemap 只列首页的正式语言网址）。`deploy/adty/nginx.conf` 里没有任何 sitemap 配置。
 
 ## 6. Cloudflare 面板
 

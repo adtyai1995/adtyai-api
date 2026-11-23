@@ -405,6 +405,18 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if AdtyOnConsumeTokens != nil {
 		AdtyOnConsumeTokens(userId, params.PromptTokens+params.CompletionTokens, c.GetInt("token_id") == 0)
 	}
+	if AdtyOnConsumeKeyTokens != nil {
+		tokenID := params.TokenId
+		if tokenID == 0 && c != nil {
+			tokenID = c.GetInt("token_id")
+		}
+		if tokenID > 0 && params.PromptTokens+params.CompletionTokens > 0 {
+			AdtyOnConsumeKeyTokens(tokenID, params.PromptTokens+params.CompletionTokens)
+			if c != nil {
+				c.Set("adty_key_tpm_recorded", true)
+			}
+		}
+	}
 	// 二开：分站倍率记进 admin_info、站长收益记账，关掉消费日志时也要记（任务 11.4、11.5）
 	if AdtyOnConsumeLog != nil {
 		AdtyOnConsumeLog(c, userId, &params)

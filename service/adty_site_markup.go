@@ -1047,11 +1047,19 @@ func AdtyAdjustPricingForSiteModels(c *gin.Context, group string, pricing []mode
 // AdtySitePriceList presents group and model prices from the same committed overrides.
 func AdtySitePriceList(c *gin.Context, groupRatio map[string]float64, displayGroup string, pricing []model.Pricing) ([]model.Pricing, error) {
 	userID := c.GetInt("id")
+	priceUserID := userID
 	var site *model.AdtySite
 	if userID > 0 {
 		site = AdtyBillingSiteForUser(userID)
-	} else {
+	}
+	// R3-052: When browsing a subsite anonymously or as a main-site user (e.g. the site owner
+	// previewing their own subsite pricing), fall back to the request host's site with
+	// site-level pricing (priceUserID = 0) instead of serving un-marked main-site prices.
+	if site == nil {
 		site = AdtySiteForRequest(c)
+		if site != nil {
+			priceUserID = 0
+		}
 	}
 	if !AdtySiteServesCustomers(site) || !resellerSetting().Enabled {
 		return pricing, nil
@@ -1060,16 +1068,16 @@ func AdtySitePriceList(c *gin.Context, groupRatio map[string]float64, displayGro
 	if !ok {
 		return pricing, nil
 	}
-	prices, err := adtySitePrices(site.Id, userID)
+	prices, err := adtySitePrices(site.Id, priceUserID)
 	if err != nil {
 		return nil, err
 	}
 	for group, ratio := range groupRatio {
-		k := ResolveAdtySiteMarkup(prices, userID, group, "")
-		marked, _, _ := adtySiteOrdinarySellRatioDec(decimal.NewFromFloat(ratio), k, d, userID, group)
+		k := ResolveAdtySiteMarkup(prices, priceUserID, group, "")
+		marked, _, _ := adtySiteOrdinarySellRatioDec(decimal.NewFromFloat(ratio), k, d, priceUserID, group)
 		groupRatio[group] = marked.InexactFloat64()
 	}
-	return adtyAdjustModelPriceList(prices, userID, displayGroup, pricing), nil
+	return adtyAdjustModelPriceList(prices, priceUserID, displayGroup, pricing), nil
 }
 
 func adtyAdjustModelPriceList(prices []model.AdtySitePrice, userId int, group string, pricing []model.Pricing) []model.Pricing {

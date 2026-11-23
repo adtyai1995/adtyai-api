@@ -81,34 +81,119 @@ func RecordAdtyBillingHoldTx(tx *gorm.DB, userID int, requestID string, shortfal
 	return nil
 }
 
-// UpsertAdtyBillingHoldForOperationTx aggregates all settled shortfall across a
-// request's operations (root + Realtime direct:* chunks) and atomically upserts
-// the corresponding AdtyBillingHold row inside the settlement transaction (R2-016).
+// UpsertAdtyBillingHoldForOperationTx is kept as an alias for SyncAdtyBillingHoldForOperationTx.
 func UpsertAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation) error {
-	if tx == nil || op == nil || op.UserId <= 0 || op.Shortfall <= 0 {
+	return syncAdtyBillingHoldForOperationTx(tx, op, false)
+}
+
+// SyncAdtyBillingHoldForOperationTx computes the authoritative shortfall for a
+// request's billing operations and atomically creates, adjusts (up or down), or
+// resolves its AdtyBillingHold row inside the settlement transaction (R2-016 / R3-006).
+// Once the root request:<reqID> operation reaches BillingSettled or BillingRefunded,
+// its shortfall (plus any non-direct child adjustments) replaces Realtime direct:*
+// chunk shortfalls so chunks are never double-counted or resurrected.
+func SyncAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation) error {
+	return syncAdtyBillingHoldForOperationTx(tx, op, false)
+}
+
+func syncAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation, fromBackfill bool) error {
+	if tx == nil || op == nil || op.UserId <= 0 {
 		return nil
+	}
+	if !tx.Migrator().HasTable(&AdtyBillingHold{}) {
+		return ErrAdtyBillingHoldTableMissing
 	}
 	reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
 	if reqID == "" {
 		reqID = op.OperationKey
 	}
-	totalShortfall := op.Shortfall
-	if tx.Migrator().HasTable(&BillingOperation{}) && reqID != "" {
+	if reqID == "" {
+		return nil
+	}
+	totalShortfall := max(0, op.Shortfall)
+	rootFinalized := false
+	if tx.Migrator().HasTable(&BillingOperation{}) {
 		rootKey := "request:" + reqID
 		directPrefix := "direct:" + reqID + ":%"
-		var sum int64
-		if err := tx.Model(&BillingOperation{}).
-			Select("COALESCE(SUM(shortfall), 0)").
-			Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR operation_key LIKE ? OR earning_root_key IN ?)",
-				op.UserId, BillingSettled, reqID, rootKey, directPrefix, []string{reqID, rootKey}).
-			Scan(&sum).Error; err != nil {
+		var rootOps []BillingOperation
+		if err := tx.Select("operation_key", "state", "shortfall").
+			Where("user_id = ? AND operation_key IN ? AND state IN ?",
+				op.UserId, []string{rootKey, reqID}, []string{BillingSettled, BillingRefunded}).
+			Find(&rootOps).Error; err != nil {
 			return err
 		}
-		if int(sum) > totalShortfall {
-			totalShortfall = int(sum)
+		if len(rootOps) > 0 {
+			rootFinalized = true
+			var sum int64
+			if err := tx.Model(&BillingOperation{}).
+				Select("COALESCE(SUM(shortfall), 0)").
+				Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR (earning_root_key IN ? AND operation_key NOT LIKE ?))",
+					op.UserId, BillingSettled, reqID, rootKey, []string{reqID, rootKey}, "direct:%").
+				Scan(&sum).Error; err != nil {
+				return err
+			}
+			totalShortfall = int(max(0, sum))
+		} else {
+			var sum int64
+			if err := tx.Model(&BillingOperation{}).
+				Select("COALESCE(SUM(shortfall), 0)").
+				Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR operation_key LIKE ? OR earning_root_key IN ?)",
+					op.UserId, BillingSettled, reqID, rootKey, directPrefix, []string{reqID, rootKey}).
+				Scan(&sum).Error; err != nil {
+				return err
+			}
+			totalShortfall = int(max(0, sum))
 		}
 	}
-	return RecordAdtyBillingHoldTx(tx, op.UserId, reqID, totalShortfall)
+	var existing []AdtyBillingHold
+	if err := lockForUpdate(tx).Where("request_id = ?", reqID).Limit(1).Find(&existing).Error; err != nil {
+		return err
+	}
+	if totalShortfall <= 0 {
+		if len(existing) > 0 && existing[0].Status == AdtyBillingHoldOpen {
+			return tx.Model(&existing[0]).Updates(map[string]any{
+				"shortfall_quota": 0,
+				"status":          AdtyBillingHoldResolved,
+			}).Error
+		}
+		return nil
+	}
+	if len(existing) == 0 {
+		row := AdtyBillingHold{
+			UserId:         op.UserId,
+			RequestId:      reqID,
+			ShortfallQuota: totalShortfall,
+			Status:         AdtyBillingHoldOpen,
+		}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "request_id"}}, DoNothing: true}).Create(&row).Error; err != nil {
+			return err
+		}
+		if err := lockForUpdate(tx).Where("request_id = ?", reqID).Limit(1).Find(&existing).Error; err != nil {
+			return err
+		}
+		if len(existing) == 0 {
+			return nil
+		}
+	}
+	if fromBackfill && existing[0].Status == AdtyBillingHoldResolved {
+		return nil
+	}
+	if rootFinalized {
+		if existing[0].ShortfallQuota != totalShortfall || existing[0].Status != AdtyBillingHoldOpen {
+			return tx.Model(&existing[0]).Updates(map[string]any{
+				"shortfall_quota": totalShortfall,
+				"status":          AdtyBillingHoldOpen,
+			}).Error
+		}
+		return nil
+	}
+	if totalShortfall > existing[0].ShortfallQuota {
+		return tx.Model(&existing[0]).Updates(map[string]any{
+			"shortfall_quota": totalShortfall,
+			"status":          AdtyBillingHoldOpen,
+		}).Error
+	}
+	return nil
 }
 
 func billingHoldRequestIDFromOperationKey(opKey string) string {
@@ -171,10 +256,22 @@ func HasOpenAdtyBillingHoldTx(tx *gorm.DB, userID int) (bool, error) {
 			return false, err
 		}
 		for _, op := range ops {
+			reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
+			if strings.HasPrefix(op.OperationKey, "direct:") && reqID != "" {
+				var finalizedRoot int64
+				if err := tx.Model(&BillingOperation{}).
+					Where("user_id = ? AND operation_key IN ? AND state IN ?",
+						userID, []string{"request:" + reqID, reqID}, []string{BillingSettled, BillingRefunded}).
+					Count(&finalizedRoot).Error; err != nil {
+					return false, err
+				}
+				if finalizedRoot > 0 {
+					continue
+				}
+			}
 			if !hasHoldTable {
 				return true, nil
 			}
-			reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
 			var resolved int64
 			if err := tx.Model(&AdtyBillingHold{}).
 				Where("user_id = ? AND request_id IN ? AND status = ?",
@@ -219,7 +316,7 @@ func BackfillMissingAdtyBillingHolds(ctx context.Context, limit int) error {
 		}
 		seen[reqID] = struct{}{}
 		if err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			return UpsertAdtyBillingHoldForOperationTx(tx, &op)
+			return syncAdtyBillingHoldForOperationTx(tx, &op, true)
 		}); err != nil {
 			return err
 		}

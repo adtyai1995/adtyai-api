@@ -194,9 +194,13 @@ func refreshTieredBillingGroup(relayInfo *relaycommon.RelayInfo) (*billingexpr.B
 		return snap, nil
 	}
 
-	estimatedQuota, err := common.QuotaFromDecimalStrict(
-		decimal.NewFromFloat(snap.EstimatedQuotaBeforeGroup).Mul(billedGroupRatio),
-	)
+	beforeGroupDec := decimal.NewFromFloat(snap.EstimatedQuotaBeforeGroup)
+	if snap.EstimatedQuotaBeforeGroupDecimal != "" {
+		if parsed, parseErr := decimal.NewFromString(snap.EstimatedQuotaBeforeGroupDecimal); parseErr == nil {
+			beforeGroupDec = parsed
+		}
+	}
+	estimatedQuota, err := common.QuotaFromDecimalStrict(beforeGroupDec.Mul(billedGroupRatio))
 	if err != nil {
 		return nil, err
 	}
@@ -204,6 +208,20 @@ func refreshTieredBillingGroup(relayInfo *relaycommon.RelayInfo) (*billingexpr.B
 	snap.GroupRatioDecimal = billedGroupRatioStr
 	snap.EstimatedQuotaAfterGroup = estimatedQuota
 	return snap, nil
+}
+
+// SyncBillingGroupSnapshot refreshes the persisted billing_operations price_snapshot
+// when an auto-group retry switches to another group (R3-009).
+func SyncBillingGroupSnapshot(relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
+	if relayInfo == nil {
+		return nil
+	}
+	if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
+		if err := model.UpdateBillingOperationGroupSnapshot(session.durableSpec()); err != nil {
+			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
+	}
+	return nil
 }
 
 // PrepareTieredBillingForSelectedGroup refreshes routing-dependent billing
@@ -214,12 +232,8 @@ func PrepareTieredBillingForSelectedGroup(c *gin.Context, relayInfo *relaycommon
 	if AdtyTeamPriceBlocked(c) {
 		return types.NewErrorWithStatusCode(ErrAdtyTeamInvalid, types.ErrorCodeModelPriceError, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 	}
-	if relayInfo != nil {
-		if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
-			if err := model.UpdateBillingOperationGroupSnapshot(session.durableSpec()); err != nil {
-				return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
-			}
-		}
+	if err := SyncBillingGroupSnapshot(relayInfo); err != nil {
+		return err
 	}
 	snap, err := refreshTieredBillingGroup(relayInfo)
 	if err != nil {
@@ -241,10 +255,7 @@ func PrepareTieredBillingForSelectedGroup(c *gin.Context, relayInfo *relaycommon
 			targetQuota = relayInfo.PriceData.Quota
 		}
 		if relayInfo.Billing == nil {
-			if targetQuota > 0 {
-				return PreConsumeBilling(c, targetQuota, relayInfo)
-			}
-			return nil
+			return PreConsumeBilling(c, targetQuota, relayInfo)
 		}
 		if targetQuota > relayInfo.Billing.GetPreConsumedQuota() {
 			if err := relayInfo.Billing.Reserve(targetQuota); err != nil {

@@ -957,7 +957,7 @@ func AttachAdtyTicketImageWithKey(userId int, ticketId, messageID int64, visibil
 		}
 		digest := sha256.Sum256([]byte(strconv.FormatInt(ticketId, 10) + ":" + strconv.Itoa(userId) + ":" + key))
 		uploadKey := hex.EncodeToString(digest[:])
-		prior := tx.Where("upload_key=?", uploadKey).Limit(1).Find(&row)
+		prior := tx.Where("upload_key=? AND COALESCE(delete_pending,false)=false", uploadKey).Limit(1).Find(&row)
 		if prior.Error != nil {
 			return prior.Error
 		}
@@ -1102,7 +1102,7 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 				return ErrAdtyTicketForbidden
 			}
 		}
-		if err := tx.Model(&target).Update("delete_pending", true).Error; err != nil {
+		if err := tx.Model(&target).Updates(map[string]any{"delete_pending": true, "upload_key": nil}).Error; err != nil {
 			return err
 		}
 		ticketSiteID = ticket.SiteId
@@ -1452,10 +1452,10 @@ func AdtyTicketTokenScope(workspace, method string, granted []string) string {
 			return "platform_main"
 		}
 	case "owner":
-		// The owner workspace uses the existing site-owner PAT scope.
-		scope := "wallet:write"
+		// R3-020: Site-owner ticket workspace requires site_owner_customer PAT scope, not personal wallet scope.
+		scope := AccessTokenResourceSiteOwnerCustomer + ":write"
 		if method == http.MethodGet {
-			scope = "wallet:read"
+			scope = AccessTokenResourceSiteOwnerCustomer + ":read"
 		}
 		if AccessTokenScopeGranted(granted, scope) {
 			return workspace

@@ -213,9 +213,16 @@ func adtySiteCustomerRows(userIds []int) (map[int]model.AdtySiteCustomer, error)
 	return rows, nil
 }
 
+func adtyExcludeIndependentTeamEmployees(query *gorm.DB) *gorm.DB {
+	if query == nil || model.DB == nil || !adtyTeamTableReadyFor(model.DB, &model.AdtyTeamMember{}) {
+		return query
+	}
+	return query.Where("NOT EXISTS (SELECT 1 FROM adty_team_members m WHERE m.user_id = users.id AND m.independent_employee = ?)", true)
+}
+
 // ListAdtyOwnerCustomers 按注册时间分页列出本站客户（不支持模糊搜索，11.7）。
 func ListAdtyOwnerCustomers(site *model.AdtySite, offset, limit int) ([]AdtyOwnerCustomer, int64, error) {
-	query := model.DB.Model(&model.User{}).Where("site_id = ? AND staff_site_id = 0", site.Id)
+	query := adtyExcludeIndependentTeamEmployees(model.DB.Model(&model.User{}).Where("site_id = ? AND staff_site_id = 0", site.Id))
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -247,7 +254,7 @@ func ListAdtyOwnerCustomers(site *model.AdtySite, offset, limit int) ([]AdtyOwne
 // GetAdtyOwnerCustomer 取本站的一个客户；别的站和主站的用户当作不存在。
 func GetAdtyOwnerCustomer(site *model.AdtySite, userId int) (*AdtyOwnerCustomer, error) {
 	var users []model.User
-	if err := model.DB.Select(adtyOwnerCustomerColumns).Where("id = ? AND site_id = ? AND staff_site_id = 0", userId, site.Id).Limit(1).Find(&users).Error; err != nil {
+	if err := adtyExcludeIndependentTeamEmployees(model.DB.Model(&model.User{})).Select(adtyOwnerCustomerColumns).Where("id = ? AND site_id = ? AND staff_site_id = 0", userId, site.Id).Limit(1).Find(&users).Error; err != nil {
 		return nil, err
 	}
 	if len(users) == 0 {
@@ -278,7 +285,7 @@ func LookupAdtyOwnerCustomer(site *model.AdtySite, ownerId int, q string) (*Adty
 	now := adtyLookupNow().Unix()
 	var users []model.User
 	email := model.NormalizeEmail(q)
-	if err := model.DB.Select(adtyOwnerCustomerColumns).Where("site_id = ? AND staff_site_id = 0 AND (username = ? OR email = ?)", site.Id, q, email).
+	if err := adtyExcludeIndependentTeamEmployees(model.DB.Model(&model.User{})).Select(adtyOwnerCustomerColumns).Where("site_id = ? AND staff_site_id = 0 AND (username = ? OR email = ?)", site.Id, q, email).
 		Order("id").Limit(1).Find(&users).Error; err != nil {
 		return nil, err
 	}

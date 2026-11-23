@@ -185,7 +185,20 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			return err
 		}
 		if len(existing) > 0 {
-			if existing[0].UserId != input.UserId || existing[0].AccountType != input.AccountType || !moneyDec(existing[0].Amount).Equal(amount) {
+			sameDest := existing[0].UserId == input.UserId &&
+				existing[0].AccountType == input.AccountType &&
+				moneyDec(existing[0].Amount).Equal(amount) &&
+				strings.TrimSpace(existing[0].AccountNetwork) == strings.TrimSpace(input.AccountNetwork) &&
+				strings.TrimSpace(existing[0].AccountNo) == strings.TrimSpace(input.AccountNo) &&
+				strings.TrimSpace(existing[0].AccountName) == strings.TrimSpace(input.AccountName) &&
+				strings.TrimSpace(existing[0].QRImageURL) == strings.TrimSpace(input.QRImageURL)
+			if sameDest && (input.AccountType == model.ReferralWithdrawToAlipay || input.AccountType == model.ReferralWithdrawToWechat) {
+				existingRate, err := decimal.NewFromString(strings.TrimSpace(existing[0].CNYRate))
+				if err != nil || !existingRate.Equal(input.ExpectedCNYRate) {
+					sameDest = false
+				}
+			}
+			if !sameDest {
 				return model.ErrAdtyIdempotencyConflict
 			}
 			result = &existing[0]
@@ -448,7 +461,12 @@ func reduceOrReleaseWithdrawalAfterClawbackTx(tx *gorm.DB, withdrawalId int, red
 		amount = occupied
 	}
 	updates := withdrawalAmountUpdates(&withdrawal, amount)
-	if !amount.IsPositive() {
+	netAfter := amount.Sub(moneyDec(withdrawal.FeeAmount))
+	shouldCancel := !amount.IsPositive() ||
+		(withdrawal.Status == model.ReferralWithdrawalStatusPending &&
+			withdrawal.AccountType != model.ReferralWithdrawToBalance &&
+			!netAfter.IsPositive())
+	if shouldCancel {
 		now := time.Now().Unix()
 		updates["status"] = model.ReferralWithdrawalStatusCanceled
 		updates["canceled_at"] = now
@@ -456,7 +474,25 @@ func reduceOrReleaseWithdrawalAfterClawbackTx(tx *gorm.DB, withdrawalId int, red
 		if err := tx.Model(&model.ReferralWithdrawal{}).Where("id = ?", withdrawal.Id).Updates(updates).Error; err != nil {
 			return err
 		}
-		return (&ReferralService{}).releaseWithdrawalItemsTx(tx, withdrawal.Id)
+		if err := (&ReferralService{}).releaseWithdrawalItemsTx(tx, withdrawal.Id); err != nil {
+			return err
+		}
+		if amount.IsPositive() {
+			account, err := lockReferralAccountTx(tx, withdrawal.AffiliateId)
+			if err != nil {
+				return err
+			}
+			releaseAmt := decimal.Min(amount, moneyDec(account.FrozenAmount))
+			if releaseAmt.IsPositive() {
+				if err := AdjustAccountTx(tx, account, decimal.Zero, releaseAmt, releaseAmt.Neg(), decimal.Zero, model.ReferralCommissionLedger{
+					WithdrawalId: withdrawal.Id, Type: "withdraw_release", RefType: "withdrawal", RefId: fmt.Sprint(withdrawal.Id),
+					ExternalRefId: fmt.Sprintf("release:%d", withdrawal.Id), Remark: "commission refunded",
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
 	return tx.Model(&model.ReferralWithdrawal{}).Where("id = ?", withdrawal.Id).Updates(updates).Error
 }
@@ -604,6 +640,9 @@ func (s *ReferralService) ReviewWithdrawal(withdrawalId, adminId int, approve bo
 			return common.NewMessage("Only pending withdrawals can be reviewed")
 		}
 		if approve {
+			if !moneyDec(withdrawal.NetAmount).IsPositive() {
+				return common.NewMessage("Withdrawal net amount is no longer positive; reject or cancel instead")
+			}
 			if err := tx.Model(&model.ReferralWithdrawal{}).Where("id = ?", withdrawal.Id).Updates(map[string]any{
 				"status": model.ReferralWithdrawalStatusApproved, "approved_at": now, "reviewed_by": adminId,
 			}).Error; err != nil {
@@ -653,6 +692,9 @@ func (s *ReferralService) MarkWithdrawalPaid(withdrawalId, adminId int, txnNo, p
 		}
 		if withdrawal.Status != model.ReferralWithdrawalStatusApproved {
 			return common.NewMessage("This withdrawal cannot be marked as paid")
+		}
+		if !moneyDec(withdrawal.NetAmount).IsPositive() {
+			return common.NewMessage("Withdrawal net amount is no longer positive; reject or cancel instead")
 		}
 		account, err := lockReferralAccountTx(tx, withdrawal.AffiliateId)
 		if err != nil {

@@ -24,12 +24,21 @@ func adtyNoteBillingShortfall(c *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	if c == nil || relayInfo == nil {
 		return nil
 	}
-	added := relayInfo.BillingShortfall - before
-	if added <= 0 {
+	delta := relayInfo.BillingShortfall - before
+	if delta == 0 {
 		return nil
 	}
-	c.Set(AdtyBillingShortfallContextKey, c.GetInt(AdtyBillingShortfallContextKey)+added)
-	if err := model.RecordAdtyBillingHold(relayInfo.UserId, relayInfo.RequestId, added); err != nil {
+	next := max(0, c.GetInt(AdtyBillingShortfallContextKey)+delta)
+	c.Set(AdtyBillingShortfallContextKey, next)
+	if delta < 0 {
+		return nil
+	}
+	// Durable BillingSession settlements already synchronized AdtyBillingHold
+	// atomically inside ApplyBillingSettlement via SyncAdtyBillingHoldForOperationTx.
+	if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
+		return nil
+	}
+	if err := model.RecordAdtyBillingHold(relayInfo.UserId, relayInfo.RequestId, delta); err != nil {
 		logger.LogError(c, common.LogText("failed to record billing shortfall hold for request %s: %s", relayInfo.RequestId, err.Error()))
 		return err
 	}

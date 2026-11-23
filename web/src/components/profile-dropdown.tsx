@@ -46,9 +46,11 @@ export function ProfileDropdown() {
   const [open, setOpen] = useDialogState()
   const user = useAuthStore((state) => state.auth.user)
   const { displayName, roleLabel } = useUserDisplay(user)
-  const isSuperAdmin = user?.role === ROLE.SUPER_ADMIN
-  const isWalletVisible = useIsSidebarModuleVisible('/wallet')
-  const isSecurityVisible = useIsSidebarModuleVisible('/security')
+  const isSiteStaff = (user?.staff_site_id ?? 0) > 0
+  const isSuperAdmin = user?.role === ROLE.SUPER_ADMIN && !isSiteStaff
+  const isWalletVisible = useIsSidebarModuleVisible('/wallet') && !isSiteStaff
+  const isSecurityVisible =
+    useIsSidebarModuleVisible('/security') && !isSiteStaff
   const avatarName = user?.username || displayName
   const avatarFallback = getUserAvatarFallback(avatarName)
   const avatarFallbackStyle = useMemo(
@@ -103,10 +105,12 @@ export function ProfileDropdown() {
 
           <DropdownMenuSeparator />
 
-          <DropdownMenuItem onClick={() => navigate({ to: '/profile' })}>
-            <User className='size-4' />
-            {t('Profile')}
-          </DropdownMenuItem>
+          {!isSiteStaff && (
+            <DropdownMenuItem onClick={() => navigate({ to: '/profile' })}>
+              <User className='size-4' />
+              {t('Profile')}
+            </DropdownMenuItem>
+          )}
 
           {isSecurityVisible && (
             <DropdownMenuItem onClick={() => navigate({ to: '/security' })}>

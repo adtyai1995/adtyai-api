@@ -31,7 +31,11 @@ import { adtyTopupQueryKeys, cancelAdtyOrder, getAdtyOrder } from '../api'
 import { payWithEpay } from '../api-pay'
 import { formatCountdown, useNowSeconds } from '../lib/countdown'
 import { detectPayDevice } from '../lib/device'
-import { creditedUsdAmount } from '../lib/money'
+import {
+  creditedUsdAmount,
+  giftFulfillmentStatusLabelKey,
+  isGiftBonusWithheld,
+} from '../lib/money'
 import { qrContent, mobileTarget } from '../lib/payment-links'
 import { clearPendingPayment, savePendingPayment } from '../lib/pending-payment'
 import type { AdtyOrder, AdtyTopupBusiness } from '../types'
@@ -225,14 +229,20 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
         </p>
       )}
       {ext && status === 'success' && (
-        <p
-          className='text-success text-center text-lg font-semibold'
-          role='status'
-        >
-          {t('Credited ${{amount}}', {
-            amount: creditedUsdAmount(ext),
-          })}
-        </p>
+        <div className='space-y-1 text-center' role='status'>
+          <p className='text-success text-lg font-semibold'>
+            {t('Credited ${{amount}}', {
+              amount: creditedUsdAmount(ext),
+            })}
+          </p>
+          {isGiftBonusWithheld(ext.gift_fulfillment_status) && (
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                giftFulfillmentStatusLabelKey(ext.gift_fulfillment_status) ?? ''
+              )}
+            </p>
+          )}
+        </div>
       )}
       {ext && status === 'expired' && (
         <p className='text-destructive text-center' role='status'>

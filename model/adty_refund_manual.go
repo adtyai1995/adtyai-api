@@ -56,6 +56,28 @@ func moveCustomerRefundOperatingTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyMa
 	if !tx.Migrator().HasTable(&AdtySiteWallet{}) || !tx.Migrator().HasTable(&AdtySiteWalletLedger{}) {
 		return nil
 	}
+	// R3-015: Once a subsite has closed and migrated customer principal lots to site_id=0,
+	// its operating wallet has already been debited for those lots; skip touching it again.
+	if tx.Migrator().HasTable(&AdtySite{}) {
+		var site AdtySite
+		if err := tx.Select("id", "status").Where("id = ?", ext.SiteId).Limit(1).Find(&site).Error; err != nil {
+			return err
+		}
+		if site.Status == AdtySiteStatusClosed {
+			return nil
+		}
+	}
+	if tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		var batch AdtyFundBatch
+		if err := tx.Select("id", "site_id").
+			Where("user_id = ? AND source = ? AND kind = ?", ext.UserId, ext.TradeNo, AdtyFundBatchKindPrincipal).
+			Limit(1).Find(&batch).Error; err != nil {
+			return err
+		}
+		if batch.Id > 0 && batch.SiteId != nil && *batch.SiteId == 0 {
+			return nil
+		}
+	}
 	usd := decimal.NewFromInt(quota).Div(common.QuotaPerUnitDecimal())
 	if !usd.IsPositive() {
 		return nil

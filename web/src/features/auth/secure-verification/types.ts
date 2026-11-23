@@ -171,8 +171,13 @@ export type VerificationOperation =
       context?: Record<string, unknown>
     }
   | {
+      scope: 'api_key.read'
+      context?: { token_id: number } | { token_ids: number[] }
+    }
+  | {
       scope: Exclude<
         SecurityProofScope,
+        | 'api_key.read'
         | 'adty.root_gift.grant'
         | 'channel.key.read'
         | 'account.binding.bind'

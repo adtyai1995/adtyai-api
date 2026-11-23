@@ -57,7 +57,7 @@ func reversePersonalStreamAllocationsTx(tx *gorm.DB, op *BillingOperation, amoun
 	}
 	var sources []BillingOperation
 	if err := tx.Select("operation_key").
-		Where("user_id = ? AND (operation_key = ? OR earning_root_key = ?)", op.UserId, root, root).
+		Where("user_id = ? AND (operation_key = ? OR earning_root_key = ?) AND operation_key <> ?", op.UserId, root, root, op.OperationKey).
 		Order("created_at DESC, operation_key DESC").
 		Find(&sources).Error; err != nil {
 		return err

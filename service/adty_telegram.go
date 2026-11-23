@@ -414,7 +414,14 @@ func StartAdtyTelegramBind(userId int, purpose string) (string, string, int64, e
 	if user.Status != common.UserStatusEnabled {
 		return "", "", 0, ErrAdtyTelegramForbidden
 	}
-	if siteOpen, err := adtyTelegramSiteAccess(model.DB, user.SiteId); err != nil {
+	if user.StaffSiteId > 0 && purpose != model.AdtyTelegramPurposeAdmin {
+		return "", "", 0, ErrAdtyTelegramForbidden
+	}
+	siteForAccess := user.SiteId
+	if user.StaffSiteId > 0 {
+		siteForAccess = user.StaffSiteId
+	}
+	if siteOpen, err := adtyTelegramSiteAccess(model.DB, siteForAccess); err != nil {
 		return "", "", 0, err
 	} else if !siteOpen {
 		return "", "", 0, ErrAdtyTelegramForbidden
@@ -517,6 +524,23 @@ func adtyTelegramSavedOr(key, fallback string) string {
 	return fallback
 }
 
+func adtyTelegramSiteDisplayName(siteID int) string {
+	if siteID > 0 {
+		if site, err := GetAdtySite(siteID); err == nil && site != nil {
+			if name := strings.TrimSpace(AdtyBrandFor(site).Name); name != "" {
+				return name
+			}
+			if sub := strings.TrimSpace(site.Subdomain); sub != "" {
+				return sub
+			}
+		}
+	}
+	if name := strings.TrimSpace(common.SystemName); name != "" {
+		return name
+	}
+	return common.AdtyBrandName
+}
+
 func ConfirmAdtyTelegramBind(userId int, purpose, code string, telegramUserId int64) (*model.AdtyTelegramBinding, error) {
 	if !adtyValidTelegramPurpose(purpose) {
 		return nil, ErrAdtyTelegramInvalid
@@ -527,6 +551,7 @@ func ConfirmAdtyTelegramBind(userId int, purpose, code string, telegramUserId in
 	}
 	sum := sha256.Sum256([]byte(code))
 	var binding *model.AdtyTelegramBinding
+	var boundSiteID int
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
 		if err := model.AdtyLockForUpdate(tx).First(&user, userId).Error; err != nil {
@@ -535,7 +560,15 @@ func ConfirmAdtyTelegramBind(userId int, purpose, code string, telegramUserId in
 		if user.Status != common.UserStatusEnabled {
 			return ErrAdtyTelegramForbidden
 		}
-		if siteOpen, err := adtyTelegramSiteAccess(tx, user.SiteId); err != nil {
+		if user.StaffSiteId > 0 && purpose != model.AdtyTelegramPurposeAdmin {
+			return ErrAdtyTelegramForbidden
+		}
+		siteForAccess := user.SiteId
+		if user.StaffSiteId > 0 {
+			siteForAccess = user.StaffSiteId
+		}
+		boundSiteID = siteForAccess
+		if siteOpen, err := adtyTelegramSiteAccess(tx, siteForAccess); err != nil {
 			return err
 		} else if !siteOpen {
 			return ErrAdtyTelegramForbidden
@@ -609,12 +642,27 @@ func ConfirmAdtyTelegramBind(userId int, purpose, code string, telegramUserId in
 		}
 		return tx.Model(&challenge).Update("used_at", time.Now().Unix()).Error
 	})
+	if err == nil && binding != nil {
+		siteName := adtyTelegramSiteDisplayName(boundSiteID)
+		if _, body, renderErr := RenderAdtyBilingualNotice("telegram_bind_confirm", nil, siteName); renderErr == nil && strings.TrimSpace(body) != "" {
+			_ = QueueAdtyTelegramNotice(userId, purpose, body, fmt.Sprintf("tg-bind:%d:%s:%d", userId, purpose, time.Now().UnixNano()))
+		}
+	}
 	return binding, err
 }
 
 func GetAdtyTelegramBind(userId int, purpose string) (*AdtyTelegramBindView, error) {
 	if !adtyValidTelegramPurpose(purpose) {
 		return nil, ErrAdtyTelegramInvalid
+	}
+	if userId > 0 && model.DB != nil {
+		var u model.User
+		if err := model.DB.Select("id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&u).Error; err != nil {
+			return nil, err
+		}
+		if u.StaffSiteId > 0 && purpose != model.AdtyTelegramPurposeAdmin {
+			return nil, ErrAdtyTelegramForbidden
+		}
 	}
 	view := &AdtyTelegramBindView{Status: "unbound", Purpose: purpose}
 	var row model.AdtyTelegramBinding
@@ -637,7 +685,7 @@ func QueueAdtyTelegramNotice(userId int, purpose, body, eventKey string) error {
 		return ErrAdtyTelegramInvalid
 	}
 	body = strings.TrimSpace(body)
-	if userId <= 0 || strings.TrimSpace(eventKey) == "" || body == "" || adtyTextHasSecret(body) {
+	if userId <= 0 || strings.TrimSpace(eventKey) == "" || body == "" || adtyTextHasOutboundSecret(body) {
 		return ErrAdtyTelegramInvalid
 	}
 	if !strings.Contains(body, "\n\n") {

@@ -365,7 +365,7 @@ export function DataRetentionSection() {
                             deidentified: item.deidentify_count,
                             failed: item.failure_count,
                           })}
-                          {item.skip_reason ? ` · ${item.skip_reason}` : ''}
+                          {item.skip_reason ? ` · ${t(item.skip_reason)}` : ''}
                         </li>
                       ))}
                     </ul>

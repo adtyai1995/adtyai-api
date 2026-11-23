@@ -86,7 +86,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 	return []dataRetentionCategorySpec{
 		{
 			Category:        model.DataRetentionCategoryUserAccountProfile,
-			Title:           "用户账号及个人资料",
+			Title:           "User accounts and profile data",
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete, model.DataRetentionActionDeidentify},
 			DefaultBehavior: "no_automatic_deletion",
@@ -94,7 +94,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 		},
 		{
 			Category:        model.DataRetentionCategoryLoginSecurity,
-			Title:           "登录/安全记录",
+			Title:           "Login and security records",
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
@@ -102,7 +102,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 		},
 		{
 			Category:        model.DataRetentionCategoryAPIUsageLogs,
-			Title:           "API 调用日志和用量记录",
+			Title:           "API usage logs and records",
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
@@ -111,7 +111,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 		},
 		{
 			Category:        model.DataRetentionCategoryOrdersPayments,
-			Title:           "订单及支付事件",
+			Title:           "Orders and payment events",
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
@@ -120,7 +120,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 		},
 		{
 			Category:        model.DataRetentionCategoryFinancialLedgers,
-			Title:           "资金流水、钱包、保证金、收益、佣金和退款",
+			Title:           "Financial ledgers, wallets, margins, earnings, commissions, and refunds",
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
@@ -129,7 +129,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 		},
 		{
 			Category:        model.DataRetentionCategorySupportTickets,
-			Title:           "客服工单及图片",
+			Title:           "Support tickets and images",
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
@@ -138,7 +138,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 		},
 		{
 			Category:        model.DataRetentionCategoryNotificationHistory,
-			Title:           "通知和公告历史",
+			Title:           "Notification and announcement history",
 			AutoCleanable:   false,
 			AllowedActions:  []string{model.DataRetentionActionExclude},
 			DefaultBehavior: "permanent_retention",
@@ -146,7 +146,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 		},
 		{
 			Category:        model.DataRetentionCategoryOperationAudit,
-			Title:           "操作审计",
+			Title:           "Operation audit logs",
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
@@ -154,7 +154,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 		},
 		{
 			Category:        model.DataRetentionCategoryTaskArtifacts,
-			Title:           "任务输入、输出及生成文件关联信息",
+			Title:           "Task inputs, outputs, and generated file references",
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
@@ -219,24 +219,26 @@ type dataRetentionPolicyMutation struct {
 }
 
 // SaveDataRetentionPolicies updates Root-configured periods. It does not start cleanup.
-func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, inputs []DataRetentionPolicyInput) error {
+// Returns the prepared audit event ID (if persisted via AuditIntent) so callers can
+// deduplicate generic middleware audit rows (R3-043).
+func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, inputs []DataRetentionPolicyInput) (string, error) {
 	if len(inputs) == 0 {
-		return common.NewMessage("Invalid parameters")
+		return "", common.NewMessage("Invalid parameters")
 	}
 	if model.DB == nil {
-		return errors.New("database unavailable")
+		return "", errors.New("database unavailable")
 	}
 	seen := map[string]bool{}
 	mutations := make([]dataRetentionPolicyMutation, 0, len(inputs))
 	for _, input := range inputs {
 		category := strings.TrimSpace(input.Category)
 		if !model.IsDataRetentionCategory(category) || seen[category] {
-			return common.NewMessage("Invalid parameters")
+			return "", common.NewMessage("Invalid parameters")
 		}
 		seen[category] = true
 		spec, ok := dataRetentionSpec(category)
 		if !ok {
-			return common.NewMessage("Invalid parameters")
+			return "", common.NewMessage("Invalid parameters")
 		}
 		action := strings.TrimSpace(strings.ToLower(input.Action))
 		if category == model.DataRetentionCategoryNotificationHistory || !spec.AutoCleanable {
@@ -244,7 +246,7 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 				continue
 			}
 			if input.RetentionDays != nil || (action != "" && action != model.DataRetentionActionExclude) {
-				return common.NewMessage("Notification history cannot be given an automatic cleanup period")
+				return "", common.NewMessage("Notification history cannot be given an automatic cleanup period")
 			}
 			continue
 		}
@@ -256,13 +258,13 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 			continue
 		}
 		if input.RetentionDays == nil || *input.RetentionDays < 1 || *input.RetentionDays > maxDataRetentionDays {
-			return common.NewMessage("A retention period must be a positive number of days")
+			return "", common.NewMessage("A retention period must be a positive number of days")
 		}
 		if action == "" {
 			action = model.DataRetentionActionDelete
 		}
 		if !allowedDataRetentionAction(spec, action) {
-			return common.NewMessage("Invalid parameters")
+			return "", common.NewMessage("Invalid parameters")
 		}
 		mutations = append(mutations, dataRetentionPolicyMutation{
 			category: category,
@@ -271,7 +273,7 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 		})
 	}
 	if len(mutations) == 0 {
-		return nil
+		return "", nil
 	}
 
 	var auditEventID string
@@ -349,7 +351,7 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 		return nil
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if auditEventID != "" {
 		deliveryCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -373,7 +375,7 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 			},
 		})
 	}
-	return nil
+	return auditEventID, nil
 }
 
 func allowedDataRetentionAction(spec dataRetentionCategorySpec, action string) bool {

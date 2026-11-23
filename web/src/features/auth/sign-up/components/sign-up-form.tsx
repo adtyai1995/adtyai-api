@@ -90,6 +90,12 @@ export function SignUpForm({
   } = useEmailVerification({
     turnstileToken,
     validateTurnstile,
+    onTurnstileConsumed: () => {
+      if (isTurnstileEnabled) {
+        setTurnstileToken('')
+        setTurnstileWidgetKey((current) => current + 1)
+      }
+    },
   })
 
   const form = useForm<z.infer<typeof registerFormSchema>>({
@@ -186,10 +192,7 @@ export function SignUpForm({
   }
 
   async function handleSendVerificationCode() {
-    if (await sendCode(emailValue || '')) {
-      setTurnstileToken('')
-      setTurnstileWidgetKey((current) => current + 1)
-    }
+    await sendCode(emailValue || '')
   }
 
   let verificationCodeAction: ReactNode = t('Send code')

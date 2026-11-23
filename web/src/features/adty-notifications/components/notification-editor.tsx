@@ -145,6 +145,12 @@ export function NotificationEditor(props: {
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: notificationManagerKey })
       void client.invalidateQueries({ queryKey: ['adty-notifications'] })
+      void client.invalidateQueries({ queryKey: ['status'] })
+      try {
+        window.localStorage.removeItem('status')
+      } catch {
+        /* empty */
+      }
       props.onClose()
     },
     onError: (error) => handleServerError(error),

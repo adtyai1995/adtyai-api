@@ -46,7 +46,7 @@ import {
   ORDER_STATUS_LABELS,
   ORDER_STATUS_VARIANTS,
 } from '../lib/methods'
-import { formatUsd } from '../lib/money'
+import { formatUsd, giftFulfillmentStatusLabelKey } from '../lib/money'
 import type {
   AdtyOrderStatus,
   AdtyTopupBusiness,
@@ -284,7 +284,24 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
               cellClassName: 'text-right tabular-nums',
               cell: (row) => {
                 if (!row.ext) return '—'
-                return formatUsd(Number(row.ext.bonus_usd), locale)
+                const bonusAmount = formatUsd(
+                  Number(row.ext.bonus_usd),
+                  locale
+                )
+                const labelKey = giftFulfillmentStatusLabelKey(
+                  row.ext.gift_fulfillment_status
+                )
+                if (!labelKey || Number(row.ext.bonus_usd) <= 0) {
+                  return bonusAmount
+                }
+                return (
+                  <div className='flex flex-col items-end gap-0.5'>
+                    <span>{bonusAmount}</span>
+                    <span className='text-muted-foreground text-xs'>
+                      {t(labelKey)}
+                    </span>
+                  </div>
+                )
               },
             },
             {

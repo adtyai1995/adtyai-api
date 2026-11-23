@@ -798,12 +798,41 @@ func ResumeAdtySiteSettlement(c *gin.Context) {
 // adtyResellerSettingsView 是后台读到的分站设置：密钥清空，只返回「已配置」；另给出各开关依赖的项是否齐全，
 // 后台在没配好的项旁边显示「未配置」。
 type adtyResellerSettingsView struct {
-	AliyunIDConfigured     bool `json:"aliyun_id_configured"`
-	AliyunSecretConfigured bool `json:"aliyun_secret_configured"`
-	adty_setting.ResellerSetting
-	CloudflareTokenConfigured bool            `json:"cloudflare_token_configured"`
-	WidgetSecretConfigured    map[string]bool `json:"turnstile_secret_configured"`
-	CloudflareConfigured      bool            `json:"cloudflare_configured"`
+	AliyunIDConfigured         bool                                   `json:"aliyun_id_configured"`
+	AliyunSecretConfigured     bool                                   `json:"aliyun_secret_configured"`
+	DomainAutomationEnabled    bool                                   `json:"domain_automation_enabled"`
+	AliyunDomain               string                                 `json:"aliyun_domain"`
+	AliyunAccessKeyID          string                                 `json:"aliyun_access_key_id"`
+	AliyunAccessKeySecret      string                                 `json:"aliyun_access_key_Secret"`
+	DomainMainlandTarget       string                                 `json:"domain_mainland_target"`
+	Enabled                    bool                                   `json:"enabled"`
+	RootDomains                []string                               `json:"root_domains"`
+	ReservedSubdomains         []string                               `json:"reserved_subdomains"`
+	UnknownHostMode            string                                 `json:"unknown_host_mode"`
+	MarkupIncreaseDelayHours   int                                    `json:"markup_increase_delay_hours"`
+	SettleHour                 int                                    `json:"settle_hour"`
+	FreezeDays                 int                                    `json:"freeze_days"`
+	CloseNoticeDays            int                                    `json:"close_notice_days"`
+	SiteLoginOnly              bool                                   `json:"site_login_only"`
+	CustomDomainEnabled        bool                                   `json:"custom_domain_enabled"`
+	SenderDomainEnabled        bool                                   `json:"sender_domain_enabled"`
+	SelfUseCheckEnabled        bool                                   `json:"self_use_check_enabled"`
+	MigrationCheckEnabled      bool                                   `json:"migration_check_enabled"`
+	FingerprintWindowDays      int                                    `json:"fingerprint_window_days"`
+	CustomerLookupPerHour      int                                    `json:"customer_lookup_per_hour"`
+	MaxCustomDomainsPerSite    int                                    `json:"max_custom_domains_per_site"`
+	CustomDomainCreatesPerHour int                                    `json:"custom_domain_creates_per_hour"`
+	Visibility                 map[string]string                      `json:"visibility"`
+	CloudflareApiToken         string                                 `json:"cloudflare_apiToken"`
+	CloudflareZoneId           string                                 `json:"cloudflare_zone_id"`
+	CloudflareAccountId        string                                 `json:"cloudflare_account_id"`
+	CnameTarget                string                                 `json:"cname_target"`
+	FallbackOrigin             string                                 `json:"fallback_origin"`
+	TurnstileWidgets           []adty_setting.ResellerTurnstileWidget `json:"turnstile_widgets"`
+	TurnstileWidgetSecret      map[string]string                      `json:"turnstile_widget_secret"`
+	CloudflareTokenConfigured  bool                                   `json:"cloudflare_token_configured"`
+	WidgetSecretConfigured     map[string]bool                        `json:"turnstile_secret_configured"`
+	CloudflareConfigured       bool                                   `json:"cloudflare_configured"`
 	// TurnstileConfigured 单独报，**不要并进 CloudflareConfigured**：
 	// 一个是「域名加不上」，一个是「人机验证登记静默跳过」，缺它们的后果不同。
 	TurnstileConfigured bool `json:"turnstile_configured"`
@@ -814,7 +843,6 @@ type adtyResellerSettingsView struct {
 	ResendConfigured         bool              `json:"resend_configured"`
 	MoneyConfigured          bool              `json:"money_configured"`
 	TierConfigured           bool              `json:"tier_configured"`
-	SiteAgreementVersion     int               `json:"site_agreement_version"`
 	SiteCustomerTermsVersion int               `json:"site_customer_terms_version"`
 }
 
@@ -916,26 +944,48 @@ func GetAdtyResellerSettings(c *gin.Context) {
 	}
 	warnings := append(adtyResellerSettingsWarnings(&cfg), adtyClearedSecretWarnings()...)
 	view := adtyResellerSettingsView{
-		FieldVersions:             versions,
-		AliyunIDConfigured:        cfg.AliyunAccessKeyID != "",
-		AliyunSecretConfigured:    cfg.AliyunAccessKeySecret != "",
-		CloudflareTokenConfigured: strings.TrimSpace(cfg.CloudflareApiToken) != "",
-		WidgetSecretConfigured:    map[string]bool{},
-		CloudflareConfigured:      cfg.CloudflareConfigured(),
-		TurnstileConfigured:       cfg.TurnstileConfigured(),
-		SettingsWarnings:          warnings,
-		ResendConfigured:          adtyResendConfigured(),
-		MoneyConfigured:           hasTier,
-		TierConfigured:            hasTier,
-		SiteAgreementVersion:      adty_setting.GetLegalSetting().SiteAgreementVersion,
-		SiteCustomerTermsVersion:  adty_setting.GetLegalSetting().SiteCustomerTermsVersion,
+		FieldVersions:              versions,
+		AliyunIDConfigured:         cfg.AliyunAccessKeyID != "",
+		AliyunSecretConfigured:     cfg.AliyunAccessKeySecret != "",
+		DomainAutomationEnabled:    cfg.DomainAutomationEnabled,
+		AliyunDomain:               cfg.AliyunDomain,
+		DomainMainlandTarget:       cfg.DomainMainlandTarget,
+		Enabled:                    cfg.Enabled,
+		RootDomains:                cfg.RootDomains,
+		ReservedSubdomains:         cfg.ReservedSubdomains,
+		UnknownHostMode:            cfg.UnknownHostMode,
+		MarkupIncreaseDelayHours:   cfg.MarkupIncreaseDelayHours,
+		SettleHour:                 cfg.SettleHour,
+		FreezeDays:                 cfg.FreezeDays,
+		CloseNoticeDays:            cfg.CloseNoticeDays,
+		SiteLoginOnly:              cfg.SiteLoginOnly,
+		CustomDomainEnabled:        cfg.CustomDomainEnabled,
+		SenderDomainEnabled:        cfg.SenderDomainEnabled,
+		SelfUseCheckEnabled:        cfg.SelfUseCheckEnabled,
+		MigrationCheckEnabled:      cfg.MigrationCheckEnabled,
+		FingerprintWindowDays:      cfg.FingerprintWindowDays,
+		CustomerLookupPerHour:      cfg.CustomerLookupPerHour,
+		MaxCustomDomainsPerSite:    cfg.MaxCustomDomainsPerSite,
+		CustomDomainCreatesPerHour: cfg.CustomDomainCreatesPerHour,
+		Visibility:                 cfg.Visibility,
+		CloudflareZoneId:           cfg.CloudflareZoneId,
+		CloudflareAccountId:        cfg.CloudflareAccountId,
+		CnameTarget:                cfg.CnameTarget,
+		FallbackOrigin:             cfg.FallbackOrigin,
+		TurnstileWidgets:           cfg.TurnstileWidgets,
+		CloudflareTokenConfigured:  strings.TrimSpace(cfg.CloudflareApiToken) != "",
+		WidgetSecretConfigured:     map[string]bool{},
+		CloudflareConfigured:       cfg.CloudflareConfigured(),
+		TurnstileConfigured:        cfg.TurnstileConfigured(),
+		SettingsWarnings:           warnings,
+		ResendConfigured:           adtyResendConfigured(),
+		MoneyConfigured:            hasTier,
+		TierConfigured:             hasTier,
+		SiteCustomerTermsVersion:   adty_setting.GetLegalSetting().SiteCustomerTermsVersion,
 	}
 	for _, widget := range cfg.TurnstileWidgets {
 		view.WidgetSecretConfigured[widget.Id] = strings.TrimSpace(cfg.TurnstileWidgetSecret[widget.Id]) != ""
 	}
-	cfg.CloudflareApiToken, cfg.TurnstileWidgetSecret = "", nil
-	cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret = "", ""
-	view.ResellerSetting = cfg
 	common.ApiSuccess(c, view)
 }
 
@@ -973,7 +1023,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		return
 	}
 	if c.GetInt("role") < common.RoleRootUser {
-		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "clear_secrets"} {
+		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "turnstile_widgets", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "clear_secrets"} {
 			if _, present := body[key]; present {
 				denyAdtyAdminAction(c)
 				return

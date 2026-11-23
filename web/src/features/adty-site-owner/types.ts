@@ -102,8 +102,6 @@ export type OwnerSite = {
   /** Payment methods Root authorized for this site's gift, with the owner's rule. */
   bonus_methods: OwnerBonusMethod[]
   seo_index: boolean
-  agreement_version: string
-  agreement_at: number
   close_execute_at: number
   close_requested_at?: number
   prices: SitePrice[] | null
@@ -238,10 +236,11 @@ export type SenderDnsRecord = {
 export type SenderDomain = {
   site_id: number
   domain: string
-  status: 'pending' | 'verified' | 'failed' | 'disabled'
+  status: 'pending' | 'verified' | 'failed' | 'removing' | 'disabled'
   /** JSON array of SenderDnsRecord. */
   records: string
   disabled_by: number
+  cleanup_error?: string
   last_checked_at: number
   created_at: number
 }

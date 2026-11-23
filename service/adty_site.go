@@ -170,6 +170,13 @@ func AdtySiteTermsStatusWithError(userId int) (required bool, version string, er
 	if siteID <= 0 || users[0].StaffSiteId > 0 {
 		return false, version, nil
 	}
+	// R3-024: Independent team employees operate under their team leader's account and
+	// do not hold personal AdtySiteCustomer rows, so exempt them from customer terms gating.
+	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userId); empErr != nil {
+		return false, version, empErr
+	} else if isEmp {
+		return false, version, nil
+	}
 	var rows []model.AdtySiteCustomer
 	if qErr := model.AdtyLiveSiteCustomer(model.DB.Model(&model.AdtySiteCustomer{})).Select("terms_version").Where("user_id = ? AND site_id = ?", userId, siteID).Limit(1).Find(&rows).Error; qErr != nil {
 		return false, version, qErr
@@ -204,6 +211,11 @@ func acceptCustomerSiteTerms(userId int, version string) error {
 			return err
 		}
 		if len(users) == 0 || users[0].SiteId <= 0 || users[0].StaffSiteId > 0 {
+			return ErrAdtySiteNotOwner
+		}
+		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, userId); empErr != nil {
+			return empErr
+		} else if isEmp {
 			return ErrAdtySiteNotOwner
 		}
 		siteID := users[0].SiteId
@@ -709,6 +721,7 @@ func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite
 	}
 	var site model.AdtySite
 	var costChanged bool
+	var pendingScheduled bool
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -765,6 +778,7 @@ func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite
 		if pendingNotice != nil {
 			site.PendingCostFactor = pendingNotice
 			site.PendingCostFactorAt = pendingAt
+			pendingScheduled = true
 		}
 		return recordSiteAuditTx(tx, site.Id, "adjust", adminId, old, updates, adjust.Reason)
 	})
@@ -776,7 +790,7 @@ func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite
 	if err == nil && costChanged && AdtyOnSiteCostFactorChanged != nil {
 		AdtyOnSiteCostFactorChanged(updated)
 	}
-	if err == nil && updated != nil && updated.PendingCostFactor != nil && updated.PendingCostFactorAt > 0 {
+	if err == nil && pendingScheduled && updated != nil && updated.PendingCostFactor != nil && updated.PendingCostFactorAt > 0 {
 		adtyNotifySiteCostFactorPending(updated)
 	}
 	return updated, err
@@ -1101,10 +1115,36 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 			return nil
 		}
 		const target = 0
+		var movedPrincipal int64
 		var err error
-		moved, err = model.AdtySetUsersSiteTx(tx, site.Id, target)
+		moved, movedPrincipal, err = model.AdtySetUsersSiteWithMovedPrincipalTx(tx, site.Id, target)
 		if err != nil {
 			return err
+		}
+		if movedPrincipal > 0 && tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
+			// R3-015: Debit the migrated customer principal from the closing site's operating
+			// wallet so no ghost operating balance remains after principal lots move to site_id=0.
+			debitUSD := decimal.NewFromInt(movedPrincipal).Div(common.QuotaPerUnitDecimal())
+			var opWallet model.AdtySiteWallet
+			res := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).Limit(1).Find(&opWallet)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected > 0 && opWallet.Balance.IsPositive() {
+				if debitUSD.GreaterThan(opWallet.Balance) {
+					debitUSD = opWallet.Balance
+				}
+				if debitUSD.IsPositive() {
+					if _, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletOperating, debitUSD.Neg(), AdtySiteWalletChange{
+						Type:           "principal_site_close_migrate",
+						RefType:        "site_close",
+						RefID:          fmt.Sprintf("site:%d", site.Id),
+						IdempotencyKey: fmt.Sprintf("operating:close-migrate:%d", site.Id),
+					}); err != nil {
+						return err
+					}
+				}
+			}
 		}
 		if err := InheritAdtyVouchersOnCloseTx(tx, site.Id, moved); err != nil {
 			return err

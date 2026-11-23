@@ -298,7 +298,7 @@ func PostAdtyStaffBalanceRequest(c *gin.Context) {
 	row, err := service.SubmitAdtyStaffBalanceRequest(c.GetInt("id"), body.CustomerID, body.Direction, amount, key, body.AdtyStaffBalanceProvenance)
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorT(c, "This request was already used for another operation")
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)

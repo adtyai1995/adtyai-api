@@ -753,7 +753,7 @@ func resolveAdtyNotificationDisplayContentWithDB(db *gorm.DB, row model.AdtyNoti
 				if src == "" {
 					src = normalizeAdtyNotificationSourceContentWithDB(db, row.Id, content)
 				}
-				if !strings.Contains(content, eng) {
+				if !strings.Contains(src, eng) {
 					return src + "\n\n" + eng
 				}
 			}
@@ -1183,10 +1183,13 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 }
 
 func hideAdtyNotifications(userID int, inbox AdtyNotificationInbox) (AdtyNotificationInbox, error) {
-	if userID <= 0 || model.DB == nil || len(inbox.Announcements) == 0 {
+	if userID <= 0 || model.DB == nil || (len(inbox.Announcements) == 0 && strings.TrimSpace(inbox.NoticeKey) == "") {
 		return inbox, nil
 	}
-	keys := make([]string, 0, len(inbox.Announcements)*2)
+	keys := make([]string, 0, len(inbox.Announcements)*2+1)
+	if noticeKey := strings.TrimSpace(inbox.NoticeKey); noticeKey != "" {
+		keys = append(keys, noticeKey)
+	}
 	for _, item := range inbox.Announcements {
 		if key, ok := item["read_key"].(string); ok && key != "" {
 			keys = append(keys, key)
@@ -1208,6 +1211,10 @@ func hideAdtyNotifications(userID int, inbox AdtyNotificationInbox) (AdtyNotific
 	skip := map[string]bool{}
 	for _, key := range hidden {
 		skip[key] = true
+	}
+	if noticeKey := strings.TrimSpace(inbox.NoticeKey); noticeKey != "" && skip[noticeKey] {
+		inbox.Notice = ""
+		inbox.NoticeKey = ""
 	}
 	visible := inbox.Announcements[:0]
 	for _, item := range inbox.Announcements {

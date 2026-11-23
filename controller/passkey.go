@@ -518,7 +518,8 @@ func PasskeyVerifyBegin(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid Passkey verification request")
 		return
 	}
-	binding, err := service.BindVerificationOperation(service.VerificationOperation{Scope: request.Scope, Context: request.Context})
+	op := service.VerificationOperation{Scope: request.Scope, Context: request.Context}
+	binding, err := service.BindVerificationOperation(op)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -526,6 +527,10 @@ func PasskeyVerifyBegin(c *gin.Context) {
 	identity, ok := middleware.GetStepUpIdentity(c)
 	if !ok {
 		writeSecurityOperationError(c, service.ErrAuthTokenInvalid)
+		return
+	}
+	if err := service.RequireAccessTokenVerificationScopeForOperation(identity, op); err != nil {
+		writeSecurityOperationError(c, err)
 		return
 	}
 	if _, err := service.RequireVerificationMethod(identity, request.Scope, service.VerificationMethodPasskey); err != nil {
@@ -558,7 +563,12 @@ func PasskeyVerifyBegin(c *gin.Context) {
 
 	flowToken, expiresAt, err := passkeysvc.CreateSessionDataFlow(
 		model.AuthFlowPurposePasskeyStepUp,
-		passkeysvc.FlowSecurity{AuthSessionIdentity: identity, Scope: binding.Scope, ContextHash: binding.ContextHash},
+		passkeysvc.FlowSecurity{
+			AuthSessionIdentity: identity,
+			Scope:               binding.Scope,
+			ContextHash:         binding.ContextHash,
+			OperationContext:    request.Context,
+		},
 		sessionData,
 	)
 	if err != nil {
@@ -652,6 +662,13 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		return
 	}
 
+	if err := service.RequireAccessTokenVerificationScopeForOperation(identity, service.VerificationOperation{
+		Scope:   security.Scope,
+		Context: security.OperationContext,
+	}); err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
 	proof, err := service.CompleteSecurityVerification(identity, service.VerificationBinding{Scope: security.Scope, ContextHash: security.ContextHash}, service.VerificationMethodPasskey)
 	if err != nil {
 		writeSecurityOperationError(c, err)

@@ -82,8 +82,10 @@ func AdtyKeyRateLimit(midjourney ...bool) gin.HandlerFunc {
 			defer release()
 		}
 		c.Next()
-		if usedTokens := extractContextKeyTokens(c); usedTokens > 0 {
-			_ = RecordAdtyKeyTPM(tokenID, usedTokens, now)
+		if !c.GetBool("adty_key_tpm_recorded") {
+			if usedTokens := extractContextKeyTokens(c); usedTokens > 0 {
+				_ = RecordAdtyKeyTPM(tokenID, usedTokens, now)
+			}
 		}
 	}
 }
@@ -294,23 +296,37 @@ func adtyKeyTPMAllow(tokenID, tpmLimit int, now time.Time) (bool, error) {
 		}
 		adtyKeyTPMMemoryMu.Unlock()
 	}
-	if logUsed := adtyKeyTPMLogTokens(tokenID, now); logUsed > used {
+	logUsed, err := adtyKeyTPMLogTokens(tokenID, now)
+	if err != nil {
+		return false, err
+	}
+	if logUsed > used {
 		used = logUsed
 	}
 	return used < int64(tpmLimit), nil
 }
 
-func adtyKeyTPMLogTokens(tokenID int, now time.Time) int64 {
-	if model.LOG_DB == nil || !model.LOG_DB.Migrator().HasTable("logs") {
-		return 0
+func adtyKeyTPMLogTokens(tokenID int, now time.Time) (int64, error) {
+	if !common.LogConsumeEnabled || model.LOG_DB == nil || !model.LOG_DB.Migrator().HasTable("logs") {
+		return 0, nil
 	}
 	minuteStart := (now.Unix() / 60) * 60
 	var sum int64
-	_ = model.LOG_DB.Table("logs").
+	if err := model.LOG_DB.Table("logs").
 		Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0)").
 		Where("token_id = ? AND created_at >= ? AND created_at < ?", tokenID, minuteStart, minuteStart+60).
-		Scan(&sum).Error
-	return sum
+		Scan(&sum).Error; err != nil {
+		return 0, err
+	}
+	return sum, nil
+}
+
+func init() {
+	model.AdtyOnConsumeKeyTokens = func(tokenID int, tokens int) {
+		if tokenID > 0 && tokens > 0 {
+			_ = RecordAdtyKeyTPM(tokenID, tokens, time.Now())
+		}
+	}
 }
 
 func adtyKeyConcurrencyAcquire(c *gin.Context, tokenID, maxConcurrency int, now time.Time) (func(), bool, error) {

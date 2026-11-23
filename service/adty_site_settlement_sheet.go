@@ -538,7 +538,8 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 			sheet.OwnerSelfUseUSD = sheet.OwnerSelfUseUSD.Sub(row.Delta)
 			sheet.OwnerSelfUseCostUSD = sheet.OwnerSelfUseUSD
 		}
-		if row.Type == "adjustment" || row.Type == model.AdtyLedgerTypeManualAdjust {
+		if row.Type == "adjustment" || row.Type == model.AdtyLedgerTypeManualAdjust ||
+			(row.WalletKind != model.AdtySiteWalletOperating && (row.Type == "financial_adjustment" || row.Type == "staff_balance")) {
 			sheet.AdjustmentUSD = sheet.AdjustmentUSD.Add(row.Delta)
 		}
 		if row.Type == "gift_reserve" {
@@ -552,10 +553,10 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 		}
 		if row.Type == "gift_spend" {
 			spent := row.Delta.Neg()
-			if !spent.IsPositive() && row.HoldDelta.IsNegative() {
+			if spent.IsZero() && !row.HoldDelta.IsZero() {
 				spent = row.HoldDelta.Neg()
 			}
-			if spent.IsPositive() {
+			if !spent.IsZero() {
 				sheet.GiftFundingUSD = sheet.GiftFundingUSD.Add(spent)
 			}
 		}

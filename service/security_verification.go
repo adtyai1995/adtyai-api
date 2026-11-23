@@ -117,6 +117,23 @@ type AccessTokenUpdateContext struct {
 	Scopes  []string `json:"scopes"`
 }
 
+// APIKeyReadContext binds an api_key.read proof to the exact token_id or sorted
+// token_ids set being revealed (R3-050).
+type APIKeyReadContext struct {
+	TokenID  int   `json:"token_id,omitempty"`
+	TokenIDs []int `json:"token_ids,omitempty"`
+}
+
+func APIKeyReadOperation(tokenID int) VerificationOperation {
+	payload, _ := common.Marshal(APIKeyReadContext{TokenID: tokenID})
+	return VerificationOperation{Scope: VerificationScopeAPIKeyRead, Context: payload}
+}
+
+func APIKeyReadBatchOperation(tokenIDs []int) VerificationOperation {
+	payload, _ := common.Marshal(APIKeyReadContext{TokenIDs: tokenIDs})
+	return VerificationOperation{Scope: VerificationScopeAPIKeyRead, Context: payload}
+}
+
 // AccessTokenRevokeContext names exactly one token: a scoped token ID or the
 // legacy token.
 type AccessTokenRevokeContext struct {
@@ -245,10 +262,36 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
 		normalized = context
+	case VerificationScopeAPIKeyRead:
+		var ctx APIKeyReadContext
+		if len(fields) != 1 || common.Unmarshal(operation.Context, &ctx) != nil {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		hasSingle := ctx.TokenID > 0
+		hasBatch := len(ctx.TokenIDs) > 0
+		if hasSingle == hasBatch {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		if hasBatch {
+			seen := make(map[int]struct{}, len(ctx.TokenIDs))
+			dedup := make([]int, 0, len(ctx.TokenIDs))
+			for _, id := range ctx.TokenIDs {
+				if id <= 0 {
+					return VerificationBinding{}, ErrVerificationContextInvalid
+				}
+				if _, ok := seen[id]; ok {
+					continue
+				}
+				seen[id] = struct{}{}
+				dedup = append(dedup, id)
+			}
+			slices.Sort(dedup)
+			ctx.TokenIDs = dedup
+		}
+		normalized = ctx
 	case VerificationScopePasskeyRegister, VerificationScopePasskeyDelete, VerificationScopeTwoFASetup,
 		VerificationScopeTwoFADisable, VerificationScopeTwoFABackupCodes,
-		VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete,
-		VerificationScopeAPIKeyRead:
+		VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete:
 		if len(fields) != 0 {
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
@@ -660,7 +703,7 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 		// /api/verify, and ChangeUserPassword so username/email aliases cannot bypass it.
 		uidKey := common.LoginLockUserKey(user.Id)
 		if common.LoginLocked(uidKey) || common.LoginLocked(user.Username) {
-			return nil, ErrVerificationLocked
+			return nil, model.ErrPasswordVerificationLocked
 		}
 		password := input.Password
 		if common.PasswordLoginEncryptionEnabled {

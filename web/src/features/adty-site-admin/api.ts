@@ -108,6 +108,13 @@ export type AdminBalanceRequest = {
   status: 'pending' | 'approved' | 'rejected'
   reviewer_id: number
   reviewer_role: string
+  reason?: string
+  order_ref?: string
+  funding_source?: string
+  batch_kind?: string
+  batch_source?: string
+  ledger_id?: number
+  review_note?: string
   created_at: number
   reviewed_at: number
 }
@@ -481,11 +488,12 @@ export async function getAdminBalanceRequests(
 
 export async function reviewAdminBalanceRequest(
   id: number,
-  approve: boolean
+  approve: boolean,
+  reason?: string
 ): Promise<void> {
   const res = await api.post<ApiResponse<{ reviewed: boolean }>>(
     `${BASE}/balance-requests/${id}/review`,
-    { approve }
+    reason ? { approve, reason } : { approve }
   )
   requireServerSuccess(res.data)
 }

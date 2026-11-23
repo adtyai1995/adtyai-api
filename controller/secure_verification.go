@@ -104,9 +104,12 @@ func writeSecurityOperationError(c *gin.Context, err error) {
 		code, message = "SECURITY_ACTION_FORBIDDEN", service.ErrVerificationForbidden.Error()
 	case errors.Is(err, service.ErrVerificationFailed), errors.As(err, &protocolError):
 		code, message = "SECURITY_VERIFICATION_FAILED", service.ErrVerificationFailed.Error()
-	case errors.Is(err, service.ErrVerificationLocked), errors.Is(err, model.ErrPasswordVerificationLocked):
+	case errors.Is(err, service.ErrVerificationLocked):
 		status = http.StatusTooManyRequests
 		code, message = "SECURITY_VERIFICATION_LOCKED", err.Error()
+	case errors.Is(err, model.ErrPasswordVerificationLocked):
+		status = http.StatusTooManyRequests
+		code, message = "SECURITY_PASSWORD_LOCKED", err.Error()
 	case errors.Is(err, service.ErrVerificationCodeLocked):
 		code, message = "SECURITY_EMAIL_CODE_LOCKED", service.ErrVerificationCodeLocked.Error()
 	case errors.Is(err, service.ErrVerificationUnavailable):

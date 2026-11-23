@@ -346,17 +346,25 @@ func AdtySiteTables() []any {
 // 客户的资金批次也要一起搬（ISS-R4-0047）：批次自带 site_id 之后，不搬就是
 // 「客户在新站、本金挂旧站」，两边的本金负债同时算错。
 func AdtySetUsersSiteTx(tx *gorm.DB, fromSite, toSite int) ([]int, error) {
+	ids, _, err := AdtySetUsersSiteWithMovedPrincipalTx(tx, fromSite, toSite)
+	return ids, err
+}
+
+// AdtySetUsersSiteWithMovedPrincipalTx migrates all users from fromSite to toSite,
+// rewrites their fund batches' site_id, and returns both moved user IDs and the total
+// non-legacy principal quota remaining that left fromSite (R3-015).
+func AdtySetUsersSiteWithMovedPrincipalTx(tx *gorm.DB, fromSite, toSite int) ([]int, int64, error) {
 	if fromSite == toSite {
-		return nil, nil
+		return nil, 0, nil
 	}
 	// InsertWithLimit locks the owner too: a token created before this lock is
 	// revoked with the migration; one created afterwards belongs to the new site.
 	var users []User
 	if err := lockForUpdate(tx).Select("id").Where("site_id = ?", fromSite).Order("id").Find(&users).Error; err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(users) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 	ids := make([]int, len(users))
 	for i := range users {
@@ -364,21 +372,21 @@ func AdtySetUsersSiteTx(tx *gorm.DB, fromSite, toSite int) ([]int, error) {
 	}
 	var tokens []Token
 	if err := lockForUpdate(tx).Select("id", commonKeyCol).Where("user_id IN ?", ids).Order("id").Find(&tokens).Error; err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := invalidateTokensCache(tokens); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// Soft deletion keeps historical identifiers and quota facts, while normal
 	// token edits cannot reactivate the original secret at the destination.
 	if err := tx.Where("user_id IN ?", ids).Delete(&Token{}).Error; err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// Site membership is part of authorization. Fence old user metadata and
 	// browser sessions before the new membership can commit.
 	for _, id := range ids {
 		if _, err := IncrementUserAuthVersionWithTx(tx, id); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	updates := map[string]any{"site_id": toSite}
@@ -389,17 +397,27 @@ func AdtySetUsersSiteTx(tx *gorm.DB, fromSite, toSite int) ([]int, error) {
 			"CASE WHEN inherited_from_site_id = 0 THEN ? ELSE inherited_from_site_id END", fromSite)
 	}
 	if err := tx.Model(&User{}).Where("id IN ?", ids).Updates(updates).Error; err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	var movedPrincipal int64
+	if fromSite > 0 && tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		if err := tx.Model(&AdtyFundBatch{}).
+			Select("COALESCE(SUM(remaining), 0)").
+			Where("user_id IN ? AND site_id = ? AND kind = ? AND source <> ? AND remaining > 0",
+				ids, fromSite, AdtyFundBatchKindPrincipal, adtyLegacyBatchSource).
+			Scan(&movedPrincipal).Error; err != nil {
+			return nil, 0, err
+		}
 	}
 	if err := adtyMoveFundBatchesToSiteTx(tx, ids, fromSite, toSite); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if toSite == 0 {
 		if err := RecordAdtyUserSiteMigrationsTx(tx, ids, fromSite, toSite, time.Now().Unix()); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
-	return ids, nil
+	return ids, movedPrincipal, nil
 }
 
 // RecordAdtyUserSiteMigrationsTx 为迁入主站的账号记下 user_id、原站和目标站。已有同样键的行保持原样（幂等）。

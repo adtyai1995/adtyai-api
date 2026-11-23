@@ -53,7 +53,7 @@ export interface AccessTokenList {
   legacy: LegacyAccessToken | null
 }
 
-export type AccessTokenGroup = 'personal' | 'admin' | 'system'
+export type AccessTokenGroup = 'personal' | 'owner' | 'admin' | 'system'
 
 export interface AccessTokenCatalog {
   groups: { group: AccessTokenGroup; resources: PermissionResourceDef[] }[]

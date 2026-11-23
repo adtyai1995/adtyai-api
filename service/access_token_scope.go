@@ -453,6 +453,12 @@ func AccessTokenVerificationScope(verificationScope string) (scope string, liste
 	return scope, listed
 }
 
+// RequireAccessTokenVerificationScopeForOperation enforces exact per-action PAT
+// scope binding for multi-action verification scopes such as site.owner.manage (R2-004 / R3-042).
+func RequireAccessTokenVerificationScopeForOperation(identity AuthIdentity, op VerificationOperation) error {
+	return requireAccessTokenVerificationScopeForOperation(identity, op)
+}
+
 // requireAccessTokenVerificationScopeForOperation enforces exact per-action PAT
 // scope binding for multi-action verification scopes such as site.owner.manage (R2-004).
 func requireAccessTokenVerificationScopeForOperation(identity AuthIdentity, op VerificationOperation) error {

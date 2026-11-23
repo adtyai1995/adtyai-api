@@ -83,6 +83,7 @@ export type AdtyOrderExt = {
   paid_currency: string
   paid_tx_hash: string
   refunded_at: number
+  gift_fulfillment_status?: string
 }
 
 export type AdtyOrder = {

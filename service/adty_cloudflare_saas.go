@@ -661,7 +661,7 @@ func RemoveAdtySiteDomain(ctx context.Context, ownerUserId, domainId int) error 
 		return ErrAdtySiteNotFound
 	}
 	if domain.ManagedBy == "platform" {
-		return fmt.Errorf("Platform domains are managed by the platform")
+		return common.NewMessage("Platform domains are managed by the platform")
 	}
 	return removeAdtySiteDomain(ctx, &domain)
 }

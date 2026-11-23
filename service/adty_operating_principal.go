@@ -63,26 +63,14 @@ func adtyOperatingPrincipalAllocBySiteTx(tx *gorm.DB, userID int, operationKey s
 	if tx == nil || userID <= 0 || operationKey == "" || !tx.Migrator().HasTable(&model.AdtyFundAllocation{}) {
 		return nil, false, nil
 	}
-	// R2-014: Always match the exact operation_id first so task upward adjustments
-	// never inherit the root operation's site allocation before their own.
+	// R3-005: Always attribute strictly by this operation's own allocation rows.
+	// Every debit operation (including task:<id>:adjust:* and direct:*) writes its
+	// own AdtyFundAllocation rows under operation_key; never inherit EarningRootKey.
 	var allocs []model.AdtyFundAllocation
 	if err := tx.Select("batch_id", "kind", "source", "held", "settled").
 		Where("user_id = ? AND operation_id = ? AND kind = ? AND source <> ?", userID, operationKey, "principal", "legacy").
 		Order("id ASC").Find(&allocs).Error; err != nil {
 		return nil, false, err
-	}
-	if len(allocs) == 0 && tx.Migrator().HasTable(&model.BillingOperation{}) {
-		var ops []model.BillingOperation
-		if err := tx.Select("operation_key", "earning_root_key").Where("operation_key = ?", operationKey).Limit(1).Find(&ops).Error; err != nil {
-			return nil, false, err
-		}
-		if len(ops) > 0 && ops[0].EarningRootKey != "" && ops[0].EarningRootKey != operationKey {
-			if err := tx.Select("batch_id", "kind", "source", "held", "settled").
-				Where("user_id = ? AND operation_id = ? AND kind = ? AND source <> ?", userID, ops[0].EarningRootKey, "principal", "legacy").
-				Order("id ASC").Find(&allocs).Error; err != nil {
-				return nil, false, err
-			}
-		}
 	}
 	if len(allocs) == 0 {
 		return nil, false, nil

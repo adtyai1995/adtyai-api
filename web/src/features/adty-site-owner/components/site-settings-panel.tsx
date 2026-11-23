@@ -500,6 +500,7 @@ function SearchCard(props: { site: OwnerSite }) {
 function senderLabel(t: TFunction, status: SenderDomain['status']): string {
   if (status === 'verified') return t('Verified')
   if (status === 'failed') return t('Verification failed')
+  if (status === 'removing') return t('Removing')
   if (status === 'disabled') return t('Turned off')
   return t('Waiting for DNS')
 }
@@ -585,13 +586,21 @@ function SenderDomainCard(props: { site: OwnerSite }) {
                     <Button
                       size='sm'
                       variant='outline'
+                      disabled={current.status === 'removing'}
                       onClick={() => setDeleting(true)}
                     >
                       {t('Delete')}
                     </Button>
                   </div>
                 </div>
-                {current.status !== 'verified' && records.length > 0 && (
+                {current.status === 'removing' && current.cleanup_error && (
+                  <p className='text-destructive text-xs'>
+                    {current.cleanup_error}
+                  </p>
+                )}
+                {current.status !== 'verified' &&
+                  current.status !== 'removing' &&
+                  records.length > 0 && (
                   <StaticDataTable
                     tableProps={{ 'aria-label': t('DNS records to add') }}
                     data={records}

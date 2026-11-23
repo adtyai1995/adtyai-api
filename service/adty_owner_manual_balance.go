@@ -297,6 +297,11 @@ func CreditAdtySiteCustomerBalanceByOwner(siteID, ownerID, customerID int, amoun
 		if customer.SiteId != siteID || customer.StaffSiteId != 0 || customer.Status != common.UserStatusEnabled {
 			return common.NewMessage("No permission to perform this action")
 		}
+		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, customerID); empErr != nil {
+			return empErr
+		} else if isEmp {
+			return common.NewMessage("No permission to perform this action")
+		}
 		existing, err := model.FindAdtyLedgerByIdemKeyTx(tx, ledgerKey)
 		if err != nil {
 			return err

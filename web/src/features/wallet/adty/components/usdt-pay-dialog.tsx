@@ -26,13 +26,18 @@ import { Dialog } from '@/components/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { handleServerError } from '@/lib/handle-server-error'
+import { getServerErrorMessage } from '@/lib/server-error-message'
 import { useAdtyUiStore } from '@/stores/adty-ui-store'
 
 import { adtyTopupQueryKeys, cancelAdtyOrder, getAdtyOrder } from '../api'
 import { payWithBEpusdt } from '../api-pay'
 import { formatCountdown, useNowSeconds } from '../lib/countdown'
 import { CHAIN_NAMES } from '../lib/methods'
-import { creditedUsdAmount } from '../lib/money'
+import {
+  creditedUsdAmount,
+  giftFulfillmentStatusLabelKey,
+  isGiftBonusWithheld,
+} from '../lib/money'
 import { clearPendingPayment, savePendingPayment } from '../lib/pending-payment'
 import type { AdtyOrder, AdtyTopupBusiness } from '../types'
 import { ChainIcon } from './chain-icons'
@@ -127,9 +132,13 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
         return
       }
       props.onClose()
-    } catch {
-      // The gateway refuses to cancel once it has seen the transfer.
-      setNotice(t('A transfer has been detected. Please wait'))
+    } catch (error) {
+      setNotice(
+        getServerErrorMessage(
+          error,
+          t('Unable to cancel this order right now. Please try again.')
+        )
+      )
     }
   }
 
@@ -185,14 +194,20 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
         </p>
       )}
       {ext && status === 'success' && (
-        <p
-          className='text-success text-center text-lg font-semibold'
-          role='status'
-        >
-          {t('Credited ${{amount}}', {
-            amount: creditedUsdAmount(ext),
-          })}
-        </p>
+        <div className='space-y-1 text-center' role='status'>
+          <p className='text-success text-lg font-semibold'>
+            {t('Credited ${{amount}}', {
+              amount: creditedUsdAmount(ext),
+            })}
+          </p>
+          {isGiftBonusWithheld(ext.gift_fulfillment_status) && (
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                giftFulfillmentStatusLabelKey(ext.gift_fulfillment_status) ?? ''
+              )}
+            </p>
+          )}
+        </div>
       )}
       {ext && expired && status !== 'success' && (
         <p className='text-destructive text-center' role='status'>

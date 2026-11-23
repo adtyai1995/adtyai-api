@@ -467,13 +467,14 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		left -= take
 	}
 	if left <= 0 {
-		// 预扣登记的分摊正好覆盖实际消耗——最常见的形态。这里必须先把本金
-		// 消费交给站点侧，否则「有分摊行」的用户永远不扣运营钱包；补记分支
-		// 走的是下面同一个出口，两处都只经 adtyNotifyPrincipalSpentTx 一次。
+		// Lock order (R2-022 / R3-004): earnings/margin gift_spend before operating principal.
+		if err := adtyNotifyBonusSpentTx(tx, userID, bonusBySource); err != nil {
+			return 0, err
+		}
 		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationID, principalSpent); err != nil {
 			return 0, err
 		}
-		return applied, adtyNotifyBonusSpentTx(tx, userID, bonusBySource)
+		return applied, nil
 	}
 	// 已登记额度不够覆盖实际消耗：补记一条已结算分摊，再按 FIFO 扣批次。
 	//
@@ -539,13 +540,14 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 	if total.Held != backed {
 		return 0, adtyFundBatchShortfallError(total.Held - backed)
 	}
-	// 本金真的从批次里扣掉了，站点运营钱包必须同事务跟上：站长充值时就记过
-	// 一笔本金入账（operating:topup:<trade_no>），消费时不扣等于这笔钱白送。
-	// 放在收尾校验之后：校验失败整事务回滚，不会留下「钱包扣了账没扣」。
+	// Lock order (R2-022 / R3-004): earnings/margin gift_spend before operating principal.
+	if err := adtyNotifyBonusSpentTx(tx, userID, bonusBySource); err != nil {
+		return 0, err
+	}
 	if err := adtyNotifyPrincipalSpentTx(tx, userID, operationID, principalSpent); err != nil {
 		return 0, err
 	}
-	return backed, adtyNotifyBonusSpentTx(tx, userID, bonusBySource)
+	return backed, nil
 }
 
 // deductAdtyFundBatchTx 扣一个批次的 remaining。扣不动就报错，让调用方整事务回滚。
@@ -660,6 +662,7 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 	}
 	left := refundQuota
 	principalBySite := map[int]int64{}
+	bonusBySource := map[string]int64{}
 	for i := range shares {
 		if left <= 0 {
 			break
@@ -694,8 +697,20 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 					principalBySite[siteID] += giveBack
 				}
 			}
+		} else if isAdtyBonusBatchKind(shares[i].Kind) && shares[i].Source != "" {
+			var batches []AdtyFundBatch
+			if err := tx.Select("id", "kind", "gift_category", "expires_at").Where("id = ?", shares[i].BatchId).Limit(1).Find(&batches).Error; err != nil {
+				return err
+			}
+			if len(batches) > 0 && !batches[0].IsExpiringGift() {
+				bonusBySource[shares[i].Source] += giveBack
+			}
 		}
 		left -= giveBack
+	}
+	// Lock order (R2-022 / R3-004): restore earnings/margin gift_spend before operating principal.
+	if err := adtyNotifyBonusRefundedTx(tx, userID, reverseOperationID, bonusBySource); err != nil {
+		return err
 	}
 	return adtyNotifyPrincipalRefundedTx(tx, userID, reverseOperationID, principalBySite)
 }

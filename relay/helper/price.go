@@ -530,7 +530,7 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 		return hosttypes.PriceData{}, err
 	}
 
-	rawCost, trace, err := billingexpr.RunExprByHashWithRequest(exprStr, exprHash, billingexpr.TokenParams{
+	_, trace, err := billingexpr.RunExprByHashWithRequest(exprStr, exprHash, billingexpr.TokenParams{
 		P:   float64(promptTokens),
 		C:   0,
 		Len: float64(promptTokens),
@@ -540,14 +540,15 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	}
 
 	// Expression coefficients are $/1M tokens prices; convert to quota the same way per-call billing does.
-	quotaBeforeGroupDec := decimal.NewFromFloat(rawCost).Div(decimal.NewFromInt(1_000_000)).Mul(common.QuotaPerUnitDecimal())
+	quotaBeforeGroupDec := trace.CostDec.Div(decimal.NewFromInt(1_000_000)).Mul(common.QuotaPerUnitDecimal())
 	// Scale the reservation, preserving the expression's context-length tier
 	// and leaving actual settlement and fixed request prices unchanged.
 	if trace.BillingUnit != billingexpr.BillingUnitRequest {
 		quotaBeforeGroupDec = quotaBeforeGroupDec.Mul(decimal.NewFromFloat(preConsumeMultiplier))
 	}
 	quotaBeforeGroup := quotaBeforeGroupDec.InexactFloat64()
-	preConsumedQuota, err := common.QuotaFromDecimalStrict(quotaBeforeGroupDec.Mul(groupRatioInfo.BilledGroupRatio()))
+	billedGroupRatio := groupRatioInfo.BilledGroupRatio()
+	preConsumedQuota, err := common.QuotaFromDecimalStrict(quotaBeforeGroupDec.Mul(billedGroupRatio))
 	if err != nil {
 		return hosttypes.PriceData{}, err
 	}
@@ -561,25 +562,27 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	}
 
 	snapshot := &billingexpr.BillingSnapshot{
-		EstimatedImageCount:       trace.ImageCount,
-		BillingMode:               billing_setting.BillingModeTieredExpr,
-		ModelName:                 billingModelName,
-		ExprString:                exprStr,
-		ExprHash:                  exprHash,
-		GroupRatio:                groupRatioInfo.GroupRatio,
-		EstimatedPromptTokens:     promptTokens,
-		EstimatedCompletionTokens: 0,
-		PreConsumeMultiplier:      preConsumeMultiplier,
-		EstimatedQuotaBeforeGroup: quotaBeforeGroup,
-		EstimatedQuotaAfterGroup:  preConsumedQuota,
-		EstimatedTier:             trace.MatchedTier,
-		EstimatedBillingUnit:      trace.BillingUnit,
-		EstimatedFixedPrice:       trace.FixedPrice,
-		QuotaPerUnit:              float64(common.FixedQuotaPerUnit),
-		ExprVersion:               billingexpr.ExprVersion(exprStr),
-		AcceptedAt:                requestInput.AcceptedUnix,
-		BusinessTimezone:          requestInput.BusinessTimezone,
-		AcceptedLocal:             localTime,
+		EstimatedImageCount:              trace.ImageCount,
+		BillingMode:                      billing_setting.BillingModeTieredExpr,
+		ModelName:                        billingModelName,
+		ExprString:                       exprStr,
+		ExprHash:                         exprHash,
+		GroupRatio:                       groupRatioInfo.GroupRatio,
+		GroupRatioDecimal:                billedGroupRatio.String(),
+		EstimatedPromptTokens:            promptTokens,
+		EstimatedCompletionTokens:        0,
+		PreConsumeMultiplier:             preConsumeMultiplier,
+		EstimatedQuotaBeforeGroup:        quotaBeforeGroup,
+		EstimatedQuotaBeforeGroupDecimal: quotaBeforeGroupDec.String(),
+		EstimatedQuotaAfterGroup:         preConsumedQuota,
+		EstimatedTier:                    trace.MatchedTier,
+		EstimatedBillingUnit:             trace.BillingUnit,
+		EstimatedFixedPrice:              trace.FixedPrice,
+		QuotaPerUnit:                     float64(common.FixedQuotaPerUnit),
+		ExprVersion:                      billingexpr.ExprVersion(exprStr),
+		AcceptedAt:                       requestInput.AcceptedUnix,
+		BusinessTimezone:                 requestInput.BusinessTimezone,
+		AcceptedLocal:                    localTime,
 	}
 	info.TieredBillingSnapshot = snapshot
 	info.BillingRequestInput = &requestInput

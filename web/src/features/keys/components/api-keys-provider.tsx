@@ -78,18 +78,22 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
     setRefreshTrigger((prev) => prev + 1)
   }, [])
 
-  const obtainApiKeyReadProof = useCallback(async (): Promise<
-    string | null
-  > => {
-    const proof = await requestVerification({
-      scope: 'api_key.read',
-      title: t('Verify your identity'),
-      description: t(
-        'Viewing or copying a full API key requires security verification.'
-      ),
-    })
-    return proof?.proof_token ?? null
-  }, [requestVerification, t])
+  const obtainApiKeyReadProof = useCallback(
+    async (
+      context: { token_id: number } | { token_ids: number[] }
+    ): Promise<string | null> => {
+      const proof = await requestVerification({
+        scope: 'api_key.read',
+        context,
+        title: t('Verify your identity'),
+        description: t(
+          'Viewing or copying a full API key requires security verification.'
+        ),
+      })
+      return proof?.proof_token ?? null
+    },
+    [requestVerification, t]
+  )
 
   const resolveRealKey = useCallback(
     async (id: number): Promise<string | null> => {
@@ -97,7 +101,7 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
       if (id in pendingRequests.current) return pendingRequests.current[id]
 
       const request = (async () => {
-        const proofToken = await obtainApiKeyReadProof()
+        const proofToken = await obtainApiKeyReadProof({ token_id: id })
         if (!proofToken) return null
 
         setLoadingKeys((prev) => ({ ...prev, [id]: true }))
@@ -138,7 +142,7 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
         return result
       }
 
-      const proofToken = await obtainApiKeyReadProof()
+      const proofToken = await obtainApiKeyReadProof({ token_ids: uncachedIds })
       if (!proofToken) return {}
 
       for (const id of uncachedIds) {

@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -1284,11 +1286,9 @@ func writeOwnerManualRefundStep(c *gin.Context, step string, run func(tradeNo, r
 		Voucher        string `json:"voucher"`
 		Proof          string `json:"proof"`
 	}
-	if c.Request.ContentLength > 0 {
-		if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-			common.ApiErrorT(c, "Invalid parameters")
-			return
-		}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
 	}
 	refundID := strings.TrimSpace(c.Param("refund_id"))
 	payout := model.AdtyManualRefundPayout{

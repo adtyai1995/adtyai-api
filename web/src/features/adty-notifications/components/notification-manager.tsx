@@ -85,6 +85,12 @@ function NotificationManagement(props: {
       setWithdrawing(null)
       void client.invalidateQueries({ queryKey: notificationManagerKey })
       void client.invalidateQueries({ queryKey: ['adty-notifications'] })
+      void client.invalidateQueries({ queryKey: ['status'] })
+      try {
+        window.localStorage.removeItem('status')
+      } catch {
+        /* empty */
+      }
     },
     onError: (error) => handleServerError(error),
   })

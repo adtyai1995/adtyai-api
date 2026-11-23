@@ -41,16 +41,20 @@ func GetUserGroups(c *gin.Context) {
 		}
 	}
 	userUsableGroups := service.GetUserUsableGroups(userGroup)
+	groupRatios := make(map[string]float64)
 	for groupName := range ratio_setting.GetGroupRatioCopy() {
 		if !service.SiteGroupAllowed(siteID, groupName) {
 			continue
 		}
-		// UserUsableGroups contains the groups that the user can use
-		if desc, ok := userUsableGroups[groupName]; ok {
-			usableGroups[groupName] = map[string]any{
-				"ratio": service.AdtyUserGroupRatio(userId, userGroup, groupName), // 二开：分站价格（任务 11.4）
-				"desc":  desc,
-			}
+		if _, ok := userUsableGroups[groupName]; ok {
+			groupRatios[groupName] = service.GetUserGroupRatio(userGroup, groupName)
+		}
+	}
+	service.AdtyApplySitePricing(c, groupRatios)
+	for groupName, ratio := range groupRatios {
+		usableGroups[groupName] = map[string]any{
+			"ratio": ratio,
+			"desc":  userUsableGroups[groupName],
 		}
 	}
 	if _, ok := userUsableGroups["auto"]; ok && (siteID == 0 || len(usableGroups) > 0) {

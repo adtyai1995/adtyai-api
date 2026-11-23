@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -189,7 +190,11 @@ func notifyAdminsWithEventID(eventID, notifyType string, receives func(userID, r
 		if render != nil {
 			subject, content = render(userSetting.Language)
 		}
-		subject, content = ResolveAdtyNoticeTemplateForNotify(notifyType, userSetting.Language, subject, content, nil)
+		var tmplValues []any
+		if notifyType == dto.NotifyTypeChannelUpdate && content != "" {
+			tmplValues = []any{content}
+		}
+		subject, content = ResolveAdtyNoticeTemplateForNotify(notifyType, userSetting.Language, subject, content, tmplValues)
 		readSum := sha256.Sum256([]byte("watcher-notice:" + eventID + ":" + strconv.Itoa(user.Id)))
 		readKey := hex.EncodeToString(readSum[:])
 
@@ -302,7 +307,11 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 	if (liveSetting.NotifyType == "" || liveSetting.NotifyType == dto.NotifyTypeEmail) && outbox.EmailTitle != "" {
 		baseTitle, baseContent = outbox.EmailTitle, outbox.EmailContent
 	}
-	subject, content := ResolveAdtyNoticeTemplateForNotify(outbox.NotifyType, lang, baseTitle, baseContent, nil)
+	var outboxValues []any
+	if outbox.NotifyType == dto.NotifyTypeChannelUpdate && baseContent != "" {
+		outboxValues = []any{baseContent}
+	}
+	subject, content := ResolveAdtyNoticeTemplateForNotify(outbox.NotifyType, lang, baseTitle, baseContent, outboxValues)
 	attempts := outbox.AttemptCount + 1
 	if err := NotifyUser(liveUser.Id, liveUser.Email, liveSetting, dto.NewNotify(outbox.NotifyType, subject, content, nil)); err != nil {
 		common.SysLog(common.LogText("failed to send notice %s to user %d: %s", outbox.NotifyType, liveUser.Id, err.Error()))
@@ -566,7 +575,9 @@ func adtyWatcherNoticeDetail(userID int, key string) (map[string]any, bool) {
 	if res.Error != nil || res.RowsAffected == 0 || notice.Id == 0 {
 		return nil, false
 	}
-	if adtyIsNotificationKeyHidden(userID, notice.ReadKey) || adtyIsNotificationKeyHidden(userID, "watcher:"+notice.EventId) {
+	if adtyIsNotificationKeyHidden(userID, notice.ReadKey) ||
+		adtyIsNotificationKeyHidden(userID, "watcher:"+notice.ReadKey) ||
+		adtyIsNotificationKeyHidden(userID, "watcher:"+notice.EventId) {
 		return nil, false
 	}
 	if _, err := UpsertAdtySevereTodo(userID, adtyTodoSiteID(userID, nil), notice.ReadKey, notice.Title, notice.Content, notice.Category, 0); err != nil {
@@ -673,6 +684,22 @@ func sendEmailNotify(site *model.AdtySite, userEmail string, data dto.Notify) er
 	return AdtySendSiteEmail(site, title, userEmail, AdtyRenderMail(site, msg))
 }
 
+// scrubNotifyHTTPError strips secret-bearing URLs (Gotify ?token=, Bark device key,
+// Webhook credentials) from *url.Error before errors hit logs or outbox last_error (R3-029).
+func scrubNotifyHTTPError(prefix string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err != nil {
+			return fmt.Errorf("%s (%s): %s", prefix, urlErr.Op, redactAdtySecrets(urlErr.Err.Error()))
+		}
+		return fmt.Errorf("%s (%s)", prefix, urlErr.Op)
+	}
+	return fmt.Errorf("%s: %s", prefix, redactAdtySecrets(err.Error()))
+}
+
 func sendBarkNotify(barkURL string, data dto.Notify) error {
 	// 处理占位符
 	content := data.Content
@@ -702,7 +729,7 @@ func sendBarkNotify(barkURL string, data dto.Notify) error {
 
 		resp, err = DoWorkerRequest(workerReq)
 		if err != nil {
-			return fmt.Errorf("failed to send bark request through worker: %v", err)
+			return scrubNotifyHTTPError("failed to send bark request through worker", err)
 		}
 		defer resp.Body.Close()
 
@@ -713,13 +740,13 @@ func sendBarkNotify(barkURL string, data dto.Notify) error {
 	} else {
 		// SSRF防护：验证Bark URL（非Worker模式）
 		if err := ValidateSSRFProtectedFetchURL(finalURL); err != nil {
-			return fmt.Errorf("request reject: %v", err)
+			return scrubNotifyHTTPError("request reject", err)
 		}
 
 		// 直接发送请求
 		req, err = http.NewRequest(http.MethodGet, finalURL, nil)
 		if err != nil {
-			return fmt.Errorf("failed to create bark request: %v", err)
+			return scrubNotifyHTTPError("failed to create bark request", err)
 		}
 
 		// 设置User-Agent
@@ -729,7 +756,7 @@ func sendBarkNotify(barkURL string, data dto.Notify) error {
 		client := GetSSRFProtectedHTTPClient()
 		resp, err = client.Do(req)
 		if err != nil {
-			return fmt.Errorf("failed to send bark request: %v", err)
+			return scrubNotifyHTTPError("failed to send bark request", err)
 		}
 		defer resp.Body.Close()
 
@@ -795,7 +822,7 @@ func sendGotifyNotify(gotifyUrl string, gotifyToken string, priority int, data d
 
 		resp, err = DoWorkerRequest(workerReq)
 		if err != nil {
-			return fmt.Errorf("failed to send gotify request through worker: %v", err)
+			return scrubNotifyHTTPError("failed to send gotify request through worker", err)
 		}
 		defer resp.Body.Close()
 
@@ -806,13 +833,13 @@ func sendGotifyNotify(gotifyUrl string, gotifyToken string, priority int, data d
 	} else {
 		// SSRF防护：验证Gotify URL（非Worker模式）
 		if err := ValidateSSRFProtectedFetchURL(finalURL); err != nil {
-			return fmt.Errorf("request reject: %v", err)
+			return scrubNotifyHTTPError("request reject", err)
 		}
 
 		// 直接发送请求
 		req, err = http.NewRequest(http.MethodPost, finalURL, bytes.NewBuffer(payloadBytes))
 		if err != nil {
-			return fmt.Errorf("failed to create gotify request: %v", err)
+			return scrubNotifyHTTPError("failed to create gotify request", err)
 		}
 
 		// 设置请求头
@@ -823,7 +850,7 @@ func sendGotifyNotify(gotifyUrl string, gotifyToken string, priority int, data d
 		client := GetSSRFProtectedHTTPClient()
 		resp, err = client.Do(req)
 		if err != nil {
-			return fmt.Errorf("failed to send gotify request: %v", err)
+			return scrubNotifyHTTPError("failed to send gotify request", err)
 		}
 		defer resp.Body.Close()
 

@@ -893,7 +893,7 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 					return err
 				}
 			} else if (row.Kind == "task" || row.Kind == "mj_refund") && charged < 0 {
-				if err := ReverseSettledAdtyFundAllocationsTx(tx, row.UserId, row.EarningRootKey, row.OperationKey, int64(-charged)); err != nil {
+				if err := reversePersonalStreamAllocationsTx(tx, &row, int64(-charged)); err != nil {
 					return err
 				}
 			} else {
@@ -902,8 +902,11 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				// 传给「无批次时补建 legacy 批次」的分支，补出来的批次不够扣本次消耗，
 				// 结算会整笔失败——老用户（升级前就有额度、从来没批次）就再也结不了账。
 				scoped := withOwnerFundScope(tx, &row)
-				if (row.PayerKind == BillingPayerOwner || row.Kind == "direct") && settledQuota > 0 {
-					if err := AllocateAdtyFundAllocationsTx(scoped, row.UserId, row.OperationKey, settledQuota, settledBalanceBefore); err != nil {
+				if settledQuota > 0 {
+					// Ensure every non-team debit (including task upward adjust, ReservedQuota==0,
+					// and unreserved mj_charge) creates AdtyFundAllocation rows under its own
+					// operation_key so operating-principal site attribution and refunds stay exact (R3-005).
+					if err := allocateAdtyFundAllocationsTx(scoped, row.UserId, row.OperationKey, settledQuota, settledBalanceBefore, row.Kind == "direct"); err != nil {
 						return err
 					}
 				}
@@ -1037,8 +1040,8 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		if err := tx.Save(&row).Error; err != nil {
 			return err
 		}
-		if row.Shortfall > 0 && tx.Migrator().HasTable(&AdtyBillingHold{}) {
-			if err := UpsertAdtyBillingHoldForOperationTx(tx, &row); err != nil {
+		if (row.Shortfall > 0 || row.Kind == "request") && tx.Migrator().HasTable(&AdtyBillingHold{}) {
+			if err := SyncAdtyBillingHoldForOperationTx(tx, &row); err != nil {
 				return err
 			}
 		}

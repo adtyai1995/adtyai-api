@@ -50,6 +50,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SevereTodoList } from '@/features/adty-notifications/components/todo-item-card'
+import { useAuthStore } from '@/stores/auth-store'
 import {
   notificationAudienceLabels,
   notificationKindLabels,
@@ -467,6 +468,7 @@ export function NotificationPopover({
   hidingAnnouncement,
 }: NotificationPopoverProps) {
   const { t, i18n } = useTranslation()
+  const staffSiteId = useAuthStore((state) => state.auth.user?.staff_site_id ?? 0)
   const isEnglish = !(i18n.resolvedLanguage || i18n.language || '')
     .toLowerCase()
     .startsWith('zh')
@@ -504,7 +506,9 @@ export function NotificationPopover({
             {t('Latest platform updates and notices')}
           </p>
         </PopoverHeader>
-        {open && onHideAnnouncement ? <SevereTodoList /> : null}
+        {open && onHideAnnouncement && staffSiteId <= 0 ? (
+          <SevereTodoList />
+        ) : null}
 
         {error ? (
           <ErrorState onRetry={onRetry} className='min-h-48' />

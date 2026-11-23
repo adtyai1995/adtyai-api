@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/url"
 	"strconv"
@@ -79,44 +81,79 @@ func stringsHasZH(lang string) bool {
 
 func prepareTopUpGiftOnCreditTx(tx *gorm.DB, ext *model.AdtyTopupOrder, priorStatus string, facts model.AdtyPaymentFacts) (int64, error) {
 	totalBonus := topUpBonusQuota(ext)
-	bonus := adtyBonusUSDForSite(ext)
-	if tx == nil || ext == nil || ext.SiteId <= 0 || !bonus.IsPositive() {
+	if tx == nil || ext == nil || totalBonus <= 0 {
 		return totalBonus, nil
 	}
-	switch priorStatus {
-	case common.TopUpStatusExpired, model.TopUpStatusCanceled, common.TopUpStatusFailed:
-	default:
+	nonPending := priorStatus == common.TopUpStatusExpired || priorStatus == model.TopUpStatusCanceled || priorStatus == common.TopUpStatusFailed
+	nowUnix := time.Now().Unix()
+	// R3-013: Apply A.8 late-payment timing rules both after cancel/expiry and during the
+	// pending expiry buffer (ExpireAt already elapsed or verified payment timestamp > ExpireAt),
+	// covering both subsite orders (SiteId > 0) and main-site bonus orders (SiteId == 0).
+	latePending := priorStatus == common.TopUpStatusPending && ext.ExpireAt > 0 &&
+		(nowUnix > ext.ExpireAt || (facts.PaidTimeVerified && facts.PaidAt > ext.ExpireAt))
+	if !nonPending && !latePending {
 		return totalBonus, nil
 	}
-	siteQuota, err := siteGiftBonusQuota(ext)
-	if err != nil {
-		return 0, err
+	var giftQuota int64
+	bonus := decimal.Zero
+	if ext.SiteId > 0 {
+		bonus = adtyBonusUSDForSite(ext)
+		if !bonus.IsPositive() {
+			return totalBonus, nil
+		}
+		var err error
+		giftQuota, err = siteGiftBonusQuota(ext)
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		if !ext.BonusUSD.IsPositive() {
+			return totalBonus, nil
+		}
+		giftQuota = totalBonus
 	}
-	grantedWithoutSiteGift := totalBonus - siteQuota
-	if grantedWithoutSiteGift < 0 {
-		grantedWithoutSiteGift = 0
+	if giftQuota <= 0 {
+		return totalBonus, nil
 	}
-	// ISS-R1-0009: Payments completed after cancel/expiry require verified payment
-	// effective-time evidence inside the order window before auto-granting site gifts.
+	grantedWithoutWithheld := totalBonus - giftQuota
+	if grantedWithoutWithheld < 0 {
+		grantedWithoutWithheld = 0
+	}
+	// ISS-R1-0009 / R3-013: Payments completed after cancel/expiry (or after ExpireAt while pending)
+	// require verified payment effective-time evidence inside the order window before auto-granting gifts.
 	if ext.ExpireAt > 0 {
 		if !facts.PaidTimeVerified || facts.PaidAt <= 0 {
+			if priorStatus == common.TopUpStatusPending && ext.SiteId > 0 {
+				if err := ReleaseAdtySiteGiftTx(tx, ext); err != nil {
+					return 0, err
+				}
+			}
 			reason := "payment completed after cancel or expiry without verified payment timestamp; pending manual review"
-			if err := upsertGiftFulfillmentTx(tx, ext, siteQuota, model.AdtyGiftFulfillmentPendingReview, "pending_review", reason); err != nil {
+			if err := upsertGiftFulfillmentTx(tx, ext, giftQuota, model.AdtyGiftFulfillmentPendingReview, "pending_review", reason); err != nil {
 				return 0, err
 			}
 			if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Update("gift_fulfillment_status", model.AdtyGiftFulfillmentPendingReview).Error; err != nil {
 				return 0, err
 			}
 			ext.GiftFulfillmentStatus = model.AdtyGiftFulfillmentPendingReview
-			return grantedWithoutSiteGift, nil
+			return grantedWithoutWithheld, nil
 		}
 		if facts.PaidAt > ext.ExpireAt {
+			if priorStatus == common.TopUpStatusPending && ext.SiteId > 0 {
+				if err := ReleaseAdtySiteGiftTx(tx, ext); err != nil {
+					return 0, err
+				}
+			}
 			if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Update("gift_fulfillment_status", model.AdtyGiftFulfillmentCanceled).Error; err != nil {
 				return 0, err
 			}
 			ext.GiftFulfillmentStatus = model.AdtyGiftFulfillmentCanceled
-			return grantedWithoutSiteGift, nil
+			return grantedWithoutWithheld, nil
 		}
+	}
+	// Main-site bonus (SiteId == 0) has verified on-time payment evidence and needs no site guarantee.
+	if ext.SiteId <= 0 {
+		return totalBonus, nil
 	}
 	held, err := netGiftHoldTx(tx, ext.SiteId, ext.TradeNo)
 	if err != nil {
@@ -129,14 +166,14 @@ func prepareTopUpGiftOnCreditTx(tx *gorm.DB, ext *model.AdtyTopupOrder, priorSta
 		if !errors.Is(err, errGiftGuaranteeShort) && !errors.Is(err, ErrAdtySiteWalletInsufficient) {
 			return 0, err
 		}
-		if err := upsertGiftFulfillmentTx(tx, ext, siteQuota, model.AdtyGiftFulfillmentPending, "pending", err.Error()); err != nil {
+		if err := upsertGiftFulfillmentTx(tx, ext, giftQuota, model.AdtyGiftFulfillmentPending, "pending", err.Error()); err != nil {
 			return 0, err
 		}
 		if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Update("gift_fulfillment_status", model.AdtyGiftFulfillmentPending).Error; err != nil {
 			return 0, err
 		}
 		ext.GiftFulfillmentStatus = model.AdtyGiftFulfillmentPending
-		return grantedWithoutSiteGift, nil
+		return grantedWithoutWithheld, nil
 	}
 	if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
 		"gift_reserve_source":     ext.GiftReserveSource,
@@ -442,21 +479,29 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 	var granted int64
 	fulfilled := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		var row model.AdtyGiftFulfillment
-		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ? AND status = ?", tradeNo, model.AdtyGiftFulfillmentPending).
-			Limit(1).Find(&row).Error; err != nil {
+		// R3-003: Pre-read IDs unlocked, then acquire locks in canonical order:
+		// AdtySite -> AdtyTopupOrder -> AdtyManualRefund -> User -> AdtySiteWallet -> AdtyGiftFulfillment.
+		var peek model.AdtyGiftFulfillment
+		if err := tx.Select("id", "user_id", "site_id", "status").
+			Where("trade_no = ? AND status = ?", tradeNo, model.AdtyGiftFulfillmentPending).
+			Limit(1).Find(&peek).Error; err != nil {
 			return err
 		}
-		if row.Id == 0 {
-			// 已兑现或已终结：重放的扫描不能再发一次。
+		if peek.Id == 0 {
 			return nil
 		}
+		if peek.SiteId > 0 {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Where("id = ?", peek.SiteId).Limit(1).Find(&site).Error; err != nil {
+				return err
+			}
+		}
 		var ext model.AdtyTopupOrder
-		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ? AND user_id = ?", tradeNo, row.UserId).
+		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ? AND user_id = ?", tradeNo, peek.UserId).
 			Limit(1).Find(&ext).Error; err != nil {
 			return err
 		}
-		if ext.Id == 0 || ext.SiteId != row.SiteId {
+		if ext.Id == 0 || ext.SiteId != peek.SiteId {
 			return nil
 		}
 		// 本金已经全额退掉的单子不再补发：终结由退款钩子
@@ -475,18 +520,33 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 		if hasActiveRefund {
 			return nil
 		}
+		var user model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id").Where("id = ?", peek.UserId).First(&user).Error; err != nil {
+			return err
+		}
+		var row model.AdtyGiftFulfillment
+		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND status = ?", peek.Id, model.AdtyGiftFulfillmentPending).
+			Limit(1).Find(&row).Error; err != nil {
+			return err
+		}
+		if row.Id == 0 {
+			// 已兑现或已终结：重放的扫描不能再发一次。
+			return nil
+		}
 		// 当时被扣下的正是「本单赠送额度 - 已发放额度」。pending 行记的 bonus
 		// 额度是站长承诺额（可能已因部分退款缩小），本单赠送额度是实发上限，取小的那个才不会多发。
 		owed := min(row.BonusQuota, topUpBonusQuota(&ext))
 		if owed <= 0 {
 			return nil
 		}
-		targetBonusUSD := row.BonusUSD
-		if !targetBonusUSD.IsPositive() {
-			targetBonusUSD = adtyBonusUSDForSite(&ext)
-		}
-		if err := reacquireAdtySiteGiftAmountTx(tx, &ext, targetBonusUSD); err != nil {
-			return err
+		if ext.SiteId > 0 {
+			targetBonusUSD := row.BonusUSD
+			if !targetBonusUSD.IsPositive() {
+				targetBonusUSD = adtyBonusUSDForSite(&ext)
+			}
+			if err := reacquireAdtySiteGiftAmountTx(tx, &ext, targetBonusUSD); err != nil {
+				return err
+			}
 		}
 		before, err := model.AdtyCreditUserQuotaTx(tx, row.UserId, owed)
 		if err != nil {
@@ -681,6 +741,7 @@ func initGiftFulfillmentHooks() {
 	model.AdtyPrepareTopUpGiftOnCreditTx = prepareTopUpGiftOnCreditTx
 	model.AdtyAfterTopUpCreditCommitted = notifyPendingGiftFulfillmentAfterCredit
 	model.AdtyAfterBonusSpentTx = applySiteGiftSpendOnBonusTx
+	model.AdtyAfterBonusRefundedTx = reverseSiteGiftSpendOnBonusTx
 	model.AdtyBeforeExpireReleaseTx = confirmTopUpUnpaidBeforeExpireTx
 }
 
@@ -983,7 +1044,16 @@ func applySiteGiftSpendForSourceTx(tx *gorm.DB, userID int, tradeNo string, take
 		Select("COALESCE(SUM(original - remaining),0)").Scan(&spentAfter).Error; err != nil {
 		return err
 	}
+	var priorRefunds int64
+	if err := tx.Model(&model.AdtySiteWalletLedger{}).
+		Where("site_id = ? AND ref_type = ? AND ref_id = ? AND type = ? AND delta > 0", ext.SiteId, "topup", tradeNo, "gift_spend").
+		Count(&priorRefunds).Error; err != nil {
+		return err
+	}
 	key := "gift:" + tradeNo + ":spend:" + strconv.FormatInt(spentAfter, 10)
+	if priorRefunds > 0 {
+		key += ":r" + strconv.FormatInt(priorRefunds, 10)
+	}
 	already, err := adtyWalletIdempotencyExists(tx, key+":earn", key+":margin")
 	if err != nil {
 		return err
@@ -1010,6 +1080,120 @@ func applySiteGiftSpendForSourceTx(tx *gorm.DB, userID int, tradeNo string, take
 			map[string]any{
 				"trade_no": tradeNo, "earning": relEarning.String(), "margin": relMargin.String(),
 				"taken_quota": takenQuota,
+			})
+	}
+	return nil
+}
+
+// reverseSiteGiftSpendOnBonusTx mirrors applySiteGiftSpendOnBonusTx when a settled
+// non-expiring bonus share is reversed by a task/Realtime settlement refund (R3-004).
+func reverseSiteGiftSpendOnBonusTx(tx *gorm.DB, userID int, operationKey string, refunds []model.AdtyBonusSpend) error {
+	for _, item := range refunds {
+		if err := reverseSiteGiftSpendForSourceTx(tx, userID, operationKey, item.Source, item.Quota); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reverseSiteGiftSpendForSourceTx(tx *gorm.DB, userID int, operationKey, tradeNo string, refundedQuota int64) error {
+	if tx == nil || userID <= 0 || tradeNo == "" || refundedQuota <= 0 {
+		return nil
+	}
+	var ext model.AdtyTopupOrder
+	if err := tx.Where("trade_no = ? AND user_id = ?", tradeNo, userID).Limit(1).Find(&ext).Error; err != nil {
+		return err
+	}
+	bonus := adtyBonusUSDForSite(&ext)
+	if ext.Id == 0 || ext.SiteId <= 0 || !bonus.IsPositive() {
+		return nil
+	}
+	var rows []model.AdtySiteWalletLedger
+	if err := tx.Where("site_id = ? AND ref_type = ? AND ref_id = ? AND type = ?", ext.SiteId, "topup", tradeNo, "gift_spend").
+		Find(&rows).Error; err != nil {
+		return err
+	}
+	spentEarning := decimal.Zero
+	spentMargin := decimal.Zero
+	for _, row := range rows {
+		switch row.WalletKind {
+		case model.AdtySiteWalletEarnings:
+			spentEarning = spentEarning.Add(row.Delta.Neg())
+		case model.AdtySiteWalletMargin:
+			spentMargin = spentMargin.Add(row.Delta.Neg())
+		}
+	}
+	if spentEarning.IsNegative() {
+		spentEarning = decimal.Zero
+	}
+	if spentMargin.IsNegative() {
+		spentMargin = decimal.Zero
+	}
+	totalSpent := spentEarning.Add(spentMargin)
+	if !totalSpent.IsPositive() {
+		return nil
+	}
+	siteQuota, err := siteGiftBonusQuota(&ext)
+	if err != nil || siteQuota <= 0 {
+		return err
+	}
+	var netSpentQuota int64
+	if err := tx.Model(&model.AdtyFundBatch{}).
+		Where("user_id = ? AND source = ? AND kind = ?", userID, tradeNo, "bonus").
+		Select("COALESCE(SUM(original - remaining),0)").Scan(&netSpentQuota).Error; err != nil {
+		return err
+	}
+	toRestore := bonus.Mul(decimal.NewFromInt(refundedQuota)).Div(decimal.NewFromInt(siteQuota)).RoundFloor(8)
+	if netSpentQuota <= 0 || toRestore.GreaterThan(totalSpent) {
+		toRestore = totalSpent
+	}
+	if !toRestore.IsPositive() {
+		return nil
+	}
+	restEarning := decimal.Zero
+	if spentEarning.IsPositive() {
+		restEarning = toRestore.Mul(spentEarning).Div(totalSpent).RoundFloor(8)
+		if restEarning.GreaterThan(spentEarning) {
+			restEarning = spentEarning
+		}
+	}
+	restMargin := toRestore.Sub(restEarning)
+	if restMargin.GreaterThan(spentMargin) {
+		restMargin = spentMargin
+		restEarning = toRestore.Sub(restMargin)
+		if restEarning.GreaterThan(spentEarning) {
+			restEarning = spentEarning
+		}
+	}
+	sum := sha256.Sum256([]byte(tradeNo + "|" + operationKey))
+	key := "gift-rev:" + hex.EncodeToString(sum[:12])
+	already, err := adtyWalletIdempotencyExists(tx, key+":earn", key+":margin")
+	if err != nil {
+		return err
+	}
+	if restEarning.IsPositive() {
+		if _, err := applyAdtySiteWalletChangeTx(tx, ext.SiteId, model.AdtySiteWalletEarnings, restEarning, AdtySiteWalletChange{
+			Type: "gift_spend", RefType: "topup", RefID: tradeNo, IdempotencyKey: key + ":earn",
+			HoldDelta: restEarning, AllowOverdraft: true,
+		}); err != nil {
+			return err
+		}
+	}
+	if restMargin.IsPositive() {
+		if _, err := applyAdtySiteWalletChangeTx(tx, ext.SiteId, model.AdtySiteWalletMargin, restMargin, AdtySiteWalletChange{
+			Type: "gift_spend", RefType: "topup", RefID: tradeNo, IdempotencyKey: key + ":margin",
+			HoldDelta: restMargin, AllowOverdraft: true,
+		}); err != nil {
+			return err
+		}
+	}
+	if !already && (restEarning.IsPositive() || restMargin.IsPositive()) {
+		writeAdtyGiftOfficialAudit(userID, ext.SiteId, tradeNo, "adty.gift.spend_refund", "",
+			map[string]any{"spent_earning": spentEarning.String(), "spent_margin": spentMargin.String()},
+			map[string]any{
+				"trade_no": tradeNo, "operation_key": operationKey,
+				"earning": restEarning.String(), "margin": restMargin.String(),
+				"refunded_quota": refundedQuota,
 			})
 	}
 	return nil
@@ -1068,6 +1252,25 @@ func ReviewAdtyGiftFulfillment(id int64, action, note string, operatorID int) (*
 	var row model.AdtyGiftFulfillment
 	var beforeStatus string
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// R3-003: Pre-read IDs unlocked, then lock in canonical order:
+		// AdtySite -> AdtyTopupOrder -> AdtyGiftFulfillment.
+		var peek model.AdtyGiftFulfillment
+		if err := tx.Select("id", "site_id", "trade_no").First(&peek, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.NewMessage("Order not found")
+			}
+			return err
+		}
+		if peek.SiteId > 0 {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Where("id = ?", peek.SiteId).Limit(1).Find(&site).Error; err != nil {
+				return err
+			}
+		}
+		var ext model.AdtyTopupOrder
+		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ?", peek.TradeNo).Limit(1).Find(&ext).Error; err != nil {
+			return err
+		}
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return common.NewMessage("Order not found")
@@ -1086,14 +1289,23 @@ func ReviewAdtyGiftFulfillment(id int64, action, note string, operatorID int) (*
 		if action == "reject" {
 			nextStatus = model.AdtyGiftFulfillmentCanceled
 		}
+		history := adtyGiftFulfillmentHistory(row.History, map[string]any{
+			"at":          time.Now().Unix(),
+			"action":      "review_" + action,
+			"operator_id": operatorID,
+			"status":      nextStatus,
+			"reason":      nextReason,
+		})
 		if err := tx.Model(&row).Updates(map[string]any{
-			"status": nextStatus,
-			"reason": nextReason,
+			"status":  nextStatus,
+			"reason":  nextReason,
+			"history": history,
 		}).Error; err != nil {
 			return err
 		}
 		row.Status = nextStatus
 		row.Reason = nextReason
+		row.History = history
 		if err := tx.Model(&model.AdtyTopupOrder{}).
 			Where("trade_no = ?", row.TradeNo).
 			Update("gift_fulfillment_status", nextStatus).Error; err != nil {

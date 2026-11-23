@@ -33,6 +33,8 @@ const serverErrorMessageKeys = {
     'This verification method requires its dedicated verification flow.',
   SECURITY_VERIFICATION_LOCKED:
     'Two-factor authentication is temporarily locked.',
+  SECURITY_PASSWORD_LOCKED:
+    'Too many failed password attempts. Please try again later.',
   TWOFA_CODE_INVALID: 'The authenticator code is incorrect.',
   TWOFA_ALREADY_ENABLED: 'Two-factor authentication is already enabled.',
   TWOFA_NOT_ENABLED: 'Two-factor authentication is not enabled.',

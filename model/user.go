@@ -855,6 +855,28 @@ func ApplyManagedUserAccessTx(tx *gorm.DB, user *User) (bool, error) {
 		updates["role"] = user.Role
 	}
 	if user.Status != 0 && user.Status != current.Status {
+		// R3-022: Prevent admin enable from resurrecting permanently deleted/left
+		// independent team employees or employees belonging to a non-active team.
+		if user.Status == common.UserStatusEnabled && tx.Migrator().HasTable(&AdtyTeamMember{}) {
+			var empMembers []AdtyTeamMember
+			if err := tx.Where("user_id = ? AND independent_employee = ?", current.Id, true).Find(&empMembers).Error; err != nil {
+				return false, err
+			}
+			for _, m := range empMembers {
+				if m.Status == AdtyTeamMemberDeleted || m.Status == AdtyTeamMemberLeft || m.DeletedAt != 0 {
+					return false, common.NewMessage("Deleted or removed team employee accounts cannot be re-enabled")
+				}
+				if tx.Migrator().HasTable(&AdtyTeam{}) && m.TeamId > 0 {
+					var team AdtyTeam
+					if err := tx.Select("id", "status").Where("id = ?", m.TeamId).Limit(1).Find(&team).Error; err != nil {
+						return false, err
+					}
+					if team.Id == 0 || team.Status != AdtyTeamStatusActive {
+						return false, common.NewMessage("Cannot enable an employee account of a closed team")
+					}
+				}
+			}
+		}
 		updates["status"] = user.Status
 	}
 	if len(updates) == 0 {

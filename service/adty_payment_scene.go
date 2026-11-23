@@ -221,6 +221,11 @@ func adtyPaymentIdentity(db *gorm.DB, userID int, lock bool) (*model.User, strin
 	if user.Status != common.UserStatusEnabled || user.StaffSiteId != 0 {
 		return nil, "", common.NewMessage("This payment method is not available")
 	}
+	if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(db, userID); empErr != nil {
+		return nil, "", empErr
+	} else if isEmp {
+		return nil, "", common.NewMessage("This payment method is not available")
+	}
 	kind := "main_customer"
 	switch {
 	case user.Role == common.RoleRootUser:
@@ -398,12 +403,19 @@ func AdtyEpayChannelAllowed(scene *model.AdtyPaymentScene, channelID int) ([]int
 }
 
 func authorizeAdtyPaymentScene(db *gorm.DB, config *AdtyPaymentScenes, userID int, key, provider, method string, quote *AdtyQuote, lockUser bool) (*model.AdtyPaymentScene, *model.User, error) {
+	if quote == nil {
+		return nil, nil, common.NewMessage("Invalid parameters")
+	}
+	// R3-003: Acquire AdtySite lock BEFORE User lock on owner top-ups to match canonical lock order.
+	if lockUser && isOwnerTopupBusiness(quote.Business) && quote.SiteID > 0 {
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(db).First(&site, quote.SiteID).Error; err != nil {
+			return nil, nil, err
+		}
+	}
 	user, kind, err := adtyPaymentIdentity(db, userID, lockUser)
 	if err != nil {
 		return nil, nil, err
-	}
-	if quote == nil {
-		return nil, nil, common.NewMessage("Invalid parameters")
 	}
 	siteID, business, err := adtyPaymentScopeIdentity(db, user, []AdtyPaymentScope{{Business: quote.Business, SiteID: quote.SiteID, TeamID: quote.TeamID}}, lockUser)
 	if err != nil {

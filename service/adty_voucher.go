@@ -1108,6 +1108,11 @@ func creditAdtyVoucherMarginTx(tx *gorm.DB, siteId int, amount decimal.Decimal, 
 }
 
 func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.AdtyVoucher) error {
+	if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, user.Id); empErr != nil {
+		return empErr
+	} else if isEmp {
+		return ErrAdtyVoucherWrongAccount
+	}
 	switch voucher.Purpose {
 	case model.AdtyVoucherPurposeMainUser:
 		if user.SiteId != 0 || user.StaffSiteId != 0 || user.Role != common.RoleCommonUser {

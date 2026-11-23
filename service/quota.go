@@ -740,6 +740,17 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 		prompt := i18n.Translate(lang, i18n.MsgNotifyQuotaLowTitle)
 		// 二开：充值链接指向用户所属站点（任务 11.3）
 		content, values := quotaNotifyContent(lang, userSetting.NotifyType, prompt, logger.FormatQuota(balanceAfter), AdtySitePublicBaseURL(AdtySiteForUser(relayInfo.UserId)))
+		// R3-058: Apply Root-customized quota_exceed template when configured.
+		threshold := common.QuotaRemindThreshold
+		if userSetting.QuotaWarningThreshold != 0 {
+			threshold = int(userSetting.QuotaWarningThreshold)
+		}
+		customTitle, customContent := ResolveAdtyNoticeTemplateForNotify(
+			dto.NotifyTypeQuotaExceed, lang, prompt, "", []any{logger.FormatQuota(balanceAfter), logger.FormatQuota(threshold)},
+		)
+		if customContent != "" {
+			prompt, content, values = customTitle, customContent, nil
+		}
 		err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values))
 		if err != nil {
 			common.SysError(common.LogText("failed to send quota notify to user %d: %s", relayInfo.UserId, err.Error()))

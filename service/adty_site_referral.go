@@ -389,6 +389,11 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Status != common.UserStatusEnabled {
 		return nil, common.NewMessage("Only sub-site customers can use sub-site invitations")
 	}
+	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userID); empErr != nil {
+		return nil, empErr
+	} else if isEmp {
+		return nil, common.NewMessage("Only sub-site customers can use sub-site invitations")
+	}
 	var site model.AdtySite
 	if err := model.DB.First(&site, user.SiteId).Error; err != nil {
 		return nil, err
@@ -539,6 +544,11 @@ func BindAdtySiteInviteByCodeForUser(userID int, code, ipHash string) error {
 		return err
 	}
 	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Status != common.UserStatusEnabled {
+		return common.NewMessage("Only sub-site customers can use sub-site invitations")
+	}
+	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userID); empErr != nil {
+		return empErr
+	} else if isEmp {
 		return common.NewMessage("Only sub-site customers can use sub-site invitations")
 	}
 	return BindSiteInviteByCodeFromIP(user.SiteId, code, user.Id, ipHash)

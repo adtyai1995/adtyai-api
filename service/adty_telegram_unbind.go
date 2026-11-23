@@ -15,13 +15,26 @@ func RevokeAdtyTelegramBind(userID int, purpose string, audit *model.AuditLog) e
 	if userID <= 0 || !adtyValidTelegramPurpose(purpose) || audit == nil {
 		return ErrAdtyTelegramInvalid
 	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	var (
+		wasActive          bool
+		prevTelegramUserID int64
+		prevBotIdentity    string
+		prevSiteID         int
+	)
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
 		if err := model.AdtyLockForUpdate(tx).First(&user, userID).Error; err != nil {
 			return err
 		}
 		if user.Status != common.UserStatusEnabled {
 			return ErrAdtyTelegramForbidden
+		}
+		if user.StaffSiteId > 0 && purpose != model.AdtyTelegramPurposeAdmin {
+			return ErrAdtyTelegramForbidden
+		}
+		prevSiteID = user.SiteId
+		if user.StaffSiteId > 0 {
+			prevSiteID = user.StaffSiteId
 		}
 		var row model.AdtyTelegramBinding
 		before := map[string]any{"purpose": purpose, "status": "unbound"}
@@ -32,6 +45,11 @@ func RevokeAdtyTelegramBind(userID int, purpose string, audit *model.AuditLog) e
 			}
 			if found.RowsAffected > 0 {
 				before["status"] = row.Status
+				if row.Status == model.AdtyTelegramBindActive && row.TelegramUserId > 0 {
+					wasActive = true
+					prevTelegramUserID = row.TelegramUserId
+					prevBotIdentity = row.BotIdentity
+				}
 				if err := tx.Model(&row).Update("status", "revoked").Error; err != nil {
 					return err
 				}
@@ -51,6 +69,12 @@ func RevokeAdtyTelegramBind(userID int, purpose string, audit *model.AuditLog) e
 			if before["status"] == "unbound" {
 				before["status"] = model.AdtyTelegramBindActive
 			}
+			if !wasActive {
+				if parsed, parseErr := strconv.ParseInt(strings.TrimSpace(user.TelegramId), 10, 64); parseErr == nil && parsed > 0 {
+					wasActive = true
+					prevTelegramUserID = parsed
+				}
+			}
 			if err := tx.Model(&model.User{}).Where("id = ?", userID).Update("telegram_id", "").Error; err != nil {
 				return err
 			}
@@ -61,6 +85,23 @@ func RevokeAdtyTelegramBind(userID int, purpose string, audit *model.AuditLog) e
 		audit.AfterValue = common.GetJsonString(map[string]any{"purpose": purpose, "status": "revoked"})
 		return model.AppendAuditIntentTx(tx, *audit)
 	})
+	if err == nil && wasActive && prevTelegramUserID > 0 && AdtyTelegramSender != nil && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTelegramBot{}) {
+		var bot model.AdtyTelegramBot
+		if model.DB.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).RowsAffected > 0 &&
+			(prevBotIdentity == "" || bot.IdentityHash == prevBotIdentity) {
+			if token := mustOpenTelegramToken(bot); token != "" {
+				siteName := adtyTelegramSiteDisplayName(prevSiteID)
+				if _, body, renderErr := RenderAdtyBilingualNotice("telegram_unbind_confirm", nil, siteName); renderErr == nil && strings.TrimSpace(body) != "" {
+					sender := AdtyTelegramSender
+					chat := strconv.FormatInt(prevTelegramUserID, 10)
+					go func() {
+						_ = sender(token, chat, body)
+					}()
+				}
+			}
+		}
+	}
+	return err
 }
 
 // RevokeAllAdtyTelegramBindings revokes all Telegram bindings for a user when

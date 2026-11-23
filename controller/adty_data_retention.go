@@ -34,9 +34,13 @@ func PutAdtyDataRetention(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveDataRetentionPolicies(c, c.GetInt("id"), c.GetString("username"), body.Policies); err != nil {
+	eventID, err := service.SaveDataRetentionPolicies(c, c.GetInt("id"), c.GetString("username"), body.Policies)
+	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
 	}
 	markAuditLogged(c)
 	view, err := service.ListDataRetentionSettings()

@@ -42,7 +42,9 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 		}
 		params := map[string]any{"Name": channelError.ChannelName, "Id": channelError.ChannelId, "Reason": reason}
 		NotifyChannelWatchersWithEventID(channelStatusEventID(channelError.ChannelId, common.ChannelStatusAutoDisabled), formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), func(lang string) (string, string) {
-			return i18n.Translate(lang, i18n.MsgChannelNotifyDisabledSubject, params), i18n.Translate(lang, i18n.MsgChannelNotifyDisabledContent, params)
+			subj := i18n.Translate(lang, i18n.MsgChannelNotifyDisabledSubject, params)
+			body := i18n.Translate(lang, i18n.MsgChannelNotifyDisabledContent, params)
+			return ResolveAdtyNoticeTemplateForNotify("channel_disabled", lang, subj, body, []any{channelError.ChannelName, channelError.ChannelId, reason})
 		})
 	}
 }
@@ -52,7 +54,9 @@ func EnableChannel(channelId int, usingKey string, channelName string) {
 	if success {
 		params := map[string]any{"Name": channelName, "Id": channelId}
 		NotifyChannelWatchersWithEventID(channelStatusEventID(channelId, common.ChannelStatusEnabled), formatNotifyType(channelId, common.ChannelStatusEnabled), func(lang string) (string, string) {
-			return i18n.Translate(lang, i18n.MsgChannelNotifyEnabledSubject, params), i18n.Translate(lang, i18n.MsgChannelNotifyEnabledContent, params)
+			subj := i18n.Translate(lang, i18n.MsgChannelNotifyEnabledSubject, params)
+			body := i18n.Translate(lang, i18n.MsgChannelNotifyEnabledContent, params)
+			return ResolveAdtyNoticeTemplateForNotify("channel_enabled", lang, subj, body, []any{channelName, channelId})
 		})
 	}
 }

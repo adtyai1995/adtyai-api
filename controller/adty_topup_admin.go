@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -472,11 +473,9 @@ func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refund
 		Voucher        string `json:"voucher"`
 		Proof          string `json:"proof"`
 	}
-	if c.Request.ContentLength > 0 {
-		if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-			common.ApiErrorT(c, "Invalid parameters")
-			return
-		}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
 	}
 	tradeNo := c.Param("trade_no")
 	refundID := c.Param("refund_id")

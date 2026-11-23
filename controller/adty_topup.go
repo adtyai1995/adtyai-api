@@ -124,6 +124,7 @@ func GetAdtyTopUpOrder(c *gin.Context) {
 // CancelAdtyTopUpOrder 先锁住本地订单，再问支付商。只有网关明确说已经有转账时才留下待支付。
 func CancelAdtyTopUpOrder(c *gin.Context) {
 	userID := c.GetInt("id")
+	var providerCancelFailed bool
 	ext, err := model.CancelAdtyTopUpAfterLock(c.Param("trade_no"), userID, func(locked *model.AdtyTopupOrder) error {
 		provider := service.AdtyPaymentProviderByName(locked.Provider)
 		if provider == nil {
@@ -132,12 +133,19 @@ func CancelAdtyTopUpOrder(c *gin.Context) {
 		cancelErr := provider.Cancel(locked)
 		if cancelErr != nil {
 			common.SysLog(common.LogText("cancel adty order at provider failed trade_no=%s: %s", locked.TradeNo, cancelErr.Error()))
+			if !errors.Is(cancelErr, service.ErrAdtyPaymentDetected) {
+				providerCancelFailed = true
+			}
 			return cancelErr
 		}
 		return nil
 	})
 	if errors.Is(err, service.ErrAdtyPaymentDetected) {
 		common.ApiErrorT(c, "A transfer has been detected. Please wait")
+		return
+	}
+	if err != nil && providerCancelFailed {
+		common.ApiErrorT(c, "Payment gateway is temporarily unavailable. Please try again later")
 		return
 	}
 	if err != nil {

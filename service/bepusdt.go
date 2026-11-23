@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -130,18 +131,37 @@ func bepusdtPost(ctx context.Context, path string, body map[string]any) (common.
 	if !setting.BEpusdtConfigured() {
 		return nil, errBEpusdtNotConfigured
 	}
+	parsedBase, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
+	if err != nil || parsedBase == nil || (parsedBase.Scheme != "http" && parsedBase.Scheme != "https") || strings.TrimSpace(parsedBase.Host) == "" {
+		return nil, errBEpusdtNotConfigured
+	}
 	payload, err := bepusdtSignedBody(body, strings.TrimSpace(cfg.Secret))
 	if err != nil {
 		return nil, err
 	}
-	url := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/") + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	targetURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := bepusdtHTTPClient().Do(req)
+	// R3-001: Never follow redirects and enforce verified TLS on BEpusdt order create/cancel.
+	baseClient := bepusdtHTTPClient()
+	var client http.Client
+	if baseClient != nil {
+		client = *baseClient
+	}
+	if strings.EqualFold(req.URL.Scheme, "https") {
+		verifiedTransport, vErr := cloneAdtyVerifiedPaymentTransport(client.Transport)
+		if vErr != nil {
+			return nil, vErr
+		}
+		defer verifiedTransport.CloseIdleConnections()
+		client.Transport = verifiedTransport
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -254,11 +274,21 @@ func bepusdtAlreadyCanceled(err error) bool {
 	if !errors.As(err, &gateway) {
 		return false
 	}
-	lower := strings.ToLower(gateway.Message)
-	if strings.Contains(lower, "cancel") || strings.Contains(lower, "expired") || strings.Contains(lower, "not found") || strings.Contains(lower, "not exist") {
-		return true
+	msg := strings.TrimSpace(gateway.Message)
+	lower := strings.ToLower(msg)
+	// R3-012: Reject negation/failure phrases first so "cannot cancel" or "cancel failed"
+	// is never misclassified as an already-canceled terminal order.
+	for _, neg := range []string{"cannot", "can't", "unable", "fail", "error", "denied", "refuse", "invalid", "无法", "不能", "失败", "错误"} {
+		if strings.Contains(lower, neg) || strings.Contains(msg, neg) {
+			return false
+		}
 	}
-	return strings.Contains(gateway.Message, "已取消") || strings.Contains(gateway.Message, "已过期") || strings.Contains(gateway.Message, "不存在") || strings.Contains(gateway.Message, "已关闭")
+	for _, phrase := range []string{"already cancel", "canceled", "cancelled", "expired", "not found", "not exist", "closed"} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return strings.Contains(msg, "已取消") || strings.Contains(msg, "已过期") || strings.Contains(msg, "不存在") || strings.Contains(msg, "已关闭")
 }
 
 // bepusdtPaymentDetected 只认网关原文里的到账说法。状态码本身分不清已支付、已取消和网关故障。

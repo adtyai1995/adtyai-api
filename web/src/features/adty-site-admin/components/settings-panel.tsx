@@ -230,6 +230,7 @@ export function SettingsPanel(props: {
         delete permitted.cloudflare_account_id
         delete permitted.cname_target
         delete permitted.fallback_origin
+        delete permitted.turnstile_widgets
         delete permitted.turnstile_widget_secret
         delete permitted.clear_secrets
       }
@@ -576,7 +577,7 @@ export function SettingsPanel(props: {
                 <TextField
                   label={t('Widget ID of widget {{n}}', { n: index + 1 })}
                   value={widget.id}
-                  disabled={disabled}
+                  disabled={secretsDisabled}
                   onChange={(value) =>
                     set(
                       'widgets',
@@ -589,7 +590,7 @@ export function SettingsPanel(props: {
                 <TextField
                   label={t('Site key of widget {{n}}', { n: index + 1 })}
                   value={widget.site_key}
-                  disabled={disabled}
+                  disabled={secretsDisabled}
                   onChange={(value) =>
                     set(
                       'widgets',
@@ -619,7 +620,7 @@ export function SettingsPanel(props: {
                   type='button'
                   variant='ghost'
                   size='icon'
-                  disabled={disabled}
+                  disabled={secretsDisabled}
                   aria-label={t('Remove widget {{n}}', { n: index + 1 })}
                   onClick={() =>
                     set(
@@ -636,7 +637,7 @@ export function SettingsPanel(props: {
               type='button'
               variant='outline'
               size='sm'
-              disabled={disabled}
+              disabled={secretsDisabled}
               onClick={() =>
                 set('widgets', [
                   ...drafts.widgets,

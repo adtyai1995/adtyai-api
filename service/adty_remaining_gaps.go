@@ -990,9 +990,22 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 			// R1-055: Completing a personal todo must NEVER mutate global AdtyAnomalyDisposition rows;
 			// anomaly dispositions are exclusively closed by authorized Root review handlers.
 			if pub != nil && pub.ReadKey != "" && tx.Migrator().HasTable(&model.AdtyNotificationRead{}) {
+				readSiteID := siteID
+				if c != nil {
+					if reqSite := AdtySiteForRequest(c); reqSite != nil && reqSite.Id > 0 {
+						readSiteID = reqSite.Id
+					}
+				}
+				if readSiteID == 0 {
+					if item.SiteId > 0 {
+						readSiteID = item.SiteId
+					} else if pub.TargetSiteId > 0 {
+						readSiteID = pub.TargetSiteId
+					}
+				}
 				readRow := model.AdtyNotificationRead{
 					UserId:  userID,
-					SiteId:  siteID,
+					SiteId:  readSiteID,
 					ReadKey: pub.ReadKey,
 					ReadAt:  now,
 				}

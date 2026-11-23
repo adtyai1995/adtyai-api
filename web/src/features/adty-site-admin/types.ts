@@ -194,14 +194,12 @@ export type SiteStatusChange = {
   reason: string
 }
 
-export type CostTier = { min_monthly_usd: number; cost_factor: number }
 export type TurnstileWidget = { id: string; site_key: string }
 
 /**
- * GET /api/adty/admin/reseller/settings (setting/adty_setting/reseller.go).
- * Money keys are null until set (convention I). Secrets never come back:
- * cloudflare_apiToken is empty and turnstile_widget_secret is null; the
- * *_configured flags say whether one is saved.
+ * GET /api/adty/admin/reseller/settings (controller/adty_site_admin.go).
+ * Secrets never come back: cloudflare_apiToken is empty and
+ * turnstile_widget_secret is null; the *_configured flags say whether one is saved.
  */
 export type ResellerSettings = {
   domain_automation_enabled?: boolean
@@ -215,11 +213,6 @@ export type ResellerSettings = {
   root_domains: string[] | null
   reserved_subdomains: string[] | null
   unknown_host_mode: 'main' | 'reject'
-  cost_factor: number | null
-  min_cost_factor: number | null
-  cost_factor_tiers: CostTier[] | null
-  /** Retired amount-tier setting, returned only for historical compatibility. */
-  max_site_bonus_extra: number | null
   markup_increase_delay_hours: number
   settle_hour: number
   freeze_days: number
@@ -227,7 +220,6 @@ export type ResellerSettings = {
   site_login_only: boolean
   custom_domain_enabled: boolean
   sender_domain_enabled: boolean
-  invite_code_enabled: boolean
   self_use_check_enabled: boolean
   migration_check_enabled: boolean
   fingerprint_window_days: number
@@ -253,7 +245,7 @@ export type ResellerSettings = {
   site_customer_terms_version: number
 }
 
-/** PUT body: only changed keys; null clears a money key; clear_secrets empties secrets. */
+/** PUT body: only changed keys; clear_secrets empties secrets. */
 export type ResellerSettingsUpdate = Partial<
   Omit<
     ResellerSettings,
@@ -264,7 +256,6 @@ export type ResellerSettingsUpdate = Partial<
     | 'money_configured'
     | 'tier_configured'
     | 'site_customer_terms_version'
-    | 'max_site_bonus_extra'
   >
 > & {
   expected_versions?: Record<string, string>

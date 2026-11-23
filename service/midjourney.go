@@ -44,6 +44,11 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	task.BillingChargePending, task.BillingPending = false, false
 	task.BillingOperationKey, task.BillingTokenQuota = "", 0
 	task.BillingPayerKind, task.BillingPayerTeamId = "", 0
+	// R3-010: Enforce fail-closed subsite/team price block and fund-write restrictions
+	// on Midjourney requests identically to standard relay billing.
+	if len(contexts) > 0 && contexts[0] != nil && AdtyTeamPriceBlocked(contexts[0]) {
+		return false, ErrAdtyTeamInvalid
+	}
 	if !shouldBill {
 		return false, nil
 	}
@@ -52,6 +57,11 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	}
 	if quota < 0 {
 		return false, errors.New("quota cannot be negative")
+	}
+	if model.DB != nil && task.UserId > 0 {
+		if err := model.RejectRestrictedAdtyFundWrite(model.DB, model.AdtyFundWrite{AccountID: task.UserId}); err != nil {
+			return false, err
+		}
 	}
 
 	task.Quota = quota

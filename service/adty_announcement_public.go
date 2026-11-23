@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -18,7 +19,10 @@ const AdtyPublicAnnouncementLimit = 100
 // 前端的未登录可见性就不会因为这次迁移而改变——这正是「读路径分叉」的要点。
 type AdtyPublicAnnouncement struct {
 	Id          int    `json:"id"`
+	Title       string `json:"title,omitempty"`
+	TitleEn     string `json:"title_en,omitempty"`
 	Content     string `json:"content"`
+	ContentEn   string `json:"content_en,omitempty"`
 	PublishDate string `json:"publishDate"`
 	Type        string `json:"type"`
 	Extra       string `json:"extra"`
@@ -40,13 +44,60 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 		common.SysError(common.LogText("list public announcements for site %d failed: %s", siteID, err.Error()))
 		return out
 	}
+	headByKey := map[string]model.AdtyTranslationHead{}
+	if len(rows) > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		keys := make([]string, 0, len(rows)*2)
+		for _, row := range rows {
+			if row.Id > 0 {
+				keys = append(keys, adtyNotificationTranslationKey(row.Id), adtyNotificationTitleTranslationKey(row.Id))
+			}
+		}
+		if len(keys) > 0 {
+			var heads []model.AdtyTranslationHead
+			if err := model.DB.Where("object_key IN ? AND status = ?", keys, model.AdtyTranslationReady).Find(&heads).Error; err == nil {
+				for _, head := range heads {
+					headByKey[head.ObjectKey] = head
+				}
+			}
+		}
+	}
 	for _, row := range rows {
+		content := strings.TrimSpace(row.Content)
+		contentEn := ""
+		if head, ok := headByKey[adtyNotificationTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" {
+			eng := strings.TrimSpace(head.English)
+			src := strings.TrimSpace(head.Source)
+			// Guard against legacy rows where title was stored in notification:<id>
+			// while the body itself was pure English.
+			isLegacyTitleOnly := src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, content))
+			if !isLegacyTitleOnly && adtyContainsChinese(content) {
+				if src == "" {
+					src = normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, content)
+				}
+				contentEn = eng
+				if !strings.Contains(src, eng) {
+					content = src + "\n\n" + eng
+				}
+			}
+		}
+		title := strings.TrimSpace(row.Title)
+		titleEn := ""
+		extra := row.Title
+		if head, ok := headByKey[adtyNotificationTitleTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" {
+			titleEn = strings.TrimSpace(head.English)
+			if title != "" && adtyContainsChinese(title) && !strings.Contains(title, titleEn) {
+				extra = title + " / " + titleEn
+			}
+		}
 		out = append(out, AdtyPublicAnnouncement{
 			Id:          row.Id,
-			Content:     row.Content,
+			Title:       title,
+			TitleEn:     titleEn,
+			Content:     content,
+			ContentEn:   contentEn,
 			PublishDate: time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
 			Type:        adtyLegacyAnnouncementColor(row.Business),
-			Extra:       row.Title,
+			Extra:       extra,
 		})
 	}
 	return out

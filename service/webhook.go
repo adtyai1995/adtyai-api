@@ -79,7 +79,7 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 
 		resp, err = DoWorkerRequest(workerReq)
 		if err != nil {
-			return fmt.Errorf("failed to send webhook request through worker: %v", err)
+			return scrubNotifyHTTPError("failed to send webhook request through worker", err)
 		}
 		defer resp.Body.Close()
 
@@ -90,12 +90,12 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 	} else {
 		// SSRF防护：验证Webhook URL（非Worker模式）
 		if err := ValidateSSRFProtectedFetchURL(webhookURL); err != nil {
-			return fmt.Errorf("request reject: %v", err)
+			return scrubNotifyHTTPError("request reject", err)
 		}
 
 		req, err = http.NewRequest(http.MethodPost, webhookURL, bytes.NewBuffer(payloadBytes))
 		if err != nil {
-			return fmt.Errorf("failed to create webhook request: %v", err)
+			return scrubNotifyHTTPError("failed to create webhook request", err)
 		}
 
 		// 设置请求头
@@ -111,7 +111,7 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 		client := GetSSRFProtectedHTTPClient()
 		resp, err = client.Do(req)
 		if err != nil {
-			return fmt.Errorf("failed to send webhook request: %v", err)
+			return scrubNotifyHTTPError("failed to send webhook request", err)
 		}
 		defer resp.Body.Close()
 

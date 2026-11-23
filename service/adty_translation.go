@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/url"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -251,7 +253,7 @@ func TestAdtyTranslation(requestHost string) (*AdtyTranslationView, error) {
 	default:
 		return nil, ErrAdtyTranslationInvalid
 	}
-	if _, err := callAdtyTranslator(cfg.ModelName, "连接测试"); err != nil {
+	if _, err := callAdtyTranslatorForTest(cfg.ModelName, "连接测试"); err != nil {
 		return nil, err
 	}
 	now := time.Now().Unix()
@@ -265,7 +267,7 @@ func TestAdtyTranslation(requestHost string) (*AdtyTranslationView, error) {
 func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslationResult, error) {
 	source = strings.TrimSpace(source)
 	objectKey = strings.TrimSpace(objectKey)
-	if source == "" || objectKey == "" || adtyTextHasSecret(source) {
+	if source == "" || objectKey == "" || adtyTextHasOutboundSecret(source) {
 		return &AdtyTranslationResult{ObjectKey: objectKey, Source: source, Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady}, nil
 	}
 	sum := sha256.Sum256([]byte(source))
@@ -344,7 +346,7 @@ func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslatio
 }
 
 func executeAdtyReservedTranslation(objectKey, source string, siteId, version int, hash string) (*AdtyTranslationResult, error) {
-	if adtyTextHasSecret(source) {
+	if adtyTextHasOutboundSecret(source) {
 		return fallbackAdtyTranslation(objectKey, source, siteId, version, hash, "")
 	}
 	cfg, err := loadAdtyTranslationConfig()
@@ -509,7 +511,7 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 			sum := sha256.Sum256([]byte(head.Source))
 			head.SourceHash = hex.EncodeToString(sum[:])
 		}
-		if adtyTextHasSecret(head.Source) {
+		if adtyTextHasOutboundSecret(head.Source) {
 			if err := tx.Model(&head).Updates(map[string]any{
 				"source_hash": head.SourceHash,
 				"english":     "",
@@ -665,13 +667,41 @@ func EditAdtyTranslation(objectKey, english string) error {
 		if err := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).First(&head).Error; err != nil {
 			return err
 		}
-		return tx.Model(&head).Updates(map[string]any{
+		if err := tx.Model(&head).Updates(map[string]any{
 			"english":      english,
 			"human_edited": true,
 			"status":       model.AdtyTranslationReady,
 			"notice":       "",
 			"lease_until":  0,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		if strings.HasPrefix(objectKey, "notification:") {
+			suffix := strings.TrimPrefix(objectKey, "notification:")
+			if !strings.Contains(suffix, ":") {
+				if pubID, err := strconv.Atoi(suffix); err == nil && pubID > 0 && tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+					var pub model.AdtyNotificationPublication
+					if model.AdtyLockForUpdate(tx).Where("id = ?", pubID).Limit(1).Find(&pub).RowsAffected > 0 {
+						src := strings.TrimSpace(head.Source)
+						if src == "" {
+							src = normalizeAdtyNotificationSourceContentWithDB(tx, pub.Id, pub.Content)
+						}
+						if src != "" {
+							nextContent := src
+							if !strings.Contains(src, english) {
+								nextContent = src + "\n\n" + english
+							}
+							if nextContent != pub.Content {
+								if err := tx.Model(&pub).Update("content", nextContent).Error; err != nil {
+									return err
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		return nil
 	})
 }
 
@@ -770,7 +800,8 @@ func rejectAdtyCustomerTokenWithDB(db *gorm.DB, token string) error {
 	if token == "" {
 		return nil
 	}
-	if len(token) >= 4 && strings.EqualFold(token[:4], "pat-") {
+	if (len(token) >= 4 && strings.EqualFold(token[:4], "pat-")) ||
+		(len(token) >= len(model.AccessTokenPrefix) && strings.EqualFold(token[:len(model.AccessTokenPrefix)], model.AccessTokenPrefix)) {
 		return ErrAdtyTranslationSelf
 	}
 	if db == nil || !db.Migrator().HasTable(&model.Token{}) {
@@ -823,6 +854,14 @@ func translateWithBackup(cfg *model.AdtyTranslationConfig, source string) (strin
 }
 
 func callAdtyTranslator(modelName, text string) (string, error) {
+	return callAdtyTranslatorWithOptions(modelName, text, false)
+}
+
+func callAdtyTranslatorForTest(modelName, text string) (string, error) {
+	return callAdtyTranslatorWithOptions(modelName, text, true)
+}
+
+func callAdtyTranslatorWithOptions(modelName, text string, allowDisabled bool) (string, error) {
 	adtyTranslationFlight.Lock()
 	cfgConcurrency := 0
 	dailyQuota := 0
@@ -849,7 +888,15 @@ func callAdtyTranslator(modelName, text string) (string, error) {
 	}
 
 	started := time.Now()
-	english, callErr := AdtyTranslateFunc(modelName, text)
+	var (
+		english string
+		callErr error
+	)
+	if allowDisabled && AdtyTranslateFunc != nil && reflect.ValueOf(AdtyTranslateFunc).Pointer() == reflect.ValueOf(adtyTranslateViaProvider).Pointer() {
+		english, callErr = adtyTranslateViaProviderWithOptions(modelName, text, true)
+	} else {
+		english, callErr = AdtyTranslateFunc(modelName, text)
+	}
 	latency := time.Since(started).Milliseconds()
 	cost := calculateAdtyTranslationCostUSD(modelName, text, english)
 	if usageErr := finishAdtyTranslationCall(day, callErr != nil, latency, cost); usageErr != nil && callErr == nil {

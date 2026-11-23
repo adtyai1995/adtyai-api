@@ -382,9 +382,13 @@ export function TranslationAdminPanel() {
           version: resolvedVersion,
           status: resolvedStatus,
         })
+        const noticeText =
+          !body.data?.notice || body.data.notice === '英文译文未就绪'
+            ? t('English is not ready')
+            : body.data.notice
         setResult(
           body.data?.english ||
-            `${body.data?.source || source}\n${body.data?.notice || t('English is not ready')}`
+            `${body.data?.source || source}\n${noticeText}`
         )
         await refresh()
       })
@@ -417,9 +421,13 @@ export function TranslationAdminPanel() {
         version: data.version || version,
         status: data.status || (data.english ? 'ready' : 'failed'),
       })
+      const noticeText =
+        !data.notice || data.notice === '英文译文未就绪'
+          ? t('English is not ready')
+          : data.notice
       setResult(
         data.english ||
-          `${data.source || source}\n${data.notice || t('English is not ready')}`
+          `${data.source || source}\n${noticeText}`
       )
       await refresh()
     } catch (cause) {
