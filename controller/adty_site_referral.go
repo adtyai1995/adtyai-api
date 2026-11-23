@@ -170,6 +170,10 @@ func PostAdtySiteCommissionConvert(c *gin.Context) {
 		return
 	}
 	if err := service.ConvertAdtySiteInviteCommission(c.GetInt("id"), id, amount, strings.TrimSpace(c.GetHeader("Idempotency-Key"))); err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -245,6 +249,10 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 		var changed *service.RateChangedError
 		if errors.As(err, &changed) {
 			common.ApiErrorStatus(c, http.StatusOK, common.NewMessage("The exchange rate has changed. Confirm the new amount"), gin.H{"code": "rate_changed", "data": changed.Change})
+			return
+		}
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, err)
 			return
 		}
 		common.ApiError(c, err)

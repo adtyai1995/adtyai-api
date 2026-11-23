@@ -103,7 +103,9 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
     api_base_url: t(
       'Dedicated API calling URL without /v1. Must use a different hostname from the main website domain (website domain rejects model API calls; API domain serves both model APIs and the web console).'
     ),
-    support_hours: t('Shown on the home page next to the payment methods.'),
+    support_hours: t(
+      'Published in public site metadata for support hours (e.g. 09:00–22:00 UTC+8).'
+    ),
     tawk_widget_id: t('Live chat appears when both Tawk.to IDs are set.'),
   }
 

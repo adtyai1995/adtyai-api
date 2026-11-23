@@ -57,6 +57,11 @@ func GetAdtyDataRetentionRuns(c *gin.Context) {
 		return
 	}
 	limit, _ := strconv.Atoi(c.Query("limit"))
+	if limit <= 0 {
+		limit = 20
+	} else if limit > 100 {
+		limit = 100
+	}
 	runs, err := service.ListDataRetentionRuns(limit)
 	if err != nil {
 		common.ApiError(c, err)

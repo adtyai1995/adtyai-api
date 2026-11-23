@@ -579,7 +579,7 @@ func CreateAdtyAdminSite(c *gin.Context) {
 	})
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorT(c, "This request was already used for another operation")
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)
@@ -655,8 +655,13 @@ func AdjustAdtyAdminSite(c *gin.Context) {
 			return
 		}
 	}
+	clearCostFactor := slices.Contains(body.Clear, "cost_factor")
+	if (body.CostFactor != nil || clearCostFactor) && c.GetInt("role") < common.RoleRootUser {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
+		return
+	}
 	site, err := service.AdjustAdtySite(id, c.GetInt("id"), service.AdtySiteAdjust{
-		CostFactor: costFactor, ClearCostFactor: slices.Contains(body.Clear, "cost_factor"),
+		CostFactor: costFactor, ClearCostFactor: clearCostFactor,
 		Visibility: body.Visibility, AllowedGroups: body.AllowedGroups,
 		ClearAllowedGroups: slices.Contains(body.Clear, "allowed_groups"), Reason: body.Reason,
 	})
@@ -860,6 +865,13 @@ func adtyResellerSettingsWarnings(cfg *adty_setting.ResellerSetting) []string {
 	if cfg.CustomDomainEnabled && !cfg.TurnstileConfigured() {
 		warnings = append(warnings,
 			"Custom domains are on but Turnstile is not configured (account id or widgets missing): new domains will not be registered for human verification.")
+	}
+	for _, widget := range cfg.TurnstileWidgets {
+		if strings.TrimSpace(widget.Id) != "" && (strings.TrimSpace(widget.SiteKey) == "" || strings.TrimSpace(cfg.TurnstileWidgetSecret[widget.Id]) == "") {
+			warnings = append(warnings,
+				"Some Turnstile widgets are missing a site key or secret: affected sites will fall back until every widget secret is saved.")
+			break
+		}
 	}
 	if cfg.SenderDomainEnabled && !adtyResendConfigured() {
 		warnings = append(warnings,

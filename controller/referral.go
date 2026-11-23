@@ -43,6 +43,10 @@ func PostAdtyReferralClick(c *gin.Context) {
 
 // GetAdtyReferralPublicSettings 是推广计划页要的公开数字。
 func GetAdtyReferralPublicSettings(c *gin.Context) {
+	if service.AdtyRequestSiteID(c) != 0 {
+		common.ApiSuccess(c, gin.H{"enabled": false})
+		return
+	}
 	cfg := adty_setting.GetReferralSetting()
 	common.ApiSuccess(c, gin.H{
 		"enabled":           cfg.Enabled,

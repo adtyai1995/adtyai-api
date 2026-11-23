@@ -424,6 +424,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		state = "redirect_only"
 	}
 	if status == model.AdtySiteDomainActive &&
+		row.ManagedBy != "platform" &&
 		(row.Role == model.AdtySiteDomainRoleSite || row.Role == model.AdtySiteDomainRoleBaseURL) &&
 		row.DesiredState == "serve" && row.TurnstileWidget == "" && cfg.TurnstileConfigured() {
 		var widget string

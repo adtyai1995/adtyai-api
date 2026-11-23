@@ -170,6 +170,8 @@ func CreateAdtyDataRetentionRun(run *AdtyDataRetentionRun, items []AdtyDataReten
 func ListAdtyDataRetentionRuns(limit int) ([]AdtyDataRetentionRun, map[int64][]AdtyDataRetentionRunItem, error) {
 	if limit <= 0 {
 		limit = 20
+	} else if limit > 100 {
+		limit = 100
 	}
 	runs := []AdtyDataRetentionRun{}
 	if err := DB.Order("started_at DESC, id DESC").Limit(limit).Find(&runs).Error; err != nil {

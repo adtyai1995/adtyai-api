@@ -375,6 +375,13 @@ func ensureAdtyTranslationTables() {
 	}
 }
 
+func deleteAdtyTranslationHeadByKey(objectKey string) {
+	if objectKey == "" || model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		return
+	}
+	_ = model.DB.Where("object_key = ?", objectKey).Delete(&model.AdtyTranslationHead{}).Error
+}
+
 func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, sourceContent string, siteID int) {
 	if row == nil || row.Id <= 0 || model.DB == nil {
 		return
@@ -383,6 +390,12 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 	bodyText := strings.TrimSpace(sourceContent)
 	titleHasZH := adtyContainsChinese(titleText)
 	bodyHasZH := adtyContainsChinese(bodyText)
+	if !titleHasZH {
+		deleteAdtyTranslationHeadByKey(adtyNotificationTitleTranslationKey(row.Id))
+	}
+	if !bodyHasZH {
+		deleteAdtyTranslationHeadByKey(adtyNotificationTranslationKey(row.Id))
+	}
 	if !titleHasZH && !bodyHasZH {
 		return
 	}
@@ -722,7 +735,7 @@ func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublicati
 	if row.Id > 0 && db != nil && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
 		var titleHead model.AdtyTranslationHead
 		if db.Where("object_key = ?", adtyNotificationTitleTranslationKey(row.Id)).Limit(1).Find(&titleHead).RowsAffected > 0 {
-			if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
+			if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" && adtyTranslationHeadMatchesSource(titleHead, title) {
 				titleEn := strings.TrimSpace(titleHead.English)
 				if titleEn != title {
 					title = title + " / " + titleEn
@@ -742,16 +755,17 @@ func resolveAdtyNotificationDisplayContentWithDB(db *gorm.DB, row model.AdtyNoti
 	if row.Id > 0 && db != nil && adtyContainsChinese(content) && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
 		var head model.AdtyTranslationHead
 		if db.Where("object_key = ?", adtyNotificationTranslationKey(row.Id)).Limit(1).Find(&head).RowsAffected > 0 {
-			if head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" {
+			currentSrc := normalizeAdtyNotificationSourceContentWithDB(db, row.Id, content)
+			if head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" && adtyTranslationHeadMatchesSource(head, currentSrc) {
 				eng := strings.TrimSpace(head.English)
 				src := strings.TrimSpace(head.Source)
 				// Guard against legacy rows where title was stored in notification:<id>
 				// while the body itself was pure English.
-				if src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(normalizeAdtyNotificationSourceContentWithDB(db, row.Id, content)) {
+				if src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(currentSrc) {
 					return content
 				}
 				if src == "" {
-					src = normalizeAdtyNotificationSourceContentWithDB(db, row.Id, content)
+					src = currentSrc
 				}
 				if !strings.Contains(src, eng) {
 					return src + "\n\n" + eng
@@ -948,8 +962,10 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 		"business":         row.Business,
 	}
 	if row.Id > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		currentSrc := normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, row.Content)
 		var head model.AdtyTranslationHead
-		if model.DB.Where("object_key = ?", adtyNotificationTranslationKey(row.Id)).Limit(1).Find(&head).RowsAffected > 0 {
+		if model.DB.Where("object_key = ?", adtyNotificationTranslationKey(row.Id)).Limit(1).Find(&head).RowsAffected > 0 &&
+			adtyTranslationHeadMatchesSource(head, currentSrc) {
 			item["english"] = head.English
 			item["content_en"] = head.English
 			item["source"] = head.Source
@@ -959,7 +975,8 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 			item["object_key"] = head.ObjectKey
 		}
 		var titleHead model.AdtyTranslationHead
-		if model.DB.Where("object_key = ?", adtyNotificationTitleTranslationKey(row.Id)).Limit(1).Find(&titleHead).RowsAffected > 0 {
+		if model.DB.Where("object_key = ?", adtyNotificationTitleTranslationKey(row.Id)).Limit(1).Find(&titleHead).RowsAffected > 0 &&
+			adtyTranslationHeadMatchesSource(titleHead, row.Title) {
 			if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
 				item["title_en"] = strings.TrimSpace(titleHead.English)
 			}

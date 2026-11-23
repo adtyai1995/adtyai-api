@@ -295,6 +295,26 @@ func lockAdtyTopUpTx(tx *gorm.DB, tradeNo string) (*TopUp, *AdtyTopupOrder, erro
 // pending、expired、canceled、failed 都允许入账：钱已经收到了（执行层决定 4）。
 // Source=manual 时跳过金额核对，按下单时的面额加赠入账（任务 3.5）。
 func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (alreadyDone bool, credited int, topUp *TopUp, ext *AdtyTopupOrder, err error) {
+	// R4-006: Pre-read site_id unlocked and lock AdtySite BEFORE TopUp/AdtyTopupOrder/User
+	// to preserve global canonical lock order:
+	// AdtySite -> TopUp -> AdtyTopupOrder -> User -> earnings -> margin -> operating.
+	var peekSite struct {
+		SiteId int
+	}
+	if err = tx.Model(&AdtyTopupOrder{}).Select("site_id").Where("trade_no = ?", tradeNo).Limit(1).Scan(&peekSite).Error; err != nil {
+		return false, 0, nil, nil, err
+	}
+	var lockedSite AdtySite
+	lockedSiteID := 0
+	if peekSite.SiteId > 0 {
+		res := lockForUpdate(tx).Where("id = ?", peekSite.SiteId).Limit(1).Find(&lockedSite)
+		if res.Error != nil {
+			return false, 0, nil, nil, res.Error
+		}
+		if res.RowsAffected > 0 {
+			lockedSiteID = lockedSite.Id
+		}
+	}
 	topUp, ext, err = lockAdtyTopUpTx(tx, tradeNo)
 	if err != nil {
 		return false, 0, nil, nil, err
@@ -348,15 +368,17 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 			return false, 0, nil, nil, errors.New("team top-up credit is not configured")
 		}
 	}
-	// Canonical lock order: AdtySite -> User. Lock the site before the user row
-	// whenever owner self-use or margin top-up requires site validation.
+	// Canonical lock order: AdtySite -> TopUp -> AdtyTopupOrder -> User.
+	// AdtySite was already locked upfront when ext.SiteId > 0.
 	if ext.IsOwnerSelfUse() {
 		if !ext.ValidOwnerSelfUseCredit() || ext.SiteId <= 0 || ext.UserId != topUp.UserId || ext.SiteOwnerUserId != topUp.UserId {
 			return false, 0, nil, nil, ErrInvalidTopUpQuota
 		}
-		var site AdtySite
-		if err := lockForUpdate(tx).First(&site, ext.SiteId).Error; err != nil {
-			return false, 0, nil, nil, err
+		site := lockedSite
+		if lockedSiteID != ext.SiteId {
+			if err := lockForUpdate(tx).First(&site, ext.SiteId).Error; err != nil {
+				return false, 0, nil, nil, err
+			}
 		}
 		if site.Status == AdtySiteStatusClosed || site.OwnerUserId != ext.SiteOwnerUserId {
 			return false, 0, nil, nil, ErrAdtyOwnerTopupReview
@@ -369,9 +391,11 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 		if AdtyCreditOwnerMarginTopUpTx == nil {
 			return false, 0, nil, nil, errors.New("owner margin top-up credit is not configured")
 		}
-		var site AdtySite
-		if err := lockForUpdate(tx).First(&site, ext.SiteId).Error; err != nil {
-			return false, 0, nil, nil, err
+		site := lockedSite
+		if lockedSiteID != ext.SiteId {
+			if err := lockForUpdate(tx).First(&site, ext.SiteId).Error; err != nil {
+				return false, 0, nil, nil, err
+			}
 		}
 		if site.Status == AdtySiteStatusClosed || site.OwnerUserId != ext.SiteOwnerUserId {
 			return false, 0, nil, nil, ErrAdtyOwnerTopupReview

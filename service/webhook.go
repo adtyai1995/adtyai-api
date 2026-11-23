@@ -107,8 +107,8 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 			req.Header.Set("X-Webhook-Signature", signature)
 		}
 
-		// 发送请求
-		client := GetSSRFProtectedHTTPClient()
+		// 发送请求（R4-004: 禁重定向 + 强制校验 TLS + 有限超时 + SSRF 校验）
+		client := GetVerifiedNoRedirectSSRFProtectedHTTPClient(30 * time.Second)
 		resp, err = client.Do(req)
 		if err != nil {
 			return scrubNotifyHTTPError("failed to send webhook request", err)

@@ -338,11 +338,20 @@ func GrantAdtyRootExpiringGiftWithReplayTx(tx *gorm.DB, input AdtyRootExpiringGi
 		return nil, false, err
 	}
 	var customer User
-	if err := tx.Select("id", "site_id", "role").First(&customer, input.UserID).Error; err != nil {
+	if err := tx.Select("id", "site_id", "staff_site_id", "role").First(&customer, input.UserID).Error; err != nil {
 		return nil, false, err
 	}
-	if customer.Role >= common.RoleAdminUser || input.SiteID != nil && *input.SiteID != customer.SiteId {
+	if customer.Role >= common.RoleAdminUser || customer.StaffSiteId > 0 || input.SiteID != nil && *input.SiteID != customer.SiteId {
 		return nil, false, errors.New("gift target must be a customer in the selected site")
+	}
+	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		var empCount int64
+		if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", customer.Id, true).Count(&empCount).Error; err != nil {
+			return nil, false, err
+		}
+		if empCount > 0 {
+			return nil, false, errors.New("gift target must be a customer in the selected site")
+		}
 	}
 	siteID := AdtyFundBatchSiteID(customer.SiteId)
 
@@ -918,16 +927,21 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 	if amount > 0 {
 		return backed, adtyFundBatchShortfallError(amount)
 	}
+	// R4-005: Invoke bonus hooks (earnings -> margin) BEFORE principal hooks
+	// (operating) to preserve canonical adty_site_wallets lock ordering.
 	// notifyPrincipalSpent gates only the usage-charge hook. The bonus hook
 	// still runs on the quiet path so manual/staff reductions release the
 	// corresponding site gift-guarantee without debiting the operating wallet.
+	if err := adtyNotifyBonusSpentTx(tx, userID, bonusBySource); err != nil {
+		return backed, err
+	}
 	if notifyPrincipalSpent && principalTaken > 0 {
 		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationKey, principalTaken); err != nil {
 			return backed, err
 		}
 	}
 	_ = taken
-	return backed, adtyNotifyBonusSpentTx(tx, userID, bonusBySource)
+	return backed, nil
 }
 
 // AdtyAfterPrincipalReducedTx debits the subsite operating wallet when a

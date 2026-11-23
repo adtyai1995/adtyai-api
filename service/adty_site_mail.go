@@ -393,12 +393,25 @@ func AddAdtySiteSenderDomain(ctx context.Context, ownerUserId int, rawDomain str
 		return nil, lookup.Error
 	}
 	found := lookup.RowsAffected > 0
+	if found && existing.Status == model.AdtySenderDomainRemoving {
+		return nil, common.NewMessage("Sender domain removal is still in progress. Try again shortly.")
+	}
 	if found && existing.Domain == domain && (existing.Status == model.AdtySenderDomainPending || existing.Status == model.AdtySenderDomainVerified) {
 		return &existing, nil
 	}
 	// 同名重建时旧域名还占着这个名字，得先删掉才能再建。别的名字先留着，等库写成功再删。
 	if found && existing.Domain == domain && existing.ResendDomainId != "" && existing.Status != model.AdtySenderDomainDisabled {
 		if err := deleteSenderDomainIfPresent(ctx, existing.ResendDomainId); err != nil {
+			return nil, err
+		}
+		if err := model.DB.Model(&model.AdtySiteSenderDomain{}).
+			Where("site_id = ? AND resend_domain_id = ?", site.Id, existing.ResendDomainId).
+			Updates(map[string]any{
+				"status":           model.AdtySenderDomainDisabled,
+				"resend_domain_id": "",
+				"cleanup_error":    "",
+				"retry_at":         0,
+			}).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -510,13 +523,20 @@ func DisableAdtySiteSenderDomain(ctx context.Context, siteId, operatorId int) er
 	if lookup.RowsAffected == 0 || row.Status == model.AdtySenderDomainDisabled {
 		return nil
 	}
+	if operatorId == 0 && row.Status == model.AdtySenderDomainRemoving && row.DisabledBy > 0 {
+		return common.NewMessage("This sender domain is being disabled by the platform")
+	}
+	disabledBy := operatorId
+	if disabledBy == 0 && row.DisabledBy > 0 {
+		disabledBy = row.DisabledBy
+	}
 	if row.ResendDomainId != "" {
 		if err := AdtyResend.DeleteDomain(ctx, row.ResendDomainId); err != nil {
 			var apiErr *AdtyResendError
 			if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 				failure := adtyResendUserError(err)
 				if storeErr := model.DB.Model(&model.AdtySiteSenderDomain{}).Where("site_id = ? AND resend_domain_id = ?", siteId, row.ResendDomainId).Updates(map[string]any{
-					"status": model.AdtySenderDomainRemoving, "disabled_by": operatorId, "cleanup_error": failure.Error(), "retry_at": time.Now().Add(10 * time.Minute).Unix(),
+					"status": model.AdtySenderDomainRemoving, "disabled_by": disabledBy, "cleanup_error": failure.Error(), "retry_at": time.Now().Add(10 * time.Minute).Unix(),
 				}).Error; storeErr != nil {
 					return storeErr
 				}
@@ -525,7 +545,7 @@ func DisableAdtySiteSenderDomain(ctx context.Context, siteId, operatorId int) er
 		}
 	}
 	return model.DB.Model(&model.AdtySiteSenderDomain{}).Where("site_id = ? AND resend_domain_id = ?", siteId, row.ResendDomainId).Updates(map[string]any{
-		"status": model.AdtySenderDomainDisabled, "disabled_by": operatorId, "cleanup_error": "", "retry_at": 0, "last_checked_at": time.Now().Unix(),
+		"status": model.AdtySenderDomainDisabled, "disabled_by": disabledBy, "cleanup_error": "", "retry_at": 0, "last_checked_at": time.Now().Unix(),
 	}).Error
 }
 

@@ -600,7 +600,8 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 
 	// record all the consume log even if quota is 0
-	if totalTokens == 0 && !fixedPriceBilling {
+	usePriceBilling := relayInfo.PriceData.UsePrice && relayInfo.PriceData.BilledModelPrice().IsPositive()
+	if totalTokens == 0 && !fixedPriceBilling && !usePriceBilling {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
 		quota = 0
@@ -615,7 +616,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 			return err
 		}
 	}
-	if totalTokens != 0 || fixedPriceBilling {
+	if totalTokens != 0 || fixedPriceBilling || usePriceBilling {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
@@ -681,14 +682,26 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 	return err
 }
 
+func postConsumeViolationFeeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool, contexts ...*gin.Context) error {
+	_, err := postConsumeDirectWithPrefix("violation", relayInfo, quota, preConsumedQuota, sendEmail, contexts...)
+	return err
+}
+
 func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool, contexts ...*gin.Context) (result postConsumeQuotaResult, err error) {
+	return postConsumeDirectWithPrefix("direct", relayInfo, quota, preConsumedQuota, sendEmail, contexts...)
+}
+
+func postConsumeDirectWithPrefix(prefix string, relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool, contexts ...*gin.Context) (result postConsumeQuotaResult, err error) {
 	if relayInfo == nil {
 		return result, model.ErrBillingOperationConflict
 	}
 	if relayInfo.RequestId == "" {
 		relayInfo.RequestId = common.NewRequestId()
 	}
-	key := fmt.Sprintf("direct:%s:%d", relayInfo.RequestId, relayInfo.BillingDirectSequence)
+	if prefix == "" {
+		prefix = "direct"
+	}
+	key := fmt.Sprintf("%s:%s:%d", prefix, relayInfo.RequestId, relayInfo.BillingDirectSequence)
 	spec := model.BillingOperation{OperationKey: key, UserId: relayInfo.UserId, TokenId: relayInfo.TokenId, TokenUnlimited: relayInfo.TokenUnlimited,
 		EarningRootKey: "request:" + relayInfo.RequestId}
 	if relayInfo.IsPlayground {
@@ -705,6 +718,9 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 	if err = model.QueueDirectBillingDelta(spec, quota); err != nil {
 		return result, err
 	}
+	// R4-020: Advance sequence immediately once the operation row commits so a
+	// transient ApplyBillingSettlement error never collides with subsequent chunks.
+	relayInfo.BillingDirectSequence++
 	op, _, applyErr := model.ApplyBillingSettlement(key)
 	if applyErr != nil {
 		return result, applyErr
@@ -712,7 +728,6 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 	if len(contexts) > 0 && contexts[0] != nil {
 		contexts[0].Set(usageBillingContextKey, op)
 	}
-	relayInfo.BillingDirectSequence++
 	result.FundingApplied, result.TokenApplied, result.Shortfall = true, spec.TokenId > 0, op.Shortfall
 	result.TokenCharged = op.TokenAppliedQuota
 	relayInfo.BillingShortfall += op.Shortfall
@@ -749,7 +764,9 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 			dto.NotifyTypeQuotaExceed, lang, prompt, "", []any{logger.FormatQuota(balanceAfter), logger.FormatQuota(threshold)},
 		)
 		if customContent != "" {
-			prompt, content, values = customTitle, customContent, nil
+			// R4-048: Keep values intact so sendEmailNotify preserves the top-up CTA
+			// button (values[2]) and SendWebhookNotify preserves structured data.Values.
+			prompt, content = customTitle, customContent
 		}
 		err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values))
 		if err != nil {

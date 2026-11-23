@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -390,7 +391,7 @@ func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams) []*
 func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	var tasks []*Task
 	err := DB.Where("progress != ?", "100%").
-		Where("billing_initial_pending = ?", false).
+		Where("billing_initial_pending = ? AND billing_pending = ?", false, false).
 		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
 		Where("submit_time < ?", cutoffUnix).
 		Order("submit_time").
@@ -399,18 +400,30 @@ func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	if err != nil {
 		return nil
 	}
-	return tasks
+	out := tasks[:0]
+	for _, t := range tasks {
+		if t != nil && strings.TrimSpace(t.PrivateData.BillingReviewReason) == "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error
 	// get all tasks progress is not 100%
-	err = DB.Where("progress != ? AND billing_initial_pending = ?", "100%", false).Where("status != ?", TaskStatusFailure).Where("status != ?", TaskStatusSuccess).Limit(limit).Order("id").Find(&tasks).Error
+	err = DB.Where("progress != ? AND billing_initial_pending = ? AND billing_pending = ?", "100%", false, false).Where("status != ?", TaskStatusFailure).Where("status != ?", TaskStatusSuccess).Limit(limit).Order("id").Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
-	return tasks
+	out := tasks[:0]
+	for _, t := range tasks {
+		if t != nil && strings.TrimSpace(t.PrivateData.BillingReviewReason) == "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // HasUnfinishedSyncTasks reports whether at least one async (Suno/video) task is

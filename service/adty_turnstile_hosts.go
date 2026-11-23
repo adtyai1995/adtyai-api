@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -25,8 +26,8 @@ import (
 // adtyTurnstileVerifyURL 是 siteverify 的地址，测试里换成假服务器。
 var adtyTurnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
-// adtyTurnstileHTTP 调 siteverify 用，官方示例超时 10 秒。
-var adtyTurnstileHTTP = &http.Client{Timeout: 10 * time.Second}
+// adtyTurnstileHTTP 调 siteverify 用，官方示例超时 10 秒，禁重定向并独立校验 TLS（R4-002）。
+var adtyTurnstileHTTP = NewVerifiedDirectNoRedirectHTTPClient(10 * time.Second)
 
 const adtyTurnstileMaxTokenLength = 2048
 
@@ -189,7 +190,12 @@ func AdtyTurnstileFor(site *model.AdtySite, requestHost string) AdtyTurnstileCho
 	}
 	for _, widget := range cfg.TurnstileWidgets {
 		if widget.Id == widgetId {
-			return AdtyTurnstileChoice{SiteKey: widget.SiteKey, Secret: cfg.TurnstileWidgetSecret[widget.Id]}
+			siteKey := strings.TrimSpace(widget.SiteKey)
+			secret := strings.TrimSpace(cfg.TurnstileWidgetSecret[widget.Id])
+			if siteKey == "" || secret == "" {
+				return AdtyTurnstileChoice{}
+			}
+			return AdtyTurnstileChoice{SiteKey: siteKey, Secret: secret}
 		}
 	}
 	return AdtyTurnstileChoice{}
@@ -224,7 +230,7 @@ func AdtyTurnstileVerifyAt(ctx context.Context, verifyURL, secret, token, remote
 		Success  bool   `json:"success"`
 		Hostname string `json:"hostname"`
 	}
-	if err := common.DecodeJson(resp.Body, &result); err != nil {
+	if err := common.DecodeJson(io.LimitReader(resp.Body, 1<<20), &result); err != nil {
 		return false, err
 	}
 	if !result.Success {

@@ -153,6 +153,8 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var responseId = common.GetUUID()
 	var created = time.Now().Unix()
 	var toolCallIndex int
+	var emittedOutput bool
+	var responseText strings.Builder
 	start := helper.GenerateStartEmptyResponse(responseId, created, model, nil)
 	if data, err := common.Marshal(start); err == nil {
 		_ = helper.StringData(c, string(data))
@@ -167,6 +169,11 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		var chunk ollamaChatStreamChunk
 		if err := common.Unmarshal([]byte(line), &chunk); err != nil {
 			logger.LogError(c, common.LogText("ollama stream json decode error: %s line=%s", err.Error(), line))
+			if emittedOutput {
+				// R4-023: Output has already been delivered to the client; settle
+				// billed usage instead of returning an error that refunds 100%.
+				break
+			}
 			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 		if chunk.Model != "" {
@@ -175,7 +182,18 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		created = toUnix(chunk.CreatedAt)
 
 		if !chunk.Done {
-			delta, _ := buildOllamaStreamDelta(&chunk, responseId, created, model, &toolCallIndex)
+			delta, hasPayload := buildOllamaStreamDelta(&chunk, responseId, created, model, &toolCallIndex)
+			if hasPayload {
+				emittedOutput = true
+				if len(delta.Choices) > 0 {
+					if content := delta.Choices[0].Delta.GetContentString(); content != "" {
+						responseText.WriteString(content)
+					}
+					if reasoning := delta.Choices[0].Delta.GetReasoningContent(); reasoning != "" {
+						responseText.WriteString(reasoning)
+					}
+				}
+			}
 			if data, err := common.Marshal(delta); err == nil {
 				_ = helper.StringData(c, string(data))
 			}
@@ -183,6 +201,15 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		// done frame
 		if delta, hasPayload := buildOllamaStreamDelta(&chunk, responseId, created, model, &toolCallIndex); hasPayload {
+			emittedOutput = true
+			if len(delta.Choices) > 0 {
+				if content := delta.Choices[0].Delta.GetContentString(); content != "" {
+					responseText.WriteString(content)
+				}
+				if reasoning := delta.Choices[0].Delta.GetReasoningContent(); reasoning != "" {
+					responseText.WriteString(reasoning)
+				}
+			}
 			if data, err := common.Marshal(delta); err == nil {
 				_ = helper.StringData(c, string(data))
 			}
@@ -216,6 +243,9 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 	if err := scanner.Err(); err != nil && err != io.EOF {
 		logger.LogError(c, common.LogText("ollama stream scan error: %s", err.Error()))
+	}
+	if usage.TotalTokens == 0 && (emittedOutput || responseText.Len() > 0) {
+		usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}
 	return usage, nil
 }

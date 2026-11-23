@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -51,14 +52,14 @@ var AdtyTelegramGetMe = func(string) (int64, string, error) {
 // 「没有新消息发出」的外观和「没有消息要发」一模一样，不会自愈。
 //
 // 所以超时不是「让失败更快」，是让整条重试机制保持活着。
-var adtyTelegramHTTP = &http.Client{Timeout: 15 * time.Second}
+var adtyTelegramHTTP = NewVerifiedDirectNoRedirectHTTPClient(15 * time.Second)
 
 // adtyTelegramInteractiveHTTP 用于**交互式**调用（保存 bot token 时验证身份）。
 //
 // 它和投递那个 15 秒的 client 分开，是因为等待的人不同：投递是后台 goroutine，
 // 15 秒没人等；而 `getMe` 是用户点了「保存」之后同步等结果——**15 秒会让人以为
 // 卡死，然后重复点，产生第二个保存请求。**
-var adtyTelegramInteractiveHTTP = &http.Client{Timeout: 5 * time.Second}
+var adtyTelegramInteractiveHTTP = NewVerifiedDirectNoRedirectHTTPClient(5 * time.Second)
 
 // adtyTelegramAPIBase 是出站 API 的根地址，**留作变量给测试替换**。
 //
@@ -1053,7 +1054,7 @@ func adtyTelegramSendMessageHTTP(token, chat, text string) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("telegram sendMessage status %d", response.StatusCode)
 	}
-	if err := common.DecodeJson(response.Body, &body); err != nil {
+	if err := common.DecodeJson(io.LimitReader(response.Body, 1<<20), &body); err != nil {
 		return err
 	}
 	if !body.Ok {
@@ -1150,7 +1151,7 @@ func adtyTelegramGetMeHTTP(token string) (int64, string, error) {
 			Username string `json:"username"`
 		} `json:"result"`
 	}
-	if common.DecodeJson(response.Body, &body) != nil || !body.Ok || body.Result.Id <= 0 {
+	if common.DecodeJson(io.LimitReader(response.Body, 1<<20), &body) != nil || !body.Ok || body.Result.Id <= 0 {
 		return 0, "", ErrAdtyTelegramUnverified
 	}
 	return body.Result.Id, body.Result.Username, nil

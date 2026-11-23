@@ -323,7 +323,8 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 	if refundCurrency == "" {
 		refundCurrency = ext.PayCurrency
 	}
-	refund := gin.H{"refunded_at": ext.RefundedAt, "refund_quota": ext.RefundQuota, "refund_amount": ext.RefundAmount, "currency": refundCurrency}
+	refundUSD := decimal.NewFromInt(ext.RefundQuota).Div(common.QuotaPerUnitDecimal()).String()
+	refund := gin.H{"refunded_at": ext.RefundedAt, "refund_quota": ext.RefundQuota, "refund_amount": ext.RefundAmount, "refund_usd": refundUSD, "currency": refundCurrency}
 	preview, previewErr := model.LoadSiteInviteCommissionRefundPreview(model.DB, tradeNo, ext.RefundQuota, ext.FaceQuota())
 	if previewErr != nil {
 		common.ApiError(c, previewErr)

@@ -129,6 +129,7 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 		if vErr != nil {
 			return nil, vErr
 		}
+		defer verifiedTransport.CloseIdleConnections()
 		mapiClient.Transport = verifiedTransport
 	}
 	mapiClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -262,6 +263,7 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 		if vErr != nil {
 			return nil, vErr
 		}
+		defer verifiedTransport.CloseIdleConnections()
 		client.Transport = verifiedTransport
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -361,6 +363,7 @@ func adtyEpayGet(ctx context.Context, target string) ([]byte, error) {
 		if vErr != nil {
 			return nil, vErr
 		}
+		defer verifiedTransport.CloseIdleConnections()
 		client.Transport = verifiedTransport
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

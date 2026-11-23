@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	passkeysvc "github.com/QuantumNous/new-api/service/passkey"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -138,7 +139,7 @@ func GetStatus(c *gin.Context) {
 		"HeaderNavModules":    common.OptionMap["HeaderNavModules"],
 		"SidebarModulesAdmin": common.OptionMap["SidebarModulesAdmin"],
 
-		"passkey_login":             passkeySetting.Enabled,
+		"passkey_login":             passkeySetting.Enabled && passkeysvc.IsAvailableForRequest(c.Request, ""),
 		"passkey_display_name":      passkeySetting.RPDisplayName,
 		"passkey_rp_id":             passkeySetting.EffectiveRPID(),
 		"passkey_rp_ids":            passkeySetting.RelyingPartyIDs(),

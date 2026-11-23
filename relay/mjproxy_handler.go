@@ -386,8 +386,11 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, billingErr.Error())
 	}
 	billingApplied := false
+	upstreamAcceptedBillable := false
 	defer func() {
-		if !billingApplied {
+		// R4-021: Once upstream accepted a billable job, never auto-release the
+		// billing reservation to BillingRefunded on transient DB/queue errors.
+		if !billingApplied && !upstreamAcceptedBillable {
 			service.ReleaseMidjourneyTaskBilling(midjourneyTask)
 		}
 	}()
@@ -402,6 +405,8 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	midjourneyTask.Description = midjResponse.Description
 	if mjResp.StatusCode != http.StatusOK || midjResponse.Code != 1 {
 		billingPrepared, _ = service.PrepareMidjourneyTaskBilling(info, midjourneyTask, 0, false)
+	} else if priceData.Quota > 0 {
+		upstreamAcceptedBillable = true
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {
@@ -717,8 +722,10 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, billingErr.Error())
 	}
 	billingApplied := false
+	upstreamAcceptedBillable := false
 	defer func() {
-		if !billingApplied {
+		// R4-021: Never auto-refund after upstream accepted a billable submit.
+		if !billingApplied && !upstreamAcceptedBillable {
 			service.ReleaseMidjourneyTaskBilling(midjourneyTask)
 		}
 	}()
@@ -805,6 +812,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	if !skipNewRow {
 		if !consumeQuota || midjResponseWithStatus.StatusCode != http.StatusOK {
 			billingPrepared, _ = service.PrepareMidjourneyTaskBilling(relayInfo, midjourneyTask, 0, false)
+		} else if priceData.Quota > 0 {
+			upstreamAcceptedBillable = true
 		}
 		err = midjourneyTask.Insert()
 		if err != nil {

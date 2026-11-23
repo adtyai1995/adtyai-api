@@ -401,14 +401,14 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			if AdtyTeamReserveHook == nil {
 				return ErrBillingOperationConflict
 			}
-			// Migration holds user before token and team. Serialize on the user
-			// first, then follow the lifecycle team-before-token order.
-			var user User
-			if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {
-				return err
-			}
+			// R4-007: Canonical lock order across billing & team lifecycle is
+			// adty_teams -> users -> tokens.
 			var team AdtyTeam
 			if err := lockForUpdate(tx).First(&team, result.PayerTeamId).Error; err != nil {
+				return err
+			}
+			var user User
+			if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {
 				return err
 			}
 			var token Token
@@ -718,6 +718,37 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		base, tokenBase := row.ReservedQuota, row.TokenReservedQuota
 		if row.Kind == "request" {
+			// R4-020: Include committed/settled Realtime direct:* chunks for this
+			// request root so a transient ApplyBillingSettlement failure on a chunk
+			// cannot cause double-charging during final request settlement.
+			var directOps []BillingOperation
+			if err := tx.Select("actual_quota", "applied_quota", "token_applied_quota", "state").
+				Where("user_id = ? AND kind = ? AND earning_root_key = ? AND operation_key LIKE ? AND state IN ?",
+					row.UserId, "direct", row.OperationKey, "direct:%", []string{BillingSettlePending, BillingSettled}).
+				Find(&directOps).Error; err != nil {
+				return err
+			}
+			var directWalletSum, directTokenSum int64
+			for _, dop := range directOps {
+				if dop.State == BillingSettled {
+					directWalletSum += int64(dop.AppliedQuota)
+					directTokenSum += int64(dop.TokenAppliedQuota)
+				} else {
+					directWalletSum += int64(dop.ActualQuota)
+					if row.TokenId > 0 {
+						directTokenSum += int64(dop.ActualQuota)
+					}
+				}
+			}
+			if directWalletSum > int64(common.MaxWalletQuota) || directTokenSum > int64(common.MaxWalletQuota) {
+				return ErrBillingOperationConflict
+			}
+			if int(directWalletSum) > row.StreamWalletQuota {
+				row.StreamWalletQuota = int(directWalletSum)
+			}
+			if int(directTokenSum) > row.StreamTokenQuota {
+				row.StreamTokenQuota = int(directTokenSum)
+			}
 			if base > common.MaxWalletQuota-row.StreamWalletQuota || tokenBase > common.MaxWalletQuota-row.StreamTokenQuota {
 				return ErrBillingOperationConflict
 			}
@@ -863,6 +894,15 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		//   同一笔 operation 只会结算一次，这个额度同时也是站点运营钱包
 		//   （AdtyAfterPrincipalSpentTx）能扣的上限：站点侧不能比用户真实消耗
 		//   多付钱。
+		// R4-005: Pre-lock the site's earnings wallet before fund-batch settlement/reversal
+		// (which may lock margin and operating wallets), preserving canonical lock order
+		// User -> adty_site_wallets(earnings -> margin -> operating).
+		if row.PayerKind != BillingPayerOwner && row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) && tx.Migrator().HasTable(&AdtySiteWallet{}) {
+			var prelockEarnings AdtySiteWallet
+			if err := lockForUpdate(tx).Where("site_id = ? AND kind = ?", row.SiteId, AdtySiteWalletEarnings).Limit(1).Find(&prelockEarnings).Error; err != nil {
+				return err
+			}
+		}
 		settledQuota, settledBalanceBefore := int64(base+charged), int64(balance+base)
 		if !teamPaid && row.Kind == "request" && row.StreamWalletQuota > 0 {
 			// Stream child operations (direct:*) already consumed their fund batches and
@@ -965,7 +1005,9 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				task.PrivateData.BillingContext = &bc
 			}
 			task.PrivateData.TokenConsumedQuota = &row.TokenAppliedQuota
-			if err := tx.Model(&task).Updates(map[string]any{"quota": row.AppliedQuota, "private_data": task.PrivateData, "billing_pending": false, "billing_initial_pending": false}).Error; err != nil {
+			// R4-019: Keep billing_pending=true for ambiguous submissions awaiting manual review.
+			keepPendingReview := strings.TrimSpace(task.PrivateData.BillingReviewReason) != ""
+			if err := tx.Model(&task).Updates(map[string]any{"quota": row.AppliedQuota, "private_data": task.PrivateData, "billing_pending": keepPendingReview, "billing_initial_pending": false}).Error; err != nil {
 				return err
 			}
 		}

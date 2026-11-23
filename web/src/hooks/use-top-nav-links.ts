@@ -112,7 +112,9 @@ export function useTopNavLinks(): TopNavLink[] {
 
   // ADTY task 8.2: unknown nav keys default to visible, so no admin setting
   // is needed; HeaderNavModules {"affiliate": false} hides it.
-  if (modules?.affiliate !== false) {
+  // R4-045: Hide the main-site affiliate program entry on subsites.
+  const isSubsite = Boolean(status?.adty_site)
+  if (!isSubsite && modules?.affiliate !== false) {
     links.push({
       id: 'affiliate',
       title: t('Affiliate Program'),

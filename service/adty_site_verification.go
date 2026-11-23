@@ -43,13 +43,14 @@ const (
 	AdtySiteOwnerActionVoucherCancel      = "voucher.cancel"       // target: voucher ID
 	AdtySiteOwnerActionCustomerBalance    = "customer.balance"     // target: customer user ID
 	AdtySiteOwnerActionTeamBalance        = "team.balance"         // target: team ID
+	AdtySiteOwnerActionWithdrawalCreate   = "withdrawal.create"    // target: site ID
 )
 
 var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender,
 	AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete,
 	AdtySiteOwnerActionStaffBalanceReview,
 	AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel,
-	AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance}
+	AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance, AdtySiteOwnerActionWithdrawalCreate}
 
 // AdtySiteOwnerContext 是 proof 绑定的操作：哪种操作、对哪个目标，员工写操作及资金操作还会绑定请求体摘要。
 type AdtySiteOwnerContext struct {
@@ -73,6 +74,18 @@ type AdtyOwnerBalanceReviewDigestInput struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
+// AdtyOwnerWithdrawalDigestInput is the canonical digest payload for
+// withdrawal.create step-up verification (R4-032).
+type AdtyOwnerWithdrawalDigestInput struct {
+	AmountUSD      string `json:"amount_usd"`
+	Method         string `json:"method"`
+	Network        string `json:"network"`
+	AccountNo      string `json:"account_no"`
+	AccountName    string `json:"account_name"`
+	ExpectedRate   string `json:"expected_rate"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
 func adtyIsSiteOwnerStaffAction(action string) bool {
 	switch action {
 	case AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete:
@@ -87,7 +100,7 @@ func adtyIsSiteOwnerDigestRequiredAction(action string) bool {
 		return true
 	}
 	switch action {
-	case AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance, AdtySiteOwnerActionStaffBalanceReview:
+	case AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance, AdtySiteOwnerActionStaffBalanceReview, AdtySiteOwnerActionWithdrawalCreate:
 		return true
 	default:
 		return false
@@ -134,6 +147,31 @@ func normalizeAdtyOwnerBalanceReviewDigestInput(in AdtyOwnerBalanceReviewDigestI
 	return AdtyOwnerBalanceReviewDigestInput{
 		Approve: in.Approve,
 		Reason:  strings.TrimSpace(in.Reason),
+	}
+}
+
+func normalizeAdtyOwnerWithdrawalDigestInput(in AdtyOwnerWithdrawalDigestInput) AdtyOwnerWithdrawalDigestInput {
+	amt := strings.TrimSpace(in.AmountUSD)
+	if d, err := decimal.NewFromString(amt); err == nil {
+		amt = d.String()
+	}
+	rate := strings.TrimSpace(in.ExpectedRate)
+	if d, err := decimal.NewFromString(rate); err == nil {
+		rate = d.String()
+	}
+	method := strings.ToLower(strings.TrimSpace(in.Method))
+	network := ""
+	if method == "usdt" {
+		network = strings.ToUpper(strings.TrimSpace(in.Network))
+	}
+	return AdtyOwnerWithdrawalDigestInput{
+		AmountUSD:      amt,
+		Method:         method,
+		Network:        network,
+		AccountNo:      strings.TrimSpace(in.AccountNo),
+		AccountName:    strings.TrimSpace(in.AccountName),
+		ExpectedRate:   rate,
+		IdempotencyKey: strings.TrimSpace(in.IdempotencyKey),
 	}
 }
 
@@ -191,6 +229,19 @@ func AdtyOwnerActionRequestDigest(action string, v any) string {
 			return hex.EncodeToString(sum[:])
 		}
 		in = normalizeAdtyOwnerBalanceReviewDigestInput(in)
+		canonical, err := common.Marshal(in)
+		if err != nil {
+			return ""
+		}
+		sum := sha256.Sum256(canonical)
+		return hex.EncodeToString(sum[:])
+	case AdtySiteOwnerActionWithdrawalCreate:
+		var in AdtyOwnerWithdrawalDigestInput
+		if common.Unmarshal(rawBytes, &in) != nil {
+			sum := sha256.Sum256(rawBytes)
+			return hex.EncodeToString(sum[:])
+		}
+		in = normalizeAdtyOwnerWithdrawalDigestInput(in)
 		canonical, err := common.Marshal(in)
 		if err != nil {
 			return ""
@@ -352,7 +403,7 @@ func adtySiteOwnerActionAccessTokenScope(ctx AdtySiteOwnerContext) string {
 			return AccessTokenResourceSiteOwnerCustomer + ":write"
 		}
 		return AccessTokenResourceSiteOwnerSetting + ":write"
-	case AdtySiteOwnerActionBonus, AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel:
+	case AdtySiteOwnerActionBonus, AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel, AdtySiteOwnerActionWithdrawalCreate:
 		return AccessTokenResourceSiteOwnerOrder + ":write"
 	case AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionTeamBalance:
 		return AccessTokenResourceSiteOwnerSetting + ":write"

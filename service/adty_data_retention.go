@@ -28,7 +28,7 @@ const (
 	dataRetentionSkipNotification = "permanent retention; automatic cleanup must not delete notification history"
 	dataRetentionSkipOrders       = "policy: orders and payment events are never automatically deleted, including after a retention period expires or an account is cancelled"
 	dataRetentionSkipFinancial    = "policy: financial ledgers are never automatically deleted, including after a retention period expires or an account is cancelled"
-	dataRetentionSkipArtifacts    = "policy: task artifacts are kept by default, as in official NewAPI; they are never automatically deleted after a retention period expires or an account is cancelled"
+	dataRetentionSkipArtifacts    = "policy: task artifacts are kept by default under platform defaults; they are never automatically deleted after a retention period expires or an account is cancelled"
 	dataRetentionSkipDeidentify   = "de-identification is not implemented for this category; no automatic deletion was performed"
 )
 
@@ -158,7 +158,7 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
-			Notes:           "Listed for Root configuration. Task artifacts follow official NewAPI and are kept by default. Automatic cleanup never deletes them after a configured period expires or an account is cancelled. Changing a policy does not delete history by itself.",
+			Notes:           "Listed for Root configuration. Task artifacts follow platform defaults and are kept by default. Automatic cleanup never deletes them after a configured period expires or an account is cancelled. Changing a policy does not delete history by itself.",
 			SkipConfigured:  dataRetentionSkipArtifacts,
 		},
 	}

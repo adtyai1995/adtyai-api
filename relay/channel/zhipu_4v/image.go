@@ -1,6 +1,7 @@
 package zhipu_4v
 
 import (
+	"errors"
 	"io"
 	"net/http"
 
@@ -115,6 +116,12 @@ func zhipu4vImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		}
 		payload.Data = append(payload.Data, imageData)
 	}
+
+	if len(payload.Data) == 0 {
+		return nil, types.NewError(errors.New("zhipu_4v image: no usable image data"), types.ErrorCodeBadResponse)
+	}
+	// R4-029: Settle billing against the actual number of delivered images.
+	info.UpdateImageCount(int64(len(payload.Data)))
 
 	jsonResp, err := common.Marshal(payload)
 	if err != nil {

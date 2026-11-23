@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,13 +26,96 @@ type protectedFetchDialer struct {
 }
 
 type ssrfProtectedRoundTripper struct {
-	resolver      ssrfResolver
-	dialContext   func(ctx context.Context, network, address string) (net.Conn, error)
-	getProtection func() (*common.SSRFProtection, bool, error)
-	proxy         func(*http.Request) (*url.URL, error)
+	resolver         ssrfResolver
+	dialContext      func(ctx context.Context, network, address string) (net.Conn, error)
+	getProtection    func() (*common.SSRFProtection, bool, error)
+	proxy            func(*http.Request) (*url.URL, error)
+	forceVerifiedTLS bool
 
 	mutex      sync.Mutex
 	transports map[string]*http.Transport
+}
+
+func newAdtyVerifiedTLSConfig() *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: false,
+		MinVersion:         tls.VersionTLS12,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if cs.Version < tls.VersionTLS12 {
+				return ErrAdtyUnverifiedPaymentTLS
+			}
+			if len(cs.PeerCertificates) == 0 || len(cs.VerifiedChains) == 0 {
+				return ErrAdtyUnverifiedPaymentTLS
+			}
+			return nil
+		},
+	}
+}
+
+var (
+	adtyVerifiedDirectTransportOnce sync.Once
+	adtyVerifiedDirectTransport     *http.Transport
+)
+
+func getAdtyVerifiedDirectTransport() *http.Transport {
+	adtyVerifiedDirectTransportOnce.Do(func() {
+		dialer := &net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
+		adtyVerifiedDirectTransport = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           dialer.DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   16,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+			TLSClientConfig:       newAdtyVerifiedTLSConfig(),
+		}
+	})
+	return adtyVerifiedDirectTransport
+}
+
+// NewVerifiedDirectNoRedirectHTTPClient builds an outbound HTTP client backed by
+// an independent verified-TLS transport (never inheriting DefaultTransport's
+// TLS_INSECURE_SKIP_VERIFY mutation) with redirects disabled and a finite timeout (R4-002).
+func NewVerifiedDirectNoRedirectHTTPClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: getAdtyVerifiedDirectTransport(),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func newVerifiedNoRedirectProtectedFetchHTTPClient(timeout time.Duration) *http.Client {
+	netDialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &ssrfProtectedRoundTripper{
+			resolver:         net.DefaultResolver,
+			dialContext:      netDialer.DialContext,
+			getProtection:    currentFetchProtection,
+			proxy:            http.ProxyFromEnvironment,
+			forceVerifiedTLS: true,
+			transports:       make(map[string]*http.Transport),
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func currentFetchProtection() (*common.SSRFProtection, bool, error) {
@@ -161,7 +245,9 @@ func (t *ssrfProtectedRoundTripper) newTransport(proxyURL *url.URL) *http.Transp
 		Proxy:               proxyFunc,
 		DialContext:         dialContext,
 	}
-	if common.TLSInsecureSkipVerify {
+	if t.forceVerifiedTLS {
+		transport.TLSClientConfig = newAdtyVerifiedTLSConfig()
+	} else if common.TLSInsecureSkipVerify {
 		transport.TLSClientConfig = common.InsecureTLSConfig.Clone()
 	}
 	return transport

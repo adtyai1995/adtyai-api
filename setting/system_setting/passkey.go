@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
@@ -31,9 +32,9 @@ var ErrPasskeyRPIDUnavailable = errors.New("This Passkey domain is not available
 // mutable settings pointer with a WebAuthn ceremony.
 func PasskeySettingsSnapshot() PasskeySettings {
 	common.OptionMapRWMutex.RLock()
-	settings, serverAddress := defaultPasskeySettings, ServerAddress
+	settings, serverAddress, apiBaseURL := defaultPasskeySettings, ServerAddress, adty_setting.GetSiteSetting().APIBaseURL
 	common.OptionMapRWMutex.RUnlock()
-	return settings.WithDefaults(serverAddress)
+	return settings.WithDefaults(serverAddress, apiBaseURL)
 }
 
 // EffectiveRPID preserves the existing default and port handling for settings
@@ -151,7 +152,7 @@ func GetPasskeySettings() *PasskeySettings {
 	return &defaultPasskeySettings
 }
 
-func (s PasskeySettings) WithDefaults(serverAddress string) PasskeySettings {
+func (s PasskeySettings) WithDefaults(serverAddress string, extraOrigins ...string) PasskeySettings {
 	if s.RPID == "" && serverAddress != "" {
 		// 从ServerAddress提取域名作为RPID
 		// ServerAddress可能是 "https://newapi.pro" 这种格式
@@ -163,7 +164,34 @@ func (s PasskeySettings) WithDefaults(serverAddress string) PasskeySettings {
 		}
 	}
 	if s.Origins == "" || s.Origins == "[]" {
-		s.Origins = serverAddress
+		origins := make([]string, 0, 1+len(extraOrigins))
+		if trimmed := strings.TrimRight(strings.TrimSpace(serverAddress), "/"); trimmed != "" {
+			origins = append(origins, trimmed)
+		}
+		rpID := strings.ToLower(s.EffectiveRPID())
+		if rpID == "" && len(origins) > 0 {
+			if parsed, err := url.Parse(origins[0]); err == nil && parsed.Host != "" {
+				rpID = strings.ToLower(parsed.Hostname())
+			}
+		}
+		for _, extra := range extraOrigins {
+			trimmed := strings.TrimRight(strings.TrimSpace(extra), "/")
+			if trimmed == "" || slices.Contains(origins, trimmed) {
+				continue
+			}
+			parsed, err := url.Parse(trimmed)
+			if err != nil || parsed.User != nil || parsed.Host == "" {
+				continue
+			}
+			if parsed.Scheme != "https" && (!s.AllowInsecureOrigin || parsed.Scheme != "http") {
+				continue
+			}
+			host := strings.ToLower(parsed.Hostname())
+			if rpID == "" || host == rpID || ((strings.Contains(rpID, ".") || rpID == "localhost") && strings.HasSuffix(host, "."+rpID)) {
+				origins = append(origins, trimmed)
+			}
+		}
+		s.Origins = strings.Join(origins, ",")
 	}
 	return s
 }

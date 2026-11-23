@@ -453,6 +453,45 @@ func AccessTokenVerificationScope(verificationScope string) (scope string, liste
 	return scope, listed
 }
 
+// ResolveAccessTokenVerificationScopeForOperation resolves the non-secret PAT
+// scope requirement for a verification operation so passkey step-up flows can
+// store and re-enforce the exact scope without persisting raw operation payloads (R4-008).
+func ResolveAccessTokenVerificationScopeForOperation(op VerificationOperation) (string, bool, error) {
+	if op.Scope != VerificationScopeAdtySiteOwnerManage {
+		required, _ := AccessTokenVerificationScope(op.Scope)
+		return required, required == "", nil
+	}
+	var ctx AdtySiteOwnerContext
+	if err := common.Unmarshal(op.Context, &ctx); err != nil {
+		return "", false, ErrVerificationContextInvalid
+	}
+	required := adtySiteOwnerActionAccessTokenScope(ctx)
+	return required, required == "", nil
+}
+
+// RequireResolvedAccessTokenVerificationScope enforces a previously resolved
+// non-secret PAT scope requirement on the current request identity (R4-008).
+func RequireResolvedAccessTokenVerificationScope(identity AuthIdentity, requiredScope string, accessTokenForbidden bool) error {
+	tokenID, ok := model.ParseAccessTokenSessionID(identity.SessionID)
+	if !ok {
+		return nil
+	}
+	if accessTokenForbidden || requiredScope == "" {
+		return ErrVerificationForbidden
+	}
+	token, err := model.GetUserAccessToken(identity.UserID, tokenID)
+	if errors.Is(err, model.ErrAccessTokenNotFound) {
+		return ErrAuthTokenInvalid
+	}
+	if err != nil {
+		return err
+	}
+	if !AccessTokenScopeGranted(token.GetScopes(), requiredScope) {
+		return ErrVerificationForbidden
+	}
+	return nil
+}
+
 // RequireAccessTokenVerificationScopeForOperation enforces exact per-action PAT
 // scope binding for multi-action verification scopes such as site.owner.manage (R2-004 / R3-042).
 func RequireAccessTokenVerificationScopeForOperation(identity AuthIdentity, op VerificationOperation) error {

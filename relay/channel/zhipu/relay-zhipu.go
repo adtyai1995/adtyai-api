@@ -156,12 +156,22 @@ func streamMetaResponseZhipu2OpenAI(zhipuResponse *ZhipuStreamMetaResponse) (*dt
 
 func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	var usage *dto.Usage
+	var responseText strings.Builder
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
 	dataChan := make(chan string)
 	metaChan := make(chan string)
 	stopChan := make(chan bool)
+	done := make(chan struct{})
 	go func() {
+		sendString := func(ch chan<- string, v string) bool {
+			select {
+			case ch <- v:
+				return true
+			case <-done:
+				return false
+			}
+		}
 		for scanner.Scan() {
 			data := scanner.Text()
 			lines := strings.Split(data, "\n")
@@ -170,24 +180,34 @@ func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 					continue
 				}
 				if line[:5] == "data:" {
-					dataChan <- line[5:]
+					if !sendString(dataChan, line[5:]) {
+						return
+					}
 					if i != len(lines)-1 {
-						dataChan <- "\n"
+						if !sendString(dataChan, "\n") {
+							return
+						}
 					}
 				} else if line[:5] == "meta:" {
-					metaChan <- line[5:]
+					if !sendString(metaChan, line[5:]) {
+						return
+					}
 				}
 			}
 		}
 		if err := scanner.Err(); err != nil {
 			common.SysLog(common.LogText("error reading stream: %s", err.Error()))
 		}
-		stopChan <- true
+		select {
+		case stopChan <- true:
+		case <-done:
+		}
 	}()
 	helper.SetEventStreamHeaders(c)
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case data := <-dataChan:
+			responseText.WriteString(data)
 			response := streamResponseZhipu2OpenAI(data)
 			jsonResponse, err := common.Marshal(response)
 			if err != nil {
@@ -217,7 +237,15 @@ func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 			return false
 		}
 	})
+	close(done)
 	service.CloseResponseBodyGracefully(resp)
+	if usage == nil {
+		if responseText.Len() > 0 {
+			usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		} else {
+			usage = &dto.Usage{}
+		}
+	}
 	return usage, nil
 }
 

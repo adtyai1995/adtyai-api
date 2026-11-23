@@ -65,25 +65,28 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 		content := strings.TrimSpace(row.Content)
 		contentEn := ""
 		if head, ok := headByKey[adtyNotificationTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" {
-			eng := strings.TrimSpace(head.English)
-			src := strings.TrimSpace(head.Source)
-			// Guard against legacy rows where title was stored in notification:<id>
-			// while the body itself was pure English.
-			isLegacyTitleOnly := src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, content))
-			if !isLegacyTitleOnly && adtyContainsChinese(content) {
-				if src == "" {
-					src = normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, content)
-				}
-				contentEn = eng
-				if !strings.Contains(src, eng) {
-					content = src + "\n\n" + eng
+			currentSrc := normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, content)
+			if adtyTranslationHeadMatchesSource(head, currentSrc) {
+				eng := strings.TrimSpace(head.English)
+				src := strings.TrimSpace(head.Source)
+				// Guard against legacy rows where title was stored in notification:<id>
+				// while the body itself was pure English.
+				isLegacyTitleOnly := src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(currentSrc)
+				if !isLegacyTitleOnly && adtyContainsChinese(content) {
+					if src == "" {
+						src = currentSrc
+					}
+					contentEn = eng
+					if !strings.Contains(src, eng) {
+						content = src + "\n\n" + eng
+					}
 				}
 			}
 		}
 		title := strings.TrimSpace(row.Title)
 		titleEn := ""
 		extra := row.Title
-		if head, ok := headByKey[adtyNotificationTitleTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" {
+		if head, ok := headByKey[adtyNotificationTitleTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" && adtyTranslationHeadMatchesSource(head, title) {
 			titleEn = strings.TrimSpace(head.English)
 			if title != "" && adtyContainsChinese(title) && !strings.Contains(title, titleEn) {
 				extra = title + " / " + titleEn

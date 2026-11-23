@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 )
 
@@ -136,26 +137,39 @@ var (
 )
 
 func GetRankingsSnapshot(period string) (*RankingsResponse, error) {
+	return GetRankingsSnapshotForSite(period, 0)
+}
+
+func GetRankingsSnapshotForSite(period string, siteID int) (*RankingsResponse, error) {
 	config, err := rankingConfig(period)
 	if err != nil {
 		return nil, err
 	}
+	if siteID < 0 {
+		siteID = 0
+	}
+	cacheKey := fmt.Sprintf("%d:%s", siteID, config.id)
 
 	now := time.Now()
 	rankingCacheMu.Lock()
-	if item, ok := rankingCache[config.id]; ok && now.Before(item.expiresAt) {
+	if item, ok := rankingCache[cacheKey]; ok && now.Before(item.expiresAt) {
 		rankingCacheMu.Unlock()
 		return item.data, nil
 	}
 	rankingCacheMu.Unlock()
 
-	data, err := buildRankingsSnapshot(config, now)
+	data, err := buildRankingsSnapshot(config, now, siteID)
 	if err != nil {
 		return nil, err
 	}
 
 	rankingCacheMu.Lock()
-	rankingCache[config.id] = rankingCacheItem{
+	for k, v := range rankingCache {
+		if !now.Before(v.expiresAt) {
+			delete(rankingCache, k)
+		}
+	}
+	rankingCache[cacheKey] = rankingCacheItem{
 		expiresAt: now.Add(rankingCacheTTL),
 		data:      data,
 	}
@@ -179,13 +193,73 @@ func rankingConfig(period string) (rankingPeriodConfig, error) {
 	}
 }
 
-func buildRankingsSnapshot(config rankingPeriodConfig, now time.Time) (*RankingsResponse, error) {
+func rankingVisibleModelsForSite(siteID int) map[string]struct{} {
+	rawUsable := GetUserUsableGroups("")
+	concreteGroups := make([]string, 0, len(rawUsable))
+	for g := range rawUsable {
+		if g == "" || g == "auto" || g == "all" {
+			continue
+		}
+		if !SiteGroupAllowed(siteID, g) {
+			continue
+		}
+		concreteGroups = append(concreteGroups, g)
+	}
+	visible := make(map[string]struct{})
+	if len(concreteGroups) == 0 {
+		return visible
+	}
+	for _, item := range model.GetPricing() {
+		if !model.CatalogModelCallable(item.ModelName) {
+			continue
+		}
+		allowAll := common.StringsContains(item.EnableGroup, "all")
+		for _, g := range concreteGroups {
+			if !allowAll && !common.StringsContains(item.EnableGroup, g) {
+				continue
+			}
+			if GroupModelAllowed(g, item.ModelName) {
+				visible[item.ModelName] = struct{}{}
+				break
+			}
+		}
+	}
+	return visible
+}
+
+func filterRankingTotals(rows []model.RankingQuotaTotal, visible map[string]struct{}) []model.RankingQuotaTotal {
+	if len(rows) == 0 || len(visible) == 0 {
+		return []model.RankingQuotaTotal{}
+	}
+	out := make([]model.RankingQuotaTotal, 0, len(rows))
+	for _, row := range rows {
+		if _, ok := visible[row.ModelName]; ok {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func filterRankingBuckets(rows []model.RankingQuotaBucket, visible map[string]struct{}) []model.RankingQuotaBucket {
+	if len(rows) == 0 || len(visible) == 0 {
+		return []model.RankingQuotaBucket{}
+	}
+	out := make([]model.RankingQuotaBucket, 0, len(rows))
+	for _, row := range rows {
+		if _, ok := visible[row.ModelName]; ok {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func buildRankingsSnapshot(config rankingPeriodConfig, now time.Time, siteID int) (*RankingsResponse, error) {
 	startTime, endTime := rankingTimeRange(config, now)
-	currentTotals, err := model.GetRankingQuotaTotals(startTime, endTime)
+	currentTotals, err := model.GetRankingQuotaTotalsForSite(startTime, endTime, siteID)
 	if err != nil {
 		return nil, err
 	}
-	currentBuckets, err := model.GetRankingQuotaBuckets(startTime, endTime, config.bucketSize)
+	currentBuckets, err := model.GetRankingQuotaBucketsForSite(startTime, endTime, config.bucketSize, siteID)
 	if err != nil {
 		return nil, err
 	}
@@ -193,11 +267,16 @@ func buildRankingsSnapshot(config rankingPeriodConfig, now time.Time) (*Rankings
 	var previousTotals []model.RankingQuotaTotal
 	if config.hasPrevious {
 		previousStart, previousEnd := previousRankingTimeRange(config, startTime)
-		previousTotals, err = model.GetRankingQuotaTotals(previousStart, previousEnd)
+		previousTotals, err = model.GetRankingQuotaTotalsForSite(previousStart, previousEnd, siteID)
 		if err != nil {
 			return nil, err
 		}
 	}
+
+	visible := rankingVisibleModelsForSite(siteID)
+	currentTotals = filterRankingTotals(currentTotals, visible)
+	previousTotals = filterRankingTotals(previousTotals, visible)
+	currentBuckets = filterRankingBuckets(currentBuckets, visible)
 
 	meta := buildRankingModelMeta()
 	totalTokens := sumRankingTokens(currentTotals)

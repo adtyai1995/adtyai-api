@@ -5,6 +5,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // AdtyKeyLimits extends the adty_key_limits table schema with per-key TPM and
@@ -162,8 +163,10 @@ func ApplyAdtyKeyLimitPatchTx(tx *gorm.DB, tokenID int, patch AdtyKeyLimitPatch)
 		return previous, AdtyKeyLimits{TokenId: tokenID}, nil
 	}
 	updated.UpdatedAt = common.GetTimestamp()
-	row := updated
-	if err := tx.Where("token_id = ?", tokenID).Assign(row).FirstOrCreate(&row).Error; err != nil {
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "token_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"per_minute", "tpm", "concurrency", "updated_at"}),
+	}).Create(&updated).Error; err != nil {
 		return previous, updated, err
 	}
 	return previous, updated, nil

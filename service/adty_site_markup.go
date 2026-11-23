@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"sort"
 	"strings"
@@ -1072,42 +1073,34 @@ func AdtySitePriceList(c *gin.Context, groupRatio map[string]float64, displayGro
 	if err != nil {
 		return nil, err
 	}
+	rawGroupRatio := maps.Clone(groupRatio)
 	for group, ratio := range groupRatio {
 		k := ResolveAdtySiteMarkup(prices, priceUserID, group, "")
 		marked, _, _ := adtySiteOrdinarySellRatioDec(decimal.NewFromFloat(ratio), k, d, priceUserID, group)
 		groupRatio[group] = marked.InexactFloat64()
 	}
-	return adtyAdjustModelPriceList(prices, priceUserID, displayGroup, pricing), nil
+	_ = displayGroup
+	return adtyAdjustModelPriceList(prices, priceUserID, d, rawGroupRatio, pricing), nil
 }
 
-func adtyAdjustModelPriceList(prices []model.AdtySitePrice, userId int, group string, pricing []model.Pricing) []model.Pricing {
-	baseK := ResolveAdtySiteMarkup(prices, userId, group, "")
-	if !baseK.IsPositive() {
+func adtyAdjustModelPriceList(prices []model.AdtySitePrice, userId int, costFactor decimal.Decimal, rawGroupRatio map[string]float64, pricing []model.Pricing) []model.Pricing {
+	if len(pricing) == 0 {
 		return pricing
 	}
 	out := make([]model.Pricing, len(pricing))
 	copy(out, pricing)
-	changed := false
 	for i := range out {
 		name := adtyNormalizeSitePriceModel(out[i].ModelName)
-		if name == "" {
-			continue
+		modelGroupRatio := make(map[string]float64, len(rawGroupRatio))
+		for group, rawRatio := range rawGroupRatio {
+			modelK := ResolveAdtySiteMarkup(prices, userId, group, name)
+			marked, _, _ := adtySiteOrdinarySellRatioDec(decimal.NewFromFloat(rawRatio), modelK, costFactor, userId, group)
+			modelGroupRatio[group] = marked.InexactFloat64()
 		}
-		modelK := ResolveAdtySiteMarkup(prices, userId, group, name)
-		if !modelK.IsPositive() || modelK.Equal(baseK) {
-			continue
-		}
-		factor := modelK.Div(baseK)
-		out[i].ModelPrice = decimal.NewFromFloat(out[i].ModelPrice).Mul(factor).InexactFloat64()
-		if out[i].ModelRatio != nil {
-			scaled := decimal.NewFromFloat(*out[i].ModelRatio).Mul(factor).InexactFloat64()
-			out[i].ModelRatio = &scaled
-		}
-		out[i].BillingDisplayMultiplier = factor.String()
-		changed = true
-	}
-	if !changed {
-		return pricing
+		out[i].GroupRatio = modelGroupRatio
+		// R4-036: Per-group final retail ratios are supplied directly on each model;
+		// never leak a display-group-only internal markup factor.
+		out[i].BillingDisplayMultiplier = ""
 	}
 	return out
 }

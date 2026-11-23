@@ -176,6 +176,7 @@ function SiteActions(props: {
   const user = useAuthStore((state) => state.auth.user)
   const canClose = user?.role === ROLE.SUPER_ADMIN
   const canReview = user?.role === ROLE.SUPER_ADMIN
+  const isRoot = user?.role === ROLE.SUPER_ADMIN
   const canAdjust = canAdmin(user, ADTY_PERMISSIONS.SITE_ADJUST)
   const canDelete = canAdmin(user, ADTY_PERMISSIONS.SITE_DELETE)
   const site = props.site
@@ -220,11 +221,11 @@ function SiteActions(props: {
     (key) => visibility[key] !== savedVisibility[key]
   )
   const adjustmentDirty =
-    costFactor.trim() !== (site.cost_factor ?? '') ||
+    (isRoot && costFactor.trim() !== (site.cost_factor ?? '')) ||
     allowedGroups.trim() !== readAllowedGroups(site.allowed_groups) ||
     visibilityChanged
   const dirty =
-    costFactor !== (site.cost_factor ?? '') ||
+    (isRoot && costFactor !== (site.cost_factor ?? '')) ||
     allowedGroups !== readAllowedGroups(site.allowed_groups) ||
     reason !== '' ||
     visibilityChanged
@@ -267,7 +268,9 @@ function SiteActions(props: {
       }
       const body: Parameters<typeof adjustSite>[1] = { reason: reason.trim() }
       const clear: Array<'cost_factor' | 'allowed_groups'> = []
-      if (costFactor.trim() !== (site.cost_factor ?? '')) {
+      const actorIsRoot =
+        useAuthStore.getState().auth.user?.role === ROLE.SUPER_ADMIN
+      if (actorIsRoot && costFactor.trim() !== (site.cost_factor ?? '')) {
         if (costFactor.trim() === '') clear.push('cost_factor')
         else body.cost_factor = costFactor.trim()
       }
@@ -349,18 +352,20 @@ function SiteActions(props: {
   return (
     <section className='flex flex-col gap-3 rounded-lg border p-3'>
       <h3 className='text-sm font-medium'>{t('Manage')}</h3>
-      <div className='grid gap-3 sm:grid-cols-2'>
-        <div className='space-y-1'>
-          <Label htmlFor='site-cost-factor'>{t('Cost factor')}</Label>
-          <Input
-            id='site-cost-factor'
-            value={costFactor}
-            placeholder={t('Follow site level')}
-            disabled={(!canReview && !canAdjust) || !editable || busy}
-            onChange={(event) => setCostFactor(event.target.value)}
-          />
+      {isRoot && (
+        <div className='grid gap-3 sm:grid-cols-2'>
+          <div className='space-y-1'>
+            <Label htmlFor='site-cost-factor'>{t('Cost factor')}</Label>
+            <Input
+              id='site-cost-factor'
+              value={costFactor}
+              placeholder={t('Follow site level')}
+              disabled={!editable || busy}
+              onChange={(event) => setCostFactor(event.target.value)}
+            />
+          </div>
         </div>
-      </div>
+      )}
       <div className='space-y-1'>
         <Label htmlFor='site-allowed-groups'>{t('Allowed groups')}</Label>
         <Input
@@ -937,7 +942,9 @@ function SiteDomains(props: {
                       {t('Retry')}
                     </Button>
                   )}
-                {canDelete && domain.status !== 'removed' && (
+                {canDelete &&
+                  domain.status !== 'removed' &&
+                  domain.managed_by !== 'platform' && (
                   <Button
                     variant='outline'
                     size='sm'
@@ -989,6 +996,68 @@ function SiteDomains(props: {
       )}
     </section>
   )
+}
+
+function balanceFundingSourceLabel(
+  source: string,
+  t: (key: string) => string
+): string {
+  switch (source) {
+    case 'auto':
+      return t('Automatic (earnings first, then margin)')
+    case 'site_earnings':
+    case 'earnings':
+      return t('Earnings wallet')
+    case 'site_margin':
+    case 'margin':
+      return t('Margin wallet')
+    case 'platform':
+      return t('Platform')
+    case 'specified_batch':
+      return t('Specified fund batch')
+    default:
+      return source
+  }
+}
+
+function balanceBatchKindLabel(
+  kind: string,
+  t: (key: string) => string
+): string {
+  switch (kind) {
+    case 'principal':
+      return t('Principal')
+    case 'bonus':
+      return t('Bonus')
+    case 'expiring_bonus':
+      return t('Expiring gift')
+    default:
+      return kind
+  }
+}
+
+function balanceBatchSourceLabel(
+  source: string,
+  t: (key: string) => string
+): string {
+  switch (source) {
+    case 'legacy':
+      return t('Legacy balance')
+    case 'topup':
+      return t('Top-up')
+    case 'voucher':
+      return t('Voucher')
+    case 'manual':
+      return t('Manual adjustment')
+    case 'referral':
+      return t('Referral')
+    case 'gift':
+      return t('Gift')
+    case 'site_close':
+      return t('Site closure transfer')
+    default:
+      return source
+  }
 }
 
 function RootBalanceRequests(props: { siteId: number }) {
@@ -1096,7 +1165,8 @@ function RootBalanceRequests(props: { siteId: number }) {
                   {row.reason && <span className='break-all'>{row.reason}</span>}
                   {row.funding_source && (
                     <span className='text-muted-foreground'>
-                      {t('Funding source')}: {row.funding_source}
+                      {t('Funding source')}:{' '}
+                      {balanceFundingSourceLabel(row.funding_source, t)}
                     </span>
                   )}
                   {row.order_ref && (
@@ -1105,8 +1175,15 @@ function RootBalanceRequests(props: { siteId: number }) {
                     </span>
                   )}
                   {(row.batch_kind || row.batch_source) && (
-                    <span className='text-muted-foreground font-mono'>
-                      {[row.batch_kind, row.batch_source]
+                    <span className='text-muted-foreground'>
+                      {[
+                        row.batch_kind
+                          ? balanceBatchKindLabel(row.batch_kind, t)
+                          : '',
+                        row.batch_source
+                          ? balanceBatchSourceLabel(row.batch_source, t)
+                          : '',
+                      ]
                         .filter(Boolean)
                         .join(' / ')}
                     </span>

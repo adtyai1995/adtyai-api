@@ -9,28 +9,35 @@ import (
 	"gorm.io/gorm"
 )
 
-// Owner routes pass an explicit site. Recheck the original order and current
-// owner under the same transaction locks as every refund state transition.
-func adtyRequireOwnerRefundScopeTx(tx *gorm.DB, ext *AdtyTopupOrder, operatorID int, ownerSiteID []int) error {
-	if len(ownerSiteID) == 0 {
-		return nil
+// R4-006: Lock AdtySite BEFORE TopUp/AdtyTopupOrder when an owner route passes
+// an explicit ownerSiteID, preserving global canonical lock order:
+// AdtySite -> TopUp -> AdtyTopupOrder -> User -> earnings -> margin -> operating.
+func lockAdtyRefundOrderForScopeTx(tx *gorm.DB, tradeNo string, operatorID int, ownerSiteID []int) (*TopUp, *AdtyTopupOrder, error) {
+	if len(ownerSiteID) > 0 {
+		if len(ownerSiteID) != 1 || ownerSiteID[0] <= 0 {
+			return nil, nil, common.NewMessage("No permission to perform this action")
+		}
+		var site AdtySite
+		if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ? AND status IN ?", ownerSiteID[0], operatorID,
+			[]string{AdtySiteStatusActive, AdtySiteStatusPaused}).First(&site).Error; err != nil {
+			return nil, nil, common.NewMessage("No permission to perform this action")
+		}
+		var user User
+		if err := tx.Select("id", "status").First(&user, operatorID).Error; err != nil {
+			return nil, nil, err
+		}
+		if user.Status != common.UserStatusEnabled {
+			return nil, nil, common.NewMessage("No permission to perform this action")
+		}
 	}
-	if len(ownerSiteID) != 1 || ownerSiteID[0] <= 0 || ext.SiteId != ownerSiteID[0] || ext.IsOwnerBusiness() {
-		return common.NewMessage("No permission to perform this action")
+	topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+	if err != nil {
+		return nil, nil, err
 	}
-	var site AdtySite
-	if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ? AND status IN ?", ownerSiteID[0], operatorID,
-		[]string{AdtySiteStatusActive, AdtySiteStatusPaused}).First(&site).Error; err != nil {
-		return common.NewMessage("No permission to perform this action")
+	if len(ownerSiteID) > 0 && (ext.SiteId != ownerSiteID[0] || ext.IsOwnerBusiness()) {
+		return nil, nil, common.NewMessage("No permission to perform this action")
 	}
-	var user User
-	if err := tx.Select("id", "status").First(&user, operatorID).Error; err != nil {
-		return err
-	}
-	if user.Status != common.UserStatusEnabled {
-		return common.NewMessage("No permission to perform this action")
-	}
-	return nil
+	return topUp, ext, nil
 }
 
 func AdtyExternalRefundOffsetTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error) {
@@ -609,11 +616,8 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+		topUp, ext, err := lockAdtyRefundOrderForScopeTx(tx, tradeNo, operatorID, ownerSiteID)
 		if err != nil {
-			return err
-		}
-		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
 		existing, err := adtyFindManualRefundByIDTx(tx, refundID)
@@ -712,11 +716,8 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+		topUp, ext, err := lockAdtyRefundOrderForScopeTx(tx, tradeNo, operatorID, ownerSiteID)
 		if err != nil {
-			return err
-		}
-		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
@@ -793,11 +794,8 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 	var deducted int64
 	replay := false
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+		topUp, ext, err := lockAdtyRefundOrderForScopeTx(tx, tradeNo, operatorID, ownerSiteID)
 		if err != nil {
-			return err
-		}
-		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
 		if ext.TeamId > 0 {
@@ -1068,11 +1066,8 @@ func PlanAdtyTopUpManualRefundBonus(tradeNo, refundID string, operatorID int, id
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		_, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+		_, ext, err := lockAdtyRefundOrderForScopeTx(tx, tradeNo, operatorID, ownerSiteID)
 		if err != nil {
-			return err
-		}
-		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
@@ -1132,11 +1127,8 @@ func PlanAdtyTopUpManualRefundCommission(tradeNo, refundID string, operatorID in
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		_, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+		_, ext, err := lockAdtyRefundOrderForScopeTx(tx, tradeNo, operatorID, ownerSiteID)
 		if err != nil {
-			return err
-		}
-		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
@@ -1227,11 +1219,8 @@ func RecordAdtyTopUpManualRefundPayout(tradeNo, refundID string, operatorID int,
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+		topUp, ext, err := lockAdtyRefundOrderForScopeTx(tx, tradeNo, operatorID, ownerSiteID)
 		if err != nil {
-			return err
-		}
-		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
@@ -1346,11 +1335,8 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 	var committedExt *AdtyTopupOrder
 	replay := false
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+		topUp, ext, err := lockAdtyRefundOrderForScopeTx(tx, tradeNo, operatorID, ownerSiteID)
 		if err != nil {
-			return err
-		}
-		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
@@ -1505,11 +1491,20 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		if err := tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Update("status", status).Error; err != nil {
 			return err
 		}
+		// R4-013: Accumulate adty_topup_orders.refund_amount in the order's payment
+		// currency (not USD) so non-USD order traces report accurate currency totals.
+		refundAmountDelta := adtyRefundAmount(ext, row.RequestQuota, ext.FaceQuota())
+		if row.PayoutAmount.IsPositive() && strings.EqualFold(strings.TrimSpace(row.PayoutCurrency), strings.TrimSpace(ext.refundCurrency())) {
+			refundAmountDelta = row.PayoutAmount
+		} else if !refundAmountDelta.IsPositive() {
+			refundAmountDelta = row.RequestUSD
+		}
+		nextRefundAmount := ext.RefundAmount.Add(refundAmountDelta)
 		if err := tx.Model(&AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
 			"refunded_at":   now,
 			"refund_reason": row.Reason,
 			"refund_quota":  newRefundQuota,
-			"refund_amount": ext.RefundAmount.Add(row.RequestUSD),
+			"refund_amount": nextRefundAmount,
 		}).Error; err != nil {
 			return err
 		}
@@ -1530,7 +1525,7 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		row.CompleteOperatorId, row.CompletedAt, row.CompleteIdemKey = operatorID, now, idemKey
 		topUp.Status = status
 		ext.RefundedAt, ext.RefundReason = now, row.Reason
-		ext.RefundQuota, ext.RefundAmount = newRefundQuota, ext.RefundAmount.Add(row.RequestUSD)
+		ext.RefundQuota, ext.RefundAmount = newRefundQuota, nextRefundAmount
 		ext.RefundDeductedQuota = row.DeductedPrincipalQuota + bonusTaken
 		ext.RefundBonusQuota = bonusTaken
 		if AdtyAfterTopUpRefundedTx != nil {
@@ -1583,11 +1578,8 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 	var releasedUserID int
 	trimmedNote := strings.TrimSpace(note)
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		_, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
+		_, ext, err := lockAdtyRefundOrderForScopeTx(tx, tradeNo, operatorID, ownerSiteID)
 		if err != nil {
-			return err
-		}
-		if err := adtyRequireOwnerRefundScopeTx(tx, ext, operatorID, ownerSiteID); err != nil {
 			return err
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)

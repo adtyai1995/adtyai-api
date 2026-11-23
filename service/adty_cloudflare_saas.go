@@ -41,7 +41,7 @@ type AdtyCloudflareClient struct {
 // AdtyCloudflare 是业务代码用的客户端，Token 读分站设置里的 cloudflare_apiToken。
 var AdtyCloudflare = &AdtyCloudflareClient{
 	BaseURL: adtyCloudflareDefaultBaseURL,
-	HTTP:    &http.Client{Timeout: 20 * time.Second},
+	HTTP:    NewVerifiedDirectNoRedirectHTTPClient(20 * time.Second),
 	Token:   func() string { return adty_setting.GetResellerSetting().CloudflareApiToken },
 }
 
@@ -671,6 +671,9 @@ func RemoveAdtySiteDomainByAdmin(ctx context.Context, domainId int) error {
 	var domain model.AdtySiteDomain
 	if model.DB.Where("id = ?", domainId).Limit(1).Find(&domain).RowsAffected == 0 {
 		return ErrAdtySiteNotFound
+	}
+	if domain.ManagedBy == "platform" {
+		return common.NewMessage("Platform domains are managed by the platform")
 	}
 	return removeAdtySiteDomain(ctx, &domain)
 }

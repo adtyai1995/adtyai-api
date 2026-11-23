@@ -47,6 +47,7 @@ import {
   getSuccessRateTextClass,
 } from '@/features/performance-metrics/lib/format'
 import { PluginIcon } from '@/features/task-plugins/components/plugin-icon'
+import { useStatus } from '@/hooks/use-status'
 import { getLobeIcon } from '@/lib/lobe-icon'
 import {
   getServerErrorMessage,
@@ -747,6 +748,7 @@ type GroupPricingSectionProps = {
   usdExchangeRate: number
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
+  hideRatio?: boolean
 }
 
 function GroupPricingSection(props: GroupPricingSectionProps) {
@@ -808,6 +810,7 @@ function ProviderGroupPricingSection(
 ) {
   const { t, i18n } = useTranslation()
   const showRechargePrice = props.showRechargePrice ?? false
+  const effectiveGroupRatio = props.model.group_ratio ?? props.groupRatio
 
   const availableGroups = useMemo(
     () => getAvailableGroups(props.model, props.usableGroup || {}),
@@ -914,7 +917,7 @@ function ProviderGroupPricingSection(
     })
     const formattedPricesByGroup = new Map(
       availableGroups.map((group) => {
-        const ratio = props.groupRatio[group] || 1
+        const ratio = effectiveGroupRatio[group] || 1
         return [
           group,
           getDynamicFormattedPricesByTier(dynamicTiers, {
@@ -937,7 +940,7 @@ function ProviderGroupPricingSection(
         <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <div className='space-y-3'>
           {availableGroups.map((group) => {
-            const ratio = props.groupRatio[group] || 1
+            const ratio = effectiveGroupRatio[group] || 1
             const formattedPricesByTier =
               formattedPricesByGroup.get(group) ??
               new Map<DynamicPricingTier, Map<string, string>>()
@@ -946,9 +949,11 @@ function ProviderGroupPricingSection(
               <div key={group} className='overflow-hidden rounded-lg border'>
                 <div className='bg-muted/20 flex items-center justify-between gap-3 border-b px-3 py-2'>
                   <GroupBadge group={group} size='sm' />
-                  <span className='text-muted-foreground font-mono text-xs'>
-                    {ratio}x
-                  </span>
+                  {!props.hideRatio && (
+                    <span className='text-muted-foreground font-mono text-xs'>
+                      {ratio}x
+                    </span>
+                  )}
                 </div>
                 <StaticDataTable
                   className='rounded-none border-0'
@@ -1108,7 +1113,7 @@ function ProviderGroupPricingSection(
       showRechargePrice,
       props.priceRate,
       props.usdExchangeRate,
-      props.groupRatio
+      effectiveGroupRatio
     )
   const renderFixedGroupPrice = (group: string) =>
     formatFixedPrice(
@@ -1117,7 +1122,7 @@ function ProviderGroupPricingSection(
       showRechargePrice,
       props.priceRate,
       props.usdExchangeRate,
-      props.groupRatio
+      effectiveGroupRatio
     )
 
   return (
@@ -1138,13 +1143,18 @@ function ProviderGroupPricingSection(
             cellClassName: 'py-2.5',
             cell: (group) => <GroupBadge group={group} size='sm' />,
           },
-          {
-            id: 'ratio',
-            header: t('Ratio'),
-            className: thClass,
-            cellClassName: 'text-muted-foreground py-2.5 font-mono',
-            cell: (group) => `${props.groupRatio[group] || 1}x`,
-          },
+          ...(props.hideRatio
+            ? []
+            : [
+                {
+                  id: 'ratio',
+                  header: t('Ratio'),
+                  className: thClass,
+                  cellClassName: 'text-muted-foreground py-2.5 font-mono',
+                  cell: (group: string) =>
+                    `${effectiveGroupRatio[group] || 1}x`,
+                },
+              ]),
           ...(isTokenBased
             ? [
                 {
@@ -1217,6 +1227,8 @@ export interface ModelDetailsContentProps {
 
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
   const { t } = useTranslation()
+  const { status } = useStatus()
+  const isSubsite = Boolean(status?.adty_site)
   const showRechargePrice = props.showRechargePrice ?? false
 
   const isDynamic =
@@ -1259,12 +1271,13 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
 
           <section className='bg-card space-y-6 rounded-[14px] border p-5'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
-            {props.model.billing_display_multiplier && (
+            {!isSubsite && props.model.billing_display_multiplier && (
               <p className='text-muted-foreground text-sm'>
-                {t('Model price multiplier')}: {props.model.billing_display_multiplier}x
+                {t('Model price multiplier')}:{' '}
+                {props.model.billing_display_multiplier}x
               </p>
             )}
-            {showBasePrices && (
+            {!isSubsite && showBasePrices && (
               <PriceSection
                 model={props.model}
                 priceRate={props.priceRate}
@@ -1273,7 +1286,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
                 showRechargePrice={showRechargePrice}
               />
             )}
-            {isDynamic && !simpleTaskPricing && (
+            {!isSubsite && isDynamic && !simpleTaskPricing && (
               <DynamicPricingBreakdown
                 billingExpr={props.model.billing_expr}
                 displayMultiplier={props.model.billing_display_multiplier}
@@ -1294,6 +1307,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
               usdExchangeRate={props.usdExchangeRate}
               tokenUnit={props.tokenUnit}
               showRechargePrice={showRechargePrice}
+              hideRatio={isSubsite}
             />
           </section>
 

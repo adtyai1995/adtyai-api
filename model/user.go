@@ -866,6 +866,9 @@ func ApplyManagedUserAccessTx(tx *gorm.DB, user *User) (bool, error) {
 				if m.Status == AdtyTeamMemberDeleted || m.Status == AdtyTeamMemberLeft || m.DeletedAt != 0 {
 					return false, common.NewMessage("Deleted or removed team employee accounts cannot be re-enabled")
 				}
+				if m.Status == AdtyTeamMemberDisabled {
+					return false, common.NewMessage("Team-disabled employee accounts must be re-enabled by the team leader")
+				}
 				if tx.Migrator().HasTable(&AdtyTeam{}) && m.TeamId > 0 {
 					var team AdtyTeam
 					if err := tx.Select("id", "status").Where("id = ?", m.TeamId).Limit(1).Find(&team).Error; err != nil {

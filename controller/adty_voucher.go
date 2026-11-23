@@ -64,6 +64,10 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		Source: body.Source, Reason: body.Reason, IntentKey: intentKey,
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrAdtyVoucherIntentConflict) || errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -107,6 +111,10 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 		DesignatedOwnerId: designatedOwnerID, AmountUSD: amount, Reason: body.Reason, IntentKey: intentKey,
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrAdtyVoucherIntentConflict) || errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

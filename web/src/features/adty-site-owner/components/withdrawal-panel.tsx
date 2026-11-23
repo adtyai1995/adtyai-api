@@ -40,6 +40,7 @@ import {
   getSiteWithdrawRules,
   siteOwnerKeys,
 } from '../api'
+import { useOwnerVerification } from './owner-verification'
 
 const NETWORKS = ['TRC20', 'BEP20', 'POLYGON', 'XLAYER'] as const
 
@@ -69,6 +70,7 @@ export function WithdrawalPanel({
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const owner = useOwnerVerification()
   const rules = useQuery({
     queryKey: siteOwnerKeys.list('withdraw-rules', { siteId }),
     queryFn: () => getSiteWithdrawRules(siteId),
@@ -150,19 +152,36 @@ export function WithdrawalPanel({
         expected_rate: rate,
         expected_payout: quote.data,
       }
+      const hadSaved = Boolean(intent.saved)
       const key = await intent.prepare({
         amount,
         method,
         quote: quoteSignature,
       })
-      if (!key) return
+      if (!key) return false
+      const proof = await owner.verify('withdrawal.create', originalSite, {
+        amount_usd: payload.amount_usd,
+        method: payload.method,
+        network: payload.network,
+        account_no: payload.account_no,
+        account_name: payload.account_name,
+        expected_rate: payload.expected_rate,
+        idempotency_key: key,
+      })
+      if (!proof) {
+        if (!hadSaved) intent.clear(key)
+        return false
+      }
       const row = await createSiteWithdrawal(
         { ...payload, site_id: originalSite, idempotencyKey: key },
-        siteId
+        siteId,
+        proof
       )
       intent.accept(key, row.id)
+      return true
     },
-    onSuccess: () => {
+    onSuccess: (submitted) => {
+      if (!submitted) return
       reset()
       refresh()
     },

@@ -20,6 +20,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { toast } from 'sonner'
 
+import { siteAdminKeys } from '@/features/adty-site-admin/api'
 import { adtySiteQueryKey } from '@/features/adty-site/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
@@ -81,30 +82,54 @@ const STATUS_RELATED_KEYS = new Set([
   'QuotaForNewUser',
   'QuotaForInviter',
   'QuotaForInvitee',
-  'UserAgreementEnabled',
-  'PrivacyPolicyEnabled',
+  'legal.user_agreement',
+  'legal.privacy_policy',
   'adty_legal_setting.site_customer_terms_version',
-  'adty_legal_setting.user_agreement_enabled',
-  'adty_legal_setting.privacy_policy_enabled',
   'adty_site_setting.refund_policy_enabled',
   'LogConsumeEnabled',
   'log_setting.user_export_enabled',
   'log_setting.max_range_days',
   'QuotaPerUnit',
   'USDExchangeRate',
+  'Price',
   'DisplayInCurrencyEnabled',
   'DisplayTokenStatEnabled',
+  'general_setting.docs_link',
   'general_setting.quota_display_type',
   'general_setting.custom_currency_symbol',
   'general_setting.custom_currency_exchange_rate',
+  'console_setting.api_info_enabled',
+  'console_setting.api_info',
+  'console_setting.uptime_kuma_enabled',
+  'console_setting.uptime_kuma_groups',
+  'console_setting.announcements_enabled',
+  'console_setting.faq_enabled',
+  'Chats',
+  'BatchUpdateEnabled',
+  'DrawingEnabled',
+  'TaskEnabled',
+  'MjNotifyEnabled',
+  'DataExportEnabled',
+  'DataExportDefaultTime',
+  'DemoSiteEnabled',
+  'SelfUseModeEnabled',
+  'DefaultUseAutoGroup',
   'oidc.display_name',
   'ServerAddress',
   'adty_site_setting.api_base_url',
   'DefaultCollapseSidebar',
   'passkey.enabled',
+  'passkey.rp_display_name',
   'passkey.rp_id',
   'passkey.legacy_rp_ids',
   'passkey.origins',
+  'passkey.allow_insecure_origin',
+  'passkey.user_verification',
+  'passkey.attachment_preference',
+  'adty_bepusdt.enabled',
+  'adty_bepusdt.base_url',
+  'adty_bepusdt.secret',
+  'adty_bepusdt.trade_types',
   'QuotaRemindEnabled',
   'QuotaRemindThreshold',
 ])
@@ -154,8 +179,15 @@ export function useUpdateOption() {
           refetchType: 'none',
         })
 
-        if (variables.key.startsWith('adty_site_setting.')) {
+        if (
+          variables.key.startsWith('adty_site_setting.') ||
+          variables.key === 'MinTopUp' ||
+          variables.key === 'ServerAddress'
+        ) {
           queryClient.invalidateQueries({ queryKey: adtySiteQueryKey })
+        }
+        if (variables.key === 'ResendApiKey') {
+          queryClient.invalidateQueries({ queryKey: siteAdminKeys.settings })
         }
 
         // If updating frontend-display-related config, also refresh status

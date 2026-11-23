@@ -669,7 +669,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		logger.LogError(ctx, common.LogText("Task %s not found in taskM", taskId))
 		return fmt.Errorf("task %s not found", taskId)
 	}
-	if task.BillingInitialPending {
+	if task.BillingInitialPending || task.BillingPending || strings.TrimSpace(task.PrivateData.BillingReviewReason) != "" {
 		return nil
 	}
 	if task.PrivateData.Execution != nil && task.PrivateData.Execution.TaskPlugin != nil && GetTaskAdaptorForTaskFunc != nil {

@@ -21,9 +21,11 @@ import (
 )
 
 var (
-	httpClient              *http.Client
-	ssrfProtectedHTTPClient *http.Client
-	proxyClients            = proxyHTTPClientCache{
+	httpClient                       *http.Client
+	ssrfProtectedHTTPClient          *http.Client
+	ssrfVerifiedNoRedirectHTTPClient *http.Client
+	ssrfVerifiedNoRedirectOnce       sync.Once
+	proxyClients                     = proxyHTTPClientCache{
 		clients: make(map[string]*http.Client),
 		aliases: make(map[string]string),
 	}
@@ -41,13 +43,23 @@ type proxyURLConfig struct {
 	cacheKey  string
 }
 
+func redactedRedirectTarget(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	if u.Scheme == "" && u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) > 0 && via[0].Header.Get("mj-api-secret") != "" && !sameHTTPOrigin(via[0].URL, req.URL) {
 		return fmt.Errorf("cross-origin midjourney redirect blocked")
 	}
 	urlStr := req.URL.String()
 	if err := validateURLWithCurrentFetchSetting(urlStr, true); err != nil {
-		return fmt.Errorf("redirect to %s blocked: %v", urlStr, err)
+		return fmt.Errorf("redirect to %s blocked: %v", redactedRedirectTarget(req.URL), err)
 	}
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
@@ -65,7 +77,7 @@ func sameHTTPOrigin(left, right *url.URL) bool {
 func checkProtectedFetchRedirect(req *http.Request, via []*http.Request) error {
 	urlStr := req.URL.String()
 	if err := ValidateSSRFProtectedFetchURL(urlStr); err != nil {
-		return fmt.Errorf("redirect to %s blocked: %v", urlStr, err)
+		return fmt.Errorf("redirect to %s blocked: %v", redactedRedirectTarget(req.URL), err)
 	}
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
@@ -171,6 +183,25 @@ func GetSSRFProtectedHTTPClient() *http.Client {
 		return GetHttpClient()
 	}
 	return ssrfProtectedHTTPClient
+}
+
+// GetVerifiedNoRedirectSSRFProtectedHTTPClient returns a pooled outbound HTTP
+// client that always enforces verified TLS (>=1.2, InsecureSkipVerify=false),
+// disables redirects, bounds timeout, and enforces dial-time SSRF protection
+// when SSRF protection is enabled (R4-003 / R4-004 / R4-051).
+func GetVerifiedNoRedirectSSRFProtectedHTTPClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if fetchSetting := system_setting.GetFetchSetting(); fetchSetting != nil && !fetchSetting.EnableSSRFProtection {
+		return NewVerifiedDirectNoRedirectHTTPClient(timeout)
+	}
+	ssrfVerifiedNoRedirectOnce.Do(func() {
+		ssrfVerifiedNoRedirectHTTPClient = newVerifiedNoRedirectProtectedFetchHTTPClient(30 * time.Second)
+	})
+	client := *ssrfVerifiedNoRedirectHTTPClient
+	client.Timeout = timeout
+	return &client
 }
 
 func newProxyURLConfig(parsedURL *url.URL) *proxyURLConfig {

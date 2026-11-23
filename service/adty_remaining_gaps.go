@@ -1430,14 +1430,21 @@ func HideAdtyNotificationForUserFromRequest(c *gin.Context, userID int, key stri
 	if adtyIsNotificationKeyHidden(userID, key) {
 		return nil
 	}
-	_, visible, err := GetAdtyNotificationDetail(userID, AdtySiteForRequest(c), key)
+	item, visible, err := GetAdtyNotificationDetail(userID, AdtySiteForRequest(c), key)
 	if err != nil {
 		return err
 	}
 	if !visible {
 		return gorm.ErrRecordNotFound
 	}
-	return hideAdtyNotificationForUser(c, userID, key)
+	canonicalKey := strings.TrimSpace(key)
+	if rk, ok := item["read_key"].(string); ok && strings.TrimSpace(rk) != "" {
+		canonicalKey = strings.TrimSpace(rk)
+	}
+	if adtyIsNotificationKeyHidden(userID, canonicalKey) {
+		return nil
+	}
+	return hideAdtyNotificationForUser(c, userID, canonicalKey)
 }
 
 func hideAdtyNotificationForUser(c *gin.Context, userID int, key string) error {
@@ -1606,7 +1613,7 @@ var defaultAdtyBilingualNoticeTemplates = map[string]AdtyBilingualNoticeTemplate
 	},
 }
 
-var adtyNoticePlaceholderPattern = regexp.MustCompile(`\{\{[A-Za-z0-9_.]+\}\}|\{[A-Za-z0-9_.]+\}|%[sdv]`)
+var adtyNoticePlaceholderPattern = regexp.MustCompile(`\{\{[A-Za-z0-9_.]+\}\}|\{[A-Za-z0-9_.]+\}`)
 
 func extractAdtyNoticePlaceholders(texts ...string) []string {
 	seen := map[string]struct{}{}
@@ -1993,6 +2000,31 @@ func SavedAdtyBilingualNoticeText(key string) (string, bool) {
 	}
 }
 
+func hasUnfilledNoticePlaceholder(rawTexts []string, valueCount int) bool {
+	for _, raw := range rawTexts {
+		for _, token := range adtyNoticePlaceholderPattern.FindAllString(raw, -1) {
+			name := strings.TrimSuffix(strings.TrimPrefix(token, "{{"), "}}")
+			if name == token {
+				name = strings.TrimSuffix(strings.TrimPrefix(token, "{"), "}")
+			}
+			if name == "SystemName" && common.SystemName != "" {
+				continue
+			}
+			if name == "value" {
+				if valueCount > 0 {
+					continue
+				}
+				return true
+			}
+			if idx, err := strconv.Atoi(name); err == nil && idx >= 1 && idx <= valueCount {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveAdtyNoticeTemplateForNotify checks if Root has configured a custom bilingual
 // template for notifyType in the database, and if so renders it in lang; otherwise
 // returns defaultSubject and defaultContent unchanged.
@@ -2008,16 +2040,15 @@ func ResolveAdtyNoticeTemplateForNotify(notifyType, lang, defaultSubject, defaul
 		if err != nil || !customized || tpl == nil {
 			continue
 		}
-		var subject, content string
+		rawTitle, rawContent := tpl.TitleEn, tpl.ContentEn
 		if isChineseNoticeLang(lang) {
-			subject, content = applyAdtyNoticeVars(tpl.TitleZh, nil, values...), applyAdtyNoticeVars(tpl.ContentZh, nil, values...)
-		} else {
-			subject, content = applyAdtyNoticeVars(tpl.TitleEn, nil, values...), applyAdtyNoticeVars(tpl.ContentEn, nil, values...)
+			rawTitle, rawContent = tpl.TitleZh, tpl.ContentZh
 		}
-		// A saved row with unfilled placeholders must not replace already rendered copy.
-		if len(values) == 0 && (strings.Contains(subject, "{{") || strings.Contains(content, "{{")) {
+		// A saved row with unfilled placeholders must not replace already rendered copy (R4-048).
+		if hasUnfilledNoticePlaceholder([]string{rawTitle, rawContent}, len(values)) {
 			continue
 		}
+		subject, content := applyAdtyNoticeVars(rawTitle, nil, values...), applyAdtyNoticeVars(rawContent, nil, values...)
 		return subject, content
 	}
 	return defaultSubject, defaultContent

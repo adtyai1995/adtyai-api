@@ -249,7 +249,8 @@ export async function createSiteWithdrawal(
     expected_rate: string
     idempotencyKey: string
   },
-  siteId?: number
+  siteId?: number,
+  proof?: string
 ): Promise<SiteWithdrawal> {
   const res = await api.post<ApiResponse<SiteWithdrawal>>(
     `${BASE}/withdrawals`,
@@ -265,7 +266,11 @@ export async function createSiteWithdrawal(
     },
     {
       params: archivedQuery(siteId),
-      headers: { 'Idempotency-Key': body.idempotencyKey },
+      headers: {
+        'Idempotency-Key': body.idempotencyKey,
+        ...(proof ? { 'X-Security-Proof': proof } : {}),
+      },
+      ...(proof ? { singleUseAuthorization: true } : {}),
     }
   )
   return requireServerSuccess(res.data).data

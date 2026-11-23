@@ -261,10 +261,23 @@ export function WithdrawalPanel(props: {
                     </Button>
                   </>
                 )}
-                {props.canPayout && row.status === 'approved' && (
-                  <Button size='sm' onClick={() => setPaying(row)}>
-                    {t('Mark as paid')}
-                  </Button>
+                {row.status === 'approved' && (
+                  <>
+                    {props.canPayout && (
+                      <Button size='sm' onClick={() => setPaying(row)}>
+                        {t('Mark as paid')}
+                      </Button>
+                    )}
+                    {props.canReview && (
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        onClick={() => setRejecting(row)}
+                      >
+                        {t('Reject')}
+                      </Button>
+                    )}
+                  </>
                 )}
               </div>
             ),

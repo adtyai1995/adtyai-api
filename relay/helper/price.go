@@ -91,18 +91,49 @@ func RefreshPriceDataForSelectedGroup(c *gin.Context, info *relaycommon.RelayInf
 	}
 	if info.TieredBillingSnapshot == nil || info.TieredBillingSnapshot.BillingMode != "tiered_expr" {
 		ratioDec := info.PriceData.GroupRatioInfo.BilledGroupRatio()
-		if info.PriceData.UsePrice {
+		if info.RelayFormat == types.RelayFormatTask {
+			// R4-018: Task pricing applies OtherRatios in relay_task.go after
+			// ModelPriceHelperPerCall; freeze pre-OtherRatios base Quota for the
+			// newly selected group so retries never multiply OtherRatios by r^k
+			// or keep a stale Group A ratio/zero on free->paid fallback.
+			if info.PriceData.UsePrice {
+				base := info.PriceData.BilledModelPrice()
+				quota, err := common.QuotaFromDecimalStrict(base.Mul(common.QuotaPerUnitDecimal()).Mul(ratioDec))
+				if err != nil {
+					return err
+				}
+				info.PriceData.FreeModel = !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume && (ratioDec.IsZero() || base.IsZero())
+				if info.PriceData.FreeModel {
+					quota = 0
+				}
+				info.PriceData.Quota = quota
+				info.PriceData.QuotaToPreConsume = quota
+			} else {
+				base := info.PriceData.BilledModelRatio()
+				quota, err := common.QuotaFromDecimalStrict(base.Div(decimal.NewFromInt(2)).Mul(common.QuotaPerUnitDecimal()).Mul(ratioDec))
+				if err != nil {
+					return err
+				}
+				info.PriceData.FreeModel = !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume && (ratioDec.IsZero() || base.IsZero())
+				if info.PriceData.FreeModel {
+					quota = 0
+				}
+				info.PriceData.Quota = quota
+				info.PriceData.QuotaToPreConsume = quota
+			}
+		} else if info.PriceData.UsePrice {
 			base := info.PriceData.BilledModelPrice()
 			quotaDec := info.PriceData.ApplyOtherRatiosToDecimal(base.Mul(common.QuotaPerUnitDecimal()).Mul(ratioDec))
 			quota, err := common.QuotaFromDecimalStrict(quotaDec)
 			if err != nil {
 				return err
 			}
-			info.PriceData.QuotaToPreConsume = quota
-			if info.PriceData.Quota > 0 {
-				info.PriceData.Quota = quota
-			}
 			info.PriceData.FreeModel = !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume && (ratioDec.IsZero() || base.IsZero())
+			if info.PriceData.FreeModel {
+				quota = 0
+			}
+			info.PriceData.QuotaToPreConsume = quota
+			info.PriceData.Quota = quota
 		} else {
 			base := info.PriceData.BilledModelRatio()
 			var quota int

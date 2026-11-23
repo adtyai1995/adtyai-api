@@ -69,6 +69,8 @@ func GetAdtyResellerUsage() (*AdtyResellerUsage, error) {
 		case model.AdtySenderDomainFailed:
 			usage.Sender.Failed += row.Total
 			usage.Sender.InUse += row.Total
+		case model.AdtySenderDomainRemoving:
+			usage.Sender.InUse += row.Total
 		case model.AdtySenderDomainDisabled:
 			usage.Sender.Disabled += row.Total
 		}
@@ -80,14 +82,14 @@ func GetAdtyResellerUsage() (*AdtyResellerUsage, error) {
 		Total           int
 	}
 	if err := model.DB.Model(&model.AdtySiteDomain{}).Select("turnstile_widget, COUNT(*) AS total").
-		Where("status = ? AND turnstile_widget <> ''", model.AdtySiteDomainActive).Group("turnstile_widget").Scan(&assigned).Error; err != nil {
+		Where("status = ? AND managed_by <> ? AND turnstile_widget <> ''", model.AdtySiteDomainActive, "platform").Group("turnstile_widget").Scan(&assigned).Error; err != nil {
 		return nil, err
 	}
 	byWidget := map[string]int{}
 	for _, row := range assigned {
 		byWidget[row.TurnstileWidget] = row.Total
 	}
-	if err := model.DB.Model(&model.AdtySiteDomain{}).Where("status = ? AND turnstile_widget = ''", model.AdtySiteDomainActive).
+	if err := model.DB.Model(&model.AdtySiteDomain{}).Where("status = ? AND managed_by <> ? AND turnstile_widget = ''", model.AdtySiteDomainActive, "platform").
 		Count(&usage.UnassignedDomains).Error; err != nil {
 		return nil, err
 	}

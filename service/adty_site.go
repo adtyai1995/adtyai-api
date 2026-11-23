@@ -1115,6 +1115,11 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 			return nil
 		}
 		const target = 0
+		// R4-007: Lock and inherit active site teams BEFORE locking site users
+		// so site closure obeys canonical AdtySite -> AdtyTeam -> User -> operating order.
+		if err := InheritAdtyTeamsOnCloseTx(tx, site.Id); err != nil {
+			return err
+		}
 		var movedPrincipal int64
 		var err error
 		moved, movedPrincipal, err = model.AdtySetUsersSiteWithMovedPrincipalTx(tx, site.Id, target)
@@ -1150,9 +1155,6 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 			return err
 		}
 		if err := transferSiteTicketsToMainTx(tx, site.Id); err != nil {
-			return err
-		}
-		if err := InheritAdtyTeamsOnCloseTx(tx, site.Id); err != nil {
 			return err
 		}
 		// 主站没有在用的分站客户行；原站成员关系归档保留，不删除，以便追溯原始站点。

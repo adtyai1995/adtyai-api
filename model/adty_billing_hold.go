@@ -116,7 +116,7 @@ func syncAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation, fromBa
 		rootKey := "request:" + reqID
 		directPrefix := "direct:" + reqID + ":%"
 		var rootOps []BillingOperation
-		if err := tx.Select("operation_key", "state", "shortfall").
+		if err := tx.Select("operation_key", "state", "shortfall", "stream_wallet_quota").
 			Where("user_id = ? AND operation_key IN ? AND state IN ?",
 				op.UserId, []string{rootKey, reqID}, []string{BillingSettled, BillingRefunded}).
 			Find(&rootOps).Error; err != nil {
@@ -124,12 +124,24 @@ func syncAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation, fromBa
 		}
 		if len(rootOps) > 0 {
 			rootFinalized = true
+			hasFoldedStream := false
+			for _, ro := range rootOps {
+				if ro.StreamWalletQuota > 0 {
+					hasFoldedStream = true
+					break
+				}
+			}
 			var sum int64
-			if err := tx.Model(&BillingOperation{}).
-				Select("COALESCE(SUM(shortfall), 0)").
-				Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR (earning_root_key IN ? AND operation_key NOT LIKE ?))",
-					op.UserId, BillingSettled, reqID, rootKey, []string{reqID, rootKey}, "direct:%").
-				Scan(&sum).Error; err != nil {
+			q := tx.Model(&BillingOperation{}).
+				Select("COALESCE(SUM(shortfall), 0)")
+			if hasFoldedStream {
+				q = q.Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR (earning_root_key IN ? AND operation_key NOT LIKE ?))",
+					op.UserId, BillingSettled, reqID, rootKey, []string{reqID, rootKey}, "direct:%")
+			} else {
+				q = q.Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR operation_key LIKE ? OR earning_root_key IN ?)",
+					op.UserId, BillingSettled, reqID, rootKey, directPrefix, []string{reqID, rootKey})
+			}
+			if err := q.Scan(&sum).Error; err != nil {
 				return err
 			}
 			totalShortfall = int(max(0, sum))
@@ -208,6 +220,13 @@ func billingHoldRequestIDFromOperationKey(opKey string) string {
 		}
 		return rest
 	}
+	if strings.HasPrefix(opKey, "violation:") {
+		rest := strings.TrimPrefix(opKey, "violation:")
+		if idx := strings.LastIndexByte(rest, ':'); idx > 0 {
+			return rest[:idx]
+		}
+		return rest
+	}
 	return opKey
 }
 
@@ -258,14 +277,14 @@ func HasOpenAdtyBillingHoldTx(tx *gorm.DB, userID int) (bool, error) {
 		for _, op := range ops {
 			reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
 			if strings.HasPrefix(op.OperationKey, "direct:") && reqID != "" {
-				var finalizedRoot int64
+				var finalizedStreamRoot int64
 				if err := tx.Model(&BillingOperation{}).
-					Where("user_id = ? AND operation_key IN ? AND state IN ?",
+					Where("user_id = ? AND operation_key IN ? AND state IN ? AND stream_wallet_quota > 0",
 						userID, []string{"request:" + reqID, reqID}, []string{BillingSettled, BillingRefunded}).
-					Count(&finalizedRoot).Error; err != nil {
+					Count(&finalizedStreamRoot).Error; err != nil {
 					return false, err
 				}
-				if finalizedRoot > 0 {
+				if finalizedStreamRoot > 0 {
 					continue
 				}
 			}

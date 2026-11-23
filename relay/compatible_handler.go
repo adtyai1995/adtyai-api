@@ -175,13 +175,17 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		return newApiErr
 	}
 
-	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
+	usageObj, _ := usage.(*dto.Usage)
+	if usageObj == nil {
+		usageObj = &dto.Usage{}
+	}
+	var containAudioTokens = usageObj.CompletionTokenDetails.AudioTokens > 0 || usageObj.PromptTokensDetails.AudioTokens > 0
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 
 	if containAudioTokens && containsAudioRatios {
-		service.PostAudioConsumeQuota(c, info, usage.(*dto.Usage), nil)
+		service.PostAudioConsumeQuota(c, info, usageObj, nil)
 	} else {
-		service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+		service.PostTextConsumeQuota(c, info, usageObj, nil)
 	}
 	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 // 站长中心（任务 11.6、11.7）。每个处理函数先取「当前用户是 active、paused 或 closing 站点的站长」，否则 403；
@@ -603,8 +604,14 @@ func GetAdtyOwnerExport(c *gin.Context) {
 				day.RevenueUSD.StringFixed(2), day.EarningUSD.StringFixed(2), day.BonusUSD.StringFixed(2), day.RefundUSD.StringFixed(2))
 		}
 	case "customers":
+		excludeIndependentEmp := func(q *gorm.DB) *gorm.DB {
+			if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTeamMember{}) {
+				return q.Where("NOT EXISTS (SELECT 1 FROM adty_team_members m WHERE m.user_id = users.id AND m.independent_employee = ?)", true)
+			}
+			return q
+		}
 		var total int64
-		if err := model.DB.Model(&model.User{}).Where("site_id = ? AND staff_site_id = 0", site.Id).Count(&total).Error; err != nil {
+		if err := excludeIndependentEmp(model.DB.Model(&model.User{}).Where("site_id = ? AND staff_site_id = 0", site.Id)).Count(&total).Error; err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -612,7 +619,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 			return
 		}
 		var users []model.User
-		if err := model.DB.Select("id", "username", "email", "created_at").Where("site_id = ? AND staff_site_id = 0", site.Id).Order("id").Find(&users).Error; err != nil {
+		if err := excludeIndependentEmp(model.DB.Select("id", "username", "email", "created_at").Where("site_id = ? AND staff_site_id = 0", site.Id)).Order("id").Find(&users).Error; err != nil {
 			common.ApiError(c, err)
 			return
 		}

@@ -529,7 +529,12 @@ func PasskeyVerifyBegin(c *gin.Context) {
 		writeSecurityOperationError(c, service.ErrAuthTokenInvalid)
 		return
 	}
-	if err := service.RequireAccessTokenVerificationScopeForOperation(identity, op); err != nil {
+	requiredPATScope, patForbidden, err := service.ResolveAccessTokenVerificationScopeForOperation(op)
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	if err := service.RequireResolvedAccessTokenVerificationScope(identity, requiredPATScope, patForbidden); err != nil {
 		writeSecurityOperationError(c, err)
 		return
 	}
@@ -564,10 +569,11 @@ func PasskeyVerifyBegin(c *gin.Context) {
 	flowToken, expiresAt, err := passkeysvc.CreateSessionDataFlow(
 		model.AuthFlowPurposePasskeyStepUp,
 		passkeysvc.FlowSecurity{
-			AuthSessionIdentity: identity,
-			Scope:               binding.Scope,
-			ContextHash:         binding.ContextHash,
-			OperationContext:    request.Context,
+			AuthSessionIdentity:      identity,
+			Scope:                    binding.Scope,
+			ContextHash:              binding.ContextHash,
+			RequiredAccessTokenScope: requiredPATScope,
+			AccessTokenForbidden:     patForbidden,
 		},
 		sessionData,
 	)
@@ -662,10 +668,7 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		return
 	}
 
-	if err := service.RequireAccessTokenVerificationScopeForOperation(identity, service.VerificationOperation{
-		Scope:   security.Scope,
-		Context: security.OperationContext,
-	}); err != nil {
+	if err := service.RequireResolvedAccessTokenVerificationScope(identity, security.RequiredAccessTokenScope, security.AccessTokenForbidden); err != nil {
 		writeSecurityOperationError(c, err)
 		return
 	}

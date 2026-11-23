@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 
 	"github.com/gin-gonic/gin"
@@ -73,7 +75,7 @@ func getAndDecode(ctx context.Context, client *http.Client, url string, dest any
 		return errors.New("non-200 status")
 	}
 
-	return common.DecodeJson(resp.Body, dest)
+	return common.DecodeJson(io.LimitReader(resp.Body, 2<<20), dest)
 }
 
 func fetchGroupData(ctx context.Context, client *http.Client, groupConfig map[string]any) UptimeGroupResult {
@@ -179,7 +181,7 @@ func GetUptimeKumaStatus(c *gin.Context) {
 		// The independent deadline still bounds every refresh, including failures.
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
-		client := &http.Client{Timeout: httpTimeout}
+		client := service.GetVerifiedNoRedirectSSRFProtectedHTTPClient(httpTimeout)
 		results := make([]UptimeGroupResult, len(groups))
 		g, gCtx := errgroup.WithContext(ctx)
 		g.SetLimit(4)

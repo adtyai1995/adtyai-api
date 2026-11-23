@@ -114,61 +114,24 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 		AccountType: input.AccountType, SubmittedAt: time.Now().Unix(), Status: model.ReferralWithdrawalStatusPending,
 	}
 	switch input.AccountType {
-	case model.ReferralWithdrawToBalance:
-		withdrawal.Status = model.ReferralWithdrawalStatusPaid
-		withdrawal.PaidAt = withdrawal.SubmittedAt
-	case model.ReferralWithdrawToUSDT:
-		if cfg.MinWithdrawUSD == nil || cfg.USDTWithdrawFee == nil {
-			return nil, ErrReferralWithdrawUnavailable
-		}
-		if amount.LessThan(decimal.NewFromFloat(*cfg.MinWithdrawUSD)) {
-			return nil, common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": *cfg.MinWithdrawUSD})
-		}
-		network := strings.ToUpper(strings.TrimSpace(input.AccountNetwork))
-		if !ValidateUSDTAddress(network, input.AccountNo) {
-			return nil, common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
-		}
-		fee := decimal.NewFromFloat(*cfg.USDTWithdrawFee).Round(2)
-		net := amount.Sub(fee)
-		if !net.IsPositive() {
-			return nil, common.NewMessage("The amount must be larger than the network fee")
-		}
-		withdrawal.AccountNetwork = network
-		withdrawal.AccountNo = strings.TrimSpace(input.AccountNo)
-		withdrawal.FeeAmount = moneyF(fee)
-		withdrawal.NetAmount = moneyF(net)
-	case model.ReferralWithdrawToAlipay, model.ReferralWithdrawToWechat:
-		if cfg.MinWithdrawUSD == nil {
-			return nil, ErrReferralWithdrawUnavailable
-		}
-		if amount.LessThan(decimal.NewFromFloat(*cfg.MinWithdrawUSD)) {
-			return nil, common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": *cfg.MinWithdrawUSD})
-		}
-		if !validReferralQR(input.QRImageURL) || strings.TrimSpace(input.AccountName) == "" {
-			return nil, common.NewMessage("Upload the payment QR code and enter the payee name")
-		}
-		withdrawal.AccountName = strings.TrimSpace(input.AccountName)
-		withdrawal.QRImageURL = strings.TrimSpace(input.QRImageURL)
+	case model.ReferralWithdrawToBalance, model.ReferralWithdrawToUSDT, model.ReferralWithdrawToAlipay, model.ReferralWithdrawToWechat:
 	default:
 		return nil, common.NewMessage("Unsupported withdrawal method")
+	}
+	normalizedNetwork := strings.ToUpper(strings.TrimSpace(input.AccountNetwork))
+	trimmedAccountNo := strings.TrimSpace(input.AccountNo)
+	trimmedAccountName := strings.TrimSpace(input.AccountName)
+	normalizedQR := strings.TrimSpace(input.QRImageURL)
+	if name, ok := extractReferralAssetName(normalizedQR); ok {
+		normalizedQR = "/api/referral-assets/" + name
 	}
 
 	var result *model.ReferralWithdrawal
 	var creditQuota int64
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		if withdrawal.AccountType == model.ReferralWithdrawToAlipay || withdrawal.AccountType == model.ReferralWithdrawToWechat {
-			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserId, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
-			if !ok {
-				return common.NewMessage("Upload the payment QR code and enter the payee name")
-			}
-			withdrawal.QRImageURL = canonicalQR
-		}
 		affiliate, err := s.lockAffiliateByUserTx(tx, input.UserId)
 		if err != nil {
 			return err
-		}
-		if !affiliate.WithdrawalEnabled || affiliate.Status != model.ReferralAffiliateStatusApproved {
-			return ErrReferralWithdrawBlocked
 		}
 		var lockedCommissions []model.ReferralCommission
 		if err := model.AdtyLockForUpdate(tx).Where("affiliate_id = ? AND status IN ?", affiliate.Id,
@@ -180,18 +143,25 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 		if err != nil {
 			return err
 		}
+		// R4-044: Check idempotency replay BEFORE current rule/toggle checks so retries
+		// succeed deterministically even after threshold/rate/status updates, and compare
+		// canonicalized network & QR asset path.
 		var existing []model.ReferralWithdrawal
 		if err := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing).Error; err != nil {
 			return err
 		}
 		if len(existing) > 0 {
+			existingQR := strings.TrimSpace(existing[0].QRImageURL)
+			if name, ok := extractReferralAssetName(existingQR); ok {
+				existingQR = "/api/referral-assets/" + name
+			}
 			sameDest := existing[0].UserId == input.UserId &&
 				existing[0].AccountType == input.AccountType &&
 				moneyDec(existing[0].Amount).Equal(amount) &&
-				strings.TrimSpace(existing[0].AccountNetwork) == strings.TrimSpace(input.AccountNetwork) &&
-				strings.TrimSpace(existing[0].AccountNo) == strings.TrimSpace(input.AccountNo) &&
-				strings.TrimSpace(existing[0].AccountName) == strings.TrimSpace(input.AccountName) &&
-				strings.TrimSpace(existing[0].QRImageURL) == strings.TrimSpace(input.QRImageURL)
+				strings.ToUpper(strings.TrimSpace(existing[0].AccountNetwork)) == normalizedNetwork &&
+				strings.TrimSpace(existing[0].AccountNo) == trimmedAccountNo &&
+				strings.TrimSpace(existing[0].AccountName) == trimmedAccountName &&
+				existingQR == normalizedQR
 			if sameDest && (input.AccountType == model.ReferralWithdrawToAlipay || input.AccountType == model.ReferralWithdrawToWechat) {
 				existingRate, err := decimal.NewFromString(strings.TrimSpace(existing[0].CNYRate))
 				if err != nil || !existingRate.Equal(input.ExpectedCNYRate) {
@@ -203,6 +173,49 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			}
 			result = &existing[0]
 			return nil
+		}
+		if !affiliate.WithdrawalEnabled || affiliate.Status != model.ReferralAffiliateStatusApproved {
+			return ErrReferralWithdrawBlocked
+		}
+		switch input.AccountType {
+		case model.ReferralWithdrawToBalance:
+			withdrawal.Status = model.ReferralWithdrawalStatusPaid
+			withdrawal.PaidAt = withdrawal.SubmittedAt
+		case model.ReferralWithdrawToUSDT:
+			if cfg.MinWithdrawUSD == nil || cfg.USDTWithdrawFee == nil {
+				return ErrReferralWithdrawUnavailable
+			}
+			if amount.LessThan(decimal.NewFromFloat(*cfg.MinWithdrawUSD)) {
+				return common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": *cfg.MinWithdrawUSD})
+			}
+			if !ValidateUSDTAddress(normalizedNetwork, trimmedAccountNo) {
+				return common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": normalizedNetwork})
+			}
+			fee := decimal.NewFromFloat(*cfg.USDTWithdrawFee).Round(2)
+			net := amount.Sub(fee)
+			if !net.IsPositive() {
+				return common.NewMessage("The amount must be larger than the network fee")
+			}
+			withdrawal.AccountNetwork = normalizedNetwork
+			withdrawal.AccountNo = trimmedAccountNo
+			withdrawal.FeeAmount = moneyF(fee)
+			withdrawal.NetAmount = moneyF(net)
+		case model.ReferralWithdrawToAlipay, model.ReferralWithdrawToWechat:
+			if cfg.MinWithdrawUSD == nil {
+				return ErrReferralWithdrawUnavailable
+			}
+			if amount.LessThan(decimal.NewFromFloat(*cfg.MinWithdrawUSD)) {
+				return common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": *cfg.MinWithdrawUSD})
+			}
+			if !validReferralQR(input.QRImageURL) || trimmedAccountName == "" {
+				return common.NewMessage("Upload the payment QR code and enter the payee name")
+			}
+			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserId, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
+			if !ok {
+				return common.NewMessage("Upload the payment QR code and enter the payee name")
+			}
+			withdrawal.AccountName = trimmedAccountName
+			withdrawal.QRImageURL = canonicalQR
 		}
 		if input.AccountType == model.ReferralWithdrawToAlipay || input.AccountType == model.ReferralWithdrawToWechat {
 			rate, updatedAt, err := currentWithdrawCNYRateTx(tx)
@@ -463,7 +476,7 @@ func reduceOrReleaseWithdrawalAfterClawbackTx(tx *gorm.DB, withdrawalId int, red
 	updates := withdrawalAmountUpdates(&withdrawal, amount)
 	netAfter := amount.Sub(moneyDec(withdrawal.FeeAmount))
 	shouldCancel := !amount.IsPositive() ||
-		(withdrawal.Status == model.ReferralWithdrawalStatusPending &&
+		((withdrawal.Status == model.ReferralWithdrawalStatusPending || withdrawal.Status == model.ReferralWithdrawalStatusApproved) &&
 			withdrawal.AccountType != model.ReferralWithdrawToBalance &&
 			!netAfter.IsPositive())
 	if shouldCancel {
@@ -636,10 +649,10 @@ func (s *ReferralService) ReviewWithdrawal(withdrawalId, adminId int, approve bo
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", withdrawalId).First(&withdrawal).Error; err != nil {
 			return err
 		}
-		if withdrawal.Status != model.ReferralWithdrawalStatusPending {
-			return common.NewMessage("Only pending withdrawals can be reviewed")
-		}
 		if approve {
+			if withdrawal.Status != model.ReferralWithdrawalStatusPending {
+				return common.NewMessage("Only pending withdrawals can be reviewed")
+			}
 			if !moneyDec(withdrawal.NetAmount).IsPositive() {
 				return common.NewMessage("Withdrawal net amount is no longer positive; reject or cancel instead")
 			}
@@ -649,6 +662,9 @@ func (s *ReferralService) ReviewWithdrawal(withdrawalId, adminId int, approve bo
 				return err
 			}
 			return recordReferralAuditTx(tx, "withdrawal_approve", withdrawal.UserId, withdrawal.AffiliateId, adminId, reason, ip, ua, nil, map[string]any{"id": withdrawal.Id})
+		}
+		if withdrawal.Status != model.ReferralWithdrawalStatusPending && withdrawal.Status != model.ReferralWithdrawalStatusApproved {
+			return common.NewMessage("Only pending or approved withdrawals can be rejected")
 		}
 		if err := s.releaseWithdrawalTx(tx, &withdrawal, model.ReferralWithdrawalStatusRejected, adminId, reason, now); err != nil {
 			return err

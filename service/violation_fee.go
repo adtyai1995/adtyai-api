@@ -119,7 +119,7 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 	}
 
 	shortfallBefore := relayInfo.BillingShortfall
-	if err := PostConsumeQuota(relayInfo, feeQuota, 0, true, ctx); err != nil {
+	if err := postConsumeViolationFeeQuota(relayInfo, feeQuota, 0, true, ctx); err != nil {
 		logger.LogError(ctx, common.LogText("failed to charge violation fee: %s", err.Error()))
 		return false, err
 	}

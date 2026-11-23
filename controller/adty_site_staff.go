@@ -81,6 +81,21 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 				staffID = target.Id
 			}
 		}
+		// R4-042: Redact Root operator IDs and internal platform review remarks
+		// before returning site audit rows to the site owner.
+		if item.OperatorId != site.OwnerUserId && item.OperatorId > 0 {
+			item.OperatorId = 0
+			item.OldValue = ""
+			item.NewValue = ""
+			switch {
+			case strings.HasPrefix(item.Reason, "staff balance approved"):
+				item.Reason = "staff balance approved"
+			case strings.HasPrefix(item.Reason, "staff balance rejected"):
+				item.Reason = "staff balance rejected"
+			default:
+				item.Reason = ""
+			}
+		}
 		views = append(views, staffAuditView{AdtySiteAudit: item, StaffId: staffID, CustomerId: target.CustomerId})
 	}
 	page.SetTotal(int(total))

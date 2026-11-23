@@ -317,6 +317,11 @@ func ConsumeAuthFlowWithAction(token string, match AuthFlowMatch, action func(tx
 				return err
 			}
 		}
+		if consumed.Payload != "" {
+			if err := tx.Model(&AuthFlow{}).Where("id = ?", consumed.Id).Update("payload", "").Error; err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {

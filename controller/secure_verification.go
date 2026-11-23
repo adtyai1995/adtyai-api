@@ -29,6 +29,30 @@ func GetVerificationMethods(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
+	if service.AdtySiteForRequest(c) == nil && requirements != nil {
+		scope := c.Query("scope")
+		if scope == service.VerificationScopePasskeyRegister && !passkeysvc.IsRegistrationAvailableForRequest(c.Request) {
+			for i := range requirements.Methods {
+				if requirements.Methods[i].Available && requirements.Methods[i].Method != service.VerificationMethodRootExempt {
+					requirements.Methods[i].Available = false
+					requirements.Methods[i].Reason = system_setting.ErrPasskeyRPIDUnavailable.Error()
+				}
+			}
+		} else {
+			var credRPID string
+			if cred, credErr := model.GetPasskeyByUserID(identity.UserID); credErr == nil && cred != nil && cred.RPID != nil {
+				credRPID = *cred.RPID
+			}
+			if !passkeysvc.IsAvailableForRequest(c.Request, credRPID) {
+				for i := range requirements.Methods {
+					if requirements.Methods[i].Method == service.VerificationMethodPasskey && requirements.Methods[i].Available {
+						requirements.Methods[i].Available = false
+						requirements.Methods[i].Reason = system_setting.ErrPasskeyRPIDUnavailable.Error()
+					}
+				}
+			}
+		}
+	}
 	common.ApiSuccess(c, requirements)
 }
 

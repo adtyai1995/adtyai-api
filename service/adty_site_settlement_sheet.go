@@ -539,7 +539,9 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 			sheet.OwnerSelfUseCostUSD = sheet.OwnerSelfUseUSD
 		}
 		if row.Type == "adjustment" || row.Type == model.AdtyLedgerTypeManualAdjust ||
-			(row.WalletKind != model.AdtySiteWalletOperating && (row.Type == "financial_adjustment" || row.Type == "staff_balance")) {
+			(row.WalletKind != model.AdtySiteWalletOperating &&
+				(row.Type == "financial_adjustment" || row.Type == "staff_balance" ||
+					row.Type == "owner_customer_balance" || row.Type == "owner_team_balance")) {
 			sheet.AdjustmentUSD = sheet.AdjustmentUSD.Add(row.Delta)
 		}
 		if row.Type == "gift_reserve" {

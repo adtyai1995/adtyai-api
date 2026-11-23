@@ -115,9 +115,7 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		}
 	}
 
-	if imageN := lo.FromPtrOr(request.N, uint(0)); imageN > 0 {
-		inputPayload["num_outputs"] = int(imageN)
-	}
+	imageN := lo.FromPtrOr(request.N, uint(0))
 
 	if strings.EqualFold(request.Quality, "hd") || strings.EqualFold(request.Quality, "high") {
 		inputPayload["prompt_upsampling"] = true
@@ -163,6 +161,17 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			return nil, fmt.Errorf("replicate adaptor: failed to decode extra field %s: %w", key, err)
 		}
 		inputPayload[key] = val
+	}
+
+	// R4-001: Enforce billed image count after merging ExtraFields/Extra so clients
+	// cannot smuggle extra num_outputs overrides past dto.MaxImageN or billing.
+	for k := range inputPayload {
+		if strings.EqualFold(k, "num_outputs") {
+			delete(inputPayload, k)
+		}
+	}
+	if imageN > 0 {
+		inputPayload["num_outputs"] = int(imageN)
 	}
 
 	return map[string]any{
@@ -276,6 +285,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	if len(imageResponse.Data) == 0 {
 		return nil, types.NewError(errors.New("replicate adaptor: no usable image data"), types.ErrorCodeBadResponse)
 	}
+	// R4-001: Always settle billing against the actual delivered image count.
+	info.UpdateImageCount(int64(len(imageResponse.Data)))
 
 	responseBytes, err := common.Marshal(imageResponse)
 	if err != nil {

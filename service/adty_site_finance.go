@@ -299,8 +299,14 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		}
 		netNewUse := change.HoldDelta.Sub(delta)
 		if (delta.IsNegative() || change.HoldDelta.IsPositive()) && (kind == model.AdtySiteWalletOperating || !change.AllowOverdraft) {
-			if after.IsNegative() || after.Sub(totalFrozenAfter).IsNegative() {
-				return nil, ErrAdtySiteWalletInsufficient
+			// R4-011: For non-operating wallets (earnings/margin), settling an already-reserved
+			// hold (delta < 0, HoldDelta <= delta, netNewUse <= 0) does not reduce free balance
+			// and must still succeed even when prior AllowOverdraft settlements left Balance < FrozenUSD.
+			// Operating wallets remain strictly non-negative per DEC-004.
+			if kind == model.AdtySiteWalletOperating || netNewUse.IsPositive() {
+				if after.IsNegative() || after.Sub(totalFrozenAfter).IsNegative() {
+					return nil, ErrAdtySiteWalletInsufficient
+				}
 			}
 			if netNewUse.IsPositive() && after.Sub(totalFrozenAfter).LessThan(minimum) {
 				return nil, ErrAdtySiteWalletInsufficient

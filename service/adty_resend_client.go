@@ -33,7 +33,7 @@ type AdtyResendClient struct {
 func NewAdtyResendClient() *AdtyResendClient {
 	return &AdtyResendClient{
 		BaseURL: adtyResendDefaultBaseURL,
-		HTTP:    &http.Client{Timeout: 20 * time.Second},
+		HTTP:    NewVerifiedDirectNoRedirectHTTPClient(20 * time.Second),
 		APIKey: func() string {
 			common.OptionMapRWMutex.RLock()
 			defer common.OptionMapRWMutex.RUnlock()

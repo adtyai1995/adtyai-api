@@ -562,10 +562,12 @@ func init() {
 		if err := adtySiteBonusAfterCreditTx(tx, topUp, ext); err != nil {
 			return err
 		}
-		if err := adtyCreditOperatingPrincipalTx(tx, topUp, ext); err != nil {
+		// R4-006: Record site invite commission (locks earnings -> margin) BEFORE
+		// crediting operating principal (locks operating) to preserve canonical wallet lock order.
+		if err := adtyRecordSiteInviteCommissionTx(tx, ext); err != nil {
 			return err
 		}
-		return adtyRecordSiteInviteCommissionTx(tx, ext)
+		return adtyCreditOperatingPrincipalTx(tx, topUp, ext)
 	}
 	model.AdtyAfterTopUpRefundedTx = func(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
 		if err := adtyReferralAfterRefundTx(tx, topUp, ext); err != nil {

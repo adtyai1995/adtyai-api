@@ -442,9 +442,11 @@ const adtyGiftFulfillmentResumeLimit = 100
 //
 // 保障仍然不足时整笔跳过：不写额度、不改状态、不写批次，留待下次补足。
 // 每笔各起一个事务，一笔失败不影响同一站点的其它笔，也不会重复发放
+// ResumePendingAdtyGiftFulfillments retries pending gift fulfillments for a site
+// (including siteID == 0 for main-site bonus orders after refund/transient pauses).
 // （pending → fulfilled 的迁移在行锁内只发生一次）。
 func ResumePendingAdtyGiftFulfillments(siteID int) (int, error) {
-	if siteID <= 0 || model.DB == nil {
+	if siteID < 0 || model.DB == nil {
 		return 0, nil
 	}
 	var rows []model.AdtyGiftFulfillment
@@ -919,7 +921,11 @@ func cancelPendingGiftFulfillmentOnFullRefundTx(tx *gorm.DB, ext *model.AdtyTopu
 		if row.Id == 0 {
 			return nil
 		}
+		// R4-015: Support main-site (SiteId == 0) pending_review bonus shrinkage on partial refund.
 		origBonusUSD := adtyBonusUSDForSite(ext)
+		if ext.SiteId <= 0 {
+			origBonusUSD = decimal.Max(ext.BonusUSD, decimal.Zero)
+		}
 		refundedUSD := decimal.NewFromInt(ext.RefundQuota).Div(common.QuotaPerUnitDecimal())
 		reclaimedUSD := model.CumulativeGiftReclaim(origBonusUSD, ext.FaceUSD, decimal.Zero, refundedUSD)
 		shrunkUSD := origBonusUSD.Sub(reclaimedUSD)
@@ -1279,6 +1285,15 @@ func ReviewAdtyGiftFulfillment(id int64, action, note string, operatorID int) (*
 		}
 		if row.Status != model.AdtyGiftFulfillmentPendingReview {
 			return common.NewMessage("Only pending review records can be reviewed")
+		}
+		if action == "approve" {
+			hasActiveRefund, err := model.HasActiveManualRefundOccupancyTx(tx, row.TradeNo)
+			if err != nil {
+				return err
+			}
+			if hasActiveRefund {
+				return common.NewMessage("Complete or terminate the active refund before approving this gift")
+			}
 		}
 		beforeStatus = row.Status
 		nextStatus := model.AdtyGiftFulfillmentPending

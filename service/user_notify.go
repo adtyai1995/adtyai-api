@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -186,15 +188,15 @@ func notifyAdminsWithEventID(eventID, notifyType string, receives func(userID, r
 		if !receives(user.Id, user.Role, userSetting) {
 			continue
 		}
-		subject, content := "", ""
+		rawSubject, rawContent := "", ""
 		if render != nil {
-			subject, content = render(userSetting.Language)
+			rawSubject, rawContent = render(userSetting.Language)
 		}
 		var tmplValues []any
-		if notifyType == dto.NotifyTypeChannelUpdate && content != "" {
-			tmplValues = []any{content}
+		if notifyType == dto.NotifyTypeChannelUpdate && rawContent != "" {
+			tmplValues = []any{rawContent}
 		}
-		subject, content = ResolveAdtyNoticeTemplateForNotify(notifyType, userSetting.Language, subject, content, tmplValues)
+		subject, content := ResolveAdtyNoticeTemplateForNotify(notifyType, userSetting.Language, rawSubject, rawContent, tmplValues)
 		readSum := sha256.Sum256([]byte("watcher-notice:" + eventID + ":" + strconv.Itoa(user.Id)))
 		readKey := hex.EncodeToString(readSum[:])
 
@@ -226,8 +228,8 @@ func notifyAdminsWithEventID(eventID, notifyType string, receives func(userID, r
 				continue
 			}
 		} else {
-			// Freeze a separate English copy: the in-site notice stays localized,
-			// even when delivery is retried after a notification-channel change.
+			// Store pre-template copy in outbox so deliverWatcherOutboxEntry applies
+			// ResolveAdtyNoticeTemplateForNotify exactly once per delivery (R4-048).
 			emailTitle, emailContent := "", ""
 			if render != nil {
 				emailTitle, emailContent = render("en")
@@ -238,8 +240,8 @@ func notifyAdminsWithEventID(eventID, notifyType string, receives func(userID, r
 				NotifyType:   notifyType,
 				Category:     "model_group_anomaly",
 				Language:     userSetting.Language,
-				Title:        subject,
-				Content:      content,
+				Title:        rawSubject,
+				Content:      rawContent,
 				EmailTitle:   emailTitle,
 				EmailContent: emailContent,
 				Status:       AdtyWatcherOutboxPending,
@@ -286,9 +288,14 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 	}
 	liveSetting := liveUser.GetSetting()
 	if receives == nil {
-		if outbox.NotifyType == dto.NotifyTypeChannelUpdate {
+		switch outbox.NotifyType {
+		case dto.NotifyTypeChannelUpdate:
 			receives = receivesUpstreamModelUpdateNotice
-		} else {
+		case adtyNotifyTypeEpayMaintenance:
+			receives = func(_ int, role int, _ dto.UserSetting) bool {
+				return role == common.RoleRootUser
+			}
+		default:
 			receives = receivesChannelWatcherNotice
 		}
 	}
@@ -606,6 +613,33 @@ func notifyDeliveryLanguage(setting dto.UserSetting) string {
 	return setting.Language
 }
 
+// ValidateSingleNotificationEmail ensures a user-configured notification email
+// is strictly a single bare email address (rejecting semicolon/comma recipient
+// lists, display names, whitespace, and control characters) (R4-049).
+func ValidateSingleNotificationEmail(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("empty notification email")
+	}
+	if strings.ContainsAny(trimmed, ";, \t\r\n<>\"'\\") {
+		return "", errors.New("invalid email address")
+	}
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f {
+			return "", errors.New("invalid email address")
+		}
+	}
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil || addr == nil || addr.Address != trimmed || addr.Name != "" {
+		return "", errors.New("invalid email address")
+	}
+	at := strings.LastIndexByte(trimmed, '@')
+	if at <= 0 || at >= len(trimmed)-1 || !strings.Contains(trimmed[at+1:], ".") {
+		return "", errors.New("invalid email address")
+	}
+	return trimmed, nil
+}
+
 func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data dto.Notify) error {
 	notifyType := userSetting.NotifyType
 	if notifyType == "" {
@@ -625,15 +659,19 @@ func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data 
 	switch notifyType {
 	case dto.NotifyTypeEmail:
 		// 优先使用设置中的通知邮箱，如果为空则使用用户的默认邮箱
-		emailToUse := userSetting.NotificationEmail
+		emailToUse := strings.TrimSpace(userSetting.NotificationEmail)
 		if emailToUse == "" {
-			emailToUse = userEmail
+			emailToUse = strings.TrimSpace(userEmail)
 		}
 		if emailToUse == "" {
 			common.SysLog(common.LogText("user %d has no email, skip sending email", userId))
 			return nil
 		}
-		return sendEmailNotify(AdtySiteForUser(userId), emailToUse, data)
+		validatedEmail, valErr := ValidateSingleNotificationEmail(emailToUse)
+		if valErr != nil {
+			return fmt.Errorf("invalid notification email for user %d", userId)
+		}
+		return sendEmailNotify(AdtySiteForUser(userId), validatedEmail, data)
 	case dto.NotifyTypeWebhook:
 		webhookURLStr := userSetting.WebhookUrl
 		if webhookURLStr == "" {
@@ -684,8 +722,19 @@ func sendEmailNotify(site *model.AdtySite, userEmail string, data dto.Notify) er
 	return AdtySendSiteEmail(site, title, userEmail, AdtyRenderMail(site, msg))
 }
 
+var notifyEmbeddedURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
+func scrubEmbeddedURLs(s string) string {
+	return notifyEmbeddedURLPattern.ReplaceAllStringFunc(s, func(raw string) string {
+		if parsed, err := url.Parse(raw); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			return parsed.Scheme + "://" + parsed.Host + "/[redacted]"
+		}
+		return "[redacted-url]"
+	})
+}
+
 // scrubNotifyHTTPError strips secret-bearing URLs (Gotify ?token=, Bark device key,
-// Webhook credentials) from *url.Error before errors hit logs or outbox last_error (R3-029).
+// Webhook credentials) from *url.Error and embedded URLs before errors hit logs or outbox last_error (R3-029 / R4-004).
 func scrubNotifyHTTPError(prefix string, err error) error {
 	if err == nil {
 		return nil
@@ -693,11 +742,11 @@ func scrubNotifyHTTPError(prefix string, err error) error {
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		if urlErr.Err != nil {
-			return fmt.Errorf("%s (%s): %s", prefix, urlErr.Op, redactAdtySecrets(urlErr.Err.Error()))
+			return fmt.Errorf("%s (%s): %s", prefix, urlErr.Op, redactAdtySecrets(scrubEmbeddedURLs(urlErr.Err.Error())))
 		}
 		return fmt.Errorf("%s (%s)", prefix, urlErr.Op)
 	}
-	return fmt.Errorf("%s: %s", prefix, redactAdtySecrets(err.Error()))
+	return fmt.Errorf("%s: %s", prefix, redactAdtySecrets(scrubEmbeddedURLs(err.Error())))
 }
 
 func sendBarkNotify(barkURL string, data dto.Notify) error {
@@ -723,7 +772,7 @@ func sendBarkNotify(barkURL string, data dto.Notify) error {
 			Key:    system_setting.WorkerValidKey,
 			Method: http.MethodGet,
 			Headers: map[string]string{
-				"User-Agent": "OneAPI-Bark-Notify/1.0",
+				"User-Agent": "ADTYAI-Bark-Notify/1.0",
 			},
 		}
 
@@ -750,10 +799,10 @@ func sendBarkNotify(barkURL string, data dto.Notify) error {
 		}
 
 		// 设置User-Agent
-		req.Header.Set("User-Agent", "OneAPI-Bark-Notify/1.0")
+		req.Header.Set("User-Agent", "ADTYAI-Bark-Notify/1.0")
 
-		// 发送请求
-		client := GetSSRFProtectedHTTPClient()
+		// 发送请求（R4-004: 禁重定向 + 强制校验 TLS + 有限超时 + SSRF 校验）
+		client := GetVerifiedNoRedirectSSRFProtectedHTTPClient(30 * time.Second)
 		resp, err = client.Do(req)
 		if err != nil {
 			return scrubNotifyHTTPError("failed to send bark request", err)
@@ -815,7 +864,7 @@ func sendGotifyNotify(gotifyUrl string, gotifyToken string, priority int, data d
 			Method: http.MethodPost,
 			Headers: map[string]string{
 				"Content-Type": "application/json; charset=utf-8",
-				"User-Agent":   "OneAPI-Gotify-Notify/1.0",
+				"User-Agent":   "ADTYAI-Gotify-Notify/1.0",
 			},
 			Body: payloadBytes,
 		}
@@ -844,10 +893,10 @@ func sendGotifyNotify(gotifyUrl string, gotifyToken string, priority int, data d
 
 		// 设置请求头
 		req.Header.Set("Content-Type", "application/json; charset=utf-8")
-		req.Header.Set("User-Agent", "NewAPI-Gotify-Notify/1.0")
+		req.Header.Set("User-Agent", "ADTYAI-Gotify-Notify/1.0")
 
-		// 发送请求
-		client := GetSSRFProtectedHTTPClient()
+		// 发送请求（R4-004: 禁重定向 + 强制校验 TLS + 有限超时 + SSRF 校验）
+		client := GetVerifiedNoRedirectSSRFProtectedHTTPClient(30 * time.Second)
 		resp, err = client.Do(req)
 		if err != nil {
 			return scrubNotifyHTTPError("failed to send gotify request", err)

@@ -44,27 +44,13 @@ var (
 // 直接向渠道上游发起 HTTP 调用。
 var AdtyPlatformChannelTranslateFunc func(channel *model.Channel, modelName, systemPrompt, text string, timeout time.Duration) (string, error)
 
-// adtyTranslationHTTPClient 造一次翻译用的客户端：复用进程的出口连接池，只覆盖超时，
-// 免得慢翻译一直占着调用方的 goroutine。测试替换这里。
+// adtyTranslationHTTPClient 造一次翻译用的客户端：复用共享的 SSRF + 强制校验 TLS +
+// 禁重定向连接池，只覆盖超时，免得慢翻译一直占着调用方的 goroutine。测试替换这里。
 var adtyTranslationHTTPClient = func(timeout time.Duration) *http.Client {
-	base := GetSSRFProtectedHTTPClient()
-	if base == nil {
-		base = GetHttpClient()
+	if timeout <= 0 {
+		timeout = adtyTranslationDefaultTimeout
 	}
-	if base == nil {
-		base = http.DefaultClient
-	}
-	client := *base
-	client.Timeout = timeout
-	// R2-026: Disable redirects to prevent SSRF bypass, HTTPS downgrade, and
-	// upstream API key (Authorization / x-api-key) exfiltration; enforce verified TLS.
-	client.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	if verifiedTransport, err := cloneAdtyVerifiedPaymentTransport(client.Transport); err == nil {
-		client.Transport = verifiedTransport
-	}
-	return &client
+	return GetVerifiedNoRedirectSSRFProtectedHTTPClient(timeout)
 }
 
 // adtyTranslateViaProvider 是生产用的 AdtyTranslateFunc 实现：每次调用读一次 Root 配置，

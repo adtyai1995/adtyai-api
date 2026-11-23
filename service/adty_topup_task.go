@@ -53,6 +53,9 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 	if err := ReleaseAdtySiteInviteCommissions(time.Unix(now, 0)); err != nil {
 		common.SysError(common.LogText("release site invite commissions: %s", err.Error()))
 	}
+	if _, err := ResumePendingAdtyGiftFulfillments(0); err != nil {
+		common.SysError(common.LogText("resume main-site pending gift fulfillments: %s", err.Error()))
+	}
 	verifyExpiredOrdersUnpaidBeforeExpire(now)
 	var cursorExpireAt, cursorID int64
 	for page := 0; page < 50; page++ {

@@ -63,7 +63,7 @@ export function modelsFromPricing(
       vendor_name: vendor?.name,
       vendor_icon: vendor?.icon,
       vendor_description: vendor?.description,
-      group_ratio: groupRatio,
+      group_ratio: model.group_ratio ?? groupRatio,
     }
   })
   pricedFrom = data

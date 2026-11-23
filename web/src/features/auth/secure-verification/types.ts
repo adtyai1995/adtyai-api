@@ -80,6 +80,7 @@ export type SiteOwnerAction =
   | 'voucher.issue'
   | 'voucher.freeze'
   | 'voucher.cancel'
+  | 'withdrawal.create'
 
 /** ManageUser actions that change a user's status or role and need step-up. */
 export type AdminUserManageAction = 'disable' | 'enable' | 'promote' | 'demote'

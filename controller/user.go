@@ -1703,13 +1703,14 @@ func UpdateUserSetting(c *gin.Context) {
 		}
 	}
 
-	// 如果是邮件类型，验证邮箱地址
-	if req.QuotaWarningType == dto.NotifyTypeEmail && req.NotificationEmail != "" {
-		// 验证邮箱格式
-		if !strings.Contains(req.NotificationEmail, "@") {
+	// 如果是邮件类型，验证邮箱地址（R4-049: 严格校验单邮箱，禁止多收件人列表）
+	if req.QuotaWarningType == dto.NotifyTypeEmail && strings.TrimSpace(req.NotificationEmail) != "" {
+		validatedEmail, err := service.ValidateSingleNotificationEmail(req.NotificationEmail)
+		if err != nil {
 			common.ApiErrorT(c, "Invalid email address")
 			return
 		}
+		req.NotificationEmail = validatedEmail
 	}
 
 	// 如果是Bark类型，验证Bark URL

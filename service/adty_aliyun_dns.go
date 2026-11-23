@@ -109,7 +109,7 @@ func (c *AdtyAliDNSClient) call(ctx context.Context, action string, params url.V
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := c.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = NewVerifiedDirectNoRedirectHTTPClient(20 * time.Second)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

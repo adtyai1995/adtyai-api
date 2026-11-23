@@ -1,12 +1,18 @@
 package middleware
 
 import (
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
+
+var turnstileVerifyHTTPClient = service.NewVerifiedDirectNoRedirectHTTPClient(10 * time.Second)
 
 type turnstileCheckResponse struct {
 	Success bool `json:"success"`
@@ -28,11 +34,20 @@ func TurnstileCheck() gin.HandlerFunc {
 					return
 				}
 			}
-			rawRes, err := http.PostForm(adtyTurnstileSiteverifyURL, url.Values{
+			form := url.Values{
 				"secret":   {common.TurnstileSecretKey},
 				"response": {response},
 				"remoteip": {c.ClientIP()},
-			})
+			}
+			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, adtyTurnstileSiteverifyURL, strings.NewReader(form.Encode()))
+			if err != nil {
+				common.SysLog(err.Error())
+				common.ApiErrorT(c, "Turnstile verification failed, please refresh and try again!")
+				c.Abort()
+				return
+			}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rawRes, err := turnstileVerifyHTTPClient.Do(req)
 			if err != nil {
 				common.SysLog(err.Error())
 				common.ApiErrorT(c, "Turnstile verification failed, please refresh and try again!")
@@ -41,7 +56,7 @@ func TurnstileCheck() gin.HandlerFunc {
 			}
 			defer rawRes.Body.Close()
 			var res turnstileCheckResponse
-			err = common.DecodeJson(rawRes.Body, &res)
+			err = common.DecodeJson(io.LimitReader(rawRes.Body, 1<<20), &res)
 			if err != nil {
 				common.SysLog(err.Error())
 				common.ApiErrorT(c, "Turnstile verification failed, please refresh and try again!")

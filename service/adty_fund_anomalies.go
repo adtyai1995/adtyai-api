@@ -322,15 +322,22 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 	}
 	var items []adtyFundAnomalyItem
 	for _, row := range rows {
-		// 1) Owner margin top-ups credit the site's margin wallet, not AdtyBalanceLedger.
-		if row.Business == model.AdtyBusinessOwnerMarginTopup {
+		// 1) Owner margin top-ups & site_margin vouchers credit the site's margin wallet, not AdtyBalanceLedger.
+		isMarginVoucher := row.PaymentProvider == model.AdtyVoucherProvider && row.PaymentMethod == model.AdtyVoucherPurposeSiteMargin
+		if row.Business == model.AdtyBusinessOwnerMarginTopup || isMarginVoucher {
 			if !row.FaceUSD.IsPositive() {
 				continue
+			}
+			refType := "topup"
+			reason := "successful owner margin top-up was not booked to margin wallet"
+			if isMarginVoucher {
+				refType = "voucher"
+				reason = "redeemed site_margin voucher was not booked to margin wallet"
 			}
 			var marginBooked decimal.Decimal
 			if err := model.DB.Model(&model.AdtySiteWalletLedger{}).
 				Where("site_id = ? AND wallet_kind = ? AND ref_type = ? AND ref_id = ? AND delta > 0",
-					siteID, model.AdtySiteWalletMargin, "topup", row.TradeNo).
+					siteID, model.AdtySiteWalletMargin, refType, row.TradeNo).
 				Select("COALESCE(SUM(delta), 0)").Scan(&marginBooked).Error; err != nil {
 				return nil, err
 			}
@@ -346,9 +353,9 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 				AccountID:  row.UserId,
 				Difference: gapUSD.String(),
 				Evidence: mustAnomalyEvidence(map[string]any{
-					"status": row.Status, "business": row.Business,
+					"status": row.Status, "business": row.Business, "payment_method": row.PaymentMethod,
 					"expected_margin_usd": row.FaceUSD.String(), "booked_margin_usd": marginBooked.String(),
-					"reason": "successful owner margin top-up was not booked to margin wallet",
+					"reason": reason,
 				}),
 			})
 			continue

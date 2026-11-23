@@ -100,6 +100,17 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionWithdrawalCreate, site.Id, service.AdtyOwnerWithdrawalDigestInput{
+		AmountUSD:      amount.String(),
+		Method:         body.Method,
+		Network:        body.Network,
+		AccountNo:      body.AccountNo,
+		AccountName:    body.AccountName,
+		ExpectedRate:   expected.String(),
+		IdempotencyKey: c.GetHeader("Idempotency-Key"),
+	}) {
+		return
+	}
 	row, err := service.CreateAdtySiteWithdrawal(service.AdtySiteWithdrawInput{
 		SiteID: site.Id, OwnerID: c.GetInt("id"), AmountUSD: amount, Method: body.Method, Network: body.Network,
 		AccountNo: body.AccountNo, AccountName: body.AccountName, ExpectedRate: expected, ExpectedPayout: body.ExpectedPayout,
@@ -146,6 +157,7 @@ func PutAdtySiteWithdrawRules(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	markAuditLogged(c)
 	common.ApiSuccess(c, gin.H{"saved": true})
 }
 
@@ -236,5 +248,6 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 		common.ApiError(c, err)
 		return
 	}
+	markAuditLogged(c)
 	common.ApiSuccess(c, gin.H{"updated": true})
 }

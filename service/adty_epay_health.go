@@ -17,9 +17,11 @@ import (
 
 // 补查、连续未付、探活（任务 5.3）。都挂在充值维护任务上，只在主节点跑。
 
+const adtyNotifyTypeEpayMaintenance = "adty_epay_maintenance"
+
 // adtyNotifyRootAdmins 通知超级管理员，测试可以替换。走 notifyAdmins，通知方式、语言、限频都按上游处理。
 var adtyNotifyRootAdmins = func(render func(lang string) (string, string)) {
-	notifyAdmins(dto.NotifyTypeChannelUpdate, func(_ int, role int, _ dto.UserSetting) bool {
+	notifyAdmins(adtyNotifyTypeEpayMaintenance, func(_ int, role int, _ dto.UserSetting) bool {
 		return role == common.RoleRootUser
 	}, render)
 }

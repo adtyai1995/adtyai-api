@@ -651,7 +651,9 @@ func executeTaskSubmissionWith(
 	}
 
 	if taskErr != nil {
-		if c != nil && c.GetBool("task_submit_ambiguous") && (c.Request == nil || c.Request.Context().Err() == nil) {
+		// R4-019: Always persist ambiguous upstream submissions regardless of client
+		// disconnect so pre-consumed funds are held for review instead of auto-refunded.
+		if c != nil && c.GetBool("task_submit_ambiguous") {
 			if holdAmbiguousTaskSubmission(c, relayInfo, taskErr) {
 				durable = true
 			}

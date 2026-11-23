@@ -135,6 +135,79 @@ func BuildLoginWebAuthn(r *http.Request, hint, credentialRPID string) (*webauthn
 	return wa, available, err
 }
 
+func effectiveRequestOrigin(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		return origin
+	}
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		return ""
+	}
+	scheme := detectScheme(r)
+	if scheme == "" {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+// IsAvailableForRequest reports whether Passkey login or step-up verification
+// can succeed on the current request's Origin/Host under active Passkey settings (R4-033).
+func IsAvailableForRequest(r *http.Request, credentialRPID string) bool {
+	settings := system_setting.PasskeySettingsSnapshot()
+	if !settings.Enabled {
+		return false
+	}
+	origins, err := resolveOrigins(r, &settings)
+	if err != nil {
+		return false
+	}
+	primary, err := resolveRPID(r, &settings, origins)
+	if err != nil {
+		return false
+	}
+	reqOrigin := effectiveRequestOrigin(r)
+	configured := append([]string{primary}, settings.RelyingPartyIDs()...)
+	for _, id := range configured {
+		if credentialRPID != "" && id != credentialRPID {
+			continue
+		}
+		allowedOrigins := originsForRPID(origins, id)
+		if len(allowedOrigins) == 0 {
+			continue
+		}
+		if reqOrigin == "" || protocol.IsOriginInHaystack(reqOrigin, allowedOrigins) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsRegistrationAvailableForRequest reports whether a new Passkey can be
+// registered on the current request's Origin/Host under the primary RP ID (R4-033).
+func IsRegistrationAvailableForRequest(r *http.Request) bool {
+	settings := system_setting.PasskeySettingsSnapshot()
+	if !settings.Enabled {
+		return false
+	}
+	origins, err := resolveOrigins(r, &settings)
+	if err != nil {
+		return false
+	}
+	primary, err := resolveRPID(r, &settings, origins)
+	if err != nil {
+		return false
+	}
+	allowedOrigins := originsForRPID(origins, primary)
+	if len(allowedOrigins) == 0 {
+		return false
+	}
+	reqOrigin := effectiveRequestOrigin(r)
+	return reqOrigin == "" || protocol.IsOriginInHaystack(reqOrigin, allowedOrigins)
+}
+
 func originsForRPID(origins []string, rpID string) []string {
 	allowed := []string{}
 	for _, origin := range origins {

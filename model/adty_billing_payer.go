@@ -104,23 +104,16 @@ func freezeBillingPayerTx(tx *gorm.DB, row *BillingOperation, newAcceptance bool
 }
 
 func captureBillingPayerTx(tx *gorm.DB, row *BillingOperation) error {
-	var user User
-	if err := lockForUpdate(tx).First(&user, row.UserId).Error; err != nil {
-		return err
-	}
 	row.PayerKind, row.PayerTeamId = BillingPayerPersonal, 0
-	if row.TokenId <= 0 {
-		return validateUnboundTeamEmployeeTx(tx, row.UserId)
-	}
 	var before AdtyTeamKey
-	hasBindings := tx.Migrator().HasTable(&AdtyTeamKey{})
+	hasBindings := row.TokenId > 0 && tx.Migrator().HasTable(&AdtyTeamKey{})
 	if hasBindings {
 		if err := tx.Where("token_id = ?", row.TokenId).Limit(1).Find(&before).Error; err != nil {
 			return err
 		}
 		if before.Id != 0 {
-			// Team lifecycle mutations also lock team before token. Do not
-			// invert that order while freezing an accepted team request.
+			// R4-007: Lock adty_teams before users and tokens to match canonical
+			// team-lifecycle lock ordering (adty_teams -> users -> tokens).
 			var team AdtyTeam
 			if err := lockForUpdate(tx).First(&team, before.TeamId).Error; err != nil {
 				return err
@@ -129,6 +122,13 @@ func captureBillingPayerTx(tx *gorm.DB, row *BillingOperation) error {
 				return ErrBillingOperationConflict
 			}
 		}
+	}
+	var user User
+	if err := lockForUpdate(tx).First(&user, row.UserId).Error; err != nil {
+		return err
+	}
+	if row.TokenId <= 0 {
+		return validateUnboundTeamEmployeeTx(tx, row.UserId)
 	}
 	var token Token
 	if err := lockForUpdate(tx).First(&token, row.TokenId).Error; err != nil {

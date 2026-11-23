@@ -550,7 +550,9 @@ func adtySiteBonusAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 func adtySiteBonusAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
 	bonus := adtyBonusUSDForSite(ext)
 	if bonus.IsZero() {
-		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, ext.RefundBonusQuota, ext.RefundBonusQuota)
+		// R4-015: Pass full order bonus quota as denominator so main-site (SiteId==0)
+		// partial refunds shrink pending_review gifts proportionally instead of canceling 100%.
+		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, ext.RefundBonusQuota, topUpBonusQuota(ext))
 	}
 	hasRows, prevReclaimed, cumReclaimed, err := adtyCompletedManualRefundBonusStatsTx(tx, ext)
 	if err != nil {

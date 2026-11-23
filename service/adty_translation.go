@@ -264,14 +264,58 @@ func TestAdtyTranslation(requestHost string) (*AdtyTranslationView, error) {
 	return adtyTranslationView(*cfg), nil
 }
 
+func adtyTranslationSourceHash(source string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(source)))
+	return hex.EncodeToString(sum[:])
+}
+
+func adtyTranslationHeadMatchesSource(head model.AdtyTranslationHead, currentSource string) bool {
+	norm := strings.TrimSpace(currentSource)
+	if norm == "" {
+		return false
+	}
+	if storedHash := strings.TrimSpace(head.SourceHash); storedHash != "" {
+		return storedHash == adtyTranslationSourceHash(norm)
+	}
+	return strings.TrimSpace(head.Source) == norm
+}
+
+func invalidateAdtyTranslationHeadOnSecret(objectKey, sourceHash string, siteId int) {
+	if objectKey == "" || model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		return
+	}
+	_ = withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
+		var head model.AdtyTranslationHead
+		lookup := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).Limit(1).Find(&head)
+		if lookup.Error != nil || lookup.RowsAffected == 0 {
+			return lookup.Error
+		}
+		return tx.Model(&model.AdtyTranslationHead{}).Where("id = ?", head.Id).Updates(map[string]any{
+			"site_id":      siteId,
+			"version":      head.Version + 1,
+			"source_hash":  sourceHash,
+			"source":       "",
+			"english":      "",
+			"status":       model.AdtyTranslationFailed,
+			"human_edited": false,
+			"model_name":   "",
+			"notice":       AdtyTranslationNotReady,
+			"lease_until":  0,
+		}).Error
+	})
+}
+
 func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslationResult, error) {
 	source = strings.TrimSpace(source)
 	objectKey = strings.TrimSpace(objectKey)
-	if source == "" || objectKey == "" || adtyTextHasOutboundSecret(source) {
+	if source == "" || objectKey == "" {
 		return &AdtyTranslationResult{ObjectKey: objectKey, Source: source, Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady}, nil
 	}
-	sum := sha256.Sum256([]byte(source))
-	hash := hex.EncodeToString(sum[:])
+	hash := adtyTranslationSourceHash(source)
+	if adtyTextHasOutboundSecret(source) {
+		invalidateAdtyTranslationHeadOnSecret(objectKey, hash, siteId)
+		return &AdtyTranslationResult{ObjectKey: objectKey, Source: source, Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady}, nil
+	}
 
 	var version int
 	var reused *AdtyTranslationResult

@@ -265,6 +265,16 @@ func adtySiteWalletResponse(c *gin.Context, siteID int, ledger bool, hideOperati
 		var queryErr error
 		if hideOperating {
 			items, total, queryErr = service.ListAdtyOwnerSiteWalletLedger(siteID, c.Query("kind"), page.GetStartIdx(), page.GetPageSize())
+			if queryErr == nil {
+				callerID := c.GetInt("id")
+				// R4-042: Redact Root operator IDs and internal platform remarks on owner wallet ledger views.
+				for i := range items {
+					if items[i].OperatorId > 0 && items[i].OperatorId != callerID {
+						items[i].OperatorId = 0
+						items[i].Reason = ""
+					}
+				}
+			}
 		} else {
 			items, total, queryErr = service.ListAdtySiteWalletLedger(siteID, c.Query("kind"), page.GetStartIdx(), page.GetPageSize())
 		}
