@@ -180,22 +180,27 @@ func TestTeamEarningUsesFrozenSupplyAndFinalPrice(t *testing.T) {
 
 func TestFirstCustomerPricePreservesInheritedEffectiveMarkup(t *testing.T) {
 	for _, tc := range []struct {
-		name, requested, current string
-		pending                  bool
+		name, requested string
+		raised          bool
 	}{
-		{"raise", "1.8", "1.5", true}, {"decrease", "1.2", "1.2", false},
+		{"raise", "1.8", true}, {"decrease", "1.2", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := prepareSiteDB(t)
 			_, site := openActiveSite(t, db, "first-customer-price")
 			sitePrice(t, db, site.Id, 0, "", "1.5")
 			customer := siteCustomer(t, db, site, "first-price-customer")
-			_, err := SaveAdtySitePricing(AdtySitePricingInput{SiteId: site.Id, UserId: customer.Id, DefaultMarkup: dec(tc.requested), ExpectedVersion: 0, Now: time.Now().Unix()})
+			res, err := SaveAdtySitePricing(AdtySitePricingInput{SiteId: site.Id, UserId: customer.Id, DefaultMarkup: dec(tc.requested), ExpectedVersion: 0, Now: time.Now().Unix()})
 			require.NoError(t, err)
 			var row model.AdtySitePrice
 			require.NoError(t, db.Where("site_id = ? AND user_id = ?", site.Id, customer.Id).First(&row).Error)
-			assert.Equal(t, tc.current, row.Markup.String())
-			assert.Equal(t, tc.pending, row.PendingAt > 0)
+			assert.Equal(t, tc.requested, row.Markup.String())
+			assert.Zero(t, row.PendingAt)
+			assert.Equal(t, tc.raised, len(res.Raised) > 0)
+			var rev model.AdtyPriceRevision
+			require.NoError(t, db.Where("site_id = ? AND user_id = ?", site.Id, customer.Id).Order("id DESC").First(&rev).Error)
+			assert.Equal(t, "1.5", rev.Before)
+			assert.Equal(t, tc.requested, rev.After)
 		})
 	}
 }

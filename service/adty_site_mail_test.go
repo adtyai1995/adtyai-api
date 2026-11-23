@@ -359,8 +359,7 @@ func TestClosingHookEmailsCustomers(t *testing.T) {
 	}
 	t.Cleanup(func() { AdtyDeliverSiteEmail = previous })
 	site.CloseExecuteAt = 1_700_000_000
-	require.NotNil(t, AdtyOnSiteClosing)
-	AdtyOnSiteClosing(site)
+	adtyNotifySiteClosing(site)
 	require.NotEmpty(t, sent)
 	assert.Contains(t, sent[0], customer.Email)
 	assert.Contains(t, sent[0], customer.Username)

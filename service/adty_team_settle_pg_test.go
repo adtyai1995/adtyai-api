@@ -28,6 +28,7 @@ import (
 // 钩子，否则差额落到成员个人钱包（补扣扣错人，退还凭空多给），团队余额停在预扣值。
 type teamSettleFixture struct {
 	db     *gorm.DB
+	leader *model.User
 	member *model.User
 	token  *model.Token
 	team   model.AdtyTeam
@@ -37,6 +38,8 @@ func newTeamSettleFixture(t *testing.T, personalQuota int, teamQuota int64) *tea
 	t.Helper()
 	db := prepareReferralDB(t)
 	leader := referralUser(t, db, "team-settle-leader")
+	require.NoError(t, db.Model(leader).Update("quota", personalQuota).Error)
+	leader.Quota = personalQuota
 	created, err := CreateAdtyTeam(leader.Id, 0, "Settle", decimal.NewFromInt(1))
 	require.NoError(t, err)
 	view, err := CreateAdtyTeamEmployee(leader.Id, created.Team.Id, "settle-emp", "StrongPassword123!", "Settle Emp")
@@ -52,7 +55,7 @@ func newTeamSettleFixture(t *testing.T, personalQuota int, teamQuota int64) *tea
 	require.NoError(t, CreditAdtyTeam(int64(leader.Id), created.Team.Id, teamQuota, "team-settle-credit"))
 	var team model.AdtyTeam
 	require.NoError(t, db.First(&team, created.Team.Id).Error)
-	return &teamSettleFixture{db: db, member: &member, token: token, team: team}
+	return &teamSettleFixture{db: db, leader: leader, member: &member, token: token, team: team}
 }
 
 func (f *teamSettleFixture) reserve(t *testing.T, key string, quota int) {
@@ -257,6 +260,7 @@ func TestBillingPayerSnapshotSurvivesRebindPG(t *testing.T) {
 
 func TestBillingPayerSnapshotKeepsPersonalWalletAfterBindingPG(t *testing.T) {
 	f := newTeamSettleFixture(t, 500_000, 100_000)
+	f.member = f.leader
 	f.token = &model.Token{UserId: f.member.Id, Key: "personal-before-bind", Name: "personal",
 		RemainQuota: 1_000_000, UnlimitedQuota: true, Status: common.TokenStatusEnabled, ExpiredTime: -1}
 	require.NoError(t, f.db.Create(f.token).Error)
@@ -367,6 +371,7 @@ func TestBillingPayerSnapshotRecoversLegacyReservationPG(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newTeamSettleFixture(t, 500_000, 100_000)
 			if tc.personal {
+				f.member = f.leader
 				f.token = &model.Token{UserId: f.member.Id, Key: "legacy-personal", RemainQuota: 1_000_000,
 					UnlimitedQuota: true, Status: common.TokenStatusEnabled, ExpiredTime: -1}
 				require.NoError(t, f.db.Create(f.token).Error)

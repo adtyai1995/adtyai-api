@@ -1032,7 +1032,7 @@ func TestConvertedSiteCommissionClawbackReclaimsFundBatches(t *testing.T) {
 	require.EqualValues(t, 0, totalAfter, "all converted commission fund batches must be reclaimed on clawback")
 
 	var wdBatch model.AdtyFundBatch
-	require.NoError(t, db.Where("user_id = ? AND source = ?", invite.InviterId, fmt.Sprintf("site-invite-wd:%d", wd.Id)).First(&wdBatch).Error)
+	require.NoError(t, db.Where("user_id = ? AND source = ?", invite.InviterId, fmt.Sprintf("site-comm-wd:%d:%d", row.Id, wd.Id)).First(&wdBatch).Error)
 	require.EqualValues(t, 0, wdBatch.Remaining)
 
 	var recovery model.AdtyCommissionRecovery

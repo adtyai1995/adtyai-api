@@ -111,6 +111,7 @@ func TestOfficialMigrateInstallsAuditLogsForSiteClose(t *testing.T) {
 	require.NoError(t, model.RunOfficialMigrateDB(), "official migrate must initialize the throwaway database")
 	require.True(t, model.LOG_DB.Migrator().HasTable(&model.AuditLog{}), "official migrate must install audit_logs")
 	require.NoError(t, i18n.Init())
+	require.NoError(t, db.Create(&model.AdtySiteTier{Code: "standard", Name: "Standard", CostFactor: decimalPtr("0.8"), Enabled: true, SortOrder: 1}).Error)
 
 	cfg := adty_setting.GetResellerSetting()
 	*cfg = adty_setting.DefaultResellerSetting()
@@ -205,6 +206,7 @@ func TestAdtyPostgreSQLCloseMigrationMatrixAcceptance(t *testing.T) {
 
 	require.NoError(t, model.RunOfficialMigrateDB(), "official migrate must initialize the throwaway database")
 	require.NoError(t, i18n.Init())
+	require.NoError(t, db.Create(&model.AdtySiteTier{Code: "standard", Name: "Standard", CostFactor: decimalPtr("0.8"), Enabled: true, SortOrder: 1}).Error)
 
 	cfg := adty_setting.GetResellerSetting()
 	*cfg = adty_setting.DefaultResellerSetting()
@@ -650,7 +652,8 @@ func TestAdtyPostgreSQLCloseMigrationMatrixAcceptance(t *testing.T) {
 			return nil
 		}
 		require.NoError(t, RetryAdtySiteCloseMigrationMail(site))
-		require.NoError(t, db.Where("site_id = ?", site.Id).First(&batch).Error)
+		batch = model.AdtySiteCloseMailBatch{}
+		require.NoError(t, db.Where("site_id = ?", site.Id).Order("revision DESC").First(&batch).Error)
 		assert.Equal(t, 2, batch.RecipientCount)
 		assert.Equal(t, 2, batch.SuccessCount)
 		assert.Zero(t, batch.FailCount)
@@ -664,11 +667,13 @@ func TestAdtyPostgreSQLCloseMigrationMatrixAcceptance(t *testing.T) {
 		assert.NotContains(t, failBody, "s11-secret-order")
 		assert.Contains(t, failBody, "https://adtyai.com")
 		// A second retry must not create another campaign or duplicate recipients.
+		var batchCountBefore int64
+		require.NoError(t, db.Model(&model.AdtySiteCloseMailBatch{}).Where("site_id = ?", site.Id).Count(&batchCountBefore).Error)
 		require.NoError(t, RetryAdtySiteCloseMigrationMail(site))
 		var batchCount, recipientCount int64
 		require.NoError(t, db.Model(&model.AdtySiteCloseMailBatch{}).Where("site_id = ?", site.Id).Count(&batchCount).Error)
-		require.NoError(t, db.Model(&model.AdtySiteCloseMailRecipient{}).Where("site_id = ?", site.Id).Count(&recipientCount).Error)
-		assert.Equal(t, int64(1), batchCount)
+		require.NoError(t, db.Model(&model.AdtySiteCloseMailRecipient{}).Where("batch_id = ?", batch.Id).Count(&recipientCount).Error)
+		assert.Equal(t, batchCountBefore, batchCount)
 		assert.Equal(t, int64(2), recipientCount)
 	})
 
