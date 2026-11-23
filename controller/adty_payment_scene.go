@@ -39,5 +39,6 @@ func PutAdtyPaymentScenes(c *gin.Context) {
 		writeAdtyTopUpError(c, err)
 		return
 	}
+	markAuditLogged(c)
 	common.ApiSuccess(c, config)
 }

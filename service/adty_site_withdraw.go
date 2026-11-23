@@ -55,21 +55,26 @@ type adtySiteWithdrawConfig struct {
 }
 
 func SaveAdtySiteWithdrawRules(rules AdtySiteWithdrawRules, operatorID int) error {
+	_, err := SaveAdtySiteWithdrawRulesWithAudit(rules, operatorID)
+	return err
+}
+
+func SaveAdtySiteWithdrawRulesWithAudit(rules AdtySiteWithdrawRules, operatorID int) (string, error) {
 	_, minRaw, err := requiredPositiveDecimal(rules.MinUSD)
 	if err != nil {
-		return ErrAdtySiteWithdrawUnset
+		return "", ErrAdtySiteWithdrawUnset
 	}
 	_, feeRaw, err := requiredPositiveDecimal(rules.FeeUSD)
 	if err != nil {
-		return ErrAdtySiteWithdrawUnset
+		return "", ErrAdtySiteWithdrawUnset
 	}
 	_, alipayRaw, err := requiredPositiveDecimal(rules.AlipayCNYRate)
 	if err != nil {
-		return ErrAdtySiteWithdrawUnset
+		return "", ErrAdtySiteWithdrawUnset
 	}
 	_, usdtRaw, err := requiredPositiveDecimal(rules.USDTUSDRate)
 	if err != nil {
-		return ErrAdtySiteWithdrawUnset
+		return "", ErrAdtySiteWithdrawUnset
 	}
 	values := map[string]string{
 		adtySiteWithdrawMinKey:    minRaw,
@@ -105,15 +110,17 @@ func SaveAdtySiteWithdrawRules(rules AdtySiteWithdrawRules, operatorID int) erro
 		auditEvent, err = appendAdtyOfficialAuditTx(tx, operatorID, 0, "site_withdraw_rules", "global", "adty.site_withdraw.rules.update", "", "", before, after, model.AuditResultSuccess)
 		return err
 	}); err != nil {
-		return err
+		return "", err
 	}
 	if err := model.ApplyOptionValues(values); err != nil {
-		return err
+		return "", err
 	}
+	eventID := ""
 	if auditEvent != nil {
+		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	return nil
+	return eventID, nil
 }
 
 func siteWithdrawalAuditSnapshot(row *model.AdtySiteWithdrawal) map[string]any {
@@ -456,7 +463,13 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 }
 
 func MarkAdtySiteWithdrawalPaying(id int64, reviewerID int, expected ...int) error {
+	_, _, err := MarkAdtySiteWithdrawalPayingWithAudit(id, reviewerID, expected...)
+	return err
+}
+
+func MarkAdtySiteWithdrawalPayingWithAudit(id int64, reviewerID int, expected ...int) (string, bool, error) {
 	var auditEvent *model.AuditLog
+	replayed := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
@@ -467,6 +480,7 @@ func MarkAdtySiteWithdrawalPaying(id int64, reviewerID int, expected ...int) err
 			previous = expected[0]
 		}
 		if row.Status == model.AdtySiteWithdrawPaying && row.AttemptNumber == previous+1 {
+			replayed = true
 			return nil
 		}
 		if row.Status != model.AdtySiteWithdrawPending || row.AttemptNumber != previous || row.AttemptOpen {
@@ -488,19 +502,27 @@ func MarkAdtySiteWithdrawalPaying(id int64, reviewerID int, expected ...int) err
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, reviewerID, row.SiteId, "site_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_withdraw.paying", "", "", before, siteWithdrawalAuditSnapshot(&row), model.AuditResultSuccess)
 		return auditErr
 	})
+	eventID := ""
 	if err == nil && auditEvent != nil {
+		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	return err
+	return eventID, replayed, err
 }
 
 // Recall changes the review state while the outstanding attempt keeps the hold.
 func RecallAdtySiteWithdrawalToPending(id int64, reviewerID int, reason string, expected ...int) error {
+	_, _, err := RecallAdtySiteWithdrawalToPendingWithAudit(id, reviewerID, reason, expected...)
+	return err
+}
+
+func RecallAdtySiteWithdrawalToPendingWithAudit(id int64, reviewerID int, reason string, expected ...int) (string, bool, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		return common.NewMessage("Recall reason is required")
+		return "", false, common.NewMessage("Recall reason is required")
 	}
 	var auditEvent *model.AuditLog
+	replayed := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
@@ -510,6 +532,7 @@ func RecallAdtySiteWithdrawalToPending(id int64, reviewerID int, reason string, 
 			return ErrAdtySiteWithdrawLocked
 		}
 		if row.Status == model.AdtySiteWithdrawPending && row.AttemptOpen && row.ProofNote == reason {
+			replayed = true
 			return nil
 		}
 		if row.Status != model.AdtySiteWithdrawPaying {
@@ -531,16 +554,23 @@ func RecallAdtySiteWithdrawalToPending(id int64, reviewerID int, reason string, 
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, reviewerID, row.SiteId, "site_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_withdraw.recall", reason, "", before, siteWithdrawalAuditSnapshot(&row), model.AuditResultSuccess)
 		return auditErr
 	})
+	eventID := ""
 	if err == nil && auditEvent != nil {
+		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	return err
+	return eventID, replayed, err
 }
 
 func ConfirmAdtySiteWithdrawalFailed(id int64, reviewerID, attempt int, reason, reference string) error {
+	_, err := ConfirmAdtySiteWithdrawalFailedWithAudit(id, reviewerID, attempt, reason, reference)
+	return err
+}
+
+func ConfirmAdtySiteWithdrawalFailedWithAudit(id int64, reviewerID, attempt int, reason, reference string) (string, error) {
 	reason, reference = strings.TrimSpace(reason), strings.TrimSpace(reference)
 	if reason == "" || reference == "" {
-		return common.NewMessage("Enter the failed payout reference")
+		return "", common.NewMessage("Enter the failed payout reference")
 	}
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -566,10 +596,12 @@ func ConfirmAdtySiteWithdrawalFailed(id int64, reviewerID, attempt int, reason, 
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, reviewerID, row.SiteId, "site_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_withdraw.failed", reason, "", before, after, model.AuditResultSuccess)
 		return auditErr
 	})
+	eventID := ""
 	if err == nil && auditEvent != nil {
+		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	return err
+	return eventID, err
 }
 
 func resolveSitePayoutAttempt(tx *gorm.DB, row *model.AdtySiteWithdrawal, reviewerID int, status, reference, proof string) error {
@@ -589,12 +621,18 @@ func resolveSitePayoutAttempt(tx *gorm.DB, row *model.AdtySiteWithdrawal, review
 }
 
 func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string, attempt ...int) error {
+	_, _, err := MarkAdtySiteWithdrawalPaidWithAudit(id, reviewerID, txID, proof, attempt...)
+	return err
+}
+
+func MarkAdtySiteWithdrawalPaidWithAudit(id int64, reviewerID int, txID, proof string, attempt ...int) (string, bool, error) {
 	txID = strings.TrimSpace(txID)
 	proof = strings.TrimSpace(proof)
 	if txID == "" && proof == "" {
-		return common.NewMessage("Enter the payout reference")
+		return "", false, common.NewMessage("Enter the payout reference")
 	}
 	var auditEvent *model.AuditLog
+	replayed := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
@@ -608,6 +646,7 @@ func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string, at
 			return ErrAdtySiteWithdrawLocked
 		}
 		if row.Status == model.AdtySiteWithdrawPaid && row.TxID == txID && row.ProofNote == proof {
+			replayed = true
 			return nil
 		}
 		if row.Status != model.AdtySiteWithdrawPaying && !(row.Status == model.AdtySiteWithdrawPending && row.AttemptOpen) {
@@ -638,10 +677,12 @@ func MarkAdtySiteWithdrawalPaid(id int64, reviewerID int, txID, proof string, at
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, reviewerID, row.SiteId, "site_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_withdraw.paid", proof, "", before, siteWithdrawalAuditSnapshot(&row), model.AuditResultSuccess)
 		return auditErr
 	})
+	eventID := ""
 	if err == nil && auditEvent != nil {
+		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	return err
+	return eventID, replayed, err
 }
 
 func CancelAdtySiteWithdrawal(siteID, ownerID int, id int64) error {
@@ -649,6 +690,11 @@ func CancelAdtySiteWithdrawal(siteID, ownerID int, id int64) error {
 }
 
 func RejectAdtySiteWithdrawal(id int64, reviewerID int, reason string) error {
+	_, err := RejectAdtySiteWithdrawalWithAudit(id, reviewerID, reason)
+	return err
+}
+
+func RejectAdtySiteWithdrawalWithAudit(id int64, reviewerID int, reason string) (string, error) {
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteWithdrawal
@@ -674,10 +720,12 @@ func RejectAdtySiteWithdrawal(id int64, reviewerID int, reason string) error {
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, reviewerID, row.SiteId, "site_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_withdraw.reject", reason, "", before, siteWithdrawalAuditSnapshot(&row), model.AuditResultSuccess)
 		return auditErr
 	})
+	eventID := ""
 	if err == nil && auditEvent != nil {
+		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	return err
+	return eventID, err
 }
 
 func releaseAdtySiteWithdrawal(id int64, siteID, ownerID int, status string, ownerOnly bool) error {

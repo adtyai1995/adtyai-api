@@ -74,6 +74,9 @@ func jimengImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 
 	// Convert Jimeng response to OpenAI format
 	fullTextResponse := responseJimeng2OpenAIImage(c, &jimengResponse, info)
+	if info != nil && fullTextResponse != nil {
+		info.UpdateImageCount(int64(len(fullTextResponse.Data)))
+	}
 	jsonResponse, err := common.Marshal(fullTextResponse)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
@@ -83,7 +86,7 @@ func jimengImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 	c.Writer.WriteHeader(resp.StatusCode)
 	_, err = c.Writer.Write(jsonResponse)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		common.SysLog(common.LogText("failed to write Jimeng image response after upstream generation: %v", err))
 	}
 
 	return &dto.Usage{}, nil

@@ -56,12 +56,31 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 	if err := model.DB.Model(&model.AdtySite{}).Where("earning_hook_failures > 0").Pluck("id", &failedSites).Error; err != nil {
 		return 0, err
 	}
+	var pendingCoverageSites []int
+	if model.DB.Migrator().HasTable(&model.AdtySiteInviteCommission{}) {
+		if err := model.DB.Model(&model.AdtySiteInviteCommission{}).Distinct("site_id").
+			Where("site_id > 0 AND status = ?", model.AdtySiteCommissionPendingCoverage).
+			Pluck("site_id", &pendingCoverageSites).Error; err != nil {
+			return 0, err
+		}
+	}
+	pendingCoverageSet := make(map[int]struct{}, len(pendingCoverageSites))
+	for _, siteId := range pendingCoverageSites {
+		pendingCoverageSet[siteId] = struct{}{}
+	}
 	seen := make(map[int]struct{}, len(siteIds))
 	for _, siteId := range siteIds {
 		seen[siteId] = struct{}{}
 	}
 	for _, siteId := range failedSites {
 		if _, ok := seen[siteId]; !ok {
+			seen[siteId] = struct{}{}
+			siteIds = append(siteIds, siteId)
+		}
+	}
+	for _, siteId := range pendingCoverageSites {
+		if _, ok := seen[siteId]; !ok {
+			seen[siteId] = struct{}{}
 			siteIds = append(siteIds, siteId)
 		}
 	}
@@ -77,7 +96,8 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 			continue
 		}
 		_, wasProjected := projectedSites[siteId]
-		if ok || wasProjected {
+		_, hasPendingCoverage := pendingCoverageSet[siteId]
+		if ok || wasProjected || hasPendingCoverage {
 			if ok {
 				settled++
 			}

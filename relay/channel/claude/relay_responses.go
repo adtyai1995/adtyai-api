@@ -43,6 +43,7 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 	// upstream usage remains billable.
 	streamFailed := false
 
+	var clientGone bool
 	sendResponsesEvent := func(eventType string, payload dto.ResponsesStreamResponse) bool {
 		payload.Type = eventType
 		data, err := common.Marshal(payload)
@@ -51,7 +52,11 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			return false
 		}
 		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: eventType}, string(data)); err != nil {
-			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			clientGone = true
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+			}
+			logger.LogWarn(c, common.LogText("Claude responses client disconnected during stream: %v", err))
 			return false
 		}
 		return true
@@ -158,6 +163,10 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			}
 		}
 	})
+	if clientGone || (streamErr != nil && (c.Writer.Written() || (info != nil && info.SendResponseCount > 0))) {
+		HandleStreamFinalResponse(c, info, claudeInfo)
+		return claudeInfo.Usage, nil
+	}
 	if streamErr != nil {
 		return nil, streamErr
 	}
@@ -175,13 +184,16 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 	state.SetUsage(&openAIUsage)
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)
 	if err != nil {
-		if failResponsesStream(err) {
-			return claudeInfo.Usage, streamErr
+		if failResponsesStream(err) || c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+			return claudeInfo.Usage, nil
 		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	for _, result := range finalResults {
 		if !sendResult(result) {
+			if clientGone || c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+				return claudeInfo.Usage, nil
+			}
 			return nil, streamErr
 		}
 	}

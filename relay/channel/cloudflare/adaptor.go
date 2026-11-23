@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -73,7 +74,7 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
-	return request, nil
+	return nil, errors.New("not implemented")
 }
 
 func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.EmbeddingRequest) (any, error) {
@@ -118,10 +119,19 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		} else {
 			usage, err = openai.OaiResponsesHandler(c, info, resp)
 		}
+	case constant.RelayModeCompletions:
+		if info.IsStream {
+			err, usage = cfStreamHandler(c, info, resp)
+		} else {
+			err, usage = cfHandler(c, info, resp)
+		}
 	case constant.RelayModeAudioTranslation:
 		fallthrough
 	case constant.RelayModeAudioTranscription:
 		err, usage = cfSTTHandler(c, info, resp)
+	default:
+		service.CloseResponseBodyGracefully(resp)
+		err = types.NewError(fmt.Errorf("unsupported cloudflare relay mode: %d", info.RelayMode), types.ErrorCodeInvalidRequest)
 	}
 	return
 }

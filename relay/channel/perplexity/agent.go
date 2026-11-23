@@ -378,5 +378,9 @@ func agentStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 	if reportedUsage != nil {
 		usage = reportedUsage
 	}
+	if streamErr != nil && (c.Writer.Written() || (info != nil && info.SendResponseCount > 0)) {
+		common.SysLog(common.LogText("Perplexity Agent stream error after output written, billing delivered usage: %v", streamErr))
+		return usage, nil
+	}
 	return usage, streamErr
 }

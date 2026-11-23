@@ -61,6 +61,9 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 // UpdateImageCount ignores non-positive counts.
 func openaiImageResponseCount(responseBody []byte) int64 {
 	data := gjson.GetBytes(responseBody, "data")
+	if !data.Exists() {
+		data = gjson.GetBytes(responseBody, "images")
+	}
 	if data.IsObject() {
 		if openaiImageDataHasField(data, "url") || openaiImageDataHasField(data, "b64_json") {
 			return 1

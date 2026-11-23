@@ -53,8 +53,8 @@ import {
   getServerErrorMessage,
   requireServerSuccess,
 } from '@/lib/server-error-message'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
-import { useAuthStore } from '@/stores/auth-store'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
@@ -78,7 +78,11 @@ import {
   type DynamicPriceEntry,
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
-import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
+import {
+  getAvailableGroups,
+  getConfiguredGroupRatio,
+  isTokenBasedModel,
+} from '../lib/model-helpers'
 import { withPluginPricing } from '../lib/plugin-pricing'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
 import {
@@ -879,24 +883,32 @@ function ProviderGroupPricingSection(
           <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
           <div className='rounded-lg border border-amber-200/70 bg-amber-50/70 p-3 dark:border-amber-500/20 dark:bg-amber-500/10'>
             <div className='text-sm font-medium text-amber-800 dark:text-amber-200'>
-              {t('Special billing expression')}
+              {props.hideRatio
+                ? t('Dynamic Pricing')
+                : t('Special billing expression')}
             </div>
             <p className='text-muted-foreground mt-1 text-xs'>
-              {t(
-                pricingDisplayFallbackKey(
-                  props.model.billing_expr || '',
-                  props.model.billing_usage_schema
-                )
-              )}
+              {props.hideRatio
+                ? t(
+                    'Billed dynamically based on actual usage and site retail pricing'
+                  )
+                : t(
+                    pricingDisplayFallbackKey(
+                      props.model.billing_expr || '',
+                      props.model.billing_usage_schema
+                    )
+                  )}
             </p>
-            <div className='mt-3'>
-              <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase'>
-                {t('Raw expression')}
+            {!props.hideRatio && (
+              <div className='mt-3'>
+                <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase'>
+                  {t('Raw expression')}
+                </div>
+                <code className='text-muted-foreground bg-background/80 block max-h-28 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs break-all'>
+                  {props.model.billing_expr}
+                </code>
               </div>
-              <code className='text-muted-foreground bg-background/80 block max-h-28 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs break-all'>
-                {props.model.billing_expr}
-              </code>
-            </div>
+            )}
           </div>
         </section>
       )
@@ -917,7 +929,7 @@ function ProviderGroupPricingSection(
     })
     const formattedPricesByGroup = new Map(
       availableGroups.map((group) => {
-        const ratio = effectiveGroupRatio[group] || 1
+        const ratio = getConfiguredGroupRatio(effectiveGroupRatio, group)
         return [
           group,
           getDynamicFormattedPricesByTier(dynamicTiers, {
@@ -940,7 +952,7 @@ function ProviderGroupPricingSection(
         <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <div className='space-y-3'>
           {availableGroups.map((group) => {
-            const ratio = effectiveGroupRatio[group] || 1
+            const ratio = getConfiguredGroupRatio(effectiveGroupRatio, group)
             const formattedPricesByTier =
               formattedPricesByGroup.get(group) ??
               new Map<DynamicPricingTier, Map<string, string>>()
@@ -1152,7 +1164,7 @@ function ProviderGroupPricingSection(
                   className: thClass,
                   cellClassName: 'text-muted-foreground py-2.5 font-mono',
                   cell: (group: string) =>
-                    `${effectiveGroupRatio[group] || 1}x`,
+                    `${getConfiguredGroupRatio(effectiveGroupRatio, group)}x`,
                 },
               ]),
           ...(isTokenBased
@@ -1228,7 +1240,7 @@ export interface ModelDetailsContentProps {
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
   const { t } = useTranslation()
   const { status } = useStatus()
-  const isSubsite = Boolean(status?.adty_site)
+  const isSubsite = Boolean(status?.adty_site || subsiteDocument())
   const showRechargePrice = props.showRechargePrice ?? false
 
   const isDynamic =
@@ -1367,7 +1379,6 @@ export function ModelDetails() {
   const { modelId } = useParams({ from: '/pricing/$modelId/' })
   const search = useSearch({ from: '/pricing/$modelId/' })
   const navigate = useNavigate()
-  const userGroup = useAuthStore((state) => state.auth.user?.group)
 
   const {
     models,
@@ -1383,7 +1394,7 @@ export function ModelDetails() {
     refetch,
     priceRate,
     usdExchangeRate,
-  } = usePricingData(true, resolvePricingDisplayGroup(search.group, userGroup))
+  } = usePricingData(true, resolvePricingDisplayGroup(search.group))
   const hasCatalogData = hasData ?? Boolean(models && models.length > 0)
   const hasError = Boolean(isError || error)
 

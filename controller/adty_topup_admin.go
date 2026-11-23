@@ -80,7 +80,11 @@ func PostAdtyRootExpiringGift(c *gin.Context) {
 		_ = model.PublishUserAuthCache(userID)
 		if audit.EventId != "" {
 			_ = model.DeliverAuditIntent(c.Request.Context(), audit.EventId)
+			rememberPreparedAuditEvent(c, audit.EventId)
+			markAuditLogged(c)
 		}
+	} else {
+		markIdempotentReplayNoAudit(c)
 	}
 	common.ApiSuccess(c, batch)
 }

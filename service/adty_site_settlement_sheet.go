@@ -571,6 +571,32 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 				sheet.GiftReleaseUSD = sheet.GiftReleaseUSD.Add(released)
 			}
 		}
+		// R5-017: Classify all cash-moving earnings/margin ledger types so daily sheet
+		// breakdowns reconcile cleanly against EarningsDeltaUSD and MarginDeltaUSD.
+		if row.WalletKind == model.AdtySiteWalletEarnings || row.WalletKind == model.AdtySiteWalletMargin {
+			switch row.Type {
+			case "voucher_spend":
+				if row.Delta.IsNegative() {
+					sheet.VoucherFundingUSD = sheet.VoucherFundingUSD.Add(row.Delta.Neg())
+				}
+			case "earning_to_margin":
+				if row.WalletKind == model.AdtySiteWalletMargin && row.Delta.IsPositive() {
+					sheet.EarningToMarginUSD = sheet.EarningToMarginUSD.Add(row.Delta)
+				}
+			case "commission_deduct":
+				if row.Delta.IsNegative() {
+					sheet.CommissionPaidUSD = sheet.CommissionPaidUSD.Add(row.Delta.Neg())
+				}
+			case "commission_clawback_return":
+				if row.Delta.IsPositive() {
+					sheet.CommissionClawbackReturnUSD = sheet.CommissionClawbackReturnUSD.Add(row.Delta)
+				}
+			case "margin_topup", "margin_root_credit", "margin_cycle_open", "voucher_margin":
+				if row.WalletKind == model.AdtySiteWalletMargin && !row.Delta.IsZero() {
+					sheet.MarginTopupUSD = sheet.MarginTopupUSD.Add(row.Delta)
+				}
+			}
+		}
 		record("wallet_entry", row.Id)
 		switch row.WalletKind {
 		case model.AdtySiteWalletEarnings:

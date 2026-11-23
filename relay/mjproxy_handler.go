@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -80,7 +81,7 @@ func RelayMidjourneyImage(c *gin.Context) {
 		})
 		return
 	}
-	resp, err := fetchMidjourneyImage(c, httpClient, imageURL, serverName)
+	resp, err := fetchMidjourneyImage(c, httpClient, imageURL, serverName, proxy != "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "http_get_image_failed",
@@ -89,9 +90,9 @@ func RelayMidjourneyImage(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		responseBody, _ := io.ReadAll(resp.Body)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		c.JSON(resp.StatusCode, gin.H{
-			"error": string(responseBody),
+			"error": "upstream_image_fetch_failed",
 		})
 		return
 	}
@@ -172,45 +173,119 @@ func pinMidjourneyImageURL(raw string) (pinnedURL, serverName string, err error)
 	return parsed.String(), serverName, nil
 }
 
-func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, serverName string) (*http.Response, error) {
+type transportClosingBody struct {
+	io.ReadCloser
+	closeTransport func()
+}
+
+func (b *transportClosingBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.closeTransport != nil {
+		b.closeTransport()
+	}
+	return err
+}
+
+func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, serverName string, pinRedirects bool) (*http.Response, error) {
 	if client == nil {
 		return nil, fmt.Errorf("http client is nil")
 	}
-	oneOff := *client
-	oneOff.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return fmt.Errorf("stopped after redirects")
+	currentURL := rawURL
+	currentServerName := serverName
+	for hop := 0; hop <= 5; hop++ {
+		oneOff := *client
+		oneOff.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
 		}
-		pinned, _, pinErr := pinMidjourneyImageURL(redirect.URL.String())
-		if pinErr != nil {
-			return pinErr
-		}
-		parsed, parseErr := url.Parse(pinned)
-		if parseErr != nil {
-			return parseErr
-		}
-		redirect.URL = parsed
-		redirect.Host = ""
-		return nil
-	}
-	if serverName != "" {
-		if transport, ok := client.Transport.(*http.Transport); ok {
-			cloned := transport.Clone()
-			if cloned.TLSClientConfig == nil {
-				cloned.TLSClientConfig = &tls.Config{ServerName: serverName}
-			} else {
-				cfg := cloned.TLSClientConfig.Clone()
-				cfg.ServerName = serverName
-				cloned.TLSClientConfig = cfg
+		var clonedTransport *http.Transport
+		if currentServerName != "" {
+			if transport, ok := client.Transport.(*http.Transport); ok {
+				clonedTransport = transport.Clone()
+				if clonedTransport.TLSClientConfig == nil {
+					clonedTransport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: currentServerName}
+				} else {
+					cfg := clonedTransport.TLSClientConfig.Clone()
+					cfg.ServerName = currentServerName
+					clonedTransport.TLSClientConfig = cfg
+				}
+				oneOff.Transport = clonedTransport
 			}
-			oneOff.Transport = cloned
 		}
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, currentURL, nil)
+		if err != nil {
+			if clonedTransport != nil {
+				clonedTransport.CloseIdleConnections()
+			}
+			return nil, err
+		}
+		resp, err := oneOff.Do(req)
+		if err != nil {
+			if clonedTransport != nil {
+				clonedTransport.CloseIdleConnections()
+			}
+			return nil, err
+		}
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			loc := strings.TrimSpace(resp.Header.Get("Location"))
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			if clonedTransport != nil {
+				clonedTransport.CloseIdleConnections()
+			}
+			if loc == "" || hop >= 5 {
+				return nil, fmt.Errorf("stopped after redirects")
+			}
+			baseParsed, parseErr := url.Parse(currentURL)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			refParsed, parseErr := url.Parse(loc)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			nextURL := baseParsed.ResolveReference(refParsed).String()
+			if pinRedirects {
+				pinned, nextServerName, pinErr := pinMidjourneyImageURL(nextURL)
+				if pinErr != nil {
+					return nil, pinErr
+				}
+				currentURL = pinned
+				currentServerName = nextServerName
+			} else {
+				if valErr := service.ValidateSSRFProtectedFetchURL(nextURL); valErr != nil {
+					return nil, valErr
+				}
+				currentURL = nextURL
+				currentServerName = ""
+			}
+			continue
+		}
+		if clonedTransport != nil && resp.Body != nil {
+			resp.Body = &transportClosingBody{
+				ReadCloser:     resp.Body,
+				closeTransport: clonedTransport.CloseIdleConnections,
+			}
+		}
+		return resp, nil
 	}
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, err
+	return nil, fmt.Errorf("stopped after redirects")
+}
+
+func isAmbiguousMidjourneySubmitError(resp *dto.MidjourneyResponseWithStatusCode, err error) bool {
+	if err == nil {
+		return false
 	}
-	return oneOff.Do(req)
+	if resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func midjourneyImageContentType(header string) (string, bool) {
@@ -398,6 +473,9 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	mjResp, _, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	accepted := service.RecordMidjourneyPolicyResponse(c, mjResp, err)
 	if err != nil {
+		if priceData.Quota > 0 && isAmbiguousMidjourneySubmitError(mjResp, err) {
+			upstreamAcceptedBillable = true
+		}
 		return &mjResp.Response
 	}
 	midjResponse := &mjResp.Response
@@ -733,6 +811,9 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	accepted := service.RecordMidjourneyPolicyResponse(c, midjResponseWithStatus, err)
 	if err != nil {
+		if consumeQuota && priceData.Quota > 0 && isAmbiguousMidjourneySubmitError(midjResponseWithStatus, err) {
+			upstreamAcceptedBillable = true
+		}
 		return &midjResponseWithStatus.Response
 	}
 	midjResponse := &midjResponseWithStatus.Response

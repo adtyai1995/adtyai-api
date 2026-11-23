@@ -24,7 +24,6 @@ import { ErrorState } from '@/components/error-state'
 import { PublicLayout } from '@/components/layout'
 import { PageTransition } from '@/components/page-transition'
 import { getServerErrorMessage } from '@/lib/server-error-message'
-import { useAuthStore } from '@/stores/auth-store'
 
 import {
   LoadingSkeleton,
@@ -48,11 +47,10 @@ export function Pricing() {
   )
 
   const search = useSearch({ from: '/pricing/' })
-  const userGroup = useAuthStore((state) => state.auth.user?.group)
   const [explicitGroup, setExplicitGroup] = useState<string | undefined>(
     () => search.group
   )
-  const displayGroup = resolvePricingDisplayGroup(explicitGroup, userGroup)
+  const displayGroup = resolvePricingDisplayGroup(explicitGroup)
 
   const {
     models,

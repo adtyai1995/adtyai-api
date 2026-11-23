@@ -1247,6 +1247,13 @@ func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
 	var revokedAccessTokens int64
 	var disabledEmployeeIDs []int
 	if err := DB.Transaction(func(tx *gorm.DB) error {
+		// R5-008: Pre-lock AdtyTeam / AdtyTeamMember rows BEFORE ValidateAuthSessionWithTx
+		// locks users(user.Id), preserving canonical adty_teams -> adty_team_members -> users order.
+		if AdtyPreLockUserDeleteHook != nil {
+			if err := AdtyPreLockUserDeleteHook(tx, user.Id); err != nil {
+				return err
+			}
+		}
 		if identity != nil {
 			if err := ValidateAuthSessionWithTx(tx, *identity); err != nil {
 				return err

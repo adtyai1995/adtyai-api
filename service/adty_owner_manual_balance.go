@@ -50,10 +50,11 @@ type AdtyOwnerTeamBalanceResult struct {
 // AdtySiteTierPrincipalAdjustResult is returned after Root adjusts a site's
 // tier-evaluation cumulative customer recharge total.
 type AdtySiteTierPrincipalAdjustResult struct {
-	Adjustment *model.AdtySiteTierPrincipalAdjustment `json:"adjustment"`
-	Site       *model.AdtySite                        `json:"site"`
-	Stats      AdtySiteTierStats                      `json:"stats"`
-	Replayed   bool                                   `json:"replayed,omitempty"`
+	Adjustment   *model.AdtySiteTierPrincipalAdjustment `json:"adjustment"`
+	Site         *model.AdtySite                        `json:"site"`
+	Stats        AdtySiteTierStats                      `json:"stats"`
+	Replayed     bool                                   `json:"replayed,omitempty"`
+	AuditEventID string                                 `json:"-"`
 }
 
 func adtyMarginRequiredFloorTx(tx *gorm.DB, siteID int, margin *model.AdtySiteWallet) (decimal.Decimal, error) {
@@ -762,9 +763,10 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 		statsAfter.AdjustmentUSD = adjustAfter
 		statsAfter.PrincipalUSD = effectiveAfter
 		out = &AdtySiteTierPrincipalAdjustResult{
-			Adjustment: adj,
-			Site:       &refreshed,
-			Stats:      statsAfter,
+			Adjustment:   adj,
+			Site:         &refreshed,
+			Stats:        statsAfter,
+			AuditEventID: prepared.EventId,
 		}
 		return nil
 	})

@@ -354,13 +354,34 @@ func adtyReferralAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyT
 			return err
 		}
 	}
-	var commissions []model.ReferralCommission
-	if err := model.AdtyLockForUpdate(tx).Where("source_type = ? AND source_trade_no = ?", model.ReferralSourceTopup, topUp.TradeNo).Order("id").Find(&commissions).Error; err != nil {
+	// R5-006: Lock ALL ReferralCommission rows that may be touched by this refund OR by
+	// auto-canceling multi-commission withdrawals (same affiliate's available/frozen commissions)
+	// in ascending id order BEFORE locking any ReferralWithdrawal row.
+	var affiliateIDs []int
+	if err := tx.Model(&model.ReferralCommission{}).
+		Where("source_type = ? AND source_trade_no = ? AND affiliate_id > 0", model.ReferralSourceTopup, topUp.TradeNo).
+		Distinct("affiliate_id").Pluck("affiliate_id", &affiliateIDs).Error; err != nil {
 		return err
 	}
-	commissionIDs := make([]int, 0, len(commissions))
-	for _, commission := range commissions {
-		commissionIDs = append(commissionIDs, commission.Id)
+	var allLockedCommissions []model.ReferralCommission
+	lockQuery := model.AdtyLockForUpdate(tx).Where("source_type = ? AND source_trade_no = ?", model.ReferralSourceTopup, topUp.TradeNo)
+	if len(affiliateIDs) > 0 {
+		lockQuery = model.AdtyLockForUpdate(tx).Where(
+			"(source_type = ? AND source_trade_no = ?) OR (affiliate_id IN ? AND status IN ?)",
+			model.ReferralSourceTopup, topUp.TradeNo, affiliateIDs,
+			[]string{model.ReferralCommissionStatusAvailable, model.ReferralCommissionStatusFrozen},
+		)
+	}
+	if err := lockQuery.Order("id ASC").Find(&allLockedCommissions).Error; err != nil {
+		return err
+	}
+	commissions := make([]model.ReferralCommission, 0, len(allLockedCommissions))
+	commissionIDs := make([]int, 0, len(allLockedCommissions))
+	for _, commission := range allLockedCommissions {
+		if commission.SourceType == model.ReferralSourceTopup && commission.SourceTradeNo == topUp.TradeNo {
+			commissions = append(commissions, commission)
+			commissionIDs = append(commissionIDs, commission.Id)
+		}
 	}
 	if err := lockFrozenWithdrawalsForCommissionsTx(tx, commissionIDs); err != nil {
 		return err
@@ -450,6 +471,10 @@ const adtyReferralCommissionRecoveryKind = "ref_withdrawn"
 func clawBackSettledCommissionTx(tx *gorm.DB, account *model.ReferralCommissionAccount, commission *model.ReferralCommission, part decimal.Decimal, tradeNo string, entry model.ReferralCommissionLedger) error {
 	if !part.IsPositive() {
 		return nil
+	}
+	if account != nil {
+		entry.AffiliateId = account.AffiliateId
+		entry.UserId = account.UserId
 	}
 	if exists, err := referralLedgerExistsTx(tx, entry.ExternalRefId); err != nil {
 		return err

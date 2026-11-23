@@ -285,6 +285,10 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 
 	if streamErr != nil {
+		if c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+			logger.LogWarn(c, common.LogText("Gemini stream error after output written, billing delivered usage: %v", streamErr))
+			return usage, nil
+		}
 		return usage, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {

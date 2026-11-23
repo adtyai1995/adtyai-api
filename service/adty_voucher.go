@@ -102,6 +102,7 @@ type AdtyVoucherIssued struct {
 	Quota             int64           `json:"quota"`
 	IntentKey         string          `json:"intent_key,omitempty"`
 	Replayed          bool            `json:"replayed,omitempty"`
+	AuditEventID      string          `json:"-"`
 }
 
 type AdtyVoucherRedeemed struct {
@@ -170,6 +171,7 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 	hash := model.AdtyVoucherCodeHash(code)
 	tail := code[len(code)-4:]
 	var issued *AdtyVoucherIssued
+	var auditEvent *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		// Canonical lock order: AdtySite -> User(id ASC) -> AdtySiteWallet.
 		var lockedSite *model.AdtySite
@@ -283,11 +285,29 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 		if err := tx.Create(&row).Error; err != nil {
 			return err
 		}
+		auditSiteID := row.TargetSiteId
+		if auditSiteID == 0 {
+			auditSiteID = input.SiteId
+		}
+		auditEvent, err = appendAdtyOfficialAuditTx(tx, input.IssuerId, auditSiteID, "voucher", strconv.FormatInt(row.Id, 10), "adty.voucher.issue", input.Reason, "",
+			nil,
+			map[string]any{
+				"voucher_id": row.Id, "purpose": row.Purpose, "amount_usd": row.AmountUSD.String(),
+				"quota": row.Quota, "status": model.AdtyVoucherStatusPending, "source": row.SourceKind,
+				"frozen_earnings_usd": row.FrozenEarningsUSD.String(), "frozen_margin_usd": row.FrozenMarginUSD.String(),
+				"site_id": auditSiteID, "target_site_id": row.TargetSiteId, "designated_owner_id": row.DesignatedOwnerId,
+				"code_tail": tail, "intent_key": input.IntentKey,
+			},
+			model.AuditResultSuccess)
+		if err != nil {
+			return err
+		}
 		issued = &AdtyVoucherIssued{
 			Id: row.Id, Code: code, CodeTail: tail, Purpose: row.Purpose, Status: row.Status,
 			SourceKind: row.SourceKind, FrozenEarningsUSD: row.FrozenEarningsUSD, FrozenMarginUSD: row.FrozenMarginUSD,
 			TargetSiteId: row.TargetSiteId, DesignatedOwnerId: row.DesignatedOwnerId,
 			AmountUSD: row.AmountUSD, Quota: row.Quota, IntentKey: input.IntentKey,
+			AuditEventID: auditEvent.EventId,
 		}
 		return nil
 	})
@@ -298,21 +318,8 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 			return replay, nil
 		}
 	}
-	if err == nil && issued != nil && !issued.Replayed {
-		siteID := issued.TargetSiteId
-		if siteID == 0 {
-			siteID = input.SiteId
-		}
-		writeAdtyOfficialAudit(input.IssuerId, siteID, "voucher", strconv.FormatInt(issued.Id, 10), "adty.voucher.issue", input.Reason, "",
-			nil,
-			map[string]any{
-				"voucher_id": issued.Id, "purpose": issued.Purpose, "amount_usd": issued.AmountUSD.String(),
-				"quota": issued.Quota, "status": model.AdtyVoucherStatusPending, "source": issued.SourceKind,
-				"frozen_earnings_usd": issued.FrozenEarningsUSD.String(), "frozen_margin_usd": issued.FrozenMarginUSD.String(),
-				"site_id": siteID, "target_site_id": issued.TargetSiteId, "designated_owner_id": issued.DesignatedOwnerId,
-				"code_tail": issued.CodeTail, "intent_key": input.IntentKey,
-			},
-			model.AuditResultSuccess)
+	if err == nil && issued != nil && !issued.Replayed && auditEvent != nil {
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	return issued, err
 }
@@ -428,6 +435,9 @@ func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
 	if marginResumedSiteID > 0 && result != nil && !result.Replayed {
 		if _, resumeErr := ResumePendingAdtyGiftFulfillments(marginResumedSiteID); resumeErr != nil {
 			common.SysError(common.LogText("resume pending gifts after margin voucher redeem failed for site %d: %s", marginResumedSiteID, resumeErr.Error()))
+		}
+		if covErr := ResumeAdtySiteInviteCoverage(marginResumedSiteID, time.Now()); covErr != nil {
+			common.SysError(common.LogText("resume site invite coverage after margin voucher redeem failed for site %d: %s", marginResumedSiteID, covErr.Error()))
 		}
 	}
 	return result, nil
@@ -685,6 +695,11 @@ func adtyVoucherNonRootManageAllowedTx(tx *gorm.DB, actor *model.User, voucher *
 }
 
 func FreezeAdtyVoucher(actorId int, voucherId int64) error {
+	_, err := FreezeAdtyVoucherWithAudit(actorId, voucherId)
+	return err
+}
+
+func FreezeAdtyVoucherWithAudit(actorId int, voucherId int64) (string, error) {
 	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var stub struct {
@@ -737,7 +752,7 @@ func FreezeAdtyVoucher(actorId int, voucherId int64) error {
 	if err == nil && event.EventId != "" {
 		deliverAdtyCommittedAudit(event)
 	}
-	return err
+	return event.EventId, err
 }
 
 // InheritAdtyVouchersOnCloseTx keeps unredeemed customer codes under the original
@@ -768,6 +783,11 @@ func InheritAdtyVouchersOnCloseTx(tx *gorm.DB, siteId int, movedUserIDs []int) e
 }
 
 func CancelAdtyVoucher(actorId int, voucherId int64) error {
+	_, err := CancelAdtyVoucherWithAudit(actorId, voucherId)
+	return err
+}
+
+func CancelAdtyVoucherWithAudit(actorId int, voucherId int64) (string, error) {
 	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var stub struct {
@@ -813,7 +833,7 @@ func CancelAdtyVoucher(actorId int, voucherId int64) error {
 	if err == nil && event.EventId != "" {
 		deliverAdtyCommittedAudit(event)
 	}
-	return err
+	return event.EventId, err
 }
 
 func revokeUnusedOwnerAndMarginVouchersOnCloseTx(tx *gorm.DB, siteId int) error {

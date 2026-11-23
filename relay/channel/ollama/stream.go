@@ -348,6 +348,9 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	created := toUnix(lastChunk.CreatedAt)
 	usage := &dto.Usage{PromptTokens: lastChunk.PromptEvalCount, CompletionTokens: lastChunk.EvalCount, TotalTokens: lastChunk.PromptEvalCount + lastChunk.EvalCount}
 	content := aggContent.String()
+	if usage.TotalTokens == 0 && (content != "" || reasoningBuilder.Len() > 0 || len(toolCalls) > 0) {
+		usage = service.ResponseText2Usage(c, content+reasoningBuilder.String(), model, info.GetEstimatePromptTokens())
+	}
 	finishReason := lastChunk.DoneReason
 	if finishReason == "" {
 		finishReason = "stop"

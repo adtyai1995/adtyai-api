@@ -62,6 +62,10 @@ func PostAdtyNotificationHide(c *gin.Context) {
 		return
 	}
 	if err := service.HideAdtyNotificationForUserFromRequest(c, c.GetInt("id"), body.Key); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Announcement not found"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -89,7 +93,7 @@ func PostAdtyNotificationTodoComplete(c *gin.Context) {
 
 func GetAdtyNotificationTodos(c *gin.Context) {
 	includeCompleted := c.Query("include_completed") == "1" || c.Query("include_completed") == "true"
-	items, err := service.ListAdtyTodosForUser(c.GetInt("id"), includeCompleted)
+	items, err := service.ListAdtyTodosForUserOnSite(c.GetInt("id"), service.AdtySiteForRequest(c), includeCompleted)
 	if err != nil {
 		common.ApiError(c, err)
 		return

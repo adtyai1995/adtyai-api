@@ -57,7 +57,7 @@ type AdtyStaffBalanceRequest struct {
 	BeforeQuota    int64           `json:"before_quota"`
 	AfterQuota     int64           `json:"after_quota"`
 	LedgerId       int64           `json:"ledger_id"`
-	IdempotencyKey *string         `json:"idempotency_key,omitempty" gorm:"type:varchar(64);uniqueIndex"`
+	IdempotencyKey *string         `json:"-" gorm:"type:varchar(64);uniqueIndex"`
 	Status         string          `json:"status" gorm:"type:varchar(16);index"`
 	ReviewerId     int             `json:"reviewer_id"`
 	ReviewerRole   string          `json:"reviewer_role" gorm:"type:varchar(16)"`

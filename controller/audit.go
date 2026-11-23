@@ -306,6 +306,15 @@ func markAuditLogged(c *gin.Context) {
 	common.SetContextKey(c, constant.ContextKeyAuditLogged, true)
 }
 
+// markIdempotentReplayNoAudit suppresses the admin-route generic fallback audit when
+// the handler verified an already-audited idempotent replay that performed no new write (R5-042).
+func markIdempotentReplayNoAudit(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyAuditLogged, true)
+}
+
 // recordManageAudit 记录一条由操作者本人归属的管理/高危审计日志（资源类操作：
 // 渠道 / 系统设置 / 兑换码等）。content 由 action+params 自动渲染。
 func recordManageAudit(c *gin.Context, action string, params map[string]any) {

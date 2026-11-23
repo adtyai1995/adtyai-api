@@ -89,7 +89,7 @@ func GetAdtyResellerUsage() (*AdtyResellerUsage, error) {
 	for _, row := range assigned {
 		byWidget[row.TurnstileWidget] = row.Total
 	}
-	if err := model.DB.Model(&model.AdtySiteDomain{}).Where("status = ? AND managed_by <> ? AND turnstile_widget = ''", model.AdtySiteDomainActive, "platform").
+	if err := model.DB.Model(&model.AdtySiteDomain{}).Where("status = ? AND desired_state IN ? AND managed_by <> ? AND turnstile_widget = ''", model.AdtySiteDomainActive, []string{"", "serve"}, "platform").
 		Count(&usage.UnassignedDomains).Error; err != nil {
 		return nil, err
 	}

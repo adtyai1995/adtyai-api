@@ -613,6 +613,22 @@ func TransferAdtyEarningToMargin(siteID, operator int, amount decimal.Decimal, k
 		return err
 	}
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// R5-050: Lock AdtySite BEFORE earnings -> margin wallets to obey canonical lock order
+		// and reject non-replay transfers from closing/paused/closed sites or non-owners.
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+			return err
+		}
+		var existingEarn model.AdtySiteWalletLedger
+		earnLookup := tx.Where("idempotency_key = ?", earnKey).Limit(1).Find(&existingEarn)
+		if earnLookup.Error != nil {
+			return earnLookup.Error
+		}
+		if earnLookup.RowsAffected == 0 {
+			if site.OwnerUserId != operator || site.Status != model.AdtySiteStatusActive {
+				return common.NewMessage("Site is not active")
+			}
+		}
 		if _, err := applyAdtySiteWalletChangeTx(tx, siteID, model.AdtySiteWalletEarnings, amount.Neg(), AdtySiteWalletChange{
 			Type: "earning_to_margin", IdempotencyKey: earnKey, OperatorID: operator,
 		}); err != nil {
@@ -630,10 +646,6 @@ func TransferAdtyEarningToMargin(siteID, operator int, amount decimal.Decimal, k
 			return lookup.Error
 		}
 		if lookup.RowsAffected == 0 {
-			var site model.AdtySite
-			if err := tx.Select("tier_code").First(&site, siteID).Error; err != nil {
-				return err
-			}
 			var configured int64
 			if err := tx.Model(&model.AdtySiteTier{}).Where("code = ? AND enabled = ?", site.TierCode, true).Count(&configured).Error; err != nil {
 				return err
@@ -653,6 +665,9 @@ func TransferAdtyEarningToMargin(siteID, operator int, amount decimal.Decimal, k
 	// 转账已经提交，兑现失败不回滚它；未兑现的仍是 pending。
 	if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
 		common.SysLog(common.LogText("gift fulfillment: resume after margin top-up site %d: %s", siteID, err.Error()))
+	}
+	if err := ResumeAdtySiteInviteCoverage(siteID, time.Now()); err != nil {
+		common.SysLog(common.LogText("site invite coverage: resume after margin top-up site %d: %s", siteID, err.Error()))
 	}
 	return nil
 }
@@ -730,6 +745,9 @@ func CreditAdtySiteMarginByRoot(siteID, rootUserID int, amount decimal.Decimal, 
 	}
 	if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
 		common.SysLog(common.LogText("gift fulfillment: resume after root margin credit site %d: %s", siteID, err.Error()))
+	}
+	if err := ResumeAdtySiteInviteCoverage(siteID, time.Now()); err != nil {
+		common.SysLog(common.LogText("site invite coverage: resume after root margin credit site %d: %s", siteID, err.Error()))
 	}
 	return ledger, nil
 }

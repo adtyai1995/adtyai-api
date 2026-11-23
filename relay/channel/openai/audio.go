@@ -37,22 +37,49 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	c.Writer.WriteHeader(resp.StatusCode)
 
 	if info.IsStream {
+		var streamedAudioBytes int
 		helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+			if service.SundaySearch(data, "audio") {
+				var chunk struct {
+					Type  string `json:"type"`
+					Audio string `json:"audio"`
+				}
+				if err := common.Unmarshal([]byte(data), &chunk); err == nil && len(chunk.Audio) > 0 {
+					streamedAudioBytes += (len(chunk.Audio) * 3) / 4
+				}
+			}
 			if service.SundaySearch(data, "usage") {
 				var simpleResponse dto.SimpleResponse
 				if err := common.Unmarshal([]byte(data), &simpleResponse); err != nil {
 					logger.LogError(c, err.Error())
 					sr.Error(err)
-				} else if simpleResponse.Usage.TotalTokens != 0 {
+				} else if simpleResponse.Usage.TotalTokens != 0 || simpleResponse.Usage.InputTokens != 0 || simpleResponse.Usage.OutputTokens != 0 {
 					usage.PromptTokens = simpleResponse.Usage.InputTokens
-					usage.CompletionTokens = simpleResponse.OutputTokens
-					usage.TotalTokens = simpleResponse.TotalTokens
+					usage.CompletionTokens = simpleResponse.Usage.OutputTokens
+					usage.TotalTokens = max(simpleResponse.Usage.TotalTokens, usage.PromptTokens+usage.CompletionTokens)
+					usage.PromptTokensDetails.TextTokens = usage.PromptTokens
+					audioOut := simpleResponse.Usage.CompletionTokenDetails.AudioTokens
+					if audioOut <= 0 {
+						audioOut = usage.CompletionTokens
+					}
+					usage.CompletionTokenDetails.AudioTokens = audioOut
 				}
 			}
 			if err := helper.StringData(c, data); err != nil {
 				sr.Error(err)
 			}
 		})
+		usage.PromptTokensDetails.TextTokens = usage.PromptTokens
+		if usage.CompletionTokenDetails.AudioTokens == 0 {
+			if usage.CompletionTokens > 0 {
+				usage.CompletionTokenDetails.AudioTokens = usage.CompletionTokens
+			} else if streamedAudioBytes > 0 {
+				estimatedTokens := estimatedAudioTokensFromSizeKB(float64(streamedAudioBytes) / 1000.0)
+				usage.CompletionTokens = estimatedTokens
+				usage.CompletionTokenDetails.AudioTokens = estimatedTokens
+				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+			}
+		}
 	} else {
 		common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
 		// 读取响应体到缓冲区

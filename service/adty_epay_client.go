@@ -219,6 +219,9 @@ func adtyEpayQRSafe(value string) bool {
 }
 
 func adtyRejectUnsafeEpayLink(result *AdtyEpayCreateResult) error {
+	if result == nil {
+		return fmt.Errorf("epay returned an unsafe payment link")
+	}
 	safe := false
 	switch result.Mode {
 	case "qrcode":
@@ -229,6 +232,16 @@ func adtyRejectUnsafeEpayLink(result *AdtyEpayCreateResult) error {
 		safe = adtyEpayOpenedLinkSafe(result.URLScheme)
 	}
 	if !safe {
+		return fmt.Errorf("epay returned an unsafe payment link")
+	}
+	// Validate every non-empty secondary link field as well so unsafe schemes are never persisted or returned.
+	if strings.TrimSpace(result.QRCode) != "" && !adtyEpayQRSafe(result.QRCode) {
+		return fmt.Errorf("epay returned an unsafe payment link")
+	}
+	if strings.TrimSpace(result.PayURL) != "" && !adtyEpayOpenedLinkSafe(result.PayURL) {
+		return fmt.Errorf("epay returned an unsafe payment link")
+	}
+	if strings.TrimSpace(result.URLScheme) != "" && !adtyEpayOpenedLinkSafe(result.URLScheme) {
 		return fmt.Errorf("epay returned an unsafe payment link")
 	}
 	return nil

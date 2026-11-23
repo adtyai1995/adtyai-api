@@ -123,6 +123,9 @@ func adtyTurnstileRemoveDomain(ctx context.Context, tx *gorm.DB, widgetId, hostn
 	cfg := resellerSetting()
 	account := strings.TrimSpace(cfg.CloudflareAccountId)
 	if account == "" {
+		if strings.TrimSpace(widgetId) != "" {
+			return common.NewMessage("Restore the Turnstile account to release the hostname")
+		}
 		return nil
 	}
 	if err := adtyLockTurnstileWidgets(tx, account); err != nil {

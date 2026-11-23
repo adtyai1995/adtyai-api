@@ -344,6 +344,11 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	})
 	info.StreamStatus.RequireTerminal()
 	if err != nil {
+		if c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+			common.SysLog(common.LogText("Claude stream error after output written, billing delivered usage: %v", err))
+			HandleStreamFinalResponse(c, info, claudeInfo)
+			return claudeInfo.Usage, nil
+		}
 		return nil, err
 	}
 

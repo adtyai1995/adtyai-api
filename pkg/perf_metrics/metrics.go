@@ -464,6 +464,10 @@ func Query(params QueryParams) (QueryResult, error) {
 }
 
 func QuerySummaryAll(hours int, groups []string, recentModels ...string) (SummaryAllResult, error) {
+	return QuerySummaryAllFiltered(hours, groups, nil, recentModels...)
+}
+
+func QuerySummaryAllFiltered(hours int, groups []string, allowModel func(modelName string) bool, recentModels ...string) (SummaryAllResult, error) {
 	if len(recentModels) > MaxRecentModels {
 		return SummaryAllResult{}, common.NewMessage("Invalid parameters")
 	}
@@ -565,6 +569,9 @@ func QuerySummaryAll(hours int, groups []string, recentModels ...string) (Summar
 	models := make([]ModelSummary, 0, len(totals))
 	for name, total := range totals {
 		if total.requestCount == 0 {
+			continue
+		}
+		if allowModel != nil && !allowModel(name) {
 			continue
 		}
 		all.requestCount += total.requestCount

@@ -301,7 +301,15 @@ func accumulateRealtimeUsage(dst, src *dto.RealtimeUsage) {
 	if dst == nil || src == nil {
 		return
 	}
-	dst.TotalTokens += src.TotalTokens
+	srcTotal := src.TotalTokens
+	if srcTotal == 0 {
+		srcTotal = max(
+			src.InputTokens+src.OutputTokens,
+			src.InputTokenDetails.TextTokens+src.InputTokenDetails.AudioTokens+src.InputTokenDetails.ImageTokens+
+				src.OutputTokenDetails.TextTokens+src.OutputTokenDetails.AudioTokens,
+		)
+	}
+	dst.TotalTokens += srcTotal
 	dst.InputTokens += src.InputTokens
 	dst.OutputTokens += src.OutputTokens
 	dst.InputTokenDetails.CachedTokens += src.InputTokenDetails.CachedTokens

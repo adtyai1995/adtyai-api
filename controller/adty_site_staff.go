@@ -64,6 +64,17 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 		StaffId    int `json:"staff_id"`
 		CustomerId int `json:"customer_id"`
 	}
+	// R5-040: Collect all current and historical staff user_ids for this site so
+	// staff-authored audit rows are preserved while Root/platform operator metadata is redacted.
+	siteStaffUserIDs := map[int]bool{}
+	var staffUserIDs []int
+	if err := model.DB.Model(&model.AdtySiteStaff{}).Where("site_id = ?", site.Id).Pluck("user_id", &staffUserIDs).Error; err == nil {
+		for _, uid := range staffUserIDs {
+			if uid > 0 {
+				siteStaffUserIDs[uid] = true
+			}
+		}
+	}
 	views := make([]staffAuditView, 0, len(items))
 	for _, item := range items {
 		var target struct {
@@ -81,9 +92,9 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 				staffID = target.Id
 			}
 		}
-		// R4-042: Redact Root operator IDs and internal platform review remarks
-		// before returning site audit rows to the site owner.
-		if item.OperatorId != site.OwnerUserId && item.OperatorId > 0 {
+		// R4-042 / R5-040: Redact only Root/platform operator IDs and internal platform
+		// review remarks before returning site audit rows to the site owner.
+		if item.OperatorId > 0 && item.OperatorId != site.OwnerUserId && !siteStaffUserIDs[item.OperatorId] {
 			item.OperatorId = 0
 			item.OldValue = ""
 			item.NewValue = ""
@@ -236,23 +247,28 @@ func PostAdtyStaffCustomerDisable(c *gin.Context) {
 	manageAdtyStaffCustomer(c, service.AdtyStaffActionCustomerDisable, "customers.disable")
 }
 
+func redactRootBalanceRequests(rows []model.AdtyStaffBalanceRequest) {
+	for i := range rows {
+		if rows[i].ReviewerRole == "root" {
+			rows[i].ReviewerId = 0
+			rows[i].ReviewNote = ""
+		}
+	}
+}
+
 func GetAdtyStaffBalanceRequests(c *gin.Context) {
 	staff, site, ok := adtyStaffRequest(c, "")
 	if !ok {
 		return
 	}
-	rows, err := service.ListStaffBalanceRequests(site.Id)
+	page := common.GetPageQuery(c)
+	rows, total, err := service.PageStaffOwnBalanceRequests(site.Id, staff.UserId, c.Query("status"), page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	own := make([]model.AdtyStaffBalanceRequest, 0, len(rows))
-	for _, row := range rows {
-		if row.StaffUserId == staff.UserId {
-			own = append(own, row)
-		}
-	}
-	common.ApiSuccess(c, gin.H{"items": own})
+	redactRootBalanceRequests(rows)
+	common.ApiSuccess(c, gin.H{"items": rows, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
 func GetAdtyOwnerBalanceRequests(c *gin.Context) {
@@ -260,7 +276,7 @@ func GetAdtyOwnerBalanceRequests(c *gin.Context) {
 	if !ok {
 		return
 	}
-	listOwnerBalanceRequestPage(c, site.Id)
+	listOwnerBalanceRequestPage(c, site.Id, true)
 }
 
 func GetAdtyAdminBalanceRequests(c *gin.Context) {
@@ -273,15 +289,18 @@ func GetAdtyAdminBalanceRequests(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	listOwnerBalanceRequestPage(c, siteID)
+	listOwnerBalanceRequestPage(c, siteID, false)
 }
 
-func listOwnerBalanceRequestPage(c *gin.Context, siteID int) {
+func listOwnerBalanceRequestPage(c *gin.Context, siteID int, redactRoot bool) {
 	page := common.GetPageQuery(c)
 	rows, total, err := service.PageStaffBalanceRequests(siteID, c.Query("status"), page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if redactRoot {
+		redactRootBalanceRequests(rows)
 	}
 	common.ApiSuccess(c, gin.H{"items": rows, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }

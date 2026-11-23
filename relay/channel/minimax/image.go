@@ -249,7 +249,7 @@ func miniMaxImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	c.Writer.Header().Set("Content-Type", "application/json")
 	c.Writer.WriteHeader(resp.StatusCode)
 	if _, err := c.Writer.Write(jsonResponse); err != nil {
-		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		common.SysLog(common.LogText("failed to write MiniMax image response after upstream generation: %v", err))
 	}
 
 	return &dto.Usage{}, nil

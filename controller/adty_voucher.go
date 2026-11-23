@@ -118,6 +118,12 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if issued.Replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if issued.AuditEventID != "" {
+		rememberPreparedAuditEvent(c, issued.AuditEventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, issued)
 }
 
@@ -181,9 +187,14 @@ func PostAdtyVoucherFreeze(c *gin.Context) {
 	if c.GetInt("role") != common.RoleRootUser && !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherFreeze, id) {
 		return
 	}
-	if err := service.FreezeAdtyVoucher(c.GetInt("id"), int64(id)); err != nil {
+	eventID, err := service.FreezeAdtyVoucherWithAudit(c.GetInt("id"), int64(id))
+	if err != nil {
 		writeAdtyVoucherError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, gin.H{"id": id, "status": model.AdtyVoucherStatusFrozen})
 }
@@ -271,9 +282,14 @@ func PostAdtyAdminVoucherCancel(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := service.CancelAdtyVoucher(c.GetInt("id"), int64(id)); err != nil {
+	eventID, err := service.CancelAdtyVoucherWithAudit(c.GetInt("id"), int64(id))
+	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, gin.H{"id": id, "status": model.AdtyVoucherStatusCancelled})
 }

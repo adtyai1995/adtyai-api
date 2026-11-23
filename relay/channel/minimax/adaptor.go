@@ -59,6 +59,12 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		if err := common.Unmarshal(request.Metadata, &minimaxRequest); err != nil {
 			return nil, fmt.Errorf("error unmarshalling metadata to minimax request: %w", err)
 		}
+		// R5-013: Restore billing-critical model and text fields after metadata merge.
+		minimaxRequest.Model = info.UpstreamModelName
+		if minimaxRequest.Model == "" {
+			minimaxRequest.Model = info.OriginModelName
+		}
+		minimaxRequest.Text = request.Input
 	}
 
 	jsonData, err := common.Marshal(minimaxRequest)

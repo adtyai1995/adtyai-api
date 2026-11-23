@@ -397,13 +397,26 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 			continue
 		}
 
-		// 3) Pending / under-review / canceled gift fulfillment: only principal (or fulfilled gift) is expected in AdtyBalanceLedger.
+		// 3) Pending / under-review / canceled / shrunk-then-fulfilled gift fulfillment:
+		// adjust expected booked quota to principal + actually fulfilled bonus (R5-002).
 		if row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentPending ||
 			row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentPendingReview ||
 			row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentCanceled {
 			faceQuota := row.FaceUSD.Mul(common.QuotaPerUnitDecimal()).Floor().IntPart()
 			if faceQuota > 0 && faceQuota < expected {
 				expected = faceQuota
+			}
+		} else if row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentFulfilled && model.DB.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+			var fulfill model.AdtyGiftFulfillment
+			if err := model.DB.Select("bonus_quota").Where("trade_no = ?", row.TradeNo).Limit(1).Find(&fulfill).Error; err != nil {
+				return nil, err
+			}
+			if fulfill.BonusQuota > 0 {
+				faceQuota := row.FaceUSD.Mul(common.QuotaPerUnitDecimal()).Floor().IntPart()
+				fulfilledExpected := faceQuota + fulfill.BonusQuota
+				if fulfilledExpected > 0 && fulfilledExpected < expected {
+					expected = fulfilledExpected
+				}
 			}
 		}
 

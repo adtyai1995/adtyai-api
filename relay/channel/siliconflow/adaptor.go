@@ -15,7 +15,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
-	"github.com/samber/lo"
 )
 
 type Adaptor struct {
@@ -49,14 +48,13 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 
 	sfRequest.Model = request.Model
 	sfRequest.Prompt = request.Prompt
-	// 优先使用image_size/batch_size，否则使用OpenAI标准的size/n
-	if sfRequest.ImageSize == "" {
-		sfRequest.ImageSize = request.Size
-	}
-	if sfRequest.BatchSize == 0 {
-		if request.N != nil {
-			sfRequest.BatchSize = lo.FromPtr(request.N)
-		}
+	// R5-014: Always derive billing-relevant size and batch count from billed request.Size/N
+	// so request.Extra cannot silently multiply generated images or upscale resolution.
+	sfRequest.ImageSize = request.Size
+	if request.N != nil && *request.N > 0 {
+		sfRequest.BatchSize = *request.N
+	} else {
+		sfRequest.BatchSize = 1
 	}
 
 	return sfRequest, nil

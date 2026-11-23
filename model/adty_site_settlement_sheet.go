@@ -35,10 +35,15 @@ type AdtySiteSettlementSheet struct {
 	OwnerSelfUseCostUSD       decimal.Decimal                    `json:"owner_self_use_cost_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	SupplyCostUSD             decimal.Decimal                    `json:"supply_cost_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	SpreadUSD                 decimal.Decimal                    `json:"spread_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	GiftReserveUSD            decimal.Decimal                    `json:"gift_reserve_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	GiftFundingUSD            decimal.Decimal                    `json:"gift_funding_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	GiftReleaseUSD            decimal.Decimal                    `json:"gift_release_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	TrialExpenseUSD           decimal.Decimal                    `json:"trial_expense_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	GiftReserveUSD              decimal.Decimal                    `json:"gift_reserve_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	GiftFundingUSD              decimal.Decimal                    `json:"gift_funding_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	GiftReleaseUSD              decimal.Decimal                    `json:"gift_release_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	VoucherFundingUSD           decimal.Decimal                    `json:"voucher_funding_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	EarningToMarginUSD          decimal.Decimal                    `json:"earning_to_margin_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	MarginTopupUSD              decimal.Decimal                    `json:"margin_topup_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	CommissionPaidUSD           decimal.Decimal                    `json:"commission_paid_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	CommissionClawbackReturnUSD decimal.Decimal                    `json:"commission_clawback_return_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	TrialExpenseUSD             decimal.Decimal                    `json:"trial_expense_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	CommissionUSD             decimal.Decimal                    `json:"commission_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	PendingCoverageUnverified bool                               `json:"pending_coverage_unverified" gorm:"not null;default:false"`
 	PendingCoverageUSD        decimal.Decimal                    `json:"pending_coverage_usd" gorm:"type:decimal(20,8);not null;default:0"`

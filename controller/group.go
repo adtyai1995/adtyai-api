@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -50,7 +51,10 @@ func GetUserGroups(c *gin.Context) {
 			groupRatios[groupName] = service.GetUserGroupRatio(userGroup, groupName)
 		}
 	}
-	service.AdtyApplySitePricing(c, groupRatios)
+	if err := service.AdtyApplySitePricing(c, groupRatios); err != nil {
+		common.ApiErrorStatus(c, http.StatusServiceUnavailable, err)
+		return
+	}
 	for groupName, ratio := range groupRatios {
 		usableGroups[groupName] = map[string]any{
 			"ratio": ratio,

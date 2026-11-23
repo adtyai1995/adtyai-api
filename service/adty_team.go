@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,7 @@ func adtyTeamTableReadyFor(tx *gorm.DB, modelValue any) bool {
 func init() {
 	model.AdtyTeamReserveHook = reserveAdtyTeamQuotaHook
 	model.AdtyTeamSettleHook = settleAdtyTeamQuotaHook
+	model.AdtyPreLockUserDeleteHook = preLockAdtyTeamForUserDelete
 	model.AdtyBeforeUserDeleteHook = closeAdtyTeamForDeletedLeader
 	model.AdtyCreditTeamTopUpTx = creditAdtyTeamTopUpTx
 }
@@ -582,8 +584,9 @@ func ResetAdtyTeamEmployeePassword(leaderId int, teamId int64, memberUserId int,
 			return err
 		}
 		if err := tx.Model(&model.User{}).Where("id = ?", memberUserId).Updates(map[string]any{
-			"password":     hash,
-			"access_token": "",
+			"password":                hash,
+			"access_token":            nil,
+			"access_token_created_at": nil,
 		}).Error; err != nil {
 			return err
 		}
@@ -766,8 +769,9 @@ func disableIndependentTeamEmployeeUserTx(tx *gorm.DB, userId int) error {
 		return err
 	}
 	if err := tx.Model(&model.User{}).Where("id = ?", userId).Updates(map[string]any{
-		"status":       common.UserStatusDisabled,
-		"access_token": "",
+		"status":                  common.UserStatusDisabled,
+		"access_token":            nil,
+		"access_token_created_at": nil,
 	}).Error; err != nil {
 		return err
 	}
@@ -1337,17 +1341,23 @@ func CloseAdtyTeam(leaderId int, teamId int64) error {
 
 func closeAdtyTeamTx(tx *gorm.DB, team *model.AdtyTeam) ([]int, []int, error) {
 	var members []model.AdtyTeamMember
-	if err := model.AdtyLockForUpdate(tx).Where("team_id = ? AND status = ?", team.Id, model.AdtyTeamMemberActive).Find(&members).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).Where("team_id = ? AND status = ?", team.Id, model.AdtyTeamMemberActive).Order("id ASC").Find(&members).Error; err != nil {
 		return nil, nil, err
 	}
-	disabledEmployeeIDs := make([]int, 0)
+	// R5-008: Sort independent employee user IDs ascending before locking/updating users rows.
+	employeeIDs := make([]int, 0, len(members))
 	for _, member := range members {
-		if member.IndependentEmployee && member.Role != model.AdtyTeamRoleLeader {
-			if err := disableIndependentTeamEmployeeUserTx(tx, member.UserId); err != nil {
-				return nil, nil, err
-			}
-			disabledEmployeeIDs = append(disabledEmployeeIDs, member.UserId)
+		if member.IndependentEmployee && member.Role != model.AdtyTeamRoleLeader && member.UserId > 0 {
+			employeeIDs = append(employeeIDs, member.UserId)
 		}
+	}
+	sort.Ints(employeeIDs)
+	disabledEmployeeIDs := make([]int, 0, len(employeeIDs))
+	for _, empID := range employeeIDs {
+		if err := disableIndependentTeamEmployeeUserTx(tx, empID); err != nil {
+			return nil, nil, err
+		}
+		disabledEmployeeIDs = append(disabledEmployeeIDs, empID)
 	}
 	if err := tx.Model(&model.AdtyTeamMember{}).Where("team_id = ? AND status = ?", team.Id, model.AdtyTeamMemberActive).
 		Update("status", model.AdtyTeamMemberLeft).Error; err != nil {
@@ -1747,23 +1757,19 @@ func BindAdtyTeamKey(userId, tokenId int, teamIds ...int64) error {
 // 已记录的 source_site_id 不会被重试改成 0 或另一个猜测值。已在主站且来源为空的历史团队不会被本函数回填；
 // 来源已独立记录的历史团队由 model.BackfillAdtyTeamSourceSiteID 在迁移时补写。
 // 关站迁入不会关闭团队；原团队 API Key 仍按迁移安全规则停用。
-func InheritAdtyTeamsOnCloseTx(tx *gorm.DB, siteId int) error {
-	if !adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) {
-		return nil
-	}
-	if siteId == 0 {
-		return nil
+func inheritAdtyTeamsBeforeUsersOnCloseTx(tx *gorm.DB, siteId int) ([]int64, error) {
+	if !adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) || siteId == 0 {
+		return nil, nil
 	}
 	var teams []model.AdtyTeam
-	if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status = ?", siteId, model.AdtyTeamStatusActive).Order("id").Find(&teams).Error; err != nil {
-		return err
+	if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status = ?", siteId, model.AdtyTeamStatusActive).Order("id ASC").Find(&teams).Error; err != nil {
+		return nil, err
 	}
+	teamIDs := make([]int64, 0, len(teams))
+	now := time.Now().Unix()
 	for _, team := range teams {
-		if err := tx.Model(&model.AdtyTeamInvite{}).Where("team_id = ? AND used_at = 0 AND revoked_at = 0", team.Id).Update("revoked_at", time.Now().Unix()).Error; err != nil {
-			return err
-		}
-		if _, err := disableAdtyTeamKeysTx(tx, team.Id); err != nil {
-			return err
+		if err := tx.Model(&model.AdtyTeamInvite{}).Where("team_id = ? AND used_at = 0 AND revoked_at = 0", team.Id).Update("revoked_at", now).Error; err != nil {
+			return nil, err
 		}
 		updates := map[string]any{"site_id": 0}
 		// 只在来源尚未记录、且迁移前 site_id 就是正在关闭的分站时写入；已在主站（0）的不猜测来源。
@@ -1771,10 +1777,28 @@ func InheritAdtyTeamsOnCloseTx(tx *gorm.DB, siteId int) error {
 			updates["source_site_id"] = team.SiteId
 		}
 		if err := tx.Model(&model.AdtyTeam{}).Where("id = ?", team.Id).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+		teamIDs = append(teamIDs, team.Id)
+	}
+	return teamIDs, nil
+}
+
+func disableAdtyTeamsKeysOnCloseTx(tx *gorm.DB, teamIDs []int64) error {
+	for _, teamID := range teamIDs {
+		if _, err := disableAdtyTeamKeysTx(tx, teamID); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func InheritAdtyTeamsOnCloseTx(tx *gorm.DB, siteId int) error {
+	teamIDs, err := inheritAdtyTeamsBeforeUsersOnCloseTx(tx, siteId)
+	if err != nil {
+		return err
+	}
+	return disableAdtyTeamsKeysOnCloseTx(tx, teamIDs)
 }
 
 func reserveAdtyTeamQuotaHook(tx *gorm.DB, teamId int64, userId, delta int, ref string) (bool, error) {
@@ -2001,6 +2025,32 @@ func AdtyIndependentTeamEmployeeSet(userIDs []int) (map[int]bool, error) {
 		res[uid] = true
 	}
 	return res, nil
+}
+
+func preLockAdtyTeamForUserDelete(tx *gorm.DB, userId int) error {
+	if tx == nil || userId <= 0 || !adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) {
+		return nil
+	}
+	var leaderTeams []model.AdtyTeam
+	if err := model.AdtyLockForUpdate(tx).Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusActive).Order("id ASC").Find(&leaderTeams).Error; err != nil {
+		return err
+	}
+	if !adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{}) {
+		return nil
+	}
+	leaderTeamIDs := make([]int64, 0, len(leaderTeams))
+	for _, team := range leaderTeams {
+		leaderTeamIDs = append(leaderTeamIDs, team.Id)
+	}
+	var memberRows []model.AdtyTeamMember
+	memberQuery := model.AdtyLockForUpdate(tx).Where("user_id = ? AND status IN ?", userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled})
+	if len(leaderTeamIDs) > 0 {
+		memberQuery = model.AdtyLockForUpdate(tx).Where(
+			"(team_id IN ? AND status = ?) OR (user_id = ? AND status IN ?)",
+			leaderTeamIDs, model.AdtyTeamMemberActive, userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled},
+		)
+	}
+	return memberQuery.Order("id ASC").Find(&memberRows).Error
 }
 
 func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) ([]int, error) {

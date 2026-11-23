@@ -336,6 +336,10 @@ func ValidateAdtyTeamTopupCreateTx(tx *gorm.DB, ext *AdtyTopupOrder) error {
 	return nil
 }
 
+// AdtyPreLockUserDeleteHook acquires AdtyTeam and AdtyTeamMember row locks
+// BEFORE user deletion locks the users row, preventing AB-BA deadlocks (R5-008).
+var AdtyPreLockUserDeleteHook func(tx *gorm.DB, userId int) error
+
 // AdtyBeforeUserDeleteHook closes a team when its leader is deleted and returns
 // the user IDs of any independent team employees disabled during closure (R2-010).
 var AdtyBeforeUserDeleteHook func(tx *gorm.DB, userId int) ([]int, error)

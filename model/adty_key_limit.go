@@ -67,8 +67,16 @@ func GetAdtyKeyLimitsTx(tx *gorm.DB, tokenID int) (AdtyKeyLimits, error) {
 // GetAdtyKeyLimits returns all stored per-key rate limits (RPM, TPM, Concurrency).
 // A missing row means no extra cap on that key.
 func GetAdtyKeyLimits(tokenID int) (AdtyKeyLimits, error) {
-	if DB != nil && DB.Migrator().HasTable(&AdtyKeyLimits{}) {
-		_ = EnsureAdtyKeyLimitSchema(DB)
+	if DB != nil {
+		var key any = DB
+		if sqlDB, err := DB.DB(); err == nil && sqlDB != nil {
+			key = sqlDB
+		}
+		if _, ok := migratedKeyLimitDBs.Load(key); !ok {
+			if DB.Migrator().HasTable(&AdtyKeyLimits{}) {
+				_ = EnsureAdtyKeyLimitSchema(DB)
+			}
+		}
 	}
 	return GetAdtyKeyLimitsTx(DB, tokenID)
 }

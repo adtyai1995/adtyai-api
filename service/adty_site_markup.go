@@ -1025,11 +1025,13 @@ func AdtyUserGroupRatio(userId int, userGroup, group string) float64 {
 // Deprecated: retail prices are read directly from the database at admission.
 func InvalidateAdtySitePriceCache() {}
 
-// AdtyApplySitePricing adjusts only the supplied group prices.
-func AdtyApplySitePricing(c *gin.Context, groupRatio map[string]float64) {
+// AdtyApplySitePricing adjusts only the supplied group prices and fails closed on subsite pricing errors (R5-039).
+func AdtyApplySitePricing(c *gin.Context, groupRatio map[string]float64) error {
 	if _, err := AdtySitePriceList(c, groupRatio, "", nil); err != nil {
 		common.SysError(common.LogText("load adty site prices failed: %s", err.Error()))
+		return err
 	}
+	return nil
 }
 
 // AdtyAdjustPricingForSiteModels adjusts a standalone price list for one display group.
@@ -1067,7 +1069,7 @@ func AdtySitePriceList(c *gin.Context, groupRatio map[string]float64, displayGro
 	}
 	d, ok := AdtySiteCostFactor(site)
 	if !ok {
-		return pricing, nil
+		return nil, common.NewMessage("Subsite pricing configuration is invalid")
 	}
 	prices, err := adtySitePrices(site.Id, priceUserID)
 	if err != nil {

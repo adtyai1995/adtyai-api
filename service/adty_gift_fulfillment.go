@@ -549,6 +549,14 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 			if err := reacquireAdtySiteGiftAmountTx(tx, &ext, targetBonusUSD); err != nil {
 				return err
 			}
+			// R5-053: Book site bonus expense in daily earnings upon actual deferred gift fulfillment.
+			if targetBonusUSD.IsPositive() {
+				if err := upsertAdtySiteEarningTx(tx, adtySiteEarningDayFn(), adtySiteEarningEntry{
+					SiteId: ext.SiteId, SiteOwnerUserId: ext.SiteOwnerUserId, UserId: row.UserId, Kind: model.AdtySiteEarningBonus, Earning: targetBonusUSD.Neg(),
+				}); err != nil {
+					return err
+				}
+			}
 		}
 		before, err := model.AdtyCreditUserQuotaTx(tx, row.UserId, owed)
 		if err != nil {

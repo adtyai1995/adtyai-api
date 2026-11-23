@@ -19,6 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEffect } from 'react'
 
+import { subsiteDocument } from '@/lib/subsite-document'
+
 import { recordReferralClick } from '../api'
 
 const DEVICE_COOKIE = 'adty_did'
@@ -28,6 +30,7 @@ export async function trackReferral(
   code: string,
   landingPath: string
 ): Promise<void> {
+  if (subsiteDocument()) return
   const trimmed = code.trim()
   if (!trimmed) return
   try {
@@ -39,6 +42,7 @@ export async function trackReferral(
 
 /** Writes a random device ID once (one year, SameSite=Lax) for the self-invite check. */
 export function ensureDeviceCookie(doc: Document = document): void {
+  if (subsiteDocument()) return
   if (
     doc.cookie.split('; ').some((part) => part.startsWith(`${DEVICE_COOKIE}=`))
   ) {
@@ -60,11 +64,12 @@ export function useReferralCapture(): void {
   const ref = typeof search.ref === 'string' ? search.ref : ''
 
   useEffect(() => {
+    if (subsiteDocument()) return
     ensureDeviceCookie()
   }, [])
 
   useEffect(() => {
-    if (!ref) return
+    if (!ref || subsiteDocument()) return
     void trackReferral(ref, location.pathname)
     void navigate({
       to: '.',

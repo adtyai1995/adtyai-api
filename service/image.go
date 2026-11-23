@@ -144,14 +144,14 @@ func DecodeUrlImageData(imageUrl string) (image.Config, string, error) {
 		n, _ := io.ReadFull(response.Body, additionalData)
 		readData = append(readData, additionalData[:n]...)
 
-		// 使用io.MultiReader组合已经读取的数据和response.Body
-		limitReader := io.MultiReader(bytes.NewReader(readData), response.Body)
-
 		var config image.Config
 		var format string
-		config, format, err = getImageConfig(limitReader)
+		config, format, err = getImageConfig(bytes.NewReader(readData))
 		if err == nil {
 			return config, format, nil
+		}
+		if n < len(additionalData) {
+			break
 		}
 	}
 
@@ -159,10 +159,17 @@ func DecodeUrlImageData(imageUrl string) (image.Config, string, error) {
 }
 
 func getImageConfig(reader io.Reader) (image.Config, string, error) {
-	// Read all data so we can retry with different decoders
-	data, readErr := io.ReadAll(reader)
+	maxBytes := int64(constant.MaxFileDownloadMB) * 1024 * 1024
+	if maxBytes <= 0 {
+		maxBytes = 20 * 1024 * 1024
+	}
+	// Read bounded data so we can retry with different decoders without unbounded OOM
+	data, readErr := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if readErr != nil {
 		return image.Config{}, "", fmt.Errorf("failed to read image data: %w", readErr)
+	}
+	if int64(len(data)) > maxBytes {
+		return image.Config{}, "", fmt.Errorf("image data exceeds max size limit")
 	}
 
 	// 读取图片的头部信息来获取图片尺寸

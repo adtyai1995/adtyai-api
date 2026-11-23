@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -19,11 +20,15 @@ import (
 
 const adtyNotifyTypeEpayMaintenance = "adty_epay_maintenance"
 
-// adtyNotifyRootAdmins 通知超级管理员，测试可以替换。走 notifyAdmins，通知方式、语言、限频都按上游处理。
-var adtyNotifyRootAdmins = func(render func(lang string) (string, string)) {
-	notifyAdmins(adtyNotifyTypeEpayMaintenance, func(_ int, role int, _ dto.UserSetting) bool {
+// adtyNotifyRootAdmins 通知超级管理员，测试可以替换。走 notifyAdminsWithEventID，通知方式、语言、限频都按上游处理。
+var adtyNotifyRootAdminsWithEventID = func(eventID string, render func(lang string) (string, string)) {
+	notifyAdminsWithEventID(eventID, adtyNotifyTypeEpayMaintenance, func(_ int, role int, _ dto.UserSetting) bool {
 		return role == common.RoleRootUser
 	}, render)
+}
+
+var adtyNotifyRootAdmins = func(render func(lang string) (string, string)) {
+	adtyNotifyRootAdminsWithEventID("", render)
 }
 
 // adtyEpayQuery 和 adtyEpayProbe 可以在测试里替换成假网关。
@@ -170,7 +175,8 @@ func countAdtyEpayUnpaid(tradeNos []string) {
 			map[string]any{"id": channel.Id, "reason": model.AdtyEpayReasonUnpaid, "streak": channel.UnpaidStreak}, nil, nil)
 		name := channel.Name
 		streak := channel.UnpaidStreak
-		adtyNotifyRootAdmins(func(lang string) (string, string) {
+		eventID := fmt.Sprintf("epay_maintenance:%d:%d", channel.Id, time.Now().UnixNano())
+		adtyNotifyRootAdminsWithEventID(eventID, func(lang string) (string, string) {
 			args := map[string]any{"Name": name, "Count": streak}
 			return i18n.Translate(lang, i18n.MsgAdtyEpayMaintenanceSubject, args), i18n.Translate(lang, i18n.MsgAdtyEpayMaintenanceBody, args)
 		})
@@ -359,6 +365,9 @@ func init() {
 		if ext != nil && ext.IsOwnerMargin() && ext.SiteId > 0 {
 			if _, err := ResumePendingAdtyGiftFulfillments(ext.SiteId); err != nil {
 				common.SysLog(common.LogText("gift fulfillment: resume after online margin top-up site %d: %s", ext.SiteId, err.Error()))
+			}
+			if err := ResumeAdtySiteInviteCoverage(ext.SiteId, time.Now()); err != nil {
+				common.SysLog(common.LogText("site invite coverage: resume after online margin top-up site %d: %s", ext.SiteId, err.Error()))
 			}
 		}
 	}

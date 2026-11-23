@@ -82,6 +82,13 @@ export function BotProtectionSection({
       ([key, value]) =>
         value !== baselineRef.current[key as keyof BotProtectionFormValues]
     )
+    updates.sort(([keyA], [keyB]) => {
+      const order = (key: string) => {
+        if (key !== 'TurnstileCheckEnabled') return 1
+        return data.TurnstileCheckEnabled ? 2 : 0
+      }
+      return order(keyA) - order(keyB)
+    })
 
     for (const [key, value] of updates) {
       await updateOption.mutateAsync({ key, value: value ?? '' })

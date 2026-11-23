@@ -110,7 +110,7 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 		return nil, common.NewMessage("Invalid idempotency key")
 	}
 	withdrawal := &model.ReferralWithdrawal{
-		UserId: input.UserId, SettlementCurrency: "USD", Amount: moneyF(amount), NetAmount: moneyF(amount),
+		UserId: input.UserId, SettlementCurrency: "USD", RequestedAmount: moneyF(amount), Amount: moneyF(amount), NetAmount: moneyF(amount),
 		AccountType: input.AccountType, SubmittedAt: time.Now().Unix(), Status: model.ReferralWithdrawalStatusPending,
 	}
 	switch input.AccountType {
@@ -155,9 +155,13 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			if name, ok := extractReferralAssetName(existingQR); ok {
 				existingQR = "/api/referral-assets/" + name
 			}
+			requestedAmount := moneyDec(existing[0].RequestedAmount)
+			if !requestedAmount.IsPositive() {
+				requestedAmount = moneyDec(existing[0].Amount)
+			}
 			sameDest := existing[0].UserId == input.UserId &&
 				existing[0].AccountType == input.AccountType &&
-				moneyDec(existing[0].Amount).Equal(amount) &&
+				requestedAmount.Equal(amount) &&
 				strings.ToUpper(strings.TrimSpace(existing[0].AccountNetwork)) == normalizedNetwork &&
 				strings.TrimSpace(existing[0].AccountNo) == trimmedAccountNo &&
 				strings.TrimSpace(existing[0].AccountName) == trimmedAccountName &&

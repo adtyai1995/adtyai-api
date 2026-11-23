@@ -207,8 +207,10 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 		writeAdtyOfficialAudit(actorID, issuerID, "notification", strconv.Itoa(row.Id), auditAction, "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
 	}
 	if row.Status == "published" {
-		produceAdtySevereTodosForPublished(&row)
+		// R5-058: Apply translation BEFORE producing/updating severe todos so todo content
+		// matches the freshly updated announcement body.
 		applyAdtyNotificationTranslation(&row, sourceContent, issuerID)
+		produceAdtySevereTodosForPublished(&row)
 		if err := pushAdtyNotificationToTelegram(&row, issuer); err != nil {
 			common.SysError(common.LogText("push notification %d to telegram failed: %s", row.Id, err.Error()))
 		}
@@ -1042,7 +1044,7 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string) (ma
 				return formatTicketInboxNotice(notice, scope), true, nil
 			}
 		}
-		if item, ok := adtyWatcherNoticeDetail(userID, key); ok {
+		if item, ok := adtyWatcherNoticeDetail(userID, site, key); ok {
 			return item, true, nil
 		}
 		return nil, false, nil
@@ -1056,6 +1058,63 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string) (ma
 	item := formatAdtyNotificationItem(row)
 	RenderAdtyTodoInboxItems(userID, []map[string]any{item})
 	return item, true, nil
+}
+
+// resolveAdtyNotificationCanonicalKey resolves any supported notification key or alias
+// ("notice", "publication:<id>", "<id>", "watcher:<read_key>", "watcher:<event_id>", read_key)
+// to its canonical read_key while verifying audience/permission visibility, WITHOUT rejecting
+// keys that are already hidden so HideAdtyNotificationForUserFromRequest stays idempotent (R5-060).
+func resolveAdtyNotificationCanonicalKey(userID int, site *model.AdtySite, key string) (string, bool, error) {
+	key = strings.TrimSpace(key)
+	if userID <= 0 || key == "" {
+		return "", false, nil
+	}
+	inbox, _, err := adtyCurrentNotificationInbox(site)
+	if err != nil {
+		return "", false, err
+	}
+	if inbox.Notice != "" && (key == inbox.NoticeKey || key == "notice") {
+		return inbox.NoticeKey, true, nil
+	}
+	query, err := adtyVisibleNotificationPublications(userID, site)
+	if err != nil {
+		return "", false, err
+	}
+	var row model.AdtyNotificationPublication
+	if idStr, ok := strings.CutPrefix(key, "publication:"); ok {
+		if pubID, parseErr := strconv.Atoi(strings.TrimSpace(idStr)); parseErr == nil && pubID > 0 {
+			err = query.Where("id = ? OR read_key = ?", pubID, key).Order("id DESC").Limit(1).Find(&row).Error
+		} else {
+			err = query.Where("read_key = ?", key).Order("id DESC").Limit(1).Find(&row).Error
+		}
+	} else if pubID, parseErr := strconv.Atoi(key); parseErr == nil && pubID > 0 {
+		err = query.Where("id = ? OR read_key = ?", pubID, key).Order("id DESC").Limit(1).Find(&row).Error
+	} else {
+		err = query.Where("read_key = ?", key).Order("id DESC").Limit(1).Find(&row).Error
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if row.Id > 0 {
+		return row.ReadKey, true, nil
+	}
+	if adtyTicketInboxTablesReady() {
+		ticketQuery, _, err := adtyTicketInboxQuery(userID, site)
+		if err != nil {
+			return "", false, err
+		}
+		var notice model.AdtyTicketNotice
+		if err := ticketQuery.Select("id", "read_key").Where("read_key = ?", key).Limit(1).Find(&notice).Error; err != nil {
+			return "", false, err
+		}
+		if notice.Id > 0 {
+			return notice.ReadKey, true, nil
+		}
+	}
+	if notice, ok := adtyWatcherNoticeLookup(userID, site, key); ok {
+		return notice.ReadKey, true, nil
+	}
+	return "", false, nil
 }
 
 func adtyTicketInboxTablesReady() bool {
@@ -1176,14 +1235,14 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 	}
 
 	if firstPage {
-		for _, item := range adtyWatcherNoticeInboxItems(userID) {
+		for _, item := range adtyWatcherNoticeInboxItems(userID, site) {
 			inbox.Announcements = append(inbox.Announcements, item)
 			if key, _ := item["read_key"].(string); key != "" {
 				keys = append(keys, key)
 			}
 		}
 	}
-	inbox.UnreadPublications += adtyUnreadWatcherNoticeCount(userID, siteID)
+	inbox.UnreadPublications += adtyUnreadWatcherNoticeCount(userID, site)
 	inbox.ReadKeys, err = model.GetAdtyNotificationReadKeys(userID, siteID, keys)
 	if err != nil {
 		return inbox, err
@@ -1283,7 +1342,7 @@ func MarkAdtyNotificationInboxRead(userID int, site *model.AdtySite, keys []stri
 			allowed[key] = true
 		}
 	}
-	for key := range adtyOwnedWatcherReadKeys(userID, keys) {
+	for key := range adtyOwnedWatcherReadKeys(userID, site, keys) {
 		allowed[key] = true
 	}
 	unique := make(map[string]bool, len(keys))

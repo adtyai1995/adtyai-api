@@ -115,12 +115,17 @@ func embeddingResponseBaidu2OpenAI(response *BaiduEmbeddingResponse) *dto.OpenAI
 
 func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, *dto.Usage) {
 	usage := &dto.Usage{}
+	var responseText strings.Builder
+	hasOutput := false
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var baiduResponse BaiduChatStreamResponse
 		if err := common.Unmarshal([]byte(data), &baiduResponse); err != nil {
 			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
 			sr.Error(err)
 			return
+		}
+		if baiduResponse.Result != "" {
+			responseText.WriteString(baiduResponse.Result)
 		}
 		if baiduResponse.Usage.TotalTokens != 0 {
 			usage.TotalTokens = baiduResponse.Usage.TotalTokens
@@ -131,9 +136,14 @@ func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		if err := helper.ObjectData(c, response); err != nil {
 			common.SysLog(common.LogText("error sending stream response: %s", err.Error()))
 			sr.Error(err)
+			return
 		}
+		hasOutput = true
 	})
 	service.CloseResponseBodyGracefully(resp)
+	if usage.TotalTokens == 0 && (hasOutput || responseText.Len() > 0) {
+		usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+	}
 	return nil, usage
 }
 

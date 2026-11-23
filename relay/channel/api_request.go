@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -513,13 +514,44 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	return resp, nil
 }
 
+type taskSubmitCancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *taskSubmitCancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.cancel != nil {
+		b.cancel()
+	}
+	return err
+}
+
 func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	if c == nil || c.Request == nil {
+		return nil, errors.New("client request is missing")
+	}
+	// R5-016: Check cancellation BEFORE transmitting to upstream; once dispatched,
+	// detach from client disconnect via context.WithoutCancel with a bounded timeout
+	// so an early client disconnect cannot trigger a 100% auto-refund while upstream
+	// creates a billable async job.
+	if err := c.Request.Context().Err(); err != nil {
+		return nil, err
+	}
 	fullRequestURL, err := a.BuildRequestURL(info)
 	if err != nil {
 		return nil, err
 	}
-	req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
+	submitTimeout := 120 * time.Second
+	if common2.RelayTimeout > 0 {
+		if configured := time.Duration(common2.RelayTimeout) * time.Second; configured > submitTimeout {
+			submitTimeout = configured
+		}
+	}
+	submitCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), submitTimeout)
+	req, err := http.NewRequestWithContext(submitCtx, c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
@@ -534,14 +566,22 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 
 	err = a.BuildRequestHeader(c, req, info)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
 	if err = ApplyHeaderOverride(info, c, req); err != nil {
+		cancel()
 		return nil, err
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("do request failed: %w", err)
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body = &taskSubmitCancelBody{ReadCloser: resp.Body, cancel: cancel}
+	} else {
+		cancel()
 	}
 	return resp, nil
 }

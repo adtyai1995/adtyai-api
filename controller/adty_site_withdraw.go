@@ -62,6 +62,13 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// R5-041: Redact Root reviewer_id and non-terminal internal recall/failure notes before returning to site owner.
+	for i := range rows {
+		rows[i].ReviewerId = 0
+		if rows[i].Status != model.AdtySiteWithdrawPaid && rows[i].Status != model.AdtySiteWithdrawRejected {
+			rows[i].ProofNote = ""
+		}
+	}
 	page.SetTotal(int(total))
 	page.SetItems(rows)
 	common.ApiSuccess(c, page)
@@ -153,11 +160,15 @@ func PutAdtySiteWithdrawRules(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveAdtySiteWithdrawRules(body, c.GetInt("id")); err != nil {
+	eventID, err := service.SaveAdtySiteWithdrawRulesWithAudit(body, c.GetInt("id"))
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	markAuditLogged(c)
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, gin.H{"saved": true})
 }
 
@@ -215,10 +226,12 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	var eventID string
+	var replayed bool
 	var err error
 	switch action {
 	case "paying":
-		err = service.MarkAdtySiteWithdrawalPaying(id, c.GetInt("id"), body.Attempt)
+		eventID, replayed, err = service.MarkAdtySiteWithdrawalPayingWithAudit(id, c.GetInt("id"), body.Attempt)
 	case "recall":
 		reason := strings.TrimSpace(body.Reason)
 		if reason == "" {
@@ -226,9 +239,9 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 			return
 		}
 		if body.TxID != "" {
-			err = service.ConfirmAdtySiteWithdrawalFailed(id, c.GetInt("id"), body.Attempt, reason, body.TxID)
+			eventID, err = service.ConfirmAdtySiteWithdrawalFailedWithAudit(id, c.GetInt("id"), body.Attempt, reason, body.TxID)
 		} else {
-			err = service.RecallAdtySiteWithdrawalToPending(id, c.GetInt("id"), reason, body.Attempt)
+			eventID, replayed, err = service.RecallAdtySiteWithdrawalToPendingWithAudit(id, c.GetInt("id"), reason, body.Attempt)
 		}
 	case "reject":
 		reason := strings.TrimSpace(body.Reason)
@@ -236,9 +249,9 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 			common.ApiErrorT(c, "Reject reason is required")
 			return
 		}
-		err = service.RejectAdtySiteWithdrawal(id, c.GetInt("id"), reason)
+		eventID, err = service.RejectAdtySiteWithdrawalWithAudit(id, c.GetInt("id"), reason)
 	default:
-		err = service.MarkAdtySiteWithdrawalPaid(id, c.GetInt("id"), body.TxID, body.Proof, body.Attempt)
+		eventID, replayed, err = service.MarkAdtySiteWithdrawalPaidWithAudit(id, c.GetInt("id"), body.TxID, body.Proof, body.Attempt)
 	}
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
@@ -248,6 +261,11 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 		common.ApiError(c, err)
 		return
 	}
-	markAuditLogged(c)
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, gin.H{"updated": true})
 }

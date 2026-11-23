@@ -207,8 +207,9 @@ func LockPaymentOrphanTx(tx *gorm.DB, id int64) (*PaymentOrphanEvent, error) {
 	return &rows[0], nil
 }
 
-// LockPaymentOrphanOrderTx keeps every operator path in the payment lock order:
-// order, extension, event. An event with no local order can still be reviewed.
+// LockPaymentOrphanOrderTx keeps every operator path in the canonical payment lock order:
+// AdtySite (when site_id > 0) -> TopUp -> AdtyTopupOrder -> PaymentOrphanEvent.
+// An event with no local order can still be reviewed.
 func LockPaymentOrphanOrderTx(tx *gorm.DB, id int64) (*PaymentOrphanEvent, *TopUp, *AdtyTopupOrder, error) {
 	var observed PaymentOrphanEvent
 	if err := tx.First(&observed, id).Error; err != nil {
@@ -216,6 +217,20 @@ func LockPaymentOrphanOrderTx(tx *gorm.DB, id int64) (*PaymentOrphanEvent, *TopU
 			return nil, nil, nil, ErrPaymentOrphanNotFound
 		}
 		return nil, nil, nil, err
+	}
+	if strings.TrimSpace(observed.ReferenceID) != "" {
+		var observedOrder struct {
+			SiteId int
+		}
+		if err := tx.Model(&AdtyTopupOrder{}).Select("site_id").Where("trade_no = ?", observed.ReferenceID).Limit(1).Scan(&observedOrder).Error; err != nil {
+			return nil, nil, nil, err
+		}
+		if observedOrder.SiteId > 0 {
+			var site AdtySite
+			if err := lockForUpdate(tx).Where("id = ?", observedOrder.SiteId).Limit(1).Find(&site).Error; err != nil {
+				return nil, nil, nil, err
+			}
+		}
 	}
 	topUp, ext, err := lockAdtyTopUpTx(tx, observed.ReferenceID)
 	if err != nil && err != ErrTopUpNotFound {

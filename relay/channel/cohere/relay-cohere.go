@@ -192,6 +192,11 @@ func cohereHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	usage.PromptTokens = cohereResp.Meta.BilledUnits.InputTokens
 	usage.CompletionTokens = cohereResp.Meta.BilledUnits.OutputTokens
 	usage.TotalTokens = cohereResp.Meta.BilledUnits.InputTokens + cohereResp.Meta.BilledUnits.OutputTokens
+	if usage.TotalTokens == 0 && strings.TrimSpace(cohereResp.Text) != "" {
+		if est := service.ResponseText2Usage(c, cohereResp.Text, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
+			usage = *est
+		}
+	}
 
 	var openaiResp dto.TextResponse
 	openaiResp.Id = cohereResp.ResponseId

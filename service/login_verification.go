@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	passkeysvc "github.com/QuantumNous/new-api/service/passkey"
 	"gorm.io/gorm"
 )
 
@@ -39,14 +40,20 @@ type LoginVerification struct {
 }
 
 func StartLoginVerification(user *model.User, loginMethod string) (*LoginChallenge, error) {
-	return startLoginVerification(user, loginMethod, nil)
+	return startLoginVerification(user, loginMethod, nil, true, "")
 }
 
 func StartLoginVerificationOnSite(user *model.User, loginMethod string, siteID int) (*LoginChallenge, error) {
-	return startLoginVerification(user, loginMethod, &siteID)
+	return startLoginVerification(user, loginMethod, &siteID, true, "")
 }
 
-func startLoginVerification(user *model.User, loginMethod string, siteID *int) (*LoginChallenge, error) {
+// StartLoginVerificationForRequest applies request-host Passkey RPID/Origin availability
+// on main-site dual-domain logins so users never receive an uncompletable Passkey challenge (R5-043).
+func StartLoginVerificationForRequest(user *model.User, loginMethod string, siteID int, passkeyAvailable bool, passkeyUnavailableReason string) (*LoginChallenge, error) {
+	return startLoginVerification(user, loginMethod, &siteID, passkeyAvailable, passkeyUnavailableReason)
+}
+
+func startLoginVerification(user *model.User, loginMethod string, siteID *int, passkeyAvailable bool, passkeyUnavailableReason string) (*LoginChallenge, error) {
 	if user == nil || user.Id <= 0 || user.AuthVersion <= 0 || loginMethod == "" {
 		return nil, model.ErrAuthFlowInvalid
 	}
@@ -61,6 +68,7 @@ func startLoginVerification(user *model.User, loginMethod string, siteID *int) (
 	if err != nil || len(methods) == 0 {
 		return nil, err
 	}
+	passkeyBlockedByHost := false
 	if siteID != nil && *siteID > 0 {
 		filtered := make([]VerificationMethodOption, 0, len(methods))
 		for _, method := range methods {
@@ -70,12 +78,25 @@ func startLoginVerification(user *model.User, loginMethod string, siteID *int) (
 			filtered = append(filtered, method)
 		}
 		methods = filtered
+	} else if !passkeyAvailable {
+		for i := range methods {
+			if methods[i].Method == VerificationMethodPasskey && methods[i].Available {
+				methods[i].Available = false
+				if passkeyUnavailableReason != "" {
+					methods[i].Reason = passkeyUnavailableReason
+				}
+				passkeyBlockedByHost = true
+			}
+		}
 	}
 	available := false
 	for _, method := range methods {
 		available = available || method.Available
 	}
 	if !available {
+		if passkeyBlockedByHost {
+			return nil, passkeysvc.ErrRPIDUnavailable
+		}
 		return nil, ErrVerificationUnavailable
 	}
 	payload := loginFlowPayload{AuthVersion: state.AuthVersion, LoginMethod: loginMethod}

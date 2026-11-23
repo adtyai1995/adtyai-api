@@ -3,15 +3,46 @@ package common
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/mail"
 	"strings"
 	"time"
 )
 
+func newResendVerifiedTransport() *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   15 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: false,
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if cs.Version < tls.VersionTLS12 || len(cs.PeerCertificates) == 0 || len(cs.VerifiedChains) == 0 {
+					return errors.New("resend tls certificate verification failed")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 var resendEmailClient = &http.Client{
-	Timeout: 20 * time.Second,
+	Timeout:   20 * time.Second,
+	Transport: newResendVerifiedTransport(),
 	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	},

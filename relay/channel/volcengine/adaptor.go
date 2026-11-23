@@ -90,6 +90,16 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		if err = common.Unmarshal(request.Metadata, &volcRequest); err != nil {
 			return nil, fmt.Errorf("error unmarshalling metadata to volcengine request: %w", err)
 		}
+		// R5-013: Restore auth and billing-critical fields after metadata merge so clients
+		// cannot override model, text, reqid, or credentials.
+		volcRequest.App.AppID = appID
+		volcRequest.App.Token = token
+		volcRequest.Request.ReqID = generateRequestID()
+		volcRequest.Request.Text = request.Input
+		volcRequest.Request.Model = info.UpstreamModelName
+		if volcRequest.Request.Model == "" {
+			volcRequest.Request.Model = info.OriginModelName
+		}
 	}
 
 	c.Set(contextKeyTTSRequest, volcRequest)

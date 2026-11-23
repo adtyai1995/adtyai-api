@@ -46,18 +46,24 @@ func adtyAllocatePlatformDomainsTx(tx *gorm.DB, site *model.AdtySite) error {
 }
 
 func AdtyDomainCloseAction(row model.AdtySiteDomain) string {
-	if row.Status == model.AdtySiteDomainRemoved || row.DesiredState == "removed" || row.Role == model.AdtySiteDomainRoleBaseURL {
-		return "removed"
+	// R5-046: Only already-active website domains transition to redirect_only on close.
+	// Never-activated (pending/failed) website domains and all base_url domains are removed.
+	if row.Role == model.AdtySiteDomainRoleSite && row.Status == model.AdtySiteDomainActive && row.DesiredState != "removed" {
+		return "redirect_only"
 	}
-	return "redirect_only"
+	return "removed"
 }
 
 func adtyCloseDomainIntentsTx(tx *gorm.DB, siteID int) error {
-	for _, role := range []string{model.AdtySiteDomainRoleSite, model.AdtySiteDomainRoleBaseURL} {
-		desired := AdtyDomainCloseAction(model.AdtySiteDomain{Role: role})
-		if err := tx.Model(&model.AdtySiteDomain{}).Where("site_id = ? AND role = ? AND status <> ? AND desired_state NOT IN ?", siteID, role, model.AdtySiteDomainRemoved, []string{desired, "removed"}).Updates(map[string]any{"desired_state": desired, "automation_state": "queued", "next_run_at": 0, "generation": gorm.Expr("generation + 1")}).Error; err != nil {
-			return err
-		}
+	if err := tx.Model(&model.AdtySiteDomain{}).
+		Where("site_id = ? AND role = ? AND status = ? AND desired_state NOT IN ?", siteID, model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive, []string{"redirect_only", "removed"}).
+		Updates(map[string]any{"desired_state": "redirect_only", "automation_state": "queued", "next_run_at": 0, "generation": gorm.Expr("generation + 1")}).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&model.AdtySiteDomain{}).
+		Where("site_id = ? AND status <> ? AND desired_state <> ? AND NOT (role = ? AND status = ?)", siteID, model.AdtySiteDomainRemoved, "removed", model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive).
+		Updates(map[string]any{"desired_state": "removed", "automation_state": "queued", "next_run_at": 0, "generation": gorm.Expr("generation + 1")}).Error; err != nil {
+		return err
 	}
 	return nil
 }

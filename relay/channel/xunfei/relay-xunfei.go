@@ -12,9 +12,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
@@ -127,7 +129,7 @@ func buildXunfeiAuthUrl(hostUrl string, apiKey, apiSecret string) string {
 	return callUrl
 }
 
-func xunfeiStreamHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, appId string, apiSecret string, apiKey string) (*dto.Usage, *types.NewAPIError) {
+func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.GeneralOpenAIRequest, appId string, apiSecret string, apiKey string) (*dto.Usage, *types.NewAPIError) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	domain, authUrl := getXunfeiAuthUrl(c, apiKey, apiSecret, textRequest.Model)
@@ -137,28 +139,57 @@ func xunfeiStreamHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, a
 	}
 	helper.SetEventStreamHeaders(c)
 	var usage dto.Usage
+	var responseText strings.Builder
+	hasOutput := false
+	finalizeUsage := func() *dto.Usage {
+		if usage.TotalTokens == 0 && (hasOutput || responseText.Len() > 0) {
+			modelName := textRequest.Model
+			promptTokens := 0
+			if info != nil {
+				if info.UpstreamModelName != "" {
+					modelName = info.UpstreamModelName
+				}
+				promptTokens = info.GetEstimatePromptTokens()
+			}
+			return service.ResponseText2Usage(c, responseText.String(), modelName, promptTokens)
+		}
+		return &usage
+	}
 	for {
 		select {
 		case <-ctx.Done():
+			if hasOutput {
+				return finalizeUsage(), nil
+			}
 			return &usage, types.NewError(ctx.Err(), types.ErrorCodeDoRequestFailed)
 		case xunfeiResponse := <-dataChan:
 			usage.PromptTokens += xunfeiResponse.Payload.Usage.Text.PromptTokens
 			usage.CompletionTokens += xunfeiResponse.Payload.Usage.Text.CompletionTokens
 			usage.TotalTokens += xunfeiResponse.Payload.Usage.Text.TotalTokens
+			if len(xunfeiResponse.Payload.Choices.Text) > 0 {
+				responseText.WriteString(xunfeiResponse.Payload.Choices.Text[0].Content)
+			}
 			response := streamResponseXunfei2OpenAI(&xunfeiResponse)
 			jsonResponse, err := common.Marshal(response)
 			if err != nil {
+				if hasOutput {
+					return finalizeUsage(), nil
+				}
 				return &usage, types.NewError(err, types.ErrorCodeBadResponseBody)
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
 			c.Writer.Flush()
+			hasOutput = true
 		case err := <-stopChan:
 			if err != nil {
+				if hasOutput {
+					return finalizeUsage(), nil
+				}
 				return &usage, types.NewError(err, types.ErrorCodeBadResponseBody)
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
 			c.Writer.Flush()
-			return &usage, nil
+			return finalizeUsage(), nil
 		}
 	}
 }

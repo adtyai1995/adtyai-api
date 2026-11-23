@@ -19,7 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { useStatus } from '@/hooks/use-status'
 import { getCurrencyLabel } from '@/lib/currency'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
@@ -49,6 +51,8 @@ export function ModelPriceCell(props: {
   showExpression?: boolean
 }) {
   const { t, i18n } = useTranslation()
+  const { status } = useStatus()
+  const isSubsite = Boolean(status?.adty_site || subsiteDocument())
   const currency = useSystemConfigStore((state) => state.config.currency)
   const currencyLabel =
     currency.quotaDisplayType === 'TOKENS' ? 'USD' : getCurrencyLabel()
@@ -100,7 +104,7 @@ export function ModelPriceCell(props: {
       return (
         <span className='block max-w-full min-w-0'>
           <span className='text-muted-foreground block truncate text-sm'>
-            {t('Special billing expression')}
+            {isSubsite ? t('Dynamic Pricing') : t('Special billing expression')}
           </span>
           {providerCaption && (
             <span className='text-muted-foreground block text-xs'>
@@ -109,7 +113,14 @@ export function ModelPriceCell(props: {
                 .join(' · ')}
             </span>
           )}
-          {props.showExpression !== false && (
+          {isSubsite && (
+            <span className='text-muted-foreground mt-0.5 block text-xs'>
+              {t(
+                'Billed dynamically based on actual usage and site retail pricing'
+              )}
+            </span>
+          )}
+          {!isSubsite && props.showExpression !== false && (
             <code className='text-muted-foreground mt-1 line-clamp-2 block text-xs break-all whitespace-normal'>
               {dynamic.rawExpression}
             </code>

@@ -994,10 +994,10 @@ func adtyEffectiveGrantedBonusQuotaTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, 
 		return 0, err
 	}
 	fullQuota := int64(fullDec)
-	// Pending / pending_review / canceled gift fulfillment means the site gift
-	// was never credited to the user; never treat ungranted gift as shortfall (R1-048).
+	// Pending / pending_review / canceled / fulfilled deferred gift: always check actual
+	// granted bonus batches so ungranted or shrunk-before-fulfill gift is never over-reclaimed (R1-048 / R5-002).
 	switch ext.GiftFulfillmentStatus {
-	case AdtyGiftFulfillmentPending, AdtyGiftFulfillmentPendingReview, AdtyGiftFulfillmentCanceled:
+	case AdtyGiftFulfillmentPending, AdtyGiftFulfillmentPendingReview, AdtyGiftFulfillmentCanceled, AdtyGiftFulfillmentFulfilled:
 		if tx != nil && tx.Migrator().HasTable(&AdtyFundBatch{}) {
 			var granted int64
 			if err := tx.Model(&AdtyFundBatch{}).
@@ -1006,6 +1006,9 @@ func adtyEffectiveGrantedBonusQuotaTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, 
 				return 0, err
 			}
 			return min(fullQuota, max(granted, int64(0))), nil
+		}
+		if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentFulfilled {
+			return fullQuota, nil
 		}
 		return 0, nil
 	}
@@ -1027,6 +1030,20 @@ func adtyPlannedBonusQuotaTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManual
 	if face <= 0 {
 		return 0, nil
 	}
+	fullDec, err := common.WalletQuotaFromDecimalStrict(ext.BonusUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
+	if err != nil {
+		return 0, err
+	}
+	fullQuota := int64(fullDec)
+	// R5-002: When a pending gift was shrunk by earlier partial refunds and later fulfilled
+	// at a reduced amount, account for the already-canceled portion (priorShrunk) so subsequent
+	// refunds never over-reclaim valid remaining gift or record phantom shortfall.
+	priorShrunk := int64(0)
+	basisQuota := effectiveBonusQuota
+	if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentFulfilled && effectiveBonusQuota < fullQuota {
+		priorShrunk = fullQuota - effectiveBonusQuota
+		basisQuota = fullQuota
+	}
 	// Unified cumulative floor formula minus prior accounted gift across ALL
 	// partial and final refunds (G.9.4 / R1-048), closing rounding dust on full refund.
 	var priorReq int64
@@ -1039,17 +1056,19 @@ func adtyPlannedBonusQuotaTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManual
 		priorBonusAccounted += r.BonusDeductedQuota + r.BonusShortfallQuota
 	}
 	if legacyRefundQuota := ext.RefundQuota - priorReq; legacyRefundQuota > 0 {
-		legacyTarget := decimal.NewFromInt(effectiveBonusQuota).Mul(decimal.NewFromInt(min(legacyRefundQuota, face))).Div(decimal.NewFromInt(face)).Floor().IntPart()
-		priorBonusAccounted += max(legacyTarget, int64(0))
+		legacyTarget := decimal.NewFromInt(basisQuota).Mul(decimal.NewFromInt(min(legacyRefundQuota, face))).Div(decimal.NewFromInt(face)).Floor().IntPart()
+		priorBonusAccounted += max(legacyTarget-priorShrunk, int64(0))
 	}
 	cumRefund := ext.RefundQuota + requestQuota
 	var cumTarget int64
 	if cumRefund >= face {
-		cumTarget = effectiveBonusQuota
+		cumTarget = basisQuota
 	} else {
-		cumTarget = decimal.NewFromInt(effectiveBonusQuota).Mul(decimal.NewFromInt(max(cumRefund, int64(0)))).Div(decimal.NewFromInt(face)).Floor().IntPart()
+		cumTarget = decimal.NewFromInt(basisQuota).Mul(decimal.NewFromInt(max(cumRefund, int64(0)))).Div(decimal.NewFromInt(face)).Floor().IntPart()
 	}
-	return max(cumTarget-priorBonusAccounted, int64(0)), nil
+	planned := max(cumTarget-priorBonusAccounted-priorShrunk, int64(0))
+	remainingGranted := max(effectiveBonusQuota-priorBonusAccounted, int64(0))
+	return min(planned, remainingGranted), nil
 }
 
 // PlanAdtyTopUpManualRefundBonus records the official cumulative-ratio gift

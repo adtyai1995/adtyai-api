@@ -275,11 +275,17 @@ func difyHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
+	usage := difyResponse.MetaData.Usage
+	if usage.TotalTokens == 0 && strings.TrimSpace(difyResponse.Answer) != "" {
+		if est := service.ResponseText2Usage(c, difyResponse.Answer, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
+			usage = *est
+		}
+	}
 	fullTextResponse := dto.OpenAITextResponse{
 		Id:      difyResponse.ConversationId,
 		Object:  "chat.completion",
 		Created: common.GetTimestamp(),
-		Usage:   difyResponse.MetaData.Usage,
+		Usage:   usage,
 	}
 	choice := dto.OpenAITextResponseChoice{
 		Index: 0,
@@ -297,5 +303,5 @@ func difyHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 	c.Writer.Header().Set("Content-Type", "application/json")
 	c.Writer.WriteHeader(resp.StatusCode)
 	c.Writer.Write(jsonResponse)
-	return &difyResponse.MetaData.Usage, nil
+	return &usage, nil
 }

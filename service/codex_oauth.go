@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -99,7 +100,7 @@ func refreshCodexOAuthToken(
 		ExpiresIn    int    `json:"expires_in"`
 	}
 
-	if err := common.DecodeJson(resp.Body, &payload); err != nil {
+	if err := common.DecodeJson(io.LimitReader(resp.Body, 1<<20), &payload); err != nil {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -118,15 +119,27 @@ func refreshCodexOAuthToken(
 }
 
 func getCodexOAuthHTTPClient(proxyURL string) (*http.Client, error) {
-	baseClient, err := GetHttpClientWithProxy(strings.TrimSpace(proxyURL))
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return NewVerifiedDirectNoRedirectHTTPClient(defaultHTTPTimeout), nil
+	}
+	baseClient, err := GetHttpClientWithProxy(proxyURL)
 	if err != nil {
 		return nil, err
 	}
 	if baseClient == nil {
-		return &http.Client{Timeout: defaultHTTPTimeout}, nil
+		return NewVerifiedDirectNoRedirectHTTPClient(defaultHTTPTimeout), nil
+	}
+	verifiedTransport, err := cloneAdtyVerifiedPaymentTransport(baseClient.Transport)
+	if err != nil {
+		return nil, err
 	}
 	clientCopy := *baseClient
+	clientCopy.Transport = verifiedTransport
 	clientCopy.Timeout = defaultHTTPTimeout
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &clientCopy, nil
 }
 

@@ -104,6 +104,7 @@ const STATUS_RELATED_KEYS = new Set([
   'console_setting.uptime_kuma_groups',
   'console_setting.announcements_enabled',
   'console_setting.faq_enabled',
+  'console_setting.faq',
   'Chats',
   'BatchUpdateEnabled',
   'DrawingEnabled',
@@ -202,6 +203,12 @@ export function useUpdateOption() {
         if (variables.key === 'Notice') {
           queryClient.invalidateQueries({ queryKey: ['notice'] })
           queryClient.invalidateQueries({ queryKey: ['adty-notifications'] })
+        }
+        if (
+          variables.key.startsWith('adty_legal_setting.') ||
+          variables.key.startsWith('legal.')
+        ) {
+          queryClient.invalidateQueries({ queryKey: ['legal'] })
         }
 
         toast.success(i18next.t('Setting updated successfully'))

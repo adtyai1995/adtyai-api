@@ -19,10 +19,14 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { trackReferral } from '@/features/referral/lib/click'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 // Referral landing (adty task 6.2): record the click, then go to sign-up.
 export const Route = createFileRoute('/r/$code')({
   beforeLoad: async ({ params }) => {
+    if (subsiteDocument()) {
+      throw redirect({ to: '/', replace: true })
+    }
     await trackReferral(params.code, `/r/${params.code}`)
     throw redirect({ to: '/sign-up', replace: true })
   },

@@ -28,15 +28,15 @@ import type { PricingData, PricingModel } from '../types'
 
 /**
  * Group used to fetch a price list adjusted for the current display group
- * (ISS-R3-0009). "all" has no single adjustment group, so the request omits
- * the parameter and the backend keeps the viewer's current group.
+ * (ISS-R3-0009). When no explicit group filter is chosen (or "all" is selected),
+ * omit `?group=` so `/api/pricing` safely applies the viewer's allowed group
+ * without rejecting subsites that exclude "default".
  */
 export function resolvePricingDisplayGroup(
-  explicitGroup?: string,
-  userGroup?: string
+  explicitGroup?: string
 ): string | undefined {
-  if (explicitGroup === FILTER_ALL) return undefined
-  return pricingDisplayGroupParam(explicitGroup || userGroup || 'default')
+  if (!explicitGroup || explicitGroup === FILTER_ALL) return undefined
+  return pricingDisplayGroupParam(explicitGroup)
 }
 
 let pricedModels: PricingModel[] = []

@@ -28,7 +28,9 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
+import { useStatus } from '@/hooks/use-status'
 import { getLobeIcon } from '@/lib/lobe-icon'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
 
 import {
@@ -152,6 +154,8 @@ export const PricingSidebar = memo(function PricingSidebar(
   props: PricingSidebarProps
 ) {
   const { t } = useTranslation()
+  const { status } = useStatus()
+  const isSubsite = Boolean(status?.adty_site || subsiteDocument())
   const groupDisplay = useGroupDisplay()
   const counts = useMemo(() => {
     const vendors = new Map<string, number>()
@@ -205,7 +209,9 @@ export const PricingSidebar = memo(function PricingSidebar(
     ...props.groups.map((group) => ({
       value: group,
       label: groupDisplay.name(group),
-      suffix: formatGroupRatio(props.groupRatios?.[group]),
+      suffix: isSubsite
+        ? undefined
+        : formatGroupRatio(props.groupRatios?.[group]),
     })),
   ]
 

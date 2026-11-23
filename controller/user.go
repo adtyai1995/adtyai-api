@@ -15,8 +15,10 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	passkeysvc "github.com/QuantumNous/new-api/service/passkey"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/QuantumNous/new-api/constant"
 
@@ -170,7 +172,20 @@ func setupLogin(user *model.User, c *gin.Context) {
 		common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
 		return
 	}
-	challenge, err := service.StartLoginVerificationOnSite(user, loginMethodFromContext(c), service.AdtyRequestSiteID(c))
+	siteID := service.AdtyRequestSiteID(c)
+	passkeyAvailable := true
+	passkeyReason := ""
+	if siteID == 0 && user != nil && user.Id > 0 {
+		credRPID := ""
+		if cred, credErr := model.GetPasskeyByUserID(user.Id); credErr == nil && cred != nil && cred.RPID != nil {
+			credRPID = *cred.RPID
+		}
+		if !passkeysvc.IsAvailableForRequest(c.Request, credRPID) {
+			passkeyAvailable = false
+			passkeyReason = system_setting.ErrPasskeyRPIDUnavailable.Error()
+		}
+	}
+	challenge, err := service.StartLoginVerificationForRequest(user, loginMethodFromContext(c), siteID, passkeyAvailable, passkeyReason)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -240,7 +255,7 @@ func Register(c *gin.Context) {
 		return
 	}
 	if !common.PasswordRegisterEnabled {
-		common.ApiErrorT(c, "Password registration has been disabled by administrator, please use third-party account verification")
+		common.ApiErrorT(c, "Password registration has been disabled by administrator")
 		return
 	}
 	var payload struct {

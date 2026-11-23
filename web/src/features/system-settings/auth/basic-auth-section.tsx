@@ -113,6 +113,17 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
       }
     })
 
+    updates.sort((a, b) => {
+      const order = (key: string) => {
+        if (key === 'EmailDomainWhitelist') return 1
+        if (key === 'EmailDomainRestrictionEnabled') {
+          return data.EmailDomainRestrictionEnabled ? 2 : 0
+        }
+        return 0
+      }
+      return order(a.key) - order(b.key)
+    })
+
     for (const update of updates) {
       await updateOption.mutateAsync(update)
       baselineRef.current = {

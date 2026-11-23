@@ -78,6 +78,16 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 			response.Created = data.CreatedAt
 		}
 	}
+	if usage.TotalTokens == 0 && len(responseContent) > 0 {
+		promptTokens := usage.PromptTokens
+		if promptTokens <= 0 {
+			promptTokens = info.GetEstimatePromptTokens()
+		}
+		if est := service.ResponseText2Usage(c, string(responseContent), info.UpstreamModelName, promptTokens); est != nil {
+			usage = *est
+			response.Usage = usage
+		}
+	}
 	// 添加 response.Choices
 	response.Choices = []dto.OpenAITextResponseChoice{
 		{
@@ -142,14 +152,16 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 		streamErr = handleCozeEvent(c, currentEvent, currentData, &responseText, usage, id, info)
 	}
 
-	if streamErr != nil {
+	hadMidStreamErr := streamErr != nil || scanner.Err() != nil
+	if streamErr != nil && !(c.Writer.Written() || (info != nil && info.SendResponseCount > 0) || responseText != "") {
 		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && !(c.Writer.Written() || (info != nil && info.SendResponseCount > 0) || responseText != "") {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	helper.Done(c)
+	if !hadMidStreamErr {
+		helper.Done(c)
+	}
 
 	if usage.TotalTokens == 0 {
 		// 流式路径不经过 checkIfChatComplete，coze_input_count 没被设置过，取到的是 0；

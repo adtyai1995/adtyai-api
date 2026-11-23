@@ -1115,15 +1115,21 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 			return nil
 		}
 		const target = 0
-		// R4-007: Lock and inherit active site teams BEFORE locking site users
-		// so site closure obeys canonical AdtySite -> AdtyTeam -> User -> operating order.
-		if err := InheritAdtyTeamsOnCloseTx(tx, site.Id); err != nil {
+		// R4-007 / R5-004: Strictly follow canonical lock order:
+		// AdtySite -> AdtyTeam -> User -> Token -> AdtyVoucher -> AdtySiteWallet(earnings -> margin -> operating).
+		inheritedTeamIDs, err := inheritAdtyTeamsBeforeUsersOnCloseTx(tx, site.Id)
+		if err != nil {
 			return err
 		}
 		var movedPrincipal int64
-		var err error
 		moved, movedPrincipal, err = model.AdtySetUsersSiteWithMovedPrincipalTx(tx, site.Id, target)
 		if err != nil {
+			return err
+		}
+		if err := disableAdtyTeamsKeysOnCloseTx(tx, inheritedTeamIDs); err != nil {
+			return err
+		}
+		if err := InheritAdtyVouchersOnCloseTx(tx, site.Id, moved); err != nil {
 			return err
 		}
 		if movedPrincipal > 0 && tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
@@ -1150,9 +1156,6 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 					}
 				}
 			}
-		}
-		if err := InheritAdtyVouchersOnCloseTx(tx, site.Id, moved); err != nil {
-			return err
 		}
 		if err := transferSiteTicketsToMainTx(tx, site.Id); err != nil {
 			return err

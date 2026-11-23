@@ -63,6 +63,8 @@ func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[st
 	if err := model.ApplyOptionValues(map[string]string{key: value}); err != nil {
 		common.SysError(common.LogText("apply %s after it was stored: %s", key, err.Error()))
 	}
+	deliverCommittedAudits(c, []model.AuditLog{event})
+	markAuditLogged(c)
 	return true
 }
 

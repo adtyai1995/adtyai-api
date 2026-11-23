@@ -33,9 +33,6 @@ func ResolveTrustedProxies(raw string) (trustedProxies []string, usedDefaults bo
 	if strings.EqualFold(raw, "private") {
 		return append([]string(nil), defaultTrustedProxyCIDRs...), false, nil
 	}
-	if strings.EqualFold(raw, "none") {
-		return nil, false, nil
-	}
 
 	parts := strings.Split(raw, ",")
 	trustedProxies = make([]string, 0, len(parts))

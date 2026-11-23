@@ -99,7 +99,7 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 		}},
 		{from: "adty_site_withdrawals x", columns: map[string]string{
 			"id": "x.id", "user_id": "x.owner_user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-SITE-' || CAST(x.id AS TEXT)",
-			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "CASE WHEN x.method = 'usdt' THEN x.net_usd ELSE 0 END", "paid_currency": "CASE WHEN x.method = 'usdt' THEN 'USDT' ELSE '' END",
+			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "CAST(COALESCE(NULLIF(x.payout_amount, ''), '0') AS NUMERIC)", "paid_currency": "COALESCE(x.payout_currency, '')",
 		}},
 		{from: "adty_site_invite_withdrawals x", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_invite_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-INV-' || CAST(x.id AS TEXT)",
@@ -166,7 +166,11 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 	if sourceType := c.Query("source_type"); sourceType != "" {
 		query = query.Where("o.source_type = ?", sourceType)
 	}
-	for parameter, column := range map[string]string{"site_id": "o.site_id", "user_id": "o.user_id", "channel_id": "o.channel_id", "team_id": "o.team_id"} {
+	filterCols := map[string]string{"site_id": "o.site_id", "user_id": "o.user_id", "team_id": "o.team_id"}
+	if ownerSiteID == nil && selfUserID == nil {
+		filterCols["channel_id"] = "o.channel_id"
+	}
+	for parameter, column := range filterCols {
 		if raw := strings.TrimSpace(c.Query(parameter)); raw != "" {
 			value, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil || value < 0 {
@@ -249,7 +253,12 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 		}
 		if order.SourceType == "topup" {
 			order.Anomaly = rechargeAuditAnomaly(*order)
-			order.ChannelName = adtyEpayChannelNames()[order.ChannelId]
+			if ownerSiteID == nil && selfUserID == nil {
+				order.ChannelName = adtyEpayChannelNames()[order.ChannelId]
+			} else {
+				order.ChannelId = 0
+				order.ChannelName = ""
+			}
 			if selfUserID == nil && order.HasExt {
 				for _, capability := range service.AdtyPaymentCapabilities() {
 					if capability.Provider != order.PaymentProvider {

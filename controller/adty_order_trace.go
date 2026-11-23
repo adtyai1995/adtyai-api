@@ -282,7 +282,14 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 		}
 		order.SiteName = names[*order.SiteId]
 	}
-	order.ChannelName = adtyEpayChannelNames()[order.ChannelId]
+	isSelf := len(selfUserID) > 0
+	isAdmin := ownerSiteID == nil && !isSelf
+	if isAdmin {
+		order.ChannelName = adtyEpayChannelNames()[order.ChannelId]
+	} else {
+		order.ChannelId = 0
+		order.ChannelName = ""
+	}
 	var ext model.AdtyTopupOrder
 	err := model.DB.Where("trade_no = ?", tradeNo).First(&ext).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -290,11 +297,13 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 		return
 	}
 	sections := []string{"payments", "wallet", "funds", "refunds", "exceptions", "reviews"}
-	if ownerSiteID == nil && len(selfUserID) == 0 {
+	if isSelf {
+		sections = []string{"payments", "wallet", "funds", "refunds"}
+	} else if isAdmin {
 		sections = []string{"payments", "wallet", "funds", "refunds", "site_wallet", "exceptions", "reviews", "commissions", "commission_movements"}
 	}
 	section := c.DefaultQuery("section", "payments")
-	if len(selfUserID) > 0 {
+	if isSelf {
 		// Reuse the restricted trace projection after selecting this user's
 		// exact order. Unknown legacy sites remain unknown, never guessed.
 		hiddenSite := -1
@@ -303,7 +312,7 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 			ownerSiteID = order.SiteId
 		}
 	}
-	traceQuery, projection, ok := adtyOrderTraceQuery(section, order, ownerSiteID)
+	traceQuery, projection, ok := adtyOrderTraceQuery(section, order, ownerSiteID, isSelf)
 	if !ok {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -325,32 +334,34 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 	}
 	refundUSD := decimal.NewFromInt(ext.RefundQuota).Div(common.QuotaPerUnitDecimal()).String()
 	refund := gin.H{"refunded_at": ext.RefundedAt, "refund_quota": ext.RefundQuota, "refund_amount": ext.RefundAmount, "refund_usd": refundUSD, "currency": refundCurrency}
-	preview, previewErr := model.LoadSiteInviteCommissionRefundPreview(model.DB, tradeNo, ext.RefundQuota, ext.FaceQuota())
-	if previewErr != nil {
-		common.ApiError(c, previewErr)
-		return
-	}
-	if preview != nil {
-		refund["commission"] = preview
-		if preview.ClawedUSD != "0" {
-			refund["commission_clawed_usd"] = preview.ClawedUSD
-			refund["commission_recovered_usd"] = preview.RecoveredUSD
+	if !isSelf {
+		preview, previewErr := model.LoadSiteInviteCommissionRefundPreview(model.DB, tradeNo, ext.RefundQuota, ext.FaceQuota())
+		if previewErr != nil {
+			common.ApiError(c, previewErr)
+			return
 		}
-		if preview.WithdrawnUSD != "0" {
-			refund["commission_withdrawn_usd"] = preview.WithdrawnUSD
+		if preview != nil {
+			refund["commission"] = preview
+			if preview.ClawedUSD != "0" {
+				refund["commission_clawed_usd"] = preview.ClawedUSD
+				refund["commission_recovered_usd"] = preview.RecoveredUSD
+			}
+			if preview.WithdrawnUSD != "0" {
+				refund["commission_withdrawn_usd"] = preview.WithdrawnUSD
+			}
 		}
-	}
-	var recoveries []model.AdtyCommissionRecovery
-	if err := model.DB.Where("trade_no = ?", tradeNo).Find(&recoveries).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	recovery := decimal.Zero
-	for _, row := range recoveries {
-		recovery = recovery.Add(row.AmountUSD)
-	}
-	if recovery.IsPositive() {
-		refund["commission_recovery_usd"] = recovery.String()
+		var recoveries []model.AdtyCommissionRecovery
+		if err := model.DB.Where("trade_no = ?", tradeNo).Find(&recoveries).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		recovery := decimal.Zero
+		for _, row := range recoveries {
+			recovery = recovery.Add(row.AmountUSD)
+		}
+		if recovery.IsPositive() {
+			refund["commission_recovery_usd"] = recovery.String()
+		}
 	}
 	if ownerSiteID == nil {
 		refund["reason"] = ext.RefundReason
@@ -373,7 +384,7 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 
 // Each section has its own total and pagination. Static projections omit raw
 // provider payload/error fields and administrative credentials for every role.
-func adtyOrderTraceQuery(section string, order rechargeAuditOrder, ownerSiteID *int) (*gorm.DB, string, bool) {
+func adtyOrderTraceQuery(section string, order rechargeAuditOrder, ownerSiteID *int, isSelf bool) (*gorm.DB, string, bool) {
 	switch section {
 	case "payments":
 		q := model.DB.Model(&model.AdtyOrderPaymentEvent{}).Where("trade_no = ? AND user_id = ? AND provider = ?", order.TradeNo, order.UserId, order.PaymentProvider)
@@ -402,9 +413,15 @@ func adtyOrderTraceQuery(section string, order rechargeAuditOrder, ownerSiteID *
 		}
 		return q, "id, 'Site wallet movement' AS kind, wallet_kind AS source, type AS status, ref_id AS reference, delta AS amount, balance_before, balance_after, reason AS note, operator_id, created_at", true
 	case "exceptions":
+		if isSelf {
+			return nil, "", false
+		}
 		return model.DB.Model(&model.PaymentOrphanEvent{}).Where("reference_id = ? AND provider = ?", order.TradeNo, order.PaymentProvider),
 			"id, 'Reconciliation event' AS kind, event_type AS source, status, event_id AS reference, create_time AS created_at", true
 	case "reviews":
+		if isSelf {
+			return nil, "", false
+		}
 		return model.DB.Model(&model.PaymentOrphanReview{}).Where("trade_no = ? AND provider = ?", order.TradeNo, order.PaymentProvider),
 			"id, 'Financial review' AS kind, status, external_amount AS amount, external_currency AS currency, refund_ledger_id AS reference, operator_id, note, created_at", true
 	case "commissions":

@@ -70,11 +70,10 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 			Body: payloadBytes,
 		}
 
-		// 如果有secret，添加签名到headers
+		// 如果有secret，添加签名到headers（与直连模式一致，仅发送签名不泄露明文密钥）
 		if secret != "" {
 			signature := generateSignature(secret, payloadBytes)
 			workerReq.Headers["X-Webhook-Signature"] = signature
-			workerReq.Headers["Authorization"] = "Bearer " + secret
 		}
 
 		resp, err = DoWorkerRequest(workerReq)

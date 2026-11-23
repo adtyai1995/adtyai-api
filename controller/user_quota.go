@@ -35,7 +35,7 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 	skipAdtyQuotaAudit := false
 	defer func() {
 		if skipAdtyQuotaAudit {
-			markAuditLogged(c)
+			markIdempotentReplayNoAudit(c)
 			return
 		}
 		content := auditContentEN(action, params)

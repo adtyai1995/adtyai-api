@@ -404,7 +404,9 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		quota = tieredQuota
 	}
 
-	totalTokens := usage.TotalTokens
+	totalTokens := max(usage.TotalTokens, usage.InputTokens+usage.OutputTokens, textInputTokens+textOutTokens+audioInputTokens+audioOutTokens)
+	fixedPriceBilling := tieredOk && isFixedPriceSettlement(relayInfo, tieredResult)
+	usePriceBilling := usePrice && modelPrice > 0
 	var logContent []*common.Message
 	if !usePrice {
 		logContent = append(logContent, common.NewMessage("Model ratio {{model_ratio}}, completion ratio {{completion_ratio}}, audio ratio {{audio_ratio}}, audio completion ratio {{audio_completion_ratio}}, group ratio {{group_ratio}}", map[string]any{
@@ -422,7 +424,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	}
 
 	// record all the consume log even if quota is 0
-	if totalTokens == 0 {
+	if totalTokens == 0 && !fixedPriceBilling && !usePriceBilling {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
 		quota = 0
@@ -437,7 +439,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 			return err
 		}
 	}
-	if totalTokens != 0 {
+	if totalTokens != 0 || fixedPriceBilling || usePriceBilling {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}

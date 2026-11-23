@@ -21,6 +21,10 @@ import (
 
 // PostAdtyReferralClick 记点击并写签名 cookie（不用登录）。每次点击都覆盖，以最后一次为准。
 func PostAdtyReferralClick(c *gin.Context) {
+	if service.AdtyRequestSiteID(c) != 0 {
+		writeReferralError(c, service.ErrReferralDisabled)
+		return
+	}
 	var body struct {
 		Code        string `json:"code"`
 		LandingPath string `json:"landing_path"`

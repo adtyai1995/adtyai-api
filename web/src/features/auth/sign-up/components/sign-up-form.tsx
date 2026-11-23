@@ -204,6 +204,19 @@ export function SignUpForm({
     verificationCodeAction = <Loader2 className='h-4 w-4 animate-spin' />
   }
 
+  const registerDisabled = status?.register_enabled === false
+  const passwordRegisterDisabled = status?.password_register_enabled === false
+  if (registerDisabled || passwordRegisterDisabled) {
+    const disabledMessage = registerDisabled
+      ? t('New user registration has been disabled by administrator')
+      : t('Password registration has been disabled by administrator')
+    return (
+      <div className='border-border/60 bg-muted/40 text-muted-foreground rounded-md border p-4 text-sm'>
+        {disabledMessage}
+      </div>
+    )
+  }
+
   return (
     <Form {...form}>
       <form

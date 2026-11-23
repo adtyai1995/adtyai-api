@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	queryPerfMetricsSummary = perfmetrics.QuerySummaryAll
-	queryPerfMetrics        = perfmetrics.Query
+	queryPerfMetricsSummary         = perfmetrics.QuerySummaryAll
+	queryPerfMetricsSummaryFiltered = perfmetrics.QuerySummaryAllFiltered
+	queryPerfMetrics                = perfmetrics.Query
 )
 
 const perfMetricsLoadFailed = "Failed to load performance metrics"
@@ -64,19 +65,32 @@ func perfMetricsScope(c *gin.Context) (int, []string, []string) {
 	return siteID, concreteGroups, allowedGroups
 }
 
-func perfMetricsModelVisible(modelName string, concreteGroups []string) bool {
-	if strings.TrimSpace(modelName) == "" || len(concreteGroups) == 0 {
-		return false
+// perfMetricsVisibleModelGroups maps each callable catalog model to the subset of
+// concreteGroups where it actually has an enabled ability/channel and passes GroupModelAllowed (R5-021).
+func perfMetricsVisibleModelGroups(concreteGroups []string) map[string][]string {
+	visible := make(map[string][]string)
+	if len(concreteGroups) == 0 {
+		return visible
 	}
-	if !model.CatalogModelCallable(modelName) {
-		return false
-	}
-	for _, g := range concreteGroups {
-		if service.GroupModelAllowed(g, modelName) {
-			return true
+	for _, item := range model.GetPricing() {
+		if !model.CatalogModelCallable(item.ModelName) {
+			continue
+		}
+		allowAll := common.StringsContains(item.EnableGroup, "all")
+		var matched []string
+		for _, g := range concreteGroups {
+			if !allowAll && !common.StringsContains(item.EnableGroup, g) {
+				continue
+			}
+			if service.GroupModelAllowed(g, item.ModelName) {
+				matched = append(matched, g)
+			}
+		}
+		if len(matched) > 0 {
+			visible[item.ModelName] = matched
 		}
 	}
-	return false
+	return visible
 }
 
 func GetPerfMetricsSummary(c *gin.Context) {
@@ -93,7 +107,8 @@ func GetPerfMetricsSummary(c *gin.Context) {
 		return
 	}
 	_, concreteGroups, activeGroups := perfMetricsScope(c)
-	if len(activeGroups) == 0 {
+	visibleModelGroups := perfMetricsVisibleModelGroups(concreteGroups)
+	if len(activeGroups) == 0 || len(visibleModelGroups) == 0 {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"data": perfmetrics.SummaryAllResult{
@@ -102,26 +117,30 @@ func GetPerfMetricsSummary(c *gin.Context) {
 		})
 		return
 	}
+	isVisible := func(name string) bool {
+		_, ok := visibleModelGroups[name]
+		return ok
+	}
 	visibleRecent := make([]string, 0, len(recentModels))
 	for _, name := range recentModels {
-		if perfMetricsModelVisible(name, concreteGroups) {
+		if isVisible(name) {
 			visibleRecent = append(visibleRecent, name)
 		}
 	}
-	result, err := queryPerfMetricsSummary(hours, activeGroups, visibleRecent...)
+	result, err := queryPerfMetricsSummaryFiltered(hours, activeGroups, isVisible, visibleRecent...)
 	if err != nil {
 		reportPerfMetricsQueryError(c, err, "summary")
 		return
 	}
 	filteredModels := make([]perfmetrics.ModelSummary, 0, len(result.Models))
 	for _, item := range result.Models {
-		if perfMetricsModelVisible(item.ModelName, concreteGroups) {
+		if isVisible(item.ModelName) {
 			filteredModels = append(filteredModels, item)
 		}
 	}
 	result.Models = filteredModels
 	for name := range result.RecentSuccessSeries {
-		if !perfMetricsModelVisible(name, concreteGroups) {
+		if !isVisible(name) {
 			delete(result.RecentSuccessSeries, name)
 		}
 	}
@@ -149,8 +168,10 @@ func GetPerfMetrics(c *gin.Context) {
 		}
 	}
 
-	_, concreteGroups, allowedGroups := perfMetricsScope(c)
-	if !perfMetricsModelVisible(modelName, concreteGroups) {
+	siteID, concreteGroups, allowedGroups := perfMetricsScope(c)
+	visibleModelGroups := perfMetricsVisibleModelGroups(concreteGroups)
+	enabledGroups, visible := visibleModelGroups[modelName]
+	if !visible {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"data": perfmetrics.QueryResult{
@@ -161,11 +182,9 @@ func GetPerfMetrics(c *gin.Context) {
 		})
 		return
 	}
-	modelGroups := make([]string, 0, len(allowedGroups))
-	for _, g := range allowedGroups {
-		if g == "auto" || service.GroupModelAllowed(g, modelName) {
-			modelGroups = append(modelGroups, g)
-		}
+	modelGroups := append([]string{}, enabledGroups...)
+	if siteID == 0 && slices.Contains(allowedGroups, "auto") {
+		modelGroups = append(modelGroups, "auto")
 	}
 	requestedGroup := strings.TrimSpace(c.Query("group"))
 	if requestedGroup != "" && requestedGroup != "all" && !slices.Contains(modelGroups, requestedGroup) {

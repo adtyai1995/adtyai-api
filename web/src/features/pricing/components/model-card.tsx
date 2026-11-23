@@ -23,7 +23,9 @@ import { useTranslation } from 'react-i18next'
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
+import { useStatus } from '@/hooks/use-status'
 import { getLobeIcon } from '@/lib/lobe-icon'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
@@ -59,6 +61,8 @@ export interface ModelCardProps {
 
 export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const { t, i18n } = useTranslation()
+  const { status } = useStatus()
+  const isSubsite = Boolean(status?.adty_site || subsiteDocument())
   const tokenUnit = props.tokenUnit ?? DEFAULT_TOKEN_UNIT
   const priceRate = props.priceRate ?? 1
   const usdExchangeRate = props.usdExchangeRate ?? 1
@@ -116,7 +120,16 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
       (entry) => entry.field === 'cacheReadPrice' && entry.unit === 'token'
     )
     if (dynamicSummary.isSpecialExpression) {
-      priceSummary = (
+      priceSummary = isSubsite ? (
+        <div className='col-span-full min-w-0'>
+          <span className='text-warning'>{t('Dynamic Pricing')}</span>
+          <p className='text-muted-foreground mt-1 text-xs'>
+            {t(
+              'Billed dynamically based on actual usage and site retail pricing'
+            )}
+          </p>
+        </div>
+      ) : (
         <div className='col-span-full min-w-0'>
           <span className='text-warning'>
             {t('Special billing expression')}

@@ -247,10 +247,11 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 	c.Header("Content-Type", contentType)
 	c.Header("Transfer-Encoding", "chunked")
 
+	wroteAudio := false
 	for {
 		msg, recvErr := ReceiveMessage(conn)
 		if recvErr != nil {
-			if websocket.IsCloseError(recvErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+			if websocket.IsCloseError(recvErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) || wroteAudio {
 				break
 			}
 			return nil, types.NewErrorWithStatusCode(
@@ -262,6 +263,13 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 
 		switch msg.MsgType {
 		case MsgTypeError:
+			if wroteAudio {
+				return &dto.Usage{
+					PromptTokens:     info.GetEstimatePromptTokens(),
+					CompletionTokens: 0,
+					TotalTokens:      info.GetEstimatePromptTokens(),
+				}, nil
+			}
 			return nil, types.NewErrorWithStatusCode(
 				fmt.Errorf("received error from server: code=%d, %s", msg.ErrorCode, string(msg.Payload)),
 				types.ErrorCodeBadResponse,
@@ -272,12 +280,20 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		case MsgTypeAudioOnlyServer:
 			if len(msg.Payload) > 0 {
 				if _, writeErr := c.Writer.Write(msg.Payload); writeErr != nil {
+					if wroteAudio {
+						return &dto.Usage{
+							PromptTokens:     info.GetEstimatePromptTokens(),
+							CompletionTokens: 0,
+							TotalTokens:      info.GetEstimatePromptTokens(),
+						}, nil
+					}
 					return nil, types.NewErrorWithStatusCode(
 						fmt.Errorf("failed to write audio data: %w", writeErr),
 						types.ErrorCodeBadResponse,
 						http.StatusInternalServerError,
 					)
 				}
+				wroteAudio = true
 				c.Writer.Flush()
 			}
 

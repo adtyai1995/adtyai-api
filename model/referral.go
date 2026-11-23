@@ -129,6 +129,7 @@ type ReferralWithdrawal struct {
 	AffiliateId        int     `json:"affiliate_id" gorm:"index"`
 	UserId             int     `json:"user_id" gorm:"index"`
 	SettlementCurrency string  `json:"settlement_currency" gorm:"type:varchar(16);default:'USD'"`
+	RequestedAmount    float64 `json:"requested_amount" gorm:"type:decimal(20,8);not null;default:0"`
 	Amount             float64 `json:"amount" gorm:"type:decimal(20,8);not null;default:0"`
 	FeeAmount          float64 `json:"fee_amount" gorm:"type:decimal(20,8);not null;default:0"`
 	NetAmount          float64 `json:"net_amount" gorm:"type:decimal(20,8);not null;default:0"`

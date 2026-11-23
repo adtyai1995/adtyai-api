@@ -537,6 +537,12 @@ func adtySiteBonusAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 	if bonus.IsZero() {
 		return nil
 	}
+	// R5-053: Only book site bonus expense when the gift is actually credited now.
+	// Deferred gifts (pending/pending_review) book when fulfilled; canceled gifts never book.
+	switch ext.GiftFulfillmentStatus {
+	case model.AdtyGiftFulfillmentPending, model.AdtyGiftFulfillmentPendingReview, model.AdtyGiftFulfillmentCanceled:
+		return nil
+	}
 	return upsertAdtySiteEarningTx(tx, adtySiteEarningDayFn(), adtySiteEarningEntry{
 		SiteId: ext.SiteId, SiteOwnerUserId: ext.SiteOwnerUserId, UserId: topUp.UserId, Kind: model.AdtySiteEarningBonus, Earning: bonus.Neg(),
 	})

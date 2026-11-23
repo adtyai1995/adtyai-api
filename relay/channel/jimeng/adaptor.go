@@ -82,6 +82,9 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		if err := common.Unmarshal(request.ExtraFields, &payload); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal extra fields: %w", err)
 		}
+		// R5-014: Restore billing-critical model and prompt after ExtraFields merge.
+		payload.ReqKey = request.Model
+		payload.Prompt = request.Prompt
 	}
 
 	return payload, nil

@@ -718,26 +718,34 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		base, tokenBase := row.ReservedQuota, row.TokenReservedQuota
 		if row.Kind == "request" {
-			// R4-020: Include committed/settled Realtime direct:* chunks for this
-			// request root so a transient ApplyBillingSettlement failure on a chunk
-			// cannot cause double-charging during final request settlement.
+			// R4-020 / R5-009: Lock Realtime direct:* chunks in ascending operation_key order.
+			// Fold only already-settled chunks; atomically cancel any uncollected BillingSettlePending
+			// chunks so this root request settlement itself collects (or refunds without crediting)
+			// that amount and records any shortfall directly on request:<reqID>.
 			var directOps []BillingOperation
-			if err := tx.Select("actual_quota", "applied_quota", "token_applied_quota", "state").
+			if err := lockForUpdate(tx).
 				Where("user_id = ? AND kind = ? AND earning_root_key = ? AND operation_key LIKE ? AND state IN ?",
 					row.UserId, "direct", row.OperationKey, "direct:%", []string{BillingSettlePending, BillingSettled}).
+				Order("operation_key ASC").
 				Find(&directOps).Error; err != nil {
 				return err
 			}
 			var directWalletSum, directTokenSum int64
-			for _, dop := range directOps {
+			for i := range directOps {
+				dop := &directOps[i]
 				if dop.State == BillingSettled {
 					directWalletSum += int64(dop.AppliedQuota)
 					directTokenSum += int64(dop.TokenAppliedQuota)
-				} else {
-					directWalletSum += int64(dop.ActualQuota)
-					if row.TokenId > 0 {
-						directTokenSum += int64(dop.ActualQuota)
+					continue
+				}
+				if dop.PayerKind != BillingPayerTeam {
+					if err := ReleaseAdtyFundAllocationsTx(tx, dop.UserId, dop.OperationKey); err != nil {
+						return err
 					}
+				}
+				dop.State = BillingCanceled
+				if err := tx.Save(dop).Error; err != nil {
+					return err
 				}
 			}
 			if directWalletSum > int64(common.MaxWalletQuota) || directTokenSum > int64(common.MaxWalletQuota) {
@@ -851,6 +859,15 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				// 团队 Key 却没有结算钩子（构建缺了 service 的注册）：不能退回个人钱包。
 				return ErrBillingOperationConflict
 			}
+			// R5-007: When a team task or mj_refund updates users.used_quota below,
+			// lock User right after AdtyTeam (before Token and AdtySiteWallet) to match
+			// canonical lock order AdtyTeam -> User -> Token -> AdtySiteWallet.
+			if (row.Kind == "task" && delta != 0) || (row.Kind == "mj_refund" && base > 0) {
+				var usedQuotaUser User
+				if err := lockForUpdate(tx).Select("id").Where("id = ?", row.UserId).Limit(1).Find(&usedQuotaUser).Error; err != nil {
+					return err
+				}
+			}
 		} else {
 			var user User
 			if err := lockForUpdate(tx).First(&user, row.UserId).Error; err != nil {
@@ -894,9 +911,33 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		//   同一笔 operation 只会结算一次，这个额度同时也是站点运营钱包
 		//   （AdtyAfterPrincipalSpentTx）能扣的上限：站点侧不能比用户真实消耗
 		//   多付钱。
+		// R5-007: Lock and update Token BEFORE locking AdtySiteWallet(earnings/margin/operating)
+		// so every settlement obeys canonical User -> Token -> AdtySiteWallet lock order.
+		row.TokenAppliedQuota = 0
+		tokenDelta := 0
+		if row.TokenId > 0 {
+			var tokens []Token
+			if err := lockForUpdate(tx).Where("id = ?", row.TokenId).Limit(1).Find(&tokens).Error; err != nil {
+				return err
+			}
+			// Deleted tokens cannot be used again. They must not prevent a wallet
+			// refund; an error writing an existing token still rolls everything back.
+			if len(tokens) > 0 {
+				if tokens[0].UserId != row.UserId {
+					return ErrBillingOperationConflict
+				}
+				if tokenBase != row.ActualQuota {
+					if err := applyTokenQuotaDeltaTx(tx, &tokens[0], tokenBase-row.ActualQuota, common.BatchUpdateEnabled && common.RedisEnabled); err != nil {
+						return err
+					}
+				}
+				row.TokenAppliedQuota = row.ActualQuota
+				tokenDelta = tokenBase - row.ActualQuota
+			}
+		}
 		// R4-005: Pre-lock the site's earnings wallet before fund-batch settlement/reversal
 		// (which may lock margin and operating wallets), preserving canonical lock order
-		// User -> adty_site_wallets(earnings -> margin -> operating).
+		// User -> Token -> adty_site_wallets(earnings -> margin -> operating).
 		if row.PayerKind != BillingPayerOwner && row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) && tx.Migrator().HasTable(&AdtySiteWallet{}) {
 			var prelockEarnings AdtySiteWallet
 			if err := lockForUpdate(tx).Where("site_id = ? AND kind = ?", row.SiteId, AdtySiteWalletEarnings).Limit(1).Find(&prelockEarnings).Error; err != nil {
@@ -965,28 +1006,6 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		row.ReservedQuota, row.TokenReservedQuota = base, tokenBase
 		row.Shortfall, row.AppliedQuota = delta-charged, base+charged
-		row.TokenAppliedQuota = 0
-		tokenDelta := 0
-		if row.TokenId > 0 {
-			var tokens []Token
-			if err := lockForUpdate(tx).Where("id = ?", row.TokenId).Limit(1).Find(&tokens).Error; err != nil {
-				return err
-			}
-			// Deleted tokens cannot be used again. They must not prevent a wallet
-			// refund; an error writing an existing token still rolls everything back.
-			if len(tokens) > 0 {
-				if tokens[0].UserId != row.UserId {
-					return ErrBillingOperationConflict
-				}
-				if tokenBase != row.ActualQuota {
-					if err := applyTokenQuotaDeltaTx(tx, &tokens[0], tokenBase-row.ActualQuota, common.BatchUpdateEnabled && common.RedisEnabled); err != nil {
-						return err
-					}
-				}
-				row.TokenAppliedQuota = row.ActualQuota
-				tokenDelta = tokenBase - row.ActualQuota
-			}
-		}
 		// 团队付款没有动个人钱包，流水里的钱包差额必须是 0；否则对账会把这笔差额
 		// 当成成员钱包的变动，和团队流水重复计一次。
 		walletDelta := -charged
@@ -1042,7 +1061,8 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		if row.Kind == "request" || row.Kind == "mj_charge" {
 			earningQuota = row.AppliedQuota - row.StreamWalletQuota
 			if row.State == BillingRefundPending {
-				earningQuota = 0
+				// R5-009: Reverse any subsite earnings already booked by settled Realtime direct:* chunks.
+				earningQuota = -row.StreamWalletQuota
 			}
 		}
 		if row.PayerKind != BillingPayerOwner && row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) && earningQuota != 0 {

@@ -10222,6 +10222,13 @@
     "Welcome to our ADTY AI platform...": "Welcome to our ADTY AI platform...",
     "Withdrawals are paused while the site is closing": "Withdrawals are paused while the site is closing",
     "policy: task artifacts are kept by default under platform defaults; they are never automatically deleted after a retention period expires or an account is cancelled": "policy: task artifacts are kept by default under platform defaults; they are never automatically deleted after a retention period expires or an account is cancelled",
-    "Listed for Root configuration. Task artifacts follow platform defaults and are kept by default. Automatic cleanup never deletes them after a configured period expires or an account is cancelled. Changing a policy does not delete history by itself.": "Listed for Root configuration. Task artifacts follow platform defaults and are kept by default. Automatic cleanup never deletes them after a configured period expires or an account is cancelled. Changing a policy does not delete history by itself."
+    "Listed for Root configuration. Task artifacts follow platform defaults and are kept by default. Automatic cleanup never deletes them after a configured period expires or an account is cancelled. Changing a policy does not delete history by itself.": "Listed for Root configuration. Task artifacts follow platform defaults and are kept by default. Automatic cleanup never deletes them after a configured period expires or an account is cancelled. Changing a policy does not delete history by itself.",
+    "Announcement not found": "Announcement not found",
+    "Billed dynamically based on actual usage and site retail pricing": "Billed dynamically based on actual usage and site retail pricing",
+    "Password registration has been disabled by administrator": "Password registration has been disabled by administrator",
+    "Restore the Turnstile account to release the hostname": "Restore the Turnstile account to release the hostname",
+    "Site is not active": "Site is not active",
+    "Subsite pricing configuration is invalid": "Subsite pricing configuration is invalid",
+    "The partner rate must be between {{min}} and {{max}}": "The partner rate must be between {{min}} and {{max}}"
   }
 }

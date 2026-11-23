@@ -179,16 +179,11 @@ func PostAdtyAdminSiteTierPrincipal(c *gin.Context) {
 	case err != nil:
 		common.ApiError(c, err)
 	default:
-		if !res.Replayed {
-			recordManageAudit(c, "adty.site.tier_principal_adjust", map[string]any{
-				"site_id":             siteID,
-				"mode":                res.Adjustment.Mode,
-				"delta_usd":           res.Adjustment.DeltaUSD.String(),
-				"effective_after_usd": res.Adjustment.EffectiveAfterUSD.String(),
-				"tier_before":         res.Adjustment.TierBefore,
-				"tier_after":          res.Adjustment.TierAfter,
-				"adjustment_id":       res.Adjustment.Id,
-			})
+		if res.Replayed {
+			markIdempotentReplayNoAudit(c)
+		} else if res.AuditEventID != "" {
+			rememberPreparedAuditEvent(c, res.AuditEventID)
+			markAuditLogged(c)
 		}
 		common.ApiSuccess(c, res)
 	}

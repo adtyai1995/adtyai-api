@@ -555,7 +555,7 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 			sum := sha256.Sum256([]byte(head.Source))
 			head.SourceHash = hex.EncodeToString(sum[:])
 		}
-		if adtyTextHasOutboundSecret(head.Source) {
+		if strings.TrimSpace(head.Source) == "" || adtyTextHasOutboundSecret(head.Source) {
 			if err := tx.Model(&head).Updates(map[string]any{
 				"source_hash": head.SourceHash,
 				"english":     "",
@@ -711,6 +711,10 @@ func EditAdtyTranslation(objectKey, english string) error {
 		if err := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).First(&head).Error; err != nil {
 			return err
 		}
+		// R5-057: Capture prior English BEFORE updating head.english so double human edits
+		// on secret-bearing ZH announcements strip the prior English cleanly instead of
+		// appending duplicates and breaking adtyTranslationHeadMatchesSource.
+		oldEnglish := strings.TrimSpace(head.English)
 		if err := tx.Model(&head).Updates(map[string]any{
 			"english":      english,
 			"human_edited": true,
@@ -728,7 +732,11 @@ func EditAdtyTranslation(objectKey, english string) error {
 					if model.AdtyLockForUpdate(tx).Where("id = ?", pubID).Limit(1).Find(&pub).RowsAffected > 0 {
 						src := strings.TrimSpace(head.Source)
 						if src == "" {
-							src = normalizeAdtyNotificationSourceContentWithDB(tx, pub.Id, pub.Content)
+							src = strings.TrimSpace(pub.Content)
+							if oldEnglish != "" {
+								src = strings.TrimSpace(strings.TrimSuffix(src, "\n\n"+oldEnglish))
+							}
+							src = strings.TrimSpace(strings.TrimSuffix(src, "\n\n"+AdtyTranslationNotReady))
 						}
 						if src != "" {
 							nextContent := src

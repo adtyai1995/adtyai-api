@@ -406,10 +406,17 @@ func authorizeAdtyPaymentScene(db *gorm.DB, config *AdtyPaymentScenes, userID in
 	if quote == nil {
 		return nil, nil, common.NewMessage("Invalid parameters")
 	}
-	// R3-003: Acquire AdtySite lock BEFORE User lock on owner top-ups to match canonical lock order.
+	// R3-003 / R5-003: Acquire AdtySite and AdtyTeam locks BEFORE User lock to match
+	// canonical global lock order AdtySite -> AdtyTeam -> User.
 	if lockUser && isOwnerTopupBusiness(quote.Business) && quote.SiteID > 0 {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(db).First(&site, quote.SiteID).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	if lockUser && quote.Business == model.AdtyBusinessTeamTopup && quote.TeamID > 0 {
+		var team model.AdtyTeam
+		if err := model.AdtyLockForUpdate(db).First(&team, quote.TeamID).Error; err != nil {
 			return nil, nil, err
 		}
 	}
@@ -476,6 +483,14 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		config.Version = row.Version
 		if err := common.UnmarshalJsonStr(row.Payload, &config.Scenes); err != nil {
 			return err
+		}
+		if ext.SiteId > 0 {
+			// R5-003: Lock AdtySite BEFORE AdtyEpayChannel so CreateAdtyPaymentOrder matches
+			// CompleteAdtyTopUpTx's canonical AdtySite -> AdtyEpayChannel lock order.
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).First(&site, ext.SiteId).Error; err != nil {
+				return err
+			}
 		}
 		if ext.Provider == model.PaymentProviderAdtyEpay {
 			var channel model.AdtyEpayChannel

@@ -31,6 +31,10 @@ const (
 	AdtyWatcherOutboxDelivered = "delivered"
 	AdtyWatcherOutboxFailed    = "failed"
 	AdtyWatcherOutboxRevoked   = "revoked"
+	AdtyWatcherOutboxDead      = "dead"
+
+	adtyWatcherOutboxMaxAttempts = 5
+	adtyWatcherOutboxBatchLimit  = 50
 )
 
 // AdtyChannelWatcherNotice persists the authoritative in-site notification history
@@ -253,35 +257,72 @@ func notifyAdminsWithEventID(eventID, notifyType string, receives func(userID, r
 			}
 		}
 
-		if deliverWatcherOutboxEntry(&outbox, receives) {
+		if deliverWatcherOutboxEntry(&outbox, receives, false) {
 			sentCount++
 		}
 	}
 	return sentCount
 }
 
-func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(userID, role int, setting dto.UserSetting) bool) bool {
+func isPermanentWatcherDeliveryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "request reject") ||
+		strings.Contains(msg, "invalid email") ||
+		strings.Contains(msg, "invalid webhook") ||
+		strings.Contains(msg, "invalid bark") ||
+		strings.Contains(msg, "invalid gotify") ||
+		strings.Contains(msg, "unsupported notify type")
+}
+
+func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(userID, role int, setting dto.UserSetting) bool, forceClaim bool) bool {
 	if outbox == nil || model.DB == nil {
 		return false
 	}
 	now := time.Now().Unix()
+	// R5-059: Atomically claim a short lease before calling NotifyUser so concurrent
+	// inline delivery and the 60s background retry worker never double-deliver the same row.
+	claimQuery := model.DB.Model(&AdtyChannelWatcherOutbox{}).
+		Where("id = ? AND status IN ?", outbox.Id, []string{AdtyWatcherOutboxPending, AdtyWatcherOutboxFailed})
+	if !forceClaim {
+		claimQuery = claimQuery.Where("next_retry_at = 0 OR next_retry_at <= ?", now)
+	}
+	claim := claimQuery.Updates(map[string]any{
+		"next_retry_at": now + 120,
+		"updated_at":    now,
+	})
+	if claim.Error != nil || claim.RowsAffected == 0 {
+		return false
+	}
 	var liveUser model.User
 	if err := model.DB.Select("id", "email", "role", "status", "setting").Where("id = ?", outbox.UserId).Limit(1).Find(&liveUser).Error; err != nil {
 		common.SysLog(common.LogText("failed to query recipient %d for watcher outbox %d: %s", outbox.UserId, outbox.Id, err.Error()))
+		attempts := outbox.AttemptCount + 1
+		nextStatus := AdtyWatcherOutboxFailed
+		nextRetry := now + int64(60)<<min(attempts-1, 4)
+		if attempts >= adtyWatcherOutboxMaxAttempts {
+			nextStatus = AdtyWatcherOutboxDead
+			nextRetry = 0
+		}
 		_ = model.DB.Model(outbox).Updates(map[string]any{
-			"status":        AdtyWatcherOutboxFailed,
+			"status":        nextStatus,
+			"attempt_count": attempts,
 			"last_error":    "recipient lookup error: " + err.Error(),
-			"next_retry_at": now + 60,
+			"next_retry_at": nextRetry,
 			"updated_at":    now,
 		}).Error
-		outbox.Status = AdtyWatcherOutboxFailed
+		outbox.Status = nextStatus
+		outbox.AttemptCount = attempts
 		return false
 	}
 	if liveUser.Id == 0 {
 		_ = model.DB.Model(outbox).Updates(map[string]any{
-			"status":     AdtyWatcherOutboxRevoked,
-			"last_error": "recipient not found",
-			"updated_at": now,
+			"status":        AdtyWatcherOutboxRevoked,
+			"last_error":    "recipient not found",
+			"next_retry_at": 0,
+			"updated_at":    now,
 		}).Error
 		outbox.Status = AdtyWatcherOutboxRevoked
 		return false
@@ -301,9 +342,10 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 	}
 	if liveUser.Status != common.UserStatusEnabled || liveUser.Role < common.RoleAdminUser || !receives(liveUser.Id, liveUser.Role, liveSetting) {
 		_ = model.DB.Model(outbox).Updates(map[string]any{
-			"status":     AdtyWatcherOutboxRevoked,
-			"last_error": "recipient permission or notification switch revoked before delivery",
-			"updated_at": now,
+			"status":        AdtyWatcherOutboxRevoked,
+			"last_error":    "recipient permission or notification switch revoked before delivery",
+			"next_retry_at": 0,
+			"updated_at":    now,
 		}).Error
 		outbox.Status = AdtyWatcherOutboxRevoked
 		return false
@@ -322,14 +364,20 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 	attempts := outbox.AttemptCount + 1
 	if err := NotifyUser(liveUser.Id, liveUser.Email, liveSetting, dto.NewNotify(outbox.NotifyType, subject, content, nil)); err != nil {
 		common.SysLog(common.LogText("failed to send notice %s to user %d: %s", outbox.NotifyType, liveUser.Id, err.Error()))
+		nextStatus := AdtyWatcherOutboxFailed
+		nextRetry := now + int64(60)<<min(attempts-1, 4)
+		if attempts >= adtyWatcherOutboxMaxAttempts || isPermanentWatcherDeliveryError(err) {
+			nextStatus = AdtyWatcherOutboxDead
+			nextRetry = 0
+		}
 		_ = model.DB.Model(outbox).Updates(map[string]any{
-			"status":        AdtyWatcherOutboxFailed,
+			"status":        nextStatus,
 			"attempt_count": attempts,
 			"last_error":    err.Error(),
-			"next_retry_at": now + 60,
+			"next_retry_at": nextRetry,
 			"updated_at":    now,
 		}).Error
-		outbox.Status = AdtyWatcherOutboxFailed
+		outbox.Status = nextStatus
 		outbox.AttemptCount = attempts
 		outbox.LastError = err.Error()
 		return false
@@ -367,17 +415,17 @@ func retryChannelWatcherNotices(dueOnly bool, now int64) int {
 	if model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherOutbox{}) {
 		return 0
 	}
-	query := model.DB.Where("status IN ?", []string{AdtyWatcherOutboxPending, AdtyWatcherOutboxFailed})
+	query := model.DB.Where("status IN ? AND attempt_count < ?", []string{AdtyWatcherOutboxPending, AdtyWatcherOutboxFailed}, adtyWatcherOutboxMaxAttempts)
 	if dueOnly {
 		query = query.Where("next_retry_at = 0 OR next_retry_at <= ?", now)
 	}
 	var rows []AdtyChannelWatcherOutbox
-	if err := query.Order("id ASC").Find(&rows).Error; err != nil {
+	if err := query.Order("id ASC").Limit(adtyWatcherOutboxBatchLimit).Find(&rows).Error; err != nil {
 		return 0
 	}
 	delivered := 0
 	for i := range rows {
-		if deliverWatcherOutboxEntry(&rows[i], nil) {
+		if deliverWatcherOutboxEntry(&rows[i], nil, !dueOnly) {
 			delivered++
 		}
 	}
@@ -481,11 +529,46 @@ func UpstreamModelUpdateEventID(now int64, changedChannels, failedChannels int) 
 
 const adtyWatcherNoticeListLimit = 100
 
-func adtyWatcherNoticeInboxItems(userID int) []map[string]any {
-	if userID <= 0 || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+// adtyWatcherNoticeAccess returns live SQL watcher-notice visibility for userID on host site.
+// Platform watcher notices are main-host only and require live Root (for epay maintenance)
+// or enabled Admin + ChannelRead (for channel/model watcher notices) (R5-025).
+func adtyWatcherNoticeAccess(userID int, site *model.AdtySite) (canChannel bool, canEpay bool) {
+	if userID <= 0 || site != nil || model.DB == nil {
+		return false, false
+	}
+	var user model.User
+	if err := model.DB.Select("id", "role", "status").Where("id = ?", userID).Limit(1).Find(&user).Error; err != nil || user.Id == 0 {
+		return false, false
+	}
+	if user.Status != common.UserStatusEnabled || user.Role < common.RoleAdminUser {
+		return false, false
+	}
+	canEpay = user.Role == common.RoleRootUser
+	canChannel = AdtyAdminRoleCan(user.Id, user.Role, authz.ChannelRead)
+	return canChannel, canEpay
+}
+
+func adtyWatcherNoticePermitted(notifyType string, canChannel, canEpay bool) bool {
+	if notifyType == adtyNotifyTypeEpayMaintenance {
+		return canEpay
+	}
+	return canChannel
+}
+
+func adtyWatcherNoticeInboxItems(userID int, site *model.AdtySite) []map[string]any {
+	if userID <= 0 || site != nil || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+		return nil
+	}
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	if !canChannel && !canEpay {
 		return nil
 	}
 	q := model.DB.Where("user_id = ?", userID)
+	if !canEpay {
+		q = q.Where("notify_type <> ?", adtyNotifyTypeEpayMaintenance)
+	} else if !canChannel {
+		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
+	}
 	if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
 		q = q.Where(
 			"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h.key = adty_channel_watcher_notices.read_key OR h.key = 'watcher:' || adty_channel_watcher_notices.read_key))",
@@ -498,7 +581,7 @@ func adtyWatcherNoticeInboxItems(userID int) []map[string]any {
 	}
 	items := make([]map[string]any, 0, len(notices))
 	for _, notice := range notices {
-		if strings.TrimSpace(notice.ReadKey) == "" {
+		if strings.TrimSpace(notice.ReadKey) == "" || !adtyWatcherNoticePermitted(notice.NotifyType, canChannel, canEpay) {
 			continue
 		}
 		items = append(items, formatAdtyWatcherNoticeItem(notice))
@@ -532,15 +615,24 @@ func formatAdtyWatcherNoticeItem(notice AdtyChannelWatcherNotice) map[string]any
 	}
 }
 
-func adtyUnreadWatcherNoticeCount(userID, siteID int) int64 {
-	if userID <= 0 || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+func adtyUnreadWatcherNoticeCount(userID int, site *model.AdtySite) int64 {
+	if userID <= 0 || site != nil || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+		return 0
+	}
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	if !canChannel && !canEpay {
 		return 0
 	}
 	q := model.DB.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND read_key <> ''", userID)
+	if !canEpay {
+		q = q.Where("notify_type <> ?", adtyNotifyTypeEpayMaintenance)
+	} else if !canChannel {
+		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
+	}
 	if model.DB.Migrator().HasTable(&model.AdtyNotificationRead{}) {
 		q = q.Where(
-			"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.site_id = ? AND r.read_key = adty_channel_watcher_notices.read_key)",
-			userID, siteID,
+			"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.site_id = 0 AND r.read_key = adty_channel_watcher_notices.read_key)",
+			userID,
 		)
 	}
 	if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
@@ -556,13 +648,23 @@ func adtyUnreadWatcherNoticeCount(userID, siteID int) int64 {
 	return unread
 }
 
-func adtyOwnedWatcherReadKeys(userID int, keys []string) map[string]bool {
+func adtyOwnedWatcherReadKeys(userID int, site *model.AdtySite, keys []string) map[string]bool {
 	owned := map[string]bool{}
-	if userID <= 0 || len(keys) == 0 || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+	if userID <= 0 || site != nil || len(keys) == 0 || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return owned
 	}
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	if !canChannel && !canEpay {
+		return owned
+	}
+	q := model.DB.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND read_key IN ?", userID, keys)
+	if !canEpay {
+		q = q.Where("notify_type <> ?", adtyNotifyTypeEpayMaintenance)
+	} else if !canChannel {
+		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
+	}
 	var found []string
-	if err := model.DB.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND read_key IN ?", userID, keys).Pluck("read_key", &found).Error; err != nil {
+	if err := q.Pluck("read_key", &found).Error; err != nil {
 		return owned
 	}
 	for _, key := range found {
@@ -571,15 +673,30 @@ func adtyOwnedWatcherReadKeys(userID int, keys []string) map[string]bool {
 	return owned
 }
 
-func adtyWatcherNoticeDetail(userID int, key string) (map[string]any, bool) {
+func adtyWatcherNoticeLookup(userID int, site *model.AdtySite, key string) (*AdtyChannelWatcherNotice, bool) {
 	key = strings.TrimSpace(key)
-	if userID <= 0 || key == "" || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+	if userID <= 0 || site != nil || key == "" || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+		return nil, false
+	}
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	if !canChannel && !canEpay {
 		return nil, false
 	}
 	stripped := strings.TrimPrefix(key, "watcher:")
 	var notice AdtyChannelWatcherNotice
 	res := model.DB.Where("user_id = ? AND (read_key = ? OR read_key = ? OR event_id = ? OR event_id = ?)", userID, key, stripped, key, stripped).Order("id DESC").Limit(1).Find(&notice)
 	if res.Error != nil || res.RowsAffected == 0 || notice.Id == 0 {
+		return nil, false
+	}
+	if !adtyWatcherNoticePermitted(notice.NotifyType, canChannel, canEpay) {
+		return nil, false
+	}
+	return &notice, true
+}
+
+func adtyWatcherNoticeDetail(userID int, site *model.AdtySite, key string) (map[string]any, bool) {
+	notice, ok := adtyWatcherNoticeLookup(userID, site, key)
+	if !ok {
 		return nil, false
 	}
 	if adtyIsNotificationKeyHidden(userID, notice.ReadKey) ||
@@ -590,7 +707,7 @@ func adtyWatcherNoticeDetail(userID int, key string) (map[string]any, bool) {
 	if _, err := UpsertAdtySevereTodo(userID, adtyTodoSiteID(userID, nil), notice.ReadKey, notice.Title, notice.Content, notice.Category, 0); err != nil {
 		common.SysLog(common.LogText("severe todo was not created for watcher notice %s: %s", notice.ReadKey, err.Error()))
 	}
-	item := formatAdtyWatcherNoticeItem(notice)
+	item := formatAdtyWatcherNoticeItem(*notice)
 	RenderAdtyTodoInboxItems(userID, []map[string]any{item})
 	return item, true
 }
@@ -600,9 +717,19 @@ func ListAdtyChannelWatcherNoticesForUser(userID int) ([]AdtyChannelWatcherNotic
 	if userID <= 0 || model.DB == nil {
 		return nil, nil
 	}
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, nil)
+	if !canChannel && !canEpay {
+		return []AdtyChannelWatcherNotice{}, nil
+	}
 	ensureAdtyChannelWatcherTables()
+	q := model.DB.Where("user_id = ?", userID)
+	if !canEpay {
+		q = q.Where("notify_type <> ?", adtyNotifyTypeEpayMaintenance)
+	} else if !canChannel {
+		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
+	}
 	var rows []AdtyChannelWatcherNotice
-	err := model.DB.Where("user_id = ?", userID).Order("id DESC").Limit(adtyWatcherNoticeListLimit).Find(&rows).Error
+	err := q.Order("id DESC").Limit(adtyWatcherNoticeListLimit).Find(&rows).Error
 	return rows, err
 }
 

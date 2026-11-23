@@ -532,18 +532,22 @@ func parseHEIFDimensions(data []byte) (int, int, bool) {
 		headerLen := 8
 
 		if boxSize == 1 {
-			// 64-bit extended size
+			// 64-bit extended size: validate in uint64 before casting to int to avoid signed overflow.
 			if offset+16 > size {
 				break
 			}
-			boxSize = int(binary.BigEndian.Uint64(data[offset+8 : offset+16]))
+			extSize := binary.BigEndian.Uint64(data[offset+8 : offset+16])
 			headerLen = 16
+			if extSize < uint64(headerLen) || extSize > uint64(size-offset) {
+				break
+			}
+			boxSize = int(extSize)
 		} else if boxSize == 0 {
 			// box extends to end of data
 			boxSize = size - offset
 		}
 
-		if boxSize < headerLen || offset+boxSize > size {
+		if boxSize < headerLen || boxSize > size-offset {
 			break
 		}
 

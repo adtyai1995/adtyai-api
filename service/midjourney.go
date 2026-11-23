@@ -330,8 +330,14 @@ func CoverPlusActionToNormalAction(midjRequest *dto.MidjourneyRequest) *dto.Midj
 		return MidjourneyErrorWrapper(constant.MjRequestError, "custom_id_is_required")
 	}
 	splits := strings.Split(customId, "::")
+	if len(splits) < 2 {
+		return MidjourneyErrorWrapper(constant.MjRequestError, "unknown_action")
+	}
 	var action string
 	if splits[1] == "JOB" {
+		if len(splits) < 3 {
+			return MidjourneyErrorWrapper(constant.MjRequestError, "unknown_action")
+		}
 		action = splits[2]
 	} else {
 		action = splits[1]
@@ -341,6 +347,9 @@ func CoverPlusActionToNormalAction(midjRequest *dto.MidjourneyRequest) *dto.Midj
 		return MidjourneyErrorWrapper(constant.MjRequestError, "unknown_action")
 	}
 	if strings.Contains(action, "upsample") {
+		if len(splits) < 4 {
+			return MidjourneyErrorWrapper(constant.MjRequestError, "index_parse_failed")
+		}
 		index, err := strconv.Atoi(splits[3])
 		if err != nil {
 			return MidjourneyErrorWrapper(constant.MjRequestError, "index_parse_failed")
@@ -350,6 +359,9 @@ func CoverPlusActionToNormalAction(midjRequest *dto.MidjourneyRequest) *dto.Midj
 	} else if strings.Contains(action, "variation") {
 		midjRequest.Index = 1
 		if action == "variation" {
+			if len(splits) < 4 {
+				return MidjourneyErrorWrapper(constant.MjRequestError, "index_parse_failed")
+			}
 			index, err := strconv.Atoi(splits[3])
 			if err != nil {
 				return MidjourneyErrorWrapper(constant.MjRequestError, "index_parse_failed")

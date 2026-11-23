@@ -55,6 +55,21 @@ func PageStaffBalanceRequests(siteID int, status string, offset, limit int) ([]m
 	return rows, total, err
 }
 
+// PageStaffOwnBalanceRequests returns paginated adjustment requests submitted by one staff member on one site (R5-044).
+func PageStaffOwnBalanceRequests(siteID, staffUserID int, status string, offset, limit int) ([]model.AdtyStaffBalanceRequest, int64, error) {
+	var rows []model.AdtyStaffBalanceRequest
+	var total int64
+	query := model.DB.Model(&model.AdtyStaffBalanceRequest{}).Where("site_id = ? AND staff_user_id = ?", siteID, staffUserID)
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := query.Order("id DESC").Offset(offset).Limit(limit).Find(&rows).Error
+	return rows, total, err
+}
+
 // WalletUSDParts splits a wallet into principal and permanent bonus for display.
 type WalletUSDParts struct {
 	Principal decimal.Decimal
@@ -142,16 +157,24 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 	var officialEntry *model.AuditLog
 	var deliverIntent bool
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// R5-033: Pre-read staff.site_id unlocked, then lock AdtySite BEFORE AdtySiteStaff
+		// to obey canonical AdtySite -> AdtySiteStaff -> User lock order.
+		var observedStaff struct {
+			SiteId int
+		}
+		if err := tx.Model(&model.AdtySiteStaff{}).Select("site_id").Where("user_id = ? AND status = ?", staffUserID, "enabled").First(&observedStaff).Error; err != nil || observedStaff.SiteId <= 0 {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, observedStaff.SiteId).Error; err != nil {
+			return err
+		}
 		var staff model.AdtySiteStaff
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ? AND status = ?", staffUserID, "enabled").First(&staff).Error; err != nil {
 			return common.NewMessage("No permission to perform this action")
 		}
-		if !slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffBalanceRequest) {
+		if staff.SiteId != site.Id || !slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffBalanceRequest) {
 			return common.NewMessage("No permission to perform this action")
-		}
-		var site model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).First(&site, staff.SiteId).Error; err != nil {
-			return err
 		}
 		if site.OwnerUserId != staff.OwnerUserId || site.Status != model.AdtySiteStatusActive || !AdtySiteAgreementAccepted(site.AgreementVer) {
 			return common.NewMessage("No permission to perform this action")
@@ -166,7 +189,8 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 		if _, err := model.ValidateAdtyAdjustmentOrderTx(tx, customerUserID, prov.OrderRef, &staff.SiteId); err != nil {
 			return err
 		}
-		if existing, err := findAdtyStaffBalanceRequestByIdemKey(tx, idempotencyKey); err != nil {
+		scopedIdemKey := adtyScopedStaffBalanceIdemKey(staff.SiteId, staffUserID, idempotencyKey)
+		if existing, err := findAdtyStaffBalanceRequestByIdemKey(tx, staff.SiteId, staffUserID, idempotencyKey); err != nil {
 			return err
 		} else if existing != nil {
 			if !sameAdtyStaffBalanceRequest(existing, staff.SiteId, staffUserID, customerUserID, direction, amount) {
@@ -181,7 +205,7 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 		row := &model.AdtyStaffBalanceRequest{
 			SiteId: staff.SiteId, StaffUserId: staffUserID, CustomerUserId: customerUserID,
 			Direction: direction, AmountUSD: amount, Status: model.AdtyStaffBalancePending,
-			IdempotencyKey: &idempotencyKey,
+			IdempotencyKey: &scopedIdemKey,
 			Reason:         prov.Reason, BusinessRef: prov.OrderRef, OrderRef: prov.OrderRef, FundingSource: prov.FundingSource,
 			BatchKind: prov.BatchKind, BatchSource: prov.BatchSource,
 		}
@@ -302,9 +326,17 @@ func (s jsonRawString) MarshalJSON() ([]byte, error) {
 	return []byte(s), nil
 }
 
-func findAdtyStaffBalanceRequestByIdemKey(db *gorm.DB, key string) (*model.AdtyStaffBalanceRequest, error) {
+// adtyScopedStaffBalanceIdemKey isolates staff balance request idempotency keys per
+// (site_id, staff_user_id) while staying within the existing varchar(64) column limit (R5-044).
+func adtyScopedStaffBalanceIdemKey(siteID, staffUserID int, key string) string {
+	return fmt.Sprintf("s%d:u%d:%s", siteID, staffUserID, common.Sha1([]byte(strings.TrimSpace(key))))
+}
+
+func findAdtyStaffBalanceRequestByIdemKey(db *gorm.DB, siteID, staffUserID int, rawKey string) (*model.AdtyStaffBalanceRequest, error) {
+	scopedKey := adtyScopedStaffBalanceIdemKey(siteID, staffUserID, rawKey)
 	var rows []model.AdtyStaffBalanceRequest
-	if err := db.Where("idempotency_key = ?", key).Limit(1).Find(&rows).Error; err != nil {
+	if err := db.Where("idempotency_key = ? OR (site_id = ? AND staff_user_id = ? AND idempotency_key = ?)",
+		scopedKey, siteID, staffUserID, strings.TrimSpace(rawKey)).Limit(1).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
@@ -833,9 +865,21 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 			}
 		}
 		var item AdtyTodoItem
-		found := tx.Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
-		if found.Error != nil {
-			return found.Error
+		// R5-058: When publicationID > 0, update any existing todo for (user_id, publication_id)
+		// in place (updating its key to the new ReadKey) so editing a published severe announcement
+		// never spawns duplicate orphaned pending todos.
+		var found *gorm.DB
+		if publicationID > 0 {
+			found = tx.Where("user_id = ? AND publication_id = ?", userID, publicationID).Order("id DESC").Limit(1).Find(&item)
+			if found.Error != nil {
+				return found.Error
+			}
+		}
+		if found == nil || found.RowsAffected == 0 {
+			found = tx.Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
+			if found.Error != nil {
+				return found.Error
+			}
 		}
 		if found.RowsAffected == 0 {
 			item = AdtyTodoItem{
@@ -871,6 +915,10 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 			return nil
 		}
 		updates := map[string]any{"updated_at": now}
+		if key != "" && item.Key != key {
+			updates["key"] = key
+			item.Key = key
+		}
 		if publicationID > 0 && item.PublicationId == 0 {
 			updates["publication_id"] = publicationID
 			item.PublicationId = publicationID
@@ -1182,6 +1230,12 @@ func MigrateAdtyOpsClusterTables(db *gorm.DB) error {
 
 // ListAdtyTodosForUser returns severe todo items for userID, optionally including completed items.
 func ListAdtyTodosForUser(userID int, includeCompleted bool) ([]AdtyTodoItem, error) {
+	return ListAdtyTodosForUserOnSite(userID, nil, includeCompleted)
+}
+
+// ListAdtyTodosForUserOnSite returns severe todo items for userID filtered against
+// withdrawn announcements (R5-058) and revoked/subsite watcher permissions (R5-025).
+func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeCompleted bool) ([]AdtyTodoItem, error) {
 	if userID <= 0 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
@@ -1193,8 +1247,64 @@ func ListAdtyTodosForUser(userID int, includeCompleted bool) ([]AdtyTodoItem, er
 		q = q.Where("status <> ?", AdtyTodoStatusCompleted)
 	}
 	var items []AdtyTodoItem
-	err := q.Order("id DESC").Find(&items).Error
-	return items, err
+	if err := q.Order("id DESC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return items, nil
+	}
+	pubIDs := make([]int, 0, len(items))
+	watcherKeys := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.PublicationId > 0 {
+			pubIDs = append(pubIDs, item.PublicationId)
+		} else if item.Key != "" {
+			watcherKeys = append(watcherKeys, item.Key)
+		}
+	}
+	activePubs := map[int]bool{}
+	if len(pubIDs) > 0 && model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+		var publishedIDs []int
+		if err := model.DB.Model(&model.AdtyNotificationPublication{}).
+			Where("id IN ? AND status = ?", pubIDs, "published").
+			Pluck("id", &publishedIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, pid := range publishedIDs {
+			activePubs[pid] = true
+		}
+	}
+	watcherTypes := map[string]string{}
+	if len(watcherKeys) > 0 && model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+		var notices []struct {
+			ReadKey    string
+			NotifyType string
+		}
+		if err := model.DB.Model(&AdtyChannelWatcherNotice{}).
+			Select("read_key", "notify_type").
+			Where("user_id = ? AND read_key IN ?", userID, watcherKeys).
+			Find(&notices).Error; err != nil {
+			return nil, err
+		}
+		for _, n := range notices {
+			watcherTypes[n.ReadKey] = n.NotifyType
+		}
+	}
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	filtered := make([]AdtyTodoItem, 0, len(items))
+	for _, item := range items {
+		if item.PublicationId > 0 {
+			if model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{}) && !activePubs[item.PublicationId] {
+				continue
+			}
+		} else if notifyType, isWatcher := watcherTypes[item.Key]; isWatcher {
+			if !adtyWatcherNoticePermitted(notifyType, canChannel, canEpay) {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 // GetAdtyTodoHistory returns the ordered state transition history for one user's todo key.
@@ -1427,20 +1537,21 @@ func HideAdtyNotificationForUser(userID int, key string) error {
 // HideAdtyNotificationForUserFromRequest is the request-scoped hide path so
 // the official audit can use the site already resolved for this request.
 func HideAdtyNotificationForUserFromRequest(c *gin.Context, userID int, key string) error {
+	key = strings.TrimSpace(key)
+	if userID <= 0 || key == "" {
+		return common.NewMessage("Invalid parameters")
+	}
 	if adtyIsNotificationKeyHidden(userID, key) {
 		return nil
 	}
-	item, visible, err := GetAdtyNotificationDetail(userID, AdtySiteForRequest(c), key)
+	canonicalKey, found, err := resolveAdtyNotificationCanonicalKey(userID, AdtySiteForRequest(c), key)
 	if err != nil {
 		return err
 	}
-	if !visible {
+	if !found || strings.TrimSpace(canonicalKey) == "" {
 		return gorm.ErrRecordNotFound
 	}
-	canonicalKey := strings.TrimSpace(key)
-	if rk, ok := item["read_key"].(string); ok && strings.TrimSpace(rk) != "" {
-		canonicalKey = strings.TrimSpace(rk)
-	}
+	canonicalKey = strings.TrimSpace(canonicalKey)
 	if adtyIsNotificationKeyHidden(userID, canonicalKey) {
 		return nil
 	}
@@ -2002,19 +2113,24 @@ func SavedAdtyBilingualNoticeText(key string) (string, bool) {
 
 func hasUnfilledNoticePlaceholder(rawTexts []string, valueCount int) bool {
 	for _, raw := range rawTexts {
+		valueUses := 0
 		for _, token := range adtyNoticePlaceholderPattern.FindAllString(raw, -1) {
-			name := strings.TrimSuffix(strings.TrimPrefix(token, "{{"), "}}")
-			if name == token {
-				name = strings.TrimSuffix(strings.TrimPrefix(token, "{"), "}")
-			}
-			if name == "SystemName" && common.SystemName != "" {
-				continue
-			}
-			if name == "value" {
-				if valueCount > 0 {
+			if token == "{{SystemName}}" {
+				if common.SystemName != "" {
 					continue
 				}
 				return true
+			}
+			if token == "{{value}}" {
+				valueUses++
+				if valueUses <= valueCount {
+					continue
+				}
+				return true
+			}
+			name := strings.TrimSuffix(strings.TrimPrefix(token, "{{"), "}}")
+			if name == token {
+				name = strings.TrimSuffix(strings.TrimPrefix(token, "{"), "}")
 			}
 			if idx, err := strconv.Atoi(name); err == nil && idx >= 1 && idx <= valueCount {
 				continue

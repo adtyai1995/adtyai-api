@@ -80,7 +80,10 @@ func ValidatePartnerReferralRate(rate decimal.Decimal) error {
 		return common.NewMessage("The configured partner rate range is invalid")
 	}
 	if rate.LessThan(minRate) || rate.GreaterThan(maxRate) {
-		return common.NewMessage(fmt.Sprintf("The partner rate must be between %s and %s", minRate.String(), maxRate.String()))
+		return common.NewMessage("The partner rate must be between {{min}} and {{max}}", map[string]any{
+			"min": minRate.String(),
+			"max": maxRate.String(),
+		})
 	}
 	return nil
 }
