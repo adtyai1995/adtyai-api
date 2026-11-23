@@ -32,7 +32,7 @@ func adtyOwnerSiteOr403(c *gin.Context) (*model.AdtySite, bool) {
 		common.ApiError(c, err)
 		return nil, false
 	}
-	if site.AgreementVer != service.AdtyCurrentSiteAgreementVersion() {
+	if !service.AdtySiteAgreementAccepted(site.AgreementVer) {
 		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteAgreement)
 		return nil, false
 	}

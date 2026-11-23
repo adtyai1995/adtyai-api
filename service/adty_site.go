@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -50,16 +51,19 @@ const (
 	AdtyPausedRepairOutcomeClose  = "close"
 )
 
-// AdtySitePreset 是开站时预设的单站 d 和 k 上限（管理员直接开或邀请码带的），空就用全局。
+// AdtySitePreset 是开站时预设的单站 d、等级和元数据（管理员直接开），空就用全局。
 type AdtySitePreset struct {
-	MaxMarkup     *decimal.Decimal // Deprecated: owners control retail pricing.
-	CostFactor    *decimal.Decimal
-	ContactInfo   string
-	AgreementVer  string
-	InviteCodeId  int
-	OperatorId    int
-	ExplicitRoot  string // 管理员开站可以指定根域名，空就用 root_domains 的第一个
-	InitialStatus string // 空则按开站方式决定
+	MaxMarkup      *decimal.Decimal // Deprecated: owners control retail pricing.
+	CostFactor     *decimal.Decimal
+	TierCode       string
+	TierMode       string
+	ContactInfo    string
+	AgreementVer   string
+	InviteCodeId   int
+	OperatorId     int
+	ExplicitRoot   string // 管理员开站可以指定根域名，空就用 root_domains 的第一个
+	InitialStatus  string // 空则按开站方式决定
+	IdempotencyKey string
 }
 
 func resellerSetting() *adty_setting.ResellerSetting { return adty_setting.GetResellerSetting() }
@@ -119,6 +123,16 @@ func AdtyCurrentSiteAgreementVersion() string {
 	return strconv.Itoa(adty_setting.GetLegalSetting().SiteAgreementVersion)
 }
 
+// AdtySiteAgreementAccepted reports whether a site satisfies the active site
+// agreement requirement. Version <= 0 means no site agreement is published yet,
+// so newly opened sites are not deadlocked out of the owner center.
+func AdtySiteAgreementAccepted(agreementVer string) bool {
+	if adty_setting.GetLegalSetting().SiteAgreementVersion <= 0 {
+		return true
+	}
+	return agreementVer == AdtyCurrentSiteAgreementVersion()
+}
+
 // AdtyCurrentSiteCustomerTermsVersion 是分站客户条款当前的版本号。0 表示还没写。
 func AdtyCurrentSiteCustomerTermsVersion() string {
 	return strconv.Itoa(adty_setting.GetLegalSetting().SiteCustomerTermsVersion)
@@ -129,9 +143,9 @@ func AdtyCurrentSiteCustomerTermsVersion() string {
 func AdtySiteTermsStatus(userId int) (required bool, version string) {
 	if site, err := AdtyOwnerSite(userId); err == nil && site != nil {
 		version = AdtyCurrentSiteAgreementVersion()
-		return site.AgreementVer != version, version
+		return !AdtySiteAgreementAccepted(site.AgreementVer), version
 	} else if err != nil && !errors.Is(err, ErrAdtySiteNotOwner) {
-		return true, AdtyCurrentSiteAgreementVersion()
+		return adty_setting.GetLegalSetting().SiteAgreementVersion > 0, AdtyCurrentSiteAgreementVersion()
 	}
 	version = AdtyCurrentSiteCustomerTermsVersion()
 	if adty_setting.GetLegalSetting().SiteCustomerTermsVersion <= 0 {
@@ -169,6 +183,9 @@ func AcceptAdtySiteTerms(userId int, version string) error {
 }
 
 func acceptOwnerSiteAgreement(userId int, version string) error {
+	if adty_setting.GetLegalSetting().SiteAgreementVersion <= 0 {
+		return ErrAdtySiteAgreement
+	}
 	current := AdtyCurrentSiteAgreementVersion()
 	if version != current {
 		return ErrAdtySiteAgreement
@@ -313,41 +330,84 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 	if !cfg.Ready() {
 		return nil, ErrAdtySiteDisabled
 	}
-	if strings.TrimSpace(subdomain) == "" && cfg.DomainAutomationEnabled {
-		for range 20 {
-			n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 48))
-			if err != nil {
-				return nil, err
-			}
-			subdomain = "s" + n.Text(36)
-			var count int64
-			if err := model.DB.Model(&model.AdtySite{}).Where("subdomain = ?", subdomain).Count(&count).Error; err != nil {
-				return nil, err
-			}
-			if count == 0 {
-				break
-			}
+	idemKey := strings.TrimSpace(preset.IdempotencyKey)
+	if len(idemKey) > 64 {
+		return nil, common.NewMessage("Idempotency-Key is too long (maximum 64 characters)")
+	}
+	tierCode := strings.TrimSpace(preset.TierCode)
+	tierMode := strings.TrimSpace(preset.TierMode)
+	if tierCode != "" {
+		if tierMode == "" {
+			tierMode = AdtySiteTierModeAuto
 		}
+		if tierMode != AdtySiteTierModeAuto && tierMode != AdtySiteTierModeManual {
+			return nil, ErrAdtySiteTierMode
+		}
+	} else if tierMode != "" && tierMode != AdtySiteTierModeAuto && tierMode != AdtySiteTierModeManual {
+		return nil, ErrAdtySiteTierMode
 	}
-	label, err := AdtyNormalizeSubdomain(subdomain)
-	if err != nil {
-		return nil, err
-	}
+	rawSubdomain := strings.ToLower(strings.TrimSpace(subdomain))
 	if err := validateSitePreset(preset.CostFactor); err != nil {
 		return nil, err
 	}
-	currentVer := AdtyCurrentSiteAgreementVersion()
-	if openedBy != model.AdtySiteOpenedByAdmin && (adty_setting.GetLegalSetting().SiteAgreementVersion <= 0 || strings.TrimSpace(preset.AgreementVer) != currentVer) {
-		return nil, ErrAdtySiteAgreement
-	}
-	root := preset.ExplicitRoot
+	root := strings.ToLower(strings.TrimSpace(preset.ExplicitRoot))
 	if root == "" {
 		root = cfg.RootDomains[0]
 		if cfg.DomainAutomationEnabled {
 			root = cfg.AliyunDomain
 		}
-	} else if !slices.Contains(cfg.RootDomains, root) {
+	} else if !slices.Contains(cfg.RootDomains, root) && !(cfg.DomainAutomationEnabled && root == cfg.AliyunDomain) {
 		return nil, common.NewMessage("Invalid root domain {{domain}}", map[string]any{"domain": root})
+	}
+	if cfg.DomainAutomationEnabled && root != cfg.AliyunDomain {
+		return nil, common.NewMessage("Site root is outside the managed DNS domain")
+	}
+	costStr := ""
+	if preset.CostFactor != nil {
+		costStr = preset.CostFactor.String()
+	}
+	contact := truncateText(strings.TrimSpace(preset.ContactInfo), 500)
+	var openKeyDigest *string
+	openFingerprint := ""
+	if idemKey != "" {
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%s", preset.OperatorId, idemKey))))
+		openKeyDigest = &digest
+		openFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s", userId, rawSubdomain, root, costStr, tierCode, tierMode, contact))))
+	}
+	label := rawSubdomain
+	if label == "" {
+		allocated := false
+		for range 20 {
+			n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 48))
+			if err != nil {
+				return nil, err
+			}
+			candidate := "s" + n.Text(36)
+			if _, err := AdtyNormalizeSubdomain(candidate); err != nil {
+				continue
+			}
+			var count int64
+			if err := model.DB.Model(&model.AdtySite{}).Where("subdomain = ?", candidate).Count(&count).Error; err != nil {
+				return nil, err
+			}
+			if count == 0 {
+				label = candidate
+				allocated = true
+				break
+			}
+		}
+		if !allocated {
+			return nil, ErrAdtySiteSubdomainUsed
+		}
+	}
+	var err error
+	label, err = AdtyNormalizeSubdomain(label)
+	if err != nil {
+		return nil, err
+	}
+	currentVer := AdtyCurrentSiteAgreementVersion()
+	if openedBy != model.AdtySiteOpenedByAdmin && (adty_setting.GetLegalSetting().SiteAgreementVersion <= 0 || strings.TrimSpace(preset.AgreementVer) != currentVer) {
+		return nil, ErrAdtySiteAgreement
 	}
 	status := preset.InitialStatus
 	if status == "" {
@@ -359,8 +419,9 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 	now := time.Now().Unix()
 	site := &model.AdtySite{
 		OwnerUserId: userId, Subdomain: label, RootDomain: root, Status: status,
-		CostFactor: preset.CostFactor, ContactInfo: truncateText(preset.ContactInfo, 500),
-		OpenedBy: openedBy, AgreementVer: strings.TrimSpace(preset.AgreementVer),
+		CostFactor: preset.CostFactor, ContactInfo: contact,
+		OpenedBy: openedBy, OpenKey: openKeyDigest, OpenFingerprint: openFingerprint,
+		AgreementVer: strings.TrimSpace(preset.AgreementVer),
 	}
 	if site.AgreementVer != "" {
 		site.AgreementAt = now
@@ -371,7 +432,23 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 		// checked after waiting must include another opening's committed site.
 		txOptions = append(txOptions, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	}
+	replayed := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		if openKeyDigest != nil {
+			var existing model.AdtySite
+			lookup := tx.Where("open_key = ?", *openKeyDigest).Limit(1).Find(&existing)
+			if lookup.Error != nil {
+				return lookup.Error
+			}
+			if lookup.RowsAffected > 0 {
+				if existing.OpenFingerprint != openFingerprint {
+					return model.ErrAdtyIdempotencyConflict
+				}
+				site = &existing
+				replayed = true
+				return nil
+			}
+		}
 		// Commission transfers lock the affiliate before the user wallet. Keep
 		// the same order; invalid openings roll this uncommitted marker back.
 		if status == model.AdtySiteStatusActive {
@@ -379,15 +456,51 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 				return err
 			}
 		}
-		var users []model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id", "status").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil {
+		lockIDs := []int{userId}
+		if openKeyDigest != nil && preset.OperatorId > 0 && preset.OperatorId != userId {
+			lockIDs = append(lockIDs, preset.OperatorId)
+		}
+		var lockedUsers []model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id", "staff_site_id", "status").Where("id IN ?", lockIDs).Order("id ASC").Find(&lockedUsers).Error; err != nil {
 			return err
 		}
-		if len(users) == 0 || users[0].Status != common.UserStatusEnabled {
+		if openKeyDigest != nil {
+			var existing model.AdtySite
+			lookup := tx.Where("open_key = ?", *openKeyDigest).Limit(1).Find(&existing)
+			if lookup.Error != nil {
+				return lookup.Error
+			}
+			if lookup.RowsAffected > 0 {
+				if existing.OpenFingerprint != openFingerprint {
+					return model.ErrAdtyIdempotencyConflict
+				}
+				site = &existing
+				replayed = true
+				return nil
+			}
+		}
+		var targetUser *model.User
+		for i := range lockedUsers {
+			if lockedUsers[i].Id == userId {
+				targetUser = &lockedUsers[i]
+				break
+			}
+		}
+		if targetUser == nil || targetUser.Status != common.UserStatusEnabled {
 			return common.NewMessage("User not found")
 		}
-		if users[0].SiteId > 0 {
+		if targetUser.StaffSiteId != 0 {
+			return common.NewMessage("Site staff accounts cannot own a site")
+		}
+		if targetUser.SiteId > 0 {
 			return ErrAdtySiteCustomer
+		}
+		var empCount int64
+		if err := tx.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", userId, true).Count(&empCount).Error; err != nil {
+			return err
+		}
+		if empCount > 0 {
+			return common.NewMessage("Independent team employee accounts cannot own a site")
 		}
 		var owned int64
 		if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status <> ?", userId, model.AdtySiteStatusClosed).Count(&owned).Error; err != nil {
@@ -395,6 +508,22 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 		}
 		if owned > 0 {
 			return ErrAdtySiteAlreadyOwner
+		}
+		var selectedTier *model.AdtySiteTier
+		if tierCode != "" {
+			selectedTier = &model.AdtySiteTier{}
+			if err := tx.Where("code = ? AND enabled = ?", tierCode, true).First(selectedTier).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtySiteTierNotFound
+				}
+				return err
+			}
+			site.TierCode = selectedTier.Code
+			site.TierMode = tierMode
+			site.TierCostFactor = selectedTier.CostFactor
+			site.TierUpdatedAt = now
+		} else if tierMode != "" {
+			site.TierMode = tierMode
 		}
 		var taken int64
 		if err := tx.Model(&model.AdtySite{}).Where("subdomain = ?", label).Count(&taken).Error; err != nil {
@@ -424,15 +553,24 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 		if err := ensureAdtySiteWalletsTx(tx, site.Id); err != nil {
 			return err
 		}
+		if selectedTier != nil {
+			if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletMargin).
+				Update("required_balance", selectedTier.DepositUSD).Error; err != nil {
+				return err
+			}
+		}
 		return recordSiteAuditTx(tx, site.Id, "open", preset.OperatorId, nil, map[string]any{
-			"opened_by": openedBy, "status": status, "subdomain": label, "cost_factor": site.CostFactor,
+			"opened_by": openedBy, "status": status, "subdomain": label, "root_domain": root,
+			"cost_factor": site.CostFactor, "tier_code": site.TierCode, "tier_mode": site.TierMode,
 			"invite_code_id": preset.InviteCodeId,
 		}, "")
 	}, txOptions...)
 	if err != nil {
 		return nil, err
 	}
-	InvalidateAdtySiteCache()
+	if !replayed {
+		InvalidateAdtySiteCache()
+	}
 	return site, nil
 }
 

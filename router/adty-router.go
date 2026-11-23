@@ -633,6 +633,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/wallets", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/wallet-ledgers", "scope", "option:read")
 	rootWallets := apiRouter.Group("/adty/admin/sites", middleware.RootAuth())
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/owner-candidates", "scope", "option:read")
+	rootWallets.GET("/owner-candidates", controller.GetAdtyAdminSiteOwnerCandidates)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/paused-repairs", "scope", "option:read")
 	rootWallets.GET("/paused-repairs", controller.ListAdtyPausedSiteRepairs)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/paused-repair", "scope", "option:write")

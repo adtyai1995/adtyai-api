@@ -73,7 +73,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
         <SectionPageLayout.Title>{t('Reseller sites')}</SectionPageLayout.Title>
         <SectionPageLayout.Description>
           {t(
-            'Open sites, approve or reject applications, review flagged customers and reports.'
+            'Open and manage reseller sites, supply pricing, domains, risk reviews and withdrawals.'
           )}
         </SectionPageLayout.Description>
         <SectionPageLayout.Content>
@@ -102,7 +102,15 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
               ))}
             </TabsList>
             <TabsContent value='sites' className='min-w-0'>
-              <SitesPanel onOpenSite={(site) => setOpenSite(site.id)} />
+              <SitesPanel
+                onOpenSite={(site) => setOpenSite(site.id)}
+                onNavigateSection={(section) =>
+                  void navigate({
+                    to: '/site-admin/$section',
+                    params: { section },
+                  })
+                }
+              />
             </TabsContent>
             <TabsContent value='overview'>
               <OverviewPanel />
@@ -116,6 +124,12 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
                 section='supply'
                 canWrite={canSettings}
                 canWriteSecrets={canWriteSecrets}
+                onNavigateSection={(section) =>
+                  void navigate({
+                    to: '/site-admin/$section',
+                    params: { section },
+                  })
+                }
               />
               <SiteTiersPanel />
             </TabsContent>

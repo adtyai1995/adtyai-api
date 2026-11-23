@@ -601,14 +601,48 @@ export async function getSiteCustomers(
   return requireServerSuccess(res.data).data
 }
 
-export async function createSite(body: {
-  user_id: number
-  subdomain: string
-  root_domain?: string
-  cost_factor?: string
-  contact_info?: string
-}): Promise<AdminSite> {
-  const res = await api.post<ApiResponse<AdminSite>>(`${BASE}/sites`, body)
+export type SiteOwnerCandidate = {
+  id: number
+  username: string
+  display_name: string
+  email: string
+  role: number
+  created_at: number
+}
+
+export async function getSiteOwnerCandidates(params: {
+  keyword?: string
+  p?: number
+  page_size?: number
+}): Promise<SitePage<SiteOwnerCandidate>> {
+  const res = await api.get<ApiResponse<SitePage<SiteOwnerCandidate>>>(
+    `${BASE}/sites/owner-candidates`,
+    {
+      params: {
+        p: params.p ?? 1,
+        page_size: params.page_size ?? 20,
+        keyword: params.keyword?.trim() || undefined,
+      },
+    }
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function createSite(
+  body: {
+    user_id: number
+    subdomain: string
+    root_domain?: string
+    cost_factor?: string
+    tier_code?: string
+    tier_mode?: 'auto' | 'manual'
+    contact_info?: string
+  },
+  idempotencyKey?: string
+): Promise<AdminSite> {
+  const res = await api.post<ApiResponse<AdminSite>>(`${BASE}/sites`, body, {
+    headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+  })
   return requireServerSuccess(res.data).data
 }
 

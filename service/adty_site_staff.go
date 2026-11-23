@@ -90,7 +90,7 @@ func adtyStaffOwnerTx(tx *gorm.DB, ownerID, siteID int, allowClosing bool) (*mod
 	if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
 		return nil, err
 	}
-	if site.OwnerUserId != ownerID || site.AgreementVer != AdtyCurrentSiteAgreementVersion() || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && (!allowClosing || site.Status != model.AdtySiteStatusClosing)) {
+	if site.OwnerUserId != ownerID || !AdtySiteAgreementAccepted(site.AgreementVer) || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && (!allowClosing || site.Status != model.AdtySiteStatusClosing)) {
 		return nil, ErrAdtyStaffDenied
 	}
 	return &site, nil
@@ -259,7 +259,7 @@ func AdtyStaffAccess(userID int, authVersion int64, permission string) (*model.A
 	if err := model.DB.First(&site, staff.SiteId).Error; err != nil {
 		return nil, nil, err
 	}
-	if site.OwnerUserId != staff.OwnerUserId || site.AgreementVer != AdtyCurrentSiteAgreementVersion() || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing) {
+	if site.OwnerUserId != staff.OwnerUserId || !AdtySiteAgreementAccepted(site.AgreementVer) || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing) {
 		return nil, nil, ErrAdtyStaffDenied
 	}
 	grants := AdtyStaffViewOf(staff).Permissions

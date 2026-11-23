@@ -70,6 +70,7 @@ export function SettingsPanel(props: {
   section: 'supply' | 'domains' | 'policies'
   canWrite: boolean
   canWriteSecrets: boolean
+  onNavigateSection?: (section: 'settings' | 'domains') => void
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -281,13 +282,27 @@ export function SettingsPanel(props: {
         </p>
       ))}
       {props.section === 'supply' && (
-        <SwitchRow
-          label={t('Reseller sites')}
-          checked={drafts.enabled}
-          disabled={disabled || (!canEnable && !drafts.enabled)}
-          hint={enableHint}
-          onCheckedChange={(value) => set('enabled', value)}
-        />
+        <div className='flex flex-col gap-2'>
+          <SwitchRow
+            label={t('Reseller sites')}
+            checked={drafts.enabled}
+            disabled={disabled || (!canEnable && !drafts.enabled)}
+            hint={enableHint}
+            onCheckedChange={(value) => set('enabled', value)}
+          />
+          {!rootsSet && props.onNavigateSection && (
+            <div>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() => props.onNavigateSection?.('domains')}
+              >
+                {t('Go to Domains')}
+              </Button>
+            </div>
+          )}
+        </div>
       )}
 
       {props.section === 'supply' && (

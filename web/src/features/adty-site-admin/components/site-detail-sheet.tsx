@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { CopyButton } from '@/components/copy-button'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import {
   sideDrawerContentClassName,
@@ -587,7 +588,7 @@ function SiteCustomers(props: { siteId: number }) {
 }
 
 function SiteDomains(props: {
-  siteId: number
+  site: AdminSite
   domains: AdminSiteDomain[]
   senders: AdminSenderDomain[]
 }) {
@@ -623,7 +624,7 @@ function SiteDomains(props: {
       ) {
         throw new Error(t('No permission to perform this action'))
       }
-      return disableSiteSenderDomain(props.siteId)
+      return disableSiteSenderDomain(props.site.id)
     },
     onSuccess: () => {
       toast.success(t('Saved successfully'))
@@ -638,85 +639,137 @@ function SiteDomains(props: {
     },
     onError: (error) => handleServerError(error),
   })
-  if (props.domains.length === 0 && props.senders.length === 0) return null
+  const defaultHost =
+    props.site.host || `${props.site.subdomain}.${props.site.root_domain}`
+  const apiHost =
+    props.site.api_host ||
+    props.domains.find((d) => d.role === 'base_url' && d.status !== 'removed')
+      ?.hostname ||
+    ''
   return (
-    <section className='flex flex-col gap-2'>
-      <h3 className='text-sm font-medium'>{t('Custom domains')}</h3>
-      {props.domains.map((domain) => (
-        <div
-          key={domain.id}
-          className='flex items-center justify-between gap-2'
-        >
-          <span className='text-sm break-all'>
-            {domain.hostname} ·{' '}
-            {domain.role === 'base_url' ? t('API address') : t('Website')} ·{' '}
-            {domain.status} · {domain.ssl_status}
-            {domain.automation_state && (
-              <span className='text-muted-foreground block'>
-                {t(`Domain automation: ${domain.automation_state}`)}
-              </span>
-            )}
-            {domain.last_error && (
-              <span className='text-destructive block'>
-                {domain.last_error}
-              </span>
-            )}
-          </span>
-          {user?.role === ROLE.SUPER_ADMIN &&
-            domain.status !== 'removed' &&
-            domain.automation_state && (
-              <Button
-                variant='outline'
-                size='sm'
-                disabled={retryDomain.isPending}
-                onClick={() => retryDomain.mutate(domain.id)}
-              >
-                {t('Retry')}
-              </Button>
-            )}
-          {canDelete && domain.status !== 'removed' && (
-            <Button
-              variant='outline'
+    <section className='flex flex-col gap-3 rounded-lg border p-3'>
+      <h3 className='text-sm font-medium'>{t('Site access and domains')}</h3>
+      <dl className='grid gap-3 text-sm sm:grid-cols-2'>
+        <div className='flex flex-col gap-1'>
+          <dt className='text-muted-foreground text-xs'>
+            {t('Website address')}
+          </dt>
+          <dd className='flex items-center gap-2 font-mono text-xs break-all'>
+            <span>{defaultHost}</span>
+            <CopyButton
+              value={`https://${defaultHost}`}
               size='sm'
-              disabled={disableDomain.isPending}
-              onClick={() => disableDomain.mutate(domain.id)}
-            >
-              {t('Disable')}
-            </Button>
-          )}
-        </div>
-      ))}
-      {props.senders.map((sender) => (
-        <div
-          key={sender.domain}
-          className='flex items-center justify-between gap-2'
-        >
-          <span className='text-sm break-all'>
-            {sender.domain} · {t(sender.status)}
-            {sender.cleanup_error && (
-              <span className='block'>
-                {t('Cleanup failed')} · {t(sender.cleanup_error)}
-              </span>
-            )}
-            {!!sender.retry_at && (
-              <span className='block'>
-                {t('Next retry')} · {formatTimestampToDate(sender.retry_at)}
-              </span>
-            )}
-          </span>
-          {canDelete && (
-            <Button
               variant='outline'
-              size='sm'
-              disabled={disableSender.isPending}
-              onClick={() => disableSender.mutate()}
-            >
-              {sender.status === 'removing' ? t('Retry') : t('Disable')}{' '}
-              {t('Sender domain')}
-            </Button>
-          )}
+              aria-label={t('Copy link')}
+            />
+          </dd>
         </div>
-      ))}
+        <div className='flex flex-col gap-1'>
+          <dt className='text-muted-foreground text-xs'>{t('API address')}</dt>
+          <dd className='flex items-center gap-2 text-xs break-all'>
+            {apiHost ? (
+              <>
+                <span className='font-mono'>{apiHost}</span>
+                <CopyButton
+                  value={`https://${apiHost}`}
+                  size='sm'
+                  variant='outline'
+                  aria-label={t('Copy link')}
+                />
+              </>
+            ) : (
+              <span className='text-muted-foreground'>
+                {t('Configure a custom API domain after opening')}
+              </span>
+            )}
+          </dd>
+        </div>
+      </dl>
+      {props.domains.length > 0 && (
+        <div className='flex flex-col gap-2 border-t pt-2'>
+          {props.domains.map((domain) => (
+            <div
+              key={domain.id}
+              className='flex items-center justify-between gap-2'
+            >
+              <span className='text-sm break-all'>
+                <span className='font-mono text-xs'>{domain.hostname}</span> ·{' '}
+                {domain.role === 'base_url' ? t('API address') : t('Website')} ·{' '}
+                {domain.status} · {domain.ssl_status}
+                {domain.automation_state && (
+                  <span className='text-muted-foreground block text-xs'>
+                    {t(`Domain automation: ${domain.automation_state}`)}
+                  </span>
+                )}
+                {domain.last_error && (
+                  <span className='text-destructive block text-xs'>
+                    {domain.last_error}
+                  </span>
+                )}
+              </span>
+              <div className='flex shrink-0 gap-1.5'>
+                {user?.role === ROLE.SUPER_ADMIN &&
+                  domain.status !== 'removed' &&
+                  domain.automation_state && (
+                    <Button
+                      variant='outline'
+                      size='sm'
+                      disabled={retryDomain.isPending}
+                      onClick={() => retryDomain.mutate(domain.id)}
+                    >
+                      {t('Retry')}
+                    </Button>
+                  )}
+                {canDelete && domain.status !== 'removed' && (
+                  <Button
+                    variant='outline'
+                    size='sm'
+                    disabled={disableDomain.isPending}
+                    onClick={() => disableDomain.mutate(domain.id)}
+                  >
+                    {t('Disable')}
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {props.senders.length > 0 && (
+        <div className='flex flex-col gap-2 border-t pt-2'>
+          {props.senders.map((sender) => (
+            <div
+              key={sender.domain}
+              className='flex items-center justify-between gap-2'
+            >
+              <span className='text-sm break-all'>
+                {sender.domain} · {t(sender.status)}
+                {sender.cleanup_error && (
+                  <span className='block text-xs'>
+                    {t('Cleanup failed')} · {t(sender.cleanup_error)}
+                  </span>
+                )}
+                {!!sender.retry_at && (
+                  <span className='block text-xs'>
+                    {t('Next retry')} · {formatTimestampToDate(sender.retry_at)}
+                  </span>
+                )}
+              </span>
+              {canDelete && (
+                <Button
+                  variant='outline'
+                  size='sm'
+                  disabled={disableSender.isPending}
+                  onClick={() => disableSender.mutate()}
+                >
+                  {sender.status === 'removing' ? t('Retry') : t('Disable')}{' '}
+                  {t('Sender domain')}
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   )
 }
@@ -1050,6 +1103,11 @@ export function SiteDetailSheet(props: {
                   />
                 )}
               </dl>
+              <SiteDomains
+                site={site}
+                domains={query.data?.domains ?? []}
+                senders={query.data?.sender_domains ?? []}
+              />
               <section className='flex flex-col gap-2'>
                 <h3 className='text-sm font-medium'>{t('Business data')}</h3>
                 {statsQuery.isError && (
@@ -1091,11 +1149,6 @@ export function SiteDetailSheet(props: {
                 site={site}
               />
               <SiteFundPanel siteId={site.id} />
-              <SiteDomains
-                siteId={site.id}
-                domains={query.data?.domains ?? []}
-                senders={query.data?.sender_domains ?? []}
-              />
               <SiteCustomers siteId={site.id} />
               <section className='flex flex-col gap-2'>
                 <h3 className='text-sm font-medium'>{t('Audit trail')}</h3>

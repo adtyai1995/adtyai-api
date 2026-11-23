@@ -2,6 +2,7 @@ package controller
 
 import (
 	"cmp"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ type adtySiteAdminView struct {
 	model.AdtySite
 	OwnerUsername       string `json:"owner_username"`
 	Host                string `json:"host"`
+	ApiHost             string `json:"api_host,omitempty"`
 	Customers           int64  `json:"customers"`
 	EffectiveCostFactor string `json:"effective_cost_factor"` // 当前生效的 d（单站 > 档位 > 全局，不低于下限）
 	service.AdtySiteMonthTotals
@@ -82,6 +84,22 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 			counts[row.SiteId] = row.Total
 		}
 	}
+	apiHosts := map[int]string{}
+	if len(siteIds) > 0 {
+		var apiDomains []model.AdtySiteDomain
+		if err := model.DB.Select("site_id", "hostname", "status", "managed_by").
+			Where("site_id IN ? AND role = ? AND status <> ?", siteIds, model.AdtySiteDomainRoleBaseURL, model.AdtySiteDomainRemoved).
+			Order("id ASC").Find(&apiDomains).Error; err != nil {
+			return nil, err
+		}
+		for _, dom := range apiDomains {
+			cur := apiHosts[dom.SiteId]
+			// Prefer active custom/platform API host, otherwise show allocated platform API host.
+			if cur == "" || (dom.Status == model.AdtySiteDomainActive && dom.ManagedBy != "platform") {
+				apiHosts[dom.SiteId] = dom.Hostname
+			}
+		}
+	}
 	totals, err := service.AdtySitesMonthTotals(siteIds, time.Now())
 	if err != nil {
 		return nil, err
@@ -89,7 +107,7 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 	views := make([]adtySiteAdminView, 0, len(sites))
 	for _, site := range sites {
 		view := adtySiteAdminView{AdtySite: site, OwnerUsername: names[site.OwnerUserId], Host: service.AdtySiteDisplayHost(&site),
-			Customers: counts[site.Id], AdtySiteMonthTotals: totals[site.Id]}
+			ApiHost: apiHosts[site.Id], Customers: counts[site.Id], AdtySiteMonthTotals: totals[site.Id]}
 		if d, ok := service.AdtySiteCostFactor(&site); ok {
 			view.EffectiveCostFactor = d.String()
 		}
@@ -447,14 +465,76 @@ func GetAdtyAdminSiteCustomers(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
-// CreateAdtyAdminSite 是管理员直接开站（分站·调整）：{user_id, subdomain, root_domain?, cost_factor?, contact_info?}。
+// GetAdtyAdminSiteOwnerCandidates lists eligible main-site users who can be designated
+// as fixed owner of a new reseller site (Root only). Excludes disabled accounts, sub-site
+// accounts, site staff, independent team employees, and users who already own a non-closed site.
+func GetAdtyAdminSiteOwnerCandidates(c *gin.Context) {
+	pageInfo := common.GetPageQuery(c)
+	pageSize := pageInfo.GetPageSize()
+	if pageSize <= 0 || pageSize > 50 {
+		pageSize = 20
+	}
+	ownedSub := model.DB.Model(&model.AdtySite{}).Select("owner_user_id").Where("status <> ?", model.AdtySiteStatusClosed)
+	empSub := model.DB.Model(&model.AdtyTeamMember{}).Select("user_id").Where("independent_employee = ?", true)
+	query := model.DB.Model(&model.User{}).
+		Where("site_id = 0 AND staff_site_id = 0 AND status = ?", common.UserStatusEnabled).
+		Where("id NOT IN (?)", ownedSub).
+		Where("id NOT IN (?)", empSub)
+	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
+		op := "LIKE"
+		if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
+			op = "ILIKE"
+		}
+		like := "%" + keyword + "%"
+		if id, err := strconv.Atoi(strings.TrimPrefix(keyword, "#")); err == nil && id > 0 {
+			query = query.Where("(id = ? OR username "+op+" ? OR display_name "+op+" ? OR email "+op+" ?)", id, like, like, like)
+		} else {
+			query = query.Where("(username "+op+" ? OR display_name "+op+" ? OR email "+op+" ?)", like, like, like)
+		}
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var users []model.User
+	if err := query.Select("id", "username", "display_name", "email", "role", "created_at").
+		Order("id DESC").Offset(pageInfo.GetStartIdx()).Limit(pageSize).Find(&users).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	showEmail := adtyAdminFieldVisible(c, authz.AdtyUserRead)
+	items := make([]gin.H, 0, len(users))
+	for _, user := range users {
+		email := service.AdtyMaskEmail(user.Email)
+		if showEmail {
+			email = user.Email
+		}
+		items = append(items, gin.H{
+			"id":           user.Id,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"email":        email,
+			"role":         user.Role,
+			"created_at":   user.CreatedAt,
+		})
+	}
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
+}
+
+// CreateAdtyAdminSite 是管理员直接开站（仅 Root）：{user_id, subdomain?, root_domain?, cost_factor?, tier_code?, tier_mode?, contact_info?}。
 func CreateAdtyAdminSite(c *gin.Context) {
 	var body struct {
-		UserId      int     `json:"user_id"`
-		Subdomain   string  `json:"subdomain"`
-		RootDomain  string  `json:"root_domain"`
-		CostFactor  *string `json:"cost_factor"`
-		ContactInfo string  `json:"contact_info"`
+		UserId         int     `json:"user_id"`
+		Subdomain      string  `json:"subdomain"`
+		RootDomain     string  `json:"root_domain"`
+		CostFactor     *string `json:"cost_factor"`
+		TierCode       string  `json:"tier_code"`
+		TierMode       string  `json:"tier_mode"`
+		ContactInfo    string  `json:"contact_info"`
+		IdempotencyKey string  `json:"idempotency_key"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil || body.UserId <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -465,16 +545,30 @@ func CreateAdtyAdminSite(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" {
+		key = strings.TrimSpace(body.IdempotencyKey)
+	}
 	site, err := service.OpenAdtySite(body.UserId, body.Subdomain, model.AdtySiteOpenedByAdmin, service.AdtySitePreset{
-		CostFactor: costFactor, ContactInfo: body.ContactInfo, OperatorId: c.GetInt("id"),
-		ExplicitRoot: strings.ToLower(strings.TrimSpace(body.RootDomain)),
+		CostFactor: costFactor, TierCode: body.TierCode, TierMode: body.TierMode,
+		ContactInfo: body.ContactInfo, OperatorId: c.GetInt("id"),
+		ExplicitRoot: strings.ToLower(strings.TrimSpace(body.RootDomain)), IdempotencyKey: key,
 	})
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorT(c, "This request was already used for another operation")
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
 	recordManageAuditFor(c, body.UserId, "adty.site.open", map[string]any{"site_id": site.Id, "subdomain": site.Subdomain})
-	common.ApiSuccess(c, site)
+	views, err := buildSiteAdminViews([]model.AdtySite{*site})
+	if err != nil || len(views) == 0 {
+		common.ApiSuccess(c, site)
+		return
+	}
+	common.ApiSuccess(c, views[0])
 }
 
 // ReviewAdtyAdminSite 通过或驳回开站申请（分站·审核）：{approve, cost_factor?, note}。

@@ -146,7 +146,7 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 		if err := model.AdtyLockForUpdate(tx).First(&site, staff.SiteId).Error; err != nil {
 			return err
 		}
-		if site.OwnerUserId != staff.OwnerUserId || site.Status != model.AdtySiteStatusActive || site.AgreementVer != AdtyCurrentSiteAgreementVersion() {
+		if site.OwnerUserId != staff.OwnerUserId || site.Status != model.AdtySiteStatusActive || !AdtySiteAgreementAccepted(site.AgreementVer) {
 			return common.NewMessage("No permission to perform this action")
 		}
 		var customer model.User

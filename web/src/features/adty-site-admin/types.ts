@@ -51,6 +51,8 @@ export type AdminSite = {
   subdomain: string
   root_domain: string
   host: string
+  api_host?: string
+  effective_cost_factor?: string
   status: SiteStatus
   settle_hold_reason?: string
   cost_factor: string | null

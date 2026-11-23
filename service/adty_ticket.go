@@ -1231,10 +1231,10 @@ func adtyTicketAssigneesTx(tx *gorm.DB, ticket model.AdtyTicket, includePlatform
 	var ownerID int
 	if ticket.HandlingSite() > 0 {
 		var site model.AdtySite
-		if err := tx.Where("id = ? AND status IN ? AND agreement_ver = ?", ticket.HandlingSite(), []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}, AdtyCurrentSiteAgreementVersion()).Limit(1).Find(&site).Error; err != nil {
+		if err := tx.Where("id = ? AND status IN ?", ticket.HandlingSite(), []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&site).Error; err != nil {
 			return nil, err
 		}
-		if site.Id > 0 {
+		if site.Id > 0 && AdtySiteAgreementAccepted(site.AgreementVer) {
 			ownerID = site.OwnerUserId
 			q := tx.Where("site_id = ? AND owner_user_id = ? AND status = ?", ticket.HandlingSite(), ownerID, "enabled")
 			if id > 0 {
@@ -1331,12 +1331,12 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 	if lookup.RowsAffected > 0 {
 		actor.Staff = &staff
 		if staff.SiteId > 0 && actor.User.StaffSiteId == staff.SiteId && actor.User.SiteId == staff.SiteId && actor.User.Role == common.RoleCommonUser && staff.Status == "enabled" && slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffTicketManage) {
-			var n int64
-			err := tx.Model(&model.AdtySite{}).Where("id = ? AND owner_user_id = ? AND status IN ? AND agreement_ver = ?", staff.SiteId, staff.OwnerUserId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}, AdtyCurrentSiteAgreementVersion()).Count(&n).Error
-			if err != nil {
-				return actor, err
+			var staffSite model.AdtySite
+			res := tx.Model(&model.AdtySite{}).Where("id = ? AND owner_user_id = ? AND status IN ?", staff.SiteId, staff.OwnerUserId, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&staffSite)
+			if res.Error != nil {
+				return actor, res.Error
 			}
-			actor.StaffTickets = n == 1
+			actor.StaffTickets = res.RowsAffected == 1 && AdtySiteAgreementAccepted(staffSite.AgreementVer)
 		}
 	}
 	var site model.AdtySite
@@ -1346,7 +1346,7 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 	}
 	if owned.RowsAffected > 0 {
 		actor.OwnerSiteId = site.Id
-		actor.OwnerTickets = site.AgreementVer == AdtyCurrentSiteAgreementVersion()
+		actor.OwnerTickets = AdtySiteAgreementAccepted(site.AgreementVer)
 	}
 	var member model.AdtyTeamMember
 	team := tx.Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).Limit(1).Find(&member)

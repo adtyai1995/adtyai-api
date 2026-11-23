@@ -16,14 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, Info, Plus } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
@@ -36,15 +36,13 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
-import { searchUsers } from '@/features/users/api'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
-import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
-  createSite,
+  getResellerSettings,
   getSites,
   SITE_ADMIN_PAGE_SIZE,
   siteAdminKeys,
@@ -55,14 +53,16 @@ import {
   type SiteSort,
   type SiteSortKey,
 } from '../lib/sites'
+import type { SiteAdminSectionId } from '../sections'
 import type { AdminSite, SiteStatus } from '../types'
+import { OpenSiteDialog } from './open-site-dialog'
 import { SiteStatusBadge } from './site-status-badge'
 
 const STATUSES: SiteStatus[] = [
-  'pending',
   'active',
   'closing',
   'closed',
+  'pending',
 ]
 
 /** Column header that sorts the loaded page; aria-sort sits on the header cell. */
@@ -100,8 +100,11 @@ function ariaSort(sort: SiteSort, key: SiteSortKey) {
   return sort.direction === 'asc' ? 'ascending' : 'descending'
 }
 
-/** Site list (task 11.9): status filter, search, sortable columns, paging. */
-export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
+/** Site list (task 11.9): status filter, search, sortable columns, paging, and structured site opening dialog. */
+export function SitesPanel(props: {
+  onOpenSite: (site: AdminSite) => void
+  onNavigateSection?: (section: SiteAdminSectionId) => void
+}) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
@@ -109,28 +112,48 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
   const [keyword, setKeyword] = useState('')
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<SiteSort>(DEFAULT_SITE_SORT)
-  const [ownerId, setOwnerId] = useState('')
-  const [ownerKeyword, setOwnerKeyword] = useState('')
-  const [confirmed, setConfirmed] = useState(false)
-  const [subdomain, setSubdomain] = useState('')
+  const [openDialog, setOpenDialog] = useState(false)
   const canCreate =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
-  const queryClient = useQueryClient()
-  const candidates = useQuery({
-    queryKey: ['site-owner-candidates', ownerKeyword.trim()],
-    queryFn: async () => {
-      const result = await searchUsers({
-        keyword: ownerKeyword.trim(),
-        site_id: 0,
-        p: 1,
-        page_size: 20,
-      })
-      if (!result.success) throw new Error(result.message)
-      return result.data?.items ?? []
-    },
-    enabled: canCreate && ownerKeyword.trim() !== '',
+  const settingsQuery = useQuery({
+    queryKey: siteAdminKeys.settings,
+    queryFn: getResellerSettings,
+    enabled: canCreate,
   })
-  const owner = candidates.data?.find((item) => String(item.id) === ownerId)
+  const settings = settingsQuery.data
+  const missingPrereqs: {
+    key: string
+    label: string
+    section: SiteAdminSectionId
+    actionLabel: string
+  }[] = []
+  if (settings) {
+    if (!settings.money_configured) {
+      missingPrereqs.push({
+        key: 'money',
+        label: t('Global cost factor and minimum cost factor are not configured'),
+        section: 'settings',
+        actionLabel: t('Supply settings'),
+      })
+    }
+    if ((settings.root_domains ?? []).length === 0) {
+      missingPrereqs.push({
+        key: 'roots',
+        label: t('No platform root domain is configured'),
+        section: 'domains',
+        actionLabel: t('Domains'),
+      })
+    }
+    if (!settings.enabled) {
+      missingPrereqs.push({
+        key: 'enabled',
+        label: t('Reseller sites master switch is turned off'),
+        section: 'settings',
+        actionLabel: t('Supply settings'),
+      })
+    }
+  }
+  const openingReady = Boolean(settings && missingPrereqs.length === 0)
   const params = {
     p: page,
     status,
@@ -143,27 +166,6 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
     queryFn: () => getSites(params),
   })
   const rows = query.data?.items ?? []
-  const openSite = useMutation({
-    mutationFn: () => {
-      if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
-        throw new Error(t('No permission to perform this action'))
-      }
-      return createSite({
-        user_id: Number(ownerId),
-        subdomain: subdomain.trim(),
-      })
-    },
-    onSuccess: (site) => {
-      setConfirmed(false)
-      setOwnerKeyword('')
-      props.onOpenSite(site)
-      setOwnerId('')
-      setSubdomain('')
-      toast.success(t('Site opened'))
-      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
-    },
-    onError: (error) => handleServerError(error),
-  })
   const onSort = (key: SiteSortKey) => {
     setSort((prev) => nextSiteSort(prev, key))
     setPage(1)
@@ -183,110 +185,107 @@ export function SitesPanel(props: { onOpenSite: (site: AdminSite) => void }) {
   return (
     <div className='flex flex-col gap-3'>
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-      <form
-        className='flex flex-wrap gap-2'
-        onSubmit={(event) => {
-          event.preventDefault()
-          setSearch(keyword.trim())
-          setPage(1)
-        }}
-      >
-        <NativeSelect
-          aria-label={t('Status')}
-          value={status}
-          onChange={(event) => {
-            setStatus(event.target.value)
+      {canCreate && settings && !openingReady && (
+        <Alert className='border-warning/40 bg-warning/5'>
+          <AlertTriangle className='text-warning size-4' />
+          <AlertTitle>{t('Complete prerequisites before opening a site')}</AlertTitle>
+          <AlertDescription className='mt-2 flex flex-col gap-2'>
+            <ul className='list-disc space-y-1 pl-4 text-xs'>
+              {missingPrereqs.map((item) => (
+                <li key={item.key}>{item.label}</li>
+              ))}
+            </ul>
+            {props.onNavigateSection && (
+              <div className='flex flex-wrap gap-2 pt-1'>
+                {missingPrereqs.some((item) => item.section === 'settings') && (
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    onClick={() => props.onNavigateSection?.('settings')}
+                  >
+                    {t('Go to Supply settings')}
+                  </Button>
+                )}
+                {missingPrereqs.some((item) => item.section === 'domains') && (
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    onClick={() => props.onNavigateSection?.('domains')}
+                  >
+                    {t('Go to Domains')}
+                  </Button>
+                )}
+              </div>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+      {canCreate && openingReady && settings && settings.site_agreement_version <= 0 && (
+        <Alert>
+          <Info className='size-4' />
+          <AlertDescription className='text-xs'>
+            {t(
+              'Site agreement is not published yet (version 0). Sites can still open normally; once you publish a site agreement under System Settings > Content, owners will be prompted to accept it.'
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <form
+          className='flex flex-wrap gap-2'
+          onSubmit={(event) => {
+            event.preventDefault()
+            setSearch(keyword.trim())
             setPage(1)
           }}
         >
-          <NativeSelectOption value=''>{t('All statuses')}</NativeSelectOption>
-          {STATUSES.map((item) => (
-            <NativeSelectOption key={item} value={item}>
-              {statusLabels[item]}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-        <Input
-          className='w-64'
-          value={keyword}
-          onChange={(event) => setKeyword(event.target.value)}
-          placeholder={t('Subdomain or owner username')}
-          aria-label={t('Search')}
-        />
-        <Button variant='brand' type='submit'>
-          {t('Search')}
-        </Button>
-      </form>
-      {canCreate && (
-        <form
-          className='flex flex-wrap items-end gap-2'
-          aria-label={t('Open a reseller site')}
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (!canCreate || !confirmed || !owner) return
-            openSite.mutate()
-          }}
-        >
-          <Input
-            className='w-48'
-            value={ownerKeyword}
-            aria-label={t('Search main-site users')}
-            placeholder={t('Search main-site users')}
-            onChange={(event) => {
-              setOwnerKeyword(event.target.value)
-              setOwnerId('')
-              setConfirmed(false)
-            }}
-          />
-          {candidates.isError && (
-            <ErrorState onRetry={() => void candidates.refetch()} />
-          )}
           <NativeSelect
-            value={ownerId}
-            aria-label={t('Owner')}
-            required
+            aria-label={t('Status')}
+            value={status}
             onChange={(event) => {
-              setOwnerId(event.target.value)
-              setConfirmed(false)
+              setStatus(event.target.value)
+              setPage(1)
             }}
           >
-            <NativeSelectOption value=''>
-              {t('Select owner')}
-            </NativeSelectOption>
-            {candidates.data?.map((item) => (
-              <NativeSelectOption key={item.id} value={String(item.id)}>
-                {item.username} (#{item.id})
+            <NativeSelectOption value=''>{t('All statuses')}</NativeSelectOption>
+            {STATUSES.map((item) => (
+              <NativeSelectOption key={item} value={item}>
+                {statusLabels[item]}
               </NativeSelectOption>
             ))}
           </NativeSelect>
-          {owner && (
-            <label className='flex items-center gap-2 text-sm'>
-              <input
-                type='checkbox'
-                checked={confirmed}
-                onChange={(event) => setConfirmed(event.target.checked)}
-              />
-              {t('Confirm site owner {{name}} (#{{id}})', {
-                name: owner.username,
-                id: owner.id,
-              })}
-            </label>
-          )}
           <Input
-            className='w-48'
-            value={subdomain}
-            onChange={(event) => setSubdomain(event.target.value)}
-            aria-label={t('Domain')}
-            placeholder={t('Leave blank to allocate automatically')}
+            className='w-64'
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            placeholder={t('Subdomain or owner username')}
+            aria-label={t('Search')}
           />
-          <Button
-            variant='brand'
-            type='submit'
-            disabled={!owner || !confirmed || openSite.isPending}
-          >
-            {t('Open a reseller site')}
+          <Button variant='outline' type='submit'>
+            {t('Search')}
           </Button>
         </form>
+        {canCreate && (
+          <Button
+            type='button'
+            variant='brand'
+            disabled={!openingReady}
+            onClick={() => setOpenDialog(true)}
+          >
+            <Plus className='size-4' aria-hidden />
+            {t('Open a reseller site')}
+          </Button>
+        )}
+      </div>
+      {canCreate && (
+        <OpenSiteDialog
+          open={openDialog}
+          settings={settings}
+          onOpenChange={setOpenDialog}
+          onViewSite={props.onOpenSite}
+        />
       )}
       {/* The ui/table primitives directly: StaticDataTable cannot put
           aria-sort on the header cell of a sortable column. The card is the

@@ -59,6 +59,8 @@ type AdtySite struct {
 	AgreementAt             int64            `json:"agreement_at"`
 	ContactInfo             string           `json:"contact_info" gorm:"type:text"`
 	OpenedBy                string           `json:"opened_by" gorm:"type:varchar(16)"`
+	OpenKey                 *string          `json:"-" gorm:"uniqueIndex;type:varchar(64)"`
+	OpenFingerprint         string           `json:"-" gorm:"type:varchar(64)"`
 	ReviewNote              string           `json:"review_note" gorm:"type:text"`
 	// 关站：站长申请时写 CloseRequestedAt；管理员定下客户去向后状态改 closing，到 CloseExecuteAt 由主节点执行。
 	CloseRequestedAt int64  `json:"close_requested_at"`
