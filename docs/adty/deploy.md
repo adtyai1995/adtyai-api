@@ -141,6 +141,25 @@ BACKUP_REMOTE=backup@backup-host:/srv/backup/adtyai/
 - 安全：不开 Bot Fight Mode，不开「Under Attack」模式。Claude Code、Codex 这类客户端过不了浏览器质询，请求会被拦。
 - 网络：「伪 IPv4」保持关闭，否则 Cloudflare 会改写 `CF-Connecting-IP`；WebSockets 保持打开。
 
+### 可选的主站默认首页 HTML 缓存
+
+`ADTY_HOME_SHARED_CACHE` 默认为 `false`，主站首页返回 `no-cache`。启用后，已安装的主站可把完整的默认首页共享 60 秒，浏览器每次使用都须重验证。中英文使用各自的 URL 和内容 ETag。分站始终返回 `private, no-store`，已关闭的分站按原站点规则重定向。
+
+1. 先在 Cloudflare 的 **Caching → Configuration → Purge Cache → Custom Purge → URL** 演练按 URL 清除正式主站的 `/` 和 `/zh-cn`。把清除操作纳入发布、回滚、主站域名、品牌、SEO 和自定义首页的变更流程。域名迁移时同时清除旧域名的两个 URL。缺少刷新权限或流程时保留默认设置。
+2. 在生产 `.env` 设置 `ADTY_HOME_SHARED_CACHE=true`，运行 `docker compose up -d adtyai-api`。直接在服务器请求源站核对响应，例如 `curl -sS -D - -o /dev/null -H 'Host: www.adtyai.com' http://127.0.0.1:3000/`。主站正式地址必须与后台「服务器地址」一致。两份合格的 HTML 都应返回 `200`、`public, max-age=0, s-maxage=60, must-revalidate` 和 `ETag`。有 Cookie、Authorization、响应 Set-Cookie、查询串、路径别名、自定义内容或模板缺失时返回 `private, no-store`。
+3. 在 **Caching → Cache Rules** 添加 `Eligible for cache` 规则，下式中的域名换成正式主站。它在边缘读取已有缓存前匹配原始 URL 和请求头。确保其他规则或 Worker 不会为其余首页流量开启缓存。保留默认缓存键，区分协议、Host、语言路径。开启 Origin Cache Control，Edge TTL 选 **Use cache-control header if present, bypass cache if not**，Browser TTL 选 **Respect existing headers**。保留 `Set-Cookie`。在 **Status Code TTL** 将 `201–303`、`305–599` 设为 `no-store`（API 值 `-1`），200 和 304 由源站决定有效期。这样错误和跳转也不会被保存。[Cloudflare Cache Rules 设置](https://developers.cloudflare.com/cache/how-to/cache-rules/settings/)
+
+   ```text
+   (raw.http.request.full_uri in {"https://www.adtyai.com/" "https://www.adtyai.com/zh-cn"}
+    and http.request.method in {"GET" "HEAD"}
+    and not http.request.headers.truncated
+    and not has_key(http.request.headers, "cookie")
+    and not has_key(http.request.headers, "authorization"))
+   ```
+
+4. 清除两个 URL 后从同一机器对每个 URL 连续执行两次 `curl -sS -D - -o /dev/null https://www.adtyai.com/`（中文用 `/zh-cn`）。核对 `CF-Ray` 机房后缀相同，第二次匿名 **GET** 返回 `CF-Cache-Status: HIT`。接着在同一 URL 加 `-H 'Cookie: check=1'`、`-H 'Authorization: Bearer check'` 分别重试，检查 `BYPASS` 或 `DYNAMIC` 以及 `private, no-store`。另查 `/?check=1`、`/zh-cn/`、主站别名、在用分站、已关闭分站。浏览器首次打开以及登录后的访问应分别得到对应响应；不能把 `HEAD` 的结果当作 GET 命中证据。
+5. 每次变更前暂停这条缓存规则并清除两个 URL。发布时先让新哈希资源在所有节点可取，并保留上一个版本的哈希资源，再切换 HTML。例如把与镜像同一次构建的 `web/dist/static/` 增量上传到服务 `/static/` 的静态目录或 `PUBLIC_CDN_URL`，保留旧文件，抽查新旧脚本均可下载。等所有节点载入新配置或版本后，分别核对英文 `/`、中文 `/zh-cn` 的品牌、标题和 canonical，清除两个 URL 后再恢复规则，并重做第 4 步。回滚缓存时停用规则并清除两个 URL，将环境变量改回 `false` 后重建 API 容器，复核响应头。
+
 ## 7. 验证真实 IP
 
 两层信任：Nginx 只相信从 Cloudflare 网段来的 `CF-Connecting-IP`，再用覆盖的方式写 `X-Forwarded-For`；adtyai-api 只相信 compose 网关（Nginx）。

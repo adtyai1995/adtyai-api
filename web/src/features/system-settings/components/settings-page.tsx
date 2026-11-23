@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useParams } from '@tanstack/react-router'
-import { useMemo, useState, type ReactNode } from 'react'
+import { Suspense, useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
@@ -171,7 +171,9 @@ export function SettingsPage<
       pageTitle={sectionTitle}
       fillViewport={activeSection === 'model-pricing'}
     >
-      {sectionContent}
+      <Suspense fallback={<SettingsPageSkeleton label={t(loadingMessage)} />}>
+        {sectionContent}
+      </Suspense>
     </SettingsPageFrame>
   )
 }

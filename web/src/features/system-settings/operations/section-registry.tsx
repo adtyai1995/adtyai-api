@@ -16,21 +16,71 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { NoticeTemplatesEditor } from '@/features/adty-site-admin/components/notice-templates-editor'
-import { TelegramAdminPanel } from '@/features/adty-telegram/admin-panel'
-import { TranslationAdminPanel } from '@/features/adty-translation/admin-panel'
+import { lazy } from 'react'
 
-import { SystemBehaviorSection } from '../general/system-behavior-section'
-import { EmailSettingsSection } from '../integrations/email-settings-section'
-import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
-import { WorkerSettingsSection } from '../integrations/worker-settings-section'
-import { DataRetentionSection } from '../maintenance/data-retention-section'
-import { GroupHealthSection } from '../maintenance/group-health-section'
-import { LogSettingsSection } from '../maintenance/log-settings-section'
-import { PerformanceSection } from '../maintenance/performance-section'
-import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+
+const NoticeTemplatesEditor = lazy(() =>
+  import('@/features/adty-site-admin/components/notice-templates-editor').then(
+    (module) => ({ default: module.NoticeTemplatesEditor })
+  )
+)
+const TelegramAdminPanel = lazy(() =>
+  import('@/features/adty-telegram/admin-panel').then((module) => ({
+    default: module.TelegramAdminPanel,
+  }))
+)
+const TranslationAdminPanel = lazy(() =>
+  import('@/features/adty-translation/admin-panel').then((module) => ({
+    default: module.TranslationAdminPanel,
+  }))
+)
+const SystemBehaviorSection = lazy(() =>
+  import('../general/system-behavior-section').then((module) => ({
+    default: module.SystemBehaviorSection,
+  }))
+)
+const EmailSettingsSection = lazy(() =>
+  import('../integrations/email-settings-section').then((module) => ({
+    default: module.EmailSettingsSection,
+  }))
+)
+const MonitoringSettingsSection = lazy(() =>
+  import('../integrations/monitoring-settings-section').then((module) => ({
+    default: module.MonitoringSettingsSection,
+  }))
+)
+const WorkerSettingsSection = lazy(() =>
+  import('../integrations/worker-settings-section').then((module) => ({
+    default: module.WorkerSettingsSection,
+  }))
+)
+const DataRetentionSection = lazy(() =>
+  import('../maintenance/data-retention-section').then((module) => ({
+    default: module.DataRetentionSection,
+  }))
+)
+const GroupHealthSection = lazy(() =>
+  import('../maintenance/group-health-section').then((module) => ({
+    default: module.GroupHealthSection,
+  }))
+)
+const LogSettingsSection = lazy(() =>
+  import('../maintenance/log-settings-section').then((module) => ({
+    default: module.LogSettingsSection,
+  }))
+)
+const PerformanceSection = lazy(() =>
+  import('../maintenance/performance-section').then((module) => ({
+    default: module.PerformanceSection,
+  }))
+)
+const UpdateCheckerSection = lazy(() =>
+  import('../maintenance/update-checker-section').then((module) => ({
+    default: module.UpdateCheckerSection,
+  }))
+)
 
 const OPERATIONS_SECTIONS = [
   {

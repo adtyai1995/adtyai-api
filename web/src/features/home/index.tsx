@@ -19,15 +19,19 @@ For commercial licensing, please contact support@quantumnous.com
 import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { PublicLayout } from '@/components/layout'
+import { PublicLayout } from '@/components/layout/components/public-layout'
 import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
 import { AdtyLanding } from '@/features/adty-home'
+import { useRemovePrerenderOnMount } from '@/features/adty-seo/prerender-cleanup'
 import { isLikelyHtml } from '@/lib/content-format'
 
 import { useHomePageContent } from './hooks'
 
 export function Home() {
+  // The content can switch from the default landing to a custom homepage
+  // while its stylesheet loads. Keep the handover active across both views.
+  useRemovePrerenderOnMount()
   const { i18n, t } = useTranslation()
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const { resolvedTheme } = useTheme()

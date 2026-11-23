@@ -16,12 +16,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { AdtyUserLimitSection } from '../request-limits/adty-user-limit-section'
-import { RateLimitSection } from '../request-limits/rate-limit-section'
-import { SSRFSection } from '../request-limits/ssrf-section'
-import { TokenLimitSection } from '../request-limits/token-limit-section'
+import { lazy } from 'react'
+
 import type { SecuritySettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+
+const AdtyUserLimitSection = lazy(() =>
+  import('../request-limits/adty-user-limit-section').then((module) => ({
+    default: module.AdtyUserLimitSection,
+  }))
+)
+const RateLimitSection = lazy(() =>
+  import('../request-limits/rate-limit-section').then((module) => ({
+    default: module.RateLimitSection,
+  }))
+)
+const SSRFSection = lazy(() =>
+  import('../request-limits/ssrf-section').then((module) => ({
+    default: module.SSRFSection,
+  }))
+)
+const TokenLimitSection = lazy(() =>
+  import('../request-limits/token-limit-section').then((module) => ({
+    default: module.TokenLimitSection,
+  }))
+)
 
 const SECURITY_SECTIONS = [
   {

@@ -37,6 +37,7 @@ services:
       SESSION_COOKIE_TRUSTED_URL: ${SESSION_COOKIE_TRUSTED_URL:?set SESSION_COOKIE_TRUSTED_URL in .env}
       ERROR_LOG_ENABLED: "true"
       BATCH_UPDATE_ENABLED: "true"
+      ADTY_HOME_SHARED_CACHE: ${ADTY_HOME_SHARED_CACHE:-false}
       ADTY_FLUSH_TOKEN: ${ADTY_FLUSH_TOKEN:?set ADTY_FLUSH_TOKEN in .env}
       # Telegram 出站总开关。不设时 `AdtyTelegramSender` 是 nil，每条投递
       # Fail→×5→Dead、队列自己清干净、零日志——「没有通知要发」和「一条都发不出去」

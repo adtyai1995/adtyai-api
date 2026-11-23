@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useRemovePrerenderOnMount } from '@/features/adty-seo/prerender-cleanup'
 import { useApiBaseUrl } from '@/features/adty-site/api'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -54,10 +53,9 @@ export function LandingSections(props: {
 
 /**
  * Default home page (adty task 8.3); the public layout adds header and
- * footer. On mount it removes the server-inserted prerendered copy (9.3).
+ * footer.
  */
 export function AdtyLanding() {
-  useRemovePrerenderOnMount()
   const user = useAuthStore((state) => state.auth.user)
   const baseUrl = useApiBaseUrl()
   const data = useLandingData()

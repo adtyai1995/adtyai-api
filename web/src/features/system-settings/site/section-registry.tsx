@@ -16,22 +16,49 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { SystemInfoSection } from '../general/system-info-section'
+import { lazy } from 'react'
+
 import {
   parseHeaderNavModules,
   parseSidebarModulesAdmin,
   serializeHeaderNavModules,
   serializeSidebarModulesAdmin,
 } from '../maintenance/config'
-import { HeaderNavigationSection } from '../maintenance/header-navigation-section'
-import { NoticeSection } from '../maintenance/notice-section'
-import { SidebarModulesSection } from '../maintenance/sidebar-modules-section'
 import type { SiteSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { toAdtySeoDefaults } from './adty-seo-defaults'
-import { AdtySeoSection } from './adty-seo-section'
 import { toAdtySiteDefaults } from './adty-site-defaults'
-import { AdtySiteSection } from './adty-site-section'
+
+const SystemInfoSection = lazy(() =>
+  import('../general/system-info-section').then((module) => ({
+    default: module.SystemInfoSection,
+  }))
+)
+const HeaderNavigationSection = lazy(() =>
+  import('../maintenance/header-navigation-section').then((module) => ({
+    default: module.HeaderNavigationSection,
+  }))
+)
+const NoticeSection = lazy(() =>
+  import('../maintenance/notice-section').then((module) => ({
+    default: module.NoticeSection,
+  }))
+)
+const SidebarModulesSection = lazy(() =>
+  import('../maintenance/sidebar-modules-section').then((module) => ({
+    default: module.SidebarModulesSection,
+  }))
+)
+const AdtySeoSection = lazy(() =>
+  import('./adty-seo-section').then((module) => ({
+    default: module.AdtySeoSection,
+  }))
+)
+const AdtySiteSection = lazy(() =>
+  import('./adty-site-section').then((module) => ({
+    default: module.AdtySiteSection,
+  }))
+)
 
 const SITE_SECTIONS = [
   {

@@ -16,14 +16,33 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { lazy } from 'react'
+
 import { parseCurrencyDisplayType } from '@/lib/currency'
 
-import { PricingSection } from '../general/pricing-section'
-import { QuotaSettingsSection } from '../general/quota-settings-section'
-import { PaymentSettingsSection } from '../integrations/payment-settings-section'
-import { RatioSettingsCard } from '../models/ratio-settings-card'
 import type { BillingSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+
+const PricingSection = lazy(() =>
+  import('../general/pricing-section').then((module) => ({
+    default: module.PricingSection,
+  }))
+)
+const QuotaSettingsSection = lazy(() =>
+  import('../general/quota-settings-section').then((module) => ({
+    default: module.QuotaSettingsSection,
+  }))
+)
+const PaymentSettingsSection = lazy(() =>
+  import('../integrations/payment-settings-section').then((module) => ({
+    default: module.PaymentSettingsSection,
+  }))
+)
+const RatioSettingsCard = lazy(() =>
+  import('../models/ratio-settings-card').then((module) => ({
+    default: module.RatioSettingsCard,
+  }))
+)
 
 const getModelDefaults = (settings: BillingSettings) => ({
   ModelPrice: settings.ModelPrice,

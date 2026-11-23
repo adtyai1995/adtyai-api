@@ -98,6 +98,11 @@ export function PublicHeader(props: PublicHeaderProps) {
   const notifications = useNotifications()
   const routerState = useRouterState()
   const pathname = routerState.location.pathname
+  // Keep the server-rendered brand visible while /api/status refreshes.
+  const [prerenderedBrand] = useState(
+    () => typeof document !== 'undefined' && !!document.querySelector('#adty-prerender header')
+  )
+  const loadingBrand = loading && !prerenderedBrand
 
   const user = auth.user
   const isAuthenticated = !!user
@@ -111,12 +116,12 @@ export function PublicHeader(props: PublicHeaderProps) {
     <HeaderLogo
       src={systemLogo}
       darkSrc={systemLogo === DEFAULT_LOGO ? '/logo-dark.png' : undefined}
-      loading={loading}
-      logoLoaded={logoLoaded}
+      loading={loadingBrand}
+      logoLoaded={logoLoaded || prerenderedBrand}
     />
   ) : null
   if (customLogo) logoContent = customLogo
-  if (loading) logoContent = <Skeleton className='h-7 w-28 rounded-md' />
+  if (loadingBrand) logoContent = <Skeleton className='h-7 w-28 rounded-md' />
 
   let authContent = (
     <Button
@@ -245,7 +250,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                 </div>
                 {!hasSystemLogo && !customLogo && (
                   <span className='max-w-48 truncate text-sm font-semibold tracking-tight'>
-                    {loading ? (
+                    {loadingBrand ? (
                       <Skeleton className='h-4 w-16' />
                     ) : (
                       displaySiteName

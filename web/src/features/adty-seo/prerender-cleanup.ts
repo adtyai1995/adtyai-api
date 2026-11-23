@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useRouterState } from '@tanstack/react-router'
-import { useEffect, useLayoutEffect } from 'react'
+import { useLayoutEffect } from 'react'
 
 import { isHomePath } from './home-langs'
 
@@ -26,6 +26,7 @@ export const PRERENDER_ELEMENT_ID = 'adty-prerender'
 
 export function removePrerenderedHome(): void {
   document.getElementById(PRERENDER_ELEMENT_ID)?.remove()
+  document.getElementById('adty-home-critical')?.remove()
 }
 
 /**
@@ -34,7 +35,19 @@ export function removePrerenderedHome(): void {
  */
 export function useRemovePrerenderOnMount(): void {
   useLayoutEffect(() => {
-    removePrerenderedHome()
+    if (!document.getElementById(PRERENDER_ELEMENT_ID)) return
+    if (!document.querySelector('template[data-adty-home-style]')) {
+      removePrerenderedHome()
+      return
+    }
+    // Failed stylesheets keep their template, leaving the static links usable.
+    document.addEventListener('adty-home-styles-ready', removePrerenderedHome)
+    return () => {
+      document.removeEventListener(
+        'adty-home-styles-ready',
+        removePrerenderedHome
+      )
+    }
   }, [])
 }
 
@@ -46,7 +59,7 @@ export function useAdtyPrerenderCleanup(): void {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isHomePath(pathname)) removePrerenderedHome()
   }, [pathname])
 }

@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { ADTY_BRAND_NAME } from '@/lib/adty-brand'
 
 /**
- * Static header of the same height as the public header (h-16), with the
+ * Static header with the same logo position and height as the public header, with the
  * logo and the site name; the real header replaces it on mount.
  */
 export function PrerenderHeader({
@@ -28,25 +28,31 @@ export function PrerenderHeader({
   siteTemplate?: boolean
 }) {
   return (
-    <header className='fixed inset-x-0 top-0 z-50'>
-      <div className='mx-auto flex h-16 max-w-7xl items-center gap-2.5 px-6 md:px-8'>
+    <header className='border-border bg-background/85 fixed inset-x-0 top-0 z-50 border-b backdrop-blur-[10px]'>
+      <div className='mx-auto flex h-[66px] w-full max-w-[1180px] items-center px-5 sm:px-10'>
         {siteTemplate ? (
-          '__ADTY_SITE_BRAND__'
+          <span className='flex h-7 max-w-full items-center truncate text-sm font-semibold tracking-tight'>
+            __ADTY_SITE_BRAND__
+          </span>
         ) : (
           <>
             {/* The logo artwork already contains the ADTY wordmark; the brand name
             stays in the markup for assistive tech only. */}
             <img
               src='/logo.png'
+              width={522}
+              height={128}
               alt=''
               aria-hidden='true'
-              className='h-6 w-auto max-w-none object-contain dark:hidden'
+              className='h-7 w-auto max-w-none object-contain dark:hidden'
             />
             <img
               src='/logo-dark.png'
+              width={522}
+              height={128}
               alt=''
               aria-hidden='true'
-              className='hidden h-6 w-auto max-w-none object-contain dark:block'
+              className='hidden h-7 w-auto max-w-none object-contain dark:block'
             />
             <span className='sr-only'>{ADTY_BRAND_NAME}</span>
           </>

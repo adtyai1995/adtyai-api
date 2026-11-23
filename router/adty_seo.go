@@ -39,6 +39,7 @@ const (
 	adtySEOHeadEnd           = "<!--/adty-head-->"
 	adtySEOPrerenderFile     = "web/dist/adty-home.json"
 	adtySEOSitePrerenderFile = "web/dist/adty-site-home.json"
+	adtyHomeStylesFile       = "web/dist/adty-home-styles.json"
 	// 上游 system_setting.ServerAddress 的默认值，没改过就当没设
 	adtyDefaultServerAddress = "http://localhost:3000"
 )
@@ -68,6 +69,52 @@ func (p *adtyPrerender) load(buildFS fs.FS) map[string]string {
 	return p.pages
 }
 
+// The build records the original link tags, including the deployment's asset
+// prefix. An old or incomplete manifest leaves the ordinary document intact.
+func adtyOptimizedHomeIndex(indexPage []byte, buildFS fs.FS) []byte {
+	var manifest struct {
+		CSS         string   `json:"css"`
+		Stylesheets []string `json:"stylesheets"`
+	}
+	data, err := fs.ReadFile(buildFS, adtyHomeStylesFile)
+	if err != nil || common.Unmarshal(data, &manifest) != nil || strings.TrimSpace(manifest.CSS) == "" || len(manifest.Stylesheets) == 0 {
+		return nil
+	}
+	if !bytes.Contains(indexPage, []byte(`<div id="root"`)) || !bytes.Contains(indexPage, []byte("</body>")) {
+		return nil
+	}
+	out := indexPage
+	for i, link := range manifest.Stylesheets {
+		if link == "" || bytes.Count(indexPage, []byte(link)) != 1 {
+			return nil
+		}
+		replacement := `<template data-adty-home-style>` + link + `</template><noscript>` + link + `</noscript>`
+		if i == 0 {
+			replacement = `<style id="adty-home-critical">` + manifest.CSS + `</style>` + replacement
+		}
+		out = bytes.Replace(out, []byte(link), []byte(replacement), 1)
+	}
+	// Install listeners before inserting real links so even cached loads are
+	// observed. Keep the static page on failure, including when React is ready.
+	const loadStyles = `<script>
+requestAnimationFrame(function () {
+  requestAnimationFrame(function () {
+    var templates = document.querySelectorAll('template[data-adty-home-style]');
+    var pending = templates.length;
+    templates.forEach(function (template) {
+      var link = template.content.firstElementChild.cloneNode(true);
+      link.addEventListener('load', function () {
+        template.remove();
+        if (--pending === 0) document.dispatchEvent(new Event('adty-home-styles-ready'));
+      });
+      template.before(link);
+    });
+  });
+});
+</script></body>`
+	return bytes.Replace(out, []byte("</body>"), []byte(loadStyles), 1)
+}
+
 // AdtySEOHomePages 处理官方首页语言网址（`/`、`/zh-cn`）的 GET 和 HEAD：把 index.html 里 <!--adty-head-->
 // 占位区换成这一页的标题、描述、canonical、hreflang 和分享标签，<html lang> 换成这一页的语言，
 // 并在 #root 前插入预渲染的正文（任务 9.3，执行层决定 23）。其余请求原样交给后面的处理。
@@ -75,11 +122,14 @@ func (p *adtyPrerender) load(buildFS fs.FS) map[string]string {
 func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 	// Capture only persisted completion at router initialization. New installs
 	// use the API fallback until restart; requests never read a mutable flag.
+	var optimizedIndex []byte
 	if model.IsSetupComplete() {
 		indexPage = bytes.Replace(indexPage, []byte("</head>"), []byte(`<meta name="adty-setup-complete" content="true"></head>`), 1)
+		optimizedIndex = adtyOptimizedHomeIndex(indexPage, buildFS)
 	}
 	prerender := &adtyPrerender{}
 	sitePrerender := &adtyPrerender{file: adtySEOSitePrerenderFile}
+	sharedCache := common.GetEnvOrDefaultBool("ADTY_HOME_SHARED_CACHE", false)
 	var warnAddressOnce sync.Once
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
@@ -93,6 +143,7 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 		// 分站使用无平台品牌的模板，逐请求填入自己的品牌和专用 API 地址。
 		if site := service.AdtySiteForRequest(c); site != nil {
 			head := adtySiteSEO(site)
+			siteIndex := indexPage
 			brand := service.AdtyBrandFor(site)
 			body := "<main><h1>" + html.EscapeString(brand.Name) + "</h1></main>"
 			if strings.TrimSpace(brand.Name) == "" {
@@ -101,7 +152,7 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 			} else if template := sitePrerender.load(buildFS)[page.contentLang]; template != "" {
 				brandHTML := "<span>" + html.EscapeString(brand.Name) + "</span>"
 				if brand.LogoURL != "" {
-					brandHTML = `<img src="` + html.EscapeString(brand.LogoURL) + `" alt="` + html.EscapeString(brand.Name) + `" class="h-6 w-auto max-w-none object-contain" />`
+					brandHTML = `<img src="` + html.EscapeString(brand.LogoURL) + `" alt="` + html.EscapeString(brand.Name) + `" class="h-7 w-auto max-w-full object-contain" />`
 				}
 				apiBase := service.AdtySiteAPIBaseURL(site)
 				if apiBase == "" {
@@ -112,8 +163,11 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 					"__ADTY_SITE_BRAND__", brandHTML,
 					"__ADTY_SITE_API__", html.EscapeString(apiBase),
 				).Replace(template)
+				if optimizedIndex != nil {
+					siteIndex = optimizedIndex
+				}
 			}
-			out := adtyRenderHomePage(indexPage, page, head, body)
+			out := adtyRenderHomePage(siteIndex, page, head, body)
 			out = adtyBrandDocument(out, site, false)
 			if head.noindex {
 				c.Header("X-Robots-Tag", "noindex")
@@ -147,15 +201,19 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 		head := adtyMainSEO(base, noindex)
 		// 结构化数据只写在请求路径就是 / 的那一页（features.md：「只在 `/` 写」）。
 		head.websiteData = adtySEOIsRootPath(c.Request.URL.Path)
-		out := adtyRenderHomePage(indexPage, page, head, body)
+		mainIndex := indexPage
+		completeHome := optimizedIndex != nil && body != ""
+		if completeHome {
+			mainIndex = optimizedIndex
+		}
+		out := adtyRenderHomePage(mainIndex, page, head, body)
 		if noindex {
 			c.Header("X-Robots-Tag", "noindex")
 		} else {
 			c.Header("X-Robots-Tag", "index, follow")
 		}
 
-		c.Header("Cache-Control", "no-cache")
-		c.Data(http.StatusOK, "text/html; charset=utf-8", out)
+		serveAdtyMainHome(c, base, sharedCache, completeHome, out)
 		c.Abort()
 	}
 }

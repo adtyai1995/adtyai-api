@@ -16,11 +16,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { lazy } from 'react'
+
 import type { AuthSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
-import { BasicAuthSection } from './basic-auth-section'
-import { BotProtectionSection } from './bot-protection-section'
-import { PasskeySection } from './passkey-section'
+
+const BasicAuthSection = lazy(() =>
+  import('./basic-auth-section').then((module) => ({
+    default: module.BasicAuthSection,
+  }))
+)
+const BotProtectionSection = lazy(() =>
+  import('./bot-protection-section').then((module) => ({
+    default: module.BotProtectionSection,
+  }))
+)
+const PasskeySection = lazy(() =>
+  import('./passkey-section').then((module) => ({
+    default: module.PasskeySection,
+  }))
+)
 
 const AUTH_SECTIONS = [
   {

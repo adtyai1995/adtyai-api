@@ -16,16 +16,49 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { lazy } from 'react'
+
 import type { ContentSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
-import { AdtyLegalSection } from './adty-legal-section'
-import { AnnouncementsSection } from './announcements-section'
-import { ApiInfoSection } from './api-info-section'
-import { ChatSettingsSection } from './chat-settings-section'
-import { DashboardSection } from './dashboard-section'
-import { DrawingSettingsSection } from './drawing-settings-section'
-import { FAQSection } from './faq-section'
-import { UptimeKumaSection } from './uptime-kuma-section'
+
+const AdtyLegalSection = lazy(() =>
+  import('./adty-legal-section').then((module) => ({
+    default: module.AdtyLegalSection,
+  }))
+)
+const AnnouncementsSection = lazy(() =>
+  import('./announcements-section').then((module) => ({
+    default: module.AnnouncementsSection,
+  }))
+)
+const ApiInfoSection = lazy(() =>
+  import('./api-info-section').then((module) => ({
+    default: module.ApiInfoSection,
+  }))
+)
+const ChatSettingsSection = lazy(() =>
+  import('./chat-settings-section').then((module) => ({
+    default: module.ChatSettingsSection,
+  }))
+)
+const DashboardSection = lazy(() =>
+  import('./dashboard-section').then((module) => ({
+    default: module.DashboardSection,
+  }))
+)
+const DrawingSettingsSection = lazy(() =>
+  import('./drawing-settings-section').then((module) => ({
+    default: module.DrawingSettingsSection,
+  }))
+)
+const FAQSection = lazy(() =>
+  import('./faq-section').then((module) => ({ default: module.FAQSection }))
+)
+const UptimeKumaSection = lazy(() =>
+  import('./uptime-kuma-section').then((module) => ({
+    default: module.UptimeKumaSection,
+  }))
+)
 
 /**
  * Validate and coerce DataExportDefaultTime to a safe value
