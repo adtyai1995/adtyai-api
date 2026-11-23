@@ -251,6 +251,7 @@ export type ResellerSettings = {
   field_versions?: Record<string, string>
   settings_warnings?: string[]
   money_configured: boolean
+  tier_configured?: boolean
   site_agreement_version: number
   site_customer_terms_version: number
 }
@@ -264,6 +265,7 @@ export type ResellerSettingsUpdate = Partial<
     | 'cloudflare_configured'
     | 'resend_configured'
     | 'money_configured'
+    | 'tier_configured'
     | 'site_agreement_version'
     | 'site_customer_terms_version'
     | 'max_site_bonus_extra'

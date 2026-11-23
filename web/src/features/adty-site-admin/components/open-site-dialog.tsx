@@ -133,7 +133,9 @@ export function OpenSiteDialog(props: {
     queryFn: getSiteTiers,
     enabled: props.open && isRoot && createdSite === null,
   })
-  const enabledTiers = (tiers.data ?? []).filter((item) => item.enabled)
+  const enabledTiers = (tiers.data ?? []).filter(
+    (item) => item.enabled && item.cost_factor
+  )
 
   const normalizedSub = subdomain.trim().toLowerCase()
   const subdomainError =
@@ -145,16 +147,11 @@ export function OpenSiteDialog(props: {
         )
       : ''
 
-  const minFactor = props.settings?.min_cost_factor
   const parsedCostFactor = costFactor.trim() === '' ? null : Number(costFactor)
   let costFactorError = ''
   if (parsedCostFactor !== null) {
     if (!Number.isFinite(parsedCostFactor) || parsedCostFactor <= 0) {
       costFactorError = t('The cost factor must be greater than 0')
-    } else if (minFactor != null && parsedCostFactor < minFactor) {
-      costFactorError = t(
-        'The cost factor cannot be below the minimum cost factor'
-      )
     }
   }
 
@@ -218,10 +215,9 @@ export function OpenSiteDialog(props: {
       ? `api-s<ID>.${effectiveRoot}`
       : t('Configure a custom API domain after opening')
 
-  const selectedTierObj = enabledTiers.find((item) => item.code === tierCode)
-  let previewCostFactor = props.settings?.cost_factor
-    ? `${props.settings.cost_factor} (${t('Global')})`
-    : '-'
+  const selectedTierObj =
+    enabledTiers.find((item) => item.code === tierCode) ?? enabledTiers[0]
+  let previewCostFactor = '-'
   if (costFactor.trim() !== '') {
     previewCostFactor = `${costFactor.trim()} (${t('Per-site')})`
   } else if (selectedTierObj?.cost_factor) {
@@ -603,21 +599,11 @@ export function OpenSiteDialog(props: {
                   step='any'
                   inputMode='decimal'
                   value={costFactor}
-                  placeholder={
-                    props.settings?.cost_factor != null
-                      ? `${t('Global')}: ${props.settings.cost_factor}`
-                      : t('Global')
-                  }
+                  placeholder={t('Follow site level')}
                   onChange={(event) => setCostFactor(event.target.value)}
                 />
-                {costFactorError ? (
+                {costFactorError && (
                   <p className='text-destructive text-xs'>{costFactorError}</p>
-                ) : (
-                  minFactor != null && (
-                    <p className='text-muted-foreground text-xs'>
-                      {t('Minimum cost factor')}: {minFactor}
-                    </p>
-                  )
                 )}
               </div>
 
@@ -631,12 +617,16 @@ export function OpenSiteDialog(props: {
                   onChange={(event) => setTierCode(event.target.value)}
                 >
                   <NativeSelectOption value=''>
-                    {t('Use automatic level evaluation')}
+                    {enabledTiers[0]
+                      ? t('Auto-assign lowest level ({{name}})', {
+                          name: enabledTiers[0].name,
+                        })
+                      : t('Use automatic level evaluation')}
                   </NativeSelectOption>
                   {enabledTiers.map((tier) => (
                     <NativeSelectOption key={tier.code} value={tier.code}>
                       {tier.name} ({tier.code}
-                      {tier.cost_factor ? ` · d=${tier.cost_factor}` : ''})
+                      {tier.cost_factor ? ` · ${tier.cost_factor}` : ''})
                     </NativeSelectOption>
                   ))}
                 </NativeSelect>

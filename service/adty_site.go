@@ -123,14 +123,10 @@ func AdtyCurrentSiteAgreementVersion() string {
 	return strconv.Itoa(adty_setting.GetLegalSetting().SiteAgreementVersion)
 }
 
-// AdtySiteAgreementAccepted reports whether a site satisfies the active site
-// agreement requirement. Version <= 0 means no site agreement is published yet,
-// so newly opened sites are not deadlocked out of the owner center.
+// AdtySiteAgreementAccepted always returns true because site opening agreements
+// are not required for site owners.
 func AdtySiteAgreementAccepted(agreementVer string) bool {
-	if adty_setting.GetLegalSetting().SiteAgreementVersion <= 0 {
-		return true
-	}
-	return agreementVer == AdtyCurrentSiteAgreementVersion()
+	return true
 }
 
 // AdtyCurrentSiteCustomerTermsVersion 是分站客户条款当前的版本号。0 表示还没写。
@@ -138,14 +134,11 @@ func AdtyCurrentSiteCustomerTermsVersion() string {
 	return strconv.Itoa(adty_setting.GetLegalSetting().SiteCustomerTermsVersion)
 }
 
-// AdtySiteTermsStatus 说明登录后要不要重新勾选。站长看开站协议，分站客户看客户条款。
+// AdtySiteTermsStatus 说明登录后要不要重新勾选。站长无需签署开站协议；分站客户按客户条款版本检查。
 // 查询失败或分站客户缺少 AdtySiteCustomer 关系时一律按需重签（required=true）拦截，绝不当作免签放行（ISS-R1-0032）。
 func AdtySiteTermsStatus(userId int) (required bool, version string) {
 	if site, err := AdtyOwnerSite(userId); err == nil && site != nil {
-		version = AdtyCurrentSiteAgreementVersion()
-		return !AdtySiteAgreementAccepted(site.AgreementVer), version
-	} else if err != nil && !errors.Is(err, ErrAdtySiteNotOwner) {
-		return adty_setting.GetLegalSetting().SiteAgreementVersion > 0, AdtyCurrentSiteAgreementVersion()
+		return false, ""
 	}
 	version = AdtyCurrentSiteCustomerTermsVersion()
 	if adty_setting.GetLegalSetting().SiteCustomerTermsVersion <= 0 {
@@ -263,15 +256,11 @@ func acceptCustomerSiteTerms(userId int, version string) error {
 	})
 }
 
-// validateSitePreset checks a site supply factor against the configured floor.
+// validateSitePreset checks an optional per-site supply discount override.
 func validateSitePreset(costFactor *decimal.Decimal) error {
-	cfg := resellerSetting()
 	if costFactor != nil {
-		if !costFactor.IsPositive() {
+		if !costFactor.IsPositive() || costFactor.GreaterThanOrEqual(decimal.New(1, 4)) || !costFactor.Equal(costFactor.Truncate(6)) {
 			return common.NewMessage("The cost factor must be greater than 0")
-		}
-		if cfg.MinCostFactor != nil && costFactor.LessThan(decimal.NewFromFloat(*cfg.MinCostFactor)) {
-			return common.NewMessage("The cost factor cannot be below the minimum cost factor")
 		}
 	}
 	return nil
@@ -405,10 +394,6 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 	if err != nil {
 		return nil, err
 	}
-	currentVer := AdtyCurrentSiteAgreementVersion()
-	if openedBy != model.AdtySiteOpenedByAdmin && (adty_setting.GetLegalSetting().SiteAgreementVersion <= 0 || strings.TrimSpace(preset.AgreementVer) != currentVer) {
-		return nil, ErrAdtySiteAgreement
-	}
 	status := preset.InitialStatus
 	if status == "" {
 		status = model.AdtySiteStatusActive
@@ -518,13 +503,27 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 				}
 				return err
 			}
-			site.TierCode = selectedTier.Code
-			site.TierMode = tierMode
-			site.TierCostFactor = selectedTier.CostFactor
-			site.TierUpdatedAt = now
-		} else if tierMode != "" {
-			site.TierMode = tierMode
+			if selectedTier.CostFactor == nil || !selectedTier.CostFactor.IsPositive() {
+				return ErrAdtySiteTierInvalid
+			}
+		} else {
+			var tierErr error
+			selectedTier, tierErr = defaultAdtySiteTierTx(tx)
+			if tierErr != nil {
+				return tierErr
+			}
+			if selectedTier == nil {
+				return common.NewMessage("Configure at least one enabled site level with a supply discount before opening a site")
+			}
 		}
+		effectiveTierMode := tierMode
+		if effectiveTierMode == "" {
+			effectiveTierMode = AdtySiteTierModeAuto
+		}
+		site.TierCode = selectedTier.Code
+		site.TierMode = effectiveTierMode
+		site.TierCostFactor = selectedTier.CostFactor
+		site.TierUpdatedAt = now
 		var taken int64
 		if err := tx.Model(&model.AdtySite{}).Where("subdomain = ?", label).Count(&taken).Error; err != nil {
 			return err
@@ -744,11 +743,8 @@ func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite
 			updates["pending_cost_factor_at"] = 0
 		case adjust.CostFactor != nil:
 			current, hasCurrent := AdtySiteCostFactor(&site)
-			if hasCurrent && adjust.CostFactor.GreaterThan(current) {
-				delay := resellerSetting().MarkupIncreaseDelayHours
-				if delay < 1 {
-					delay = 24
-				}
+			delay := resellerSetting().MarkupIncreaseDelayHours
+			if hasCurrent && adjust.CostFactor.GreaterThan(current) && delay > 0 {
 				pendingAt = time.Now().Unix() + int64(delay)*3600
 				updates["pending_cost_factor"] = *adjust.CostFactor
 				updates["pending_cost_factor_at"] = pendingAt

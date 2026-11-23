@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type {
-  CostTier,
   ResellerSettings,
   ResellerSettingsUpdate,
   TurnstileWidget,
@@ -160,9 +159,9 @@ export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
   return drafts
 }
 
-/** Money keys still unset after these drafts; enabled needs all of them. */
-export function missingMoneyKeys(drafts: ResellerDrafts): MoneyKey[] {
-  return MONEY_KEYS.filter((key) => drafts[key].trim() === '')
+/** Money keys still unset after these drafts; supply discounts are configured per site level. */
+export function missingMoneyKeys(_drafts: ResellerDrafts): MoneyKey[] {
+  return []
 }
 
 /**
@@ -210,11 +209,6 @@ export function buildResellerUpdate(
   if (drafts.aliyun_secret.trim()) {
     body.aliyun_access_key_Secret = drafts.aliyun_secret.trim()
   }
-  for (const key of MONEY_KEYS) {
-    const draft = drafts[key].trim()
-    const next = draft === '' ? null : Number(draft)
-    if (next !== saved[key]) body[key] = next
-  }
   for (const key of RULE_KEYS) {
     const next = Number(drafts[key])
     if (next !== saved[key]) body[key] = next
@@ -235,15 +229,6 @@ export function buildResellerUpdate(
   const reserved = lines(drafts.reserved_subdomains)
   if (!sameList(reserved, saved.reserved_subdomains ?? [])) {
     body.reserved_subdomains = reserved
-  }
-  const tiers: CostTier[] = drafts.tiers
-    .filter((tier) => tier.min_monthly_usd.trim() || tier.cost_factor.trim())
-    .map((tier) => ({
-      min_monthly_usd: Number(tier.min_monthly_usd),
-      cost_factor: Number(tier.cost_factor),
-    }))
-  if (JSON.stringify(tiers) !== JSON.stringify(saved.cost_factor_tiers ?? [])) {
-    body.cost_factor_tiers = tiers
   }
   const savedVisibility = {
     ...VISIBILITY_DEFAULTS,

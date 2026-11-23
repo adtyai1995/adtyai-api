@@ -726,13 +726,52 @@ func ValidateAdtySiteTier(tier model.AdtySiteTier) error {
 			return ErrAdtySiteTierInvalid
 		}
 	}
-	// CostFactor is a supply-price multiplier. It may be below or above 1; only
-	// non-positive values or values that would not survive decimal(10,6) are rejected.
-	if tier.CostFactor != nil && (!tier.CostFactor.IsPositive() ||
-		tier.CostFactor.GreaterThanOrEqual(decimal.New(1, 4)) || !tier.CostFactor.Equal(tier.CostFactor.Truncate(6))) {
+	// Supply discount is defined per site level and must be a positive decimal(10,6).
+	if tier.CostFactor == nil || !tier.CostFactor.IsPositive() ||
+		tier.CostFactor.GreaterThanOrEqual(decimal.New(1, 4)) || !tier.CostFactor.Equal(tier.CostFactor.Truncate(6)) {
 		return ErrAdtySiteTierInvalid
 	}
 	return nil
+}
+
+// HasReadyAdtySiteTier reports whether at least one enabled site level with a
+// positive supply discount exists.
+func HasReadyAdtySiteTier(db *gorm.DB) (bool, error) {
+	if db == nil {
+		db = model.DB
+	}
+	if db == nil {
+		return false, nil
+	}
+	var count int64
+	if err := db.Model(&model.AdtySiteTier{}).
+		Where("enabled = ? AND cost_factor IS NOT NULL AND cost_factor > 0", true).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func lowestEnabledAdtySiteTier(tiers []model.AdtySiteTier) *model.AdtySiteTier {
+	var lowest *model.AdtySiteTier
+	for i := range tiers {
+		tier := &tiers[i]
+		if !tier.Enabled || tier.CostFactor == nil || !tier.CostFactor.IsPositive() {
+			continue
+		}
+		if lowest == nil || adtySiteTierHigher(*lowest, *tier) {
+			lowest = tier
+		}
+	}
+	return lowest
+}
+
+func defaultAdtySiteTierTx(tx *gorm.DB) (*model.AdtySiteTier, error) {
+	var tiers []model.AdtySiteTier
+	if err := tx.Where("enabled = ? AND cost_factor IS NOT NULL AND cost_factor > 0", true).Find(&tiers).Error; err != nil {
+		return nil, err
+	}
+	return lowestEnabledAdtySiteTier(tiers), nil
 }
 
 // SaveAdtySiteTiers upserts definitions by their stable code. It intentionally
@@ -752,6 +791,8 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 		for _, input := range tiers {
 			input.Code = strings.TrimSpace(input.Code)
 			input.Name = strings.TrimSpace(input.Name)
+			input.MinEffectiveUsers = 0
+			input.MinConsumptionUSD = decimal.Zero
 			if _, ok := seen[input.Code]; ok {
 				return ErrAdtySiteTierInvalid
 			}
@@ -775,8 +816,8 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 			}
 			if err := tx.Model(&model.AdtySiteTier{}).Where("id = ?", current.Id).Updates(map[string]any{
 				"name": input.Name, "min_monthly_usd": input.MinMonthlyUSD,
-				"min_effective_users": input.MinEffectiveUsers, "min_principal_usd": input.MinPrincipalUSD,
-				"min_consumption_usd": input.MinConsumptionUSD, "cost_factor": input.CostFactor,
+				"min_effective_users": 0, "min_principal_usd": input.MinPrincipalUSD,
+				"min_consumption_usd": decimal.Zero, "cost_factor": input.CostFactor,
 				"deposit_usd": input.DepositUSD, "enabled": input.Enabled,
 				"sort_order": input.SortOrder,
 			}).Error; err != nil {
@@ -811,6 +852,8 @@ func CreateAdtySiteTiers(tiers []model.AdtySiteTier) error {
 		for _, tier := range tiers {
 			tier.Id = 0
 			tier.Name, tier.Code = strings.TrimSpace(tier.Name), strings.TrimSpace(tier.Code)
+			tier.MinEffectiveUsers = 0
+			tier.MinConsumptionUSD = decimal.Zero
 			if err := ValidateAdtySiteTier(tier); err != nil {
 				return err
 			}
@@ -830,11 +873,12 @@ var ErrAdtySiteTierConflict = common.NewMessage("This level code already exists"
 
 func ListAdtySiteTiers() ([]model.AdtySiteTier, error) {
 	var tiers []model.AdtySiteTier
-	err := model.DB.Order("min_effective_users, min_principal_usd, min_consumption_usd, sort_order, id").Find(&tiers).Error
+	err := model.DB.Order("min_principal_usd, sort_order, id").Find(&tiers).Error
 	return tiers, err
 }
 
-// AdtySiteTierStats is the A.10 lifetime snapshot used to choose a site grade.
+// AdtySiteTierStats is the lifetime snapshot used to choose a site grade.
+// Only cumulative net customer top-up principal (PrincipalUSD) gates upgrade/downgrade.
 type AdtySiteTierStats struct {
 	EffectiveUsers int64
 	PrincipalUSD   decimal.Decimal
@@ -842,20 +886,12 @@ type AdtySiteTierStats struct {
 }
 
 func (stats AdtySiteTierStats) Meets(tier model.AdtySiteTier) bool {
-	return stats.EffectiveUsers >= tier.MinEffectiveUsers &&
-		!stats.PrincipalUSD.LessThan(tier.MinPrincipalUSD) &&
-		!stats.ConsumptionUSD.LessThan(tier.MinConsumptionUSD)
+	return !stats.PrincipalUSD.LessThan(tier.MinPrincipalUSD)
 }
 
 func adtySiteTierHigher(a, b model.AdtySiteTier) bool {
-	if a.MinEffectiveUsers != b.MinEffectiveUsers {
-		return a.MinEffectiveUsers > b.MinEffectiveUsers
-	}
 	if !a.MinPrincipalUSD.Equal(b.MinPrincipalUSD) {
 		return a.MinPrincipalUSD.GreaterThan(b.MinPrincipalUSD)
-	}
-	if !a.MinConsumptionUSD.Equal(b.MinConsumptionUSD) {
-		return a.MinConsumptionUSD.GreaterThan(b.MinConsumptionUSD)
 	}
 	if a.SortOrder != b.SortOrder {
 		return a.SortOrder > b.SortOrder
@@ -1006,6 +1042,10 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 			return err
 		}
 		selected := SelectAdtySiteTier(tiers, stats)
+		warn = selected == nil && len(tiers) > 0
+		if selected == nil {
+			selected = lowestEnabledAdtySiteTier(tiers)
+		}
 		previous := site.TierCode
 		next := ""
 		if selected != nil {
@@ -1017,7 +1057,6 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 				return err
 			}
 		}
-		warn = selected == nil && len(tiers) > 0
 		if err := recordAdtySiteTierEvaluationTx(tx, siteID, periodID, now, stats, next, previous, warn); err != nil {
 			return err
 		}
@@ -1040,9 +1079,9 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 func notifyAdtySiteTierBelowMinimum(siteID int, periodID string) {
 	adtyNotifyRootAdmins(func(lang string) (string, string) {
 		if strings.HasPrefix(strings.ToLower(lang), "zh") {
-			return "分站等级未达最低档", "分站 #" + strconv.Itoa(siteID) + " 开站以来累计指标未达到任一已启用等级的三项门槛，仅预警，未关站。周期 " + periodID + "。"
+			return "分站等级未达最低档", "分站 #" + strconv.Itoa(siteID) + " 开站以来客户累计净充值本金未达到任一已启用等级的门槛，仅预警，未关站。周期 " + periodID + "。"
 		}
-		return "Site grade below the lowest configured level", "Site #" + strconv.Itoa(siteID) + " does not meet all three lifetime thresholds of any enabled grade. The site was not closed. Period " + periodID + "."
+		return "Site grade below the lowest configured level", "Site #" + strconv.Itoa(siteID) + " does not meet the cumulative net customer top-up principal threshold of any enabled grade. The site was not closed. Period " + periodID + "."
 	})
 }
 
@@ -1110,6 +1149,22 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 					return ErrAdtySiteTierNotFound
 				}
 				return err
+			}
+		} else if mode == AdtySiteTierModeAuto {
+			stats, err := loadAdtySiteTierStatsTx(tx, siteID)
+			if err != nil {
+				return err
+			}
+			var tiers []model.AdtySiteTier
+			if err := tx.Where("enabled = ?", true).Find(&tiers).Error; err != nil {
+				return err
+			}
+			selected = SelectAdtySiteTier(tiers, stats)
+			if selected == nil {
+				selected = lowestEnabledAdtySiteTier(tiers)
+			}
+			if selected != nil {
+				code = selected.Code
 			}
 		}
 		if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {

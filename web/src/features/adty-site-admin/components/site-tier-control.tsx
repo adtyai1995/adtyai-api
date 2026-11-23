@@ -112,7 +112,7 @@ export function SiteTierControl(props: { site: AdminSite }) {
       </div>
       <p className='text-muted-foreground text-xs'>
         {t(
-          'Switching to automatic clears the level until the next hourly evaluation picks one.'
+          'Switching to automatic immediately matches the site to its qualifying level based on cumulative net customer top-up principal.'
         )}
       </p>
     </section>

@@ -353,7 +353,7 @@ function SiteActions(props: {
           <Input
             id='site-cost-factor'
             value={costFactor}
-            placeholder={t('Global')}
+            placeholder={t('Follow site level')}
             disabled={(!canReview && !canAdjust) || !editable || busy}
             onChange={(event) => setCostFactor(event.target.value)}
           />
@@ -376,7 +376,7 @@ function SiteActions(props: {
       </div>
       <p className='text-muted-foreground text-xs'>
         {t(
-          'Leave empty to use the global value. The owner is notified when d changes.'
+          'Leave empty to follow the site level supply discount. The owner is notified when it changes.'
         )}
       </p>
       {visibilityEditor}
@@ -1085,13 +1085,18 @@ export function SiteDetailSheet(props: {
                 <Info label={t('Customers')} value={String(site.customers)} />
                 <Info
                   label={t('Cost factor')}
-                  value={site.cost_factor ?? t('Global')}
+                  value={site.cost_factor ?? t('Follow site level')}
                 />
                 <Info
                   label={t('Tier cost factor')}
                   value={
                     site.tier_cost_factor
-                      ? `${site.tier_cost_factor} (${site.tier_month})`
+                      ? [
+                          site.tier_cost_factor,
+                          site.tier_code && `(${site.tier_code})`,
+                        ]
+                          .filter(Boolean)
+                          .join(' ')
                       : '-'
                   }
                 />

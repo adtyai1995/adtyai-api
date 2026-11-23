@@ -45,9 +45,7 @@ import { SwitchRow } from './setting-fields'
 type Draft = {
   code: string
   name: string
-  min_effective_users: string
   min_principal_usd: string
-  min_consumption_usd: string
   cost_factor: string
   deposit_usd: string
   sort_order: string
@@ -57,9 +55,7 @@ type Draft = {
 const EMPTY_DRAFT: Draft = {
   code: '',
   name: '',
-  min_effective_users: '0',
   min_principal_usd: '0',
-  min_consumption_usd: '0',
   cost_factor: '',
   deposit_usd: '0',
   sort_order: '0',
@@ -73,9 +69,7 @@ function draftOf(tier: SiteTier): Draft {
   return {
     code: tier.code,
     name: tier.name,
-    min_effective_users: String(tier.min_effective_users),
     min_principal_usd: tier.min_principal_usd,
-    min_consumption_usd: tier.min_consumption_usd,
     cost_factor: tier.cost_factor ?? '',
     deposit_usd: tier.deposit_usd,
     sort_order: String(tier.sort_order),
@@ -85,26 +79,26 @@ function draftOf(tier: SiteTier): Draft {
 
 function draftReady(draft: Draft) {
   const code = draft.code.trim()
+  const discount = draft.cost_factor.trim()
   return (
     code !== '' &&
     [...code].length <= 32 &&
     draft.name.trim() !== '' &&
-    INTEGER.test(draft.min_effective_users.trim()) &&
     INTEGER.test(draft.sort_order.trim()) &&
-    [
-      draft.min_principal_usd,
-      draft.min_consumption_usd,
-      draft.deposit_usd,
-    ].every((value) => DECIMAL.test(value.trim())) &&
-    (draft.cost_factor.trim() === '' || DECIMAL.test(draft.cost_factor.trim()))
+    [draft.min_principal_usd, draft.deposit_usd].every((value) =>
+      DECIMAL.test(value.trim())
+    ) &&
+    DECIMAL.test(discount) &&
+    Number(discount) > 0
   )
 }
 
 /**
  * Root defines site levels (adty_site_tiers). The hourly evaluation gives each
- * automatic site the highest enabled level whose three lifetime thresholds are
- * all met. Levels are saved by code and never deleted, so a level still
- * assigned to a site cannot disappear; disable it instead.
+ * automatic site the highest enabled level whose cumulative net customer
+ * top-up principal threshold is met. Levels are saved by code and never
+ * deleted, so a level still assigned to a site cannot disappear; disable it
+ * instead.
  */
 export function SiteTiersPanel() {
   const { t } = useTranslation()
@@ -121,18 +115,21 @@ export function SiteTiersPanel() {
     enabled: isRoot,
   })
   const save = useMutation({
-    mutationFn: ({draft, isNew}: {draft: Draft; isNew: boolean}) =>
-      saveSiteTier({
-        code: draft.code.trim(),
-        name: draft.name.trim(),
-        min_effective_users: Number(draft.min_effective_users.trim()),
-        min_principal_usd: draft.min_principal_usd.trim(),
-        min_consumption_usd: draft.min_consumption_usd.trim(),
-        cost_factor: draft.cost_factor.trim() || null,
-        deposit_usd: draft.deposit_usd.trim(),
-        sort_order: Number(draft.sort_order.trim()),
-        enabled: draft.enabled,
-      }, isNew),
+    mutationFn: ({ draft, isNew }: { draft: Draft; isNew: boolean }) =>
+      saveSiteTier(
+        {
+          code: draft.code.trim(),
+          name: draft.name.trim(),
+          min_effective_users: 0,
+          min_principal_usd: draft.min_principal_usd.trim(),
+          min_consumption_usd: '0',
+          cost_factor: draft.cost_factor.trim(),
+          deposit_usd: draft.deposit_usd.trim(),
+          sort_order: Number(draft.sort_order.trim()),
+          enabled: draft.enabled,
+        },
+        isNew
+      ),
     onSuccess: () => {
       toast.success(t('Saved successfully'))
       setEditing(null)
@@ -187,7 +184,7 @@ export function SiteTiersPanel() {
           <h2 className='text-sm font-medium'>{t('Site levels')}</h2>
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Automatic sites get the highest enabled level whose three lifetime thresholds are all met. Levels cannot be deleted; disable a level instead.'
+              'Automatic sites get the highest enabled level whose cumulative net customer top-up principal threshold is met. Levels cannot be deleted; disable a level instead.'
             )}
           </p>
         </div>
@@ -226,26 +223,21 @@ export function SiteTiersPanel() {
             },
             {
               id: 'thresholds',
-              header: t('Thresholds'),
+              header: t('Upgrade threshold'),
               cell: (row) => (
                 <div className='flex flex-col text-xs tabular-nums'>
                   <span>
-                    {t('Effective customers')} ≥ {row.min_effective_users}
-                  </span>
-                  <span>
-                    {t('Customer net top-up principal')} ≥ {row.min_principal_usd} USD
-                  </span>
-                  <span>
-                    {t('Settled consumption')} ≥ {row.min_consumption_usd} USD
+                    {t('Customer net top-up principal')} ≥{' '}
+                    {row.min_principal_usd} USD
                   </span>
                 </div>
               ),
             },
             {
               id: 'cost',
-              header: t('Cost factor'),
+              header: t('Supply discount'),
               cellClassName: 'tabular-nums',
-              cell: (row) => row.cost_factor ?? t('Default'),
+              cell: (row) => row.cost_factor ?? '-',
             },
             {
               id: 'deposit',
@@ -328,44 +320,37 @@ export function SiteTiersPanel() {
         </div>
         <div className='border-t pt-3 sm:col-span-2'>
           <h3 className='text-sm font-medium'>
-            {t('Upgrade thresholds (cumulative customer metrics)')}
+            {t('Upgrade threshold (cumulative customer net top-up)')}
           </h3>
-          <p className='text-muted-foreground mt-0.5 text-xs'>
-            {t(
-              'All three lifetime customer metrics must be met to qualify automatically. Enter 0 to skip a threshold.'
-            )}
-          </p>
         </div>
-        {field('min_effective_users', t('Minimum effective customers'))}
-        {field(
-          'min_principal_usd',
-          t('Minimum customer net top-up principal (USD)'),
-          {
-            decimal: true,
-            hint: t(
-              'Customer top-up principal minus refunds (not owner margin).'
-            ),
-          }
-        )}
-        {field(
-          'min_consumption_usd',
-          t('Minimum customer settled consumption (USD)'),
-          {
-            decimal: true,
-          }
-        )}
+        <div className='sm:col-span-2'>
+          {field(
+            'min_principal_usd',
+            t('Minimum customer net top-up principal (USD)'),
+            {
+              decimal: true,
+              hint: t(
+                'Customer top-up principal minus refunds; enter 0 for no threshold (not owner margin).'
+              ),
+            }
+          )}
+        </div>
         <div className='border-t pt-3 sm:col-span-2'>
           <h3 className='text-sm font-medium'>
-            {t('Level pricing and owner margin')}
+            {t('Level supply discount and owner margin')}
           </h3>
         </div>
-        {field('cost_factor', t('Supply cost factor (empty uses default)'), {
+        {field('cost_factor', t('Supply discount (required, greater than 0)'), {
           decimal: true,
-          hint: t('Supply cost = main site standard price × cost factor.'),
+          hint: t(
+            'Supply cost = main site standard price × supply discount (e.g. 0.8 = 80%).'
+          ),
         })}
         {field('deposit_usd', t('Owner margin requirement (USD)'), {
           decimal: true,
-          hint: t('Deposit target required in the owner margin wallet.'),
+          hint: t(
+            'Deposit target required in the owner margin wallet; enter 0 if none.'
+          ),
         })}
       </Dialog>
     </section>

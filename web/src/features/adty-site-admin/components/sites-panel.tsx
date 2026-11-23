@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, Info, Plus } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, Plus } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -128,10 +128,10 @@ export function SitesPanel(props: {
     actionLabel: string
   }[] = []
   if (settings) {
-    if (!settings.money_configured) {
+    if (!(settings.tier_configured ?? settings.money_configured)) {
       missingPrereqs.push({
-        key: 'money',
-        label: t('Global cost factor and minimum cost factor are not configured'),
+        key: 'tiers',
+        label: t('No enabled site level with a supply discount is configured'),
         section: 'settings',
         actionLabel: t('Supply settings'),
       })
@@ -218,16 +218,6 @@ export function SitesPanel(props: {
                   </Button>
                 )}
               </div>
-            )}
-          </AlertDescription>
-        </Alert>
-      )}
-      {canCreate && openingReady && settings && settings.site_agreement_version <= 0 && (
-        <Alert>
-          <Info className='size-4' />
-          <AlertDescription className='text-xs'>
-            {t(
-              'Site agreement is not published yet (version 0). Sites can still open normally; once you publish a site agreement under System Settings > Content, owners will be prompted to accept it.'
             )}
           </AlertDescription>
         </Alert>

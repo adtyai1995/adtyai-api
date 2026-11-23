@@ -111,7 +111,7 @@ func DefaultResellerSetting() ResellerSetting {
 		ReservedSubdomains:         []string{"www", "api", "admin", "pay", "mail", "news", "links", "status", "docs", "app"},
 		UnknownHostMode:            ResellerUnknownHostReject,
 		CostFactorTiers:            []ResellerCostTier{},
-		MarkupIncreaseDelayHours:   24,
+		MarkupIncreaseDelayHours:   0,
 		SettleHour:                 4,
 		FreezeDays:                 7,
 		CloseNoticeDays:            7,
@@ -142,29 +142,26 @@ func (s *ResellerSetting) ResellerMoneyConfigured() bool {
 	return s.CostFactor != nil && s.MinCostFactor != nil
 }
 
-// Ready 说明分站功能可用：总开关开着，金额参数和根域名都已设置。
+// Ready 说明分站功能基础开关和根域名已就绪；供货折扣按已启用分站等级在业务层校验。
 func (s *ResellerSetting) Ready() bool {
-	return s.Enabled && s.ResellerMoneyConfigured() && len(s.RootDomains) > 0
+	return s.Enabled && len(s.RootDomains) > 0
 }
 
 // HoldGlobalCostFactorIncrease keeps the current global d when the requested
-// value is higher, and records the higher value to take effect after the
-// markup-increase delay. A lower or equal value applies immediately.
+// value is higher and a positive delay is configured. Delay <= 0 applies
+// immediately (real-time).
 func HoldGlobalCostFactorIncrease(next, previous *ResellerSetting, now int64) bool {
 	if next == nil || previous == nil || next.CostFactor == nil || previous.CostFactor == nil {
 		return false
 	}
-	if *next.CostFactor <= *previous.CostFactor {
+	delay := next.MarkupIncreaseDelayHours
+	if *next.CostFactor <= *previous.CostFactor || delay <= 0 {
 		next.PendingCostFactor = nil
 		next.PendingCostFactorAt = 0
 		return false
 	}
 	pending := *next.CostFactor
 	next.PendingCostFactor = &pending
-	delay := next.MarkupIncreaseDelayHours
-	if delay < 1 {
-		delay = 24
-	}
 	next.PendingCostFactorAt = now + int64(delay)*3600
 	kept := *previous.CostFactor
 	next.CostFactor = &kept
@@ -172,23 +169,19 @@ func HoldGlobalCostFactorIncrease(next, previous *ResellerSetting, now int64) bo
 }
 
 // HoldMinCostFactorIncrease keeps the current floor when the requested floor is
-// higher, and records the higher floor to take effect after the same delay as
-// a global d increase. A lower or equal floor applies immediately.
+// higher and a positive delay is configured. Delay <= 0 applies immediately.
 func HoldMinCostFactorIncrease(next, previous *ResellerSetting, now int64) bool {
 	if next == nil || previous == nil || next.MinCostFactor == nil || previous.MinCostFactor == nil {
 		return false
 	}
-	if *next.MinCostFactor <= *previous.MinCostFactor {
+	delay := next.MarkupIncreaseDelayHours
+	if *next.MinCostFactor <= *previous.MinCostFactor || delay <= 0 {
 		next.PendingMinCostFactor = nil
 		next.PendingMinCostFactorAt = 0
 		return false
 	}
 	pending := *next.MinCostFactor
 	next.PendingMinCostFactor = &pending
-	delay := next.MarkupIncreaseDelayHours
-	if delay < 1 {
-		delay = 24
-	}
 	next.PendingMinCostFactorAt = now + int64(delay)*3600
 	kept := *previous.MinCostFactor
 	next.MinCostFactor = &kept
@@ -328,9 +321,6 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 		if touches("turnstile_widgets") && (strings.TrimSpace(widget.Id) == "" || strings.TrimSpace(widget.SiteKey) == "") {
 			return common.NewMessage("Each Turnstile widget needs an ID and a site key")
 		}
-	}
-	if touches("enabled", "cost_factor", "min_cost_factor") && s.Enabled && !s.ResellerMoneyConfigured() {
-		return common.NewMessage("Set the supply cost factor and its minimum before turning reseller sites on")
 	}
 	if touches("enabled", "root_domains") && s.Enabled && len(s.RootDomains) == 0 {
 		return common.NewMessage("Add at least one root domain before turning reseller sites on")

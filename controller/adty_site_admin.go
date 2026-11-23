@@ -790,6 +790,7 @@ type adtyResellerSettingsView struct {
 	SettingsWarnings         []string          `json:"settings_warnings"`
 	ResendConfigured         bool              `json:"resend_configured"`
 	MoneyConfigured          bool              `json:"money_configured"`
+	TierConfigured           bool              `json:"tier_configured"`
 	SiteAgreementVersion     int               `json:"site_agreement_version"`
 	SiteCustomerTermsVersion int               `json:"site_customer_terms_version"`
 }
@@ -869,6 +870,11 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	hasTier, err := service.HasReadyAdtySiteTier(model.DB)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	warnings := append(adtyResellerSettingsWarnings(&cfg), adtyClearedSecretWarnings()...)
 	view := adtyResellerSettingsView{
 		FieldVersions:             versions,
@@ -880,7 +886,8 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		TurnstileConfigured:       cfg.TurnstileConfigured(),
 		SettingsWarnings:          warnings,
 		ResendConfigured:          adtyResendConfigured(),
-		MoneyConfigured:           cfg.ResellerMoneyConfigured(),
+		MoneyConfigured:           hasTier,
+		TierConfigured:            hasTier,
 		SiteAgreementVersion:      adty_setting.GetLegalSetting().SiteAgreementVersion,
 		SiteCustomerTermsVersion:  adty_setting.GetLegalSetting().SiteCustomerTermsVersion,
 	}
@@ -1051,6 +1058,15 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		}
 		if err := adty_setting.ValidateResellerPatch(&next, adtyResendConfigured(), values); err != nil {
 			return err
+		}
+		if next.Enabled {
+			hasTier, err := service.HasReadyAdtySiteTier(tx)
+			if err != nil {
+				return err
+			}
+			if !hasTier {
+				return common.NewMessage("Configure at least one enabled site level with a supply discount before turning reseller sites on")
+			}
 		}
 		if _, changed := values["cost_factor"]; changed {
 			heldCostIncrease = adty_setting.HoldGlobalCostFactorIncrease(&next, &current, nowUnix)

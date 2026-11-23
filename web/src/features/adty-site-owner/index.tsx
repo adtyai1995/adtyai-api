@@ -34,7 +34,6 @@ import { DraftNavigationProvider } from '@/features/system-settings/components/d
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getOwnerSite, siteOwnerKeys } from './api'
-import { AgreementPanel } from './components/agreement-panel'
 import { ArchivedAccountsPanel } from './components/archived-accounts-panel'
 import { BonusPanel } from './components/bonus-panel'
 import { CommissionWithdrawalPanel } from './components/commission-withdrawal-panel'
@@ -50,7 +49,6 @@ import { SettlementSheetPanel } from './components/settlement-sheet-panel'
 import { SiteReferralPanel } from './components/site-referral-panel'
 import { SiteSettingsPanel } from './components/site-settings-panel'
 import { StaffPanel } from './components/staff-panel'
-import { TermsAcceptPanel } from './components/terms-accept-panel'
 import { VoucherPanel } from './components/voucher-panel'
 import { WalletLedgerPanel } from './components/wallet-ledger-panel'
 import { WithdrawalPanel } from './components/withdrawal-panel'
@@ -69,13 +67,12 @@ export function SiteOwnerCenter(props: {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.auth.user)
-  const termsRequired = user?.site_terms_required === true
   // Tickets and teams have their own sidebar entries and render without the owner-center tabs.
   const standalone = SITE_OWNER_STANDALONE_SECTIONS.includes(props.section)
   const site = useQuery({
     queryKey: siteOwnerKeys.site,
     queryFn: getOwnerSite,
-    enabled: !termsRequired && props.section !== 'history',
+    enabled: props.section !== 'history',
   })
   const labels: Record<SiteOwnerSectionId, string> = {
     overview: t('Overview'),
@@ -104,13 +101,8 @@ export function SiteOwnerCenter(props: {
             {standalone ? labels[props.section] : t('Site owner center')}
           </SectionPageLayout.Title>
           <SectionPageLayout.Content>
-            {termsRequired && (
-              <TermsAcceptPanel version={user?.site_terms_version ?? ''} />
-            )}
-            {!termsRequired && site.isLoading && (
-              <Skeleton className='h-40 w-full' />
-            )}
-            {!termsRequired && site.isError && (
+            {site.isLoading && <Skeleton className='h-40 w-full' />}
+            {site.isError && (
               <ErrorState
                 className='min-h-48'
                 onRetry={() => void site.refetch()}
@@ -143,7 +135,7 @@ export function SiteOwnerCenter(props: {
                 {props.section === 'teams' && <OwnerTeamAdmin />}
                 {!standalone && (
                 <Tabs
-                  value={props.section}
+                  value={props.section === 'agreement' ? 'overview' : props.section}
                   onValueChange={(value) =>
                     void navigate({
                       to: '/site-owner/$section',
@@ -159,6 +151,7 @@ export function SiteOwnerCenter(props: {
                   >
                     {SITE_OWNER_SECTIONS.filter(
                       (section) =>
+                        section !== 'agreement' &&
                         (section !== 'history' || user?.adty_archived_site_owner) &&
                         !SITE_OWNER_STANDALONE_SECTIONS.includes(section)
                     ).map((section) => (
@@ -254,9 +247,6 @@ export function SiteOwnerCenter(props: {
                   <TabsContent value='notices'>
                     <NotificationManager mode='owner' siteId={site.data.id} />
                     <TelegramBindCard purpose='admin' />
-                  </TabsContent>
-                  <TabsContent value='agreement'>
-                    <AgreementPanel site={site.data} />
                   </TabsContent>
                 </Tabs>
                 )}

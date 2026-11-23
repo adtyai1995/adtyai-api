@@ -120,23 +120,19 @@ func AdtySiteMarkup(userId int, group, modelName string) decimal.Decimal {
 	return ResolveAdtySiteMarkup(prices, userId, group, modelName)
 }
 
-// AdtySiteCostFactor 是站点当前的供货倍率：单站设的值 → 业绩档位 → 全局；低于 min_cost_factor 时用下限。
-// 供货倍率是正的乘数，可以小于或大于 1。全局值没设时返回 false（这时分站功能本来就打不开）。
+// AdtySiteCostFactor 是站点当前的供货折扣：单站覆盖 → 分站等级供货折扣（历史无等级行才回退旧全局值）。
 func AdtySiteCostFactor(site *model.AdtySite) (decimal.Decimal, bool) {
 	cfg := resellerSetting()
 	var d decimal.Decimal
 	switch {
 	case site != nil && site.CostFactor != nil:
 		d = *site.CostFactor
-	case site != nil && site.TierCostFactor != nil && (len(cfg.CostFactorTiers) > 0 || site.TierCode != ""):
+	case site != nil && site.TierCostFactor != nil:
 		d = *site.TierCostFactor
 	case cfg.CostFactor != nil:
 		d = decimal.NewFromFloat(*cfg.CostFactor)
 	default:
 		return decimal.Zero, false
-	}
-	if cfg.MinCostFactor != nil {
-		d = decimal.Max(d, decimal.NewFromFloat(*cfg.MinCostFactor))
 	}
 	if !d.IsPositive() {
 		return decimal.Zero, false
@@ -848,76 +844,9 @@ func ApplyDueAdtySiteMarkups(now int64) (int64, error) {
 	return changed, nil
 }
 
-// AssignAdtySiteCostTiers 按上个月每个站的客户消费额取档（cost_factor_tiers 设了才启用），写进 TierCostFactor。
-// revenue 是「站点 id → 上月客户消费额（美元）」，由 11.5 的日汇总算出；month 形如 2026-10。
-// 返回 d 变了的站，由调用方通知站长。
+// AssignAdtySiteCostTiers is retired: supply discounts are governed by site levels (AdtySiteTier).
 func AssignAdtySiteCostTiers(month string, revenue map[int]decimal.Decimal) ([]model.AdtySite, error) {
-	tiers := resellerSetting().CostFactorTiers
-	if len(tiers) == 0 {
-		return nil, nil
-	}
-	var sites []model.AdtySite
-	if err := model.DB.Where("status IN ?", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).
-		Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").Where("tier_month IS NULL OR tier_month <> ?", month).Find(&sites).Error; err != nil {
-		return nil, err
-	}
-	var changed []model.AdtySite
-	for _, site := range sites {
-		amount := revenue[site.Id]
-		var picked *decimal.Decimal
-		best := decimal.NewFromInt(-1)
-		for _, tier := range tiers {
-			threshold := decimal.NewFromFloat(tier.MinMonthlyUSD)
-			if threshold.LessThanOrEqual(amount) && threshold.GreaterThan(best) {
-				best = threshold
-				factor := decimal.NewFromFloat(tier.CostFactor)
-				picked = &factor
-			}
-		}
-		current, hasCurrent := AdtySiteCostFactor(&site)
-		raise := picked != nil && hasCurrent && picked.GreaterThan(current)
-		updates := map[string]any{"tier_month": month}
-		if raise {
-			delay := resellerSetting().MarkupIncreaseDelayHours
-			if delay < 1 {
-				delay = 24
-			}
-			pendingAt := time.Now().Unix() + int64(delay)*3600
-			updates["pending_tier_cost_factor"] = *picked
-			updates["pending_tier_cost_factor_at"] = pendingAt
-		} else {
-			if picked == nil {
-				updates["tier_cost_factor"] = nil
-			} else {
-				updates["tier_cost_factor"] = *picked
-			}
-			updates["pending_tier_cost_factor"] = gorm.Expr("NULL")
-			updates["pending_tier_cost_factor_at"] = 0
-		}
-		updated := model.DB.Model(&model.AdtySite{}).Where("id = ?", site.Id).
-			Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").
-			Where("tier_month IS NULL OR tier_month <> ?", month).Updates(updates)
-		if updated.Error != nil {
-			return nil, updated.Error
-		}
-		if updated.RowsAffected == 0 {
-			continue
-		}
-		if raise {
-			notice := site
-			notice.PendingCostFactor = picked
-			notice.PendingCostFactorAt = updates["pending_tier_cost_factor_at"].(int64)
-			adtyNotifySiteCostFactorPending(&notice)
-			continue
-		}
-		before := site.TierCostFactor
-		if (before == nil) != (picked == nil) || (before != nil && picked != nil && !before.Equal(*picked)) {
-			site.TierCostFactor, site.TierMonth = picked, month
-			changed = append(changed, site)
-		}
-	}
-	InvalidateAdtySiteCache()
-	return changed, nil
+	return nil, nil
 }
 
 // AdtyStampTaskSiteBilling 在任务提交时把这次请求的完整 G.2-11 快照和兼容 k、d 写进 BillingContext。
@@ -1035,31 +964,9 @@ func adtySiteMonthRevenue(month string) (map[int]decimal.Decimal, error) {
 	return revenue, nil
 }
 
-// RunAdtySiteCostTierAssignment 按上个月已记账消费给还没算过那个月的站分档。没有档位时什么都不写。
+// RunAdtySiteCostTierAssignment is retired: supply discounts are governed by site levels (AdtySiteTier).
 func RunAdtySiteCostTierAssignment(now time.Time) error {
-	if len(resellerSetting().CostFactorTiers) == 0 {
-		return nil
-	}
-	loc, _, err := loadAdtyBusinessLocation()
-	if err != nil {
-		return err
-	}
-	local := now.In(loc)
-	month := time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, -1, 0).Format("2006-01")
-	var pending int64
-	err = model.DB.Model(&model.AdtySite{}).
-		Where("(tier_mode = '' OR tier_mode IS NULL) AND (tier_code = '' OR tier_code IS NULL)").
-		Where("status IN ? AND (tier_month <> ? OR tier_month IS NULL)", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}, month).
-		Count(&pending).Error
-	if err != nil || pending == 0 {
-		return err
-	}
-	revenue, err := adtySiteMonthRevenue(month)
-	if err != nil {
-		return err
-	}
-	_, err = AssignAdtySiteCostTiers(month, revenue)
-	return err
+	return nil
 }
 
 // startAdtySiteCostTierTask 在主节点每小时检查一次：上个月还没分档的站，按已记账消费补算。

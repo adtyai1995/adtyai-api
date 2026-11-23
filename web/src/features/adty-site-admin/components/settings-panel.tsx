@@ -43,15 +43,12 @@ import {
 import {
   buildResellerUpdate,
   cloudflareReady,
-  missingMoneyKeys,
   mergeResellerDrafts,
   newRowKey,
-  MONEY_KEYS,
   RULE_KEYS,
   SWITCH_KEYS,
   toResellerDrafts,
   VISIBILITY_KEYS,
-  type MoneyKey,
   type ResellerDrafts,
   type RuleKey,
   type SwitchKey,
@@ -188,25 +185,15 @@ export function SettingsPanel(props: {
       (baseline.field_versions?.[key] ?? '')
   )
 
-  const missingMoney = missingMoneyKeys(drafts)
+  const tierReady = Boolean(saved.tier_configured ?? saved.money_configured)
   const rootsSet = drafts.root_domains.trim() !== ''
-  const canEnable = missingMoney.length === 0 && rootsSet
+  const canEnable = tierReady && rootsSet
   const cfReady = cloudflareReady(saved, drafts)
 
-  const moneyLabels: Record<MoneyKey, string> = {
-    cost_factor: t('Default cost factor d (fallback, greater than 0)'),
-    min_cost_factor: t('Minimum cost factor floor'),
-  }
-  const moneyHints: Record<MoneyKey, string> = {
-    cost_factor: t(
-      'Supply cost = main site standard price × d (e.g. 0.8 = 80%). Site levels override this default.'
-    ),
-    min_cost_factor: t(
-      'Hard floor across all site levels and single-site overrides; must be <= default cost factor.'
-    ),
-  }
   const ruleLabels: Record<RuleKey, string> = {
-    markup_increase_delay_hours: t('Supply cost increase delay (hours)'),
+    markup_increase_delay_hours: t(
+      'Supply price increase delay (hours, 0 = immediate)'
+    ),
     close_notice_days: t('Close notice days'),
     fingerprint_window_days: t('Fingerprint window (days)'),
     customer_lookup_per_hour: t('Customer lookups per hour'),
@@ -228,8 +215,10 @@ export function SettingsPanel(props: {
   }
 
   let enableHint: string | undefined
-  if (missingMoney.length > 0) {
-    enableHint = t('Set every money setting marked Not configured first.')
+  if (!tierReady) {
+    enableHint = t(
+      'Add at least one enabled site level with a supply discount below first.'
+    )
   } else if (!rootsSet) {
     enableHint = t('Add at least one root domain first.')
   }
@@ -311,106 +300,6 @@ export function SettingsPanel(props: {
             </div>
           )}
         </div>
-      )}
-
-      {props.section === 'supply' && (
-        <fieldset className='grid gap-4 sm:grid-cols-2'>
-          <legend className='mb-2 text-sm font-medium'>{t('Money')}</legend>
-          {MONEY_KEYS.map((key) => (
-            <TextField
-              key={key}
-              type='number'
-              required
-              label={moneyLabels[key]}
-              value={drafts[key]}
-              disabled={disabled}
-              onChange={(value) => set(key, value)}
-            >
-              <p className='text-muted-foreground text-xs'>{moneyHints[key]}</p>
-            </TextField>
-          ))}
-          <details
-            open={drafts.tiers.length > 0}
-            className='rounded-lg border p-3 sm:col-span-2'
-          >
-            <summary className='cursor-pointer text-sm font-medium'>
-              {t(
-                'Legacy fallback: cost factor tiers by last month customer spend (optional)'
-              )}
-            </summary>
-            <div className='mt-3 space-y-2'>
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Only applies to sites with no site level assigned. Leave empty if you manage cost factors via Site levels below.'
-                )}
-              </p>
-              {drafts.tiers.map((tier, index) => (
-                <div key={tier.key} className='flex items-end gap-2'>
-                  <TextField
-                    type='number'
-                    label={t('From (USD per month)')}
-                    value={tier.min_monthly_usd}
-                    disabled={disabled}
-                    onChange={(value) =>
-                      set(
-                        'tiers',
-                        drafts.tiers.map((item, i) =>
-                          i === index
-                            ? { ...item, min_monthly_usd: value }
-                            : item
-                        )
-                      )
-                    }
-                  />
-                  <TextField
-                    type='number'
-                    label={t('Cost factor')}
-                    value={tier.cost_factor}
-                    disabled={disabled}
-                    onChange={(value) =>
-                      set(
-                        'tiers',
-                        drafts.tiers.map((item, i) =>
-                          i === index ? { ...item, cost_factor: value } : item
-                        )
-                      )
-                    }
-                  />
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='icon'
-                    disabled={disabled}
-                    aria-label={t('Remove tier {{n}}', { n: index + 1 })}
-                    onClick={() =>
-                      set(
-                        'tiers',
-                        drafts.tiers.filter((_, i) => i !== index)
-                      )
-                    }
-                  >
-                    <Trash2 aria-hidden />
-                  </Button>
-                </div>
-              ))}
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                disabled={disabled}
-                onClick={() =>
-                  set('tiers', [
-                    ...drafts.tiers,
-                    { key: newRowKey(), min_monthly_usd: '', cost_factor: '' },
-                  ])
-                }
-              >
-                <Plus aria-hidden />
-                {t('Add tier')}
-              </Button>
-            </div>
-          </details>
-        </fieldset>
       )}
 
       {props.section === 'domains' && (
@@ -789,9 +678,8 @@ export function SettingsPanel(props: {
       </details>
       <p className='text-muted-foreground text-xs'>
         {t(
-          'Site agreement version {{agreement}}, site customer terms version {{terms}}. Edit them under System Settings > Content.',
+          'Site customer terms version {{terms}}. Edit it under System Settings > Content.',
           {
-            agreement: saved.site_agreement_version,
             terms: saved.site_customer_terms_version,
           }
         )}
