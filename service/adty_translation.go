@@ -17,7 +17,10 @@ import (
 	"gorm.io/gorm"
 )
 
-const AdtyTranslationNotReady = "英文译文未就绪"
+const (
+	AdtyTranslationNotReady      = "英文译文未就绪"
+	adtyTranslationLeaseDuration = 5 * time.Minute
+)
 
 var (
 	ErrAdtyTranslationInvalid = common.NewMessage("Invalid parameters")
@@ -291,6 +294,7 @@ func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslatio
 		if lookup.RowsAffected > 0 {
 			version = head.Version + 1
 		}
+		leaseUntil := time.Now().Add(adtyTranslationLeaseDuration).Unix()
 		head.ObjectKey = objectKey
 		head.SiteId = siteId
 		head.Version = version
@@ -301,6 +305,7 @@ func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslatio
 		head.HumanEdited = false
 		head.ModelName = ""
 		head.Notice = AdtyTranslationNotReady
+		head.LeaseUntil = leaseUntil
 		if lookup.RowsAffected == 0 {
 			if err := tx.Create(&head).Error; err != nil {
 				return err
@@ -316,6 +321,7 @@ func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslatio
 				"human_edited": false,
 				"model_name":   "",
 				"notice":       AdtyTranslationNotReady,
+				"lease_until":  leaseUntil,
 			}).Error; err != nil {
 				return err
 			}
@@ -417,6 +423,7 @@ func executeAdtyReservedTranslation(objectKey, source string, siteId, version in
 		current.Status = model.AdtyTranslationReady
 		current.ModelName = modelName
 		current.Notice = ""
+		current.LeaseUntil = 0
 		if err := tx.Save(&current).Error; err != nil {
 			return err
 		}
@@ -463,6 +470,8 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 	}
 	var head model.AdtyTranslationHead
 	var reused *AdtyTranslationResult
+	var blocked *AdtyTranslationResult
+	isTicketReply := strings.HasPrefix(objectKey, "ticket-reply:")
 	err := withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).First(&head).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -476,7 +485,12 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 		if head.HumanEdited || head.Version != version {
 			return ErrAdtyTranslationInvalid
 		}
-		if strings.HasPrefix(objectKey, "ticket-reply:") && head.Status == model.AdtyTranslationPending {
+		now := time.Now().Unix()
+		if isTicketReply && head.Status == model.AdtyTranslationPending {
+			reused = &AdtyTranslationResult{ObjectKey: head.ObjectKey, Source: head.Source, Version: head.Version, Status: head.Status, Notice: head.Notice, Reused: true}
+			return nil
+		}
+		if !isTicketReply && head.Status == model.AdtyTranslationPending && head.LeaseUntil > now {
 			reused = &AdtyTranslationResult{ObjectKey: head.ObjectKey, Source: head.Source, Version: head.Version, Status: head.Status, Notice: head.Notice, Reused: true}
 			return nil
 		}
@@ -495,11 +509,44 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 			sum := sha256.Sum256([]byte(head.Source))
 			head.SourceHash = hex.EncodeToString(sum[:])
 		}
+		if adtyTextHasSecret(head.Source) {
+			if err := tx.Model(&head).Updates(map[string]any{
+				"source_hash": head.SourceHash,
+				"english":     "",
+				"status":      model.AdtyTranslationFailed,
+				"notice":      AdtyTranslationNotReady,
+				"lease_until": 0,
+			}).Error; err != nil {
+				return err
+			}
+			if err := upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
+				ObjectKey:  objectKey,
+				Version:    version,
+				SourceHash: head.SourceHash,
+				Status:     model.AdtyTranslationFailed,
+				ModelName:  head.ModelName,
+				FinishedAt: now,
+			}); err != nil {
+				return err
+			}
+			blocked = &AdtyTranslationResult{
+				ObjectKey: objectKey,
+				Source:    head.Source,
+				Status:    model.AdtyTranslationFailed,
+				Notice:    AdtyTranslationNotReady,
+				Version:   version,
+			}
+			return nil
+		}
+		leaseUntil := int64(0)
+		if !isTicketReply {
+			leaseUntil = time.Now().Add(adtyTranslationLeaseDuration).Unix()
+		}
 		if err := tx.Model(&head).Updates(map[string]any{
 			"source_hash": head.SourceHash,
 			"status":      model.AdtyTranslationPending,
 			"notice":      AdtyTranslationNotReady,
-			"lease_until": 0,
+			"lease_until": leaseUntil,
 		}).Error; err != nil {
 			return err
 		}
@@ -517,46 +564,14 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 	if reused != nil {
 		return reused, nil
 	}
+	if blocked != nil {
+		return blocked, nil
+	}
 
-	if strings.HasPrefix(objectKey, "ticket-reply:") {
+	if isTicketReply {
 		return &AdtyTranslationResult{ObjectKey: objectKey, Source: head.Source, Version: version, Status: model.AdtyTranslationPending, Notice: AdtyTranslationNotReady}, nil
 	}
-	cfg, err := loadAdtyTranslationConfig()
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fallbackAdtyTranslation(objectKey, head.Source, head.SiteId, version, head.SourceHash, "")
-		}
-		return nil, err
-	}
-	if !cfg.Enabled || (cfg.MaxChars > 0 && len([]rune(head.Source)) > cfg.MaxChars) {
-		return fallbackAdtyTranslation(objectKey, head.Source, head.SiteId, version, head.SourceHash, "")
-	}
-	english, modelName, callErr := translateWithBackup(cfg, head.Source)
-	if callErr != nil {
-		return fallbackAdtyTranslation(objectKey, head.Source, head.SiteId, version, head.SourceHash, modelName)
-	}
-	if err := CompleteAdtyTranslationJob(objectKey, version, english); err != nil {
-		return fallbackAdtyTranslation(objectKey, head.Source, head.SiteId, version, head.SourceHash, modelName)
-	}
-	_ = withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
-		_ = tx.Model(&model.AdtyTranslationHead{}).Where("object_key = ? AND version = ?", objectKey, version).Update("model_name", modelName).Error
-		_ = upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
-			ObjectKey:  objectKey,
-			Version:    version,
-			SourceHash: head.SourceHash,
-			Status:     model.AdtyTranslationReady,
-			ModelName:  modelName,
-			FinishedAt: time.Now().Unix(),
-		})
-		return tx.Model(&model.AdtyTranslationConfig{}).Where("id = ?", 1).Update("translated_at", time.Now().Unix()).Error
-	})
-	return &AdtyTranslationResult{
-		ObjectKey: objectKey,
-		Source:    head.Source,
-		English:   english,
-		Status:    model.AdtyTranslationReady,
-		Version:   version,
-	}, nil
+	return executeAdtyReservedTranslation(objectKey, head.Source, head.SiteId, version, head.SourceHash)
 }
 
 // ListAdtyTranslationTasks lists current translation heads with their job metadata.
@@ -621,9 +636,10 @@ func CompleteAdtyTranslationJob(objectKey string, version int, english string) e
 			return ErrAdtyTranslationInvalid
 		}
 		if err := tx.Model(&head).Updates(map[string]any{
-			"english": english,
-			"status":  model.AdtyTranslationReady,
-			"notice":  "",
+			"english":     english,
+			"status":      model.AdtyTranslationReady,
+			"notice":      "",
+			"lease_until": 0,
 		}).Error; err != nil {
 			return err
 		}
@@ -654,6 +670,7 @@ func EditAdtyTranslation(objectKey, english string) error {
 			"human_edited": true,
 			"status":       model.AdtyTranslationReady,
 			"notice":       "",
+			"lease_until":  0,
 		}).Error
 	})
 }
@@ -688,15 +705,16 @@ func loadAdtyTranslationConfig() (*model.AdtyTranslationConfig, error) {
 }
 
 func rejectAdtyTranslationSelf(baseURL, requestHost, token string) error {
-	parsed, err := url.Parse(baseURL)
-	if err != nil || parsed.Host == "" || parsed.Scheme != "https" {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Host == "" || parsed.User != nil || !strings.EqualFold(parsed.Scheme, "https") {
 		return ErrAdtyTranslationSelf
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.EqualFold(host, requestHost) || adtyTranslationTargetIsSelf(host) {
+	host := strings.Trim(AdtyNormalizeHost(parsed.Host), "[]")
+	reqHost := strings.Trim(AdtyNormalizeHost(requestHost), "[]")
+	if host == "" || (reqHost != "" && host == reqHost) || adtyTranslationTargetIsSelf(parsed.Host) {
 		return ErrAdtyTranslationSelf
 	}
-	if strings.Contains(strings.ToLower(parsed.Path), "/v1/") && strings.EqualFold(host, requestHost) {
+	if err := validateURLWithCurrentFetchSetting(parsed.String(), false); err != nil {
 		return ErrAdtyTranslationSelf
 	}
 	return rejectAdtyCustomerToken(token)
@@ -706,13 +724,64 @@ func rejectAdtyCustomerToken(token string) error {
 	return rejectAdtyCustomerTokenWithDB(model.DB, token)
 }
 
+func normalizeAdtyCustomerTokenCandidates(raw string) []string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	candidates := make([]string, 0, 4)
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == v {
+				return
+			}
+		}
+		candidates = append(candidates, v)
+	}
+	stripChannelSuffix := func(v string) string {
+		idx := strings.LastIndex(v, "-")
+		if idx <= 0 || idx >= len(v)-1 {
+			return v
+		}
+		suffix := v[idx+1:]
+		for i := 0; i < len(suffix); i++ {
+			if suffix[i] < '0' || suffix[i] > '9' {
+				return v
+			}
+		}
+		return v[:idx]
+	}
+	add(trimmed)
+	add(stripChannelSuffix(trimmed))
+	if len(trimmed) > 3 && strings.EqualFold(trimmed[:3], "sk-") {
+		stripped := trimmed[3:]
+		add(stripped)
+		add(stripChannelSuffix(stripped))
+	}
+	return candidates
+}
+
 func rejectAdtyCustomerTokenWithDB(db *gorm.DB, token string) error {
 	token = strings.TrimSpace(token)
-	if token == "" || db == nil || !db.Migrator().HasTable(&model.Token{}) {
+	if token == "" {
+		return nil
+	}
+	if len(token) >= 4 && strings.EqualFold(token[:4], "pat-") {
+		return ErrAdtyTranslationSelf
+	}
+	if db == nil || !db.Migrator().HasTable(&model.Token{}) {
+		return nil
+	}
+	candidates := normalizeAdtyCustomerTokenCandidates(token)
+	if len(candidates) == 0 {
 		return nil
 	}
 	var count int64
-	if err := db.Model(&model.Token{}).Where("key = ?", token).Count(&count).Error; err != nil {
+	if err := db.Unscoped().Model(&model.Token{}).Where("key IN ?", candidates).Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {
@@ -976,6 +1045,7 @@ func fallbackAdtyTranslation(objectKey, source string, siteId, version int, hash
 			"status":      model.AdtyTranslationFailed,
 			"notice":      AdtyTranslationNotReady,
 			"model_name":  modelName,
+			"lease_until": 0,
 		}).Error
 	})
 	if err != nil {

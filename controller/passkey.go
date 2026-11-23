@@ -43,6 +43,10 @@ func parsePasskeyFinishRequest(c *gin.Context) (*passkeyFinishRequest, error) {
 }
 
 func PasskeyRegisterBegin(c *gin.Context) {
+	if service.AdtySiteForRequest(c) != nil {
+		common.ApiErrorT(c, "Passkey authentication is disabled.")
+		return
+	}
 	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		common.ApiErrorT(c, "Passkey authentication is disabled.")
 		return
@@ -116,6 +120,10 @@ func PasskeyRegisterBegin(c *gin.Context) {
 }
 
 func PasskeyRegisterFinish(c *gin.Context) {
+	if service.AdtySiteForRequest(c) != nil {
+		common.ApiErrorT(c, "Passkey authentication is disabled.")
+		return
+	}
 	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		common.ApiErrorT(c, "Passkey authentication is disabled.")
 		return
@@ -204,6 +212,10 @@ func PasskeyRegisterFinish(c *gin.Context) {
 }
 
 func PasskeyDelete(c *gin.Context) {
+	if service.AdtySiteForRequest(c) != nil {
+		common.ApiErrorT(c, "Passkey authentication is disabled.")
+		return
+	}
 	user, err := getAuthenticatedUser(c)
 	if err != nil {
 		writeSecurityOperationError(c, err)
@@ -234,6 +246,16 @@ func PasskeyDelete(c *gin.Context) {
 }
 
 func PasskeyStatus(c *gin.Context) {
+	if service.AdtySiteForRequest(c) != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data": gin.H{
+				"enabled": false,
+			},
+		})
+		return
+	}
 	user, err := getAuthenticatedUser(c)
 	if err != nil {
 		writeSecurityOperationError(c, err)
@@ -435,9 +457,9 @@ func AdminResetPasskey(c *gin.Context) {
 		return
 	}
 
-	user := &model.User{Id: id}
-	if err := user.FillUserById(); err != nil {
-		writeSecurityOperationError(c, err)
+	user, err := model.GetUserById(id, false)
+	if err != nil {
+		common.ApiErrorT(c, "User does not exist")
 		return
 	}
 	myRole := c.GetInt("role")
@@ -477,6 +499,10 @@ func AdminResetPasskey(c *gin.Context) {
 }
 
 func PasskeyVerifyBegin(c *gin.Context) {
+	if service.AdtySiteForRequest(c) != nil {
+		common.ApiErrorT(c, "Passkey authentication is disabled.")
+		return
+	}
 	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		common.ApiErrorT(c, "Passkey authentication is disabled.")
 		return
@@ -553,6 +579,10 @@ func PasskeyVerifyBegin(c *gin.Context) {
 }
 
 func PasskeyVerifyFinish(c *gin.Context) {
+	if service.AdtySiteForRequest(c) != nil {
+		common.ApiErrorT(c, "Passkey authentication is disabled.")
+		return
+	}
 	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		common.ApiErrorT(c, "Passkey authentication is disabled.")
 		return

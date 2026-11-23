@@ -137,7 +137,11 @@ func PostAdtyOwnerSiteTeamBalance(c *gin.Context) {
 		}
 		idemKey = hdr
 	}
-	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionTeamBalance, int(id)) {
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionTeamBalance, int(id), service.AdtyOwnerBalanceCreditDigestInput{
+		AmountUSD:      amount.String(),
+		Reason:         body.Reason,
+		IdempotencyKey: idemKey,
+	}) {
 		return
 	}
 	res, err := service.CreditAdtySiteTeamBalanceByOwner(site.Id, c.GetInt("id"), id, amount, body.Reason, idemKey)
@@ -561,13 +565,21 @@ func PostAdtyTeamRegistrationComplete(c *gin.Context) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		Name     string `json:"name"`
-		SiteId   *int   `json:"site_id"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	created, err := service.CompleteAdtyTeamRegistration(body.Code, body.Username, body.Password, body.Name, body.SiteId)
+	// R1-021: Never trust a client-supplied site_id; derive from trusted request Host.
+	trustedSiteID := 0
+	if site := service.AdtySiteForRequest(c); site != nil {
+		if site.Status != model.AdtySiteStatusActive {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Site is not open for registration"))
+			return
+		}
+		trustedSiteID = site.Id
+	}
+	created, err := service.CompleteAdtyTeamRegistration(body.Code, body.Username, body.Password, body.Name, &trustedSiteID)
 	if err != nil {
 		common.ApiError(c, err)
 		return

@@ -20,38 +20,11 @@ const (
 )
 
 func clonePriceData(price hosttypes.PriceData) hosttypes.PriceData {
-	out := hosttypes.PriceData{
-		FreeModel:            price.FreeModel,
-		ModelPrice:           price.ModelPrice,
-		ModelRatio:           price.ModelRatio,
-		CompletionRatio:      price.CompletionRatio,
-		CacheRatio:           price.CacheRatio,
-		CacheCreationRatio:   price.CacheCreationRatio,
-		ImageRatio:           price.ImageRatio,
-		AudioRatio:           price.AudioRatio,
-		AudioCompletionRatio: price.AudioCompletionRatio,
-		UsePrice:             price.UsePrice,
-		Quota:                price.Quota,
-		QuotaToPreConsume:    price.QuotaToPreConsume,
-		GroupRatioInfo:       price.GroupRatioInfo,
-	}
-	if price.HasBilledModelPrice() {
-		out.SetBilledModelPrice(price.BilledModelPrice())
-	}
-	if price.HasBilledModelRatio() {
-		out.SetBilledModelRatio(price.BilledModelRatio())
-	}
-	if price.HasBilledCompletionRatio() {
-		out.SetBilledCompletionRatio(price.BilledCompletionRatio())
-	}
-	if price.HasBilledAudioRatio() {
-		out.SetBilledAudioRatio(price.BilledAudioRatio())
-	}
-	if price.HasBilledAudioCompletionRatio() {
-		out.SetBilledAudioCompletionRatio(price.BilledAudioCompletionRatio())
-	}
+	out := price
 	if ratios := price.OtherRatios(); len(ratios) > 0 {
 		out.ReplaceOtherRatios(ratios)
+	} else {
+		out.ReplaceOtherRatios(nil)
 	}
 	return out
 }
@@ -146,6 +119,33 @@ func AdtyFreezeRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo)
 	snap := buildRequestPriceSnapshot(c, info)
 	if snap == nil || !snap.HasOfficialFields() {
 		return
+	}
+	c.Set(AdtyPriceSnapshotContextKey, snap)
+}
+
+// AdtyRefreshFrozenPriceSnapshotForGroup refreshes the frozen snapshot and
+// PriceData when auto_group switches to a different billing group on retry,
+// while strictly preserving the original accept-time timestamp (G.2).
+func AdtyRefreshFrozenPriceSnapshotForGroup(c *gin.Context, info *relaycommon.RelayInfo) {
+	if c == nil || info == nil {
+		return
+	}
+	prev := AdtyFrozenPriceSnapshot(c)
+	c.Set(adtyFrozenPriceDataContextKey, clonePriceData(info.PriceData))
+	snap := buildRequestPriceSnapshot(c, info)
+	if snap == nil || !snap.HasOfficialFields() {
+		return
+	}
+	if prev != nil {
+		if prev.AcceptedAt > 0 {
+			snap.AcceptedAt = prev.AcceptedAt
+		}
+		if prev.AcceptedLocal != "" {
+			snap.AcceptedLocal = prev.AcceptedLocal
+		}
+		if prev.BusinessTimezone != "" && snap.BusinessTimezone == "" {
+			snap.BusinessTimezone = prev.BusinessTimezone
+		}
 	}
 	c.Set(AdtyPriceSnapshotContextKey, snap)
 }
@@ -362,6 +362,12 @@ func AdtyReuseFrozenPriceData(c *gin.Context, info *relaycommon.RelayInfo) bool 
 		name = info.OriginModelName
 	}
 	if snap.ModelName != "" && name != "" && snap.ModelName != name && snap.ModelName != info.OriginModelName {
+		return false
+	}
+	if autoGroup := c.GetString("auto_group"); autoGroup != "" && snap.BillingGroup != "" && snap.BillingGroup != autoGroup {
+		return false
+	}
+	if info.UsingGroup != "" && snap.BillingGroup != "" && snap.BillingGroup != info.UsingGroup {
 		return false
 	}
 	if v, exists := c.Get(adtyFrozenPriceDataContextKey); exists {

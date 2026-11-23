@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 // PrepareImageBillingForRequest reserves the effective outbound image quantity
@@ -39,25 +40,31 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 			request.BusinessTimezone = snap.BusinessTimezone
 		}
 		request.ImageCount = &count
-		cost, trace, runErr := billingexpr.RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, billingexpr.TokenParams{
+		_, trace, runErr := billingexpr.RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, billingexpr.TokenParams{
 			P: float64(snap.EstimatedPromptTokens), C: float64(snap.EstimatedCompletionTokens), Len: float64(snap.EstimatedPromptTokens),
 		}, request)
 		if runErr != nil {
 			return types.NewErrorWithStatusCode(runErr, types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
-		beforeGroup := cost / 1_000_000 * snap.QuotaPerUnit
-		if trace.BillingUnit != billingexpr.BillingUnitRequest && snap.PreConsumeMultiplier != 0 {
-			beforeGroup *= snap.PreConsumeMultiplier
+		unitDec := common.QuotaPerUnitDecimal()
+		if snap.QuotaPerUnit != 0 && snap.QuotaPerUnit != float64(common.FixedQuotaPerUnit) {
+			unitDec = decimal.NewFromFloat(snap.QuotaPerUnit)
 		}
-		quota, err = billingexpr.QuotaRoundStrict(beforeGroup * info.PriceData.GroupRatioInfo.GroupRatio)
+		beforeGroupDec := trace.CostDec.Div(decimal.NewFromInt(1_000_000)).Mul(unitDec)
+		if trace.BillingUnit != billingexpr.BillingUnitRequest && snap.PreConsumeMultiplier != 0 {
+			beforeGroupDec = beforeGroupDec.Mul(decimal.NewFromFloat(snap.PreConsumeMultiplier))
+		}
+		groupRatioDec := decimal.NewFromFloat(info.PriceData.GroupRatioInfo.GroupRatio)
+		quota, err = common.QuotaFromDecimalStrict(beforeGroupDec.Mul(groupRatioDec))
 		if err == nil {
 			snap.EstimatedImageCount = trace.ImageCount
-			snap.EstimatedQuotaBeforeGroup = beforeGroup
+			snap.EstimatedQuotaBeforeGroup = beforeGroupDec.InexactFloat64()
 			snap.EstimatedQuotaAfterGroup = quota
 			snap.EstimatedTier = trace.MatchedTier
 			snap.EstimatedBillingUnit = trace.BillingUnit
 			snap.EstimatedFixedPrice = trace.FixedPrice
 			snap.GroupRatio = info.PriceData.GroupRatioInfo.GroupRatio
+			snap.GroupRatioDecimal = groupRatioDec.String()
 		}
 	} else {
 		quantity := 1
@@ -67,11 +74,15 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		// Overwrite the per-attempt ratio so a failed attempt cannot leak its
 		// quantity into another channel.
 		info.PriceData.AddOtherRatio("n", float64(quantity))
-		base := info.ImageQuotaBeforeGroup
+		baseDec := decimal.NewFromFloat(info.ImageQuotaBeforeGroup)
 		if info.PriceData.UsePrice {
-			base = info.PriceData.ModelPrice * common.QuotaPerUnit
+			baseDec = decimal.NewFromFloat(info.PriceData.ModelPrice).Mul(common.QuotaPerUnitDecimal())
 		}
-		quota, err = common.QuotaFromFloatStrict(info.PriceData.ApplyOtherRatiosToFloat(base * info.PriceData.GroupRatioInfo.GroupRatio))
+		totalDec := baseDec.Mul(decimal.NewFromFloat(info.PriceData.GroupRatioInfo.GroupRatio))
+		for _, r := range info.PriceData.OtherRatios() {
+			totalDec = totalDec.Mul(decimal.NewFromFloat(r))
+		}
+		quota, err = common.QuotaFromDecimalStrict(totalDec)
 	}
 	if err != nil {
 		return types.NewErrorWithStatusCode(err, types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())

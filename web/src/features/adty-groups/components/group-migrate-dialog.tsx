@@ -57,11 +57,15 @@ export function GroupMigrateDialog(props: GroupMigrateDialogProps) {
         queryClient.invalidateQueries({ queryKey: groupDisplayQueryKey }),
       ])
       toast.success(
-        t('Moved {{users}} users, {{tokens}} keys and {{channels}} channels', {
-          users: refs.users,
-          tokens: refs.tokens,
-          channels: refs.channels,
-        })
+        t(
+          'Moved {{users}} users, {{tokens}} keys, {{channels}} channels and {{sites}} sites',
+          {
+            users: refs.users,
+            tokens: refs.tokens,
+            channels: refs.channels,
+            sites: refs.sites ?? 0,
+          }
+        )
       )
       setTarget(null)
       props.onOpenChange(false)
@@ -82,7 +86,7 @@ export function GroupMigrateDialog(props: GroupMigrateDialogProps) {
       }}
       title={t('Migrate group')}
       description={t(
-        'Move all users, keys and channels of {{group}} to another group. Then the group can be deleted.',
+        'Move all users, keys, channels and sites of {{group}} to another group. Then the group can be deleted.',
         { group: from ? display.adminLabel(from.id) : '' }
       )}
       contentHeight='auto'

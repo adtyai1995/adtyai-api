@@ -30,7 +30,14 @@ type adtyGroupAdminView struct {
 // 登录：返回全部分组的名字，已删除的也返回，旧日志和旧密钥要显示；
 // usable 表示本人现在能选，visible 表示没删除，两者给下拉框用。
 func GetAdtyGroupDisplay(c *gin.Context) {
-	loggedIn := c.GetInt("id") > 0
+	userID := c.GetInt("id")
+	loggedIn := userID > 0
+	siteID := service.AdtyRequestSiteID(c)
+	if siteID == 0 && loggedIn {
+		if user, err := model.GetUserCache(userID); err == nil && user != nil && user.SiteId > 0 {
+			siteID = user.SiteId
+		}
+	}
 	groups, err := model.ListAdtyGroups(loggedIn)
 	if err != nil {
 		writeAdtyGroupError(c, err)
@@ -39,6 +46,9 @@ func GetAdtyGroupDisplay(c *gin.Context) {
 	usable := service.GetUserUsableGroups(c.GetString("group"))
 	out := make([]adtyGroupDisplay, 0, len(groups))
 	for _, group := range groups {
+		if !service.SiteGroupAllowed(siteID, group.ID) {
+			continue
+		}
 		_, isUsable := usable[group.ID]
 		visible := !group.Deleted()
 		if !loggedIn && !isUsable {
@@ -137,7 +147,7 @@ func UpdateAdtyGroup(c *gin.Context) {
 	common.ApiSuccess(c, updated)
 }
 
-// MigrateAdtyGroup 把一个分组的用户、密钥和渠道全部改到另一个分组，并写审计。
+// MigrateAdtyGroup 把一个分组的用户、密钥、渠道和分站全部改到另一个分组，并写审计。
 func MigrateAdtyGroup(c *gin.Context) {
 	id := c.Param("id")
 	var body struct {
@@ -158,6 +168,7 @@ func MigrateAdtyGroup(c *gin.Context) {
 		"users":    moved.Users,
 		"tokens":   moved.Tokens,
 		"channels": moved.Channels,
+		"sites":    moved.Sites,
 	})
 	common.ApiSuccess(c, moved)
 }
@@ -185,7 +196,7 @@ func writeAdtyGroupError(c *gin.Context, err error) {
 	case errors.Is(err, model.ErrAdtyGroupSameTarget):
 		common.ApiErrorT(c, "Choose a different target group")
 	case errors.Is(err, model.ErrAdtyGroupInUse):
-		common.ApiErrorT(c, "The group is still used by users, keys or channels. Migrate it first")
+		common.ApiErrorT(c, "The group is still used by users, keys, channels or sites. Migrate it first")
 	case errors.Is(err, model.ErrAdtyGroupUndeletable):
 		common.ApiErrorT(c, "The default group cannot be deleted")
 	default:

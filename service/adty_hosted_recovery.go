@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -16,8 +15,24 @@ type AdtyPaymentOrderQuerier interface {
 	Query(context.Context, *model.AdtyTopupOrder) (*model.AdtyPaymentFacts, error)
 }
 
+type adtyVerifiedPaymentClientCtxKey struct{}
+
+func withAdtyVerifiedPaymentClient(ctx context.Context, client *http.Client) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, adtyVerifiedPaymentClientCtxKey{}, client)
+}
+
+func adtyVerifiedPaymentClientFromContext(ctx context.Context) *http.Client {
+	if ctx == nil {
+		return nil
+	}
+	client, _ := ctx.Value(adtyVerifiedPaymentClientCtxKey{}).(*http.Client)
+	return client
+}
+
 var (
-	adtyVerifiedPaymentTLSMu         sync.Mutex
 	adtyHostedRecoveryProviderByName = func(name string) any {
 		return AdtyPaymentProviderByName(name)
 	}
@@ -40,21 +55,7 @@ func queryAdtyHostedPaymentFacts(ctx context.Context, provider AdtyPaymentOrderQ
 	}
 	defer verifiedTransport.CloseIdleConnections()
 
-	adtyVerifiedPaymentTLSMu.Lock()
-	base := GetHttpClient()
-	var prevTransport http.RoundTripper
-	if base != nil {
-		prevTransport = base.Transport
-		base.Transport = verifiedTransport
-	}
-	defer func() {
-		if base != nil {
-			base.Transport = prevTransport
-		}
-		adtyVerifiedPaymentTLSMu.Unlock()
-	}()
-
-	return provider.Query(ctx, ext)
+	return provider.Query(withAdtyVerifiedPaymentClient(ctx, verifiedClient), ext)
 }
 
 // RecoverAdtyHostedPayment shares the callback's transaction and immutable

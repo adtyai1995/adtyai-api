@@ -203,6 +203,9 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("expr compile error: %w", err)
 	}
+	if err := validateExponentNodes(tree.Node); err != nil {
+		return nil, fmt.Errorf("expr compile error: %w", err)
+	}
 	fixedPricing := ast.Find(tree.Node, func(node ast.Node) bool {
 		identifier, ok := node.(*ast.IdentifierNode)
 		return ok && identifier.Value == "fixed"

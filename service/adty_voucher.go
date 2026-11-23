@@ -146,6 +146,8 @@ func adtyVoucherGuessKey(userId int) string {
 	return fmt.Sprintf("%s%d", adtyVoucherGuessKeyPrefix, userId)
 }
 
+var ErrAdtyVoucherForbidden = common.NewMessage("No permission to perform this action")
+
 func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 	input.Reason = strings.TrimSpace(input.Reason)
 	input.Purpose = strings.TrimSpace(input.Purpose)
@@ -169,7 +171,22 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 	tail := code[len(code)-4:]
 	var issued *AdtyVoucherIssued
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		issuer, err := lockAdtyVoucherUser(tx, input.IssuerId)
+		// Canonical lock order: AdtySite -> User(id ASC) -> AdtySiteWallet.
+		var lockedSite *model.AdtySite
+		if input.SiteId > 0 && (input.Purpose == model.AdtyVoucherPurposeSiteMargin || input.Purpose == model.AdtyVoucherPurposeSiteCustomer || input.Purpose == model.AdtyVoucherPurposeSiteOwner) {
+			site, err := lockAdtyVoucherSite(tx, input.SiteId)
+			if err != nil {
+				return err
+			}
+			lockedSite = site
+		}
+		var issuer *model.User
+		if input.Purpose == model.AdtyVoucherPurposeSiteMargin && lockedSite != nil && lockedSite.OwnerUserId > 0 && lockedSite.OwnerUserId < input.IssuerId {
+			if _, err := lockAdtyVoucherUser(tx, lockedSite.OwnerUserId); err != nil {
+				return err
+			}
+		}
+		issuer, err = lockAdtyVoucherUser(tx, input.IssuerId)
 		if err != nil {
 			return err
 		}
@@ -195,7 +212,7 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 		switch input.Purpose {
 		case model.AdtyVoucherPurposeMainUser:
 			if issuer.Role != common.RoleRootUser {
-				return common.NewMessage("No permission to perform this action")
+				return ErrAdtyVoucherForbidden
 			}
 			if input.SiteId != 0 || input.DesignatedOwnerId != 0 || input.Source != "" {
 				return common.NewMessage("Invalid parameters")
@@ -205,14 +222,11 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 				return err
 			}
 		case model.AdtyVoucherPurposeSiteMargin:
-			if issuer.Role != common.RoleRootUser || input.SiteId <= 0 {
+			if issuer.Role != common.RoleRootUser || input.SiteId <= 0 || lockedSite == nil {
 				return common.NewMessage("Invalid parameters")
 			}
-			site, err := lockAdtyVoucherSite(tx, input.SiteId)
-			if err != nil {
-				return err
-			}
-			if site.Status == model.AdtySiteStatusClosed || site.OwnerUserId <= 0 {
+			site := lockedSite
+			if site.Status != model.AdtySiteStatusActive || site.OwnerUserId <= 0 {
 				return common.NewMessage("Invalid parameters")
 			}
 			designatedOwnerID := input.DesignatedOwnerId
@@ -221,8 +235,10 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 			} else if designatedOwnerID != site.OwnerUserId {
 				return common.NewMessage("Invalid parameters")
 			}
-			if _, err := lockAdtyVoucherUser(tx, designatedOwnerID); err != nil {
-				return err
+			if designatedOwnerID > input.IssuerId {
+				if _, err := lockAdtyVoucherUser(tx, designatedOwnerID); err != nil {
+					return err
+				}
 			}
 			row.SourceKind = model.AdtyVoucherSourcePlatform
 			row.TargetSiteId = site.Id
@@ -231,12 +247,12 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 				return err
 			}
 		case model.AdtyVoucherPurposeSiteCustomer, model.AdtyVoucherPurposeSiteOwner:
-			site, err := lockAdtyVoucherSite(tx, input.SiteId)
-			if err != nil {
-				return err
+			if lockedSite == nil {
+				return common.NewMessage("Invalid parameters")
 			}
+			site := lockedSite
 			if site.OwnerUserId != issuer.Id || site.Status != model.AdtySiteStatusActive {
-				return common.NewMessage("No permission to perform this action")
+				return ErrAdtyVoucherForbidden
 			}
 			if input.DesignatedOwnerId != 0 && input.DesignatedOwnerId != site.OwnerUserId {
 				return common.NewMessage("Invalid parameters")
@@ -378,9 +394,10 @@ func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
 	hash := model.AdtyVoucherCodeHash(code)
 	var result *AdtyVoucherRedeemed
 	var credit int64
+	var marginResumedSiteID int
 	var err error
 	for attempt := 0; attempt < adtyVoucherTradeNoAttempts; attempt++ {
-		result, credit, err = redeemAdtyVoucherOnce(userId, hash, attempt)
+		result, credit, marginResumedSiteID, err = redeemAdtyVoucherOnce(userId, hash, attempt)
 		if err == nil {
 			break
 		}
@@ -408,12 +425,18 @@ func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
 	if credit > 0 {
 		model.AdtySyncCreditUserQuotaCache(userId, credit, "voucher redemption")
 	}
+	if marginResumedSiteID > 0 && result != nil && !result.Replayed {
+		if _, resumeErr := ResumePendingAdtyGiftFulfillments(marginResumedSiteID); resumeErr != nil {
+			common.SysError(common.LogText("resume pending gifts after margin voucher redeem failed for site %d: %s", marginResumedSiteID, resumeErr.Error()))
+		}
+	}
 	return result, nil
 }
 
-func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRedeemed, int64, error) {
+func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRedeemed, int64, int, error) {
 	var result *AdtyVoucherRedeemed
 	var credit int64
+	var marginResumedSiteID int
 	var redeemAudit map[string]any
 	var redeemVoucherID int64
 	var redeemSiteID int
@@ -469,6 +492,7 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 			if err := creditAdtyVoucherMarginTx(tx, voucher.TargetSiteId, voucher.AmountUSD, trade); err != nil {
 				return err
 			}
+			marginResumedSiteID = voucher.TargetSiteId
 		} else {
 			before, err := model.AdtyCreditUserQuotaTx(tx, user.Id, voucher.Quota)
 			if err != nil {
@@ -482,15 +506,18 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 				return err
 			}
 			// 币值批次的站点取券的目标站，没有目标站时退回来源站（与下面审计行
-			// 的口径一致）。0 是主站，不是「未知」。
+			// 的口径一致）。主站承接的关站兑换码归入主站（0），且绝不入账原已关站 operating 钱包。
 			batchSite := voucher.TargetSiteId
 			if batchSite == 0 {
 				batchSite = voucher.SourceSiteId
 			}
+			if voucher.InheritedByMain {
+				batchSite = 0
+			}
 			if err := model.CreateAdtyFundBatchesWithSiteTx(tx, user.Id, model.AdtyFundBatchSiteID(batchSite), trade, voucher.Quota, 0); err != nil {
 				return err
 			}
-			if voucher.Purpose == model.AdtyVoucherPurposeSiteCustomer || voucher.Purpose == model.AdtyVoucherPurposeSiteOwner {
+			if !voucher.InheritedByMain && (voucher.Purpose == model.AdtyVoucherPurposeSiteCustomer || voucher.Purpose == model.AdtyVoucherPurposeSiteOwner) {
 				if err := adtyMoveOperatingPrincipalTx(tx, batchSite, voucher.Quota, "principal_credit", "voucher", trade, "operating:voucher:"+trade, false); err != nil {
 					return err
 				}
@@ -520,7 +547,7 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 			redeemAudit,
 			model.AuditResultSuccess)
 	}
-	return result, credit, err
+	return result, credit, marginResumedSiteID, err
 }
 
 func loadAdtyVoucherRedeemReplay(userId int, hash string) (*AdtyVoucherRedeemed, error) {
@@ -628,15 +655,57 @@ func LoadAdtyVoucherIssuance() (AdtyVoucherIssuance, error) {
 	return AdtyVoucherIssuance{LimitUSD: row.LimitUSD.String(), FrozenUSD: row.FrozenUSD.String(), SpentUSD: row.SpentUSD.String()}, nil
 }
 
-// AdtyVoucherMarginAuthorized reports whether Root lets the site freeze its
-// margin to issue codes.
-func AdtyVoucherMarginAuthorized(siteId int) bool {
-	return adtyVoucherMarginAuthorized(model.DB, siteId)
+func adtyVoucherNonRootManageAllowedTx(tx *gorm.DB, actor *model.User, voucher *model.AdtyVoucher, lockedSite *model.AdtySite) error {
+	if actor.Role == common.RoleRootUser {
+		return nil
+	}
+	if voucher.IssuerId != actor.Id || voucher.InheritedByMain {
+		return ErrAdtyVoucherForbidden
+	}
+	siteID := voucher.SourceSiteId
+	if siteID <= 0 {
+		siteID = voucher.TargetSiteId
+	}
+	if siteID > 0 {
+		var site *model.AdtySite
+		if lockedSite != nil && lockedSite.Id == siteID {
+			site = lockedSite
+		} else {
+			var loaded model.AdtySite
+			if err := tx.First(&loaded, siteID).Error; err != nil {
+				return err
+			}
+			site = &loaded
+		}
+		if site.OwnerUserId != actor.Id || site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusClosed {
+			return ErrAdtyVoucherForbidden
+		}
+	}
+	return nil
 }
 
 func FreezeAdtyVoucher(actorId int, voucherId int64) error {
 	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var stub struct {
+			SourceSiteId int
+			TargetSiteId int
+		}
+		if err := tx.Model(&model.AdtyVoucher{}).Select("source_site_id", "target_site_id").First(&stub, voucherId).Error; err != nil {
+			return err
+		}
+		siteID := stub.SourceSiteId
+		if siteID <= 0 {
+			siteID = stub.TargetSiteId
+		}
+		var lockedSite *model.AdtySite
+		if siteID > 0 {
+			var err error
+			lockedSite, err = lockAdtyVoucherSite(tx, siteID)
+			if err != nil {
+				return err
+			}
+		}
 		actor, err := lockAdtyVoucherUser(tx, actorId)
 		if err != nil {
 			return err
@@ -645,8 +714,8 @@ func FreezeAdtyVoucher(actorId int, voucherId int64) error {
 		if err := model.AdtyLockForUpdate(tx).First(&voucher, voucherId).Error; err != nil {
 			return err
 		}
-		if actor.Role != common.RoleRootUser && voucher.IssuerId != actor.Id {
-			return common.NewMessage("No permission to perform this action")
+		if err := adtyVoucherNonRootManageAllowedTx(tx, actor, &voucher, lockedSite); err != nil {
+			return err
 		}
 		if voucher.Status != model.AdtyVoucherStatusPending {
 			return common.NewMessage("Invalid parameters")
@@ -701,6 +770,25 @@ func InheritAdtyVouchersOnCloseTx(tx *gorm.DB, siteId int, movedUserIDs []int) e
 func CancelAdtyVoucher(actorId int, voucherId int64) error {
 	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var stub struct {
+			SourceSiteId int
+			TargetSiteId int
+		}
+		if err := tx.Model(&model.AdtyVoucher{}).Select("source_site_id", "target_site_id").First(&stub, voucherId).Error; err != nil {
+			return err
+		}
+		siteID := stub.SourceSiteId
+		if siteID <= 0 {
+			siteID = stub.TargetSiteId
+		}
+		var lockedSite *model.AdtySite
+		if siteID > 0 {
+			var err error
+			lockedSite, err = lockAdtyVoucherSite(tx, siteID)
+			if err != nil {
+				return err
+			}
+		}
 		actor, err := lockAdtyVoucherUser(tx, actorId)
 		if err != nil {
 			return err
@@ -709,8 +797,8 @@ func CancelAdtyVoucher(actorId int, voucherId int64) error {
 		if err := model.AdtyLockForUpdate(tx).First(&voucher, voucherId).Error; err != nil {
 			return err
 		}
-		if actor.Role != common.RoleRootUser && voucher.IssuerId != actor.Id {
-			return common.NewMessage("No permission to perform this action")
+		if err := adtyVoucherNonRootManageAllowedTx(tx, actor, &voucher, lockedSite); err != nil {
+			return err
 		}
 		beforeStatus := voucher.Status
 		if err := cancelAdtyVoucherTx(tx, &voucher); err != nil {
@@ -834,30 +922,6 @@ func SetAdtyVoucherIssuanceLimit(actorId int, limit decimal.Decimal) error {
 			return ErrAdtyVoucherLimit
 		}
 		return tx.Model(row).Update("limit_usd", limit).Error
-	})
-}
-
-func SetAdtyVoucherMarginAuthorization(actorId, siteId int, allowed bool) error {
-	return model.DB.Transaction(func(tx *gorm.DB) error {
-		actor, err := lockAdtyVoucherUser(tx, actorId)
-		if err != nil {
-			return err
-		}
-		if actor.Role != common.RoleRootUser || siteId <= 0 {
-			return common.NewMessage("No permission to perform this action")
-		}
-		if _, err := lockAdtyVoucherSite(tx, siteId); err != nil {
-			return err
-		}
-		var row model.AdtyVoucherAuthorization
-		lookup := tx.Where("site_id = ?", siteId).Limit(1).Find(&row)
-		if lookup.Error != nil {
-			return lookup.Error
-		}
-		if lookup.RowsAffected == 0 {
-			return tx.Create(&model.AdtyVoucherAuthorization{SiteId: siteId, MarginIssue: allowed}).Error
-		}
-		return tx.Model(&row).Update("margin_issue", allowed).Error
 	})
 }
 
@@ -1043,12 +1107,6 @@ func creditAdtyVoucherMarginTx(tx *gorm.DB, siteId int, amount decimal.Decimal, 
 	return err
 }
 
-// adtyVoucherMarginAuthorized always returns true under the unified automatic
-// funding rule (earnings first, excess margin above tier floor second).
-func adtyVoucherMarginAuthorized(tx *gorm.DB, siteId int) bool {
-	return siteId > 0
-}
-
 func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.AdtyVoucher) error {
 	switch voucher.Purpose {
 	case model.AdtyVoucherPurposeMainUser:
@@ -1063,7 +1121,7 @@ func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.Adty
 		if err := tx.First(&site, voucher.TargetSiteId).Error; err != nil {
 			return err
 		}
-		if site.Status == model.AdtySiteStatusClosed {
+		if site.Status != model.AdtySiteStatusActive {
 			return ErrAdtyVoucherWrongAccount
 		}
 	case model.AdtyVoucherPurposeSiteCustomer:
@@ -1091,7 +1149,7 @@ func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.Adty
 		if err := tx.First(&site, voucher.TargetSiteId).Error; err != nil {
 			return err
 		}
-		if site.Status == model.AdtySiteStatusClosed {
+		if site.Status != model.AdtySiteStatusActive {
 			return ErrAdtyVoucherWrongAccount
 		}
 	default:

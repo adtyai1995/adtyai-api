@@ -116,18 +116,20 @@ func (AdtyManualRefund) TableName() string { return "adty_manual_refunds" }
 // order). H and U come from in-progress machine rows and are not added to
 // RefundQuota or refund ratios until the refund is completed.
 type AdtyManualRefundOccupancy struct {
-	FaceQuota       int64  `json:"face_quota"`
-	CompletedQuota  int64  `json:"completed_quota"`
-	InProgressQuota int64  `json:"in_progress_quota"`
-	UnknownQuota    int64  `json:"unknown_quota"`
-	OccupiedQuota   int64  `json:"occupied_quota"`
-	RemainingQuota  int64  `json:"remaining_quota"`
-	FaceUSD         string `json:"face_usd"`
-	CompletedUSD    string `json:"completed_usd"`
-	InProgressUSD   string `json:"in_progress_usd"`
-	UnknownUSD      string `json:"unknown_usd"`
-	OccupiedUSD     string `json:"occupied_usd"`
-	RemainingUSD    string `json:"remaining_usd"`
+	FaceQuota           int64  `json:"face_quota"`
+	CompletedQuota      int64  `json:"completed_quota"`
+	InProgressQuota     int64  `json:"in_progress_quota"`
+	UnknownQuota        int64  `json:"unknown_quota"`
+	ExternalOffsetQuota int64  `json:"external_offset_quota"`
+	OccupiedQuota       int64  `json:"occupied_quota"`
+	RemainingQuota      int64  `json:"remaining_quota"`
+	FaceUSD             string `json:"face_usd"`
+	CompletedUSD        string `json:"completed_usd"`
+	InProgressUSD       string `json:"in_progress_usd"`
+	UnknownUSD          string `json:"unknown_usd"`
+	ExternalOffsetUSD   string `json:"external_offset_usd"`
+	OccupiedUSD         string `json:"occupied_usd"`
+	RemainingUSD        string `json:"remaining_usd"`
 }
 
 // AdtyManualRefundResult is one state-machine step result.
@@ -163,7 +165,118 @@ func adtyQuotaUSDString(quota int64) string {
 	return decimal.NewFromInt(quota).Div(common.QuotaPerUnitDecimal()).String()
 }
 
-func adtyBuildManualRefundOccupancy(ext *AdtyTopupOrder, held, unknown int64) *AdtyManualRefundOccupancy {
+func adtyConvertExternalOffsetToQuota(ext *AdtyTopupOrder, amount decimal.Decimal, currency string) int64 {
+	if ext == nil || !amount.IsPositive() {
+		return 0
+	}
+	face := ext.FaceQuota()
+	if face <= 0 {
+		return 0
+	}
+	cur := strings.ToUpper(strings.TrimSpace(currency))
+	var q int64
+	switch {
+	case cur == "" || cur == "USD":
+		q = amount.Mul(common.QuotaPerUnitDecimal()).Ceil().IntPart()
+	case ext.PaidAmount.IsPositive() && strings.EqualFold(cur, ext.PaidCurrency):
+		q = decimal.NewFromInt(face).Mul(amount).Div(ext.PaidAmount).Ceil().IntPart()
+	case ext.PayAmount.IsPositive() && strings.EqualFold(cur, ext.PayCurrency):
+		q = decimal.NewFromInt(face).Mul(amount).Div(ext.PayAmount).Ceil().IntPart()
+	default:
+		// Unknown currency mismatch: conservatively occupy full order principal until resolved.
+		q = face
+	}
+	if q < 0 {
+		return 0
+	}
+	if q > face {
+		return face
+	}
+	return q
+}
+
+func isExternalReversalEventType(eventID, eventType string) bool {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(eventID)), "reversal:") {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(eventType))
+	return strings.Contains(lower, "refund") ||
+		strings.Contains(lower, "chargeback") ||
+		strings.Contains(lower, "dispute") ||
+		strings.Contains(lower, "reversal")
+}
+
+// adtyExternalRefundOffsetTx computes X: net verified or pending-review external
+// refund/chargeback/dispute occupancy beyond already-completed internal refund S
+// (R1-004 / G.9 / 1.3.3). Must be called inside the original order lock.
+func adtyExternalRefundOffsetTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error) {
+	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
+		return 0, nil
+	}
+	face := ext.FaceQuota()
+	if face <= 0 {
+		return 0, nil
+	}
+	hasOrphan := tx.Migrator().HasTable(&PaymentOrphanEvent{})
+	hasReview := tx.Migrator().HasTable(&PaymentOrphanReview{})
+	if !hasOrphan && !hasReview {
+		return 0, nil
+	}
+	var maxExternalQuota int64
+	reviewByID := map[int64]PaymentOrphanReview{}
+	if hasReview {
+		var reviews []PaymentOrphanReview
+		if err := tx.Where("trade_no = ? AND status IN ?", ext.TradeNo, []string{PaymentOrphanStatusPendingReview, PaymentOrphanStatusRefunded}).
+			Order("id ASC").Find(&reviews).Error; err != nil {
+			return 0, err
+		}
+		for _, r := range reviews {
+			reviewByID[r.ID] = r
+		}
+	}
+	if hasOrphan {
+		var events []PaymentOrphanEvent
+		if err := tx.Where("reference_id = ? AND status IN ?", ext.TradeNo, []string{PaymentOrphanStatusPendingReview, PaymentOrphanStatusRefunded}).
+			Order("id ASC").Find(&events).Error; err != nil {
+			return 0, err
+		}
+		for _, ev := range events {
+			if ev.ReviewID > 0 {
+				if rev, ok := reviewByID[ev.ReviewID]; ok {
+					if rev.Status == PaymentOrphanStatusDismissed || rev.Status == PaymentOrphanStatusNeverCredited {
+						continue
+					}
+					if rev.ExternalAmount.IsPositive() {
+						q := adtyConvertExternalOffsetToQuota(ext, rev.ExternalAmount, rev.ExternalCurrency)
+						if q > maxExternalQuota {
+							maxExternalQuota = q
+						}
+						continue
+					}
+				}
+			}
+			if ev.Status == PaymentOrphanStatusRefunded || isExternalReversalEventType(ev.EventID, ev.EventType) {
+				// Unreviewed external reversal / chargeback occupies full principal until dismissed or quantified.
+				maxExternalQuota = face
+			}
+		}
+	} else if hasReview {
+		for _, rev := range reviewByID {
+			if rev.ExternalAmount.IsPositive() {
+				q := adtyConvertExternalOffsetToQuota(ext, rev.ExternalAmount, rev.ExternalCurrency)
+				if q > maxExternalQuota {
+					maxExternalQuota = q
+				}
+			}
+		}
+	}
+	if maxExternalQuota <= ext.RefundQuota {
+		return 0, nil
+	}
+	return maxExternalQuota - ext.RefundQuota, nil
+}
+
+func adtyBuildManualRefundOccupancy(ext *AdtyTopupOrder, held, unknown, externalOffset int64) *AdtyManualRefundOccupancy {
 	face := ext.FaceQuota()
 	completed := ext.RefundQuota
 	if completed < 0 {
@@ -175,24 +288,29 @@ func adtyBuildManualRefundOccupancy(ext *AdtyTopupOrder, held, unknown int64) *A
 	if unknown < 0 {
 		unknown = 0
 	}
-	occupied := completed + held + unknown
+	if externalOffset < 0 {
+		externalOffset = 0
+	}
+	occupied := completed + held + unknown + externalOffset
 	remaining := face - occupied
 	if remaining < 0 {
 		remaining = 0
 	}
 	return &AdtyManualRefundOccupancy{
-		FaceQuota:       face,
-		CompletedQuota:  completed,
-		InProgressQuota: held,
-		UnknownQuota:    unknown,
-		OccupiedQuota:   occupied,
-		RemainingQuota:  remaining,
-		FaceUSD:         ext.FaceUSD.String(),
-		CompletedUSD:    adtyQuotaUSDString(completed),
-		InProgressUSD:   adtyQuotaUSDString(held),
-		UnknownUSD:      adtyQuotaUSDString(unknown),
-		OccupiedUSD:     adtyQuotaUSDString(occupied),
-		RemainingUSD:    adtyQuotaUSDString(remaining),
+		FaceQuota:           face,
+		CompletedQuota:      completed,
+		InProgressQuota:     held,
+		UnknownQuota:        unknown,
+		ExternalOffsetQuota: externalOffset,
+		OccupiedQuota:       occupied,
+		RemainingQuota:      remaining,
+		FaceUSD:             ext.FaceUSD.String(),
+		CompletedUSD:        adtyQuotaUSDString(completed),
+		InProgressUSD:       adtyQuotaUSDString(held),
+		UnknownUSD:          adtyQuotaUSDString(unknown),
+		ExternalOffsetUSD:   adtyQuotaUSDString(externalOffset),
+		OccupiedUSD:         adtyQuotaUSDString(occupied),
+		RemainingUSD:        adtyQuotaUSDString(remaining),
 	}
 }
 

@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMemo } from 'react'
 
+import { useApiBaseUrl } from '@/features/adty-site/api'
 import type { SystemStatus } from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
 import { subsiteDocument } from '@/lib/subsite-document'
@@ -40,19 +41,49 @@ function getStoredStatusChats(): RawChatConfig {
   }
 }
 
-function extractServerAddress(status: SystemStatus | null) {
-  const fromStatus =
-    (status?.server_address as string | undefined) ??
-    (status?.serverAddress as string | undefined) ??
-    status?.data?.server_address ??
-    (status?.data as Record<string, unknown> | undefined)?.serverAddress
+function normalizeBaseUrl(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim().replace(/\/+$/, '') : ''
+}
 
-  if (fromStatus && typeof fromStatus === 'string') {
-    return fromStatus
+function extractServerAddress(
+  status: SystemStatus | null,
+  apiBaseUrl: string
+) {
+  const fromSite = normalizeBaseUrl(apiBaseUrl)
+  if (fromSite) {
+    return fromSite
+  }
+
+  const statusRecord = status as Record<string, unknown> | null
+  const dataRecord = status?.data as Record<string, unknown> | undefined
+  const candidates = [
+    statusRecord?.api_base_url,
+    dataRecord?.api_base_url,
+    status?.server_address,
+    status?.serverAddress,
+    status?.data?.server_address,
+    dataRecord?.serverAddress,
+  ]
+  for (const candidate of candidates) {
+    const normalized = normalizeBaseUrl(candidate)
+    if (normalized) {
+      return normalized
+    }
+  }
+
+  const tenant = subsiteDocument()
+  if (tenant) {
+    return normalizeBaseUrl(tenant.api)
+  }
+
+  const explicitEmptyServerAddress =
+    status?.server_address === '' || status?.data?.server_address === ''
+  if (explicitEmptyServerAddress) {
+    return ''
   }
 
   if (typeof window !== 'undefined') {
-    return subsiteDocument()?.api ?? window.location.origin
+    return normalizeBaseUrl(window.location.origin)
   }
 
   return ''
@@ -70,8 +101,12 @@ export function useChatPresets(): {
   serverAddress: string
 } {
   const { status } = useStatus()
+  const apiBaseUrl = useApiBaseUrl()
 
-  const serverAddress = useMemo(() => extractServerAddress(status), [status])
+  const serverAddress = useMemo(
+    () => extractServerAddress(status, apiBaseUrl),
+    [status, apiBaseUrl]
+  )
 
   const chatPresets = useMemo(() => {
     const raw = extractChats(status)

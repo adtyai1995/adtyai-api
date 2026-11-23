@@ -21,7 +21,8 @@ func SetApiRouter(router *gin.Engine) {
 	anonymousRequestBodyLimit := middleware.AnonymousRequestBodyLimit()
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
-		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)
+		// R1-064: Rate-limit initial installation endpoint.
+		apiRouter.POST("/setup", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.PostSetup)
 		apiRouter.GET("/status", controller.GetStatus)
 		apiRouter.GET("/ready", controller.GetReady)
 		apiRouter.GET("/health", controller.GetReady)
@@ -83,7 +84,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/self", controller.GetSelf)
 				selfRoute.GET("/models", controller.GetUserModels)
 				selfRoute.PUT("/self", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.UpdateSelf)
-				selfRoute.POST("/self/deletion-code", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.SendAccountDeletionCode)
+				selfRoute.POST("/self/deletion-code", middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("account-security"), middleware.EmailVerificationRateLimit(), middleware.DisableCache(), controller.SendAccountDeletionCode)
 				selfRoute.DELETE("/self", middleware.DisableCache(), controller.DeleteSelf)
 				accessTokenRoute := selfRoute.Group("/access_tokens")
 				accessTokenRoute.Use(middleware.DisableCache())
@@ -251,7 +252,8 @@ func SetApiRouter(router *gin.Engine) {
 		dataRoute.GET("/users", middleware.AdminAuth(), controller.GetQuotaDatesByUser)
 		dataRoute.GET("/self", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.GetUserQuotaDates)
 		dataRoute.GET("/flow", middleware.AdminAuth(), controller.GetAllFlowQuotaDates)
-		dataRoute.GET("/flow/self", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.GetUserFlowQuotaDates)
+		// R1-061: Restrict user flow analytics endpoint to admins (non-admin consumption analytics dashboard excluded by A.2).
+		dataRoute.GET("/flow/self", middleware.AdminAuth(), controller.GetUserFlowQuotaDates)
 
 		logRoute.Use(middleware.CORS(), middleware.CriticalRateLimit())
 		{

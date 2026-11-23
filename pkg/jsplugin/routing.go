@@ -612,6 +612,55 @@ func (g *RoutingGeneration) Routes() []RouteBinding {
 	return append([]RouteBinding(nil), g.routes...)
 }
 
+// MatchesRoute reports whether concretePath (with actual parameter values, not
+// declared :param templates) matches any plugin route declared for method
+// (or any method when method is empty). Used by site middleware (R1-098).
+func (g *RoutingGeneration) MatchesRoute(method, concretePath string) bool {
+	if g == nil || len(g.routes) == 0 || concretePath == "" {
+		return false
+	}
+	wantMethod := strings.ToUpper(strings.TrimSpace(method))
+	reqSegs := splitCleanPathSegments(concretePath)
+	for _, rb := range g.routes {
+		if wantMethod != "" && !strings.EqualFold(rb.Route.Method, wantMethod) {
+			continue
+		}
+		if matchRouteSegments(splitCleanPathSegments(rb.Route.Path), reqSegs) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitCleanPathSegments(p string) []string {
+	trimmed := strings.Trim(p, "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
+}
+
+func matchRouteSegments(pattern, actual []string) bool {
+	for i, seg := range pattern {
+		if strings.HasPrefix(seg, "*") {
+			return i < len(actual)
+		}
+		if i >= len(actual) {
+			return false
+		}
+		if strings.HasPrefix(seg, ":") {
+			if actual[i] == "" {
+				return false
+			}
+			continue
+		}
+		if seg != actual[i] {
+			return false
+		}
+	}
+	return len(pattern) == len(actual)
+}
+
 // RouteGroups returns the inner router's registrations: one per method and
 // path shape, without the skipped routes.
 func (g *RoutingGeneration) RouteGroups() []RouteGroup {

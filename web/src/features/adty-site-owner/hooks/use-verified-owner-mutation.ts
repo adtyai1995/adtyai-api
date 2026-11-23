@@ -36,6 +36,7 @@ import { useOwnerVerification } from '../components/owner-verification'
 export function useVerifiedOwnerMutation<TVars>(options: {
   action: SiteOwnerAction
   target: (vars: TVars) => number
+  request?: (vars: TVars) => object
   run?: (vars: TVars, proof: string) => Promise<unknown>
   staffRequest?: (vars: TVars) => StaffInput
   successMessage?: string
@@ -47,12 +48,20 @@ export function useVerifiedOwnerMutation<TVars>(options: {
   return useMutation({
     mutationFn: async (vars: TVars) => {
       const target = options.target(vars)
-      const request = options.staffRequest && structuredClone(options.staffRequest(vars))
-      const proof = await owner.verify(options.action, target, request)
+      const staffRequest =
+        options.staffRequest && structuredClone(options.staffRequest(vars))
+      const requestPayload =
+        staffRequest ??
+        (options.request ? structuredClone(options.request(vars)) : undefined)
+      const proof = await owner.verify(options.action, target, requestPayload)
       if (!proof) return false
-      if (request) await submitStaffRequest(options.action,target,request,proof)
-      else if (options.run) await options.run(vars, proof)
-      else throw new Error('Missing verified action')
+      if (staffRequest) {
+        await submitStaffRequest(options.action, target, staffRequest, proof)
+      } else if (options.run) {
+        await options.run(vars, proof)
+      } else {
+        throw new Error('Missing verified action')
+      }
       return true
     },
     onSuccess: (done) => {

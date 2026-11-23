@@ -267,6 +267,48 @@ func advanceCurrentSessionToVersion(identity AuthIdentity, nextUserAuthVersion i
 }
 
 func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*AuthBundle, *model.User, error) {
+	return refreshLoginSession(nil, rawRefreshToken, expectedSID, ip, userAgent)
+}
+
+func RefreshLoginSessionForRequest(c *gin.Context, rawRefreshToken, expectedSID, ip, userAgent string) (*AuthBundle, *model.User, error) {
+	if c != nil && !adtySessionHostAllowed(c) {
+		return nil, nil, ErrLoginSessionMismatch
+	}
+	return refreshLoginSession(c, rawRefreshToken, expectedSID, ip, userAgent)
+}
+
+func adtyRefreshSessionSiteAllowed(c *gin.Context, user *model.User, session *model.UserSession) bool {
+	if c == nil {
+		return true
+	}
+	if user == nil || session == nil {
+		return false
+	}
+	requestSiteID := AdtyRequestSiteID(c)
+	if user.SiteId != 0 {
+		if user.SiteId != requestSiteID {
+			return false
+		}
+		if issued, ok := session.IssuedSite(); ok && issued != requestSiteID {
+			return false
+		}
+		return true
+	}
+	issued, ok := session.IssuedSite()
+	if !ok {
+		return requestSiteID == 0
+	}
+	if issued != requestSiteID {
+		return false
+	}
+	if requestSiteID == 0 {
+		return true
+	}
+	site := AdtySiteForRequest(c)
+	return site != nil && site.Id == requestSiteID && site.OwnerUserId == user.Id
+}
+
+func refreshLoginSession(c *gin.Context, rawRefreshToken, expectedSID, ip, userAgent string) (*AuthBundle, *model.User, error) {
 	sid, secret, ok := splitRefreshToken(rawRefreshToken)
 	if !ok {
 		return nil, nil, ErrRefreshTokenInvalid
@@ -296,6 +338,9 @@ func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*A
 		currentUser.Status != common.UserStatusEnabled || currentUser.AuthVersion != session.UserAuthVersion {
 		_, _ = model.RevokeUserSession(session.UserID, session.SID, "user_security_changed")
 		return nil, nil, ErrLoginSessionRevoked
+	}
+	if !adtyRefreshSessionSiteAllowed(c, currentUser, session) {
+		return nil, nil, ErrLoginSessionMismatch
 	}
 	nextSecret := deriveNextRefreshSecret(sid, secret)
 	rotated, err := model.RotateUserSessionRefresh(session.UserID, sid, hashRefreshSecret(secret), hashRefreshSecret(nextSecret), time.Now().Unix(), RefreshReplayWindow, truncateAuthMetadata(ip, 64), truncateAuthMetadata(userAgent, 512))

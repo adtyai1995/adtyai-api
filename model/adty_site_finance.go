@@ -100,6 +100,7 @@ type AdtySiteWallet struct {
 	Currency        string           `json:"currency" gorm:"type:varchar(16)"`
 	Balance         decimal.Decimal  `json:"balance" gorm:"type:decimal(28,8);not null;default:0"`
 	FrozenUSD       decimal.Decimal  `json:"frozen_usd" gorm:"type:decimal(28,8);not null;default:0"`
+	ExcessFrozenUSD decimal.Decimal  `json:"excess_frozen_usd" gorm:"type:decimal(28,8);not null;default:0"`
 	RequiredBalance decimal.Decimal  `json:"required_balance" gorm:"type:decimal(28,8);not null;default:0"`
 	CycleTierUSD    decimal.Decimal  `json:"cycle_tier_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	CycleUsedUSD    decimal.Decimal  `json:"cycle_used_usd" gorm:"type:decimal(20,8);not null;default:0"`

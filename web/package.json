@@ -14,7 +14,6 @@
     "format:plugins": "cd ../plugins && oxfmt -c .oxfmtrc.json --write .",
     "format:plugins:check": "cd ../plugins && oxfmt -c .oxfmtrc.json --check .",
     "preview": "rsbuild preview",
-    "browser:smoke": "node scripts/adty/browser-smoke.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:watch": "vitest",

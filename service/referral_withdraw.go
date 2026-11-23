@@ -242,7 +242,14 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			if err := s.markWithdrawalItemsPaidTx(tx, withdrawal.Id); err != nil {
 				return err
 			}
-			creditQuota = amount.Mul(decimal.NewFromFloat(common.QuotaPerUnit)).Floor().IntPart()
+			creditQuotaInt, convErr := common.WalletQuotaFromDecimalStrict(amount.Mul(common.QuotaPerUnitDecimal()).Floor())
+			if convErr != nil {
+				return convErr
+			}
+			if creditQuotaInt <= 0 {
+				return common.NewMessage("Invalid withdrawal amount")
+			}
+			creditQuota = int64(creditQuotaInt)
 			before, err := model.AdtyCreditUserQuotaTx(tx, input.UserId, creditQuota)
 			if err != nil {
 				return err

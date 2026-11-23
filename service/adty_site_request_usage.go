@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"sort"
 	"time"
 
@@ -137,7 +136,7 @@ func GetAdtySiteUsageBreakdown(siteID int, from, to string) (*AdtySiteUsageBreak
 				var data struct {
 					Admin usageLogEvidence `json:"admin_info"`
 				}
-				if json.Unmarshal([]byte(l.Other), &data) == nil {
+				if common.Unmarshal([]byte(l.Other), &data) == nil {
 					evidence[i] = data.Admin
 				}
 				if owner := evidence[i].Owner; owner != nil && owner.SiteID != nil && owner.payer() != "" && l.UserId > 0 {

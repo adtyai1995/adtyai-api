@@ -35,10 +35,7 @@ func TurnstileCheck() gin.HandlerFunc {
 			})
 			if err != nil {
 				common.SysLog(err.Error())
-				c.JSON(http.StatusOK, gin.H{
-					"success": false,
-					"message": err.Error(),
-				})
+				common.ApiErrorT(c, "Turnstile verification failed, please refresh and try again!")
 				c.Abort()
 				return
 			}
@@ -47,10 +44,7 @@ func TurnstileCheck() gin.HandlerFunc {
 			err = common.DecodeJson(rawRes.Body, &res)
 			if err != nil {
 				common.SysLog(err.Error())
-				c.JSON(http.StatusOK, gin.H{
-					"success": false,
-					"message": err.Error(),
-				})
+				common.ApiErrorT(c, "Turnstile verification failed, please refresh and try again!")
 				c.Abort()
 				return
 			}

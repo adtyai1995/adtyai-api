@@ -16,16 +16,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table'
+import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Textarea } from '@/components/ui/textarea'
 import {
   getOwnerBalanceRequests,
   getStaffAccounts,
@@ -36,12 +39,11 @@ import {
   type StaffBalanceRequest,
 } from '@/features/adty-site-staff/api'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { formatTimestamp } from '@/lib/format'
-import { handleServerError } from '@/lib/handle-server-error'
 
 import { siteOwnerKeys } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
+import { useOwnerVerification } from './owner-verification'
 import { StaffDialog } from './staff-dialog'
 
 function staffRequestSourceLabel(source: string, t: (key: string) => string) {
@@ -74,7 +76,12 @@ export function StaffPanel(props: { siteId: number; closing?: boolean }) {
     staff: StaffAccount
     action: 'status' | 'delete'
   } | null>(null)
-  const client = useQueryClient()
+  const [reviewing, setReviewing] = useState<{
+    row: StaffBalanceRequest
+    approve: boolean
+  } | null>(null)
+  const [reviewReason, setReviewReason] = useState('')
+  const ownerVerification = useOwnerVerification()
   const [requestPage, setRequestPage] = useState(1)
   const [requestStatus, setRequestStatus] = useState('pending')
   const requests = useQuery({
@@ -85,18 +92,27 @@ export function StaffPanel(props: { siteId: number; closing?: boolean }) {
     }),
     queryFn: () => getOwnerBalanceRequests(requestPage, requestStatus),
   })
-  const review = useMutation({
-    mutationFn: (input: { id: number; approve: boolean }) =>
-      reviewOwnerBalanceRequest(input.id, input.approve),
+  const review = useVerifiedOwnerMutation<{
+    id: number
+    approve: boolean
+    reason: string
+  }>({
+    action: 'staff.balance_review',
+    target: (vars) => vars.id,
+    request: (vars) =>
+      vars.reason
+        ? { approve: vars.approve, reason: vars.reason }
+        : { approve: vars.approve },
+    run: (vars, proof) =>
+      reviewOwnerBalanceRequest(
+        vars.id,
+        { approve: vars.approve, reason: vars.reason },
+        proof
+      ),
     onSuccess: () => {
-      void client.invalidateQueries({
-        queryKey: siteOwnerKeys.list('balance-requests', {
-          siteId: props.siteId,
-        }),
-      })
-      void invalidateSidebarBadges(client)
+      setReviewing(null)
+      setReviewReason('')
     },
-    onError: (error) => handleServerError(error),
   })
   const list = useQuery({
     queryKey: siteOwnerKeys.list('staff', { p: page }),
@@ -327,9 +343,10 @@ export function StaffPanel(props: { siteId: number; closing?: boolean }) {
                         size='sm'
                         variant='outline'
                         disabled={review.isPending}
-                        onClick={() =>
-                          review.mutate({ id: row.id, approve: true })
-                        }
+                        onClick={() => {
+                          setReviewReason('')
+                          setReviewing({ row, approve: true })
+                        }}
                       >
                         {t('Approve')}
                       </Button>
@@ -337,9 +354,10 @@ export function StaffPanel(props: { siteId: number; closing?: boolean }) {
                         size='sm'
                         variant='outline'
                         disabled={review.isPending}
-                        onClick={() =>
-                          review.mutate({ id: row.id, approve: false })
-                        }
+                        onClick={() => {
+                          setReviewReason('')
+                          setReviewing({ row, approve: false })
+                        }}
                       >
                         {t('Reject')}
                       </Button>
@@ -373,6 +391,67 @@ export function StaffPanel(props: { siteId: number; closing?: boolean }) {
           onClose={() => setEditing(null)}
         />
       )}
+      <Dialog
+        open={reviewing !== null && !ownerVerification.verifying}
+        onOpenChange={(open) => {
+          if (!open && !review.isPending) {
+            setReviewing(null)
+            setReviewReason('')
+          }
+        }}
+        title={t('Review balance request')}
+        description={
+          reviewing
+            ? `${t('Customer ID')}: #${reviewing.row.customer_user_id} · ${
+                reviewing.row.direction === 'increase'
+                  ? t('Increase')
+                  : t('Decrease')
+              } ${reviewing.row.amount_usd} USD`
+            : undefined
+        }
+        footer={
+          <div className='flex justify-end gap-2'>
+            <Button
+              type='button'
+              variant='outline'
+              disabled={review.isPending}
+              onClick={() => {
+                setReviewing(null)
+                setReviewReason('')
+              }}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              type='button'
+              variant={reviewing?.approve ? 'brand' : 'destructive'}
+              disabled={review.isPending || !reviewing}
+              onClick={() => {
+                if (!reviewing) return
+                review.mutate({
+                  id: reviewing.row.id,
+                  approve: reviewing.approve,
+                  reason: reviewReason.trim(),
+                })
+              }}
+            >
+              {reviewing?.approve ? t('Approve') : t('Reject')}
+            </Button>
+          </div>
+        }
+      >
+        <div className='flex flex-col gap-2'>
+          <Label htmlFor='staff-balance-review-reason'>
+            {t('Review reason (optional)')}
+          </Label>
+          <Textarea
+            id='staff-balance-review-reason'
+            maxLength={200}
+            value={reviewReason}
+            onChange={(event) => setReviewReason(event.target.value)}
+          />
+        </div>
+      </Dialog>
       <ConfirmDialog
         open={confirming !== null}
         onOpenChange={(open) => {
@@ -415,8 +494,11 @@ function StaffActivity() {
     'staff.customer.read': t('View customer list'),
     'staff.topups.read': t('View customer recharges'),
     'staff.usage.read': t('View customer usage'),
+    'staff.orders.read': t('View customer orders'),
     'staff.customer.password.request': t('Send password reset instructions'),
     'staff.customer.disable': t('Disable customer'),
+    'staff.balance_request': t('Submit balance request'),
+    'staff.balance_review': t('Review balance request'),
   }
   return (
     <section className='flex flex-col gap-3'>

@@ -22,7 +22,7 @@ func RefreshAuth(c *gin.Context) {
 		writeAuthSessionError(c, service.ErrRefreshTokenInvalid)
 		return
 	}
-	bundle, user, err := service.RefreshLoginSession(rawRefreshToken, c.GetHeader("X-Auth-Session"), c.ClientIP(), c.Request.UserAgent())
+	bundle, user, err := service.RefreshLoginSessionForRequest(c, rawRefreshToken, c.GetHeader("X-Auth-Session"), c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
 		if errors.Is(err, service.ErrRefreshTokenInvalid) || errors.Is(err, service.ErrLoginSessionRevoked) {
 			service.ClearRefreshCookie(c)

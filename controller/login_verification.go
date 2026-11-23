@@ -30,7 +30,17 @@ func VerifyLogin(c *gin.Context) {
 		writeSecurityOperationError(c, service.ErrProofMethod)
 		return
 	}
-	bundle, err := service.VerifyLoginCodeOnSite(request.FlowToken, request.Code, c.ClientIP(), c.Request.UserAgent(), service.AdtyRequestSiteID(c))
+	siteID := service.AdtyRequestSiteID(c)
+	verification, err := service.RequireLoginVerificationOnSite(request.FlowToken, service.VerificationMethodTwoFA, siteID)
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	if !service.AdtySiteLoginAllowed(c, verification.State.UserID) {
+		common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
+		return
+	}
+	bundle, err := service.VerifyLoginCodeOnSite(request.FlowToken, request.Code, c.ClientIP(), c.Request.UserAgent(), siteID)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -39,6 +49,10 @@ func VerifyLogin(c *gin.Context) {
 }
 
 func LoginPasskeyBegin(c *gin.Context) {
+	if service.AdtySiteForRequest(c) != nil {
+		common.ApiErrorT(c, "Passkey authentication is disabled.")
+		return
+	}
 	var request struct {
 		FlowToken string `json:"flow_token"`
 		RPID      string `json:"rp_id"`
@@ -47,9 +61,13 @@ func LoginPasskeyBegin(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	verification, err := service.RequireLoginVerification(request.FlowToken, service.VerificationMethodPasskey)
+	verification, err := service.RequireLoginVerificationOnSite(request.FlowToken, service.VerificationMethodPasskey, service.AdtyRequestSiteID(c))
 	if err != nil {
 		writeSecurityOperationError(c, err)
+		return
+	}
+	if !service.AdtySiteLoginAllowed(c, verification.State.UserID) {
+		common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
 		return
 	}
 	credential, err := model.GetPasskeyByUserID(verification.State.UserID)
@@ -84,6 +102,10 @@ func LoginPasskeyBegin(c *gin.Context) {
 }
 
 func LoginPasskeyFinish(c *gin.Context) {
+	if service.AdtySiteForRequest(c) != nil {
+		common.ApiErrorT(c, "Passkey authentication is disabled.")
+		return
+	}
 	var request struct {
 		FlowToken        string          `json:"flow_token"`
 		PasskeyFlowToken string          `json:"passkey_flow_token"`
@@ -93,9 +115,13 @@ func LoginPasskeyFinish(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	verification, err := service.RequireLoginVerification(request.FlowToken, service.VerificationMethodPasskey)
+	verification, err := service.RequireLoginVerificationOnSite(request.FlowToken, service.VerificationMethodPasskey, service.AdtyRequestSiteID(c))
 	if err != nil {
 		writeSecurityOperationError(c, err)
+		return
+	}
+	if !service.AdtySiteLoginAllowed(c, verification.State.UserID) {
+		common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
 		return
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBytes(request.Credential)

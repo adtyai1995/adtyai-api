@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/shopspring/decimal"
@@ -171,6 +172,26 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 			flagTaskBillingManualReview(ctx, task, "no task adaptor for platform "+string(task.Platform))
 			continue
 		}
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelId: task.ChannelId,
+			},
+		}
+		if ch, chErr := model.CacheGetChannel(task.ChannelId); chErr == nil && ch != nil {
+			baseURL := ch.GetBaseURL()
+			if baseURL == "" {
+				baseURL = constant.GetChannelBaseURL(ch.Type)
+			}
+			info.ChannelMeta.ChannelType = ch.Type
+			info.ChannelMeta.ChannelBaseUrl = baseURL
+			info.ChannelMeta.ChannelSetting = ch.GetSetting()
+			info.ChannelMeta.HeadersOverride = ch.GetHeaderOverride()
+			info.ApiKey = ch.Key
+		}
+		if task.PrivateData.Key != "" {
+			info.ApiKey = task.PrivateData.Key
+		}
+		adaptor.Init(info)
 		result := task.PrivateData.CompletionBilling
 		if result == nil {
 			result = &relaycommon.TaskInfo{Status: string(task.Status)}

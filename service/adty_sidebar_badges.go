@@ -22,6 +22,8 @@ const (
 	AdtyBadgeFundAnomaliesOpen                    = "fund_anomalies_open"
 	AdtyBadgeStaffBalancePending                  = "staff_balance_pending"
 	AdtyBadgeTicketsPending                       = "tickets_pending"
+	AdtyBadgePlatformTicketsPending               = "platform_tickets_pending"
+	AdtyBadgeOwnerTicketsPending                  = "owner_tickets_pending"
 	AdtyBadgeTicketsWaitingUser                   = "tickets_waiting_user"
 	AdtyBadgePaymentOrphansPendingReview          = "payment_orphans_pending_review"
 )
@@ -41,6 +43,8 @@ func AdtySidebarBadgeConfirmedKinds() []string {
 		AdtyBadgeFundAnomaliesOpen,
 		AdtyBadgeStaffBalancePending,
 		AdtyBadgeTicketsPending,
+		AdtyBadgePlatformTicketsPending,
+		AdtyBadgeOwnerTicketsPending,
 		AdtyBadgeTicketsWaitingUser,
 		AdtyBadgePaymentOrphansPendingReview,
 	}
@@ -371,32 +375,70 @@ func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor
 }
 
 func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor, tokenScopes ...[]string) error {
-	switch {
-	case actor.PlatformMain:
-		actor.Scope = "platform"
-	case actor.OwnerTickets:
-		actor.Scope = "owner"
-	case actor.StaffTickets:
-		actor.Scope = "staff"
-	case actor.Staff != nil || actor.User.StaffSiteId > 0:
-		return nil
-	default:
-		actor.Scope = "personal"
+	resolveScope := func(requested string) string {
+		if len(tokenScopes) > 0 {
+			return AdtyTicketTokenScope(requested, "GET", tokenScopes[0])
+		}
+		return requested
 	}
-	if len(tokenScopes) > 0 {
-		actor.Scope = AdtyTicketTokenScope(actor.Scope, "GET", tokenScopes[0])
-		if actor.Scope == "denied" {
-			actor.Scope = "personal"
+	countForScope := func(scope string) (AdtyTicketBadges, error) {
+		scoped := actor
+		scoped.Scope = scope
+		return countAdtyTicketBadges(scopedAdtyTickets(model.DB, scoped))
+	}
+
+	// 1. Customer-side waiting-user badge (personal + shared team tickets for team leaders).
+	if actor.Staff == nil && actor.User.StaffSiteId == 0 {
+		customerScope := "personal"
+		if actor.TeamId > 0 && actor.TeamRole == model.AdtyTeamRoleLeader {
+			customerScope = "participant"
+		}
+		if resolved := resolveScope(customerScope); resolved != "denied" {
+			badges, err := countForScope(resolved)
+			if err != nil {
+				return err
+			}
+			counts[AdtyBadgeTicketsWaitingUser] = badges.WaitingUser
 		}
 	}
-	badges, err := countAdtyTicketBadges(scopedAdtyTickets(model.DB, actor))
-	if err != nil {
-		return err
+
+	// 2. Platform handler pending badge.
+	if actor.PlatformMain {
+		if resolved := resolveScope("platform"); resolved != "denied" {
+			badges, err := countForScope(resolved)
+			if err != nil {
+				return err
+			}
+			counts[AdtyBadgePlatformTicketsPending] = badges.Pending
+			counts[AdtyBadgeTicketsPending] = badges.Pending
+		}
 	}
-	if actor.isHandling() {
-		counts[AdtyBadgeTicketsPending] = badges.Pending
+
+	// 3. Site-owner handler pending badge.
+	if actor.OwnerTickets {
+		if resolved := resolveScope("owner"); resolved != "denied" {
+			badges, err := countForScope(resolved)
+			if err != nil {
+				return err
+			}
+			counts[AdtyBadgeOwnerTicketsPending] = badges.Pending
+			if _, exists := counts[AdtyBadgeTicketsPending]; !exists {
+				counts[AdtyBadgeTicketsPending] = badges.Pending
+			}
+		}
 	}
-	counts[AdtyBadgeTicketsWaitingUser] = badges.WaitingUser
+
+	// 4. Site-staff handler badges.
+	if actor.StaffTickets {
+		if resolved := resolveScope("staff"); resolved != "denied" {
+			badges, err := countForScope(resolved)
+			if err != nil {
+				return err
+			}
+			counts[AdtyBadgeTicketsPending] = badges.Pending
+			counts[AdtyBadgeTicketsWaitingUser] = badges.WaitingUser
+		}
+	}
 	return nil
 }
 

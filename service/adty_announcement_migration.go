@@ -3,7 +3,6 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -33,7 +32,7 @@ func MigrateLegacyAnnouncements(raw string) (created int, err error) {
 		return 0, nil
 	}
 	var entries []map[string]any
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+	if err := common.Unmarshal([]byte(raw), &entries); err != nil {
 		// 旧 option 是用户手写的 JSON，坏数据不该挡住启动：记一条日志，跳过迁移。
 		return 0, err
 	}

@@ -2,7 +2,6 @@ package service
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"gorm.io/gorm"
 )
 
@@ -47,7 +47,10 @@ var AdtyPlatformChannelTranslateFunc func(channel *model.Channel, modelName, sys
 // adtyTranslationHTTPClient 造一次翻译用的客户端：复用进程的出口连接池，只覆盖超时，
 // 免得慢翻译一直占着调用方的 goroutine。测试替换这里。
 var adtyTranslationHTTPClient = func(timeout time.Duration) *http.Client {
-	base := GetHttpClient()
+	base := GetSSRFProtectedHTTPClient()
+	if base == nil {
+		base = GetHttpClient()
+	}
 	if base == nil {
 		base = http.DefaultClient
 	}
@@ -103,7 +106,7 @@ func adtyTranslateViaProvider(modelName, text string) (string, error) {
 			return "", err
 		}
 		if AdtyPlatformChannelTranslateFunc != nil {
-			return AdtyPlatformChannelTranslateFunc(channel, upstreamModel, adtyTranslationSystemPrompt, text, adtyTranslationTimeout(cfg.TimeoutSec))
+			return AdtyPlatformChannelTranslateFunc(channel, upstreamModel, buildAdtyTranslationSystemPrompt(text), text, adtyTranslationTimeout(cfg.TimeoutSec))
 		}
 		return adtyDispatchTranslationHTTP(protocol, endpoint, token, upstreamModel, text, cfg.TimeoutSec)
 
@@ -117,7 +120,7 @@ func adtyDispatchTranslationHTTP(protocol, endpoint, token, modelName, text stri
 	if err != nil {
 		return "", err
 	}
-	body, err := json.Marshal(payload)
+	body, err := common.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
@@ -270,7 +273,7 @@ func adtyChannelSupportsModel(ch *model.Channel, modelName string) (string, bool
 	}
 	if rawMapping := strings.TrimSpace(ch.GetModelMapping()); rawMapping != "" {
 		var mapping map[string]string
-		if err := json.Unmarshal([]byte(rawMapping), &mapping); err == nil {
+		if err := common.Unmarshal([]byte(rawMapping), &mapping); err == nil {
 			if mapped, ok := mapping[modelName]; ok && strings.TrimSpace(mapped) != "" {
 				return strings.TrimSpace(mapped), true
 			}
@@ -313,7 +316,10 @@ func adtyTranslationEndpoint(rawBaseURL, protocol string) (string, error) {
 	if err != nil || parsed.Host == "" || parsed.User != nil || !strings.EqualFold(parsed.Scheme, "https") {
 		return "", ErrAdtyTranslationInvalid
 	}
-	if adtyTranslationTargetIsSelf(parsed.Hostname()) {
+	if adtyTranslationTargetIsSelf(parsed.Host) {
+		return "", ErrAdtyTranslationSelf
+	}
+	if err := validateURLWithCurrentFetchSetting(parsed.String(), false); err != nil {
 		return "", ErrAdtyTranslationSelf
 	}
 	path := strings.TrimSuffix(parsed.Path, "/")
@@ -337,21 +343,75 @@ func adtyTranslationEndpoint(rawBaseURL, protocol string) (string, error) {
 	return parsed.String(), nil
 }
 
-// adtyTranslationTargetIsSelf 防止翻译请求回到本站：本站品牌域名、主站域名和分站根域名都算自己。
+// adtyTranslationTargetIsSelf 防止翻译请求回到本站：本站品牌域名、主站域名、API 域名、分站根域名/自定义域名与私网/环回地址都算自己。
 func adtyTranslationTargetIsSelf(host string) bool {
-	host = strings.ToLower(strings.TrimSpace(host))
-	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+	host = strings.Trim(AdtyNormalizeHost(host), "[]")
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "0.0.0.0" {
 		return true
 	}
-	own := []string{strings.TrimPrefix(strings.ToLower(common.AdtyBrandURL), "https://")}
-	if main := adtyMainHost(); main != "" && main != "localhost" {
-		own = append(own, adtyRegistrableDomain(main))
-	}
-	own = append(own, resellerSetting().RootDomains...)
-	for _, domain := range own {
-		domain = strings.ToLower(strings.TrimSpace(domain))
-		if domain != "" && adtyHostUnder(host, domain) {
+	if ip := common.ParseIP(host); ip != nil {
+		if common.IsPrivateIP(ip) || ip.IsPrivate() || ip.IsLoopback() ||
+			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsUnspecified() || ip.IsMulticast() ||
+			common.IsIpInCIDRList(ip, []string{"100.64.0.0/10"}) {
 			return true
+		}
+	}
+	if AdtyIsMainHost(host) {
+		return true
+	}
+	own := []string{}
+	addOwn := func(domain string) {
+		domain = strings.Trim(AdtyNormalizeHost(domain), "[]")
+		if domain != "" && domain != "localhost" {
+			own = append(own, domain)
+		}
+	}
+	addOwn(hostOfURL(common.AdtyBrandURL))
+	if main := adtyMainHost(); main != "" && main != "localhost" {
+		addOwn(main)
+		if common.ParseIP(main) == nil {
+			addOwn(adtyRegistrableDomain(main))
+		}
+	}
+	if apiHost := hostOfURL(adty_setting.GetSiteSetting().APIBaseURL); apiHost != "" && apiHost != "localhost" {
+		addOwn(apiHost)
+		if common.ParseIP(apiHost) == nil {
+			addOwn(adtyRegistrableDomain(apiHost))
+		}
+	}
+	reseller := resellerSetting()
+	for _, domain := range reseller.RootDomains {
+		addOwn(domain)
+	}
+	addOwn(reseller.CnameTarget)
+	addOwn(reseller.FallbackOrigin)
+	for _, domain := range own {
+		if adtyHostUnder(host, domain) {
+			return true
+		}
+	}
+	if model.DB != nil {
+		if model.DB.Migrator().HasTable(&model.AdtySite{}) {
+			if AdtyIsCustomDomainHost(host) || AdtyIsApiOnlyHost(host) || AdtySiteForHost(host) != nil {
+				return true
+			}
+			if sub, root, ok := strings.Cut(host, "."); ok && sub != "" && root != "" {
+				var count int64
+				if err := model.DB.Model(&model.AdtySite{}).
+					Where("LOWER(subdomain) = ? AND LOWER(root_domain) = ?", sub, root).
+					Count(&count).Error; err == nil && count > 0 {
+					return true
+				}
+			}
+		}
+		if model.DB.Migrator().HasTable(&model.AdtySiteDomain{}) {
+			var count int64
+			if err := model.DB.Model(&model.AdtySiteDomain{}).
+				Where("LOWER(hostname) = ?", host).
+				Count(&count).Error; err == nil && count > 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -365,12 +425,13 @@ func adtyTranslationTimeout(seconds int) time.Duration {
 }
 
 func adtyTranslationPayload(protocol, modelName, text string) (any, error) {
+	systemPrompt := buildAdtyTranslationSystemPrompt(text)
 	switch protocol {
 	case adtyTranslationProtocolAnthropic:
 		return map[string]any{
 			"model":      modelName,
 			"max_tokens": adtyTranslationMaxOutputTokens,
-			"system":     adtyTranslationSystemPrompt,
+			"system":     systemPrompt,
 			"messages":   []map[string]string{{"role": "user", "content": text}},
 		}, nil
 	case adtyTranslationProtocolOpenAI:
@@ -378,7 +439,7 @@ func adtyTranslationPayload(protocol, modelName, text string) (any, error) {
 			"model":  modelName,
 			"stream": false,
 			"messages": []map[string]string{
-				{"role": "system", "content": adtyTranslationSystemPrompt},
+				{"role": "system", "content": systemPrompt},
 				{"role": "user", "content": text},
 			},
 		}, nil
@@ -395,7 +456,7 @@ func adtyTranslationReply(protocol string, raw []byte) (string, error) {
 				Text string `json:"text"`
 			} `json:"content"`
 		}
-		if err := json.Unmarshal(raw, &decoded); err != nil {
+		if err := common.Unmarshal(raw, &decoded); err != nil {
 			return "", errAdtyTranslationNoReply
 		}
 		for _, part := range decoded.Content {
@@ -412,7 +473,7 @@ func adtyTranslationReply(protocol string, raw []byte) (string, error) {
 				} `json:"message"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal(raw, &decoded); err != nil {
+		if err := common.Unmarshal(raw, &decoded); err != nil {
 			return "", errAdtyTranslationNoReply
 		}
 		if len(decoded.Choices) > 0 {

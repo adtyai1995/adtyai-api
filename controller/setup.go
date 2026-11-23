@@ -139,7 +139,8 @@ func PostSetup(c *gin.Context) {
 
 	existingRoot, err := getExistingRootUser()
 	if err != nil {
-		common.ApiErrorT(c, "System error: {{error}}", map[string]any{"error": err.Error()})
+		common.SysError(common.LogText("setup check root user failed: %v", err))
+		common.ApiErrorT(c, "Database error, please contact the administrator")
 		return
 	}
 
@@ -165,7 +166,7 @@ func PostSetup(c *gin.Context) {
 			return
 		}
 		if err := common.Validate.StructPartial(&model.User{Username: req.Username}, "Username"); err != nil {
-			common.ApiErrorT(c, "Invalid input {{error}}", map[string]any{"error": err.Error()})
+			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
 		// Validate password
@@ -175,17 +176,15 @@ func PostSetup(c *gin.Context) {
 		}
 
 		if err := common.ValidateNewAccountPassword(req.Password); err != nil {
-			c.JSON(200, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
+			common.ApiError(c, err)
 			return
 		}
 
 		// Create root user
 		hashedPassword, err := common.HashAccountPassword(req.Password)
 		if err != nil {
-			common.ApiErrorT(c, "System error: {{error}}", map[string]any{"error": err.Error()})
+			common.SysError(common.LogText("setup hash password failed: %v", err))
+			common.ApiErrorT(c, "Database error, please contact the administrator")
 			return
 		}
 		rootUser := model.User{
@@ -199,16 +198,16 @@ func PostSetup(c *gin.Context) {
 		}
 		err = model.CreateRootUserIfAbsent(&rootUser)
 		if err != nil {
-			common.ApiErrorT(c, "Failed to create the administrator account: {{error}}", map[string]any{"error": err.Error()})
+			common.SysError(common.LogText("setup create root user failed: %v", err))
+			common.ApiErrorT(c, "Database error, please contact the administrator")
 			return
 		}
 		currentRoot, err := getExistingRootUser()
 		if err != nil || currentRoot == nil {
-			errMsg := "root account unavailable"
 			if err != nil {
-				errMsg = err.Error()
+				common.SysError(common.LogText("setup verify root user failed: %v", err))
 			}
-			common.ApiErrorT(c, "Failed to create the administrator account: {{error}}", map[string]any{"error": errMsg})
+			common.ApiErrorT(c, "Database error, please contact the administrator")
 			return
 		}
 		if currentRoot.Username != req.Username || !common.ValidatePasswordAndHash(req.Password, currentRoot.Password) {
@@ -257,14 +256,16 @@ func PostSetup(c *gin.Context) {
 	err = model.UpdateOption("SelfUseModeEnabled", boolToString(req.SelfUseModeEnabled))
 	if err != nil {
 		restoreMemory()
-		common.ApiErrorT(c, "Failed to save the self-use mode setting: {{error}}", map[string]any{"error": err.Error()})
+		common.SysError(common.LogText("setup save SelfUseModeEnabled failed: %v", err))
+		common.ApiErrorT(c, "Database error, please contact the administrator")
 		return
 	}
 
 	err = model.UpdateOption("DemoSiteEnabled", boolToString(req.DemoSiteEnabled))
 	if err != nil {
 		restoreMemory()
-		common.ApiErrorT(c, "Failed to save the demo site mode setting: {{error}}", map[string]any{"error": err.Error()})
+		common.SysError(common.LogText("setup save DemoSiteEnabled failed: %v", err))
+		common.ApiErrorT(c, "Database error, please contact the administrator")
 		return
 	}
 
@@ -276,7 +277,8 @@ func PostSetup(c *gin.Context) {
 		err = model.DB.Create(&setup).Error
 		if err != nil {
 			restoreMemory()
-			common.ApiErrorT(c, "Failed to initialize the system: {{error}}", map[string]any{"error": err.Error()})
+			common.SysError(common.LogText("setup create record failed: %v", err))
+			common.ApiErrorT(c, "Database error, please contact the administrator")
 			return
 		}
 	}

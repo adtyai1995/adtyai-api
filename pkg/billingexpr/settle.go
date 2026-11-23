@@ -23,6 +23,11 @@ func groupRatioDecimal(snap *BillingSnapshot) decimal.Decimal {
 	if snap == nil {
 		return decimal.NewFromInt(1)
 	}
+	if snap.GroupRatioDecimal != "" {
+		if parsed, err := decimal.NewFromString(snap.GroupRatioDecimal); err == nil {
+			return parsed
+		}
+	}
 	return decimal.NewFromFloat(snap.GroupRatio)
 }
 

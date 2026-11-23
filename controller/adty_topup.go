@@ -3,7 +3,6 @@ package controller
 import (
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -325,12 +324,12 @@ func matchAdtyTopUpSelfFilter(userID int, item model.AdtyTopUpView, filter adtyT
 	if filter.Business != "" && (item.Ext == nil || item.Ext.Business != filter.Business) {
 		return false
 	}
-	raw, err := json.Marshal(item)
+	raw, err := common.Marshal(item)
 	if err != nil {
 		return false
 	}
 	var row adtyTopUpFilterRow
-	if err := json.Unmarshal(raw, &row); err != nil {
+	if err := common.Unmarshal(raw, &row); err != nil {
 		return false
 	}
 	if row.UserID != 0 && row.UserID != userID {
@@ -408,11 +407,11 @@ func matchAdtyTopUpSelfFilter(userID int, item model.AdtyTopUpView, filter adtyT
 
 func newAdtyScanPageInfo(page, pageSize int) *common.PageInfo {
 	var info common.PageInfo
-	raw, _ := json.Marshal(map[string]int{
+	raw, _ := common.Marshal(map[string]int{
 		"page":      page,
 		"page_size": pageSize,
 	})
-	_ = json.Unmarshal(raw, &info)
+	_ = common.Unmarshal(raw, &info)
 	return &info
 }
 
@@ -421,8 +420,8 @@ func resolveAdtyPageWindow(pageInfo *common.PageInfo) (int, int) {
 		Page     int `json:"page"`
 		PageSize int `json:"page_size"`
 	}
-	if raw, err := json.Marshal(pageInfo); err == nil {
-		_ = json.Unmarshal(raw, &window)
+	if raw, err := common.Marshal(pageInfo); err == nil {
+		_ = common.Unmarshal(raw, &window)
 	}
 	if window.Page <= 0 {
 		window.Page = 1

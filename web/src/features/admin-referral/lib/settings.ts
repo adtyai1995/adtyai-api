@@ -18,7 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { ReferralSettings, ReferralSettingsUpdate } from '../api'
 
-export type MoneyKey = 'default_rate' | 'min_withdraw_usd' | 'usdt_withdraw_fee'
+export type MoneyKey =
+  | 'default_rate'
+  | 'partner_min_rate'
+  | 'partner_max_rate'
+  | 'min_withdraw_usd'
+  | 'usdt_withdraw_fee'
 export type RuleKey =
   | 'cookie_ttl_days'
   | 'freeze_days'
@@ -29,6 +34,8 @@ export type RuleKey =
 
 export const MONEY_KEYS: MoneyKey[] = [
   'default_rate',
+  'partner_min_rate',
+  'partner_max_rate',
   'min_withdraw_usd',
   'usdt_withdraw_fee',
 ]

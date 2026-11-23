@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -215,7 +214,7 @@ func EncodeRequestPriceSnapshot(s *RequestPriceSnapshot) (string, error) {
 	if s == nil {
 		return "", nil
 	}
-	encoded, err := json.Marshal(s)
+	encoded, err := common.Marshal(s)
 	if err != nil {
 		return "", err
 	}
@@ -228,7 +227,7 @@ func DecodeRequestPriceSnapshot(raw string) *RequestPriceSnapshot {
 		return nil
 	}
 	var snapshot RequestPriceSnapshot
-	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+	if err := common.Unmarshal([]byte(raw), &snapshot); err != nil {
 		return nil
 	}
 	if !snapshot.HasOfficialFields() {

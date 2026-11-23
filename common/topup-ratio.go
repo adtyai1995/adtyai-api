@@ -1,6 +1,7 @@
 package common
 
 import (
+	"math"
 	"sync"
 )
 
@@ -36,8 +37,7 @@ func GetTopupGroupRatio(name string) float64 {
 	topupGroupRatioMutex.RLock()
 	defer topupGroupRatioMutex.RUnlock()
 	ratio, ok := topupGroupRatio[name]
-	if !ok {
-		SysError(LogText("topup group ratio not found: %s", name))
+	if !ok || math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 {
 		return 1
 	}
 	return ratio

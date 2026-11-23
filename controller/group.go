@@ -12,8 +12,12 @@ import (
 )
 
 func GetGroups(c *gin.Context) {
+	siteID := service.AdtyRequestSiteID(c)
 	groupNames := make([]string, 0)
 	for groupName := range ratio_setting.GetGroupRatioCopy() {
+		if !service.SiteGroupAllowed(siteID, groupName) {
+			continue
+		}
 		groupNames = append(groupNames, groupName)
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -24,14 +28,23 @@ func GetGroups(c *gin.Context) {
 }
 
 func GetUserGroups(c *gin.Context) {
+	siteID := service.AdtyRequestSiteID(c)
 	usableGroups := make(map[string]map[string]any)
 	userGroup := ""
 	userId := c.GetInt("id")
 	if userId > 0 {
 		userGroup, _ = model.GetUserGroup(userId, false)
+		if siteID == 0 {
+			if user, err := model.GetUserCache(userId); err == nil && user != nil && user.SiteId > 0 {
+				siteID = user.SiteId
+			}
+		}
 	}
 	userUsableGroups := service.GetUserUsableGroups(userGroup)
-	for groupName, _ := range ratio_setting.GetGroupRatioCopy() {
+	for groupName := range ratio_setting.GetGroupRatioCopy() {
+		if !service.SiteGroupAllowed(siteID, groupName) {
+			continue
+		}
 		// UserUsableGroups contains the groups that the user can use
 		if desc, ok := userUsableGroups[groupName]; ok {
 			usableGroups[groupName] = map[string]any{
@@ -40,7 +53,7 @@ func GetUserGroups(c *gin.Context) {
 			}
 		}
 	}
-	if _, ok := userUsableGroups["auto"]; ok {
+	if _, ok := userUsableGroups["auto"]; ok && (siteID == 0 || len(usableGroups) > 0) {
 		usableGroups["auto"] = map[string]any{
 			"ratio": "auto",
 			"desc":  setting.GetUsableGroupDescription("auto"),

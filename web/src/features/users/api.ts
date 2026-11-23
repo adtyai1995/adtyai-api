@@ -190,12 +190,17 @@ export async function manageUser(
 }
 
 /**
- * Adjust user quota atomically (add/subtract/override)
+ * Adjust user quota atomically (add/subtract/override); requires an `admin.user.quota` proof
  */
 export async function adjustUserQuota(
-  payload: ManageUserQuotaPayload
+  payload: ManageUserQuotaPayload,
+  proofToken?: string
 ): Promise<ApiResponse<Partial<User>>> {
-  const res = await api.post('/api/user/manage', payload)
+  const res = await api.post(
+    '/api/user/manage',
+    payload,
+    proofToken ? securityProofConfig(proofToken) : undefined
+  )
   return res.data
 }
 

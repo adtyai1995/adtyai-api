@@ -477,3 +477,18 @@ README.zh_TW.md
 README.fr.md
 README.ja.md
 .github/README.md
+
+# 已退役的官方价、价格快照回填与金额档位赠金（2026-11-23）
+controller/adty_pricing.go
+controller/adty_price_snapshot_backfill.go
+service/adty_official_price.go
+service/adty_price_snapshot_backfill.go
+setting/adty_setting/official_price.go
+web/src/features/system-settings/integrations/adty-bonus-rates-editor.tsx
+web/src/features/pricing/hooks/use-official-prices.ts
+web/src/features/pricing/components/adty-official-price-cells.tsx
+web/src/features/pricing/lib/adty-savings.ts
+web/src/features/system-settings/billing/price-snapshot-backfill-section.tsx
+web/src/features/system-settings/models/adty-official-prices-section.tsx
+web/src/features/system-settings/models/adty-official-price-sheet.tsx
+web/src/features/wallet/adty/lib/bonus.ts

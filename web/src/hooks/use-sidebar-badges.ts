@@ -40,6 +40,8 @@ export const CONFIRMED_SIDEBAR_BADGE_KINDS = [
   'fund_anomalies_open',
   'staff_balance_pending',
   'tickets_pending',
+  'platform_tickets_pending',
+  'owner_tickets_pending',
   'tickets_waiting_user',
   'payment_orphans_pending_review',
 ] as const
@@ -81,6 +83,10 @@ export const TICKET_BADGE_KINDS = [
   'tickets_pending',
   'tickets_waiting_user',
 ] as const
+
+export const PERSONAL_TICKET_BADGE_KINDS = ['tickets_waiting_user'] as const
+export const OWNER_TICKET_BADGE_KINDS = ['owner_tickets_pending'] as const
+export const PLATFORM_TICKET_BADGE_KINDS = ['platform_tickets_pending'] as const
 
 export const STAFF_WORKSPACE_BADGE_KINDS = ['tickets_pending'] as const
 

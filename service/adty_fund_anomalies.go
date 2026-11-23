@@ -283,13 +283,19 @@ func adtyDuplicateEventTradeNos(siteID int, outcome, eventType string) ([]string
 }
 
 type adtySuccessOrderRow struct {
-	TradeNo     string
-	UserId      int
-	SiteId      int
-	Status      string
-	CreditQuota int64
-	FaceUSD     decimal.Decimal
-	HasExt      bool
+	TradeNo               string
+	UserId                int
+	SiteId                int
+	Status                string
+	Business              string
+	TeamId                int64
+	GiftFulfillmentStatus string
+	BonusUSD              decimal.Decimal
+	CreditQuota           int64
+	FaceUSD               decimal.Decimal
+	PaymentProvider       string
+	PaymentMethod         string
+	HasExt                bool
 }
 
 func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
@@ -297,8 +303,14 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 	err := model.DB.Table("top_ups AS t").
 		Select(`t.trade_no AS trade_no, t.user_id AS user_id, t.status AS status,
 			COALESCE(a.site_id, u.site_id) AS site_id,
+			COALESCE(a.business, '') AS business,
+			COALESCE(a.team_id, 0) AS team_id,
+			COALESCE(a.gift_fulfillment_status, '') AS gift_fulfillment_status,
+			COALESCE(a.bonus_usd, 0) AS bonus_usd,
 			COALESCE(a.credit_quota, 0) AS credit_quota,
 			COALESCE(a.face_usd, 0) AS face_usd,
+			COALESCE(t.payment_provider, '') AS payment_provider,
+			COALESCE(t.payment_method, '') AS payment_method,
 			(a.trade_no IS NOT NULL) AS has_ext`).
 		Joins("JOIN users u ON u.id = t.user_id").
 		Joins("LEFT JOIN adty_topup_orders a ON a.trade_no = t.trade_no").
@@ -310,6 +322,38 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 	}
 	var items []adtyFundAnomalyItem
 	for _, row := range rows {
+		// 1) Owner margin top-ups credit the site's margin wallet, not AdtyBalanceLedger.
+		if row.Business == model.AdtyBusinessOwnerMarginTopup {
+			if !row.FaceUSD.IsPositive() {
+				continue
+			}
+			var marginBooked decimal.Decimal
+			if err := model.DB.Model(&model.AdtySiteWalletLedger{}).
+				Where("site_id = ? AND wallet_type = ? AND ref_type = ? AND ref_id = ? AND delta > 0",
+					siteID, model.AdtySiteWalletMargin, "topup", row.TradeNo).
+				Select("COALESCE(SUM(delta), 0)").Scan(&marginBooked).Error; err != nil {
+				return nil, err
+			}
+			if !marginBooked.LessThan(row.FaceUSD) {
+				continue
+			}
+			gapUSD := row.FaceUSD.Sub(marginBooked)
+			items = append(items, adtyFundAnomalyItem{
+				Kind:       AdtyAnomalyOrderSuccessUnbooked,
+				Ref:        row.TradeNo,
+				OrderRef:   row.TradeNo,
+				SiteID:     siteID,
+				AccountID:  row.UserId,
+				Difference: gapUSD.String(),
+				Evidence: mustAnomalyEvidence(map[string]any{
+					"status": row.Status, "business": row.Business,
+					"expected_margin_usd": row.FaceUSD.String(), "booked_margin_usd": marginBooked.String(),
+					"reason": "successful owner margin top-up was not booked to margin wallet",
+				}),
+			})
+			continue
+		}
+
 		expected := row.CreditQuota
 		if expected <= 0 && row.FaceUSD.IsPositive() {
 			expected = row.FaceUSD.Mul(common.QuotaPerUnitDecimal()).IntPart()
@@ -317,9 +361,53 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 		if expected <= 0 {
 			continue
 		}
+
+		// 2) Team top-ups credit AdtyTeamLedger, not personal AdtyBalanceLedger.
+		if row.Business == model.AdtyBusinessTeamTopup || row.TeamId > 0 {
+			var teamBooked int64
+			if err := model.DB.Model(&model.AdtyTeamLedger{}).
+				Where("team_id = ? AND ref_id = ? AND delta_quota > 0", row.TeamId, row.TradeNo).
+				Select("COALESCE(SUM(delta_quota), 0)").Scan(&teamBooked).Error; err != nil {
+				return nil, err
+			}
+			if teamBooked >= expected {
+				continue
+			}
+			gap := expected - teamBooked
+			items = append(items, adtyFundAnomalyItem{
+				Kind:       AdtyAnomalyOrderSuccessUnbooked,
+				Ref:        row.TradeNo,
+				OrderRef:   row.TradeNo,
+				SiteID:     siteID,
+				AccountID:  row.UserId,
+				Difference: decimal.NewFromInt(gap).Div(common.QuotaPerUnitDecimal()).String(),
+				Evidence: mustAnomalyEvidence(map[string]any{
+					"status": row.Status, "business": row.Business, "team_id": row.TeamId,
+					"expected_credit_quota": expected, "booked_quota": teamBooked,
+					"reason": "successful team top-up was not booked to team ledger",
+				}),
+			})
+			continue
+		}
+
+		// 3) Pending / under-review / canceled gift fulfillment: only principal (or fulfilled gift) is expected in AdtyBalanceLedger.
+		if row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentPending ||
+			row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentPendingReview ||
+			row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentCanceled {
+			faceQuota := row.FaceUSD.Mul(common.QuotaPerUnitDecimal()).Floor().IntPart()
+			if faceQuota > 0 && faceQuota < expected {
+				expected = faceQuota
+			}
+		}
+
+		// 4) Personal wallet top-ups & voucher redemptions (include voucher and gift_fulfillment ledger types).
 		var booked int64
 		if err := model.DB.Model(&model.AdtyBalanceLedger{}).
-			Where("user_id = ? AND type = ? AND ref_type = ? AND ref_id = ?", row.UserId, model.AdtyLedgerTypeTopUp, "topup", row.TradeNo).
+			Where("user_id = ? AND ref_id = ? AND delta_quota > 0 AND ((type = ? AND ref_type = ?) OR (type = ? AND ref_type = ?) OR (type = ? AND ref_type = ?))",
+				row.UserId, row.TradeNo,
+				model.AdtyLedgerTypeTopUp, "topup",
+				model.AdtyLedgerTypeVoucher, "voucher",
+				model.AdtyLedgerTypeGiftFulfillment, "topup").
 			Select("COALESCE(SUM(delta_quota), 0)").Scan(&booked).Error; err != nil {
 			return nil, err
 		}
@@ -335,7 +423,7 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 			AccountID:  row.UserId,
 			Difference: decimal.NewFromInt(gap).Div(common.QuotaPerUnitDecimal()).String(),
 			Evidence: mustAnomalyEvidence(map[string]any{
-				"status": row.Status, "has_ext": row.HasExt,
+				"status": row.Status, "has_ext": row.HasExt, "business": row.Business,
 				"expected_credit_quota": expected, "booked_quota": booked,
 				"face_usd": row.FaceUSD.String(),
 				"reason":   "successful top-up principal or official credit was not booked",
@@ -373,6 +461,27 @@ func detectInsufficientGiftGuarantees(siteID int) ([]adtyFundAnomalyItem, error)
 	for _, ext := range orders {
 		status := strings.TrimSpace(statusByTrade[ext.TradeNo])
 		if !giftGuaranteeShouldBeHeld(status) {
+			// Failed / expired / canceled / replaced orders must not retain any frozen site gift guarantee (R1-003).
+			if ledgerCountByTrade[ext.TradeNo] > 0 && holdByTrade[ext.TradeNo].IsPositive() {
+				held := holdByTrade[ext.TradeNo]
+				items = append(items, adtyFundAnomalyItem{
+					Kind:       AdtyAnomalyGiftGuaranteeShort,
+					Ref:        ext.TradeNo,
+					OrderRef:   ext.TradeNo,
+					SiteID:     siteID,
+					AccountID:  ext.UserId,
+					Difference: held.String(),
+					Evidence: mustAnomalyEvidence(map[string]any{
+						"status":           status,
+						"required_usd":     "0",
+						"reserved_earning": ext.GiftReserveEarning.String(),
+						"reserved_margin":  ext.GiftReserveMargin.String(),
+						"held_usd":         held.String(),
+						"bonus_usd":        ext.BonusUSD.String(),
+						"reason":           "non-active order still holds unreleased site gift guarantee",
+					}),
+				})
+			}
 			continue
 		}
 		batchInfo, hasBatch := bonusBatchByTrade[ext.TradeNo]
@@ -928,11 +1037,22 @@ func refundRowAmountMismatch(siteID int, ext *model.AdtyTopupOrder, rows []model
 			}
 		}
 		if row.PayoutStatus == model.AdtyManualRefundPayoutSuccess {
-			expected := row.ForeignReference
-			if !expected.IsPositive() {
-				expected = row.RequestUSD
+			payoutCur := strings.ToUpper(strings.TrimSpace(row.PayoutCurrency))
+			orderCur := strings.ToUpper(strings.TrimSpace(ext.PaidCurrency))
+			if orderCur == "" {
+				orderCur = strings.ToUpper(strings.TrimSpace(ext.PayCurrency))
 			}
-			if expected.IsPositive() && !row.PayoutAmount.Equal(expected) {
+			var expected decimal.Decimal
+			sameCurrency := false
+			switch {
+			case row.ForeignReference.IsPositive() && (payoutCur == "" || orderCur == "" || payoutCur == orderCur):
+				expected = row.ForeignReference
+				sameCurrency = true
+			case payoutCur == "" || payoutCur == "USD":
+				expected = row.RequestUSD
+				sameCurrency = true
+			}
+			if sameCurrency && expected.IsPositive() && !row.PayoutAmount.Equal(expected) {
 				return adtyFundAnomalyItem{
 					Kind:       AdtyAnomalyRefundAmountMismatch,
 					Ref:        ext.TradeNo,
@@ -942,10 +1062,28 @@ func refundRowAmountMismatch(siteID int, ext *model.AdtyTopupOrder, rows []model
 					Difference: row.PayoutAmount.Sub(expected).Abs().String(),
 					Evidence: mustAnomalyEvidence(map[string]any{
 						"refund_id": row.RefundId, "payout_amount": row.PayoutAmount.String(),
+						"payout_currency":   payoutCur,
+						"order_currency":    orderCur,
 						"foreign_reference": row.ForeignReference.String(),
 						"request_usd":       row.RequestUSD.String(),
 						"payout_status":     row.PayoutStatus,
 						"reason":            "paid-out amount does not match the authorized refund",
+					}),
+				}, true
+			}
+			if !sameCurrency && (!row.PayoutAmount.IsPositive() || strings.TrimSpace(row.PayoutVoucher) == "") {
+				return adtyFundAnomalyItem{
+					Kind:       AdtyAnomalyRefundAmountMismatch,
+					Ref:        ext.TradeNo,
+					OrderRef:   ext.TradeNo,
+					SiteID:     siteID,
+					AccountID:  ext.UserId,
+					Difference: row.RequestUSD.String(),
+					Evidence: mustAnomalyEvidence(map[string]any{
+						"refund_id": row.RefundId, "payout_amount": row.PayoutAmount.String(),
+						"payout_currency": payoutCur, "order_currency": orderCur,
+						"payout_voucher": row.PayoutVoucher, "payout_status": row.PayoutStatus,
+						"reason": "cross-currency refund payout is missing a positive amount or voucher proof",
 					}),
 				}, true
 			}

@@ -22,12 +22,19 @@ import { Dashboard } from '@/features/dashboard'
 import {
   DASHBOARD_SECTION_IDS,
   DASHBOARD_DEFAULT_SECTION,
+  isAdminOnlyDashboardSection,
 } from '@/features/dashboard/section-registry'
+import { canViewAllLogs } from '@/lib/adty-permissions'
+import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/dashboard/$section')({
   beforeLoad: ({ params }) => {
     const validSections = DASHBOARD_SECTION_IDS as unknown as string[]
-    if (!validSections.includes(params.section)) {
+    const user = useAuthStore.getState().auth.user
+    if (
+      !validSections.includes(params.section) ||
+      (isAdminOnlyDashboardSection(params.section) && !canViewAllLogs(user))
+    ) {
       throw redirect({
         to: '/dashboard/$section',
         params: { section: DASHBOARD_DEFAULT_SECTION },

@@ -88,7 +88,10 @@ export const siteOwnerKeys = {
 
 /** Header carrying a step-up proof for sensitive owner actions. */
 function proofHeaders(proof: string) {
-  return { headers: { 'X-Security-Proof': proof } }
+  return {
+    headers: { 'X-Security-Proof': proof },
+    singleUseAuthorization: true,
+  }
 }
 
 export async function requestSiteClose(
@@ -770,24 +773,10 @@ export async function creditOwnerCustomerBalance(
         'X-Security-Proof': proof,
         'Idempotency-Key': idempotencyKey,
       },
+      singleUseAuthorization: true,
     }
   )
   return requireServerSuccess(res.data).data
-}
-
-/** Proof: action `trial`, target = customer id. */
-export async function grantTrial(
-  id: number,
-  amountUsd: string,
-  idempotencyKey: string,
-  proof: string
-): Promise<void> {
-  const res = await api.post<ApiResponse<unknown>>(
-    `${BASE}/customers/${id}/trial`,
-    { amount_usd: amountUsd, idempotency_key: idempotencyKey },
-    proofHeaders(proof)
-  )
-  requireServerSuccess(res.data)
 }
 
 export async function reportCustomer(

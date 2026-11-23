@@ -534,6 +534,14 @@ func UpdateOption(c *gin.Context) {
 		}
 	}
 	if model.IsPasskeyDomainOption(option.Key) {
+		if option.Key == "ServerAddress" {
+			optionUpdateCrossKeyMu.Lock()
+			defer optionUpdateCrossKeyMu.Unlock()
+			if err := service.ValidateMainSiteDomainSeparation(option.Value.(string), adty_setting.GetSiteSetting().APIBaseURL); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 		change, updateErr := model.UpdatePasskeyDomainOptions(map[string]string{option.Key: option.Value.(string)}, false, "")
 		if updateErr != nil {
 			writePasskeyDomainSettingsError(c, updateErr)
@@ -600,6 +608,12 @@ func UpdateOption(c *gin.Context) {
 	} else {
 		optionUpdateCrossKeyMu.Lock()
 		defer optionUpdateCrossKeyMu.Unlock()
+		if option.Key == "adty_site_setting.api_base_url" {
+			if err = service.ValidateMainSiteDomainSeparation(system_setting.ServerAddress, valueStr); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 		err = model.UpdateOptionWithAudit(option.Key, valueStr, auditEvent, func(beforeRaw string) model.AuditLog {
 			auditBefore := formatOptionAuditValue(option.Key, beforeRaw)
 			auditAfter := formatOptionAuditValue(option.Key, valueStr)

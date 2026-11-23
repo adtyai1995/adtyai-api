@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"image"
-	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -32,6 +32,7 @@ var (
 	ErrAdtyTicketInvalid   = common.NewMessage("Invalid parameters")
 	ErrAdtyTicketForbidden = common.NewMessage("No permission to perform this action")
 	ErrAdtyTicketImage     = common.NewMessage("Only images are accepted")
+	ErrAdtyTicketImageSize = common.NewMessage("Image exceeds the size limit")
 	adtyTicketImageDir     = func() string { return filepath.Join("uploads", "adty-ticket-images") }
 )
 
@@ -61,9 +62,10 @@ type AdtyTicketDetail struct {
 	Ticket    model.AdtyTicket          `json:"ticket"`
 	Messages  []model.AdtyTicketMessage `json:"messages"`
 	Images    []model.AdtyTicketImage   `json:"images"`
-	Events    []model.AdtyTicketEvent   `json:"events"`
-	CanNote   bool                      `json:"can_note"`
-	CanManage bool                      `json:"can_manage"`
+	Events     []model.AdtyTicketEvent   `json:"events"`
+	CanNote    bool                      `json:"can_note"`
+	CanManage  bool                      `json:"can_manage"`
+	CanControl bool                      `json:"can_control"`
 }
 
 type AdtyTicketBadges struct {
@@ -154,7 +156,7 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 	input.RelatedModel = strings.TrimSpace(redactAdtySecrets(input.RelatedModel))
 	input.RelatedGroup = strings.TrimSpace(redactAdtySecrets(input.RelatedGroup))
 	input.RelatedError = strings.TrimSpace(redactAdtySecrets(input.RelatedError))
-	if userId <= 0 || input.Title == "" || input.Body == "" || len(input.Title) > 120 {
+	if userId <= 0 || input.Title == "" || input.Body == "" || utf8.RuneCountInString(input.Title) > 120 {
 		return nil, ErrAdtyTicketInvalid
 	}
 	if input.Type == "" {
@@ -188,6 +190,7 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 	}
 	var created *model.AdtyTicket
 	createdNew := false
+	var createAudit *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
 		if err := model.AdtyLockForUpdate(tx).Select("id").First(&user, userId).Error; err != nil {
@@ -275,17 +278,30 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 		ticket.InitialMessageId = message.Id
 		created = &ticket
 		createdNew = true
-		return nil
-	})
-	if err == nil && createdNew && created != nil {
-		writeAdtyOfficialAudit(userId, created.SiteId, "ticket", strconv.FormatInt(created.Id, 10), "adty.ticket.create", "", "",
+		var auditErr error
+		createAudit, auditErr = appendAdtyOfficialAuditTx(tx, userId, ticket.SiteId, "ticket", strconv.FormatInt(ticket.Id, 10), "adty.ticket.create", "", "",
 			nil,
 			map[string]any{
-				"ticket_id": created.Id, "site_id": created.SiteId, "user_id": created.UserId,
-				"team_id": created.TeamId, "type": created.Type, "title": created.Title,
-				"priority": created.Priority, "status": created.Status, "related_kind": created.RelatedKind,
+				"ticket_id": ticket.Id, "site_id": ticket.SiteId, "user_id": ticket.UserId,
+				"team_id": ticket.TeamId, "type": ticket.Type, "title": ticket.Title,
+				"priority": ticket.Priority, "status": ticket.Status, "related_kind": ticket.RelatedKind,
 			},
 			model.AuditResultSuccess)
+		return auditErr
+	})
+	if err == nil && createdNew && created != nil {
+		if createAudit != nil {
+			deliverAdtyCommittedAudit(*createAudit)
+		} else {
+			writeAdtyOfficialAudit(userId, created.SiteId, "ticket", strconv.FormatInt(created.Id, 10), "adty.ticket.create", "", "",
+				nil,
+				map[string]any{
+					"ticket_id": created.Id, "site_id": created.SiteId, "user_id": created.UserId,
+					"team_id": created.TeamId, "type": created.Type, "title": created.Title,
+					"priority": created.Priority, "status": created.Status, "related_kind": created.RelatedKind,
+				},
+				model.AuditResultSuccess)
+		}
 	}
 	return created, err
 }
@@ -486,7 +502,7 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 		}
 	}
 	var images []model.AdtyTicketImage
-	if err := model.DB.Select("id", "object_id", "ticket_id", "message_id", "visibility", "mime", "size", "width", "height", "sha256", "created_at").Where("ticket_id = ? AND visibility IN ?", ticket.Id, visibility).Order("id ASC").Find(&images).Error; err != nil {
+	if err := model.DB.Select("id", "object_id", "ticket_id", "message_id", "visibility", "mime", "size", "width", "height", "sha256", "created_at").Where("ticket_id = ? AND visibility IN ? AND COALESCE(delete_pending, false) = false", ticket.Id, visibility).Order("id ASC").Find(&images).Error; err != nil {
 		return nil, err
 	}
 	var events []model.AdtyTicketEvent
@@ -505,7 +521,18 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 			return nil, err
 		}
 	}
-	return &AdtyTicketDetail{Actions: allowedTicketActions(actor, ticket), Assignees: assignees, Ticket: ticket, Messages: messages, Images: images, Events: events, CanNote: actor.isHandling(), CanManage: actor.isHandling()}, nil
+	canControl := actor.isHandling() || isAdtyTicketCustomerController(actor, ticket)
+	return &AdtyTicketDetail{Actions: allowedTicketActions(actor, ticket), Assignees: assignees, Ticket: ticket, Messages: messages, Images: images, Events: events, CanNote: actor.isHandling(), CanManage: actor.isHandling(), CanControl: canControl}, nil
+}
+
+func isAdtyTicketCustomerController(actor adtyTicketActor, ticket model.AdtyTicket) bool {
+	if actor.Staff != nil || actor.User.StaffSiteId > 0 {
+		return false
+	}
+	if actor.User.Id == ticket.UserId {
+		return !ticket.TeamShared || (actor.TeamId > 0 && actor.TeamId == ticket.TeamId)
+	}
+	return ticket.TeamShared && actor.TeamId > 0 && actor.TeamId == ticket.TeamId && actor.TeamRole == model.AdtyTeamRoleLeader
 }
 
 func allowedTicketActions(actor adtyTicketActor, ticket model.AdtyTicket) []string {
@@ -535,7 +562,7 @@ func allowedTicketActions(actor adtyTicketActor, ticket model.AdtyTicket) []stri
 	if handler && status != model.AdtyTicketClosed {
 		actions = append(actions, "close")
 	}
-	if handler || actor.User.Id == ticket.UserId {
+	if handler || isAdtyTicketCustomerController(actor, ticket) {
 		if active {
 			actions = append(actions, "resolve")
 		} else {
@@ -567,6 +594,7 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 	}
 	var statusAudit map[string]any
 	var statusBefore map[string]any
+	var statusAuditEntry *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		if assigneeId > 0 {
 			var membership model.AdtySiteStaff
@@ -584,7 +612,7 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 		}
 		var operationKey *string
 		if status == "reopen" && key != "" {
-			if actor.User.Id != ticket.UserId && !actor.isHandling() {
+			if !isAdtyTicketCustomerController(actor, ticket) && !actor.isHandling() {
 				return ErrAdtyTicketForbidden
 			}
 			digest := sha256.Sum256([]byte(strconv.FormatInt(ticket.Id, 10) + ":" + strconv.Itoa(userId) + ":reopen:" + key))
@@ -697,15 +725,25 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 		if err := tx.Create(&eventRow).Error; err != nil {
 			return err
 		}
-		return emitAdtyTicketStatusNoticesTx(tx, ticket, eventRow, actor.User.Id, next, nextAssignee)
+		if err := emitAdtyTicketStatusNoticesTx(tx, ticket, eventRow, actor.User.Id, next, nextAssignee); err != nil {
+			return err
+		}
+		var auditErr error
+		statusAuditEntry, auditErr = appendAdtyOfficialAuditTx(tx, userId, ticket.SiteId, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.status", "", "",
+			statusBefore, statusAudit, model.AuditResultSuccess)
+		return auditErr
 	})
 	if err == nil && statusAudit != nil {
-		siteID := 0
-		if value, ok := statusAudit["site_id"].(int); ok {
-			siteID = value
+		if statusAuditEntry != nil {
+			deliverAdtyCommittedAudit(*statusAuditEntry)
+		} else {
+			siteID := 0
+			if value, ok := statusAudit["site_id"].(int); ok {
+				siteID = value
+			}
+			writeAdtyOfficialAudit(userId, siteID, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.status", "", "",
+				statusBefore, statusAudit, model.AuditResultSuccess)
 		}
-		writeAdtyOfficialAudit(userId, siteID, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.status", "", "",
-			statusBefore, statusAudit, model.AuditResultSuccess)
 	}
 	return err
 }
@@ -714,7 +752,7 @@ func nextAdtyTicketStatus(tx *gorm.DB, actor adtyTicketActor, ticket model.AdtyT
 	landing := reopenAdtyTicketLanding(nextAssignee)
 	switch requested {
 	case "resolve":
-		if actor.User.Id != ticket.UserId && !actor.isHandling() {
+		if !isAdtyTicketCustomerController(actor, ticket) && !actor.isHandling() {
 			return "", ErrAdtyTicketForbidden
 		}
 		if current == model.AdtyTicketClosed {
@@ -722,7 +760,7 @@ func nextAdtyTicketStatus(tx *gorm.DB, actor adtyTicketActor, ticket model.AdtyT
 		}
 		return model.AdtyTicketResolved, nil
 	case "reopen":
-		if ticket.UserId != actor.User.Id && !actor.isHandling() {
+		if !isAdtyTicketCustomerController(actor, ticket) && !actor.isHandling() {
 			return "", ErrAdtyTicketForbidden
 		}
 		if current == model.AdtyTicketResolved || current == model.AdtyTicketClosed {
@@ -869,7 +907,9 @@ func AttachAdtyTicketImageWithKey(userId int, ticketId, messageID int64, visibil
 	var mime string
 	var width, height int
 	var sanitizeErr error = ErrAdtyTicketImage
-	if len(data) > 0 && len(data) <= policy.MaxBytes {
+	if len(data) > policy.MaxBytes {
+		sanitizeErr = ErrAdtyTicketImageSize
+	} else if len(data) > 0 {
 		stripped, mime, width, height, sanitizeErr = sanitizeAdtyTicketImage(data, policy)
 	}
 	var sum [32]byte
@@ -1030,6 +1070,7 @@ func OpenAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...strin
 func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...string) error {
 	var target model.AdtyTicketImage
 	var ticketSiteID int
+	var deleteAudit *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
 		if err != nil {
@@ -1050,8 +1091,7 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 				return ErrAdtyTicketForbidden
 			}
 		} else if !actor.isHandling() {
-			allowed := actor.User.Id == ticket.UserId ||
-				(ticket.TeamShared && actor.TeamRole == model.AdtyTeamRoleLeader && actor.TeamId > 0 && actor.TeamId == ticket.TeamId)
+			allowed := isAdtyTicketCustomerController(actor, ticket)
 			if !allowed && target.MessageId > 0 {
 				var msg model.AdtyTicketMessage
 				if err := tx.Select("author_id").Where("id = ? AND ticket_id = ?", target.MessageId, ticket.Id).First(&msg).Error; err == nil && msg.AuthorId == actor.User.Id {
@@ -1066,9 +1106,17 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 			return err
 		}
 		ticketSiteID = ticket.SiteId
-		return tx.Create(&model.AdtyTicketEvent{
+		if err := tx.Create(&model.AdtyTicketEvent{
 			TicketId: ticket.Id, ActorId: actor.User.Id, Action: "image_delete", Detail: strconv.FormatInt(target.Id, 10),
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		var auditErr error
+		deleteAudit, auditErr = appendAdtyOfficialAuditTx(tx, userId, ticketSiteID, "ticket_image", strconv.FormatInt(target.Id, 10), "adty.ticket.image.delete", "", "",
+			map[string]any{"ticket_id": ticketId, "image_id": target.Id, "object_id": target.ObjectId, "visibility": target.Visibility},
+			map[string]any{"deleted": true},
+			model.AuditResultSuccess)
+		return auditErr
 	})
 	if err != nil {
 		return err
@@ -1078,10 +1126,14 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 			_ = model.DB.Where("id = ? AND COALESCE(delete_pending,false)=true", target.Id).Delete(&model.AdtyTicketImage{}).Error
 		}
 	}
-	writeAdtyOfficialAudit(userId, ticketSiteID, "ticket_image", strconv.FormatInt(target.Id, 10), "adty.ticket.image.delete", "", "",
-		map[string]any{"ticket_id": ticketId, "image_id": target.Id, "object_id": target.ObjectId, "visibility": target.Visibility},
-		map[string]any{"deleted": true},
-		model.AuditResultSuccess)
+	if deleteAudit != nil {
+		deliverAdtyCommittedAudit(*deleteAudit)
+	} else {
+		writeAdtyOfficialAudit(userId, ticketSiteID, "ticket_image", strconv.FormatInt(target.Id, 10), "adty.ticket.image.delete", "", "",
+			map[string]any{"ticket_id": ticketId, "image_id": target.Id, "object_id": target.ObjectId, "visibility": target.Visibility},
+			map[string]any{"deleted": true},
+			model.AuditResultSuccess)
+	}
 	return nil
 }
 
@@ -1097,6 +1149,7 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 	var saved *model.AdtyTicketMessage
 	createdNew := false
 	var ticketSiteID int
+	var replyAudit *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
 		if err != nil {
@@ -1174,17 +1227,32 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 			if err := emitAdtyTicketReplyNoticesTx(tx, ticket, row, eventRow.Id, actor.User.Id); err != nil {
 				return err
 			}
+			var auditErr error
+			replyAudit, auditErr = appendAdtyOfficialAuditTx(tx, userId, ticketSiteID, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.reply", "", "",
+				nil,
+				map[string]any{
+					"ticket_id": ticketId, "message_id": row.Id, "author_id": row.AuthorId,
+					"visibility": row.Visibility, "site_id": ticketSiteID,
+				},
+				model.AuditResultSuccess)
+			if auditErr != nil {
+				return auditErr
+			}
 		}
 		return nil
 	})
 	if err == nil && createdNew && saved != nil && visibility == model.AdtyTicketVisibilityPublic {
-		writeAdtyOfficialAudit(userId, ticketSiteID, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.reply", "", "",
-			nil,
-			map[string]any{
-				"ticket_id": ticketId, "message_id": saved.Id, "author_id": saved.AuthorId,
-				"visibility": saved.Visibility, "site_id": ticketSiteID,
-			},
-			model.AuditResultSuccess)
+		if replyAudit != nil {
+			deliverAdtyCommittedAudit(*replyAudit)
+		} else {
+			writeAdtyOfficialAudit(userId, ticketSiteID, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.reply", "", "",
+				nil,
+				map[string]any{
+					"ticket_id": ticketId, "message_id": saved.Id, "author_id": saved.AuthorId,
+					"visibility": saved.Visibility, "site_id": ticketSiteID,
+				},
+				model.AuditResultSuccess)
+		}
 	}
 	return saved, err
 }
@@ -1645,6 +1713,9 @@ func recordTicketNoticeTx(tx *gorm.DB, ticket model.AdtyTicket, eventID int64, a
 			}
 		}
 		userID = contact
+		if action != "create" && userID == actorID {
+			return nil
+		}
 	}
 	key += ":to:" + strconv.Itoa(userID)
 	createdAt := time.Now().Unix()
@@ -1711,7 +1782,7 @@ func emitAdtyTicketStatusNoticesTx(tx *gorm.DB, ticket model.AdtyTicket, event m
 	key := "ticket:" + id + ":event:" + strconv.FormatInt(event.Id, 10)
 	title := "工单 #" + id + " 已更新 / Ticket #" + id + " updated"
 	body := "工单处理进度已更新，可在网站查看。\n\nThe progress of your ticket has changed. Open it on the website."
-	if ticket.UserId != actorID {
+	if ticket.UserId != actorID || ticket.TeamShared {
 		if err := recordTicketNoticeTx(tx, ticket, event.Id, actorID, ticket.UserId, model.AdtyTelegramPurposeUser, event.Action, key, title, body); err != nil {
 			return err
 		}
@@ -1828,7 +1899,7 @@ func startAdtyTicketNoticeSyncTask() {
 	}()
 }
 func init() {
-	adtyMasterTasks = append(adtyMasterTasks, startAdtyTicketNoticeSyncTask, startTicketTranslationWorker)
+	adtyMasterTasks = append(adtyMasterTasks, startAdtyTicketNoticeSyncTask, startTicketTranslationWorker, StartAdtyPendingTicketAttachmentCleanupTask)
 }
 
 // ListAdtyTicketNoticesForUser returns persisted in-site ticket notices for the
@@ -1851,14 +1922,47 @@ func ticketTranslationKey(messageID int64) string {
 
 const adtyTicketMaxFileBytes = 16 << 20
 
-func SaveAdtyTicketImagePolicy(policy model.AdtyTicketPolicy) error {
+func SaveAdtyTicketImagePolicy(policy model.AdtyTicketPolicy, audits ...model.AuditLog) error {
 	if policy.MaxBytes < 1 || policy.MaxBytes > adtyTicketMaxFileBytes || policy.MaxCount < 1 || policy.MaxCount > 100 ||
 		policy.MaxTotal < policy.MaxBytes || policy.MaxTotal > 256<<20 || policy.MaxSide < 1 || policy.MaxSide > 16000 ||
 		policy.MaxPixels < 1 || policy.MaxPixels > 32000000 {
 		return ErrAdtyTicketInvalid
 	}
 	policy.Id = 1
-	return model.DB.Save(&policy).Error
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var existing model.AdtyTicketPolicy
+		found := model.AdtyLockForUpdate(tx).Where("id = ?", 1).Limit(1).Find(&existing)
+		if found.Error != nil {
+			return found.Error
+		}
+		before := map[string]any{
+			"max_bytes":  existing.MaxBytes,
+			"max_count":  existing.MaxCount,
+			"max_total":  existing.MaxTotal,
+			"max_side":   existing.MaxSide,
+			"max_pixels": existing.MaxPixels,
+		}
+		after := map[string]any{
+			"max_bytes":  policy.MaxBytes,
+			"max_count":  policy.MaxCount,
+			"max_total":  policy.MaxTotal,
+			"max_side":   policy.MaxSide,
+			"max_pixels": policy.MaxPixels,
+		}
+		if err := tx.Save(&policy).Error; err != nil {
+			return err
+		}
+		if len(audits) > 0 && tx.Migrator().HasTable(&model.AuditIntent{}) {
+			for _, event := range audits {
+				event.BeforeValue = common.GetJsonString(before)
+				event.AfterValue = common.GetJsonString(after)
+				if err := model.AppendAuditIntentTx(tx, event); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func AdtyTicketImageMaxBytes() int { return adtyTicketPolicy().MaxBytes }
@@ -1888,7 +1992,7 @@ func adtyTicketPolicy() model.AdtyTicketPolicy {
 
 func sanitizeAdtyTicketImage(data []byte, policy model.AdtyTicketPolicy) ([]byte, string, int, int, error) {
 	kind := http.DetectContentType(data)
-	if bytes.HasPrefix(data, []byte("%PDF")) || strings.Contains(kind, "pdf") || strings.Contains(kind, "zip") {
+	if bytes.HasPrefix(data, []byte("%PDF")) || bytes.HasPrefix(data, []byte("GIF8")) || strings.EqualFold(kind, "image/gif") || strings.Contains(kind, "pdf") || strings.Contains(kind, "zip") {
 		return nil, "", 0, 0, ErrAdtyTicketImage
 	}
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
@@ -1905,25 +2009,35 @@ func sanitizeAdtyTicketImage(data []byte, policy model.AdtyTicketPolicy) ([]byte
 		if err := jpeg.Encode(&buf, decoded, &jpeg.Options{Quality: 85}); err != nil {
 			return nil, "", 0, 0, ErrAdtyTicketImage
 		}
+		if buf.Len() > policy.MaxBytes {
+			return nil, "", 0, 0, ErrAdtyTicketImageSize
+		}
 		return buf.Bytes(), "image/jpeg", config.Width, config.Height, nil
 	case "png":
 		if err := png.Encode(&buf, decoded); err != nil {
 			return nil, "", 0, 0, ErrAdtyTicketImage
 		}
-		return buf.Bytes(), "image/png", config.Width, config.Height, nil
-	case "gif":
-		if err := gif.Encode(&buf, decoded, nil); err != nil {
-			return nil, "", 0, 0, ErrAdtyTicketImage
+		if buf.Len() > policy.MaxBytes {
+			return nil, "", 0, 0, ErrAdtyTicketImageSize
 		}
-		return buf.Bytes(), "image/gif", config.Width, config.Height, nil
+		return buf.Bytes(), "image/png", config.Width, config.Height, nil
 	case "webp":
-		// Go 只有 WebP 解码器、没有编码器，所以这里存成 PNG。
-		// 重编码必然丢掉所有 chunk，元数据清理因此和 JPEG/PNG 一样由解码-编码完成，
-		// 不再是「扫一下 EXIF 字样就原样返回」那种黑名单检查——换块名或大小写就能绕过。
+		// Go 只有 WebP 解码器、没有编码器，先尝试重编码为 PNG；若 PNG 超过单图上限，
+		// 回退为 JPEG（Quality: 85），仍超限时明确返回尺寸超限错误。
 		if err := png.Encode(&buf, decoded); err != nil {
 			return nil, "", 0, 0, ErrAdtyTicketImage
 		}
-		return buf.Bytes(), "image/png", config.Width, config.Height, nil
+		if buf.Len() <= policy.MaxBytes {
+			return buf.Bytes(), "image/png", config.Width, config.Height, nil
+		}
+		buf.Reset()
+		if err := jpeg.Encode(&buf, decoded, &jpeg.Options{Quality: 85}); err != nil {
+			return nil, "", 0, 0, ErrAdtyTicketImage
+		}
+		if buf.Len() > policy.MaxBytes {
+			return nil, "", 0, 0, ErrAdtyTicketImageSize
+		}
+		return buf.Bytes(), "image/jpeg", config.Width, config.Height, nil
 	default:
 		return nil, "", 0, 0, ErrAdtyTicketImage
 	}

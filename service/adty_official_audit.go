@@ -19,6 +19,48 @@ func deliverAdtyCommittedAudit(event model.AuditLog) {
 	_ = model.DeliverAuditIntent(ctx, event.EventId)
 }
 
+func appendAdtyOfficialAuditTx(tx *gorm.DB, actorId, siteId int, objectType, objectID, action, reason, approvalRef string, before, after any, result string) (*model.AuditLog, error) {
+	objectType = strings.TrimSpace(objectType)
+	objectID = strings.TrimSpace(objectID)
+	action = strings.TrimSpace(action)
+	if objectType == "" || objectID == "" || action == "" || strings.TrimSpace(result) == "" {
+		return nil, nil
+	}
+	if tx == nil || !tx.Migrator().HasTable(&model.AuditIntent{}) {
+		return nil, nil
+	}
+	rec := model.OfficialAuditWrite{
+		UserId:      actorId,
+		SiteID:      model.OfficialAuditSiteIDPointer(siteId),
+		ObjectType:  objectType,
+		ObjectID:    objectID,
+		Action:      action,
+		Category:    model.AuditCategoryOperation,
+		Content:     action,
+		Before:      before,
+		After:       after,
+		Reason:      reason,
+		ApprovalRef: approvalRef,
+		Result:      result,
+		Success:     result == model.AuditResultSuccess,
+	}
+	if actorId > 0 {
+		var u model.User
+		if err := tx.Select("id", "username", "role").Where("id = ?", actorId).Limit(1).Find(&u).Error; err == nil && u.Id > 0 {
+			rec.Username = u.Username
+			rec.ActorRole = u.Role
+		}
+	}
+	entry, err := model.PrepareOfficialAuditLog(nil, rec)
+	if err != nil {
+		return nil, err
+	}
+	if err := model.AppendAuditIntentTx(tx, entry); err != nil {
+		return nil, err
+	}
+	return &entry, nil
+}
+
 func writeAdtyOfficialAudit(actorId, siteId int, objectType, objectID, action, reason, approvalRef string, before, after any, result string) {
 	objectType = strings.TrimSpace(objectType)
 	objectID = strings.TrimSpace(objectID)

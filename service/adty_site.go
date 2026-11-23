@@ -137,72 +137,57 @@ func AdtyCurrentSiteCustomerTermsVersion() string {
 // AdtySiteTermsStatus 说明登录后要不要重新勾选。站长无需签署开站协议；分站客户按客户条款版本检查。
 // 查询失败或分站客户缺少 AdtySiteCustomer 关系时一律按需重签（required=true）拦截，绝不当作免签放行（ISS-R1-0032）。
 func AdtySiteTermsStatus(userId int) (required bool, version string) {
-	if site, err := AdtyOwnerSite(userId); err == nil && site != nil {
-		return false, ""
+	req, ver, err := AdtySiteTermsStatusWithError(userId)
+	if err != nil {
+		return true, ver
+	}
+	return req, ver
+}
+
+// AdtySiteTermsStatusWithError distinguishes genuine database/lookup errors
+// (returned as err != nil -> HTTP 503) from unaccepted customer terms (R1-062).
+func AdtySiteTermsStatusWithError(userId int) (required bool, version string, err error) {
+	if site, ownerErr := AdtyOwnerSite(userId); ownerErr == nil && site != nil {
+		return false, "", nil
+	} else if ownerErr != nil && !errors.Is(ownerErr, ErrAdtySiteNotOwner) && !errors.Is(ownerErr, gorm.ErrRecordNotFound) {
+		return false, "", ownerErr
 	}
 	version = AdtyCurrentSiteCustomerTermsVersion()
 	if adty_setting.GetLegalSetting().SiteCustomerTermsVersion <= 0 {
-		return false, version
+		return false, version, nil
 	}
 	if userId <= 0 || model.DB == nil {
-		return true, version
+		return false, version, errors.New("terms database unavailable")
 	}
 	var users []model.User
-	if err := model.DB.Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil || len(users) == 0 {
-		return true, version
+	if qErr := model.DB.Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; qErr != nil {
+		return false, version, qErr
+	}
+	if len(users) == 0 {
+		return true, version, nil
 	}
 	siteID := users[0].SiteId
 	if siteID <= 0 || users[0].StaffSiteId > 0 {
-		return false, version
+		return false, version, nil
 	}
 	var rows []model.AdtySiteCustomer
-	if err := model.AdtyLiveSiteCustomer(model.DB.Model(&model.AdtySiteCustomer{})).Select("terms_version").Where("user_id = ? AND site_id = ?", userId, siteID).Limit(1).Find(&rows).Error; err != nil || len(rows) == 0 {
-		return true, version
+	if qErr := model.AdtyLiveSiteCustomer(model.DB.Model(&model.AdtySiteCustomer{})).Select("terms_version").Where("user_id = ? AND site_id = ?", userId, siteID).Limit(1).Find(&rows).Error; qErr != nil {
+		return false, version, qErr
 	}
-	return rows[0].TermsVersion != version, version
+	if len(rows) == 0 {
+		return true, version, nil
+	}
+	return rows[0].TermsVersion != version, version, nil
 }
 
-// AcceptAdtySiteTerms 接受当前条款。站长写开站协议，分站客户写 TermsVersion 和 TermsAt。
+// AcceptAdtySiteTerms 接受当前分站客户条款（站长开站协议已退役 — R1-123）。
 // 版本对不上不写；已经是当前版本则直接成功。
 func AcceptAdtySiteTerms(userId int, version string) error {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		return ErrAdtySiteAgreement
 	}
-	if _, err := AdtyOwnerSite(userId); err == nil {
-		return acceptOwnerSiteAgreement(userId, version)
-	}
 	return acceptCustomerSiteTerms(userId, version)
-}
-
-func acceptOwnerSiteAgreement(userId int, version string) error {
-	if adty_setting.GetLegalSetting().SiteAgreementVersion <= 0 {
-		return ErrAdtySiteAgreement
-	}
-	current := AdtyCurrentSiteAgreementVersion()
-	if version != current {
-		return ErrAdtySiteAgreement
-	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
-		var sites []model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).Where("owner_user_id = ? AND status IN ?", userId,
-			[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&sites).Error; err != nil {
-			return err
-		}
-		if len(sites) == 0 {
-			return ErrAdtySiteNotOwner
-		}
-		site := sites[0]
-		if site.AgreementVer == current {
-			return nil
-		}
-		now := time.Now().Unix()
-		if err := tx.Model(&site).Updates(map[string]any{"agreement_ver": current, "agreement_at": now}).Error; err != nil {
-			return err
-		}
-		return recordSiteAuditTx(tx, site.Id, "terms_accept", userId,
-			map[string]any{"agreement_ver": site.AgreementVer}, map[string]any{"agreement_ver": current}, "")
-	})
 }
 
 func acceptCustomerSiteTerms(userId int, version string) error {

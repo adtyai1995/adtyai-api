@@ -98,6 +98,11 @@ func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, 
 		CreatedAt:   createdAt,
 	}
 	if ext.TeamId == 0 && userID > 0 && ext.FaceUSD.IsPositive() {
+		// Canonical lock order: AdtySite -> User -> AdtySiteInvite.
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+			return err
+		}
 		var payer model.User
 		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").First(&payer, userID).Error; err != nil {
 			return err
@@ -114,10 +119,6 @@ func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, 
 			if ext.CreatedAt <= 0 || invite.CreatedAt <= 0 || invite.CreatedAt <= ext.CreatedAt {
 				snap.InviterId = invite.InviterId
 			}
-		}
-		var site model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
-			return err
 		}
 		var siteRate model.AdtySiteReferralRate
 		rateLookup := tx.Where("site_id = ?", siteID).Limit(1).Find(&siteRate)
@@ -355,17 +356,25 @@ func ResumeAdtySiteInviteCoverage(siteID int, now time.Time) error {
 }
 
 func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resume bool) error {
+	// Read site_id unlocked first so we preserve canonical lock order:
+	// AdtySite -> AdtySiteInviteCommission -> AdtySiteWallet.
+	var stub struct {
+		SiteId int
+	}
+	if err := tx.Model(&model.AdtySiteInviteCommission{}).Select("site_id").First(&stub, id).Error; err != nil {
+		return err
+	}
+	// Serialize the site-wide backlog check with concurrent coverage attempts.
+	var site model.AdtySite
+	if err := model.AdtyLockForUpdate(tx).First(&site, stub.SiteId).Error; err != nil {
+		return err
+	}
 	var row model.AdtySiteInviteCommission
 	if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 		return err
 	}
 	if row.Status != model.AdtySiteCommissionPendingCoverage {
 		return nil
-	}
-	// Serialize the site-wide backlog check with concurrent coverage attempts.
-	var site model.AdtySite
-	if err := model.AdtyLockForUpdate(tx).First(&site, row.SiteId).Error; err != nil {
-		return err
 	}
 	cap := row.PendingCoverageCap
 	days := row.ObservationDays
@@ -458,7 +467,7 @@ func freezeSiteCommissionMarginTx(tx *gorm.DB, siteID int, need decimal.Decimal,
 		return decimal.Zero, err
 	}
 	room := AdtyMarginNewDraw(AdtyMarginDrawInput{
-		TierUSD: wallet.CycleTierUSD, Balance: wallet.Balance, Used: wallet.CycleUsedUSD, Frozen: wallet.FrozenUSD,
+		TierUSD: wallet.CycleTierUSD, Balance: wallet.Balance, Used: wallet.CycleUsedUSD, Frozen: wallet.FrozenUSD, ExcessFrozen: wallet.ExcessFrozenUSD,
 	})
 	take := decimal.Min(need, room)
 	already, err := siteCommissionFrozenHoldTx(tx, siteID, model.AdtySiteWalletMargin, tradeNo)
@@ -583,6 +592,21 @@ func adtySiteInviteCommissionAfterRefundTx(tx *gorm.DB, ext *model.AdtyTopupOrde
 	if ext.RefundRatio().IsZero() && ext.FaceQuota() > 0 && ext.RefundQuota <= 0 {
 		return nil
 	}
+	// R1-045 global lock order: lock inviter User before AdtySiteInviteCommission
+	// to match ConvertAdtySiteInviteCommission and avoid AB-BA deadlocks.
+	var stub model.AdtySiteInviteCommission
+	if err := tx.Select("id", "inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&stub).Error; err != nil {
+		return err
+	}
+	if stub.Id == 0 {
+		return nil
+	}
+	if stub.InviterId > 0 && stub.InviterId != ext.UserId {
+		var inviter model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id").First(&inviter, stub.InviterId).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
 	var row model.AdtySiteInviteCommission
 	lookup := model.AdtyLockForUpdate(tx).Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&row)
 	if lookup.Error != nil || lookup.RowsAffected == 0 || row.Status == model.AdtySiteCommissionClawedBack {
@@ -644,7 +668,9 @@ func adtySiteInviteCommissionAfterRefundTx(tx *gorm.DB, ext *model.AdtyTopupOrde
 		}
 	}
 	row.ClawedUSD = target
-	row.RecoveryUSD = row.RecoveryUSD.Add(shortfall)
+	// R1-093: Both withdrawn external recoveries (parts[2]) and unrecoverable
+	// converted shortfalls contribute to recovery_usd.
+	row.RecoveryUSD = row.RecoveryUSD.Add(shortfall).Add(parts[2])
 	updates := map[string]any{
 		"pending_payout_claw_usd": row.PendingPayoutClawUSD, "clawed_usd": row.ClawedUSD, "recovered_usd": row.RecoveredUSD, "recovery_usd": row.RecoveryUSD,
 		"earnings_hold_usd": row.EarningsHoldUSD, "margin_hold_usd": row.MarginHoldUSD,
@@ -700,7 +726,18 @@ func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommiss
 		}); err != nil {
 			return decimal.Zero, err
 		}
-
+		// R1-008: Reclaimed converted commission principal must symmetrically debit
+		// the site's operating wallet and return the recovered funds to the original
+		// funding wallet(s) (earnings/margin) in the same transaction.
+		if row.SiteId > 0 {
+			if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, -debited, "principal_clawback", "site_invite", row.TradeNo, "operating:"+key, false); err != nil {
+				return decimal.Zero, err
+			}
+			debitedUSD := decimal.NewFromInt(debited).Div(common.QuotaPerUnitDecimal())
+			if err := refundClawedSiteCommissionToFundingWalletsTx(tx, row, debitedUSD, clawedAfter); err != nil {
+				return decimal.Zero, err
+			}
+		}
 	}
 	debitedUSD := decimal.NewFromInt(debited).Div(common.QuotaPerUnitDecimal())
 	shortfall := amount.Sub(debitedUSD)
@@ -708,6 +745,60 @@ func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommiss
 		return decimal.Zero, nil
 	}
 	return shortfall, nil
+}
+
+func refundClawedSiteCommissionToFundingWalletsTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, amount, clawedAfter decimal.Decimal) error {
+	if tx == nil || row == nil || row.SiteId <= 0 || !amount.IsPositive() {
+		return nil
+	}
+	var deductRows []struct {
+		WalletKind string
+		Spent      decimal.Decimal
+	}
+	if err := tx.Model(&model.AdtySiteWalletLedger{}).
+		Select("wallet_kind, COALESCE(SUM(-delta), 0) AS spent").
+		Where("site_id = ? AND type = ? AND ref_type = ? AND ref_id = ? AND delta < 0",
+			row.SiteId, "commission_deduct", "site_invite", row.TradeNo).
+		Group("wallet_kind").
+		Scan(&deductRows).Error; err != nil {
+		return err
+	}
+	earningsSpent := decimal.Zero
+	marginSpent := decimal.Zero
+	for _, r := range deductRows {
+		switch r.WalletKind {
+		case model.AdtySiteWalletEarnings:
+			earningsSpent = earningsSpent.Add(r.Spent)
+		case model.AdtySiteWalletMargin:
+			marginSpent = marginSpent.Add(r.Spent)
+		}
+	}
+	weights := []decimal.Decimal{earningsSpent, marginSpent}
+	if !earningsSpent.IsPositive() && !marginSpent.IsPositive() {
+		weights = []decimal.Decimal{amount, decimal.Zero}
+	}
+	parts := splitDecimalByWeights(amount, weights)
+	kinds := []string{model.AdtySiteWalletEarnings, model.AdtySiteWalletMargin}
+	codes := []string{"e", "m"}
+	for i, part := range parts {
+		if !part.IsPositive() {
+			continue
+		}
+		idemKey := fmt.Sprintf("ccr:%d:%s:%s", row.Id, codes[i], clawedAfter.String())
+		if len(idemKey) > 128 {
+			idemKey = fmt.Sprintf("ccr:%d:%s:%s", row.Id, codes[i], common.Sha1([]byte(clawedAfter.String())))
+		}
+		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, kinds[i], part, AdtySiteWalletChange{
+			Type:           "commission_clawback_return",
+			RefType:        "site_invite",
+			RefID:          row.TradeNo,
+			Reason:         "site invite commission clawback return",
+			IdempotencyKey: idemKey,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, wanted int64) (int64, error) {
@@ -858,6 +949,11 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 	}
 	credited := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// R1-045 global lock order: lock User before AdtySiteInviteCommission and AdtySiteWallet.
+		var inviter model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id").First(&inviter, inviterID).Error; err != nil {
+			return err
+		}
 		var row model.AdtySiteInviteCommission
 		if err := model.AdtyLockForUpdate(tx).Where("inviter_id = ?", inviterID).First(&row, commissionID).Error; err != nil {
 			return err
@@ -893,9 +989,14 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 		}); err != nil {
 			return err
 		}
-		// 转化到余额的批次记在佣金行所属站（row.SiteId）。
+		// 转化到余额的批次记在佣金行所属站（row.SiteId），同时向该站 operating 钱包入账等额本金背书（R1-008）。
 		if err := model.CreateAdtyFundBatchesWithSiteTx(tx, inviterID, model.AdtyFundBatchSiteID(row.SiteId), ref, int64(quota), 0); err != nil {
 			return err
+		}
+		if row.SiteId > 0 {
+			if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, int64(quota), "principal_credit", "site_invite", row.TradeNo, "operating:"+ref, false); err != nil {
+				return err
+			}
 		}
 		credited = true
 		return tx.Model(&row).Updates(map[string]any{

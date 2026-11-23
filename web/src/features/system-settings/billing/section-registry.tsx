@@ -150,7 +150,6 @@ const BILLING_SECTIONS = [
           MinTopUp: settings.MinTopUp,
           CustomCallbackAddress: settings.CustomCallbackAddress,
           AmountOptions: settings['payment_setting.amount_options'],
-          BonusRates: settings['adty_topup_setting.bonus_rates'],
         }}
         epayDefaultValues={{
           orderMinutes: settings['adty_topup_setting.epay_order_minutes'],

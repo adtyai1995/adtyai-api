@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -50,6 +51,11 @@ func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[st
 		return model.AppendAuditIntentTx(tx, event)
 	})
 	if err != nil {
+		// R1-037: Business/authorization validation failures return 400/403 instead of 500.
+		if adty_setting.IsBonusMethodValidationError(err) {
+			common.ApiErrorStatus(c, http.StatusForbidden, err)
+			return false
+		}
 		// 写库失败必须是 500：这条接口以前谎报 success，配置静默丢失。
 		common.ApiErrorStatus(c, http.StatusInternalServerError, err)
 		return false
@@ -58,6 +64,15 @@ func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[st
 		common.SysError(common.LogText("apply %s after it was stored: %s", key, err.Error()))
 	}
 	return true
+}
+
+// GetAdtyMainMethodBonus returns main-site payment-method gift rules for Root (R1-040).
+func GetAdtyMainMethodBonus(c *gin.Context) {
+	rules := adty_setting.GetTopupSetting().MethodBonus
+	if rules == nil {
+		rules = map[string]adty_setting.MethodBonusRule{}
+	}
+	common.ApiSuccess(c, rules)
 }
 
 // PutAdtyMainMethodBonus lets Root set one main-site payment-method gift rule.
@@ -81,6 +96,41 @@ func PutAdtyMainMethodBonus(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, adty_setting.GetTopupSetting().MethodBonus)
+}
+
+// GetAdtySiteBonusMarginFill returns Root's margin-fill authorization for one site (R1-040).
+func GetAdtySiteBonusMarginFill(c *gin.Context) {
+	siteID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || siteID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	common.ApiSuccess(c, gin.H{"site_id": siteID, "enabled": adty_setting.SiteBonusMarginFillAllowed(siteID)})
+}
+
+// PutAdtySiteBonusMarginFill lets Root toggle margin-fill authorization for one site (R1-040).
+func PutAdtySiteBonusMarginFill(c *gin.Context) {
+	siteID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || siteID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil || body.Enabled == nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	merge := func(current string) (string, error) {
+		return adty_setting.MergeSiteBonusMarginFill(current, siteID, *body.Enabled)
+	}
+	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteBonusMarginFill, "adty.topup.site_bonus_margin_fill.update",
+		map[string]any{"site_id": siteID, "enabled": *body.Enabled},
+		map[string]any{"site_id": siteID, "enabled": *body.Enabled}, merge) {
+		return
+	}
+	common.ApiSuccess(c, gin.H{"site_id": siteID, "enabled": *body.Enabled})
 }
 
 // PutAdtySiteBonusMethodAuth lets Root authorize one method for a site.
@@ -116,18 +166,26 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// R1-037: Disallow gift rule edits on closing sites and enforce step-up verification.
+	if site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusClosed {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This site is closing and cannot change bonus rules"))
+		return
+	}
 	var body adtyMethodBonusBody
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	var authorization string
-	merge := func(current string) (string, error) {
-		return adty_setting.MergeSiteMethodBonusWithAuth(current, authorization, site.Id, body.Method, body.Enabled, body.Rate)
-	}
 	if _, err := adty_setting.MergeMainMethodBonus("", body.Method, body.Enabled, body.Rate); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionBonus, site.Id) {
+		return
+	}
+	var authorization string
+	merge := func(current string) (string, error) {
+		return adty_setting.MergeSiteMethodBonusWithAuth(current, authorization, site.Id, body.Method, body.Enabled, body.Rate)
 	}
 	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteMethodBonus, "adty.topup.site_method_bonus.update",
 		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate, "site_id": site.Id},

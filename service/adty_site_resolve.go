@@ -211,10 +211,28 @@ func hostOfURL(raw string) string {
 	return AdtyNormalizeHost(parsed.Host)
 }
 
+// AdtyIsDefaultServerAddress reports whether ServerAddress is still at its
+// unconfigured or localhost default (used to allow initial /setup on a fresh
+// deployment before ServerAddress is configured — R1-013).
+func AdtyIsDefaultServerAddress() bool {
+	host := hostOfURL(system_setting.ServerAddress)
+	return host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 // ValidateMainSiteDomainSeparation enforces that the main site's website host
 // (ServerAddress) and dedicated API host (adty_site_setting.api_base_url) are
-// strictly distinct whenever APIBaseURL is configured.
+// strictly distinct whenever APIBaseURL is configured, and rejects invalid URLs
+// with missing schemes or non-empty path/query/fragment/userinfo (R1-100).
 func ValidateMainSiteDomainSeparation(serverAddress, apiBaseURL string) error {
+	serverRaw := strings.TrimSpace(serverAddress)
+	var siteHost string
+	if serverRaw != "" {
+		parsedServer, err := url.Parse(serverRaw)
+		if err != nil || (parsedServer.Scheme != "http" && parsedServer.Scheme != "https") || AdtyNormalizeHost(parsedServer.Host) == "" {
+			return common.NewMessage("Enter a full URL starting with http:// or https://")
+		}
+		siteHost = AdtyNormalizeHost(parsedServer.Host)
+	}
 	apiRaw := strings.TrimSpace(apiBaseURL)
 	if apiRaw == "" {
 		return nil
@@ -223,7 +241,9 @@ func ValidateMainSiteDomainSeparation(serverAddress, apiBaseURL string) error {
 	if err != nil || (parsedAPI.Scheme != "http" && parsedAPI.Scheme != "https") || AdtyNormalizeHost(parsedAPI.Host) == "" {
 		return common.NewMessage("Enter a full URL starting with http:// or https://")
 	}
-	siteHost := hostOfURL(serverAddress)
+	if parsedAPI.User != nil || (parsedAPI.Path != "" && parsedAPI.Path != "/") || parsedAPI.RawQuery != "" || parsedAPI.Fragment != "" {
+		return common.NewMessage("API base URL must contain only scheme and host without path, query, or fragment")
+	}
 	apiHost := AdtyNormalizeHost(parsedAPI.Host)
 	if siteHost != "" && apiHost == siteHost {
 		return common.NewMessage("API base URL must use a different domain from the website server address")

@@ -29,6 +29,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 type TaskSubmitResult struct {
@@ -250,9 +251,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
-	// 4. 价格计算：基础模型价格。重试可能换了插件或渠道，每次尝试都重新定价，
-	//    不沿用上一次尝试的表达式快照。
+	// 4. 价格计算：基础模型价格。重试可能换了插件或渠道，但保留首次受理时钟与同模型表达式快照。
 	info.OriginModelName = modelName
+	prevSnapshot := info.TieredBillingSnapshot
 	info.TieredBillingSnapshot = nil
 	var priceData types.PriceData
 	var err error
@@ -289,12 +290,12 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			facts = provider.ExtractUsageFacts(c, info)
 		}
 		input := billingexpr.RequestInput{Usage: facts}
-		localTime, err := service.FreezeAdtyBillingClock(&input, info.TieredBillingSnapshot, info.StartTime)
+		localTime, err := service.FreezeAdtyBillingClock(&input, prevSnapshot, info.StartTime)
 		if err != nil {
 			return nil, service.TaskErrorWrapperLocal(err, "model_price_error", http.StatusBadRequest)
 		}
-		if prev := info.TieredBillingSnapshot; prev != nil && prev.TaskUsageBilling && prev.ModelName == modelName {
-			exprStr = prev.ExprString
+		if prevSnapshot != nil && prevSnapshot.TaskUsageBilling && prevSnapshot.ModelName == modelName {
+			exprStr = prevSnapshot.ExprString
 		}
 		cost, trace, runErr := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{}, input)
 		if runErr != nil || cost < 0 {
@@ -304,10 +305,29 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			return nil, service.TaskErrorWrapper(runErr, "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
 		groupRatioInfo := helper.HandleGroupRatio(c, info)
-		quota, clamp := common.QuotaRoundChecked(cost * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		beforeGroupDec := trace.CostDec.Mul(common.QuotaPerUnitDecimal())
+		groupRatioDec := decimal.NewFromFloat(groupRatioInfo.GroupRatio)
+		quota, clamp := common.QuotaFromDecimalChecked(beforeGroupDec.Mul(groupRatioDec))
 		noteTaskQuotaClamp(info, clamp)
 		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, GroupRatioInfo: groupRatioInfo}
-		info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{BillingMode: billing_setting.BillingModeTieredExpr, ModelName: modelName, ExprString: exprStr, ExprHash: billingexpr.ExprHashString(exprStr), GroupRatio: groupRatioInfo.GroupRatio, EstimatedQuotaBeforeGroup: cost * common.QuotaPerUnit, EstimatedQuotaAfterGroup: quota, EstimatedTier: trace.MatchedTier, QuotaPerUnit: common.QuotaPerUnit, ExprVersion: billingexpr.ExprVersion(exprStr), TaskUsageBilling: true, UsageFacts: facts, AcceptedAt: input.AcceptedUnix, BusinessTimezone: input.BusinessTimezone, AcceptedLocal: localTime}
+		info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{
+			BillingMode:               billing_setting.BillingModeTieredExpr,
+			ModelName:                 modelName,
+			ExprString:                exprStr,
+			ExprHash:                  billingexpr.ExprHashString(exprStr),
+			GroupRatio:                groupRatioInfo.GroupRatio,
+			GroupRatioDecimal:         groupRatioDec.String(),
+			EstimatedQuotaBeforeGroup: beforeGroupDec.InexactFloat64(),
+			EstimatedQuotaAfterGroup:  quota,
+			EstimatedTier:             trace.MatchedTier,
+			QuotaPerUnit:              common.QuotaPerUnit,
+			ExprVersion:               billingexpr.ExprVersion(exprStr),
+			TaskUsageBilling:          true,
+			UsageFacts:                facts,
+			AcceptedAt:                input.AcceptedUnix,
+			BusinessTimezone:          input.BusinessTimezone,
+			AcceptedLocal:             localTime,
+		}
 	} else {
 		priceData, err = helper.ModelPriceHelperPerCall(c, info)
 		if err != nil {
@@ -518,7 +538,7 @@ var fetchRespBuilders = map[int]func(c *gin.Context) (respBody []byte, taskResp 
 func RelayTaskFetch(c *gin.Context, relayMode int) (taskResp *dto.TaskError) {
 	respBuilder, ok := fetchRespBuilders[relayMode]
 	if !ok {
-		taskResp = service.TaskErrorWrapperLocal(errors.New("invalid_relay_mode"), "invalid_relay_mode", http.StatusBadRequest)
+		return service.TaskErrorWrapperLocal(errors.New("invalid_relay_mode"), "invalid_relay_mode", http.StatusBadRequest)
 	}
 
 	respBody, taskErr := respBuilder(c)

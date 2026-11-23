@@ -96,6 +96,25 @@ function domainLabel(t: TFunction, status: SiteDomain['status']): string {
   return t('Waiting for DNS')
 }
 
+function domainAutomationLabel(t: TFunction, state: string): string {
+  switch (state) {
+    case 'queued':
+      return t('Domain automation: Queued')
+    case 'validating':
+      return t('Domain automation: Validating')
+    case 'ready':
+      return t('Domain automation: Ready')
+    case 'retry':
+      return t('Domain automation: Retrying')
+    case 'redirect_only':
+      return t('Domain automation: Redirect only')
+    case 'removed':
+      return t('Domain automation: Removed')
+    default:
+      return state
+  }
+}
+
 function BrandCard(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -354,7 +373,7 @@ function DomainsCard(props: { site: OwnerSite }) {
                 )}
                 {domain.automation_state && (
                   <p className='text-muted-foreground text-xs'>
-                    {t(`Domain automation: ${domain.automation_state}`)}
+                    {domainAutomationLabel(t, domain.automation_state)}
                   </p>
                 )}
                 {domain.managed_by !== 'platform' &&
@@ -648,7 +667,7 @@ function CloseRequestCard(props: { site: OwnerSite }) {
     onSuccess: () => {
       toast.success(
         t(
-          'Close request sent. An administrator will choose where customers go.'
+          'Close request sent. When the site closes, customer balances and unredeemed recharge codes are automatically inherited by the main site.'
         )
       )
       setReason('')

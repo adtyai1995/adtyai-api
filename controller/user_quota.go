@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -47,6 +48,16 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 		// the duplicate financial reference from this operation intent.
 		recordDurableOperationAudit(c, action, content, params, success)
 	}()
+
+	// R1-018: Require step-up verification bound to target user ID before quota mutation.
+	if req.Id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if requireAdminUserProof(c, service.VerificationScopeAdminUserQuota, service.AdminUserContext{UserID: req.Id}) == nil {
+		skipAdtyQuotaAudit = true
+		return
+	}
 
 	// 二开：原因和幂等键，同一事务写余额流水（任务 7.2）；原因只进审计，不进用户日志。
 	params["reason"] = strings.TrimSpace(req.Reason)

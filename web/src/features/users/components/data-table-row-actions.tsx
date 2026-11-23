@@ -194,6 +194,12 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const canWrite = canAdmin(operator, ADTY_PERMISSIONS.USER_WRITE)
   const canDelete = canAdmin(operator, ADTY_PERMISSIONS.USER_DELETE)
   const operatorIsRoot = operator?.role === USER_ROLE.ROOT
+  const canPromoteUser =
+    operatorIsRoot &&
+    !isAdmin &&
+    (user.site_id ?? 0) === 0 &&
+    (user.staff_site_id ?? 0) === 0 &&
+    !user.is_team_employee
 
   if (isUserDeleted(user)) {
     return null
@@ -250,7 +256,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuItem>
         )}
 
-        {operatorIsRoot && !isAdmin && (
+        {canPromoteUser && (
           <DropdownMenuItem onClick={() => handleManage('promote')}>
             {t('Promote')}
             <DropdownMenuShortcut>

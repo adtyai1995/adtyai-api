@@ -27,7 +27,7 @@ var (
 var adtySiteAssetDir = func() string { return filepath.Join("uploads", "site-assets") }
 
 // adtySiteAssetName 是存储文件名的格式：site-<站点 id>-<uuid>.<扩展名>。
-var adtySiteAssetName = regexp.MustCompile(`^site-[0-9]+-[0-9a-f]{32}\.(png|jpg|webp|svg)$`)
+var adtySiteAssetName = regexp.MustCompile(`^site-[0-9]+-[0-9a-f]{32}\.(png|jpg|webp)$`)
 
 // adtySiteLogoKind 判断文件类型：只收 PNG、JPEG 和 WebP。不收 SVG。
 func adtySiteLogoKind(data []byte) (ext, contentType string, err error) {
@@ -79,8 +79,6 @@ func OpenAdtySiteAsset(name string) (string, string, error) {
 	switch filepath.Ext(name) {
 	case ".jpg":
 		contentType = "image/jpeg"
-	case ".svg":
-		contentType = "image/svg+xml"
 	case ".webp":
 		contentType = "image/webp"
 	}

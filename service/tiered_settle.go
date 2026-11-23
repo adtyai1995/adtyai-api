@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -207,6 +208,16 @@ func refreshTieredBillingGroup(relayInfo *relaycommon.RelayInfo) (*billingexpr.B
 // estimate before sending. If the initial group was free and skipped
 // pre-consume, switching to a paid group creates the session at that point.
 func PrepareTieredBillingForSelectedGroup(c *gin.Context, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
+	if AdtyTeamPriceBlocked(c) {
+		return types.NewErrorWithStatusCode(ErrAdtyTeamInvalid, types.ErrorCodeModelPriceError, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
+	if relayInfo != nil {
+		if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
+			if err := model.UpdateBillingOperationGroupSnapshot(session.durableSpec()); err != nil {
+				return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+			}
+		}
+	}
 	snap, err := refreshTieredBillingGroup(relayInfo)
 	if err != nil {
 		return types.NewErrorWithStatusCode(
@@ -217,6 +228,31 @@ func PrepareTieredBillingForSelectedGroup(c *gin.Context, relayInfo *relaycommon
 		)
 	}
 	if snap == nil {
+		// Non-tiered models: if auto_group switched to a higher-cost or paid
+		// group on retry, ensure pre-consume covers the new group's estimate.
+		if relayInfo == nil || relayInfo.PriceData.FreeModel || !relayInfo.PriceData.GroupRatioInfo.BilledGroupRatio().IsPositive() {
+			return nil
+		}
+		targetQuota := relayInfo.PriceData.QuotaToPreConsume
+		if targetQuota <= 0 && relayInfo.PriceData.Quota > 0 {
+			targetQuota = relayInfo.PriceData.Quota
+		}
+		if relayInfo.Billing == nil {
+			if targetQuota > 0 {
+				return PreConsumeBilling(c, targetQuota, relayInfo)
+			}
+			return nil
+		}
+		if targetQuota > relayInfo.Billing.GetPreConsumedQuota() {
+			if err := relayInfo.Billing.Reserve(targetQuota); err != nil {
+				var apiErr *types.NewAPIError
+				if errors.As(err, &apiErr) {
+					return apiErr
+				}
+				return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+			}
+			relayInfo.FinalPreConsumedQuota = relayInfo.Billing.GetPreConsumedQuota()
+		}
 		return nil
 	}
 	if snap.GroupRatio == 0 {

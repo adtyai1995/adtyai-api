@@ -98,10 +98,9 @@ func RequestAdtyEpayPay(c *gin.Context) {
 		common.ApiError(c, service.ErrAdtyEpayChosenChannelUnavailable)
 		return
 	}
-	maxAttempts := adtyEpayMaxAttempts
-	if req.ChannelId > 0 {
-		maxAttempts = 1
-	}
+	// DEC-027 (R1-035): Never auto-switch payment channels on gateway failure.
+	// Always attempt at most one channel and let the user manually choose another.
+	maxAttempts := 1
 	if err := replaceOtherPendingAdtyOrders(c, quote); err != nil {
 		if errors.Is(err, service.ErrAdtyPaymentDetected) {
 			common.ApiErrorT(c, "A transfer has been detected. Please wait")
@@ -121,6 +120,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 	}
 	deadline := time.Now().Add(totalTimeout)
 	callback := strings.TrimRight(service.GetCallbackAddress(), "/")
+	attemptFailed := false
 	for attempt := 0; attempt < maxAttempts && time.Now().Before(deadline); attempt++ {
 		channel, method, err := service.PickAdtyEpayChannel(req.Method, quote.PayAmount, req.Device, exclude, time.Now().Unix(), allowedChannels)
 		if err != nil {
@@ -139,7 +139,8 @@ func RequestAdtyEpayPay(c *gin.Context) {
 			methodLabel:  method.DisplayName,
 		})
 		if errors.Is(err, model.ErrAdtyEpayDailyLimit) {
-			continue
+			attemptFailed = true
+			break
 		}
 		if err != nil {
 			writeAdtyTopUpError(c, err)
@@ -159,8 +160,11 @@ func RequestAdtyEpayPay(c *gin.Context) {
 		cancel()
 		if err != nil {
 			common.SysLog(common.LogText("epay channel %d order failed trade_no=%s: %s", channel.Id, topUp.TradeNo, err.Error()))
-			_ = model.UpdatePendingTopUpStatus(topUp.TradeNo, model.PaymentProviderAdtyEpay, common.TopUpStatusFailed)
-			continue
+			if failErr := model.FailPendingAdtyTopUp(topUp.TradeNo, model.PaymentProviderAdtyEpay); failErr != nil {
+				common.SysError(common.LogText("epay fail pending order %s failed: %s", topUp.TradeNo, failErr.Error()))
+			}
+			attemptFailed = true
+			break
 		}
 		if result.Mode != "submit" && result.Mode != method.ReturnType {
 			_ = model.UpdateAdtyEpayMethodReturnType(method.Id, result.Mode)
@@ -182,7 +186,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 		common.ApiSuccess(c, view)
 		return
 	}
-	if req.ChannelId > 0 {
+	if req.ChannelId > 0 || attemptFailed {
 		common.ApiError(c, service.ErrAdtyEpayChosenChannelUnavailable)
 		return
 	}

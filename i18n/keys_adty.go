@@ -25,11 +25,6 @@ const (
 	MsgAdtyLimitConcurrency = "adty.limit.concurrency"
 	MsgAdtyLimitUnavailable = "adty.limit.unavailable"
 
-	MsgAdtyMarketingUnsubscribe        = "adty.marketing.unsubscribe"
-	MsgAdtyMarketingUnsubscribePrompt  = "adty.marketing.unsubscribe_prompt"
-	MsgAdtyMarketingUnsubscribeDone    = "adty.marketing.unsubscribe_done"
-	MsgAdtyMarketingUnsubscribeInvalid = "adty.marketing.unsubscribe_invalid"
-
 	MsgAdtySiteClosingSubject       = "adty.site.closing_subject"
 	MsgAdtySiteClosingBody          = "adty.site.closing_body"
 	MsgAdtySiteMigrationMailSubject = "adty.site.migration_mail_subject"

@@ -33,7 +33,6 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/internal/flush-batch", controller.FlushAdtyBatchUpdates)
 	registerAdtyEpayRoutes(apiRouter)
 	registerAdtyReferralRoutes(apiRouter)
-	registerAdtyOfficialPriceRoutes(apiRouter)
 	registerAdtySiteRoutes(apiRouter)
 	registerAdtyLegalRoutes(apiRouter)
 	registerAdtyResellerRoutes(apiRouter)
@@ -58,7 +57,7 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 	} {
 		rootPath, ownerPath := "/adty/admin/notifications"+route.path, "/adty/site/notifications"+route.path
 		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api"+rootPath, "scope", "option:"+route.scope)
-		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api"+ownerPath, "scope", "wallet:"+route.scope)
+		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api"+ownerPath, "scope", service.AccessTokenResourceSiteOwnerSetting+":"+route.scope)
 		handler := controller.WriteAdtyManagedNotification
 		if route.method == http.MethodGet {
 			handler = controller.GetAdtyManagedNotifications
@@ -78,32 +77,33 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 
 func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	for _, route := range []struct{ method, path, scope string }{
-		{http.MethodPost, "/api/adty/teams/:id/close", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/profile", "wallet:write"},
+		// R1-016: High-risk team administration routes require browser session, never personal wallet:write PATs.
+		{http.MethodPost, "/api/adty/teams/:id/close", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/profile", "session"},
 		{http.MethodPost, "/api/adty/teams/:id/topups", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/topups/:trade_no/resume", "wallet:write"},
 		{http.MethodGet, "/api/adty/teams/:id/topups", "wallet:read"},
-		{http.MethodPost, "/api/adty/teams/:id/leave", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/employees", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/members/:userId/enable", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/members/:userId/disable", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/members/:userId/delete", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/members/:userId/password", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/keys", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/keys/:tokenId/revoke", "wallet:write"},
-		{http.MethodPost, "/api/adty/teams/:id/transfer", "wallet:write"},
+		{http.MethodPost, "/api/adty/teams/:id/leave", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/employees", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/members/:userId/enable", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/members/:userId/disable", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/members/:userId/delete", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/members/:userId/password", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/keys", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/keys/:tokenId/revoke", "session"},
+		{http.MethodPost, "/api/adty/teams/:id/transfer", "session"},
 		{http.MethodGet, "/api/adty/telegram/me", "profile:read"},
 		{http.MethodDelete, "/api/adty/telegram/me", "profile:write"},
 		{http.MethodPost, "/api/adty/telegram/bind/start", "profile:write"},
 		{http.MethodPost, "/api/adty/telegram/bind/confirm", "profile:write"},
 		{http.MethodPost, "/api/adty/telegram/unbind", "profile:write"},
 		{http.MethodPost, "/api/adty/telegram/bind/unbind", "profile:write"},
-		{http.MethodGet, "/api/adty/site/telegram", "wallet:read"},
-		{http.MethodDelete, "/api/adty/site/telegram", "wallet:write"},
-		{http.MethodPost, "/api/adty/site/telegram/bind/start", "wallet:write"},
-		{http.MethodPost, "/api/adty/site/telegram/bind/confirm", "wallet:write"},
-		{http.MethodPost, "/api/adty/site/telegram/unbind", "wallet:write"},
-		{http.MethodPost, "/api/adty/site/telegram/bind/unbind", "wallet:write"},
+		{http.MethodGet, "/api/adty/site/telegram", service.AccessTokenResourceSiteOwnerSetting + ":read"},
+		{http.MethodDelete, "/api/adty/site/telegram", service.AccessTokenResourceSiteOwnerSetting + ":write"},
+		{http.MethodPost, "/api/adty/site/telegram/bind/start", service.AccessTokenResourceSiteOwnerSetting + ":write"},
+		{http.MethodPost, "/api/adty/site/telegram/bind/confirm", service.AccessTokenResourceSiteOwnerSetting + ":write"},
+		{http.MethodPost, "/api/adty/site/telegram/unbind", service.AccessTokenResourceSiteOwnerSetting + ":write"},
+		{http.MethodPost, "/api/adty/site/telegram/bind/unbind", service.AccessTokenResourceSiteOwnerSetting + ":write"},
 		{http.MethodGet, "/api/adty/admin/telegram/bots", "option:read"},
 		{http.MethodPut, "/api/adty/admin/telegram/bots/:purpose", "option:write"},
 		{http.MethodPost, "/api/adty/admin/telegram/bots/:purpose/test", "option:write"},
@@ -164,14 +164,14 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/teams/:id/transfer", middleware.UserAuth(), controller.PostAdtyTeamTransfer)
 	apiRouter.GET("/adty/telegram/me", middleware.UserAuth(), controller.GetAdtyTelegramMe)
 	apiRouter.DELETE("/adty/telegram/me", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
-	apiRouter.POST("/adty/telegram/unbind", middleware.UserAuth(), controller.UnbindTelegram)
-	apiRouter.POST("/adty/telegram/bind/unbind", middleware.UserAuth(), controller.UnbindTelegram)
+	apiRouter.POST("/adty/telegram/unbind", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
+	apiRouter.POST("/adty/telegram/bind/unbind", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
 	apiRouter.POST("/adty/telegram/bind/start", middleware.UserAuth(), controller.PostAdtyTelegramBindStart)
 	apiRouter.POST("/adty/telegram/bind/confirm", middleware.UserAuth(), controller.PostAdtyTelegramBindConfirm)
 	apiRouter.GET("/adty/site/telegram", middleware.UserAuth(), controller.GetAdtyTelegramMe)
 	apiRouter.DELETE("/adty/site/telegram", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
-	apiRouter.POST("/adty/site/telegram/unbind", middleware.UserAuth(), controller.UnbindTelegram)
-	apiRouter.POST("/adty/site/telegram/bind/unbind", middleware.UserAuth(), controller.UnbindTelegram)
+	apiRouter.POST("/adty/site/telegram/unbind", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
+	apiRouter.POST("/adty/site/telegram/bind/unbind", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
 	apiRouter.POST("/adty/site/telegram/bind/start", middleware.UserAuth(), controller.PostAdtyTelegramBindStart)
 	apiRouter.POST("/adty/site/telegram/bind/confirm", middleware.UserAuth(), controller.PostAdtyTelegramBindConfirm)
 	apiRouter.POST("/adty/telegram/webhook/:purpose/:secret", middleware.CriticalRateLimit(), controller.PostAdtyTelegramWebhook)
@@ -224,8 +224,6 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/payment-scenes", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/payment-scenes", "scope", "option:write")
-	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/billing/price-snapshot-backfill", "scope", "option:read")
-	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/billing/price-snapshot-backfill", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/fund-anomalies", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/fund-anomalies/dispositions", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/fund-anomalies/dispositions/:id/review", "scope", "option:write")
@@ -280,8 +278,6 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/admin/site-withdrawals/:id/paid", middleware.RootAuth(), controller.PostAdtySiteWithdrawalPaid)
 	apiRouter.GET("/adty/admin/payment-scenes", middleware.RootAuth(), controller.GetAdtyPaymentScenes)
 	apiRouter.PUT("/adty/admin/payment-scenes", middleware.RootAuth(), controller.PutAdtyPaymentScenes)
-	apiRouter.GET("/adty/admin/billing/price-snapshot-backfill", middleware.RootAuth(), controller.GetAdtyPriceSnapshotBackfill)
-	apiRouter.POST("/adty/admin/billing/price-snapshot-backfill", middleware.RootAuth(), controller.PostAdtyPriceSnapshotBackfill)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/topup/info", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/topup/quote", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/topup/orders/:trade_no", "scope", "wallet:read")
@@ -290,10 +286,10 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/topup/self", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/vouchers/redeem", "scope", "wallet:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/teams/mine", "scope", "wallet:read")
-	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams", "scope", "wallet:write")
-	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/:id/invites", "scope", "wallet:write")
-	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/teams/:id/invites", "scope", "wallet:read")
-	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/:id/invites/:inviteId/revoke", "scope", "wallet:write")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams", "session", "")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/:id/invites", "session", "")
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/teams/:id/invites", "session", "")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/teams/:id/invites/:inviteId/revoke", "session", "")
 
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/orders", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/orders/:trade_no", "scope", "wallet:read")
@@ -306,7 +302,8 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	topup.POST("/orders/:trade_no/cancel", middleware.CriticalRateLimit(), controller.CancelAdtyTopUpOrder)
 	topup.GET("/pending", controller.GetAdtyTopUpPending)
 	topup.GET("/self", controller.GetAdtyTopUpSelf)
-	apiRouter.POST("/adty/vouchers/redeem", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:voucher-redeem"), controller.PostAdtyVoucherRedeem)
+	// R1-062: Enforce site customer terms gate on voucher redemption and site-commission writes.
+	apiRouter.POST("/adty/vouchers/redeem", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:voucher-redeem"), controller.PostAdtyVoucherRedeem)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-referral/profile", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-referral/bind", "scope", "wallet:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions", "scope", "wallet:read")
@@ -319,23 +316,23 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/:id/convert/by-key", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-commissions/:id/convert", "scope", "wallet:write")
 	apiRouter.GET("/adty/site-referral/profile", middleware.UserAuth(), controller.GetAdtySiteCustomerReferralProfile)
-	apiRouter.POST("/adty/site-referral/bind", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:site-invite-bind"), controller.PostAdtySiteCustomerReferralBind)
+	apiRouter.POST("/adty/site-referral/bind", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:site-invite-bind"), controller.PostAdtySiteCustomerReferralBind)
 	apiRouter.GET("/adty/site-commissions", middleware.UserAuth(), controller.GetAdtySiteCommissions)
 	apiRouter.GET("/adty/site-commissions/withdrawals/rules", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawRules)
 	apiRouter.GET("/adty/site-commissions/withdrawals/quote", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawalQuote)
 	apiRouter.GET("/adty/site-commissions/withdrawals", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawals)
-	apiRouter.POST("/adty/site-commissions/withdrawals", middleware.UserAuth(), controller.PostAdtySiteInviteWithdrawal)
-	apiRouter.POST("/adty/site-commissions/withdrawals/:id/cancel", middleware.UserAuth(), controller.PostAdtySiteInviteWithdrawalCancel)
+	apiRouter.POST("/adty/site-commissions/withdrawals", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.PostAdtySiteInviteWithdrawal)
+	apiRouter.POST("/adty/site-commissions/withdrawals/:id/cancel", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.PostAdtySiteInviteWithdrawalCancel)
 	apiRouter.GET("/adty/site-commissions/withdrawals/by-key", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawalByKey)
 	apiRouter.GET("/adty/site-commissions/:id/convert/by-key", middleware.UserAuth(), controller.GetAdtySiteCommissionConversionByKey)
-	apiRouter.POST("/adty/site-commissions/:id/convert", middleware.UserAuth(), controller.PostAdtySiteCommissionConvert)
+	apiRouter.POST("/adty/site-commissions/:id/convert", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.PostAdtySiteCommissionConvert)
 	apiRouter.GET("/adty/teams/mine", middleware.UserAuth(), controller.GetAdtyTeamMine)
 	apiRouter.POST("/adty/teams", middleware.UserAuth(), controller.PostAdtyTeam)
 	apiRouter.POST("/adty/teams/:id/invites", middleware.UserAuth(), controller.PostAdtyTeamInvite)
 	apiRouter.GET("/adty/teams/:id/invites", middleware.UserAuth(), controller.GetAdtyTeamInvites)
 	apiRouter.POST("/adty/teams/:id/invites/:inviteId/revoke", middleware.UserAuth(), controller.PostAdtyTeamRevokeInvite)
 	apiRouter.POST("/adty/team-employees/register", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.AnonymousRequestBodyLimit(), controller.PostAdtyTeamEmployeeRegistration)
-	apiRouter.POST("/adty/team-registrations/complete", middleware.CriticalRateLimit(), controller.PostAdtyTeamRegistrationComplete)
+	apiRouter.POST("/adty/team-registrations/complete", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.AnonymousRequestBodyLimit(), controller.PostAdtyTeamRegistrationComplete)
 }
 
 // registerAdtyFinanceRoutes 挂充值对账、补单和退款（任务 3.5），按后台权限注册。
@@ -458,21 +455,6 @@ func registerAdtyReferralRoutes(apiRouter *gin.RouterGroup) {
 	}
 }
 
-// registerAdtyOfficialPriceRoutes 挂官方价（任务 8.4）。公开接口和 /api/pricing 同一个开关、同样登记 any；
-// 后台三个接口只有超级管理员。*model 让带斜杠的模型名也能改。
-func registerAdtyOfficialPriceRoutes(apiRouter *gin.RouterGroup) {
-	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/pricing/official", "any", "")
-	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/official-prices", "scope", "option:read")
-	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/official-prices/*model", "scope", "option:write")
-	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/official-prices/sync", "scope", "option:write")
-	apiRouter.GET("/adty/pricing/official", middleware.HeaderNavModuleAuth("pricing"), controller.GetAdtyOfficialPrices)
-
-	root := apiRouter.Group("/adty/admin/official-prices", middleware.RootAuth())
-	root.GET("", controller.GetAdtyAdminOfficialPrices)
-	root.PUT("/*model", controller.PutAdtyOfficialPrice)
-	root.POST("/sync", controller.SyncAdtyOfficialPrices)
-}
-
 // registerAdtySiteRoutes 挂站点公开配置（任务 8.3）。
 func registerAdtySiteRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site", "any", "")
@@ -486,99 +468,107 @@ func registerAdtyLegalRoutes(apiRouter *gin.RouterGroup) {
 }
 
 // registerAdtyResellerRoutes 挂站长分站（P11）。后台接口按「分站」权限注册（任务 11.9）；
-// 站长侧接口读 wallet:read、写 wallet:write（任务 11.1、11.6）。
+// 站长侧接口按专属 site_owner_* scope 隔离，严禁与个人 wallet:* 混用（R1-016）。
 func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
+	const (
+		ownerCustRead  = service.AccessTokenResourceSiteOwnerCustomer + ":read"
+		ownerCustWrite = service.AccessTokenResourceSiteOwnerCustomer + ":write"
+		ownerOrdRead   = service.AccessTokenResourceSiteOwnerOrder + ":read"
+		ownerOrdWrite  = service.AccessTokenResourceSiteOwnerOrder + ":write"
+		ownerLogRead   = service.AccessTokenResourceSiteOwnerLog + ":read"
+		ownerSetRead   = service.AccessTokenResourceSiteOwnerSetting + ":read"
+		ownerSetWrite  = service.AccessTokenResourceSiteOwnerSetting + ":write"
+	)
 	owner := apiRouter.Group("/adty/site", middleware.UserAuth())
 	for _, route := range []struct {
 		method, path, scope string
 		handlers            []gin.HandlerFunc
 	}{
 		{http.MethodPost, "/apply", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-apply"), controller.ApplyAdtySite}},
-		{http.MethodPost, "/close", "wallet:write", []gin.HandlerFunc{controller.RequestAdtySiteClose}},
-		// 改价、改加赠、送试用、删域名要二次验证（任务 11.6）
-		{http.MethodPut, "/pricing", "wallet:write", []gin.HandlerFunc{controller.PutAdtySitePricingWithProof}},
-		{http.MethodGet, "/pricing/history", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerPricingHistory}},
-		{http.MethodGet, "/customers/:id/pricing/history", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerPricingHistory}},
-		{http.MethodPut, "/customers/:id/pricing", "wallet:write", []gin.HandlerFunc{controller.PutAdtySiteCustomerPricingWithProof}},
+		{http.MethodPost, "/close", ownerSetWrite, []gin.HandlerFunc{controller.RequestAdtySiteClose}},
+		// 改价、改加赠、删域名等敏感操作需二次验证（任务 11.6）
+		{http.MethodPut, "/pricing", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtySitePricingWithProof}},
+		{http.MethodGet, "/pricing/history", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerPricingHistory}},
+		{http.MethodGet, "/customers/:id/pricing/history", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerPricingHistory}},
+		{http.MethodPut, "/customers/:id/pricing", ownerCustWrite, []gin.HandlerFunc{controller.PutAdtySiteCustomerPricingWithProof}},
 		// 自定义域名（任务 11.8）
-		{http.MethodGet, "/domains", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteDomains}},
-		{http.MethodPost, "/domains", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-domain"), controller.AddAdtySiteDomain}},
-		{http.MethodDelete, "/domains/:id", "wallet:write", []gin.HandlerFunc{controller.RemoveAdtySiteDomainWithProof}},
+		{http.MethodGet, "/domains", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteDomains}},
+		{http.MethodPost, "/domains", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-domain"), controller.AddAdtySiteDomain}},
+		{http.MethodDelete, "/domains/:id", ownerSetWrite, []gin.HandlerFunc{controller.RemoveAdtySiteDomainWithProof}},
 		// 站长中心（任务 11.6、11.7）。接受协议不走站长中心的协议门。
 		{http.MethodPost, "/terms/accept", "profile:write", []gin.HandlerFunc{controller.AcceptAdtySiteTerms}},
-		{http.MethodGet, "/self", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSite}},
-		{http.MethodGet, "/archived-sites/:site_id/domains", "wallet:read", []gin.HandlerFunc{controller.GetAdtyArchivedWebsiteDomains}},
-		{http.MethodDelete, "/archived-sites/:site_id/domains/:id", "wallet:write", []gin.HandlerFunc{controller.DeleteAdtyArchivedWebsiteDomain}},
-		{http.MethodGet, "/archived-sites", "wallet:read", []gin.HandlerFunc{controller.GetAdtyArchivedOwnerSites}},
-		{http.MethodPut, "/self", "wallet:write", []gin.HandlerFunc{controller.PutAdtyOwnerSite}},
-		{http.MethodGet, "/stats", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerStats}},
-		{http.MethodGet, "/earnings", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerEarnings}},
-		{http.MethodGet, "/settlement-sheets", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSettlementSheets}},
-		{http.MethodGet, "/earnings/lines", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerEarningLines}},
-		{http.MethodGet, "/vouchers", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteVouchers}},
-		{http.MethodPost, "/vouchers", "wallet:write", []gin.HandlerFunc{controller.PostAdtySiteVoucher}},
-		{http.MethodPost, "/vouchers/:id/cancel", "wallet:write", []gin.HandlerFunc{controller.PostAdtyVoucherCancel}},
-		{http.MethodPost, "/vouchers/:id/freeze", "wallet:write", []gin.HandlerFunc{controller.PostAdtyVoucherFreeze}},
-		{http.MethodPut, "/bonus-methods", "wallet:write", []gin.HandlerFunc{controller.PutAdtySiteMethodBonus}},
-		{http.MethodGet, "/wallets", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerWallets}},
-		{http.MethodPost, "/wallets/earning-to-margin", "wallet:write", []gin.HandlerFunc{controller.PostAdtyEarningToMargin}},
-		{http.MethodPost, "/wallets/earning-to-personal", "wallet:write", []gin.HandlerFunc{controller.PostOwnerPersonalTransfer}},
-		{http.MethodGet, "/wallets/self-use", "wallet:read", []gin.HandlerFunc{controller.GetOwnerSelfUseBalance}},
-		{http.MethodGet, "/self-use/usage", "wallet:read", []gin.HandlerFunc{controller.GetOwnerSelfUseUsage}},
-		{http.MethodGet, "/self-use/transfers", "wallet:read", []gin.HandlerFunc{controller.GetOwnerPrincipalTransfers}},
-		{http.MethodPost, "/self-use/keys", "api_key:write", []gin.HandlerFunc{middleware.TokenOperationAudit(), middleware.UserCriticalRateLimit("CT:owner-key"), controller.AddOwnerSelfUseToken}},
-		{http.MethodGet, "/withdrawals/rules", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteWithdrawRules}},
-		{http.MethodGet, "/withdrawals/by-key", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteWithdrawalByKey}},
-		{http.MethodGet, "/withdrawals", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteWithdrawals}},
-		{http.MethodPost, "/withdrawals", "wallet:write", []gin.HandlerFunc{controller.PostAdtySiteWithdrawal}},
-		{http.MethodPost, "/withdrawals/:id/cancel", "wallet:write", []gin.HandlerFunc{controller.PostAdtySiteWithdrawalCancel}},
-		{http.MethodGet, "/wallet-ledgers", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerWalletLedger}},
-		{http.MethodGet, "/orders", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerOrders}},
-		{http.MethodGet, "/orders/summary", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerOrderSummary}},
-		{http.MethodGet, "/orders/:trade_no", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerOrder}},
-		{http.MethodGet, "/orders/:trade_no/refund-preview", "wallet:read", []gin.HandlerFunc{controller.PreviewAdtyOwnerOrderRefund}},
-		{http.MethodGet, "/orders/:trade_no/refunds", "wallet:read", []gin.HandlerFunc{controller.ListAdtyOwnerOrderManualRefunds}},
-		{http.MethodGet, "/orders/:trade_no/refunds/:refund_id", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerOrderManualRefund}},
-		{http.MethodPost, "/orders/:trade_no/refund", "wallet:write", []gin.HandlerFunc{controller.RefundAdtyOwnerOrder}},
-		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/approve", "wallet:write", []gin.HandlerFunc{controller.ApproveAdtyOwnerOrderManualRefund}},
-		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/reclaim", "wallet:write", []gin.HandlerFunc{controller.ReclaimAdtyOwnerOrderManualRefund}},
-		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/bonus", "wallet:write", []gin.HandlerFunc{controller.PlanAdtyOwnerOrderManualRefundBonus}},
-		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/commission", "wallet:write", []gin.HandlerFunc{controller.PlanAdtyOwnerOrderManualRefundCommission}},
-		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/payout", "wallet:write", []gin.HandlerFunc{controller.RecordAdtyOwnerOrderManualRefundPayout}},
-		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/complete", "wallet:write", []gin.HandlerFunc{controller.CompleteAdtyOwnerOrderManualRefund}},
-		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/terminate", "wallet:write", []gin.HandlerFunc{controller.TerminateAdtyOwnerOrderManualRefund}},
-		{http.MethodGet, "/teams", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeams}},
-		{http.MethodGet, "/teams/:id", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeam}},
-		{http.MethodGet, "/teams/:id/ledgers", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamLedger}},
-		{http.MethodPost, "/teams/:id/balance", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-team-balance"), controller.PostAdtyOwnerSiteTeamBalance}},
-		{http.MethodPost, "/teams", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeam}},
-		{http.MethodPost, "/team-registrations", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistration}},
-		{http.MethodGet, "/team-registrations", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamRegistrations}},
-		{http.MethodPost, "/team-registrations/:id/revoke", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistrationRevoke}},
-		{http.MethodPut, "/teams/:id/discount", "wallet:write", []gin.HandlerFunc{controller.PutAdtyOwnerSiteTeamDiscount}},
-		{http.MethodGet, "/referral", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferral}},
-		{http.MethodPut, "/referral", "wallet:write", []gin.HandlerFunc{controller.PutAdtyOwnerSiteReferral}},
-		{http.MethodPut, "/referral/enabled", "wallet:write", []gin.HandlerFunc{controller.PutAdtyOwnerSiteReferralEnabled}},
-		{http.MethodGet, "/referral/invites", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteInvites}},
-		{http.MethodPost, "/referral/invites", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteInvite}},
-		{http.MethodPost, "/referral/cover-pending", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteCoverageResume}},
-		{http.MethodGet, "/commission-withdrawals", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteInviteWithdrawals}},
-		{http.MethodPost, "/commission-withdrawals/:id/review", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteInviteWithdrawalReview}},
-		{http.MethodPost, "/commission-withdrawals/:id/paid", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteInviteWithdrawalPaid}},
-		{http.MethodGet, "/customers", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerCustomers}},
-		{http.MethodGet, "/customers/lookup", "wallet:read", []gin.HandlerFunc{controller.LookupAdtyOwnerCustomer}},
-		{http.MethodGet, "/customers/:id", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerCustomer}},
-		{http.MethodGet, "/customers/:id/logs", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerCustomerLogs}},
-		{http.MethodGet, "/customers/:id/topups", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerCustomerTopUps}},
-		{http.MethodPost, "/customers/:id/balance", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-customer-balance"), controller.PostAdtyOwnerCustomerBalance}},
-		{http.MethodPost, "/customers/:id/trial", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-trial"), controller.PostAdtyOwnerTrial}},
-		{http.MethodPost, "/report", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-report"), controller.PostAdtyOwnerReport}},
-		{http.MethodGet, "/export", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerExport}},
-		{http.MethodPost, "/logo", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-logo"), controller.UploadAdtySiteLogo}},
+		{http.MethodGet, "/self", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSite}},
+		{http.MethodGet, "/archived-sites/:site_id/domains", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyArchivedWebsiteDomains}},
+		{http.MethodDelete, "/archived-sites/:site_id/domains/:id", ownerSetWrite, []gin.HandlerFunc{controller.DeleteAdtyArchivedWebsiteDomain}},
+		{http.MethodGet, "/archived-sites", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyArchivedOwnerSites}},
+		{http.MethodPut, "/self", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtyOwnerSite}},
+		{http.MethodGet, "/stats", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerStats}},
+		{http.MethodGet, "/earnings", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerEarnings}},
+		{http.MethodGet, "/settlement-sheets", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerSettlementSheets}},
+		{http.MethodGet, "/earnings/lines", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerEarningLines}},
+		{http.MethodGet, "/vouchers", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteVouchers}},
+		{http.MethodPost, "/vouchers", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtySiteVoucher}},
+		{http.MethodPost, "/vouchers/:id/cancel", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyVoucherCancel}},
+		{http.MethodPost, "/vouchers/:id/freeze", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyVoucherFreeze}},
+		{http.MethodPut, "/bonus-methods", ownerOrdWrite, []gin.HandlerFunc{controller.PutAdtySiteMethodBonus}},
+		{http.MethodGet, "/wallets", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerWallets}},
+		{http.MethodPost, "/wallets/earning-to-margin", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyEarningToMargin}},
+		{http.MethodPost, "/wallets/earning-to-personal", ownerOrdWrite, []gin.HandlerFunc{controller.PostOwnerPersonalTransfer}},
+		{http.MethodGet, "/wallets/self-use", ownerOrdRead, []gin.HandlerFunc{controller.GetOwnerSelfUseBalance}},
+		{http.MethodGet, "/self-use/usage", ownerOrdRead, []gin.HandlerFunc{controller.GetOwnerSelfUseUsage}},
+		{http.MethodGet, "/self-use/transfers", ownerOrdRead, []gin.HandlerFunc{controller.GetOwnerPrincipalTransfers}},
+		{http.MethodPost, "/self-use/keys", ownerOrdWrite, []gin.HandlerFunc{middleware.TokenOperationAudit(), middleware.UserCriticalRateLimit("CT:owner-key"), controller.AddOwnerSelfUseToken}},
+		{http.MethodGet, "/withdrawals/rules", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteWithdrawRules}},
+		{http.MethodGet, "/withdrawals/by-key", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteWithdrawalByKey}},
+		{http.MethodGet, "/withdrawals", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteWithdrawals}},
+		{http.MethodPost, "/withdrawals", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtySiteWithdrawal}},
+		{http.MethodPost, "/withdrawals/:id/cancel", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtySiteWithdrawalCancel}},
+		{http.MethodGet, "/wallet-ledgers", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerWalletLedger}},
+		{http.MethodGet, "/orders", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerOrders}},
+		{http.MethodGet, "/orders/summary", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerOrderSummary}},
+		{http.MethodGet, "/orders/:trade_no", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerOrder}},
+		{http.MethodGet, "/orders/:trade_no/refund-preview", ownerOrdRead, []gin.HandlerFunc{controller.PreviewAdtyOwnerOrderRefund}},
+		{http.MethodGet, "/orders/:trade_no/refunds", ownerOrdRead, []gin.HandlerFunc{controller.ListAdtyOwnerOrderManualRefunds}},
+		{http.MethodGet, "/orders/:trade_no/refunds/:refund_id", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerOrderManualRefund}},
+		{http.MethodPost, "/orders/:trade_no/refund", ownerOrdWrite, []gin.HandlerFunc{controller.RefundAdtyOwnerOrder}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/approve", ownerOrdWrite, []gin.HandlerFunc{controller.ApproveAdtyOwnerOrderManualRefund}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/reclaim", ownerOrdWrite, []gin.HandlerFunc{controller.ReclaimAdtyOwnerOrderManualRefund}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/bonus", ownerOrdWrite, []gin.HandlerFunc{controller.PlanAdtyOwnerOrderManualRefundBonus}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/commission", ownerOrdWrite, []gin.HandlerFunc{controller.PlanAdtyOwnerOrderManualRefundCommission}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/payout", ownerOrdWrite, []gin.HandlerFunc{controller.RecordAdtyOwnerOrderManualRefundPayout}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/complete", ownerOrdWrite, []gin.HandlerFunc{controller.CompleteAdtyOwnerOrderManualRefund}},
+		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/terminate", ownerOrdWrite, []gin.HandlerFunc{controller.TerminateAdtyOwnerOrderManualRefund}},
+		{http.MethodGet, "/teams", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeams}},
+		{http.MethodGet, "/teams/:id", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeam}},
+		{http.MethodGet, "/teams/:id/ledgers", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamLedger}},
+		{http.MethodPost, "/teams/:id/balance", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-team-balance"), controller.PostAdtyOwnerSiteTeamBalance}},
+		{http.MethodPost, "/teams", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeam}},
+		{http.MethodPost, "/team-registrations", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistration}},
+		{http.MethodGet, "/team-registrations", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamRegistrations}},
+		{http.MethodPost, "/team-registrations/:id/revoke", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistrationRevoke}},
+		{http.MethodPut, "/teams/:id/discount", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtyOwnerSiteTeamDiscount}},
+		{http.MethodGet, "/referral", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferral}},
+		{http.MethodPut, "/referral", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtyOwnerSiteReferral}},
+		{http.MethodPut, "/referral/enabled", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtyOwnerSiteReferralEnabled}},
+		{http.MethodGet, "/referral/invites", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteInvites}},
+		{http.MethodPost, "/referral/invites", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteInvite}},
+		{http.MethodPost, "/referral/cover-pending", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteCoverageResume}},
+		{http.MethodGet, "/commission-withdrawals", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteInviteWithdrawals}},
+		{http.MethodPost, "/commission-withdrawals/:id/review", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteInviteWithdrawalReview}},
+		{http.MethodPost, "/commission-withdrawals/:id/paid", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteInviteWithdrawalPaid}},
+		{http.MethodGet, "/customers", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerCustomers}},
+		{http.MethodGet, "/customers/lookup", ownerCustRead, []gin.HandlerFunc{controller.LookupAdtyOwnerCustomer}},
+		{http.MethodGet, "/customers/:id", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerCustomer}},
+		{http.MethodGet, "/customers/:id/logs", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerCustomerLogs}},
+		{http.MethodGet, "/customers/:id/topups", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerCustomerTopUps}},
+		{http.MethodPost, "/customers/:id/balance", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-customer-balance"), controller.PostAdtyOwnerCustomerBalance}},
+		{http.MethodPost, "/report", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-report"), controller.PostAdtyOwnerReport}},
+		{http.MethodGet, "/export", ownerLogRead, []gin.HandlerFunc{controller.GetAdtyOwnerExport}},
+		{http.MethodPost, "/logo", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-logo"), controller.UploadAdtySiteLogo}},
 		// 站长发件域名（任务 11.3）
-		{http.MethodGet, "/sender-domain", "wallet:read", []gin.HandlerFunc{controller.GetAdtySiteSenderDomain}},
-		{http.MethodPost, "/sender-domain", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-sender"), controller.AddAdtySiteSenderDomain}},
-		{http.MethodDelete, "/sender-domain", "wallet:write", []gin.HandlerFunc{controller.RemoveAdtySiteSenderDomainWithProof}},
+		{http.MethodGet, "/sender-domain", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteSenderDomain}},
+		{http.MethodPost, "/sender-domain", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-sender"), controller.AddAdtySiteSenderDomain}},
+		{http.MethodDelete, "/sender-domain", ownerSetWrite, []gin.HandlerFunc{controller.RemoveAdtySiteSenderDomainWithProof}},
 	} {
 		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api/adty/site"+route.path, "scope", route.scope)
 		owner.Handle(route.method, route.path, route.handlers...)
@@ -616,6 +606,9 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		if route.method == http.MethodPost && (route.path == "/adty/staff/customers/:id/password-reset" || route.path == "/adty/staff/customers/:id/disable") {
 			handlers = append(handlers, middleware.UserCriticalRateLimit("CT:staff-customer-security"))
 		}
+		if route.method == http.MethodPost && route.path == "/adty/site/balance-requests/:id/review" {
+			handlers = append(handlers, middleware.UserCriticalRateLimit("CT:site-balance-review"))
+		}
 		apiRouter.Handle(route.method, route.path, append(handlers, route.handler)...)
 	}
 
@@ -628,7 +621,9 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	root.POST("/tiers", controller.PutAdtySiteTiers)
 	root.GET("/tiers", controller.GetAdtySiteTiers)
 	root.PUT("/tiers", controller.PutAdtySiteTiers)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/bonus-methods", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/bonus-methods", "scope", "option:write")
+	apiRouter.GET("/adty/admin/bonus-methods", middleware.RootAuth(), controller.GetAdtyMainMethodBonus)
 	apiRouter.PUT("/adty/admin/bonus-methods", middleware.RootAuth(), controller.PutAdtyMainMethodBonus)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/users/:id/expiring-gifts", "scope", service.AccessTokenScopeOf(authz.AdtyFinanceManualCredit))
 	apiRouter.POST("/adty/admin/users/:id/expiring-gifts", middleware.RootAuth(), controller.PostAdtyRootExpiringGift)
@@ -643,6 +638,10 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootWallets.POST("/:id/paused-repair", controller.RepairAdtyPausedSite)
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/sites/:id/bonus-methods", "scope", "option:write")
 	rootWallets.PUT("/:id/bonus-methods", controller.PutAdtySiteBonusMethodAuth)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/bonus-margin-fill", "scope", "option:read")
+	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/sites/:id/bonus-margin-fill", "scope", "option:write")
+	rootWallets.GET("/:id/bonus-margin-fill", controller.GetAdtySiteBonusMarginFill)
+	rootWallets.PUT("/:id/bonus-margin-fill", controller.PutAdtySiteBonusMarginFill)
 	rootWallets.GET("/:id/commission-margin", controller.GetAdtySiteCommissionMargin)
 	rootWallets.PUT("/:id/commission-margin", controller.PutAdtySiteCommissionMargin)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/close-mail", "scope", "option:read")
@@ -667,19 +666,15 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootWallets.POST("/:id/owner", controller.HandoverAdtyAdminSiteOwner)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/vouchers", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/vouchers/limit", "scope", "option:write")
-	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/vouchers/sites/:id/margin", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/vouchers/:id/freeze", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/vouchers/:id/cancel", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/vouchers", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/vouchers/limit", "scope", "option:read")
-	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/vouchers/sites/:id/margin", "scope", "option:read")
 	rootVouchers := apiRouter.Group("/adty/admin/vouchers", middleware.RootAuth())
 	rootVouchers.GET("", controller.GetAdtyAdminVouchers)
 	rootVouchers.POST("", controller.PostAdtyAdminVoucher)
 	rootVouchers.GET("/limit", controller.GetAdtyVoucherIssuanceLimit)
 	rootVouchers.PUT("/limit", controller.PutAdtyVoucherIssuanceLimit)
-	rootVouchers.GET("/sites/:id/margin", controller.GetAdtyVoucherMarginAuthorization)
-	rootVouchers.PUT("/sites/:id/margin", controller.PutAdtyVoucherMarginAuthorization)
 	rootVouchers.POST("/:id/freeze", controller.PostAdtyVoucherFreeze)
 	rootVouchers.POST("/:id/cancel", controller.PostAdtyAdminVoucherCancel)
 

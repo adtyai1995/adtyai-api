@@ -310,6 +310,11 @@ func validateOptionValue(key string, value string) error {
 		if err := common.UnmarshalJsonStr(value, &parsed); err != nil || parsed == nil {
 			return common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": key})
 		}
+		for _, ratio := range parsed {
+			if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 {
+				return common.NewMessage("{{key}} must be a positive number", map[string]any{"key": key})
+			}
+		}
 	case "GroupGroupRatio":
 		parsed := map[string]map[string]float64{}
 		if err := common.UnmarshalJsonStr(value, &parsed); err != nil || parsed == nil {

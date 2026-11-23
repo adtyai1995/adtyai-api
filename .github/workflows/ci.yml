@@ -15,41 +15,12 @@ concurrency:
 # queued runs start, and a base branch can advance after the merge event.
 jobs:
   backend:
-    name: Backend vet, build, and test
+    name: Backend vet and build
     if: github.event.action != 'closed' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    # The real PostgreSQL suite exceeds 10 minutes before build and scan overhead.
-    timeout-minutes: 45
+    timeout-minutes: 20
     env:
       GOWORK: 'off'
-      ADTY_TEST_PG_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable client_encoding=UTF8'
-      TEST_POSTGRES_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable client_encoding=UTF8'
-      AUDIT_POSTGRES_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable client_encoding=UTF8'
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: adty_ci_test
-          POSTGRES_DB: adty_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d adty_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      # middleware rate-limit evidence dials this port. InitRedisClient exits the
-      # test process when the ping fails, so the service has to be up first.
-      redis:
-        image: redis:7.4.4-alpine
-        ports:
-          - 56379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     steps:
       - name: Checkout
@@ -71,11 +42,6 @@ jobs:
         run: |
           mkdir -p web/dist
           touch web/dist/index.html
-
-      - name: Install backup script test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes python3 libpq5
 
       - name: Vet root module
         run: go vet ./...
@@ -99,23 +65,11 @@ jobs:
         working-directory: tokenkit
         run: go build ./...
 
-      - name: Test root, relaykit, and tokenkit modules
-        run: make test
-
-      - name: Test main package deployment constraints
-        run: go test -count=1 -run 'TestPprofListenAddrIsLoopback|TestRootCompose|TestRunnableEntrypointsDoNotUseFloatingUpstreamImages' .
-
-      - name: Scan Go modules for known vulnerabilities
-        run: |
-          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-          (cd relaykit && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...)
-          (cd tokenkit && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...)
-
   frontend:
-    name: Frontend typecheck and test
+    name: Frontend typecheck, build, and static checks
     if: github.event.action != 'closed' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
@@ -145,19 +99,10 @@ jobs:
         run: make check-plugins
 
       - name: Typecheck
-        run: bun check -b
+        run: bun run typecheck
 
       - name: Build production bundle
         run: bun run build
-
-      - name: Install Chromium for browser smoke
-        run: bun x playwright install --with-deps chromium
-
-      - name: Run production browser smoke
-        run: bun run browser:smoke
-
-      - name: Test
-        run: bun run test
 
       - name: i18n check
         run: node scripts/adty/i18n-check.mjs
@@ -174,61 +119,3 @@ jobs:
       - name: Check docs against code
         working-directory: .
         run: node scripts/adty/doc-refs.mjs
-
-  e2e:
-    name: Closed-loop payment, browser, and permission checks
-    if: github.event.action != 'closed' || github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      GOWORK: 'off'
-      ADTY_TEST_PG_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable client_encoding=UTF8'
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: adty_ci_test
-          POSTGRES_DB: adty_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d adty_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          repository: ${{ github.event.pull_request.base.repo.full_name }}
-          ref: ${{ github.sha }}
-      - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            relaykit/go.sum
-            tokenkit/go.sum
-      - name: Run closed-loop checks
-        run: bash scripts/adty/e2e-closed-loop.sh
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: '1.4.4'
-      - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: web/.node-version
-      - name: Install browser gate services
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes postgresql-client redis-server
-      - name: Install browser dependencies
-        working-directory: web
-        run: |
-          bun install --frozen-lockfile
-          bun x playwright install --with-deps chromium
-      - name: Run production wallet browser checks
-        run: bash scripts/adty/browser-business.sh

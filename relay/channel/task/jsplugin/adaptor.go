@@ -242,12 +242,22 @@ func (a *TaskAdaptor) AdjustBillingOnSubmit(info *relaycommon.RelayInfo, taskDat
 }
 
 func (a *TaskAdaptor) AdjustBillingOnComplete(ctx context.Context, task *model.Task, result *relaycommon.TaskInfo) int {
-	_, baseURL, proxy := a.queryCredentials()
+	key, baseURL, proxy := a.queryCredentials()
 	ctx = pluginruntime.WithFetcher(ctx, a.hookFetcher(baseURL, proxy))
 	if !a.hasHook(ctx, "extractUsageOnComplete") {
 		return 0
 	}
-	value, err := a.plugin.Engine.Call(ctx, "extractUsageOnComplete", jsonValue(task), jsonValue(result))
+	queryCtx, err := a.queryContext(task, key, baseURL, proxy)
+	if err != nil {
+		return 0
+	}
+	var rawBody any
+	if task != nil && len(task.Data) > 0 {
+		if err := common.Unmarshal(task.Data, &rawBody); err != nil {
+			rawBody = string(task.Data)
+		}
+	}
+	value, err := a.plugin.Engine.Call(ctx, "extractUsageOnComplete", queryCtx, jsonValue(result), rawBody)
 	if err != nil {
 		return 0
 	}
@@ -1900,10 +1910,22 @@ func (a *TaskAdaptor) validatedCompletionUsageFacts(facts any, models ...string)
 			if !numeric || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
 				return nil, fmt.Errorf("plugin usage value must be a finite non-negative number")
 			}
-			validated[key] = float64(common.QuotaFromFloat(number))
+			quota, clamp := common.QuotaFromFloatChecked(number)
+			if clamp != nil {
+				common.SysError(common.LogText("task plugin %s completion usage %s saturated: %v -> %d", a.plugin.Meta.Key, key, number, quota))
+			}
+			validated[key] = float64(quota)
 		default:
 			if number, numeric := usageNumber(value); numeric {
-				validated[key] = number
+				if math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
+					return nil, fmt.Errorf("plugin usage value must be a finite non-negative number")
+				}
+				if quota, clamp := common.QuotaFromFloatChecked(number); clamp != nil {
+					common.SysError(common.LogText("task plugin %s completion usage %s saturated: %v -> %d", a.plugin.Meta.Key, key, number, quota))
+					validated[key] = float64(quota)
+				} else {
+					validated[key] = number
+				}
 			}
 		}
 	}
@@ -2114,12 +2136,20 @@ func positiveInt(value any) int {
 		if number <= 0 {
 			return 0
 		}
-		return common.QuotaFromFloat(float64(number))
+		quota, clamp := common.QuotaFromFloatChecked(float64(number))
+		if clamp != nil {
+			common.SysError(common.LogText("task plugin positiveInt saturated: %d -> %d", number, quota))
+		}
+		return quota
 	case float64:
-		if number <= 0 {
+		if math.IsNaN(number) || math.IsInf(number, 0) || number <= 0 {
 			return 0
 		}
-		return common.QuotaFromFloat(number)
+		quota, clamp := common.QuotaFromFloatChecked(number)
+		if clamp != nil {
+			common.SysError(common.LogText("task plugin positiveInt saturated: %v -> %d", number, quota))
+		}
+		return quota
 	default:
 		return 0
 	}

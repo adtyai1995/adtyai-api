@@ -112,7 +112,7 @@ func SiteBonusEarningCovers(siteID int, bonus decimal.Decimal) error {
 		return err
 	}
 	allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
-		TierUSD: margin.CycleTierUSD, Balance: margin.Balance, Used: margin.CycleUsedUSD, Frozen: margin.FrozenUSD,
+		TierUSD: margin.CycleTierUSD, Balance: margin.Balance, Used: margin.CycleUsedUSD, Frozen: margin.FrozenUSD, ExcessFrozen: margin.ExcessFrozenUSD,
 	})
 	if margin.Id == 0 || short.GreaterThan(allowed) {
 		return common.NewMessage("Site gift reserve is not covered by the earning wallet or authorized margin")
@@ -159,7 +159,7 @@ func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder, marginAuthori
 		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", ext.SiteId, model.AdtySiteWalletMargin).First(&margin).Error; err != nil {
 			return err
 		}
-		allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{TierUSD: margin.CycleTierUSD, Balance: margin.Balance, Used: margin.CycleUsedUSD, Frozen: margin.FrozenUSD})
+		allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{TierUSD: margin.CycleTierUSD, Balance: margin.Balance, Used: margin.CycleUsedUSD, Frozen: margin.FrozenUSD, ExcessFrozen: margin.ExcessFrozenUSD})
 		if rest.GreaterThan(allowed) {
 			return common.NewMessage("Site gift reserve is not covered by the earning wallet or authorized margin")
 		}

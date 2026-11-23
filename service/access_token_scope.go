@@ -91,8 +91,8 @@ var accessTokenStaticResources = []AccessTokenResource{
 		accessTokenView("View site customer usage logs and operational audit records."),
 	}},
 	{Resource: AccessTokenResourceSiteOwnerSetting, LabelKey: "Site settings & pricing", group: AccessTokenGroupOwner, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
-		accessTokenView("View site configuration, domains, pricing, notices, teams, and staff."),
-		accessTokenEdit("Change site configuration, domains, pricing, notices, teams, and staff."),
+		accessTokenView("View site configuration, domains, pricing, notices, and teams."),
+		accessTokenEdit("Change site configuration, domains, pricing, notices, and teams."),
 	}},
 	{Resource: "user", LabelKey: "Users", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View users, their sign-in bindings, and permission settings."),
@@ -147,11 +147,20 @@ func isAccessTokenSiteOwner(userID int) bool {
 
 // AccessTokenOwnerRouteScope maps a site-owner management HTTP route and method
 // to its dedicated site-owner domain/action scope so site-owner routes never
-// share personal wallet:read / wallet:write scopes.
+// share personal wallet:read / wallet:write scopes (R1-016).
 func AccessTokenOwnerRouteScope(method, fullPath string) string {
+	// Customer-side and site-application endpoints under /api/adty/site remain on
+	// their explicit personal scopes (or public/session-only declarations).
+	switch fullPath {
+	case "/api/adty/site", "/api/adty/site/apply", "/api/adty/site/terms/accept":
+		return ""
+	}
+	if strings.HasPrefix(fullPath, "/api/adty/site/staff") || strings.HasPrefix(fullPath, "/api/adty/site/balance-requests") {
+		return ""
+	}
 	var rest string
 	matched := false
-	for _, prefix := range []string{"/api/adty/owner", "/api/user/adty/owner", "/api/adty/site/owner"} {
+	for _, prefix := range []string{"/api/adty/site", "/api/adty/owner", "/api/user/adty/owner", "/api/adty/site/owner"} {
 		if fullPath == prefix {
 			rest = ""
 			matched = true
@@ -173,16 +182,15 @@ func AccessTokenOwnerRouteScope(method, fullPath string) string {
 	}
 	segment, _, _ := strings.Cut(rest, "/")
 	switch segment {
-	case "customers", "customer":
+	case "customers", "customer", "report":
 		return AccessTokenResourceSiteOwnerCustomer + accessTokenScopeSeparator + action
-	case "orders", "order", "wallet", "wallets", "finance", "earnings", "earning",
-		"settlements", "settlement", "withdrawals", "withdrawal", "commissions", "commission",
-		"vouchers", "voucher", "anomalies", "anomaly", "refund", "refunds", "topup", "topups":
+	case "orders", "order", "wallet", "wallets", "wallet-ledgers", "finance", "earnings", "earning",
+		"settlements", "settlement", "settlement-sheets", "withdrawals", "withdrawal",
+		"commissions", "commission", "commission-withdrawals", "vouchers", "voucher",
+		"anomalies", "anomaly", "refund", "refunds", "topup", "topups",
+		"bonus-methods", "self-use", "stats":
 		return AccessTokenResourceSiteOwnerOrder + accessTokenScopeSeparator + action
-	case "logs", "log", "usage", "audit", "audits":
-		if action != authz.ActionRead {
-			return AccessTokenResourceSiteOwnerLog + accessTokenScopeSeparator + authz.ActionWrite
-		}
+	case "logs", "log", "usage", "audit", "audits", "export":
 		return AccessTokenResourceSiteOwnerLog + accessTokenScopeSeparator + authz.ActionRead
 	default:
 		return AccessTokenResourceSiteOwnerSetting + accessTokenScopeSeparator + action
@@ -400,6 +408,7 @@ var accessTokenVerificationScopes = map[string]string{
 	VerificationScopeAdminUserCreate:       "user:write",
 	VerificationScopeAdminUserUpdate:       "user:write",
 	VerificationScopeAdminUserDelete:       "user:write",
+	VerificationScopeAdminUserQuota:        "user:write",
 	VerificationScopeAdminUserManage:       "user:write",
 	VerificationScopeAdminUserPasskeyReset: "user:write",
 	VerificationScopeAdminUserTwoFADisable: "user:write",
@@ -423,6 +432,7 @@ var accessTokenVerificationScopes = map[string]string{
 var adminUserVerificationPermissions = map[string]authz.Permission{
 	VerificationScopeAdminUserCreate:       authz.AdtyUserCreate,
 	VerificationScopeAdminUserDelete:       authz.AdtyUserDelete,
+	VerificationScopeAdminUserQuota:        authz.AdtyUserQuota,
 	VerificationScopeAdminUserUpdate:       authz.AdtyUserWrite,
 	VerificationScopeAdminUserManage:       authz.AdtyUserWrite,
 	VerificationScopeAdminUserPasskeyReset: authz.AdtyUserWrite,
@@ -461,6 +471,15 @@ func requireAccessTokenVerificationScope(identity AuthIdentity, verificationScop
 		return err
 	}
 	if !AccessTokenScopeGranted(token.GetScopes(), required) {
+		if verificationScope == VerificationScopeAdtySiteOwnerManage {
+			granted := token.GetScopes()
+			if AccessTokenScopeGranted(granted, AccessTokenResourceSiteOwnerCustomer+accessTokenScopeSeparator+authz.ActionWrite) ||
+				AccessTokenScopeGranted(granted, AccessTokenResourceSiteOwnerOrder+accessTokenScopeSeparator+authz.ActionWrite) ||
+				AccessTokenScopeGranted(granted, AccessTokenResourceSiteOwnerSetting+accessTokenScopeSeparator+authz.ActionWrite) {
+				return nil
+			}
+			return ErrVerificationForbidden
+		}
 		// Only an existing grant may retain the original admin proof scope.
 		// The final mutation still rechecks its own route and action.
 		if _, adminScope := adminUserVerificationPermissions[verificationScope]; AdtyAdminPermissionsEnabled() && adminScope && token.ScopeVersion == 0 && AccessTokenScopeGranted(token.GetScopes(), "user:write") {

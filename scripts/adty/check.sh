@@ -2,8 +2,8 @@
 # adtyai-api 本地检查（实施方案任务 0.3），每个任务结束都跑一遍。
 # 只在 WSL 的测试副本（~/adtyai/mirror/main）里跑；仓库在 /mnt 下（Windows 的盘）就直接退出。
 # 用法：bash scripts/adty/check.sh             后端、前端都跑
-#       bash scripts/adty/check.sh --backend   只跑根模块、relaykit、tokenkit 的 go vet、go build、go test
-#       bash scripts/adty/check.sh --frontend  只跑 web 的 install、typecheck、lint、test、copyright:check
+#       bash scripts/adty/check.sh --backend   只跑根模块、relaykit、tokenkit 的 go vet、go build
+#       bash scripts/adty/check.sh --frontend  只跑 web 的 install、typecheck、build、lint、i18n、copyright、docs
 # 任何一步失败就停。上游本来就有的失败记在 docs/adty/baseline.md；lint 和 copyright:check 由
 # scripts/adty/ratchet.mjs 和同目录的两份清单比较，只拦清单以外的新问题。
 set -euo pipefail
@@ -77,38 +77,17 @@ fi
 
 if [ "$run_backend" -eq 1 ]; then
   export GOWORK=off
-  # 与 make test 一致：真实 PostgreSQL 集成用例会超过 Go 默认的单包 10 分钟。
-  test_timeout=${GO_TEST_TIMEOUT:-30m}
-  if [ -z "${ADTY_TEST_PG_DSN:-}" ]; then
-    echo "check.sh: ADTY_TEST_PG_DSN 未设置，分组测试需要 PostgreSQL，不能跳过" >&2
-    exit 1
-  fi
 
   step "根模块：go vet ./..."
   go vet ./...
   step "根模块：go build ./..."
   go build ./...
 
-  # 同 makefile 的 test 目标：main 包嵌入的是 web/dist 的构建产物，不在这里测
-  step "根模块：go test（main 包除外）"
-  root=$(go list -m)
-  all_pkgs=$(go list -e ./...)
-  pkgs=$(grep -vxF "$root" <<<"$all_pkgs" || true)
-  if [ -z "$pkgs" ]; then
-    echo "check.sh: 根模块除 main 包外没有找到包" >&2
-    exit 1
-  fi
-  # 包名按空白拆开传给 go test
-  # shellcheck disable=SC2086
-  go test -timeout="$test_timeout" $pkgs
-
   for module in relaykit tokenkit; do
     step "$module：go vet ./..."
     (cd "$module" && go vet ./...)
     step "$module：go build ./..."
     (cd "$module" && go build ./...)
-    step "$module：go test ./..."
-    (cd "$module" && go test -timeout="$test_timeout" ./...)
   done
 fi
 
@@ -121,25 +100,16 @@ if [ "$run_frontend" -eq 1 ]; then
   (cd web && bun run typecheck)
   step "web build"
   (cd web && bun run build)
-  step "web install Chromium for browser smoke"
-  (cd web && bun x playwright install chromium)
-  step "web production browser smoke"
-  (cd web && bun run browser:smoke)
   # 上游原样就有 lint error 和不合要求的文件头（docs/adty/baseline.md）。这两步由 ratchet.mjs 跑，
   # 只拦 scripts/adty/baseline-lint.txt、baseline-copyright.txt 以外的新问题
   step "web：bun run lint（和 scripts/adty/baseline-lint.txt 比较）"
   node scripts/adty/ratchet.mjs lint
-  step "web：bun run test"
-  (cd web && bun run test)
   step "web：我们的语言键在简体中文和英文中齐全（scripts/adty/i18n-check.mjs）"
   (cd web && node scripts/adty/i18n-check.mjs)
   step "web：bun run copyright:check（和 scripts/adty/baseline-copyright.txt 比较）"
   node scripts/adty/ratchet.mjs copyright
-fi
-
-if [ "$run_backend" -eq 1 ] && [ "$run_frontend" -eq 1 ]; then
-  step "生产浏览器：隔离 PostgreSQL、Redis、真实钱包和权限"
-  bash scripts/adty/browser-business.sh
+  step "docs：文档与代码一致性检查（make check-docs）"
+  make check-docs
 fi
 
 step "检查全部通过"

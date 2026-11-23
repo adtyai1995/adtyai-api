@@ -39,7 +39,6 @@ import { getServerErrorMessage } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 import { quoteAdtyTopup } from '../api'
-import { bonusRateFor, bonusUsdFor } from '../lib/bonus'
 import { paymentMethodKey } from '../lib/methods'
 import { formatPaymentAmount, formatUsd } from '../lib/money'
 import type { AdtyMethod, AdtyTopupBusiness, AdtyTopupInfo } from '../types'
@@ -62,9 +61,6 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   const ownerSelfUse = props.business === 'owner_self_use_topup'
   const ownerMargin = props.business === 'owner_margin_topup'
   const ownerTopup = ownerSelfUse || ownerMargin
-  const rates = ownerTopup ? {} : (props.info?.bonus_rates ?? {})
-  // No bonus tiers in the admin means no bonus at all: show plain amounts.
-  const hasBonus = Object.values(rates).some((rate) => rate > 0)
   const [sceneKey, setSceneKey] = useState('wallet_topup')
   const scenes = props.info?.scenes ?? []
   const scene = scenes.find((item) => item.key === sceneKey) ?? scenes[0]
@@ -148,25 +144,19 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     quote && Number.isFinite(quote.credit_quota) && quote.credit_quota > 0
       ? quote.credit_quota / 500_000
       : Number.NaN
-  const bonusRate = validAmount ? bonusRateFor(amount, rates) : 0
   let bonusUsd = 0
   let totalCreditUsd = amount
-  if (validAmount && !ownerTopup) {
-    if (quote) {
-      if (Number.isFinite(quotedBonusUsd) && quotedBonusUsd > 0) {
-        bonusUsd = quotedBonusUsd
-      }
-      const hasFace = Number.isFinite(quotedFaceUsd) && quotedFaceUsd > 0
-      totalCreditUsd = (hasFace ? quotedFaceUsd : amount) + bonusUsd
-      if (
-        Number.isFinite(quotedCreditUsd) &&
-        (!hasFace || Math.abs(quotedCreditUsd - totalCreditUsd) < 0.01)
-      ) {
-        totalCreditUsd = quotedCreditUsd
-      }
-    } else {
-      bonusUsd = bonusUsdFor(amount, rates)
-      totalCreditUsd += bonusUsd
+  if (validAmount && !ownerTopup && quote) {
+    if (Number.isFinite(quotedBonusUsd) && quotedBonusUsd > 0) {
+      bonusUsd = quotedBonusUsd
+    }
+    const hasFace = Number.isFinite(quotedFaceUsd) && quotedFaceUsd > 0
+    totalCreditUsd = (hasFace ? quotedFaceUsd : amount) + bonusUsd
+    if (
+      Number.isFinite(quotedCreditUsd) &&
+      (!hasFace || Math.abs(quotedCreditUsd - totalCreditUsd) < 0.01)
+    ) {
+      totalCreditUsd = quotedCreditUsd
     }
   }
   let creditText = '-'
@@ -214,13 +204,6 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
           <CardDescription>
             {t(
               'Paid amount credits the site margin wallet and opens a new 90% margin cycle. No bonus or customer balance applies.'
-            )}
-          </CardDescription>
-        )}
-        {hasBonus && (
-          <CardDescription>
-            {t(
-              'Bigger top-ups get a bigger bonus. The bonus is credited with the payment.'
             )}
           </CardDescription>
         )}
@@ -273,13 +256,6 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
                 <span className='text-base font-semibold'>
                   ${formatNumber(tier.amount, locale)}
                 </span>
-                {hasBonus && (
-                  <span className='text-success text-xs'>
-                    {tier.rate > 0
-                      ? t('Bonus {{rate}}%', { rate: tier.rate })
-                      : t('No bonus')}
-                  </span>
-                )}
               </Button>
             ))}
           </div>
@@ -301,11 +277,9 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
                 setSelectedTier(null)
               }}
             />
-            {customAmount !== '' && (hasBonus || !validAmount) && (
+            {customAmount !== '' && !validAmount && (
               <p className='text-muted-foreground text-xs'>
-                {validAmount
-                  ? t('Bonus {{rate}}%', { rate: bonusRate })
-                  : t('At least ${{amount}}', { amount: minTopup })}
+                {t('At least ${{amount}}', { amount: minTopup })}
               </p>
             )}
           </div>

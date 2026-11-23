@@ -84,7 +84,7 @@ func prepareTopUpGiftOnCreditTx(tx *gorm.DB, ext *model.AdtyTopupOrder, priorSta
 		return totalBonus, nil
 	}
 	switch priorStatus {
-	case common.TopUpStatusExpired, model.TopUpStatusCanceled:
+	case common.TopUpStatusExpired, model.TopUpStatusCanceled, common.TopUpStatusFailed:
 	default:
 		return totalBonus, nil
 	}
@@ -283,7 +283,7 @@ func reacquireAdtySiteGiftAmountTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonus
 		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", ext.SiteId, model.AdtySiteWalletMargin).First(&margin).Error; err != nil {
 			return err
 		}
-		allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{TierUSD: margin.CycleTierUSD, Balance: margin.Balance, Used: margin.CycleUsedUSD, Frozen: margin.FrozenUSD})
+		allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{TierUSD: margin.CycleTierUSD, Balance: margin.Balance, Used: margin.CycleUsedUSD, Frozen: margin.FrozenUSD, ExcessFrozen: margin.ExcessFrozenUSD})
 		if rest.GreaterThan(allowed) {
 			return errGiftGuaranteeShort
 		}
@@ -492,7 +492,7 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 		if err != nil {
 			return err
 		}
-		if err := addAdtyGiftFulfilledBonusTx(tx, row.UserId, tradeNo, owed); err != nil {
+		if err := addAdtyGiftFulfilledBonusTx(tx, row.UserId, row.SiteId, tradeNo, owed); err != nil {
 			return err
 		}
 		key := "gift-fulfill:" + common.Sha1([]byte(tradeNo))
@@ -548,7 +548,7 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 // 补发的额度会从「Σ批次 == 余额」里漏掉，后续 gift_spend 按比例释放保障也就错了。
 // 所以先按 source 把 original/remaining 一起加上；本单从未落过 bonus 批次
 // （赠金被整笔扣下）时才新建。
-func addAdtyGiftFulfilledBonusTx(tx *gorm.DB, userID int, source string, quota int64) error {
+func addAdtyGiftFulfilledBonusTx(tx *gorm.DB, userID, siteID int, source string, quota int64) error {
 	if tx == nil || userID <= 0 || source == "" || quota <= 0 {
 		return nil
 	}
@@ -567,9 +567,17 @@ func addAdtyGiftFulfilledBonusTx(tx *gorm.DB, userID int, source string, quota i
 	// 没有 bonus 批次：本单收钱时赠金被整笔扣下，当时只落了本金批次。
 	// CreateAdtyFundBatchesTx 在这里不能用——它按 (user, source) 判重，
 	// 本金批次在就算「已存在」直接返回，补发的额度会静默丢掉。
+	siteIDPtr := siteID
 	return tx.Create(&model.AdtyFundBatch{
-		UserId: userID, Kind: "bonus", Source: source,
-		Original: quota, Remaining: quota, CreatedAt: common.GetTimestamp(),
+		UserId:       userID,
+		SiteId:       &siteIDPtr,
+		Kind:         model.AdtyFundBatchKindBonus,
+		GiftCategory: model.AdtyGiftCategoryPermanent,
+		Status:       model.AdtyFundBatchStatusActive,
+		Source:       source,
+		Original:     quota,
+		Remaining:    quota,
+		CreatedAt:    common.GetTimestamp(),
 	}).Error
 }
 
@@ -590,7 +598,16 @@ func adtyGiftFulfillmentHistory(raw string, event map[string]any) string {
 }
 
 func notifyPendingGiftFulfillmentAfterCredit(_ *model.TopUp, ext *model.AdtyTopupOrder, _ int) {
-	if ext == nil || (ext.GiftFulfillmentStatus != model.AdtyGiftFulfillmentPending && ext.GiftFulfillmentStatus != model.AdtyGiftFulfillmentPendingReview) {
+	if ext == nil {
+		return
+	}
+	if ext.IsOwnerMargin() && ext.SiteId > 0 {
+		if _, err := ResumePendingAdtyGiftFulfillments(ext.SiteId); err != nil {
+			common.SysLog(common.LogText("resume pending gift fulfillments after owner margin top-up site=%d: %s", ext.SiteId, err.Error()))
+		}
+		return
+	}
+	if ext.GiftFulfillmentStatus != model.AdtyGiftFulfillmentPending && ext.GiftFulfillmentStatus != model.AdtyGiftFulfillmentPendingReview {
 		return
 	}
 	adtyNotifyGiftFulfillmentPending(ext)
@@ -854,9 +871,15 @@ func cancelPendingGiftFulfillmentOnFullRefundTx(tx *gorm.DB, ext *model.AdtyTopu
 		}
 		shrunkQuota := int64(shrunkQuotaDec)
 		if shrunkQuota <= 0 || !shrunkUSD.IsPositive() {
-			return tx.Model(&model.AdtyGiftFulfillment{}).
+			if err := tx.Model(&model.AdtyGiftFulfillment{}).
 				Where("id = ?", row.Id).
-				Updates(map[string]any{"status": model.AdtyGiftFulfillmentCanceled, "reason": "partial refund left no remaining gift"}).Error
+				Updates(map[string]any{"status": model.AdtyGiftFulfillmentCanceled, "reason": "partial refund left no remaining gift"}).Error; err != nil {
+				return err
+			}
+			ext.GiftFulfillmentStatus = model.AdtyGiftFulfillmentCanceled
+			return tx.Model(&model.AdtyTopupOrder{}).
+				Where("id = ?", ext.Id).
+				Update("gift_fulfillment_status", model.AdtyGiftFulfillmentCanceled).Error
 		}
 		if shrunkUSD.LessThan(row.BonusUSD) || shrunkQuota < row.BonusQuota {
 			history := adtyGiftFulfillmentHistory(row.History, map[string]any{

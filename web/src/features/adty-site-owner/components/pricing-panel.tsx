@@ -137,13 +137,20 @@ export function PricingPanel(props: { site: OwnerSite }) {
     },
   })
   const closing = props.site.status === 'closing'
+  const parsedSupplyDiscount = Number(props.site.cost_factor)
+  const supplyDiscount =
+    Number.isFinite(parsedSupplyDiscount) && parsedSupplyDiscount > 0
+      ? parsedSupplyDiscount
+      : 1
+  const supplyDiscountText = props.site.cost_factor || String(supplyDiscount)
+  const supplyPriceForOneUsd = supplyDiscount.toFixed(4)
 
   return (
     <div className='flex flex-col gap-4'>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Retail price equals supply price times your multiplier. Your supply cost factor is {{cost}}.',
-          { cost: props.site.cost_factor }
+          'Retail price equals supply price times your multiplier. Your supply discount is {{cost}}.',
+          { cost: supplyDiscountText }
         )}
       </p>
       <p className='text-muted-foreground text-sm'>
@@ -266,53 +273,66 @@ export function PricingPanel(props: { site: OwnerSite }) {
       <section aria-label={t('Markup by model')} className='space-y-2'>
         <h3 className='text-sm font-medium'>{t('Markup by model')}</h3>
         {modelRows.map((row, index) => (
-          <div key={row.key} className='flex items-end gap-2'>
-            <div className='space-y-2'>
-              <Label htmlFor={`model-name-${index}`}>{t('Model')}</Label>
-              <Input
-                id={`model-name-${index}`}
-                value={row.model}
-                disabled={closing}
-                onChange={(event) =>
-                  setModelRows((prev) =>
-                    prev.map((item, i) =>
-                      i === index
-                        ? { ...item, model: event.target.value }
-                        : item
+          <div key={row.key} className='flex flex-col gap-1'>
+            <div className='flex items-end gap-2'>
+              <div className='space-y-2'>
+                <Label htmlFor={`model-name-${index}`}>{t('Model')}</Label>
+                <Input
+                  id={`model-name-${index}`}
+                  value={row.model}
+                  disabled={closing}
+                  onChange={(event) =>
+                    setModelRows((prev) =>
+                      prev.map((item, i) =>
+                        i === index
+                          ? { ...item, model: event.target.value }
+                          : item
+                      )
                     )
-                  )
-                }
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor={`model-markup-${index}`}>{t('Markup')}</Label>
-              <Input
-                id={`model-markup-${index}`}
-                type='number'
-                min='0.0001'
-                step='0.0001'
-                value={row.markup}
-                disabled={closing}
-                onChange={(event) =>
-                  setModelRows((prev) =>
-                    prev.map((item, i) =>
-                      i === index
-                        ? { ...item, markup: event.target.value }
-                        : item
+                  }
+                />
+              </div>
+              <div className='space-y-2'>
+                <Label htmlFor={`model-markup-${index}`}>{t('Markup')}</Label>
+                <Input
+                  id={`model-markup-${index}`}
+                  type='number'
+                  min='0.0001'
+                  step='0.0001'
+                  value={row.markup}
+                  disabled={closing}
+                  onChange={(event) =>
+                    setModelRows((prev) =>
+                      prev.map((item, i) =>
+                        i === index
+                          ? { ...item, markup: event.target.value }
+                          : item
+                      )
                     )
-                  )
-                }
-              />
+                  }
+                />
+              </div>
+              <Button
+                variant='outline'
+                disabled={closing}
+                onClick={() => {
+                  setModelRows((prev) => prev.filter((_, i) => i !== index))
+                }}
+              >
+                {t('Remove')}
+              </Button>
             </div>
-            <Button
-              variant='outline'
-              disabled={closing}
-              onClick={() => {
-                setModelRows((prev) => prev.filter((_, i) => i !== index))
-              }}
-            >
-              {t('Remove')}
-            </Button>
+            {validRetailMarkup(row.markup) && (
+              <p className='text-muted-foreground text-xs tabular-nums'>
+                {t(
+                  'Main-site $1.0000 → Supply ${{supply}} → Retail ${{retail}}',
+                  {
+                    supply: supplyPriceForOneUsd,
+                    retail: (supplyDiscount * Number(row.markup)).toFixed(4),
+                  }
+                )}
+              </p>
+            )}
           </div>
         ))}
         <Button
@@ -334,17 +354,22 @@ export function PricingPanel(props: { site: OwnerSite }) {
           <h3 className='text-sm font-medium'>{t('Price preview')}</h3>
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Example retail prices for a $1 supply price. Each override is shown on its own, with the site default as its fallback.'
+              'Example retail prices for a $1.0000 main-site standard price. Each override is shown on its own, with the site default as its fallback.'
             )}
           </p>
           <ul className='space-y-1 text-sm tabular-nums'>
             {previews.map(({ name, before, after }) => (
               <li key={name}>
-                {t('{{name}}: {{before}} USD → {{after}} USD', {
-                  name,
-                  before,
-                  after,
-                })}
+                {name}:{' '}
+                {t(
+                  'Main-site standard $1.0000 → Supply ${{supply}} (×{{discount}}) → Retail ${{before}} → ${{after}}',
+                  {
+                    supply: supplyPriceForOneUsd,
+                    discount: supplyDiscountText,
+                    before: (supplyDiscount * Number(before)).toFixed(4),
+                    after: (supplyDiscount * Number(after)).toFixed(4),
+                  }
+                )}
               </li>
             ))}
           </ul>

@@ -85,6 +85,7 @@ const ACCEPTED_TICKET_IMAGE_MIMES = new Set([
   'image/jpeg',
   'image/webp',
 ])
+const ACCEPTED_TICKET_IMAGE_EXT = /\.(png|jpe?g|webp)$/i
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -171,6 +172,7 @@ type TicketDetail = {
   events?: TicketEvent[]
   can_note: boolean
   can_manage: boolean
+  can_control?: boolean
 }
 
 type TicketList = {
@@ -423,7 +425,7 @@ function TicketWorkspace({
       }
       const createdTicket = payload.data
       const targetScope = resolvedAudience === 'team' ? 'team' : 'personal'
-      const filesToUpload = createFiles.map((item) => item.file)
+      const pendingItems = [...createFiles]
       attempts.current.delete('create')
       if (submittedVersion === createVersion.current) {
         setTitle('')
@@ -433,7 +435,6 @@ function TicketWorkspace({
         setAudience('personal')
         setType('other')
         setPriority('normal')
-        setCreateFiles([])
         if (ticketDraftLink(window.location.hash)) {
           window.history.replaceState(window.history.state, '', '#tickets')
         }
@@ -443,20 +444,43 @@ function TicketWorkspace({
       setScope(targetScope)
       selectTicket(createdTicket.id)
       const firstMessageId = createdTicket.initial_message_id ?? 0
-      for (const file of filesToUpload) {
-        const encoded = await readFileAsBase64(file)
-        await postTicketImage(
-          createdTicket.id,
-          firstMessageId,
-          'public',
-          targetScope,
-          encoded
+      const failedItems: typeof pendingItems = []
+      let firstErr = ''
+      for (const item of pendingItems) {
+        try {
+          const encoded = await readFileAsBase64(item.file)
+          await postTicketImage(
+            createdTicket.id,
+            firstMessageId,
+            'public',
+            targetScope,
+            encoded
+          )
+        } catch (cause) {
+          failedItems.push(item)
+          if (!firstErr) {
+            firstErr = getServerErrorMessage(cause, t('Only images are accepted'))
+          }
+        }
+      }
+      if (submittedVersion === createVersion.current) {
+        setCreateFiles(failedItems)
+      }
+      if (failedItems.length > 0) {
+        setError(
+          failedItems.length === 1 && pendingItems.length === 1
+            ? firstErr
+            : t('{{failed}} of {{total}} images failed to upload: {{reason}}', {
+                failed: failedItems.length,
+                total: pendingItems.length,
+                reason: firstErr,
+              })
         )
       }
-      await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
     } finally {
+      await refresh()
       setPending(false)
     }
   }
@@ -616,7 +640,12 @@ function TicketWorkspace({
     }
     let nextTotal = currentTotalBytes
     for (const file of incoming) {
-      if (file.type && !ACCEPTED_TICKET_IMAGE_MIMES.has(file.type)) {
+      const mime = file.type.toLowerCase()
+      const mimeAllowed =
+        mime !== ''
+          ? ACCEPTED_TICKET_IMAGE_MIMES.has(mime)
+          : ACCEPTED_TICKET_IMAGE_EXT.test(file.name)
+      if (!mimeAllowed || /\.gif$/i.test(file.name)) {
         return t('Only PNG, JPEG and WebP images are accepted')
       }
       if (maxBytes > 0 && file.size > maxBytes) {
@@ -652,14 +681,34 @@ function TicketWorkspace({
       const visibility = detail.data?.messages.find(
         (m) => m.id === imageMessage
       )?.visibility
+      let failedCount = 0
+      let firstErr = ''
       for (const file of files) {
-        const encoded = await readFileAsBase64(file)
-        await postTicketImage(selected, imageMessage, visibility, scope, encoded)
+        try {
+          const encoded = await readFileAsBase64(file)
+          await postTicketImage(selected, imageMessage, visibility, scope, encoded)
+        } catch (cause) {
+          failedCount++
+          if (!firstErr) {
+            firstErr = getServerErrorMessage(cause, t('Only images are accepted'))
+          }
+        }
       }
-      await refresh()
+      if (failedCount > 0) {
+        setError(
+          failedCount === 1 && files.length === 1
+            ? firstErr
+            : t('{{failed}} of {{total}} images failed to upload: {{reason}}', {
+                failed: failedCount,
+                total: files.length,
+                reason: firstErr,
+              })
+        )
+      }
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Only images are accepted')))
     } finally {
+      await refresh()
       setPending(false)
     }
   }
@@ -975,7 +1024,8 @@ function TicketWorkspace({
                       !terminal &&
                       (detail.data.can_manage ||
                         (image.visibility === 'public' &&
-                          (detail.data.ticket.user_id === userId ||
+                          (detail.data.can_control ||
+                            detail.data.ticket.user_id === userId ||
                             message.author_id === userId)))
                     return (
                       <TicketImage
@@ -1007,7 +1057,8 @@ function TicketWorkspace({
                   !terminal &&
                   (detail.data.can_manage ||
                     (image.visibility === 'public' &&
-                      detail.data.ticket.user_id === userId))
+                      (detail.data.can_control ||
+                        detail.data.ticket.user_id === userId)))
                 return (
                   <TicketImage
                     key={image.id}
@@ -1324,6 +1375,7 @@ function TicketWorkspace({
             <Label htmlFor='ticket-title'>{t('Title')}</Label>
             <Input
               id='ticket-title'
+              maxLength={120}
               value={title}
               onChange={(event) => setTitle(event.target.value)}
             />

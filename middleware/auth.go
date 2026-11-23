@@ -72,6 +72,11 @@ func authHelper(c *gin.Context, minRole int) {
 		abortWithWebMessage(c, http.StatusForbidden, "AUTH_INSUFFICIENT_PRIVILEGE", common.NewMessage("Unauthorized, insufficient privileges"))
 		return
 	}
+	// R1-012: Platform admin / root endpoints are strictly restricted to the main site domain.
+	if minRole >= common.RoleAdminUser && service.AdtyRequestSiteID(c) != 0 {
+		abortWithWebMessage(c, http.StatusForbidden, "AUTH_ADMIN_MAIN_SITE_ONLY", common.NewMessage("Platform administration endpoints are only accessible on the main site"))
+		return
+	}
 	var lookup *accessTokenLookup
 	if useAccessToken {
 		lookup = requestAccessTokenLookup(c)
@@ -597,6 +602,12 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 				status = http.StatusForbidden
 			}
 			common.ApiErrorStatus(c, status, errors.New(i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch)))
+			c.Abort()
+			return
+		}
+		// R1-068: Enforce live team token lifecycle state on read-only token queries too.
+		if err := model.ValidateAdtyTeamTokenTx(model.DB, token); err != nil {
+			common.ApiErrorStatus(c, http.StatusForbidden, err)
 			c.Abort()
 			return
 		}

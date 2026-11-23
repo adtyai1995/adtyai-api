@@ -60,6 +60,12 @@ export function VoucherPanel(props: { siteId: number }) {
     earnings: string
     margin: string
   } | null>(null)
+  const [reconciled, setReconciled] = useState<{
+    id: number
+    tail: string
+    amountUsd: string
+    status?: string
+  } | null>(null)
   const [page, setPage] = useState(1)
   const intentRef = useRef<{ payload: string; key: string } | null>(null)
   const list = useQuery({
@@ -91,6 +97,18 @@ export function VoucherPanel(props: { siteId: number }) {
         },
         proof
       )
+      if (issued.replayed || !issued.code) {
+        setCode('')
+        setIssuedSplit(null)
+        setReconciled({
+          id: issued.id,
+          tail: issued.code_tail,
+          amountUsd: issued.amount_usd,
+          status: issued.status,
+        })
+        return
+      }
+      setReconciled(null)
       setCode(issued.code)
       setIssuedSplit({
         earnings: issued.frozen_earnings_usd ?? '0',
@@ -114,6 +132,16 @@ export function VoucherPanel(props: { siteId: number }) {
     run: (id, proof) => cancelOwnerVoucher(id, proof),
     successMessage: t('Code cancelled'),
   })
+  const cancelAndReplace = useVerifiedOwnerMutation<number>({
+    action: 'voucher.cancel',
+    target: (id) => id,
+    run: (id, proof) => cancelOwnerVoucher(id, proof),
+    successMessage: t('Code cancelled'),
+    onSuccess: () => {
+      intentRef.current = null
+      setReconciled(null)
+    },
+  })
   const rows = Array.isArray(list.data?.items) ? list.data.items : []
 
   return (
@@ -124,6 +152,7 @@ export function VoucherPanel(props: { siteId: number }) {
           event.preventDefault()
           setCode('')
           setIssuedSplit(null)
+          setReconciled(null)
           const trimmedAmount = amount.trim()
           const trimmedReason = reason.trim()
           const payload = `${purpose}:${trimmedAmount}:${trimmedReason}`
@@ -187,6 +216,49 @@ export function VoucherPanel(props: { siteId: number }) {
         >
           {t('Issue code')}
         </Button>
+        {reconciled && (
+          <div
+            role='status'
+            className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
+          >
+            <p>
+              {t(
+                'Previous issuance request already created code #{{id}} (tail {{tail}}, {{amount}} USD). Full codes are shown once.',
+                {
+                  id: reconciled.id,
+                  tail: reconciled.tail,
+                  amount: reconciled.amountUsd,
+                }
+              )}
+            </p>
+            <div className='flex flex-wrap gap-2'>
+              {(!reconciled.status ||
+                reconciled.status === 'pending' ||
+                reconciled.status === 'frozen') && (
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={cancelAndReplace.isPending}
+                  onClick={() => cancelAndReplace.mutate(reconciled.id)}
+                >
+                  {t('Cancel code and replace')}
+                </Button>
+              )}
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() => {
+                  intentRef.current = null
+                  setReconciled(null)
+                }}
+              >
+                {t('Prepare replacement code')}
+              </Button>
+            </div>
+          </div>
+        )}
         {code && (
           <div className='flex flex-col gap-1 text-sm'>
             <div className='flex items-center gap-2'>

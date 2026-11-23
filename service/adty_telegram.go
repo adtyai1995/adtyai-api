@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service/authz"
 	"gorm.io/gorm"
 )
 
@@ -163,13 +165,55 @@ func adtyTelegramAdminAccess(tx *gorm.DB, user *model.User) (bool, error) {
 	if user == nil || user.Id <= 0 || user.Status != common.UserStatusEnabled {
 		return false, nil
 	}
-	if user.Role >= common.RoleAdminUser {
-		return true, nil
+	// 1. 现役有效 Root 或具备平台工单处理权限的平台管理员（且未被撤权）
+	if user.SiteId == 0 && user.StaffSiteId == 0 && user.Role >= common.RoleAdminUser {
+		if user.Role >= common.RoleRootUser {
+			return true, nil
+		}
+		if tx.Migrator().HasTable(&model.CasbinRule{}) {
+			check, err := authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
+			if err != nil {
+				return false, err
+			}
+			if check(user.Id, user.Role, authz.AdtyTicketManageAll) || check(user.Id, user.Role, authz.AdtyTicketManage) {
+				return true, nil
+			}
+		}
 	}
-	var count int64
-	staffSites := tx.Model(&model.AdtySiteStaff{}).Select("site_id").Where("user_id=? AND status=?", user.Id, "enabled")
-	err := tx.Model(&model.AdtySite{}).Where("owner_user_id=? OR id IN (?)", user.Id, staffSites).Where("status IN ?", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Count(&count).Error
-	return count > 0, err
+	// 2. 现役活跃分站站长
+	activeStatuses := []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}
+	if tx.Migrator().HasTable(&model.AdtySite{}) {
+		var site model.AdtySite
+		owned := tx.Where("owner_user_id = ? AND status IN ?", user.Id, activeStatuses).Limit(1).Find(&site)
+		if owned.Error != nil {
+			return false, owned.Error
+		}
+		if owned.RowsAffected > 0 && AdtySiteAgreementAccepted(site.AgreementVer) {
+			return true, nil
+		}
+		// 3. 具备分站工单权限的现役员工
+		if tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+			var staff model.AdtySiteStaff
+			lookup := tx.Where("user_id = ? AND status = ?", user.Id, "enabled").Limit(1).Find(&staff)
+			if lookup.Error != nil {
+				return false, lookup.Error
+			}
+			if lookup.RowsAffected > 0 && staff.SiteId > 0 &&
+				user.StaffSiteId == staff.SiteId && user.SiteId == staff.SiteId &&
+				user.Role == common.RoleCommonUser &&
+				slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffTicketManage) {
+				var staffSite model.AdtySite
+				res := tx.Where("id = ? AND owner_user_id = ? AND status IN ?", staff.SiteId, staff.OwnerUserId, activeStatuses).Limit(1).Find(&staffSite)
+				if res.Error != nil {
+					return false, res.Error
+				}
+				if res.RowsAffected == 1 && AdtySiteAgreementAccepted(staffSite.AgreementVer) {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 func SaveAdtyTelegramBot(purpose, token string, enabled bool, audits ...model.AuditLog) (*AdtyTelegramSaved, error) {
@@ -270,7 +314,7 @@ func SaveAdtyTelegramBot(purpose, token string, enabled bool, audits ...model.Au
 }
 
 func TestAdtyTelegramBot(purpose string, userId int) error {
-	if !adtyValidTelegramPurpose(purpose) {
+	if !adtyValidTelegramPurpose(purpose) || userId <= 0 {
 		return ErrAdtyTelegramInvalid
 	}
 	var row model.AdtyTelegramBot
@@ -280,9 +324,44 @@ func TestAdtyTelegramBot(purpose string, userId int) error {
 	if row.Id == 0 || row.TokenCipher == "" {
 		return ErrAdtyTelegramInvalid
 	}
+	if !row.Enabled {
+		return common.NewMessage("Telegram bot is disabled")
+	}
 	token := mustOpenTelegramToken(row)
 	if token == "" {
 		return ErrAdtyTelegramInvalid
+	}
+	var user model.User
+	if err := model.DB.Select("id", "site_id", "staff_site_id", "status", "role").First(&user, userId).Error; err != nil {
+		return err
+	}
+	if user.Status != common.UserStatusEnabled {
+		return ErrAdtyTelegramForbidden
+	}
+	if siteOpen, err := adtyTelegramSiteAccess(model.DB, user.SiteId); err != nil {
+		return err
+	} else if !siteOpen {
+		return ErrAdtyTelegramForbidden
+	}
+	if purpose == model.AdtyTelegramPurposeAdmin {
+		adminOK, err := adtyTelegramAdminAccess(model.DB, &user)
+		if err != nil {
+			return err
+		}
+		if !adminOK {
+			return ErrAdtyTelegramForbidden
+		}
+	}
+	var binding model.AdtyTelegramBinding
+	found := model.DB.Where("user_id = ? AND purpose = ? AND status = ?", userId, purpose, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
+	if found.Error != nil {
+		return found.Error
+	}
+	if found.RowsAffected == 0 || binding.BotIdentity != row.IdentityHash || binding.TelegramUserId <= 0 || binding.SiteId != user.SiteId {
+		return common.NewMessage("Bind your Telegram account first before sending a test message")
+	}
+	if AdtyTelegramSender == nil {
+		return common.NewMessage("Telegram outbound sending is disabled")
 	}
 	botID, username, err := AdtyTelegramGetMe(token)
 	if err != nil {
@@ -291,6 +370,9 @@ func TestAdtyTelegramBot(purpose string, userId int) error {
 	if botID <= 0 {
 		return ErrAdtyTelegramUnverified
 	}
+	if err := AdtyTelegramSender(token, strconv.FormatInt(binding.TelegramUserId, 10), adtyTelegramSavedOr("telegram_test_notice", "测试通知\n\nTest notice")); err != nil {
+		return err
+	}
 	updates := map[string]any{
 		"tested_at":         time.Now().Unix(),
 		"identity_verified": true,
@@ -298,12 +380,7 @@ func TestAdtyTelegramBot(purpose string, userId int) error {
 	if username != "" {
 		updates["username"] = username
 	}
-	if err := model.DB.Model(&row).Updates(updates).Error; err != nil {
-		return err
-	}
-	// Each test is its own delivery; a fixed key made every test after the first a silent duplicate.
-	eventKey := "telegram-test:" + purpose + ":" + strconv.Itoa(userId) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	return QueueAdtyTelegramNotice(userId, purpose, adtyTelegramSavedOr("telegram_test_notice", "测试通知\n\nTest notice"), eventKey)
+	return model.DB.Model(&row).Updates(updates).Error
 }
 
 func StartAdtyTelegramBind(userId int, purpose string) (string, string, int64, error) {
@@ -314,11 +391,20 @@ func StartAdtyTelegramBind(userId int, purpose string) (string, string, int64, e
 	if err := model.DB.Select("id", "site_id", "staff_site_id", "status", "role").First(&user, userId).Error; err != nil {
 		return "", "", 0, err
 	}
-	if user.Status != common.UserStatusEnabled || !adtySiteIsOpen(model.DB, user.SiteId) {
+	if user.Status != common.UserStatusEnabled {
 		return "", "", 0, ErrAdtyTelegramForbidden
 	}
-	if purpose == model.AdtyTelegramPurposeAdmin && !adtyCanUseAdminTelegram(model.DB, &user) {
+	if siteOpen, err := adtyTelegramSiteAccess(model.DB, user.SiteId); err != nil {
+		return "", "", 0, err
+	} else if !siteOpen {
 		return "", "", 0, ErrAdtyTelegramForbidden
+	}
+	if purpose == model.AdtyTelegramPurposeAdmin {
+		if adminOK, err := adtyTelegramAdminAccess(model.DB, &user); err != nil {
+			return "", "", 0, err
+		} else if !adminOK {
+			return "", "", 0, ErrAdtyTelegramForbidden
+		}
 	}
 	var bot model.AdtyTelegramBot
 	if err := model.DB.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).Error; err != nil {
@@ -375,6 +461,25 @@ func HandleAdtyTelegramUpdate(purpose, secret string, update AdtyTelegramUpdate)
 		if lookup.RowsAffected == 0 || challenge.UsedAt != 0 || challenge.SeenAt != 0 || challenge.ExpiresAt < time.Now().Unix() || challenge.BotIdentity != bot.IdentityHash {
 			return ErrAdtyTelegramInvalid
 		}
+		var user model.User
+		if err := tx.Select("id", "site_id", "staff_site_id", "status", "role").Where("id = ?", challenge.UserId).Limit(1).Find(&user).Error; err != nil {
+			return err
+		}
+		if user.Id == 0 || user.Status != common.UserStatusEnabled || user.SiteId != challenge.SiteId {
+			return ErrAdtyTelegramForbidden
+		}
+		if siteOpen, err := adtyTelegramSiteAccess(tx, user.SiteId); err != nil {
+			return err
+		} else if !siteOpen {
+			return ErrAdtyTelegramForbidden
+		}
+		if purpose == model.AdtyTelegramPurposeAdmin {
+			if adminOK, err := adtyTelegramAdminAccess(tx, &user); err != nil {
+				return err
+			} else if !adminOK {
+				return ErrAdtyTelegramForbidden
+			}
+		}
 		return tx.Model(&challenge).Updates(map[string]any{
 			"telegram_user_id": update.Message.From.Id, "telegram_username": update.Message.From.Username, "seen_at": time.Now().Unix(),
 		}).Error
@@ -407,11 +512,20 @@ func ConfirmAdtyTelegramBind(userId int, purpose, code string, telegramUserId in
 		if err := model.AdtyLockForUpdate(tx).First(&user, userId).Error; err != nil {
 			return err
 		}
-		if user.Status != common.UserStatusEnabled || !adtySiteIsOpen(tx, user.SiteId) {
+		if user.Status != common.UserStatusEnabled {
 			return ErrAdtyTelegramForbidden
 		}
-		if purpose == model.AdtyTelegramPurposeAdmin && !adtyCanUseAdminTelegram(tx, &user) {
+		if siteOpen, err := adtyTelegramSiteAccess(tx, user.SiteId); err != nil {
+			return err
+		} else if !siteOpen {
 			return ErrAdtyTelegramForbidden
+		}
+		if purpose == model.AdtyTelegramPurposeAdmin {
+			if adminOK, err := adtyTelegramAdminAccess(tx, &user); err != nil {
+				return err
+			} else if !adminOK {
+				return ErrAdtyTelegramForbidden
+			}
 		}
 		var challenge model.AdtyTelegramChallenge
 		lookup := model.AdtyLockForUpdate(tx).Where("code_hash = ?", hex.EncodeToString(sum[:])).Limit(1).Find(&challenge)
@@ -530,8 +644,19 @@ func QueueAdtyTelegramNotice(userId int, purpose, body, eventKey string) error {
 		if found.Error != nil {
 			return found.Error
 		}
-		if found.RowsAffected > 0 && user.Id > 0 && user.Status == common.UserStatusEnabled && user.SiteId == binding.SiteId && adtySiteIsOpen(tx, binding.SiteId) {
-			if purpose != model.AdtyTelegramPurposeAdmin || adtyCanUseAdminTelegram(tx, &user) {
+		if found.RowsAffected > 0 && user.Id > 0 && user.Status == common.UserStatusEnabled && user.SiteId == binding.SiteId {
+			siteOpen, err := adtyTelegramSiteAccess(tx, binding.SiteId)
+			if err != nil {
+				return err
+			}
+			adminOK := true
+			if siteOpen && purpose == model.AdtyTelegramPurposeAdmin {
+				adminOK, err = adtyTelegramAdminAccess(tx, &user)
+				if err != nil {
+					return err
+				}
+			}
+			if siteOpen && adminOK {
 				var bot model.AdtyTelegramBot
 				if err := tx.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).Error; err != nil {
 					return err

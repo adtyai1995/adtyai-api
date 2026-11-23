@@ -102,7 +102,6 @@ export type AdtyOrder = {
 export type AdtyTopupInfo = {
   scenes?: AdtyPaymentScene[]
   tiers: AdtyTier[]
-  bonus_rates: Record<string, number>
   min_topup: number
   methods: AdtyMethod[]
   price_cny_per_usd: number

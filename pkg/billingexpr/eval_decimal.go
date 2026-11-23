@@ -13,7 +13,52 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+const maxExprExponent = 32
+
 var errNonFiniteExpr = errors.New("expr result must be finite and non-negative")
+
+func validateExponentNodes(root ast.Node) error {
+	var foundErr error
+	ast.Walk(&root, &exponentValidator{err: &foundErr})
+	return foundErr
+}
+
+type exponentValidator struct {
+	err *error
+}
+
+func (v *exponentValidator) Visit(node *ast.Node) {
+	if *v.err != nil || node == nil || *node == nil {
+		return
+	}
+	bin, ok := (*node).(*ast.BinaryNode)
+	if !ok || (bin.Operator != "**" && bin.Operator != "^") {
+		return
+	}
+	if val, ok := literalNumericValue(bin.Right); ok {
+		if math.IsNaN(val) || math.IsInf(val, 0) || math.Trunc(val) != val || math.Abs(val) > maxExprExponent {
+			*v.err = fmt.Errorf("exponent must be an integer within [-%d, %d]", maxExprExponent, maxExprExponent)
+		}
+	}
+}
+
+func literalNumericValue(node ast.Node) (float64, bool) {
+	switch n := node.(type) {
+	case *ast.IntegerNode:
+		return float64(n.Value), true
+	case *ast.FloatNode:
+		return n.Value, true
+	case *ast.UnaryNode:
+		if n.Operator == "-" {
+			if v, ok := literalNumericValue(n.Node); ok {
+				return -v, true
+			}
+		} else if n.Operator == "+" {
+			return literalNumericValue(n.Node)
+		}
+	}
+	return 0, false
+}
 
 type decimalEvalEnv struct {
 	src             string
@@ -203,6 +248,12 @@ func evalArithmetic(op string, left, right any) (any, error) {
 		}
 		return ld.Mod(rd), nil
 	case "**", "^":
+		if !rd.Equal(rd.Truncate(0)) || rd.Abs().GreaterThan(decimal.NewFromInt(maxExprExponent)) {
+			return nil, fmt.Errorf("expr run error: exponent must be an integer within [-%d, %d]", maxExprExponent, maxExprExponent)
+		}
+		if ld.IsZero() && rd.IsNegative() {
+			return nil, errNonFiniteExpr
+		}
 		return ld.Pow(rd), nil
 	default:
 		return nil, fmt.Errorf("expr run error: unsupported operator %q", op)

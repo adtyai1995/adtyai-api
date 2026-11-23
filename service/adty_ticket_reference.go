@@ -123,18 +123,41 @@ func ticketRequestSnapshot(tx *gorm.DB, actor adtyTicketActor, ref string, ticke
 			return op.PayerTeamId, nil
 		}
 	}
-	ownerID := actor.User.Id
-	if found.RowsAffected > 0 {
-		ownerID = op.UserId
-	}
+	payerTeamID := op.PayerTeamId
 	var log model.Log
 	if model.LOG_DB != nil {
-		if err := model.LOG_DB.Select("model_name", "group", "created_at", "type", "other", "id").Where("user_id=? AND request_id=?", ownerID, ref).Order("id DESC").Limit(1).Find(&log).Error; err != nil {
-			return 0, err
+		if found.RowsAffected > 0 {
+			if err := model.LOG_DB.Select("user_id", "token_id", "model_name", "group", "created_at", "type", "other", "id").Where("user_id=? AND request_id=?", op.UserId, ref).Order("id DESC").Limit(1).Find(&log).Error; err != nil {
+				return 0, err
+			}
+		} else {
+			if err := model.LOG_DB.Select("user_id", "token_id", "model_name", "group", "created_at", "type", "other", "id").Where("request_id=?", ref).Order("CASE WHEN user_id = " + strconv.Itoa(actor.User.Id) + " THEN 0 ELSE 1 END, id DESC").Limit(1).Find(&log).Error; err != nil {
+				return 0, err
+			}
 		}
 	}
 	if log.Id == 0 && found.RowsAffected == 0 {
 		return 0, ErrAdtyTicketInvalid
+	}
+	if found.RowsAffected == 0 && log.Id > 0 {
+		if log.TokenId > 0 && tx.Migrator().HasTable(&model.AdtyTeamKey{}) {
+			var teamKey model.AdtyTeamKey
+			tk := tx.Select("team_id").Where("token_id = ?", log.TokenId).Limit(1).Find(&teamKey)
+			if tk.Error != nil {
+				return 0, tk.Error
+			}
+			if tk.RowsAffected > 0 && teamKey.TeamId > 0 {
+				payerTeamID = teamKey.TeamId
+			}
+		}
+		own := log.UserId == actor.User.Id
+		if payerTeamID > 0 {
+			if actor.TeamId != payerTeamID || (!own && actor.TeamRole != model.AdtyTeamRoleLeader) {
+				return 0, ErrAdtyTicketInvalid
+			}
+		} else if !own {
+			return 0, ErrAdtyTicketInvalid
+		}
 	}
 	if ticket != nil {
 		ticket.RelatedAt = op.CreatedAt
@@ -175,7 +198,7 @@ func ticketRequestSnapshot(tx *gorm.DB, actor adtyTicketActor, ref string, ticke
 		ticket.RelatedGroup = boundedTicketHint(ticket.RelatedGroup, 64)
 		ticket.RelatedError = boundedTicketHint(ticket.RelatedError, 64)
 	}
-	return op.PayerTeamId, nil
+	return payerTeamID, nil
 }
 
 func boundedTicketHint(value string, limit int) string {

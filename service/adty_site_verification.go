@@ -10,11 +10,13 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/shopspring/decimal"
 )
 
 // 站长中心的敏感操作要重新验证身份（任务 11.6，按 AGENTS.md 的 OWASP 要求做敏感操作的再认证）：
-// 改价、改加赠、送试用额度、删除自定义域名、新建修改删除优惠码、删除发件域名。用上游的二次验证（/api/verify 拿 proof，请求带 X-Security-Proof），
-// 和 2FA、Passkey、密码同一套；proof 只能用一次，并绑定操作和目标，不能拿去做别的事。
+// 改价、改加赠、删除自定义域名、发放/冻结/作废兑换码、删除发件域名、员工写操作及审批、手动给客户/团队加余额。
+// 用上游的二次验证（/api/verify 拿 proof，请求带 X-Security-Proof），和 2FA、Passkey、密码同一套；
+// proof 只能用一次，并绑定操作、目标以及关键金额/幂等键请求摘要，不能拿去做别的事。
 
 // VerificationScopeAdtySiteOwnerManage 是站长敏感操作的验证范围。
 const VerificationScopeAdtySiteOwnerManage = "site.owner.manage"
@@ -27,37 +29,65 @@ const (
 
 // 站长敏感操作的种类。
 const (
-	AdtySiteOwnerActionPricing         = "pricing"       // target：0 是全站定价，否则是客户 id
-	AdtySiteOwnerActionBonus           = "bonus"         // target：站点 id
-	AdtySiteOwnerActionTrial           = "trial"         // target：客户 id
-	AdtySiteOwnerActionDomain          = "domain.delete" // target：自定义域名 id
-	AdtySiteOwnerActionSender          = "sender.delete" // target：站点 id
-	AdtySiteOwnerActionStaffCreate     = "staff.create"  // target: site ID
-	AdtySiteOwnerActionStaffUpdate     = "staff.update"  // target: membership ID
-	AdtySiteOwnerActionStaffPassword   = "staff.password"
-	AdtySiteOwnerActionStaffDelete     = "staff.delete"
-	AdtySiteOwnerActionVoucherIssue    = "voucher.issue"    // target: site ID
-	AdtySiteOwnerActionVoucherFreeze   = "voucher.freeze"   // target: voucher ID
-	AdtySiteOwnerActionVoucherCancel   = "voucher.cancel"   // target: voucher ID
-	AdtySiteOwnerActionCustomerBalance = "customer.balance" // target: customer user ID
-	AdtySiteOwnerActionTeamBalance     = "team.balance"     // target: team ID
+	AdtySiteOwnerActionPricing            = "pricing"       // target：0 是全站定价，否则是客户 id
+	AdtySiteOwnerActionBonus              = "bonus"         // target：站点 id
+	AdtySiteOwnerActionDomain             = "domain.delete" // target：自定义域名 id
+	AdtySiteOwnerActionSender             = "sender.delete" // target：站点 id
+	AdtySiteOwnerActionStaffCreate        = "staff.create"  // target: site ID
+	AdtySiteOwnerActionStaffUpdate        = "staff.update"  // target: membership ID
+	AdtySiteOwnerActionStaffPassword      = "staff.password"
+	AdtySiteOwnerActionStaffDelete        = "staff.delete"
+	AdtySiteOwnerActionStaffBalanceReview = "staff.balance_review" // target: balance request ID
+	AdtySiteOwnerActionVoucherIssue       = "voucher.issue"        // target: site ID
+	AdtySiteOwnerActionVoucherFreeze      = "voucher.freeze"       // target: voucher ID
+	AdtySiteOwnerActionVoucherCancel      = "voucher.cancel"       // target: voucher ID
+	AdtySiteOwnerActionCustomerBalance    = "customer.balance"     // target: customer user ID
+	AdtySiteOwnerActionTeamBalance        = "team.balance"         // target: team ID
 )
 
-var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionTrial, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender,
+var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender,
 	AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete,
+	AdtySiteOwnerActionStaffBalanceReview,
 	AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel,
 	AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance}
 
-// AdtySiteOwnerContext 是 proof 绑定的操作：哪种操作、对哪个目标，员工写操作还会绑定请求体摘要。
+// AdtySiteOwnerContext 是 proof 绑定的操作：哪种操作、对哪个目标，员工写操作及资金操作还会绑定请求体摘要。
 type AdtySiteOwnerContext struct {
 	Action string `json:"action"`
 	Target int    `json:"target"`
 	Digest string `json:"digest,omitempty"`
 }
 
+// AdtyOwnerBalanceCreditDigestInput is the canonical digest payload for
+// customer.balance and team.balance step-up verification (R1-018).
+type AdtyOwnerBalanceCreditDigestInput struct {
+	AmountUSD      string `json:"amount_usd"`
+	Reason         string `json:"reason"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// AdtyOwnerBalanceReviewDigestInput is the canonical digest payload for
+// staff.balance_review step-up verification (R1-018).
+type AdtyOwnerBalanceReviewDigestInput struct {
+	Approve bool   `json:"approve"`
+	Reason  string `json:"reason,omitempty"`
+}
+
 func adtyIsSiteOwnerStaffAction(action string) bool {
 	switch action {
 	case AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func adtyIsSiteOwnerDigestRequiredAction(action string) bool {
+	if adtyIsSiteOwnerStaffAction(action) {
+		return true
+	}
+	switch action {
+	case AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance, AdtySiteOwnerActionStaffBalanceReview:
 		return true
 	default:
 		return false
@@ -86,6 +116,91 @@ func normalizeAdtyStaffInputForDigest(input AdtyStaffInput) AdtyStaffInput {
 		}
 	}
 	return input
+}
+
+func normalizeAdtyOwnerBalanceCreditDigestInput(in AdtyOwnerBalanceCreditDigestInput) AdtyOwnerBalanceCreditDigestInput {
+	amt := strings.TrimSpace(in.AmountUSD)
+	if d, err := decimal.NewFromString(amt); err == nil {
+		amt = d.String()
+	}
+	return AdtyOwnerBalanceCreditDigestInput{
+		AmountUSD:      amt,
+		Reason:         strings.TrimSpace(in.Reason),
+		IdempotencyKey: strings.TrimSpace(in.IdempotencyKey),
+	}
+}
+
+func normalizeAdtyOwnerBalanceReviewDigestInput(in AdtyOwnerBalanceReviewDigestInput) AdtyOwnerBalanceReviewDigestInput {
+	return AdtyOwnerBalanceReviewDigestInput{
+		Approve: in.Approve,
+		Reason:  strings.TrimSpace(in.Reason),
+	}
+}
+
+// AdtyOwnerActionRequestDigest computes the canonical SHA-256 hex digest for
+// site-owner actions that bind payload parameters to their step-up proof (R1-018).
+func AdtyOwnerActionRequestDigest(action string, v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		trimmed := strings.TrimSpace(s)
+		if isAdtyHexDigest(trimmed) {
+			return strings.ToLower(trimmed)
+		}
+	}
+	if adtyIsSiteOwnerStaffAction(action) {
+		return AdtyStaffRequestDigest(v)
+	}
+	var rawBytes []byte
+	switch val := v.(type) {
+	case string:
+		rawBytes = []byte(strings.TrimSpace(val))
+	case []byte:
+		rawBytes = bytes.TrimSpace(val)
+	case json.RawMessage:
+		rawBytes = bytes.TrimSpace(val)
+	default:
+		b, err := common.Marshal(val)
+		if err != nil {
+			return ""
+		}
+		rawBytes = b
+	}
+	if len(rawBytes) == 0 {
+		return ""
+	}
+	switch action {
+	case AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance:
+		var in AdtyOwnerBalanceCreditDigestInput
+		if common.Unmarshal(rawBytes, &in) != nil {
+			sum := sha256.Sum256(rawBytes)
+			return hex.EncodeToString(sum[:])
+		}
+		in = normalizeAdtyOwnerBalanceCreditDigestInput(in)
+		canonical, err := common.Marshal(in)
+		if err != nil {
+			return ""
+		}
+		sum := sha256.Sum256(canonical)
+		return hex.EncodeToString(sum[:])
+	case AdtySiteOwnerActionStaffBalanceReview:
+		var in AdtyOwnerBalanceReviewDigestInput
+		if common.Unmarshal(rawBytes, &in) != nil {
+			sum := sha256.Sum256(rawBytes)
+			return hex.EncodeToString(sum[:])
+		}
+		in = normalizeAdtyOwnerBalanceReviewDigestInput(in)
+		canonical, err := common.Marshal(in)
+		if err != nil {
+			return ""
+		}
+		sum := sha256.Sum256(canonical)
+		return hex.EncodeToString(sum[:])
+	default:
+		sum := sha256.Sum256(rawBytes)
+		return hex.EncodeToString(sum[:])
+	}
 }
 
 // AdtyStaffRequestDigest computes the canonical SHA-256 hex digest of a staff mutation payload.
@@ -133,7 +248,7 @@ func AdtyStaffRequestDigest(v any) string {
 			return hex.EncodeToString(sum[:])
 		}
 	default:
-		raw, err := json.Marshal(val)
+		raw, err := common.Marshal(val)
 		if err != nil {
 			return ""
 		}
@@ -143,7 +258,7 @@ func AdtyStaffRequestDigest(v any) string {
 		}
 	}
 	input = normalizeAdtyStaffInputForDigest(input)
-	raw, err := json.Marshal(input)
+	raw, err := common.Marshal(input)
 	if err != nil {
 		return ""
 	}
@@ -197,13 +312,13 @@ func adtyBindSiteOwnerOperation(scope string, fields map[string]json.RawMessage,
 		digest = strings.ToLower(digest)
 	}
 	if len(bytes.TrimSpace(wire.Request)) > 0 {
-		reqDigest := AdtyStaffRequestDigest(wire.Request)
+		reqDigest := AdtyOwnerActionRequestDigest(wire.Action, wire.Request)
 		if reqDigest == "" || (digest != "" && digest != reqDigest) {
 			return nil, false
 		}
 		digest = reqDigest
 	}
-	if adtyIsSiteOwnerStaffAction(wire.Action) {
+	if adtyIsSiteOwnerDigestRequiredAction(wire.Action) {
 		if digest == "" {
 			return nil, false
 		}
@@ -217,7 +332,7 @@ func adtyBindSiteOwnerOperation(scope string, fields map[string]json.RawMessage,
 func AdtySiteOwnerOperation(action string, target int, request ...any) VerificationOperation {
 	ctx := AdtySiteOwnerContext{Action: action, Target: target}
 	if len(request) > 0 && request[0] != nil {
-		ctx.Digest = AdtyStaffRequestDigest(request[0])
+		ctx.Digest = AdtyOwnerActionRequestDigest(action, request[0])
 	}
 	payload, _ := common.Marshal(ctx)
 	return VerificationOperation{Scope: VerificationScopeAdtySiteOwnerManage, Context: payload}
@@ -229,8 +344,9 @@ func AdtyStaffCustomerOperation(action string, target int) VerificationOperation
 }
 
 func init() {
-	// 访问令牌也可以做站长操作，但令牌要有钱包写权限（和站长接口登记的 wallet:write 一致）。
-	accessTokenVerificationScopes[VerificationScopeAdtySiteOwnerManage] = "wallet:write"
+	// R1-016: Site owner step-up proofs require dedicated site_owner_*:write scopes,
+	// never personal wallet:write.
+	accessTokenVerificationScopes[VerificationScopeAdtySiteOwnerManage] = AccessTokenResourceSiteOwnerSetting + ":write"
 	// Staff customer security actions require a browser session, never a PAT.
 	accessTokenVerificationScopes[VerificationScopeAdtyStaffCustomerManage] = ""
 }

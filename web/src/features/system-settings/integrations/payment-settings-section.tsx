@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from '@tanstack/react-router'
 import { Code2, Eye, ShieldAlert } from 'lucide-react'
 import * as React from 'react'
@@ -25,9 +26,17 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import * as z from 'zod'
 
+import { ErrorState } from '@/components/error-state'
 import { JsonCodeEditor } from '@/components/json-code-editor'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import {
   Form,
   FormControl,
@@ -38,16 +47,21 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PaymentChannels } from '@/features/adty-payment-channels'
 import { PaymentSceneManager } from '@/features/adty-payment-scenes'
+import { api } from '@/lib/api'
+import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { SettingsForm } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
-import { AdtyBonusRatesEditor } from './adty-bonus-rates-editor'
 import {
   AdtyEpaySettingsSection,
   type AdtyEpaySettingsDefaults,
@@ -96,19 +110,6 @@ const paymentSchema = z.object({
       })
     }
   }),
-  BonusRates: z.string().superRefine((value, ctx) => {
-    const error = getJsonError(
-      value,
-      (parsed) =>
-        !!parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-    )
-    if (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: error,
-      })
-    }
-  }),
 })
 
 type PaymentFormValues = z.infer<typeof paymentSchema>
@@ -117,11 +118,218 @@ const providerSchemas = {
     Price: true,
     MinTopUp: true,
     AmountOptions: true,
-    BonusRates: true,
   }),
   epay: paymentSchema.pick({
     CustomCallbackAddress: true,
   }),
+}
+
+type MainBonusMethodRule = {
+  enabled: boolean
+  rate: string
+}
+
+type MainBonusMethodsMap = Record<string, MainBonusMethodRule>
+
+const MAIN_BONUS_METHODS = [
+  { key: 'alipay', labelKey: 'Alipay' },
+  { key: 'wxpay', labelKey: 'WeChat Pay' },
+  { key: 'usdt', labelKey: 'USDT' },
+] as const
+
+function isValidBonusRateDecimal(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(trimmed)) {
+    return false
+  }
+  const num = Number(trimmed)
+  return Number.isFinite(num) && num >= 0 && num <= 1
+}
+
+function formatBonusRatePercent(raw: string): string {
+  const trimmed = raw.trim()
+  if (!isValidBonusRateDecimal(trimmed)) return ''
+  const pct = Number((Number(trimmed) * 100).toFixed(4))
+  return `= ${pct}%`
+}
+
+function MainBonusMethodsPanel() {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const [drafts, setDrafts] = React.useState<MainBonusMethodsMap>({})
+  const [savingMethod, setSavingMethod] = React.useState<string | null>(null)
+
+  const query = useQuery({
+    queryKey: ['adty-admin-bonus-methods'],
+    queryFn: async () => {
+      const res = await api.get<{
+        success: boolean
+        message?: string
+        data?: MainBonusMethodsMap
+      }>('/api/adty/admin/bonus-methods')
+      return requireServerSuccess(res.data).data ?? {}
+    },
+  })
+
+  React.useEffect(() => {
+    if (!query.data) return
+    setDrafts((prev) => {
+      const next: MainBonusMethodsMap = { ...prev }
+      for (const item of MAIN_BONUS_METHODS) {
+        const remote = query.data?.[item.key]
+        next[item.key] = {
+          enabled: Boolean(remote?.enabled),
+          rate: remote?.rate ?? '',
+        }
+      }
+      return next
+    })
+  }, [query.data])
+
+  const mutation = useMutation({
+    mutationFn: async (payload: {
+      method: string
+      enabled: boolean
+      rate: string
+    }) => {
+      const res = await api.put<{
+        success: boolean
+        message?: string
+        data?: MainBonusMethodsMap
+      }>('/api/adty/admin/bonus-methods', payload)
+      return requireServerSuccess(res.data).data ?? {}
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['adty-admin-bonus-methods'], updated)
+      toast.success(t('Saved'))
+    },
+    onError: (error) => handleServerError(error),
+    onSettled: () => setSavingMethod(null),
+  })
+
+  const handleSave = (methodKey: string) => {
+    const draft = drafts[methodKey] ?? { enabled: false, rate: '' }
+    const trimmed = draft.rate.trim()
+    if (draft.enabled) {
+      if (!isValidBonusRateDecimal(trimmed)) {
+        toast.error(t('Enter a decimal rate between 0 and 1 (e.g. 0.025)'))
+        return
+      }
+    } else if (trimmed !== '' && !isValidBonusRateDecimal(trimmed)) {
+      toast.error(t('Enter a decimal rate between 0 and 1 (e.g. 0.025)'))
+      return
+    }
+    setSavingMethod(methodKey)
+    mutation.mutate({
+      method: methodKey,
+      enabled: draft.enabled,
+      rate: trimmed || '0',
+    })
+  }
+
+  let bodyContent: React.ReactNode
+  if (query.isPending) {
+    bodyContent = (
+      <div className='space-y-2'>
+        <Skeleton className='h-10 w-full' />
+        <Skeleton className='h-10 w-full' />
+        <Skeleton className='h-10 w-full' />
+      </div>
+    )
+  } else if (query.isError) {
+    bodyContent = (
+      <ErrorState
+        className='min-h-28'
+        title={t('Failed to load')}
+        onRetry={() => void query.refetch()}
+      />
+    )
+  } else {
+    bodyContent = MAIN_BONUS_METHODS.map((item) => {
+      const draft = drafts[item.key] ?? { enabled: false, rate: '' }
+      const percentHint = formatBonusRatePercent(draft.rate)
+      const isSavingThis = savingMethod === item.key && mutation.isPending
+      return (
+        <div
+          key={item.key}
+          className='flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between'
+        >
+          <div className='flex items-center gap-3'>
+            <Switch
+              id={`main-bonus-switch-${item.key}`}
+              checked={draft.enabled}
+              onCheckedChange={(checked) =>
+                setDrafts((prev) => ({
+                  ...prev,
+                  [item.key]: {
+                    enabled: checked,
+                    rate: prev[item.key]?.rate ?? '',
+                  },
+                }))
+              }
+            />
+            <Label
+              htmlFor={`main-bonus-switch-${item.key}`}
+              className='min-w-20 font-medium'
+            >
+              {t(item.labelKey)}
+            </Label>
+          </div>
+          <div className='flex flex-wrap items-center gap-2'>
+            <div className='flex items-center gap-2'>
+              <Input
+                type='text'
+                inputMode='decimal'
+                aria-label={`${t(item.labelKey)} ${t('Bonus rate')}`}
+                placeholder='0.025'
+                className='w-32 font-mono text-xs'
+                value={draft.rate}
+                onChange={(event) =>
+                  setDrafts((prev) => ({
+                    ...prev,
+                    [item.key]: {
+                      enabled: prev[item.key]?.enabled ?? false,
+                      rate: event.target.value,
+                    },
+                  }))
+                }
+              />
+              {percentHint && (
+                <span className='text-muted-foreground min-w-16 font-mono text-xs'>
+                  {percentHint}
+                </span>
+              )}
+            </div>
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              disabled={isSavingThis}
+              onClick={() => handleSave(item.key)}
+            >
+              {t('Save')}
+            </Button>
+          </div>
+        </div>
+      )
+    })
+  }
+
+  return (
+    <Card className='shadow-none'>
+      <CardHeader className='pb-3'>
+        <CardTitle className='text-base'>
+          {t('Payment method top-up bonus')}
+        </CardTitle>
+        <CardDescription>
+          {t(
+            'Configure bonus rate (0 to 1, e.g. 0.025 for 2.5%) credited per payment method on the main site. Bonus earns no commission.'
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-3'>{bodyContent}</CardContent>
+    </Card>
+  )
 }
 type PaymentTab = keyof typeof providerSchemas | 'usdt'
 const PAYMENT_TABS = ['general', 'epay', 'usdt'] as const
@@ -177,7 +385,6 @@ export function PaymentSettingsSection({
     defaultValues: {
       ...defaultValues,
       AmountOptions: formatJsonForEditor(defaultValues.AmountOptions),
-      BonusRates: formatJsonForEditor(defaultValues.BonusRates),
     },
   })
 
@@ -190,7 +397,6 @@ export function PaymentSettingsSection({
       {
         ...parsedDefaults,
         AmountOptions: formatJsonForEditor(parsedDefaults.AmountOptions),
-        BonusRates: formatJsonForEditor(parsedDefaults.BonusRates),
       },
       { keepDirtyValues: true }
     )
@@ -202,7 +408,6 @@ export function PaymentSettingsSection({
       MinTopUp: values.MinTopUp,
       CustomCallbackAddress: removeTrailingSlash(values.CustomCallbackAddress),
       AmountOptions: values.AmountOptions.trim(),
-      BonusRates: values.BonusRates.trim(),
     }
 
     const initial = {
@@ -212,7 +417,6 @@ export function PaymentSettingsSection({
         initialRef.current.CustomCallbackAddress
       ),
       AmountOptions: initialRef.current.AmountOptions.trim(),
-      BonusRates: initialRef.current.BonusRates.trim(),
     }
 
     const updates: Array<{ key: string; value: string | number | boolean }> = []
@@ -242,22 +446,9 @@ export function PaymentSettingsSection({
       })
     }
 
-    if (
-      normalizeJsonForComparison(sanitized.BonusRates) !==
-      normalizeJsonForComparison(initial.BonusRates)
-    ) {
-      updates.push({
-        key: 'adty_topup_setting.bonus_rates',
-        value: sanitized.BonusRates,
-      })
-    }
-
     const fields = paymentTabSchema(activeTab).shape
     const tabUpdates = updates.filter((update) => {
-      if (
-        update.key === 'payment_setting.amount_options' ||
-        update.key === 'adty_topup_setting.bonus_rates'
-      ) {
+      if (update.key === 'payment_setting.amount_options') {
         return activeTab === 'general'
       }
       return update.key in fields
@@ -273,8 +464,6 @@ export function PaymentSettingsSection({
       let field = update.key
       if (update.key === 'payment_setting.amount_options') {
         field = 'AmountOptions'
-      } else if (update.key === 'adty_topup_setting.bonus_rates') {
-        field = 'BonusRates'
       }
       if (field in initialRef.current) {
         initialRef.current[field as keyof PaymentFormValues] =
@@ -441,27 +630,7 @@ export function PaymentSettingsSection({
                     )}
                   />
 
-                  <FormField
-                    control={form.control}
-                    name='BonusRates'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Top-up bonus')}</FormLabel>
-                        <FormControl>
-                          <AdtyBonusRatesEditor
-                            value={field.value}
-                            onChange={field.onChange}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t(
-                            'Bonus percent credited on top of each top-up. The bonus earns no commission.'
-                          )}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <MainBonusMethodsPanel />
                 </div>
               </div>
             </TabsContent>

@@ -123,6 +123,11 @@ func ListAdtySiteWallets(siteID int) ([]model.AdtySiteWallet, error) {
 		if !found {
 			wallet = model.AdtySiteWallet{SiteId: siteID, Kind: kind, Currency: "USD"}
 		}
+		if kind == model.AdtySiteWalletMargin && !wallet.RequiredBalance.IsPositive() {
+			if floor, floorErr := adtyMarginRequiredFloorTx(model.DB, siteID, &wallet); floorErr == nil && floor.IsPositive() {
+				wallet.RequiredBalance = floor
+			}
+		}
 		wallets = append(wallets, wallet)
 	}
 	return wallets, nil
@@ -251,10 +256,18 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	}
 	before := wallet.Balance
 	after := before.Add(delta)
-	frozenAfter := wallet.FrozenUSD.Add(change.HoldDelta)
-	if !validAdtySiteWalletAmount(after) || frozenAfter.IsNegative() || !validAdtySiteWalletAmount(frozenAfter) {
+	frozenAfter := wallet.FrozenUSD
+	excessFrozenAfter := wallet.ExcessFrozenUSD
+	if kind == model.AdtySiteWalletMargin && change.MarginExcessOnly {
+		excessFrozenAfter = excessFrozenAfter.Add(change.HoldDelta)
+	} else {
+		frozenAfter = frozenAfter.Add(change.HoldDelta)
+	}
+	if !validAdtySiteWalletAmount(after) || frozenAfter.IsNegative() || !validAdtySiteWalletAmount(frozenAfter) ||
+		excessFrozenAfter.IsNegative() || !validAdtySiteWalletAmount(excessFrozenAfter) {
 		return nil, ErrAdtySiteWalletInvalidOperation
 	}
+	totalFrozenAfter := frozenAfter.Add(excessFrozenAfter)
 	cycleUsed := wallet.CycleUsedUSD
 	cycleTier := wallet.CycleTierUSD
 	if kind == model.AdtySiteWalletMargin && change.MarginExcessOnly {
@@ -262,7 +275,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		// approved staff balance increase, and site vouchers) preserves 100%
 		// of the site level's required margin floor while allowing 100% of
 		// excess balance above that floor without consuming the 90% gift/commission cycle.
-		if after.IsNegative() || after.Sub(frozenAfter).IsNegative() {
+		if after.IsNegative() || after.Sub(totalFrozenAfter).IsNegative() {
 			return nil, ErrAdtySiteWalletInsufficient
 		}
 		netNewUse := change.HoldDelta.Sub(delta)
@@ -271,7 +284,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 			if err != nil {
 				return nil, err
 			}
-			if after.Sub(frozenAfter).LessThan(floor) {
+			if after.Sub(totalFrozenAfter).LessThan(floor) {
 				return nil, ErrAdtySiteWalletInsufficient
 			}
 		}
@@ -283,9 +296,14 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 				minimum = wallet.CycleTierUSD.Sub(AdtyMarginCycleLimit(wallet.CycleTierUSD))
 			}
 		}
-		if (delta.IsNegative() || change.HoldDelta.IsPositive()) &&
-			(kind == model.AdtySiteWalletOperating || !change.AllowOverdraft) && after.Sub(frozenAfter).LessThan(minimum) {
-			return nil, ErrAdtySiteWalletInsufficient
+		netNewUse := change.HoldDelta.Sub(delta)
+		if (delta.IsNegative() || change.HoldDelta.IsPositive()) && (kind == model.AdtySiteWalletOperating || !change.AllowOverdraft) {
+			if after.IsNegative() || after.Sub(totalFrozenAfter).IsNegative() {
+				return nil, ErrAdtySiteWalletInsufficient
+			}
+			if netNewUse.IsPositive() && after.Sub(totalFrozenAfter).LessThan(minimum) {
+				return nil, ErrAdtySiteWalletInsufficient
+			}
 		}
 		if kind == model.AdtySiteWalletMargin && delta.IsNegative() && cycleTier.IsPositive() && !change.AllowOverdraft {
 			newDraw := delta.Abs()
@@ -294,7 +312,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 				newDraw = newDraw.Sub(consumed)
 			}
 			allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
-				TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD,
+				TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD, ExcessFrozen: wallet.ExcessFrozenUSD,
 			})
 			if newDraw.GreaterThan(allowed) {
 				return nil, ErrAdtySiteWalletInsufficient
@@ -303,7 +321,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		}
 		if kind == model.AdtySiteWalletMargin && delta.IsZero() && change.HoldDelta.IsPositive() && cycleTier.IsPositive() && !change.AllowOverdraft {
 			allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
-				TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD,
+				TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD, ExcessFrozen: wallet.ExcessFrozenUSD,
 			})
 			if change.HoldDelta.GreaterThan(allowed) {
 				return nil, ErrAdtySiteWalletInsufficient
@@ -326,7 +344,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		}
 	}
 	updates := map[string]any{
-		"balance": after, "frozen_usd": frozenAfter, "cycle_tier_usd": cycleTier, "cycle_used_usd": cycleUsed,
+		"balance": after, "frozen_usd": frozenAfter, "excess_frozen_usd": excessFrozenAfter, "cycle_tier_usd": cycleTier, "cycle_used_usd": cycleUsed,
 	}
 	var cycleBefore, cycleAfter *string
 	if kind == model.AdtySiteWalletMargin {
@@ -336,7 +354,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 			return nil, err
 		}
 		current := wallet
-		current.Balance, current.FrozenUSD = after, frozenAfter
+		current.Balance, current.FrozenUSD, current.ExcessFrozenUSD = after, frozenAfter, excessFrozenAfter
 		current.CycleTierUSD, current.CycleUsedUSD = cycleTier, cycleUsed
 		if delta.IsPositive() && change.OpenMarginCycle {
 			current.CycleNumber++

@@ -348,14 +348,8 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 			return false, 0, nil, nil, errors.New("team top-up credit is not configured")
 		}
 	}
-	// Serialize personal-customer crediting on the user row before mutating TopUp.Status so concurrent
-	// first-payment eligibility checks (e.g. site invite binding) never observe uncommitted status.
-	var user User
-	if ext.TeamId == 0 {
-		if err := lockForUpdate(tx).First(&user, topUp.UserId).Error; err != nil {
-			return false, 0, nil, nil, err
-		}
-	}
+	// Canonical lock order: AdtySite -> User. Lock the site before the user row
+	// whenever owner self-use or margin top-up requires site validation.
 	if ext.IsOwnerSelfUse() {
 		if !ext.ValidOwnerSelfUseCredit() || ext.SiteId <= 0 || ext.UserId != topUp.UserId || ext.SiteOwnerUserId != topUp.UserId {
 			return false, 0, nil, nil, ErrInvalidTopUpQuota
@@ -381,6 +375,14 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 		}
 		if site.Status == AdtySiteStatusClosed || site.OwnerUserId != ext.SiteOwnerUserId {
 			return false, 0, nil, nil, ErrAdtyOwnerTopupReview
+		}
+	}
+	// Serialize personal-customer crediting on the user row before mutating TopUp.Status so concurrent
+	// first-payment eligibility checks (e.g. site invite binding) never observe uncommitted status.
+	var user User
+	if ext.TeamId == 0 {
+		if err := lockForUpdate(tx).First(&user, topUp.UserId).Error; err != nil {
+			return false, 0, nil, nil, err
 		}
 	}
 	if err := tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Updates(map[string]any{
@@ -660,6 +662,36 @@ func ReplaceAdtyTopUpAfterLock(tradeNo string, userId int, confirm func(*AdtyTop
 		return tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Update("status", TopUpStatusReplaced).Error
 	})
 	return ext, err
+}
+
+// FailPendingAdtyTopUp atomically marks a pending ADTY top-up order as failed
+// and releases any site gift guarantee held on it (R1-003 / G.4).
+func FailPendingAdtyTopUp(tradeNo, expectedPaymentProvider string) error {
+	if strings.TrimSpace(tradeNo) == "" {
+		return errors.New("payment order number not provided")
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		topUp, locked, err := lockAdtyTopUpTx(tx, tradeNo)
+		if err != nil {
+			if errors.Is(err, ErrTopUpNotFound) {
+				// Fallback for non-ADTY top_up rows without extension.
+				return UpdatePendingTopUpStatus(tradeNo, expectedPaymentProvider, common.TopUpStatusFailed)
+			}
+			return err
+		}
+		if expectedPaymentProvider != "" && topUp.PaymentProvider != expectedPaymentProvider {
+			return ErrPaymentMethodMismatch
+		}
+		if topUp.Status != common.TopUpStatusPending {
+			return ErrTopUpStatusInvalid
+		}
+		if AdtyReleaseTopUpReserveTx != nil && locked != nil {
+			if err := AdtyReleaseTopUpReserveTx(tx, locked); err != nil {
+				return err
+			}
+		}
+		return tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Update("status", common.TopUpStatusFailed).Error
+	})
 }
 
 // CancelAdtyTopUpAfterLock 先锁住订单。confirm 在锁内调用，用来问支付商。

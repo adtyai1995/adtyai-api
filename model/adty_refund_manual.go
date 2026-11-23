@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -24,13 +23,143 @@ func adtyRequireOwnerRefundScopeTx(tx *gorm.DB, ext *AdtyTopupOrder, operatorID 
 		return common.NewMessage("No permission to perform this action")
 	}
 	var user User
-	if err := lockForUpdate(tx).Select("id", "status").First(&user, operatorID).Error; err != nil {
+	if err := tx.Select("id", "status").First(&user, operatorID).Error; err != nil {
 		return err
 	}
 	if user.Status != common.UserStatusEnabled {
 		return common.NewMessage("No permission to perform this action")
 	}
 	return nil
+}
+
+func adtyComputeManualRefundOccupancyTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraHeld int64) (*AdtyManualRefundOccupancy, error) {
+	held, unknown := adtySumManualRefundOccupancy(rows)
+	externalOffset, err := adtyExternalRefundOffsetTx(tx, ext)
+	if err != nil {
+		return nil, err
+	}
+	return adtyBuildManualRefundOccupancy(ext, held+extraHeld, unknown, externalOffset), nil
+}
+
+// moveCustomerRefundOperatingTx atomically adjusts a subsite's operating wallet
+// when reclaiming or releasing ordinary personal subsite customer principal
+// (R1-005 / R1-006 / A.11 / DEC-004).
+func moveCustomerRefundOperatingTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRefund, quota int64, operatorID int, release bool) error {
+	if tx == nil || ext == nil || row == nil || ext.SiteId <= 0 || ext.TeamId > 0 || ext.IsOwnerSelfUse() || quota <= 0 {
+		return nil
+	}
+	if !tx.Migrator().HasTable(&AdtySiteWallet{}) || !tx.Migrator().HasTable(&AdtySiteWalletLedger{}) {
+		return nil
+	}
+	usd := decimal.NewFromInt(quota).Div(common.QuotaPerUnitDecimal())
+	if !usd.IsPositive() {
+		return nil
+	}
+	kind := "customer_topup_refund"
+	delta := usd.Neg()
+	if release {
+		kind = "customer_topup_refund_release"
+		delta = usd
+	}
+	idemKey := kind + ":" + row.RefundId
+	var existing int64
+	if err := tx.Model(&AdtySiteWalletLedger{}).Where("idempotency_key = ?", idemKey).Count(&existing).Error; err != nil {
+		return err
+	}
+	if existing > 0 {
+		return nil
+	}
+	var wallet AdtySiteWallet
+	res := lockForUpdate(tx).Where("site_id = ? AND kind = ?", ext.SiteId, AdtySiteWalletOperating).Limit(1).Find(&wallet)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil
+	}
+	before := wallet.Balance
+	after := before.Add(delta)
+	if !release && after.LessThan(wallet.FrozenUSD) {
+		return common.NewMessage("Site operating wallet balance is insufficient for principal refund")
+	}
+	if err := tx.Model(&wallet).Update("balance", after).Error; err != nil {
+		return err
+	}
+	return tx.Create(&AdtySiteWalletLedger{
+		SiteId:         ext.SiteId,
+		WalletId:       wallet.Id,
+		WalletKind:     wallet.Kind,
+		Delta:          delta,
+		BalanceBefore:  before,
+		BalanceAfter:   after,
+		Type:           kind,
+		RefType:        "topup",
+		RefId:          ext.TradeNo,
+		OperatorId:     operatorID,
+		Reason:         row.Reason,
+		IdempotencyKey: idemKey,
+	}).Error
+}
+
+// releaseCustomerManualRefundTx atomically restores an ordinary personal
+// customer's reclaimed principal, fund batch, ledger, and subsite operating
+// wallet when a manual refund is terminated after internal reclaim (R1-006).
+func releaseCustomerManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRefund, operatorID int) (bool, error) {
+	if tx == nil || ext == nil || row == nil || ext.TeamId > 0 || ext.IsOwnerSelfUse() || row.ReclaimedAt == 0 || row.DeductedPrincipalQuota <= 0 {
+		return false, nil
+	}
+	releaseKey := "customer_refund_release:" + row.RefundId
+	if existing, err := FindAdtyLedgerByIdemKeyTx(tx, releaseKey); err != nil {
+		return false, err
+	} else if existing != nil {
+		return false, nil
+	}
+	var user User
+	if err := lockForUpdate(tx).First(&user, ext.UserId).Error; err != nil {
+		return false, err
+	}
+	before, err := userWalletBalance(user.Quota, user.QuotaPending)
+	if err != nil {
+		return false, err
+	}
+	if err := applyUserQuotaDeltaTx(tx, &user, int(row.DeductedPrincipalQuota), false); err != nil {
+		return false, err
+	}
+	if tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		var lots []AdtyFundBatch
+		if err := lockForUpdate(tx).Where("user_id = ? AND source = ? AND kind = ?", ext.UserId, ext.TradeNo, AdtyFundBatchKindPrincipal).
+			Order("id ASC").Find(&lots).Error; err != nil {
+			return false, err
+		}
+		remaining := row.DeductedPrincipalQuota
+		for i := range lots {
+			if remaining <= 0 {
+				break
+			}
+			room := lots[i].Original - lots[i].Remaining
+			if room <= 0 {
+				continue
+			}
+			restore := min(room, remaining)
+			if err := tx.Model(&AdtyFundBatch{}).Where("id = ?", lots[i].Id).
+				Update("remaining", gorm.Expr("remaining + ?", restore)).Error; err != nil {
+				return false, err
+			}
+			remaining -= restore
+		}
+		if remaining > 0 {
+			return false, common.NewMessage("Original principal fund batch cannot accommodate refund restoration")
+		}
+	}
+	ledger := adtyManualRefundLedger(ext.UserId, -row.DeductedPrincipalQuota, int64(before), ext.TradeNo,
+		row.Reason+" [refund release: "+row.RefundId+"]", operatorID, releaseKey)
+	if err := InsertAdtyLedgerTx(tx, ledger); err != nil {
+		return false, err
+	}
+	if err := moveCustomerRefundOperatingTx(tx, ext, row, row.DeductedPrincipalQuota, operatorID, true); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // CumulativeGiftReclaim is this refund's gift recovery:
@@ -101,10 +230,12 @@ type AdtyRefundPageFacts struct {
 	RefundCompletedQuota        int64                            `json:"refund_completed_quota"`
 	RefundInProgressQuota       int64                            `json:"refund_in_progress_quota"`
 	RefundUnknownQuota          int64                            `json:"refund_unknown_quota"`
+	RefundExternalOffsetQuota   int64                            `json:"refund_external_offset_quota"`
 	RefundRemainingQuota        int64                            `json:"refund_remaining_quota"`
 	RefundCompletedUSD          string                           `json:"refund_completed_usd,omitempty"`
 	RefundInProgressUSD         string                           `json:"refund_in_progress_usd,omitempty"`
 	RefundUnknownUSD            string                           `json:"refund_unknown_usd,omitempty"`
+	RefundExternalOffsetUSD     string                           `json:"refund_external_offset_usd,omitempty"`
 	RefundRemainingUSD          string                           `json:"refund_remaining_usd,omitempty"`
 	ManualShortfallQuota        int64                            `json:"manual_shortfall_quota"`
 	ManualShortfallUSD          string                           `json:"manual_shortfall_usd,omitempty"`
@@ -150,8 +281,10 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 	if err := DB.Where("trade_no = ?", tradeNo).Order("id").Find(&refunds).Error; err != nil {
 		return nil, err
 	}
-	held, unknown := adtySumManualRefundOccupancy(refunds)
-	occupancy := adtyBuildManualRefundOccupancy(&ext, held, unknown)
+	occupancy, err := adtyComputeManualRefundOccupancyTx(DB, &ext, refunds, 0)
+	if err != nil {
+		return nil, err
+	}
 	if ext.IsOwnerSelfUse() {
 		balance, err := userWalletBalance(user.Quota, user.QuotaPending)
 		if err != nil {
@@ -173,15 +306,17 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 		FaceUSD: ext.FaceUSD.String(), PayCurrency: ext.PayCurrency,
 		PaidAmount: ext.PaidAmount.String(), PaidCurrency: ext.PaidCurrency,
 		OrderRate: ext.PriceSnapshot.String(), PendingQuota: int64(user.QuotaPending),
-		RefundOccupiedQuota:   occupancy.OccupiedQuota,
-		RefundCompletedQuota:  occupancy.CompletedQuota,
-		RefundInProgressQuota: occupancy.InProgressQuota,
-		RefundUnknownQuota:    occupancy.UnknownQuota,
-		RefundRemainingQuota:  occupancy.RemainingQuota,
-		RefundCompletedUSD:    occupancy.CompletedUSD,
-		RefundInProgressUSD:   occupancy.InProgressUSD,
-		RefundUnknownUSD:      occupancy.UnknownUSD,
-		RefundRemainingUSD:    occupancy.RemainingUSD,
+		RefundOccupiedQuota:       occupancy.OccupiedQuota,
+		RefundCompletedQuota:      occupancy.CompletedQuota,
+		RefundInProgressQuota:     occupancy.InProgressQuota,
+		RefundUnknownQuota:        occupancy.UnknownQuota,
+		RefundExternalOffsetQuota: occupancy.ExternalOffsetQuota,
+		RefundRemainingQuota:      occupancy.RemainingQuota,
+		RefundCompletedUSD:        occupancy.CompletedUSD,
+		RefundInProgressUSD:       occupancy.InProgressUSD,
+		RefundUnknownUSD:          occupancy.UnknownUSD,
+		RefundExternalOffsetUSD:   occupancy.ExternalOffsetUSD,
+		RefundRemainingUSD:        occupancy.RemainingUSD,
 		ManualShortfallQuota:  shortfall,
 		ManualShortfallUSD:    adtyQuotaUSDString(shortfall),
 		BonusUSD:              ext.BonusUSD.String(),
@@ -466,8 +601,11 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 			if err != nil {
 				return err
 			}
-			held, unknown := adtySumManualRefundOccupancy(rows)
-			result = adtyManualRefundView(existing, adtyBuildManualRefundOccupancy(ext, held, unknown), nil)
+			occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+			if err != nil {
+				return err
+			}
+			result = adtyManualRefundView(existing, occ, nil)
 			return nil
 		}
 		if err := adtyEnsureCreditedOrder(topUp, ext); err != nil {
@@ -477,8 +615,10 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 		if err != nil {
 			return err
 		}
-		held, unknown := adtySumManualRefundOccupancy(rows)
-		occupancy := adtyBuildManualRefundOccupancy(ext, held, unknown)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
 		requestQuota, err := ManualRefundUSDQuota(ext.FaceUSD, decimal.NewFromInt(occupancy.OccupiedQuota).Div(common.QuotaPerUnitDecimal()), requestUSD)
 		if err != nil {
 			return err
@@ -517,7 +657,11 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 		if err := tx.Create(row).Error; err != nil {
 			return err
 		}
-		result = adtyManualRefundView(row, adtyBuildManualRefundOccupancy(ext, held+requestQuota, unknown), nil)
+		afterOcc, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, requestQuota)
+		if err != nil {
+			return err
+		}
+		result = adtyManualRefundView(row, afterOcc, nil)
 		return nil
 	})
 	if err != nil {
@@ -552,14 +696,25 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		if err != nil {
 			return err
 		}
-		held, unknown := adtySumManualRefundOccupancy(rows)
-		occupancy := adtyBuildManualRefundOccupancy(ext, held, unknown)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
+		trimmedNote := strings.TrimSpace(note)
 		if row.ApprovedAt > 0 {
+			if (row.ApproveIdemKey != "" && row.ApproveIdemKey != idemKey) ||
+				row.ApproveOperatorId != operatorID || row.ApproveNote != trimmedNote {
+				return ErrAdtyIdempotencyConflict
+			}
 			result = adtyManualRefundView(row, occupancy, nil)
 			return nil
 		}
 		if row.Status != AdtyManualRefundStatusSubmitted {
 			return common.NewMessage("This refund cannot be approved")
+		}
+		// S+H+U+X <= L must still hold at approval time (R1-004).
+		if occupancy.OccupiedQuota > occupancy.FaceQuota {
+			return common.NewMessage("Refund amount exceeds the remaining principal")
 		}
 		// 与申请、完成两处同一道闸：审批推进前必须自己确认这笔单有现金背书。
 		// 补丁之前就已经 submitted 的行绕过了申请阶段的门，只能在这里拦。
@@ -578,13 +733,13 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 			"approve_operator_id": operatorID,
 			"approved_at":         now,
 			"approve_idem_key":    idemKey,
-			"approve_note":        strings.TrimSpace(note),
+			"approve_note":        trimmedNote,
 		}).Error; err != nil {
 			return err
 		}
 		row.Status = AdtyManualRefundStatusApproved
 		row.ApproveOperatorId, row.ApprovedAt, row.ApproveIdemKey = operatorID, now, idemKey
-		row.ApproveNote = strings.TrimSpace(note)
+		row.ApproveNote = trimmedNote
 		result = adtyManualRefundView(row, occupancy, nil)
 		return nil
 	})
@@ -631,9 +786,14 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		if err != nil {
 			return err
 		}
-		held, unknown := adtySumManualRefundOccupancy(rows)
-		occupancy := adtyBuildManualRefundOccupancy(ext, held, unknown)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
 		if row.ReclaimedAt > 0 {
+			if (row.ReclaimIdemKey != "" && row.ReclaimIdemKey != idemKey) || row.ReclaimOperatorId != operatorID {
+				return ErrAdtyIdempotencyConflict
+			}
 			existing, err := FindAdtyLedgerByIdemKeyTx(tx, row.ReclaimIdemKey)
 			if err != nil {
 				return err
@@ -666,6 +826,13 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 				return err
 			} else if taken != reclaimable {
 				return common.NewMessage("Internal principal reclaim could not be applied to this order")
+			}
+			// Ordinary personal subsite customer principal reclaim must debit the
+			// subsite's operating wallet atomically in the same transaction (R1-005).
+			if ext.SiteId > 0 && reclaimable > 0 {
+				if err := moveCustomerRefundOperatingTx(tx, ext, row, reclaimable, operatorID, false); err != nil {
+					return err
+				}
 			}
 		}
 		if err := adtyDebitUserQuotaTx(tx, topUp.UserId, reclaimable); err != nil {
@@ -728,9 +895,14 @@ func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID st
 	if err != nil {
 		return nil, false, err
 	}
-	held, unknown := adtySumManualRefundOccupancy(rows)
-	occupancy := adtyBuildManualRefundOccupancy(ext, held, unknown)
+	occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+	if err != nil {
+		return nil, false, err
+	}
 	if row.ReclaimedAt > 0 {
+		if (row.ReclaimIdemKey != "" && row.ReclaimIdemKey != idemKey) || row.ReclaimOperatorId != operatorID {
+			return nil, false, ErrAdtyIdempotencyConflict
+		}
 		return adtyManualRefundView(row, occupancy, nil), true, nil
 	}
 	if err := adtyRequireApprovedManualRefund(row); err != nil {
@@ -782,44 +954,71 @@ func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID st
 	return adtyManualRefundView(row, occupancy, nil), false, nil
 }
 
-func adtyPlannedBonusQuota(ext *AdtyTopupOrder, rows []AdtyManualRefund, refundID string, requestQuota int64, requestUSD decimal.Decimal) (int64, error) {
+func adtyEffectiveGrantedBonusQuotaTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error) {
 	if ext == nil || ext.TeamId > 0 || !ext.BonusUSD.IsPositive() {
 		return 0, nil
 	}
-	// On the final refund that reaches full face value, close any cumulative
-	// floor rounding dust so the entire gift entitlement is accounted for (ISS-R1-0068).
-	if face := ext.FaceQuota(); face > 0 && ext.RefundQuota+requestQuota >= face {
-		totalQuotaDec, err := common.WalletQuotaFromDecimalStrict(ext.BonusUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
-		if err != nil {
-			return 0, err
-		}
-		var priorReq int64
-		var priorBonusAccounted int64
-		for _, r := range rows {
-			if r.RefundId == refundID || r.Status != AdtyManualRefundStatusCompleted {
-				continue
-			}
-			priorReq += r.RequestQuota
-			priorBonusAccounted += r.BonusDeductedQuota + r.BonusShortfallQuota
-		}
-		if legacyRefundQuota := ext.RefundQuota - priorReq; legacyRefundQuota > 0 {
-			legacyUSD := decimal.NewFromInt(legacyRefundQuota).Div(common.QuotaPerUnitDecimal())
-			legacyBonusUSD := CumulativeGiftReclaim(ext.BonusUSD, ext.FaceUSD, decimal.Zero, legacyUSD)
-			legacyQuota, err := common.WalletQuotaFromDecimalStrict(legacyBonusUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
-			if err != nil {
-				return 0, err
-			}
-			priorBonusAccounted += int64(legacyQuota)
-		}
-		return max(int64(totalQuotaDec)-priorBonusAccounted, int64(0)), nil
-	}
-	alreadyUSD := decimal.NewFromInt(ext.RefundQuota).Div(common.QuotaPerUnitDecimal())
-	reclaimUSD := CumulativeGiftReclaim(ext.BonusUSD, ext.FaceUSD, alreadyUSD, requestUSD)
-	reclaimQuota, err := common.WalletQuotaFromDecimalStrict(reclaimUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
+	fullDec, err := common.WalletQuotaFromDecimalStrict(ext.BonusUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
 	if err != nil {
 		return 0, err
 	}
-	return int64(reclaimQuota), nil
+	fullQuota := int64(fullDec)
+	// Pending / pending_review / canceled gift fulfillment means the site gift
+	// was never credited to the user; never treat ungranted gift as shortfall (R1-048).
+	switch ext.GiftFulfillmentStatus {
+	case AdtyGiftFulfillmentPending, AdtyGiftFulfillmentPendingReview, AdtyGiftFulfillmentCanceled:
+		if tx != nil && tx.Migrator().HasTable(&AdtyFundBatch{}) {
+			var granted int64
+			if err := tx.Model(&AdtyFundBatch{}).
+				Where("user_id = ? AND source = ? AND kind IN ?", ext.UserId, ext.TradeNo, []string{AdtyFundBatchKindBonus, AdtyFundBatchKindExpiringBonus}).
+				Select("COALESCE(SUM(original), 0)").Scan(&granted).Error; err != nil {
+				return 0, err
+			}
+			return min(fullQuota, max(granted, int64(0))), nil
+		}
+		return 0, nil
+	}
+	return fullQuota, nil
+}
+
+func adtyPlannedBonusQuotaTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, refundID string, requestQuota int64, requestUSD decimal.Decimal) (int64, error) {
+	if ext == nil || ext.TeamId > 0 || !ext.BonusUSD.IsPositive() {
+		return 0, nil
+	}
+	effectiveBonusQuota, err := adtyEffectiveGrantedBonusQuotaTx(tx, ext)
+	if err != nil {
+		return 0, err
+	}
+	if effectiveBonusQuota <= 0 {
+		return 0, nil
+	}
+	face := ext.FaceQuota()
+	if face <= 0 {
+		return 0, nil
+	}
+	// Unified cumulative floor formula minus prior accounted gift across ALL
+	// partial and final refunds (G.9.4 / R1-048), closing rounding dust on full refund.
+	var priorReq int64
+	var priorBonusAccounted int64
+	for _, r := range rows {
+		if r.RefundId == refundID || r.Status != AdtyManualRefundStatusCompleted {
+			continue
+		}
+		priorReq += r.RequestQuota
+		priorBonusAccounted += r.BonusDeductedQuota + r.BonusShortfallQuota
+	}
+	if legacyRefundQuota := ext.RefundQuota - priorReq; legacyRefundQuota > 0 {
+		legacyTarget := decimal.NewFromInt(effectiveBonusQuota).Mul(decimal.NewFromInt(min(legacyRefundQuota, face))).Div(decimal.NewFromInt(face)).Floor().IntPart()
+		priorBonusAccounted += max(legacyTarget, int64(0))
+	}
+	cumRefund := ext.RefundQuota + requestQuota
+	var cumTarget int64
+	if cumRefund >= face {
+		cumTarget = effectiveBonusQuota
+	} else {
+		cumTarget = decimal.NewFromInt(effectiveBonusQuota).Mul(decimal.NewFromInt(max(cumRefund, int64(0)))).Div(decimal.NewFromInt(face)).Floor().IntPart()
+	}
+	return max(cumTarget-priorBonusAccounted, int64(0)), nil
 }
 
 // PlanAdtyTopUpManualRefundBonus records the official cumulative-ratio gift
@@ -847,16 +1046,21 @@ func PlanAdtyTopUpManualRefundBonus(tradeNo, refundID string, operatorID int, id
 		if err != nil {
 			return err
 		}
-		held, unknown := adtySumManualRefundOccupancy(rows)
-		occupancy := adtyBuildManualRefundOccupancy(ext, held, unknown)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
 		if row.BonusAt > 0 {
+			if (row.BonusIdemKey != "" && row.BonusIdemKey != idemKey) || row.BonusOperatorId != operatorID {
+				return ErrAdtyIdempotencyConflict
+			}
 			result = adtyManualRefundView(row, occupancy, nil)
 			return nil
 		}
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
 		}
-		planned, err := adtyPlannedBonusQuota(ext, rows, row.RefundId, row.RequestQuota, row.RequestUSD)
+		planned, err := adtyPlannedBonusQuotaTx(tx, ext, rows, row.RefundId, row.RequestQuota, row.RequestUSD)
 		if err != nil {
 			return err
 		}
@@ -903,9 +1107,14 @@ func PlanAdtyTopUpManualRefundCommission(tradeNo, refundID string, operatorID in
 		if err != nil {
 			return err
 		}
-		held, unknown := adtySumManualRefundOccupancy(rows)
-		occupancy := adtyBuildManualRefundOccupancy(ext, held, unknown)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
 		if row.CommissionAt > 0 {
+			if (row.CommissionIdemKey != "" && row.CommissionIdemKey != idemKey) || row.CommissionOperatorId != operatorID {
+				return ErrAdtyIdempotencyConflict
+			}
 			result = adtyManualRefundView(row, occupancy, nil)
 			return nil
 		}
@@ -916,7 +1125,7 @@ func PlanAdtyTopUpManualRefundCommission(tradeNo, refundID string, operatorID in
 		if err != nil {
 			return err
 		}
-		snapshot, err := json.Marshal(preview)
+		snapshot, err := common.Marshal(preview)
 		if err != nil {
 			return err
 		}
@@ -990,13 +1199,43 @@ func RecordAdtyTopUpManualRefundPayout(tradeNo, refundID string, operatorID int,
 		if err != nil {
 			return err
 		}
-		if row.PayoutRecordedAt > 0 && row.PayoutStatus != AdtyManualRefundPayoutUnknown {
-			held, unknown := adtySumManualRefundOccupancy(rows)
-			result = adtyManualRefundView(row, adtyBuildManualRefundOccupancy(ext, held, unknown), nil)
-			return nil
+		// Idempotency & retry semantics (R1-049):
+		// - Same idemKey: replay only when parameters match identically, else 409 conflict.
+		// - Different idemKey: rejected if already succeeded; allowed as a new payout
+		//   attempt when the prior payout outcome was failed or unknown.
+		if row.PayoutRecordedAt > 0 {
+			if row.PayoutIdemKey == idemKey {
+				if row.PayoutStatus != status ||
+					row.PayoutCurrency != currency ||
+					!row.PayoutAmount.Equal(payout.Amount) ||
+					row.PayoutAt != payout.PaidAt ||
+					row.PayoutVoucher != voucher ||
+					row.PayoutOperatorId != operatorID {
+					return ErrAdtyIdempotencyConflict
+				}
+				occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+				if err != nil {
+					return err
+				}
+				result = adtyManualRefundView(row, occ, nil)
+				return nil
+			}
+			if row.PayoutStatus == AdtyManualRefundPayoutSuccess {
+				return ErrAdtyIdempotencyConflict
+			}
 		}
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
+		}
+		// S+H+U+X <= L must still hold before recording a non-failed payout (R1-004).
+		if status != AdtyManualRefundPayoutFailed {
+			occCheck, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+			if err != nil {
+				return err
+			}
+			if occCheck.OccupiedQuota > occCheck.FaceQuota {
+				return common.NewMessage("Refund amount exceeds the remaining principal")
+			}
 		}
 		// 与申请、完成两处同一道闸：记录打款前必须自己确认这笔单有现金背书。
 		// 补丁之前就已经 approved 的行到这里会直接落一个线下付款事实。
@@ -1035,8 +1274,11 @@ func RecordAdtyTopUpManualRefundPayout(tradeNo, refundID string, operatorID int,
 				rows[i] = *row
 			}
 		}
-		held, unknown := adtySumManualRefundOccupancy(rows)
-		result = adtyManualRefundView(row, adtyBuildManualRefundOccupancy(ext, held, unknown), nil)
+		occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
+		result = adtyManualRefundView(row, occ, nil)
 		return nil
 	})
 	if err != nil {
@@ -1076,8 +1318,10 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		if err != nil {
 			return err
 		}
-		held, unknown := adtySumManualRefundOccupancy(rows)
 		if row.Status == AdtyManualRefundStatusCompleted {
+			if (row.CompleteIdemKey != "" && row.CompleteIdemKey != idemKey) || row.CompleteOperatorId != operatorID {
+				return ErrAdtyIdempotencyConflict
+			}
 			var existing *AdtyBalanceLedger
 			if ext.TeamId == 0 {
 				existing, err = FindAdtyLedgerByIdemKeyTx(tx, row.CompleteIdemKey)
@@ -1085,12 +1329,24 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 					return err
 				}
 			}
-			result = adtyManualRefundView(row, adtyBuildManualRefundOccupancy(ext, held, unknown), existing)
+			occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+			if err != nil {
+				return err
+			}
+			result = adtyManualRefundView(row, occ, existing)
 			replay = true
 			return nil
 		}
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
+		}
+		// S+H+U+X <= L must still hold at completion time (R1-004).
+		occCheck, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
+		if occCheck.OccupiedQuota > occCheck.FaceQuota {
+			return common.NewMessage("Refund amount exceeds the remaining principal")
 		}
 		// 申请阶段的那道闸挡不住「补丁之前就已经 approved」的单：它们仍在流程里，
 		// 完成时会直接走到付款。这里必须复核一次，而且要在任何扣减/写账之前。
@@ -1136,7 +1392,7 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 			} else if existing != nil {
 				return ErrAdtyIdempotencyConflict
 			}
-			planned, err = adtyPlannedBonusQuota(ext, rows, row.RefundId, row.RequestQuota, row.RequestUSD)
+			planned, err = adtyPlannedBonusQuotaTx(tx, ext, rows, row.RefundId, row.RequestQuota, row.RequestUSD)
 			if err != nil {
 				return err
 			}
@@ -1228,8 +1484,11 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 				rows[i] = *row
 			}
 		}
-		held, unknown = adtySumManualRefundOccupancy(rows)
-		result = adtyManualRefundView(row, adtyBuildManualRefundOccupancy(ext, held, unknown), ledger)
+		occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
+		result = adtyManualRefundView(row, occ, ledger)
 		return nil
 	})
 	if err != nil {
@@ -1247,9 +1506,9 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 }
 
 // TerminateAdtyTopUpManualRefund formally ends a refund after payout failure
-// (or before payout confirmation) and releases H/U. Owner self-use refunds also
-// release their original share and reverse any internal reclaim atomically.
-// Customer refunds retain their existing internal-reclaim behavior.
+// (or before payout confirmation) and releases H/U. Team, owner self-use, and
+// ordinary personal customer refunds all atomically reverse any internal
+// principal reclaim and symmetric operating wallet movement (R1-006).
 func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idemKey, note string, ownerSiteID ...int) (*AdtyManualRefundResult, error) {
 	refundID, err := adtyNormalizeRefundID(refundID)
 	if err != nil {
@@ -1261,6 +1520,7 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 	}
 	var result *AdtyManualRefundResult
 	var releasedUserID int
+	trimmedNote := strings.TrimSpace(note)
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		_, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 		if err != nil {
@@ -1273,15 +1533,30 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 		if err != nil {
 			return err
 		}
-		held, unknown := adtySumManualRefundOccupancy(rows)
 		if row.Status == AdtyManualRefundStatusTerminated {
+			if (row.TerminateIdemKey != "" && row.TerminateIdemKey != idemKey) ||
+				row.TerminateOperatorId != operatorID || row.TerminateNote != trimmedNote {
+				return ErrAdtyIdempotencyConflict
+			}
 			// Older releases closed the refund without reversing the reclaim.
 			if ext.TeamId > 0 && row.DeductedPrincipalQuota > 0 {
 				if err := releaseAdtyTeamRefundTx(tx, ext, row, operatorID); err != nil {
 					return err
 				}
+			} else if ext.TeamId == 0 && !ext.IsOwnerSelfUse() && row.ReclaimedAt > 0 && row.DeductedPrincipalQuota > 0 {
+				restored, err := releaseCustomerManualRefundTx(tx, ext, row, operatorID)
+				if err != nil {
+					return err
+				}
+				if restored {
+					releasedUserID = row.UserId
+				}
 			}
-			result = adtyManualRefundView(row, adtyBuildManualRefundOccupancy(ext, held, unknown), nil)
+			occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+			if err != nil {
+				return err
+			}
+			result = adtyManualRefundView(row, occ, nil)
 			return nil
 		}
 		if row.Status == AdtyManualRefundStatusCompleted {
@@ -1300,12 +1575,19 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 			if err := releaseAdtyTeamRefundTx(tx, ext, row, operatorID); err != nil {
 				return err
 			}
-		}
-		if ext.IsOwnerSelfUse() && row.ApprovedAt > 0 {
+		} else if ext.IsOwnerSelfUse() && row.ApprovedAt > 0 {
 			if err := releaseOwnerRefundTx(tx, ext, row, operatorID, idemKey); err != nil {
 				return err
 			}
 			if row.ReclaimedAt > 0 {
+				releasedUserID = row.UserId
+			}
+		} else if ext.TeamId == 0 && !ext.IsOwnerSelfUse() && row.ReclaimedAt > 0 && row.DeductedPrincipalQuota > 0 {
+			restored, err := releaseCustomerManualRefundTx(tx, ext, row, operatorID)
+			if err != nil {
+				return err
+			}
+			if restored {
 				releasedUserID = row.UserId
 			}
 		}
@@ -1315,20 +1597,23 @@ func TerminateAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, id
 			"terminate_operator_id": operatorID,
 			"terminated_at":         now,
 			"terminate_idem_key":    idemKey,
-			"terminate_note":        strings.TrimSpace(note),
+			"terminate_note":        trimmedNote,
 		}).Error; err != nil {
 			return err
 		}
 		row.Status = AdtyManualRefundStatusTerminated
 		row.TerminateOperatorId, row.TerminatedAt, row.TerminateIdemKey = operatorID, now, idemKey
-		row.TerminateNote = strings.TrimSpace(note)
+		row.TerminateNote = trimmedNote
 		for i := range rows {
 			if rows[i].RefundId == row.RefundId {
 				rows[i] = *row
 			}
 		}
-		held, unknown = adtySumManualRefundOccupancy(rows)
-		result = adtyManualRefundView(row, adtyBuildManualRefundOccupancy(ext, held, unknown), nil)
+		occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if err != nil {
+			return err
+		}
+		result = adtyManualRefundView(row, occ, nil)
 		return nil
 	})
 	if err != nil {

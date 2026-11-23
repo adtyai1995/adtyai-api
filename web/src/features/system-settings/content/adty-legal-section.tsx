@@ -41,10 +41,9 @@ export type AdtyLegalField =
   | 'user_agreement'
   | 'privacy_policy'
   | 'refund_policy'
-  | 'site_agreement'
   | 'site_customer_terms'
 
-type VersionKey = 'site_agreement_version' | 'site_customer_terms_version'
+type VersionKey = 'site_customer_terms_version'
 type LegalKey = AdtyLegalField | VersionKey
 
 /** Saved option values: each is a JSON object of content language → Markdown. */
@@ -57,7 +56,6 @@ const FIELDS: AdtyLegalField[] = [
   'user_agreement',
   'privacy_policy',
   'refund_policy',
-  'site_agreement',
   'site_customer_terms',
 ]
 
@@ -89,15 +87,12 @@ function toValues(saved: AdtyLegalDefaults): Record<LegalKey, string> {
     user_agreement: serializeTexts(parseTexts(saved.user_agreement)),
     privacy_policy: serializeTexts(parseTexts(saved.privacy_policy)),
     refund_policy: serializeTexts(parseTexts(saved.refund_policy)),
-    site_agreement: serializeTexts(parseTexts(saved.site_agreement)),
     site_customer_terms: serializeTexts(parseTexts(saved.site_customer_terms)),
-    site_agreement_version: String(saved.site_agreement_version),
     site_customer_terms_version: String(saved.site_customer_terms_version),
   }
 }
 
 function versionKeyFor(field: AdtyLegalField): VersionKey | null {
-  if (field === 'site_agreement') return 'site_agreement_version'
   if (field === 'site_customer_terms') return 'site_customer_terms_version'
   return null
 }
@@ -114,7 +109,6 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
     user_agreement: t('User Agreement'),
     privacy_policy: t('Privacy Policy'),
     refund_policy: t('Refund Policy'),
-    site_agreement: t('Site Agreement'),
     site_customer_terms: t('Site Customer Terms'),
   }
   const updateOption = useUpdateOption()

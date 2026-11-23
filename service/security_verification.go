@@ -42,6 +42,7 @@ const (
 	VerificationScopeAdminUserCreate       = "admin.user.create"
 	VerificationScopeAdminUserUpdate       = "admin.user.update"
 	VerificationScopeAdminUserDelete       = "admin.user.delete"
+	VerificationScopeAdminUserQuota        = "admin.user.quota"
 	VerificationScopeAdminUserManage       = "admin.user.manage"
 	VerificationScopeAdminUserPasskeyReset = "admin.user.passkey.reset"
 	VerificationScopeAdminUserTwoFADisable = "admin.user.2fa.disable"
@@ -183,7 +184,7 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
 		normalized = context
-	case VerificationScopeAdminUserUpdate, VerificationScopeAdminUserDelete, VerificationScopeAdminUserPasskeyReset, VerificationScopeAdminUserTwoFADisable:
+	case VerificationScopeAdminUserUpdate, VerificationScopeAdminUserDelete, VerificationScopeAdminUserQuota, VerificationScopeAdminUserPasskeyReset, VerificationScopeAdminUserTwoFADisable:
 		var context AdminUserContext
 		if len(fields) != 1 || common.Unmarshal(fields["user_id"], &context.UserID) != nil || context.UserID <= 0 {
 			return VerificationBinding{}, ErrVerificationContextInvalid
@@ -332,7 +333,7 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 		VerificationScopeAccountBind,
 		VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete,
 		VerificationScopeAdminUserCreate, VerificationScopeAdminUserUpdate, VerificationScopeAdminUserDelete,
-		VerificationScopeAdminUserManage, VerificationScopeAdminUserPasskeyReset,
+		VerificationScopeAdminUserQuota, VerificationScopeAdminUserManage, VerificationScopeAdminUserPasskeyReset,
 		VerificationScopeAdminUserTwoFADisable, VerificationScopeAdminUserBindingClear,
 		VerificationScopeAdtyTopUpRefund, VerificationScopeAdtyTopUpManualRefundStep, VerificationScopeAdtyTopUpManualComplete, VerificationScopeAdtyPaymentOrphanCredit, VerificationScopeAdtyPaymentOrphanResolve, VerificationScopeAdtyTopUpQuery, VerificationScopeAdtySiteEarningReview:
 		if scope == VerificationScopeAccountDelete && state.Role == common.RoleRootUser {
@@ -428,7 +429,7 @@ func GetVerificationRequirements(identity AuthIdentity, scope string) (*Verifica
 			switch scope {
 			case VerificationScopeAccountBind, VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete,
 				VerificationScopeAdminUserCreate, VerificationScopeAdminUserUpdate, VerificationScopeAdminUserDelete,
-				VerificationScopeAdminUserManage, VerificationScopeAdminUserPasskeyReset,
+				VerificationScopeAdminUserQuota, VerificationScopeAdminUserManage, VerificationScopeAdminUserPasskeyReset,
 				VerificationScopeAdminUserTwoFADisable, VerificationScopeAdminUserBindingClear,
 				VerificationScopeAdtyTopUpRefund, VerificationScopeAdtyTopUpManualRefundStep, VerificationScopeAdtyTopUpManualComplete, VerificationScopeAdtyPaymentOrphanCredit, VerificationScopeAdtyPaymentOrphanResolve, VerificationScopeAdtyTopUpQuery, VerificationScopeAdtySiteEarningReview:
 				methods[i].Available, methods[i].Reason = false, "Password authentication is disabled."
@@ -619,21 +620,28 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 	}
 	switch input.Method {
 	case VerificationMethodPassword:
-		password := input.Password
-		if common.PasswordLoginEncryptionEnabled {
-			var err error
-			password, err = common.DecryptPassword(input.PasswordEncrypted, input.EncryptionKeyID)
-			if err != nil {
-				return nil, ErrVerificationFailed
-			}
-		}
 		user, err := model.GetUserById(identity.UserID, true)
 		if err != nil {
 			return nil, err
 		}
-		if password == "" || user.Password == "" || !common.ValidatePasswordAndHash(password, user.Password) {
+		// R1-017: Share login password lockout across /api/verify so it cannot be
+		// abused as an unthrottled password brute-force oracle.
+		if common.LoginLocked(user.Username) {
 			return nil, ErrVerificationFailed
 		}
+		password := input.Password
+		if common.PasswordLoginEncryptionEnabled {
+			password, err = common.DecryptPassword(input.PasswordEncrypted, input.EncryptionKeyID)
+			if err != nil {
+				_ = common.RecordLoginFailure(user.Username)
+				return nil, ErrVerificationFailed
+			}
+		}
+		if password == "" || user.Password == "" || !common.ValidatePasswordAndHash(password, user.Password) {
+			_ = common.RecordLoginFailure(user.Username)
+			return nil, ErrVerificationFailed
+		}
+		common.ClearLoginFailures(user.Username)
 	case VerificationMethodTwoFA:
 		if input.Scope == VerificationScopeTwoFABackupCodes {
 			if _, err := common.ValidateNumericCode(input.Code); err != nil {

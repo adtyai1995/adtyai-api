@@ -639,14 +639,14 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 	}
 
 	var withdrawals []model.AdtySiteWithdrawal
-	if err := tx.Where("site_id = ? AND created_at >= ? AND created_at < ?", siteID, start, end).Find(&withdrawals).Error; err != nil {
+	if err := tx.Where("site_id = ? AND status = ? AND paid_at >= ? AND paid_at < ?", siteID, model.AdtySiteWithdrawPaid, start, end).Find(&withdrawals).Error; err != nil {
 		return sheet, err
 	}
 	for _, row := range withdrawals {
 		sheet.WithdrawalUSD = sheet.WithdrawalUSD.Add(row.AmountUSD)
 		record("withdrawal", row.Id)
 		sheet.WithdrawalFeeUSD = sheet.WithdrawalFeeUSD.Add(row.FeeUSD)
-		note(row.CreatedAt)
+		note(row.PaidAt)
 		sheet.IncludedCount++
 	}
 

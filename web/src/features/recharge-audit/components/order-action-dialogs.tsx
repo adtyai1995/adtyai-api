@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery } from '@tanstack/react-query'
+import { isAxiosError } from 'axios'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -230,6 +231,8 @@ export function RefundDialog(
   const [payoutAt, setPayoutAt] = useState('')
   const [payoutVoucher, setPayoutVoucher] = useState('')
   const [payoutStatus, setPayoutStatus] = useState('success')
+  const [payoutIdempotencyKey, setPayoutIdempotencyKey] = useState('')
+  const [payoutConflict, setPayoutConflict] = useState(false)
   const [terminateOpen, setTerminateOpen] = useState(false)
   const [terminateNote, setTerminateNote] = useState('')
   const typedAmount = refundUsd.trim()
@@ -243,6 +246,8 @@ export function RefundDialog(
     setPayoutAt('')
     setPayoutVoucher('')
     setPayoutStatus('success')
+    setPayoutIdempotencyKey('')
+    setPayoutConflict(false)
     setTerminateOpen(false)
     setTerminateNote('')
     setIdempotencyKey(crypto.randomUUID())
@@ -291,6 +296,22 @@ export function RefundDialog(
       setSelectedId(firstRefundId)
     }
   }, [firstRefundId, selectedId])
+  const selectedRefundId = selected?.refund_id ?? ''
+  const selectedPayoutStatus = selected?.payout_status ?? ''
+  const needsPayoutRetryKey =
+    selectedPayoutStatus === 'failed' || selectedPayoutStatus === 'unknown'
+  useEffect(() => {
+    setPayoutConflict(false)
+    if (!selectedRefundId) {
+      setPayoutIdempotencyKey('')
+      return
+    }
+    setPayoutIdempotencyKey(
+      needsPayoutRetryKey
+        ? `${selectedRefundId}:payout:${crypto.randomUUID()}`
+        : `${selectedRefundId}:payout`
+    )
+  }, [selectedRefundId, needsPayoutRetryKey])
 
   const refresh = () => {
     void listing.refetch()
@@ -346,7 +367,10 @@ export function RefundDialog(
     ) => {
       if (!selected) throw new Error('cancelled')
       const body: Record<string, unknown> = {
-        idempotency_key: `${selected.refund_id}:${step}`,
+        idempotency_key:
+          step === 'payout'
+            ? payoutIdempotencyKey || `${selected.refund_id}:payout`
+            : `${selected.refund_id}:${step}`,
       }
       if (step === 'payout') {
         body.status = payoutStatus
@@ -399,10 +423,20 @@ export function RefundDialog(
       }
       toast.success(done[step] ?? t('Refund step recorded'))
       if (step === 'terminate') setTerminateNote('')
+      if (step === 'payout') setPayoutConflict(false)
       refresh()
     },
-    onError: (error) => {
+    onError: (error, step) => {
       if (error instanceof Error && error.message === 'cancelled') return
+      if (isAxiosError(error) && error.response?.status === 409) {
+        if (step === 'payout') setPayoutConflict(true)
+        toast.error(
+          t(
+            'Idempotency key conflict: parameters differ from the previous request. Generate a new retry key or refresh and try again.'
+          )
+        )
+        return
+      }
       handleServerError(error)
     },
   })
@@ -568,6 +602,17 @@ export function RefundDialog(
             <dt className='text-muted-foreground'>{t('Unknown payout (U)')}</dt>
             <dd className='text-right tabular-nums'>
               {occupancy?.unknown_usd ?? facts.refund_unknown_usd ?? '0'} USD
+            </dd>
+          </div>
+          <div className='contents'>
+            <dt className='text-muted-foreground'>
+              {t('External offset (X)')}
+            </dt>
+            <dd className='text-right tabular-nums'>
+              {occupancy?.external_offset_usd ??
+                facts.refund_external_offset_usd ??
+                '0'}{' '}
+              USD
             </dd>
           </div>
           <div className='contents'>
@@ -821,6 +866,30 @@ export function RefundDialog(
                   <option value='unknown'>{t('Unknown')}</option>
                   <option value='failed'>{t('Failed')}</option>
                 </select>
+                {(needsPayoutRetryKey || payoutConflict) && (
+                  <Alert>
+                    <AlertDescription className='flex flex-wrap items-center justify-between gap-2'>
+                      <span>
+                        {t(
+                          'Previous payout failed or status is unknown. A new retry key will be used to resubmit the payout result.'
+                        )}
+                      </span>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        onClick={() => {
+                          setPayoutConflict(false)
+                          setPayoutIdempotencyKey(
+                            `${selected.refund_id}:payout:${crypto.randomUUID()}`
+                          )
+                        }}
+                      >
+                        {t('Generate new retry key')}
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
                 <Button
                   variant='outline'
                   disabled={!canStep(!!selected.approved_at)}

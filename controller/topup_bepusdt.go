@@ -85,7 +85,9 @@ func RequestBEpusdtPay(c *gin.Context) {
 	})
 	if err != nil {
 		common.SysLog(common.LogText("bepusdt create order failed trade_no=%s: %s", topUp.TradeNo, err.Error()))
-		_ = model.UpdatePendingTopUpStatus(topUp.TradeNo, model.PaymentProviderAdtyBEpusdt, common.TopUpStatusFailed)
+		if failErr := model.FailPendingAdtyTopUp(topUp.TradeNo, model.PaymentProviderAdtyBEpusdt); failErr != nil {
+			common.SysError(common.LogText("bepusdt fail pending order %s failed: %s", topUp.TradeNo, failErr.Error()))
+		}
 		common.ApiErrorT(c, "The payment gateway is unavailable. Please try again later")
 		return
 	}

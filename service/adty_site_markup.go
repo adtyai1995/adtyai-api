@@ -299,7 +299,10 @@ func adtyApplySiteMarkupOnlyDecimal(c *gin.Context, userId int, group string, gr
 		}
 	}
 	if !dOK {
-		common.SysError(common.LogText("site cost factor missing for user %d group %s, leaving group ratio unchanged", userId, group))
+		if c != nil {
+			c.Set(AdtyTeamPriceBlockedKey, true)
+		}
+		common.SysError(common.LogText("site cost factor missing for user %d group %s, blocking billing fail-closed", userId, group))
 		adtyRememberPriceFactors(c, factors)
 		return groupRatio, one
 	}

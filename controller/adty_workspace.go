@@ -194,6 +194,12 @@ func PostAdtyTelegramBindConfirm(c *gin.Context) {
 	if body.Purpose == "" {
 		body.Purpose = model.AdtyTelegramPurposeUser
 	}
+	if !strings.Contains(c.FullPath(), "/site/") && body.Purpose == model.AdtyTelegramPurposeAdmin {
+		if err := service.CheckAdtyPlatformTicketAccess(c.GetInt("id")); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
 	binding, err := service.ConfirmAdtyTelegramBind(c.GetInt("id"), body.Purpose, body.Code, body.TelegramUserId)
 	if err != nil {
 		common.ApiError(c, err)
@@ -216,6 +222,10 @@ func PostAdtyTelegramWebhook(c *gin.Context) {
 	chatID := int64(0)
 	if update.Message != nil {
 		chatID = update.Message.Chat.Id
+	}
+	if chatID == 0 || strings.TrimSpace(reply) == "" {
+		c.JSON(http.StatusOK, gin.H{})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"method": "sendMessage", "chat_id": chatID, "text": reply})
 }
@@ -639,7 +649,7 @@ func GetAdtyGroupHealth(c *gin.Context) {
 	for group := range usable {
 		allowed = append(allowed, group)
 	}
-	rows, err := service.ListAdtyGroupHealthForUser(c.GetInt("id"), c.GetString("group"), c.Query("model"), allowed, time.Now())
+	rows, err := service.ListAdtyGroupHealthForUserOnSite(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), c.Query("model"), allowed, time.Now())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -712,9 +722,17 @@ func PutAdtyTicketImagePolicy(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveAdtyTicketImagePolicy(policy); err != nil {
+	audit := prepareManageAudit(c, c.GetInt("id"), "adty.ticket.image_policy.update", map[string]any{
+		"max_bytes":  policy.MaxBytes,
+		"max_count":  policy.MaxCount,
+		"max_total":  policy.MaxTotal,
+		"max_side":   policy.MaxSide,
+		"max_pixels": policy.MaxPixels,
+	})
+	if err := service.SaveAdtyTicketImagePolicy(policy, audit); err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	deliverCommittedAudits(c, []model.AuditLog{audit})
 	common.ApiSuccess(c, gin.H{"updated": true})
 }

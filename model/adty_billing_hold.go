@@ -19,14 +19,15 @@ const (
 // recorded or checked because the hold table is absent.
 var ErrAdtyBillingHoldTableMissing = errors.New("adty billing hold table is missing")
 
-// ErrAdtyUserPaidPaused is returned when an unresolved shortfall hold pauses
-// new paid requests on the same payer domain (DEC-034 / G3.6).
+// ErrAdtyUserPaidPaused is retained for compatibility; per DEC-003,
+// shortfall holds are recorded for finance review and do not pause new paid
+// requests on personal, owner, or team payer domains.
 var ErrAdtyUserPaidPaused = errors.New("new paid requests are paused while a billing shortfall hold is open")
 
-// AdtyBillingHold is the same-account shortfall waiting for finance review.
-// Per DEC-034 (G3.6), an open shortfall hold pauses NEW paid requests on the
-// same payer domain until resolved, without blocking free requests, channel
-// retries on already-reserved sessions, or in-flight settlements/refunds.
+// AdtyBillingHold records a same-account billing shortfall for finance review.
+// Per DEC-003, wallets never go negative; uncollected shortfall is recorded
+// here without pausing subsequent paid requests (each request is still subject
+// to its own pre-consume balance sufficiency check).
 type AdtyBillingHold struct {
 	Id             int64  `json:"id"`
 	UserId         int    `json:"user_id" gorm:"index"`
@@ -81,23 +82,26 @@ func billingHoldRequestIDFromOperationKey(opKey string) string {
 	return opKey
 }
 
-// CheckAdtyBillingHoldForPayerTx checks whether the given payer domain has an
-// unresolved shortfall hold or an unprojected settled operation shortfall.
+// CheckAdtyBillingHoldForPayerTx previously paused new paid requests when an
+// open shortfall hold existed. Per DEC-003 (R1-024), shortfall holds are audit
+// and finance-review records only and must never block new paid requests.
 func CheckAdtyBillingHoldForPayerTx(tx *gorm.DB, userID int, payerKind string, payerTeamID int64) error {
+	return nil
+}
+
+// HasOpenAdtyBillingHoldTx reports whether userID has an unresolved personal
+// shortfall hold or unprojected settled operation shortfall (used for finance
+// inspection/reporting, never to pause paid requests).
+func HasOpenAdtyBillingHoldTx(tx *gorm.DB, userID int) (bool, error) {
 	if tx == nil || userID <= 0 {
-		return nil
+		return false, nil
 	}
 	hasHoldTable := tx.Migrator().HasTable(&AdtyBillingHold{})
 	hasOpTable := tx.Migrator().HasTable(&BillingOperation{})
-
-	if payerKind == BillingPayerTeam && payerTeamID > 0 {
-		// A team shortfall is reviewed on its originating request (DEC-003).
-		return nil
-	}
 	if hasHoldTable {
 		var openHolds []AdtyBillingHold
 		if err := tx.Where("user_id = ? AND status = ?", userID, AdtyBillingHoldOpen).Find(&openHolds).Error; err != nil {
-			return err
+			return false, err
 		}
 		for _, h := range openHolds {
 			if hasOpTable && h.RequestId != "" {
@@ -105,42 +109,41 @@ func CheckAdtyBillingHoldForPayerTx(tx *gorm.DB, userID int, payerKind string, p
 				if err := tx.Model(&BillingOperation{}).
 					Where("operation_key IN ? AND payer_kind = ?", []string{"request:" + h.RequestId, h.RequestId}, BillingPayerTeam).
 					Count(&teamOps).Error; err != nil {
-					return err
+					return false, err
 				}
 				if teamOps > 0 {
 					continue
 				}
 			}
-			return ErrAdtyUserPaidPaused
+			return true, nil
 		}
 	}
-
 	if hasOpTable {
 		var ops []BillingOperation
 		if err := tx.Select("operation_key", "user_id", "shortfall").
 			Where("user_id = ? AND (payer_kind = '' OR payer_kind = ? OR payer_kind IS NULL) AND state = ? AND shortfall > 0",
 				userID, BillingPayerPersonal, BillingSettled).
 			Find(&ops).Error; err != nil {
-			return err
+			return false, err
 		}
 		for _, op := range ops {
 			if !hasHoldTable {
-				return ErrAdtyUserPaidPaused
+				return true, nil
 			}
 			reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
 			var resolved int64
 			if err := tx.Model(&AdtyBillingHold{}).
-				Where("user_id = ? AND (request_id IN ? OR status = ?) AND status = ?",
-					userID, []string{reqID, op.OperationKey}, AdtyBillingHoldResolved, AdtyBillingHoldResolved).
+				Where("user_id = ? AND request_id IN ? AND status = ?",
+					userID, []string{reqID, op.OperationKey}, AdtyBillingHoldResolved).
 				Count(&resolved).Error; err != nil {
-				return err
+				return false, err
 			}
 			if resolved == 0 {
-				return ErrAdtyUserPaidPaused
+				return true, nil
 			}
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // BackfillMissingAdtyBillingHolds repairs missing AdtyBillingHold rows for

@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -154,6 +156,14 @@ func resolveAdtyVoucherIntentKey(c *gin.Context, bodyValues ...string) (string, 
 	return resolved, true
 }
 
+func writeAdtyVoucherError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrAdtyVoucherForbidden) {
+		common.ApiErrorStatus(c, http.StatusForbidden, err)
+		return
+	}
+	common.ApiError(c, err)
+}
+
 func PostAdtyVoucherFreeze(c *gin.Context) {
 	id, ok := adtyPathId(c)
 	if !ok {
@@ -164,29 +174,10 @@ func PostAdtyVoucherFreeze(c *gin.Context) {
 		return
 	}
 	if err := service.FreezeAdtyVoucher(c.GetInt("id"), int64(id)); err != nil {
-		common.ApiError(c, err)
+		writeAdtyVoucherError(c, err)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"id": id, "status": model.AdtyVoucherStatusFrozen})
-}
-
-func PutAdtyVoucherMarginAuthorization(c *gin.Context) {
-	siteId, ok := adtyPathId(c)
-	if !ok {
-		return
-	}
-	var body struct {
-		Allowed bool `json:"allowed"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.SetAdtyVoucherMarginAuthorization(c.GetInt("id"), siteId, body.Allowed); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"site_id": siteId, "allowed": body.Allowed})
 }
 
 func PostAdtyVoucherCancel(c *gin.Context) {
@@ -198,7 +189,7 @@ func PostAdtyVoucherCancel(c *gin.Context) {
 		return
 	}
 	if err := service.CancelAdtyVoucher(c.GetInt("id"), int64(id)); err != nil {
-		common.ApiError(c, err)
+		writeAdtyVoucherError(c, err)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"id": id, "status": model.AdtyVoucherStatusCancelled})
@@ -237,8 +228,7 @@ func GetAdtyAdminVouchers(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"total": total, "items": items, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
-// GetAdtySiteVouchers lists the codes this owner issued from this site's
-// wallets, and whether Root allows issuing from margin.
+// GetAdtySiteVouchers lists the codes this owner issued from this site's wallets.
 func GetAdtySiteVouchers(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {
@@ -254,7 +244,6 @@ func GetAdtySiteVouchers(c *gin.Context) {
 	}
 	common.ApiSuccess(c, gin.H{
 		"total": total, "items": items, "page": page.GetPage(), "page_size": page.GetPageSize(),
-		"margin_allowed": service.AdtyVoucherMarginAuthorized(site.Id),
 	})
 }
 
@@ -265,14 +254,6 @@ func GetAdtyVoucherIssuanceLimit(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, view)
-}
-
-func GetAdtyVoucherMarginAuthorization(c *gin.Context) {
-	siteId, ok := adtyPathId(c)
-	if !ok {
-		return
-	}
-	common.ApiSuccess(c, gin.H{"site_id": siteId, "allowed": service.AdtyVoucherMarginAuthorized(siteId)})
 }
 
 // PostAdtyAdminVoucherCancel lets Root cancel any unredeemed code and release

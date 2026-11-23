@@ -156,17 +156,17 @@ func TransferAdtyEarningsToPersonal(siteID, ownerID int, usd decimal.Decimal, in
 	ref := fmt.Sprintf("owner-%x", digest[:24])
 	credited := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		// Checkout and payment credit also lock user before site.
-		var owner model.User
-		if err := model.AdtyLockForUpdate(tx).First(&owner, ownerID).Error; err != nil {
-			return err
-		}
+		// Canonical global fund lock order: AdtySite -> User -> AdtySiteWallet.
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
 			return err
 		}
 		if site.OwnerUserId != ownerID || site.Status != model.AdtySiteStatusActive {
 			return ErrAdtySiteNotOwner
+		}
+		var owner model.User
+		if err := model.AdtyLockForUpdate(tx).First(&owner, ownerID).Error; err != nil {
+			return err
 		}
 		key := ref
 		prior, err := model.FindAdtyBalanceLedgerByKeyTx(tx, key)

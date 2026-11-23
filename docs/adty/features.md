@@ -150,7 +150,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 - 佣金已经生成（待结算、冻结、可提现、已提现都算）：扣回 佣金 × ratio（8 位小数，向下取整）。
   - ratio = 1：整笔处理。待结算的作废，其余的扣回，和以前一样。
-  - 0 < ratio < 1：佣金状态不变，记一笔部分扣回的返佣流水（`commission_clawback_partial`）。待结算的从待结算里扣，并把这笔佣金的金额减掉这部分；冻结、可提现、已提现的从可提现里扣，可以扣成负数，以后的新佣金结算时先抵扣。
+  - 0 < ratio < 1：佣金状态不变，记一笔部分扣回的返佣流水（`commission_clawback_partial`）。待结算的从待结算里扣，并把这笔佣金的金额减掉这部分；冻结、可提现、已提现的最多扣减至可用余额归零，余额不会扣为负数，已提现超出部分记入追偿账目。
   - ratio = 0（用户把本金花完了）：佣金不动，照样结算。
 - 计佣任务还没跑（退款早于计佣）：计佣任务也处理已退款的订单，只按用户花掉的那部分计佣，基数 = 面额 × (1 − ratio)；一分没花（ratio = 1）时跳过。退款事务里不同步跑计佣，两边都先锁计佣任务那一行，不会重复计佣。
 - 例：上面第一行（R = $80、P = $70），返佣比例 10%：佣金 $10，ratio = 0.7，扣回 $7，推广员留 $3。
@@ -318,7 +318,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 ### 加赠和试用额度
 
 - **加赠**：按支付方式，不按金额档位。Root 先逐站授权支付方式（`site_method_auth`），站长再在站长中心 → 加赠（`/site-owner/bonus`）设本站比例（`site_method_bonus`，要重新验证身份）。授权、收益保障、赠金冻结和待履约见「充值和加赠」。旧站点金额档位 `adty_sites.bonus_rates` 不再接受新保存（`SaveAdtySiteBonusRates` 返回 `ErrAdtyAmountTierRetired`）。
-- **试用额度**：站长在客户详情里给单个客户送（`POST /api/adty/site/customers/:id/trial`，要重新验证身份），站长可为本站设置单次发放预算和每日合计预算，两项都设置后可发放。这些预算不参与开站校验。钱从站长的推广佣金可提现余额里扣（`referral_commission_accounts.available_amount`），不够就拒绝；给客户加额度、写余额流水 `site_trial`，并记一条已结算的 `trial` 日汇总行（只做报表，结算任务不再取它）（`service/adty_site_earning.go:381-506`）。
+- **试用额度（已退役）**：旧版 `POST /api/adty/site/customers/:id/trial` 入口已退役（前端已移除，后端按退役策略拒绝）；站长给客户加额度统一使用「手动增加余额」或「发放充值码」（优先从可用收益出资，不足部分由超出等级底线的超额保证金补足）。历史已落库的 `site_trial` 流水和报表行保留只读展示。
 
 ### 收益、冻结、结算、提现
 
@@ -375,7 +375,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - Cloudflare Token 和 widget secret 在 options 中以 AES-256-GCM 加密；只有部署固定的 `CRYPTO_SECRET` 能解密，数据库备份不包含该 key。历史明文首次读取时在行锁内升级，重复加载保持密文不变。错误 key 或损坏密文会清空本节点此域的运行密钥并记录不含秘密的错误，其余安全设置仍可加载。Root 可替换/清空密钥；空串保存保持旧值，任何角色均不能从接口读到原值或密文。
 - **两种 role**：每个域名带 `role`，建站时用 `POST /api/adty/site/domains {hostname, role}` 指定（`controller/adty_reseller.go:47-52`、`model/adty_site_domain.go:13-28`）：
   - `role=site`（默认）承接网站、登录、充值、支付返回和账户接口。模型调用在转发与预扣前返回 403。
-  - `role=base_url`：API 地址，只放行 relay（`/v1`、`/v1beta`、`/mj`、`/pg`）和探活/元信息接口（`/api/status`、`/api/ready`、`/api/uptime/status`、`/api/ratio_config`、`/api/adty/groups/display`、`/api/adty/site`、`/api/adty/pricing*`）。其他页面一律 404，其他账号接口一律 403（`middleware/adty_site_context.go:100-114,181-196`）。
+  - `role=base_url`：API 地址，承接 relay（`/v1`、`/v1beta`、`/mj`、`/pg`）和探活/元信息接口（`/api/status`、`/api/ready`、`/api/uptime/status`、`/api/ratio_config`、`/api/adty/groups/display`、`/api/adty/site`、`/api/adty/pricing*`）；浏览器访问页面路径时 302 跳转至该站对应的网站域（不参与搜索引擎收录），API 路径按正常鉴权与业务规则校验。
 - **流程**：站长在站点设置里填子域名（不能是根域名，不能在我们的根域名、主站域名、CNAME 目标、回源主机名下）→ 后端调 Cloudflare 建自定义主机名（HTTP 验证、DV 证书），3 秒后再查一次取验证记录 → 站长中心显示「把这个域名 CNAME 到 `cname_target`」和要加的 TXT 记录 → 主节点每 5 分钟查一次，主机名和证书都是 active 才启用；72 小时还不通标失败，站长重新提交就是重试。
 - **Turnstile**：域名启用后，按 `turnstile_widgets` 的顺序登记进第一个还有空位的 widget（每个 widget 最多 10 个域名）；名额满了域名照常能用，之后每 5 分钟重试登记。`/api/status` 按当前站点返回对应的 site key，校验时用对应的 secret，并核对 Cloudflare 返回的主机名。
 - `/api/status` 的 `server_address` 优先使用本站已激活的 `role=base_url` 域名，否则使用 `api-s<site_id>.<root_domain>`。原有主机名发生冲突时以站长后台返回的地址为准。同站 Key 换入口后继续按原个人、团队或站长自用账户计费。
@@ -433,7 +433,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - 直接开站已与佣金转余额统一为先锁推广员、再锁用户的顺序；开站失败回滚站长标记和新账户。MySQL 开站事务使用 READ COMMITTED，资格检查包含等待用户锁之前已提交的待审核站点；并发推广页创建记录仍补齐站长标记，重开保留首次时间且阻止并行恢复返佣清零。真实三库回归、历史审批锁等待和本轮完整后端门禁通过；原 PostgreSQL 死锁、MySQL 双站及并发漏标记均先观察失败后修复。
 - 以上是本轮局部证据，整体仍为“代码级验收未通过”。团队、通知、员工权限等总方案缺口尚未闭环；三钱包和收益提现的实现状态见「新规范实施状态」和「站长收益提现」。外部 DNS、Cloudflare、SSL 及支付供应商仍待实际联调。
 - 关站前客户通知、涨价前客户通知、改 d 后站长通知已接入站点系统邮件；营销发送任务已删除。发送结果及失败可重试状态按邮件任务记录。
-- 每月业绩档位任务已注册，按上月业绩计算 `tier_cost_factor`，未达到档位时恢复默认规则。
+- 旧版每月业绩档位任务已退役，分站等级由基于客户累计净充值本金的自动考核或 Root 手动钉住模式统一驱动。
 - 总览、风控复核和举报、经营数据均已接入实际接口；站点列表显示本月充值、营业额和收益，排序由后端执行。
 - 站点明细提供自定义域名、发件域名停用操作。域名生命周期使用数据库锁，并在恢复外部创建操作时核验站点、域名和 generation 所有权。
 - 站长可以申请关站，后台和站长中心展示关站中状态；关站中的站点仍可进入站长中心处理已有业务。
@@ -446,7 +446,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 工作区《ADTYAI_分站系统开发规范》是新的业务基线。旧 P11 说明描述的兼容流程已被下面的实现替换；差异和风险清单见 [site-system-implementation.md](site-system-implementation.md)。
 
-- **等级自动考核已实现**：动态等级定义存在 `adty_site_tiers`，Root 用 `GET/PUT /api/adty/admin/reseller/tiers` 管理代码、名称、供货倍率和保证金要求，不硬编码等级数值。主节点每小时跑一次自动考核（`service/adty_site_finance.go:795-833`），按 UTC 日期做周期 ID，同一站同一周期重复跑不会重复写等级、保证金要求或预警（`service/adty_site_finance.go:715-784`）。门槛是开站以来累计的三个指标：有效客户数、留存本金、已结算消费；取所有已启用等级里三项都满足的最高档（`service/adty_site_finance.go:580-661`）。手动钉住的站（`tier_mode=manual`）不会被自动考核覆盖；三项都达不到时通知 Root「未达最低档」，只预警、不关站（`service/adty_site_finance.go:766-793`）。界面：Root 在分站后台「设置」页的「分站等级」里新增、编辑、停用等级，按代码保存，不能删除；分站详情的「分站等级」可以把站点固定到某个已启用等级，或改回自动考核（`PUT /api/adty/admin/sites/:id/tier`，Root，PAT `option:write`；改回自动会先清空等级，等下一次整点考核）。
+- **等级自动考核已实现**：动态等级定义存在 `adty_site_tiers`，Root 用 `GET/POST/PATCH /api/adty/admin/reseller/tiers` 管理代码、名称、最低客户累计净充值本金门槛、供货折扣和保证金要求，不硬编码等级数值。主节点每小时跑一次自动考核，按业务时区日期做周期 ID，同一站同一周期重复跑不会重复写等级、保证金要求或预警。考核口径以「累计净实付客户充值本金（含已退净额折减）+ Root 手动调整的阶梯考核本金（`adty_site_tier_principal_adjustments`）」为准，取所有已启用等级里满足门槛的最高档。手动钉住的站（`tier_mode=manual`）不会被自动考核覆盖；未达最低档时仅预警、不关站。界面：Root 在分站后台「设置」页的「分站等级」里新增、编辑、停用等级，按代码保存，不能删除；分站详情的「分站等级」可以把站点固定到某个已启用等级，或改回自动考核（`PUT /api/adty/admin/sites/:id/tier`，Root，PAT `option:write`）。
 - **等级落地**：切换等级会在同一事务更新站点的 `tier_cost_factor` 和保证金钱包的 `required_balance`；保证金要求变更只改应缴额，不会凭空增加余额（`service/adty_site_finance.go:679-698`）。手动等级模式不受旧月度业绩档位和旧延迟生效任务覆盖。
 - **三钱包已实现**：`adty_site_wallets`（经营 / 收益 / 保证金）和 `adty_site_wallet_ledgers`。钱包唯一绑定站点和类型，变动在事务内锁钱包并追加含前后余额、业务来源和幂等键的流水；流水禁止通过模型更新或删除，重复幂等键返回原流水。站点查询 `GET /api/adty/site/wallets`、`GET /api/adty/site/wallet-ledgers`（PAT `wallet:read`）；Root 查询 `GET /api/adty/admin/sites/:id/wallets`、`GET /api/adty/admin/sites/:id/wallet-ledgers`（PAT `option:read`），普通管理员不能使用。界面：Root 在分站详情的资金区看三个钱包的余额和流水；站长在「收益」页看收益钱包、保证金钱包的余额（含冻结）和流水，看不到经营钱包；两边都能按钱包筛选、分页。
 - **保证金补充周期**：Root 指定保证金码核销、本站收益划转保证金，每次真实入账都在原资金事务内开启新周期，使用归零，目标取锁定钱包时当前档位；小额补充不要求补满整档，业务重放不再次重置。调档只改当前应缴目标，不能直接扩大原周期。钱包保存周期编号、起点和初始余额；不可变流水保存带版本的周期前后公式快照，旧流水的空快照表示历史未知。旧冻结及订单预留继续承担原来源责任；现有 `frozen_usd` 包含两者，公式快照明确记录其合计，不另造零预留，也不重复扣减。新周期同时受真实资金和周期90%限制，已开启周期的最低保留额取原周期档位的10%，不随当前应缴目标变化；冻结转支出时冻结与余额等额减少，实际使用只增加一次。

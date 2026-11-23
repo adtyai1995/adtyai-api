@@ -195,6 +195,21 @@ func getTokenRequestUserGroup(c *gin.Context) (string, error) {
 	return model.GetUserGroup(c.GetInt("id"), false)
 }
 
+func tokenRequestSiteID(c *gin.Context) int {
+	if siteID := service.AdtyRequestSiteID(c); siteID > 0 {
+		return siteID
+	}
+	if siteID := common.GetContextKeyInt(c, constant.ContextKeyUserSiteId); siteID > 0 {
+		return siteID
+	}
+	if userID := c.GetInt("id"); userID > 0 {
+		if user, err := model.GetUserCache(userID); err == nil && user != nil && user.SiteId > 0 {
+			return user.SiteId
+		}
+	}
+	return 0
+}
+
 func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) bool {
 	if len(groups) == 0 {
 		if err := token.SetAutoGroups(nil); err != nil {
@@ -215,6 +230,7 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 		common.ApiError(c, err)
 		return false
 	}
+	siteID := tokenRequestSiteID(c)
 	seen := make(map[string]struct{}, len(groups))
 	for _, group := range groups {
 		if _, ok := seen[group]; ok {
@@ -222,7 +238,7 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 			return false
 		}
 		seen[group] = struct{}{}
-		if !service.IsUserSelectableGroup(userGroup, group) {
+		if !service.IsUserSelectableGroup(userGroup, group) || !service.SiteGroupAllowed(siteID, group) {
 			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
 			return false
 		}
@@ -287,8 +303,16 @@ func GetTokenAutoGroups(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	siteID := tokenRequestSiteID(c)
+	raw := service.GetUserAutoGroup(userGroup)
+	groups := make([]string, 0, len(raw))
+	for _, g := range raw {
+		if service.SiteGroupAllowed(siteID, g) {
+			groups = append(groups, g)
+		}
+	}
 	common.ApiSuccess(c, gin.H{
-		"groups":    service.GetUserAutoGroup(userGroup),
+		"groups":    groups,
 		"max_count": setting.GetMaxTokenAutoGroups(),
 	})
 }
@@ -383,21 +407,38 @@ func GetTokenUsage(c *gin.Context) {
 		"model_limits_enabled": token.ModelLimitsEnabled,
 		"expires_at":           expiredAt,
 	}
-	// 用户额度只在令牌允许时返回；IP 白名单已由 TokenAuthReadOnly 检查。
-	if token.AllowUserQuotaQuery {
-		userQuota, err := model.GetUserQuota(token.UserId, false)
-		var userUsedQuota int
-		if err == nil {
-			userUsedQuota, err = model.GetUserUsedQuota(token.UserId)
-		}
-		if err != nil {
-			common.SysError(common.LogText("failed to get user quota: %s", err.Error()))
+	// 用户额度只在令牌允许且非站长自用 Key 时返回；团队 Key 返回团队共享余额绝不泄露成员个人钱包。
+	if token.AllowUserQuotaQuery && token.OwnerSelfUseSiteId == 0 {
+		teamQuota, isTeamKey, teamErr := service.AdtyTeamSharedQuotaForToken(token.Id)
+		if teamErr != nil {
+			common.SysError(common.LogText("failed to get team quota for token: %s", teamErr.Error()))
 			common.ApiErrorI18n(c, i18n.MsgTokenGetInfoFailed)
 			return
 		}
-		data["user_quota"] = gin.H{
-			"total_available": userQuota,
-			"total_used":      userUsedQuota,
+		if isTeamKey {
+			data["team_quota"] = gin.H{
+				"total_available": teamQuota,
+			}
+			data["user_quota"] = gin.H{
+				"total_available": teamQuota,
+				"total_used":      0,
+				"scope":           "team",
+			}
+		} else {
+			userQuota, err := model.GetUserQuota(token.UserId, false)
+			var userUsedQuota int
+			if err == nil {
+				userUsedQuota, err = model.GetUserUsedQuota(token.UserId)
+			}
+			if err != nil {
+				common.SysError(common.LogText("failed to get user quota: %s", err.Error()))
+				common.ApiErrorI18n(c, i18n.MsgTokenGetInfoFailed)
+				return
+			}
+			data["user_quota"] = gin.H{
+				"total_available": userQuota,
+				"total_used":      userUsedQuota,
+			}
 		}
 	}
 
@@ -452,11 +493,19 @@ func addPersonalToken(c *gin.Context, ownerSite int) {
 	}
 	// 检查用户令牌数量是否已达上限
 	maxTokens := operation_setting.GetMaxUserTokens()
+	siteID := tokenRequestSiteID(c)
+	if ownerSite > 0 {
+		siteID = ownerSite
+	}
 	if token.Group == "auto" {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 			return
 		}
 	} else {
+		if token.Group != "" && !service.SiteGroupAllowed(siteID, token.Group) {
+			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": token.Group})
+			return
+		}
 		token.CrossGroupRetry = false
 		_ = token.SetAutoGroups(nil)
 	}
@@ -585,8 +634,16 @@ func UpdateToken(c *gin.Context) {
 	replaceRemainQuota := false
 	keyLimitPatch := model.AdtyKeyLimitPatch{}
 	if statusOnly != "" {
+		if token.Status != common.TokenStatusEnabled && token.Status != common.TokenStatusDisabled {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
 		cleanToken.Status = token.Status
 	} else {
+		siteID := tokenRequestSiteID(c)
+		if cleanToken.OwnerSelfUseSiteId > 0 {
+			siteID = cleanToken.OwnerSelfUseSiteId
+		}
 		// If you add more fields, please also update token.Update()
 		cleanToken.Name = token.Name
 		cleanToken.ExpiredTime = token.ExpiredTime
@@ -601,6 +658,13 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.AllowIps = token.AllowIps
 		if request.AllowUserQuotaQuery != nil {
 			cleanToken.AllowUserQuotaQuery = *request.AllowUserQuotaQuery
+		}
+		if cleanToken.OwnerSelfUseSiteId > 0 {
+			cleanToken.AllowUserQuotaQuery = false
+		}
+		if token.Group != "" && token.Group != "auto" && !service.SiteGroupAllowed(siteID, token.Group) {
+			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": token.Group})
+			return
 		}
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry

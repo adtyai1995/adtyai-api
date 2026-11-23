@@ -253,7 +253,6 @@ export function VoucherAdminPanel() {
                 {
                   id: reconciled.id,
                   tail: reconciled.code_tail,
-                  defaultValue: `Previous issuance request already created code #${reconciled.id} (tail ${reconciled.code_tail}). Full codes are shown once.`,
                 }
               )}
             </p>
@@ -268,9 +267,7 @@ export function VoucherAdminPanel() {
                     change.mutate({ kind: 'cancel', id: reconciled.id })
                   }
                 >
-                  {t('Cancel code and replace', {
-                    defaultValue: 'Cancel code and replace',
-                  })}
+                  {t('Cancel code and replace')}
                 </Button>
               ) : (
                 <Button
@@ -283,9 +280,7 @@ export function VoucherAdminPanel() {
                     setIntentKey(createVoucherIssuanceIntentKey())
                   }}
                 >
-                  {t('Prepare replacement code', {
-                    defaultValue: 'Prepare replacement code',
-                  })}
+                  {t('Prepare replacement code')}
                 </Button>
               )}
             </div>

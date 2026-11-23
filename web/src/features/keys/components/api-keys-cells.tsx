@@ -57,10 +57,18 @@ export function ApiKeyCell({ apiKey }: { apiKey: ApiKey }) {
   const maskedKey = `sk-${apiKey.key}`
 
   const handlePopoverOpen = useCallback(
-    (open: boolean) => {
-      setPopoverOpen(open)
-      if (open && !resolvedFullKey) {
-        resolveRealKey(apiKey.id)
+    async (open: boolean) => {
+      if (!open) {
+        setPopoverOpen(false)
+        return
+      }
+      if (resolvedFullKey) {
+        setPopoverOpen(true)
+        return
+      }
+      const key = await resolveRealKey(apiKey.id)
+      if (key) {
+        setPopoverOpen(true)
       }
     },
     [resolvedFullKey, resolveRealKey, apiKey.id]

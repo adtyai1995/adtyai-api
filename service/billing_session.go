@@ -474,11 +474,8 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			available = min(available, principal)
 			payerKind = model.BillingPayerOwner
 		}
-		if preConsumedQuota > 0 || payerKind == model.BillingPayerOwner && !relayInfo.PriceData.FreeModel {
-			if holdErr := model.CheckAdtyBillingHoldForPayerTx(model.DB, relayInfo.UserId, payerKind, payerTeamID); holdErr != nil {
-				return nil, types.NewErrorWithStatusCode(holdErr, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry())
-			}
-		}
+		_ = payerKind
+		_ = payerTeamID
 		remaining := int(min(available, int64(math.MaxInt)))
 		if available <= 0 {
 			return nil, types.NewErrorWithStatusCode(

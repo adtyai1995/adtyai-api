@@ -401,7 +401,16 @@ export function ApiKeysMutateDrawer({
     }
   }
 
-  const onInvalid: SubmitErrorHandler<ApiKeyFormValues> = () => {
+  const onInvalid: SubmitErrorHandler<ApiKeyFormValues> = (errors) => {
+    if (
+      errors.rate_limit_per_minute ||
+      errors.rate_limit_tpm ||
+      errors.rate_limit_concurrency ||
+      errors.model_limits ||
+      errors.allow_ips
+    ) {
+      setAdvancedOpen(true)
+    }
     toast.error(t('Please fix the highlighted fields before saving'))
   }
 
@@ -796,6 +805,64 @@ export function ApiKeysMutateDrawer({
                             <Input
                               type='number'
                               min={0}
+                              value={field.value ?? 0}
+                              onChange={(event) =>
+                                field.onChange(
+                                  event.target.value === ''
+                                    ? 0
+                                    : Number(event.target.value)
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t('Empty or zero means no extra limit on this key')}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name='rate_limit_tpm'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Tokens per minute (TPM)')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              min={0}
+                              step={1}
+                              value={field.value ?? 0}
+                              onChange={(event) =>
+                                field.onChange(
+                                  event.target.value === ''
+                                    ? 0
+                                    : Number(event.target.value)
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t('Empty or zero means no extra limit on this key')}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name='rate_limit_concurrency'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Max concurrent requests')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              min={0}
+                              step={1}
                               value={field.value ?? 0}
                               onChange={(event) =>
                                 field.onChange(

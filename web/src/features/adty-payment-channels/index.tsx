@@ -53,9 +53,73 @@ const STATUS_VARIANT = {
   disabled: 'neutral',
   revoked: 'danger',
 } as const
-const METHOD_LABEL: Record<string, string> = {
-  alipay: 'Alipay',
-  wxpay: 'WeChat Pay',
+
+function paymentMethodLabel(
+  method: string,
+  t: (key: string) => string
+): string {
+  if (method === 'alipay') return t('Alipay')
+  if (method === 'wxpay') return t('WeChat Pay')
+  return method
+}
+
+function paymentReturnTypeLabel(
+  returnType: string,
+  t: (key: string) => string
+): string {
+  switch (returnType) {
+    case 'qrcode':
+      return t('QR code')
+    case 'payurl':
+      return t('Payment URL')
+    case 'urlscheme':
+      return t('App scheme')
+    default:
+      return returnType
+  }
+}
+
+function paymentOrderModeLabel(
+  orderMode: string,
+  t: (key: string) => string
+): string {
+  if (orderMode === 'api') return t('API order')
+  if (orderMode === 'submit') return t('Form submit')
+  return orderMode
+}
+
+function paymentChannelStatusLabel(
+  status: EpayChannel['status'],
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'enabled':
+      return t('Enabled')
+    case 'maintenance':
+      return t('Maintenance')
+    case 'disabled':
+      return t('Disabled')
+    case 'revoked':
+      return t('Revoked')
+    default:
+      return status
+  }
+}
+
+function paymentStatusReasonLabel(
+  reason: string,
+  t: (key: string) => string
+): string {
+  switch (reason) {
+    case 'manual':
+      return t('Manual')
+    case 'unpaid':
+      return t('Consecutive unpaid orders')
+    case 'probe':
+      return t('Health probe failed')
+    default:
+      return reason
+  }
 }
 
 /** Alipay / WeChat channels: status, limits, today's amount, tests and switches. */
@@ -86,12 +150,12 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
     mutationFn: (id: number) => testEpayChannel(id),
     onSuccess: (results) => {
       for (const result of results) {
-        const label = t(METHOD_LABEL[result.method] ?? result.method)
+        const label = paymentMethodLabel(result.method, t)
         if (result.ok) {
           toast.success(
             t('{{method}}: returns {{type}}', {
               method: label,
-              type: result.return_type,
+              type: paymentReturnTypeLabel(result.return_type, t),
             })
           )
           continue
@@ -186,7 +250,7 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
                         .filter((m) => m.enabled)
                         .map(
                           (m) =>
-                            `${t(METHOD_LABEL[m.method] ?? m.method)}${m.return_type ? ` (${m.return_type})` : ''}`
+                            `${paymentMethodLabel(m.method, t)}${m.return_type ? ` (${paymentReturnTypeLabel(m.return_type, t)})` : ''}`
                         )
                         .join(', ') || '-',
                   },
@@ -198,14 +262,14 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
                   {
                     id: 'mode',
                     header: t('Order mode'),
-                    cell: (row) => row.order_mode,
+                    cell: (row) => paymentOrderModeLabel(row.order_mode, t),
                   },
                   {
                     id: 'status',
                     header: t('Status'),
                     cell: (row) => (
                       <StatusBadge
-                        label={`${t(row.status)}${row.status_reason ? ` · ${t(row.status_reason)}` : ''}`}
+                        label={`${paymentChannelStatusLabel(row.status, t)}${row.status_reason ? ` · ${paymentStatusReasonLabel(row.status_reason, t)}` : ''}`}
                         variant={STATUS_VARIANT[row.status]}
                         copyable={false}
                       />
@@ -223,7 +287,7 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
                       Object.entries(row.today_cny)
                         .map(
                           ([method, sum]) =>
-                            `${t(METHOD_LABEL[method] ?? method)} ¥${sum}`
+                            `${paymentMethodLabel(method, t)} ¥${sum}`
                         )
                         .join(' / ') || '-',
                   },

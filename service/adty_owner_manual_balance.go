@@ -116,7 +116,7 @@ func adtyResolveOwnerFundingSplitTx(tx *gorm.DB, siteID, operatorID int, amountU
 	if err != nil {
 		return AdtyOwnerFundingSplit{}, err
 	}
-	marginExcess := marginWallet.Balance.Sub(marginWallet.FrozenUSD).Sub(floor)
+	marginExcess := marginWallet.Balance.Sub(marginWallet.FrozenUSD).Sub(marginWallet.ExcessFrozenUSD).Sub(floor)
 	if marginExcess.IsNegative() {
 		marginExcess = decimal.Zero
 	}
@@ -236,19 +236,28 @@ func adtyOwnerManualBalanceQuota(amount decimal.Decimal) (int64, error) {
 }
 
 func lookupOwnerFundingSplitFromLedgersTx(tx *gorm.DB, siteID int, baseKey string) (decimal.Decimal, decimal.Decimal) {
+	earn, margin, _ := lookupOwnerFundingSplitAndReasonFromLedgersTx(tx, siteID, baseKey)
+	return earn, margin
+}
+
+func lookupOwnerFundingSplitAndReasonFromLedgersTx(tx *gorm.DB, siteID int, baseKey string) (decimal.Decimal, decimal.Decimal, string) {
 	var rows []model.AdtySiteWalletLedger
 	if err := tx.Where("site_id = ? AND idempotency_key IN ?", siteID, []string{baseKey + ":earnings", baseKey + ":margin"}).Find(&rows).Error; err != nil {
-		return decimal.Zero, decimal.Zero
+		return decimal.Zero, decimal.Zero, ""
 	}
 	earn, margin := decimal.Zero, decimal.Zero
+	reason := ""
 	for _, row := range rows {
+		if reason == "" {
+			reason = row.Reason
+		}
 		if row.WalletKind == model.AdtySiteWalletEarnings {
 			earn = row.Delta.Abs()
 		} else if row.WalletKind == model.AdtySiteWalletMargin {
 			margin = row.Delta.Abs()
 		}
 	}
-	return earn, margin
+	return earn, margin, reason
 }
 
 // CreditAdtySiteCustomerBalanceByOwner lets an active site owner directly add
@@ -424,7 +433,7 @@ func CreditAdtySiteTeamBalanceByOwner(siteID, ownerID int, teamID int64, amountU
 	if err != nil {
 		return nil, err
 	}
-	hash := common.Sha1([]byte("site:" + strconv.Itoa(siteID) + ":team:" + strconv.FormatInt(teamID, 10) + ":" + idempotencyKey))
+	hash := common.Sha1([]byte("site:" + strconv.Itoa(siteID) + ":" + idempotencyKey))
 	ref := "owner-team-" + hash[:24]
 	baseKey := "owner-team-bal:" + strconv.Itoa(siteID) + ":" + hash
 	ledgerKey := adtyTeamLedgerKey("credit", ref, 0)
@@ -455,10 +464,10 @@ func CreditAdtySiteTeamBalanceByOwner(siteID, ownerID int, teamID int64, amountU
 			return lookup.Error
 		}
 		if lookup.RowsAffected > 0 {
-			if existing.TeamId != teamID || existing.DeltaQuota != deltaQuota || existing.ActorUserId != ownerID {
+			earn, margin, storedReason := lookupOwnerFundingSplitAndReasonFromLedgersTx(tx, siteID, baseKey)
+			if existing.TeamId != teamID || existing.DeltaQuota != deltaQuota || existing.ActorUserId != ownerID || (storedReason != "" && storedReason != reason) {
 				return model.ErrAdtyIdempotencyConflict
 			}
-			earn, margin := lookupOwnerFundingSplitFromLedgersTx(tx, siteID, baseKey)
 			out = &AdtyOwnerTeamBalanceResult{
 				TeamID:            teamID,
 				AmountUSD:         amountUSD,
@@ -624,13 +633,14 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 		if err != nil {
 			return err
 		}
-		adjustBefore := site.TierPrincipalAdjustmentUSD
+		onlinePrincipal := statsBefore.OnlinePrincipalUSD.Round(8)
+		adjustBefore := site.TierPrincipalAdjustmentUSD.Round(8)
 		var adjustAfter, delta decimal.Decimal
 		if mode == model.AdtyTierPrincipalAdjustModeDelta {
 			delta = amountUSD
 			adjustAfter = adjustBefore.Add(delta)
 		} else {
-			adjustAfter = amountUSD.Sub(statsBefore.OnlinePrincipalUSD)
+			adjustAfter = amountUSD.Sub(onlinePrincipal).Round(8)
 			delta = adjustAfter.Sub(adjustBefore)
 			if delta.IsZero() {
 				return common.NewMessage("Effective total already matches the target amount")
@@ -639,7 +649,7 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 		if !adjustAfter.Equal(adjustAfter.Truncate(8)) || adjustAfter.Abs().GreaterThanOrEqual(decimal.New(1, 12)) {
 			return ErrAdtySiteTierInvalid
 		}
-		effectiveAfter := statsBefore.OnlinePrincipalUSD.Add(adjustAfter)
+		effectiveAfter := onlinePrincipal.Add(adjustAfter).Round(8)
 		if effectiveAfter.IsNegative() {
 			effectiveAfter = decimal.Zero
 		}

@@ -59,23 +59,6 @@ import { API_KEY_STATUS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import { apiKeySchema } from '../types'
 import { useApiKeys } from './api-keys-provider'
 
-import { subsiteDocument } from '@/lib/subsite-document'
-
-function getServerAddress(): string {
-  const tenant = subsiteDocument()
-  if (tenant) return tenant.api
-  try {
-    const raw = localStorage.getItem('status')
-    if (raw) {
-      const status = JSON.parse(raw)
-      if (status.server_address) return status.server_address as string
-    }
-  } catch {
-    /* empty */
-  }
-  return window.location.origin
-}
-
 type DataTableRowActionsProps<TData> = {
   row: Row<TData>
 }
@@ -103,6 +86,10 @@ export function DataTableRowActions<TData>({
 
   const handleOpenChatPreset = useCallback(
     async (preset: ChatPreset) => {
+      if (!serverAddress) {
+        toast.error(t('API base URL is not configured'))
+        return
+      }
       const realKey = await resolveRealKey(apiKey.id)
       if (!realKey) return
 
@@ -241,12 +228,13 @@ export function DataTableRowActions<TData>({
         <DropdownMenuItem
           disabled={isRealKeyLoading}
           onClick={async () => {
+            if (!serverAddress) {
+              toast.error(t('API base URL is not configured'))
+              return
+            }
             const realKey = await resolveRealKey(apiKey.id)
             if (!realKey) return
-            const connStr = encodeChannelConnectionInfo(
-              realKey,
-              getServerAddress()
-            )
+            const connStr = encodeChannelConnectionInfo(realKey, serverAddress)
             const ok = await copyToClipboard(connStr)
             if (ok) toast.success(t('Copied'))
           }}

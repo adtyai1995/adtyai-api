@@ -213,7 +213,7 @@ func GetReferralBindings(c *gin.Context) {
 	referralPage(c, service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralBinding{}).Where("inviter_user_id = ?", userID), "inviter_user_id", siteID), &items)
 }
 
-// ReviewReferralPartner 通过（带 15–20 的比例）或驳回合作伙伴申请（推广返佣·审核）。
+// ReviewReferralPartner 通过（按配置的合作伙伴返佣比例上下限）或驳回合作伙伴申请（推广返佣·审核）。
 func ReviewReferralPartner(c *gin.Context) {
 	siteID, ok := referralAdminScopeOrError(c)
 	if !ok {

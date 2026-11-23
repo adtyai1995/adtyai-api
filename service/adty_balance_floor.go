@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 余额下限：请求前余额不够就拒绝；结算补扣最多扣到 0，不产生负余额。
-// 没扣到的差额记入 adty_billing_holds，并暂停该用户新的付费请求，直到财务核查。
+// 余额下限（DEC-003）：请求前余额不够就拒绝；结算补扣最多扣到 0，不产生负余额。
+// 没扣到的差额记入 adty_billing_holds 供财务核查与审计追踪，但不因此暂停用户后续新的付费请求。
 // 差额同时记在消费日志的 admin_info.shortfall_quota。不从其他账户或站长保证金补扣。
 
 // AdtyBillingShortfallContextKey 存放上一次扣费产生、还没写进消费日志的差额。
@@ -18,8 +18,8 @@ const AdtyBillingShortfallContextKey = "adty_billing_shortfall"
 const adtyShortfallAdminKey = "shortfall_quota"
 
 // adtyNoteBillingShortfall 在扣费之后调用：把这次扣费新增的差额（RelayInfo.BillingShortfall 的增量）
-// 记进 gin 上下文，交给紧接着的 RecordConsumeLog 钩子写日志，并写入暂停记录。
-// 暂停记录写入失败不得被当成成功，错误交给调用方；本函数不回滚已经成功的钱包扣款。
+// 记进 gin 上下文，交给紧接着的 RecordConsumeLog 钩子写日志，并写入短差额审计台账记录。
+// 台账记录写入失败不得被当成成功，错误交给调用方；本函数不回滚已经成功的钱包扣款。
 func adtyNoteBillingShortfall(c *gin.Context, relayInfo *relaycommon.RelayInfo, before int) error {
 	if c == nil || relayInfo == nil {
 		return nil

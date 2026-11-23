@@ -34,6 +34,7 @@ export type GroupRefs = {
   users: number
   tokens: number
   channels: number
+  sites?: number
 }
 
 export type AdminGroup = {

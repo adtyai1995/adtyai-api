@@ -11,9 +11,13 @@ import (
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"gorm.io/gorm"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var adtyCloudflareZoneIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 var AdtyAliDNS = func() *AdtyAliDNSClient {
 	cfg := resellerSetting()
@@ -108,7 +112,76 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 			return err
 		}
 	}
+	if err := adtyBackfillActiveCustomBaseURLTurnstile(ctx, now); err != nil {
+		failures = append(failures, err)
+	}
 	InvalidateAdtySiteCache()
+	return errors.Join(failures...)
+}
+
+func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time) error {
+	if !resellerSetting().TurnstileConfigured() {
+		return nil
+	}
+	var rows []model.AdtySiteDomain
+	if err := model.DB.WithContext(ctx).
+		Where("status = ? AND role = ? AND managed_by <> ? AND turnstile_widget = ? AND desired_state IN ? AND lease_until <= ?",
+			model.AdtySiteDomainActive, model.AdtySiteDomainRoleBaseURL, "platform", "", []string{"", "serve"}, now.Unix()).
+		Order("id ASC").Limit(50).Find(&rows).Error; err != nil {
+		return err
+	}
+	var failures []error
+	for i := range rows {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
+		row := &rows[i]
+		nonce := make([]byte, 16)
+		if _, err := rand.Read(nonce); err != nil {
+			return err
+		}
+		row.LeaseToken = hex.EncodeToString(nonce)
+		claim := model.DB.Model(&model.AdtySiteDomain{}).
+			Where("id = ? AND lease_until <= ? AND generation = ? AND status = ? AND turnstile_widget = ?",
+				row.Id, now.Unix(), row.Generation, model.AdtySiteDomainActive, "").
+			Updates(map[string]any{"lease_token": row.LeaseToken, "lease_until": now.Add(2 * time.Minute).Unix()})
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected == 0 {
+			continue
+		}
+		runctx, cancel := context.WithTimeout(ctx, time.Minute)
+		var widget string
+		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			var assignErr error
+			widget, assignErr = adtyTurnstileAssign(runctx, tx, row.Hostname)
+			return assignErr
+		})
+		cancel()
+		updates := map[string]any{"lease_token": "", "lease_until": 0}
+		if err != nil {
+			updates["last_error"] = err.Error()
+			failures = append(failures, fmt.Errorf("domain %d turnstile backfill: %w", row.Id, err))
+		} else if widget != "" {
+			updates["turnstile_widget"] = widget
+			updates["last_error"] = ""
+		}
+		if err := model.DB.Model(&model.AdtySiteDomain{}).
+			Where("id = ? AND lease_token = ? AND generation = ?", row.Id, row.LeaseToken, row.Generation).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		genChangedUpdates := map[string]any{"lease_token": "", "lease_until": 0, "next_run_at": 0}
+		if err == nil && widget != "" {
+			genChangedUpdates["turnstile_widget"] = widget
+		}
+		if err := model.DB.Model(&model.AdtySiteDomain{}).
+			Where("id = ? AND lease_token = ? AND generation <> ?", row.Id, row.LeaseToken, row.Generation).
+			Updates(genChangedUpdates).Error; err != nil {
+			return err
+		}
+	}
 	return errors.Join(failures...)
 }
 
@@ -350,7 +423,9 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 	if row.DesiredState == "redirect_only" && status == model.AdtySiteDomainActive {
 		state = "redirect_only"
 	}
-	if status == model.AdtySiteDomainActive && row.Role == model.AdtySiteDomainRoleSite && row.DesiredState == "serve" && row.TurnstileWidget == "" && cfg.TurnstileConfigured() {
+	if status == model.AdtySiteDomainActive &&
+		(row.Role == model.AdtySiteDomainRoleSite || row.Role == model.AdtySiteDomainRoleBaseURL) &&
+		row.DesiredState == "serve" && row.TurnstileWidget == "" && cfg.TurnstileConfigured() {
 		var widget string
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var err error
@@ -363,6 +438,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			if err := adtySaveDomainResource(row, map[string]any{"turnstile_widget": widget}); err != nil {
 				return err
 			}
+			row.TurnstileWidget = widget
 		}
 	}
 	// Keep an unverified serving host out of the route table.
@@ -410,11 +486,15 @@ func CheckAdtyDomainProvider(ctx context.Context, provider string) error {
 	case "aliyun":
 		return AdtyAliDNS().Check(ctx, cfg.AliyunDomain)
 	case "cloudflare":
+		zoneID := strings.TrimSpace(cfg.CloudflareZoneId)
+		if !adtyCloudflareZoneIDPattern.MatchString(zoneID) {
+			return fmt.Errorf("Invalid Cloudflare zone ID")
+		}
 		var fallback struct {
 			Origin string `json:"origin"`
 			Status string `json:"status"`
 		}
-		if err := AdtyCloudflare.do(ctx, http.MethodGet, "/zones/"+cfg.CloudflareZoneId+"/custom_hostnames/fallback_origin", nil, &fallback); err != nil {
+		if err := AdtyCloudflare.do(ctx, http.MethodGet, "/zones/"+url.PathEscape(zoneID)+"/custom_hostnames/fallback_origin", nil, &fallback); err != nil {
 			return err
 		}
 		if fallback.Origin != cfg.FallbackOrigin || fallback.Status != "active" {

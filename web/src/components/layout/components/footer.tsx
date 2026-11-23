@@ -20,6 +20,7 @@ import { Link } from '@tanstack/react-router'
 import { Fragment } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { HtmlContent } from '@/components/html-content'
 import { useAdtySite } from '@/features/adty-site/api'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
@@ -207,9 +208,9 @@ export function Footer(props: FooterProps) {
         </div>
 
         {footerHtml && (
-          <div
+          <HtmlContent
+            content={footerHtml}
             className='custom-footer text-muted-foreground mt-8 text-[13px]'
-            dangerouslySetInnerHTML={{ __html: footerHtml }}
           />
         )}
 

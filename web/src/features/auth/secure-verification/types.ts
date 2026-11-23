@@ -26,6 +26,7 @@ export type VerificationMethod =
   | 'session'
   | 'root_exempt'
 export type SecurityProofScope =
+  | 'api_key.read'
   | 'channel.key.read'
   | 'passkey.register'
   | 'passkey.delete'
@@ -43,6 +44,7 @@ export type SecurityProofScope =
   | 'admin.user.update'
   | 'admin.user.delete'
   | 'admin.user.manage'
+  | 'admin.user.quota'
   | 'admin.user.passkey.reset'
   | 'admin.user.2fa.disable'
   | 'admin.user.binding.clear'
@@ -66,7 +68,6 @@ export type SecurityProofScope =
 export type SiteOwnerAction =
   | 'pricing'
   | 'bonus'
-  | 'trial'
   | 'customer.balance'
   | 'team.balance'
   | 'domain.delete'
@@ -75,6 +76,7 @@ export type SiteOwnerAction =
   | 'staff.update'
   | 'staff.password'
   | 'staff.delete'
+  | 'staff.balance_review'
   | 'voucher.issue'
   | 'voucher.freeze'
   | 'voucher.cancel'
@@ -103,6 +105,7 @@ export type VerificationOperation =
       scope:
         | 'admin.user.update'
         | 'admin.user.delete'
+        | 'admin.user.quota'
         | 'admin.user.passkey.reset'
         | 'admin.user.2fa.disable'
       context: { user_id: number }

@@ -25,6 +25,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
+import { formatTimestamp } from '@/lib/format'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 
 type BindView = {
@@ -69,6 +70,8 @@ export function TelegramBindCard(props: {
     },
   })
   const [code, setCode] = useState('')
+  const [botUsername, setBotUsername] = useState('')
+  const [expiresAt, setExpiresAt] = useState(0)
   const [telegramId, setTelegramId] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
@@ -81,12 +84,14 @@ export function TelegramBindCard(props: {
       const body = response.data as {
         success?: boolean
         message?: string
-        data?: { code?: string }
+        data?: { code?: string; bot_username?: string; expires_at?: number }
       }
       if (!body.success || !body.data?.code) {
         throw new Error(body.message || t('Failed to save'))
       }
       setCode(body.data.code)
+      setBotUsername(body.data.bot_username ?? '')
+      setExpiresAt(body.data.expires_at ?? 0)
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
     } finally {
@@ -106,6 +111,8 @@ export function TelegramBindCard(props: {
       const body = response.data as { success?: boolean; message?: string }
       if (!body.success) throw new Error(body.message || t('Failed to save'))
       setCode('')
+      setBotUsername('')
+      setExpiresAt(0)
       setTelegramId('')
       await queryClient.invalidateQueries({
         queryKey: ['adty-telegram', props.purpose],
@@ -125,6 +132,8 @@ export function TelegramBindCard(props: {
       const body = response.data as { success?: boolean; message?: string }
       if (!body.success) throw new Error(body.message || t('Failed to save'))
       setCode('')
+      setBotUsername('')
+      setExpiresAt(0)
       setTelegramId('')
       await queryClient.invalidateQueries({
         queryKey: ['adty-telegram', props.purpose],
@@ -195,9 +204,33 @@ export function TelegramBindCard(props: {
               {t('Start binding')}
             </Button>
             {code && (
-              <p className='text-sm break-all'>
-                {t('Binding code')}: {code}
-              </p>
+              <div className='bg-muted/40 flex flex-col gap-1.5 rounded-md border p-3 text-sm'>
+                {botUsername && (
+                  <div className='flex flex-wrap items-center gap-2'>
+                    <span className='font-mono text-xs'>@{botUsername}</span>
+                    <a
+                      href={`https://t.me/${encodeURIComponent(botUsername)}?start=${encodeURIComponent(code)}`}
+                      target='_blank'
+                      rel='noreferrer'
+                      className='text-primary underline underline-offset-2'
+                    >
+                      {t('Open Telegram bot')}
+                    </a>
+                  </div>
+                )}
+                <p className='break-all'>
+                  {t('Send the following command to the bot')}:{' '}
+                  <code className='font-mono text-xs'>/start {code}</code>
+                </p>
+                <p className='text-muted-foreground break-all text-xs'>
+                  {t('Binding code')}: {code}
+                </p>
+                {expiresAt > 0 && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('Expires at')}: {formatTimestamp(expiresAt)}
+                  </p>
+                )}
+              </div>
             )}
             <div className='flex flex-col gap-1'>
               <Label htmlFor={`tg-id-${props.purpose}`}>

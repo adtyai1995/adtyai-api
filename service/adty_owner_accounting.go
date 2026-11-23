@@ -61,7 +61,7 @@ func ownerEarningsWalletTx(tx *gorm.DB, siteID, ownerID int, wallet *model.AdtyS
         ) AS facts GROUP BY owner_id`,
 		first, siteID, model.AdtySiteEarningAvailable, []string{model.AdtySiteEarningUsage, model.AdtySiteEarningRefund},
 		first, model.AdtySiteWithdrawPaid, []string{model.AdtySiteWithdrawPending, model.AdtySiteWithdrawPaying}, siteID,
-		[]string{ownerTransfer, "earning_to_margin", "owner_customer_balance", "owner_team_balance", "staff_balance"}, first, siteID, model.AdtySiteWalletEarnings,
+		[]string{ownerTransfer, "earning_to_margin", "owner_customer_balance", "owner_team_balance", "staff_balance", "financial_adjustment"}, first, siteID, model.AdtySiteWalletEarnings,
 		[]string{"site_earning_settlement", "earning_withdraw_freeze", "earning_withdraw_release", "earning_withdraw_paid"}).Scan(&rows).Error
 	if err != nil {
 		return decimal.Zero, decimal.Zero, err

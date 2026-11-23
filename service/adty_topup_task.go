@@ -50,6 +50,9 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 			hook.fn(now)
 		}()
 	}
+	if err := ReleaseAdtySiteInviteCommissions(time.Unix(now, 0)); err != nil {
+		common.SysError(common.LogText("release site invite commissions: %s", err.Error()))
+	}
 	verifyExpiredOrdersUnpaidBeforeExpire(now)
 	for {
 		expired, err := model.ExpireAdtyTopUps(now, 200)

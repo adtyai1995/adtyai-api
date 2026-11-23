@@ -45,7 +45,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { getOwnerWallets, siteOwnerKeys } from '@/features/adty-site-owner/api'
+import {
+  getOwnerSite,
+  getOwnerWallets,
+  siteOwnerKeys,
+} from '@/features/adty-site-owner/api'
 import { OwnerFundingPreviewBox } from '@/features/adty-site-owner/components/owner-funding-preview'
 import { useVerifiedOwnerMutation } from '@/features/adty-site-owner/hooks/use-verified-owner-mutation'
 import { computeOwnerFundingPreview } from '@/features/adty-site-owner/lib/funding-preview'
@@ -294,6 +298,11 @@ function OwnerTeamBalanceCredit(props: { team: TeamAdminDetail }) {
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
   const intentRef = useRef<{ payload: string; key: string } | null>(null)
+  const site = useQuery({
+    queryKey: siteOwnerKeys.site,
+    queryFn: getOwnerSite,
+  })
+  const closing = site.data?.status === 'closing'
   const wallets = useQuery({
     queryKey: siteOwnerKeys.list('wallets', {}),
     queryFn: getOwnerWallets,
@@ -307,6 +316,11 @@ function OwnerTeamBalanceCredit(props: { team: TeamAdminDetail }) {
   }>({
     action: 'team.balance',
     target: () => props.team.id,
+    request: (vars) => ({
+      amount_usd: vars.amount,
+      reason: vars.reason,
+      idempotency_key: vars.key,
+    }),
     run: (vars, proof) =>
       creditOwnerTeamBalance(
         props.team.id,
@@ -322,9 +336,18 @@ function OwnerTeamBalanceCredit(props: { team: TeamAdminDetail }) {
       void client.invalidateQueries({ queryKey: teamAdminKeys.all })
     },
   })
+  const inputsDisabled =
+    closing || wallets.isPending || wallets.isError || !wallets.isSuccess
   return (
     <section className='flex flex-col gap-2'>
       <h3 className='text-sm font-medium'>{t('Add shared balance')}</h3>
+      {closing && (
+        <p className='text-destructive text-sm'>
+          {t('Balance cannot be added while the site is closing')}
+        </p>
+      )}
+      {wallets.isPending && <LoadingState />}
+      {wallets.isError && <ErrorState onRetry={() => void wallets.refetch()} />}
       <div className='grid gap-2 sm:grid-cols-2'>
         <div className='flex flex-col gap-1'>
           <Label htmlFor={`team-credit-amount-${props.team.id}`}>
@@ -334,6 +357,7 @@ function OwnerTeamBalanceCredit(props: { team: TeamAdminDetail }) {
             id={`team-credit-amount-${props.team.id}`}
             inputMode='decimal'
             autoComplete='off'
+            disabled={inputsDisabled}
             value={amount}
             onChange={(event) => setAmount(event.target.value)}
           />
@@ -345,20 +369,24 @@ function OwnerTeamBalanceCredit(props: { team: TeamAdminDetail }) {
           <Input
             id={`team-credit-reason-${props.team.id}`}
             maxLength={200}
+            disabled={inputsDisabled}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
           />
         </div>
       </div>
-      <OwnerFundingPreviewBox wallets={walletRows} amount={amount} />
+      {wallets.isSuccess && (
+        <OwnerFundingPreviewBox wallets={walletRows} amount={amount} />
+      )}
       <div>
         <Button
           type='button'
           variant='brand'
           disabled={
+            inputsDisabled ||
             credit.isPending ||
             !preview.valid ||
-            (wallets.isSuccess && !preview.sufficient) ||
+            !preview.sufficient ||
             reason.trim() === ''
           }
           onClick={() => {

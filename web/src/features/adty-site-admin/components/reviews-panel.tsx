@@ -104,6 +104,12 @@ export function ReviewsPanel() {
     return <ErrorState onRetry={retry} />
   }
 
+  const riskLabel = (flag: string) => {
+    if (flag === 'self_use') return t('Possible self-use')
+    if (flag === 'migration') return t('Possible main site migration')
+    return flag
+  }
+
   return (
     <div className='flex flex-col gap-6'>
       {(flagged.isError || reports.isError) && <ErrorState onRetry={retry} />}
@@ -118,7 +124,7 @@ export function ReviewsPanel() {
                 key={`${row.site_id}-${row.user_id}`}
                 className='flex items-center justify-between gap-2'
               >
-                <span>{row.risk_reason || row.risk_flag}</span>
+                <span>{row.risk_reason || riskLabel(row.risk_flag)}</span>
                 <Button
                   size='sm'
                   onClick={() => review.mutate(row.user_id)}

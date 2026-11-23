@@ -33,12 +33,15 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import type { ReferralAffiliate } from '@/features/referral/types'
+import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
+import { useAuthStore } from '@/stores/auth-store'
 
 import {
   ADMIN_REFERRAL_PAGE_SIZE,
   adminReferralKeys,
   getAffiliates,
+  getReferralSettings,
   reviewPartner,
   updateAffiliate,
   type AffiliateAction,
@@ -88,6 +91,16 @@ export function AffiliatePanel(props: {
   const [amount, setAmount] = useState('')
   const [adjustKey, setAdjustKey] = useState(() => crypto.randomUUID())
   const [reason, setReason] = useState('')
+  const user = useAuthStore((state) => state.auth.user)
+  const canReadSettings = canAdmin(user, ADTY_PERMISSIONS.REFERRAL_SETTINGS_READ)
+  const settingsQuery = useQuery({
+    queryKey: adminReferralKeys.settings,
+    queryFn: getReferralSettings,
+    enabled: canReadSettings,
+    meta: { errorToast: false },
+  })
+  const partnerMinRate = settingsQuery.data?.partner_min_rate ?? 0
+  const partnerMaxRate = settingsQuery.data?.partner_max_rate ?? 100
   const params = {
     p: page,
     keyword: search,
@@ -267,12 +280,18 @@ export function AffiliatePanel(props: {
             <Input
               id='partner-rate'
               type='number'
-              min={15}
-              max={20}
+              min={partnerMinRate}
+              max={partnerMaxRate}
               step='0.1'
               value={rate}
               onChange={(event) => setRate(event.target.value)}
             />
+            <p className='text-muted-foreground text-xs'>
+              {t('Allowed range: {{min}}%–{{max}}%', {
+                min: partnerMinRate,
+                max: partnerMaxRate,
+              })}
+            </p>
           </div>
           <div className='space-y-2'>
             <Label htmlFor='partner-reason'>{t('Reason')}</Label>

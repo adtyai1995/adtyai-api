@@ -140,6 +140,13 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 		if err := tx.Create(row).Error; err != nil {
 			return err
 		}
+		// R1-045 global lock order: lock User before AdtySiteInviteCommission when crediting balance.
+		if method == "balance" {
+			var lockUser model.User
+			if err := model.AdtyLockForUpdate(tx).Select("id").First(&lockUser, input.UserID).Error; err != nil {
+				return err
+			}
+		}
 		if err := allocateSiteInviteWithdrawalTx(tx, row, method == "balance"); err != nil {
 			return err
 		}
@@ -162,7 +169,12 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 			}); err != nil {
 				return err
 			}
-			// 邀请佣金转到余额的批次记在佣金所属站（row.SiteId）。
+			// 邀请佣金转到余额的批次记在佣金所属站（row.SiteId），同时向 operating 钱包入账等额本金背书（R1-008）。
+			if row.SiteId > 0 {
+				if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, int64(quota), "principal_credit", "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), "operating:"+ref, false); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		return nil
@@ -402,11 +414,16 @@ func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string
 					return err
 				}
 			}
-			if err := tx.Model(&commission).Updates(map[string]any{
+			updates := map[string]any{
 				"frozen_usd":              gorm.Expr("frozen_usd - ?", item.AmountUSD),
 				"withdrawn_usd":           gorm.Expr("withdrawn_usd + ?", item.AmountUSD),
 				"pending_payout_claw_usd": gorm.Expr("pending_payout_claw_usd - ?", item.RefundUSD),
-			}).Error; err != nil {
+			}
+			if item.RefundUSD.IsPositive() {
+				// R1-093: Reflect newly created withdrawn recovery in commission.recovery_usd.
+				updates["recovery_usd"] = gorm.Expr("recovery_usd + ?", item.RefundUSD)
+			}
+			if err := tx.Model(&commission).Updates(updates).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&item).Update("status", model.AdtySiteInviteWithdrawItemPaid).Error; err != nil {

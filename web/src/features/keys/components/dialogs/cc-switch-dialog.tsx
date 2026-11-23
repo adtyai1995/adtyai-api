@@ -27,6 +27,8 @@ import { Combobox } from '@/components/ui/combobox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { useApiBaseUrl } from '@/features/adty-site/api'
+import { useStatus } from '@/hooks/use-status'
 import { getUserModels } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { subsiteDocument } from '@/lib/subsite-document'
@@ -56,19 +58,8 @@ const APP_CONFIGS = {
 
 type AppType = keyof typeof APP_CONFIGS
 
-function getServerAddress(): string {
-  const tenant = subsiteDocument()
-  if (tenant) return tenant.api
-  try {
-    const raw = localStorage.getItem('status')
-    if (raw) {
-      const status = JSON.parse(raw)
-      if (status.server_address) return status.server_address
-    }
-  } catch {
-    /* empty */
-  }
-  return window.location.origin
+function normalizeBaseUrl(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim().replace(/\/+$/, '') : ''
 }
 
 function buildCCSwitchURL(
@@ -76,11 +67,10 @@ function buildCCSwitchURL(
   name: string,
   models: Record<string, string>,
   apiKey: string,
-  baseUrl?: string
+  serverAddress: string
 ): string {
-  // adty: callers may pass the public API address (task 8.7)
-  const serverAddress = baseUrl?.replace(/\/+$/, '') || getServerAddress()
-  const endpoint = app === 'codex' ? `${serverAddress}/v1` : serverAddress
+  const normalized = normalizeBaseUrl(serverAddress)
+  const endpoint = app === 'codex' ? `${normalized}/v1` : normalized
   const params = new URLSearchParams()
   params.set('resource', 'provider')
   params.set('app', app)
@@ -90,7 +80,7 @@ function buildCCSwitchURL(
   for (const [k, v] of Object.entries(models)) {
     if (v) params.set(k, v)
   }
-  params.set('homepage', serverAddress)
+  params.set('homepage', normalized)
   params.set('enabled', 'true')
   return `ccswitch://v1/import?${params.toString()}`
 }
@@ -99,15 +89,45 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   tokenKey: string
-  /** Base URL to import; defaults to status.server_address or the page origin. */
+  /** Base URL to import; defaults to the configured site API base URL. */
   endpoint?: string
 }
 
 export function CCSwitchDialog(props: Props) {
   const { t } = useTranslation()
+  const apiBaseUrl = useApiBaseUrl()
+  const { status } = useStatus()
   const [app, setApp] = useState<AppType>('claude')
   const [name, setName] = useState<string>(APP_CONFIGS.claude.defaultName)
   const [models, setModels] = useState<Record<string, string>>({})
+
+  const resolvedEndpoint = useMemo(() => {
+    const statusRecord = status as Record<string, unknown> | null
+    const dataRecord = status?.data as Record<string, unknown> | undefined
+    const explicit = [
+      props.endpoint,
+      apiBaseUrl,
+      statusRecord?.api_base_url,
+      dataRecord?.api_base_url,
+      status?.server_address,
+      status?.serverAddress,
+      status?.data?.server_address,
+      dataRecord?.serverAddress,
+    ]
+    for (const candidate of explicit) {
+      const normalized = normalizeBaseUrl(candidate)
+      if (normalized) return normalized
+    }
+    const tenant = subsiteDocument()
+    if (tenant) return normalizeBaseUrl(tenant.api)
+    if (status?.server_address === '' || status?.data?.server_address === '') {
+      return ''
+    }
+    if (typeof window !== 'undefined') {
+      return normalizeBaseUrl(window.location.origin)
+    }
+    return ''
+  }, [props.endpoint, apiBaseUrl, status])
 
   const { data: modelsData } = useQuery({
     queryKey: ['user-models-ccswitch'],
@@ -146,10 +166,14 @@ export function CCSwitchDialog(props: Props) {
       toast.warning(t('Please select a primary model'))
       return
     }
+    if (!resolvedEndpoint) {
+      toast.error(t('API base URL is not configured'))
+      return
+    }
     const key = props.tokenKey.startsWith('sk-')
       ? props.tokenKey
       : `sk-${props.tokenKey}`
-    const url = buildCCSwitchURL(app, name, models, key, props.endpoint)
+    const url = buildCCSwitchURL(app, name, models, key, resolvedEndpoint)
     window.open(url, '_blank')
     props.onOpenChange(false)
   }

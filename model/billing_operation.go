@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -279,6 +280,72 @@ func freezeBillingEarningRiskTx(tx *gorm.DB, row *BillingOperation) error {
 
 // ReserveBillingOperation atomically reserves both wallet and token. A rejected
 // request leaves neither a debit nor a pending job that could charge it later.
+// AdtyBusinessLocation returns the configured Root business-day timezone
+// (defaulting to Asia/Shanghai, with a UTC+8 fixed fallback if tzdata is absent).
+func AdtyBusinessLocation(tx *gorm.DB) *time.Location {
+	const key = "adty.business_timezone"
+	name := "Asia/Shanghai"
+	if tx != nil && tx.Migrator().HasTable(&Option{}) {
+		var opt Option
+		if err := tx.Where("key = ?", key).Limit(1).Find(&opt).Error; err == nil {
+			if trimmed := strings.TrimSpace(opt.Value); trimmed != "" {
+				name = trimmed
+			}
+		}
+	} else if raw, ok, err := ReadOptionFromDB(key); err == nil && ok {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			name = trimmed
+		}
+	}
+	if loc, err := time.LoadLocation(name); err == nil {
+		return loc
+	}
+	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		return loc
+	}
+	return time.FixedZone("CST", 8*3600)
+}
+
+// UpdateBillingOperationGroupSnapshot updates the frozen price snapshot and
+// site earning factors of a reserved request operation when auto_group switches
+// billing groups during retry (R1-002).
+func UpdateBillingOperationGroupSnapshot(spec BillingOperation) error {
+	if spec.OperationKey == "" || DB == nil {
+		return nil
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var row BillingOperation
+		if err := lockForUpdate(tx).Where("operation_key = ?", spec.OperationKey).First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if row.Kind != "request" || row.State != BillingReserved {
+			return nil
+		}
+		if row.PayerKind == BillingPayerOwner && row.SiteId != spec.SiteId {
+			return ErrBillingOperationConflict
+		}
+		changed := false
+		if spec.PriceSnapshot != "" && row.PriceSnapshot != spec.PriceSnapshot {
+			row.PriceSnapshot = spec.PriceSnapshot
+			changed = true
+		}
+		if row.SiteId != spec.SiteId || row.SiteMarkup != spec.SiteMarkup || row.SiteCostFactor != spec.SiteCostFactor {
+			row.SiteId, row.SiteMarkup, row.SiteCostFactor = spec.SiteId, spec.SiteMarkup, spec.SiteCostFactor
+			if spec.SiteOwnerUserId > 0 {
+				row.SiteOwnerUserId = spec.SiteOwnerUserId
+			}
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return tx.Save(&row).Error
+	})
+}
+
 func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperation, error) {
 	if spec.OperationKey == "" || spec.UserId <= 0 || target < 0 {
 		return nil, ErrBillingOperationConflict
@@ -330,11 +397,6 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			return tx.Save(&result).Error
 		}
 		delta := target - result.ReservedQuota
-		if result.ReservedQuota == 0 && target > 0 {
-			if err := CheckAdtyBillingHoldForPayerTx(tx, result.UserId, result.PayerKind, result.PayerTeamId); err != nil {
-				return err
-			}
-		}
 		if result.PayerKind == BillingPayerTeam {
 			if AdtyTeamReserveHook == nil {
 				return ErrBillingOperationConflict
@@ -939,7 +1001,7 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				return err
 			}
 			event := AdtySiteEarningEvent{OperationKey: row.OperationKey, SiteId: row.SiteId, SiteOwnerUserId: row.SiteOwnerUserId, UserId: row.UserId,
-				Quota: earningQuota, Markup: row.SiteMarkup, CostFactor: row.SiteCostFactor, Day: time.Now().Format("2006-01-02"),
+				Quota: earningQuota, Markup: row.SiteMarkup, CostFactor: row.SiteCostFactor, Day: time.Now().In(AdtyBusinessLocation(tx)).Format("2006-01-02"),
 				RootOperationKey: row.EarningRootKey, RiskFlag: row.EarningRiskFlag, ReviewStatus: row.EarningReviewStatus}
 			var customers []AdtySiteCustomer
 			if err := lockForUpdate(tx).Where("user_id = ?", row.UserId).Limit(1).Find(&customers).Error; err != nil {

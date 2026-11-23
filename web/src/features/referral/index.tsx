@@ -48,7 +48,7 @@ function ReferralRules(props: { profile: ReferralProfile }) {
       { rate: profile.rate || '-' }
     ),
     t(
-      'Commission settles {{days}} days after the top-up. Refunded top-ups void or claw back their commission, and the balance can go below zero.',
+      'Commission settles {{days}} days after the top-up. Refunded top-ups void or claw back their commission; balances never go below zero, and any already-withdrawn excess is recorded for recovery.',
       { days: profile.freeze_days }
     ),
     t('The last referral link a visitor opens before signing up counts.'),

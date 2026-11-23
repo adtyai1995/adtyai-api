@@ -35,6 +35,8 @@ export type UserRole = z.infer<typeof userRoleSchema>
 export const userSchema = z.object({
   id: z.number(),
   site_id: z.number().int().nonnegative().optional(),
+  staff_site_id: z.number().int().nonnegative().optional(),
+  is_team_employee: z.boolean().optional(),
   site_name: z.string().optional(),
   username: z.string(),
   display_name: z.string(),

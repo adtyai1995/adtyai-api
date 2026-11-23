@@ -285,6 +285,11 @@ func RestoreVerificationCodeWithKey(key string, code string, purpose string, iss
 }
 
 func DeleteKey(key string, purpose string) {
+	if RedisEnabled && RDB != nil {
+		if err := RDB.Del(context.Background(), verificationRedisKey(purpose, key)).Err(); err != nil {
+			SysError(LogText("verification code delete failed: %s", err.Error()))
+		}
+	}
 	verificationMutex.Lock()
 	defer verificationMutex.Unlock()
 	delete(verificationMap, purpose+key)

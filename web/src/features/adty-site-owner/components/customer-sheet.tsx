@@ -52,7 +52,6 @@ import {
   getOwnerCustomerLogs,
   getOwnerCustomerTopUps,
   getOwnerWallets,
-  grantTrial,
   reportCustomer,
   savePricing,
   siteOwnerKeys,
@@ -63,7 +62,7 @@ import { newIdempotencyKey, validRetailMarkup } from '../lib/site-owner'
 import { OwnerFundingPreviewBox } from './owner-funding-preview'
 import { PricingHistory } from './pricing-history'
 
-/** Customer drawer: profile, requests, top-ups, keys, trial credit, own price and report. */
+/** Customer drawer: profile, requests, top-ups, keys, manual balance, own price and report. */
 export function CustomerSheet(props: {
   customerId: number | null
   onOpenChange: (open: boolean) => void
@@ -73,14 +72,12 @@ export function CustomerSheet(props: {
   const id = props.customerId ?? 0
   const [creditAmount, setCreditAmount] = useState('')
   const [creditReason, setCreditReason] = useState('')
-  const [trialAmount, setTrialAmount] = useState('')
   const [markup, setMarkup] = useState('')
   const [reason, setReason] = useState('')
   const [discarding, setDiscarding] = useState(false)
   const dirty =
     creditAmount !== '' ||
     creditReason !== '' ||
-    trialAmount !== '' ||
     markup !== '' ||
     reason !== ''
   useDraftNavigation(dirty)
@@ -104,6 +101,11 @@ export function CustomerSheet(props: {
   }>({
     action: 'customer.balance',
     target: () => id,
+    request: (vars) => ({
+      amount_usd: vars.amount,
+      reason: vars.reason,
+      idempotency_key: vars.key,
+    }),
     run: (vars, proof) =>
       creditOwnerCustomerBalance(
         id,
@@ -129,17 +131,6 @@ export function CustomerSheet(props: {
     queryFn: () => getOwnerCustomerTopUps(id, 1),
     enabled: id > 0,
     meta: { errorToast: false },
-  })
-  const trialIntentRef = useRef<{ payload: string; key: string } | null>(null)
-  const trial = useVerifiedOwnerMutation<{ amount: string; key: string }>({
-    action: 'trial',
-    target: () => id,
-    run: (vars, proof) => grantTrial(id, vars.amount, vars.key, proof),
-    successMessage: t('Trial credit sent'),
-    onSuccess: () => {
-      trialIntentRef.current = null
-      setTrialAmount('')
-    },
   })
   const price = useVerifiedOwnerMutation<string | null>({
     action: 'pricing',
@@ -407,47 +398,8 @@ export function CustomerSheet(props: {
               </Button>
               <p className='text-muted-foreground text-xs'>
                 {t(
-                  'Funded automatically from available earnings first, then excess margin above the level deposit floor. Does not count toward site-level cumulative customer recharge.'
+                  'Funded automatically from available earnings first, then excess margin above the level deposit floor. Does not count toward site-level cumulative customer recharge. Use Add balance or Recharge codes to credit customers.'
                 )}
-              </p>
-            </section>
-            <section className='space-y-2' aria-labelledby='trial-title'>
-              <h3 id='trial-title' className='text-sm font-medium'>
-                {t('Send trial credit')}
-              </h3>
-              <div className='flex items-end gap-2'>
-                <div className='space-y-2'>
-                  <Label htmlFor='trial-amount'>{t('Amount (USD)')}</Label>
-                  <Input
-                    id='trial-amount'
-                    type='number'
-                    min={0}
-                    step='0.01'
-                    value={trialAmount}
-                    onChange={(event) => setTrialAmount(event.target.value)}
-                  />
-                </div>
-                <Button
-                  disabled={!trialAmount || trial.isPending}
-                  onClick={() => {
-                    const payload = `${id}:${trialAmount}`
-                    if (trialIntentRef.current?.payload !== payload) {
-                      trialIntentRef.current = {
-                        payload,
-                        key: newIdempotencyKey(),
-                      }
-                    }
-                    trial.mutate({
-                      amount: trialAmount,
-                      key: trialIntentRef.current.key,
-                    })
-                  }}
-                >
-                  {t('Send')}
-                </Button>
-              </div>
-              <p className='text-muted-foreground text-xs'>
-                {t('Trial credit is taken from your earnings.')}
               </p>
             </section>
             <section className='space-y-2' aria-labelledby='own-price-title'>
@@ -511,10 +463,8 @@ export function CustomerSheet(props: {
         onOpenChange={setDiscarding}
         onDiscard={() => {
           creditIntentRef.current = null
-          trialIntentRef.current = null
           setCreditAmount('')
           setCreditReason('')
-          setTrialAmount('')
           setMarkup('')
           setReason('')
           props.onOpenChange(false)

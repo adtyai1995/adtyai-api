@@ -164,6 +164,29 @@ func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	return common.QuotaFromDecimalChecked(quota)
 }
 
+func realtimeUsageToDTOUsage(usage *dto.RealtimeUsage) *dto.Usage {
+	if usage == nil {
+		return &dto.Usage{}
+	}
+	return &dto.Usage{
+		PromptTokens:           usage.InputTokens,
+		CompletionTokens:       usage.OutputTokens,
+		TotalTokens:            usage.TotalTokens,
+		PromptTokensDetails:    usage.InputTokenDetails.Clone(),
+		CompletionTokenDetails: usage.OutputTokenDetails,
+		InputTokens:            usage.InputTokens,
+		OutputTokens:           usage.OutputTokens,
+	}
+}
+
+func buildRealtimeTieredParams(relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage) billingexpr.TokenParams {
+	var usedVars map[string]bool
+	if relayInfo != nil && relayInfo.TieredBillingSnapshot != nil {
+		usedVars = billingexpr.UsedVarsByHash(relayInfo.TieredBillingSnapshot.ExprString, relayInfo.TieredBillingSnapshot.ExprHash)
+	}
+	return BuildTieredTokenParams(realtimeUsageToDTOUsage(usage), false, usedVars)
+}
+
 func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage) error {
 	if relayInfo.UsePrice {
 		return nil
@@ -178,69 +201,88 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		return err
 	}
 
-	modelName := relayInfo.OriginModelName
-	textInputTokens := usage.InputTokenDetails.TextTokens
-	textOutTokens := usage.OutputTokenDetails.TextTokens
-	audioInputTokens := usage.InputTokenDetails.AudioTokens
-	audioOutTokens := usage.OutputTokenDetails.AudioTokens
-	groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
-	modelRatioDec, _, _ := ratio_setting.GetModelRatioDecimal(modelName)
-	if relayInfo.PriceData.HasBilledModelRatio() {
-		modelRatioDec = relayInfo.PriceData.BilledModelRatio()
-	}
-	modelRatio := modelRatioDec.InexactFloat64()
+	var quota int
+	if tieredOk, tieredQuota, _ := TryTieredSettle(relayInfo, buildRealtimeTieredParams(relayInfo, usage)); tieredOk {
+		quota = tieredQuota
+	} else {
+		modelName := relayInfo.GetBillingModelName()
+		if modelName == "" {
+			modelName = relayInfo.OriginModelName
+		}
+		textInputTokens := usage.InputTokenDetails.TextTokens
+		textOutTokens := usage.OutputTokenDetails.TextTokens
+		audioInputTokens := usage.InputTokenDetails.AudioTokens
+		audioOutTokens := usage.OutputTokenDetails.AudioTokens
+		groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
+		modelRatioDec, _, _ := ratio_setting.GetModelRatioDecimal(modelName)
+		if relayInfo.PriceData.HasBilledModelRatio() {
+			modelRatioDec = relayInfo.PriceData.BilledModelRatio()
+		}
+		modelRatio := modelRatioDec.InexactFloat64()
 
-	autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
-	if exists {
-		groupRatio = ratio_setting.GetGroupRatio(autoGroup.(string))
-		logger.LogDebug(ctx, "final group ratio: %f", groupRatio)
-		relayInfo.UsingGroup = autoGroup.(string)
+		autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
+		if exists {
+			groupRatio = ratio_setting.GetGroupRatio(autoGroup.(string))
+			logger.LogDebug(ctx, "final group ratio: %f", groupRatio)
+			relayInfo.UsingGroup = autoGroup.(string)
+		}
+
+		actualGroupRatioDec := ratio_setting.GetGroupRatioDecimal(relayInfo.UsingGroup)
+		if exists {
+			actualGroupRatioDec = ratio_setting.GetGroupRatioDecimal(autoGroup.(string))
+		}
+		if billed, ok := ratio_setting.GetGroupGroupRatioDecimal(relayInfo.UserGroup, relayInfo.UsingGroup); ok {
+			actualGroupRatioDec = billed
+		}
+		actualGroupRatioDec, _ = AdtyApplySiteMarkupDecimal(ctx, relayInfo.UserId, relayInfo.UsingGroup, actualGroupRatioDec, modelName) // 二开：任务 11.4
+		actualGroupRatio := actualGroupRatioDec.InexactFloat64()
+
+		quotaInfo := QuotaInfo{
+			InputDetails: TokenDetails{
+				TextTokens:  textInputTokens,
+				AudioTokens: audioInputTokens,
+			},
+			OutputDetails: TokenDetails{
+				TextTokens:  textOutTokens,
+				AudioTokens: audioOutTokens,
+			},
+			ModelName:  modelName,
+			UsePrice:   relayInfo.UsePrice,
+			ModelRatio: modelRatio,
+			GroupRatio: actualGroupRatio,
+		}
+		quotaInfo = withBilledGroupRatio(quotaInfo, actualGroupRatioDec)
+		quotaInfo.ModelRatioDecimal = modelRatioDec
+		quotaInfo.hasModelRatioDecimal = true
+		if snap := AdtyFrozenPriceSnapshot(ctx); snap != nil {
+			quotaInfo = applySnapshotToQuotaInfo(quotaInfo, snap)
+		}
+
+		var clamp *common.QuotaClamp
+		quota, clamp = calculateAudioQuota(quotaInfo)
+		noteQuotaClamp(relayInfo, clamp)
 	}
 
-	actualGroupRatioDec := ratio_setting.GetGroupRatioDecimal(relayInfo.UsingGroup)
-	if exists {
-		actualGroupRatioDec = ratio_setting.GetGroupRatioDecimal(autoGroup.(string))
+	if relayInfo.Billing == nil && quota > 0 {
+		if apiErr := PreConsumeBilling(ctx, 0, relayInfo); apiErr != nil {
+			return apiErr
+		}
 	}
-	if billed, ok := ratio_setting.GetGroupGroupRatioDecimal(relayInfo.UserGroup, relayInfo.UsingGroup); ok {
-		actualGroupRatioDec = billed
-	}
-	actualGroupRatioDec, _ = AdtyApplySiteMarkupDecimal(ctx, relayInfo.UserId, relayInfo.UsingGroup, actualGroupRatioDec, modelName) // 二开：任务 11.4
-	actualGroupRatio := actualGroupRatioDec.InexactFloat64()
-
-	quotaInfo := QuotaInfo{
-		InputDetails: TokenDetails{
-			TextTokens:  textInputTokens,
-			AudioTokens: audioInputTokens,
-		},
-		OutputDetails: TokenDetails{
-			TextTokens:  textOutTokens,
-			AudioTokens: audioOutTokens,
-		},
-		ModelName:  modelName,
-		UsePrice:   relayInfo.UsePrice,
-		ModelRatio: modelRatio,
-		GroupRatio: actualGroupRatio,
-	}
-	quotaInfo = withBilledGroupRatio(quotaInfo, actualGroupRatioDec)
-	quotaInfo.ModelRatioDecimal = modelRatioDec
-	quotaInfo.hasModelRatioDecimal = true
-	if snap := AdtyFrozenPriceSnapshot(ctx); snap != nil {
-		quotaInfo = applySnapshotToQuotaInfo(quotaInfo, snap)
-	}
-
-	quota, clamp := calculateAudioQuota(quotaInfo)
-	noteQuotaClamp(relayInfo, clamp)
 
 	availableQuota := int64(userQuota)
 	isTeamKey := false
+	var op *model.BillingOperation
 	if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
-		if op, opErr := model.GetBillingOperation(session.operationKey); opErr == nil && op != nil && op.PayerKind == model.BillingPayerTeam && op.PayerTeamId > 0 {
-			var team model.AdtyTeam
-			if err := model.DB.Select("id", "shared_quota").First(&team, op.PayerTeamId).Error; err != nil {
-				return err
+		if loadedOp, opErr := model.GetBillingOperation(session.operationKey); opErr == nil && loadedOp != nil {
+			op = loadedOp
+			if op.PayerKind == model.BillingPayerTeam && op.PayerTeamId > 0 {
+				var team model.AdtyTeam
+				if err := model.DB.Select("id", "shared_quota").First(&team, op.PayerTeamId).Error; err != nil {
+					return err
+				}
+				availableQuota = team.SharedQuota
+				isTeamKey = true
 			}
-			availableQuota = team.SharedQuota
-			isTeamKey = true
 		}
 	}
 	if !isTeamKey && relayInfo.TokenId > 0 && !relayInfo.IsPlayground {
@@ -253,6 +295,31 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 			isTeamKey = true
 		}
 	}
+	if !isTeamKey {
+		if op != nil {
+			scoped, scopeErr := model.AdtyOwnerScopedWallet(model.DB, op, userQuota)
+			if scopeErr != nil {
+				return scopeErr
+			}
+			availableQuota = int64(scoped)
+		} else if value, ok := ctx.Get(AdtyOwnerSelfUseContextKey); ok {
+			site, valid := value.(*model.AdtySite)
+			if !valid || site == nil || site.Id <= 0 || site.OwnerUserId != relayInfo.UserId || site.Status != model.AdtySiteStatusActive {
+				return model.ErrBillingOperationConflict
+			}
+			principal, pErr := model.AdtyOwnerPrincipalAvailable(model.DB, relayInfo.UserId, site.Id)
+			if pErr != nil {
+				return pErr
+			}
+			availableQuota = min(availableQuota, principal)
+		} else {
+			scoped, scopeErr := model.AdtyOwnerScopedWallet(model.DB, &model.BillingOperation{UserId: relayInfo.UserId}, userQuota)
+			if scopeErr != nil {
+				return scopeErr
+			}
+			availableQuota = int64(scoped)
+		}
+	}
 
 	if availableQuota < int64(quota) {
 		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(int(min(availableQuota, int64(math.MaxInt)))), logger.FormatQuota(quota))
@@ -262,11 +329,6 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
 	}
 
-	if relayInfo.Billing == nil && quota > 0 {
-		if apiErr := PreConsumeBilling(ctx, 0, relayInfo); apiErr != nil {
-			return apiErr
-		}
-	}
 	shortfallBefore := relayInfo.BillingShortfall
 	result, err := postConsumeQuotaWithResult(relayInfo, quota, 0, false, ctx)
 	holdErr := adtyNoteBillingShortfall(ctx, relayInfo, shortfallBefore)
@@ -291,11 +353,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	usage *dto.RealtimeUsage, extraContent []*common.Message) error {
 
 	var tieredResult *billingexpr.TieredResult
-	tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, billingexpr.TokenParams{
-		P:   float64(usage.InputTokens),
-		C:   float64(usage.OutputTokens),
-		Len: float64(usage.InputTokens),
-	})
+	tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, buildRealtimeTieredParams(relayInfo, usage))
 	if tieredOk {
 		tieredResult = tieredRes
 	}

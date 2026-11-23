@@ -437,7 +437,7 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		}
 	}
 	var paid int64
-	if err := model.DB.Model(&model.TopUp{}).Where("user_id = ? AND status = ?", user.Id, common.TopUpStatusSuccess).Count(&paid).Error; err != nil {
+	if err := model.DB.Model(&model.TopUp{}).Where("user_id = ? AND status IN ?", user.Id, []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}).Count(&paid).Error; err != nil {
 		return nil, err
 	}
 	siteName := strings.TrimSpace(AdtyBrandFor(&site).Name)

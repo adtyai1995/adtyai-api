@@ -21,9 +21,11 @@ import {
   CardStaggerContainer,
   CardStaggerItem,
 } from '@/components/page-transition'
+import { canOpenPlatformTickets } from '@/features/adty-site-admin/sections'
 import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
 import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { useStatus } from '@/hooks/use-status'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { LanguagePreferencesCard } from './components/language-preferences-card'
@@ -35,9 +37,18 @@ import { useProfile } from './hooks'
 export function Profile() {
   const { profile, loading, refreshProfile } = useProfile()
   const { status } = useStatus()
-  const permissions = useAuthStore((s) => s.auth.user?.permissions)
+  const user = useAuthStore((s) => s.auth.user)
+  const permissions = user?.permissions
 
   const canConfigureSidebar = permissions?.sidebar_settings !== false
+  const showPlatformAdminTelegram = Boolean(
+    user &&
+      user.role < ROLE.SUPER_ADMIN &&
+      (user.site_id ?? 0) === 0 &&
+      (user.staff_site_id ?? 0) === 0 &&
+      !user.adty_site_owner &&
+      canOpenPlatformTickets(user)
+  )
   // Older cached status payloads lack these fields; the site default is on.
   const quotaRemindEnabled = status?.quota_remind_enabled !== false
   const quotaRemindThreshold = status?.quota_remind_threshold ?? 0
@@ -65,6 +76,9 @@ export function Profile() {
                   onProfileUpdate={refreshProfile}
                 />
                 <TelegramBindCard purpose='user' />
+                {showPlatformAdminTelegram && (
+                  <TelegramBindCard purpose='admin' platformSupport />
+                )}
                 <TicketCenter scope='personal' />
               </div>
 

@@ -60,6 +60,7 @@ interface UserQuotaDialogProps {
 
 export function UserQuotaDialog(props: UserQuotaDialogProps) {
   const { t } = useTranslation()
+  const { requestVerification, verificationActive } = useUsers()
   const [mode, setMode] = useState<QuotaAdjustMode>('add')
   const [amount, setAmount] = useState('')
   const [loading, setLoading] = useState(false)
@@ -132,20 +133,30 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
 
     setLoading(true)
     try {
+      const proof = await requestVerification({
+        scope: 'admin.user.quota',
+        context: { user_id: props.userId },
+        title: t('Verify to adjust quota'),
+        description: t('Confirm your identity before adjusting this user quota.'),
+      })
+      if (!proof?.proof_token) return
       const value =
         mode === 'override' ? parseQuotaFromDollars(amountValue) : quotaValue
-      const result = await adjustUserQuota({
-        id: props.userId,
-        action: 'add_quota',
-        mode,
-        value: mode === 'override' ? value : Math.abs(value),
-        reason: reason.trim(),
-        idempotency_key: idempotencyKey,
-        order_ref: orderRef.trim(),
-        funding_source: decreases ? 'specified_batch' : fundingSource,
-        batch_kind: decreases ? batchKind : '',
-        batch_source: decreases ? batchSource.trim() : '',
-      })
+      const result = await adjustUserQuota(
+        {
+          id: props.userId,
+          action: 'add_quota',
+          mode,
+          value: mode === 'override' ? value : Math.abs(value),
+          reason: reason.trim(),
+          idempotency_key: idempotencyKey,
+          order_ref: orderRef.trim(),
+          funding_source: decreases ? 'specified_batch' : fundingSource,
+          batch_kind: decreases ? batchKind : '',
+          batch_source: decreases ? batchSource.trim() : '',
+        },
+        proof.proof_token
+      )
       if (result.success) {
         toast.success(t('Quota adjusted successfully'))
         resetForm()
@@ -172,7 +183,7 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
 
   return (
     <Dialog
-      open={props.open}
+      open={props.open && !verificationActive}
       onOpenChange={props.onOpenChange}
       title={t('Adjust Quota')}
       description={t('Select an operation mode and enter the amount')}

@@ -34,8 +34,15 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 		if firstPassword != (current.Password == "") {
 			return ErrAccountPasswordState
 		}
-		if !firstPassword && !common.ValidatePasswordAndHash(update.OriginalPassword, current.Password) {
-			return ErrCurrentPasswordInvalid
+		if !firstPassword {
+			if common.LoginLocked(current.Username) {
+				return common.NewMessage("Too many failed attempts. Please try again later.")
+			}
+			if !common.ValidatePasswordAndHash(update.OriginalPassword, current.Password) {
+				_ = common.RecordLoginFailure(current.Username)
+				return ErrCurrentPasswordInvalid
+			}
+			common.ClearLoginFailures(current.Username)
 		}
 		if current.Password != "" && common.ValidatePasswordAndHash(update.Password, current.Password) {
 			return common.ErrAccountPasswordSame

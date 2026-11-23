@@ -313,6 +313,9 @@ func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*
 	}
 	result, err := adtyEpayQuery(ctx, channel, ext.TradeNo)
 	if err != nil {
+		if errors.Is(err, errEpayOrderAbsent) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if result == nil || result.OutTradeNo != ext.TradeNo || result.MerchantId != channel.MerchantId {

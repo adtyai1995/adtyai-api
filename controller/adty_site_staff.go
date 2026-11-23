@@ -71,11 +71,17 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 			StaffId    int `json:"staff_id"`
 			CustomerId int `json:"customer_id"`
 		}
-		if common.UnmarshalJsonStr(item.NewValue, &target) != nil {
-			common.ApiErrorStatus(c, http.StatusInternalServerError, service.ErrAdtyStaffInput)
-			return
+		// R1-065: Tolerate non-JSON historical audit payloads instead of 500ing the whole page,
+		// and avoid conflating request id / balance_request id with staff_id.
+		_ = common.UnmarshalJsonStr(item.NewValue, &target)
+		staffID := target.StaffId
+		if staffID <= 0 {
+			switch item.Action {
+			case "staff.create", "staff.update", "staff.password", "staff.delete":
+				staffID = target.Id
+			}
 		}
-		views = append(views, staffAuditView{AdtySiteAudit: item, StaffId: max(target.Id, target.StaffId), CustomerId: target.CustomerId})
+		views = append(views, staffAuditView{AdtySiteAudit: item, StaffId: staffID, CustomerId: target.CustomerId})
 	}
 	page.SetTotal(int(total))
 	page.SetItems(views)
@@ -319,13 +325,26 @@ func reviewAdtyStaffBalance(c *gin.Context, role string) {
 		return
 	}
 	var body struct {
-		Approve bool `json:"approve"`
+		Approve bool   `json:"approve"`
+		Reason  string `json:"reason"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.ReviewAdtyStaffBalanceRequest(c.GetInt("id"), role, id, body.Approve); err != nil {
+	// R1-018: Owner balance-request review requires step-up proof bound to (requestID, approve, reason).
+	if role == "owner" {
+		if _, ok := adtyOwnerSiteOr403(c); !ok {
+			return
+		}
+		if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionStaffBalanceReview, int(id), service.AdtyOwnerBalanceReviewDigestInput{
+			Approve: body.Approve,
+			Reason:  body.Reason,
+		}) {
+			return
+		}
+	}
+	if err := service.ReviewAdtyStaffBalanceRequest(c.GetInt("id"), role, id, body.Approve, body.Reason); err != nil {
 		common.ApiError(c, err)
 		return
 	}

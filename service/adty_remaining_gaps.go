@@ -410,6 +410,13 @@ func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest,
 		if err := model.ReduceAdtyAdjustmentBatchTx(tx, row.CustomerUserId, row.SiteId, row.BatchSource, row.BatchKind, debited); err != nil {
 			return staffBalanceApplyResult{}, err
 		}
+		if row.BatchKind == model.AdtyFundBatchKindPrincipal && row.SiteId > 0 {
+			// Symmetrically debit subsite operating wallet on principal reduction (R1-007).
+			if err := adtyMoveOperatingPrincipalTx(tx, row.SiteId, -debited, "principal_adjust_debit", "staff_balance",
+				strconv.FormatInt(row.Id, 10), key+":operating_debit", false); err != nil {
+				return staffBalanceApplyResult{}, err
+			}
+		}
 		fundingSource = row.FundingSource
 	} else {
 		split, err = adtyFundStaffBalanceIncreaseTx(tx, row, delta)
@@ -499,11 +506,19 @@ func adtyFundStaffBalanceIncreaseTx(tx *gorm.DB, row model.AdtyStaffBalanceReque
 
 func fundAdtyFinancialAdjustmentTx(tx *gorm.DB, row model.AdtyFinancialAdjustment) error {
 	kind := ""
+	marginExcessOnly := false
+	operatorID := 0
 	switch row.FundingSource {
 	case model.AdtyStaffFundingSourceEarnings:
 		kind = model.AdtySiteWalletEarnings
+		var site model.AdtySite
+		if err := tx.Select("id", "owner_user_id").First(&site, row.SiteId).Error; err != nil {
+			return err
+		}
+		operatorID = site.OwnerUserId
 	case model.AdtyStaffFundingSourceMargin:
 		kind = model.AdtySiteWalletMargin
+		marginExcessOnly = true
 	default:
 		return common.NewMessage("Select an authorized funding source")
 	}
@@ -512,7 +527,8 @@ func fundAdtyFinancialAdjustmentTx(tx *gorm.DB, row model.AdtyFinancialAdjustmen
 	amount := decimal.NewFromInt(row.DeltaQuota).Div(common.QuotaPerUnitDecimal())
 	if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, kind, amount.Neg(), AdtySiteWalletChange{
 		Type: "financial_adjustment", RefType: "financial_adjustment", RefID: ref,
-		Reason: row.Reason, IdempotencyKey: key + ":fund",
+		OperatorID: operatorID, Reason: row.Reason, IdempotencyKey: key + ":fund",
+		MarginExcessOnly: marginExcessOnly,
 	}); err != nil {
 		return err
 	}
@@ -523,10 +539,17 @@ func init() {
 	model.AdtyFundFinancialAdjustmentTx = fundAdtyFinancialAdjustmentTx
 }
 
-func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestID int64, approve bool) error {
+func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestID int64, approve bool, reviewReason ...string) error {
 	var changedUserID int
 	var officialEntry *model.AuditLog
 	var deliverIntent bool
+	note := ""
+	if len(reviewReason) > 0 {
+		note = strings.TrimSpace(reviewReason[0])
+	}
+	if len(note) > 200 {
+		return common.NewMessage("Review reason must be at most 200 characters")
+	}
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtyStaffBalanceRequest
 		if err := model.AdtyLockForUpdate(tx).First(&row, requestID).Error; err != nil {
@@ -608,13 +631,18 @@ func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestI
 			"earnings_usd":   applied.EarningsUSD.String(),
 			"margin_usd":     applied.MarginUSD.String(),
 			"reviewed_at":    reviewedAt,
+			"review_reason":  note,
 			"reason":         row.Reason, "order_ref": row.OrderRef, "batch_kind": row.BatchKind, "batch_source": row.BatchSource,
+		}
+		auditReason := "staff balance " + status
+		if note != "" {
+			auditReason += ": " + note
 		}
 		if err := tx.Create(&model.AdtySiteAudit{
 			SiteId: row.SiteId, Action: "staff.balance_review", OperatorId: reviewerID,
 			OldValue: common.GetJsonString(beforeSnapshot),
 			NewValue: common.GetJsonString(afterSnapshot),
-			Reason:   "staff balance " + status,
+			Reason:   auditReason,
 		}).Error; err != nil {
 			return err
 		}
@@ -625,7 +653,7 @@ func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestI
 			approvalRef = fmt.Sprintf("staff_balance:%d:ledger:%d", row.Id, applied.LedgerID)
 		}
 		entry, ok, err := appendStaffBalanceOfficialAuditTx(tx, reviewer.Id, reviewer.Username, reviewer.Role, row.SiteId,
-			strconv.FormatInt(row.Id, 10), officialAction, approvalRef, beforeSnapshot, afterSnapshot, "staff balance "+status)
+			strconv.FormatInt(row.Id, 10), officialAction, approvalRef, beforeSnapshot, afterSnapshot, auditReason)
 		if err != nil {
 			return err
 		}
@@ -959,11 +987,8 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 		}
 
 		if targetStatus == AdtyTodoStatusCompleted {
-			if tx.Migrator().HasTable(&model.AdtyAnomalyDisposition{}) {
-				_ = tx.Model(&model.AdtyAnomalyDisposition{}).
-					Where("ref = ? AND status IN ?", key, []string{"open", "reviewing"}).
-					Updates(map[string]any{"status": "resolved", "operator_id": userID}).Error
-			}
+			// R1-055: Completing a personal todo must NEVER mutate global AdtyAnomalyDisposition rows;
+			// anomaly dispositions are exclusively closed by authorized Root review handlers.
 			if pub != nil && pub.ReadKey != "" && tx.Migrator().HasTable(&model.AdtyNotificationRead{}) {
 				readRow := model.AdtyNotificationRead{
 					UserId:  userID,
@@ -1271,7 +1296,7 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 			return common.NewMessage("Site invite rate is not configured")
 		}
 		var paid int64
-		if err := tx.Model(&model.TopUp{}).Where("user_id = ? AND status = ?", inviteeID, common.TopUpStatusSuccess).Count(&paid).Error; err != nil {
+		if err := tx.Model(&model.TopUp{}).Where("user_id = ? AND status IN ?", inviteeID, []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}).Count(&paid).Error; err != nil {
 			return err
 		}
 		if paid > 0 {
@@ -1435,32 +1460,6 @@ func hideAdtyNotificationForUser(c *gin.Context, userID int, key string) error {
 		deliverAdtyCommittedAudit(event)
 	}
 	return err
-}
-
-func writeAdtyNotificationHideAudit(c *gin.Context, userID int, key string) {
-	rec := model.OfficialAuditWrite{
-		UserId:     userID,
-		SiteID:     model.OfficialAuditSiteIDPointer(0),
-		ObjectType: "notification",
-		ObjectID:   key,
-		Action:     "adty.notification.hide",
-		Category:   model.AuditCategoryOperation,
-		Content:    "adty.notification.hide",
-		Result:     model.AuditResultSuccess,
-		Success:    true,
-	}
-	var actor *model.User
-	if userID > 0 {
-		if user, err := model.GetUserById(userID, false); err == nil && user != nil {
-			actor = user
-			rec.Username = user.Username
-			rec.ActorRole = user.Role
-		}
-	}
-	rec.SiteID = model.OfficialAuditSiteIDPointer(officialNotificationHideSiteID(c, actor))
-	if err := model.WriteOfficialAuditLog(c, rec); err != nil {
-		common.SysLog(common.LogText("official notification hide audit write failed: %s", err.Error()))
-	}
 }
 
 func officialNotificationHideSiteID(c *gin.Context, user *model.User) int {

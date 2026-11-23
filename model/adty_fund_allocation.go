@@ -64,6 +64,10 @@ type AdtyFundAllocation struct {
 
 func (AdtyFundAllocation) TableName() string { return "adty_fund_allocations" }
 
+func isAdtyBonusBatchKind(kind string) bool {
+	return kind == AdtyFundBatchKindBonus || kind == AdtyFundBatchKindExpiringBonus
+}
+
 // AllocateAdtyFundAllocationsTx records the pre-charge shares for one operation.
 // amount is the cumulative quota this operation should have reserved: a repeated
 // call only records the difference, so the top-up path can call it again with a
@@ -190,7 +194,7 @@ func allocateAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, 
 		if remaining <= 0 {
 			break
 		}
-		if batch.Kind != "bonus" {
+		if !isAdtyBonusBatchKind(batch.Kind) {
 			continue
 		}
 		available := batch.Remaining - heldByBatch[batch.Id]
@@ -318,8 +322,8 @@ func SumAdtyFundAllocationHeld(userID int) (principal, bonus int64, err error) {
 	for _, row := range rows {
 		if row.Kind == "principal" {
 			principal = row.Held
-		} else if row.Kind == "bonus" {
-			bonus = row.Held
+		} else if isAdtyBonusBatchKind(row.Kind) {
+			bonus += row.Held
 		}
 	}
 	return principal, bonus, nil
@@ -429,10 +433,10 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		}
 		take := min(held, left)
 		if take <= 0 {
-			// 本次没用到这部分：只释放，不动 remaining。
+			// 本次没用到这部分：只释放未结算占有，保留已结算部分维持 held >= settled 不变量（R1-031）。
 			if err := tx.Model(&AdtyFundAllocation{}).
 				Where("id = ? AND held = ?", shares[i].Id, shares[i].Held).
-				Updates(map[string]any{"held": 0}).Error; err != nil {
+				Updates(map[string]any{"held": shares[i].Settled}).Error; err != nil {
 				return 0, err
 			}
 			continue
@@ -443,7 +447,7 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		if shares[i].Kind == "principal" && shares[i].Source != "legacy" {
 			principalSpent += take
 		}
-		if shares[i].Kind == "bonus" && shares[i].Source != "" {
+		if isAdtyBonusBatchKind(shares[i].Kind) && shares[i].Source != "" {
 			var batch AdtyFundBatch
 			if err := tx.First(&batch, shares[i].BatchId).Error; err != nil {
 				return 0, err
@@ -452,11 +456,12 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 				bonusBySource[shares[i].Source] += take
 			}
 		}
-		// 只消费了一部分时，把这份分摊收窄到实际消耗，held 与 settled 相等，
+		// 只消费了一部分时，把这份分摊收窄到累计已结算额度，held 与 settled 相等（R1-031），
 		// 未用到的部分随之释放（批次没有扣过它，不需要回补）。
+		newSettled := shares[i].Settled + take
 		if err := tx.Model(&AdtyFundAllocation{}).
 			Where("id = ? AND held = ?", shares[i].Id, shares[i].Held).
-			Updates(map[string]any{"held": take, "settled": shares[i].Settled + take}).Error; err != nil {
+			Updates(map[string]any{"held": newSettled, "settled": newSettled}).Error; err != nil {
 			return 0, err
 		}
 		left -= take
@@ -497,7 +502,7 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		if shares[i].Kind == "principal" && shares[i].Source != "legacy" {
 			principalSpent += take
 		}
-		if shares[i].Kind == "bonus" && shares[i].Source != "" {
+		if isAdtyBonusBatchKind(shares[i].Kind) && shares[i].Source != "" {
 			var batch AdtyFundBatch
 			if err := tx.First(&batch, shares[i].BatchId).Error; err != nil {
 				return 0, err
@@ -506,9 +511,10 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 				bonusBySource[shares[i].Source] += take
 			}
 		}
+		newSettled := shares[i].Settled + take
 		if err := tx.Model(&AdtyFundAllocation{}).
 			Where("id = ? AND held = ?", shares[i].Id, shares[i].Held).
-			Updates(map[string]any{"held": take, "settled": shares[i].Settled + take}).Error; err != nil {
+			Updates(map[string]any{"held": newSettled, "settled": newSettled}).Error; err != nil {
 			return 0, err
 		}
 		left -= take

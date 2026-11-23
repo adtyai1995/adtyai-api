@@ -45,11 +45,13 @@ import { useTranslation } from 'react-i18next'
 import type { SidebarBadges, SidebarData } from '@/components/layout/types'
 import {
   ORDER_MANAGEMENT_BADGE_KINDS,
+  OWNER_TICKET_BADGE_KINDS,
+  PERSONAL_TICKET_BADGE_KINDS,
+  PLATFORM_TICKET_BADGE_KINDS,
   REFERRAL_ADMIN_BADGE_KINDS,
   RESELLER_SITES_BADGE_KINDS,
   SITE_OWNER_BADGE_KINDS,
   STAFF_WORKSPACE_BADGE_KINDS,
-  TICKET_BADGE_KINDS,
   useSidebarBadges,
 } from '@/hooks/use-sidebar-badges'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
@@ -74,8 +76,18 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     mixedLabel,
     failedLabel
   )
-  const ticketsBadge = sidebarBadges.badge(
-    TICKET_BADGE_KINDS,
+  const personalTicketsBadge = sidebarBadges.badge(
+    PERSONAL_TICKET_BADGE_KINDS,
+    mixedLabel,
+    failedLabel
+  )
+  const ownerTicketsBadge = sidebarBadges.badge(
+    OWNER_TICKET_BADGE_KINDS,
+    mixedLabel,
+    failedLabel
+  )
+  const platformTicketsBadge = sidebarBadges.badge(
+    PLATFORM_TICKET_BADGE_KINDS,
     mixedLabel,
     failedLabel
   )
@@ -157,6 +169,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               title: t('Dashboard'),
               url: '/dashboard/models',
               icon: LayoutDashboard,
+              requiredPermission: ADTY_PERMISSIONS.LOG_READ,
             },
             {
               title: t('API Keys'),
@@ -215,7 +228,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               title: t('Tickets'),
               url: '/profile#tickets',
               icon: LifeBuoy,
-              badge: platformTickets || isSiteOwner ? undefined : ticketsBadge,
+              badge: personalTicketsBadge,
             },
             {
               title: t('Referral'),
@@ -238,7 +251,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
                     title: t('Ticket management'),
                     url: '/site-owner/tickets',
                     icon: LifeBuoy,
-                    badge: ticketsBadge,
+                    badge: ownerTicketsBadge,
                   },
                   {
                     title: t('Team management'),
@@ -276,7 +289,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
                     title: t('Ticket management'),
                     url: '/admin-tickets',
                     icon: LifeBuoy,
-                    badge: ticketsBadge,
+                    badge: platformTicketsBadge,
                   },
                 ]
               : []),
@@ -359,7 +372,9 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     t,
     platformTickets,
     staffWorkspaceBadge,
-    ticketsBadge,
+    personalTicketsBadge,
+    ownerTicketsBadge,
+    platformTicketsBadge,
     siteOwnerBadge,
     referralAdminBadge,
     withdrawalFilter,

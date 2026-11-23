@@ -118,6 +118,7 @@
           "getContentSectionContent",
           "getContentSectionMeta",
           "getDashboardSectionNavItems",
+          "isAdminOnlyDashboardSection",
           "getModelsSectionNavItems",
           "getModelsSectionContent",
           "getModelsSectionMeta",

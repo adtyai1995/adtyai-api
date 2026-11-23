@@ -183,6 +183,11 @@ func UniversalVerify(c *gin.Context) {
 	request.SiteID = service.AdtyRequestSiteID(c)
 	proof, err := service.VerifySecurityInput(identity, request)
 	if err != nil {
+		// R1-017: Record redacted failure audit for security verification attempts.
+		recordUserSecurityAudit(c, identity.UserID, "user.security_verify_failed", map[string]any{
+			"method": request.Method,
+			"scope":  request.Scope,
+		})
 		writeSecurityOperationError(c, err)
 		return
 	}

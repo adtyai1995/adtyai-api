@@ -43,6 +43,22 @@ import {
 
 const NETWORKS = ['TRC20', 'BEP20', 'POLYGON', 'XLAYER'] as const
 
+function withdrawalMethodLabel(
+  method: string,
+  t: (key: string) => string
+): string {
+  switch (method) {
+    case 'alipay':
+      return t('Alipay')
+    case 'wxpay':
+      return t('WeChat Pay')
+    case 'usdt':
+      return 'USDT'
+    default:
+      return method
+  }
+}
+
 /** Owner request against the site earnings wallet. Amounts come from Root rules, not from this page. */
 export function WithdrawalPanel({
   siteId,
@@ -367,7 +383,8 @@ export function WithdrawalPanel({
                 className='flex flex-wrap items-center justify-between gap-2 text-sm tabular-nums'
               >
                 <span>
-                  WD-SITE-{row.id} · {row.amount_usd} USD · {row.method} ·{' '}
+                  WD-SITE-{row.id} · {row.amount_usd} USD ·{' '}
+                  {withdrawalMethodLabel(row.method, t)} ·{' '}
                   {siteWithdrawalStatusLabel(t, row.status)}
                 </span>
                 {row.status === 'pending' && !row.attempt_open && (

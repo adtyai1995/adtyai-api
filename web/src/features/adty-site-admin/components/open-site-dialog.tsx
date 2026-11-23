@@ -210,10 +210,9 @@ export function OpenSiteDialog(props: {
   const previewWebsiteHost = effectiveRoot
     ? `${subdomainMode === 'custom' && normalizedSub ? normalizedSub : 's********'}.${effectiveRoot}`
     : '-'
-  const previewApiHost =
-    automationOn && effectiveRoot
-      ? `api-s<ID>.${effectiveRoot}`
-      : t('Configure a custom API domain after opening')
+  const previewApiHost = effectiveRoot
+    ? `api-s<ID>.${effectiveRoot}`
+    : t('Configure a custom API domain after opening')
 
   const selectedTierObj =
     enabledTiers.find((item) => item.code === tierCode) ?? enabledTiers[0]

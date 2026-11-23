@@ -18,34 +18,76 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { SiteWallet } from '@/features/adty-ledger/site-wallet-labels'
 
-const TWO_DECIMAL_PATTERN = /^\d+(?:\.\d{1,2})?$/
+const EIGHT_DECIMAL_PATTERN = /^\d+(?:\.\d{1,8})?$/
+const SCALE_DIGITS = 8
+const SCALE = 100_000_000n
+const MAX_SINGLE_WALLET_USD_UNITS = 10_000_000n * SCALE
 
 export type OwnerFundingPreview = {
   valid: boolean
-  amount: number
-  earningsAvailable: number
-  marginFloor: number
-  marginExcessAvailable: number
-  fromEarnings: number
-  fromMargin: number
-  shortfall: number
+  exceedsMax: boolean
+  amount: bigint
+  earningsAvailable: bigint
+  marginFloor: bigint
+  marginExcessAvailable: bigint
+  fromEarnings: bigint
+  fromMargin: bigint
+  shortfall: bigint
   sufficient: boolean
 }
 
-function toCents(raw: string | undefined): number {
-  if (!raw) return 0
-  const parsed = Number(raw)
-  if (!Number.isFinite(parsed)) return 0
-  return Math.floor(parsed * 100 + 1e-6)
+function parseDecimalUnits(raw: string | undefined): bigint | null {
+  if (!raw) return 0n
+  const trimmed = raw.trim()
+  if (!trimmed) return 0n
+  const negative = trimmed.startsWith('-')
+  const unsigned = negative ? trimmed.slice(1) : trimmed
+  if (!/^\d+(?:\.\d+)?$/.test(unsigned)) return null
+  const [wholePart, fracPart = ''] = unsigned.split('.')
+  const paddedFrac = fracPart.slice(0, SCALE_DIGITS).padEnd(SCALE_DIGITS, '0')
+  const units = BigInt(wholePart) * SCALE + BigInt(paddedFrac)
+  return negative ? -units : units
 }
 
-function fromCents(cents: number): number {
-  return Math.max(0, Math.round(cents)) / 100
+function toUnits(raw: string | undefined): bigint {
+  return parseDecimalUnits(raw) ?? 0n
 }
 
-export function formatFundingUsd(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '0.00'
-  return value.toFixed(2)
+function maxBigInt(a: bigint, b: bigint): bigint {
+  return a > b ? a : b
+}
+
+function minBigInt(a: bigint, b: bigint): bigint {
+  return a < b ? a : b
+}
+
+function totalFrozenUnits(wallet: SiteWallet | undefined): bigint {
+  if (!wallet) return 0n
+  if (wallet.frozen_balance !== undefined && wallet.frozen_balance !== '') {
+    return maxBigInt(0n, toUnits(wallet.frozen_balance))
+  }
+  return (
+    maxBigInt(0n, toUnits(wallet.frozen_usd)) +
+    maxBigInt(0n, toUnits(wallet.excess_frozen_usd))
+  )
+}
+
+export function formatFundingUsd(value: bigint | number | string): string {
+  let units: bigint
+  if (typeof value === 'bigint') {
+    units = value
+  } else if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return '0.00'
+    units = toUnits(value.toFixed(SCALE_DIGITS))
+  } else {
+    units = toUnits(value)
+  }
+  if (units <= 0n) return '0.00'
+  const whole = units / SCALE
+  const frac = (units % SCALE).toString().padStart(SCALE_DIGITS, '0')
+  const trimmedFrac = frac.replace(/0+$/, '')
+  const displayFrac = trimmedFrac.length < 2 ? frac.slice(0, 2) : trimmedFrac
+  return `${whole.toString()}.${displayFrac}`
 }
 
 /**
@@ -60,59 +102,76 @@ export function computeOwnerFundingPreview(
   const earnings = wallets.find((item) => item.kind === 'earnings')
   const margin = wallets.find((item) => item.kind === 'margin')
 
-  const earningsAvailCents = Math.max(
-    0,
-    toCents(earnings?.balance) - toCents(earnings?.frozen_usd)
+  const earningsAvailUnits = maxBigInt(
+    0n,
+    toUnits(earnings?.balance) - totalFrozenUnits(earnings)
   )
-  const marginFloorCents = Math.max(0, toCents(margin?.required_balance))
-  const marginExcessCents = Math.max(
-    0,
-    toCents(margin?.balance) - toCents(margin?.frozen_usd) - marginFloorCents
+  const marginFloorUnits = maxBigInt(0n, toUnits(margin?.required_balance))
+  const marginExcessUnits = maxBigInt(
+    0n,
+    toUnits(margin?.balance) - totalFrozenUnits(margin) - marginFloorUnits
   )
 
   const trimmed = amountRaw.trim()
-  if (!TWO_DECIMAL_PATTERN.test(trimmed)) {
+  if (!EIGHT_DECIMAL_PATTERN.test(trimmed)) {
     return {
       valid: false,
-      amount: 0,
-      earningsAvailable: fromCents(earningsAvailCents),
-      marginFloor: fromCents(marginFloorCents),
-      marginExcessAvailable: fromCents(marginExcessCents),
-      fromEarnings: 0,
-      fromMargin: 0,
-      shortfall: 0,
+      exceedsMax: false,
+      amount: 0n,
+      earningsAvailable: earningsAvailUnits,
+      marginFloor: marginFloorUnits,
+      marginExcessAvailable: marginExcessUnits,
+      fromEarnings: 0n,
+      fromMargin: 0n,
+      shortfall: 0n,
       sufficient: false,
     }
   }
-  const amountCents = Math.round(Number(trimmed) * 100)
-  if (!Number.isFinite(amountCents) || amountCents <= 0) {
+  const amountUnits = parseDecimalUnits(trimmed)
+  if (amountUnits === null || amountUnits <= 0n) {
     return {
       valid: false,
-      amount: 0,
-      earningsAvailable: fromCents(earningsAvailCents),
-      marginFloor: fromCents(marginFloorCents),
-      marginExcessAvailable: fromCents(marginExcessCents),
-      fromEarnings: 0,
-      fromMargin: 0,
-      shortfall: 0,
+      exceedsMax: false,
+      amount: 0n,
+      earningsAvailable: earningsAvailUnits,
+      marginFloor: marginFloorUnits,
+      marginExcessAvailable: marginExcessUnits,
+      fromEarnings: 0n,
+      fromMargin: 0n,
+      shortfall: 0n,
+      sufficient: false,
+    }
+  }
+  if (amountUnits > MAX_SINGLE_WALLET_USD_UNITS) {
+    return {
+      valid: false,
+      exceedsMax: true,
+      amount: amountUnits,
+      earningsAvailable: earningsAvailUnits,
+      marginFloor: marginFloorUnits,
+      marginExcessAvailable: marginExcessUnits,
+      fromEarnings: 0n,
+      fromMargin: 0n,
+      shortfall: 0n,
       sufficient: false,
     }
   }
 
-  const fromEarningsCents = Math.min(earningsAvailCents, amountCents)
-  const neededMarginCents = amountCents - fromEarningsCents
-  const fromMarginCents = Math.min(marginExcessCents, neededMarginCents)
-  const shortfallCents = Math.max(0, neededMarginCents - marginExcessCents)
+  const fromEarningsUnits = minBigInt(earningsAvailUnits, amountUnits)
+  const neededMarginUnits = amountUnits - fromEarningsUnits
+  const fromMarginUnits = minBigInt(marginExcessUnits, neededMarginUnits)
+  const shortfallUnits = maxBigInt(0n, neededMarginUnits - marginExcessUnits)
 
   return {
     valid: true,
-    amount: fromCents(amountCents),
-    earningsAvailable: fromCents(earningsAvailCents),
-    marginFloor: fromCents(marginFloorCents),
-    marginExcessAvailable: fromCents(marginExcessCents),
-    fromEarnings: fromCents(fromEarningsCents),
-    fromMargin: fromCents(fromMarginCents),
-    shortfall: fromCents(shortfallCents),
-    sufficient: shortfallCents === 0,
+    exceedsMax: false,
+    amount: amountUnits,
+    earningsAvailable: earningsAvailUnits,
+    marginFloor: marginFloorUnits,
+    marginExcessAvailable: marginExcessUnits,
+    fromEarnings: fromEarningsUnits,
+    fromMargin: fromMarginUnits,
+    shortfall: shortfallUnits,
+    sufficient: shortfallUnits === 0n,
   }
 }

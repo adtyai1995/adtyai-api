@@ -70,6 +70,18 @@ func AdtyOwnerPrincipalAvailable(tx *gorm.DB, userID, siteID int) (int64, error)
 	return available, err
 }
 
+// AdtyOwnerScopedWallet exposes the owner self-use vs ordinary wallet isolation
+// calculation for non-transactional pre-checks such as Realtime WSS streaming.
+func AdtyOwnerScopedWallet(tx *gorm.DB, op *BillingOperation, balance int) (int, error) {
+	if tx == nil {
+		tx = DB
+	}
+	if op == nil {
+		return balance, nil
+	}
+	return ownerScopedWallet(tx, op, balance)
+}
+
 func ownerScopedWallet(tx *gorm.DB, op *BillingOperation, balance int) (int, error) {
 	if op.PayerKind != BillingPayerOwner && !tx.Migrator().HasTable(&AdtySite{}) {
 		return balance, nil

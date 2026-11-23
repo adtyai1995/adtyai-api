@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -39,15 +40,19 @@ func PostAdtyRootExpiringGift(c *gin.Context) {
 	}
 	amount, _ := decimal.NewFromString(input.AmountUSD)
 	var batch *model.AdtyFundBatch
+	var replayed bool
 	var audit model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		batch, err = model.GrantAdtyRootExpiringGiftTx(tx, model.AdtyRootExpiringGiftGrantInput{
+		batch, replayed, err = model.GrantAdtyRootExpiringGiftWithReplayTx(tx, model.AdtyRootExpiringGiftGrantInput{
 			UserID: userID, OperatorID: c.GetInt("id"), OperatorRole: c.GetInt("role"),
 			AmountUSD: amount, ExpiresAt: input.ExpiresAt, Reason: input.Reason, IdempotencyKey: input.IdempotencyKey,
 		})
 		if err != nil {
 			return err
+		}
+		if replayed {
+			return nil
 		}
 		audit, err = model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
 			UserId: c.GetInt("id"), ActorRole: common.RoleRootUser, SiteID: batch.SiteId,
@@ -62,12 +67,20 @@ func PostAdtyRootExpiringGift(c *gin.Context) {
 	})
 	if err != nil {
 		_ = c.Error(err)
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, model.ErrAdtyIdempotencyConflict)
+			return
+		}
 		common.ApiErrorT(c, "Failed to grant expiring gift")
 		return
 	}
-	model.AdtySyncUserQuotaCache(userID, "root_expiring_gift")
-	_ = model.PublishUserAuthCache(userID)
-	_ = model.DeliverAuditIntent(c.Request.Context(), audit.EventId)
+	if !replayed {
+		model.AdtySyncUserQuotaCache(userID, "root_expiring_gift")
+		_ = model.PublishUserAuthCache(userID)
+		if audit.EventId != "" {
+			_ = model.DeliverAuditIntent(c.Request.Context(), audit.EventId)
+		}
+	}
 	common.ApiSuccess(c, batch)
 }
 

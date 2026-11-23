@@ -20,8 +20,10 @@ type LoginChallenge struct {
 
 // loginFlowPayload stays comparable; completion compares it with the bound copy.
 type loginFlowPayload struct {
-	AuthVersion int64  `json:"auth_version"`
-	LoginMethod string `json:"login_method"`
+	AuthVersion  int64  `json:"auth_version"`
+	LoginMethod  string `json:"login_method"`
+	IssuedSiteID int    `json:"issued_site_id"`
+	HasSiteID    bool   `json:"has_site_id,omitempty"`
 }
 
 // LoginVerification is server-owned state read from a primary-authenticated flow.
@@ -37,6 +39,14 @@ type LoginVerification struct {
 }
 
 func StartLoginVerification(user *model.User, loginMethod string) (*LoginChallenge, error) {
+	return startLoginVerification(user, loginMethod, nil)
+}
+
+func StartLoginVerificationOnSite(user *model.User, loginMethod string, siteID int) (*LoginChallenge, error) {
+	return startLoginVerification(user, loginMethod, &siteID)
+}
+
+func startLoginVerification(user *model.User, loginMethod string, siteID *int) (*LoginChallenge, error) {
 	if user == nil || user.Id <= 0 || user.AuthVersion <= 0 || loginMethod == "" {
 		return nil, model.ErrAuthFlowInvalid
 	}
@@ -51,6 +61,16 @@ func StartLoginVerification(user *model.User, loginMethod string) (*LoginChallen
 	if err != nil || len(methods) == 0 {
 		return nil, err
 	}
+	if siteID != nil && *siteID > 0 {
+		filtered := make([]VerificationMethodOption, 0, len(methods))
+		for _, method := range methods {
+			if method.Method == VerificationMethodPasskey {
+				continue
+			}
+			filtered = append(filtered, method)
+		}
+		methods = filtered
+	}
 	available := false
 	for _, method := range methods {
 		available = available || method.Available
@@ -59,6 +79,10 @@ func StartLoginVerification(user *model.User, loginMethod string) (*LoginChallen
 		return nil, ErrVerificationUnavailable
 	}
 	payload := loginFlowPayload{AuthVersion: state.AuthVersion, LoginMethod: loginMethod}
+	if siteID != nil {
+		payload.IssuedSiteID = *siteID
+		payload.HasSiteID = true
+	}
 	encoded, err := common.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -75,6 +99,14 @@ func StartLoginVerification(user *model.User, loginMethod string) (*LoginChallen
 }
 
 func RequireLoginVerification(token, method string) (*LoginVerification, error) {
+	return requireLoginVerification(token, method, nil)
+}
+
+func RequireLoginVerificationOnSite(token, method string, siteID int) (*LoginVerification, error) {
+	return requireLoginVerification(token, method, &siteID)
+}
+
+func requireLoginVerification(token, method string, expectedSiteID *int) (*LoginVerification, error) {
 	flow, err := model.GetAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeLoginVerification})
 	if err != nil {
 		return nil, err
@@ -82,6 +114,18 @@ func RequireLoginVerification(token, method string) (*LoginVerification, error) 
 	var payload loginFlowPayload
 	if err := common.UnmarshalJsonStr(flow.Payload, &payload); err != nil || payload.AuthVersion <= 0 || payload.LoginMethod == "" {
 		return nil, model.ErrAuthFlowInvalid
+	}
+	if expectedSiteID != nil {
+		if payload.HasSiteID {
+			if payload.IssuedSiteID != *expectedSiteID {
+				return nil, model.ErrAuthFlowInvalid
+			}
+		} else if *expectedSiteID != 0 {
+			return nil, model.ErrAuthFlowInvalid
+		}
+		if *expectedSiteID > 0 && method == VerificationMethodPasskey {
+			return nil, ErrVerificationUnavailable
+		}
 	}
 	state, err := model.GetUserVerificationState(flow.UserId)
 	if err != nil {
@@ -124,7 +168,7 @@ func VerifyLoginCodeOnSite(token, code, ip, userAgent string, issuedSiteID int) 
 }
 
 func verifyLoginCode(token, code, ip, userAgent string, issuedSiteID *int) (*AuthBundle, error) {
-	verification, err := RequireLoginVerification(token, VerificationMethodTwoFA)
+	verification, err := requireLoginVerification(token, VerificationMethodTwoFA, issuedSiteID)
 	if err != nil {
 		return nil, err
 	}
@@ -158,6 +202,15 @@ func CompleteLoginVerificationOnSite(token string, verification *LoginVerificati
 func completeLoginVerification(token string, verification *LoginVerification, method, ip, userAgent string, issuedSiteID *int) (*AuthBundle, error) {
 	if verification == nil || verification.Flow == nil || verification.State == nil {
 		return nil, model.ErrAuthFlowInvalid
+	}
+	if issuedSiteID != nil {
+		if verification.payload.HasSiteID {
+			if verification.payload.IssuedSiteID != *issuedSiteID {
+				return nil, model.ErrAuthFlowInvalid
+			}
+		} else if *issuedSiteID != 0 {
+			return nil, model.ErrAuthFlowInvalid
+		}
 	}
 	session, refreshSecret, err := newLoginSession(verification.State.UserID, verification.payload.AuthVersion, verification.payload.LoginMethod, ip, userAgent, issuedSiteID)
 	if err != nil {

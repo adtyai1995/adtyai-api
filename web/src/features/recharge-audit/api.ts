@@ -448,10 +448,12 @@ export type RefundPageFacts = {
   refund_completed_quota?: number
   refund_in_progress_quota?: number
   refund_unknown_quota?: number
+  refund_external_offset_quota?: number
   refund_remaining_quota?: number
   refund_completed_usd?: string
   refund_in_progress_usd?: string
   refund_unknown_usd?: string
+  refund_external_offset_usd?: string
   refund_remaining_usd?: string
   manual_shortfall_quota?: number
   manual_shortfall_usd?: string
@@ -471,12 +473,14 @@ export type ManualRefundOccupancy = {
   completed_quota: number
   in_progress_quota: number
   unknown_quota: number
+  external_offset_quota?: number
   occupied_quota: number
   remaining_quota: number
   face_usd: string
   completed_usd: string
   in_progress_usd: string
   unknown_usd: string
+  external_offset_usd?: string
   occupied_usd: string
   remaining_usd: string
 }

@@ -48,9 +48,11 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 		logger.LogDebug(ctx, "final group: %s", autoGroup)
 		relayInfo.UsingGroup = autoGroup.(string)
 	}
-	// Retry/resume must reuse the accept-time snapshot and must not re-read
-	// live model prices, site markup, cost factor, or team pay ratio.
-	if snap := service.AdtyFrozenPriceSnapshot(ctx); snap != nil {
+	// Retry/resume on the same billing group must reuse the accept-time
+	// snapshot and must not re-read live prices. When auto_group switches to a
+	// different group, recompute the new group's ratio/site/team price while
+	// preserving accept-time semantics (G.2 / R1-002).
+	if snap := service.AdtyFrozenPriceSnapshot(ctx); snap != nil && (snap.BillingGroup == "" || snap.BillingGroup == relayInfo.UsingGroup) {
 		return service.GroupRatioInfoFromSnapshot(snap)
 	}
 
@@ -80,6 +82,53 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 	}
 
 	return groupRatioInfo
+}
+
+// RefreshPriceDataForSelectedGroup refreshes pre-consume estimates and the
+// frozen price snapshot when auto_group switches to a different billing group
+// during retry (G.2 / R1-002), while keeping original acceptance timestamps.
+func RefreshPriceDataForSelectedGroup(c *gin.Context, info *relaycommon.RelayInfo) error {
+	if c == nil || info == nil {
+		return nil
+	}
+	if info.TieredBillingSnapshot == nil || info.TieredBillingSnapshot.BillingMode != "tiered_expr" {
+		ratioDec := info.PriceData.GroupRatioInfo.BilledGroupRatio()
+		if info.PriceData.UsePrice {
+			base := info.PriceData.BilledModelPrice()
+			quotaDec := info.PriceData.ApplyOtherRatiosToDecimal(base.Mul(common.QuotaPerUnitDecimal()).Mul(ratioDec))
+			quota, err := common.QuotaFromDecimalStrict(quotaDec)
+			if err != nil {
+				return err
+			}
+			info.PriceData.QuotaToPreConsume = quota
+			if info.PriceData.Quota > 0 {
+				info.PriceData.Quota = quota
+			}
+			info.PriceData.FreeModel = !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume && (ratioDec.IsZero() || base.IsZero())
+		} else {
+			base := info.PriceData.BilledModelRatio()
+			var quota int
+			var err error
+			if info.ImageQuotaBeforeGroup > 0 {
+				quotaDec := info.PriceData.ApplyOtherRatiosToDecimal(decimal.NewFromFloat(info.ImageQuotaBeforeGroup).Mul(ratioDec))
+				quota, err = common.QuotaFromDecimalStrict(quotaDec)
+			} else {
+				var preConsumeMultiplier float64
+				preConsumeMultiplier, err = operation_setting.InputPreConsumeMultiplier()
+				if err == nil {
+					quotaDec := decimal.NewFromFloat(float64(info.GetEstimatePromptTokens()) * preConsumeMultiplier).Mul(base).Mul(ratioDec)
+					quota, err = common.QuotaFromDecimalStrict(quotaDec)
+				}
+			}
+			if err != nil {
+				return err
+			}
+			info.PriceData.QuotaToPreConsume = quota
+			info.PriceData.FreeModel = !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume && (ratioDec.IsZero() || base.IsZero())
+		}
+	}
+	service.AdtyRefreshFrozenPriceSnapshotForGroup(c, info)
+	return nil
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
@@ -245,7 +294,8 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			priceData.AddOtherRatio("n", float64(count))
 		}
 		if !usePrice {
-			quota, err := common.QuotaFromFloatStrict(priceData.ApplyOtherRatiosToFloat(info.ImageQuotaBeforeGroup * groupRatioInfo.GroupRatio))
+			quotaDec := priceData.ApplyOtherRatiosToDecimal(decimal.NewFromFloat(info.ImageQuotaBeforeGroup).Mul(groupRatioInfo.BilledGroupRatio()))
+			quota, err := common.QuotaFromDecimalStrict(quotaDec)
 			if err != nil {
 				return hosttypes.PriceData{}, err
 			}
@@ -253,8 +303,8 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		}
 	}
 	if usePrice {
-		quotaToPreConsume := priceData.ApplyOtherRatiosToFloat(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
-		quota, err := common.QuotaFromFloatStrict(quotaToPreConsume)
+		quotaDec := priceData.ApplyOtherRatiosToDecimal(modelPriceDec.Mul(common.QuotaPerUnitDecimal()).Mul(groupRatioInfo.BilledGroupRatio()))
+		quota, err := common.QuotaFromDecimalStrict(quotaDec)
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}
@@ -316,12 +366,12 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 
 	if usePrice {
 		var err error
-		quota, err = common.QuotaFromFloatStrict(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		quota, err = common.QuotaFromDecimalStrict(modelPriceDec.Mul(common.QuotaPerUnitDecimal()).Mul(groupRatioInfo.BilledGroupRatio()))
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}
 		if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {
-			if groupRatioInfo.GroupRatio == 0 || modelPrice == 0 {
+			if groupRatioInfo.BilledGroupRatio().IsZero() || modelPriceDec.IsZero() {
 				quota = 0
 				freeModel = true
 			}
@@ -329,13 +379,13 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 	} else {
 		// 按量计费：以模型倍率的一半作为预扣额度
 		var err error
-		quota, err = common.QuotaFromFloatStrict(modelRatio / 2 * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		quota, err = common.QuotaFromDecimalStrict(modelRatioDec.Div(decimal.NewFromInt(2)).Mul(common.QuotaPerUnitDecimal()).Mul(groupRatioInfo.BilledGroupRatio()))
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}
 		modelPrice = -1
 		if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {
-			if groupRatioInfo.GroupRatio == 0 || modelRatio == 0 {
+			if groupRatioInfo.BilledGroupRatio().IsZero() || modelRatioDec.IsZero() {
 				quota = 0
 				freeModel = true
 			}

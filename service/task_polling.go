@@ -297,9 +297,41 @@ func DispatchPlatformUpdate(ctx context.Context, platform constant.TaskPlatform,
 		}
 		return
 	}
+	if adaptor == nil && GetTaskAdaptorForTaskFunc != nil {
+		hasBatch := false
+		for _, taskIds := range taskChannelM {
+			for _, id := range taskIds {
+				if t := taskM[id]; t != nil && t.PrivateData.Execution != nil && t.PrivateData.Execution.TaskPlugin != nil {
+					if pinned := GetTaskAdaptorForTaskFunc(t, t.Platform); pinned != nil {
+						if pb, ok := pinned.(BatchTaskPollingAdaptor); ok && pb.FetchMode() == "batch" {
+							hasBatch = true
+							break
+						}
+					}
+				}
+			}
+			if hasBatch {
+				break
+			}
+		}
+		if hasBatch {
+			if err := UpdateBatchTasks(ctx, nil, taskChannelM, taskM); err != nil {
+				common.SysLog(common.LogText("UpdateBatchTasks fail: %s", err))
+			}
+			return
+		}
+	}
 	if err := UpdateVideoTasks(ctx, platform, taskChannelM, taskM); err != nil {
 		common.SysLog(common.LogText("UpdateVideoTasks fail: %s", err))
 	}
+}
+
+func taskPollingPluginGroupKey(task *model.Task) string {
+	if task == nil || task.PrivateData.Execution == nil || task.PrivateData.Execution.TaskPlugin == nil {
+		return ""
+	}
+	tp := task.PrivateData.Execution.TaskPlugin
+	return fmt.Sprintf("%s@%s#%d", tp.Key, tp.Version, tp.Generation)
 }
 
 func UpdateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, taskChannelM map[int][]string, taskM map[string]*model.Task) error {
@@ -307,9 +339,24 @@ func UpdateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, task
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err := updateBatchTasks(ctx, adaptor, channelId, taskIds, taskM)
-		if err != nil {
-			logger.LogError(ctx, common.LogText("channel #%d failed to update async tasks: %s", channelId, err.Error()))
+		// Partition tasks on the same channel by pinned (pluginKey, pluginVersion, generation)
+		// so concurrent plugin upgrades never mix task versions in one batch poll.
+		groupOrder := make([]string, 0, 1)
+		grouped := make(map[string][]string, 1)
+		for _, id := range taskIds {
+			gk := taskPollingPluginGroupKey(taskM[id])
+			if _, exists := grouped[gk]; !exists {
+				groupOrder = append(groupOrder, gk)
+			}
+			grouped[gk] = append(grouped[gk], id)
+		}
+		for _, gk := range groupOrder {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err := updateBatchTasks(ctx, adaptor, channelId, grouped[gk], taskM); err != nil {
+				logger.LogError(ctx, common.LogText("channel #%d failed to update async tasks: %s", channelId, err.Error()))
+			}
 		}
 	}
 	return ctx.Err()
@@ -365,8 +412,19 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		if pinned := GetTaskAdaptorForTaskFunc(tasks[0], tasks[0].Platform); pinned != nil {
 			if pinnedBatch, ok := pinned.(BatchTaskPollingAdaptor); ok && pinnedBatch.FetchMode() == "batch" {
 				adaptor = pinnedBatch
+			} else {
+				pinned.Init(info)
+				for _, taskID := range taskIds {
+					if err := updateVideoSingleTask(ctx, pinned, ch, taskID, taskM); err != nil {
+						logger.LogError(ctx, common.LogText("Failed to update pinned task %s: %s", taskID, err.Error()))
+					}
+				}
+				return nil
 			}
 		}
+	}
+	if adaptor == nil {
+		return fmt.Errorf("batch task adaptor not found for channel %d", channelId)
 	}
 	adaptor.Init(info)
 	pollCtx, cancel := TaskPollContext(ctx)
@@ -553,19 +611,18 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 		return fmt.Errorf("CacheGetChannel failed: %w", err)
 	}
 	adaptor := GetTaskAdaptorFunc(platform)
-	if adaptor == nil {
-		return fmt.Errorf("video adaptor not found")
+	if adaptor != nil {
+		info := &relaycommon.RelayInfo{}
+		info.ChannelMeta = &relaycommon.ChannelMeta{
+			ChannelType:     cacheGetChannel.Type,
+			ChannelId:       cacheGetChannel.Id,
+			ChannelBaseUrl:  cacheGetChannel.GetBaseURL(),
+			ChannelSetting:  cacheGetChannel.GetSetting(),
+			HeadersOverride: cacheGetChannel.GetHeaderOverride(),
+		}
+		info.ApiKey = cacheGetChannel.Key
+		adaptor.Init(info)
 	}
-	info := &relaycommon.RelayInfo{}
-	info.ChannelMeta = &relaycommon.ChannelMeta{
-		ChannelType:     cacheGetChannel.Type,
-		ChannelId:       cacheGetChannel.Id,
-		ChannelBaseUrl:  cacheGetChannel.GetBaseURL(),
-		ChannelSetting:  cacheGetChannel.GetSetting(),
-		HeadersOverride: cacheGetChannel.GetHeaderOverride(),
-	}
-	info.ApiKey = cacheGetChannel.Key
-	adaptor.Init(info)
 	disablePollingSleep := cacheGetChannel.GetOtherSettings().DisableTaskPollingSleep
 	for i, taskId := range taskIds {
 		if ctx.Err() != nil {
@@ -622,6 +679,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 			adaptor = pinned
 		}
 	}
+	if adaptor == nil {
+		return fmt.Errorf("video adaptor not found")
+	}
 	key := ch.Key
 
 	privateData := task.PrivateData
@@ -666,9 +726,11 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	taskResult := &relaycommon.TaskInfo{}
-	// try parse as New API response format
+	isPluginTask := task.PrivateData.Execution != nil && task.PrivateData.Execution.TaskPlugin != nil
+	// try parse as New API response format for non-plugin adaptors only; JS plugins
+	// handle both vendor and new_api payloads in ParseTaskResult and run extractUsageOnComplete.
 	var responseItems taskdto.TaskResponse[model.Task]
-	if err = common.Unmarshal(responseBody, &responseItems); err == nil && responseItems.IsSuccess() {
+	if !isPluginTask && common.Unmarshal(responseBody, &responseItems) == nil && responseItems.IsSuccess() && responseItems.Data.Status != "" {
 		logger.LogDebug(ctx, "updateVideoSingleTask parsed as new api response format: %+v", responseItems)
 		t := responseItems.Data
 		taskResult.TaskID = t.TaskID

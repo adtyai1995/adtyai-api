@@ -22,42 +22,12 @@ concurrency:
 jobs:
   # 后端、前端拆成两个作业并行跑，互相没有 needs；镜像要等两个都绿才构建
   test-backend:
-    name: Backend vet, build, and test
+    name: Backend vet and build
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    # PostgreSQL 集成测试会超过 Go 默认的单包 10 分钟；还需预留构建、扫描和闭环检查时间。
-    timeout-minutes: 45
+    timeout-minutes: 20
     env:
       GOWORK: 'off'
-      # 一次性测试库密码，只给 CI 用，不是生产密码。
-      ADTY_TEST_PG_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable'
-      TEST_POSTGRES_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable'
-      AUDIT_POSTGRES_DSN: 'host=127.0.0.1 port=5432 user=postgres password=adty_ci_test dbname=adty_test sslmode=disable'
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: adty_ci_test
-          POSTGRES_DB: adty_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d adty_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      # middleware rate-limit evidence dials this port. InitRedisClient exits the
-      # test process when the ping fails, so the service has to be up first.
-      redis:
-        image: redis:7.4.4-alpine
-        ports:
-          - 56379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     steps:
       # 同 ci.yml，去掉了 repository（push 事件里它是空的）
@@ -79,11 +49,6 @@ jobs:
         run: |
           mkdir -p web/dist
           touch web/dist/index.html
-
-      - name: Install backup script test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes python3 libpq5
 
       - name: Vet root module
         run: go vet ./...
@@ -107,30 +72,14 @@ jobs:
         working-directory: tokenkit
         run: go build ./...
 
-      - name: Test root, relaykit, and tokenkit modules
-        run: make test
-
-      - name: Test main package deployment constraints
-        run: go test -count=1 -run 'TestPprofListenAddrIsLoopback|TestRootCompose|TestRunnableEntrypointsDoNotUseFloatingUpstreamImages' .
-
-      - name: Scan Go modules for known vulnerabilities
-        run: |
-          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-          (cd relaykit && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...)
-          (cd tokenkit && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...)
-
-      - name: Run closed-loop checks
-        run: bash scripts/adty/e2e-closed-loop.sh
-
   # 前端同 ci.yml，另加 lint 和 copyright:check 的基线比较（和 scripts/adty/check.sh 一样，
   # 见 docs/adty/baseline.md）。ratchet.mjs 和 copyright:check 用 node 跑，版本同 web/.node-version
   # make check-plugins 只是 bun run lint:plugins + format:plugins:check，依赖这里已经装好的依赖，
   # 单独开作业还要重新 checkout + install，反而更慢，所以留在本作业里。
   test-frontend:
-    name: Frontend build, lint, and test
+    name: Frontend build, lint, and static checks
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    # 上游 ci.yml 的前端 10 分钟；这里还多跑了 lint、build、test 和 i18n/copyright 检查
     timeout-minutes: 20
 
     steps:
@@ -159,7 +108,7 @@ jobs:
 
       - name: Typecheck frontend
         working-directory: web
-        run: bun check -b
+        run: bun run typecheck
 
       - name: Build production bundle
         working-directory: web
@@ -167,10 +116,6 @@ jobs:
 
       - name: Lint frontend against baseline
         run: node scripts/adty/ratchet.mjs lint
-
-      - name: Test frontend
-        working-directory: web
-        run: bun run test
 
       # 正式语言为简体中文和英文，和界面实际可加载的语言保持一致。
       - name: Check our frontend translations

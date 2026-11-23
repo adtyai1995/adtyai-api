@@ -445,7 +445,11 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 		return snap, nil
 	}
 	bonusUSD := faceUSD.Mul(rateDec).Round(6)
-	bonusQuota := bonusUSD.Mul(common.QuotaPerUnitDecimal()).Floor().IntPart()
+	bonusQuotaInt, err := common.WalletQuotaFromDecimalStrict(bonusUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
+	if err != nil {
+		return snap, err
+	}
+	bonusQuota := int64(bonusQuotaInt)
 	if !bonusUSD.IsPositive() || bonusQuota <= 0 {
 		return snap, nil
 	}
@@ -508,6 +512,14 @@ func verifyTrustedBonusSiteTx(tx *gorm.DB, siteID int) error {
 	return nil
 }
 
+var bonusLockForUpdateFn func(*gorm.DB) *gorm.DB
+
+// RegisterBonusLockForUpdate injects model.AdtyLockForUpdate without introducing
+// a package import cycle between model and setting/adty_setting (R1-120).
+func RegisterBonusLockForUpdate(fn func(*gorm.DB) *gorm.DB) {
+	bonusLockForUpdateFn = fn
+}
+
 func loadBonusOptionsTx(tx *gorm.DB, keys []string, lock bool) (map[string]string, error) {
 	out := make(map[string]string, len(keys))
 	db := tx
@@ -525,11 +537,8 @@ func loadBonusOptionsTx(tx *gorm.DB, keys []string, lock bool) (map[string]strin
 		}
 	}
 	q := db.Table("options").Select("key, value").Where("key IN ?", keys).Order("key ASC")
-	if lock && tx != nil {
-		name := tx.Dialector.Name()
-		if name == "postgres" || name == "mysql" {
-			q = q.Clauses(clause.Locking{Strength: "UPDATE"})
-		}
+	if lock && tx != nil && bonusLockForUpdateFn != nil {
+		q = bonusLockForUpdateFn(q)
 	}
 	var rows []struct {
 		Key   string `gorm:"column:key"`
@@ -592,6 +601,16 @@ func marshalBonusSetting(value any) (string, error) {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+// IsBonusMethodValidationError reports whether err is a domain validation error
+// (HTTP 400/403) rather than a database persistence error (HTTP 500) (R1-037).
+func IsBonusMethodValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	_, ok := err.(*bonusMethodError)
+	return ok
 }
 
 // AuthorizeSiteBonusMarginFill lets an authorized site cover a gift shortfall from margin.

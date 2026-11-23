@@ -3,6 +3,7 @@ package controller
 import (
 	"cmp"
 	"errors"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -85,6 +86,7 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 		}
 	}
 	apiHosts := map[int]string{}
+	apiHostPriority := map[int]int{}
 	if len(siteIds) > 0 {
 		var apiDomains []model.AdtySiteDomain
 		if err := model.DB.Select("site_id", "hostname", "status", "managed_by").
@@ -93,9 +95,18 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 			return nil, err
 		}
 		for _, dom := range apiDomains {
-			cur := apiHosts[dom.SiteId]
-			// Prefer active custom/platform API host, otherwise show allocated platform API host.
-			if cur == "" || (dom.Status == model.AdtySiteDomainActive && dom.ManagedBy != "platform") {
+			prio := 1
+			if dom.ManagedBy == "platform" {
+				if dom.Status == model.AdtySiteDomainActive {
+					prio = 3
+				} else {
+					prio = 2
+				}
+			} else if dom.Status == model.AdtySiteDomainActive {
+				prio = 4
+			}
+			if prio > apiHostPriority[dom.SiteId] {
+				apiHostPriority[dom.SiteId] = prio
 				apiHosts[dom.SiteId] = dom.Hostname
 			}
 		}
@@ -106,8 +117,16 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 	}
 	views := make([]adtySiteAdminView, 0, len(sites))
 	for _, site := range sites {
+		apiHost := apiHosts[site.Id]
+		if apiHost == "" {
+			if rawAPI := strings.TrimSpace(service.AdtySiteAPIBaseURL(&site)); rawAPI != "" {
+				if parsed, parseErr := url.Parse(rawAPI); parseErr == nil && parsed.Host != "" {
+					apiHost = parsed.Host
+				}
+			}
+		}
 		view := adtySiteAdminView{AdtySite: site, OwnerUsername: names[site.OwnerUserId], Host: service.AdtySiteDisplayHost(&site),
-			ApiHost: apiHosts[site.Id], Customers: counts[site.Id], AdtySiteMonthTotals: totals[site.Id]}
+			ApiHost: apiHost, Customers: counts[site.Id], AdtySiteMonthTotals: totals[site.Id]}
 		if d, ok := service.AdtySiteCostFactor(&site); ok {
 			view.EffectiveCostFactor = d.String()
 		}

@@ -48,7 +48,7 @@ const TAWK_SCRIPT_ID = 'adty-tawk-script'
 
 // tawk.to property and widget ids are plain tokens; anything else is a typo or
 // an injection attempt and must not reach the script URL.
-const TAWK_ID_PATTERN = /^[A-Za-z0-9_-]+$/
+const TAWK_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
 function officialEmbedSrc(propertyId: string, widgetId: string): string {
   return `https://embed.tawk.to/${encodeURIComponent(propertyId)}/${encodeURIComponent(widgetId)}`

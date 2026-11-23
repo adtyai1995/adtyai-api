@@ -158,7 +158,7 @@ func setupLogin(user *model.User, c *gin.Context) {
 		common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
 		return
 	}
-	challenge, err := service.StartLoginVerification(user, loginMethodFromContext(c))
+	challenge, err := service.StartLoginVerificationOnSite(user, loginMethodFromContext(c), service.AdtyRequestSiteID(c))
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -394,23 +394,106 @@ func Register(c *gin.Context) {
 }
 
 type adminUserResponse struct {
-	*model.User
-	LiveQuota int    `json:"live_quota"`
-	SiteName  string `json:"site_name"`
+	Id                  int                        `json:"id"`
+	Username            string                     `json:"username"`
+	DisplayName         string                     `json:"display_name"`
+	Role                int                        `json:"role"`
+	Status              int                        `json:"status"`
+	Email               string                     `json:"email"`
+	GitHubId            string                     `json:"github_id"`
+	DiscordId           string                     `json:"discord_id"`
+	OidcId              string                     `json:"oidc_id"`
+	WeChatId            string                     `json:"wechat_id"`
+	TelegramId          string                     `json:"telegram_id"`
+	Quota               int                        `json:"quota"`
+	LiveQuota           int                        `json:"live_quota"`
+	UsedQuota           int                        `json:"used_quota"`
+	RequestCount        int                        `json:"request_count"`
+	Group               string                     `json:"group"`
+	DeletedAt           gorm.DeletedAt             `json:"DeletedAt"`
+	LinuxDOId           string                     `json:"linux_do_id"`
+	Setting             string                     `json:"setting"`
+	Remark              string                     `json:"remark,omitempty"`
+	StripeCustomer      string                     `json:"stripe_customer"`
+	CreatedAt           int64                      `json:"created_at"`
+	LastLoginAt         int64                      `json:"last_login_at"`
+	SiteId              int                        `json:"site_id"`
+	SiteName            string                     `json:"site_name"`
+	InheritedFromSiteId int                        `json:"inherited_from_site_id"`
+	StaffSiteId         int                        `json:"staff_site_id"`
+	IsTeamEmployee      bool                       `json:"is_team_employee"`
+	AdminPermissions    map[string]map[string]bool `json:"admin_permissions,omitempty"`
+}
+
+func sanitizeAdminUserSetting(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	var parsed dto.UserSetting
+	if err := common.UnmarshalJsonStr(trimmed, &parsed); err != nil {
+		return ""
+	}
+	parsed.WebhookSecret = ""
+	parsed.WebhookUrl = ""
+	parsed.GotifyToken = ""
+	parsed.GotifyUrl = ""
+	parsed.BarkUrl = ""
+	encoded, err := common.Marshal(parsed)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 func buildAdminUserResponses(users []*model.User) ([]adminUserResponse, error) {
 	siteIDs := make([]int, len(users))
+	userIDs := make([]int, len(users))
 	for i, user := range users {
 		siteIDs[i] = user.SiteId
+		userIDs[i] = user.Id
 	}
 	names, err := service.AdtySiteNames(siteIDs)
 	if err != nil {
 		return nil, err
 	}
+	teamEmployees, err := service.AdtyIndependentTeamEmployeeSet(userIDs)
+	if err != nil {
+		return nil, err
+	}
 	items := make([]adminUserResponse, len(users))
 	for i, user := range users {
-		items[i] = adminUserResponse{User: user, LiveQuota: user.ToBaseUser().Quota, SiteName: names[user.SiteId]}
+		items[i] = adminUserResponse{
+			Id:                  user.Id,
+			Username:            user.Username,
+			DisplayName:         user.DisplayName,
+			Role:                user.Role,
+			Status:              user.Status,
+			Email:               user.Email,
+			GitHubId:            user.GitHubId,
+			DiscordId:           user.DiscordId,
+			OidcId:              user.OidcId,
+			WeChatId:            user.WeChatId,
+			TelegramId:          user.TelegramId,
+			Quota:               user.Quota,
+			LiveQuota:           user.ToBaseUser().Quota,
+			UsedQuota:           user.UsedQuota,
+			RequestCount:        user.RequestCount,
+			Group:               user.Group,
+			DeletedAt:           user.DeletedAt,
+			LinuxDOId:           user.LinuxDOId,
+			Setting:             sanitizeAdminUserSetting(user.Setting),
+			Remark:              user.Remark,
+			StripeCustomer:      user.StripeCustomer,
+			CreatedAt:           user.CreatedAt,
+			LastLoginAt:         user.LastLoginAt,
+			SiteId:              user.SiteId,
+			SiteName:            names[user.SiteId],
+			InheritedFromSiteId: user.InheritedFromSiteId,
+			StaffSiteId:         user.StaffSiteId,
+			IsTeamEmployee:      teamEmployees[user.Id],
+			AdminPermissions:    user.AdminPermissions,
+		}
 	}
 	return items, nil
 }
@@ -934,7 +1017,7 @@ func AdminClearUserBinding(c *gin.Context) {
 		return
 	}
 	if bindingType == "telegram" {
-		_ = revokeUserTelegramBindings(user.Id, "")
+		_ = service.RevokeAllAdtyTelegramBindings(user.Id)
 	}
 
 	recordManageAuditFor(c, user.Id, "user.binding_clear", map[string]any{
@@ -1212,21 +1295,23 @@ func DeleteSelf(c *gin.Context) {
 		}
 		recordUserSecurityAudit(c, c.GetInt("id"), "user.account_delete", params)
 	}()
-	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeAccountDelete}) == nil {
+	identity, ok := middleware.GetStepUpIdentity(c)
+	if !ok {
+		writeSecurityOperationError(c, service.ErrAuthTokenInvalid)
 		return
 	}
-	identity, _ := middleware.GetStepUpIdentity(c)
 	account, err := model.GetUserById(identity.UserID, false)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
 	}
-	code, issued, ok := consumeAccountDeletionCode(c, account.Id, account.Email)
-	if !ok {
+	if _, _, ok := consumeAccountDeletionCode(c, account.Id, account.Email); !ok {
+		return
+	}
+	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeAccountDelete}) == nil {
 		return
 	}
 	if revokedAccessTokens, err = model.DeleteUserForSession(identity); err != nil {
-		common.RestoreVerificationCodeWithKey(accountDeletionCodeKey(account.Id, account.Email), code, common.AccountDeletionPurpose, issued)
 		if writeUserDeleteBlockError(c, err) {
 			return
 		}
@@ -1283,13 +1368,25 @@ func CreateUser(c *gin.Context) {
 		Role:        user.Role, // 保持管理员设置的角色
 	}
 	authzTouched := false
+	var permissionAuditEvents []model.AuditLog
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := cleanUser.InsertWithTx(tx, 0); err != nil {
 			return err
 		}
 		touched, err := updateAdminPermissionsForUserInTx(c, tx, cleanUser.Id, cleanUser.Role, user.AdminPermissions)
 		authzTouched = touched
-		return err
+		if err != nil {
+			return err
+		}
+		if touched && cleanUser.Role >= common.RoleAdminUser && user.AdminPermissions != nil {
+			event, err := appendAdtyPermissionAuditTx(c, tx, cleanUser.Id, cleanUser.Role, authz.PermissionsMap{}, user.AdminPermissions)
+			if err != nil {
+				return err
+			}
+			permissionAuditEvents = append(permissionAuditEvents, event)
+			auditParams["admin_permissions_updated"] = true
+		}
+		return nil
 	}); err != nil {
 		if errors.Is(err, model.ErrUsernameAlreadyTaken) {
 			common.ApiErrorT(c, "Username already exists or has been deleted")
@@ -1297,6 +1394,9 @@ func CreateUser(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	}
+	if len(permissionAuditEvents) > 0 {
+		deliverCommittedAudits(c, permissionAuditEvents)
 	}
 	if authzTouched {
 		if err := authz.ReloadPolicy(); err != nil {
@@ -1360,13 +1460,17 @@ func ManageUser(c *gin.Context) {
 		manageUserQuota(c, req)
 		return
 	}
-	user := model.User{
-		Id: req.Id,
-	}
-	// Fill attributes
-	model.DB.Unscoped().Where(&user).First(&user)
-	if user.Id == 0 {
+	if req.Id <= 0 {
 		common.ApiErrorT(c, "User does not exist")
+		return
+	}
+	var user model.User
+	if err := model.DB.Unscoped().First(&user, req.Id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorT(c, "User does not exist")
+			return
+		}
+		common.ApiError(c, err)
 		return
 	}
 	myRole := c.GetInt("role")
@@ -1424,6 +1528,19 @@ func ManageUser(c *gin.Context) {
 		}
 		if user.Role >= common.RoleAdminUser {
 			common.ApiErrorT(c, "This user is already an administrator")
+			return
+		}
+		if user.SiteId > 0 || user.StaffSiteId > 0 {
+			common.ApiErrorStatus(c, http.StatusForbidden, model.ErrCannotPromoteScopedUser)
+			return
+		}
+		isTeamEmployee, empErr := service.AdtyIsIndependentTeamEmployee(user.Id)
+		if empErr != nil {
+			common.ApiError(c, empErr)
+			return
+		}
+		if isTeamEmployee {
+			common.ApiErrorStatus(c, http.StatusForbidden, model.ErrCannotPromoteScopedUser)
 			return
 		}
 		user.Role = common.RoleAdminUser

@@ -46,9 +46,7 @@ const defaultContentSettings: ContentSettings = {
   'adty_legal_setting.user_agreement': '{}',
   'adty_legal_setting.privacy_policy': '{}',
   'adty_legal_setting.refund_policy': '{}',
-  'adty_legal_setting.site_agreement': '{}',
   'adty_legal_setting.site_customer_terms': '{}',
-  'adty_legal_setting.site_agreement_version': 0,
   'adty_legal_setting.site_customer_terms_version': 0,
 }
 

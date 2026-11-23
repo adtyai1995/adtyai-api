@@ -135,8 +135,8 @@ func AcceptAdtySiteTerms(c *gin.Context) {
 }
 
 // adtyRequireOwnerProof 要求这次站长操作带上有效的二次验证 proof；失败时已经写好响应。
-func adtyRequireOwnerProof(c *gin.Context, action string, target int) bool {
-	return middleware.RequireSecurityProof(c, service.AdtySiteOwnerOperation(action, target)) != nil
+func adtyRequireOwnerProof(c *gin.Context, action string, target int, request ...any) bool {
+	return middleware.RequireSecurityProof(c, service.AdtySiteOwnerOperation(action, target, request...)) != nil
 }
 
 func adtyPathId(c *gin.Context) (int, bool) {
@@ -473,41 +473,6 @@ func GetAdtyOwnerCustomerTopUps(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
-// PostAdtyOwnerTrial 送试用额度：POST /api/adty/site/customers/:id/trial {amount_usd, idempotency_key}，要二次验证。
-func PostAdtyOwnerTrial(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	id, ok := adtyPathId(c)
-	if !ok {
-		return
-	}
-	var body struct {
-		AmountUSD      string `json:"amount_usd"`
-		IdempotencyKey string `json:"idempotency_key"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
-	if err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionTrial, id) {
-		return
-	}
-	grant, err := service.GrantAdtySiteTrial(site.Id, id, amount, body.IdempotencyKey)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	recordUserSecurityAudit(c, c.GetInt("id"), "adty.site.trial", map[string]any{"site_id": site.Id, "customer_id": id, "amount_usd": grant.AmountUSD.String()})
-	common.ApiSuccess(c, grant)
-}
-
 // PostAdtyOwnerCustomerBalance 站长给本站客户手动增加余额：
 // POST /api/adty/site/customers/:id/balance {amount_usd, reason, idempotency_key?}，需二次验证。
 // 优先扣站点可用收益，不足部分自动从超出等级要求保证金底线的溢余保证金中补足。
@@ -542,7 +507,11 @@ func PostAdtyOwnerCustomerBalance(c *gin.Context) {
 		}
 		idemKey = hdr
 	}
-	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionCustomerBalance, id) {
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionCustomerBalance, id, service.AdtyOwnerBalanceCreditDigestInput{
+		AmountUSD:      amount.String(),
+		Reason:         body.Reason,
+		IdempotencyKey: idemKey,
+	}) {
 		return
 	}
 	res, err := service.CreditAdtySiteCustomerBalanceByOwner(site.Id, c.GetInt("id"), id, amount, body.Reason, idemKey)
@@ -629,7 +598,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 		}
 		b.WriteString("day,user_id,kind,reason,revenue_usd,earning_usd,status\n")
 		for _, row := range rows {
-			fmt.Fprintf(&b, "%s,%d,%s,%s,%s,%s,%s\n", row.Day, row.UserId, row.Kind, row.Reason, row.Revenue.StringFixed(2), row.Earning.StringFixed(2), row.Status)
+			fmt.Fprintf(&b, "%s,%d,%s,%s,%s,%s,%s\n", row.Day, row.UserId, row.Kind, adtyCSVField(row.Reason), row.Revenue.StringFixed(2), row.Earning.StringFixed(2), row.Status)
 		}
 	case "stats":
 		stats, err := service.GetAdtyOwnerStats(site.Id, c.GetInt("id"), c.Query("from"), c.Query("to"))
@@ -644,7 +613,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 		}
 	case "customers":
 		var total int64
-		if err := model.DB.Model(&model.User{}).Where("site_id = ?", site.Id).Count(&total).Error; err != nil {
+		if err := model.DB.Model(&model.User{}).Where("site_id = ? AND staff_site_id = 0", site.Id).Count(&total).Error; err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -652,7 +621,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 			return
 		}
 		var users []model.User
-		if err := model.DB.Select("id", "username", "email", "created_at").Where("site_id = ?", site.Id).Order("id").Find(&users).Error; err != nil {
+		if err := model.DB.Select("id", "username", "email", "created_at").Where("site_id = ? AND staff_site_id = 0", site.Id).Order("id").Find(&users).Error; err != nil {
 			common.ApiError(c, err)
 			return
 		}

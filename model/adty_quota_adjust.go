@@ -255,6 +255,13 @@ func AdjustUserQuotaWithLedger(userID, operatorID, operatorRole int, mode string
 			return err
 		}
 		row.ApprovalRef = fmt.Sprintf("financial_adjustment:%d:approved:%d", row.Id, operatorID)
+		if delta < 0 && order.SiteId > 0 && prov.BatchKind == AdtyFundBatchKindPrincipal && AdtyAfterPrincipalReducedTx != nil {
+			// Reducing a subsite customer's principal lot must symmetrically debit
+			// the subsite operating wallet to preserve 1:1 principal backing (R1-007).
+			if err := AdtyAfterPrincipalReducedTx(tx, order.SiteId, -delta, "financial_adjustment", fmt.Sprintf("%d", row.Id), fmt.Sprintf("financial-adjustment:%d:operating_debit", row.Id)); err != nil {
+				return err
+			}
+		}
 		if delta > 0 {
 			if order.SiteId > 0 {
 				if AdtyFundFinancialAdjustmentTx == nil {

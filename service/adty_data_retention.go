@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -758,14 +759,29 @@ func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64, cutoff i
 	return deleted, false, nil
 }
 
-// A crash after unlink is harmless: an absent file also completes the job.
-func cleanExpiredTicketImages(ctx context.Context, limit int) (int64, error) {
-	var after, failed int64
+var adtyPendingTicketAttachmentCleanupOnce sync.Once
+
+// CleanupPendingAdtyTicketAttachments 独立清理 delete_pending = true 的孤儿工单附件，
+// 即使工单保留天数清理未开启也可运行。返回本次成功清理数量与失败数量。
+func CleanupPendingAdtyTicketAttachments(ctx context.Context, limit int) (int64, int64, error) {
+	if model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTicketImage{}) {
+		return 0, 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	var after, cleaned, failed int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return cleaned, failed, err
+		}
 		var images []model.AdtyTicketImage
 		db := model.DB.WithContext(ctx)
-		if err := db.Where("delete_pending=? AND id>?", true, after).Order("id").Limit(limit).Find(&images).Error; err != nil {
-			return failed, err
+		if err := db.Where("COALESCE(delete_pending, false) = true AND id > ?", after).Order("id").Limit(limit).Find(&images).Error; err != nil {
+			return cleaned, failed, err
 		}
 		for _, image := range images {
 			after = image.Id
@@ -775,16 +791,45 @@ func cleanExpiredTicketImages(ctx context.Context, limit int) (int64, error) {
 			}
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				failed++
+				common.SysError(common.LogText("cleanup pending ticket attachment %d failed: %s", image.Id, err.Error()))
 				continue
 			}
-			if err := db.Where("id=? AND delete_pending=?", image.Id, true).Delete(&model.AdtyTicketImage{}).Error; err != nil {
-				return failed, err
+			if err := db.Where("id = ? AND COALESCE(delete_pending, false) = true", image.Id).Delete(&model.AdtyTicketImage{}).Error; err != nil {
+				return cleaned, failed, err
 			}
+			cleaned++
 		}
 		if len(images) < limit {
-			return failed, nil
+			if cleaned > 0 || failed > 0 {
+				common.SysLog(common.LogText("cleaned pending ticket attachments: cleaned=%d failed=%d", cleaned, failed))
+			}
+			return cleaned, failed, nil
 		}
 	}
+}
+
+// StartAdtyPendingTicketAttachmentCleanupTask starts an independent periodic
+// cleanup loop for delete_pending ticket attachments regardless of whether
+// ticket retention cleanup is configured.
+func StartAdtyPendingTicketAttachmentCleanupTask() {
+	adtyPendingTicketAttachmentCleanupOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(10 * time.Minute)
+			defer ticker.Stop()
+			for {
+				if _, _, err := CleanupPendingAdtyTicketAttachments(context.Background(), 200); err != nil {
+					common.SysError(common.LogText("pending ticket attachment cleanup: %s", err.Error()))
+				}
+				<-ticker.C
+			}
+		}()
+	})
+}
+
+// A crash after unlink is harmless: an absent file also completes the job.
+func cleanExpiredTicketImages(ctx context.Context, limit int) (int64, error) {
+	_, failed, err := CleanupPendingAdtyTicketAttachments(ctx, limit)
+	return failed, err
 }
 
 func drainRetentionBatches(ctx context.Context, fn func() (int64, error)) (int64, error) {

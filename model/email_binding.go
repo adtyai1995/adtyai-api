@@ -159,8 +159,14 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 		return nil
 	}
 	for _, mainHost := range mainConfiguredHosts(tx) {
-		if siteID > 0 && host == mainHost {
-			return ErrAuthFlowInvalid
+		if host == mainHost {
+			if siteID > 0 {
+				return ErrAuthFlowInvalid
+			}
+			// R1-011: An exact configured main-site host (website or API host) is
+			// always valid for main-site (siteID == 0) email bindings even when a
+			// reseller site shares the same parent root domain.
+			return nil
 		}
 	}
 	if hasSitesTable {

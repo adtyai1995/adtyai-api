@@ -52,11 +52,14 @@ export type VoucherIssued = {
   code: string
   code_tail: string
   purpose: string
+  status?: string
   source_kind?: string
   frozen_earnings_usd?: string
   frozen_margin_usd?: string
   amount_usd: string
   quota: number
+  replayed?: boolean
+  intent_key?: string
 }
 
 export const VOUCHER_STATUSES = [

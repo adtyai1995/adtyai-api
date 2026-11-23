@@ -80,6 +80,14 @@ export function UserLedgerDialog(props: {
     refund: t('Refund'),
     manual_adjust: t('Manual adjustment'),
     commission_transfer: t('Commission to balance'),
+    topup: t('Top-up'),
+    voucher: t('Recharge code redeemed'),
+    root_expiring_gift: t('Expiring trial gift'),
+    gift_expire: t('Expiring gift cleared'),
+    gift_fulfillment: t('Pending bonus fulfilled'),
+    site_trial: t('Site trial credit'),
+    owner_customer_balance: t('Owner balance credit'),
+    staff_balance: t('Staff balance adjustment'),
   }
 
   let bodyContent: React.ReactNode

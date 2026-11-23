@@ -36,6 +36,11 @@ type AdtyNotificationPublication struct {
 	// 用户会把它当骚扰——改错别字的收益远小于这个代价。
 	// 所以非 0 之后就不再推，哪怕内容改了。
 	TelegramAt int64 `json:"telegram_at" gorm:"not null;default:0"`
+	// TelegramOutboxSeededAt records when Telegram outbox rows were first
+	// enqueued for this publication. Once set, bounded outbox recovery skips
+	// this publication and late-joining team members are never retroactively
+	// pushed historical team announcements.
+	TelegramOutboxSeededAt *int64 `json:"-" gorm:"index"`
 }
 
 var ErrAdtyNotificationConflict = common.NewMessage("This notification was changed elsewhere. Reload and try again")
@@ -43,7 +48,11 @@ var ErrAdtyNotificationConflict = common.NewMessage("This notification was chang
 // UpdateAdtyNotificationPublication uses a conditional write so a stale editor
 // cannot overwrite a revision or restore a withdrawn publication.
 func UpdateAdtyNotificationPublication(row *AdtyNotificationPublication, revision int64) error {
-	result := DB.Model(&AdtyNotificationPublication{}).
+	return UpdateAdtyNotificationPublicationTx(DB, row, revision)
+}
+
+func UpdateAdtyNotificationPublicationTx(tx *gorm.DB, row *AdtyNotificationPublication, revision int64) error {
+	result := tx.Model(&AdtyNotificationPublication{}).
 		// 草稿也能编辑：`draft` 存在的意义就是「还没发出去、随便改」。
 		// 已撤回的不能编辑——那不是编辑对象，是历史记录。
 		Where("id = ? AND issuer_site_id = ? AND revision = ? AND status IN ?", row.Id, row.IssuerSiteId, revision, []string{"published", "draft"}).

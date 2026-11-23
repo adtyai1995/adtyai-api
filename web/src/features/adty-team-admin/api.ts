@@ -183,6 +183,7 @@ export async function creditOwnerTeamBalance(
         'X-Security-Proof': proof,
         'Idempotency-Key': idempotencyKey,
       },
+      singleUseAuthorization: true,
     }
   )
   return requireServerSuccess(res.data).data

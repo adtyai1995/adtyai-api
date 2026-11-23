@@ -153,14 +153,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 						realtimeUsage = realtimeEvent.Response.Usage
 					}
 					if realtimeUsage != nil {
-						usage.TotalTokens += realtimeUsage.TotalTokens
-						usage.InputTokens += realtimeUsage.InputTokens
-						usage.OutputTokens += realtimeUsage.OutputTokens
-						usage.InputTokenDetails.AudioTokens += realtimeUsage.InputTokenDetails.AudioTokens
-						usage.InputTokenDetails.CachedTokens += realtimeUsage.InputTokenDetails.CachedTokens
-						usage.InputTokenDetails.TextTokens += realtimeUsage.InputTokenDetails.TextTokens
-						usage.OutputTokenDetails.AudioTokens += realtimeUsage.OutputTokenDetails.AudioTokens
-						usage.OutputTokenDetails.TextTokens += realtimeUsage.OutputTokenDetails.TextTokens
+						accumulateRealtimeUsage(usage, realtimeUsage)
 						responseUsage := usage
 						usage = &dto.RealtimeUsage{}
 						localUsage = &dto.RealtimeUsage{}
@@ -264,10 +257,14 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	stop()
 
 	if usage.TotalTokens != 0 {
-		_ = preConsumeUsage(c, info, usage, sumUsage)
+		if err := preConsumeUsage(c, info, usage, sumUsage); err != nil {
+			logger.LogError(c, common.LogText("realtime disconnect preConsumeUsage failed: %s", err.Error()))
+		}
 	}
 	if localUsage.TotalTokens != 0 {
-		_ = preConsumeUsage(c, info, localUsage, sumUsage)
+		if err := preConsumeUsage(c, info, localUsage, sumUsage); err != nil {
+			logger.LogError(c, common.LogText("realtime disconnect localUsage preConsumeUsage failed: %s", err.Error()))
+		}
 	}
 
 	return nil, sumUsage
@@ -288,18 +285,58 @@ func writeRealtimeClose(conn *websocket.Conn) {
 	)
 }
 
+func addOptIntPtr(dst **int, src *int) {
+	if src == nil {
+		return
+	}
+	if *dst == nil {
+		v := *src
+		*dst = &v
+		return
+	}
+	**dst += *src
+}
+
+func accumulateRealtimeUsage(dst, src *dto.RealtimeUsage) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.TotalTokens += src.TotalTokens
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.InputTokenDetails.CachedTokens += src.InputTokenDetails.CachedTokens
+	dst.InputTokenDetails.CachedCreationTokens += src.InputTokenDetails.CachedCreationTokens
+	dst.InputTokenDetails.CacheWriteTokens += src.InputTokenDetails.CacheWriteTokens
+	dst.InputTokenDetails.CacheCreationInputTokens += src.InputTokenDetails.CacheCreationInputTokens
+	dst.InputTokenDetails.TextTokens += src.InputTokenDetails.TextTokens
+	dst.InputTokenDetails.AudioTokens += src.InputTokenDetails.AudioTokens
+	dst.InputTokenDetails.ImageTokens += src.InputTokenDetails.ImageTokens
+	if src.InputTokenDetails.CachedTokensDetails != nil {
+		if dst.InputTokenDetails.CachedTokensDetails == nil {
+			dst.InputTokenDetails.CachedTokensDetails = &dto.CachedTokenDetails{}
+		}
+		addOptIntPtr(&dst.InputTokenDetails.CachedTokensDetails.TextTokens, src.InputTokenDetails.CachedTokensDetails.TextTokens)
+		addOptIntPtr(&dst.InputTokenDetails.CachedTokensDetails.ImageTokens, src.InputTokenDetails.CachedTokensDetails.ImageTokens)
+		addOptIntPtr(&dst.InputTokenDetails.CachedTokensDetails.AudioTokens, src.InputTokenDetails.CachedTokensDetails.AudioTokens)
+	}
+	if src.InputTokenDetails.CacheWriteTokensDetails != nil {
+		if dst.InputTokenDetails.CacheWriteTokensDetails == nil {
+			dst.InputTokenDetails.CacheWriteTokensDetails = &dto.CacheWriteTokenDetails{}
+		}
+		dst.InputTokenDetails.CacheWriteTokensDetails.TTL30mTokens += src.InputTokenDetails.CacheWriteTokensDetails.TTL30mTokens
+		dst.InputTokenDetails.CacheWriteTokensDetails.TTL12hTokens += src.InputTokenDetails.CacheWriteTokensDetails.TTL12hTokens
+	}
+	dst.OutputTokenDetails.TextTokens += src.OutputTokenDetails.TextTokens
+	dst.OutputTokenDetails.AudioTokens += src.OutputTokenDetails.AudioTokens
+	dst.OutputTokenDetails.ImageTokens += src.OutputTokenDetails.ImageTokens
+	dst.OutputTokenDetails.ReasoningTokens += src.OutputTokenDetails.ReasoningTokens
+}
+
 func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.RealtimeUsage, totalUsage *dto.RealtimeUsage) error {
 	if usage == nil || totalUsage == nil {
 		return fmt.Errorf("invalid usage pointer")
 	}
 
-	totalUsage.TotalTokens += usage.TotalTokens
-	totalUsage.InputTokens += usage.InputTokens
-	totalUsage.OutputTokens += usage.OutputTokens
-	totalUsage.InputTokenDetails.CachedTokens += usage.InputTokenDetails.CachedTokens
-	totalUsage.InputTokenDetails.TextTokens += usage.InputTokenDetails.TextTokens
-	totalUsage.InputTokenDetails.AudioTokens += usage.InputTokenDetails.AudioTokens
-	totalUsage.OutputTokenDetails.TextTokens += usage.OutputTokenDetails.TextTokens
-	totalUsage.OutputTokenDetails.AudioTokens += usage.OutputTokenDetails.AudioTokens
+	accumulateRealtimeUsage(totalUsage, usage)
 	return service.PreWssConsumeQuota(ctx, info, usage)
 }

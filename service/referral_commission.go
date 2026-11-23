@@ -88,7 +88,8 @@ func adtyReferralSnapshot(userId int) (int, decimal.Decimal) {
 }
 
 func prepareAdtyReferralSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	if ext.IsOwnerBusiness() {
+	// R1-095: Owner business and team top-ups do not generate main-site referral commissions.
+	if ext.IsOwnerBusiness() || ext.TeamId > 0 || ext.Business == model.AdtyBusinessTeamTopup {
 		ext.ReferralAffiliateId, ext.ReferralRate = 0, decimal.Zero
 		return nil
 	}
@@ -104,7 +105,7 @@ func prepareAdtyReferralSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.A
 // adtyReferralAfterCreditTx 在入账的同一个事务里插一条计佣任务。只用 OnConflict DoNothing，
 // 不做可能报错的查询：PostgreSQL 下钩子一出错，整个入账事务都作废（审阅重点 10）。
 func adtyReferralAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	if ext == nil || ext.IsOwnerBusiness() || ext.ReferralAffiliateId == 0 {
+	if ext == nil || ext.IsOwnerBusiness() || ext.TeamId > 0 || ext.Business == model.AdtyBusinessTeamTopup || ext.ReferralAffiliateId == 0 {
 		return nil
 	}
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.ReferralCommissionJob{
@@ -142,11 +143,15 @@ func ProcessAdtyTopUpCommission(tradeNo string) error {
 		if status != common.TopUpStatusSuccess && status != model.TopUpStatusRefunded {
 			return skip("order is " + status)
 		}
-		ext, err := model.GetAdtyTopupOrder(tradeNo)
-		if err != nil {
+		var extRows []model.AdtyTopupOrder
+		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ?", tradeNo).Limit(1).Find(&extRows).Error; err != nil {
 			return err
 		}
-		if ext == nil || ext.ReferralAffiliateId == 0 {
+		var ext *model.AdtyTopupOrder
+		if len(extRows) > 0 {
+			ext = &extRows[0]
+		}
+		if ext == nil || ext.ReferralAffiliateId == 0 || ext.TeamId > 0 || ext.Business == model.AdtyBusinessTeamTopup {
 			return skip("no referral snapshot")
 		}
 		// 退款早于计佣：退掉的本金不计佣，没退的（用户花掉的）照算。全额退本金时跳过。
@@ -593,6 +598,10 @@ func startReferralSettlementTask() {
 		for range ticker.C {
 			if _, err := RunReferralSettlementOnce(time.Now().Unix(), 200); err != nil {
 				common.SysError(common.LogText("referral settlement: %s", err.Error()))
+			}
+			// R1-052: Release covered subsite invite commissions whose observation window has elapsed.
+			if err := ReleaseAdtySiteInviteCommissions(time.Now()); err != nil {
+				common.SysError(common.LogText("site invite commission release: %s", err.Error()))
 			}
 		}
 	}()

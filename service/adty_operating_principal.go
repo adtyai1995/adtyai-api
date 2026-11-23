@@ -1,6 +1,9 @@
 package service
 
 import (
+	"fmt"
+	"sort"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/shopspring/decimal"
@@ -10,6 +13,14 @@ import (
 func init() {
 	model.AdtyAfterPrincipalSpentTx = adtyDebitOperatingPrincipalTx
 	model.AdtyAfterPrincipalRefundedTx = adtyRefundOperatingPrincipalTx
+	model.AdtyAfterPrincipalReducedTx = adtyReduceOperatingPrincipalTx
+}
+
+func adtyReduceOperatingPrincipalTx(tx *gorm.DB, siteID int, quota int64, refType, refID, idemKey string) error {
+	if tx == nil || siteID <= 0 || quota <= 0 {
+		return nil
+	}
+	return adtyMoveOperatingPrincipalTx(tx, siteID, -quota, "principal_adjust_debit", refType, refID, idemKey, false)
 }
 
 func adtyCreditOperatingPrincipalTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
@@ -19,13 +30,103 @@ func adtyCreditOperatingPrincipalTx(tx *gorm.DB, topUp *model.TopUp, ext *model.
 	return adtyMoveOperatingPrincipalTx(tx, ext.SiteId, ext.FaceQuota(), "principal_credit", "topup", ext.TradeNo, "operating:topup:"+ext.TradeNo, false)
 }
 
-// adtyDebitOperatingPrincipalTx 是 `AdtyAfterPrincipalSpentTx` 的实现：把这次
-// 消费里**由站点本金垫付**的那部分从站点运营钱包扣掉。
-//
-// 幂等键必须由 operation key 派生，不能每次现编一个 UUID：结算路径
-// (`ApplyBillingSettlement`) 在事务被重试或进程恢复后被重放，现编 UUID 会让
-// 同一笔消费把运营钱包扣两遍。没有 operation 身份的直接扣费（每次调用都是
-// 一笔真实消费）才退化成随机键。
+func adtyBatchSiteIDTx(tx *gorm.DB, batch *model.AdtyFundBatch) (int, error) {
+	if batch == nil {
+		return 0, nil
+	}
+	// Explicit site_id (including 0 for main-site batches) is authoritative.
+	if batch.SiteId != nil {
+		if *batch.SiteId > 0 {
+			return *batch.SiteId, nil
+		}
+		return 0, nil
+	}
+	if batch.Source == "" {
+		return 0, nil
+	}
+	var orders []model.AdtyTopupOrder
+	if err := tx.Select("site_id").Where("trade_no = ? AND site_id > 0", batch.Source).Limit(1).Find(&orders).Error; err != nil {
+		return 0, err
+	}
+	if len(orders) > 0 && orders[0].SiteId > 0 {
+		return orders[0].SiteId, nil
+	}
+	return 0, nil
+}
+
+// adtyOperatingPrincipalAllocBySiteTx attributes principal consumption for
+// operationKey across actual consumed AdtyFundBatch rows (keyed by operation_id,
+// never source — R1-009). Returns found=true whenever allocation rows exist
+// (even if all principal belonged to main-site site_id=0 batches, so callers
+// never erroneously fall back to InheritedFromSiteId).
+func adtyOperatingPrincipalAllocBySiteTx(tx *gorm.DB, userID int, operationKey string, limitQuota int64) (bySite map[int]int64, found bool, err error) {
+	if tx == nil || userID <= 0 || operationKey == "" || !tx.Migrator().HasTable(&model.AdtyFundAllocation{}) {
+		return nil, false, nil
+	}
+	allocKeys := []string{operationKey}
+	var ops []model.BillingOperation
+	if tx.Migrator().HasTable(&model.BillingOperation{}) {
+		if err := tx.Select("operation_key", "earning_root_key").Where("operation_key = ?", operationKey).Limit(1).Find(&ops).Error; err != nil {
+			return nil, false, err
+		}
+		if len(ops) > 0 && ops[0].EarningRootKey != "" && ops[0].EarningRootKey != operationKey {
+			allocKeys = append(allocKeys, ops[0].EarningRootKey)
+		}
+	}
+	var allocs []model.AdtyFundAllocation
+	if err := tx.Select("batch_id", "kind", "source", "held", "settled").
+		Where("user_id = ? AND operation_id IN ? AND kind = ? AND source <> ?", userID, allocKeys, "principal", "legacy").
+		Order("id ASC").Find(&allocs).Error; err != nil {
+		return nil, false, err
+	}
+	if len(allocs) == 0 {
+		return nil, false, nil
+	}
+	bySite = map[int]int64{}
+	remaining := limitQuota
+	for _, alloc := range allocs {
+		if alloc.BatchId <= 0 {
+			continue
+		}
+		share := alloc.Settled
+		if share <= 0 {
+			share = alloc.Held
+		}
+		if share <= 0 {
+			continue
+		}
+		var batches []model.AdtyFundBatch
+		if err := tx.Select("id", "site_id", "source").Where("id = ?", alloc.BatchId).Limit(1).Find(&batches).Error; err != nil {
+			return nil, false, err
+		}
+		if len(batches) == 0 {
+			continue
+		}
+		found = true
+		siteID, err := adtyBatchSiteIDTx(tx, &batches[0])
+		if err != nil {
+			return nil, false, err
+		}
+		take := share
+		if limitQuota > 0 {
+			if remaining <= 0 {
+				break
+			}
+			if take > remaining {
+				take = remaining
+			}
+			remaining -= take
+		}
+		if siteID > 0 && take > 0 {
+			bySite[siteID] += take
+		}
+	}
+	return bySite, found, nil
+}
+
+// adtyResolveOperatingPrincipalSiteIDTx resolves a single fallback site ID when
+// no AdtyFundAllocation rows exist for the operation. It never attributes a
+// main-site batch to InheritedFromSiteId.
 func adtyResolveOperatingPrincipalSiteIDTx(tx *gorm.DB, userID int, operationKey string) (int, error) {
 	var rootKey string
 	if operationKey != "" {
@@ -59,55 +160,52 @@ func adtyResolveOperatingPrincipalSiteIDTx(tx *gorm.DB, userID int, operationKey
 		if len(ledgers) > 0 && ledgers[0].SiteId > 0 {
 			return ledgers[0].SiteId, nil
 		}
-		allocKeys := []string{operationKey}
-		if rootKey != "" && rootKey != operationKey {
-			allocKeys = append(allocKeys, rootKey)
-		}
-		var allocs []model.AdtyFundAllocation
-		if err := tx.Select("batch_id").Where("user_id = ? AND source IN ?", userID, allocKeys).Order("id ASC").Find(&allocs).Error; err != nil {
-			return 0, err
-		}
-		for _, alloc := range allocs {
-			if alloc.BatchId <= 0 {
-				continue
-			}
-			var batches []model.AdtyFundBatch
-			if err := tx.Select("id", "site_id", "source").Where("id = ?", alloc.BatchId).Limit(1).Find(&batches).Error; err != nil {
-				return 0, err
-			}
-			if len(batches) == 0 {
-				continue
-			}
-			if batches[0].SiteId != nil && *batches[0].SiteId > 0 {
-				return *batches[0].SiteId, nil
-			}
-			if batches[0].Source == "" {
-				continue
-			}
-			var orders []model.AdtyTopupOrder
-			if err := tx.Select("site_id").Where("trade_no = ? AND site_id > 0", batches[0].Source).Limit(1).Find(&orders).Error; err != nil {
-				return 0, err
-			}
-			if len(orders) > 0 && orders[0].SiteId > 0 {
-				return orders[0].SiteId, nil
-			}
-		}
 	}
 	var user model.User
-	if err := tx.Select("id", "site_id", "inherited_from_site_id").First(&user, userID).Error; err != nil {
+	if err := tx.Select("id", "site_id").First(&user, userID).Error; err != nil {
 		return 0, err
 	}
 	if user.SiteId > 0 {
 		return user.SiteId, nil
-	}
-	if user.InheritedFromSiteId > 0 {
-		return user.InheritedFromSiteId, nil
 	}
 	return 0, nil
 }
 
 func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error {
 	if tx == nil || userID <= 0 || principalQuota <= 0 {
+		return nil
+	}
+	refType, err := adtyOperatingRefType(tx, operationKey, "consume")
+	if err != nil {
+		return err
+	}
+	bySite, found, err := adtyOperatingPrincipalAllocBySiteTx(tx, userID, operationKey, principalQuota)
+	if err != nil {
+		return err
+	}
+	if found {
+		if len(bySite) == 0 {
+			// All consumed principal came from main-site (site_id=0) batches.
+			return nil
+		}
+		siteIDs := make([]int, 0, len(bySite))
+		for sid := range bySite {
+			siteIDs = append(siteIDs, sid)
+		}
+		sort.Ints(siteIDs)
+		for _, sid := range siteIDs {
+			q := bySite[sid]
+			if q <= 0 {
+				continue
+			}
+			key := "operating:consume:" + operationKey
+			if len(siteIDs) > 1 {
+				key = fmt.Sprintf("operating:consume:%s:s%d", operationKey, sid)
+			}
+			if err := adtyMoveOperatingPrincipalTx(tx, sid, -q, "principal_consume", refType, operationKey, key, false); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	siteID, err := adtyResolveOperatingPrincipalSiteIDTx(tx, userID, operationKey)
@@ -125,15 +223,98 @@ func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string,
 		refID = operationKey
 	}
 	// Insufficient cover leaves settlement pending for an authorized adjustment.
-	refType, err := adtyOperatingRefType(tx, operationKey, "consume")
-	if err != nil {
-		return err
-	}
 	return adtyMoveOperatingPrincipalTx(tx, siteID, -principalQuota, "principal_consume", refType, refID, key, false)
 }
 
 func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error {
 	if tx == nil || userID <= 0 || principalQuota <= 0 {
+		return nil
+	}
+	refType, err := adtyOperatingRefType(tx, operationKey, "refund")
+	if err != nil {
+		return err
+	}
+	// Prefer exact mirror of previously debited operating wallet ledger rows for this operation.
+	if operationKey != "" && tx.Migrator().HasTable(&model.AdtySiteWalletLedger{}) {
+		refKeys := []string{operationKey}
+		if tx.Migrator().HasTable(&model.BillingOperation{}) {
+			var ops []model.BillingOperation
+			if err := tx.Select("earning_root_key").Where("operation_key = ?", operationKey).Limit(1).Find(&ops).Error; err != nil {
+				return err
+			}
+			if len(ops) > 0 && ops[0].EarningRootKey != "" && ops[0].EarningRootKey != operationKey {
+				refKeys = append(refKeys, ops[0].EarningRootKey)
+			}
+		}
+		var debits []model.AdtySiteWalletLedger
+		if err := tx.Select("site_id", "delta").
+			Where("wallet_type = ? AND type = ? AND ref_id IN ? AND delta < 0", model.AdtySiteWalletOperating, "principal_consume", refKeys).
+			Order("site_id ASC, id ASC").Find(&debits).Error; err != nil {
+			return err
+		}
+		if len(debits) > 0 {
+			bySite := map[int]int64{}
+			for _, d := range debits {
+				if d.SiteId <= 0 {
+					continue
+				}
+				q := d.Delta.Abs().Mul(common.QuotaPerUnitDecimal()).Round(0).IntPart()
+				if q > 0 {
+					bySite[d.SiteId] += q
+				}
+			}
+			siteIDs := make([]int, 0, len(bySite))
+			for sid := range bySite {
+				siteIDs = append(siteIDs, sid)
+			}
+			sort.Ints(siteIDs)
+			remaining := principalQuota
+			for _, sid := range siteIDs {
+				if remaining <= 0 {
+					break
+				}
+				take := min(bySite[sid], remaining)
+				if take <= 0 {
+					continue
+				}
+				key := "operating:refund:" + operationKey
+				if len(siteIDs) > 1 {
+					key = fmt.Sprintf("operating:refund:%s:s%d", operationKey, sid)
+				}
+				if err := adtyMoveOperatingPrincipalTx(tx, sid, take, "principal_refund", refType, operationKey, key, false); err != nil {
+					return err
+				}
+				remaining -= take
+			}
+			return nil
+		}
+	}
+	bySite, found, err := adtyOperatingPrincipalAllocBySiteTx(tx, userID, operationKey, principalQuota)
+	if err != nil {
+		return err
+	}
+	if found {
+		if len(bySite) == 0 {
+			return nil
+		}
+		siteIDs := make([]int, 0, len(bySite))
+		for sid := range bySite {
+			siteIDs = append(siteIDs, sid)
+		}
+		sort.Ints(siteIDs)
+		for _, sid := range siteIDs {
+			q := bySite[sid]
+			if q <= 0 {
+				continue
+			}
+			key := "operating:refund:" + operationKey
+			if len(siteIDs) > 1 {
+				key = fmt.Sprintf("operating:refund:%s:s%d", operationKey, sid)
+			}
+			if err := adtyMoveOperatingPrincipalTx(tx, sid, q, "principal_refund", refType, operationKey, key, false); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	siteID, err := adtyResolveOperatingPrincipalSiteIDTx(tx, userID, operationKey)
@@ -148,10 +329,6 @@ func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string
 	if operationKey != "" {
 		key = "operating:refund:" + operationKey
 		refID = operationKey
-	}
-	refType, err := adtyOperatingRefType(tx, operationKey, "refund")
-	if err != nil {
-		return err
 	}
 	return adtyMoveOperatingPrincipalTx(tx, siteID, principalQuota, "principal_refund", refType, refID, key, false)
 }

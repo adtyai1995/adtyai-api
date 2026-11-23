@@ -65,12 +65,14 @@ import {
   retryDomainAutomation,
   disableSiteSenderDomain,
   getAdminBalanceRequests,
+  getAdminSiteBonusMarginFill,
   getSite,
   getSiteCustomers,
   getSiteStats,
   reviewAdminBalanceRequest,
   resumeSiteSettlement,
   reviewSite,
+  saveAdminSiteBonusMarginFill,
   SITE_ADMIN_PAGE_SIZE,
   siteAdminKeys,
   type AdminBalanceRequest,
@@ -501,6 +503,202 @@ function SiteActions(props: {
   )
 }
 
+function closeMailBatchStatusLabel(
+  status: string,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'active':
+      return t('Active')
+    case 'queued':
+      return t('Queued')
+    case 'sending':
+    case 'running':
+      return t('Sending')
+    case 'completed':
+    case 'done':
+      return t('Completed')
+    case 'retry':
+    case 'retrying':
+      return t('Retrying')
+    case 'failed':
+      return t('Failed')
+    case 'superseded':
+      return t('Superseded')
+    default:
+      return status
+  }
+}
+
+function closeMailRecipientStatusLabel(
+  status: string,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'pending':
+    case 'queued':
+      return t('Pending')
+    case 'sent':
+    case 'delivered':
+    case 'confirmed':
+      return t('Delivered')
+    case 'failed':
+      return t('Failed')
+    case 'review':
+      return t('Needs review')
+    case 'skipped':
+      return t('Skipped')
+    default:
+      return status
+  }
+}
+
+function adminDomainStatusLabel(
+  status: string,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'active':
+      return t('Active')
+    case 'pending':
+      return t('Waiting for DNS')
+    case 'failed':
+      return t('Failed')
+    case 'removed':
+      return t('Removed')
+    case 'disabled':
+      return t('Disabled')
+    default:
+      return status
+  }
+}
+
+function adminDomainSslLabel(
+  status: string,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'active':
+    case 'ready':
+      return t('Active')
+    case 'pending':
+    case 'pending_validation':
+    case 'validating':
+      return t('Pending')
+    case 'failed':
+      return t('Failed')
+    case 'none':
+    case '':
+      return '-'
+    default:
+      return status
+  }
+}
+
+function adminDomainAutomationLabel(
+  state: string,
+  t: (key: string) => string
+): string {
+  switch (state) {
+    case 'queued':
+      return t('Domain automation: Queued')
+    case 'validating':
+      return t('Domain automation: Validating')
+    case 'ready':
+      return t('Domain automation: Ready')
+    case 'retry':
+      return t('Domain automation: Retrying')
+    case 'redirect_only':
+      return t('Domain automation: Redirect only')
+    case 'removed':
+      return t('Domain automation: Removed')
+    default:
+      return state
+  }
+}
+
+function adminSenderStatusLabel(
+  status: string,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'verified':
+      return t('Verified')
+    case 'pending':
+      return t('Waiting for DNS')
+    case 'failed':
+      return t('Verification failed')
+    case 'disabled':
+      return t('Turned off')
+    case 'removing':
+      return t('Removing')
+    default:
+      return status
+  }
+}
+
+function siteAuditActionLabel(
+  action: string,
+  t: (key: string) => string
+): string {
+  switch (action) {
+    case 'open':
+      return t('Open site')
+    case 'approve':
+      return t('Approve')
+    case 'reject':
+      return t('Reject')
+    case 'pause':
+      return t('Pause')
+    case 'resume':
+      return t('Resume')
+    case 'adjust':
+      return t('Adjust')
+    case 'paused_repair':
+      return t('Paused repair')
+    case 'close_request':
+      return t('Request to close this site')
+    case 'close_schedule':
+      return t('Schedule close')
+    case 'close':
+      return t('Close')
+    case 'notice_takedown':
+      return t('Take down notice')
+    case 'customer_review':
+      return t('Review this customer')
+    case 'earning_review':
+      return t('Review earnings')
+    case 'margin.root_credit':
+      return t('Root direct margin credit')
+    case 'customer.balance_credit':
+      return t('Manual customer balance credit')
+    case 'team.balance_credit':
+      return t('Manual team balance credit')
+    case 'tier.principal_adjust':
+      return t('Tier principal adjustment')
+    case 'settlement_resume':
+      return t('Resume settlement')
+    case 'close_mail_retry':
+      return t('Retry')
+    case 'close_mail_delivered':
+      return t('Confirm delivered')
+    case 'report_resolved':
+      return t('Resolve report')
+    case 'staff.create':
+      return t('Create staff account')
+    case 'staff.update':
+      return t('Edit staff account')
+    case 'staff.password':
+      return t('Reset staff password')
+    case 'staff.delete':
+      return t('Delete staff account')
+    case 'staff.customer.disable':
+      return t('Disable customer')
+    default:
+      return action
+  }
+}
+
 function CloseMailPanel({siteId}:{siteId:number}){
  const {t}=useTranslation()
  const [page,setPage]=useState(1)
@@ -514,13 +712,13 @@ function CloseMailPanel({siteId}:{siteId:number}){
  <h3>{t('Closure notification delivery')}</h3>
  {data && <>
  <select aria-label={t('Notification batch')} value={data.batch_id} onChange={e=>{setBatch(Number(e.target.value));setPage(1)}}>
- {data.batches.map(b=><option key={b.id} value={b.id}>#{b.id} · {b.execute_at > 0 ? formatTimestampToDate(b.execute_at) : t('Unknown')} · {b.retry_status}</option>)}
+ {data.batches.map(b=><option key={b.id} value={b.id}>#{b.id} · {b.execute_at > 0 ? formatTimestampToDate(b.execute_at) : t('Unknown')} · {closeMailBatchStatusLabel(b.retry_status, t)}</option>)}
  </select>
  <Label>{t('Reconciliation note')}<Input value={reason} onChange={e=>setReason(e.target.value)}/></Label>
  {data.recipients.map(row=><div key={row.id} className="space-x-2 text-sm">
- <span>{row.email} · {row.status} · {t('Attempts')} {row.attempt_count} {row.last_error}</span>
+ <span>{row.email} · {closeMailRecipientStatusLabel(row.status, t)} · {t('Attempts')} {row.attempt_count} {row.last_error}</span>
  {row.attempts?.length ? <details><summary>{t('Delivery attempts')}</summary><ul>{row.attempts.map(attempt =>
-   <li key={attempt.number}>#{attempt.number} · {attempt.provider} · {attempt.outcome} · {formatTimestampToDate(attempt.started_at)} {attempt.provider_message_id}</li>
+   <li key={attempt.number}>#{attempt.number} · {attempt.provider} · {closeMailRecipientStatusLabel(attempt.outcome, t)} · {formatTimestampToDate(attempt.started_at)} {attempt.provider_message_id}</li>
  )}</ul></details> : null}
  {(row.status==='failed'||row.status==='review')&&data.batches.find(b=>b.id===data.batch_id)?.retry_status!=='superseded' && <>
  <Button variant="outline" disabled={resolve.isPending||!reason.trim()} onClick={()=>resolve.mutate({row,decision:'retry'})}>{t('Retry')}</Button>
@@ -695,10 +893,11 @@ function SiteDomains(props: {
               <span className='text-sm break-all'>
                 <span className='font-mono text-xs'>{domain.hostname}</span> ·{' '}
                 {domain.role === 'base_url' ? t('API address') : t('Website')} ·{' '}
-                {domain.status} · {domain.ssl_status}
+                {adminDomainStatusLabel(domain.status, t)} ·{' '}
+                {adminDomainSslLabel(domain.ssl_status ?? '', t)}
                 {domain.automation_state && (
                   <span className='text-muted-foreground block text-xs'>
-                    {t(`Domain automation: ${domain.automation_state}`)}
+                    {adminDomainAutomationLabel(domain.automation_state, t)}
                   </span>
                 )}
                 {domain.last_error && (
@@ -743,10 +942,10 @@ function SiteDomains(props: {
               className='flex items-center justify-between gap-2'
             >
               <span className='text-sm break-all'>
-                {sender.domain} · {t(sender.status)}
+                {sender.domain} · {adminSenderStatusLabel(sender.status, t)}
                 {sender.cleanup_error && (
                   <span className='block text-xs'>
-                    {t('Cleanup failed')} · {t(sender.cleanup_error)}
+                    {t('Cleanup failed')} · {sender.cleanup_error}
                   </span>
                 )}
                 {!!sender.retry_at && (
@@ -972,6 +1171,11 @@ export function SiteBonusMethodAuth(props: { siteId: number }) {
     queryFn: async () => requireServerSuccess(await getSystemOptions()),
     enabled: isRoot,
   })
+  const marginFill = useQuery({
+    queryKey: siteAdminKeys.list('bonus-margin-fill', { siteId: props.siteId }),
+    queryFn: () => getAdminSiteBonusMarginFill(props.siteId),
+    enabled: isRoot,
+  })
   const save = useMutation({
     mutationFn: async (input: {
       method: 'alipay' | 'wxpay' | 'usdt'
@@ -990,6 +1194,19 @@ export function SiteBonusMethodAuth(props: { siteId: number }) {
     onSuccess: () => {
       toast.success(t('Saved successfully'))
       void queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+    },
+    onError: (err) => handleServerError(err),
+  })
+  const saveMarginFill = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
+        throw new Error(t('No permission to perform this action'))
+      }
+      await saveAdminSiteBonusMarginFill(props.siteId, enabled)
+    },
+    onSuccess: () => {
+      toast.success(t('Saved successfully'))
       void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
     },
     onError: (err) => handleServerError(err),
@@ -1026,6 +1243,21 @@ export function SiteBonusMethodAuth(props: { siteId: number }) {
             />
           ))}
         </div>
+      )}
+      {marginFill.isPending && <LoadingState />}
+      {marginFill.isError && (
+        <ErrorState onRetry={() => void marginFill.refetch()} />
+      )}
+      {marginFill.isSuccess && (
+        <SwitchRow
+          label={t('Allow this site to use margin to cover top-up bonuses')}
+          hint={t(
+            'When enabled, top-up bonuses can draw from the open margin cycle if available earnings are insufficient.'
+          )}
+          checked={marginFill.data.enabled === true}
+          disabled={saveMarginFill.isPending}
+          onCheckedChange={(enabled) => saveMarginFill.mutate(enabled)}
+        />
       )}
     </section>
   )
@@ -1175,7 +1407,9 @@ export function SiteDetailSheet(props: {
                       id: 'action',
                       header: t('Action'),
                       cell: (row) => (
-                        <span className='font-mono text-xs'>{row.action}</span>
+                        <span className='text-xs'>
+                          {siteAuditActionLabel(row.action, t)}
+                        </span>
                       ),
                     },
                     {

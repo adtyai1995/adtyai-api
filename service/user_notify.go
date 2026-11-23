@@ -259,7 +259,18 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 	}
 	now := time.Now().Unix()
 	var liveUser model.User
-	if err := model.DB.Select("id", "email", "role", "status", "setting").Where("id = ?", outbox.UserId).Limit(1).Find(&liveUser).Error; err != nil || liveUser.Id == 0 {
+	if err := model.DB.Select("id", "email", "role", "status", "setting").Where("id = ?", outbox.UserId).Limit(1).Find(&liveUser).Error; err != nil {
+		common.SysLog(common.LogText("failed to query recipient %d for watcher outbox %d: %s", outbox.UserId, outbox.Id, err.Error()))
+		_ = model.DB.Model(outbox).Updates(map[string]any{
+			"status":        AdtyWatcherOutboxFailed,
+			"last_error":    "recipient lookup error: " + err.Error(),
+			"next_retry_at": now + 60,
+			"updated_at":    now,
+		}).Error
+		outbox.Status = AdtyWatcherOutboxFailed
+		return false
+	}
+	if liveUser.Id == 0 {
 		_ = model.DB.Model(outbox).Updates(map[string]any{
 			"status":     AdtyWatcherOutboxRevoked,
 			"last_error": "recipient not found",
@@ -452,12 +463,21 @@ func UpstreamModelUpdateEventID(now int64, changedChannels, failedChannels int) 
 	return fmt.Sprintf("upstream_model_update:%d:%d:%d", now, changedChannels, failedChannels)
 }
 
+const adtyWatcherNoticeListLimit = 100
+
 func adtyWatcherNoticeInboxItems(userID int) []map[string]any {
 	if userID <= 0 || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return nil
 	}
+	q := model.DB.Where("user_id = ?", userID)
+	if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
+		q = q.Where(
+			"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h.key = adty_channel_watcher_notices.read_key OR h.key = 'watcher:' || adty_channel_watcher_notices.read_key))",
+			userID,
+		)
+	}
 	var notices []AdtyChannelWatcherNotice
-	if err := model.DB.Where("user_id = ?", userID).Order("id DESC").Find(&notices).Error; err != nil || len(notices) == 0 {
+	if err := q.Order("id DESC").Limit(adtyWatcherNoticeListLimit).Find(&notices).Error; err != nil || len(notices) == 0 {
 		return nil
 	}
 	items := make([]map[string]any, 0, len(notices))
@@ -500,19 +520,21 @@ func adtyUnreadWatcherNoticeCount(userID, siteID int) int64 {
 	if userID <= 0 || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return 0
 	}
-	var keys []string
-	if err := model.DB.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND read_key <> ''", userID).Pluck("read_key", &keys).Error; err != nil || len(keys) == 0 {
-		return 0
+	q := model.DB.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND read_key <> ''", userID)
+	if model.DB.Migrator().HasTable(&model.AdtyNotificationRead{}) {
+		q = q.Where(
+			"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.site_id = ? AND r.read_key = adty_channel_watcher_notices.read_key)",
+			userID, siteID,
+		)
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtyNotificationRead{}) {
-		return int64(len(keys))
+	if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
+		q = q.Where(
+			"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h.key = adty_channel_watcher_notices.read_key OR h.key = 'watcher:' || adty_channel_watcher_notices.read_key))",
+			userID,
+		)
 	}
-	read, err := model.GetAdtyNotificationReadKeys(userID, siteID, keys)
-	if err != nil {
-		return 0
-	}
-	unread := int64(len(keys) - len(read))
-	if unread < 0 {
+	var unread int64
+	if err := q.Count(&unread).Error; err != nil {
 		return 0
 	}
 	return unread
@@ -561,7 +583,7 @@ func ListAdtyChannelWatcherNoticesForUser(userID int) ([]AdtyChannelWatcherNotic
 	}
 	ensureAdtyChannelWatcherTables()
 	var rows []AdtyChannelWatcherNotice
-	err := model.DB.Where("user_id = ?", userID).Order("id DESC").Find(&rows).Error
+	err := model.DB.Where("user_id = ?", userID).Order("id DESC").Limit(adtyWatcherNoticeListLimit).Find(&rows).Error
 	return rows, err
 }
 

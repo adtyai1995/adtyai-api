@@ -132,6 +132,57 @@ func DeleteAdtyGlossaryTerm(id int64) error {
 	return nil
 }
 
+func adtyMatchedGlossaryTerms(db *gorm.DB, source string) []model.AdtyGlossaryTerm {
+	if db == nil || strings.TrimSpace(source) == "" || !db.Migrator().HasTable(&model.AdtyGlossaryTerm{}) {
+		return nil
+	}
+	var terms []model.AdtyGlossaryTerm
+	if err := db.Where("locale = ?", AdtyOfficialGlossaryLocaleEN).Order("id ASC").Find(&terms).Error; err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(terms))
+	matched := make([]model.AdtyGlossaryTerm, 0, len(terms))
+	for _, term := range terms {
+		src := strings.TrimSpace(term.Source)
+		dst := strings.TrimSpace(term.Target)
+		if src == "" || dst == "" {
+			continue
+		}
+		if _, dup := seen[src]; dup {
+			continue
+		}
+		if strings.Contains(source, src) {
+			seen[src] = struct{}{}
+			term.Source = src
+			term.Target = dst
+			matched = append(matched, term)
+		}
+	}
+	return matched
+}
+
+func buildAdtyTranslationSystemPrompt(source string) string {
+	terms := adtyMatchedGlossaryTerms(model.DB, source)
+	if len(terms) == 0 {
+		return adtyTranslationSystemPrompt
+	}
+	var b strings.Builder
+	b.WriteString(adtyTranslationSystemPrompt)
+	b.WriteString("\nYou must use these exact English glossary translations for the matching Chinese terms: ")
+	for i, term := range terms {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteByte('"')
+		b.WriteString(term.Source)
+		b.WriteString(`" -> "`)
+		b.WriteString(term.Target)
+		b.WriteByte('"')
+	}
+	b.WriteByte('.')
+	return b.String()
+}
+
 func adtyTranslationKeepsGlossary(source, english string) bool {
 	return adtyTranslationKeepsGlossaryWithDB(model.DB, source, english)
 }

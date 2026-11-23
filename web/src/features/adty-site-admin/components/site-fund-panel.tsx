@@ -52,6 +52,54 @@ import {
 } from '../api'
 import { SwitchRow } from './setting-fields'
 
+function fundAnomalyKindLabel(
+  kind: string,
+  t: (key: string) => string
+): string {
+  switch (kind) {
+    case 'balance_ledger_gap':
+      return t('Balance and ledger mismatch')
+    case 'open_shortfall_hold':
+      return t('Open shortfall hold')
+    case 'margin_anomaly':
+      return t('Margin cycle anomaly')
+    case 'duplicate_credit':
+      return t('Duplicate credit')
+    case 'duplicate_refund':
+      return t('Duplicate refund')
+    case 'order_success_unbooked':
+      return t('Successful order unbooked')
+    case 'gift_guarantee_short':
+      return t('Insufficient gift guarantee')
+    case 'earning_supply_mismatch':
+      return t('Earnings and supply cost mismatch')
+    case 'refund_amount_mismatch':
+      return t('Refund amount mismatch')
+    case 'closed_team_topup':
+      return t('Closed team top-up')
+    case 'team_principal_review':
+      return t('Team principal review required')
+    default:
+      return kind
+  }
+}
+
+function dispositionStatusLabel(
+  status: string,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'open':
+      return t('Open')
+    case 'reviewing':
+      return t('Reviewing')
+    case 'closed':
+      return t('Closed')
+    default:
+      return status
+  }
+}
+
 /** Root sees the site anomaly scan and can issue a margin code. Amounts are typed, not suggested. */
 export function SiteFundPanel(props: { siteId: number }) {
   const { t } = useTranslation()
@@ -227,8 +275,8 @@ export function SiteFundPanel(props: { siteId: number }) {
       {anomalies.isSuccess && anomalyKinds.length > 0 && (
         <ul className='flex flex-col gap-1 text-sm'>
           {anomalyKinds.map((kind) => (
-            <li key={kind} className='font-mono text-xs'>
-              {kind}
+            <li key={kind} className='text-xs'>
+              {fundAnomalyKindLabel(kind, t)}
             </li>
           ))}
         </ul>
@@ -319,7 +367,6 @@ export function SiteFundPanel(props: { siteId: number }) {
               {
                 id: reconciled.id,
                 tail: reconciled.code_tail,
-                defaultValue: `Previous issuance request already created code #${reconciled.id} (tail ${reconciled.code_tail}). Full codes are shown once.`,
               }
             )}
           </p>
@@ -332,9 +379,7 @@ export function SiteFundPanel(props: { siteId: number }) {
                 disabled={cancelReconciled.isPending}
                 onClick={() => cancelReconciled.mutate(reconciled.id)}
               >
-                {t('Cancel code and replace', {
-                  defaultValue: 'Cancel code and replace',
-                })}
+                {t('Cancel code and replace')}
               </Button>
             ) : (
               <Button
@@ -347,9 +392,7 @@ export function SiteFundPanel(props: { siteId: number }) {
                   setIntentKey(createVoucherIssuanceIntentKey())
                 }}
               >
-                {t('Prepare replacement code', {
-                  defaultValue: 'Prepare replacement code',
-                })}
+                {t('Prepare replacement code')}
               </Button>
             )}
           </div>
@@ -456,8 +499,10 @@ export function FundReviewPanel(props: { siteId: number }) {
               key={row.id}
               className='flex flex-wrap items-center gap-2 text-sm'
             >
-              <span className='font-mono text-xs'>{row.kind}</span>
-              <span>{row.status}</span>
+              <span className='text-xs'>
+                {fundAnomalyKindLabel(row.kind, t)}
+              </span>
+              <span>{dispositionStatusLabel(row.status, t)}</span>
               {row.difference ? (
                 <span className='tabular-nums'>{row.difference}</span>
               ) : null}

@@ -1,10 +1,3 @@
-import i18next from 'i18next'
-
-import type { SiteWalletLedgerPage } from '@/features/adty-ledger/site-wallet-labels'
-import type {
-  VoucherIssued,
-  VoucherPage,
-} from '@/features/adty-ledger/voucher-labels'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -23,6 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import i18next from 'i18next'
+
+import type { SiteWalletLedgerPage } from '@/features/adty-ledger/site-wallet-labels'
+import type {
+  VoucherIssued,
+  VoucherPage,
+} from '@/features/adty-ledger/voucher-labels'
 import type {
   SettlementSheet,
   SettlementPage,
@@ -917,22 +917,22 @@ export async function cancelAdminVoucher(id: number): Promise<void> {
   resetVoucherIssuanceIntent(id)
 }
 
-export async function getAdminVoucherMarginAuthorization(
+export async function getAdminSiteBonusMarginFill(
   siteId: number
-): Promise<{ site_id: number; allowed: boolean }> {
-  const res = await api.get<ApiResponse<{ site_id: number; allowed: boolean }>>(
-    `${BASE}/vouchers/sites/${siteId}/margin`
+): Promise<{ site_id: number; enabled: boolean }> {
+  const res = await api.get<ApiResponse<{ site_id: number; enabled: boolean }>>(
+    `${BASE}/sites/${siteId}/bonus-margin-fill`
   )
   return requireServerSuccess(res.data).data
 }
 
-export async function saveAdminVoucherMarginAuthorization(
+export async function saveAdminSiteBonusMarginFill(
   siteId: number,
-  allowed: boolean
+  enabled: boolean
 ): Promise<void> {
   const res = await api.put<ApiResponse<unknown>>(
-    `${BASE}/vouchers/sites/${siteId}/margin`,
-    { allowed }
+    `${BASE}/sites/${siteId}/bonus-margin-fill`,
+    { enabled }
   )
   requireServerSuccess(res.data)
 }

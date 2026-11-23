@@ -83,7 +83,7 @@ func adtyRetainedTopUpUSD(order *model.AdtyTopupOrder) decimal.Decimal {
 	if !kept.IsPositive() {
 		return decimal.Zero
 	}
-	return order.FaceUSD.Mul(kept)
+	return order.FaceUSD.Mul(kept).Round(8)
 }
 
 func adtyDayUnix(day string, endOfDay bool, loc *time.Location) int64 {

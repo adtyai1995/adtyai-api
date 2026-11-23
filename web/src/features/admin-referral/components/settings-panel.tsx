@@ -98,6 +98,8 @@ export function SettingsPanel(props: { canWrite: boolean }) {
 
   const labels: Record<MoneyKey | RuleKey, string> = {
     default_rate: t('Default commission rate (%)'),
+    partner_min_rate: t('Minimum partner rate (%)'),
+    partner_max_rate: t('Maximum partner rate (%)'),
     min_withdraw_usd: t('Minimum withdrawal (USD)'),
     usdt_withdraw_fee: t('USDT withdrawal fee (USDT)'),
     cookie_ttl_days: t('Referral cookie (days)'),

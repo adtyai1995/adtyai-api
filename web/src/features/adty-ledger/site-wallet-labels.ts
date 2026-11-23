@@ -54,6 +54,8 @@ export type SiteWallet = {
   currency?: string
   balance: string
   frozen_usd?: string
+  excess_frozen_usd?: string
+  frozen_balance?: string
   required_balance?: string
   cycle_tier_usd?: string
   cycle_used_usd?: string

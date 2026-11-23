@@ -295,9 +295,20 @@ export function DataRetentionSection() {
                 )}
                 {category.min_retention_days ? (
                   <p className='text-dim text-[12.5px]'>
-                    {t('Usage-log cleanup keeps a {{days}}-day safety floor.', {
-                      days: category.min_retention_days,
-                    })}
+                    {(() => {
+                      let floorKey =
+                        'Automatic cleanup keeps a {{days}}-day safety floor.'
+                      if (category.category === 'api_usage_logs') {
+                        floorKey =
+                          'Usage-log cleanup keeps a {{days}}-day safety floor.'
+                      } else if (category.category === 'support_tickets') {
+                        floorKey =
+                          'Support-ticket cleanup keeps a {{days}}-day safety floor.'
+                      }
+                      return t(floorKey, {
+                        days: category.min_retention_days,
+                      })
+                    })()}
                   </p>
                 ) : null}
                 {!category.configured && category.auto_cleanable ? (

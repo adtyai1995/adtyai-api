@@ -77,7 +77,11 @@ func (adtyBEpusdtProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
-	client := *bepusdtHTTPClient()
+	baseClient := adtyVerifiedPaymentClientFromContext(ctx)
+	if baseClient == nil {
+		baseClient = bepusdtHTTPClient()
+	}
+	client := *baseClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	baseTransport := client.Transport
 	if baseTransport == nil {

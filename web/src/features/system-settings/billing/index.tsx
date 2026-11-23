@@ -62,8 +62,6 @@ const defaultBillingSettings: BillingSettings = {
   MinTopUp: 1,
   CustomCallbackAddress: '',
   'payment_setting.amount_options': '',
-  'payment_setting.amount_discount': '',
-  'adty_topup_setting.bonus_rates': '{}',
   'adty_topup_setting.usdt_order_minutes': 15,
   'adty_topup_setting.epay_order_minutes': 10,
   'adty_epay_setting.channel_timeout_seconds': 5,

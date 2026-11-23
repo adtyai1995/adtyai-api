@@ -79,18 +79,19 @@ func adtyStaffGrants(role string, custom *[]string) ([]string, error) {
 // Recheck ownership inside the mutation transaction, including account status,
 // the current agreement and site state. A cached HTTP precheck is insufficient.
 func adtyStaffOwnerTx(tx *gorm.DB, ownerID, siteID int, allowClosing bool) (*model.AdtySite, error) {
-	var owner model.User
-	if err := model.AdtyLockForUpdate(tx).First(&owner, ownerID).Error; err != nil {
-		return nil, err
-	}
-	if owner.Status != common.UserStatusEnabled || owner.StaffSiteId != 0 {
-		return nil, ErrAdtyStaffDenied
-	}
+	// Canonical lock order: AdtySite -> User.
 	var site model.AdtySite
 	if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
 		return nil, err
 	}
 	if site.OwnerUserId != ownerID || !AdtySiteAgreementAccepted(site.AgreementVer) || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && (!allowClosing || site.Status != model.AdtySiteStatusClosing)) {
+		return nil, ErrAdtyStaffDenied
+	}
+	var owner model.User
+	if err := model.AdtyLockForUpdate(tx).First(&owner, ownerID).Error; err != nil {
+		return nil, err
+	}
+	if owner.Status != common.UserStatusEnabled || owner.StaffSiteId != 0 {
 		return nil, ErrAdtyStaffDenied
 	}
 	return &site, nil

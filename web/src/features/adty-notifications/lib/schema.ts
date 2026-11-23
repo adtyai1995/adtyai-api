@@ -22,8 +22,10 @@ const baseNotificationObject = z.object({
   title: z.string().trim().max(120, 'Invalid parameters'),
   content: z.string().trim().max(10000, 'Invalid parameters'),
   kind: z.enum(['platform', 'system', 'maintenance', 'rules']),
-  audience: z.enum(['all_users', 'all_sites', 'site']),
+  audience: z.enum(['all_users', 'all_sites', 'site', 'team', 'user']),
   target_site_id: z.number().int().nonnegative(),
+  target_team_id: z.number().int().nonnegative(),
+  target_user_id: z.number().int().nonnegative(),
   business: z.string().trim().max(200, 'Invalid parameters'),
   sync_telegram: z.boolean(),
   telegram_channel: z.string().trim().max(128, 'Invalid parameters'),
@@ -33,8 +35,9 @@ function refineNotificationTargets(
   value: z.infer<typeof baseNotificationObject>,
   ctx: z.RefinementCtx
 ) {
-  // 勾了同步但没填频道，排进队列也是一条发不出去的投递，前端先挡住。
-  if (value.sync_telegram && value.telegram_channel === '') {
+  const isPrivateTarget = value.audience === 'team' || value.audience === 'user'
+  // 勾了同步但没填频道，排进队列也是一条发不出去的投递，前端先挡住；team/user 走私聊不要求公开频道。
+  if (value.sync_telegram && !isPrivateTarget && value.telegram_channel === '') {
     ctx.addIssue({
       code: 'custom',
       path: ['telegram_channel'],
@@ -46,6 +49,20 @@ function refineNotificationTargets(
       code: 'custom',
       path: ['target_site_id'],
       message: 'Select a site',
+    })
+  }
+  if (value.audience === 'team' && value.target_team_id <= 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['target_team_id'],
+      message: 'Enter a valid team ID',
+    })
+  }
+  if (value.audience === 'user' && value.target_user_id <= 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['target_user_id'],
+      message: 'Enter a valid user ID',
     })
   }
 }
@@ -84,4 +101,6 @@ export const notificationAudienceLabels: Record<
   all_users: 'All users',
   all_sites: 'All sites',
   site: 'Selected site',
+  team: 'Specific team',
+  user: 'Specific user',
 }

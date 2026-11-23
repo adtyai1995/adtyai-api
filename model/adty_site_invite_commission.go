@@ -125,16 +125,16 @@ type AdtySiteInviteCommissionView struct {
 	OfficialStates []AdtySiteCommissionStateAmount `json:"official_states"`
 }
 
-// SplitDecimalByWeights assigns total across positive weights, giving any
-// remainder to the last positive weight. Zero weights stay zero.
+// SplitDecimalByWeights assigns total across positive weights at 1e-8 unit
+// precision using G.9.5 largest-remainder allocation: floor each bucket to 1e-8,
+// then distribute remaining 1e-8 units by descending fractional remainder and
+// ascending bucket index. Zero weights stay zero and no bucket exceeds its weight.
 func SplitDecimalByWeights(total decimal.Decimal, weights []decimal.Decimal) []decimal.Decimal {
 	out := make([]decimal.Decimal, len(weights))
 	sum := decimal.Zero
-	last := -1
-	for i, weight := range weights {
+	for _, weight := range weights {
 		if weight.IsPositive() {
 			sum = sum.Add(weight)
-			last = i
 		}
 	}
 	if !total.IsPositive() || !sum.IsPositive() {
@@ -143,21 +143,63 @@ func SplitDecimalByWeights(total decimal.Decimal, weights []decimal.Decimal) []d
 	if total.GreaterThan(sum) {
 		total = sum
 	}
-	assigned := decimal.Zero
+	scale := decimal.New(1, 8)
+	totalUnits := total.Mul(scale).Floor().IntPart()
+	if totalUnits <= 0 {
+		return out
+	}
+	type bucket struct {
+		idx      int
+		units    int64
+		capUnits int64
+		rem      decimal.Decimal
+	}
+	buckets := make([]bucket, 0, len(weights))
+	var assigned int64
 	for i, weight := range weights {
 		if !weight.IsPositive() {
 			continue
 		}
-		if i == last {
-			out[i] = total.Sub(assigned)
+		capUnits := weight.Mul(scale).Floor().IntPart()
+		raw := decimal.NewFromInt(totalUnits).Mul(weight).Div(sum)
+		floored := raw.Floor().IntPart()
+		if floored > capUnits {
+			floored = capUnits
+		}
+		rem := raw.Sub(decimal.NewFromInt(floored))
+		assigned += floored
+		buckets = append(buckets, bucket{idx: i, units: floored, capUnits: capUnits, rem: rem})
+	}
+	leftover := totalUnits - assigned
+	// Sort by descending fractional remainder, tie-breaking by ascending bucket index (G.9.5).
+	for i := 1; i < len(buckets); i++ {
+		for j := i; j > 0; j-- {
+			cmp := buckets[j].rem.Cmp(buckets[j-1].rem)
+			if cmp > 0 || (cmp == 0 && buckets[j].idx < buckets[j-1].idx) {
+				buckets[j], buckets[j-1] = buckets[j-1], buckets[j]
+			} else {
+				break
+			}
+		}
+	}
+	for leftover > 0 {
+		progressed := false
+		for i := range buckets {
+			if leftover <= 0 {
+				break
+			}
+			if buckets[i].units < buckets[i].capUnits {
+				buckets[i].units++
+				leftover--
+				progressed = true
+			}
+		}
+		if !progressed {
 			break
 		}
-		part := total.Mul(weight).Div(sum).Round(8)
-		if assigned.Add(part).GreaterThan(total) {
-			part = total.Sub(assigned)
-		}
-		out[i] = part
-		assigned = assigned.Add(part)
+	}
+	for _, b := range buckets {
+		out[b.idx] = decimal.NewFromInt(b.units).Div(scale)
 	}
 	return out
 }

@@ -146,7 +146,9 @@ export function useNotifications() {
               page.announcements
                 .filter(
                   (item) =>
-                    /^(publication|ticket-notice):/.test(String(item.id)) &&
+                    /^(publication|ticket-notice|watcher):/.test(
+                      String(item.id)
+                    ) &&
                     input.keys.includes(String(item.read_key)) &&
                     !page.read_keys.includes(String(item.read_key))
                 )
@@ -237,7 +239,7 @@ export function useNotifications() {
         if (userID > 0) {
           if (
             firstPage?.unread_publications !== undefined &&
-            /^(publication|ticket-notice):/.test(String(item.id))
+            /^(publication|ticket-notice|watcher):/.test(String(item.id))
           ) {
             return false
           }

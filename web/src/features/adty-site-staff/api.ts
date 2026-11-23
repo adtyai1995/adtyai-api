@@ -143,11 +143,20 @@ export async function getOwnerBalanceRequests(p: number, status: string) {
 }
 export async function reviewOwnerBalanceRequest(
   id: number,
-  approve: boolean
+  body: { approve: boolean; reason?: string },
+  proof: string
 ): Promise<void> {
+  const trimmedReason = body.reason?.trim()
+  const payload = trimmedReason
+    ? { approve: body.approve, reason: trimmedReason }
+    : { approve: body.approve }
   const response = await api.post<Response<{ reviewed: boolean }>>(
     `/api/adty/site/balance-requests/${id}/review`,
-    { approve }
+    payload,
+    {
+      headers: { 'X-Security-Proof': proof },
+      singleUseAuthorization: true,
+    }
   )
   requireServerSuccess(response.data)
 }

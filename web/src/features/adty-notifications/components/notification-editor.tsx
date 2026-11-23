@@ -69,16 +69,32 @@ export function NotificationEditor(props: {
   const id = useId()
   const client = useQueryClient()
   const [discarding, setDiscarding] = useState(false)
+  const parseTargetId = (raw: string | undefined, prefix: string): number => {
+    if (!raw || !raw.startsWith(prefix)) return 0
+    const parsed = Number.parseInt(raw.slice(prefix.length), 10)
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : 0
+  }
   const form = useForm<NotificationInput>({
     resolver: zodResolver(notificationSchema),
     // 编辑既有公告时后端只回 telegram_channel / telegram_at，没有 sync_telegram
-    // 这一列；这里由「推过没有」反推勾选状态，否则表单字段是 undefined，
+    // 这一列；这里由「推过没有 / 填了频道」反推勾选状态，否则表单字段是 undefined，
     // z.boolean() 会直接判无效、保存按钮永远报错。
     defaultValues: props.row
       ? {
           ...props.row,
-          sync_telegram: (props.row.telegram_at ?? 0) > 0,
-          telegram_channel: props.row.telegram_channel ?? '',
+          target_team_id:
+            props.row.target_team_id ??
+            parseTargetId(props.row.target_site_name, 'team:'),
+          target_user_id:
+            props.row.target_user_id ??
+            parseTargetId(props.row.target_site_name, 'user:'),
+          sync_telegram:
+            (props.row.telegram_at ?? 0) > 0 ||
+            Boolean(props.row.telegram_channel),
+          telegram_channel:
+            props.row.telegram_channel === '@private'
+              ? ''
+              : (props.row.telegram_channel ?? ''),
         }
       : {
           title: '',
@@ -86,6 +102,8 @@ export function NotificationEditor(props: {
           kind: 'platform',
           audience: props.mode === 'owner' ? 'site' : 'all_users',
           target_site_id: props.siteId,
+          target_team_id: 0,
+          target_user_id: 0,
           business: '',
           sync_telegram: false,
           telegram_channel: '',
@@ -114,6 +132,14 @@ export function NotificationEditor(props: {
       return savePublication(props.mode, props.row, {
         ...input,
         target_site_id: input.audience === 'site' ? input.target_site_id : 0,
+        target_team_id:
+          input.audience === 'team' ? Number(input.target_team_id) : 0,
+        target_user_id:
+          input.audience === 'user' ? Number(input.target_user_id) : 0,
+        telegram_channel:
+          input.audience === 'team' || input.audience === 'user'
+            ? ''
+            : input.telegram_channel,
       })
     },
     onSuccess: () => {
@@ -133,7 +159,13 @@ export function NotificationEditor(props: {
     const raw = form.getValues()
     const parsed = notificationDraftSchema.safeParse({
       ...raw,
-      target_site_id: Number(raw.target_site_id),
+      target_site_id: Number(raw.target_site_id) || 0,
+      target_team_id: Number(raw.target_team_id) || 0,
+      target_user_id: Number(raw.target_user_id) || 0,
+      telegram_channel:
+        raw.audience === 'team' || raw.audience === 'user'
+          ? ''
+          : raw.telegram_channel,
     })
     if (!parsed.success) {
       for (const issue of parsed.error.issues) {
@@ -246,12 +278,16 @@ export function NotificationEditor(props: {
               </FieldLabel>
               <NativeSelect
                 id={`${id}-audience`}
-                disabled={save.isPending || props.mode === 'owner'}
+                disabled={save.isPending}
                 {...form.register('audience')}
               >
                 {Object.entries(notificationAudienceLabels)
                   .filter(
-                    ([value]) => props.mode === 'root' || value === 'site'
+                    ([value]) =>
+                      props.mode === 'root' ||
+                      value === 'site' ||
+                      value === 'team' ||
+                      value === 'user'
                   )
                   .map(([value, label]) => (
                     <NativeSelectOption key={value} value={value}>
@@ -260,6 +296,48 @@ export function NotificationEditor(props: {
                   ))}
               </NativeSelect>
             </Field>
+            {audience === 'team' && (
+              <Field data-invalid={!!errors.target_team_id}>
+                <FieldLabel htmlFor={`${id}-team`}>
+                  {t('Target team ID')}
+                </FieldLabel>
+                <Input
+                  id={`${id}-team`}
+                  type='number'
+                  min={1}
+                  step={1}
+                  aria-invalid={!!errors.target_team_id}
+                  disabled={save.isPending}
+                  {...form.register('target_team_id', { valueAsNumber: true })}
+                />
+                <FieldError>
+                  {errors.target_team_id?.message
+                    ? t(errors.target_team_id.message)
+                    : null}
+                </FieldError>
+              </Field>
+            )}
+            {audience === 'user' && (
+              <Field data-invalid={!!errors.target_user_id}>
+                <FieldLabel htmlFor={`${id}-user`}>
+                  {t('Target user ID')}
+                </FieldLabel>
+                <Input
+                  id={`${id}-user`}
+                  type='number'
+                  min={1}
+                  step={1}
+                  aria-invalid={!!errors.target_user_id}
+                  disabled={save.isPending}
+                  {...form.register('target_user_id', { valueAsNumber: true })}
+                />
+                <FieldError>
+                  {errors.target_user_id?.message
+                    ? t(errors.target_user_id.message)
+                    : null}
+                </FieldError>
+              </Field>
+            )}
             {props.mode === 'root' && audience === 'site' && (
               <Field data-invalid={!!errors.target_site_id}>
                 <FieldLabel htmlFor={`${id}-site`}>{t('Site')}</FieldLabel>
@@ -313,26 +391,31 @@ export function NotificationEditor(props: {
                 </Label>
               </div>
             </Field>
-            {syncTelegram && (
-              <Field data-invalid={!!errors.telegram_channel}>
-                <FieldLabel htmlFor={`${id}-telegram-channel`}>
-                  {t('Telegram channel')}
-                </FieldLabel>
-                <Input
-                  id={`${id}-telegram-channel`}
-                  maxLength={128}
-                  placeholder='@your_channel'
-                  aria-invalid={!!errors.telegram_channel}
-                  disabled={save.isPending}
-                  {...form.register('telegram_channel')}
-                />
-                <FieldError>
-                  {errors.telegram_channel?.message
-                    ? t(errors.telegram_channel.message)
-                    : null}
-                </FieldError>
-              </Field>
-            )}
+            {syncTelegram &&
+              (audience === 'team' || audience === 'user' ? (
+                <p className='text-muted-foreground text-sm'>
+                  {t('Will be sent privately to bound recipients via Telegram.')}
+                </p>
+              ) : (
+                <Field data-invalid={!!errors.telegram_channel}>
+                  <FieldLabel htmlFor={`${id}-telegram-channel`}>
+                    {t('Telegram channel')}
+                  </FieldLabel>
+                  <Input
+                    id={`${id}-telegram-channel`}
+                    maxLength={128}
+                    placeholder='@your_channel'
+                    aria-invalid={!!errors.telegram_channel}
+                    disabled={save.isPending}
+                    {...form.register('telegram_channel')}
+                  />
+                  <FieldError>
+                    {errors.telegram_channel?.message
+                      ? t(errors.telegram_channel.message)
+                      : null}
+                  </FieldError>
+                </Field>
+              ))}
             <Field data-invalid={!!errors.business}>
               <FieldLabel htmlFor={`${id}-business`}>
                 {t('Related business')}

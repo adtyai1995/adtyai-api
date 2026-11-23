@@ -18,7 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, EyeOff } from 'lucide-react'
-import { useState, useCallback, useMemo, lazy, Suspense } from 'react'
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  lazy,
+  Suspense,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -50,6 +57,7 @@ import {
   type DashboardSectionId,
   DASHBOARD_DEFAULT_SECTION,
   DASHBOARD_SECTION_IDS,
+  isAdminOnlyDashboardSection,
 } from './section-registry'
 import type {
   DashboardChartPreferences,
@@ -261,10 +269,22 @@ export function Dashboard() {
   const visibleSections = useMemo(
     () =>
       DASHBOARD_SECTION_IDS.filter(
-        (section) => section !== 'overview' && (section !== 'users' || isAdmin)
+        (section) =>
+          section !== 'overview' &&
+          (!isAdminOnlyDashboardSection(section) || isAdmin)
       ),
     [isAdmin]
   )
+  const sectionDenied = !isAdmin && isAdminOnlyDashboardSection(activeSection)
+  useEffect(() => {
+    if (sectionDenied) {
+      void navigate({
+        to: '/dashboard/$section',
+        params: { section: DASHBOARD_DEFAULT_SECTION },
+        replace: true,
+      })
+    }
+  }, [sectionDenied, navigate])
   const handleSectionChange = useCallback(
     (section: string) => {
       void navigate({
@@ -330,7 +350,7 @@ export function Dashboard() {
     ) : null
   const sectionActions = modelActions ?? flowActions
 
-  if (activeSection === 'overview') {
+  if (activeSection === 'overview' || sectionDenied) {
     return <OverviewDashboard />
   }
 

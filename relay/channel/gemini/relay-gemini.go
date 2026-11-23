@@ -567,8 +567,8 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	}
 
 	for _, prediction := range geminiResponse.Predictions {
-		if prediction.RaiFilteredReason != "" {
-			continue // skip filtered image
+		if prediction.RaiFilteredReason != "" || strings.TrimSpace(prediction.BytesBase64Encoded) == "" {
+			continue // skip filtered or empty image
 		}
 		openAIResponse.Data = append(openAIResponse.Data, dto.ImageData{
 			B64Json: prediction.BytesBase64Encoded,
@@ -588,6 +588,9 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	// each image has fixed 258 tokens
 	const imageTokens = 258
 	generatedImages := len(openAIResponse.Data)
+	if info != nil {
+		info.UpdateImageCount(int64(generatedImages))
+	}
 
 	usage := &dto.Usage{
 		PromptTokens:     imageTokens * generatedImages, // each generated image has fixed 258 tokens

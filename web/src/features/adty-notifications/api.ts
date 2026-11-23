@@ -22,13 +22,18 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 import type { NotificationInput } from './lib/schema'
 
 export type NotificationMode = 'root' | 'owner'
-export type Publication = NotificationInput & {
+export type Publication = Omit<
+  NotificationInput,
+  'target_team_id' | 'target_user_id'
+> & {
   id: number
   revision: number
   publisher_id: number
   publisher_name: string
   issuer_site_id: number
   target_site_name: string
+  target_team_id?: number
+  target_user_id?: number
   published_at: number
   status: 'published' | 'withdrawn' | 'draft'
   // 后端回的这两个列让编辑器知道「这条原来发到哪个频道、有没有推过」。

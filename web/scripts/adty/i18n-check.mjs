@@ -156,7 +156,31 @@ const LITERAL_KEYS = new Set([...UPSTREAM_LITERAL_KEYS, ...ADTY_LITERAL_KEYS])
 
 function readTranslations(name) {
   const file = resolve(localesDir, `${name}.json`)
-  return JSON.parse(readFileSync(file, 'utf8')).translation
+  const parsed = JSON.parse(readFileSync(file, 'utf8'))
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).length !== 1 ||
+    !Object.hasOwn(parsed, 'translation') ||
+    !parsed.translation ||
+    typeof parsed.translation !== 'object' ||
+    Array.isArray(parsed.translation)
+  ) {
+    const extraKeys =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? Object.keys(parsed).filter((k) => k !== 'translation')
+        : []
+    console.error(
+      `i18n-check: ${name}.json must contain only the top-level "translation" object${
+        extraKeys.length > 0
+          ? ` (unexpected top-level keys: ${extraKeys.join(', ')})`
+          : ''
+      }`
+    )
+    process.exit(1)
+  }
+  return parsed.translation
 }
 
 const upstreamKeys = new Set(

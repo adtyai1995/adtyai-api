@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"strings"
 
@@ -30,9 +31,18 @@ func adtyIsSessionAPI(path string) bool {
 		strings.HasPrefix(path, "/api/oauth/")
 }
 
-func adtyIsAPIPath(path string) bool {
+func adtyIsLoopbackRemoteAddr(remoteAddr string) bool {
+	host := strings.TrimSpace(remoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func adtyIsAPIPath(method, path string) bool {
 	if generation := jsplugin.DefaultRegistry.Generation(); generation != nil {
-		if _, found := generation.LookupDeclaredRoute(http.MethodGet, path); found {
+		if generation.MatchesRoute(method, path) {
 			return true
 		}
 	}
@@ -70,6 +80,20 @@ func AdtySiteContext() gin.HandlerFunc {
 		cfg := adty_setting.GetResellerSetting()
 		host := service.AdtyNormalizeHost(c.Request.Host)
 		path := c.Request.URL.Path
+		method := c.Request.Method
+		// R1-013: Always allow container-local loopback health/readiness probes even
+		// when ServerAddress is set to a production domain.
+		if (path == "/api/ready" || path == "/api/health") && adtyIsLoopbackRemoteAddr(c.Request.RemoteAddr) {
+			c.Next()
+			return
+		}
+		// R1-013: Before initial /setup completes on a fresh install with default
+		// ServerAddress (localhost) and reseller disabled, allow first-time setup on
+		// the deployment domain.
+		if !cfg.Enabled && !model.IsSetupComplete() && service.AdtyIsDefaultServerAddress() {
+			c.Next()
+			return
+		}
 		if service.AdtyIsMainHost(host) {
 			if adtyIsRelayPath(path) && !service.AdtyHostAllowsRelay(host) {
 				adtyAbortRelayOnWebHost(c)
@@ -82,7 +106,7 @@ func AdtySiteContext() gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		if c.Request.Method == http.MethodGet && path == service.AdtyDomainProbePath {
+		if method == http.MethodGet && path == service.AdtyDomainProbePath {
 			c.Header("Cache-Control", "no-store")
 			identity, err := service.AdtyDomainProbeForHost(host)
 			if err != nil {
@@ -92,10 +116,12 @@ func AdtySiteContext() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusOK, identity)
 			return
 		}
-		if adtyIsAPIPath(path) {
+		if adtyIsAPIPath(method, path) {
 			c.Header("Cache-Control", "private, no-store")
 		}
-		if adtyIsRelayPath(path) && service.AdtySiteForHost(host) != nil && !service.AdtyHostAllowsRelay(host) {
+		// R1-099: Only return api_domain_required when the site is actively serving
+		// customers; closed sites fall through to unified closed-site 403/302 handling.
+		if adtyIsRelayPath(path) && service.AdtySiteServesCustomers(service.AdtySiteForHost(host)) && !service.AdtyHostAllowsRelay(host) {
 			adtyAbortRelayOnWebHost(c)
 			return
 		}
@@ -110,14 +136,20 @@ func AdtySiteContext() gin.HandlerFunc {
 			}
 		}
 		site := service.AdtySiteForHost(host)
-		api := adtyIsAPIPath(path)
+		api := adtyIsAPIPath(method, path)
 		switch {
 		case service.AdtySiteServesCustomers(site):
+			// R1-012: Block all platform administration routes on every subsite domain
+			// (platform subdomains, API subdomains, and custom domains alike).
+			if adtyPlatformSubdomainAdminAPI(path) {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
 			c.Set(service.AdtySiteContextKey, site)
 		case site != nil && site.Status == model.AdtySiteStatusClosed:
 			// Closed websites retain only a redirect to the main-site root.
 			target := service.AdtySiteBaseURL(nil)
-			if !api && target != "" && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) && c.GetHeader("Upgrade") == "" && !service.AdtyIsApiOnlyHost(host) {
+			if !api && target != "" && (method == http.MethodGet || method == http.MethodHead) && c.GetHeader("Upgrade") == "" && !service.AdtyIsApiOnlyHost(host) {
 				c.Header("Cache-Control", "no-store")
 				c.Redirect(http.StatusFound, strings.TrimRight(target, "/")+"/")
 				c.Abort()
@@ -142,11 +174,12 @@ func adtyHandleCustomDomain(c *gin.Context, host string) {
 	}
 	c.Set(service.AdtySiteContextKey, site)
 	path := c.Request.URL.Path
+	method := c.Request.Method
 	isAPIHost := service.AdtyIsApiOnlyHost(host)
 	isCustom := service.AdtyIsCustomDomainHost(host)
 	if !service.AdtySiteServesCustomers(site) {
 		// 已关停的站点域名仅保留页面 302 跳转主站；已关停的 API 域名一律 403 拒绝。
-		if !isAPIHost && site.Status == model.AdtySiteStatusClosed && !adtyIsAPIPath(path) && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) && c.GetHeader("Upgrade") == "" {
+		if !isAPIHost && site.Status == model.AdtySiteStatusClosed && !adtyIsAPIPath(method, path) && (method == http.MethodGet || method == http.MethodHead) && c.GetHeader("Upgrade") == "" {
 			if target := service.AdtySiteBaseURL(nil); target != "" {
 				c.Header("Cache-Control", "no-store")
 				c.Redirect(http.StatusFound, strings.TrimRight(target, "/")+"/")
@@ -158,7 +191,7 @@ func adtyHandleCustomDomain(c *gin.Context, host string) {
 		return
 	}
 	// 自定义域名（网站域名或自定义 API 域名）以及平台 API 域名均拒绝平台级管理接口，
-	// 但承接完整的本站客户端体验（首页、登录、注册、充值、用量、令牌等）；
+	// 但承接完整的本站客户端体验（首页、登录、注册、邮箱绑定、充值、用量、令牌等）；
 	// API 域名同时放行全部模型中转 API 与插件路由。
 	if (isCustom && adtyCustomDomainAdminAPI(path)) || (!isCustom && adtyPlatformSubdomainAdminAPI(path)) {
 		c.AbortWithStatus(http.StatusForbidden)
@@ -187,7 +220,15 @@ func AdtyRequireCurrentSiteTerms() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		required, _ := service.AdtySiteTermsStatus(userID)
+		required, _, err := service.AdtySiteTermsStatusWithError(userID)
+		if err != nil {
+			// R1-062: Distinguish database/lookup failures (503) from genuinely unaccepted terms (403).
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"success": false,
+				"message": "Service temporarily unavailable, please retry later",
+			})
+			return
+		}
 		if required {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"success": false,
@@ -201,11 +242,15 @@ func AdtyRequireCurrentSiteTerms() gin.HandlerFunc {
 
 func adtyPlatformSubdomainAdminAPI(path string) bool {
 	prefixes := []string{
-		"/api/adty/admin", "/api/channel", "/api/option", "/api/deployments",
-		"/api/adty/marketing/admin",
+		"/api/adty/admin", "/api/adty/marketing/admin",
+		"/api/channel", "/api/option", "/api/deployments",
+		"/api/user/admin", "/api/authz", "/api/audit",
+		"/api/performance", "/api/ratio_sync", "/api/task_plugins",
+		"/api/system_task", "/api/system_info", "/api/vendors",
+		"/api/prefill_group", "/api/setup",
 	}
 	for _, prefix := range prefixes {
-		if path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(path, prefix) {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
 			return true
 		}
 	}
@@ -213,19 +258,16 @@ func adtyPlatformSubdomainAdminAPI(path string) bool {
 }
 
 // adtyCustomDomainAdminAPI 是自定义域名上仍然拒绝的平台级管理接口。
-// 其余 /api 路径都按客户端体验放行（登录、注册、充值、用量、令牌等）。
-//
-// /api/oauth 下现在只剩邮箱绑定（第三方登录已删除），它在自定义域名上仍按原规则拒绝。
+// 其余 /api 路径（包括 /api/oauth/email/bind* 邮箱绑定 — R1-011）均按客户端体验放行。
 func adtyCustomDomainAdminAPI(path string) bool {
-	if adtyPlatformSubdomainAdminAPI(path) {
-		return true
-	}
-	return path == "/api/oauth" || strings.HasPrefix(path, "/api/oauth/")
+	return adtyPlatformSubdomainAdminAPI(path)
 }
 
 func adtyIsRelayPath(path string) bool {
-	_, rest, hasMode := strings.Cut(strings.TrimPrefix(path, "/"), "/")
-	if hasMode && strings.HasPrefix(rest, "mj/") {
+	// R1-010: Exclude /api/... so console MJ log endpoints like /api/mj/self are not
+	// misclassified as relay mode-prefixed /:mode/mj/* requests.
+	before, rest, hasMode := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	if hasMode && before != "" && before != "api" && strings.HasPrefix(rest, "mj/") {
 		return true
 	}
 	return strings.HasPrefix(path, "/v1/") || path == "/v1" ||

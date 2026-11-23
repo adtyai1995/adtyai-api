@@ -2,7 +2,6 @@ package service
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,17 +26,22 @@ const (
 	AdtyGroupProbeUserID = 0
 	// AdtyGroupProbeHeader 标记由平台独立探针发起的上游探测请求。
 	AdtyGroupProbeHeader = "X-Adty-Probe-Identity"
+
+	adtyGroupHealthStateMainID    = 1
+	adtyGroupHealthStateRequestID = 2
+	adtyGroupHealthStateProbeID   = 3
 )
 
 var (
-	adtyGroupProbeOnce sync.Once
+	adtyGroupProbeOnce       sync.Once
+	adtyGroupHealthAlertOnce sync.Once
 	// AdtyGroupProbeDispatchFunc 执行单次分组模型上游探活。默认直接用渠道密钥请求上游并分类结果，不经过客户计费链路。
 	AdtyGroupProbeDispatchFunc = defaultAdtyGroupProbeDispatch
 )
 
 func init() {
 	perfmetrics.GroupHealthObserver = observeAdtyGroupHealth
-	adtyMasterTasks = append(adtyMasterTasks, StartAdtyGroupHealthProbes)
+	adtyMasterTasks = append(adtyMasterTasks, StartAdtyGroupHealthProbes, StartAdtyGroupHealthAlerts)
 }
 
 type AdtyGroupHealthView struct {
@@ -111,7 +115,7 @@ func RecordAdtyGroupHealth(siteId int, group, modelName, kind, outcome string, n
 		if err := recordAdtyGroupHealthSampleTx(tx, siteId, group, modelName, kind, outcome, now); err != nil {
 			return err
 		}
-		return touchAdtyGroupHealthHeartbeatTx(tx, now)
+		return touchAdtyGroupHealthHeartbeatTx(tx, kind, now)
 	})
 }
 
@@ -121,10 +125,10 @@ func recordAdtyGroupHealthSampleTx(tx *gorm.DB, siteId int, group, modelName, ki
 	}).Error
 }
 
-func touchAdtyGroupHealthHeartbeatTx(tx *gorm.DB, now time.Time) error {
+func touchAdtyGroupHealthStateRowTx(tx *gorm.DB, id int, now time.Time) error {
 	var state model.AdtyGroupHealthState
-	found := tx.First(&state, 1)
-	state.Id = 1
+	found := tx.First(&state, id)
+	state.Id = id
 	state.HeartbeatAt = now.Unix()
 	if state.SuccessMin == "" {
 		state.SuccessMin = "0.95"
@@ -139,6 +143,20 @@ func touchAdtyGroupHealthHeartbeatTx(tx *gorm.DB, now time.Time) error {
 		return found.Error
 	}
 	return tx.Model(&state).Updates(map[string]any{"heartbeat_at": now.Unix()}).Error
+}
+
+func touchAdtyGroupHealthHeartbeatTx(tx *gorm.DB, kind string, now time.Time) error {
+	if err := touchAdtyGroupHealthStateRowTx(tx, adtyGroupHealthStateMainID, now); err != nil {
+		return err
+	}
+	switch kind {
+	case model.AdtyGroupHealthRequest:
+		return touchAdtyGroupHealthStateRowTx(tx, adtyGroupHealthStateRequestID, now)
+	case model.AdtyGroupHealthProbe:
+		return touchAdtyGroupHealthStateRowTx(tx, adtyGroupHealthStateProbeID, now)
+	default:
+		return nil
+	}
 }
 
 func RecordAdtyGroupProbe(siteId int, group, modelName string, ok bool, now time.Time) error {
@@ -359,15 +377,16 @@ func RunAdtyGroupProbesOnce(now time.Time) (int, error) {
 			probed++
 		}
 	}
+	_ = ReconcileAdtyGroupHealthAlertsOnce(now)
 	return probed, nil
 }
 
-// StartAdtyGroupHealthProbes 在主节点启动周期性分组可用性主动探针（默认关闭自动轮询，可通过 ADTY_GROUP_PROBE_INTERVAL_SECONDS 开启）。
+// StartAdtyGroupHealthProbes 在主节点启动周期性分组可用性主动探针（默认每 300 秒轮询一次，可通过 ADTY_GROUP_PROBE_INTERVAL_SECONDS=0 关闭）。
 func StartAdtyGroupHealthProbes() {
 	if !common.IsMasterNode {
 		return
 	}
-	interval := common.GetEnvOrDefault("ADTY_GROUP_PROBE_INTERVAL_SECONDS", 0)
+	interval := common.GetEnvOrDefault("ADTY_GROUP_PROBE_INTERVAL_SECONDS", 300)
 	if interval <= 0 {
 		return
 	}
@@ -383,6 +402,82 @@ func StartAdtyGroupHealthProbes() {
 			}
 		}()
 	})
+}
+
+// StartAdtyGroupHealthAlerts 在主节点周期性对账分组健康告警，彻底与用户只读 GET 解耦。
+func StartAdtyGroupHealthAlerts() {
+	if !common.IsMasterNode {
+		return
+	}
+	interval := common.GetEnvOrDefault("ADTY_GROUP_HEALTH_ALERT_INTERVAL_SECONDS", 60)
+	if interval <= 0 {
+		return
+	}
+	if interval < 15 {
+		interval = 15
+	}
+	adtyGroupHealthAlertOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(time.Duration(interval) * time.Second)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				_ = ReconcileAdtyGroupHealthAlertsOnce(now)
+			}
+		}()
+	})
+}
+
+// ReconcileAdtyGroupHealthAlertsOnce 在后台统一刷新主站与分站分组健康告警开关状态。
+func ReconcileAdtyGroupHealthAlertsOnce(now time.Time) error {
+	if model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyGroupHealthSample{}) {
+		return nil
+	}
+	siteSet := map[int]struct{}{0: {}}
+	if model.DB.Migrator().HasTable(&model.AdtySite{}) {
+		var siteIDs []int
+		if err := model.DB.Model(&model.AdtySite{}).
+			Where("status IN ?", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).
+			Pluck("id", &siteIDs).Error; err == nil {
+			for _, id := range siteIDs {
+				siteSet[id] = struct{}{}
+			}
+		}
+	}
+	since := now.Add(-24 * time.Hour).Unix()
+	var sampleSites []int
+	if err := model.DB.Model(&model.AdtyGroupHealthSample{}).Distinct("site_id").Where("created_at >= ?", since).Pluck("site_id", &sampleSites).Error; err == nil {
+		for _, id := range sampleSites {
+			siteSet[id] = struct{}{}
+		}
+	}
+	if model.DB.Migrator().HasTable(&model.AdtyGroupHealthAlert{}) {
+		var alertSites []int
+		if err := model.DB.Model(&model.AdtyGroupHealthAlert{}).Distinct("site_id").Where("open = ?", true).Pluck("site_id", &alertSites).Error; err == nil {
+			for _, id := range alertSites {
+				siteSet[id] = struct{}{}
+			}
+		}
+	}
+	siteIDs := make([]int, 0, len(siteSet))
+	for id := range siteSet {
+		siteIDs = append(siteIDs, id)
+	}
+	slices.Sort(siteIDs)
+	for _, siteID := range siteIDs {
+		views, err := listAdtyGroupHealth(siteID, "", now)
+		if err != nil {
+			return err
+		}
+		for _, view := range views {
+			switch view.Status {
+			case model.AdtyGroupHealthDegraded:
+				_ = openAdtyGroupHealthAlert(siteID, view.Group, "degraded")
+			case model.AdtyGroupHealthOK:
+				_ = closeAdtyGroupHealthAlert(siteID, view.Group)
+			}
+		}
+	}
+	return nil
 }
 
 func resolveAdtyGroupProbeChannel(group, modelName string) (*model.Channel, string, string, string, string, error) {
@@ -472,7 +567,7 @@ func defaultAdtyGroupProbeDispatch(_ *model.Channel, modelName, protocol, endpoi
 			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
 		}
 	}
-	body, err := json.Marshal(payload)
+	body, err := common.Marshal(payload)
 	if err != nil {
 		return AdtyGroupProbeResult{Err: err}
 	}
@@ -506,7 +601,7 @@ func defaultAdtyGroupProbeDispatch(_ *model.Channel, modelName, protocol, endpoi
 			Type string `json:"type"`
 		} `json:"error"`
 	}
-	_ = json.Unmarshal(raw, &parsedErr)
+	_ = common.Unmarshal(raw, &parsedErr)
 	return AdtyGroupProbeResult{
 		StatusCode: resp.StatusCode,
 		ErrorCode:  parsedErr.Error.Code,
@@ -518,24 +613,86 @@ func defaultAdtyGroupProbeDispatch(_ *model.Channel, modelName, protocol, endpoi
 // AdtyGroupHealthConfig is what Root tunes for the API key group picker. The
 // defaults match listAdtyGroupHealth when nothing has been saved yet.
 type AdtyGroupHealthConfig struct {
-	SuccessMin   string `json:"success_min"`
-	StaleSeconds int    `json:"stale_seconds"`
-	HeartbeatAt  int64  `json:"heartbeat_at"`
+	SuccessMin         string `json:"success_min"`
+	StaleSeconds       int    `json:"stale_seconds"`
+	HeartbeatAt        int64  `json:"heartbeat_at"`
+	RequestHeartbeatAt int64  `json:"request_heartbeat_at"`
+	ProbeHeartbeatAt   int64  `json:"probe_heartbeat_at"`
+}
+
+type adtyGroupHealthSnapshot struct {
+	SuccessMin         string
+	StaleSeconds       int
+	HeartbeatAt        int64
+	RequestHeartbeatAt int64
+	ProbeHeartbeatAt   int64
+}
+
+func loadAdtyGroupHealthSnapshot() (adtyGroupHealthSnapshot, error) {
+	snap := adtyGroupHealthSnapshot{
+		SuccessMin:   "0.95",
+		StaleSeconds: 6 * 3600,
+	}
+	var rows []model.AdtyGroupHealthState
+	if err := model.DB.Where("id IN ?", []int64{adtyGroupHealthStateMainID, adtyGroupHealthStateRequestID, adtyGroupHealthStateProbeID}).Find(&rows).Error; err != nil {
+		return snap, err
+	}
+	for _, row := range rows {
+		switch row.Id {
+		case adtyGroupHealthStateMainID:
+			if row.SuccessMin != "" {
+				snap.SuccessMin = row.SuccessMin
+			}
+			if row.StaleSeconds > 0 {
+				snap.StaleSeconds = row.StaleSeconds
+			}
+			snap.HeartbeatAt = row.HeartbeatAt
+		case adtyGroupHealthStateRequestID:
+			snap.RequestHeartbeatAt = row.HeartbeatAt
+		case adtyGroupHealthStateProbeID:
+			snap.ProbeHeartbeatAt = row.HeartbeatAt
+		}
+	}
+	if snap.HeartbeatAt > 0 {
+		if snap.RequestHeartbeatAt > snap.HeartbeatAt {
+			snap.RequestHeartbeatAt = snap.HeartbeatAt
+		}
+		if snap.ProbeHeartbeatAt > snap.HeartbeatAt {
+			snap.ProbeHeartbeatAt = snap.HeartbeatAt
+		}
+	}
+	return snap, nil
+}
+
+func adtyGroupHealthCollectorInterruptState(snap adtyGroupHealthSnapshot, now time.Time) (allInterrupted, reqInterrupted, probeInterrupted bool) {
+	nowUnix := now.Unix()
+	staleSec := int64(snap.StaleSeconds)
+	if snap.RequestHeartbeatAt == 0 && snap.ProbeHeartbeatAt == 0 {
+		legacy := snap.HeartbeatAt > 0 && nowUnix-snap.HeartbeatAt > staleSec
+		return legacy, legacy, legacy
+	}
+	reqInterrupted = snap.RequestHeartbeatAt > 0 && nowUnix-snap.RequestHeartbeatAt > staleSec
+	probeInterrupted = snap.ProbeHeartbeatAt > 0 && nowUnix-snap.ProbeHeartbeatAt > staleSec
+	if snap.RequestHeartbeatAt > 0 && snap.ProbeHeartbeatAt > 0 {
+		allInterrupted = reqInterrupted && probeInterrupted
+	} else {
+		allInterrupted = reqInterrupted || probeInterrupted
+	}
+	return allInterrupted, reqInterrupted, probeInterrupted
 }
 
 func GetAdtyGroupHealthConfig() (AdtyGroupHealthConfig, error) {
-	var state model.AdtyGroupHealthState
-	if err := model.DB.Where("id = ?", 1).Limit(1).Find(&state).Error; err != nil {
+	snap, err := loadAdtyGroupHealthSnapshot()
+	if err != nil {
 		return AdtyGroupHealthConfig{}, err
 	}
-	view := AdtyGroupHealthConfig{SuccessMin: state.SuccessMin, StaleSeconds: state.StaleSeconds, HeartbeatAt: state.HeartbeatAt}
-	if view.SuccessMin == "" {
-		view.SuccessMin = "0.95"
-	}
-	if view.StaleSeconds == 0 {
-		view.StaleSeconds = 6 * 3600
-	}
-	return view, nil
+	return AdtyGroupHealthConfig{
+		SuccessMin:         snap.SuccessMin,
+		StaleSeconds:       snap.StaleSeconds,
+		HeartbeatAt:        snap.HeartbeatAt,
+		RequestHeartbeatAt: snap.RequestHeartbeatAt,
+		ProbeHeartbeatAt:   snap.ProbeHeartbeatAt,
+	}, nil
 }
 
 func PutAdtyGroupHealthConfig(successMin string, staleSeconds int, audits ...model.AuditLog) error {
@@ -571,25 +728,52 @@ func PutAdtyGroupHealthConfig(successMin string, staleSeconds int, audits ...mod
 }
 
 func ListAdtyGroupHealthForUser(userId int, userGroup, modelName string, allowed []string, now time.Time) ([]AdtyGroupHealthView, error) {
+	return ListAdtyGroupHealthForUserOnSite(userId, 0, userGroup, modelName, allowed, now)
+}
+
+func ListAdtyGroupHealthForUserOnSite(userId, requestSiteID int, userGroup, modelName string, allowed []string, now time.Time) ([]AdtyGroupHealthView, error) {
 	var user model.User
 	if err := model.DB.Select("id", "site_id").First(&user, userId).Error; err != nil {
 		return nil, err
 	}
-	rows, err := listAdtyGroupHealth(user.SiteId, modelName, now)
+	siteID := requestSiteID
+	if siteID <= 0 {
+		siteID = user.SiteId
+	}
+	rows, err := listAdtyGroupHealth(siteID, modelName, now)
 	if err != nil {
 		return nil, err
 	}
 	allow := map[string]struct{}{}
-	for _, group := range allowed {
+	addAllowed := func(group string) {
+		group = strings.TrimSpace(group)
+		if group == "" || group == "auto" {
+			return
+		}
+		if !SiteGroupAllowed(siteID, group) {
+			return
+		}
+		if user.SiteId > 0 && requestSiteID > 0 && user.SiteId != requestSiteID && !SiteGroupAllowed(user.SiteId, group) {
+			return
+		}
 		allow[group] = struct{}{}
 	}
+	for _, group := range allowed {
+		addAllowed(group)
+	}
 	if userGroup != "" {
-		allow[userGroup] = struct{}{}
+		addAllowed(userGroup)
+	}
+	snap, _ := loadAdtyGroupHealthSnapshot()
+	allInterrupted, _, probeInterrupted := adtyGroupHealthCollectorInterruptState(snap, now)
+	emptyStatus := model.AdtyGroupHealthNoData
+	if allInterrupted || probeInterrupted {
+		emptyStatus = model.AdtyGroupHealthInterrupted
 	}
 	filtered := make([]AdtyGroupHealthView, 0, len(allow))
 	seen := map[string]struct{}{}
 	scope := "platform"
-	if user.SiteId > 0 {
+	if siteID > 0 {
 		scope = "site"
 	}
 	for _, row := range rows {
@@ -604,22 +788,15 @@ func ListAdtyGroupHealthForUser(userId int, userGroup, modelName string, allowed
 			continue
 		}
 		filtered = append(filtered, AdtyGroupHealthView{
-			Group: group, Status: model.AdtyGroupHealthNoData, Scope: scope, Series: adtyHealthSeries(now, nil),
+			Group: group, Status: emptyStatus, Scope: scope, Series: adtyHealthSeries(now, nil),
 		})
 	}
 	return filtered, nil
 }
 
 func listAdtyGroupHealth(siteId int, modelName string, now time.Time) ([]AdtyGroupHealthView, error) {
-	var state model.AdtyGroupHealthState
-	_ = model.DB.First(&state, 1).Error
-	if state.SuccessMin == "" {
-		state.SuccessMin = "0.95"
-	}
-	if state.StaleSeconds == 0 {
-		state.StaleSeconds = 6 * 3600
-	}
-	minRate, _ := decimal.NewFromString(state.SuccessMin)
+	snap, _ := loadAdtyGroupHealthSnapshot()
+	minRate, _ := decimal.NewFromString(snap.SuccessMin)
 	since := now.Add(-24 * time.Hour).Unix()
 	query := model.DB.Where("site_id = ? AND created_at >= ?", siteId, since)
 	if modelName != "" {
@@ -630,16 +807,21 @@ func listAdtyGroupHealth(siteId int, modelName string, now time.Time) ([]AdtyGro
 		return nil, err
 	}
 	type tally struct {
-		success int
-		fail    int
-		refuse  int
-		probeOK int
-		probeNo int
-		updated int64
-		series  map[int64]*AdtyGroupHealthPoint
+		success        int
+		fail           int
+		refuse         int
+		probeOK        int
+		probeNo        int
+		updated        int64
+		requestUpdated int64
+		probeUpdated   int64
+		series         map[int64]*AdtyGroupHealthPoint
 	}
 	grouped := map[string]*tally{}
 	for _, sample := range samples {
+		if siteId > 0 && !SiteGroupAllowed(siteId, sample.GroupName) {
+			continue
+		}
 		row := grouped[sample.GroupName]
 		if row == nil {
 			row = &tally{series: map[int64]*AdtyGroupHealthPoint{}}
@@ -653,12 +835,18 @@ func listAdtyGroupHealth(siteId int, modelName string, now time.Time) ([]AdtyGro
 			row.updated = sample.CreatedAt
 		}
 		if sample.Kind == model.AdtyGroupHealthProbe {
+			if sample.CreatedAt > row.probeUpdated {
+				row.probeUpdated = sample.CreatedAt
+			}
 			if sample.Outcome == model.AdtyGroupHealthSuccess {
 				row.probeOK++
 			} else if sample.Outcome == model.AdtyGroupHealthUpstream {
 				row.probeNo++
 			}
 			continue
+		}
+		if sample.CreatedAt > row.requestUpdated {
+			row.requestUpdated = sample.CreatedAt
 		}
 		window := sample.CreatedAt - (sample.CreatedAt % (15 * 60))
 		point := row.series[window]
@@ -674,58 +862,46 @@ func listAdtyGroupHealth(siteId int, modelName string, now time.Time) ([]AdtyGro
 			point.Fail++
 		}
 	}
-	interrupted := state.HeartbeatAt > 0 && now.Unix()-state.HeartbeatAt > int64(state.StaleSeconds)
+	allInterrupted, _, probeInterrupted := adtyGroupHealthCollectorInterruptState(snap, now)
 	scope := "platform"
 	if siteId > 0 {
 		scope = "site"
 	}
+	nowUnix := now.Unix()
+	staleSec := int64(snap.StaleSeconds)
 	out := make([]AdtyGroupHealthView, 0, len(grouped))
 	for group, row := range grouped {
 		view := AdtyGroupHealthView{Group: group, Status: model.AdtyGroupHealthNoData, Scope: scope, UpdatedAt: row.updated, Series: adtyHealthSeries(now, row.series)}
 		requestTotal := row.success + row.fail
 		view.RequestSamples = requestTotal
 		view.ProbeSamples = row.probeOK + row.probeNo
-		if interrupted {
-			view.Status = model.AdtyGroupHealthInterrupted
-			out = append(out, view)
-			continue
+		reqStatus := HealthSampleStatus(requestTotal, row.requestUpdated, nowUnix, staleSec)
+		probeStatus := HealthSampleStatus(view.ProbeSamples, row.probeUpdated, nowUnix, staleSec)
+		reqFresh := reqStatus == "ok"
+		probeFresh := probeStatus == "ok"
+		if requestTotal > 0 {
+			rate := float64(row.success) / float64(requestTotal)
+			view.RequestSuccessRate = &rate
 		}
 		if view.ProbeSamples > 0 {
 			rate := float64(row.probeOK) / float64(view.ProbeSamples)
 			view.ProbeRate = &rate
 		}
-		if HealthSampleStatus(view.RequestSamples+view.ProbeSamples, row.updated, now.Unix(), int64(state.StaleSeconds)) == "stale" {
-			if requestTotal > 0 {
-				rate := float64(row.success) / float64(requestTotal)
-				view.RequestSuccessRate = &rate
-			}
+		reqDegraded := reqFresh && view.RequestSuccessRate != nil && decimal.NewFromFloat(*view.RequestSuccessRate).LessThan(minRate)
+		probeDegraded := probeFresh && view.ProbeRate != nil && decimal.NewFromFloat(*view.ProbeRate).LessThan(minRate)
+		switch {
+		case allInterrupted:
+			view.Status = model.AdtyGroupHealthInterrupted
+		case reqDegraded || probeDegraded:
+			view.Status = model.AdtyGroupHealthDegraded
+		case reqFresh || probeFresh:
+			view.Status = model.AdtyGroupHealthOK
+		case probeInterrupted:
+			view.Status = model.AdtyGroupHealthInterrupted
+		case reqStatus == "stale" || probeStatus == "stale":
 			view.Status = model.AdtyGroupHealthStale
-			out = append(out, view)
-			continue
-		}
-		if requestTotal == 0 {
-			if view.ProbeRate != nil {
-				if decimal.NewFromFloat(*view.ProbeRate).GreaterThanOrEqual(minRate) {
-					view.Status = model.AdtyGroupHealthOK
-				} else {
-					view.Status = model.AdtyGroupHealthDegraded
-					_ = openAdtyGroupHealthAlert(siteId, group, "degraded")
-				}
-			} else {
-				view.Status = model.AdtyGroupHealthNoData
-			}
-		} else {
-			rate := float64(row.success) / float64(requestTotal)
-			view.RequestSuccessRate = &rate
-			if decimal.NewFromFloat(rate).GreaterThanOrEqual(minRate) {
-				view.Status = model.AdtyGroupHealthOK
-			} else {
-				view.Status = model.AdtyGroupHealthDegraded
-				_ = openAdtyGroupHealthAlert(siteId, group, "degraded")
-			}
-		}
-		if view.Status == model.AdtyGroupHealthOK {
-			_ = closeAdtyGroupHealthAlert(siteId, group)
+		default:
+			view.Status = model.AdtyGroupHealthNoData
 		}
 		out = append(out, view)
 	}

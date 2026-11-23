@@ -211,9 +211,7 @@ export type ContentSettings = {
   'adty_legal_setting.user_agreement': string
   'adty_legal_setting.privacy_policy': string
   'adty_legal_setting.refund_policy': string
-  'adty_legal_setting.site_agreement': string
   'adty_legal_setting.site_customer_terms': string
-  'adty_legal_setting.site_agreement_version': number
   'adty_legal_setting.site_customer_terms_version': number
 }
 
@@ -298,8 +296,6 @@ export type BillingSettings = {
   MinTopUp: number
   CustomCallbackAddress: string
   'payment_setting.amount_options': string
-  'payment_setting.amount_discount': string
-  'adty_topup_setting.bonus_rates': string
   'adty_topup_setting.usdt_order_minutes': number
   'adty_topup_setting.epay_order_minutes': number
   'adty_epay_setting.channel_timeout_seconds': number

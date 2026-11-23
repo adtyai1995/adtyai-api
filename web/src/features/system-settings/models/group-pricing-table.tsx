@@ -195,17 +195,21 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
   const refsText = (id: string) => {
     const refs = adminById.get(id)?.refs
     if (!refs) return '-'
-    return t('{{users}} users · {{tokens}} keys · {{channels}} channels', {
-      users: formatNumber(refs.users, locale),
-      tokens: formatNumber(refs.tokens, locale),
-      channels: formatNumber(refs.channels, locale),
-    })
+    return t(
+      '{{users}} users · {{tokens}} keys · {{channels}} channels · {{sites}} sites',
+      {
+        users: formatNumber(refs.users, locale),
+        tokens: formatNumber(refs.tokens, locale),
+        channels: formatNumber(refs.channels, locale),
+        sites: formatNumber(refs.sites ?? 0, locale),
+      }
+    )
   }
 
   const deleteBlocked = (id: string) => {
     const refs = adminById.get(id)?.refs
     if (!refs || id === DEFAULT_GROUP_ID) return true
-    return refs.users + refs.tokens + refs.channels > 0
+    return refs.users + refs.tokens + refs.channels + (refs.sites ?? 0) > 0
   }
 
   return (
@@ -216,7 +220,7 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
             <CardTitle>{t('Pricing groups')}</CardTitle>
             <CardDescription>
               {t(
-                'Each group has a fixed ID. Rename it in any language without affecting users or keys; to remove a group, migrate its users, keys and channels first.'
+                'Each group has a fixed ID. Rename it in any language without affecting users or keys; to remove a group, migrate its users, keys, channels and sites first.'
               )}
             </CardDescription>
           </div>
@@ -416,7 +420,7 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
                         aria-label={t('Delete group')}
                         title={
                           deleteBlocked(row.id)
-                            ? t('Migrate its users, keys and channels first')
+                            ? t('Migrate its users, keys, channels and sites first')
                             : undefined
                         }
                       >

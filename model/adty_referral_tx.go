@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"gorm.io/gorm"
 )
 
@@ -14,6 +15,10 @@ import (
 // 旧代码在 service 里直接写 clause.Locking 的地方统一改用它。
 
 // AdtyLockForUpdate 给查询加行锁（SQLite 下跳过，和 lockForUpdate 一致）。
+func init() {
+	adty_setting.RegisterBonusLockForUpdate(AdtyLockForUpdate)
+}
+
 func AdtyLockForUpdate(tx *gorm.DB) *gorm.DB {
 	return lockForUpdate(tx)
 }

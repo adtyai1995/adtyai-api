@@ -48,12 +48,12 @@ sudo cp .env.example .env && sudo chmod 600 .env
 | `LOG_SQL_DSN` | 否 | 空（用主库） | 独立日志库，必须是 PostgreSQL 18 |
 | `ADTY_TELEGRAM_ALLOW_NETWORK` | 否 | `1` | 设成 `0` 时进程里没有 Telegram sender：通知和公告同步全部失败，外部只看到「没有消息要发」 |
 | `NODE_NAME` | 否 | `adtyai-node-1` | 节点名，多节点时区分 |
-| `TZ` | 否 | `UTC` | 容器本地时区；业务日切不看它，看后台的 `adty.business_timezone` |
+| `TZ` | 否 | `Asia/Shanghai` | 容器本地时区；业务日切以后台的 `adty.business_timezone` 为准（未设时同样按 `Asia/Shanghai` 零点切日） |
 | `MAX_REQUEST_BODY_MB` | 否 | 128 | 单请求体上限（`common/init.go:190`），要和 Nginx 的 100m 一起考虑 |
 | `ANONYMOUS_REQUEST_BODY_LIMIT_KB` | 否 | 512 | 匿名请求体上限（`common/init.go:191`） |
 | `TASK_PLUGIN_ENABLED` | 否 | true | 任务插件总开关（`common/init.go:198`） |
 | `TASK_PLUGIN_PROTOCOL_TIMEOUT_SECONDS` | 否 | 600 | 客户端等待插件任务的协议超时，超时回 504（`common/init.go:214`） |
-| `ADTY_OFFICIAL_PRICE_SYNC_HOURS` | 否 | 24 | 主节点同步官方价的间隔，最少 1 小时（`service/adty_official_price.go:174`） |
+| `ADTY_GROUP_PROBE_INTERVAL_SECONDS` | 否 | 300 | 主节点分组健康主动探测间隔，单位秒，最少 30 秒，0 表示禁用 |
 | `REFERRAL_SETTLEMENT_INTERVAL_SECONDS` | 否 | 60 | 主节点返佣结算间隔，最少 10 秒（`service/referral_commission.go:534`） |
 | `ADTY_TOPUP_MAINTENANCE_INTERVAL_SECONDS` | 否 | 60 | 主节点充值单维护间隔（`service/adty_topup_task.go:73`） |
 
@@ -241,7 +241,7 @@ sudo docker compose ps adtyai-api                 # 等到 healthy
 
 ## 11. 站长分站（P11）
 
-分站有两种域名来源：平台子域名 `<子域名>.<分站根域名>`，和站长自己的自定义域名。自定义域名本身又按用途分两种：`role=site` 出页面、登录、充值和用量，`role=base_url` 只放行 `/v1`、`/v1beta`、`/mj` 与探活（页面 404，账号接口 403）。两种都走同一台机器、同一个网关，网关按请求的 Host 查站点表识别是哪个站（任务 11.2），Nginx 只要把 Host 原样传过去。下面用 `sites.example.com` 代表分站根域名。
+分站有两种域名来源：平台子域名 `<子域名>.<分站根域名>`，和站长自己的自定义域名。自定义域名本身又按用途分两种：`role=site` 承接页面、登录、充值和用量并拒绝模型调用，`role=base_url` 承接模型中转接口（`/v1`、`/v1beta`、`/mj`、`/pg`）与探活/元信息接口；浏览器访问 `role=base_url` 页面路径时 302 跳转至该站对应的网站域（搜索引擎不收录），API 路径按正常鉴权与业务规则校验。两种都走同一台机器、同一个网关，网关按请求的 Host 查站点表识别是哪个站（任务 11.2），Nginx 只要把 Host 原样传过去。下面用 `sites.example.com` 代表分站根域名。
 
 ### Cloudflare
 

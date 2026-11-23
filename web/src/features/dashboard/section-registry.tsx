@@ -32,11 +32,13 @@ const DASHBOARD_SECTIONS = [
   {
     id: 'models',
     titleKey: 'Model Call Analytics',
+    adminOnly: true,
     build: () => null,
   },
   {
     id: 'flow',
     titleKey: 'Flow',
+    adminOnly: true,
     build: () => null,
   },
   {
@@ -49,7 +51,11 @@ const DASHBOARD_SECTIONS = [
 
 export type DashboardSectionId = (typeof DASHBOARD_SECTIONS)[number]['id']
 
-const ADMIN_ONLY_SECTIONS = new Set<string>(['users'])
+const ADMIN_ONLY_SECTIONS = new Set<string>(['models', 'flow', 'users'])
+
+export function isAdminOnlyDashboardSection(section: string): boolean {
+  return ADMIN_ONLY_SECTIONS.has(section)
+}
 
 const dashboardRegistry = createSectionRegistry<
   DashboardSectionId,

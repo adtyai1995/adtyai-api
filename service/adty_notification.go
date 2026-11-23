@@ -59,6 +59,22 @@ func ListAdtyManagedNotifications(issuerSiteID, start, limit int) ([]model.AdtyN
 	return items, total, err
 }
 
+func adtyNotificationAuditSnapshot(row model.AdtyNotificationPublication) map[string]any {
+	return map[string]any{
+		"id":               row.Id,
+		"issuer_site_id":   row.IssuerSiteId,
+		"audience":         row.Audience,
+		"target_site_id":   row.TargetSiteId,
+		"target_site_name": row.TargetSiteName,
+		"kind":             row.Kind,
+		"title":            row.Title,
+		"business":         row.Business,
+		"status":           row.Status,
+		"revision":         row.Revision,
+		"telegram_channel": row.TelegramChannel,
+	}
+}
+
 func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int, input AdtyNotificationInput, withdraw bool) (*model.AdtyNotificationPublication, error) {
 	issuerID := 0
 	if issuer != nil {
@@ -68,11 +84,13 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 		}
 	}
 	row := model.AdtyNotificationPublication{IssuerSiteId: issuerID}
+	var beforeSnap map[string]any
 	currentStatus := ""
 	if id > 0 {
 		if err := model.DB.Where("id = ? AND issuer_site_id = ?", id, issuerID).First(&row).Error; err != nil {
 			return nil, err
 		}
+		beforeSnap = adtyNotificationAuditSnapshot(row)
 		currentStatus = row.Status
 		if input.Revision <= 0 {
 			return nil, common.NewMessage("Invalid parameters")
@@ -104,7 +122,24 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 	row.UpdatedAt, row.UpdatedBy = time.Now().Unix(), actorID
 	if withdraw {
 		row.Status = "withdrawn"
-		return &row, model.UpdateAdtyNotificationPublication(&row, input.Revision)
+		var auditEntry *model.AuditLog
+		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			if err := model.UpdateAdtyNotificationPublicationTx(tx, &row, input.Revision); err != nil {
+				return err
+			}
+			var auditErr error
+			auditEntry, auditErr = appendAdtyOfficialAuditTx(tx, actorID, issuerID, "notification", strconv.Itoa(row.Id), "adty.notification.withdraw", "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
+			return auditErr
+		})
+		if err != nil {
+			return &row, err
+		}
+		if auditEntry != nil {
+			deliverAdtyCommittedAudit(*auditEntry)
+		} else {
+			writeAdtyOfficialAudit(actorID, issuerID, "notification", strconv.Itoa(row.Id), "adty.notification.withdraw", "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
+		}
+		return &row, nil
 	}
 	input.Title, input.Content, input.Business = strings.TrimSpace(input.Title), strings.TrimSpace(input.Content), strings.TrimSpace(input.Business)
 	sourceContent := normalizeAdtyNotificationSourceContent(row.Id, input.Content)
@@ -145,17 +180,36 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 	} else {
 		row.TelegramChannel = ""
 	}
+	auditAction := "adty.notification.create"
 	if id > 0 {
-		if err := model.UpdateAdtyNotificationPublication(&row, input.Revision); err != nil {
-			return nil, err
+		auditAction = "adty.notification.update"
+	}
+	var auditEntry *model.AuditLog
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if id > 0 {
+			if err := model.UpdateAdtyNotificationPublicationTx(tx, &row, input.Revision); err != nil {
+				return err
+			}
+		} else if err := tx.Create(&row).Error; err != nil {
+			return err
 		}
-	} else if err := model.DB.Create(&row).Error; err != nil {
+		var auditErr error
+		auditEntry, auditErr = appendAdtyOfficialAuditTx(tx, actorID, issuerID, "notification", strconv.Itoa(row.Id), auditAction, "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
+		return auditErr
+	}); err != nil {
 		return nil, err
+	}
+	if auditEntry != nil {
+		deliverAdtyCommittedAudit(*auditEntry)
+	} else {
+		writeAdtyOfficialAudit(actorID, issuerID, "notification", strconv.Itoa(row.Id), auditAction, "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
 	}
 	if row.Status == "published" {
 		produceAdtySevereTodosForPublished(&row)
 		applyAdtyNotificationTranslation(&row, sourceContent, issuerID)
-		pushAdtyNotificationToTelegram(&row, issuer)
+		if err := pushAdtyNotificationToTelegram(&row, issuer); err != nil {
+			common.SysError(common.LogText("push notification %d to telegram failed: %s", row.Id, err.Error()))
+		}
 	}
 	return &row, nil
 }
@@ -265,6 +319,10 @@ func adtyNotificationTranslationKey(id int) string {
 	return fmt.Sprintf("notification:%d", id)
 }
 
+func adtyNotificationTitleTranslationKey(id int) string {
+	return fmt.Sprintf("notification-title:%d", id)
+}
+
 func adtyContainsChinese(text string) bool {
 	for _, r := range text {
 		if unicode.Is(unicode.Han, r) {
@@ -319,16 +377,24 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 	if row == nil || row.Id <= 0 || model.DB == nil {
 		return
 	}
-	sourceText := strings.TrimSpace(sourceContent)
-	if !adtyContainsChinese(sourceText) && !adtyContainsChinese(row.Title) {
+	titleText := strings.TrimSpace(row.Title)
+	bodyText := strings.TrimSpace(sourceContent)
+	titleHasZH := adtyContainsChinese(titleText)
+	bodyHasZH := adtyContainsChinese(bodyText)
+	if !titleHasZH && !bodyHasZH {
 		return
 	}
-	if !adtyContainsChinese(sourceText) {
-		sourceText = strings.TrimSpace(row.Title)
-	}
 	ensureAdtyTranslationTables()
+	if titleHasZH {
+		if _, err := TranslateAdtyDynamic(adtyNotificationTitleTranslationKey(row.Id), titleText, siteID); err != nil {
+			common.SysError(common.LogText("translate notification %d title failed: %s", row.Id, err.Error()))
+		}
+	}
+	if !bodyHasZH {
+		return
+	}
 	objectKey := adtyNotificationTranslationKey(row.Id)
-	res, err := TranslateAdtyDynamic(objectKey, sourceText, siteID)
+	res, err := TranslateAdtyDynamic(objectKey, bodyText, siteID)
 	if err != nil {
 		common.SysError(common.LogText("translate notification %d failed: %s", row.Id, err.Error()))
 	}
@@ -422,21 +488,29 @@ func queueAdtyPrivatePublicationTelegramTx(tx *gorm.DB, row *model.AdtyNotificat
 			Status:   model.AdtyTelegramDeliverySkip,
 		}
 		var user model.User
-		_ = tx.Select("id", "site_id", "staff_site_id", "status", "role").Where("id = ?", uid).Limit(1).Find(&user).Error
+		if err := tx.Select("id", "site_id", "staff_site_id", "status", "role").Where("id = ?", uid).Limit(1).Find(&user).Error; err != nil {
+			return err
+		}
 		var binding model.AdtyTelegramBinding
 		found := tx.Where("user_id = ? AND purpose = ? AND status = ?", uid, purpose, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
 		if found.Error != nil {
 			return found.Error
 		}
-		if found.RowsAffected > 0 && user.Id > 0 && user.Status == common.UserStatusEnabled && user.SiteId == binding.SiteId && adtySiteIsOpen(tx, binding.SiteId) {
-			var bot model.AdtyTelegramBot
-			if err := tx.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).Error; err != nil {
+		if found.RowsAffected > 0 && user.Id > 0 && user.Status == common.UserStatusEnabled && user.SiteId == binding.SiteId {
+			siteOpen, err := adtyTelegramSiteAccess(tx, binding.SiteId)
+			if err != nil {
 				return err
 			}
-			if bot.Id != 0 && bot.IdentityHash == binding.BotIdentity && binding.TelegramUserId > 0 {
-				delivery.Status = model.AdtyTelegramDeliveryWait
-				delivery.BindingId = binding.Id
-				delivery.SiteId = binding.SiteId
+			if siteOpen {
+				var bot model.AdtyTelegramBot
+				if err := tx.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).Error; err != nil {
+					return err
+				}
+				if bot.Id != 0 && bot.IdentityHash == binding.BotIdentity && binding.TelegramUserId > 0 {
+					delivery.Status = model.AdtyTelegramDeliveryWait
+					delivery.BindingId = binding.Id
+					delivery.SiteId = binding.SiteId
+				}
 			}
 		}
 		if err := tx.Create(&delivery).Error; err != nil {
@@ -475,55 +549,94 @@ func adtyNotificationHasTelegramOutbox(tx *gorm.DB, row *model.AdtyNotificationP
 	return count > 0
 }
 
-// RecoverAdtyNotificationTelegramOutbox inspects published notifications that
-// requested Telegram sync and recovers any missing outbox rows if an earlier
-// attempt crashed or left telegram_at out of sync with adty_telegram_deliveries.
+// RecoverAdtyNotificationTelegramOutbox inspects recent published notifications
+// that requested Telegram sync and have not yet finished outbox seeding, using
+// a bounded 7-day window and cursor pagination so it neither full-scans old
+// history nor retroactively pushes historical team notices to new members.
 func RecoverAdtyNotificationTelegramOutbox() {
 	if model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{}) || !model.DB.Migrator().HasTable(&model.AdtyTelegramDelivery{}) {
 		return
 	}
-	var pubs []model.AdtyNotificationPublication
-	if err := model.DB.Where("status = ? AND telegram_channel <> ?", "published", "").Order("id").Find(&pubs).Error; err != nil {
-		return
-	}
-	for i := range pubs {
-		pub := &pubs[i]
-		if adtyNotificationHasTelegramOutbox(model.DB, pub) {
-			continue
+	hasSeededCol := model.DB.Migrator().HasColumn(&model.AdtyNotificationPublication{}, "telegram_outbox_seeded_at")
+	cutoff := time.Now().Add(-7 * 24 * time.Hour).Unix()
+	const batchSize = 50
+	const maxPerTick = 200
+	after := 0
+	processed := 0
+	for processed < maxPerTick {
+		q := model.DB.Where("status = ? AND telegram_channel <> ? AND published_at >= ? AND id > ?", "published", "", cutoff, after)
+		if hasSeededCol {
+			q = q.Where("telegram_outbox_seeded_at IS NULL")
 		}
-		var issuer *model.AdtySite
-		if pub.IssuerSiteId > 0 {
-			var site model.AdtySite
-			if model.DB.Where("id = ?", pub.IssuerSiteId).Limit(1).Find(&site).RowsAffected > 0 {
-				issuer = &site
-			} else {
-				issuer = &model.AdtySite{Id: pub.IssuerSiteId}
+		var pubs []model.AdtyNotificationPublication
+		if err := q.Order("id ASC").Limit(batchSize).Find(&pubs).Error; err != nil || len(pubs) == 0 {
+			return
+		}
+		for i := range pubs {
+			pub := &pubs[i]
+			after = pub.Id
+			processed++
+			if adtyNotificationHasTelegramOutbox(model.DB, pub) {
+				if hasSeededCol {
+					now := time.Now().Unix()
+					_ = model.DB.Model(&model.AdtyNotificationPublication{}).
+						Where("id = ? AND telegram_outbox_seeded_at IS NULL", pub.Id).
+						Update("telegram_outbox_seeded_at", now).Error
+				}
+				continue
+			}
+			var issuer *model.AdtySite
+			if pub.IssuerSiteId > 0 {
+				var site model.AdtySite
+				if model.DB.Where("id = ?", pub.IssuerSiteId).Limit(1).Find(&site).RowsAffected > 0 {
+					issuer = &site
+				} else {
+					issuer = &model.AdtySite{Id: pub.IssuerSiteId}
+				}
+			}
+			if err := enqueueAdtyNotificationToTelegram(pub, issuer, true); err != nil {
+				common.SysError(common.LogText("recover notification %d telegram outbox failed: %s", pub.Id, err.Error()))
+			}
+			if processed >= maxPerTick {
+				return
 			}
 		}
-		enqueueAdtyNotificationToTelegram(pub, issuer, true)
+		if len(pubs) < batchSize {
+			return
+		}
 	}
 }
 
 // pushAdtyNotificationToTelegram 尝试把公告推一次到频道（或私聊队列），并保证
-// `telegram_at` 占位与投递队列写入在同一个数据库事务内原子提交。
-func pushAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, issuer *model.AdtySite) {
-	enqueueAdtyNotificationToTelegram(row, issuer, false)
+// `telegram_at` 占位、投递队列写入与 `telegram_outbox_seeded_at` 置位在同一个数据库事务内原子提交。
+func pushAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, issuer *model.AdtySite) error {
+	return enqueueAdtyNotificationToTelegram(row, issuer, false)
 }
 
-func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, issuer *model.AdtySite, allowRecovery bool) {
+func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, issuer *model.AdtySite, allowRecovery bool) error {
 	if row == nil || model.DB == nil {
-		return
+		return nil
 	}
 	channel := strings.TrimSpace(row.TelegramChannel)
 	if channel == "" {
-		return // 没配频道就不发，也不报错
+		return nil // 没配频道就不发，也不报错
 	}
 	purpose := model.AdtyTelegramPurposeAdmin
 	if issuer != nil || row.IssuerSiteId > 0 {
 		purpose = model.AdtyTelegramPurposeUser
 	}
 	at := time.Now().Unix()
+	hasSeededCol := model.DB.Migrator().HasColumn(&model.AdtyNotificationPublication{}, "telegram_outbox_seeded_at")
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if hasSeededCol {
+			var current model.AdtyNotificationPublication
+			if err := model.AdtyLockForUpdate(tx).Select("id", "telegram_at", "telegram_outbox_seeded_at").Where("id = ?", row.Id).First(&current).Error; err != nil {
+				return err
+			}
+			if current.TelegramOutboxSeededAt != nil {
+				return nil
+			}
+		}
 		res := tx.Model(&model.AdtyNotificationPublication{}).
 			Where("id = ? AND telegram_at = 0", row.Id).
 			Update("telegram_at", at)
@@ -535,23 +648,42 @@ func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, i
 			// message just because the body changed. Recovery may fill a missing
 			// outbox row, and only that.
 			if !allowRecovery || adtyNotificationHasTelegramOutbox(tx, row) {
+				if hasSeededCol {
+					_ = tx.Model(&model.AdtyNotificationPublication{}).
+						Where("id = ? AND telegram_outbox_seeded_at IS NULL", row.Id).
+						Update("telegram_outbox_seeded_at", at).Error
+				}
 				return nil
 			}
 		}
 		if row.Audience == "team" || row.Audience == "user" {
-			return queueAdtyPrivatePublicationTelegramTx(tx, row)
+			if err := queueAdtyPrivatePublicationTelegramTx(tx, row); err != nil {
+				return err
+			}
+		} else {
+			if err := queueAdtyPublicTelegramTx(tx, channel, purpose, announceTelegramBodyWithDB(tx, *row), adtyPublicNotificationEventKey(row.Id)); err != nil {
+				return err
+			}
 		}
-		return queueAdtyPublicTelegramTx(tx, channel, purpose, announceTelegramBodyWithDB(tx, *row), adtyPublicNotificationEventKey(row.Id))
+		if hasSeededCol {
+			if err := tx.Model(&model.AdtyNotificationPublication{}).
+				Where("id = ? AND telegram_outbox_seeded_at IS NULL", row.Id).
+				Update("telegram_outbox_seeded_at", at).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		row.TelegramAt = 0
 		common.SysError(common.LogText("queue announcement %d for telegram failed: %s", row.Id, err.Error()))
-		return
+		return err
 	}
 	var refreshed model.AdtyNotificationPublication
 	if model.DB.Select("telegram_at").Where("id = ?", row.Id).Limit(1).Find(&refreshed).RowsAffected > 0 {
 		row.TelegramAt = refreshed.TelegramAt
 	}
+	return nil
 }
 
 // announceTelegramBody 把公告压成一条频道消息：标题 + 正文。
@@ -562,10 +694,22 @@ func announceTelegramBody(row model.AdtyNotificationPublication) string {
 
 func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublication) string {
 	content := resolveAdtyNotificationDisplayContentWithDB(db, row)
-	if row.Title == "" {
+	title := strings.TrimSpace(row.Title)
+	if title == "" {
 		return content
 	}
-	return row.Title + "\n\n" + content
+	if row.Id > 0 && db != nil && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		var titleHead model.AdtyTranslationHead
+		if db.Where("object_key = ?", adtyNotificationTitleTranslationKey(row.Id)).Limit(1).Find(&titleHead).RowsAffected > 0 {
+			if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
+				titleEn := strings.TrimSpace(titleHead.English)
+				if titleEn != title {
+					title = title + " / " + titleEn
+				}
+			}
+		}
+	}
+	return title + "\n\n" + content
 }
 
 func resolveAdtyNotificationDisplayContent(row model.AdtyNotificationPublication) string {
@@ -574,12 +718,17 @@ func resolveAdtyNotificationDisplayContent(row model.AdtyNotificationPublication
 
 func resolveAdtyNotificationDisplayContentWithDB(db *gorm.DB, row model.AdtyNotificationPublication) string {
 	content := strings.TrimSpace(row.Content)
-	if row.Id > 0 && db != nil && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+	if row.Id > 0 && db != nil && adtyContainsChinese(content) && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
 		var head model.AdtyTranslationHead
 		if db.Where("object_key = ?", adtyNotificationTranslationKey(row.Id)).Limit(1).Find(&head).RowsAffected > 0 {
 			if head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" {
 				eng := strings.TrimSpace(head.English)
 				src := strings.TrimSpace(head.Source)
+				// Guard against legacy rows where title was stored in notification:<id>
+				// while the body itself was pure English.
+				if src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(normalizeAdtyNotificationSourceContentWithDB(db, row.Id, content)) {
+					return content
+				}
 				if src == "" {
 					src = normalizeAdtyNotificationSourceContentWithDB(db, row.Id, content)
 				}
@@ -788,6 +937,12 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 			item["translation_version"] = head.Version
 			item["object_key"] = head.ObjectKey
 		}
+		var titleHead model.AdtyTranslationHead
+		if model.DB.Where("object_key = ?", adtyNotificationTitleTranslationKey(row.Id)).Limit(1).Find(&titleHead).RowsAffected > 0 {
+			if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
+				item["title_en"] = strings.TrimSpace(titleHead.English)
+			}
+		}
 	}
 	return item
 }
@@ -895,9 +1050,18 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 	if site != nil {
 		siteID = site.Id
 	}
-	receipts := model.DB.Model(&model.AdtyNotificationRead{}).Select("read_key").Where("user_id = ? AND site_id = ?", userID, siteID)
+	unreadPubQuery := query.Session(&gorm.Session{}).Where(
+		"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.site_id = ? AND r.read_key = adty_notification_publications.read_key)",
+		userID, siteID,
+	)
+	if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
+		unreadPubQuery = unreadPubQuery.Where(
+			"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h.key = adty_notification_publications.read_key OR h.key = 'publication:' || CAST(adty_notification_publications.id AS TEXT)))",
+			userID,
+		)
+	}
 	var unread int64
-	if err := query.Session(&gorm.Session{}).Where("read_key NOT IN (?)", receipts).Count(&unread).Error; err != nil {
+	if err := unreadPubQuery.Count(&unread).Error; err != nil {
 		return inbox, err
 	}
 	inbox.UnreadPublications = unread
@@ -940,10 +1104,15 @@ func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, tick
 		}
 		var unreadTickets int64
 		if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
-			hidden := model.DB.Model(&model.AdtyNotificationHide{}).Select("key").Where("user_id = ?", userID)
-			ticketQuery = ticketQuery.Where("read_key NOT IN (?)", hidden)
+			ticketQuery = ticketQuery.Where(
+				"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND h.key = adty_ticket_notices.read_key)",
+				userID,
+			)
 		}
-		if err := ticketQuery.Session(&gorm.Session{}).Where("read_key NOT IN (?)", ticketReceipts.Session(&gorm.Session{}).Select("read_key")).Count(&unreadTickets).Error; err != nil {
+		if err := ticketQuery.Session(&gorm.Session{}).Where(
+			"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.read_key = adty_ticket_notices.read_key)",
+			userID,
+		).Count(&unreadTickets).Error; err != nil {
 			return inbox, err
 		}
 		inbox.UnreadPublications += unreadTickets

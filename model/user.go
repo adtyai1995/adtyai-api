@@ -539,6 +539,8 @@ func getUserById(query *gorm.DB, id int, selectAll bool) (*User, error) {
 	return &user, err
 }
 
+var ErrCannotPromoteScopedUser = errors.New("Cannot promote a subsite customer, site staff, or team employee account to platform administrator.")
+
 // GetSelfUserById reads dashboard profile data and password existence in one
 // query. The password hash and management access token are never selected.
 func GetSelfUserById(id int) (*User, error) {
@@ -553,7 +555,7 @@ func GetSelfUserById(id int) (*User, error) {
 		"id", "username", "display_name", "role", "status", "email",
 		"github_id", "discord_id", "oidc_id", "wechat_id", "telegram_id",
 		"group", "quota", "quota_pending", "used_quota", "request_count", "linux_do_id", "setting",
-		"stripe_customer", "auth_version", "staff_site_id",
+		"stripe_customer", "auth_version", "site_id", "inherited_from_site_id", "staff_site_id",
 		"CASE WHEN password <> '' THEN 1 ELSE 0 END AS has_password",
 	}).First(&profile, "id = ?", id).Error
 	profile.User.HasPassword = profile.HasPassword
@@ -823,11 +825,27 @@ func ApplyManagedUserAccessTx(tx *gorm.DB, user *User) (bool, error) {
 		return false, fmt.Errorf("invalid managed user update")
 	}
 	var current User
-	if err := lockForUpdate(tx).Select("id", "role", "status").Where("id = ?", user.Id).First(&current).Error; err != nil {
+	if err := lockForUpdate(tx).Select("id", "role", "status", "site_id", "staff_site_id").Where("id = ?", user.Id).First(&current).Error; err != nil {
 		return false, err
 	}
 	updates := map[string]any{}
 	if user.Role != 0 && user.Role != current.Role {
+		if user.Role >= common.RoleAdminUser && user.Role > current.Role {
+			if current.SiteId > 0 || current.StaffSiteId > 0 {
+				return false, ErrCannotPromoteScopedUser
+			}
+			if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+				var empCount int64
+				if err := tx.Model(&AdtyTeamMember{}).
+					Where("user_id = ? AND independent_employee = ?", current.Id, true).
+					Count(&empCount).Error; err != nil {
+					return false, err
+				}
+				if empCount > 0 {
+					return false, ErrCannotPromoteScopedUser
+				}
+			}
+		}
 		updates["role"] = user.Role
 	}
 	if user.Status != 0 && user.Status != current.Status {
@@ -1216,15 +1234,18 @@ func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
 		return 0, err
 	}
 	if err := publishCommittedUserAuthVersion(user.Id, nextAuthVersion); err != nil {
-		return revokedAccessTokens, err
+		common.SysError(common.LogText("failed to publish auth tombstone after deleting user %d: %v", user.Id, err))
 	}
 	if _, err := RevokeAllUserSessions(user.Id, "user_deleted"); err != nil {
-		return revokedAccessTokens, err
+		common.SysError(common.LogText("failed to revoke sessions after deleting user %d: %v", user.Id, err))
 	}
 	if err := InvalidateUserTokensCache(user.Id); err != nil {
-		return revokedAccessTokens, err
+		common.SysError(common.LogText("failed to invalidate token cache after deleting user %d: %v", user.Id, err))
 	}
-	return revokedAccessTokens, invalidateUserCache(user.Id)
+	if err := invalidateUserCache(user.Id); err != nil {
+		common.SysError(common.LogText("failed to invalidate user cache after deleting user %d: %v", user.Id, err))
+	}
+	return revokedAccessTokens, nil
 }
 
 func (user *User) HardDelete() (int64, error) {
@@ -1534,7 +1555,7 @@ func resetUserPasswordWithOutcome(user *User, password string) (PasswordResetOut
 			}
 			return err
 		}
-		if NormalizeEmail(current.Email) != NormalizeEmail(email) || current.SiteId != siteID {
+		if NormalizeEmail(current.Email) != NormalizeEmail(email) || current.SiteId != siteID || current.Status != common.UserStatusEnabled {
 			return ErrEmailNotFound
 		}
 		outcome.UserID, outcome.Role = current.Id, current.Role

@@ -912,7 +912,9 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 // adtyLoadActiveCustomDomains 是站点识别用的「active 的自定义域名 → 站点 id」（AdtyLoadCustomDomains）。
 func adtyLoadActiveCustomDomains() (map[string]int, error) {
 	var domains []model.AdtySiteDomain
-	if err := model.DB.Select("hostname", "site_id").Where("status = ?", model.AdtySiteDomainActive).Find(&domains).Error; err != nil {
+	if err := model.DB.Select("hostname", "site_id").
+		Where("status = ? AND managed_by <> ?", model.AdtySiteDomainActive, "platform").
+		Find(&domains).Error; err != nil {
 		return nil, err
 	}
 	hosts := make(map[string]int, len(domains))

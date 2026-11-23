@@ -39,9 +39,9 @@ var builtinBillingExpr = map[string]string{
 	"gpt-audio-1.5":    `tier("standard", p * 2.5 + c * 10 + ai * 32 + ao * 64)`,
 	"omni-moderation":  `tier("free", fixed(0))`,
 	// https://platform.claude.com/docs/en/about-claude/pricing (2026-11-15).
-	// Haiku 5.5 has an official 100k input ladder; cache hits are 10% of the
-	// matching input rate. 5m/1h cache writes stay on create-cache defaults.
-	"claude-haiku-5-5": `len <= 100000 ? tier("standard", p * 0.1 + cr * 0.01 + c * 0.5) : tier("long_context", p * 0.5 + cr * 0.05 + c * 2.5)`,
+	// Haiku 5.5 has an official 100k input ladder; cache hits are 10% and 5m/1h
+	// cache writes are 125%/200% of the matching input rate.
+	"claude-haiku-5-5": `len <= 100000 ? tier("standard", p * 0.1 + cr * 0.01 + cc * 0.125 + cc1h * 0.2 + c * 0.5) : tier("long_context", p * 0.5 + cr * 0.05 + cc * 0.625 + cc1h * 1 + c * 2.5)`,
 	// https://cloud.baidu.com/doc/qianfan/s/wmh4sv6ya (updated 2026-11-11).
 	// Catalog (原价) converted at the project's USD2RMB=7.3. Peak is 08:00-22:00
 	// Beijing time every day, as the official table states.

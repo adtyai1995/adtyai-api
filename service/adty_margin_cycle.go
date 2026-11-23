@@ -20,6 +20,7 @@ type adtyMarginCycleSnapshot struct {
 	BalanceUSD        decimal.Decimal  `json:"balance_usd"`
 	UsedUSD           decimal.Decimal  `json:"used_usd"`
 	FrozenReservedUSD decimal.Decimal  `json:"frozen_and_reserved_usd"`
+	ExcessFrozenUSD   decimal.Decimal  `json:"excess_frozen_usd,omitempty"`
 	CycleRoomUSD      decimal.Decimal  `json:"cycle_room_usd"`
 	CashRoomUSD       decimal.Decimal  `json:"cash_room_usd"`
 	NewDrawUSD        decimal.Decimal  `json:"new_draw_usd"`
@@ -29,12 +30,12 @@ func snapshotAdtyMarginCycle(wallet model.AdtySiteWallet) (*string, error) {
 	limit := AdtyMarginCycleLimit(wallet.CycleTierUSD)
 	retained := wallet.CycleTierUSD.Sub(limit)
 	cycleRoom := decimal.Max(decimal.Zero, limit.Sub(wallet.CycleUsedUSD).Sub(wallet.FrozenUSD))
-	cashRoom := decimal.Max(decimal.Zero, wallet.Balance.Sub(wallet.FrozenUSD).Sub(retained))
+	cashRoom := decimal.Max(decimal.Zero, wallet.Balance.Sub(wallet.FrozenUSD).Sub(wallet.ExcessFrozenUSD).Sub(retained))
 	data, err := common.Marshal(adtyMarginCycleSnapshot{
 		Version: 1, CycleNumber: wallet.CycleNumber, StartedAt: wallet.CycleStartedAt,
 		InitialBalanceUSD: wallet.CycleInitialUSD, TierUSD: wallet.CycleTierUSD,
 		LimitUSD: limit, RetainedUSD: retained, BalanceUSD: wallet.Balance,
-		UsedUSD: wallet.CycleUsedUSD, FrozenReservedUSD: wallet.FrozenUSD,
+		UsedUSD: wallet.CycleUsedUSD, FrozenReservedUSD: wallet.FrozenUSD, ExcessFrozenUSD: wallet.ExcessFrozenUSD,
 		CycleRoomUSD: cycleRoom, CashRoomUSD: cashRoom, NewDrawUSD: decimal.Min(cycleRoom, cashRoom),
 	})
 	if err != nil {
@@ -45,14 +46,17 @@ func snapshotAdtyMarginCycle(wallet model.AdtySiteWallet) (*string, error) {
 }
 
 // AdtyMarginDrawInput is one margin cycle. TierUSD is the frozen tier T.
-// Used, Frozen and Reserved occupy the 90% cap. Balance is the real margin cash.
+// Used, Frozen and Reserved occupy the 90% cap. ExcessFrozen holds excess-margin
+// commitments above the tier floor (e.g. site vouchers) that reduce free cash
+// without occupying the 90% gift/commission cycle cap. Balance is the real margin cash.
 type AdtyMarginDrawInput struct {
-	TierUSD     decimal.Decimal
-	Balance     decimal.Decimal
-	Used        decimal.Decimal
-	Frozen      decimal.Decimal
-	Reserved    decimal.Decimal
-	CycleOpened bool
+	TierUSD      decimal.Decimal
+	Balance      decimal.Decimal
+	Used         decimal.Decimal
+	Frozen       decimal.Decimal
+	ExcessFrozen decimal.Decimal
+	Reserved     decimal.Decimal
+	CycleOpened  bool
 }
 
 // AdtyMarginCycleLimit is 90% of the frozen tier. The other 10% stays retained.
@@ -80,7 +84,7 @@ func AdtyMarginNewDraw(in AdtyMarginDrawInput) decimal.Decimal {
 	}
 	capRoom := limit.Sub(occupied)
 	retained := in.TierUSD.Sub(limit)
-	cashRoom := in.Balance.Sub(in.Frozen).Sub(in.Reserved).Sub(retained)
+	cashRoom := in.Balance.Sub(in.Frozen).Sub(in.ExcessFrozen).Sub(in.Reserved).Sub(retained)
 	room := decimal.Min(capRoom, cashRoom)
 	if room.IsNegative() {
 		return decimal.Zero
