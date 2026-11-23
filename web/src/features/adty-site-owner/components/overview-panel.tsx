@@ -57,7 +57,7 @@ export function OverviewPanel() {
     {
       kind: 'tickets_pending',
       section: 'tickets',
-      label: t('Ticket workspace'),
+      label: t('Ticket management'),
     },
     {
       kind: 'invite_withdrawals_pending',

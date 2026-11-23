@@ -116,6 +116,9 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
   const isSiteOwner = useAuthStore(
     (state) => state.auth.user?.adty_site_owner === true
   )
+  const hasTeam = useAuthStore(
+    (state) => state.auth.user?.adty_has_team === true
+  )
   const isStaff = useAuthStore(
     (state) => (state.auth.user?.staff_site_id ?? 0) > 0
   )
@@ -194,11 +197,15 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
           id: 'personal',
           title: t('Account'),
           items: [
-            {
-              title: t('My team'),
-              url: '/my-team',
-              icon: Users,
-            },
+            ...(hasTeam
+              ? [
+                  {
+                    title: t('My team'),
+                    url: '/my-team',
+                    icon: Users,
+                  },
+                ]
+              : []),
             {
               title: t('Wallet'),
               url: '/wallet',
@@ -228,7 +235,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             ...(isSiteOwner
               ? [
                   {
-                    title: t('Ticket workspace'),
+                    title: t('Ticket management'),
                     url: '/site-owner/tickets',
                     icon: LifeBuoy,
                     badge: ticketsBadge,
@@ -266,7 +273,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             ...(platformTickets
               ? [
                   {
-                    title: t('Ticket workspace'),
+                    title: t('Ticket management'),
                     url: '/admin-tickets',
                     icon: LifeBuoy,
                     badge: ticketsBadge,
@@ -359,6 +366,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     resellerSitesBadge,
     orderManagementBadge,
     isSiteOwner,
+    hasTeam,
     hasArchivedSite,
     isStaff,
     badges.modelPricing,

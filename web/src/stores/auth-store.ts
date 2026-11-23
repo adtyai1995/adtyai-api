@@ -53,6 +53,8 @@ export interface AuthUser {
   /** adty: the user owns an active, paused or closing reseller site (task 11.6). */
   adty_archived_site_owner?: boolean
   adty_site_owner?: boolean
+  /** True when the user belongs to an active team or led a closed team. */
+  adty_has_team?: boolean
   /** Reseller sub-site id for sub-site customers; 0 for main-site accounts. */
   site_id?: number
   /** Dedicated employee identity; never grants owner or administrator authority. */

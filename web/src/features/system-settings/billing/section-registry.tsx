@@ -21,11 +21,9 @@ import { parseCurrencyDisplayType } from '@/lib/currency'
 import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
-import { AdtyOfficialPricesSection } from '../models/adty-official-prices-section'
 import { RatioSettingsCard } from '../models/ratio-settings-card'
 import type { BillingSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
-import { PriceSnapshotBackfillSection } from './price-snapshot-backfill-section'
 
 const getModelDefaults = (settings: BillingSettings) => ({
   ModelPrice: settings.ModelPrice,
@@ -124,11 +122,6 @@ const BILLING_SECTIONS = [
     ),
   },
   {
-    id: 'official-prices',
-    titleKey: 'Official Prices',
-    build: () => <AdtyOfficialPricesSection />,
-  },
-  {
     id: 'payment',
     titleKey: 'Payment Gateway',
     build: (settings: BillingSettings) => (
@@ -162,11 +155,6 @@ const BILLING_SECTIONS = [
         }}
       />
     ),
-  },
-  {
-    id: 'price-snapshot-backfill',
-    titleKey: 'Historical price snapshots',
-    build: () => <PriceSnapshotBackfillSection />,
   },
 ] as const
 

@@ -743,7 +743,7 @@ function TicketWorkspace({
       <CardContent className='flex flex-col gap-4 py-4'>
         <div className='flex flex-col gap-1'>
           <h2 className='text-sm font-medium'>
-            {workspace === 'personal' ? t('My tickets') : t('Ticket workspace')}
+            {workspace === 'personal' ? t('My tickets') : t('Ticket management')}
           </h2>
           <p className='text-muted-foreground text-sm'>
             {t('Images only. Hide API keys, passwords, and payment details.')}

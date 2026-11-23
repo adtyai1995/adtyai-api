@@ -45,7 +45,7 @@ export const SettingsCard = memo(function SettingsCard({
   return (
     <Card
       data-card-hover='false'
-      className={cn('gap-0 overflow-hidden py-0', className)}
+      className={cn('shrink-0 gap-0 overflow-hidden py-0', className)}
     >
       <CardHeader className='border-border gap-1 border-b px-5 py-4 sm:px-6'>
         <CardTitle className='text-[15px] leading-snug font-semibold tracking-tight [word-break:keep-all]'>

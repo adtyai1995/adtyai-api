@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 import { ErrorState } from '@/components/error-state'
 import { PublicLayout } from '@/components/layout'
 import { PageTransition } from '@/components/page-transition'
-import { toIntlLocale } from '@/i18n/languages'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -37,14 +36,13 @@ import {
 } from './components'
 import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
-import { useOfficialPrices } from './hooks/use-official-prices'
 import {
   resolvePricingDisplayGroup,
   usePricingData,
 } from './hooks/use-pricing-data'
 
 export function Pricing() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [selectedModelName, setSelectedModelName] = useState<string | null>(
     null
   )
@@ -72,7 +70,6 @@ export function Pricing() {
     priceRate,
     usdExchangeRate,
   } = usePricingData(true, displayGroup)
-  const officialPrices = useOfficialPrices()
   const hasCatalogData = hasData ?? Boolean(models && models.length > 0)
   const hasError = Boolean(isError || error)
 
@@ -159,7 +156,6 @@ export function Pricing() {
           tokenUnit={tokenUnit}
           showRechargePrice={showRechargePrice}
           selectedGroup={groupFilter}
-          officialPrices={officialPrices.prices}
           usableGroups={availableGroups}
         />
       )
@@ -174,7 +170,6 @@ export function Pricing() {
         showRechargePrice={showRechargePrice}
         selectedGroup={groupFilter}
         onModelClick={handleModelClick}
-        officialPrices={officialPrices.prices}
         usableGroups={availableGroups}
       />
     )
@@ -220,16 +215,6 @@ export function Pricing() {
                 count: models?.length || 0,
               })}
             </p>
-            {officialPrices.updatedAt > 0 && (
-              <p className='text-muted-foreground/70 mt-1 text-[11px]'>
-                {t('Official prices updated on {{date}}', {
-                  date: new Intl.DateTimeFormat(
-                    toIntlLocale(i18n.resolvedLanguage || i18n.language),
-                    { dateStyle: 'medium' }
-                  ).format(new Date(officialPrices.updatedAt * 1000)),
-                })}
-              </p>
-            )}
           </header>
 
           <main className='min-w-0 space-y-5'>

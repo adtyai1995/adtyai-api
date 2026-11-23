@@ -56,6 +56,7 @@ type SettingsPageFrameProps = {
   title: ReactNode
   /** Plain-text version of `title`, used to avoid repeating it on cards. */
   pageTitle?: string
+  fillViewport?: boolean
   children: ReactNode
 }
 
@@ -88,7 +89,13 @@ function SettingsPageFrame(props: SettingsPageFrameProps) {
           />
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>
-          <div className='flex h-full min-h-0 w-full flex-col gap-4'>
+          <div
+            className={
+              props.fillViewport
+                ? 'flex h-full min-h-0 w-full flex-col gap-4'
+                : 'flex min-h-full w-full flex-col gap-4 pb-6'
+            }
+          >
             {props.children}
           </div>
         </SectionPageLayout.Content>
@@ -159,7 +166,11 @@ export function SettingsPage<
   )
 
   return (
-    <SettingsPageFrame title={sectionTitle} pageTitle={sectionTitle}>
+    <SettingsPageFrame
+      title={sectionTitle}
+      pageTitle={sectionTitle}
+      fillViewport={activeSection === 'model-pricing'}
+    >
       {sectionContent}
     </SettingsPageFrame>
   )

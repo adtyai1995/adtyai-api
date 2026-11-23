@@ -596,15 +596,21 @@ export function RatioSettingsCard({
             </SettingsPageTitleStatusPortal>
           )}
 
-          <SettingsSection title={t(titleKey)} className='min-h-0 flex-1'>
+          <SettingsSection
+            title={t(titleKey)}
+            className='flex min-h-0 flex-1 flex-col'
+            bodyClassName='flex min-h-0 flex-1 flex-col overflow-auto'
+          >
             {visibleTabs.map((tab) => (
               <TabsContent
                 key={tab}
                 value={tab}
                 className={
-                  tab === 'models' || tab === 'unset-models'
-                    ? 'flex min-h-0 flex-col data-hidden:hidden'
-                    : 'min-h-0'
+                  tab === 'models' ||
+                  tab === 'unset-models' ||
+                  tab === 'upstream-sync'
+                    ? 'flex min-h-0 flex-1 flex-col data-hidden:hidden'
+                    : 'min-h-0 flex-1'
                 }
               >
                 {renderTabContent(tab)}

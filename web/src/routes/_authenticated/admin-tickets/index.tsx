@@ -21,7 +21,6 @@ import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 import { canOpenPlatformTickets } from '@/features/adty-site-admin/sections'
-import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
 import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -39,7 +38,7 @@ function AdminTicketsPage() {
   const { t } = useTranslation()
   return (
     <SectionPageLayout>
-      <SectionPageLayout.Title>{t('Ticket workspace')}</SectionPageLayout.Title>
+      <SectionPageLayout.Title>{t('Ticket management')}</SectionPageLayout.Title>
       <SectionPageLayout.Description>
         {t(
           'Claim, assign, reply to and close support tickets within your authorized scope.'
@@ -48,7 +47,6 @@ function AdminTicketsPage() {
       <SectionPageLayout.Content>
         <div className='flex flex-col gap-5'>
           <TicketCenter scope='platform' />
-          <TelegramBindCard purpose='admin' platformSupport />
         </div>
       </SectionPageLayout.Content>
     </SectionPageLayout>

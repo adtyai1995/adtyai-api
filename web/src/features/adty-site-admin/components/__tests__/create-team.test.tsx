@@ -15,19 +15,16 @@ afterEach(() => {
   vi.resetAllMocks()
 })
 
-it('creates a team with the selected site and its existing leader', async () => {
+it('creates a main-site team with its existing leader and supply discount', async () => {
   api.get.mockImplementation(async (url) => ({
     data: {
       success: true,
-      data:
-        url === '/api/user/sites'
-          ? [{ site_id: 41, site_name: 'Subsite A' }]
-          : {
-              items: url.includes('site_id=41')
-                ? [{ id: 9, username: 'Leader A' }]
-                : [],
-              total: 1,
-            },
+      data: {
+        items: url.includes('site_id=0')
+          ? [{ id: 9, username: 'Leader A' }]
+          : [],
+        total: 1,
+      },
     },
   }))
   api.post.mockResolvedValue({
@@ -41,26 +38,30 @@ it('creates a team with the selected site and its existing leader', async () => 
       <CreateTeamForm />
     </QueryClientProvider>
   )
-  await screen.findByRole('option', { name: /Subsite A/ })
-  fireEvent.change(screen.getByLabelText('Site'), { target: { value: '41' } })
+  expect(screen.queryByLabelText('Site')).toBeNull()
   await screen.findByRole('option', { name: /Leader A/ })
   fireEvent.change(screen.getByLabelText('Leader'), { target: { value: '9' } })
-  const nameInput=screen.getByLabelText('Team name')
-  fireEvent.change(nameInput,{target:{value:'𠮷'.repeat(65)}})
-  expect(screen.getByRole('button',{name:'Create team'})).toBeDisabled()
+  const nameInput = screen.getByLabelText('Team name')
+  fireEvent.change(nameInput, { target: { value: '𠮷'.repeat(65) } })
+  expect(screen.getByRole('button', { name: 'Create team' })).toBeDisabled()
   expect(screen.getByRole('alert')).toHaveTextContent('Team name')
-  fireEvent.change(nameInput,{target:{value:'𠮷'.repeat(64)}})
-  expect(screen.getByRole('button',{name:'Create team'})).toBeEnabled()
+  fireEvent.change(nameInput, { target: { value: '𠮷'.repeat(64) } })
+  expect(screen.getByRole('button', { name: 'Create team' })).toBeEnabled()
   fireEvent.change(nameInput, {
     target: { value: 'Finance' },
   })
+  const discountInput = screen.getByLabelText('Team supply discount')
+  fireEvent.change(discountInput, { target: { value: '1.2' } })
+  expect(screen.getByRole('button', { name: 'Create team' })).toBeDisabled()
+  fireEvent.change(discountInput, { target: { value: '0.85' } })
+  expect(screen.getByRole('button', { name: 'Create team' })).toBeEnabled()
   fireEvent.click(screen.getByRole('button', { name: 'Create team' }))
   expect((await screen.findByRole('status')).textContent).toContain(
     'Finance (#23)'
   )
   expect(api.post).toHaveBeenCalledWith(
     '/api/adty/admin/teams',
-    { site_id: 41, leader_id: 9, name: 'Finance' },
+    { site_id: 0, leader_id: 9, name: 'Finance', discount: '0.85' },
     { headers: { 'Idempotency-Key': expect.any(String) } }
   )
   client.clear()

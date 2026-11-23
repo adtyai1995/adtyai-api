@@ -23,18 +23,12 @@ import { useTranslation } from 'react-i18next'
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
-import { toIntlLocale } from '@/i18n/languages'
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import { useBillingTime } from '../hooks/use-billing-time'
-import {
-  formatSavingsPercent,
-  getSavingsRatio,
-  type OfficialPrice,
-} from '../lib/adty-savings'
 import {
   getCardExamplePrice,
   getDynamicDisplayGroupRatio,
@@ -59,8 +53,6 @@ export interface ModelCardProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   perf?: ModelPerfBadgeData
-  /** Official list price; when set, the card shows the saving (adty task 8.5). */
-  officialPrice?: OfficialPrice
   /** Groups the viewer can use; when set, other groups are not shown. */
   usableGroups?: string[]
 }
@@ -76,11 +68,6 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const tags = parseTags(props.model.tags)
   const groups = (props.model.enable_groups || []).filter(
     (group) => !props.usableGroups || props.usableGroups.includes(group)
-  )
-  const savings = getSavingsRatio(
-    props.model,
-    props.officialPrice,
-    props.selectedGroup
   )
   const endpoints = props.model.supported_endpoint_types || []
   const modelIconKey = props.model.icon || props.model.vendor_icon
@@ -366,16 +353,6 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           <div className='grid grid-cols-[repeat(auto-fit,minmax(88px,1fr))] gap-x-3 gap-y-2'>
             {priceSummary}
           </div>
-          {savings != null && savings > 0 && (
-            <span className='text-success text-xs font-medium'>
-              {t('Save {{percent}}', {
-                percent: formatSavingsPercent(
-                  savings,
-                  toIntlLocale(i18n.resolvedLanguage || i18n.language)
-                ),
-              })}
-            </span>
-          )}
         </div>
         {(groups.length > 0 || endpoints.length > 0) && (
           <dl

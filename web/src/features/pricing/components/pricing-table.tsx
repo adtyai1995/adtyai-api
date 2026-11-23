@@ -28,7 +28,6 @@ import {
 } from '@/components/data-table'
 
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
-import type { OfficialPrices } from '../lib/adty-savings'
 import type { PricingModel, TokenUnit } from '../types'
 import { usePricingColumns } from './pricing-columns'
 
@@ -41,7 +40,6 @@ export interface PricingTableProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   onModelClick?: (modelName: string) => void
-  officialPrices?: OfficialPrices
   usableGroups?: string[]
 }
 
@@ -69,7 +67,6 @@ export function PricingTable(props: PricingTableProps) {
     usdExchangeRate,
     showRechargePrice,
     selectedGroup,
-    officialPrices: props.officialPrices,
     usableGroups: props.usableGroups,
   })
 

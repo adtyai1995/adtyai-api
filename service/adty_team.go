@@ -191,6 +191,26 @@ type AdtyTeamInviteView struct {
 	Status    string `json:"status"`
 }
 
+// AdtyUserHasTeam reports whether the user currently belongs to an active team
+// or led a closed team whose read-only history remains accessible on /my-team.
+func AdtyUserHasTeam(userId int) bool {
+	if userId <= 0 || model.DB == nil {
+		return false
+	}
+	var count int64
+	if err := model.DB.Model(&model.AdtyTeamMember{}).
+		Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).
+		Count(&count).Error; err == nil && count > 0 {
+		return true
+	}
+	if err := model.DB.Model(&model.AdtyTeam{}).
+		Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusClosed).
+		Count(&count).Error; err == nil && count > 0 {
+		return true
+	}
+	return false
+}
+
 func GetAdtyTeamMine(userId int) (*AdtyTeamMine, error) {
 	var membership model.AdtyTeamMember
 	lookup := model.DB.Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).Limit(1).Find(&membership)

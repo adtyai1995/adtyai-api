@@ -30,6 +30,7 @@ type SettingsSectionProps = {
   titleProps?: React.HTMLAttributes<HTMLHeadingElement>
   children: React.ReactNode
   className?: string
+  bodyClassName?: string
 }
 
 /**
@@ -43,6 +44,7 @@ export function SettingsSection({
   titleProps,
   children,
   className,
+  bodyClassName,
 }: SettingsSectionProps) {
   const suppressHeader = useSuppressSettingsSectionHeader()
   const pageTitle = useSettingsPageTitle()
@@ -74,7 +76,9 @@ export function SettingsSection({
           ) : null}
         </div>
       )}
-      <div className='min-w-0 px-5 py-5 sm:px-6 sm:py-6'>{children}</div>
+      <div className={cn('min-w-0 px-5 py-5 sm:px-6 sm:py-6', bodyClassName)}>
+        {children}
+      </div>
     </section>
   )
 }

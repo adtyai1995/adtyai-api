@@ -28,10 +28,8 @@ import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
-import type { OfficialPrices } from '../lib/adty-savings'
 import { parseTags } from '../lib/filters'
 import type { PricingModel } from '../types'
-import { OfficialPriceCell, SavingsCell } from './adty-official-price-cells'
 import { CachedPriceCell } from './cached-price-cell'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
@@ -41,8 +39,6 @@ import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
 // ----------------------------------------------------------------------------
 
 export type PricingColumnsOptions = ModelPriceCellOptions & {
-  /** Official list prices by model name (adty task 8.5). */
-  officialPrices?: OfficialPrices
   /** Groups the viewer can use; when set, other groups are not shown. */
   usableGroups?: string[]
 }
@@ -99,34 +95,6 @@ export function usePricingColumns(
         <ModelPriceCell model={row.original} options={options} />
       ),
       size: 150,
-      enableSorting: false,
-    },
-
-    // Official price column (adty task 8.5)
-    {
-      id: 'official_price',
-      header: t('Official Price'),
-      cell: ({ row }) => (
-        <OfficialPriceCell
-          official={options.officialPrices?.[row.original.model_name]}
-        />
-      ),
-      size: 112,
-      enableSorting: false,
-    },
-
-    // Savings against the official price; negative savings show a dash
-    {
-      id: 'savings',
-      header: t('Savings'),
-      cell: ({ row }) => (
-        <SavingsCell
-          model={row.original}
-          official={options.officialPrices?.[row.original.model_name]}
-          selectedGroup={options.selectedGroup}
-        />
-      ),
-      size: 72,
       enableSorting: false,
     },
 

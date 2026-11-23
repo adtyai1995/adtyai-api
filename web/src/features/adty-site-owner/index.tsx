@@ -77,7 +77,7 @@ export function SiteOwnerCenter(props: {
   const labels: Record<SiteOwnerSectionId, string> = {
     overview: t('Overview'),
     history: t('Historical site accounts'),
-    tickets: t('Ticket workspace'),
+    tickets: t('Ticket management'),
     customers: t('Customers'),
     teams: t('Team management'),
     commissions: t('Invite commission withdrawal'),

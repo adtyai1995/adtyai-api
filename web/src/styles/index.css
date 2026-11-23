@@ -141,6 +141,35 @@ For commercial licensing, please contact support@quantumnous.com
   }
 }
 
+/* Allow selecting and copying all titles, headings, labels, tabs, table headers and navigation labels site-wide.
+ * Kept unlayered so it takes precedence over Tailwind's @layer utilities (.select-none). */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+label,
+legend,
+summary,
+th,
+th button,
+[data-slot='card-title'],
+[data-slot='dialog-title'],
+[data-slot='sheet-title'],
+[data-slot='alert-title'],
+[data-slot='tabs-trigger'],
+[data-slot='sidebar-group-label'],
+[data-slot='sidebar-menu-button'],
+[data-slot='sidebar-menu-sub-button'],
+[data-slot='accordion-trigger'],
+[data-slot='collapsible-trigger'],
+[data-slot='breadcrumb-page'],
+[data-slot='breadcrumb-link'] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* Vercel Geist-style skeleton shimmer */
 .skeleton-shimmer {
   background: linear-gradient(

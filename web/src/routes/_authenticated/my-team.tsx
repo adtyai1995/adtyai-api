@@ -16,13 +16,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 import { TeamPanel } from '@/features/wallet/adty/team-panel'
+import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/my-team')({
+  beforeLoad: () => {
+    if (useAuthStore.getState().auth.user?.adty_has_team !== true) {
+      throw redirect({ to: '/dashboard/overview', replace: true })
+    }
+  },
   component: MyTeam,
 })
 
