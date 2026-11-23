@@ -23,13 +23,17 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { AdtyOnlineTopup } from '@/features/wallet/adty/components/adty-online-topup'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { siteOwnerKeys, transferEarningToMargin } from '../api'
 import { newIdempotencyKey } from '../lib/site-owner'
 
-/** Moves typed earnings into margin. The tier deposit comes from the enabled site tier. */
-export function EarningToMarginPanel() {
+/** Moves typed earnings into margin or tops up margin online. The tier deposit comes from the enabled site tier. */
+export function EarningToMarginPanel(props: {
+  returnTradeNo?: string
+  onReturnClosed?: () => void
+}) {
   const { t } = useTranslation()
   const client = useQueryClient()
   const [amount, setAmount] = useState('')
@@ -75,6 +79,14 @@ export function EarningToMarginPanel() {
       >
         {t('Transfer earnings to margin')}
       </Button>
+      <AdtyOnlineTopup
+        business='owner_margin_topup'
+        returnTradeNo={props.returnTradeNo}
+        onReturnClosed={props.onReturnClosed}
+        onSettled={() =>
+          client.invalidateQueries({ queryKey: siteOwnerKeys.all })
+        }
+      />
     </section>
   )
 }

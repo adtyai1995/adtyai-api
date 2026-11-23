@@ -26,7 +26,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { NotificationManager } from '@/features/adty-notifications/components/notification-manager'
-import { TeamRegistrationLinksPanel } from '@/features/adty-team-registration'
+import { OwnerTeamAdmin } from '@/features/adty-team-admin'
 import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
 import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { RechargeAudit } from '@/features/recharge-audit'
@@ -49,23 +49,29 @@ import { PricingPanel } from './components/pricing-panel'
 import { SettlementSheetPanel } from './components/settlement-sheet-panel'
 import { SiteReferralPanel } from './components/site-referral-panel'
 import { SiteSettingsPanel } from './components/site-settings-panel'
-import { SiteTeamDiscountPanel } from './components/site-team-discount-panel'
 import { StaffPanel } from './components/staff-panel'
 import { TermsAcceptPanel } from './components/terms-accept-panel'
 import { VoucherPanel } from './components/voucher-panel'
 import { WalletLedgerPanel } from './components/wallet-ledger-panel'
 import { WithdrawalPanel } from './components/withdrawal-panel'
-import { SITE_OWNER_SECTIONS, type SiteOwnerSectionId } from './sections'
+import {
+  SITE_OWNER_SECTIONS,
+  SITE_OWNER_STANDALONE_SECTIONS,
+  type SiteOwnerSectionId,
+} from './sections'
 
 /** Site owner center (task 11.6): one page with a tab per section. */
 export function SiteOwnerCenter(props: {
   section: SiteOwnerSectionId
   returnTradeNo?: string
+  returnBusiness?: 'owner_self_use_topup' | 'owner_margin_topup'
 }) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.auth.user)
   const termsRequired = user?.site_terms_required === true
+  // Tickets and teams have their own sidebar entries and render without the owner-center tabs.
+  const standalone = SITE_OWNER_STANDALONE_SECTIONS.includes(props.section)
   const site = useQuery({
     queryKey: siteOwnerKeys.site,
     queryFn: getOwnerSite,
@@ -95,7 +101,7 @@ export function SiteOwnerCenter(props: {
       <DraftNavigationProvider>
         <SectionPageLayout>
           <SectionPageLayout.Title>
-            {t('Site owner center')}
+            {standalone ? labels[props.section] : t('Site owner center')}
           </SectionPageLayout.Title>
           <SectionPageLayout.Content>
             {termsRequired && (
@@ -133,6 +139,9 @@ export function SiteOwnerCenter(props: {
                     </AlertDescription>
                   </Alert>
                 )}
+                {props.section === 'tickets' && <TicketCenter scope='owner' />}
+                {props.section === 'teams' && <OwnerTeamAdmin />}
+                {!standalone && (
                 <Tabs
                   value={props.section}
                   onValueChange={(value) =>
@@ -150,7 +159,8 @@ export function SiteOwnerCenter(props: {
                   >
                     {SITE_OWNER_SECTIONS.filter(
                       (section) =>
-                        section !== 'history' || user?.adty_archived_site_owner
+                        (section !== 'history' || user?.adty_archived_site_owner) &&
+                        !SITE_OWNER_STANDALONE_SECTIONS.includes(section)
                     ).map((section) => (
                       <TabsTrigger
                         key={section}
@@ -161,9 +171,6 @@ export function SiteOwnerCenter(props: {
                       </TabsTrigger>
                     ))}
                   </TabsList>
-                  <TabsContent value='tickets'>
-                    <TicketCenter scope='owner' />
-                  </TabsContent>
                   <TabsContent value='overview'>
                     <OverviewPanel />
                   </TabsContent>
@@ -172,10 +179,6 @@ export function SiteOwnerCenter(props: {
                     className='flex flex-col gap-5'
                   >
                     <CustomersPanel />
-                  </TabsContent>
-                  <TabsContent value='teams'>
-                    <TeamRegistrationLinksPanel actor='owner' />
-                    <SiteTeamDiscountPanel />
                   </TabsContent>
                   <TabsContent value='commissions'>
                     <SiteReferralPanel />
@@ -204,7 +207,11 @@ export function SiteOwnerCenter(props: {
                       <EarningsPanel />
                       <section id='self-use'>
                         <OwnerSelfUsePanel
-                          returnTradeNo={props.returnTradeNo}
+                          returnTradeNo={
+                            props.returnBusiness === 'owner_margin_topup'
+                              ? undefined
+                              : props.returnTradeNo
+                          }
                           onReturnClosed={() =>
                             void navigate({
                               to: '/site-owner/$section',
@@ -219,7 +226,21 @@ export function SiteOwnerCenter(props: {
                         <SettlementSheetPanel />
                       </section>
                       <section id='margin'>
-                        <EarningToMarginPanel />
+                        <EarningToMarginPanel
+                          returnTradeNo={
+                            props.returnBusiness === 'owner_margin_topup'
+                              ? props.returnTradeNo
+                              : undefined
+                          }
+                          onReturnClosed={() =>
+                            void navigate({
+                              to: '/site-owner/$section',
+                              params: { section: 'earnings' },
+                              search: {},
+                              replace: true,
+                            })
+                          }
+                        />
                       </section>
                       <section id='withdrawal'>
                         <WithdrawalPanel key={site.data.id} activeSiteId={site.data.id} />
@@ -238,6 +259,7 @@ export function SiteOwnerCenter(props: {
                     <AgreementPanel site={site.data} />
                   </TabsContent>
                 </Tabs>
+                )}
               </div>
             )}
           </SectionPageLayout.Content>

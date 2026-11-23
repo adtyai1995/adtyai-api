@@ -63,7 +63,7 @@ export function CreateTeamForm() {
       setName('')
       setLeader('')
       attempt.current = { body: '', key: '' }
-      void client.invalidateQueries({ queryKey: ['main-site-teams'] })
+      void client.invalidateQueries({ queryKey: ['adty-team-admin'] })
     },
     onError: (error) => handleServerError(error),
   })

@@ -451,7 +451,15 @@ func GetAdtyOwnerSiteTeams(c *gin.Context) {
 		return
 	}
 	page := common.GetPageQuery(c)
-	rows, total, err := service.ListAdtyOwnerSiteTeams(site.Id, c.GetInt("id"), page.GetStartIdx(), page.GetPageSize(), c.Query("q"))
+	// Without status the list keeps its historical meaning: active teams only.
+	status := c.Query("status")
+	switch status {
+	case "":
+		status = model.AdtyTeamStatusActive
+	case "all":
+		status = ""
+	}
+	rows, total, err := service.ListAdtyTeamsForAdmin(service.AdtyTeamListFilter{SiteID: &site.Id, Status: status, Query: c.Query("q")}, page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -510,6 +518,30 @@ func PostAdtyOwnerSiteInvite(c *gin.Context) {
 		return
 	}
 	if err := service.BindAdtyOwnerSiteInviteFromIP(site.Id, c.GetInt("id"), body.InviterID, body.InviteeID, service.HashReferralRiskValue(c.ClientIP())); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"bound": true})
+}
+
+func GetAdtySiteCustomerReferralProfile(c *gin.Context) {
+	profile, err := service.GetAdtySiteCustomerReferralProfile(c.GetInt("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, profile)
+}
+
+func PostAdtySiteCustomerReferralBind(c *gin.Context) {
+	var body struct {
+		InviteCode string `json:"invite_code"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.BindAdtySiteInviteByCodeForUser(c.GetInt("id"), body.InviteCode, service.HashReferralRiskValue(c.ClientIP())); err != nil {
 		common.ApiError(c, err)
 		return
 	}

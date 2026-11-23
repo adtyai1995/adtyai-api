@@ -22,16 +22,11 @@ import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { TeamRegistrationLinksPanel } from '@/features/adty-team-registration'
-import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
-import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { BusinessTimezonePanel } from './components/business-timezone-panel'
-import { FundReviewPanel } from './components/site-fund-panel'
-import { MainTeamPricePanel } from './components/main-team-price-panel'
 import { OverviewPanel } from './components/overview-panel'
 import { PausedSiteRepairPanel } from './components/paused-site-repair-panel'
 import { ReviewsPanel } from './components/reviews-panel'
@@ -61,10 +56,8 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
   const labels: Record<SiteAdminSectionId, string> = {
     sites: t('Sites'),
     overview: t('Overview'),
-    tickets: t('Ticket workspace'),
     reviews: t('Risk reviews and reports'),
     settings: t('Supply settings'),
-    teams: t('Team management'),
     domains: t('Domains'),
     policies: t('Access and risk'),
     withdrawals: t('Withdrawals'),
@@ -111,10 +104,6 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
             <TabsContent value='sites' className='min-w-0'>
               <SitesPanel onOpenSite={(site) => setOpenSite(site.id)} />
             </TabsContent>
-            <TabsContent value='tickets'>
-              <TicketCenter scope='platform' />
-              <TelegramBindCard purpose='admin' platformSupport />
-            </TabsContent>
             <TabsContent value='overview'>
               <OverviewPanel />
               <BusinessTimezonePanel />
@@ -145,11 +134,6 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
                 canWriteSecrets={canWriteSecrets}
               />
               <SiteReferralCapPanel />
-            </TabsContent>
-            <TabsContent value='teams' className='flex flex-col gap-5'>
-              <TeamRegistrationLinksPanel actor='root' />
-              <MainTeamPricePanel />
-              <FundReviewPanel siteId={0} />
             </TabsContent>
             <TabsContent value='withdrawals'>
               <WithdrawRulesPanel />

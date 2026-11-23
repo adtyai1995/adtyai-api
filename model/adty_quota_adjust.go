@@ -110,7 +110,7 @@ func ValidateAdtyAdjustmentOrderTx(tx *gorm.DB, userID int, orderRef string, sit
 	if err := tx.Where("trade_no = ? AND user_id = ?", orderRef, userID).First(&order).Error; err != nil {
 		return nil, err
 	}
-	if order.TeamId != 0 || order.IsOwnerSelfUse() {
+	if order.TeamId != 0 || order.IsOwnerBusiness() {
 		return nil, common.NewMessage("No permission to perform this action")
 	}
 	if siteID != nil && order.SiteId != *siteID {
@@ -207,7 +207,7 @@ func AdjustUserQuotaWithLedger(userID, operatorID, operatorRole int, mode string
 		if err != nil {
 			return err
 		}
-		if order.TeamId != 0 || order.IsOwnerSelfUse() {
+		if order.TeamId != 0 || order.IsOwnerBusiness() {
 			return common.NewMessage("No permission to perform this action")
 		}
 		if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{AccountID: userID, SiteID: order.SiteId, OrderRef: prov.OrderRef}); err != nil {

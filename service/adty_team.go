@@ -154,6 +154,7 @@ type AdtyTeamMine struct {
 	Discount     decimal.Decimal      `json:"discount"`
 	SharedQuota  int64                `json:"shared_quota"`
 	Status       string               `json:"status"`
+	ClosedAt     int64                `json:"closed_at,omitempty"`
 	Members      []AdtyTeamMemberView `json:"members"`
 	Keys         []AdtyTeamKeyView    `json:"keys"`
 }
@@ -196,16 +197,26 @@ func GetAdtyTeamMine(userId int) (*AdtyTeamMine, error) {
 	if lookup.Error != nil {
 		return nil, lookup.Error
 	}
-	if lookup.RowsAffected == 0 {
-		return nil, nil
-	}
 	var team model.AdtyTeam
-	if err := model.DB.First(&team, membership.TeamId).Error; err != nil {
+	if lookup.RowsAffected == 0 {
+		// After closing a team, its leader's membership becomes "left". Keep the
+		// most recently closed team visible read-only so history and remaining
+		// balance stay inspectable on /my-team.
+		closed := model.DB.Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusClosed).
+			Order("closed_at DESC, id DESC").Limit(1).Find(&team)
+		if closed.Error != nil {
+			return nil, closed.Error
+		}
+		if closed.RowsAffected == 0 {
+			return nil, nil
+		}
+		membership = model.AdtyTeamMember{TeamId: team.Id, UserId: userId, Role: model.AdtyTeamRoleLeader, Status: model.AdtyTeamMemberLeft}
+	} else if err := model.DB.First(&team, membership.TeamId).Error; err != nil {
 		return nil, err
 	}
 	page := &AdtyTeamMine{
 		TeamId: team.Id, Name: team.Name, SiteId: team.SiteId, SourceSiteId: team.SourceSiteId, Role: membership.Role,
-		Discount: team.Discount, SharedQuota: team.SharedQuota, Status: team.Status,
+		Discount: team.Discount, SharedQuota: team.SharedQuota, Status: team.Status, ClosedAt: team.ClosedAt,
 		Members: []AdtyTeamMemberView{}, Keys: []AdtyTeamKeyView{},
 	}
 	if err := fillAdtyTeamPage(page, membership); err != nil {
@@ -463,6 +474,65 @@ func DeleteAdtyTeamMember(leaderId int, teamId int64, memberUserId int) error {
 		return err
 	}
 	_ = model.InvalidateUserTokensCache(memberUserId)
+	deliverAdtyCommittedAudit(event)
+	return nil
+}
+
+// ResetAdtyTeamEmployeePassword lets an active team's leader set a new password
+// for one of its non-deleted independent employee sub-accounts and revokes that
+// employee's existing sessions immediately.
+func ResetAdtyTeamEmployeePassword(leaderId int, teamId int64, memberUserId int, password string) error {
+	if leaderId <= 0 || teamId <= 0 || memberUserId <= 0 || memberUserId == leaderId {
+		return ErrAdtyTeamForbidden
+	}
+	if err := common.ValidateNewAccountPassword(password); err != nil {
+		return err
+	}
+	hash, err := common.HashAccountPassword(password)
+	if err != nil {
+		return err
+	}
+	var event model.AuditLog
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		team, err := lockActiveTeam(tx, teamId)
+		if err != nil {
+			return err
+		}
+		if team.LeaderUserId != leaderId {
+			return ErrAdtyTeamForbidden
+		}
+		var member model.AdtyTeamMember
+		lookup := model.AdtyLockForUpdate(tx).Where("team_id = ? AND user_id = ?", team.Id, memberUserId).Limit(1).Find(&member)
+		if lookup.Error != nil {
+			return lookup.Error
+		}
+		if lookup.RowsAffected == 0 || !member.IndependentEmployee || member.Role == model.AdtyTeamRoleLeader || member.Status == model.AdtyTeamMemberDeleted || member.DeletedAt != 0 {
+			return ErrAdtyTeamForbidden
+		}
+		user, err := lockAdtyTeamUser(tx, memberUserId)
+		if err != nil {
+			return err
+		}
+		if user.SiteId != team.SiteId || user.StaffSiteId != 0 || user.Role != common.RoleCommonUser {
+			return ErrAdtyTeamForbidden
+		}
+		if _, err := model.IncrementUserAuthVersionWithTx(tx, memberUserId); err != nil {
+			return err
+		}
+		if err := tx.Model(&model.User{}).Where("id = ?", memberUserId).Update("password", hash).Error; err != nil {
+			return err
+		}
+		event, err = appendAdtyTeamAuditTx(tx, leaderId, team.SiteId, "team_member", strconv.Itoa(memberUserId), "adty.team.member.password_reset",
+			map[string]any{"team_id": teamId, "user_id": memberUserId},
+			map[string]any{"team_id": teamId, "user_id": memberUserId, "sessions_revoked": true})
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if err := model.PublishUserAuthCache(memberUserId); err != nil {
+		common.SysError("Failed to publish team employee auth cache")
+	}
 	deliverAdtyCommittedAudit(event)
 	return nil
 }

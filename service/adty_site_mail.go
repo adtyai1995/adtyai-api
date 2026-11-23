@@ -1455,12 +1455,16 @@ func AdtyPayResultTarget(token string) string {
 	if err != nil {
 		return fallback
 	}
-	if ext.IsOwnerSelfUse() {
+	if ext.IsOwnerBusiness() {
 		site := AdtySiteById(ext.SiteId)
 		if site == nil || site.Status == model.AdtySiteStatusClosed {
 			return fallback
 		}
-		return AdtySitePublicBaseURL(site) + "/site-owner/earnings?trade_no=" + url.QueryEscape(tradeNo)
+		target := AdtySitePublicBaseURL(site) + "/site-owner/earnings?trade_no=" + url.QueryEscape(tradeNo)
+		if ext.IsOwnerMargin() {
+			target += "&business=owner_margin_topup#margin"
+		}
+		return target
 	}
 	// 跳回优先用站长的自定义域名：客户是在站长的牌子上付的钱，就该回到站长的站。
 	// 客户在那个域名上本来就登录着，回来直接看到钱包和这笔订单。

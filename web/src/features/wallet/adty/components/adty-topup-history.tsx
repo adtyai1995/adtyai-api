@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
@@ -73,6 +73,7 @@ function dateInputToUnixSeconds(
 /** The user's own top-up orders with face value, bonus, payment and status. */
 export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
   const { t, i18n } = useTranslation()
+  const fieldId = useId()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
@@ -109,14 +110,24 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
     return <ErrorState onRetry={() => void query.refetch()} />
   }
 
+  let historyTitle = t('Top-up history')
+  if (props.business === 'owner_margin_topup') {
+    historyTitle = t('Owner margin top-up history')
+  } else if (props.business === 'owner_self_use_topup') {
+    historyTitle = t('Owner self-use top-up history')
+  }
+
   return (
-    <Card id='wallet-history' className='scroll-mt-4'>
+    <Card
+      id={
+        props.business === 'owner_margin_topup'
+          ? 'margin-topup-history'
+          : 'wallet-history'
+      }
+      className='scroll-mt-4'
+    >
       <CardHeader>
-        <CardTitle>
-          {props.business === 'owner_self_use_topup'
-            ? t('Owner self-use top-up history')
-            : t('Top-up history')}
-        </CardTitle>
+        <CardTitle>{historyTitle}</CardTitle>
         <CardDescription>
           {t('Orders paid after they expire are still credited.')}
         </CardDescription>
@@ -124,9 +135,9 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
       <CardContent className='flex flex-col gap-3'>
         <div className='flex flex-wrap items-end gap-2'>
           <div className='flex flex-col gap-1'>
-            <Label htmlFor='topup-history-status'>{t('Status')}</Label>
+            <Label htmlFor={`${fieldId}-status`}>{t('Status')}</Label>
             <NativeSelect
-              id='topup-history-status'
+              id={`${fieldId}-status`}
               aria-label={t('Status')}
               value={status}
               onChange={(event) => {
@@ -145,9 +156,9 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
             </NativeSelect>
           </div>
           <div className='flex flex-col gap-1'>
-            <Label htmlFor='topup-history-method'>{t('Payment method')}</Label>
+            <Label htmlFor={`${fieldId}-method`}>{t('Payment method')}</Label>
             <NativeSelect
-              id='topup-history-method'
+              id={`${fieldId}-method`}
               aria-label={t('Payment method')}
               value={paymentMethod}
               onChange={(event) => {
@@ -166,9 +177,9 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
             </NativeSelect>
           </div>
           <div className='flex flex-col gap-1'>
-            <Label htmlFor='topup-history-trade-no'>{t('Order number')}</Label>
+            <Label htmlFor={`${fieldId}-trade-no`}>{t('Order number')}</Label>
             <Input
-              id='topup-history-trade-no'
+              id={`${fieldId}-trade-no`}
               aria-label={t('Order number')}
               value={tradeNo}
               placeholder={t('Order number')}
@@ -179,11 +190,11 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
             />
           </div>
           <div className='flex flex-col gap-1'>
-            <Label htmlFor='topup-history-start-date'>
+            <Label htmlFor={`${fieldId}-start-date`}>
               {t('Start date', { defaultValue: 'Start date' })}
             </Label>
             <Input
-              id='topup-history-start-date'
+              id={`${fieldId}-start-date`}
               aria-label={t('Start date', { defaultValue: 'Start date' })}
               type='date'
               value={startDate}
@@ -194,11 +205,11 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
             />
           </div>
           <div className='flex flex-col gap-1'>
-            <Label htmlFor='topup-history-end-date'>
+            <Label htmlFor={`${fieldId}-end-date`}>
               {t('End date', { defaultValue: 'End date' })}
             </Label>
             <Input
-              id='topup-history-end-date'
+              id={`${fieldId}-end-date`}
               aria-label={t('End date', { defaultValue: 'End date' })}
               type='date'
               value={endDate}

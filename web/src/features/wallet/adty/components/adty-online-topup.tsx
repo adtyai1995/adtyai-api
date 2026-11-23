@@ -90,7 +90,14 @@ export function AdtyOnlineTopup(props: {
         }
         onResume={(order) => setPayment(resumePayment(order))}
       />
-      <div id='wallet-add-funds' className='scroll-mt-4'>
+      <div
+        id={
+          props.business === 'owner_margin_topup'
+            ? 'margin-add-funds'
+            : 'wallet-add-funds'
+        }
+        className='scroll-mt-4'
+      >
         {info.isError && <ErrorState onRetry={() => void info.refetch()} />}
         {!info.isError && (
           <AdtyRechargeCard

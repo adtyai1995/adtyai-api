@@ -398,6 +398,11 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 				sheet.IncludedCount++
 				continue
 			}
+			if order.IsOwnerMargin() {
+				note(paid.CompleteTime)
+				sheet.IncludedCount++
+				continue
+			}
 			if order.IsOwnerSelfUse() {
 				sheet.OwnerSelfUseTopupUSD = sheet.OwnerSelfUseTopupUSD.Add(order.FaceUSD)
 			} else {

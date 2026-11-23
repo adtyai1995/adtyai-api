@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
+import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import {
   createServerError,
@@ -37,6 +38,8 @@ export function TicketImage(props: {
   expiresAt?: number
   imageID: number
   label: string
+  onDelete?: () => void
+  deleting?: boolean
 }) {
   const { t } = useTranslation()
   const query = useQuery({
@@ -132,18 +135,31 @@ export function TicketImage(props: {
   }
   return (
     <div className='flex min-w-0 flex-col gap-1 text-sm'>
-      {src ? (
-        <a
-          href={src}
-          target='_blank'
-          rel='noreferrer'
-          className='break-all underline'
-        >
-          {props.label}
-        </a>
-      ) : (
-        <span className='break-all'>{props.label}</span>
-      )}
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        {src ? (
+          <a
+            href={src}
+            target='_blank'
+            rel='noreferrer'
+            className='break-all underline'
+          >
+            {props.label}
+          </a>
+        ) : (
+          <span className='break-all'>{props.label}</span>
+        )}
+        {props.onDelete && (
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            disabled={props.deleting}
+            onClick={props.onDelete}
+          >
+            {t('Delete image')}
+          </Button>
+        )}
+      </div>
       <div className='h-48 w-full max-w-xs overflow-auto'>{content}</div>
     </div>
   )

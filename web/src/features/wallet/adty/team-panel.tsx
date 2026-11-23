@@ -19,18 +19,23 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyButton } from '@/components/copy-button'
+import { Dialog } from '@/components/dialog'
+import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { PasswordInput } from '@/components/password-input'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { teamRegistrationUrl } from '@/features/adty-team-registration/api'
 import { api } from '@/lib/api'
+import { formatQuota, formatTimestampToDate } from '@/lib/format'
 import {
   getServerErrorMessage,
   requireServerSuccess,
@@ -68,6 +73,13 @@ const teamKeyStatusLabels: Record<string, string> = {
   left: 'Revoked',
 }
 
+const memberStatusLabels: Record<string, string> = {
+  active: 'Active',
+  disabled: 'Disabled',
+  left: 'Left the team',
+  deleted: 'Deleted',
+}
+
 type TeamMine = {
   team_id: number
   name: string
@@ -75,6 +87,7 @@ type TeamMine = {
   discount: string
   shared_quota: number
   status: string
+  closed_at?: number
   members?: TeamMember[]
   keys?: TeamKey[]
 }
@@ -113,11 +126,13 @@ export function TeamPanel() {
       return body.data?.team ?? null
     },
   })
+  const team = mine.data
+  const isActive = team?.status === 'active'
   const [sceneKey, setSceneKey] = useState('')
   const topupInfo = useQuery({
-    queryKey: [...adtyTopupQueryKeys.info, 'team_topup', mine.data?.team_id],
-    queryFn: () => getAdtyTopupInfo('team_topup', mine.data?.team_id),
-    enabled: mine.data?.role === 'leader',
+    queryKey: [...adtyTopupQueryKeys.info, 'team_topup', team?.team_id],
+    queryFn: () => getAdtyTopupInfo('team_topup', team?.team_id),
+    enabled: team?.role === 'leader' && isActive,
   })
   const scenes = topupInfo.data?.scenes ?? []
   const scene = scenes.find((item) => item.key === sceneKey) ?? scenes[0]
@@ -133,6 +148,8 @@ export function TeamPanel() {
   const [employeeUsername, setEmployeeUsername] = useState('')
   const [employeePassword, setEmployeePassword] = useState('')
   const [deleteEmployee, setDeleteEmployee] = useState<TeamMember | null>(null)
+  const [resetMember, setResetMember] = useState<TeamMember | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
   const [ttlHours, setTtlHours] = useState('24')
   const [tokenId, setTokenId] = useState('')
   const [confirmClose, setConfirmClose] = useState(false)
@@ -145,12 +162,11 @@ export function TeamPanel() {
 
   const refresh = () =>
     void queryClient.invalidateQueries({ queryKey: ['adty-team'] })
-  const team = mine.data
   const [checkout, setCheckout] = useState<AdtyOrderExt | null>(null)
   const attempt = useRef({ body: '', key: '' })
   const pendingOrders = useQuery({
     queryKey: ['adty-team', 'pending-orders', team?.team_id],
-    enabled: team?.role === 'leader',
+    enabled: team?.role === 'leader' && isActive,
     queryFn: async () => {
       const { data } = await api.get<{
         success: boolean
@@ -166,7 +182,7 @@ export function TeamPanel() {
     : ''
   const invites = useQuery({
     queryKey: ['adty-team', 'invites', team?.team_id],
-    enabled: team?.role === 'leader' && Boolean(team?.team_id),
+    enabled: team?.role === 'leader' && isActive && Boolean(team?.team_id),
     queryFn: async () => {
       const teamId = team?.team_id
       if (!teamId) return []
@@ -244,6 +260,23 @@ export function TeamPanel() {
           </div>
           {mine.isPending && <LoadingState />}
           {mine.isError && <ErrorState onRetry={() => void mine.refetch()} />}
+          {mine.isSuccess && !team && (
+            <EmptyState
+              title={t('You are not in a team')}
+              description={t(
+                'Only the platform Root administrator can create teams or issue team registration links.'
+              )}
+            />
+          )}
+          {team && !isActive && (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'This team is closed. Members, keys and remaining balance are kept read-only for history.'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           {team && (
             <dl className='grid grid-cols-2 gap-3 text-sm'>
               <div className='flex flex-col gap-1'>
@@ -251,8 +284,14 @@ export function TeamPanel() {
                 <dd>{team.name}</dd>
               </div>
               <div className='flex flex-col gap-1'>
+                <dt className='text-muted-foreground'>{t('Status')}</dt>
+                <dd>{isActive ? t('Active') : t('Closed')}</dd>
+              </div>
+              <div className='flex flex-col gap-1'>
                 <dt className='text-muted-foreground'>{t('Shared quota')}</dt>
-                <dd className='tabular-nums'>{team.shared_quota}</dd>
+                <dd className='tabular-nums'>
+                  {formatQuota(team.shared_quota)}
+                </dd>
               </div>
               <div className='flex flex-col gap-1'>
                 <dt className='text-muted-foreground'>
@@ -264,9 +303,34 @@ export function TeamPanel() {
                 <dt className='text-muted-foreground'>{t('Role')}</dt>
                 <dd>{team.role === 'leader' ? t('Leader') : t('Member')}</dd>
               </div>
+              {!isActive && Boolean(team.closed_at) && (
+                <div className='flex flex-col gap-1'>
+                  <dt className='text-muted-foreground'>{t('Closed at')}</dt>
+                  <dd className='tabular-nums'>
+                    {formatTimestampToDate(team.closed_at ?? 0)}
+                  </dd>
+                </div>
+              )}
             </dl>
           )}
-          {team?.role === 'leader' && (
+          {team?.role === 'leader' && !isActive && (
+            <div className='flex flex-col gap-2'>
+              <h3 className='text-sm font-medium'>{t('Members')}</h3>
+              {(team.members ?? []).map((member) => (
+                <div
+                  key={member.user_id}
+                  className='flex flex-wrap items-center justify-between gap-3 text-sm'
+                >
+                  <span className='min-w-0 truncate'>
+                    {member.username || member.user_id} ·{' '}
+                    {member.role === 'leader' ? t('Leader') : t('Member')} ·{' '}
+                    {t(memberStatusLabels[member.status] ?? member.status)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {team?.role === 'leader' && isActive && (
             <div className='flex flex-col gap-2'>
               <div className='flex flex-col gap-1'>
                 <Label htmlFor='team-rename'>{t('Team name')}</Label>
@@ -618,33 +682,10 @@ export function TeamPanel() {
                     <span className='min-w-0 truncate'>
                       {member.username || member.user_id} ·{' '}
                       {member.role === 'leader' ? t('Leader') : t('Member')} ·{' '}
-                      {member.status}
+                      {t(memberStatusLabels[member.status] ?? member.status)}
                     </span>
-                    {member.role !== 'leader' && member.status === 'active' && (
-                      <Button
-                        type='button'
-                        variant='outline'
-                        size='sm'
-                        disabled={pending}
-                        onClick={() =>
-                          void run(async () => {
-                            const response = await api.post(
-                              `/api/adty/teams/${team.team_id}/members/${member.user_id}/disable`
-                            )
-                            if (!response.data?.success) {
-                              throw new Error(
-                                response.data?.message || 'Failed to save'
-                              )
-                            }
-                          })
-                        }
-                      >
-                        {t('Disable member')}
-                      </Button>
-                    )}
-                    {member.role !== 'leader' &&
-                      member.independent_employee &&
-                      member.status === 'disabled' && (
+                    <div className='flex flex-wrap gap-1.5'>
+                      {member.role !== 'leader' && member.status === 'active' && (
                         <Button
                           type='button'
                           variant='outline'
@@ -653,7 +694,7 @@ export function TeamPanel() {
                           onClick={() =>
                             void run(async () => {
                               const response = await api.post(
-                                `/api/adty/teams/${team.team_id}/members/${member.user_id}/enable`
+                                `/api/adty/teams/${team.team_id}/members/${member.user_id}/disable`
                               )
                               if (!response.data?.success) {
                                 throw new Error(
@@ -663,22 +704,61 @@ export function TeamPanel() {
                             })
                           }
                         >
-                          {t('Enable employee')}
+                          {t('Disable member')}
                         </Button>
                       )}
-                    {member.role !== 'leader' &&
-                      member.independent_employee &&
-                      member.status !== 'deleted' && (
-                        <Button
-                          type='button'
-                          variant='outline'
-                          size='sm'
-                          disabled={pending}
-                          onClick={() => setDeleteEmployee(member)}
-                        >
-                          {t('Delete employee')}
-                        </Button>
-                      )}
+                      {member.role !== 'leader' &&
+                        member.independent_employee &&
+                        member.status === 'disabled' && (
+                          <Button
+                            type='button'
+                            variant='outline'
+                            size='sm'
+                            disabled={pending}
+                            onClick={() =>
+                              void run(async () => {
+                                const response = await api.post(
+                                  `/api/adty/teams/${team.team_id}/members/${member.user_id}/enable`
+                                )
+                                if (!response.data?.success) {
+                                  throw new Error(
+                                    response.data?.message || 'Failed to save'
+                                  )
+                                }
+                              })
+                            }
+                          >
+                            {t('Enable employee')}
+                          </Button>
+                        )}
+                      {member.role !== 'leader' &&
+                        member.independent_employee &&
+                        member.status !== 'deleted' && (
+                          <>
+                            <Button
+                              type='button'
+                              variant='outline'
+                              size='sm'
+                              disabled={pending}
+                              onClick={() => {
+                                setResetPassword('')
+                                setResetMember(member)
+                              }}
+                            >
+                              {t('Reset password')}
+                            </Button>
+                            <Button
+                              type='button'
+                              variant='outline'
+                              size='sm'
+                              disabled={pending}
+                              onClick={() => setDeleteEmployee(member)}
+                            >
+                              {t('Delete employee')}
+                            </Button>
+                          </>
+                        )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -738,7 +818,7 @@ export function TeamPanel() {
               </Button>
             </div>
           )}
-          {team && team.role !== 'leader' && (
+          {team && team.role !== 'leader' && isActive && (
             <div className='flex flex-col gap-2'>
               <div className='flex flex-col gap-1'>
                 <Label htmlFor='team-token'>{t('Token id')}</Label>
@@ -808,7 +888,8 @@ export function TeamPanel() {
                     {key.name || key.token_id} ·{' '}
                     {t(teamKeyStatusLabels[key.status] ?? key.status)}
                   </span>
-                  {(key.binding_status ?? key.status) === 'active' &&
+                  {isActive &&
+                    (key.binding_status ?? key.status) === 'active' &&
                     key.status !== 'deleted' && (
                       <Button
                         type='button'
@@ -869,6 +950,71 @@ export function TeamPanel() {
             onSettled={refresh}
           />
         ))}
+      <Dialog
+        open={resetMember !== null}
+        onOpenChange={(open) => {
+          if (!open && !pending) {
+            setResetMember(null)
+            setResetPassword('')
+          }
+        }}
+        title={t('Reset employee password')}
+        description={t(
+          'Set a new password for {{name}}. Their existing sign-in sessions will be revoked immediately.',
+          {
+            name:
+              resetMember?.username || String(resetMember?.user_id ?? ''),
+          }
+        )}
+        footer={
+          <>
+            <Button
+              type='button'
+              variant='outline'
+              disabled={pending}
+              onClick={() => {
+                setResetMember(null)
+                setResetPassword('')
+              }}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              type='button'
+              variant='brand'
+              disabled={pending || !resetPassword}
+              onClick={() => {
+                if (!team || !resetMember) return
+                const userId = resetMember.user_id
+                void run(async () => {
+                  const response = await api.post(
+                    `/api/adty/teams/${team.team_id}/members/${userId}/password`,
+                    { password: resetPassword }
+                  )
+                  requireServerSuccess(response.data)
+                  setResetMember(null)
+                  setResetPassword('')
+                  toast.success(t('Password updated'))
+                })
+              }}
+            >
+              {t('Save')}
+            </Button>
+          </>
+        }
+      >
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor='team-employee-reset-password'>
+            {t('New password')}
+          </Label>
+          <PasswordInput
+            id='team-employee-reset-password'
+            autoComplete='new-password'
+            value={resetPassword}
+            onChange={(event) => setResetPassword(event.target.value)}
+          />
+        </div>
+      </Dialog>
       <ConfirmDialog
         open={deleteEmployee !== null}
         onOpenChange={(open) => {

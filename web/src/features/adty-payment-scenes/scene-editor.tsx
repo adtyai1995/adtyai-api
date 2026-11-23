@@ -95,7 +95,9 @@ export function PaymentSceneEditor(props: {
   useDraftNavigation(form.formState.isDirty)
   const epaySelected = form.watch('providers').includes('adty_epay')
   const selectedSites = form.watch('site_scope') === 'selected'
-  const ownerTopup = form.watch('business') === 'owner_self_use_topup'
+  const ownerTopup =
+    form.watch('business') === 'owner_self_use_topup' ||
+    form.watch('business') === 'owner_margin_topup'
   const channels = useQuery({
     queryKey: [...epayChannelsQueryKey, props.userId],
     queryFn: getEpayChannels,
@@ -230,7 +232,12 @@ export function PaymentSceneEditor(props: {
                       if (event.target.value !== 'team_topup') {
                         form.setValue('team_ids', [])
                       }
-                      if (event.target.value !== 'owner_self_use_topup') return
+                      if (
+                        event.target.value !== 'owner_self_use_topup' &&
+                        event.target.value !== 'owner_margin_topup'
+                      ) {
+                        return
+                      }
                       form.setValue('user_types', ['site_owner'], {
                         shouldDirty: true,
                       })
@@ -251,6 +258,9 @@ export function PaymentSceneEditor(props: {
                   </NativeSelectOption>
                   <NativeSelectOption value='owner_self_use_topup'>
                     {t('Owner self-use top-up')}
+                  </NativeSelectOption>
+                  <NativeSelectOption value='owner_margin_topup'>
+                    {t('Owner margin online top-up')}
                   </NativeSelectOption>
                 </NativeSelect>
               </Field>

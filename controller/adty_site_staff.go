@@ -266,7 +266,7 @@ func listOwnerBalanceRequestPage(c *gin.Context, siteID int) {
 }
 
 func PostAdtyStaffBalanceRequest(c *gin.Context) {
-	if _, _, ok := adtyStaffRequest(c, ""); !ok {
+	if _, _, ok := adtyStaffRequest(c, service.AdtyStaffBalanceRequest); !ok {
 		return
 	}
 	var body struct {

@@ -42,19 +42,21 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 		writeAdtyTopUpError(c, err)
 		return
 	}
+	business := c.Query("business")
+	isOwnerBiz := business == model.AdtyBusinessOwnerSelfUseTopup || business == model.AdtyBusinessOwnerMarginTopup
 	for _, scene := range scenes {
-		if scene.Key == "wallet_topup" || c.Query("business") == model.AdtyBusinessOwnerSelfUseTopup {
+		if scene.Key == "wallet_topup" || isOwnerBiz {
 			methods = scene.Methods
 			break
 		}
 	}
 	var pending *model.AdtyTopUpView
 	ownerSiteID := 0
-	if c.Query("business") == model.AdtyBusinessOwnerSelfUseTopup {
+	if isOwnerBiz {
 		ownerSiteID = service.AdtyRequestSiteID(c)
 	}
-	if c.Query("business") != model.AdtyBusinessTeamTopup {
-		if view, err := model.GetUserPendingAdtyTopUp(c.GetInt("id"), time.Now().Unix(), ownerSiteID); err == nil {
+	if business != model.AdtyBusinessTeamTopup {
+		if view, err := model.GetUserPendingAdtyTopUpForBusiness(c.GetInt("id"), time.Now().Unix(), ownerSiteID, business); err == nil {
 			pending = view
 		}
 	}
@@ -168,15 +170,16 @@ func FlushAdtyBatchUpdates(c *gin.Context) {
 
 // GetAdtyTopUpPending 返回本人最新一笔还没过期的 pending 订单，没有时 data 为 null。
 func GetAdtyTopUpPending(c *gin.Context) {
+	business := c.Query("business")
 	ownerSiteID := 0
-	if c.Query("business") == model.AdtyBusinessOwnerSelfUseTopup {
+	if business == model.AdtyBusinessOwnerSelfUseTopup || business == model.AdtyBusinessOwnerMarginTopup {
 		ownerSiteID = service.AdtyRequestSiteID(c)
 		if ownerSiteID <= 0 {
 			common.ApiSuccess(c, nil)
 			return
 		}
 	}
-	view, err := model.GetUserPendingAdtyTopUp(c.GetInt("id"), time.Now().Unix(), ownerSiteID)
+	view, err := model.GetUserPendingAdtyTopUpForBusiness(c.GetInt("id"), time.Now().Unix(), ownerSiteID, business)
 	if err != nil {
 		writeAdtyTopUpError(c, err)
 		return
@@ -465,7 +468,7 @@ func GetAdtyTopUpSelf(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if filter.Business == model.AdtyBusinessOwnerSelfUseTopup {
+	if filter.Business == model.AdtyBusinessOwnerSelfUseTopup || filter.Business == model.AdtyBusinessOwnerMarginTopup {
 		filter.OwnerSiteID = service.AdtyRequestSiteID(c)
 		if filter.OwnerSiteID <= 0 {
 			filter.OwnerSiteID = -1
@@ -537,10 +540,12 @@ func newAdtyTradeNo(prefix string, userID int) (string, error) {
 func replaceOtherPendingAdtyOrders(c *gin.Context, quote ...*service.AdtyQuote) error {
 	userID := c.GetInt("id")
 	ownerSiteID := 0
-	if len(quote) > 0 && quote[0] != nil && quote[0].Business == model.AdtyBusinessOwnerSelfUseTopup {
+	business := ""
+	if len(quote) > 0 && quote[0] != nil && (quote[0].Business == model.AdtyBusinessOwnerSelfUseTopup || quote[0].Business == model.AdtyBusinessOwnerMarginTopup) {
 		ownerSiteID = quote[0].SiteID
+		business = quote[0].Business
 	}
-	tradeNos, err := model.ListUserPendingAdtyTradeNos(userID, ownerSiteID)
+	tradeNos, err := model.ListUserPendingAdtyTradeNosForBusiness(userID, ownerSiteID, business)
 	if err != nil {
 		return err
 	}
@@ -605,7 +610,7 @@ func createAdtyOrder(c *gin.Context, draft adtyOrderDraft) (*model.TopUp, *model
 		ChannelId:       draft.channelID,
 		MethodLabel:     draft.methodLabel,
 	}
-	if quote.Business == model.AdtyBusinessOwnerSelfUseTopup {
+	if quote.Business == model.AdtyBusinessOwnerSelfUseTopup || quote.Business == model.AdtyBusinessOwnerMarginTopup {
 		ext.SiteId = quote.SiteID
 	} else if site := service.AdtyBillingSiteForUser(userID); site != nil {
 		ext.SiteId = site.Id // 分站客户的加赠由站长出（任务 11.5）

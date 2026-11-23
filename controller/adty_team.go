@@ -15,16 +15,87 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// GetAdtyMainTeams is Root's team list across every site. site_id narrows it
+// to one site (0 is the main site); status is active, closed or empty for all.
 func GetAdtyMainTeams(c *gin.Context) {
 	page := common.GetPageQuery(c)
-	query := model.DB.Model(&model.AdtyTeam{}).Where("site_id = ?", 0)
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
+	filter := service.AdtyTeamListFilter{Status: c.Query("status"), Query: c.Query("q")}
+	if raw := strings.TrimSpace(c.Query("site_id")); raw != "" {
+		siteID, err := strconv.Atoi(raw)
+		if err != nil || siteID < 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		filter.SiteID = &siteID
+	}
+	rows, total, err := service.ListAdtyTeamsForAdmin(filter, page.GetStartIdx(), page.GetPageSize())
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	var rows []model.AdtyTeam
-	if err := query.Order("id DESC").Offset(page.GetStartIdx()).Limit(page.GetPageSize()).Find(&rows).Error; err != nil {
+	common.ApiSuccess(c, gin.H{"total": total, "items": rows})
+}
+
+// GetAdtyAdminTeam is Root's read-only team detail.
+func GetAdtyAdminTeam(c *gin.Context) {
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	detail, err := service.GetAdtyTeamAdminDetail(id, nil)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, detail)
+}
+
+// GetAdtyAdminTeamLedger is Root's page of one team's shared-balance ledger.
+func GetAdtyAdminTeamLedger(c *gin.Context) {
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	page := common.GetPageQuery(c)
+	rows, total, err := service.ListAdtyTeamLedgerForAdmin(id, nil, page.GetStartIdx(), page.GetPageSize())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"total": total, "items": rows})
+}
+
+// GetAdtyOwnerSiteTeam is the owner's read-only detail of a team on its site.
+func GetAdtyOwnerSiteTeam(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	detail, err := service.GetAdtyTeamAdminDetail(id, &site.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, detail)
+}
+
+// GetAdtyOwnerSiteTeamLedger is the owner's page of a site team's shared-balance ledger.
+func GetAdtyOwnerSiteTeamLedger(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	page := common.GetPageQuery(c)
+	rows, total, err := service.ListAdtyTeamLedgerForAdmin(id, &site.Id, page.GetStartIdx(), page.GetPageSize())
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -317,6 +388,30 @@ func PostAdtyTeamDeleteMember(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"deleted": true})
+}
+
+func PostAdtyTeamEmployeePassword(c *gin.Context) {
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	memberID, err := strconv.Atoi(c.Param("userId"))
+	if err != nil || memberID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.ResetAdtyTeamEmployeePassword(c.GetInt("id"), id, memberID, body.Password); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"updated": true})
 }
 
 func PostAdtyMainTeamRegistration(c *gin.Context) {

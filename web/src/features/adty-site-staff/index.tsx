@@ -137,7 +137,8 @@ export function StaffWorkspace() {
     })
   }
   if (
-    canList ||
+    orderTypes.length > 0 ||
+    grants.includes('customers.balance_request') ||
     grants.includes('customers.topups') ||
     grants.includes('customers.usage') ||
     grants.includes('customers.disable')
@@ -158,7 +159,7 @@ export function StaffWorkspace() {
               {t('Orders')}
             </Button>
           )}
-          {canList && (
+          {grants.includes('customers.balance_request') && (
             <Button
               size='sm'
               variant='outline'
@@ -276,7 +277,9 @@ export function StaffWorkspace() {
                   onClose={() => setRecords(null)}
                 />
               )}
-            {balanceCustomer && canList && (
+            {balanceCustomer &&
+              canList &&
+              grants.includes('customers.balance_request') && (
               <StaffBalanceRequestDialog
                 key={`${self.data.staff.version}-${balanceCustomer.id}`}
                 customer={balanceCustomer}

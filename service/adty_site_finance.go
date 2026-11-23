@@ -590,6 +590,84 @@ func TransferAdtyEarningToMargin(siteID, operator int, amount decimal.Decimal, k
 	return nil
 }
 
+// CreditAdtySiteMarginByRoot records a direct Root-authorized margin deposit
+// without fabricating a main-site wallet debit, opens a new 90% margin cycle,
+// and resumes pending gift fulfillments after commit.
+func CreditAdtySiteMarginByRoot(siteID, rootUserID int, amount decimal.Decimal, reason, key string) (*model.AdtySiteWalletLedger, error) {
+	reason = strings.TrimSpace(reason)
+	key = strings.TrimSpace(key)
+	if siteID <= 0 || rootUserID <= 0 || !amount.IsPositive() || !validAdtySiteWalletAmount(amount) ||
+		reason == "" || len([]rune(reason)) > 200 || key == "" || len(key) > 64 {
+		return nil, ErrAdtySiteWalletInvalidOperation
+	}
+	scopedKey := "site:" + strconv.Itoa(siteID) + ":margin-root:" + key
+	if len(scopedKey) > 128 {
+		return nil, ErrAdtySiteWalletIdempotencyKey
+	}
+	if err := EnsureAdtySiteWallets(siteID); err != nil {
+		return nil, err
+	}
+	var ledger *model.AdtySiteWalletLedger
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+			return err
+		}
+		if site.Status == model.AdtySiteStatusClosed {
+			return common.NewMessage("Site is closed")
+		}
+		var margin model.AdtySiteWallet
+		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).First(&margin).Error; err != nil {
+			return err
+		}
+		var existing model.AdtySiteWalletLedger
+		lookup := tx.Where("idempotency_key = ?", scopedKey).Limit(1).Find(&existing)
+		if lookup.Error != nil {
+			return lookup.Error
+		}
+		if lookup.RowsAffected > 0 {
+			if existing.SiteId != siteID || existing.WalletKind != model.AdtySiteWalletMargin || !existing.Delta.Equal(amount) || existing.Reason != reason {
+				return model.ErrAdtyIdempotencyConflict
+			}
+			ledger = &existing
+			return nil
+		}
+		if !margin.RequiredBalance.IsPositive() {
+			var tier model.AdtySiteTier
+			if err := tx.Where("code = ? AND enabled = ?", site.TierCode, true).First(&tier).Error; err != nil || !tier.DepositUSD.IsPositive() {
+				return common.NewMessage("Margin tier is not configured")
+			}
+			if err := tx.Model(&margin).Update("required_balance", tier.DepositUSD).Error; err != nil {
+				return err
+			}
+			margin.RequiredBalance = tier.DepositUSD
+		}
+		var err error
+		ledger, err = applyAdtySiteWalletChangeTx(tx, siteID, model.AdtySiteWalletMargin, amount, AdtySiteWalletChange{
+			Type:            "margin_root_credit",
+			RefType:         "root_margin",
+			RefID:           key,
+			Reason:          reason,
+			OperatorID:      rootUserID,
+			IdempotencyKey:  scopedKey,
+			OpenMarginCycle: true,
+		})
+		if err != nil {
+			return err
+		}
+		return recordSiteAuditTx(tx, siteID, "margin.root_credit", rootUserID,
+			map[string]any{"margin_balance": ledger.BalanceBefore.String()},
+			map[string]any{"margin_balance": ledger.BalanceAfter.String(), "amount_usd": amount.String(), "owner_user_id": site.OwnerUserId, "reason": reason, "ledger_id": ledger.Id},
+			reason)
+	}); err != nil {
+		return nil, err
+	}
+	if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
+		common.SysLog(common.LogText("gift fulfillment: resume after root margin credit site %d: %s", siteID, err.Error()))
+	}
+	return ledger, nil
+}
+
 // adtyEarningToMarginKeys scopes the client idempotency key to one site. The
 // ledger has a single global unique index on idempotency_key, so an unscoped
 // client string would let one site fail, pre-empt, or probe another site's
@@ -802,7 +880,7 @@ func SelectAdtySiteTier(tiers []model.AdtySiteTier, stats AdtySiteTierStats) *mo
 }
 
 func adtySiteTierCountsAsPrincipal(order model.AdtyTopupOrder) bool {
-	if order.IsOwnerSelfUse() {
+	if order.IsOwnerBusiness() {
 		return false
 	}
 	if order.Provider == model.AdtyVoucherProvider {

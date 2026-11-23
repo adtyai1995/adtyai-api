@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"image"
 	"image/gif"
 	"image/jpeg"
@@ -228,6 +229,7 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 					return ErrAdtyTicketForbidden
 				}
 				ticket.Status = model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
+				ticket.InitialMessageId = prior.Id
 				created = &ticket
 				return nil
 			}
@@ -270,6 +272,7 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 		if err := emitAdtyTicketCreateNoticesTx(tx, ticket, createEvent.Id, actor.User.Id); err != nil {
 			return err
 		}
+		ticket.InitialMessageId = message.Id
 		created = &ticket
 		createdNew = true
 		return nil
@@ -929,13 +932,13 @@ func AttachAdtyTicketImageWithKey(userId int, ticketId, messageID int64, visibil
 		}
 		var count int64
 		var total int64
-		if err := tx.Model(&model.AdtyTicketImage{}).Where("ticket_id = ?", ticket.Id).Count(&count).Error; err != nil {
+		if err := tx.Model(&model.AdtyTicketImage{}).Where("ticket_id = ? AND COALESCE(delete_pending,false)=false", ticket.Id).Count(&count).Error; err != nil {
 			return err
 		}
 		if int(count) >= policy.MaxCount {
 			return ErrAdtyTicketImage
 		}
-		if err := tx.Model(&model.AdtyTicketImage{}).Where("ticket_id = ?", ticket.Id).Select("COALESCE(SUM(size),0)").Scan(&total).Error; err != nil {
+		if err := tx.Model(&model.AdtyTicketImage{}).Where("ticket_id = ? AND COALESCE(delete_pending,false)=false", ticket.Id).Select("COALESCE(SUM(size),0)").Scan(&total).Error; err != nil {
 			return err
 		}
 		if int(total)+len(stripped) > policy.MaxTotal {
@@ -1019,6 +1022,67 @@ func OpenAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...strin
 		return "", "", err
 	}
 	return path, imageRow.Mime, nil
+}
+
+// DeleteAdtyTicketImage hides an image atomically inside a transaction, records
+// both a ticket event and an official audit log, and removes the backing file
+// after commit so a crash or disk failure never leaves a dangling visible image.
+func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...string) error {
+	var target model.AdtyTicketImage
+	var ticketSiteID int
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
+		if err != nil {
+			return err
+		}
+		var ticket model.AdtyTicket
+		if err := scopedAdtyTickets(model.AdtyLockForUpdate(tx), actor).First(&ticket, ticketId).Error; err != nil {
+			return err
+		}
+		if ticket.Status == model.AdtyTicketClosed || ticket.Status == model.AdtyTicketResolved {
+			return ErrAdtyTicketInvalid
+		}
+		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND ticket_id = ? AND COALESCE(delete_pending,false)=false", imageId, ticket.Id).First(&target).Error; err != nil {
+			return err
+		}
+		if target.Visibility != model.AdtyTicketVisibilityPublic {
+			if !actor.isHandling() {
+				return ErrAdtyTicketForbidden
+			}
+		} else if !actor.isHandling() {
+			allowed := actor.User.Id == ticket.UserId ||
+				(ticket.TeamShared && actor.TeamRole == model.AdtyTeamRoleLeader && actor.TeamId > 0 && actor.TeamId == ticket.TeamId)
+			if !allowed && target.MessageId > 0 {
+				var msg model.AdtyTicketMessage
+				if err := tx.Select("author_id").Where("id = ? AND ticket_id = ?", target.MessageId, ticket.Id).First(&msg).Error; err == nil && msg.AuthorId == actor.User.Id {
+					allowed = true
+				}
+			}
+			if !allowed {
+				return ErrAdtyTicketForbidden
+			}
+		}
+		if err := tx.Model(&target).Update("delete_pending", true).Error; err != nil {
+			return err
+		}
+		ticketSiteID = ticket.SiteId
+		return tx.Create(&model.AdtyTicketEvent{
+			TicketId: ticket.Id, ActorId: actor.User.Id, Action: "image_delete", Detail: strconv.FormatInt(target.Id, 10),
+		}).Error
+	})
+	if err != nil {
+		return err
+	}
+	if path, pathErr := adtyTicketImageStoragePath(target); pathErr == nil {
+		if rmErr := os.Remove(path); rmErr == nil || errors.Is(rmErr, os.ErrNotExist) {
+			_ = model.DB.Where("id = ? AND COALESCE(delete_pending,false)=true", target.Id).Delete(&model.AdtyTicketImage{}).Error
+		}
+	}
+	writeAdtyOfficialAudit(userId, ticketSiteID, "ticket_image", strconv.FormatInt(target.Id, 10), "adty.ticket.image.delete", "", "",
+		map[string]any{"ticket_id": ticketId, "image_id": target.Id, "object_id": target.ObjectId, "visibility": target.Visibility},
+		map[string]any{"deleted": true},
+		model.AuditResultSuccess)
+	return nil
 }
 
 func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visibility string, workspace ...string) (*model.AdtyTicketMessage, error) {

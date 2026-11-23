@@ -342,7 +342,7 @@ func adtyHostnameMonthlyFee(count int64) decimal.Decimal {
 }
 
 func adtyCustomerTopUpOrders(db *gorm.DB) *gorm.DB {
-	return db.Where("COALESCE(business, '') <> ?", model.AdtyBusinessOwnerSelfUseTopup).
+	return db.Where("COALESCE(business, '') NOT IN ?", []string{model.AdtyBusinessOwnerSelfUseTopup, model.AdtyBusinessOwnerMarginTopup}).
 		Where("COALESCE(provider, '') <> ? OR method IN ?", model.AdtyVoucherProvider, []string{model.AdtyVoucherPurposeMainUser, model.AdtyVoucherPurposeSiteCustomer})
 }
 

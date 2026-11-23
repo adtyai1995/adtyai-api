@@ -89,6 +89,10 @@ export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
       return t('Withdrawal returned')
     case 'earning_to_margin':
       return t('Earnings moved to margin')
+    case 'margin_root_credit':
+      return t('Root direct margin credit')
+    case 'margin_topup':
+      return t('Margin online top-up')
     case 'margin_cycle_open':
       return t('Margin cycle opened')
     case 'commission_freeze':

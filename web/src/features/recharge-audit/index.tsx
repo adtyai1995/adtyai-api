@@ -337,6 +337,9 @@ export function RechargeAudit(props: {
                         if (row.business === 'owner_self_use_topup') {
                           return t('Owner self-use top-up')
                         }
+                        if (row.business === 'owner_margin_topup') {
+                          return t('Owner margin top-up')
+                        }
                         return t(UNIFIED_ORDER_LABELS[row.order_type] ?? row.order_type)
                       },
                     },

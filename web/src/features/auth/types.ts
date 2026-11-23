@@ -47,6 +47,8 @@ export interface RegisterPayload {
   lang?: string
   /** adty task 11.7, sent as a query parameter */
   site_terms_version?: string
+  /** Optional sub-site customer invite code from ?site_invite= or form input */
+  site_invite_code?: string
 }
 
 export interface PasswordResetPayload {

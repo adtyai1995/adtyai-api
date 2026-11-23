@@ -153,7 +153,7 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 		ownWithdrawals := model.DB.Model(&model.AdtySiteWithdrawal{}).Select("id").Scopes(model.AdtyWithdrawalOwnerScope(*ownerSiteID, c.GetInt("id")))
 		query = query.Where("o.site_id = ?", *ownerSiteID).
 			Where("(o.source_type <> 'site_withdrawal' OR o.id IN (?))", ownWithdrawals).
-			Where("(o.source_type <> 'topup' OR COALESCE(a.business,'') <> ? OR o.user_id = ?)", model.AdtyBusinessOwnerSelfUseTopup, c.GetInt("id"))
+			Where("(o.source_type <> 'topup' OR COALESCE(a.business,'') NOT IN ? OR o.user_id = ?)", []string{model.AdtyBusinessOwnerSelfUseTopup, model.AdtyBusinessOwnerMarginTopup}, c.GetInt("id"))
 	}
 	if selfUserID != nil {
 		query = query.Where("o.user_id = ?", *selfUserID)
@@ -255,7 +255,7 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 					}
 					switch order.Status {
 					case common.TopUpStatusSuccess:
-						order.Actions.Refund = capability.Refund && (ownerSiteID == nil || order.Business != model.AdtyBusinessOwnerSelfUseTopup)
+						order.Actions.Refund = capability.Refund && order.Business != model.AdtyBusinessOwnerMarginTopup && (ownerSiteID == nil || order.Business != model.AdtyBusinessOwnerSelfUseTopup)
 					case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled:
 						if ownerSiteID == nil {
 							order.Actions.Complete, order.Actions.Query = capability.Complete, capability.Query
@@ -462,7 +462,7 @@ func enrichTopupAuditOrders(orders []rechargeAuditOrder, ownerSiteID *int, siteN
 		if ownerSiteID != nil {
 			// ISS-R1-0081: An authorized site owner can initiate/manage manual
 			// refunds on original orders belonging to their site.
-			if orders[i].Business != model.AdtyBusinessOwnerSelfUseTopup && orders[i].SiteId != nil && *orders[i].SiteId == *ownerSiteID && orders[i].Status == common.TopUpStatusSuccess {
+			if orders[i].Business != model.AdtyBusinessOwnerSelfUseTopup && orders[i].Business != model.AdtyBusinessOwnerMarginTopup && orders[i].SiteId != nil && *orders[i].SiteId == *ownerSiteID && orders[i].Status == common.TopUpStatusSuccess {
 				orders[i].Actions.Refund = capability.Refund
 			}
 			continue
@@ -472,7 +472,7 @@ func enrichTopupAuditOrders(orders []rechargeAuditOrder, ownerSiteID *int, siteN
 			orders[i].Actions.Complete = capability.Complete
 			orders[i].Actions.Query = capability.Query
 		case common.TopUpStatusSuccess:
-			orders[i].Actions.Refund = capability.Refund
+			orders[i].Actions.Refund = capability.Refund && orders[i].Business != model.AdtyBusinessOwnerMarginTopup
 		}
 	}
 }
@@ -1083,7 +1083,7 @@ func adtyOwnerOrderForRefundOrError(c *gin.Context) (*model.AdtySite, string, *m
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Order not found"))
 		return nil, "", nil, false
 	}
-	if ext.IsOwnerSelfUse() {
+	if ext.IsOwnerBusiness() {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This operation requires main-site finance permission"))
 		return nil, "", nil, false
 	}

@@ -88,7 +88,7 @@ func adtyReferralSnapshot(userId int) (int, decimal.Decimal) {
 }
 
 func prepareAdtyReferralSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	if ext.IsOwnerSelfUse() {
+	if ext.IsOwnerBusiness() {
 		ext.ReferralAffiliateId, ext.ReferralRate = 0, decimal.Zero
 		return nil
 	}
@@ -104,7 +104,7 @@ func prepareAdtyReferralSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.A
 // adtyReferralAfterCreditTx 在入账的同一个事务里插一条计佣任务。只用 OnConflict DoNothing，
 // 不做可能报错的查询：PostgreSQL 下钩子一出错，整个入账事务都作废（审阅重点 10）。
 func adtyReferralAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	if ext == nil || ext.IsOwnerSelfUse() || ext.ReferralAffiliateId == 0 {
+	if ext == nil || ext.IsOwnerBusiness() || ext.ReferralAffiliateId == 0 {
 		return nil
 	}
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.ReferralCommissionJob{

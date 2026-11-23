@@ -36,6 +36,12 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
   const payable = order.has_ext
     ? `${order.pay_amount} ${order.pay_currency} / ${order.paid_amount} ${order.paid_currency}`
     : t('Missing order details')
+  let businessLabel = t(UNIFIED_ORDER_LABELS[order.order_type] ?? order.order_type)
+  if (order.business === 'owner_self_use_topup') {
+    businessLabel = t('Owner self-use top-up')
+  } else if (order.business === 'owner_margin_topup') {
+    businessLabel = t('Owner margin top-up')
+  }
   return (
     <>
       <dl className='grid grid-cols-1 gap-3 text-sm break-words sm:grid-cols-3'>
@@ -47,7 +53,7 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           ],
           [t('Status'), t(ORDER_TRACE_LABELS[order.status] ?? order.status)],
           [t('Provider'), order.payment_provider],
-          [t('Business'), order.business === 'owner_self_use_topup' ? t('Owner self-use top-up') : t(UNIFIED_ORDER_LABELS[order.order_type] ?? order.order_type)],
+          [t('Business'), businessLabel],
           [t('Original order'), order.original_trade_no || '-'],
           [
             t('Payment scene'),

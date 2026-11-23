@@ -1,7 +1,9 @@
 package service
 
 import (
+	"crypto/rand"
 	"errors"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrAdtySiteReferralUnset = errors.New("site commission policy is not configured")
@@ -267,4 +270,262 @@ func ListAdtySiteInvites(siteID, ownerID int) ([]model.AdtySiteInvite, error) {
 	var rows []model.AdtySiteInvite
 	err := model.DB.Where("site_id = ?", siteID).Order("id desc").Limit(50).Find(&rows).Error
 	return rows, err
+}
+
+const adtySiteCustomerInviteAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+type AdtySiteCustomerReferralInvitee struct {
+	InviteeId       int    `json:"invitee_id"`
+	InviteeUsername string `json:"invitee_username"`
+	Rate            string `json:"rate"`
+	RatePercent     string `json:"rate_percent"`
+	CreatedAt       int64  `json:"created_at"`
+}
+
+type AdtySiteCustomerReferralProfile struct {
+	SiteId             int                               `json:"site_id"`
+	SiteName           string                            `json:"site_name"`
+	SiteStatus         string                            `json:"site_status"`
+	Enabled            bool                              `json:"enabled"`
+	RateConfigured     bool                              `json:"rate_configured"`
+	Rate               string                            `json:"rate,omitempty"`
+	RatePercent        string                            `json:"rate_percent,omitempty"`
+	ObservationDays    *int64                            `json:"observation_days,omitempty"`
+	PendingCoverageCap *decimal.Decimal                  `json:"pending_coverage_cap,omitempty"`
+	InviteCode         string                            `json:"invite_code"`
+	InviteURL          string                            `json:"invite_url"`
+	InvitedCount       int64                             `json:"invited_count"`
+	Invites            []AdtySiteCustomerReferralInvitee `json:"invites"`
+	HasInviter         bool                              `json:"has_inviter"`
+	InviterUsername    string                            `json:"inviter_username,omitempty"`
+	CanBind            bool                              `json:"can_bind"`
+}
+
+func generateAdtySiteCustomerInviteCode() (string, error) {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	out := make([]byte, len(buf))
+	for i, b := range buf {
+		out[i] = adtySiteCustomerInviteAlphabet[int(b)%len(adtySiteCustomerInviteAlphabet)]
+	}
+	return string(out), nil
+}
+
+func ensureAdtySiteCustomerInviteCode(userID, siteID int) (string, error) {
+	for range 8 {
+		var code string
+		retry := false
+		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.AdtySiteCustomer{
+				UserId:   userID,
+				SiteId:   siteID,
+				Status:   model.AdtySiteCustomerActive,
+				JoinedAt: common.GetTimestamp(),
+			}).Error; err != nil {
+				return err
+			}
+			var cust model.AdtySiteCustomer
+			if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userID).First(&cust).Error; err != nil {
+				return err
+			}
+			if cust.InviteCode != nil && strings.TrimSpace(*cust.InviteCode) != "" {
+				code = strings.TrimSpace(*cust.InviteCode)
+				return nil
+			}
+			candidate, err := generateAdtySiteCustomerInviteCode()
+			if err != nil {
+				return err
+			}
+			var dup int64
+			if err := tx.Model(&model.AdtySiteCustomer{}).Where("invite_code = ?", candidate).Count(&dup).Error; err != nil {
+				return err
+			}
+			if dup > 0 {
+				retry = true
+				return nil
+			}
+			if err := tx.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", userID).Update("invite_code", candidate).Error; err != nil {
+				return err
+			}
+			code = candidate
+			return nil
+		})
+		if err != nil {
+			continue
+		}
+		if !retry && code != "" {
+			return code, nil
+		}
+	}
+	return "", common.NewMessage("Failed to generate site invite code")
+}
+
+// GetAdtySiteCustomerReferralProfile returns the subsite customer's level-1 invite
+// code, registration link, site referral policy, invited users, and bind eligibility.
+func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralProfile, error) {
+	if userID <= 0 {
+		return nil, common.NewMessage("No permission to perform this action")
+	}
+	var user model.User
+	if err := model.DB.Select("id", "site_id", "staff_site_id", "status").First(&user, userID).Error; err != nil {
+		return nil, err
+	}
+	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Status != common.UserStatusEnabled {
+		return nil, common.NewMessage("Only sub-site customers can use sub-site invitations")
+	}
+	var site model.AdtySite
+	if err := model.DB.First(&site, user.SiteId).Error; err != nil {
+		return nil, err
+	}
+	if site.Status == model.AdtySiteStatusClosed {
+		return nil, common.NewMessage("Site is not open for registration")
+	}
+	code, err := ensureAdtySiteCustomerInviteCode(user.Id, site.Id)
+	if err != nil {
+		return nil, err
+	}
+	var rateRow model.AdtySiteReferralRate
+	rateLookup := model.DB.Where("site_id = ?", site.Id).Limit(1).Find(&rateRow)
+	if rateLookup.Error != nil {
+		return nil, rateLookup.Error
+	}
+	var invitedCount int64
+	if err := model.DB.Model(&model.AdtySiteInvite{}).Where("site_id = ? AND inviter_id = ?", site.Id, user.Id).Count(&invitedCount).Error; err != nil {
+		return nil, err
+	}
+	var inviteRows []model.AdtySiteInvite
+	if err := model.DB.Where("site_id = ? AND inviter_id = ?", site.Id, user.Id).Order("id desc").Limit(50).Find(&inviteRows).Error; err != nil {
+		return nil, err
+	}
+	inviteeIDs := make([]int, 0, len(inviteRows))
+	for _, row := range inviteRows {
+		inviteeIDs = append(inviteeIDs, row.InviteeId)
+	}
+	userNames := map[int]string{}
+	if len(inviteeIDs) > 0 {
+		var users []model.User
+		if err := model.DB.Select("id", "username").Where("id IN ?", inviteeIDs).Find(&users).Error; err != nil {
+			return nil, err
+		}
+		for _, u := range users {
+			userNames[u.Id] = u.Username
+		}
+	}
+	invites := make([]AdtySiteCustomerReferralInvitee, 0, len(inviteRows))
+	for _, row := range inviteRows {
+		invites = append(invites, AdtySiteCustomerReferralInvitee{
+			InviteeId:       row.InviteeId,
+			InviteeUsername: userNames[row.InviteeId],
+			Rate:            row.Rate.String(),
+			RatePercent:     row.Rate.Mul(decimal.NewFromInt(100)).String(),
+			CreatedAt:       row.CreatedAt,
+		})
+	}
+	var bound model.AdtySiteInvite
+	boundLookup := model.DB.Where("invitee_id = ?", user.Id).Limit(1).Find(&bound)
+	if boundLookup.Error != nil {
+		return nil, boundLookup.Error
+	}
+	hasInviter := boundLookup.RowsAffected > 0
+	inviterUsername := ""
+	if hasInviter {
+		var inviter model.User
+		if err := model.DB.Select("id", "username").First(&inviter, bound.InviterId).Error; err == nil {
+			inviterUsername = inviter.Username
+		}
+	}
+	var paid int64
+	if err := model.DB.Model(&model.TopUp{}).Where("user_id = ? AND status = ?", user.Id, common.TopUpStatusSuccess).Count(&paid).Error; err != nil {
+		return nil, err
+	}
+	siteName := strings.TrimSpace(AdtyBrandFor(&site).Name)
+	if siteName == "" {
+		siteName = site.Subdomain
+	}
+	baseURL := strings.TrimRight(AdtySitePublicBaseURL(&site), "/")
+	inviteURL := "/register?site_invite=" + url.QueryEscape(code)
+	if baseURL != "" {
+		inviteURL = baseURL + inviteURL
+	}
+	rateConfigured := rateLookup.RowsAffected > 0
+	enabled := rateConfigured && rateRow.Enabled && rateRow.Rate.IsPositive()
+	siteOpen := site.Status != model.AdtySiteStatusClosed && site.Status != model.AdtySiteStatusClosing
+	profile := &AdtySiteCustomerReferralProfile{
+		SiteId:             site.Id,
+		SiteName:           siteName,
+		SiteStatus:         site.Status,
+		Enabled:            enabled,
+		RateConfigured:     rateConfigured,
+		ObservationDays:    site.MarketingPolicy.ObservationDays,
+		PendingCoverageCap: site.MarketingPolicy.PendingCoverageCap,
+		InviteCode:         code,
+		InviteURL:          inviteURL,
+		InvitedCount:       invitedCount,
+		Invites:            invites,
+		HasInviter:         hasInviter,
+		InviterUsername:    inviterUsername,
+		CanBind:            !hasInviter && paid == 0 && enabled && siteOpen,
+	}
+	if rateConfigured {
+		profile.Rate = rateRow.Rate.String()
+		profile.RatePercent = rateRow.Rate.Mul(decimal.NewFromInt(100)).String()
+	}
+	return profile, nil
+}
+
+// BindSiteInviteByCodeFromIP resolves a subsite customer invite code within siteID
+// and delegates binding to BindSiteInviteFromIP (same site, enabled referral, before first paid order).
+func BindSiteInviteByCodeFromIP(siteID int, code string, inviteeID int, ipHash string) error {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if siteID <= 0 || inviteeID <= 0 || code == "" || len(code) > 24 {
+		return common.NewMessage("Invalid site invite code")
+	}
+	var rate model.AdtySiteReferralRate
+	if err := model.DB.Where("site_id = ?", siteID).First(&rate).Error; err != nil || !rate.Enabled || !rate.Rate.IsPositive() {
+		return common.NewMessage("Site referral is not enabled")
+	}
+	var cust model.AdtySiteCustomer
+	lookup := model.AdtyLiveSiteCustomer(model.DB).Where("site_id = ? AND invite_code = ?", siteID, code).Limit(1).Find(&cust)
+	if lookup.Error != nil {
+		return lookup.Error
+	}
+	if lookup.RowsAffected == 0 || cust.UserId <= 0 {
+		return common.NewMessage("Invalid site invite code")
+	}
+	if cust.UserId == inviteeID {
+		return common.NewMessage("You cannot invite yourself")
+	}
+	var inviter model.User
+	if err := model.DB.Select("id", "site_id", "staff_site_id", "status").First(&inviter, cust.UserId).Error; err != nil {
+		return common.NewMessage("Invalid site invite code")
+	}
+	if inviter.SiteId != siteID || inviter.StaffSiteId > 0 || inviter.Status != common.UserStatusEnabled {
+		return common.NewMessage("Invalid site invite code")
+	}
+	var invitee model.User
+	if err := model.DB.Select("id", "site_id", "staff_site_id", "status").First(&invitee, inviteeID).Error; err != nil {
+		return err
+	}
+	if invitee.SiteId != siteID || invitee.StaffSiteId > 0 || invitee.Status != common.UserStatusEnabled {
+		return common.NewMessage("Only sub-site customers can use sub-site invitations")
+	}
+	return BindSiteInviteFromIP(siteID, cust.UserId, inviteeID, ipHash)
+}
+
+// BindAdtySiteInviteByCodeForUser lets a logged-in subsite customer bind an inviter
+// code manually before their first paid order.
+func BindAdtySiteInviteByCodeForUser(userID int, code, ipHash string) error {
+	if userID <= 0 {
+		return common.NewMessage("No permission to perform this action")
+	}
+	var user model.User
+	if err := model.DB.Select("id", "site_id", "staff_site_id", "status").First(&user, userID).Error; err != nil {
+		return err
+	}
+	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Status != common.UserStatusEnabled {
+		return common.NewMessage("Only sub-site customers can use sub-site invitations")
+	}
+	return BindSiteInviteByCodeFromIP(user.SiteId, code, user.Id, ipHash)
 }

@@ -349,5 +349,12 @@ func init() {
 			countAdtyEpayUnpaid([]string{ext.TradeNo})
 		}
 	}
-	model.AdtyAfterTopUpCompleted = resetAdtyEpayUnpaid
+	model.AdtyAfterTopUpCompleted = func(topUp *model.TopUp, ext *model.AdtyTopupOrder) {
+		resetAdtyEpayUnpaid(topUp, ext)
+		if ext != nil && ext.IsOwnerMargin() && ext.SiteId > 0 {
+			if _, err := ResumePendingAdtyGiftFulfillments(ext.SiteId); err != nil {
+				common.SysLog(common.LogText("gift fulfillment: resume after online margin top-up site %d: %s", ext.SiteId, err.Error()))
+			}
+		}
+	}
 }

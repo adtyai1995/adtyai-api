@@ -24,15 +24,17 @@ import {
 import { ROLE } from '@/lib/roles'
 import type { AuthUser } from '@/stores/auth-store'
 
-/** Sections of /site-admin/$section, each with the permission it needs (task 11.9). */
+/**
+ * Sections of /site-admin/$section, each with the permission it needs (task 11.9).
+ * The ticket workspace and team management are standalone pages
+ * (/admin-tickets, /admin-teams); see SITE_ADMIN_MOVED_SECTIONS.
+ */
 export const SITE_ADMIN_SECTIONS = [
-  { id: 'tickets', permission: ADTY_PERMISSIONS.TICKET_MANAGE },
   { id: 'sites', permission: ADTY_PERMISSIONS.SITE_READ },
   { id: 'overview', permission: ADTY_PERMISSIONS.SITE_READ },
   { id: 'reviews', permission: ADTY_PERMISSIONS.SITE_REVIEW },
   { id: 'domains', permission: ADTY_PERMISSIONS.SITE_SETTINGS_READ },
   { id: 'policies', permission: ADTY_PERMISSIONS.SITE_SETTINGS_READ },
-  { id: 'teams', permission: ADTY_PERMISSIONS.SITE_READ, rootOnly: true },
   { id: 'settings', permission: ADTY_PERMISSIONS.SITE_SETTINGS_READ },
   // Withdrawal review and recharge codes are Root-only on the server.
   { id: 'withdrawals', permission: ADTY_PERMISSIONS.SITE_READ, rootOnly: true },
@@ -42,6 +44,12 @@ export const SITE_ADMIN_SECTIONS = [
   permission: AdtyPermission
   rootOnly?: boolean
 }>
+
+/** Old /site-admin sections that moved to their own pages; old links redirect. */
+export const SITE_ADMIN_MOVED_SECTIONS = {
+  tickets: '/admin-tickets',
+  teams: '/admin-teams',
+} as const
 
 export type SiteAdminSectionId = (typeof SITE_ADMIN_SECTIONS)[number]['id']
 
@@ -59,10 +67,15 @@ export function canOpenSiteAdminSection(
   if ('rootOnly' in section && section.rootOnly) {
     return user?.role === ROLE.SUPER_ADMIN
   }
-  if (
-    section.id === 'tickets' &&
+  return canAdmin(user, section.permission)
+}
+
+/** The platform ticket workspace needs ticket handling permission, not a site permission. */
+export function canOpenPlatformTickets(
+  user: AuthUser | null | undefined
+): boolean {
+  return (
+    canAdmin(user, ADTY_PERMISSIONS.TICKET_MANAGE) ||
     canAdmin(user, ADTY_PERMISSIONS.TICKET_MANAGE_ALL)
   )
-    return true
-  return canAdmin(user, section.permission)
 }

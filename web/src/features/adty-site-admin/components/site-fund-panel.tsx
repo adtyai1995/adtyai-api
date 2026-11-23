@@ -17,8 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
@@ -37,6 +38,7 @@ import {
   type AdminVoucherIssued,
   cancelAdminVoucher,
   createVoucherIssuanceIntentKey,
+  creditAdminSiteMargin,
   getAdminAnomalyDispositions,
   getAdminFundAnomalies,
   getAdminSiteCommissionMargin,
@@ -61,10 +63,47 @@ export function SiteFundPanel(props: { siteId: number }) {
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
   const [code, setCode] = useState('')
+  const [directAmount, setDirectAmount] = useState('')
+  const [directReason, setDirectReason] = useState('')
+  const directIntentRef = useRef<{ payload: string; key: string } | null>(null)
   const [intentKey, setIntentKey] = useState(() =>
     createVoucherIssuanceIntentKey()
   )
   const [reconciled, setReconciled] = useState<AdminVoucherIssued | null>(null)
+  const directCredit = useMutation({
+    mutationFn: () => {
+      const payloadObj = {
+        amount_usd: directAmount.trim(),
+        reason: directReason.trim(),
+      }
+      const serialized = JSON.stringify(payloadObj)
+      if (directIntentRef.current?.payload !== serialized) {
+        const key =
+          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID()
+            : `margin-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        directIntentRef.current = { payload: serialized, key }
+      }
+      return creditAdminSiteMargin(
+        props.siteId,
+        payloadObj,
+        directIntentRef.current.key
+      )
+    },
+    onSuccess: (res) => {
+      directIntentRef.current = null
+      setDirectAmount('')
+      setDirectReason('')
+      toast.success(
+        t('Margin credited. Current margin balance: {{balance}} USD', {
+          balance: res.balance,
+        })
+      )
+      void client.invalidateQueries({ queryKey: siteAdminKeys.all })
+      void invalidateSidebarBadges(client)
+    },
+    onError: (error) => handleServerError(error),
+  })
   const wallets = useQuery({
     queryKey: siteAdminKeys.list('wallets', { siteId: props.siteId }),
     queryFn: () => getAdminSiteWallets(props.siteId),
@@ -224,6 +263,44 @@ export function SiteFundPanel(props: { siteId: number }) {
         </ul>
       )}
       <FundReviewPanel siteId={props.siteId} />
+      <h3 className='text-sm font-medium'>{t('Direct margin credit')}</h3>
+      <p className='text-muted-foreground text-sm'>
+        {t(
+          'Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet.'
+        )}
+      </p>
+      <div className='grid gap-3 sm:grid-cols-2'>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor='direct-margin-amount'>{t('Amount')}</Label>
+          <Input
+            id='direct-margin-amount'
+            value={directAmount}
+            inputMode='decimal'
+            autoComplete='off'
+            onChange={(event) => setDirectAmount(event.target.value)}
+          />
+        </div>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor='direct-margin-reason'>{t('Reason')}</Label>
+          <Input
+            id='direct-margin-reason'
+            value={directReason}
+            onChange={(event) => setDirectReason(event.target.value)}
+          />
+        </div>
+      </div>
+      <Button
+        type='button'
+        variant='outline'
+        disabled={
+          directCredit.isPending ||
+          directAmount.trim() === '' ||
+          directReason.trim() === ''
+        }
+        onClick={() => directCredit.mutate()}
+      >
+        {t('Credit margin directly')}
+      </Button>
       <h3 className='text-sm font-medium'>{t('Issue margin code')}</h3>
       <p className='text-muted-foreground text-sm'>
         {t('Only the site owner can redeem a margin code.')}

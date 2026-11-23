@@ -267,7 +267,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               ? [
                   {
                     title: t('Ticket workspace'),
-                    url: '/site-admin/tickets',
+                    url: '/admin-tickets',
                     icon: LifeBuoy,
                     badge: ticketsBadge,
                   },
@@ -304,7 +304,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             },
             {
               title: t('Team management'),
-              url: '/site-admin/teams',
+              url: '/admin-teams',
               icon: Users,
               requiredRole: ROLE.SUPER_ADMIN,
             },

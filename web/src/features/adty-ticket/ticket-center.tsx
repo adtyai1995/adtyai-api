@@ -76,6 +76,34 @@ const eventLabels: Record<string, string> = {
   reopen: 'Reopen ticket',
   image_upload: 'Upload image',
   image_view: 'View image',
+  image_delete: 'Delete image',
+}
+
+const TICKET_IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp'
+const ACCEPTED_TICKET_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+])
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.addEventListener(
+      'load',
+      () => {
+        const value = String(reader.result || '')
+        resolve(value.slice(value.indexOf(',') + 1))
+      },
+      { once: true }
+    )
+    reader.addEventListener(
+      'error',
+      () => reject(new Error('Only images are accepted')),
+      { once: true }
+    )
+    reader.readAsDataURL(file)
+  })
 }
 
 type Ticket = {
@@ -91,6 +119,7 @@ type Ticket = {
   team_shared?: boolean
   related_error?: string
   id: number
+  initial_message_id?: number
   title: string
   status: string
   priority?: string
@@ -181,6 +210,7 @@ function TicketWorkspace({
   const createVersion = useRef(0)
   const [type, setType] = useState('other')
   const [priority, setPriority] = useState('normal')
+  const [createFiles, setCreateFiles] = useState<{ id: string; file: File }[]>([])
   const [imageMessage, setImageMessage] = useState(0)
   const [audience, setAudience] = useState('personal')
   const [relatedKind, setRelatedKind] = useState('')
@@ -391,6 +421,9 @@ function TicketWorkspace({
       if (!payload.success || !payload.data) {
         throw new Error(payload.message || t('Failed to save'))
       }
+      const createdTicket = payload.data
+      const targetScope = resolvedAudience === 'team' ? 'team' : 'personal'
+      const filesToUpload = createFiles.map((item) => item.file)
       attempts.current.delete('create')
       if (submittedVersion === createVersion.current) {
         setTitle('')
@@ -400,14 +433,26 @@ function TicketWorkspace({
         setAudience('personal')
         setType('other')
         setPriority('normal')
+        setCreateFiles([])
         if (ticketDraftLink(window.location.hash)) {
           window.history.replaceState(window.history.state, '', '#tickets')
         }
       }
       setPage(1)
       setQueue('')
-      setScope(resolvedAudience === 'team' ? 'team' : 'personal')
-      selectTicket(payload.data.id)
+      setScope(targetScope)
+      selectTicket(createdTicket.id)
+      const firstMessageId = createdTicket.initial_message_id ?? 0
+      for (const file of filesToUpload) {
+        const encoded = await readFileAsBase64(file)
+        await postTicketImage(
+          createdTicket.id,
+          firstMessageId,
+          'public',
+          targetScope,
+          encoded
+        )
+      }
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -525,38 +570,116 @@ function TicketWorkspace({
     }
   }
 
-  const uploadImage = async (encodedData: string) => {
-    if (selected === null) return
+  const postTicketImage = async (
+    ticketId: number,
+    messageId: number,
+    visibility: string | undefined,
+    targetScope: string,
+    encodedData: string
+  ) => {
+    const digest = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(encodedData)
+    )
+    const hash = Array.from(new Uint8Array(digest), (b) =>
+      b.toString(16).padStart(2, '0')
+    ).join('')
+    const response = await api.post(
+      `/api/adty/tickets/${ticketId}/images`,
+      {
+        data: encodedData,
+        message_id: messageId,
+        visibility: visibility || 'public',
+      },
+      {
+        params: { scope: targetScope },
+        headers: { 'Idempotency-Key': `image:${messageId}:${hash}` },
+      }
+    )
+    const payload = response.data as { success?: boolean; message?: string }
+    if (!payload?.success) {
+      throw new Error(payload?.message || t('Only images are accepted'))
+    }
+  }
+
+  const validateImageBatch = (
+    incoming: File[],
+    currentCount: number,
+    currentTotalBytes: number
+  ): string | null => {
+    const policy = list.data?.imagePolicy
+    const maxBytes = policy?.max_bytes ?? 0
+    const maxCount = policy?.max_count ?? 0
+    const maxTotal = policy?.max_total ?? 0
+    if (maxCount > 0 && currentCount + incoming.length > maxCount) {
+      return t('Image count exceeds the limit ({{limit}})', { limit: maxCount })
+    }
+    let nextTotal = currentTotalBytes
+    for (const file of incoming) {
+      if (file.type && !ACCEPTED_TICKET_IMAGE_MIMES.has(file.type)) {
+        return t('Only PNG, JPEG and WebP images are accepted')
+      }
+      if (maxBytes > 0 && file.size > maxBytes) {
+        return t('Image exceeds the size limit')
+      }
+      nextTotal += file.size
+    }
+    if (maxTotal > 0 && nextTotal > maxTotal) {
+      return t('Total image size exceeds the limit')
+    }
+    return null
+  }
+
+  const uploadImages = async (files: File[]) => {
+    if (selected === null || files.length === 0) return
+    const existingImages = detail.data?.images ?? []
+    const existingTotal = existingImages.reduce(
+      (sum, img) => sum + (img.size ?? 0),
+      0
+    )
+    const validationError = validateImageBatch(
+      files,
+      existingImages.length,
+      existingTotal
+    )
+    if (validationError) {
+      setError(validationError)
+      return
+    }
     setPending(true)
     setError('')
     try {
-      const digest = await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(encodedData)
-      )
-      const hash = Array.from(new Uint8Array(digest), (b) =>
-        b.toString(16).padStart(2, '0')
-      ).join('')
-      const response = await api.post(
-        `/api/adty/tickets/${selected}/images`,
-        {
-          data: encodedData,
-          message_id: imageMessage,
-          visibility: detail.data?.messages.find((m) => m.id === imageMessage)
-            ?.visibility,
-        },
-        {
-          params: { scope },
-          headers: { 'Idempotency-Key': `image:${imageMessage}:${hash}` },
-        }
-      )
-      const payload = response.data as { success?: boolean; message?: string }
-      if (!payload?.success) {
-        throw new Error(payload?.message || t('Only images are accepted'))
+      const visibility = detail.data?.messages.find(
+        (m) => m.id === imageMessage
+      )?.visibility
+      for (const file of files) {
+        const encoded = await readFileAsBase64(file)
+        await postTicketImage(selected, imageMessage, visibility, scope, encoded)
       }
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Only images are accepted')))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const deleteImage = async (imageId: number) => {
+    if (selected === null) return
+    setPending(true)
+    setError('')
+    try {
+      const response = await api.delete(
+        `/api/adty/tickets/${selected}/images/${imageId}`,
+        { params: { scope } }
+      )
+      const payload = response.data as { success?: boolean; message?: string }
+      if (!payload?.success) {
+        throw new Error(payload?.message || t('Failed to save'))
+      }
+      await refresh()
+    } catch (cause) {
+      setError(getServerErrorMessage(cause, t('Failed to save')))
     } finally {
       setPending(false)
     }
@@ -847,18 +970,30 @@ function TicketWorkspace({
                       image.message_id === message.id &&
                       (detail.data.can_note || image.visibility === 'public')
                   )
-                  .map((image) => (
-                    <TicketImage
-                      key={image.id}
-                      ticketID={detail.data.ticket.id}
-                      imageID={image.id}
-                      grant={detail.data.image_grants?.[image.id]}
-                      expiresAt={detail.data.image_grants_exp}
-                      scope={scope}
-                      userId={userId}
-                      label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
-                    />
-                  ))}
+                  .map((image) => {
+                    const canDelete =
+                      !terminal &&
+                      (detail.data.can_manage ||
+                        (image.visibility === 'public' &&
+                          (detail.data.ticket.user_id === userId ||
+                            message.author_id === userId)))
+                    return (
+                      <TicketImage
+                        key={image.id}
+                        ticketID={detail.data.ticket.id}
+                        imageID={image.id}
+                        grant={detail.data.image_grants?.[image.id]}
+                        expiresAt={detail.data.image_grants_exp}
+                        scope={scope}
+                        userId={userId}
+                        label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
+                        deleting={pending}
+                        onDelete={
+                          canDelete ? () => void deleteImage(image.id) : undefined
+                        }
+                      />
+                    )
+                  })}
               </div>
             ))}
             {detail.data.images
@@ -867,18 +1002,29 @@ function TicketWorkspace({
                   !image.message_id &&
                   (detail.data.can_note || image.visibility === 'public')
               )
-              .map((image) => (
-                <TicketImage
-                  key={image.id}
-                  ticketID={detail.data.ticket.id}
-                  imageID={image.id}
-                  grant={detail.data.image_grants?.[image.id]}
-                  expiresAt={detail.data.image_grants_exp}
-                  scope={scope}
-                  userId={userId}
-                  label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
-                />
-              ))}
+              .map((image) => {
+                const canDelete =
+                  !terminal &&
+                  (detail.data.can_manage ||
+                    (image.visibility === 'public' &&
+                      detail.data.ticket.user_id === userId))
+                return (
+                  <TicketImage
+                    key={image.id}
+                    ticketID={detail.data.ticket.id}
+                    imageID={image.id}
+                    grant={detail.data.image_grants?.[image.id]}
+                    expiresAt={detail.data.image_grants_exp}
+                    scope={scope}
+                    userId={userId}
+                    label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
+                    deleting={pending}
+                    onDelete={
+                      canDelete ? () => void deleteImage(image.id) : undefined
+                    }
+                  />
+                )
+              })}
             {(detail.data.events ?? [])
               .filter(
                 (event) => event.action !== 'note' || detail.data.can_note
@@ -1082,31 +1228,28 @@ function TicketWorkspace({
             </NativeSelect>
             <Label htmlFor='ticket-image'>
               {t('Image')} · {t('Upload limit (bytes)')}{' '}
-              {list.data.imagePolicy?.max_bytes}
+              {list.data.imagePolicy?.max_bytes} ·{' '}
+              {t('Images used {{used}}/{{max}}', {
+                used: detail.data.images?.length ?? 0,
+                max: list.data.imagePolicy?.max_count ?? 0,
+              })}
             </Label>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Mask API keys, emails, verification codes and payment secrets before uploading. PNG, JPEG and WebP only.'
+              )}
+            </p>
             <Input
               id='ticket-image'
               type='file'
-              accept='image/png,image/jpeg,image/gif,image/webp'
+              multiple
+              accept={TICKET_IMAGE_ACCEPT}
               disabled={terminal || pending || !imageMessage}
               onChange={(event) => {
-                const file = event.target.files?.[0]
+                const files = [...(event.target.files ?? [])]
                 event.target.value = ''
-                if (!file || selected === null) return
-                if (file.size > (list.data?.imagePolicy?.max_bytes ?? 0)) {
-                  setError(t('Image exceeds the size limit'))
-                  return
-                }
-                const reader = new FileReader()
-                reader.addEventListener(
-                  'load',
-                  () => {
-                    const value = String(reader.result || '')
-                    void uploadImage(value.slice(value.indexOf(',') + 1))
-                  },
-                  { once: true }
-                )
-                reader.readAsDataURL(file)
+                if (files.length === 0 || selected === null) return
+                void uploadImages(files)
               }}
             />
           </div>
@@ -1243,6 +1386,79 @@ function TicketWorkspace({
                 ))}
               </div>
             )}
+            <div className='flex flex-col gap-1'>
+              <Label htmlFor='ticket-create-images'>
+                {t('Attachments (optional)')}
+                {list.data?.imagePolicy &&
+                  ` · ${t('Images used {{used}}/{{max}}', {
+                    used: createFiles.length,
+                    max: list.data.imagePolicy.max_count,
+                  })}`}
+              </Label>
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Mask API keys, emails, verification codes and payment secrets before uploading. PNG, JPEG and WebP only.'
+                )}
+              </p>
+              <Input
+                id='ticket-create-images'
+                type='file'
+                multiple
+                accept={TICKET_IMAGE_ACCEPT}
+                disabled={pending}
+                onChange={(event) => {
+                  const picked = [...(event.target.files ?? [])]
+                  event.target.value = ''
+                  if (picked.length === 0) return
+                  const currentBytes = createFiles.reduce(
+                    (sum, item) => sum + item.file.size,
+                    0
+                  )
+                  const validationError = validateImageBatch(
+                    picked,
+                    createFiles.length,
+                    currentBytes
+                  )
+                  if (validationError) {
+                    setError(validationError)
+                    return
+                  }
+                  setError('')
+                  setCreateFiles((prev) => [
+                    ...prev,
+                    ...picked.map((file, i) => ({
+                      id: `${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`,
+                      file,
+                    })),
+                  ])
+                }}
+              />
+              {createFiles.length > 0 && (
+                <div className='flex flex-col gap-1'>
+                  {createFiles.map((item) => (
+                    <div
+                      key={item.id}
+                      className='flex items-center justify-between gap-2 text-xs'
+                    >
+                      <span className='min-w-0 truncate'>{item.file.name}</span>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='ghost'
+                        disabled={pending}
+                        onClick={() =>
+                          setCreateFiles((prev) =>
+                            prev.filter((entry) => entry.id !== item.id)
+                          )
+                        }
+                      >
+                        {t('Remove')}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <Button
               type='button'
               disabled={

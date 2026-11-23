@@ -23,13 +23,21 @@ import {
   canOpenSiteAdminSection,
   isSiteAdminSection,
   SITE_ADMIN_DEFAULT_SECTION,
+  SITE_ADMIN_MOVED_SECTIONS,
   SITE_ADMIN_SECTIONS,
 } from '@/features/adty-site-admin/sections'
 import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/site-admin/$section')({
-  beforeLoad: ({ params }) => {
+  beforeLoad: ({ params, location }) => {
     const user = useAuthStore.getState().auth.user
+    // Old ticket notification links and bookmarks keep their #case-N anchor.
+    if (params.section === 'tickets' || params.section === 'teams') {
+      throw redirect({
+        to: SITE_ADMIN_MOVED_SECTIONS[params.section],
+        hash: location.hash || undefined,
+      })
+    }
     if (!isSiteAdminSection(params.section)) {
       throw redirect({
         to: '/site-admin/$section',

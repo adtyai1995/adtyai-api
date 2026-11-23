@@ -42,6 +42,51 @@ func PostAdtyEarningToMargin(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"transferred": true})
 }
 
+func PostAdtyAdminSiteMargin(c *gin.Context) {
+	id, ok := adtyPathId(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		AmountUSD      string `json:"amount_usd"`
+		Reason         string `json:"reason"`
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	if err != nil || !amount.IsPositive() {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" {
+		key = strings.TrimSpace(body.IdempotencyKey)
+	}
+	if key == "" || strings.TrimSpace(body.Reason) == "" {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	ledger, err := service.CreditAdtySiteMarginByRoot(id, c.GetInt("id"), amount, body.Reason, key)
+	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorT(c, "This request was already used for another operation")
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"credited":       true,
+		"ledger_id":      ledger.Id,
+		"balance":        ledger.BalanceAfter.String(),
+		"balance_before": ledger.BalanceBefore.String(),
+		"balance_after":  ledger.BalanceAfter.String(),
+	})
+}
+
 func GetAdtyOwnerWallets(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {

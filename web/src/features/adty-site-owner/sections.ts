@@ -39,6 +39,12 @@ export type SiteOwnerSectionId = (typeof SITE_OWNER_SECTIONS)[number]
 
 export const SITE_OWNER_DEFAULT_SECTION: SiteOwnerSectionId = 'overview'
 
+/** Sections with their own sidebar entry; they render without the owner-center tab bar. */
+export const SITE_OWNER_STANDALONE_SECTIONS: readonly SiteOwnerSectionId[] = [
+  'tickets',
+  'teams',
+]
+
 export function isSiteOwnerSection(value: string): value is SiteOwnerSectionId {
   return (SITE_OWNER_SECTIONS as readonly string[]).includes(value)
 }

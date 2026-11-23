@@ -350,7 +350,7 @@ function AnnouncementsContent({
                     </div>
 
                     {item.ticket_path &&
-                      /^\/(profile|site-admin\/tickets|site-owner\/tickets|site-staff)#case-\d+(?:-team)?$/.test(
+                      /^\/(profile|admin-tickets|site-admin\/tickets|site-owner\/tickets|site-staff)#case-\d+(?:-team)?$/.test(
                         item.ticket_path
                       ) && (
                         <a

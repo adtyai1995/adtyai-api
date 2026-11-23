@@ -32,10 +32,10 @@ import {
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import {
-  type StaffAccount,
-  type StaffPermission,
-  type StaffRole,
+import type {
+  StaffAccount,
+  StaffPermission,
+  StaffRole,
 } from '@/features/adty-site-staff/api'
 import { staffRolePermissions } from '@/features/adty-site-staff/lib/permissions'
 
@@ -67,6 +67,7 @@ export function StaffDialog(props: {
           'customers.balance',
           'customers.topups',
           'customers.usage',
+          'customers.balance_request',
           'customers.disable',
           'tickets.manage',
         ])
@@ -93,6 +94,7 @@ export function StaffDialog(props: {
           permission === 'customers.topups' ||
           permission === 'customers.usage' ||
           permission === 'tickets.manage' ||
+          permission === 'customers.balance_request' ||
           permission === 'customers.disable'
       ),
     },
@@ -128,6 +130,10 @@ export function StaffDialog(props: {
     { value: 'customers.balance', label: t('View customer balances') },
     { value: 'customers.topups', label: t('View customer recharges') },
     { value: 'customers.usage', label: t('View customer usage') },
+    {
+      value: 'customers.balance_request',
+      label: t('Request customer balance changes'),
+    },
     { value: 'customers.disable', label: t('Disable customer') },
   ]
   let title = t('Edit staff account')

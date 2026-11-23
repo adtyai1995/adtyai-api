@@ -143,9 +143,10 @@ type AdtySiteCustomer struct {
 	RiskReason          string `json:"-" gorm:"type:text"`                // 只给后台看
 	Reviewed            bool   `json:"reviewed"`
 	EarningRiskReleased bool   `json:"-"` // only an explicit review converting skipped earnings releases old charges
-	TermsVersion        string `json:"terms_version" gorm:"type:varchar(32)"`
-	TermsAt             int64  `json:"terms_at"`
-	JoinedAt            int64  `json:"joined_at"`
+	TermsVersion        string  `json:"terms_version" gorm:"type:varchar(32)"`
+	TermsAt             int64   `json:"terms_at"`
+	JoinedAt            int64   `json:"joined_at"`
+	InviteCode          *string `json:"invite_code,omitempty" gorm:"uniqueIndex;type:varchar(24)"`
 }
 
 func (AdtySiteCustomer) TableName() string { return "adty_site_customers" }

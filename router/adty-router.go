@@ -88,6 +88,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/teams/:id/members/:userId/enable", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/members/:userId/disable", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/members/:userId/delete", "wallet:write"},
+		{http.MethodPost, "/api/adty/teams/:id/members/:userId/password", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/keys", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/keys/:tokenId/revoke", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/transfer", "wallet:write"},
@@ -117,6 +118,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/tickets/:id/status", "profile:write"},
 		{http.MethodPost, "/api/adty/tickets/:id/images", "profile:write"},
 		{http.MethodGet, "/api/adty/tickets/:id/images/:imageId", "profile:read"},
+		{http.MethodDelete, "/api/adty/tickets/:id/images/:imageId", "profile:write"},
 		{http.MethodPut, "/api/adty/admin/ticket-image-policy", "option:write"},
 		{http.MethodGet, "/api/adty/admin/translation", "option:read"},
 		{http.MethodPut, "/api/adty/admin/translation", "option:write"},
@@ -156,6 +158,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/teams/:id/members/:userId/enable", middleware.UserAuth(), controller.PostAdtyTeamEnableMember)
 	apiRouter.POST("/adty/teams/:id/members/:userId/disable", middleware.UserAuth(), controller.PostAdtyTeamDisableMember)
 	apiRouter.POST("/adty/teams/:id/members/:userId/delete", middleware.UserAuth(), controller.PostAdtyTeamDeleteMember)
+	apiRouter.POST("/adty/teams/:id/members/:userId/password", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:team-employee"), middleware.AnonymousRequestBodyLimit(), controller.PostAdtyTeamEmployeePassword)
 	apiRouter.POST("/adty/teams/:id/keys", middleware.UserAuth(), controller.PostAdtyTeamBindKey)
 	apiRouter.POST("/adty/teams/:id/keys/:tokenId/revoke", middleware.UserAuth(), controller.PostAdtyTeamRevokeKey)
 	apiRouter.POST("/adty/teams/:id/transfer", middleware.UserAuth(), controller.PostAdtyTeamTransfer)
@@ -213,6 +216,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/tickets/:id/status", middleware.UserAuth(), controller.PostAdtyTicketStatus)
 	apiRouter.POST("/adty/tickets/:id/images", middleware.UserAuth(), controller.PostAdtyTicketImage)
 	apiRouter.GET("/adty/tickets/:id/images/:imageId", middleware.UserAuth(), controller.GetAdtyTicketImage)
+	apiRouter.DELETE("/adty/tickets/:id/images/:imageId", middleware.UserAuth(), controller.DeleteAdtyTicketImage)
 	apiRouter.GET("/adty/groups/health", middleware.UserAuth(), controller.GetAdtyGroupHealth)
 }
 
@@ -237,6 +241,10 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/sites/:id/commission-margin", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/teams", "scope", "option:read")
 	apiRouter.GET("/adty/admin/teams", middleware.RootAuth(), controller.GetAdtyMainTeams)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/teams/:id", "scope", "option:read")
+	apiRouter.GET("/adty/admin/teams/:id", middleware.RootAuth(), controller.GetAdtyAdminTeam)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/teams/:id/ledgers", "scope", "option:read")
+	apiRouter.GET("/adty/admin/teams/:id/ledgers", middleware.RootAuth(), controller.GetAdtyAdminTeamLedger)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/teams", "scope", "option:write")
 	apiRouter.POST("/adty/admin/teams", middleware.RootAuth(), controller.PostAdtyMainTeam)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/team-registrations", "scope", "option:write")
@@ -299,6 +307,8 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	topup.GET("/pending", controller.GetAdtyTopUpPending)
 	topup.GET("/self", controller.GetAdtyTopUpSelf)
 	apiRouter.POST("/adty/vouchers/redeem", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:voucher-redeem"), controller.PostAdtyVoucherRedeem)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-referral/profile", "scope", "wallet:read")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-referral/bind", "scope", "wallet:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals/rules", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals/quote", "scope", "wallet:read")
@@ -308,6 +318,8 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals/by-key", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/:id/convert/by-key", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-commissions/:id/convert", "scope", "wallet:write")
+	apiRouter.GET("/adty/site-referral/profile", middleware.UserAuth(), controller.GetAdtySiteCustomerReferralProfile)
+	apiRouter.POST("/adty/site-referral/bind", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:site-invite-bind"), controller.PostAdtySiteCustomerReferralBind)
 	apiRouter.GET("/adty/site-commissions", middleware.UserAuth(), controller.GetAdtySiteCommissions)
 	apiRouter.GET("/adty/site-commissions/withdrawals/rules", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawRules)
 	apiRouter.GET("/adty/site-commissions/withdrawals/quote", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawalQuote)
@@ -536,6 +548,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/complete", "wallet:write", []gin.HandlerFunc{controller.CompleteAdtyOwnerOrderManualRefund}},
 		{http.MethodPost, "/orders/:trade_no/refunds/:refund_id/terminate", "wallet:write", []gin.HandlerFunc{controller.TerminateAdtyOwnerOrderManualRefund}},
 		{http.MethodGet, "/teams", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeams}},
+		{http.MethodGet, "/teams/:id", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeam}},
+		{http.MethodGet, "/teams/:id/ledgers", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamLedger}},
 		{http.MethodPost, "/teams", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeam}},
 		{http.MethodPost, "/team-registrations", "wallet:write", []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistration}},
 		{http.MethodGet, "/team-registrations", "wallet:read", []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamRegistrations}},
@@ -633,6 +647,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootWallets.POST("/:id/close-mail", controller.ResolveAdtyAdminCloseMail)
 	rootWallets.GET("/:id/wallets", controller.GetAdtyAdminSiteWallets)
 	rootWallets.GET("/:id/wallet-ledgers", controller.GetAdtyAdminSiteWalletLedger)
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/margin", "scope", "option:write")
+	rootWallets.POST("/:id/margin", controller.PostAdtyAdminSiteMargin)
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/sites/:id/tier", "scope", "option:write")
 	rootWallets.PUT("/:id/tier", controller.PutAdtySiteTierAssignment)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites", "scope", "option:write")

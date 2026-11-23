@@ -42,6 +42,8 @@ import { Route as SetupIndexRouteImport } from './routes/setup/index'
 import { Route as TeamRegisterCodeRouteImport } from './routes/team-register/$code'
 import { Route as authUserResetRouteImport } from './routes/(auth)/user/reset'
 import { Route as AuthenticatedAdminReferralIndexRouteImport } from './routes/_authenticated/admin-referral/index'
+import { Route as AuthenticatedAdminTeamsIndexRouteImport } from './routes/_authenticated/admin-teams/index'
+import { Route as AuthenticatedAdminTicketsIndexRouteImport } from './routes/_authenticated/admin-tickets/index'
 import { Route as AuthenticatedChannelsIndexRouteImport } from './routes/_authenticated/channels/index'
 import { Route as AuthenticatedChatChatIdRouteImport } from './routes/_authenticated/chat/$chatId'
 import { Route as AuthenticatedDashboardIndexRouteImport } from './routes/_authenticated/dashboard/index'
@@ -248,6 +250,18 @@ const AuthenticatedAdminReferralIndexRoute =
   AuthenticatedAdminReferralIndexRouteImport.update({
     id: '/admin-referral/',
     path: '/admin-referral/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAdminTeamsIndexRoute =
+  AuthenticatedAdminTeamsIndexRouteImport.update({
+    id: '/admin-teams/',
+    path: '/admin-teams/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAdminTicketsIndexRoute =
+  AuthenticatedAdminTicketsIndexRouteImport.update({
+    id: '/admin-tickets/',
+    path: '/admin-tickets/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedChannelsIndexRoute =
@@ -539,6 +553,8 @@ export interface FileRoutesByFullPath {
   '/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
   '/usage-logs/audit': typeof AuthenticatedUsageLogsAuditRoute
   '/admin-referral/': typeof AuthenticatedAdminReferralIndexRoute
+  '/admin-teams/': typeof AuthenticatedAdminTeamsIndexRoute
+  '/admin-tickets/': typeof AuthenticatedAdminTicketsIndexRoute
   '/channels/': typeof AuthenticatedChannelsIndexRoute
   '/dashboard/': typeof AuthenticatedDashboardIndexRoute
   '/keys/': typeof AuthenticatedKeysIndexRoute
@@ -613,6 +629,8 @@ export interface FileRoutesByTo {
   '/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
   '/usage-logs/audit': typeof AuthenticatedUsageLogsAuditRoute
   '/admin-referral': typeof AuthenticatedAdminReferralIndexRoute
+  '/admin-teams': typeof AuthenticatedAdminTeamsIndexRoute
+  '/admin-tickets': typeof AuthenticatedAdminTicketsIndexRoute
   '/channels': typeof AuthenticatedChannelsIndexRoute
   '/dashboard': typeof AuthenticatedDashboardIndexRoute
   '/keys': typeof AuthenticatedKeysIndexRoute
@@ -691,6 +709,8 @@ export interface FileRoutesById {
   '/_authenticated/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
   '/_authenticated/usage-logs/audit': typeof AuthenticatedUsageLogsAuditRoute
   '/_authenticated/admin-referral/': typeof AuthenticatedAdminReferralIndexRoute
+  '/_authenticated/admin-teams/': typeof AuthenticatedAdminTeamsIndexRoute
+  '/_authenticated/admin-tickets/': typeof AuthenticatedAdminTicketsIndexRoute
   '/_authenticated/channels/': typeof AuthenticatedChannelsIndexRoute
   '/_authenticated/dashboard/': typeof AuthenticatedDashboardIndexRoute
   '/_authenticated/keys/': typeof AuthenticatedKeysIndexRoute
@@ -768,6 +788,8 @@ export interface FileRouteTypes {
     | '/usage-logs/$section'
     | '/usage-logs/audit'
     | '/admin-referral/'
+    | '/admin-teams/'
+    | '/admin-tickets/'
     | '/channels/'
     | '/dashboard/'
     | '/keys/'
@@ -842,6 +864,8 @@ export interface FileRouteTypes {
     | '/usage-logs/$section'
     | '/usage-logs/audit'
     | '/admin-referral'
+    | '/admin-teams'
+    | '/admin-tickets'
     | '/channels'
     | '/dashboard'
     | '/keys'
@@ -919,6 +943,8 @@ export interface FileRouteTypes {
     | '/_authenticated/usage-logs/$section'
     | '/_authenticated/usage-logs/audit'
     | '/_authenticated/admin-referral/'
+    | '/_authenticated/admin-teams/'
+    | '/_authenticated/admin-tickets/'
     | '/_authenticated/channels/'
     | '/_authenticated/dashboard/'
     | '/_authenticated/keys/'
@@ -1211,6 +1237,20 @@ declare module '@tanstack/react-router' {
       path: '/admin-referral'
       fullPath: '/admin-referral/'
       preLoaderRoute: typeof AuthenticatedAdminReferralIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin-teams/': {
+      id: '/_authenticated/admin-teams/'
+      path: '/admin-teams'
+      fullPath: '/admin-teams/'
+      preLoaderRoute: typeof AuthenticatedAdminTeamsIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin-tickets/': {
+      id: '/_authenticated/admin-tickets/'
+      path: '/admin-tickets'
+      fullPath: '/admin-tickets/'
+      preLoaderRoute: typeof AuthenticatedAdminTicketsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/channels/': {
@@ -1611,6 +1651,8 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedUsageLogsSectionRoute: typeof AuthenticatedUsageLogsSectionRoute
   AuthenticatedUsageLogsAuditRoute: typeof AuthenticatedUsageLogsAuditRoute
   AuthenticatedAdminReferralIndexRoute: typeof AuthenticatedAdminReferralIndexRoute
+  AuthenticatedAdminTeamsIndexRoute: typeof AuthenticatedAdminTeamsIndexRoute
+  AuthenticatedAdminTicketsIndexRoute: typeof AuthenticatedAdminTicketsIndexRoute
   AuthenticatedChannelsIndexRoute: typeof AuthenticatedChannelsIndexRoute
   AuthenticatedDashboardIndexRoute: typeof AuthenticatedDashboardIndexRoute
   AuthenticatedKeysIndexRoute: typeof AuthenticatedKeysIndexRoute
@@ -1644,6 +1686,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedUsageLogsSectionRoute: AuthenticatedUsageLogsSectionRoute,
   AuthenticatedUsageLogsAuditRoute: AuthenticatedUsageLogsAuditRoute,
   AuthenticatedAdminReferralIndexRoute: AuthenticatedAdminReferralIndexRoute,
+  AuthenticatedAdminTeamsIndexRoute: AuthenticatedAdminTeamsIndexRoute,
+  AuthenticatedAdminTicketsIndexRoute: AuthenticatedAdminTicketsIndexRoute,
   AuthenticatedChannelsIndexRoute: AuthenticatedChannelsIndexRoute,
   AuthenticatedDashboardIndexRoute: AuthenticatedDashboardIndexRoute,
   AuthenticatedKeysIndexRoute: AuthenticatedKeysIndexRoute,

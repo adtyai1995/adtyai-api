@@ -69,7 +69,7 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 		scene.UserTypes = append([]string{}, scene.UserTypes...)
 		scene.Name = strings.TrimSpace(scene.Name)
 		if !adtySceneKey.MatchString(scene.Key) || seen[scene.Key] || scene.Name == "" || utf8.RuneCountInString(scene.Name) > 120 ||
-			!slices.Contains([]string{model.AdtyBusinessWalletTopup, model.AdtyBusinessTeamTopup, model.AdtyBusinessOwnerSelfUseTopup}, scene.Business) || len(scene.Providers) == 0 || len(scene.Providers) > 6 ||
+			!slices.Contains([]string{model.AdtyBusinessWalletTopup, model.AdtyBusinessTeamTopup, model.AdtyBusinessOwnerSelfUseTopup, model.AdtyBusinessOwnerMarginTopup}, scene.Business) || len(scene.Providers) == 0 || len(scene.Providers) > 6 ||
 			len(scene.Methods) > 100 || len(scene.ChannelIDs) > 1000 || len(scene.SiteIDs) > 1000 || len(scene.Currencies) > 32 || len(scene.UserTypes) > 6 ||
 			!slices.Contains([]string{"all", "main", "all_sites", "selected"}, scene.SiteScope) ||
 			(scene.SiteScope == "selected" && len(scene.SiteIDs) == 0) || (scene.SiteScope != "selected" && len(scene.SiteIDs) != 0) ||
@@ -88,7 +88,7 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 				return nil, common.NewMessage("Invalid parameters")
 			}
 		}
-		if scene.Business == model.AdtyBusinessOwnerSelfUseTopup &&
+		if isOwnerTopupBusiness(scene.Business) &&
 			(!slices.Contains([]string{"all_sites", "selected"}, scene.SiteScope) || len(scene.UserTypes) != 1 || scene.UserTypes[0] != "site_owner") {
 			return nil, common.NewMessage("Invalid parameters")
 		}
@@ -311,7 +311,7 @@ func AdtyPaymentScenesForUser(userID int, scope ...AdtyPaymentScope) ([]AdtyPaym
 	if err != nil {
 		return nil, err
 	}
-	if business == model.AdtyBusinessOwnerSelfUseTopup {
+	if isOwnerTopupBusiness(business) {
 		kind = "site_owner"
 	}
 	views := []AdtyPaymentSceneView{}
@@ -413,7 +413,7 @@ func authorizeAdtyPaymentScene(db *gorm.DB, config *AdtyPaymentScenes, userID in
 	if key == "" {
 		key = business
 	}
-	if business == model.AdtyBusinessOwnerSelfUseTopup {
+	if isOwnerTopupBusiness(business) {
 		kind = "site_owner"
 	}
 	for _, scene := range scenes {
@@ -484,10 +484,13 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		if err != nil {
 			return err
 		}
-		if !ext.IsOwnerSelfUse() && user.SiteId != ext.SiteId {
+		if !ext.IsOwnerBusiness() && user.SiteId != ext.SiteId {
 			return common.NewMessage("This payment method is not available")
 		}
 		if ext.IsOwnerSelfUse() && !ext.ValidOwnerSelfUseCredit() {
+			return common.NewMessage("Invalid parameters")
+		}
+		if ext.IsOwnerMargin() && !ext.ValidOwnerMarginCredit() {
 			return common.NewMessage("Invalid parameters")
 		}
 		if err := model.ValidateAdtyTeamTopupCreateTx(tx, ext); err != nil {
@@ -516,7 +519,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		var rule adty_setting.MethodBonusRule
 		authorized, marginAllowed := false, false
 		bonusMethod := AdtyBonusMethod(method)
-		if bonusMethod != "" && ext.TeamId == 0 && !ext.IsOwnerSelfUse() {
+		if bonusMethod != "" && ext.TeamId == 0 && !ext.IsOwnerBusiness() {
 			if ext.SiteId == 0 {
 				rule, authorized, err = adty_setting.ParseMainMethodBonus(bonusValues[adty_setting.TopupSettingKeyMethodBonus], bonusMethod)
 			} else {

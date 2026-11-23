@@ -550,6 +550,22 @@ func GetAdtyTicketImage(c *gin.Context) {
 	c.File(path)
 }
 
+func DeleteAdtyTicketImage(c *gin.Context) {
+	id, ok := adtyInt64Param(c, "id")
+	if !ok {
+		return
+	}
+	imageID, ok := adtyInt64Param(c, "imageId")
+	if !ok {
+		return
+	}
+	if err := service.DeleteAdtyTicketImage(c.GetInt("id"), id, imageID, adtyRequestedTicketScope(c)); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"deleted": true})
+}
+
 func GetAdtyTranslation(c *gin.Context) {
 	view, err := service.GetAdtyTranslationConfig()
 	if err != nil {

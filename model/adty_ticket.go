@@ -43,8 +43,9 @@ type AdtyTicket struct {
 	RelatedModel   string `json:"related_model" gorm:"type:varchar(80)"`
 	RelatedGroup   string `json:"related_group" gorm:"type:varchar(64)"`
 	RelatedError   string `json:"related_error" gorm:"type:varchar(64)"`
-	CreatedAt      int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt      int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt        int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	InitialMessageId int64  `json:"initial_message_id,omitempty" gorm:"-"`
 }
 
 func (t AdtyTicket) HandlingSite() int {

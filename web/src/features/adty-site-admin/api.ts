@@ -288,6 +288,31 @@ export async function getAdminSiteWallets(
   return listOrEmpty(requireServerSuccess(res.data).data)
 }
 
+export async function creditAdminSiteMargin(
+  siteId: number,
+  body: { amount_usd: string; reason: string },
+  idempotencyKey: string
+): Promise<{
+  credited: boolean
+  ledger_id: number
+  balance: string
+  balance_before: string
+  balance_after: string
+}> {
+  const res = await api.post<
+    ApiResponse<{
+      credited: boolean
+      ledger_id: number
+      balance: string
+      balance_before: string
+      balance_after: string
+    }>
+  >(`${BASE}/sites/${siteId}/margin`, body, {
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+  return requireServerSuccess(res.data).data
+}
+
 /** Root only: every wallet kind of one site, newest first. */
 export async function getAdminSiteWalletLedger(
   siteId: number,

@@ -71,7 +71,7 @@ func loadLegacySiteCommissionPolicyTx(tx *gorm.DB) (adtySiteCommissionPolicy, er
 // PrepareAdtySiteInviteCommissionSnapshotTx freezes site invite commission eligibility,
 // rate, amount, and observation period at order creation time inside the order transaction.
 func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	if ext.IsOwnerSelfUse() {
+	if ext.IsOwnerBusiness() {
 		return nil
 	}
 	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
@@ -254,7 +254,7 @@ func SiteInviteCommissionWithdrawable(row *model.AdtySiteInviteCommission, now t
 // RecordAdtySiteInviteCommissionTx snapshots one site invite commission.
 // It does not spend a wallet. Team top-ups and missing invites record nothing.
 func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, now time.Time) error {
-	if ext.IsOwnerSelfUse() {
+	if ext.IsOwnerBusiness() {
 		return nil
 	}
 	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {

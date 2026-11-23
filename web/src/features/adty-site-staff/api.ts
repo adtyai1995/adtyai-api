@@ -31,6 +31,7 @@ export type StaffPermission =
   | 'customers.topups'
   | 'customers.usage'
   | 'tickets.manage'
+  | 'customers.balance_request'
   | 'customers.disable'
 export type StaffCustomerAction = 'disable'
 export type StaffBalanceDirection = 'increase' | 'decrease'

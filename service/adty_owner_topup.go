@@ -7,6 +7,32 @@ import (
 	"gorm.io/gorm"
 )
 
+func init() {
+	model.AdtyCreditOwnerMarginTopUpTx = creditAdtyOwnerMarginTopUpTx
+}
+
+func isOwnerTopupBusiness(business string) bool {
+	return business == model.AdtyBusinessOwnerSelfUseTopup || business == model.AdtyBusinessOwnerMarginTopup
+}
+
+func creditAdtyOwnerMarginTopUpTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
+	if ext == nil || topUp == nil || !ext.IsOwnerMargin() || ext.SiteId <= 0 || !ext.FaceUSD.IsPositive() {
+		return model.ErrInvalidTopUpQuota
+	}
+	if err := ensureAdtySiteWalletsTx(tx, ext.SiteId); err != nil {
+		return err
+	}
+	_, err := applyAdtySiteWalletChangeTx(tx, ext.SiteId, model.AdtySiteWalletMargin, ext.FaceUSD, AdtySiteWalletChange{
+		Type:            "margin_topup",
+		RefType:         "topup",
+		RefID:           ext.TradeNo,
+		OperatorID:      topUp.UserId,
+		IdempotencyKey:  "margin_topup:" + ext.TradeNo,
+		OpenMarginCycle: true,
+	})
+	return err
+}
+
 // SiteID is supplied by trusted host resolution, never a checkout body.
 type AdtyPaymentScope struct {
 	TeamID   int64
@@ -39,7 +65,7 @@ func adtyPaymentScopeIdentity(db *gorm.DB, user *model.User, scopes []AdtyPaymen
 		}
 		return user.SiteId, model.AdtyBusinessWalletTopup, nil
 	}
-	if scope.Business != model.AdtyBusinessOwnerSelfUseTopup || scope.SiteID <= 0 || user.StaffSiteId != 0 || user.Status != common.UserStatusEnabled {
+	if !isOwnerTopupBusiness(scope.Business) || scope.SiteID <= 0 || user.StaffSiteId != 0 || user.Status != common.UserStatusEnabled {
 		return 0, "", common.NewMessage("This payment method is not available")
 	}
 	var site model.AdtySite
@@ -65,7 +91,7 @@ func AdtyQuoteForPayment(userID, requestSiteID int, group, business string, face
 	if err != nil {
 		return nil, err
 	}
-	quote, err := adtyQuoteForSite(AdtyBillingSiteForUser(userID), group, face, method, business == model.AdtyBusinessOwnerSelfUseTopup)
+	quote, err := adtyQuoteForSite(AdtyBillingSiteForUser(userID), group, face, method, isOwnerTopupBusiness(business))
 	if err != nil {
 		return nil, err
 	}

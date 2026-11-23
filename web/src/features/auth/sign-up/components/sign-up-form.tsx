@@ -64,6 +64,11 @@ export function SignUpForm({
     number | null
   >(null)
   const [verificationCode, setVerificationCode] = useState('')
+  const [initialSiteInvite] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('site_invite')?.trim() ?? ''
+  })
+  const [siteInviteCode, setSiteInviteCode] = useState(initialSiteInvite)
   const [agreedToLegal, setAgreedToLegal] = useState(false)
   const [turnstileWidgetKey, setTurnstileWidgetKey] = useState(0)
   const legalConsentErrorMessage = t('Please agree to the legal terms first')
@@ -158,6 +163,7 @@ export function SignUpForm({
         site_terms_version: requiresSiteTerms
           ? String(siteTermsVersion)
           : undefined,
+        site_invite_code: siteInviteCode.trim() || undefined,
       })
 
       if (res?.success) {
@@ -311,6 +317,20 @@ export function SignUpForm({
               </Button>
             </div>
           </>
+        )}
+
+        {(requiresSiteTerms || initialSiteInvite !== '') && (
+          <div className='space-y-1.5'>
+            <Label htmlFor='sign-up-site-invite-code'>
+              {t('Site invite code (optional)')}
+            </Label>
+            <Input
+              id='sign-up-site-invite-code'
+              placeholder={t('Enter site invite code')}
+              value={siteInviteCode}
+              onChange={(event) => setSiteInviteCode(event.target.value)}
+            />
+          </div>
         )}
 
         {/* Turnstile */}

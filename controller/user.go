@@ -233,7 +233,8 @@ func Register(c *gin.Context) {
 	}
 	var payload struct {
 		model.User
-		AgreementAccepted bool `json:"agreement_accepted"`
+		AgreementAccepted bool   `json:"agreement_accepted"`
+		SiteInviteCode    string `json:"site_invite_code"`
 	}
 	err := common.DecodeJson(c.Request.Body, &payload)
 	if err != nil {
@@ -341,6 +342,17 @@ func Register(c *gin.Context) {
 	}
 	// 二开：注册即推广员、按推广 cookie 绑定、记指纹（任务 6.2、6.5）
 	service.AdtyAfterRegister(c, &insertedUser)
+	if insertedUser.SiteId > 0 {
+		siteInviteCode := strings.TrimSpace(payload.SiteInviteCode)
+		if siteInviteCode == "" {
+			siteInviteCode = strings.TrimSpace(c.Query("site_invite"))
+		}
+		if siteInviteCode != "" {
+			if bindErr := service.BindSiteInviteByCodeFromIP(insertedUser.SiteId, siteInviteCode, insertedUser.Id, service.HashReferralRiskValue(c.ClientIP())); bindErr != nil {
+				common.SysLog(common.LogText("site invite bind on register skipped user_id=%d site_id=%d: %s", insertedUser.Id, insertedUser.SiteId, bindErr.Error()))
+			}
+		}
+	}
 	if payload.AgreementAccepted {
 		model.RecordLog(insertedUser.Id, model.LogTypeSystem, common.NewMessage("Accepted the current user agreement and privacy policy"))
 	}
@@ -607,6 +619,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"permissions":              permissions,
 		"adty_archived_site_owner": service.AdtyHasArchivedSite(user.Id),
 		"adty_site_owner":          service.AdtyIsSiteOwner(user.Id), // 二开：侧边栏只对站长显示站长中心（任务 11.6）
+		"site_id":                  user.SiteId,
 		"staff_site_id":            user.StaffSiteId,
 		"site_terms_required":      required,
 		"site_terms_version":       version,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -135,14 +136,17 @@ func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction st
 	var deliverIntent bool
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var staff model.AdtySiteStaff
-		if err := tx.Where("user_id = ? AND status = ?", staffUserID, "enabled").First(&staff).Error; err != nil {
+		if err := model.AdtyLockForUpdate(tx).Where("user_id = ? AND status = ?", staffUserID, "enabled").First(&staff).Error; err != nil {
+			return common.NewMessage("No permission to perform this action")
+		}
+		if !slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffBalanceRequest) {
 			return common.NewMessage("No permission to perform this action")
 		}
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).First(&site, staff.SiteId).Error; err != nil {
 			return err
 		}
-		if site.OwnerUserId != staff.OwnerUserId || site.Status != model.AdtySiteStatusActive {
+		if site.OwnerUserId != staff.OwnerUserId || site.Status != model.AdtySiteStatusActive || site.AgreementVer != AdtyCurrentSiteAgreementVersion() {
 			return common.NewMessage("No permission to perform this action")
 		}
 		var customer model.User

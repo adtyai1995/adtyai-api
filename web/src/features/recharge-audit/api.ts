@@ -52,7 +52,11 @@ export type RechargeAuditOrder = {
   reference?: string
   original_trade_no?: string
   team_id?: number
-  business?: 'wallet_topup' | 'team_topup' | 'owner_self_use_topup'
+  business?:
+    | 'wallet_topup'
+    | 'team_topup'
+    | 'owner_self_use_topup'
+    | 'owner_margin_topup'
   trade_no: string
   payment_method: string
   payment_provider: string

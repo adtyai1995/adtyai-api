@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
@@ -56,9 +56,12 @@ type AdtyRechargeCardProps = {
 
 export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   const { t, i18n } = useTranslation()
+  const sceneSelectId = useId()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const tiers = props.info?.tiers ?? []
-  const ownerTopup = props.business === 'owner_self_use_topup'
+  const ownerSelfUse = props.business === 'owner_self_use_topup'
+  const ownerMargin = props.business === 'owner_margin_topup'
+  const ownerTopup = ownerSelfUse || ownerMargin
   const rates = ownerTopup ? {} : (props.info?.bonus_rates ?? {})
   // No bonus tiers in the admin means no bonus at all: show plain amounts.
   const hasBonus = Object.values(rates).some((rate) => rate > 0)
@@ -189,16 +192,28 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     })
   }
 
+  let cardTitle = t('Add funds')
+  if (ownerMargin) {
+    cardTitle = t('Owner margin online top-up')
+  } else if (ownerSelfUse) {
+    cardTitle = t('Owner self-use top-up')
+  }
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>
-          {ownerTopup ? t('Owner self-use top-up') : t('Add funds')}
-        </CardTitle>
-        {ownerTopup && (
+        <CardTitle>{cardTitle}</CardTitle>
+        {ownerSelfUse && (
           <CardDescription>
             {t(
               'Each $1 adds $1 to your site self-use principal. No bonus applies.'
+            )}
+          </CardDescription>
+        )}
+        {ownerMargin && (
+          <CardDescription>
+            {t(
+              'Paid amount credits the site margin wallet and opens a new 90% margin cycle. No bonus or customer balance applies.'
             )}
           </CardDescription>
         )}
@@ -213,9 +228,9 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
       <CardContent className='flex flex-col gap-6'>
         {scenes.length > 0 && (
           <div className='space-y-2'>
-            <Label htmlFor='wallet-payment-scene'>{t('Payment scene')}</Label>
+            <Label htmlFor={sceneSelectId}>{t('Payment scene')}</Label>
             <NativeSelect
-              id='wallet-payment-scene'
+              id={sceneSelectId}
               value={paymentScene}
               disabled={props.paying}
               onChange={(event) => {
@@ -269,11 +284,11 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
             ))}
           </div>
           <div className='flex flex-col gap-1.5 sm:max-w-xs'>
-            <Label htmlFor='adty-custom-amount'>
+            <Label htmlFor={`${sceneSelectId}-amount`}>
               {t('Custom amount (USD)')}
             </Label>
             <Input
-              id='adty-custom-amount'
+              id={`${sceneSelectId}-amount`}
               type='number'
               inputMode='decimal'
               min={minTopup}

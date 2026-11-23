@@ -27,12 +27,14 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { getReferralProfile, referralQueryKeys } from './api'
 import { PartnerCard } from './components/partner-card'
 import { ReferralLinkCard } from './components/referral-link-card'
 import { ReferralStats } from './components/referral-stats'
 import { CommissionTable, WithdrawalTable } from './components/referral-tables'
+import { SiteCustomerReferral } from './components/site-customer-referral'
 import { WithdrawDrawer } from './components/withdraw-drawer'
 import type { ReferralProfile } from './types'
 
@@ -87,14 +89,34 @@ function ReferralRules(props: { profile: ReferralProfile }) {
 export function Referral() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const user = useAuthStore((state) => state.auth.user)
+  const isSubsiteCustomer =
+    (user?.site_id ?? 0) > 0 && !(user?.staff_site_id ?? 0)
   const [withdrawing, setWithdrawing] = useState(false)
   const profileQuery = useQuery({
     queryKey: referralQueryKeys.profile,
     queryFn: getReferralProfile,
+    enabled: !isSubsiteCustomer,
   })
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: referralQueryKeys.all })
   const profile = profileQuery.data
+
+  if (isSubsiteCustomer) {
+    return (
+      <SectionPageLayout>
+        <SectionPageLayout.Title>{t('Referral')}</SectionPageLayout.Title>
+        <SectionPageLayout.Description>
+          {t(
+            'Invite users to this sub-site through your one-level invite link and manage your site invite commissions.'
+          )}
+        </SectionPageLayout.Description>
+        <SectionPageLayout.Content>
+          <SiteCustomerReferral />
+        </SectionPageLayout.Content>
+      </SectionPageLayout>
+    )
+  }
 
   return (
     <SectionPageLayout>

@@ -21,6 +21,7 @@ export type AdtyTopupBusiness =
   | 'wallet_topup'
   | 'team_topup'
   | 'owner_self_use_topup'
+  | 'owner_margin_topup'
 
 export type AdtyMethod = {
   id: string

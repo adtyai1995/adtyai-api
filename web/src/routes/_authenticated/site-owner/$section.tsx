@@ -31,6 +31,10 @@ import { useAuthStore } from '@/stores/auth-store'
 export const Route = createFileRoute('/_authenticated/site-owner/$section')({
   validateSearch: z.object({
     trade_no: z.string().trim().min(1).max(64).optional().catch(undefined),
+    business: z
+      .enum(['owner_self_use_topup', 'owner_margin_topup'])
+      .optional()
+      .catch(undefined),
   }),
   beforeLoad: ({ params }) => {
     if (!isSiteOwnerSection(params.section)) {
@@ -53,10 +57,11 @@ export const Route = createFileRoute('/_authenticated/site-owner/$section')({
 
 function SiteOwnerPage() {
   const params = Route.useParams()
-  const { trade_no } = Route.useSearch()
+  const { trade_no, business } = Route.useSearch()
   return (
     <SiteOwnerCenter
       returnTradeNo={params.section === 'earnings' ? trade_no : undefined}
+      returnBusiness={params.section === 'earnings' ? business : undefined}
       section={
         isSiteOwnerSection(params.section)
           ? params.section

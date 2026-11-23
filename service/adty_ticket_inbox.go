@@ -79,7 +79,7 @@ func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) ma
 	if row.Purpose == model.AdtyTelegramPurposeAdmin || (row.Purpose == "" && row.UserId != row.TicketOwnerID) {
 		switch handlerScope {
 		case "platform":
-			path = "/site-admin/tickets"
+			path = "/admin-tickets"
 		case "owner":
 			path = "/site-owner/tickets"
 		case "staff":

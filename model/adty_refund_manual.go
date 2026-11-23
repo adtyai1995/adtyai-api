@@ -15,7 +15,7 @@ func adtyRequireOwnerRefundScopeTx(tx *gorm.DB, ext *AdtyTopupOrder, operatorID 
 	if len(ownerSiteID) == 0 {
 		return nil
 	}
-	if len(ownerSiteID) != 1 || ownerSiteID[0] <= 0 || ext.SiteId != ownerSiteID[0] || ext.IsOwnerSelfUse() {
+	if len(ownerSiteID) != 1 || ownerSiteID[0] <= 0 || ext.SiteId != ownerSiteID[0] || ext.IsOwnerBusiness() {
 		return common.NewMessage("No permission to perform this action")
 	}
 	var site AdtySite
@@ -133,6 +133,9 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 	var ext AdtyTopupOrder
 	if err := DB.Where("trade_no = ?", tradeNo).First(&ext).Error; err != nil {
 		return nil, err
+	}
+	if ext.IsOwnerMargin() {
+		return nil, common.NewMessage("Margin top-up orders cannot be refunded through customer refund")
 	}
 	var user User
 	if ext.TeamId == 0 {
@@ -399,6 +402,9 @@ func adtyEnsureCreditedOrder(topUp *TopUp, ext *AdtyTopupOrder) error {
 	// 对它们退现金等于凭空付出这笔钱，而额度本身还能继续花。
 	if ext == nil {
 		return ErrAdtyRefundNotCashBacked
+	}
+	if ext.IsOwnerMargin() {
+		return common.NewMessage("Margin top-up orders cannot be refunded through customer refund")
 	}
 	if ext.Provider == AdtyVoucherProvider {
 		return ErrAdtyRefundNotCashBacked
