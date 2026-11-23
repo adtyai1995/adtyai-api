@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState, type ReactNode } from 'react'
+import { Suspense, useState, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SettingsPageProvider } from '../../components/settings-page-context'
@@ -50,17 +50,18 @@ function Fixture(props: { children: ReactNode }) {
   return (
     <SettingsPageProvider actionsContainer={actions}>
       <div ref={setActions} />
-      {props.children}
+      <Suspense fallback={null}>{props.children}</Suspense>
     </SettingsPageProvider>
   )
 }
 
-function renderSection(options: Array<{ key: string; value: string }>) {
+async function renderSection(options: Array<{ key: string; value: string }>) {
   const settings = getOptionValue(
     options,
     ADTY_SEO_OPTION_DEFAULTS
   ) as SiteSettings
   render(<Fixture>{getSiteSectionContent('adty-seo', settings)}</Fixture>)
+  await screen.findByLabelText('Title (English)')
 }
 
 afterEach(() => {
@@ -72,8 +73,8 @@ describe('home page SEO settings section', () => {
     expect(SITE_SECTION_IDS).toContain('adty-seo')
   })
 
-  it('describes the two home language URLs', () => {
-    renderSection([])
+  it('describes the two home language URLs', async () => {
+    await renderSection([])
 
     expect(
       screen.getByText(
@@ -82,8 +83,8 @@ describe('home page SEO settings section', () => {
     ).toBeInTheDocument()
   })
 
-  it('reads back the saved English title, description and share image', () => {
-    renderSection(savedOptions)
+  it('reads back the saved English title, description and share image', async () => {
+    await renderSection(savedOptions)
 
     expect(screen.getByLabelText('Title (English)')).toHaveValue(
       'ADTY AI - one key'
@@ -96,7 +97,7 @@ describe('home page SEO settings section', () => {
 
   it('reads back another language from its tab', async () => {
     const user = userEvent.setup()
-    renderSection(savedOptions)
+    await renderSection(savedOptions)
 
     await user.click(screen.getByRole('tab', { name: '简体中文' }))
 
@@ -108,7 +109,7 @@ describe('home page SEO settings section', () => {
 
   it('saves the changed language map as JSON without empty languages', async () => {
     const user = userEvent.setup()
-    renderSection(savedOptions)
+    await renderSection(savedOptions)
 
     await user.click(screen.getByRole('tab', { name: '简体中文' }))
     await user.clear(screen.getByLabelText('Title (简体中文)'))
@@ -124,7 +125,7 @@ describe('home page SEO settings section', () => {
 
   it('uses the saved values as the baseline for later saves', async () => {
     const user = userEvent.setup()
-    renderSection(savedOptions)
+    await renderSection(savedOptions)
 
     await user.click(screen.getByRole('tab', { name: '简体中文' }))
     await user.type(
@@ -149,7 +150,7 @@ describe('home page SEO settings section', () => {
 
   it('warns about a title over 60 characters but still saves it', async () => {
     const user = userEvent.setup()
-    renderSection([])
+    await renderSection([])
 
     await user.type(screen.getByLabelText('Title (English)'), 'x'.repeat(61))
 

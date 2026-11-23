@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState, type ReactNode } from 'react'
+import { Suspense, useState, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SettingsPageProvider } from '../../components/settings-page-context'
@@ -48,12 +48,12 @@ function Fixture(props: { children: ReactNode }) {
   return (
     <SettingsPageProvider actionsContainer={actions}>
       <div ref={setActions} />
-      {props.children}
+      <Suspense fallback={null}>{props.children}</Suspense>
     </SettingsPageProvider>
   )
 }
 
-function renderSection(options: Array<{ key: string; value: string }>) {
+async function renderSection(options: Array<{ key: string; value: string }>) {
   // site/index.tsx spreads ADTY_SITE_OPTION_DEFAULTS into the page defaults;
   // the SiteSettings type makes the build fail if that spread goes missing.
   const settings = getOptionValue(
@@ -61,6 +61,7 @@ function renderSection(options: Array<{ key: string; value: string }>) {
     ADTY_SITE_OPTION_DEFAULTS
   ) as SiteSettings
   render(<Fixture>{getSiteSectionContent('adty-site', settings)}</Fixture>)
+  await screen.findByLabelText('API base URL')
 }
 
 afterEach(() => {
@@ -72,8 +73,8 @@ describe('ADTY AI site settings section', () => {
     expect(SITE_SECTION_IDS).toContain('adty-site')
   })
 
-  it('reads back the saved values', () => {
-    renderSection(savedOptions)
+  it('reads back the saved values', async () => {
+    await renderSection(savedOptions)
 
     expect(screen.getByLabelText('API base URL')).toHaveValue(
       'https://api.example.com'
@@ -96,7 +97,7 @@ describe('ADTY AI site settings section', () => {
 
   it('saves only the changed fields under adty_site_setting', async () => {
     const user = userEvent.setup()
-    renderSection(savedOptions)
+    await renderSection(savedOptions)
 
     await user.clear(screen.getByLabelText('Support hours'))
     await user.type(screen.getByLabelText('Support hours'), '  24/7  ')
@@ -118,7 +119,7 @@ describe('ADTY AI site settings section', () => {
 
   it('uses the saved values as the baseline for later saves', async () => {
     const user = userEvent.setup()
-    renderSection(savedOptions)
+    await renderSection(savedOptions)
 
     await user.clear(screen.getByLabelText('Support hours'))
     await user.type(screen.getByLabelText('Support hours'), '24/7')
@@ -140,7 +141,7 @@ describe('ADTY AI site settings section', () => {
 
   it('does not save an API address that is not an http(s) URL', async () => {
     const user = userEvent.setup()
-    renderSection([])
+    await renderSection([])
 
     await user.type(screen.getByLabelText('API base URL'), 'api.example.com')
     await user.click(screen.getByRole('button', { name: 'Save Changes' }))
