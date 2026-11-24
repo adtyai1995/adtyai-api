@@ -10229,6 +10229,13 @@
     "Restore the Turnstile account to release the hostname": "请先恢复 Turnstile 账号配置以释放该域名",
     "Site is not active": "站点当前未处于活跃状态",
     "Subsite pricing configuration is invalid": "分站定价配置无效",
-    "The partner rate must be between {{min}} and {{max}}": "合作伙伴比例必须在 {{min}} 到 {{max}} 之间"
+    "The partner rate must be between {{min}} and {{max}}": "合作伙伴比例必须在 {{min}} 到 {{max}} 之间",
+    "A secret key is already configured. Leave blank to keep it unchanged.": "已配置密钥。留空将保持原密钥不变。",
+    "Cannot clear Turnstile settings while Turnstile verification is enabled.": "启用 Turnstile 校验期间不能清空 Turnstile 配置。",
+    "Cannot clear the email domain whitelist while email domain restriction is enabled.": "启用邮箱域名白名单限制期间不能清空允许的邮箱域名列表。",
+    "Configured (leave blank to keep unchanged)": "已配置（留空保持不变）",
+    "Password updated. Sign in again with your new password.": "密码已更新，请使用新密码重新登录。",
+    "Task Plugin channels do not support balance queries": "任务插件渠道不支持查询余额",
+    "e.g. ADTY AI Console": "例如 ADTY AI 控制台"
   }
 }

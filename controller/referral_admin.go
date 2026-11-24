@@ -272,6 +272,7 @@ func UpdateReferralAffiliate(c *gin.Context) {
 		return
 	}
 	adminID := c.GetInt("id")
+	replayed := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var affiliate model.ReferralAffiliate
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userID).First(&affiliate).Error; err != nil {
@@ -323,6 +324,7 @@ func UpdateReferralAffiliate(c *gin.Context) {
 				if prior[0].AffiliateId != affiliate.Id || !decimal.NewFromFloat(prior[0].DeltaAvailable).Round(2).Equal(delta) {
 					return model.ErrAdtyIdempotencyConflict
 				}
+				replayed = true
 				return nil
 			}
 			var acc model.ReferralCommissionAccount
@@ -354,7 +356,11 @@ func UpdateReferralAffiliate(c *gin.Context) {
 		writeReferralError(c, err)
 		return
 	}
-	recordManageAuditFor(c, userID, "adty.referral.affiliate_update", map[string]any{"action": body.Action})
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else {
+		recordManageAuditFor(c, userID, "adty.referral.affiliate_update", map[string]any{"action": body.Action})
+	}
 	common.ApiSuccess(c, nil)
 }
 

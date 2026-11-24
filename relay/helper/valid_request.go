@@ -61,6 +61,17 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 }
 
 func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, error) {
+	if strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+		form, err := common.ParseMultipartFormReusable(c)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse audio form request: %w", err)
+		}
+		for key, values := range form.Value {
+			if !strings.HasSuffix(key, "[]") && len(values) > 1 {
+				return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
+			}
+		}
+	}
 	audioRequest := &dto.AudioRequest{}
 	err := common.UnmarshalBodyReusable(c, audioRequest)
 	if err != nil {
@@ -214,6 +225,13 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 			form, err := common.ParseMultipartFormReusable(c)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse image edit form request: %w", err)
+			}
+			// R6-013: Reject duplicate scalar multipart fields so upstream last-value-wins
+			// parsers cannot execute different quality/size/n/model than billed.
+			for key, values := range form.Value {
+				if !strings.HasSuffix(key, "[]") && !strings.HasPrefix(key, "image[") && len(values) > 1 {
+					return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
+				}
 			}
 			formData := url.Values(form.Value)
 			c.Request.MultipartForm = form

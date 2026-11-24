@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,7 +151,9 @@ func GetClaudeAuthHeader(token string) http.Header {
 }
 
 func GetResponseBody(method, url string, channel *model.Channel, headers http.Header) ([]byte, error) {
-	req, err := http.NewRequest(method, url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -168,10 +171,10 @@ func GetResponseBody(method, url string, channel *model.Channel, headers http.He
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, res.Body)
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
 		return nil, fmt.Errorf("status code: %d", res.StatusCode)
 	}
-	body, err := io.ReadAll(res.Body)
+	body, err := io.ReadAll(io.LimitReader(res.Body, 2<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +716,7 @@ func UpdateChannelBalance(c *gin.Context) {
 		return
 	}
 	if channel.Type == constant.ChannelTypeTaskPlugin {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "Task Plugin channels do not support balance queries"})
+		common.ApiErrorT(c, "Task Plugin channels do not support balance queries")
 		return
 	}
 	if channel.ChannelInfo.IsMultiKey {

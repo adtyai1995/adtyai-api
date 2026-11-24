@@ -392,7 +392,9 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	if err := tx.Create(result).Error; err != nil {
 		return nil, err
 	}
-	writeAdtyMarginWalletOfficialAudit(result, change, wallet.FrozenUSD, frozenAfter, cycleUsed, cycleTier)
+	if _, err := appendAdtyMarginWalletOfficialAuditTx(tx, result, change, wallet.FrozenUSD, frozenAfter, cycleUsed, cycleTier); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -676,20 +678,27 @@ func TransferAdtyEarningToMargin(siteID, operator int, amount decimal.Decimal, k
 // without fabricating a main-site wallet debit, opens a new 90% margin cycle,
 // and resumes pending gift fulfillments after commit.
 func CreditAdtySiteMarginByRoot(siteID, rootUserID int, amount decimal.Decimal, reason, key string) (*model.AdtySiteWalletLedger, error) {
+	ledger, _, _, err := CreditAdtySiteMarginByRootWithAudit(siteID, rootUserID, amount, reason, key)
+	return ledger, err
+}
+
+func CreditAdtySiteMarginByRootWithAudit(siteID, rootUserID int, amount decimal.Decimal, reason, key string) (*model.AdtySiteWalletLedger, string, bool, error) {
 	reason = strings.TrimSpace(reason)
 	key = strings.TrimSpace(key)
 	if siteID <= 0 || rootUserID <= 0 || !amount.IsPositive() || !validAdtySiteWalletAmount(amount) ||
 		reason == "" || len([]rune(reason)) > 200 || key == "" || len(key) > 64 {
-		return nil, ErrAdtySiteWalletInvalidOperation
+		return nil, "", false, ErrAdtySiteWalletInvalidOperation
 	}
 	scopedKey := "site:" + strconv.Itoa(siteID) + ":margin-root:" + key
 	if len(scopedKey) > 128 {
-		return nil, ErrAdtySiteWalletIdempotencyKey
+		return nil, "", false, ErrAdtySiteWalletIdempotencyKey
 	}
 	if err := EnsureAdtySiteWallets(siteID); err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 	var ledger *model.AdtySiteWalletLedger
+	var auditEvent *model.AuditLog
+	var replayed bool
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
@@ -712,6 +721,7 @@ func CreditAdtySiteMarginByRoot(siteID, rootUserID int, amount decimal.Decimal, 
 				return model.ErrAdtyIdempotencyConflict
 			}
 			ledger = &existing
+			replayed = true
 			return nil
 		}
 		if !margin.RequiredBalance.IsPositive() && strings.TrimSpace(site.TierCode) != "" {
@@ -736,20 +746,28 @@ func CreditAdtySiteMarginByRoot(siteID, rootUserID int, amount decimal.Decimal, 
 		if err != nil {
 			return err
 		}
-		return recordSiteAuditTx(tx, siteID, "margin.root_credit", rootUserID,
+		auditEvent, err = recordSiteAuditWithIntentTx(tx, siteID, "margin.root_credit", rootUserID,
 			map[string]any{"margin_balance": ledger.BalanceBefore.String()},
 			map[string]any{"margin_balance": ledger.BalanceAfter.String(), "amount_usd": amount.String(), "owner_user_id": site.OwnerUserId, "reason": reason, "ledger_id": ledger.Id},
 			reason)
+		return err
 	}); err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
-	if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
-		common.SysLog(common.LogText("gift fulfillment: resume after root margin credit site %d: %s", siteID, err.Error()))
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	if err := ResumeAdtySiteInviteCoverage(siteID, time.Now()); err != nil {
-		common.SysLog(common.LogText("site invite coverage: resume after root margin credit site %d: %s", siteID, err.Error()))
+	if !replayed {
+		if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
+			common.SysLog(common.LogText("gift fulfillment: resume after root margin credit site %d: %s", siteID, err.Error()))
+		}
+		if err := ResumeAdtySiteInviteCoverage(siteID, time.Now()); err != nil {
+			common.SysLog(common.LogText("site invite coverage: resume after root margin credit site %d: %s", siteID, err.Error()))
+		}
 	}
-	return ledger, nil
+	return ledger, eventID, replayed, nil
 }
 
 // adtyEarningToMarginKeys scopes the client idempotency key to one site. The

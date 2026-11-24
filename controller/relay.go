@@ -753,15 +753,18 @@ func executeTaskSubmissionWith(
 		common.SysError(common.LogText("insert task error: %s", insertErr.Error()))
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
 		diagnostics.failed("insert", "database_error", taskErr, false)
-		// A relayed event stream already holds the vendor's work, so it is
-		// settled and logged without a task row. Settlement uses SettleBilling
-		// and never overdraws.
-		if c.Writer.Written() {
+		// R6-011: Once upstream accepted the task (result != nil), settle the
+		// reservation even if task persistence fails and nothing was written to
+		// the client, preventing a 100% auto-refund of a live paid upstream job.
+		if result != nil || c.Writer.Written() {
 			if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
 				common.SysError(common.LogText("settle task billing error: %s", settleErr.Error()))
 				return nil, taskErr
 			}
-			service.LogTaskConsumption(c, relayInfo, task)
+			durable = true
+			if c.Writer.Written() {
+				service.LogTaskConsumption(c, relayInfo, task)
+			}
 		}
 		return nil, taskErr
 	}

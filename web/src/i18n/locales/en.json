@@ -10229,6 +10229,13 @@
     "Restore the Turnstile account to release the hostname": "Restore the Turnstile account to release the hostname",
     "Site is not active": "Site is not active",
     "Subsite pricing configuration is invalid": "Subsite pricing configuration is invalid",
-    "The partner rate must be between {{min}} and {{max}}": "The partner rate must be between {{min}} and {{max}}"
+    "The partner rate must be between {{min}} and {{max}}": "The partner rate must be between {{min}} and {{max}}",
+    "A secret key is already configured. Leave blank to keep it unchanged.": "A secret key is already configured. Leave blank to keep it unchanged.",
+    "Cannot clear Turnstile settings while Turnstile verification is enabled.": "Cannot clear Turnstile settings while Turnstile verification is enabled.",
+    "Cannot clear the email domain whitelist while email domain restriction is enabled.": "Cannot clear the email domain whitelist while email domain restriction is enabled.",
+    "Configured (leave blank to keep unchanged)": "Configured (leave blank to keep unchanged)",
+    "Password updated. Sign in again with your new password.": "Password updated. Sign in again with your new password.",
+    "Task Plugin channels do not support balance queries": "Task Plugin channels do not support balance queries",
+    "e.g. ADTY AI Console": "e.g. ADTY AI Console"
   }
 }

@@ -554,17 +554,16 @@ func adtySiteBonusAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 // （adtyBonusUSDForSite 只算站长出的部分）。站长的消费分成不扣：充值本身不产生站长收益，收益来自消费，
 // 客户已经花掉的额度是真实消费。
 func adtySiteBonusAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	bonus := adtyBonusUSDForSite(ext)
+	bonus, totalBonusQuota, err := effectiveSiteGiftBasisTx(tx, ext)
+	if err != nil {
+		return err
+	}
 	if bonus.IsZero() {
 		// R4-015: Pass full order bonus quota as denominator so main-site (SiteId==0)
 		// partial refunds shrink pending_review gifts proportionally instead of canceling 100%.
 		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, ext.RefundBonusQuota, topUpBonusQuota(ext))
 	}
 	hasRows, prevReclaimed, cumReclaimed, err := adtyCompletedManualRefundBonusStatsTx(tx, ext)
-	if err != nil {
-		return err
-	}
-	totalBonusQuota, err := siteGiftBonusQuota(ext)
 	if err != nil {
 		return err
 	}
@@ -577,7 +576,12 @@ func adtySiteBonusAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 		if denom <= 0 {
 			denom = cumReclaimed
 		}
-		cumUSD := adtyProportionalGiftUSD(bonus, cumReclaimed, denom)
+		var cumUSD decimal.Decimal
+		if denom > 0 && cumReclaimed >= denom {
+			cumUSD = bonus
+		} else {
+			cumUSD = adtyProportionalGiftUSD(bonus, cumReclaimed, denom)
+		}
 		prevUSD := adtyProportionalGiftUSD(bonus, prevReclaimed, denom)
 		returned = cumUSD.Sub(prevUSD)
 	} else {
@@ -589,7 +593,11 @@ func adtySiteBonusAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 			denom = ext.RefundBonusQuota
 		}
 		reclaimed := min(denom, min(ext.RefundBonusQuota, max(ext.RefundDeductedQuota, 0)))
-		returned = adtyProportionalGiftUSD(bonus, reclaimed, denom)
+		if denom > 0 && reclaimed >= denom {
+			returned = bonus
+		} else {
+			returned = adtyProportionalGiftUSD(bonus, reclaimed, denom)
+		}
 	}
 	if returned.IsPositive() {
 		if err := upsertAdtySiteEarningTx(tx, adtySiteEarningDayFn(), adtySiteEarningEntry{
@@ -623,6 +631,12 @@ func adtyUniqueViolation(err error) bool {
 // ReviewAdtySiteCustomer 管理员复核风控客户（分站·审核）：认可后之后的消费正常计收益；
 // convertSkipped 时把还没结算的 skipped 行改成 usage。
 func ReviewAdtySiteCustomer(userId, adminId int, convertSkipped bool) error {
+	_, err := ReviewAdtySiteCustomerWithAudit(userId, adminId, convertSkipped)
+	return err
+}
+
+func ReviewAdtySiteCustomerWithAudit(userId, adminId int, convertSkipped bool) (string, error) {
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var customer model.AdtySiteCustomer
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userId).First(&customer).Error; err != nil {
@@ -707,10 +721,19 @@ func ReviewAdtySiteCustomer(userId, adminId int, convertSkipped bool) error {
 				}
 			}
 		}
-		return recordSiteAuditTx(tx, customer.SiteId, "customer_review", adminId, map[string]any{"user_id": userId, "risk_flag": customer.RiskFlag},
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, customer.SiteId, "customer_review", adminId, map[string]any{"user_id": userId, "risk_flag": customer.RiskFlag},
 			map[string]any{"reviewed": true, "convert_skipped": convertSkipped}, "")
+		return auditErr
 	})
-	return err
+	if err != nil {
+		return "", err
+	}
+	if auditEvent != nil {
+		deliverAdtyCommittedAudit(*auditEvent)
+		return auditEvent.EventId, nil
+	}
+	return "", nil
 }
 
 func init() {

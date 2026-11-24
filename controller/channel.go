@@ -2237,7 +2237,7 @@ func OllamaPullModel(c *gin.Context) {
 		})
 		return
 	}
-	err = ollama.PullOllamaModel(c.Request.Context(), baseURL, key, req.ModelName)
+	err = ollama.PullOllamaModel(c.Request.Context(), baseURL, key, req.ModelName, channel.GetSetting())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -2322,7 +2322,7 @@ func OllamaPullModelStream(c *gin.Context) {
 	}
 
 	// 执行拉取
-	err = ollama.PullOllamaModelStream(c.Request.Context(), baseURL, key, req.ModelName, progressCallback)
+	err = ollama.PullOllamaModelStream(c.Request.Context(), baseURL, key, req.ModelName, progressCallback, channel.GetSetting())
 
 	if err != nil {
 		errorData, _ := common.Marshal(gin.H{
@@ -2396,7 +2396,7 @@ func OllamaDeleteModel(c *gin.Context) {
 		})
 		return
 	}
-	err = ollama.DeleteOllamaModel(c.Request.Context(), baseURL, key, req.ModelName)
+	err = ollama.DeleteOllamaModel(c.Request.Context(), baseURL, key, req.ModelName, channel.GetSetting())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -2449,7 +2449,7 @@ func OllamaVersion(c *gin.Context) {
 		common.ApiErrorT(c, "Failed to fetch Ollama version: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
-	version, err := ollama.FetchOllamaVersion(c.Request.Context(), baseURL, key)
+	version, err := ollama.FetchOllamaVersion(c.Request.Context(), baseURL, key, channel.GetSetting())
 	if err != nil {
 		common.ApiErrorT(c, "Failed to fetch Ollama version: {{error}}", map[string]any{"error": err.Error()})
 		return

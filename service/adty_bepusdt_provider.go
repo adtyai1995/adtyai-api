@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"io"
 	"net/http"
@@ -86,20 +85,16 @@ func (adtyBEpusdtProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder)
 	if baseTransport == nil {
 		baseTransport = http.DefaultTransport
 	}
-	transport, ok := baseTransport.(*http.Transport)
-	if !ok || transport.DialTLS != nil || transport.DialTLSContext != nil {
+	if tr, ok := baseTransport.(*http.Transport); !ok || tr.DialTLS != nil || tr.DialTLSContext != nil {
 		return nil, errors.New("verified BEpusdt HTTPS transport is unavailable")
 	}
 	// Relay's global TLS opt-out must not authenticate an unsigned payment
-	// response. Keep configured trust roots but verify this gateway's hostname.
-	transport = transport.Clone()
-	tlsConfig := &tls.Config{}
-	if transport.TLSClientConfig != nil {
-		tlsConfig = transport.TLSClientConfig.Clone()
+	// response. Enforce verified TLS >= 1.2 + chain check and reset ServerName.
+	transport, vErr := cloneAdtyVerifiedPaymentTransport(baseTransport)
+	if vErr != nil {
+		return nil, errors.New("verified BEpusdt HTTPS transport is unavailable")
 	}
-	tlsConfig.InsecureSkipVerify = false
-	tlsConfig.ServerName = ""
-	transport.TLSClientConfig = tlsConfig
+	transport.TLSClientConfig.ServerName = ""
 	client.Transport = transport
 	defer transport.CloseIdleConnections()
 	if client.Timeout <= 0 || client.Timeout > 10*time.Second {

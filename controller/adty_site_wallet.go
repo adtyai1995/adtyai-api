@@ -73,7 +73,7 @@ func PostAdtyAdminSiteMargin(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	ledger, err := service.CreditAdtySiteMarginByRoot(id, c.GetInt("id"), amount, body.Reason, key)
+	ledger, eventID, replayed, err := service.CreditAdtySiteMarginByRootWithAudit(id, c.GetInt("id"), amount, body.Reason, key)
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
 			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
@@ -81,6 +81,12 @@ func PostAdtyAdminSiteMargin(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	}
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, gin.H{
 		"credited":       true,

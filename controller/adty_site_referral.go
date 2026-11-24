@@ -328,7 +328,7 @@ func PostAdtyOwnerSiteInviteWithdrawalReview(c *gin.Context) {
 	processSiteWithdrawalReview(c, service.ReviewAdtySiteInviteWithdrawal)
 }
 func PostClosedSiteInviteWithdrawalReview(c *gin.Context) {
-	processSiteWithdrawalReview(c, service.ReviewClosedAdtySiteInviteWithdrawal)
+	processClosedSiteWithdrawalReview(c, service.ReviewClosedAdtySiteInviteWithdrawalWithAudit)
 }
 func processSiteWithdrawalReview(c *gin.Context, process func(int, int64, bool, string) error) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -351,6 +351,34 @@ func processSiteWithdrawalReview(c *gin.Context, process func(int, int64, bool, 
 	common.ApiSuccess(c, gin.H{"reviewed": true})
 }
 
+func processClosedSiteWithdrawalReview(c *gin.Context, process func(int, int64, bool, string) (string, bool, error)) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var body struct {
+		Approve bool   `json:"approve"`
+		Reason  string `json:"reason"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	eventID, replayed, err := process(c.GetInt("id"), id, body.Approve, body.Reason)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
+	common.ApiSuccess(c, gin.H{"reviewed": true})
+}
+
 func PostAdtyOwnerSiteInviteWithdrawalPaid(c *gin.Context) {
 	if _, ok := adtyOwnerSiteOr403(c); !ok {
 		return
@@ -358,10 +386,34 @@ func PostAdtyOwnerSiteInviteWithdrawalPaid(c *gin.Context) {
 	processSiteWithdrawalPaid(c, service.MarkAdtySiteInviteWithdrawalPaid)
 }
 func PostClosedSiteInviteWithdrawalFailed(c *gin.Context) {
-	processSiteWithdrawalReview(c, service.ConfirmClosedSiteInvitePayoutFailure)
+	processClosedSiteWithdrawalReview(c, service.ConfirmClosedSiteInvitePayoutFailureWithAudit)
 }
 func PostClosedSiteInviteWithdrawalPaid(c *gin.Context) {
-	processSiteWithdrawalPaid(c, service.MarkClosedAdtySiteInviteWithdrawalPaid)
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var body struct {
+		TxID  string `json:"tx_id"`
+		Proof string `json:"proof"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	eventID, replayed, err := service.MarkClosedAdtySiteInviteWithdrawalPaidWithAudit(c.GetInt("id"), id, body.TxID, body.Proof)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
+	common.ApiSuccess(c, gin.H{"paid": true})
 }
 func processSiteWithdrawalPaid(c *gin.Context, process func(int, int64, string, string) error) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)

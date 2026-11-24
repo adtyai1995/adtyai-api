@@ -43,12 +43,16 @@ func ReviewAdtySiteEarning(c *gin.Context) {
 	if middleware.RequireSecurityProof(c, service.AdtySiteEarningReviewOperation(body.OperationKey, body.OriginalCharge, body.Reason)) == nil {
 		return
 	}
-	if err := service.ReviewAdtySiteEarningRoot(body.OperationKey, c.GetInt("id"), body.OriginalCharge, body.Reason); err != nil {
+	eventID, replayed, err := service.ReviewAdtySiteEarningRootWithAudit(body.OperationKey, c.GetInt("id"), body.OriginalCharge, body.Reason)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, 0, "adty.finance.site_earning_review", map[string]any{
-		"operation_key": body.OperationKey, "original_charge": body.OriginalCharge, "reason": strings.TrimSpace(body.Reason),
-	})
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, gin.H{"operation_key": body.OperationKey, "original_charge": body.OriginalCharge})
 }

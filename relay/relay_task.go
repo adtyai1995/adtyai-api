@@ -371,6 +371,11 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 
 	// 7. 预扣费：首次尝试创建计费会话；重试时会话已存在，换到更贵的渠道要在
 	//    发起上游请求前补足预扣，余额不足就不发请求。
+	if service.AdtyTeamPriceBlocked(c) {
+		taskErr := service.TaskErrorWrapperLocal(service.ErrAdtyTeamInvalid, "team_price_blocked", http.StatusForbidden)
+		taskErr.NoRetry = true
+		return nil, taskErr
+	}
 	if info.Billing != nil || !info.PriceData.FreeModel {
 		info.ForcePreConsume = true
 		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {

@@ -473,10 +473,13 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		// 打印类似 curl 命令格式的信息
 		logger.LogDebug(c.Request.Context(), "--form 'model=\"%s\"'", request.Model)
 
-		// 遍历表单字段并打印输出
+		// 遍历表单字段并打印输出（R6-013: 禁止重复标量字段绕过计费/格式校验）
 		for key, values := range formData.Value {
 			if key == "model" {
 				continue
+			}
+			if !strings.HasSuffix(key, "[]") && len(values) > 1 {
+				return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
 			}
 			for _, value := range values {
 				writer.WriteField(key, value)
@@ -540,11 +543,14 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			mf = form
 		}
 
-		// 写入所有非文件字段
+		// 写入所有非文件字段（R6-013: 禁止重复标量字段绕过 quality/size/n 计费校验）
 		if mf != nil {
 			for key, values := range mf.Value {
 				if key == "model" {
 					continue
+				}
+				if !strings.HasSuffix(key, "[]") && !strings.HasPrefix(key, "image[") && len(values) > 1 {
+					return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
 				}
 				for _, value := range values {
 					writer.WriteField(key, value)

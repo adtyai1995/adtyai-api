@@ -393,7 +393,7 @@ func adtyOrderTraceQuery(section string, order rechargeAuditOrder, ownerSiteID *
 		}
 		return q, "id, 'Payment' AS kind, source, outcome AS status, event_type AS reference, CASE WHEN outcome IN ('credited', 'replayed') THEN paid_amount ELSE NULL END AS amount, paid_currency AS currency, created_at, operator_id", true
 	case "wallet":
-		return model.DB.Model(&model.AdtyBalanceLedger{}).Where("ref_type = ? AND ref_id = ? AND user_id = ?", "topup", order.TradeNo, order.UserId),
+		return model.DB.Model(&model.AdtyBalanceLedger{}).Where("ref_type IN ? AND ref_id = ? AND user_id = ?", []string{"topup", "voucher"}, order.TradeNo, order.UserId),
 			"id, 'Wallet movement' AS kind, type AS status, ref_id AS reference, delta_quota, balance_before, balance_after, operator_id, reason AS note, created_at", true
 	case "funds":
 		return model.DB.Model(&model.AdtyFundBatch{}).Where("user_id = ? AND source = ?", order.UserId, order.TradeNo),
@@ -405,7 +405,7 @@ func adtyOrderTraceQuery(section string, order rechargeAuditOrder, ownerSiteID *
 		if ownerSiteID != nil {
 			return nil, "", false
 		}
-		q := model.DB.Model(&model.AdtySiteWalletLedger{}).Where("ref_id = ? AND ref_type IN ?", order.TradeNo, []string{"topup", "site_invite"})
+		q := model.DB.Model(&model.AdtySiteWalletLedger{}).Where("ref_id = ? AND ref_type IN ?", order.TradeNo, []string{"topup", "site_invite", "voucher"})
 		if order.SiteId == nil {
 			q = q.Where("1 = 0")
 		} else {

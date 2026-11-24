@@ -100,7 +100,7 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
         if (typeof value !== 'string') return
         const domains = value
           .split('\n')
-          .map((domain) => domain.trim())
+          .map((domain) => domain.trim().toLowerCase())
           .filter(Boolean)
           .join(',')
         if (domains !== baselineRef.current.EmailDomainWhitelist) {

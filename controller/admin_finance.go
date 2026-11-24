@@ -103,11 +103,11 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 		}},
 		{from: "adty_site_invite_withdrawals x", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_invite_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-INV-' || CAST(x.id AS TEXT)",
-			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "CAST(COALESCE(NULLIF(x.payout_amount, ''), '0') AS NUMERIC)", "paid_currency": "x.payout_currency",
+			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "CASE WHEN x.method = 'balance' THEN x.net_usd ELSE CAST(COALESCE(NULLIF(x.payout_amount, ''), '0') AS NUMERIC) END", "paid_currency": "CASE WHEN x.method = 'balance' THEN 'USD' ELSE COALESCE(x.payout_currency, '') END",
 		}},
 		{from: "referral_withdrawals x", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "0", "order_type": "'withdrawal'", "source_type": "'main_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-MAIN-' || CAST(x.id AS TEXT)",
-			"payment_method": "x.account_type", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.submitted_at", "complete_time": "x.paid_at", "face_usd": "x.amount", "paid_amount": "CASE WHEN x.account_type = 'usdt' THEN x.net_amount ELSE 0 END", "paid_currency": "CASE WHEN x.account_type = 'usdt' THEN 'USDT' ELSE '' END",
+			"payment_method": "x.account_type", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.submitted_at", "complete_time": "x.paid_at", "face_usd": "x.amount", "paid_amount": "CASE WHEN x.account_type = 'usdt' THEN x.net_amount WHEN x.account_type IN ('alipay', 'wechat') THEN CAST(COALESCE(NULLIF(x.cny_amount, ''), '0') AS NUMERIC) WHEN x.account_type = 'balance' THEN x.net_amount ELSE 0 END", "paid_currency": "CASE WHEN x.account_type = 'usdt' THEN 'USDT' WHEN x.account_type IN ('alipay', 'wechat') THEN 'CNY' WHEN x.account_type = 'balance' THEN COALESCE(NULLIF(x.settlement_currency, ''), 'USD') ELSE '' END",
 		}},
 		{from: "adty_site_invite_commissions x", columns: map[string]string{
 			"id": "x.id", "user_id": "x.inviter_id", "site_id": "x.site_id", "order_type": "'commission'", "source_type": "'site_commission'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'COM-SITE-' || CAST(x.id AS TEXT)", "original_trade_no": "x.trade_no",
@@ -1123,6 +1123,12 @@ func PreviewAdtyOwnerOrderRefund(c *gin.Context) {
 		if err != nil {
 			writeAdtyFinanceError(c, err)
 			return
+		}
+		if result.Facts != nil && result.Facts.Commission != nil {
+			result.Commission = result.Facts.Commission
+			result.CommissionIssuedUSD = result.Facts.Commission.IssuedUSD
+			result.CommissionWithdrawnUSD = result.Facts.Commission.WithdrawnUSD
+			result.CommissionClawbackUSD = result.Facts.Commission.ExpectedClawbackUSD
 		}
 	}
 	result.Ledger = nil

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -935,13 +936,42 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				tokenDelta = tokenBase - row.ActualQuota
 			}
 		}
-		// R4-005: Pre-lock the site's earnings wallet before fund-batch settlement/reversal
-		// (which may lock margin and operating wallets), preserving canonical lock order
-		// User -> Token -> adty_site_wallets(earnings -> margin -> operating).
-		if row.PayerKind != BillingPayerOwner && row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) && tx.Migrator().HasTable(&AdtySiteWallet{}) {
-			var prelockEarnings AdtySiteWallet
-			if err := lockForUpdate(tx).Where("site_id = ? AND kind = ?", row.SiteId, AdtySiteWalletEarnings).Limit(1).Find(&prelockEarnings).Error; err != nil {
-				return err
+		// R4-005 / R6-008: Pre-lock all involved site earnings wallets in ascending
+		// site_id order BEFORE fund-batch settlement/reversal (which may lock margin
+		// and operating wallets), preserving User -> Token -> earnings(ASC) -> margin(ASC) -> operating(ASC).
+		if tx.Migrator().HasTable(&AdtySiteWallet{}) {
+			earningsSiteSet := make(map[int]struct{})
+			if row.PayerKind != BillingPayerOwner && row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) {
+				earningsSiteSet[row.SiteId] = struct{}{}
+			}
+			if !teamPaid && row.PayerKind != BillingPayerOwner && tx.Migrator().HasTable(&AdtyFundBatch{}) && tx.Migrator().HasTable(&AdtyTopupOrder{}) {
+				var bonusSiteIDs []int
+				if err := tx.Table("adty_topup_orders").
+					Distinct("adty_topup_orders.site_id").
+					Joins("JOIN adty_fund_batches ON adty_fund_batches.source = adty_topup_orders.trade_no").
+					Where("adty_fund_batches.user_id = ? AND adty_fund_batches.kind = ? AND adty_topup_orders.site_id > 0", row.UserId, "bonus").
+					Pluck("adty_topup_orders.site_id", &bonusSiteIDs).Error; err != nil {
+					return err
+				}
+				for _, sid := range bonusSiteIDs {
+					if sid > 0 {
+						earningsSiteSet[sid] = struct{}{}
+					}
+				}
+			}
+			if len(earningsSiteSet) > 0 {
+				siteIDs := make([]int, 0, len(earningsSiteSet))
+				for sid := range earningsSiteSet {
+					siteIDs = append(siteIDs, sid)
+				}
+				sort.Ints(siteIDs)
+				var prelockedEarnings []AdtySiteWallet
+				if err := lockForUpdate(tx).
+					Where("site_id IN ? AND kind = ?", siteIDs, AdtySiteWalletEarnings).
+					Order("site_id ASC").
+					Find(&prelockedEarnings).Error; err != nil {
+					return err
+				}
 			}
 		}
 		settledQuota, settledBalanceBefore := int64(base+charged), int64(balance+base)

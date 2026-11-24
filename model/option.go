@@ -574,6 +574,19 @@ func ApplyOptionValues(values map[string]string) error {
 	return nil
 }
 
+// ParseEmailDomainWhitelist normalizes a comma-separated whitelist by trimming,
+// lowercasing, and dropping empty entries so "" yields an empty slice.
+func ParseEmailDomainWhitelist(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		domain := strings.ToLower(strings.TrimSpace(part))
+		if domain != "" {
+			out = append(out, domain)
+		}
+	}
+	return out
+}
+
 func updateOptionMap(key string, value string) (err error) {
 	if key == "adty_reseller_setting.unknown_host_mode" {
 		value = "reject"
@@ -702,7 +715,7 @@ func updateOptionMap(key string, value string) (err error) {
 	}
 	switch key {
 	case "EmailDomainWhitelist":
-		common.EmailDomainWhitelist = strings.Split(value, ",")
+		common.EmailDomainWhitelist = ParseEmailDomainWhitelist(value)
 	case "SMTPServer":
 		common.SMTPServer = value
 	case "SMTPPort":

@@ -79,7 +79,7 @@ func fetchLatestCodexClientVersion(ctx context.Context, client *http.Client, rel
 		Draft      bool   `json:"draft"`
 		Prerelease bool   `json:"prerelease"`
 	}
-	if err := common.DecodeJson(resp.Body, &release); err != nil {
+	if err := common.DecodeJson(io.LimitReader(resp.Body, 4<<20), &release); err != nil {
 		return "", err
 	}
 	if release.Draft || release.Prerelease {
@@ -146,7 +146,7 @@ func FetchCodexModels(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return resp.StatusCode, nil, err
 	}

@@ -21,6 +21,9 @@ const (
 // model is free. A later violation fee must not select a new token binding.
 // Zero reservation leaves genuinely free requests available at zero balance.
 func FreezeRequestBillingPayer(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
+	if AdtyTeamPriceBlocked(c) {
+		return types.NewErrorWithStatusCode(ErrAdtyTeamInvalid, types.ErrorCodeModelPriceError, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
 	if info == nil {
 		return types.NewError(model.ErrBillingOperationConflict, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
@@ -49,6 +52,9 @@ func FreezeRequestBillingPayer(c *gin.Context, info *relaycommon.RelayInfo) *typ
 // 会话已存在时（任务重试换到另一个渠道）把预扣补到 preConsumedQuota，
 // 和首次预扣一样必须由余额覆盖。
 func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
+	if AdtyTeamPriceBlocked(c) {
+		return types.NewErrorWithStatusCode(ErrAdtyTeamInvalid, types.ErrorCodeModelPriceError, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
 	if c != nil && relayInfo != nil {
 		AdtyFreezeRequestPriceSnapshot(c, relayInfo)
 	}

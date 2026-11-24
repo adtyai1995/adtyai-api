@@ -369,7 +369,7 @@ func CreditAdtySiteCustomerBalanceByOwner(siteID, ownerID, customerID int, amoun
 			"ledger_id":     entry.Id,
 			"reason":        reason,
 		}
-		if err := recordSiteAuditTx(tx, siteID, "customer.balance_credit", ownerID, beforeSnap, afterSnap, reason); err != nil {
+		if err := recordSiteCompatibilityAuditTx(tx, siteID, "customer.balance_credit", ownerID, beforeSnap, afterSnap, reason); err != nil {
 			return err
 		}
 		var owner model.User
@@ -508,7 +508,7 @@ func CreditAdtySiteTeamBalanceByOwner(siteID, ownerID int, teamID int64, amountU
 			"ref":          ref,
 			"reason":       reason,
 		}
-		if err := recordSiteAuditTx(tx, siteID, "team.balance_credit", ownerID, beforeSnap, afterSnap, reason); err != nil {
+		if err := recordSiteCompatibilityAuditTx(tx, siteID, "team.balance_credit", ownerID, beforeSnap, afterSnap, reason); err != nil {
 			return err
 		}
 		var owner model.User
@@ -723,7 +723,7 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 			"adjustment_id":        adj.Id,
 			"reason":               reason,
 		}
-		if err := recordSiteAuditTx(tx, siteID, "tier.principal_adjust", operatorID, beforeSnap, afterSnap, reason); err != nil {
+		if err := recordSiteCompatibilityAuditTx(tx, siteID, "tier.principal_adjust", operatorID, beforeSnap, afterSnap, reason); err != nil {
 			return err
 		}
 		var operator model.User

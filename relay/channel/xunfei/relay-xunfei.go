@@ -231,6 +231,11 @@ func xunfeiHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, appId s
 			},
 		}
 	}
+	if usage.TotalTokens == 0 && usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
+		if est := service.ResponseText2Usage(c, content, textRequest.Model, 0); est != nil {
+			usage = *est
+		}
+	}
 	xunfeiResponse.Payload.Choices.Text[0].Content = content
 	xunfeiResponse.Payload.Usage.Text = usage
 
@@ -336,20 +341,23 @@ func getXunfeiAuthUrl(c *gin.Context, apiKey string, apiSecret string, modelName
 	return domain, authUrl
 }
 
-func getAPIVersion(c *gin.Context, modelName string) string {
-	query := c.Request.URL.Query()
-	apiVersion := query.Get("api-version")
-	if apiVersion != "" {
-		return apiVersion
+func isAllowedXunfeiAPIVersion(v string) bool {
+	switch v {
+	case "v1.1", "v2.1", "v3.1", "v3.5", "v4.0":
+		return true
+	default:
+		return false
 	}
-	parts := strings.Split(modelName, "-")
-	if len(parts) == 2 {
-		apiVersion = parts[1]
-		return apiVersion
+}
 
+func getAPIVersion(c *gin.Context, modelName string) string {
+	// R6-012: Never trust client query `?api-version=` to override upstream domain/path.
+	parts := strings.Split(modelName, "-")
+	if len(parts) == 2 && isAllowedXunfeiAPIVersion(parts[1]) {
+		return parts[1]
 	}
-	apiVersion = c.GetString("api_version")
-	if apiVersion != "" {
+	apiVersion := strings.TrimSpace(c.GetString("api_version"))
+	if isAllowedXunfeiAPIVersion(apiVersion) {
 		return apiVersion
 	}
 	apiVersion = "v1.1"

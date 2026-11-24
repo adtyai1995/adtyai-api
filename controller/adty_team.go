@@ -154,15 +154,7 @@ func PostAdtyOwnerSiteTeamBalance(c *gin.Context) {
 		}
 		return
 	}
-	if !res.Replayed {
-		recordUserSecurityAudit(c, c.GetInt("id"), "adty.site.team_balance_credit", map[string]any{
-			"site_id":      site.Id,
-			"team_id":      id,
-			"amount_usd":   res.AmountUSD.String(),
-			"earnings_usd": res.EarningsUSD.String(),
-			"margin_usd":   res.MarginUSD.String(),
-		})
-	}
+	// R6-037: Official audit intent is already persisted atomically inside CreditAdtySiteTeamBalanceByOwner.
 	common.ApiSuccess(c, res)
 }
 
@@ -183,9 +175,14 @@ func PutAdtyMainTeamAgreementPrice(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveAdtyMainTeamAgreementPrice(id, body.Discount, c.GetInt("id")); err != nil {
+	eventID, err := service.SaveAdtyMainTeamAgreementPriceWithAudit(id, body.Discount, c.GetInt("id"))
+	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, gin.H{"updated": true, "discount": decimal.RequireFromString(strings.TrimSpace(body.Discount)).String()})
 }
@@ -267,10 +264,16 @@ func PostAdtyMainTeam(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	created, err := service.CreateAdtySiteTeamByRoot(c.GetInt("id"), body.SiteId, body.LeaderId, body.Name, body.Discount, c.GetHeader("Idempotency-Key"))
+	created, eventID, replayed, err := service.CreateAdtySiteTeamByRootWithAudit(c.GetInt("id"), body.SiteId, body.LeaderId, body.Name, body.Discount, c.GetHeader("Idempotency-Key"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, created)
 }
@@ -487,10 +490,14 @@ func PostAdtyMainTeamRegistration(c *gin.Context) {
 	if !ok {
 		return
 	}
-	issued, err := service.CreateAdtyMainTeamRegistration(c.GetInt("id"), ttl)
+	issued, eventID, err := service.CreateAdtyMainTeamRegistrationWithAudit(c.GetInt("id"), ttl)
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, issued)
 }
@@ -517,10 +524,14 @@ func PostAdtyMainTeamRegistrationRevoke(c *gin.Context) {
 	if !ok {
 		return
 	}
-	view, err := service.RevokeAdtyMainTeamRegistration(c.GetInt("id"), int64(id))
+	view, eventID, err := service.RevokeAdtyMainTeamRegistrationWithAudit(c.GetInt("id"), int64(id))
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, view)
 }

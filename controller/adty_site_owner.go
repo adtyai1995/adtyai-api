@@ -518,16 +518,7 @@ func PostAdtyOwnerCustomerBalance(c *gin.Context) {
 		}
 		return
 	}
-	if !res.Replayed {
-		recordUserSecurityAudit(c, c.GetInt("id"), "adty.site.customer_balance_credit", map[string]any{
-			"site_id":      site.Id,
-			"customer_id":  id,
-			"amount_usd":   res.AmountUSD.String(),
-			"earnings_usd": res.EarningsUSD.String(),
-			"margin_usd":   res.MarginUSD.String(),
-			"ledger_id":    res.LedgerID,
-		})
-	}
+	// R6-037: Official audit intent is already persisted atomically inside CreditAdtySiteCustomerBalanceByOwner.
 	common.ApiSuccess(c, res)
 }
 

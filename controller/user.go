@@ -1221,7 +1221,8 @@ func UpdateSelf(c *gin.Context) {
 				"committed":        true,
 				"relogin_required": true,
 				"code":             "CREDENTIAL_COMMITTED_RELOGIN_REQUIRED",
-				"message":          "Password updated; please sign in again",
+				"message":          "Password updated. Sign in again with your new password.",
+				"message_key":      "Password updated. Sign in again with your new password.",
 				"data":             data,
 			})
 			return

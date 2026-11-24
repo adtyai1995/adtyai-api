@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -811,6 +812,70 @@ func normalizeAdtyTodoKey(key string) string {
 	return strings.TrimSpace(key)
 }
 
+func truncateAdtyRunes(s string, maxRunes int) string {
+	s = strings.TrimSpace(s)
+	if maxRunes <= 0 || utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	return string([]rune(s)[:maxRunes])
+}
+
+func adtyTodoItemVisibleForUserOnSite(db *gorm.DB, userID int, site *model.AdtySite, item *AdtyTodoItem, pub *model.AdtyNotificationPublication) (bool, error) {
+	if db == nil || userID <= 0 || item == nil || item.UserId != userID {
+		return false, nil
+	}
+	hasPubTable := db.Migrator().HasTable(&model.AdtyNotificationPublication{})
+	if pub == nil && hasPubTable {
+		pub = lookupAdtyPublicationForTodoTx(db, item.Key, item.PublicationId)
+	}
+	if item.PublicationId > 0 || pub != nil {
+		if !hasPubTable {
+			return false, nil
+		}
+		if pub == nil || pub.Status != "published" {
+			return false, nil
+		}
+		q, err := adtyVisibleNotificationPublicationsWithDB(db, userID, site)
+		if err != nil {
+			return false, err
+		}
+		var visibleCount int64
+		if err := q.Where("id = ?", pub.Id).Count(&visibleCount).Error; err != nil {
+			return false, err
+		}
+		if visibleCount > 0 {
+			return true, nil
+		}
+		// Site owners managing their subsite from the main host can still see and
+		// transition active site-targeted severe todos while they remain owner.
+		if site == nil && pub.Audience == "site" && pub.TargetSiteId > 0 && db.Migrator().HasTable(&model.AdtySite{}) {
+			var ownedCount int64
+			if err := db.Model(&model.AdtySite{}).
+				Where("id = ? AND owner_user_id = ? AND status <> ?", pub.TargetSiteId, userID, model.AdtySiteStatusClosed).
+				Count(&ownedCount).Error; err != nil {
+				return false, err
+			}
+			return ownedCount > 0, nil
+		}
+		return false, nil
+	}
+	if item.Key != "" && db.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+		var notice AdtyChannelWatcherNotice
+		res := db.Select("id", "notify_type").Where("user_id = ? AND read_key = ?", userID, item.Key).Limit(1).Find(&notice)
+		if res.Error != nil {
+			return false, res.Error
+		}
+		if res.RowsAffected > 0 {
+			canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+			return adtyWatcherNoticePermitted(notice.NotifyType, canChannel, canEpay), nil
+		}
+	}
+	if site != nil && item.SiteId > 0 && item.SiteId != site.Id {
+		return false, nil
+	}
+	return true, nil
+}
+
 func lookupAdtyPublicationForTodoTx(tx *gorm.DB, key string, publicationID int) *model.AdtyNotificationPublication {
 	if tx == nil || !tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
 		return nil
@@ -887,9 +952,9 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 				SiteId:        siteID,
 				Key:           key,
 				PublicationId: publicationID,
-				Title:         strings.TrimSpace(title),
+				Title:         truncateAdtyRunes(title, 200),
 				Content:       strings.TrimSpace(content),
-				Business:      strings.TrimSpace(business),
+				Business:      truncateAdtyRunes(business, 200),
 				Severity:      "severe",
 				Status:        AdtyTodoStatusPending,
 				Revision:      1,
@@ -923,17 +988,17 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 			updates["publication_id"] = publicationID
 			item.PublicationId = publicationID
 		}
-		if strings.TrimSpace(title) != "" {
-			updates["title"] = strings.TrimSpace(title)
-			item.Title = strings.TrimSpace(title)
+		if trimmedTitle := truncateAdtyRunes(title, 200); trimmedTitle != "" {
+			updates["title"] = trimmedTitle
+			item.Title = trimmedTitle
 		}
 		if strings.TrimSpace(content) != "" {
 			updates["content"] = strings.TrimSpace(content)
 			item.Content = strings.TrimSpace(content)
 		}
-		if strings.TrimSpace(business) != "" {
-			updates["business"] = strings.TrimSpace(business)
-			item.Business = strings.TrimSpace(business)
+		if trimmedBusiness := truncateAdtyRunes(business, 200); trimmedBusiness != "" {
+			updates["business"] = trimmedBusiness
+			item.Business = trimmedBusiness
 		}
 		if err := tx.Model(&item).Updates(updates).Error; err != nil {
 			return err
@@ -951,7 +1016,7 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 	key = normalizeAdtyTodoKey(key)
 	targetStatus = strings.TrimSpace(targetStatus)
 	note = strings.TrimSpace(note)
-	if userID <= 0 || key == "" {
+	if userID <= 0 || key == "" || utf8.RuneCountInString(note) > 500 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
 	if targetStatus != AdtyTodoStatusPending && targetStatus != AdtyTodoStatusInProgress && targetStatus != AdtyTodoStatusCompleted {
@@ -959,6 +1024,10 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 	}
 	if err := ensureAdtyTodoTables(model.DB); err != nil {
 		return nil, err
+	}
+	var reqSite *model.AdtySite
+	if c != nil {
+		reqSite = AdtySiteForRequest(c)
 	}
 	now := time.Now().Unix()
 	var result *AdtyTodoItem
@@ -988,6 +1057,14 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 			return gorm.ErrRecordNotFound
 		} else if pub != nil && item.PublicationId == 0 {
 			item.PublicationId = pub.Id
+		}
+		// R6-004: Enforce live visibility (withdrawn/retargeted publication, revoked watcher RBAC, host isolation).
+		visible, err := adtyTodoItemVisibleForUserOnSite(tx, userID, reqSite, &item, pub)
+		if err != nil {
+			return err
+		}
+		if !visible {
+			return gorm.ErrRecordNotFound
 		}
 
 		prevStatus = item.Status
@@ -1234,7 +1311,7 @@ func ListAdtyTodosForUser(userID int, includeCompleted bool) ([]AdtyTodoItem, er
 }
 
 // ListAdtyTodosForUserOnSite returns severe todo items for userID filtered against
-// withdrawn announcements (R5-058) and revoked/subsite watcher permissions (R5-025).
+// withdrawn/retargeted announcements (R5-058, R6-004) and revoked/subsite watcher permissions (R5-025).
 func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeCompleted bool) ([]AdtyTodoItem, error) {
 	if userID <= 0 {
 		return nil, common.NewMessage("Invalid parameters")
@@ -1253,56 +1330,16 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 	if len(items) == 0 {
 		return items, nil
 	}
-	pubIDs := make([]int, 0, len(items))
-	watcherKeys := make([]string, 0, len(items))
-	for _, item := range items {
-		if item.PublicationId > 0 {
-			pubIDs = append(pubIDs, item.PublicationId)
-		} else if item.Key != "" {
-			watcherKeys = append(watcherKeys, item.Key)
-		}
-	}
-	activePubs := map[int]bool{}
-	if len(pubIDs) > 0 && model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
-		var publishedIDs []int
-		if err := model.DB.Model(&model.AdtyNotificationPublication{}).
-			Where("id IN ? AND status = ?", pubIDs, "published").
-			Pluck("id", &publishedIDs).Error; err != nil {
-			return nil, err
-		}
-		for _, pid := range publishedIDs {
-			activePubs[pid] = true
-		}
-	}
-	watcherTypes := map[string]string{}
-	if len(watcherKeys) > 0 && model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
-		var notices []struct {
-			ReadKey    string
-			NotifyType string
-		}
-		if err := model.DB.Model(&AdtyChannelWatcherNotice{}).
-			Select("read_key", "notify_type").
-			Where("user_id = ? AND read_key IN ?", userID, watcherKeys).
-			Find(&notices).Error; err != nil {
-			return nil, err
-		}
-		for _, n := range notices {
-			watcherTypes[n.ReadKey] = n.NotifyType
-		}
-	}
-	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
 	filtered := make([]AdtyTodoItem, 0, len(items))
-	for _, item := range items {
-		if item.PublicationId > 0 {
-			if model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{}) && !activePubs[item.PublicationId] {
-				continue
-			}
-		} else if notifyType, isWatcher := watcherTypes[item.Key]; isWatcher {
-			if !adtyWatcherNoticePermitted(notifyType, canChannel, canEpay) {
-				continue
-			}
+	for i := range items {
+		visible, err := adtyTodoItemVisibleForUserOnSite(model.DB, userID, site, &items[i], nil)
+		if err != nil {
+			return nil, err
 		}
-		filtered = append(filtered, item)
+		if !visible {
+			continue
+		}
+		filtered = append(filtered, items[i])
 	}
 	return filtered, nil
 }
@@ -1860,24 +1897,30 @@ func syncLegacyAdtyNoticeTemplatesTable(tx *gorm.DB, tpl AdtyBilingualNoticeTemp
 
 // SaveAdtyNoticeTemplate allows Root to create or update a fixed bilingual system notice template.
 func SaveAdtyNoticeTemplate(actorID, actorRole int, key, titleZh, contentZh, titleEn, contentEn string) (*AdtyBilingualNoticeTemplate, error) {
+	saved, _, err := SaveAdtyNoticeTemplateWithAudit(actorID, actorRole, key, titleZh, contentZh, titleEn, contentEn)
+	return saved, err
+}
+
+func SaveAdtyNoticeTemplateWithAudit(actorID, actorRole int, key, titleZh, contentZh, titleEn, contentEn string) (*AdtyBilingualNoticeTemplate, string, error) {
 	if actorID <= 0 || actorRole != common.RoleRootUser {
-		return nil, common.NewMessage("No permission to perform this action")
+		return nil, "", common.NewMessage("No permission to perform this action")
 	}
 	key = strings.TrimSpace(key)
 	titleZh, contentZh = strings.TrimSpace(titleZh), strings.TrimSpace(contentZh)
 	titleEn, contentEn = strings.TrimSpace(titleEn), strings.TrimSpace(contentEn)
 	if key == "" || len(key) > 128 || titleZh == "" || contentZh == "" || titleEn == "" || contentEn == "" {
-		return nil, common.NewMessage("Invalid parameters")
+		return nil, "", common.NewMessage("Invalid parameters")
 	}
 	if err := ValidateAdtyNoticeTemplatePlaceholders(titleZh, contentZh, titleEn, contentEn); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := ensureAdtyNoticeTemplateTable(model.DB); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	now := time.Now().Unix()
 	var saved *AdtyBilingualNoticeTemplate
 	var beforeSnap any
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var existing AdtyBilingualNoticeTemplate
 		found := tx.Where("key = ?", key).Limit(1).Find(&existing)
@@ -1905,49 +1948,34 @@ func SaveAdtyNoticeTemplate(actorID, actorRole int, key, titleZh, contentZh, tit
 			}
 			syncLegacyAdtyNoticeTemplatesTable(tx, row)
 			saved = &row
-			return nil
+		} else {
+			beforeSnap = existing
+			existing.TitleZh = titleZh
+			existing.ContentZh = contentZh
+			existing.TitleEn = titleEn
+			existing.ContentEn = contentEn
+			existing.Revision++
+			existing.UpdatedBy = actorID
+			existing.UpdatedAt = now
+			if err := tx.Save(&existing).Error; err != nil {
+				return err
+			}
+			syncLegacyAdtyNoticeTemplatesTable(tx, existing)
+			saved = &existing
 		}
-		beforeSnap = existing
-		existing.TitleZh = titleZh
-		existing.ContentZh = contentZh
-		existing.TitleEn = titleEn
-		existing.ContentEn = contentEn
-		existing.Revision++
-		existing.UpdatedBy = actorID
-		existing.UpdatedAt = now
-		if err := tx.Save(&existing).Error; err != nil {
-			return err
-		}
-		syncLegacyAdtyNoticeTemplatesTable(tx, existing)
-		saved = &existing
-		return nil
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, actorID, 0, "notice_template", saved.Key, "adty.notice_template.save", "", "", beforeSnap, saved, model.AuditResultSuccess)
+		return auditErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if saved != nil {
-		var username string
-		var user model.User
-		if model.DB.Select("id", "username").Where("id = ?", actorID).Limit(1).Find(&user).RowsAffected > 0 {
-			username = user.Username
-		}
-		_ = model.WriteOfficialAuditLog(nil, model.OfficialAuditWrite{
-			UserId:     actorID,
-			Username:   username,
-			ActorRole:  actorRole,
-			SiteID:     model.OfficialAuditSiteIDPointer(0),
-			ObjectType: "notice_template",
-			ObjectID:   saved.Key,
-			Action:     "adty.notice_template.save",
-			Category:   model.AuditCategoryOperation,
-			Content:    "adty.notice_template.save",
-			Before:     beforeSnap,
-			After:      saved,
-			Result:     model.AuditResultSuccess,
-			Success:    true,
-		})
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	return saved, nil
+	return saved, eventID, nil
 }
 
 // GetAdtyNoticeTemplate returns a customized or default bilingual system notice template by key.

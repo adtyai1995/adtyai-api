@@ -84,17 +84,34 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
   const savedTradeTypes = props.defaultValues.tradeTypes
   const savedMinutes = props.defaultValues.orderMinutes
   useEffect(() => {
+    const prev = savedRef.current
     savedRef.current = {
-      ...savedRef.current,
       enabled: savedEnabled,
       baseUrl: savedBaseUrl,
       tradeTypes: savedTradeTypes,
       orderMinutes: savedMinutes,
     }
-    setEnabled(savedEnabled)
-    setBaseUrl(savedBaseUrl)
-    setChains(initialChains)
-    setMinutes(String(savedMinutes))
+    if (savedEnabled !== prev.enabled) {
+      setEnabled((current) =>
+        current === prev.enabled ? savedEnabled : current
+      )
+    }
+    if (savedBaseUrl !== prev.baseUrl) {
+      setBaseUrl((current) =>
+        current === prev.baseUrl ? savedBaseUrl : current
+      )
+    }
+    if (savedTradeTypes !== prev.tradeTypes) {
+      const prevSerialized = JSON.stringify(parseTradeTypes(prev.tradeTypes))
+      setChains((current) =>
+        JSON.stringify(current) === prevSerialized ? initialChains : current
+      )
+    }
+    if (savedMinutes !== prev.orderMinutes) {
+      setMinutes((current) =>
+        current === String(prev.orderMinutes) ? String(savedMinutes) : current
+      )
+    }
   }, [savedEnabled, savedBaseUrl, savedTradeTypes, savedMinutes, initialChains])
 
   const minutesValue = Number.parseInt(minutes, 10)
@@ -129,6 +146,13 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
         value: minutesValue,
       })
     }
+    updates.sort((a, b) => {
+      const order = (key: string) => {
+        if (key !== 'adty_bepusdt.enabled') return 1
+        return enabled ? 2 : 0
+      }
+      return order(a.key) - order(b.key)
+    })
     for (const update of updates) {
       await updateOption.mutateAsync(update)
       if (update.key === 'adty_bepusdt.enabled') {

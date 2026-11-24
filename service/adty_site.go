@@ -263,45 +263,30 @@ func validateSitePreset(costFactor *decimal.Decimal) error {
 	return nil
 }
 
-func recordSiteAuditTx(tx *gorm.DB, siteId int, action string, operatorId int, oldValue, newValue any, reason string) error {
+func recordSiteCompatibilityAuditTx(tx *gorm.DB, siteId int, action string, operatorId int, oldValue, newValue any, reason string) error {
 	reason = truncateText(reason, 1000)
-	if err := tx.Create(&model.AdtySiteAudit{
+	return tx.Create(&model.AdtySiteAudit{
 		SiteId: siteId, Action: action, OperatorId: operatorId,
 		OldValue: common.GetJsonString(oldValue), NewValue: common.GetJsonString(newValue), Reason: reason,
-	}).Error; err != nil {
-		return err
-	}
-	username, role := "", 0
-	if operatorId > 0 {
-		var users []model.User
-		if err := tx.Select("id", "username", "role").Where("id = ?", operatorId).Limit(1).Find(&users).Error; err != nil {
-			return err
-		}
-		if len(users) > 0 {
-			username, role = users[0].Username, users[0].Role
-		}
+	}).Error
+}
+
+func recordSiteAuditWithIntentTx(tx *gorm.DB, siteId int, action string, operatorId int, oldValue, newValue any, reason string) (*model.AuditLog, error) {
+	reason = truncateText(reason, 1000)
+	if err := recordSiteCompatibilityAuditTx(tx, siteId, action, operatorId, oldValue, newValue, reason); err != nil {
+		return nil, err
 	}
 	officialAction := action
 	if !strings.Contains(action, ".") {
 		officialAction = "adty.site." + action
 	}
-	siteID := siteId
-	if err := model.WriteOfficialAuditLog(nil, model.OfficialAuditWrite{
-		UserId: operatorId, Username: username, ActorRole: role,
-		SiteID: &siteID, ObjectType: "site", ObjectID: strconv.Itoa(siteId),
-		Action: officialAction, Category: model.AuditCategoryOperation, Content: officialAction,
-		Before: oldValue, After: newValue, Reason: reason, Result: model.AuditResultSuccess, Success: true,
-	}); err != nil {
-		// Compatibility AdtySiteAudit is already in this transaction. A log-store
-		// failure must not roll back the business change, but it must not be
-		// silent either: the official row is the only copy of the audit trail
-		// that leaves the business transaction, so losing it has to be
-		// observable and locatable afterwards.
-		common.SysError(common.LogText(
-			"official site audit write failed: site_id=%d operator_id=%d action=%s object_id=%s error=%s",
-			siteId, operatorId, officialAction, strconv.Itoa(siteId), err.Error()))
-	}
-	return nil
+	// R6-037: Persist official audit atomically via AuditIntent inside tx instead of cross-pool LOG_DB write.
+	return appendAdtyOfficialAuditTx(tx, operatorId, siteId, "site", strconv.Itoa(siteId), officialAction, reason, "", oldValue, newValue, model.AuditResultSuccess)
+}
+
+func recordSiteAuditTx(tx *gorm.DB, siteId int, action string, operatorId int, oldValue, newValue any, reason string) error {
+	_, err := recordSiteAuditWithIntentTx(tx, siteId, action, operatorId, oldValue, newValue, reason)
+	return err
 }
 
 // OpenAdtySite is the official Root opening path (AdtySiteOpenedByAdmin).
@@ -309,16 +294,21 @@ func recordSiteAuditTx(tx *gorm.DB, siteId int, action string, operatorId int, o
 // called directly (A.10-01 / SITE-002). Opening as active still writes
 // ReferralAffiliate.SiteOwnerSince in the same transaction.
 func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset) (*model.AdtySite, error) {
+	site, _, _, err := OpenAdtySiteWithAudit(userId, subdomain, openedBy, preset)
+	return site, err
+}
+
+func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySitePreset) (*model.AdtySite, string, bool, error) {
 	if openedBy != model.AdtySiteOpenedByAdmin || preset.InviteCodeId > 0 {
-		return nil, ErrAdtySiteSelfServeRetired
+		return nil, "", false, ErrAdtySiteSelfServeRetired
 	}
 	cfg := resellerSetting()
 	if !cfg.Ready() {
-		return nil, ErrAdtySiteDisabled
+		return nil, "", false, ErrAdtySiteDisabled
 	}
 	idemKey := strings.TrimSpace(preset.IdempotencyKey)
 	if len(idemKey) > 64 {
-		return nil, common.NewMessage("Idempotency-Key is too long (maximum 64 characters)")
+		return nil, "", false, common.NewMessage("Idempotency-Key is too long (maximum 64 characters)")
 	}
 	tierCode := strings.TrimSpace(preset.TierCode)
 	tierMode := strings.TrimSpace(preset.TierMode)
@@ -327,14 +317,14 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 			tierMode = AdtySiteTierModeAuto
 		}
 		if tierMode != AdtySiteTierModeAuto && tierMode != AdtySiteTierModeManual {
-			return nil, ErrAdtySiteTierMode
+			return nil, "", false, ErrAdtySiteTierMode
 		}
 	} else if tierMode != "" && tierMode != AdtySiteTierModeAuto && tierMode != AdtySiteTierModeManual {
-		return nil, ErrAdtySiteTierMode
+		return nil, "", false, ErrAdtySiteTierMode
 	}
 	rawSubdomain := strings.ToLower(strings.TrimSpace(subdomain))
 	if err := validateSitePreset(preset.CostFactor); err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 	root := strings.ToLower(strings.TrimSpace(preset.ExplicitRoot))
 	if root == "" {
@@ -343,10 +333,10 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 			root = cfg.AliyunDomain
 		}
 	} else if !slices.Contains(cfg.RootDomains, root) && !(cfg.DomainAutomationEnabled && root == cfg.AliyunDomain) {
-		return nil, common.NewMessage("Invalid root domain {{domain}}", map[string]any{"domain": root})
+		return nil, "", false, common.NewMessage("Invalid root domain {{domain}}", map[string]any{"domain": root})
 	}
 	if cfg.DomainAutomationEnabled && root != cfg.AliyunDomain {
-		return nil, common.NewMessage("Site root is outside the managed DNS domain")
+		return nil, "", false, common.NewMessage("Site root is outside the managed DNS domain")
 	}
 	costStr := ""
 	if preset.CostFactor != nil {
@@ -366,7 +356,7 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 		for range 20 {
 			n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 48))
 			if err != nil {
-				return nil, err
+				return nil, "", false, err
 			}
 			candidate := "s" + n.Text(36)
 			if _, err := AdtyNormalizeSubdomain(candidate); err != nil {
@@ -374,7 +364,7 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 			}
 			var count int64
 			if err := model.DB.Model(&model.AdtySite{}).Where("subdomain = ?", candidate).Count(&count).Error; err != nil {
-				return nil, err
+				return nil, "", false, err
 			}
 			if count == 0 {
 				label = candidate
@@ -383,13 +373,13 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 			}
 		}
 		if !allocated {
-			return nil, ErrAdtySiteSubdomainUsed
+			return nil, "", false, ErrAdtySiteSubdomainUsed
 		}
 	}
 	var err error
 	label, err = AdtyNormalizeSubdomain(label)
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 	status := preset.InitialStatus
 	if status == "" {
@@ -415,6 +405,7 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 		txOptions = append(txOptions, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	}
 	replayed := false
+	var auditEvent *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		if openKeyDigest != nil {
 			var existing model.AdtySite
@@ -557,19 +548,26 @@ func OpenAdtySite(userId int, subdomain, openedBy string, preset AdtySitePreset)
 				return err
 			}
 		}
-		return recordSiteAuditTx(tx, site.Id, "open", preset.OperatorId, nil, map[string]any{
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, "open", preset.OperatorId, nil, map[string]any{
 			"opened_by": openedBy, "status": status, "subdomain": label, "root_domain": root,
 			"cost_factor": site.CostFactor, "tier_code": site.TierCode, "tier_mode": site.TierMode,
 			"invite_code_id": preset.InviteCodeId,
 		}, "")
+		return auditErr
 	}, txOptions...)
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	if !replayed {
 		InvalidateAdtySiteCache()
 	}
-	return site, nil
+	return site, eventID, replayed, nil
 }
 
 // markAffiliateSiteOwnerTx 写 SiteOwnerSince（只在还是 0 时写，关站后重开不覆盖第一次的时间）。
@@ -624,16 +622,22 @@ func ApplyAdtySite(userId int, subdomain, contactInfo, agreeVersion, inviteCode 
 }
 
 // ReviewAdtySiteApplication 通过或驳回开站申请。通过时写 SiteOwnerSince，可以同时设单站 d 和 k 上限。
-func ReviewAdtySiteApplication(siteId, adminId int, approve bool, costFactor, _ *decimal.Decimal, note string) (*model.AdtySite, error) {
+func ReviewAdtySiteApplication(siteId, adminId int, approve bool, costFactor, maxMarkup *decimal.Decimal, note string) (*model.AdtySite, error) {
+	site, _, err := ReviewAdtySiteApplicationWithAudit(siteId, adminId, approve, costFactor, maxMarkup, note)
+	return site, err
+}
+
+func ReviewAdtySiteApplicationWithAudit(siteId, adminId int, approve bool, costFactor, _ *decimal.Decimal, note string) (*model.AdtySite, string, error) {
 	if approve && !resellerSetting().Ready() {
-		return nil, ErrAdtySiteDisabled
+		return nil, "", ErrAdtySiteDisabled
 	}
 	if approve {
 		if err := validateSitePreset(costFactor); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	var site model.AdtySite
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -671,13 +675,21 @@ func ReviewAdtySiteApplication(siteId, adminId int, approve bool, costFactor, _ 
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(updates).Error; err != nil {
 			return err
 		}
-		return recordSiteAuditTx(tx, site.Id, action, adminId, map[string]any{"status": site.Status}, updates, note)
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, action, adminId, map[string]any{"status": site.Status}, updates, note)
+		return auditErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	InvalidateAdtySiteCache()
-	return GetAdtySite(siteId)
+	updated, err := GetAdtySite(siteId)
+	return updated, eventID, err
 }
 
 // GetAdtySite 按 id 取站点。
@@ -706,22 +718,28 @@ type AdtySiteAdjust struct {
 
 // AdjustAdtySite 改单站 d、k 上限、可见范围。改 d 的通知站长由 11.9 的通知接上（AdtyOnSiteCostFactorChanged）。
 func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite, error) {
+	site, _, err := AdjustAdtySiteWithAudit(siteId, adminId, adjust)
+	return site, err
+}
+
+func AdjustAdtySiteWithAudit(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite, string, error) {
 	if err := validateSitePreset(adjust.CostFactor); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if adjust.Visibility != nil && strings.TrimSpace(*adjust.Visibility) != "" {
 		values := map[string]string{}
 		if err := common.UnmarshalJsonStr(*adjust.Visibility, &values); err != nil {
-			return nil, common.NewMessage("Invalid parameters")
+			return nil, "", common.NewMessage("Invalid parameters")
 		}
 		probe := adty_setting.ResellerSetting{Visibility: values, UnknownHostMode: adty_setting.ResellerUnknownHostMain, FingerprintWindowDays: 1}
 		if err := adty_setting.ValidateResellerSetting(&probe, true); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	var site model.AdtySite
 	var costChanged bool
 	var pendingScheduled bool
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -780,10 +798,17 @@ func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite
 			site.PendingCostFactorAt = pendingAt
 			pendingScheduled = true
 		}
-		return recordSiteAuditTx(tx, site.Id, "adjust", adminId, old, updates, adjust.Reason)
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, "adjust", adminId, old, updates, adjust.Reason)
+		return auditErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	InvalidateAdtySiteCache()
 	updated, err := GetAdtySite(siteId)
@@ -793,7 +818,7 @@ func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite
 	if err == nil && pendingScheduled && updated != nil && updated.PendingCostFactor != nil && updated.PendingCostFactorAt > 0 {
 		adtyNotifySiteCostFactorPending(updated)
 	}
-	return updated, err
+	return updated, eventID, err
 }
 
 // ApplyDueAdtySiteCostFactors writes pending higher cost factors whose time has
@@ -879,19 +904,26 @@ func ListLeftoverPausedAdtySites() ([]model.AdtySite, error) {
 // existing close/handover flow (ScheduleAdtySiteClose, customers inherited by
 // the main site). Other statuses are rejected. Pause/resume write paths stay retired.
 func RepairLeftoverPausedAdtySite(siteId, adminId int, outcome string, plan AdtySiteClosePlan) (*model.AdtySite, error) {
+	site, _, _, err := RepairLeftoverPausedAdtySiteWithAudit(siteId, adminId, outcome, plan)
+	return site, err
+}
+
+func RepairLeftoverPausedAdtySiteWithAudit(siteId, adminId int, outcome string, plan AdtySiteClosePlan) (*model.AdtySite, string, bool, error) {
 	switch strings.TrimSpace(outcome) {
 	case AdtyPausedRepairOutcomeActive:
-		return repairLeftoverPausedAdtySiteToActive(siteId, adminId, plan.Reason)
+		site, eventID, err := repairLeftoverPausedAdtySiteToActiveWithAudit(siteId, adminId, plan.Reason)
+		return site, eventID, false, err
 	case AdtyPausedRepairOutcomeClose:
 		plan.TransferTo = 0
 		plan.ClawBack = false
-		return scheduleAdtySiteClose(siteId, adminId, plan, model.AdtySiteStatusPaused)
+		return scheduleAdtySiteCloseWithAudit(siteId, adminId, plan, model.AdtySiteStatusPaused)
 	default:
-		return nil, ErrAdtySiteStatus
+		return nil, "", false, ErrAdtySiteStatus
 	}
 }
 
-func repairLeftoverPausedAdtySiteToActive(siteId, adminId int, reason string) (*model.AdtySite, error) {
+func repairLeftoverPausedAdtySiteToActiveWithAudit(siteId, adminId int, reason string) (*model.AdtySite, string, error) {
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
@@ -907,16 +939,24 @@ func repairLeftoverPausedAdtySiteToActive(siteId, adminId int, reason string) (*
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(updates).Error; err != nil {
 			return err
 		}
-		return recordSiteAuditTx(tx, site.Id, "paused_repair", adminId,
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, "paused_repair", adminId,
 			map[string]any{"status": site.Status},
 			map[string]any{"status": model.AdtySiteStatusActive, "outcome": AdtyPausedRepairOutcomeActive},
 			reason)
+		return auditErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	InvalidateAdtySiteCache()
-	return GetAdtySite(siteId)
+	site, err := GetAdtySite(siteId)
+	return site, eventID, err
 }
 
 // RequestAdtySiteClose 是站长申请关站：只记下申请时间。关闭仍由 Root 在主站后台确认，客户一律由主站继承。
@@ -961,15 +1001,21 @@ type AdtySiteClosePlan struct {
 // ScheduleAdtySiteClose 把站点改成 closing，close_transfer_to 只记 0（由主站继承），
 // close_notice_days 天后由主节点执行；Immediate 时立即执行。站点 pending（还没开）时直接关闭，没有客户。
 func ScheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan) (*model.AdtySite, error) {
-	return scheduleAdtySiteClose(siteId, adminId, plan, "")
+	site, _, _, err := scheduleAdtySiteCloseWithAudit(siteId, adminId, plan, "")
+	return site, err
 }
 
-func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, requiredStatus string) (*model.AdtySite, error) {
+func ScheduleAdtySiteCloseWithAudit(siteId, adminId int, plan AdtySiteClosePlan) (*model.AdtySite, string, bool, error) {
+	return scheduleAdtySiteCloseWithAudit(siteId, adminId, plan, "")
+}
+
+func scheduleAdtySiteCloseWithAudit(siteId, adminId int, plan AdtySiteClosePlan, requiredStatus string) (*model.AdtySite, string, bool, error) {
 	now := time.Now().Unix()
 	immediate := plan.Immediate
 	wasPending := false
 	replay := false
 	var receipt model.AdtySiteCloseMailBatch
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
@@ -1028,7 +1074,7 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 			return err
 		}
 		if requiredStatus == model.AdtySiteStatusPaused {
-			if err := recordSiteAuditTx(tx, site.Id, "paused_repair", adminId,
+			if err := recordSiteCompatibilityAuditTx(tx, site.Id, "paused_repair", adminId,
 				map[string]any{"status": site.Status},
 				map[string]any{
 					"status": model.AdtySiteStatusClosing, "outcome": AdtyPausedRepairOutcomeClose,
@@ -1057,12 +1103,22 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 		if plan.ExecuteAt > 0 {
 			action = "close_reschedule"
 		}
-		return recordSiteAuditTx(tx, site.Id, action, adminId, map[string]any{"status": site.Status, "close_execute_at": site.CloseExecuteAt}, updates, plan.Reason)
+		if requiredStatus == model.AdtySiteStatusPaused {
+			action = "paused_repair"
+		}
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, action, adminId, map[string]any{"status": site.Status, "close_execute_at": site.CloseExecuteAt}, updates, plan.Reason)
+		return auditErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
-	result := func() (*model.AdtySite, error) {
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
+	result := func() (*model.AdtySite, string, bool, error) {
 		site, err := GetAdtySite(siteId)
 		if err == nil {
 			site.CloseMailBatchId = receipt.Id
@@ -1070,7 +1126,7 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 				site.CloseExecuteAt = receipt.ExecuteAt
 			}
 		}
-		return site, err
+		return site, eventID, replay, err
 	}
 	if replay {
 		return result()
@@ -1083,7 +1139,7 @@ func scheduleAdtySiteClose(siteId, adminId int, plan AdtySiteClosePlan, required
 	}
 	if immediate {
 		if err := ExecuteAdtySiteClose(siteId, now); err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
 	}
 	return result()
@@ -1320,7 +1376,13 @@ func startAdtySiteCloseTask() {
 // ClearAdtySiteNotice 是管理员一键下线分站公告（分站·调整，任务 11.3、11.9）：清空 Brand.notice，其余品牌字段不动，写审计。
 // 返回下线前的公告（审计里也有）。没有公告时什么都不改。
 func ClearAdtySiteNotice(siteId, adminId int, reason string) (string, error) {
+	old, _, err := ClearAdtySiteNoticeWithAudit(siteId, adminId, reason)
+	return old, err
+}
+
+func ClearAdtySiteNoticeWithAudit(siteId, adminId int, reason string) (string, string, error) {
 	var old string
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
@@ -1347,11 +1409,18 @@ func ClearAdtySiteNotice(siteId, adminId int, reason string) (string, error) {
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Update("brand", string(encoded)).Error; err != nil {
 			return err
 		}
-		return recordSiteAuditTx(tx, site.Id, "notice_takedown", adminId, map[string]any{"notice": old}, map[string]any{"notice": ""}, reason)
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, "notice_takedown", adminId, map[string]any{"notice": old}, map[string]any{"notice": ""}, reason)
+		return auditErr
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	InvalidateAdtySiteCache()
-	return old, nil
+	return old, eventID, nil
 }

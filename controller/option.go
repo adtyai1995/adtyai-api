@@ -56,6 +56,10 @@ func readAuthoritativeEpayTimeouts() (map[string]string, error) {
 
 func isSensitiveOptionKey(k string) bool {
 	trimmed := strings.TrimSpace(k)
+	// TurnstileSiteKey is a public client key served unauthenticated by /api/status.
+	if trimmed == "TurnstileSiteKey" {
+		return false
+	}
 	lower := strings.ToLower(trimmed)
 	if strings.HasSuffix(lower, "aliyun_access_key_id") {
 		return true
@@ -245,7 +249,7 @@ func GetOptions(c *gin.Context) {
 	optionValues := make(map[string]string)
 	common.OptionMapRWMutex.Lock()
 	for k, v := range common.OptionMap {
-		if strings.HasPrefix(k, "model_deployment.") || k == "theme.frontend" || k == "billing_setting.billing_mode" || k == "billing_setting.billing_expr" || k == "ResendKeyConfigured" || isRetiredOptionKey(k) {
+		if strings.HasPrefix(k, "model_deployment.") || k == "theme.frontend" || k == "billing_setting.billing_mode" || k == "billing_setting.billing_expr" || k == "ResendKeyConfigured" || k == "TurnstileSecretConfigured" || isRetiredOptionKey(k) {
 			continue
 		}
 		value := common.Interface2String(v)
@@ -262,6 +266,8 @@ func GetOptions(c *gin.Context) {
 	}
 	options = append(options, &model.Option{
 		Key: "ResendKeyConfigured", Value: strconv.FormatBool(strings.TrimSpace(common.OptionMap["ResendApiKey"]) != ""),
+	}, &model.Option{
+		Key: "TurnstileSecretConfigured", Value: strconv.FormatBool(strings.TrimSpace(common.OptionMap["TurnstileSecretKey"]) != ""),
 	})
 	common.OptionMapRWMutex.Unlock()
 	// Display the same effective expressions used by pricing and settlement,
@@ -317,6 +323,8 @@ func UpdatePasskeyDomains(c *gin.Context) {
 	}
 	if !request.Preview {
 		recordPasskeyDomainAudit(c, change, request.RemovalConfirmation != "", nil)
+	} else {
+		markIdempotentReplayNoAudit(c)
 	}
 	common.ApiSuccess(c, change)
 }
@@ -409,16 +417,9 @@ func UpdateOption(c *gin.Context) {
 		return
 	}
 	switch option.Key {
-	case "EmailDomainRestrictionEnabled":
-		if option.Value == "true" && len(common.EmailDomainWhitelist) == 0 {
-			common.ApiErrorT(c, "Cannot enable the email domain restriction. Enter the allowed email domains first.")
-			return
-		}
-	case "TurnstileCheckEnabled":
-		if option.Value == "true" && common.TurnstileSiteKey == "" {
-			common.ApiErrorT(c, "Cannot enable Turnstile verification. Enter the Turnstile settings first.")
-			return
-		}
+	case "EmailDomainRestrictionEnabled", "EmailDomainWhitelist",
+		"TurnstileCheckEnabled", "TurnstileSiteKey", "TurnstileSecretKey":
+		// Cross-key validation runs below under optionUpdateCrossKeyMu.
 	case "theme.frontend":
 		if option.Value != "default" {
 			common.ApiErrorT(c, "The Classic frontend has been removed. The theme can only be set to default")
@@ -634,7 +635,43 @@ func UpdateOption(c *gin.Context) {
 	} else {
 		optionUpdateCrossKeyMu.Lock()
 		defer optionUpdateCrossKeyMu.Unlock()
-		if option.Key == "adty_site_setting.api_base_url" {
+		switch option.Key {
+		case "EmailDomainRestrictionEnabled":
+			common.OptionMapRWMutex.RLock()
+			hasWhitelist := len(common.EmailDomainWhitelist) > 0
+			common.OptionMapRWMutex.RUnlock()
+			if valueStr == "true" && !hasWhitelist {
+				common.ApiErrorT(c, "Cannot enable the email domain restriction. Enter the allowed email domains first.")
+				return
+			}
+		case "EmailDomainWhitelist":
+			parsed := model.ParseEmailDomainWhitelist(valueStr)
+			valueStr = strings.Join(parsed, ",")
+			common.OptionMapRWMutex.RLock()
+			restrictionEnabled := common.EmailDomainRestrictionEnabled
+			common.OptionMapRWMutex.RUnlock()
+			if restrictionEnabled && len(parsed) == 0 {
+				common.ApiErrorT(c, "Cannot clear the email domain whitelist while email domain restriction is enabled.")
+				return
+			}
+		case "TurnstileCheckEnabled":
+			common.OptionMapRWMutex.RLock()
+			hasSiteKey := strings.TrimSpace(common.TurnstileSiteKey) != ""
+			hasSecretKey := strings.TrimSpace(common.TurnstileSecretKey) != ""
+			common.OptionMapRWMutex.RUnlock()
+			if valueStr == "true" && (!hasSiteKey || !hasSecretKey) {
+				common.ApiErrorT(c, "Cannot enable Turnstile verification. Enter the Turnstile settings first.")
+				return
+			}
+		case "TurnstileSiteKey", "TurnstileSecretKey":
+			common.OptionMapRWMutex.RLock()
+			turnstileEnabled := common.TurnstileCheckEnabled
+			common.OptionMapRWMutex.RUnlock()
+			if turnstileEnabled && strings.TrimSpace(valueStr) == "" {
+				common.ApiErrorT(c, "Cannot clear Turnstile settings while Turnstile verification is enabled.")
+				return
+			}
+		case "adty_site_setting.api_base_url":
 			if err = service.ValidateMainSiteDomainSeparation(system_setting.ServerAddress, valueStr); err != nil {
 				common.ApiError(c, err)
 				return

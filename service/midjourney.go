@@ -148,6 +148,7 @@ func reserveMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	if len(contexts) > 0 && contexts[0] != nil {
 		contexts[0].Set(usageBillingContextKey, row)
 	}
+	activeBillingReservations.Store(task.BillingOperationKey, struct{}{})
 	task.BillingTokenQuota = row.TokenReservedQuota
 	return nil
 }
@@ -158,6 +159,7 @@ func ReleaseMidjourneyTaskBilling(task *model.Midjourney) {
 		return
 	}
 	key := task.BillingOperationKey
+	activeBillingReservations.Delete(key)
 	op, err := model.GetBillingOperation(key)
 	if err != nil || op == nil || op.State != model.BillingReserved {
 		return
@@ -171,6 +173,30 @@ func ReleaseMidjourneyTaskBilling(task *model.Midjourney) {
 	}
 	task.BillingChargePending = false
 	task.BillingTokenQuota = 0
+}
+
+// SettleAmbiguousMidjourneyTaskBilling transitions an accepted/ambiguous
+// Midjourney billing reservation out of BillingReserved so expired-lease cleanup
+// cannot auto-refund a live upstream job (R6-010).
+func SettleAmbiguousMidjourneyTaskBilling(task *model.Midjourney, quota int) {
+	if task == nil || task.BillingOperationKey == "" || model.DB == nil || quota <= 0 {
+		return
+	}
+	key := task.BillingOperationKey
+	activeBillingReservations.Delete(key)
+	op, err := model.GetBillingOperation(key)
+	if err != nil || op == nil || op.State != model.BillingReserved {
+		return
+	}
+	if err := model.QueueBillingSettlement(key, quota, false); err != nil {
+		common.SysError(common.LogText("queue ambiguous midjourney billing settlement failed: %s", err.Error()))
+		return
+	}
+	if _, _, err := model.ApplyBillingSettlement(key); err != nil {
+		common.SysError(common.LogText("apply ambiguous midjourney billing settlement failed: %s", err.Error()))
+		return
+	}
+	projectBillingEarnings(key)
 }
 
 // SettleMidjourneyTaskBilling charges a persisted legacy task and records the applied stages.
@@ -189,6 +215,9 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 }
 
 func settleDurableMidjourney(task *model.Midjourney) (bool, error) {
+	if task != nil && task.BillingOperationKey != "" {
+		activeBillingReservations.Delete(task.BillingOperationKey)
+	}
 	key, err := model.QueueMidjourneyBillingOperation(task, false)
 	if err != nil {
 		return false, err
@@ -401,16 +430,23 @@ func ConvertSimpleChangeParams(content string) *dto.MidjourneyRequest {
 	}
 
 	action := strings.ToLower(split[1])
+	if len(action) == 0 {
+		return nil
+	}
 	changeParams := &dto.MidjourneyRequest{}
 	changeParams.TaskId = split[0]
 
+	if action == "r" {
+		changeParams.Action = "REROLL"
+		return changeParams
+	}
+	if len(action) != 2 {
+		return nil
+	}
 	if action[0] == 'u' {
 		changeParams.Action = "UPSCALE"
 	} else if action[0] == 'v' {
 		changeParams.Action = "VARIATION"
-	} else if action == "r" {
-		changeParams.Action = "REROLL"
-		return changeParams
 	} else {
 		return nil
 	}
@@ -516,7 +552,7 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 	}
 	var midjResponse dto.MidjourneyResponse
 	var midjourneyUploadsResponse dto.MidjourneyUploadResponse
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "read_response_body_failed", statusCode), nullBytes, err
 	}

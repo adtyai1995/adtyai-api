@@ -114,20 +114,21 @@ func adtyWalletIdempotencyExists(tx *gorm.DB, keys ...string) (bool, error) {
 	return n > 0, nil
 }
 
-func writeAdtyGiftOfficialAudit(actorId, siteId int, tradeNo, action, reason string, before, after any) {
-	writeAdtyOfficialAudit(actorId, siteId, "gift", tradeNo, action, reason, "", before, after, model.AuditResultSuccess)
+func appendAdtyGiftOfficialAuditTx(tx *gorm.DB, actorId, siteId int, tradeNo, action, reason string, before, after any) (*model.AuditLog, error) {
+	return appendAdtyOfficialAuditTx(tx, actorId, siteId, "gift", tradeNo, action, reason, "", before, after, model.AuditResultSuccess)
 }
 
-func writeAdtyMarginWalletOfficialAudit(ledger *model.AdtySiteWalletLedger, change AdtySiteWalletChange, frozenBefore, frozenAfter, cycleUsed, cycleTier decimal.Decimal) {
+func appendAdtyMarginWalletOfficialAuditTx(tx *gorm.DB, ledger *model.AdtySiteWalletLedger, change AdtySiteWalletChange, frozenBefore, frozenAfter, cycleUsed, cycleTier decimal.Decimal) (*model.AuditLog, error) {
 	if ledger == nil || ledger.WalletKind != model.AdtySiteWalletMargin {
-		return
+		return nil, nil
 	}
 	switch change.Type {
-	case "gift_reserve", "gift_release", "gift_spend", "voucher_margin":
-		// Parent gift or voucher operations write the official record.
-		return
+	case "gift_reserve", "gift_release", "gift_spend", "voucher_margin", "voucher_freeze",
+		"margin_root_credit", "owner_customer_balance", "owner_team_balance":
+		// Parent gift, voucher, margin deposit, or manual balance operations write the official record.
+		return nil, nil
 	}
-	writeAdtyOfficialAudit(change.OperatorID, ledger.SiteId, "margin", strconv.Itoa(ledger.SiteId), "adty.margin."+change.Type, change.Reason, "",
+	return appendAdtyOfficialAuditTx(tx, change.OperatorID, ledger.SiteId, "margin", strconv.Itoa(ledger.SiteId), "adty.margin."+change.Type, change.Reason, "",
 		map[string]any{
 			"balance": ledger.BalanceBefore.String(),
 			"frozen":  frozenBefore.String(),

@@ -384,6 +384,25 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Usage.GetCacheCreation5mTokens()
 		claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Usage.GetCacheCreation1hTokens()
 	}
+	// R6-042: Fallback to estimated token usage if a Claude-compatible upstream
+	// omitted or zeroed usage on a delivered non-stream response.
+	if claudeInfo.Usage.TotalTokens == 0 && claudeInfo.Usage.PromptTokens == 0 && claudeInfo.Usage.CompletionTokens == 0 {
+		var textBuilder strings.Builder
+		for _, block := range claudeResponse.Content {
+			if block.Text != nil && *block.Text != "" {
+				textBuilder.WriteString(*block.Text)
+			}
+			if block.Thinking != nil && *block.Thinking != "" {
+				textBuilder.WriteString(*block.Thinking)
+			}
+		}
+		if textBuilder.Len() > 0 || len(claudeResponse.Content) > 0 {
+			fallbackUsage := service.ResponseText2Usage(c, textBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+			claudeInfo.Usage.PromptTokens = fallbackUsage.PromptTokens
+			claudeInfo.Usage.CompletionTokens = fallbackUsage.CompletionTokens
+			claudeInfo.Usage.TotalTokens = fallbackUsage.TotalTokens
+		}
+	}
 	var responseData []byte
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:

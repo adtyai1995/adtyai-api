@@ -4,6 +4,7 @@ package i18n
 // 译文在 locales/adty.<语言>.yaml；上游的 keys.go 和三个 yaml 不动。
 const (
 	MsgAdtyAPIKeySiteMismatch     = "adty.api_key.site_mismatch"
+	MsgAdtyRelayHostDisallowed    = "adty.relay.host_disallowed"
 	MsgAdtyEpayMaintenanceSubject = "adty.epay.maintenance_subject"
 	MsgAdtyEpayMaintenanceBody    = "adty.epay.maintenance_body"
 

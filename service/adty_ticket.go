@@ -241,8 +241,10 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 		ticket := model.AdtyTicket{
 			SiteId: actor.User.SiteId, UserId: actor.User.Id, TeamId: teamID, Type: input.Type,
 			TeamShared: teamID > 0, Title: input.Title, Priority: priority, Status: model.AdtyTicketNew,
-			RelatedKind: input.RelatedKind, RelatedRef: input.RelatedRef, RelatedModel: input.RelatedModel,
-			RelatedGroup: input.RelatedGroup, RelatedError: input.RelatedError,
+			RelatedKind: input.RelatedKind, RelatedRef: input.RelatedRef,
+			RelatedModel: boundedTicketHint(input.RelatedModel, 80),
+			RelatedGroup: boundedTicketHint(input.RelatedGroup, 64),
+			RelatedError: boundedTicketHint(input.RelatedError, 64),
 		}
 		if input.RelatedKind == "request" {
 			payer, err := ticketRequestSnapshot(tx, actor, input.RelatedRef, &ticket)

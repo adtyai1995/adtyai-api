@@ -120,6 +120,16 @@ func adtyReferralAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyT
 // 状态 pending，SettleAt = 现在 + 冻结天数。由结算任务每轮扫描调用。
 func ProcessAdtyTopUpCommission(tradeNo string) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
+		// R6-017: Lock top_ups -> adty_topup_orders BEFORE referral_commission_jobs,
+		// matching CompleteAdtyTopUpManualRefund -> adtyReferralAfterRefundTx lock order.
+		var topUps []model.TopUp
+		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ?", tradeNo).Limit(1).Find(&topUps).Error; err != nil {
+			return err
+		}
+		var extRows []model.AdtyTopupOrder
+		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ?", tradeNo).Limit(1).Find(&extRows).Error; err != nil {
+			return err
+		}
 		var job model.ReferralCommissionJob
 		if err := model.AdtyLockForUpdate(tx).Where("source_type = ? AND source_trade_no = ?", model.ReferralSourceTopup, tradeNo).First(&job).Error; err != nil {
 			return err
@@ -132,20 +142,12 @@ func ProcessAdtyTopUpCommission(tradeNo string) error {
 				"status": model.ReferralCommissionJobStatusSkipped, "last_error": reason, "attempt_count": job.AttemptCount + 1,
 			}).Error
 		}
-		var topUps []model.TopUp
-		if err := tx.Where("trade_no = ?", tradeNo).Limit(1).Find(&topUps).Error; err != nil {
-			return err
-		}
 		if len(topUps) == 0 {
 			return skip("order not found")
 		}
 		status := topUps[0].Status
 		if status != common.TopUpStatusSuccess && status != model.TopUpStatusRefunded {
 			return skip("order is " + status)
-		}
-		var extRows []model.AdtyTopupOrder
-		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ?", tradeNo).Limit(1).Find(&extRows).Error; err != nil {
-			return err
 		}
 		var ext *model.AdtyTopupOrder
 		if len(extRows) > 0 {
@@ -598,10 +600,13 @@ func init() {
 		if err := adtyReferralAfterRefundTx(tx, topUp, ext); err != nil {
 			return err
 		}
-		if err := adtySiteBonusAfterRefundTx(tx, topUp, ext); err != nil {
+		// R6-018: Process site invite commission (locks AdtySiteInviteCommission ->
+		// AdtySiteInviteWithdrawal -> earnings -> margin) BEFORE site gift guarantee
+		// release (locks earnings -> margin) to preserve canonical lock order.
+		if err := adtySiteInviteCommissionAfterRefundTx(tx, ext); err != nil {
 			return err
 		}
-		return adtySiteInviteCommissionAfterRefundTx(tx, ext)
+		return adtySiteBonusAfterRefundTx(tx, topUp, ext)
 	}
 	model.AdtyAfterTopUpRefundCommitted = func(_ *model.TopUp, ext *model.AdtyTopupOrder) {
 		if ext == nil || strings.TrimSpace(ext.TradeNo) == "" || model.DB == nil {

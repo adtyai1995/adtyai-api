@@ -247,12 +247,16 @@ func PostAdtyStaffCustomerDisable(c *gin.Context) {
 	manageAdtyStaffCustomer(c, service.AdtyStaffActionCustomerDisable, "customers.disable")
 }
 
+func redactRootBalanceRequest(row *model.AdtyStaffBalanceRequest) {
+	if row != nil && row.ReviewerRole == "root" {
+		row.ReviewerId = 0
+		row.ReviewNote = ""
+	}
+}
+
 func redactRootBalanceRequests(rows []model.AdtyStaffBalanceRequest) {
 	for i := range rows {
-		if rows[i].ReviewerRole == "root" {
-			rows[i].ReviewerId = 0
-			rows[i].ReviewNote = ""
-		}
+		redactRootBalanceRequest(&rows[i])
 	}
 }
 
@@ -338,6 +342,7 @@ func PostAdtyStaffBalanceRequest(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	redactRootBalanceRequest(row)
 	common.ApiSuccess(c, row)
 }
 

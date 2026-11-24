@@ -53,10 +53,12 @@ type BotProtectionFormValues = z.infer<typeof botProtectionSchema>
 
 type BotProtectionSectionProps = {
   defaultValues: BotProtectionFormValues
+  secretConfigured?: boolean
 }
 
 export function BotProtectionSection({
   defaultValues,
+  secretConfigured = false,
 }: BotProtectionSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
@@ -94,11 +96,14 @@ export function BotProtectionSection({
       await updateOption.mutateAsync({ key, value: value ?? '' })
       baselineRef.current = {
         ...baselineRef.current,
-        [key]: value,
+        [key]: key === 'TurnstileSecretKey' ? '' : value,
       }
       baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
-    form.reset(data, { keepDirtyValues: true })
+    form.reset(
+      { ...data, TurnstileSecretKey: '' },
+      { keepDirtyValues: false }
+    )
   }
 
   return (
@@ -159,11 +164,22 @@ export function BotProtectionSection({
                 <FormControl>
                   <Input
                     type='password'
-                    placeholder={t('Your Turnstile secret key')}
+                    placeholder={
+                      secretConfigured
+                        ? t('Configured (leave blank to keep unchanged)')
+                        : t('Your Turnstile secret key')
+                    }
                     autoComplete='new-password'
                     {...field}
                   />
                 </FormControl>
+                {secretConfigured && (
+                  <FormDescription>
+                    {t(
+                      'A secret key is already configured. Leave blank to keep it unchanged.'
+                    )}
+                  </FormDescription>
+                )}
                 <FormMessage />
               </FormItem>
             )}

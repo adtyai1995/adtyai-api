@@ -47,6 +47,16 @@ func GetAdtyAdminWithdrawRules(c *gin.Context) {
 	common.ApiSuccess(c, view)
 }
 
+func redactSiteWithdrawalForOwner(row *model.AdtySiteWithdrawal) {
+	if row == nil {
+		return
+	}
+	row.ReviewerId = 0
+	if row.Status != model.AdtySiteWithdrawPaid && row.Status != model.AdtySiteWithdrawRejected {
+		row.ProofNote = ""
+	}
+}
+
 func GetAdtySiteWithdrawals(c *gin.Context) {
 	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
@@ -62,12 +72,9 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	// R5-041: Redact Root reviewer_id and non-terminal internal recall/failure notes before returning to site owner.
+	// R5-041/R6-036: Redact Root reviewer_id and non-terminal internal recall/failure notes before returning to site owner.
 	for i := range rows {
-		rows[i].ReviewerId = 0
-		if rows[i].Status != model.AdtySiteWithdrawPaid && rows[i].Status != model.AdtySiteWithdrawRejected {
-			rows[i].ProofNote = ""
-		}
+		redactSiteWithdrawalForOwner(&rows[i])
 	}
 	page.SetTotal(int(total))
 	page.SetItems(rows)
@@ -131,6 +138,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	redactSiteWithdrawalForOwner(row)
 	common.ApiSuccess(c, row)
 }
 

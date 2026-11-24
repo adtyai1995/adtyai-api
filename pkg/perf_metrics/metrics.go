@@ -412,6 +412,9 @@ func queryWindow(now time.Time, hours int) (int64, int64) {
 }
 
 func Query(params QueryParams) (QueryResult, error) {
+	if params.Group == "all" {
+		params.Group = ""
+	}
 	startTs, endTs := queryWindow(time.Now(), params.Hours)
 	allowedGroups := allowedGroupSet(params.AllowedGroups)
 

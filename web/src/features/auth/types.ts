@@ -123,6 +123,7 @@ export interface SystemStatus {
     password_login_encryption_enabled?: boolean
     password_register_enabled?: boolean
     site_customer_terms_version?: number
+    adty_site?: Record<string, unknown> | null
     [key: string]: unknown
   }
   // Allow direct access to common properties
@@ -154,6 +155,7 @@ export interface SystemStatus {
   quota_remind_enabled?: boolean
   /** Site default low balance reminder threshold, in quota units */
   quota_remind_threshold?: number
+  adty_site?: Record<string, unknown> | null
   [key: string]: unknown
 }
 

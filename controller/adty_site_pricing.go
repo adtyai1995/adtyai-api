@@ -111,13 +111,24 @@ func PutAdtySiteCustomerPricing(c *gin.Context) {
 		return
 	}
 	var count int64
-	if err := model.DB.Model(&model.User{}).Where("id = ? AND site_id = ?", customerId, site.Id).Count(&count).Error; err != nil {
+	if err := model.DB.Model(&model.User{}).Where("id = ? AND site_id = ? AND staff_site_id = 0", customerId, site.Id).Count(&count).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	if count == 0 {
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Customer not found"))
 		return
+	}
+	if model.DB.Migrator().HasTable(&model.AdtyTeamMember{}) {
+		var empCount int64
+		if err := model.DB.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", customerId, true).Count(&empCount).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if empCount > 0 {
+			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Customer not found"))
+			return
+		}
 	}
 	saveAdtySitePricing(c, site, customerId)
 }

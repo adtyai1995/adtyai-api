@@ -56,6 +56,20 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 	if _, err := ResumePendingAdtyGiftFulfillments(0); err != nil {
 		common.SysError(common.LogText("resume main-site pending gift fulfillments: %s", err.Error()))
 	}
+	if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+		var pendingGiftSites []int
+		if err := model.DB.Model(&model.AdtyGiftFulfillment{}).Distinct("site_id").
+			Where("site_id > 0 AND status = ?", model.AdtyGiftFulfillmentPending).
+			Pluck("site_id", &pendingGiftSites).Error; err != nil {
+			common.SysError(common.LogText("query pending subsite gift fulfillments: %s", err.Error()))
+		} else {
+			for _, siteID := range pendingGiftSites {
+				if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
+					common.SysError(common.LogText("resume subsite pending gift fulfillments site=%d: %s", siteID, err.Error()))
+				}
+			}
+		}
+	}
 	verifyExpiredOrdersUnpaidBeforeExpire(now)
 	var cursorExpireAt, cursorID int64
 	for page := 0; page < 50; page++ {

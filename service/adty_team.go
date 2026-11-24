@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,9 +97,14 @@ func creditAdtyTeamTopUpTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopup
 // SaveAdtyMainTeamAgreementPrice sets a main-site team discount. Subsite teams are rejected.
 // There is no supply-price floor. The discount must be greater than zero and at most 1.
 func SaveAdtyMainTeamAgreementPrice(teamID int64, raw string, actorIDs ...int) error {
+	_, err := SaveAdtyMainTeamAgreementPriceWithAudit(teamID, raw, actorIDs...)
+	return err
+}
+
+func SaveAdtyMainTeamAgreementPriceWithAudit(teamID int64, raw string, actorIDs ...int) (string, error) {
 	value, err := decimal.NewFromString(strings.TrimSpace(raw))
 	if teamID <= 0 || err != nil || !adtySiteTeamPayRatioConfigValid(value) {
-		return ErrAdtyTeamInvalid
+		return "", ErrAdtyTeamInvalid
 	}
 	actorID := 0
 	if len(actorIDs) > 0 {
@@ -123,10 +129,12 @@ func SaveAdtyMainTeamAgreementPrice(teamID int64, raw string, actorIDs ...int) e
 		return err
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
-	deliverAdtyCommittedAudit(event)
-	return nil
+	if event.EventId != "" {
+		deliverAdtyCommittedAudit(event)
+	}
+	return event.EventId, nil
 }
 
 var (
@@ -957,37 +965,65 @@ func CreateAdtyMainTeamByRoot(actorId, leaderId int, name, rawDiscount string) (
 // >0 for an active subsite) and designates an existing user of that site as the
 // unique leader. Only Root may call this (A.9.1 / DEC-012).
 func CreateAdtySiteTeamByRoot(actorId, siteId, leaderId int, name, rawDiscount string, keys ...string) (*AdtyTeamCreated, error) {
+	created, _, _, err := CreateAdtySiteTeamByRootWithAudit(actorId, siteId, leaderId, name, rawDiscount, keys...)
+	return created, err
+}
+
+func CreateAdtySiteTeamByRootWithAudit(actorId, siteId, leaderId int, name, rawDiscount string, keys ...string) (*AdtyTeamCreated, string, bool, error) {
 	if siteId < 0 {
-		return nil, ErrAdtyTeamInvalid
+		return nil, "", false, ErrAdtyTeamInvalid
 	}
 	var actor model.User
 	if err := model.DB.Select("id", "role").First(&actor, actorId).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrAdtyTeamForbidden
+			return nil, "", false, ErrAdtyTeamForbidden
 		}
-		return nil, err
+		return nil, "", false, err
 	}
 	if actor.Role != common.RoleRootUser {
-		return nil, ErrAdtyTeamForbidden
+		return nil, "", false, ErrAdtyTeamForbidden
 	}
 	discount, err := adtyTeamDiscountOrDefault(rawDiscount)
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 	var created *AdtyTeamCreated
 	var event model.AuditLog
+	replayed := false
 	key := ""
 	if len(keys) > 0 {
 		key = strings.TrimSpace(keys[0])
 	}
 	if len(key) > 64 {
-		return nil, ErrAdtyTeamIdempotencyKey
+		return nil, "", false, ErrAdtyTeamIdempotencyKey
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%s", actorId, key))))
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s/%s", siteId, leaderId, discount.String(), strings.TrimSpace(name)))))
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// R6-006: Preserve canonical AdtySite -> User (id ASC) lock order.
+		if siteId > 0 {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).First(&site, siteId).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyTeamForbidden
+				}
+				return err
+			}
+			if site.Status != model.AdtySiteStatusActive {
+				return ErrAdtyTeamForbidden
+			}
+		}
 		if key != "" {
-			if err := model.AdtyLockForUpdate(tx).Select("id", "role").First(&actor, actorId).Error; err != nil {
+			lockUserIDs := []int{actorId}
+			if leaderId > 0 && leaderId != actorId {
+				lockUserIDs = append(lockUserIDs, leaderId)
+			}
+			sort.Ints(lockUserIDs)
+			var prelockedUsers []model.User
+			if err := model.AdtyLockForUpdate(tx).Select("id", "role").Where("id IN ?", lockUserIDs).Order("id ASC").Find(&prelockedUsers).Error; err != nil {
+				return err
+			}
+			if err := tx.Select("id", "role").First(&actor, actorId).Error; err != nil {
 				return err
 			}
 			if actor.Role != common.RoleRootUser {
@@ -1006,6 +1042,7 @@ func CreateAdtySiteTeamByRoot(actorId, siteId, leaderId int, name, rawDiscount s
 					return err
 				}
 				created = &AdtyTeamCreated{Team: existing, Member: member}
+				replayed = true
 				return nil
 			}
 		}
@@ -1026,12 +1063,12 @@ func CreateAdtySiteTeamByRoot(actorId, siteId, leaderId int, name, rawDiscount s
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 	if event.EventId != "" {
 		deliverAdtyCommittedAudit(event)
 	}
-	return created, nil
+	return created, event.EventId, replayed, nil
 }
 
 // CreateAdtyOwnerSiteTeam is permanently rejected under A.9.1 / DEC-012:
@@ -1068,6 +1105,15 @@ func createAdtyTeamTx(tx *gorm.DB, leaderId, siteId int, name string, discount d
 	if leaderId <= 0 || siteId < 0 || !adtySiteTeamPayRatioConfigValid(discount) {
 		return nil, ErrAdtyTeamInvalid
 	}
+	if siteId > 0 {
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, siteId).Error; err != nil {
+			return nil, err
+		}
+		if site.Status != model.AdtySiteStatusActive {
+			return nil, ErrAdtyTeamForbidden
+		}
+	}
 	leader, err := lockAdtyTeamUser(tx, leaderId)
 	if err != nil {
 		return nil, err
@@ -1077,15 +1123,6 @@ func createAdtyTeamTx(tx *gorm.DB, leaderId, siteId int, name string, discount d
 	}
 	if err := rejectTeamStaffIdentityTx(tx, leader.Id); err != nil {
 		return nil, err
-	}
-	if siteId > 0 {
-		var site model.AdtySite
-		if err := tx.First(&site, siteId).Error; err != nil {
-			return nil, err
-		}
-		if site.Status != model.AdtySiteStatusActive {
-			return nil, ErrAdtyTeamForbidden
-		}
 	}
 	if err := rejectActiveTeamMembership(tx, leader.Id); err != nil {
 		return nil, err
@@ -2028,29 +2065,86 @@ func AdtyIndependentTeamEmployeeSet(userIDs []int) (map[int]bool, error) {
 }
 
 func preLockAdtyTeamForUserDelete(tx *gorm.DB, userId int) error {
-	if tx == nil || userId <= 0 || !adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) {
+	if tx == nil || userId <= 0 {
 		return nil
 	}
-	var leaderTeams []model.AdtyTeam
-	if err := model.AdtyLockForUpdate(tx).Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusActive).Order("id ASC").Find(&leaderTeams).Error; err != nil {
-		return err
+	hasTeamTable := adtyTeamTableReadyFor(tx, &model.AdtyTeam{})
+	hasMemberTable := adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{})
+	teamIDSet := make(map[int64]struct{})
+	if hasTeamTable {
+		var ledIDs []int64
+		if err := tx.Model(&model.AdtyTeam{}).
+			Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusActive).
+			Pluck("id", &ledIDs).Error; err != nil {
+			return err
+		}
+		for _, id := range ledIDs {
+			teamIDSet[id] = struct{}{}
+		}
 	}
-	if !adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{}) {
-		return nil
+	if hasMemberTable {
+		var memberTeamIDs []int64
+		if err := tx.Model(&model.AdtyTeamMember{}).
+			Where("user_id = ? AND status IN ?", userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled}).
+			Pluck("team_id", &memberTeamIDs).Error; err != nil {
+			return err
+		}
+		for _, id := range memberTeamIDs {
+			if id > 0 {
+				teamIDSet[id] = struct{}{}
+			}
+		}
 	}
-	leaderTeamIDs := make([]int64, 0, len(leaderTeams))
-	for _, team := range leaderTeams {
-		leaderTeamIDs = append(leaderTeamIDs, team.Id)
+	leaderTeamIDs := make([]int64, 0, len(teamIDSet))
+	if hasTeamTable && len(teamIDSet) > 0 {
+		allTeamIDs := make([]int64, 0, len(teamIDSet))
+		for id := range teamIDSet {
+			allTeamIDs = append(allTeamIDs, id)
+		}
+		slices.Sort(allTeamIDs)
+		var lockedTeams []model.AdtyTeam
+		if err := model.AdtyLockForUpdate(tx).Where("id IN ?", allTeamIDs).Order("id ASC").Find(&lockedTeams).Error; err != nil {
+			return err
+		}
+		for _, team := range lockedTeams {
+			if team.LeaderUserId == userId && team.Status == model.AdtyTeamStatusActive {
+				leaderTeamIDs = append(leaderTeamIDs, team.Id)
+			}
+		}
 	}
-	var memberRows []model.AdtyTeamMember
-	memberQuery := model.AdtyLockForUpdate(tx).Where("user_id = ? AND status IN ?", userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled})
-	if len(leaderTeamIDs) > 0 {
-		memberQuery = model.AdtyLockForUpdate(tx).Where(
-			"(team_id IN ? AND status = ?) OR (user_id = ? AND status IN ?)",
-			leaderTeamIDs, model.AdtyTeamMemberActive, userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled},
-		)
+	userIDSet := map[int]struct{}{userId: {}}
+	if hasMemberTable {
+		var memberRows []model.AdtyTeamMember
+		memberQuery := model.AdtyLockForUpdate(tx).Where("user_id = ? AND status IN ?", userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled})
+		if len(leaderTeamIDs) > 0 {
+			memberQuery = model.AdtyLockForUpdate(tx).Where(
+				"(team_id IN ? AND status IN ?) OR (user_id = ? AND status IN ?)",
+				leaderTeamIDs, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled},
+				userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled},
+			)
+		}
+		if err := memberQuery.Order("id ASC").Find(&memberRows).Error; err != nil {
+			return err
+		}
+		leaderSet := make(map[int64]struct{}, len(leaderTeamIDs))
+		for _, id := range leaderTeamIDs {
+			leaderSet[id] = struct{}{}
+		}
+		for _, m := range memberRows {
+			if _, ok := leaderSet[m.TeamId]; ok && m.IndependentEmployee && m.UserId > 0 {
+				userIDSet[m.UserId] = struct{}{}
+			}
+		}
 	}
-	return memberQuery.Order("id ASC").Find(&memberRows).Error
+	// R6-007: Lock all affected User rows in ascending ID order BEFORE any token locks
+	// or ValidateAuthSessionWithTx / IncrementUserAuthVersionWithTx calls.
+	userIDs := make([]int, 0, len(userIDSet))
+	for uid := range userIDSet {
+		userIDs = append(userIDs, uid)
+	}
+	sort.Ints(userIDs)
+	var lockedUsers []model.User
+	return model.AdtyLockForUpdate(tx).Select("id").Where("id IN ?", userIDs).Order("id ASC").Find(&lockedUsers).Error
 }
 
 func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) ([]int, error) {
@@ -2114,7 +2208,7 @@ func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) ([]int, error) {
 
 func disableAdtyTeamMemberKeysTx(tx *gorm.DB, teamId int64, userId int) error {
 	var keys []model.AdtyTeamKey
-	if err := model.AdtyLockForUpdate(tx).Where("team_id = ? AND user_id = ? AND status = ?", teamId, userId, model.AdtyTeamMemberActive).Find(&keys).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).Where("team_id = ? AND user_id = ? AND status = ?", teamId, userId, model.AdtyTeamMemberActive).Order("id ASC").Find(&keys).Error; err != nil {
 		return err
 	}
 	if len(keys) == 0 {
@@ -2124,8 +2218,9 @@ func disableAdtyTeamMemberKeysTx(tx *gorm.DB, teamId int64, userId int) error {
 	for _, key := range keys {
 		ids = append(ids, key.TokenId)
 	}
+	sort.Ints(ids)
 	var lockedTokens []model.Token
-	if err := model.AdtyLockForUpdate(tx).Select("id").Where("id IN ?", ids).Find(&lockedTokens).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).Select("id").Where("id IN ?", ids).Order("id ASC").Find(&lockedTokens).Error; err != nil {
 		return err
 	}
 	if err := tx.Model(&model.Token{}).Where("id IN ?", ids).Update("status", common.TokenStatusDisabled).Error; err != nil {
@@ -2136,7 +2231,7 @@ func disableAdtyTeamMemberKeysTx(tx *gorm.DB, teamId int64, userId int) error {
 
 func disableAdtyTeamKeysTx(tx *gorm.DB, teamId int64) ([]int, error) {
 	var keys []model.AdtyTeamKey
-	if err := model.AdtyLockForUpdate(tx).Where("team_id = ? AND status = ?", teamId, model.AdtyTeamMemberActive).Find(&keys).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).Where("team_id = ? AND status = ?", teamId, model.AdtyTeamMemberActive).Order("id ASC").Find(&keys).Error; err != nil {
 		return nil, err
 	}
 	if len(keys) == 0 {
@@ -2148,8 +2243,9 @@ func disableAdtyTeamKeysTx(tx *gorm.DB, teamId int64) ([]int, error) {
 		ids = append(ids, key.TokenId)
 		owners = append(owners, key.UserId)
 	}
+	sort.Ints(ids)
 	var lockedTokens []model.Token
-	if err := model.AdtyLockForUpdate(tx).Select("id").Where("id IN ?", ids).Find(&lockedTokens).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).Select("id").Where("id IN ?", ids).Order("id ASC").Find(&lockedTokens).Error; err != nil {
 		return nil, err
 	}
 	if err := tx.Model(&model.Token{}).Where("id IN ?", ids).Update("status", common.TokenStatusDisabled).Error; err != nil {

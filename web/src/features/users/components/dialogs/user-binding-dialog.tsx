@@ -110,13 +110,13 @@ export function UserBindingDialog(props: Props) {
         : ''
       return {
         key: field.key,
-        label: field.label,
+        label: t(field.label),
         icon: field.icon,
         value,
         isBound: Boolean(value),
       }
     })
-  }, [user])
+  }, [user, t])
 
   const displayedBindings = showBoundOnly
     ? allBindings.filter((binding) => binding.isBound)

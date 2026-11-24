@@ -579,6 +579,24 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 		default:
 			return ErrAdtySiteStatus
 		}
+		if input.UserId > 0 {
+			var customerCount int64
+			if err := tx.Model(&model.User{}).Where("id = ? AND site_id = ? AND staff_site_id = 0", input.UserId, input.SiteId).Count(&customerCount).Error; err != nil {
+				return err
+			}
+			if customerCount == 0 {
+				return common.NewMessage("Customer not found")
+			}
+			if tx.Migrator().HasTable(&model.AdtyTeamMember{}) {
+				var empCount int64
+				if err := tx.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", input.UserId, true).Count(&empCount).Error; err != nil {
+					return err
+				}
+				if empCount > 0 {
+					return common.NewMessage("Customer not found")
+				}
+			}
+		}
 		type priceChange struct {
 			group, model string
 			markup       decimal.Decimal

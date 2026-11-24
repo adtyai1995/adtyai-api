@@ -1133,10 +1133,8 @@ func adtyUsesDefaultDeliverSiteEmail() bool {
 func adtyIsResendActive() bool {
 	common.OptionMapRWMutex.RLock()
 	provider := common.OptionMap["EmailProvider"]
-	apiKey := strings.TrimSpace(common.OptionMap["ResendApiKey"])
-	resendFrom := strings.TrimSpace(common.OptionMap["ResendFrom"])
 	common.OptionMapRWMutex.RUnlock()
-	return provider == "resend" || (provider == "" && apiKey != "" && resendFrom != "" && common.SMTPFrom == "")
+	return provider == "resend"
 }
 
 func deliverAdtySiteCloseMail(site *model.AdtySite, recipient *model.AdtySiteCloseMailRecipient, subject, body string) (string, error) {

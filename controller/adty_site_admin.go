@@ -388,12 +388,15 @@ func HandleAdtyAdminSiteReport(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	report, err := service.HandleAdtySiteReport(id, c.GetInt("id"), body.Status, body.Note)
+	report, eventID, err := service.HandleAdtySiteReportWithAudit(id, c.GetInt("id"), body.Status, body.Note)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, report.UserId, "adty.site.report", map[string]any{"report_id": report.Id, "status": report.Status})
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, report)
 }
 
@@ -572,7 +575,7 @@ func CreateAdtyAdminSite(c *gin.Context) {
 	if key == "" {
 		key = strings.TrimSpace(body.IdempotencyKey)
 	}
-	site, err := service.OpenAdtySite(body.UserId, body.Subdomain, model.AdtySiteOpenedByAdmin, service.AdtySitePreset{
+	site, eventID, replayed, err := service.OpenAdtySiteWithAudit(body.UserId, body.Subdomain, model.AdtySiteOpenedByAdmin, service.AdtySitePreset{
 		CostFactor: costFactor, TierCode: body.TierCode, TierMode: body.TierMode,
 		ContactInfo: body.ContactInfo, OperatorId: c.GetInt("id"),
 		ExplicitRoot: strings.ToLower(strings.TrimSpace(body.RootDomain)), IdempotencyKey: key,
@@ -585,7 +588,12 @@ func CreateAdtyAdminSite(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, body.UserId, "adty.site.open", map[string]any{"site_id": site.Id, "subdomain": site.Subdomain})
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	views, err := buildSiteAdminViews([]model.AdtySite{*site})
 	if err != nil || len(views) == 0 {
 		common.ApiSuccess(c, site)
@@ -618,12 +626,15 @@ func ReviewAdtyAdminSite(c *gin.Context) {
 			return
 		}
 	}
-	site, err := service.ReviewAdtySiteApplication(id, c.GetInt("id"), body.Approve, costFactor, nil, body.Note)
+	site, eventID, err := service.ReviewAdtySiteApplicationWithAudit(id, c.GetInt("id"), body.Approve, costFactor, nil, body.Note)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, site.OwnerUserId, "adty.site.review", map[string]any{"site_id": site.Id, "approve": body.Approve})
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, site)
 }
 
@@ -660,7 +671,7 @@ func AdjustAdtyAdminSite(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}
-	site, err := service.AdjustAdtySite(id, c.GetInt("id"), service.AdtySiteAdjust{
+	site, eventID, err := service.AdjustAdtySiteWithAudit(id, c.GetInt("id"), service.AdtySiteAdjust{
 		CostFactor: costFactor, ClearCostFactor: clearCostFactor,
 		Visibility: body.Visibility, AllowedGroups: body.AllowedGroups,
 		ClearAllowedGroups: slices.Contains(body.Clear, "allowed_groups"), Reason: body.Reason,
@@ -669,7 +680,12 @@ func AdjustAdtyAdminSite(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, site.OwnerUserId, "adty.site.adjust", map[string]any{"site_id": site.Id})
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	} else {
+		markIdempotentReplayNoAudit(c)
+	}
 	common.ApiSuccess(c, site)
 }
 
@@ -696,6 +712,8 @@ func SetAdtyAdminSiteStatus(c *gin.Context) {
 		return
 	}
 	var site *model.AdtySite
+	var eventID string
+	var replayed bool
 	var err error
 	switch body.Status {
 	case model.AdtySiteStatusActive, model.AdtySiteStatusPaused:
@@ -714,7 +732,7 @@ func SetAdtyAdminSiteStatus(c *gin.Context) {
 			}
 			transferTo = *body.TransferTo
 		}
-		site, err = service.ScheduleAdtySiteClose(id, c.GetInt("id"), service.AdtySiteClosePlan{
+		site, eventID, replayed, err = service.ScheduleAdtySiteCloseWithAudit(id, c.GetInt("id"), service.AdtySiteClosePlan{
 			ExecuteAt: body.ExecuteAt, ExpectedExecuteAt: body.ExpectedExecuteAt, TransferTo: transferTo, ClawBack: body.ClawBack, Immediate: body.Immediate, Reason: body.Reason,
 		})
 	default:
@@ -725,7 +743,12 @@ func SetAdtyAdminSiteStatus(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, site.OwnerUserId, "adty.site.status", map[string]any{"site_id": site.Id, "status": site.Status})
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, site)
 }
 
@@ -770,16 +793,19 @@ func RepairAdtyPausedSite(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	site, err := service.RepairLeftoverPausedAdtySite(id, c.GetInt("id"), body.Outcome, service.AdtySiteClosePlan{
+	site, eventID, replayed, err := service.RepairLeftoverPausedAdtySiteWithAudit(id, c.GetInt("id"), body.Outcome, service.AdtySiteClosePlan{
 		Immediate: body.Immediate, Reason: body.Reason,
 	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, site.OwnerUserId, "adty.site.paused_repair", map[string]any{
-		"site_id": site.Id, "outcome": strings.TrimSpace(body.Outcome), "status": site.Status,
-	})
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, site)
 }
 
@@ -789,14 +815,15 @@ func ResumeAdtySiteSettlement(c *gin.Context) {
 	if !ok {
 		return
 	}
-	site, err := service.ResumeAdtySiteSettlement(id, c.GetInt("id"), time.Now())
+	site, eventID, err := service.ResumeAdtySiteSettlementWithAudit(id, c.GetInt("id"), time.Now())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, site.OwnerUserId, "adty.site.settlement_resume", map[string]any{
-		"site_id": site.Id, "settle_hold_reason": site.SettleHoldReason,
-	})
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, site)
 }
 
@@ -1218,11 +1245,15 @@ func ReviewAdtySiteCustomer(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.ReviewAdtySiteCustomer(id, c.GetInt("id"), body.ConvertSkipped); err != nil {
+	eventID, err := service.ReviewAdtySiteCustomerWithAudit(id, c.GetInt("id"), body.ConvertSkipped)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, id, "adty.site.customer_review", map[string]any{"user_id": id, "convert_skipped": body.ConvertSkipped})
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
 	common.ApiSuccess(c, gin.H{"user_id": id, "reviewed": true})
 }
 
@@ -1241,12 +1272,17 @@ func ClearAdtyAdminSiteNotice(c *gin.Context) {
 			return
 		}
 	}
-	old, err := service.ClearAdtySiteNotice(id, c.GetInt("id"), body.Reason)
+	old, eventID, err := service.ClearAdtySiteNoticeWithAudit(id, c.GetInt("id"), body.Reason)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "adty.site.notice_takedown", map[string]any{"site_id": id, "had_notice": old != ""})
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	} else {
+		markIdempotentReplayNoAudit(c)
+	}
 	common.ApiSuccess(c, gin.H{"site_id": id, "cleared": old != ""})
 }
 

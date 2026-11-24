@@ -53,9 +53,37 @@ func redactedRedirectTarget(u *url.URL) string {
 	return u.Scheme + "://" + u.Host
 }
 
+var crossOriginCredentialHeaders = []string{
+	"Authorization",
+	"Mj-Api-Secret",
+	"X-Api-Key",
+	"X-Goog-Api-Key",
+	"Api-Key",
+	"X-Subscription-Key",
+	"Ocp-Apim-Subscription-Key",
+	"Chatgpt-Account-Id",
+}
+
+func requestHasCredentialHeader(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	for _, header := range crossOriginCredentialHeaders {
+		if req.Header.Get(header) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func checkRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) > 0 && via[0].Header.Get("mj-api-secret") != "" && !sameHTTPOrigin(via[0].URL, req.URL) {
-		return fmt.Errorf("cross-origin midjourney redirect blocked")
+	if len(via) > 0 {
+		if strings.EqualFold(via[0].URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+			return fmt.Errorf("https to non-https redirect blocked")
+		}
+		if requestHasCredentialHeader(via[0]) && !sameHTTPOrigin(via[0].URL, req.URL) {
+			return fmt.Errorf("cross-origin credential redirect blocked")
+		}
 	}
 	urlStr := req.URL.String()
 	if err := validateURLWithCurrentFetchSetting(urlStr, true); err != nil {

@@ -631,10 +631,14 @@ func PostAdtyGiftFulfillmentReview(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	row, fulfilled, err := service.ReviewAdtyGiftFulfillment(id, body.Action, body.Note, c.GetInt("id"))
+	row, fulfilled, eventID, err := service.ReviewAdtyGiftFulfillmentWithAudit(id, body.Action, body.Note, c.GetInt("id"))
 	if err != nil {
 		writeAdtyFinanceError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, gin.H{
 		"item":      row,

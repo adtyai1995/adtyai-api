@@ -187,7 +187,10 @@ func GetPerfMetrics(c *gin.Context) {
 		modelGroups = append(modelGroups, "auto")
 	}
 	requestedGroup := strings.TrimSpace(c.Query("group"))
-	if requestedGroup != "" && requestedGroup != "all" && !slices.Contains(modelGroups, requestedGroup) {
+	if requestedGroup == "all" {
+		requestedGroup = ""
+	}
+	if requestedGroup != "" && !slices.Contains(modelGroups, requestedGroup) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"data": perfmetrics.QueryResult{

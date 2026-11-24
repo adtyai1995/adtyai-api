@@ -106,9 +106,14 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 	var ext *AdtyTopupOrder
 	var balance int64
 	var checkin int64
+	var effectiveGrantedBonus int64
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var err error
 		topUp, ext, err = lockAdtyTopUpTx(tx, tradeNo)
+		if err != nil {
+			return err
+		}
+		effectiveGrantedBonus, err = adtyEffectiveGrantedBonusQuotaTx(tx, ext)
 		if err != nil {
 			return err
 		}
@@ -130,9 +135,24 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 		return nil, common.NewMessage("Only credited orders can be refunded")
 	}
 	deducted, bonus, refundQuota, amount := adtyRefundFigures(ext, balance, checkin)
+	// R6-048: Use effective granted bonus (handles shrunk-then-fulfilled orders)
+	// and cap remaining refundable principal by RefundRemainingQuota.
+	if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentFulfilled || ext.RefundBonusQuota > 0 {
+		remainingBonus := max(effectiveGrantedBonus-ext.RefundBonusQuota, 0)
+		bonus = remainingBonus
+		spendable := max(balance-checkin, 0)
+		maxDeduct := max(ext.FaceQuota()-ext.RefundQuota, 0) + remainingBonus
+		deducted = min(spendable, maxDeduct)
+		refundQuota = max(deducted-bonus, 0)
+		amount = adtyRefundAmount(ext, refundQuota, ext.FaceQuota())
+	}
 	facts, err := LoadAdtyRefundPageFacts(tradeNo, decimal.Zero)
 	if err != nil {
 		return nil, err
+	}
+	if facts != nil && refundQuota > facts.RefundRemainingQuota {
+		refundQuota = facts.RefundRemainingQuota
+		amount = adtyRefundAmount(ext, refundQuota, ext.FaceQuota())
 	}
 	if ext.IsOwnerSelfUse() {
 		refundQuota = facts.RefundRemainingQuota
@@ -142,7 +162,7 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 		DeductedQuota: deducted, BonusQuota: bonus, RefundQuota: refundQuota,
 		RefundAmount: amount, Currency: ext.refundCurrency(),
 	}
-	preview, err := LoadSiteInviteCommissionRefundPreview(DB, tradeNo, refundQuota, ext.FaceQuota())
+	preview, err := LoadSiteInviteCommissionRefundPreview(DB, tradeNo, ext.RefundQuota+refundQuota, ext.FaceQuota())
 	if err != nil {
 		return nil, err
 	}

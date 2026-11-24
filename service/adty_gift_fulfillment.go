@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -378,14 +379,16 @@ func reacquireAdtySiteGiftAmountTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonus
 		ext.GiftReserveSource = "earning"
 	}
 	if !already && (fromEarning.IsPositive() || fromMargin.IsPositive()) {
-		writeAdtyGiftOfficialAudit(ext.UserId, ext.SiteId, ext.TradeNo, "adty.gift.reserve", "reacquire",
+		if _, err := appendAdtyGiftOfficialAuditTx(tx, ext.UserId, ext.SiteId, ext.TradeNo, "adty.gift.reserve", "reacquire",
 			map[string]any{"earning": "0", "margin": "0"},
 			map[string]any{
 				"trade_no": ext.TradeNo, "site_id": ext.SiteId, "bonus_usd": ext.BonusUSD.String(),
 				"source":  ext.GiftReserveSource,
 				"earning": fromEarning.String(), "margin": fromMargin.String(),
 				"phase": "reacquire",
-			})
+			}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -479,6 +482,7 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 	}
 	var notify model.AdtyGiftFulfillment
 	var granted int64
+	var auditEntry *model.AuditLog
 	fulfilled := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// R3-003: Pre-read IDs unlocked, then acquire locks in canonical order:
@@ -590,13 +594,17 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 		}).Error; err != nil {
 			return err
 		}
-		writeAdtyGiftOfficialAudit(row.UserId, row.SiteId, tradeNo, "adty.gift.fulfill",
+		var auditErr error
+		auditEntry, auditErr = appendAdtyGiftOfficialAuditTx(tx, row.UserId, row.SiteId, tradeNo, "adty.gift.fulfill",
 			"guarantee top-up released the pending gift",
 			map[string]any{"status": model.AdtyGiftFulfillmentPending, "quota": 0},
 			map[string]any{
 				"trade_no": tradeNo, "status": model.AdtyGiftFulfillmentFulfilled, "quota": owed,
 				"source": ext.GiftReserveSource, "earning": ext.GiftReserveEarning.String(), "margin": ext.GiftReserveMargin.String(),
 			})
+		if auditErr != nil {
+			return auditErr
+		}
 		fulfilled = true
 		granted = owed
 		notify = row
@@ -604,6 +612,9 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 	})
 	if err != nil {
 		return false, err
+	}
+	if auditEntry != nil {
+		deliverAdtyCommittedAudit(*auditEntry)
 	}
 	if fulfilled {
 		model.AdtySyncCreditUserQuotaCache(notify.UserId, granted, "gift fulfillment")
@@ -755,6 +766,28 @@ func initGiftFulfillmentHooks() {
 	model.AdtyBeforeExpireReleaseTx = confirmTopUpUnpaidBeforeExpireTx
 }
 
+// effectiveSiteGiftBasisTx returns the actual granted site gift USD and quota
+// basis for refund guarantee release and daily bonus reversal (R6-019). For
+// deferred gifts shrunk by an earlier partial refund before fulfillment, it uses
+// the fulfilled AdtyGiftFulfillment row rather than the unshrunk order fields.
+func effectiveSiteGiftBasisTx(tx *gorm.DB, ext *model.AdtyTopupOrder) (decimal.Decimal, int64, error) {
+	siteBonus := adtyBonusUSDForSite(ext)
+	totalBonusQuota, err := siteGiftBonusQuota(ext)
+	if err != nil {
+		return decimal.Zero, 0, err
+	}
+	if tx != nil && ext != nil && ext.GiftFulfillmentStatus == model.AdtyGiftFulfillmentFulfilled && tx.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+		var row model.AdtyGiftFulfillment
+		if err := tx.Where("trade_no = ? AND status = ?", ext.TradeNo, model.AdtyGiftFulfillmentFulfilled).Limit(1).Find(&row).Error; err != nil {
+			return decimal.Zero, 0, err
+		}
+		if row.Id > 0 && row.BonusUSD.IsPositive() && row.BonusQuota > 0 {
+			return row.BonusUSD, row.BonusQuota, nil
+		}
+	}
+	return siteBonus, totalBonusQuota, nil
+}
+
 // releaseUnusedSiteGiftGuaranteeTx releases the unused portion of a paid
 // order's site-gift guarantee back to the original earning and/or margin
 // wallets. The unused amount follows the official reclaim: site gift ×
@@ -764,8 +797,7 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 	if tx == nil || ext == nil || ext.SiteId <= 0 {
 		return nil
 	}
-	siteBonus := adtyBonusUSDForSite(ext)
-	totalBonusQuota, err := siteGiftBonusQuota(ext)
+	siteBonus, totalBonusQuota, err := effectiveSiteGiftBasisTx(tx, ext)
 	if err != nil {
 		return err
 	}
@@ -773,6 +805,24 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 	if err != nil {
 		return err
 	}
+	var bonusBatchCount int64
+	var remainingBonusQuota int64
+	if tx.Migrator().HasTable(&model.AdtyFundBatch{}) {
+		if err := tx.Model(&model.AdtyFundBatch{}).
+			Where("user_id = ? AND source = ? AND kind = ?", ext.UserId, ext.TradeNo, "bonus").
+			Count(&bonusBatchCount).Error; err != nil {
+			return err
+		}
+		if bonusBatchCount > 0 {
+			if err := tx.Model(&model.AdtyFundBatch{}).
+				Where("user_id = ? AND source = ? AND kind = ?", ext.UserId, ext.TradeNo, "bonus").
+				Select("COALESCE(SUM(remaining), 0)").
+				Scan(&remainingBonusQuota).Error; err != nil {
+				return err
+			}
+		}
+	}
+	bonusBatchDepleted := bonusBatchCount > 0 && remainingBonusQuota <= 0
 	var unusedUSD decimal.Decimal
 	var key string
 	var reclaimedForCancel int64
@@ -802,7 +852,7 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 		}
 		unusedUSD = cumTarget.Sub(alreadyReleased)
 		key = "gift:" + ext.TradeNo + ":refund-" + strconv.FormatInt(cumReclaimed, 10)
-		fullRelease = totalBonusQuota > 0 && cumReclaimed >= totalBonusQuota
+		fullRelease = (totalBonusQuota > 0 && cumReclaimed >= totalBonusQuota) || bonusBatchDepleted
 	} else {
 		bonusQuota := ext.RefundBonusQuota
 		if bonusQuota <= 0 {
@@ -820,9 +870,9 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 		}
 		unusedUSD = adtyProportionalGiftUSD(siteBonus, reclaimed, denom)
 		key = "gift:" + ext.TradeNo
-		fullRelease = reclaimed == denom
+		fullRelease = reclaimed == denom || bonusBatchDepleted
 	}
-	if !unusedUSD.IsPositive() {
+	if !unusedUSD.IsPositive() && !fullRelease {
 		return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimedForCancel, denomForCancel)
 	}
 	heldEarning, heldMargin, err := netGiftHoldByKindTx(tx, ext.SiteId, ext.TradeNo)
@@ -859,6 +909,13 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 	if err != nil {
 		return err
 	}
+	// R6-018: Ensure canonical earnings -> margin lock order even for margin-only reserves.
+	if relMargin.IsPositive() && !relEarning.IsPositive() && tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
+		var prelockEarnings model.AdtySiteWallet
+		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", ext.SiteId, model.AdtySiteWalletEarnings).Limit(1).Find(&prelockEarnings).Error; err != nil {
+			return err
+		}
+	}
 	if relEarning.IsPositive() {
 		if _, err := applyAdtySiteWalletChangeTx(tx, ext.SiteId, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
 			Type: "gift_release", RefType: "topup", RefID: ext.TradeNo, IdempotencyKey: key + ":earn:refund-release",
@@ -876,12 +933,14 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 		}
 	}
 	if !already && (relEarning.IsPositive() || relMargin.IsPositive()) {
-		writeAdtyGiftOfficialAudit(ext.UserId, ext.SiteId, ext.TradeNo, "adty.gift.release", "unused gift guarantee released on refund",
+		if _, err := appendAdtyGiftOfficialAuditTx(tx, ext.UserId, ext.SiteId, ext.TradeNo, "adty.gift.release", "unused gift guarantee released on refund",
 			map[string]any{"earning": heldEarning.String(), "margin": heldMargin.String()},
 			map[string]any{
 				"trade_no": ext.TradeNo, "earning": relEarning.String(), "margin": relMargin.String(),
 				"phase": "refund",
-			})
+			}); err != nil {
+			return err
+		}
 	}
 	return cancelPendingGiftFulfillmentOnFullRefundTx(tx, ext, reclaimedForCancel, denomForCancel)
 }
@@ -988,7 +1047,54 @@ func cancelPendingGiftFulfillmentOnFullRefundTx(tx *gorm.DB, ext *model.AdtyTopu
 	return nil
 }
 
+// preLockGiftSpendSiteWalletsTx locks all involved site earnings wallets in site_id ASC
+// order followed by all involved site margin wallets in site_id ASC order (R6-008).
+func preLockGiftSpendSiteWalletsTx(tx *gorm.DB, userID int, items []model.AdtyBonusSpend) error {
+	if tx == nil || userID <= 0 || len(items) == 0 || !tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
+		return nil
+	}
+	sources := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.Source == "" {
+			continue
+		}
+		if _, ok := seen[item.Source]; !ok {
+			seen[item.Source] = struct{}{}
+			sources = append(sources, item.Source)
+		}
+	}
+	if len(sources) == 0 {
+		return nil
+	}
+	var siteIDs []int
+	if err := tx.Model(&model.AdtyTopupOrder{}).
+		Distinct("site_id").
+		Where("user_id = ? AND trade_no IN ? AND site_id > 0", userID, sources).
+		Pluck("site_id", &siteIDs).Error; err != nil {
+		return err
+	}
+	if len(siteIDs) == 0 {
+		return nil
+	}
+	sort.Ints(siteIDs)
+	var locked []model.AdtySiteWallet
+	if err := model.AdtyLockForUpdate(tx).
+		Where("site_id IN ? AND kind = ?", siteIDs, model.AdtySiteWalletEarnings).
+		Order("site_id ASC").
+		Find(&locked).Error; err != nil {
+		return err
+	}
+	return model.AdtyLockForUpdate(tx).
+		Where("site_id IN ? AND kind = ?", siteIDs, model.AdtySiteWalletMargin).
+		Order("site_id ASC").
+		Find(&locked).Error
+}
+
 func applySiteGiftSpendOnBonusTx(tx *gorm.DB, userID int, spends []model.AdtyBonusSpend) error {
+	if err := preLockGiftSpendSiteWalletsTx(tx, userID, spends); err != nil {
+		return err
+	}
 	for _, spend := range spends {
 		if err := applySiteGiftSpendForSourceTx(tx, userID, spend.Source, spend.Quota); err != nil {
 			return err
@@ -1089,12 +1195,14 @@ func applySiteGiftSpendForSourceTx(tx *gorm.DB, userID int, tradeNo string, take
 		}
 	}
 	if !already && (relEarning.IsPositive() || relMargin.IsPositive()) {
-		writeAdtyGiftOfficialAudit(userID, ext.SiteId, tradeNo, "adty.gift.spend", "",
+		if _, err := appendAdtyGiftOfficialAuditTx(tx, userID, ext.SiteId, tradeNo, "adty.gift.spend", "",
 			map[string]any{"earning": heldEarning.String(), "margin": heldMargin.String()},
 			map[string]any{
 				"trade_no": tradeNo, "earning": relEarning.String(), "margin": relMargin.String(),
 				"taken_quota": takenQuota,
-			})
+			}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1102,6 +1210,9 @@ func applySiteGiftSpendForSourceTx(tx *gorm.DB, userID int, tradeNo string, take
 // reverseSiteGiftSpendOnBonusTx mirrors applySiteGiftSpendOnBonusTx when a settled
 // non-expiring bonus share is reversed by a task/Realtime settlement refund (R3-004).
 func reverseSiteGiftSpendOnBonusTx(tx *gorm.DB, userID int, operationKey string, refunds []model.AdtyBonusSpend) error {
+	if err := preLockGiftSpendSiteWalletsTx(tx, userID, refunds); err != nil {
+		return err
+	}
 	for _, item := range refunds {
 		if err := reverseSiteGiftSpendForSourceTx(tx, userID, operationKey, item.Source, item.Quota); err != nil {
 			return err
@@ -1202,13 +1313,15 @@ func reverseSiteGiftSpendForSourceTx(tx *gorm.DB, userID int, operationKey, trad
 		}
 	}
 	if !already && (restEarning.IsPositive() || restMargin.IsPositive()) {
-		writeAdtyGiftOfficialAudit(userID, ext.SiteId, tradeNo, "adty.gift.spend_refund", "",
+		if _, err := appendAdtyGiftOfficialAuditTx(tx, userID, ext.SiteId, tradeNo, "adty.gift.spend_refund", "",
 			map[string]any{"spent_earning": spentEarning.String(), "spent_margin": spentMargin.String()},
 			map[string]any{
 				"trade_no": tradeNo, "operation_key": operationKey,
 				"earning": restEarning.String(), "margin": restMargin.String(),
 				"refunded_quota": refundedQuota,
-			})
+			}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1252,19 +1365,25 @@ func ListAdtyGiftFulfillments(status string, siteID int, pageInfo *common.PageIn
 // action="approve" transitions pending_review -> pending and immediately attempts fulfillment.
 // action="reject" transitions pending_review -> canceled and syncs adty_topup_orders.
 func ReviewAdtyGiftFulfillment(id int64, action, note string, operatorID int) (*model.AdtyGiftFulfillment, bool, error) {
+	row, fulfilled, _, err := ReviewAdtyGiftFulfillmentWithAudit(id, action, note, operatorID)
+	return row, fulfilled, err
+}
+
+func ReviewAdtyGiftFulfillmentWithAudit(id int64, action, note string, operatorID int) (*model.AdtyGiftFulfillment, bool, string, error) {
 	if model.DB == nil || id <= 0 || operatorID <= 0 {
-		return nil, false, common.NewMessage("Invalid parameters")
+		return nil, false, "", common.NewMessage("Invalid parameters")
 	}
 	action = strings.ToLower(strings.TrimSpace(action))
 	note = strings.TrimSpace(note)
 	if action != "approve" && action != "reject" {
-		return nil, false, common.NewMessage("Invalid parameters")
+		return nil, false, "", common.NewMessage("Invalid parameters")
 	}
 	if action == "reject" && note == "" {
-		return nil, false, common.NewMessage("Please enter a review reason")
+		return nil, false, "", common.NewMessage("Please enter a review reason")
 	}
 	var row model.AdtyGiftFulfillment
 	var beforeStatus string
+	var auditEntry *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// R3-003: Pre-read IDs unlocked, then lock in canonical order:
 		// AdtySite -> AdtyTopupOrder -> AdtyGiftFulfillment.
@@ -1334,10 +1453,19 @@ func ReviewAdtyGiftFulfillment(id int64, action, note string, operatorID int) (*
 			Update("gift_fulfillment_status", nextStatus).Error; err != nil {
 			return err
 		}
-		return nil
+		var auditErr error
+		auditEntry, auditErr = appendAdtyGiftOfficialAuditTx(tx, operatorID, row.SiteId, row.TradeNo, "adty.gift.fulfillment.review", note,
+			map[string]any{"id": row.Id, "status": beforeStatus},
+			map[string]any{"id": row.Id, "trade_no": row.TradeNo, "action": action, "status": row.Status})
+		return auditErr
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
+	}
+	eventID := ""
+	if auditEntry != nil {
+		eventID = auditEntry.EventId
+		deliverAdtyCommittedAudit(*auditEntry)
 	}
 	fulfilled := false
 	if action == "approve" {
@@ -1351,8 +1479,5 @@ func ReviewAdtyGiftFulfillment(id int64, action, note string, operatorID int) (*
 			row = refreshed
 		}
 	}
-	writeAdtyGiftOfficialAudit(operatorID, row.SiteId, row.TradeNo, "adty.gift.fulfillment.review", note,
-		map[string]any{"id": row.Id, "status": beforeStatus},
-		map[string]any{"id": row.Id, "trade_no": row.TradeNo, "action": action, "status": row.Status, "fulfilled": fulfilled})
-	return &row, fulfilled, nil
+	return &row, fulfilled, eventID, nil
 }

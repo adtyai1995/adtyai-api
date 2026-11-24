@@ -74,28 +74,40 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *common.RelayInfo, requestBody 
 		return nil, err
 	}
 	// 解析 resp
+	defer resp.Body.Close()
 	var cozeResponse CozeChatResponse
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, err
 	}
-	err = hostcommon.Unmarshal(respBody, &cozeResponse)
+	if err := hostcommon.Unmarshal(respBody, &cozeResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse coze chat response: %w", err)
+	}
 	if cozeResponse.Code != 0 {
 		return nil, errors.New(cozeResponse.Msg)
 	}
 	c.Set("coze_conversation_id", cozeResponse.Data.ConversationId)
 	c.Set("coze_chat_id", cozeResponse.Data.Id)
-	// 轮询检查消息是否完成
+	// 轮询检查消息是否完成（R6-045: 增加有界截止时间与请求取消监听）
+	pollDeadline := time.NewTimer(2 * time.Minute)
+	defer pollDeadline.Stop()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	for {
 		err, isComplete := checkIfChatComplete(a, c, info)
 		if err != nil {
 			return nil, err
-		} else {
-			if isComplete {
-				break
-			}
 		}
-		time.Sleep(time.Second * 1)
+		if isComplete {
+			break
+		}
+		select {
+		case <-c.Request.Context().Done():
+			return nil, c.Request.Context().Err()
+		case <-pollDeadline.C:
+			return nil, errors.New("coze chat completion poll timed out")
+		case <-ticker.C:
+		}
 	}
 	// 发送获取消息请求
 	return getChatDetail(a, c, info)

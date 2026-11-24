@@ -124,23 +124,14 @@ func syncAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation, fromBa
 		}
 		if len(rootOps) > 0 {
 			rootFinalized = true
-			hasFoldedStream := false
-			for _, ro := range rootOps {
-				if ro.StreamWalletQuota > 0 {
-					hasFoldedStream = true
-					break
-				}
-			}
+			// R6-009: Once the root request:<reqID> op is finalized, direct:* chunks
+			// are unconditionally folded into the root op even when every chunk had
+			// AppliedQuota == 0 (StreamWalletQuota == 0) and Shortfall > 0.
 			var sum int64
 			q := tx.Model(&BillingOperation{}).
-				Select("COALESCE(SUM(shortfall), 0)")
-			if hasFoldedStream {
-				q = q.Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR (earning_root_key IN ? AND operation_key NOT LIKE ?))",
+				Select("COALESCE(SUM(shortfall), 0)").
+				Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR (earning_root_key IN ? AND operation_key NOT LIKE ?))",
 					op.UserId, BillingSettled, reqID, rootKey, []string{reqID, rootKey}, "direct:%")
-			} else {
-				q = q.Where("user_id = ? AND state = ? AND shortfall > 0 AND (operation_key = ? OR operation_key = ? OR operation_key LIKE ? OR earning_root_key IN ?)",
-					op.UserId, BillingSettled, reqID, rootKey, directPrefix, []string{reqID, rootKey})
-			}
 			if err := q.Scan(&sum).Error; err != nil {
 				return err
 			}

@@ -34,6 +34,9 @@ import type {
 } from '../types'
 
 function isSensitiveOptionKey(key: string): boolean {
+  if (key === 'TurnstileSiteKey') {
+    return false
+  }
   return (
     key.endsWith('Token') ||
     key.endsWith('Secret') ||
@@ -164,6 +167,13 @@ export function useUpdateOption() {
                 nextData,
                 'ResendKeyConfigured',
                 'true'
+              )
+            }
+            if (variables.key === 'TurnstileSecretKey') {
+              nextData = upsertSystemOption(
+                nextData,
+                'TurnstileSecretConfigured',
+                stringValue.trim() !== '' ? 'true' : 'false'
               )
             }
             if (nextData === current.data) return current

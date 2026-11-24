@@ -24,10 +24,25 @@ func FetchCodexChannelModels(channel *model.Channel) ([]string, error) {
 	defer cancel()
 
 	// The GitHub release lookup is not an upstream request; it always verifies
-	// certificates, whatever the channel's TLS setting says.
-	releaseClient, err := GetHttpClientWithProxy(setting.Proxy)
-	if err != nil {
-		return nil, err
+	// certificates, whatever the channel's or global TLS setting says.
+	var releaseClient *http.Client
+	if strings.TrimSpace(setting.Proxy) == "" {
+		releaseClient = NewVerifiedDirectNoRedirectHTTPClient(20 * time.Second)
+	} else {
+		baseClient, pErr := GetHttpClientWithProxy(setting.Proxy)
+		if pErr != nil {
+			return nil, pErr
+		}
+		verifiedTransport, vErr := cloneAdtyVerifiedPaymentTransport(baseClient.Transport)
+		if vErr != nil {
+			return nil, vErr
+		}
+		defer verifiedTransport.CloseIdleConnections()
+		cloned := *baseClient
+		cloned.Transport = verifiedTransport
+		cloned.Timeout = 20 * time.Second
+		cloned.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		releaseClient = &cloned
 	}
 	clientVersion, err := GetLatestCodexClientVersion(ctx, releaseClient)
 	if err != nil {

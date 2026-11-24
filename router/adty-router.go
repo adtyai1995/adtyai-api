@@ -174,7 +174,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/site/telegram/bind/unbind", middleware.UserAuth(), controller.DeleteAdtyTelegramBinding)
 	apiRouter.POST("/adty/site/telegram/bind/start", middleware.UserAuth(), controller.PostAdtyTelegramBindStart)
 	apiRouter.POST("/adty/site/telegram/bind/confirm", middleware.UserAuth(), controller.PostAdtyTelegramBindConfirm)
-	apiRouter.POST("/adty/telegram/webhook/:purpose/:secret", middleware.CriticalRateLimit(), controller.PostAdtyTelegramWebhook)
+	apiRouter.POST("/adty/telegram/webhook/:purpose/:secret", middleware.AnonymousRequestBodyLimit(), middleware.CriticalRateLimit(), controller.PostAdtyTelegramWebhook)
 	root := apiRouter.Group("/adty/admin", middleware.RootAuth())
 	root.PUT("/ticket-image-policy", controller.PutAdtyTicketImagePolicy)
 	root.GET("/notice-templates", controller.GetAdtyNoticeTemplates)

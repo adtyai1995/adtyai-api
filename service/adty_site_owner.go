@@ -499,10 +499,16 @@ func ReportAdtySiteCustomer(site *model.AdtySite, ownerId, userId int, reason st
 
 // HandleAdtySiteReport 管理员处理举报（分站·审核）：resolved 或 dismissed，写审计。
 func HandleAdtySiteReport(reportId, adminId int, status, note string) (*model.AdtySiteReport, error) {
+	report, _, err := HandleAdtySiteReportWithAudit(reportId, adminId, status, note)
+	return report, err
+}
+
+func HandleAdtySiteReportWithAudit(reportId, adminId int, status, note string) (*model.AdtySiteReport, string, error) {
 	if status != model.AdtySiteReportResolved && status != model.AdtySiteReportDismissed {
-		return nil, common.NewMessage("Invalid parameters")
+		return nil, "", common.NewMessage("Invalid parameters")
 	}
 	var report model.AdtySiteReport
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", reportId).First(&report).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -520,10 +526,17 @@ func HandleAdtySiteReport(reportId, adminId int, status, note string) (*model.Ad
 			return err
 		}
 		report.Status, report.HandledBy, report.HandleNote, report.HandledAt = status, adminId, truncateText(note, 1000), now
-		return recordSiteAuditTx(tx, report.SiteId, "report_"+status, adminId, map[string]any{"report_id": report.Id, "user_id": report.UserId}, nil, note)
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, report.SiteId, "report_"+status, adminId, map[string]any{"report_id": report.Id, "user_id": report.UserId}, nil, note)
+		return auditErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return &report, nil
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
+	return &report, eventID, nil
 }

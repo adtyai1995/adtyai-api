@@ -64,6 +64,18 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 			return 0, err
 		}
 	}
+	var pendingGiftSites []int
+	if model.DB.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+		if err := model.DB.Model(&model.AdtyGiftFulfillment{}).Distinct("site_id").
+			Where("site_id > 0 AND status = ?", model.AdtyGiftFulfillmentPending).
+			Pluck("site_id", &pendingGiftSites).Error; err != nil {
+			return 0, err
+		}
+	}
+	pendingGiftSet := make(map[int]struct{}, len(pendingGiftSites))
+	for _, siteId := range pendingGiftSites {
+		pendingGiftSet[siteId] = struct{}{}
+	}
 	pendingCoverageSet := make(map[int]struct{}, len(pendingCoverageSites))
 	for _, siteId := range pendingCoverageSites {
 		pendingCoverageSet[siteId] = struct{}{}
@@ -84,6 +96,12 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 			siteIds = append(siteIds, siteId)
 		}
 	}
+	for _, siteId := range pendingGiftSites {
+		if _, ok := seen[siteId]; !ok {
+			seen[siteId] = struct{}{}
+			siteIds = append(siteIds, siteId)
+		}
+	}
 	settled := 0
 	var first error
 	for _, siteId := range siteIds {
@@ -97,9 +115,13 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 		}
 		_, wasProjected := projectedSites[siteId]
 		_, hasPendingCoverage := pendingCoverageSet[siteId]
-		if ok || wasProjected || hasPendingCoverage {
+		_, hasPendingGift := pendingGiftSet[siteId]
+		if ok || wasProjected || hasPendingCoverage || hasPendingGift {
 			if ok {
 				settled++
+			}
+			if _, err := ResumePendingAdtyGiftFulfillments(siteId); err != nil {
+				common.SysError(common.LogText("resume site gift fulfillments failed site=%d: %s", siteId, err.Error()))
 			}
 			if err := ResumeAdtySiteInviteCoverage(siteId, now); err != nil {
 				common.SysError(common.LogText("resume site invite coverage failed site=%d: %s", siteId, err.Error()))
@@ -383,7 +405,13 @@ func adtyAnyFloat(value any) float64 {
 
 // ResumeAdtySiteSettlement 清掉对账暂停并立刻再结一次。数字还是对不上会重新暂停。
 func ResumeAdtySiteSettlement(siteId, operatorId int, now time.Time) (*model.AdtySite, error) {
+	site, _, err := ResumeAdtySiteSettlementWithAudit(siteId, operatorId, now)
+	return site, err
+}
+
+func ResumeAdtySiteSettlementWithAudit(siteId, operatorId int, now time.Time) (*model.AdtySite, string, error) {
 	var site model.AdtySite
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
 			return err
@@ -396,19 +424,32 @@ func ResumeAdtySiteSettlement(siteId, operatorId int, now time.Time) (*model.Adt
 			return err
 		}
 		site.SettleHoldReason = ""
-		return recordSiteAuditTx(tx, site.Id, "settlement_resume", operatorId,
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, "settlement_resume", operatorId,
 			map[string]any{"settle_hold_reason": old}, map[string]any{"settle_hold_reason": ""}, "")
+		return auditErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	if _, err := settleAdtySite(siteId, adtySettleCutoffDay(now), now.Unix()); err != nil {
-		return nil, err
+		return nil, eventID, err
+	}
+	if _, err := ResumePendingAdtyGiftFulfillments(siteId); err != nil {
+		common.SysError(common.LogText("resume site gift fulfillments failed site=%d: %s", siteId, err.Error()))
+	}
+	if err := ResumeAdtySiteInviteCoverage(siteId, now); err != nil {
+		common.SysError(common.LogText("resume site invite coverage failed site=%d: %s", siteId, err.Error()))
 	}
 	if err := model.DB.First(&site, siteId).Error; err != nil {
-		return nil, err
+		return nil, eventID, err
 	}
-	return &site, nil
+	return &site, eventID, nil
 }
 
 // adtyOwnerAccountTx 锁站长的佣金账户；还没有推广员记录时建一个（开站前用户可能没走过 P6）。

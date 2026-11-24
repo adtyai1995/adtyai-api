@@ -13,15 +13,22 @@ import (
 // classification of the original charge. It resolves the whole historical
 // task, so later positive adjustments and refunds cannot receive new decisions.
 func ReviewAdtySiteEarningRoot(operationKey string, adminId int, decision, reason string) error {
+	_, _, err := ReviewAdtySiteEarningRootWithAudit(operationKey, adminId, decision, reason)
+	return err
+}
+
+func ReviewAdtySiteEarningRootWithAudit(operationKey string, adminId int, decision, reason string) (string, bool, error) {
 	if adminId <= 0 || strings.TrimSpace(reason) == "" ||
 		(decision != model.AdtyEarningOriginalReleased && decision != model.AdtyEarningOriginalSkipped) {
-		return common.NewMessage("Invalid parameters")
+		return "", false, common.NewMessage("Invalid parameters")
 	}
 	var event model.AdtySiteEarningEvent
 	if err := model.DB.Where("operation_key = ?", operationKey).First(&event).Error; err != nil {
-		return err
+		return "", false, err
 	}
 	var keys []string
+	var auditEvent *model.AuditLog
+	replayed := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var customers []model.AdtySiteCustomer
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", event.UserId).Limit(1).Find(&customers).Error; err != nil {
@@ -39,11 +46,15 @@ func ReviewAdtySiteEarningRoot(operationKey string, adminId int, decision, reaso
 			if err := tx.Model(&root).Update("earning_review_status", decision).Error; err != nil {
 				return err
 			}
-			if err := recordSiteAuditTx(tx, event.SiteId, "earning_review", adminId,
+			var auditErr error
+			auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, event.SiteId, "earning_review", adminId,
 				map[string]any{"root_operation_key": root.OperationKey, "status": model.AdtyEarningNeedsReview},
-				map[string]any{"operation_key": operationKey, "root_operation_key": root.OperationKey, "original_charge": decision}, strings.TrimSpace(reason)); err != nil {
-				return err
+				map[string]any{"operation_key": operationKey, "root_operation_key": root.OperationKey, "original_charge": decision}, strings.TrimSpace(reason))
+			if auditErr != nil {
+				return auditErr
 			}
+		} else {
+			replayed = true
 		}
 		if err := tx.Model(&model.AdtySiteEarningEvent{}).Where("root_operation_key = ? AND review_status = ?", root.OperationKey, model.AdtyEarningNeedsReview).
 			Updates(map[string]any{"review_status": decision, "risk_released": decision == model.AdtyEarningOriginalReleased}).Error; err != nil {
@@ -52,16 +63,21 @@ func ReviewAdtySiteEarningRoot(operationKey string, adminId int, decision, reaso
 		return tx.Model(&model.AdtySiteEarningEvent{}).Where("root_operation_key = ? AND projected = ?", root.OperationKey, false).Pluck("operation_key", &keys).Error
 	})
 	if err != nil {
-		return err
+		return "", false, err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	// Classification and audit are already durable. A projection failure can be
 	// retried through the same decision or the normal recovery worker.
 	for _, key := range keys {
 		if err := projectAdtySiteEarningEvent(context.Background(), key); err != nil {
-			return err
+			return eventID, replayed, err
 		}
 	}
-	return clearAdtyEarningReviewHold(event.SiteId)
+	return eventID, replayed, clearAdtyEarningReviewHold(event.SiteId)
 }
 
 func clearAdtyEarningReviewHold(siteId int) error {

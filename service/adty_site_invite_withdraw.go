@@ -310,16 +310,25 @@ func siteInviteCommissionFree(row *model.AdtySiteInviteCommission) decimal.Decim
 // ReviewAdtySiteInviteWithdrawal approves or rejects a pending cash withdrawal.
 // Only the owner of that withdrawal's site may review it.
 func ReviewAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string) error {
-	return reviewSiteInviteWithdrawal(ownerID, withdrawalID, approve, reason, false, "")
+	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, withdrawalID, approve, reason, false, "")
+	return err
 }
 func ReviewClosedAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string) error {
-	return reviewSiteInviteWithdrawal(ownerID, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
+	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
+	return err
+}
+func ReviewClosedAdtySiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, approve bool, reason string) (string, bool, error) {
+	return reviewSiteInviteWithdrawalWithAudit(ownerID, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
 }
 func ConfirmClosedSiteInvitePayoutFailure(actor int, id int64, approve bool, reason string) error {
+	_, _, err := ConfirmClosedSiteInvitePayoutFailureWithAudit(actor, id, approve, reason)
+	return err
+}
+func ConfirmClosedSiteInvitePayoutFailureWithAudit(actor int, id int64, approve bool, reason string) (string, bool, error) {
 	if approve {
-		return common.NewMessage("Invalid parameters")
+		return "", false, common.NewMessage("Invalid parameters")
 	}
-	return reviewSiteInviteWithdrawal(actor, id, false, reason, true, model.AdtySiteInviteWithdrawApproved)
+	return reviewSiteInviteWithdrawalWithAudit(actor, id, false, reason, true, model.AdtySiteInviteWithdrawApproved)
 }
 // lockSiteInviteWithdrawalCanonicalTx acquires locks in canonical global order
 // (AdtySite -> AdtySiteInviteCommission(id ASC) -> AdtySiteInviteWithdrawal)
@@ -366,14 +375,17 @@ func lockSiteInviteWithdrawalCanonicalTx(tx *gorm.DB, withdrawalID int64, ownerI
 	return &row, nil
 }
 
-func reviewSiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string, platform bool, requiredStatus string) error {
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+func reviewSiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, approve bool, reason string, platform bool, requiredStatus string) (string, bool, error) {
+	var auditEvent *model.AuditLog
+	replayed := false
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		lockedRow, err := lockSiteInviteWithdrawalCanonicalTx(tx, withdrawalID, ownerID, platform, 0)
 		if err != nil {
 			return err
 		}
 		row := *lockedRow
 		if !approve && row.Status == model.AdtySiteInviteWithdrawRejected && row.FailureAt > 0 && row.FailureBy == ownerID && row.RejectReason == strings.TrimSpace(reason) && requiredStatus != model.AdtySiteInviteWithdrawPending {
+			replayed = true
 			return nil
 		}
 		if requiredStatus != "" && row.Status != requiredStatus {
@@ -388,35 +400,66 @@ func reviewSiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, r
 		if !approve && row.Status == model.AdtySiteInviteWithdrawApproved && strings.TrimSpace(reason) == "" {
 			return common.NewMessage("Enter the failed payout reference")
 		}
+		beforeSnap := map[string]any{"id": row.Id, "site_id": row.SiteId, "status": row.Status, "amount_usd": row.AmountUSD.String()}
 		if approve {
-			return tx.Model(&row).Updates(map[string]any{
+			if err := tx.Model(&row).Updates(map[string]any{
 				"status": model.AdtySiteInviteWithdrawApproved, "reviewed_by": ownerID, "reviewed_at": time.Now().Unix(),
-			}).Error
+			}).Error; err != nil {
+				return err
+			}
+			var auditErr error
+			auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, ownerID, row.SiteId, "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_invite_withdrawal.approve", strings.TrimSpace(reason), "",
+				beforeSnap, map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawApproved, "platform": platform}, model.AuditResultSuccess)
+			return auditErr
 		}
 		if err := releaseSiteInviteWithdrawalTx(tx, &row); err != nil {
 			return err
 		}
 		changes := map[string]any{"status": model.AdtySiteInviteWithdrawRejected, "reject_reason": strings.TrimSpace(reason)}
+		action := "adty.site_invite_withdrawal.reject"
 		if row.Status == model.AdtySiteInviteWithdrawApproved {
 			changes["failure_by"], changes["failure_at"] = ownerID, time.Now().Unix()
+			action = "adty.site_invite_withdrawal.failed"
 		} else {
 			changes["reviewed_by"], changes["reviewed_at"] = ownerID, time.Now().Unix()
 		}
-		return tx.Model(&row).Updates(changes).Error
+		if err := tx.Model(&row).Updates(changes).Error; err != nil {
+			return err
+		}
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, ownerID, row.SiteId, "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), action, strings.TrimSpace(reason), "",
+			beforeSnap, map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawRejected, "platform": platform}, model.AuditResultSuccess)
+		return auditErr
 	})
+	if err != nil {
+		return "", false, err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
+	return eventID, replayed, nil
 }
 
 // MarkAdtySiteInviteWithdrawalPaid records the owner's offline payment.
 // It moves the freeze to withdrawn commission and does not credit quota.
 func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, proof string) error {
-	return paySiteInviteWithdrawal(ownerID, withdrawalID, txID, proof, false)
+	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, withdrawalID, txID, proof, false)
+	return err
 }
 func MarkClosedAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, proof string) error {
-	return paySiteInviteWithdrawal(ownerID, withdrawalID, txID, proof, true)
+	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, withdrawalID, txID, proof, true)
+	return err
 }
-func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string, platform bool) error {
+func MarkClosedAdtySiteInviteWithdrawalPaidWithAudit(ownerID int, withdrawalID int64, txID, proof string) (string, bool, error) {
+	return paySiteInviteWithdrawalWithAudit(ownerID, withdrawalID, txID, proof, true)
+}
+func paySiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, txID, proof string, platform bool) (string, bool, error) {
 	txID = strings.TrimSpace(txID)
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	var auditEvent *model.AuditLog
+	replayed := false
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		lockedRow, err := lockSiteInviteWithdrawalCanonicalTx(tx, withdrawalID, ownerID, platform, 0)
 		if err != nil {
 			return err
@@ -431,6 +474,7 @@ func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string
 			cleanProof = canonicalProof
 		}
 		if row.Status == model.AdtySiteInviteWithdrawPaid && row.Method != "balance" && row.TxID == txID && row.ProofNote == cleanProof {
+			replayed = true
 			return nil
 		}
 		if row.Status != model.AdtySiteInviteWithdrawApproved || !payableSiteInviteWithdrawal(&row) {
@@ -487,11 +531,27 @@ func paySiteInviteWithdrawal(ownerID int, withdrawalID int64, txID, proof string
 				return err
 			}
 		}
-		return tx.Model(&row).Updates(map[string]any{
+		if err := tx.Model(&row).Updates(map[string]any{
 			"status": model.AdtySiteInviteWithdrawPaid, "paid_at": time.Now().Unix(), "paid_by": ownerID,
 			"tx_id": txID, "proof_note": cleanProof, "receipt_key": receiptKey,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, ownerID, row.SiteId, "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_invite_withdrawal.paid", "", "",
+			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": row.Status, "amount_usd": row.AmountUSD.String()},
+			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID, "platform": platform}, model.AuditResultSuccess)
+		return auditErr
 	})
+	if err != nil {
+		return "", false, err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
+	return eventID, replayed, nil
 }
 
 func requireSiteInviteProcessor(tx *gorm.DB, ownerID, siteID int, platform bool) error {

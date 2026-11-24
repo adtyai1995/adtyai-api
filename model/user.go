@@ -1334,6 +1334,13 @@ func (user *User) HardDelete() (int64, error) {
 	var revokedAccessTokens int64
 	var disabledEmployeeIDs []int
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		// R6-007: Pre-lock AdtyTeam / AdtyTeamMember / affected User rows in canonical
+		// order before AdtyBeforeUserDeleteHook touches tokens or users.
+		if AdtyPreLockUserDeleteHook != nil {
+			if err := AdtyPreLockUserDeleteHook(tx, user.Id); err != nil {
+				return err
+			}
+		}
 		ownsSite, err := userOwnsOpenSite(tx, user.Id)
 		if err != nil {
 			return err

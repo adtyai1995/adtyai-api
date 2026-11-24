@@ -52,6 +52,7 @@ import { useStatus } from '@/hooks/use-status'
 import { handleServerError } from '@/lib/handle-server-error'
 import { AuthOperationError } from '@/lib/secure-verification'
 import { createServerError } from '@/lib/server-error-message'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
 
 export function SignUpForm({
@@ -118,6 +119,9 @@ export function SignUpForm({
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
   const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
   const requiresLegalConsent = hasUserAgreement || hasPrivacyPolicy
+  const isSubsite = Boolean(
+    status?.adty_site || status?.data?.adty_site || subsiteDocument()
+  )
   const siteTermsVersion = Number(status?.site_customer_terms_version ?? 0)
   const requiresSiteTerms =
     Number.isInteger(siteTermsVersion) && siteTermsVersion > 0
@@ -169,7 +173,9 @@ export function SignUpForm({
         site_terms_version: requiresSiteTerms
           ? String(siteTermsVersion)
           : undefined,
-        site_invite_code: siteInviteCode.trim() || undefined,
+        site_invite_code: isSubsite
+          ? siteInviteCode.trim() || undefined
+          : undefined,
       })
 
       if (res?.success) {
@@ -339,7 +345,7 @@ export function SignUpForm({
           </>
         )}
 
-        {(requiresSiteTerms || initialSiteInvite !== '') && (
+        {isSubsite && (
           <div className='space-y-1.5'>
             <Label htmlFor='sign-up-site-invite-code'>
               {t('Site invite code (optional)')}

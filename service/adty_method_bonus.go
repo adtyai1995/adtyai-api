@@ -197,14 +197,16 @@ func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder, marginAuthori
 		ext.GiftReserveSource = "earning"
 	}
 	if !already && (fromEarning.IsPositive() || fromMargin.IsPositive()) {
-		writeAdtyGiftOfficialAudit(ext.UserId, ext.SiteId, ext.TradeNo, "adty.gift.reserve", "",
+		if _, err := appendAdtyGiftOfficialAuditTx(tx, ext.UserId, ext.SiteId, ext.TradeNo, "adty.gift.reserve", "",
 			map[string]any{"earning": "0", "margin": "0"},
 			map[string]any{
 				"trade_no": ext.TradeNo, "site_id": ext.SiteId, "bonus_usd": ext.BonusUSD.String(),
 				"source":  ext.GiftReserveSource,
 				"earning": fromEarning.String(), "margin": fromMargin.String(),
 				"method": ext.Method, "bonus_method": ext.BonusMethod,
-			})
+			}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -238,12 +240,14 @@ func ReleaseAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder) error {
 		}
 	}
 	if !already && (ext.GiftReserveEarning.IsPositive() || ext.GiftReserveMargin.IsPositive()) {
-		writeAdtyGiftOfficialAudit(ext.UserId, ext.SiteId, ext.TradeNo, "adty.gift.release", "",
+		if _, err := appendAdtyGiftOfficialAuditTx(tx, ext.UserId, ext.SiteId, ext.TradeNo, "adty.gift.release", "",
 			map[string]any{
 				"trade_no": ext.TradeNo, "source": ext.GiftReserveSource,
 				"earning": ext.GiftReserveEarning.String(), "margin": ext.GiftReserveMargin.String(),
 			},
-			map[string]any{"trade_no": ext.TradeNo, "earning": "0", "margin": "0", "source": ext.GiftReserveSource})
+			map[string]any{"trade_no": ext.TradeNo, "earning": "0", "margin": "0", "source": ext.GiftReserveSource}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -70,9 +70,10 @@ type AdtyTelegramDelivery struct {
 	Purpose   string `json:"purpose" gorm:"type:varchar(16)"`
 	SiteId    int    `json:"site_id"`
 	BindingId int64  `json:"binding_id"`
-	Status    string `json:"status" gorm:"type:varchar(16);index"`
-	Attempts  int    `json:"attempts"`
-	Body      string `json:"body" gorm:"type:text"`
+	Status      string `json:"status" gorm:"type:varchar(16);index"`
+	Attempts    int    `json:"attempts"`
+	NextRetryAt int64  `json:"next_retry_at" gorm:"not null;default:0;index"`
+	Body        string `json:"body" gorm:"type:text"`
 	LastError string `json:"last_error" gorm:"type:varchar(128)"`
 	Public    bool   `json:"public"`
 	// Channel 是公开公告要投递到的目标：频道的 @username 或数字 id（-100…）。

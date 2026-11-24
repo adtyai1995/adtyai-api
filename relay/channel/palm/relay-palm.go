@@ -55,19 +55,26 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 	createdTime := common.GetTimestamp()
 	dataChan := make(chan string)
 	stopChan := make(chan bool)
+	done := make(chan struct{})
+	sendStop := func() {
+		select {
+		case stopChan <- true:
+		case <-done:
+		}
+	}
 	go func() {
+		defer service.CloseResponseBodyGracefully(resp)
 		responseBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			common.SysLog(common.LogText("error reading stream response: %s", err.Error()))
-			stopChan <- true
+			sendStop()
 			return
 		}
-		service.CloseResponseBodyGracefully(resp)
 		var palmResponse PaLMChatResponse
 		err = common.Unmarshal(responseBody, &palmResponse)
 		if err != nil {
 			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
-			stopChan <- true
+			sendStop()
 			return
 		}
 		fullTextResponse := streamResponsePaLM2OpenAI(&palmResponse)
@@ -76,14 +83,18 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 		if len(palmResponse.Candidates) > 0 {
 			responseText = palmResponse.Candidates[0].Content
 		}
-	jsonResponse, err := common.Marshal(fullTextResponse)
+		jsonResponse, err := common.Marshal(fullTextResponse)
 		if err != nil {
 			common.SysLog(common.LogText("error marshalling stream response: %s", err.Error()))
-			stopChan <- true
+			sendStop()
 			return
 		}
-		dataChan <- string(jsonResponse)
-		stopChan <- true
+		select {
+		case dataChan <- string(jsonResponse):
+		case <-done:
+			return
+		}
+		sendStop()
 	}()
 	helper.SetEventStreamHeaders(c)
 	c.Stream(func(w io.Writer) bool {
@@ -96,6 +107,7 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 			return false
 		}
 	})
+	close(done)
 	service.CloseResponseBodyGracefully(resp)
 	return nil, responseText
 }

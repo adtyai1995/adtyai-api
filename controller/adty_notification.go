@@ -173,7 +173,7 @@ func WriteAdtyManagedNotification(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	row, err := service.SaveAdtyNotificationPublication(c.GetInt("id"), issuer, id, input, c.Request.Method == http.MethodDelete)
+	row, eventID, err := service.SaveAdtyNotificationPublicationWithAudit(c.GetInt("id"), issuer, id, input, c.Request.Method == http.MethodDelete)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Not found"))
 		return
@@ -185,6 +185,10 @@ func WriteAdtyManagedNotification(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, row)
 }
@@ -224,10 +228,14 @@ func PutAdtyNoticeTemplate(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	saved, err := service.SaveAdtyNoticeTemplate(c.GetInt("id"), common.RoleRootUser, c.Param("key"), body.TitleZh, body.ContentZh, body.TitleEn, body.ContentEn)
+	saved, eventID, err := service.SaveAdtyNoticeTemplateWithAudit(c.GetInt("id"), common.RoleRootUser, c.Param("key"), body.TitleZh, body.ContentZh, body.TitleEn, body.ContentEn)
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, saved)
 }

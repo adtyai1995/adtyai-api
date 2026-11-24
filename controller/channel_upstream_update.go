@@ -336,7 +336,9 @@ func sanitizeAdvancedCustomRequestError(err error, key string, requestURL string
 }
 
 func getFetchModelsResponseBody(method string, requestURL string, channel *model.Channel, headers http.Header) ([]byte, error) {
-	request, err := http.NewRequest(method, requestURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, method, requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -359,9 +361,10 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return nil, fmt.Errorf("status code: %d", response.StatusCode)
 	}
-	return io.ReadAll(response.Body)
+	return io.ReadAll(io.LimitReader(response.Body, 10<<20))
 }
 
 func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
@@ -382,7 +385,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get channel key: %w", err)
 		}
-		models, err := ollama.FetchOllamaModels(context.Background(), baseURL, key)
+		models, err := ollama.FetchOllamaModels(context.Background(), baseURL, key, channel.GetSetting())
 		if err != nil {
 			return nil, err
 		}

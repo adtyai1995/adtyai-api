@@ -272,10 +272,13 @@ func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, serverNam
 }
 
 func isAmbiguousMidjourneySubmitError(resp *dto.MidjourneyResponseWithStatusCode, err error) bool {
+	if resp != nil && (resp.StatusCode == http.StatusGatewayTimeout || (err != nil && resp.StatusCode >= 200 && resp.StatusCode < 300)) {
+		return true
+	}
 	if err == nil {
 		return false
 	}
-	if resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if IsAmbiguousTaskSubmitTransportError(err) {
 		return true
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -463,10 +466,15 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	billingApplied := false
 	upstreamAcceptedBillable := false
 	defer func() {
-		// R4-021: Once upstream accepted a billable job, never auto-release the
-		// billing reservation to BillingRefunded on transient DB/queue errors.
-		if !billingApplied && !upstreamAcceptedBillable {
-			service.ReleaseMidjourneyTaskBilling(midjourneyTask)
+		// R4-021 / R6-010: Once upstream accepted or returned an ambiguous outcome
+		// for a billable job, transition out of BillingReserved instead of releasing
+		// or leaving reference_id=0 eligible for lease-expiry auto-refund.
+		if !billingApplied {
+			if upstreamAcceptedBillable {
+				service.SettleAmbiguousMidjourneyTaskBilling(midjourneyTask, priceData.Quota)
+			} else {
+				service.ReleaseMidjourneyTaskBilling(midjourneyTask)
+			}
 		}
 	}()
 	service.RequestPolicy(c).BeginAttempt(&model.Channel{Id: c.GetInt("channel_id")}, info.UsingGroup)
@@ -481,7 +489,9 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	midjResponse := &mjResp.Response
 	midjourneyTask.Code, midjourneyTask.MjId = midjResponse.Code, midjResponse.Result
 	midjourneyTask.Description = midjResponse.Description
-	if mjResp.StatusCode != http.StatusOK || midjResponse.Code != 1 {
+	if mjResp.StatusCode == http.StatusGatewayTimeout && priceData.Quota > 0 {
+		upstreamAcceptedBillable = true
+	} else if mjResp.StatusCode != http.StatusOK || midjResponse.Code != 1 {
 		billingPrepared, _ = service.PrepareMidjourneyTaskBilling(info, midjourneyTask, 0, false)
 	} else if priceData.Quota > 0 {
 		upstreamAcceptedBillable = true
@@ -802,9 +812,14 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	billingApplied := false
 	upstreamAcceptedBillable := false
 	defer func() {
-		// R4-021: Never auto-refund after upstream accepted a billable submit.
-		if !billingApplied && !upstreamAcceptedBillable {
-			service.ReleaseMidjourneyTaskBilling(midjourneyTask)
+		// R4-021 / R6-010: Never auto-refund (or leave in BillingReserved) after
+		// upstream accepted or returned an ambiguous outcome for a billable submit.
+		if !billingApplied {
+			if upstreamAcceptedBillable {
+				service.SettleAmbiguousMidjourneyTaskBilling(midjourneyTask, priceData.Quota)
+			} else {
+				service.ReleaseMidjourneyTaskBilling(midjourneyTask)
+			}
 		}
 	}()
 	service.RequestPolicy(c).BeginAttempt(&model.Channel{Id: c.GetInt("channel_id")}, relayInfo.UsingGroup)
@@ -891,7 +906,9 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 	if !skipNewRow {
-		if !consumeQuota || midjResponseWithStatus.StatusCode != http.StatusOK {
+		if midjResponseWithStatus.StatusCode == http.StatusGatewayTimeout && priceData.Quota > 0 {
+			upstreamAcceptedBillable = true
+		} else if !consumeQuota || midjResponseWithStatus.StatusCode != http.StatusOK {
 			billingPrepared, _ = service.PrepareMidjourneyTaskBilling(relayInfo, midjourneyTask, 0, false)
 		} else if priceData.Quota > 0 {
 			upstreamAcceptedBillable = true

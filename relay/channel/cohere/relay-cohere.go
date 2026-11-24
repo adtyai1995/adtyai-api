@@ -102,15 +102,24 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	})
 	dataChan := make(chan string)
 	stopChan := make(chan bool)
+	done := make(chan struct{})
 	go func() {
+		defer service.CloseResponseBodyGracefully(resp)
 		for scanner.Scan() {
 			data := scanner.Text()
-			dataChan <- data
+			select {
+			case dataChan <- data:
+			case <-done:
+				return
+			}
 		}
 		if err := scanner.Err(); err != nil {
 			common.SysLog(common.LogText("error reading stream: %s", err.Error()))
 		}
-		stopChan <- true
+		select {
+		case stopChan <- true:
+		case <-done:
+		}
 	}()
 	helper.SetEventStreamHeaders(c)
 	isFirst := true
@@ -170,6 +179,8 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			return false
 		}
 	})
+	close(done)
+	service.CloseResponseBodyGracefully(resp)
 	if usage.PromptTokens == 0 {
 		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}

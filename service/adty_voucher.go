@@ -448,6 +448,7 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 	var credit int64
 	var marginResumedSiteID int
 	var redeemAudit map[string]any
+	var redeemAuditEntry *model.AuditLog
 	var redeemVoucherID int64
 	var redeemSiteID int
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -549,13 +550,18 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 			"redeemer_id": user.Id, "source_kind": voucher.SourceKind, "source_site_id": voucher.SourceSiteId,
 			"target_site_id": voucher.TargetSiteId,
 		}
-		return nil
-	})
-	if err == nil && result != nil && !result.Replayed && redeemAudit != nil {
-		writeAdtyOfficialAudit(userId, redeemSiteID, "voucher", strconv.FormatInt(redeemVoucherID, 10), "adty.voucher.redeem", "", "",
+		var auditErr error
+		redeemAuditEntry, auditErr = appendAdtyOfficialAuditTx(tx, userId, redeemSiteID, "voucher", strconv.FormatInt(redeemVoucherID, 10), "adty.voucher.redeem", "", "",
 			map[string]any{"status": model.AdtyVoucherStatusPending},
 			redeemAudit,
 			model.AuditResultSuccess)
+		if auditErr != nil {
+			return auditErr
+		}
+		return nil
+	})
+	if err == nil && result != nil && !result.Replayed && redeemAuditEntry != nil {
+		deliverAdtyCommittedAudit(*redeemAuditEntry)
 	}
 	return result, credit, marginResumedSiteID, err
 }

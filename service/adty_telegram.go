@@ -458,17 +458,30 @@ func StartAdtyTelegramBind(userId int, purpose string) (string, string, int64, e
 	return code, bot.Username, expires, nil
 }
 
-func HandleAdtyTelegramUpdate(purpose, secret string, update AdtyTelegramUpdate) (string, error) {
+func VerifyAdtyTelegramWebhook(purpose, secret string) error {
+	_, err := verifyAdtyTelegramWebhookBot(purpose, secret)
+	return err
+}
+
+func verifyAdtyTelegramWebhookBot(purpose, secret string) (*model.AdtyTelegramBot, error) {
 	if !adtyValidTelegramPurpose(purpose) {
-		return "", ErrAdtyTelegramInvalid
+		return nil, ErrAdtyTelegramInvalid
 	}
 	var bot model.AdtyTelegramBot
 	if err := model.DB.Where("purpose = ?", purpose).Limit(1).Find(&bot).Error; err != nil {
-		return "", err
+		return nil, err
 	}
 	sum := sha256.Sum256([]byte(secret))
 	if bot.Id == 0 || subtle.ConstantTimeCompare([]byte(bot.WebhookHash), []byte(hex.EncodeToString(sum[:]))) != 1 {
-		return "", ErrAdtyTelegramForbidden
+		return nil, ErrAdtyTelegramForbidden
+	}
+	return &bot, nil
+}
+
+func HandleAdtyTelegramUpdate(purpose, secret string, update AdtyTelegramUpdate) (string, error) {
+	bot, err := verifyAdtyTelegramWebhookBot(purpose, secret)
+	if err != nil {
+		return "", err
 	}
 	if update.Message == nil || update.Message.Chat.Type != "private" || update.Message.From.Id <= 0 {
 		return adtyTelegramSavedOr("telegram_bot_reply", adtyTelegramReply), nil
@@ -480,7 +493,7 @@ func HandleAdtyTelegramUpdate(purpose, secret string, update AdtyTelegramUpdate)
 		return adtyTelegramSavedOr("telegram_bot_reply", adtyTelegramReply), nil
 	}
 	hash := sha256.Sum256([]byte(strings.TrimSpace(code)))
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var challenge model.AdtyTelegramChallenge
 		lookup := model.AdtyLockForUpdate(tx).Where("code_hash = ? AND purpose = ?", hex.EncodeToString(hash[:]), purpose).Limit(1).Find(&challenge)
 		if lookup.Error != nil {
@@ -948,12 +961,31 @@ func authorizeAndResolveAdtyTelegramDelivery(row *model.AdtyTelegramDelivery) (t
 
 func RetryAdtyTelegram() (int, error) {
 	RecoverAdtyNotificationTelegramOutbox()
+	now := time.Now().Unix()
 	var rows []model.AdtyTelegramDelivery
-	if err := model.DB.Where("status IN ?", []string{model.AdtyTelegramDeliveryWait, model.AdtyTelegramDeliveryFail}).Limit(20).Find(&rows).Error; err != nil {
+	if err := model.DB.
+		Where("status IN ? AND (next_retry_at = 0 OR next_retry_at <= ?)", []string{model.AdtyTelegramDeliveryWait, model.AdtyTelegramDeliveryFail}, now).
+		Order("id ASC").
+		Limit(20).
+		Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, row := range rows {
+		// R6-032: Atomically claim a 120s lease before invoking the external Telegram API
+		// so multi-replica retries never double-send the same delivery row.
+		claimNow := time.Now().Unix()
+		claim := model.DB.Model(&model.AdtyTelegramDelivery{}).
+			Where("id = ? AND status = ? AND attempts = ? AND (next_retry_at = 0 OR next_retry_at <= ?)",
+				row.Id, row.Status, row.Attempts, claimNow).
+			Update("next_retry_at", claimNow+120)
+		if claim.Error != nil {
+			return n, claim.Error
+		}
+		if claim.RowsAffected == 0 {
+			continue
+		}
+
 		status := model.AdtyTelegramDeliveryFail
 		last := "sender unavailable"
 		if AdtyTelegramSender != nil {
@@ -976,12 +1008,34 @@ func RetryAdtyTelegram() (int, error) {
 			}
 		}
 		attempts := row.Attempts + 1
+		nextRetryAt := int64(0)
 		if last == telegramAuthorizationUnavailable {
 			attempts = row.Attempts
-		} else if status != model.AdtyTelegramDeliverySent && status != model.AdtyTelegramDeliverySkip && attempts >= 5 {
-			status = model.AdtyTelegramDeliveryDead
+			nextRetryAt = time.Now().Unix() + 60
+		} else if status != model.AdtyTelegramDeliverySent && status != model.AdtyTelegramDeliverySkip {
+			if attempts >= 5 {
+				status = model.AdtyTelegramDeliveryDead
+			} else {
+				shift := attempts - 1
+				if shift < 0 {
+					shift = 0
+				}
+				if shift > 4 {
+					shift = 4
+				}
+				nextRetryAt = time.Now().Unix() + int64(60<<shift)
+			}
 		}
-		if err := model.DB.Model(&row).Updates(map[string]any{"status": status, "attempts": attempts, "last_error": last}).Error; err != nil {
+		upd := model.DB.Model(&model.AdtyTelegramDelivery{}).Where("id = ?", row.Id)
+		if status != model.AdtyTelegramDeliverySent {
+			upd = upd.Where("status IN ?", []string{model.AdtyTelegramDeliveryWait, model.AdtyTelegramDeliveryFail})
+		}
+		if err := upd.Updates(map[string]any{
+			"status":        status,
+			"attempts":      attempts,
+			"last_error":    last,
+			"next_retry_at": nextRetryAt,
+		}).Error; err != nil {
 			return n, err
 		}
 		n++

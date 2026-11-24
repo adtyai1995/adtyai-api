@@ -632,7 +632,12 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 	}
 	headers := make(map[string][]string, len(resp.Header))
 	maps.Copy(headers, resp.Header)
-	value, err := a.plugin.Engine.Call(c.Request.Context(), "parseSubmitResponse", a.submitContext(c, info), map[string]any{"statusCode": resp.StatusCode, "headers": headers, "body": responseBody})
+	// R6-011: DoTaskApiRequest detached from client cancellation so upstream may
+	// have already created a live job. Run post-submit plugin hooks under a
+	// bounded non-canceled context so task ID and immediate usage are not dropped.
+	hookCtx, cancelHook := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 15*time.Second)
+	defer cancelHook()
+	value, err := a.plugin.Engine.Call(hookCtx, "parseSubmitResponse", a.submitContext(c, info), map[string]any{"statusCode": resp.StatusCode, "headers": headers, "body": responseBody})
 	if err != nil {
 		logger.LogDebug(
 			c,
@@ -696,7 +701,7 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 		CompletionTokens: positiveInt(parsed.Immediate.CompletionTokens), TotalTokens: positiveInt(parsed.Immediate.TotalTokens),
 	}
 	response.Immediate = immediate
-	if immediate.Status != model.TaskStatusSuccess || !a.hasHook(c.Request.Context(), "extractUsageOnComplete") {
+	if immediate.Status != model.TaskStatusSuccess || !a.hasHook(hookCtx, "extractUsageOnComplete") {
 		return response, nil
 	}
 	// A relayed stream that stopped early keeps the reservation: the plugin
@@ -714,7 +719,7 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 		logger.LogWarn(c, common.LogText("task plugin %s completion context failed; retaining reserved quota: %v", a.plugin.Meta.Key, err))
 		return response, nil
 	}
-	facts, err := a.plugin.Engine.Call(c.Request.Context(), "extractUsageOnComplete", ctx, jsonValue(immediate), parsed.TaskData)
+	facts, err := a.plugin.Engine.Call(hookCtx, "extractUsageOnComplete", ctx, jsonValue(immediate), parsed.TaskData)
 	if err != nil {
 		logger.LogWarn(c, common.LogText("task plugin %s completion usage failed; retaining reserved quota: %v", a.plugin.Meta.Key, err))
 		return response, nil

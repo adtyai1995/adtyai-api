@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -209,12 +210,18 @@ func PostAdtyTelegramBindConfirm(c *gin.Context) {
 }
 
 func PostAdtyTelegramWebhook(c *gin.Context) {
-	var update service.AdtyTelegramUpdate
-	if err := common.DecodeJson(c.Request.Body, &update); err != nil {
+	purpose := c.Param("purpose")
+	secret := c.Param("secret")
+	if err := service.VerifyAdtyTelegramWebhook(purpose, secret); err != nil {
 		c.Status(http.StatusForbidden)
 		return
 	}
-	reply, err := service.HandleAdtyTelegramUpdate(c.Param("purpose"), c.Param("secret"), update)
+	var update service.AdtyTelegramUpdate
+	if err := common.DecodeJson(io.LimitReader(c.Request.Body, 1<<20), &update); err != nil {
+		c.Status(http.StatusForbidden)
+		return
+	}
+	reply, err := service.HandleAdtyTelegramUpdate(purpose, secret, update)
 	if err != nil {
 		c.Status(http.StatusForbidden)
 		return

@@ -68,20 +68,25 @@ func adtyTeamRegistrationTTLValid(ttl time.Duration) bool {
 
 // CreateAdtyMainTeamRegistration issues a main-site create-team link. Only Root may call this.
 func CreateAdtyMainTeamRegistration(actorId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, error) {
+	issued, _, err := CreateAdtyMainTeamRegistrationWithAudit(actorId, ttl)
+	return issued, err
+}
+
+func CreateAdtyMainTeamRegistrationWithAudit(actorId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, string, error) {
 	if !adtyTeamRegistrationTTLValid(ttl) {
-		return nil, ErrAdtyTeamInvalid
+		return nil, "", ErrAdtyTeamInvalid
 	}
 	var actor model.User
 	if err := model.DB.Select("id", "role").First(&actor, actorId).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrAdtyTeamForbidden
+			return nil, "", ErrAdtyTeamForbidden
 		}
-		return nil, err
+		return nil, "", err
 	}
 	if actor.Role != common.RoleRootUser {
-		return nil, ErrAdtyTeamForbidden
+		return nil, "", ErrAdtyTeamForbidden
 	}
-	return issueAdtyTeamRegistration(actorId, 0, ttl)
+	return issueAdtyTeamRegistrationWithAudit(actorId, 0, ttl)
 }
 
 // CreateAdtyOwnerSiteTeamRegistration permanently rejects the former owner
@@ -90,27 +95,40 @@ func CreateAdtyOwnerSiteTeamRegistration(_, _ int, _ time.Duration) (*AdtyTeamRe
 	return nil, ErrAdtyTeamForbidden
 }
 
-func issueAdtyTeamRegistration(actorId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, error) {
+func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, string, error) {
 	code, hash, err := newAdtyTeamRegistrationCode()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	link := model.AdtyTeamRegistrationLink{
 		SiteId: siteId, CodeHash: hash, CreatedBy: actorId, ExpiresAt: time.Now().Add(ttl).Unix(),
 	}
-	if err := model.DB.Create(&link).Error; err != nil {
-		return nil, err
+	var auditEvent *model.AuditLog
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&link).Error; err != nil {
+			return err
+		}
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, actorId, siteId, "team_registration", strconv.FormatInt(link.Id, 10), "adty.team.registration.create", "", "", nil, map[string]any{
+			"link_id": link.Id, "site_id": siteId, "created_by": actorId,
+			"expires_at": link.ExpiresAt, "result": model.AuditResultSuccess,
+		}, model.AuditResultSuccess)
+		return auditErr
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	issued := &AdtyTeamRegistrationIssue{
 		Id: link.Id, Code: code, SiteId: link.SiteId, ExpiresAt: link.ExpiresAt,
 		CreatedBy: link.CreatedBy, CreatedAt: link.CreatedAt,
 		Status: model.AdtyTeamRegistrationStatusOutstanding,
 	}
-	writeAdtyTeamRegistrationAudit(actorId, siteId, link.Id, "adty.team.registration.create", nil, map[string]any{
-		"link_id": link.Id, "site_id": siteId, "created_by": actorId,
-		"expires_at": link.ExpiresAt, "result": model.AuditResultSuccess,
-	}, model.AuditResultSuccess)
-	return issued, nil
+	return issued, eventID, nil
 }
 
 // CompleteAdtyTeamRegistration creates the team and leader from a one-time link.
@@ -126,6 +144,7 @@ func CompleteAdtyTeamRegistration(code, username, password, teamName string, req
 	var created *AdtyTeamCreated
 	var link model.AdtyTeamRegistrationLink
 	var newUser *model.User
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		lookup := model.AdtyLockForUpdate(tx).Where("code_hash = ?", hash).Limit(1).Find(&link)
 		if lookup.Error != nil {
@@ -172,7 +191,12 @@ func CompleteAdtyTeamRegistration(code, username, password, teamName string, req
 		link.UsedBy, link.UsedAt, link.TeamId = leaderID, now, row.Team.Id
 		created = row
 		newUser = createdUser
-		return nil
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, link.UsedBy, link.SiteId, "team_registration", strconv.FormatInt(link.Id, 10), "adty.team.registration.complete", "", "", nil, map[string]any{
+			"link_id": link.Id, "site_id": link.SiteId, "created_by": link.CreatedBy,
+			"used_by": link.UsedBy, "team_id": link.TeamId, "result": model.AuditResultSuccess,
+		}, model.AuditResultSuccess)
+		return auditErr
 	})
 	if err != nil {
 		return nil, err
@@ -180,10 +204,9 @@ func CompleteAdtyTeamRegistration(code, username, password, teamName string, req
 	if newUser != nil {
 		newUser.FinishInsert(0)
 	}
-	writeAdtyTeamRegistrationAudit(link.UsedBy, link.SiteId, link.Id, "adty.team.registration.complete", nil, map[string]any{
-		"link_id": link.Id, "site_id": link.SiteId, "created_by": link.CreatedBy,
-		"used_by": link.UsedBy, "team_id": link.TeamId, "result": model.AuditResultSuccess,
-	}, model.AuditResultSuccess)
+	if auditEvent != nil {
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
 	return created, nil
 }
 
@@ -258,17 +281,22 @@ func listAdtyTeamRegistrations(siteId int) ([]AdtyTeamRegistrationView, error) {
 }
 
 func RevokeAdtyMainTeamRegistration(actorId int, linkId int64) (*AdtyTeamRegistrationView, error) {
+	view, _, err := RevokeAdtyMainTeamRegistrationWithAudit(actorId, linkId)
+	return view, err
+}
+
+func RevokeAdtyMainTeamRegistrationWithAudit(actorId int, linkId int64) (*AdtyTeamRegistrationView, string, error) {
 	var actor model.User
 	if err := model.DB.Select("id", "role").First(&actor, actorId).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrAdtyTeamForbidden
+			return nil, "", ErrAdtyTeamForbidden
 		}
-		return nil, err
+		return nil, "", err
 	}
 	if actor.Role != common.RoleRootUser {
-		return nil, ErrAdtyTeamForbidden
+		return nil, "", ErrAdtyTeamForbidden
 	}
-	return revokeAdtyTeamRegistration(actorId, 0, linkId)
+	return revokeAdtyTeamRegistrationWithAudit(actorId, 0, linkId)
 }
 
 func RevokeAdtyOwnerSiteTeamRegistration(ownerId, siteId int, linkId int64) (*AdtyTeamRegistrationView, error) {
@@ -278,15 +306,17 @@ func RevokeAdtyOwnerSiteTeamRegistration(ownerId, siteId int, linkId int64) (*Ad
 	if _, err := lockOwnerSite(siteId, ownerId); err != nil {
 		return nil, err
 	}
-	return revokeAdtyTeamRegistration(ownerId, siteId, linkId)
+	view, _, err := revokeAdtyTeamRegistrationWithAudit(ownerId, siteId, linkId)
+	return view, err
 }
 
-func revokeAdtyTeamRegistration(actorId, siteId int, linkId int64) (*AdtyTeamRegistrationView, error) {
+func revokeAdtyTeamRegistrationWithAudit(actorId, siteId int, linkId int64) (*AdtyTeamRegistrationView, string, error) {
 	if linkId <= 0 {
-		return nil, ErrAdtyTeamInvalid
+		return nil, "", ErrAdtyTeamInvalid
 	}
 	var view AdtyTeamRegistrationView
 	var createdBy int
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var link model.AdtyTeamRegistrationLink
 		lookup := model.AdtyLockForUpdate(tx).Where("id = ? AND site_id = ?", linkId, siteId).Limit(1).Find(&link)
@@ -306,19 +336,25 @@ func revokeAdtyTeamRegistration(actorId, siteId int, linkId int64) (*AdtyTeamReg
 		link.RevokedBy, link.RevokedAt = actorId, now
 		createdBy = link.CreatedBy
 		view = adtyTeamRegistrationView(link, now)
-		return nil
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, actorId, siteId, "team_registration", strconv.FormatInt(view.Id, 10), "adty.team.registration.revoke", "", "", map[string]any{
+			"link_id": view.Id, "site_id": siteId, "status": model.AdtyTeamRegistrationStatusOutstanding,
+		}, map[string]any{
+			"link_id": view.Id, "site_id": siteId, "created_by": createdBy,
+			"revoked_by": actorId, "revoked_at": view.RevokedAt, "result": model.AuditResultSuccess,
+			"status": model.AdtyTeamRegistrationStatusRevoked,
+		}, model.AuditResultSuccess)
+		return auditErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	writeAdtyTeamRegistrationAudit(actorId, siteId, view.Id, "adty.team.registration.revoke", map[string]any{
-		"link_id": view.Id, "site_id": siteId, "status": model.AdtyTeamRegistrationStatusOutstanding,
-	}, map[string]any{
-		"link_id": view.Id, "site_id": siteId, "created_by": createdBy,
-		"revoked_by": actorId, "revoked_at": view.RevokedAt, "result": model.AuditResultSuccess,
-		"status": model.AdtyTeamRegistrationStatusRevoked,
-	}, model.AuditResultSuccess)
-	return &view, nil
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
+	return &view, eventID, nil
 }
 
 func adtyTeamRegistrationView(link model.AdtyTeamRegistrationLink, now int64) AdtyTeamRegistrationView {
@@ -327,23 +363,5 @@ func adtyTeamRegistrationView(link model.AdtyTeamRegistrationLink, now int64) Ad
 		ExpiresAt: link.ExpiresAt, UsedBy: link.UsedBy, UsedAt: link.UsedAt, TeamId: link.TeamId,
 		RevokedBy: link.RevokedBy, RevokedAt: link.RevokedAt,
 		Status: model.AdtyTeamRegistrationStatus(link, now),
-	}
-}
-
-func writeAdtyTeamRegistrationAudit(actorId, siteId int, linkId int64, action string, before, after any, result string) {
-	rec := model.OfficialAuditWrite{
-		UserId: actorId, SiteID: model.OfficialAuditSiteIDPointer(siteId),
-		ObjectType: "team_registration", ObjectID: strconv.FormatInt(linkId, 10),
-		Action: action, Category: model.AuditCategoryOperation, Content: action,
-		Before: before, After: after, Result: result, Success: result == model.AuditResultSuccess,
-	}
-	if actorId > 0 {
-		if user, err := model.GetUserById(actorId, false); err == nil && user != nil {
-			rec.Username = user.Username
-			rec.ActorRole = user.Role
-		}
-	}
-	if err := model.WriteOfficialAuditLog(nil, rec); err != nil {
-		common.SysLog(common.LogText("official team registration audit write failed: %s", err.Error()))
 	}
 }

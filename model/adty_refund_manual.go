@@ -29,6 +29,20 @@ func lockAdtyRefundOrderForScopeTx(tx *gorm.DB, tradeNo string, operatorID int, 
 		if user.Status != common.UserStatusEnabled {
 			return nil, nil, common.NewMessage("No permission to perform this action")
 		}
+	} else {
+		// R6-018: Root manual refunds also lock AdtySite BEFORE TopUp/AdtyTopupOrder
+		// when the order belongs to a subsite, matching CompleteAdtyTopUpTx and
+		// coverAdtySiteInviteCommissionTx canonical lock order.
+		var hint AdtyTopupOrder
+		if err := tx.Select("site_id").Where("trade_no = ?", tradeNo).Limit(1).Find(&hint).Error; err != nil {
+			return nil, nil, err
+		}
+		if hint.SiteId > 0 {
+			var site AdtySite
+			if err := lockForUpdate(tx).Select("id").Where("id = ?", hint.SiteId).Limit(1).Find(&site).Error; err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 	topUp, ext, err := lockAdtyRefundOrderForOperatorTx(tx, tradeNo, operatorID)
 	if err != nil {

@@ -78,11 +78,16 @@ func adtyNotificationAuditSnapshot(row model.AdtyNotificationPublication) map[st
 }
 
 func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int, input AdtyNotificationInput, withdraw bool) (*model.AdtyNotificationPublication, error) {
+	row, _, err := SaveAdtyNotificationPublicationWithAudit(actorID, issuer, id, input, withdraw)
+	return row, err
+}
+
+func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySite, id int, input AdtyNotificationInput, withdraw bool) (*model.AdtyNotificationPublication, string, error) {
 	issuerID := 0
 	if issuer != nil {
 		issuerID = issuer.Id
 		if issuer.Status == model.AdtySiteStatusClosing {
-			return nil, ErrAdtySiteClosing
+			return nil, "", ErrAdtySiteClosing
 		}
 	}
 	row := model.AdtyNotificationPublication{IssuerSiteId: issuerID}
@@ -90,29 +95,29 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 	currentStatus := ""
 	if id > 0 {
 		if err := model.DB.Where("id = ? AND issuer_site_id = ?", id, issuerID).First(&row).Error; err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		beforeSnap = adtyNotificationAuditSnapshot(row)
 		currentStatus = row.Status
 		if input.Revision <= 0 {
-			return nil, common.NewMessage("Invalid parameters")
+			return nil, "", common.NewMessage("Invalid parameters")
 		}
 		if currentStatus == "withdrawn" {
 			// 撤回的公告是历史记录，不是可编辑对象。
-			return nil, common.NewMessage("Invalid parameters")
+			return nil, "", common.NewMessage("Invalid parameters")
 		}
 		if currentStatus == "published" && input.Draft {
 			// 已发布的不能退回草稿：那是「悄无声息地把它从所有人眼前拿走」，
 			// 而撤回这个动作是显式且有历史的。
-			return nil, common.NewMessage("Published announcements cannot be turned back into drafts")
+			return nil, "", common.NewMessage("Published announcements cannot be turned back into drafts")
 		}
 	} else {
 		if withdraw || input.Revision != 0 {
-			return nil, common.NewMessage("Invalid parameters")
+			return nil, "", common.NewMessage("Invalid parameters")
 		}
 		var publisher model.User
 		if err := model.DB.First(&publisher, actorID).Error; err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		row.PublisherId, row.PublisherName = actorID, publisher.Username
 		row.Revision = 1
@@ -134,14 +139,16 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 			return auditErr
 		})
 		if err != nil {
-			return &row, err
+			return &row, "", err
 		}
+		eventID := ""
 		if auditEntry != nil {
+			eventID = auditEntry.EventId
 			deliverAdtyCommittedAudit(*auditEntry)
 		} else {
 			writeAdtyOfficialAudit(actorID, issuerID, "notification", strconv.Itoa(row.Id), "adty.notification.withdraw", "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
 		}
-		return &row, nil
+		return &row, eventID, nil
 	}
 	input.Title, input.Content, input.Business = strings.TrimSpace(input.Title), strings.TrimSpace(input.Content), strings.TrimSpace(input.Business)
 	sourceContent := normalizeAdtyNotificationSourceContent(row.Id, input.Content)
@@ -151,12 +158,12 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 		utf8.RuneCountInString(input.Title) > 120 || utf8.RuneCountInString(sourceContent) > 10000 || utf8.RuneCountInString(input.Business) > 200 ||
 		!slices.Contains([]string{"platform", "system", "maintenance", "rules"}, input.Kind) ||
 		!slices.Contains([]string{"all_users", "all_sites", "site", "team", "user"}, input.Audience) {
-		return nil, common.NewMessage("Invalid parameters")
+		return nil, "", common.NewMessage("Invalid parameters")
 	}
 
 	targetSiteID, targetSiteName, err := resolveAdtyNotificationTarget(issuer, issuerID, input)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	row.Title, row.Content, row.Business = input.Title, sourceContent, input.Business
@@ -199,9 +206,11 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 		auditEntry, auditErr = appendAdtyOfficialAuditTx(tx, actorID, issuerID, "notification", strconv.Itoa(row.Id), auditAction, "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
 		return auditErr
 	}); err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	eventID := ""
 	if auditEntry != nil {
+		eventID = auditEntry.EventId
 		deliverAdtyCommittedAudit(*auditEntry)
 	} else {
 		writeAdtyOfficialAudit(actorID, issuerID, "notification", strconv.Itoa(row.Id), auditAction, "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
@@ -215,7 +224,7 @@ func SaveAdtyNotificationPublication(actorID int, issuer *model.AdtySite, id int
 			common.SysError(common.LogText("push notification %d to telegram failed: %s", row.Id, err.Error()))
 		}
 	}
-	return &row, nil
+	return &row, eventID, nil
 }
 
 func resolveAdtyNotificationTarget(issuer *model.AdtySite, issuerID int, input AdtyNotificationInput) (int, string, error) {
@@ -779,11 +788,18 @@ func resolveAdtyNotificationDisplayContentWithDB(db *gorm.DB, row model.AdtyNoti
 }
 
 func adtyUserActiveTeamTargets(userID, siteID int) ([]string, error) {
-	if userID <= 0 || model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTeam{}) || !model.DB.Migrator().HasTable(&model.AdtyTeamMember{}) {
+	return adtyUserActiveTeamTargetsWithDB(model.DB, userID, siteID)
+}
+
+func adtyUserActiveTeamTargetsWithDB(db *gorm.DB, userID, siteID int) ([]string, error) {
+	if db == nil {
+		db = model.DB
+	}
+	if userID <= 0 || db == nil || !db.Migrator().HasTable(&model.AdtyTeam{}) || !db.Migrator().HasTable(&model.AdtyTeamMember{}) {
 		return nil, nil
 	}
 	var memberTeamIDs []int64
-	if err := model.DB.Model(&model.AdtyTeamMember{}).
+	if err := db.Model(&model.AdtyTeamMember{}).
 		Where("user_id = ? AND status = ?", userID, model.AdtyTeamMemberActive).
 		Pluck("team_id", &memberTeamIDs).Error; err != nil {
 		return nil, err
@@ -792,7 +808,7 @@ func adtyUserActiveTeamTargets(userID, siteID int) ([]string, error) {
 		return nil, nil
 	}
 	var activeTeamIDs []int64
-	if err := model.DB.Model(&model.AdtyTeam{}).
+	if err := db.Model(&model.AdtyTeam{}).
 		Where("id IN ? AND site_id = ? AND status = ?", memberTeamIDs, siteID, model.AdtyTeamStatusActive).
 		Pluck("id", &activeTeamIDs).Error; err != nil {
 		return nil, err
@@ -835,11 +851,18 @@ func adtyUserCanReadPublication(user *model.User, pub *model.AdtyNotificationPub
 // A matching Host alone does not entitle an unrelated account to site content.
 // Account membership is read from SQL rather than client parameters or caches.
 func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gorm.DB, error) {
+	return adtyVisibleNotificationPublicationsWithDB(model.DB, userID, site)
+}
+
+func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *model.AdtySite) (*gorm.DB, error) {
+	if db == nil {
+		db = model.DB
+	}
 	var user model.User
-	if err := model.DB.First(&user, userID).Error; err != nil {
+	if err := db.First(&user, userID).Error; err != nil {
 		return nil, err
 	}
-	query := model.DB.Model(&model.AdtyNotificationPublication{}).Where("status = ?", "published")
+	query := db.Model(&model.AdtyNotificationPublication{}).Where("status = ?", "published")
 	userTarget := fmt.Sprintf("user:%d", userID)
 	// 可见性规则（A.18.2 / features.md:16）：
 	//
@@ -852,7 +875,7 @@ func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gor
 	platformAudiences := []string{"all_users", "all_sites", "all"}
 	if site == nil {
 		if user.SiteId == 0 && user.StaffSiteId == 0 {
-			teamTargets, err := adtyUserActiveTeamTargets(userID, 0)
+			teamTargets, err := adtyUserActiveTeamTargetsWithDB(db, userID, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -870,7 +893,7 @@ func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gor
 		return query.Where("audience IN ?", platformAudiences), nil
 	}
 	var current model.AdtySite
-	if err := model.DB.First(&current, site.Id).Error; err != nil {
+	if err := db.First(&current, site.Id).Error; err != nil {
 		return nil, err
 	}
 	if user.SiteId != site.Id && current.OwnerUserId != userID {
@@ -878,7 +901,7 @@ func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gor
 		return query.Where("audience IN ?", platformAudiences), nil
 	}
 	if user.SiteId == site.Id && user.StaffSiteId == 0 {
-		teamTargets, err := adtyUserActiveTeamTargets(userID, site.Id)
+		teamTargets, err := adtyUserActiveTeamTargetsWithDB(db, userID, site.Id)
 		if err != nil {
 			return nil, err
 		}

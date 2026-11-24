@@ -88,6 +88,7 @@ const AUTH_SECTIONS = [
           TurnstileSiteKey: settings.TurnstileSiteKey,
           TurnstileSecretKey: settings.TurnstileSecretKey,
         }}
+        secretConfigured={settings.TurnstileSecretConfigured}
       />
     ),
   },

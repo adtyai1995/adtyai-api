@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"net"
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
@@ -47,12 +48,19 @@ func smtpTLSConfig() *tls.Config {
 	}
 }
 
+const (
+	smtpDialTimeout = 15 * time.Second
+	smtpIODeadline  = 30 * time.Second
+)
+
 func newSMTPClient(addr string) (*smtp.Client, error) {
+	dialer := &net.Dialer{Timeout: smtpDialTimeout}
 	if SMTPSSLEnabled || (SMTPPort == 465 && !SMTPStartTLSEnabled) {
-		conn, err := tls.Dial("tcp", addr, smtpTLSConfig())
+		conn, err := tls.DialWithDialer(dialer, "tcp", addr, smtpTLSConfig())
 		if err != nil {
 			return nil, err
 		}
+		_ = conn.SetDeadline(time.Now().Add(smtpIODeadline))
 		client, err := smtp.NewClient(conn, SMTPServer)
 		if err != nil {
 			_ = conn.Close()
@@ -61,8 +69,14 @@ func newSMTPClient(addr string) (*smtp.Client, error) {
 		return client, nil
 	}
 
-	client, err := smtp.Dial(addr)
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(smtpIODeadline))
+	client, err := smtp.NewClient(conn, SMTPServer)
+	if err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 

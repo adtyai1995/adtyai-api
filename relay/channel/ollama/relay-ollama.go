@@ -332,20 +332,42 @@ func ollamaEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	for i, emb := range oResp.Embeddings {
 		data = append(data, dto.OpenAIEmbeddingResponseItem{Index: i, Object: "embedding", Embedding: emb})
 	}
-	usage := &dto.Usage{PromptTokens: oResp.PromptEvalCount, CompletionTokens: 0, TotalTokens: oResp.PromptEvalCount}
+	promptTokens := oResp.PromptEvalCount
+	if promptTokens == 0 && len(data) > 0 {
+		promptTokens = info.GetEstimatePromptTokens()
+	}
+	usage := &dto.Usage{PromptTokens: promptTokens, CompletionTokens: 0, TotalTokens: promptTokens}
 	embResp := &dto.OpenAIEmbeddingResponse{Object: "list", Data: data, Model: info.UpstreamModelName, Usage: *usage}
 	out, _ := common.Marshal(embResp)
 	service.IOCopyBytesGracefully(c, resp, out)
 	return usage, nil
 }
 
-func FetchOllamaModels(ctx context.Context, baseURL, apiKey string) ([]OllamaModel, error) {
+func ollamaManagementClient(timeout time.Duration, settings ...dto.ChannelSettings) (*http.Client, error) {
+	var cfg dto.ChannelSettings
+	if len(settings) > 0 {
+		cfg = settings[0]
+	}
+	base, err := service.GetHttpClientWithProxySettings(cfg.Proxy, cfg)
+	if err != nil {
+		return nil, err
+	}
+	cloned := *base
+	cloned.Timeout = timeout
+	cloned.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &cloned, nil
+}
+
+func FetchOllamaModels(ctx context.Context, baseURL, apiKey string, settings ...dto.ChannelSettings) ([]OllamaModel, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	url := fmt.Sprintf("%s/api/tags", baseURL)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client, err := ollamaManagementClient(30*time.Second, settings...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create http client: %v", err)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %v", err)
@@ -363,12 +385,12 @@ func FetchOllamaModels(ctx context.Context, baseURL, apiKey string) ([]OllamaMod
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return nil, fmt.Errorf("server returned error %d: %s", response.StatusCode, string(body))
 	}
 
 	var tagsResponse OllamaTagsResponse
-	body, err := io.ReadAll(response.Body)
+	body, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %v", err)
 	}
@@ -382,7 +404,7 @@ func FetchOllamaModels(ctx context.Context, baseURL, apiKey string) ([]OllamaMod
 }
 
 // 拉取 Ollama 模型 (非流式)
-func PullOllamaModel(ctx context.Context, baseURL, apiKey, modelName string) error {
+func PullOllamaModel(ctx context.Context, baseURL, apiKey, modelName string, settings ...dto.ChannelSettings) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -398,8 +420,9 @@ func PullOllamaModel(ctx context.Context, baseURL, apiKey, modelName string) err
 		return fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	client := &http.Client{
-		Timeout: 30 * 60 * 1000 * time.Millisecond, // 30分钟超时，支持大模型
+	client, err := ollamaManagementClient(30*time.Minute, settings...)
+	if err != nil {
+		return fmt.Errorf("failed to create http client: %v", err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(requestBody)))
 	if err != nil {
@@ -418,7 +441,7 @@ func PullOllamaModel(ctx context.Context, baseURL, apiKey, modelName string) err
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("failed to pull model, status %d: %s", response.StatusCode, string(body))
 	}
 
@@ -426,7 +449,7 @@ func PullOllamaModel(ctx context.Context, baseURL, apiKey, modelName string) err
 }
 
 // 流式拉取 Ollama 模型 (支持进度回调)
-func PullOllamaModelStream(ctx context.Context, baseURL, apiKey, modelName string, progressCallback func(OllamaPullResponse)) error {
+func PullOllamaModelStream(ctx context.Context, baseURL, apiKey, modelName string, progressCallback func(OllamaPullResponse), settings ...dto.ChannelSettings) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -442,8 +465,9 @@ func PullOllamaModelStream(ctx context.Context, baseURL, apiKey, modelName strin
 		return fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	client := &http.Client{
-		Timeout: 60 * 60 * 1000 * time.Millisecond, // 1小时超时，支持超大模型
+	client, err := ollamaManagementClient(60*time.Minute, settings...)
+	if err != nil {
+		return fmt.Errorf("failed to create http client: %v", err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(requestBody)))
 	if err != nil {
@@ -462,7 +486,7 @@ func PullOllamaModelStream(ctx context.Context, baseURL, apiKey, modelName strin
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("failed to pull model, status %d: %s", response.StatusCode, string(body))
 	}
 
@@ -506,7 +530,7 @@ func PullOllamaModelStream(ctx context.Context, baseURL, apiKey, modelName strin
 }
 
 // 删除 Ollama 模型
-func DeleteOllamaModel(ctx context.Context, baseURL, apiKey, modelName string) error {
+func DeleteOllamaModel(ctx context.Context, baseURL, apiKey, modelName string, settings ...dto.ChannelSettings) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -521,7 +545,10 @@ func DeleteOllamaModel(ctx context.Context, baseURL, apiKey, modelName string) e
 		return fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client, err := ollamaManagementClient(30*time.Second, settings...)
+	if err != nil {
+		return fmt.Errorf("failed to create http client: %v", err)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, strings.NewReader(string(requestBody)))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
@@ -539,14 +566,14 @@ func DeleteOllamaModel(ctx context.Context, baseURL, apiKey, modelName string) e
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("failed to delete model, status %d: %s", response.StatusCode, string(body))
 	}
 
 	return nil
 }
 
-func FetchOllamaVersion(ctx context.Context, baseURL, apiKey string) (string, error) {
+func FetchOllamaVersion(ctx context.Context, baseURL, apiKey string, settings ...dto.ChannelSettings) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -557,7 +584,10 @@ func FetchOllamaVersion(ctx context.Context, baseURL, apiKey string) (string, er
 
 	url := fmt.Sprintf("%s/api/version", trimmedBase)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client, err := ollamaManagementClient(10*time.Second, settings...)
+	if err != nil {
+		return "", fmt.Errorf("failed to create http client: %v", err)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %v", err)
@@ -573,7 +603,7 @@ func FetchOllamaVersion(ctx context.Context, baseURL, apiKey string) (string, er
 	}
 	defer response.Body.Close()
 
-	body, err := io.ReadAll(response.Body)
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %v", err)
 	}

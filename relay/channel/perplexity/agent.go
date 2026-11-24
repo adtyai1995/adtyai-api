@@ -312,6 +312,7 @@ func agentStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 			return
 		}
 		if event.Type == "response.failed" || event.Type == "response.error" || event.Type == "error" {
+			hadOutput := c.Writer.Written() || (info != nil && info.SendResponseCount > 0)
 			upstreamError := types.OpenAIError{}
 			if event.Response != nil && event.Response.GetOpenAIError() != nil {
 				upstreamError = *event.Response.GetOpenAIError()
@@ -323,8 +324,11 @@ func agentStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 			}
 			streamErr = types.WithOpenAIError(upstreamError, http.StatusBadGateway)
 			info.StreamStatus.MarkFailed(fmt.Sprint(upstreamError.Code), upstreamError.Type, http.StatusBadGateway)
-			// Keep the native error event visible to a client already receiving SSE.
-			_ = helper.ResponseChunkData(c, event, data)
+			// R6-043: Only forward the SSE error event when output was already written;
+			// otherwise keep c.Writer unwritten so channel retry and zero-output refund work.
+			if hadOutput {
+				_ = helper.ResponseChunkData(c, event, data)
+			}
 			sr.Stop(streamErr)
 			return
 		}

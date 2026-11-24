@@ -642,13 +642,13 @@ func FetchGeminiModels(baseURL, apiKey string, setting dto.ChannelSettings) ([]s
 		}
 
 		if response.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(response.Body)
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 			response.Body.Close()
 			cancel()
 			return nil, fmt.Errorf("server returned error %d: %s", response.StatusCode, string(body))
 		}
 
-		body, err := io.ReadAll(response.Body)
+		body, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))
 		response.Body.Close()
 		cancel()
 		if err != nil {
