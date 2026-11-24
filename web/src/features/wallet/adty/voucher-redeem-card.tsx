@@ -73,14 +73,16 @@ export function VoucherRedeemCard(props: { onRedeemed: () => void }) {
     <Card>
       <CardContent className='flex flex-col gap-3 py-4'>
         <div className='flex flex-col gap-1'>
-          <h2 className='text-sm font-medium'>{t('Redeem a code')}</h2>
+          <h2 className='text-sm font-medium'>{t('Credit Redemption Code')}</h2>
           <p className='text-muted-foreground text-sm'>
-            {t('A recharge code adds principal once. It does not add a bonus.')}
+            {t(
+              'A redemption code adds principal once. It does not add a bonus.'
+            )}
           </p>
         </div>
         <div className='flex flex-col gap-2 sm:flex-row sm:items-end'>
           <div className='flex flex-1 flex-col gap-1'>
-            <Label htmlFor='voucher-code'>{t('Recharge code')}</Label>
+            <Label htmlFor='voucher-code'>{t('Redemption code')}</Label>
             <Input
               id='voucher-code'
               value={code}

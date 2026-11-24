@@ -4,12 +4,15 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -117,28 +120,41 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 			row.PayoutAmount, row.PayoutCurrency = quote.PayoutAmount, quote.PayoutCurrency
 			if method == "usdt" {
 				network := strings.ToUpper(strings.TrimSpace(input.Network))
+				_, usdtNetworks := usableSiteInviteWithdrawConfig(site.MarketingPolicy)
+				if !slices.Contains(usdtNetworks, network) {
+					return common.NewMessage("This USDT network is not enabled")
+				}
 				if !ValidateUSDTAddress(network, input.AccountNo) {
 					return common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
 				}
 				row.Network, row.AccountNo = network, strings.TrimSpace(input.AccountNo)
 			} else {
-				if !validReferralQR(input.QRImageURL) || strings.TrimSpace(input.AccountName) == "" {
-					return common.NewMessage("Upload the payment QR code and enter the payee name")
+				trimmedName := strings.TrimSpace(input.AccountName)
+				trimmedNo := strings.TrimSpace(input.AccountNo)
+				if trimmedName == "" || trimmedNo == "" {
+					return common.NewMessage("Enter the payee real name and Alipay account")
+				}
+				if utf8.RuneCountInString(trimmedName) > 64 || utf8.RuneCountInString(trimmedNo) > 128 {
+					return common.NewMessage("Invalid parameters")
 				}
 				if input.ExpectedQuoteID == "" && !quote.Rate.Equal(input.ExpectedCNYRate) {
 					return &RateChangedError{Change: ReferralRateChange{Rate: quote.Rate.String(), CNYAmount: quote.PayoutAmount}}
 				}
-				row.AccountName = strings.TrimSpace(input.AccountName)
+				row.AccountName = trimmedName
+				row.AccountNo = trimmedNo
+				if trimmedQR := strings.TrimSpace(input.QRImageURL); trimmedQR != "" {
+					if !validReferralQR(trimmedQR) {
+						return common.NewMessage("Invalid payment QR code")
+					}
+					canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserID, model.ReferralAssetPurposeWithdrawalQR, trimmedQR)
+					if !ok {
+						return common.NewMessage("Invalid payment QR code")
+					}
+					row.QRImageURL = canonicalQR
+				}
 			}
 		default:
 			return common.NewMessage("Unsupported withdrawal method")
-		}
-		if method == "alipay" {
-			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserID, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
-			if !ok {
-				return common.NewMessage("Upload the payment QR code and enter the payee name")
-			}
-			row.QRImageURL = canonicalQR
 		}
 		if err := tx.Create(row).Error; err != nil {
 			return err
@@ -214,9 +230,20 @@ func sameSiteInviteDestination(tx *gorm.DB, row *model.AdtySiteInviteWithdrawal,
 	case "usdt":
 		return row.Network == strings.ToUpper(strings.TrimSpace(input.Network)) && row.AccountNo == strings.TrimSpace(input.AccountNo)
 	case "alipay":
-		qr, ok := IsOwnedReferralAssetTx(tx, input.UserID, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
+		qr := ""
+		if trimmedQR := strings.TrimSpace(input.QRImageURL); trimmedQR != "" {
+			var ok bool
+			qr, ok = IsOwnedReferralAssetTx(tx, input.UserID, model.ReferralAssetPurposeWithdrawalQR, trimmedQR)
+			if !ok {
+				return false
+			}
+		}
 		rate, err := decimal.NewFromString(row.Rate)
-		return ok && row.QRImageURL == qr && row.AccountName == strings.TrimSpace(input.AccountName) && err == nil && (input.ExpectedQuoteID != "" || rate.Equal(input.ExpectedCNYRate))
+		return row.QRImageURL == qr &&
+			row.AccountName == strings.TrimSpace(input.AccountName) &&
+			row.AccountNo == strings.TrimSpace(input.AccountNo) &&
+			err == nil &&
+			(input.ExpectedQuoteID != "" || rate.Equal(input.ExpectedCNYRate))
 	default:
 		return row.Method == "balance"
 	}
@@ -706,13 +733,14 @@ func releaseSiteInviteWithdrawalTx(tx *gorm.DB, row *model.AdtySiteInviteWithdra
 	return nil
 }
 
-// AdtySiteInviteWithdrawRulesView is blank for cash methods until the owner saves min, fee, and rate.
+// AdtySiteInviteWithdrawRulesView reports the site-invite withdrawal methods and parameters enabled by the owner.
 type AdtySiteInviteWithdrawRulesView struct {
-	Configured bool     `json:"configured"`
-	MinUSD     string   `json:"min_usd,omitempty"`
-	FeeUSD     string   `json:"fee_usd,omitempty"`
-	CNYRate    string   `json:"cny_rate,omitempty"`
-	Methods    []string `json:"methods"`
+	Configured   bool     `json:"configured"`
+	MinUSD       string   `json:"min_usd,omitempty"`
+	FeeUSD       string   `json:"fee_usd,omitempty"`
+	CNYRate      string   `json:"cny_rate,omitempty"`
+	Methods      []string `json:"methods"`
+	USDTNetworks []string `json:"usdt_networks"`
 }
 
 // LoadAdtySiteInviteWithdrawRules reports the separate site-invite withdrawal rules.
@@ -721,7 +749,10 @@ func LoadAdtySiteInviteWithdrawRules() (AdtySiteInviteWithdrawRulesView, error) 
 }
 
 func LoadAdtyCustomerSiteInviteWithdrawRules(userID int, requested ...int) (AdtySiteInviteWithdrawRulesView, error) {
-	view := AdtySiteInviteWithdrawRulesView{Methods: adtySiteInviteWithdrawMethods(false)}
+	view := AdtySiteInviteWithdrawRulesView{
+		Methods:      adtySiteInviteWithdrawMethods(false),
+		USDTNetworks: []string{},
+	}
 	var user model.User
 	if err := model.DB.Select("site_id").First(&user, userID).Error; err != nil {
 		return view, err
@@ -740,10 +771,20 @@ func LoadAdtyCustomerSiteInviteWithdrawRules(userID int, requested ...int) (Adty
 		return view, err
 	}
 	policy := site.MarketingPolicy
-	if policy.MinUSD != nil && policy.FeeUSD != nil && policy.CNYRate != nil {
+	externalMethods, usdtNetworks := usableSiteInviteWithdrawConfig(policy)
+	if len(externalMethods) > 0 {
 		view.Configured = true
-		view.MinUSD, view.FeeUSD, view.CNYRate = policy.MinUSD.String(), policy.FeeUSD.String(), policy.CNYRate.String()
-		view.Methods = adtySiteInviteWithdrawMethods(true)
+		if policy.MinUSD != nil {
+			view.MinUSD = policy.MinUSD.String()
+		}
+		if slices.Contains(externalMethods, adty_setting.ReferralWithdrawMethodUSDT) && policy.FeeUSD != nil {
+			view.FeeUSD = policy.FeeUSD.String()
+			view.USDTNetworks = usdtNetworks
+		}
+		if slices.Contains(externalMethods, adty_setting.ReferralWithdrawMethodAlipay) && policy.CNYRate != nil {
+			view.CNYRate = policy.CNYRate.String()
+		}
+		view.Methods = append([]string{"balance"}, externalMethods...)
 	}
 	return view, nil
 }

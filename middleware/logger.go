@@ -20,43 +20,46 @@ func RouteTag(tag string) gin.HandlerFunc {
 
 func SetUpLogger(server *gin.Engine) {
 	server.Use(redactTaskArtifactAccessQuery())
-	server.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
-		var requestID string
-		if param.Keys != nil {
-			requestID, _ = param.Keys[common.RequestIdKey].(string)
-		}
-		tag, _ := param.Keys[RouteTagKey].(string)
-		if tag == "" {
-			tag = "web"
-		}
-		path := param.Path
-		// Redact Telegram webhook path secret before writing access logs (R10-038).
-		const tgWebhookPrefix = "/api/adty/telegram/webhook/"
-		if strings.HasPrefix(path, tgWebhookPrefix) {
-			pathWithoutQuery, _, _ := strings.Cut(path, "?")
-			rest := strings.TrimPrefix(pathWithoutQuery, tgWebhookPrefix)
-			if purpose, _, hasSecret := strings.Cut(rest, "/"); hasSecret {
-				path = tgWebhookPrefix + purpose + "/[REDACTED]"
-			} else {
-				path = pathWithoutQuery
+	server.Use(gin.LoggerWithConfig(gin.LoggerConfig{
+		Output: common.LogWriter,
+		Formatter: func(param gin.LogFormatterParams) string {
+			var requestID string
+			if param.Keys != nil {
+				requestID, _ = param.Keys[common.RequestIdKey].(string)
 			}
-		} else if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
-			// OAuth callbacks carry one-time codes and state in the query string.
-			// Redact the log value only; the handler still needs the original query.
-			path, _, _ = strings.Cut(path, "?")
-		} else if param.Request.URL.RawQuery != "" {
-			query := param.Request.URL.Query().Encode()
-			path = param.Request.URL.EscapedPath() + relaycommon.SanitizeURLForLog("?"+query)
-		}
-		return fmt.Sprintf("[GIN] %s | %s | %s | %3d | %13v | %15s | %7s %s\n",
-			param.TimeStamp.Format("2006/01/02 - 15:04:05"),
-			tag,
-			requestID,
-			param.StatusCode,
-			param.Latency,
-			param.ClientIP,
-			param.Method,
-			path,
-		)
+			tag, _ := param.Keys[RouteTagKey].(string)
+			if tag == "" {
+				tag = "web"
+			}
+			path := param.Path
+			// Redact Telegram webhook path secret before writing access logs (R10-038).
+			const tgWebhookPrefix = "/api/adty/telegram/webhook/"
+			if strings.HasPrefix(path, tgWebhookPrefix) {
+				pathWithoutQuery, _, _ := strings.Cut(path, "?")
+				rest := strings.TrimPrefix(pathWithoutQuery, tgWebhookPrefix)
+				if purpose, _, hasSecret := strings.Cut(rest, "/"); hasSecret {
+					path = tgWebhookPrefix + purpose + "/[REDACTED]"
+				} else {
+					path = pathWithoutQuery
+				}
+			} else if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
+				// OAuth callbacks carry one-time codes and state in the query string.
+				// Redact the log value only; the handler still needs the original query.
+				path, _, _ = strings.Cut(path, "?")
+			} else if param.Request.URL.RawQuery != "" {
+				query := param.Request.URL.Query().Encode()
+				path = param.Request.URL.EscapedPath() + relaycommon.SanitizeURLForLog("?"+query)
+			}
+			return fmt.Sprintf("[GIN] %s | %s | %s | %3d | %13v | %15s | %7s %s\n",
+				param.TimeStamp.Format("2006/01/02 - 15:04:05"),
+				tag,
+				requestID,
+				param.StatusCode,
+				param.Latency,
+				param.ClientIP,
+				param.Method,
+				path,
+			)
+		},
 	}))
 }

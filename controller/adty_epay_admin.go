@@ -20,11 +20,13 @@ import (
 
 type adtyEpayChannelView struct {
 	model.AdtyEpayChannel
-	HasKey   bool              `json:"has_key"`
-	TodayCNY map[string]string `json:"today_cny"`
+	HasKey                bool              `json:"has_key"`
+	HasMerchantPrivateKey bool              `json:"has_merchant_private_key"`
+	HasPlatformPublicKey  bool              `json:"has_platform_public_key"`
+	TodayCNY              map[string]string `json:"today_cny"`
 }
 
-// GetAdtyEpayChannels 列出通道，带今天每种方式已到账的人民币。密钥不返回。
+// GetAdtyEpayChannels 列出通道，带今天每种方式已到账的人民币。商户密钥与商户私钥不返回。
 func GetAdtyEpayChannels(c *gin.Context) {
 	channels, err := model.ListAdtyEpayChannels()
 	if err != nil {
@@ -43,22 +45,32 @@ func GetAdtyEpayChannels(c *gin.Context) {
 				today[m.Method] = sum.StringFixed(2)
 			}
 		}
-		out = append(out, adtyEpayChannelView{AdtyEpayChannel: channel, HasKey: channel.MerchantKey != "", TodayCNY: today})
+		channel.SignType = channel.EffectiveSignType()
+		out = append(out, adtyEpayChannelView{
+			AdtyEpayChannel:       channel,
+			HasKey:                channel.MerchantKey != "",
+			HasMerchantPrivateKey: channel.MerchantPrivateKey != "",
+			HasPlatformPublicKey:  channel.PlatformPublicKey != "",
+			TodayCNY:              today,
+		})
 	}
 	common.ApiSuccess(c, out)
 }
 
 type adtyEpayChannelRequest struct {
-	Name            string `json:"name"`
-	GatewayURL      string `json:"gateway_url"`
-	MerchantId      string `json:"merchant_id"`
-	MerchantKey     string `json:"merchant_key"`
-	Priority        int    `json:"priority"`
-	Weight          int    `json:"weight"`
-	OrderMode       string `json:"order_mode"`
-	ProbeMode       string `json:"probe_mode"`
-	UnpaidThreshold int    `json:"unpaid_threshold"`
-	Methods         []struct {
+	Name               string `json:"name"`
+	GatewayURL         string `json:"gateway_url"`
+	MerchantId         string `json:"merchant_id"`
+	MerchantKey        string `json:"merchant_key"`
+	SignType           string `json:"sign_type"`
+	MerchantPrivateKey string `json:"merchant_private_key"`
+	PlatformPublicKey  string `json:"platform_public_key"`
+	Priority           int    `json:"priority"`
+	Weight             int    `json:"weight"`
+	OrderMode          string `json:"order_mode"`
+	ProbeMode          string `json:"probe_mode"`
+	UnpaidThreshold    int    `json:"unpaid_threshold"`
+	Methods            []struct {
 		Method        string          `json:"method"`
 		DisplayName   string          `json:"display_name"`
 		TypeCode      string          `json:"type_code"`
@@ -81,6 +93,25 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 	if !strings.HasPrefix(req.GatewayURL, "https://") && !strings.HasPrefix(req.GatewayURL, "http://") {
 		return nil, common.NewMessage("The gateway address must start with http:// or https://")
 	}
+	signType := strings.ToUpper(strings.TrimSpace(req.SignType))
+	if signType == "" {
+		signType = model.AdtyEpaySignTypeMD5
+	}
+	if signType != model.AdtyEpaySignTypeMD5 && signType != model.AdtyEpaySignTypeRSA {
+		return nil, common.NewMessage("Epay signature type must be MD5 or RSA")
+	}
+	merchantPrivateKey := strings.TrimSpace(req.MerchantPrivateKey)
+	if merchantPrivateKey != "" {
+		if _, err := service.ParseEpayRSAPrivateKey(merchantPrivateKey); err != nil {
+			return nil, common.NewMessage("The Epay merchant private key is missing or invalid")
+		}
+	}
+	platformPublicKey := strings.TrimSpace(req.PlatformPublicKey)
+	if platformPublicKey != "" {
+		if _, err := service.ParseEpayRSAPublicKey(platformPublicKey); err != nil {
+			return nil, common.NewMessage("The Epay platform public key is missing or invalid")
+		}
+	}
 	if req.OrderMode != model.AdtyEpayOrderModeSubmit {
 		req.OrderMode = model.AdtyEpayOrderModeAPI
 	}
@@ -90,15 +121,18 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 		req.ProbeMode = "off"
 	}
 	channel := &model.AdtyEpayChannel{
-		Name:            strings.TrimSpace(req.Name),
-		GatewayURL:      req.GatewayURL,
-		MerchantId:      strings.TrimSpace(req.MerchantId),
-		MerchantKey:     strings.TrimSpace(req.MerchantKey),
-		Priority:        req.Priority,
-		Weight:          max(req.Weight, 1),
-		OrderMode:       req.OrderMode,
-		ProbeMode:       req.ProbeMode,
-		UnpaidThreshold: max(req.UnpaidThreshold, 0),
+		Name:               strings.TrimSpace(req.Name),
+		GatewayURL:         req.GatewayURL,
+		MerchantId:         strings.TrimSpace(req.MerchantId),
+		MerchantKey:        strings.TrimSpace(req.MerchantKey),
+		SignType:           signType,
+		MerchantPrivateKey: merchantPrivateKey,
+		PlatformPublicKey:  platformPublicKey,
+		Priority:           req.Priority,
+		Weight:             max(req.Weight, 1),
+		OrderMode:          req.OrderMode,
+		ProbeMode:          req.ProbeMode,
+		UnpaidThreshold:    max(req.UnpaidThreshold, 0),
 	}
 	enabled := 0
 	for _, m := range req.Methods {
@@ -136,7 +170,16 @@ func CreateAdtyEpayChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if channel.MerchantKey == "" {
+	if channel.IsRSA() {
+		if channel.MerchantPrivateKey == "" {
+			common.ApiErrorT(c, "The Epay merchant private key is missing or invalid")
+			return
+		}
+		if channel.PlatformPublicKey == "" {
+			common.ApiErrorT(c, "The Epay platform public key is missing or invalid")
+			return
+		}
+	} else if channel.MerchantKey == "" {
 		common.ApiErrorT(c, "The merchant key is required")
 		return
 	}
@@ -146,7 +189,7 @@ func CreateAdtyEpayChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "adty.epay_channel.create", map[string]any{"id": channel.Id, "name": channel.Name})
+	recordManageAudit(c, "adty.epay_channel.create", map[string]any{"id": channel.Id, "name": channel.Name, "sign_type": channel.SignType})
 	common.ApiSuccess(c, gin.H{"id": channel.Id})
 }
 
@@ -176,11 +219,41 @@ func UpdateAdtyEpayChannel(c *gin.Context) {
 	channel.Status = existing.Status
 	channel.StatusReason = existing.StatusReason
 	keepKey := channel.MerchantKey == ""
+	keepPrivateKey := channel.MerchantPrivateKey == ""
+	keepPublicKey := channel.PlatformPublicKey == ""
+	if channel.IsRSA() {
+		effectivePrivateKey := channel.MerchantPrivateKey
+		if keepPrivateKey {
+			effectivePrivateKey = existing.MerchantPrivateKey
+		}
+		if _, err := service.ParseEpayRSAPrivateKey(effectivePrivateKey); err != nil {
+			common.ApiErrorT(c, "The Epay merchant private key is missing or invalid")
+			return
+		}
+		effectivePublicKey := channel.PlatformPublicKey
+		if keepPublicKey {
+			effectivePublicKey = existing.PlatformPublicKey
+		}
+		if _, err := service.ParseEpayRSAPublicKey(effectivePublicKey); err != nil {
+			common.ApiErrorT(c, "The Epay platform public key is missing or invalid")
+			return
+		}
+	} else {
+		effectiveMerchantKey := channel.MerchantKey
+		if keepKey {
+			effectiveMerchantKey = existing.MerchantKey
+		}
+		if effectiveMerchantKey == "" {
+			common.ApiErrorT(c, "The merchant key is required")
+			return
+		}
+	}
 	if err := model.SaveAdtyEpayChannel(channel, keepKey); err != nil {
 		writeAdtyEpayAdminError(c, err)
 		return
 	}
-	recordManageAudit(c, "adty.epay_channel.update", map[string]any{"id": id, "name": channel.Name, "key_changed": !keepKey})
+	keyChanged := !keepKey || !keepPrivateKey || (!keepPublicKey && channel.PlatformPublicKey != existing.PlatformPublicKey)
+	recordManageAudit(c, "adty.epay_channel.update", map[string]any{"id": id, "name": channel.Name, "sign_type": channel.SignType, "key_changed": keyChanged})
 	common.ApiSuccess(c, nil)
 }
 

@@ -111,34 +111,39 @@ func GetReferralOverview(c *gin.Context) {
 // GetReferralSettings 返回推广设置；提现汇率直接查库。
 func GetReferralSettings(c *gin.Context) {
 	cfg := *adty_setting.GetReferralSetting()
+	hasRate := false
 	if rate, updatedAt, err := service.CurrentWithdrawCNYRate(); err == nil {
 		cfg.WithdrawCNYRate, cfg.WithdrawCNYRateUpdatedAt = rate.String(), updatedAt
+		hasRate = true
 	} else if !errors.Is(err, service.ErrReferralRateUnset) {
 		common.ApiError(c, err)
 		return
 	} else {
 		cfg.WithdrawCNYRate, cfg.WithdrawCNYRateUpdatedAt = "", 0
 	}
+	cfg.WithdrawMethods, cfg.WithdrawUSDTNetworks = cfg.EffectiveWithdrawConfig(hasRate)
 	common.ApiSuccess(c, cfg)
 }
 
 // UpdateReferralSettings 保存推广设置。提现汇率和这些设置同一次提交，汇率不合法或写库失败时一起回滚。
 func UpdateReferralSettings(c *gin.Context) {
 	var body struct {
-		DefaultRate              *float64 `json:"default_rate"`
-		PartnerMinRate           *float64 `json:"partner_min_rate"`
-		PartnerMaxRate           *float64 `json:"partner_max_rate"`
-		CookieTTLDays            *int     `json:"cookie_ttl_days"`
-		FreezeDays               *int     `json:"freeze_days"`
-		MinWithdrawUSD           *float64 `json:"min_withdraw_usd"`
-		USDTWithdrawFee          *float64 `json:"usdt_withdraw_fee"`
-		CancelWindowMinutes      *int     `json:"cancel_window_minutes"`
-		SelfInviteWindowDays     *int     `json:"self_invite_window_days"`
-		BatchRegisterThreshold   *int     `json:"batch_register_threshold"`
-		BatchRegisterWindowHours *int     `json:"batch_register_window_hours"`
-		Enabled                  *bool    `json:"enabled"`
-		WithdrawCNYRate          string   `json:"withdraw_cny_rate"`
-		// Clear 列出要改回「未设置」的钱款项：default_rate、partner_min_rate、partner_max_rate、min_withdraw_usd、usdt_withdraw_fee（约定 I）。
+		DefaultRate              *float64  `json:"default_rate"`
+		PartnerMinRate           *float64  `json:"partner_min_rate"`
+		PartnerMaxRate           *float64  `json:"partner_max_rate"`
+		CookieTTLDays            *int      `json:"cookie_ttl_days"`
+		FreezeDays               *int      `json:"freeze_days"`
+		MinWithdrawUSD           *float64  `json:"min_withdraw_usd"`
+		USDTWithdrawFee          *float64  `json:"usdt_withdraw_fee"`
+		CancelWindowMinutes      *int      `json:"cancel_window_minutes"`
+		SelfInviteWindowDays     *int      `json:"self_invite_window_days"`
+		BatchRegisterThreshold   *int      `json:"batch_register_threshold"`
+		BatchRegisterWindowHours *int      `json:"batch_register_window_hours"`
+		Enabled                  *bool     `json:"enabled"`
+		WithdrawCNYRate          string    `json:"withdraw_cny_rate"`
+		WithdrawMethods          *[]string `json:"withdraw_methods"`
+		WithdrawUSDTNetworks     *[]string `json:"withdraw_usdt_networks"`
+		// Clear 列出要改回「未设置」的钱款项：default_rate、partner_min_rate、partner_max_rate、min_withdraw_usd、usdt_withdraw_fee、withdraw_cny_rate（约定 I）。
 		Clear []string `json:"clear"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
@@ -188,10 +193,41 @@ func UpdateReferralSettings(c *gin.Context) {
 		!putInt("batch_register_window_hours", body.BatchRegisterWindowHours, 1) {
 		return
 	}
+	if body.WithdrawMethods != nil {
+		methods, ok := adty_setting.NormalizeReferralWithdrawMethods(*body.WithdrawMethods)
+		if !ok {
+			common.ApiErrorT(c, "Unsupported withdrawal method")
+			return
+		}
+		encoded, err := common.Marshal(methods)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		values[adty_setting.ReferralKeyWithdrawMethods] = string(encoded)
+	}
+	if body.WithdrawUSDTNetworks != nil {
+		networks, ok := adty_setting.NormalizeReferralWithdrawUSDTNetworks(*body.WithdrawUSDTNetworks)
+		if !ok {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		encoded, err := common.Marshal(networks)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		values[adty_setting.ReferralKeyWithdrawUSDTNetworks] = string(encoded)
+	}
 	for _, key := range body.Clear {
 		switch key {
 		case "default_rate", "partner_min_rate", "partner_max_rate", "min_withdraw_usd", "usdt_withdraw_fee":
 			values["adty_referral_setting."+key] = "null"
+		case "withdraw_cny_rate":
+			if strings.TrimSpace(body.WithdrawCNYRate) == "" {
+				values[adty_setting.ReferralKeyWithdrawCNYRate] = ""
+				values[adty_setting.ReferralKeyWithdrawCNYRateUpdatedAt] = "0"
+			}
 		default:
 			common.ApiErrorT(c, "Invalid parameters")
 			return

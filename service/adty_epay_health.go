@@ -289,7 +289,7 @@ func (adtyEpayProvider) Cancel(ext *model.AdtyTopupOrder) error {
 		return nil
 	}
 	endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || channel.MerchantId == "" || channel.MerchantKey == "" {
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || channel.MerchantId == "" || !channel.HasCredentials() {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -316,7 +316,7 @@ func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*
 		return nil, common.NewMessage("This payment channel has been permanently revoked")
 	}
 	endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || channel.MerchantId == "" || channel.MerchantKey == "" {
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || channel.MerchantId == "" || !channel.HasCredentials() {
 		return nil, errors.New("authenticated HTTPS Epay query is unavailable")
 	}
 	result, err := adtyEpayQuery(ctx, channel, ext.TradeNo)

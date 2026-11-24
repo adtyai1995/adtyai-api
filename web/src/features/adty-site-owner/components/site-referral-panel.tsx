@@ -17,16 +17,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import {
+  canonicalWithdrawMethods,
+  canonicalWithdrawNetworks,
+  CASH_WITHDRAW_METHODS,
+  type CashWithdrawMethod,
+} from '@/features/admin-referral/lib/settings'
+import {
+  USDT_NETWORKS,
+  usdtNetworkLabel,
+  type UsdtNetwork,
+} from '@/features/referral/lib/address'
+import { WITHDRAWAL_TARGET_LABELS } from '@/features/referral/lib/labels'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 import { STATUS_QUERY_KEY } from '@/lib/status-query'
@@ -37,6 +50,7 @@ import {
   saveOwnerSiteReferralEnabled,
   siteOwnerKeys,
   type SiteMarketingField,
+  type SiteMarketingUpdate,
   type SiteReferralView,
 } from '../api'
 import {
@@ -150,6 +164,259 @@ function MarketingFields(props: {
   )
 }
 
+function SiteWithdrawPolicyForm(props: { policy: SiteReferralView }) {
+  const { t } = useTranslation()
+  const client = useQueryClient()
+  const policy = props.policy
+
+  const savedMethods = canonicalWithdrawMethods(policy.withdraw_methods)
+  const savedNetworks = canonicalWithdrawNetworks(policy.withdraw_usdt_networks)
+  const savedMin = String(policy.min_usd ?? '')
+  const savedFee = String(policy.fee_usd ?? '')
+  const savedRate = String(policy.cny_rate ?? '')
+  const savedCancel = String(policy.cancel_window_minutes ?? '')
+
+  const [methods, setMethods] = useState<CashWithdrawMethod[]>(savedMethods)
+  const [networks, setNetworks] = useState<UsdtNetwork[]>(savedNetworks)
+  const [minUsd, setMinUsd] = useState(savedMin)
+  const [feeUsd, setFeeUsd] = useState(savedFee)
+  const [cnyRate, setCnyRate] = useState(savedRate)
+  const [cancelWindowMinutes, setCancelWindowMinutes] = useState(savedCancel)
+
+  useEffect(() => {
+    setMethods(canonicalWithdrawMethods(policy.withdraw_methods))
+    setNetworks(canonicalWithdrawNetworks(policy.withdraw_usdt_networks))
+    setMinUsd(String(policy.min_usd ?? ''))
+    setFeeUsd(String(policy.fee_usd ?? ''))
+    setCnyRate(String(policy.cny_rate ?? ''))
+    setCancelWindowMinutes(String(policy.cancel_window_minutes ?? ''))
+  }, [policy])
+
+  const usdtEnabled = methods.includes('usdt')
+  const alipayEnabled = methods.includes('alipay')
+  const anyCashEnabled = usdtEnabled || alipayEnabled
+
+  const usdtChainError =
+    usdtEnabled && networks.length === 0 ? t('Choose at least one chain') : ''
+  const minValue = Number(minUsd)
+  const minError =
+    anyCashEnabled &&
+    (minUsd.trim() === '' || !Number.isFinite(minValue) || !(minValue > 0))
+      ? t('Not set')
+      : ''
+  const feeValue = Number(feeUsd)
+  const feeError =
+    usdtEnabled &&
+    (feeUsd.trim() === '' || !Number.isFinite(feeValue) || feeValue < 0)
+      ? t('Not set')
+      : ''
+  const cnyValue = Number(cnyRate)
+  const cnyError =
+    alipayEnabled &&
+    (cnyRate.trim() === '' || !Number.isFinite(cnyValue) || !(cnyValue > 0))
+      ? t('Not set')
+      : ''
+  const hasError = Boolean(usdtChainError || minError || feeError || cnyError)
+
+  const isDirty =
+    JSON.stringify(methods) !== JSON.stringify(savedMethods) ||
+    JSON.stringify(networks) !== JSON.stringify(savedNetworks) ||
+    minUsd.trim() !== savedMin.trim() ||
+    feeUsd.trim() !== savedFee.trim() ||
+    cnyRate.trim() !== savedRate.trim() ||
+    cancelWindowMinutes.trim() !== savedCancel.trim()
+
+  const save = useMutation({
+    mutationFn: () => {
+      const payload: SiteMarketingUpdate = {
+        withdraw_methods: methods,
+        withdraw_usdt_networks: networks,
+      }
+      if (minUsd.trim() !== savedMin.trim()) payload.min_usd = minUsd.trim()
+      if (feeUsd.trim() !== savedFee.trim()) payload.fee_usd = feeUsd.trim()
+      if (cnyRate.trim() !== savedRate.trim()) payload.cny_rate = cnyRate.trim()
+      if (cancelWindowMinutes.trim() !== savedCancel.trim()) {
+        payload.cancel_window_minutes = cancelWindowMinutes.trim()
+      }
+      return saveOwnerSiteReferral(payload)
+    },
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      await client.invalidateQueries({
+        queryKey: ['adty-site-invite-withdraw-rules'],
+      })
+      void invalidateSidebarBadges(client)
+      toast.success(t('Saved successfully'))
+    },
+    onError: (error) => handleServerError(error),
+  })
+
+  const toggleMethod = (method: CashWithdrawMethod, checked: boolean) => {
+    setMethods((prev) => {
+      const next = checked
+        ? [...prev, method]
+        : prev.filter((item) => item !== method)
+      return canonicalWithdrawMethods(next)
+    })
+  }
+
+  const toggleNetwork = (network: UsdtNetwork, checked: boolean) => {
+    setNetworks((prev) => {
+      const next = checked
+        ? [...prev, network]
+        : prev.filter((item) => item !== network)
+      return canonicalWithdrawNetworks(next)
+    })
+  }
+
+  return (
+    <form
+      className='space-y-4 rounded-lg border p-4'
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (hasError || !isDirty || save.isPending) return
+        save.mutate()
+      }}
+    >
+      <div className='space-y-1'>
+        <h3 className='text-sm font-medium'>
+          {t('Invite commission withdrawal')}
+        </h3>
+        <p className='text-muted-foreground text-sm'>
+          {t('Transfer to account balance is always enabled.')}
+        </p>
+      </div>
+
+      <fieldset className='space-y-2'>
+        <legend className='text-sm font-medium'>
+          {t('Cash withdrawal methods')}
+        </legend>
+        <div className='flex flex-wrap gap-5'>
+          {CASH_WITHDRAW_METHODS.map((method) => (
+            <label
+              key={method}
+              className='flex items-center gap-2 text-sm font-medium'
+            >
+              <Checkbox
+                disabled={save.isPending}
+                checked={methods.includes(method)}
+                onCheckedChange={(checked) =>
+                  toggleMethod(method, checked === true)
+                }
+              />
+              {t(WITHDRAWAL_TARGET_LABELS[method])}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <div className='grid gap-4 sm:grid-cols-2'>
+        <div className='space-y-1.5'>
+          <Label htmlFor='site-policy-min_usd'>
+            {t('Minimum withdrawal (USD)')}
+          </Label>
+          <Input
+            id='site-policy-min_usd'
+            type='number'
+            min='0'
+            step='any'
+            aria-invalid={Boolean(minError)}
+            value={minUsd}
+            placeholder={t('Not set')}
+            onChange={(event) => setMinUsd(event.target.value)}
+          />
+          {minError && <p className='text-destructive text-xs'>{minError}</p>}
+        </div>
+        <div className='space-y-1.5'>
+          <Label htmlFor='site-policy-cancel_window_minutes'>
+            {t('Cancel window (minutes)')}
+          </Label>
+          <Input
+            id='site-policy-cancel_window_minutes'
+            type='number'
+            min='0'
+            step='1'
+            value={cancelWindowMinutes}
+            onChange={(event) => setCancelWindowMinutes(event.target.value)}
+          />
+        </div>
+      </div>
+
+      {usdtEnabled && (
+        <div className='bg-muted/30 space-y-4 rounded-md border p-3'>
+          <fieldset className='space-y-2'>
+            <legend className='text-sm font-medium'>
+              {t('Enabled chains')}
+            </legend>
+            <div className='flex flex-wrap gap-4'>
+              {USDT_NETWORKS.map((network) => (
+                <label
+                  key={network}
+                  className='flex items-center gap-2 text-sm'
+                >
+                  <Checkbox
+                    disabled={save.isPending}
+                    checked={networks.includes(network)}
+                    onCheckedChange={(checked) =>
+                      toggleNetwork(network, checked === true)
+                    }
+                  />
+                  {usdtNetworkLabel(network)}
+                </label>
+              ))}
+            </div>
+            {usdtChainError && (
+              <p className='text-destructive text-xs'>{usdtChainError}</p>
+            )}
+          </fieldset>
+          <div className='max-w-xs space-y-1.5'>
+            <Label htmlFor='site-policy-fee_usd'>{t('USDT fee (USD)')}</Label>
+            <Input
+              id='site-policy-fee_usd'
+              type='number'
+              min='0'
+              step='any'
+              aria-invalid={Boolean(feeError)}
+              value={feeUsd}
+              placeholder={t('Not set')}
+              onChange={(event) => setFeeUsd(event.target.value)}
+            />
+            {feeError && <p className='text-destructive text-xs'>{feeError}</p>}
+          </div>
+        </div>
+      )}
+
+      {alipayEnabled && (
+        <div className='bg-muted/30 space-y-1.5 rounded-md border p-3'>
+          <Label htmlFor='site-policy-cny_rate'>
+            {t('CNY withdrawal rate (1 USD = ? CNY)')}
+          </Label>
+          <Input
+            id='site-policy-cny_rate'
+            className='w-44'
+            type='number'
+            min='0'
+            step='any'
+            aria-invalid={Boolean(cnyError)}
+            value={cnyRate}
+            placeholder={t('Not set')}
+            onChange={(event) => setCnyRate(event.target.value)}
+          />
+          {cnyError && <p className='text-destructive text-xs'>{cnyError}</p>}
+        </div>
+      )}
+
+      <Button
+        type='submit'
+        variant='brand'
+        disabled={save.isPending || !isDirty || hasError}
+      >
+        {t('Save')}
+      </Button>
+    </form>
+  )
+}
+
 /** Subsite referral policy settings: enable switch, invite rate (<= 30%), coverage & withdrawal terms. */
 export function SiteReferralPanel() {
   const { t } = useTranslation()
@@ -224,26 +491,7 @@ export function SiteReferralPanel() {
         ]}
       />
 
-      <MarketingFields
-        title={t('Invite commission withdrawal')}
-        description={t(
-          'Set the minimum, fee and exchange rate together to enable cash withdrawals'
-        )}
-        policy={rules.data}
-        fields={[
-          { key: 'min_usd', label: t('Minimum withdrawal (USD)') },
-          { key: 'fee_usd', label: t('USDT fee (USD)') },
-          {
-            key: 'cancel_window_minutes',
-            label: t('Cancel window (minutes)'),
-            integer: true,
-          },
-          {
-            key: 'cny_rate',
-            label: t('CNY withdrawal rate (1 USD = ? CNY)'),
-          },
-        ]}
-      />
+      <SiteWithdrawPolicyForm policy={rules.data} />
     </section>
   )
 }

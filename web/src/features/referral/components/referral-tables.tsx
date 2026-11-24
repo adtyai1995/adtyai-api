@@ -126,13 +126,13 @@ export function CommissionTable() {
   )
 }
 
-/** Where the money goes: chain + address, payee, or balance. */
+/** Where the money goes: chain + address, payee name + account, or balance. */
 function withdrawalTarget(row: ReferralWithdrawal): string {
   if (row.account_type === 'usdt') {
     return `${usdtNetworkLabel(row.account_network)} ${row.account_no}`
   }
   if (row.account_type === 'balance') return ''
-  return row.account_name
+  return [row.account_name, row.account_no].filter(Boolean).join(' · ')
 }
 
 export function WithdrawalTable(props: { cancelWindowMinutes: number }) {

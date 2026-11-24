@@ -28,6 +28,12 @@ export const Route = createFileRoute(
   '/_authenticated/system-settings/billing/$section'
 )({
   beforeLoad: ({ params }) => {
+    if (params.section === 'recharge-bonus') {
+      throw redirect({
+        to: '/recharge-bonus',
+        replace: true,
+      })
+    }
     if (params.section === 'epay' || params.section === 'usdt') {
       throw redirect({
         to: '/system-settings/billing/$section',

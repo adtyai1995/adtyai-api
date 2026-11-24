@@ -113,8 +113,12 @@ export function Wallet(props: WalletProps) {
             error={userError}
           />
           {userError && <ErrorState onRetry={() => void fetchUser()} />}
-          <VoucherRedeemCard onRedeemed={() => void fetchUser()} />
-          <AdtyOnlineTopup onSettled={fetchUser} />
+          <AdtyOnlineTopup
+            onSettled={fetchUser}
+            afterRechargeSlot={
+              <VoucherRedeemCard onRedeemed={() => void fetchUser()} />
+            }
+          />
         </div>
       </SectionPageLayout.Content>
     </SectionPageLayout>

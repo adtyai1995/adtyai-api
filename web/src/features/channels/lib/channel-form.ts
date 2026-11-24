@@ -278,6 +278,7 @@ export const channelFormSchema = z
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
     vertex_project_id: z.string().optional(), // Vertex AI specific (api_key mode only)
+    vertex_api_version: z.enum(['v1', 'v1beta1']).optional(), // Vertex AI Google model (Gemini, Imagen) path version
     aws_key_type: z.enum(['ak_sk', 'api_key']).optional(), // AWS specific
     aws_api_type: z.enum(['invoke_model', 'mantle']).optional(),
     azure_responses_version: z.string().optional(), // Azure specific
@@ -472,6 +473,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   is_enterprise_account: false,
   vertex_key_type: 'json',
   vertex_project_id: '',
+  vertex_api_version: 'v1',
   aws_key_type: 'ak_sk',
   aws_api_type: 'invoke_model',
   azure_responses_version: '',
@@ -548,6 +550,7 @@ export function transformChannelToFormDefaults(
   // Parse type-specific settings from settings field
   let vertexKeyType: 'json' | 'api_key' = 'json'
   let vertexProjectId = ''
+  let vertexApiVersion: 'v1' | 'v1beta1' = 'v1'
   let azureResponsesVersion = ''
   let isEnterpriseAccount = false
   let awsKeyType: 'ak_sk' | 'api_key' = 'ak_sk'
@@ -571,6 +574,8 @@ export function transformChannelToFormDefaults(
       const parsed = JSON.parse(channel.settings)
       vertexKeyType = parsed.vertex_key_type || 'json'
       vertexProjectId = parsed.vertex_project_id || ''
+      vertexApiVersion =
+        parsed.vertex_api_version === 'v1beta1' ? 'v1beta1' : 'v1'
       azureResponsesVersion = parsed.azure_responses_version || ''
       isEnterpriseAccount = parsed.openrouter_enterprise === true
       awsKeyType = parsed.aws_key_type || 'ak_sk'
@@ -634,6 +639,7 @@ export function transformChannelToFormDefaults(
     is_enterprise_account: isEnterpriseAccount,
     vertex_key_type: vertexKeyType,
     vertex_project_id: vertexProjectId,
+    vertex_api_version: vertexApiVersion,
     azure_responses_version: azureResponsesVersion,
     aws_key_type: awsKeyType,
     aws_api_type: awsApiType,
@@ -656,8 +662,23 @@ export function transformChannelToFormDefaults(
 /**
  * Build the setting JSON string from form extra settings
  */
-export function buildSettingJSON(formData: ChannelFormValues): string {
+export function buildSettingJSON(
+  formData: ChannelFormValues,
+  previousSetting?: string
+): string {
+  let previous: unknown
+  if (previousSetting?.trim()) {
+    try {
+      previous = JSON.parse(previousSetting)
+    } catch {
+      // Fall back to the field values when the stored value is invalid JSON.
+    }
+  }
+
   const settingObj: Record<string, unknown> = {
+    ...(previous && typeof previous === 'object' && !Array.isArray(previous)
+      ? previous
+      : {}),
     task_plugin_key:
       formData.type === CHANNEL_TYPE_TASK_PLUGIN
         ? formData.task_plugin_key?.trim() || ''
@@ -676,6 +697,9 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       formData.responses_websocket_enabled === true,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
+    http_protocol: undefined,
+    http2_connection_shards: undefined,
+    tls_insecure_skip_verify: undefined,
   }
 
   const protocol = normalizeHttpProtocol(formData.http_protocol)
@@ -722,9 +746,11 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     } else {
       delete settingsObj.vertex_project_id
     }
+    settingsObj.vertex_api_version = formData.vertex_api_version || 'v1'
   } else {
     delete settingsObj.vertex_key_type
     delete settingsObj.vertex_project_id
+    delete settingsObj.vertex_api_version
   }
 
   // Add azure_responses_version for Azure channels (type 3)
@@ -857,6 +883,27 @@ function normalizeBaseUrl(value: string | undefined): string {
 }
 
 /**
+ * Normalize a channel API key for submission.
+ *
+ * JSON credentials (for example a Codex credential object or a Vertex AI
+ * service-account key, including a JSON array) are returned with only
+ * surrounding whitespace removed, so their internal formatting is kept.
+ * Plain keys are split on newlines and each key is trimmed individually,
+ * so batch creation and multi-key replacement do not send padded keys
+ * upstream; blank lines are dropped.
+ */
+function normalizeChannelKey(value: string | undefined): string {
+  const trimmed = value?.trim() ?? ''
+  if (!trimmed) return ''
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return trimmed
+  return trimmed
+    .split(/\r?\n/)
+    .map((key) => key.trim())
+    .filter((key) => key !== '')
+    .join('\n')
+}
+
+/**
  * Transform form data to API payload for creating channel
  */
 export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
@@ -871,7 +918,7 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     name: formData.name,
     type: formData.type,
     base_url: normalizeBaseUrl(formData.base_url) || null,
-    key: formData.key,
+    key: normalizeChannelKey(formData.key),
     openai_organization: formData.openai_organization || null,
     models: formData.models,
     group: formatGroups(formData.group),
@@ -931,7 +978,7 @@ export function transformFormDataToUpdatePayload(
     status_code_mapping: formData.status_code_mapping || null,
     tag: formData.tag || null,
     remark: formData.remark || '',
-    setting: buildSettingJSON(formData),
+    setting: buildSettingJSON(formData, formData.setting),
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
@@ -939,8 +986,9 @@ export function transformFormDataToUpdatePayload(
   }
 
   // Only include key if it was changed (not empty)
-  if (formData.key && formData.key.trim()) {
-    payload.key = formData.key
+  const normalizedKey = normalizeChannelKey(formData.key)
+  if (normalizedKey) {
+    payload.key = normalizedKey
   }
 
   // Clean up empty strings to null for optional fields

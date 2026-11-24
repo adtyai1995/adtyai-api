@@ -21,7 +21,6 @@ import {
   Box,
   Route,
   CreditCard,
-  Gift,
   Layout,
   Settings,
   Shield,
@@ -85,11 +84,7 @@ function getSystemSettingsNavGroups(
           badge: badges.modelPricing,
           items: getBillingSectionNavItems(t, {
             'model-pricing': badges.modelPricing,
-          }).map((item) =>
-            item.url === '/system-settings/billing/recharge-bonus'
-              ? { ...item, icon: Gift }
-              : item
-          ),
+          }),
         },
         {
           title: t('Models'),

@@ -496,7 +496,7 @@ export function TeamPanel() {
                     onChange={(event) => setTopupAmount(event.target.value)}
                   />
                 </div>
-                {scenes.length > 0 && (
+                {scenes.length > 1 && (
                   <div className='flex flex-col gap-1'>
                     <Label htmlFor='team-payment-scene'>
                       {t('Payment scene')}

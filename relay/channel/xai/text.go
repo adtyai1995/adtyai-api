@@ -1,7 +1,6 @@
 package xai
 
 import (
-	"io"
 	"net/http"
 	"strings"
 
@@ -84,9 +83,9 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			containStreamUsage = true
 			usage.PromptTokens = xAIResp.Usage.PromptTokens
 			usage.TotalTokens = xAIResp.Usage.TotalTokens
-			normalizeXAIUsage(usage, "xai stream")
 			usage.PromptTokensDetails = xAIResp.Usage.PromptTokensDetails
 			usage.CompletionTokenDetails = xAIResp.Usage.CompletionTokenDetails
+			normalizeXAIUsage(usage, "xai stream")
 		}
 
 		openaiResponse := streamResponseXAI2OpenAI(&xAIResp, usage)
@@ -111,12 +110,12 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 func xAIHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
 
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 	var xaiResponse ChatCompletionResponse
-	err = common.Unmarshal(responseBody, &xaiResponse)
+	err := common.Unmarshal(responseBody, &xaiResponse)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}

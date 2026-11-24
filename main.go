@@ -187,15 +187,7 @@ func main() {
 		common.FatalLog(common.LogText("failed to configure trusted proxies: %s", err.Error()))
 		return
 	}
-	server.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
-		common.SysLog(common.LogText("panic detected: %v", err))
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{
-				"message": "Internal server error, please contact support",
-				"type":    "adtyai_panic",
-			},
-		})
-	}))
+	server.Use(middleware.PanicRecover())
 	// This will cause SSE not to work!!!
 	//server.Use(gzip.Gzip(gzip.DefaultCompression))
 	server.Use(middleware.SecurityHeaders())

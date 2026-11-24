@@ -38,6 +38,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { Textarea } from '@/components/ui/textarea'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -45,6 +46,7 @@ import {
   type EpayChannel,
   type EpayChannelInput,
   type EpayMethodConfig,
+  type EpaySignType,
 } from '../api'
 
 const METHODS: Array<{ id: EpayMethodConfig['method']; label: string }> = [
@@ -72,7 +74,10 @@ function toInput(channel: EpayChannel | null): EpayChannelInput {
     name: channel?.name ?? '',
     gateway_url: channel?.gateway_url ?? '',
     merchant_id: channel?.merchant_id ?? '',
+    sign_type: channel?.sign_type === 'RSA' ? 'RSA' : 'MD5',
     merchant_key: '',
+    merchant_private_key: '',
+    platform_public_key: channel?.platform_public_key ?? '',
     priority: channel?.priority ?? 0,
     weight: channel?.weight ?? 1,
     order_mode: channel?.order_mode ?? 'api',
@@ -121,7 +126,18 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
       ),
     }))
   const anyMethod = input.methods.some((m) => m.enabled)
-  const needsKey = !props.channel && input.merchant_key.trim() === ''
+  const isRSA = input.sign_type === 'RSA'
+  let needsKey = false
+  if (isRSA) {
+    const hasPrivateKey = Boolean(props.channel?.has_merchant_private_key)
+    const hasPublicKey = Boolean(props.channel?.has_platform_public_key)
+    needsKey =
+      (!hasPrivateKey && input.merchant_private_key.trim() === '') ||
+      (!hasPublicKey && input.platform_public_key.trim() === '')
+  } else {
+    const hasMd5Key = Boolean(props.channel?.has_key)
+    needsKey = !hasMd5Key && input.merchant_key.trim() === ''
+  }
 
   return (
     <Sheet open={props.open} onOpenChange={props.onOpenChange}>
@@ -170,6 +186,62 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
               />
             </div>
             <div className='space-y-2'>
+              <Label htmlFor='epay-sign-type'>{t('Signature type')}</Label>
+              <NativeSelect
+                id='epay-sign-type'
+                value={input.sign_type}
+                onChange={(e) =>
+                  set('sign_type', e.target.value as EpaySignType)
+                }
+              >
+                <option value='MD5'>MD5</option>
+                <option value='RSA'>RSA</option>
+              </NativeSelect>
+            </div>
+          </div>
+          {isRSA ? (
+            <div className='space-y-3'>
+              <div className='space-y-2'>
+                <Label htmlFor='epay-private-key'>
+                  {t('Merchant private key')}
+                </Label>
+                <Textarea
+                  id='epay-private-key'
+                  rows={4}
+                  autoComplete='off'
+                  spellCheck={false}
+                  className='font-mono text-xs break-all'
+                  value={input.merchant_private_key}
+                  placeholder={
+                    props.channel?.has_merchant_private_key
+                      ? t('Leave empty to keep the current key')
+                      : 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC...'
+                  }
+                  onChange={(e) => set('merchant_private_key', e.target.value)}
+                />
+              </div>
+              <div className='space-y-2'>
+                <Label htmlFor='epay-public-key'>
+                  {t('Platform public key')}
+                </Label>
+                <Textarea
+                  id='epay-public-key'
+                  rows={4}
+                  autoComplete='off'
+                  spellCheck={false}
+                  className='font-mono text-xs break-all'
+                  value={input.platform_public_key}
+                  placeholder={
+                    props.channel?.has_platform_public_key
+                      ? t('Leave empty to keep the current key')
+                      : 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...'
+                  }
+                  onChange={(e) => set('platform_public_key', e.target.value)}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className='space-y-2'>
               <Label htmlFor='epay-key'>{t('Merchant key')}</Label>
               <Input
                 id='epay-key'
@@ -177,12 +249,14 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
                 autoComplete='new-password'
                 value={input.merchant_key}
                 placeholder={
-                  props.channel ? t('Leave empty to keep the current key') : ''
+                  props.channel?.has_key
+                    ? t('Leave empty to keep the current key')
+                    : ''
                 }
                 onChange={(e) => set('merchant_key', e.target.value)}
               />
             </div>
-          </div>
+          )}
           <div className='grid grid-cols-3 gap-3'>
             <div className='space-y-2'>
               <Label htmlFor='epay-priority'>{t('Priority')}</Label>

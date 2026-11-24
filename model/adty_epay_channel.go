@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -26,31 +27,63 @@ const (
 
 	AdtyEpayOrderModeAPI    = "api"
 	AdtyEpayOrderModeSubmit = "submit"
+
+	AdtyEpaySignTypeMD5 = "MD5"
+	AdtyEpaySignTypeRSA = "RSA"
 )
 
 var ErrAdtyEpayChannelNotFound = errors.New("adty epay channel not found")
 
-// AdtyEpayChannel 是一个易支付商户。商户密钥存在 merchant_key 列，不序列化给前端。
+// AdtyEpayChannel 是一个易支付商户。商户密钥与商户私钥不序列化给前端。
 type AdtyEpayChannel struct {
-	Id              int                     `json:"id"`
-	Name            string                  `json:"name" gorm:"type:varchar(128)"`
-	GatewayURL      string                  `json:"gateway_url" gorm:"column:gateway_url;type:varchar(512)"`
-	MerchantId      string                  `json:"merchant_id" gorm:"type:varchar(128)"`
-	MerchantKey     string                  `json:"-" gorm:"column:merchant_key;type:varchar(512)"`
-	Priority        int                     `json:"priority"`
-	Weight          int                     `json:"weight"`
-	OrderMode       string                  `json:"order_mode" gorm:"type:varchar(16)"`
-	ProbeMode       string                  `json:"probe_mode" gorm:"type:varchar(16)"`
-	Status          string                  `json:"status" gorm:"type:varchar(16);index"`
-	StatusReason    string                  `json:"status_reason" gorm:"type:varchar(16)"`
-	UnpaidStreak    int                     `json:"unpaid_streak"`
-	UnpaidThreshold int                     `json:"unpaid_threshold"`
-	ProbeFailCount  int                     `json:"probe_fail_count"`
-	ProbeOkCount    int                     `json:"probe_ok_count"`
-	LastProbeAt     int64                   `json:"last_probe_at"`
-	CreatedAt       int64                   `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt       int64                   `json:"updated_at" gorm:"autoUpdateTime"`
-	Methods         []AdtyEpayChannelMethod `json:"methods" gorm:"foreignKey:ChannelId"`
+	Id                 int                     `json:"id"`
+	Name               string                  `json:"name" gorm:"type:varchar(128)"`
+	GatewayURL         string                  `json:"gateway_url" gorm:"column:gateway_url;type:varchar(512)"`
+	MerchantId         string                  `json:"merchant_id" gorm:"type:varchar(128)"`
+	MerchantKey        string                  `json:"-" gorm:"column:merchant_key;type:varchar(512)"`
+	SignType           string                  `json:"sign_type" gorm:"column:sign_type;type:varchar(16);not null;default:'MD5'"`
+	MerchantPrivateKey string                  `json:"-" gorm:"column:merchant_private_key;type:text"`
+	PlatformPublicKey  string                  `json:"platform_public_key" gorm:"column:platform_public_key;type:text"`
+	Priority           int                     `json:"priority"`
+	Weight             int                     `json:"weight"`
+	OrderMode          string                  `json:"order_mode" gorm:"type:varchar(16)"`
+	ProbeMode          string                  `json:"probe_mode" gorm:"type:varchar(16)"`
+	Status             string                  `json:"status" gorm:"type:varchar(16);index"`
+	StatusReason       string                  `json:"status_reason" gorm:"type:varchar(16)"`
+	UnpaidStreak       int                     `json:"unpaid_streak"`
+	UnpaidThreshold    int                     `json:"unpaid_threshold"`
+	ProbeFailCount     int                     `json:"probe_fail_count"`
+	ProbeOkCount       int                     `json:"probe_ok_count"`
+	LastProbeAt        int64                   `json:"last_probe_at"`
+	CreatedAt          int64                   `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt          int64                   `json:"updated_at" gorm:"autoUpdateTime"`
+	Methods            []AdtyEpayChannelMethod `json:"methods" gorm:"foreignKey:ChannelId"`
+}
+
+// EffectiveSignType returns the canonical signature type ("MD5" or "RSA"),
+// treating empty values as "MD5" for backward compatibility.
+func (channel *AdtyEpayChannel) EffectiveSignType() string {
+	if channel != nil && strings.EqualFold(strings.TrimSpace(channel.SignType), AdtyEpaySignTypeRSA) {
+		return AdtyEpaySignTypeRSA
+	}
+	return AdtyEpaySignTypeMD5
+}
+
+// IsRSA reports whether this channel uses Epay v2 RSA signing.
+func (channel *AdtyEpayChannel) IsRSA() bool {
+	return channel.EffectiveSignType() == AdtyEpaySignTypeRSA
+}
+
+// HasCredentials reports whether the signing credentials required by SignType are present.
+func (channel *AdtyEpayChannel) HasCredentials() bool {
+	if channel == nil {
+		return false
+	}
+	if channel.IsRSA() {
+		return strings.TrimSpace(channel.MerchantPrivateKey) != "" &&
+			strings.TrimSpace(channel.PlatformPublicKey) != ""
+	}
+	return strings.TrimSpace(channel.MerchantKey) != ""
 }
 
 func (AdtyEpayChannel) TableName() string {
@@ -123,7 +156,11 @@ func GetAdtyEpayChannel(id int) (*AdtyEpayChannel, error) {
 // checkout, callbacks and queries. Operational limits and labels may change.
 func (channel *AdtyEpayChannel) SamePaymentIdentity(other *AdtyEpayChannel) bool {
 	if other == nil || channel.Id != other.Id || channel.MerchantId != other.MerchantId ||
-		channel.MerchantKey != other.MerchantKey || channel.GatewayURL != other.GatewayURL ||
+		channel.EffectiveSignType() != other.EffectiveSignType() ||
+		channel.MerchantKey != other.MerchantKey ||
+		channel.MerchantPrivateKey != other.MerchantPrivateKey ||
+		channel.PlatformPublicKey != other.PlatformPublicKey ||
+		channel.GatewayURL != other.GatewayURL ||
 		channel.OrderMode != other.OrderMode || len(channel.Methods) != len(other.Methods) {
 		return false
 	}
@@ -148,11 +185,14 @@ func (channel *AdtyEpayChannel) SamePaymentIdentity(other *AdtyEpayChannel) bool
 	return true
 }
 
-// SaveAdtyEpayChannel 新建或改一个通道，方式整组替换。keepKey 为真时不改商户密钥。
+// SaveAdtyEpayChannel 新建或改一个通道，方式整组替换。keepKey 为真时不改商户密钥；编辑时留空的 RSA 密钥也会保留原值。
 func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
+		channel.SignType = channel.EffectiveSignType()
 		methods := channel.Methods
 		defer func() { channel.Methods = methods }()
+		keepPrivateKey := false
+		keepPublicKey := false
 		if channel.Id != 0 {
 			var existing AdtyEpayChannel
 			if err := AdtyLockForUpdate(tx).Preload("Methods").First(&existing, channel.Id).Error; err != nil {
@@ -166,6 +206,14 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 			}
 			if keepKey {
 				channel.MerchantKey = existing.MerchantKey
+			}
+			if channel.MerchantPrivateKey == "" {
+				keepPrivateKey = true
+				channel.MerchantPrivateKey = existing.MerchantPrivateKey
+			}
+			if channel.PlatformPublicKey == "" {
+				keepPublicKey = true
+				channel.PlatformPublicKey = existing.PlatformPublicKey
 			}
 			if !existing.SamePaymentIdentity(channel) {
 				var count int64
@@ -189,6 +237,12 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 			omit := []string{"created_at", "unpaid_streak", "probe_fail_count", "probe_ok_count", "last_probe_at"}
 			if keepKey {
 				omit = append(omit, "merchant_key")
+			}
+			if keepPrivateKey {
+				omit = append(omit, "merchant_private_key")
+			}
+			if keepPublicKey {
+				omit = append(omit, "platform_public_key")
 			}
 			result := tx.Model(&AdtyEpayChannel{}).Where("id = ?", channel.Id).Omit(omit...).Select("*").Updates(channel)
 			if result.Error != nil {
@@ -253,7 +307,7 @@ func RevokeAdtyEpayChannelWithAudit(id int, event AuditLog) error {
 			return err
 		}
 		before, err := encodeOfficialAuditValue(map[string]any{
-			"status": channel.Status, "status_reason": channel.StatusReason, "credential_present": channel.MerchantKey != "",
+			"status": channel.Status, "status_reason": channel.StatusReason, "credential_present": channel.HasCredentials(),
 		})
 		if err != nil {
 			return err
@@ -276,6 +330,8 @@ func setAdtyEpayChannelStatus(tx *gorm.DB, id int, status, reason string) error 
 	updates := map[string]any{"status": status, "status_reason": reason}
 	if status == AdtyEpayStatusRevoked {
 		updates["merchant_key"] = ""
+		updates["merchant_private_key"] = ""
+		updates["platform_public_key"] = ""
 		updates["status_reason"] = AdtyEpayReasonManual
 	}
 	if status == AdtyEpayStatusEnabled {

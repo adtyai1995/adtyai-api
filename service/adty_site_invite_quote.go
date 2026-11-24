@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -49,19 +50,26 @@ func siteInviteQuote(site *model.AdtySite, amount decimal.Decimal, method string
 	if !amount.IsPositive() || !amount.Equal(amount.Round(8)) {
 		return q, common.NewMessage("Invalid parameters")
 	}
-	if p.MinUSD == nil || p.FeeUSD == nil || p.CNYRate == nil {
-		return q, common.NewMessage("This withdrawal method is not available")
-	}
-	if amount.LessThan(*p.MinUSD) {
-		return q, common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": p.MinUSD.String()})
-	}
+	methods, _ := usableSiteInviteWithdrawConfig(p)
 	switch method {
 	case "usdt":
+		if !slices.Contains(methods, adty_setting.ReferralWithdrawMethodUSDT) || p.MinUSD == nil || p.FeeUSD == nil {
+			return q, common.NewMessage("This withdrawal method is not available")
+		}
+		if amount.LessThan(*p.MinUSD) {
+			return q, common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": p.MinUSD.String()})
+		}
 		q.Rate, q.FeeUSD, q.PayoutCurrency = decimal.NewFromInt(1), *p.FeeUSD, "USDT"
 		if !amount.GreaterThan(q.FeeUSD) {
 			return q, common.NewMessage("The amount must be larger than the network fee")
 		}
 	case "alipay":
+		if !slices.Contains(methods, adty_setting.ReferralWithdrawMethodAlipay) || p.MinUSD == nil || p.CNYRate == nil {
+			return q, common.NewMessage("This withdrawal method is not available")
+		}
+		if amount.LessThan(*p.MinUSD) {
+			return q, common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": p.MinUSD.String()})
+		}
 		q.Rate, q.PayoutCurrency = *p.CNYRate, "CNY"
 	default:
 		return q, common.NewMessage("Unsupported withdrawal method")

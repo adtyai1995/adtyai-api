@@ -52,33 +52,45 @@ func GetAdtyReferralPublicSettings(c *gin.Context) {
 		return
 	}
 	cfg := adty_setting.GetReferralSetting()
+	hasRate := false
+	if _, _, err := service.CurrentWithdrawCNYRate(); err == nil {
+		hasRate = true
+	} else if !errors.Is(err, service.ErrReferralRateUnset) {
+		common.ApiError(c, err)
+		return
+	}
+	methods, networks := cfg.UsableWithdrawConfig(hasRate)
 	common.ApiSuccess(c, gin.H{
-		"enabled":           cfg.Enabled,
-		"default_rate":      cfg.DefaultRate,
-		"partner_min_rate":  cfg.PartnerMinRate,
-		"partner_max_rate":  cfg.PartnerMaxRate,
-		"freeze_days":       cfg.FreezeDays,
-		"min_withdraw_usd":  cfg.MinWithdrawUSD,
-		"usdt_withdraw_fee": cfg.USDTWithdrawFee,
-		"cookie_ttl_days":   cfg.CookieTTLDays,
+		"enabled":                cfg.Enabled,
+		"default_rate":           cfg.DefaultRate,
+		"partner_min_rate":       cfg.PartnerMinRate,
+		"partner_max_rate":       cfg.PartnerMaxRate,
+		"freeze_days":            cfg.FreezeDays,
+		"min_withdraw_usd":       cfg.MinWithdrawUSD,
+		"usdt_withdraw_fee":      cfg.USDTWithdrawFee,
+		"cookie_ttl_days":        cfg.CookieTTLDays,
+		"withdraw_methods":       methods,
+		"withdraw_usdt_networks": networks,
 	})
 }
 
 type referralProfile struct {
-	Affiliate        *model.ReferralAffiliate         `json:"affiliate"`
-	Account          *model.ReferralCommissionAccount `json:"account"`
-	Rate             string                           `json:"rate"`
-	PartnerMinRate   *float64                         `json:"partner_min_rate"` // null：未设置
-	PartnerMaxRate   *float64                         `json:"partner_max_rate"` // null：未设置
-	FreezeDays       int                              `json:"freeze_days"`
-	MinWithdrawUSD   *float64                         `json:"min_withdraw_usd"`  // null：未设置
-	USDTWithdrawFee  *float64                         `json:"usdt_withdraw_fee"` // null：未设置
-	SiteOwner        bool                             `json:"site_owner"`        // 开了分站，邀请返佣停止
-	CancelWindowMins int                              `json:"cancel_window_minutes"`
-	CNYRate          string                           `json:"cny_rate"`
-	CNYRateUpdatedAt int64                            `json:"cny_rate_updated_at"`
-	Enabled          bool                             `json:"enabled"`
-	Funnel           map[string]any                   `json:"funnel"`
+	Affiliate            *model.ReferralAffiliate         `json:"affiliate"`
+	Account              *model.ReferralCommissionAccount `json:"account"`
+	Rate                 string                           `json:"rate"`
+	PartnerMinRate       *float64                         `json:"partner_min_rate"` // null：未设置
+	PartnerMaxRate       *float64                         `json:"partner_max_rate"` // null：未设置
+	FreezeDays           int                              `json:"freeze_days"`
+	MinWithdrawUSD       *float64                         `json:"min_withdraw_usd"`  // null：未设置
+	USDTWithdrawFee      *float64                         `json:"usdt_withdraw_fee"` // null：未设置
+	WithdrawMethods      []string                         `json:"withdraw_methods"`
+	WithdrawUSDTNetworks []string                         `json:"withdraw_usdt_networks"`
+	SiteOwner            bool                             `json:"site_owner"` // 开了分站，邀请返佣停止
+	CancelWindowMins     int                              `json:"cancel_window_minutes"`
+	CNYRate              string                           `json:"cny_rate"`
+	CNYRateUpdatedAt     int64                            `json:"cny_rate_updated_at"`
+	Enabled              bool                             `json:"enabled"`
+	Funnel               map[string]any                   `json:"funnel"`
 }
 
 // GetReferralProfile 返回推广资料：推广员（没有就兜底建一个）、账户、比例、规则、提现汇率（查库）。
@@ -105,12 +117,15 @@ func GetReferralProfile(c *gin.Context) {
 	if rate, ok := service.AffiliateRate(affiliate); ok {
 		profile.Rate = rate.String()
 	}
+	hasRate := false
 	if rate, updatedAt, err := service.CurrentWithdrawCNYRate(); err == nil {
 		profile.CNYRate, profile.CNYRateUpdatedAt = rate.String(), updatedAt
+		hasRate = true
 	} else if !errors.Is(err, service.ErrReferralRateUnset) {
 		common.ApiError(c, err)
 		return
 	}
+	profile.WithdrawMethods, profile.WithdrawUSDTNetworks = cfg.UsableWithdrawConfig(hasRate)
 	var clicks, signups, paying int64
 	var earned decimal.Decimal
 	if err := model.DB.Model(&model.ReferralClick{}).Where("affiliate_id = ?", affiliate.Id).Count(&clicks).Error; err != nil {

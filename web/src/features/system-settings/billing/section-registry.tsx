@@ -38,11 +38,6 @@ const PaymentSettingsSection = lazy(() =>
     default: module.PaymentSettingsSection,
   }))
 )
-const RechargeBonusSection = lazy(() =>
-  import('./recharge-bonus-section').then((module) => ({
-    default: module.RechargeBonusSection,
-  }))
-)
 const RatioSettingsCard = lazy(() =>
   import('../models/ratio-settings-card').then((module) => ({
     default: module.RatioSettingsCard,
@@ -178,11 +173,6 @@ const BILLING_SECTIONS = [
         }}
       />
     ),
-  },
-  {
-    id: 'recharge-bonus',
-    titleKey: 'Recharge Bonus',
-    build: () => <RechargeBonusSection />,
   },
 ] as const
 

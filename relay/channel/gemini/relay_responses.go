@@ -3,7 +3,6 @@ package gemini
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -22,9 +21,9 @@ import (
 func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
 
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 	logger.LogDebug(c, "Gemini responses response body: %s", responseBody)
 
@@ -94,6 +93,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	hostedBridge := relayconvert.NewGeminiHostedStreamBridge()
 	var streamErr *types.NewAPIError
+	wroteToClient := false
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
 		data, err := common.Marshal(event.Payload)
@@ -107,6 +107,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 			}
 			return false
 		}
+		wroteToClient = true
 		return true
 	}
 	failResponsesStream := func(err error) bool {
@@ -148,20 +149,56 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		return true
 	}
 
-	usage, streamAPIError := geminiStreamHandler(c, info, resp, func(_ string, geminiResponse *dto.GeminiChatResponse) bool {
+	usage, outcome, streamAPIError := geminiStreamHandlerWithOutcome(c, info, resp, func(_ string, geminiResponse *dto.GeminiChatResponse) bool {
+		if geminiAbnormalFinishReason(geminiResponse) != "" && !geminiHasVisibleOutput(geminiResponse) {
+			return true
+		}
+		if !wroteToClient && !geminiHasRenderablePart(geminiResponse) {
+			return true
+		}
 		hostedBridge.Observe(geminiResponse)
 		return sendChunk(geminiResponse)
 	})
 	if streamAPIError != nil {
-		if failResponsesStream(streamAPIError) && streamErr == nil {
+		if (wroteToClient || c.Writer.Written()) && failResponsesStream(streamAPIError) && streamErr == nil {
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkFailed(string(streamAPIError.GetErrorCode()), "server_error", streamAPIError.StatusCode)
+			}
 			return usage, nil
 		}
 		return usage, streamAPIError
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		if info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone {
-			failResponsesStream(fmt.Errorf("gemini stream ended unexpectedly: %s", info.StreamStatus.Summary()))
+			err := fmt.Errorf("gemini stream ended unexpectedly: %s", info.StreamStatus.Summary())
+			if !wroteToClient && !c.Writer.Written() {
+				return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			}
+			info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusInternalServerError)
+			failResponsesStream(err)
 		}
+		return usage, nil
+	}
+	if !isGeminiDownstreamStop(c, info) && outcome.abnormalFinishReason != "" {
+		err := fmt.Errorf("gemini stream stopped abnormally: finishReason=%s", outcome.abnormalFinishReason)
+		if !wroteToClient && !c.Writer.Written() {
+			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		}
+		if info.StreamStatus != nil {
+			info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusInternalServerError)
+		}
+		failResponsesStream(err)
+		return usage, nil
+	}
+	if !isGeminiDownstreamStop(c, info) && !outcome.hasVisibleOutput && !outcome.hasGroundingOutput {
+		err := fmt.Errorf("gemini stream finished with empty visible output: finishReason=%s", outcome.lastFinishReason)
+		if !wroteToClient && !c.Writer.Written() {
+			return usage, types.NewOpenAIError(err, types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+		}
+		if info.StreamStatus != nil {
+			info.StreamStatus.MarkFailed(string(types.ErrorCodeEmptyResponse), "server_error", http.StatusInternalServerError)
+		}
+		failResponsesStream(err)
 		return usage, nil
 	}
 	if streamErr != nil {

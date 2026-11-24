@@ -243,6 +243,20 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
                     cell: (row) => row.name,
                   },
                   {
+                    id: 'sign_type',
+                    header: t('Signature type'),
+                    cell: (row) => {
+                      const signType = row.sign_type === 'RSA' ? 'RSA' : 'MD5'
+                      return (
+                        <StatusBadge
+                          label={signType}
+                          variant={signType === 'RSA' ? 'info' : 'neutral'}
+                          copyable={false}
+                        />
+                      )
+                    },
+                  },
+                  {
                     id: 'methods',
                     header: t('Methods'),
                     cell: (row) =>
@@ -397,10 +411,9 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
         open={deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t('Delete payment channel')}
-        desc={t(
-          'Delete {{name}}? Channels with orders can only be disabled.',
-          { name: deleting?.name ?? '' }
-        )}
+        desc={t('Delete {{name}}? Channels with orders can only be disabled.', {
+          name: deleting?.name ?? '',
+        })}
         destructive
         isLoading={remove.isPending}
         handleConfirm={() => deleting && remove.mutate(deleting.id)}

@@ -146,6 +146,8 @@ const DEFAULT_IMAGE_PROFILE = {
   background: true,
   tools: true,
   fastPromptMode: true,
+  rgba: true,
+  layerImages: 100,
 };
 const LAYER_SIZE_PRESETS = ["1K", "1.5K", "2K"];
 const IMAGE_ACTIONS = ["text_to_image", "image_to_image"];

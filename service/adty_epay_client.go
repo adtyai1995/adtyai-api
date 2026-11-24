@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,7 +50,10 @@ var adtyEpayHTTPClient = func() *http.Client {
 
 func adtyEpayEndpoint(channel *model.AdtyEpayChannel, path string) string {
 	base := strings.TrimRight(strings.TrimSpace(channel.GatewayURL), "/")
-	for _, suffix := range []string{"/submit.php", "/mapi.php", "/api.php"} {
+	for _, suffix := range []string{
+		"/api/pay/submit", "/api/pay/create", "/api/pay/query", "/api/merchant/info",
+		"/submit.php", "/mapi.php", "/api.php",
+	} {
 		base = strings.TrimSuffix(base, suffix)
 	}
 	return base + path
@@ -75,70 +79,48 @@ func adtyEpayOrderParams(channel *model.AdtyEpayChannel, method *model.AdtyEpayC
 	return params
 }
 
-// CreateAdtyEpayOrder 下单。API 模式 POST mapi.php；页面跳转模式只生成签名后的 submit.php 链接。
+// CreateAdtyEpayOrder 下单。MD5 使用 mapi.php / submit.php；RSA 使用 /api/pay/create / /api/pay/submit。
 func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, method *model.AdtyEpayChannelMethod, req AdtyEpayCreateRequest) (*AdtyEpayCreateResult, error) {
-	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || channel.MerchantKey == "" {
+	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || !channel.HasCredentials() {
 		return nil, common.NewMessage("This payment channel has been permanently revoked")
 	}
 	params := adtyEpayOrderParams(channel, method, req)
 	if channel.OrderMode == model.AdtyEpayOrderModeSubmit {
-		sign, err := EpaySign(params, channel.MerchantKey)
+		if channel.IsRSA() && strings.TrimSpace(req.Device) != "" {
+			params["device"] = req.Device
+		}
+		signed, err := EpaySignChannelParams(channel, params)
 		if err != nil {
 			return nil, err
 		}
 		values := url.Values{}
-		for key, value := range params {
+		for key, value := range signed {
 			values.Set(key, value)
 		}
-		values.Set("sign", sign)
-		values.Set("sign_type", "MD5")
-		result := &AdtyEpayCreateResult{Mode: "submit", PayURL: adtyEpayEndpoint(channel, "/submit.php") + "?" + values.Encode()}
+		submitPath := "/submit.php"
+		if channel.IsRSA() {
+			submitPath = "/api/pay/submit"
+		}
+		result := &AdtyEpayCreateResult{Mode: "submit", PayURL: adtyEpayEndpoint(channel, submitPath) + "?" + values.Encode()}
 		if err := adtyRejectUnsafeEpayLink(result); err != nil {
 			return nil, err
 		}
 		return result, nil
 	}
+	if channel.IsRSA() {
+		return createAdtyEpayOrderRSA(ctx, channel, params, req)
+	}
 	params["clientip"] = req.ClientIP
 	params["device"] = req.Device
-	sign, err := EpaySign(params, channel.MerchantKey)
+	signed, err := EpaySignChannelParams(channel, params)
 	if err != nil {
 		return nil, err
 	}
 	form := url.Values{}
-	for key, value := range params {
+	for key, value := range signed {
 		form.Set(key, value)
 	}
-	form.Set("sign", sign)
-	form.Set("sign_type", "MD5")
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adtyEpayEndpoint(channel, "/mapi.php"), strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("epay mapi request failed")
-	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// R2-026: Disable redirects and enforce verified TLS on mapi.php order creation.
-	baseClient := adtyVerifiedPaymentClientFromContext(ctx)
-	if baseClient == nil {
-		baseClient = adtyEpayHTTPClient()
-	}
-	var mapiClient http.Client
-	if baseClient != nil {
-		mapiClient = *baseClient
-	}
-	if strings.EqualFold(httpReq.URL.Scheme, "https") {
-		verifiedTransport, vErr := cloneAdtyVerifiedPaymentTransport(mapiClient.Transport)
-		if vErr != nil {
-			return nil, vErr
-		}
-		defer verifiedTransport.CloseIdleConnections()
-		mapiClient.Transport = verifiedTransport
-	}
-	mapiClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := mapiClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("epay mapi request failed")
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	statusCode, raw, err := adtyEpayPostForm(ctx, adtyEpayEndpoint(channel, "/mapi.php"), form, "epay mapi request failed")
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +133,7 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 		URLScheme string            `json:"urlscheme"`
 	}
 	if err := common.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("epay mapi returned non-JSON (http %d)", resp.StatusCode)
+		return nil, fmt.Errorf("epay mapi returned non-JSON (http %d)", statusCode)
 	}
 	code := strings.Trim(strings.TrimSpace(string(parsed.Code)), `"`)
 	if code != "1" {
@@ -167,6 +149,72 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 		result.Mode = "urlscheme"
 	default:
 		return nil, fmt.Errorf("epay mapi returned no payment link")
+	}
+	if err := adtyRejectUnsafeEpayLink(result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func createAdtyEpayOrderRSA(ctx context.Context, channel *model.AdtyEpayChannel, params map[string]string, req AdtyEpayCreateRequest) (*AdtyEpayCreateResult, error) {
+	params["method"] = "web"
+	params["clientip"] = req.ClientIP
+	params["device"] = req.Device
+	signed, err := EpaySignChannelParams(channel, params)
+	if err != nil {
+		return nil, err
+	}
+	form := url.Values{}
+	for key, value := range signed {
+		form.Set(key, value)
+	}
+	statusCode, raw, err := adtyEpayPostForm(ctx, adtyEpayEndpoint(channel, "/api/pay/create"), form, "epay api request failed")
+	if err != nil {
+		return nil, err
+	}
+	fields, err := EpayVerifyRSAResponse(channel, raw)
+	if err != nil {
+		var apiErr *epayRSAAPIError
+		if errors.As(err, &apiErr) {
+			return nil, apiErr
+		}
+		if statusCode != http.StatusOK {
+			return nil, fmt.Errorf("epay api http %d", statusCode)
+		}
+		return nil, err
+	}
+	result := &AdtyEpayCreateResult{GatewayTradeNo: fields["trade_no"]}
+	payType := strings.ToLower(strings.TrimSpace(fields["pay_type"]))
+	payInfo := strings.TrimSpace(fields["pay_info"])
+	if payInfo != "" {
+		switch payType {
+		case "qrcode":
+			result.Mode = "qrcode"
+			result.QRCode = payInfo
+		case "jump", "payurl", "url":
+			result.Mode = "payurl"
+			result.PayURL = payInfo
+		case "urlscheme":
+			result.Mode = "urlscheme"
+			result.URLScheme = payInfo
+		}
+	}
+	if result.Mode == "" {
+		switch {
+		case fields["qrcode"] != "":
+			result.Mode = "qrcode"
+			result.QRCode = fields["qrcode"]
+		case fields["payurl"] != "":
+			result.Mode = "payurl"
+			result.PayURL = fields["payurl"]
+		case fields["urlscheme"] != "":
+			result.Mode = "urlscheme"
+			result.URLScheme = fields["urlscheme"]
+		case payType != "":
+			return nil, fmt.Errorf("epay api returned unsupported pay_type %s", payType)
+		default:
+			return nil, fmt.Errorf("epay api returned no payment link")
+		}
 	}
 	if err := adtyRejectUnsafeEpayLink(result); err != nil {
 		return nil, err
@@ -247,10 +295,13 @@ func adtyRejectUnsafeEpayLink(result *AdtyEpayCreateResult) error {
 	return nil
 }
 
-// QueryAdtyEpayOrder 按我们的订单号查单（api.php?act=order）。status、code 兼容数字和字符串。
+// QueryAdtyEpayOrder 按我们的订单号查单。MD5 走 api.php?act=order；RSA 走 POST /api/pay/query 并验签。
 func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, outTradeNo string) (*AdtyEpayQueryResult, error) {
-	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || channel.MerchantKey == "" {
+	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || !channel.HasCredentials() {
 		return nil, common.NewMessage("This payment channel has been permanently revoked")
+	}
+	if channel.IsRSA() {
+		return queryAdtyEpayOrderRSA(ctx, channel, outTradeNo)
 	}
 	values := url.Values{}
 	values.Set("act", "order")
@@ -332,11 +383,89 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 	return result, nil
 }
 
-// ProbeAdtyEpayChannel 探活：按 ProbeMode 调 act=query、act=balance，或查一个不存在的订单。
+func queryAdtyEpayOrderRSA(ctx context.Context, channel *model.AdtyEpayChannel, outTradeNo string) (*AdtyEpayQueryResult, error) {
+	signed, err := EpaySignChannelParams(channel, map[string]string{"out_trade_no": outTradeNo})
+	if err != nil {
+		return nil, err
+	}
+	form := url.Values{}
+	for key, value := range signed {
+		form.Set(key, value)
+	}
+	statusCode, raw, err := adtyEpayPostForm(ctx, adtyEpayEndpoint(channel, "/api/pay/query"), form, "epay query request failed")
+	if err != nil {
+		return nil, err
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("epay query http %d", statusCode)
+	}
+	fields, err := EpayVerifyRSAResponse(channel, raw)
+	if err != nil {
+		var apiErr *epayRSAAPIError
+		if errors.As(err, &apiErr) {
+			msg := strings.ToLower(apiErr.Msg)
+			if strings.Contains(msg, "订单不存在") || strings.Contains(msg, "订单号不存在") || strings.Contains(msg, "order not found") {
+				return nil, errEpayOrderAbsent
+			}
+			return nil, fmt.Errorf("epay order query did not succeed")
+		}
+		return nil, err
+	}
+	result := &AdtyEpayQueryResult{
+		TypeCode:       fields["type"],
+		GatewayTradeNo: fields["trade_no"],
+		OutTradeNo:     fields["out_trade_no"],
+		MerchantId:     strings.TrimSpace(fields["pid"]),
+	}
+	switch strings.TrimSpace(fields["status"]) {
+	case "1":
+		result.Paid = true
+	case "0":
+	default:
+		return nil, fmt.Errorf("epay returned unknown payment status")
+	}
+	result.PaidAt = AdtyEpayPaidTime(strings.TrimSpace(fields["endtime"]))
+	if money := strings.TrimSpace(fields["money"]); money != "" {
+		if value, err := decimal.NewFromString(money); err == nil {
+			result.MoneyCNY = value
+		}
+	}
+	return result, nil
+}
+
+// ProbeAdtyEpayChannel 探活：MD5 按 ProbeMode 调 api.php；RSA 调 /api/merchant/info 或 /api/pay/query。
 // HTTP 200 并且返回 JSON 就算通（查不到订单的 code=-1 也算网关正常）。
 func ProbeAdtyEpayChannel(ctx context.Context, channel *model.AdtyEpayChannel) error {
-	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || channel.MerchantKey == "" {
+	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || !channel.HasCredentials() {
 		return common.NewMessage("This payment channel has been permanently revoked")
+	}
+	if channel.IsRSA() {
+		path := "/api/pay/query"
+		probeParams := map[string]string{"out_trade_no": "PROBE" + fmt.Sprint(adtyEpayNow().Unix())}
+		if channel.ProbeMode == "query" || channel.ProbeMode == "balance" {
+			path = "/api/merchant/info"
+			probeParams = map[string]string{}
+		}
+		signed, err := EpaySignChannelParams(channel, probeParams)
+		if err != nil {
+			return err
+		}
+		form := url.Values{}
+		for key, value := range signed {
+			form.Set(key, value)
+		}
+		statusCode, raw, err := adtyEpayPostForm(ctx, adtyEpayEndpoint(channel, path), form, "epay request failed")
+		if err != nil {
+			return err
+		}
+		if statusCode != http.StatusOK {
+			return fmt.Errorf("epay http %d", statusCode)
+		}
+		var parsed map[string]any
+		if err := common.Unmarshal(raw, &parsed); err != nil {
+			return fmt.Errorf("epay probe returned non-JSON")
+		}
+		return nil
 	}
 	values := url.Values{}
 	values.Set("pid", channel.MerchantId)
@@ -348,7 +477,7 @@ func ProbeAdtyEpayChannel(ctx context.Context, channel *model.AdtyEpayChannel) e
 		values.Set("act", "balance")
 	default:
 		values.Set("act", "order")
-		values.Set("out_trade_no", "PROBE"+fmt.Sprint(time.Now().Unix()))
+		values.Set("out_trade_no", "PROBE"+fmt.Sprint(adtyEpayNow().Unix()))
 	}
 	raw, err := adtyEpayGet(ctx, adtyEpayEndpoint(channel, "/api.php")+"?"+values.Encode())
 	if err != nil {
@@ -359,6 +488,42 @@ func ProbeAdtyEpayChannel(ctx context.Context, channel *model.AdtyEpayChannel) e
 		return fmt.Errorf("epay probe returned non-JSON")
 	}
 	return nil
+}
+
+func adtyEpayPostForm(ctx context.Context, target string, form url.Values, errMsg string) (int, []byte, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, errors.New(errMsg)
+	}
+	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// R2-026: Disable redirects and enforce verified TLS on Epay POST requests.
+	baseClient := adtyVerifiedPaymentClientFromContext(ctx)
+	if baseClient == nil {
+		baseClient = adtyEpayHTTPClient()
+	}
+	var client http.Client
+	if baseClient != nil {
+		client = *baseClient
+	}
+	if strings.EqualFold(httpReq.URL.Scheme, "https") {
+		verifiedTransport, vErr := cloneAdtyVerifiedPaymentTransport(client.Transport)
+		if vErr != nil {
+			return 0, nil, vErr
+		}
+		defer verifiedTransport.CloseIdleConnections()
+		client.Transport = verifiedTransport
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return 0, nil, errors.New(errMsg)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, raw, nil
 }
 
 func adtyEpayGet(ctx context.Context, target string) ([]byte, error) {

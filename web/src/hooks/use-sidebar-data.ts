@@ -463,6 +463,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               requiredPermission: ADTY_PERMISSIONS.FINANCE_READ,
             },
             {
+              title: t('Recharge Bonus'),
+              url: '/recharge-bonus',
+              icon: Gift,
+              requiredRole: ROLE.SUPER_ADMIN,
+            },
+            {
               title: t('Redemption Codes'),
               url: '/vouchers',
               icon: Ticket,

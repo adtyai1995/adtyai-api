@@ -19,11 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 import type { StatusVariant } from '@/components/status-badge'
 
 import type {
+  ActiveWithdrawalAccountType,
   ReferralCommissionStatus,
   ReferralProfile,
   ReferralWithdrawalStatus,
   WithdrawalAccountType,
 } from '../types'
+import { USDT_NETWORKS, type UsdtNetwork } from './address'
 
 // Values are i18n keys; render them with t().
 
@@ -85,13 +87,39 @@ export function newIdempotencyKey(): string {
   return crypto.randomUUID()
 }
 
-/** Which targets the admin has configured (adty convention I: no built-in minimum, fee or rate). */
+/** Enabled USDT networks in canonical order (defaults to all 4 when unspecified). */
+export function availableUsdtNetworks(networks?: string[]): UsdtNetwork[] {
+  if (!Array.isArray(networks)) return [...USDT_NETWORKS]
+  return USDT_NETWORKS.filter((item) => networks.includes(item))
+}
+
+/** Which targets the admin has enabled and configured (adty convention I: no built-in minimum, fee or rate). */
 export function withdrawTargetAvailable(
   profile: ReferralProfile,
   target: WithdrawalAccountType
 ): boolean {
   if (target === 'balance') return true
+  if (target === 'wechat') return false
+  if (
+    Array.isArray(profile.withdraw_methods) &&
+    !profile.withdraw_methods.includes(target)
+  ) {
+    return false
+  }
   if (profile.min_withdraw_usd === null) return false
-  if (target === 'usdt') return profile.usdt_withdraw_fee !== null
+  if (target === 'usdt') {
+    if (profile.usdt_withdraw_fee === null) return false
+    return availableUsdtNetworks(profile.withdraw_usdt_networks).length > 0
+  }
   return profile.cny_rate !== ''
+}
+
+/** Active targets shown to the promoter (balance is always first; external methods only if enabled). */
+export function availableWithdrawalTargets(
+  profile: ReferralProfile
+): ActiveWithdrawalAccountType[] {
+  const targets: ActiveWithdrawalAccountType[] = ['balance']
+  if (withdrawTargetAvailable(profile, 'usdt')) targets.push('usdt')
+  if (withdrawTargetAvailable(profile, 'alipay')) targets.push('alipay')
+  return targets
 }

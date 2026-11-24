@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
@@ -39,6 +39,7 @@ export function AdtyOnlineTopup(props: {
   returnTradeNo?: string
   onReturnClosed?: () => void
   onSettled: () => Promise<void>
+  afterRechargeSlot?: ReactNode
 }) {
   const client = useQueryClient()
   const { t } = useTranslation()
@@ -121,6 +122,7 @@ export function AdtyOnlineTopup(props: {
           />
         )}
       </div>
+      {props.afterRechargeSlot}
       <AdtyTopupHistory business={props.business} />
       <AdtyPaymentDialogs
         business={props.business}

@@ -24,6 +24,8 @@ func convertOpenAIResponsesRequestToClaudeMessages(c context.Context, info convm
 	return OpenAIResponsesRequestToClaudeMessages(c, info, responsesRequest)
 }
 
+// OpenAIResponsesRequestToClaudeMessages converts Responses input, tools,
+// reasoning, and explicit JSON Schema output settings into a Claude request.
 func OpenAIResponsesRequestToClaudeMessages(c context.Context, info convmeta.Meta, req *dto.OpenAIResponsesRequest) (*dto.ClaudeRequest, error) {
 	if req == nil {
 		return nil, fmt.Errorf("request is nil")
@@ -35,6 +37,7 @@ func OpenAIResponsesRequestToClaudeMessages(c context.Context, info convmeta.Met
 		return nil, err
 	}
 
+	promptCaching := convmeta.OptionsOf(info).Claude.ResponsesPromptCaching
 	claudeRequest := &dto.ClaudeRequest{
 		Model:       req.Model,
 		Temperature: req.Temperature,
@@ -65,6 +68,18 @@ func OpenAIResponsesRequestToClaudeMessages(c context.Context, info convmeta.Met
 	}
 	convdiag.Add(c, diagnostics...)
 	if err := sharedclaude.ApplyReasoning(c, claudeRequest, info, sourceReasoning, true); err != nil {
+		return nil, reasoning.AsClientError(err)
+	}
+	responseFormat, err := RequestTextToChatResponseFormat(req.Text)
+	if err != nil {
+		return nil, reasoning.AsClientError(err)
+	}
+	if responseFormat == nil && len(kitutil.ObjectMember(req.Text, "format")) > 0 {
+		// The Chat parser treats a missing type as no format. An explicitly
+		// supplied Claude format must not silently lose its constraints.
+		return nil, reasoning.AsClientError(fmt.Errorf("response format type is required for Claude Messages"))
+	}
+	if err := sharedclaude.ApplyResponseFormat(claudeRequest, responseFormat); err != nil {
 		return nil, reasoning.AsClientError(err)
 	}
 	if claudeRequest.MaxTokens == nil {
@@ -119,7 +134,7 @@ func OpenAIResponsesRequestToClaudeMessages(c context.Context, info convmeta.Met
 		default:
 			sourceRole := strings.TrimSpace(kitutil.Interface2String(item["role"]))
 			role := responsesClaudeRole(sourceRole)
-			parts, err := responsesInputContentToClaudeMediaMessages(c, item["content"])
+			parts, err := responsesInputContentToClaudeMediaMessages(c, item["content"], promptCaching)
 			if err != nil {
 				return nil, err
 			}
@@ -165,7 +180,63 @@ func OpenAIResponsesRequestToClaudeMessages(c context.Context, info convmeta.Met
 	if claudeRequest.MaxTokens == nil {
 		return nil, sharedclaude.ErrMissingMaxTokens
 	}
+	if promptCaching {
+		if err := applyResponsesClaudePromptCaching(c, req, claudeRequest, systemMessages); err != nil {
+			return nil, err
+		}
+	}
 	return claudeRequest, nil
+}
+
+const claudeEphemeralCacheControl = `{"type":"ephemeral"}`
+
+// Apply the slot limit after history normalization, so an omitted assistant
+// prefill or media block cannot consume a breakpoint. Explicit points win.
+func applyResponsesClaudePromptCaching(c context.Context, req *dto.OpenAIResponsesRequest, out *dto.ClaudeRequest, system []dto.ClaudeMediaMessage) error {
+	var options struct {
+		Mode string `json:"mode"`
+	}
+	if RawJSONPresent(req.PromptCacheOptions) {
+		if err := kitutil.Unmarshal(req.PromptCacheOptions, &options); err != nil {
+			return fmt.Errorf("invalid prompt_cache_options: %w", err)
+		}
+	}
+
+	const maxBreakpoints = 4
+	explicit := 0
+	keepBreakpoints := func(blocks []dto.ClaudeMediaMessage) {
+		for i := range blocks {
+			if len(blocks[i].CacheControl) == 0 {
+				continue
+			}
+			explicit++
+			if explicit > maxBreakpoints {
+				blocks[i].CacheControl = nil
+			}
+		}
+	}
+	keepBreakpoints(system)
+	for _, message := range out.Messages {
+		blocks, _ := message.Content.([]dto.ClaudeMediaMessage)
+		keepBreakpoints(blocks)
+	}
+	if explicit > maxBreakpoints {
+		convdiag.Add(c, types.ConversionDiagnostic{
+			Code: "cache_breakpoint_limit", Path: "input",
+			Message:  "Claude accepts four cache breakpoints; later explicit breakpoints were omitted",
+			Severity: types.ConversionDiagnosticWarning,
+		})
+	}
+	if explicit >= maxBreakpoints || (options.Mode != "" && options.Mode != "implicit") {
+		return nil
+	}
+	// Don't charge an ordinary one-shot prompt for a cache write. A cache key
+	// is a reuse hint, not content or an Anthropic cache key.
+	hasCacheKey := kitutil.GetJsonType(req.PromptCacheKey) == "string" && kitutil.JsonRawMessageToString(req.PromptCacheKey) != ""
+	if options.Mode == "implicit" || explicit > 0 || len(out.Messages) > 1 || hasCacheKey {
+		out.CacheControl = []byte(claudeEphemeralCacheControl)
+	}
+	return nil
 }
 
 func responsesFunctionDeclarationsToClaudeTools(functions []dto.FunctionRequest) []any {
@@ -181,7 +252,7 @@ func responsesFunctionDeclarationsToClaudeTools(functions []dto.FunctionRequest)
 	return tools
 }
 
-func responsesInputContentToClaudeMediaMessages(c context.Context, content any) ([]dto.ClaudeMediaMessage, error) {
+func responsesInputContentToClaudeMediaMessages(c context.Context, content any, promptCaching bool) ([]dto.ClaudeMediaMessage, error) {
 	contentParts, err := ContentParts(content)
 	if err != nil {
 		return nil, err
@@ -189,14 +260,19 @@ func responsesInputContentToClaudeMediaMessages(c context.Context, content any) 
 
 	parts := make([]dto.ClaudeMediaMessage, 0, len(contentParts))
 	for _, contentPart := range contentParts {
+		var cacheControl []byte
+		if marker, ok := contentPart["prompt_cache_breakpoint"].(map[string]any); promptCaching && ok && marker["mode"] == "explicit" {
+			cacheControl = []byte(claudeEphemeralCacheControl)
+		}
 		partType := strings.TrimSpace(kitutil.Interface2String(contentPart["type"]))
 		switch partType {
 		case "input_text", "output_text", "text":
 			text := kitutil.Interface2String(contentPart["text"])
 			if text != "" {
 				parts = append(parts, dto.ClaudeMediaMessage{
-					Type: "text",
-					Text: kitutil.GetPointer(text),
+					Type:         "text",
+					Text:         kitutil.GetPointer(text),
+					CacheControl: cacheControl,
 				})
 			}
 		case "input_image", "input_file", "input_audio", "input_video":
@@ -224,6 +300,7 @@ func responsesInputContentToClaudeMediaMessages(c context.Context, content any) 
 				})
 				continue
 			}
+			block.CacheControl = cacheControl
 			parts = append(parts, block)
 		}
 	}
@@ -269,7 +346,7 @@ func responsesToolOutputToClaude(c context.Context, value any) any {
 			return responseToolOutputToChatContent(value)
 		}
 	}
-	blocks, err := responsesInputContentToClaudeMediaMessages(c, rawParts)
+	blocks, err := responsesInputContentToClaudeMediaMessages(c, rawParts, false)
 	if err != nil {
 		return responseToolOutputToChatContent(value)
 	}

@@ -56,6 +56,7 @@ import { Route as AuthenticatedModelsSectionRouteImport } from './routes/_authen
 import { Route as AuthenticatedPaymentChannelsIndexRouteImport } from './routes/_authenticated/payment-channels/index'
 import { Route as AuthenticatedProfileIndexRouteImport } from './routes/_authenticated/profile/index'
 import { Route as AuthenticatedRechargeAuditIndexRouteImport } from './routes/_authenticated/recharge-audit/index'
+import { Route as AuthenticatedRechargeBonusIndexRouteImport } from './routes/_authenticated/recharge-bonus/index'
 import { Route as AuthenticatedReferralIndexRouteImport } from './routes/_authenticated/referral/index'
 import { Route as AuthenticatedSecurityIndexRouteImport } from './routes/_authenticated/security/index'
 import { Route as AuthenticatedSiteAdminIndexRouteImport } from './routes/_authenticated/site-admin/index'
@@ -338,6 +339,12 @@ const AuthenticatedRechargeAuditIndexRoute =
     path: '/recharge-audit/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedRechargeBonusIndexRoute =
+  AuthenticatedRechargeBonusIndexRouteImport.update({
+    id: '/recharge-bonus/',
+    path: '/recharge-bonus/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedReferralIndexRoute =
   AuthenticatedReferralIndexRouteImport.update({
     id: '/referral/',
@@ -591,6 +598,7 @@ export interface FileRoutesByFullPath {
   '/payment-channels/': typeof AuthenticatedPaymentChannelsIndexRoute
   '/profile/': typeof AuthenticatedProfileIndexRoute
   '/recharge-audit/': typeof AuthenticatedRechargeAuditIndexRoute
+  '/recharge-bonus/': typeof AuthenticatedRechargeBonusIndexRoute
   '/referral/': typeof AuthenticatedReferralIndexRoute
   '/security/': typeof AuthenticatedSecurityIndexRoute
   '/site-admin/': typeof AuthenticatedSiteAdminIndexRoute
@@ -671,6 +679,7 @@ export interface FileRoutesByTo {
   '/payment-channels': typeof AuthenticatedPaymentChannelsIndexRoute
   '/profile': typeof AuthenticatedProfileIndexRoute
   '/recharge-audit': typeof AuthenticatedRechargeAuditIndexRoute
+  '/recharge-bonus': typeof AuthenticatedRechargeBonusIndexRoute
   '/referral': typeof AuthenticatedReferralIndexRoute
   '/security': typeof AuthenticatedSecurityIndexRoute
   '/site-admin': typeof AuthenticatedSiteAdminIndexRoute
@@ -755,6 +764,7 @@ export interface FileRoutesById {
   '/_authenticated/payment-channels/': typeof AuthenticatedPaymentChannelsIndexRoute
   '/_authenticated/profile/': typeof AuthenticatedProfileIndexRoute
   '/_authenticated/recharge-audit/': typeof AuthenticatedRechargeAuditIndexRoute
+  '/_authenticated/recharge-bonus/': typeof AuthenticatedRechargeBonusIndexRoute
   '/_authenticated/referral/': typeof AuthenticatedReferralIndexRoute
   '/_authenticated/security/': typeof AuthenticatedSecurityIndexRoute
   '/_authenticated/site-admin/': typeof AuthenticatedSiteAdminIndexRoute
@@ -838,6 +848,7 @@ export interface FileRouteTypes {
     | '/payment-channels/'
     | '/profile/'
     | '/recharge-audit/'
+    | '/recharge-bonus/'
     | '/referral/'
     | '/security/'
     | '/site-admin/'
@@ -918,6 +929,7 @@ export interface FileRouteTypes {
     | '/payment-channels'
     | '/profile'
     | '/recharge-audit'
+    | '/recharge-bonus'
     | '/referral'
     | '/security'
     | '/site-admin'
@@ -1001,6 +1013,7 @@ export interface FileRouteTypes {
     | '/_authenticated/payment-channels/'
     | '/_authenticated/profile/'
     | '/_authenticated/recharge-audit/'
+    | '/_authenticated/recharge-bonus/'
     | '/_authenticated/referral/'
     | '/_authenticated/security/'
     | '/_authenticated/site-admin/'
@@ -1389,6 +1402,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedRechargeAuditIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/recharge-bonus/': {
+      id: '/_authenticated/recharge-bonus/'
+      path: '/recharge-bonus'
+      fullPath: '/recharge-bonus/'
+      preLoaderRoute: typeof AuthenticatedRechargeBonusIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/referral/': {
       id: '/_authenticated/referral/'
       path: '/referral'
@@ -1741,6 +1761,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedPaymentChannelsIndexRoute: typeof AuthenticatedPaymentChannelsIndexRoute
   AuthenticatedProfileIndexRoute: typeof AuthenticatedProfileIndexRoute
   AuthenticatedRechargeAuditIndexRoute: typeof AuthenticatedRechargeAuditIndexRoute
+  AuthenticatedRechargeBonusIndexRoute: typeof AuthenticatedRechargeBonusIndexRoute
   AuthenticatedReferralIndexRoute: typeof AuthenticatedReferralIndexRoute
   AuthenticatedSecurityIndexRoute: typeof AuthenticatedSecurityIndexRoute
   AuthenticatedSiteAdminIndexRoute: typeof AuthenticatedSiteAdminIndexRoute
@@ -1781,6 +1802,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
     AuthenticatedPaymentChannelsIndexRoute,
   AuthenticatedProfileIndexRoute: AuthenticatedProfileIndexRoute,
   AuthenticatedRechargeAuditIndexRoute: AuthenticatedRechargeAuditIndexRoute,
+  AuthenticatedRechargeBonusIndexRoute: AuthenticatedRechargeBonusIndexRoute,
   AuthenticatedReferralIndexRoute: AuthenticatedReferralIndexRoute,
   AuthenticatedSecurityIndexRoute: AuthenticatedSecurityIndexRoute,
   AuthenticatedSiteAdminIndexRoute: AuthenticatedSiteAdminIndexRoute,

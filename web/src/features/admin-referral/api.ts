@@ -65,6 +65,8 @@ export type ReferralSettings = {
   freeze_days: number
   min_withdraw_usd: number | null
   usdt_withdraw_fee: number | null
+  withdraw_methods: string[]
+  withdraw_usdt_networks: string[]
   cancel_window_minutes: number
   withdraw_cny_rate: string
   withdraw_cny_rate_updated_at: number
@@ -94,6 +96,7 @@ export type ReferralSettingsUpdate = Partial<
     | 'partner_max_rate'
     | 'min_withdraw_usd'
     | 'usdt_withdraw_fee'
+    | 'withdraw_cny_rate'
   >
 }
 

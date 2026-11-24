@@ -16,7 +16,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { USDT_NETWORKS, type UsdtNetwork } from '@/features/referral/lib/address'
+
 import type { ReferralSettings, ReferralSettingsUpdate } from '../api'
+
+export const CASH_WITHDRAW_METHODS = ['usdt', 'alipay'] as const
+export type CashWithdrawMethod = (typeof CASH_WITHDRAW_METHODS)[number]
+
+export function canonicalWithdrawMethods(
+  list?: string[]
+): CashWithdrawMethod[] {
+  if (!Array.isArray(list)) return []
+  const set = new Set(list.map((v) => v.trim().toLowerCase()))
+  return CASH_WITHDRAW_METHODS.filter((m) => set.has(m))
+}
+
+export function canonicalWithdrawNetworks(list?: string[]): UsdtNetwork[] {
+  if (!Array.isArray(list)) return []
+  const set = new Set(list.map((v) => v.trim().toUpperCase()))
+  return USDT_NETWORKS.filter((n) => set.has(n))
+}
 
 export type MoneyKey =
   | 'default_rate'

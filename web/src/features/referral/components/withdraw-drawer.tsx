@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
+import { X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -52,19 +53,17 @@ import {
 import {
   ADDRESS_HINTS,
   isValidUsdtAddress,
-  USDT_NETWORKS,
   usdtNetAmount,
   usdtNetworkLabel,
   type UsdtNetwork,
 } from '../lib/address'
 import {
+  availableUsdtNetworks,
+  availableWithdrawalTargets,
   newIdempotencyKey,
-  withdrawTargetAvailable,
   WITHDRAWAL_TARGET_LABELS,
 } from '../lib/labels'
-import type { ReferralProfile, WithdrawalAccountType } from '../types'
-
-const TARGETS: WithdrawalAccountType[] = ['balance', 'usdt', 'alipay', 'wechat']
+import type { ActiveWithdrawalAccountType, ReferralProfile } from '../types'
 
 type WithdrawDrawerProps = {
   open: boolean
@@ -77,24 +76,56 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const profile = props.profile
-  const [target, setTarget] = useState<WithdrawalAccountType>('balance')
+  const targets = useMemo(() => availableWithdrawalTargets(profile), [profile])
+  const enabledNetworks = useMemo(
+    () => availableUsdtNetworks(profile.withdraw_usdt_networks),
+    [profile.withdraw_usdt_networks]
+  )
+  const [target, setTarget] = useState<ActiveWithdrawalAccountType>('balance')
   const [amount, setAmount] = useState('')
-  const [network, setNetwork] = useState<UsdtNetwork | ''>('')
+  const [network, setNetwork] = useState<UsdtNetwork | ''>(() =>
+    enabledNetworks.length === 1 ? enabledNetworks[0] : ''
+  )
   const [address, setAddress] = useState('')
   const [payee, setPayee] = useState('')
+  const [alipayAccount, setAlipayAccount] = useState('')
   const [qrUrl, setQrUrl] = useState('')
   const [cnyRate, setCnyRate] = useState(profile.cny_rate)
   const [confirmingUsdt, setConfirmingUsdt] = useState(false)
   const [rateChange, setRateChange] = useState<RateChange | null>(null)
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey)
+  const qrFileRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!targets.includes(target)) {
+      setTarget('balance')
+    }
+  }, [targets, target])
+
+  useEffect(() => {
+    if (rateChange === null) {
+      setCnyRate(profile.cny_rate)
+    }
+  }, [profile.cny_rate, rateChange])
+
+  useEffect(() => {
+    if (enabledNetworks.length === 1) {
+      if (network !== enabledNetworks[0]) {
+        setNetwork(enabledNetworks[0])
+      }
+    } else if (network !== '' && !enabledNetworks.includes(network)) {
+      setNetwork('')
+      setAddress('')
+    }
+  }, [enabledNetworks, network])
 
   const available = profile.account.available_amount
   const value = Number(amount)
   const fee = profile.usdt_withdraw_fee ?? 0
   const minimum = profile.min_withdraw_usd ?? 0
-  const isCny = target === 'alipay' || target === 'wechat'
+  const isAlipay = target === 'alipay'
   const cnyAmount =
-    isCny && value > 0 ? (value * Number(cnyRate)).toFixed(2) : ''
+    isAlipay && value > 0 ? (value * Number(cnyRate)).toFixed(2) : ''
   const net = usdtNetAmount(value, fee)
 
   const validate = (): string => {
@@ -104,7 +135,9 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
       return t('The minimum withdrawal is ${{amount}}', { amount: minimum })
     }
     if (target === 'usdt') {
-      if (network === '') return t('Choose a network')
+      if (network === '' || !enabledNetworks.includes(network)) {
+        return t('Choose a network')
+      }
       if (!isValidUsdtAddress(network, address)) {
         return t('The address does not match the {{network}} network', {
           network: usdtNetworkLabel(network),
@@ -112,8 +145,8 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
       }
       if (net <= 0) return t('The amount must be larger than the network fee')
     }
-    if (isCny && (qrUrl === '' || payee.trim() === '')) {
-      return t('Upload the payment QR code and enter the payee name')
+    if (isAlipay && (payee.trim() === '' || alipayAccount.trim() === '')) {
+      return t('Enter the payee real name and Alipay account')
     }
     return ''
   }
@@ -123,23 +156,32 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
     setAmount('')
     setAddress('')
     setPayee('')
+    setAlipayAccount('')
     setQrUrl('')
-    setNetwork('')
+    if (qrFileRef.current) qrFileRef.current.value = ''
+    setNetwork(enabledNetworks.length === 1 ? enabledNetworks[0] : '')
     setIdempotencyKey(newIdempotencyKey())
   }
 
   const submit = useMutation({
-    mutationFn: (expectedRate: string) =>
-      createReferralWithdrawal({
+    mutationFn: (expectedRate: string) => {
+      let accountNo: string | undefined
+      if (target === 'usdt') {
+        accountNo = address.trim()
+      } else if (isAlipay) {
+        accountNo = alipayAccount.trim()
+      }
+      return createReferralWithdrawal({
         amount: value.toFixed(2),
         account_type: target,
         account_network: target === 'usdt' ? network : undefined,
-        account_no: target === 'usdt' ? address.trim() : undefined,
-        account_name: isCny ? payee.trim() : undefined,
-        qr_image_url: isCny ? qrUrl : undefined,
-        expected_cny_rate: isCny ? expectedRate : undefined,
+        account_no: accountNo,
+        account_name: isAlipay ? payee.trim() : undefined,
+        qr_image_url: isAlipay && qrUrl !== '' ? qrUrl : undefined,
+        expected_cny_rate: isAlipay ? expectedRate : undefined,
         idempotency_key: idempotencyKey,
-      }),
+      })
+    },
     onSuccess: (result) => {
       if (result.kind === 'rate_changed') {
         setRateChange(result)
@@ -192,30 +234,21 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
         >
           <fieldset className='space-y-2'>
             <legend className='text-sm font-medium'>{t('Withdraw to')}</legend>
-            <div className='grid grid-cols-2 gap-2'>
-              {TARGETS.map((item) => {
-                const enabled = withdrawTargetAvailable(profile, item)
-                return (
-                  <Button
-                    key={item}
-                    type='button'
-                    variant='outline'
-                    disabled={!enabled}
-                    aria-pressed={target === item}
-                    className={
-                      target === item ? 'border-foreground bg-foreground/5' : ''
-                    }
-                    onClick={() => setTarget(item)}
-                  >
-                    {t(WITHDRAWAL_TARGET_LABELS[item])}
-                    {!enabled && (
-                      <span className='text-muted-foreground ml-1 text-xs'>
-                        {t('Not available yet')}
-                      </span>
-                    )}
-                  </Button>
-                )
-              })}
+            <div className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
+              {targets.map((item) => (
+                <Button
+                  key={item}
+                  type='button'
+                  variant='outline'
+                  aria-pressed={target === item}
+                  className={
+                    target === item ? 'border-foreground bg-foreground/5' : ''
+                  }
+                  onClick={() => setTarget(item)}
+                >
+                  {t(WITHDRAWAL_TARGET_LABELS[item])}
+                </Button>
+              ))}
             </div>
           </fieldset>
 
@@ -248,8 +281,10 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
                     setAddress('')
                   }}
                 >
-                  <option value=''>{t('Choose a network')}</option>
-                  {USDT_NETWORKS.map((item) => (
+                  {enabledNetworks.length > 1 && (
+                    <option value=''>{t('Choose a network')}</option>
+                  )}
+                  {enabledNetworks.map((item) => (
                     <option key={item} value={item}>
                       {usdtNetworkLabel(item)}
                     </option>
@@ -280,7 +315,7 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
             </>
           )}
 
-          {isCny && (
+          {isAlipay && (
             <>
               <Alert>
                 <AlertDescription>
@@ -295,16 +330,32 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
                 </AlertDescription>
               </Alert>
               <div className='space-y-2'>
-                <Label htmlFor='withdraw-payee'>{t('Payee name')}</Label>
+                <Label htmlFor='withdraw-payee'>{t('Payee real name')}</Label>
                 <Input
                   id='withdraw-payee'
+                  maxLength={64}
                   value={payee}
                   onChange={(event) => setPayee(event.target.value)}
                 />
               </div>
               <div className='space-y-2'>
-                <Label htmlFor='withdraw-qr'>{t('Payment QR code')}</Label>
+                <Label htmlFor='withdraw-alipay-account'>
+                  {t('Alipay account')}
+                </Label>
                 <Input
+                  id='withdraw-alipay-account'
+                  maxLength={128}
+                  value={alipayAccount}
+                  placeholder={t('Phone number or email')}
+                  onChange={(event) => setAlipayAccount(event.target.value)}
+                />
+              </div>
+              <div className='space-y-2'>
+                <Label htmlFor='withdraw-qr'>
+                  {t('Payment QR code (optional)')}
+                </Label>
+                <Input
+                  ref={qrFileRef}
                   id='withdraw-qr'
                   type='file'
                   accept='image/png,image/jpeg,image/webp'
@@ -314,11 +365,25 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
                   }}
                 />
                 {qrUrl && (
-                  <img
-                    src={qrUrl}
-                    alt={t('Payment QR code')}
-                    className='h-40 w-40 rounded-lg border object-contain'
-                  />
+                  <div className='flex items-start gap-2 pt-1'>
+                    <img
+                      src={qrUrl}
+                      alt={t('Payment QR code')}
+                      className='h-36 w-36 rounded-lg border object-contain'
+                    />
+                    <Button
+                      type='button'
+                      size='sm'
+                      variant='outline'
+                      onClick={() => {
+                        setQrUrl('')
+                        if (qrFileRef.current) qrFileRef.current.value = ''
+                      }}
+                    >
+                      <X className='size-3.5' aria-hidden='true' />
+                      {t('Remove')}
+                    </Button>
+                  </div>
                 )}
               </div>
             </>

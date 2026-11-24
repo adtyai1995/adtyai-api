@@ -505,7 +505,6 @@ func newGeminiStreamResponse(candidates []dto.GeminiChatCandidate, usage *dto.Us
 	return response
 }
 
-
 // geminiCachedContentTokenCount returns the cache-read tokens included in the
 // prompt count. Chat usage carries them in PromptTokensDetails; stream state
 // stores usage normalized by UsageFromChatUsage, which carries them in
@@ -514,10 +513,10 @@ func geminiCachedContentTokenCount(usage *dto.Usage) int {
 	if usage == nil {
 		return 0
 	}
-	if usage.PromptTokensDetails.CachedTokens != 0 {
+	if usage.PromptTokensDetails.CachedTokens > 0 {
 		return usage.PromptTokensDetails.CachedTokens
 	}
-	if usage.InputTokensDetails != nil {
+	if usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens > 0 {
 		return usage.InputTokensDetails.CachedTokens
 	}
 	return 0

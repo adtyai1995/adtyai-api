@@ -24,11 +24,18 @@ import { toast } from 'sonner'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { adtySiteQueryKey } from '@/features/adty-site/api'
 import { referralQueryKeys } from '@/features/referral/api'
+import {
+  USDT_NETWORKS,
+  usdtNetworkLabel,
+  type UsdtNetwork,
+} from '@/features/referral/lib/address'
+import { WITHDRAWAL_TARGET_LABELS } from '@/features/referral/lib/labels'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
@@ -45,7 +52,15 @@ import {
   type ReferralSettings,
   type ReferralSettingsUpdate,
 } from '../api'
-import { RULE_KEYS, type MoneyKey, type RuleKey } from '../lib/settings'
+import {
+  canonicalWithdrawMethods,
+  canonicalWithdrawNetworks,
+  CASH_WITHDRAW_METHODS,
+  RULE_KEYS,
+  type CashWithdrawMethod,
+  type MoneyKey,
+  type RuleKey,
+} from '../lib/settings'
 
 type VisibleMoneyKey = Exclude<
   MoneyKey,
@@ -75,25 +90,48 @@ function toVisibleDrafts(settings: ReferralSettings): VisibleDrafts {
 function buildVisibleSettingsUpdate(
   saved: ReferralSettings,
   drafts: VisibleDrafts,
-  enabled: boolean
+  enabled: boolean,
+  withdrawMethods: CashWithdrawMethod[],
+  withdrawUsdtNetworks: UsdtNetwork[]
 ): ReferralSettingsUpdate {
   const body: ReferralSettingsUpdate = {}
-  const clear: VisibleMoneyKey[] = []
+  const clear: NonNullable<ReferralSettingsUpdate['clear']> = []
+  let withdrawalTouched = false
   for (const key of VISIBLE_MONEY_KEYS) {
     const draft = drafts[key].trim()
     if (draft === '') {
-      if (saved[key] !== null && saved[key] !== undefined) clear.push(key)
+      if (saved[key] !== null && saved[key] !== undefined) {
+        clear.push(key)
+        if (key !== 'default_rate') withdrawalTouched = true
+      }
     } else if (Number(draft) !== saved[key]) {
       body[key] = Number(draft)
+      if (key !== 'default_rate') withdrawalTouched = true
     }
   }
   for (const key of RULE_KEYS) {
     if (Number(drafts[key]) !== saved[key]) body[key] = Number(drafts[key])
   }
+  const cnyDraft = drafts.cny_rate.trim()
+  if (cnyDraft !== saved.withdraw_cny_rate) {
+    withdrawalTouched = true
+    if (cnyDraft === '') {
+      clear.push('withdraw_cny_rate')
+    } else {
+      body.withdraw_cny_rate = cnyDraft
+    }
+  }
   if (clear.length > 0) body.clear = clear
   if (enabled !== saved.enabled) body.enabled = enabled
-  if (drafts.cny_rate.trim() !== saved.withdraw_cny_rate) {
-    body.withdraw_cny_rate = drafts.cny_rate.trim()
+  const savedMethods = canonicalWithdrawMethods(saved.withdraw_methods)
+  const savedNetworks = canonicalWithdrawNetworks(saved.withdraw_usdt_networks)
+  const methodsChanged =
+    JSON.stringify(withdrawMethods) !== JSON.stringify(savedMethods)
+  const networksChanged =
+    JSON.stringify(withdrawUsdtNetworks) !== JSON.stringify(savedNetworks)
+  if (methodsChanged || networksChanged || withdrawalTouched) {
+    body.withdraw_methods = withdrawMethods
+    body.withdraw_usdt_networks = withdrawUsdtNetworks
   }
   return body
 }
@@ -107,12 +145,22 @@ export function SettingsPanel(props: { canWrite: boolean }) {
   })
   const [drafts, setDrafts] = useState<VisibleDrafts | null>(null)
   const [enabled, setEnabled] = useState(false)
+  const [withdrawMethods, setWithdrawMethods] = useState<CashWithdrawMethod[]>(
+    []
+  )
+  const [withdrawUsdtNetworks, setWithdrawUsdtNetworks] = useState<
+    UsdtNetwork[]
+  >([])
   const saved = query.data
 
   useEffect(() => {
     if (!saved) return
     setDrafts(toVisibleDrafts(saved))
     setEnabled(saved.enabled)
+    setWithdrawMethods(canonicalWithdrawMethods(saved.withdraw_methods))
+    setWithdrawUsdtNetworks(
+      canonicalWithdrawNetworks(saved.withdraw_usdt_networks)
+    )
   }, [saved])
 
   const save = useMutation({
@@ -147,11 +195,19 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     onError: (err) => handleServerError(err),
   })
 
+  const savedMethods = saved
+    ? canonicalWithdrawMethods(saved.withdraw_methods)
+    : []
+  const savedNetworks = saved
+    ? canonicalWithdrawNetworks(saved.withdraw_usdt_networks)
+    : []
   useDraftNavigation(
     !!saved &&
       !!drafts &&
       (enabled !== saved.enabled ||
-        JSON.stringify(drafts) !== JSON.stringify(toVisibleDrafts(saved)))
+        JSON.stringify(drafts) !== JSON.stringify(toVisibleDrafts(saved)) ||
+        JSON.stringify(withdrawMethods) !== JSON.stringify(savedMethods) ||
+        JSON.stringify(withdrawUsdtNetworks) !== JSON.stringify(savedNetworks))
   )
   if (query.isError) return <ErrorState onRetry={() => void query.refetch()} />
   if (!saved || !drafts) return <LoadingState />
@@ -173,14 +229,62 @@ export function SettingsPanel(props: { canWrite: boolean }) {
   const set = (key: keyof VisibleDrafts, value: string) =>
     setDrafts((prev) => (prev ? { ...prev, [key]: value } : prev))
   const rateMissing = drafts.default_rate.trim() === ''
+  const usdtEnabled = withdrawMethods.includes('usdt')
+  const alipayEnabled = withdrawMethods.includes('alipay')
+  const anyCashEnabled = usdtEnabled || alipayEnabled
+  const usdtChainError =
+    usdtEnabled && withdrawUsdtNetworks.length === 0
+      ? t('Choose at least one chain')
+      : ''
+  const minMissingError =
+    anyCashEnabled && drafts.min_withdraw_usd.trim() === '' ? t('Not set') : ''
+  const feeMissingError =
+    usdtEnabled && drafts.usdt_withdraw_fee.trim() === '' ? t('Not set') : ''
+  const cnyRateNum = Number(drafts.cny_rate)
+  const cnyRateMissingError =
+    alipayEnabled &&
+    (drafts.cny_rate.trim() === '' ||
+      !Number.isFinite(cnyRateNum) ||
+      !(cnyRateNum > 0))
+      ? t('Not set')
+      : ''
+  const hasWithdrawValidationError = Boolean(
+    usdtChainError || minMissingError || feeMissingError || cnyRateMissingError
+  )
+
+  const toggleMethod = (method: CashWithdrawMethod, checked: boolean) => {
+    setWithdrawMethods((prev) => {
+      const next = checked
+        ? [...prev, method]
+        : prev.filter((item) => item !== method)
+      return canonicalWithdrawMethods(next)
+    })
+  }
+
+  const toggleNetwork = (network: UsdtNetwork, checked: boolean) => {
+    setWithdrawUsdtNetworks((prev) => {
+      const next = checked
+        ? [...prev, network]
+        : prev.filter((item) => item !== network)
+      return canonicalWithdrawNetworks(next)
+    })
+  }
 
   return (
     <form
       className='flex max-w-3xl flex-col gap-6'
       onSubmit={(event) => {
         event.preventDefault()
-        if (disabled) return
-        save.mutate(buildVisibleSettingsUpdate(saved, drafts, enabled))
+        if (disabled || hasWithdrawValidationError) return
+        save.mutate(
+          buildVisibleSettingsUpdate(
+            saved,
+            drafts,
+            enabled,
+            withdrawMethods,
+            withdrawUsdtNetworks
+          )
+        )
       }}
     >
       <div className='flex items-center justify-between gap-4 rounded-lg border p-3'>
@@ -199,52 +303,171 @@ export function SettingsPanel(props: { canWrite: boolean }) {
           onCheckedChange={setEnabled}
         />
       </div>
-      <fieldset className='grid gap-4 sm:grid-cols-3'>
-        <legend className='mb-2 text-sm font-medium'>
+
+      <fieldset className='space-y-2'>
+        <legend className='text-sm font-medium'>
           {t('Money (no built-in values)')}
         </legend>
-        {VISIBLE_MONEY_KEYS.map((key) => (
-          <div key={key} className='space-y-2'>
-            <Label htmlFor={`referral-${key}`}>{labels[key]}</Label>
+        <div className='grid gap-4 sm:grid-cols-3'>
+          <div className='space-y-2'>
+            <Label htmlFor='referral-default_rate'>{labels.default_rate}</Label>
             <Input
-              id={`referral-${key}`}
+              id='referral-default_rate'
               disabled={disabled}
               type='number'
               min={0}
               step='0.01'
-              value={drafts[key]}
+              value={drafts.default_rate}
               placeholder={t('Not set')}
-              onChange={(event) => set(key, event.target.value)}
+              onChange={(event) => set('default_rate', event.target.value)}
             />
-            {drafts[key].trim() === '' && (
+            {rateMissing && (
               <p className='text-warning text-xs'>{t('Not set')}</p>
             )}
           </div>
-        ))}
+          <div className='space-y-2'>
+            <Label htmlFor='referral-min_withdraw_usd'>
+              {labels.min_withdraw_usd}
+            </Label>
+            <Input
+              id='referral-min_withdraw_usd'
+              disabled={disabled}
+              type='number'
+              min={0}
+              step='0.01'
+              value={drafts.min_withdraw_usd}
+              placeholder={t('Not set')}
+              aria-invalid={Boolean(minMissingError)}
+              onChange={(event) => set('min_withdraw_usd', event.target.value)}
+            />
+            {minMissingError ? (
+              <p className='text-destructive text-xs'>{minMissingError}</p>
+            ) : (
+              drafts.min_withdraw_usd.trim() === '' && (
+                <p className='text-warning text-xs'>{t('Not set')}</p>
+              )
+            )}
+          </div>
+        </div>
       </fieldset>
-      <div className='space-y-2'>
-        <Label htmlFor='referral-cny-rate'>
-          {t('CNY withdrawal rate (1 USD = ? CNY)')}
-        </Label>
-        <Input
-          id='referral-cny-rate'
-          disabled={disabled}
-          className='w-40'
-          type='number'
-          min={0}
-          step='0.0001'
-          value={drafts.cny_rate}
-          placeholder={t('Not set')}
-          onChange={(event) => set('cny_rate', event.target.value)}
-        />
-        <p className='text-muted-foreground text-xs' data-testid='cny-updated'>
-          {saved.withdraw_cny_rate_updated_at > 0
-            ? t('Updated {{time}}', {
-                time: formatTimestamp(saved.withdraw_cny_rate_updated_at),
-              })
-            : t('Not set')}
-        </p>
+
+      <div className='space-y-4 rounded-lg border p-4'>
+        <div className='space-y-1'>
+          <h3 className='text-sm font-medium'>
+            {t('Cash withdrawal methods')}
+          </h3>
+          <p className='text-muted-foreground text-xs'>
+            {t('Transfer to account balance is always enabled.')}
+          </p>
+        </div>
+
+        <fieldset className='space-y-2'>
+          <legend className='sr-only'>{t('Cash withdrawal methods')}</legend>
+          <div className='flex flex-wrap gap-5'>
+            {CASH_WITHDRAW_METHODS.map((method) => (
+              <label
+                key={method}
+                className='flex items-center gap-2 text-sm font-medium'
+              >
+                <Checkbox
+                  disabled={disabled}
+                  checked={withdrawMethods.includes(method)}
+                  onCheckedChange={(checked) =>
+                    toggleMethod(method, checked === true)
+                  }
+                />
+                {t(WITHDRAWAL_TARGET_LABELS[method])}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        {usdtEnabled && (
+          <div className='bg-muted/30 space-y-4 rounded-md border p-3'>
+            <fieldset className='space-y-2'>
+              <legend className='text-sm font-medium'>
+                {t('Enabled chains')}
+              </legend>
+              <div className='flex flex-wrap gap-4'>
+                {USDT_NETWORKS.map((network) => (
+                  <label
+                    key={network}
+                    className='flex items-center gap-2 text-sm'
+                  >
+                    <Checkbox
+                      disabled={disabled}
+                      checked={withdrawUsdtNetworks.includes(network)}
+                      onCheckedChange={(checked) =>
+                        toggleNetwork(network, checked === true)
+                      }
+                    />
+                    {usdtNetworkLabel(network)}
+                  </label>
+                ))}
+              </div>
+              {usdtChainError && (
+                <p className='text-destructive text-xs'>{usdtChainError}</p>
+              )}
+            </fieldset>
+            <div className='max-w-xs space-y-2'>
+              <Label htmlFor='referral-usdt_withdraw_fee'>
+                {labels.usdt_withdraw_fee}
+              </Label>
+              <Input
+                id='referral-usdt_withdraw_fee'
+                disabled={disabled}
+                type='number'
+                min={0}
+                step='0.01'
+                value={drafts.usdt_withdraw_fee}
+                placeholder={t('Not set')}
+                aria-invalid={Boolean(feeMissingError)}
+                onChange={(event) =>
+                  set('usdt_withdraw_fee', event.target.value)
+                }
+              />
+              {feeMissingError && (
+                <p className='text-destructive text-xs'>{feeMissingError}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {alipayEnabled && (
+          <div className='bg-muted/30 space-y-2 rounded-md border p-3'>
+            <Label htmlFor='referral-cny-rate'>
+              {t('CNY withdrawal rate (1 USD = ? CNY)')}
+            </Label>
+            <Input
+              id='referral-cny-rate'
+              disabled={disabled}
+              className='w-40'
+              type='number'
+              min={0}
+              step='0.0001'
+              value={drafts.cny_rate}
+              placeholder={t('Not set')}
+              aria-invalid={Boolean(cnyRateMissingError)}
+              onChange={(event) => set('cny_rate', event.target.value)}
+            />
+            {cnyRateMissingError ? (
+              <p className='text-destructive text-xs'>{cnyRateMissingError}</p>
+            ) : (
+              <p
+                className='text-muted-foreground text-xs'
+                data-testid='cny-updated'
+              >
+                {saved.withdraw_cny_rate_updated_at > 0
+                  ? t('Updated {{time}}', {
+                      time: formatTimestamp(saved.withdraw_cny_rate_updated_at),
+                    })
+                  : t('Not set')}
+              </p>
+            )}
+          </div>
+        )}
       </div>
+
       <fieldset className='grid gap-4 sm:grid-cols-3'>
         <legend className='mb-2 text-sm font-medium'>{t('Rules')}</legend>
         {RULE_KEYS.map((key) => (
@@ -263,7 +486,11 @@ export function SettingsPanel(props: { canWrite: boolean }) {
         ))}
       </fieldset>
       <div>
-        <Button variant='brand' type='submit' disabled={disabled}>
+        <Button
+          variant='brand'
+          type='submit'
+          disabled={disabled || hasWithdrawValidationError}
+        >
           {t('Save Changes')}
         </Button>
       </div>

@@ -601,6 +601,8 @@ export type SiteReferralView = {
   min_usd: string | null
   fee_usd: string | null
   cny_rate: string | null
+  withdraw_methods?: string[]
+  withdraw_usdt_networks?: string[]
   rate_configured: boolean
   rate?: string
   enabled?: boolean
@@ -743,11 +745,16 @@ export async function saveOwnerSiteReferralEnabled(
 
 export type SiteMarketingField = Exclude<
   keyof SiteReferralView,
-  'rate_configured' | 'enabled'
+  'rate_configured' | 'enabled' | 'withdraw_methods' | 'withdraw_usdt_networks'
 >
 
+export type SiteMarketingUpdate = Partial<Record<SiteMarketingField, string>> & {
+  withdraw_methods?: string[]
+  withdraw_usdt_networks?: string[]
+}
+
 export async function saveOwnerSiteReferral(
-  fields: Partial<Record<SiteMarketingField, string>>
+  fields: SiteMarketingUpdate
 ): Promise<void> {
   const res = await api.put<ApiResponse<{ saved: boolean }>>(
     `${BASE}/referral`,

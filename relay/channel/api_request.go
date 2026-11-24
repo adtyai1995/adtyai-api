@@ -480,14 +480,18 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	targetConn, resp, err := dialer.DialContext(c.Request.Context(), fullRequestURL, targetHeader)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		sanitizedErr := sanitizeDoRequestError(err)
+		if helper.ClientRequestCanceled(c) {
+			logger.LogWarn(c, common2.LogText("client request canceled during websocket dial to %s: %v", common.SanitizeURLForLog(fullRequestURL), sanitizedErr))
+			return nil, types.NewError(sanitizedErr, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry(), types.ErrOptionWithHideErrMsg("client closed request"))
+		}
 		statusCode := http.StatusInternalServerError
 		if resp != nil {
 			statusCode = resp.StatusCode
-			if resp.Body != nil {
-				_ = resp.Body.Close()
-			}
 		}
-		sanitizedErr := sanitizeDoRequestError(err)
 		return nil, types.NewErrorWithStatusCode(fmt.Errorf("dial failed to %s: %w", common.SanitizeURLForLog(fullRequestURL), sanitizedErr), types.ErrorCodeDoRequestFailed, statusCode)
 	}
 	return targetConn, nil
@@ -551,6 +555,10 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	resp, err := relayClient.Do(req)
 	if err != nil {
 		safeErr := sanitizeDoRequestError(err)
+		if helper.ClientRequestCanceled(c) && (req == nil || errors.Is(req.Context().Err(), context.Canceled)) {
+			logger.LogWarn(c, common2.LogText("client request canceled: %s", safeErr.Error()))
+			return nil, types.NewError(safeErr, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry(), types.ErrOptionWithHideErrMsg("client closed request"))
+		}
 		logger.LogError(c, common2.LogText("do request failed: %s", safeErr.Error()))
 		if isRawAmbiguousTransportError(err) {
 			return nil, types.NewError(ErrAmbiguousTaskSubmitTransport, types.ErrorCodeDoRequestFailed)
@@ -669,5 +677,9 @@ func newClientAPIRequest(c *gin.Context, fullRequestURL string, requestBody io.R
 	if c == nil || c.Request == nil {
 		return nil, errors.New("client request is missing")
 	}
-	return http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
+	ctx := c.Request.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return http.NewRequestWithContext(ctx, c.Request.Method, fullRequestURL, requestBody)
 }

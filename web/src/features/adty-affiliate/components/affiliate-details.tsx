@@ -84,14 +84,21 @@ export function AffiliateDetails(props: AffiliateDetailsProps) {
       'Withdraw to your account balance at any time with no minimum and no fee.'
     ),
   ]
-  if (settings.min_withdraw_usd !== null) {
+  const enabledMethods = Array.isArray(settings.withdraw_methods)
+    ? settings.withdraw_methods.filter((m) => m === 'usdt' || m === 'alipay')
+    : ['usdt', 'alipay']
+  const methodNames = enabledMethods.map((m) =>
+    m === 'usdt' ? t('USDT') : t('Alipay')
+  )
+  if (settings.min_withdraw_usd !== null && methodNames.length > 0) {
     rules.push(
-      t('Withdrawals to USDT, Alipay or WeChat Pay start at {{amount}}.', {
+      t('Withdrawals to {{methods}} start at {{amount}}.', {
+        methods: methodNames.join(' / '),
         amount: formatUsd(settings.min_withdraw_usd, locale),
       })
     )
   }
-  if (settings.usdt_withdraw_fee !== null) {
+  if (enabledMethods.includes('usdt') && settings.usdt_withdraw_fee !== null) {
     rules.push(
       t('USDT withdrawals have a network fee of {{fee}} USDT.', {
         fee: settings.usdt_withdraw_fee,

@@ -264,7 +264,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
         )}
       </CardHeader>
       <CardContent className='flex flex-col gap-6'>
-        {scenes.length > 0 && (
+        {scenes.length > 1 && (
           <div className='space-y-2'>
             <Label htmlFor={sceneSelectId}>{t('Payment scene')}</Label>
             <NativeSelect

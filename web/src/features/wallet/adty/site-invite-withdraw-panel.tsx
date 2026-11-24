@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -30,11 +31,11 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { uploadReferralAsset } from '@/features/referral/api'
 import {
   isValidUsdtAddress,
-  USDT_NETWORKS,
   usdtNetworkLabel,
   type UsdtNetwork,
 } from '@/features/referral/lib/address'
 import {
+  availableUsdtNetworks,
   WITHDRAWAL_STATUS_LABELS,
   WITHDRAWAL_TARGET_LABELS,
 } from '@/features/referral/lib/labels'
@@ -55,6 +56,7 @@ type WithdrawRules = {
   fee_usd?: string
   cny_rate?: string
   methods: string[]
+  usdt_networks?: string[]
 }
 
 type SiteInviteWithdrawal = {
@@ -127,7 +129,10 @@ async function createWithdrawal(body: {
       site_id: body.siteId,
       method: body.method,
       network: body.method === 'usdt' ? body.network : '',
-      account_no: body.method === 'usdt' ? body.accountNo : '',
+      account_no:
+        body.method === 'usdt' || body.method === 'alipay'
+          ? body.accountNo
+          : '',
       account_name: body.method === 'alipay' ? body.accountName : '',
       qr_image_url: body.method === 'alipay' ? body.qrUrl : '',
       expected_quote_id: body.expectedQuoteId,
@@ -234,13 +239,45 @@ function SiteWithdrawForm(props: {
   const [network, setNetwork] = useState<UsdtNetwork | ''>('')
   const [address, setAddress] = useState('')
   const [payee, setPayee] = useState('')
+  const [alipayAccount, setAlipayAccount] = useState('')
   const [qrUrl, setQrUrl] = useState('')
   const [confirmation, setConfirmation] = useState<Quote | null>(null)
   const [quoteChanged, setQuoteChanged] = useState(false)
+  const qrFileRef = useRef<HTMLInputElement | null>(null)
   const intent = useWithdrawalIntent(
     '/api/adty/site-commissions/withdrawals',
     props.siteId
   )
+
+  const visibleMethods = useMemo<Method[]>(
+    () =>
+      METHODS.filter(
+        (item) =>
+          item === 'balance' || rules.data?.methods?.includes(item) === true
+      ),
+    [rules.data?.methods]
+  )
+  const enabledNetworks = useMemo(
+    () => availableUsdtNetworks(rules.data?.usdt_networks),
+    [rules.data?.usdt_networks]
+  )
+
+  useEffect(() => {
+    if (!visibleMethods.includes(method)) {
+      setMethod('balance')
+    }
+  }, [visibleMethods, method])
+
+  useEffect(() => {
+    if (enabledNetworks.length === 1) {
+      if (network !== enabledNetworks[0]) {
+        setNetwork(enabledNetworks[0])
+      }
+    } else if (network !== '' && !enabledNetworks.includes(network)) {
+      setNetwork('')
+      setAddress('')
+    }
+  }, [enabledNetworks, network])
 
   const available = props.rows.reduce(
     (sum, row) => sum + freeAmount(row, Math.floor(Date.now() / 1000)),
@@ -249,17 +286,40 @@ function SiteWithdrawForm(props: {
   const value = Number(amount)
   const minimum = Number(rules.data?.min_usd || 0)
   const isCny = method === 'alipay'
-  const cashReady = rules.data?.configured === true
+  const usdtEnabled = visibleMethods.includes('usdt')
+  const alipayEnabled = visibleMethods.includes('alipay')
+  const cashReady = usdtEnabled || alipayEnabled
+
+  const rulesSummary = useMemo(() => {
+    if (!cashReady) return ''
+    const parts: string[] = []
+    if (rules.data?.min_usd) {
+      parts.push(t('Minimum {{min}} USD', { min: rules.data.min_usd }))
+    }
+    if (usdtEnabled && rules.data?.fee_usd !== undefined) {
+      parts.push(t('USDT fee {{fee}} USD', { fee: rules.data.fee_usd }))
+    }
+    if (alipayEnabled && rules.data?.cny_rate) {
+      parts.push(t('CNY rate {{rate}}', { rate: rules.data.cny_rate }))
+    }
+    return parts.join(' · ')
+  }, [
+    cashReady,
+    usdtEnabled,
+    alipayEnabled,
+    rules.data?.min_usd,
+    rules.data?.fee_usd,
+    rules.data?.cny_rate,
+    t,
+  ])
 
   const validate = (): string => {
     if (amount.trim() === '') return ''
     if (!(value > 0)) return t('Enter a withdrawal amount')
     if (value > available) return t('Not enough withdrawable commission')
     if (method !== 'balance') {
-      if (!cashReady) {
-        return t(
-          'Cash withdrawal stays off until the minimum, fee, and CNY rate are saved.'
-        )
+      if (!visibleMethods.includes(method)) {
+        return t('This withdrawal method is not available yet')
       }
       if (value < minimum) {
         return t('The minimum withdrawal is ${{amount}}', {
@@ -268,15 +328,17 @@ function SiteWithdrawForm(props: {
       }
     }
     if (method === 'usdt') {
-      if (network === '') return t('Choose a network')
+      if (network === '' || !enabledNetworks.includes(network)) {
+        return t('Choose a network')
+      }
       if (!isValidUsdtAddress(network, address)) {
         return t('The address does not match the {{network}} network', {
           network: usdtNetworkLabel(network),
         })
       }
     }
-    if (isCny && (qrUrl === '' || payee.trim() === '')) {
-      return t('Upload the payment QR code and enter the payee name')
+    if (isCny && (payee.trim() === '' || alipayAccount.trim() === '')) {
+      return t('Enter the payee real name and Alipay account')
     }
     return ''
   }
@@ -292,19 +354,27 @@ function SiteWithdrawForm(props: {
     setAmount('')
     setAddress('')
     setPayee('')
+    setAlipayAccount('')
     setQrUrl('')
-    setNetwork('')
+    if (qrFileRef.current) qrFileRef.current.value = ''
+    setNetwork(enabledNetworks.length === 1 ? enabledNetworks[0] : '')
     setConfirmation(null)
     setQuoteChanged(false)
   }
   const submit = useMutation({
     mutationFn: async (confirmedQuote: Quote | null) => {
+      let accountNo = ''
+      if (method === 'usdt') {
+        accountNo = address.trim()
+      } else if (isCny) {
+        accountNo = alipayAccount.trim()
+      }
       const body = {
         siteId: props.siteId,
         amount: amount.trim(),
         method,
         network: method === 'usdt' ? network : '',
-        accountNo: method === 'usdt' ? address.trim() : '',
+        accountNo,
         accountName: isCny ? payee.trim() : '',
         qrUrl: isCny ? qrUrl : '',
         expectedQuoteId: confirmedQuote?.quote_id ?? '',
@@ -413,17 +483,13 @@ function SiteWithdrawForm(props: {
       {rules.data && !cashReady && (
         <p className='text-muted-foreground text-sm'>
           {t(
-            'Cash withdrawal stays off until the minimum, fee, and CNY rate are saved.'
+            'Cash withdrawals are not enabled yet. You can still transfer to your account balance.'
           )}
         </p>
       )}
-      {cashReady && (
+      {cashReady && rulesSummary && (
         <p className='text-muted-foreground text-sm tabular-nums'>
-          {t('Minimum {{min}} USD. Fee {{fee}} USD. Rate {{rate}}.', {
-            min: rules.data?.min_usd,
-            fee: rules.data?.fee_usd,
-            rate: rules.data?.cny_rate,
-          })}
+          {rulesSummary}
         </p>
       )}
       <WithdrawalRecovery
@@ -448,32 +514,23 @@ function SiteWithdrawForm(props: {
               <legend className='text-sm font-medium'>
                 {t('Withdraw to')}
               </legend>
-              <div className='grid grid-cols-2 gap-2'>
-                {METHODS.map((item) => {
-                  const enabled =
-                    item === 'balance' ||
-                    rules.data?.methods.includes(item) === true
-                  return (
-                    <Button
-                      key={item}
-                      type='button'
-                      variant='outline'
-                      disabled={!enabled}
-                      aria-pressed={method === item}
-                      className={method === item ? 'border-foreground' : ''}
-                      onClick={() => {
-                        setMethod(item)
-                      }}
-                    >
-                      {t(methodLabel(item))}
-                      {!enabled && (
-                        <span className='text-muted-foreground ml-1 text-xs'>
-                          {t('Not available yet')}
-                        </span>
-                      )}
-                    </Button>
-                  )
-                })}
+              <div className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
+                {visibleMethods.map((item) => (
+                  <Button
+                    key={item}
+                    type='button'
+                    variant='outline'
+                    aria-pressed={method === item}
+                    className={
+                      method === item ? 'border-foreground bg-foreground/5' : ''
+                    }
+                    onClick={() => {
+                      setMethod(item)
+                    }}
+                  >
+                    {t(methodLabel(item))}
+                  </Button>
+                ))}
               </div>
             </fieldset>
             <div className='flex flex-col gap-2'>
@@ -493,7 +550,7 @@ function SiteWithdrawForm(props: {
                 </p>
               )}
             </div>
-            {method === 'usdt' && cashReady && (
+            {method === 'usdt' && usdtEnabled && (
               <>
                 <div className='flex flex-col gap-2'>
                   <Label htmlFor='site-invite-withdraw-network'>
@@ -507,10 +564,12 @@ function SiteWithdrawForm(props: {
                       setAddress('')
                     }}
                   >
-                    <NativeSelectOption value=''>
-                      {t('Choose a network')}
-                    </NativeSelectOption>
-                    {USDT_NETWORKS.map((item) => (
+                    {enabledNetworks.length > 1 && (
+                      <NativeSelectOption value=''>
+                        {t('Choose a network')}
+                      </NativeSelectOption>
+                    )}
+                    {enabledNetworks.map((item) => (
                       <NativeSelectOption key={item} value={item}>
                         {usdtNetworkLabel(item)}
                       </NativeSelectOption>
@@ -531,24 +590,39 @@ function SiteWithdrawForm(props: {
                 </div>
               </>
             )}
-            {isCny && cashReady && (
+            {isCny && alipayEnabled && (
               <>
                 <div className='flex flex-col gap-2'>
                   <Label htmlFor='site-invite-withdraw-payee'>
-                    {t('Payee name')}
+                    {t('Payee real name')}
                   </Label>
                   <Input
                     id='site-invite-withdraw-payee'
+                    maxLength={64}
                     value={payee}
                     autoComplete='name'
                     onChange={(event) => setPayee(event.target.value)}
                   />
                 </div>
                 <div className='flex flex-col gap-2'>
-                  <Label htmlFor='site-invite-withdraw-qr'>
-                    {t('Payment QR code')}
+                  <Label htmlFor='site-invite-withdraw-alipay-account'>
+                    {t('Alipay account')}
                   </Label>
                   <Input
+                    id='site-invite-withdraw-alipay-account'
+                    maxLength={128}
+                    value={alipayAccount}
+                    autoComplete='off'
+                    placeholder={t('Phone number or email')}
+                    onChange={(event) => setAlipayAccount(event.target.value)}
+                  />
+                </div>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='site-invite-withdraw-qr'>
+                    {t('Payment QR code (optional)')}
+                  </Label>
+                  <Input
+                    ref={qrFileRef}
                     id='site-invite-withdraw-qr'
                     type='file'
                     accept='image/png,image/jpeg,image/webp'
@@ -558,11 +632,25 @@ function SiteWithdrawForm(props: {
                     }}
                   />
                   {qrUrl !== '' && (
-                    <img
-                      src={qrUrl}
-                      alt={t('Payment QR code')}
-                      className='h-40 w-40 rounded-lg border object-contain'
-                    />
+                    <div className='flex items-start gap-2 pt-1'>
+                      <img
+                        src={qrUrl}
+                        alt={t('Payment QR code')}
+                        className='h-36 w-36 rounded-lg border object-contain'
+                      />
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        onClick={() => {
+                          setQrUrl('')
+                          if (qrFileRef.current) qrFileRef.current.value = ''
+                        }}
+                      >
+                        <X className='size-3.5' aria-hidden='true' />
+                        {t('Remove')}
+                      </Button>
+                    </div>
                   )}
                 </div>
               </>
@@ -603,7 +691,11 @@ function SiteWithdrawForm(props: {
                   {t('Site')} #{row.site_id} ·{' '}
                 </>
               )}
-              {row.amount_usd} USD · {t(methodLabel(row.method))} ·{' '}
+              {row.amount_usd} USD · {t(methodLabel(row.method))}
+              {row.method === 'alipay' &&
+                (row.account_name || row.account_no) &&
+                ` (${[row.account_name, row.account_no].filter(Boolean).join(' · ')})`}
+              {' · '}
               {t(statusLabel(row.status))}
               {row.payout_amount !== '' &&
                 ` · ${row.payout_amount} ${row.payout_currency}`}
@@ -644,7 +736,10 @@ function SiteWithdrawForm(props: {
               </>
             ) : (
               <p>
-                {payee} ·{' '}
+                {[payee.trim(), alipayAccount.trim()]
+                  .filter(Boolean)
+                  .join(' · ')}{' '}
+                ·{' '}
                 {t('1 USD = {{rate}} CNY. You receive ¥{{cny}}.', {
                   rate: confirmation?.rate,
                   cny: confirmation?.payout_amount,

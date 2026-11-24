@@ -737,7 +737,7 @@ func adtyOrderRequiresRemoteUnpaidConfirm(tx *gorm.DB, ext *model.AdtyTopupOrder
 		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil {
 			return false, nil
 		}
-		return channel.MerchantId != "" && channel.MerchantKey != "", nil
+		return channel.MerchantId != "" && channel.HasCredentials(), nil
 	default:
 		return false, nil
 	}

@@ -26,3 +26,17 @@ func RelayPanicRecover() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// PanicRecover is the server-wide panic recovery. Gin logs the panic stack
+// through common.ErrorLogWriter so it reaches the current log file.
+func PanicRecover() gin.HandlerFunc {
+	return gin.CustomRecoveryWithWriter(common.ErrorLogWriter, func(c *gin.Context, err any) {
+		common.SysLog(common.LogText("panic detected: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{
+				"message": "Internal server error, please contact support",
+				"type":    "adtyai_panic",
+			},
+		})
+	})
+}

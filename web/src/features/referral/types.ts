@@ -50,6 +50,8 @@ export type ReferralProfile = {
   freeze_days: number
   min_withdraw_usd: number | null
   usdt_withdraw_fee: number | null
+  withdraw_methods?: string[]
+  withdraw_usdt_networks?: string[]
   cancel_window_minutes: number
   /** Empty when the CNY withdrawal rate is not set. */
   cny_rate: string
@@ -81,6 +83,7 @@ export type ReferralCommission = {
 }
 
 export type WithdrawalAccountType = 'balance' | 'usdt' | 'alipay' | 'wechat'
+export type ActiveWithdrawalAccountType = 'balance' | 'usdt' | 'alipay'
 
 export type ReferralWithdrawalStatus =
   | 'pending'
@@ -136,5 +139,7 @@ export type ReferralPublicSettings = {
   freeze_days: number
   min_withdraw_usd: number | null
   usdt_withdraw_fee: number | null
+  withdraw_methods?: string[]
+  withdraw_usdt_networks?: string[]
   cookie_ttl_days: number
 }

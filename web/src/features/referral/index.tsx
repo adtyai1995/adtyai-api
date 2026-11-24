@@ -35,12 +35,15 @@ import { ReferralStats } from './components/referral-stats'
 import { CommissionTable, WithdrawalTable } from './components/referral-tables'
 import { SiteCustomerReferral } from './components/site-customer-referral'
 import { WithdrawDrawer } from './components/withdraw-drawer'
+import { withdrawTargetAvailable } from './lib/labels'
 import type { ReferralProfile } from './types'
 
 function ReferralRules(props: { profile: ReferralProfile }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const profile = props.profile
+  const usdtAvailable = withdrawTargetAvailable(profile, 'usdt')
+  const alipayAvailable = withdrawTargetAvailable(profile, 'alipay')
   const rules = [
     t(
       'You earn {{rate}}% of the top-up face value of every user who signs up through your link, for as long as they top up. Bonus credit earns nothing.',
@@ -53,7 +56,7 @@ function ReferralRules(props: { profile: ReferralProfile }) {
     t('The last referral link a visitor opens before signing up counts.'),
     t('Inviting yourself, or many sign-ups from one network, earns nothing.'),
   ]
-  if (profile.min_withdraw_usd !== null) {
+  if (profile.min_withdraw_usd !== null && (usdtAvailable || alipayAvailable)) {
     rules.push(
       t(
         'Transfers to your balance are instant and free. Other withdrawals need at least {{amount}} and are reviewed; you can cancel within {{minutes}} minutes.',
@@ -64,7 +67,7 @@ function ReferralRules(props: { profile: ReferralProfile }) {
       )
     )
   }
-  if (profile.usdt_withdraw_fee !== null) {
+  if (usdtAvailable && profile.usdt_withdraw_fee !== null) {
     rules.push(
       t('USDT withdrawals pay a network fee of {{fee}} USDT.', {
         fee: profile.usdt_withdraw_fee,

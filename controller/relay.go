@@ -927,6 +927,8 @@ func decideTaskRetry(c *gin.Context, taskErr *taskdto.TaskError, retryTimes int)
 		stop.Reason = "request_completed"
 	case taskErr.NoRetry:
 		stop.Reason = "task_accepted"
+	case taskErr.Code == string(types.ErrorCodeRequestCancelled) || (c != nil && c.Request != nil && c.Request.Context() != nil && errors.Is(c.Request.Context().Err(), context.Canceled)):
+		stop.Reason, stop.Source = "client_cancelled", "client"
 	case service.ShouldSkipRetryAfterChannelAffinityFailure(c):
 		stop.Reason, stop.Source = "strict_session", "session_rule"
 		if source := service.RequestPolicy(c).SessionModeSource; source != "" {

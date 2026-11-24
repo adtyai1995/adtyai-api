@@ -217,18 +217,6 @@ func RefreshUserGroupCache(userId int) error {
 	return PublishUserAuthCache(userId)
 }
 
-func updateUserEmailCache(userId int, email string) error {
-	return PublishUserAuthCache(userId)
-}
-
-func updateUserNameCache(userId int, username string) error {
-	return PublishUserAuthCache(userId)
-}
-
-func updateUserSettingCache(userId int, setting string) error {
-	return PublishUserAuthCache(userId)
-}
-
 // GetUserLanguage returns the user's language preference from cache
 // Uses the existing GetUserCache mechanism for efficiency
 func GetUserLanguage(userId int) string {

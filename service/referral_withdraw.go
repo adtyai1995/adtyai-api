@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -14,7 +16,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// 三种提现（任务 6.4）：转入余额（立即完成）、USDT（人工审核）、支付宝/微信收款码（人工审核，汇率提交时查库锁定）。
+// 三种提现（任务 6.4）：转入余额（立即完成）、USDT（人工审核）、支付宝（人工审核，汇率提交时查库锁定）。
 
 var (
 	ErrReferralRateChanged   = errors.New("rate_changed")
@@ -31,11 +33,11 @@ var (
 type ReferralWithdrawalCreateInput struct {
 	UserId          int
 	Amount          decimal.Decimal
-	AccountType     string // balance | usdt | alipay | wechat
+	AccountType     string // balance | usdt | alipay
 	AccountNetwork  string // TRC20 | BEP20 | POLYGON | XLAYER（只有 usdt 用）
-	AccountNo       string // USDT 地址
-	AccountName     string // 收款人姓名（支付宝、微信必填）
-	QRImageURL      string
+	AccountNo       string // USDT 地址或支付宝账号
+	AccountName     string // 收款人真实姓名（支付宝必填）
+	QRImageURL      string // 支付宝收款码（选填）
 	ExpectedCNYRate decimal.Decimal
 	IdempotencyKey  string
 }
@@ -114,7 +116,7 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 		AccountType: input.AccountType, SubmittedAt: time.Now().Unix(), Status: model.ReferralWithdrawalStatusPending,
 	}
 	switch input.AccountType {
-	case model.ReferralWithdrawToBalance, model.ReferralWithdrawToUSDT, model.ReferralWithdrawToAlipay, model.ReferralWithdrawToWechat:
+	case model.ReferralWithdrawToBalance, model.ReferralWithdrawToUSDT, model.ReferralWithdrawToAlipay:
 	default:
 		return nil, common.NewMessage("Unsupported withdrawal method")
 	}
@@ -166,7 +168,7 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 				strings.TrimSpace(existing[0].AccountNo) == trimmedAccountNo &&
 				strings.TrimSpace(existing[0].AccountName) == trimmedAccountName &&
 				existingQR == normalizedQR
-			if sameDest && (input.AccountType == model.ReferralWithdrawToAlipay || input.AccountType == model.ReferralWithdrawToWechat) {
+			if sameDest && input.AccountType == model.ReferralWithdrawToAlipay {
 				existingRate, err := decimal.NewFromString(strings.TrimSpace(existing[0].CNYRate))
 				if err != nil || !existingRate.Equal(input.ExpectedCNYRate) {
 					sameDest = false
@@ -186,8 +188,12 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			withdrawal.Status = model.ReferralWithdrawalStatusPaid
 			withdrawal.PaidAt = withdrawal.SubmittedAt
 		case model.ReferralWithdrawToUSDT:
-			if cfg.MinWithdrawUSD == nil || cfg.USDTWithdrawFee == nil {
+			usableMethods, usdtNetworks := cfg.UsableWithdrawConfig(false)
+			if cfg.MinWithdrawUSD == nil || cfg.USDTWithdrawFee == nil || !slices.Contains(usableMethods, adty_setting.ReferralWithdrawMethodUSDT) {
 				return ErrReferralWithdrawUnavailable
+			}
+			if !slices.Contains(usdtNetworks, normalizedNetwork) {
+				return common.NewMessage("This USDT network is not enabled")
 			}
 			if amount.LessThan(decimal.NewFromFloat(*cfg.MinWithdrawUSD)) {
 				return common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": *cfg.MinWithdrawUSD})
@@ -204,24 +210,37 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			withdrawal.AccountNo = trimmedAccountNo
 			withdrawal.FeeAmount = moneyF(fee)
 			withdrawal.NetAmount = moneyF(net)
-		case model.ReferralWithdrawToAlipay, model.ReferralWithdrawToWechat:
+		case model.ReferralWithdrawToAlipay:
 			if cfg.MinWithdrawUSD == nil {
+				return ErrReferralWithdrawUnavailable
+			}
+			effectiveMethods, _ := cfg.EffectiveWithdrawConfig(true)
+			if !slices.Contains(effectiveMethods, adty_setting.ReferralWithdrawMethodAlipay) {
 				return ErrReferralWithdrawUnavailable
 			}
 			if amount.LessThan(decimal.NewFromFloat(*cfg.MinWithdrawUSD)) {
 				return common.NewMessage("The minimum withdrawal is ${{amount}}", map[string]any{"amount": *cfg.MinWithdrawUSD})
 			}
-			if !validReferralQR(input.QRImageURL) || trimmedAccountName == "" {
-				return common.NewMessage("Upload the payment QR code and enter the payee name")
+			if trimmedAccountName == "" || trimmedAccountNo == "" {
+				return common.NewMessage("Enter the payee real name and Alipay account")
 			}
-			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserId, model.ReferralAssetPurposeWithdrawalQR, input.QRImageURL)
-			if !ok {
-				return common.NewMessage("Upload the payment QR code and enter the payee name")
+			if utf8.RuneCountInString(trimmedAccountName) > 64 || utf8.RuneCountInString(trimmedAccountNo) > 128 {
+				return common.NewMessage("Invalid parameters")
 			}
 			withdrawal.AccountName = trimmedAccountName
-			withdrawal.QRImageURL = canonicalQR
+			withdrawal.AccountNo = trimmedAccountNo
+			if trimmedQR := strings.TrimSpace(input.QRImageURL); trimmedQR != "" {
+				if !validReferralQR(trimmedQR) {
+					return common.NewMessage("Invalid payment QR code")
+				}
+				canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.UserId, model.ReferralAssetPurposeWithdrawalQR, trimmedQR)
+				if !ok {
+					return common.NewMessage("Invalid payment QR code")
+				}
+				withdrawal.QRImageURL = canonicalQR
+			}
 		}
-		if input.AccountType == model.ReferralWithdrawToAlipay || input.AccountType == model.ReferralWithdrawToWechat {
+		if input.AccountType == model.ReferralWithdrawToAlipay {
 			rate, updatedAt, err := currentWithdrawCNYRateTx(tx)
 			if err != nil {
 				return err
@@ -1012,6 +1031,9 @@ func (s *ReferralService) SaveReferralSettings(values map[string]string, rawRate
 		if err := referralProgramCanStayOn(tx, values); err != nil {
 			return err
 		}
+		if err := validateReferralWithdrawSettingsTx(tx, values, writeRate); err != nil {
+			return err
+		}
 		if err := model.SaveOptionsTx(tx, values); err != nil {
 			return err
 		}
@@ -1037,6 +1059,139 @@ func (s *ReferralService) SaveReferralSettings(values map[string]string, rawRate
 		return err
 	}
 	return refreshReferralGateOptions()
+}
+
+// validateReferralWithdrawSettingsTx 校验主站外部提现方式及对应参数的完整性（USDT 与支付宝互相解耦）。
+func validateReferralWithdrawSettingsTx(tx *gorm.DB, values map[string]string, writeRate bool) error {
+	const (
+		minKey = "adty_referral_setting.min_withdraw_usd"
+		feeKey = "adty_referral_setting.usdt_withdraw_fee"
+	)
+	touched := writeRate
+	for _, key := range []string{
+		minKey,
+		feeKey,
+		adty_setting.ReferralKeyWithdrawCNYRate,
+		adty_setting.ReferralKeyWithdrawMethods,
+		adty_setting.ReferralKeyWithdrawUSDTNetworks,
+	} {
+		if _, ok := values[key]; ok {
+			touched = true
+			break
+		}
+	}
+	if !touched {
+		return nil
+	}
+	readOpt := func(key string) (string, bool, error) {
+		if raw, ok := values[key]; ok {
+			return raw, true, nil
+		}
+		return model.ReadOptionForUpdate(tx, key)
+	}
+	if rawNets, ok := values[adty_setting.ReferralKeyWithdrawUSDTNetworks]; ok {
+		trimmed := strings.TrimSpace(rawNets)
+		if trimmed != "" && !strings.EqualFold(trimmed, "null") {
+			var parsed []string
+			if err := common.UnmarshalJsonStr(trimmed, &parsed); err != nil {
+				return common.NewMessage("Invalid parameters")
+			}
+			norm, valid := adty_setting.NormalizeReferralWithdrawUSDTNetworks(parsed)
+			if !valid {
+				return common.NewMessage("Invalid parameters")
+			}
+			encoded, err := common.Marshal(norm)
+			if err != nil {
+				return err
+			}
+			values[adty_setting.ReferralKeyWithdrawUSDTNetworks] = string(encoded)
+		}
+	}
+	rawMethods, hasMethodsOpt, err := readOpt(adty_setting.ReferralKeyWithdrawMethods)
+	if err != nil {
+		return err
+	}
+	trimmedMethods := strings.TrimSpace(rawMethods)
+	if !hasMethodsOpt || trimmedMethods == "" || strings.EqualFold(trimmedMethods, "null") {
+		return nil
+	}
+	var parsedMethods []string
+	if err := common.UnmarshalJsonStr(trimmedMethods, &parsedMethods); err != nil {
+		return common.NewMessage("Unsupported withdrawal method")
+	}
+	methods, valid := adty_setting.NormalizeReferralWithdrawMethods(parsedMethods)
+	if !valid {
+		return common.NewMessage("Unsupported withdrawal method")
+	}
+	if _, ok := values[adty_setting.ReferralKeyWithdrawMethods]; ok {
+		encoded, err := common.Marshal(methods)
+		if err != nil {
+			return err
+		}
+		values[adty_setting.ReferralKeyWithdrawMethods] = string(encoded)
+	}
+	hasSetDecimal := func(key string) (bool, error) {
+		raw, ok, err := readOpt(key)
+		if err != nil {
+			return false, err
+		}
+		trimmed := strings.TrimSpace(raw)
+		if !ok || trimmed == "" || strings.EqualFold(trimmed, "null") {
+			return false, nil
+		}
+		val, err := decimal.NewFromString(trimmed)
+		if err != nil || val.IsNegative() {
+			return false, common.NewMessage("Invalid parameters")
+		}
+		return true, nil
+	}
+	minSet, err := hasSetDecimal(minKey)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(methods, adty_setting.ReferralWithdrawMethodUSDT) {
+		feeSet, err := hasSetDecimal(feeKey)
+		if err != nil {
+			return err
+		}
+		if !minSet || !feeSet {
+			return common.NewMessage("Set the minimum withdrawal and USDT fee before enabling USDT withdrawals")
+		}
+		rawNets, hasNetsOpt, err := readOpt(adty_setting.ReferralKeyWithdrawUSDTNetworks)
+		if err != nil {
+			return err
+		}
+		trimmedNets := strings.TrimSpace(rawNets)
+		if !hasNetsOpt || trimmedNets == "" || strings.EqualFold(trimmedNets, "null") {
+			return common.NewMessage("Select at least one USDT network")
+		}
+		var parsedNets []string
+		if err := common.UnmarshalJsonStr(trimmedNets, &parsedNets); err != nil {
+			return common.NewMessage("Invalid parameters")
+		}
+		nets, valid := adty_setting.NormalizeReferralWithdrawUSDTNetworks(parsedNets)
+		if !valid || len(nets) == 0 {
+			return common.NewMessage("Select at least one USDT network")
+		}
+	}
+	if slices.Contains(methods, adty_setting.ReferralWithdrawMethodAlipay) {
+		rateSet := writeRate
+		if !rateSet {
+			rawRateOpt, ok, err := readOpt(adty_setting.ReferralKeyWithdrawCNYRate)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if parsedRate, parseErr := decimal.NewFromString(strings.TrimSpace(rawRateOpt)); parseErr == nil && parsedRate.IsPositive() {
+					rateSet = true
+				}
+			}
+		}
+		if !minSet || !rateSet {
+			return common.NewMessage("Set the minimum withdrawal and CNY exchange rate before enabling Alipay withdrawals")
+		}
+	}
+	return nil
 }
 
 // validatePartnerRateBoundsTx validates effective partner_min_rate <= partner_max_rate

@@ -91,14 +91,16 @@ func (s *AdtySite) BeforeCreate(tx *gorm.DB) error {
 }
 
 type AdtySiteMarketingPolicy struct {
-	PendingCoverageCap  *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
-	CancelWindowMinutes *int64           `json:"cancel_window_minutes" gorm:"column:invite_cancel_window_minutes"`
-	ObservationDays     *int64           `json:"observation_days"`
-	MinUSD              *decimal.Decimal `json:"min_usd" gorm:"column:invite_withdraw_min;type:decimal(20,8)"`
-	FeeUSD              *decimal.Decimal `json:"fee_usd" gorm:"column:invite_withdraw_fee;type:decimal(20,8)"`
-	CNYRate             *decimal.Decimal `json:"cny_rate" gorm:"column:invite_withdraw_cny_rate;type:decimal(20,8)"`
-	TrialGrantMaxUSD    *decimal.Decimal `json:"trial_grant_max_usd" gorm:"type:decimal(20,8)"`
-	TrialGrantDailyUSD  *decimal.Decimal `json:"trial_grant_daily_usd" gorm:"type:decimal(20,8)"`
+	PendingCoverageCap   *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
+	CancelWindowMinutes  *int64           `json:"cancel_window_minutes" gorm:"column:invite_cancel_window_minutes"`
+	ObservationDays      *int64           `json:"observation_days"`
+	MinUSD               *decimal.Decimal `json:"min_usd" gorm:"column:invite_withdraw_min;type:decimal(20,8)"`
+	FeeUSD               *decimal.Decimal `json:"fee_usd" gorm:"column:invite_withdraw_fee;type:decimal(20,8)"`
+	CNYRate              *decimal.Decimal `json:"cny_rate" gorm:"column:invite_withdraw_cny_rate;type:decimal(20,8)"`
+	WithdrawMethods      *string          `json:"-" gorm:"column:invite_withdraw_methods;type:varchar(64)"`
+	WithdrawUSDTNetworks *string          `json:"-" gorm:"column:invite_withdraw_usdt_networks;type:varchar(128)"`
+	TrialGrantMaxUSD     *decimal.Decimal `json:"trial_grant_max_usd" gorm:"type:decimal(20,8)"`
+	TrialGrantDailyUSD   *decimal.Decimal `json:"trial_grant_daily_usd" gorm:"type:decimal(20,8)"`
 }
 
 // AdtySiteInviteCode 是开站邀请码：有效就直接开成 active，并用码上预设的供货倍率。

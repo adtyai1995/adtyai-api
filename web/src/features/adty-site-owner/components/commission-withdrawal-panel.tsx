@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Upload, X } from 'lucide-react'
+import { ExternalLink, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -115,7 +115,16 @@ function formatPayoutDisplay(
   return formatUsd(Number(row.amount_usd || 0), locale)
 }
 
-function PayeeCell(props: { row: CommissionWithdrawalRow }) {
+type QrPreviewInfo = {
+  url: string
+  name?: string
+  accountNo?: string
+}
+
+function PayeeCell(props: {
+  row: CommissionWithdrawalRow
+  onPreviewQr: (info: QrPreviewInfo) => void
+}) {
   const { t } = useTranslation()
   const row = props.row
   if (row.method === 'usdt') {
@@ -148,23 +157,29 @@ function PayeeCell(props: { row: CommissionWithdrawalRow }) {
   return (
     <div className='flex items-center gap-2'>
       {row.qr_image_url !== '' && (
-        <a
-          href={row.qr_image_url}
-          target='_blank'
-          rel='noopener noreferrer'
-          className='shrink-0'
+        <button
+          type='button'
+          className='shrink-0 cursor-zoom-in rounded-md border bg-white p-0.5 transition hover:opacity-80'
+          aria-label={t('Preview payment QR code')}
+          onClick={() =>
+            props.onPreviewQr({
+              url: row.qr_image_url,
+              name: row.account_name,
+              accountNo: row.account_no,
+            })
+          }
         >
           <img
             src={row.qr_image_url}
             alt={t('Payment QR code')}
-            className='h-14 w-14 rounded-md border object-contain'
+            className='h-14 w-14 rounded object-contain'
           />
-        </a>
+        </button>
       )}
       <div className='flex min-w-0 flex-col gap-0.5'>
         <span className='font-medium'>{t(methodLabel(row.method))}</span>
         {row.account_name && (
-          <span className='text-sm'>{row.account_name}</span>
+          <span className='text-sm font-medium'>{row.account_name}</span>
         )}
         {row.account_no && (
           <div className='flex items-center gap-1'>
@@ -174,7 +189,7 @@ function PayeeCell(props: { row: CommissionWithdrawalRow }) {
             <CopyButton
               value={row.account_no}
               size='icon'
-              aria-label={t('Copy address')}
+              aria-label={t('Copy account')}
             />
           </div>
         )}
@@ -214,6 +229,7 @@ export function CommissionWithdrawalPanel(
   )
   const [paying, setPaying] = useState<CommissionWithdrawalRow | null>(null)
   const [failing, setFailing] = useState<CommissionWithdrawalRow | null>(null)
+  const [previewQr, setPreviewQr] = useState<QrPreviewInfo | null>(null)
 
   const [approveNote, setApproveNote] = useState('')
   const [rejectReason, setRejectReason] = useState('')
@@ -438,7 +454,9 @@ export function CommissionWithdrawalPanel(
               {
                 id: 'payee',
                 header: t('Pay to'),
-                cell: (row) => <PayeeCell row={row} />,
+                cell: (row) => (
+                  <PayeeCell row={row} onPreviewQr={setPreviewQr} />
+                ),
               },
               {
                 id: 'amount',
@@ -767,6 +785,50 @@ export function CommissionWithdrawalPanel(
       >
         {paying && (
           <div className='space-y-4'>
+            {paying.method === 'alipay' && (
+              <div className='bg-muted/40 flex flex-wrap items-start justify-between gap-3 rounded-lg border p-3'>
+                <div className='flex min-w-0 flex-1 flex-col gap-1 text-sm'>
+                  <span className='text-muted-foreground text-xs'>
+                    {t('Alipay payee details')}
+                  </span>
+                  {paying.account_name && (
+                    <div className='font-medium'>{paying.account_name}</div>
+                  )}
+                  {paying.account_no && (
+                    <div className='flex items-center gap-1'>
+                      <span className='font-mono text-xs break-all'>
+                        {paying.account_no}
+                      </span>
+                      <CopyButton
+                        value={paying.account_no}
+                        size='icon'
+                        aria-label={t('Copy account')}
+                      />
+                    </div>
+                  )}
+                </div>
+                {paying.qr_image_url !== '' && (
+                  <button
+                    type='button'
+                    className='shrink-0 cursor-zoom-in rounded-md border bg-white p-1 transition hover:opacity-80'
+                    aria-label={t('Preview payment QR code')}
+                    onClick={() =>
+                      setPreviewQr({
+                        url: paying.qr_image_url,
+                        name: paying.account_name,
+                        accountNo: paying.account_no,
+                      })
+                    }
+                  >
+                    <img
+                      src={paying.qr_image_url}
+                      alt={t('Payment QR code')}
+                      className='h-28 w-28 object-contain'
+                    />
+                  </button>
+                )}
+              </div>
+            )}
             {(paying.method === 'usdt' || paying.method === 'alipay') && (
               <div className='space-y-2'>
                 <Label htmlFor='commission-pay-tx'>
@@ -904,6 +966,49 @@ export function CommissionWithdrawalPanel(
             />
           </div>
         </div>
+      </Dialog>
+
+      {/* QR Lightbox Preview Dialog */}
+      <Dialog
+        open={previewQr !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewQr(null)
+        }}
+        title={t('Payment QR code')}
+        description={
+          previewQr
+            ? [previewQr.name, previewQr.accountNo].filter(Boolean).join(' · ')
+            : ''
+        }
+        contentClassName='sm:max-w-md'
+        footer={
+          previewQr ? (
+            <div className='flex w-full items-center justify-between gap-2'>
+              <a
+                href={previewQr.url}
+                target='_blank'
+                rel='noopener noreferrer'
+                className='text-primary inline-flex items-center gap-1 text-sm underline'
+              >
+                <ExternalLink className='size-3.5' aria-hidden='true' />
+                {t('Open in new tab')}
+              </a>
+              <Button variant='outline' onClick={() => setPreviewQr(null)}>
+                {t('Close')}
+              </Button>
+            </div>
+          ) : undefined
+        }
+      >
+        {previewQr && (
+          <div className='flex flex-col items-center gap-3'>
+            <img
+              src={previewQr.url}
+              alt={t('Payment QR code')}
+              className='max-h-[70vh] w-full max-w-sm rounded-lg border object-contain'
+            />
+          </div>
+        )}
       </Dialog>
     </section>
   )

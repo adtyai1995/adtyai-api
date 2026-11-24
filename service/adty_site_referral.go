@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -25,22 +27,126 @@ var (
 
 type AdtySiteReferralView struct {
 	model.AdtySiteMarketingPolicy
-	RateConfigured bool   `json:"rate_configured"`
-	Rate           string `json:"rate,omitempty"`
-	Enabled        bool   `json:"enabled"`
+	WithdrawMethods      []string `json:"withdraw_methods"`
+	WithdrawUSDTNetworks []string `json:"withdraw_usdt_networks"`
+	RateConfigured       bool     `json:"rate_configured"`
+	Rate                 string   `json:"rate,omitempty"`
+	Enabled              bool     `json:"enabled"`
 }
 
 type AdtySiteMarketingUpdate struct {
-	Rate                *string `json:"rate"`
-	Enabled             *bool   `json:"enabled"`
-	PendingCoverageCap  *string `json:"pending_coverage_cap"`
-	CancelWindowMinutes *string `json:"cancel_window_minutes"`
-	ObservationDays     *string `json:"observation_days"`
-	MinUSD              *string `json:"min_usd"`
-	FeeUSD              *string `json:"fee_usd"`
-	CNYRate             *string `json:"cny_rate"`
-	TrialGrantMaxUSD    *string `json:"trial_grant_max_usd"`
-	TrialGrantDailyUSD  *string `json:"trial_grant_daily_usd"`
+	Rate                 *string   `json:"rate"`
+	Enabled              *bool     `json:"enabled"`
+	PendingCoverageCap   *string   `json:"pending_coverage_cap"`
+	CancelWindowMinutes  *string   `json:"cancel_window_minutes"`
+	ObservationDays      *string   `json:"observation_days"`
+	MinUSD               *string   `json:"min_usd"`
+	FeeUSD               *string   `json:"fee_usd"`
+	CNYRate              *string   `json:"cny_rate"`
+	WithdrawMethods      *[]string `json:"withdraw_methods"`
+	WithdrawUSDTNetworks *[]string `json:"withdraw_usdt_networks"`
+	TrialGrantMaxUSD     *string   `json:"trial_grant_max_usd"`
+	TrialGrantDailyUSD   *string   `json:"trial_grant_daily_usd"`
+}
+
+func parseSiteWithdrawList(raw *string) ([]string, bool) {
+	if raw == nil {
+		return nil, false
+	}
+	trimmed := strings.TrimSpace(*raw)
+	if trimmed == "" || trimmed == "[]" {
+		return []string{}, true
+	}
+	if strings.HasPrefix(trimmed, "[") {
+		var items []string
+		if err := common.UnmarshalJsonStr(trimmed, &items); err == nil {
+			if items == nil {
+				return []string{}, true
+			}
+			return items, true
+		}
+		return []string{}, true
+	}
+	parts := strings.Split(trimmed, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if item := strings.TrimSpace(part); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out, true
+}
+
+func effectiveSiteInviteWithdrawConfig(policy model.AdtySiteMarketingPolicy) (methods []string, networks []string) {
+	if policy.WithdrawMethods == nil {
+		if policy.MinUSD != nil && policy.FeeUSD != nil && policy.CNYRate != nil {
+			methods = []string{adty_setting.ReferralWithdrawMethodUSDT, adty_setting.ReferralWithdrawMethodAlipay}
+			if rawNets, ok := parseSiteWithdrawList(policy.WithdrawUSDTNetworks); ok {
+				if normNets, valid := adty_setting.NormalizeReferralWithdrawUSDTNetworks(rawNets); valid {
+					networks = normNets
+				} else {
+					networks = []string{}
+				}
+			} else {
+				networks = adty_setting.AllReferralWithdrawUSDTNetworks()
+			}
+			return methods, networks
+		}
+		return []string{}, []string{}
+	}
+	rawMethods, _ := parseSiteWithdrawList(policy.WithdrawMethods)
+	methods = []string{}
+	if normMethods, ok := adty_setting.NormalizeReferralWithdrawMethods(rawMethods); ok {
+		methods = normMethods
+	} else {
+		seen := map[string]struct{}{}
+		for _, raw := range rawMethods {
+			m := strings.ToLower(strings.TrimSpace(raw))
+			if m == adty_setting.ReferralWithdrawMethodUSDT || m == adty_setting.ReferralWithdrawMethodAlipay {
+				seen[m] = struct{}{}
+			}
+		}
+		for _, m := range []string{adty_setting.ReferralWithdrawMethodUSDT, adty_setting.ReferralWithdrawMethodAlipay} {
+			if _, ok := seen[m]; ok {
+				methods = append(methods, m)
+			}
+		}
+	}
+	networks = []string{}
+	if rawNets, ok := parseSiteWithdrawList(policy.WithdrawUSDTNetworks); ok {
+		if normNets, valid := adty_setting.NormalizeReferralWithdrawUSDTNetworks(rawNets); valid {
+			networks = normNets
+		} else {
+			allowed := adty_setting.AllReferralWithdrawUSDTNetworks()
+			seen := map[string]struct{}{}
+			for _, raw := range rawNets {
+				n := strings.ToUpper(strings.TrimSpace(raw))
+				if slices.Contains(allowed, n) {
+					seen[n] = struct{}{}
+				}
+			}
+			for _, n := range allowed {
+				if _, ok := seen[n]; ok {
+					networks = append(networks, n)
+				}
+			}
+		}
+	}
+	return methods, networks
+}
+
+func usableSiteInviteWithdrawConfig(policy model.AdtySiteMarketingPolicy) (methods []string, networks []string) {
+	rawMethods, rawNetworks := effectiveSiteInviteWithdrawConfig(policy)
+	methods = []string{}
+	networks = []string{}
+	if slices.Contains(rawMethods, adty_setting.ReferralWithdrawMethodUSDT) && policy.MinUSD != nil && policy.FeeUSD != nil && len(rawNetworks) > 0 {
+		methods = append(methods, adty_setting.ReferralWithdrawMethodUSDT)
+		networks = rawNetworks
+	}
+	if slices.Contains(rawMethods, adty_setting.ReferralWithdrawMethodAlipay) && policy.MinUSD != nil && policy.CNYRate != nil {
+		methods = append(methods, adty_setting.ReferralWithdrawMethodAlipay)
+	}
+	return methods, networks
 }
 
 var siteMarketingDecimal = regexp.MustCompile(`^(?:[0-9]{1,12}(?:\.[0-9]{0,8})?|\.[0-9]{1,8})$`)
@@ -132,9 +238,58 @@ func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpda
 			}
 			updates["observation_days"] = policy.ObservationDays
 		}
-		if input.MinUSD != nil || input.FeeUSD != nil || input.CNYRate != nil {
-			if (policy.MinUSD == nil) != (policy.FeeUSD == nil) || (policy.MinUSD == nil) != (policy.CNYRate == nil) {
-				return common.NewMessage("Set the minimum, fee and exchange rate together to enable cash withdrawals")
+		if input.WithdrawMethods != nil {
+			methods, ok := adty_setting.NormalizeReferralWithdrawMethods(*input.WithdrawMethods)
+			if !ok {
+				return common.NewMessage("Unsupported withdrawal method")
+			}
+			encoded, err := common.Marshal(methods)
+			if err != nil {
+				return err
+			}
+			raw := string(encoded)
+			policy.WithdrawMethods = &raw
+			updates["invite_withdraw_methods"] = raw
+		}
+		if input.WithdrawUSDTNetworks != nil {
+			networks, ok := adty_setting.NormalizeReferralWithdrawUSDTNetworks(*input.WithdrawUSDTNetworks)
+			if !ok {
+				return common.NewMessage("Invalid parameters")
+			}
+			encoded, err := common.Marshal(networks)
+			if err != nil {
+				return err
+			}
+			raw := string(encoded)
+			policy.WithdrawUSDTNetworks = &raw
+			updates["invite_withdraw_usdt_networks"] = raw
+		}
+		if input.MinUSD != nil || input.FeeUSD != nil || input.CNYRate != nil || input.WithdrawMethods != nil || input.WithdrawUSDTNetworks != nil {
+			if policy.WithdrawMethods != nil {
+				methods, networks := effectiveSiteInviteWithdrawConfig(policy)
+				if slices.Contains(methods, adty_setting.ReferralWithdrawMethodUSDT) {
+					if policy.MinUSD == nil || policy.FeeUSD == nil {
+						return common.NewMessage("Set the minimum withdrawal and USDT fee before enabling USDT withdrawals")
+					}
+					if len(networks) == 0 {
+						return common.NewMessage("Select at least one USDT network")
+					}
+				}
+				if slices.Contains(methods, adty_setting.ReferralWithdrawMethodAlipay) {
+					if policy.MinUSD == nil || policy.CNYRate == nil {
+						return common.NewMessage("Set the minimum withdrawal and CNY exchange rate before enabling Alipay withdrawals")
+					}
+				}
+			} else {
+				if (policy.MinUSD == nil) != (policy.FeeUSD == nil) || (policy.MinUSD == nil) != (policy.CNYRate == nil) {
+					return common.NewMessage("Set the minimum, fee and exchange rate together to enable cash withdrawals")
+				}
+				if input.WithdrawUSDTNetworks != nil && policy.MinUSD != nil && policy.FeeUSD != nil && policy.CNYRate != nil {
+					_, networks := effectiveSiteInviteWithdrawConfig(policy)
+					if len(networks) == 0 {
+						return common.NewMessage("Select at least one USDT network")
+					}
+				}
 			}
 		}
 		var rate model.AdtySiteReferralRate
@@ -194,7 +349,12 @@ func LoadAdtyOwnerSiteReferral(siteID, ownerID int) (AdtySiteReferralView, error
 	if err != nil {
 		return AdtySiteReferralView{}, err
 	}
-	view := AdtySiteReferralView{AdtySiteMarketingPolicy: site.MarketingPolicy}
+	methods, networks := effectiveSiteInviteWithdrawConfig(site.MarketingPolicy)
+	view := AdtySiteReferralView{
+		AdtySiteMarketingPolicy: site.MarketingPolicy,
+		WithdrawMethods:         methods,
+		WithdrawUSDTNetworks:    networks,
+	}
 	var row model.AdtySiteReferralRate
 	lookup := model.DB.Where("site_id = ?", siteID).Limit(1).Find(&row)
 	if lookup.Error != nil {

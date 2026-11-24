@@ -33,11 +33,15 @@ export type EpayMethodConfig = {
   enabled: boolean
 }
 
+export type EpaySignType = 'MD5' | 'RSA'
+
 export type EpayChannel = {
   id: number
   name: string
   gateway_url: string
   merchant_id: string
+  sign_type: EpaySignType
+  platform_public_key?: string
   priority: number
   weight: number
   order_mode: 'api' | 'submit'
@@ -47,14 +51,27 @@ export type EpayChannel = {
   unpaid_streak: number
   unpaid_threshold: number
   has_key: boolean
+  has_merchant_private_key?: boolean
+  has_platform_public_key?: boolean
   today_cny: Record<string, string>
   methods: EpayMethodConfig[]
 }
 
 export type EpayChannelInput = Omit<
   EpayChannel,
-  'id' | 'status' | 'status_reason' | 'unpaid_streak' | 'has_key' | 'today_cny'
-> & { merchant_key: string }
+  | 'id'
+  | 'status'
+  | 'status_reason'
+  | 'unpaid_streak'
+  | 'has_key'
+  | 'has_merchant_private_key'
+  | 'has_platform_public_key'
+  | 'today_cny'
+> & {
+  merchant_key: string
+  merchant_private_key: string
+  platform_public_key: string
+}
 
 export type EpayTestResult = {
   method: string
