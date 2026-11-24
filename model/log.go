@@ -199,7 +199,7 @@ func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo *
 		siteID := InferOfficialAuditSiteID(c, params)
 		objectType, objectID := InferOfficialAuditObject(action, params, strconv.Itoa(userId))
 		before, after := InferOfficialAuditBeforeAfter(params)
-		if err := WriteOfficialAuditLog(c, OfficialAuditWrite{
+		if err := WriteDurableOfficialAuditLog(c, OfficialAuditWrite{
 			UserId: userId, Username: username, ActorRole: actorRole, SiteID: OfficialAuditSiteIDPointer(siteID),
 			ObjectType: objectType, ObjectID: objectID, Action: action, Category: AuditCategoryOperation,
 			Content: content, Before: before, After: after, Reason: InferOfficialAuditReason(params),

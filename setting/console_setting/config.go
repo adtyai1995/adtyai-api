@@ -1,6 +1,9 @@
 package console_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 type ConsoleSetting struct {
 	ApiInfo              string `json:"api_info"`              // 控制台 API 信息 (JSON 数组字符串)
@@ -33,7 +36,10 @@ func init() {
 	config.GlobalConfig.Register("console_setting", &consoleSetting)
 }
 
-// GetConsoleSetting 获取 ConsoleSetting 配置实例
+// GetConsoleSetting 获取 ConsoleSetting 配置快照
 func GetConsoleSetting() *ConsoleSetting {
-	return &consoleSetting
+	common.OptionMapRWMutex.RLock()
+	snap := consoleSetting
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }

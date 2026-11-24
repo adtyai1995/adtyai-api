@@ -17,11 +17,13 @@ import (
 )
 
 func RerankHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	logger.LogDebug(c, "reranker response body: %s", responseBody)
 	var jinaResp dto.RerankResponse
 	if info.ChannelType == constant.ChannelTypeXinference {
@@ -67,7 +69,18 @@ func RerankHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
-		jinaResp.Usage.PromptTokens = jinaResp.Usage.TotalTokens
+		jinaResp.Usage.PromptTokens = max(jinaResp.Usage.PromptTokens, 0)
+		jinaResp.Usage.CompletionTokens = max(jinaResp.Usage.CompletionTokens, 0)
+		jinaResp.Usage.TotalTokens = max(jinaResp.Usage.TotalTokens, 0)
+		if jinaResp.Usage.TotalTokens <= 0 && jinaResp.Usage.PromptTokens <= 0 {
+			est := info.GetEstimatePromptTokens()
+			jinaResp.Usage.PromptTokens = est
+			jinaResp.Usage.TotalTokens = est
+		} else if jinaResp.Usage.TotalTokens > 0 {
+			jinaResp.Usage.PromptTokens = jinaResp.Usage.TotalTokens
+		} else {
+			jinaResp.Usage.TotalTokens = jinaResp.Usage.PromptTokens
+		}
 	}
 
 	c.Writer.Header().Set("Content-Type", "application/json")

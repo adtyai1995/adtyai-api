@@ -184,8 +184,11 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 		if row.Audience == "team" || row.Audience == "user" {
 			row.TelegramChannel = adtyPrivateTelegramMarker
 		} else {
+			if issuer != nil || issuerID > 0 {
+				return nil, "", common.NewMessage("Subsites cannot push announcements to shared public Telegram channels")
+			}
 			ch := strings.TrimSpace(input.TelegramChannel)
-			if utf8.RuneCountInString(ch) > 128 {
+			if !adtyValidPublicTelegramChannel(ch) || utf8.RuneCountInString(ch) > 128 {
 				return nil, "", common.NewMessage("Invalid parameters")
 			}
 			row.TelegramChannel = ch
@@ -220,12 +223,13 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 		writeAdtyOfficialAudit(actorID, issuerID, "notification", strconv.Itoa(row.Id), auditAction, "", "", beforeSnap, adtyNotificationAuditSnapshot(row), model.AuditResultSuccess)
 	}
 	if row.Status == "published" {
-		// R5-058: Apply translation BEFORE producing/updating severe todos so todo content
-		// matches the freshly updated announcement body.
-		applyAdtyNotificationTranslation(&row, sourceContent, issuerID)
-		produceAdtySevereTodosForPublished(&row)
-		if err := pushAdtyNotificationToTelegram(&row, issuer); err != nil {
-			common.SysError(common.LogText("push notification %d to telegram failed: %s", row.Id, err.Error()))
+		// R5-058 / R9-044: Apply translation BEFORE producing/updating severe todos
+		// and abort downstream fan-out if a newer revision or withdrawal superseded row.
+		if applyAdtyNotificationTranslation(&row, sourceContent, issuerID) {
+			produceAdtySevereTodosForPublished(&row)
+			if err := pushAdtyNotificationToTelegram(&row, issuer); err != nil {
+				common.SysError(common.LogText("push notification %d to telegram failed: %s", row.Id, err.Error()))
+			}
 		}
 	}
 	return &row, eventID, nil
@@ -397,22 +401,50 @@ func deleteAdtyTranslationHeadByKey(objectKey string) {
 	_ = model.DB.Where("object_key = ?", objectKey).Delete(&model.AdtyTranslationHead{}).Error
 }
 
-func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, sourceContent string, siteID int) {
+func adtyNotificationRevisionIsCurrent(id int, revision int64) bool {
+	if id <= 0 || model.DB == nil {
+		return false
+	}
+	var current struct {
+		Revision int64
+		Status   string
+	}
+	res := model.DB.Model(&model.AdtyNotificationPublication{}).
+		Select("revision", "status").
+		Where("id = ?", id).
+		Limit(1).
+		Find(&current)
+	if res.Error != nil || res.RowsAffected == 0 {
+		return false
+	}
+	if current.Status != "published" {
+		return false
+	}
+	if revision > 0 && current.Revision != revision {
+		return false
+	}
+	return true
+}
+
+func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, sourceContent string, siteID int) bool {
 	if row == nil || row.Id <= 0 || model.DB == nil {
-		return
+		return false
+	}
+	if !adtyNotificationRevisionIsCurrent(row.Id, row.Revision) {
+		return false
 	}
 	titleText := strings.TrimSpace(row.Title)
 	bodyText := strings.TrimSpace(sourceContent)
 	titleHasZH := adtyContainsChinese(titleText)
 	bodyHasZH := adtyContainsChinese(bodyText)
-	if !titleHasZH {
+	if !titleHasZH && adtyNotificationRevisionIsCurrent(row.Id, row.Revision) {
 		deleteAdtyTranslationHeadByKey(adtyNotificationTitleTranslationKey(row.Id))
 	}
-	if !bodyHasZH {
+	if !bodyHasZH && adtyNotificationRevisionIsCurrent(row.Id, row.Revision) {
 		deleteAdtyTranslationHeadByKey(adtyNotificationTranslationKey(row.Id))
 	}
 	if !titleHasZH && !bodyHasZH {
-		return
+		return adtyNotificationRevisionIsCurrent(row.Id, row.Revision)
 	}
 	ensureAdtyTranslationTables()
 	if titleHasZH {
@@ -421,12 +453,15 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 		}
 	}
 	if !bodyHasZH {
-		return
+		return adtyNotificationRevisionIsCurrent(row.Id, row.Revision)
 	}
 	objectKey := adtyNotificationTranslationKey(row.Id)
 	res, err := TranslateAdtyDynamic(objectKey, bodyText, siteID)
 	if err != nil {
 		common.SysError(common.LogText("translate notification %d failed: %s", row.Id, err.Error()))
+	}
+	if !adtyNotificationRevisionIsCurrent(row.Id, row.Revision) {
+		return false
 	}
 	bilingual := sourceContent
 	if res != nil && res.Status == model.AdtyTranslationReady && strings.TrimSpace(res.English) != "" {
@@ -440,10 +475,15 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 		}
 	}
 	if bilingual != row.Content {
-		if err := model.DB.Model(&model.AdtyNotificationPublication{}).Where("id = ?", row.Id).Update("content", bilingual).Error; err == nil {
-			row.Content = bilingual
+		upd := model.DB.Model(&model.AdtyNotificationPublication{}).
+			Where("id = ? AND revision = ? AND status = ?", row.Id, row.Revision, "published").
+			Update("content", bilingual)
+		if upd.Error != nil || upd.RowsAffected != 1 {
+			return false
 		}
+		row.Content = bilingual
 	}
+	return adtyNotificationRevisionIsCurrent(row.Id, row.Revision)
 }
 
 // 公告入队的 EventKey 绑公告 id，不绑正文。正文一改哈希就变，
@@ -658,17 +698,25 @@ func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, i
 	at := time.Now().Unix()
 	hasSeededCol := model.DB.Migrator().HasColumn(&model.AdtyNotificationPublication{}, "telegram_outbox_seeded_at")
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var current model.AdtyNotificationPublication
+		cols := []string{"id", "status", "revision", "telegram_at"}
 		if hasSeededCol {
-			var current model.AdtyNotificationPublication
-			if err := model.AdtyLockForUpdate(tx).Select("id", "telegram_at", "telegram_outbox_seeded_at").Where("id = ?", row.Id).First(&current).Error; err != nil {
-				return err
-			}
-			if current.TelegramOutboxSeededAt != nil {
-				return nil
-			}
+			cols = append(cols, "telegram_outbox_seeded_at")
+		}
+		if err := model.AdtyLockForUpdate(tx).Select(cols).Where("id = ?", row.Id).First(&current).Error; err != nil {
+			return err
+		}
+		if current.Status != "published" {
+			return nil
+		}
+		if !allowRecovery && row.Revision > 0 && current.Revision != row.Revision {
+			return nil
+		}
+		if hasSeededCol && current.TelegramOutboxSeededAt != nil {
+			return nil
 		}
 		res := tx.Model(&model.AdtyNotificationPublication{}).
-			Where("id = ? AND telegram_at = 0", row.Id).
+			Where("id = ? AND telegram_at = 0 AND status = ?", row.Id, "published").
 			Update("telegram_at", at)
 		if res.Error != nil {
 			return res.Error
@@ -969,6 +1017,16 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 			targetUserID, _ = strconv.Atoi(raw)
 		}
 	}
+	publisherLabel := strings.TrimSpace(common.GetSystemName())
+	if row.IssuerSiteId > 0 {
+		publisherLabel = ""
+		if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySite{}) {
+			var issuerSite model.AdtySite
+			if model.DB.Select("id", "subdomain", "root_domain", "brand").Where("id = ?", row.IssuerSiteId).Limit(1).Find(&issuerSite).RowsAffected > 0 {
+				publisherLabel = strings.TrimSpace(AdtyBrandFor(&issuerSite).Name)
+			}
+		}
+	}
 	item := map[string]any{
 		"id":               fmt.Sprintf("publication:%d", row.Id),
 		"read_key":         row.ReadKey,
@@ -976,8 +1034,7 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 		"content":          content,
 		"type":             "default",
 		"publishDate":      time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
-		"publisher_name":   row.PublisherName,
-		"publisher_id":     row.PublisherId,
+		"publisher_name":   publisherLabel,
 		"issuer_site_id":   row.IssuerSiteId,
 		"audience":         row.Audience,
 		"target_site_id":   row.TargetSiteId,

@@ -30,6 +30,31 @@ const (
 // AdtyOnSiteGroupConfigChanged 在分组迁移或删除改到分站 allowed_groups 后调用，由 service 挂上清站点缓存。
 var AdtyOnSiteGroupConfigChanged func()
 
+// ValidateAdtyGroupOptionTx 由 service/adty_group_guard.go 注册，用于在事务内持锁复验全部 8 个分组配置。
+var ValidateAdtyGroupOptionTx func(tx *gorm.DB, key, value string) error
+
+var adtyGroupOptionKeysSorted = []string{
+	"AutoGroups",
+	"GroupGroupRatio",
+	AdtyGroupModelAllowOption,
+	"GroupRatio",
+	"ModelRequestRateLimitGroup",
+	"TopupGroupRatio",
+	"UserUsableGroups",
+	"group_ratio_setting.group_special_usable_group",
+}
+
+func preLockAdtyGroupOptionsTx(tx *gorm.DB, keys []string) error {
+	if tx == nil || len(keys) == 0 || !tx.Migrator().HasTable(&Option{}) {
+		return nil
+	}
+	sorted := slices.Clone(keys)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	var rows []Option
+	return lockForUpdate(tx).Where(commonKeyCol+" IN ?", sorted).Order(commonKeyCol + " ASC").Find(&rows).Error
+}
+
 // adtyGroupConfigMu 让删除分组时的整份回写和单键保存排队。
 // 只在内存快照上改完再写回，会盖掉这中间已经保存的倍率。
 var adtyGroupConfigMu sync.Mutex
@@ -242,13 +267,29 @@ func GetAdtyGroup(id string) (*AdtyGroup, error) {
 
 // ActiveAdtyGroupIDs 返回未删除分组的 ID 集合，保存设置时按它校验。
 func ActiveAdtyGroupIDs() (map[string]struct{}, error) {
-	var ids []string
-	if err := DB.Model(&AdtyGroup{}).Pluck("id", &ids).Error; err != nil {
+	return ActiveAdtyGroupIDsTx(DB, false)
+}
+
+// ActiveAdtyGroupIDsTx returns active (non-deleted) group IDs inside tx,
+// optionally locking live rows in ascending ID order.
+func ActiveAdtyGroupIDsTx(tx *gorm.DB, lock bool) (map[string]struct{}, error) {
+	if tx == nil {
+		tx = DB
+	}
+	if !tx.Migrator().HasTable(&AdtyGroup{}) {
+		return map[string]struct{}{}, nil
+	}
+	q := tx
+	if lock {
+		q = lockForUpdate(q)
+	}
+	var groups []AdtyGroup
+	if err := q.Select("id").Order("id ASC").Find(&groups).Error; err != nil {
 		return nil, err
 	}
-	out := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		out[id] = struct{}{}
+	out := make(map[string]struct{}, len(groups))
+	for _, g := range groups {
+		out[g.ID] = struct{}{}
 	}
 	return out, nil
 }
@@ -590,6 +631,11 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 	var optionValues map[string]string
 	var siteChanged bool
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		// R9-008: Pre-lock options (sorted) BEFORE adty_groups -> adty_sites to match
+		// UpdateOptionWithAudit canonical lock order and prevent 40P01 deadlocks.
+		if err := preLockAdtyGroupOptionsTx(tx, []string{AdtyGroupModelAllowOption}); err != nil {
+			return err
+		}
 		if err := lockLiveAdtyGroupsTx(tx, fromID, toID); err != nil {
 			return err
 		}
@@ -702,15 +748,8 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 			if err != nil {
 				return err
 			}
-			for key, value := range optionValues {
-				option := Option{Key: key}
-				if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
-					return err
-				}
-				option.Value = value
-				if err := tx.Save(&option).Error; err != nil {
-					return err
-				}
+			if err := SaveOptionsTx(tx, optionValues); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -754,6 +793,10 @@ func DeleteAdtyGroup(id string) error {
 	var values map[string]string
 	var siteChanged bool
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		// R9-008: Pre-lock all 8 group option keys in sorted order BEFORE adty_groups -> adty_sites.
+		if err := preLockAdtyGroupOptionsTx(tx, adtyGroupOptionKeysSorted); err != nil {
+			return err
+		}
 		if err := lockLiveAdtyGroupsTx(tx, id); err != nil {
 			return err
 		}
@@ -797,17 +840,15 @@ func DeleteAdtyGroup(id string) error {
 		if err != nil {
 			return err
 		}
-		for key, value := range values {
-			option := Option{Key: key}
-			if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
-				return err
-			}
-			option.Value = value
-			if err := tx.Save(&option).Error; err != nil {
+		if err := tx.Where("id = ?", id).Delete(&AdtyGroup{}).Error; err != nil {
+			return err
+		}
+		if tx.Migrator().HasTable(&Option{}) {
+			if err := SaveOptionsTx(tx, values); err != nil {
 				return err
 			}
 		}
-		return tx.Where("id = ?", id).Delete(&AdtyGroup{}).Error
+		return nil
 	})
 	if err != nil {
 		return err
@@ -1022,7 +1063,8 @@ func adtyGroupOptionsMigrated(fromID, toID string, load func(string) (string, er
 	if !ok {
 		return values, nil
 	}
-	if toModels, hasTo := gma[toID]; hasTo {
+	// R9-033: Empty slice toID: [] means unrestricted; treat identically to !hasTo.
+	if toModels, hasTo := gma[toID]; hasTo && len(toModels) > 0 {
 		merged := make([]string, 0, len(toModels)+len(fromModels))
 		for _, item := range toModels {
 			item = strings.TrimSpace(item)

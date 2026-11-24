@@ -2155,6 +2155,37 @@ func preLockAdtyTeamForUserDelete(tx *gorm.DB, userId int) error {
 	if err := model.AdtyLockForUpdate(tx).Select("id").Where("id IN ?", userIDs).Order("id ASC").Find(&lockedUsers).Error; err != nil {
 		return err
 	}
+	// R9-031: Re-check non-locking after locking User(userId) to ensure no concurrent
+	// team creation or membership join appeared while waiting on the User lock;
+	// otherwise closeAdtyTeamForDeletedLeader would acquire team/member locks after User.
+	if hasTeamTable {
+		var postLedIDs []int64
+		if err := tx.Model(&model.AdtyTeam{}).
+			Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusActive).
+			Pluck("id", &postLedIDs).Error; err != nil {
+			return err
+		}
+		for _, id := range postLedIDs {
+			if _, ok := teamIDSet[id]; !ok {
+				return common.NewMessage("Team state changed concurrently, please retry")
+			}
+		}
+	}
+	if hasMemberTable {
+		var postMemberTeamIDs []int64
+		if err := tx.Model(&model.AdtyTeamMember{}).
+			Where("user_id = ? AND status IN ?", userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled}).
+			Pluck("team_id", &postMemberTeamIDs).Error; err != nil {
+			return err
+		}
+		for _, id := range postMemberTeamIDs {
+			if id > 0 {
+				if _, ok := teamIDSet[id]; !ok {
+					return common.NewMessage("Team state changed concurrently, please retry")
+				}
+			}
+		}
+	}
 	// R7-011: Pre-lock team keys and all affected tokens (team-bound + personal)
 	// in canonical ascending ID order (adty_team_keys -> tokens) so HardDelete/Delete
 	// never deadlocks with BatchDeleteTokens.

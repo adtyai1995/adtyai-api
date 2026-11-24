@@ -91,6 +91,8 @@ type AdtyTicketImage struct {
 	ObjectId      string  `json:"object_id" gorm:"type:varchar(64);index"`
 	TicketId      int64   `json:"ticket_id" gorm:"index"`
 	MessageId     int64   `json:"message_id" gorm:"index"`
+	UploaderId    int     `json:"-" gorm:"default:0;index"`
+	UploaderRole  string  `json:"-" gorm:"type:varchar(16);default:''"`
 	Visibility    string  `json:"visibility" gorm:"type:varchar(16);index"`
 	Mime          string  `json:"mime" gorm:"type:varchar(32)"`
 	Size          int     `json:"size"`

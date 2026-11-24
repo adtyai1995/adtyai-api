@@ -30,6 +30,11 @@ func normalizeXAIUsage(usage *dto.Usage, where string) {
 	if usage == nil {
 		return
 	}
+	usage.PromptTokens = max(usage.PromptTokens, 0)
+	usage.CompletionTokens = max(usage.CompletionTokens, 0)
+	usage.TotalTokens = max(usage.TotalTokens, 0)
+	usage.PromptTokensDetails.CachedTokens = max(usage.PromptTokensDetails.CachedTokens, 0)
+	usage.CompletionTokenDetails.ReasoningTokens = max(usage.CompletionTokenDetails.ReasoningTokens, 0)
 	if usage.TotalTokens < usage.PromptTokens {
 		common.SysError(common.LogText(
 			"%s upstream usage is self-contradictory: total_tokens=%d < prompt_tokens=%d, billing prompt tokens only",
@@ -92,7 +97,7 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	})
 
-	if !containStreamUsage || usage.TotalTokens == 0 {
+	if !containStreamUsage || usage.TotalTokens <= 0 {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -117,9 +122,10 @@ func xAIHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response
 	}
 	if xaiResponse.Usage != nil {
 		normalizeXAIUsage(xaiResponse.Usage, "xai non-stream")
+		xaiResponse.Usage.CompletionTokenDetails.ReasoningTokens = max(xaiResponse.Usage.CompletionTokenDetails.ReasoningTokens, 0)
 		xaiResponse.Usage.CompletionTokenDetails.TextTokens = max(xaiResponse.Usage.CompletionTokens-xaiResponse.Usage.CompletionTokenDetails.ReasoningTokens, 0)
 	}
-	if xaiResponse.Usage == nil || (xaiResponse.Usage.TotalTokens == 0 && xaiResponse.Usage.PromptTokens == 0 && xaiResponse.Usage.CompletionTokens == 0) {
+	if xaiResponse.Usage == nil || (xaiResponse.Usage.TotalTokens <= 0 && xaiResponse.Usage.PromptTokens <= 0 && xaiResponse.Usage.CompletionTokens <= 0) {
 		var textBuilder strings.Builder
 		for _, choice := range xaiResponse.Choices {
 			textBuilder.WriteString(choice.Message.StringContent())

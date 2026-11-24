@@ -14,7 +14,7 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 
 	switch info.ChannelType {
 	case constant.ChannelTypeDeepSeek:
-		if usage.PromptTokensDetails.CachedTokens == 0 && usage.PromptCacheHitTokens != 0 {
+		if usage.PromptTokensDetails.CachedTokens == 0 && usage.PromptCacheHitTokens > 0 {
 			usage.PromptTokensDetails.CachedTokens = usage.PromptCacheHitTokens
 		}
 	case constant.ChannelTypeZhipu_v4:
@@ -69,13 +69,13 @@ func extractCachedTokensFromBody(body []byte) (int, bool) {
 		return 0, false
 	}
 
-	if payload.Usage.PromptTokensDetails.CachedTokens != nil {
+	if payload.Usage.PromptTokensDetails.CachedTokens != nil && *payload.Usage.PromptTokensDetails.CachedTokens > 0 {
 		return *payload.Usage.PromptTokensDetails.CachedTokens, true
 	}
-	if payload.Usage.CachedTokens != nil {
+	if payload.Usage.CachedTokens != nil && *payload.Usage.CachedTokens > 0 {
 		return *payload.Usage.CachedTokens, true
 	}
-	if payload.Usage.PromptCacheHitTokens != nil {
+	if payload.Usage.PromptCacheHitTokens != nil && *payload.Usage.PromptCacheHitTokens > 0 {
 		return *payload.Usage.PromptCacheHitTokens, true
 	}
 	return 0, false

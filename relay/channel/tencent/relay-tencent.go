@@ -180,12 +180,14 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 }
 
 func tencentHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	var tencentSb TencentChatResponseSB
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	err = common.Unmarshal(responseBody, &tencentSb)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -197,7 +199,10 @@ func tencentHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Resp
 		}, resp.StatusCode)
 	}
 	fullTextResponse := responseTencent2OpenAI(&tencentSb.Response)
-	if fullTextResponse.Usage.TotalTokens == 0 && fullTextResponse.Usage.PromptTokens == 0 && fullTextResponse.Usage.CompletionTokens == 0 {
+	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
+	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
+	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
+	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
 		var textBuilder strings.Builder
 		for _, ch := range fullTextResponse.Choices {
 			textBuilder.WriteString(ch.Message.StringContent())
@@ -205,6 +210,8 @@ func tencentHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Resp
 		if est := service.ResponseText2Usage(c, textBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
 			fullTextResponse.Usage = *est
 		}
+	} else if fullTextResponse.Usage.TotalTokens <= 0 {
+		fullTextResponse.Usage.TotalTokens = fullTextResponse.Usage.PromptTokens + fullTextResponse.Usage.CompletionTokens
 	}
 	jsonResponse, err := common.Marshal(fullTextResponse)
 	if err != nil {

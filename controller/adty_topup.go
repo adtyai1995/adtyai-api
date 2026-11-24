@@ -62,7 +62,7 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"tiers":              tiers,
 		"bonus_rates":        bonusRates,
-		"min_topup":          operation_setting.MinTopUp,
+		"min_topup":          operation_setting.GetMinTopUp(),
 		"methods":            methods,
 		"scenes":             scenes,
 		"price_cny_per_usd":  operation_setting.Price,

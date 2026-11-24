@@ -60,6 +60,13 @@ var (
 var OptionMap map[string]string
 var OptionMapRWMutex sync.RWMutex
 
+func GetSystemName() string {
+	OptionMapRWMutex.RLock()
+	name := SystemName
+	OptionMapRWMutex.RUnlock()
+	return name
+}
+
 var ItemsPerPage = 10
 var MaxRecentItems = 1000
 

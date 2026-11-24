@@ -576,7 +576,8 @@ func executeTaskSubmissionWith(
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
 			policy.BeginAttempt(channel, relayInfo.UsingGroup)
-			if retryParam.GetRetry() > 0 {
+			_, hasChannelSetting := c.Get(string(constant.ContextKeyChannelSetting))
+			if retryParam.GetRetry() > 0 || common.GetContextKeyInt(c, constant.ContextKeyChannelId) != channel.Id || !hasChannelSetting {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
 					break

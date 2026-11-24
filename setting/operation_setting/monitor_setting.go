@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
 )
 
@@ -39,27 +40,30 @@ func init() {
 }
 
 func GetMonitorSetting() *MonitorSetting {
+	common.OptionMapRWMutex.RLock()
+	snap := monitorSetting
+	common.OptionMapRWMutex.RUnlock()
 	if os.Getenv("CHANNEL_TEST_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_TEST_FREQUENCY"))
 		if err == nil && frequency > 0 {
-			monitorSetting.AutoTestChannelEnabled = true
-			monitorSetting.AutoTestChannelMinutes = float64(frequency)
-			monitorSetting.ChannelTestMode = ChannelTestModeScheduledAll
+			snap.AutoTestChannelEnabled = true
+			snap.AutoTestChannelMinutes = float64(frequency)
+			snap.ChannelTestMode = ChannelTestModeScheduledAll
 		}
 	}
 	if enabled, ok := os.LookupEnv("CHANNEL_TEST_ENABLED"); ok {
 		parsed, err := strconv.ParseBool(enabled)
 		if err == nil {
-			monitorSetting.AutoTestChannelEnabled = parsed
+			snap.AutoTestChannelEnabled = parsed
 		}
 	}
-	switch monitorSetting.ChannelTestMode {
+	switch snap.ChannelTestMode {
 	case ChannelTestModeAutoBanOnly, ChannelTestModePassiveRecovery:
 	default:
-		monitorSetting.ChannelTestMode = ChannelTestModeScheduledAll
+		snap.ChannelTestMode = ChannelTestModeScheduledAll
 	}
-	monitorSetting.ChannelTestConcurrency = NormalizeChannelTestConcurrency(monitorSetting.ChannelTestConcurrency)
-	return &monitorSetting
+	snap.ChannelTestConcurrency = NormalizeChannelTestConcurrency(snap.ChannelTestConcurrency)
+	return &snap
 }
 
 func NormalizeChannelTestConcurrency(concurrency int) int {

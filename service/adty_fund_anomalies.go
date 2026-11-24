@@ -1010,7 +1010,7 @@ func refundOccupancyMismatch(siteID int, ext *model.AdtyTopupOrder, rows []model
 			}
 		}
 	}
-	extOffset, _ := model.AdtyExternalRefundOffsetTx(model.DB, ext)
+	extOffset, _ := model.AdtyExternalRefundOffsetForRowsTx(model.DB, ext, rows)
 	if extOffset < 0 {
 		extOffset = 0
 	}

@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
 )
 
@@ -24,19 +25,24 @@ func init() {
 	config.GlobalConfig.Register("adty_bepusdt", &bepusdtSetting)
 }
 
-// GetBEpusdtSetting 返回当前的 BEpusdt 配置。
+// GetBEpusdtSetting 返回当前的 BEpusdt 配置快照。
 func GetBEpusdtSetting() *BEpusdtSetting {
-	return &bepusdtSetting
+	common.OptionMapRWMutex.RLock()
+	snap := bepusdtSetting
+	snap.TradeTypes = slices.Clone(bepusdtSetting.TradeTypes)
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 // BEpusdtConfigured 说明网关地址和密钥都已填写并且启用。
 func BEpusdtConfigured() bool {
-	return bepusdtSetting.Enabled &&
-		strings.TrimSpace(bepusdtSetting.BaseURL) != "" &&
-		strings.TrimSpace(bepusdtSetting.Secret) != ""
+	cfg := GetBEpusdtSetting()
+	return cfg.Enabled &&
+		strings.TrimSpace(cfg.BaseURL) != "" &&
+		strings.TrimSpace(cfg.Secret) != ""
 }
 
 // BEpusdtChainEnabled 说明这条链已启用。
 func BEpusdtChainEnabled(tradeType string) bool {
-	return slices.Contains(bepusdtSetting.TradeTypes, tradeType)
+	return slices.Contains(GetBEpusdtSetting().TradeTypes, tradeType)
 }

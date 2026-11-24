@@ -467,6 +467,10 @@ func AdminResetPasskey(c *gin.Context) {
 		common.ApiErrorMsg(c, "no permission")
 		return
 	}
+	if isAccessTokenRequest(c) && user.Role >= common.RoleAdminUser {
+		denyAdtyAdminAction(c)
+		return
+	}
 	authorization := requireAdminUserProof(c, service.VerificationScopeAdminUserPasskeyReset, service.AdminUserContext{UserID: user.Id})
 	if authorization == nil {
 		return
@@ -481,7 +485,11 @@ func AdminResetPasskey(c *gin.Context) {
 		return
 	}
 
-	if err := model.DeletePasskeyByUserIDWithAuthVersion(user.Id); err != nil {
+	if err := model.DeletePasskeyByUserIDWithAuthVersionForActor(user.Id, isAccessTokenRequest(c)); err != nil {
+		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
+			denyAdtyAdminAction(c)
+			return
+		}
 		writeSecurityOperationError(c, err)
 		return
 	}

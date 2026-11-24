@@ -22,6 +22,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"golang.org/x/net/publicsuffix"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // 自定义域名（任务 11.8），走 Cloudflare for SaaS 的自定义主机名。按官方 API 文档的示例写，没有实测
@@ -179,7 +180,60 @@ func adtyCustomHostnameGeneration(domain *model.AdtySiteDomain) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s:%s", domain.Id, domain.SiteId, domain.Hostname, domain.OwnershipToken))))
 }
 
+const adtyCloudResourcePendingPrefix = "pending:"
+
+func adtyPendingCloudResourceID(domain *model.AdtySiteDomain) string {
+	return adtyCloudResourcePendingPrefix + adtyCustomHostnameGeneration(domain)
+}
+
+func adtyRecordCloudCreateIntent(zone string, domain *model.AdtySiteDomain) error {
+	if domain == nil || domain.Id <= 0 || model.DB == nil {
+		return nil
+	}
+	// Persist a pre-create journal row independently of the caller's tx so even
+	// if the caller tx rolls back after an outbound Cloudflare POST, cleanup
+	// knows a remote creation was attempted for this generation (R9-018).
+	intent := model.AdtyDomainCloudResource{
+		DomainId:   domain.Id,
+		Generation: adtyCustomHostnameGeneration(domain),
+		Zone:       zone,
+		Hostname:   domain.Hostname,
+		ResourceID: adtyPendingCloudResourceID(domain),
+	}
+	return model.DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "resource_id"}},
+		DoNothing: true,
+	}).Create(&intent).Error
+}
+
+func adtyLookupCloudResourceState(tx *gorm.DB, zone string, domain *model.AdtySiteDomain) (resourceID string, createAttempted bool, err error) {
+	if domain == nil || domain.Id <= 0 {
+		return "", false, nil
+	}
+	createAttempted = domain.CFCreateStartedAt > 0
+	var rows []model.AdtyDomainCloudResource
+	if err = tx.Where("domain_id = ? AND generation = ? AND zone = ? AND hostname = ?",
+		domain.Id, adtyCustomHostnameGeneration(domain), zone, domain.Hostname).
+		Order("id DESC").Find(&rows).Error; err != nil {
+		return "", createAttempted, err
+	}
+	for _, r := range rows {
+		if strings.HasPrefix(r.ResourceID, adtyCloudResourcePendingPrefix) {
+			createAttempted = true
+			continue
+		}
+		if r.ResourceID != "" && resourceID == "" {
+			resourceID = r.ResourceID
+			createAttempted = true
+		}
+	}
+	return resourceID, createAttempted, nil
+}
+
 func (c *AdtyCloudflareClient) createCustomHostname(ctx context.Context, zone string, domain *model.AdtySiteDomain) (*adtyCustomHostname, error) {
+	if err := adtyRecordCloudCreateIntent(zone, domain); err != nil {
+		return nil, fmt.Errorf("Cloudflare hostname creation journal could not be recorded")
+	}
 	var out adtyCustomHostname
 	body := map[string]any{
 		"hostname": domain.Hostname,
@@ -612,9 +666,12 @@ func adtyAttachCustomHostnameLocked(ctx context.Context, tx *gorm.DB, domain *mo
 	created, err := AdtyCloudflare.createCustomHostname(ctx, zone, domain)
 	var apiErr *AdtyCloudflareError
 	if errors.As(err, &apiErr) && apiErr.Code == adtyCloudflareDuplicateCode {
-		created, err = AdtyCloudflare.findCustomHostname(ctx, zone, domain.Hostname)
-		if err == nil && created == nil {
-			err = apiErr
+		// R9-018: Never blindly adopt an unowned duplicate 1406 hostname. Only
+		// recover a resource ID already journaled for this exact domain generation.
+		recordedID, _, lookupErr := adtyLookupCloudResourceState(tx, zone, domain)
+		if lookupErr == nil && recordedID != "" {
+			created = &adtyCustomHostname{Id: recordedID, Hostname: domain.Hostname}
+			err = nil
 		}
 	}
 	if err != nil {
@@ -730,17 +787,18 @@ func removeAdtySiteDomainLocked(ctx context.Context, tx *gorm.DB, domain *model.
 	}
 	zone := strings.TrimSpace(resellerSetting().CloudflareZoneId)
 	hostnameID := domain.CFHostnameId
+	createAttempted := domain.CFCreateStartedAt > 0
 	if hostnameID == "" {
-		var resource model.AdtyDomainCloudResource
-		if err := tx.Where("domain_id = ? AND generation = ? AND zone = ? AND hostname = ?", domain.Id, adtyCustomHostnameGeneration(domain), zone, domain.Hostname).Order("id DESC").Limit(1).Find(&resource).Error; err != nil {
+		var err error
+		hostnameID, createAttempted, err = adtyLookupCloudResourceState(tx, zone, domain)
+		if err != nil {
 			return err
 		}
-		hostnameID = resource.ResourceID
 	}
-	if hostnameID == "" {
-		// A remote create may have succeeded before the database transaction
-		// rolled back. Only our exact generation marker proves it is ours;
-		// an unrecorded candidate fails closed so removal cannot orphan it in Cloudflare (R8-030).
+	if hostnameID == "" && createAttempted {
+		// A remote create was attempted and may have succeeded before the database
+		// transaction rolled back. Only our exact generation marker proves it is ours;
+		// an unrecorded candidate fails closed so removal cannot orphan it in Cloudflare (R8-030 / R9-018).
 		candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, domain.Hostname)
 		if err != nil {
 			return adtyCloudflareUserError(err)
@@ -783,10 +841,36 @@ func adtyRemoveDomainsOfClosedSite(site *model.AdtySite) {
 	}
 }
 
-// adtyMarkCustomDomainFailed 把超时的域名标成 failed。Cloudflare 上还有主机名时先删掉；删不掉就保持 pending，下次再试。
+// adtyMarkCustomDomainFailed 把超时的域名标成 failed。Cloudflare 上还有主机名（含仅写进云资源流水或已发起创建的）时先删掉；删不掉或存在未记账远端资源就保持 pending，下次再试。
 func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, domain *model.AdtySiteDomain, updates map[string]any) error {
-	if domain.CFHostnameId != "" {
-		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, domain.CFHostnameId); err != nil {
+	hostnameID := domain.CFHostnameId
+	createAttempted := domain.CFCreateStartedAt > 0
+	if hostnameID == "" {
+		var err error
+		hostnameID, createAttempted, err = adtyLookupCloudResourceState(tx, zone, domain)
+		if err != nil {
+			return err
+		}
+	}
+	if hostnameID == "" && createAttempted {
+		candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, domain.Hostname)
+		if err != nil {
+			common.SysError(common.LogText("lookup timed out custom hostname for domain %d failed", domain.Id))
+			updates["last_error"] = "cloudflare lookup failed"
+			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+		}
+		if candidate != nil {
+			if candidate.Metadata["site_id"] == strconv.Itoa(domain.SiteId) &&
+				candidate.Metadata["adty_domain_id"] == strconv.Itoa(domain.Id) && candidate.Metadata["adty_generation"] == adtyCustomHostnameGeneration(domain) {
+				hostnameID = candidate.Id
+			} else {
+				updates["last_error"] = "unrecorded cloudflare creation requires reconciliation"
+				return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+			}
+		}
+	}
+	if hostnameID != "" {
+		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
 			common.SysError(common.LogText("delete timed out custom hostname for domain %d failed", domain.Id))
 			updates["last_error"] = "cloudflare delete failed"
 			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error

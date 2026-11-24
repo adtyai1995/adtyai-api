@@ -215,8 +215,8 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			}
 		}
 		// finalize once and break loop
-		usage.PromptTokens = chunk.PromptEvalCount
-		usage.CompletionTokens = chunk.EvalCount
+		usage.PromptTokens = max(chunk.PromptEvalCount, 0)
+		usage.CompletionTokens = max(chunk.EvalCount, 0)
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		finishReason := chunk.DoneReason
 		if finishReason == "" {
@@ -244,7 +244,7 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if err := scanner.Err(); err != nil && err != io.EOF {
 		logger.LogError(c, common.LogText("ollama stream scan error: %s", err.Error()))
 	}
-	if usage.TotalTokens == 0 && (emittedOutput || responseText.Len() > 0) {
+	if usage.TotalTokens <= 0 && (emittedOutput || responseText.Len() > 0) {
 		usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}
 	return usage, nil
@@ -252,11 +252,14 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 // non-stream handler for chat/generate
 func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("empty response"), types.ErrorCodeBadResponse, http.StatusBadRequest)
+	}
+	defer service.CloseResponseBodyGracefully(resp)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	raw := string(body)
 	if common.DebugEnabled {
 		println("ollama non-stream raw resp:", raw)
@@ -346,9 +349,11 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		model = info.UpstreamModelName
 	}
 	created := toUnix(lastChunk.CreatedAt)
-	usage := &dto.Usage{PromptTokens: lastChunk.PromptEvalCount, CompletionTokens: lastChunk.EvalCount, TotalTokens: lastChunk.PromptEvalCount + lastChunk.EvalCount}
+	promptTokens := max(lastChunk.PromptEvalCount, 0)
+	completionTokens := max(lastChunk.EvalCount, 0)
+	usage := &dto.Usage{PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: promptTokens + completionTokens}
 	content := aggContent.String()
-	if usage.TotalTokens == 0 && (content != "" || reasoningBuilder.Len() > 0 || len(toolCalls) > 0) {
+	if usage.TotalTokens <= 0 && (content != "" || reasoningBuilder.Len() > 0 || len(toolCalls) > 0) {
 		usage = service.ResponseText2Usage(c, content+reasoningBuilder.String(), model, info.GetEstimatePromptTokens())
 	}
 	finishReason := lastChunk.DoneReason

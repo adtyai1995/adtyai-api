@@ -150,7 +150,7 @@ Redis 限流使用原子 Lua 固定窗口，替代旧的近似滑动窗口 List 
 - scope 形如 `resource:action`。个人权限（资料、API 令牌、用量、钱包、账户安全）和部分后台权限由令牌目录定义；受 Casbin 保护的后台权限直接复用管理员权限矩阵的 resource 与 action。只能授予自己当前拥有的权限，并且每个请求都会重新读取角色和权限：撤回某项管理员权限后，携带该 scope 的令牌立即失去对应能力。
 - 每条面板路由都必须声明所需 scope。未声明的路由一律拒绝（403 `ACCESS_TOKEN_ROUTE_UNDECLARED`），scope 不足返回 403 `ACCESS_TOKEN_SCOPE_DENIED`，令牌过期返回 401 `ACCESS_TOKEN_EXPIRED`。
 - PAT 不能创建、改名或撤销 PAT，也不能管理登录会话；这些接口只接受浏览器登录会话。
-- PAT 可以完成二次验证，Proof 绑定到该令牌，并且令牌必须持有该操作对应的 scope：`channel.key.read` 需要 `channel:secret_view`，`admin.user.*` 按具体操作分别需要 `adty_user:create`、`adty_user:delete`、`adty_user:quota` 或 `adty_user:write`，本人的密码、2FA、Passkey、账号绑定和注销需要 `account_security:write`。
+- PAT 可以完成二次验证，Proof 绑定到该令牌，并且令牌必须持有该操作对应的 scope：`channel.key.read` 需要 `channel:secret_view`，对普通用户的 `admin.user.*` 按具体操作分别需要 `adty_user:delete`、`adty_user:quota` 或 `adty_user:write`，本人的密码、2FA、Passkey、账号绑定和注销需要 `account_security:write`。创建管理员账号（`admin.user.create`）、`promote`/`demote`、修改 `admin_permissions` 以及所有针对管理员及以上目标用户（`role >= RoleAdminUser`）的变更操作（编辑、禁用/启用、删除、重置 Passkey、关闭 2FA、清除绑定等）仅接受浏览器登录会话，PAT 一律拒绝。
 - 通过 PAT 完成的安全变更（如修改密码、2FA、Passkey）会让该用户的所有浏览器登录会话下线，令牌本身保持可用。
 - 用户被禁用期间，其令牌全部不可用，重新启用后恢复；注销或删除用户时，其令牌被删除。
 - 最后使用时间和 IP 每个令牌每分钟最多更新一次；更新失败不影响请求。
@@ -172,12 +172,12 @@ Telegram 绑定不走 `auth_flows`：已登录前端调用 `POST /api/adty/teleg
 - `admin.user.delete`（`{"user_id"}`）：`DELETE /api/user/:id` 与 `POST /api/user/manage` 的 `delete`；
 - `admin.user.manage`（`{"user_id","action"}`，action 为 `disable` / `enable` / `promote` / `demote`）：`POST /api/user/manage`；额度调整 `add_quota` 要求 `admin.user.quota`（`{"user_id"}`）Proof；
 - `admin.user.update`（`{"user_id"}`）：`PUT /api/user/` 在请求包含新密码或 `admin_permissions` 时要求；仅修改显示名、分组、备注不要求；
-- `admin.user.create`（`{"role"}`）：`POST /api/user/` 创建管理员角色时要求；创建普通用户不要求；
+- `admin.user.create`（`{"role"}`）：`POST /api/user/` 创建管理员角色时要求（仅浏览器登录会话，不支持 PAT）；创建普通用户不要求；
 - `admin.user.passkey.reset`（`{"user_id"}`）：`DELETE /api/user/:id/reset_passkey`；
 - `admin.user.2fa.disable`（`{"user_id"}`）：`DELETE /api/user/:id/2fa`；
 - `admin.user.binding.clear`（`{"user_id","binding_type"}`，`binding_type ∈ {email, telegram}`）：`DELETE /api/user/:id/bindings/:binding_type`。
 
-这些 `admin.user.*` scope 只对管理员及以上角色签发；重要操作支持从账户已启用的验证方式（`password`、`email_code`、`2fa`、`passkey`）中任选其一完成二次验证（密码登录被关闭时不接受密码验证；Root 账号在后台重要操作中按 `root_exempt` 规则免于重复二次验证）。通过 PAT 调用上述接口时，令牌需持有对应的 `adty_user:{create,delete,quota,write}` scope 并按要求完成二次验证；旧版令牌不能调用。
+这些 `admin.user.*` scope 只对管理员及以上角色签发；重要操作支持从账户已启用的验证方式（`password`、`email_code`、`2fa`、`passkey`）中任选其一完成二次验证（密码登录被关闭时不接受密码验证；Root 账号在后台重要操作中按 `root_exempt` 规则免于重复二次验证）。通过 PAT 调用上述接口时，仅允许操作普通用户（`role < RoleAdminUser`），令牌需持有对应的 `adty_user:{delete,quota,write}` scope 并按要求完成二次验证；创建管理员（`admin.user.create`）、角色升降级（`promote`/`demote`）、修改 `admin_permissions` 以及任何针对管理员及以上目标用户的敏感操作均仅支持浏览器登录会话，拒绝 PAT 与旧版令牌。
 
 Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 scope，不能跨用户、跨会话或跨用途复用。对 PAT 而言，Proof 绑定的“登录会话”就是令牌本身。
 

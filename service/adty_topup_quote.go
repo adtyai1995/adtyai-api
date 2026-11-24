@@ -76,8 +76,9 @@ func adtyQuoteForSite(site *model.AdtySite, userGroup string, face int64, method
 	if !IsAdtyUSDTMethod(method) && !IsAdtyEpayMethod(method) {
 		return nil, common.NewMessage("Unsupported payment method")
 	}
-	if face < int64(operation_setting.MinTopUp) || face <= 0 {
-		return nil, common.NewMessage("Top-up amount cannot be less than {{amount}}", map[string]any{"amount": operation_setting.MinTopUp})
+	minTopUp := operation_setting.GetMinTopUp()
+	if face < int64(minTopUp) || face <= 0 {
+		return nil, common.NewMessage("Top-up amount cannot be less than {{amount}}", map[string]any{"amount": minTopUp})
 	}
 	var quote *AdtyQuote
 	var err error

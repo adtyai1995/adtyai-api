@@ -182,7 +182,7 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 					return
 				}
 				if int64(len(buf)) > maxBytes {
-					lastErr = errors.New("upstream metadata exceeds size limit")
+					lastErr = common.NewMessage("Upstream metadata exceeds size limit")
 					return
 				}
 				// cache body and ETag
@@ -216,7 +216,7 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 				buf := bodyCache[url]
 				cacheMutex.RUnlock()
 				if len(buf) == 0 {
-					lastErr = errors.New("cache miss for 304 response")
+					lastErr = common.NewMessage("Upstream metadata cache miss for 304 response")
 					return
 				}
 				if err := common.Unmarshal(buf, out); err != nil {
@@ -276,7 +276,7 @@ type metadataSyncCandidate struct {
 func fetchMetadataCatalog(c *gin.Context, locale string) (metadataSyncSource, map[string]model.MetadataValues, map[string]model.Vendor, error) {
 	resolved, valid := normalizeLocale(locale)
 	if !valid {
-		return metadataSyncSource{}, nil, nil, errors.New("unsupported metadata language")
+		return metadataSyncSource{}, nil, nil, common.NewMessage("Unsupported metadata language")
 	}
 	modelsURL, vendorsURL := getUpstreamURLs(resolved)
 	source := metadataSyncSource{Locale: resolved, ModelsURL: modelsURL, VendorsURL: vendorsURL}
@@ -291,13 +291,21 @@ func fetchMetadataCatalog(c *gin.Context, locale string) (metadataSyncSource, ma
 	go func() { defer wg.Done(); vendorsErr = fetchJSON(ctx, vendorsURL, &vendorsEnv) }()
 	wg.Wait()
 	if modelsErr != nil {
-		return source, nil, nil, fmt.Errorf("fetch models (%s, %s): %w", resolved, modelsURL, modelsErr)
+		var msg *common.Message
+		if errors.As(modelsErr, &msg) {
+			return source, nil, nil, modelsErr
+		}
+		return source, nil, nil, common.NewMessage("Failed to fetch upstream models: {{error}}", map[string]any{"error": modelsErr.Error()})
 	}
 	if vendorsErr != nil {
-		return source, nil, nil, fmt.Errorf("fetch vendors (%s, %s): %w", resolved, vendorsURL, vendorsErr)
+		var msg *common.Message
+		if errors.As(vendorsErr, &msg) {
+			return source, nil, nil, vendorsErr
+		}
+		return source, nil, nil, common.NewMessage("Failed to fetch upstream vendors: {{error}}", map[string]any{"error": vendorsErr.Error()})
 	}
 	if !modelsEnv.Success || !vendorsEnv.Success {
-		return source, nil, nil, errors.New("upstream metadata source reported failure")
+		return source, nil, nil, common.NewMessage("Upstream metadata source reported failure")
 	}
 	models := make(map[string]model.MetadataValues)
 	vendors := make(map[string]model.Vendor)
@@ -320,10 +328,10 @@ func fetchMetadataCatalog(c *gin.Context, locale string) (metadataSyncSource, ma
 		}
 		values := model.MetadataValues{Description: item.Description, Icon: item.Icon, Tags: item.Tags, Vendor: strings.TrimSpace(item.VendorName), Endpoints: endpoints, NameRule: item.NameRule, Status: item.Status}
 		if err := model.ValidateMetadataValues(values); err != nil {
-			return source, nil, nil, fmt.Errorf("model %s: %w", item.ModelName, err)
+			return source, nil, nil, common.NewMessage("Invalid upstream metadata for model {{model}}: {{error}}", map[string]any{"model": item.ModelName, "error": err.Error()})
 		}
 		if _, duplicate := models[item.ModelName]; duplicate {
-			return source, nil, nil, fmt.Errorf("duplicate upstream model: %s", item.ModelName)
+			return source, nil, nil, common.NewMessage("Duplicate upstream model: {{model}}", map[string]any{"model": item.ModelName})
 		}
 		models[item.ModelName] = values
 	}
@@ -438,7 +446,7 @@ func SyncUpstreamModels(c *gin.Context) {
 		Selections    []model.MetadataSyncSelection `json:"selections"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil || len(request.Selections) == 0 || request.SourceVersion == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Preview and select metadata changes before applying"})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Preview and select metadata changes before applying"))
 		return
 	}
 	source, upstream, vendors, err := fetchMetadataCatalog(c, request.Locale)
@@ -447,14 +455,14 @@ func SyncUpstreamModels(c *gin.Context) {
 		return
 	}
 	if source.Version != request.SourceVersion {
-		c.JSON(http.StatusConflict, gin.H{"success": false, "message": "Upstream metadata changed; preview again"})
+		common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("Upstream metadata changed; preview again"))
 		return
 	}
 	updates := make([]model.MetadataSyncUpdate, 0, len(request.Selections))
 	for _, selection := range request.Selections {
 		values, exists := upstream[selection.ModelName]
 		if !exists {
-			c.JSON(http.StatusConflict, gin.H{"success": false, "message": "Selected upstream model is no longer available"})
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("Selected upstream model is no longer available"))
 			return
 		}
 		updates = append(updates, model.MetadataSyncUpdate{MetadataSyncSelection: selection, Values: values})
@@ -474,11 +482,16 @@ func SyncUpstreamModels(c *gin.Context) {
 			denyAdtyAdminAction(c)
 			return
 		}
-		status := http.StatusBadRequest
 		if errors.Is(err, model.ErrMetadataSyncConflict) {
-			status = http.StatusConflict
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("Metadata changed; preview again before applying"))
+			return
 		}
-		c.JSON(status, gin.H{"success": false, "message": err.Error()})
+		var msg *common.Message
+		if errors.As(err, &msg) {
+			common.ApiErrorStatus(c, http.StatusBadRequest, err)
+			return
+		}
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Failed to apply metadata sync: {{error}}", map[string]any{"error": err.Error()}))
 		return
 	}
 	recordManageAudit(c, "model.metadata.sync", map[string]any{"created_models": result.CreatedModels, "updated_models": result.UpdatedModels, "created_vendors": result.CreatedVendors})

@@ -87,17 +87,25 @@ func adtyAccessTokenMayManage(c *gin.Context, action string) bool {
 // adtyFieldScopeAllows 说明当前访问令牌是否带了这个权限对应的 scope。
 // 浏览器会话没有访问令牌上下文，字段跟随实时授权；旧版明文令牌没有 scope，按最小权限处理。
 func adtyFieldScopeAllows(c *gin.Context, permission authz.Permission) bool {
-	legacy, isToken := c.Get("access_token_legacy")
-	if !isToken {
+	if !isAccessTokenRequest(c) {
 		return true
 	}
-	if legacy == true {
+	if legacy, ok := c.Get("access_token_legacy"); ok && legacy == true {
 		return false
 	}
 	scopes, _ := c.Get("access_token_scopes")
 	granted, _ := scopes.([]string)
 	return service.AccessTokenScopeAllowsRoute(granted, c.GetInt("access_token_scope_version"), c.GetInt("role"),
 		c.Request.Method, c.FullPath(), service.AccessTokenScopeOf(permission))
+}
+
+// canActWithPermission checks live RBAC permission intersected with PAT scope
+// (rejecting legacy PATs) in both ADTY and standard modes.
+func canActWithPermission(c *gin.Context, permission authz.Permission) bool {
+	if !authz.Can(c.GetInt("id"), c.GetInt("role"), permission) {
+		return false
+	}
+	return adtyFieldScopeAllows(c, permission)
 }
 
 // adtyAdminFieldVisible 是字段级的只读判定：实时授权 ∩ 当前访问令牌 scope。

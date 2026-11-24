@@ -146,7 +146,7 @@ func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		hasOutput = true
 	})
 	service.CloseResponseBodyGracefully(resp)
-	if usage.TotalTokens == 0 && (hasOutput || responseText.Len() > 0) {
+	if usage.TotalTokens <= 0 && (hasOutput || responseText.Len() > 0) {
 		usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}
 	return nil, usage
@@ -167,10 +167,15 @@ func baiduHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respon
 		return types.NewError(fmt.Errorf("%s", baiduResponse.ErrorMsg), types.ErrorCodeBadResponseBody), nil
 	}
 	fullTextResponse := responseBaidu2OpenAI(&baiduResponse)
-	if fullTextResponse.Usage.TotalTokens == 0 && fullTextResponse.Usage.PromptTokens == 0 && fullTextResponse.Usage.CompletionTokens == 0 {
+	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
+	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
+	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
+	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
 		if est := service.ResponseText2Usage(c, baiduResponse.Result, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
 			fullTextResponse.Usage = *est
 		}
+	} else if fullTextResponse.Usage.TotalTokens <= 0 {
+		fullTextResponse.Usage.TotalTokens = fullTextResponse.Usage.PromptTokens + fullTextResponse.Usage.CompletionTokens
 	}
 	jsonResponse, err := common.Marshal(fullTextResponse)
 	if err != nil {
@@ -197,10 +202,15 @@ func baiduEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 		return types.NewError(fmt.Errorf("%s", baiduResponse.ErrorMsg), types.ErrorCodeBadResponseBody), nil
 	}
 	fullTextResponse := embeddingResponseBaidu2OpenAI(&baiduResponse)
-	if fullTextResponse.Usage.TotalTokens == 0 && fullTextResponse.Usage.PromptTokens == 0 && len(fullTextResponse.Data) > 0 {
+	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
+	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
+	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
+	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && len(fullTextResponse.Data) > 0 {
 		est := info.GetEstimatePromptTokens()
 		fullTextResponse.Usage.PromptTokens = est
 		fullTextResponse.Usage.TotalTokens = est
+	} else if fullTextResponse.Usage.TotalTokens <= 0 {
+		fullTextResponse.Usage.TotalTokens = fullTextResponse.Usage.PromptTokens
 	}
 	jsonResponse, err := common.Marshal(fullTextResponse)
 	if err != nil {

@@ -289,36 +289,44 @@ func addOptIntPtr(dst **int, src *int) {
 	if src == nil {
 		return
 	}
+	val := max(*src, 0)
 	if *dst == nil {
-		v := *src
-		*dst = &v
+		*dst = &val
 		return
 	}
-	**dst += *src
+	**dst += val
 }
 
 func accumulateRealtimeUsage(dst, src *dto.RealtimeUsage) {
 	if dst == nil || src == nil {
 		return
 	}
+	inTokens := max(src.InputTokens, 0)
+	outTokens := max(src.OutputTokens, 0)
+	inText := max(src.InputTokenDetails.TextTokens, 0)
+	inAudio := max(src.InputTokenDetails.AudioTokens, 0)
+	inImage := max(src.InputTokenDetails.ImageTokens, 0)
+	outText := max(src.OutputTokenDetails.TextTokens, 0)
+	outAudio := max(src.OutputTokenDetails.AudioTokens, 0)
+	outImage := max(src.OutputTokenDetails.ImageTokens, 0)
+	outReasoning := max(src.OutputTokenDetails.ReasoningTokens, 0)
 	srcTotal := src.TotalTokens
-	if srcTotal == 0 {
+	if srcTotal <= 0 {
 		srcTotal = max(
-			src.InputTokens+src.OutputTokens,
-			src.InputTokenDetails.TextTokens+src.InputTokenDetails.AudioTokens+src.InputTokenDetails.ImageTokens+
-				src.OutputTokenDetails.TextTokens+src.OutputTokenDetails.AudioTokens,
+			inTokens+outTokens,
+			inText+inAudio+inImage+outText+outAudio+outImage,
 		)
 	}
-	dst.TotalTokens += srcTotal
-	dst.InputTokens += src.InputTokens
-	dst.OutputTokens += src.OutputTokens
-	dst.InputTokenDetails.CachedTokens += src.InputTokenDetails.CachedTokens
-	dst.InputTokenDetails.CachedCreationTokens += src.InputTokenDetails.CachedCreationTokens
-	dst.InputTokenDetails.CacheWriteTokens += src.InputTokenDetails.CacheWriteTokens
-	dst.InputTokenDetails.CacheCreationInputTokens += src.InputTokenDetails.CacheCreationInputTokens
-	dst.InputTokenDetails.TextTokens += src.InputTokenDetails.TextTokens
-	dst.InputTokenDetails.AudioTokens += src.InputTokenDetails.AudioTokens
-	dst.InputTokenDetails.ImageTokens += src.InputTokenDetails.ImageTokens
+	dst.TotalTokens += max(srcTotal, 0)
+	dst.InputTokens += inTokens
+	dst.OutputTokens += outTokens
+	dst.InputTokenDetails.CachedTokens += max(src.InputTokenDetails.CachedTokens, 0)
+	dst.InputTokenDetails.CachedCreationTokens += max(src.InputTokenDetails.CachedCreationTokens, 0)
+	dst.InputTokenDetails.CacheWriteTokens += max(src.InputTokenDetails.CacheWriteTokens, 0)
+	dst.InputTokenDetails.CacheCreationInputTokens += max(src.InputTokenDetails.CacheCreationInputTokens, 0)
+	dst.InputTokenDetails.TextTokens += inText
+	dst.InputTokenDetails.AudioTokens += inAudio
+	dst.InputTokenDetails.ImageTokens += inImage
 	if src.InputTokenDetails.CachedTokensDetails != nil {
 		if dst.InputTokenDetails.CachedTokensDetails == nil {
 			dst.InputTokenDetails.CachedTokensDetails = &dto.CachedTokenDetails{}
@@ -331,13 +339,13 @@ func accumulateRealtimeUsage(dst, src *dto.RealtimeUsage) {
 		if dst.InputTokenDetails.CacheWriteTokensDetails == nil {
 			dst.InputTokenDetails.CacheWriteTokensDetails = &dto.CacheWriteTokenDetails{}
 		}
-		dst.InputTokenDetails.CacheWriteTokensDetails.TTL30mTokens += src.InputTokenDetails.CacheWriteTokensDetails.TTL30mTokens
-		dst.InputTokenDetails.CacheWriteTokensDetails.TTL12hTokens += src.InputTokenDetails.CacheWriteTokensDetails.TTL12hTokens
+		dst.InputTokenDetails.CacheWriteTokensDetails.TTL30mTokens += max(src.InputTokenDetails.CacheWriteTokensDetails.TTL30mTokens, 0)
+		dst.InputTokenDetails.CacheWriteTokensDetails.TTL12hTokens += max(src.InputTokenDetails.CacheWriteTokensDetails.TTL12hTokens, 0)
 	}
-	dst.OutputTokenDetails.TextTokens += src.OutputTokenDetails.TextTokens
-	dst.OutputTokenDetails.AudioTokens += src.OutputTokenDetails.AudioTokens
-	dst.OutputTokenDetails.ImageTokens += src.OutputTokenDetails.ImageTokens
-	dst.OutputTokenDetails.ReasoningTokens += src.OutputTokenDetails.ReasoningTokens
+	dst.OutputTokenDetails.TextTokens += outText
+	dst.OutputTokenDetails.AudioTokens += outAudio
+	dst.OutputTokenDetails.ImageTokens += outImage
+	dst.OutputTokenDetails.ReasoningTokens += outReasoning
 }
 
 func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.RealtimeUsage, totalUsage *dto.RealtimeUsage) error {

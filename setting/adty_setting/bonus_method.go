@@ -159,10 +159,11 @@ func MainMethodBonus(method string) (MethodBonusRule, bool) {
 			return rule, found
 		}
 	}
-	if topupSetting.MethodBonus == nil {
+	ts := GetTopupSetting()
+	if ts.MethodBonus == nil {
 		return MethodBonusRule{}, false
 	}
-	rule, ok := topupSetting.MethodBonus[method]
+	rule, ok := ts.MethodBonus[method]
 	return rule, ok
 }
 
@@ -177,10 +178,11 @@ func SiteMethodBonusAllowed(siteID int, method string) bool {
 			return allowed
 		}
 	}
-	if topupSetting.SiteMethodAuth == nil {
+	ts := GetTopupSetting()
+	if ts.SiteMethodAuth == nil {
 		return false
 	}
-	for _, item := range topupSetting.SiteMethodAuth[siteID] {
+	for _, item := range ts.SiteMethodAuth[siteID] {
 		if item == method {
 			return true
 		}
@@ -340,12 +342,15 @@ func LockAndMergeSiteMethodBonusTx(tx *gorm.DB, siteID int, method string, enabl
 		return "", err
 	}
 	authJSON, hasAuth := rawValues[TopupSettingKeySiteMethodAuth]
-	if !hasAuth && topupSetting.SiteMethodAuth != nil {
-		authJSON, _ = marshalBonusSetting(topupSetting.SiteMethodAuth)
-	}
 	bonusJSON, hasBonus := rawValues[TopupSettingKeySiteMethodBonus]
-	if !hasBonus && topupSetting.SiteMethodBonus != nil {
-		bonusJSON, _ = marshalBonusSetting(topupSetting.SiteMethodBonus)
+	if !hasAuth || !hasBonus {
+		ts := GetTopupSetting()
+		if !hasAuth && ts.SiteMethodAuth != nil {
+			authJSON, _ = marshalBonusSetting(ts.SiteMethodAuth)
+		}
+		if !hasBonus && ts.SiteMethodBonus != nil {
+			bonusJSON, _ = marshalBonusSetting(ts.SiteMethodBonus)
+		}
 	}
 	merged, err := MergeSiteMethodBonusWithAuth(bonusJSON, authJSON, siteID, method, enabled, rate)
 	if err != nil {
@@ -412,8 +417,10 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 		snap.MainAuthorized = ok && rule.Enabled
 	} else {
 		rawAuth, hasAuth := rawValues[TopupSettingKeySiteMethodAuth]
-		if !hasAuth && topupSetting.SiteMethodAuth != nil {
-			rawAuth, _ = marshalBonusSetting(topupSetting.SiteMethodAuth)
+		if !hasAuth {
+			if ts := GetTopupSetting(); ts.SiteMethodAuth != nil {
+				rawAuth, _ = marshalBonusSetting(ts.SiteMethodAuth)
+			}
 		}
 		allowed, err := ParseSiteMethodBonusAllowed(rawAuth, siteID, key)
 		if err != nil {
@@ -429,8 +436,10 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 			return snap, nil
 		}
 		rawBonus, hasBonus := rawValues[TopupSettingKeySiteMethodBonus]
-		if !hasBonus && topupSetting.SiteMethodBonus != nil {
-			rawBonus, _ = marshalBonusSetting(topupSetting.SiteMethodBonus)
+		if !hasBonus {
+			if ts := GetTopupSetting(); ts.SiteMethodBonus != nil {
+				rawBonus, _ = marshalBonusSetting(ts.SiteMethodBonus)
+			}
 		}
 		rule, ok, err = ParseSiteMethodBonus(rawAuth, rawBonus, siteID, key)
 		if err != nil {
@@ -584,6 +593,8 @@ func ApplyMethodBonusOption(key, value string) error {
 	if !ok || field == "" {
 		return errBonusMethod("unknown bonus setting key")
 	}
+	common.OptionMapRWMutex.Lock()
+	defer common.OptionMapRWMutex.Unlock()
 	return config.UpdateConfigFromMap(&topupSetting, map[string]string{field: value})
 }
 
@@ -615,6 +626,8 @@ func IsBonusMethodValidationError(err error) bool {
 
 // AuthorizeSiteBonusMarginFill lets an authorized site cover a gift shortfall from margin.
 func AuthorizeSiteBonusMarginFill(siteID int, allowed bool) {
+	common.OptionMapRWMutex.Lock()
+	defer common.OptionMapRWMutex.Unlock()
 	if topupSetting.SiteBonusMarginFill == nil {
 		topupSetting.SiteBonusMarginFill = map[int]bool{}
 	}
@@ -628,7 +641,8 @@ func SiteBonusMarginFillAllowed(siteID int) bool {
 			return allowed
 		}
 	}
-	return topupSetting.SiteBonusMarginFill != nil && topupSetting.SiteBonusMarginFill[siteID]
+	ts := GetTopupSetting()
+	return ts.SiteBonusMarginFill != nil && ts.SiteBonusMarginFill[siteID]
 }
 
 func canonicalBonusMethod(method string) (string, error) {
@@ -672,24 +686,28 @@ func SiteMethodBonus(siteID int, method string) (MethodBonusRule, bool) {
 		rawAuth, hasAuth := readOptionFromDB(db, TopupSettingKeySiteMethodAuth)
 		rawBonus, hasBonus := readOptionFromDB(db, TopupSettingKeySiteMethodBonus)
 		if hasAuth || hasBonus {
-			if !hasAuth && topupSetting.SiteMethodAuth != nil {
-				rawAuth, _ = marshalBonusSetting(topupSetting.SiteMethodAuth)
-			}
-			if !hasBonus && topupSetting.SiteMethodBonus != nil {
-				rawBonus, _ = marshalBonusSetting(topupSetting.SiteMethodBonus)
+			if !hasAuth || !hasBonus {
+				ts := GetTopupSetting()
+				if !hasAuth && ts.SiteMethodAuth != nil {
+					rawAuth, _ = marshalBonusSetting(ts.SiteMethodAuth)
+				}
+				if !hasBonus && ts.SiteMethodBonus != nil {
+					rawBonus, _ = marshalBonusSetting(ts.SiteMethodBonus)
+				}
 			}
 			if rule, ok, err := ParseSiteMethodBonus(rawAuth, rawBonus, siteID, method); err == nil {
 				return rule, ok
 			}
 		}
 	}
-	if topupSetting.SiteMethodBonus == nil {
+	ts := GetTopupSetting()
+	if ts.SiteMethodBonus == nil {
 		return MethodBonusRule{}, false
 	}
 	if !SiteMethodBonusAllowed(siteID, method) {
 		return MethodBonusRule{}, false
 	}
-	rules := topupSetting.SiteMethodBonus[siteID]
+	rules := ts.SiteMethodBonus[siteID]
 	rule, ok := rules[method]
 	return rule, ok
 }

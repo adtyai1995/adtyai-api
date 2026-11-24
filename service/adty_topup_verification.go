@@ -30,13 +30,14 @@ const (
 )
 
 // AdtyTopUpRefundContext binds a refund proof to one order and the exact
-// refund request (amount or quota, plus reason). A proof issued for another
-// trade_no, amount, quota, or reason is rejected.
+// refund request (amount or quota, plus reason and optional reconcile_orphan_id).
+// A proof issued for another trade_no, amount, quota, reason, or orphan is rejected.
 type AdtyTopUpRefundContext struct {
-	TradeNo     string `json:"trade_no"`
-	Reason      string `json:"reason"`
-	RefundQuota *int64 `json:"refund_quota,omitempty"`
-	RefundUSD   string `json:"refund_usd,omitempty"`
+	TradeNo           string `json:"trade_no"`
+	Reason            string `json:"reason"`
+	RefundQuota       *int64 `json:"refund_quota,omitempty"`
+	RefundUSD         string `json:"refund_usd,omitempty"`
+	ReconcileOrphanID int64  `json:"reconcile_orphan_id,omitempty"`
 }
 
 // AdtyTopUpManualCompleteContext binds a manual-credit proof to one order and
@@ -160,9 +161,19 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 		for key := range fields {
 			switch key {
 			case "trade_no", "reason", "refund_quota", "refund_usd":
+			case "reconcile_orphan_id":
+				if scope != VerificationScopeAdtyTopUpRefund {
+					return nil, false
+				}
 			default:
 				return nil, false
 			}
+		}
+		if context.ReconcileOrphanID < 0 {
+			return nil, false
+		}
+		if scope != VerificationScopeAdtyTopUpRefund && context.ReconcileOrphanID != 0 {
+			return nil, false
 		}
 		context.TradeNo = strings.TrimSpace(context.TradeNo)
 		context.Reason = strings.TrimSpace(context.Reason)
@@ -329,9 +340,13 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 }
 
 // AdtyTopUpRefundOperation builds the step-up operation for an admin refund.
-func AdtyTopUpRefundOperation(tradeNo, reason, refundUSD string, refundQuota *int64) VerificationOperation {
+func AdtyTopUpRefundOperation(tradeNo, reason, refundUSD string, refundQuota *int64, reconcileOrphanID ...int64) VerificationOperation {
+	var orphanID int64
+	if len(reconcileOrphanID) > 0 && reconcileOrphanID[0] > 0 {
+		orphanID = reconcileOrphanID[0]
+	}
 	payload, _ := common.Marshal(AdtyTopUpRefundContext{
-		TradeNo: tradeNo, Reason: reason, RefundUSD: refundUSD, RefundQuota: refundQuota,
+		TradeNo: tradeNo, Reason: reason, RefundUSD: refundUSD, RefundQuota: refundQuota, ReconcileOrphanID: orphanID,
 	})
 	return VerificationOperation{Scope: VerificationScopeAdtyTopUpRefund, Context: payload}
 }

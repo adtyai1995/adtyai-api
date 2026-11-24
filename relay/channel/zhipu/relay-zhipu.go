@@ -239,23 +239,32 @@ func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	})
 	close(done)
 	service.CloseResponseBodyGracefully(resp)
-	if usage == nil {
+	if usage != nil {
+		usage.PromptTokens = max(usage.PromptTokens, 0)
+		usage.CompletionTokens = max(usage.CompletionTokens, 0)
+		usage.TotalTokens = max(usage.TotalTokens, 0)
+	}
+	if usage == nil || (usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0) {
 		if responseText.Len() > 0 {
 			usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		} else {
 			usage = &dto.Usage{}
 		}
+	} else if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	return usage, nil
 }
 
 func zhipuHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	var zhipuResponse ZhipuResponse
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	err = common.Unmarshal(responseBody, &zhipuResponse)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -267,7 +276,10 @@ func zhipuHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respon
 		}, resp.StatusCode)
 	}
 	fullTextResponse := responseZhipu2OpenAI(&zhipuResponse)
-	if fullTextResponse.Usage.TotalTokens == 0 && fullTextResponse.Usage.PromptTokens == 0 && fullTextResponse.Usage.CompletionTokens == 0 {
+	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
+	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
+	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
+	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
 		var textBuilder strings.Builder
 		for _, ch := range fullTextResponse.Choices {
 			textBuilder.WriteString(ch.Message.StringContent())
@@ -275,6 +287,8 @@ func zhipuHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respon
 		if est := service.ResponseText2Usage(c, textBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
 			fullTextResponse.Usage = *est
 		}
+	} else if fullTextResponse.Usage.TotalTokens <= 0 {
+		fullTextResponse.Usage.TotalTokens = fullTextResponse.Usage.PromptTokens + fullTextResponse.Usage.CompletionTokens
 	}
 	jsonResponse, err := common.Marshal(fullTextResponse)
 	if err != nil {

@@ -25,6 +25,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	rkdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -48,9 +49,10 @@ func RelayMidjourneyImage(c *gin.Context) {
 	}
 	var httpClient *http.Client
 	var proxy string
+	var channelSetting rkdto.ChannelSettings
 	if channel, err := model.CacheGetChannel(midjourneyTask.ChannelId); err == nil {
-		channelSetting := channel.GetSetting()
-		proxy = channelSetting.Proxy
+		channelSetting = channel.GetSetting()
+		proxy = strings.TrimSpace(channelSetting.Proxy)
 		if proxy != "" {
 			if httpClient, err = service.GetHttpClientWithProxySettings(proxy, channelSetting); err != nil {
 				c.JSON(400, gin.H{
@@ -83,7 +85,7 @@ func RelayMidjourneyImage(c *gin.Context) {
 		})
 		return
 	}
-	resp, err := fetchMidjourneyImage(c, httpClient, imageURL, logicalURL, serverName, requestHost, proxy != "")
+	resp, err := fetchMidjourneyImage(c, httpClient, imageURL, logicalURL, serverName, requestHost, proxy != "", proxy, channelSetting)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "http_get_image_failed",
@@ -189,7 +191,7 @@ func (b *transportClosingBody) Close() error {
 	return err
 }
 
-func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, logicalURL, serverName, requestHost string, pinRedirects bool) (*http.Response, error) {
+func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, logicalURL, serverName, requestHost string, pinRedirects bool, proxy string, channelSetting rkdto.ChannelSettings) (*http.Response, error) {
 	if client == nil {
 		return nil, fmt.Errorf("http client is nil")
 	}
@@ -207,17 +209,23 @@ func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, logicalUR
 		}
 		var clonedTransport *http.Transport
 		if currentServerName != "" {
-			if transport, ok := client.Transport.(*http.Transport); ok {
+			if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
 				clonedTransport = transport.Clone()
-				if clonedTransport.TLSClientConfig == nil {
-					clonedTransport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: currentServerName}
-				} else {
-					cfg := clonedTransport.TLSClientConfig.Clone()
-					cfg.ServerName = currentServerName
-					clonedTransport.TLSClientConfig = cfg
+			} else {
+				var tErr error
+				clonedTransport, tErr = service.NewRelayTransportWithProxySettings(proxy, channelSetting)
+				if tErr != nil {
+					return nil, tErr
 				}
-				oneOff.Transport = clonedTransport
 			}
+			if clonedTransport.TLSClientConfig == nil {
+				clonedTransport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: currentServerName}
+			} else {
+				cfg := clonedTransport.TLSClientConfig.Clone()
+				cfg.ServerName = currentServerName
+				clonedTransport.TLSClientConfig = cfg
+			}
+			oneOff.Transport = clonedTransport
 		}
 		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, currentURL, nil)
 		if err != nil {
@@ -591,6 +599,11 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *dto.MidjourneyResponse {
 	common.SetContextKey(c, constant.ContextKeyChannelId, originTask.ChannelId)
 	common.SetContextKey(c, constant.ContextKeyChannelKey, key)
 	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
+	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
+	common.SetContextKey(c, constant.ContextKeyChannelSetting, channel.GetSetting())
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
+	common.SetContextKey(c, constant.ContextKeyChannelParamOverride, channel.GetParamOverride())
+	common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, channel.GetHeaderOverride())
 	c.Set("channel_id", originTask.ChannelId)
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 
@@ -780,10 +793,16 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			if keyErr != nil {
 				return service.MidjourneyErrorWrapper(constant.MjRequestError, keyErr.Error())
 			}
+			channelSetting := channel.GetSetting()
+			channelOtherSettings := channel.GetOtherSettings()
 			common.SetContextKey(c, constant.ContextKeyChannelId, originTask.ChannelId)
 			common.SetContextKey(c, constant.ContextKeyChannelKey, key)
 			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
 			common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, channelSetting)
+			common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channelOtherSettings)
+			common.SetContextKey(c, constant.ContextKeyChannelParamOverride, channel.GetParamOverride())
+			common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, channel.GetHeaderOverride())
 			c.Set("base_url", channel.GetBaseURL())
 			c.Set("channel_id", originTask.ChannelId)
 			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
@@ -792,6 +811,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 				relayInfo.ChannelBaseUrl = channel.GetBaseURL()
 				relayInfo.ChannelType = channel.Type
 				relayInfo.ApiKey = key
+				relayInfo.ChannelSetting = channelSetting
+				relayInfo.ChannelOtherSettings = channelOtherSettings
 			}
 			logger.LogDebug(c, "Midjourney action uses origin channel: id=%s, base_url=%s", strconv.Itoa(originTask.ChannelId), channel.GetBaseURL())
 		}

@@ -21,6 +21,58 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func clampNonNegativeUsage(usage *dto.Usage) bool {
+	if usage == nil {
+		return false
+	}
+	changed := false
+	clamp := func(v *int) {
+		if *v < 0 {
+			*v = 0
+			changed = true
+		}
+	}
+	clampInput := func(d *dto.InputTokenDetails) {
+		if d == nil {
+			return
+		}
+		clamp(&d.CachedTokens)
+		clamp(&d.CachedCreationTokens)
+		clamp(&d.CacheWriteTokens)
+		clamp(&d.CacheCreationInputTokens)
+		clamp(&d.TextTokens)
+		clamp(&d.AudioTokens)
+		clamp(&d.ImageTokens)
+		if d.CacheWriteTokensDetails != nil {
+			clamp(&d.CacheWriteTokensDetails.TTL30mTokens)
+			clamp(&d.CacheWriteTokensDetails.TTL12hTokens)
+		}
+	}
+	clampOutput := func(d *dto.OutputTokenDetails) {
+		if d == nil {
+			return
+		}
+		clamp(&d.TextTokens)
+		clamp(&d.AudioTokens)
+		clamp(&d.ImageTokens)
+		clamp(&d.ReasoningTokens)
+	}
+	clamp(&usage.PromptTokens)
+	clamp(&usage.CompletionTokens)
+	clamp(&usage.TotalTokens)
+	clamp(&usage.PromptCacheHitTokens)
+	clamp(&usage.InputTokens)
+	clamp(&usage.OutputTokens)
+	clamp(&usage.ReasoningTokens)
+	clamp(&usage.ClaudeCacheCreation5mTokens)
+	clamp(&usage.ClaudeCacheCreation1hTokens)
+	clampInput(&usage.PromptTokensDetails)
+	clampOutput(&usage.CompletionTokenDetails)
+	clampInput(usage.InputTokensDetails)
+	clampOutput(usage.OutputTokensDetails)
+	return changed
+}
+
 func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
 	if data == "" {
 		return nil
@@ -182,12 +234,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
-	if !containStreamUsage {
+	clampNonNegativeUsage(usage)
+	if !containStreamUsage || (usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && usage.TotalTokens <= 0) {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	} else if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(usageFrame))
+	clampNonNegativeUsage(usage)
 
 	for _, name := range streamFunctionCallNames {
 		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
@@ -305,10 +362,10 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		forceFormat = true
 	}
 
-	usageModified := false
-	if simpleResponse.Usage.PromptTokens == 0 {
-		completionTokens := simpleResponse.Usage.CompletionTokens
-		if completionTokens == 0 {
+	usageModified := clampNonNegativeUsage(&simpleResponse.Usage)
+	if simpleResponse.Usage.PromptTokens <= 0 {
+		completionTokens := max(simpleResponse.Usage.CompletionTokens, 0)
+		if completionTokens <= 0 {
 			for _, choice := range simpleResponse.Choices {
 				ctkm := tokenkit.Count(info.UpstreamModelName, choice.Message.StringContent()+choice.Message.GetReasoningContent())
 				completionTokens += ctkm
@@ -321,9 +378,15 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		}
 		simpleResponse.Usage = *fallbackUsage
 		usageModified = true
+	} else if simpleResponse.Usage.TotalTokens <= 0 {
+		simpleResponse.Usage.TotalTokens = simpleResponse.Usage.PromptTokens + simpleResponse.Usage.CompletionTokens
+		usageModified = true
 	}
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
+	if clampNonNegativeUsage(&simpleResponse.Usage) {
+		usageModified = true
+	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:

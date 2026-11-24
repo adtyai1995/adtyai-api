@@ -846,7 +846,7 @@ func sendEmailNotify(site *model.AdtySite, userEmail string, data dto.Notify) er
 	}
 	title := data.Title
 	if site != nil {
-		title = strings.ReplaceAll(title, common.SystemName, AdtyBrandFor(site).Name)
+		title = strings.ReplaceAll(title, common.GetSystemName(), AdtyBrandFor(site).Name)
 	}
 	msg := AdtyMailMessage{Title: title, Paragraphs: strings.Split(content, "\n")}
 	if data.Type == dto.NotifyTypeQuotaExceed && len(data.Values) >= 3 {

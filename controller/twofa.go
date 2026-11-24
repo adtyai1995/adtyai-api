@@ -198,13 +198,21 @@ func AdminDisable2FA(c *gin.Context) {
 		common.ApiErrorT(c, "No permission to change the 2FA settings of users at the same or higher level")
 		return
 	}
+	if isAccessTokenRequest(c) && targetUser.Role >= common.RoleAdminUser {
+		denyAdtyAdminAction(c)
+		return
+	}
 	authorization := requireAdminUserProof(c, service.VerificationScopeAdminUserTwoFADisable, service.AdminUserContext{UserID: userId})
 	if authorization == nil {
 		return
 	}
 
 	// 禁用2FA
-	if err := model.DisableTwoFAWithAuthVersion(userId); err != nil {
+	if err := model.DisableTwoFAWithAuthVersionForActor(userId, isAccessTokenRequest(c)); err != nil {
+		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
+			denyAdtyAdminAction(c)
+			return
+		}
 		if errors.Is(err, model.ErrTwoFANotEnabled) {
 			common.ApiErrorT(c, "Two-factor authentication is not enabled.")
 			return

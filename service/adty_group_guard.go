@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"gorm.io/gorm"
 )
 
 // adtyGroupSpecialUsableKey 是特殊可用分组在 options 表里的键（带点的 config 键）。
@@ -13,6 +14,7 @@ const adtyGroupSpecialUsableKey = "group_ratio_setting.group_special_usable_grou
 
 func init() {
 	model.AdtyOnSiteGroupConfigChanged = InvalidateAdtySiteCache
+	model.ValidateAdtyGroupOptionTx = ValidateAdtyGroupOptionTx
 }
 
 // IsAdtyGroupOption 说明这个配置项的键或值里写的是分组 ID，保存前要校验。
@@ -30,6 +32,17 @@ func IsAdtyGroupOption(key string) bool {
 // GroupRatio 还不能漏掉任何未删除的分组：删除分组只能走迁移和删除。
 // GroupModelAllow 额外在保存前强校验「分组 ID → 非空模型名数组」结构，其余配置项的格式错误留给上游各自的检查。
 func ValidateAdtyGroupOption(key, value string) error {
+	return validateAdtyGroupOption(nil, key, value, false)
+}
+
+// ValidateAdtyGroupOptionTx locks live adty_groups inside tx (canonical order:
+// options -> adty_groups) and validates all 8 group-scoped options against the
+// locked group table to eliminate delete-vs-option TOCTOU races (R9-008).
+func ValidateAdtyGroupOptionTx(tx *gorm.DB, key, value string) error {
+	return validateAdtyGroupOption(tx, key, value, true)
+}
+
+func validateAdtyGroupOption(tx *gorm.DB, key, value string, lock bool) error {
 	if !IsAdtyGroupOption(key) {
 		return nil
 	}
@@ -43,9 +56,20 @@ func ValidateAdtyGroupOption(key, value string) error {
 	if key == groupModelAllowOption && len(ids) == 0 {
 		return nil
 	}
-	active, err := model.ActiveAdtyGroupIDs()
-	if err != nil {
-		return err
+	var active map[string]struct{}
+	if tx != nil {
+		active, err = model.ActiveAdtyGroupIDsTx(tx, lock)
+		if err != nil {
+			return err
+		}
+		if len(active) == 0 {
+			return nil
+		}
+	} else {
+		active, err = model.ActiveAdtyGroupIDs()
+		if err != nil {
+			return err
+		}
 	}
 	for _, ref := range ids {
 		if ref.id == "auto" {

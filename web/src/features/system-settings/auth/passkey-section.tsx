@@ -241,6 +241,54 @@ export function PasskeySection(props: PasskeySectionProps) {
     })
   }, [props.defaultValues, form])
 
+  const resetCommittedField = (
+    key: keyof FlatPasskeyDefaults,
+    committed: PasskeyFormInput
+  ) => {
+    switch (key) {
+      case 'passkey.enabled':
+        form.resetField('passkey.enabled', {
+          defaultValue: committed.passkey.enabled,
+        })
+        break
+      case 'passkey.rp_display_name':
+        form.resetField('passkey.rp_display_name', {
+          defaultValue: committed.passkey.rp_display_name,
+        })
+        break
+      case 'passkey.rp_id':
+        form.resetField('passkey.rp_id', {
+          defaultValue: committed.passkey.rp_id,
+        })
+        break
+      case 'passkey.legacy_rp_ids':
+        form.resetField('passkey.legacy_rp_ids', {
+          defaultValue: committed.passkey.legacy_rp_ids,
+        })
+        break
+      case 'passkey.origins':
+        form.resetField('passkey.origins', {
+          defaultValue: committed.passkey.origins,
+        })
+        break
+      case 'passkey.allow_insecure_origin':
+        form.resetField('passkey.allow_insecure_origin', {
+          defaultValue: committed.passkey.allow_insecure_origin,
+        })
+        break
+      case 'passkey.user_verification':
+        form.resetField('passkey.user_verification', {
+          defaultValue: committed.passkey.user_verification,
+        })
+        break
+      case 'passkey.attachment_preference':
+        form.resetField('passkey.attachment_preference', {
+          defaultValue: committed.passkey.attachment_preference,
+        })
+        break
+    }
+  }
+
   const saveSettings = async (
     normalized: FlatPasskeyDefaults,
     preview?: PasskeyDomainChange
@@ -275,19 +323,33 @@ export function PasskeySection(props: PasskeySectionProps) {
         saved['passkey.rp_id'] = result.data.rp_id
         saved['passkey.legacy_rp_ids'] = result.data.legacy_rp_ids
         saved['passkey.origins'] = result.data.origins
-        baselineRef.current = {
+        const nextBaseline: FlatPasskeyDefaults = {
           ...baselineRef.current,
           'passkey.rp_id': saved['passkey.rp_id'],
           'passkey.legacy_rp_ids': saved['passkey.legacy_rp_ids'],
           'passkey.origins': saved['passkey.origins'],
         }
+        baselineRef.current = nextBaseline
+        baselineSerializedRef.current = JSON.stringify(nextBaseline)
+        const committed = buildFormDefaults(nextBaseline)
+        for (const domainKey of passkeyDomainKeys) {
+          resetCommittedField(domainKey, committed)
+        }
+        setPendingDomainChange(null)
       }
       for (const key of changedKeys) {
         if (passkeyDomainKeys.some((domainKey) => domainKey === key)) continue
         await updateOption.mutateAsync({ key, value: normalized[key] ?? '' })
+        const nextBaseline: FlatPasskeyDefaults = {
+          ...baselineRef.current,
+          [key]: normalized[key],
+        }
+        baselineRef.current = nextBaseline
+        baselineSerializedRef.current = JSON.stringify(nextBaseline)
+        resetCommittedField(key, buildFormDefaults(nextBaseline))
       }
     } catch {
-      // The mutation reports the error once. Keep the draft available for retry.
+      // The mutation reports the error once. Keep any unsaved draft available for retry.
       return
     }
     baselineRef.current = saved
@@ -795,7 +857,7 @@ export function PasskeySection(props: PasskeySectionProps) {
         destructive={removedDomains.length > 0}
         isLoading={isSaving}
         handleConfirm={() => {
-          if (pendingDomainChange) {
+          if (pendingDomainChange && !isSaving) {
             void saveSettings(
               pendingDomainChange.values,
               pendingDomainChange.preview

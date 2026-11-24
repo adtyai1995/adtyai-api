@@ -87,9 +87,15 @@ func GetStatus(c *gin.Context) {
 		publicAnnouncements = service.AdtyPublicAnnouncementsForRequest(c)
 	}
 	passkeySetting := system_setting.PasskeySettingsSnapshot()
+	passkeyLoginAvailable := passkeySetting.Enabled && passkeysvc.IsAvailableForRequest(c.Request, "")
 	legalSetting := system_setting.GetLegalSettings()
+	generalSetting := operation_setting.GetGeneralSetting()
+	isCurrencyDisplay := operation_setting.IsCurrencyDisplay()
+	quotaDisplayType := operation_setting.GetQuotaDisplayType()
+	logSetting := operation_setting.GetLogSetting()
 	serverAddress := service.AdtySiteAPIBaseURL(nil)
 	// 锁只包住读 OptionMap / 全局变量的这段，读完立刻放（下面都是拼响应，不碰配置）。
+	// 禁止在持锁期间调用任何内部加锁 getter（避免 Go RWMutex 递归 RLock 死锁）。
 	common.OptionMapRWMutex.RLock()
 
 	data := gin.H{
@@ -104,13 +110,13 @@ func GetStatus(c *gin.Context) {
 		"server_address":     serverAddress,
 		"turnstile_check":    common.TurnstileCheckEnabled,
 		"turnstile_site_key": turnstileSiteKey,
-		"docs_link":          operation_setting.GetGeneralSetting().DocsLink,
+		"docs_link":          generalSetting.DocsLink,
 		"quota_per_unit":     common.QuotaPerUnit,
 		// 兼容旧前端：保留 display_in_currency，同时提供新的 quota_display_type
-		"display_in_currency":           operation_setting.IsCurrencyDisplay(),
-		"quota_display_type":            operation_setting.GetQuotaDisplayType(),
-		"custom_currency_symbol":        operation_setting.GetGeneralSetting().CustomCurrencySymbol,
-		"custom_currency_exchange_rate": operation_setting.GetGeneralSetting().CustomCurrencyExchangeRate,
+		"display_in_currency":           isCurrencyDisplay,
+		"quota_display_type":            quotaDisplayType,
+		"custom_currency_symbol":        generalSetting.CustomCurrencySymbol,
+		"custom_currency_exchange_rate": generalSetting.CustomCurrencyExchangeRate,
 		"enable_batch_update":           common.BatchUpdateEnabled,
 		"enable_drawing":                common.DrawingEnabled,
 		"enable_task":                   common.TaskEnabled,
@@ -141,7 +147,7 @@ func GetStatus(c *gin.Context) {
 		"HeaderNavModules":    common.OptionMap["HeaderNavModules"],
 		"SidebarModulesAdmin": common.OptionMap["SidebarModulesAdmin"],
 
-		"passkey_login":             passkeySetting.Enabled && passkeysvc.IsAvailableForRequest(c.Request, ""),
+		"passkey_login":             passkeyLoginAvailable,
 		"passkey_display_name":      passkeySetting.RPDisplayName,
 		"passkey_rp_id":             passkeySetting.EffectiveRPID(),
 		"passkey_rp_ids":            passkeySetting.RelyingPartyIDs(),
@@ -151,8 +157,8 @@ func GetStatus(c *gin.Context) {
 		"setup":                     constant.Setup,
 		"user_agreement_enabled":    legalSetting.UserAgreement != "",
 		"privacy_policy_enabled":    legalSetting.PrivacyPolicy != "",
-		"log_export_enabled":        operation_setting.GetLogSetting().UserExportEnabled,
-		"log_max_range_days":        operation_setting.GetLogSetting().MaxRangeDays,
+		"log_export_enabled":        logSetting.UserExportEnabled,
+		"log_max_range_days":        logSetting.MaxRangeDays,
 		"quota_remind_enabled":      common.QuotaRemindEnabled,
 		"quota_remind_threshold":    common.QuotaRemindThreshold,
 		"payment_methods":           paymentMethods,

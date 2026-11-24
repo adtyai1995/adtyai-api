@@ -29,7 +29,10 @@ func init() {
 }
 
 func GetLogSetting() *LogSetting {
-	return &logSetting
+	common.OptionMapRWMutex.RLock()
+	snap := logSetting
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 func (s *LogSetting) MaxRangeSeconds() int64 {

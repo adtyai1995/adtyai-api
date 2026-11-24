@@ -3,6 +3,7 @@ package model
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -59,12 +60,16 @@ type PricingVendor struct {
 	Icon        string `json:"icon,omitempty"`
 }
 
+type pricingSnapshot struct {
+	pricing            []Pricing
+	vendors            []PricingVendor
+	supportedEndpoints map[string]common.EndpointInfo
+	updatedAt          time.Time
+}
+
 var (
-	pricingMap           []Pricing
-	vendorsList          []PricingVendor
-	supportedEndpointMap map[string]common.EndpointInfo
-	lastGetPricingTime   time.Time
-	updatePricingLock    sync.Mutex
+	currentPricingSnapshot atomic.Pointer[pricingSnapshot]
+	updatePricingLock      sync.Mutex
 
 	// 缓存映射：模型名 -> 启用分组 / 计费类型
 	modelEnableGroups     = make(map[string][]string)
@@ -77,36 +82,43 @@ var (
 	modelSupportEndpointsLock = sync.RWMutex{}
 )
 
-func GetPricing() []Pricing {
-	if time.Since(lastGetPricingTime) > time.Minute*1 || len(pricingMap) == 0 {
-		updatePricingLock.Lock()
-		defer updatePricingLock.Unlock()
-		// Double check after acquiring the lock
-		if time.Since(lastGetPricingTime) > time.Minute*1 || len(pricingMap) == 0 {
-			modelSupportEndpointsLock.Lock()
-			defer modelSupportEndpointsLock.Unlock()
-			updatePricing()
-		}
+func loadPricingSnapshot() *pricingSnapshot {
+	snap := currentPricingSnapshot.Load()
+	if snap != nil && time.Since(snap.updatedAt) <= time.Minute && len(snap.pricing) > 0 {
+		return snap
 	}
-	return pricingMap
+	updatePricingLock.Lock()
+	defer updatePricingLock.Unlock()
+	snap = currentPricingSnapshot.Load()
+	if snap != nil && time.Since(snap.updatedAt) <= time.Minute && len(snap.pricing) > 0 {
+		return snap
+	}
+	modelSupportEndpointsLock.Lock()
+	defer modelSupportEndpointsLock.Unlock()
+	return updatePricing()
+}
+
+func GetPricing() []Pricing {
+	snap := loadPricingSnapshot()
+	if snap == nil {
+		return nil
+	}
+	return snap.pricing
 }
 
 func InvalidatePricingCache() {
 	updatePricingLock.Lock()
 	defer updatePricingLock.Unlock()
-
-	pricingMap = nil
-	vendorsList = nil
-	lastGetPricingTime = time.Time{}
+	currentPricingSnapshot.Store(nil)
 }
 
 // GetVendors 返回当前定价接口使用到的供应商信息
 func GetVendors() []PricingVendor {
-	if time.Since(lastGetPricingTime) > time.Minute*1 || len(pricingMap) == 0 {
-		// 保证先刷新一次
-		GetPricing()
+	snap := loadPricingSnapshot()
+	if snap == nil {
+		return nil
 	}
-	return vendorsList
+	return snap.vendors
 }
 
 func GetModelSupportEndpointTypes(model string) []constant.EndpointType {
@@ -194,12 +206,12 @@ func appendPricingEndpoint(endpoints []string, endpoint string) []string {
 	return append(endpoints, endpoint)
 }
 
-func updatePricing() {
+func updatePricing() *pricingSnapshot {
 	//modelRatios := common.GetModelRatios()
 	enableAbilities, err := GetAllEnableAbilityWithChannels()
 	if err != nil {
 		common.SysLog(common.LogText("GetAllEnableAbilityWithChannels error: %v", err))
-		return
+		return currentPricingSnapshot.Load()
 	}
 	// 预加载模型元数据与供应商一次，避免循环查询
 	var allMeta []Model
@@ -222,9 +234,9 @@ func updatePricing() {
 	initDefaultVendorMapping(metaMap, vendorMap, enableAbilities)
 
 	// 构建对前端友好的供应商列表
-	vendorsList = make([]PricingVendor, 0, len(vendorMap))
+	newVendors := make([]PricingVendor, 0, len(vendorMap))
 	for _, v := range vendorMap {
-		vendorsList = append(vendorsList, PricingVendor{
+		newVendors = append(newVendors, PricingVendor{
 			ID:          v.Id,
 			Name:        v.Name,
 			Description: v.Description,
@@ -289,14 +301,14 @@ func updatePricing() {
 		modelSupportEndpointTypes[model] = supportedEndpoints
 	}
 
-	// 构建全局 supportedEndpointMap（默认 + 自定义覆盖）
-	supportedEndpointMap = make(map[string]common.EndpointInfo)
+	// 构建不可变 supportedEndpoints 快照（默认 + 自定义覆盖）
+	newSupportedEndpoints := make(map[string]common.EndpointInfo)
 	// 1. 默认端点
 	for _, endpoints := range modelSupportEndpointTypes {
 		for _, et := range endpoints {
 			if info, ok := common.GetDefaultEndpointInfo(et); ok {
-				if _, exists := supportedEndpointMap[string(et)]; !exists {
-					supportedEndpointMap[string(et)] = info
+				if _, exists := newSupportedEndpoints[string(et)]; !exists {
+					newSupportedEndpoints[string(et)] = info
 				}
 			}
 		}
@@ -311,7 +323,7 @@ func updatePricing() {
 			for k, v := range raw {
 				switch val := v.(type) {
 				case string:
-					supportedEndpointMap[k] = common.EndpointInfo{Path: val, Method: "POST"}
+					newSupportedEndpoints[k] = common.EndpointInfo{Path: val, Method: "POST"}
 				case map[string]any:
 					ep := common.EndpointInfo{Method: "POST"}
 					if p, ok := val["path"].(string); ok {
@@ -320,7 +332,7 @@ func updatePricing() {
 					if m, ok := val["method"].(string); ok {
 						ep.Method = strings.ToUpper(m)
 					}
-					supportedEndpointMap[k] = ep
+					newSupportedEndpoints[k] = ep
 				default:
 					// ignore unsupported types
 				}
@@ -328,7 +340,7 @@ func updatePricing() {
 		}
 	}
 
-	pricingMap = make([]Pricing, 0)
+	newPricing := make([]Pricing, 0, len(modelGroupsMap))
 	pluginGeneration := jsplugin.DefaultRegistry.Generation()
 	for model, groups := range modelGroupsMap {
 		pricing := Pricing{
@@ -432,28 +444,49 @@ func updatePricing() {
 				})
 			}
 		}
-		pricingMap = append(pricingMap, pricing)
+		newPricing = append(newPricing, pricing)
 	}
 
 	// 防止大更新后数据不通用
-	if len(pricingMap) > 0 {
-		pricingMap[0].PricingVersion = "5a90f2b86c08bd983a9a2e6d66c255f4eaef9c4bc934386d2b6ae84ef0ff1f1f"
+	if len(newPricing) > 0 {
+		newPricing[0].PricingVersion = "5a90f2b86c08bd983a9a2e6d66c255f4eaef9c4bc934386d2b6ae84ef0ff1f1f"
 	}
 
 	// 刷新缓存映射，供高并发快速查询
 	modelEnableGroupsLock.Lock()
 	modelEnableGroups = make(map[string][]string)
 	modelQuotaTypeMap = make(map[string]int)
-	for _, p := range pricingMap {
+	for _, p := range newPricing {
 		modelEnableGroups[p.ModelName] = p.EnableGroup
 		modelQuotaTypeMap[p.ModelName] = p.QuotaType
 	}
 	modelEnableGroupsLock.Unlock()
 
-	lastGetPricingTime = time.Now()
+	snap := &pricingSnapshot{
+		pricing:            newPricing,
+		vendors:            newVendors,
+		supportedEndpoints: newSupportedEndpoints,
+		updatedAt:          time.Now(),
+	}
+	currentPricingSnapshot.Store(snap)
+	return snap
 }
 
-// GetSupportedEndpointMap 返回全局端点到路径的映射
+// GetSupportedEndpointMap 返回全局端点到路径的不可变快照映射
 func GetSupportedEndpointMap() map[string]common.EndpointInfo {
-	return supportedEndpointMap
+	snap := loadPricingSnapshot()
+	if snap == nil {
+		return map[string]common.EndpointInfo{}
+	}
+	return snap.supportedEndpoints
+}
+
+// GetPricingBundle atomically returns pricing, vendors, and supported endpoints
+// from a single immutable snapshot.
+func GetPricingBundle() ([]Pricing, []PricingVendor, map[string]common.EndpointInfo) {
+	snap := loadPricingSnapshot()
+	if snap == nil {
+		return nil, nil, map[string]common.EndpointInfo{}
+	}
+	return snap.pricing, snap.vendors, snap.supportedEndpoints
 }

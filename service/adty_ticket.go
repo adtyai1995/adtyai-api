@@ -232,6 +232,7 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 					return ErrAdtyTicketForbidden
 				}
 				ticket.Status = model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
+				ticket.AssigneeId = 0
 				ticket.InitialMessageId = prior.Id
 				created = &ticket
 				return nil
@@ -1009,8 +1010,13 @@ func AttachAdtyTicketImageWithKey(userId int, ticketId, messageID int64, visibil
 		if err := os.WriteFile(filePath, stripped, 0o640); err != nil {
 			return err
 		}
+		uploaderRole := "customer"
+		if actor.isHandling() {
+			uploaderRole = "support"
+		}
 		row = model.AdtyTicketImage{
-			UploadKey: &uploadKey, ObjectId: objectID, TicketId: ticket.Id, MessageId: messageID, Visibility: visibility, Mime: mime,
+			UploadKey: &uploadKey, ObjectId: objectID, TicketId: ticket.Id, MessageId: messageID,
+			UploaderId: actor.User.Id, UploaderRole: uploaderRole, Visibility: visibility, Mime: mime,
 			Size: len(stripped), Width: width, Height: height, SHA256: hex.EncodeToString(sum[:]), Storage: name,
 		}
 		if err := tx.Create(&row).Error; err != nil {
@@ -1126,8 +1132,16 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 				if msg.AuthorId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
 					return ErrAdtyTicketForbidden
 				}
-			} else if !isAdtyTicketCustomerController(actor, ticket) {
-				return ErrAdtyTicketForbidden
+			} else {
+				if ticketSupportAuthor(target.UploaderRole) || (target.UploaderRole != "" && target.UploaderRole != "customer" && target.UploaderId != actor.User.Id) {
+					return ErrAdtyTicketForbidden
+				}
+				if target.UploaderId > 0 && target.UploaderId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
+					return ErrAdtyTicketForbidden
+				}
+				if !isAdtyTicketCustomerController(actor, ticket) && target.UploaderId != actor.User.Id {
+					return ErrAdtyTicketForbidden
+				}
 			}
 		}
 		if err := tx.Model(&target).Updates(map[string]any{"delete_pending": true, "upload_key": nil}).Error; err != nil {

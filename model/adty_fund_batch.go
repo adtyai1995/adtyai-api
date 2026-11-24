@@ -709,11 +709,16 @@ type AdtyBonusSpend struct {
 	Quota  int64
 }
 
-// AdtyAfterBonusSpentTx runs after bonus lots are reduced, both on usage
-// charges and on the quiet path used by official adjustments and staff
-// approvals, so the matching site gift-guarantee can be released. Refunds
-// that reclaim lots by source do not call it.
+// AdtyAfterBonusSpentTx runs after bonus lots are consumed by real API usage
+// charges so the matching site gift-guarantee is spent (gift_spend) to cover
+// platform API cost.
 var AdtyAfterBonusSpentTx func(tx *gorm.DB, userID int, spends []AdtyBonusSpend) error
+
+// AdtyAfterBonusReleasedTx runs when unspent permanent bonus lots are revoked
+// by official adjustments, staff balance decreases, or quiet non-usage debits,
+// releasing the site gift-guarantee freeze (gift_release, delta = 0) without
+// debiting the site owner's wallet balance.
+var AdtyAfterBonusReleasedTx func(tx *gorm.DB, userID int, releases []AdtyBonusSpend) error
 
 // AdtyAfterBonusRefundedTx runs inside the settlement transaction when a
 // settled non-expiring bonus share is reversed (e.g. failed task refund or
@@ -740,6 +745,27 @@ func adtyNotifyBonusSpentTx(tx *gorm.DB, userID int, bonusBySource map[string]in
 		return nil
 	}
 	return AdtyAfterBonusSpentTx(tx, userID, spends)
+}
+
+func adtyNotifyBonusReleasedTx(tx *gorm.DB, userID int, bonusBySource map[string]int64) error {
+	if len(bonusBySource) == 0 || AdtyAfterBonusReleasedTx == nil {
+		return nil
+	}
+	sources := make([]string, 0, len(bonusBySource))
+	for source := range bonusBySource {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	releases := make([]AdtyBonusSpend, 0, len(sources))
+	for _, source := range sources {
+		if quota := bonusBySource[source]; quota > 0 {
+			releases = append(releases, AdtyBonusSpend{Source: source, Quota: quota})
+		}
+	}
+	if len(releases) == 0 {
+		return nil
+	}
+	return AdtyAfterBonusReleasedTx(tx, userID, releases)
 }
 
 func adtyNotifyBonusRefundedTx(tx *gorm.DB, userID int, operationKey string, bonusBySource map[string]int64) error {
@@ -929,11 +955,16 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 	}
 	// R4-005: Invoke bonus hooks (earnings -> margin) BEFORE principal hooks
 	// (operating) to preserve canonical adty_site_wallets lock ordering.
-	// notifyPrincipalSpent gates only the usage-charge hook. The bonus hook
-	// still runs on the quiet path so manual/staff reductions release the
-	// corresponding site gift-guarantee without debiting the operating wallet.
-	if err := adtyNotifyBonusSpentTx(tx, userID, bonusBySource); err != nil {
-		return backed, err
+	// Usage charges (notifyPrincipalSpent == true) realize gift_spend; quiet
+	// non-usage reductions release the unspent guarantee freeze (gift_release).
+	if notifyPrincipalSpent {
+		if err := adtyNotifyBonusSpentTx(tx, userID, bonusBySource); err != nil {
+			return backed, err
+		}
+	} else {
+		if err := adtyNotifyBonusReleasedTx(tx, userID, bonusBySource); err != nil {
+			return backed, err
+		}
 	}
 	if notifyPrincipalSpent && principalTaken > 0 {
 		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationKey, principalTaken); err != nil {
@@ -990,7 +1021,7 @@ func ReduceAdtyAdjustmentBatchTx(tx *gorm.DB, userID, siteID int, source, kind s
 		return err
 	}
 	if batch.Kind == AdtyFundBatchKindBonus && !batch.IsExpiringGift() {
-		return adtyNotifyBonusSpentTx(tx, userID, map[string]int64{source: amount})
+		return adtyNotifyBonusReleasedTx(tx, userID, map[string]int64{source: amount})
 	}
 	return nil
 }

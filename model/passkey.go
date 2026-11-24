@@ -263,14 +263,18 @@ func upsertPasskeyCredentialWithAuthVersion(credential *PasskeyCredential, ident
 }
 
 func DeletePasskeyByUserIDWithAuthVersion(userID int) error {
-	return deletePasskeyWithAuthVersion(userID, nil)
+	return deletePasskeyWithAuthVersion(userID, nil, false)
+}
+
+func DeletePasskeyByUserIDWithAuthVersionForActor(userID int, denyAdminTarget bool) error {
+	return deletePasskeyWithAuthVersion(userID, nil, denyAdminTarget)
 }
 
 func DeletePasskeyForSession(identity AuthSessionIdentity) error {
-	return deletePasskeyWithAuthVersion(identity.UserID, &identity)
+	return deletePasskeyWithAuthVersion(identity.UserID, &identity, false)
 }
 
-func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity) error {
+func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity, denyAdminTarget bool) error {
 	if userID == 0 {
 		return errors.New("failed to delete the Passkey, please try again")
 	}
@@ -278,6 +282,14 @@ func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity) err
 		if identity != nil {
 			if err := ValidateAuthSessionWithTx(tx, *identity); err != nil {
 				return err
+			}
+		} else {
+			var target User
+			if err := lockForUpdate(tx).Select("id", "role").First(&target, userID).Error; err != nil {
+				return err
+			}
+			if denyAdminTarget && target.Role >= common.RoleAdminUser {
+				return ErrAdminTargetSessionRequired
 			}
 		}
 		var credential PasskeyCredential

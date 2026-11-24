@@ -101,23 +101,23 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		return "", fmt.Errorf("model %q requires AWS Mantle Messages API", info.UpstreamModelName)
 	}
 	if info.ChannelOtherSettings.AwsKeyType == dto.AwsKeyTypeApiKey {
-		awsModelId := getAwsModelID(info.UpstreamModelName)
 		a.ClientMode = ClientModeApiKey
 		awsSecret := strings.Split(info.ApiKey, "|")
-		if len(awsSecret) != 2 {
+		if len(awsSecret) != 2 || strings.TrimSpace(awsSecret[0]) == "" || strings.TrimSpace(awsSecret[1]) == "" {
 			return "", errors.New("invalid aws api key, should be in format of <api-key>|<region>")
 		}
-		return fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse", awsModelId, awsSecret[1]), nil
-	} else {
-		a.ClientMode = ClientModeAKSK
 		return "", nil
 	}
+	a.ClientMode = ClientModeAKSK
+	return "", nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	claude.CommonClaudeHeadersOperation(c, req, info)
 	if a.ClientMode == ClientModeApiKey {
-		req.Set("Authorization", "Bearer "+info.ApiKey)
+		if awsSecret := strings.Split(info.ApiKey, "|"); len(awsSecret) == 2 && strings.TrimSpace(awsSecret[0]) != "" {
+			req.Set("Authorization", "Bearer "+strings.TrimSpace(awsSecret[0]))
+		}
 	}
 	return nil
 }
@@ -180,15 +180,11 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 	default:
 		return nil, errors.New("invalid AWS API type")
 	}
-	if a.ClientMode == ClientModeApiKey {
-		return channel.DoApiRequest(a, c, info, requestBody)
-	} else {
-		return doAwsClientRequest(c, info, a, requestBody)
-	}
+	return doAwsClientRequest(c, info, a, requestBody)
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-	if info.ChannelOtherSettings.AwsApiType == dto.AwsApiTypeMantle || a.ClientMode == ClientModeApiKey {
+	if info.ChannelOtherSettings.AwsApiType == dto.AwsApiTypeMantle {
 		claudeAdaptor := claude.Adaptor{}
 		usage, err = claudeAdaptor.DoResponse(c, resp, info)
 	} else {

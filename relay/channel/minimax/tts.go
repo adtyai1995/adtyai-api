@@ -11,6 +11,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -90,6 +91,9 @@ type MiniMaxBaseResp struct {
 }
 
 func handleTTSResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	body, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		return nil, types.NewErrorWithStatusCode(
@@ -98,7 +102,6 @@ func handleTTSResponse(c *gin.Context, resp *http.Response, info *relaycommon.Re
 			http.StatusInternalServerError,
 		)
 	}
-	defer resp.Body.Close()
 
 	// Parse response
 	var minimaxResp MiniMaxTTSResponse

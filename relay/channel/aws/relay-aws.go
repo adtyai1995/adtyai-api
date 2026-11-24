@@ -70,17 +70,26 @@ func newAwsClient(c *gin.Context, info *relaycommon.RelayInfo) (*bedrockruntime.
 	var client *bedrockruntime.Client
 	switch len(awsSecret) {
 	case 2:
-		apiKey := awsSecret[0]
-		region := awsSecret[1]
+		apiKey := strings.TrimSpace(awsSecret[0])
+		region := strings.TrimSpace(awsSecret[1])
+		if apiKey == "" || region == "" {
+			return nil, errors.New("invalid aws api key, should be in format of <api-key>|<region>")
+		}
 		client = bedrockruntime.New(bedrockruntime.Options{
 			Region:                  region,
 			BearerAuthTokenProvider: bearer.StaticTokenProvider{Token: bearer.Token{Value: apiKey}},
 			HTTPClient:              httpClient,
 		})
 	case 3:
-		ak := awsSecret[0]
-		sk := awsSecret[1]
-		region := awsSecret[2]
+		if info.ChannelOtherSettings.AwsKeyType == dto.AwsKeyTypeApiKey {
+			return nil, errors.New("invalid aws api key, should be in format of <api-key>|<region>")
+		}
+		ak := strings.TrimSpace(awsSecret[0])
+		sk := strings.TrimSpace(awsSecret[1])
+		region := strings.TrimSpace(awsSecret[2])
+		if ak == "" || sk == "" || region == "" {
+			return nil, errors.New("invalid aws secret key")
+		}
 		client = bedrockruntime.New(bedrockruntime.Options{
 			Region:      region,
 			Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(ak, sk, "")),
@@ -279,6 +288,7 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 	}
 
 	events := stream.Events()
+	receivedChunk := false
 streamLoop:
 	for {
 		select {
@@ -294,6 +304,7 @@ streamLoop:
 
 			switch v := event.(type) {
 			case *bedrockruntimeTypes.ResponseStreamMemberChunk:
+				receivedChunk = true
 				info.SetFirstResponseTime()
 				respErr := claude.HandleStreamResponseData(c, info, claudeInfo, string(v.Value.Bytes))
 				if respErr != nil {
@@ -320,6 +331,21 @@ streamLoop:
 	}
 
 	_ = stream.Close()
+	streamErr := stream.Err()
+	ctxErr := ctx.Err()
+	if !c.Writer.Written() && (info == nil || info.SendResponseCount == 0) {
+		if streamErr != nil {
+			return newAwsInvokeError(requestContext, streamErr, "InvokeModelWithResponseStream"), nil
+		}
+		if ctxErr != nil {
+			return newAwsInvokeError(requestContext, ctxErr, "InvokeModelWithResponseStream"), nil
+		}
+		if !receivedChunk {
+			return types.NewError(errors.New("empty upstream stream response"), types.ErrorCodeBadResponseBody), nil
+		}
+	} else if streamErr != nil {
+		common.SysLog(common.LogText("AWS stream terminated with error after output written, billing delivered usage: %v", streamErr))
+	}
 	claude.HandleStreamFinalResponse(c, info, claudeInfo)
 	return nil, claudeInfo.Usage
 }
@@ -385,14 +411,16 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 	}
 
 	usage := dto.Usage{
-		PromptTokens:     novaResp.Usage.InputTokens,
-		CompletionTokens: novaResp.Usage.OutputTokens,
-		TotalTokens:      novaResp.Usage.TotalTokens,
+		PromptTokens:     max(novaResp.Usage.InputTokens, 0),
+		CompletionTokens: max(novaResp.Usage.OutputTokens, 0),
+		TotalTokens:      max(novaResp.Usage.TotalTokens, 0),
 	}
-	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && usage.TotalTokens <= 0 {
 		// 向上游拿不到 usage（拦截/空 content 时常见）就会全零——那等于这次调用免费。
 		// 退回本地估算：没有文本可数，只有输入 token。
 		usage = *service.ResponseText2Usage(c, content, info.UpstreamModelName, info.GetEstimatePromptTokens())
+	} else if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	response.Usage = usage
 

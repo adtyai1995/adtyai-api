@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -20,21 +22,71 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var outboundURLCredPattern = regexp.MustCompile(`(?i)\b((?:https?|socks5h?|wss?)://)([^/\s@]+)@`)
+
+func sanitizeOutboundText(s string) string {
+	if s == "" {
+		return ""
+	}
+	redacted := outboundURLCredPattern.ReplaceAllString(s, "${1}***@")
+	return common.MaskSensitiveInfo(redacted)
+}
+
+func sanitizeOutboundURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		clean := *parsed
+		if clean.User != nil {
+			clean.User = url.User("***")
+		}
+		clean.RawQuery = ""
+		clean.Fragment = ""
+		return common.MaskSensitiveInfo(clean.String())
+	}
+	return sanitizeOutboundText(trimmed)
+}
+
+func sanitizeOutboundError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr != nil {
+		return &url.Error{
+			Op:  urlErr.Op,
+			URL: sanitizeOutboundURL(urlErr.URL),
+			Err: sanitizeOutboundError(urlErr.Err),
+		}
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	msg := err.Error()
+	sanitized := sanitizeOutboundText(msg)
+	if sanitized != msg {
+		return errors.New(sanitized)
+	}
+	return err
+}
+
+// SanitizeOutboundError redacts embedded credentials, query secrets, and sensitive
+// tokens from outbound HTTP/proxy errors while preserving context sentinels.
+func SanitizeOutboundError(err error) error {
+	return sanitizeOutboundError(err)
+}
+
 // GetFileTypeFromUrl 获取文件类型，返回 mime type， 例如 image/jpeg, image/png, image/gif, image/bmp, image/tiff, application/pdf
 // 如果获取失败，返回 application/octet-stream
 func GetFileTypeFromUrl(c *gin.Context, rawURL string, reason ...string) (string, error) {
-	maskedURL := common.MaskSensitiveInfo(rawURL)
+	maskedURL := sanitizeOutboundURL(rawURL)
 	response, err := DoDownloadRequest(rawURL, []string{"get_mime_type", strings.Join(reason, ", ")}...)
 	if err != nil {
-		errText := common.MaskSensitiveInfo(err.Error())
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) && urlErr != nil {
-			sanitized := *urlErr
-			sanitized.URL = common.MaskSensitiveInfo(sanitized.URL)
-			errText = sanitized.Error()
-		}
-		common.SysLog(common.LogText("fail to get file type from url: %s, error: %s", maskedURL, errText))
-		return "", err
+		sanitizedErr := sanitizeOutboundError(err)
+		common.SysLog(common.LogText("fail to get file type from url: %s, error: %s", maskedURL, sanitizedErr.Error()))
+		return "", sanitizedErr
 	}
 	defer response.Body.Close()
 

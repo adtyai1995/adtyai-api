@@ -224,9 +224,14 @@ func streamResponseDify2OpenAI(difyResponse DifyChunkChatCompletionResponse) *dt
 }
 
 func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	var responseText string
 	usage := &dto.Usage{}
 	var nodeToken int
+	var streamErr error
+	hasOutput := false
 	helper.SetEventStreamHeaders(c)
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var difyResponse DifyChunkChatCompletionResponse
@@ -236,18 +241,28 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			return
 		}
 		if difyResponse.Event == "message_end" {
-			usage = &difyResponse.MetaData.Usage
+			u := difyResponse.MetaData.Usage
+			u.PromptTokens = max(u.PromptTokens, 0)
+			u.CompletionTokens = max(u.CompletionTokens, 0)
+			u.TotalTokens = max(u.TotalTokens, 0)
+			usage = &u
 			sr.Done()
 			return
 		} else if difyResponse.Event == "error" {
-			sr.Stop(fmt.Errorf("dify error event"))
+			streamErr = fmt.Errorf("dify error event")
+			sr.Stop(streamErr)
 			return
 		}
 		openaiResponse := *streamResponseDify2OpenAI(difyResponse)
 		if len(openaiResponse.Choices) != 0 {
-			responseText += openaiResponse.Choices[0].Delta.GetContentString()
+			content := openaiResponse.Choices[0].Delta.GetContentString()
+			responseText += content
+			if content != "" {
+				hasOutput = true
+			}
 			if openaiResponse.Choices[0].Delta.ReasoningContent != nil {
 				nodeToken += 1
+				hasOutput = true
 			}
 		}
 		if err := helper.ObjectData(c, openaiResponse); err != nil {
@@ -255,31 +270,49 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			sr.Error(err)
 		}
 	})
-	helper.Done(c)
-	if usage.TotalTokens == 0 {
+	if streamErr != nil && !hasOutput && !c.Writer.Written() && (info == nil || info.SendResponseCount == 0) {
+		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
+	if streamErr == nil {
+		helper.Done(c)
+	}
+	usage.PromptTokens = max(usage.PromptTokens, 0)
+	usage.CompletionTokens = max(usage.CompletionTokens, 0)
+	usage.TotalTokens = max(usage.TotalTokens, 0)
+	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
 		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
+	} else if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	usage.CompletionTokens += nodeToken
+	usage.TotalTokens = max(usage.TotalTokens, usage.PromptTokens+usage.CompletionTokens)
 	return usage, nil
 }
 
 func difyHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	var difyResponse DifyChatCompletionResponse
 	responseBody, err := io.ReadAll(resp.Body)
 
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	err = common.Unmarshal(responseBody, &difyResponse)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	usage := difyResponse.MetaData.Usage
-	if usage.TotalTokens == 0 && strings.TrimSpace(difyResponse.Answer) != "" {
+	usage.PromptTokens = max(usage.PromptTokens, 0)
+	usage.CompletionTokens = max(usage.CompletionTokens, 0)
+	usage.TotalTokens = max(usage.TotalTokens, 0)
+	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && strings.TrimSpace(difyResponse.Answer) != "" {
 		if est := service.ResponseText2Usage(c, difyResponse.Answer, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
 			usage = *est
 		}
+	} else if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	fullTextResponse := dto.OpenAITextResponse{
 		Id:      difyResponse.ConversationId,

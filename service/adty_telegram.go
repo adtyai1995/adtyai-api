@@ -550,7 +550,7 @@ func adtyTelegramSiteDisplayName(siteID int) string {
 			}
 		}
 	}
-	if name := strings.TrimSpace(common.SystemName); name != "" {
+	if name := strings.TrimSpace(common.GetSystemName()); name != "" {
 		return name
 	}
 	return common.AdtyBrandName
@@ -769,9 +769,22 @@ func QueueAdtyPublicTelegram(channel, purpose, body string) error {
 	return queueAdtyPublicTelegramTx(model.DB, channel, purpose, body, "")
 }
 
+var (
+	adtyPublicTelegramChannelPattern = regexp.MustCompile(`^@[A-Za-z][A-Za-z0-9_]{3,31}$`)
+	adtyPublicTelegramChatIDPattern  = regexp.MustCompile(`^-100\d{5,}$`)
+)
+
+func adtyValidPublicTelegramChannel(channel string) bool {
+	channel = strings.TrimSpace(channel)
+	if channel == "" || strings.EqualFold(channel, adtyPrivateTelegramMarker) {
+		return false
+	}
+	return adtyPublicTelegramChannelPattern.MatchString(channel) || adtyPublicTelegramChatIDPattern.MatchString(channel)
+}
+
 func queueAdtyPublicTelegramTx(tx *gorm.DB, channel, purpose, body, eventKey string) error {
 	channel, body = strings.TrimSpace(channel), strings.TrimSpace(body)
-	if channel == "" || utf8.RuneCountInString(channel) > 128 || body == "" || !adtyValidTelegramPurpose(purpose) {
+	if !adtyValidPublicTelegramChannel(channel) || utf8.RuneCountInString(channel) > 128 || body == "" || purpose != model.AdtyTelegramPurposeAdmin {
 		return ErrAdtyTelegramInvalid
 	}
 	if adtyTelegramPrivateWords.MatchString(body) {
@@ -893,6 +906,9 @@ func authorizeAndResolveAdtyTelegramDelivery(row *model.AdtyTelegramDelivery) (t
 		if channel == "" {
 			return "", "", "", "channel missing"
 		}
+		if row.Purpose != model.AdtyTelegramPurposeAdmin || !adtyValidPublicTelegramChannel(channel) {
+			return "", "", "invalid public channel", ""
+		}
 		if strings.HasPrefix(row.EventKey, "pub:") {
 			parts := strings.Split(row.EventKey, ":")
 			if len(parts) >= 2 {
@@ -903,6 +919,9 @@ func authorizeAndResolveAdtyTelegramDelivery(row *model.AdtyTelegramDelivery) (t
 					}
 					if pub.Id == 0 || pub.Status != "published" {
 						return "", "", "publication withdrawn", ""
+					}
+					if pub.IssuerSiteId > 0 {
+						return "", "", "subsite public channel unsupported", ""
 					}
 				}
 			}

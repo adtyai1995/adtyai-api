@@ -89,7 +89,7 @@ func writeAdtyOfficialAudit(actorId, siteId int, objectType, objectID, action, r
 			rec.ActorRole = user.Role
 		}
 	}
-	if err := model.WriteOfficialAuditLog(nil, rec); err != nil {
+	if err := model.WriteDurableOfficialAuditLog(nil, rec); err != nil {
 		common.SysLog(common.LogText("official %s audit write failed: %s", action, err.Error()))
 	}
 }

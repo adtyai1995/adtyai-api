@@ -544,21 +544,26 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		common.SysLog(common.LogText("do request failed: %s", err.Error()))
-		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "do_request_failed", http.StatusInternalServerError), nullBytes, err
+		sanitized := sanitizeOutboundError(err)
+		common.SysLog(common.LogText("do request failed: %s", sanitized.Error()))
+		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "do_request_failed", http.StatusInternalServerError), nullBytes, sanitized
 	}
 	defer CloseResponseBodyGracefully(resp)
 	statusCode := resp.StatusCode
 	//if statusCode != 200  {
 	//	return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "bad_response_status_code", statusCode), nullBytes, nil
 	//}
-	err = req.Body.Close()
-	if err != nil {
-		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "close_request_body_failed", statusCode), nullBytes, err
+	if req != nil && req.Body != nil {
+		err = req.Body.Close()
+		if err != nil {
+			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "close_request_body_failed", statusCode), nullBytes, err
+		}
 	}
-	err = c.Request.Body.Close()
-	if err != nil {
-		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "close_request_body_failed", statusCode), nullBytes, err
+	if c != nil && c.Request != nil && c.Request.Body != nil {
+		err = c.Request.Body.Close()
+		if err != nil {
+			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "close_request_body_failed", statusCode), nullBytes, err
+		}
 	}
 	var midjResponse dto.MidjourneyResponse
 	var midjourneyUploadsResponse dto.MidjourneyUploadResponse
@@ -568,7 +573,7 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 	}
 	logger.LogDebug(c, "midjourney response body: %s", responseBody)
 	if len(responseBody) == 0 {
-		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "empty_response_body", statusCode), responseBody, nil
+		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "empty_response_body", statusCode), responseBody, errors.New("empty response body")
 	} else {
 		err = common.Unmarshal(responseBody, &midjResponse)
 		if err != nil {

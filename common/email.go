@@ -57,17 +57,19 @@ func snapshotSMTPConfig() smtpConfigSnapshot {
 	return snap
 }
 
-func shouldUseSMTPLoginAuth() bool {
-	cfg := snapshotSMTPConfig()
+func shouldUseSMTPLoginAuthWithConfig(cfg smtpConfigSnapshot) bool {
 	if cfg.forceAuthLogin {
 		return true
 	}
 	return isOutlookServer(cfg.account) || slices.Contains(EmailLoginAuthServerList, cfg.server)
 }
 
+func shouldUseSMTPLoginAuth() bool {
+	return shouldUseSMTPLoginAuthWithConfig(snapshotSMTPConfig())
+}
+
 func getSMTPAuth() smtp.Auth {
-	cfg := snapshotSMTPConfig()
-	return AutoSMTPAuth(cfg.account, cfg.token)
+	return autoSMTPAuthWithConfig(snapshotSMTPConfig())
 }
 
 func shouldAuthenticateSMTP() bool {
@@ -186,7 +188,7 @@ func SendSMTPEmailFrom(from, subject, receiver, content string) error {
 		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
 		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
 		receiver, mime.QEncoding.Encode("utf-8", displayName), smtpFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
-	auth := AutoSMTPAuth(cfg.account, cfg.token)
+	auth := autoSMTPAuthWithConfig(cfg)
 	addr := fmt.Sprintf("%s:%d", cfg.server, cfg.port)
 	to := strings.Split(receiver, ";")
 	var err error

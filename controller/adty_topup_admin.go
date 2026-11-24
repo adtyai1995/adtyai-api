@@ -420,7 +420,11 @@ func RefundAdtyTopUp(c *gin.Context) {
 		common.ApiErrorT(c, "Enter the refund amount in USD")
 		return
 	}
-	if middleware.RequireSecurityProof(c, service.AdtyTopUpRefundOperation(tradeNo, body.Reason, refundUSD, refundQuota)) == nil {
+	if body.ReconcileOrphanID < 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if middleware.RequireSecurityProof(c, service.AdtyTopUpRefundOperation(tradeNo, body.Reason, refundUSD, refundQuota, body.ReconcileOrphanID)) == nil {
 		return
 	}
 	var amount decimal.Decimal

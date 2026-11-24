@@ -2,6 +2,7 @@ package claude
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -268,13 +269,41 @@ func recordClaudeServerToolUse(info *relaycommon.RelayInfo, serverToolUse *dto.C
 	}
 }
 
+func clampClaudeUsage(u *dto.ClaudeUsage) {
+	if u == nil {
+		return
+	}
+	u.InputTokens = max(u.InputTokens, 0)
+	u.OutputTokens = max(u.OutputTokens, 0)
+	u.CacheCreationInputTokens = max(u.CacheCreationInputTokens, 0)
+	u.CacheReadInputTokens = max(u.CacheReadInputTokens, 0)
+	if u.CacheCreation != nil {
+		u.CacheCreation.Ephemeral5mInputTokens = max(u.CacheCreation.Ephemeral5mInputTokens, 0)
+		u.CacheCreation.Ephemeral1hInputTokens = max(u.CacheCreation.Ephemeral1hInputTokens, 0)
+	}
+}
+
+func clampClaudeDTOUsage(u *dto.Usage) {
+	if u == nil {
+		return
+	}
+	u.PromptTokens = max(u.PromptTokens, 0)
+	u.CompletionTokens = max(u.CompletionTokens, 0)
+	u.TotalTokens = max(u.TotalTokens, 0)
+	u.PromptTokensDetails.CachedTokens = max(u.PromptTokensDetails.CachedTokens, 0)
+	u.PromptTokensDetails.CachedCreationTokens = max(u.PromptTokensDetails.CachedCreationTokens, 0)
+	u.ClaudeCacheCreation5mTokens = max(u.ClaudeCacheCreation5mTokens, 0)
+	u.ClaudeCacheCreation1hTokens = max(u.ClaudeCacheCreation1hTokens, 0)
+}
+
 func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+	clampClaudeDTOUsage(claudeInfo.Usage)
 	// Claude input_tokens excludes cache reads and writes, so a fully cached
 	// prompt reports zero input; the prompt is uncounted only when the total
 	// with cache is zero as well. Zero output is uncounted only when content
 	// was streamed, so a refusal before any output keeps its zeros.
-	missingInputUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage).PromptTokens == 0
-	missingOutputUsage := claudeInfo.Usage.CompletionTokens == 0 && claudeInfo.ResponseText.Len() > 0
+	missingInputUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage).PromptTokens <= 0
+	missingOutputUsage := claudeInfo.Usage.CompletionTokens <= 0 && claudeInfo.ResponseText.Len() > 0
 	if missingInputUsage || missingOutputUsage || !claudeInfo.Done {
 		if common.DebugEnabled {
 			common.SysLog(common.LogText("claude response usage is not complete, maybe upstream error"))
@@ -336,7 +365,9 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		Usage:        &dto.Usage{},
 	}
 	var err *types.NewAPIError
+	receivedEvent := false
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		receivedEvent = true
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
 			sr.Stop(err)
@@ -350,6 +381,9 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 			return claudeInfo.Usage, nil
 		}
 		return nil, err
+	}
+	if !receivedEvent && !c.Writer.Written() && (info == nil || info.SendResponseCount == 0) {
+		return nil, types.NewError(errors.New("empty upstream stream response"), types.ErrorCodeBadResponseBody)
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
@@ -371,6 +405,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage = &dto.Usage{}
 	}
 	if claudeResponse.Usage != nil {
+		clampClaudeUsage(claudeResponse.Usage)
 		claudeInfo.Usage.PromptTokens = claudeResponse.Usage.InputTokens
 		claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
 		claudeInfo.Usage.TotalTokens = claudeResponse.Usage.InputTokens + claudeResponse.Usage.OutputTokens
@@ -384,9 +419,10 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Usage.GetCacheCreation5mTokens()
 		claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Usage.GetCacheCreation1hTokens()
 	}
+	clampClaudeDTOUsage(claudeInfo.Usage)
 	// R6-042: Fallback to estimated token usage if a Claude-compatible upstream
 	// omitted or zeroed usage on a delivered non-stream response.
-	if claudeInfo.Usage.TotalTokens == 0 && claudeInfo.Usage.PromptTokens == 0 && claudeInfo.Usage.CompletionTokens == 0 {
+	if buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage).PromptTokens <= 0 && claudeInfo.Usage.CompletionTokens <= 0 && claudeInfo.Usage.TotalTokens <= 0 {
 		var textBuilder strings.Builder
 		for _, block := range claudeResponse.Content {
 			if block.Text != nil && *block.Text != "" {
@@ -401,6 +437,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			claudeInfo.Usage.PromptTokens = fallbackUsage.PromptTokens
 			claudeInfo.Usage.CompletionTokens = fallbackUsage.CompletionTokens
 			claudeInfo.Usage.TotalTokens = fallbackUsage.TotalTokens
+			claudeInfo.Usage.BillingUsage = nil
 		}
 	}
 	var responseData []byte

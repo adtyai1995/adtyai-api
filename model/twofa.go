@@ -307,21 +307,31 @@ func GetUnusedBackupCodeCount(userId int) (int, error) {
 // DisableTwoFAWithAuthVersion atomically removes the factor and invalidates
 // every access token issued against the previous security configuration.
 func DisableTwoFAWithAuthVersion(userId int) error {
-	return disableTwoFAWithAuthVersion(userId, nil)
+	return disableTwoFAWithAuthVersion(userId, nil, false)
+}
+
+func DisableTwoFAWithAuthVersionForActor(userId int, denyAdminTarget bool) error {
+	return disableTwoFAWithAuthVersion(userId, nil, denyAdminTarget)
 }
 
 func DisableTwoFAForSession(identity AuthSessionIdentity) error {
-	return disableTwoFAWithAuthVersion(identity.UserID, &identity)
+	return disableTwoFAWithAuthVersion(identity.UserID, &identity, false)
 }
 
-func disableTwoFAWithAuthVersion(userId int, identity *AuthSessionIdentity) error {
+func disableTwoFAWithAuthVersion(userId int, identity *AuthSessionIdentity, denyAdminTarget bool) error {
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		if identity != nil {
 			if err := ValidateAuthSessionWithTx(tx, *identity); err != nil {
 				return err
 			}
-		} else if err := lockForUpdate(tx).Select("id").First(&User{}, userId).Error; err != nil {
-			return err
+		} else {
+			var target User
+			if err := lockForUpdate(tx).Select("id", "role").First(&target, userId).Error; err != nil {
+				return err
+			}
+			if denyAdminTarget && target.Role >= common.RoleAdminUser {
+				return ErrAdminTargetSessionRequired
+			}
 		}
 		var twoFA TwoFA
 		if err := lockForUpdate(tx).Where("user_id = ? AND is_enabled = ?", userId, true).First(&twoFA).Error; err != nil {

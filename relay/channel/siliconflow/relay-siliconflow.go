@@ -14,20 +14,34 @@ import (
 )
 
 func siliconflowRerankHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	var siliconflowResp SFRerankResponse
 	err = common.Unmarshal(responseBody, &siliconflowResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	usage := &dto.Usage{
-		PromptTokens:     siliconflowResp.Meta.Tokens.InputTokens,
-		CompletionTokens: siliconflowResp.Meta.Tokens.OutputTokens,
-		TotalTokens:      siliconflowResp.Meta.Tokens.InputTokens + siliconflowResp.Meta.Tokens.OutputTokens,
+	inTokens := max(siliconflowResp.Meta.Tokens.InputTokens, 0)
+	outTokens := max(siliconflowResp.Meta.Tokens.OutputTokens, 0)
+	var usage *dto.Usage
+	if inTokens <= 0 && outTokens <= 0 {
+		est := info.GetEstimatePromptTokens()
+		usage = &dto.Usage{
+			PromptTokens:     est,
+			CompletionTokens: 0,
+			TotalTokens:      est,
+		}
+	} else {
+		usage = &dto.Usage{
+			PromptTokens:     inTokens,
+			CompletionTokens: outTokens,
+			TotalTokens:      inTokens + outTokens,
+		}
 	}
 	rerankResp := &dto.RerankResponse{
 		Results: siliconflowResp.Results,

@@ -93,7 +93,12 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			service.FailMidjourneyTasksWithoutChannel(ctx, missing, "Failed to get the channel information. Please contact the administrator")
 			continue
 		}
-		requestUrl := fmt.Sprintf("%s/mj/task/list-by-condition", *midjourneyChannel.BaseURL)
+		baseURL := strings.TrimRight(strings.TrimSpace(midjourneyChannel.GetBaseURL()), "/")
+		if baseURL == "" {
+			logger.LogError(ctx, common.LogText("channel #%d has empty base_url, skipping Midjourney poll", channelId))
+			continue
+		}
+		requestUrl := fmt.Sprintf("%s/mj/task/list-by-condition", baseURL)
 
 		body, err := common.Marshal(map[string]any{
 			"ids": taskIds,
@@ -107,7 +112,7 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		req, err := http.NewRequestWithContext(requestCtx, "POST", requestUrl, bytes.NewBuffer(body))
 		if err != nil {
 			cancel()
-			logger.LogError(ctx, common.LogText("Get Task error: %v", err))
+			logger.LogError(ctx, common.LogText("Get Task error: %v", service.SanitizeOutboundError(err)))
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -115,13 +120,13 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		chSettings := midjourneyChannel.GetSetting()
 		httpClient, clientErr := service.GetHttpClientWithProxySettings(chSettings.Proxy, chSettings)
 		if clientErr != nil {
-			logger.LogError(ctx, common.LogText("Get Task http client error: %v", clientErr))
+			logger.LogError(ctx, common.LogText("Get Task http client error: %v", service.SanitizeOutboundError(clientErr)))
 			cancel()
 			continue
 		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			logger.LogError(ctx, common.LogText("Get Task Do req error: %v", err))
+			logger.LogError(ctx, common.LogText("Get Task Do req error: %v", service.SanitizeOutboundError(err)))
 			cancel()
 			continue
 		}

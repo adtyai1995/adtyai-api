@@ -44,7 +44,7 @@ var AdtyLoadApiOnlyDomains func() (map[string]bool, error)
 // AdtySiteNames returns display names without exposing the sites' financial or private settings.
 // A missing historical site keeps its ID and an empty name; site 0 is always the main site.
 func AdtySiteNames(siteIDs []int) (map[int]string, error) {
-	names := map[int]string{0: common.SystemName}
+	names := map[int]string{0: common.GetSystemName()}
 	ids := make([]int, 0, len(siteIDs))
 	seen := map[int]bool{}
 	for _, id := range siteIDs {
@@ -708,11 +708,21 @@ func AdtyEnsureSiteCustomer(userId, siteId int, ipHash, deviceHash, termsVersion
 	})
 	if err != nil {
 		sID := siteId
+		username := ""
+		actorRole := common.RoleCommonUser
+		if u, uErr := model.GetUserById(userId, false); uErr == nil && u != nil {
+			username = u.Username
+			if u.Role > 0 {
+				actorRole = u.Role
+			}
+		}
 		if auditErr := model.WriteDurableOfficialAuditLog(nil, model.OfficialAuditWrite{
 			UserId:     userId,
+			Username:   username,
+			ActorRole:  actorRole,
 			SiteID:     &sID,
 			ObjectType: "site_customer",
-			ObjectID:   strings.TrimSpace(termsVersion),
+			ObjectID:   fmt.Sprintf("%d:%d", siteId, userId),
 			Action:     "adty.site.customer_relation_recovery_needed",
 			Category:   model.AuditCategoryOperation,
 			Content:    "site customer relation persistence failed; account remains terms-gated until recovered",

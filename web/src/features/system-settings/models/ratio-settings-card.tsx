@@ -151,6 +151,21 @@ const createGroupSchema = (t: Translate) =>
 
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>
 type GroupFormValues = z.infer<ReturnType<typeof createGroupSchema>>
+
+function formatGroupFormValues(values: GroupFormValues): GroupFormValues {
+  return {
+    ...values,
+    GroupRatio: formatJsonForTextarea(values.GroupRatio),
+    TopupGroupRatio: formatJsonForTextarea(values.TopupGroupRatio),
+    UserUsableGroups: formatJsonForTextarea(values.UserUsableGroups),
+    GroupGroupRatio: formatJsonForTextarea(values.GroupGroupRatio),
+    AutoGroups: formatJsonForTextarea(values.AutoGroups),
+    GroupSpecialUsableGroup: formatJsonForTextarea(
+      values.GroupSpecialUsableGroup
+    ),
+    GroupModelAllow: formatJsonForTextarea(values.GroupModelAllow ?? '{}'),
+  }
+}
 type RatioTabId =
   | 'models'
   | 'unset-models'
@@ -260,6 +275,9 @@ export function RatioSettingsCard({
   const groupNormalizedSerializedRef = useRef(
     JSON.stringify(groupNormalizedDefaults.current)
   )
+  const groupFormDefaultsRef = useRef<GroupFormValues>(
+    formatGroupFormValues(groupDefaults)
+  )
   const modelSchema = useMemo(() => createModelSchema(t), [t])
   const groupSchema = useMemo(() => createGroupSchema(t), [t])
 
@@ -287,20 +305,7 @@ export function RatioSettingsCard({
   const groupForm = useForm<GroupFormValues>({
     resolver: zodResolver(groupSchema),
     mode: 'onChange',
-    defaultValues: {
-      ...groupDefaults,
-      GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
-      TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
-      UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
-      GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
-      AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
-      GroupSpecialUsableGroup: formatJsonForTextarea(
-        groupDefaults.GroupSpecialUsableGroup
-      ),
-      GroupModelAllow: formatJsonForTextarea(
-        groupDefaults.GroupModelAllow ?? '{}'
-      ),
-    },
+    defaultValues: groupFormDefaultsRef.current,
   })
 
   useEffect(() => {
@@ -361,23 +366,9 @@ export function RatioSettingsCard({
     groupNormalizedDefaults.current = nextGroupNormalized
     groupNormalizedSerializedRef.current = serialized
 
-    groupForm.reset(
-      {
-        ...groupDefaults,
-        GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
-        TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
-        UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
-        GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
-        AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
-        GroupSpecialUsableGroup: formatJsonForTextarea(
-          groupDefaults.GroupSpecialUsableGroup
-        ),
-        GroupModelAllow: formatJsonForTextarea(
-          groupDefaults.GroupModelAllow ?? '{}'
-        ),
-      },
-      { keepDirtyValues: true }
-    )
+    const nextGroupDefaults = formatGroupFormValues(groupDefaults)
+    groupFormDefaultsRef.current = nextGroupDefaults
+    groupForm.reset(nextGroupDefaults, { keepDirtyValues: true })
   }, [groupDefaults, groupForm])
 
   const saveModelRatios = useCallback(
@@ -468,9 +459,32 @@ export function RatioSettingsCard({
         groupNormalizedSerializedRef.current = JSON.stringify(
           groupNormalizedDefaults.current
         )
+        const committedValue =
+          key === 'GroupModelAllow'
+            ? (values.GroupModelAllow ?? '{}')
+            : values[key]
+        groupFormDefaultsRef.current = {
+          ...groupFormDefaultsRef.current,
+          [key]: committedValue,
+        }
+        groupForm.reset(groupFormDefaultsRef.current, {
+          keepValues: true,
+          keepFieldsRef: true,
+          keepErrors: true,
+        })
       }
+      const nextDefaults = formatGroupFormValues({
+        ...groupFormDefaultsRef.current,
+        ...values,
+        GroupModelAllow: values.GroupModelAllow ?? '{}',
+      })
+      groupFormDefaultsRef.current = nextDefaults
+      groupForm.reset(nextDefaults, {
+        keepFieldsRef: true,
+        keepErrors: true,
+      })
     },
-    [updateOption]
+    [groupForm, updateOption]
   )
 
   const handleResetRatios = useCallback(() => {

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -34,7 +35,14 @@ func WssHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.
 	}
 
 	if resp != nil {
-		info.TargetWs = resp.(*websocket.Conn)
+		wsConn, ok := resp.(*websocket.Conn)
+		if !ok {
+			if httpResp, isHTTP := resp.(*http.Response); isHTTP && httpResp != nil {
+				service.CloseResponseBodyGracefully(httpResp)
+			}
+			return types.NewError(fmt.Errorf("unexpected response type %T for websocket api type %d", resp, info.ApiType), types.ErrorCodeInvalidApiType, types.ErrOptionWithSkipRetry())
+		}
+		info.TargetWs = wsConn
 		defer info.TargetWs.Close()
 		var closeOnce sync.Once
 		unregister := wsmanager.Register(info.ChannelId, wsmanager.KindRealtime, func(reason string) {
@@ -56,7 +64,8 @@ func WssHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
-	if err := service.PostWssConsumeQuota(c, info, info.UpstreamModelName, usage.(*dto.RealtimeUsage), nil); err != nil {
+	rtUsage, _ := usage.(*dto.RealtimeUsage)
+	if err := service.PostWssConsumeQuota(c, info, info.UpstreamModelName, rtUsage, nil); err != nil {
 		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
 	return nil

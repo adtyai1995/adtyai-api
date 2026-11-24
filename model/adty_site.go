@@ -352,69 +352,149 @@ func AdtySetUsersSiteTx(tx *gorm.DB, fromSite, toSite int) ([]int, error) {
 
 // AdtySetUsersSiteWithMovedPrincipalTx migrates all users from fromSite to toSite,
 // rewrites their fund batches' site_id, and returns both moved user IDs and the total
-// non-legacy principal quota remaining that left fromSite (R3-015).
+// AdtySetUsersSiteWithMovedPrincipalTx moves all users on fromSite to toSite and returns
+// the moved user IDs and total non-legacy principal quota remaining that left fromSite (R3-015).
 func AdtySetUsersSiteWithMovedPrincipalTx(tx *gorm.DB, fromSite, toSite int) ([]int, int64, error) {
+	return AdtyCloseSiteUsersAndOwnerSelfUseTx(tx, fromSite, 0, toSite)
+}
+
+// AdtyCloseSiteUsersAndOwnerSelfUseTx migrates all customers on fromSite and, when
+// closing to main site (toSite == 0 && ownerUserID > 0), also revokes the owner's
+// self-use API keys for fromSite and migrates unencumbered owner self-use principal
+// batches to site_id = 0 under strict canonical lock order (User ASC -> Token ASC).
+func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toSite int) ([]int, int64, error) {
 	if fromSite == toSite {
 		return nil, 0, nil
 	}
+	migrateOwnerSelfUse := fromSite > 0 && toSite == 0 && ownerUserID > 0
 	// InsertWithLimit locks the owner too: a token created before this lock is
 	// revoked with the migration; one created afterwards belongs to the new site.
 	var users []User
-	if err := lockForUpdate(tx).Select("id").Where("site_id = ?", fromSite).Order("id").Find(&users).Error; err != nil {
+	userQ := lockForUpdate(tx).Select("id", "site_id")
+	if migrateOwnerSelfUse {
+		userQ = userQ.Where("site_id = ? OR id = ?", fromSite, ownerUserID)
+	} else {
+		userQ = userQ.Where("site_id = ?", fromSite)
+	}
+	if err := userQ.Order("id").Find(&users).Error; err != nil {
 		return nil, 0, err
 	}
-	if len(users) == 0 {
+	ids := make([]int, 0, len(users))
+	ownerLocked := false
+	for i := range users {
+		if users[i].SiteId == fromSite {
+			ids = append(ids, users[i].Id)
+		}
+		if migrateOwnerSelfUse && users[i].Id == ownerUserID {
+			ownerLocked = true
+		}
+	}
+	if len(ids) == 0 && !ownerLocked {
 		return nil, 0, nil
 	}
-	ids := make([]int, len(users))
-	for i := range users {
-		ids[i] = users[i].Id
-	}
 	var tokens []Token
-	if err := lockForUpdate(tx).Select("id", commonKeyCol).Where("user_id IN ?", ids).Order("id").Find(&tokens).Error; err != nil {
+	tokenQ := lockForUpdate(tx).Select("id", commonKeyCol)
+	switch {
+	case len(ids) > 0 && ownerLocked:
+		tokenQ = tokenQ.Where("user_id IN ? OR (user_id = ? AND owner_self_use_site_id = ?)", ids, ownerUserID, fromSite)
+	case len(ids) > 0:
+		tokenQ = tokenQ.Where("user_id IN ?", ids)
+	default:
+		tokenQ = tokenQ.Where("user_id = ? AND owner_self_use_site_id = ?", ownerUserID, fromSite)
+	}
+	if err := tokenQ.Order("id").Find(&tokens).Error; err != nil {
 		return nil, 0, err
 	}
-	if err := invalidateTokensCache(tokens); err != nil {
-		return nil, 0, err
-	}
-	// Soft deletion keeps historical identifiers and quota facts, while normal
-	// token edits cannot reactivate the original secret at the destination.
-	if err := tx.Where("user_id IN ?", ids).Delete(&Token{}).Error; err != nil {
-		return nil, 0, err
-	}
-	// Site membership is part of authorization. Fence old user metadata and
-	// browser sessions before the new membership can commit.
-	for _, id := range ids {
-		if _, err := IncrementUserAuthVersionWithTx(tx, id); err != nil {
+	if len(tokens) > 0 {
+		if err := invalidateTokensCache(tokens); err != nil {
 			return nil, 0, err
 		}
-	}
-	updates := map[string]any{"site_id": toSite}
-	if toSite == 0 {
-		// Stamp the origin only when it is still unset so a later membership
-		// write cannot rewrite a previous close-inherit mapping.
-		updates["inherited_from_site_id"] = gorm.Expr(
-			"CASE WHEN inherited_from_site_id = 0 THEN ? ELSE inherited_from_site_id END", fromSite)
-	}
-	if err := tx.Model(&User{}).Where("id IN ?", ids).Updates(updates).Error; err != nil {
-		return nil, 0, err
+		tokenIDs := make([]int, len(tokens))
+		for i := range tokens {
+			tokenIDs[i] = tokens[i].Id
+		}
+		// Soft deletion keeps historical identifiers and quota facts, while normal
+		// token edits cannot reactivate the original secret at the destination.
+		if err := tx.Where("id IN ?", tokenIDs).Delete(&Token{}).Error; err != nil {
+			return nil, 0, err
+		}
 	}
 	var movedPrincipal int64
-	if fromSite > 0 && tx.Migrator().HasTable(&AdtyFundBatch{}) {
-		if err := tx.Model(&AdtyFundBatch{}).
-			Select("COALESCE(SUM(remaining), 0)").
-			Where("user_id IN ? AND site_id = ? AND kind = ? AND source <> ? AND remaining > 0",
-				ids, fromSite, AdtyFundBatchKindPrincipal, adtyLegacyBatchSource).
-			Scan(&movedPrincipal).Error; err != nil {
+	if len(ids) > 0 {
+		// Site membership is part of authorization. Fence old user metadata and
+		// browser sessions before the new membership can commit.
+		for _, id := range ids {
+			if _, err := IncrementUserAuthVersionWithTx(tx, id); err != nil {
+				return nil, 0, err
+			}
+		}
+		updates := map[string]any{"site_id": toSite}
+		if toSite == 0 {
+			// Stamp the origin only when it is still unset so a later membership
+			// write cannot rewrite a previous close-inherit mapping.
+			updates["inherited_from_site_id"] = gorm.Expr(
+				"CASE WHEN inherited_from_site_id = 0 THEN ? ELSE inherited_from_site_id END", fromSite)
+		}
+		if err := tx.Model(&User{}).Where("id IN ?", ids).Updates(updates).Error; err != nil {
 			return nil, 0, err
 		}
-	}
-	if err := adtyMoveFundBatchesToSiteTx(tx, ids, fromSite, toSite); err != nil {
-		return nil, 0, err
-	}
-	if toSite == 0 {
-		if err := RecordAdtyUserSiteMigrationsTx(tx, ids, fromSite, toSite, time.Now().Unix()); err != nil {
+		if fromSite > 0 && tx.Migrator().HasTable(&AdtyFundBatch{}) {
+			if err := tx.Model(&AdtyFundBatch{}).
+				Select("COALESCE(SUM(remaining), 0)").
+				Where("user_id IN ? AND site_id = ? AND kind = ? AND source <> ? AND remaining > 0",
+					ids, fromSite, AdtyFundBatchKindPrincipal, adtyLegacyBatchSource).
+				Scan(&movedPrincipal).Error; err != nil {
+				return nil, 0, err
+			}
+		}
+		if err := adtyMoveFundBatchesToSiteTx(tx, ids, fromSite, toSite); err != nil {
 			return nil, 0, err
+		}
+		if toSite == 0 {
+			if err := RecordAdtyUserSiteMigrationsTx(tx, ids, fromSite, toSite, time.Now().Unix()); err != nil {
+				return nil, 0, err
+			}
+		}
+	}
+	if ownerLocked && tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		var ownerBatches []AdtyFundBatch
+		if err := lockForUpdate(tx).
+			Where("user_id = ? AND site_id = ? AND kind = ? AND remaining > 0", ownerUserID, fromSite, AdtyFundBatchKindPrincipal).
+			Order("id ASC").
+			Find(&ownerBatches).Error; err != nil {
+			return nil, 0, err
+		}
+		if len(ownerBatches) > 0 {
+			encumbered := map[int64]bool{}
+			if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+				var heldBatchIDs []int64
+				if err := tx.Model(&AdtyFundAllocation{}).
+					Distinct("batch_id").
+					Where("user_id = ? AND operation_id LIKE ? AND held > settled", ownerUserID, ownerRefundOperationPrefix+"%").
+					Pluck("batch_id", &heldBatchIDs).Error; err != nil {
+					return nil, 0, err
+				}
+				for _, bid := range heldBatchIDs {
+					encumbered[bid] = true
+				}
+			}
+			moveBatchIDs := make([]int64, 0, len(ownerBatches))
+			for _, batch := range ownerBatches {
+				if encumbered[batch.Id] {
+					continue
+				}
+				moveBatchIDs = append(moveBatchIDs, batch.Id)
+				if batch.Source != adtyLegacyBatchSource {
+					movedPrincipal += batch.Remaining
+				}
+			}
+			if len(moveBatchIDs) > 0 {
+				if err := tx.Model(&AdtyFundBatch{}).
+					Where("id IN ?", moveBatchIDs).
+					Update("site_id", toSite).Error; err != nil {
+					return nil, 0, err
+				}
+			}
 		}
 	}
 	return ids, movedPrincipal, nil

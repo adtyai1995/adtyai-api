@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -224,42 +226,47 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 		}
 	}
 
-	client := service.GetSSRFProtectedHTTPClient()
+	clientHeaders := taskArtifactClientHeaders(c.Request.Header)
+	var resp *http.Response
 	if proxy != "" {
-		client, err = service.GetHttpClientWithProxySettings(proxy, setting)
-		if err != nil {
+		resp, err = doTaskMediaProxiedRequest(
+			c,
+			method,
+			parsedURL.String(),
+			descriptor.Body,
+			descriptor.Headers,
+			clientHeaders,
+			descriptor.Credentialless,
+			proxy,
+			setting,
+			taskMediaResponseHeaderTimeout,
+		)
+	} else {
+		client := service.GetSSRFProtectedHTTPClient()
+		if client == nil {
+			client = http.DefaultClient
+		}
+		req, reqErr := http.NewRequestWithContext(c.Request.Context(), method, parsedURL.String(), bytes.NewReader(descriptor.Body))
+		if reqErr != nil {
 			return &taskMediaProxyError{
 				status: http.StatusInternalServerError, code: "artifact_internal_error",
-				message: "Failed to create artifact proxy client", err: err,
+				message: "Failed to create artifact request", err: reqErr,
 			}
 		}
-	}
-	if client == nil {
-		client = http.DefaultClient
-	}
-
-	req, err := http.NewRequestWithContext(c.Request.Context(), method, parsedURL.String(), bytes.NewReader(descriptor.Body))
-	if err != nil {
-		return &taskMediaProxyError{
-			status: http.StatusInternalServerError, code: "artifact_internal_error",
-			message: "Failed to create artifact request", err: err,
+		if hdrErr := applyTaskMediaRequestHeaders(req.Header, descriptor.Headers); hdrErr != nil {
+			return &taskMediaProxyError{
+				status: http.StatusBadGateway, code: "artifact_request_rejected",
+				message: "Artifact request headers were rejected", err: hdrErr,
+			}
 		}
-	}
-	if err := applyTaskMediaRequestHeaders(req.Header, descriptor.Headers); err != nil {
-		return &taskMediaProxyError{
-			status: http.StatusBadGateway, code: "artifact_request_rejected",
-			message: "Artifact request headers were rejected", err: err,
+		for name, value := range clientHeaders {
+			req.Header.Set(name, value)
 		}
+		client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless)
+		clientWithoutBodyTimeout := *client
+		clientWithoutBodyTimeout.Timeout = 0
+		resp, err = doTaskMediaRequest(&clientWithoutBodyTimeout, req, taskMediaResponseHeaderTimeout)
 	}
-	clientHeaders := taskArtifactClientHeaders(c.Request.Header)
-	for name, value := range clientHeaders {
-		req.Header.Set(name, value)
-	}
-
-	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless)
-	clientWithoutBodyTimeout := *client
-	clientWithoutBodyTimeout.Timeout = 0
-	resp, err := doTaskMediaRequest(&clientWithoutBodyTimeout, req, taskMediaResponseHeaderTimeout)
 	if err != nil {
 		if errors.Is(err, errTaskMediaRequestRejected) {
 			return &taskMediaProxyError{
@@ -328,12 +335,20 @@ type taskMediaHTTPResult struct {
 
 type taskMediaCancelBody struct {
 	io.ReadCloser
-	cancel context.CancelFunc
-	once   sync.Once
+	cancel         context.CancelFunc
+	closeTransport func()
+	once           sync.Once
 }
 
 func (b *taskMediaCancelBody) Close() error {
-	b.once.Do(b.cancel)
+	b.once.Do(func() {
+		if b.cancel != nil {
+			b.cancel()
+		}
+		if b.closeTransport != nil {
+			b.closeTransport()
+		}
+	})
 	return b.ReadCloser.Close()
 }
 
@@ -409,6 +424,11 @@ func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, cl
 			req.URL.Host == "" || req.URL.User != nil || req.URL.Fragment != "" {
 			return fmt.Errorf("%w: invalid redirect URL", errTaskMediaRequestRejected)
 		}
+		for _, prev := range via {
+			if prev != nil && prev.URL != nil && strings.EqualFold(prev.URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+				return fmt.Errorf("%w: https to non-https redirect blocked", errTaskMediaRequestRejected)
+			}
+		}
 		if err := validateTaskMediaURL(req.URL.String(), proxy); err != nil {
 			return fmt.Errorf("%w: %v", errTaskMediaRequestRejected, err)
 		}
@@ -432,6 +452,213 @@ func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, cl
 		return nil
 	}
 	return &cloned
+}
+
+var lookupTaskMediaIPs = func(host string) ([]net.IP, error) {
+	return net.LookupIP(host)
+}
+
+func pinTaskMediaURL(raw string) (pinnedURL, serverName, requestHost string, err error) {
+	fetchSetting := system_setting.GetFetchSetting()
+	if fetchSetting == nil || !fetchSetting.EnableSSRFProtection {
+		return raw, "", "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", "", "", err
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return "", "", "", fmt.Errorf("invalid host")
+	}
+	if err := common.ValidateURLWithFetchSetting(
+		raw,
+		true,
+		fetchSetting.AllowPrivateIp,
+		fetchSetting.DomainFilterMode,
+		fetchSetting.IpFilterMode,
+		fetchSetting.DomainList,
+		fetchSetting.IpList,
+		fetchSetting.AllowedPorts,
+		fetchSetting.ApplyIPFilterForDomain,
+	); err != nil {
+		return "", "", "", err
+	}
+	if net.ParseIP(host) != nil {
+		return raw, "", "", nil
+	}
+	ips, err := lookupTaskMediaIPs(host)
+	if err != nil {
+		return "", "", "", fmt.Errorf("DNS resolution failed for %s: %v", host, err)
+	}
+	if len(ips) == 0 {
+		return "", "", "", fmt.Errorf("DNS resolution failed for %s", host)
+	}
+	protection, err := common.NewSSRFProtectionFromFetchSetting(
+		fetchSetting.AllowPrivateIp,
+		fetchSetting.DomainFilterMode,
+		fetchSetting.IpFilterMode,
+		fetchSetting.DomainList,
+		fetchSetting.IpList,
+		fetchSetting.AllowedPorts,
+		true,
+	)
+	if err != nil {
+		return "", "", "", err
+	}
+	for _, ip := range ips {
+		if err := protection.ValidateResolvedIP(host, ip); err != nil {
+			return "", "", "", err
+		}
+	}
+	origHost := parsed.Host
+	port := parsed.Port()
+	if port == "" {
+		if strings.EqualFold(parsed.Scheme, "https") {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	parsed.Host = net.JoinHostPort(ips[0].String(), port)
+	if strings.EqualFold(parsed.Scheme, "https") {
+		serverName = host
+	}
+	return parsed.String(), serverName, origHost, nil
+}
+
+func doTaskMediaProxiedRequest(
+	c *gin.Context,
+	method string,
+	initialURL string,
+	body []byte,
+	descriptorHeaders map[string]string,
+	clientHeaders map[string]string,
+	credentialless bool,
+	proxy string,
+	channelSetting dto.ChannelSettings,
+	responseHeaderTimeout time.Duration,
+) (*http.Response, error) {
+	currentMethod := method
+	currentLogicalURL := initialURL
+	currentBody := body
+	currentHeaders := make(map[string]string, len(descriptorHeaders))
+	for k, v := range descriptorHeaders {
+		currentHeaders[k] = v
+	}
+	seenHTTPS := false
+
+	for hop := 0; hop <= 10; hop++ {
+		currentParsed, err := url.Parse(currentLogicalURL)
+		if err != nil || (currentParsed.Scheme != "http" && currentParsed.Scheme != "https") ||
+			currentParsed.Host == "" || currentParsed.User != nil || currentParsed.Fragment != "" {
+			return nil, fmt.Errorf("%w: invalid URL", errTaskMediaRequestRejected)
+		}
+		if strings.EqualFold(currentParsed.Scheme, "https") {
+			seenHTTPS = true
+		} else if seenHTTPS {
+			return nil, fmt.Errorf("%w: https to non-https redirect blocked", errTaskMediaRequestRejected)
+		}
+		if isSelfTaskMediaURL(c, currentParsed) {
+			return nil, fmt.Errorf("%w: proxy loop", errTaskMediaRequestRejected)
+		}
+		pinnedURL, serverName, requestHost, err := pinTaskMediaURL(currentLogicalURL)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errTaskMediaRequestRejected, err)
+		}
+		transport, err := service.NewRelayTransportWithProxySettings(proxy, channelSetting)
+		if err != nil {
+			return nil, service.SanitizeOutboundError(err)
+		}
+		if serverName != "" {
+			if transport.TLSClientConfig == nil {
+				transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
+			} else {
+				cfg := transport.TLSClientConfig.Clone()
+				cfg.ServerName = serverName
+				transport.TLSClientConfig = cfg
+			}
+		}
+		oneOff := &http.Client{
+			Transport: transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		var reqBody io.Reader
+		if len(currentBody) > 0 {
+			reqBody = bytes.NewReader(currentBody)
+		}
+		req, err := http.NewRequestWithContext(c.Request.Context(), currentMethod, pinnedURL, reqBody)
+		if err != nil {
+			transport.CloseIdleConnections()
+			return nil, service.SanitizeOutboundError(err)
+		}
+		if requestHost != "" {
+			req.Host = requestHost
+		}
+		if err := applyTaskMediaRequestHeaders(req.Header, currentHeaders); err != nil {
+			transport.CloseIdleConnections()
+			return nil, err
+		}
+		for name, value := range clientHeaders {
+			req.Header.Set(name, value)
+		}
+		resp, err := doTaskMediaRequest(oneOff, req, responseHeaderTimeout)
+		if err != nil {
+			transport.CloseIdleConnections()
+			return nil, service.SanitizeOutboundError(err)
+		}
+		if resp.StatusCode == http.StatusMovedPermanently ||
+			resp.StatusCode == http.StatusFound ||
+			resp.StatusCode == http.StatusSeeOther ||
+			resp.StatusCode == http.StatusTemporaryRedirect ||
+			resp.StatusCode == http.StatusPermanentRedirect {
+			loc := strings.TrimSpace(resp.Header.Get("Location"))
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			transport.CloseIdleConnections()
+			if loc == "" || hop >= 10 {
+				return nil, fmt.Errorf("%w: too many redirects", errTaskMediaRequestRejected)
+			}
+			refParsed, parseErr := url.Parse(loc)
+			if parseErr != nil {
+				return nil, fmt.Errorf("%w: invalid redirect URL", errTaskMediaRequestRejected)
+			}
+			nextParsed := currentParsed.ResolveReference(refParsed)
+			if (nextParsed.Scheme != "http" && nextParsed.Scheme != "https") ||
+				nextParsed.Host == "" || nextParsed.User != nil || nextParsed.Fragment != "" {
+				return nil, fmt.Errorf("%w: invalid redirect URL", errTaskMediaRequestRejected)
+			}
+			if seenHTTPS && !strings.EqualFold(nextParsed.Scheme, "https") {
+				return nil, fmt.Errorf("%w: https to non-https redirect blocked", errTaskMediaRequestRejected)
+			}
+			if !sameTaskMediaOrigin(currentParsed, nextParsed) {
+				if !credentialless {
+					return nil, fmt.Errorf("%w: credentialed cross-origin redirect", errTaskMediaRequestRejected)
+				}
+				currentHeaders = nil
+				currentBody = nil
+			}
+			if (resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther) &&
+				currentMethod == http.MethodPost {
+				currentMethod = http.MethodGet
+				currentBody = nil
+			}
+			currentLogicalURL = nextParsed.String()
+			continue
+		}
+		if cancelBody, ok := resp.Body.(*taskMediaCancelBody); ok {
+			cancelBody.closeTransport = transport.CloseIdleConnections
+		} else if resp.Body != nil {
+			resp.Body = &taskMediaCancelBody{
+				ReadCloser:     resp.Body,
+				closeTransport: transport.CloseIdleConnections,
+			}
+		}
+		return resp, nil
+	}
+	return nil, fmt.Errorf("%w: too many redirects", errTaskMediaRequestRejected)
 }
 
 func validateTaskMediaURL(rawURL, proxy string) error {

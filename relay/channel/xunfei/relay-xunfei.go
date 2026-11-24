@@ -143,7 +143,10 @@ func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textReques
 	var responseText strings.Builder
 	hasOutput := false
 	finalizeUsage := func() *dto.Usage {
-		if usage.TotalTokens == 0 && (hasOutput || responseText.Len() > 0) {
+		usage.PromptTokens = max(usage.PromptTokens, 0)
+		usage.CompletionTokens = max(usage.CompletionTokens, 0)
+		usage.TotalTokens = max(usage.TotalTokens, 0)
+		if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && (hasOutput || responseText.Len() > 0) {
 			modelName := textRequest.Model
 			promptTokens := 0
 			if info != nil {
@@ -153,6 +156,9 @@ func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textReques
 				promptTokens = info.GetEstimatePromptTokens()
 			}
 			return service.ResponseText2Usage(c, responseText.String(), modelName, promptTokens)
+		}
+		if usage.TotalTokens <= 0 {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
 		return &usage
 	}
@@ -164,9 +170,9 @@ func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textReques
 			}
 			return &usage, types.NewError(ctx.Err(), types.ErrorCodeDoRequestFailed)
 		case xunfeiResponse := <-dataChan:
-			usage.PromptTokens += xunfeiResponse.Payload.Usage.Text.PromptTokens
-			usage.CompletionTokens += xunfeiResponse.Payload.Usage.Text.CompletionTokens
-			usage.TotalTokens += xunfeiResponse.Payload.Usage.Text.TotalTokens
+			usage.PromptTokens += max(xunfeiResponse.Payload.Usage.Text.PromptTokens, 0)
+			usage.CompletionTokens += max(xunfeiResponse.Payload.Usage.Text.CompletionTokens, 0)
+			usage.TotalTokens += max(xunfeiResponse.Payload.Usage.Text.TotalTokens, 0)
 			if len(xunfeiResponse.Payload.Choices.Text) > 0 {
 				responseText.WriteString(xunfeiResponse.Payload.Choices.Text[0].Content)
 			}
@@ -215,9 +221,9 @@ func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.
 			if len(xunfeiResponse.Payload.Choices.Text) > 0 {
 				content += xunfeiResponse.Payload.Choices.Text[0].Content
 			}
-			usage.PromptTokens += xunfeiResponse.Payload.Usage.Text.PromptTokens
-			usage.CompletionTokens += xunfeiResponse.Payload.Usage.Text.CompletionTokens
-			usage.TotalTokens += xunfeiResponse.Payload.Usage.Text.TotalTokens
+			usage.PromptTokens += max(xunfeiResponse.Payload.Usage.Text.PromptTokens, 0)
+			usage.CompletionTokens += max(xunfeiResponse.Payload.Usage.Text.CompletionTokens, 0)
+			usage.TotalTokens += max(xunfeiResponse.Payload.Usage.Text.TotalTokens, 0)
 		case err := <-stopChan:
 			if err != nil {
 				return &usage, types.NewError(err, types.ErrorCodeBadResponseBody)
@@ -232,7 +238,7 @@ func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.
 			},
 		}
 	}
-	if usage.TotalTokens == 0 && usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
+	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
 		modelName := textRequest.Model
 		promptTokens := 0
 		if info != nil {
@@ -244,6 +250,8 @@ func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.
 		if est := service.ResponseText2Usage(c, content, modelName, promptTokens); est != nil {
 			usage = *est
 		}
+	} else if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	xunfeiResponse.Payload.Choices.Text[0].Content = content
 	xunfeiResponse.Payload.Usage.Text = usage

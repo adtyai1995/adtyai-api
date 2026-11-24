@@ -72,10 +72,15 @@ func mokaEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 	// 	}, nil
 	// }
 	fullTextResponse := embeddingResponseMoka2OpenAI(&baiduResponse)
-	if fullTextResponse.Usage.TotalTokens == 0 && fullTextResponse.Usage.PromptTokens == 0 && len(fullTextResponse.Data) > 0 {
+	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
+	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
+	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
+	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && len(fullTextResponse.Data) > 0 {
 		est := info.GetEstimatePromptTokens()
 		fullTextResponse.Usage.PromptTokens = est
 		fullTextResponse.Usage.TotalTokens = est
+	} else if fullTextResponse.Usage.TotalTokens <= 0 {
+		fullTextResponse.Usage.TotalTokens = fullTextResponse.Usage.PromptTokens
 	}
 	jsonResponse, err := common.Marshal(fullTextResponse)
 	if err != nil {

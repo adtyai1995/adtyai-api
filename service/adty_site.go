@@ -1187,7 +1187,7 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 			return err
 		}
 		var movedPrincipal int64
-		moved, movedPrincipal, err = model.AdtySetUsersSiteWithMovedPrincipalTx(tx, site.Id, target)
+		moved, movedPrincipal, err = model.AdtyCloseSiteUsersAndOwnerSelfUseTx(tx, site.Id, site.OwnerUserId, target)
 		if err != nil {
 			return err
 		}
@@ -1246,7 +1246,11 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 	if err != nil {
 		return err
 	}
-	model.AdtyInvalidateUserCaches(moved)
+	invalidateIDs := moved
+	if closed.OwnerUserId > 0 && !slices.Contains(invalidateIDs, closed.OwnerUserId) {
+		invalidateIDs = append(append([]int(nil), moved...), closed.OwnerUserId)
+	}
+	model.AdtyInvalidateUserCaches(invalidateIDs)
 	InvalidateAdtySiteCache()
 	if closed.Id > 0 && AdtyOnSiteClosed != nil {
 		AdtyOnSiteClosed(&closed)

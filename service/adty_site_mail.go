@@ -233,7 +233,7 @@ func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string,
 // AdtyBrandFor 是站点的品牌；nil 返回主站品牌。没填站名的分站用子域名。
 func AdtyBrandFor(site *model.AdtySite) AdtySiteBrand {
 	if site == nil {
-		return AdtySiteBrand{Name: common.SystemName, BaseURL: AdtySiteBaseURL(nil)}
+		return AdtySiteBrand{Name: common.GetSystemName(), BaseURL: AdtySiteBaseURL(nil)}
 	}
 	var brand AdtySiteBrandInput
 	if strings.TrimSpace(site.Brand) != "" {

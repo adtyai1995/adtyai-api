@@ -316,12 +316,15 @@ func requestOpenAI2Embeddings(r dto.EmbeddingRequest) *OllamaEmbeddingRequest {
 }
 
 func ollamaEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("empty response"), types.ErrorCodeBadResponse, http.StatusBadRequest)
+	}
+	defer service.CloseResponseBodyGracefully(resp)
 	var oResp OllamaEmbeddingResponse
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	if err = common.Unmarshal(body, &oResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
@@ -332,8 +335,8 @@ func ollamaEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	for i, emb := range oResp.Embeddings {
 		data = append(data, dto.OpenAIEmbeddingResponseItem{Index: i, Object: "embedding", Embedding: emb})
 	}
-	promptTokens := oResp.PromptEvalCount
-	if promptTokens == 0 && len(data) > 0 {
+	promptTokens := max(oResp.PromptEvalCount, 0)
+	if promptTokens <= 0 && len(data) > 0 {
 		promptTokens = info.GetEstimatePromptTokens()
 	}
 	usage := &dto.Usage{PromptTokens: promptTokens, CompletionTokens: 0, TotalTokens: promptTokens}

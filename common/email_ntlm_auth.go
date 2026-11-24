@@ -14,10 +14,16 @@ type smtpAutoAuth struct {
 	username string
 	password string
 	mech     string
+	cfg      *smtpConfigSnapshot
 }
 
 func AutoSMTPAuth(username, password string) smtp.Auth {
 	return &smtpAutoAuth{username: username, password: password}
+}
+
+func autoSMTPAuthWithConfig(cfg smtpConfigSnapshot) smtp.Auth {
+	copied := cfg
+	return &smtpAutoAuth{username: cfg.account, password: cfg.token, cfg: &copied}
 }
 
 func (a *smtpAutoAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
@@ -28,8 +34,14 @@ func (a *smtpAutoAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 	if err := checkSMTPAuthConnection(server); err != nil {
 		return "", nil, err
 	}
-	useLoginAuth := SMTPForceAuthLogin
-	if !useLoginAuth && shouldUseSMTPLoginAuth() {
+	var cfg smtpConfigSnapshot
+	if a.cfg != nil {
+		cfg = *a.cfg
+	} else {
+		cfg = snapshotSMTPConfig()
+	}
+	useLoginAuth := cfg.forceAuthLogin
+	if !useLoginAuth && shouldUseSMTPLoginAuthWithConfig(cfg) {
 		useLoginAuth = !(server != nil && len(server.Auth) == 1 && smtpServerSupportsAuth(server, "NTLM"))
 	}
 	if useLoginAuth {
@@ -40,7 +52,7 @@ func (a *smtpAutoAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 	switch {
 	case smtpServerSupportsAuth(server, "PLAIN"):
 		a.mech = "PLAIN"
-		return smtp.PlainAuth("", a.username, a.password, SMTPServer).Start(server)
+		return smtp.PlainAuth("", a.username, a.password, cfg.server).Start(server)
 	case smtpServerSupportsAuth(server, "LOGIN"):
 		a.mech = "LOGIN"
 		return "LOGIN", []byte{}, nil
@@ -53,7 +65,7 @@ func (a *smtpAutoAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 		return "NTLM", negotiateMessage, nil
 	default:
 		a.mech = "PLAIN"
-		return smtp.PlainAuth("", a.username, a.password, SMTPServer).Start(server)
+		return smtp.PlainAuth("", a.username, a.password, cfg.server).Start(server)
 	}
 }
 

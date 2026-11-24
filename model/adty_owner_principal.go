@@ -90,7 +90,7 @@ func eligibleFundLots(tx *gorm.DB, userID int) *gorm.DB {
 	if id > 0 {
 		return q.Where("site_id = ? AND kind = ?", id, "principal")
 	}
-	return q.Where("(kind <> 'principal' OR site_id IS NULL OR site_id NOT IN (?))", tx.Model(&AdtySite{}).Select("id").Where("owner_user_id = ?", userID))
+	return q.Where("(kind <> 'principal' OR site_id IS NULL OR site_id NOT IN (?))", tx.Model(&AdtySite{}).Select("id").Where("owner_user_id = ? AND status <> ?", userID, AdtySiteStatusClosed))
 }
 
 // Available site principal excludes shares still reserved by another request.
@@ -99,7 +99,7 @@ func AdtyOwnerPrincipalAvailable(tx *gorm.DB, userID, siteID int) (int64, error)
 	if siteID > 0 {
 		q = q.Where("site_id = ?", siteID)
 	} else {
-		q = q.Where("site_id IN (?)", tx.Model(&AdtySite{}).Select("id").Where("owner_user_id = ?", userID))
+		q = q.Where("site_id IN (?)", tx.Model(&AdtySite{}).Select("id").Where("owner_user_id = ? AND status <> ?", userID, AdtySiteStatusClosed))
 	}
 	const sum = "COALESCE(SUM(remaining - COALESCE((SELECT SUM(a.held-a.settled) FROM adty_fund_allocations a WHERE a.batch_id=adty_fund_batches.id AND a.held>a.settled),0)),0)"
 	var available int64

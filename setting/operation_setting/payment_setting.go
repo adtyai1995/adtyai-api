@@ -1,6 +1,12 @@
 package operation_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"maps"
+	"slices"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 type PaymentSetting struct {
 	AmountOptions  []int           `json:"amount_options"`
@@ -19,5 +25,11 @@ func init() {
 }
 
 func GetPaymentSetting() *PaymentSetting {
-	return &paymentSetting
+	common.OptionMapRWMutex.RLock()
+	snap := PaymentSetting{
+		AmountOptions:  slices.Clone(paymentSetting.AmountOptions),
+		AmountDiscount: maps.Clone(paymentSetting.AmountDiscount),
+	}
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }

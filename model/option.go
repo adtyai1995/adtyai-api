@@ -407,6 +407,18 @@ func UpdateOptionWithAudit(key, value string, event AuditLog, snapshot ...func(s
 		if err := freeze(tx); err != nil {
 			return err
 		}
+		if adtyGroupConfigOption(key) {
+			if len(snapshot) == 0 {
+				if err := preLockAdtyGroupOptionsTx(tx, []string{key}); err != nil {
+					return err
+				}
+			}
+			if ValidateAdtyGroupOptionTx != nil {
+				if err := ValidateAdtyGroupOptionTx(tx, key, value); err != nil {
+					return err
+				}
+			}
+		}
 		if err := SaveOptionsTx(tx, values); err != nil {
 			return err
 		}
@@ -432,6 +444,23 @@ func UpdateOption(key string, value string) error {
 	}
 	if err := validateOptionValue(key, value); err != nil {
 		return err
+	}
+	if adtyGroupConfigOption(key) {
+		values := map[string]string{key: value}
+		if err := DB.Transaction(func(tx *gorm.DB) error {
+			if err := preLockAdtyGroupOptionsTx(tx, []string{key}); err != nil {
+				return err
+			}
+			if ValidateAdtyGroupOptionTx != nil {
+				if err := ValidateAdtyGroupOptionTx(tx, key, value); err != nil {
+					return err
+				}
+			}
+			return SaveOptionsTx(tx, values)
+		}); err != nil {
+			return err
+		}
+		return ApplyOptionValues(values)
 	}
 	// Save to database first
 	stored, err := encodeAdtyOptionSecret(key, value)
@@ -480,20 +509,29 @@ func UpdateOptionsBulk(values map[string]string) error {
 			return err
 		}
 	}
+	pricingValues := make(map[string]string)
+	otherValues := make(map[string]string)
 	for key, value := range values {
+		if IsModelPricingOption(key) {
+			pricingValues[key] = value
+		} else {
+			otherValues[key] = value
+		}
+	}
+	for key, value := range otherValues {
 		if err := validateOptionValue(key, value); err != nil {
 			return err
 		}
 	}
 	var policySnapshot *RequestPolicySnapshot
-	for key := range values {
+	for key := range otherValues {
 		if IsRequestPolicyOption(key) {
 			requestPolicyOptionMutex.Lock()
 			defer requestPolicyOptionMutex.Unlock()
 			options := maps.Clone(CurrentRequestPolicy().Options)
-			for key, value := range values {
-				if IsRequestPolicyOption(key) {
-					options[key] = value
+			for k, v := range otherValues {
+				if IsRequestPolicyOption(k) {
+					options[k] = v
 				}
 			}
 			var err error
@@ -505,13 +543,53 @@ func UpdateOptionsBulk(values map[string]string) error {
 		}
 	}
 
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		return SaveOptionsTx(tx, values)
-	})
+	saveOtherInTx := func(tx *gorm.DB) error {
+		if len(otherValues) == 0 {
+			return nil
+		}
+		groupKeys := make([]string, 0)
+		for k := range otherValues {
+			if adtyGroupConfigOption(k) {
+				groupKeys = append(groupKeys, k)
+			}
+		}
+		if len(groupKeys) > 0 {
+			slices.Sort(groupKeys)
+			if err := preLockAdtyGroupOptionsTx(tx, groupKeys); err != nil {
+				return err
+			}
+			if ValidateAdtyGroupOptionTx != nil {
+				for _, k := range groupKeys {
+					if err := ValidateAdtyGroupOptionTx(tx, k, otherValues[k]); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return SaveOptionsTx(tx, otherValues)
+	}
+
+	if len(pricingValues) > 0 {
+		if len(otherValues) == 0 {
+			return UpdateModelPricingOptions(pricingValues)
+		}
+		if err := UpdateModelPricingOptions(pricingValues, saveOtherInTx); err != nil {
+			return err
+		}
+		if err := ApplyOptionValues(otherValues); err != nil {
+			return err
+		}
+		if policySnapshot != nil {
+			requestPolicySnapshot.Store(policySnapshot)
+		}
+		return nil
+	}
+
+	err := DB.Transaction(saveOtherInTx)
 	if err != nil {
 		return err
 	}
-	if err := ApplyOptionValues(values); err != nil {
+	if err := ApplyOptionValues(otherValues); err != nil {
 		return err
 	}
 	if policySnapshot != nil {

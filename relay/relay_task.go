@@ -107,15 +107,23 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		if newAPIError != nil {
 			return service.TaskErrorWrapper(newAPIError, "channel_no_available_key", newAPIError.StatusCode, common.UpstreamAddresses(c)...)
 		}
+		chSetting := ch.GetSetting()
+		chOtherSettings := ch.GetOtherSettings()
 		common.SetContextKey(c, constant.ContextKeyChannelKey, key)
 		common.SetContextKey(c, constant.ContextKeyChannelType, ch.Type)
 		common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, ch.GetBaseURL())
 		common.SetContextKey(c, constant.ContextKeyChannelId, originTask.ChannelId)
+		common.SetContextKey(c, constant.ContextKeyChannelSetting, chSetting)
+		common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, chOtherSettings)
+		common.SetContextKey(c, constant.ContextKeyChannelParamOverride, ch.GetParamOverride())
+		common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, ch.GetHeaderOverride())
 
 		info.ChannelBaseUrl = ch.GetBaseURL()
 		info.ChannelId = originTask.ChannelId
 		info.ChannelType = ch.Type
 		info.ApiKey = key
+		info.ChannelSetting = chSetting
+		info.ChannelOtherSettings = chOtherSettings
 	}
 
 	// 提取 remix 参数（时长、分辨率 → OtherRatios）

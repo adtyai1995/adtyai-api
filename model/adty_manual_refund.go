@@ -211,13 +211,42 @@ func isExternalReversalEventType(eventID, eventType string) bool {
 // refund/chargeback/dispute occupancy beyond already-completed internal refund S
 // (R1-004 / G.9 / 1.3.3). Must be called inside the original order lock.
 func adtyExternalRefundOffsetTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error) {
-	return adtyExternalRefundOffsetExcludingOrphanTx(tx, ext, 0)
+	return adtyExternalRefundOffsetForRowsTx(tx, ext, nil, 0, 0)
 }
 
-// adtyExternalRefundOffsetExcludingOrphanTx computes X while optionally waiving
-// a single pending_review external-reversal orphan event that is explicitly
-// bound to the manual refund currently reconciling that external reversal (R8-009).
-func adtyExternalRefundOffsetExcludingOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder, waiveOrphanID int64) (int64, error) {
+func adtyOrphanExternalQuota(ext *AdtyTopupOrder, ev PaymentOrphanEvent, reviewByID map[int64]PaymentOrphanReview) int64 {
+	if ext == nil {
+		return 0
+	}
+	face := ext.FaceQuota()
+	if face <= 0 {
+		return 0
+	}
+	if ev.ReviewID > 0 {
+		if rev, ok := reviewByID[ev.ReviewID]; ok {
+			if rev.Status == PaymentOrphanStatusDismissed || rev.Status == PaymentOrphanStatusNeverCredited {
+				return 0
+			}
+			if rev.ExternalAmount.IsPositive() {
+				q := adtyConvertExternalOffsetToQuota(ext, rev.ExternalAmount, rev.ExternalCurrency)
+				if q > face {
+					return face
+				}
+				return max(q, int64(0))
+			}
+		}
+	}
+	if ev.Status == PaymentOrphanStatusRefunded || isExternalReversalEventType(ev.EventID, ev.EventType) {
+		return face
+	}
+	return 0
+}
+
+// adtyExternalRefundOffsetForRowsTx computes X (unreconciled external reversal
+// exposure beyond completed S and in-flight manual refunds explicitly reconciling
+// pending_review external reversal orphans on this order). Each bound orphan's
+// waived share is strictly capped at that orphan's verified external reversal quota.
+func adtyExternalRefundOffsetForRowsTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraReconcileOrphanID, extraReconcileQuota int64) (int64, error) {
 	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
 		return 0, nil
 	}
@@ -242,6 +271,7 @@ func adtyExternalRefundOffsetExcludingOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder,
 			reviewByID[r.ID] = r
 		}
 	}
+	pendingOrphanCap := map[int64]int64{}
 	if hasOrphan {
 		var events []PaymentOrphanEvent
 		if err := tx.Where("reference_id = ? AND status IN ?", ext.TradeNo, []string{PaymentOrphanStatusPendingReview, PaymentOrphanStatusRefunded}).
@@ -249,42 +279,52 @@ func adtyExternalRefundOffsetExcludingOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder,
 			return 0, err
 		}
 		for _, ev := range events {
-			if waiveOrphanID > 0 && ev.ID == waiveOrphanID && ev.Status == PaymentOrphanStatusPendingReview {
-				continue
+			q := adtyOrphanExternalQuota(ext, ev, reviewByID)
+			if q > maxExternalQuota {
+				maxExternalQuota = q
 			}
-			if ev.ReviewID > 0 {
-				if rev, ok := reviewByID[ev.ReviewID]; ok {
-					if rev.Status == PaymentOrphanStatusDismissed || rev.Status == PaymentOrphanStatusNeverCredited {
-						continue
-					}
-					if rev.ExternalAmount.IsPositive() {
-						q := adtyConvertExternalOffsetToQuota(ext, rev.ExternalAmount, rev.ExternalCurrency)
-						if q > maxExternalQuota {
-							maxExternalQuota = q
-						}
-						continue
-					}
-				}
-			}
-			if ev.Status == PaymentOrphanStatusRefunded || isExternalReversalEventType(ev.EventID, ev.EventType) {
-				// Unreviewed external reversal / chargeback occupies full principal until dismissed or quantified.
-				maxExternalQuota = face
+			if ev.Status == PaymentOrphanStatusPendingReview && isExternalReversalEventType(ev.EventID, ev.EventType) && q > 0 {
+				pendingOrphanCap[ev.ID] = q
 			}
 		}
 	} else if hasReview {
 		for _, rev := range reviewByID {
 			if rev.ExternalAmount.IsPositive() {
 				q := adtyConvertExternalOffsetToQuota(ext, rev.ExternalAmount, rev.ExternalCurrency)
+				if q > face {
+					q = face
+				}
 				if q > maxExternalQuota {
 					maxExternalQuota = q
 				}
 			}
 		}
 	}
-	if maxExternalQuota <= ext.RefundQuota {
+	activeReconcileByOrphan := map[int64]int64{}
+	for _, row := range rows {
+		if row.ReconcileOrphanId <= 0 || row.Status == AdtyManualRefundStatusCompleted || row.Status == AdtyManualRefundStatusTerminated {
+			continue
+		}
+		if pendingOrphanCap[row.ReconcileOrphanId] > 0 && row.RequestQuota > 0 {
+			activeReconcileByOrphan[row.ReconcileOrphanId] += row.RequestQuota
+		}
+	}
+	if extraReconcileOrphanID > 0 && extraReconcileQuota > 0 && pendingOrphanCap[extraReconcileOrphanID] > 0 {
+		activeReconcileByOrphan[extraReconcileOrphanID] += extraReconcileQuota
+	}
+	var activeReconcileQuota int64
+	for oid, bound := range activeReconcileByOrphan {
+		capQuota := pendingOrphanCap[oid]
+		if bound > capQuota {
+			bound = capQuota
+		}
+		activeReconcileQuota += bound
+	}
+	accounted := ext.RefundQuota + activeReconcileQuota
+	if maxExternalQuota <= accounted {
 		return 0, nil
 	}
-	return maxExternalQuota - ext.RefundQuota, nil
+	return maxExternalQuota - accounted, nil
 }
 
 func adtyBuildManualRefundOccupancy(ext *AdtyTopupOrder, held, unknown, externalOffset int64) *AdtyManualRefundOccupancy {

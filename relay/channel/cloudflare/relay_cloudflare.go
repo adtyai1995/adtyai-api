@@ -30,6 +30,9 @@ func convertCf2CompletionsRequest(textRequest dto.GeneralOpenAIRequest) *CfReque
 }
 
 func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, *dto.Usage) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
 
@@ -85,17 +88,17 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	}
 	helper.Done(c)
 
-	service.CloseResponseBodyGracefully(resp)
-
 	return nil, usage
 }
 
 func cfHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, *dto.Usage) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeBadResponseBody), nil
 	}
-	service.CloseResponseBodyGracefully(resp)
 	var response dto.TextResponse
 	err = common.Unmarshal(responseBody, &response)
 	if err != nil {
@@ -120,12 +123,14 @@ func cfHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response)
 }
 
 func cfSTTHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, *dto.Usage) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	var cfResp CfAudioResponse
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeBadResponseBody), nil
 	}
-	service.CloseResponseBodyGracefully(resp)
 	err = common.Unmarshal(responseBody, &cfResp)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeBadResponseBody), nil

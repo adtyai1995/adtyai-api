@@ -31,12 +31,30 @@ import (
 // transport error occurred after the request may have been transmitted upstream.
 var ErrAmbiguousTaskSubmitTransport = errors.New("upstream error: do request failed")
 
+var proxyCredURLPattern = regexp.MustCompile(`(?i)\b(socks5h?|https?)://([^/\s@]+)@`)
+
+func sanitizeErrorText(text string) string {
+	masked := proxyCredURLPattern.ReplaceAllString(text, `$1://***@`)
+	return common2.MaskSensitiveInfo(masked)
+}
+
 func sanitizeDoRequestError(err error) error {
+	if err == nil {
+		return nil
+	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) && urlErr != nil {
 		sanitized := *urlErr
 		sanitized.URL = common.SanitizeURLForLog(sanitized.URL)
+		if sanitized.Err != nil {
+			sanitized.Err = sanitizeDoRequestError(sanitized.Err)
+		}
 		return &sanitized
+	}
+	msg := err.Error()
+	masked := sanitizeErrorText(msg)
+	if masked != msg {
+		return errors.New(masked)
 	}
 	return err
 }
@@ -449,15 +467,16 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	dialer := *websocket.DefaultDialer
-	if info.ChannelSetting.Proxy != "" {
-		proxyURL, _, proxyErr := common2.ParseProxyURLRuntime(info.ChannelSetting.Proxy)
-		if proxyErr != nil {
-			return nil, proxyErr
-		}
-		dialer.Proxy = http.ProxyURL(proxyURL)
+	transport, transportErr := service.NewRelayTransportWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
+	if transportErr != nil {
+		return nil, sanitizeDoRequestError(transportErr)
 	}
-	if info.ChannelSetting.TLSInsecureSkipVerify {
-		dialer.TLSClientConfig = common2.InsecureTLSConfig
+	dialer.Proxy = transport.Proxy
+	if transport.DialContext != nil {
+		dialer.NetDialContext = transport.DialContext
+	}
+	if transport.TLSClientConfig != nil {
+		dialer.TLSClientConfig = transport.TLSClientConfig.Clone()
 	}
 	targetConn, resp, err := dialer.DialContext(c.Request.Context(), fullRequestURL, targetHeader)
 	if err != nil {
@@ -468,7 +487,8 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 				_ = resp.Body.Close()
 			}
 		}
-		return nil, types.NewErrorWithStatusCode(fmt.Errorf("dial failed to %s: %w", common.SanitizeURLForLog(fullRequestURL), err), types.ErrorCodeDoRequestFailed, statusCode)
+		sanitizedErr := sanitizeDoRequestError(err)
+		return nil, types.NewErrorWithStatusCode(fmt.Errorf("dial failed to %s: %w", common.SanitizeURLForLog(fullRequestURL), sanitizedErr), types.ErrorCodeDoRequestFailed, statusCode)
 	}
 	return targetConn, nil
 }
@@ -554,8 +574,12 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		c.Set(common2.UpstreamRequestIdKey, upID)
 	}
 
-	_ = req.Body.Close()
-	_ = c.Request.Body.Close()
+	if req != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	if c != nil && c.Request != nil && c.Request.Body != nil {
+		_ = c.Request.Body.Close()
+	}
 	return resp, nil
 }
 

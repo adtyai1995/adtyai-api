@@ -201,15 +201,22 @@ func (p *SSRFProtection) isAllowedPort(port int) bool {
 	return slices.Contains(p.AllowedPorts, port)
 }
 
+func normalizeSSRFDomain(domain string) string {
+	return strings.TrimRight(strings.ToLower(strings.TrimSpace(domain)), ".")
+}
+
 // isDomainWhitelisted 检查域名是否在白名单中
 func isDomainListed(domain string, list []string) bool {
 	if len(list) == 0 {
 		return false
 	}
 
-	domain = strings.ToLower(domain)
+	domain = normalizeSSRFDomain(domain)
+	if domain == "" {
+		return false
+	}
 	for _, item := range list {
-		item = strings.ToLower(strings.TrimSpace(item))
+		item = normalizeSSRFDomain(item)
 		if item == "" {
 			continue
 		}
@@ -220,7 +227,7 @@ func isDomainListed(domain string, list []string) bool {
 		// 通配符匹配 (*.example.com)
 		if after, ok := strings.CutPrefix(item, "*."); ok {
 			suffix := after
-			if strings.HasSuffix(domain, "."+suffix) || domain == suffix {
+			if suffix != "" && (strings.HasSuffix(domain, "."+suffix) || domain == suffix) {
 				return true
 			}
 		}
@@ -302,7 +309,11 @@ func (p *SSRFProtection) ValidateNetworkTarget(host string, port int) error {
 		return nil
 	}
 
-	if !p.isDomainAllowed(host) {
+	normalizedHost := normalizeSSRFDomain(host)
+	if normalizedHost == "" {
+		return fmt.Errorf("invalid host")
+	}
+	if !p.isDomainAllowed(normalizedHost) {
 		if p.DomainFilterMode {
 			return fmt.Errorf("domain not in whitelist: %s", host)
 		}

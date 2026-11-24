@@ -48,11 +48,13 @@ func convertCozeChatRequest(c *gin.Context, request dto.GeneralOpenAIRequest) *C
 }
 
 func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	// convert coze response to openai response
 	var response dto.TextResponse
 	var cozeResponse CozeChatDetailResponse
@@ -66,9 +68,12 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	}
 	// 从上下文获取 usage
 	var usage dto.Usage
-	usage.PromptTokens = c.GetInt("coze_input_count")
-	usage.CompletionTokens = c.GetInt("coze_output_count")
-	usage.TotalTokens = c.GetInt("coze_token_count")
+	usage.PromptTokens = max(c.GetInt("coze_input_count"), 0)
+	usage.CompletionTokens = max(c.GetInt("coze_output_count"), 0)
+	usage.TotalTokens = max(c.GetInt("coze_token_count"), 0)
+	if usage.TotalTokens <= 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
 	response.Usage = usage
 	response.Id = helper.GetResponseID(c)
 
@@ -79,7 +84,7 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 			response.Created = data.CreatedAt
 		}
 	}
-	if usage.TotalTokens == 0 && len(responseContent) > 0 {
+	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && len(responseContent) > 0 {
 		promptTokens := usage.PromptTokens
 		if promptTokens <= 0 {
 			promptTokens = info.GetEstimatePromptTokens()
@@ -165,7 +170,10 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 		helper.Done(c)
 	}
 
-	if usage.TotalTokens == 0 {
+	usage.PromptTokens = max(usage.PromptTokens, 0)
+	usage.CompletionTokens = max(usage.CompletionTokens, 0)
+	usage.TotalTokens = max(usage.TotalTokens, 0)
+	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
 		// 流式路径不经过 checkIfChatComplete，coze_input_count 没被设置过，取到的是 0；
 		// 拿 0 当 prompt 等于把输入白送出去。退回所有 adaptor 共用的估算口径。
 		promptTokens := c.GetInt("coze_input_count")
@@ -173,6 +181,8 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 			promptTokens = info.GetEstimatePromptTokens()
 		}
 		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, promptTokens)
+	} else if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 
 	return usage, nil
@@ -189,9 +199,12 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 			return nil
 		}
 
-		usage.PromptTokens = chatData.Usage.InputCount
-		usage.CompletionTokens = chatData.Usage.OutputCount
-		usage.TotalTokens = chatData.Usage.TokenCount
+		usage.PromptTokens = max(chatData.Usage.InputCount, 0)
+		usage.CompletionTokens = max(chatData.Usage.OutputCount, 0)
+		usage.TotalTokens = max(chatData.Usage.TokenCount, 0)
+		if usage.TotalTokens <= 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
 
 		finishReason := "stop"
 		stopResponse := helper.GenerateStopResponse(id, common.GetTimestamp(), info.UpstreamModelName, finishReason)

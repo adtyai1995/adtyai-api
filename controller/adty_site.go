@@ -41,6 +41,6 @@ func GetAdtySite(c *gin.Context) {
 	common.ApiSuccess(c, adtySiteView{
 		SiteSetting:    settings,
 		SupportContact: contact,
-		MinTopUp:       operation_setting.MinTopUp,
+		MinTopUp:       operation_setting.GetMinTopUp(),
 	})
 }

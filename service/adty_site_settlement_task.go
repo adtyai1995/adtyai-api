@@ -46,8 +46,9 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 	cutoff := adtySettleCutoffDay(now)
 	var siteIds []int
 	if err := model.DB.Model(&model.AdtySiteEarningDaily{}).Distinct("site_id").
-		Where("status IN ? AND kind <> ?",
-			[]string{model.AdtySiteEarningPending, model.AdtySiteEarningAvailable}, model.AdtySiteEarningTrial).
+		Where("status IN ? AND kind NOT IN ?",
+			[]string{model.AdtySiteEarningPending, model.AdtySiteEarningAvailable},
+			[]string{model.AdtySiteEarningTrial, model.AdtySiteEarningSkipped}).
 		Pluck("site_id", &siteIds).Error; err != nil {
 		return 0, err
 	}
@@ -168,8 +169,8 @@ func settleAdtySite(siteId int, cutoff string, now int64) (bool, error) {
 			return err
 		}
 		var rows []model.AdtySiteEarningDaily
-		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status = ? AND kind <> ?",
-			siteId, model.AdtySiteEarningPending, model.AdtySiteEarningTrial).
+		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status = ? AND kind NOT IN ?",
+			siteId, model.AdtySiteEarningPending, []string{model.AdtySiteEarningTrial, model.AdtySiteEarningSkipped}).
 			Order("id ASC").
 			Find(&rows).Error; err != nil {
 			return err
@@ -200,7 +201,8 @@ func settleAdtySite(siteId int, cutoff string, now int64) (bool, error) {
 				// Gift funding is already held as a wallet freeze. Settling the
 				// bonus reporting rows must not spend the same money again,
 				// and must not reduce the parallel commission book either.
-				if row.Kind != model.AdtySiteEarningBonus && row.Kind != model.AdtySiteEarningBonusReversal {
+				// Skipped rows are finance-excluded and must never credit the earnings wallet.
+				if row.Kind != model.AdtySiteEarningBonus && row.Kind != model.AdtySiteEarningBonusReversal && row.Kind != model.AdtySiteEarningSkipped {
 					walletTotal = walletTotal.Add(row.Earning)
 				}
 				ids = append(ids, row.Id)

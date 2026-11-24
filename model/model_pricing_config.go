@@ -95,7 +95,7 @@ func defaultPricingMaps() map[string]map[string]any {
 
 func readModelPricingMaps(db *gorm.DB) (map[string]map[string]any, map[string]bool, []string, error) {
 	var rows []Option
-	if err := db.Where(commonKeyCol+" IN ?", modelPricingOptionKeys).Find(&rows).Error; err != nil {
+	if err := db.Where(commonKeyCol+" IN ?", modelPricingOptionKeys).Order(commonKeyCol + " ASC").Find(&rows).Error; err != nil {
 		return nil, nil, nil, err
 	}
 	values := defaultPricingMaps()
@@ -711,20 +711,15 @@ func UpdateModelPricingOptions(updates map[string]string, audits ...func(*gorm.D
 func mutateModelPricingOptions(mutate func(*gorm.DB, map[string]map[string]any) error) error {
 	modelPricingMutationMu.Lock()
 	defer modelPricingMutationMu.Unlock()
+	sortedKeys := slices.Clone(modelPricingOptionKeys)
+	slices.Sort(sortedKeys)
 	var committed map[string]map[string]any
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		values, existing, duplicated, err := readModelPricingMaps(lockForUpdate(tx))
-		if err != nil {
-			return err
-		}
-		if len(duplicated) > 0 {
-			common.SysError(common.LogText("options table has duplicate pricing keys [%s]; the table is missing a primary key", strings.Join(duplicated, ", ")))
-		}
+		// R9-034: Seed any missing pricing option rows in sorted key order BEFORE
+		// acquiring FOR UPDATE locks so concurrent first-writes serialize cleanly
+		// without lost updates or ctid-order deadlocks.
 		defaults := defaultPricingMaps()
-		for _, key := range modelPricingOptionKeys {
-			if existing[key] {
-				continue
-			}
+		for _, key := range sortedKeys {
 			encoded, err := common.Marshal(defaults[key])
 			if err != nil {
 				return err
@@ -734,10 +729,17 @@ func mutateModelPricingOptions(mutate func(*gorm.DB, map[string]map[string]any) 
 				return err
 			}
 		}
+		values, _, duplicated, err := readModelPricingMaps(lockForUpdate(tx))
+		if err != nil {
+			return err
+		}
+		if len(duplicated) > 0 {
+			common.SysError(common.LogText("options table has duplicate pricing keys [%s]; the table is missing a primary key", strings.Join(duplicated, ", ")))
+		}
 		if err := mutate(tx, values); err != nil {
 			return err
 		}
-		for _, key := range modelPricingOptionKeys {
+		for _, key := range sortedKeys {
 			encoded, err := common.Marshal(values[key])
 			if err != nil {
 				return err

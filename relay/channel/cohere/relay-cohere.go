@@ -152,8 +152,9 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 					},
 				}
 				if cohereResp.Response != nil {
-					usage.PromptTokens = cohereResp.Response.Meta.BilledUnits.InputTokens
-					usage.CompletionTokens = cohereResp.Response.Meta.BilledUnits.OutputTokens
+					usage.PromptTokens = max(cohereResp.Response.Meta.BilledUnits.InputTokens, 0)
+					usage.CompletionTokens = max(cohereResp.Response.Meta.BilledUnits.OutputTokens, 0)
+					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 				}
 			} else {
 				openaiResp.Choices = []dto.ChatCompletionsStreamResponseChoice{
@@ -181,29 +182,33 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	})
 	close(done)
 	service.CloseResponseBodyGracefully(resp)
-	if usage.PromptTokens == 0 {
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && usage.TotalTokens <= 0 {
 		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
+	} else if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	return usage, nil
 }
 
 func cohereHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	createdTime := common.GetTimestamp()
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	var cohereResp CohereResponseResult
 	err = common.Unmarshal(responseBody, &cohereResp)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	usage := dto.Usage{}
-	usage.PromptTokens = cohereResp.Meta.BilledUnits.InputTokens
-	usage.CompletionTokens = cohereResp.Meta.BilledUnits.OutputTokens
-	usage.TotalTokens = cohereResp.Meta.BilledUnits.InputTokens + cohereResp.Meta.BilledUnits.OutputTokens
-	if usage.TotalTokens == 0 && strings.TrimSpace(cohereResp.Text) != "" {
+	usage.PromptTokens = max(cohereResp.Meta.BilledUnits.InputTokens, 0)
+	usage.CompletionTokens = max(cohereResp.Meta.BilledUnits.OutputTokens, 0)
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	if usage.TotalTokens <= 0 && strings.TrimSpace(cohereResp.Text) != "" {
 		if est := service.ResponseText2Usage(c, cohereResp.Text, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
 			usage = *est
 		}
@@ -235,25 +240,29 @@ func cohereHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 }
 
 func cohereRerankHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	service.CloseResponseBodyGracefully(resp)
 	var cohereResp CohereRerankResponseResult
 	err = common.Unmarshal(responseBody, &cohereResp)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	usage := dto.Usage{}
-	if cohereResp.Meta.BilledUnits.InputTokens == 0 {
+	inTokens := max(cohereResp.Meta.BilledUnits.InputTokens, 0)
+	outTokens := max(cohereResp.Meta.BilledUnits.OutputTokens, 0)
+	if inTokens <= 0 {
 		usage.PromptTokens = info.GetEstimatePromptTokens()
 		usage.CompletionTokens = 0
 		usage.TotalTokens = info.GetEstimatePromptTokens()
 	} else {
-		usage.PromptTokens = cohereResp.Meta.BilledUnits.InputTokens
-		usage.CompletionTokens = cohereResp.Meta.BilledUnits.OutputTokens
-		usage.TotalTokens = cohereResp.Meta.BilledUnits.InputTokens + cohereResp.Meta.BilledUnits.OutputTokens
+		usage.PromptTokens = inTokens
+		usage.CompletionTokens = outTokens
+		usage.TotalTokens = inTokens + outTokens
 	}
 
 	var rerankResp dto.RerankResponse

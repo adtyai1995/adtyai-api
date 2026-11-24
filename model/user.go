@@ -572,14 +572,22 @@ func DeleteUserById(id int) (int64, error) {
 	return user.Delete()
 }
 
+// ErrAdminTargetSessionRequired is returned when a Personal Access Token
+// attempts to mutate an administrator/root account.
+var ErrAdminTargetSessionRequired = errors.New("admin target mutation requires browser session")
+
 // HardDeleteUserById permanently deletes a user and returns how many scoped
 // access tokens were deleted with it.
 func HardDeleteUserById(id int) (int64, error) {
+	return HardDeleteUserByIdForActor(id, false)
+}
+
+func HardDeleteUserByIdForActor(id int, denyAdminTarget bool) (int64, error) {
 	if id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
 	user := User{Id: id}
-	return user.HardDelete()
+	return user.hardDelete(denyAdminTarget)
 }
 
 func (user *User) prepareForInsert(tx *gorm.DB) error {
@@ -827,12 +835,19 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 // the row is not restored from that old snapshot. changed is false when the
 // locked row already has the requested role and status.
 func ApplyManagedUserAccessTx(tx *gorm.DB, user *User) (bool, error) {
+	return ApplyManagedUserAccessForActorTx(tx, user, false)
+}
+
+func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, denyAdminTarget bool) (bool, error) {
 	if tx == nil || user == nil || user.Id <= 0 {
 		return false, fmt.Errorf("invalid managed user update")
 	}
 	var current User
 	if err := lockForUpdate(tx).Select("id", "role", "status", "site_id", "staff_site_id").Where("id = ?", user.Id).First(&current).Error; err != nil {
 		return false, err
+	}
+	if denyAdminTarget && current.Role >= common.RoleAdminUser {
+		return false, ErrAdminTargetSessionRequired
 	}
 	updates := map[string]any{}
 	if user.Role != 0 && user.Role != current.Role {
@@ -953,12 +968,19 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 			return err
 		}
 	}
-	authChanged := (updatePassword && current.Password != newUser.Password) || current.Group != newUser.Group
+	passwordChanged := updatePassword && current.Password != newUser.Password
+	authChanged := passwordChanged || current.Group != newUser.Group
 	if authChanged {
 		newUser.AuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
 			return err
 		}
+	}
+	if passwordChanged {
+		if _, err = DeleteUserAccessTokensWithTx(tx, user.Id); err != nil {
+			return err
+		}
+		updates["access_token"] = ""
 	}
 	if err = tx.Model(&current).Updates(updates).Error; err != nil {
 		if isUsernameUniqueViolation(err) {
@@ -970,6 +992,10 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 }
 
 func (user *User) ClearBinding(bindingType string) error {
+	return user.ClearBindingForActor(bindingType, false)
+}
+
+func (user *User) ClearBindingForActor(bindingType string, denyAdminTarget bool) error {
 	if user.Id == 0 {
 		return errors.New("user id is empty")
 	}
@@ -985,6 +1011,13 @@ func (user *User) ClearBinding(bindingType string) error {
 	}
 
 	if err := DB.Transaction(func(tx *gorm.DB) error {
+		var current User
+		if err := lockForUpdate(tx).Select("id", "role").First(&current, user.Id).Error; err != nil {
+			return err
+		}
+		if denyAdminTarget && current.Role >= common.RoleAdminUser {
+			return ErrAdminTargetSessionRequired
+		}
 		if err := tx.Model(&User{}).Where("id = ?", user.Id).Update(column, "").Error; err != nil {
 			return err
 		}
@@ -1239,7 +1272,15 @@ func LookupLoginCandidateUserID(identifier string, siteID int) (int, bool) {
 	return 0, false
 }
 
+func (user *User) DeleteForActor(denyAdminTarget bool) (int64, error) {
+	return user.deleteWithOptions(nil, denyAdminTarget)
+}
+
 func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
+	return user.deleteWithOptions(identity, false)
+}
+
+func (user *User) deleteWithOptions(identity *AuthSessionIdentity, denyAdminTarget bool) (int64, error) {
 	if user.Id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
@@ -1258,13 +1299,16 @@ func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
 			if err := ValidateAuthSessionWithTx(tx, *identity); err != nil {
 				return err
 			}
-			var role int
-			if err := tx.Model(&User{}).Where("id = ?", user.Id).Select("role").Scan(&role).Error; err != nil {
-				return err
-			}
-			if role == common.RoleRootUser {
-				return ErrCannotDeleteRootUser
-			}
+		}
+		var lockedUser User
+		if err := lockForUpdate(tx).Select("id", "role").First(&lockedUser, user.Id).Error; err != nil {
+			return err
+		}
+		if lockedUser.Role == common.RoleRootUser {
+			return ErrCannotDeleteRootUser
+		}
+		if denyAdminTarget && lockedUser.Role >= common.RoleAdminUser {
+			return ErrAdminTargetSessionRequired
 		}
 		ownsSite, err := userOwnsOpenSite(tx, user.Id)
 		if err != nil {
@@ -1326,6 +1370,10 @@ func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
 }
 
 func (user *User) HardDelete() (int64, error) {
+	return user.hardDelete(false)
+}
+
+func (user *User) hardDelete(denyAdminTarget bool) (int64, error) {
 	if user.Id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
@@ -1340,6 +1388,16 @@ func (user *User) HardDelete() (int64, error) {
 			if err := AdtyPreLockUserDeleteHook(tx, user.Id); err != nil {
 				return err
 			}
+		}
+		var lockedUser User
+		if err := lockForUpdate(tx.Unscoped()).Select("id", "role").First(&lockedUser, user.Id).Error; err != nil {
+			return err
+		}
+		if lockedUser.Role == common.RoleRootUser {
+			return ErrCannotDeleteRootUser
+		}
+		if denyAdminTarget && lockedUser.Role >= common.RoleAdminUser {
+			return ErrAdminTargetSessionRequired
 		}
 		ownsSite, err := userOwnsOpenSite(tx, user.Id)
 		if err != nil {
@@ -1679,11 +1737,13 @@ func resetUserPasswordWithOutcome(user *User, password string) (PasswordResetOut
 		return outcome, err
 	}
 	outcome.State = PasswordResetCommitted
-	if err := PublishUserAuthCache(user.Id); err != nil {
-		return outcome, err
+	if cacheErr := PublishUserAuthCache(user.Id); cacheErr != nil {
+		common.SysError(common.LogText("failed to publish auth cache after password reset for user %d: %v", user.Id, cacheErr))
 	}
-	_, err = RevokeAllUserSessions(user.Id, "password_reset")
-	return outcome, err
+	if _, revokeErr := RevokeAllUserSessions(user.Id, "password_reset"); revokeErr != nil {
+		common.SysError(common.LogText("failed to revoke sessions after password reset for user %d: %v", user.Id, revokeErr))
+	}
+	return outcome, nil
 }
 
 func IsAdmin(userId int) bool {

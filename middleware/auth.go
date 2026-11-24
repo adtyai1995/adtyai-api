@@ -594,7 +594,8 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			return
 		}
 		if !service.AdtyHostAllowsRelay(c.Request.Host) {
-			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAdtyRelayHostDisallowed), types.ErrorCodeAccessDenied)
+			common.ApiErrorStatus(c, http.StatusForbidden, errors.New(i18n.T(c, i18n.MsgAdtyRelayHostDisallowed)))
+			c.Abort()
 			return
 		}
 		if status := service.AdtyAPIKeyHostStatus(userCache.SiteId, c.Request.Host); status != 0 || token.OwnerSelfUseSiteId > 0 {

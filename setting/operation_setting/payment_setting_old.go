@@ -5,7 +5,16 @@ This file is the old version of the payment settings file. If you need to add ne
 
 package operation_setting
 
+import "github.com/QuantumNous/new-api/common"
+
 var CustomCallbackAddress = ""
 var Price = 7.3
 var MinTopUp = 1
 var USDExchangeRate = 7.3
+
+func GetMinTopUp() int {
+	common.OptionMapRWMutex.RLock()
+	v := MinTopUp
+	common.OptionMapRWMutex.RUnlock()
+	return v
+}

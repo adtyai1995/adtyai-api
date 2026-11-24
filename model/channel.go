@@ -825,27 +825,10 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		if status == common.ChannelStatusAutoDisabled && channelCache.Status == common.ChannelStatusManuallyDisabled {
 			return false
 		}
-		if channelCache.ChannelInfo.IsMultiKey {
-			beforeStatus := channelCache.Status
-			// 如果是多Key模式，更新缓存中的状态
-			handlerMultiKeyUpdate(channelCache, usingKey, status, reason)
-			if beforeStatus != channelCache.Status {
-				CacheUpdateChannelStatus(channelId, channelCache.Status)
-			}
-			//CacheUpdateChannel(channelCache)
-			//return true
-		} else {
-			// 如果缓存渠道存在，且状态已是目标状态，直接返回
-			if channelCache.Status == status {
-				if status != common.ChannelStatusAutoDisabled {
-					return false
-				}
-				// A stale AutoDisabled entry can hide a manual disable or an
-				// Enabled row in the database. Keep going so the stored-row
-				// guard can refresh, or AutoDisabled can still be persisted.
-			} else {
-				CacheUpdateChannelStatus(channelId, status)
-			}
+		// Never mutate the published cached *Channel or its MultiKeyStatusList map in place
+		// (R9-007): concurrent readers hold pointers without channelSyncLock.
+		if !channelCache.ChannelInfo.IsMultiKey && channelCache.Status == status && status != common.ChannelStatusAutoDisabled {
+			return false
 		}
 	}
 
@@ -870,8 +853,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 	} else {
 		// Check the stored row too, since this node's cache may be stale.
 		if status == common.ChannelStatusAutoDisabled && channel.Status == common.ChannelStatusManuallyDisabled {
-			// The cache branch may already have written AutoDisabled on this
-			// node. Refresh from the stored row so auto-probe cannot reopen it.
+			// Refresh from the stored row so auto-probe cannot reopen it.
 			refreshNeeded = common.MemoryCacheEnabled
 			return false
 		}
@@ -880,7 +862,27 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		overridesKeyExhaustion := channel.ChannelInfo.IsMultiKey && usingKey == "" &&
 			status == common.ChannelStatusManuallyDisabled && reason != ChannelStatusReasonAllKeysDisabled &&
 			channel.GetOtherInfo()["status_reason"] == ChannelStatusReasonAllKeysDisabled
-		if channel.Status == status && !overridesKeyExhaustion {
+		multiKeyTargetNeedsUpdate := false
+		if channel.ChannelInfo.IsMultiKey {
+			keys := channel.GetKeys()
+			if usingKey != "" {
+				for i, key := range keys {
+					if key == usingKey {
+						curStatus := common.ChannelStatusEnabled
+						if channel.ChannelInfo.MultiKeyStatusList != nil {
+							if s, ok := channel.ChannelInfo.MultiKeyStatusList[i]; ok && s != 0 {
+								curStatus = s
+							}
+						}
+						multiKeyTargetNeedsUpdate = curStatus != status
+						break
+					}
+				}
+			} else if status == common.ChannelStatusEnabled && !hasEnabledMultiKey(keys, channel.ChannelInfo.MultiKeyStatusList) {
+				multiKeyTargetNeedsUpdate = true
+			}
+		}
+		if channel.Status == status && !overridesKeyExhaustion && !multiKeyTargetNeedsUpdate {
 			return false
 		}
 
@@ -903,6 +905,12 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		if err != nil {
 			common.SysLog(common.LogText("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
 			return false
+		}
+		if common.MemoryCacheEnabled {
+			CacheUpdateChannel(channel)
+			if channel.Status != common.ChannelStatusEnabled {
+				CacheUpdateChannelStatus(channelId, channel.Status)
+			}
 		}
 	}
 	return true

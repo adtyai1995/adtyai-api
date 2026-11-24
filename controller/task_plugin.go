@@ -50,17 +50,17 @@ type taskPluginUploadRequest struct {
 func UploadTaskPlugin(c *gin.Context) {
 	var request taskPluginUploadRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		common.ApiErrorMsg(c, err.Error())
+		common.ApiErrorT(c, "Invalid request parameters: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
 	if len(request.Source) > maxTaskPluginSourceBytes {
-		common.ApiErrorMsg(c, "plugin source exceeds 8 MiB")
+		common.ApiErrorT(c, "Plugin source exceeds the 8 MiB limit.")
 		return
 	}
 	if expected := strings.TrimSpace(request.SourceSha256); expected != "" {
 		actual := fmt.Sprintf("%x", sha256.Sum256([]byte(request.Source)))
 		if !strings.EqualFold(actual, expected) {
-			common.ApiErrorMsg(c, "plugin source sha256 mismatch")
+			common.ApiErrorT(c, "Plugin source SHA-256 mismatch")
 			return
 		}
 	}
@@ -71,13 +71,13 @@ func UploadTaskPlugin(c *gin.Context) {
 		return
 	}
 	if err = jsplugin.ValidateV1Meta(loaded.Meta); err != nil {
-		common.ApiErrorMsg(c, err.Error())
+		common.ApiErrorT(c, "Invalid plugin metadata: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
 	icon := strings.TrimSpace(request.Icon)
 	if icon != "" {
 		if _, _, err = jsplugin.DecodeIconDataURI(icon); err != nil {
-			common.ApiErrorMsg(c, err.Error())
+			common.ApiErrorT(c, "Invalid plugin icon: {{error}}", map[string]any{"error": err.Error()})
 			return
 		}
 	}
@@ -87,7 +87,7 @@ func UploadTaskPlugin(c *gin.Context) {
 	}
 	if enabled && !request.Force {
 		if err = jsplugin.PreflightRoutingConflict(jsplugin.DefaultRegistry.Generation(), loaded); err != nil {
-			common.ApiErrorMsg(c, err.Error())
+			common.ApiErrorT(c, "Plugin routing conflict: {{error}}", map[string]any{"error": err.Error()})
 			return
 		}
 	}
@@ -364,7 +364,7 @@ func GetTaskPlugin(c *gin.Context) {
 	}
 	source, err := plugins.Source(key)
 	if err != nil {
-		common.ApiErrorMsg(c, "task plugin not found")
+		common.ApiErrorT(c, "Task plugin not found")
 		return
 	}
 	loaded, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{Key: key})
@@ -386,7 +386,7 @@ func DryRunTaskPlugin(c *gin.Context) {
 	markIdempotentReplayNoAudit(c)
 	var request taskPluginDryRunRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		common.ApiErrorMsg(c, err.Error())
+		common.ApiErrorT(c, "Invalid request parameters: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
 	detailSource := ""
@@ -397,7 +397,7 @@ func DryRunTaskPlugin(c *gin.Context) {
 		detailSource, err = plugins.Source(c.Param("key"))
 	}
 	if err != nil {
-		common.ApiErrorMsg(c, "task plugin not found")
+		common.ApiErrorT(c, "Task plugin not found")
 		return
 	}
 	loaded, err := jsplugin.NewRegistry().Register(detailSource, jsplugin.Options{Key: c.Param("key")})
@@ -408,7 +408,7 @@ func DryRunTaskPlugin(c *gin.Context) {
 	args := make([]any, len(request.Args))
 	for index, raw := range request.Args {
 		if err = common.Unmarshal(raw, &args[index]); err != nil {
-			common.ApiErrorMsg(c, fmt.Sprintf("invalid argument %d: %v", index+1, err))
+			common.ApiErrorT(c, "Invalid argument {{index}}: {{error}}", map[string]any{"index": index + 1, "error": err.Error()})
 			return
 		}
 	}
@@ -419,7 +419,7 @@ func DryRunTaskPlugin(c *gin.Context) {
 		output, err = loaded.Engine.CallMember(context.Background(), request.Hook, request.Member, args...)
 	}
 	if err != nil {
-		common.ApiErrorMsg(c, err.Error())
+		common.ApiErrorT(c, "Plugin execution failed: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
 	common.ApiSuccess(c, output)
@@ -431,7 +431,7 @@ func DeleteTaskPluginVersion(c *gin.Context) {
 	plugin, lookupErr := model.GetTaskPluginVersion(key, version)
 	if lookupErr != nil {
 		if errors.Is(lookupErr, gorm.ErrRecordNotFound) {
-			common.ApiErrorMsg(c, "override plugin version not found; factory plugins cannot be deleted")
+			common.ApiErrorT(c, "Override plugin version not found; factory plugins cannot be deleted")
 			return
 		}
 		common.ApiError(c, lookupErr)
@@ -444,14 +444,14 @@ func DeleteTaskPluginVersion(c *gin.Context) {
 			return
 		}
 		if (len(channels) > 0 || inFlight > 0) && c.Query("force") != "true" {
-			c.JSON(200, gin.H{"success": false, "message": "task plugin is still in use", "data": gin.H{"channels": channels, "in_flight_count": inFlight}})
+			common.ApiErrorStatus(c, http.StatusOK, common.NewMessage("Plugin is still in use"), gin.H{"data": gin.H{"channels": channels, "in_flight_count": inFlight}})
 			return
 		}
 	}
 	_, err := model.DeleteTaskPluginVersion(key, version)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			common.ApiErrorMsg(c, "override plugin version not found; factory plugins cannot be deleted")
+			common.ApiErrorT(c, "Override plugin version not found; factory plugins cannot be deleted")
 			return
 		}
 		common.ApiError(c, err)
@@ -465,7 +465,7 @@ func DeleteTaskPluginVersion(c *gin.Context) {
 	compileError := taskPluginSyncState.errors[key]
 	taskPluginSyncState.Unlock()
 	if compileError != "" {
-		common.ApiErrorMsg(c, compileError)
+		common.ApiErrorT(c, "Plugin compilation failed: {{error}}", map[string]any{"error": compileError})
 		return
 	}
 	var data any
@@ -483,7 +483,7 @@ type taskPluginActivateRequest struct {
 func ActivateTaskPlugin(c *gin.Context) {
 	var request taskPluginActivateRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		common.ApiErrorMsg(c, err.Error())
+		common.ApiErrorT(c, "Invalid request parameters: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
 	versions, err := model.ListTaskPluginVersions(c.Param("key"))
@@ -499,7 +499,7 @@ func ActivateTaskPlugin(c *gin.Context) {
 		}
 	}
 	if target == nil {
-		common.ApiErrorMsg(c, "plugin version not found")
+		common.ApiErrorT(c, "Plugin version not found")
 		return
 	}
 	compiled, err := jsplugin.NewRegistry().Register(string(target.Source), jsplugin.Options{Key: target.Key, Version: target.Version})
@@ -529,7 +529,7 @@ type taskPluginStatusRequest struct {
 func SetTaskPluginStatus(c *gin.Context) {
 	var request taskPluginStatusRequest
 	if err := c.ShouldBindJSON(&request); err != nil || request.Enabled == nil {
-		common.ApiErrorMsg(c, "enabled is required")
+		common.ApiErrorT(c, "Plugin enabled status is required")
 		return
 	}
 	key := c.Param("key")
@@ -549,7 +549,7 @@ func SetTaskPluginStatus(c *gin.Context) {
 		cascade := c.Query("cascade") == "true"
 		force := c.Query("force") == "true"
 		if (len(channels) > 0 && !cascade) || (inFlight > 0 && !force) {
-			c.JSON(200, gin.H{"success": false, "message": "task plugin is still in use", "data": gin.H{"channels": channels, "in_flight_count": inFlight}})
+			common.ApiErrorStatus(c, http.StatusOK, common.NewMessage("Plugin is still in use"), gin.H{"data": gin.H{"channels": channels, "in_flight_count": inFlight}})
 			return
 		}
 		if cascade {
@@ -707,7 +707,7 @@ func GetTaskPluginMarketplaceSources(c *gin.Context) {
 func UpdateTaskPluginMarketplaceSources(c *gin.Context) {
 	var sources []setting.TaskPluginMarketplaceSource
 	if err := c.ShouldBindJSON(&sources); err != nil {
-		common.ApiErrorMsg(c, err.Error())
+		common.ApiErrorT(c, "Invalid request parameters: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
 	if sources == nil {
@@ -717,12 +717,12 @@ func UpdateTaskPluginMarketplaceSources(c *gin.Context) {
 		name := strings.TrimSpace(sources[i].Name)
 		indexURL := strings.TrimSpace(sources[i].IndexURL)
 		if name == "" {
-			common.ApiErrorMsg(c, "marketplace source name is required")
+			common.ApiErrorT(c, "Marketplace source name is required")
 			return
 		}
 		parsed, err := url.Parse(indexURL)
 		if err != nil || !parsed.IsAbs() || parsed.Host == "" || (!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
-			common.ApiErrorMsg(c, "marketplace source index_url must be an absolute http(s) URL")
+			common.ApiErrorT(c, "Marketplace source index URL must be an absolute http(s) URL")
 			return
 		}
 		sources[i].Name = name

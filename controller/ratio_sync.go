@@ -3,7 +3,9 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -44,6 +46,138 @@ const (
 	modelsDevPath               = "/api.json"
 	modelsDevInputCostRatioBase = 1000.0
 )
+
+func doRatioSyncAttempt(ctx context.Context, baseClient *http.Client, initialURL, authHeader, proxy string, chSetting dto.ChannelSettings) (*http.Response, error) {
+	if proxy == "" {
+		client := *baseClient
+		var customTransport *http.Transport
+		if chSetting.TLSInsecureSkipVerify {
+			if tr, ok := baseClient.Transport.(*http.Transport); ok && tr != nil {
+				customTransport = tr.Clone()
+				customTransport.TLSClientConfig = common.InsecureTLSConfig.Clone()
+			} else {
+				var tErr error
+				customTransport, tErr = service.NewRelayTransportWithProxySettings("", chSetting)
+				if tErr != nil {
+					return nil, tErr
+				}
+			}
+			client.Transport = customTransport
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, initialURL, nil)
+		if err != nil {
+			if customTransport != nil {
+				customTransport.CloseIdleConnections()
+			}
+			return nil, err
+		}
+		if authHeader != "" {
+			httpReq.Header.Set("Authorization", authHeader)
+		}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			if customTransport != nil {
+				customTransport.CloseIdleConnections()
+			}
+			return nil, err
+		}
+		if customTransport != nil && resp.Body != nil {
+			resp.Body = &taskMediaCancelBody{
+				ReadCloser:     resp.Body,
+				closeTransport: customTransport.CloseIdleConnections,
+			}
+		}
+		return resp, nil
+	}
+
+	currentLogicalURL := initialURL
+	seenHTTPS := false
+	for hop := 0; hop <= 5; hop++ {
+		currentParsed, err := url.Parse(currentLogicalURL)
+		if err != nil || (currentParsed.Scheme != "http" && currentParsed.Scheme != "https") ||
+			currentParsed.Host == "" || currentParsed.User != nil {
+			return nil, fmt.Errorf("%w: invalid upstream URL", errTaskMediaRequestRejected)
+		}
+		if strings.EqualFold(currentParsed.Scheme, "https") {
+			seenHTTPS = true
+		} else if seenHTTPS {
+			return nil, fmt.Errorf("%w: https to non-https redirect blocked", errTaskMediaRequestRejected)
+		}
+		pinnedURL, serverName, requestHost, err := pinTaskMediaURL(currentLogicalURL)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errTaskMediaRequestRejected, err)
+		}
+		transport, err := service.NewRelayTransportWithProxySettings(proxy, chSetting)
+		if err != nil {
+			return nil, err
+		}
+		if serverName != "" {
+			if transport.TLSClientConfig == nil {
+				transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
+			} else {
+				cfg := transport.TLSClientConfig.Clone()
+				cfg.ServerName = serverName
+				transport.TLSClientConfig = cfg
+			}
+		}
+		oneOff := &http.Client{
+			Transport: transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pinnedURL, nil)
+		if err != nil {
+			transport.CloseIdleConnections()
+			return nil, err
+		}
+		if requestHost != "" {
+			req.Host = requestHost
+		}
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		resp, err := oneOff.Do(req)
+		if err != nil {
+			transport.CloseIdleConnections()
+			return nil, err
+		}
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			loc := strings.TrimSpace(resp.Header.Get("Location"))
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			transport.CloseIdleConnections()
+			if loc == "" || hop >= 5 {
+				return nil, fmt.Errorf("%w: too many redirects", errTaskMediaRequestRejected)
+			}
+			refParsed, parseErr := url.Parse(loc)
+			if parseErr != nil {
+				return nil, fmt.Errorf("%w: invalid redirect URL", errTaskMediaRequestRejected)
+			}
+			nextParsed := currentParsed.ResolveReference(refParsed)
+			if (nextParsed.Scheme != "http" && nextParsed.Scheme != "https") ||
+				nextParsed.Host == "" || nextParsed.User != nil {
+				return nil, fmt.Errorf("%w: invalid redirect URL", errTaskMediaRequestRejected)
+			}
+			if seenHTTPS && !strings.EqualFold(nextParsed.Scheme, "https") {
+				return nil, fmt.Errorf("%w: https to non-https redirect blocked", errTaskMediaRequestRejected)
+			}
+			if authHeader != "" && !sameTaskMediaOrigin(currentParsed, nextParsed) {
+				return nil, fmt.Errorf("%w: cross-origin credential redirect blocked", errTaskMediaRequestRejected)
+			}
+			currentLogicalURL = nextParsed.String()
+			continue
+		}
+		if resp.Body != nil {
+			resp.Body = &taskMediaCancelBody{
+				ReadCloser:     resp.Body,
+				closeTransport: transport.CloseIdleConnections,
+			}
+		}
+		return resp, nil
+	}
+	return nil, fmt.Errorf("%w: too many redirects", errTaskMediaRequestRejected)
+}
 
 func nearlyEqual(a, b float64) bool {
 	if a > b {
@@ -225,6 +359,7 @@ func FetchUpstreamRatios(c *gin.Context) {
 	}
 
 	var upstreams []dto.UpstreamDTO
+	dbChannelMap := make(map[int]*model.Channel)
 
 	if len(req.Upstreams) > 0 {
 		for _, u := range req.Upstreams {
@@ -248,6 +383,7 @@ func FetchUpstreamRatios(c *gin.Context) {
 			return
 		}
 		for _, ch := range dbChannels {
+			dbChannelMap[ch.Id] = ch
 			if base := ch.GetBaseURL(); strings.HasPrefix(base, "http") {
 				upstreams = append(upstreams, dto.UpstreamDTO{
 					ID:       ch.Id,
@@ -269,8 +405,8 @@ func FetchUpstreamRatios(c *gin.Context) {
 
 	sem := make(chan struct{}, maxConcurrentFetches)
 
-	client := service.GetSSRFProtectedHTTPClient()
-	if client == nil {
+	baseClient := service.GetSSRFProtectedHTTPClient()
+	if baseClient == nil {
 		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("HTTP client is not initialized"))
 		return
 	}
@@ -306,27 +442,40 @@ func FetchUpstreamRatios(c *gin.Context) {
 				uniqueName = fmt.Sprintf("%s(%d)", chItem.Name, chItem.ID)
 			}
 
-			if err := service.ValidateSSRFProtectedFetchURL(fullURL); err != nil {
-				logger.LogWarn(c.Request.Context(), common.LogText("upstream ratio URL rejected: %s", err.Error()))
-				ch <- upstreamResult{Name: uniqueName, Err: err.Error()}
+			var dbCh *model.Channel
+			var chSetting dto.ChannelSettings
+			if chItem.ID > 0 {
+				if cached, ok := dbChannelMap[chItem.ID]; ok {
+					dbCh = cached
+				} else {
+					var chErr error
+					dbCh, chErr = model.GetChannelById(chItem.ID, true)
+					if chErr != nil && isOpenRouter {
+						ch <- upstreamResult{Name: uniqueName, Err: "failed to get channel key: " + chErr.Error()}
+						return
+					}
+				}
+				if dbCh != nil {
+					chSetting = dbCh.GetSetting()
+				}
+			}
+			proxy := strings.TrimSpace(chSetting.Proxy)
+
+			if err := validateTaskMediaURL(fullURL, proxy); err != nil {
+				sanitized := service.SanitizeOutboundError(err)
+				logger.LogWarn(c.Request.Context(), common.LogText("upstream ratio URL rejected: %s", sanitized.Error()))
+				ch <- upstreamResult{Name: uniqueName, Err: sanitized.Error()}
 				return
 			}
 
 			ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(req.Timeout)*time.Second)
 			defer cancel()
 
-			httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
-			if err != nil {
-				logger.LogWarn(c.Request.Context(), common.LogText("build request failed: %s", err.Error()))
-				ch <- upstreamResult{Name: uniqueName, Err: err.Error()}
-				return
-			}
-
+			authHeader := ""
 			// OpenRouter requires Bearer token auth
-			if isOpenRouter && chItem.ID != 0 {
-				dbCh, err := model.GetChannelById(chItem.ID, true)
-				if err != nil {
-					ch <- upstreamResult{Name: uniqueName, Err: "failed to get channel key: " + err.Error()}
+			if isOpenRouter && chItem.ID > 0 {
+				if dbCh == nil {
+					ch <- upstreamResult{Name: uniqueName, Err: "failed to get channel key"}
 					return
 				}
 				key, _, apiErr := dbCh.GetNextEnabledKey()
@@ -338,25 +487,34 @@ func FetchUpstreamRatios(c *gin.Context) {
 					ch <- upstreamResult{Name: uniqueName, Err: "no API key configured for this channel"}
 					return
 				}
-				httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(key))
+				authHeader = "Bearer " + strings.TrimSpace(key)
 			} else if isOpenRouter {
 				ch <- upstreamResult{Name: uniqueName, Err: "OpenRouter requires a valid channel with API key"}
 				return
 			}
 
-			// 简单重试：最多 3 次，指数退避
+			// 简单重试：最多 3 次，指数退避（支持 ctx 取消）
 			var resp *http.Response
 			var lastErr error
 			for attempt := range 3 {
-				resp, lastErr = client.Do(httpReq)
+				resp, lastErr = doRatioSyncAttempt(ctx, baseClient, fullURL, authHeader, proxy, chSetting)
 				if lastErr == nil {
 					break
 				}
-				time.Sleep(time.Duration(200*(1<<attempt)) * time.Millisecond)
+				if ctx.Err() != nil || errors.Is(lastErr, errTaskMediaRequestRejected) {
+					break
+				}
+				if attempt < 2 {
+					if sleepErr := sleepWithContext(ctx, time.Duration(200*(1<<attempt))*time.Millisecond); sleepErr != nil {
+						lastErr = sleepErr
+						break
+					}
+				}
 			}
 			if lastErr != nil {
-				logger.LogWarn(c.Request.Context(), common.LogText("http error on %s: %s", chItem.Name, lastErr.Error()))
-				ch <- upstreamResult{Name: uniqueName, Err: lastErr.Error()}
+				sanitized := service.SanitizeOutboundError(lastErr)
+				logger.LogWarn(c.Request.Context(), common.LogText("http error on %s: %s", chItem.Name, sanitized.Error()))
+				ch <- upstreamResult{Name: uniqueName, Err: sanitized.Error()}
 				return
 			}
 			defer resp.Body.Close()
@@ -373,8 +531,9 @@ func FetchUpstreamRatios(c *gin.Context) {
 			limited := io.LimitReader(resp.Body, maxRatioConfigBytes)
 			bodyBytes, err := io.ReadAll(limited)
 			if err != nil {
-				logger.LogWarn(c.Request.Context(), common.LogText("read response failed from %s: %s", chItem.Name, err.Error()))
-				ch <- upstreamResult{Name: uniqueName, Err: err.Error()}
+				sanitized := service.SanitizeOutboundError(err)
+				logger.LogWarn(c.Request.Context(), common.LogText("read response failed from %s: %s", chItem.Name, sanitized.Error()))
+				ch <- upstreamResult{Name: uniqueName, Err: sanitized.Error()}
 				return
 			}
 

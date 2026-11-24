@@ -1364,6 +1364,9 @@ func produceAdtySevereTodosForPublished(row *model.AdtyNotificationPublication) 
 	if row == nil || model.DB == nil || !adtyPublicationIsSevere(model.DB, row) {
 		return
 	}
+	if row.Id > 0 && !adtyNotificationRevisionIsCurrent(row.Id, row.Revision) {
+		return
+	}
 	switch row.Audience {
 	case "user":
 		raw, ok := strings.CutPrefix(row.TargetSiteName, "user:")
@@ -2150,8 +2153,10 @@ func ListAdtyNoticeTemplates() ([]AdtyBilingualNoticeTemplate, error) {
 
 func applyAdtyNoticeVars(text string, vars map[string]string, args ...any) string {
 	out := text
-	if strings.Contains(out, "{{SystemName}}") && common.SystemName != "" {
-		out = strings.ReplaceAll(out, "{{SystemName}}", common.SystemName)
+	if strings.Contains(out, "{{SystemName}}") {
+		if sysName := common.GetSystemName(); sysName != "" {
+			out = strings.ReplaceAll(out, "{{SystemName}}", sysName)
+		}
 	}
 	for k, v := range vars {
 		out = strings.ReplaceAll(out, "{{"+k+"}}", v)
@@ -2263,7 +2268,7 @@ func hasUnfilledNoticePlaceholder(rawTexts []string, valueCount int) bool {
 		valueUses := 0
 		for _, token := range adtyNoticePlaceholderPattern.FindAllString(raw, -1) {
 			if token == "{{SystemName}}" {
-				if common.SystemName != "" {
+				if common.GetSystemName() != "" {
 					continue
 				}
 				return true

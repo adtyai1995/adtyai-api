@@ -58,13 +58,17 @@ func AdtyExternalRefundOffsetTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error)
 	return adtyExternalRefundOffsetTx(tx, ext)
 }
 
-func adtyComputeManualRefundOccupancyTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraHeld int64) (*AdtyManualRefundOccupancy, error) {
-	return adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, extraHeld, 0)
+func AdtyExternalRefundOffsetForRowsTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund) (int64, error) {
+	return adtyExternalRefundOffsetForRowsTx(tx, ext, rows, 0, 0)
 }
 
-func adtyComputeManualRefundOccupancyForRowTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraHeld int64, waiveOrphanID int64) (*AdtyManualRefundOccupancy, error) {
+func adtyComputeManualRefundOccupancyTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraHeld int64) (*AdtyManualRefundOccupancy, error) {
+	return adtyComputeManualRefundOccupancyWithExtraReconcileTx(tx, ext, rows, extraHeld, 0, 0)
+}
+
+func adtyComputeManualRefundOccupancyWithExtraReconcileTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraHeld, extraReconcileOrphanID, extraReconcileQuota int64) (*AdtyManualRefundOccupancy, error) {
 	held, unknown := adtySumManualRefundOccupancy(rows)
-	externalOffset, err := adtyExternalRefundOffsetExcludingOrphanTx(tx, ext, waiveOrphanID)
+	externalOffset, err := adtyExternalRefundOffsetForRowsTx(tx, ext, rows, extraReconcileOrphanID, extraReconcileQuota)
 	if err != nil {
 		return nil, err
 	}
@@ -72,28 +76,51 @@ func adtyComputeManualRefundOccupancyForRowTx(tx *gorm.DB, ext *AdtyTopupOrder, 
 }
 
 // adtyValidateReconcileOrphanTx locks and verifies a pending_review external
-// reversal orphan event bound to a manual refund reconciling it (R8-009).
+// reversal orphan event bound to a manual refund reconciling it (R8-009 / R9-015 / R9-016).
+// Returns the remaining reconcilable quota capacity on this orphan (excluding currentRefundID).
 // Caller must already hold the canonical order lock (AdtySite -> TopUp -> AdtyTopupOrder).
-func adtyValidateReconcileOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, currentRefundID string, orphanID int64) error {
+func adtyValidateReconcileOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, currentRefundID string, orphanID, currentRequestQuota int64) (int64, error) {
 	if orphanID <= 0 {
-		return nil
+		return 0, nil
 	}
 	orphan, err := LockPaymentOrphanTx(tx, orphanID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if orphan.ReferenceID != ext.TradeNo || !strings.EqualFold(orphan.Provider, ext.Provider) {
-		return ErrPaymentMethodMismatch
+		return 0, ErrPaymentMethodMismatch
 	}
 	if orphan.Status != PaymentOrphanStatusPendingReview || !isExternalReversalEventType(orphan.EventID, orphan.EventType) {
-		return common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
+		return 0, common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
 	}
-	for _, other := range rows {
-		if other.RefundId != currentRefundID && other.Status != AdtyManualRefundStatusTerminated && other.ReconcileOrphanId == orphanID {
-			return ErrAdtyIdempotencyConflict
+	reviewByID := map[int64]PaymentOrphanReview{}
+	if orphan.ReviewID > 0 && tx.Migrator().HasTable(&PaymentOrphanReview{}) {
+		var rev PaymentOrphanReview
+		if err := tx.Where("id = ?", orphan.ReviewID).Limit(1).Find(&rev).Error; err != nil {
+			return 0, err
+		}
+		if rev.ID > 0 {
+			if rev.Status == PaymentOrphanStatusDismissed || rev.Status == PaymentOrphanStatusNeverCredited {
+				return 0, common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
+			}
+			reviewByID[rev.ID] = rev
 		}
 	}
-	return nil
+	orphanCap := adtyOrphanExternalQuota(ext, *orphan, reviewByID)
+	if orphanCap <= 0 {
+		return 0, common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
+	}
+	var boundOther int64
+	for _, other := range rows {
+		if other.RefundId != currentRefundID && other.Status != AdtyManualRefundStatusTerminated && other.ReconcileOrphanId == orphanID {
+			boundOther += other.RequestQuota
+		}
+	}
+	avail := orphanCap - boundOther
+	if avail <= 0 || (currentRequestQuota > 0 && currentRequestQuota > avail) {
+		return 0, common.NewMessage("Refund amount exceeds the verified external reversal amount")
+	}
+	return avail, nil
 }
 
 // moveCustomerRefundOperatingTx atomically adjusts a subsite's operating wallet
@@ -686,7 +713,7 @@ func ApplyAdtyTopUpManualRefundForOrphan(tradeNo, reason string, operatorID int,
 			if err != nil {
 				return err
 			}
-			occ, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, existing.ReconcileOrphanId)
+			occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 			if err != nil {
 				return err
 			}
@@ -700,12 +727,14 @@ func ApplyAdtyTopUpManualRefundForOrphan(tradeNo, reason string, operatorID int,
 		if err != nil {
 			return err
 		}
+		var availOrphanCap int64
 		if reconcileOrphanID > 0 {
-			if err := adtyValidateReconcileOrphanTx(tx, ext, rows, refundID, reconcileOrphanID); err != nil {
+			availOrphanCap, err = adtyValidateReconcileOrphanTx(tx, ext, rows, refundID, reconcileOrphanID, 0)
+			if err != nil {
 				return err
 			}
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, reconcileOrphanID)
+		occupancy, err := adtyComputeManualRefundOccupancyWithExtraReconcileTx(tx, ext, rows, 0, reconcileOrphanID, availOrphanCap)
 		if err != nil {
 			return err
 		}
@@ -713,7 +742,14 @@ func ApplyAdtyTopUpManualRefundForOrphan(tradeNo, reason string, operatorID int,
 		if err != nil {
 			return err
 		}
-		if requestQuota > occupancy.RemainingQuota {
+		if reconcileOrphanID > 0 && requestQuota > availOrphanCap {
+			return common.NewMessage("Refund amount exceeds the verified external reversal amount")
+		}
+		afterOcc, err := adtyComputeManualRefundOccupancyWithExtraReconcileTx(tx, ext, rows, requestQuota, reconcileOrphanID, requestQuota)
+		if err != nil {
+			return err
+		}
+		if requestQuota > occupancy.RemainingQuota || afterOcc.OccupiedQuota > afterOcc.FaceQuota {
 			return common.NewMessage("Refund amount exceeds the remaining principal")
 		}
 		if ext.IsOwnerSelfUse() {
@@ -748,10 +784,6 @@ func ApplyAdtyTopUpManualRefundForOrphan(tradeNo, reason string, operatorID int,
 		if err := tx.Create(row).Error; err != nil {
 			return err
 		}
-		afterOcc, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, requestQuota, reconcileOrphanID)
-		if err != nil {
-			return err
-		}
 		result = adtyManualRefundView(row, afterOcc, nil)
 		return nil
 	})
@@ -784,7 +816,7 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 		if err != nil {
 			return err
 		}
@@ -799,6 +831,11 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		}
 		if row.Status != AdtyManualRefundStatusSubmitted {
 			return common.NewMessage("This refund cannot be approved")
+		}
+		if row.ReconcileOrphanId > 0 {
+			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
+				return err
+			}
 		}
 		// S+H+U+X <= L must still hold at approval time (R1-004).
 		if occupancy.OccupiedQuota > occupancy.FaceQuota {
@@ -871,7 +908,7 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 		if err != nil {
 			return err
 		}
@@ -889,6 +926,11 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		}
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
+		}
+		if row.ReconcileOrphanId > 0 {
+			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
+				return err
+			}
 		}
 		if occupancy.OccupiedQuota > occupancy.FaceQuota {
 			return common.NewMessage("Refund amount exceeds the remaining principal")
@@ -983,7 +1025,7 @@ func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID st
 	if err != nil {
 		return nil, false, err
 	}
-	occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
+	occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 	if err != nil {
 		return nil, false, err
 	}
@@ -995,6 +1037,11 @@ func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID st
 	}
 	if err := adtyRequireApprovedManualRefund(row); err != nil {
 		return nil, false, err
+	}
+	if row.ReconcileOrphanId > 0 {
+		if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
+			return nil, false, err
+		}
 	}
 	if occupancy.OccupiedQuota > occupancy.FaceQuota {
 		return nil, false, common.NewMessage("Refund amount exceeds the remaining principal")
@@ -1153,7 +1200,7 @@ func PlanAdtyTopUpManualRefundBonus(tradeNo, refundID string, operatorID int, id
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 		if err != nil {
 			return err
 		}
@@ -1166,6 +1213,11 @@ func PlanAdtyTopUpManualRefundBonus(tradeNo, refundID string, operatorID int, id
 		}
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
+		}
+		if row.ReconcileOrphanId > 0 {
+			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
+				return err
+			}
 		}
 		if occupancy.OccupiedQuota > occupancy.FaceQuota {
 			return common.NewMessage("Refund amount exceeds the remaining principal")
@@ -1214,7 +1266,7 @@ func PlanAdtyTopUpManualRefundCommission(tradeNo, refundID string, operatorID in
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
+		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 		if err != nil {
 			return err
 		}
@@ -1227,6 +1279,11 @@ func PlanAdtyTopUpManualRefundCommission(tradeNo, refundID string, operatorID in
 		}
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
+		}
+		if row.ReconcileOrphanId > 0 {
+			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
+				return err
+			}
 		}
 		if occupancy.OccupiedQuota > occupancy.FaceQuota {
 			return common.NewMessage("Refund amount exceeds the remaining principal")
@@ -1336,7 +1393,12 @@ func RecordAdtyTopUpManualRefundPayout(tradeNo, refundID string, operatorID int,
 		}
 		// S+H+U+X <= L must still hold before recording a non-failed payout (R1-004).
 		if status != AdtyManualRefundPayoutFailed {
-			occCheck, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
+			if row.ReconcileOrphanId > 0 {
+				if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
+					return err
+				}
+			}
+			occCheck, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 			if err != nil {
 				return err
 			}
@@ -1445,12 +1507,13 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 			return err
 		}
 		// S+H+U+X <= L must still hold at completion time (R1-004).
-		if row.ReconcileOrphanId > 0 {
-			if err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId); err != nil {
+		hasConfirmedOfflinePayout := row.PayoutRecordedAt > 0 && row.PayoutStatus == AdtyManualRefundPayoutSuccess
+		if row.ReconcileOrphanId > 0 && !hasConfirmedOfflinePayout {
+			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
 		}
-		occCheck, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
+		occCheck, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 		if err != nil {
 			return err
 		}

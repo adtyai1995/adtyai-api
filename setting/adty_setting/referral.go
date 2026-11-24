@@ -1,6 +1,9 @@
 package adty_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 // ReferralSetting 是推广返佣的设置（任务 6.1），键名 adty_referral_setting.<json 标签>。
 // 比例是百分数，10 表示 10%（执行层决定 18）。提现汇率用字符串存：空串表示未设置，
@@ -43,7 +46,15 @@ func init() {
 	config.GlobalConfig.Register("adty_referral_setting", &referralSetting)
 }
 
-// GetReferralSetting 返回当前的推广设置。
+// GetReferralSetting 返回当前的推广设置快照。
 func GetReferralSetting() *ReferralSetting {
-	return &referralSetting
+	common.OptionMapRWMutex.RLock()
+	snap := referralSetting
+	snap.DefaultRate = cloneFloat64Ptr(referralSetting.DefaultRate)
+	snap.PartnerMinRate = cloneFloat64Ptr(referralSetting.PartnerMinRate)
+	snap.PartnerMaxRate = cloneFloat64Ptr(referralSetting.PartnerMaxRate)
+	snap.MinWithdrawUSD = cloneFloat64Ptr(referralSetting.MinWithdrawUSD)
+	snap.USDTWithdrawFee = cloneFloat64Ptr(referralSetting.USDTWithdrawFee)
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }

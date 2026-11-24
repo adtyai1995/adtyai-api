@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand"
 	"sort"
 	"strings"
@@ -320,6 +321,23 @@ func cacheGetChannelInfo(id int) (*ChannelInfo, bool, error) {
 	return &c.ChannelInfo, true, nil
 }
 
+func cloneChannelForCache(src *Channel) *Channel {
+	if src == nil {
+		return nil
+	}
+	copied := *src
+	if src.ChannelInfo.MultiKeyStatusList != nil {
+		copied.ChannelInfo.MultiKeyStatusList = maps.Clone(src.ChannelInfo.MultiKeyStatusList)
+	}
+	if src.ChannelInfo.MultiKeyDisabledReason != nil {
+		copied.ChannelInfo.MultiKeyDisabledReason = maps.Clone(src.ChannelInfo.MultiKeyDisabledReason)
+	}
+	if src.ChannelInfo.MultiKeyDisabledTime != nil {
+		copied.ChannelInfo.MultiKeyDisabledTime = maps.Clone(src.ChannelInfo.MultiKeyDisabledTime)
+	}
+	return &copied
+}
+
 func CacheUpdateChannelStatus(id int, status int) {
 	if !common.MemoryCacheEnabled {
 		return
@@ -327,17 +345,21 @@ func CacheUpdateChannelStatus(id int, status int) {
 	channelSyncLock.Lock()
 	defer channelSyncLock.Unlock()
 	channelCacheGeneration++
-	if channel, ok := channelsIDM[id]; ok {
-		channel.Status = status
+	if channel, ok := channelsIDM[id]; ok && channel != nil {
+		cloned := cloneChannelForCache(channel)
+		cloned.Status = status
+		channelsIDM[id] = cloned
 	}
 	if status != common.ChannelStatusEnabled {
-		// delete the channel from group2model2channels
+		// Copy-on-write slice removal so concurrent readers iterating old slices never race.
 		for group, model2channels := range group2model2channels {
-			for model, channels := range model2channels {
+			for modelName, channels := range model2channels {
 				for i, channelId := range channels {
 					if channelId == id {
-						// remove the channel from the slice
-						group2model2channels[group][model] = append(channels[:i], channels[i+1:]...)
+						next := make([]int, 0, len(channels)-1)
+						next = append(next, channels[:i]...)
+						next = append(next, channels[i+1:]...)
+						group2model2channels[group][modelName] = next
 						break
 					}
 				}
@@ -355,6 +377,7 @@ func CacheUpdateChannel(channel *Channel) {
 		channelSyncLock.Unlock()
 		return
 	}
+	channel = cloneChannelForCache(channel)
 	channelCacheGeneration++
 
 	if channelsIDM == nil {

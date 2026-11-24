@@ -129,6 +129,31 @@ func ResolvePaymentOrphanReview(id int64, operatorID int, request PaymentOrphanR
 		if topUp != nil && (topUp.PaymentProvider != orphan.Provider || (ext != nil && (ext.Provider != orphan.Provider || ext.UserId != topUp.UserId))) {
 			return ErrPaymentMethodMismatch
 		}
+		if tx.Migrator().HasTable(&AdtyManualRefund{}) {
+			if request.Status == PaymentOrphanStatusDismissed || request.Status == PaymentOrphanStatusNeverCredited {
+				var activeBound int64
+				if err := tx.Model(&AdtyManualRefund{}).
+					Where("reconcile_orphan_id = ? AND status NOT IN ?", id, []string{AdtyManualRefundStatusCompleted, AdtyManualRefundStatusTerminated}).
+					Count(&activeBound).Error; err != nil {
+					return err
+				}
+				if activeBound > 0 {
+					return common.NewMessage("Terminate active manual refunds bound to this external reversal before resolving")
+				}
+			}
+			if request.Status == PaymentOrphanStatusPendingReview && ext != nil && amount.IsPositive() {
+				var boundQuota int64
+				if err := tx.Model(&AdtyManualRefund{}).
+					Select("COALESCE(SUM(request_quota), 0)").
+					Where("reconcile_orphan_id = ? AND status <> ?", id, AdtyManualRefundStatusTerminated).
+					Scan(&boundQuota).Error; err != nil {
+					return err
+				}
+				if boundQuota > 0 && adtyConvertExternalOffsetToQuota(ext, amount, request.ExternalCurrency) < boundQuota {
+					return common.NewMessage("External reversal amount cannot be less than manual refunds already bound to it")
+				}
+			}
+		}
 		review := &PaymentOrphanReview{
 			OrphanID: id, OperatorID: operatorID, Status: request.Status, TradeNo: request.TradeNo,
 			ExternalAmount: amount, ExternalCurrency: request.ExternalCurrency, Proof: request.Proof, Note: request.Note,

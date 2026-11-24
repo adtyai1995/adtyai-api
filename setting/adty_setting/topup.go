@@ -1,6 +1,10 @@
 package adty_setting
 
 import (
+	"maps"
+	"slices"
+
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
 )
 
@@ -29,7 +33,34 @@ func init() {
 	config.GlobalConfig.Register("adty_topup_setting", &topupSetting)
 }
 
-// GetTopupSetting 返回当前的充值设置。
+// GetTopupSetting 返回当前充值设置的深拷贝快照，防止与并发配置更新产生 map 读写竞争。
 func GetTopupSetting() *TopupSetting {
-	return &topupSetting
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
+	snap := TopupSetting{
+		USDTOrderMinutes: topupSetting.USDTOrderMinutes,
+		EpayOrderMinutes: topupSetting.EpayOrderMinutes,
+	}
+	if topupSetting.BonusRates != nil {
+		snap.BonusRates = maps.Clone(topupSetting.BonusRates)
+	}
+	if topupSetting.MethodBonus != nil {
+		snap.MethodBonus = maps.Clone(topupSetting.MethodBonus)
+	}
+	if topupSetting.SiteMethodAuth != nil {
+		snap.SiteMethodAuth = make(map[int][]string, len(topupSetting.SiteMethodAuth))
+		for k, v := range topupSetting.SiteMethodAuth {
+			snap.SiteMethodAuth[k] = slices.Clone(v)
+		}
+	}
+	if topupSetting.SiteMethodBonus != nil {
+		snap.SiteMethodBonus = make(map[int]map[string]MethodBonusRule, len(topupSetting.SiteMethodBonus))
+		for k, v := range topupSetting.SiteMethodBonus {
+			snap.SiteMethodBonus[k] = maps.Clone(v)
+		}
+	}
+	if topupSetting.SiteBonusMarginFill != nil {
+		snap.SiteBonusMarginFill = maps.Clone(topupSetting.SiteBonusMarginFill)
+	}
+	return &snap
 }

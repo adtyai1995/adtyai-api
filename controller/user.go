@@ -1051,12 +1051,20 @@ func AdminClearUserBinding(c *gin.Context) {
 		common.ApiErrorT(c, "No permission to access users of same or higher level")
 		return
 	}
+	if isAccessTokenRequest(c) && user.Role >= common.RoleAdminUser {
+		denyAdtyAdminAction(c)
+		return
+	}
 	authorization := requireAdminUserProof(c, service.VerificationScopeAdminUserBindingClear, service.AdminUserBindingContext{UserID: user.Id, BindingType: bindingType})
 	if authorization == nil {
 		return
 	}
 
-	if err := user.ClearBinding(bindingType); err != nil {
+	if err := user.ClearBindingForActor(bindingType, isAccessTokenRequest(c)); err != nil {
+		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
+			denyAdtyAdminAction(c)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -1308,12 +1316,20 @@ func DeleteUser(c *gin.Context) {
 		common.ApiErrorT(c, "No permission to update users of same or higher permission level")
 		return
 	}
+	if isAccessTokenRequest(c) && originUser.Role >= common.RoleAdminUser {
+		denyAdtyAdminAction(c)
+		return
+	}
 	authorization := requireAdminUserProof(c, service.VerificationScopeAdminUserDelete, service.AdminUserContext{UserID: originUser.Id})
 	if authorization == nil {
 		return
 	}
-	revokedAccessTokens, err := model.HardDeleteUserById(id)
+	revokedAccessTokens, err := model.HardDeleteUserByIdForActor(id, isAccessTokenRequest(c))
 	if err != nil {
+		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
+			denyAdtyAdminAction(c)
+			return
+		}
 		if writeUserDeleteBlockError(c, err) {
 			return
 		}
@@ -1550,6 +1566,10 @@ func ManageUser(c *gin.Context) {
 		common.ApiErrorT(c, "No permission to update users of same or higher permission level")
 		return
 	}
+	if isAccessTokenRequest(c) && user.Role >= common.RoleAdminUser {
+		denyAdtyAdminAction(c)
+		return
+	}
 	switch req.Action {
 	case "disable":
 		user.Status = common.UserStatusDisabled
@@ -1568,8 +1588,12 @@ func ManageUser(c *gin.Context) {
 		if authorization == nil {
 			return
 		}
-		revokedAccessTokens, err := user.Delete()
+		revokedAccessTokens, err := user.DeleteForActor(isAccessTokenRequest(c))
 		if err != nil {
+			if errors.Is(err, model.ErrAdminTargetSessionRequired) {
+				denyAdtyAdminAction(c)
+				return
+			}
 			if writeUserDeleteBlockError(c, err) {
 				return
 			}
@@ -1656,9 +1680,13 @@ func ManageUser(c *gin.Context) {
 		}
 	} else if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var txErr error
-		changed, txErr = model.ApplyManagedUserAccessTx(tx, &user)
+		changed, txErr = model.ApplyManagedUserAccessForActorTx(tx, &user, isAccessTokenRequest(c))
 		return txErr
 	}); err != nil {
+		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
+			denyAdtyAdminAction(c)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
