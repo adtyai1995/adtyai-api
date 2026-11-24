@@ -66,6 +66,7 @@ func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, 
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse audio form request: %w", err)
 		}
+		defer form.RemoveAll()
 		for key, values := range form.Value {
 			if !strings.HasSuffix(key, "[]") && len(values) > 1 {
 				return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
@@ -230,6 +231,7 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 			// parsers cannot execute different quality/size/n/model than billed.
 			for key, values := range form.Value {
 				if !strings.HasSuffix(key, "[]") && !strings.HasPrefix(key, "image[") && len(values) > 1 {
+					_ = form.RemoveAll()
 					return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
 				}
 			}

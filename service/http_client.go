@@ -76,7 +76,7 @@ func requestHasCredentialHeader(req *http.Request) bool {
 	return false
 }
 
-func checkRedirect(req *http.Request, via []*http.Request) error {
+func checkRedirectSecurity(req *http.Request, via []*http.Request) error {
 	if len(via) > 0 {
 		if strings.EqualFold(via[0].URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
 			return fmt.Errorf("https to non-https redirect blocked")
@@ -84,6 +84,13 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 		if requestHasCredentialHeader(via[0]) && !sameHTTPOrigin(via[0].URL, req.URL) {
 			return fmt.Errorf("cross-origin credential redirect blocked")
 		}
+	}
+	return nil
+}
+
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if err := checkRedirectSecurity(req, via); err != nil {
+		return err
 	}
 	urlStr := req.URL.String()
 	if err := validateURLWithCurrentFetchSetting(urlStr, true); err != nil {
@@ -103,6 +110,9 @@ func sameHTTPOrigin(left, right *url.URL) bool {
 }
 
 func checkProtectedFetchRedirect(req *http.Request, via []*http.Request) error {
+	if err := checkRedirectSecurity(req, via); err != nil {
+		return err
+	}
 	urlStr := req.URL.String()
 	if err := ValidateSSRFProtectedFetchURL(urlStr); err != nil {
 		return fmt.Errorf("redirect to %s blocked: %v", redactedRedirectTarget(req.URL), err)
@@ -532,6 +542,32 @@ func ResetProxyClientCache() {
 	}
 	defaultClient.CloseIdleConnections()
 	proxyClients.store(clientCacheKey("", defaultHTTPTransportPolicy()), defaultClient)
+}
+
+// NewRelayTransportWithProxySettings builds a single *http.Transport applying
+// channel proxy and TLS policy (used by WebSocket dialers such as Volcengine TTS).
+func NewRelayTransportWithProxySettings(proxyURL string, settings dto.ChannelSettings) (*http.Transport, error) {
+	policy := NormalizeHTTPTransportPolicy(settings)
+	var tlsConfig *tls.Config
+	if policy.TLSInsecureSkipVerify {
+		tlsConfig = common.InsecureTLSConfig
+	}
+	var parsedProxy *url.URL
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		parsed, legacySuffixStripped, err := common.ParseProxyURLRuntime(trimmed)
+		if err != nil {
+			return nil, err
+		}
+		if legacySuffixStripped {
+			warnLegacyProxyURLOnce(newProxyURLConfig(parsed))
+		}
+		parsedProxy = parsed
+	}
+	factory, err := newTransportFactory(parsedProxy, tlsConfig)
+	if err != nil {
+		return nil, err
+	}
+	return factory(), nil
 }
 
 // NewProxyHttpClient is kept for compatibility.

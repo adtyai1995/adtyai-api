@@ -90,7 +90,6 @@ export function WorkerSettingsSection({
     const sanitizedUrl = removeTrailingSlash(values.WorkerUrl)
     const sanitizedKey = values.WorkerValidKey.trim()
     const initialUrl = removeTrailingSlash(baselineRef.current.WorkerUrl)
-    const initialKey = baselineRef.current.WorkerValidKey.trim()
 
     const updates: Array<{ key: string; value: string | boolean }> = []
 
@@ -98,7 +97,7 @@ export function WorkerSettingsSection({
       updates.push({ key: 'WorkerUrl', value: sanitizedUrl })
     }
 
-    if (sanitizedKey !== initialKey || sanitizedUrl === '') {
+    if (sanitizedKey !== '' || (sanitizedUrl === '' && initialUrl !== '')) {
       updates.push({ key: 'WorkerValidKey', value: sanitizedKey })
     }
 
@@ -114,7 +113,9 @@ export function WorkerSettingsSection({
 
     for (const update of updates) {
       await updateOption.mutateAsync(update)
-      if (update.key !== 'WorkerValidKey') {
+      if (update.key === 'WorkerValidKey') {
+        form.setValue('WorkerValidKey', '')
+      } else {
         baselineRef.current = {
           ...baselineRef.current,
           [update.key]: update.value,

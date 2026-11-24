@@ -551,7 +551,9 @@ func fetchAdvancedCustomBalance(channel *model.Channel) (channelBalanceResult, e
 		return channelBalanceResult{}, sanitizeFetchModelsError(err, key)
 	}
 
-	request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return channelBalanceResult{}, sanitizeFetchModelsError(err, key)
 	}

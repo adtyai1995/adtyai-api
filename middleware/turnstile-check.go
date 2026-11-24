@@ -20,7 +20,11 @@ type turnstileCheckResponse struct {
 
 func TurnstileCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if common.TurnstileCheckEnabled {
+		common.OptionMapRWMutex.RLock()
+		turnstileEnabled := common.TurnstileCheckEnabled
+		turnstileSecret := common.TurnstileSecretKey
+		common.OptionMapRWMutex.RUnlock()
+		if turnstileEnabled {
 			response := c.Query("turnstile")
 			if response == "" {
 				common.ApiErrorT(c, "Turnstile token is empty")
@@ -35,7 +39,7 @@ func TurnstileCheck() gin.HandlerFunc {
 				}
 			}
 			form := url.Values{
-				"secret":   {common.TurnstileSecretKey},
+				"secret":   {turnstileSecret},
 				"response": {response},
 				"remoteip": {c.ClientIP()},
 			}

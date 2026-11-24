@@ -124,7 +124,8 @@ func appendAdtyMarginWalletOfficialAuditTx(tx *gorm.DB, ledger *model.AdtySiteWa
 	}
 	switch change.Type {
 	case "gift_reserve", "gift_release", "gift_spend", "voucher_margin", "voucher_freeze",
-		"margin_root_credit", "owner_customer_balance", "owner_team_balance":
+		"voucher_release", "voucher_spend", "margin_root_credit",
+		"owner_customer_balance", "owner_team_balance", "staff_balance", "financial_adjustment":
 		// Parent gift, voucher, margin deposit, or manual balance operations write the official record.
 		return nil, nil
 	}

@@ -194,7 +194,7 @@ func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textReques
 	}
 }
 
-func xunfeiHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, appId string, apiSecret string, apiKey string) (*dto.Usage, *types.NewAPIError) {
+func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.GeneralOpenAIRequest, appId string, apiSecret string, apiKey string) (*dto.Usage, *types.NewAPIError) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	domain, authUrl := getXunfeiAuthUrl(c, apiKey, apiSecret, textRequest.Model)
@@ -232,7 +232,15 @@ func xunfeiHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, appId s
 		}
 	}
 	if usage.TotalTokens == 0 && usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
-		if est := service.ResponseText2Usage(c, content, textRequest.Model, 0); est != nil {
+		modelName := textRequest.Model
+		promptTokens := 0
+		if info != nil {
+			if info.UpstreamModelName != "" {
+				modelName = info.UpstreamModelName
+			}
+			promptTokens = info.GetEstimatePromptTokens()
+		}
+		if est := service.ResponseText2Usage(c, content, modelName, promptTokens); est != nil {
 			usage = *est
 		}
 	}

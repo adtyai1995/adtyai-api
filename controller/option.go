@@ -318,6 +318,8 @@ func UpdatePasskeyDomains(c *gin.Context) {
 		writePasskeyDomainSettingsError(c, err)
 		if !request.Preview {
 			recordPasskeyDomainAudit(c, change, request.RemovalConfirmation != "", err)
+		} else {
+			markIdempotentReplayNoAudit(c)
 		}
 		return
 	}

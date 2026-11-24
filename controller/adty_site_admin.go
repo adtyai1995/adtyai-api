@@ -1365,9 +1365,14 @@ func ResolveAdtyAdminCloseMail(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.ResolveAdtyCloseMailRecipient(id, c.GetInt("id"), req.RecipientID, req.Attempt, req.Decision, req.Reason); err != nil {
+	eventID, err := service.ResolveAdtyCloseMailRecipientWithAudit(id, c.GetInt("id"), req.RecipientID, req.Attempt, req.Decision, req.Reason)
+	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, nil)
 }

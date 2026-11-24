@@ -157,6 +157,7 @@ function MainBonusMethodsPanel() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [drafts, setDrafts] = React.useState<MainBonusMethodsMap>({})
+  const savedRef = React.useRef<MainBonusMethodsMap | null>(null)
   const [savingMethod, setSavingMethod] = React.useState<string | null>(null)
 
   const query = useQuery({
@@ -173,17 +174,36 @@ function MainBonusMethodsPanel() {
 
   React.useEffect(() => {
     if (!query.data) return
+    const incoming: MainBonusMethodsMap = {}
+    for (const item of MAIN_BONUS_METHODS) {
+      const remote = query.data?.[item.key]
+      incoming[item.key] = {
+        enabled: Boolean(remote?.enabled),
+        rate: remote?.rate ?? '',
+      }
+    }
+    const prevSaved = savedRef.current
+    if (!prevSaved) {
+      savedRef.current = incoming
+      setDrafts(incoming)
+      return
+    }
     setDrafts((prev) => {
       const next: MainBonusMethodsMap = { ...prev }
       for (const item of MAIN_BONUS_METHODS) {
-        const remote = query.data?.[item.key]
-        next[item.key] = {
-          enabled: Boolean(remote?.enabled),
-          rate: remote?.rate ?? '',
+        const cur = prev[item.key]
+        const base = prevSaved[item.key]
+        const isClean =
+          !cur ||
+          !base ||
+          (cur.enabled === base.enabled && cur.rate === base.rate)
+        if (isClean) {
+          next[item.key] = incoming[item.key]
         }
       }
       return next
     })
+    savedRef.current = incoming
   }, [query.data])
 
   const mutation = useMutation({
@@ -199,7 +219,22 @@ function MainBonusMethodsPanel() {
       }>('/api/adty/admin/bonus-methods', payload)
       return requireServerSuccess(res.data).data ?? {}
     },
-    onSuccess: (updated) => {
+    onSuccess: (updated, variables) => {
+      const remote = updated[variables.method]
+      const savedEntry = {
+        enabled: Boolean(remote?.enabled),
+        rate: remote?.rate ?? '',
+      }
+      if (savedRef.current) {
+        savedRef.current = {
+          ...savedRef.current,
+          [variables.method]: savedEntry,
+        }
+      }
+      setDrafts((prev) => ({
+        ...prev,
+        [variables.method]: savedEntry,
+      }))
       queryClient.setQueryData(['adty-admin-bonus-methods'], updated)
       toast.success(t('Saved'))
     },

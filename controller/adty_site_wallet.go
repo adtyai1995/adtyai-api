@@ -224,9 +224,14 @@ func PostAdtyAnomalyDispositionReview(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.ReviewAdtyAnomalyDisposition(id, c.GetInt("id"), body.Status, body.Note); err != nil {
+	eventID, err := service.ReviewAdtyAnomalyDispositionWithAudit(id, c.GetInt("id"), body.Status, body.Note)
+	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, gin.H{"reviewed": true})
 }

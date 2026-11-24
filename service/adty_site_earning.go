@@ -105,6 +105,13 @@ func upsertAdtySiteEarningTx(tx *gorm.DB, day string, entry adtySiteEarningEntry
 		if immediateCredit {
 			rowStatus = model.AdtySiteEarningAvailable
 			settledAt = now
+			// R7-004: Pre-lock earnings wallet BEFORE AdtySiteEarningDaily so every
+			// writer obeys canonical AdtySiteWallet(earnings) -> AdtySiteEarningDaily order.
+			if !entry.Earning.IsZero() {
+				if err := preLockAdtySiteWalletsTx(tx, entry.SiteId, model.AdtySiteWalletEarnings); err != nil {
+					return err
+				}
+			}
 		}
 		targetSlot := ""
 		for attempt := range 8 {
@@ -638,9 +645,24 @@ func ReviewAdtySiteCustomer(userId, adminId int, convertSkipped bool) error {
 func ReviewAdtySiteCustomerWithAudit(userId, adminId int, convertSkipped bool) (string, error) {
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var hint model.AdtySiteCustomer
+		if err := tx.Select("user_id", "site_id").Where("user_id = ?", userId).First(&hint).Error; err != nil {
+			return err
+		}
+		// R7-004: Pre-lock site earnings wallet BEFORE AdtySiteCustomer when converting
+		// skipped rows so lock order matches ApplyBillingSettlement
+		// (AdtySiteWallet(earnings) -> AdtySiteCustomer -> AdtySiteEarningDaily).
+		if convertSkipped && hint.SiteId > 0 {
+			if err := preLockAdtySiteWalletsTx(tx, hint.SiteId, model.AdtySiteWalletEarnings); err != nil {
+				return err
+			}
+		}
 		var customer model.AdtySiteCustomer
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userId).First(&customer).Error; err != nil {
 			return err
+		}
+		if convertSkipped && customer.SiteId != hint.SiteId {
+			return model.ErrBillingOperationConflict
 		}
 		if err := tx.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", userId).Update("reviewed", true).Error; err != nil {
 			return err
@@ -651,7 +673,7 @@ func ReviewAdtySiteCustomerWithAudit(userId, adminId int, convertSkipped bool) (
 			}
 			var events []model.AdtySiteEarningEvent
 			if err := model.AdtyLockForUpdate(tx).Where("user_id = ? AND site_id = ? AND risk_flag <> ? AND (risk_released = ? OR risk_released IS NULL) AND (review_status = ? OR review_status IS NULL)",
-				userId, customer.SiteId, "", false, "").Find(&events).Error; err != nil {
+				userId, customer.SiteId, "", false, "").Order("id ASC").Find(&events).Error; err != nil {
 				return err
 			}
 			for _, event := range events {
@@ -661,7 +683,7 @@ func ReviewAdtySiteCustomerWithAudit(userId, adminId int, convertSkipped bool) (
 			}
 			var rows []model.AdtySiteEarningDaily
 			if err := tx.Where("user_id = ? AND site_id = ? AND kind = ? AND status = ?", userId, customer.SiteId,
-				model.AdtySiteEarningSkipped, model.AdtySiteEarningPending).Find(&rows).Error; err != nil {
+				model.AdtySiteEarningSkipped, model.AdtySiteEarningPending).Order("id ASC").Find(&rows).Error; err != nil {
 				return err
 			}
 			for _, row := range rows {

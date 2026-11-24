@@ -602,8 +602,6 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/adty/staff/balance-requests", controller.PostAdtyStaffBalanceRequest},
 		{http.MethodGet, "/adty/site/balance-requests", controller.GetAdtyOwnerBalanceRequests},
 		{http.MethodPost, "/adty/site/balance-requests/:id/review", controller.PostAdtyOwnerBalanceReview},
-		{http.MethodGet, "/adty/admin/balance-requests", controller.GetAdtyAdminBalanceRequests},
-		{http.MethodPost, "/adty/admin/balance-requests/:id/review", controller.PostAdtyAdminBalanceReview},
 	} {
 		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api"+route.path, "session", "")
 		handlers := []gin.HandlerFunc{middleware.UserAuth(), middleware.DisableCache()}
@@ -615,6 +613,12 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		}
 		apiRouter.Handle(route.method, route.path, append(handlers, route.handler)...)
 	}
+	// R7-035: Mount Root balance-request endpoints under RootAuth so failed Root
+	// review attempts also flow through beginAdminAudit/finishAdminAudit.
+	middleware.DeclareAdtyAccessTokenRoute(http.MethodGet, "/api/adty/admin/balance-requests", "session", "")
+	middleware.DeclareAdtyAccessTokenRoute(http.MethodPost, "/api/adty/admin/balance-requests/:id/review", "session", "")
+	apiRouter.GET("/adty/admin/balance-requests", middleware.RootAuth(), middleware.DisableCache(), controller.GetAdtyAdminBalanceRequests)
+	apiRouter.POST("/adty/admin/balance-requests/:id/review", middleware.RootAuth(), middleware.DisableCache(), controller.PostAdtyAdminBalanceReview)
 
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/reseller/tiers", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/reseller/tiers", "scope", "option:write")

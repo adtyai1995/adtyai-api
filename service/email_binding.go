@@ -41,13 +41,21 @@ func ValidateAccountEmail(email string) (string, error) {
 	if len(parts) != 2 {
 		return "", ErrAccountEmailInvalid
 	}
-	if common.EmailDomainRestrictionEnabled {
-		allowed := slices.Contains(common.EmailDomainWhitelist, parts[1])
+	common.OptionMapRWMutex.RLock()
+	domainRestrict := common.EmailDomainRestrictionEnabled
+	aliasRestrict := common.EmailAliasRestrictionEnabled
+	var whitelist []string
+	if domainRestrict {
+		whitelist = append([]string(nil), common.EmailDomainWhitelist...)
+	}
+	common.OptionMapRWMutex.RUnlock()
+	if domainRestrict {
+		allowed := slices.Contains(whitelist, parts[1])
 		if !allowed {
 			return "", ErrAccountEmailRestricted
 		}
 	}
-	if common.EmailAliasRestrictionEnabled && strings.ContainsAny(parts[0], "+.") {
+	if aliasRestrict && strings.ContainsAny(parts[0], "+.") {
 		return "", ErrAccountEmailRestricted
 	}
 	return email, nil

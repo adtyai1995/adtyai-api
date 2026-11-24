@@ -558,6 +558,32 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 		if err := lockLiveAdtyGroupsTx(tx, fromID, toID); err != nil {
 			return err
 		}
+		if tx.Migrator().HasTable(&AdtySite{}) {
+			var sites []AdtySite
+			if err := lockForUpdate(tx).Select("id", "status", "allowed_groups").
+				Where("allowed_groups <> ''").
+				Order("id").Find(&sites).Error; err != nil {
+				return err
+			}
+			for _, site := range sites {
+				groups, err := parseAdtySiteAllowedGroups(site.AllowedGroups)
+				if err != nil || !slices.Contains(groups, fromID) {
+					continue
+				}
+				next := replaceAdtyGroupInSlice(groups, fromID, toID)
+				raw, err := common.Marshal(next)
+				if err != nil {
+					return err
+				}
+				if err := tx.Model(&AdtySite{}).Where("id = ?", site.Id).Update("allowed_groups", string(raw)).Error; err != nil {
+					return err
+				}
+				siteChanged = true
+				if site.Status != AdtySiteStatusClosed {
+					moved.Sites++
+				}
+			}
+		}
 		var users []User
 		if err := lockForUpdate(tx.Unscoped()).Select("id").Where(commonGroupCol+" = ?", fromID).Order("id").Find(&users).Error; err != nil {
 			return err
@@ -631,33 +657,6 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 				return err
 			}
 			moved.Channels++
-		}
-
-		if tx.Migrator().HasTable(&AdtySite{}) {
-			var sites []AdtySite
-			if err := lockForUpdate(tx).Select("id", "status", "allowed_groups").
-				Where("allowed_groups <> ''").
-				Order("id").Find(&sites).Error; err != nil {
-				return err
-			}
-			for _, site := range sites {
-				groups, err := parseAdtySiteAllowedGroups(site.AllowedGroups)
-				if err != nil || !slices.Contains(groups, fromID) {
-					continue
-				}
-				next := replaceAdtyGroupInSlice(groups, fromID, toID)
-				raw, err := common.Marshal(next)
-				if err != nil {
-					return err
-				}
-				if err := tx.Model(&AdtySite{}).Where("id = ?", site.Id).Update("allowed_groups", string(raw)).Error; err != nil {
-					return err
-				}
-				siteChanged = true
-				if site.Status != AdtySiteStatusClosed {
-					moved.Sites++
-				}
-			}
 		}
 
 		if tx.Migrator().HasTable(&Option{}) {
@@ -988,20 +987,22 @@ func adtyGroupOptionsMigrated(fromID, toID string, load func(string) (string, er
 	if !ok {
 		return values, nil
 	}
-	merged := make([]string, 0, len(gma[toID])+len(fromModels))
-	for _, item := range gma[toID] {
-		item = strings.TrimSpace(item)
-		if item != "" && !slices.Contains(merged, item) {
-			merged = append(merged, item)
+	if toModels, hasTo := gma[toID]; hasTo {
+		merged := make([]string, 0, len(toModels)+len(fromModels))
+		for _, item := range toModels {
+			item = strings.TrimSpace(item)
+			if item != "" && !slices.Contains(merged, item) {
+				merged = append(merged, item)
+			}
 		}
-	}
-	for _, item := range fromModels {
-		item = strings.TrimSpace(item)
-		if item != "" && !slices.Contains(merged, item) {
-			merged = append(merged, item)
+		for _, item := range fromModels {
+			item = strings.TrimSpace(item)
+			if item != "" && !slices.Contains(merged, item) {
+				merged = append(merged, item)
+			}
 		}
+		gma[toID] = merged
 	}
-	gma[toID] = merged
 	delete(gma, fromID)
 	raw, err := common.Marshal(gma)
 	if err != nil {

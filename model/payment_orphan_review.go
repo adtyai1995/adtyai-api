@@ -153,18 +153,26 @@ func ResolvePaymentOrphanReview(id int64, operatorID int, request PaymentOrphanR
 				return common.NewMessage("The original wallet refund ledger is required")
 			}
 			var deducted int64
+			var hasDebit bool
+			var firstDebitID int64
 			for _, ledger := range ledgers {
-				if ledger.DeltaQuota > 0 || ledger.DeltaQuota < -int64(common.MaxWalletQuota) {
+				if ledger.DeltaQuota < -int64(common.MaxWalletQuota) || ledger.DeltaQuota > int64(common.MaxWalletQuota) {
 					return common.NewMessage("The original wallet refund ledger is required")
+				}
+				if ledger.DeltaQuota < 0 {
+					if !hasDebit {
+						firstDebitID = ledger.Id
+					}
+					hasDebit = true
 				}
 				deducted += -ledger.DeltaQuota
 			}
 			refundUSD := decimal.NewFromInt(ext.RefundQuota).Div(common.QuotaPerUnitDecimal())
 			amountOK := ext.RefundAmount.Equal(adtyRefundAmount(ext, ext.RefundQuota, ext.FaceQuota())) || ext.RefundAmount.Equal(refundUSD)
-			if deducted > ext.CreditQuota || ext.RefundQuota < 0 || ext.RefundQuota > ext.FaceQuota() || !amountOK {
+			if !hasDebit || deducted < 0 || deducted > ext.CreditQuota || ext.RefundQuota < 0 || ext.RefundQuota > ext.FaceQuota() || !amountOK {
 				return common.NewMessage("The original wallet refund ledger is required")
 			}
-			review.RefundLedgerID, review.DeductedQuota = ledgers[0].Id, deducted
+			review.RefundLedgerID, review.DeductedQuota = firstDebitID, deducted
 			review.RefundQuota, review.RefundAmount = ext.RefundQuota, ext.RefundAmount
 			review.ExposureAmount = decimal.Max(amount.Sub(ext.RefundAmount), decimal.Zero)
 		case PaymentOrphanStatusNeverCredited:

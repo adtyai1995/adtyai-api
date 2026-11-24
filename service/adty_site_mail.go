@@ -328,6 +328,23 @@ func normalizeSenderDomain(raw string) (string, error) {
 	if main := adtyMainHost(); main != "" && main != "localhost" {
 		blocked = append(blocked, adtyRegistrableDomain(main))
 	}
+	if apiHost := adtyAPIBaseHost(); apiHost != "" && apiHost != "localhost" {
+		blocked = append(blocked, adtyRegistrableDomain(apiHost))
+	}
+	common.OptionMapRWMutex.RLock()
+	resendFrom := strings.TrimSpace(common.OptionMap["ResendFrom"])
+	common.OptionMapRWMutex.RUnlock()
+	if resendFrom != "" {
+		addrStr := resendFrom
+		if parsed, err := mail.ParseAddress(resendFrom); err == nil && parsed != nil && parsed.Address != "" {
+			addrStr = parsed.Address
+		}
+		if at := strings.LastIndex(addrStr, "@"); at >= 0 && at+1 < len(addrStr) {
+			if fromHost := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(addrStr[at+1:])), "."); fromHost != "" && fromHost != "localhost" {
+				blocked = append(blocked, adtyRegistrableDomain(fromHost))
+			}
+		}
+	}
 	blocked = append(blocked, strings.TrimPrefix(common.AdtyBrandURL, "https://"))
 	for _, own := range blocked {
 		if adtyHostUnder(domain, strings.ToLower(strings.TrimSpace(own))) {
@@ -833,11 +850,17 @@ func buildAdtySiteCloseMailBatchView(batch model.AdtySiteCloseMailBatch, statusF
 
 // ResolveAdtyCloseMailRecipient records a Root decision after checking the provider.
 func ResolveAdtyCloseMailRecipient(siteID, operatorID int, id int64, attempt int, decision, reason string) error {
+	_, err := ResolveAdtyCloseMailRecipientWithAudit(siteID, operatorID, id, attempt, decision, reason)
+	return err
+}
+
+func ResolveAdtyCloseMailRecipientWithAudit(siteID, operatorID int, id int64, attempt int, decision, reason string) (string, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" || (decision != "retry" && decision != "delivered") {
-		return common.NewMessage("Invalid parameters")
+		return "", common.NewMessage("Invalid parameters")
 	}
 	var batchID int64
+	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtySiteCloseMailRecipient
 		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND site_id = ?", id, siteID).First(&row).Error; err != nil {
@@ -860,12 +883,22 @@ func ResolveAdtyCloseMailRecipient(siteID, operatorID int, id int64, attempt int
 			return err
 		}
 		batchID = row.BatchId
-		return recordSiteAuditTx(tx, siteID, "close_mail_"+decision, operatorID, map[string]any{"recipient_id": id, "status": row.Status, "attempt": attempt}, map[string]any{"status": updates["status"], "batch": batchID}, reason)
+		var auditErr error
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, siteID, "close_mail_"+decision, operatorID, map[string]any{"recipient_id": id, "status": row.Status, "attempt": attempt}, map[string]any{"status": updates["status"], "batch": batchID}, reason)
+		return auditErr
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
-	return refreshAdtySiteCloseMailBatchCounts(batchID, time.Now().Unix())
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
+	if err := refreshAdtySiteCloseMailBatchCounts(batchID, time.Now().Unix()); err != nil {
+		return eventID, err
+	}
+	return eventID, nil
 }
 
 // RetryAdtySiteCloseMigrationMailByRoot lets Root inspect and retry failed/pending
@@ -891,22 +924,34 @@ func RetryAdtySiteCloseMigrationMailByRoot(siteId, operatorId int, includeSendin
 		reason = "retry close migration mail"
 	}
 	now := time.Now().Unix()
-	_ = model.DB.Create(&model.AdtySiteAudit{
-		SiteId:     siteId,
-		OperatorId: operatorId,
-		Action:     "close_mail_retry",
-		Reason:     reason,
-		NewValue:   fmt.Sprintf("batch=%d total=%d success=%d fail=%d status=%s", view.Id, view.RecipientCount, view.SuccessCount, view.FailCount, view.RetryStatus),
-		CreatedAt:  now,
-	}).Error
-	if operatorId > 0 {
-		writeAdtyOfficialAudit(operatorId, siteId, "site", fmt.Sprintf("%d", siteId), "site.close_mail.retry", reason, "", nil, map[string]any{
-			"batch_id":        view.Id,
-			"recipient_count": view.RecipientCount,
-			"success_count":   view.SuccessCount,
-			"fail_count":      view.FailCount,
-			"retry_status":    view.RetryStatus,
-		}, model.AuditResultSuccess)
+	var auditEvent *model.AuditLog
+	if auditTxErr := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&model.AdtySiteAudit{
+			SiteId:     siteId,
+			OperatorId: operatorId,
+			Action:     "close_mail_retry",
+			Reason:     reason,
+			NewValue:   fmt.Sprintf("batch=%d total=%d success=%d fail=%d status=%s", view.Id, view.RecipientCount, view.SuccessCount, view.FailCount, view.RetryStatus),
+			CreatedAt:  now,
+		}).Error; err != nil {
+			return err
+		}
+		if operatorId > 0 {
+			var auditErr error
+			auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, operatorId, siteId, "site", fmt.Sprintf("%d", siteId), "site.close_mail.retry", reason, "", nil, map[string]any{
+				"batch_id":        view.Id,
+				"recipient_count": view.RecipientCount,
+				"success_count":   view.SuccessCount,
+				"fail_count":      view.FailCount,
+				"retry_status":    view.RetryStatus,
+			}, model.AuditResultSuccess)
+			return auditErr
+		}
+		return nil
+	}); auditTxErr != nil {
+		common.SysError(common.LogText("persist close mail retry audit intent failed: %s", auditTxErr.Error()))
+	} else if auditEvent != nil {
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	return view, nil
 }

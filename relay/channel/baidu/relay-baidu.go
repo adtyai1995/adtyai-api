@@ -1,10 +1,12 @@
 package baidu
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -235,21 +237,30 @@ func getBaiduAccessTokenHelper(apiKey string) (*BaiduAccessToken, error) {
 	if len(parts) != 2 {
 		return nil, errors.New("invalid baidu apikey")
 	}
-	req, err := http.NewRequest("POST", fmt.Sprintf("https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=%s&client_secret=%s",
-		parts[0], parts[1]), nil)
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_id", parts[0])
+	form.Set("client_secret", parts[1])
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://aip.baidubce.com/oauth/2.0/token", strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("failed to create baidu token request")
 	}
-	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
 	res, err := service.GetHttpClient().Do(req)
 	if err != nil {
-		return nil, err
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr.Err != nil {
+			return nil, fmt.Errorf("baidu token request failed: %w", urlErr.Err)
+		}
+		return nil, fmt.Errorf("baidu token request failed: %w", err)
 	}
 	defer res.Body.Close()
 
 	var accessToken BaiduAccessToken
-	err = common.DecodeJson(res.Body, &accessToken)
+	err = common.DecodeJson(io.LimitReader(res.Body, 1<<20), &accessToken)
 	if err != nil {
 		return nil, err
 	}

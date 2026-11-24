@@ -162,9 +162,15 @@ func settleAdtySite(siteId int, cutoff string, now int64) (bool, error) {
 				holdPositive = true
 			}
 		}
+		// R7-004: Pre-lock earnings wallet BEFORE AdtySiteEarningDaily so lock order
+		// matches ApplyBillingSettlement / upsertAdtySiteEarningTx.
+		if err := preLockAdtySiteWalletsTx(tx, siteId, model.AdtySiteWalletEarnings); err != nil {
+			return err
+		}
 		var rows []model.AdtySiteEarningDaily
 		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status = ? AND kind <> ?",
 			siteId, model.AdtySiteEarningPending, model.AdtySiteEarningTrial).
+			Order("id ASC").
 			Find(&rows).Error; err != nil {
 			return err
 		}

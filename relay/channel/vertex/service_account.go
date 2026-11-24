@@ -1,10 +1,13 @@
 package vertex
 
 import (
+	"context"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -125,14 +128,21 @@ func exchangeJwtForAccessToken(signedJWT string, proxy string) (string, error) {
 		return "", fmt.Errorf("new proxy http client failed: %w", err)
 	}
 
-	resp, err := client.PostForm(authURL, data)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	var result map[string]any
-	if err := common.DecodeJson(resp.Body, &result); err != nil {
+	if err := common.DecodeJson(io.LimitReader(resp.Body, 1<<20), &result); err != nil {
 		return "", err
 	}
 

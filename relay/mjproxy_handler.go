@@ -491,6 +491,13 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	midjourneyTask.Description = midjResponse.Description
 	if mjResp.StatusCode == http.StatusGatewayTimeout && priceData.Quota > 0 {
 		upstreamAcceptedBillable = true
+		if midjourneyTask.MjId == "" {
+			midjourneyTask.Status = "AMBIGUOUS"
+			midjourneyTask.Progress = "100%"
+			if midjourneyTask.FailReason == "" {
+				midjourneyTask.FailReason = "ambiguous_upstream_submit"
+			}
+		}
 	} else if mjResp.StatusCode != http.StatusOK || midjResponse.Code != 1 {
 		billingPrepared, _ = service.PrepareMidjourneyTaskBilling(info, midjourneyTask, 0, false)
 	} else if priceData.Quota > 0 {
@@ -559,8 +566,15 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *dto.MidjourneyResponse {
 	if channel.Status != common.ChannelStatusEnabled {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, i18n.T(c, i18n.MsgRelayTaskChannelDisabled))
 	}
+	key, _, keyErr := channel.GetNextEnabledKey()
+	if keyErr != nil {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, keyErr.Error())
+	}
+	common.SetContextKey(c, constant.ContextKeyChannelId, originTask.ChannelId)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, key)
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
 	c.Set("channel_id", originTask.ChannelId)
-	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
+	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 
 	requestURL := getMjRequestPath(c.Request.URL.String())
 	fullRequestURL := fmt.Sprintf("%s%s", channel.GetBaseURL(), requestURL)
@@ -744,9 +758,23 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			if channel.Status != common.ChannelStatusEnabled {
 				return service.MidjourneyErrorWrapper(constant.MjRequestError, i18n.T(c, i18n.MsgRelayTaskChannelDisabled))
 			}
+			key, _, keyErr := channel.GetNextEnabledKey()
+			if keyErr != nil {
+				return service.MidjourneyErrorWrapper(constant.MjRequestError, keyErr.Error())
+			}
+			common.SetContextKey(c, constant.ContextKeyChannelId, originTask.ChannelId)
+			common.SetContextKey(c, constant.ContextKeyChannelKey, key)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
+			common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
 			c.Set("base_url", channel.GetBaseURL())
 			c.Set("channel_id", originTask.ChannelId)
-			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
+			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
+			if relayInfo != nil {
+				relayInfo.ChannelId = originTask.ChannelId
+				relayInfo.ChannelBaseUrl = channel.GetBaseURL()
+				relayInfo.ChannelType = channel.Type
+				relayInfo.ApiKey = key
+			}
 			logger.LogDebug(c, "Midjourney action uses origin channel: id=%s, base_url=%s", strconv.Itoa(originTask.ChannelId), channel.GetBaseURL())
 		}
 		midjRequest.Prompt = originTask.Prompt
@@ -908,6 +936,13 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	if !skipNewRow {
 		if midjResponseWithStatus.StatusCode == http.StatusGatewayTimeout && priceData.Quota > 0 {
 			upstreamAcceptedBillable = true
+			if midjourneyTask.MjId == "" {
+				midjourneyTask.Status = "AMBIGUOUS"
+				midjourneyTask.Progress = "100%"
+				if midjourneyTask.FailReason == "" {
+					midjourneyTask.FailReason = "ambiguous_upstream_submit"
+				}
+			}
 		} else if !consumeQuota || midjResponseWithStatus.StatusCode != http.StatusOK {
 			billingPrepared, _ = service.PrepareMidjourneyTaskBilling(relayInfo, midjourneyTask, 0, false)
 		} else if priceData.Quota > 0 {

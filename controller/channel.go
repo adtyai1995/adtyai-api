@@ -1758,7 +1758,7 @@ func ManageMultiKeys(c *gin.Context) {
 
 	// get_key_status 为只读查询，不记录审计。修改操作只在写库成功后记录，失败不能留下已执行的审计。
 	if request.Action == "get_key_status" {
-		markAuditLogged(c)
+		markIdempotentReplayNoAudit(c)
 	}
 	auditMultiKey := func() {
 		recordManageAudit(c, "channel.multi_key_manage", map[string]any{

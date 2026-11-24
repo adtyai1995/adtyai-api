@@ -95,8 +95,9 @@ func GetReferralProfile(c *gin.Context) {
 		return
 	}
 	cfg := adty_setting.GetReferralSetting()
+	redactedAffiliate := redactReferralAffiliateForUser(affiliate)
 	profile := referralProfile{
-		Affiliate: affiliate, Account: &account,
+		Affiliate: redactedAffiliate, Account: &account,
 		PartnerMinRate: cfg.PartnerMinRate, PartnerMaxRate: cfg.PartnerMaxRate,
 		FreezeDays: cfg.FreezeDays, MinWithdrawUSD: cfg.MinWithdrawUSD, USDTWithdrawFee: cfg.USDTWithdrawFee,
 		CancelWindowMins: cfg.CancelWindowMinutes, Enabled: cfg.Enabled, SiteOwner: affiliate.SiteOwnerSince > 0,
@@ -186,9 +187,33 @@ func GetReferralWithdrawals(c *gin.Context) {
 		return
 	}
 	resignWithdrawalAssets(items)
+	for i := range items {
+		redactReferralWithdrawalForUser(&items[i])
+	}
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(items)
 	common.ApiSuccess(c, pageInfo)
+}
+
+func redactReferralAffiliateForUser(affiliate *model.ReferralAffiliate) *model.ReferralAffiliate {
+	if affiliate == nil {
+		return nil
+	}
+	copyVal := *affiliate
+	copyVal.RiskNote = ""
+	copyVal.ApprovedBy = 0
+	copyVal.DisabledBy = 0
+	return &copyVal
+}
+
+func redactReferralWithdrawalForUser(w *model.ReferralWithdrawal) {
+	if w == nil {
+		return
+	}
+	w.AdminNote = ""
+	w.ReviewedBy = 0
+	w.RejectedBy = 0
+	w.CanceledBy = 0
 }
 
 func resignWithdrawalAssets(items []model.ReferralWithdrawal) {
@@ -229,6 +254,12 @@ func CreateReferralWithdrawal(c *gin.Context) {
 			return
 		}
 		writeReferralError(c, err)
+		return
+	}
+	if withdrawal != nil {
+		redacted := *withdrawal
+		redactReferralWithdrawalForUser(&redacted)
+		common.ApiSuccess(c, &redacted)
 		return
 	}
 	common.ApiSuccess(c, withdrawal)

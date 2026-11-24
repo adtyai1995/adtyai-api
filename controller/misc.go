@@ -70,7 +70,9 @@ func GetStatus(c *gin.Context) {
 	// 支付方式可能查通道表，必须在配置锁之外算。
 	paymentMethods := service.AdtyAvailablePaymentMethodIDs()
 	// 分站 widget 要在拿配置锁之前查，避免锁里再查站点表。
+	common.OptionMapRWMutex.RLock()
 	turnstileSiteKey := common.TurnstileSiteKey
+	common.OptionMapRWMutex.RUnlock()
 	if choice := service.AdtyTurnstileFor(service.AdtySiteForRequest(c), c.Request.Host); choice.SiteKey != "" {
 		turnstileSiteKey = choice.SiteKey
 	}

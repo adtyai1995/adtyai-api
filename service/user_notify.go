@@ -306,15 +306,19 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 			nextStatus = AdtyWatcherOutboxDead
 			nextRetry = 0
 		}
-		_ = model.DB.Model(outbox).Updates(map[string]any{
+		lastErr := truncateAdtyRunes("recipient lookup error: "+err.Error(), 1000)
+		if updErr := model.DB.Model(outbox).Updates(map[string]any{
 			"status":        nextStatus,
 			"attempt_count": attempts,
-			"last_error":    "recipient lookup error: " + err.Error(),
+			"last_error":    lastErr,
 			"next_retry_at": nextRetry,
 			"updated_at":    now,
-		}).Error
+		}).Error; updErr != nil {
+			common.SysError(common.LogText("failed to update watcher outbox %d after lookup error: %s", outbox.Id, updErr.Error()))
+		}
 		outbox.Status = nextStatus
 		outbox.AttemptCount = attempts
+		outbox.LastError = lastErr
 		return false
 	}
 	if liveUser.Id == 0 {
@@ -370,16 +374,19 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 			nextStatus = AdtyWatcherOutboxDead
 			nextRetry = 0
 		}
-		_ = model.DB.Model(outbox).Updates(map[string]any{
+		lastErr := truncateAdtyRunes(err.Error(), 1000)
+		if updErr := model.DB.Model(outbox).Updates(map[string]any{
 			"status":        nextStatus,
 			"attempt_count": attempts,
-			"last_error":    err.Error(),
+			"last_error":    lastErr,
 			"next_retry_at": nextRetry,
 			"updated_at":    now,
-		}).Error
+		}).Error; updErr != nil {
+			common.SysError(common.LogText("failed to update watcher outbox %d after delivery error: %s", outbox.Id, updErr.Error()))
+		}
 		outbox.Status = nextStatus
 		outbox.AttemptCount = attempts
-		outbox.LastError = err.Error()
+		outbox.LastError = lastErr
 		return false
 	}
 	_ = model.DB.Model(outbox).Updates(map[string]any{

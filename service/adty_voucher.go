@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -846,6 +847,7 @@ func revokeUnusedOwnerAndMarginVouchersOnCloseTx(tx *gorm.DB, siteId int) error 
 	var vouchers []model.AdtyVoucher
 	if err := model.AdtyLockForUpdate(tx).
 		Where("(target_site_id = ? OR source_site_id = ?) AND purpose IN ? AND status IN ?", siteId, siteId, []string{model.AdtyVoucherPurposeSiteOwner, model.AdtyVoucherPurposeSiteMargin}, []string{model.AdtyVoucherStatusPending, model.AdtyVoucherStatusFrozen}).
+		Order("id ASC").
 		Find(&vouchers).Error; err != nil {
 		return err
 	}
@@ -898,9 +900,14 @@ func revokeUnusedOwnerAndMarginVouchersOnClosedSitesTx(tx *gorm.DB) error {
 			siteIDs[voucher.SourceSiteId] = struct{}{}
 		}
 	}
+	sortedSiteIDs := make([]int, 0, len(siteIDs))
 	for siteID := range siteIDs {
+		sortedSiteIDs = append(sortedSiteIDs, siteID)
+	}
+	slices.Sort(sortedSiteIDs)
+	for _, siteID := range sortedSiteIDs {
 		var site model.AdtySite
-		if err := tx.Select("id", "status").Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil {
+		if err := model.AdtyLockForUpdate(tx).Select("id", "status").Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil {
 			return err
 		}
 		if site.Id == 0 || site.Status != model.AdtySiteStatusClosed {
@@ -1059,6 +1066,11 @@ func releaseAdtyVoucherSourceTx(tx *gorm.DB, voucher *model.AdtyVoucher) error {
 		return releaseAdtyVoucherLiabilityTx(tx, voucher.AmountUSD)
 	}
 	earnUSD, marginUSD, legacySingleMargin := adtyVoucherFrozenSplit(voucher)
+	if marginUSD.IsPositive() && !earnUSD.IsPositive() && voucher.SourceSiteId > 0 {
+		if err := preLockAdtySiteWalletsTx(tx, voucher.SourceSiteId, model.AdtySiteWalletEarnings); err != nil {
+			return err
+		}
+	}
 	if earnUSD.IsPositive() {
 		if _, err := applyAdtySiteWalletChangeTx(tx, voucher.SourceSiteId, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
 			Type: "voucher_release", RefType: "voucher", RefID: voucher.CodeHash[:16], Reason: "voucher cancellation release", IdempotencyKey: "voucher-release:" + voucher.CodeHash,
@@ -1093,6 +1105,11 @@ func spendAdtyVoucherSourceTx(tx *gorm.DB, voucher *model.AdtyVoucher) error {
 		return spendAdtyVoucherLiabilityTx(tx, voucher.AmountUSD)
 	}
 	earnUSD, marginUSD, legacySingleMargin := adtyVoucherFrozenSplit(voucher)
+	if marginUSD.IsPositive() && !earnUSD.IsPositive() && voucher.SourceSiteId > 0 {
+		if err := preLockAdtySiteWalletsTx(tx, voucher.SourceSiteId, model.AdtySiteWalletEarnings); err != nil {
+			return err
+		}
+	}
 	if earnUSD.IsPositive() {
 		if _, err := applyAdtySiteWalletChangeTx(tx, voucher.SourceSiteId, model.AdtySiteWalletEarnings, earnUSD.Neg(), AdtySiteWalletChange{
 			Type: "voucher_spend", RefType: "voucher", RefID: voucher.CodeHash[:16], Reason: "voucher redeem spend", IdempotencyKey: "voucher-spend:" + voucher.CodeHash,

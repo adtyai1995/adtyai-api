@@ -246,7 +246,9 @@ export function EmailSettingsSection({
             ...baselineRef.current,
             ResendKeyConfigured: true,
           }
-        } else if (update.key !== 'SMTPToken') {
+        } else if (update.key === 'SMTPToken') {
+          form.setValue('SMTPToken', '')
+        } else {
           baselineRef.current = {
             ...baselineRef.current,
             [update.key]: update.value,
@@ -255,6 +257,7 @@ export function EmailSettingsSection({
         baselineSerializedRef.current = JSON.stringify(baselineRef.current)
       }
       form.setValue('ResendApiKey', '')
+      form.setValue('SMTPToken', '')
     } catch (error) {
       handleServerError(error)
     }

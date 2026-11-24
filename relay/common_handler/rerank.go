@@ -41,7 +41,9 @@ func RerankHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 				if result.Document != nil {
 					if doc, ok := result.Document.(string); ok {
 						if doc == "" {
-							document = info.Documents[result.Index]
+							if result.Index >= 0 && result.Index < len(info.Documents) {
+								document = info.Documents[result.Index]
+							}
 						} else {
 							document = doc
 						}

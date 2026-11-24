@@ -258,7 +258,7 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, presentAdtySiteInviteWithdrawals([]model.AdtySiteInviteWithdrawal{*row}, nil)[0])
+	common.ApiSuccess(c, presentAdtySiteInviteWithdrawals([]model.AdtySiteInviteWithdrawal{*row}, nil, true)[0])
 }
 
 func GetAdtySiteInviteWithdrawals(c *gin.Context) {
@@ -267,7 +267,7 @@ func GetAdtySiteInviteWithdrawals(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": presentAdtySiteInviteWithdrawals(rows, nil)})
+	common.ApiSuccess(c, gin.H{"items": presentAdtySiteInviteWithdrawals(rows, nil, true)})
 }
 
 func PostAdtySiteInviteWithdrawalCancel(c *gin.Context) {
@@ -290,14 +290,14 @@ func GetAdtyOwnerSiteInviteWithdrawals(c *gin.Context) {
 	}
 	page := common.GetPageQuery(c)
 	rows, total, err := service.ListAdtyOwnerSiteInviteWithdrawals(site.Id, c.Query("status"), page)
-	presentCommissionPage(c, page, rows, total, err)
+	presentCommissionPage(c, page, rows, total, err, true)
 }
 func GetClosedSiteInviteWithdrawals(c *gin.Context) {
 	page := common.GetPageQuery(c)
 	rows, total, err := service.ListClosedSiteInviteWithdrawals(c.Query("status"), page)
-	presentCommissionPage(c, page, rows, total, err)
+	presentCommissionPage(c, page, rows, total, err, false)
 }
-func presentCommissionPage(c *gin.Context, page *common.PageInfo, rows []model.AdtySiteInviteWithdrawal, total int64, err error) {
+func presentCommissionPage(c *gin.Context, page *common.PageInfo, rows []model.AdtySiteInviteWithdrawal, total int64, err error, redactOperators bool) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -317,7 +317,7 @@ func presentCommissionPage(c *gin.Context, page *common.PageInfo, rows []model.A
 		return
 	}
 	page.SetTotal(int(total))
-	page.SetItems(presentAdtySiteInviteWithdrawals(rows, names))
+	page.SetItems(presentAdtySiteInviteWithdrawals(rows, names, redactOperators))
 	common.ApiSuccess(c, page)
 }
 
@@ -443,12 +443,18 @@ type adtySiteInviteWithdrawalItem struct {
 	Username     string `json:"username,omitempty"`
 }
 
-func presentAdtySiteInviteWithdrawals(rows []model.AdtySiteInviteWithdrawal, names map[int]string) []adtySiteInviteWithdrawalItem {
+func presentAdtySiteInviteWithdrawals(rows []model.AdtySiteInviteWithdrawal, names map[int]string, redactOperators bool) []adtySiteInviteWithdrawalItem {
 	now := time.Now()
 	out := make([]adtySiteInviteWithdrawalItem, len(rows))
 	for i, row := range rows {
 		row.QRImageURL = service.ResignReferralAssetURLForWithdrawal(row.QRImageURL, row.UserId, model.ReferralAssetPurposeWithdrawalQR, now)
 		row.ProofNote = service.ResignReferralAssetURLForWithdrawal(row.ProofNote, 0, model.ReferralAssetPurposePaymentProof, now)
+		if redactOperators {
+			row.ReviewedBy = 0
+			row.PaidBy = 0
+			row.FailureBy = 0
+			row.LegacyDecisionBy = 0
+		}
 		state := service.SiteInviteCancellation(&row, now.Unix())
 		item := adtySiteInviteWithdrawalItem{AdtySiteInviteWithdrawal: row, CanCancel: state.CanCancel, CancelReason: state.CancelReason}
 		if names != nil {

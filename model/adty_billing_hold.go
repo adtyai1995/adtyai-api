@@ -270,7 +270,7 @@ func HasOpenAdtyBillingHoldTx(tx *gorm.DB, userID int) (bool, error) {
 			if strings.HasPrefix(op.OperationKey, "direct:") && reqID != "" {
 				var finalizedStreamRoot int64
 				if err := tx.Model(&BillingOperation{}).
-					Where("user_id = ? AND operation_key IN ? AND state IN ? AND stream_wallet_quota > 0",
+					Where("user_id = ? AND operation_key IN ? AND state IN ?",
 						userID, []string{"request:" + reqID, reqID}, []string{BillingSettled, BillingRefunded}).
 					Count(&finalizedStreamRoot).Error; err != nil {
 					return false, err

@@ -223,6 +223,11 @@ func ReleaseAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder) error {
 	if err != nil {
 		return err
 	}
+	if ext.GiftReserveMargin.IsPositive() && !ext.GiftReserveEarning.IsPositive() {
+		if err := preLockAdtySiteWalletsTx(tx, ext.SiteId, model.AdtySiteWalletEarnings); err != nil {
+			return err
+		}
+	}
 	if ext.GiftReserveEarning.IsPositive() {
 		if _, err := applyAdtySiteWalletChangeTx(tx, ext.SiteId, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
 			Type: "gift_release", RefType: "topup", RefID: ext.TradeNo, IdempotencyKey: key + ":earn:release",

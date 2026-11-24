@@ -107,6 +107,7 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 	var balance int64
 	var checkin int64
 	var effectiveGrantedBonus int64
+	var priorBonusAccounted int64
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var err error
 		topUp, ext, err = lockAdtyTopUpTx(tx, tradeNo)
@@ -116,6 +117,49 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 		effectiveGrantedBonus, err = adtyEffectiveGrantedBonusQuotaTx(tx, ext)
 		if err != nil {
 			return err
+		}
+		// R7-029: Compute prior accounted bonus from persisted completed manual refunds
+		// (ext.RefundBonusQuota is gorm:"-" and always 0 on DB reads).
+		if tx.Migrator().HasTable(&AdtyManualRefund{}) {
+			var completed []AdtyManualRefund
+			if err := tx.Select("request_quota", "bonus_deducted_quota", "bonus_shortfall_quota").
+				Where("trade_no = ? AND status = ?", tradeNo, AdtyManualRefundStatusCompleted).
+				Find(&completed).Error; err != nil {
+				return err
+			}
+			var priorReq int64
+			for _, r := range completed {
+				priorReq += r.RequestQuota
+				priorBonusAccounted += r.BonusDeductedQuota + r.BonusShortfallQuota
+			}
+			if legacyRefundQuota := ext.RefundQuota - priorReq; legacyRefundQuota > 0 && ext.FaceQuota() > 0 {
+				fullQuota := max(ext.CreditQuota-ext.FaceQuota(), int64(0))
+				if ext.BonusUSD.IsPositive() {
+					if fullDec, convErr := common.WalletQuotaFromDecimalStrict(ext.BonusUSD.Mul(common.QuotaPerUnitDecimal()).Floor()); convErr == nil && int64(fullDec) > fullQuota {
+						fullQuota = int64(fullDec)
+					}
+				}
+				priorShrunk := int64(0)
+				basisQuota := effectiveGrantedBonus
+				if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentFulfilled && effectiveGrantedBonus < fullQuota {
+					priorShrunk = fullQuota - effectiveGrantedBonus
+					basisQuota = fullQuota
+				} else if ext.GiftFulfillmentStatus == "" && basisQuota <= 0 {
+					basisQuota = fullQuota
+				}
+				if basisQuota > 0 {
+					legacyTarget := decimal.NewFromInt(basisQuota).Mul(decimal.NewFromInt(min(legacyRefundQuota, ext.FaceQuota()))).Div(decimal.NewFromInt(ext.FaceQuota())).Floor().IntPart()
+					priorBonusAccounted += max(legacyTarget-priorShrunk, int64(0))
+				}
+			}
+		} else if ext.RefundQuota > 0 && ext.FaceQuota() > 0 {
+			baseBonus := effectiveGrantedBonus
+			if baseBonus <= 0 && ext.GiftFulfillmentStatus == "" {
+				baseBonus = max(ext.CreditQuota-ext.FaceQuota(), int64(0))
+			}
+			if baseBonus > 0 {
+				priorBonusAccounted = decimal.NewFromInt(baseBonus).Mul(decimal.NewFromInt(min(ext.RefundQuota, ext.FaceQuota()))).Div(decimal.NewFromInt(ext.FaceQuota())).Floor().IntPart()
+			}
 		}
 		if ext.TeamId > 0 {
 			var lot AdtyTeamFundLot
@@ -135,10 +179,15 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 		return nil, common.NewMessage("Only credited orders can be refunded")
 	}
 	deducted, bonus, refundQuota, amount := adtyRefundFigures(ext, balance, checkin)
-	// R6-048: Use effective granted bonus (handles shrunk-then-fulfilled orders)
-	// and cap remaining refundable principal by RefundRemainingQuota.
-	if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentFulfilled || ext.RefundBonusQuota > 0 {
-		remainingBonus := max(effectiveGrantedBonus-ext.RefundBonusQuota, 0)
+	// R6-048 / R7-029: Use effective granted bonus minus persisted prior accounted
+	// bonus (handles shrunk-then-fulfilled and post-partial-refund orders) and
+	// keep deducted consistent when RefundRemainingQuota clamps refundQuota.
+	if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentFulfilled || ext.RefundQuota > 0 || priorBonusAccounted > 0 {
+		baseBonus := effectiveGrantedBonus
+		if baseBonus <= 0 && ext.GiftFulfillmentStatus == "" {
+			baseBonus = max(ext.CreditQuota-ext.FaceQuota(), int64(0))
+		}
+		remainingBonus := max(baseBonus-priorBonusAccounted, int64(0))
 		bonus = remainingBonus
 		spendable := max(balance-checkin, 0)
 		maxDeduct := max(ext.FaceQuota()-ext.RefundQuota, 0) + remainingBonus
@@ -152,6 +201,7 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 	}
 	if facts != nil && refundQuota > facts.RefundRemainingQuota {
 		refundQuota = facts.RefundRemainingQuota
+		deducted = min(deducted, refundQuota+bonus)
 		amount = adtyRefundAmount(ext, refundQuota, ext.FaceQuota())
 	}
 	if ext.IsOwnerSelfUse() {

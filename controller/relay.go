@@ -651,12 +651,17 @@ func executeTaskSubmissionWith(
 	}
 
 	if taskErr != nil {
-		// R4-019: Always persist ambiguous upstream submissions regardless of client
+		// R4-019 / R7-005: Always persist ambiguous upstream submissions regardless of client
 		// disconnect so pre-consumed funds are held for review instead of auto-refunded.
+		// If persisting the review row fails, fall back to SettleBilling and mark durable
+		// so the defer never auto-refunds a potentially accepted upstream job.
 		if c != nil && c.GetBool("task_submit_ambiguous") {
-			if holdAmbiguousTaskSubmission(c, relayInfo, taskErr) {
-				durable = true
+			if !holdAmbiguousTaskSubmission(c, relayInfo, taskErr) {
+				if settleErr := service.SettleBilling(c, relayInfo, relayInfo.PriceData.Quota); settleErr != nil {
+					common.SysError(common.LogText("settle ambiguous task billing error after insert failure: %s", settleErr.Error()))
+				}
 			}
+			durable = true
 		}
 		diagnostics.failed(stage, "task_error", taskErr, durable)
 		return nil, taskErr
@@ -666,11 +671,11 @@ func executeTaskSubmissionWith(
 		diagnostics.failed("submit", "missing_result", taskErr, false)
 		return nil, taskErr
 	}
-	// R3-011: Upstream has already accepted this billable task (result != nil).
-	// Attempt to reserve any submit-time upward adjustment, but NEVER abort or
-	// refund 100% if upward reserve fails or the client disconnected — persist
-	// the task with context.WithoutCancel and let SettleBilling apply DEC-003
-	// (cap wallet debit at 0 and record shortfall hold) so vendor cost is accounted.
+	// R3-011 / R7-005: Upstream has already accepted this billable task (result != nil).
+	// Never auto-refund via defer once upstream accepted. Attempt to reserve any
+	// submit-time upward adjustment, persist with context.WithoutCancel, and let
+	// SettleBilling apply DEC-003 (cap wallet debit at 0 and record shortfall hold).
+	durable = true
 	if relayInfo.Billing != nil {
 		stage = "reserve"
 		diagnostics.reserve("reserve_start", result.Quota)
@@ -752,23 +757,17 @@ func executeTaskSubmissionWith(
 	if insertErr := task.InsertWithContext(persistCtx, insertOmits...); insertErr != nil {
 		common.SysError(common.LogText("insert task error: %s", insertErr.Error()))
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
-		diagnostics.failed("insert", "database_error", taskErr, false)
-		// R6-011: Once upstream accepted the task (result != nil), settle the
+		diagnostics.failed("insert", "database_error", taskErr, durable)
+		// R6-011 / R7-005: Once upstream accepted the task (result != nil), settle the
 		// reservation even if task persistence fails and nothing was written to
-		// the client, preventing a 100% auto-refund of a live paid upstream job.
-		if result != nil || c.Writer.Written() {
-			if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
-				common.SysError(common.LogText("settle task billing error: %s", settleErr.Error()))
-				return nil, taskErr
-			}
-			durable = true
-			if c.Writer.Written() {
-				service.LogTaskConsumption(c, relayInfo, task)
-			}
+		// the client, and always record consumption once settled (durable is already true).
+		if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
+			common.SysError(common.LogText("settle task billing error: %s", settleErr.Error()))
+			return nil, taskErr
 		}
+		service.LogTaskConsumption(c, relayInfo, task)
 		return nil, taskErr
 	}
-	durable = true
 	stage = "settle"
 	diagnostics.durable(task)
 	diagnostics.settleStart(task, result.Quota)

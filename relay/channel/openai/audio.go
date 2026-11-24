@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -173,6 +175,7 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	var responseData struct {
+		Text  string `json:"text"`
 		Usage *struct {
 			dto.Usage
 			InputTokenDetails *struct {
@@ -181,7 +184,8 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 			} `json:"input_token_details"`
 		} `json:"usage"`
 	}
-	if err := common.Unmarshal(responseBody, &responseData); err == nil && responseData.Usage != nil {
+	parsedJSON := common.Unmarshal(responseBody, &responseData) == nil
+	if parsedJSON && responseData.Usage != nil {
 		usage := &responseData.Usage.Usage
 		if usage.PromptTokens == 0 {
 			usage.PromptTokens = usage.InputTokens
@@ -218,9 +222,27 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		}
 	}
 
-	usage := &dto.Usage{}
-	usage.PromptTokens = info.GetEstimatePromptTokens()
-	usage.CompletionTokens = 0
-	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	promptTokens := info.GetEstimatePromptTokens()
+	usage := &dto.Usage{
+		PromptTokens: promptTokens,
+		TotalTokens:  promptTokens,
+	}
+	// R7-013: When a model has explicit audio-token pricing (e.g. gpt-4o-transcribe)
+	// and returns non-JSON (response_format=text/srt/vtt) or omits `usage`, preserve
+	// AudioRatio billing and estimate completion text tokens from the transcript.
+	if ratio_setting.ContainsAudioRatio(info.GetBillingModelName()) {
+		usage.PromptTokensDetails.AudioTokens = promptTokens
+		transcriptText := strings.TrimSpace(responseData.Text)
+		if !parsedJSON || transcriptText == "" {
+			transcriptText = strings.TrimSpace(string(responseBody))
+		}
+		if transcriptText != "" {
+			if est := service.ResponseText2Usage(c, transcriptText, info.UpstreamModelName, promptTokens); est != nil && est.CompletionTokens > 0 {
+				usage.CompletionTokens = est.CompletionTokens
+				usage.CompletionTokenDetails.TextTokens = est.CompletionTokens
+				usage.TotalTokens = promptTokens + est.CompletionTokens
+			}
+		}
+	}
 	return nil, usage
 }

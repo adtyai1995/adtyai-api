@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -155,19 +156,29 @@ func SaveAdtyTranslationConfig(input AdtyTranslationInput, audits ...model.Audit
 	input.Protocol = strings.TrimSpace(input.Protocol)
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
 	input.ModelName = strings.TrimSpace(input.ModelName)
+	input.BackupModel = strings.TrimSpace(input.BackupModel)
 	if input.Mode != model.AdtyTranslationModeOwn && input.Mode != model.AdtyTranslationModeSet {
 		return nil, ErrAdtyTranslationInvalid
 	}
-	if input.ModelName == "" || input.MaxChars < 0 || input.DailyQuota < 0 || input.RetryLimit < 0 || input.Concurrency < 0 {
+	if input.ModelName == "" || input.MaxChars < 0 || input.DailyQuota < 0 || input.RetryLimit < 0 || input.Concurrency < 0 ||
+		utf8.RuneCountInString(input.BaseURL) > 256 || utf8.RuneCountInString(input.ModelName) > 80 || utf8.RuneCountInString(input.BackupModel) > 80 {
 		return nil, ErrAdtyTranslationInvalid
 	}
 	if input.Mode == model.AdtyTranslationModeOwn {
-		if _, err := adtyTranslationProtocolName(input.Protocol); err != nil {
+		protocol, err := adtyTranslationProtocolName(input.Protocol)
+		if err != nil {
 			return nil, err
 		}
+		input.Protocol = protocol
 		if err := rejectAdtyTranslationSelf(input.BaseURL, input.RequestHost, input.Token); err != nil {
 			return nil, err
 		}
+	} else if input.Protocol != "" {
+		protocol, err := adtyTranslationProtocolName(input.Protocol)
+		if err != nil {
+			return nil, err
+		}
+		input.Protocol = protocol
 	}
 	var saved model.AdtyTranslationConfig
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -310,6 +321,9 @@ func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslatio
 	objectKey = strings.TrimSpace(objectKey)
 	if source == "" || objectKey == "" {
 		return &AdtyTranslationResult{ObjectKey: objectKey, Source: source, Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady}, nil
+	}
+	if utf8.RuneCountInString(objectKey) > 160 {
+		return &AdtyTranslationResult{ObjectKey: objectKey, Source: source, Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady}, ErrAdtyTranslationInvalid
 	}
 	hash := adtyTranslationSourceHash(source)
 	if adtyTextHasOutboundSecret(source) {

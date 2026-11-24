@@ -5739,6 +5739,7 @@
     "Resend email delivery failed (HTTP {{status}})": "Resend email delivery failed (HTTP {{status}})",
     "Resend in {{seconds}}s": "Resend in {{seconds}}s",
     "Resend key configuration status is read-only": "Resend key configuration status is read-only",
+    "Turnstile secret configuration status is read-only": "Turnstile secret configuration status is read-only",
     "Resend request failed": "Resend request failed",
     "Resend sender address is not configured or invalid": "Resend sender address is not configured or invalid",
     "Reserve requested images; settle returned images.": "Reserve requested images; settle returned images.",

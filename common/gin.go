@@ -386,6 +386,7 @@ func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
 
 	// Reset request body
 	if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
+		_ = form.RemoveAll()
 		return nil, seekErr
 	}
 	c.Request.Body = io.NopCloser(storage)

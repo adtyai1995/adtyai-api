@@ -1073,16 +1073,6 @@ func scheduleAdtySiteCloseWithAudit(siteId, adminId int, plan AdtySiteClosePlan,
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(updates).Error; err != nil {
 			return err
 		}
-		if requiredStatus == model.AdtySiteStatusPaused {
-			if err := recordSiteCompatibilityAuditTx(tx, site.Id, "paused_repair", adminId,
-				map[string]any{"status": site.Status},
-				map[string]any{
-					"status": model.AdtySiteStatusClosing, "outcome": AdtyPausedRepairOutcomeClose,
-					"close_execute_at": executeAt, "immediate": immediate,
-				}, plan.Reason); err != nil {
-				return err
-			}
-		}
 		if !wasPending {
 			var last model.AdtySiteCloseMailBatch
 			if err := tx.Where("site_id = ?", site.Id).Order("revision DESC").Limit(1).Find(&last).Error; err != nil {
@@ -1103,11 +1093,17 @@ func scheduleAdtySiteCloseWithAudit(siteId, adminId int, plan AdtySiteClosePlan,
 		if plan.ExecuteAt > 0 {
 			action = "close_reschedule"
 		}
+		afterSnap := make(map[string]any, len(updates)+2)
+		for k, v := range updates {
+			afterSnap[k] = v
+		}
 		if requiredStatus == model.AdtySiteStatusPaused {
 			action = "paused_repair"
+			afterSnap["outcome"] = AdtyPausedRepairOutcomeClose
+			afterSnap["immediate"] = immediate
 		}
 		var auditErr error
-		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, action, adminId, map[string]any{"status": site.Status, "close_execute_at": site.CloseExecuteAt}, updates, plan.Reason)
+		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, action, adminId, map[string]any{"status": site.Status, "close_execute_at": site.CloseExecuteAt}, afterSnap, plan.Reason)
 		return auditErr
 	})
 	if err != nil {

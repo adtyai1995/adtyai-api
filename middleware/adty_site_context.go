@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/service"
@@ -61,7 +62,7 @@ func adtyIsAPIPath(method, path string) bool {
 func adtyAbortRelayOnWebHost(c *gin.Context) {
 	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 		"error": gin.H{
-			"message": "Model API requests are not allowed on the website domain; use the API domain instead",
+			"message": i18n.T(c, i18n.MsgAdtyRelayHostDisallowed),
 			"type":    "invalid_request_error",
 			"code":    "api_domain_required",
 		},

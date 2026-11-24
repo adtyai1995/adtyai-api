@@ -260,6 +260,15 @@ func adtyMainHost() string {
 	return strings.ToLower(parsed.Hostname())
 }
 
+// adtyAPIBaseHost 是主站配置的 API 域名（来自 adty_site_setting.api_base_url），小写，没设就是空。
+func adtyAPIBaseHost() string {
+	parsed, err := url.Parse(strings.TrimSpace(adty_setting.GetSiteSetting().APIBaseURL))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
 // adtyRegistrableDomain 按公共后缀表取注册域名（eTLD+1），用来判断主站、CNAME 目标和回源域名下的子域名。
 func adtyRegistrableDomain(host string) string {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
@@ -298,6 +307,9 @@ func normalizeCustomDomain(raw string) (string, error) {
 	}
 	if main := adtyMainHost(); main != "" && main != "localhost" {
 		blocked = append(blocked, adtyRegistrableDomain(main))
+	}
+	if apiHost := adtyAPIBaseHost(); apiHost != "" && apiHost != "localhost" {
+		blocked = append(blocked, adtyRegistrableDomain(apiHost))
 	}
 	blocked = append(blocked, strings.TrimPrefix(common.AdtyBrandURL, "https://"))
 	for _, domain := range blocked {

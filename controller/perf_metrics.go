@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	queryPerfMetricsSummary         = perfmetrics.QuerySummaryAll
-	queryPerfMetricsSummaryFiltered = perfmetrics.QuerySummaryAllFiltered
-	queryPerfMetrics                = perfmetrics.Query
+	queryPerfMetricsSummary              = perfmetrics.QuerySummaryAll
+	queryPerfMetricsSummaryFiltered      = perfmetrics.QuerySummaryAllFiltered
+	queryPerfMetricsSummaryByModelGroups = perfmetrics.QuerySummaryAllByModelGroups
+	queryPerfMetrics                     = perfmetrics.Query
 )
 
 const perfMetricsLoadFailed = "Failed to load performance metrics"
@@ -106,7 +107,7 @@ func GetPerfMetricsSummary(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
-	_, concreteGroups, activeGroups := perfMetricsScope(c)
+	siteID, concreteGroups, activeGroups := perfMetricsScope(c)
 	visibleModelGroups := perfMetricsVisibleModelGroups(concreteGroups)
 	if len(activeGroups) == 0 || len(visibleModelGroups) == 0 {
 		c.JSON(http.StatusOK, gin.H{
@@ -117,8 +118,17 @@ func GetPerfMetricsSummary(c *gin.Context) {
 		})
 		return
 	}
+	includeAuto := siteID == 0 && slices.Contains(activeGroups, "auto")
+	allowedGroupsByModel := make(map[string][]string, len(visibleModelGroups))
+	for modelName, enabledGroups := range visibleModelGroups {
+		modelGroups := append([]string{}, enabledGroups...)
+		if includeAuto {
+			modelGroups = append(modelGroups, "auto")
+		}
+		allowedGroupsByModel[modelName] = modelGroups
+	}
 	isVisible := func(name string) bool {
-		_, ok := visibleModelGroups[name]
+		_, ok := allowedGroupsByModel[name]
 		return ok
 	}
 	visibleRecent := make([]string, 0, len(recentModels))
@@ -127,7 +137,7 @@ func GetPerfMetricsSummary(c *gin.Context) {
 			visibleRecent = append(visibleRecent, name)
 		}
 	}
-	result, err := queryPerfMetricsSummaryFiltered(hours, activeGroups, isVisible, visibleRecent...)
+	result, err := queryPerfMetricsSummaryByModelGroups(hours, activeGroups, allowedGroupsByModel, visibleRecent...)
 	if err != nil {
 		reportPerfMetricsQueryError(c, err, "summary")
 		return

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -770,7 +771,7 @@ func QueueAdtyPublicTelegram(channel, purpose, body string) error {
 
 func queueAdtyPublicTelegramTx(tx *gorm.DB, channel, purpose, body, eventKey string) error {
 	channel, body = strings.TrimSpace(channel), strings.TrimSpace(body)
-	if channel == "" || body == "" || !adtyValidTelegramPurpose(purpose) {
+	if channel == "" || utf8.RuneCountInString(channel) > 128 || body == "" || !adtyValidTelegramPurpose(purpose) {
 		return ErrAdtyTelegramInvalid
 	}
 	if adtyTelegramPrivateWords.MatchString(body) {

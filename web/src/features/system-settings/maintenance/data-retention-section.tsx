@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -137,22 +137,52 @@ export function DataRetentionSection() {
     enabled: isRoot,
   })
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
+  const savedRef = useRef<Record<string, Draft> | null>(null)
 
   useEffect(() => {
     if (!settings.data?.categories) return
-    const next: Record<string, Draft> = {}
+    const incoming: Record<string, Draft> = {}
     for (const category of settings.data.categories) {
-      next[category.category] = {
+      incoming[category.category] = {
         days:
           category.retention_days != null ? String(category.retention_days) : '',
         action: category.action || category.allowed_actions[0] || 'delete',
       }
     }
-    setDrafts(next)
+    const prevSaved = savedRef.current
+    if (!prevSaved) {
+      savedRef.current = incoming
+      setDrafts(incoming)
+      return
+    }
+    setDrafts((prev) => {
+      const next: Record<string, Draft> = { ...prev }
+      for (const category of settings.data?.categories ?? []) {
+        const key = category.category
+        const cur = prev[key]
+        const base = prevSaved[key]
+        const isClean =
+          !cur ||
+          !base ||
+          (cur.days === base.days && cur.action === base.action)
+        if (isClean) {
+          next[key] = incoming[key]
+        }
+      }
+      return next
+    })
+    savedRef.current = incoming
   }, [settings.data])
 
   const save = useMutation({
-    mutationFn: async (policies: unknown) => {
+    mutationFn: async (
+      policies: Array<{
+        category: string
+        clear?: boolean
+        retention_days?: number
+        action?: string
+      }>
+    ) => {
       const response = await api.put('/api/adty/admin/data-retention', {
         policies,
       })
@@ -161,8 +191,17 @@ export function DataRetentionSection() {
         throw new Error(body.message || 'Failed to save')
       }
     },
-    onSuccess: async () => {
-      toast.success(t('Retention settings saved. Later cleanup runs will use the new periods.'))
+    onSuccess: async (_, policies) => {
+      if (savedRef.current) {
+        const nextSaved = { ...savedRef.current }
+        for (const item of policies) {
+          delete nextSaved[item.category]
+        }
+        savedRef.current = nextSaved
+      }
+      toast.success(
+        t('Retention settings saved. Later cleanup runs will use the new periods.')
+      )
       await queryClient.invalidateQueries({ queryKey: ['adty-data-retention'] })
     },
     onError: (error) => {

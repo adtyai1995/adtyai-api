@@ -634,6 +634,14 @@ func adtySiteInviteCommissionAfterRefundTx(tx *gorm.DB, ext *model.AdtyTopupOrde
 			return err
 		}
 	}
+	// R7-006: Pre-lock earnings and margin in canonical order BEFORE any
+	// operating-wallet debit in clawConvertedSiteCommissionTx or subsequent
+	// gift-guarantee release in adtySiteBonusAfterRefundTx.
+	if row.SiteId > 0 && (parts[0].IsPositive() || parts[1].IsPositive()) {
+		if err := preLockAdtySiteWalletsTx(tx, row.SiteId, model.AdtySiteWalletEarnings, model.AdtySiteWalletMargin); err != nil {
+			return err
+		}
+	}
 	if parts[0].IsPositive() {
 		if err := consumeSiteCommissionHoldTx(tx, &row, parts[0], true, "refund:"+target.String()); err != nil {
 			return err
@@ -781,6 +789,11 @@ func refundClawedSiteCommissionToFundingWalletsTx(tx *gorm.DB, row *model.AdtySi
 		weights = []decimal.Decimal{amount, decimal.Zero}
 	}
 	parts := splitDecimalByWeights(amount, weights)
+	if parts[1].IsPositive() && !parts[0].IsPositive() && row.SiteId > 0 {
+		if err := preLockAdtySiteWalletsTx(tx, row.SiteId, model.AdtySiteWalletEarnings); err != nil {
+			return err
+		}
+	}
 	kinds := []string{model.AdtySiteWalletEarnings, model.AdtySiteWalletMargin}
 	codes := []string{"e", "m"}
 	for i, part := range parts {
@@ -900,6 +913,11 @@ func consumeSiteCommissionHoldTx(tx *gorm.DB, row *model.AdtySiteInviteCommissio
 	}
 	if settled.LessThan(amount) {
 		return common.NewMessage("Not enough withdrawable commission")
+	}
+	if parts[1].IsPositive() && !parts[0].IsPositive() && row.SiteId > 0 {
+		if err := preLockAdtySiteWalletsTx(tx, row.SiteId, model.AdtySiteWalletEarnings); err != nil {
+			return err
+		}
 	}
 	kinds := []string{model.AdtySiteWalletEarnings, model.AdtySiteWalletMargin}
 	codes := []string{"e", "m"}

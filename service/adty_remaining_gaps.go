@@ -572,7 +572,59 @@ func init() {
 	model.AdtyFundFinancialAdjustmentTx = fundAdtyFinancialAdjustmentTx
 }
 
+// RecordAdtyStaffReadAudit persists both the site audit row and durable official
+// AuditIntent atomically before returning customer data, then delivers best-effort.
+func RecordAdtyStaffReadAudit(c *gin.Context, staff *model.AdtySiteStaff, action string, target int) error {
+	if staff == nil || model.DB == nil {
+		return nil
+	}
+	after := map[string]any{"staff_id": staff.Id, "customer_id": target}
+	username := ""
+	actorRole := 0
+	if c != nil {
+		username = c.GetString("username")
+		actorRole = c.GetInt("role")
+	}
+	var auditEntry *model.AuditLog
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&model.AdtySiteAudit{
+			SiteId:     staff.SiteId,
+			OperatorId: staff.UserId,
+			Action:     action,
+			NewValue:   common.GetJsonString(after),
+		}).Error; err != nil {
+			return err
+		}
+		entry, auditErr := model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
+			UserId: staff.UserId, Username: username, ActorRole: actorRole,
+			SiteID: model.OfficialAuditSiteIDPointer(staff.SiteId), ObjectType: "site.staff",
+			ObjectID: strconv.Itoa(staff.Id), Action: "adty." + action, Category: model.AuditCategoryOperation,
+			Content: action, After: after, Result: model.AuditResultSuccess, Success: true,
+		})
+		if auditErr != nil {
+			return auditErr
+		}
+		if err := model.AppendAuditIntentTx(tx, entry); err != nil {
+			return err
+		}
+		auditEntry = &entry
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if auditEntry != nil {
+		deliverAdtyCommittedAudit(*auditEntry)
+	}
+	return nil
+}
+
 func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestID int64, approve bool, reviewReason ...string) error {
+	_, err := ReviewAdtyStaffBalanceRequestWithAudit(reviewerID, reviewerRole, requestID, approve, reviewReason...)
+	return err
+}
+
+func ReviewAdtyStaffBalanceRequestWithAudit(reviewerID int, reviewerRole string, requestID int64, approve bool, reviewReason ...string) (string, error) {
 	var changedUserID int
 	var officialEntry *model.AuditLog
 	var deliverIntent bool
@@ -581,7 +633,7 @@ func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestI
 		note = strings.TrimSpace(reviewReason[0])
 	}
 	if len(note) > 200 {
-		return common.NewMessage("Review reason must be at most 200 characters")
+		return "", common.NewMessage("Review reason must be at most 200 characters")
 	}
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtyStaffBalanceRequest
@@ -695,15 +747,17 @@ func ReviewAdtyStaffBalanceRequest(reviewerID int, reviewerRole string, requestI
 		return nil
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
+	eventID := ""
 	if officialEntry != nil {
+		eventID = officialEntry.EventId
 		deliverStaffBalanceOfficialAudit(officialEntry, deliverIntent)
 	}
 	if changedUserID > 0 {
 		model.AdtySyncUserQuotaCache(changedUserID, "staff-balance")
 	}
-	return nil
+	return eventID, nil
 }
 
 // ReconcileOperatingWallet returns operating balance minus customer principal.
@@ -1031,15 +1085,15 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 	}
 	now := time.Now().Unix()
 	var result *AdtyTodoItem
-	var transitioned bool
 	var prevStatus string
+	var auditEntry *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
 		siteID := 0
-		if tx.Select("id", "site_id").Where("id = ?", userID).Limit(1).Find(&user).RowsAffected > 0 {
+		hasUser := tx.Select("id", "username", "role", "site_id").Where("id = ?", userID).Limit(1).Find(&user).RowsAffected > 0
+		if hasUser {
 			siteID = user.SiteId
 		}
-		pub := lookupAdtyPublicationForTodoTx(tx, key, 0)
 		var item AdtyTodoItem
 		found := tx.Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
 		if found.Error != nil {
@@ -1055,7 +1109,11 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 			}
 			// 完成和进行中只改已有待办。缺行、外键、任意公告键都不得在这里物化。
 			return gorm.ErrRecordNotFound
-		} else if pub != nil && item.PublicationId == 0 {
+		}
+		// R7-042: Resolve publication using item.PublicationId after loading item so
+		// post-edit ReadKey rotations still link the publication and record AdtyNotificationRead.
+		pub := lookupAdtyPublicationForTodoTx(tx, item.Key, item.PublicationId)
+		if pub != nil && item.PublicationId == 0 {
 			item.PublicationId = pub.Id
 		}
 		// R6-004: Enforce live visibility (withdrawn/retargeted publication, revoked watcher RBAC, host isolation).
@@ -1137,15 +1195,48 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 				_ = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&readRow).Error
 			}
 		}
-		transitioned = true
+		action := "adty.todo.transition"
+		if item.Status == AdtyTodoStatusCompleted {
+			action = "adty.todo.complete"
+		}
+		auditSiteID := item.SiteId
+		if auditSiteID == 0 {
+			var actorPtr *model.User
+			if hasUser {
+				actorPtr = &user
+			}
+			auditSiteID = officialNotificationHideSiteID(c, actorPtr)
+		}
+		entry, auditErr := model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
+			UserId:     userID,
+			Username:   user.Username,
+			ActorRole:  user.Role,
+			SiteID:     model.OfficialAuditSiteIDPointer(auditSiteID),
+			ObjectType: "todo",
+			ObjectID:   item.Key,
+			Action:     action,
+			Category:   model.AuditCategoryOperation,
+			Content:    action,
+			Before:     map[string]any{"key": item.Key, "status": prevStatus},
+			After:      map[string]any{"key": item.Key, "status": item.Status, "completed_at": item.CompletedAt, "revision": item.Revision},
+			Result:     model.AuditResultSuccess,
+			Success:    true,
+		})
+		if auditErr != nil {
+			return auditErr
+		}
+		if err := model.AppendAuditIntentTx(tx, entry); err != nil {
+			return err
+		}
+		auditEntry = &entry
 		result = &item
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if transitioned && result != nil {
-		writeAdtyTodoAudit(c, userID, result, prevStatus)
+	if auditEntry != nil {
+		deliverAdtyCommittedAudit(*auditEntry)
 	}
 	return result, nil
 }
@@ -1353,7 +1444,23 @@ func GetAdtyTodoHistory(userID int, key string) ([]AdtyTodoStateHistory, error) 
 	if err := ensureAdtyTodoTables(model.DB); err != nil {
 		return nil, err
 	}
+	var item AdtyTodoItem
+	found := model.DB.Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
+	if found.Error != nil {
+		return nil, found.Error
+	}
+	if found.RowsAffected == 0 {
+		if pub := lookupAdtyPublicationForTodoTx(model.DB, key, 0); pub != nil && pub.Id > 0 {
+			if err := model.DB.Where("user_id = ? AND publication_id = ?", userID, pub.Id).Limit(1).Find(&item).Error; err != nil {
+				return nil, err
+			}
+		}
+	}
 	var history []AdtyTodoStateHistory
+	if item.Id > 0 {
+		err := model.DB.Where("user_id = ? AND (todo_id = ? OR key = ?)", userID, item.Id, key).Order("id ASC").Find(&history).Error
+		return history, err
+	}
 	err := model.DB.Where("user_id = ? AND key = ?", userID, key).Order("id ASC").Find(&history).Error
 	return history, err
 }
@@ -1908,7 +2015,8 @@ func SaveAdtyNoticeTemplateWithAudit(actorID, actorRole int, key, titleZh, conte
 	key = strings.TrimSpace(key)
 	titleZh, contentZh = strings.TrimSpace(titleZh), strings.TrimSpace(contentZh)
 	titleEn, contentEn = strings.TrimSpace(titleEn), strings.TrimSpace(contentEn)
-	if key == "" || len(key) > 128 || titleZh == "" || contentZh == "" || titleEn == "" || contentEn == "" {
+	if key == "" || len(key) > 128 || titleZh == "" || contentZh == "" || titleEn == "" || contentEn == "" ||
+		utf8.RuneCountInString(titleZh) > 255 || utf8.RuneCountInString(titleEn) > 255 {
 		return nil, "", common.NewMessage("Invalid parameters")
 	}
 	if err := ValidateAdtyNoticeTemplatePlaceholders(titleZh, contentZh, titleEn, contentEn); err != nil {

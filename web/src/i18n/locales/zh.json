@@ -3559,6 +3559,7 @@
     "Resend sender address is not configured or invalid": "Resend 发件邮箱未配置或无效",
     "Resend request failed": "请求 Resend 失败",
     "Resend key configuration status is read-only": "Resend 密钥的配置状态不能手动修改",
+    "Turnstile secret configuration status is read-only": "Turnstile 密钥的配置状态不能手动修改",
     "Resend email delivery failed (HTTP {{status}})": "Resend 发送邮件失败（HTTP {{status}}）",
     "Resend codes": "重新发送验证码",
     "Resend API key is not configured or invalid": "Resend API 密钥未配置或无效",

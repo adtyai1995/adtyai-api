@@ -8,7 +8,7 @@
 - Refresh Token 是随机不透明值，有效期最长 30 天。浏览器只通过 `HttpOnly`、`SameSite=Strict` Cookie 持有它；服务端仅保存 HMAC 摘要，并在每次刷新时轮换。
 - Refresh Cookie 名为 `adtyai_refresh`。`adtyai_has_session` 是 Refresh Cookie 的会话提示，值恒为 `1`，`Path=/`、非 `HttpOnly`，与 Refresh Cookie 同时写入、同时清除、同一过期时间。它只声明"曾签发过 Refresh Cookie"，不含任何凭据，也不参与任何鉴权判定；伪造它唯一的效果是自费一次注定失败的 refresh。它存在的原因是 Refresh Cookie 被 `HttpOnly` 和 `Path=/api/user/auth` 双重限制，`/` 上的页面无法判断自己是否匿名，否则每次冷启动都要发一次注定 401 的 refresh，而该请求还会占用按 IP 计数的 `CriticalRateLimit` 配额。
 - `user_sessions` 是登录会话控制面，记录设备、IP、登录方式、最后活跃时间、到期时间和撤销状态。数据库中的 Session 状态是最终权威；撤销传播速度取决于下文所述的 Redis 拓扑。
-- 用户的密码、状态、角色或安全因子发生安全相关变化时，`auth_version` 会递增并使旧登录会话失效。管理员调整分组只刷新授权缓存，不会退出任何登录设备。
+- 用户的密码、状态、角色、分组或安全因子发生安全相关变化时，`auth_version` 会递增并使旧登录会话失效，同时刷新授权缓存。
 - Redis 缓存保存用户鉴权快照和登录会话快照。版本栅栏和撤销 tombstone 防止旧缓存重新授权；Session 快照使用跟随 `SYNC_FREQUENCY` 的短 TTL，缓存未命中或未启用 Redis 时回退到数据库校验。
 
 `SESSION_SECRET` 用于派生 Access Token、Security Proof、Refresh Token 摘要和 AuthFlow 摘要的不同用途密钥。生产环境及多节点部署必须在所有节点配置相同的高强度随机值；更换该值会使现有登录、临时鉴权流程和 Security Proof 全部失效。
@@ -87,7 +87,7 @@
 
 定时清理即使发现 `expires_at` 已过期，也不会删除 `created_at` 仍落在实际签发窗口内的行；尚未达到 revoked 保留期的撤销记录同样会继续保留。这样在扩大配置窗口时，过期清理不会静默削弱签发计数或审计保留。
 
-活跃数量会计入状态仍为 active 但 `user_auth_version` 已过期的异常残留行，而设备列表只展示当前鉴权版本。因此遇到 `AUTH_SESSION_LIMIT` 时，应优先在仍已登录的设备上执行“撤销其他会话”，该操作会同时清理不可见的旧版本 active 行；没有可用设备时可使用密码重置撤销所有会话。密码重置不会清空签发窗口计数。
+活跃数量仅统计当前鉴权版本（`user_auth_version` 匹配）且未过期、状态为 active 的会话，与设备列表口径一致。遇到 `AUTH_SESSION_LIMIT` 时，可在已登录设备上撤销不需要的会话或执行“撤销其他会话”；没有可用设备时可通过密码重置递增 `auth_version` 使全部旧会话失效。密码重置不会清空签发窗口计数。
 
 仅 master 节点每小时分批删除过期 Session 和超过保留期的 revoked Session。`USER_SESSION_HOURLY_ALERT_THRESHOLD`（默认 `5000`）只在最近一小时全局签发量异常时记录告警，不会形成可被滥用的全站登录拒绝开关。
 
@@ -150,7 +150,7 @@ Redis 限流使用原子 Lua 固定窗口，替代旧的近似滑动窗口 List 
 - scope 形如 `resource:action`。个人权限（资料、API 令牌、用量、钱包、账户安全）和部分后台权限由令牌目录定义；受 Casbin 保护的后台权限直接复用管理员权限矩阵的 resource 与 action。只能授予自己当前拥有的权限，并且每个请求都会重新读取角色和权限：撤回某项管理员权限后，携带该 scope 的令牌立即失去对应能力。
 - 每条面板路由都必须声明所需 scope。未声明的路由一律拒绝（403 `ACCESS_TOKEN_ROUTE_UNDECLARED`），scope 不足返回 403 `ACCESS_TOKEN_SCOPE_DENIED`，令牌过期返回 401 `ACCESS_TOKEN_EXPIRED`。
 - PAT 不能创建、改名或撤销 PAT，也不能管理登录会话；这些接口只接受浏览器登录会话。
-- PAT 可以完成二次验证，Proof 绑定到该令牌，并且令牌必须持有该操作对应的 scope：`channel.key.read` 需要 `channel:secret_view`，`admin.user.*` 需要 `user:write`，本人的密码、2FA、Passkey、账号绑定和注销需要 `account_security:write`。
+- PAT 可以完成二次验证，Proof 绑定到该令牌，并且令牌必须持有该操作对应的 scope：`channel.key.read` 需要 `channel:secret_view`，`admin.user.*` 按具体操作分别需要 `adty_user:create`、`adty_user:delete`、`adty_user:quota` 或 `adty_user:write`，本人的密码、2FA、Passkey、账号绑定和注销需要 `account_security:write`。
 - 通过 PAT 完成的安全变更（如修改密码、2FA、Passkey）会让该用户的所有浏览器登录会话下线，令牌本身保持可用。
 - 用户被禁用期间，其令牌全部不可用，重新启用后恢复；注销或删除用户时，其令牌被删除。
 - 最后使用时间和 IP 每个令牌每分钟最多更新一次；更新失败不影响请求。
@@ -159,7 +159,7 @@ Redis 限流使用原子 Lua 固定窗口，替代旧的近似滑动窗口 List 
 
 邮箱绑定、2FA pending、Passkey ceremony 等临时状态存放在 `auth_flows`。客户端只持有随机 `flow_token`，数据库仅保存 HMAC 摘要；流程具有用途、intent、用户和登录会话绑定，并且只能原子消费一次。
 
-Telegram 绑定不走 `auth_flows`：已登录前端调用 `POST /api/adty/telegram/bind/start` 创建一次性凭据，Telegram widget 回调 `POST /api/adty/telegram/bind/confirm` 时校验凭据、重新确认原登录会话仍有效并完成绑定。一次性凭据存放在 `adty_telegram_challenges` 表，只能消费一次，重复回放会被拒绝。
+Telegram 绑定不走 `auth_flows`：已登录前端调用 `POST /api/adty/telegram/bind/start` 创建一次性绑定码并保存在 `adty_telegram_challenges` 表；用户向通知机器人发送 `/start <code>` 经由 Telegram webhook 暂存认领信息后，再回到网站调用 `POST /api/adty/telegram/bind/confirm` 校验凭据并完成绑定。一次性凭据只能消费一次，重复回放会被拒绝。
 
 敏感操作使用有效期 1 分钟的 `X-Security-Proof`：
 
@@ -177,11 +177,11 @@ Telegram 绑定不走 `auth_flows`：已登录前端调用 `POST /api/adty/teleg
 - `admin.user.2fa.disable`（`{"user_id"}`）：`DELETE /api/user/:id/2fa`；
 - `admin.user.binding.clear`（`{"user_id","binding_type"}`，`binding_type ∈ {email, telegram}`）：`DELETE /api/user/:id/bindings/:binding_type`。
 
-这些 `admin.user.*` scope 只对管理员及以上角色签发；已启用 2FA 或 Passkey 的管理员必须使用其中之一，未启用时回退到密码重新认证；密码登录被关闭时不接受密码验证。通过 PAT 调用上述接口时，令牌需持有 `user:write` 并完成二次验证；旧版令牌不能调用。
+这些 `admin.user.*` scope 只对管理员及以上角色签发；重要操作支持从账户已启用的验证方式（`password`、`email_code`、`2fa`、`passkey`）中任选其一完成二次验证（密码登录被关闭时不接受密码验证；Root 账号在后台重要操作中按 `root_exempt` 规则免于重复二次验证）。通过 PAT 调用上述接口时，令牌需持有对应的 `adty_user:{create,delete,quota,write}` scope 并按要求完成二次验证；旧版令牌不能调用。
 
 Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 scope，不能跨用户、跨会话或跨用途复用。对 PAT 而言，Proof 绑定的“登录会话”就是令牌本身。
 
-启用了 2FA 的用户注册 Passkey 时，register begin 与 finish 都必须携带有效的 `passkey.register` Proof；finish 会在消费一次性 AuthFlow 之前重新验证 Proof。未启用 2FA 的首次 Passkey 注册不要求该请求头。
+所有用户注册 Passkey 时，`register/begin` 均必须携带有效的 `passkey.register` Proof 并签发一次性 `AuthFlow`；`register/finish` 校验并原子消费该 `AuthFlow` 完成注册，不再重复要求 `X-Security-Proof`。
 
 ## 升级注意事项
 

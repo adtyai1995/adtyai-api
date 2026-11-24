@@ -8,11 +8,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -209,7 +211,28 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 	header := http.Header{}
 	header.Set("Authorization", fmt.Sprintf("Bearer;%s", token))
 
-	conn, resp, dialErr := websocket.DefaultDialer.DialContext(context.Background(), requestURL, header)
+	transport, transportErr := service.NewRelayTransportWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
+	if transportErr != nil {
+		return nil, types.NewErrorWithStatusCode(
+			fmt.Errorf("failed to configure websocket proxy: %w", transportErr),
+			types.ErrorCodeDoRequestFailed,
+			http.StatusBadGateway,
+		)
+	}
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 30 * time.Second,
+		Proxy:            transport.Proxy,
+		NetDialContext:   transport.DialContext,
+		TLSClientConfig:  transport.TLSClientConfig,
+	}
+	reqCtx := c.Request.Context()
+	dialCtx, dialCancel := context.WithTimeout(reqCtx, 30*time.Second)
+	defer dialCancel()
+
+	conn, resp, dialErr := dialer.DialContext(dialCtx, requestURL, header)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if dialErr != nil {
 		if resp != nil {
 			return nil, types.NewErrorWithStatusCode(
@@ -225,6 +248,8 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		)
 	}
 	defer conn.Close()
+	stopCancel := context.AfterFunc(reqCtx, func() { _ = conn.Close() })
+	defer stopCancel()
 
 	payload, marshalErr := common.Marshal(volcRequest)
 	if marshalErr != nil {
@@ -247,8 +272,13 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 	c.Header("Content-Type", contentType)
 	c.Header("Transfer-Encoding", "chunked")
 
+	readTimeout := 2 * time.Minute
+	if common.RelayTimeout > 0 {
+		readTimeout = time.Duration(common.RelayTimeout) * time.Second
+	}
 	wroteAudio := false
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		msg, recvErr := ReceiveMessage(conn)
 		if recvErr != nil {
 			if websocket.IsCloseError(recvErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) || wroteAudio {

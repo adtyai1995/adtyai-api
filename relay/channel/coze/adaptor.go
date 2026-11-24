@@ -1,6 +1,7 @@
 package coze
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -88,13 +89,13 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *common.RelayInfo, requestBody 
 	}
 	c.Set("coze_conversation_id", cozeResponse.Data.ConversationId)
 	c.Set("coze_chat_id", cozeResponse.Data.Id)
-	// 轮询检查消息是否完成（R6-045: 增加有界截止时间与请求取消监听）
-	pollDeadline := time.NewTimer(2 * time.Minute)
-	defer pollDeadline.Stop()
+	// 轮询检查消息是否完成（R6-045 / R7-017: 派生带 2 分钟截止与请求取消的上下文，传给每次轮询与详情请求）
+	pollCtx, pollCancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	defer pollCancel()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
-		err, isComplete := checkIfChatComplete(a, c, info)
+		err, isComplete := checkIfChatComplete(pollCtx, a, c, info)
 		if err != nil {
 			return nil, err
 		}
@@ -102,15 +103,16 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *common.RelayInfo, requestBody 
 			break
 		}
 		select {
-		case <-c.Request.Context().Done():
-			return nil, c.Request.Context().Err()
-		case <-pollDeadline.C:
-			return nil, errors.New("coze chat completion poll timed out")
+		case <-pollCtx.Done():
+			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
+				return nil, errors.New("coze chat completion poll timed out")
+			}
+			return nil, pollCtx.Err()
 		case <-ticker.C:
 		}
 	}
 	// 发送获取消息请求
-	return getChatDetail(a, c, info)
+	return getChatDetail(pollCtx, a, c, info)
 }
 
 // DoResponse implements channel.Adaptor.

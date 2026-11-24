@@ -56,6 +56,8 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 	dataChan := make(chan string)
 	stopChan := make(chan bool)
 	done := make(chan struct{})
+	workerDone := make(chan struct{})
+	textChan := make(chan string, 1)
 	sendStop := func() {
 		select {
 		case stopChan <- true:
@@ -63,6 +65,7 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 		}
 	}
 	go func() {
+		defer close(workerDone)
 		defer service.CloseResponseBodyGracefully(resp)
 		responseBody, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -81,7 +84,7 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 		fullTextResponse.Id = responseId
 		fullTextResponse.Created = createdTime
 		if len(palmResponse.Candidates) > 0 {
-			responseText = palmResponse.Candidates[0].Content
+			textChan <- palmResponse.Candidates[0].Content
 		}
 		jsonResponse, err := common.Marshal(fullTextResponse)
 		if err != nil {
@@ -109,6 +112,11 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 	})
 	close(done)
 	service.CloseResponseBodyGracefully(resp)
+	<-workerDone
+	select {
+	case responseText = <-textChan:
+	default:
+	}
 	return nil, responseText
 }
 

@@ -184,7 +184,11 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 		if row.Audience == "team" || row.Audience == "user" {
 			row.TelegramChannel = adtyPrivateTelegramMarker
 		} else {
-			row.TelegramChannel = strings.TrimSpace(input.TelegramChannel)
+			ch := strings.TrimSpace(input.TelegramChannel)
+			if utf8.RuneCountInString(ch) > 128 {
+				return nil, "", common.NewMessage("Invalid parameters")
+			}
+			row.TelegramChannel = ch
 		}
 	} else {
 		row.TelegramChannel = ""
@@ -691,14 +695,11 @@ func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, i
 				// R2-055: Permanent content/configuration rejections must persist a skipped
 				// outbox row and mark telegram_outbox_seeded_at instead of retrying every minute for 7 days.
 				if errors.Is(err, ErrAdtyTelegramPrivate) || errors.Is(err, ErrAdtyTelegramInvalid) {
-					lastErr := err.Error()
-					if len(lastErr) > 128 {
-						lastErr = lastErr[:128]
-					}
+					lastErr := truncateAdtyRunes(err.Error(), 128)
 					skipRow := model.AdtyTelegramDelivery{
 						Public:    true,
 						Purpose:   purpose,
-						Channel:   channel,
+						Channel:   truncateAdtyRunes(channel, 128),
 						EventKey:  adtyPublicNotificationEventKey(row.Id),
 						Body:      "",
 						Status:    model.AdtyTelegramDeliverySkip,

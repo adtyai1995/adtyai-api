@@ -469,17 +469,26 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		if err2 != nil {
 			return nil, fmt.Errorf("error parsing multipart form: %w", err2)
 		}
+		defer formData.RemoveAll()
 
 		// 打印类似 curl 命令格式的信息
 		logger.LogDebug(c.Request.Context(), "--form 'model=\"%s\"'", request.Model)
 
-		// 遍历表单字段并打印输出（R6-013: 禁止重复标量字段绕过计费/格式校验）
+		// 遍历表单字段并打印输出（R6-013: 禁止重复标量字段绕过计费/格式校验；R7-013: 禁止流式音频转写绕过计费）
 		for key, values := range formData.Value {
 			if key == "model" {
 				continue
 			}
 			if !strings.HasSuffix(key, "[]") && len(values) > 1 {
 				return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
+			}
+			if strings.EqualFold(key, "stream") {
+				for _, value := range values {
+					trimmed := strings.TrimSpace(value)
+					if strings.EqualFold(trimmed, "true") || trimmed == "1" {
+						return nil, errors.New("streaming audio transcription is not supported")
+					}
+				}
 			}
 			for _, value := range values {
 				writer.WriteField(key, value)
@@ -606,10 +615,12 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 
 				part, err := writer.CreatePart(h)
 				if err != nil {
+					_ = file.Close()
 					return nil, fmt.Errorf("create form part failed for image %d: %w", i, err)
 				}
 
 				if _, err := io.Copy(part, file); err != nil {
+					_ = file.Close()
 					return nil, fmt.Errorf("copy file failed for image %d: %w", i, err)
 				}
 
@@ -633,10 +644,12 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 
 				part, err := writer.CreatePart(h)
 				if err != nil {
+					_ = file.Close()
 					return nil, fmt.Errorf("create form file failed for %s", name)
 				}
 
 				if _, err := io.Copy(part, file); err != nil {
+					_ = file.Close()
 					return nil, fmt.Errorf("copy %s file failed", name)
 				}
 				_ = file.Close()

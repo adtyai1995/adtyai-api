@@ -467,10 +467,18 @@ func Query(params QueryParams) (QueryResult, error) {
 }
 
 func QuerySummaryAll(hours int, groups []string, recentModels ...string) (SummaryAllResult, error) {
-	return QuerySummaryAllFiltered(hours, groups, nil, recentModels...)
+	return querySummaryAll(hours, groups, nil, nil, recentModels...)
 }
 
 func QuerySummaryAllFiltered(hours int, groups []string, allowModel func(modelName string) bool, recentModels ...string) (SummaryAllResult, error) {
+	return querySummaryAll(hours, groups, allowModel, nil, recentModels...)
+}
+
+func QuerySummaryAllByModelGroups(hours int, groups []string, allowedGroupsByModel map[string][]string, recentModels ...string) (SummaryAllResult, error) {
+	return querySummaryAll(hours, groups, nil, allowedGroupsByModel, recentModels...)
+}
+
+func querySummaryAll(hours int, groups []string, allowModel func(modelName string) bool, allowedGroupsByModel map[string][]string, recentModels ...string) (SummaryAllResult, error) {
 	if len(recentModels) > MaxRecentModels {
 		return SummaryAllResult{}, common.NewMessage("Invalid parameters")
 	}
@@ -478,6 +486,32 @@ func QuerySummaryAllFiltered(hours int, groups []string, allowModel func(modelNa
 	startTs, endTs := queryWindow(now, hours)
 	recentStartTs, _ := queryWindow(now, recentSuccessHistoryHours)
 	allowedGroups := allowedGroupSet(groups)
+	var perModelGroupSet map[string]map[string]struct{}
+	if allowedGroupsByModel != nil {
+		perModelGroupSet = make(map[string]map[string]struct{}, len(allowedGroupsByModel))
+		for m, mg := range allowedGroupsByModel {
+			perModelGroupSet[m] = allowedGroupSet(mg)
+		}
+	}
+	allowModelGroup := func(modelName, groupName string) bool {
+		if perModelGroupSet != nil {
+			set, ok := perModelGroupSet[modelName]
+			if !ok {
+				return false
+			}
+			_, ok = set[groupName]
+			return ok
+		}
+		if allowModel != nil && !allowModel(modelName) {
+			return false
+		}
+		if allowedGroups != nil {
+			if _, ok := allowedGroups[groupName]; !ok {
+				return false
+			}
+		}
+		return true
+	}
 	queryStartTs := startTs
 
 	recentBuckets := make(map[string]map[int64]counters, len(recentModels))
@@ -488,8 +522,15 @@ func QuerySummaryAllFiltered(hours int, groups []string, allowModel func(modelNa
 		if _, exists := recentBuckets[name]; exists {
 			continue
 		}
+		recentGroups := groups
+		if allowedGroupsByModel != nil {
+			recentGroups = allowedGroupsByModel[name]
+			if len(recentGroups) == 0 {
+				continue
+			}
+		}
 		recentBuckets[name] = map[int64]counters{}
-		buckets, err := model.GetRecentPerfMetricSuccessBuckets(name, recentStartTs, endTs, groups, recentSuccessSampleLimit)
+		buckets, err := model.GetRecentPerfMetricSuccessBuckets(name, recentStartTs, endTs, recentGroups, recentSuccessSampleLimit)
 		if err != nil {
 			return SummaryAllResult{}, err
 		}
@@ -502,13 +543,22 @@ func QuerySummaryAllFiltered(hours int, groups []string, allowModel func(modelNa
 		}
 	}
 
-	rows, err := model.GetPerfMetricsSummaryBucketsAll(queryStartTs, endTs, groups)
+	var rows []model.PerfMetricSummaryBucket
+	var err error
+	if perModelGroupSet != nil {
+		rows, err = model.GetPerfMetricsSummaryBucketsByModelGroup(queryStartTs, endTs, groups)
+	} else {
+		rows, err = model.GetPerfMetricsSummaryBucketsAll(queryStartTs, endTs, groups)
+	}
 	if err != nil {
 		return SummaryAllResult{}, err
 	}
 
 	modelBuckets := map[string]map[int64]counters{}
 	for _, row := range rows {
+		if perModelGroupSet != nil && !allowModelGroup(row.ModelName, row.Group) {
+			continue
+		}
 		value := counters{
 			requestCount:   row.RequestCount,
 			successCount:   row.SuccessCount,
@@ -524,10 +574,8 @@ func QuerySummaryAllFiltered(hours int, groups []string, allowModel func(modelNa
 		if k.bucketTs > endTs {
 			return true
 		}
-		if allowedGroups != nil {
-			if _, ok := allowedGroups[k.group]; !ok {
-				return true
-			}
+		if !allowModelGroup(k.model, k.group) {
+			return true
 		}
 		snap := value.(*atomicBucket).snapshot()
 		if snap.requestCount == 0 {

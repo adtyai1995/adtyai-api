@@ -189,6 +189,32 @@ func validAdtySiteWalletAmount(amount decimal.Decimal) bool {
 	return amount.Equal(amount.Truncate(8)) && amount.Abs().LessThan(decimal.New(1, 20))
 }
 
+// preLockAdtySiteWalletsTx ensures site wallets exist and locks the requested
+// wallet kinds in canonical order (earnings -> margin -> operating) to prevent
+// cross-transaction AB-BA deadlocks.
+func preLockAdtySiteWalletsTx(tx *gorm.DB, siteID int, kinds ...string) error {
+	if tx == nil || siteID <= 0 || len(kinds) == 0 || !tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
+		return nil
+	}
+	if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {
+		return err
+	}
+	want := make(map[string]struct{}, len(kinds))
+	for _, k := range kinds {
+		want[k] = struct{}{}
+	}
+	for _, kind := range []string{model.AdtySiteWalletEarnings, model.AdtySiteWalletMargin, model.AdtySiteWalletOperating} {
+		if _, ok := want[kind]; !ok {
+			continue
+		}
+		var w model.AdtySiteWallet
+		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", siteID, kind).First(&w).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta decimal.Decimal, change AdtySiteWalletChange) (*model.AdtySiteWalletLedger, error) {
 	if (delta.IsZero() && change.HoldDelta.IsZero()) || (!delta.IsZero() && !validAdtySiteWalletAmount(delta)) || (!change.HoldDelta.IsZero() && !validAdtySiteWalletAmount(change.HoldDelta)) {
 		return nil, ErrAdtySiteWalletInvalidOperation
@@ -477,14 +503,20 @@ func PageAdtyAnomalyDispositions(siteID int, status, order, kind string, offset,
 // Setting status to reviewing restricts related fund writes for the recorded account, order, or
 // site; closing the item lifts that restriction.
 func ReviewAdtyAnomalyDisposition(id int64, operatorID int, status, note string) error {
+	_, err := ReviewAdtyAnomalyDispositionWithAudit(id, operatorID, status, note)
+	return err
+}
+
+func ReviewAdtyAnomalyDispositionWithAudit(id int64, operatorID int, status, note string) (string, error) {
 	status, note = strings.TrimSpace(status), strings.TrimSpace(note)
 	if id <= 0 || operatorID <= 0 || (status != "reviewing" && status != "closed") {
-		return common.NewMessage("Invalid parameters")
+		return "", common.NewMessage("Invalid parameters")
 	}
 	if status == "closed" && note == "" {
-		return common.NewMessage("Invalid parameters")
+		return "", common.NewMessage("Invalid parameters")
 	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	var auditEvent *model.AuditLog
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtyAnomalyDisposition
 		if err := model.AdtyLockForUpdate(tx).First(&row, id).Error; err != nil {
 			return err
@@ -497,8 +529,26 @@ func ReviewAdtyAnomalyDisposition(id int64, operatorID int, status, note string)
 		}).Error; err != nil {
 			return err
 		}
-		return notifyAdtyAnomalyDispositionTx(tx, row, operatorID, status, note)
+		if err := notifyAdtyAnomalyDispositionTx(tx, row, operatorID, status, note); err != nil {
+			return err
+		}
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, operatorID, row.SiteId, "anomaly_disposition", strconv.FormatInt(row.Id, 10),
+			"adty.anomaly_disposition.review", note, "",
+			map[string]any{"status": row.Status, "note": row.Note},
+			map[string]any{"status": status, "note": note, "kind": row.Kind, "order_ref": row.OrderRef},
+			model.AuditResultSuccess)
+		return auditErr
 	})
+	if err != nil {
+		return "", err
+	}
+	eventID := ""
+	if auditEvent != nil {
+		eventID = auditEvent.EventId
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
+	return eventID, nil
 }
 
 func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDisposition, operatorID int, status, note string) error {
