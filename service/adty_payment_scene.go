@@ -41,6 +41,14 @@ func GetAdtyPaymentScenes() (*AdtyPaymentScenes, error) {
 	view := &AdtyPaymentScenes{Version: config.Version}
 	err = common.UnmarshalJsonStr(config.Payload, &view.Scenes)
 	if err == nil {
+		filtered := make([]model.AdtyPaymentScene, 0, len(view.Scenes))
+		for _, scene := range view.Scenes {
+			if !model.IsAllowedAdtyPaymentSceneBusiness(scene.Business) {
+				continue
+			}
+			filtered = append(filtered, scene)
+		}
+		view.Scenes = filtered
 		view.ProviderOptions = operableAdtyPaymentCapabilities()
 		for _, provider := range AdtyPaymentProviders() {
 			if !model.IsAdtyPaymentProvider(provider.Name()) {
@@ -69,7 +77,7 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 		scene.UserTypes = append([]string{}, scene.UserTypes...)
 		scene.Name = strings.TrimSpace(scene.Name)
 		if !adtySceneKey.MatchString(scene.Key) || seen[scene.Key] || scene.Name == "" || utf8.RuneCountInString(scene.Name) > 120 ||
-			!slices.Contains([]string{model.AdtyBusinessWalletTopup, model.AdtyBusinessTeamTopup, model.AdtyBusinessOwnerSelfUseTopup, model.AdtyBusinessOwnerMarginTopup}, scene.Business) || len(scene.Providers) == 0 || len(scene.Providers) > 6 ||
+			!model.IsAllowedAdtyPaymentSceneBusiness(scene.Business) || len(scene.Providers) == 0 || len(scene.Providers) > 6 ||
 			len(scene.Methods) > 100 || len(scene.ChannelIDs) > 1000 || len(scene.SiteIDs) > 1000 || len(scene.Currencies) > 32 || len(scene.UserTypes) > 6 ||
 			!slices.Contains([]string{"all", "main", "all_sites", "selected"}, scene.SiteScope) ||
 			(scene.SiteScope == "selected" && len(scene.SiteIDs) == 0) || (scene.SiteScope != "selected" && len(scene.SiteIDs) != 0) ||
@@ -88,7 +96,7 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 				return nil, common.NewMessage("Invalid parameters")
 			}
 		}
-		if isOwnerTopupBusiness(scene.Business) &&
+		if scene.Business == model.AdtyBusinessOwnerMarginTopup &&
 			(!slices.Contains([]string{"all_sites", "selected"}, scene.SiteScope) || len(scene.UserTypes) != 1 || scene.UserTypes[0] != "site_owner") {
 			return nil, common.NewMessage("Invalid parameters")
 		}
@@ -253,6 +261,9 @@ func adtySceneAudience(scene model.AdtyPaymentScene, siteID int, kind string, bu
 	if len(business) > 0 && business[0] != "" {
 		want = business[0]
 	}
+	if !model.IsAllowedAdtyPaymentSceneBusiness(scene.Business) || !model.IsAllowedAdtyPaymentSceneBusiness(want) {
+		return false
+	}
 	if !scene.Enabled || scene.Business != want || (len(scene.UserTypes) > 0 && !slices.Contains(scene.UserTypes, kind)) {
 		return false
 	}
@@ -269,11 +280,18 @@ func adtySceneAudience(scene model.AdtyPaymentScene, siteID int, kind string, bu
 	return false
 }
 
-// An explicit team policy for this site and payer replaces wallet inheritance,
-// including when Root has disabled every applicable team rule.
+// adtyScopedScenes resolves which payment scenes govern a top-up:
+//   - Subsite teams (site > 0) always resolve via wallet_topup ("全站用户充值") rules
+//     using siteID = team.SiteId and teamID = 0, never team_topup.
+//   - Main-site teams (site == 0) resolve via team_topup ("主站团队充值") rules matching
+//     teamID; an explicit main-site team policy replaces wallet inheritance even when
+//     disabled, while fresh setups without any team_topup rule fall back to wallet_topup.
 func adtyScopedScenes(scenes []model.AdtyPaymentScene, business string, site int, kind string, teamID int64) ([]model.AdtyPaymentScene, string) {
 	if business != model.AdtyBusinessTeamTopup {
 		return scenes, business
+	}
+	if site > 0 {
+		return scenes, model.AdtyBusinessWalletTopup
 	}
 	var scoped []model.AdtyPaymentScene
 	for _, scene := range scenes {
@@ -429,22 +447,37 @@ func authorizeAdtyPaymentScene(db *gorm.DB, config *AdtyPaymentScenes, userID in
 		return nil, nil, err
 	}
 	scenes, business := adtyScopedScenes(config.Scenes, business, siteID, kind, quote.TeamID)
-	if key == "" {
-		key = business
-	}
 	if isOwnerTopupBusiness(business) {
 		kind = "site_owner"
 	}
-	for _, scene := range scenes {
-		if scene.Key != key {
-			continue
-		}
-		if !adtySceneAudience(scene, siteID, kind, business) || !quote.FaceUSD.IsPositive() ||
-			quote.FaceUSD.LessThan(scene.MinUSD) || (scene.MaxUSD.IsPositive() && quote.FaceUSD.GreaterThan(scene.MaxUSD)) ||
-			!adtySceneMethod(scene, provider, method, quote.PayCurrency) {
+	matchesScene := func(scene model.AdtyPaymentScene) bool {
+		return adtySceneAudience(scene, siteID, kind, business) && quote.FaceUSD.IsPositive() &&
+			!quote.FaceUSD.LessThan(scene.MinUSD) && (!scene.MaxUSD.IsPositive() || !quote.FaceUSD.GreaterThan(scene.MaxUSD)) &&
+			adtySceneMethod(scene, provider, method, quote.PayCurrency)
+	}
+	if key != "" {
+		for _, scene := range scenes {
+			if scene.Key != key {
+				continue
+			}
+			if matchesScene(scene) {
+				return &scene, user, nil
+			}
 			break
 		}
-		return &scene, user, nil
+		return nil, nil, common.NewMessage("This payment method is not available")
+	}
+	// When no explicit payment_scene key is provided, prefer the default key
+	// matching the resolved business, then fall back to the first matching scene.
+	for _, scene := range scenes {
+		if scene.Key == business && matchesScene(scene) {
+			return &scene, user, nil
+		}
+	}
+	for _, scene := range scenes {
+		if matchesScene(scene) {
+			return &scene, user, nil
+		}
 	}
 	return nil, nil, common.NewMessage("This payment method is not available")
 }
@@ -469,7 +502,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 	config := &AdtyPaymentScenes{}
 	bonusValues := map[string]string{}
 	prepare := func(tx *gorm.DB) error {
-		for _, key := range []string{adty_setting.TopupSettingKeyMethodBonus, adty_setting.TopupSettingKeySiteBonusMarginFill, adty_setting.TopupSettingKeySiteMethodAuth, adty_setting.TopupSettingKeySiteMethodBonus} {
+		for _, key := range []string{adty_setting.TopupSettingKeyMethodBonus, adty_setting.TopupSettingKeySiteBonusMarginFill, adty_setting.TopupSettingKeySiteMethodBonus} {
 			value, err := model.LockOptionValueTx(tx, key)
 			if err != nil {
 				return err
@@ -514,8 +547,8 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		if !ext.IsOwnerBusiness() && user.SiteId != ext.SiteId {
 			return common.NewMessage("This payment method is not available")
 		}
-		if ext.IsOwnerSelfUse() && !ext.ValidOwnerSelfUseCredit() {
-			return common.NewMessage("Invalid parameters")
+		if ext.IsOwnerSelfUse() {
+			return common.NewMessage("Site owner self-use top-up has been retired")
 		}
 		if ext.IsOwnerMargin() && !ext.ValidOwnerMarginCredit() {
 			return common.NewMessage("Invalid parameters")
@@ -550,7 +583,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 			if ext.SiteId == 0 {
 				rule, authorized, err = adty_setting.ParseMainMethodBonus(bonusValues[adty_setting.TopupSettingKeyMethodBonus], bonusMethod)
 			} else {
-				rule, authorized, err = adty_setting.ParseSiteMethodBonus(bonusValues[adty_setting.TopupSettingKeySiteMethodAuth], bonusValues[adty_setting.TopupSettingKeySiteMethodBonus], ext.SiteId, bonusMethod)
+				rule, authorized, err = adty_setting.ParseSiteMethodBonusRule(bonusValues[adty_setting.TopupSettingKeySiteMethodBonus], ext.SiteId, bonusMethod)
 			}
 			if err != nil {
 				return err

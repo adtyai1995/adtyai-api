@@ -1139,7 +1139,56 @@ func PreviewAdtyOwnerOrderRefund(c *gin.Context) {
 	}
 	result.Ledger = nil
 	adtyOwnerRefundFacts(result.Facts, c.GetInt("id"))
-	common.ApiSuccess(c, result)
+	common.ApiSuccess(c, presentAdtyTopUpRefundResult(result))
+}
+
+type adtyRefundPageFactsView struct {
+	*model.AdtyRefundPageFacts
+	Username string `json:"username,omitempty"`
+}
+
+type adtyTopUpRefundResultView struct {
+	*model.AdtyTopUpRefundResult
+	Facts *adtyRefundPageFactsView `json:"facts,omitempty"`
+}
+
+type adtyManualRefundResultView struct {
+	*model.AdtyManualRefundResult
+	Facts *adtyRefundPageFactsView `json:"facts,omitempty"`
+}
+
+func presentAdtyRefundPageFacts(facts *model.AdtyRefundPageFacts) *adtyRefundPageFactsView {
+	if facts == nil {
+		return nil
+	}
+	username := ""
+	if facts.UserId > 0 {
+		username = model.LookupUsernamesByIDs(model.DB, []int{facts.UserId})[facts.UserId]
+	}
+	return &adtyRefundPageFactsView{
+		AdtyRefundPageFacts: facts,
+		Username:            username,
+	}
+}
+
+func presentAdtyTopUpRefundResult(result *model.AdtyTopUpRefundResult) any {
+	if result == nil || result.Facts == nil {
+		return result
+	}
+	return adtyTopUpRefundResultView{
+		AdtyTopUpRefundResult: result,
+		Facts:                 presentAdtyRefundPageFacts(result.Facts),
+	}
+}
+
+func presentAdtyManualRefundResult(result *model.AdtyManualRefundResult) any {
+	if result == nil || result.Facts == nil {
+		return result
+	}
+	return adtyManualRefundResultView{
+		AdtyManualRefundResult: result,
+		Facts:                  presentAdtyRefundPageFacts(result.Facts),
+	}
 }
 
 // Preserve original-order amounts and state, exposing private handling evidence
@@ -1199,7 +1248,7 @@ func ListAdtyOwnerOrderManualRefunds(c *gin.Context) {
 			return
 		}
 		adtyOwnerRefundResult(result, c.GetInt("id"))
-		common.ApiSuccess(c, result)
+		common.ApiSuccess(c, presentAdtyManualRefundResult(result))
 	}
 }
 
@@ -1215,7 +1264,7 @@ func GetAdtyOwnerOrderManualRefund(c *gin.Context) {
 			return
 		}
 		adtyOwnerRefundResult(result, c.GetInt("id"))
-		common.ApiSuccess(c, result)
+		common.ApiSuccess(c, presentAdtyManualRefundResult(result))
 	}
 }
 
@@ -1284,7 +1333,7 @@ func RefundAdtyOwnerOrder(c *gin.Context) {
 		"request_quota": applied.Refund.RequestQuota,
 	})
 	adtyOwnerRefundResult(applied, c.GetInt("id"))
-	common.ApiSuccess(c, applied)
+	common.ApiSuccess(c, presentAdtyManualRefundResult(applied))
 }
 
 // PostAdtyOwnerOrderRefund aliases RefundAdtyOwnerOrder for site-owner routing.
@@ -1364,7 +1413,7 @@ func writeOwnerManualRefundStep(c *gin.Context, step string, run func(tradeNo, r
 	}
 	recordManageAuditFor(c, result.Refund.UserId, "adty.site.order.refund."+step, audit)
 	adtyOwnerRefundResult(result, c.GetInt("id"))
-	common.ApiSuccess(c, result)
+	common.ApiSuccess(c, presentAdtyManualRefundResult(result))
 }
 
 func ApproveAdtyOwnerOrderManualRefund(c *gin.Context) {

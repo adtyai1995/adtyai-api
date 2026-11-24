@@ -66,12 +66,6 @@ export function OverviewPanel() {
       section: 'commissions' as const,
       label: t('Invite commission withdrawal'),
     },
-    {
-      key: 'staff',
-      count: counts.staff_balance_pending ?? 0,
-      section: 'staff' as const,
-      label: t('Balance requests'),
-    },
   ]
   const balances = earnings.data?.balances
   const total = stats.data?.total
@@ -108,7 +102,7 @@ export function OverviewPanel() {
         {(
           [
             ['earnings', t('Earnings Details')],
-            ['withdrawals', t('Withdrawals')],
+            ['withdrawals', t('Earnings Withdrawals')],
             ['wallets', t('Transfer earnings to margin')],
             ['settlements', t('Settlement Sheets')],
             ['commissions', t('Promotion Management')],

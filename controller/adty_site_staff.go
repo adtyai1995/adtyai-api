@@ -1,10 +1,7 @@
 package controller
 
 import (
-	"encoding/json"
-	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,6 +12,33 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
+
+func filterDisabledStaffPermissions(perms []string) []string {
+	if len(perms) == 0 {
+		return perms
+	}
+	filtered := make([]string, 0, len(perms))
+	for _, perm := range perms {
+		if perm == service.AdtyStaffBalanceRequest {
+			continue
+		}
+		filtered = append(filtered, perm)
+	}
+	return filtered
+}
+
+func sanitizeAdtyStaffView(view service.AdtyStaffView) service.AdtyStaffView {
+	view.Permissions = filterDisabledStaffPermissions(view.Permissions)
+	return view
+}
+
+func stripDisabledStaffInputPermissions(input *service.AdtyStaffInput) {
+	if input == nil || input.Permissions == nil {
+		return
+	}
+	filtered := filterDisabledStaffPermissions(*input.Permissions)
+	input.Permissions = &filtered
+}
 
 func GetAdtyOwnerStaff(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
@@ -35,7 +59,7 @@ func GetAdtyOwnerStaff(c *gin.Context) {
 	}
 	items := make([]service.AdtyStaffView, 0, len(staff))
 	for _, member := range staff {
-		items = append(items, service.AdtyStaffViewOf(member))
+		items = append(items, sanitizeAdtyStaffView(service.AdtyStaffViewOf(member)))
 	}
 	page.SetTotal(int(total))
 	page.SetItems(items)
@@ -157,10 +181,15 @@ func PostAdtyOwnerStaff(c *gin.Context) {
 	if !adtyRequireOwnerStaffProof(c, service.AdtySiteOwnerActionStaffCreate, site.Id, input) {
 		return
 	}
+	stripDisabledStaffInputPermissions(&input)
 	staff, err := adtyOwnerStaffCreateFn(c.GetInt("id"), site.Id, input)
 	if err != nil {
 		common.ApiErrorStatus(c, service.AdtyStaffErrorStatus(err), err)
 		return
+	}
+	if staff != nil {
+		sanitized := sanitizeAdtyStaffView(*staff)
+		staff = &sanitized
 	}
 	common.ApiSuccess(c, staff)
 }
@@ -202,10 +231,17 @@ func mutateAdtyOwnerStaff(c *gin.Context, action string) {
 	if !adtyRequireOwnerStaffProof(c, action, id, input) {
 		return
 	}
+	if action == service.AdtySiteOwnerActionStaffUpdate {
+		stripDisabledStaffInputPermissions(&input)
+	}
 	staff, err := adtyOwnerStaffMutateFn(c.GetInt("id"), site.Id, id, action, input)
 	if err != nil {
 		common.ApiErrorStatus(c, service.AdtyStaffErrorStatus(err), err)
 		return
+	}
+	if staff != nil {
+		sanitized := sanitizeAdtyStaffView(*staff)
+		staff = &sanitized
 	}
 	common.ApiSuccess(c, staff)
 }
@@ -233,7 +269,7 @@ func GetAdtyStaffSelf(c *gin.Context) {
 	if !ok {
 		return
 	}
-	common.ApiSuccess(c, gin.H{"staff": service.AdtyStaffViewOf(*staff), "site_name": service.AdtySiteDisplayHost(site)})
+	common.ApiSuccess(c, gin.H{"staff": sanitizeAdtyStaffView(service.AdtyStaffViewOf(*staff)), "site_name": service.AdtySiteDisplayHost(site)})
 }
 
 func PostAdtyStaffCustomerPasswordReset(c *gin.Context) {
@@ -247,40 +283,20 @@ func PostAdtyStaffCustomerDisable(c *gin.Context) {
 	manageAdtyStaffCustomer(c, service.AdtyStaffActionCustomerDisable, "customers.disable")
 }
 
-func redactRootBalanceRequest(row *model.AdtyStaffBalanceRequest) {
-	if row != nil && row.ReviewerRole == "root" {
-		row.ReviewerId = 0
-		row.ReviewNote = ""
-	}
-}
-
-func redactRootBalanceRequests(rows []model.AdtyStaffBalanceRequest) {
-	for i := range rows {
-		redactRootBalanceRequest(&rows[i])
-	}
-}
-
 func GetAdtyStaffBalanceRequests(c *gin.Context) {
-	staff, site, ok := adtyStaffRequest(c, "")
-	if !ok {
+	if _, _, ok := adtyStaffRequest(c, ""); !ok {
 		return
 	}
 	page := common.GetPageQuery(c)
-	rows, total, err := service.PageStaffOwnBalanceRequests(site.Id, staff.UserId, c.Query("status"), page.GetStartIdx(), page.GetPageSize())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	redactRootBalanceRequests(rows)
-	common.ApiSuccess(c, gin.H{"items": rows, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
+	common.ApiSuccess(c, gin.H{"items": []any{}, "total": 0, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
 func GetAdtyOwnerBalanceRequests(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
+	if _, ok := adtyOwnerSiteOr403(c); !ok {
 		return
 	}
-	listOwnerBalanceRequestPage(c, site.Id, true)
+	page := common.GetPageQuery(c)
+	common.ApiSuccess(c, gin.H{"items": []any{}, "total": 0, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
 func GetAdtyAdminBalanceRequests(c *gin.Context) {
@@ -288,111 +304,20 @@ func GetAdtyAdminBalanceRequests(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}
-	siteID, err := strconv.Atoi(c.Query("site_id"))
-	if err != nil || siteID <= 0 {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	listOwnerBalanceRequestPage(c, siteID, false)
-}
-
-func listOwnerBalanceRequestPage(c *gin.Context, siteID int, redactRoot bool) {
 	page := common.GetPageQuery(c)
-	rows, total, err := service.PageStaffBalanceRequests(siteID, c.Query("status"), page.GetStartIdx(), page.GetPageSize())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if redactRoot {
-		redactRootBalanceRequests(rows)
-	}
-	common.ApiSuccess(c, gin.H{"items": rows, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
+	common.ApiSuccess(c, gin.H{"items": []any{}, "total": 0, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
 func PostAdtyStaffBalanceRequest(c *gin.Context) {
-	if _, _, ok := adtyStaffRequest(c, service.AdtyStaffBalanceRequest); !ok {
-		return
-	}
-	var body struct {
-		CustomerID     int    `json:"customer_id"`
-		Direction      string `json:"direction"`
-		AmountUSD      string `json:"amount_usd"`
-		IdempotencyKey string `json:"idempotency_key"`
-		model.AdtyStaffBalanceProvenance
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
-	if err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	key := strings.TrimSpace(body.IdempotencyKey)
-	if key == "" {
-		key = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	}
-	row, err := service.SubmitAdtyStaffBalanceRequest(c.GetInt("id"), body.CustomerID, body.Direction, amount, key, body.AdtyStaffBalanceProvenance)
-	if err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
-		return
-	}
-	redactRootBalanceRequest(row)
-	common.ApiSuccess(c, row)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Staff balance requests have been disabled."))
 }
 
 func PostAdtyOwnerBalanceReview(c *gin.Context) {
-	reviewAdtyStaffBalance(c, "owner")
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Staff balance requests have been disabled."))
 }
 
 func PostAdtyAdminBalanceReview(c *gin.Context) {
-	if c.GetInt("role") != common.RoleRootUser {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-		return
-	}
-	reviewAdtyStaffBalance(c, "root")
-}
-
-func reviewAdtyStaffBalance(c *gin.Context, role string) {
-	id, ok := adtyInt64Param(c, "id")
-	if !ok {
-		return
-	}
-	var body struct {
-		Approve bool   `json:"approve"`
-		Reason  string `json:"reason"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	// R1-018: Owner balance-request review requires step-up proof bound to (requestID, approve, reason).
-	if role == "owner" {
-		if _, ok := adtyOwnerSiteOr403(c); !ok {
-			return
-		}
-		if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionStaffBalanceReview, int(id), service.AdtyOwnerBalanceReviewDigestInput{
-			Approve: body.Approve,
-			Reason:  body.Reason,
-		}) {
-			return
-		}
-	}
-	eventID, err := service.ReviewAdtyStaffBalanceRequestWithAudit(c.GetInt("id"), role, id, body.Approve, body.Reason)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if role == "root" && eventID != "" {
-		rememberPreparedAuditEvent(c, eventID)
-		markAuditLogged(c)
-	}
-	common.ApiSuccess(c, gin.H{"reviewed": true})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Staff balance requests have been disabled."))
 }
 
 func manageAdtyStaffCustomer(c *gin.Context, action, permission string) {
@@ -409,7 +334,7 @@ func manageAdtyStaffCustomer(c *gin.Context, action, permission string) {
 		return
 	}
 	// There are deliberately no mutable customer fields in this contract.
-	var body map[string]json.RawMessage
+	var body map[string]common.RawMessage
 	if common.DecodeJson(http.MaxBytesReader(c.Writer, c.Request.Body, 1024), &body) != nil || len(body) != 0 {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return

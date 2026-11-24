@@ -121,7 +121,7 @@ export async function saveOwnerSite(body: {
   return requireServerSuccess(res.data).data
 }
 
-/** One payment-method gift rule; Root must have authorized the method for this site. */
+/** One payment-method recharge bonus rule for this site. */
 export async function saveOwnerSiteMethodBonus(
   method: string,
   enabled: boolean,
@@ -401,6 +401,7 @@ export type SiteInviteCommissionWithdrawal = {
   id: number
   user_id: number
   username?: string
+  created_at?: number
   legacy_decision_by?: number
   legacy_decision_at?: number
   reviewed_by?: number
@@ -700,7 +701,8 @@ export async function getOwnerSiteReferralCommissions(
   page = 1,
   pageSize = OWNER_PAGE_SIZE,
   status = '',
-  q = ''
+  q = '',
+  inviterUserId?: number
 ): Promise<SiteReferralPage<SiteReferralCommissionItem>> {
   const res = await api.get<
     ApiResponse<SiteReferralPage<SiteReferralCommissionItem>>
@@ -711,6 +713,8 @@ export async function getOwnerSiteReferralCommissions(
       page_size: pageSize,
       status: status.trim() || undefined,
       q: q.trim() || undefined,
+      inviter_user_id:
+        inviterUserId && inviterUserId > 0 ? inviterUserId : undefined,
     },
   })
   const data = requireServerSuccess(res.data).data
@@ -827,35 +831,22 @@ export async function getOwnerCustomerTopUps(
   return requireServerSuccess(res.data).data
 }
 
-export type OwnerCustomerBalanceResult = {
-  customer_id: number
-  amount_usd: string
-  quota: number
-  balance_before: number
-  balance_after: number
-  earnings_usd: string
-  margin_usd: string
-  ledger_id: number
-  replayed?: boolean
+export type OwnerCustomerPasswordResult = {
+  user_id: number
+  username: string
+  generated_password?: string
 }
 
-/** Proof: action `customer.balance`, target = customer id. */
-export async function creditOwnerCustomerBalance(
-  id: number,
-  body: { amount_usd: string; reason: string },
-  idempotencyKey: string,
-  proof: string
-): Promise<OwnerCustomerBalanceResult> {
-  const res = await api.post<ApiResponse<OwnerCustomerBalanceResult>>(
-    `${BASE}/customers/${id}/balance`,
-    { ...body, idempotency_key: idempotencyKey },
-    {
-      headers: {
-        'X-Security-Proof': proof,
-        'Idempotency-Key': idempotencyKey,
-      },
-      singleUseAuthorization: true,
-    }
+/** Proof: action `customer.password`, target = customer id. */
+export async function resetOwnerCustomerPassword(
+  customerId: number,
+  payload: { password?: string; random?: boolean; length?: number },
+  proofToken: string
+): Promise<OwnerCustomerPasswordResult> {
+  const res = await api.post<ApiResponse<OwnerCustomerPasswordResult>>(
+    `${BASE}/customers/${customerId}/password`,
+    payload,
+    proofHeaders(proofToken)
   )
   return requireServerSuccess(res.data).data
 }

@@ -66,6 +66,11 @@ func redactSiteWithdrawalForOwner(row *model.AdtySiteWithdrawal) {
 	}
 }
 
+type adtyOwnerSiteWithdrawalItem struct {
+	model.AdtySiteWithdrawal
+	OwnerUsername string `json:"owner_username"`
+}
+
 func GetAdtySiteWithdrawals(c *gin.Context) {
 	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
@@ -81,12 +86,22 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	ownerIDs := make([]int, 0, len(rows))
 	// R5-041/R6-036: Redact Root reviewer_id and non-terminal internal recall/failure notes before returning to site owner.
 	for i := range rows {
 		redactSiteWithdrawalForOwner(&rows[i])
+		ownerIDs = append(ownerIDs, rows[i].OwnerUserId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ownerIDs)
+	items := make([]adtyOwnerSiteWithdrawalItem, len(rows))
+	for i, row := range rows {
+		items[i] = adtyOwnerSiteWithdrawalItem{
+			AdtySiteWithdrawal: row,
+			OwnerUsername:      names[row.OwnerUserId],
+		}
 	}
 	page.SetTotal(int(total))
-	page.SetItems(rows)
+	page.SetItems(items)
 	common.ApiSuccess(c, page)
 }
 
@@ -267,10 +282,16 @@ func PutAdtySiteWithdrawRules(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"saved": true})
 }
 
+type adtyAdminSiteWithdrawalItem struct {
+	service.AdtySiteWithdrawalAdminRow
+	OwnerUsername    string `json:"owner_username"`
+	ReviewerUsername string `json:"reviewer_username,omitempty"`
+}
+
 // GetAdtyAdminSiteWithdrawals is Root's review list across all sites.
 func GetAdtyAdminSiteWithdrawals(c *gin.Context) {
 	page := common.GetPageQuery(c)
-	items, total, err := service.ListAdtySiteWithdrawalsForAdmin(strings.TrimSpace(c.Query("status")), page.GetStartIdx(), page.GetPageSize())
+	rows, total, err := service.ListAdtySiteWithdrawalsForAdmin(strings.TrimSpace(c.Query("status")), page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
 			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
@@ -278,6 +299,19 @@ func GetAdtyAdminSiteWithdrawals(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	}
+	ids := make([]int, 0, len(rows)*2)
+	for _, row := range rows {
+		ids = append(ids, row.OwnerUserId, row.ReviewerId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]adtyAdminSiteWithdrawalItem, len(rows))
+	for i, row := range rows {
+		items[i] = adtyAdminSiteWithdrawalItem{
+			AdtySiteWithdrawalAdminRow: row,
+			OwnerUsername:              names[row.OwnerUserId],
+			ReviewerUsername:           names[row.ReviewerId],
+		}
 	}
 	common.ApiSuccess(c, gin.H{"total": total, "items": items, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }

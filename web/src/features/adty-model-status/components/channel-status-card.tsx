@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Activity, Clock, Database, KeyRound, Layers } from 'lucide-react'
+import { Activity, Clock, KeyRound, Layers } from 'lucide-react'
 import { memo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -26,7 +26,6 @@ import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 
 import {
-  formatCacheHitRate,
   formatCheckedTimestamp,
   formatGroupRatio,
   formatLatency,
@@ -122,8 +121,8 @@ export const ChannelStatusCard = memo(function ChannelStatusCard(
         </div>
       </div>
 
-      {/* 3-Column KPI Strip */}
-      <div className='grid grid-cols-3 gap-2'>
+      {/* 2-Column KPI Strip */}
+      <div className='grid grid-cols-2 gap-2'>
         <div className='border-border/70 bg-muted/20 flex min-w-0 flex-col justify-between rounded-xl border px-2.5 py-2.5'>
           <div>
             <div className='text-muted-foreground flex items-center gap-1 text-[11px] font-medium'>
@@ -163,28 +162,6 @@ export const ChannelStatusCard = memo(function ChannelStatusCard(
             )}
           >
             {formatSuccessRate(item.uptime)}
-          </div>
-        </div>
-
-        <div className='border-border/70 bg-muted/20 flex min-w-0 flex-col justify-between rounded-xl border px-2.5 py-2.5'>
-          <div>
-            <div className='text-muted-foreground flex items-center gap-1 text-[11px] font-medium'>
-              <Database className='size-3 shrink-0' aria-hidden='true' />
-              <span className='truncate'>{t('Cache hit rate')}</span>
-            </div>
-            <div className='text-muted-foreground/75 mt-0.5 truncate text-[10px]'>
-              {t('Last 1440m')}
-            </div>
-          </div>
-          <div
-            className={cn(
-              'mt-2 truncate font-mono text-[15px] font-bold tracking-tight tabular-nums',
-              item.cacheHitRate === null
-                ? 'text-muted-foreground'
-                : 'text-foreground'
-            )}
-          >
-            {formatCacheHitRate(item.cacheHitRate)}
           </div>
         </div>
       </div>

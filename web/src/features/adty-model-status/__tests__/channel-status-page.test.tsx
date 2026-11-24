@@ -132,7 +132,9 @@ describe('ModelStatusPage (Channel Status redesign)', () => {
     expect(screen.getByText('5.53s')).toBeTruthy()
     expect(screen.getByText('420ms')).toBeTruthy()
     expect(screen.getByText('99.50%')).toBeTruthy()
-    expect(screen.getByText('67.30%')).toBeTruthy()
+    expect(screen.queryByText('67.30%')).toBeNull()
+    expect(screen.queryByText('Cache hit rate')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Cache hit rate/i })).toBeNull()
     expect(screen.getByText('Multiplier x0.75')).toBeTruthy()
     expect(screen.getByText('Image')).toBeTruthy()
 

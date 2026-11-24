@@ -216,8 +216,8 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
       )}
       {ext && status === 'pending' && !expired && (
         <div className='flex flex-col items-center gap-4'>
-          <div className='flex items-center gap-2 text-sm font-medium'>
-            <ChainIcon method={props.chain} />
+          <div className='bg-muted/50 inline-flex items-center gap-2.5 rounded-full border px-3.5 py-1.5 text-sm font-medium'>
+            <ChainIcon method={props.chain} className='size-6' />
             <span>USDT · {chainName}</span>
           </div>
           <div className='rounded-lg bg-white p-3'>

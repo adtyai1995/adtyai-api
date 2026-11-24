@@ -27,11 +27,16 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { adtySiteQueryKey } from '@/features/adty-site/api'
+import { referralQueryKeys } from '@/features/referral/api'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
+import { getSelf } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
-import { useAuthStore } from '@/stores/auth-store'
+import { STATUS_QUERY_KEY } from '@/lib/status-query'
+import { useAuthStore, type AuthUser } from '@/stores/auth-store'
 
 import {
   adminReferralKeys,
@@ -125,6 +130,18 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     },
     onSuccess: (next) => {
       queryClient.setQueryData(adminReferralKeys.settings, next)
+      void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: adtySiteQueryKey })
+      void queryClient.invalidateQueries({ queryKey: referralQueryKeys.all })
+      void queryClient.invalidateQueries({ queryKey: ['user', 'self'] })
+      void invalidateSidebarBadges(queryClient)
+      void getSelf()
+        .then((res) => {
+          if (res?.success && res.data) {
+            useAuthStore.getState().auth.setUser(res.data as AuthUser)
+          }
+        })
+        .catch(() => {})
       toast.success(t('Saved successfully'))
     },
     onError: (err) => handleServerError(err),

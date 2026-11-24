@@ -23,8 +23,8 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
-import { ChevronDown, ChevronUp } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronDown, ChevronUp, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -33,6 +33,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -51,12 +52,18 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { adtySiteQueryKey } from '@/features/adty-site/api'
+import { referralQueryKeys } from '@/features/referral/api'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
+import { getSelf } from '@/lib/api'
 import { formatNumber, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
+import { STATUS_QUERY_KEY } from '@/lib/status-query'
+import { useAuthStore, type AuthUser } from '@/stores/auth-store'
 
 import {
   bindOwnerSiteInvite,
@@ -68,10 +75,16 @@ import {
   OWNER_PAGE_SIZE,
   resumeOwnerSiteCoverage,
   siteOwnerKeys,
+  type SiteReferralAffiliateItem,
   type SiteReferralOverview,
 } from '../api'
 import { CommissionWithdrawalPanel } from './commission-withdrawal-panel'
 import { SiteReferralPanel } from './site-referral-panel'
+
+type SubsiteAffiliateFilter = {
+  userId: number
+  username?: string
+}
 
 const COMMISSION_STATUS_OPTIONS = [
   'pending_coverage',
@@ -85,31 +98,6 @@ function formatSiteRate(raw: string): string {
   if (!Number.isFinite(value)) return raw || '-'
   const pct = value <= 1 ? value * 100 : value
   return `${Number(pct.toFixed(4))}%`
-}
-
-function formatUserLabel(
-  username: string | undefined,
-  userId: number,
-  displayName?: string
-): { primary: string; secondary: string } {
-  const cleanUsername = (username ?? '').trim()
-  const cleanDisplay = (displayName ?? '').trim()
-  if (cleanDisplay && cleanUsername && cleanDisplay !== cleanUsername) {
-    return {
-      primary: cleanDisplay,
-      secondary: `${cleanUsername} (#${userId})`,
-    }
-  }
-  if (cleanUsername) {
-    return {
-      primary: cleanUsername,
-      secondary: `#${userId}`,
-    }
-  }
-  return {
-    primary: `#${userId}`,
-    secondary: '',
-  }
 }
 
 /** Literal t() calls so the i18n key scanner sees every status label. */
@@ -341,42 +329,16 @@ function SiteManualBindingsCard() {
                   {
                     id: 'inviter',
                     header: t('Inviter'),
-                    cell: (row) => {
-                      const label = formatUserLabel(
-                        row.inviter_username,
-                        row.inviter_id
-                      )
-                      return (
-                        <div className='flex flex-col'>
-                          <span>{label.primary}</span>
-                          {label.secondary && (
-                            <span className='text-muted-foreground text-xs tabular-nums'>
-                              {label.secondary}
-                            </span>
-                          )}
-                        </div>
-                      )
-                    },
+                    cellClassName: 'tabular-nums',
+                    cell: (row) =>
+                      formatUserIdentity(row.inviter_id, row.inviter_username),
                   },
                   {
                     id: 'invitee',
                     header: t('Invitee'),
-                    cell: (row) => {
-                      const label = formatUserLabel(
-                        row.invitee_username,
-                        row.invitee_id
-                      )
-                      return (
-                        <div className='flex flex-col'>
-                          <span>{label.primary}</span>
-                          {label.secondary && (
-                            <span className='text-muted-foreground text-xs tabular-nums'>
-                              {label.secondary}
-                            </span>
-                          )}
-                        </div>
-                      )
-                    },
+                    cellClassName: 'tabular-nums',
+                    cell: (row) =>
+                      formatUserIdentity(row.invitee_id, row.invitee_username),
                   },
                   {
                     id: 'rate',
@@ -403,7 +365,9 @@ function SiteManualBindingsCard() {
   )
 }
 
-function SiteAffiliatesTab() {
+function SiteAffiliatesTab(props: {
+  onViewCommissions: (affiliate: SiteReferralAffiliateItem) => void
+}) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
@@ -461,7 +425,7 @@ function SiteAffiliatesTab() {
       ) : (
         <>
           <StaticDataTable
-            tableClassName='min-w-[880px]'
+            tableClassName='min-w-[960px]'
             tableProps={{ 'aria-label': t('Affiliates') }}
             data={query.data?.items ?? []}
             getRowKey={(row) => String(row.user_id)}
@@ -471,24 +435,9 @@ function SiteAffiliatesTab() {
             columns={[
               {
                 id: 'user',
-                header: t('Username / ID'),
-                cell: (row) => {
-                  const label = formatUserLabel(
-                    row.username,
-                    row.user_id,
-                    row.display_name
-                  )
-                  return (
-                    <div className='flex flex-col'>
-                      <span className='font-medium'>{label.primary}</span>
-                      {label.secondary && (
-                        <span className='text-muted-foreground text-xs tabular-nums'>
-                          {label.secondary}
-                        </span>
-                      )}
-                    </div>
-                  )
-                },
+                header: t('Affiliate'),
+                cellClassName: 'font-medium tabular-nums',
+                cell: (row) => formatUserIdentity(row.user_id, row.username),
               },
               {
                 id: 'invite_count',
@@ -532,6 +481,21 @@ function SiteAffiliatesTab() {
                 cellClassName: 'text-right font-medium tabular-nums',
                 cell: (row) => formatUsd(Number(row.total_earned ?? 0), locale),
               },
+              {
+                id: 'actions',
+                header: t('Actions'),
+                className: 'text-right',
+                cellClassName: 'text-right',
+                cell: (row) => (
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={() => props.onViewCommissions(row)}
+                  >
+                    {t('View commissions')}
+                  </Button>
+                ),
+              },
             ]}
           />
           <PageSwitcher
@@ -548,7 +512,10 @@ function SiteAffiliatesTab() {
   )
 }
 
-function SiteCommissionsTab() {
+function SiteCommissionsTab(props: {
+  affiliateFilter: SubsiteAffiliateFilter | null
+  onClearAffiliateFilter: () => void
+}) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
@@ -556,14 +523,27 @@ function SiteCommissionsTab() {
   const [keyword, setKeyword] = useState('')
   const [search, setSearch] = useState('')
 
+  const inviterUserId = props.affiliateFilter?.userId
+
+  useEffect(() => {
+    setPage(1)
+  }, [inviterUserId])
+
   const query = useQuery({
     queryKey: siteOwnerKeys.list('site-referral-commissions', {
       page,
       status,
       search,
+      inviterUserId,
     }),
     queryFn: () =>
-      getOwnerSiteReferralCommissions(page, OWNER_PAGE_SIZE, status, search),
+      getOwnerSiteReferralCommissions(
+        page,
+        OWNER_PAGE_SIZE,
+        status,
+        search,
+        inviterUserId
+      ),
     placeholderData: keepPreviousData,
   })
 
@@ -619,6 +599,31 @@ function SiteCommissionsTab() {
         </NativeSelect>
       </div>
 
+      {props.affiliateFilter && (
+        <div className='flex flex-wrap items-center gap-2'>
+          <Badge variant='secondary' className='gap-1.5 py-1 pr-1.5 pl-2.5'>
+            <span className='tabular-nums'>
+              {t('Affiliate')}:{' '}
+              {formatUserIdentity(
+                props.affiliateFilter.userId,
+                props.affiliateFilter.username
+              )}
+            </span>
+            <button
+              type='button'
+              className='hover:bg-muted-foreground/20 inline-flex size-4 items-center justify-center rounded-sm transition-colors'
+              aria-label={t('Clear filter')}
+              onClick={() => {
+                props.onClearAffiliateFilter()
+                setPage(1)
+              }}
+            >
+              <X className='size-3' aria-hidden='true' />
+            </button>
+          </Badge>
+        </div>
+      )}
+
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
       {query.isPending && !query.data ? (
         <LoadingState />
@@ -645,42 +650,16 @@ function SiteCommissionsTab() {
               {
                 id: 'inviter',
                 header: t('Inviter'),
-                cell: (row) => {
-                  const label = formatUserLabel(
-                    row.inviter_username,
-                    row.inviter_id
-                  )
-                  return (
-                    <div className='flex flex-col'>
-                      <span>{label.primary}</span>
-                      {label.secondary && (
-                        <span className='text-muted-foreground text-xs tabular-nums'>
-                          {label.secondary}
-                        </span>
-                      )}
-                    </div>
-                  )
-                },
+                cellClassName: 'tabular-nums',
+                cell: (row) =>
+                  formatUserIdentity(row.inviter_id, row.inviter_username),
               },
               {
                 id: 'invitee',
                 header: t('Invitee'),
-                cell: (row) => {
-                  const label = formatUserLabel(
-                    row.invitee_username,
-                    row.invitee_id
-                  )
-                  return (
-                    <div className='flex flex-col'>
-                      <span>{label.primary}</span>
-                      {label.secondary && (
-                        <span className='text-muted-foreground text-xs tabular-nums'>
-                          {label.secondary}
-                        </span>
-                      )}
-                    </div>
-                  )
-                },
+                cellClassName: 'tabular-nums',
+                cell: (row) =>
+                  formatUserIdentity(row.invitee_id, row.invitee_username),
               },
               {
                 id: 'order_amount',
@@ -786,11 +765,43 @@ function SiteCommissionsTab() {
 export function SiteReferralAdmin() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const [activeTab, setActiveTab] = useState('withdrawals')
+  const [commissionAffiliateFilter, setCommissionAffiliateFilter] =
+    useState<SubsiteAffiliateFilter | null>(null)
 
   const overview = useQuery({
     queryKey: siteOwnerKeys.list('site-referral-overview', {}),
     queryFn: getOwnerSiteReferralOverview,
   })
+
+  // Refresh /api/status and user self cache immediately when the subsite referral
+  // enabled switch changes in SiteReferralPanel (R-35 #15).
+  const referralRules = useQuery({
+    queryKey: siteOwnerKeys.list('site-referral', {}),
+    queryFn: getOwnerSiteReferral,
+  })
+  const previousEnabledRef = useRef<boolean | undefined>(undefined)
+  useEffect(() => {
+    const currentEnabled = referralRules.data?.enabled
+    if (currentEnabled === undefined) return
+    if (
+      previousEnabledRef.current !== undefined &&
+      previousEnabledRef.current !== currentEnabled
+    ) {
+      void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: adtySiteQueryKey })
+      void queryClient.invalidateQueries({ queryKey: referralQueryKeys.all })
+      void queryClient.invalidateQueries({ queryKey: ['user', 'self'] })
+      void getSelf()
+        .then((res) => {
+          if (res?.success && res.data) {
+            useAuthStore.getState().auth.setUser(res.data as AuthUser)
+          }
+        })
+        .catch(() => {})
+    }
+    previousEnabledRef.current = currentEnabled
+  }, [referralRules.data?.enabled, queryClient])
 
   const resumeCoverage = useMutation({
     mutationFn: resumeOwnerSiteCoverage,
@@ -814,7 +825,7 @@ export function SiteReferralAdmin() {
       {overview.isPending && <LoadingState />}
       {data && <SiteReferralKpiStrip data={data} />}
 
-      <Tabs defaultValue='withdrawals'>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className='flex flex-wrap items-center justify-between gap-2'>
           <TabsList
             variant='line'
@@ -861,10 +872,21 @@ export function SiteReferralAdmin() {
           <CommissionWithdrawalPanel />
         </TabsContent>
         <TabsContent value='affiliates'>
-          <SiteAffiliatesTab />
+          <SiteAffiliatesTab
+            onViewCommissions={(row) => {
+              setCommissionAffiliateFilter({
+                userId: row.user_id,
+                username: row.username,
+              })
+              setActiveTab('commissions')
+            }}
+          />
         </TabsContent>
         <TabsContent value='commissions'>
-          <SiteCommissionsTab />
+          <SiteCommissionsTab
+            affiliateFilter={commissionAffiliateFilter}
+            onClearAffiliateFilter={() => setCommissionAffiliateFilter(null)}
+          />
         </TabsContent>
         <TabsContent value='settings' className='pt-4'>
           <SiteReferralPanel />

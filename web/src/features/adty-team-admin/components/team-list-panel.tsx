@@ -39,6 +39,7 @@ import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { getUserSites } from '@/features/users/api'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatQuota, formatTimestampToDate } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import {
@@ -196,11 +197,11 @@ export function TeamListPanel(props: {
                         )}
                       </TableCell>
                     )}
-                    <TableCell>
-                      {row.leader_username || '-'}{' '}
-                      <span className='text-muted-foreground tabular-nums'>
-                        #{row.leader_user_id}
-                      </span>
+                    <TableCell className='tabular-nums'>
+                      {formatUserIdentity(
+                        row.leader_user_id,
+                        row.leader_username
+                      )}
                     </TableCell>
                     <TableCell>
                       <StatusBadge

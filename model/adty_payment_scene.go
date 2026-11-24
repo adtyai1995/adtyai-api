@@ -38,6 +38,18 @@ type AdtyPaymentSceneConfig struct {
 
 var ErrAdtyPaymentSceneConflict = errors.New("payment scene configuration version conflict")
 
+// IsAllowedAdtyPaymentSceneBusiness reports whether business is one of the
+// three active payment scene types (wallet_topup, team_topup, owner_margin_topup).
+// owner_self_use_topup is retired and retained only for historical order reads.
+func IsAllowedAdtyPaymentSceneBusiness(business string) bool {
+	switch business {
+	case AdtyBusinessWalletTopup, AdtyBusinessTeamTopup, AdtyBusinessOwnerMarginTopup:
+		return true
+	default:
+		return false
+	}
+}
+
 func seedAdtyPaymentScenesOn(db *gorm.DB) error {
 	scenes := []AdtyPaymentScene{{
 		Key: "wallet_topup", Name: "Wallet top-up", Business: "wallet_topup", Enabled: true,

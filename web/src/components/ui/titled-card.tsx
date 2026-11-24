@@ -78,7 +78,7 @@ export function TitledCard({
             <div className='min-w-0'>
               <CardTitle
                 className={cn(
-                  'text-[15px] leading-snug font-semibold tracking-tight [word-break:keep-all]',
+                  'text-lg tracking-tight sm:text-xl',
                   titleClassName
                 )}
               >
@@ -86,10 +86,7 @@ export function TitledCard({
               </CardTitle>
               {description != null && (
                 <CardDescription
-                  className={cn(
-                    'text-dim text-[13px] leading-relaxed',
-                    descriptionClassName
-                  )}
+                  className={cn('text-xs sm:text-sm', descriptionClassName)}
                 >
                   {description}
                 </CardDescription>

@@ -34,6 +34,7 @@ import { useSecureVerification } from '@/features/auth/secure-verification/hooks
 import { officialCommissionStateLabel } from '@/features/wallet/adty/commission-states'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { formatQuota } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
@@ -526,8 +527,14 @@ export function RefundDialog(
             <dd className='text-right tabular-nums'>{facts.site_id}</dd>
           </div>
           <div className='contents'>
-            <dt className='text-muted-foreground'>{t('Customer ID')}</dt>
-            <dd className='text-right tabular-nums'>{facts.user_id}</dd>
+            <dt className='text-muted-foreground'>{t('User')}</dt>
+            <dd className='text-right tabular-nums'>
+              {formatUserIdentity(
+                facts.user_id,
+                (facts as { username?: string }).username ||
+                  props.order?.username
+              )}
+            </dd>
           </div>
           <div className='contents'>
             <dt className='text-muted-foreground'>{t('Original principal')}</dt>

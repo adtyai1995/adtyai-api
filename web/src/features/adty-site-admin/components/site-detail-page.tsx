@@ -17,9 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useLocation, useNavigate } from '@tanstack/react-router'
 import { AlertTriangle, ArrowLeft, Ticket, Trash2 } from 'lucide-react'
-import { useId, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -43,6 +43,7 @@ import { DraftNavigationProvider } from '@/features/system-settings/components/d
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -53,26 +54,69 @@ import { CloseSiteDialog } from './close-site-dialog'
 import { SiteBasicBrandForm } from './site-basic-brand-form'
 import {
   CloseMailCard,
-  RootBalanceRequestsCard,
   SiteAuditCard,
-  SiteBonusMethodAuth,
   SiteBusinessStatsCard,
   SiteCustomersCard,
   SiteDomainsCard,
+  SiteMarginPoliciesCard,
+  SiteSupplyDiscountCard,
 } from './site-detail-sections'
 import { SiteFundPanel } from './site-fund-panel'
 import { SiteStatusBadge } from './site-status-badge'
 import { SiteTierControl } from './site-tier-control'
 
+type SiteDetailTab =
+  | 'basic'
+  | 'domains'
+  | 'business'
+  | 'tier'
+  | 'wallets'
+  | 'customers'
+  | 'danger'
+
+function resolveSiteDetailTab(
+  raw: string | null | undefined,
+  isRoot: boolean
+): SiteDetailTab {
+  const normalized = raw?.trim().toLowerCase()
+  if (normalized === 'finance') {
+    return isRoot ? 'wallets' : 'business'
+  }
+  switch (normalized) {
+    case 'basic':
+    case 'domains':
+    case 'business':
+    case 'customers':
+      return normalized
+    case 'tier':
+    case 'wallets':
+    case 'danger':
+      return isRoot ? normalized : 'basic'
+    default:
+      return 'basic'
+  }
+}
+
 /** Dedicated detail and edit page for a single reseller subsite. */
 export function SiteDetailPage(props: { siteId: number }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const location = useLocation()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const fieldId = useId()
   const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+
+  const requestedTab = useMemo(() => {
+    const tabParam = new URLSearchParams(location.searchStr).get('tab')
+    return resolveSiteDetailTab(tabParam, isRoot)
+  }, [location.searchStr, isRoot])
+  const [activeTab, setActiveTab] = useState<SiteDetailTab>(requestedTab)
+
+  useEffect(() => {
+    setActiveTab(requestedTab)
+  }, [requestedTab])
 
   const [closing, setClosing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -168,7 +212,10 @@ export function SiteDetailPage(props: { siteId: number }) {
                       {t('Owner')}
                     </dt>
                     <dd className='mt-1 truncate text-sm font-medium'>
-                      {site.owner_username || `#${site.owner_user_id}`}
+                      {formatUserIdentity(
+                        site.owner_user_id,
+                        site.owner_username
+                      )}
                     </dd>
                   </div>
                   <div className='bg-card rounded-xl border p-3.5'>
@@ -214,7 +261,13 @@ export function SiteDetailPage(props: { siteId: number }) {
                   </div>
                 </dl>
 
-                <Tabs defaultValue='basic' className='flex flex-col gap-4'>
+                <Tabs
+                  value={activeTab}
+                  onValueChange={(value) =>
+                    setActiveTab(resolveSiteDetailTab(value, isRoot))
+                  }
+                  className='flex flex-col gap-4'
+                >
                   <TabsList
                     variant='line'
                     className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 [--tab-underline:var(--brand)] group-data-horizontal/tabs:h-auto'
@@ -232,11 +285,27 @@ export function SiteDetailPage(props: { siteId: number }) {
                       {t('Domains & Access')}
                     </TabsTrigger>
                     <TabsTrigger
-                      value='finance'
+                      value='business'
                       className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
                     >
-                      {t('Level & Wallets')}
+                      {t('Business data')}
                     </TabsTrigger>
+                    {isRoot && (
+                      <TabsTrigger
+                        value='tier'
+                        className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
+                      >
+                        {t('Level & Supply')}
+                      </TabsTrigger>
+                    )}
+                    {isRoot && (
+                      <TabsTrigger
+                        value='wallets'
+                        className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
+                      >
+                        {t('Wallets & Finance')}
+                      </TabsTrigger>
+                    )}
                     <TabsTrigger
                       value='customers'
                       className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
@@ -265,17 +334,20 @@ export function SiteDetailPage(props: { siteId: number }) {
                     />
                   </TabsContent>
 
-                  <TabsContent value='finance' className='flex flex-col gap-5'>
+                  <TabsContent value='business' className='flex flex-col gap-5'>
                     <SiteBusinessStatsCard
                       data={statsQuery.data}
                       isPending={statsQuery.isPending}
                       isError={statsQuery.isError}
                       onRetry={() => void statsQuery.refetch()}
                     />
-                    {isRoot && (
+                  </TabsContent>
+
+                  {isRoot && (
+                    <TabsContent value='tier' className='flex flex-col gap-5'>
                       <Card>
                         <CardHeader>
-                          <CardTitle>{t('Level & Supply Discount')}</CardTitle>
+                          <CardTitle>{t('Level & Supply')}</CardTitle>
                         </CardHeader>
                         <CardContent>
                           <SiteTierControl
@@ -284,12 +356,22 @@ export function SiteDetailPage(props: { siteId: number }) {
                           />
                         </CardContent>
                       </Card>
-                    )}
-                    <SiteBonusMethodAuth siteId={site.id} />
-                    {isRoot && (
+                      <SiteSupplyDiscountCard
+                        key={`${site.id}:${site.cost_factor ?? ''}`}
+                        site={site}
+                      />
+                      <SiteMarginPoliciesCard siteId={site.id} />
+                    </TabsContent>
+                  )}
+
+                  {isRoot && (
+                    <TabsContent
+                      value='wallets'
+                      className='flex flex-col gap-5'
+                    >
                       <Card>
                         <CardHeader className='flex flex-row flex-wrap items-center justify-between gap-2 space-y-0'>
-                          <CardTitle>{t('Wallets & Margin')}</CardTitle>
+                          <CardTitle>{t('Wallets & Finance')}</CardTitle>
                           <Button
                             type='button'
                             size='sm'
@@ -305,9 +387,8 @@ export function SiteDetailPage(props: { siteId: number }) {
                           <SiteFundPanel siteId={site.id} />
                         </CardContent>
                       </Card>
-                    )}
-                    <RootBalanceRequestsCard siteId={site.id} />
-                  </TabsContent>
+                    </TabsContent>
+                  )}
 
                   <TabsContent
                     value='customers'
@@ -409,7 +490,10 @@ export function SiteDetailPage(props: { siteId: number }) {
                       siteLabel={
                         brand.name ? `${brand.name} · ${displayHost}` : displayHost
                       }
-                      ownerLabel={site.owner_username || `#${site.owner_user_id}`}
+                      ownerLabel={formatUserIdentity(
+                        site.owner_user_id,
+                        site.owner_username
+                      )}
                       open={quickMarginOpen}
                       onOpenChange={setQuickMarginOpen}
                     />

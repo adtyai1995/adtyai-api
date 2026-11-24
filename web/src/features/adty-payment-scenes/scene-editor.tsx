@@ -56,9 +56,14 @@ import {
   type PaymentSceneConfig,
 } from './api'
 import {
+  ACTIVE_SCENE_BUSINESSES,
   paymentSceneSchema,
   sceneAudienceLabels,
+  sceneBusinessDescriptions,
+  sceneBusinessLabels,
   sceneUserLabels,
+  type ActiveSceneBusiness,
+  type PaymentSceneFormValues,
 } from './schema'
 
 export function PaymentSceneEditor(props: {
@@ -71,11 +76,27 @@ export function PaymentSceneEditor(props: {
   const id = useId()
   const client = useQueryClient()
   const [discarding, setDiscarding] = useState(false)
-  const [pending, setPending] = useState<PaymentScene | null>(null)
-  const form = useForm<PaymentScene>({
+  const [pending, setPending] = useState<PaymentSceneFormValues | null>(null)
+  const existingScene = props.config.scenes[props.index]
+  const isLegacySelfUse = existingScene?.business === 'owner_self_use_topup'
+  let initialBusiness: ActiveSceneBusiness = 'wallet_topup'
+  if (
+    existingScene &&
+    (ACTIVE_SCENE_BUSINESSES as readonly string[]).includes(
+      existingScene.business
+    )
+  ) {
+    initialBusiness = existingScene.business as ActiveSceneBusiness
+  } else if (isLegacySelfUse) {
+    initialBusiness = 'owner_margin_topup'
+  }
+  const form = useForm<PaymentSceneFormValues>({
     resolver: zodResolver(paymentSceneSchema),
-    defaultValues: props.config.scenes[props.index]
-      ? props.config.scenes[props.index]
+    defaultValues: existingScene
+      ? {
+          ...existingScene,
+          business: initialBusiness,
+        }
       : {
           key: '',
           name: '',
@@ -95,9 +116,8 @@ export function PaymentSceneEditor(props: {
   useDraftNavigation(form.formState.isDirty)
   const epaySelected = form.watch('providers').includes('adty_epay')
   const selectedSites = form.watch('site_scope') === 'selected'
-  const ownerTopup =
-    form.watch('business') === 'owner_self_use_topup' ||
-    form.watch('business') === 'owner_margin_topup'
+  const selectedBusiness = form.watch('business')
+  const ownerTopup = selectedBusiness === 'owner_margin_topup'
   const channels = useQuery({
     queryKey: [...epayChannelsQueryKey, props.userId],
     queryFn: getEpayChannels,
@@ -232,10 +252,7 @@ export function PaymentSceneEditor(props: {
                       if (event.target.value !== 'team_topup') {
                         form.setValue('team_ids', [])
                       }
-                      if (
-                        event.target.value !== 'owner_self_use_topup' &&
-                        event.target.value !== 'owner_margin_topup'
-                      ) {
+                      if (event.target.value !== 'owner_margin_topup') {
                         return
                       }
                       form.setValue('user_types', ['site_owner'], {
@@ -250,19 +267,22 @@ export function PaymentSceneEditor(props: {
                     },
                   })}
                 >
-                  <NativeSelectOption value='wallet_topup'>
-                    {t('Wallet top-up')}
-                  </NativeSelectOption>
-                  <NativeSelectOption value='team_topup'>
-                    {t('Team top-up')}
-                  </NativeSelectOption>
-                  <NativeSelectOption value='owner_self_use_topup'>
-                    {t('Owner self-use top-up')}
-                  </NativeSelectOption>
-                  <NativeSelectOption value='owner_margin_topup'>
-                    {t('Owner margin online top-up')}
-                  </NativeSelectOption>
+                  {ACTIVE_SCENE_BUSINESSES.map((biz) => (
+                    <NativeSelectOption key={biz} value={biz}>
+                      {t(sceneBusinessLabels[biz])}
+                    </NativeSelectOption>
+                  ))}
                 </NativeSelect>
+                <p className='text-muted-foreground text-xs'>
+                  {t(sceneBusinessDescriptions[selectedBusiness])}
+                </p>
+                {isLegacySelfUse && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'This record used the retired Owner Self-use Top-up type. Saving updates it to the selected business type.'
+                    )}
+                  </p>
+                )}
               </Field>
               <Field>
                 <FieldLabel htmlFor={`${id}-enabled`}>

@@ -32,6 +32,7 @@ import { ORDER_TRACE_LABELS, UNIFIED_ORDER_LABELS } from '@/features/recharge-au
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatCurrencyFromUSD } from '@/lib/currency'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 
 import { getStaffCustomerOrder, getStaffCustomerOrders, STAFF_PAGE_SIZE, type StaffOrderType } from './api'
 
@@ -62,7 +63,7 @@ export function StaffOrdersDialog(props: {
   const query = tradeNo === null ? list : detail
   const order = detail.data
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) props.onClose() }} title={t(tradeNo === null ? 'Orders' : 'Order details')} description={props.customer.username}>
+    <Dialog open onOpenChange={(open) => { if (!open) props.onClose() }} title={t(tradeNo === null ? 'Orders' : 'Order details')} description={formatUserIdentity(props.customer.id, props.customer.username)}>
       {tradeNo === null ? (
         <NativeSelect aria-label={t('Order type')} value={orderType} onChange={(event) => {
           const value = props.orderTypes.find((kind) => kind === event.target.value)

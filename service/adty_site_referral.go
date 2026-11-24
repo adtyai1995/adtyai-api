@@ -693,7 +693,7 @@ func loadSiteReferralUserSummaries(ids []int) (map[int]adtySiteReferralUserSumma
 			end = len(unique)
 		}
 		var users []model.User
-		if err := model.DB.Select("id", "username", "display_name").Where("id IN ?", unique[start:end]).Find(&users).Error; err != nil {
+		if err := model.DB.Unscoped().Select("id", "username", "display_name").Where("id IN ?", unique[start:end]).Find(&users).Error; err != nil {
 			return nil, err
 		}
 		for _, u := range users {
@@ -995,7 +995,7 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 }
 
 // ListAdtyOwnerSiteReferralCommissions returns paginated subsite invite commissions for siteID.
-func ListAdtyOwnerSiteReferralCommissions(siteID int, status, q string, offset, limit int, now time.Time) ([]AdtyOwnerSiteCommissionRow, int64, error) {
+func ListAdtyOwnerSiteReferralCommissions(siteID int, status, q string, offset, limit int, now time.Time, inviterUserID ...int) ([]AdtyOwnerSiteCommissionRow, int64, error) {
 	if siteID <= 0 {
 		return nil, 0, common.NewMessage("Invalid parameters")
 	}
@@ -1013,6 +1013,9 @@ func ListAdtyOwnerSiteReferralCommissions(siteID int, status, q string, offset, 
 	}
 
 	query := model.DB.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ?", siteID)
+	if len(inviterUserID) > 0 && inviterUserID[0] > 0 {
+		query = query.Where("inviter_id = ?", inviterUserID[0])
+	}
 	switch trimmedStatus := strings.TrimSpace(status); trimmedStatus {
 	case "", "all":
 	case "pending":
@@ -1026,7 +1029,7 @@ func ListAdtyOwnerSiteReferralCommissions(siteID int, status, q string, offset, 
 	if q = strings.TrimSpace(q); q != "" {
 		like := "%" + strings.ToLower(q) + "%"
 		userMatch := func() *gorm.DB {
-			return model.DB.Model(&model.User{}).Select("id").Where("LOWER(username) LIKE ? OR LOWER(display_name) LIKE ?", like, like)
+			return model.DB.Unscoped().Model(&model.User{}).Select("id").Where("LOWER(username) LIKE ? OR LOWER(display_name) LIKE ?", like, like)
 		}
 		if id, err := strconv.Atoi(strings.TrimPrefix(q, "#")); err == nil && id > 0 {
 			query = query.Where(

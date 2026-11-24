@@ -735,6 +735,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"adty_archived_site_owner": service.AdtyHasArchivedSite(user.Id),
 		"adty_site_owner":          service.AdtyIsSiteOwner(user.Id), // 二开：侧边栏只对站长显示站长中心（任务 11.6）
 		"adty_has_team":            service.AdtyUserHasTeam(user.Id),
+		"adty_referral_enabled":    service.IsAdtyReferralEnabledForSite(user.SiteId),
 		"site_id":                  user.SiteId,
 		"staff_site_id":            user.StaffSiteId,
 		"site_terms_required":      required,
@@ -1039,6 +1040,126 @@ func UpdateUser(c *gin.Context) {
 		"message":   "",
 	})
 	return
+}
+
+// AdminResetUserPassword allows an administrator or root user to set a new
+// manual password or generate a random alphanumeric password for a managed user.
+// Existing sessions, PATs, and legacy access tokens are revoked immediately.
+func AdminResetUserPassword(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid user ID")
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+		Random   bool   `json:"random"`
+		Length   int    `json:"length"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if body.Random {
+		if body.Length != 0 && (body.Length < common.MinRandomAccountPasswordLength || body.Length > common.MaxRandomAccountPasswordLength) {
+			common.ApiError(c, common.ErrRandomAccountPasswordLength)
+			return
+		}
+	} else if err := common.ValidateNewAccountPassword(body.Password); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	originUser, err := model.GetUserById(id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	myRole := c.GetInt("role")
+	if !canManageTargetRole(myRole, originUser.Role) {
+		common.ApiErrorT(c, "No permission to update users of same or higher permission level")
+		return
+	}
+	if isAccessTokenRequest(c) && originUser.Role >= common.RoleAdminUser {
+		denyAdtyAdminAction(c)
+		return
+	}
+	authorization := requireAdminUserProof(c, service.VerificationScopeAdminUserUpdate, service.AdminUserContext{UserID: originUser.Id})
+	if authorization == nil {
+		return
+	}
+	var newPassword, generatedPassword string
+	if body.Random {
+		newPassword, err = common.GenerateRandomAccountPassword(body.Length)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		generatedPassword = newPassword
+	} else {
+		newPassword = body.Password
+	}
+	hashedPassword, err := common.HashAccountPassword(newPassword)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var targetUsername string
+	var auditEvent model.AuditLog
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var current model.User
+		if err := model.AdtyLockForUpdate(tx).First(&current, id).Error; err != nil {
+			return err
+		}
+		if !canManageTargetRole(myRole, current.Role) {
+			return common.NewMessage("No permission to update users of same or higher permission level")
+		}
+		if isAccessTokenRequest(c) && current.Role >= common.RoleAdminUser {
+			return errAdtyAdminActionDenied
+		}
+		if _, err := model.IncrementUserAuthVersionWithTx(tx, current.Id); err != nil {
+			return err
+		}
+		if _, err := model.DeleteUserAccessTokensWithTx(tx, current.Id); err != nil {
+			return err
+		}
+		if err := tx.Model(&model.User{}).Where("id = ?", current.Id).Updates(map[string]any{
+			"password":                hashedPassword,
+			"access_token":            nil,
+			"access_token_created_at": nil,
+		}).Error; err != nil {
+			return err
+		}
+		targetUsername = current.Username
+		auditParams := map[string]any{
+			"id":                  current.Id,
+			"username":            current.Username,
+			"target_role":         current.Role,
+			"random":              body.Random,
+			"verification_method": authorization.Method,
+		}
+		auditEvent = prepareManageAudit(c, current.Id, "admin.user.password_reset", auditParams)
+		return model.AppendAuditIntentTx(tx, auditEvent)
+	}); err != nil {
+		if errors.Is(err, errAdtyAdminActionDenied) {
+			denyAdtyAdminAction(c)
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	deliverCommittedAudits(c, []model.AuditLog{auditEvent})
+	if err := model.PublishUserAuthCache(id); err != nil {
+		common.SysError(common.LogText("failed to publish auth cache after admin password reset: user=%d err=%v", id, err))
+	}
+	if _, err := model.RevokeAllUserSessions(id, "admin_user_password_reset"); err != nil {
+		common.SysError(common.LogText("failed to revoke sessions after admin password reset: user=%d err=%v", id, err))
+	}
+	setAuthNoStore(c)
+	common.ApiSuccess(c, gin.H{
+		"user_id":            id,
+		"username":           targetUsername,
+		"generated_password": generatedPassword,
+	})
 }
 
 func AdminClearUserBinding(c *gin.Context) {

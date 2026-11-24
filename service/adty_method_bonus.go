@@ -1,6 +1,7 @@
 package service
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -9,6 +10,8 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
+
+var adtyCanonicalBonusMethods = []string{AdtyMethodAlipay, AdtyMethodWxpay, "usdt"}
 
 // AdtyBonusMethod is the canonical payment-method key for gift rules.
 // USDT chains share one rule. Amount-tier rates are not a bonus authority.
@@ -46,39 +49,146 @@ func AdtyPaymentMethodBonus(site *model.AdtySite, method string, faceUSD decimal
 
 func adtyMethodBonusRule(site *model.AdtySite, key string) (adty_setting.MethodBonusRule, bool) {
 	if site != nil {
-		if !adty_setting.SiteMethodBonusAllowed(site.Id, key) {
-			return adty_setting.MethodBonusRule{}, false
-		}
 		return adty_setting.SiteMethodBonus(site.Id, key)
 	}
 	return adty_setting.MainMethodBonus(key)
 }
 
-// AdtySiteBonusMethod is one payment method Root authorized for a site's gift,
-// with the owner's current rule. Rate is a decimal fraction, not a percent.
-type AdtySiteBonusMethod struct {
-	Method  string `json:"method"`
-	Enabled bool   `json:"enabled"`
-	Rate    string `json:"rate"`
+// EnabledMainSiteBonusMethods returns the canonical bonus method keys
+// ("alipay", "wxpay", "usdt") currently enabled on the main site across active
+// wallet_topup payment scenes and configured providers/channels, in fixed order.
+func EnabledMainSiteBonusMethods() []string {
+	enabled := map[string]bool{}
+	usedScenes := false
+	if model.DB != nil {
+		if cfg, err := GetAdtyPaymentScenes(); err == nil {
+			usedScenes = true
+			for _, scene := range cfg.Scenes {
+				if !scene.Enabled || scene.Business != model.AdtyBusinessWalletTopup {
+					continue
+				}
+				for _, provider := range AdtyPaymentProviders() {
+					for _, method := range provider.Methods() {
+						if !method.Available || !adtySceneMethod(scene, provider.Name(), method.Id, method.Currency) {
+							continue
+						}
+						if method.Kind == "epay" {
+							channelMethods, chErr := adtyEpaySceneChannelMethods(scene, method)
+							if chErr != nil || len(channelMethods) == 0 {
+								continue
+							}
+						}
+						if key := AdtyBonusMethod(method.Id); key != "" {
+							enabled[key] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	if !usedScenes {
+		for _, id := range AdtyAvailablePaymentMethodIDs() {
+			if key := AdtyBonusMethod(id); key != "" {
+				enabled[key] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(adtyCanonicalBonusMethods))
+	for _, method := range adtyCanonicalBonusMethods {
+		if enabled[method] {
+			out = append(out, method)
+		}
+	}
+	return out
 }
 
-// AdtySiteBonusMethods lists the methods Root authorized for this site, in a fixed
-// order. A method Root did not authorize is absent: a rate there would never be paid.
+// IsMainSiteBonusMethodEnabled reports whether method (raw or canonical) is
+// currently enabled on the main site.
+func IsMainSiteBonusMethodEnabled(method string) bool {
+	key := AdtyBonusMethod(method)
+	if key == "" {
+		return false
+	}
+	return slices.Contains(EnabledMainSiteBonusMethods(), key)
+}
+
+// AdtyActiveMethodBonusRates returns authoritative active bonus rates as decimal
+// fraction strings in (0, 1] (e.g. "0.05" for 5%) keyed by canonical method
+// ("alipay", "wxpay", "usdt"). Only enabled rules with positive rates are included.
+// Team and site-owner businesses do not receive recharge method bonuses.
+func AdtyActiveMethodBonusRates(userID int, requestSiteID int, business string) map[string]string {
+	out := map[string]string{}
+	biz := strings.TrimSpace(business)
+	if biz != "" && biz != model.AdtyBusinessWalletTopup {
+		return out
+	}
+	siteID := requestSiteID
+	if userID > 0 && model.DB != nil {
+		var user model.User
+		if err := model.DB.Select("id, site_id").Where("id = ?", userID).Limit(1).Find(&user).Error; err == nil && user.Id > 0 {
+			siteID = user.SiteId
+		}
+	}
+	if siteID > 0 && model.DB != nil {
+		var site model.AdtySite
+		if err := model.DB.Select("id, status").Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil || site.Id == 0 || site.Status != model.AdtySiteStatusActive {
+			return out
+		}
+	}
+	for _, method := range adtyCanonicalBonusMethods {
+		var (
+			rule adty_setting.MethodBonusRule
+			ok   bool
+		)
+		if siteID > 0 {
+			rule, ok = adty_setting.SiteMethodBonus(siteID, method)
+		} else {
+			rule, ok = adty_setting.MainMethodBonus(method)
+		}
+		if !ok || !rule.Enabled {
+			continue
+		}
+		rateDec, err := decimal.NewFromString(strings.TrimSpace(rule.Rate))
+		if err != nil || !rateDec.IsPositive() || rateDec.GreaterThan(decimal.NewFromInt(1)) {
+			continue
+		}
+		out[method] = rateDec.String()
+	}
+	return out
+}
+
+// AdtySiteBonusMethod is one main-site-enabled payment method available for a
+// subsite's gift configuration, with the owner's current rule. Rate is a decimal
+// fraction in [0, 1], not a percent.
+type AdtySiteBonusMethod struct {
+	Method        string `json:"method"`
+	Enabled       bool   `json:"enabled"`
+	Rate          string `json:"rate"`
+	Authorized    bool   `json:"authorized"`
+	EnabledByMain bool   `json:"enabled_by_main"`
+}
+
+// AdtySiteBonusMethods lists all payment methods currently enabled on the main
+// site in fixed order (alipay, wxpay, usdt) with the subsite owner's saved rules.
 func AdtySiteBonusMethods(site *model.AdtySite) []AdtySiteBonusMethod {
 	if site == nil {
 		return nil
 	}
-	methods := make([]AdtySiteBonusMethod, 0, 3)
-	for _, method := range []string{AdtyMethodAlipay, AdtyMethodWxpay, "usdt"} {
-		if !adty_setting.SiteMethodBonusAllowed(site.Id, method) {
-			continue
-		}
+	mainMethods := EnabledMainSiteBonusMethods()
+	methods := make([]AdtySiteBonusMethod, 0, len(mainMethods))
+	for _, method := range mainMethods {
 		rule, configured := adty_setting.SiteMethodBonus(site.Id, method)
 		rate := "0"
 		if configured {
 			rate = rule.Rate
 		}
-		methods = append(methods, AdtySiteBonusMethod{Method: method, Enabled: configured && rule.Enabled, Rate: rate})
+		methods = append(methods, AdtySiteBonusMethod{
+			Method:        method,
+			Enabled:       configured && rule.Enabled,
+			Rate:          rate,
+			Authorized:    true,
+			EnabledByMain: true,
+		})
 	}
 	return methods
 }

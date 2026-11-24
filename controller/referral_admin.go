@@ -19,21 +19,65 @@ import (
 
 // 推广管理（任务 6.7 的后端）。所有接口都用 handlePermissionRoute 按推广返佣的权限注册。
 
-func referralPage(c *gin.Context, query *gorm.DB, out any) bool {
+func referralPageRows(c *gin.Context, query *gorm.DB, out any) (*common.PageInfo, bool) {
 	pageInfo := common.GetPageQuery(c)
 	var total int64
 	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 		common.ApiError(c, err)
-		return false
+		return nil, false
 	}
 	if err := query.Order("id DESC").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(out).Error; err != nil {
 		common.ApiError(c, err)
-		return false
+		return nil, false
 	}
 	pageInfo.SetTotal(int(total))
+	return pageInfo, true
+}
+
+func referralPage(c *gin.Context, query *gorm.DB, out any) bool {
+	pageInfo, ok := referralPageRows(c, query, out)
+	if !ok {
+		return false
+	}
 	pageInfo.SetItems(out)
 	common.ApiSuccess(c, pageInfo)
 	return true
+}
+
+type referralAffiliateAdminItem struct {
+	model.ReferralAffiliate
+	Username string `json:"username"`
+}
+
+type referralBindingAdminItem struct {
+	model.ReferralBinding
+	InviteeUsername string `json:"invitee_username"`
+	InviterUsername string `json:"inviter_username"`
+}
+
+type referralCommissionAdminItem struct {
+	model.ReferralCommission
+	AffiliateUsername string `json:"affiliate_username"`
+	InviteeUsername   string `json:"invitee_username"`
+}
+
+type referralLedgerAdminItem struct {
+	model.ReferralCommissionLedger
+	Username string `json:"username"`
+}
+
+type referralAdminAuditLogItem struct {
+	model.ReferralAdminAuditLog
+	AdminUsername  string `json:"admin_username"`
+	TargetUsername string `json:"target_username"`
+}
+
+type referralWithdrawalAdminItem struct {
+	model.ReferralWithdrawal
+	Username           string `json:"username"`
+	ReviewedByUsername string `json:"reviewed_by_username,omitempty"`
+	RejectedByUsername string `json:"rejected_by_username,omitempty"`
+	CanceledByUsername string `json:"canceled_by_username,omitempty"`
 }
 
 // GetReferralAdminBadges 是侧边栏「推广管理」旁的待处理数：待审核提现 + 待打款提现（合作伙伴已下线，partners 恒为 0）。
@@ -191,8 +235,25 @@ func GetReferralAffiliates(c *gin.Context) {
 		query = query.Where("invite_code = ? OR user_id IN (?)", strings.ToUpper(keyword),
 			model.DB.Model(&model.User{}).Select("id").Where("username LIKE ?", "%"+keyword+"%"))
 	}
-	var items []model.ReferralAffiliate
-	referralPage(c, query, &items)
+	var rows []model.ReferralAffiliate
+	pageInfo, ok := referralPageRows(c, query, &rows)
+	if !ok {
+		return
+	}
+	ids := make([]int, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.UserId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]referralAffiliateAdminItem, len(rows))
+	for i, row := range rows {
+		items[i] = referralAffiliateAdminItem{
+			ReferralAffiliate: row,
+			Username:          names[row.UserId],
+		}
+	}
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
 }
 
 // GetReferralBindings 列出一个推广员带来的用户。
@@ -219,8 +280,26 @@ func GetReferralBindings(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}
-	var items []model.ReferralBinding
-	referralPage(c, service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralBinding{}).Where("inviter_user_id = ?", userID), "inviter_user_id", siteID), &items)
+	var rows []model.ReferralBinding
+	pageInfo, ok := referralPageRows(c, service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralBinding{}).Where("inviter_user_id = ?", userID), "inviter_user_id", siteID), &rows)
+	if !ok {
+		return
+	}
+	ids := make([]int, 0, len(rows)*2)
+	for _, row := range rows {
+		ids = append(ids, row.InviteeUserId, row.InviterUserId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]referralBindingAdminItem, len(rows))
+	for i, row := range rows {
+		items[i] = referralBindingAdminItem{
+			ReferralBinding: row,
+			InviteeUsername: names[row.InviteeUserId],
+			InviterUsername: names[row.InviterUserId],
+		}
+	}
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
 }
 
 // ReviewReferralPartner 合作伙伴申请审核已下线（R-34 #2）。
@@ -364,14 +443,62 @@ func GetAdminReferralCommissions(c *gin.Context) {
 		return
 	}
 	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralCommission{}), "affiliate_user_id", siteID)
-	if status := strings.TrimSpace(c.Query("status")); status != "" {
+	if status := strings.TrimSpace(c.Query("status")); status != "" && status != "all" {
 		query = query.Where("status = ?", status)
 	}
-	if raw := c.Query("affiliate_id"); raw != "" {
-		query = query.Where("affiliate_id = ?", raw)
+	if raw := strings.TrimSpace(c.Query("affiliate_id")); raw != "" {
+		aid, err := strconv.Atoi(raw)
+		if err != nil || aid <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		query = query.Where("affiliate_id = ?", aid)
 	}
-	var items []model.ReferralCommission
-	referralPage(c, query, &items)
+	if raw := strings.TrimSpace(c.Query("affiliate_user_id")); raw != "" {
+		uid, err := strconv.Atoi(raw)
+		if err != nil || uid <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		query = query.Where("affiliate_user_id = ?", uid)
+	}
+	if q := strings.TrimSpace(c.Query("q")); q != "" {
+		like := "%" + strings.ToLower(q) + "%"
+		userSub := func() *gorm.DB {
+			return model.DB.Unscoped().Table("users").Select("id").Where("LOWER(username) LIKE ?", like)
+		}
+		if id, err := strconv.Atoi(strings.TrimPrefix(q, "#")); err == nil && id > 0 {
+			query = query.Where(
+				"(LOWER(source_trade_no) LIKE ? OR affiliate_user_id = ? OR invitee_user_id = ? OR affiliate_user_id IN (?) OR invitee_user_id IN (?))",
+				like, id, id, userSub(), userSub(),
+			)
+		} else {
+			query = query.Where(
+				"(LOWER(source_trade_no) LIKE ? OR affiliate_user_id IN (?) OR invitee_user_id IN (?))",
+				like, userSub(), userSub(),
+			)
+		}
+	}
+	var rows []model.ReferralCommission
+	pageInfo, ok := referralPageRows(c, query, &rows)
+	if !ok {
+		return
+	}
+	ids := make([]int, 0, len(rows)*2)
+	for _, row := range rows {
+		ids = append(ids, row.AffiliateUserId, row.InviteeUserId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]referralCommissionAdminItem, len(rows))
+	for i, row := range rows {
+		items[i] = referralCommissionAdminItem{
+			ReferralCommission: row,
+			AffiliateUsername:  names[row.AffiliateUserId],
+			InviteeUsername:    names[row.InviteeUserId],
+		}
+	}
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
 }
 
 // GetReferralCommissionJobs 列出计佣任务。
@@ -433,11 +560,33 @@ func GetReferralLedgers(c *gin.Context) {
 		return
 	}
 	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralCommissionLedger{}), "user_id", siteID)
-	if raw := c.Query("affiliate_id"); raw != "" {
-		query = query.Where("affiliate_id = ?", raw)
+	if raw := strings.TrimSpace(c.Query("affiliate_id")); raw != "" {
+		aid, err := strconv.Atoi(raw)
+		if err != nil || aid <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		query = query.Where("affiliate_id = ?", aid)
 	}
-	var items []model.ReferralCommissionLedger
-	referralPage(c, query, &items)
+	var rows []model.ReferralCommissionLedger
+	pageInfo, ok := referralPageRows(c, query, &rows)
+	if !ok {
+		return
+	}
+	ids := make([]int, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.UserId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]referralLedgerAdminItem, len(rows))
+	for i, row := range rows {
+		items[i] = referralLedgerAdminItem{
+			ReferralCommissionLedger: row,
+			Username:                 names[row.UserId],
+		}
+	}
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
 }
 
 // GetReferralAdminAuditLogs 列出推广管理的操作记录。
@@ -450,8 +599,26 @@ func GetReferralAdminAuditLogs(c *gin.Context) {
 	if siteID != nil {
 		query = service.ScopeAdtyReferralUsersQuery(query.Where("target_user_id > 0"), "target_user_id", siteID)
 	}
-	var items []model.ReferralAdminAuditLog
-	referralPage(c, query, &items)
+	var rows []model.ReferralAdminAuditLog
+	pageInfo, ok := referralPageRows(c, query, &rows)
+	if !ok {
+		return
+	}
+	ids := make([]int, 0, len(rows)*2)
+	for _, row := range rows {
+		ids = append(ids, row.AdminUserId, row.TargetUserId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]referralAdminAuditLogItem, len(rows))
+	for i, row := range rows {
+		items[i] = referralAdminAuditLogItem{
+			ReferralAdminAuditLog: row,
+			AdminUsername:         names[row.AdminUserId],
+			TargetUsername:        names[row.TargetUserId],
+		}
+	}
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
 }
 
 // GetAdminReferralWithdrawals 列出提现，收款码和凭证链接重新签名。
@@ -466,19 +633,27 @@ func GetAdminReferralWithdrawals(c *gin.Context) {
 	} else if status != "" {
 		query = query.Where("status = ?", status)
 	}
-	pageInfo := common.GetPageQuery(c)
-	var total int64
-	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
-		common.ApiError(c, err)
+	var rows []model.ReferralWithdrawal
+	pageInfo, ok := referralPageRows(c, query, &rows)
+	if !ok {
 		return
 	}
-	var items []model.ReferralWithdrawal
-	if err := query.Order("id DESC").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&items).Error; err != nil {
-		common.ApiError(c, err)
-		return
+	resignWithdrawalAssets(rows)
+	ids := make([]int, 0, len(rows)*4)
+	for _, row := range rows {
+		ids = append(ids, row.UserId, row.ReviewedBy, row.RejectedBy, row.CanceledBy)
 	}
-	resignWithdrawalAssets(items)
-	pageInfo.SetTotal(int(total))
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]referralWithdrawalAdminItem, len(rows))
+	for i, row := range rows {
+		items[i] = referralWithdrawalAdminItem{
+			ReferralWithdrawal: row,
+			Username:           names[row.UserId],
+			ReviewedByUsername: names[row.ReviewedBy],
+			RejectedByUsername: names[row.RejectedBy],
+			CanceledByUsername: names[row.CanceledBy],
+		}
+	}
 	pageInfo.SetItems(items)
 	common.ApiSuccess(c, pageInfo)
 }

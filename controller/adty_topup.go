@@ -44,11 +44,15 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	business := c.Query("business")
 	isOwnerBiz := business == model.AdtyBusinessOwnerSelfUseTopup || business == model.AdtyBusinessOwnerMarginTopup
 	for _, scene := range scenes {
-		if scene.Key == "wallet_topup" || isOwnerBiz {
+		if scene.Key == model.AdtyBusinessWalletTopup || isOwnerBiz || business == model.AdtyBusinessTeamTopup {
 			methods = scene.Methods
 			break
 		}
 	}
+	if len(methods) == 0 && len(scenes) > 0 {
+		methods = scenes[0].Methods
+	}
+	methodBonusRates := service.AdtyActiveMethodBonusRates(c.GetInt("id"), service.AdtyRequestSiteID(c), business)
 	var pending *model.AdtyTopUpView
 	ownerSiteID := 0
 	if isOwnerBiz {
@@ -62,6 +66,7 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"tiers":              tiers,
 		"bonus_rates":        bonusRates,
+		"method_bonus_rates": methodBonusRates,
 		"min_topup":          operation_setting.GetMinTopUp(),
 		"methods":            methods,
 		"scenes":             scenes,
@@ -78,6 +83,7 @@ type adtyQuoteRequest struct {
 	Amount       int64  `json:"amount"`
 	Method       string `json:"method"`
 	ChannelId    int    `json:"channel_id"` // 易支付：客户选的通道，0 表示不指定
+	TeamId       int64  `json:"team_id"`
 }
 
 // PostAdtyTopUpQuote 报价，同时返回这个金额下这种方式能不能用。
@@ -87,7 +93,15 @@ func PostAdtyTopUpQuote(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	quote, err := service.AdtyQuoteForPayment(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Method)
+	var (
+		quote *service.AdtyQuote
+		err   error
+	)
+	if req.Business == model.AdtyBusinessTeamTopup {
+		quote, err = service.AdtyQuoteForTeamPayment(c.GetInt("id"), service.AdtyRequestSiteID(c), req.TeamId, c.GetString("group"), req.Amount, req.Method)
+	} else {
+		quote, err = service.AdtyQuoteForPayment(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Method)
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return

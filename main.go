@@ -30,6 +30,7 @@ import (
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	_ "github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -335,6 +336,7 @@ func InitResources() error {
 		common.FatalLog(common.LogText("failed to initialize database: %s", err.Error()))
 		return err
 	}
+	adty_setting.SetAuthoritativeBonusDB(model.DB)
 	if common.IsMasterNode {
 		if err = service.MigrateAdtyOpsClusterTables(model.DB); err != nil {
 			common.FatalLog(common.LogText("failed to migrate ops cluster tables: %s", err.Error()))

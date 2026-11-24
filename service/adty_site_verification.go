@@ -42,6 +42,7 @@ const (
 	AdtySiteOwnerActionVoucherFreeze      = "voucher.freeze"       // target: voucher ID
 	AdtySiteOwnerActionVoucherCancel      = "voucher.cancel"       // target: voucher ID
 	AdtySiteOwnerActionCustomerBalance    = "customer.balance"     // target: customer user ID
+	AdtySiteOwnerActionCustomerPassword   = "customer.password"    // target: customer user ID
 	AdtySiteOwnerActionTeamBalance        = "team.balance"         // target: team ID
 	AdtySiteOwnerActionWithdrawalCreate   = "withdrawal.create"    // target: site ID
 )
@@ -50,7 +51,7 @@ var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerAct
 	AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete,
 	AdtySiteOwnerActionStaffBalanceReview,
 	AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel,
-	AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance, AdtySiteOwnerActionWithdrawalCreate}
+	AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionCustomerPassword, AdtySiteOwnerActionTeamBalance, AdtySiteOwnerActionWithdrawalCreate}
 
 // AdtySiteOwnerContext 是 proof 绑定的操作：哪种操作、对哪个目标，员工写操作及资金操作还会绑定请求体摘要。
 type AdtySiteOwnerContext struct {
@@ -405,7 +406,7 @@ func AdtyStaffCustomerOperation(action string, target int) VerificationOperation
 
 func adtySiteOwnerActionAccessTokenScope(ctx AdtySiteOwnerContext) string {
 	switch ctx.Action {
-	case AdtySiteOwnerActionCustomerBalance:
+	case AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionCustomerPassword:
 		return AccessTokenResourceSiteOwnerCustomer + ":write"
 	case AdtySiteOwnerActionPricing:
 		if ctx.Target > 0 {

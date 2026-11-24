@@ -29,6 +29,7 @@ import type { OwnerCustomer } from '@/features/adty-site-owner/types'
 import { ORDER_TRACE_LABELS } from '@/features/recharge-audit/trace-labels'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatQuota, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 
 import { getStaffCustomerRecords, STAFF_PAGE_SIZE } from './api'
 
@@ -77,7 +78,10 @@ export function StaffRecordsDialog(props: {
       title={
         props.kind === 'topups' ? t('Recharge records') : t('Usage records')
       }
-      description={props.customer.username}
+      description={formatUserIdentity(
+        props.customer.id,
+        props.customer.username
+      )}
     >
       {query.isPending && <Skeleton className='h-32' />}
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}

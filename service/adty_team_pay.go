@@ -67,6 +67,45 @@ func adtyTeamQuote(userGroup string, face int64, method string) (*AdtyQuote, err
 	return quote, nil
 }
 
+// AdtyQuoteForTeamPayment quotes a team top-up for an active team leader.
+// Team orders keep Business=team_topup and receive zero recharge bonus;
+// scene authorization routes subsite teams (team.SiteId > 0) through wallet_topup
+// and main-site teams (team.SiteId == 0) through team_topup.
+func AdtyQuoteForTeamPayment(leaderID, requestSiteID int, teamID int64, userGroup string, face int64, method string) (*AdtyQuote, error) {
+	if leaderID <= 0 || teamID <= 0 {
+		return nil, ErrAdtyTeamForbidden
+	}
+	var team model.AdtyTeam
+	if err := model.DB.First(&team, teamID).Error; err != nil {
+		return nil, ErrAdtyTeamForbidden
+	}
+	if team.Status != model.AdtyTeamStatusActive || team.LeaderUserId != leaderID {
+		return nil, ErrAdtyTeamForbidden
+	}
+	var leader model.User
+	if err := model.DB.First(&leader, leaderID).Error; err != nil {
+		return nil, ErrAdtyTeamForbidden
+	}
+	if leader.Status != common.UserStatusEnabled || leader.StaffSiteId != 0 || leader.SiteId != team.SiteId {
+		return nil, ErrAdtyTeamForbidden
+	}
+	if requestSiteID > 0 && requestSiteID != team.SiteId {
+		return nil, ErrAdtyTeamForbidden
+	}
+	group := userGroup
+	if strings.TrimSpace(group) == "" {
+		group = leader.Group
+	}
+	quote, err := adtyTeamQuote(group, face, method)
+	if err != nil {
+		return nil, err
+	}
+	quote.TeamID = teamID
+	quote.Business = model.AdtyBusinessTeamTopup
+	quote.SiteID = team.SiteId
+	return quote, nil
+}
+
 // StartAdtyTeamTopupPayment opens an epay or USDT order for a team.
 // The payable amount uses the configured top-up price. The order has no gift.
 // A positive channelID pins the Epay order to that channel: if it cannot take

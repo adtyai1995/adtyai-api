@@ -31,6 +31,7 @@ import { Label } from '@/components/ui/label'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
 import { formatQuota, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -133,18 +134,11 @@ export function CustomersPanel() {
         }
         columns={[
           {
-            id: 'id',
-            header: t('ID'),
-            className: 'text-right',
-            cellClassName: 'text-right tabular-nums',
-            cell: (row) => row.id,
-          },
-          {
-            id: 'username',
-            header: t('Username'),
+            id: 'user',
+            header: t('ID / Username'),
             cell: (row) => (
-              <span className='flex items-center gap-2'>
-                {row.username}
+              <span className='flex items-center gap-2 tabular-nums'>
+                {formatUserIdentity(row.id, row.username)}
                 <RiskBadge customer={row} />
               </span>
             ),

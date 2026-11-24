@@ -37,6 +37,7 @@ import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { api } from '@/lib/api'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import {
   createServerError,
   getServerErrorMessage,
@@ -954,10 +955,14 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
               {tickets.map((ticket) => {
                 const timestampText = formatTicketShortTime(ticket.created_at)
                 const submitterText =
-                  ticket.username ||
-                  (ticket.user_id > 0 ? `#${ticket.user_id}` : '')
+                  ticket.user_id > 0 || ticket.username
+                    ? formatUserIdentity(ticket.user_id, ticket.username)
+                    : ''
                 const assigneeText = ticket.assignee_id
-                  ? ticket.assignee_username || `#${ticket.assignee_id}`
+                  ? formatUserIdentity(
+                      ticket.assignee_id,
+                      ticket.assignee_username
+                    )
                   : ''
 
                 return (

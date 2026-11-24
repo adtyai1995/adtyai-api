@@ -43,7 +43,6 @@ func AdtySidebarBadgeConfirmedKinds() []string {
 		AdtyBadgeSiteInviteCommissionsPendingCoverage,
 		AdtyBadgeReferralCommissionsFrozen,
 		AdtyBadgeFundAnomaliesOpen,
-		AdtyBadgeStaffBalancePending,
 		AdtyBadgeTicketsPending,
 		AdtyBadgePlatformTicketsPending,
 		AdtyBadgeOwnerTicketsPending,
@@ -164,9 +163,7 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 			badgeAfterSeen(model.DB.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ? AND status = ?", actor.OwnerSiteId, model.AdtySiteCommissionPendingCoverage), "created_at", seenMap[AdtyBadgeSiteInviteCommissionsPendingCoverage]),
 		)
 	}
-	if !isToken {
-		collectAdtyStaffBalanceBadge(counts, actor, requestSite == nil, seenMap)
-	}
+	// Staff balance requests are retired (R-35 #11); omit staff_balance_pending without querying adty_staff_balance_requests.
 	collectAdtyTicketBadgesInto(counts, actor, requestSite == nil, seenMap, tokenScopes...)
 	if requestSite == nil && tokenAllows(AccessTokenScopeOf(authz.AdtyFinanceRead)) {
 		collectAdtyPaymentOrphanBadge(counts, actor, seenMap)
@@ -406,20 +403,6 @@ func scopeReferralUserQuery(query *gorm.DB, userColumn string, siteID *int) *gor
 		return query
 	}
 	return query.Where(userColumn+" IN (?)", model.DB.Model(&model.User{}).Select("id").Where("site_id = ?", *siteID))
-}
-
-func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor, onMainSite bool, seenMap map[string]int64) {
-	query := badgeAfterSeen(model.DB.Model(&model.AdtyStaffBalanceRequest{}).Where("status = ?", model.AdtyStaffBalancePending), "created_at", seenMap[AdtyBadgeStaffBalancePending])
-	switch {
-	case onMainSite && actor.User.Role >= common.RoleRootUser:
-	case actor.OwnerSiteId > 0:
-		query = query.Where("site_id = ?", actor.OwnerSiteId)
-	case actor.Staff != nil && actor.Staff.Status == "enabled":
-		query = query.Where("site_id = ? AND staff_user_id = ?", actor.Staff.SiteId, actor.User.Id)
-	default:
-		return
-	}
-	counts[AdtyBadgeStaffBalancePending] = countBadgeOrZero(AdtyBadgeStaffBalancePending, query)
 }
 
 func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor, onMainSite bool, seenMap map[string]int64, tokenScopes ...[]string) {

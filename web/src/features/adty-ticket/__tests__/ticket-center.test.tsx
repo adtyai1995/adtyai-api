@@ -183,7 +183,7 @@ describe('TicketCenter redesign', () => {
     ).closest('button')
     expect(rowButton).not.toBeNull()
     if (!rowButton) return
-    expect(within(rowButton).getByText('Mysterious')).toBeTruthy()
+    expect(within(rowButton).getByText('42 / Mysterious')).toBeTruthy()
     expect(within(rowButton).getByText('Urgent')).toBeTruthy()
     expect(within(rowButton).getByText('Admin replied')).toBeTruthy()
 

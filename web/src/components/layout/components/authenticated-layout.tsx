@@ -131,7 +131,7 @@ export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
             <SidebarInset
               className={cn(
                 '@container/content',
-                'bg-canvas',
+                'bg-background',
                 'h-[calc(100svh-var(--app-header-height,0px))]',
                 'min-h-0 overflow-hidden',
                 'peer-data-[variant=inset]:h-[calc(100svh-var(--app-header-height,0px)-(var(--spacing)*4))]'

@@ -95,6 +95,11 @@ func PutAdtySiteTierAssignment(c *gin.Context) {
 	}
 }
 
+type adtySiteTierPrincipalAdjustmentItem struct {
+	model.AdtySiteTierPrincipalAdjustment
+	OperatorUsername string `json:"operator_username,omitempty"`
+}
+
 // GetAdtyAdminSiteTierPrincipal returns the tier-evaluation customer recharge
 // breakdown (online customer net recharge + Root manual adjustment = effective
 // total) and paged adjustment history for one site.
@@ -118,10 +123,22 @@ func GetAdtyAdminSiteTierPrincipal(c *gin.Context) {
 		return
 	}
 	pageInfo, offset, limit := adtyPage(c)
-	items, total, err := service.ListAdtySiteTierPrincipalAdjustments(siteID, offset, limit)
+	rows, total, err := service.ListAdtySiteTierPrincipalAdjustments(siteID, offset, limit)
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	opIDs := make([]int, 0, len(rows))
+	for _, row := range rows {
+		opIDs = append(opIDs, row.OperatorId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, opIDs)
+	items := make([]adtySiteTierPrincipalAdjustmentItem, len(rows))
+	for i, row := range rows {
+		items[i] = adtySiteTierPrincipalAdjustmentItem{
+			AdtySiteTierPrincipalAdjustment: row,
+			OperatorUsername:                names[row.OperatorId],
+		}
 	}
 	common.ApiSuccess(c, gin.H{
 		"site_id":                 siteID,

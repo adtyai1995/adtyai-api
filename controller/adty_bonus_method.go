@@ -77,11 +77,7 @@ func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[st
 
 // GetAdtyMainMethodBonus returns main-site payment-method gift rules for Root (R1-040).
 func GetAdtyMainMethodBonus(c *gin.Context) {
-	rules := adty_setting.GetTopupSetting().MethodBonus
-	if rules == nil {
-		rules = map[string]adty_setting.MethodBonusRule{}
-	}
-	common.ApiSuccess(c, rules)
+	common.ApiSuccess(c, adty_setting.MainMethodBonusMap())
 }
 
 // PutAdtyMainMethodBonus lets Root set one main-site payment-method gift rule.
@@ -104,7 +100,7 @@ func PutAdtyMainMethodBonus(c *gin.Context) {
 		map[string]any{"method": body.Method, "enabled": body.Enabled}, merge) {
 		return
 	}
-	common.ApiSuccess(c, adty_setting.GetTopupSetting().MethodBonus)
+	common.ApiSuccess(c, adty_setting.MainMethodBonusMap())
 }
 
 // GetAdtySiteBonusMarginFill returns Root's margin-fill authorization for one site (R1-040).
@@ -142,34 +138,15 @@ func PutAdtySiteBonusMarginFill(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"site_id": siteID, "enabled": *body.Enabled})
 }
 
-// PutAdtySiteBonusMethodAuth lets Root authorize one method for a site.
+// PutAdtySiteBonusMethodAuth is deprecated: subsites no longer require per-site
+// payment-method bonus authorization from the main site.
 func PutAdtySiteBonusMethodAuth(c *gin.Context) {
-	siteID, err := strconv.Atoi(c.Param("id"))
-	if err != nil || siteID <= 0 {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	var body adtyMethodBonusBody
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil || body.Allowed == nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	merge := func(current string) (string, error) {
-		return adty_setting.MergeSiteMethodAuth(current, siteID, body.Method, *body.Allowed)
-	}
-	if _, err := merge(""); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteMethodAuth, "adty.topup.site_method_auth.update",
-		map[string]any{"method": body.Method, "allowed": *body.Allowed, "site_id": siteID},
-		map[string]any{"method": body.Method, "allowed": *body.Allowed}, merge) {
-		return
-	}
-	common.ApiSuccess(c, gin.H{"site_id": siteID, "allowed": *body.Allowed})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Per-site payment method bonus authorization has been removed"))
 }
 
-// PutAdtySiteMethodBonus lets a site owner save a gift rule inside Root's authorization.
+// PutAdtySiteMethodBonus lets an active site owner configure a gift rule for any
+// payment method currently enabled on the main site (or disable an existing rule
+// even if the main site disabled that method later).
 func PutAdtySiteMethodBonus(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {
@@ -189,14 +166,17 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if body.Enabled && !service.IsMainSiteBonusMethodEnabled(body.Method) {
+		common.ApiError(c, common.NewMessage("This payment method is not enabled on the main site"))
+		return
+	}
 	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionBonus, site.Id) {
 		return
 	}
 	actorID := c.GetInt("id")
-	var authorization string
 	var txRef *gorm.DB
 	merge := func(current string) (string, error) {
-		// Lock AdtySite after options (site_method_auth -> site_method_bonus -> AdtySite)
+		// Lock AdtySite after options (site_method_bonus -> AdtySite)
 		// matching CreateAdtyPaymentOrder canonical lock order to serialize with site close/pause.
 		var locked model.AdtySite
 		if err := model.AdtyLockForUpdate(txRef).Where("id = ?", site.Id).First(&locked).Error; err != nil {
@@ -205,15 +185,13 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 		if locked.OwnerUserId != actorID || locked.Status != model.AdtySiteStatusActive {
 			return "", errAdtyBonusSiteForbidden
 		}
-		return adty_setting.MergeSiteMethodBonusWithAuth(current, authorization, site.Id, body.Method, body.Enabled, body.Rate)
+		return adty_setting.MergeSiteMethodBonus(current, site.Id, body.Method, body.Enabled, body.Rate)
 	}
 	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteMethodBonus, "adty.topup.site_method_bonus.update",
 		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate, "site_id": site.Id},
 		map[string]any{"method": body.Method, "enabled": body.Enabled}, merge, func(tx *gorm.DB) error {
 			txRef = tx
-			var err error
-			authorization, err = model.LockOptionValueTx(tx, adty_setting.TopupSettingKeySiteMethodAuth)
-			return err
+			return nil
 		}) {
 		return
 	}

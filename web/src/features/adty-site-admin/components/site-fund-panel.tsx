@@ -26,6 +26,7 @@ import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { siteWalletKindLabel } from '@/features/adty-ledger/site-wallet-labels'
 import { SiteWalletLedger } from '@/features/adty-ledger/site-wallet-ledger'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
@@ -35,22 +36,14 @@ import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
-  type AdminVoucherIssued,
-  cancelAdminVoucher,
-  createVoucherIssuanceIntentKey,
   creditAdminSiteMargin,
   getAdminAnomalyDispositions,
   getAdminFundAnomalies,
-  getAdminSiteCommissionMargin,
   getAdminSiteWalletLedger,
   getAdminSiteWallets,
-  issueAdminMarginVoucher,
-  resetVoucherIssuanceIntent,
   reviewAdminAnomalyDisposition,
-  saveAdminSiteCommissionMargin,
   siteAdminKeys,
 } from '../api'
-import { SwitchRow } from './setting-fields'
 
 function fundAnomalyKindLabel(
   kind: string,
@@ -100,22 +93,15 @@ function dispositionStatusLabel(
   }
 }
 
-/** Root sees the site anomaly scan and can issue a margin code. Amounts are typed, not suggested. */
+/** Root sees site wallets, direct margin credit, wallet ledger, anomalies, and review history. */
 export function SiteFundPanel(props: { siteId: number }) {
   const { t } = useTranslation()
   const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
   const client = useQueryClient()
-  const [amount, setAmount] = useState('')
-  const [reason, setReason] = useState('')
-  const [code, setCode] = useState('')
   const [directAmount, setDirectAmount] = useState('')
   const [directReason, setDirectReason] = useState('')
   const directIntentRef = useRef<{ payload: string; key: string } | null>(null)
-  const [intentKey, setIntentKey] = useState(() =>
-    createVoucherIssuanceIntentKey()
-  )
-  const [reconciled, setReconciled] = useState<AdminVoucherIssued | null>(null)
   const directCredit = useMutation({
     mutationFn: () => {
       const payloadObj = {
@@ -160,250 +146,134 @@ export function SiteFundPanel(props: { siteId: number }) {
     queryFn: () => getAdminFundAnomalies(props.siteId),
     enabled: isRoot,
   })
-  const marginAuth = useQuery({
-    queryKey: siteAdminKeys.list('commission-margin', { siteId: props.siteId }),
-    queryFn: () => getAdminSiteCommissionMargin(props.siteId),
-    enabled: isRoot,
-  })
-  const saveMargin = useMutation({
-    mutationFn: (allowed: boolean) =>
-      saveAdminSiteCommissionMargin(props.siteId, allowed),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: siteAdminKeys.all })
-      void invalidateSidebarBadges(client)
-    },
-    onError: (error) => handleServerError(error),
-  })
-  const issue = useMutation({
-    mutationFn: () =>
-      issueAdminMarginVoucher({
-        site_id: props.siteId,
-        amount_usd: amount.trim(),
-        reason: reason.trim(),
-        intent_key: intentKey,
-      }),
-    onSuccess: (issued) => {
-      if (issued.replayed || !issued.code) {
-        setCode('')
-        setReconciled(issued)
-        void client.invalidateQueries({ queryKey: siteAdminKeys.all })
-        void invalidateSidebarBadges(client)
-        return
-      }
-      setCode(issued.code)
-      setReconciled(null)
-      setAmount('')
-      setReason('')
-      resetVoucherIssuanceIntent(intentKey)
-      setIntentKey(createVoucherIssuanceIntentKey())
-      void client.invalidateQueries({ queryKey: siteAdminKeys.all })
-      void invalidateSidebarBadges(client)
-    },
-    onError: (error) => handleServerError(error),
-  })
-  const cancelReconciled = useMutation({
-    mutationFn: (id: number) => cancelAdminVoucher(id),
-    onSuccess: () => {
-      setReconciled(null)
-      resetVoucherIssuanceIntent(intentKey)
-      setIntentKey(createVoucherIssuanceIntentKey())
-      void client.invalidateQueries({ queryKey: siteAdminKeys.all })
-      void invalidateSidebarBadges(client)
-    },
-    onError: (error) => handleServerError(error),
-  })
   if (!isRoot) return null
   // 缓存里可能留着旧形状的响应；列表只认数组，其它一律当空，否则 `.map` 会让整页白屏。
   const walletRows = Array.isArray(wallets.data) ? wallets.data : []
   const anomalyKinds = Array.isArray(anomalies.data) ? anomalies.data : []
   return (
-    <section className='flex flex-col gap-3'>
-      <h3 className='text-sm font-medium'>{t('Wallets')}</h3>
-      {wallets.isPending && <LoadingState />}
-      {wallets.isError && <ErrorState onRetry={() => void wallets.refetch()} />}
-      {wallets.isSuccess && walletRows.length === 0 && (
-        <p className='text-sm'>{t('No data')}</p>
-      )}
-      {wallets.isSuccess && walletRows.length > 0 && (
-        <ul className='flex flex-col gap-1 text-sm tabular-nums'>
-          {walletRows.map((wallet) => (
-            <li key={wallet.id}>
-              {siteWalletKindLabel(t, wallet.kind)}: {wallet.balance} USD
-              {Number(wallet.frozen_usd) > 0
-                ? ` · ${t('Frozen')} ${wallet.frozen_usd}`
-                : ''}
-              {Number(wallet.excess_frozen_usd) > 0
-                ? ` · ${t('Excess frozen')} ${wallet.excess_frozen_usd}`
-                : ''}
-              {wallet.kind === 'margin' && wallet.cycle_tier_usd
-                ? ` · ${wallet.cycle_used_usd}/${wallet.cycle_tier_usd}`
-                : ''}
-            </li>
-          ))}
-        </ul>
-      )}
-      <SiteWalletLedger
-        label={t('Wallet ledger')}
-        queryKey={siteAdminKeys.list('wallet-ledger', { siteId: props.siteId })}
-        kinds={['operating', 'earnings', 'margin']}
-        fetchPage={(kind, page, pageSize) =>
-          getAdminSiteWalletLedger(props.siteId, kind, page, pageSize)
-        }
-        showOperator
-      />
-      <h3 className='text-sm font-medium'>{t('Commission coverage')}</h3>
-      {marginAuth.isPending && <LoadingState />}
-      {marginAuth.isError && (
-        <ErrorState onRetry={() => void marginAuth.refetch()} />
-      )}
-      {marginAuth.isSuccess && (
-        <SwitchRow
-          label={t('Cover commission from margin')}
-          hint={t(
-            'After earnings, the open margin cycle can cover the rest. No amount is set here.'
-          )}
-          checked={marginAuth.data?.allowed === true}
-          disabled={saveMargin.isPending}
-          onCheckedChange={(value) => saveMargin.mutate(value)}
-        />
-      )}
-      <h3 className='text-sm font-medium'>{t('Fund anomalies')}</h3>
-      {anomalies.isPending && <LoadingState />}
-      {anomalies.isError && (
-        <ErrorState onRetry={() => void anomalies.refetch()} />
-      )}
-      {anomalies.isSuccess && anomalyKinds.length === 0 && (
-        <p className='text-sm'>{t('No data')}</p>
-      )}
-      {anomalies.isSuccess && anomalyKinds.length > 0 && (
-        <ul className='flex flex-col gap-1 text-sm'>
-          {anomalyKinds.map((kind) => (
-            <li key={kind} className='text-xs'>
-              {fundAnomalyKindLabel(kind, t)}
-            </li>
-          ))}
-        </ul>
-      )}
-      <FundReviewPanel siteId={props.siteId} />
-      <h3 className='text-sm font-medium'>{t('Direct margin credit')}</h3>
-      <p className='text-muted-foreground text-sm'>
-        {t(
-          'Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet. Excess margin above the site level deposit floor can also be used by the owner for manual customer/team balance credits and recharge codes.'
+    <section className='flex flex-col gap-5'>
+      <div className='flex flex-col gap-2.5'>
+        <h3 className='text-sm font-medium'>{t('Wallets')}</h3>
+        {wallets.isPending && <LoadingState />}
+        {wallets.isError && (
+          <ErrorState onRetry={() => void wallets.refetch()} />
         )}
-      </p>
-      <div className='grid gap-3 sm:grid-cols-2'>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='direct-margin-amount'>{t('Amount')}</Label>
-          <Input
-            id='direct-margin-amount'
-            value={directAmount}
-            inputMode='decimal'
-            autoComplete='off'
-            onChange={(event) => setDirectAmount(event.target.value)}
-          />
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='direct-margin-reason'>{t('Reason')}</Label>
-          <Input
-            id='direct-margin-reason'
-            value={directReason}
-            onChange={(event) => setDirectReason(event.target.value)}
-          />
-        </div>
+        {wallets.isSuccess && walletRows.length === 0 && (
+          <p className='text-muted-foreground text-sm'>{t('No data')}</p>
+        )}
+        {wallets.isSuccess && walletRows.length > 0 && (
+          <dl className='grid gap-3 sm:grid-cols-3'>
+            {walletRows.map((wallet) => (
+              <div
+                key={wallet.id}
+                className='bg-muted/40 rounded-lg border p-3 text-sm tabular-nums'
+              >
+                <dt className='text-muted-foreground text-xs'>
+                  {siteWalletKindLabel(t, wallet.kind)}
+                </dt>
+                <dd className='mt-1 text-base font-semibold'>
+                  {wallet.balance} USD
+                </dd>
+                <div className='text-muted-foreground mt-1 flex flex-col gap-0.5 text-xs'>
+                  {Number(wallet.frozen_usd) > 0 && (
+                    <span>
+                      {t('Frozen')}: {wallet.frozen_usd} USD
+                    </span>
+                  )}
+                  {Number(wallet.excess_frozen_usd) > 0 && (
+                    <span>
+                      {t('Excess frozen')}: {wallet.excess_frozen_usd} USD
+                    </span>
+                  )}
+                  {wallet.kind === 'margin' && wallet.cycle_tier_usd && (
+                    <span>
+                      {wallet.cycle_used_usd}/{wallet.cycle_tier_usd} USD
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </dl>
+        )}
       </div>
-      <Button
-        type='button'
-        variant='outline'
-        disabled={
-          directCredit.isPending ||
-          directAmount.trim() === '' ||
-          directReason.trim() === ''
-        }
-        onClick={() => directCredit.mutate()}
-      >
-        {t('Credit margin directly')}
-      </Button>
-      <h3 className='text-sm font-medium'>{t('Issue margin code')}</h3>
-      <p className='text-muted-foreground text-sm'>
-        {t('Only the site owner can redeem a margin code.')}
-      </p>
-      <div className='grid gap-3 sm:grid-cols-2'>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='margin-code-amount'>{t('Amount')}</Label>
-          <Input
-            id='margin-code-amount'
-            value={amount}
-            inputMode='decimal'
-            onChange={(event) => setAmount(event.target.value)}
-          />
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='margin-code-reason'>{t('Reason')}</Label>
-          <Input
-            id='margin-code-reason'
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-          />
-        </div>
-      </div>
-      <Button
-        type='button'
-        variant='outline'
-        disabled={
-          issue.isPending ||
-          reconciled !== null ||
-          amount.trim() === '' ||
-          reason.trim() === ''
-        }
-        onClick={() => issue.mutate()}
-      >
-        {t('Issue margin code')}
-      </Button>
-      {reconciled && (
-        <div
-          data-testid='margin-voucher-reconcile-banner'
-          className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
-        >
-          <p>
-            {t(
-              'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
-              {
-                id: reconciled.id,
-                tail: reconciled.code_tail,
-              }
-            )}
-          </p>
-          <div className='flex flex-wrap gap-2'>
-            {reconciled.id > 0 &&
-              (!reconciled.status ||
-                reconciled.status === 'pending' ||
-                reconciled.status === 'frozen') && (
-                <Button
-                  type='button'
-                  size='sm'
-                  variant='outline'
-                  disabled={cancelReconciled.isPending}
-                  onClick={() => cancelReconciled.mutate(reconciled.id)}
-                >
-                  {t('Cancel code and replace')}
-                </Button>
-              )}
-            <Button
-              type='button'
-              size='sm'
-              variant='outline'
-              onClick={() => {
-                setReconciled(null)
-                resetVoucherIssuanceIntent(intentKey)
-                setIntentKey(createVoucherIssuanceIntentKey())
-              }}
-            >
-              {t('Prepare replacement code')}
-            </Button>
+
+      <div className='flex flex-col gap-2.5 border-t pt-4'>
+        <h3 className='text-sm font-medium'>{t('Direct margin credit')}</h3>
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet. Excess margin above the site level deposit floor can also be used by the owner for manual customer/team balance credits and recharge codes.'
+          )}
+        </p>
+        <div className='grid max-w-2xl gap-3 sm:grid-cols-2'>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='direct-margin-amount'>{t('Amount')}</Label>
+            <Input
+              id='direct-margin-amount'
+              value={directAmount}
+              inputMode='decimal'
+              autoComplete='off'
+              onChange={(event) => setDirectAmount(event.target.value)}
+            />
+          </div>
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='direct-margin-reason'>{t('Reason')}</Label>
+            <Input
+              id='direct-margin-reason'
+              value={directReason}
+              onChange={(event) => setDirectReason(event.target.value)}
+            />
           </div>
         </div>
-      )}
-      {code && <p className='text-sm break-all'>{code}</p>}
+        <div>
+          <Button
+            type='button'
+            variant='outline'
+            disabled={
+              directCredit.isPending ||
+              directAmount.trim() === '' ||
+              directReason.trim() === ''
+            }
+            onClick={() => directCredit.mutate()}
+          >
+            {t('Credit margin directly')}
+          </Button>
+        </div>
+      </div>
+
+      <div className='border-t pt-4'>
+        <SiteWalletLedger
+          label={t('Wallet ledger')}
+          queryKey={siteAdminKeys.list('wallet-ledger', {
+            siteId: props.siteId,
+          })}
+          kinds={['operating', 'earnings', 'margin']}
+          fetchPage={(kind, page, pageSize) =>
+            getAdminSiteWalletLedger(props.siteId, kind, page, pageSize)
+          }
+          showOperator
+        />
+      </div>
+
+      <div className='flex flex-col gap-2.5 border-t pt-4'>
+        <h3 className='text-sm font-medium'>{t('Fund anomalies')}</h3>
+        {anomalies.isPending && <LoadingState />}
+        {anomalies.isError && (
+          <ErrorState onRetry={() => void anomalies.refetch()} />
+        )}
+        {anomalies.isSuccess && anomalyKinds.length === 0 && (
+          <p className='text-muted-foreground text-sm'>{t('No data')}</p>
+        )}
+        {anomalies.isSuccess && anomalyKinds.length > 0 && (
+          <ul className='flex flex-col gap-1 text-sm'>
+            {anomalyKinds.map((kind) => (
+              <li key={kind} className='text-xs'>
+                {fundAnomalyKindLabel(kind, t)}
+              </li>
+            ))}
+          </ul>
+        )}
+        <FundReviewPanel siteId={props.siteId} />
+      </div>
     </section>
   )
 }
@@ -444,40 +314,50 @@ export function FundReviewPanel(props: { siteId: number }) {
     : []
   if (!isRoot) return null
   return (
-    <section className='flex flex-col gap-2'>
-      <h3 className='text-sm font-medium'>{t('Financial review history')}</h3>
-      <Label htmlFor='disposition-status'>{t('Status')}</Label>
-      <select
-        id='disposition-status'
-        value={status}
-        onChange={(e) => {
-          setStatus(e.target.value)
-          setPage(1)
-        }}
-      >
-        <option value=''>{t('All')}</option>
-        <option value='open'>{t('Open')}</option>
-        <option value='reviewing'>{t('Reviewing')}</option>
-        <option value='closed'>{t('Closed')}</option>
-      </select>
-      <Label htmlFor='disposition-order'>{t('Order number')}</Label>
-      <Input
-        id='disposition-order'
-        value={order}
-        onChange={(e) => {
-          setOrder(e.target.value)
-          setPage(1)
-        }}
-      />
-      <Label htmlFor='disposition-kind'>{t('Anomaly type')}</Label>
-      <Input
-        id='disposition-kind'
-        value={kind}
-        onChange={(e) => {
-          setKind(e.target.value)
-          setPage(1)
-        }}
-      />
+    <section className='flex flex-col gap-3 pt-2'>
+      <h4 className='text-sm font-medium'>{t('Financial review history')}</h4>
+      <div className='grid max-w-3xl gap-3 sm:grid-cols-3'>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor='disposition-status'>{t('Status')}</Label>
+          <NativeSelect
+            id='disposition-status'
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value)
+              setPage(1)
+            }}
+          >
+            <NativeSelectOption value=''>{t('All')}</NativeSelectOption>
+            <NativeSelectOption value='open'>{t('Open')}</NativeSelectOption>
+            <NativeSelectOption value='reviewing'>
+              {t('Reviewing')}
+            </NativeSelectOption>
+            <NativeSelectOption value='closed'>{t('Closed')}</NativeSelectOption>
+          </NativeSelect>
+        </div>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor='disposition-order'>{t('Order number')}</Label>
+          <Input
+            id='disposition-order'
+            value={order}
+            onChange={(e) => {
+              setOrder(e.target.value)
+              setPage(1)
+            }}
+          />
+        </div>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor='disposition-kind'>{t('Anomaly type')}</Label>
+          <Input
+            id='disposition-kind'
+            value={kind}
+            onChange={(e) => {
+              setKind(e.target.value)
+              setPage(1)
+            }}
+          />
+        </div>
+      </div>
       {dispositions.isPending && <LoadingState />}
       {dispositions.isError && (
         <ErrorState onRetry={() => void dispositions.refetch()} />

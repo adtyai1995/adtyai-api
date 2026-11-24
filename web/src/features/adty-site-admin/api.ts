@@ -99,27 +99,6 @@ export async function getSiteStats(id: number): Promise<SiteStatsResponse> {
   return requireServerSuccess(res.data).data
 }
 
-export type AdminBalanceRequest = {
-  id: number
-  site_id: number
-  staff_user_id: number
-  customer_user_id: number
-  direction: 'increase' | 'decrease'
-  amount_usd: string
-  status: 'pending' | 'approved' | 'rejected'
-  reviewer_id: number
-  reviewer_role: string
-  reason?: string
-  order_ref?: string
-  funding_source?: string
-  batch_kind?: string
-  batch_source?: string
-  ledger_id?: number
-  review_note?: string
-  created_at: number
-  reviewed_at: number
-}
-
 export async function getAdminWithdrawRules() {
   const res = await api.get<
     ApiResponse<
@@ -474,31 +453,6 @@ export async function saveAdminSiteCommissionMargin(
   requireServerSuccess(res.data)
 }
 
-export async function getAdminBalanceRequests(
-  siteId: number,
-  p: number,
-  status: string
-) {
-  const res = await api.get<
-    ApiResponse<{ items: AdminBalanceRequest[]; total: number }>
-  >(`${BASE}/balance-requests`, {
-    params: { site_id: siteId, p, page_size: SITE_ADMIN_PAGE_SIZE, status },
-  })
-  return requireServerSuccess(res.data).data
-}
-
-export async function reviewAdminBalanceRequest(
-  id: number,
-  approve: boolean,
-  reason?: string
-): Promise<void> {
-  const res = await api.post<ApiResponse<{ reviewed: boolean }>>(
-    `${BASE}/balance-requests/${id}/review`,
-    reason ? { approve, reason } : { approve }
-  )
-  requireServerSuccess(res.data)
-}
-
 export async function getFlaggedCustomers(
   p: number
 ): Promise<SitePage<FlaggedCustomer>> {
@@ -780,6 +734,7 @@ export type AdminSiteWithdrawal = {
   id: number
   site_id: number
   owner_user_id: number
+  owner_username?: string
   subdomain: string
   amount_usd: string
   fee_usd: string

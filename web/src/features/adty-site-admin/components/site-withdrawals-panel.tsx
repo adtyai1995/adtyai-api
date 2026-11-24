@@ -43,6 +43,7 @@ import { siteWithdrawalStatusLabel } from '@/features/adty-ledger/site-wallet-la
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -231,7 +232,11 @@ export function SiteWithdrawalsPanel() {
                     <div className='flex flex-col'>
                       <span>{row.subdomain || `#${row.site_id}`}</span>
                       <span className='text-muted-foreground text-xs'>
-                        {t('Owner')} #{row.owner_user_id}
+                        {t('Owner')}:{' '}
+                        {formatUserIdentity(
+                          row.owner_user_id,
+                          row.owner_username
+                        )}
                       </span>
                     </div>
                   ),
@@ -444,10 +449,19 @@ export function SiteWithdrawalsPanel() {
       >
         {action && (
           <div className='flex items-start justify-between gap-3'>
-            <p className='text-sm tabular-nums'>
-              {action.row.subdomain || `#${action.row.site_id}`} ·{' '}
-              {action.row.payout_amount} {action.row.payout_currency}
-            </p>
+            <div className='flex flex-col gap-0.5'>
+              <p className='text-sm tabular-nums'>
+                {action.row.subdomain || `#${action.row.site_id}`} ·{' '}
+                {action.row.payout_amount} {action.row.payout_currency}
+              </p>
+              <p className='text-muted-foreground text-xs'>
+                {t('Owner')}:{' '}
+                {formatUserIdentity(
+                  action.row.owner_user_id,
+                  action.row.owner_username
+                )}
+              </p>
+            </div>
             {action.kind === 'paid' && action.row.qr_image_url && (
               <a
                 href={action.row.qr_image_url}

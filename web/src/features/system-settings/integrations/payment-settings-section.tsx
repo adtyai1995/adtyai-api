@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from '@tanstack/react-router'
 import { Code2, Eye, ShieldAlert } from 'lucide-react'
 import * as React from 'react'
@@ -26,17 +25,9 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import * as z from 'zod'
 
-import { ErrorState } from '@/components/error-state'
 import { JsonCodeEditor } from '@/components/json-code-editor'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import {
   Form,
   FormControl,
@@ -47,15 +38,9 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PaymentChannels } from '@/features/adty-payment-channels'
 import { PaymentSceneManager } from '@/features/adty-payment-scenes'
-import { api } from '@/lib/api'
-import { handleServerError } from '@/lib/handle-server-error'
-import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { SettingsForm } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
@@ -124,248 +109,6 @@ const providerSchemas = {
   }),
 }
 
-type MainBonusMethodRule = {
-  enabled: boolean
-  rate: string
-}
-
-type MainBonusMethodsMap = Record<string, MainBonusMethodRule>
-
-const MAIN_BONUS_METHODS = [
-  { key: 'alipay', labelKey: 'Alipay' },
-  { key: 'wxpay', labelKey: 'WeChat Pay' },
-  { key: 'usdt', labelKey: 'USDT' },
-] as const
-
-function isValidBonusRateDecimal(raw: string): boolean {
-  const trimmed = raw.trim()
-  if (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(trimmed)) {
-    return false
-  }
-  const num = Number(trimmed)
-  return Number.isFinite(num) && num >= 0 && num <= 1
-}
-
-function formatBonusRatePercent(raw: string): string {
-  const trimmed = raw.trim()
-  if (!isValidBonusRateDecimal(trimmed)) return ''
-  const pct = Number((Number(trimmed) * 100).toFixed(4))
-  return `= ${pct}%`
-}
-
-function MainBonusMethodsPanel() {
-  const { t } = useTranslation()
-  const queryClient = useQueryClient()
-  const [drafts, setDrafts] = React.useState<MainBonusMethodsMap>({})
-  const savedRef = React.useRef<MainBonusMethodsMap | null>(null)
-  const [savingMethod, setSavingMethod] = React.useState<string | null>(null)
-
-  const query = useQuery({
-    queryKey: ['adty-admin-bonus-methods'],
-    queryFn: async () => {
-      const res = await api.get<{
-        success: boolean
-        message?: string
-        data?: MainBonusMethodsMap
-      }>('/api/adty/admin/bonus-methods')
-      return requireServerSuccess(res.data).data ?? {}
-    },
-  })
-
-  React.useEffect(() => {
-    if (!query.data) return
-    const incoming: MainBonusMethodsMap = {}
-    for (const item of MAIN_BONUS_METHODS) {
-      const remote = query.data?.[item.key]
-      incoming[item.key] = {
-        enabled: Boolean(remote?.enabled),
-        rate: remote?.rate ?? '',
-      }
-    }
-    const prevSaved = savedRef.current
-    if (!prevSaved) {
-      savedRef.current = incoming
-      setDrafts(incoming)
-      return
-    }
-    setDrafts((prev) => {
-      const next: MainBonusMethodsMap = { ...prev }
-      for (const item of MAIN_BONUS_METHODS) {
-        const cur = prev[item.key]
-        const base = prevSaved[item.key]
-        const isClean =
-          !cur ||
-          !base ||
-          (cur.enabled === base.enabled && cur.rate === base.rate)
-        if (isClean) {
-          next[item.key] = incoming[item.key]
-        }
-      }
-      return next
-    })
-    savedRef.current = incoming
-  }, [query.data])
-
-  const mutation = useMutation({
-    mutationFn: async (payload: {
-      method: string
-      enabled: boolean
-      rate: string
-    }) => {
-      const res = await api.put<{
-        success: boolean
-        message?: string
-        data?: MainBonusMethodsMap
-      }>('/api/adty/admin/bonus-methods', payload)
-      return requireServerSuccess(res.data).data ?? {}
-    },
-    onSuccess: (updated, variables) => {
-      const remote = updated[variables.method]
-      const savedEntry = {
-        enabled: Boolean(remote?.enabled),
-        rate: remote?.rate ?? '',
-      }
-      if (savedRef.current) {
-        savedRef.current = {
-          ...savedRef.current,
-          [variables.method]: savedEntry,
-        }
-      }
-      setDrafts((prev) => ({
-        ...prev,
-        [variables.method]: savedEntry,
-      }))
-      queryClient.setQueryData(['adty-admin-bonus-methods'], updated)
-      toast.success(t('Saved'))
-    },
-    onError: (error) => handleServerError(error),
-    onSettled: () => setSavingMethod(null),
-  })
-
-  const handleSave = (methodKey: string) => {
-    const draft = drafts[methodKey] ?? { enabled: false, rate: '' }
-    const trimmed = draft.rate.trim()
-    if (draft.enabled) {
-      if (!isValidBonusRateDecimal(trimmed)) {
-        toast.error(t('Enter a decimal rate between 0 and 1 (e.g. 0.025)'))
-        return
-      }
-    } else if (trimmed !== '' && !isValidBonusRateDecimal(trimmed)) {
-      toast.error(t('Enter a decimal rate between 0 and 1 (e.g. 0.025)'))
-      return
-    }
-    setSavingMethod(methodKey)
-    mutation.mutate({
-      method: methodKey,
-      enabled: draft.enabled,
-      rate: trimmed || '0',
-    })
-  }
-
-  let bodyContent: React.ReactNode
-  if (query.isPending) {
-    bodyContent = (
-      <div className='space-y-2'>
-        <Skeleton className='h-10 w-full' />
-        <Skeleton className='h-10 w-full' />
-        <Skeleton className='h-10 w-full' />
-      </div>
-    )
-  } else if (query.isError) {
-    bodyContent = (
-      <ErrorState
-        className='min-h-28'
-        title={t('Failed to load')}
-        onRetry={() => void query.refetch()}
-      />
-    )
-  } else {
-    bodyContent = MAIN_BONUS_METHODS.map((item) => {
-      const draft = drafts[item.key] ?? { enabled: false, rate: '' }
-      const percentHint = formatBonusRatePercent(draft.rate)
-      const isSavingThis = savingMethod === item.key && mutation.isPending
-      return (
-        <div
-          key={item.key}
-          className='flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between'
-        >
-          <div className='flex items-center gap-3'>
-            <Switch
-              id={`main-bonus-switch-${item.key}`}
-              checked={draft.enabled}
-              onCheckedChange={(checked) =>
-                setDrafts((prev) => ({
-                  ...prev,
-                  [item.key]: {
-                    enabled: checked,
-                    rate: prev[item.key]?.rate ?? '',
-                  },
-                }))
-              }
-            />
-            <Label
-              htmlFor={`main-bonus-switch-${item.key}`}
-              className='min-w-20 font-medium'
-            >
-              {t(item.labelKey)}
-            </Label>
-          </div>
-          <div className='flex flex-wrap items-center gap-2'>
-            <div className='flex items-center gap-2'>
-              <Input
-                type='text'
-                inputMode='decimal'
-                aria-label={`${t(item.labelKey)} ${t('Bonus rate')}`}
-                placeholder='0.025'
-                className='w-32 font-mono text-xs'
-                value={draft.rate}
-                onChange={(event) =>
-                  setDrafts((prev) => ({
-                    ...prev,
-                    [item.key]: {
-                      enabled: prev[item.key]?.enabled ?? false,
-                      rate: event.target.value,
-                    },
-                  }))
-                }
-              />
-              {percentHint && (
-                <span className='text-muted-foreground min-w-16 font-mono text-xs'>
-                  {percentHint}
-                </span>
-              )}
-            </div>
-            <Button
-              type='button'
-              size='sm'
-              variant='outline'
-              disabled={isSavingThis}
-              onClick={() => handleSave(item.key)}
-            >
-              {t('Save')}
-            </Button>
-          </div>
-        </div>
-      )
-    })
-  }
-
-  return (
-    <Card className='shadow-none'>
-      <CardHeader className='pb-3'>
-        <CardTitle className='text-base'>
-          {t('Payment method top-up bonus')}
-        </CardTitle>
-        <CardDescription>
-          {t(
-            'Configure bonus rate (0 to 1, e.g. 0.025 for 2.5%) credited per payment method on the main site. Bonus earns no commission.'
-          )}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='space-y-3'>{bodyContent}</CardContent>
-    </Card>
-  )
-}
 type PaymentTab = keyof typeof providerSchemas | 'usdt'
 const PAYMENT_TABS = ['general', 'epay', 'usdt'] as const
 
@@ -604,7 +347,7 @@ export function PaymentSettingsSection({
                   />
                 </div>
 
-                <div className='grid gap-6 md:grid-cols-2 md:items-start'>
+                <div className='max-w-2xl'>
                   <FormField
                     control={form.control}
                     name='AmountOptions'
@@ -664,8 +407,6 @@ export function PaymentSettingsSection({
                       </FormItem>
                     )}
                   />
-
-                  <MainBonusMethodsPanel />
                 </div>
               </div>
             </TabsContent>

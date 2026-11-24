@@ -2,7 +2,6 @@ package controller
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -15,6 +14,191 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 )
+
+type adtyTeamKeyResponse struct {
+	service.AdtyTeamKeyView
+	Username string `json:"username,omitempty"`
+}
+
+type adtyTeamAdminDetailResponse struct {
+	service.AdtyTeamAdminRow
+	Members []service.AdtyTeamMemberView `json:"members"`
+	Keys    []adtyTeamKeyResponse        `json:"keys"`
+}
+
+type adtyTeamMineResponse struct {
+	TeamId       int64                        `json:"team_id"`
+	Name         string                       `json:"name"`
+	SiteId       int                          `json:"site_id"`
+	SourceSiteId int                          `json:"source_site_id"`
+	Role         string                       `json:"role"`
+	Discount     decimal.Decimal              `json:"discount"`
+	SharedQuota  int64                        `json:"shared_quota"`
+	Status       string                       `json:"status"`
+	ClosedAt     int64                        `json:"closed_at,omitempty"`
+	Members      []service.AdtyTeamMemberView `json:"members"`
+	Keys         []adtyTeamKeyResponse        `json:"keys"`
+}
+
+type adtyTeamLedgerResponse struct {
+	model.AdtyTeamLedger
+	ActorUsername string `json:"actor_username,omitempty"`
+}
+
+type adtyTeamTopupResponse struct {
+	model.AdtyTopupOrder
+	Username string `json:"username,omitempty"`
+}
+
+type adtyTeamInviteResponse struct {
+	service.AdtyTeamInviteView
+	CreatedByUsername string `json:"created_by_username,omitempty"`
+	UsedByUsername    string `json:"used_by_username,omitempty"`
+	RevokedByUsername string `json:"revoked_by_username,omitempty"`
+}
+
+type adtyTeamRegistrationResponse struct {
+	service.AdtyTeamRegistrationView
+	CreatedByUsername string `json:"created_by_username,omitempty"`
+	UsedByUsername    string `json:"used_by_username,omitempty"`
+	RevokedByUsername string `json:"revoked_by_username,omitempty"`
+}
+
+func enrichAdtyTeamKeys(keys []service.AdtyTeamKeyView) []adtyTeamKeyResponse {
+	out := make([]adtyTeamKeyResponse, len(keys))
+	ids := make([]int, 0, len(keys))
+	for _, k := range keys {
+		if k.UserId > 0 {
+			ids = append(ids, k.UserId)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	for i, k := range keys {
+		out[i] = adtyTeamKeyResponse{
+			AdtyTeamKeyView: k,
+			Username:        names[k.UserId],
+		}
+	}
+	return out
+}
+
+func enrichAdtyTeamAdminDetail(detail *service.AdtyTeamAdminDetail) *adtyTeamAdminDetailResponse {
+	if detail == nil {
+		return nil
+	}
+	return &adtyTeamAdminDetailResponse{
+		AdtyTeamAdminRow: detail.AdtyTeamAdminRow,
+		Members:          detail.Members,
+		Keys:             enrichAdtyTeamKeys(detail.Keys),
+	}
+}
+
+func enrichAdtyTeamMine(mine *service.AdtyTeamMine) *adtyTeamMineResponse {
+	if mine == nil {
+		return nil
+	}
+	return &adtyTeamMineResponse{
+		TeamId:       mine.TeamId,
+		Name:         mine.Name,
+		SiteId:       mine.SiteId,
+		SourceSiteId: mine.SourceSiteId,
+		Role:         mine.Role,
+		Discount:     mine.Discount,
+		SharedQuota:  mine.SharedQuota,
+		Status:       mine.Status,
+		ClosedAt:     mine.ClosedAt,
+		Members:      mine.Members,
+		Keys:         enrichAdtyTeamKeys(mine.Keys),
+	}
+}
+
+func enrichAdtyTeamLedgers(rows []model.AdtyTeamLedger) []adtyTeamLedgerResponse {
+	out := make([]adtyTeamLedgerResponse, len(rows))
+	ids := make([]int, 0, len(rows))
+	for _, row := range rows {
+		if row.ActorUserId > 0 {
+			ids = append(ids, row.ActorUserId)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	for i, row := range rows {
+		out[i] = adtyTeamLedgerResponse{
+			AdtyTeamLedger: row,
+			ActorUsername:  names[row.ActorUserId],
+		}
+	}
+	return out
+}
+
+func enrichAdtyTeamTopups(rows []model.AdtyTopupOrder) []adtyTeamTopupResponse {
+	out := make([]adtyTeamTopupResponse, len(rows))
+	ids := make([]int, 0, len(rows))
+	for _, row := range rows {
+		if row.UserId > 0 {
+			ids = append(ids, row.UserId)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	for i, row := range rows {
+		out[i] = adtyTeamTopupResponse{
+			AdtyTopupOrder: row,
+			Username:       names[row.UserId],
+		}
+	}
+	return out
+}
+
+func enrichAdtyTeamInvites(rows []service.AdtyTeamInviteView) []adtyTeamInviteResponse {
+	out := make([]adtyTeamInviteResponse, len(rows))
+	ids := make([]int, 0, len(rows)*3)
+	for _, row := range rows {
+		if row.CreatedBy > 0 {
+			ids = append(ids, row.CreatedBy)
+		}
+		if row.UsedBy > 0 {
+			ids = append(ids, row.UsedBy)
+		}
+		if row.RevokedBy > 0 {
+			ids = append(ids, row.RevokedBy)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	for i, row := range rows {
+		out[i] = adtyTeamInviteResponse{
+			AdtyTeamInviteView: row,
+			CreatedByUsername:  names[row.CreatedBy],
+			UsedByUsername:     names[row.UsedBy],
+			RevokedByUsername:  names[row.RevokedBy],
+		}
+	}
+	return out
+}
+
+func enrichAdtyTeamRegistrations(rows []service.AdtyTeamRegistrationView) []adtyTeamRegistrationResponse {
+	out := make([]adtyTeamRegistrationResponse, len(rows))
+	ids := make([]int, 0, len(rows)*3)
+	for _, row := range rows {
+		if row.CreatedBy > 0 {
+			ids = append(ids, row.CreatedBy)
+		}
+		if row.UsedBy > 0 {
+			ids = append(ids, row.UsedBy)
+		}
+		if row.RevokedBy > 0 {
+			ids = append(ids, row.RevokedBy)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	for i, row := range rows {
+		out[i] = adtyTeamRegistrationResponse{
+			AdtyTeamRegistrationView: row,
+			CreatedByUsername:        names[row.CreatedBy],
+			UsedByUsername:           names[row.UsedBy],
+			RevokedByUsername:        names[row.RevokedBy],
+		}
+	}
+	return out
+}
 
 // GetAdtyMainTeams is Root's team list across every site. site_id narrows it
 // to one site (0 is the main site); status is active, closed or empty for all.
@@ -48,7 +232,7 @@ func GetAdtyAdminTeam(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, detail)
+	common.ApiSuccess(c, enrichAdtyTeamAdminDetail(detail))
 }
 
 // GetAdtyAdminTeamLedger is Root's page of one team's shared-balance ledger.
@@ -63,7 +247,7 @@ func GetAdtyAdminTeamLedger(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"total": total, "items": rows})
+	common.ApiSuccess(c, gin.H{"total": total, "items": enrichAdtyTeamLedgers(rows)})
 }
 
 // GetAdtyOwnerSiteTeam is the owner's read-only detail of a team on its site.
@@ -81,7 +265,7 @@ func GetAdtyOwnerSiteTeam(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, detail)
+	common.ApiSuccess(c, enrichAdtyTeamAdminDetail(detail))
 }
 
 // GetAdtyOwnerSiteTeamLedger is the owner's page of a site team's shared-balance ledger.
@@ -100,62 +284,12 @@ func GetAdtyOwnerSiteTeamLedger(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"total": total, "items": rows})
+	common.ApiSuccess(c, gin.H{"total": total, "items": enrichAdtyTeamLedgers(rows)})
 }
 
-// PostAdtyOwnerSiteTeamBalance lets an active site owner directly add shared
-// balance to an active team on their site (earnings first, then excess margin
-// above the site level's required deposit floor). Requires step-up verification.
+// PostAdtyOwnerSiteTeamBalance is disabled (R-35 #11).
 func PostAdtyOwnerSiteTeamBalance(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	id, ok := adtyInt64Param(c, "id")
-	if !ok {
-		return
-	}
-	var body struct {
-		AmountUSD      string `json:"amount_usd"`
-		Reason         string `json:"reason"`
-		IdempotencyKey string `json:"idempotency_key"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
-	if err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	idemKey := strings.TrimSpace(body.IdempotencyKey)
-	if hdr := strings.TrimSpace(c.GetHeader("Idempotency-Key")); hdr != "" {
-		if idemKey != "" && idemKey != hdr {
-			common.ApiErrorT(c, "Invalid parameters")
-			return
-		}
-		idemKey = hdr
-	}
-	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionTeamBalance, int(id), service.AdtyOwnerBalanceCreditDigestInput{
-		AmountUSD:      amount.String(),
-		Reason:         body.Reason,
-		IdempotencyKey: idemKey,
-	}) {
-		return
-	}
-	res, err := service.CreditAdtySiteTeamBalanceByOwner(site.Id, c.GetInt("id"), id, amount, body.Reason, idemKey)
-	if err != nil {
-		switch {
-		case errors.Is(err, model.ErrAdtyIdempotencyConflict):
-			common.ApiErrorStatus(c, http.StatusConflict, err)
-		default:
-			common.ApiError(c, err)
-		}
-		return
-	}
-	// R6-037: Official audit intent is already persisted atomically inside CreditAdtySiteTeamBalanceByOwner.
-	common.ApiSuccess(c, res)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Manual team balance top-up is disabled."))
 }
 
 // PutAdtyMainTeamAgreementPrice lets Root customize or re-customize the pricing
@@ -244,7 +378,7 @@ func GetAdtyTeamTopups(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	common.ApiSuccess(c, gin.H{"items": enrichAdtyTeamTopups(rows)})
 }
 
 func PostAdtyTeam(c *gin.Context) {
@@ -290,7 +424,7 @@ func GetAdtyTeamMine(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"team": mine})
+	common.ApiSuccess(c, gin.H{"team": enrichAdtyTeamMine(mine)})
 }
 
 func parseAdtyTeamInviteTTL(c *gin.Context) (time.Duration, bool) {
@@ -351,7 +485,7 @@ func GetAdtyTeamInvites(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	common.ApiSuccess(c, gin.H{"items": enrichAdtyTeamInvites(rows)})
 }
 
 func PostAdtyTeamRevokeInvite(c *gin.Context) {
@@ -514,7 +648,7 @@ func GetAdtyMainTeamRegistrations(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	common.ApiSuccess(c, gin.H{"items": enrichAdtyTeamRegistrations(rows)})
 }
 
 func PostAdtyMainTeamRegistrationRevoke(c *gin.Context) {
@@ -552,7 +686,7 @@ func GetAdtyOwnerSiteTeamRegistrations(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	common.ApiSuccess(c, gin.H{"items": enrichAdtyTeamRegistrations(rows)})
 }
 
 func PostAdtyOwnerSiteTeamRegistrationRevoke(c *gin.Context) {

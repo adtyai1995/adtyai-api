@@ -44,6 +44,10 @@ import {
 } from './api'
 import { AffiliatePanel } from './components/affiliate-panel'
 import {
+  CommissionsPanel,
+  type CommissionAffiliateFilter,
+} from './components/commissions-panel'
+import {
   AuditLogPanel,
   CommissionJobsPanel,
   LedgerPanel,
@@ -85,6 +89,9 @@ function WithdrawalWork(props: ReferralEntry & { canReview: boolean; canPayout: 
 /** Referral admin (adty task 6.7): overview, pending reviews, affiliates, withdrawals, settings. */
 export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
   const { t, i18n } = useTranslation()
+  const [activeTab, setActiveTab] = useState('withdrawals')
+  const [commissionFilterAffiliate, setCommissionFilterAffiliate] =
+    useState<CommissionAffiliateFilter | null>(null)
   const [settingsVisited, setSettingsVisited] = useState(false)
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
@@ -178,8 +185,9 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
               </div>
             )}
             <Tabs
-              defaultValue='withdrawals'
+              value={activeTab}
               onValueChange={(value) => {
+                setActiveTab(value)
                 if (value === 'settings') setSettingsVisited(true)
               }}
             >
@@ -200,6 +208,12 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                     className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
                   >
                     {t('Affiliates')}
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value='commissions'
+                    className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
+                  >
+                    {t('Commission details')}
                   </TabsTrigger>
                   <TabsTrigger
                     value='commission-jobs'
@@ -248,7 +262,25 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                 />
               </TabsContent>
               <TabsContent value='affiliates'>
-                <AffiliatePanel canAdjust={canAdjust} />
+                <AffiliatePanel
+                  canAdjust={canAdjust}
+                  onViewCommissions={(row) => {
+                    setCommissionFilterAffiliate({
+                      affiliateId: row.id,
+                      userId: row.user_id,
+                      username: row.username,
+                    })
+                    setActiveTab('commissions')
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value='commissions' className='pt-3'>
+                <CommissionsPanel
+                  affiliateFilter={commissionFilterAffiliate}
+                  onClearAffiliateFilter={() =>
+                    setCommissionFilterAffiliate(null)
+                  }
+                />
               </TabsContent>
               <TabsContent value='commission-jobs'>
                 <CommissionJobsPanel canRetry={canAdjust} />

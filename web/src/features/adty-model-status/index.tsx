@@ -72,12 +72,6 @@ const SORT_OPTIONS: readonly SortOptionConfig[] = [
     descLabelKey: 'High to low',
   },
   {
-    key: 'cacheHitRate',
-    labelKey: 'Cache hit rate',
-    ascLabelKey: 'Low to high',
-    descLabelKey: 'High to low',
-  },
-  {
     key: 'avgPingMs',
     labelKey: 'Average latency',
     ascLabelKey: 'Low to high',

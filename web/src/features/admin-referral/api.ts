@@ -133,17 +133,64 @@ export async function getReferralOverview(): Promise<ReferralOverview> {
   return requireServerSuccess(res.data).data
 }
 
+export type AdminReferralAffiliate = ReferralAffiliate & {
+  username?: string
+}
+
+export type AdminReferralWithdrawal = ReferralWithdrawal & {
+  username?: string
+}
+
+export type AdminReferralCommission = ReferralCommission & {
+  affiliate_user_id: number
+  affiliate_username?: string
+  invitee_username?: string
+  source_type?: string
+  source_order_id?: number
+  order_type?: string
+  paid_amount?: number
+  paid_currency?: string
+  settlement_currency?: string
+  settlement_fx_rate?: number
+  settlement_base_amount?: number
+  available_at?: number
+  frozen_at?: number
+  withdrawal_id?: number
+  updated_at?: number
+}
+
+export type AdminReferralCommissionsParams = {
+  p?: number
+  page_size?: number
+  status?: string
+  affiliate_id?: number
+  affiliate_user_id?: number
+  q?: string
+}
+
 export const getAffiliates = (params: {
   p: number
   keyword?: string
   partner_status?: string
-}) => getPage<ReferralAffiliate>('/affiliates', params)
+}) => getPage<AdminReferralAffiliate>('/affiliates', params)
 
 export const getAdminWithdrawals = (params: { p: number; status?: string }) =>
-  getPage<ReferralWithdrawal>('/withdrawals', params)
+  getPage<AdminReferralWithdrawal>('/withdrawals', params)
 
-export const getAdminCommissions = (params: { p: number; status?: string }) =>
-  getPage<ReferralCommission>('/commissions', params)
+export const fetchAdminReferralCommissions = (
+  params: AdminReferralCommissionsParams
+) =>
+  getPage<AdminReferralCommission>('/commissions', {
+    p: params.p ?? 1,
+    page_size: params.page_size ?? ADMIN_REFERRAL_PAGE_SIZE,
+    status: params.status?.trim() || undefined,
+    affiliate_id: params.affiliate_id || undefined,
+    affiliate_user_id: params.affiliate_user_id || undefined,
+    q: params.q?.trim() || undefined,
+  })
+
+export const getAdminCommissions = (params: AdminReferralCommissionsParams) =>
+  fetchAdminReferralCommissions(params)
 
 export const reviewPartner = (
   userId: number,
@@ -194,6 +241,7 @@ export type ReferralLedgerEntry = {
   id: number
   affiliate_id: number
   user_id: number
+  username?: string
   commission_id: number
   withdrawal_id: number
   type: string
@@ -209,13 +257,17 @@ export type ReferralLedgerEntry = {
   created_at: number
 }
 
+export type AdminReferralLedgerItem = ReferralLedgerEntry
+
 /** One referral admin action (model.ReferralAdminAuditLog). */
 export type ReferralAuditLog = {
   id: number
   action: string
   target_user_id: number
+  target_username?: string
   affiliate_id: number
   admin_user_id: number
+  admin_username?: string
   reason: string
   ip: string
   user_agent: string
@@ -223,6 +275,8 @@ export type ReferralAuditLog = {
   new_value: string
   created_at: number
 }
+
+export type AdminReferralAuditItem = ReferralAuditLog
 
 export const getCommissionJobs = (params: { p: number; status?: string }) =>
   getPage<ReferralCommissionJob>('/commission-jobs', params)

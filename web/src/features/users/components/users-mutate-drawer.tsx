@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil } from 'lucide-react'
+import { KeyRound, Pencil } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -97,6 +97,7 @@ import {
 import type { User } from '../types'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
+import { UsersResetPasswordDialog } from './users-reset-password-dialog'
 
 type UsersMutateDrawerProps = {
   open: boolean
@@ -127,6 +128,7 @@ export function UsersMutateDrawer({
   const [currentQuotaRaw, setCurrentQuotaRaw] = useState(0)
   const [currentLiveQuota, setCurrentLiveQuota] = useState(0)
   const [ledgerOpen, setLedgerOpen] = useState(false)
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false)
   const [loadedUser, setLoadedUser] = useState<User>()
   const loadedTargetId = loadedUser?.id
   const isTargetLoaded =
@@ -157,6 +159,7 @@ export function UsersMutateDrawer({
     setCurrentLiveQuota(0)
     setQuotaDialogOpen(false)
     setLedgerOpen(false)
+    setResetPasswordOpen(false)
     form.reset(USER_FORM_DEFAULT_VALUES)
 
     if (open && isUpdate && targetUserId !== undefined) {
@@ -191,6 +194,15 @@ export function UsersMutateDrawer({
   const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
   const targetIsAdmin =
     (selectedRole ?? (isTargetLoaded ? loadedUser?.role : 0) ?? 0) >= ROLE.ADMIN
+  const targetForReset = loadedUser ?? currentRow
+  const canResetRandomPassword =
+    isUpdate &&
+    Boolean(targetForReset) &&
+    canSubmit &&
+    isTargetLoaded &&
+    (targetForReset?.role ?? 0) !== ROLE.SUPER_ADMIN &&
+    (currentUser?.role === ROLE.SUPER_ADMIN ||
+      (currentUser?.role ?? 0) > (targetForReset?.role ?? 0))
 
   const onSubmit = async (data: UserFormValues) => {
     if (isUpdate && !isTargetLoaded) return
@@ -456,7 +468,21 @@ export function UsersMutateDrawer({
                   name='password'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>{t('Password')}</FormLabel>
+                      <div className='flex items-center justify-between gap-2'>
+                        <FormLabel>{t('Password')}</FormLabel>
+                        {isUpdate && (
+                          <Button
+                            type='button'
+                            size='sm'
+                            variant='outline'
+                            disabled={!canResetRandomPassword || isSubmitting}
+                            onClick={() => setResetPasswordOpen(true)}
+                          >
+                            <KeyRound className='mr-1 h-3.5 w-3.5' aria-hidden />
+                            {t('Reset random password')}
+                          </Button>
+                        )}
+                      </div>
                       <FormControl
                         describedBy={
                           !isUpdate || field.value
@@ -692,6 +718,13 @@ export function UsersMutateDrawer({
           open={ledgerOpen && isTargetLoaded}
           onOpenChange={setLedgerOpen}
           userId={loadedUser.id}
+        />
+      )}
+      {currentRow && isTargetLoaded && loadedUser && (
+        <UsersResetPasswordDialog
+          open={resetPasswordOpen && isTargetLoaded}
+          onOpenChange={setResetPasswordOpen}
+          user={loadedUser}
         />
       )}
     </>

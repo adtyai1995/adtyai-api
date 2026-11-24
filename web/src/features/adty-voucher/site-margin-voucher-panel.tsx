@@ -49,6 +49,7 @@ import { parseSiteBrand } from '@/features/adty-site-admin/lib/sites'
 import type { AdminSite } from '@/features/adty-site-admin/types'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -75,7 +76,7 @@ const PAGE_SIZE = 20
 function formatSiteOptionLabel(site: AdminSite): string {
   const brand = parseSiteBrand(site.brand)
   const host = site.host || `${site.subdomain}.${site.root_domain}`
-  const owner = site.owner_username || `#${site.owner_user_id}`
+  const owner = formatUserIdentity(site.owner_user_id, site.owner_username)
   if (brand.name) {
     return `${brand.name} · ${host} (${owner})`
   }

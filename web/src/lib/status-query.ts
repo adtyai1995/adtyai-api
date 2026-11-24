@@ -46,6 +46,26 @@ export const STATUS_STORAGE_KEY = 'status'
 /** Status payload shape — loose on purpose; the backend map is open-ended. */
 export type StatusData = Record<string, unknown>
 
+/**
+ * Read the site-scoped `adty_referral_enabled` flag from a `/api/status`
+ * payload (supporting both top-level and nested `data` shapes).
+ * Returns `undefined` when status is unavailable or omits the flag.
+ */
+export function readReferralEnabledFromStatus(
+  status: StatusData | null | undefined
+): boolean | undefined {
+  if (!status) return undefined
+  if (typeof status.adty_referral_enabled === 'boolean') {
+    return status.adty_referral_enabled
+  }
+  const nested = status.data
+  if (nested && typeof nested === 'object') {
+    const value = (nested as Record<string, unknown>).adty_referral_enabled
+    if (typeof value === 'boolean') return value
+  }
+  return undefined
+}
+
 /** Coerce a status field to a number, keeping `fallback` for unusable values. */
 function toNumber(value: unknown, fallback: number): number {
   if (typeof value === 'number' && !Number.isNaN(value)) return value
@@ -92,7 +112,8 @@ export function mapStatusDataToConfig(
 
   return {
     systemName: (data.system_name as string | undefined) || DEFAULT_SYSTEM_NAME,
-    logo: (data.logo as string | undefined) || (data.adty_site ? '' : DEFAULT_LOGO),
+    logo:
+      (data.logo as string | undefined) || (data.adty_site ? '' : DEFAULT_LOGO),
     siteTitle: (data.site_title as string | undefined) || '',
     favicon:
       (data.favicon as string | undefined) ||

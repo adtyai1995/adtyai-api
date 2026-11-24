@@ -94,6 +94,7 @@ func GetStatus(c *gin.Context) {
 	quotaDisplayType := operation_setting.GetQuotaDisplayType()
 	logSetting := operation_setting.GetLogSetting()
 	serverAddress := service.AdtySiteAPIBaseURL(nil)
+	referralEnabled := service.IsAdtyReferralEnabledForSite(service.AdtyRequestSiteID(c))
 	// 锁只包住读 OptionMap / 全局变量的这段，读完立刻放（下面都是拼响应，不碰配置）。
 	// 禁止在持锁期间调用任何内部加锁 getter（避免 Go RWMutex 递归 RLock 死锁）。
 	common.OptionMapRWMutex.RLock()
@@ -162,6 +163,7 @@ func GetStatus(c *gin.Context) {
 		"quota_remind_enabled":      common.QuotaRemindEnabled,
 		"quota_remind_threshold":    common.QuotaRemindThreshold,
 		"payment_methods":           paymentMethods,
+		"adty_referral_enabled":     referralEnabled,
 	}
 	common.OptionMapRWMutex.RUnlock()
 

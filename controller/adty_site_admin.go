@@ -63,16 +63,7 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 		ownerIds = append(ownerIds, site.OwnerUserId)
 		siteIds = append(siteIds, site.Id)
 	}
-	names := map[int]string{}
-	if len(ownerIds) > 0 {
-		var owners []model.User
-		if err := model.DB.Unscoped().Select("id", "username").Where("id IN ?", ownerIds).Find(&owners).Error; err != nil {
-			return nil, err
-		}
-		for _, owner := range owners {
-			names[owner.Id] = owner.Username
-		}
-	}
+	names := model.LookupUsernamesByIDs(model.DB, ownerIds)
 	counts := map[int]int64{}
 	if len(siteIds) > 0 {
 		var rows []struct {
@@ -345,14 +336,22 @@ func GetAdtyAdminFlaggedCustomers(c *gin.Context) {
 			skipped[sum.UserId] = sum.Total
 		}
 	}
+	usernames := model.LookupUsernamesByIDs(model.DB, userIds)
 	items := make([]gin.H, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, gin.H{"user_id": row.UserId, "site_id": row.SiteId, "risk_flag": row.RiskFlag, "risk_reason": row.RiskReason,
+		items = append(items, gin.H{"user_id": row.UserId, "username": usernames[row.UserId], "site_id": row.SiteId, "risk_flag": row.RiskFlag, "risk_reason": row.RiskReason,
 			"reviewed": row.Reviewed, "joined_at": row.JoinedAt, "skipped_usd": skipped[row.UserId].StringFixed(2)})
 	}
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(items)
 	common.ApiSuccess(c, pageInfo)
+}
+
+type adtySiteReportAdminItem struct {
+	model.AdtySiteReport
+	Username          string `json:"username"`
+	ReporterUsername  string `json:"reporter_username,omitempty"`
+	HandledByUsername string `json:"handled_by_username,omitempty"`
 }
 
 // GetAdtyAdminSiteReports 列出站长的举报（分站·查看）：GET /api/adty/admin/sites/reports?status=pending|resolved|dismissed|all。
@@ -372,8 +371,22 @@ func GetAdtyAdminSiteReports(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	ids := make([]int, 0, len(reports)*3)
+	for _, report := range reports {
+		ids = append(ids, report.UserId, report.ReporterId, report.HandledBy)
+	}
+	usernames := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]adtySiteReportAdminItem, len(reports))
+	for i, report := range reports {
+		items[i] = adtySiteReportAdminItem{
+			AdtySiteReport:    report,
+			Username:          usernames[report.UserId],
+			ReporterUsername:  usernames[report.ReporterId],
+			HandledByUsername: usernames[report.HandledBy],
+		}
+	}
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(reports)
+	pageInfo.SetItems(items)
 	common.ApiSuccess(c, pageInfo)
 }
 
@@ -403,6 +416,11 @@ func HandleAdtyAdminSiteReport(c *gin.Context) {
 	common.ApiSuccess(c, report)
 }
 
+type adtySiteAuditAdminItem struct {
+	model.AdtySiteAudit
+	OperatorUsername string `json:"operator_username,omitempty"`
+}
+
 // GetAdtyAdminSite 是一个分站的明细（分站·查看），带最近的操作记录。
 func GetAdtyAdminSite(c *gin.Context) {
 	id, ok := siteIdParam(c)
@@ -424,6 +442,18 @@ func GetAdtyAdminSite(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	auditOpIDs := make([]int, 0, len(audits))
+	for _, a := range audits {
+		auditOpIDs = append(auditOpIDs, a.OperatorId)
+	}
+	opNames := model.LookupUsernamesByIDs(model.DB, auditOpIDs)
+	auditItems := make([]adtySiteAuditAdminItem, len(audits))
+	for i, a := range audits {
+		auditItems[i] = adtySiteAuditAdminItem{
+			AdtySiteAudit:    a,
+			OperatorUsername: opNames[a.OperatorId],
+		}
+	}
 	var domains []model.AdtySiteDomain
 	if err := model.DB.Where("site_id = ?", id).Order("id DESC").Find(&domains).Error; err != nil {
 		common.ApiError(c, err)
@@ -437,7 +467,7 @@ func GetAdtyAdminSite(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"site": views[0], "audits": audits, "domains": domains, "sender_domains": senders})
+	common.ApiSuccess(c, gin.H{"site": views[0], "audits": auditItems, "domains": domains, "sender_domains": senders})
 }
 
 // GetAdtyAdminSiteCustomers 列出一个分站的客户（分站·查看）。没有用户查看权限时邮箱打码。
@@ -1396,12 +1426,24 @@ func GetAdtyAdminCloseMail(c *gin.Context) {
 	if len(rows) > 0 {
 		ids := make([]int64, len(rows))
 		byID := make(map[int64]*model.AdtySiteCloseMailRecipient, len(rows))
+		missingNameIDs := make([]int, 0)
 		for i := range rows {
 			if !showEmail {
 				rows[i].Email = service.AdtyMaskEmail(rows[i].Email)
 			}
+			if strings.TrimSpace(rows[i].Username) == "" && rows[i].UserId > 0 {
+				missingNameIDs = append(missingNameIDs, rows[i].UserId)
+			}
 			ids[i] = rows[i].Id
 			byID[rows[i].Id] = &rows[i]
+		}
+		if len(missingNameIDs) > 0 {
+			names := model.LookupUsernamesByIDs(model.DB, missingNameIDs)
+			for i := range rows {
+				if strings.TrimSpace(rows[i].Username) == "" && rows[i].UserId > 0 {
+					rows[i].Username = names[rows[i].UserId]
+				}
+			}
 		}
 		var attempts []model.AdtySiteCloseMailAttempt
 		if err := model.DB.Where("recipient_id IN ?", ids).Order("recipient_id,number").Find(&attempts).Error; err != nil {

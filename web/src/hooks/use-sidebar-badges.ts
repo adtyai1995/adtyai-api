@@ -37,7 +37,6 @@ export const CONFIRMED_SIDEBAR_BADGE_KINDS = [
   'site_invite_commissions_pending_coverage',
   'referral_commissions_frozen',
   'fund_anomalies_open',
-  'staff_balance_pending',
   'tickets_pending',
   'platform_tickets_pending',
   'owner_tickets_pending',
@@ -68,7 +67,6 @@ export const ORDER_MANAGEMENT_BADGE_KINDS = [
 export const RESELLER_SITES_BADGE_KINDS = [
   'site_withdrawals_pending',
   'fund_anomalies_open',
-  'staff_balance_pending',
 ] as const
 
 export const SITE_OWNER_EARNINGS_BADGE_KINDS = [
@@ -79,11 +77,8 @@ export const SITE_OWNER_EARNINGS_BADGE_KINDS = [
 export const SITE_OWNER_COMMISSIONS_BADGE_KINDS =
   SITE_OWNER_EARNINGS_BADGE_KINDS
 
-export const SITE_OWNER_STAFF_BADGE_KINDS = ['staff_balance_pending'] as const
-
 export const SITE_OWNER_BADGE_KINDS = [
   ...SITE_OWNER_EARNINGS_BADGE_KINDS,
-  ...SITE_OWNER_STAFF_BADGE_KINDS,
 ] as const
 
 export const TICKET_BADGE_KINDS = [
@@ -136,12 +131,6 @@ export function getSidebarBadgeKeysForPath(
     normalized.startsWith('/site-owner/commissions/')
   ) {
     return SITE_OWNER_COMMISSIONS_BADGE_KINDS
-  }
-  if (
-    normalized === '/site-owner/staff' ||
-    normalized.startsWith('/site-owner/staff/')
-  ) {
-    return SITE_OWNER_STAFF_BADGE_KINDS
   }
   if (
     normalized === '/admin-tickets' ||

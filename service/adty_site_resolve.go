@@ -518,6 +518,34 @@ func adtyScheme() string {
 	return "https"
 }
 
+// IsAdtyReferralEnabledForSite reports whether referral/invite commissions are currently enabled for siteID.
+// Main site (siteID == 0): checks adty_setting.GetReferralSetting().Enabled.
+// Subsite (siteID > 0): checks site is active (not closed) and adty_site_referral_rates has enabled=true && rate > 0.
+func IsAdtyReferralEnabledForSite(siteID int) bool {
+	if siteID < 0 {
+		return false
+	}
+	if siteID == 0 {
+		return adty_setting.GetReferralSetting().Enabled
+	}
+	if model.DB == nil {
+		return false
+	}
+	var site model.AdtySite
+	if err := model.DB.Select("id", "status").Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil || site.Id == 0 {
+		return false
+	}
+	if !AdtySiteServesCustomers(&site) {
+		return false
+	}
+	var rate model.AdtySiteReferralRate
+	lookup := model.DB.Where("site_id = ?", siteID).Limit(1).Find(&rate)
+	if lookup.Error != nil || lookup.RowsAffected == 0 {
+		return false
+	}
+	return rate.Enabled && rate.Rate.IsPositive()
+}
+
 // AdtyOverrideStatus 在 /api/status 末尾调用（controller/misc.go）：当前请求是分站时，换成分站的站名、Logo、
 // 地址，关掉第三方登录和 Passkey，并清掉主站页脚、公告和 Passkey 域名。
 // Turnstile 继续用全局 site key，不在这里查 widget。

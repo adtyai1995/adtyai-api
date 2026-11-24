@@ -29,6 +29,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
+import { STATUS_QUERY_KEY } from '@/lib/status-query'
 
 import {
   getOwnerSiteReferral,
@@ -162,6 +163,7 @@ export function SiteReferralPanel() {
     onSuccess: () => {
       toast.success(t('Saved successfully'))
       void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      void client.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
       void invalidateSidebarBadges(client)
     },
     onError: (error) => handleServerError(error),

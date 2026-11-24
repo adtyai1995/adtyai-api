@@ -31,32 +31,8 @@ export type StaffPermission =
   | 'customers.topups'
   | 'customers.usage'
   | 'tickets.manage'
-  | 'customers.balance_request'
   | 'customers.disable'
 export type StaffCustomerAction = 'disable'
-export type StaffBalanceDirection = 'increase' | 'decrease'
-export type StaffBalanceRequest = {
-  id: number
-  site_id: number
-  staff_user_id: number
-  customer_user_id: number
-  direction: StaffBalanceDirection
-  amount_usd: string
-  reason: string
-  order_ref: string
-  funding_source: string
-  batch_kind: string
-  batch_source: string
-  before_quota?: number
-  after_quota?: number
-  ledger_id?: number
-  idempotency_key?: string
-  status: 'pending' | 'approved' | 'rejected'
-  reviewer_id: number
-  reviewer_role: string
-  created_at: number
-  reviewed_at: number
-}
 export type StaffAccount = {
   id: number
   user_id: number
@@ -81,11 +57,14 @@ export type StaffAudit = {
   id: number
   action: string
   operator_id: number
+  operator_username?: string
   created_at: number
   old_value: string
   new_value: string
   staff_id: number
+  staff_username?: string
   customer_id: number
+  customer_username?: string
 }
 export type StaffUsage = {
   id: number
@@ -108,58 +87,6 @@ export type StaffOrder = {
 type Response<T> = { success: boolean; message?: string; data: T }
 export const STAFF_PAGE_SIZE = 20
 
-export async function getStaffBalanceRequests(): Promise<
-  StaffBalanceRequest[]
-> {
-  const response = await api.get<Response<{ items?: StaffBalanceRequest[] }>>(
-    '/api/adty/staff/balance-requests'
-  )
-  return requireServerSuccess(response.data).data.items ?? []
-}
-export async function createStaffBalanceRequest(input: {
-  customer_id: number
-  direction: StaffBalanceDirection
-  amount_usd: string
-  idempotency_key: string
-  reason: string
-  order_ref: string
-  funding_source: string
-  batch_kind: string
-  batch_source: string
-}): Promise<StaffBalanceRequest> {
-  const response = await api.post<Response<StaffBalanceRequest>>(
-    '/api/adty/staff/balance-requests',
-    input
-  )
-  return requireServerSuccess(response.data).data
-}
-export async function getOwnerBalanceRequests(p: number, status: string) {
-  const response = await api.get<
-    Response<{ items: StaffBalanceRequest[]; total: number }>
-  >('/api/adty/site/balance-requests', {
-    params: { p, status, page_size: STAFF_PAGE_SIZE },
-  })
-  return requireServerSuccess(response.data).data
-}
-export async function reviewOwnerBalanceRequest(
-  id: number,
-  body: { approve: boolean; reason?: string },
-  proof: string
-): Promise<void> {
-  const trimmedReason = body.reason?.trim()
-  const payload = trimmedReason
-    ? { approve: body.approve, reason: trimmedReason }
-    : { approve: body.approve }
-  const response = await api.post<Response<{ reviewed: boolean }>>(
-    `/api/adty/site/balance-requests/${id}/review`,
-    payload,
-    {
-      headers: { 'X-Security-Proof': proof },
-      singleUseAuthorization: true,
-    }
-  )
-  requireServerSuccess(response.data)
-}
 export async function getStaffAccounts(
   page: number
 ): Promise<OwnerPage<StaffAccount>> {

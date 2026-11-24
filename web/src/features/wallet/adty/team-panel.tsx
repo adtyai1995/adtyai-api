@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -33,20 +34,36 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { teamRegistrationUrl } from '@/features/adty-team-registration/api'
+import { toIntlLocale } from '@/i18n/languages'
 import { api } from '@/lib/api'
 import { formatQuota, formatTimestampToDate } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import {
   getServerErrorMessage,
   requireServerSuccess,
 } from '@/lib/server-error-message'
+import { cn } from '@/lib/utils'
 
-import { adtyTopupQueryKeys, getAdtyTopupInfo } from './api'
+import { adtyTopupQueryKeys, getAdtyTopupInfo, quoteAdtyTopup } from './api'
 import { EpayPayDialog } from './components/epay-pay-dialog'
 import { PaymentMethodButtons } from './components/payment-method-buttons'
 import { UsdtPayDialog } from './components/usdt-pay-dialog'
 import { paymentMethodKey } from './lib/methods'
+import { formatPaymentAmount, formatUsd } from './lib/money'
 import type { AdtyOrderExt } from './types'
+
+function formatFixedPayAmount(raw: string): string {
+  const num = Number(raw)
+  if (!Number.isFinite(num)) return raw
+  const trimmed = raw.trim()
+  const dotIndex = trimmed.indexOf('.')
+  if (dotIndex >= 0 && trimmed.length - dotIndex - 1 > 2) {
+    return trimmed
+  }
+  return num.toFixed(2)
+}
 
 type TeamMember = {
   user_id: number
@@ -112,7 +129,8 @@ const inviteStatusLabel: Record<string, string> = {
 }
 
 export function TeamPanel() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
   const mine = useQuery({
     queryKey: ['adty-team', 'mine'],
@@ -159,6 +177,96 @@ export function TeamPanel() {
     topupMethods.find(
       (method) => paymentMethodKey(method) === topupMethodKey
     ) ?? null
+  const parsedTopupAmount =
+    topupAmount.trim() === '' ? Number.NaN : Number(topupAmount.trim())
+  const minTeamTopup = Math.max(
+    topupInfo.data?.min_topup ?? 1,
+    Number(scene?.min_usd ?? 0)
+  )
+  const maxTeamTopup = Number(scene?.max_usd ?? 0)
+  const validTopupAmount =
+    Number.isSafeInteger(parsedTopupAmount) &&
+    parsedTopupAmount > 0 &&
+    parsedTopupAmount >= minTeamTopup &&
+    (maxTeamTopup <= 0 || parsedTopupAmount <= maxTeamTopup)
+
+  const teamQuoteQuery = useQuery({
+    queryKey: [
+      'adty-topup',
+      'quote',
+      'team_topup',
+      team?.team_id,
+      scene?.key ?? '',
+      parsedTopupAmount,
+      topupMethodKey,
+    ],
+    queryFn: () =>
+      quoteAdtyTopup(
+        parsedTopupAmount,
+        topupMethod?.id ?? '',
+        scene?.key ?? 'wallet_topup',
+        topupMethod?.channel_id,
+        'team_topup',
+        team?.team_id
+      ),
+    enabled:
+      team?.role === 'leader' &&
+      isActive &&
+      validTopupAmount &&
+      topupMethod !== null &&
+      topupMethod.available,
+    meta: { errorToast: false },
+  })
+  const teamQuote = teamQuoteQuery.data?.quote
+  let isTeamUsdtChannel = false
+  if (teamQuote) {
+    isTeamUsdtChannel = teamQuote.pay_currency === 'USDT'
+  } else if (topupMethod) {
+    isTeamUsdtChannel =
+      topupMethod.kind === 'usdt' ||
+      topupMethod.id.toLowerCase().startsWith('usdt') ||
+      topupMethod.currency === 'USDT'
+  } else {
+    isTeamUsdtChannel =
+      topupMethods.length > 0 &&
+      topupMethods.every((item) => item.kind === 'usdt')
+  }
+  const fallbackCnyRate = Number(topupInfo.data?.price_cny_per_usd ?? 0)
+  const hasEstimatedTeamPay =
+    validTopupAmount &&
+    topupMethod !== null &&
+    (Boolean(teamQuote) ||
+      isTeamUsdtChannel ||
+      (Number.isFinite(fallbackCnyRate) && fallbackCnyRate > 0))
+  let teamPayAmountText = isTeamUsdtChannel ? '0.00 USDT' : '¥0.00'
+  let teamPayRateHint = ''
+  if (validTopupAmount && topupMethod !== null) {
+    if (teamQuote) {
+      if (teamQuote.pay_currency === 'USDT') {
+        teamPayAmountText = `${formatFixedPayAmount(teamQuote.pay_amount)} USDT`
+        teamPayRateHint = t('1 USDT = 1 USD')
+      } else if (teamQuote.pay_currency === 'CNY') {
+        teamPayAmountText = `¥${Number(teamQuote.pay_amount).toFixed(2)}`
+        teamPayRateHint = t('1 USD = {{rate}} CNY', {
+          rate: Number(teamQuote.price_cny_per_usd).toFixed(2),
+        })
+      } else {
+        teamPayAmountText = formatPaymentAmount(
+          teamQuote.pay_amount,
+          teamQuote.pay_currency,
+          locale
+        )
+      }
+    } else if (isTeamUsdtChannel) {
+      teamPayAmountText = `${parsedTopupAmount.toFixed(2)} USDT`
+      teamPayRateHint = t('1 USDT = 1 USD')
+    } else if (Number.isFinite(fallbackCnyRate) && fallbackCnyRate > 0) {
+      teamPayAmountText = `¥${(parsedTopupAmount * fallbackCnyRate).toFixed(2)}`
+      teamPayRateHint = t('1 USD = {{rate}} CNY', {
+        rate: fallbackCnyRate.toFixed(2),
+      })
+    }
+  }
 
   const refresh = () =>
     void queryClient.invalidateQueries({ queryKey: ['adty-team'] })
@@ -322,7 +430,7 @@ export function TeamPanel() {
                   className='flex flex-wrap items-center justify-between gap-3 text-sm'
                 >
                   <span className='min-w-0 truncate'>
-                    {member.username || member.user_id} ·{' '}
+                    {formatUserIdentity(member.user_id, member.username)} ·{' '}
                     {member.role === 'leader' ? t('Leader') : t('Member')} ·{' '}
                     {t(memberStatusLabels[member.status] ?? member.status)}
                   </span>
@@ -374,102 +482,168 @@ export function TeamPanel() {
               >
                 {t('Rename')}
               </Button>
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor='team-topup'>{t('Team top-up')}</Label>
-                <Input
-                  id='team-topup'
-                  value={topupAmount}
-                  inputMode='decimal'
-                  autoComplete='off'
-                  onChange={(event) => setTopupAmount(event.target.value)}
-                />
-              </div>
-              <div className='flex flex-col gap-1'>
+              <div className='flex flex-col gap-3'>
+                <div className='flex flex-col gap-1'>
+                  <Label htmlFor='team-topup'>{t('Team top-up')}</Label>
+                  <Input
+                    id='team-topup'
+                    value={topupAmount}
+                    inputMode='decimal'
+                    autoComplete='off'
+                    placeholder={t('At least ${{amount}}', {
+                      amount: minTeamTopup,
+                    })}
+                    onChange={(event) => setTopupAmount(event.target.value)}
+                  />
+                </div>
                 {scenes.length > 0 && (
-                  <>
+                  <div className='flex flex-col gap-1'>
                     <Label htmlFor='team-payment-scene'>
                       {t('Payment scene')}
                     </Label>
-                    <select
+                    <NativeSelect
                       id='team-payment-scene'
-                      value={scene?.key}
+                      value={scene?.key ?? ''}
                       onChange={(e) => {
                         setSceneKey(e.target.value)
                         setTopupMethodKey(null)
                       }}
                     >
                       {scenes.map((item) => (
-                        <option key={item.key} value={item.key}>
-                          {item.name}
-                        </option>
+                        <NativeSelectOption key={item.key} value={item.key}>
+                          {t(item.name)}
+                        </NativeSelectOption>
                       ))}
-                    </select>
-                  </>
+                    </NativeSelect>
+                  </div>
                 )}
-                <Label>{t('Payment method')}</Label>
-                <PaymentMethodButtons
-                  methods={topupMethods}
-                  selected={topupMethodKey}
-                  onSelect={setTopupMethodKey}
-                  disabled={pending}
-                />
+                <div className='flex flex-col gap-2'>
+                  <Label>{t('Payment method')}</Label>
+                  <PaymentMethodButtons
+                    methods={topupMethods}
+                    selected={topupMethodKey}
+                    onSelect={setTopupMethodKey}
+                    disabled={pending}
+                  />
+                </div>
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'A team top-up does not include a payment-method gift. The order stays pending until payment completion credits the shared balance.'
+                  )}
+                </p>
+                <section
+                  className='bg-muted/40 flex flex-col gap-3 rounded-xl border p-4 sm:p-5'
+                  aria-live='polite'
+                >
+                  <div className='flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between'>
+                    <div className='grid flex-1 gap-3 sm:grid-cols-2 sm:gap-6'>
+                      <div className='flex flex-col gap-1'>
+                        <span className='text-muted-foreground text-xs font-medium'>
+                          {t('Estimated Credit')}
+                        </span>
+                        <span
+                          className={cn(
+                            'text-xl font-semibold tracking-tight tabular-nums',
+                            validTopupAmount
+                              ? 'text-foreground'
+                              : 'text-muted-foreground'
+                          )}
+                          data-testid='team-topup-credit'
+                        >
+                          {formatUsd(
+                            validTopupAmount ? parsedTopupAmount : 0,
+                            locale
+                          )}
+                        </span>
+                      </div>
+                      <div className='flex flex-col gap-1 sm:border-l sm:pl-6'>
+                        <div className='flex items-center gap-2'>
+                          <span className='text-muted-foreground text-xs font-medium'>
+                            {t('Amount Due')}
+                          </span>
+                          {teamQuoteQuery.isFetching && (
+                            <span className='text-muted-foreground inline-flex items-center gap-1 text-xs'>
+                              <Loader2
+                                className='size-3 animate-spin'
+                                aria-hidden='true'
+                              />
+                              {t('Calculating...')}
+                            </span>
+                          )}
+                        </div>
+                        <div className='flex flex-wrap items-baseline gap-2'>
+                          <span
+                            className={cn(
+                              'text-xl font-semibold tracking-tight tabular-nums',
+                              hasEstimatedTeamPay
+                                ? 'text-foreground'
+                                : 'text-muted-foreground'
+                            )}
+                            data-testid='team-topup-pay'
+                          >
+                            {teamPayAmountText}
+                          </span>
+                          {teamPayRateHint && (
+                            <span className='text-muted-foreground text-xs tabular-nums'>
+                              {teamPayRateHint}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <Button
+                      type='button'
+                      variant='brand'
+                      className='w-full shrink-0 sm:w-auto sm:min-w-28'
+                      disabled={
+                        pending || !validTopupAmount || topupMethod === null
+                      }
+                      onClick={() =>
+                        void run(async () => {
+                          if (!topupMethod) return
+                          const body = JSON.stringify([
+                            team.team_id,
+                            topupAmount.trim(),
+                            scene?.key,
+                            topupMethodKey,
+                          ])
+                          if (attempt.current.body !== body) {
+                            attempt.current = { body, key: crypto.randomUUID() }
+                          }
+                          const response = await api.post(
+                            `/api/adty/teams/${team.team_id}/topups`,
+                            {
+                              amount_usd: topupAmount.trim(),
+                              payment_scene: scene?.key,
+                              method: topupMethod.id,
+                              channel_id: topupMethod.channel_id,
+                            },
+                            {
+                              headers: {
+                                'Idempotency-Key': attempt.current.key,
+                              },
+                            }
+                          )
+                          if (!response.data?.success) {
+                            throw new Error(
+                              response.data?.message || 'Failed to save'
+                            )
+                          }
+                          const order = response.data.data as AdtyOrderExt
+                          if (!order?.trade_no) {
+                            throw new Error('Order number not provided')
+                          }
+                          setCheckout(order)
+                          attempt.current = { body: '', key: '' }
+                          setTopupAmount('')
+                        })
+                      }
+                    >
+                      {pending ? t('Processing...') : t('Team top-up')}
+                    </Button>
+                  </div>
+                </section>
               </div>
-              <p className='text-muted-foreground text-sm'>
-                {t(
-                  'A team top-up does not include a payment-method gift. The order stays pending until payment completion credits the shared balance.'
-                )}
-              </p>
-              <Button
-                type='button'
-                variant='outline'
-                disabled={
-                  pending ||
-                  !Number.isSafeInteger(Number(topupAmount)) ||
-                  Number(topupAmount) <= 0 ||
-                  Number(topupAmount) < Number(scene?.min_usd ?? 0) ||
-                  (Number(scene?.max_usd) > 0 &&
-                    Number(topupAmount) > Number(scene?.max_usd)) ||
-                  topupMethod === null
-                }
-                onClick={() =>
-                  void run(async () => {
-                    if (!topupMethod) return
-                    const body = JSON.stringify([
-                      team.team_id,
-                      topupAmount.trim(),
-                      scene?.key,
-                      topupMethodKey,
-                    ])
-                    if (attempt.current.body !== body) {
-                      attempt.current = { body, key: crypto.randomUUID() }
-                    }
-                    const response = await api.post(
-                      `/api/adty/teams/${team.team_id}/topups`,
-                      {
-                        amount_usd: topupAmount.trim(),
-                        payment_scene: scene?.key,
-                        method: topupMethod.id,
-                        channel_id: topupMethod.channel_id,
-                      },
-                      { headers: { 'Idempotency-Key': attempt.current.key } }
-                    )
-                    if (!response.data?.success) {
-                      throw new Error(
-                        response.data?.message || 'Failed to save'
-                      )
-                    }
-                    const order = response.data.data as AdtyOrderExt
-                    if (!order?.trade_no) {
-                      throw new Error('Order number not provided')
-                    }
-                    setCheckout(order)
-                    attempt.current = { body: '', key: '' }
-                    setTopupAmount('')
-                  })
-                }
-              >
-                {t('Team top-up')}
-              </Button>
               {pendingOrders.isError && (
                 <ErrorState onRetry={() => void pendingOrders.refetch()} />
               )}
@@ -578,7 +752,7 @@ export function TeamPanel() {
                       {t(inviteStatusLabel[row.status] ?? row.status)} ·{' '}
                       {t('Validity')}:{' '}
                       {row.expires_at
-                        ? new Date(row.expires_at * 1000).toLocaleString()
+                        ? new Date(row.expires_at * 1000).toLocaleString(locale)
                         : '—'}
                     </span>
                     {row.status === 'outstanding' && (
@@ -680,7 +854,7 @@ export function TeamPanel() {
                     className='flex flex-wrap items-center justify-between gap-3 text-sm'
                   >
                     <span className='min-w-0 truncate'>
-                      {member.username || member.user_id} ·{' '}
+                      {formatUserIdentity(member.user_id, member.username)} ·{' '}
                       {member.role === 'leader' ? t('Leader') : t('Member')} ·{' '}
                       {t(memberStatusLabels[member.status] ?? member.status)}
                     </span>
@@ -967,8 +1141,9 @@ export function TeamPanel() {
         description={t(
           'Set a new password for {{name}}. Their existing sign-in sessions will be revoked immediately.',
           {
-            name:
-              resetMember?.username || String(resetMember?.user_id ?? ''),
+            name: resetMember
+              ? formatUserIdentity(resetMember.user_id, resetMember.username)
+              : '',
           }
         )}
         footer={
@@ -1036,7 +1211,11 @@ export function TeamPanel() {
           }
         }}
         title={t('Delete employee')}
-        desc={deleteEmployee?.username || String(deleteEmployee?.user_id ?? '')}
+        desc={
+          deleteEmployee
+            ? formatUserIdentity(deleteEmployee.user_id, deleteEmployee.username)
+            : ''
+        }
         confirmText={t('Confirm delete')}
         destructive
         isLoading={pending}

@@ -34,6 +34,7 @@ import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
 import { formatQuota } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -43,7 +44,6 @@ import {
   type StaffCustomerAction,
   type StaffOrderType,
 } from './api'
-import { StaffBalanceRequestDialog } from './balance-request-dialog'
 import { StaffCustomerActionDialog } from './customer-actions'
 import { StaffRecordsDialog } from './records-dialog'
 import { StaffOrdersDialog } from './staff-orders-dialog'
@@ -56,9 +56,6 @@ export function StaffWorkspace() {
     customer: OwnerCustomer
     action: StaffCustomerAction
   } | null>(null)
-  const [balanceCustomer, setBalanceCustomer] = useState<OwnerCustomer | null>(
-    null
-  )
   const [orders, setOrders] = useState<{
     customer: OwnerCustomer
     version: number
@@ -92,9 +89,13 @@ export function StaffWorkspace() {
   })
   const columns: StaticDataTableColumn<OwnerCustomer>[] = [
     {
-      id: 'username',
-      header: t('Username'),
-      cell: (customer) => customer.username,
+      id: 'user',
+      header: t('ID / Username'),
+      cell: (customer) => (
+        <span className='tabular-nums'>
+          {formatUserIdentity(customer.id, customer.username)}
+        </span>
+      ),
     },
     {
       id: 'email',
@@ -138,7 +139,6 @@ export function StaffWorkspace() {
   }
   if (
     orderTypes.length > 0 ||
-    grants.includes('customers.balance_request') ||
     grants.includes('customers.topups') ||
     grants.includes('customers.usage') ||
     grants.includes('customers.disable')
@@ -150,6 +150,7 @@ export function StaffWorkspace() {
         <div className='flex flex-wrap gap-1'>
           {orderTypes.length > 0 && (
             <Button
+              type='button'
               size='sm'
               variant='outline'
               onClick={() =>
@@ -159,17 +160,9 @@ export function StaffWorkspace() {
               {t('Orders')}
             </Button>
           )}
-          {grants.includes('customers.balance_request') && (
-            <Button
-              size='sm'
-              variant='outline'
-              onClick={() => setBalanceCustomer(customer)}
-            >
-              {t('Request balance change')}
-            </Button>
-          )}
           {grants.includes('customers.topups') && (
             <Button
+              type='button'
               size='sm'
               variant='outline'
               onClick={() => setRecords({ customer, kind: 'topups' })}
@@ -179,6 +172,7 @@ export function StaffWorkspace() {
           )}
           {grants.includes('customers.usage') && (
             <Button
+              type='button'
               size='sm'
               variant='outline'
               onClick={() => setRecords({ customer, kind: 'logs' })}
@@ -188,6 +182,7 @@ export function StaffWorkspace() {
           )}
           {customer.status === 1 && grants.includes('customers.disable') && (
             <Button
+              type='button'
               size='sm'
               variant='destructive'
               onClick={() => setCustomerAction({ customer, action: 'disable' })}
@@ -207,10 +202,19 @@ export function StaffWorkspace() {
         {self.isError && <ErrorState onRetry={() => void self.refetch()} />}
         {self.isSuccess && (
           <div className='flex flex-col gap-4'>
-            <p>
-              {self.data.site_name} · {self.data.staff.display_name}
+            <p className='tabular-nums'>
+              {self.data.site_name} ·{' '}
+              {formatUserIdentity(
+                self.data.staff.user_id,
+                self.data.staff.username
+              )}
+              {self.data.staff.display_name &&
+              self.data.staff.display_name !== self.data.staff.username
+                ? ` (${self.data.staff.display_name})`
+                : ''}
             </p>
             <Button
+              type='button'
               variant='outline'
               onClick={() => {
                 void self.refetch()
@@ -277,16 +281,6 @@ export function StaffWorkspace() {
                   onClose={() => setRecords(null)}
                 />
               )}
-            {balanceCustomer &&
-              canList &&
-              grants.includes('customers.balance_request') && (
-              <StaffBalanceRequestDialog
-                key={`${self.data.staff.version}-${balanceCustomer.id}`}
-                customer={balanceCustomer}
-                userId={userId ?? 0}
-                onClose={() => setBalanceCustomer(null)}
-              />
-            )}
             {customerAction &&
               canList &&
               grants.includes('customers.disable') && (

@@ -16,26 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { LucideIcon } from 'lucide-react'
-/*
-Copyright (C) 2023-2026 QuantumNous
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as
-published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-For commercial licensing, please contact support@quantumnous.com
-*/
 /* eslint-disable react-refresh/only-export-components */
+import type { LucideIcon } from 'lucide-react'
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -43,20 +25,13 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { stringToColor } from '@/lib/colors'
 import { cn } from '@/lib/utils'
 
-/* The accent palette is single-hue after the 2026 brand refresh: `--chart-1`
- * is the brand blue, `--chart-2` a mid blue and `--chart-3` a light tint, while
- * `--chart-4` / `--chart-5` are the two neutrals. Decorative hue buckets are
- * therefore mapped by *depth* — deep buckets take chart-1, mid ones chart-2 and
- * light ones chart-3 — so a bucket never lands on a grey slot, which used to
- * render "purple" and "pink" chips in a disabled-looking grey. The neutral
- * slots stay reserved for genuinely grey names. */
 export const dotColorMap = {
   success: 'bg-success',
   warning: 'bg-warning',
   danger: 'bg-destructive',
   info: 'bg-info',
   neutral: 'bg-neutral',
-  purple: 'bg-chart-2',
+  purple: 'bg-chart-4',
   amber: 'bg-warning',
   blue: 'bg-chart-1',
   cyan: 'bg-chart-2',
@@ -67,68 +42,38 @@ export const dotColorMap = {
   'light-green': 'bg-emerald-400',
   lime: 'bg-chart-3',
   orange: 'bg-warning',
-  pink: 'bg-chart-3',
+  pink: 'bg-chart-5',
   red: 'bg-destructive',
   teal: 'bg-chart-2',
-  violet: 'bg-chart-2',
+  violet: 'bg-chart-4',
   yellow: 'bg-warning',
 } as const
 
-/* Text keeps the same depth mapping but resolves to `--brand-ink`, the token
- * the design system reserves for blue copy on tinted surfaces: the light ramp
- * tiers are too pale to read as text, and brand-ink already flips to a light
- * blue in dark mode. */
 export const textColorMap = {
   success: 'text-success',
   warning: 'text-warning',
   danger: 'text-destructive',
   info: 'text-info',
   neutral: 'text-muted-foreground',
-  purple: 'text-brand-ink',
+  purple: 'text-chart-4',
   amber: 'text-warning',
   blue: 'text-chart-1',
-  cyan: 'text-brand-ink',
+  cyan: 'text-chart-2',
   green: 'text-success',
   grey: 'text-muted-foreground',
   indigo: 'text-chart-1',
   'light-blue': 'text-info',
   'light-green': 'text-emerald-500 dark:text-emerald-300',
-  lime: 'text-brand-ink',
+  lime: 'text-chart-3',
   orange: 'text-warning',
-  pink: 'text-brand-ink',
+  pink: 'text-chart-5',
   red: 'text-destructive',
-  teal: 'text-brand-ink',
-  violet: 'text-brand-ink',
+  teal: 'text-chart-2',
+  violet: 'text-chart-4',
   yellow: 'text-warning',
 } as const
 
 export type StatusVariant = keyof typeof dotColorMap
-
-/** Soft, tinted pill surface used by the `badge` type: 5px radius, tinted
- *  fill and the matching semantic text color (design system §4). */
-export function statusBadgeSurfaceClass(variant: StatusVariant): string {
-  switch (variant) {
-    case 'success':
-    case 'green':
-      return 'bg-success-soft text-success'
-    case 'warning':
-    case 'amber':
-    case 'yellow':
-    case 'orange':
-      return 'bg-warning-soft text-warning'
-    case 'danger':
-    case 'red':
-      return 'bg-destructive-soft text-destructive'
-    case 'info':
-    case 'blue':
-    case 'light-blue':
-    case 'cyan':
-    case 'teal':
-      return 'bg-info-soft text-info'
-    default:
-      return 'bg-muted text-muted-foreground'
-  }
-}
 
 /** Controls the visual style of the badge.
  * - `badge`    — default pill with background and padding (default)
@@ -224,16 +169,12 @@ export function StatusBadge({
       className={cn(
         'inline-flex w-fit max-w-full min-w-0 shrink items-center font-medium tracking-normal whitespace-nowrap transition-colors',
         isBadge
-          ? cn(
-              'rounded-[5px]',
-              sizeMap[size ?? 'sm'],
-              statusBadgeSurfaceClass(computedVariant)
-            )
+          ? cn('rounded-4xl', sizeMap[size ?? 'sm'])
           : cn(
               textSizeMap[size ?? 'sm'],
-              type === 'underline' && 'border-b border-current pb-px',
-              textColorMap[computedVariant]
+              type === 'underline' && 'border-b border-current pb-px'
             ),
+        textColorMap[computedVariant],
         pulse && 'animate-pulse',
         copyable &&
           'cursor-copy hover:brightness-95 active:scale-95 dark:hover:brightness-110',

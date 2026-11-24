@@ -51,6 +51,7 @@ import { useStatus } from '@/hooks/use-status'
 import { handleServerError } from '@/lib/handle-server-error'
 import { AuthOperationError } from '@/lib/secure-verification'
 import { createServerError } from '@/lib/server-error-message'
+import { readReferralEnabledFromStatus } from '@/lib/status-query'
 import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
 
@@ -121,6 +122,8 @@ export function SignUpForm({
   const isSubsite = Boolean(
     status?.adty_site || status?.data?.adty_site || subsiteDocument()
   )
+  const referralEnabled = readReferralEnabledFromStatus(status) === true
+  const showSiteInviteCode = isSubsite && referralEnabled
   const turnstileReady = !isTurnstileEnabled || Boolean(turnstileToken)
 
   useEffect(() => {
@@ -161,7 +164,7 @@ export function SignUpForm({
         turnstile: turnstileToken,
         agreement_accepted: requiresLegalConsent ? true : undefined,
         lang: i18n.resolvedLanguage || i18n.language,
-        site_invite_code: isSubsite
+        site_invite_code: showSiteInviteCode
           ? siteInviteCode.trim() || undefined
           : undefined,
       })
@@ -333,7 +336,7 @@ export function SignUpForm({
           </>
         )}
 
-        {isSubsite && (
+        {showSiteInviteCode && (
           <div className='space-y-1.5'>
             <Label htmlFor='sign-up-site-invite-code'>
               {t('Site invite code (optional)')}

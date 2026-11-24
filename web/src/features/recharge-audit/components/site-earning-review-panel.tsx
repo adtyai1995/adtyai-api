@@ -41,6 +41,7 @@ import { SecureVerificationDialog } from '@/features/auth/secure-verification/co
 import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatQuota, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -49,6 +50,8 @@ import {
   type SiteEarningDecision,
   type SiteEarningReview,
 } from '../api'
+
+type SiteEarningReviewRow = SiteEarningReview & { username?: string }
 
 const PAGE_SIZE = 20
 
@@ -111,8 +114,13 @@ export function SiteEarningReviewPanel(props: { canResolve: boolean }) {
                     },
                     {
                       id: 'customer',
-                      header: t('Customer ID'),
-                      cell: (row) => row.user_id,
+                      header: t('Customer'),
+                      cellClassName: 'tabular-nums',
+                      cell: (row) =>
+                        formatUserIdentity(
+                          row.user_id,
+                          (row as SiteEarningReviewRow).username
+                        ),
                     },
                     {
                       id: 'task',
@@ -245,8 +253,13 @@ function SiteEarningReviewDialog(props: {
       <dl className='grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 text-sm'>
         <dt className='text-muted-foreground'>{t('Site ID')}</dt>
         <dd className='text-right tabular-nums'>{props.event.site_id}</dd>
-        <dt className='text-muted-foreground'>{t('Customer ID')}</dt>
-        <dd className='text-right tabular-nums'>{props.event.user_id}</dd>
+        <dt className='text-muted-foreground'>{t('Customer')}</dt>
+        <dd className='text-right tabular-nums'>
+          {formatUserIdentity(
+            props.event.user_id,
+            (props.event as SiteEarningReviewRow).username
+          )}
+        </dd>
         <dt className='text-muted-foreground'>{t('Task')}</dt>
         <dd className='text-right font-mono text-xs break-all'>
           {props.event.root_operation_key}

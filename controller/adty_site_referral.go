@@ -137,16 +137,35 @@ func PutAdtyOwnerSiteReferral(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"saved": true})
 }
 
+type adtySiteCommissionCustomerItem struct {
+	model.AdtySiteInviteCommissionView
+	InviterUsername string `json:"inviter_username"`
+	InviteeUsername string `json:"invitee_username"`
+}
+
 func GetAdtySiteCommissions(c *gin.Context) {
 	rows, err := service.ListAdtySiteInviteCommissions(c.GetInt("id"), time.Now())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	items, err := model.PresentSiteInviteCommissions(model.DB, rows)
+	views, err := model.PresentSiteInviteCommissions(model.DB, rows)
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	ids := make([]int, 0, len(views)*2)
+	for _, view := range views {
+		ids = append(ids, view.InviterId, view.InviteeId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]adtySiteCommissionCustomerItem, len(views))
+	for i, view := range views {
+		items[i] = adtySiteCommissionCustomerItem{
+			AdtySiteInviteCommissionView: view,
+			InviterUsername:              names[view.InviterId],
+			InviteeUsername:              names[view.InviteeId],
+		}
 	}
 	common.ApiSuccess(c, gin.H{"items": items})
 }
@@ -258,16 +277,19 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, presentAdtySiteInviteWithdrawals([]model.AdtySiteInviteWithdrawal{*row}, nil, true)[0])
+	names := model.LookupUsernamesByIDs(model.DB, []int{row.UserId})
+	common.ApiSuccess(c, presentAdtySiteInviteWithdrawals([]model.AdtySiteInviteWithdrawal{*row}, names, true)[0])
 }
 
 func GetAdtySiteInviteWithdrawals(c *gin.Context) {
-	rows, err := service.ListAdtySiteInviteWithdrawals(c.GetInt("id"))
+	userID := c.GetInt("id")
+	rows, err := service.ListAdtySiteInviteWithdrawals(userID)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": presentAdtySiteInviteWithdrawals(rows, nil, true)})
+	names := model.LookupUsernamesByIDs(model.DB, []int{userID})
+	common.ApiSuccess(c, gin.H{"items": presentAdtySiteInviteWithdrawals(rows, names, true)})
 }
 
 func PostAdtySiteInviteWithdrawalCancel(c *gin.Context) {
@@ -302,20 +324,14 @@ func presentCommissionPage(c *gin.Context, page *common.PageInfo, rows []model.A
 		common.ApiError(c, err)
 		return
 	}
-	ids := make([]int, 0, len(rows))
-	seen := map[int]struct{}{}
+	ids := make([]int, 0, len(rows)*5)
 	for _, row := range rows {
-		if _, ok := seen[row.UserId]; ok {
-			continue
-		}
-		seen[row.UserId] = struct{}{}
 		ids = append(ids, row.UserId)
+		if !redactOperators {
+			ids = append(ids, row.ReviewedBy, row.PaidBy, row.FailureBy, row.LegacyDecisionBy)
+		}
 	}
-	names, err := adtyUsernamesByID(ids)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
 	page.SetTotal(int(total))
 	page.SetItems(presentAdtySiteInviteWithdrawals(rows, names, redactOperators))
 	common.ApiSuccess(c, page)
@@ -438,9 +454,13 @@ func processSiteWithdrawalPaid(c *gin.Context, process func(int, int64, string, 
 
 type adtySiteInviteWithdrawalItem struct {
 	model.AdtySiteInviteWithdrawal
-	CanCancel    bool   `json:"can_cancel"`
-	CancelReason string `json:"cancel_reason"`
-	Username     string `json:"username,omitempty"`
+	CanCancel                bool   `json:"can_cancel"`
+	CancelReason             string `json:"cancel_reason"`
+	Username                 string `json:"username"`
+	ReviewedByUsername       string `json:"reviewed_by_username,omitempty"`
+	PaidByUsername           string `json:"paid_by_username,omitempty"`
+	FailureByUsername        string `json:"failure_by_username,omitempty"`
+	LegacyDecisionByUsername string `json:"legacy_decision_by_username,omitempty"`
 }
 
 func presentAdtySiteInviteWithdrawals(rows []model.AdtySiteInviteWithdrawal, names map[int]string, redactOperators bool) []adtySiteInviteWithdrawalItem {
@@ -459,25 +479,16 @@ func presentAdtySiteInviteWithdrawals(rows []model.AdtySiteInviteWithdrawal, nam
 		item := adtySiteInviteWithdrawalItem{AdtySiteInviteWithdrawal: row, CanCancel: state.CanCancel, CancelReason: state.CancelReason}
 		if names != nil {
 			item.Username = names[row.UserId]
+			if !redactOperators {
+				item.ReviewedByUsername = names[row.ReviewedBy]
+				item.PaidByUsername = names[row.PaidBy]
+				item.FailureByUsername = names[row.FailureBy]
+				item.LegacyDecisionByUsername = names[row.LegacyDecisionBy]
+			}
 		}
 		out[i] = item
 	}
 	return out
-}
-
-func adtyUsernamesByID(ids []int) (map[int]string, error) {
-	names := map[int]string{}
-	if len(ids) == 0 {
-		return names, nil
-	}
-	var users []model.User
-	if err := model.DB.Select("id", "username").Where("id IN ?", ids).Find(&users).Error; err != nil {
-		return nil, err
-	}
-	for _, user := range users {
-		names[user.Id] = user.Username
-	}
-	return names, nil
 }
 
 func PutAdtyOwnerSiteReferralEnabled(c *gin.Context) {
@@ -606,8 +617,21 @@ func GetAdtyOwnerSiteReferralCommissions(c *gin.Context) {
 	if !ok {
 		return
 	}
+	inviterUserID := 0
+	rawInviter := strings.TrimSpace(c.Query("inviter_user_id"))
+	if rawInviter == "" {
+		rawInviter = strings.TrimSpace(c.Query("inviter_id"))
+	}
+	if rawInviter != "" {
+		uid, err := strconv.Atoi(rawInviter)
+		if err != nil || uid <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		inviterUserID = uid
+	}
 	page := adtySiteReferralPageQuery(c)
-	items, total, err := service.ListAdtyOwnerSiteReferralCommissions(site.Id, c.Query("status"), c.Query("q"), page.GetStartIdx(), page.GetPageSize(), time.Now())
+	items, total, err := service.ListAdtyOwnerSiteReferralCommissions(site.Id, c.Query("status"), c.Query("q"), page.GetStartIdx(), page.GetPageSize(), time.Now(), inviterUserID)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -637,24 +661,10 @@ func GetAdtyOwnerSiteInvites(c *gin.Context) {
 		return
 	}
 	ids := make([]int, 0, len(rows)*2)
-	seen := make(map[int]struct{}, len(rows)*2)
 	for _, row := range rows {
-		for _, id := range []int{row.InviterId, row.InviteeId} {
-			if id <= 0 {
-				continue
-			}
-			if _, exists := seen[id]; exists {
-				continue
-			}
-			seen[id] = struct{}{}
-			ids = append(ids, id)
-		}
+		ids = append(ids, row.InviterId, row.InviteeId)
 	}
-	names, err := adtyUsernamesByID(ids)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
 	items := make([]adtyOwnerSiteInviteItem, len(rows))
 	for i, row := range rows {
 		items[i] = adtyOwnerSiteInviteItem{

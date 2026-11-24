@@ -466,12 +466,20 @@ func GetAdtyOwnerCustomerTopUps(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
-// PostAdtyOwnerCustomerBalance 站长给本站客户手动增加余额：
-// POST /api/adty/site/customers/:id/balance {amount_usd, reason, idempotency_key?}，需二次验证。
-// 优先扣站点可用收益，不足部分自动从超出等级要求保证金底线的溢余保证金中补足。
+// PostAdtyOwnerCustomerBalance 站长给本站客户手动增加余额已停用（R-35 #11），请改用兑换码。
 func PostAdtyOwnerCustomerBalance(c *gin.Context) {
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Manual customer balance top-up is disabled; please issue a site voucher instead."))
+}
+
+// PostAdtyOwnerCustomerPassword 站长修改或随机重置本站客户密码：
+// POST /api/adty/site/customers/:id/password {password?, random?, length?}，需二次验证。
+func PostAdtyOwnerCustomerPassword(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {
+		return
+	}
+	if site.Status == model.AdtySiteStatusClosing {
+		common.ApiError(c, service.ErrAdtySiteClosing)
 		return
 	}
 	id, ok := adtyPathId(c)
@@ -479,48 +487,49 @@ func PostAdtyOwnerCustomerBalance(c *gin.Context) {
 		return
 	}
 	var body struct {
-		AmountUSD      string `json:"amount_usd"`
-		Reason         string `json:"reason"`
-		IdempotencyKey string `json:"idempotency_key"`
+		Password string `json:"password"`
+		Random   bool   `json:"random"`
+		Length   int    `json:"length"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
-	if err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	idemKey := strings.TrimSpace(body.IdempotencyKey)
-	if hdr := strings.TrimSpace(c.GetHeader("Idempotency-Key")); hdr != "" {
-		if idemKey != "" && idemKey != hdr {
-			common.ApiErrorT(c, "Invalid parameters")
+	if body.Random {
+		if body.Length != 0 && (body.Length < common.MinRandomAccountPasswordLength || body.Length > common.MaxRandomAccountPasswordLength) {
+			common.ApiError(c, common.ErrRandomAccountPasswordLength)
 			return
 		}
-		idemKey = hdr
-	}
-	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionCustomerBalance, id, service.AdtyOwnerBalanceCreditDigestInput{
-		AmountUSD:      amount.String(),
-		Reason:         body.Reason,
-		IdempotencyKey: idemKey,
-	}) {
+	} else if err := common.ValidateNewAccountPassword(body.Password); err != nil {
+		common.ApiError(c, err)
 		return
 	}
-	res, err := service.CreditAdtySiteCustomerBalanceByOwner(site.Id, c.GetInt("id"), id, amount, body.Reason, idemKey)
+	// Reject non-existent or foreign customer IDs before consuming the step-up proof.
+	if _, err := service.GetAdtyOwnerCustomer(site, id); err != nil {
+		common.ApiErrorStatus(c, http.StatusNotFound, service.ErrAdtySiteCustomerNotFound)
+		return
+	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionCustomerPassword, id) {
+		return
+	}
+	username, generatedPassword, err := service.ResetAdtySiteCustomerPassword(site.Id, c.GetInt("id"), id, body.Password, body.Random, body.Length)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrAdtySiteCustomerNotFound):
 			common.ApiErrorStatus(c, http.StatusNotFound, err)
-		case errors.Is(err, model.ErrAdtyIdempotencyConflict):
-			common.ApiErrorStatus(c, http.StatusConflict, err)
+		case errors.Is(err, service.ErrAdtySiteNotOwner), errors.Is(err, service.ErrAdtySiteAgreement):
+			common.ApiErrorStatus(c, http.StatusForbidden, err)
 		default:
 			common.ApiError(c, err)
 		}
 		return
 	}
-	// R6-037: Official audit intent is already persisted atomically inside CreditAdtySiteCustomerBalanceByOwner.
-	common.ApiSuccess(c, res)
+	setAuthNoStore(c)
+	common.ApiSuccess(c, gin.H{
+		"user_id":            id,
+		"username":           username,
+		"generated_password": generatedPassword,
+	})
 }
 
 // PostAdtyOwnerReport 举报客户：POST /api/adty/site/report {user_id, reason}。

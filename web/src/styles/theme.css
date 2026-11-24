@@ -106,17 +106,15 @@ For commercial licensing, please contact support@quantumnous.com
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  /* ADTY: 1.5x so cards are 12px while buttons and inputs stay 8px. */
-  --radius-xl: calc(var(--radius) * 1.5);
+  --radius-xl: calc(var(--radius) * 1.4);
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
 :root {
-  /* ADTY white theme (design draft section 6). rounded-lg = 8px buttons and
-   * inputs, rounded-xl = 12px cards. */
-  --radius: 0.5rem;
+  /* Original new-api neutral shadcn radius scale (0.625rem = 10px). */
+  --radius: 0.625rem;
   --app-header-height: 3rem;
   /* Static build-channel fallback consumed when JS hasn't booted yet. */
   --app-rev: '2k6e8r7p';
@@ -132,85 +130,68 @@ For commercial licensing, please contact support@quantumnous.com
   --font-mono:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     'Courier New', monospace;
-  /* Cool neutral ramp (2026 brand refresh). `--ink-soft` is the wordmark
-   * slate; `--line` / `--line2` are the hairlines and `--soft` / `--soft2` the
-   * hover and fill surfaces. The semantic tokens below alias into this ramp so
-   * the neutral tint lives in one place. */
-  --ink: #0f1a26;
-  --ink-soft: #30425a;
-  --dim: #53667b;
-  --faint: #64798f;
-  --line: #e6ecf2;
-  --line2: #dce4ee;
-  --soft: #f8fafc;
-  --soft2: #eef3f8;
-  --background: #ffffff;
-  --foreground: var(--ink);
-  --card: #ffffff;
-  --card-foreground: var(--ink);
-  --popover: #ffffff;
-  --popover-foreground: var(--ink);
-  /* Console content area behind the white cards. */
-  --canvas: var(--soft);
-  --primary: #0a0a0a;
-  --primary-foreground: #ffffff;
-  --secondary: var(--soft2);
-  --secondary-foreground: var(--ink);
-  --muted: var(--soft2);
-  --muted-foreground: var(--dim);
-  --accent: var(--soft2);
-  --accent-foreground: var(--ink);
-  --destructive: #dc2626;
-  --destructive-foreground: #ffffff;
-  --destructive-soft: #fef2f2;
-  --success: #16a34a;
-  --success-foreground: #ffffff;
-  --success-soft: #f0fdf4;
-  --warning: #b45309;
-  --warning-foreground: #ffffff;
-  --warning-soft: #fffbeb;
-  --info: #1d4ed8;
-  --info-foreground: #ffffff;
-  --info-soft: #eff6ff;
-  /* ADTY brand blue: the logo gradient runs #0078fa -> #78f0fa. */
-  --brand: #0070ec;
-  --brand-foreground: #ffffff;
-  --brand-hover: #0060d8;
-  --brand-soft: #eef6ff;
-  --brand-ink: #0059c7;
-  --neutral: #a3a3a3;
-  --neutral-foreground: #0a0a0a;
-  /* Console typography accents: explanatory copy (`--dim`) and the quietest
-     hint level (`--faint`), e.g. stat labels and empty-state glyphs. Both come
-     from the cool ramp above. */
-  --border: var(--line);
-  --input: var(--line);
-  --ring: #a3a3a3;
-  --chart-1: #0070ec;
-  --chart-2: #4fa3ff;
-  --chart-3: #8fc2ff;
-  --chart-4: #a3a3a3;
-  --chart-5: #d4d4d4;
-  --overview-accent-1: #525252;
-  --overview-accent-2: #737373;
-  --overview-accent-3: #a3a3a3;
-  --sidebar: #ffffff;
-  --sidebar-foreground: var(--ink);
-  --sidebar-primary: #0a0a0a;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: var(--brand-soft);
-  --sidebar-accent-foreground: var(--brand-ink);
-  --sidebar-border: var(--line);
-  --sidebar-ring: #a3a3a3;
-  --skeleton-base: #f5f5f5;
-  --skeleton-highlight: #fafafa;
+
+  /* Original new-api neutral shadcn light palette (oklch). */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.627 0.194 149.214);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.666 0.179 58.318);
+  --warning-foreground: oklch(0.985 0 0);
+  --info: oklch(0.546 0.245 262.881);
+  --info-foreground: oklch(0.985 0 0);
+  --neutral: oklch(0.708 0 0);
+  --neutral-foreground: oklch(0.205 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  /* Multi-hue chart & badge palette matching original new-api semantic slots
+   * (blue, teal/cyan, green, purple/violet, pink/rose) and theme-presets.css. */
+  --chart-1: oklch(0.546 0.245 262.881);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.627 0.194 149.214);
+  --chart-4: oklch(0.558 0.288 302.321);
+  --chart-5: oklch(0.592 0.249 0.584);
+  --overview-accent-1: oklch(0.623 0.214 259.815);
+  --overview-accent-2: oklch(0.715 0.143 215.221);
+  --overview-accent-3: oklch(0.606 0.25 292.717);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  --skeleton-base: oklch(0.96 0 0);
+  --skeleton-highlight: oklch(0.985 0 0);
   --table-row: var(--background);
-  /* Design system §3: header band #fafafa on white, rows separated by a
-     hairline lighter than --border, hover barely tinted. */
-  --table-header: #fafafa;
-  --table-header-hover: #f5f5f5;
-  --table-row-border: #f5f6f7;
-  --table-row-hover: #fcfcfd;
+  --table-header: color-mix(
+    in oklch,
+    var(--foreground) 1.5%,
+    var(--background)
+  );
+  --table-header-hover: color-mix(
+    in oklch,
+    var(--foreground) 3%,
+    var(--background)
+  );
+  --table-row-border: var(--border);
+  --table-row-hover: color-mix(in oklch, var(--muted) 50%, var(--background));
   /* Disabled rows: kept subtle so they read as "quiet", not as a colored
      alert state. */
   --table-disabled: color-mix(
@@ -228,6 +209,32 @@ For commercial licensing, please contact support@quantumnous.com
     var(--foreground) 16%,
     var(--background)
   );
+
+  /* Compatibility semantic aliases to original new-api tokens so all existing
+   * components using bg-brand, text-dim, bg-canvas, border-line, etc. render
+   * natively in neutral shadcn styling and follow theme presets seamlessly. */
+  --brand: var(--primary);
+  --brand-foreground: var(--primary-foreground);
+  --brand-hover: color-mix(in oklch, var(--primary) 90%, transparent);
+  --brand-soft: var(--accent);
+  --brand-ink: var(--foreground);
+  --ink: var(--foreground);
+  --ink-soft: color-mix(in oklch, var(--foreground) 80%, var(--background));
+  --dim: var(--muted-foreground);
+  --faint: color-mix(in oklch, var(--muted-foreground) 75%, var(--background));
+  --line: var(--border);
+  --line2: var(--border);
+  --soft: var(--muted);
+  --soft2: var(--accent);
+  --canvas: var(--background);
+  --destructive-soft: color-mix(
+    in oklch,
+    var(--destructive) 12%,
+    var(--background)
+  );
+  --success-soft: color-mix(in oklch, var(--success) 12%, var(--background));
+  --warning-soft: color-mix(in oklch, var(--warning) 14%, var(--background));
+  --info-soft: color-mix(in oklch, var(--info) 12%, var(--background));
 }
 
 /* ADTY task 9.2: on Japanese pages, Japanese fonts come before the Chinese
@@ -252,87 +259,143 @@ For commercial licensing, please contact support@quantumnous.com
   /* Native controls follow the theme; Dark Reader also reads this to detect
      the built-in dark theme. */
   color-scheme: dark;
-  /* ADTY white theme, dark variant (design draft section 6). */
-  /* Cool neutral ramp, dark counterpart: text sits a touch below pure white and
-   * the fills carry the same slate cast as the light theme. */
-  --ink: #eef3f8;
-  --ink-soft: #c3d2e2;
-  --dim: #93a3b5;
-  --faint: #7a8d9f;
-  --line: #232f3c;
-  --line2: #1b2530;
-  --soft: #0f1720;
-  --soft2: #1a2430;
-  --background: #0a0a0a;
-  --foreground: var(--ink);
-  --card: #141414;
-  --card-foreground: var(--ink);
-  --popover: #141414;
-  --popover-foreground: var(--ink);
-  --canvas: #0a0a0a;
-  --primary: #fafafa;
-  --primary-foreground: #0a0a0a;
-  --secondary: var(--soft2);
-  --secondary-foreground: var(--ink);
-  --muted: var(--soft2);
-  --muted-foreground: var(--dim);
-  --accent: var(--soft2);
-  --accent-foreground: var(--ink);
-  --destructive: #f87171;
-  --destructive-foreground: #0a0a0a;
-  --destructive-soft: color-mix(in srgb, var(--destructive) 15%, transparent);
-  --success: #4ade80;
-  --success-foreground: #0a0a0a;
-  --success-soft: color-mix(in srgb, var(--success) 15%, transparent);
-  --warning: #fbbf24;
-  --warning-foreground: #0a0a0a;
-  --warning-soft: color-mix(in srgb, var(--warning) 15%, transparent);
-  --info: #60a5fa;
-  --info-foreground: #0a0a0a;
-  --info-soft: color-mix(in srgb, var(--info) 15%, transparent);
-  /* Blue glares at full saturation on #0a0a0a: lift the brand one notch and
-   * move the tints to a deep navy so buttons and chips stay comfortable. */
-  --brand: #3d94ff;
-  /* #3d94ff carries black text at 7.2:1; white sat at 2.7:1 and failed AA. */
-  --brand-foreground: #08111c;
-  --brand-hover: #58a6ff;
-  --brand-soft: #0d1b2b;
-  --brand-ink: #8fc2ff;
-  --neutral: #737373;
-  --neutral-foreground: #fafafa;
-  --border: var(--line);
-  --input: var(--line);
-  --ring: #525252;
-  --chart-1: #3d94ff;
-  --chart-2: #1a6fd4;
-  --chart-3: #9a9a9a;
-  --chart-4: #525252;
-  --chart-5: #2a2a2a;
-  --overview-accent-1: #a3a3a3;
-  --overview-accent-2: #737373;
-  --overview-accent-3: #525252;
-  --sidebar: #0a0a0a;
-  --sidebar-foreground: var(--ink);
-  --sidebar-primary: #fafafa;
-  --sidebar-primary-foreground: #0a0a0a;
-  --sidebar-accent: var(--brand-soft);
-  --sidebar-accent-foreground: var(--brand-ink);
-  --sidebar-border: var(--line);
-  --sidebar-ring: #525252;
-  --skeleton-base: #1f1f1f;
-  --skeleton-highlight: #262626;
+  /* Original new-api neutral shadcn dark palette (oklch). */
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --destructive-soft: color-mix(in oklch, var(--destructive) 15%, transparent);
+  --success: oklch(0.723 0.219 149.579);
+  --success-foreground: oklch(0.145 0 0);
+  --success-soft: color-mix(in oklch, var(--success) 15%, transparent);
+  --warning: oklch(0.828 0.189 84.429);
+  --warning-foreground: oklch(0.145 0 0);
+  --warning-soft: color-mix(in oklch, var(--warning) 15%, transparent);
+  --info: oklch(0.707 0.165 254.624);
+  --info-foreground: oklch(0.145 0 0);
+  --info-soft: color-mix(in oklch, var(--info) 15%, transparent);
+  --neutral: oklch(0.556 0 0);
+  --neutral-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.707 0.165 254.624);
+  --chart-2: oklch(0.777 0.152 181.912);
+  --chart-3: oklch(0.792 0.209 151.711);
+  --chart-4: oklch(0.714 0.203 305.504);
+  --chart-5: oklch(0.712 0.194 13.428);
+  --overview-accent-1: oklch(0.707 0.165 254.624);
+  --overview-accent-2: oklch(0.789 0.154 211.53);
+  --overview-accent-3: oklch(0.702 0.183 293.541);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.922 0 0);
+  --sidebar-primary-foreground: oklch(0.205 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+  --skeleton-base: oklch(0.269 0 0);
+  --skeleton-highlight: oklch(0.32 0 0);
   --table-row: var(--background);
   --table-header: color-mix(in oklch, var(--foreground) 6%, var(--background));
-  --table-row-border: color-mix(
+  --table-header-hover: color-mix(
     in oklch,
     var(--foreground) 9%,
     var(--background)
   );
-  --table-row-hover: color-mix(
+  --table-row-border: var(--border);
+  --table-row-hover: color-mix(in oklch, var(--muted) 50%, var(--background));
+  --table-disabled: color-mix(
     in oklch,
-    var(--foreground) 4%,
+    var(--foreground) 7%,
     var(--background)
   );
+  --table-disabled-hover: color-mix(
+    in oklch,
+    var(--foreground) 9.5%,
+    var(--background)
+  );
+  --table-disabled-border: color-mix(
+    in oklch,
+    var(--foreground) 24%,
+    var(--background)
+  );
+}
+
+/* Re-bind compatibility aliases and derived table tokens on <body> presets so
+ * switching `data-theme-preset` in theme-presets.css updates every alias too. */
+[data-theme-preset] {
+  --brand: var(--primary);
+  --brand-foreground: var(--primary-foreground);
+  --brand-hover: color-mix(in oklch, var(--primary) 90%, transparent);
+  --brand-soft: var(--accent);
+  --brand-ink: var(--foreground);
+  --ink: var(--foreground);
+  --ink-soft: color-mix(in oklch, var(--foreground) 80%, var(--background));
+  --dim: var(--muted-foreground);
+  --faint: color-mix(in oklch, var(--muted-foreground) 75%, var(--background));
+  --line: var(--border);
+  --line2: var(--border);
+  --soft: var(--muted);
+  --soft2: var(--accent);
+  --canvas: var(--background);
+  --destructive-soft: color-mix(
+    in oklch,
+    var(--destructive) 12%,
+    var(--background)
+  );
+  --success-soft: color-mix(in oklch, var(--success) 12%, var(--background));
+  --warning-soft: color-mix(in oklch, var(--warning) 14%, var(--background));
+  --info-soft: color-mix(in oklch, var(--info) 12%, var(--background));
+  --table-row: var(--background);
+  --table-header: color-mix(
+    in oklch,
+    var(--foreground) 1.5%,
+    var(--background)
+  );
+  --table-header-hover: color-mix(
+    in oklch,
+    var(--foreground) 3%,
+    var(--background)
+  );
+  --table-row-border: var(--border);
+  --table-row-hover: color-mix(in oklch, var(--muted) 50%, var(--background));
+  --table-disabled: color-mix(
+    in oklch,
+    var(--foreground) 3%,
+    var(--background)
+  );
+  --table-disabled-hover: color-mix(
+    in oklch,
+    var(--foreground) 4.5%,
+    var(--background)
+  );
+  --table-disabled-border: color-mix(
+    in oklch,
+    var(--foreground) 16%,
+    var(--background)
+  );
+}
+
+.dark [data-theme-preset] {
+  --destructive-soft: color-mix(in oklch, var(--destructive) 15%, transparent);
+  --success-soft: color-mix(in oklch, var(--success) 15%, transparent);
+  --warning-soft: color-mix(in oklch, var(--warning) 15%, transparent);
+  --info-soft: color-mix(in oklch, var(--info) 15%, transparent);
+  --table-header: color-mix(in oklch, var(--foreground) 6%, var(--background));
   --table-header-hover: color-mix(
     in oklch,
     var(--foreground) 9%,

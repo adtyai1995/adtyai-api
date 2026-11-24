@@ -23,10 +23,9 @@ import { useTheme } from '@/context/theme-provider'
 import { resolveThemeColor } from './theme-color'
 
 /**
- * The shared chart palette. Blue is the only accent colour in the design
- * system, so every chart reads the same blue → grey ramp instead of the
- * rainbow default palettes of the chart library. The values live in
- * `styles/theme.css` as `--chart-1` … `--chart-5` (light and dark).
+ * The shared chart palette driven by the original new-api `--chart-1` …
+ * `--chart-5` tokens in `styles/theme.css` (and overridden by active
+ * `data-theme-preset` blocks in `styles/theme-presets.css`).
  */
 export const CHART_PALETTE_VARS = [
   '--chart-1',
@@ -36,10 +35,14 @@ export const CHART_PALETTE_VARS = [
   '--chart-5',
 ] as const
 
-/** Mirrors theme.css, used when the stylesheet is not available (SSR, jsdom). */
+/**
+ * Multi-hue fallback matching `styles/theme.css` `--chart-1` … `--chart-5`
+ * (blue, teal, green, purple, rose), used when computed styles are unavailable
+ * (SSR, jsdom).
+ */
 export const CHART_PALETTE_FALLBACK = {
-  light: ['#0070ec', '#4fa3ff', '#8fc2ff', '#a3a3a3', '#d4d4d4'],
-  dark: ['#3d94ff', '#1a6fd4', '#9a9a9a', '#525252', '#2a2a2a'],
+  light: ['#2563eb', '#0d9488', '#16a34a', '#9333ea', '#e11d48'],
+  dark: ['#60a5fa', '#2dd4bf', '#4ade80', '#c084fc', '#fb7185'],
 } as const
 
 const HEX_COLOUR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i
@@ -50,21 +53,20 @@ function isDarkTheme(): boolean {
 }
 
 /**
- * One token, as a colour the canvas charts accept. Hex values are used as
- * written; other colour syntaxes (a theme preset may ship `oklch()`) are
- * normalized through a canvas by `resolveThemeColor`.
+ * Resolve one CSS token to a colour canvas charts accept. Reads from `<body>`
+ * first so `data-theme-preset` overrides apply; hex values are used directly
+ * and `oklch()` / `color-mix()` tokens are normalized through `resolveThemeColor`.
  */
 function readPaletteEntry(token: string, fallback: string): string {
   if (typeof document === 'undefined') return fallback
-  const raw = getComputedStyle(document.documentElement)
-    .getPropertyValue(token)
-    .trim()
+  const target = document.body ?? document.documentElement
+  const raw = getComputedStyle(target).getPropertyValue(token).trim()
   if (HEX_COLOUR.test(raw)) return raw
   if (!raw) return fallback
   return resolveThemeColor(token) ?? fallback
 }
 
-/** The palette for the theme currently on `<html>`, read from CSS variables. */
+/** The palette for the active theme and preset, read from CSS variables. */
 export function readChartPalette(): string[] {
   const fallback = isDarkTheme()
     ? CHART_PALETTE_FALLBACK.dark
@@ -74,7 +76,7 @@ export function readChartPalette(): string[] {
   )
 }
 
-/** Repeats the palette so an ordinal scale of `length` series stays in-brand. */
+/** Repeats the theme palette to cover an ordinal scale of `length` series. */
 export function chartPaletteRange(
   length: number,
   palette: readonly string[] = readChartPalette()
@@ -91,21 +93,33 @@ const REPEAT_ALPHA_STEP = 0.2
 const MIN_REPEAT_ALPHA = 0.4
 
 function withAlpha(colour: string, alpha: number): string {
-  const match = /^#([0-9a-f]{6})$/i.exec(colour.trim())
-  if (!match?.[1]) return colour
-  const value = Number.parseInt(match[1], 16)
-  const r = (value >> 16) & 0xff
-  const g = (value >> 8) & 0xff
-  const b = value & 0xff
-  return `rgba(${r}, ${g}, ${b}, ${Number(alpha.toFixed(2))})`
+  const trimmed = colour.trim()
+  const hexMatch = /^#([0-9a-f]{6})$/i.exec(trimmed)
+  if (hexMatch?.[1]) {
+    const value = Number.parseInt(hexMatch[1], 16)
+    const r = (value >> 16) & 0xff
+    const g = (value >> 8) & 0xff
+    const b = value & 0xff
+    return `rgba(${r}, ${g}, ${b}, ${Number(alpha.toFixed(2))})`
+  }
+  const rgbMatch =
+    /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/i.exec(
+      trimmed
+    )
+  if (rgbMatch) {
+    const [, r, g, b, existingAlpha] = rgbMatch
+    const baseAlpha = existingAlpha !== undefined ? Number(existingAlpha) : 1
+    const nextAlpha = Number((baseAlpha * alpha).toFixed(2))
+    return `rgba(${r}, ${g}, ${b}, ${nextAlpha})`
+  }
+  return colour
 }
 
 /**
- * `chartPaletteRange` for leaderboards, where the series count routinely runs
- * past the five slots (the vendor chart lists up to twelve). Each lap round the
- * ramp drops the opacity one step, so series 6-10 read as a muted version of
- * 1-5 instead of an exact duplicate of them. Non-hex entries (a theme preset
- * may ship `oklch()`) are not converted, so those simply repeat.
+ * `chartPaletteRange` for leaderboards where the series count exceeds five.
+ * Each lap round the palette lowers opacity one step so series 6-10 stay
+ * visually distinct from series 1-5 across both hex and resolved `rgba()`
+ * theme colours.
  */
 export function chartPaletteRangeFaded(
   length: number,

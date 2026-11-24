@@ -16,19 +16,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { CopyButton } from '@/components/copy-button'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
+import { Dialog } from '@/components/dialog'
 import { sideDrawerContentClassName } from '@/components/drawer-layout'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
+import { PasswordInput } from '@/components/password-input'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import {
   Sheet,
   SheetContent,
@@ -38,6 +42,7 @@ import {
 } from '@/components/ui/sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import type { SiteOwnerAction } from '@/features/auth/secure-verification'
 import { DraftDiscardDialog } from '@/features/system-settings/components/draft-discard-dialog'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { ORDER_STATUS_LABELS } from '@/features/wallet/adty/lib/methods'
@@ -46,75 +51,93 @@ import type { AdtyOrderStatus } from '@/features/wallet/adty/types'
 import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatQuota, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
+import { accountPasswordSchema } from '@/lib/password-policy'
 
 import {
-  creditOwnerCustomerBalance,
   getOwnerCustomer,
   getOwnerCustomerLogs,
   getOwnerCustomerTopUps,
-  getOwnerWallets,
   reportCustomer,
+  resetOwnerCustomerPassword,
   siteOwnerKeys,
+  type OwnerCustomerPasswordResult,
 } from '../api'
-import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
-import { computeOwnerFundingPreview } from '../lib/funding-preview'
-import { newIdempotencyKey } from '../lib/site-owner'
-import { OwnerFundingPreviewBox } from './owner-funding-preview'
+import { useOwnerVerification } from './owner-verification'
 
-/** Customer drawer: profile, requests, top-ups, keys, manual balance and report. */
+const RANDOM_PASSWORD_LENGTHS = [12, 16, 20, 24] as const
+const CUSTOMER_PASSWORD_ACTION: SiteOwnerAction = 'customer.password'
+
+/** Customer drawer: profile, requests, top-ups, keys, password management and report. */
 export function CustomerSheet(props: {
   customerId: number | null
   onOpenChange: (open: boolean) => void
 }) {
   const { t, i18n } = useTranslation()
+  const queryClient = useQueryClient()
+  const ownerVerification = useOwnerVerification()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const id = props.customerId ?? 0
-  const [creditAmount, setCreditAmount] = useState('')
-  const [creditReason, setCreditReason] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [randomLength, setRandomLength] = useState<number>(16)
+  const [generatedResult, setGeneratedResult] =
+    useState<OwnerCustomerPasswordResult | null>(null)
   const [reason, setReason] = useState('')
   const [discarding, setDiscarding] = useState(false)
-  const dirty = creditAmount !== '' || creditReason !== '' || reason !== ''
+  useEffect(() => {
+    setNewPassword('')
+    setRandomLength(16)
+    setGeneratedResult(null)
+    setReason('')
+  }, [props.customerId])
+  const dirty = newPassword !== '' || reason !== ''
   useDraftNavigation(dirty)
+  const passwordCheck = accountPasswordSchema.safeParse(newPassword)
+  const passwordInvalid = newPassword !== '' && !passwordCheck.success
   const detail = useQuery({
     queryKey: siteOwnerKeys.list('customer', { id }),
     queryFn: () => getOwnerCustomer(id),
     enabled: id > 0,
   })
-  const wallets = useQuery({
-    queryKey: siteOwnerKeys.list('wallets', {}),
-    queryFn: getOwnerWallets,
-    enabled: id > 0,
-  })
-  const walletRows = Array.isArray(wallets.data) ? wallets.data : []
-  const creditPreview = computeOwnerFundingPreview(walletRows, creditAmount)
-  const creditIntentRef = useRef<{ payload: string; key: string } | null>(null)
-  const creditBalance = useVerifiedOwnerMutation<{
-    amount: string
-    reason: string
-    key: string
-  }>({
-    action: 'customer.balance',
-    target: () => id,
-    request: (vars) => ({
-      amount_usd: vars.amount,
-      reason: vars.reason,
-      idempotency_key: vars.key,
-    }),
-    run: (vars, proof) =>
-      creditOwnerCustomerBalance(
-        id,
-        { amount_usd: vars.amount, reason: vars.reason },
-        vars.key,
-        proof
-      ),
-    successMessage: t('Balance added'),
-    onSuccess: () => {
-      creditIntentRef.current = null
-      setCreditAmount('')
-      setCreditReason('')
+  const setManualPassword = useMutation({
+    mutationFn: async (password: string) => {
+      const proof = await ownerVerification.verify(CUSTOMER_PASSWORD_ACTION, id)
+      if (!proof) return null
+      return resetOwnerCustomerPassword(id, { password }, proof)
     },
+    onSuccess: (res) => {
+      if (!res) return
+      setNewPassword('')
+      toast.success(
+        t(
+          'Password updated. All active customer sessions have been signed out.'
+        )
+      )
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+    },
+    onError: (err) => handleServerError(err),
   })
+  const resetRandomPassword = useMutation({
+    mutationFn: async (length: number) => {
+      const proof = await ownerVerification.verify(CUSTOMER_PASSWORD_ACTION, id)
+      if (!proof) return null
+      return resetOwnerCustomerPassword(id, { random: true, length }, proof)
+    },
+    onSuccess: (res) => {
+      if (!res) return
+      setGeneratedResult(res)
+      toast.success(
+        t(
+          'Random password generated. All active customer sessions have been signed out.'
+        )
+      )
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+    },
+    onError: (err) => handleServerError(err),
+  })
+  const isPasswordPending =
+    setManualPassword.isPending || resetRandomPassword.isPending
   const logs = useQuery({
     queryKey: siteOwnerKeys.list('customer-logs', { id }),
     queryFn: () => getOwnerCustomerLogs(id, 1),
@@ -142,12 +165,19 @@ export function CustomerSheet(props: {
       open={props.customerId !== null}
       onOpenChange={(open) => {
         if (!open && dirty) setDiscarding(true)
-        else props.onOpenChange(open)
+        else {
+          if (!open) setGeneratedResult(null)
+          props.onOpenChange(open)
+        }
       }}
     >
       <SheetContent className={sideDrawerContentClassName('sm:max-w-2xl')}>
         <SheetHeader>
-          <SheetTitle>{customer?.username ?? t('Customer')}</SheetTitle>
+          <SheetTitle className='tabular-nums'>
+            {customer
+              ? formatUserIdentity(customer.id, customer.username)
+              : t('Customer')}
+          </SheetTitle>
           <SheetDescription>{customer?.email}</SheetDescription>
         </SheetHeader>
         {detail.isError && <ErrorState onRetry={() => void detail.refetch()} />}
@@ -315,70 +345,98 @@ export function CustomerSheet(props: {
               </TabsContent>
             </Tabs>
             <section
-              className='space-y-2'
-              aria-labelledby='manual-balance-title'
+              className='space-y-4 rounded-lg border p-4'
+              aria-labelledby='customer-password-title'
             >
-              <h3 id='manual-balance-title' className='text-sm font-medium'>
-                {t('Add balance')}
-              </h3>
-              <div className='grid gap-2 sm:grid-cols-2'>
-                <div className='space-y-1'>
-                  <Label htmlFor='credit-balance-amount'>
-                    {t('Amount (USD)')}
-                  </Label>
-                  <Input
-                    id='credit-balance-amount'
-                    inputMode='decimal'
-                    value={creditAmount}
-                    onChange={(event) => setCreditAmount(event.target.value)}
-                  />
-                </div>
-                <div className='space-y-1'>
-                  <Label htmlFor='credit-balance-reason'>{t('Reason')}</Label>
-                  <Input
-                    id='credit-balance-reason'
-                    maxLength={200}
-                    value={creditReason}
-                    onChange={(event) => setCreditReason(event.target.value)}
-                  />
-                </div>
+              <div className='space-y-1'>
+                <h3 id='customer-password-title' className='text-sm font-medium'>
+                  {t('Password Management')}
+                </h3>
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Set a new password manually or generate a one-time random password. Changing the password immediately signs the customer out of all active sessions.'
+                  )}
+                </p>
               </div>
-              <OwnerFundingPreviewBox
-                wallets={walletRows}
-                amount={creditAmount}
-              />
-              <Button
-                variant='brand'
-                disabled={
-                  creditBalance.isPending ||
-                  !creditPreview.valid ||
-                  (wallets.isSuccess && !creditPreview.sufficient) ||
-                  creditReason.trim() === ''
-                }
-                onClick={() => {
-                  const trimmedAmount = creditAmount.trim()
-                  const trimmedReason = creditReason.trim()
-                  const payload = `${id}:${trimmedAmount}:${trimmedReason}`
-                  if (creditIntentRef.current?.payload !== payload) {
-                    creditIntentRef.current = {
-                      payload,
-                      key: newIdempotencyKey(),
-                    }
-                  }
-                  creditBalance.mutate({
-                    amount: trimmedAmount,
-                    reason: trimmedReason,
-                    key: creditIntentRef.current.key,
-                  })
+              <form
+                className='space-y-2'
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (!passwordCheck.success || isPasswordPending) return
+                  setManualPassword.mutate(newPassword)
                 }}
               >
-                {t('Add balance')}
-              </Button>
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Funded automatically from available earnings first, then excess margin above the level deposit floor. Does not count toward site-level cumulative customer recharge. Use Add balance or Recharge codes to credit customers.'
-                )}
-              </p>
+                <div className='space-y-1'>
+                  <Label htmlFor='owner-customer-password'>
+                    {t('New password')}
+                  </Label>
+                  <div className='flex flex-wrap items-start gap-2'>
+                    <div className='min-w-56 flex-1'>
+                      <PasswordInput
+                        id='owner-customer-password'
+                        autoComplete='new-password'
+                        value={newPassword}
+                        placeholder={t('Enter new password (8-128 characters)')}
+                        aria-invalid={passwordInvalid}
+                        disabled={isPasswordPending}
+                        onChange={(event) => setNewPassword(event.target.value)}
+                      />
+                    </div>
+                    <Button
+                      type='submit'
+                      variant='brand'
+                      disabled={
+                        isPasswordPending ||
+                        newPassword === '' ||
+                        !passwordCheck.success
+                      }
+                    >
+                      {t('Save Password')}
+                    </Button>
+                  </div>
+                  {passwordInvalid && (
+                    <p role='alert' className='text-destructive text-xs'>
+                      {t('Password must contain between 8 and 128 characters.')}
+                    </p>
+                  )}
+                </div>
+              </form>
+              <div className='space-y-2 border-t pt-3'>
+                <div className='flex flex-wrap items-end gap-2'>
+                  <div className='space-y-1'>
+                    <Label htmlFor='owner-customer-random-length'>
+                      {t('Password length')}
+                    </Label>
+                    <NativeSelect
+                      id='owner-customer-random-length'
+                      value={String(randomLength)}
+                      disabled={isPasswordPending}
+                      onChange={(event) =>
+                        setRandomLength(Number(event.target.value))
+                      }
+                    >
+                      {RANDOM_PASSWORD_LENGTHS.map((len) => (
+                        <NativeSelectOption key={len} value={String(len)}>
+                          {t('{{count}} characters', { count: len })}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </div>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    disabled={isPasswordPending}
+                    onClick={() => resetRandomPassword.mutate(randomLength)}
+                  >
+                    {t('Reset Random Password')}
+                  </Button>
+                </div>
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Includes uppercase letters, lowercase letters, and digits.'
+                  )}
+                </p>
+              </div>
             </section>
             <section className='space-y-2' aria-labelledby='report-title'>
               <h3 id='report-title' className='text-sm font-medium'>
@@ -391,6 +449,7 @@ export function CustomerSheet(props: {
                 onChange={(event) => setReason(event.target.value)}
               />
               <Button
+                type='button'
                 variant='outline'
                 disabled={!reason.trim() || report.isPending}
                 onClick={() => report.mutate()}
@@ -401,13 +460,61 @@ export function CustomerSheet(props: {
           </div>
         )}
       </SheetContent>
+      <Dialog
+        open={generatedResult !== null}
+        onOpenChange={(open) => {
+          if (!open) setGeneratedResult(null)
+        }}
+        title={t('New Random Password')}
+        description={
+          generatedResult
+            ? formatUserIdentity(
+                generatedResult.user_id,
+                generatedResult.username
+              )
+            : undefined
+        }
+        footer={
+          <Button
+            type='button'
+            variant='brand'
+            onClick={() => setGeneratedResult(null)}
+          >
+            {t('I have copied it')}
+          </Button>
+        }
+      >
+        <div className='flex flex-col gap-3'>
+          <Alert>
+            <AlertDescription>
+              {t(
+                'This password is shown only once and cannot be retrieved after closing this dialog. Copy it now and share it securely with the customer. All existing sessions for this customer have been signed out.'
+              )}
+            </AlertDescription>
+          </Alert>
+          {generatedResult?.generated_password && (
+            <div className='bg-muted flex items-center justify-between gap-2 rounded-md border px-3 py-2'>
+              <code className='font-mono text-sm break-all select-all'>
+                {generatedResult.generated_password}
+              </code>
+              <CopyButton
+                value={generatedResult.generated_password}
+                variant='outline'
+                size='sm'
+                aria-label={t('Copy password')}
+              >
+                {t('Copy')}
+              </CopyButton>
+            </div>
+          )}
+        </div>
+      </Dialog>
       <DraftDiscardDialog
         open={discarding}
         onOpenChange={setDiscarding}
         onDiscard={() => {
-          creditIntentRef.current = null
-          setCreditAmount('')
-          setCreditReason('')
+          setNewPassword('')
+          setGeneratedResult(null)
           setReason('')
           props.onOpenChange(false)
         }}

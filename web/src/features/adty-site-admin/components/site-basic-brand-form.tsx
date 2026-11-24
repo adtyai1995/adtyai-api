@@ -139,7 +139,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
   const savedHomePage = site.home_page_content ?? ''
   const savedContact = site.contact_info ?? ''
   const savedSeo = Boolean(site.seo_index)
-  const savedCostFactor = site.cost_factor ?? ''
   const savedAllowedGroups = readAllowedGroups(site.allowed_groups)
   const savedVisibility = readSiteVisibility(site.visibility)
 
@@ -149,7 +148,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
   const [homePageContent, setHomePageContent] = useState(savedHomePage)
   const [contactInfo, setContactInfo] = useState(savedContact)
   const [seoIndex, setSeoIndex] = useState(savedSeo)
-  const [costFactor, setCostFactor] = useState(savedCostFactor)
   const [allowedGroups, setAllowedGroups] = useState(savedAllowedGroups)
   const [visibility, setVisibility] = useState(() => savedVisibility)
   const [reason, setReason] = useState('')
@@ -181,9 +179,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
     setSeoIndex((current) =>
       current === Boolean(prev.seo_index) ? Boolean(site.seo_index) : current
     )
-    setCostFactor((current) =>
-      current === (prev.cost_factor ?? '') ? (site.cost_factor ?? '') : current
-    )
     setAllowedGroups((current) =>
       current === readAllowedGroups(prev.allowed_groups)
         ? readAllowedGroups(site.allowed_groups)
@@ -210,7 +205,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
   const homePageChanged = homePageContent !== savedHomePage
   const contactChanged = contactInfo !== savedContact
   const seoChanged = seoIndex !== savedSeo
-  const costFactorChanged = isRoot && costFactor.trim() !== savedCostFactor
   const allowedGroupsChanged = allowedGroups.trim() !== savedAllowedGroups
   const visibilityChanged = VISIBILITY_KEYS.some(
     (key) => visibility[key] !== savedVisibility[key]
@@ -221,16 +215,10 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
     homePageChanged ||
     contactChanged ||
     seoChanged ||
-    costFactorChanged ||
     allowedGroupsChanged ||
     visibilityChanged
 
   const voucherUrlInvalid = !isValidOptionalHttpUrl(brand.voucher_purchase_url)
-  const parsedCostFactor = costFactor.trim() === '' ? null : Number(costFactor)
-  const costFactorInvalid =
-    isRoot &&
-    parsedCostFactor !== null &&
-    (!Number.isFinite(parsedCostFactor) || parsedCostFactor <= 0)
 
   const dirty = hasChanges || reason !== ''
   useDraftNavigation(dirty)
@@ -248,7 +236,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
       }
       return reviewSite(site.id, {
         approve,
-        cost_factor: costFactor.trim() || undefined,
         note: reason.trim(),
       })
     },
@@ -270,8 +257,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
         reason: reason.trim(),
       }
       const clear: Array<'cost_factor' | 'allowed_groups'> = []
-      const actorIsRoot =
-        useAuthStore.getState().auth.user?.role === ROLE.SUPER_ADMIN
       if (changedBrandKeys.length > 0) {
         body.brand = Object.fromEntries(
           changedBrandKeys.map((key) => [key, brand[key]])
@@ -285,10 +270,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
       }
       if (seoChanged) {
         body.seo_index = seoIndex
-      }
-      if (actorIsRoot && costFactorChanged) {
-        if (costFactor.trim() === '') clear.push('cost_factor')
-        else body.cost_factor = costFactor.trim()
       }
       if (visibilityChanged) {
         body.visibility = serializeSiteVisibility(visibility)
@@ -316,7 +297,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
       setHomePageContent(updated.home_page_content ?? '')
       setContactInfo(updated.contact_info ?? '')
       setSeoIndex(Boolean(updated.seo_index))
-      setCostFactor(updated.cost_factor ?? '')
       setAllowedGroups(readAllowedGroups(updated.allowed_groups))
       setVisibility(readSiteVisibility(updated.visibility))
       queryClient.setQueryData<Awaited<ReturnType<typeof getSite>>>(
@@ -370,7 +350,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
     setHomePageContent(savedHomePage)
     setContactInfo(savedContact)
     setSeoIndex(savedSeo)
-    setCostFactor(savedCostFactor)
     setAllowedGroups(savedAllowedGroups)
     setVisibility(savedVisibility)
     setReason('')
@@ -381,7 +360,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
       className='flex flex-col gap-5'
       onSubmit={(event) => {
         event.preventDefault()
-        if (!editable || !hasChanges || voucherUrlInvalid || costFactorInvalid) {
+        if (!editable || !hasChanges || voucherUrlInvalid) {
           return
         }
         save.mutate()
@@ -416,7 +395,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
             <CardTitle>{t('Pending site application')}</CardTitle>
             <CardDescription>
               {t(
-                'Approve or reject this pending site application. Optionally set an initial cost factor or review note.'
+                'Approve or reject this pending site application. Optionally enter a review note.'
               )}
             </CardDescription>
           </CardHeader>
@@ -660,52 +639,23 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>{t('Supply, Operations & Visibility')}</CardTitle>
+          <CardTitle>{t('Operations & Visibility')}</CardTitle>
           <CardDescription>
             {t(
-              'Manage owner contact, search engine indexing, per-site supply cost factor, allowed billing groups, and customer data visibility.'
+              'Manage owner contact, search engine indexing, allowed billing groups, and customer data visibility.'
             )}
           </CardDescription>
         </CardHeader>
         <CardContent className='grid gap-4'>
-          <div className='grid gap-4 sm:grid-cols-2'>
-            <div className='space-y-1.5'>
-              <Label htmlFor={`${fieldId}-contact`}>{t('Owner contact')}</Label>
-              <Input
-                id={`${fieldId}-contact`}
-                disabled={!editable || busy}
-                value={contactInfo}
-                placeholder={t('Telegram, WeChat, or email for operations')}
-                onChange={(event) => setContactInfo(event.target.value)}
-              />
-            </div>
-            {isRoot && (
-              <div className='space-y-1.5'>
-                <Label htmlFor={`${fieldId}-cost-factor`}>
-                  {t('Cost factor')}
-                </Label>
-                <Input
-                  id={`${fieldId}-cost-factor`}
-                  inputMode='decimal'
-                  value={costFactor}
-                  placeholder={t('Follow site level')}
-                  disabled={(!editable && site.status !== 'pending') || busy}
-                  aria-invalid={costFactorInvalid}
-                  onChange={(event) => setCostFactor(event.target.value)}
-                />
-                {costFactorInvalid ? (
-                  <p className='text-destructive text-xs'>
-                    {t('The cost factor must be greater than 0')}
-                  </p>
-                ) : (
-                  <p className='text-muted-foreground text-xs'>
-                    {t(
-                      'Leave empty to follow the site level supply discount. The owner is notified when it changes.'
-                    )}
-                  </p>
-                )}
-              </div>
-            )}
+          <div className='space-y-1.5'>
+            <Label htmlFor={`${fieldId}-contact`}>{t('Owner contact')}</Label>
+            <Input
+              id={`${fieldId}-contact`}
+              disabled={!editable || busy}
+              value={contactInfo}
+              placeholder={t('Telegram, WeChat, or email for operations')}
+              onChange={(event) => setContactInfo(event.target.value)}
+            />
           </div>
 
           <div className='space-y-1.5'>
@@ -778,11 +728,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
                 type='submit'
                 variant='brand'
                 disabled={
-                  busy ||
-                  !hasChanges ||
-                  voucherUrlInvalid ||
-                  costFactorInvalid ||
-                  !visibilityValid
+                  busy || !hasChanges || voucherUrlInvalid || !visibilityValid
                 }
               >
                 {t('Save site settings')}

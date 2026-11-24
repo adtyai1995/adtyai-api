@@ -27,6 +27,7 @@ import {
   ShieldAlert,
   Link2,
   Gift,
+  KeyRound,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -100,6 +101,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     setOpen('delete')
   }
 
+  const handleResetPassword = () => {
+    setCurrentRow(user)
+    setOpen('reset-password')
+  }
+
   const handleManage = async (action: AdminUserManageAction) => {
     try {
       const proof = await requestVerification({
@@ -169,6 +175,10 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     (user.site_id ?? 0) === 0 &&
     (user.staff_site_id ?? 0) === 0 &&
     !user.is_team_employee
+  const canResetPassword =
+    canWrite &&
+    !isRoot &&
+    (operatorIsRoot || (operator?.role ?? 0) > user.role)
 
   if (isUserDeleted(user)) {
     return null
@@ -257,6 +267,16 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         )}
 
         <DropdownMenuSeparator />
+
+        <DropdownMenuItem
+          onClick={handleResetPassword}
+          disabled={!canResetPassword}
+        >
+          {t('Reset random password')}
+          <DropdownMenuShortcut>
+            <KeyRound size={16} />
+          </DropdownMenuShortcut>
+        </DropdownMenuItem>
 
         <DropdownMenuItem
           onSelect={(event) => {

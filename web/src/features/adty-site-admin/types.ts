@@ -161,6 +161,7 @@ export type SiteStatsResponse = {
 
 export type FlaggedCustomer = {
   user_id: number
+  username?: string
   site_id: number
   risk_flag: string
   risk_reason: string
@@ -172,6 +173,7 @@ export type SiteReport = {
   id: number
   site_id: number
   user_id: number
+  username?: string
   reason: string
   status: string
 }
@@ -181,6 +183,7 @@ export type SiteAudit = {
   site_id: number
   action: string
   operator_id: number
+  operator_username?: string
   old_value: string
   new_value: string
   reason: string

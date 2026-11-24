@@ -22,7 +22,6 @@ import type { UptimeGroupResult } from '@/features/dashboard/types'
 
 import {
   computeAggregateHealth,
-  formatCacheHitRate,
   formatGroupRatio,
   formatLatency,
   formatSuccessRate,
@@ -33,7 +32,7 @@ import {
 } from '../lib/channel-status'
 
 describe('channel-status helpers', () => {
-  it('formats latency, success rate, cache hit rate, and group ratio consistently', () => {
+  it('formats latency, success rate, and group ratio consistently', () => {
     expect(formatLatency(null)).toBe('—')
     expect(formatLatency(420.4)).toBe('420ms')
     expect(formatLatency(5532)).toBe('5.53s')
@@ -41,9 +40,6 @@ describe('channel-status helpers', () => {
     expect(formatSuccessRate(null)).toBe('—')
     expect(formatSuccessRate(0.995)).toBe('99.50%')
     expect(formatSuccessRate(1.2)).toBe('100.00%')
-
-    expect(formatCacheHitRate(null)).toBe('—')
-    expect(formatCacheHitRate(67.3)).toBe('67.30%')
 
     expect(formatGroupRatio(0.75)).toBe('0.75')
     expect(formatGroupRatio(0.0400001)).toBe('0.04')
@@ -84,7 +80,6 @@ describe('channel-status helpers', () => {
     )
     expect(card.displayName).toBe('Localized Empty')
     expect(card.status).toBe('unknown')
-    expect(card.cacheHitRate).toBeNull()
   })
 
   it('computes aggregate health priority as disrupted > degraded > operational > unknown', () => {
@@ -165,8 +160,11 @@ describe('channel-status helpers', () => {
       sortChannelCards(cards, 'ratio', 'desc').map((c) => c.groupId)
     ).toEqual(['a', 'b', 'c'])
     expect(
-      sortChannelCards(cards, 'cacheHitRate', 'desc').map((c) => c.groupId)
-    ).toEqual(['b', 'c', 'a'])
+      sortChannelCards(cards, 'avgPingMs', 'asc').map((c) => c.groupId)
+    ).toEqual(['b', 'a', 'c'])
+    expect(
+      sortChannelCards(cards, 'avgPingMs', 'desc').map((c) => c.groupId)
+    ).toEqual(['a', 'b', 'c'])
     expect(
       sortChannelCards(cards, 'status', 'asc').map((c) => c.groupId)
     ).toEqual(['a', 'b', 'c'])

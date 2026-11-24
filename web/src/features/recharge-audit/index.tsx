@@ -41,6 +41,7 @@ import type { AdtyOrderStatus } from '@/features/wallet/adty/types'
 import { toIntlLocale } from '@/i18n/languages'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -317,7 +318,9 @@ export function RechargeAudit(props: {
                     {
                       id: 'user',
                       header: t('User'),
-                      cell: (row) => `${row.username || '-'} (#${row.user_id})`,
+                      cellClassName: 'tabular-nums',
+                      cell: (row) =>
+                        formatUserIdentity(row.user_id, row.username),
                     },
                     {
                       id: 'site',

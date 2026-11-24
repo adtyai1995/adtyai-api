@@ -27,6 +27,7 @@ import {
   SecureVerificationDialog,
   useSecureVerification,
 } from '@/features/auth/secure-verification'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { manageStaffCustomer, type StaffCustomerAction } from './api'
@@ -87,7 +88,9 @@ export function StaffCustomerActionDialog(props: {
         title={t('Disable customer')}
         desc={
           <div className='flex flex-col gap-2'>
-            <span className='break-all'>{props.customer.username}</span>
+            <span className='break-all tabular-nums'>
+              {formatUserIdentity(props.customer.id, props.customer.username)}
+            </span>
             <span>
               {t(
                 'Existing customer sessions will stop working immediately. Restoring access requires an administrator.'

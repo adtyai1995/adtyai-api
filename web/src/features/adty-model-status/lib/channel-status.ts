@@ -27,12 +27,7 @@ import dayjs from '@/lib/dayjs'
 
 export type ChannelPlatformFilter = 'all' | UptimePlatform
 
-export type ChannelSortKey =
-  | 'ratio'
-  | 'uptime'
-  | 'cacheHitRate'
-  | 'avgPingMs'
-  | 'status'
+export type ChannelSortKey = 'ratio' | 'uptime' | 'avgPingMs' | 'status'
 
 export type ChannelSortDirection = 'asc' | 'desc'
 
@@ -80,7 +75,6 @@ export const DEFAULT_SORT_DIRECTIONS: Record<
 > = {
   ratio: 'asc',
   uptime: 'desc',
-  cacheHitRate: 'desc',
   avgPingMs: 'asc',
   status: 'asc',
 }
@@ -98,7 +92,6 @@ export interface ChannelStatusCardItem {
   status: UptimeStatusLabel
   uptime: number | null
   avgPingMs: number | null
-  cacheHitRate: number | null
   lastCheckedAt: string | number | null
   heartbeats: UptimeHeartbeat[]
 }
@@ -258,10 +251,6 @@ export function resolveChannelCard(
       ? rawPing
       : computeAvgPingFromHeartbeats(heartbeats)
 
-  const rawCacheHit = normalizeFiniteNumber(group.cacheHitRate)
-  const cacheHitRate =
-    rawCacheHit !== null ? Math.min(100, Math.max(0, rawCacheHit)) : null
-
   const lastCheckedAt =
     group.lastCheckedAt ??
     primaryModel?.lastCheckedAt ??
@@ -290,7 +279,6 @@ export function resolveChannelCard(
     status,
     uptime,
     avgPingMs,
-    cacheHitRate,
     lastCheckedAt,
     heartbeats,
   }
@@ -326,12 +314,6 @@ export function formatSuccessRate(uptime: number | null | undefined): string {
   if (uptime == null || !Number.isFinite(uptime)) return '—'
   const clamped = Math.min(1, Math.max(0, uptime))
   return `${(clamped * 100).toFixed(2)}%`
-}
-
-export function formatCacheHitRate(rate: number | null | undefined): string {
-  if (rate == null || !Number.isFinite(rate)) return '—'
-  const clamped = Math.min(100, Math.max(0, rate))
-  return `${clamped.toFixed(2)}%`
 }
 
 export function formatGroupRatio(ratio: number): string {
@@ -453,9 +435,6 @@ export function sortChannelCards(
         break
       case 'uptime':
         diff = compareNullableNumbers(a.uptime, b.uptime, direction)
-        break
-      case 'cacheHitRate':
-        diff = compareNullableNumbers(a.cacheHitRate, b.cacheHitRate, direction)
         break
       case 'avgPingMs':
         diff = compareNullableNumbers(a.avgPingMs, b.avgPingMs, direction)

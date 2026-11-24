@@ -25,6 +25,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -118,13 +119,20 @@ export function ReviewsPanel() {
         {flaggedRows.length === 0 ? (
           <EmptyState className='min-h-24' title={t('No data')} />
         ) : (
-          <ul>
+          <ul className='flex flex-col gap-2'>
             {flaggedRows.map((row) => (
               <li
                 key={`${row.site_id}-${row.user_id}`}
-                className='flex items-center justify-between gap-2'
+                className='flex flex-wrap items-center justify-between gap-2 rounded-md border p-2.5 text-sm'
               >
-                <span>{row.risk_reason || riskLabel(row.risk_flag)}</span>
+                <div className='flex min-w-0 flex-col gap-0.5'>
+                  <span className='font-medium'>
+                    {formatUserIdentity(row.user_id, row.username)}
+                  </span>
+                  <span className='text-muted-foreground text-xs'>
+                    {row.risk_reason || riskLabel(row.risk_flag)}
+                  </span>
+                </div>
                 <Button
                   size='sm'
                   onClick={() => review.mutate(row.user_id)}
@@ -152,9 +160,16 @@ export function ReviewsPanel() {
             {reportRows.map((row) => (
               <li
                 key={row.id}
-                className='flex items-center justify-between gap-2'
+                className='flex flex-wrap items-center justify-between gap-2 rounded-md border p-2.5 text-sm'
               >
-                <span>{row.reason}</span>
+                <div className='flex min-w-0 flex-col gap-0.5'>
+                  <span className='font-medium'>
+                    {formatUserIdentity(row.user_id, row.username)}
+                  </span>
+                  <span className='text-muted-foreground text-xs'>
+                    {row.reason}
+                  </span>
+                </div>
                 <Button
                   size='sm'
                   onClick={() => resolve.mutate(row.id)}

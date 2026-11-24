@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -14,19 +15,74 @@ import (
 )
 
 const (
-	MinAccountPasswordLength = 8
-	MaxAccountPasswordLength = 128
-	accountPasswordMemory    = 19 * 1024
-	accountPasswordTime      = 2
-	accountPasswordSaltBytes = 16
-	accountPasswordKeyBytes  = 32
+	MinAccountPasswordLength           = 8
+	MaxAccountPasswordLength           = 128
+	DefaultRandomAccountPasswordLength = 16
+	MinRandomAccountPasswordLength     = 12
+	MaxRandomAccountPasswordLength     = 32
+	accountPasswordMemory              = 19 * 1024
+	accountPasswordTime                = 2
+	accountPasswordSaltBytes           = 16
+	accountPasswordKeyBytes            = 32
+
+	randomAccountPasswordUpper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	randomAccountPasswordLower = "abcdefghijklmnopqrstuvwxyz"
+	randomAccountPasswordDigit = "0123456789"
+	randomAccountPasswordPool  = randomAccountPasswordUpper + randomAccountPasswordLower + randomAccountPasswordDigit
 )
 
 var (
-	ErrAccountPasswordLength = errors.New("Password must contain between 8 and 128 characters.")
-	ErrAccountPasswordSame   = errors.New("New password must be different from current password")
-	ErrPasswordLegacyLimit   = errors.New("Long passwords are unavailable until the password storage upgrade is complete.")
+	ErrAccountPasswordLength       = errors.New("Password must contain between 8 and 128 characters.")
+	ErrAccountPasswordSame         = errors.New("New password must be different from current password")
+	ErrPasswordLegacyLimit         = errors.New("Long passwords are unavailable until the password storage upgrade is complete.")
+	ErrRandomAccountPasswordLength = errors.New("Random password length must be between 12 and 32 characters.")
 )
+
+func cryptoRandAlphabetByte(alphabet string) (byte, error) {
+	idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+	if err != nil {
+		return 0, err
+	}
+	return alphabet[idx.Int64()], nil
+}
+
+// GenerateRandomAccountPassword generates a cryptographically random alphanumeric
+// password (A-Z, a-z, 0-9 only; no symbols) guaranteed to include at least one
+// uppercase letter, one lowercase letter, and one digit. Length 0 defaults to 16;
+// allowed range is 12..32.
+func GenerateRandomAccountPassword(length int) (string, error) {
+	if length == 0 {
+		length = DefaultRandomAccountPasswordLength
+	}
+	if length < MinRandomAccountPasswordLength || length > MaxRandomAccountPasswordLength {
+		return "", ErrRandomAccountPasswordLength
+	}
+	buf := make([]byte, length)
+	var err error
+	if buf[0], err = cryptoRandAlphabetByte(randomAccountPasswordUpper); err != nil {
+		return "", fmt.Errorf("generate random account password: %w", err)
+	}
+	if buf[1], err = cryptoRandAlphabetByte(randomAccountPasswordLower); err != nil {
+		return "", fmt.Errorf("generate random account password: %w", err)
+	}
+	if buf[2], err = cryptoRandAlphabetByte(randomAccountPasswordDigit); err != nil {
+		return "", fmt.Errorf("generate random account password: %w", err)
+	}
+	for i := 3; i < length; i++ {
+		if buf[i], err = cryptoRandAlphabetByte(randomAccountPasswordPool); err != nil {
+			return "", fmt.Errorf("generate random account password: %w", err)
+		}
+	}
+	for i := length - 1; i > 0; i-- {
+		jBig, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return "", fmt.Errorf("shuffle random account password: %w", err)
+		}
+		j := int(jBig.Int64())
+		buf[i], buf[j] = buf[j], buf[i]
+	}
+	return string(buf), nil
+}
 
 // ValidateNewAccountPassword applies only when a user chooses a new password.
 // Authentication must continue to accept historical passwords without applying

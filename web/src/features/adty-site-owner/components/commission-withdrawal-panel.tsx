@@ -23,23 +23,36 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { CopyButton } from '@/components/copy-button'
+import { StaticDataTable } from '@/components/data-table/static/static-data-table'
+import { Dialog } from '@/components/dialog'
+import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
+import { StatusBadge, type StatusVariant } from '@/components/status-badge'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Textarea } from '@/components/ui/textarea'
 import { adminReferralKeys } from '@/features/admin-referral/api'
 import { uploadReferralAsset } from '@/features/referral/api'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { usdtNetworkLabel } from '@/features/referral/lib/address'
 import {
   WITHDRAWAL_STATUS_LABELS,
+  WITHDRAWAL_STATUS_VARIANTS,
   WITHDRAWAL_TARGET_LABELS,
 } from '@/features/referral/lib/labels'
+import type { ReferralWithdrawalStatus } from '@/features/referral/types'
+import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { WithdrawalCancellation } from '@/features/wallet/adty/withdrawal-cancellation'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
+import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
+import { cn } from '@/lib/utils'
 
 import {
   getOwnerCommissionWithdrawals,
@@ -51,7 +64,18 @@ import {
   type SiteInviteCommissionWithdrawal,
 } from '../api'
 
+type CommissionWithdrawalRow = SiteInviteCommissionWithdrawal
+
+const WITHDRAWAL_STATUS_OPTIONS: ReferralWithdrawalStatus[] = [
+  'pending',
+  'approved',
+  'paid',
+  'rejected',
+  'canceled',
+]
+
 function methodLabel(method: string): string {
+  if (method === 'wxpay') return WITHDRAWAL_TARGET_LABELS.wechat
   if (method in WITHDRAWAL_TARGET_LABELS) {
     return WITHDRAWAL_TARGET_LABELS[
       method as keyof typeof WITHDRAWAL_TARGET_LABELS
@@ -69,337 +93,93 @@ function statusLabel(status: string): string {
   return status
 }
 
-function Payee(props: { row: SiteInviteCommissionWithdrawal }) {
+function statusVariant(status: string): StatusVariant {
+  if (status in WITHDRAWAL_STATUS_VARIANTS) {
+    return WITHDRAWAL_STATUS_VARIANTS[
+      status as keyof typeof WITHDRAWAL_STATUS_VARIANTS
+    ]
+  }
+  return 'neutral'
+}
+
+function formatPayoutDisplay(
+  row: CommissionWithdrawalRow,
+  locale?: string
+): string {
+  if (row.payout_amount !== '') {
+    return `${row.payout_amount} ${row.payout_currency}`.trim()
+  }
+  if (row.method === 'usdt' && row.net_usd) {
+    return `${row.net_usd} USDT`
+  }
+  return formatUsd(Number(row.amount_usd || 0), locale)
+}
+
+function PayeeCell(props: { row: CommissionWithdrawalRow }) {
   const { t } = useTranslation()
   const row = props.row
   if (row.method === 'usdt') {
     return (
       <div className='flex flex-col gap-1'>
-        <span>{usdtNetworkLabel(row.network)}</span>
-        <div className='flex items-center gap-1'>
-          <span className='font-mono text-sm break-all'>{row.account_no}</span>
-          <CopyButton
-            value={row.account_no}
-            size='icon'
-            aria-label={t('Copy address')}
-          />
+        <div className='flex flex-wrap items-center gap-1.5'>
+          <span className='font-medium'>{t(methodLabel(row.method))}</span>
+          {row.network && (
+            <Badge variant='secondary'>{usdtNetworkLabel(row.network)}</Badge>
+          )}
         </div>
+        {row.account_no && (
+          <div className='flex items-center gap-1'>
+            <span className='font-mono text-xs break-all'>
+              {row.account_no}
+            </span>
+            <CopyButton
+              value={row.account_no}
+              size='icon'
+              aria-label={t('Copy address')}
+            />
+          </div>
+        )}
       </div>
     )
   }
-  if (row.method === 'balance') return <span>{t('Account balance')}</span>
+  if (row.method === 'balance') {
+    return <span>{t('Account balance')}</span>
+  }
   return (
     <div className='flex items-center gap-2'>
       {row.qr_image_url !== '' && (
-        <a href={row.qr_image_url} target='_blank' rel='noreferrer'>
+        <a
+          href={row.qr_image_url}
+          target='_blank'
+          rel='noopener noreferrer'
+          className='shrink-0'
+        >
           <img
             src={row.qr_image_url}
             alt={t('Payment QR code')}
-            className='h-16 w-16 rounded-lg border object-contain'
+            className='h-14 w-14 rounded-md border object-contain'
           />
         </a>
       )}
-      <div className='flex flex-col'>
-        <span>{t(methodLabel(row.method))}</span>
-        <span>{row.account_name}</span>
+      <div className='flex min-w-0 flex-col gap-0.5'>
+        <span className='font-medium'>{t(methodLabel(row.method))}</span>
+        {row.account_name && (
+          <span className='text-sm'>{row.account_name}</span>
+        )}
+        {row.account_no && (
+          <div className='flex items-center gap-1'>
+            <span className='text-muted-foreground font-mono text-xs break-all'>
+              {row.account_no}
+            </span>
+            <CopyButton
+              value={row.account_no}
+              size='icon'
+              aria-label={t('Copy address')}
+            />
+          </div>
+        )}
       </div>
     </div>
-  )
-}
-
-function ReviewRow(props: {
-  closed?: boolean
-  canReview?: boolean
-  canPay?: boolean
-  row: SiteInviteCommissionWithdrawal
-  onDone: () => void
-}) {
-  const { t } = useTranslation()
-  const row = props.row
-  const [reason, setReason] = useState('')
-  const [txId, setTxId] = useState('')
-  const [proof, setProof] = useState('')
-  const proofFileRef = useRef<HTMLInputElement | null>(null)
-  const uploadProof = useMutation({
-    mutationFn: (file: File) =>
-      props.closed
-        ? uploadReferralAsset(file, '/api/user/admin/referral/upload')
-        : uploadOwnerWithdrawalQR(file, 'payment_proof'),
-    onSuccess: (url) => {
-      setProof(url)
-      toast.success(t('Payment proof uploaded'))
-    },
-    onError: (err) => handleServerError(err),
-  })
-  const review = useMutation({
-    mutationFn: (approve: boolean) =>
-      props.closed
-        ? reviewOwnerCommissionWithdrawal(
-            row.id,
-            approve,
-            reason,
-            true,
-            row.status === 'approved'
-          )
-        : reviewOwnerCommissionWithdrawal(row.id, approve, reason),
-    onSuccess: () => {
-      toast.success(t('Saved successfully'))
-      setReason('')
-      props.onDone()
-    },
-    onError: (err) => handleServerError(err),
-  })
-  const pay = useMutation({
-    mutationFn: () =>
-      props.closed
-        ? markOwnerCommissionWithdrawalPaid(
-            row.id,
-            txId.trim(),
-            proof.trim(),
-            true
-          )
-        : markOwnerCommissionWithdrawalPaid(row.id, txId.trim(), proof.trim()),
-    onSuccess: () => {
-      toast.success(t('Marked as paid'))
-      setTxId('')
-      setProof('')
-      props.onDone()
-    },
-    onError: (err) => handleServerError(err),
-  })
-  return (
-    <li className='flex flex-col gap-2 text-sm'>
-      <p className='tabular-nums'>
-        {props.closed && (
-          <>
-            {t('Site')} #{row.site_id} ·{' '}
-          </>
-        )}
-        #{row.id} · {row.username || row.user_id} · {row.amount_usd} USD ·{' '}
-        {t(methodLabel(row.method))} · {t(statusLabel(row.status))}
-        {row.payout_amount !== '' &&
-          ` · ${row.payout_amount} ${row.payout_currency}`}
-      </p>
-      {row.method === 'usdt' && (
-        <p>
-          {t('USDT fee (USD)')} {row.fee_usd}
-        </p>
-      )}
-      <WithdrawalCancellation state={row} />
-      {[
-        [
-          t('Legacy decision record'),
-          row.legacy_decision_by,
-          row.legacy_decision_at,
-        ],
-        [t('Withdrawal reviewer'), row.reviewed_by, row.reviewed_at],
-        [t('Payment recorded by'), row.paid_by, row.paid_at],
-        [t('Failed payout recorded by'), row.failure_by, row.failure_at],
-      ].map(([label, actor, at]) =>
-        at ? (
-          <p key={label}>
-            {label} {actor ? `#${actor}` : t('Unknown')} ·{' '}
-            {formatTimestamp(Number(at))}
-          </p>
-        ) : null
-      )}
-      {row.failure_at ? <p>{row.reject_reason}</p> : null}
-      <Payee row={row} />
-      {row.status === 'paid' && row.tx_id && (
-        <p>
-          {t('Transfer reference')} {row.tx_id}
-        </p>
-      )}
-      {row.status === 'paid' && row.proof_note && (
-        <div className='flex flex-col gap-1.5'>
-          <p>
-            {t('Proof note')}{' '}
-            {row.proof_note.startsWith('/api/referral-assets/') ? (
-              <a
-                href={row.proof_note}
-                target='_blank'
-                rel='noopener noreferrer'
-                className='underline'
-              >
-                {t('Payment proof')}
-              </a>
-            ) : (
-              row.proof_note
-            )}
-          </p>
-          {row.proof_note.startsWith('/api/referral-assets/') && (
-            <a
-              href={row.proof_note}
-              target='_blank'
-              rel='noopener noreferrer'
-              className='w-fit'
-            >
-              <img
-                src={row.proof_note}
-                alt={t('Payment proof')}
-                className='h-16 w-16 rounded border object-contain'
-              />
-            </a>
-          )}
-        </div>
-      )}
-      {props.canReview !== false &&
-        row.status === 'pending' &&
-        row.method !== 'balance' && (
-          <div className='flex flex-col gap-2'>
-            <Label htmlFor={`commission-reject-${row.id}`}>{t('Reason')}</Label>
-            <Input
-              id={`commission-reject-${row.id}`}
-              value={reason}
-              autoComplete='off'
-              onChange={(event) => setReason(event.target.value)}
-            />
-            <div className='flex flex-wrap gap-2'>
-              <Button
-                type='button'
-                variant='outline'
-                disabled={review.isPending}
-                onClick={() => review.mutate(true)}
-              >
-                {t('Approve')}
-              </Button>
-              <Button
-                type='button'
-                variant='outline'
-                disabled={review.isPending}
-                onClick={() => review.mutate(false)}
-              >
-                {t('Reject')}
-              </Button>
-            </div>
-          </div>
-        )}
-      {row.status === 'approved' && (
-        <form
-          className='flex flex-col gap-2'
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (props.canPay !== false) pay.mutate()
-          }}
-        >
-          {(row.method === 'usdt' || row.method === 'alipay') && (
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor={`commission-tx-${row.id}`}>
-                {row.method === 'usdt'
-                  ? t('Transaction hash')
-                  : t('Transfer reference')}
-              </Label>
-              <Input
-                id={`commission-tx-${row.id}`}
-                value={txId}
-                autoComplete='off'
-                onChange={(event) => setTxId(event.target.value)}
-                required={row.method === 'usdt'}
-              />
-            </div>
-          )}
-          <div className='flex flex-col gap-2'>
-            <Label htmlFor={`commission-proof-${row.id}`}>
-              {t('Proof note')}
-            </Label>
-            <div className='flex flex-wrap items-center gap-2'>
-              <Input
-                id={`commission-proof-${row.id}`}
-                className='min-w-0 flex-1'
-                value={proof}
-                autoComplete='off'
-                placeholder={t('Enter transfer note or upload proof image')}
-                onChange={(event) => setProof(event.target.value)}
-              />
-              <input
-                ref={proofFileRef}
-                type='file'
-                accept='image/png,image/jpeg,image/webp'
-                className='hidden'
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) uploadProof.mutate(file)
-                }}
-              />
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                disabled={props.canPay === false || uploadProof.isPending}
-                onClick={() => proofFileRef.current?.click()}
-              >
-                <Upload className='size-3.5' aria-hidden />
-                {t('Upload proof image')}
-              </Button>
-              {proof.trim().startsWith('/api/referral-assets/') && (
-                <Button
-                  type='button'
-                  size='sm'
-                  variant='ghost'
-                  onClick={() => {
-                    setProof('')
-                    if (proofFileRef.current) proofFileRef.current.value = ''
-                  }}
-                >
-                  <X className='size-3.5' aria-hidden />
-                  {t('Clear')}
-                </Button>
-              )}
-            </div>
-            {proof.trim().startsWith('/api/referral-assets/') && (
-              <a
-                href={proof.trim()}
-                target='_blank'
-                rel='noopener noreferrer'
-                className='w-fit'
-              >
-                <img
-                  src={proof.trim()}
-                  alt={t('Payment proof')}
-                  className='h-20 w-20 rounded border object-contain'
-                />
-              </a>
-            )}
-          </div>
-          <div className='flex flex-col gap-2'>
-            <Label htmlFor={`commission-fail-${row.id}`}>
-              {t('Failed payout reference')}
-            </Label>
-            <Input
-              id={`commission-fail-${row.id}`}
-              value={reason}
-              autoComplete='off'
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </div>
-          <div className='flex flex-wrap gap-2'>
-            <Button
-              type='submit'
-              variant='outline'
-              disabled={
-                props.canPay === false ||
-                pay.isPending ||
-                (!txId.trim() &&
-                  (row.method !== 'alipay' ||
-                    !proof.trim().startsWith('/api/referral-assets/')))
-              }
-            >
-              {t('Mark as paid')}
-            </Button>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={
-                props.canPay === false || review.isPending || !reason.trim()
-              }
-              onClick={() => review.mutate(false)}
-            >
-              {t('Confirm failed payout')}
-            </Button>
-          </div>
-        </form>
-      )}
-    </li>
   )
 }
 
@@ -412,7 +192,8 @@ export function CommissionWithdrawalPanel(
     status?: string
   } = {}
 ) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const client = useQueryClient()
   const [page, setPage] = useState(1)
   useEffect(() => {
@@ -424,6 +205,23 @@ export function CommissionWithdrawalPanel(
     window.location.hash === '#pending' ? 'pending' : 'actionable'
   )
   const status = props.status ?? ownStatus
+
+  const [approving, setApproving] = useState<CommissionWithdrawalRow | null>(
+    null
+  )
+  const [rejecting, setRejecting] = useState<CommissionWithdrawalRow | null>(
+    null
+  )
+  const [paying, setPaying] = useState<CommissionWithdrawalRow | null>(null)
+  const [failing, setFailing] = useState<CommissionWithdrawalRow | null>(null)
+
+  const [approveNote, setApproveNote] = useState('')
+  const [rejectReason, setRejectReason] = useState('')
+  const [txId, setTxId] = useState('')
+  const [proof, setProof] = useState('')
+  const [failReason, setFailReason] = useState('')
+  const proofFileRef = useRef<HTMLInputElement | null>(null)
+
   const list = useQuery({
     queryKey: siteOwnerKeys.list('commission-withdrawals', {
       page,
@@ -435,6 +233,7 @@ export function CommissionWithdrawalPanel(
         ? getOwnerCommissionWithdrawals(page, status, true)
         : getOwnerCommissionWithdrawals(page, status),
   })
+
   // A decision can remove the last request on the current filtered page.
   const total = list.data?.total
   useEffect(() => {
@@ -442,6 +241,7 @@ export function CommissionWithdrawalPanel(
     const lastPage = Math.max(1, Math.ceil(total / OWNER_PAGE_SIZE))
     if (page > lastPage) setPage(lastPage)
   }, [page, total])
+
   const refresh = () => {
     void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
     if (props.closed) {
@@ -450,81 +250,661 @@ export function CommissionWithdrawalPanel(
     void invalidateSidebarBadges(client)
   }
 
+  const uploadProof = useMutation({
+    mutationFn: (file: File) =>
+      props.closed
+        ? uploadReferralAsset(file, '/api/user/admin/referral/upload')
+        : uploadOwnerWithdrawalQR(file, 'payment_proof'),
+    onSuccess: (url) => {
+      setProof(url)
+      toast.success(t('Payment proof uploaded'))
+    },
+    onError: (err) => handleServerError(err),
+  })
+
+  const review = useMutation({
+    mutationFn: (input: {
+      row: CommissionWithdrawalRow
+      approve: boolean
+      reason: string
+    }) =>
+      props.closed
+        ? reviewOwnerCommissionWithdrawal(
+            input.row.id,
+            input.approve,
+            input.reason,
+            true,
+            input.row.status === 'approved'
+          )
+        : reviewOwnerCommissionWithdrawal(
+            input.row.id,
+            input.approve,
+            input.reason
+          ),
+    onSuccess: () => {
+      toast.success(t('Saved successfully'))
+      setApproving(null)
+      setRejecting(null)
+      setFailing(null)
+      setApproveNote('')
+      setRejectReason('')
+      setFailReason('')
+      refresh()
+    },
+    onError: (err) => handleServerError(err),
+  })
+
+  const pay = useMutation({
+    mutationFn: (row: CommissionWithdrawalRow) =>
+      props.closed
+        ? markOwnerCommissionWithdrawalPaid(
+            row.id,
+            txId.trim(),
+            proof.trim(),
+            true
+          )
+        : markOwnerCommissionWithdrawalPaid(row.id, txId.trim(), proof.trim()),
+    onSuccess: () => {
+      toast.success(t('Marked as paid'))
+      setPaying(null)
+      setTxId('')
+      setProof('')
+      if (proofFileRef.current) proofFileRef.current.value = ''
+      refresh()
+    },
+    onError: (err) => handleServerError(err),
+  })
+
+  const rows: CommissionWithdrawalRow[] = list.data?.items ?? []
+
+  const payDisabled =
+    !paying ||
+    props.canPay === false ||
+    pay.isPending ||
+    uploadProof.isPending ||
+    (!txId.trim() &&
+      (paying.method !== 'alipay' ||
+        !proof.trim().startsWith('/api/referral-assets/')))
+
   return (
     <section
       id='pending'
-      className='flex flex-col gap-4'
+      className={cn(
+        'flex flex-col gap-4',
+        props.closed && 'border-border mt-6 border-t pt-6'
+      )}
       aria-label={t('Invite commission withdrawal')}
     >
-      <div className='flex flex-col gap-1'>
-        <h2 className='text-sm font-medium'>
-          {props.closed
-            ? t('Closed-site commission withdrawals')
-            : t('Invite commission withdrawal')}
-        </h2>
-        <p className='text-muted-foreground text-sm'>
-          {props.closed
-            ? t('Process withdrawals for closed sites.')
-            : t(
-                'The site owner reviews cash withdrawals of invite commission.'
-              )}
-        </p>
-        <p className='text-muted-foreground text-sm'>
-          {props.closed
-            ? t(
-                'The platform pays the customer offline. Recording payment deducts the closed site’s held funds.'
-              )
-            : t(
-                'The platform or its authorized payer pays the customer offline. Recording payment releases the site’s hold.'
-              )}
-        </p>
-      </div>
-      {props.status === undefined && (
-        <div className='flex items-center gap-2'>
-          <Label htmlFor='commission-status'>{t('Status')}</Label>
-          <select
+      <div className='flex flex-wrap items-start justify-between gap-3'>
+        <div className='flex flex-col gap-1'>
+          <h2 className='text-sm font-medium'>
+            {props.closed
+              ? t('Closed-site commission withdrawals')
+              : t('Invite commission withdrawal')}
+          </h2>
+          <p className='text-muted-foreground text-sm'>
+            {props.closed
+              ? t('Process withdrawals for closed sites.')
+              : t(
+                  'The site owner reviews cash withdrawals of invite commission.'
+                )}{' '}
+            {props.closed
+              ? t(
+                  'The platform pays the customer offline. Recording payment deducts the closed site’s held funds.'
+                )
+              : t(
+                  'The platform or its authorized payer pays the customer offline. Recording payment releases the site’s hold.'
+                )}
+          </p>
+        </div>
+        {props.status === undefined && (
+          <NativeSelect
             id='commission-status'
-            className='bg-background h-9 rounded-md border px-3'
+            className='w-52'
+            aria-label={t('Status')}
             value={status}
             onChange={(event) => {
               setStatus(event.target.value)
               setPage(1)
             }}
           >
-            <option value='actionable'>
+            <NativeSelectOption value='actionable'>
               {t('Awaiting review or payment')}
-            </option>
-            <option value=''>{t('All')}</option>
-            {['pending', 'approved', 'paid', 'rejected', 'canceled'].map(
-              (value) => (
-                <option key={value} value={value}>
-                  {t(statusLabel(value))}
-                </option>
-              )
-            )}
-          </select>
-        </div>
-      )}
-      {list.isPending && <LoadingState />}
+            </NativeSelectOption>
+            <NativeSelectOption value=''>{t('All statuses')}</NativeSelectOption>
+            {WITHDRAWAL_STATUS_OPTIONS.map((value) => (
+              <NativeSelectOption key={value} value={value}>
+                {t(statusLabel(value))}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        )}
+      </div>
+
       {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
-      {list.isSuccess && list.data.items.length === 0 && (
-        <p className='text-muted-foreground text-sm'>
-          {t('No withdrawals yet')}
-        </p>
+      {list.isPending && !list.data ? (
+        <LoadingState />
+      ) : (
+        <>
+          <StaticDataTable
+            tableClassName='min-w-[1040px]'
+            tableProps={{ 'aria-label': t('Invite commission withdrawal') }}
+            data={rows}
+            getRowKey={(row) => String(row.id)}
+            emptyContent={
+              <EmptyState
+                className='min-h-32'
+                title={t('No withdrawals yet')}
+              />
+            }
+            columns={[
+              {
+                id: 'time',
+                header: t('Time'),
+                cellClassName: 'tabular-nums whitespace-nowrap',
+                cell: (row) => {
+                  const createdAt = row.created_at ?? 0
+                  const hasTime = createdAt > 0
+                  let subtitle: string | null = null
+                  if (props.closed && row.site_id) {
+                    subtitle = `${t('Site')} #${row.site_id} · #${row.id}`
+                  } else if (hasTime) {
+                    subtitle = `#${row.id}`
+                  }
+                  return (
+                    <div className='flex flex-col gap-0.5'>
+                      <span>
+                        {hasTime ? formatTimestamp(createdAt) : `#${row.id}`}
+                      </span>
+                      {subtitle && (
+                        <span className='text-muted-foreground text-xs'>
+                          {subtitle}
+                        </span>
+                      )}
+                    </div>
+                  )
+                },
+              },
+              {
+                id: 'user',
+                header: t('User'),
+                cellClassName: 'tabular-nums',
+                cell: (row) => (
+                  <span className='font-medium'>
+                    {formatUserIdentity(row.user_id, row.username)}
+                  </span>
+                ),
+              },
+              {
+                id: 'payee',
+                header: t('Pay to'),
+                cell: (row) => <PayeeCell row={row} />,
+              },
+              {
+                id: 'amount',
+                header: t('Amount'),
+                className: 'text-right',
+                cellClassName: 'text-right tabular-nums',
+                cell: (row) => {
+                  const payoutDisplay = formatPayoutDisplay(row, locale)
+                  const requestedDisplay = formatUsd(
+                    Number(row.amount_usd || 0),
+                    locale
+                  )
+                  const hasUsdtFee =
+                    row.method === 'usdt' && Number(row.fee_usd || 0) > 0
+                  return (
+                    <div className='flex flex-col items-end gap-0.5'>
+                      <span className='font-semibold'>{payoutDisplay}</span>
+                      {payoutDisplay !== requestedDisplay && (
+                        <span className='text-muted-foreground text-xs'>
+                          {requestedDisplay}
+                        </span>
+                      )}
+                      {hasUsdtFee && (
+                        <span className='text-muted-foreground text-xs'>
+                          {t('USDT fee (USD)')}: {row.fee_usd}
+                        </span>
+                      )}
+                    </div>
+                  )
+                },
+              },
+              {
+                id: 'status',
+                header: t('Status'),
+                cell: (row) => {
+                  const auditEntries = props.closed
+                    ? [
+                        [
+                          t('Legacy decision record'),
+                          row.legacy_decision_by,
+                          row.legacy_decision_at,
+                        ],
+                        [
+                          t('Withdrawal reviewer'),
+                          row.reviewed_by,
+                          row.reviewed_at,
+                        ],
+                        [t('Payment recorded by'), row.paid_by, row.paid_at],
+                        [
+                          t('Failed payout recorded by'),
+                          row.failure_by,
+                          row.failure_at,
+                        ],
+                      ].filter(([, , at]) => Boolean(at))
+                    : []
+                  return (
+                    <div className='flex max-w-xs flex-col items-start gap-1'>
+                      <StatusBadge
+                        label={t(statusLabel(row.status))}
+                        variant={statusVariant(row.status)}
+                        copyable={false}
+                      />
+                      {row.status === 'pending' &&
+                        (row.can_cancel || row.cancel_deadline > 0) && (
+                          <div className='text-muted-foreground text-xs [&_span]:text-xs'>
+                            <WithdrawalCancellation state={row} />
+                          </div>
+                        )}
+                      {row.status === 'paid' && row.tx_id && (
+                        <span className='text-muted-foreground font-mono text-xs break-all'>
+                          {row.tx_id}
+                        </span>
+                      )}
+                      {row.status === 'paid' && row.proof_note && (
+                        <div className='text-muted-foreground flex items-center gap-1.5 text-xs'>
+                          {row.proof_note.startsWith('/api/referral-assets/') ? (
+                            <a
+                              href={row.proof_note}
+                              target='_blank'
+                              rel='noopener noreferrer'
+                              className='underline'
+                            >
+                              {t('Payment proof')}
+                            </a>
+                          ) : (
+                            <span className='break-words'>{row.proof_note}</span>
+                          )}
+                        </div>
+                      )}
+                      {row.reject_reason && (
+                        <span className='text-destructive/90 text-xs break-words'>
+                          {row.reject_reason}
+                        </span>
+                      )}
+                      {auditEntries.map(([label, actor, at]) => (
+                        <span
+                          key={String(label)}
+                          className='text-muted-foreground text-[11px] tabular-nums'
+                        >
+                          {label} {actor ? `#${actor}` : t('Unknown')} ·{' '}
+                          {formatTimestamp(Number(at))}
+                        </span>
+                      ))}
+                    </div>
+                  )
+                },
+              },
+              {
+                id: 'actions',
+                header: t('Actions'),
+                className: 'text-right',
+                cellClassName: 'text-right',
+                cell: (row) => (
+                  <div className='flex flex-wrap justify-end gap-1.5'>
+                    {props.canReview !== false &&
+                      row.status === 'pending' &&
+                      row.method !== 'balance' && (
+                        <>
+                          <Button
+                            size='sm'
+                            disabled={review.isPending}
+                            onClick={() => {
+                              setApproveNote('')
+                              setApproving(row)
+                            }}
+                          >
+                            {t('Approve')}
+                          </Button>
+                          <Button
+                            size='sm'
+                            variant='outline'
+                            disabled={review.isPending}
+                            onClick={() => {
+                              setRejectReason('')
+                              setRejecting(row)
+                            }}
+                          >
+                            {t('Reject')}
+                          </Button>
+                        </>
+                      )}
+                    {row.status === 'approved' && props.canPay !== false && (
+                      <>
+                        <Button
+                          size='sm'
+                          disabled={pay.isPending}
+                          onClick={() => {
+                            setTxId('')
+                            setProof('')
+                            if (proofFileRef.current) {
+                              proofFileRef.current.value = ''
+                            }
+                            setPaying(row)
+                          }}
+                        >
+                          {t('Mark as paid')}
+                        </Button>
+                        <Button
+                          size='sm'
+                          variant='outline'
+                          disabled={review.isPending}
+                          onClick={() => {
+                            setFailReason('')
+                            setFailing(row)
+                          }}
+                        >
+                          {t('Confirm failed payout')}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+          />
+          {list.data && (
+            <PageSwitcher
+              page={page}
+              total={list.data.total}
+              pageSize={OWNER_PAGE_SIZE}
+              onPageChange={setPage}
+            />
+          )}
+        </>
       )}
-      <ul className='flex flex-col gap-4'>
-        {(list.data?.items ?? []).map((row) => (
-          <ReviewRow {...props} key={row.id} row={row} onDone={refresh} />
-        ))}
-      </ul>
-      {list.data && (
-        <PageSwitcher
-          page={page}
-          total={list.data.total}
-          pageSize={OWNER_PAGE_SIZE}
-          onPageChange={setPage}
-        />
-      )}
+
+      {/* Approve Dialog */}
+      <Dialog
+        open={approving !== null}
+        onOpenChange={(open) => {
+          if (!open) setApproving(null)
+        }}
+        title={t('Approve withdrawal')}
+        description={
+          approving
+            ? `${formatUserIdentity(approving.user_id, approving.username)} · ${formatPayoutDisplay(approving, locale)}`
+            : ''
+        }
+        footer={
+          <>
+            <Button
+              variant='outline'
+              disabled={review.isPending}
+              onClick={() => setApproving(null)}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              variant='brand'
+              disabled={review.isPending}
+              onClick={() =>
+                approving &&
+                review.mutate({
+                  row: approving,
+                  approve: true,
+                  reason: approveNote.trim(),
+                })
+              }
+            >
+              {t('Approve')}
+            </Button>
+          </>
+        }
+      >
+        <div className='space-y-4'>
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Approve this withdrawal request? After approval, pay the user offline and mark it as paid.'
+            )}
+          </p>
+          <div className='space-y-2'>
+            <Label htmlFor='commission-approve-note'>
+              {t('Note (optional)')}
+            </Label>
+            <Textarea
+              id='commission-approve-note'
+              rows={2}
+              value={approveNote}
+              onChange={(event) => setApproveNote(event.target.value)}
+            />
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Reject Dialog */}
+      <Dialog
+        open={rejecting !== null}
+        onOpenChange={(open) => {
+          if (!open) setRejecting(null)
+        }}
+        title={t('Reject the withdrawal')}
+        description={
+          rejecting
+            ? `${formatUserIdentity(rejecting.user_id, rejecting.username)} · ${formatPayoutDisplay(rejecting, locale)}`
+            : ''
+        }
+        footer={
+          <>
+            <Button
+              variant='outline'
+              disabled={review.isPending}
+              onClick={() => setRejecting(null)}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              variant='destructive'
+              disabled={rejectReason.trim() === '' || review.isPending}
+              onClick={() =>
+                rejecting &&
+                review.mutate({
+                  row: rejecting,
+                  approve: false,
+                  reason: rejectReason.trim(),
+                })
+              }
+            >
+              {t('Reject')}
+            </Button>
+          </>
+        }
+      >
+        <div className='space-y-2'>
+          <Label htmlFor='commission-reject-reason'>
+            {t('Reason (required)')}
+          </Label>
+          <Textarea
+            id='commission-reject-reason'
+            rows={3}
+            value={rejectReason}
+            onChange={(event) => setRejectReason(event.target.value)}
+          />
+        </div>
+      </Dialog>
+
+      {/* Mark Paid Dialog */}
+      <Dialog
+        open={paying !== null}
+        onOpenChange={(open) => {
+          if (!open) setPaying(null)
+        }}
+        title={t('Mark as paid')}
+        description={
+          paying
+            ? `${formatUserIdentity(paying.user_id, paying.username)} · ${formatPayoutDisplay(paying, locale)}`
+            : ''
+        }
+        footer={
+          <>
+            <Button
+              variant='outline'
+              disabled={pay.isPending}
+              onClick={() => setPaying(null)}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              variant='brand'
+              disabled={payDisabled}
+              onClick={() => paying && pay.mutate(paying)}
+            >
+              {t('Confirm')}
+            </Button>
+          </>
+        }
+      >
+        {paying && (
+          <div className='space-y-4'>
+            {(paying.method === 'usdt' || paying.method === 'alipay') && (
+              <div className='space-y-2'>
+                <Label htmlFor='commission-pay-tx'>
+                  {paying.method === 'usdt'
+                    ? t('Transaction hash')
+                    : t('Transfer reference')}
+                </Label>
+                <Input
+                  id='commission-pay-tx'
+                  value={txId}
+                  autoComplete='off'
+                  onChange={(event) => setTxId(event.target.value)}
+                  required={paying.method === 'usdt'}
+                />
+              </div>
+            )}
+            <div className='space-y-2'>
+              <Label htmlFor='commission-pay-proof'>{t('Proof note')}</Label>
+              <div className='flex flex-wrap items-center gap-2'>
+                <Input
+                  id='commission-pay-proof'
+                  className='min-w-0 flex-1'
+                  value={proof}
+                  autoComplete='off'
+                  placeholder={t('Enter transfer note or upload proof image')}
+                  onChange={(event) => setProof(event.target.value)}
+                />
+                <input
+                  ref={proofFileRef}
+                  type='file'
+                  accept='image/png,image/jpeg,image/webp'
+                  className='hidden'
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) uploadProof.mutate(file)
+                  }}
+                />
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={uploadProof.isPending}
+                  onClick={() => proofFileRef.current?.click()}
+                >
+                  <Upload className='size-3.5' aria-hidden='true' />
+                  {t('Upload proof image')}
+                </Button>
+                {proof.trim().startsWith('/api/referral-assets/') && (
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='ghost'
+                    onClick={() => {
+                      setProof('')
+                      if (proofFileRef.current) proofFileRef.current.value = ''
+                    }}
+                  >
+                    <X className='size-3.5' aria-hidden='true' />
+                    {t('Clear')}
+                  </Button>
+                )}
+              </div>
+              {proof.trim().startsWith('/api/referral-assets/') && (
+                <a
+                  href={proof.trim()}
+                  target='_blank'
+                  rel='noopener noreferrer'
+                  className='block w-fit pt-1'
+                >
+                  <img
+                    src={proof.trim()}
+                    alt={t('Payment proof')}
+                    className='h-20 w-20 rounded border object-contain'
+                  />
+                </a>
+              )}
+            </div>
+          </div>
+        )}
+      </Dialog>
+
+      {/* Confirm Failed Payout Dialog */}
+      <Dialog
+        open={failing !== null}
+        onOpenChange={(open) => {
+          if (!open) setFailing(null)
+        }}
+        title={t('Confirm failed payout')}
+        description={
+          failing
+            ? `${formatUserIdentity(failing.user_id, failing.username)} · ${formatPayoutDisplay(failing, locale)}`
+            : ''
+        }
+        footer={
+          <>
+            <Button
+              variant='outline'
+              disabled={review.isPending}
+              onClick={() => setFailing(null)}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              variant='destructive'
+              disabled={failReason.trim() === '' || review.isPending}
+              onClick={() =>
+                failing &&
+                review.mutate({
+                  row: failing,
+                  approve: false,
+                  reason: failReason.trim(),
+                })
+              }
+            >
+              {t('Confirm failed payout')}
+            </Button>
+          </>
+        }
+      >
+        <div className='space-y-4'>
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Record the failed payout reference so the withdrawal can be returned to the user.'
+            )}
+          </p>
+          <div className='space-y-2'>
+            <Label htmlFor='commission-fail-reason'>
+              {t('Failed payout reference')}
+            </Label>
+            <Textarea
+              id='commission-fail-reason'
+              rows={3}
+              value={failReason}
+              onChange={(event) => setFailReason(event.target.value)}
+            />
+          </div>
+        </div>
+      </Dialog>
     </section>
   )
 }

@@ -572,6 +572,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/customers/:id/logs", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerCustomerLogs}},
 		{http.MethodGet, "/customers/:id/topups", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerCustomerTopUps}},
 		{http.MethodPost, "/customers/:id/balance", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-customer-balance"), controller.PostAdtyOwnerCustomerBalance}},
+		{http.MethodPost, "/customers/:id/password", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-customer-password"), middleware.DisableCache(), controller.PostAdtyOwnerCustomerPassword}},
 		{http.MethodPost, "/report", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-report"), controller.PostAdtyOwnerReport}},
 		{http.MethodGet, "/export", ownerLogRead, []gin.HandlerFunc{controller.GetAdtyOwnerExport}},
 		{http.MethodPost, "/logo", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-logo"), controller.UploadAdtySiteLogo}},

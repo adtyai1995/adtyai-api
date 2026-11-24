@@ -45,7 +45,7 @@ func readOptionFromDB(db *gorm.DB, key string) (string, bool) {
 	var row struct {
 		Value string `gorm:"column:value"`
 	}
-	res := db.Table("options").Select("value").Where("key = ?", key).Limit(1).Find(&row)
+	res := db.Table("options").Select("value").Where(map[string]any{"key": key}).Limit(1).Find(&row)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return "", false
 	}
@@ -94,32 +94,24 @@ func ParseMainMethodBonus(rawMethodBonus, method string) (MethodBonusRule, bool,
 	return rule, ok, nil
 }
 
-// ParseSiteMethodBonusAllowed parses whether Root authorized method for siteID from raw JSON.
-func ParseSiteMethodBonusAllowed(rawSiteMethodAuth string, siteID int, method string) (bool, error) {
+// ParseSiteMethodBonusAllowed reports whether siteID and method are valid for
+// subsite bonus rules. Per-site main-site authorization (site_method_auth) has
+// been removed; main-site enabled payment method checks happen at the service layer.
+func ParseSiteMethodBonusAllowed(_ string, siteID int, method string) (bool, error) {
 	if siteID <= 0 {
 		return false, nil
 	}
-	key, err := canonicalBonusMethod(method)
-	if err != nil {
+	if _, err := canonicalBonusMethod(method); err != nil {
 		return false, err
 	}
-	var auth map[int][]string
-	if err := unmarshalBonusSetting(rawSiteMethodAuth, &auth); err != nil {
-		return false, err
-	}
-	for _, item := range auth[siteID] {
-		if item == key {
-			return true, nil
-		}
-	}
-	return false, nil
+	return true, nil
 }
 
-// ParseSiteMethodBonus parses a site-owner rule only if Root currently authorizes the method.
-func ParseSiteMethodBonus(rawSiteMethodAuth, rawSiteMethodBonus string, siteID int, method string) (MethodBonusRule, bool, error) {
-	allowed, err := ParseSiteMethodBonusAllowed(rawSiteMethodAuth, siteID, method)
-	if err != nil || !allowed {
-		return MethodBonusRule{}, false, err
+// ParseSiteMethodBonusRule parses a site-owner bonus rule for siteID and method
+// from raw site_method_bonus JSON without requiring per-site authorization.
+func ParseSiteMethodBonusRule(rawSiteMethodBonus string, siteID int, method string) (MethodBonusRule, bool, error) {
+	if siteID <= 0 {
+		return MethodBonusRule{}, false, nil
 	}
 	key, err := canonicalBonusMethod(method)
 	if err != nil {
@@ -136,6 +128,12 @@ func ParseSiteMethodBonus(rawSiteMethodAuth, rawSiteMethodBonus string, siteID i
 	return rule, ok, nil
 }
 
+// ParseSiteMethodBonus parses a site-owner rule from raw site_method_bonus JSON.
+// rawSiteMethodAuth is ignored now that per-site authorization has been removed.
+func ParseSiteMethodBonus(_, rawSiteMethodBonus string, siteID int, method string) (MethodBonusRule, bool, error) {
+	return ParseSiteMethodBonusRule(rawSiteMethodBonus, siteID, method)
+}
+
 // ParseSiteBonusMarginFillAllowed parses whether Root authorized margin fill for siteID.
 func ParseSiteBonusMarginFillAllowed(rawMarginFill string, siteID int) (bool, error) {
 	if siteID <= 0 {
@@ -146,6 +144,47 @@ func ParseSiteBonusMarginFillAllowed(rawMarginFill string, siteID int) (bool, er
 		return false, err
 	}
 	return allowed != nil && allowed[siteID], nil
+}
+
+// MainMethodBonusMap returns all main-site bonus rules from the authoritative DB
+// when wired, falling back to the in-memory option snapshot.
+func MainMethodBonusMap() map[string]MethodBonusRule {
+	if raw, ok := readOptionFromDB(getAuthoritativeBonusDB(), TopupSettingKeyMethodBonus); ok {
+		var rules map[string]MethodBonusRule
+		if err := unmarshalBonusSetting(raw, &rules); err == nil {
+			if rules == nil {
+				return map[string]MethodBonusRule{}
+			}
+			return rules
+		}
+	}
+	ts := GetTopupSetting()
+	if ts.MethodBonus == nil {
+		return map[string]MethodBonusRule{}
+	}
+	return ts.MethodBonus
+}
+
+// SiteMethodBonusMap returns one site's bonus rules from the authoritative DB
+// when wired, falling back to the in-memory option snapshot.
+func SiteMethodBonusMap(siteID int) map[string]MethodBonusRule {
+	if siteID <= 0 {
+		return map[string]MethodBonusRule{}
+	}
+	if raw, ok := readOptionFromDB(getAuthoritativeBonusDB(), TopupSettingKeySiteMethodBonus); ok {
+		var all map[int]map[string]MethodBonusRule
+		if err := unmarshalBonusSetting(raw, &all); err == nil {
+			if all == nil || all[siteID] == nil {
+				return map[string]MethodBonusRule{}
+			}
+			return all[siteID]
+		}
+	}
+	ts := GetTopupSetting()
+	if ts.SiteMethodBonus == nil || ts.SiteMethodBonus[siteID] == nil {
+		return map[string]MethodBonusRule{}
+	}
+	return ts.SiteMethodBonus[siteID]
 }
 
 // MainMethodBonus is the main-site rule. An absent rule is off.
@@ -167,27 +206,14 @@ func MainMethodBonus(method string) (MethodBonusRule, bool) {
 	return rule, ok
 }
 
-// SiteMethodBonusAllowed reports whether Root authorized this method for a site.
+// SiteMethodBonusAllowed reports whether siteID and method are valid for subsite
+// bonus configuration. Per-site main-site authorization (site_method_auth) has been removed.
 func SiteMethodBonusAllowed(siteID int, method string) bool {
-	key, err := canonicalBonusMethod(method)
-	if err == nil {
-		method = key
-	}
-	if raw, ok := readOptionFromDB(getAuthoritativeBonusDB(), TopupSettingKeySiteMethodAuth); ok {
-		if allowed, err := ParseSiteMethodBonusAllowed(raw, siteID, method); err == nil {
-			return allowed
-		}
-	}
-	ts := GetTopupSetting()
-	if ts.SiteMethodAuth == nil {
+	if siteID <= 0 {
 		return false
 	}
-	for _, item := range ts.SiteMethodAuth[siteID] {
-		if item == method {
-			return true
-		}
-	}
-	return false
+	_, err := canonicalBonusMethod(method)
+	return err == nil
 }
 
 // MergeMainMethodBonus 校验一条主站规则，并把它合并进 current。
@@ -246,28 +272,13 @@ func MergeSiteMethodAuth(current string, siteID int, method string, allowed bool
 	return marshalBonusSetting(next)
 }
 
-// MergeSiteMethodBonusWithAuth validates a site rule against the authoritative
-// currentAuth JSON read inside the same SQL transaction, and merges it into currentBonus.
-func MergeSiteMethodBonusWithAuth(currentBonus, currentAuth string, siteID int, method string, enabled bool, rate string) (string, error) {
-	if siteID <= 0 {
-		return "", errBonusMethod("site is required")
-	}
-	key, err := canonicalBonusMethod(method)
-	if err != nil {
-		return "", err
-	}
-	allowed, err := ParseSiteMethodBonusAllowed(currentAuth, siteID, key)
-	if err != nil {
-		return "", err
-	}
-	if !allowed {
-		return "", errBonusMethod("payment method is not authorized for this site")
-	}
-	return mergeAuthorizedSiteMethodBonus(currentBonus, siteID, key, enabled, rate)
+// MergeSiteMethodBonusWithAuth validates and merges a site bonus rule into currentBonus.
+// currentAuth is ignored now that per-site main-site authorization has been removed.
+func MergeSiteMethodBonusWithAuth(currentBonus, _ string, siteID int, method string, enabled bool, rate string) (string, error) {
+	return MergeSiteMethodBonus(currentBonus, siteID, method, enabled, rate)
 }
 
-// MergeSiteMethodBonus 校验一条站长规则（必须在 Root 授权的支付方式内），
-// 并把它合并进 current。
+// MergeSiteMethodBonus 校验一条站长规则，并把它合并进 current。
 func MergeSiteMethodBonus(current string, siteID int, method string, enabled bool, rate string) (string, error) {
 	if siteID <= 0 {
 		return "", errBonusMethod("site is required")
@@ -275,9 +286,6 @@ func MergeSiteMethodBonus(current string, siteID int, method string, enabled boo
 	key, err := canonicalBonusMethod(method)
 	if err != nil {
 		return "", err
-	}
-	if !SiteMethodBonusAllowed(siteID, key) {
-		return "", errBonusMethod("payment method is not authorized for this site")
 	}
 	return mergeAuthorizedSiteMethodBonus(current, siteID, key, enabled, rate)
 }
@@ -321,9 +329,8 @@ func MergeSiteBonusMarginFill(current string, siteID int, allowed bool) (string,
 	return marshalBonusSetting(next)
 }
 
-// LockAndMergeSiteMethodBonusTx locks the authoritative site_method_auth and
-// site_method_bonus rows in the same SQL transaction, validates that Root
-// currently authorizes the method for siteID, and writes the updated rule.
+// LockAndMergeSiteMethodBonusTx locks the authoritative site_method_bonus row in
+// the SQL transaction, validates the site and rule, and writes the updated rule.
 func LockAndMergeSiteMethodBonusTx(tx *gorm.DB, siteID int, method string, enabled bool, rate string) (string, error) {
 	if tx == nil {
 		return "", errBonusMethod("transaction is required")
@@ -335,24 +342,19 @@ func LockAndMergeSiteMethodBonusTx(tx *gorm.DB, siteID int, method string, enabl
 		return "", err
 	}
 	rawValues, err := loadBonusOptionsTx(tx, []string{
-		TopupSettingKeySiteMethodAuth,
 		TopupSettingKeySiteMethodBonus,
 	}, true)
 	if err != nil {
 		return "", err
 	}
-	authJSON, hasAuth := rawValues[TopupSettingKeySiteMethodAuth]
 	bonusJSON, hasBonus := rawValues[TopupSettingKeySiteMethodBonus]
-	if !hasAuth || !hasBonus {
+	if !hasBonus {
 		ts := GetTopupSetting()
-		if !hasAuth && ts.SiteMethodAuth != nil {
-			authJSON, _ = marshalBonusSetting(ts.SiteMethodAuth)
-		}
-		if !hasBonus && ts.SiteMethodBonus != nil {
+		if ts.SiteMethodBonus != nil {
 			bonusJSON, _ = marshalBonusSetting(ts.SiteMethodBonus)
 		}
 	}
-	merged, err := MergeSiteMethodBonusWithAuth(bonusJSON, authJSON, siteID, method, enabled, rate)
+	merged, err := MergeSiteMethodBonus(bonusJSON, siteID, method, enabled, rate)
 	if err != nil {
 		return "", err
 	}
@@ -363,8 +365,8 @@ func LockAndMergeSiteMethodBonusTx(tx *gorm.DB, siteID int, method string, enabl
 }
 
 // LoadBonusPolicySnapshotTx evaluates the bonus policy for (siteID, isTeam, method, faceUSD)
-// inside tx, optionally locking the option rows so that concurrent Root authorization
-// or rate updates are serialized with order creation (G.4.2 / G.4.11 / G.4.14).
+// inside tx, optionally locking the option rows so that concurrent rate updates
+// are serialized with order creation (G.4.2 / G.4.11 / G.4.14).
 func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method string, faceUSD decimal.Decimal, lock bool) (BonusPolicySnapshot, error) {
 	faceUSD = faceUSD.Round(6)
 	snap := BonusPolicySnapshot{
@@ -395,7 +397,6 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 	keys := []string{
 		TopupSettingKeyMethodBonus,
 		TopupSettingKeySiteBonusMarginFill,
-		TopupSettingKeySiteMethodAuth,
 		TopupSettingKeySiteMethodBonus,
 	}
 	rawValues, err := loadBonusOptionsTx(tx, keys, lock)
@@ -416,24 +417,11 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 		}
 		snap.MainAuthorized = ok && rule.Enabled
 	} else {
-		rawAuth, hasAuth := rawValues[TopupSettingKeySiteMethodAuth]
-		if !hasAuth {
-			if ts := GetTopupSetting(); ts.SiteMethodAuth != nil {
-				rawAuth, _ = marshalBonusSetting(ts.SiteMethodAuth)
-			}
-		}
-		allowed, err := ParseSiteMethodBonusAllowed(rawAuth, siteID, key)
-		if err != nil {
-			return snap, err
-		}
-		snap.SiteAuthorized = allowed
+		snap.SiteAuthorized = true
 		if rawFill, hasFill := rawValues[TopupSettingKeySiteBonusMarginFill]; hasFill {
 			snap.MarginFillAllowed, _ = ParseSiteBonusMarginFillAllowed(rawFill, siteID)
 		} else {
 			snap.MarginFillAllowed = SiteBonusMarginFillAllowed(siteID)
-		}
-		if !allowed {
-			return snap, nil
 		}
 		rawBonus, hasBonus := rawValues[TopupSettingKeySiteMethodBonus]
 		if !hasBonus {
@@ -441,7 +429,7 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 				rawBonus, _ = marshalBonusSetting(ts.SiteMethodBonus)
 			}
 		}
-		rule, ok, err = ParseSiteMethodBonus(rawAuth, rawBonus, siteID, key)
+		rule, ok, err = ParseSiteMethodBonusRule(rawBonus, siteID, key)
 		if err != nil {
 			return snap, err
 		}
@@ -545,7 +533,7 @@ func loadBonusOptionsTx(tx *gorm.DB, keys []string, lock bool) (map[string]strin
 			}
 		}
 	}
-	q := db.Table("options").Select("key, value").Where("key IN ?", keys).Order("key ASC")
+	q := db.Table("options").Select("key, value").Where(map[string]any{"key": keys}).Order(clause.OrderByColumn{Column: clause.Column{Name: "key"}})
 	if lock && tx != nil && bonusLockForUpdateFn != nil {
 		q = bonusLockForUpdateFn(q)
 	}
@@ -581,7 +569,7 @@ func upsertBonusOptionRowTx(tx *gorm.DB, key, value string) error {
 	if err := ensureBonusOptionRowTx(tx, key); err != nil {
 		return err
 	}
-	return tx.Table("options").Where("key = ?", key).Update("value", value).Error
+	return tx.Table("options").Where(map[string]any{"key": key}).Update("value", value).Error
 }
 
 // ApplyMethodBonusOption 把一条已校验的加赠配置同步进内存。
@@ -675,39 +663,26 @@ type bonusMethodError struct{ text string }
 
 func (e *bonusMethodError) Error() string { return e.text }
 
-// SiteMethodBonus is the site-owner rule inside an authorized method.
+// SiteMethodBonus returns the site-owner bonus rule for siteID and method
+// from the authoritative DB when wired, falling back to the in-memory option snapshot.
 func SiteMethodBonus(siteID int, method string) (MethodBonusRule, bool) {
-	key, err := canonicalBonusMethod(method)
-	if err == nil {
-		method = key
+	if siteID <= 0 {
+		return MethodBonusRule{}, false
 	}
-	db := getAuthoritativeBonusDB()
-	if db != nil {
-		rawAuth, hasAuth := readOptionFromDB(db, TopupSettingKeySiteMethodAuth)
-		rawBonus, hasBonus := readOptionFromDB(db, TopupSettingKeySiteMethodBonus)
-		if hasAuth || hasBonus {
-			if !hasAuth || !hasBonus {
-				ts := GetTopupSetting()
-				if !hasAuth && ts.SiteMethodAuth != nil {
-					rawAuth, _ = marshalBonusSetting(ts.SiteMethodAuth)
-				}
-				if !hasBonus && ts.SiteMethodBonus != nil {
-					rawBonus, _ = marshalBonusSetting(ts.SiteMethodBonus)
-				}
-			}
-			if rule, ok, err := ParseSiteMethodBonus(rawAuth, rawBonus, siteID, method); err == nil {
-				return rule, ok
-			}
+	key, err := canonicalBonusMethod(method)
+	if err != nil {
+		return MethodBonusRule{}, false
+	}
+	if rawBonus, hasBonus := readOptionFromDB(getAuthoritativeBonusDB(), TopupSettingKeySiteMethodBonus); hasBonus {
+		if rule, ok, err := ParseSiteMethodBonusRule(rawBonus, siteID, key); err == nil {
+			return rule, ok
 		}
 	}
 	ts := GetTopupSetting()
 	if ts.SiteMethodBonus == nil {
 		return MethodBonusRule{}, false
 	}
-	if !SiteMethodBonusAllowed(siteID, method) {
-		return MethodBonusRule{}, false
-	}
 	rules := ts.SiteMethodBonus[siteID]
-	rule, ok := rules[method]
+	rule, ok := rules[key]
 	return rule, ok
 }

@@ -54,6 +54,7 @@ import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -481,7 +482,10 @@ export function SitesPanel(props: {
                       </button>
                     </TableCell>
                     <TableCell>
-                      {row.owner_username || `#${row.owner_user_id}`}
+                      {formatUserIdentity(
+                        row.owner_user_id,
+                        row.owner_username
+                      )}
                     </TableCell>
                     <TableCell>
                       <div className='flex flex-col gap-0.5'>

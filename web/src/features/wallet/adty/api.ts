@@ -25,8 +25,40 @@ import type {
   AdtyQuote,
   AdtyTopupBusiness,
   AdtyTopupHistoryFilters,
-  AdtyTopupInfo,
+  AdtyTopupInfo as BaseAdtyTopupInfo,
 } from './types'
+
+export type AdtyTopupInfo = BaseAdtyTopupInfo & {
+  /** Active payment-method recharge bonus rates keyed by canonical method (e.g. alipay, wxpay, usdt). */
+  method_bonus_rates?: Record<string, string>
+}
+
+/**
+ * Formats a bonus rate string (either decimal fraction like "0.05" or percentage like "5")
+ * into a clean percentage number string (e.g. "5", "2.5"), or null when inactive.
+ */
+export function formatBonusPercentValue(raw?: string | number): string | null {
+  if (raw === undefined || raw === null) return null
+  const num = Number(String(raw).trim())
+  if (!Number.isFinite(num) || num <= 0) return null
+  const percent = num <= 1 ? num * 100 : num
+  const rounded = Number(percent.toFixed(2))
+  return rounded > 0 ? String(rounded) : null
+}
+
+/** Resolves the active recharge bonus percent for a payment method id (maps usdt.* -> usdt). */
+export function resolveMethodBonusPercent(
+  methodId: string,
+  methodBonusRates?: Record<string, string>
+): string | null {
+  if (!methodBonusRates) return null
+  const normalized = methodId.toLowerCase().trim()
+  const raw =
+    methodBonusRates[methodId] ??
+    methodBonusRates[normalized] ??
+    (normalized.startsWith('usdt') ? methodBonusRates.usdt : undefined)
+  return formatBonusPercentValue(raw)
+}
 
 type ApiResponse<T> = { success: boolean; message?: string; data: T }
 
@@ -55,7 +87,8 @@ export async function quoteAdtyTopup(
   method: string,
   paymentScene = 'wallet_topup',
   channelId?: number,
-  business?: AdtyTopupBusiness
+  business?: AdtyTopupBusiness,
+  teamId?: number
 ): Promise<{ quote: AdtyQuote; available: boolean }> {
   const res = await api.post<
     ApiResponse<{ quote: AdtyQuote; available: boolean }>
@@ -65,6 +98,7 @@ export async function quoteAdtyTopup(
     channel_id: channelId,
     payment_scene: paymentScene,
     business,
+    team_id: teamId,
   })
   return requireServerSuccess(res.data).data
 }

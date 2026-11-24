@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { EmptyState } from '@/components/empty-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -41,10 +42,10 @@ const METHOD_LABELS: Record<string, string> = {
 const rowValue = (row: MethodRow) =>
   JSON.stringify({ enabled: row.enabled, rate: row.rate })
 
-/** Payment-method gifts for this site's top-ups; the bonus is paid from the owner's earnings. */
+/** Recharge bonus rules by payment method for this site; the bonus is paid from the owner's earnings. */
 export function BonusPanel(props: { site: OwnerSite }) {
   const { t } = useTranslation()
-  const saved = props.site.bonus_methods
+  const saved = props.site.bonus_methods ?? []
   const savedRef = useRef<Map<string, string>>(
     new Map(saved.map((row) => [row.method, rowValue(row)]))
   )
@@ -52,7 +53,7 @@ export function BonusPanel(props: { site: OwnerSite }) {
     saved.map(({ method, enabled, rate }) => ({ method, enabled, rate }))
   )
   useEffect(() => {
-    const incoming = props.site.bonus_methods.map(
+    const incoming = (props.site.bonus_methods ?? []).map(
       ({ method, enabled, rate }) => ({
         method,
         enabled,
@@ -101,15 +102,14 @@ export function BonusPanel(props: { site: OwnerSite }) {
     <div className='flex flex-col gap-4'>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Your customers get this bonus on top-ups with the chosen payment method. It is paid from your earnings, and only methods the platform authorized for this site are shown.'
+          'Configure recharge bonus rates by payment method. Eligible customer recharges receive the configured bonus paid from your earnings.'
         )}
       </p>
       {rows.length === 0 && (
-        <p className='text-sm'>
-          {t(
-            'No payment method is authorized for a gift yet. Ask the platform operator to authorize one.'
-          )}
-        </p>
+        <EmptyState
+          className='min-h-24'
+          title={t('No payment methods are currently enabled on the main site.')}
+        />
       )}
       {rows.map((row) => (
         <div
@@ -129,7 +129,7 @@ export function BonusPanel(props: { site: OwnerSite }) {
           </div>
           <div className='flex flex-col gap-1'>
             <Label htmlFor={`bonus-rate-${row.method}`}>
-              {t('Bonus rate')}
+              {t('Recharge bonus rate')}
             </Label>
             <Input
               id={`bonus-rate-${row.method}`}
@@ -142,10 +142,11 @@ export function BonusPanel(props: { site: OwnerSite }) {
               }
             />
             <span className='text-muted-foreground text-sm'>
-              {t('A rate of 0.025 pays 2.5% of the top-up.')}
+              {t('A rate of 0.025 grants 2.5% of the recharge amount.')}
             </span>
           </div>
           <Button
+            type='button'
             variant='brand'
             size='sm'
             className='self-start'

@@ -170,6 +170,17 @@ func QueryAdtyTopUp(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"status": topUp.Status})
 }
 
+type adtyPaymentOrphanReviewView struct {
+	*model.PaymentOrphanReview
+	OperatorUsername string `json:"operator_username,omitempty"`
+}
+
+type adtyPaymentOrphanEventView struct {
+	*model.PaymentOrphanEvent
+	ResolvedByUsername string                       `json:"resolved_by_username,omitempty"`
+	Review             *adtyPaymentOrphanReviewView `json:"review,omitempty"`
+}
+
 // GetPaymentOrphans 分页列出对不上的支付回调（任务 3.5）。
 func GetPaymentOrphans(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
@@ -178,8 +189,36 @@ func GetPaymentOrphans(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	ids := make([]int, 0, len(events)*2)
+	for _, ev := range events {
+		if ev == nil {
+			continue
+		}
+		ids = append(ids, ev.ResolvedBy)
+		if ev.Review != nil {
+			ids = append(ids, ev.Review.OperatorID)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]adtyPaymentOrphanEventView, 0, len(events))
+	for _, ev := range events {
+		if ev == nil {
+			continue
+		}
+		view := adtyPaymentOrphanEventView{
+			PaymentOrphanEvent: ev,
+			ResolvedByUsername: names[ev.ResolvedBy],
+		}
+		if ev.Review != nil {
+			view.Review = &adtyPaymentOrphanReviewView{
+				PaymentOrphanReview: ev.Review,
+				OperatorUsername:    names[ev.Review.OperatorID],
+			}
+		}
+		items = append(items, view)
+	}
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(events)
+	pageInfo.SetItems(items)
 	common.ApiSuccess(c, pageInfo)
 }
 
@@ -318,6 +357,14 @@ func ResolvePaymentOrphan(c *gin.Context) {
 		return
 	}
 	recordManageAudit(c, "adty.payment_orphan.resolve", map[string]any{"id": id, "review_id": review.ID, "status": review.Status})
+	if review != nil {
+		names := model.LookupUsernamesByIDs(model.DB, []int{review.OperatorID})
+		common.ApiSuccess(c, adtyPaymentOrphanReviewView{
+			PaymentOrphanReview: review,
+			OperatorUsername:    names[review.OperatorID],
+		})
+		return
+	}
 	common.ApiSuccess(c, review)
 }
 
@@ -441,7 +488,7 @@ func PreviewAdtyTopUpRefund(c *gin.Context) {
 		}
 	}
 	redactAdtyManualRefundFactsForViewer(c, result.Facts)
-	common.ApiSuccess(c, result)
+	common.ApiSuccess(c, presentAdtyTopUpRefundResult(result))
 }
 
 func RefundAdtyTopUp(c *gin.Context) {
@@ -514,7 +561,7 @@ func RefundAdtyTopUp(c *gin.Context) {
 	}
 	recordManageAuditFor(c, applied.Refund.UserId, "adty.topup.refund.apply", auditParams)
 	redactAdtyManualRefundResultForViewer(c, applied)
-	common.ApiSuccess(c, applied)
+	common.ApiSuccess(c, presentAdtyManualRefundResult(applied))
 }
 
 func ListAdtyTopUpManualRefunds(c *gin.Context) {
@@ -524,7 +571,7 @@ func ListAdtyTopUpManualRefunds(c *gin.Context) {
 		return
 	}
 	redactAdtyManualRefundResultForViewer(c, result)
-	common.ApiSuccess(c, result)
+	common.ApiSuccess(c, presentAdtyManualRefundResult(result))
 }
 
 func GetAdtyTopUpManualRefund(c *gin.Context) {
@@ -534,7 +581,7 @@ func GetAdtyTopUpManualRefund(c *gin.Context) {
 		return
 	}
 	redactAdtyManualRefundResultForViewer(c, result)
-	common.ApiSuccess(c, result)
+	common.ApiSuccess(c, presentAdtyManualRefundResult(result))
 }
 
 func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refundID string, actor model.AdtyRefundActor, idemKey string) (*model.AdtyManualRefundResult, error)) {
@@ -611,7 +658,7 @@ func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refund
 	}
 	recordManageAuditFor(c, result.Refund.UserId, "adty.topup.refund."+step, audit)
 	redactAdtyManualRefundResultForViewer(c, result)
-	common.ApiSuccess(c, result)
+	common.ApiSuccess(c, presentAdtyManualRefundResult(result))
 }
 
 func ApproveAdtyTopUpManualRefund(c *gin.Context) {
@@ -672,6 +719,11 @@ func writeAdtyFinanceError(c *gin.Context, err error) {
 	}
 }
 
+type adtyGiftFulfillmentAdminItem struct {
+	model.AdtyGiftFulfillment
+	Username string `json:"username"`
+}
+
 // GetAdtyGiftFulfillments lists site gift fulfillment records for Root review (R2-039).
 func GetAdtyGiftFulfillments(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
@@ -689,8 +741,20 @@ func GetAdtyGiftFulfillments(c *gin.Context) {
 		writeAdtyFinanceError(c, err)
 		return
 	}
+	ids := make([]int, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.UserId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]adtyGiftFulfillmentAdminItem, len(rows))
+	for i, row := range rows {
+		items[i] = adtyGiftFulfillmentAdminItem{
+			AdtyGiftFulfillment: row,
+			Username:            names[row.UserId],
+		}
+	}
 	common.ApiSuccess(c, gin.H{
-		"items":     rows,
+		"items":     items,
 		"total":     total,
 		"page":      pageInfo.Page,
 		"page_size": pageInfo.PageSize,

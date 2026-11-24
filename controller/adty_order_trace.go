@@ -16,24 +16,46 @@ import (
 // Only explicitly linked records are exposed. A customer's other wallet
 // operations and a site's aggregated daily earnings do not belong to an order.
 type adtyOrderTraceEntry struct {
-	Id             int64            `json:"id"`
-	Kind           string           `json:"kind"`
-	Source         string           `json:"source"`
-	Status         string           `json:"status"`
-	CreatedAt      int64            `json:"created_at"`
-	Reference      string           `json:"reference"`
-	Amount         *decimal.Decimal `json:"amount,omitempty"`
-	Currency       string           `json:"currency,omitempty"`
-	DeltaQuota     *int64           `json:"delta_quota,omitempty"`
-	BalanceBefore  *decimal.Decimal `json:"balance_before,omitempty"`
-	BalanceAfter   *decimal.Decimal `json:"balance_after,omitempty"`
-	PendingDelta   *decimal.Decimal `json:"pending_delta,omitempty"`
-	AvailableDelta *decimal.Decimal `json:"available_delta,omitempty"`
-	FrozenDelta    *decimal.Decimal `json:"frozen_delta,omitempty"`
-	WithdrawnDelta *decimal.Decimal `json:"withdrawn_delta,omitempty"`
-	OperatorId     int              `json:"operator_id,omitempty"`
-	Note           string           `json:"note,omitempty"`
-	Proof          string           `json:"proof,omitempty"`
+	Id               int64            `json:"id"`
+	Kind             string           `json:"kind"`
+	Source           string           `json:"source"`
+	Status           string           `json:"status"`
+	CreatedAt        int64            `json:"created_at"`
+	Reference        string           `json:"reference"`
+	Amount           *decimal.Decimal `json:"amount,omitempty"`
+	Currency         string           `json:"currency,omitempty"`
+	DeltaQuota       *int64           `json:"delta_quota,omitempty"`
+	BalanceBefore    *decimal.Decimal `json:"balance_before,omitempty"`
+	BalanceAfter     *decimal.Decimal `json:"balance_after,omitempty"`
+	PendingDelta     *decimal.Decimal `json:"pending_delta,omitempty"`
+	AvailableDelta   *decimal.Decimal `json:"available_delta,omitempty"`
+	FrozenDelta      *decimal.Decimal `json:"frozen_delta,omitempty"`
+	WithdrawnDelta   *decimal.Decimal `json:"withdrawn_delta,omitempty"`
+	OperatorId       int              `json:"operator_id,omitempty"`
+	OperatorUsername string           `json:"operator_username,omitempty"`
+	Note             string           `json:"note,omitempty"`
+	Proof            string           `json:"proof,omitempty"`
+}
+
+func enrichAdtyOrderTraceEntries(entries []adtyOrderTraceEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	ids := make([]int, 0, len(entries))
+	for _, entry := range entries {
+		if entry.OperatorId > 0 {
+			ids = append(ids, entry.OperatorId)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	for i := range entries {
+		if entries[i].OperatorId > 0 {
+			entries[i].OperatorUsername = names[entries[i].OperatorId]
+		}
+	}
 }
 
 func GetRechargeAuditOrder(c *gin.Context) { getAdtyUnifiedOrderTrace(c, nil, nil) }
@@ -154,6 +176,7 @@ func getAdtyUnifiedOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID *int)
 			entries[i].BalanceBefore, entries[i].BalanceAfter = nil, nil
 		}
 	}
+	enrichAdtyOrderTraceEntries(entries)
 	var cancellation *service.SiteInviteCancelState
 	if order.SourceType == "site_invite_withdrawal" {
 		var row model.AdtySiteInviteWithdrawal
@@ -383,6 +406,7 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 			}
 		}
 	}
+	enrichAdtyOrderTraceEntries(entries)
 	common.ApiSuccess(c, gin.H{"order": order, "refund": refund,
 		"section": section, "sections": sections, "items": entries, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }

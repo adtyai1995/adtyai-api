@@ -38,6 +38,7 @@ import {
   type PaymentSceneConfig,
 } from './api'
 import { PaymentSceneEditor } from './scene-editor'
+import { sceneBusinessLabels } from './schema'
 
 function SceneManagement(props: { userId: number }) {
   const { t } = useTranslation()
@@ -118,7 +119,10 @@ function SceneManagement(props: { userId: number }) {
           >
             <div className='min-w-0 flex-1 break-words'>
               <p className='font-medium'>{t(scene.name)}</p>
-              <p className='text-muted-foreground text-sm'>{scene.key}</p>
+              <p className='text-muted-foreground text-sm'>
+                {scene.key} ·{' '}
+                {t(sceneBusinessLabels[scene.business] ?? scene.business)}
+              </p>
             </div>
             <StatusBadge
               variant={scene.enabled ? 'success' : 'neutral'}

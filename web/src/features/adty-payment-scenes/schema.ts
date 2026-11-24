@@ -18,6 +18,28 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+export const ACTIVE_SCENE_BUSINESSES = [
+  'wallet_topup',
+  'team_topup',
+  'owner_margin_topup',
+] as const
+
+export type ActiveSceneBusiness = (typeof ACTIVE_SCENE_BUSINESSES)[number]
+
+export const sceneBusinessLabels: Record<string, string> = {
+  wallet_topup: 'Site-wide User Top-up',
+  team_topup: 'Main-site Team Top-up',
+  owner_margin_topup: 'Owner Margin Top-up',
+  owner_self_use_topup: 'Owner Self-use Top-up (Legacy)',
+}
+
+export const sceneBusinessDescriptions: Record<ActiveSceneBusiness, string> = {
+  wallet_topup:
+    'Covers main-site users, subsite users, and subsite teams.',
+  team_topup: 'Applies to main-site teams only.',
+  owner_margin_topup: 'Applies to subsite owner margin deposits.',
+}
+
 const money = z
   .string()
   .regex(/^\d+(\.\d{1,8})?$/, 'Invalid parameters')
@@ -26,12 +48,7 @@ export const paymentSceneSchema = z
   .object({
     key: z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/, 'Invalid parameters'),
     name: z.string().trim().min(1, 'Required').max(120),
-    business: z.enum([
-      'wallet_topup',
-      'team_topup',
-      'owner_self_use_topup',
-      'owner_margin_topup',
-    ]),
+    business: z.enum(ACTIVE_SCENE_BUSINESSES),
     enabled: z.boolean(),
     providers: z.array(z.string()).min(1, 'Required').max(6),
     methods: z.array(z.string().min(1).max(255)).max(100),
@@ -47,10 +64,7 @@ export const paymentSceneSchema = z
     max_usd: money,
   })
   .superRefine((scene, context) => {
-    if (
-      scene.business === 'owner_self_use_topup' ||
-      scene.business === 'owner_margin_topup'
-    ) {
+    if (scene.business === 'owner_margin_topup') {
       if (scene.site_scope !== 'all_sites' && scene.site_scope !== 'selected') {
         context.addIssue({
           code: 'custom',
@@ -87,6 +101,8 @@ export const paymentSceneSchema = z
       })
     }
   })
+
+export type PaymentSceneFormValues = z.infer<typeof paymentSceneSchema>
 
 export const sceneAudienceLabels = {
   all: 'All sites and main site',

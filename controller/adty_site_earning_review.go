@@ -10,6 +10,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type adtySiteEarningReviewItem struct {
+	model.AdtySiteEarningEvent
+	Username          string `json:"username"`
+	SiteOwnerUsername string `json:"site_owner_username,omitempty"`
+}
+
 // GetAdtySiteEarningReviews exposes unresolved historical task adjustments to
 // finance. The original site and stable task root remain visible after transfer.
 func GetAdtySiteEarningReviews(c *gin.Context) {
@@ -25,7 +31,20 @@ func GetAdtySiteEarningReviews(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"total": total, "items": events})
+	ids := make([]int, 0, len(events)*2)
+	for _, ev := range events {
+		ids = append(ids, ev.UserId, ev.SiteOwnerUserId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]adtySiteEarningReviewItem, len(events))
+	for i, ev := range events {
+		items[i] = adtySiteEarningReviewItem{
+			AdtySiteEarningEvent: ev,
+			Username:             names[ev.UserId],
+			SiteOwnerUsername:    names[ev.SiteOwnerUserId],
+		}
+	}
+	common.ApiSuccess(c, gin.H{"total": total, "items": items})
 }
 
 // ReviewAdtySiteEarning resolves an original charge's disposition, rather than

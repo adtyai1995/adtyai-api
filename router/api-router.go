@@ -5,6 +5,7 @@ import (
 
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 
 	"github.com/gin-contrib/gzip"
@@ -114,6 +115,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/2fa/backup_codes", middleware.DisableCache(), controller.RegenerateBackupCodes)
 			}
 
+			middleware.DeclareAdtyAccessTokenRoute(http.MethodPost, "/api/user/:id/reset-password", "scope", service.AccessTokenScopeOf(authz.AdtyUserWrite))
 			adminRoute := userRoute.Group("/")
 			adminRoute.Use(middleware.AdminAuth())
 			{
@@ -127,6 +129,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.POST("/", controller.CreateUser)
 				adminRoute.POST("/manage", controller.ManageUser)
 				adminRoute.PUT("/", controller.UpdateUser)
+				adminRoute.POST("/:id/reset-password", middleware.UserCriticalRateLimit("CT:admin-reset-password"), middleware.DisableCache(), controller.AdminResetUserPassword)
 				adminRoute.DELETE("/:id", controller.DeleteUser)
 				adminRoute.DELETE("/:id/reset_passkey", controller.AdminResetPasskey)
 

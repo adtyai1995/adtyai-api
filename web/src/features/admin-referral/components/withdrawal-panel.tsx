@@ -41,10 +41,10 @@ import {
   WITHDRAWAL_STATUS_VARIANTS,
   WITHDRAWAL_TARGET_LABELS,
 } from '@/features/referral/lib/labels'
-import type { ReferralWithdrawal } from '@/features/referral/types'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -53,10 +53,11 @@ import {
   getAdminWithdrawals,
   payWithdrawal,
   reviewWithdrawal,
+  type AdminReferralWithdrawal,
 } from '../api'
 import { payoutText } from '../lib/payout'
 
-function PayeeCell(props: { row: ReferralWithdrawal }) {
+function PayeeCell(props: { row: AdminReferralWithdrawal }) {
   const { t } = useTranslation()
   const row = props.row
   if (row.account_type === 'usdt') {
@@ -110,8 +111,10 @@ export function WithdrawalPanel(props: {
   const [ownStatus, setOwnStatus] = useState('pending')
   const status = props.status ?? ownStatus
   const [page, setPage] = useState(1)
-  const [rejecting, setRejecting] = useState<ReferralWithdrawal | null>(null)
-  const [paying, setPaying] = useState<ReferralWithdrawal | null>(null)
+  const [rejecting, setRejecting] = useState<AdminReferralWithdrawal | null>(
+    null
+  )
+  const [paying, setPaying] = useState<AdminReferralWithdrawal | null>(null)
   const [reason, setReason] = useState('')
   const [txnNo, setTxnNo] = useState('')
   const [proofUrl, setProofUrl] = useState('')
@@ -125,7 +128,7 @@ export function WithdrawalPanel(props: {
     void invalidateSidebarBadges(queryClient)
   }
   const review = useMutation({
-    mutationFn: (input: { row: ReferralWithdrawal; approve: boolean }) =>
+    mutationFn: (input: { row: AdminReferralWithdrawal; approve: boolean }) =>
       reviewWithdrawal(input.row.id, { approve: input.approve, reason }),
     onSuccess: () => {
       toast.success(t('Saved successfully'))
@@ -136,7 +139,7 @@ export function WithdrawalPanel(props: {
     onError: (err) => handleServerError(err),
   })
   const pay = useMutation({
-    mutationFn: (row: ReferralWithdrawal) =>
+    mutationFn: (row: AdminReferralWithdrawal) =>
       payWithdrawal(row.id, {
         txn_no: txnNo.trim(),
         proof_url: proofUrl,
@@ -199,7 +202,12 @@ export function WithdrawalPanel(props: {
             header: t('Time'),
             cell: (row) => formatTimestamp(row.submitted_at),
           },
-          { id: 'user', header: t('User ID'), cell: (row) => row.user_id },
+          {
+            id: 'user',
+            header: t('User'),
+            cellClassName: 'tabular-nums',
+            cell: (row) => formatUserIdentity(row.user_id, row.username),
+          },
           {
             id: 'payee',
             header: t('Pay to'),

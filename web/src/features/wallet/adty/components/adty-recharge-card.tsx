@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
 import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -38,11 +39,26 @@ import { formatNumber } from '@/lib/format'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
-import { quoteAdtyTopup } from '../api'
+import {
+  formatBonusPercentValue,
+  quoteAdtyTopup,
+  type AdtyTopupInfo,
+} from '../api'
 import { paymentMethodKey } from '../lib/methods'
 import { formatPaymentAmount, formatUsd } from '../lib/money'
-import type { AdtyMethod, AdtyTopupBusiness, AdtyTopupInfo } from '../types'
+import type { AdtyMethod, AdtyTopupBusiness } from '../types'
 import { PaymentMethodButtons } from './payment-method-buttons'
+
+function formatFixedPayAmount(raw: string): string {
+  const num = Number(raw)
+  if (!Number.isFinite(num)) return raw
+  const trimmed = raw.trim()
+  const dotIndex = trimmed.indexOf('.')
+  if (dotIndex >= 0 && trimmed.length - dotIndex - 1 > 2) {
+    return trimmed
+  }
+  return num.toFixed(2)
+}
 
 type AdtyRechargeCardProps = {
   business?: AdtyTopupBusiness
@@ -145,14 +161,16 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     quote && Number.isFinite(quote.credit_quota) && quote.credit_quota > 0
       ? quote.credit_quota / 500_000
       : Number.NaN
+  let principalUsd = validAmount ? amount : 0
   let bonusUsd = 0
-  let totalCreditUsd = amount
+  let totalCreditUsd = validAmount ? amount : 0
   if (validAmount && !ownerTopup && quote) {
     if (Number.isFinite(quotedBonusUsd) && quotedBonusUsd > 0) {
       bonusUsd = quotedBonusUsd
     }
     const hasFace = Number.isFinite(quotedFaceUsd) && quotedFaceUsd > 0
-    totalCreditUsd = (hasFace ? quotedFaceUsd : amount) + bonusUsd
+    principalUsd = hasFace ? quotedFaceUsd : amount
+    totalCreditUsd = principalUsd + bonusUsd
     if (
       Number.isFinite(quotedCreditUsd) &&
       (!hasFace || Math.abs(quotedCreditUsd - totalCreditUsd) < 0.01)
@@ -160,27 +178,63 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
       totalCreditUsd = quotedCreditUsd
     }
   }
-  let creditText = '-'
+  const bonusPercent =
+    bonusUsd > 0
+      ? (formatBonusPercentValue(quote?.bonus_rate) ??
+        (principalUsd > 0
+          ? formatBonusPercentValue(bonusUsd / principalUsd)
+          : null))
+      : null
+  let bonusBreakdownText = ''
   if (validAmount && bonusUsd > 0) {
-    creditText = t('{{total}} (incl. {{bonus}} bonus)', {
-      total: formatUsd(totalCreditUsd, locale),
-      bonus: formatUsd(bonusUsd, locale),
-    })
-  } else if (validAmount && totalCreditUsd > 0) {
-    creditText = formatUsd(totalCreditUsd, locale)
+    if (bonusPercent) {
+      bonusBreakdownText = t(
+        'Principal {{principal}} + Bonus {{bonus}} (+{{percent}}%)',
+        {
+          principal: formatUsd(principalUsd, locale),
+          bonus: formatUsd(bonusUsd, locale),
+          percent: bonusPercent,
+        }
+      )
+    } else {
+      bonusBreakdownText = t('Principal {{principal}} + Bonus {{bonus}}', {
+        principal: formatUsd(principalUsd, locale),
+        bonus: formatUsd(bonusUsd, locale),
+      })
+    }
   }
-  let payText = quote
-    ? formatPaymentAmount(quote.pay_amount, quote.pay_currency, locale)
-    : ''
-  if (quote?.pay_currency === 'USDT') {
-    payText = t('{{amount}} USDT (1 USDT = 1 USD)', {
-      amount: quote.pay_amount,
-    })
-  } else if (quote?.pay_currency === 'CNY') {
-    payText = t('¥{{amount}} (1 USD = {{rate}} CNY)', {
-      amount: Number(quote.pay_amount).toFixed(2),
-      rate: Number(quote.price_cny_per_usd).toFixed(2),
-    })
+
+  let isUsdtChannel = false
+  if (quote) {
+    isUsdtChannel = quote.pay_currency === 'USDT'
+  } else if (method) {
+    isUsdtChannel =
+      method.kind === 'usdt' ||
+      method.id.toLowerCase().startsWith('usdt') ||
+      method.currency === 'USDT'
+  } else {
+    isUsdtChannel =
+      methods.length > 0 && methods.every((item) => item.kind === 'usdt')
+  }
+
+  let payAmountText = isUsdtChannel ? '0.00 USDT' : '¥0.00'
+  let payRateHint = ''
+  if (quote) {
+    if (quote.pay_currency === 'USDT') {
+      payAmountText = `${formatFixedPayAmount(quote.pay_amount)} USDT`
+      payRateHint = t('1 USDT = 1 USD')
+    } else if (quote.pay_currency === 'CNY') {
+      payAmountText = `¥${Number(quote.pay_amount).toFixed(2)}`
+      payRateHint = t('1 USD = {{rate}} CNY', {
+        rate: Number(quote.price_cny_per_usd).toFixed(2),
+      })
+    } else {
+      payAmountText = formatPaymentAmount(
+        quote.pay_amount,
+        quote.pay_currency,
+        locale
+      )
+    }
   }
 
   let cardTitle = t('Add funds')
@@ -294,31 +348,88 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
             methods={methods}
             selected={methodKey}
             onSelect={setMethodKey}
+            methodBonusRates={
+              ownerTopup ? undefined : props.info?.method_bonus_rates
+            }
           />
         </section>
 
         <section
-          className='bg-muted/40 flex flex-col gap-2 rounded-lg border p-4'
+          className='bg-muted/40 flex flex-col gap-3 rounded-xl border p-4 sm:p-5'
           aria-live='polite'
         >
-          <div className='flex flex-wrap items-baseline justify-between gap-2'>
-            <span className='text-muted-foreground text-sm'>
-              {t('You get')}
-            </span>
-            <span className='text-lg font-semibold' data-testid='adty-credit'>
-              {creditText}
-            </span>
-          </div>
-          {quote && (
-            <div className='flex flex-wrap items-baseline justify-between gap-2'>
-              <span className='text-muted-foreground text-sm'>
-                {t('You pay')}
-              </span>
-              <span className='font-medium' data-testid='adty-pay'>
-                {payText}
-              </span>
+          <div className='flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between'>
+            <div className='grid flex-1 gap-3 sm:grid-cols-2 sm:gap-6'>
+              <div className='flex flex-col gap-1'>
+                <span className='text-muted-foreground text-xs font-medium'>
+                  {t('Estimated Credit')}
+                </span>
+                <div className='flex flex-wrap items-baseline gap-2'>
+                  <span
+                    className={cn(
+                      'text-xl font-semibold tracking-tight tabular-nums',
+                      validAmount ? 'text-foreground' : 'text-muted-foreground'
+                    )}
+                    data-testid='adty-credit'
+                  >
+                    {formatUsd(validAmount ? totalCreditUsd : 0, locale)}
+                  </span>
+                  {bonusBreakdownText && (
+                    <span className='bg-emerald-500/12 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium tabular-nums'>
+                      {bonusBreakdownText}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className='flex flex-col gap-1 sm:border-l sm:pl-6'>
+                <div className='flex items-center gap-2'>
+                  <span className='text-muted-foreground text-xs font-medium'>
+                    {t('Amount Due')}
+                  </span>
+                  {quoteQuery.isFetching && (
+                    <span className='text-muted-foreground inline-flex items-center gap-1 text-xs'>
+                      <Loader2
+                        className='size-3 animate-spin'
+                        aria-hidden='true'
+                      />
+                      {t('Calculating...')}
+                    </span>
+                  )}
+                </div>
+                <div className='flex flex-wrap items-baseline gap-2'>
+                  <span
+                    className={cn(
+                      'text-xl font-semibold tracking-tight tabular-nums',
+                      quote ? 'text-foreground' : 'text-muted-foreground'
+                    )}
+                    data-testid='adty-pay'
+                  >
+                    {payAmountText}
+                  </span>
+                  {payRateHint && (
+                    <span className='text-muted-foreground text-xs tabular-nums'>
+                      {payRateHint}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
-          )}
+            <Button
+              variant='brand'
+              className='w-full shrink-0 sm:w-auto sm:min-w-28'
+              disabled={
+                !validAmount ||
+                method === null ||
+                !quoteAvailable ||
+                props.paying ||
+                quoteQuery.isFetching ||
+                quoteQuery.isError
+              }
+              onClick={() => method && props.onPay(amount, method, paymentScene)}
+            >
+              {props.paying ? t('Processing...') : t('Pay now')}
+            </Button>
+          </div>
           {quoteQuery.data && !quoteAvailable && (
             <p className='text-destructive text-sm'>
               {t(
@@ -331,21 +442,6 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
               {quoteError}
             </p>
           )}
-          <Button
-            variant='brand'
-            className='mt-2 sm:self-end'
-            disabled={
-              !validAmount ||
-              method === null ||
-              !quoteAvailable ||
-              props.paying ||
-              quoteQuery.isFetching ||
-              quoteQuery.isError
-            }
-            onClick={() => method && props.onPay(amount, method, paymentScene)}
-          >
-            {props.paying ? t('Processing...') : t('Pay now')}
-          </Button>
         </section>
       </CardContent>
     </Card>

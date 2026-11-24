@@ -382,6 +382,28 @@ func GetAdtyTickets(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if list != nil && list.CanManage && len(list.Tickets) > 0 {
+		missingIDs := make([]int, 0)
+		for _, t := range list.Tickets {
+			if t.UserId > 0 && t.Username == "" {
+				missingIDs = append(missingIDs, t.UserId)
+			}
+			if t.AssigneeId > 0 && t.AssigneeUsername == "" {
+				missingIDs = append(missingIDs, t.AssigneeId)
+			}
+		}
+		if len(missingIDs) > 0 {
+			names := model.LookupUsernamesByIDs(model.DB, missingIDs)
+			for i := range list.Tickets {
+				if list.Tickets[i].UserId > 0 && list.Tickets[i].Username == "" {
+					list.Tickets[i].Username = names[list.Tickets[i].UserId]
+				}
+				if list.Tickets[i].AssigneeId > 0 && list.Tickets[i].AssigneeUsername == "" {
+					list.Tickets[i].AssigneeUsername = names[list.Tickets[i].AssigneeId]
+				}
+			}
+		}
+	}
 	common.ApiSuccess(c, list)
 }
 
@@ -402,10 +424,22 @@ func PostAdtyTicket(c *gin.Context) {
 
 const AdtyTicketImageGrantTTL = 5 * time.Minute
 
+type adtyTicketMessageResponse struct {
+	model.AdtyTicketMessage
+	AuthorUsername string `json:"author_username,omitempty"`
+}
+
+type adtyTicketEventResponse struct {
+	model.AdtyTicketEvent
+	ActorUsername string `json:"actor_username,omitempty"`
+}
+
 type adtyTicketDetailResponse struct {
 	*service.AdtyTicketDetail
-	ImageGrantsExp int64            `json:"image_grants_exp,omitempty"`
-	ImageGrants    map[int64]string `json:"image_grants,omitempty"`
+	Messages       []adtyTicketMessageResponse `json:"messages"`
+	Events         []adtyTicketEventResponse   `json:"events"`
+	ImageGrantsExp int64                       `json:"image_grants_exp,omitempty"`
+	ImageGrants    map[int64]string            `json:"image_grants,omitempty"`
 }
 
 func adtyTicketImageGrantSecret() []byte {
@@ -464,8 +498,54 @@ func GetAdtyTicket(c *gin.Context) {
 			}
 		}
 	}
+	ids := make([]int, 0, len(detail.Messages)+len(detail.Events)+2)
+	if detail.CanManage {
+		if detail.Ticket.UserId > 0 && detail.Ticket.Username == "" {
+			ids = append(ids, detail.Ticket.UserId)
+		}
+		if detail.Ticket.AssigneeId > 0 && detail.Ticket.AssigneeUsername == "" {
+			ids = append(ids, detail.Ticket.AssigneeId)
+		}
+	}
+	for _, msg := range detail.Messages {
+		if msg.AuthorId > 0 {
+			ids = append(ids, msg.AuthorId)
+		}
+	}
+	for _, ev := range detail.Events {
+		if ev.ActorId > 0 {
+			ids = append(ids, ev.ActorId)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	if detail.CanManage {
+		if detail.Ticket.UserId > 0 && detail.Ticket.Username == "" {
+			detail.Ticket.Username = names[detail.Ticket.UserId]
+		}
+		if detail.Ticket.AssigneeId > 0 && detail.Ticket.AssigneeUsername == "" {
+			detail.Ticket.AssigneeUsername = names[detail.Ticket.AssigneeId]
+		}
+	}
+	messages := make([]adtyTicketMessageResponse, len(detail.Messages))
+	for i, msg := range detail.Messages {
+		item := adtyTicketMessageResponse{AdtyTicketMessage: msg}
+		if msg.AuthorId > 0 {
+			item.AuthorUsername = names[msg.AuthorId]
+		}
+		messages[i] = item
+	}
+	events := make([]adtyTicketEventResponse, len(detail.Events))
+	for i, ev := range detail.Events {
+		item := adtyTicketEventResponse{AdtyTicketEvent: ev}
+		if ev.ActorId > 0 {
+			item.ActorUsername = names[ev.ActorId]
+		}
+		events[i] = item
+	}
 	common.ApiSuccess(c, adtyTicketDetailResponse{
 		AdtyTicketDetail: detail,
+		Messages:         messages,
+		Events:           events,
 		ImageGrants:      grants,
 		ImageGrantsExp:   exp,
 	})

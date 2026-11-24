@@ -62,12 +62,13 @@ import {
   REFERRAL_ADMIN_BADGE_KINDS,
   RESELLER_SITES_BADGE_KINDS,
   SITE_OWNER_COMMISSIONS_BADGE_KINDS,
-  SITE_OWNER_STAFF_BADGE_KINDS,
   STAFF_WORKSPACE_BADGE_KINDS,
   useSidebarBadges,
 } from '@/hooks/use-sidebar-badges'
+import { useStatus } from '@/hooks/use-status'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { ROLE } from '@/lib/roles'
+import { readReferralEnabledFromStatus } from '@/lib/status-query'
 import { useAuthStore } from '@/stores/auth-store'
 
 /**
@@ -102,10 +103,6 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     SITE_OWNER_COMMISSIONS_BADGE_KINDS,
     mixedLabel
   )
-  const siteOwnerStaffBadge = sidebarBadges.badge(
-    SITE_OWNER_STAFF_BADGE_KINDS,
-    mixedLabel
-  )
   const referralAdminBadge = sidebarBadges.badge(
     REFERRAL_ADMIN_BADGE_KINDS,
     mixedLabel
@@ -136,11 +133,17 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
   const hasArchivedSite = useAuthStore(
     (state) => state.auth.user?.adty_archived_site_owner === true
   )
+  const { status } = useStatus()
   const isSiteOwner = useAuthStore(
     (state) => state.auth.user?.adty_site_owner === true
   )
+  const userReferralEnabled = useAuthStore(
+    (state) => state.auth.user?.adty_referral_enabled
+  )
+  const referralEnabled =
+    (readReferralEnabledFromStatus(status) ?? userReferralEnabled) === true
   const isPureSiteOwner = isSiteOwner && !isAdmin
-  const showReferral = !isAdmin && !isSiteOwner
+  const showReferral = !isAdmin && !isSiteOwner && referralEnabled
   const hasTeam = useAuthStore(
     (state) => state.auth.user?.adty_has_team === true
   )
@@ -195,7 +198,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         icon: Tags,
       },
       {
-        title: t('Top-up Bonus'),
+        title: t('Recharge Bonus'),
         url: '/site-owner/bonus',
         icon: Gift,
       },
@@ -211,7 +214,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         icon: TrendingUp,
       },
       {
-        title: t('Withdrawal Management'),
+        title: t('Earnings Withdrawals'),
         url: '/site-owner/withdrawals',
         icon: HandCoins,
       },
@@ -239,7 +242,6 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         title: t('Staff accounts'),
         url: '/site-owner/staff',
         icon: UserCog,
-        badge: siteOwnerStaffBadge,
       },
       {
         title: t('Ticket management'),
@@ -499,7 +501,6 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     ownerTicketsBadge,
     platformTicketsBadge,
     siteOwnerCommissionsBadge,
-    siteOwnerStaffBadge,
     referralAdminBadge,
     withdrawalFilter,
     resellerSitesBadge,

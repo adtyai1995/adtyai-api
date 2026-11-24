@@ -30,13 +30,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useNotifications } from '@/hooks/use-notifications'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
+import { DEFAULT_LOGO } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { defaultTopNavLinks } from '../config/top-nav.config'
 import type { TopNavLink } from '../types'
-import { DEFAULT_LOGO } from '@/lib/constants'
-
 import { HeaderLogo } from './header-logo'
 
 const AUTH_PROMPT_SECONDS = 5
@@ -99,7 +98,9 @@ export function PublicHeader(props: PublicHeaderProps) {
   const pathname = routerState.location.pathname
   // Keep the server-rendered brand visible while /api/status refreshes.
   const [prerenderedBrand] = useState(
-    () => typeof document !== 'undefined' && !!document.querySelector('#adty-prerender header')
+    () =>
+      typeof document !== 'undefined' &&
+      !!document.querySelector('#adty-prerender header')
   )
   const loadingBrand = loading && !prerenderedBrand
 
@@ -124,7 +125,6 @@ export function PublicHeader(props: PublicHeaderProps) {
 
   let authContent = (
     <Button
-      variant='brand'
       size='sm'
       className='h-8 rounded-lg px-3.5 text-xs font-medium'
       render={<Link to='/sign-in' />}
@@ -212,28 +212,19 @@ export function PublicHeader(props: PublicHeaderProps) {
 
   return (
     <>
-      <header
-        className={cn(
-          'pointer-events-none fixed inset-x-0 top-0 z-50 border-b transition-colors duration-500',
-          scrolled
-            ? 'border-transparent bg-transparent'
-            : 'border-border bg-background/85 backdrop-blur-[10px]'
-        )}
-      >
+      <header className='pointer-events-none fixed inset-x-0 top-0 z-50'>
         <div
           className={cn(
             'pointer-events-auto mx-auto transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]',
-            scrolled
-              ? 'w-full max-w-[1180px] px-3 pt-3 sm:px-4'
-              : 'w-full max-w-[1180px] px-5 sm:px-10'
+            scrolled ? 'max-w-[52rem] px-3 pt-3' : 'max-w-7xl px-4 pt-0 md:px-6'
           )}
         >
           <nav
             className={cn(
               'flex items-center justify-between gap-2 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]',
               scrolled
-                ? 'bg-background/95 ring-border h-12 rounded-2xl pr-1.5 pl-4 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.18)] ring-1 backdrop-blur-xl dark:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)]'
-                : 'h-[66px]'
+                ? 'bg-background/60 ring-border/50 h-12 rounded-2xl pr-1.5 pl-4 shadow-[0_2px_16px_-6px_rgba(0,0,0,0.08),0_0_0_0.5px_rgba(0,0,0,0.02)] ring-[0.5px] backdrop-blur-2xl dark:shadow-[0_2px_16px_-6px_rgba(0,0,0,0.4)]'
+                : 'h-16 px-2'
             )}
           >
             {/* Logo */}
@@ -467,7 +458,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                 <Link
                   to={isAuthenticated ? '/dashboard' : '/sign-in'}
                   onClick={() => setMobileOpen(false)}
-                  className='bg-brand text-brand-foreground inline-flex h-10 items-center justify-center rounded-lg text-sm font-medium transition-opacity hover:opacity-90 active:opacity-80'
+                  className='bg-foreground text-background inline-flex h-10 items-center justify-center rounded-lg text-sm font-medium transition-opacity hover:opacity-90 active:opacity-80'
                 >
                   {isAuthenticated ? t('Go to Dashboard') : t('Sign in')}
                 </Link>

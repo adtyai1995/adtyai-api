@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -40,47 +40,38 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from '@/components/ui/native-select'
+import { Textarea } from '@/components/ui/textarea'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
-import { getSystemOptions } from '@/features/system-settings/api'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
-import { api } from '@/lib/api'
 import { formatQuotaWithCurrency } from '@/lib/currency'
 import { formatTimestampToDate } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
-import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
+  adjustSite,
   disableSiteDomain,
   disableSiteSenderDomain,
-  getAdminBalanceRequests,
   getAdminSiteBonusMarginFill,
+  getAdminSiteCommissionMargin,
   getCloseMail,
+  type getSite,
   getSiteCustomers,
   resolveCloseMail,
   retryDomainAutomation,
-  reviewAdminBalanceRequest,
   saveAdminSiteBonusMarginFill,
+  saveAdminSiteCommissionMargin,
   SITE_ADMIN_PAGE_SIZE,
   siteAdminKeys,
-  type AdminBalanceRequest,
   type AdminSenderDomain,
   type AdminSiteDomain,
   type CloseMailRecipient,
 } from '../api'
 import type { AdminSite, SiteAudit, SiteStatsResponse } from '../types'
 import { SwitchRow } from './setting-fields'
-
-function balanceRequestStatusLabel(
-  status: AdminBalanceRequest['status'],
-  t: (key: string) => string
-) {
-  if (status === 'pending') return t('Pending')
-  if (status === 'approved') return t('Approved')
-  return t('Rejected')
-}
 
 function closeMailBatchStatusLabel(
   status: string,
@@ -295,68 +286,6 @@ function siteAuditActionLabel(
       return t('Review balance request')
     default:
       return action
-  }
-}
-
-function balanceFundingSourceLabel(
-  source: string,
-  t: (key: string) => string
-): string {
-  switch (source) {
-    case 'auto':
-      return t('Automatic (earnings first, then margin)')
-    case 'site_earnings':
-    case 'earnings':
-      return t('Earnings wallet')
-    case 'site_margin':
-    case 'margin':
-      return t('Margin wallet')
-    case 'platform':
-      return t('Platform')
-    case 'specified_batch':
-      return t('Specified fund batch')
-    default:
-      return source
-  }
-}
-
-function balanceBatchKindLabel(
-  kind: string,
-  t: (key: string) => string
-): string {
-  switch (kind) {
-    case 'principal':
-      return t('Principal')
-    case 'bonus':
-      return t('Bonus')
-    case 'expiring_bonus':
-      return t('Expiring gift')
-    default:
-      return kind
-  }
-}
-
-function balanceBatchSourceLabel(
-  source: string,
-  t: (key: string) => string
-): string {
-  switch (source) {
-    case 'legacy':
-      return t('Legacy balance')
-    case 'topup':
-      return t('Top-up')
-    case 'voucher':
-      return t('Voucher')
-    case 'manual':
-      return t('Manual adjustment')
-    case 'referral':
-      return t('Referral')
-    case 'gift':
-      return t('Gift')
-    case 'site_close':
-      return t('Site closure transfer')
-    default:
-      return source
   }
 }
 
@@ -718,87 +647,199 @@ export function SiteBusinessStatsCard(props: {
   )
 }
 
-const SITE_BONUS_METHODS: ReadonlyArray<{
-  method: 'alipay' | 'wxpay' | 'usdt'
-  label: string
-}> = [
-  { method: 'alipay', label: 'Alipay' },
-  { method: 'wxpay', label: 'WeChat Pay' },
-  { method: 'usdt', label: 'USDT' },
-]
-
-function parseSiteMethodAuth(
-  raw: string | undefined,
-  siteId: number
-): { valid: boolean; authorized: Set<string> } {
-  if (!raw || raw.trim() === '') {
-    return { valid: true, authorized: new Set() }
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { valid: false, authorized: new Set() }
-    }
-    for (const value of Object.values(parsed as Record<string, unknown>)) {
-      if (
-        value !== null &&
-        (!Array.isArray(value) ||
-          value.some((item) => typeof item !== 'string'))
-      ) {
-        return { valid: false, authorized: new Set() }
-      }
-    }
-    const list = (parsed as Record<string, string[] | null>)[String(siteId)]
-    return {
-      valid: true,
-      authorized: new Set(
-        Array.isArray(list) ? list.map((item) => item.trim().toLowerCase()) : []
-      ),
-    }
-  } catch {
-    return { valid: false, authorized: new Set() }
-  }
-}
-
-/** Root-only per-site payment-method gift authorization (ADTY-09-03). */
-export function SiteBonusMethodAuth(props: { siteId: number }) {
+/** Root-only per-site supply discount (cost_factor) editor, located in the Level & Supply tab. */
+export function SiteSupplyDiscountCard(props: { site: AdminSite }) {
   const { t } = useTranslation()
+  const fieldId = useId()
   const queryClient = useQueryClient()
-  const isRoot =
-    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
-  const options = useQuery({
-    queryKey: ['system-options'],
-    queryFn: async () => requireServerSuccess(await getSystemOptions()),
-    enabled: isRoot,
-  })
-  const marginFill = useQuery({
-    queryKey: siteAdminKeys.list('bonus-margin-fill', { siteId: props.siteId }),
-    queryFn: () => getAdminSiteBonusMarginFill(props.siteId),
-    enabled: isRoot,
-  })
+  const user = useAuthStore((state) => state.auth.user)
+  const isRoot = user?.role === ROLE.SUPER_ADMIN
+  const canAdjust = canAdmin(user, ADTY_PERMISSIONS.SITE_ADJUST)
+  const site = props.site
+
+  const savedCostFactor = site.cost_factor ?? ''
+  const [costFactor, setCostFactor] = useState(savedCostFactor)
+  const [reason, setReason] = useState('')
+  const previousSite = useRef(site)
+
+  useEffect(() => {
+    const prev = previousSite.current
+    if (prev === site) return
+    setCostFactor((current) =>
+      current === (prev.cost_factor ?? '') ? (site.cost_factor ?? '') : current
+    )
+    previousSite.current = site
+  }, [site])
+
+  const trimmed = costFactor.trim()
+  const costFactorChanged = trimmed !== savedCostFactor
+  const parsedCostFactor = trimmed === '' ? null : Number(trimmed)
+  const costFactorInvalid =
+    parsedCostFactor !== null &&
+    (!Number.isFinite(parsedCostFactor) || parsedCostFactor <= 0)
+  const editable =
+    canAdjust && site.status !== 'closed' && site.status !== 'closing'
+
   const save = useMutation({
-    mutationFn: async (input: {
-      method: 'alipay' | 'wxpay' | 'usdt'
-      allowed: boolean
-    }) => {
+    mutationFn: () => {
       if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
         throw new Error(t('No permission to perform this action'))
       }
-      const res = await api.put<{
-        success: boolean
-        message?: string
-        data?: { site_id: number; allowed: boolean }
-      }>(`/api/adty/admin/sites/${props.siteId}/bonus-methods`, input)
-      return requireServerSuccess(res.data)
+      const body: Parameters<typeof adjustSite>[1] = {
+        reason: reason.trim(),
+      }
+      if (trimmed === '') {
+        body.clear = ['cost_factor']
+      } else {
+        body.cost_factor = trimmed
+      }
+      return adjustSite(site.id, body)
     },
-    onSuccess: () => {
+    onSuccess: (updated) => {
+      setCostFactor(updated.cost_factor ?? '')
+      setReason('')
+      queryClient.setQueryData<Awaited<ReturnType<typeof getSite>>>(
+        siteAdminKeys.site(site.id),
+        (cached) => (cached ? { ...cached, site: updated } : cached)
+      )
       toast.success(t('Saved successfully'))
-      void queryClient.invalidateQueries({ queryKey: ['system-options'] })
       void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
     },
     onError: (err) => handleServerError(err),
   })
-  const saveMarginFill = useMutation({
+
+  if (!isRoot) return null
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t('Per-site supply discount')}</CardTitle>
+        <CardDescription>
+          {t(
+            'Override the site level supply discount for this specific site. Leave empty to follow the site level supply discount.'
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form
+          className='flex max-w-xl flex-col gap-4'
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!editable || !costFactorChanged || costFactorInvalid) return
+            save.mutate()
+          }}
+        >
+          <dl className='grid gap-3 text-sm sm:grid-cols-2'>
+            <div className='bg-muted/40 rounded-lg border p-3'>
+              <dt className='text-muted-foreground text-xs'>
+                {t('Effective cost factor')}
+              </dt>
+              <dd className='mt-1 font-semibold tabular-nums'>
+                {site.effective_cost_factor ||
+                  site.cost_factor ||
+                  site.tier_cost_factor ||
+                  t('Follow site level')}
+              </dd>
+            </div>
+            <div className='bg-muted/40 rounded-lg border p-3'>
+              <dt className='text-muted-foreground text-xs'>
+                {t('Site level')}
+              </dt>
+              <dd className='mt-1 font-medium tabular-nums'>
+                {site.tier_cost_factor || t('Follow site level')}
+              </dd>
+            </div>
+          </dl>
+
+          <div className='space-y-1.5'>
+            <Label htmlFor={`${fieldId}-cost-factor`}>{t('Cost factor')}</Label>
+            <Input
+              id={`${fieldId}-cost-factor`}
+              inputMode='decimal'
+              value={costFactor}
+              placeholder={t('Follow site level')}
+              disabled={!editable || save.isPending}
+              aria-invalid={costFactorInvalid}
+              onChange={(event) => setCostFactor(event.target.value)}
+            />
+            {costFactorInvalid ? (
+              <p className='text-destructive text-xs'>
+                {t('The cost factor must be greater than 0')}
+              </p>
+            ) : (
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Leave empty to follow the site level supply discount. The owner is notified when it changes.'
+                )}
+              </p>
+            )}
+          </div>
+
+          <div className='space-y-1.5'>
+            <Label htmlFor={`${fieldId}-reason`}>
+              {t('Change note (optional)')}
+            </Label>
+            <Textarea
+              id={`${fieldId}-reason`}
+              rows={2}
+              disabled={!editable || save.isPending}
+              value={reason}
+              placeholder={t('Optional audit note for this update')}
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </div>
+
+          {editable && (
+            <div className='flex flex-wrap items-center gap-2'>
+              <Button
+                type='submit'
+                variant='brand'
+                disabled={
+                  save.isPending || !costFactorChanged || costFactorInvalid
+                }
+              >
+                {t('Save')}
+              </Button>
+              {(costFactorChanged || reason !== '') && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  disabled={save.isPending}
+                  onClick={() => {
+                    setCostFactor(savedCostFactor)
+                    setReason('')
+                  }}
+                >
+                  {t('Reset')}
+                </Button>
+              )}
+            </div>
+          )}
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+/** Root-only margin coverage policy switches (top-up bonus margin-fill & commission margin-cover). */
+export function SiteMarginPoliciesCard(props: { siteId: number }) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const isRoot =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+
+  const bonusMarginFill = useQuery({
+    queryKey: siteAdminKeys.list('bonus-margin-fill', { siteId: props.siteId }),
+    queryFn: () => getAdminSiteBonusMarginFill(props.siteId),
+    enabled: isRoot,
+  })
+  const commissionMargin = useQuery({
+    queryKey: siteAdminKeys.list('commission-margin', { siteId: props.siteId }),
+    queryFn: () => getAdminSiteCommissionMargin(props.siteId),
+    enabled: isRoot,
+  })
+
+  const saveBonusMarginFill = useMutation({
     mutationFn: async (enabled: boolean) => {
       if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
         throw new Error(t('No permission to perform this action'))
@@ -808,271 +849,68 @@ export function SiteBonusMethodAuth(props: { siteId: number }) {
     onSuccess: () => {
       toast.success(t('Saved successfully'))
       void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+      void invalidateSidebarBadges(queryClient)
     },
     onError: (err) => handleServerError(err),
   })
+
+  const saveCommissionMargin = useMutation({
+    mutationFn: async (allowed: boolean) => {
+      if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
+        throw new Error(t('No permission to perform this action'))
+      }
+      await saveAdminSiteCommissionMargin(props.siteId, allowed)
+    },
+    onSuccess: () => {
+      toast.success(t('Saved successfully'))
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+      void invalidateSidebarBadges(queryClient)
+    },
+    onError: (err) => handleServerError(err),
+  })
+
   if (!isRoot) return null
-  const optionRows = Array.isArray(options.data?.data) ? options.data.data : []
-  const rawAuth = optionRows.find(
-    (item) => item.key === 'adty_topup_setting.site_method_auth'
-  )?.value
-  const auth = parseSiteMethodAuth(rawAuth, props.siteId)
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t('Bonuses')}</CardTitle>
+        <CardTitle>{t('Margin coverage policies')}</CardTitle>
         <CardDescription>
           {t(
-            'Authorize which top-up payment methods this site may grant bonuses on.'
+            'Control whether this site may draw from its open margin cycle when available earnings are insufficient for top-up bonuses or referral commissions.'
           )}
         </CardDescription>
       </CardHeader>
       <CardContent className='flex flex-col gap-3'>
-        {options.isPending && <LoadingState />}
-        {(options.isError || (options.isSuccess && !auth.valid)) && (
-          <ErrorState onRetry={() => void options.refetch()} />
+        {bonusMarginFill.isPending && <LoadingState />}
+        {bonusMarginFill.isError && (
+          <ErrorState onRetry={() => void bonusMarginFill.refetch()} />
         )}
-        {options.isSuccess && (
-          <div className='flex flex-col gap-2'>
-            {SITE_BONUS_METHODS.map((item) => (
-              <SwitchRow
-                key={item.method}
-                label={t(item.label)}
-                checked={auth.valid && auth.authorized.has(item.method)}
-                disabled={!auth.valid || save.isPending}
-                onCheckedChange={(allowed) =>
-                  save.mutate({ method: item.method, allowed })
-                }
-              />
-            ))}
-          </div>
-        )}
-        {marginFill.isPending && <LoadingState />}
-        {marginFill.isError && (
-          <ErrorState onRetry={() => void marginFill.refetch()} />
-        )}
-        {marginFill.isSuccess && (
+        {bonusMarginFill.isSuccess && (
           <SwitchRow
             label={t('Allow this site to use margin to cover top-up bonuses')}
             hint={t(
               'When enabled, top-up bonuses can draw from the open margin cycle if available earnings are insufficient.'
             )}
-            checked={marginFill.data.enabled === true}
-            disabled={saveMarginFill.isPending}
-            onCheckedChange={(enabled) => saveMarginFill.mutate(enabled)}
+            checked={bonusMarginFill.data.enabled === true}
+            disabled={saveBonusMarginFill.isPending}
+            onCheckedChange={(enabled) => saveBonusMarginFill.mutate(enabled)}
           />
         )}
-      </CardContent>
-    </Card>
-  )
-}
 
-export function RootBalanceRequestsCard(props: { siteId: number }) {
-  const { t } = useTranslation()
-  const queryClient = useQueryClient()
-  const isRoot =
-    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
-  const [page, setPage] = useState(1)
-  const [status, setStatus] = useState('pending')
-  const list = useQuery({
-    queryKey: siteAdminKeys.list('balance-requests', {
-      siteId: props.siteId,
-      page,
-      status,
-    }),
-    queryFn: () => getAdminBalanceRequests(props.siteId, page, status),
-    enabled: isRoot,
-  })
-  const [reviewNote, setReviewNote] = useState('')
-  const review = useMutation({
-    mutationFn: (input: { id: number; approve: boolean }) =>
-      reviewAdminBalanceRequest(input.id, input.approve, reviewNote.trim()),
-    onSuccess: () => {
-      setReviewNote('')
-      toast.success(t('Saved successfully'))
-      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
-      void invalidateSidebarBadges(queryClient)
-    },
-    onError: (error) => handleServerError(error),
-  })
-  if (!isRoot) return null
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Balance requests')}</CardTitle>
-        <CardDescription>
-          {t(
-            'This request does not change the customer balance until the site owner or Root approves it.'
-          )}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='flex flex-col gap-3'>
-        <div className='flex flex-wrap items-center gap-2'>
-          <NativeSelect
-            value={status}
-            aria-label={t('Status')}
-            onChange={(event) => {
-              setStatus(event.target.value)
-              setPage(1)
-            }}
-          >
-            <NativeSelectOption value=''>{t('All statuses')}</NativeSelectOption>
-            <NativeSelectOption value='pending'>
-              {t('Pending')}
-            </NativeSelectOption>
-            <NativeSelectOption value='approved'>
-              {t('Approved')}
-            </NativeSelectOption>
-            <NativeSelectOption value='rejected'>
-              {t('Rejected')}
-            </NativeSelectOption>
-          </NativeSelect>
-          <Input
-            className='max-w-xs'
-            value={reviewNote}
-            placeholder={t('Optional review note')}
-            aria-label={t('Optional review note')}
-            onChange={(event) => setReviewNote(event.target.value)}
-          />
-        </div>
-        {list.isPending && <LoadingState />}
-        {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
-        {list.isSuccess && (
-          <StaticDataTable
-            tableClassName='min-w-[780px]'
-            tableProps={{ 'aria-label': t('Balance requests') }}
-            data={list.data.items}
-            getRowKey={(row) => String(row.id)}
-            emptyContent={
-              <EmptyState className='min-h-24' title={t('No data')} />
-            }
-            columns={[
-              {
-                id: 'customer',
-                header: t('Customer ID'),
-                cell: (row: AdminBalanceRequest) => (
-                  <span className='tabular-nums'>{row.customer_user_id}</span>
-                ),
-              },
-              {
-                id: 'staff',
-                header: t('User ID'),
-                cell: (row: AdminBalanceRequest) => (
-                  <span className='tabular-nums'>{row.staff_user_id}</span>
-                ),
-              },
-              {
-                id: 'direction',
-                header: t('Direction'),
-                cell: (row: AdminBalanceRequest) =>
-                  row.direction === 'increase' ? t('Increase') : t('Decrease'),
-              },
-              {
-                id: 'amount',
-                header: t('Amount'),
-                cell: (row: AdminBalanceRequest) => (
-                  <span className='tabular-nums'>{row.amount_usd}</span>
-                ),
-              },
-              {
-                id: 'provenance',
-                header: t('Provenance'),
-                cell: (row: AdminBalanceRequest) => (
-                  <div className='flex max-w-xs flex-col gap-0.5 text-xs'>
-                    {row.reason && (
-                      <span className='break-all'>{row.reason}</span>
-                    )}
-                    {row.funding_source && (
-                      <span className='text-muted-foreground'>
-                        {t('Funding source')}:{' '}
-                        {balanceFundingSourceLabel(row.funding_source, t)}
-                      </span>
-                    )}
-                    {row.order_ref && (
-                      <span className='text-muted-foreground font-mono'>
-                        {t('Order ref')}: {row.order_ref}
-                      </span>
-                    )}
-                    {(row.batch_kind || row.batch_source) && (
-                      <span className='text-muted-foreground'>
-                        {[
-                          row.batch_kind
-                            ? balanceBatchKindLabel(row.batch_kind, t)
-                            : '',
-                          row.batch_source
-                            ? balanceBatchSourceLabel(row.batch_source, t)
-                            : '',
-                        ]
-                          .filter(Boolean)
-                          .join(' / ')}
-                      </span>
-                    )}
-                    {row.ledger_id ? (
-                      <span className='text-muted-foreground font-mono'>
-                        #{row.ledger_id}
-                      </span>
-                    ) : null}
-                    {!row.reason &&
-                      !row.funding_source &&
-                      !row.order_ref &&
-                      !row.batch_kind &&
-                      !row.batch_source &&
-                      !row.ledger_id && <span>-</span>}
-                  </div>
-                ),
-              },
-              {
-                id: 'status',
-                header: t('Status'),
-                cell: (row: AdminBalanceRequest) =>
-                  balanceRequestStatusLabel(row.status, t),
-              },
-              {
-                id: 'actions',
-                header: t('Actions'),
-                cell: (row: AdminBalanceRequest) =>
-                  row.status === 'pending' ? (
-                    <div className='flex flex-wrap gap-1'>
-                      <Button
-                        type='button'
-                        size='sm'
-                        variant='outline'
-                        disabled={review.isPending}
-                        onClick={() =>
-                          review.mutate({ id: row.id, approve: true })
-                        }
-                      >
-                        {t('Approve')}
-                      </Button>
-                      <Button
-                        type='button'
-                        size='sm'
-                        variant='outline'
-                        disabled={review.isPending}
-                        onClick={() =>
-                          review.mutate({ id: row.id, approve: false })
-                        }
-                      >
-                        {t('Reject')}
-                      </Button>
-                    </div>
-                  ) : (
-                    <span className='text-muted-foreground text-xs tabular-nums'>
-                      {row.reviewed_at > 0
-                        ? formatTimestampToDate(row.reviewed_at)
-                        : '-'}
-                    </span>
-                  ),
-              },
-            ]}
-          />
+        {commissionMargin.isPending && <LoadingState />}
+        {commissionMargin.isError && (
+          <ErrorState onRetry={() => void commissionMargin.refetch()} />
         )}
-        {list.data && (
-          <PageSwitcher
-            page={page}
-            pageSize={SITE_ADMIN_PAGE_SIZE}
-            total={list.data.total}
-            onPageChange={setPage}
+        {commissionMargin.isSuccess && (
+          <SwitchRow
+            label={t('Cover commission from margin')}
+            hint={t(
+              'After earnings, the open margin cycle can cover the rest. No amount is set here.'
+            )}
+            checked={commissionMargin.data?.allowed === true}
+            disabled={saveCommissionMargin.isPending}
+            onCheckedChange={(allowed) => saveCommissionMargin.mutate(allowed)}
           />
         )}
       </CardContent>
@@ -1112,7 +950,11 @@ export function SiteCustomersCard(props: { siteId: number }) {
                 <EmptyState className='min-h-24' title={t('No data')} />
               }
               columns={[
-                { id: 'user', header: t('User'), cell: (row) => row.username },
+                {
+                  id: 'user',
+                  header: t('User'),
+                  cell: (row) => formatUserIdentity(row.id, row.username),
+                },
                 {
                   id: 'email',
                   header: t('Email'),
@@ -1336,7 +1178,8 @@ export function SiteAuditCard(props: { audits: SiteAudit[] }) {
             {
               id: 'operator',
               header: t('Operator'),
-              cell: (row) => `#${row.operator_id}`,
+              cell: (row) =>
+                formatUserIdentity(row.operator_id, row.operator_username),
             },
             {
               id: 'change',

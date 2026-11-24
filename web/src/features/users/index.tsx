@@ -24,6 +24,7 @@ import { UsersDeleteDialog } from './components/users-delete-dialog'
 import { UsersMutateDrawer } from './components/users-mutate-drawer'
 import { UsersPrimaryButtons } from './components/users-primary-buttons'
 import { UsersProvider, useUsers } from './components/users-provider'
+import { UsersResetPasswordDialog } from './components/users-reset-password-dialog'
 import { UsersTable } from './components/users-table'
 
 function UsersContent() {
@@ -51,6 +52,7 @@ function UsersContent() {
         currentRow={open === 'update' ? currentRow || undefined : undefined}
       />
       <UsersDeleteDialog />
+      <UsersResetPasswordDialog />
     </>
   )
 }

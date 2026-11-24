@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -46,25 +46,20 @@ import {
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  getOwnerSite,
-  getOwnerWallets,
-  siteOwnerKeys,
-} from '@/features/adty-site-owner/api'
-import { OwnerFundingPreviewBox } from '@/features/adty-site-owner/components/owner-funding-preview'
-import { useVerifiedOwnerMutation } from '@/features/adty-site-owner/hooks/use-verified-owner-mutation'
-import { computeOwnerFundingPreview } from '@/features/adty-site-owner/lib/funding-preview'
-import { newIdempotencyKey } from '@/features/adty-site-owner/lib/site-owner'
-import {
   SUBSITE_TEAM_MULTIPLIER_MIN,
   TEAM_DISCOUNT_MAX,
   validTeamDiscount,
 } from '@/features/adty-team-registration/discount'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
-import { formatQuota, formatTimestamp, formatTimestampToDate } from '@/lib/format'
+import {
+  formatQuota,
+  formatTimestamp,
+  formatTimestampToDate,
+} from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
-  creditOwnerTeamBalance,
   getAdminTeam,
   listAdminTeamLedger,
   saveTeamDiscount,
@@ -108,13 +103,9 @@ export function TeamDetailSheet(props: {
             {team ? `${team.name} #${team.id}` : t('Team details')}
           </SheetTitle>
           <SheetDescription>
-            {props.scope === 'owner'
-              ? t(
-                  'Members and team keys are managed by the team leader. You can adjust the agreement discount or add shared balance here.'
-                )
-              : t(
-                  'Members and team keys are managed by the team leader. This page is read-only except for the discount.'
-                )}
+            {t(
+              'Members and team keys are managed by the team leader. This page is read-only except for the discount.'
+            )}
           </SheetDescription>
         </SheetHeader>
         <div className='flex flex-col gap-5 px-4 pb-6'>
@@ -130,9 +121,6 @@ export function TeamDetailSheet(props: {
                 scope={props.scope}
                 team={team}
               />
-              {props.scope === 'owner' && team.status === 'active' && (
-                <OwnerTeamBalanceCredit key={`credit-${team.id}`} team={team} />
-              )}
               <Tabs defaultValue='members'>
                 <TabsList>
                   <TabsTrigger value='members'>
@@ -155,7 +143,7 @@ export function TeamDetailSheet(props: {
                   <LedgerTable
                     key={team.id}
                     scope={props.scope}
-                    teamId={team.id}
+                    team={team}
                   />
                 </TabsContent>
               </Tabs>
@@ -174,7 +162,7 @@ function TeamSummary(props: { team: TeamAdminDetail }) {
     [t('Site'), team.site_id === 0 ? t('Main site') : team.site_name],
     [
       t('Leader'),
-      `${team.leader_username || '-'} #${team.leader_user_id}`,
+      formatUserIdentity(team.leader_user_id, team.leader_username),
     ],
     [
       t('Status'),
@@ -316,133 +304,6 @@ function TeamDiscountEditor(props: {
   )
 }
 
-/**
- * Isolated child component so useVerifiedOwnerMutation is only invoked under
- * OwnerVerificationProvider (never in the Root /admin-teams view).
- */
-function OwnerTeamBalanceCredit(props: { team: TeamAdminDetail }) {
-  const { t } = useTranslation()
-  const client = useQueryClient()
-  const [amount, setAmount] = useState('')
-  const [reason, setReason] = useState('')
-  const intentRef = useRef<{ payload: string; key: string } | null>(null)
-  const site = useQuery({
-    queryKey: siteOwnerKeys.site,
-    queryFn: getOwnerSite,
-  })
-  const closing = site.data?.status === 'closing'
-  const wallets = useQuery({
-    queryKey: siteOwnerKeys.list('wallets', {}),
-    queryFn: getOwnerWallets,
-  })
-  const walletRows = Array.isArray(wallets.data) ? wallets.data : []
-  const preview = computeOwnerFundingPreview(walletRows, amount)
-  const credit = useVerifiedOwnerMutation<{
-    amount: string
-    reason: string
-    key: string
-  }>({
-    action: 'team.balance',
-    target: () => props.team.id,
-    request: (vars) => ({
-      amount_usd: vars.amount,
-      reason: vars.reason,
-      idempotency_key: vars.key,
-    }),
-    run: (vars, proof) =>
-      creditOwnerTeamBalance(
-        props.team.id,
-        { amount_usd: vars.amount, reason: vars.reason },
-        vars.key,
-        proof
-      ),
-    successMessage: t('Shared balance added'),
-    onSuccess: () => {
-      intentRef.current = null
-      setAmount('')
-      setReason('')
-      void client.invalidateQueries({ queryKey: teamAdminKeys.all })
-    },
-  })
-  const inputsDisabled =
-    closing || wallets.isPending || wallets.isError || !wallets.isSuccess
-  return (
-    <section className='flex flex-col gap-2'>
-      <h3 className='text-sm font-medium'>{t('Add shared balance')}</h3>
-      {closing && (
-        <p className='text-destructive text-sm'>
-          {t('Balance cannot be added while the site is closing')}
-        </p>
-      )}
-      {wallets.isPending && <LoadingState />}
-      {wallets.isError && <ErrorState onRetry={() => void wallets.refetch()} />}
-      <div className='grid gap-2 sm:grid-cols-2'>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor={`team-credit-amount-${props.team.id}`}>
-            {t('Amount (USD)')}
-          </Label>
-          <Input
-            id={`team-credit-amount-${props.team.id}`}
-            inputMode='decimal'
-            autoComplete='off'
-            disabled={inputsDisabled}
-            value={amount}
-            onChange={(event) => setAmount(event.target.value)}
-          />
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor={`team-credit-reason-${props.team.id}`}>
-            {t('Reason')}
-          </Label>
-          <Input
-            id={`team-credit-reason-${props.team.id}`}
-            maxLength={200}
-            disabled={inputsDisabled}
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-          />
-        </div>
-      </div>
-      {wallets.isSuccess && (
-        <OwnerFundingPreviewBox wallets={walletRows} amount={amount} />
-      )}
-      <div>
-        <Button
-          type='button'
-          variant='brand'
-          disabled={
-            inputsDisabled ||
-            credit.isPending ||
-            !preview.valid ||
-            !preview.sufficient ||
-            reason.trim() === ''
-          }
-          onClick={() => {
-            const trimmedAmount = amount.trim()
-            const trimmedReason = reason.trim()
-            const payload = `${props.team.id}:${trimmedAmount}:${trimmedReason}`
-            if (intentRef.current?.payload !== payload) {
-              intentRef.current = { payload, key: newIdempotencyKey() }
-            }
-            credit.mutate({
-              amount: trimmedAmount,
-              reason: trimmedReason,
-              key: intentRef.current.key,
-            })
-          }}
-        >
-          {t('Add shared balance')}
-        </Button>
-      </div>
-      <p className='text-muted-foreground text-xs'>
-        {t(
-          'Funded automatically from available earnings first, then excess margin above the level deposit floor. Does not count toward site-level cumulative customer recharge.'
-        )}
-      </p>
-    </section>
-  )
-}
-
 function MembersTable(props: { team: TeamAdminDetail }) {
   const { t } = useTranslation()
   if (props.team.members.length === 0) {
@@ -452,7 +313,7 @@ function MembersTable(props: { team: TeamAdminDetail }) {
     <Table aria-label={t('Members')}>
       <TableHeader>
         <TableRow>
-          <TableHead>{t('Username')}</TableHead>
+          <TableHead>{t('ID / Username')}</TableHead>
           <TableHead>{t('Role')}</TableHead>
           <TableHead>{t('Account type')}</TableHead>
           <TableHead>{t('Status')}</TableHead>
@@ -461,11 +322,8 @@ function MembersTable(props: { team: TeamAdminDetail }) {
       <TableBody>
         {props.team.members.map((member) => (
           <TableRow key={member.user_id}>
-            <TableCell>
-              {member.username || '-'}{' '}
-              <span className='text-muted-foreground tabular-nums'>
-                #{member.user_id}
-              </span>
+            <TableCell className='tabular-nums'>
+              {formatUserIdentity(member.user_id, member.username)}
             </TableCell>
             <TableCell>
               {member.role === 'leader' ? t('Leader') : t('Member')}
@@ -508,11 +366,11 @@ function KeysTable(props: { team: TeamAdminDetail }) {
           <TableRow key={key.token_id}>
             <TableCell>{key.name || '-'}</TableCell>
             <TableCell className='tabular-nums'>#{key.token_id}</TableCell>
-            <TableCell>
-              {names.get(key.user_id) || '-'}{' '}
-              <span className='text-muted-foreground tabular-nums'>
-                #{key.user_id}
-              </span>
+            <TableCell className='tabular-nums'>
+              {formatUserIdentity(
+                key.user_id,
+                key.username || names.get(key.user_id)
+              )}
             </TableCell>
             <TableCell>{labelOf(t, KEY_STATUS_LABELS, key.status)}</TableCell>
           </TableRow>
@@ -522,12 +380,18 @@ function KeysTable(props: { team: TeamAdminDetail }) {
   )
 }
 
-function LedgerTable(props: { scope: TeamAdminScope; teamId: number }) {
+function LedgerTable(props: { scope: TeamAdminScope; team: TeamAdminDetail }) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
+  const memberNames = new Map<number, string>([
+    [props.team.leader_user_id, props.team.leader_username],
+    ...props.team.members.map(
+      (member) => [member.user_id, member.username] as const
+    ),
+  ])
   const ledger = useQuery({
-    queryKey: teamAdminKeys.ledger(props.scope, props.teamId, page),
-    queryFn: () => listAdminTeamLedger(props.scope, props.teamId, page),
+    queryKey: teamAdminKeys.ledger(props.scope, props.team.id, page),
+    queryFn: () => listAdminTeamLedger(props.scope, props.team.id, page),
   })
   if (ledger.isPending) return <LoadingState />
   if (ledger.isError) {
@@ -567,7 +431,13 @@ function LedgerTable(props: { scope: TeamAdminScope; teamId: number }) {
                   {row.ref_id}
                 </TableCell>
                 <TableCell className='tabular-nums'>
-                  {row.actor_user_id > 0 ? `#${row.actor_user_id}` : '-'}
+                  {row.actor_user_id > 0
+                    ? formatUserIdentity(
+                        row.actor_user_id,
+                        row.actor_username ||
+                          memberNames.get(row.actor_user_id)
+                      )
+                    : '-'}
                 </TableCell>
               </TableRow>
             ))}

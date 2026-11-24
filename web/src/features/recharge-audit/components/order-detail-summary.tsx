@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next'
 
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 
 import {
   officialCommissionStateLabel,
@@ -46,7 +47,7 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
     <>
       <dl className='grid grid-cols-1 gap-3 text-sm break-words sm:grid-cols-3'>
         {[
-          [t('User'), `${order.username || '-'} (#${order.user_id})`],
+          [t('User'), formatUserIdentity(order.user_id, order.username)],
           [
             t('Site'),
             `${order.site_name || t('Unknown site')} · ${order.site_id ?? '-'}`,

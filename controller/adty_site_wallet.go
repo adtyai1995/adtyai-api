@@ -187,6 +187,12 @@ func GetAdtyOwnerWalletLedger(c *gin.Context) {
 	adtySiteWalletResponse(c, site.Id, true, true)
 }
 
+type adtyAnomalyDispositionAdminItem struct {
+	model.AdtyAnomalyDisposition
+	AccountUsername  string `json:"account_username,omitempty"`
+	OperatorUsername string `json:"operator_username,omitempty"`
+}
+
 func GetAdtyAnomalyDispositions(c *gin.Context) {
 	if c.GetInt("role") != common.RoleRootUser {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
@@ -203,7 +209,20 @@ func GetAdtyAnomalyDispositions(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
+	ids := make([]int, 0, len(rows)*2)
+	for _, row := range rows {
+		ids = append(ids, row.AccountId, row.OperatorId)
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	items := make([]adtyAnomalyDispositionAdminItem, len(rows))
+	for i, row := range rows {
+		items[i] = adtyAnomalyDispositionAdminItem{
+			AdtyAnomalyDisposition: row,
+			AccountUsername:        names[row.AccountId],
+			OperatorUsername:       names[row.OperatorId],
+		}
+	}
+	common.ApiSuccess(c, gin.H{"items": items, "total": total, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
 func PostAdtyAnomalyDispositionReview(c *gin.Context) {
@@ -266,6 +285,11 @@ func GetAdtyAdminSiteWalletLedger(c *gin.Context) {
 	adtySiteWalletResponse(c, siteID, true, false)
 }
 
+type adtySiteWalletLedgerItem struct {
+	model.AdtySiteWalletLedger
+	OperatorUsername string `json:"operator_username,omitempty"`
+}
+
 func adtySiteWalletResponse(c *gin.Context, siteID int, ledger bool, hideOperating bool) {
 	var data any
 	var err error
@@ -289,7 +313,23 @@ func adtySiteWalletResponse(c *gin.Context, siteID int, ledger bool, hideOperati
 		} else {
 			items, total, queryErr = service.ListAdtySiteWalletLedger(siteID, c.Query("kind"), page.GetStartIdx(), page.GetPageSize())
 		}
-		data, err = gin.H{"total": total, "items": items, "page": page.GetPage(), "page_size": page.GetPageSize()}, queryErr
+		enriched := make([]adtySiteWalletLedgerItem, len(items))
+		if queryErr == nil {
+			opIDs := make([]int, 0, len(items))
+			for _, item := range items {
+				if item.OperatorId > 0 {
+					opIDs = append(opIDs, item.OperatorId)
+				}
+			}
+			names := model.LookupUsernamesByIDs(model.DB, opIDs)
+			for i, item := range items {
+				enriched[i] = adtySiteWalletLedgerItem{
+					AdtySiteWalletLedger: item,
+					OperatorUsername:     names[item.OperatorId],
+				}
+			}
+		}
+		data, err = gin.H{"total": total, "items": enriched, "page": page.GetPage(), "page_size": page.GetPageSize()}, queryErr
 	} else {
 		if hideOperating {
 			if err := service.ReviewAdtyPooledSiteFinance(model.DB, siteID); err != nil {

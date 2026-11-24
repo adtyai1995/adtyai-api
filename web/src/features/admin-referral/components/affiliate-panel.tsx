@@ -31,8 +31,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
-import type { ReferralAffiliate } from '@/features/referral/types'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -40,10 +40,11 @@ import {
   adminReferralKeys,
   getAffiliates,
   updateAffiliate,
+  type AdminReferralAffiliate,
   type AffiliateAction,
 } from '../api'
 
-function AffiliateState(props: { affiliate: ReferralAffiliate }) {
+function AffiliateState(props: { affiliate: AdminReferralAffiliate }) {
   const { t } = useTranslation()
   const affiliate = props.affiliate
   return (
@@ -64,13 +65,16 @@ function AffiliateState(props: { affiliate: ReferralAffiliate }) {
   )
 }
 
-export function AffiliatePanel(props: { canAdjust: boolean }) {
+export function AffiliatePanel(props: {
+  canAdjust: boolean
+  onViewCommissions?: (affiliate: AdminReferralAffiliate) => void
+}) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
   const [search, setSearch] = useState('')
-  const [editing, setEditing] = useState<ReferralAffiliate | null>(null)
+  const [editing, setEditing] = useState<AdminReferralAffiliate | null>(null)
   const [rate, setRate] = useState('')
   const [amount, setAmount] = useState('')
   const [adjustKey, setAdjustKey] = useState(() => crypto.randomUUID())
@@ -97,7 +101,7 @@ export function AffiliatePanel(props: { canAdjust: boolean }) {
   const ownRate = rate === '' ? null : Number(rate)
   const update = useMutation({
     mutationFn: (input: {
-      affiliate: ReferralAffiliate
+      affiliate: AdminReferralAffiliate
       action: AffiliateAction
     }) =>
       updateAffiliate(input.affiliate.user_id, {
@@ -110,7 +114,7 @@ export function AffiliatePanel(props: { canAdjust: boolean }) {
     onSuccess: done,
     onError: (err) => handleServerError(err),
   })
-  const act = (affiliate: ReferralAffiliate, action: AffiliateAction) =>
+  const act = (affiliate: AdminReferralAffiliate, action: AffiliateAction) =>
     update.mutate({ affiliate, action })
 
   if (query.isError && !query.data) {
@@ -146,7 +150,12 @@ export function AffiliatePanel(props: { canAdjust: boolean }) {
         getRowKey={(row) => String(row.id)}
         emptyContent={<EmptyState className='min-h-32' title={t('No data')} />}
         columns={[
-          { id: 'user', header: t('User ID'), cell: (row) => row.user_id },
+          {
+            id: 'user',
+            header: t('User'),
+            cellClassName: 'tabular-nums',
+            cell: (row) => formatUserIdentity(row.user_id, row.username),
+          },
           {
             id: 'code',
             header: t('Invite code'),
@@ -181,6 +190,15 @@ export function AffiliatePanel(props: { canAdjust: boolean }) {
             cellClassName: 'text-right',
             cell: (row) => (
               <div className='flex justify-end gap-1'>
+                {props.onViewCommissions && (
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={() => props.onViewCommissions?.(row)}
+                  >
+                    {t('View commissions')}
+                  </Button>
+                )}
                 {props.canAdjust && (
                   <Button
                     size='sm'
@@ -207,7 +225,9 @@ export function AffiliatePanel(props: { canAdjust: boolean }) {
         onOpenChange={(open) => !open && setEditing(null)}
         title={t('Adjust affiliate')}
         description={
-          editing ? `#${editing.user_id} · ${editing.invite_code}` : ''
+          editing
+            ? `${formatUserIdentity(editing.user_id, editing.username)} · ${editing.invite_code}`
+            : ''
         }
       >
         {editing && (

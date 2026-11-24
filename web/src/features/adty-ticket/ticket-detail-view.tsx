@@ -36,6 +36,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
@@ -223,17 +224,22 @@ export function TicketDetailView(props: {
               {detail.can_manage && (
                 <>
                   <span>·</span>
-                  <span>
+                  <span className='tabular-nums'>
                     {t('Submitter')}:{' '}
-                    {detail.ticket.username || `#${detail.ticket.user_id}`}
+                    {formatUserIdentity(
+                      detail.ticket.user_id,
+                      detail.ticket.username
+                    )}
                   </span>
                   {detail.ticket.assignee_id ? (
                     <>
                       <span>·</span>
-                      <span>
+                      <span className='tabular-nums'>
                         {t('Ticket assignee')}:{' '}
-                        {detail.ticket.assignee_username ||
-                          `#${detail.ticket.assignee_id}`}
+                        {formatUserIdentity(
+                          detail.ticket.assignee_id,
+                          detail.ticket.assignee_username
+                        )}
                       </span>
                     </>
                   ) : null}
@@ -303,7 +309,10 @@ export function TicketDetailView(props: {
                                 value={detail.ticket.assignee_id}
                                 disabled
                               >
-                                #{detail.ticket.assignee_id}
+                                {formatUserIdentity(
+                                  detail.ticket.assignee_id,
+                                  detail.ticket.assignee_username
+                                )}
                               </NativeSelectOption>
                             )}
                           {detail.assignees?.map((handler) => (
@@ -311,8 +320,11 @@ export function TicketDetailView(props: {
                               key={handler.id}
                               value={handler.id}
                             >
-                              {handler.display_name || handler.username} ·{' '}
-                              {handler.username} (#{handler.id})
+                              {formatUserIdentity(handler.id, handler.username)}
+                              {handler.display_name &&
+                              handler.display_name !== handler.username
+                                ? ` (${handler.display_name})`
+                                : ''}
                             </NativeSelectOption>
                           ))}
                         </NativeSelect>
@@ -414,8 +426,12 @@ export function TicketDetailView(props: {
               }
 
               const authorLabel =
-                message.author_username ||
-                (message.author_id > 0 ? `#${message.author_id}` : '')
+                message.author_id > 0 || message.author_username
+                  ? formatUserIdentity(
+                      message.author_id,
+                      message.author_username
+                    )
+                  : ''
 
               return (
                 <div

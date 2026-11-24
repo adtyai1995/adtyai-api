@@ -37,6 +37,7 @@ import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { cn } from '@/lib/utils'
 
@@ -358,11 +359,15 @@ export function LedgerPanel() {
                 id: 'affiliate',
                 header: t('Affiliate'),
                 cell: (row) => (
-                  <div className='flex flex-col text-xs'>
-                    <span>#{row.affiliate_id}</span>
-                    <span className='text-muted-foreground'>
-                      {t('User')} #{row.user_id}
+                  <div className='flex flex-col text-xs tabular-nums'>
+                    <span className='text-sm font-medium'>
+                      {formatUserIdentity(row.user_id, row.username)}
                     </span>
+                    {row.affiliate_id > 0 && (
+                      <span className='text-muted-foreground'>
+                        {t('Affiliate')} #{row.affiliate_id}
+                      </span>
+                    )}
                   </div>
                 ),
               },
@@ -485,14 +490,22 @@ export function AuditLogPanel() {
               {
                 id: 'admin',
                 header: t('Operator'),
-                cell: (row) => `#${row.admin_user_id}`,
+                cellClassName: 'tabular-nums',
+                cell: (row) =>
+                  row.admin_user_id
+                    ? formatUserIdentity(row.admin_user_id, row.admin_username)
+                    : '—',
               },
               {
                 id: 'target',
                 header: t('Target'),
+                cellClassName: 'tabular-nums',
                 cell: (row) =>
                   row.target_user_id
-                    ? `${t('User')} #${row.target_user_id}`
+                    ? formatUserIdentity(
+                        row.target_user_id,
+                        row.target_username
+                      )
                     : '—',
               },
               {
