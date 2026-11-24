@@ -117,7 +117,7 @@ func (c *AdtyCloudflareClient) do(ctx context.Context, method, path string, body
 		}
 		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, reader)
 		if err != nil {
-			return err
+			return common.SanitizeOutboundError(err, token)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 		if payload != nil {
@@ -125,7 +125,7 @@ func (c *AdtyCloudflareClient) do(ctx context.Context, method, path string, body
 		}
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
-			return err
+			return common.SanitizeOutboundError(err, token)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < adtyCloudflareMaxRetries {
 			wait := time.Second
@@ -749,6 +749,10 @@ func RemoveAdtySiteDomain(ctx context.Context, ownerUserId, domainId int) error 
 
 // RemoveAdtySiteDomainByAdmin 是主站管理员停用一个域名（11.9）。
 func RemoveAdtySiteDomainByAdmin(ctx context.Context, domainId int) error {
+	return RemoveAdtySiteDomainByAdminForActor(ctx, domainId, 0, 0, false)
+}
+
+func RemoveAdtySiteDomainByAdminForActor(ctx context.Context, domainId, actorID, actorRole int, denyAdminTarget bool) error {
 	var domain model.AdtySiteDomain
 	if model.DB.Where("id = ?", domainId).Limit(1).Find(&domain).RowsAffected == 0 {
 		return ErrAdtySiteNotFound
@@ -756,12 +760,28 @@ func RemoveAdtySiteDomainByAdmin(ctx context.Context, domainId int) error {
 	if domain.ManagedBy == "platform" {
 		return common.NewMessage("Platform domains are managed by the platform")
 	}
-	return removeAdtySiteDomain(ctx, &domain)
+	return removeAdtySiteDomainForActor(ctx, &domain, actorID, actorRole, denyAdminTarget)
 }
 
 // removeAdtySiteDomain 从 Turnstile widget 和 Cloudflare 删掉，行改成 removed。
 func removeAdtySiteDomain(ctx context.Context, domain *model.AdtySiteDomain) error {
+	return removeAdtySiteDomainForActor(ctx, domain, 0, 0, false)
+}
+
+func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDomain, actorID, actorRole int, denyAdminTarget bool) error {
 	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if (actorRole > 0 || denyAdminTarget) && domain.SiteId > 0 {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id").Where("id = ?", domain.SiteId).First(&site).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtySiteNotFound
+				}
+				return err
+			}
+			if err := checkAdtySiteTargetActorTx(tx, &site, actorID, actorRole, denyAdminTarget); err != nil {
+				return err
+			}
+		}
 		var current model.AdtySiteDomain
 		if err := adtyLockDomainRow(tx, domain.Id, &current); err != nil {
 			return err
@@ -888,6 +908,14 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
 		}
 		updates["cf_hostname_id"] = ""
+	}
+	if domain.TurnstileWidget != "" {
+		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
+			common.SysError(common.LogText("remove timed out turnstile domain %d failed", domain.Id))
+			updates["last_error"] = "turnstile cleanup failed"
+			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+		}
+		updates["turnstile_widget"] = ""
 	}
 	updates["status"] = model.AdtySiteDomainFailed
 	return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error

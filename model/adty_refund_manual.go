@@ -648,6 +648,41 @@ func adtyManualRefundView(refund *AdtyManualRefund, occupancy *AdtyManualRefundO
 	return &AdtyManualRefundResult{Refund: refund, Occupancy: occupancy, Ledger: ledger}
 }
 
+// adtyManualRefundOrderCurrencyDelta returns the amount in the order's payment
+// currency that a manual refund row will add to adty_topup_orders.refund_amount
+// upon completion. Same-currency confirmed offline payouts use PayoutAmount;
+// cross-currency payouts, orphan reconciliations, and pending applications fall
+// back to the pro-rata order-currency reference amount.
+func adtyManualRefundOrderCurrencyDelta(ext *AdtyTopupOrder, row AdtyManualRefund) decimal.Decimal {
+	if ext == nil || !ext.PaidAmount.IsPositive() {
+		return decimal.Zero
+	}
+	if row.PayoutStatus == AdtyManualRefundPayoutSuccess && row.PayoutAmount.IsPositive() && strings.EqualFold(row.PayoutCurrency, ext.refundCurrency()) {
+		return row.PayoutAmount
+	}
+	return adtyRefundAmount(ext, row.RequestQuota, ext.FaceQuota())
+}
+
+// adtyManualRefundCumulativeOrderCurrencyAmount sums completed refund_amount,
+// extraDelta for the candidate refund being evaluated, and every other active
+// (non-completed, non-terminated) sibling refund row in the order's payment
+// currency so Apply and RecordPayout cannot accept combinations that fail at Complete.
+func adtyManualRefundCumulativeOrderCurrencyAmount(ext *AdtyTopupOrder, rows []AdtyManualRefund, excludeRefundID string, extraDelta decimal.Decimal) decimal.Decimal {
+	if ext == nil {
+		return extraDelta
+	}
+	total := ext.RefundAmount.Add(extraDelta)
+	for _, other := range rows {
+		if other.RefundId == excludeRefundID ||
+			other.Status == AdtyManualRefundStatusCompleted ||
+			other.Status == AdtyManualRefundStatusTerminated {
+			continue
+		}
+		total = total.Add(adtyManualRefundOrderCurrencyDelta(ext, other))
+	}
+	return total
+}
+
 func adtyNormalizeRefundID(refundID string) (string, error) {
 	refundID = strings.TrimSpace(refundID)
 	if refundID == "" || len(refundID) > 64 {
@@ -841,6 +876,9 @@ func ApplyAdtyTopUpManualRefundForActor(tradeNo, reason string, actor AdtyRefund
 		}
 		var availOrphanCap int64
 		if reconcileOrphanID > 0 {
+			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
+				return ErrUserQuotaPermission
+			}
 			availOrphanCap, err = adtyValidateReconcileOrphanTx(tx, ext, rows, refundID, reconcileOrphanID, 0)
 			if err != nil {
 				return err
@@ -863,6 +901,15 @@ func ApplyAdtyTopUpManualRefundForActor(tradeNo, reason string, actor AdtyRefund
 		}
 		if requestQuota > occupancy.RemainingQuota || afterOcc.OccupiedQuota > afterOcc.FaceQuota {
 			return common.NewMessage("Refund amount exceeds the remaining principal")
+		}
+		if ext.PaidAmount.IsPositive() {
+			candidateDelta := adtyManualRefundOrderCurrencyDelta(ext, AdtyManualRefund{
+				RequestQuota: requestQuota,
+				RequestUSD:   requestUSD,
+			})
+			if adtyManualRefundCumulativeOrderCurrencyAmount(ext, rows, "", candidateDelta).GreaterThan(ext.PaidAmount) {
+				return common.NewMessage("Refund amount exceeds the paid order amount")
+			}
 		}
 		if ext.IsOwnerSelfUse() {
 			balance, checkin, err := lockUserQuotaForRefundTx(tx, ext.UserId)
@@ -950,6 +997,9 @@ func ApproveAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyRe
 			return common.NewMessage("This refund cannot be approved")
 		}
 		if row.ReconcileOrphanId > 0 {
+			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
+				return ErrUserQuotaPermission
+			}
 			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
@@ -1050,6 +1100,9 @@ func ReclaimAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyRe
 			return err
 		}
 		if row.ReconcileOrphanId > 0 {
+			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
+				return ErrUserQuotaPermission
+			}
 			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
@@ -1158,6 +1211,9 @@ func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID st
 		return adtyManualRefundView(row, occupancy, nil), true, nil
 	}
 	if err := adtyRequireApprovedManualRefund(row); err != nil {
+		return nil, false, err
+	}
+	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
 		return nil, false, err
 	}
 	if row.ReconcileOrphanId > 0 {
@@ -1342,6 +1398,9 @@ func PlanAdtyTopUpManualRefundBonusForActor(tradeNo, refundID string, actor Adty
 			return err
 		}
 		if row.ReconcileOrphanId > 0 {
+			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
+				return ErrUserQuotaPermission
+			}
 			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
@@ -1413,6 +1472,9 @@ func PlanAdtyTopUpManualRefundCommissionForActor(tradeNo, refundID string, actor
 			return err
 		}
 		if row.ReconcileOrphanId > 0 {
+			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
+				return ErrUserQuotaPermission
+			}
 			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
@@ -1533,21 +1595,13 @@ func RecordAdtyTopUpManualRefundPayoutForActor(tradeNo, refundID string, actor A
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
 		}
-		if status == AdtyManualRefundPayoutSuccess && ext.PaidAmount.IsPositive() && strings.EqualFold(currency, strings.TrimSpace(ext.refundCurrency())) {
-			committedAndInFlight := ext.RefundAmount
-			for _, other := range rows {
-				if other.RefundId == row.RefundId ||
-					other.Status == AdtyManualRefundStatusCompleted ||
-					other.Status == AdtyManualRefundStatusTerminated {
-					continue
-				}
-				if other.PayoutStatus == AdtyManualRefundPayoutSuccess &&
-					other.PayoutAmount.IsPositive() &&
-					strings.EqualFold(strings.TrimSpace(other.PayoutCurrency), strings.TrimSpace(ext.refundCurrency())) {
-					committedAndInFlight = committedAndInFlight.Add(other.PayoutAmount)
-				}
-			}
-			if committedAndInFlight.Add(payout.Amount).GreaterThan(ext.PaidAmount) {
+		if status == AdtyManualRefundPayoutSuccess && ext.PaidAmount.IsPositive() {
+			candidate := *row
+			candidate.PayoutStatus = status
+			candidate.PayoutAmount = payout.Amount
+			candidate.PayoutCurrency = currency
+			candidateDelta := adtyManualRefundOrderCurrencyDelta(ext, candidate)
+			if adtyManualRefundCumulativeOrderCurrencyAmount(ext, rows, row.RefundId, candidateDelta).GreaterThan(ext.PaidAmount) {
 				return common.NewMessage("Refund amount exceeds the paid order amount")
 			}
 		}
@@ -1725,6 +1779,12 @@ func CompleteAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyR
 			if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
 				return err
 			}
+			if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
+				return err
+			}
+		}
+		if row.ReconcileOrphanId > 0 && actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
+			return ErrUserQuotaPermission
 		}
 		if row.ReclaimedAt == 0 {
 			return common.NewMessage("Internal principal reclaim has not been recorded")
@@ -1810,14 +1870,9 @@ func CompleteAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyR
 		if err := tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Update("status", status).Error; err != nil {
 			return err
 		}
-		// R4-013: Accumulate adty_topup_orders.refund_amount in the order's payment
-		// currency (not USD) so non-USD order traces report accurate currency totals.
-		refundAmountDelta := adtyRefundAmount(ext, row.RequestQuota, ext.FaceQuota())
-		if row.PayoutStatus == AdtyManualRefundPayoutSuccess && row.PayoutAmount.IsPositive() && strings.EqualFold(strings.TrimSpace(row.PayoutCurrency), strings.TrimSpace(ext.refundCurrency())) {
-			refundAmountDelta = row.PayoutAmount
-		} else if !refundAmountDelta.IsPositive() {
-			refundAmountDelta = row.RequestUSD
-		}
+		// R4-013 / R13-026: Accumulate adty_topup_orders.refund_amount in the order's
+		// payment currency via the shared helper used by Apply and RecordPayout.
+		refundAmountDelta := adtyManualRefundOrderCurrencyDelta(ext, *row)
 		nextRefundAmount := ext.RefundAmount.Add(refundAmountDelta)
 		if ext.PaidAmount.IsPositive() && nextRefundAmount.GreaterThan(ext.PaidAmount) {
 			return common.NewMessage("Refund amount exceeds the paid order amount")

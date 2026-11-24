@@ -221,12 +221,12 @@ func AdtyTurnstileVerifyAt(ctx context.Context, verifyURL, secret, token, remote
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, verifyURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return false, err
+		return false, common.SanitizeOutboundError(err, secret)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := adtyTurnstileHTTP.Do(req)
 	if err != nil {
-		return false, err
+		return false, common.SanitizeOutboundError(err, secret)
 	}
 	defer resp.Body.Close()
 	var result struct {

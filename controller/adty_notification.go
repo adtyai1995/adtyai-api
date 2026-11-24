@@ -101,7 +101,11 @@ func PostAdtyNotificationTodoComplete(c *gin.Context) {
 
 func GetAdtyNotificationTodos(c *gin.Context) {
 	includeCompleted := c.Query("include_completed") == "1" || c.Query("include_completed") == "true"
-	items, err := service.ListAdtyTodosForUserOnSite(c.GetInt("id"), service.AdtySiteForRequest(c), includeCompleted)
+	var tokenScopes [][]string
+	if _, isToken := c.Get("access_token_legacy"); isToken {
+		tokenScopes = [][]string{c.GetStringSlice("access_token_scopes")}
+	}
+	items, err := service.ListAdtyTodosForUserOnSite(c.GetInt("id"), service.AdtySiteForRequest(c), includeCompleted, tokenScopes...)
 	if err != nil {
 		common.ApiError(c, err)
 		return

@@ -1774,13 +1774,17 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 					data = nil
 				}
 			}
-			originTasks = append(originTasks, map[string]any{
+			entry := map[string]any{
 				"taskId":         ref.TaskID,
 				"upstreamTaskId": ref.UpstreamTaskID,
 				"action":         ref.Action,
 				"status":         ref.Status,
 				"data":           data,
-			})
+			}
+			if len(ref.UsageFacts) > 0 {
+				entry["usageFacts"] = ref.UsageFacts
+			}
+			originTasks = append(originTasks, entry)
 		}
 		ctx["originTasks"] = originTasks
 	}

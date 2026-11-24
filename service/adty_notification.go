@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -1147,7 +1148,7 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string, tok
 				return formatTicketInboxNotice(notice, scope), true, nil
 			}
 		}
-		if item, ok := adtyWatcherNoticeDetail(userID, site, key); ok {
+		if item, ok := adtyWatcherNoticeDetail(userID, site, key, tokenScopes...); ok {
 			return item, true, nil
 		}
 		return nil, false, nil
@@ -1202,7 +1203,7 @@ func resolveAdtyNotificationCanonicalKey(userID int, site *model.AdtySite, key s
 		return row.ReadKey, true, nil
 	}
 	if adtyTicketInboxTablesReady() {
-		ticketQuery, _, err := adtyTicketInboxQuery(userID, site, tokenScopes...)
+		ticketQuery, _, err := adtyTicketInboxQueryWithMethod(userID, site, http.MethodPost, tokenScopes...)
 		if err != nil {
 			return "", false, err
 		}
@@ -1214,7 +1215,7 @@ func resolveAdtyNotificationCanonicalKey(userID int, site *model.AdtySite, key s
 			return notice.ReadKey, true, nil
 		}
 	}
-	if notice, ok := adtyWatcherNoticeLookup(userID, site, key); ok {
+	if notice, ok := adtyWatcherNoticeLookup(userID, site, key, tokenScopes...); ok {
 		return notice.ReadKey, true, nil
 	}
 	return "", false, nil
@@ -1342,14 +1343,14 @@ func GetAdtyNotificationInboxWithScopes(userID int, site *model.AdtySite, before
 	}
 
 	if firstPage {
-		for _, item := range adtyWatcherNoticeInboxItems(userID, site) {
+		for _, item := range adtyWatcherNoticeInboxItems(userID, site, tokenScopes...) {
 			inbox.Announcements = append(inbox.Announcements, item)
 			if key, _ := item["read_key"].(string); key != "" {
 				keys = append(keys, key)
 			}
 		}
 	}
-	inbox.UnreadPublications += adtyUnreadWatcherNoticeCount(userID, site)
+	inbox.UnreadPublications += adtyUnreadWatcherNoticeCount(userID, site, tokenScopes...)
 	inbox.ReadKeys, err = model.GetAdtyNotificationReadKeys(userID, siteID, keys)
 	if err != nil {
 		return inbox, err
@@ -1437,7 +1438,7 @@ func MarkAdtyNotificationInboxRead(userID int, site *model.AdtySite, keys []stri
 		allowed[key] = true
 	}
 	if adtyTicketInboxTablesReady() {
-		ticketQuery, _, err := adtyTicketInboxQuery(userID, site, tokenScopes...)
+		ticketQuery, _, err := adtyTicketInboxQueryWithMethod(userID, site, http.MethodPost, tokenScopes...)
 		if err != nil {
 			return err
 		}
@@ -1449,7 +1450,7 @@ func MarkAdtyNotificationInboxRead(userID int, site *model.AdtySite, keys []stri
 			allowed[key] = true
 		}
 	}
-	for key := range adtyOwnedWatcherReadKeys(userID, site, keys) {
+	for key := range adtyOwnedWatcherReadKeys(userID, site, keys, tokenScopes...) {
 		allowed[key] = true
 	}
 	unique := make(map[string]bool, len(keys))

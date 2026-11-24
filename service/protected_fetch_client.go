@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 )
 
@@ -30,11 +31,12 @@ type protectedFetchDialer struct {
 }
 
 type ssrfProtectedRoundTripper struct {
-	resolver         ssrfResolver
-	dialContext      func(ctx context.Context, network, address string) (net.Conn, error)
-	getProtection    func() (*common.SSRFProtection, bool, error)
-	proxy            func(*http.Request) (*url.URL, error)
-	forceVerifiedTLS bool
+	resolver           ssrfResolver
+	dialContext        func(ctx context.Context, network, address string) (net.Conn, error)
+	getProtection      func() (*common.SSRFProtection, bool, error)
+	proxy              func(*http.Request) (*url.URL, error)
+	forceVerifiedTLS   bool
+	insecureSkipVerify bool
 
 	mutex      sync.Mutex
 	transports map[string]*http.Transport
@@ -239,8 +241,15 @@ func dialHTTPSOverHTTPSProxy(ctx context.Context, dialContext func(ctx context.C
 	if err != nil {
 		return nil, err
 	}
-	proxyTLS := baseTLS.Clone()
-	proxyTLS.ServerName = proxyURL.Hostname()
+	proxyTLS := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         proxyURL.Hostname(),
+		InsecureSkipVerify: common.TLSInsecureSkipVerify,
+	}
+	if baseTLS != nil && baseTLS.VerifyConnection != nil {
+		proxyTLS = baseTLS.Clone()
+		proxyTLS.ServerName = proxyURL.Hostname()
+	}
 	proxyTLSConn := tls.Client(rawConn, proxyTLS)
 	if err := proxyTLSConn.HandshakeContext(ctx); err != nil {
 		_ = rawConn.Close()
@@ -453,10 +462,122 @@ func (t *ssrfProtectedRoundTripper) newTransport(proxyURL *url.URL) *http.Transp
 	}
 	if t.forceVerifiedTLS {
 		transport.TLSClientConfig = newAdtyVerifiedTLSConfig()
-	} else if common.TLSInsecureSkipVerify {
+	} else if t.insecureSkipVerify || common.TLSInsecureSkipVerify {
 		transport.TLSClientConfig = common.InsecureTLSConfig.Clone()
 	}
 	return transport
+}
+
+// CloneSSRFProtectedClientWithInsecureTLS clones an HTTP client with
+// TLSInsecureSkipVerify enabled while preserving ssrfProtectedRoundTripper's
+// dial-time IP validation and pinned environment-proxy protection (R13-017).
+// The returned cleanup function must be called once the response body closes.
+func CloneSSRFProtectedClientWithInsecureTLS(base *http.Client) (*http.Client, func(), error) {
+	if base == nil {
+		base = GetSSRFProtectedHTTPClient()
+	}
+	client := *base
+	if rt, ok := base.Transport.(*ssrfProtectedRoundTripper); ok && rt != nil {
+		clonedRT := &ssrfProtectedRoundTripper{
+			resolver:           rt.resolver,
+			dialContext:        rt.dialContext,
+			getProtection:      rt.getProtection,
+			proxy:              rt.proxy,
+			insecureSkipVerify: true,
+			transports:         make(map[string]*http.Transport),
+		}
+		client.Transport = clonedRT
+		return &client, clonedRT.CloseIdleConnections, nil
+	}
+	if fetchSetting := system_setting.GetFetchSetting(); fetchSetting != nil && fetchSetting.EnableSSRFProtection {
+		netDialer := &net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
+		clonedRT := &ssrfProtectedRoundTripper{
+			resolver:           net.DefaultResolver,
+			dialContext:        netDialer.DialContext,
+			getProtection:      currentFetchProtection,
+			proxy:              http.ProxyFromEnvironment,
+			insecureSkipVerify: true,
+			transports:         make(map[string]*http.Transport),
+		}
+		client.Transport = clonedRT
+		if client.CheckRedirect == nil {
+			client.CheckRedirect = checkProtectedFetchRedirect
+		}
+		return &client, clonedRT.CloseIdleConnections, nil
+	}
+	if tr, ok := base.Transport.(*http.Transport); ok && tr != nil {
+		clonedTr := tr.Clone()
+		clonedTr.TLSClientConfig = common.InsecureTLSConfig.Clone()
+		client.Transport = clonedTr
+		return &client, clonedTr.CloseIdleConnections, nil
+	}
+	tr, err := NewRelayTransportWithProxySettings("", dto.ChannelSettings{TLSInsecureSkipVerify: true})
+	if err != nil {
+		return nil, nil, err
+	}
+	client.Transport = tr
+	return &client, tr.CloseIdleConnections, nil
+}
+
+// NewPinnedRelayProxyTransport builds a single-use *http.Transport for an
+// explicit channel proxy targeting an IP-pinned URL. For https:// proxies, it
+// dials the outer TLS handshake with the proxy's hostname and tunnels the inner
+// target TLS handshake with serverName via dialHTTPSOverHTTPSProxy (R13-031).
+func NewPinnedRelayProxyTransport(proxyURL, pinnedTargetURL, serverName string, settings dto.ChannelSettings) (*http.Transport, error) {
+	transport, err := NewRelayTransportWithProxySettings(proxyURL, settings)
+	if err != nil {
+		return nil, err
+	}
+	if serverName == "" {
+		return transport, nil
+	}
+	var baseTLS *tls.Config
+	if transport.TLSClientConfig != nil {
+		baseTLS = transport.TLSClientConfig.Clone()
+	} else {
+		baseTLS = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	var parsedProxy *url.URL
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		parsed, _, err := common.ParseProxyURLRuntime(trimmed)
+		if err != nil {
+			transport.CloseIdleConnections()
+			return nil, err
+		}
+		parsedProxy = parsed
+	}
+	if parsedProxy != nil && strings.EqualFold(parsedProxy.Scheme, "https") {
+		parsedTarget, err := url.Parse(pinnedTargetURL)
+		if err != nil || parsedTarget.Host == "" {
+			transport.CloseIdleConnections()
+			return nil, fmt.Errorf("invalid pinned target URL")
+		}
+		targetAddr := parsedTarget.Host
+		if parsedTarget.Port() == "" {
+			targetAddr = net.JoinHostPort(parsedTarget.Hostname(), "443")
+		}
+		dialContext := transport.DialContext
+		if dialContext == nil {
+			netDialer := &net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}
+			dialContext = netDialer.DialContext
+		}
+		transport.Proxy = nil
+		transport.TLSClientConfig = nil
+		transport.ForceAttemptHTTP2 = false
+		transport.DialTLSContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialHTTPSOverHTTPSProxy(ctx, dialContext, parsedProxy, targetAddr, serverName, baseTLS)
+		}
+		return transport, nil
+	}
+	baseTLS.ServerName = serverName
+	transport.TLSClientConfig = baseTLS
+	return transport, nil
 }
 
 func (d *protectedFetchDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {

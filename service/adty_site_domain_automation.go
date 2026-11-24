@@ -98,6 +98,16 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 		if claim.RowsAffected == 0 {
 			continue
 		}
+		var fresh model.AdtySiteDomain
+		if err := model.DB.WithContext(ctx).
+			Where("id = ? AND lease_token = ? AND generation = ?", row.Id, row.LeaseToken, row.Generation).
+			First(&fresh).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+		row = &fresh
 		runctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		err := adtyReconcileDomain(runctx, row)
 		cancel()
@@ -320,12 +330,36 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 				return err
 			}
 		}
-		if row.TurnstileWidget != "" || (row.ManagedBy != "platform" && (hostnameID != "" || createAttempted || row.Status == model.AdtySiteDomainActive) && cfg.TurnstileConfigured()) {
-			if err := model.DB.Transaction(func(tx *gorm.DB) error { return adtyTurnstileRemoveDomain(ctx, tx, row.TurnstileWidget, row.Hostname) }); err != nil {
+		return model.DB.Transaction(func(tx *gorm.DB) error {
+			var current model.AdtySiteDomain
+			if err := adtyLockDomainRow(tx, row.Id, &current); err != nil {
 				return err
 			}
-		}
-		return adtySaveDomainResource(row, map[string]any{"status": model.AdtySiteDomainRemoved, "automation_state": "removed", "turnstile_widget": ""})
+			if current.LeaseToken != row.LeaseToken || current.Generation != row.Generation || current.DesiredState != "removed" {
+				return errAdtyDomainLeaseLost
+			}
+			if current.Status == model.AdtySiteDomainRemoved {
+				return nil
+			}
+			if current.TurnstileWidget != "" || (current.ManagedBy != "platform" && (hostnameID != "" || createAttempted || current.Status == model.AdtySiteDomainActive) && cfg.TurnstileConfigured()) {
+				if err := adtyTurnstileRemoveDomain(ctx, tx, current.TurnstileWidget, current.Hostname); err != nil {
+					return err
+				}
+			}
+			res := tx.Model(&model.AdtySiteDomain{}).
+				Where("id = ? AND lease_token = ? AND generation = ?", row.Id, row.LeaseToken, row.Generation).
+				Updates(map[string]any{"status": model.AdtySiteDomainRemoved, "automation_state": "removed", "turnstile_widget": ""})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected != 1 {
+				return errAdtyDomainLeaseLost
+			}
+			row.Status = model.AdtySiteDomainRemoved
+			row.AutomationState = "removed"
+			row.TurnstileWidget = ""
+			return nil
+		})
 	}
 	// Persist each successful provider resource immediately, even if close changes
 	// the desired state while the request is in flight. The next run cleans it.

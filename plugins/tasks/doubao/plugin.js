@@ -6,9 +6,9 @@
 // generate_audio defaults to true). Seedance 1.0 lite is no longer listed and
 // keeps the 1.0 pro tiers.
 const VIDEO_MODELS = {
-  "doubao-seedance-1-0-pro-250528": { resolutions: ["480p", "720p", "1080p"], maxDuration: 12 },
-  "doubao-seedance-1-0-lite-t2v": { resolutions: ["480p", "720p", "1080p"], maxDuration: 12 },
-  "doubao-seedance-1-0-lite-i2v": { resolutions: ["480p", "720p", "1080p"], maxDuration: 12 },
+  "doubao-seedance-1-0-pro-250528": { resolutions: ["480p", "720p", "1080p"], maxDuration: 12, frames: true },
+  "doubao-seedance-1-0-lite-t2v": { resolutions: ["480p", "720p", "1080p"], maxDuration: 12, frames: true },
+  "doubao-seedance-1-0-lite-i2v": { resolutions: ["480p", "720p", "1080p"], maxDuration: 12, frames: true },
   "doubao-seedance-1-5-pro-251215": { resolutions: ["480p", "720p", "1080p"], maxDuration: 12, audio: true },
   "doubao-seedance-2-0-260128": { resolutions: ["480p", "720p", "1080p", "4k"], maxDuration: 15, videoInput: true },
   "doubao-seedance-2-0-fast-260128": { resolutions: ["480p", "720p"], maxDuration: 15, videoInput: true },
@@ -598,18 +598,65 @@ function rewriteDraftTaskContent(content, originTasks) {
 
 function normalizeResolution(value) {
   const raw = trimmed(value).toLowerCase();
-  if (["480p", "720p", "1080p", "4k"].includes(raw)) return raw;
-  const parts = raw.replace("*", "x").split("x");
-  if (parts.length !== 2) return "720p";
-  const max = Math.max(Number(parts[0]), Number(parts[1]));
+  if (SEEDANCE_RESOLUTIONS.includes(raw)) return raw;
+  const match = /^(\d+)\s*[x*]\s*(\d+)$/.exec(raw);
+  if (!match) throw new Error("resolution must be one of " + SEEDANCE_RESOLUTIONS.join(", ") + " or width x height");
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    throw new Error("resolution must be one of " + SEEDANCE_RESOLUTIONS.join(", ") + " or width x height");
+  }
+  const max = Math.max(width, height);
   if (max >= 3840) return "4k";
   if (max >= 1920) return "1080p";
   if (max >= 1280) return "720p";
   return "480p";
 }
 
+function videoReferenceContent(req) {
+  const metadata = (req && req.metadata) || {};
+  const imageContent = [];
+  const images = Array.isArray(req && req.images) ? req.images : [];
+  for (const url of images) imageContent.push({ type: "image_url", image_url: { url: url } });
+  const metadataContent = Array.isArray(metadata.content) ? metadata.content : [];
+  const refs = imageContent.concat(metadataContent).filter((item) => item && typeof item === "object" && !Array.isArray(item) && item.type !== "text");
+  for (const item of refs) {
+    if (item.type === "video_url") {
+      const url = item.video_url && typeof item.video_url === "object" ? trimmed(item.video_url.url) : trimmed(item.video_url);
+      if (!url) throw new Error("video_url item requires a non-empty url");
+    } else if (Object.prototype.hasOwnProperty.call(item, "video_url")) {
+      throw new Error("video_url is only allowed on video_url content items");
+    }
+  }
+  return refs;
+}
+
 function hasVideo(content) {
-  return Array.isArray(content) && content.some((item) => item && (item.type === "video_url" || Object.prototype.hasOwnProperty.call(item, "video_url")));
+  return (
+    Array.isArray(content) &&
+    content.some(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        item.type === "video_url" &&
+        Boolean(item.video_url && typeof item.video_url === "object" ? trimmed(item.video_url.url) : trimmed(item.video_url))
+    )
+  );
+}
+
+function resolveVideoFrames(metadata, profile, resolvedDuration) {
+  if (!metadata || metadata.frames === undefined || metadata.frames === null || metadata.frames === "") return undefined;
+  if (resolvedDuration !== undefined || !profile.frames) return undefined;
+  const maxFrames = profile.maxDuration * 24 + 1;
+  if (typeof metadata.frames === "boolean" || Array.isArray(metadata.frames)) {
+    throw new Error("frames must be an integer between 29 and " + maxFrames);
+  }
+  const frames = Number(metadata.frames);
+  if (!Number.isInteger(frames) || frames < 29 || frames > maxFrames) {
+    throw new Error("frames must be an integer between 29 and " + maxFrames);
+  }
+  return frames;
 }
 
 // Capability profile of the executing Seedance model. Channel mapping may send
@@ -630,8 +677,7 @@ function videoResolution(ctx) {
   const metadata = req.metadata || {};
   const profile = videoProfile(ctx);
   const raw = trimmed(metadata.resolution || req.size).toLowerCase();
-  const recognized = SEEDANCE_RESOLUTIONS.includes(raw) || raw.replace("*", "x").split("x").length === 2;
-  if (!recognized) return profile.resolutions.includes("1080p") ? "1080p" : profile.resolutions[profile.resolutions.length - 1];
+  if (!raw) return profile.resolutions.includes("1080p") ? "1080p" : profile.resolutions[profile.resolutions.length - 1];
   const resolution = normalizeResolution(raw);
   if (!profile.resolutions.includes(resolution))
     throw new Error(trimmed(ctx.upstreamModel || ctx.model) + " resolution must be one of " + profile.resolutions.join(", "));
@@ -1067,20 +1113,21 @@ export function buildSubmitRequest(ctx) {
   }
   const req = ctx.requestBody;
   const metadata = req.metadata || {};
+  const profile = videoProfile(ctx);
   // Reject output tiers the model does not offer before any quota is reserved.
-  videoResolution(ctx);
+  const resolvedResolution = videoResolution(ctx);
   const body = Object.assign({ model: req.model || "", content: [] }, metadata);
-  const imageContent = [];
-  const images = Array.isArray(req.images) ? req.images : [];
-  for (const url of images) imageContent.push({ type: "image_url", image_url: { url: url } });
-  const metadataContent = Array.isArray(body.content) ? body.content : [];
-  body.content = imageContent.concat(metadataContent).filter((item) => item && item.type !== "text");
+  if (trimmed(metadata.resolution || req.size)) body.resolution = resolvedResolution;
+  body.content = videoReferenceContent(req);
   const hasReference = body.content.length > 0;
   if (trimmed(req.prompt) || !hasReference) body.content.push({ type: "text", text: req.prompt || "" });
   if (Array.isArray(body.content)) body.content = rewriteDraftTaskContent(body.content, ctx.originTasks);
   // -1 lets the model pick the length; extractUsage reserves the longest one.
   const seconds = resolveVideoDuration(req);
   if (seconds !== undefined) body.duration = seconds;
+  const frames = resolveVideoFrames(metadata, profile, seconds);
+  if (frames !== undefined) body.frames = frames;
+  else delete body.frames;
   body.model = ctx.upstreamModel || body.model;
   return {
     url: apiRoot(ctx) + "/api/v3/contents/generations/tasks",
@@ -1124,27 +1171,30 @@ export function extractUsage(ctx) {
   }
   const req = ctx.requestBody || {};
   const metadata = req.metadata || {};
+  const refContent = videoReferenceContent(req);
+  const resolution = videoResolution(ctx);
   if (ctx.usagePurpose === "billing_ratios") {
-    const ratio = videoInputRatio(ctx.upstreamModel || ctx.model, metadata.resolution, metadata.content);
+    const ratio = videoInputRatio(ctx.upstreamModel || ctx.model, resolution, refContent);
     return ratio === 1 ? null : { video_input_ratio: ratio };
   }
   const profile = videoProfile(ctx);
   // A missing duration or -1 (the model picks the length; Seedance 2.5
   // defaults to it) reserves the longest duration the model can produce.
   const resolvedDuration = resolveVideoDuration(req);
-  let seconds = resolvedDuration !== undefined && resolvedDuration > 0 ? resolvedDuration : 0;
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    const frames = Number(metadata.frames);
-    seconds = Number.isFinite(frames) && frames > 0 ? Math.floor(frames / 24) : profile.maxDuration;
-  }
-  if (seconds <= 0) seconds = 5;
+  const resolvedFrames = resolveVideoFrames(metadata, profile, resolvedDuration);
+  let seconds =
+    resolvedDuration !== undefined && resolvedDuration > 0
+      ? resolvedDuration
+      : resolvedFrames !== undefined
+        ? Math.ceil(resolvedFrames / 24)
+        : profile.maxDuration;
+  if (!Number.isFinite(seconds) || seconds <= 0) seconds = profile.maxDuration;
   seconds = Math.min(seconds, 3600);
-  const resolution = videoResolution(ctx);
   const facts = { tokens: estimateTokens(seconds, resolution), resolution: resolution };
   // Every model reports video_input, including those whose profile omits it:
   // expressions saved when all Seedance models declared the field then keep
   // matching their no-video tier.
-  facts.video_input = hasVideo(metadata.content) ? "video" : "none";
+  facts.video_input = hasVideo(refContent) ? "video" : "none";
   if (profile.audio) facts.generate_audio = metadata.generate_audio !== false;
   return facts;
 }

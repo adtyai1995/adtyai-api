@@ -247,6 +247,18 @@ func allocateAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, 
 		// 异常去查，而真正的缺口反而叫不出声。
 		var lotTotal int64
 		for i := range batches {
+			if batches[i].Status == AdtyFundBatchStatusExpired {
+				continue
+			}
+			if batches[i].IsExpiringGift() && batches[i].ExpiresAt != nil && *batches[i].ExpiresAt > 0 {
+				if loc == nil {
+					loc = AdtyBusinessLocation(tx)
+					nowUnix = time.Now().In(loc).Unix()
+				}
+				if isAdtyFundBatchExpiredAt(&batches[i], nowUnix, loc) {
+					continue
+				}
+			}
 			lotTotal += batches[i].Remaining
 		}
 		// **只在批次总额为 0 时补**，而不是「只要有差额就补」。

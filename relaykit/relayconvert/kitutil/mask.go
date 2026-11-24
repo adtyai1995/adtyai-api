@@ -14,7 +14,7 @@ var (
 	// as double quotes and angle or curly brackets, so a URL quoted in an error
 	// keeps its delimiters. Apostrophes and parentheses are valid inside a URL;
 	// the caller trims them, like other punctuation, only when they trail it.
-	maskURLPattern = regexp.MustCompile(`(?:https?|wss?)://[^\s"<>{}]+`)
+	maskURLPattern = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s"<>{}]+`)
 	maskIPPattern  = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 	// maskBracketedIPv6Pattern matches the bracketed form Go network errors use
 	// for IPv6 addresses, as in "dial tcp [2001:db8::1]:443", with an optional

@@ -126,6 +126,43 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		info.ChannelOtherSettings = chOtherSettings
 	}
 
+	// R13-025: Expose origin task payload and prior usage facts to plugin hooks
+	// (e.g., Sora remix tiered billing expressions evaluating u("seconds")/u("size")).
+	originFacts := map[string]any{}
+	if originTask.PrivateData.BillingContext != nil && originTask.PrivateData.BillingContext.TieredSnapshot != nil {
+		for k, v := range originTask.PrivateData.BillingContext.TieredSnapshot.UsageFacts {
+			originFacts[k] = v
+		}
+	}
+	if originTask.PrivateData.CompletionBilling != nil {
+		for k, v := range originTask.PrivateData.CompletionBilling.UsageFacts {
+			originFacts[k] = v
+		}
+	}
+	if len(originFacts) == 0 {
+		originFacts = nil
+	}
+	hasOriginRef := false
+	for i := range info.OriginTasks {
+		if info.OriginTasks[i].TaskID == originTask.TaskID {
+			if len(info.OriginTasks[i].UsageFacts) == 0 && len(originFacts) > 0 {
+				info.OriginTasks[i].UsageFacts = originFacts
+			}
+			hasOriginRef = true
+			break
+		}
+	}
+	if !hasOriginRef {
+		info.OriginTasks = append(info.OriginTasks, relaycommon.OriginTaskRef{
+			TaskID:         originTask.TaskID,
+			UpstreamTaskID: originTask.GetUpstreamTaskID(),
+			Action:         originTask.Action,
+			Status:         string(originTask.Status),
+			Data:           append([]byte(nil), originTask.Data...),
+			UsageFacts:     originFacts,
+		})
+	}
+
 	// 提取 remix 参数（时长、分辨率 → OtherRatios）
 	if info.Action == constant.TaskActionRemix {
 		if originTask.PrivateData.BillingContext != nil {

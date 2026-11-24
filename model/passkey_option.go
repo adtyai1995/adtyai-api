@@ -51,9 +51,7 @@ func IsPasskeyDomainOption(key string) bool {
 // nodes. Callers also hold passkeyOptionMutex for SQLite and local cache ordering.
 // Always acquire these option rows before any user/session/credential row locks.
 func lockPasskeyDomainSettings(tx *gorm.DB) (system_setting.PasskeySettings, string, error) {
-	common.OptionMapRWMutex.RLock()
-	settings, serverAddress := *system_setting.GetPasskeySettings(), system_setting.ServerAddress
-	common.OptionMapRWMutex.RUnlock()
+	settings, serverAddress := system_setting.GetPasskeyDomainSeed()
 	rows := []Option{
 		{Key: "ServerAddress", Value: serverAddress},
 		{Key: "passkey.legacy_rp_ids", Value: settings.LegacyRPIDs},

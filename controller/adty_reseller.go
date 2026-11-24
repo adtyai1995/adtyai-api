@@ -136,8 +136,8 @@ func DisableAdtyAdminSiteDomain(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := service.RemoveAdtySiteDomainByAdmin(c.Request.Context(), id); err != nil {
-		common.ApiError(c, err)
+	if err := service.RemoveAdtySiteDomainByAdminForActor(c.Request.Context(), id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c)); err != nil {
+		writeAdtyFinanceError(c, err)
 		return
 	}
 	recordManageAudit(c, "adty.site.domain_disable", map[string]any{"domain_id": id})
@@ -150,8 +150,8 @@ func DisableAdtyAdminSiteSenderDomain(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := service.DisableAdtySiteSenderDomain(c.Request.Context(), id, c.GetInt("id")); err != nil {
-		common.ApiError(c, err)
+	if err := service.DisableAdtySiteSenderDomainForActor(c.Request.Context(), id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c)); err != nil {
+		writeAdtyFinanceError(c, err)
 		return
 	}
 	recordManageAudit(c, "adty.site.sender_domain_disable", map[string]any{"site_id": id})

@@ -35,7 +35,7 @@ func DoWorkerRequest(req *WorkerRequest) (*http.Response, error) {
 	// SSRF防护：验证请求URL
 	fetchSetting := system_setting.GetFetchSetting()
 	if err := common.ValidateURLWithFetchSetting(req.URL, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain); err != nil {
-		return nil, fmt.Errorf("request reject: %w", err)
+		return nil, fmt.Errorf("request reject: %w", sanitizeOutboundError(err))
 	}
 
 	if !strings.HasSuffix(workerUrl, "/") {
@@ -68,7 +68,7 @@ func DoDownloadRequestWithContext(ctx context.Context, originUrl string, reason 
 		ctx = context.Background()
 	}
 	if workerURL, workerKey, _ := system_setting.GetWorkerConfig(); workerURL != "" {
-		common.SysLog(common.LogText("downloading file from worker: %s, reason: %s", common.MaskSensitiveInfo(originUrl), strings.Join(reason, ", ")))
+		common.SysLog(common.LogText("downloading file from worker: %s, reason: %s", sanitizeOutboundURL(originUrl), strings.Join(reason, ", ")))
 		req := &WorkerRequest{
 			URL: originUrl,
 			Key: workerKey,
@@ -77,10 +77,10 @@ func DoDownloadRequestWithContext(ctx context.Context, originUrl string, reason 
 	}
 	// SSRF防护：验证请求URL（非Worker模式）
 	if err := ValidateSSRFProtectedFetchURL(originUrl); err != nil {
-		return nil, fmt.Errorf("request reject: %v", err)
+		return nil, fmt.Errorf("request reject: %w", sanitizeOutboundError(err))
 	}
 
-	common.SysLog(common.LogText("downloading from origin: %s, reason: %s", common.MaskSensitiveInfo(originUrl), strings.Join(reason, ", ")))
+	common.SysLog(common.LogText("downloading from origin: %s, reason: %s", sanitizeOutboundURL(originUrl), strings.Join(reason, ", ")))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, originUrl, nil)
 	if err != nil {
 		return nil, sanitizeOutboundError(err)

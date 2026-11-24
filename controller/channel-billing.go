@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -172,11 +171,11 @@ func GetResponseBody(method, url string, channel *model.Channel, headers http.He
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
-		return nil, fmt.Errorf("status code: %d", res.StatusCode)
+		return nil, common.NewMessage("Upstream returned HTTP {{status}}", map[string]any{"status": res.StatusCode})
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 2<<20))
 	if err != nil {
-		return nil, err
+		return nil, common.NewMessage("Failed to read balance response")
 	}
 	return body, nil
 }
@@ -190,14 +189,17 @@ func updateChannelOpenAISBBalance(channel *model.Channel) (float64, error) {
 	response := OpenAISBUsageResponse{}
 	err = common.Unmarshal(body, &response)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if response.Data == nil {
-		return 0, errors.New(response.Msg)
+		if strings.TrimSpace(response.Msg) != "" {
+			return 0, common.NewMessage("Balance query failed: {{error}}", map[string]any{"error": response.Msg})
+		}
+		return 0, common.NewMessage("Balance query failed")
 	}
 	balance, err := strconv.ParseFloat(response.Data.Credit, 64)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	channel.UpdateBalance(balance)
 	return balance, nil
@@ -214,10 +216,10 @@ func updateChannelAIProxyBalance(channel *model.Channel) (float64, error) {
 	response := AIProxyUserOverviewResponse{}
 	err = common.Unmarshal(body, &response)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if !response.Success {
-		return 0, fmt.Errorf("code: %d, message: %s", response.ErrorCode, response.Message)
+		return 0, common.NewMessage("Upstream returned error code {{code}}: {{message}}", map[string]any{"code": response.ErrorCode, "message": response.Message})
 	}
 	channel.UpdateBalance(response.Data.TotalPoints)
 	return response.Data.TotalPoints, nil
@@ -233,7 +235,7 @@ func updateChannelAPI2GPTBalance(channel *model.Channel) (float64, error) {
 	response := API2GPTUsageResponse{}
 	err = common.Unmarshal(body, &response)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	channel.UpdateBalance(response.TotalRemaining)
 	return response.TotalRemaining, nil
@@ -248,14 +250,14 @@ func updateChannelSiliconFlowBalance(channel *model.Channel) (float64, error) {
 	response := SiliconFlowUsageResponse{}
 	err = common.Unmarshal(body, &response)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if response.Code != 20000 {
-		return 0, fmt.Errorf("code: %d, message: %s", response.Code, response.Message)
+		return 0, common.NewMessage("Upstream returned error code {{code}}: {{message}}", map[string]any{"code": response.Code, "message": response.Message})
 	}
 	balance, err := strconv.ParseFloat(response.Data.TotalBalance, 64)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	channel.UpdateBalance(balance)
 	return balance, nil
@@ -282,13 +284,13 @@ func getDeepSeekBalanceUSD(response DeepSeekUsageResponse, usdExchangeRate float
 	if usdBalance != nil {
 		balance, err := strconv.ParseFloat(*usdBalance, 64)
 		if err != nil {
-			return 0, err
+			return 0, common.NewMessage("Invalid balance JSON response")
 		}
 		if math.IsNaN(balance) || math.IsInf(balance, 0) {
-			return 0, errors.New("USD balance must be finite")
+			return 0, common.NewMessage("USD balance must be finite")
 		}
 		if balance < 0 {
-			return 0, errors.New("USD balance must be non-negative")
+			return 0, common.NewMessage("USD balance must be non-negative")
 		}
 		if balance > 0 {
 			return balance, nil
@@ -300,31 +302,31 @@ func getDeepSeekBalanceUSD(response DeepSeekUsageResponse, usdExchangeRate float
 		if usdBalance != nil {
 			return 0, nil
 		}
-		return 0, errors.New("currency USD or CNY not found")
+		return 0, common.NewMessage("Currency USD or CNY not found")
 	}
 	if math.IsNaN(usdExchangeRate) || math.IsInf(usdExchangeRate, 0) {
-		return 0, errors.New("USD exchange rate must be finite")
+		return 0, common.NewMessage("USD exchange rate must be finite")
 	}
 	if usdExchangeRate <= 0 {
-		return 0, errors.New("USD exchange rate must be greater than zero")
+		return 0, common.NewMessage("USD exchange rate must be greater than zero")
 	}
 
 	balanceCNY, err := strconv.ParseFloat(*cnyBalance, 64)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if math.IsNaN(balanceCNY) || math.IsInf(balanceCNY, 0) {
-		return 0, errors.New("CNY balance must be finite")
+		return 0, common.NewMessage("CNY balance must be finite")
 	}
 	if balanceCNY < 0 {
-		return 0, errors.New("CNY balance must be non-negative")
+		return 0, common.NewMessage("CNY balance must be non-negative")
 	}
 	balanceUSD := decimal.NewFromFloat(balanceCNY).Div(decimal.NewFromFloat(usdExchangeRate)).InexactFloat64()
 	if math.IsNaN(balanceUSD) || math.IsInf(balanceUSD, 0) {
-		return 0, errors.New("converted USD balance must be finite")
+		return 0, common.NewMessage("Converted USD balance must be finite")
 	}
 	if balanceUSD < 0 {
-		return 0, errors.New("converted USD balance must be non-negative")
+		return 0, common.NewMessage("Converted USD balance must be non-negative")
 	}
 	return balanceUSD, nil
 }
@@ -338,7 +340,7 @@ func updateChannelDeepSeekBalance(channel *model.Channel) (float64, error) {
 	response := DeepSeekUsageResponse{}
 	err = common.Unmarshal(body, &response)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	balance, err := getDeepSeekBalanceUSD(response, operation_setting.GetUSDExchangeRate())
 	if err != nil {
@@ -357,7 +359,7 @@ func updateChannelAIGC2DBalance(channel *model.Channel) (float64, error) {
 	response := APGC2DGPTUsageResponse{}
 	err = common.Unmarshal(body, &response)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	channel.UpdateBalance(response.TotalAvailable)
 	return response.TotalAvailable, nil
@@ -372,7 +374,7 @@ func updateChannelOpenRouterBalance(channel *model.Channel) (float64, error) {
 	response := OpenRouterCreditResponse{}
 	err = common.Unmarshal(body, &response)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	balance := response.Data.TotalCredits - response.Data.TotalUsage
 	channel.UpdateBalance(balance)
@@ -403,10 +405,10 @@ func updateChannelMoonshotBalance(channel *model.Channel) (float64, error) {
 	response := MoonshotBalanceResponse{}
 	err = common.Unmarshal(body, &response)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if !response.Status || response.Code != 0 {
-		return 0, fmt.Errorf("failed to update moonshot balance, status: %v, code: %d, scode: %s", response.Status, response.Code, response.Scode)
+		return 0, common.NewMessage("Failed to update Moonshot balance (status: {{status}}, code: {{code}}, scode: {{scode}})", map[string]any{"status": response.Status, "code": response.Code, "scode": response.Scode})
 	}
 	availableBalanceUsd, err := moonshotBalanceUSD(response.Data.AvailableBalance, operation_setting.GetPrice())
 	if err != nil {
@@ -418,7 +420,7 @@ func updateChannelMoonshotBalance(channel *model.Channel) (float64, error) {
 
 func moonshotBalanceUSD(cny float64, price float64) (float64, error) {
 	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) || math.IsNaN(cny) || math.IsInf(cny, 0) {
-		return 0, fmt.Errorf("invalid recharge price")
+		return 0, common.NewMessage("Invalid recharge price")
 	}
 	return decimal.NewFromFloat(cny).Div(decimal.NewFromFloat(price)).InexactFloat64(), nil
 }
@@ -426,7 +428,7 @@ func moonshotBalanceUSD(cny float64, price float64) (float64, error) {
 func updateChannelSub2APIBalance(channel *model.Channel) (float64, error) {
 	baseURL := channel.GetBaseURL()
 	if baseURL == "" {
-		return 0, errors.New("Sub2API channel is missing base_url")
+		return 0, common.NewMessage("Sub2API channel is missing base_url")
 	}
 	url := fmt.Sprintf("%s/v1/usage", strings.TrimRight(baseURL, "/"))
 	body, err := GetResponseBody("GET", url, channel, GetAuthHeader(channel.Key))
@@ -446,10 +448,10 @@ func updateChannelSub2APIBalance(channel *model.Channel) (float64, error) {
 	}
 	usage := sub2apiUsageResponse{}
 	if err := common.Unmarshal(body, &usage); err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if usage.IsValid != nil && !*usage.IsValid {
-		return 0, errors.New("Sub2API key is invalid (isValid=false)")
+		return 0, common.NewMessage("Sub2API key is invalid (isValid=false)")
 	}
 
 	balance := usage.Remaining
@@ -457,14 +459,14 @@ func updateChannelSub2APIBalance(channel *model.Channel) (float64, error) {
 		balance = usage.Balance
 	}
 	if balance == nil {
-		return 0, errors.New("Sub2API /v1/usage response is missing remaining and balance fields (the key may belong to a subscription group without an available balance)")
+		return 0, common.NewMessage("Sub2API /v1/usage response is missing remaining and balance fields (the key may belong to a subscription group without an available balance)")
 	}
 	// Sub2API reports remaining=-1 for a subscription group with no daily, weekly,
 	// or monthly limit. A wallet balance can legitimately be negative, so detect
 	// the unlimited case from the subscription limits rather than the value.
 	subscription := usage.Subscription
 	if subscription != nil && subscription.DailyLimitUSD == nil && subscription.WeeklyLimitUSD == nil && subscription.MonthlyLimitUSD == nil {
-		return 0, errors.New("Sub2API /v1/usage reports an unlimited subscription without a finite balance")
+		return 0, common.NewMessage("Sub2API /v1/usage reports an unlimited subscription without a finite balance")
 	}
 	channel.UpdateBalance(*balance)
 	return *balance, nil
@@ -476,7 +478,7 @@ func updateChannelSub2APIBalance(channel *model.Channel) (float64, error) {
 func updateChannelNewAPIBalance(channel *model.Channel) (float64, error) {
 	baseURL := strings.TrimRight(channel.GetBaseURL(), "/")
 	if baseURL == "" {
-		return 0, errors.New("New API channel is missing base_url")
+		return 0, common.NewMessage("New API channel is missing base_url")
 	}
 	body, err := GetResponseBody("GET", baseURL+"/api/usage/token/", channel, GetAuthHeader(channel.Key))
 	if err != nil {
@@ -494,10 +496,10 @@ func updateChannelNewAPIBalance(channel *model.Channel) (float64, error) {
 		} `json:"data"`
 	}
 	if err := common.Unmarshal(body, &usage); err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if !usage.Code {
-		return 0, fmt.Errorf("New API usage query failed: %s", usage.Message)
+		return 0, common.NewMessage("New API usage query failed: {{error}}", map[string]any{"error": usage.Message})
 	}
 	remaining := usage.Data.TotalAvailable
 	if usage.Data.UnlimitedQuota {
@@ -520,10 +522,10 @@ func updateChannelNewAPIBalance(channel *model.Channel) (float64, error) {
 		} `json:"data"`
 	}
 	if err := common.Unmarshal(body, &status); err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if status.Data.QuotaPerUnit <= 0 {
-		return 0, errors.New("New API /api/status response is missing quota_per_unit")
+		return 0, common.NewMessage("New API /api/status response is missing quota_per_unit")
 	}
 	balance := remaining / status.Data.QuotaPerUnit
 	channel.UpdateBalance(balance)
@@ -576,19 +578,19 @@ func fetchAdvancedCustomBalance(channel *model.Channel) (channelBalanceResult, e
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return channelBalanceResult{}, fmt.Errorf("status code: %d", response.StatusCode)
+		return channelBalanceResult{}, common.NewMessage("Upstream returned HTTP {{status}}", map[string]any{"status": response.StatusCode})
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxAdvancedCustomBalanceResponseBytes+1))
 	if err != nil {
 		return channelBalanceResult{}, sanitizeAdvancedCustomRequestError(err, key, requestURL)
 	}
 	if len(body) > maxAdvancedCustomBalanceResponseBytes {
-		return channelBalanceResult{}, fmt.Errorf("balance response exceeds %d bytes", maxAdvancedCustomBalanceResponseBytes)
+		return channelBalanceResult{}, common.NewMessage("Balance response exceeds {{limit}} bytes", map[string]any{"limit": maxAdvancedCustomBalanceResponseBytes})
 	}
 
 	var validated json.RawMessage
 	if err := common.Unmarshal(body, &validated); err != nil {
-		return channelBalanceResult{}, fmt.Errorf("invalid balance JSON response: %w", err)
+		return channelBalanceResult{}, common.NewMessage("Invalid balance JSON response")
 	}
 	if common.GetJsonType(validated) == "object" {
 		var creditSummary struct {
@@ -596,7 +598,7 @@ func fetchAdvancedCustomBalance(channel *model.Channel) (channelBalanceResult, e
 			TotalAvailable json.RawMessage `json:"total_available"`
 		}
 		if err := common.Unmarshal(body, &creditSummary); err != nil {
-			return channelBalanceResult{}, fmt.Errorf("invalid balance JSON response: %w", err)
+			return channelBalanceResult{}, common.NewMessage("Invalid balance JSON response")
 		}
 		if creditSummary.Object == "credit_summary" &&
 			common.GetJsonType(creditSummary.TotalAvailable) == "number" {
@@ -613,7 +615,7 @@ func fetchAdvancedCustomBalance(channel *model.Channel) (channelBalanceResult, e
 
 	formatted, err := common.IndentJson(body)
 	if err != nil {
-		return channelBalanceResult{}, fmt.Errorf("invalid balance JSON response: %w", err)
+		return channelBalanceResult{}, common.NewMessage("Invalid balance JSON response")
 	}
 	return channelBalanceResult{RawResponse: string(formatted)}, nil
 }
@@ -675,10 +677,10 @@ func updateStandardChannelBalance(channel *model.Channel) (float64, error) {
 	}
 	err = common.Unmarshal(body, &subscription)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if subscription.HardLimitUSD == nil || math.IsNaN(*subscription.HardLimitUSD) || math.IsInf(*subscription.HardLimitUSD, 0) {
-		return 0, fmt.Errorf("subscription response missing hard_limit_usd")
+		return 0, common.NewMessage("Subscription response missing hard_limit_usd")
 	}
 	now := time.Now()
 	startDate := fmt.Sprintf("%s-01", now.Format("2006-01"))
@@ -696,10 +698,10 @@ func updateStandardChannelBalance(channel *model.Channel) (float64, error) {
 	}
 	err = common.Unmarshal(body, &usage)
 	if err != nil {
-		return 0, err
+		return 0, common.NewMessage("Invalid balance JSON response")
 	}
 	if usage.TotalUsage == nil || math.IsNaN(*usage.TotalUsage) || math.IsInf(*usage.TotalUsage, 0) {
-		return 0, fmt.Errorf("usage response missing total_usage")
+		return 0, common.NewMessage("Usage response missing total_usage")
 	}
 	balance := *subscription.HardLimitUSD - *usage.TotalUsage/100
 	channel.UpdateBalance(balance)

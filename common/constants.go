@@ -141,6 +141,9 @@ func GetDataExportInterval() int {
 	OptionMapRWMutex.RLock()
 	v := DataExportInterval
 	OptionMapRWMutex.RUnlock()
+	if v < 1 {
+		return 1
+	}
 	return v
 }
 

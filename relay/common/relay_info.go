@@ -1020,6 +1020,7 @@ type OriginTaskRef struct {
 	Action         string
 	Status         string
 	Data           []byte
+	UsageFacts     map[string]any
 }
 
 type TaskRelayInfo struct {

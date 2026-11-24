@@ -540,15 +540,17 @@ func executeAdtyReservedTranslationWithGuard(objectKey, source string, siteId, v
 			superseded = found.RowsAffected == 0 || current.Status != model.AdtyTranslationReady
 			return nil
 		}
-		if found.RowsAffected > 0 && current.HumanEdited && current.Version == version && current.SourceHash == hash {
-			_ = upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
-				ObjectKey:  objectKey,
-				Version:    version,
-				SourceHash: hash,
-				Status:     model.AdtyTranslationReady,
-				ModelName:  modelName,
-				FinishedAt: time.Now().Unix(),
-			})
+		if found.RowsAffected > 0 && (current.HumanEdited || current.Status == model.AdtyTranslationReady) && current.Version == version && (current.SourceHash == "" || current.SourceHash == hash) {
+			if current.HumanEdited {
+				_ = upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
+					ObjectKey:  objectKey,
+					Version:    version,
+					SourceHash: hash,
+					Status:     model.AdtyTranslationReady,
+					ModelName:  modelName,
+					FinishedAt: time.Now().Unix(),
+				})
+			}
 			saved = current
 			return nil
 		}
@@ -1220,6 +1222,11 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 			preserved = found.RowsAffected > 0
 			return nil
 		}
+		if found.RowsAffected > 0 && (current.Status != model.AdtyTranslationPending || current.HumanEdited || current.Version != version || (current.SourceHash != "" && current.SourceHash != hash)) {
+			head = current
+			preserved = true
+			return nil
+		}
 		if err := upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
 			ObjectKey:  objectKey,
 			Version:    version,
@@ -1229,11 +1236,6 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 			FinishedAt: time.Now().Unix(),
 		}); err != nil {
 			return err
-		}
-		if found.RowsAffected > 0 && (current.HumanEdited || current.Version != version || (current.SourceHash != "" && current.SourceHash != hash)) {
-			head = current
-			preserved = true
-			return nil
 		}
 		head.Id = current.Id
 		if found.RowsAffected == 0 {

@@ -3,7 +3,6 @@ package relay
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -81,7 +80,7 @@ func RelayMidjourneyImage(c *gin.Context) {
 	}
 	if validateErr != nil {
 		c.JSON(http.StatusForbidden, gin.H{
-			"error": fmt.Sprintf("request blocked: %v", validateErr),
+			"error": fmt.Sprintf("request blocked: %v", service.SanitizeOutboundError(validateErr)),
 		})
 		return
 	}
@@ -153,7 +152,7 @@ func pinMidjourneyImageURL(raw string) (pinnedURL, serverName, requestHost strin
 	if len(ips) == 0 {
 		return "", "", "", fmt.Errorf("DNS resolution failed for %s", host)
 	}
-	protection, err := common.NewSSRFProtectionFromFetchSetting(fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, true)
+	protection, err := common.NewSSRFProtectionFromFetchSetting(fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -209,21 +208,10 @@ func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, logicalUR
 		}
 		var clonedTransport *http.Transport
 		if currentServerName != "" {
-			if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
-				clonedTransport = transport.Clone()
-			} else {
-				var tErr error
-				clonedTransport, tErr = service.NewRelayTransportWithProxySettings(proxy, channelSetting)
-				if tErr != nil {
-					return nil, tErr
-				}
-			}
-			if clonedTransport.TLSClientConfig == nil {
-				clonedTransport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: currentServerName}
-			} else {
-				cfg := clonedTransport.TLSClientConfig.Clone()
-				cfg.ServerName = currentServerName
-				clonedTransport.TLSClientConfig = cfg
+			var tErr error
+			clonedTransport, tErr = service.NewPinnedRelayProxyTransport(proxy, currentURL, currentServerName, channelSetting)
+			if tErr != nil {
+				return nil, tErr
 			}
 			oneOff.Transport = clonedTransport
 		}

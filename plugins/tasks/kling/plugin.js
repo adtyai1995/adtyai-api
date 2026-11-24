@@ -274,7 +274,12 @@ function outboundDuration(req) {
 
 function outboundMode(req, model) {
   const metadata = (req && req.metadata) || {};
-  return resolveKlingMode(model, (req && req.mode) || metadata.mode);
+  const topMode = trimmed(req && req.mode);
+  const metaMode = trimmed(metadata.mode);
+  if (topMode && metaMode && topMode.toLowerCase() !== metaMode.toLowerCase()) {
+    throw new Error("mode and metadata.mode must match");
+  }
+  return resolveKlingMode(model, metaMode || topMode);
 }
 
 // Pre-4.0 reservation: existing per-second table only. Do not apply later
@@ -583,7 +588,7 @@ export function buildSubmitRequest(ctx) {
       body.aspect_ratio = aspectRatio(sizeDimensions(req.size), KLING_ASPECT_RATIOS);
     Object.assign(body, metadata);
     body.model_name = model;
-    body.mode = outboundMode({ mode: body.mode, metadata: metadata }, model);
+    body.mode = outboundMode(req, model);
     body.duration = String(outboundDuration(req));
     if (body.image) body.image = filePlaceholder(body.image);
     if (body.image_tail) body.image_tail = filePlaceholder(body.image_tail);

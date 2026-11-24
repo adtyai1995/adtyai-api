@@ -533,6 +533,24 @@ func RemoveAdtySiteSenderDomain(ctx context.Context, ownerUserId int) error {
 
 // DisableAdtySiteSenderDomain 从 Resend 删掉站点的发件域名，回退到平台发件地址。operatorId 是停用的管理员（站长自己删时为 0）。
 func DisableAdtySiteSenderDomain(ctx context.Context, siteId, operatorId int) error {
+	return DisableAdtySiteSenderDomainForActor(ctx, siteId, operatorId, 0, false)
+}
+
+func DisableAdtySiteSenderDomainForActor(ctx context.Context, siteId, operatorId, actorRole int, denyAdminTarget bool) error {
+	if actorRole > 0 || denyAdminTarget {
+		if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id").Where("id = ?", siteId).First(&site).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtySiteNotFound
+				}
+				return err
+			}
+			return checkAdtySiteTargetActorTx(tx, &site, operatorId, actorRole, denyAdminTarget)
+		}); err != nil {
+			return err
+		}
+	}
 	var row model.AdtySiteSenderDomain
 	lookup := model.DB.Where("site_id = ?", siteId).Limit(1).Find(&row)
 	if lookup.Error != nil {

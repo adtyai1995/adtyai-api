@@ -70,6 +70,9 @@ func creditAdtyTeamTopUpTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopup
 	if team.LeaderUserId != topUp.UserId || (team.Status != model.AdtyTeamStatusActive && team.Status != model.AdtyTeamStatusClosed) {
 		return errors.Join(ErrAdtyTeamForbidden, model.ErrTopUpStatusInvalid)
 	}
+	if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: ext.SiteId, AccountID: topUp.UserId, OrderRef: ext.TradeNo}); err != nil {
+		return err
+	}
 	if err := applyAdtyTeamQuotaTx(tx, &team, principal, "topup", ext.TradeNo, topUp.UserId, ext.TeamPaymentEffectiveAt); err != nil {
 		return err
 	}
@@ -1310,6 +1313,9 @@ func CreditAdtyTeam(leaderId, teamId int64, quota int64, ref string) error {
 		if int64(team.LeaderUserId) != leaderId {
 			return ErrAdtyTeamForbidden
 		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: team.SiteId, AccountID: int(leaderId), OrderRef: ref}); err != nil {
+			return err
+		}
 		return applyAdtyTeamQuotaTx(tx, team, quota, "credit", ref, int(leaderId))
 	})
 }
@@ -1336,6 +1342,9 @@ func SpendAdtyTeam(userId int, quota int64, ref string) error {
 		}
 		if membership.Status != model.AdtyTeamMemberActive {
 			return ErrAdtyTeamForbidden
+		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: team.SiteId, AccountID: userId, OrderRef: ref}); err != nil {
+			return err
 		}
 		if team.SharedQuota < quota {
 			return ErrAdtyTeamFunds

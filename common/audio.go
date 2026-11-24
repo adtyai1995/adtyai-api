@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/abema/go-mp4"
@@ -46,6 +47,9 @@ func GetAudioDuration(ctx context.Context, f io.ReadSeeker, ext string) (duratio
 	default:
 		return 0, fmt.Errorf("unsupported audio format: %s", ext)
 	}
+	if err == nil && (math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0) {
+		return 0, fmt.Errorf("invalid audio duration: %v", duration)
+	}
 	SysLog(LogText("GetAudioDuration: duration=%f", duration))
 	return duration, err
 }
@@ -68,13 +72,59 @@ func getMP3Duration(r io.Reader) (float64, error) {
 		}
 		duration += f.Duration().Seconds()
 	}
+	if duration <= 0 {
+		return 0, errors.New("no valid mp3 frames found")
+	}
 	return duration, nil
+}
+
+// hasValidTrailingRIFFChunks reports whether [startPos, endPos) consists solely
+// of well-formed RIFF subchunks (e.g. LIST/INFO/id3). When a WAV file spoofs a
+// tiny data chunk size in front of real PCM audio, the remaining bytes will not
+// parse as valid RIFF chunks summing to endPos.
+func hasValidTrailingRIFFChunks(r io.ReadSeeker, dataStart, pcmSize, endPos int64) bool {
+	pos := dataStart + pcmSize
+	if pcmSize%2 == 1 && pos < endPos {
+		pos++
+	}
+	if pos >= endPos {
+		return true
+	}
+	var hdr [8]byte
+	for pos < endPos {
+		if endPos-pos < 8 {
+			return false
+		}
+		if _, err := r.Seek(pos, io.SeekStart); err != nil {
+			return false
+		}
+		if _, err := io.ReadFull(r, hdr[:]); err != nil {
+			return false
+		}
+		for i := 0; i < 4; i++ {
+			if hdr[i] < 0x20 || hdr[i] > 0x7e {
+				return false
+			}
+		}
+		chunkSize := int64(binary.LittleEndian.Uint32(hdr[4:8]))
+		next := pos + 8 + chunkSize
+		if next > endPos {
+			return false
+		}
+		if chunkSize%2 == 1 && next < endPos {
+			next++
+		}
+		pos = next
+	}
+	return pos == endPos
 }
 
 // getWAVDuration 解析 WAV 文件头以获取时长。
 func getWAVDuration(r io.ReadSeeker) (float64, error) {
 	// 1. 强制复位指针
-	r.Seek(0, io.SeekStart)
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return 0, errors.Wrap(err, "failed to seek wav file")
+	}
 
 	dec := wav.NewDecoder(r)
 
@@ -89,30 +139,18 @@ func getWAVDuration(r io.ReadSeeker) (float64, error) {
 	}
 
 	pcmSize := int64(dec.PCMSize)
+	currentPos, _ := r.Seek(0, io.SeekCurrent)
+	endPos, _ := r.Seek(0, io.SeekEnd)
+	_, _ = r.Seek(currentPos, io.SeekStart)
+	actualPCM := endPos - currentPos
 
-	// 如果读出来的 Size 是 0，尝试用文件大小反推
-	if pcmSize == 0 {
-		// 获取文件总大小
-		currentPos, _ := r.Seek(0, io.SeekCurrent) // 当前通常在 data chunk header 之后
-		endPos, _ := r.Seek(0, io.SeekEnd)
-		fileSize := endPos
-
-		// 恢复位置（虽然如果不继续读也没关系）
-		r.Seek(currentPos, io.SeekStart)
-
-		// 数据区大小 ≈ 文件总大小 - 当前指针位置(即Header大小)
-		// 注意：FwdToPCM 成功后，CurrentPos 应该刚好指向 Data 区数据的开始
-		// 或者是 Data Chunk ID + Size 之后。
-		// WAV Header 一般 44 字节。
-		if fileSize > 44 {
-			// 如果 FwdToPCM 成功，Reader 应该位于 data 块的数据起始处
-			// 所以剩余的所有字节理论上都是音频数据
-			pcmSize = fileSize - currentPos
-
-			// 简单的兜底：如果算出来还是负数或0，强制按文件大小-44计算
-			if pcmSize <= 0 {
-				pcmSize = fileSize - 44
-			}
+	// 如果读出来的 Size <= 0，或后续字节并非合法 RIFF 子块（伪造极小 data chunk size 规避计费），
+	// 使用实际剩余音频数据长度计算时长。
+	if pcmSize <= 0 || (actualPCM > pcmSize && !hasValidTrailingRIFFChunks(r, currentPos, pcmSize, endPos)) {
+		if actualPCM > 0 {
+			pcmSize = actualPCM
+		} else if endPos > 44 {
+			pcmSize = endPos - 44
 		}
 	}
 
@@ -120,43 +158,101 @@ func getWAVDuration(r io.ReadSeeker) (float64, error) {
 	bitDepth := int64(dec.BitDepth)
 	sampleRate := float64(dec.SampleRate)
 
-	if sampleRate == 0 || numChans == 0 || bitDepth == 0 {
+	if sampleRate <= 0 || numChans <= 0 || bitDepth < 8 || pcmSize <= 0 {
 		return 0, errors.New("invalid wav header metadata")
 	}
 
 	bytesPerFrame := numChans * (bitDepth / 8)
-	if bytesPerFrame == 0 {
+	if bytesPerFrame <= 0 {
 		return 0, errors.New("invalid byte depth calculation")
 	}
 
-	totalFrames := pcmSize / bytesPerFrame
-
-	durationSeconds := float64(totalFrames) / sampleRate
+	durationSeconds := float64(pcmSize) / (float64(bytesPerFrame) * sampleRate)
+	if math.IsNaN(durationSeconds) || math.IsInf(durationSeconds, 0) || durationSeconds <= 0 {
+		return 0, errors.New("invalid wav duration")
+	}
 	return durationSeconds, nil
 }
 
-// getFLACDuration 解析 FLAC 文件的 STREAMINFO 块。
-func getFLACDuration(r io.Reader) (float64, error) {
+// getFLACDuration 解析 FLAC 文件的 STREAMINFO 与音频帧，防止 NSamples=0 或伪造极小采样数规避计费。
+func getFLACDuration(r io.ReadSeeker) (float64, error) {
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return 0, errors.Wrap(err, "failed to seek flac file")
+	}
 	stream, err := flac.Parse(r)
 	if err != nil {
 		return 0, errors.Wrap(err, "failed to parse flac stream")
 	}
 	defer stream.Close()
 
-	// 时长 = 总采样数 / 采样率
-	duration := float64(stream.Info.NSamples) / float64(stream.Info.SampleRate)
+	if stream.Info == nil || stream.Info.SampleRate == 0 {
+		return 0, errors.New("invalid flac stream info")
+	}
+
+	var countedSamples uint64
+	for {
+		f, ferr := stream.ParseNext()
+		if ferr == io.EOF {
+			break
+		}
+		if ferr != nil {
+			if countedSamples == 0 && stream.Info.NSamples == 0 {
+				return 0, errors.Wrap(ferr, "failed to decode flac frames")
+			}
+			break
+		}
+		countedSamples += uint64(f.BlockSize)
+	}
+	totalSamples := stream.Info.NSamples
+	if countedSamples > totalSamples {
+		totalSamples = countedSamples
+	}
+	if totalSamples == 0 {
+		return 0, errors.New("flac stream contains no audio samples")
+	}
+
+	duration := float64(totalSamples) / float64(stream.Info.SampleRate)
 	return duration, nil
 }
 
-// getM4ADuration 解析 M4A/MP4 文件的 'mvhd' box。
+// getM4ADuration 解析 M4A/MP4 文件的 'mvhd'、轨道 'mdhd' 与样本表以防伪造零时长。
 func getM4ADuration(r io.ReadSeeker) (float64, error) {
-	// go-mp4 库需要 ReadSeeker 接口
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return 0, errors.Wrap(err, "failed to seek m4a/mp4 file")
+	}
 	info, err := mp4.Probe(r)
 	if err != nil {
 		return 0, errors.Wrap(err, "failed to probe m4a/mp4 file")
 	}
-	// 时长 = Duration / Timescale
-	return float64(info.Duration) / float64(info.Timescale), nil
+	var bestDuration float64
+	if info.Timescale > 0 && info.Duration > 0 {
+		bestDuration = float64(info.Duration) / float64(info.Timescale)
+	}
+	for _, track := range info.Tracks {
+		if track == nil || track.Timescale == 0 {
+			continue
+		}
+		if track.Duration > 0 {
+			if td := float64(track.Duration) / float64(track.Timescale); td > bestDuration {
+				bestDuration = td
+			}
+		}
+		if len(track.Samples) > 0 {
+			var sampleTicks uint64
+			for _, s := range track.Samples {
+				sampleTicks += uint64(s.TimeDelta)
+			}
+			if sampleTicks > 0 {
+				if sd := float64(sampleTicks) / float64(track.Timescale); sd > bestDuration {
+					bestDuration = sd
+				}
+			}
+		}
+	}
+	if math.IsNaN(bestDuration) || math.IsInf(bestDuration, 0) || bestDuration <= 0 {
+		return 0, errors.New("invalid m4a/mp4 duration")
+	}
+	return bestDuration, nil
 }
 
 // getOGGDuration 解析 OGG/Vorbis 文件以获取时长。
@@ -175,6 +271,9 @@ func getOGGDuration(r io.ReadSeeker) (float64, error) {
 	// 需要读取整个文件来获取总采样数
 	channels := reader.Channels()
 	sampleRate := reader.SampleRate()
+	if channels <= 0 || sampleRate <= 0 {
+		return 0, errors.New("invalid ogg vorbis metadata")
+	}
 
 	// 估算方法：读取到文件结尾
 	var totalSamples int64
@@ -188,6 +287,9 @@ func getOGGDuration(r io.ReadSeeker) (float64, error) {
 			return 0, errors.Wrap(err, "failed to read ogg samples")
 		}
 		totalSamples += int64(n / channels)
+	}
+	if totalSamples <= 0 {
+		return 0, errors.New("ogg vorbis stream contains no audio samples")
 	}
 
 	duration := float64(totalSamples) / float64(sampleRate)
@@ -204,6 +306,7 @@ func getOpusDuration(r io.ReadSeeker) (float64, error) {
 
 	// 读取 OGG 页面头部
 	var totalGranulePos int64
+	foundPage := false
 	buf := make([]byte, 27) // OGG 页面头部最小大小
 
 	for {
@@ -226,6 +329,7 @@ func getOpusDuration(r io.ReadSeeker) (float64, error) {
 			}
 			continue
 		}
+		foundPage = true
 
 		// 读取 granule position (字节 6-13, 小端序)
 		granulePos := int64(binary.LittleEndian.Uint64(buf[6:14]))
@@ -248,6 +352,10 @@ func getOpusDuration(r io.ReadSeeker) (float64, error) {
 		if _, err := r.Seek(int64(pageSize), io.SeekCurrent); err != nil {
 			break
 		}
+	}
+
+	if !foundPage || totalGranulePos <= 0 {
+		return 0, errors.New("invalid opus/ogg stream: missing valid granule position")
 	}
 
 	// Opus 的采样率固定为 48000 Hz

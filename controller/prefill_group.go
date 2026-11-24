@@ -24,7 +24,7 @@ func GetPrefillGroups(c *gin.Context) {
 func CreatePrefillGroup(c *gin.Context) {
 	var g model.PrefillGroup
 	if err := c.ShouldBindJSON(&g); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if g.Name == "" || g.Type == "" {
@@ -51,7 +51,7 @@ func CreatePrefillGroup(c *gin.Context) {
 func UpdatePrefillGroup(c *gin.Context) {
 	var g model.PrefillGroup
 	if err := c.ShouldBindJSON(&g); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if g.Id == 0 {

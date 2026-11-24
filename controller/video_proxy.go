@@ -3,7 +3,6 @@ package controller
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -501,7 +500,7 @@ func pinTaskMediaURL(raw string) (pinnedURL, serverName, requestHost string, err
 		fetchSetting.DomainList,
 		fetchSetting.IpList,
 		fetchSetting.AllowedPorts,
-		true,
+		fetchSetting.ApplyIPFilterForDomain,
 	)
 	if err != nil {
 		return "", "", "", err
@@ -566,18 +565,9 @@ func doTaskMediaProxiedRequest(
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", errTaskMediaRequestRejected, err)
 		}
-		transport, err := service.NewRelayTransportWithProxySettings(proxy, channelSetting)
+		transport, err := service.NewPinnedRelayProxyTransport(proxy, pinnedURL, serverName, channelSetting)
 		if err != nil {
 			return nil, service.SanitizeOutboundError(err)
-		}
-		if serverName != "" {
-			if transport.TLSClientConfig == nil {
-				transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
-			} else {
-				cfg := transport.TLSClientConfig.Clone()
-				cfg.ServerName = serverName
-				transport.TLSClientConfig = cfg
-			}
 		}
 		oneOff := &http.Client{
 			Transport: transport,

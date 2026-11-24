@@ -772,7 +772,7 @@ func AddChannel(c *gin.Context) {
 	addChannelRequest := AddChannelRequest{}
 	err := c.ShouldBindJSON(&addChannelRequest)
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 
@@ -1136,16 +1136,16 @@ func UpdateChannel(c *gin.Context) {
 	channel := PatchChannel{}
 	rawBody, err := c.GetRawData()
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if err := common.Unmarshal(rawBody, &channel); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	var requestData map[string]any
 	if err := common.Unmarshal(rawBody, &requestData); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if _, ok := requestData["status"]; ok {
@@ -1760,7 +1760,7 @@ func ManageMultiKeys(c *gin.Context) {
 	request := MultiKeyManageRequest{}
 	err := c.ShouldBindJSON(&request)
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 

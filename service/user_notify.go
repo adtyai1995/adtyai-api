@@ -539,7 +539,7 @@ const adtyWatcherNoticeListLimit = 100
 // adtyWatcherNoticeAccess returns live SQL watcher-notice visibility for userID on host site.
 // Platform watcher notices are main-host only and require live Root (for epay maintenance)
 // or enabled Admin + ChannelRead (for channel/model watcher notices) (R5-025).
-func adtyWatcherNoticeAccess(userID int, site *model.AdtySite) (canChannel bool, canEpay bool) {
+func adtyWatcherNoticeAccess(userID int, site *model.AdtySite, tokenScopes ...[]string) (canChannel bool, canEpay bool) {
 	if userID <= 0 || site != nil || model.DB == nil {
 		return false, false
 	}
@@ -552,6 +552,11 @@ func adtyWatcherNoticeAccess(userID int, site *model.AdtySite) (canChannel bool,
 	}
 	canEpay = user.Role == common.RoleRootUser
 	canChannel = AdtyAdminRoleCan(user.Id, user.Role, authz.ChannelRead)
+	if len(tokenScopes) > 0 {
+		scopes := tokenScopes[0]
+		canChannel = canChannel && AccessTokenScopeGranted(scopes, AccessTokenScopeOf(authz.ChannelRead))
+		canEpay = canEpay && (AccessTokenScopeGranted(scopes, "option:read") || AccessTokenScopeGranted(scopes, AccessTokenScopeOf(authz.AdtyPaymentRead)))
+	}
 	return canChannel, canEpay
 }
 
@@ -562,11 +567,11 @@ func adtyWatcherNoticePermitted(notifyType string, canChannel, canEpay bool) boo
 	return canChannel
 }
 
-func adtyWatcherNoticeInboxItems(userID int, site *model.AdtySite) []map[string]any {
+func adtyWatcherNoticeInboxItems(userID int, site *model.AdtySite, tokenScopes ...[]string) []map[string]any {
 	if userID <= 0 || site != nil || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return nil
 	}
-	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site, tokenScopes...)
 	if !canChannel && !canEpay {
 		return nil
 	}
@@ -622,11 +627,11 @@ func formatAdtyWatcherNoticeItem(notice AdtyChannelWatcherNotice) map[string]any
 	}
 }
 
-func adtyUnreadWatcherNoticeCount(userID int, site *model.AdtySite) int64 {
+func adtyUnreadWatcherNoticeCount(userID int, site *model.AdtySite, tokenScopes ...[]string) int64 {
 	if userID <= 0 || site != nil || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return 0
 	}
-	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site, tokenScopes...)
 	if !canChannel && !canEpay {
 		return 0
 	}
@@ -655,12 +660,12 @@ func adtyUnreadWatcherNoticeCount(userID int, site *model.AdtySite) int64 {
 	return unread
 }
 
-func adtyOwnedWatcherReadKeys(userID int, site *model.AdtySite, keys []string) map[string]bool {
+func adtyOwnedWatcherReadKeys(userID int, site *model.AdtySite, keys []string, tokenScopes ...[]string) map[string]bool {
 	owned := map[string]bool{}
 	if userID <= 0 || site != nil || len(keys) == 0 || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return owned
 	}
-	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site, tokenScopes...)
 	if !canChannel && !canEpay {
 		return owned
 	}
@@ -680,12 +685,12 @@ func adtyOwnedWatcherReadKeys(userID int, site *model.AdtySite, keys []string) m
 	return owned
 }
 
-func adtyWatcherNoticeLookup(userID int, site *model.AdtySite, key string) (*AdtyChannelWatcherNotice, bool) {
+func adtyWatcherNoticeLookup(userID int, site *model.AdtySite, key string, tokenScopes ...[]string) (*AdtyChannelWatcherNotice, bool) {
 	key = strings.TrimSpace(key)
 	if userID <= 0 || site != nil || key == "" || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return nil, false
 	}
-	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+	canChannel, canEpay := adtyWatcherNoticeAccess(userID, site, tokenScopes...)
 	if !canChannel && !canEpay {
 		return nil, false
 	}
@@ -701,8 +706,8 @@ func adtyWatcherNoticeLookup(userID int, site *model.AdtySite, key string) (*Adt
 	return &notice, true
 }
 
-func adtyWatcherNoticeDetail(userID int, site *model.AdtySite, key string) (map[string]any, bool) {
-	notice, ok := adtyWatcherNoticeLookup(userID, site, key)
+func adtyWatcherNoticeDetail(userID int, site *model.AdtySite, key string, tokenScopes ...[]string) (map[string]any, bool) {
+	notice, ok := adtyWatcherNoticeLookup(userID, site, key, tokenScopes...)
 	if !ok {
 		return nil, false
 	}

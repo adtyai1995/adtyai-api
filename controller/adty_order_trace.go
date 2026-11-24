@@ -296,11 +296,16 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 		common.ApiError(c, err)
 		return
 	}
+	hideOrphanSections := isSelf || (isAdmin && c.GetInt("role") < common.RoleRootUser && (order.SiteId == nil || *order.SiteId != 0))
 	sections := []string{"payments", "wallet", "funds", "refunds", "exceptions", "reviews"}
 	if isSelf {
 		sections = []string{"payments", "wallet", "funds", "refunds"}
 	} else if isAdmin {
-		sections = []string{"payments", "wallet", "funds", "refunds", "site_wallet", "exceptions", "reviews", "commissions", "commission_movements"}
+		if hideOrphanSections {
+			sections = []string{"payments", "wallet", "funds", "refunds", "site_wallet", "commissions", "commission_movements"}
+		} else {
+			sections = []string{"payments", "wallet", "funds", "refunds", "site_wallet", "exceptions", "reviews", "commissions", "commission_movements"}
+		}
 	}
 	section := c.DefaultQuery("section", "payments")
 	if isSelf {
@@ -312,7 +317,7 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 			ownerSiteID = order.SiteId
 		}
 	}
-	traceQuery, projection, ok := adtyOrderTraceQuery(section, order, ownerSiteID, isSelf)
+	traceQuery, projection, ok := adtyOrderTraceQuery(section, order, ownerSiteID, hideOrphanSections)
 	if !ok {
 		common.ApiErrorT(c, "Invalid parameters")
 		return

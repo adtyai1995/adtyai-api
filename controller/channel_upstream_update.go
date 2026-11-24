@@ -882,7 +882,7 @@ scanLoop:
 func ApplyChannelUpstreamModelUpdates(c *gin.Context) {
 	var req applyChannelUpstreamModelUpdatesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if req.ID <= 0 {
@@ -935,7 +935,7 @@ func ApplyChannelUpstreamModelUpdates(c *gin.Context) {
 func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 	var req applyChannelUpstreamModelUpdatesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if req.ID <= 0 {

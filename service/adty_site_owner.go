@@ -504,17 +504,43 @@ func HandleAdtySiteReport(reportId, adminId int, status, note string) (*model.Ad
 }
 
 func HandleAdtySiteReportWithAudit(reportId, adminId int, status, note string) (*model.AdtySiteReport, string, error) {
+	return HandleAdtySiteReportWithAuditForActor(reportId, adminId, 0, false, status, note)
+}
+
+func HandleAdtySiteReportWithAuditForActor(reportId, adminId, actorRole int, denyAdminTarget bool, status, note string) (*model.AdtySiteReport, string, error) {
 	if status != model.AdtySiteReportResolved && status != model.AdtySiteReportDismissed {
 		return nil, "", common.NewMessage("Invalid parameters")
 	}
 	var report model.AdtySiteReport
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var hint model.AdtySiteReport
+		if err := tx.Select("id", "site_id").Where("id = ?", reportId).First(&hint).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.NewMessage("Report not found")
+			}
+			return err
+		}
+		if (actorRole > 0 || denyAdminTarget) && hint.SiteId > 0 {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id").Where("id = ?", hint.SiteId).First(&site).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtySiteNotFound
+				}
+				return err
+			}
+			if err := checkAdtySiteTargetActorTx(tx, &site, adminId, actorRole, denyAdminTarget); err != nil {
+				return err
+			}
+		}
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", reportId).First(&report).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return common.NewMessage("Report not found")
 			}
 			return err
+		}
+		if report.SiteId != hint.SiteId {
+			return model.ErrBillingOperationConflict
 		}
 		if report.Status != model.AdtySiteReportPending {
 			return common.NewMessage("This report has already been handled")

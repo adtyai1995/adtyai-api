@@ -594,6 +594,12 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)
 	common.SetContextKey(c, constant.ContextKeyChannelSetting, channel.GetSetting())
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
+	_, hasPinnedEndpoint := c.Get(jsplugin.ContextKeyPinnedEndpoint)
+	_, hasPinnedRoute := c.Get(jsplugin.ContextKeyPinnedRoute)
+	if !hasPinnedEndpoint && !hasPinnedRoute && expectedPlugin == "" && c.Keys != nil {
+		delete(c.Keys, jsplugin.ContextKeyPinnedPlugin)
+		delete(c.Keys, "task_plugin_key")
+	}
 	switch channel.Type {
 	case constant.ChannelTypeTaskPlugin:
 		c.Set("task_plugin_key", channel.GetSetting().TaskPluginKey)

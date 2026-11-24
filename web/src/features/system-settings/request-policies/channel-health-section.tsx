@@ -225,6 +225,9 @@ export function ChannelHealthSection({
   const baselineRef = useRef<NormalizedChannelHealthValues>(
     normalizeDefaults(defaultValues)
   )
+  const baselineSerializedRef = useRef<string>(
+    JSON.stringify(baselineRef.current)
+  )
 
   const formDefaults = useMemo(
     () => buildFormDefaults(defaultValues),
@@ -242,7 +245,11 @@ export function ChannelHealthSection({
 
   useResetForm(form, formDefaults)
   useEffect(() => {
-    baselineRef.current = normalizeDefaults(defaultValues)
+    const normalized = normalizeDefaults(defaultValues)
+    const serialized = JSON.stringify(normalized)
+    if (serialized === baselineSerializedRef.current) return
+    baselineRef.current = normalized
+    baselineSerializedRef.current = serialized
   }, [defaultValues])
 
   const autoDisableStatusCodes = form.watch('AutomaticDisableStatusCodes')
@@ -285,6 +292,8 @@ export function ChannelHealthSection({
         Object.fromEntries(updates.map((key) => [key, String(normalized[key])]))
       )
       baselineRef.current = normalized
+      baselineSerializedRef.current = JSON.stringify(normalized)
+      form.reset(values, { keepDirtyValues: true })
     } catch (error) {
       handleServerError(error)
     }

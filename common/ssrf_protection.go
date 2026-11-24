@@ -1,6 +1,7 @@
 package common
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -376,7 +377,11 @@ func (p *SSRFProtection) ValidateURL(urlStr string) error {
 	// 解析URL
 	u, err := url.Parse(urlStr)
 	if err != nil {
-		return fmt.Errorf("invalid URL format: %w", err)
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr != nil && urlErr.Err != nil {
+			return fmt.Errorf("invalid URL format: %v", urlErr.Err)
+		}
+		return fmt.Errorf("invalid URL format")
 	}
 
 	// 只允许HTTP/HTTPS协议

@@ -170,15 +170,26 @@ function imageInput(value, files) {
   return { inlineData: { mimeType: mime, data: value } };
 }
 
+function assertSingleVideoCount(params) {
+  for (const key of ["sampleCount", "numberOfVideos"]) {
+    if (params[key] !== undefined && params[key] !== null && params[key] !== "") {
+      const count = typeof params[key] === "boolean" || Array.isArray(params[key]) ? Number.NaN : Number(params[key]);
+      if (!Number.isInteger(count) || count !== 1) throw new Error(key + " must be 1");
+    }
+  }
+}
+
 function converted(ctx) {
   const req = ctx.requestBody || {};
   const metadata = Object.assign({}, req.metadata || {});
   const params = Object.assign({}, metadata);
+  assertSingleVideoCount(params);
   if (req.duration !== undefined && req.duration !== null && req.duration !== "") params.durationSeconds = veoSeconds(req.duration);
   if (!params.resolution && req.size) params.resolution = resolutionForSize(req.size);
   if (!params.aspectRatio && req.size) params.aspectRatio = aspectForSize(req.size);
   if (params.resolution) params.resolution = String(params.resolution).toLowerCase();
-  params.numberOfVideos = 1;
+  delete params.numberOfVideos;
+  params.sampleCount = 1;
   const instance = { prompt: req.prompt };
   const image = imageInput((req.images || [])[0], ctx.files);
   if (image) instance.image = image;
@@ -207,6 +218,9 @@ export const native = {
       if (key !== "prompt" && key !== "image") throw new Error("instances[0]." + key + " is not supported");
     }
     const metadata = Object.assign({}, plainObject(body.parameters) || {});
+    assertSingleVideoCount(metadata);
+    delete metadata.numberOfVideos;
+    metadata.sampleCount = 1;
     const requestBody = { model: model, prompt: instance.prompt, metadata: metadata };
     if (metadata.durationSeconds !== undefined) {
       requestBody.duration = metadata.durationSeconds;

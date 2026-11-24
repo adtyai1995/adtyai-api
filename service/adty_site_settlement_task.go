@@ -418,10 +418,17 @@ func ResumeAdtySiteSettlement(siteId, operatorId int, now time.Time) (*model.Adt
 }
 
 func ResumeAdtySiteSettlementWithAudit(siteId, operatorId int, now time.Time) (*model.AdtySite, string, error) {
+	return ResumeAdtySiteSettlementWithAuditForActor(siteId, operatorId, 0, false, now)
+}
+
+func ResumeAdtySiteSettlementWithAuditForActor(siteId, operatorId, actorRole int, denyAdminTarget bool, now time.Time) (*model.AdtySite, string, error) {
 	var site model.AdtySite
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
+			return err
+		}
+		if err := checkAdtySiteTargetActorTx(tx, &site, operatorId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
 		if strings.TrimSpace(site.SettleHoldReason) == "" {

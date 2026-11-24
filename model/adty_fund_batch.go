@@ -988,16 +988,31 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 	if err := eligibleFundLots(tx, userID).Find(&rows).Error; err != nil {
 		return 0, err
 	}
+	heldByBatch, err := outstandingAdtyFundAllocationByBatchTx(tx, userID)
+	if err != nil {
+		return 0, err
+	}
+	loc := AdtyBusinessLocation(tx)
+	nowUnix := time.Now().In(loc).Unix()
 	// 批次总量与「这次业务之前」的余额之间的差，是**没有批次背书的额度**：
 	// 升级前的余额从来没有对应的行，退款（IncreaseUserQuota）也不会补行。
 	// 这部分要落到那条唯一的 legacy 批次上，否则扣费一定失败。
+	// R13-014: 必须排除已过期未清零的到期赠金以及已被并发请求在途占用的额度，
+	// 既防止把过期赠金当可用批次冲抵并凭空铸造额度，也防止挪用他人占位引发 BillingDead。
 	var lotTotal int64
-	// realRemaining 记下**补建之前**每个批次真正有多少额度。补建之后 remaining
+	// realRemaining 记下**补建之前**每个批次真正有多少可扣额度。补建之后 remaining
 	// 里有一部分是刚凭空写进去的，不能算进「批次背书了多少」。
 	realRemaining := make(map[int64]int64, len(rows))
 	for i := range rows {
-		lotTotal += rows[i].Remaining
-		realRemaining[rows[i].Id] = rows[i].Remaining
+		if rows[i].Status == AdtyFundBatchStatusExpired || isAdtyFundBatchExpiredAt(&rows[i], nowUnix, loc) {
+			continue
+		}
+		avail := rows[i].Remaining - heldByBatch[rows[i].Id]
+		if avail <= 0 {
+			continue
+		}
+		lotTotal += avail
+		realRemaining[rows[i].Id] = avail
 	}
 	if short := balanceBefore - lotTotal; short > 0 {
 		// 补建是必须的：存量用户升级前的额度从来没有对应行，退款
@@ -1027,7 +1042,14 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 		if amount == 0 {
 			break
 		}
-		take := rows[i].Remaining
+		if rows[i].Status == AdtyFundBatchStatusExpired || isAdtyFundBatchExpiredAt(&rows[i], nowUnix, loc) {
+			continue
+		}
+		avail := rows[i].Remaining - heldByBatch[rows[i].Id]
+		if avail <= 0 {
+			continue
+		}
+		take := avail
 		if take > amount {
 			take = amount
 		}

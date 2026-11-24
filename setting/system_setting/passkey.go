@@ -156,6 +156,13 @@ func GetPasskeySettings() *PasskeySettings {
 	return &s
 }
 
+func GetPasskeyDomainSeed() (PasskeySettings, string) {
+	common.OptionMapRWMutex.RLock()
+	settings, serverAddress := defaultPasskeySettings, ServerAddress
+	common.OptionMapRWMutex.RUnlock()
+	return settings, serverAddress
+}
+
 func (s PasskeySettings) WithDefaults(serverAddress string, extraOrigins ...string) PasskeySettings {
 	if s.RPID == "" && serverAddress != "" {
 		// 从ServerAddress提取域名作为RPID

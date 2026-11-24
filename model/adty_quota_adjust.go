@@ -220,6 +220,11 @@ func AdjustUserQuotaWithLedgerForActor(userID, operatorID, operatorRole int, den
 		if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{AccountID: userID, SiteID: order.SiteId, OrderRef: prov.OrderRef}); err != nil {
 			return err
 		}
+		if bs := strings.TrimSpace(prov.BatchSource); bs != "" && bs != strings.TrimSpace(prov.OrderRef) {
+			if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{AccountID: userID, SiteID: order.SiteId, OrderRef: bs}); err != nil {
+				return err
+			}
+		}
 		after, err := quotaAfterManualAdjust(user.Quota, value, mode)
 		if err != nil {
 			return err

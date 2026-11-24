@@ -49,7 +49,11 @@ func UpdateQuotaData() {
 			common.SysLog(common.LogText("updating dashboard data..."))
 			SaveQuotaDataCache()
 		}
-		time.Sleep(time.Duration(common.GetDataExportInterval()) * time.Minute)
+		interval := common.GetDataExportInterval()
+		if interval < 1 {
+			interval = 1
+		}
+		time.Sleep(time.Duration(interval) * time.Minute)
 	}
 }
 

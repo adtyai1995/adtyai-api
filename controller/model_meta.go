@@ -130,7 +130,7 @@ func CreateModelMeta(c *gin.Context) {
 	}
 	var m model.Model
 	if err := c.ShouldBindJSON(&m); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if m.ModelName == "" {
@@ -173,7 +173,7 @@ func UpdateModelMeta(c *gin.Context) {
 
 	var m model.Model
 	if err := c.ShouldBindJSON(&m); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if m.Id == 0 {
@@ -307,7 +307,7 @@ func BatchDeleteModelMeta(c *gin.Context) {
 		RemovePricing      bool  `json:"remove_pricing"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if request.RemovePricing && c.GetInt("role") != common.RoleRootUser {

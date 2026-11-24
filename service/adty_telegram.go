@@ -1133,13 +1133,16 @@ func adtyTelegramSendMessageHTTP(token, chat, text string) error {
 		Description string `json:"description"`
 	}
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("telegram sendMessage status %d", response.StatusCode)
+		return common.NewMessage("Telegram API returned HTTP {{status}}", map[string]any{"status": response.StatusCode})
 	}
 	if err := common.DecodeJson(io.LimitReader(response.Body, 1<<20), &body); err != nil {
-		return err
+		return common.NewMessage("Invalid Telegram API response")
 	}
 	if !body.Ok {
-		return fmt.Errorf("telegram sendMessage rejected: %s", body.Description)
+		if strings.TrimSpace(body.Description) != "" {
+			return common.NewMessage("Telegram sendMessage rejected: {{error}}", map[string]any{"error": body.Description})
+		}
+		return common.NewMessage("Telegram send failed")
 	}
 	return nil
 }

@@ -59,7 +59,22 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 		AdtyFreezeRequestPriceSnapshot(c, relayInfo)
 	}
 	if relayInfo != nil && relayInfo.UserId > 0 {
-		if err := model.RejectRestrictedAdtyFundWrite(model.DB, model.AdtyFundWrite{AccountID: relayInfo.UserId}); err != nil {
+		siteID := 0
+		if c != nil {
+			if value, ok := c.Get(AdtyOwnerSelfUseContextKey); ok {
+				if site, valid := value.(*model.AdtySite); valid && site != nil && site.Id > 0 {
+					siteID = site.Id
+				}
+			}
+			if siteID == 0 {
+				if snap := AdtyFrozenPriceSnapshot(c); snap != nil && snap.SiteId > 0 {
+					siteID = snap.SiteId
+				} else if ctxSite := c.GetInt(AdtySiteIdContextKey); ctxSite > 0 {
+					siteID = ctxSite
+				}
+			}
+		}
+		if err := model.RejectRestrictedAdtyFundWrite(model.DB, model.AdtyFundWrite{AccountID: relayInfo.UserId, SiteID: siteID}); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 		}
 	}

@@ -2,12 +2,11 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"strconv"
-	"time"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/common/limiter"
@@ -23,68 +22,85 @@ import (
 const (
 	ModelRequestRateLimitCountMark        = "MRRL"
 	ModelRequestRateLimitSuccessCountMark = "MRRLS"
-	modelRateLimitTimeFormat              = "2006-01-02T15:04:05.000Z"
+	redisSuccessMinInflightLeaseMs        = int64(5 * 60 * 1000)
+	redisSuccessMaxInflightLeaseMs        = int64(24 * 60 * 60 * 1000)
 )
 
 var modelInMemoryRateLimiter common.InMemoryRateLimiter
 
-// 检查Redis中的请求限制
-func checkRedisRateLimit(ctx context.Context, rdb *redis.Client, key string, maxCount int, durationMinutes int, duration int64) (bool, error) {
-	// 如果maxCount为0，表示不限制
-	if maxCount == 0 {
+var redisSuccessReserveScript = redis.NewScript(`
+local winKey = KEYS[1]
+local inflightKey = KEYS[2]
+local maxCount = tonumber(ARGV[1])
+local durationMs = tonumber(ARGV[2])
+local leaseMs = tonumber(ARGV[3])
+local reqID = ARGV[4]
+
+if maxCount <= 0 or durationMs <= 0 then
+	return 1
+end
+
+local t = redis.call('TIME')
+local nowMs = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+
+redis.call('ZREMRANGEBYSCORE', winKey, '-inf', nowMs - durationMs)
+redis.call('ZREMRANGEBYSCORE', inflightKey, '-inf', nowMs)
+
+local completed = redis.call('ZCARD', winKey)
+local inflight = redis.call('ZCARD', inflightKey)
+if completed + inflight >= maxCount then
+	return 0
+end
+
+redis.call('ZADD', inflightKey, nowMs + leaseMs, reqID)
+local ttlSec = math.max(1, math.ceil(leaseMs / 1000) + 60)
+redis.call('EXPIRE', inflightKey, ttlSec)
+return 1
+`)
+
+var redisSuccessCompleteScript = redis.NewScript(`
+local winKey = KEYS[1]
+local inflightKey = KEYS[2]
+local reqID = ARGV[1]
+local succeeded = tonumber(ARGV[2])
+local durationMs = tonumber(ARGV[3])
+
+redis.call('ZREM', inflightKey, reqID)
+if succeeded == 1 and durationMs > 0 then
+	local t = redis.call('TIME')
+	local nowMs = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+	redis.call('ZREMRANGEBYSCORE', winKey, '-inf', nowMs - durationMs)
+	redis.call('ZADD', winKey, nowMs, reqID)
+	local ttlSec = math.max(1, math.ceil(durationMs / 1000) + 60)
+	redis.call('EXPIRE', winKey, ttlSec)
+end
+return 1
+`)
+
+func reserveRedisSuccessSlot(ctx context.Context, rdb *redis.Client, winKey, inflightKey string, maxCount int, duration int64, reqID string) (bool, error) {
+	if maxCount <= 0 || duration <= 0 {
 		return true, nil
 	}
-
-	// 获取当前计数
-	length, err := rdb.LLen(ctx, key).Result()
+	durationMs := duration * 1000
+	leaseMs := max(durationMs, redisSuccessMinInflightLeaseMs)
+	if leaseMs > redisSuccessMaxInflightLeaseMs {
+		leaseMs = redisSuccessMaxInflightLeaseMs
+	}
+	res, err := redisSuccessReserveScript.Run(ctx, rdb, []string{winKey, inflightKey}, maxCount, durationMs, leaseMs, reqID).Int()
 	if err != nil {
 		return false, err
 	}
-
-	// 如果未达到限制，允许请求
-	if length < int64(maxCount) {
-		return true, nil
-	}
-
-	// 检查时间窗口
-	oldTimeStr, err := rdb.LIndex(ctx, key, -1).Result()
-	if errors.Is(err, redis.Nil) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	oldTime, err := time.Parse(modelRateLimitTimeFormat, oldTimeStr)
-	if err != nil {
-		return false, err
-	}
-
-	nowTimeStr := time.Now().UTC().Format(modelRateLimitTimeFormat)
-	nowTime, err := time.Parse(modelRateLimitTimeFormat, nowTimeStr)
-	if err != nil {
-		return false, err
-	}
-	// 如果在时间窗口内已达到限制，拒绝请求
-	subTime := nowTime.Sub(oldTime).Seconds()
-	if int64(subTime) < duration {
-		rdb.Expire(ctx, key, time.Duration(durationMinutes)*time.Minute)
-		return false, nil
-	}
-
-	return true, nil
+	return res == 1, nil
 }
 
-// 记录Redis请求
-func recordRedisRequest(ctx context.Context, rdb *redis.Client, key string, maxCount int, durationMinutes int) {
-	// 如果maxCount为0，不记录请求
-	if maxCount == 0 {
-		return
+func completeRedisSuccessSlot(ctx context.Context, rdb *redis.Client, winKey, inflightKey string, duration int64, reqID string, succeeded bool) {
+	flag := 0
+	if succeeded {
+		flag = 1
 	}
-
-	now := time.Now().UTC().Format(modelRateLimitTimeFormat)
-	rdb.LPush(ctx, key, now)
-	rdb.LTrim(ctx, key, 0, int64(maxCount-1))
-	rdb.Expire(ctx, key, time.Duration(durationMinutes)*time.Minute)
+	if err := redisSuccessCompleteScript.Run(ctx, rdb, []string{winKey, inflightKey}, reqID, flag, duration*1000).Err(); err != nil {
+		fmt.Println(common.LogText("failed to complete redis success rate-limit reservation: %s", err.Error()))
+	}
 }
 
 // Redis限流处理器
@@ -97,25 +113,11 @@ func redisRateLimitHandler(subject string, durationMinutes int, duration int64, 
 			return
 		}
 
-		// 1. 检查成功请求数限制
-		successKey := fmt.Sprintf("rateLimit:%s:%s", ModelRequestRateLimitSuccessCountMark, subject)
-		allowed, err := checkRedisRateLimit(ctx, rdb, successKey, successMaxCount, durationMinutes, duration)
-		if err != nil {
-			fmt.Println(common.LogText("failed to check the successful request limit: %s", err.Error()))
-			abortWithOpenAiMessage(c, http.StatusInternalServerError, "rate_limit_check_failed")
-			return
-		}
-		if !allowed {
-			abortWithOpenAiMessage(c, http.StatusTooManyRequests, i18n.T(c, i18n.MsgRateLimitReached, map[string]any{"Minutes": durationMinutes, "Max": successMaxCount}))
-			return
-		}
-
-		//2.检查总请求数限制并记录总请求（当totalMaxCount为0时会自动跳过，使用令牌桶限流器
+		// 1. 检查总请求数限制并记录总请求（当totalMaxCount为0时会自动跳过，使用令牌桶限流器）
 		if totalMaxCount > 0 {
 			totalKey := fmt.Sprintf("rateLimit:%s", subject)
-			// 初始化
 			tb := limiter.New(ctx, rdb)
-			allowed, err = tb.Allow(
+			allowed, err := tb.Allow(
 				ctx,
 				totalKey,
 				limiter.WithCapacity(rateLimitCapacity(totalMaxCount, duration)),
@@ -135,13 +137,39 @@ func redisRateLimitHandler(subject string, durationMinutes int, duration int64, 
 			}
 		}
 
-		// 4. 处理请求
+		// 2. 检查并原子预占成功请求数槽位（防止高并发流式突发绕过 — R13-007）
+		winKey := fmt.Sprintf("rateLimit:%s:{%s}:win", ModelRequestRateLimitSuccessCountMark, subject)
+		inflightKey := fmt.Sprintf("rateLimit:%s:{%s}:inflight", ModelRequestRateLimitSuccessCountMark, subject)
+		var reqID string
+		var completeOnce sync.Once
+		completeSlot := func(succeeded bool) {
+			if reqID == "" {
+				return
+			}
+			completeOnce.Do(func() {
+				completeRedisSuccessSlot(ctx, rdb, winKey, inflightKey, duration, reqID, succeeded)
+			})
+		}
+		if successMaxCount > 0 {
+			reqID = common.GetUUID()
+			allowed, err := reserveRedisSuccessSlot(ctx, rdb, winKey, inflightKey, successMaxCount, duration, reqID)
+			if err != nil {
+				fmt.Println(common.LogText("failed to check the successful request limit: %s", err.Error()))
+				abortWithOpenAiMessage(c, http.StatusInternalServerError, "rate_limit_check_failed")
+				return
+			}
+			if !allowed {
+				abortWithOpenAiMessage(c, http.StatusTooManyRequests, i18n.T(c, i18n.MsgRateLimitReached, map[string]any{"Minutes": durationMinutes, "Max": successMaxCount}))
+				return
+			}
+			defer completeSlot(false)
+		}
+
+		// 3. 处理请求
 		c.Next()
 
-		// 5. 如果请求成功，记录成功请求
-		if modelRequestSucceeded(c) {
-			recordRedisRequest(ctx, rdb, successKey, successMaxCount, durationMinutes)
-		}
+		// 4. 请求结束时转正为窗口成功计数或释放占位
+		completeSlot(modelRequestSucceeded(c))
 	}
 }
 
@@ -192,7 +220,10 @@ func ModelRequestRateLimit() func(c *gin.Context) {
 			return
 		}
 
-		// 计算限流参数
+		// 计算限流参数（防旧库/异常配置 0 分钟绕过限流 — R13-021）
+		if durationMinutes < 1 {
+			durationMinutes = 1
+		}
 		duration := rateLimitDurationSeconds(durationMinutes)
 
 		// 获取分组

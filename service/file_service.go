@@ -50,7 +50,11 @@ func LoadFileSource(c *gin.Context, source types.FileSource, reason ...string) (
 	}
 
 	if common.DebugEnabled {
-		logger.LogDebug(c, "LoadFileSource starting for: %s", source.GetIdentifier())
+		identifier := source.GetIdentifier()
+		if source.IsURL() {
+			identifier = sanitizeOutboundURL(identifier)
+		}
+		logger.LogDebug(c, "LoadFileSource starting for: %s", identifier)
 	}
 
 	// 1. 快速检查内部缓存

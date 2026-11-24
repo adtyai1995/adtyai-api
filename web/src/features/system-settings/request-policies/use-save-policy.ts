@@ -22,7 +22,25 @@ import { toast } from 'sonner'
 
 import { handleServerError } from '@/lib/handle-server-error'
 
+import type { SystemOption, SystemOptionsResponse } from '../types'
 import { savePolicyConfig } from './api'
+
+function upsertSystemOption(
+  options: SystemOption[],
+  key: string,
+  value: string
+): SystemOption[] {
+  const index = options.findIndex((item) => item.key === key)
+  if (index === -1) {
+    return [...options, { key, value }]
+  }
+  if (options[index]?.value === value) {
+    return options
+  }
+  const next = [...options]
+  next[index] = { key, value }
+  return next
+}
 
 export function useSavePolicy() {
   const client = useQueryClient()
@@ -31,7 +49,22 @@ export function useSavePolicy() {
     mutationFn: savePolicyConfig,
     onSuccess: (data, options) => {
       client.setQueryData(['request-policy'], data)
-      void client.invalidateQueries({ queryKey: ['system-options'] })
+      client.setQueryData<SystemOptionsResponse>(
+        ['system-options'],
+        (current) => {
+          if (!current || !Array.isArray(current.data)) return current
+          let nextData = current.data
+          for (const [key, value] of Object.entries(options)) {
+            nextData = upsertSystemOption(nextData, key, String(value))
+          }
+          if (nextData === current.data) return current
+          return { ...current, data: nextData }
+        }
+      )
+      void client.invalidateQueries({
+        queryKey: ['system-options'],
+        refetchType: 'none',
+      })
       void client.invalidateQueries({ queryKey: ['channel-ops'] })
       if ('channel_affinity_setting.rules' in options) {
         void client.invalidateQueries({ queryKey: ['channel-affinity-cache'] })

@@ -69,9 +69,9 @@ const isValidJSON = (value: string | undefined) => {
 const createRateLimitSchema = (t: (key: string) => string) =>
   z.object({
     ModelRequestRateLimitEnabled: z.boolean(),
-    ModelRequestRateLimitDurationMinutes: z.number().min(0),
-    ModelRequestRateLimitCount: z.number().min(0).max(100000000),
-    ModelRequestRateLimitSuccessCount: z.number().min(1).max(100000000),
+    ModelRequestRateLimitDurationMinutes: z.number().int().min(1).max(1440),
+    ModelRequestRateLimitCount: z.number().int().min(0).max(100000000),
+    ModelRequestRateLimitSuccessCount: z.number().int().min(1).max(100000000),
     ModelRequestRateLimitGroup: z
       .string()
       .optional()
@@ -170,11 +170,12 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                     <div className='flex items-center gap-2'>
                       <Input
                         type='number'
-                        min={0}
+                        min={1}
+                        max={1440}
                         step={1}
                         {...field}
                         onChange={(e) =>
-                          field.onChange(parseInt(e.target.value) || 0)
+                          field.onChange(parseInt(e.target.value, 10) || 1)
                         }
                       />
                       <span className='text-muted-foreground text-sm'>

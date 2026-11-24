@@ -66,6 +66,7 @@ export function RequestChecksSection({
   const { t } = useTranslation()
   const updateOption = useSavePolicy()
   const baselineRef = useRef<SensitiveFormValues>(defaultValues)
+  const baselineSerializedRef = useRef<string>(JSON.stringify(defaultValues))
   const form = useForm<SensitiveFormValues>({
     resolver: zodResolver(sensitiveSchema),
     defaultValues,
@@ -73,7 +74,10 @@ export function RequestChecksSection({
 
   useResetForm(form, defaultValues)
   useEffect(() => {
+    const serialized = JSON.stringify(defaultValues)
+    if (serialized === baselineSerializedRef.current) return
     baselineRef.current = defaultValues
+    baselineSerializedRef.current = serialized
   }, [defaultValues])
 
   const onSubmit = async (values: SensitiveFormValues) => {
@@ -90,6 +94,8 @@ export function RequestChecksSection({
           )
         )
         baselineRef.current = values
+        baselineSerializedRef.current = JSON.stringify(values)
+        form.reset(values, { keepDirtyValues: true })
       }
     } catch (error) {
       handleServerError(error)

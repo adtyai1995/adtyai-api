@@ -126,15 +126,52 @@ export function parseSubmitResponse(ctx, resp) {
   return { taskId, taskData: body };
 }
 
+const SORA_SIZES = ["720x1280", "1280x720", "1792x1024", "1024x1792"];
+
 function soraSeconds(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 1 || n > 3600) throw new Error("seconds must be between 1 and 3600");
   return n;
 }
 
+function resolveOriginTask(ctx) {
+  const list = Array.isArray(ctx && ctx.originTasks) ? ctx.originTasks : [];
+  if (!list.length) return null;
+  const id = trimmed(ctx && ctx.originTaskId);
+  if (id) {
+    const matched = list.find(function (item) {
+      return item && (trimmed(item.taskId) === id || trimmed(item.upstreamTaskId) === id);
+    });
+    if (matched) return matched;
+  }
+  return list[0] || null;
+}
+
+function validSoraSeconds(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(n, 3600);
+}
+
 export function extractUsage(ctx) {
-  if (ctx.action === "remix") return {};
   const req = ctx.requestBody || {};
+  if (ctx.action === "remix") {
+    if (ctx.usagePurpose === "billing_ratios") return {};
+    const origin = resolveOriginTask(ctx);
+    const originFacts = (origin && origin.usageFacts && typeof origin.usageFacts === "object" ? origin.usageFacts : null) || {};
+    const originData = (origin && origin.data && typeof origin.data === "object" ? origin.data : null) || {};
+    const seconds =
+      validSoraSeconds(originFacts.seconds) ||
+      validSoraSeconds(originData.seconds) ||
+      validSoraSeconds(originData.duration) ||
+      validSoraSeconds(req.seconds) ||
+      validSoraSeconds(req.duration) ||
+      4;
+    const rawSize = trimmed(originFacts.size || originData.size || req.size);
+    const size = SORA_SIZES.includes(rawSize) ? rawSize : "720x1280";
+    return { seconds: seconds, size: size };
+  }
   const raw = req.seconds !== undefined && req.seconds !== null && req.seconds !== "" ? req.seconds : req.duration;
   const seconds = raw === undefined || raw === null || raw === "" ? 4 : soraSeconds(raw);
   return { seconds: seconds, size: req.size || "720x1280" };

@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -144,10 +143,10 @@ func adtyDispatchTranslationHTTP(protocol, endpoint, token, modelName, text stri
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, adtyTranslationMaxBodyBytes))
 	if err != nil {
-		return "", err
+		return "", common.NewMessage("Failed to read translator response")
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("translator returned HTTP %d", response.StatusCode)
+		return "", common.NewMessage("Translator returned HTTP {{status}}", map[string]any{"status": response.StatusCode})
 	}
 	return adtyTranslationReply(protocol, raw)
 }

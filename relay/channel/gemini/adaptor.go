@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -263,6 +264,13 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 			return GeminiResponsesStreamHandler(c, info, resp)
 		}
 		return GeminiResponsesHandler(c, info, resp)
+	}
+
+	if info.RelayFormat == types.RelayFormatGemini &&
+		((c != nil && c.Request != nil && c.Request.URL != nil && helper.IsGeminiEmbeddingPath(c.Request.URL.Path)) ||
+			strings.Contains(info.RequestURLPath, ":embedContent") ||
+			strings.Contains(info.RequestURLPath, ":batchEmbedContents")) {
+		return NativeGeminiEmbeddingHandler(c, resp, info)
 	}
 
 	if info.RelayMode == constant.RelayModeGemini {

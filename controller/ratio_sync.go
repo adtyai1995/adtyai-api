@@ -3,7 +3,6 @@ package controller
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,25 +48,19 @@ const (
 
 func doRatioSyncAttempt(ctx context.Context, baseClient *http.Client, initialURL, authHeader, proxy string, chSetting dto.ChannelSettings) (*http.Response, error) {
 	if proxy == "" {
-		client := *baseClient
-		var customTransport *http.Transport
+		client := baseClient
+		var closeTransport func()
 		if chSetting.TLSInsecureSkipVerify {
-			if tr, ok := baseClient.Transport.(*http.Transport); ok && tr != nil {
-				customTransport = tr.Clone()
-				customTransport.TLSClientConfig = common.InsecureTLSConfig.Clone()
-			} else {
-				var tErr error
-				customTransport, tErr = service.NewRelayTransportWithProxySettings("", chSetting)
-				if tErr != nil {
-					return nil, tErr
-				}
+			var cErr error
+			client, closeTransport, cErr = service.CloneSSRFProtectedClientWithInsecureTLS(baseClient)
+			if cErr != nil {
+				return nil, cErr
 			}
-			client.Transport = customTransport
 		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, initialURL, nil)
 		if err != nil {
-			if customTransport != nil {
-				customTransport.CloseIdleConnections()
+			if closeTransport != nil {
+				closeTransport()
 			}
 			return nil, err
 		}
@@ -76,16 +69,18 @@ func doRatioSyncAttempt(ctx context.Context, baseClient *http.Client, initialURL
 		}
 		resp, err := client.Do(httpReq)
 		if err != nil {
-			if customTransport != nil {
-				customTransport.CloseIdleConnections()
+			if closeTransport != nil {
+				closeTransport()
 			}
 			return nil, err
 		}
-		if customTransport != nil && resp.Body != nil {
+		if closeTransport != nil && resp.Body != nil {
 			resp.Body = &taskMediaCancelBody{
 				ReadCloser:     resp.Body,
-				closeTransport: customTransport.CloseIdleConnections,
+				closeTransport: closeTransport,
 			}
+		} else if closeTransport != nil {
+			closeTransport()
 		}
 		return resp, nil
 	}
@@ -107,18 +102,9 @@ func doRatioSyncAttempt(ctx context.Context, baseClient *http.Client, initialURL
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", errTaskMediaRequestRejected, err)
 		}
-		transport, err := service.NewRelayTransportWithProxySettings(proxy, chSetting)
+		transport, err := service.NewPinnedRelayProxyTransport(proxy, pinnedURL, serverName, chSetting)
 		if err != nil {
 			return nil, err
-		}
-		if serverName != "" {
-			if transport.TLSClientConfig == nil {
-				transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
-			} else {
-				cfg := transport.TLSClientConfig.Clone()
-				cfg.ServerName = serverName
-				transport.TLSClientConfig = cfg
-			}
 		}
 		oneOff := &http.Client{
 			Transport: transport,

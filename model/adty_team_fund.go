@@ -204,6 +204,9 @@ func releaseAdtyTeamRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRe
 	if team.SharedQuota > common.MaxWalletQuota-amount {
 		return ErrBillingOperationConflict
 	}
+	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
+		return err
+	}
 	lot := tx.Model(&AdtyTeamFundLot{}).Where("team_id = ? AND kind = 'topup' AND source = ? AND reclaimed >= ?", team.Id, ext.TradeNo, amount).
 		Updates(map[string]any{"available": gorm.Expr("available + ?", amount), "reclaimed": gorm.Expr("reclaimed - ?", amount)})
 	if lot.Error != nil {

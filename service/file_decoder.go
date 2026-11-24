@@ -46,7 +46,24 @@ func sanitizeOutboundURL(rawURL string) string {
 		clean.Fragment = ""
 		return common.MaskSensitiveInfo(clean.String())
 	}
-	return sanitizeOutboundText(trimmed)
+	fallback := trimmed
+	if idx := strings.IndexAny(fallback, "?#"); idx >= 0 {
+		fallback = fallback[:idx]
+	}
+	if schemeIdx := strings.Index(fallback, "://"); schemeIdx >= 0 {
+		rest := fallback[schemeIdx+3:]
+		slashIdx := strings.IndexByte(rest, '/')
+		authority := rest
+		suffix := ""
+		if slashIdx >= 0 {
+			authority = rest[:slashIdx]
+			suffix = rest[slashIdx:]
+		}
+		if atIdx := strings.LastIndexByte(authority, '@'); atIdx >= 0 {
+			fallback = fallback[:schemeIdx+3] + "***@" + authority[atIdx+1:] + suffix
+		}
+	}
+	return sanitizeOutboundText(fallback)
 }
 
 func sanitizeOutboundError(err error) error {

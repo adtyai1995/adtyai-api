@@ -77,20 +77,24 @@ func CountRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *relayco
 			if err != nil {
 				return 0, fmt.Errorf("error opening audio file: %v", err)
 			}
-			defer file.Close()
 			// get ext and io.seeker
 			ext := filepath.Ext(fileHeader.Filename)
 			duration, err := common.GetAudioDuration(c.Request.Context(), file, ext)
+			_ = file.Close()
 			if err != nil {
 				return 0, fmt.Errorf("error getting audio duration: %v", err)
 			}
-			// duration 来自用户上传文件的元数据，可被伪造成天文数字或负数。
-			// 负值会让 token 估算变成负数（低估预扣费），先钳到 0 再转换。
-			if duration < 0 {
-				duration = 0
+			// R13-011: Reject non-positive/NaN/Inf audio durations from spoofed containers
+			// instead of clamping to 0 and allowing free transcription billing.
+			if math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0 {
+				return 0, fmt.Errorf("invalid audio duration")
 			}
-			// 一分钟 1000 token，与 $price / minute 对齐。
-			totalAudioToken += common.QuotaRound(math.Ceil(duration) / 60.0 * 1000)
+			// 一分钟 1000 token，与 $price / minute 对齐，单文件最少按 1 token 计。
+			fileTokens := common.QuotaRound(math.Ceil(duration) / 60.0 * 1000)
+			if fileTokens < 1 {
+				fileTokens = 1
+			}
+			totalAudioToken += fileTokens
 		}
 		return totalAudioToken, nil
 	}

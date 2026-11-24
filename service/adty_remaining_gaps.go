@@ -393,6 +393,14 @@ func applyApprovedStaffBalanceTx(tx *gorm.DB, row model.AdtyStaffBalanceRequest,
 	if _, err := model.ValidateAdtyAdjustmentOrderTx(tx, row.CustomerUserId, row.OrderRef, &row.SiteId); err != nil {
 		return staffBalanceApplyResult{}, err
 	}
+	if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{AccountID: row.CustomerUserId, SiteID: row.SiteId, OrderRef: row.OrderRef}); err != nil {
+		return staffBalanceApplyResult{}, err
+	}
+	if bs := strings.TrimSpace(row.BatchSource); bs != "" && bs != strings.TrimSpace(row.OrderRef) {
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{AccountID: row.CustomerUserId, SiteID: row.SiteId, OrderRef: bs}); err != nil {
+			return staffBalanceApplyResult{}, err
+		}
+	}
 	quota, err := common.WalletQuotaFromDecimalStrict(row.AmountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
 	if err != nil {
 		return staffBalanceApplyResult{}, err
@@ -874,7 +882,7 @@ func truncateAdtyRunes(s string, maxRunes int) string {
 	return string([]rune(s)[:maxRunes])
 }
 
-func adtyTodoItemVisibleForUserOnSite(db *gorm.DB, userID int, site *model.AdtySite, item *AdtyTodoItem, pub *model.AdtyNotificationPublication) (bool, error) {
+func adtyTodoItemVisibleForUserOnSite(db *gorm.DB, userID int, site *model.AdtySite, item *AdtyTodoItem, pub *model.AdtyNotificationPublication, tokenScopes ...[]string) (bool, error) {
 	if db == nil || userID <= 0 || item == nil || item.UserId != userID {
 		return false, nil
 	}
@@ -920,7 +928,7 @@ func adtyTodoItemVisibleForUserOnSite(db *gorm.DB, userID int, site *model.AdtyS
 			return false, res.Error
 		}
 		if res.RowsAffected > 0 {
-			canChannel, canEpay := adtyWatcherNoticeAccess(userID, site)
+			canChannel, canEpay := adtyWatcherNoticeAccess(userID, site, tokenScopes...)
 			return adtyWatcherNoticePermitted(notice.NotifyType, canChannel, canEpay), nil
 		}
 	}
@@ -1122,8 +1130,12 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 		return nil, err
 	}
 	var reqSite *model.AdtySite
+	var tokenScopes [][]string
 	if c != nil {
 		reqSite = AdtySiteForRequest(c)
+		if _, isToken := c.Get("access_token_legacy"); isToken {
+			tokenScopes = [][]string{c.GetStringSlice("access_token_scopes")}
+		}
 	}
 	now := time.Now().Unix()
 	var result *AdtyTodoItem
@@ -1138,14 +1150,8 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 			return found.Error
 		}
 		if found.RowsAffected == 0 {
-			var otherCount int64
-			if err := tx.Model(&AdtyTodoItem{}).Where("key = ? AND user_id <> ?", key, userID).Count(&otherCount).Error; err != nil {
-				return err
-			}
-			if otherCount > 0 {
-				return common.NewMessage("Todo item belongs to another account")
-			}
-			// 完成和进行中只改已有待办。缺行、外键、任意公告键都不得在这里物化。
+			// 完成和进行中只改已有待办。缺行、外键、任意公告键都不得在这里物化，
+			// 且统一返回 404 避免暴露其他账号是否存在该待办键（R13-019）。
 			return gorm.ErrRecordNotFound
 		}
 		// R7-042: Resolve publication using item.PublicationId after loading item so
@@ -1154,8 +1160,8 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 		if pub != nil && item.PublicationId == 0 {
 			item.PublicationId = pub.Id
 		}
-		// R6-004: Enforce live visibility (withdrawn/retargeted publication, revoked watcher RBAC, host isolation).
-		visible, err := adtyTodoItemVisibleForUserOnSite(tx, userID, reqSite, &item, pub)
+		// R6-004 / R13-004: Enforce live visibility (withdrawn/retargeted publication, revoked watcher RBAC, PAT scopes, host isolation).
+		visible, err := adtyTodoItemVisibleForUserOnSite(tx, userID, reqSite, &item, pub, tokenScopes...)
 		if err != nil {
 			return err
 		}
@@ -1459,7 +1465,7 @@ func ListAdtyTodosForUser(userID int, includeCompleted bool) ([]AdtyTodoItem, er
 
 // ListAdtyTodosForUserOnSite returns severe todo items for userID filtered against
 // withdrawn/retargeted announcements (R5-058, R6-004) and revoked/subsite watcher permissions (R5-025).
-func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeCompleted bool) ([]AdtyTodoItem, error) {
+func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeCompleted bool, tokenScopes ...[]string) ([]AdtyTodoItem, error) {
 	if userID <= 0 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
@@ -1479,7 +1485,7 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 	}
 	filtered := make([]AdtyTodoItem, 0, len(items))
 	for i := range items {
-		visible, err := adtyTodoItemVisibleForUserOnSite(model.DB, userID, site, &items[i], nil)
+		visible, err := adtyTodoItemVisibleForUserOnSite(model.DB, userID, site, &items[i], nil, tokenScopes...)
 		if err != nil {
 			return nil, err
 		}

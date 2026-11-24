@@ -103,7 +103,13 @@ function readFileAsBase64(file: File): Promise<string> {
     )
     reader.addEventListener(
       'error',
-      () => reject(new Error('Only images are accepted')),
+      () =>
+        reject(
+          createServerError({
+            message: 'Only images are accepted',
+            message_key: 'Only images are accepted',
+          })
+        ),
       { once: true }
     )
     reader.readAsDataURL(file)

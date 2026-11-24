@@ -13,6 +13,10 @@ import (
 // The recipient is fixed at event time. Reading still requires the account and
 // workspace to have access on this host, including after site closure or revocation.
 func adtyTicketInboxQuery(userID int, site *model.AdtySite, tokenScopes ...[]string) (*gorm.DB, string, error) {
+	return adtyTicketInboxQueryWithMethod(userID, site, http.MethodGet, tokenScopes...)
+}
+
+func adtyTicketInboxQueryWithMethod(userID int, site *model.AdtySite, method string, tokenScopes ...[]string) (*gorm.DB, string, error) {
 	q := model.DB.Model(&model.AdtyTicketNotice{}).Where("adty_ticket_notices.user_id = ?", userID)
 	actor, err := loadAdtyTicketActor(userID)
 	if err != nil {
@@ -31,8 +35,13 @@ func adtyTicketInboxQuery(userID int, site *model.AdtySite, tokenScopes ...[]str
 	case actor.StaffTickets && host == actor.Staff.SiteId:
 		handlerScope = "staff"
 	}
-	if handlerScope != "" && len(tokenScopes) > 0 && AdtyTicketTokenScope(handlerScope, http.MethodGet, tokenScopes[0]) == "denied" {
-		handlerScope = ""
+	if handlerScope != "" && len(tokenScopes) > 0 {
+		resolved := AdtyTicketTokenScope(handlerScope, method, tokenScopes[0])
+		if resolved == "denied" {
+			handlerScope = ""
+		} else {
+			handlerScope = resolved
+		}
 	}
 	actor.Scope = "personal"
 	customerTickets := scopedAdtyTickets(model.DB, actor).Select("id")
@@ -62,6 +71,8 @@ func adtyTicketInboxQuery(userID int, site *model.AdtySite, tokenScopes ...[]str
 			archived = archived.Where("site_id=?", actor.OwnerSiteId)
 		case "staff":
 			archived = archived.Where("site_id=?", actor.Staff.SiteId)
+		case "platform_main":
+			archived = archived.Where("site_id=0")
 		case "platform":
 			if !actor.PlatformAll {
 				archived = archived.Where("site_id=0")
@@ -82,7 +93,7 @@ func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) ma
 	path := "/profile"
 	if row.Purpose == model.AdtyTelegramPurposeAdmin || (row.Purpose == "" && row.UserId != row.TicketOwnerID) {
 		switch handlerScope {
-		case "platform":
+		case "platform", "platform_main":
 			path = "/admin-tickets"
 		case "owner":
 			path = "/site-owner/tickets"

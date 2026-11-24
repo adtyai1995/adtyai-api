@@ -249,9 +249,17 @@ func CreditPaymentOrphan(c *gin.Context) {
 	var credited int
 	var alreadyDone bool
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		orphan, _, _, err := model.LockPaymentOrphanOrderTx(tx, id)
+		orphan, topUpLocked, extLocked, err := model.LockPaymentOrphanOrderTx(tx, id)
 		if err != nil {
 			return err
+		}
+		actorID := c.GetInt("id")
+		actorRole := c.GetInt("role")
+		if actorRole != common.RoleRootUser && (extLocked == nil || extLocked.SiteId != 0) {
+			return model.ErrUserQuotaPermission
+		}
+		if (topUpLocked != nil && topUpLocked.UserId == actorID) || (extLocked != nil && extLocked.UserId == actorID) {
+			return model.ErrUserQuotaPermission
 		}
 		if !model.CanCreditPaymentOrphanEvent(orphan) {
 			return model.ErrPaymentOrphanNotCredit

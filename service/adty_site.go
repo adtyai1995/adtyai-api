@@ -717,12 +717,38 @@ type AdtySiteAdjust struct {
 }
 
 // AdjustAdtySite 改单站 d、k 上限、可见范围。改 d 的通知站长由 11.9 的通知接上（AdtyOnSiteCostFactorChanged）。
+// checkAdtySiteTargetActorTx enforces anti-self, role hierarchy, and PAT admin-target
+// restrictions against site.OwnerUserId using canonical AdtySite -> User lock order (R13-006).
+func checkAdtySiteTargetActorTx(tx *gorm.DB, site *model.AdtySite, actorID, actorRole int, denyAdminTarget bool) error {
+	if site == nil || site.OwnerUserId <= 0 || (actorRole <= 0 && !denyAdminTarget) {
+		return nil
+	}
+	var owner model.User
+	if err := model.AdtyLockForUpdate(tx).Select("id", "role").First(&owner, site.OwnerUserId).Error; err != nil {
+		return err
+	}
+	if actorID > 0 && actorID == owner.Id {
+		return model.ErrUserQuotaPermission
+	}
+	if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= owner.Role {
+		return model.ErrUserQuotaPermission
+	}
+	if denyAdminTarget && owner.Role >= common.RoleAdminUser {
+		return model.ErrAdminTargetSessionRequired
+	}
+	return nil
+}
+
 func AdjustAdtySite(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite, error) {
 	site, _, err := AdjustAdtySiteWithAudit(siteId, adminId, adjust)
 	return site, err
 }
 
 func AdjustAdtySiteWithAudit(siteId, adminId int, adjust AdtySiteAdjust) (*model.AdtySite, string, error) {
+	return AdjustAdtySiteWithAuditForActor(siteId, adminId, 0, false, adjust)
+}
+
+func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTarget bool, adjust AdtySiteAdjust) (*model.AdtySite, string, error) {
 	if err := validateSitePreset(adjust.CostFactor); err != nil {
 		return nil, "", err
 	}
@@ -762,6 +788,9 @@ func AdjustAdtySiteWithAudit(siteId, adminId int, adjust AdtySiteAdjust) (*model
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrAdtySiteNotFound
 			}
+			return err
+		}
+		if err := checkAdtySiteTargetActorTx(tx, &site, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
 		if site.Status == model.AdtySiteStatusClosed {
@@ -1400,6 +1429,10 @@ func ClearAdtySiteNotice(siteId, adminId int, reason string) (string, error) {
 }
 
 func ClearAdtySiteNoticeWithAudit(siteId, adminId int, reason string) (string, string, error) {
+	return ClearAdtySiteNoticeWithAuditForActor(siteId, adminId, 0, false, reason)
+}
+
+func ClearAdtySiteNoticeWithAuditForActor(siteId, adminId, actorRole int, denyAdminTarget bool, reason string) (string, string, error) {
 	var old string
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -1408,6 +1441,9 @@ func ClearAdtySiteNoticeWithAudit(siteId, adminId int, reason string) (string, s
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrAdtySiteNotFound
 			}
+			return err
+		}
+		if err := checkAdtySiteTargetActorTx(tx, &site, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
 		brand := map[string]any{}

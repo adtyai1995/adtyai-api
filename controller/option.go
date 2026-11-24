@@ -458,7 +458,7 @@ func UpdateOption(c *gin.Context) {
 	case "ImageRatio", "AudioRatio", "AudioCompletionRatio", "CreateCacheRatio":
 		parsed := map[string]float64{}
 		if err = common.UnmarshalJsonStr(option.Value.(string), &parsed); err != nil || parsed == nil {
-			common.ApiErrorT(c, "Failed to set the ratio: {{error}}", map[string]any{"error": "must be a JSON object"})
+			common.ApiErrorT(c, "Failed to set the ratio: value must be a JSON object")
 			return
 		}
 	case "ModelRequestRateLimitGroup":

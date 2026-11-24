@@ -120,7 +120,7 @@ func GetStatus(c *gin.Context) {
 		"enable_batch_update":           common.BatchUpdateEnabled,
 		"enable_drawing":                common.DrawingEnabled,
 		"enable_task":                   common.TaskEnabled,
-		"enable_data_export":            common.GetDataExportEnabled(),
+		"enable_data_export":            common.DataExportEnabled,
 		"data_export_default_time":      common.DataExportDefaultTime,
 		"default_collapse_sidebar":      common.DefaultCollapseSidebar,
 		"mj_notify_enabled":             setting.MjNotifyEnabled,
@@ -159,8 +159,8 @@ func GetStatus(c *gin.Context) {
 		"privacy_policy_enabled":    legalSetting.PrivacyPolicy != "",
 		"log_export_enabled":        logSetting.UserExportEnabled,
 		"log_max_range_days":        logSetting.MaxRangeDays,
-		"quota_remind_enabled":      common.GetQuotaRemindEnabled(),
-		"quota_remind_threshold":    common.GetQuotaRemindThreshold(),
+		"quota_remind_enabled":      common.QuotaRemindEnabled,
+		"quota_remind_threshold":    common.QuotaRemindThreshold,
 		"payment_methods":           paymentMethods,
 	}
 	common.OptionMapRWMutex.RUnlock()

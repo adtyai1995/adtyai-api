@@ -227,6 +227,21 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	}
 
 	promptTokens := info.GetEstimatePromptTokens()
+	transcriptText := strings.TrimSpace(responseData.Text)
+	if !parsedJSON || transcriptText == "" {
+		transcriptText = strings.TrimSpace(string(responseBody))
+	}
+	// R13-011: Never settle a non-empty STT transcription at 0 tokens when
+	// upstream omits `usage` and estimate tokens are missing/zero.
+	if promptTokens <= 0 && transcriptText != "" {
+		promptTokens = common.QuotaRound(1.0 / 60.0 * 1000)
+		if est := service.ResponseText2Usage(c, transcriptText, info.UpstreamModelName, 0); est != nil && est.CompletionTokens > promptTokens {
+			promptTokens = est.CompletionTokens
+		}
+		if promptTokens < 1 {
+			promptTokens = 1
+		}
+	}
 	usage := &dto.Usage{
 		PromptTokens: promptTokens,
 		TotalTokens:  promptTokens,
@@ -236,10 +251,6 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	// AudioRatio billing and estimate completion text tokens from the transcript.
 	if ratio_setting.ContainsAudioRatio(info.GetBillingModelName()) {
 		usage.PromptTokensDetails.AudioTokens = promptTokens
-		transcriptText := strings.TrimSpace(responseData.Text)
-		if !parsedJSON || transcriptText == "" {
-			transcriptText = strings.TrimSpace(string(responseBody))
-		}
 		if transcriptText != "" {
 			if est := service.ResponseText2Usage(c, transcriptText, info.UpstreamModelName, promptTokens); est != nil && est.CompletionTokens > 0 {
 				usage.CompletionTokens = est.CompletionTokens

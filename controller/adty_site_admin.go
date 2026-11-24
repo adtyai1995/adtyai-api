@@ -388,9 +388,9 @@ func HandleAdtyAdminSiteReport(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	report, eventID, err := service.HandleAdtySiteReportWithAudit(id, c.GetInt("id"), body.Status, body.Note)
+	report, eventID, err := service.HandleAdtySiteReportWithAuditForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body.Status, body.Note)
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtyFinanceError(c, err)
 		return
 	}
 	if eventID != "" {
@@ -677,13 +677,13 @@ func AdjustAdtyAdminSite(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}
-	site, eventID, err := service.AdjustAdtySiteWithAudit(id, c.GetInt("id"), service.AdtySiteAdjust{
+	site, eventID, err := service.AdjustAdtySiteWithAuditForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), service.AdtySiteAdjust{
 		CostFactor: costFactor, ClearCostFactor: clearCostFactor,
 		Visibility: body.Visibility, AllowedGroups: body.AllowedGroups,
 		ClearAllowedGroups: slices.Contains(body.Clear, "allowed_groups"), Reason: body.Reason,
 	})
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtyFinanceError(c, err)
 		return
 	}
 	if eventID != "" {
@@ -821,9 +821,9 @@ func ResumeAdtySiteSettlement(c *gin.Context) {
 	if !ok {
 		return
 	}
-	site, eventID, err := service.ResumeAdtySiteSettlementWithAudit(id, c.GetInt("id"), time.Now())
+	site, eventID, err := service.ResumeAdtySiteSettlementWithAuditForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), time.Now())
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtyFinanceError(c, err)
 		return
 	}
 	if eventID != "" {
@@ -1278,9 +1278,9 @@ func ClearAdtyAdminSiteNotice(c *gin.Context) {
 			return
 		}
 	}
-	old, eventID, err := service.ClearAdtySiteNoticeWithAudit(id, c.GetInt("id"), body.Reason)
+	old, eventID, err := service.ClearAdtySiteNoticeWithAuditForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body.Reason)
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtyFinanceError(c, err)
 		return
 	}
 	if eventID != "" {

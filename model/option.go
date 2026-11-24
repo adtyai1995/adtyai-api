@@ -333,6 +333,26 @@ func validateOptionValue(key string, value string) error {
 		if err := common.UnmarshalJsonStr(value, &parsed); err != nil || parsed == nil {
 			return common.NewMessage("{{key}} must be a JSON array", map[string]any{"key": key})
 		}
+	case "ModelRequestRateLimitDurationMinutes":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 1 || n > 1440 {
+			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 1, "max": 1440})
+		}
+	case "ModelRequestRateLimitCount":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 || n > math.MaxInt32 {
+			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 0, "max": math.MaxInt32})
+		}
+	case "ModelRequestRateLimitSuccessCount":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 1 || n > math.MaxInt32 {
+			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 1, "max": math.MaxInt32})
+		}
+	case "DataExportInterval":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 1 || n > 1440 {
+			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 1, "max": 1440})
+		}
 	case "ModelRequestRateLimitGroup":
 		if err := setting.CheckModelRequestRateLimitGroup(value); err != nil {
 			return err
@@ -865,20 +885,25 @@ func updateOptionMap(key string, value string) (err error) {
 	case "PreConsumedQuota":
 		common.PreConsumedQuota, _ = strconv.Atoi(value)
 	case "ModelRequestRateLimitCount":
-		v, _ := strconv.Atoi(value)
-		setting.SetModelRequestRateLimitCount(v)
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && v >= 0 && v <= math.MaxInt32 {
+			setting.SetModelRequestRateLimitCount(v)
+		}
 	case "ModelRequestRateLimitDurationMinutes":
-		v, _ := strconv.Atoi(value)
-		setting.SetModelRequestRateLimitDurationMinutes(v)
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && v >= 1 && v <= 1440 {
+			setting.SetModelRequestRateLimitDurationMinutes(v)
+		}
 	case "ModelRequestRateLimitSuccessCount":
-		v, _ := strconv.Atoi(value)
-		setting.SetModelRequestRateLimitSuccessCount(v)
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && v >= 1 && v <= math.MaxInt32 {
+			setting.SetModelRequestRateLimitSuccessCount(v)
+		}
 	case "ModelRequestRateLimitGroup":
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
 	case "DataExportInterval":
-		common.DataExportInterval, _ = strconv.Atoi(value)
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && v >= 1 && v <= 1440 {
+			common.DataExportInterval = v
+		}
 	case "DataExportDefaultTime":
 		common.DataExportDefaultTime = value
 	case "ModelRatio":
