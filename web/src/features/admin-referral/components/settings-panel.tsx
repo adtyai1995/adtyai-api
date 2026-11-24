@@ -37,17 +37,61 @@ import {
   adminReferralKeys,
   getReferralSettings,
   saveReferralSettings,
+  type ReferralSettings,
   type ReferralSettingsUpdate,
 } from '../api'
-import {
-  buildSettingsUpdate,
-  MONEY_KEYS,
-  RULE_KEYS,
-  toDrafts,
-  type Drafts,
-  type MoneyKey,
-  type RuleKey,
-} from '../lib/settings'
+import { RULE_KEYS, type MoneyKey, type RuleKey } from '../lib/settings'
+
+type VisibleMoneyKey = Exclude<
+  MoneyKey,
+  'partner_min_rate' | 'partner_max_rate'
+>
+
+const VISIBLE_MONEY_KEYS: VisibleMoneyKey[] = [
+  'default_rate',
+  'min_withdraw_usd',
+  'usdt_withdraw_fee',
+]
+
+type VisibleDrafts = Record<VisibleMoneyKey | RuleKey, string> & {
+  cny_rate: string
+}
+
+function toVisibleDrafts(settings: ReferralSettings): VisibleDrafts {
+  const drafts = { cny_rate: settings.withdraw_cny_rate } as VisibleDrafts
+  for (const key of VISIBLE_MONEY_KEYS) {
+    const value = settings[key]
+    drafts[key] = value === null || value === undefined ? '' : String(value)
+  }
+  for (const key of RULE_KEYS) drafts[key] = String(settings[key])
+  return drafts
+}
+
+function buildVisibleSettingsUpdate(
+  saved: ReferralSettings,
+  drafts: VisibleDrafts,
+  enabled: boolean
+): ReferralSettingsUpdate {
+  const body: ReferralSettingsUpdate = {}
+  const clear: VisibleMoneyKey[] = []
+  for (const key of VISIBLE_MONEY_KEYS) {
+    const draft = drafts[key].trim()
+    if (draft === '') {
+      if (saved[key] !== null && saved[key] !== undefined) clear.push(key)
+    } else if (Number(draft) !== saved[key]) {
+      body[key] = Number(draft)
+    }
+  }
+  for (const key of RULE_KEYS) {
+    if (Number(drafts[key]) !== saved[key]) body[key] = Number(drafts[key])
+  }
+  if (clear.length > 0) body.clear = clear
+  if (enabled !== saved.enabled) body.enabled = enabled
+  if (drafts.cny_rate.trim() !== saved.withdraw_cny_rate) {
+    body.withdraw_cny_rate = drafts.cny_rate.trim()
+  }
+  return body
+}
 
 export function SettingsPanel(props: { canWrite: boolean }) {
   const { t } = useTranslation()
@@ -56,13 +100,13 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     queryKey: adminReferralKeys.settings,
     queryFn: getReferralSettings,
   })
-  const [drafts, setDrafts] = useState<Drafts | null>(null)
+  const [drafts, setDrafts] = useState<VisibleDrafts | null>(null)
   const [enabled, setEnabled] = useState(false)
   const saved = query.data
 
   useEffect(() => {
     if (!saved) return
-    setDrafts(toDrafts(saved))
+    setDrafts(toVisibleDrafts(saved))
     setEnabled(saved.enabled)
   }, [saved])
 
@@ -90,16 +134,14 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     !!saved &&
       !!drafts &&
       (enabled !== saved.enabled ||
-        JSON.stringify(drafts) !== JSON.stringify(toDrafts(saved)))
+        JSON.stringify(drafts) !== JSON.stringify(toVisibleDrafts(saved)))
   )
   if (query.isError) return <ErrorState onRetry={() => void query.refetch()} />
   if (!saved || !drafts) return <LoadingState />
   const disabled = !props.canWrite || save.isPending
 
-  const labels: Record<MoneyKey | RuleKey, string> = {
+  const labels: Record<VisibleMoneyKey | RuleKey, string> = {
     default_rate: t('Default commission rate (%)'),
-    partner_min_rate: t('Minimum partner rate (%)'),
-    partner_max_rate: t('Maximum partner rate (%)'),
     min_withdraw_usd: t('Minimum withdrawal (USD)'),
     usdt_withdraw_fee: t('USDT withdrawal fee (USDT)'),
     cookie_ttl_days: t('Referral cookie (days)'),
@@ -111,7 +153,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     ),
     batch_register_window_hours: t('Batch sign-up window (hours)'),
   }
-  const set = (key: keyof Drafts, value: string) =>
+  const set = (key: keyof VisibleDrafts, value: string) =>
     setDrafts((prev) => (prev ? { ...prev, [key]: value } : prev))
   const rateMissing = drafts.default_rate.trim() === ''
 
@@ -121,23 +163,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
       onSubmit={(event) => {
         event.preventDefault()
         if (disabled) return
-        const minDraft = drafts.partner_min_rate.trim()
-        const maxDraft = drafts.partner_max_rate.trim()
-        const effectiveMin = minDraft === '' ? null : Number(minDraft)
-        const effectiveMax = maxDraft === '' ? null : Number(maxDraft)
-        if (
-          effectiveMin !== null &&
-          effectiveMax !== null &&
-          Number.isFinite(effectiveMin) &&
-          Number.isFinite(effectiveMax) &&
-          effectiveMin > effectiveMax
-        ) {
-          toast.error(
-            t('Minimum partner rate cannot exceed maximum partner rate')
-          )
-          return
-        }
-        save.mutate(buildSettingsUpdate(saved, drafts, enabled))
+        save.mutate(buildVisibleSettingsUpdate(saved, drafts, enabled))
       }}
     >
       <div className='flex items-center justify-between gap-4 rounded-lg border p-3'>
@@ -160,7 +186,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
         <legend className='mb-2 text-sm font-medium'>
           {t('Money (no built-in values)')}
         </legend>
-        {MONEY_KEYS.map((key) => (
+        {VISIBLE_MONEY_KEYS.map((key) => (
           <div key={key} className='space-y-2'>
             <Label htmlFor={`referral-${key}`}>{labels[key]}</Label>
             <Input

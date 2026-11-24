@@ -20,15 +20,25 @@ const (
 )
 
 var (
-	ErrAdtySiteWithdrawUnset  = errors.New("site withdrawal rules are not configured")
-	ErrAdtySiteWithdrawLocked = errors.New("withdrawal can no longer be cancelled")
+	ErrAdtySiteWithdrawUnset     = errors.New("site withdrawal rules are not configured")
+	ErrAdtySiteWithdrawLocked    = errors.New("withdrawal can no longer be cancelled")
+	adtySiteWithdrawUSDTNetworks = []string{"TRC20", "BEP20", "POLYGON", "XLAYER"}
 )
+
+func isAllowedAdtySiteWithdrawNetwork(network string) bool {
+	switch network {
+	case "TRC20", "BEP20", "POLYGON", "XLAYER":
+		return true
+	default:
+		return false
+	}
+}
 
 // AdtySiteWithdrawRules is Root configuration. Empty or non-positive values are unset.
 type AdtySiteWithdrawRules struct {
 	MinUSD        string `json:"min_usd"`
 	FeeUSD        string `json:"fee_usd"`
-	AlipayCNYRate string `json:"alipay_cny_rate"`
+	AlipayCNYRate string `json:"alipay_cny_rate,omitempty"`
 	USDTUSDRate   string `json:"usdt_usd_rate"`
 }
 
@@ -86,37 +96,42 @@ func SaveAdtySiteWithdrawRulesWithAudit(rules AdtySiteWithdrawRules, operatorID 
 	if err != nil {
 		return "", ErrAdtySiteWithdrawUnset
 	}
-	_, alipayRaw, err := requiredPositiveDecimal(rules.AlipayCNYRate)
-	if err != nil {
-		return "", ErrAdtySiteWithdrawUnset
-	}
 	_, usdtRaw, err := requiredPositiveDecimal(rules.USDTUSDRate)
 	if err != nil {
 		return "", ErrAdtySiteWithdrawUnset
 	}
 	values := map[string]string{
-		adtySiteWithdrawMinKey:    minRaw,
-		adtySiteWithdrawFeeKey:    feeRaw,
-		adtySiteWithdrawAlipayKey: alipayRaw,
-		adtySiteWithdrawUSDTKey:   usdtRaw,
+		adtySiteWithdrawMinKey:  minRaw,
+		adtySiteWithdrawFeeKey:  feeRaw,
+		adtySiteWithdrawUSDTKey: usdtRaw,
 	}
 	after := map[string]any{
-		"configured":      true,
-		"min_usd":         minRaw,
-		"fee_usd":         feeRaw,
-		"alipay_cny_rate": alipayRaw,
-		"usdt_usd_rate":   usdtRaw,
+		"configured":    true,
+		"min_usd":       minRaw,
+		"fee_usd":       feeRaw,
+		"usdt_usd_rate": usdtRaw,
+	}
+	if alipayTrimmed := strings.TrimSpace(rules.AlipayCNYRate); alipayTrimmed != "" {
+		if _, alipayRaw, alipayErr := requiredPositiveDecimal(alipayTrimmed); alipayErr == nil {
+			values[adtySiteWithdrawAlipayKey] = alipayRaw
+			after["alipay_cny_rate"] = alipayRaw
+		}
 	}
 	var auditEvent *model.AuditLog
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		before := map[string]any{"configured": false}
 		if prev, cfgErr := loadAdtySiteWithdrawConfigTx(tx); cfgErr == nil {
 			before = map[string]any{
-				"configured":      true,
-				"min_usd":         prev.Min.String(),
-				"fee_usd":         prev.Fee.String(),
-				"alipay_cny_rate": prev.AlipayCNYRaw,
-				"usdt_usd_rate":   prev.USDTUSDRaw,
+				"configured":    true,
+				"min_usd":       prev.Min.String(),
+				"fee_usd":       prev.Fee.String(),
+				"usdt_usd_rate": prev.USDTUSDRaw,
+			}
+			if prev.AlipayCNYRaw != "" {
+				before["alipay_cny_rate"] = prev.AlipayCNYRaw
+				if _, ok := after["alipay_cny_rate"]; !ok {
+					after["alipay_cny_rate"] = prev.AlipayCNYRaw
+				}
 			}
 		} else if !errors.Is(cfgErr, ErrAdtySiteWithdrawUnset) {
 			return cfgErr
@@ -189,11 +204,16 @@ func loadAdtySiteWithdrawConfigTx(tx *gorm.DB) (adtySiteWithdrawConfig, error) {
 	if cfg.Fee, _, err = readPositiveOptionTx(tx, adtySiteWithdrawFeeKey); err != nil {
 		return cfg, err
 	}
-	if cfg.AlipayCNYRate, cfg.AlipayCNYRaw, err = readPositiveOptionTx(tx, adtySiteWithdrawAlipayKey); err != nil {
+	if cfg.USDTUSDRate, cfg.USDTUSDRaw, err = readPositiveOptionTx(tx, adtySiteWithdrawUSDTKey); err != nil {
 		return cfg, err
 	}
-	cfg.USDTUSDRate, cfg.USDTUSDRaw, err = readPositiveOptionTx(tx, adtySiteWithdrawUSDTKey)
-	return cfg, err
+	if alipayRate, alipayRaw, alipayErr := readPositiveOptionTx(tx, adtySiteWithdrawAlipayKey); alipayErr == nil {
+		cfg.AlipayCNYRate = alipayRate
+		cfg.AlipayCNYRaw = alipayRaw
+	} else if !errors.Is(alipayErr, ErrAdtySiteWithdrawUnset) {
+		return cfg, alipayErr
+	}
+	return cfg, nil
 }
 
 func readPositiveOptionTx(tx *gorm.DB, key string) (decimal.Decimal, string, error) {
@@ -215,10 +235,14 @@ type AdtySiteWithdrawRulesView struct {
 	AlipayCNYRate string   `json:"alipay_cny_rate,omitempty"`
 	USDTUSDRate   string   `json:"usdt_usd_rate,omitempty"`
 	Methods       []string `json:"methods"`
+	Networks      []string `json:"networks"`
 }
 
 func LoadAdtySiteWithdrawRules() (AdtySiteWithdrawRulesView, error) {
-	view := AdtySiteWithdrawRulesView{Methods: []string{"alipay", "usdt"}}
+	view := AdtySiteWithdrawRulesView{
+		Methods:  []string{"usdt"},
+		Networks: append([]string(nil), adtySiteWithdrawUSDTNetworks...),
+	}
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
 		if errors.Is(err, ErrAdtySiteWithdrawUnset) {
@@ -338,6 +362,13 @@ func siteWithdrawalPayout(net, rate decimal.Decimal, method string) decimal.Deci
 }
 
 func QuoteSiteWithdrawal(amount decimal.Decimal, method string) (decimal.Decimal, error) {
+	normalized := strings.ToLower(strings.TrimSpace(method))
+	if normalized == "" {
+		normalized = "usdt"
+	}
+	if normalized != "usdt" {
+		return decimal.Zero, common.NewMessage("Only USDT withdrawal is supported")
+	}
 	var payout decimal.Decimal
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
@@ -347,15 +378,7 @@ func QuoteSiteWithdrawal(amount decimal.Decimal, method string) (decimal.Decimal
 		if !amount.Equal(amount.Round(8)) || amount.LessThan(cfg.Min) || !amount.GreaterThan(cfg.Fee) {
 			return common.NewMessage("Invalid parameters")
 		}
-		rate := cfg.AlipayCNYRate
-		switch method {
-		case "usdt":
-			rate = cfg.USDTUSDRate
-		case "alipay":
-		default:
-			return common.NewMessage("Unsupported withdrawal method")
-		}
-		payout = siteWithdrawalPayout(amount.Sub(cfg.Fee), rate, method)
+		payout = siteWithdrawalPayout(amount.Sub(cfg.Fee), cfg.USDTUSDRate, normalized)
 		if !payout.IsPositive() {
 			return common.NewMessage("The payout amount is too small")
 		}
@@ -378,8 +401,8 @@ func adtySiteWithdrawLedgerKey(prefix string, siteID int, storedKey string) stri
 
 func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithdrawal, error) {
 	method := strings.ToLower(strings.TrimSpace(input.Method))
-	if method != "alipay" && method != "usdt" {
-		return nil, common.NewMessage("Unsupported withdrawal method")
+	if method != "usdt" {
+		return nil, common.NewMessage("Only USDT withdrawal is supported")
 	}
 	amount := input.AmountUSD
 	if !amount.IsPositive() || !amount.Equal(amount.Round(8)) {
@@ -391,28 +414,16 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 	}
 	scopedKey := adtySiteWithdrawScopedKey(input.SiteID, rawKey)
 	accountNo := strings.TrimSpace(input.AccountNo)
-	accountName := strings.TrimSpace(input.AccountName)
-	rawQR := strings.TrimSpace(input.QRImageURL)
+	accountName := ""
 	normalizedQR := ""
-	if method == "usdt" {
-		network := strings.ToUpper(strings.TrimSpace(input.Network))
-		if !ValidateUSDTAddress(network, accountNo) {
-			return nil, common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
-		}
-		input.Network = network
-		rawQR = ""
-	} else {
-		if accountName == "" || (accountNo == "" && rawQR == "") {
-			return nil, common.NewMessage("Enter the payee name and account")
-		}
-		if rawQR != "" {
-			canonical, ok := CanonicalReferralAssetURL(rawQR)
-			if !ok {
-				return nil, common.NewMessage("Upload the payment QR code and enter the payee name")
-			}
-			normalizedQR = canonical
-		}
+	network := strings.ToUpper(strings.TrimSpace(input.Network))
+	if !isAllowedAdtySiteWithdrawNetwork(network) {
+		return nil, common.NewMessage("Unsupported USDT network")
 	}
+	if !ValidateUSDTAddress(network, accountNo) {
+		return nil, common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
+	}
+	input.Network = network
 	var created *model.AdtySiteWithdrawal
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -468,14 +479,9 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		if amount.LessThan(cfg.Min) || !amount.GreaterThan(cfg.Fee) {
 			return common.NewMessage("The amount is below the configured withdrawal minimum")
 		}
-		rate := cfg.AlipayCNYRate
-		rateRaw := cfg.AlipayCNYRaw
-		currency := "CNY"
-		if method == "usdt" {
-			rate = cfg.USDTUSDRate
-			rateRaw = cfg.USDTUSDRaw
-			currency = "USDT"
-		}
+		rate := cfg.USDTUSDRate
+		rateRaw := cfg.USDTUSDRaw
+		currency := "USDT"
 		if !rate.Equal(input.ExpectedRate) {
 			return &RateChangedError{Change: ReferralRateChange{Rate: rate.String(), UpdatedAt: time.Now().Unix()}}
 		}
@@ -486,13 +492,6 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		}
 		if input.ExpectedPayout != nil && !input.ExpectedPayout.Equal(payout) {
 			return common.NewMessage("Withdrawal quote changed. Confirm the updated amount.")
-		}
-		if method == "alipay" && rawQR != "" {
-			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.OwnerID, model.ReferralAssetPurposeWithdrawalQR, rawQR)
-			if !ok {
-				return common.NewMessage("Upload the payment QR code and enter the payee name")
-			}
-			normalizedQR = canonicalQR
 		}
 		// ISS-R1-0018: freeze earnings on application without decrementing Balance until paid.
 		if _, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{

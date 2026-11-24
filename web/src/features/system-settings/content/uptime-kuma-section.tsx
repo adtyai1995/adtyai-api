@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Image as ImageIcon,
   Layers,
   Loader2,
   Play,
@@ -44,9 +45,9 @@ import { LoadingState } from '@/components/loading-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -54,12 +55,18 @@ import {
   getAdminGroups,
   type AdminGroup,
 } from '@/features/adty-groups/api'
+import {
+  CHANNEL_PLATFORMS,
+  isKnownPlatform,
+} from '@/features/adty-model-status/lib/channel-status'
 import { getEnabledModels } from '@/features/channels/api'
 import {
   triggerUptimeProbe,
   UPTIME_STATUS_QUERY_KEY,
   type UptimeKumaGroupConfig,
+  type UptimePlatform,
   type UptimeProbeResponseData,
+  type UptimeProbeType,
 } from '@/features/dashboard/api'
 import { getPricing } from '@/features/pricing/api'
 import { pickContentText, toContentLang } from '@/lib/adty-lang'
@@ -75,23 +82,28 @@ interface EditableProbeGroup {
   localId: string
   groupId: string
   categoryName: string
+  platform: UptimePlatform | ''
+  probeType: UptimeProbeType | ''
+  probeModel: string
   enabled: boolean
   description: string
-  models: string[]
 }
 
 interface UptimeKumaSectionProps {
   enabled: boolean
   intervalMinutes: number
+  imageIntervalMinutes: number
   timeoutSeconds: number
   data: string
 }
 
 const MAX_GROUPS = 50
-const MAX_MODELS_PER_GROUP = 500
 const DEFAULT_INTERVAL_MINUTES = 10
 const MIN_INTERVAL_MINUTES = 1
 const MAX_INTERVAL_MINUTES = 60
+const DEFAULT_IMAGE_INTERVAL_MINUTES = 60
+const MIN_IMAGE_INTERVAL_MINUTES = 15
+const MAX_IMAGE_INTERVAL_MINUTES = 360
 const DEFAULT_TIMEOUT_SECONDS = 15
 const MIN_TIMEOUT_SECONDS = 5
 const MAX_TIMEOUT_SECONDS = 60
@@ -108,6 +120,11 @@ function clampInteger(
   return rounded
 }
 
+function parseProbeType(value: unknown): UptimeProbeType | '' {
+  if (value === 'text' || value === 'image') return value
+  return ''
+}
+
 function parseGroups(raw: string): EditableProbeGroup[] {
   try {
     const parsed: unknown = JSON.parse(raw || '[]')
@@ -118,12 +135,16 @@ function parseGroups(raw: string): EditableProbeGroup[] {
           typeof item === 'object' && item !== null
       )
       .map((item, idx) => {
-        const models = Array.isArray(item.models)
+        const legacyModels = Array.isArray(item.models)
           ? item.models
               .filter((m): m is string => typeof m === 'string')
               .map((m) => m.trim())
               .filter(Boolean)
           : []
+        const explicitProbeModel =
+          typeof item.probeModel === 'string' ? item.probeModel.trim() : ''
+        const probeModel = explicitProbeModel || legacyModels[0] || ''
+
         return {
           localId: `group-${idx}-${String(item.groupId ?? item.categoryName ?? idx)}`,
           groupId: typeof item.groupId === 'string' ? item.groupId.trim() : '',
@@ -131,10 +152,12 @@ function parseGroups(raw: string): EditableProbeGroup[] {
             typeof item.categoryName === 'string'
               ? item.categoryName.trim()
               : '',
+          platform: isKnownPlatform(item.platform) ? item.platform : '',
+          probeType: parseProbeType(item.probeType),
+          probeModel,
           enabled: typeof item.enabled === 'boolean' ? item.enabled : true,
           description:
             typeof item.description === 'string' ? item.description.trim() : '',
-          models: [...new Set(models)],
         }
       })
   } catch {
@@ -147,10 +170,8 @@ function serializeGroups(
   groupDisplayNames: Map<string, string>
 ): UptimeKumaGroupConfig[] {
   return groups.map((group) => {
-    const cleanedModels = [
-      ...new Set(group.models.map((m) => m.trim()).filter(Boolean)),
-    ]
     const trimmedGroupId = group.groupId.trim()
+    const trimmedProbeModel = group.probeModel.trim()
     const fallbackName =
       (trimmedGroupId ? groupDisplayNames.get(trimmedGroupId) : undefined) ||
       trimmedGroupId
@@ -158,10 +179,19 @@ function serializeGroups(
     const payload: UptimeKumaGroupConfig = {
       categoryName,
       enabled: group.enabled,
-      models: cleanedModels,
+      models: trimmedProbeModel ? [trimmedProbeModel] : [],
     }
     if (trimmedGroupId) {
       payload.groupId = trimmedGroupId
+    }
+    if (group.platform) {
+      payload.platform = group.platform
+    }
+    if (group.probeType) {
+      payload.probeType = group.probeType
+    }
+    if (trimmedProbeModel) {
+      payload.probeModel = trimmedProbeModel
     }
     if (group.description.trim()) {
       payload.description = group.description.trim()
@@ -200,10 +230,16 @@ function summarizeProbeResult(data: UptimeProbeResponseData | undefined): {
     let up = 0
     let down = 0
     for (const group of data.results) {
-      for (const item of group.models ?? []) {
+      if (group.models && group.models.length > 0) {
+        for (const item of group.models) {
+          probed++
+          if (item.status === 1) up++
+          else if (item.status === 0) down++
+        }
+      } else if (typeof group.status === 'number') {
         probed++
-        if (item.status === 1) up++
-        else if (item.status === 0) down++
+        if (group.status === 1) up++
+        else if (group.status === 0) down++
       }
     }
     return { probed, up, down, hasCounts: true }
@@ -229,10 +265,6 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
   const [modelSearch, setModelSearch] = useState('')
   const [customModelInput, setCustomModelInput] = useState('')
 
-  const selectedSet = useMemo(
-    () => new Set(props.group.models),
-    [props.group.models]
-  )
   const groupModelSet = useMemo(
     () => new Set(props.groupModels),
     [props.groupModels]
@@ -242,15 +274,23 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
     const merged = new Set<string>([
       ...props.groupModels,
       ...props.allModels,
-      ...props.group.models,
+      ...(props.group.probeModel ? [props.group.probeModel] : []),
     ])
     return [...merged].sort((a, b) => {
+      const aSelected = a === props.group.probeModel ? 0 : 1
+      const bSelected = b === props.group.probeModel ? 0 : 1
+      if (aSelected !== bSelected) return aSelected - bSelected
       const aInGroup = groupModelSet.has(a) ? 0 : 1
       const bInGroup = groupModelSet.has(b) ? 0 : 1
       if (aInGroup !== bInGroup) return aInGroup - bInGroup
       return a.localeCompare(b)
     })
-  }, [groupModelSet, props.allModels, props.group.models, props.groupModels])
+  }, [
+    groupModelSet,
+    props.allModels,
+    props.group.probeModel,
+    props.groupModels,
+  ])
 
   const filteredModels = useMemo(() => {
     const query = modelSearch.trim().toLowerCase()
@@ -265,58 +305,23 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
     props.onChange({ ...props.group, [key]: value })
   }
 
-  const toggleModel = (modelName: string, checked: boolean) => {
-    if (checked) {
-      if (selectedSet.has(modelName)) return
-      if (props.group.models.length >= MAX_MODELS_PER_GROUP) {
-        toast.error(
-          t('Each group can monitor at most {{count}} models', {
-            count: MAX_MODELS_PER_GROUP,
-          })
-        )
-        return
-      }
-      updateField('models', [...props.group.models, modelName])
-      return
-    }
-    updateField(
-      'models',
-      props.group.models.filter((m) => m !== modelName)
-    )
+  const handleSelectModel = (modelName: string) => {
+    updateField('probeModel', modelName)
   }
 
-  const handleAddCustomModel = () => {
+  const handleApplyCustomModel = () => {
     const trimmed = customModelInput.trim()
     if (!trimmed) return
-    if (selectedSet.has(trimmed)) {
-      setCustomModelInput('')
-      return
-    }
-    if (props.group.models.length >= MAX_MODELS_PER_GROUP) {
-      toast.error(
-        t('Each group can monitor at most {{count}} models', {
-          count: MAX_MODELS_PER_GROUP,
-        })
-      )
-      return
-    }
-    updateField('models', [...props.group.models, trimmed])
+    updateField('probeModel', trimmed)
     setCustomModelInput('')
   }
 
-  const handleSelectGroupModels = () => {
-    if (props.groupModels.length === 0) return
-    const next = [...new Set([...props.group.models, ...props.groupModels])]
-    updateField('models', next.slice(0, MAX_MODELS_PER_GROUP))
+  const handlePlatformChange = (raw: string) => {
+    updateField('platform', isKnownPlatform(raw) ? raw : '')
   }
 
-  const handleSelectVisibleModels = () => {
-    const next = [...new Set([...props.group.models, ...filteredModels])]
-    updateField('models', next.slice(0, MAX_MODELS_PER_GROUP))
-  }
-
-  const handleClearModels = () => {
-    updateField('models', [])
+  const handleProbeTypeChange = (raw: string) => {
+    updateField('probeType', parseProbeType(raw))
   }
 
   const headerTitle =
@@ -324,6 +329,10 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
     props.displayName ||
     props.group.groupId ||
     t('Untitled Group')
+
+  const platformLabelKey = props.group.platform
+    ? CHANNEL_PLATFORMS.find((p) => p.id === props.group.platform)?.labelKey
+    : undefined
 
   return (
     <Card
@@ -337,7 +346,7 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
           type='button'
           onClick={props.onToggleExpand}
           aria-expanded={props.expanded}
-          className='flex min-w-0 flex-1 items-center gap-2 text-left'
+          className='flex min-w-0 flex-1 flex-wrap items-center gap-2 text-left'
         >
           {props.expanded ? (
             <ChevronDown className='text-muted-foreground size-4 shrink-0' />
@@ -350,9 +359,32 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
               {props.group.groupId}
             </Badge>
           )}
-          <Badge variant='secondary' className='text-[11px]'>
-            {t('{{count}} models', { count: props.group.models.length })}
-          </Badge>
+          {platformLabelKey && (
+            <Badge variant='secondary' className='text-[11px]'>
+              {t(platformLabelKey)}
+            </Badge>
+          )}
+          {props.group.probeType === 'image' && (
+            <Badge variant='secondary' className='text-[11px]'>
+              {t('Image')}
+            </Badge>
+          )}
+          {props.group.probeModel ? (
+            <Badge
+              variant='secondary'
+              className='max-w-44 truncate font-mono text-[11px]'
+              title={props.group.probeModel}
+            >
+              {props.group.probeModel}
+            </Badge>
+          ) : (
+            <Badge
+              variant='outline'
+              className='text-muted-foreground text-[11px]'
+            >
+              {t('No probe model')}
+            </Badge>
+          )}
           {!props.group.enabled && (
             <Badge
               variant='outline'
@@ -435,57 +467,88 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
                 maxLength={200}
               />
             </div>
+
+            <div className='space-y-1.5'>
+              <Label
+                htmlFor={`${props.group.localId}-platform`}
+                className='text-xs font-medium'
+              >
+                {t('Platform')}
+              </Label>
+              <NativeSelect
+                id={`${props.group.localId}-platform`}
+                value={props.group.platform}
+                onChange={(e) => handlePlatformChange(e.target.value)}
+                className='w-full'
+              >
+                <NativeSelectOption value=''>{t('Auto')}</NativeSelectOption>
+                {CHANNEL_PLATFORMS.map((platform) => (
+                  <NativeSelectOption key={platform.id} value={platform.id}>
+                    {t(platform.labelKey)}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </div>
+
+            <div className='space-y-1.5'>
+              <Label
+                htmlFor={`${props.group.localId}-probe-type`}
+                className='text-xs font-medium'
+              >
+                {t('Probe Type')}
+              </Label>
+              <NativeSelect
+                id={`${props.group.localId}-probe-type`}
+                value={props.group.probeType}
+                onChange={(e) => handleProbeTypeChange(e.target.value)}
+                className='w-full'
+              >
+                <NativeSelectOption value=''>{t('Auto')}</NativeSelectOption>
+                <NativeSelectOption value='text'>
+                  {t('Text')}
+                </NativeSelectOption>
+                <NativeSelectOption value='image'>
+                  {t('Image')}
+                </NativeSelectOption>
+              </NativeSelect>
+            </div>
           </div>
 
           <div className='space-y-3'>
             <div className='flex flex-wrap items-center justify-between gap-2'>
               <div>
                 <Label className='text-xs font-semibold'>
-                  {t('Monitored Models')}
+                  {t('Primary Probe Model')}
                 </Label>
                 <p className='text-muted-foreground text-xs'>
                   {t(
-                    'Select the exact models to probe periodically for this group'
+                    'Select 1 representative model to probe periodically for this group'
                   )}
                 </p>
               </div>
-              <div className='flex flex-wrap items-center gap-1.5'>
-                {props.groupModels.length > 0 && (
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    className='h-7 text-xs'
-                    onClick={handleSelectGroupModels}
+              {props.group.probeModel && (
+                <div className='flex items-center gap-1.5'>
+                  <Badge
+                    variant='secondary'
+                    className='gap-1 pr-1 font-mono text-xs'
                   >
-                    {t('Select group models ({{count}})', {
-                      count: props.groupModels.length,
-                    })}
-                  </Button>
-                )}
-                {filteredModels.length > 0 && (
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    className='h-7 text-xs'
-                    onClick={handleSelectVisibleModels}
-                  >
-                    {t('Select all visible')}
-                  </Button>
-                )}
-                {props.group.models.length > 0 && (
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    className='text-muted-foreground h-7 text-xs'
-                    onClick={handleClearModels}
-                  >
-                    {t('Clear all')}
-                  </Button>
-                )}
-              </div>
+                    <span
+                      className='max-w-56 truncate'
+                      title={props.group.probeModel}
+                    >
+                      {props.group.probeModel}
+                    </span>
+                    <button
+                      type='button'
+                      onClick={() => updateField('probeModel', '')}
+                      className='text-muted-foreground hover:text-destructive rounded-xs p-0.5'
+                      aria-label={`${t('Clear')} ${props.group.probeModel}`}
+                    >
+                      <X className='size-3' />
+                    </button>
+                  </Badge>
+                </div>
+              )}
             </div>
 
             <div className='grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,18rem)]'>
@@ -505,10 +568,10 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault()
-                      handleAddCustomModel()
+                      handleApplyCustomModel()
                     }
                   }}
-                  placeholder={t('Add custom model name...')}
+                  placeholder={t('Set custom probe model...')}
                   className='h-8 font-mono text-xs'
                 />
                 <Button
@@ -516,11 +579,11 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
                   variant='outline'
                   size='sm'
                   className='h-8 shrink-0 px-2.5 text-xs'
-                  onClick={handleAddCustomModel}
+                  onClick={handleApplyCustomModel}
                   disabled={!customModelInput.trim()}
-                  aria-label={t('Add custom model name...')}
+                  aria-label={t('Set custom probe model...')}
                 >
-                  <Plus className='size-3.5' />
+                  <Check className='size-3.5' />
                 </Button>
               </div>
             </div>
@@ -532,74 +595,58 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
                 </div>
               ) : (
                 <ScrollArea className='h-48'>
-                  <div className='grid grid-cols-1 gap-1 p-2 sm:grid-cols-2 lg:grid-cols-3'>
+                  <div
+                    role='radiogroup'
+                    aria-label={t('Primary Probe Model')}
+                    className='flex flex-wrap gap-1.5 p-2.5'
+                  >
                     {filteredModels.map((modelName) => {
-                      const isChecked = selectedSet.has(modelName)
+                      const isSelected = props.group.probeModel === modelName
                       const isInGroup = groupModelSet.has(modelName)
                       return (
-                        <label
+                        <button
                           key={modelName}
+                          type='button'
+                          role='radio'
+                          aria-checked={isSelected}
+                          onClick={() => handleSelectModel(modelName)}
                           className={cn(
-                            'hover:bg-muted/60 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors',
-                            isChecked && 'bg-muted/40'
+                            'inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-xs transition-colors',
+                            isSelected
+                              ? 'border-brand/60 bg-brand-soft text-brand-ink font-medium'
+                              : 'border-border bg-card text-foreground hover:bg-muted/60'
                           )}
+                          title={modelName}
                         >
-                          <Checkbox
-                            checked={isChecked}
-                            onCheckedChange={(checked) =>
-                              toggleModel(modelName, checked === true)
-                            }
-                          />
-                          <span
-                            className='min-w-0 flex-1 truncate font-mono'
-                            title={modelName}
-                          >
-                            {modelName}
-                          </span>
-                          {isInGroup && (
+                          {isSelected ? (
+                            <Check
+                              className='size-3 shrink-0'
+                              aria-hidden='true'
+                            />
+                          ) : (
                             <span
-                              className='bg-primary/60 size-1.5 shrink-0 rounded-full'
-                              title={t('Enabled in this group')}
+                              className={cn(
+                                'size-1.5 shrink-0 rounded-full',
+                                isInGroup
+                                  ? 'bg-primary/60'
+                                  : 'bg-muted-foreground/30'
+                              )}
+                              aria-hidden='true'
+                              title={
+                                isInGroup
+                                  ? t('Enabled in this group')
+                                  : undefined
+                              }
                             />
                           )}
-                        </label>
+                          <span className='max-w-52 truncate'>{modelName}</span>
+                        </button>
                       )
                     })}
                   </div>
                 </ScrollArea>
               )}
             </div>
-
-            {props.group.models.length > 0 && (
-              <div className='space-y-2'>
-                <span className='text-muted-foreground text-xs font-medium'>
-                  {t('Selected models ({{count}})', {
-                    count: props.group.models.length,
-                  })}
-                </span>
-                <div className='flex max-h-36 flex-wrap gap-1.5 overflow-y-auto rounded-lg border p-2'>
-                  {props.group.models.map((modelName) => (
-                    <Badge
-                      key={modelName}
-                      variant='secondary'
-                      className='gap-1 pr-1 font-mono text-[11px]'
-                    >
-                      <span className='max-w-52 truncate' title={modelName}>
-                        {modelName}
-                      </span>
-                      <button
-                        type='button'
-                        onClick={() => toggleModel(modelName, false)}
-                        className='text-muted-foreground hover:text-destructive rounded-xs p-0.5'
-                        aria-label={`${t('Remove')} ${modelName}`}
-                      >
-                        <X className='size-3' />
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </CardContent>
       )}
@@ -624,6 +671,16 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
       )
     )
   )
+  const [imageIntervalInput, setImageIntervalInput] = useState(() =>
+    String(
+      clampInteger(
+        props.imageIntervalMinutes,
+        DEFAULT_IMAGE_INTERVAL_MINUTES,
+        MIN_IMAGE_INTERVAL_MINUTES,
+        MAX_IMAGE_INTERVAL_MINUTES
+      )
+    )
+  )
   const [timeoutInput, setTimeoutInput] = useState(() =>
     String(
       clampInteger(
@@ -639,6 +696,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   )
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({})
   const [intervalDirty, setIntervalDirty] = useState(false)
+  const [imageIntervalDirty, setImageIntervalDirty] = useState(false)
   const [timeoutDirty, setTimeoutDirty] = useState(false)
   const [groupsDirty, setGroupsDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -668,6 +726,20 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
     )
     setIntervalDirty(false)
   }, [props.intervalMinutes])
+
+  useEffect(() => {
+    setImageIntervalInput(
+      String(
+        clampInteger(
+          props.imageIntervalMinutes,
+          DEFAULT_IMAGE_INTERVAL_MINUTES,
+          MIN_IMAGE_INTERVAL_MINUTES,
+          MAX_IMAGE_INTERVAL_MINUTES
+        )
+      )
+    )
+    setImageIntervalDirty(false)
+  }, [props.imageIntervalMinutes])
 
   useEffect(() => {
     setTimeoutInput(
@@ -782,7 +854,8 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
     })
   }, [contentLang, groupSearch, unaddedAdminGroups])
 
-  const hasChanges = intervalDirty || timeoutDirty || groupsDirty
+  const hasChanges =
+    intervalDirty || imageIntervalDirty || timeoutDirty || groupsDirty
 
   const buildEditableGroupFromAdmin = (
     adminGroup: AdminGroup,
@@ -796,9 +869,11 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
       localId: `group-${Date.now()}-${indexOffset}-${adminGroup.id}`,
       groupId: adminGroup.id,
       categoryName: displayName.slice(0, 50),
+      platform: '',
+      probeType: '',
+      probeModel: groupModels[0] ?? '',
       enabled: true,
       description: desc,
-      models: groupModels.slice(0, MAX_MODELS_PER_GROUP),
     }
   }
 
@@ -926,6 +1001,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   const validateBeforeSave = (): {
     error: string | null
     interval: number
+    imageInterval: number
     timeout: number
   } => {
     const parsedInterval = Number(intervalInput.trim())
@@ -940,6 +1016,24 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
           { min: MIN_INTERVAL_MINUTES, max: MAX_INTERVAL_MINUTES }
         ),
         interval: DEFAULT_INTERVAL_MINUTES,
+        imageInterval: DEFAULT_IMAGE_INTERVAL_MINUTES,
+        timeout: DEFAULT_TIMEOUT_SECONDS,
+      }
+    }
+
+    const parsedImageInterval = Number(imageIntervalInput.trim())
+    if (
+      !Number.isInteger(parsedImageInterval) ||
+      parsedImageInterval < MIN_IMAGE_INTERVAL_MINUTES ||
+      parsedImageInterval > MAX_IMAGE_INTERVAL_MINUTES
+    ) {
+      return {
+        error: t(
+          'Image probe interval must be a whole number between {{min}} and {{max}} minutes',
+          { min: MIN_IMAGE_INTERVAL_MINUTES, max: MAX_IMAGE_INTERVAL_MINUTES }
+        ),
+        interval: parsedInterval,
+        imageInterval: DEFAULT_IMAGE_INTERVAL_MINUTES,
         timeout: DEFAULT_TIMEOUT_SECONDS,
       }
     }
@@ -956,6 +1050,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
           { min: MIN_TIMEOUT_SECONDS, max: MAX_TIMEOUT_SECONDS }
         ),
         interval: parsedInterval,
+        imageInterval: parsedImageInterval,
         timeout: DEFAULT_TIMEOUT_SECONDS,
       }
     }
@@ -966,6 +1061,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
           count: MAX_GROUPS,
         }),
         interval: parsedInterval,
+        imageInterval: parsedImageInterval,
         timeout: parsedTimeout,
       }
     }
@@ -980,6 +1076,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
             index: idx + 1,
           }),
           interval: parsedInterval,
+          imageInterval: parsedImageInterval,
           timeout: parsedTimeout,
         }
       }
@@ -990,6 +1087,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
               index: idx + 1,
             }),
             interval: parsedInterval,
+            imageInterval: parsedImageInterval,
             timeout: parsedTimeout,
           }
         }
@@ -997,11 +1095,21 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
       }
     }
 
-    return { error: null, interval: parsedInterval, timeout: parsedTimeout }
+    return {
+      error: null,
+      interval: parsedInterval,
+      imageInterval: parsedImageInterval,
+      timeout: parsedTimeout,
+    }
   }
 
   const handleSaveAll = async () => {
-    const { error: validationError, interval, timeout } = validateBeforeSave()
+    const {
+      error: validationError,
+      interval,
+      imageInterval,
+      timeout,
+    } = validateBeforeSave()
     if (validationError) {
       toast.error(validationError)
       return
@@ -1014,6 +1122,13 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
           value: interval,
         })
         setIntervalDirty(false)
+      }
+      if (imageIntervalDirty) {
+        await updateOption.mutateAsync({
+          key: 'console_setting.image_probe_interval_minutes',
+          value: imageInterval,
+        })
+        setImageIntervalDirty(false)
       }
       if (timeoutDirty) {
         await updateOption.mutateAsync({
@@ -1104,9 +1219,9 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
 
   return (
     <SettingsSection
-      title={t('Model Connectivity Monitor')}
+      title={t('Channel Status Monitor')}
       description={t(
-        'Configure built-in scheduled connectivity probes per group and model for Overview, Pricing, and Model Status pages'
+        'Configure built-in scheduled health probes with a primary probe model per group for Overview, Pricing, and Channel Status pages'
       )}
     >
       <div className='space-y-5'>
@@ -1116,9 +1231,9 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
               <SettingsSwitchField
                 checked={isEnabled}
                 onCheckedChange={handleToggleEnabled}
-                label={t('Enable Model Connectivity Monitor')}
+                label={t('Enable Channel Status Monitor')}
                 description={t(
-                  'Periodically probe configured models and display 24h connectivity status across Overview, Pricing, and Model Status pages'
+                  "Periodically probe each group's primary model and display 24h channel health across Overview, Pricing, and Channel Status pages"
                 )}
                 className='flex-1 py-0'
               />
@@ -1173,7 +1288,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
               </div>
             </div>
 
-            <div className='border-border/60 grid gap-4 border-t pt-3 sm:grid-cols-2'>
+            <div className='border-border/60 grid gap-4 border-t pt-3 sm:grid-cols-3'>
               <div className='space-y-1.5'>
                 <Label
                   htmlFor='model-probe-interval-minutes'
@@ -1201,6 +1316,38 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
                     {
                       min: MIN_INTERVAL_MINUTES,
                       max: MAX_INTERVAL_MINUTES,
+                    }
+                  )}
+                </p>
+              </div>
+
+              <div className='space-y-1.5'>
+                <Label
+                  htmlFor='image-probe-interval-minutes'
+                  className='flex items-center gap-1.5 text-xs font-semibold'
+                >
+                  <ImageIcon className='text-muted-foreground size-3.5' />
+                  {t('Image Probe Interval (minutes)')}
+                </Label>
+                <Input
+                  id='image-probe-interval-minutes'
+                  type='number'
+                  min={MIN_IMAGE_INTERVAL_MINUTES}
+                  max={MAX_IMAGE_INTERVAL_MINUTES}
+                  step={1}
+                  value={imageIntervalInput}
+                  onChange={(e) => {
+                    setImageIntervalInput(e.target.value)
+                    setImageIntervalDirty(true)
+                  }}
+                  className='max-w-44 font-mono text-sm'
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Image models run real minimal image generation probes on this longer interval to control cost ({{min}}–{{max}} min)',
+                    {
+                      min: MIN_IMAGE_INTERVAL_MINUTES,
+                      max: MAX_IMAGE_INTERVAL_MINUTES,
                     }
                   )}
                 </p>
@@ -1243,7 +1390,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
             bordered
             title={t('No monitored groups configured')}
             description={t(
-              'Click "Add Group" to select system groups and models for built-in connectivity probing.'
+              'Click "Add Group" to select system groups and a primary probe model for built-in channel health probing.'
             )}
             action={
               <div className='flex flex-wrap items-center justify-center gap-2'>
@@ -1304,7 +1451,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
         onOpenChange={setShowAddGroupDialog}
         title={t('Select Group')}
         description={t(
-          'Choose a system group to enable built-in model connectivity probing'
+          'Choose a system group to enable built-in channel health probing'
         )}
         contentHeight='auto'
         bodyClassName='space-y-3'

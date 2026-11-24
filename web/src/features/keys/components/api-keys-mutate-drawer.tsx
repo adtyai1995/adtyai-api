@@ -93,12 +93,14 @@ type ApiKeyMutateDrawerProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   currentRow?: ApiKey
+  initialGroup?: string
 }
 
 export function ApiKeysMutateDrawer({
   open,
   onOpenChange,
   currentRow,
+  initialGroup,
 }: ApiKeyMutateDrawerProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -170,11 +172,18 @@ export function ApiKeysMutateDrawer({
       '',
     [groups]
   )
+  const preferredCreateGroup = useMemo(() => {
+    const candidate = initialGroup?.trim()
+    if (candidate && groups.some((group) => group.value === candidate)) {
+      return candidate
+    }
+    return defaultConcreteGroup
+  }, [defaultConcreteGroup, groups, initialGroup])
   const schema = useMemo(() => getApiKeyFormSchema(t), [t])
 
   const form = useForm<ApiKeyFormValues>({
     resolver: zodResolver(schema),
-    defaultValues: getApiKeyFormDefaultValues(defaultConcreteGroup),
+    defaultValues: getApiKeyFormDefaultValues(preferredCreateGroup),
   })
 
   useEffect(() => {
@@ -204,7 +213,10 @@ export function ApiKeysMutateDrawer({
     }
     if (isUpdate && (!apiKeyFetched || apiKeyFetching)) return
 
-    const target = isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
+    const target =
+      isUpdate && currentRow
+        ? `update:${currentRow.id}`
+        : `create:${preferredCreateGroup}`
     if (initializedTarget === target) return
     if (isUpdate && currentRow) {
       if (apiKeyData?.success && apiKeyData.data) {
@@ -223,7 +235,7 @@ export function ApiKeysMutateDrawer({
         setInitializedTarget(target)
       }
     } else {
-      form.reset(getApiKeyFormDefaultValues(defaultConcreteGroup))
+      form.reset(getApiKeyFormDefaultValues(preferredCreateGroup))
       setInitializedQuota(undefined)
       setInitializedTarget(target)
     }
@@ -234,6 +246,7 @@ export function ApiKeysMutateDrawer({
     form,
     groups,
     defaultConcreteGroup,
+    preferredCreateGroup,
     groupsFetched,
     groupsFetching,
     apiKeyData,
@@ -244,7 +257,9 @@ export function ApiKeysMutateDrawer({
   ])
 
   const formTarget =
-    isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
+    isUpdate && currentRow
+      ? `update:${currentRow.id}`
+      : `create:${preferredCreateGroup}`
   const isFormInitialized = initializedTarget === formTarget
   const selectedGroup = form.watch('group')
 

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -561,4 +563,569 @@ func BindAdtySiteInviteByCodeForUser(userID int, code, ipHash string) error {
 		return common.NewMessage("Only sub-site customers can use sub-site invitations")
 	}
 	return BindSiteInviteByCodeFromIP(user.SiteId, code, user.Id, ipHash)
+}
+
+// AdtyOwnerSiteReferralOverview summarizes subsite referral activity for the site owner.
+type AdtyOwnerSiteReferralOverview struct {
+	Affiliates           int64  `json:"affiliates"`
+	Bindings             int64  `json:"bindings"`
+	Pending              string `json:"pending"`
+	Available            string `json:"available"`
+	Frozen               string `json:"frozen"`
+	Withdrawn            string `json:"withdrawn"`
+	PendingCoverageCount int64  `json:"pending_coverage_count"`
+	PendingWithdrawals   int64  `json:"pending_withdrawals"`
+}
+
+// AdtySiteAffiliateRow is one inviter summary row for the subsite owner's referral console.
+type AdtySiteAffiliateRow struct {
+	UserId      int    `json:"user_id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name,omitempty"`
+	InviteCount int64  `json:"invite_count"`
+	Pending     string `json:"pending"`
+	Available   string `json:"available"`
+	Frozen      string `json:"frozen"`
+	Withdrawn   string `json:"withdrawn"`
+	TotalEarned string `json:"total_earned"`
+}
+
+// AdtyOwnerSiteCommissionRow is one subsite invite commission row enriched for the site owner.
+type AdtyOwnerSiteCommissionRow struct {
+	Id              int64                                 `json:"id"`
+	SiteId          int                                   `json:"site_id"`
+	OrderId         int64                                 `json:"order_id"`
+	TradeNo         string                                `json:"trade_no"`
+	InviterId       int                                   `json:"inviter_id"`
+	InviterUsername string                                `json:"inviter_username"`
+	InviteeId       int                                   `json:"invitee_id"`
+	InviteeUsername string                                `json:"invitee_username"`
+	OrderAmountUSD  string                                `json:"order_amount_usd"`
+	FaceUSD         string                                `json:"face_usd"`
+	Rate            string                                `json:"rate"`
+	AmountUSD       string                                `json:"amount_usd"`
+	CoveredUSD      string                                `json:"covered_usd"`
+	RemainingUSD    string                                `json:"remaining_usd"`
+	ConvertedUSD    string                                `json:"converted_usd"`
+	WithdrawnUSD    string                                `json:"withdrawn_usd"`
+	FrozenUSD       string                                `json:"frozen_usd"`
+	ClawedUSD       string                                `json:"clawed_usd"`
+	Status          string                                `json:"status"`
+	CoverageStatus  string                                `json:"coverage_status"`
+	ObservationDays int64                                 `json:"observation_days"`
+	CoveredAt       int64                                 `json:"covered_at"`
+	AvailableAt     int64                                 `json:"available_at"`
+	ObservableAt    int64                                 `json:"observable_at"`
+	SettleAt        int64                                 `json:"settle_at"`
+	CreatedAt       int64                                 `json:"created_at"`
+	OfficialStates  []model.AdtySiteCommissionStateAmount `json:"official_states,omitempty"`
+}
+
+type adtySiteReferralUserSummary struct {
+	Username    string
+	DisplayName string
+}
+
+func classifySiteInviteCommissionRow(row *model.AdtySiteInviteCommission, now time.Time) (pending, available, netEarned decimal.Decimal) {
+	if row == nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero
+	}
+	netEarned = row.AmountUSD.Sub(row.ClawedUSD)
+	if netEarned.IsNegative() {
+		netEarned = decimal.Zero
+	}
+	switch row.Status {
+	case model.AdtySiteCommissionPendingCoverage:
+		pending = netEarned
+	case model.AdtySiteCommissionCovered:
+		pending = siteInviteCommissionFree(row)
+	case model.AdtySiteCommissionAvailable:
+		free := siteInviteCommissionFree(row)
+		if SiteInviteCommissionWithdrawable(row, now) {
+			available = free
+		} else {
+			pending = free
+		}
+	case model.AdtySiteCommissionClawedBack:
+		// Fully clawed back rows contribute neither pending nor available funds.
+	}
+	return pending, available, netEarned
+}
+
+func siteInviteCommissionCoverageStatus(row *model.AdtySiteInviteCommission) string {
+	if row == nil {
+		return ""
+	}
+	switch row.Status {
+	case model.AdtySiteCommissionPendingCoverage:
+		if row.CoveredUSD.IsPositive() {
+			return "partial"
+		}
+		return model.AdtySiteCommissionPendingCoverage
+	case model.AdtySiteCommissionClawedBack:
+		return model.AdtySiteCommissionClawedBack
+	default:
+		return model.AdtySiteCommissionCovered
+	}
+}
+
+func loadSiteReferralUserSummaries(ids []int) (map[int]adtySiteReferralUserSummary, error) {
+	out := make(map[int]adtySiteReferralUserSummary, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	unique := make([]int, 0, len(ids))
+	seen := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	const chunkSize = 500
+	for start := 0; start < len(unique); start += chunkSize {
+		end := start + chunkSize
+		if end > len(unique) {
+			end = len(unique)
+		}
+		var users []model.User
+		if err := model.DB.Select("id", "username", "display_name").Where("id IN ?", unique[start:end]).Find(&users).Error; err != nil {
+			return nil, err
+		}
+		for _, u := range users {
+			out[u.Id] = adtySiteReferralUserSummary{
+				Username:    u.Username,
+				DisplayName: u.DisplayName,
+			}
+		}
+	}
+	return out, nil
+}
+
+// LoadAdtyOwnerSiteReferralOverview aggregates referral metrics strictly scoped to siteID.
+func LoadAdtyOwnerSiteReferralOverview(siteID int, now time.Time) (AdtyOwnerSiteReferralOverview, error) {
+	var out AdtyOwnerSiteReferralOverview
+	if siteID <= 0 {
+		return out, common.NewMessage("Invalid parameters")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if err := model.DB.Model(&model.AdtySiteInvite{}).Where("site_id = ?", siteID).Count(&out.Bindings).Error; err != nil {
+		return out, err
+	}
+	var inviteInviters []int
+	if err := model.DB.Model(&model.AdtySiteInvite{}).
+		Where("site_id = ? AND inviter_id > 0", siteID).
+		Distinct("inviter_id").
+		Pluck("inviter_id", &inviteInviters).Error; err != nil {
+		return out, err
+	}
+	affiliatesSet := make(map[int]struct{}, len(inviteInviters))
+	for _, uid := range inviteInviters {
+		affiliatesSet[uid] = struct{}{}
+	}
+
+	pendingTotal := decimal.Zero
+	availableTotal := decimal.Zero
+	commConverted := decimal.Zero
+	commWithdrawn := decimal.Zero
+	var commBatch []model.AdtySiteInviteCommission
+	if err := model.DB.Select(
+		"id", "inviter_id", "status", "amount_usd", "clawed_usd",
+		"earnings_hold_usd", "margin_hold_usd", "frozen_usd",
+		"converted_usd", "withdrawn_usd", "available_at",
+	).Where("site_id = ?", siteID).FindInBatches(&commBatch, 1000, func(_ *gorm.DB, _ int) error {
+		for i := range commBatch {
+			row := &commBatch[i]
+			if row.InviterId > 0 {
+				affiliatesSet[row.InviterId] = struct{}{}
+			}
+			if row.Status == model.AdtySiteCommissionPendingCoverage {
+				out.PendingCoverageCount++
+			}
+			pending, available, _ := classifySiteInviteCommissionRow(row, now)
+			pendingTotal = pendingTotal.Add(pending)
+			availableTotal = availableTotal.Add(available)
+			commConverted = commConverted.Add(row.ConvertedUSD)
+			commWithdrawn = commWithdrawn.Add(row.WithdrawnUSD)
+		}
+		return nil
+	}).Error; err != nil {
+		return out, err
+	}
+
+	frozenTotal := decimal.Zero
+	cashPaid := decimal.Zero
+	balancePaid := decimal.Zero
+	var wdBatch []model.AdtySiteInviteWithdrawal
+	if err := model.DB.Select("id", "status", "method", "amount_usd").
+		Where("site_id = ? AND status IN ?", siteID, []string{
+			model.AdtySiteInviteWithdrawPending,
+			model.AdtySiteInviteWithdrawApproved,
+			model.AdtySiteInviteWithdrawPaid,
+		}).
+		FindInBatches(&wdBatch, 1000, func(_ *gorm.DB, _ int) error {
+			for i := range wdBatch {
+				w := &wdBatch[i]
+				switch w.Status {
+				case model.AdtySiteInviteWithdrawPending, model.AdtySiteInviteWithdrawApproved:
+					out.PendingWithdrawals++
+					frozenTotal = frozenTotal.Add(w.AmountUSD)
+				case model.AdtySiteInviteWithdrawPaid:
+					if w.Method == "balance" {
+						balancePaid = balancePaid.Add(w.AmountUSD)
+					} else {
+						cashPaid = cashPaid.Add(w.AmountUSD)
+					}
+				}
+			}
+			return nil
+		}).Error; err != nil {
+		return out, err
+	}
+
+	// Avoid double-counting balance withdrawals (which update both withdrawals and commissions.converted_usd)
+	// while still counting direct ConvertAdtySiteInviteCommission conversions.
+	withdrawnTotal := decimal.Max(cashPaid, commWithdrawn).Add(decimal.Max(balancePaid, commConverted))
+
+	out.Affiliates = int64(len(affiliatesSet))
+	out.Pending = pendingTotal.StringFixed(2)
+	out.Available = availableTotal.StringFixed(2)
+	out.Frozen = frozenTotal.StringFixed(2)
+	out.Withdrawn = withdrawnTotal.StringFixed(2)
+	return out, nil
+}
+
+// ListAdtyOwnerSiteReferralAffiliates returns paginated subsite affiliates with per-user commission totals.
+func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int, now time.Time) ([]AdtySiteAffiliateRow, int64, error) {
+	if siteID <= 0 {
+		return nil, 0, common.NewMessage("Invalid parameters")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	type inviteCountRow struct {
+		InviterId   int
+		InviteCount int64
+	}
+	var invCountRows []inviteCountRow
+	if err := model.DB.Model(&model.AdtySiteInvite{}).
+		Select("inviter_id, COUNT(*) AS invite_count").
+		Where("site_id = ? AND inviter_id > 0", siteID).
+		Group("inviter_id").
+		Scan(&invCountRows).Error; err != nil {
+		return nil, 0, err
+	}
+	inviteCounts := make(map[int]int64, len(invCountRows))
+	affiliateSet := make(map[int]struct{}, len(invCountRows))
+	for _, r := range invCountRows {
+		inviteCounts[r.InviterId] = r.InviteCount
+		affiliateSet[r.InviterId] = struct{}{}
+	}
+
+	var commInviters []int
+	if err := model.DB.Model(&model.AdtySiteInviteCommission{}).
+		Where("site_id = ? AND inviter_id > 0", siteID).
+		Distinct("inviter_id").
+		Pluck("inviter_id", &commInviters).Error; err != nil {
+		return nil, 0, err
+	}
+	for _, uid := range commInviters {
+		affiliateSet[uid] = struct{}{}
+	}
+	if len(affiliateSet) == 0 {
+		return []AdtySiteAffiliateRow{}, 0, nil
+	}
+
+	filteredIDs := make([]int, 0, len(affiliateSet))
+	for uid := range affiliateSet {
+		filteredIDs = append(filteredIDs, uid)
+	}
+
+	var userSummaries map[int]adtySiteReferralUserSummary
+	if q = strings.TrimSpace(q); q != "" {
+		var err error
+		userSummaries, err = loadSiteReferralUserSummaries(filteredIDs)
+		if err != nil {
+			return nil, 0, err
+		}
+		lowerQ := strings.ToLower(q)
+		parsedID, idErr := strconv.Atoi(strings.TrimPrefix(q, "#"))
+		hasID := idErr == nil && parsedID > 0
+		matched := make([]int, 0, len(filteredIDs))
+		for _, uid := range filteredIDs {
+			u := userSummaries[uid]
+			if (hasID && uid == parsedID) ||
+				strings.Contains(strings.ToLower(u.Username), lowerQ) ||
+				strings.Contains(strings.ToLower(u.DisplayName), lowerQ) {
+				matched = append(matched, uid)
+			}
+		}
+		filteredIDs = matched
+	}
+
+	total := int64(len(filteredIDs))
+	if total == 0 || offset >= len(filteredIDs) {
+		return []AdtySiteAffiliateRow{}, total, nil
+	}
+	sort.Slice(filteredIDs, func(i, j int) bool {
+		ci, cj := inviteCounts[filteredIDs[i]], inviteCounts[filteredIDs[j]]
+		if ci != cj {
+			return ci > cj
+		}
+		return filteredIDs[i] > filteredIDs[j]
+	})
+	end := offset + limit
+	if end > len(filteredIDs) {
+		end = len(filteredIDs)
+	}
+	pageIDs := filteredIDs[offset:end]
+
+	if userSummaries == nil {
+		var err error
+		userSummaries, err = loadSiteReferralUserSummaries(pageIDs)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	type affiliateTotals struct {
+		pending       decimal.Decimal
+		available     decimal.Decimal
+		totalEarned   decimal.Decimal
+		commConverted decimal.Decimal
+		commWithdrawn decimal.Decimal
+		frozen        decimal.Decimal
+		cashPaid      decimal.Decimal
+		balancePaid   decimal.Decimal
+	}
+	totalsByUser := make(map[int]*affiliateTotals, len(pageIDs))
+	for _, uid := range pageIDs {
+		totalsByUser[uid] = &affiliateTotals{}
+	}
+
+	var commBatch []model.AdtySiteInviteCommission
+	if err := model.DB.Select(
+		"id", "inviter_id", "status", "amount_usd", "clawed_usd",
+		"earnings_hold_usd", "margin_hold_usd", "frozen_usd",
+		"converted_usd", "withdrawn_usd", "available_at",
+	).Where("site_id = ? AND inviter_id IN ?", siteID, pageIDs).
+		FindInBatches(&commBatch, 1000, func(_ *gorm.DB, _ int) error {
+			for i := range commBatch {
+				row := &commBatch[i]
+				agg := totalsByUser[row.InviterId]
+				if agg == nil {
+					continue
+				}
+				pending, available, netEarned := classifySiteInviteCommissionRow(row, now)
+				agg.pending = agg.pending.Add(pending)
+				agg.available = agg.available.Add(available)
+				agg.totalEarned = agg.totalEarned.Add(netEarned)
+				agg.commConverted = agg.commConverted.Add(row.ConvertedUSD)
+				agg.commWithdrawn = agg.commWithdrawn.Add(row.WithdrawnUSD)
+			}
+			return nil
+		}).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var wdBatch []model.AdtySiteInviteWithdrawal
+	if err := model.DB.Select("id", "user_id", "status", "method", "amount_usd").
+		Where("site_id = ? AND user_id IN ? AND status IN ?", siteID, pageIDs, []string{
+			model.AdtySiteInviteWithdrawPending,
+			model.AdtySiteInviteWithdrawApproved,
+			model.AdtySiteInviteWithdrawPaid,
+		}).
+		FindInBatches(&wdBatch, 1000, func(_ *gorm.DB, _ int) error {
+			for i := range wdBatch {
+				w := &wdBatch[i]
+				agg := totalsByUser[w.UserId]
+				if agg == nil {
+					continue
+				}
+				switch w.Status {
+				case model.AdtySiteInviteWithdrawPending, model.AdtySiteInviteWithdrawApproved:
+					agg.frozen = agg.frozen.Add(w.AmountUSD)
+				case model.AdtySiteInviteWithdrawPaid:
+					if w.Method == "balance" {
+						agg.balancePaid = agg.balancePaid.Add(w.AmountUSD)
+					} else {
+						agg.cashPaid = agg.cashPaid.Add(w.AmountUSD)
+					}
+				}
+			}
+			return nil
+		}).Error; err != nil {
+		return nil, 0, err
+	}
+
+	items := make([]AdtySiteAffiliateRow, 0, len(pageIDs))
+	for _, uid := range pageIDs {
+		u := userSummaries[uid]
+		agg := totalsByUser[uid]
+		withdrawn := decimal.Max(agg.cashPaid, agg.commWithdrawn).Add(decimal.Max(agg.balancePaid, agg.commConverted))
+		items = append(items, AdtySiteAffiliateRow{
+			UserId:      uid,
+			Username:    u.Username,
+			DisplayName: u.DisplayName,
+			InviteCount: inviteCounts[uid],
+			Pending:     agg.pending.StringFixed(2),
+			Available:   agg.available.StringFixed(2),
+			Frozen:      agg.frozen.StringFixed(2),
+			Withdrawn:   withdrawn.StringFixed(2),
+			TotalEarned: agg.totalEarned.StringFixed(2),
+		})
+	}
+	return items, total, nil
+}
+
+// ListAdtyOwnerSiteReferralCommissions returns paginated subsite invite commissions for siteID.
+func ListAdtyOwnerSiteReferralCommissions(siteID int, status, q string, offset, limit int, now time.Time) ([]AdtyOwnerSiteCommissionRow, int64, error) {
+	if siteID <= 0 {
+		return nil, 0, common.NewMessage("Invalid parameters")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	query := model.DB.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ?", siteID)
+	switch trimmedStatus := strings.TrimSpace(status); trimmedStatus {
+	case "", "all":
+	case "pending":
+		query = query.Where("status IN ?", []string{model.AdtySiteCommissionPendingCoverage, model.AdtySiteCommissionCovered})
+	case model.AdtySiteCommissionPendingCoverage, model.AdtySiteCommissionCovered, model.AdtySiteCommissionAvailable, model.AdtySiteCommissionClawedBack:
+		query = query.Where("status = ?", trimmedStatus)
+	default:
+		return nil, 0, common.NewMessage("Invalid parameters")
+	}
+
+	if q = strings.TrimSpace(q); q != "" {
+		like := "%" + strings.ToLower(q) + "%"
+		userMatch := func() *gorm.DB {
+			return model.DB.Model(&model.User{}).Select("id").Where("LOWER(username) LIKE ? OR LOWER(display_name) LIKE ?", like, like)
+		}
+		if id, err := strconv.Atoi(strings.TrimPrefix(q, "#")); err == nil && id > 0 {
+			query = query.Where(
+				"(LOWER(trade_no) LIKE ? OR inviter_id = ? OR invitee_id = ? OR inviter_id IN (?) OR invitee_id IN (?))",
+				like, id, id, userMatch(), userMatch(),
+			)
+		} else {
+			query = query.Where(
+				"(LOWER(trade_no) LIKE ? OR inviter_id IN (?) OR invitee_id IN (?))",
+				like, userMatch(), userMatch(),
+			)
+		}
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []AdtyOwnerSiteCommissionRow{}, 0, nil
+	}
+
+	var rows []model.AdtySiteInviteCommission
+	if err := query.Order("id DESC").Offset(offset).Limit(limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	if len(rows) == 0 {
+		return []AdtyOwnerSiteCommissionRow{}, total, nil
+	}
+
+	userIDs := make([]int, 0, len(rows)*2)
+	tradeNos := make([]string, 0, len(rows))
+	tradeSeen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		userIDs = append(userIDs, row.InviterId, row.InviteeId)
+		if row.TradeNo != "" {
+			if _, ok := tradeSeen[row.TradeNo]; !ok {
+				tradeSeen[row.TradeNo] = struct{}{}
+				tradeNos = append(tradeNos, row.TradeNo)
+			}
+		}
+	}
+	users, err := loadSiteReferralUserSummaries(userIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	orderIDByTrade := make(map[string]int64, len(tradeNos))
+	if len(tradeNos) > 0 {
+		var orders []model.AdtyTopupOrder
+		if err := model.DB.Select("id", "trade_no").Where("site_id = ? AND trade_no IN ?", siteID, tradeNos).Find(&orders).Error; err != nil {
+			return nil, 0, err
+		}
+		for _, ord := range orders {
+			orderIDByTrade[ord.TradeNo] = ord.Id
+		}
+	}
+
+	presented, err := model.PresentSiteInviteCommissions(model.DB, rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	items := make([]AdtyOwnerSiteCommissionRow, 0, len(rows))
+	for i := range rows {
+		row := &rows[i]
+		var states []model.AdtySiteCommissionStateAmount
+		if i < len(presented) {
+			states = presented[i].OfficialStates
+		}
+		items = append(items, AdtyOwnerSiteCommissionRow{
+			Id:              row.Id,
+			SiteId:          row.SiteId,
+			OrderId:         orderIDByTrade[row.TradeNo],
+			TradeNo:         row.TradeNo,
+			InviterId:       row.InviterId,
+			InviterUsername: users[row.InviterId].Username,
+			InviteeId:       row.InviteeId,
+			InviteeUsername: users[row.InviteeId].Username,
+			OrderAmountUSD:  row.FaceUSD.String(),
+			FaceUSD:         row.FaceUSD.String(),
+			Rate:            row.Rate.String(),
+			AmountUSD:       row.AmountUSD.String(),
+			CoveredUSD:      row.CoveredUSD.String(),
+			RemainingUSD:    siteInviteCommissionFree(row).String(),
+			ConvertedUSD:    row.ConvertedUSD.String(),
+			WithdrawnUSD:    row.WithdrawnUSD.String(),
+			FrozenUSD:       row.FrozenUSD.String(),
+			ClawedUSD:       row.ClawedUSD.String(),
+			Status:          row.Status,
+			CoverageStatus:  siteInviteCommissionCoverageStatus(row),
+			ObservationDays: row.ObservationDays,
+			CoveredAt:       row.CoveredAt,
+			AvailableAt:     row.AvailableAt,
+			ObservableAt:    row.AvailableAt,
+			SettleAt:        row.AvailableAt,
+			CreatedAt:       row.CreatedAt,
+			OfficialStates:  states,
+		})
+	}
+	return items, total, nil
 }

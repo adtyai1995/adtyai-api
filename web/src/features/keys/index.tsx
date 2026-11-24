@@ -16,19 +16,46 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { getRouteApi } from '@tanstack/react-router'
+import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 
 import { ApiKeysDialogs } from './components/api-keys-dialogs'
 import { ApiKeysPrimaryButtons } from './components/api-keys-primary-buttons'
-import { ApiKeysProvider } from './components/api-keys-provider'
+import { ApiKeysProvider, useApiKeys } from './components/api-keys-provider'
 import { ApiKeysTable } from './components/api-keys-table'
+
+const route = getRouteApi('/_authenticated/keys/')
+
+function ApiKeysCreateFromSearch() {
+  const search = route.useSearch()
+  const navigate = route.useNavigate()
+  const { setOpen, setInitialCreateGroup } = useApiKeys()
+
+  useEffect(() => {
+    if (search.create !== '1') return
+    setInitialCreateGroup(search.group ?? null)
+    setOpen('create')
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        create: undefined,
+        group: undefined,
+      }),
+      replace: true,
+    })
+  }, [navigate, search.create, search.group, setInitialCreateGroup, setOpen])
+
+  return null
+}
 
 export function ApiKeys() {
   const { t } = useTranslation()
   return (
     <ApiKeysProvider>
+      <ApiKeysCreateFromSearch />
       <SectionPageLayout fixedContent>
         <SectionPageLayout.Title>{t('API Keys')}</SectionPageLayout.Title>
         <SectionPageLayout.Description>

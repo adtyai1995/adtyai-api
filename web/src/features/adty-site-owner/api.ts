@@ -609,9 +609,117 @@ export type SiteInvite = {
   id: number
   site_id: number
   inviter_id: number
+  inviter_username?: string
   invitee_id: number
+  invitee_username?: string
   rate: string
   created_at: number
+}
+
+export type SiteReferralOverview = {
+  affiliates: number
+  bindings: number
+  pending: string
+  available: string
+  frozen: string
+  withdrawn: string
+  pending_coverage_count: number
+  pending_withdrawals: number
+}
+
+export type SiteReferralAffiliateItem = {
+  user_id: number
+  username: string
+  display_name?: string
+  invite_count: number
+  pending: string
+  available: string
+  frozen: string
+  withdrawn: string
+  total_earned: string
+}
+
+export type SiteReferralCommissionItem = {
+  id: number
+  order_id: number
+  trade_no: string
+  inviter_id: number
+  inviter_username: string
+  invitee_id: number
+  invitee_username: string
+  order_amount_usd: string
+  rate: string
+  amount_usd: string
+  covered_usd: string
+  remaining_usd: string
+  status: string
+  coverage_status: string
+  settle_at: number
+  created_at: number
+}
+
+export type SiteReferralPage<T> = {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export async function getOwnerSiteReferralOverview(): Promise<SiteReferralOverview> {
+  const res = await api.get<ApiResponse<SiteReferralOverview>>(
+    `${BASE}/referral/overview`
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function getOwnerSiteReferralAffiliates(
+  page = 1,
+  pageSize = OWNER_PAGE_SIZE,
+  q = ''
+): Promise<SiteReferralPage<SiteReferralAffiliateItem>> {
+  const res = await api.get<
+    ApiResponse<SiteReferralPage<SiteReferralAffiliateItem>>
+  >(`${BASE}/referral/affiliates`, {
+    params: {
+      page,
+      p: page,
+      page_size: pageSize,
+      q: q.trim() || undefined,
+    },
+  })
+  const data = requireServerSuccess(res.data).data
+  return {
+    items: Array.isArray(data?.items) ? data.items : [],
+    total: Number(data?.total) || 0,
+    page: Number(data?.page) || page,
+    page_size: Number(data?.page_size) || pageSize,
+  }
+}
+
+export async function getOwnerSiteReferralCommissions(
+  page = 1,
+  pageSize = OWNER_PAGE_SIZE,
+  status = '',
+  q = ''
+): Promise<SiteReferralPage<SiteReferralCommissionItem>> {
+  const res = await api.get<
+    ApiResponse<SiteReferralPage<SiteReferralCommissionItem>>
+  >(`${BASE}/referral/commissions`, {
+    params: {
+      page,
+      p: page,
+      page_size: pageSize,
+      status: status.trim() || undefined,
+      q: q.trim() || undefined,
+    },
+  })
+  const data = requireServerSuccess(res.data).data
+  return {
+    items: Array.isArray(data?.items) ? data.items : [],
+    total: Number(data?.total) || 0,
+    page: Number(data?.page) || page,
+    page_size: Number(data?.page_size) || pageSize,
+  }
 }
 
 export async function getOwnerSiteReferral(): Promise<SiteReferralView> {

@@ -30,7 +30,6 @@ export type SidebarBadgeCounts = Record<string, number>
 
 export const CONFIRMED_SIDEBAR_BADGE_KINDS = [
   'notification_unread',
-  'referral_partners',
   'referral_withdrawals_pending',
   'referral_withdrawals_approved',
   'site_withdrawals_pending',
@@ -57,7 +56,6 @@ export const UNCONFIRMED_SIDEBAR_BADGE_KINDS = [
 ] as const
 
 export const REFERRAL_ADMIN_BADGE_KINDS = [
-  'referral_partners',
   'referral_withdrawals_pending',
   'referral_withdrawals_approved',
   'referral_commissions_frozen',

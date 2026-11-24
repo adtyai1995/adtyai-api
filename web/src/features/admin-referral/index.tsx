@@ -115,7 +115,6 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
     onError: (err) => handleServerError(err),
   })
   const data = overview.data
-  const pendingPartners = badges.data?.partners ?? 0
   const pendingWithdrawals =
     (badges.data?.pending_withdrawals ?? 0) +
     (badges.data?.approved_withdrawals ?? 0)
@@ -197,13 +196,6 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                     {pendingWithdrawals > 0 && ` (${pendingWithdrawals})`}
                   </TabsTrigger>
                   <TabsTrigger
-                    value='partners'
-                    className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
-                  >
-                    {t('Partner applications')}
-                    {pendingPartners > 0 && ` (${pendingPartners})`}
-                  </TabsTrigger>
-                  <TabsTrigger
                     value='affiliates'
                     className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
                   >
@@ -255,15 +247,8 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                   canPayout={canPayout}
                 />
               </TabsContent>
-              <TabsContent value='partners'>
-                <AffiliatePanel
-                  canReview={canReview}
-                  canAdjust={false}
-                  partnerOnly
-                />
-              </TabsContent>
               <TabsContent value='affiliates'>
-                <AffiliatePanel canReview={canReview} canAdjust={canAdjust} />
+                <AffiliatePanel canAdjust={canAdjust} />
               </TabsContent>
               <TabsContent value='commission-jobs'>
                 <CommissionJobsPanel canRetry={canAdjust} />

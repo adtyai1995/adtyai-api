@@ -16,235 +16,179 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import {
-  Activity,
-  AlertTriangle,
-  CheckCircle2,
-  RotateCw,
-  Search,
-  X,
-  XCircle,
-} from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
+import { Activity, ChevronDown, ChevronUp } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
-import { StatusBadge } from '@/components/status-badge'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
-import type { UptimeGroupResult } from '@/features/dashboard/types'
-import { ModelHeartbeatBars } from '@/features/pricing/components/model-connectivity-badge'
+import type { UptimePlatform } from '@/features/dashboard/types'
 import { useUptimeStatus } from '@/features/pricing/hooks/use-uptime-status'
-import {
-  extractGroupModelStatuses,
-  formatUptimePercentage,
-  getConnectivityBadgeVariant,
-  getConnectivityStatusLabelKey,
-  getConnectivityTextColorClass,
-  resolveModelPingMs,
-  type ConnectivityState,
-  type ResolvedModelUptime,
-} from '@/features/pricing/lib/uptime'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 import { getLobeIcon } from '@/lib/lobe-icon'
+import { ROLE } from '@/lib/roles'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
-const ALL_GROUPS_KEY = '__all__'
+import { AutoRefreshControls } from './components/auto-refresh-controls'
+import { ChannelStatusCard } from './components/channel-status-card'
+import {
+  CHANNEL_PLATFORMS,
+  computeAggregateHealth,
+  DEFAULT_SORT_DIRECTIONS,
+  resolveChannelCard,
+  sortChannelCards,
+  type AutoRefreshInterval,
+  type ChannelPlatformFilter,
+  type ChannelSortDirection,
+  type ChannelSortKey,
+} from './lib/channel-status'
 
-type StatusFilter = 'all' | 'online' | 'degraded' | 'offline'
-
-interface DisplayGroupSection {
-  key: string
-  groupId?: string
-  title: string
-  description?: string
-  items: ResolvedModelUptime[]
+interface SortOptionConfig {
+  key: ChannelSortKey
+  labelKey: string
+  ascLabelKey: string
+  descLabelKey: string
 }
 
-function formatLastCheckedAt(
-  value: string | number | null | undefined,
-  locale?: string
-): string | null {
-  if (value == null || value === '') return null
-  let date: Date
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || value <= 0) return null
-    date = new Date(value > 1e12 ? value : value * 1000)
-  } else {
-    date = new Date(value)
-  }
-  if (Number.isNaN(date.getTime())) {
-    return typeof value === 'string' ? value : null
-  }
-  return new Intl.DateTimeFormat(locale, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(date)
-}
-
-function getGroupKey(group: UptimeGroupResult, idx: number): string {
-  return group.groupId || group.categoryName || `group-${idx}`
-}
-
-function matchesStatusFilter(
-  state: ConnectivityState,
-  filter: StatusFilter
-): boolean {
-  if (filter === 'all') return true
-  if (filter === 'online') return state === 'online'
-  if (filter === 'degraded') {
-    return state === 'degraded' || state === 'maintenance'
-  }
-  return state === 'offline'
-}
-
-interface SummaryStatCardProps {
-  label: string
-  count: number
-  locale?: string
-  icon: React.ComponentType<{ className?: string }>
-  toneClass: string
-  dotClass: string
-  active: boolean
-  onClick: () => void
-}
-
-function SummaryStatCard(props: SummaryStatCardProps) {
-  const Icon = props.icon
-  return (
-    <button
-      type='button'
-      onClick={props.onClick}
-      aria-pressed={props.active}
-      className={cn(
-        'bg-card border-border hover:border-foreground/20 flex items-center justify-between gap-3 rounded-[14px] border p-4 text-left transition-colors',
-        props.active && 'ring-ring ring-2'
-      )}
-    >
-      <div className='min-w-0'>
-        <div className='text-muted-foreground flex items-center gap-2 text-xs font-medium'>
-          <span
-            className={cn('size-2 rounded-full', props.dotClass)}
-            aria-hidden='true'
-          />
-          <span className='truncate'>{props.label}</span>
-        </div>
-        <div
-          className={cn(
-            'mt-2 font-mono text-2xl font-bold tracking-tight tabular-nums',
-            props.toneClass
-          )}
-        >
-          {formatNumber(props.count, props.locale)}
-        </div>
-      </div>
-      <div className='bg-muted/60 flex size-10 shrink-0 items-center justify-center rounded-xl'>
-        <Icon className={cn('size-5', props.toneClass)} aria-hidden='true' />
-      </div>
-    </button>
-  )
-}
+const SORT_OPTIONS: readonly SortOptionConfig[] = [
+  {
+    key: 'ratio',
+    labelKey: 'Multiplier',
+    ascLabelKey: 'Low to high',
+    descLabelKey: 'High to low',
+  },
+  {
+    key: 'uptime',
+    labelKey: 'Success rate',
+    ascLabelKey: 'Low to high',
+    descLabelKey: 'High to low',
+  },
+  {
+    key: 'cacheHitRate',
+    labelKey: 'Cache hit rate',
+    ascLabelKey: 'Low to high',
+    descLabelKey: 'High to low',
+  },
+  {
+    key: 'avgPingMs',
+    labelKey: 'Average latency',
+    ascLabelKey: 'Low to high',
+    descLabelKey: 'High to low',
+  },
+  {
+    key: 'status',
+    labelKey: 'Status',
+    ascLabelKey: 'Healthy first',
+    descLabelKey: 'Issues first',
+  },
+] as const
 
 export function ModelStatusPage() {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const navigate = useNavigate()
   const groupDisplay = useGroupDisplay()
 
-  const { groups, isLoading, isFetching, isError, error, refetch } =
-    useUptimeStatus({ refetchInterval: 60 * 1000 })
+  const userRole = useAuthStore((s) => s.auth.user?.role ?? ROLE.GUEST)
+  const isSiteOwner = useAuthStore((s) => s.auth.user?.adty_site_owner === true)
+  const isStaff = useAuthStore((s) => (s.auth.user?.staff_site_id ?? 0) > 0)
+  const canCreateApiKey = !isStaff && !(isSiteOwner && userRole < ROLE.ADMIN)
 
-  const [selectedGroupKey, setSelectedGroupKey] =
-    useState<string>(ALL_GROUPS_KEY)
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [searchQuery, setSearchQuery] = useState('')
-
-  const sections = useMemo<DisplayGroupSection[]>(
-    () =>
-      groups.map((group, idx) => ({
-        key: getGroupKey(group, idx),
-        groupId: group.groupId,
-        title: group.groupId
-          ? groupDisplay.name(group.groupId)
-          : group.categoryName,
-        description: group.description,
-        items: extractGroupModelStatuses(group),
-      })),
-    [groupDisplay, groups]
+  const [intervalSeconds, setIntervalSeconds] =
+    useState<AutoRefreshInterval>(60)
+  const [refreshCycleKey, setRefreshCycleKey] = useState(0)
+  const [selectedPlatform, setSelectedPlatform] =
+    useState<ChannelPlatformFilter>('all')
+  const [sortKey, setSortKey] = useState<ChannelSortKey>('ratio')
+  const [sortDirection, setSortDirection] = useState<ChannelSortDirection>(
+    DEFAULT_SORT_DIRECTIONS.ratio
   )
 
-  const activeGroupKey = useMemo(() => {
-    if (selectedGroupKey === ALL_GROUPS_KEY) return ALL_GROUPS_KEY
-    const exists = sections.some((section) => section.key === selectedGroupKey)
-    return exists ? selectedGroupKey : ALL_GROUPS_KEY
-  }, [sections, selectedGroupKey])
+  const { groups, isLoading, isFetching, isError, error, refetch } =
+    useUptimeStatus({ refetchInterval: false })
 
-  const groupScopedSections = useMemo(() => {
-    if (activeGroupKey === ALL_GROUPS_KEY) return sections
-    return sections.filter((section) => section.key === activeGroupKey)
-  }, [activeGroupKey, sections])
+  const cards = useMemo(
+    () =>
+      groups.map((group, idx) =>
+        resolveChannelCard(group, idx, groupDisplay.name)
+      ),
+    [groupDisplay.name, groups]
+  )
 
-  const summary = useMemo(() => {
-    let online = 0
-    let degraded = 0
-    let offline = 0
-    let unknown = 0
-    for (const section of groupScopedSections) {
-      for (const item of section.items) {
-        if (item.state === 'online') {
-          online++
-        } else if (item.state === 'degraded' || item.state === 'maintenance') {
-          degraded++
-        } else if (item.state === 'offline') {
-          offline++
-        } else {
-          unknown++
-        }
+  const platformCounts = useMemo(() => {
+    const counts = new Map<UptimePlatform, number>()
+    for (const card of cards) {
+      counts.set(card.platform, (counts.get(card.platform) ?? 0) + 1)
+    }
+    return counts
+  }, [cards])
+
+  const visiblePlatforms = useMemo(
+    () =>
+      CHANNEL_PLATFORMS.filter(
+        (platform) => (platformCounts.get(platform.id) ?? 0) > 0
+      ),
+    [platformCounts]
+  )
+
+  const activePlatform: ChannelPlatformFilter = useMemo(() => {
+    if (selectedPlatform === 'all') return 'all'
+    return (platformCounts.get(selectedPlatform) ?? 0) > 0
+      ? selectedPlatform
+      : 'all'
+  }, [platformCounts, selectedPlatform])
+
+  const filteredAndSortedCards = useMemo(() => {
+    const filtered =
+      activePlatform === 'all'
+        ? cards
+        : cards.filter((card) => card.platform === activePlatform)
+    return sortChannelCards(filtered, sortKey, sortDirection)
+  }, [activePlatform, cards, sortDirection, sortKey])
+
+  const aggregateHealth = useMemo(() => computeAggregateHealth(cards), [cards])
+
+  const handleManualRefresh = useCallback(() => {
+    setRefreshCycleKey((prev) => prev + 1)
+    void refetch()
+  }, [refetch])
+
+  const handleSortToggle = useCallback(
+    (nextKey: ChannelSortKey) => {
+      if (sortKey === nextKey) {
+        setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+        return
       }
-    }
-    return {
-      online,
-      degraded,
-      offline,
-      unknown,
-      total: online + degraded + offline + unknown,
-    }
-  }, [groupScopedSections])
+      setSortKey(nextKey)
+      setSortDirection(DEFAULT_SORT_DIRECTIONS[nextKey])
+    },
+    [sortKey]
+  )
 
-  const filteredSections = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase()
-    return groupScopedSections
-      .map((section) => {
-        const items = section.items.filter((item) => {
-          if (!matchesStatusFilter(item.state, statusFilter)) return false
-          if (!query) return true
-          return (
-            item.model.toLowerCase().includes(query) ||
-            section.title.toLowerCase().includes(query) ||
-            (section.groupId?.toLowerCase().includes(query) ?? false)
-          )
-        })
-        return { ...section, items }
+  const handleCreateApiKey = useCallback(
+    (groupId?: string) => {
+      void navigate({
+        to: '/keys',
+        search: {
+          create: '1',
+          ...(groupId ? { group: groupId } : {}),
+        },
       })
-      .filter((section) => section.items.length > 0)
-  }, [groupScopedSections, searchQuery, statusFilter])
-
-  const toggleStatusFilter = (next: Exclude<StatusFilter, 'all'>) => {
-    setStatusFilter((prev) => (prev === next ? 'all' : next))
-  }
+    },
+    [navigate]
+  )
 
   let bodyContent: React.ReactNode
   if (isLoading) {
-    bodyContent = <LoadingState message={t('Loading model status...')} />
+    bodyContent = <LoadingState message={t('Loading channel status...')} />
   } else if (isError && groups.length === 0) {
     bodyContent = (
       <ErrorState
@@ -253,266 +197,170 @@ export function ModelStatusPage() {
           error,
           t('Failed to load uptime status')
         )}
-        onRetry={() => void refetch()}
+        onRetry={handleManualRefresh}
       />
     )
-  } else if (sections.length === 0) {
+  } else if (cards.length === 0) {
     bodyContent = (
       <EmptyState
         bordered
         icon={Activity}
-        title={t('No model connectivity monitoring configured')}
+        title={t('No channel status monitoring configured')}
         description={t(
-          'Model connectivity status will appear here once model connectivity monitoring is configured.'
+          'Channel health cards will appear here once channel status monitoring is configured.'
         )}
       />
     )
   } else {
     bodyContent = (
       <div className='flex flex-col gap-4'>
-        <div className='grid grid-cols-1 gap-3 sm:grid-cols-3'>
-          <SummaryStatCard
-            label={t('Online')}
-            count={summary.online}
-            locale={locale}
-            icon={CheckCircle2}
-            toneClass='text-success'
-            dotClass='bg-success'
-            active={statusFilter === 'online'}
-            onClick={() => toggleStatusFilter('online')}
-          />
-          <SummaryStatCard
-            label={t('Degraded')}
-            count={summary.degraded}
-            locale={locale}
-            icon={AlertTriangle}
-            toneClass='text-warning'
-            dotClass='bg-warning'
-            active={statusFilter === 'degraded'}
-            onClick={() => toggleStatusFilter('degraded')}
-          />
-          <SummaryStatCard
-            label={t('Offline')}
-            count={summary.offline}
-            locale={locale}
-            icon={XCircle}
-            toneClass='text-destructive'
-            dotClass='bg-destructive'
-            active={statusFilter === 'offline'}
-            onClick={() => toggleStatusFilter('offline')}
-          />
-        </div>
-
-        <div className='bg-card border-border flex flex-col gap-3 rounded-[14px] border p-3 sm:flex-row sm:items-center sm:justify-between'>
-          <Tabs value={activeGroupKey} onValueChange={setSelectedGroupKey}>
-            <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
-              <TabsTrigger value={ALL_GROUPS_KEY} className='gap-1.5'>
-                <span>{t('All Groups')}</span>
-                <Badge variant='secondary' className='h-4 px-1.5 text-[10px]'>
-                  {sections.length}
-                </Badge>
-              </TabsTrigger>
-              {sections.map((section) => (
-                <TabsTrigger
-                  key={section.key}
-                  value={section.key}
-                  className='gap-1.5'
-                >
-                  <span className='max-w-40 truncate'>{section.title}</span>
-                  <Badge variant='secondary' className='h-4 px-1.5 text-[10px]'>
-                    {section.items.length}
-                  </Badge>
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-
-          <div className='flex items-center gap-2'>
-            <div className='relative w-full sm:w-64'>
-              <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2' />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t('Search models...')}
-                className='h-8 pr-8 pl-8 text-sm'
-              />
-              {searchQuery && (
-                <button
-                  type='button'
-                  onClick={() => setSearchQuery('')}
-                  className='text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2'
-                  aria-label={t('Clear')}
-                >
-                  <X className='size-3.5' />
-                </button>
+        {/* Filter & Sort Toolbar */}
+        <div className='flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between'>
+          {/* Platform filter pills */}
+          <div
+            role='group'
+            aria-label={t('Platform')}
+            className='flex flex-wrap items-center gap-1.5'
+          >
+            <button
+              type='button'
+              aria-pressed={activePlatform === 'all'}
+              onClick={() => setSelectedPlatform('all')}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
+                activePlatform === 'all'
+                  ? 'border-brand/50 bg-brand-soft text-brand-ink'
+                  : 'border-border bg-card text-foreground hover:bg-muted/60'
               )}
-            </div>
-            {statusFilter !== 'all' && (
-              <Button
-                type='button'
-                variant='ghost'
-                size='sm'
-                onClick={() => setStatusFilter('all')}
-                className='h-8 shrink-0 text-xs'
+            >
+              <span>{t('All platforms')}</span>
+              <span
+                className={cn(
+                  'font-mono text-[11px] tabular-nums',
+                  activePlatform === 'all'
+                    ? 'text-brand-ink/80'
+                    : 'text-muted-foreground'
+                )}
               >
-                {t('Reset')}
-              </Button>
-            )}
+                {formatNumber(cards.length, locale)}
+              </span>
+            </button>
+
+            {visiblePlatforms.map((platform) => {
+              const isActive = activePlatform === platform.id
+              const count = platformCounts.get(platform.id) ?? 0
+              return (
+                <button
+                  key={platform.id}
+                  type='button'
+                  aria-pressed={isActive}
+                  onClick={() => setSelectedPlatform(platform.id)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
+                    isActive
+                      ? 'border-brand/50 bg-brand-soft text-brand-ink'
+                      : 'border-border bg-card text-foreground hover:bg-muted/60'
+                  )}
+                >
+                  {platform.lobeIcon && (
+                    <span
+                      className='inline-flex shrink-0 items-center'
+                      aria-hidden='true'
+                    >
+                      {getLobeIcon(platform.lobeIcon, 14)}
+                    </span>
+                  )}
+                  <span>{t(platform.labelKey)}</span>
+                  <span
+                    className={cn(
+                      'font-mono text-[11px] tabular-nums',
+                      isActive ? 'text-brand-ink/80' : 'text-muted-foreground'
+                    )}
+                  >
+                    {formatNumber(count, locale)}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Compact pill sort toggles */}
+          <div
+            role='group'
+            aria-label={t('Sort channels')}
+            className='flex flex-wrap items-center gap-1.5 lg:justify-end'
+          >
+            {SORT_OPTIONS.map((option) => {
+              const isActive = sortKey === option.key
+              const effectiveDir = isActive
+                ? sortDirection
+                : DEFAULT_SORT_DIRECTIONS[option.key]
+              const dirLabel =
+                effectiveDir === 'asc'
+                  ? t(option.ascLabelKey)
+                  : t(option.descLabelKey)
+              const SortChevron =
+                isActive && effectiveDir === 'asc' ? ChevronUp : ChevronDown
+
+              return (
+                <button
+                  key={option.key}
+                  type='button'
+                  aria-pressed={isActive}
+                  onClick={() => handleSortToggle(option.key)}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full border px-2.5 py-1.5 text-xs transition-colors',
+                    isActive
+                      ? 'border-brand/50 bg-brand-soft text-brand-ink font-medium'
+                      : 'border-border bg-card text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                  )}
+                >
+                  <span>{t(option.labelKey)}</span>
+                  <span
+                    className={cn(
+                      'text-[11px]',
+                      isActive
+                        ? 'text-brand-ink/85'
+                        : 'text-muted-foreground/80'
+                    )}
+                  >
+                    {dirLabel}
+                  </span>
+                  <SortChevron className='size-3 shrink-0' aria-hidden='true' />
+                </button>
+              )
+            })}
           </div>
         </div>
 
-        {filteredSections.length === 0 ? (
+        {/* 4-Column Group Card Grid */}
+        {filteredAndSortedCards.length === 0 ? (
           <EmptyState
             bordered
-            icon={Search}
-            title={t('No Models Found')}
-            description={t('No models match your current filters.')}
+            icon={Activity}
+            title={t('No channels found')}
+            description={t('No channels match the selected platform filter.')}
             action={
               <Button
                 type='button'
                 variant='outline'
                 size='sm'
-                onClick={() => {
-                  setSearchQuery('')
-                  setStatusFilter('all')
-                  setSelectedGroupKey(ALL_GROUPS_KEY)
-                }}
+                onClick={() => setSelectedPlatform('all')}
               >
                 {t('Clear filters')}
               </Button>
             }
           />
         ) : (
-          <div className='flex flex-col gap-4'>
-            {filteredSections.map((section) => {
-              const onlineCount = section.items.filter(
-                (item) => item.state === 'online'
-              ).length
-              return (
-                <Card
-                  key={section.key}
-                  className='border-border bg-card overflow-hidden rounded-[14px]'
-                >
-                  <CardHeader className='border-border flex flex-row flex-wrap items-center justify-between gap-2 border-b px-4 py-3 sm:px-5'>
-                    <div className='min-w-0'>
-                      <div className='flex items-center gap-2'>
-                        <h2 className='truncate text-sm font-semibold'>
-                          {section.title}
-                        </h2>
-                        {section.groupId &&
-                          section.groupId !== section.title && (
-                            <Badge
-                              variant='outline'
-                              className='font-mono text-[11px]'
-                            >
-                              {section.groupId}
-                            </Badge>
-                          )}
-                      </div>
-                      {section.description && (
-                        <p className='text-muted-foreground mt-0.5 text-xs'>
-                          {section.description}
-                        </p>
-                      )}
-                    </div>
-                    <Badge
-                      variant='secondary'
-                      className='font-mono text-xs tabular-nums'
-                    >
-                      {formatNumber(onlineCount, locale)} /{' '}
-                      {formatNumber(section.items.length, locale)} {t('Online')}
-                    </Badge>
-                  </CardHeader>
-
-                  <CardContent className='divide-border divide-y p-0'>
-                    {section.items.map((item) => {
-                      const icon = getLobeIcon(item.model, 16)
-                      const avgPing = resolveModelPingMs(item)
-                      const checkedAt = formatLastCheckedAt(
-                        item.lastCheckedAt,
-                        locale
-                      )
-                      return (
-                        <div
-                          key={`${section.key}:${item.model}`}
-                          className='hover:bg-muted/30 flex flex-col gap-2.5 px-4 py-3.5 transition-colors sm:px-5'
-                        >
-                          <div className='flex flex-wrap items-center justify-between gap-2'>
-                            <div className='flex min-w-0 items-center gap-2'>
-                              {icon}
-                              <span
-                                className='truncate font-mono text-sm font-medium'
-                                title={item.model}
-                              >
-                                {item.model}
-                              </span>
-                              <StatusBadge
-                                variant={getConnectivityBadgeVariant(
-                                  item.state
-                                )}
-                                label={t(
-                                  getConnectivityStatusLabelKey(item.state)
-                                )}
-                                size='sm'
-                                showDot
-                                copyable={false}
-                              />
-                            </div>
-
-                            <div className='flex shrink-0 items-center gap-3 text-xs'>
-                              {avgPing !== null && (
-                                <span className='text-muted-foreground font-mono tabular-nums'>
-                                  {avgPing} {t('ms')}
-                                </span>
-                              )}
-                              <span
-                                className={cn(
-                                  'font-mono text-sm font-semibold tabular-nums',
-                                  getConnectivityTextColorClass(item.state)
-                                )}
-                              >
-                                {formatUptimePercentage(item.uptime)}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className='space-y-1'>
-                            <ModelHeartbeatBars
-                              heartbeats={item.heartbeats}
-                              maxBars={24}
-                              size='lg'
-                              fillWidth
-                            />
-                            <div className='text-muted-foreground/70 flex flex-wrap items-center justify-between gap-2 text-[11px]'>
-                              <span>{t('24h ago')}</span>
-                              <div className='flex min-w-0 items-center gap-2'>
-                                {item.lastMessage && (
-                                  <span
-                                    className={cn(
-                                      'max-w-xs truncate',
-                                      item.state === 'offline' &&
-                                        'text-destructive/80'
-                                    )}
-                                    title={item.lastMessage}
-                                  >
-                                    {item.lastMessage}
-                                  </span>
-                                )}
-                                <span>
-                                  {checkedAt
-                                    ? t('Checked {{time}}', { time: checkedAt })
-                                    : t('Now')}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </CardContent>
-                </Card>
-              )
-            })}
+          <div className='grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4'>
+            {filteredAndSortedCards.map((item) => (
+              <ChannelStatusCard
+                key={item.key}
+                item={item}
+                canCreateApiKey={canCreateApiKey}
+                onCreateApiKey={handleCreateApiKey}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -520,25 +368,22 @@ export function ModelStatusPage() {
   }
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('Model Status')}</SectionPageLayout.Title>
+    <SectionPageLayout stackActionsOnMobile>
+      <SectionPageLayout.Title>{t('Channel Status')}</SectionPageLayout.Title>
       <SectionPageLayout.Description>
-        {t('Real-time 24h model availability and heartbeat history')}
+        {t(
+          'Only shows service health overview; does not expose request counts, per-request logs, or internal channel info.'
+        )}
       </SectionPageLayout.Description>
       <SectionPageLayout.Actions>
-        <Button
-          type='button'
-          variant='outline'
-          size='sm'
-          onClick={() => void refetch()}
-          disabled={isFetching}
-        >
-          <RotateCw
-            className={cn('size-3.5', isFetching && 'animate-spin')}
-            aria-hidden='true'
-          />
-          {t('Refresh')}
-        </Button>
+        <AutoRefreshControls
+          aggregateHealth={aggregateHealth}
+          intervalSeconds={intervalSeconds}
+          isFetching={isFetching}
+          refreshCycleKey={refreshCycleKey}
+          onIntervalChange={setIntervalSeconds}
+          onRefresh={handleManualRefresh}
+        />
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>{bodyContent}</SectionPageLayout.Content>
     </SectionPageLayout>

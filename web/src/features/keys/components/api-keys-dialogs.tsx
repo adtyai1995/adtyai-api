@@ -24,15 +24,30 @@ import { useApiKeys } from './api-keys-provider'
 import { CCSwitchDialog } from './dialogs/cc-switch-dialog'
 
 export function ApiKeysDialogs() {
-  const { open, setOpen, currentRow, resolvedKey } = useApiKeys()
+  const {
+    open,
+    setOpen,
+    currentRow,
+    initialCreateGroup,
+    setInitialCreateGroup,
+    resolvedKey,
+  } = useApiKeys()
   const { serverAddress } = useChatPresets()
 
   return (
     <>
       <ApiKeysMutateDrawer
         open={open === 'create' || open === 'update'}
-        onOpenChange={(isOpen) => !isOpen && setOpen(null)}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            setOpen(null)
+            setInitialCreateGroup(null)
+          }
+        }}
         currentRow={open === 'update' ? currentRow || undefined : undefined}
+        initialGroup={
+          open === 'create' ? initialCreateGroup || undefined : undefined
+        }
       />
       <ApiKeysDeleteDialog />
       <CCSwitchDialog

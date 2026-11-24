@@ -98,7 +98,7 @@ func GetReferralProfile(c *gin.Context) {
 	redactedAffiliate := redactReferralAffiliateForUser(affiliate)
 	profile := referralProfile{
 		Affiliate: redactedAffiliate, Account: &account,
-		PartnerMinRate: cfg.PartnerMinRate, PartnerMaxRate: cfg.PartnerMaxRate,
+		PartnerMinRate: nil, PartnerMaxRate: nil,
 		FreezeDays: cfg.FreezeDays, MinWithdrawUSD: cfg.MinWithdrawUSD, USDTWithdrawFee: cfg.USDTWithdrawFee,
 		CancelWindowMins: cfg.CancelWindowMinutes, Enabled: cfg.Enabled, SiteOwner: affiliate.SiteOwnerSince > 0,
 	}
@@ -135,17 +135,9 @@ func GetReferralProfile(c *gin.Context) {
 	common.ApiSuccess(c, profile)
 }
 
-// ApplyReferralPartner 申请成为合作伙伴。
+// ApplyReferralPartner 合作伙伴申请已下线（R-34 #2）。
 func ApplyReferralPartner(c *gin.Context) {
-	var body struct {
-		Note string `json:"note"`
-	}
-	_ = common.DecodeJson(c.Request.Body, &body)
-	if err := service.Referral.ApplyPartner(c.GetInt("id"), body.Note); err != nil {
-		writeReferralError(c, err)
-		return
-	}
-	common.ApiSuccess(c, nil)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Partner applications are disabled"))
 }
 
 // GetReferralCommissions 分页列出本人的佣金。

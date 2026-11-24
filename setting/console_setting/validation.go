@@ -92,15 +92,42 @@ const (
 	DefaultModelProbeIntervalMinutes = 10
 	MinModelProbeIntervalMinutes     = 1
 	MaxModelProbeIntervalMinutes     = 60
+	DefaultImageProbeIntervalMinutes = 60
+	MinImageProbeIntervalMinutes     = 15
+	MaxImageProbeIntervalMinutes     = 360
 	DefaultModelProbeTimeoutSeconds  = 15
 	MinModelProbeTimeoutSeconds      = 5
 	MaxModelProbeTimeoutSeconds      = 60
+)
+
+var (
+	validUptimePlatforms = map[string]bool{
+		"":          true,
+		"openai":    true,
+		"anthropic": true,
+		"gemini":    true,
+		"zhipu":     true,
+		"deepseek":  true,
+		"moonshot":  true,
+		"xai":       true,
+		"azure":     true,
+		"other":     true,
+	}
+	validUptimeProbeTypes = map[string]bool{
+		"":      true,
+		"auto":  true,
+		"text":  true,
+		"image": true,
+	}
 )
 
 type UptimeKumaGroup struct {
 	GroupID      string            `json:"groupId,omitempty"`
 	CategoryName string            `json:"categoryName"`
 	Enabled      *bool             `json:"enabled,omitempty"`
+	Platform     string            `json:"platform,omitempty"`
+	ProbeType    string            `json:"probeType,omitempty"`
+	ProbeModel   string            `json:"probeModel,omitempty"`
 	URL          string            `json:"url,omitempty"`
 	Slug         string            `json:"slug,omitempty"`
 	Description  string            `json:"description,omitempty"`
@@ -112,11 +139,32 @@ func (g UptimeKumaGroup) IsEnabled() bool {
 	return g.Enabled == nil || *g.Enabled
 }
 
+func (g UptimeKumaGroup) EffectiveProbeModel() string {
+	if pm := strings.TrimSpace(g.ProbeModel); pm != "" {
+		return pm
+	}
+	for _, m := range g.Models {
+		if trimmed := strings.TrimSpace(m); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func ValidateModelProbeIntervalMinutes(raw string) error {
 	trimmed := strings.TrimSpace(raw)
 	val, err := strconv.Atoi(trimmed)
 	if err != nil || val < MinModelProbeIntervalMinutes || val > MaxModelProbeIntervalMinutes {
 		return common.NewMessage("Model probe interval must be an integer between 1 and 60 minutes")
+	}
+	return nil
+}
+
+func ValidateImageProbeIntervalMinutes(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	val, err := strconv.Atoi(trimmed)
+	if err != nil || val < MinImageProbeIntervalMinutes || val > MaxImageProbeIntervalMinutes {
+		return common.NewMessage("Image probe interval must be an integer between 15 and 360 minutes")
 	}
 	return nil
 }
@@ -140,6 +188,20 @@ func GetModelProbeIntervalMinutes() int {
 	}
 	if val > MaxModelProbeIntervalMinutes {
 		return MaxModelProbeIntervalMinutes
+	}
+	return val
+}
+
+func GetImageProbeIntervalMinutes() int {
+	val := GetConsoleSetting().ImageProbeIntervalMinutes
+	if val <= 0 {
+		return DefaultImageProbeIntervalMinutes
+	}
+	if val < MinImageProbeIntervalMinutes {
+		return MinImageProbeIntervalMinutes
+	}
+	if val > MaxImageProbeIntervalMinutes {
+		return MaxImageProbeIntervalMinutes
 	}
 	return val
 }
@@ -203,6 +265,8 @@ func ValidateConsoleSettings(settingsStr string, settingType string) error {
 	switch settingType {
 	case "ModelProbeIntervalMinutes", "console_setting.model_probe_interval_minutes":
 		return ValidateModelProbeIntervalMinutes(settingsStr)
+	case "ImageProbeIntervalMinutes", "console_setting.image_probe_interval_minutes":
+		return ValidateImageProbeIntervalMinutes(settingsStr)
 	case "ModelProbeTimeoutSeconds", "console_setting.model_probe_timeout_seconds":
 		return ValidateModelProbeTimeoutSeconds(settingsStr)
 	}
@@ -451,6 +515,42 @@ func validateUptimeKumaGroups(groupsStr string) error {
 			}
 		}
 
+		if rawPlatform, exists := group["platform"]; exists && rawPlatform != nil {
+			s, ok := rawPlatform.(string)
+			if !ok {
+				return common.NewMessage("Group #{{index}} has an invalid platform field", map[string]any{"index": index})
+			}
+			platform := strings.ToLower(strings.TrimSpace(s))
+			if !validUptimePlatforms[platform] {
+				return common.NewMessage("Group #{{index}} has an invalid platform value", map[string]any{"index": index})
+			}
+		}
+
+		if rawProbeType, exists := group["probeType"]; exists && rawProbeType != nil {
+			s, ok := rawProbeType.(string)
+			if !ok {
+				return common.NewMessage("Group #{{index}} has an invalid probeType field", map[string]any{"index": index})
+			}
+			probeType := strings.ToLower(strings.TrimSpace(s))
+			if !validUptimeProbeTypes[probeType] {
+				return common.NewMessage("Group #{{index}} has an invalid probeType value", map[string]any{"index": index})
+			}
+		}
+
+		if rawProbeModel, exists := group["probeModel"]; exists && rawProbeModel != nil {
+			s, ok := rawProbeModel.(string)
+			if !ok {
+				return common.NewMessage("Group #{{index}} has an invalid probeModel field", map[string]any{"index": index})
+			}
+			probeModel := strings.TrimSpace(s)
+			if exceedsMaxCharacters(probeModel, 200) {
+				return common.NewMessage("Group #{{index}} probe model name cannot exceed 200 characters", map[string]any{"index": index})
+			}
+			if err := checkDangerousContent(probeModel, index, groupMessages); err != nil {
+				return err
+			}
+		}
+
 		// Legacy url/slug fields are optional and only validated when non-empty.
 		if rawURL, exists := group["url"]; exists && rawURL != nil {
 			s, ok := rawURL.(string)
@@ -582,6 +682,15 @@ func ParseUptimeKumaGroups(groupsStr string) []UptimeKumaGroup {
 	for _, g := range raw {
 		g.GroupID = strings.TrimSpace(g.GroupID)
 		g.CategoryName = strings.TrimSpace(g.CategoryName)
+		g.Platform = strings.ToLower(strings.TrimSpace(g.Platform))
+		if !validUptimePlatforms[g.Platform] {
+			g.Platform = ""
+		}
+		g.ProbeType = strings.ToLower(strings.TrimSpace(g.ProbeType))
+		if !validUptimeProbeTypes[g.ProbeType] {
+			g.ProbeType = ""
+		}
+		g.ProbeModel = strings.TrimSpace(g.ProbeModel)
 		g.URL = strings.TrimSpace(g.URL)
 		g.Slug = strings.TrimSpace(g.Slug)
 		g.Description = strings.TrimSpace(g.Description)
@@ -625,6 +734,12 @@ func ParseUptimeKumaGroups(groupsStr string) []UptimeKumaGroup {
 			}
 		} else {
 			g.Models = nil
+		}
+
+		if g.ProbeModel != "" && len(g.Models) == 0 {
+			g.Models = []string{g.ProbeModel}
+		} else if g.ProbeModel == "" && len(g.Models) > 0 {
+			g.ProbeModel = g.Models[0]
 		}
 
 		if len(g.MonitorMap) > 0 {

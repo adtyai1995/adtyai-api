@@ -170,6 +170,21 @@ export interface ProcessedFlowData {
 // Uptime Monitoring Types
 // ============================================================================
 
+export type UptimePlatform =
+  | 'openai'
+  | 'anthropic'
+  | 'gemini'
+  | 'zhipu'
+  | 'deepseek'
+  | 'moonshot'
+  | 'xai'
+  | 'azure'
+  | 'other'
+
+export type UptimeProbeType = 'text' | 'image'
+
+export type UptimeStatusLabel = 'up' | 'degraded' | 'down' | 'unknown'
+
 export interface UptimeHeartbeat {
   status: number
   time: string
@@ -200,6 +215,17 @@ export interface UptimeGroupResult {
   groupId?: string
   categoryName: string
   description?: string
+  platform?: UptimePlatform
+  probeType?: UptimeProbeType
+  probeModel?: string
+  groupRatio?: number | null
+  status?: number
+  statusLabel?: UptimeStatusLabel
+  uptime?: number | null
+  avgPingMs?: number | null
+  cacheHitRate?: number | null
+  lastCheckedAt?: string | number | null
+  heartbeats?: UptimeHeartbeat[]
   monitors?: UptimeMonitor[]
   models?: UptimeModelStatus[]
 }
@@ -207,6 +233,9 @@ export interface UptimeGroupResult {
 export interface UptimeKumaGroupConfig {
   groupId?: string
   categoryName: string
+  platform?: UptimePlatform
+  probeType?: UptimeProbeType
+  probeModel?: string
   enabled?: boolean
   description?: string
   models?: string[]

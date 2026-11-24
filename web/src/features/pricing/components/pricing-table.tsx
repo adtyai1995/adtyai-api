@@ -26,7 +26,6 @@ import {
   DataTableView,
   useDataTable,
 } from '@/components/data-table'
-import type { UptimeGroupResult } from '@/features/dashboard/types'
 
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
 import type { PricingModel, PricingUsableGroupValue, TokenUnit } from '../types'
@@ -43,7 +42,6 @@ export interface PricingTableProps {
   onModelClick?: (modelName: string) => void
   usableGroups?: string[]
   usableGroup?: Record<string, PricingUsableGroupValue>
-  uptimeGroups?: UptimeGroupResult[]
 }
 
 export function PricingTable(props: PricingTableProps) {
@@ -72,7 +70,6 @@ export function PricingTable(props: PricingTableProps) {
     selectedGroup,
     usableGroups: props.usableGroups,
     usableGroup: props.usableGroup,
-    uptimeGroups: props.uptimeGroups,
   })
 
   const { table } = useDataTable({

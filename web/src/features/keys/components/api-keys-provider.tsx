@@ -35,6 +35,8 @@ type ApiKeysContextType = {
   setOpen: (str: ApiKeysDialogType | null) => void
   currentRow: ApiKey | null
   setCurrentRow: React.Dispatch<React.SetStateAction<ApiKey | null>>
+  initialCreateGroup: string | null
+  setInitialCreateGroup: React.Dispatch<React.SetStateAction<string | null>>
   refreshTrigger: number
   triggerRefresh: () => void
   resolvedKey: string
@@ -54,6 +56,9 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
   const { requestVerification, dialogProps } = useSecureVerification()
   const [open, setOpen] = useDialogState<ApiKeysDialogType>(null)
   const [currentRow, setCurrentRow] = useState<ApiKey | null>(null)
+  const [initialCreateGroup, setInitialCreateGroup] = useState<string | null>(
+    null
+  )
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [resolvedKey, setResolvedKey] = useState('')
 
@@ -190,6 +195,8 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
           setOpen,
           currentRow,
           setCurrentRow,
+          initialCreateGroup,
+          setInitialCreateGroup,
           refreshTrigger,
           triggerRefresh,
           resolvedKey,

@@ -35,14 +35,13 @@ import { toIntlLocale } from '@/i18n/languages'
 import { getOwnerSite, siteOwnerKeys } from './api'
 import { ArchivedAccountsPanel } from './components/archived-accounts-panel'
 import { BonusPanel } from './components/bonus-panel'
-import { CommissionWithdrawalPanel } from './components/commission-withdrawal-panel'
 import { CustomersPanel } from './components/customers-panel'
 import { EarningsPanel } from './components/earnings-panel'
 import { OverviewPanel } from './components/overview-panel'
 import { OwnerVerificationProvider } from './components/owner-verification'
 import { PricingPanel } from './components/pricing-panel'
 import { SettlementSheetPanel } from './components/settlement-sheet-panel'
-import { SiteReferralPanel } from './components/site-referral-panel'
+import { SiteReferralAdmin } from './components/site-referral-admin'
 import { SiteSettingsPanel } from './components/site-settings-panel'
 import { StaffPanel } from './components/staff-panel'
 import { VoucherPanel } from './components/voucher-panel'
@@ -146,12 +145,7 @@ export function SiteOwnerCenter(props: {
                   <PricingPanel site={site.data} />
                 )}
                 {props.section === 'bonus' && <BonusPanel site={site.data} />}
-                {props.section === 'commissions' && (
-                  <div className='flex flex-col gap-6'>
-                    <SiteReferralPanel />
-                    <CommissionWithdrawalPanel />
-                  </div>
-                )}
+                {props.section === 'commissions' && <SiteReferralAdmin />}
                 {props.section === 'earnings' && <EarningsPanel />}
                 {props.section === 'withdrawals' && (
                   <WithdrawalPanel

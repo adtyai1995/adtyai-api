@@ -27,16 +27,13 @@ import {
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
 import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
-import type { UptimeGroupResult } from '@/features/dashboard/types'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
 import { parseTags } from '../lib/filters'
 import { resolvePricingGroupName } from '../lib/model-helpers'
-import { resolveModelUptimeForPricing } from '../lib/uptime'
 import type { PricingModel, PricingUsableGroupValue } from '../types'
 import { CachedPriceCell } from './cached-price-cell'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
-import { ModelConnectivityBadge } from './model-connectivity-badge'
 import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
 
 // ----------------------------------------------------------------------------
@@ -48,8 +45,6 @@ export type PricingColumnsOptions = ModelPriceCellOptions & {
   usableGroups?: string[]
   /** Group metadata map from `/api/pricing` used as real-name fallback. */
   usableGroup?: Record<string, PricingUsableGroupValue>
-  /** 24h model connectivity status groups used for per-model cells. */
-  uptimeGroups?: UptimeGroupResult[]
 }
 
 export function usePricingColumns(
@@ -81,22 +76,6 @@ export function usePricingColumns(
         )
       },
       minSize: 170,
-    },
-
-    // 24h Connectivity column
-    {
-      id: 'connectivity',
-      header: t('Connectivity (24h)'),
-      cell: ({ row }) => {
-        const uptime = resolveModelUptimeForPricing(
-          options.uptimeGroups ?? [],
-          row.original,
-          options.selectedGroup
-        )
-        return <ModelConnectivityBadge uptime={uptime} variant='table' />
-      },
-      size: 156,
-      enableSorting: false,
     },
 
     // Type column

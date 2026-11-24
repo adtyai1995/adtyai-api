@@ -305,7 +305,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               requiredPermission: ADTY_PERMISSIONS.LOG_READ,
             },
             {
-              title: t('Model Status'),
+              title: t('Channel Status'),
               url: '/model-status',
               icon: Activity,
             },

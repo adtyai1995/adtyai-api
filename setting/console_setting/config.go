@@ -10,6 +10,7 @@ type ConsoleSetting struct {
 	UptimeKumaBaseURL         string `json:"uptime_kuma_base_url"`         // 历史兼容字段（不再轮询外部 Uptime Kuma）
 	UptimeKumaGroups          string `json:"uptime_kuma_groups"`           // 模型探活分组配置 (JSON 数组字符串)
 	ModelProbeIntervalMinutes int    `json:"model_probe_interval_minutes"` // 内置模型探活间隔（分钟，1-60）
+	ImageProbeIntervalMinutes int    `json:"image_probe_interval_minutes"` // 内置图像模型探活间隔（分钟，15-360）
 	ModelProbeTimeoutSeconds  int    `json:"model_probe_timeout_seconds"`  // 内置模型探活单次超时（秒，5-60）
 	Announcements             string `json:"announcements"`                // 系统公告 (JSON 数组字符串)
 	FAQ                       string `json:"faq"`                          // 常见问题 (JSON 数组字符串)
@@ -25,6 +26,7 @@ var defaultConsoleSetting = ConsoleSetting{
 	UptimeKumaBaseURL:         "",
 	UptimeKumaGroups:          "",
 	ModelProbeIntervalMinutes: 10,
+	ImageProbeIntervalMinutes: 60,
 	ModelProbeTimeoutSeconds:  15,
 	Announcements:             "",
 	FAQ:                       "",

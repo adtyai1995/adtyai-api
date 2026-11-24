@@ -600,6 +600,12 @@ func UpdateOption(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	case "console_setting.image_probe_interval_minutes":
+		err = console_setting.ValidateImageProbeIntervalMinutes(option.Value.(string))
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	case "console_setting.model_probe_timeout_seconds":
 		err = console_setting.ValidateModelProbeTimeoutSeconds(option.Value.(string))
 		if err != nil {
@@ -748,6 +754,7 @@ func UpdateOption(c *gin.Context) {
 		"console_setting.uptime_kuma_groups",
 		"console_setting.uptime_kuma_base_url",
 		"console_setting.model_probe_interval_minutes",
+		"console_setting.image_probe_interval_minutes",
 		"console_setting.model_probe_timeout_seconds":
 		InvalidateUptimeStatusCache()
 	}

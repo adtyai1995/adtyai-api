@@ -30,6 +30,7 @@ const defaultContentSettings: ContentSettings = {
   'console_setting.faq': '[]',
   'console_setting.uptime_kuma_groups': '[]',
   'console_setting.model_probe_interval_minutes': 10,
+  'console_setting.image_probe_interval_minutes': 60,
   'console_setting.model_probe_timeout_seconds': 15,
   'console_setting.api_info_enabled': true,
   'console_setting.announcements_enabled': true,

@@ -272,11 +272,8 @@ func collectAdtyReferralAdminBadgeCounts(counts map[string]int64, actor adtyTick
 		return countScoped(query)
 	}
 	if can(authz.AdtyReferralReview) {
-		partners, err := runCount(AdtyBadgeReferralPartners, badgeAfterSeen(scopeReferralUserQuery(model.DB.Model(&model.ReferralAffiliate{}).Where("partner_status = ?", model.ReferralPartnerStatusPending), "user_id", siteID), "updated_at", seenMap[AdtyBadgeReferralPartners]))
-		if err != nil {
-			return err
-		}
-		counts[AdtyBadgeReferralPartners] = partners
+		// Main-site partner applications are retired (R-34 #2); keep badge at 0.
+		counts[AdtyBadgeReferralPartners] = 0
 	}
 	for _, duty := range []struct {
 		permission    authz.Permission

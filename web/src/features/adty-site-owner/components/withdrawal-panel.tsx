@@ -17,8 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { X } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -29,12 +28,16 @@ import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from '@/components/ui/native-select'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { siteWithdrawalStatusLabel } from '@/features/adty-ledger/site-wallet-labels'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import {
+  ADDRESS_HINTS,
+  isValidUsdtAddress,
+  USDT_NETWORKS,
+  usdtNetworkLabel,
+  type UsdtNetwork,
+} from '@/features/referral/lib/address'
 import { useWithdrawalIntent } from '@/features/wallet/adty/use-withdrawal-intent'
 import { WithdrawalRecovery } from '@/features/wallet/adty/withdrawal-recovery'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
@@ -48,13 +51,11 @@ import {
   getSiteWithdrawRules,
   OWNER_PAGE_SIZE,
   siteOwnerKeys,
-  uploadOwnerWithdrawalQR,
   type SiteWithdrawal,
 } from '../api'
-import { canonicalReferralAssetUrl } from '../lib/site-owner'
 import { useOwnerVerification } from './owner-verification'
 
-const NETWORKS = ['TRC20', 'BEP20', 'POLYGON', 'XLAYER'] as const
+const WITHDRAWAL_METHOD = 'usdt' as const
 
 function withdrawalMethodLabel(
   method: string,
@@ -83,7 +84,6 @@ export function WithdrawalPanel({
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const owner = useOwnerVerification()
-  const qrInputRef = useRef<HTMLInputElement | null>(null)
   const rules = useQuery({
     queryKey: siteOwnerKeys.list('withdraw-rules', { siteId }),
     queryFn: () => getSiteWithdrawRules(siteId),
@@ -101,11 +101,8 @@ export function WithdrawalPanel({
     queryFn: () => getSiteWithdrawals(siteId, page, status, number),
   })
   const [amount, setAmount] = useState('')
-  const [method, setMethod] = useState<'alipay' | 'usdt'>('alipay')
-  const [network, setNetwork] = useState<(typeof NETWORKS)[number]>('TRC20')
+  const [network, setNetwork] = useState<UsdtNetwork>('TRC20')
   const [accountNo, setAccountNo] = useState('')
-  const [accountName, setAccountName] = useState('')
-  const [qrImageUrl, setQrImageUrl] = useState('')
   const [confirmedQuote, setConfirmedQuote] = useState('')
   const originalSite = siteId ?? activeSiteId ?? 0
   const intent = useWithdrawalIntent(
@@ -118,26 +115,21 @@ export function WithdrawalPanel({
     queryKey: siteOwnerKeys.list('withdrawal-quote', {
       siteId,
       amount,
-      method,
+      method: WITHDRAWAL_METHOD,
       fee: rules.data?.fee_usd,
-      rate:
-        method === 'usdt'
-          ? rules.data?.usdt_usd_rate
-          : rules.data?.alipay_cny_rate,
+      rate: rules.data?.usdt_usd_rate,
     }),
     enabled: Boolean(rules.data?.configured) && Number(amount) > 0,
     retry: false,
-    queryFn: () => getSiteWithdrawalQuote(amount, method, siteId),
+    queryFn: () => getSiteWithdrawalQuote(amount, WITHDRAWAL_METHOD, siteId),
   })
   const quoteSignature = quote.data
     ? JSON.stringify([
         originalSite,
         amount,
-        method,
+        WITHDRAWAL_METHOD,
         rules.data?.fee_usd,
-        method === 'usdt'
-          ? rules.data?.usdt_usd_rate
-          : rules.data?.alipay_cny_rate,
+        rules.data?.usdt_usd_rate,
         quote.data,
       ])
     : ''
@@ -146,47 +138,30 @@ export function WithdrawalPanel({
     setConfirmedQuote('')
     setAmount('')
     setAccountNo('')
-    setAccountName('')
-    setQrImageUrl('')
-    if (qrInputRef.current) qrInputRef.current.value = ''
   }
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
     void invalidateSidebarBadges(queryClient)
   }
 
-  const uploadQr = useMutation({
-    mutationFn: (file: File) => uploadOwnerWithdrawalQR(file),
-    onSuccess: (url) => {
-      setQrImageUrl(url)
-      setConfirmedQuote('')
-      toast.success(t('Payment QR code uploaded'))
-    },
-    onError: (err) => handleServerError(err),
-  })
-
   const submit = useMutation({
     mutationFn: async () => {
-      const rate =
-        method === 'usdt'
-          ? rules.data?.usdt_usd_rate
-          : rules.data?.alipay_cny_rate
+      const rate = rules.data?.usdt_usd_rate
       if (!rate) throw new Error(t('Withdrawal rules are not set'))
-      const effectiveQr = method === 'alipay' ? qrImageUrl.trim() : ''
       const payload = {
         amount_usd: amount,
-        method,
-        network: method === 'usdt' ? network : '',
+        method: WITHDRAWAL_METHOD,
+        network,
         account_no: accountNo.trim(),
-        account_name: accountName.trim(),
-        qr_image_url: effectiveQr,
+        account_name: '',
+        qr_image_url: '',
         expected_rate: rate,
         expected_payout: quote.data,
       }
       const hadSaved = Boolean(intent.saved)
       const key = await intent.prepare({
         amount,
-        method,
+        method: WITHDRAWAL_METHOD,
         quote: quoteSignature,
       })
       if (!key) return false
@@ -196,7 +171,7 @@ export function WithdrawalPanel({
         network: payload.network,
         account_no: payload.account_no,
         account_name: payload.account_name,
-        qr_image_url: canonicalReferralAssetUrl(payload.qr_image_url),
+        qr_image_url: '',
         expected_rate: payload.expected_rate,
         idempotency_key: key,
       })
@@ -235,13 +210,12 @@ export function WithdrawalPanel({
   })
 
   const configured = rules.data?.configured === true
-  const rate =
-    method === 'usdt' ? rules.data?.usdt_usd_rate : rules.data?.alipay_cny_rate
-  const payeeReady =
-    method === 'usdt'
-      ? accountNo.trim() !== ''
-      : accountName.trim() !== '' &&
-        (accountNo.trim() !== '' || qrImageUrl.trim() !== '')
+  const rate = rules.data?.usdt_usd_rate
+  const trimmedAddress = accountNo.trim()
+  const addressValid =
+    trimmedAddress !== '' && isValidUsdtAddress(network, trimmedAddress)
+  const addressInvalid = trimmedAddress !== '' && !addressValid
+  const payeeReady = addressValid
   const historyRows = list.data?.items ?? []
 
   return (
@@ -321,123 +295,50 @@ export function WithdrawalPanel({
               />
             </div>
             <div className='flex flex-col gap-2'>
-              <Label htmlFor='withdraw-method'>{t('Method')}</Label>
+              <Label htmlFor='withdraw-network'>{t('Network')}</Label>
               <NativeSelect
-                id='withdraw-method'
-                value={method}
-                onChange={(event) => {
-                  const next =
-                    event.target.value === 'usdt' ? 'usdt' : 'alipay'
-                  setMethod(next)
-                  if (next === 'usdt') {
-                    setQrImageUrl('')
-                    if (qrInputRef.current) qrInputRef.current.value = ''
-                  }
-                }}
+                id='withdraw-network'
+                value={network}
+                onChange={(event) =>
+                  setNetwork(event.target.value as UsdtNetwork)
+                }
               >
-                <NativeSelectOption value='alipay'>
-                  {t('Alipay')}
-                </NativeSelectOption>
-                <NativeSelectOption value='usdt'>USDT</NativeSelectOption>
+                {USDT_NETWORKS.map((item) => (
+                  <NativeSelectOption key={item} value={item}>
+                    {`USDT (${usdtNetworkLabel(item)})`}
+                  </NativeSelectOption>
+                ))}
               </NativeSelect>
             </div>
-            {method === 'usdt' && (
-              <div className='flex flex-col gap-2'>
-                <Label htmlFor='withdraw-network'>{t('Network')}</Label>
-                <NativeSelect
-                  id='withdraw-network'
-                  value={network}
-                  onChange={(event) =>
-                    setNetwork(event.target.value as (typeof NETWORKS)[number])
-                  }
-                >
-                  {NETWORKS.map((item) => (
-                    <NativeSelectOption key={item} value={item}>
-                      {item === 'XLAYER' ? 'X Layer' : item}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </div>
-            )}
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor='withdraw-account'>
-                {method === 'alipay'
-                  ? t('Alipay account (optional if QR uploaded)')
-                  : t('Account')}
-              </Label>
+            <div className='flex flex-col gap-2 sm:col-span-2'>
+              <Label htmlFor='withdraw-account'>{t('USDT address')}</Label>
               <Input
                 id='withdraw-account'
+                className='font-mono'
                 value={accountNo}
+                placeholder={t(ADDRESS_HINTS[network])}
+                aria-invalid={addressInvalid}
                 onChange={(event) => setAccountNo(event.target.value)}
-                required={method === 'usdt' || qrImageUrl === ''}
+                required
               />
-            </div>
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor='withdraw-name'>{t('Payee name')}</Label>
-              <Input
-                id='withdraw-name'
-                value={accountName}
-                onChange={(event) => setAccountName(event.target.value)}
-                required={method === 'alipay'}
-              />
-            </div>
-            {method === 'alipay' && (
-              <div className='flex flex-col gap-2 sm:col-span-2'>
-                <Label htmlFor='withdraw-alipay-qr'>
-                  {t('Alipay payment QR code')}
-                </Label>
-                <Input
-                  ref={qrInputRef}
-                  id='withdraw-alipay-qr'
-                  type='file'
-                  accept='image/png,image/jpeg,image/webp'
-                  disabled={uploadQr.isPending || submit.isPending}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (file) uploadQr.mutate(file)
-                  }}
-                />
+              {addressInvalid ? (
+                <p className='text-destructive text-xs' role='alert'>
+                  {t('The address does not match the {{network}} network', {
+                    network: usdtNetworkLabel(network),
+                  })}
+                </p>
+              ) : (
                 <p className='text-muted-foreground text-xs'>
                   {t(
-                    'PNG, JPEG or WebP, up to 5 MB. Provide an Alipay account or upload a payment QR code (or both).'
+                    'TRC20 addresses start with T; BEP20, Polygon, and X Layer addresses start with 0x.'
                   )}
                 </p>
-                {qrImageUrl && (
-                  <div className='flex items-start gap-3 pt-1'>
-                    <a
-                      href={qrImageUrl}
-                      target='_blank'
-                      rel='noopener noreferrer'
-                    >
-                      <img
-                        src={qrImageUrl}
-                        alt={t('Payment QR code')}
-                        className='h-32 w-32 rounded-lg border object-contain'
-                      />
-                    </a>
-                    <Button
-                      type='button'
-                      size='sm'
-                      variant='outline'
-                      disabled={submit.isPending}
-                      onClick={() => {
-                        setQrImageUrl('')
-                        setConfirmedQuote('')
-                        if (qrInputRef.current) qrInputRef.current.value = ''
-                      }}
-                    >
-                      <X className='size-3.5' aria-hidden />
-                      {t('Clear')}
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
+              )}
+            </div>
           </div>
           {quote.data && (
             <p className='text-sm font-medium tabular-nums'>
-              {t('Payout amount')} · {quote.data}{' '}
-              {method === 'alipay' ? 'CNY' : 'USDT'}
+              {t('Payout amount')} · {quote.data} USDT
             </p>
           )}
           {quote.isError && <ErrorState onRetry={() => void quote.refetch()} />}
@@ -451,7 +352,10 @@ export function WithdrawalPanel({
               }
             />
             <span>
-              {t('I confirm the payee details before this request is frozen.')}
+              {t('I confirm the payee details before this request is frozen.')}{' '}
+              <span className='text-muted-foreground'>
+                {t('A wrong network or address cannot be recovered.')}
+              </span>
             </span>
           </label>
           <div>
@@ -459,11 +363,7 @@ export function WithdrawalPanel({
               variant='brand'
               type='submit'
               disabled={
-                !confirmed ||
-                !quote.data ||
-                !payeeReady ||
-                uploadQr.isPending ||
-                submit.isPending
+                !confirmed || !quote.data || !payeeReady || submit.isPending
               }
             >
               {t('Submit withdrawal')}
@@ -518,7 +418,10 @@ export function WithdrawalPanel({
             data={historyRows}
             getRowKey={(row: SiteWithdrawal) => String(row.id)}
             emptyContent={
-              <EmptyState className='min-h-24' title={t('No withdrawals yet')} />
+              <EmptyState
+                className='min-h-24'
+                title={t('No withdrawals yet')}
+              />
             }
             columns={[
               {
@@ -563,7 +466,7 @@ export function WithdrawalPanel({
                       <span className='font-medium'>
                         {withdrawalMethodLabel(row.method, t)}
                         {row.method === 'usdt' && row.network
-                          ? ` · ${row.network}`
+                          ? ` (${usdtNetworkLabel(row.network)})`
                           : ''}
                       </span>
                       {row.account_no && (

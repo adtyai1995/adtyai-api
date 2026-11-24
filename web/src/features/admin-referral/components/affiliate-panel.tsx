@@ -20,7 +20,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { Dialog } from '@/components/dialog'
@@ -33,21 +32,16 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import type { ReferralAffiliate } from '@/features/referral/types'
-import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
-import { useAuthStore } from '@/stores/auth-store'
 
 import {
   ADMIN_REFERRAL_PAGE_SIZE,
   adminReferralKeys,
   getAffiliates,
-  getReferralSettings,
-  reviewPartner,
   updateAffiliate,
   type AffiliateAction,
 } from '../api'
-
-type Editing = { affiliate: ReferralAffiliate; mode: 'partner' | 'adjust' }
 
 function AffiliateState(props: { affiliate: ReferralAffiliate }) {
   const { t } = useTranslation()
@@ -56,12 +50,6 @@ function AffiliateState(props: { affiliate: ReferralAffiliate }) {
     <div className='flex flex-wrap gap-1'>
       {affiliate.status === 'disabled' && (
         <StatusBadge label={t('Disabled')} variant='neutral' />
-      )}
-      {affiliate.partner_status === 'approved' && (
-        <StatusBadge label={t('Partner')} variant='success' />
-      )}
-      {affiliate.partner_status === 'pending' && (
-        <StatusBadge label={t('Partner application')} variant='warning' />
       )}
       {!affiliate.settlement_enabled && (
         <StatusBadge label={t('Settlement frozen')} variant='danger' />
@@ -76,35 +64,20 @@ function AffiliateState(props: { affiliate: ReferralAffiliate }) {
   )
 }
 
-export function AffiliatePanel(props: {
-  canReview: boolean
-  canAdjust: boolean
-  partnerOnly?: boolean
-}) {
+export function AffiliatePanel(props: { canAdjust: boolean }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
   const [search, setSearch] = useState('')
-  const [editing, setEditing] = useState<Editing | null>(null)
+  const [editing, setEditing] = useState<ReferralAffiliate | null>(null)
   const [rate, setRate] = useState('')
   const [amount, setAmount] = useState('')
   const [adjustKey, setAdjustKey] = useState(() => crypto.randomUUID())
   const [reason, setReason] = useState('')
-  const user = useAuthStore((state) => state.auth.user)
-  const canReadSettings = canAdmin(user, ADTY_PERMISSIONS.REFERRAL_SETTINGS_READ)
-  const settingsQuery = useQuery({
-    queryKey: adminReferralKeys.settings,
-    queryFn: getReferralSettings,
-    enabled: canReadSettings,
-    meta: { errorToast: false },
-  })
-  const partnerMinRate = settingsQuery.data?.partner_min_rate ?? 0
-  const partnerMaxRate = settingsQuery.data?.partner_max_rate ?? 100
   const params = {
     p: page,
     keyword: search,
-    partner_status: props.partnerOnly ? 'pending' : '',
   }
   const query = useQuery({
     queryKey: adminReferralKeys.list('affiliates', params),
@@ -120,16 +93,6 @@ export function AffiliatePanel(props: {
     void queryClient.invalidateQueries({ queryKey: adminReferralKeys.all })
     void invalidateSidebarBadges(queryClient)
   }
-  const partner = useMutation({
-    mutationFn: (approve: boolean) =>
-      reviewPartner(editing?.affiliate.user_id ?? 0, {
-        approve,
-        rate: approve ? rate : undefined,
-        reason,
-      }),
-    onSuccess: done,
-    onError: (err) => handleServerError(err),
-  })
   // An empty own rate goes back to the default rate.
   const ownRate = rate === '' ? null : Number(rate)
   const update = useMutation({
@@ -157,25 +120,25 @@ export function AffiliatePanel(props: {
   return (
     <div className='flex flex-col gap-3'>
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-      {!props.partnerOnly && (
-        <form
-          className='flex gap-2'
-          onSubmit={(event) => {
-            event.preventDefault()
-            setSearch(keyword.trim())
-            setPage(1)
-          }}
-        >
-          <Input
-            className='w-64'
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            placeholder={t('Invite code or username')}
-            aria-label={t('Search')}
-          />
-          <Button variant='brand' type='submit'>{t('Search')}</Button>
-        </form>
-      )}
+      <form
+        className='flex gap-2'
+        onSubmit={(event) => {
+          event.preventDefault()
+          setSearch(keyword.trim())
+          setPage(1)
+        }}
+      >
+        <Input
+          className='w-64'
+          value={keyword}
+          onChange={(event) => setKeyword(event.target.value)}
+          placeholder={t('Invite code or username')}
+          aria-label={t('Search')}
+        />
+        <Button variant='brand' type='submit'>
+          {t('Search')}
+        </Button>
+      </form>
       <StaticDataTable
         tableClassName='min-w-[900px]'
         tableProps={{ 'aria-label': t('Affiliates') }}
@@ -207,7 +170,7 @@ export function AffiliatePanel(props: {
             header: t('Risk'),
             cell: (row) => (
               <span className='text-muted-foreground text-xs'>
-                {row.risk_note || row.applicant_note || '-'}
+                {row.risk_note || '-'}
               </span>
             ),
           },
@@ -218,23 +181,11 @@ export function AffiliatePanel(props: {
             cellClassName: 'text-right',
             cell: (row) => (
               <div className='flex justify-end gap-1'>
-                {props.canReview && row.partner_status === 'pending' && (
-                  <Button
-                    size='sm'
-                    onClick={() =>
-                      setEditing({ affiliate: row, mode: 'partner' })
-                    }
-                  >
-                    {t('Review')}
-                  </Button>
-                )}
                 {props.canAdjust && (
                   <Button
                     size='sm'
                     variant='outline'
-                    onClick={() =>
-                      setEditing({ affiliate: row, mode: 'adjust' })
-                    }
+                    onClick={() => setEditing(row)}
                   >
                     {t('Adjust')}
                   </Button>
@@ -252,66 +203,11 @@ export function AffiliatePanel(props: {
       />
 
       <Dialog
-        open={editing?.mode === 'partner'}
-        onOpenChange={(open) => !open && setEditing(null)}
-        title={t('Partner application')}
-        description={editing?.affiliate.applicant_note}
-        footer={
-          <>
-            <Button
-              variant='outline'
-              disabled={partner.isPending || reason.trim() === ''}
-              onClick={() => partner.mutate(false)}
-            >
-              {t('Reject')}
-            </Button>
-            <Button
-              disabled={partner.isPending || rate === ''}
-              onClick={() => partner.mutate(true)}
-            >
-              {t('Approve')}
-            </Button>
-          </>
-        }
-      >
-        <div className='space-y-4'>
-          <div className='space-y-2'>
-            <Label htmlFor='partner-rate'>{t('Partner rate (%)')}</Label>
-            <Input
-              id='partner-rate'
-              type='number'
-              min={partnerMinRate}
-              max={partnerMaxRate}
-              step='0.1'
-              value={rate}
-              onChange={(event) => setRate(event.target.value)}
-            />
-            <p className='text-muted-foreground text-xs'>
-              {t('Allowed range: {{min}}%–{{max}}%', {
-                min: partnerMinRate,
-                max: partnerMaxRate,
-              })}
-            </p>
-          </div>
-          <div className='space-y-2'>
-            <Label htmlFor='partner-reason'>{t('Reason')}</Label>
-            <Input
-              id='partner-reason'
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </div>
-        </div>
-      </Dialog>
-
-      <Dialog
-        open={editing?.mode === 'adjust'}
+        open={editing !== null}
         onOpenChange={(open) => !open && setEditing(null)}
         title={t('Adjust affiliate')}
         description={
-          editing
-            ? `#${editing.affiliate.user_id} · ${editing.affiliate.invite_code}`
-            : ''
+          editing ? `#${editing.user_id} · ${editing.invite_code}` : ''
         }
       >
         {editing && (
@@ -338,7 +234,7 @@ export function AffiliatePanel(props: {
                   onChange={(event) => setRate(event.target.value)}
                 />
               </div>
-              <Button onClick={() => act(editing.affiliate, 'rate')}>
+              <Button onClick={() => act(editing, 'rate')}>
                 {t('Set rate')}
               </Button>
             </div>
@@ -360,7 +256,7 @@ export function AffiliatePanel(props: {
                 disabled={
                   update.isPending || amount === '' || reason.trim() === ''
                 }
-                onClick={() => act(editing.affiliate, 'adjust')}
+                onClick={() => act(editing, 'adjust')}
               >
                 {t('Apply')}
               </Button>
@@ -370,45 +266,41 @@ export function AffiliatePanel(props: {
               value=''
               onChange={(event) => {
                 if (event.target.value) {
-                  act(editing.affiliate, event.target.value as AffiliateAction)
+                  act(editing, event.target.value as AffiliateAction)
                 }
               }}
             >
               <option value=''>{t('More actions')}</option>
               <option
-                value={
-                  editing.affiliate.status === 'disabled'
-                    ? 'restore'
-                    : 'disable'
-                }
+                value={editing.status === 'disabled' ? 'restore' : 'disable'}
               >
-                {editing.affiliate.status === 'disabled'
+                {editing.status === 'disabled'
                   ? t('Restore affiliate')
                   : t('Disable affiliate')}
               </option>
               <option
                 value={
-                  editing.affiliate.settlement_enabled
+                  editing.settlement_enabled
                     ? 'freeze_settlement'
                     : 'restore_settlement'
                 }
               >
-                {editing.affiliate.settlement_enabled
+                {editing.settlement_enabled
                   ? t('Freeze settlement')
                   : t('Restore settlement')}
               </option>
               <option
                 value={
-                  editing.affiliate.withdrawal_enabled
+                  editing.withdrawal_enabled
                     ? 'freeze_withdrawal'
                     : 'restore_withdrawal'
                 }
               >
-                {editing.affiliate.withdrawal_enabled
+                {editing.withdrawal_enabled
                   ? t('Freeze withdrawals')
                   : t('Restore withdrawals')}
               </option>
-              {editing.affiliate.site_owner_since > 0 && (
+              {editing.site_owner_since > 0 && (
                 <option value='restore_referral'>
                   {t('Restore referral commission')}
                 </option>

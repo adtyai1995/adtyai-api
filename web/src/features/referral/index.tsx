@@ -30,7 +30,6 @@ import { toIntlLocale } from '@/i18n/languages'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getReferralProfile, referralQueryKeys } from './api'
-import { PartnerCard } from './components/partner-card'
 import { ReferralLinkCard } from './components/referral-link-card'
 import { ReferralStats } from './components/referral-stats'
 import { CommissionTable, WithdrawalTable } from './components/referral-tables'
@@ -138,7 +137,6 @@ export function Referral() {
               profile={profile}
               onWithdraw={() => setWithdrawing(true)}
             />
-            <PartnerCard affiliate={profile.affiliate} onApplied={refresh} />
             <Tabs defaultValue='commissions'>
               <TabsList>
                 <TabsTrigger value='commissions'>

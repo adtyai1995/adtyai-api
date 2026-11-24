@@ -21,11 +21,8 @@ import { memo, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import type { UptimeGroupResult } from '@/features/dashboard/types'
 
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
-import { useUptimeStatus } from '../hooks/use-uptime-status'
-import { resolveModelUptimeForPricing } from '../lib/uptime'
 import type { PricingModel, PricingUsableGroupValue, TokenUnit } from '../types'
 import { ModelCard } from './model-card'
 
@@ -39,7 +36,6 @@ export interface ModelCardGridProps {
   selectedGroup?: string
   usableGroups?: string[]
   usableGroup?: Record<string, PricingUsableGroupValue>
-  uptimeGroups?: UptimeGroupResult[]
 }
 
 export const ModelCardGrid = memo(function ModelCardGrid(
@@ -51,11 +47,6 @@ export const ModelCardGrid = memo(function ModelCardGrid(
   const tokenUnit = props.tokenUnit ?? DEFAULT_TOKEN_UNIT
   const totalPages = Math.max(1, Math.ceil(props.models.length / pageSize))
   const currentPage = Math.min(page, totalPages)
-
-  const uptimeQuery = useUptimeStatus({
-    enabled: props.uptimeGroups === undefined,
-  })
-  const effectiveUptimeGroups = props.uptimeGroups ?? uptimeQuery.groups
 
   const pagedModels = useMemo(() => {
     const start = (currentPage - 1) * pageSize
@@ -80,11 +71,6 @@ export const ModelCardGrid = memo(function ModelCardGrid(
             selectedGroup={props.selectedGroup}
             usableGroups={props.usableGroups}
             usableGroup={props.usableGroup}
-            uptime={resolveModelUptimeForPricing(
-              effectiveUptimeGroups,
-              model,
-              props.selectedGroup
-            )}
             onClick={props.onModelClick}
           />
         ))}

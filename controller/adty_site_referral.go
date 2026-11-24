@@ -557,6 +557,75 @@ func PutAdtyOwnerSiteTeamDiscount(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"updated": true, "discount": decimal.RequireFromString(strings.TrimSpace(body.Discount)).String()})
 }
 
+func adtySiteReferralPageQuery(c *gin.Context) *common.PageInfo {
+	page := common.GetPageQuery(c)
+	if strings.TrimSpace(c.Query("p")) == "" {
+		if raw := strings.TrimSpace(c.Query("page")); raw != "" {
+			if p, err := strconv.Atoi(raw); err == nil && p >= 1 {
+				page.Page = p
+			}
+		}
+	}
+	return page
+}
+
+func GetAdtyOwnerSiteReferralOverview(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	overview, err := service.LoadAdtyOwnerSiteReferralOverview(site.Id, time.Now())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, overview)
+}
+
+func GetAdtyOwnerSiteReferralAffiliates(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	page := adtySiteReferralPageQuery(c)
+	items, total, err := service.ListAdtyOwnerSiteReferralAffiliates(site.Id, c.Query("q"), page.GetStartIdx(), page.GetPageSize(), time.Now())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"items":     items,
+		"total":     total,
+		"page":      page.GetPage(),
+		"page_size": page.GetPageSize(),
+	})
+}
+
+func GetAdtyOwnerSiteReferralCommissions(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	page := adtySiteReferralPageQuery(c)
+	items, total, err := service.ListAdtyOwnerSiteReferralCommissions(site.Id, c.Query("status"), c.Query("q"), page.GetStartIdx(), page.GetPageSize(), time.Now())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"items":     items,
+		"total":     total,
+		"page":      page.GetPage(),
+		"page_size": page.GetPageSize(),
+	})
+}
+
+type adtyOwnerSiteInviteItem struct {
+	model.AdtySiteInvite
+	InviterUsername string `json:"inviter_username"`
+	InviteeUsername string `json:"invitee_username"`
+}
+
 func GetAdtyOwnerSiteInvites(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {
@@ -567,7 +636,34 @@ func GetAdtyOwnerSiteInvites(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": rows})
+	ids := make([]int, 0, len(rows)*2)
+	seen := make(map[int]struct{}, len(rows)*2)
+	for _, row := range rows {
+		for _, id := range []int{row.InviterId, row.InviteeId} {
+			if id <= 0 {
+				continue
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	names, err := adtyUsernamesByID(ids)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	items := make([]adtyOwnerSiteInviteItem, len(rows))
+	for i, row := range rows {
+		items[i] = adtyOwnerSiteInviteItem{
+			AdtySiteInvite:  row,
+			InviterUsername: names[row.InviterId],
+			InviteeUsername: names[row.InviteeId],
+		}
+	}
+	common.ApiSuccess(c, gin.H{"items": items})
 }
 
 func PostAdtyOwnerSiteInvite(c *gin.Context) {

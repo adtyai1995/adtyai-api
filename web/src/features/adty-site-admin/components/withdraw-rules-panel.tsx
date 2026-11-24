@@ -1,7 +1,3 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -20,6 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -42,25 +42,18 @@ export function WithdrawRulesPanel() {
   })
   const [minUsd, setMinUsd] = useState<string>()
   const [feeUsd, setFeeUsd] = useState<string>()
-  const [alipayRate, setAlipayRate] = useState<string>()
   const [usdtRate, setUsdtRate] = useState<string>()
   const save = useMutation({
     mutationFn: () =>
       saveAdminWithdrawRules({
         min_usd: (minUsd ?? current.data?.min_usd ?? '').trim(),
         fee_usd: (feeUsd ?? current.data?.fee_usd ?? '').trim(),
-        alipay_cny_rate: (
-          alipayRate ??
-          current.data?.alipay_cny_rate ??
-          ''
-        ).trim(),
         usdt_usd_rate: (usdtRate ?? current.data?.usdt_usd_rate ?? '').trim(),
       }),
     onSuccess: async () => {
       await current.refetch()
       setMinUsd(undefined)
       setFeeUsd(undefined)
-      setAlipayRate(undefined)
       setUsdtRate(undefined)
     },
     onError: (error) => handleServerError(error),
@@ -74,18 +67,22 @@ export function WithdrawRulesPanel() {
     [
       minUsd ?? current.data.min_usd,
       feeUsd ?? current.data.fee_usd,
-      alipayRate ?? current.data.alipay_cny_rate,
       usdtRate ?? current.data.usdt_usd_rate,
     ].every((value) => !!value?.trim())
   return (
     <section className='flex flex-col gap-3'>
       <h2 className='text-sm font-medium'>{t('Withdrawal rules')}</h2>
-      <p className='text-muted-foreground text-sm'>
-        {t('These figures apply only to new owner withdrawal requests.')}
-      </p>
-      <div className='grid gap-3 sm:grid-cols-2'>
+      <div className='text-muted-foreground flex flex-col gap-1 text-sm'>
+        <p>{t('These figures apply only to new owner withdrawal requests.')}</p>
+        <p>
+          {t(
+            'Site owner earnings withdrawals are paid in USDT (TRC20 / BEP20 / Polygon / X Layer).'
+          )}
+        </p>
+      </div>
+      <div className='grid gap-3 sm:grid-cols-3'>
         <div className='flex flex-col gap-1'>
-          <Label htmlFor='withdraw-min'>{t('Minimum amount')}</Label>
+          <Label htmlFor='withdraw-min'>{t('Minimum withdrawal (USD)')}</Label>
           <Input
             id='withdraw-min'
             value={minUsd ?? current.data?.min_usd ?? ''}
@@ -94,7 +91,7 @@ export function WithdrawRulesPanel() {
           />
         </div>
         <div className='flex flex-col gap-1'>
-          <Label htmlFor='withdraw-fee'>{t('Fee')}</Label>
+          <Label htmlFor='withdraw-fee'>{t('Fee (USD)')}</Label>
           <Input
             id='withdraw-fee'
             value={feeUsd ?? current.data?.fee_usd ?? ''}
@@ -103,16 +100,7 @@ export function WithdrawRulesPanel() {
           />
         </div>
         <div className='flex flex-col gap-1'>
-          <Label htmlFor='withdraw-alipay'>{t('Alipay CNY rate')}</Label>
-          <Input
-            id='withdraw-alipay'
-            value={alipayRate ?? current.data?.alipay_cny_rate ?? ''}
-            inputMode='decimal'
-            onChange={(event) => setAlipayRate(event.target.value)}
-          />
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='withdraw-usdt'>{t('USDT USD rate')}</Label>
+          <Label htmlFor='withdraw-usdt'>{t('USDT/USD rate')}</Label>
           <Input
             id='withdraw-usdt'
             value={usdtRate ?? current.data?.usdt_usd_rate ?? ''}

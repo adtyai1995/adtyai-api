@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { Activity, ArrowLeft, Code2, Info, Timer } from 'lucide-react'
+import { ArrowLeft, Code2, Info } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -27,7 +27,6 @@ import { sideDrawerContentClassName } from '@/components/drawer-layout'
 import { ErrorState } from '@/components/error-state'
 import { GroupBadge } from '@/components/group-badge'
 import { PublicLayout } from '@/components/layout'
-import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -39,7 +38,6 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
-import type { UptimeGroupResult } from '@/features/dashboard/types'
 import { PluginIcon } from '@/features/task-plugins/components/plugin-icon'
 import { useStatus } from '@/hooks/use-status'
 import { getLobeIcon } from '@/lib/lobe-icon'
@@ -54,7 +52,6 @@ import {
   resolvePricingDisplayGroup,
   usePricingData,
 } from '../hooks/use-pricing-data'
-import { useUptimeStatus } from '../hooks/use-uptime-status'
 import type { ParsedTaskTier } from '../lib/billing-expr'
 import { formatBillingCondition } from '../lib/billing-expression/condition-display'
 import {
@@ -92,14 +89,6 @@ import {
   taskTierConditions,
   pricingDisplayFallbackKey,
 } from '../lib/task-price-display'
-import {
-  formatUptimePercentage,
-  getConnectivityBadgeVariant,
-  getConnectivityStatusLabelKey,
-  getConnectivityTextColorClass,
-  resolveModelPingMs,
-  resolveModelUptimeForPricing,
-} from '../lib/uptime'
 import type {
   PriceType,
   PricingModel,
@@ -108,9 +97,7 @@ import type {
 } from '../types'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
-import { ModelHeartbeatBars } from './model-connectivity-badge'
 import { ModelDetailsApi } from './model-details-api'
-import { ModelDetailsPerformance } from './model-details-performance'
 
 // ----------------------------------------------------------------------------
 // Local UI helpers
@@ -195,99 +182,6 @@ const MODEL_DETAILS_SKELETON_KEYS = ['first', 'second', 'third', 'fourth']
 function normalizeCatalogItems(items?: readonly string[]): string[] {
   if (!items) return []
   return items.filter((item) => item.trim().length > 0)
-}
-
-function OverviewMetric(props: {
-  icon: React.ComponentType<{ className?: string }>
-  label: string
-  value: React.ReactNode
-  valueClassName?: string
-}) {
-  const Icon = props.icon
-
-  return (
-    <div className='flex min-w-0 items-center gap-2 px-3 py-2'>
-      <Icon className='text-muted-foreground/70 size-3.5 shrink-0' />
-      <div className='min-w-0 flex-1'>
-        <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider uppercase'>
-          {props.label}
-        </div>
-        <div
-          className={cn(
-            'text-foreground truncate font-mono text-sm font-semibold tabular-nums',
-            props.valueClassName
-          )}
-        >
-          {props.value}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function OverviewSummaryGrid(props: {
-  model: PricingModel
-  selectedGroup?: string
-  uptimeGroups?: UptimeGroupResult[]
-}) {
-  const { t } = useTranslation()
-  const uptimeQuery = useUptimeStatus({
-    enabled: props.uptimeGroups === undefined,
-  })
-  const groups = props.uptimeGroups ?? uptimeQuery.groups
-  const resolved = useMemo(
-    () =>
-      resolveModelUptimeForPricing(groups, props.model, props.selectedGroup),
-    [groups, props.model, props.selectedGroup]
-  )
-  const avgPing = resolved ? resolveModelPingMs(resolved) : null
-
-  return (
-    <div className='bg-muted/20 overflow-hidden rounded-lg border'>
-      <div className='grid sm:grid-cols-3 sm:divide-x'>
-        <OverviewMetric
-          icon={Activity}
-          label={t('Status')}
-          value={
-            resolved ? (
-              <StatusBadge
-                variant={getConnectivityBadgeVariant(resolved.state)}
-                label={t(getConnectivityStatusLabelKey(resolved.state))}
-                size='sm'
-                showDot
-                copyable={false}
-              />
-            ) : (
-              '—'
-            )
-          }
-        />
-        <OverviewMetric
-          icon={Activity}
-          label={t('24h Uptime')}
-          value={resolved ? formatUptimePercentage(resolved.uptime) : '—'}
-          valueClassName={
-            resolved ? getConnectivityTextColorClass(resolved.state) : undefined
-          }
-        />
-        <OverviewMetric
-          icon={Timer}
-          label={t('Average latency')}
-          value={avgPing !== null ? `${avgPing} ${t('ms')}` : '—'}
-        />
-      </div>
-      {resolved && resolved.heartbeats.length > 0 && (
-        <div className='border-t px-3 py-2'>
-          <ModelHeartbeatBars
-            heartbeats={resolved.heartbeats}
-            maxBars={24}
-            size='md'
-            fillWidth
-          />
-        </div>
-      )}
-    </div>
-  )
 }
 
 function CatalogPillList(props: { items: string[] }) {
@@ -1294,7 +1188,7 @@ function ProviderGroupPricingSection(
   )
 }
 
-const TAB_VALUES = ['overview', 'performance', 'api'] as const
+const TAB_VALUES = ['overview', 'api'] as const
 type TabValue = (typeof TAB_VALUES)[number]
 
 const TAB_META: Record<
@@ -1302,7 +1196,6 @@ const TAB_META: Record<
   { icon: React.ComponentType<{ className?: string }>; labelKey: string }
 > = {
   overview: { icon: Info, labelKey: 'Overview' },
-  performance: { icon: Activity, labelKey: 'Connectivity (24h)' },
   api: { icon: Code2, labelKey: 'API' },
 }
 
@@ -1317,7 +1210,6 @@ export interface ModelDetailsContentProps {
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
   selectedGroup?: string
-  uptimeGroups?: UptimeGroupResult[]
 }
 
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
@@ -1345,7 +1237,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
       <ModelHeader model={props.model} />
 
       <Tabs defaultValue='overview' className='gap-4'>
-        <TabsList className='bg-muted/60 grid w-full grid-cols-3 gap-1 rounded-lg p-1 group-data-horizontal/tabs:h-auto'>
+        <TabsList className='bg-muted/60 grid w-full grid-cols-2 gap-1 rounded-lg p-1 group-data-horizontal/tabs:h-auto'>
           {TAB_VALUES.map((value) => {
             const Icon = TAB_META[value].icon
             return (
@@ -1362,12 +1254,6 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
         </TabsList>
 
         <TabsContent value='overview' className='space-y-6 outline-none'>
-          <OverviewSummaryGrid
-            model={props.model}
-            selectedGroup={props.selectedGroup}
-            uptimeGroups={props.uptimeGroups}
-          />
-
           <section className='bg-card space-y-6 rounded-[14px] border p-5'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
             {!isSubsite && props.model.billing_display_multiplier && (
@@ -1413,14 +1299,6 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
           <ModelBackendDetailsSection
             model={props.model}
             usableGroup={props.usableGroup}
-          />
-        </TabsContent>
-
-        <TabsContent value='performance' className='outline-none'>
-          <ModelDetailsPerformance
-            model={props.model}
-            selectedGroup={props.selectedGroup}
-            uptimeGroups={props.uptimeGroups}
           />
         </TabsContent>
 

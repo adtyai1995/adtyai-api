@@ -25,8 +25,11 @@ import type {
   UptimeHeartbeat,
   UptimeKumaGroupConfig,
   UptimeModelStatus,
+  UptimePlatform,
   UptimeProbeRequest,
   UptimeProbeResponseData,
+  UptimeProbeType,
+  UptimeStatusLabel,
 } from './types'
 
 export type {
@@ -34,8 +37,11 @@ export type {
   UptimeHeartbeat,
   UptimeKumaGroupConfig,
   UptimeModelStatus,
+  UptimePlatform,
   UptimeProbeRequest,
   UptimeProbeResponseData,
+  UptimeProbeType,
+  UptimeStatusLabel,
 }
 
 // ============================================================================

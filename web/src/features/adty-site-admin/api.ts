@@ -137,7 +137,7 @@ export async function getAdminWithdrawRules() {
 export async function saveAdminWithdrawRules(body: {
   min_usd: string
   fee_usd: string
-  alipay_cny_rate: string
+  alipay_cny_rate?: string
   usdt_usd_rate: string
 }): Promise<void> {
   const res = await api.put<ApiResponse<{ saved: boolean }>>(

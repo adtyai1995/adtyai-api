@@ -32,7 +32,6 @@ import { cn } from '@/lib/utils'
 
 type SystemBrandProps = {
   defaultName?: string
-  defaultVersion?: string
   /**
    * Visual layout:
    * - 'sidebar': stacked card style (used inside the sidebar header).
@@ -54,8 +53,6 @@ export function SystemBrand(props: SystemBrandProps) {
 
   const variant = props.variant ?? 'sidebar'
   const name = status?.system_name || systemName || props.defaultName || ADTY_BRAND_NAME
-  const version =
-    status?.version || props.defaultVersion || t('Unknown version')
 
   // The bundled ADTY artwork already contains the wordmark: render it on its
   // own, uncropped, and fall back to the plain site name only when no logo
@@ -133,9 +130,6 @@ export function SystemBrand(props: SystemBrandProps) {
             ) : (
               <span className='truncate font-semibold'>{name}</span>
             )}
-          </div>
-          <div className='grid flex-1 text-start text-sm leading-tight group-data-[collapsible=icon]:hidden'>
-            <span className='truncate text-xs'>{version}</span>
           </div>
         </SidebarMenuButton>
       </SidebarMenuItem>

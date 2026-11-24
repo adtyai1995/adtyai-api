@@ -19,12 +19,20 @@ func GetAdtySiteWithdrawRules(c *gin.Context) {
 		return
 	}
 	if raw, ok := c.GetQuery("amount_usd"); ok {
-		amount, err := decimal.NewFromString(raw)
+		amount, err := decimal.NewFromString(strings.TrimSpace(raw))
 		if err != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
-		payout, err := service.QuoteSiteWithdrawal(amount, c.Query("method"))
+		method := strings.ToLower(strings.TrimSpace(c.Query("method")))
+		if method == "" {
+			method = "usdt"
+		}
+		if method != "usdt" {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Only USDT withdrawal is supported"))
+			return
+		}
+		payout, err := service.QuoteSiteWithdrawal(amount, method)
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -168,6 +176,14 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	method := strings.ToLower(strings.TrimSpace(body.Method))
+	if method == "" {
+		method = "usdt"
+	}
+	if method != "usdt" {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Only USDT withdrawal is supported"))
+		return
+	}
 	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -178,29 +194,25 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	digestQR := ""
-	if strings.EqualFold(strings.TrimSpace(body.Method), "alipay") {
-		digestQR = strings.TrimSpace(body.QRImageURL)
-		if canonicalQR, ok := service.CanonicalReferralAssetURL(digestQR); ok {
-			digestQR = canonicalQR
-		}
-	}
+	network := strings.ToUpper(strings.TrimSpace(body.Network))
+	accountNo := strings.TrimSpace(body.AccountNo)
+	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionWithdrawalCreate, site.Id, map[string]any{
 		"amount_usd":      amount.String(),
-		"method":          body.Method,
-		"network":         body.Network,
-		"account_no":      body.AccountNo,
-		"account_name":    body.AccountName,
-		"qr_image_url":    digestQR,
+		"method":          method,
+		"network":         network,
+		"account_no":      accountNo,
+		"account_name":    strings.TrimSpace(body.AccountName),
+		"qr_image_url":    "",
 		"expected_rate":   expected.String(),
-		"idempotency_key": c.GetHeader("Idempotency-Key"),
+		"idempotency_key": idempotencyKey,
 	}) {
 		return
 	}
 	row, err := service.CreateAdtySiteWithdrawal(service.AdtySiteWithdrawInput{
-		SiteID: site.Id, OwnerID: c.GetInt("id"), AmountUSD: amount, Method: body.Method, Network: body.Network,
-		AccountNo: body.AccountNo, AccountName: body.AccountName, QRImageURL: body.QRImageURL, ExpectedRate: expected, ExpectedPayout: body.ExpectedPayout,
-		IdempotencyKey: c.GetHeader("Idempotency-Key"),
+		SiteID: site.Id, OwnerID: c.GetInt("id"), AmountUSD: amount, Method: method, Network: network,
+		AccountNo: accountNo, AccountName: "", QRImageURL: "", ExpectedRate: expected, ExpectedPayout: body.ExpectedPayout,
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {

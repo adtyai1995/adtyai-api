@@ -36,7 +36,7 @@ func referralPage(c *gin.Context, query *gorm.DB, out any) bool {
 	return true
 }
 
-// GetReferralAdminBadges 是侧边栏「推广管理」旁的待处理数：合作伙伴申请 + 待审核提现 + 待打款提现。
+// GetReferralAdminBadges 是侧边栏「推广管理」旁的待处理数：待审核提现 + 待打款提现（合作伙伴已下线，partners 恒为 0）。
 // 计数按调用者的角色与站点过滤：Root 全局，非 Root 管理员只看主站，不再做未过滤的全局合计。
 func GetReferralAdminBadges(c *gin.Context) {
 	badges, err := service.CollectAdtyReferralAdminBadges(c.GetInt("id"), referralBadgeTokenScopes(c)...)
@@ -45,8 +45,8 @@ func GetReferralAdminBadges(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{
-		"partners": badges.Partners, "pending_withdrawals": badges.PendingWithdrawals, "approved_withdrawals": badges.ApprovedWithdrawals,
-		"total": badges.Partners + badges.PendingWithdrawals + badges.ApprovedWithdrawals,
+		"partners": 0, "pending_withdrawals": badges.PendingWithdrawals, "approved_withdrawals": badges.ApprovedWithdrawals,
+		"total": badges.PendingWithdrawals + badges.ApprovedWithdrawals,
 	})
 }
 
@@ -223,36 +223,9 @@ func GetReferralBindings(c *gin.Context) {
 	referralPage(c, service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralBinding{}).Where("inviter_user_id = ?", userID), "inviter_user_id", siteID), &items)
 }
 
-// ReviewReferralPartner 通过（按配置的合作伙伴返佣比例上下限）或驳回合作伙伴申请（推广返佣·审核）。
+// ReviewReferralPartner 合作伙伴申请审核已下线（R-34 #2）。
 func ReviewReferralPartner(c *gin.Context) {
-	siteID, ok := referralAdminScopeOrError(c)
-	if !ok {
-		return
-	}
-	userID, err := strconv.Atoi(c.Param("user_id"))
-	if err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.EnsureAdtyReferralTargetUserScope(siteID, userID); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	var body struct {
-		Approve bool            `json:"approve"`
-		Rate    decimal.Decimal `json:"rate"`
-		Reason  string          `json:"reason"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.Referral.ReviewPartnerForActor(userID, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body.Approve, body.Rate, body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
-		writeReferralError(c, err)
-		return
-	}
-	recordManageAuditFor(c, userID, "adty.referral.partner_review", map[string]any{"approve": body.Approve, "rate": body.Rate.String()})
-	common.ApiSuccess(c, nil)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Partner applications are disabled"))
 }
 
 // UpdateReferralAffiliate 调整推广员（推广返佣·调整）：设比例、停用/恢复、冻结/恢复结算和提现、调佣金。
