@@ -382,9 +382,13 @@ export function CommissionWithdrawalPanel(
               )}
         </p>
         <p className='text-muted-foreground text-sm'>
-          {t(
-            'The platform or its authorized payer pays the customer offline. Recording payment releases the site’s hold.'
-          )}
+          {props.closed
+            ? t(
+                'The platform pays the customer offline. Recording payment deducts the closed site’s held funds.'
+              )
+            : t(
+                'The platform or its authorized payer pays the customer offline. Recording payment releases the site’s hold.'
+              )}
         </p>
       </div>
       {props.status === undefined && (

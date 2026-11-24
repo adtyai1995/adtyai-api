@@ -145,34 +145,98 @@ func ResolvePaymentOrphanReview(id int64, operatorID int, request PaymentOrphanR
 			if topUp == nil || ext == nil || topUp.Status != TopUpStatusRefunded || !ext.PaidAmount.IsPositive() || !strings.EqualFold(ext.PaidCurrency, request.ExternalCurrency) || !amount.Equal(ext.PaidAmount) {
 				return common.NewMessage("A full external reversal and the original wallet refund are required")
 			}
-			var ledgers []AdtyBalanceLedger
-			if err := tx.Where("type = ? AND ref_type = ? AND ref_id = ? AND user_id = ?", AdtyLedgerTypeRefund, "topup", topUp.TradeNo, topUp.UserId).Order("id asc").Find(&ledgers).Error; err != nil {
-				return err
-			}
-			if len(ledgers) == 0 {
-				return common.NewMessage("The original wallet refund ledger is required")
+			var completedRefunds []AdtyManualRefund
+			if tx.Migrator().HasTable(&AdtyManualRefund{}) {
+				if err := tx.Where("trade_no = ? AND status = ?", topUp.TradeNo, AdtyManualRefundStatusCompleted).Order("id asc").Find(&completedRefunds).Error; err != nil {
+					return err
+				}
 			}
 			var deducted int64
-			var hasDebit bool
-			var firstDebitID int64
-			for _, ledger := range ledgers {
-				if ledger.DeltaQuota < -int64(common.MaxWalletQuota) || ledger.DeltaQuota > int64(common.MaxWalletQuota) {
+			var refundLedgerID int64
+			if ext.TeamId > 0 {
+				var teamLedgers []AdtyTeamLedger
+				if tx.Migrator().HasTable(&AdtyTeamLedger{}) {
+					refIDs := make([]string, 0, len(completedRefunds)+1)
+					refIDs = append(refIDs, topUp.TradeNo)
+					completedRefSet := map[string]struct{}{}
+					for _, cr := range completedRefunds {
+						refIDs = append(refIDs, cr.RefundId)
+						completedRefSet[cr.RefundId] = struct{}{}
+					}
+					if err := tx.Where("team_id = ? AND type IN ? AND ref_id IN ?", ext.TeamId, []string{"manual_refund", "refund_release"}, refIDs).Order("id asc").Find(&teamLedgers).Error; err != nil {
+						return err
+					}
+					for _, ledger := range teamLedgers {
+						if ledger.DeltaQuota < -int64(common.MaxWalletQuota) || ledger.DeltaQuota > int64(common.MaxWalletQuota) {
+							return common.NewMessage("The original wallet refund ledger is required")
+						}
+						if refundLedgerID == 0 && ledger.DeltaQuota <= 0 {
+							if len(completedRefSet) == 0 {
+								refundLedgerID = ledger.Id
+							} else if _, ok := completedRefSet[ledger.RefId]; ok {
+								refundLedgerID = ledger.Id
+							}
+						}
+						deducted += -ledger.DeltaQuota
+					}
+				}
+				if len(completedRefunds) == 0 && len(teamLedgers) == 0 {
 					return common.NewMessage("The original wallet refund ledger is required")
 				}
-				if ledger.DeltaQuota < 0 {
-					if !hasDebit {
-						firstDebitID = ledger.Id
-					}
-					hasDebit = true
+			} else {
+				var ledgers []AdtyBalanceLedger
+				if err := tx.Where("type = ? AND ref_type = ? AND ref_id = ? AND user_id = ?", AdtyLedgerTypeRefund, "topup", topUp.TradeNo, topUp.UserId).Order("id asc").Find(&ledgers).Error; err != nil {
+					return err
 				}
-				deducted += -ledger.DeltaQuota
+				if len(ledgers) == 0 {
+					return common.NewMessage("The original wallet refund ledger is required")
+				}
+				completedIdemKeys := map[string]struct{}{}
+				for _, cr := range completedRefunds {
+					if cr.ReclaimIdemKey != "" {
+						completedIdemKeys[cr.ReclaimIdemKey] = struct{}{}
+					}
+					if cr.CompleteIdemKey != "" {
+						completedIdemKeys[cr.CompleteIdemKey] = struct{}{}
+					}
+				}
+				var hasRefundLedger bool
+				var fallbackLedgerID int64
+				for _, ledger := range ledgers {
+					if ledger.DeltaQuota < -int64(common.MaxWalletQuota) || ledger.DeltaQuota > int64(common.MaxWalletQuota) {
+						return common.NewMessage("The original wallet refund ledger is required")
+					}
+					if ledger.DeltaQuota <= 0 {
+						hasRefundLedger = true
+						if fallbackLedgerID == 0 {
+							fallbackLedgerID = ledger.Id
+						}
+						if refundLedgerID == 0 && ledger.IdempotencyKey != nil {
+							if _, ok := completedIdemKeys[*ledger.IdempotencyKey]; ok {
+								refundLedgerID = ledger.Id
+							}
+						}
+					}
+					deducted += -ledger.DeltaQuota
+				}
+				if refundLedgerID == 0 {
+					refundLedgerID = fallbackLedgerID
+				}
+				if !hasRefundLedger && len(completedRefunds) == 0 {
+					return common.NewMessage("The original wallet refund ledger is required")
+				}
 			}
 			refundUSD := decimal.NewFromInt(ext.RefundQuota).Div(common.QuotaPerUnitDecimal())
-			amountOK := ext.RefundAmount.Equal(adtyRefundAmount(ext, ext.RefundQuota, ext.FaceQuota())) || ext.RefundAmount.Equal(refundUSD)
-			if !hasDebit || deducted < 0 || deducted > ext.CreditQuota || ext.RefundQuota < 0 || ext.RefundQuota > ext.FaceQuota() || !amountOK {
+			amountOK := ext.RefundAmount.Equal(adtyRefundAmount(ext, ext.RefundQuota, ext.FaceQuota())) ||
+				ext.RefundAmount.Equal(refundUSD) ||
+				(ext.RefundQuota == ext.FaceQuota() &&
+					len(completedRefunds) > 0 &&
+					!ext.RefundAmount.IsNegative() &&
+					ext.RefundAmount.LessThanOrEqual(ext.PaidAmount))
+			if deducted < 0 || deducted > ext.CreditQuota || ext.RefundQuota < 0 || ext.RefundQuota > ext.FaceQuota() || !amountOK {
 				return common.NewMessage("The original wallet refund ledger is required")
 			}
-			review.RefundLedgerID, review.DeductedQuota = firstDebitID, deducted
+			review.RefundLedgerID, review.DeductedQuota = refundLedgerID, deducted
 			review.RefundQuota, review.RefundAmount = ext.RefundQuota, ext.RefundAmount
 			review.ExposureAmount = decimal.Max(amount.Sub(ext.RefundAmount), decimal.Zero)
 		case PaymentOrphanStatusNeverCredited:

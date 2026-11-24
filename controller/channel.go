@@ -1506,6 +1506,7 @@ func applyFetchModelsPreviewTransport(channel *model.Channel, headerOverride *st
 }
 
 func FetchModels(c *gin.Context) {
+	markIdempotentReplayNoAudit(c)
 	var req fetchModelsRequest
 
 	if err := c.ShouldBindJSON(&req); err != nil {

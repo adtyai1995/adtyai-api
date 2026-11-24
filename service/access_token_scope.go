@@ -374,6 +374,7 @@ var accessTokenLegacyActionScopes = map[string]map[string]string{
 	"GET /api/data/flow/self":                        {"adty_log:read": "log:read"},
 	"GET /api/mj/":                                   {"adty_log:read": "log:read"},
 	"GET /api/task":                                  {"adty_log:read": "log:read"},
+	"GET /api/task/:task_id/artifacts":               {"adty_log:read": "log:read"},
 	"GET /api/user/topup":                            {"adty_finance:read": "billing:read"},
 	"GET /api/group/":                                {"adty_user:read": "group:read", "adty_log:read": "group:read", "adty_model:read": "group:read", "channel:read": "group:read"},
 	"POST /api/models/sync_upstream":                 {"adty_model:create": "model:write", "adty_model:write": "model:write"},
@@ -406,7 +407,7 @@ var accessTokenLegacyActionScopes = map[string]map[string]string{
 // obtain it; scopes missing from this table are denied too.
 var accessTokenVerificationScopes = map[string]string{
 	VerificationScopeChannelKeyRead:        AccessTokenScopeOf(authz.ChannelSecretView),
-	VerificationScopeAdminUserCreate:       "user:write",
+	VerificationScopeAdminUserCreate:       "",
 	VerificationScopeAdminUserUpdate:       "user:write",
 	VerificationScopeAdminUserDelete:       "user:write",
 	VerificationScopeAdminUserQuota:        "user:write",
@@ -431,7 +432,6 @@ var accessTokenVerificationScopes = map[string]string{
 }
 
 var adminUserVerificationPermissions = map[string]authz.Permission{
-	VerificationScopeAdminUserCreate:       authz.AdtyUserCreate,
 	VerificationScopeAdminUserDelete:       authz.AdtyUserDelete,
 	VerificationScopeAdminUserQuota:        authz.AdtyUserQuota,
 	VerificationScopeAdminUserUpdate:       authz.AdtyUserWrite,

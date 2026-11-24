@@ -49,9 +49,12 @@ func init() {
 	config.GlobalConfig.Register("adty_epay_setting", &epaySetting)
 }
 
-// GetEpaySetting 返回当前的易支付设置。
+// GetEpaySetting 返回当前易支付设置的只读快照副本。
 func GetEpaySetting() *EpaySetting {
-	return &epaySetting
+	common.OptionMapRWMutex.RLock()
+	snap := epaySetting
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 // IsEpayTimeoutKey 判断配置键是否属于易支付换通道时限。
@@ -122,9 +125,9 @@ func SyncEpayTimeouts(channelSeconds, totalSeconds int) {
 	if ValidateEpayTimeoutPair(channelSeconds, totalSeconds) != nil {
 		return
 	}
+	common.OptionMapRWMutex.Lock()
 	epaySetting.ChannelTimeoutSeconds = channelSeconds
 	epaySetting.TotalTimeoutSeconds = totalSeconds
-	common.OptionMapRWMutex.Lock()
 	if common.OptionMap != nil {
 		common.OptionMap[EpaySettingKeyChannelTimeout] = strconv.Itoa(channelSeconds)
 		common.OptionMap[EpaySettingKeyTotalTimeout] = strconv.Itoa(totalSeconds)

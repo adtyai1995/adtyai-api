@@ -903,7 +903,7 @@ func sendBarkNotify(barkURL string, data dto.Notify) error {
 		// 使用worker发送请求
 		workerReq := &WorkerRequest{
 			URL:    finalURL,
-			Key:    system_setting.WorkerValidKey,
+			Key:    system_setting.GetWorkerValidKey(),
 			Method: http.MethodGet,
 			Headers: map[string]string{
 				"User-Agent": "ADTYAI-Bark-Notify/1.0",
@@ -994,7 +994,7 @@ func sendGotifyNotify(gotifyUrl string, gotifyToken string, priority int, data d
 		// 使用worker发送请求
 		workerReq := &WorkerRequest{
 			URL:    finalURL,
-			Key:    system_setting.WorkerValidKey,
+			Key:    system_setting.GetWorkerValidKey(),
 			Method: http.MethodPost,
 			Headers: map[string]string{
 				"Content-Type": "application/json; charset=utf-8",

@@ -209,6 +209,7 @@ func modelPricingSyncValues(data map[string]any, name string) map[string]any {
 }
 
 func FetchUpstreamRatios(c *gin.Context) {
+	markIdempotentReplayNoAudit(c)
 	var req struct {
 		dto.UpstreamRequest
 		IncludeUnchanged bool `json:"include_unchanged"`

@@ -605,9 +605,14 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			c.Abort()
 			return
 		}
-		// R1-068: Enforce live team token lifecycle state on read-only token queries too.
+		// R1-068 / R8-041: Enforce live team token lifecycle state on read-only token queries too.
 		if err := model.ValidateAdtyTeamTokenTx(model.DB, token); err != nil {
-			common.ApiErrorStatus(c, http.StatusForbidden, err)
+			if errors.Is(err, model.ErrTokenInvalid) {
+				common.ApiErrorStatus(c, http.StatusForbidden, errors.New(common.TranslateMessage(c, i18n.MsgTokenInvalid)))
+			} else {
+				common.SysLog(common.LogText("validate team token failed: %s", err.Error()))
+				common.ApiErrorStatus(c, http.StatusInternalServerError, errors.New(common.TranslateMessage(c, i18n.MsgDatabaseError)))
+			}
 			c.Abort()
 			return
 		}

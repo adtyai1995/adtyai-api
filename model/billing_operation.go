@@ -704,6 +704,7 @@ func QueueMidjourneyBillingOperation(task *Midjourney, refund bool) (string, err
 func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 	var row BillingOperation
 	applied := false
+	var reviewHoldSiteID int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockForUpdate(tx).Where("operation_key = ?", key).First(&row).Error; err != nil {
 			return err
@@ -1115,6 +1116,9 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 			if err := applyBillingEarningReviewTx(tx, &row, &event); err != nil {
 				return err
 			}
+			if event.ReviewStatus == AdtyEarningNeedsReview {
+				reviewHoldSiteID = row.SiteId
+			}
 			if err := tx.Create(&event).Error; err != nil {
 				return err
 			}
@@ -1142,6 +1146,9 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 	})
 	if err != nil {
 		return nil, false, err
+	}
+	if reviewHoldSiteID > 0 {
+		markAdtyEarningReviewHold(reviewHoldSiteID)
 	}
 	refreshBillingProjections(&row)
 	return &row, applied, nil

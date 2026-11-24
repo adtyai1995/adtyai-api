@@ -76,6 +76,16 @@ func requestHasCredentialHeader(req *http.Request) bool {
 	return false
 }
 
+func CheckRedirectSecurity(req *http.Request, via []*http.Request) error {
+	if err := checkRedirectSecurity(req, via); err != nil {
+		return err
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	return nil
+}
+
 func checkRedirectSecurity(req *http.Request, via []*http.Request) error {
 	if len(via) > 0 {
 		if strings.EqualFold(via[0].URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {

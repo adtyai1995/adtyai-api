@@ -59,12 +59,41 @@ func AdtyExternalRefundOffsetTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error)
 }
 
 func adtyComputeManualRefundOccupancyTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraHeld int64) (*AdtyManualRefundOccupancy, error) {
+	return adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, extraHeld, 0)
+}
+
+func adtyComputeManualRefundOccupancyForRowTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraHeld int64, waiveOrphanID int64) (*AdtyManualRefundOccupancy, error) {
 	held, unknown := adtySumManualRefundOccupancy(rows)
-	externalOffset, err := adtyExternalRefundOffsetTx(tx, ext)
+	externalOffset, err := adtyExternalRefundOffsetExcludingOrphanTx(tx, ext, waiveOrphanID)
 	if err != nil {
 		return nil, err
 	}
 	return adtyBuildManualRefundOccupancy(ext, held+extraHeld, unknown, externalOffset), nil
+}
+
+// adtyValidateReconcileOrphanTx locks and verifies a pending_review external
+// reversal orphan event bound to a manual refund reconciling it (R8-009).
+// Caller must already hold the canonical order lock (AdtySite -> TopUp -> AdtyTopupOrder).
+func adtyValidateReconcileOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, currentRefundID string, orphanID int64) error {
+	if orphanID <= 0 {
+		return nil
+	}
+	orphan, err := LockPaymentOrphanTx(tx, orphanID)
+	if err != nil {
+		return err
+	}
+	if orphan.ReferenceID != ext.TradeNo || !strings.EqualFold(orphan.Provider, ext.Provider) {
+		return ErrPaymentMethodMismatch
+	}
+	if orphan.Status != PaymentOrphanStatusPendingReview || !isExternalReversalEventType(orphan.EventID, orphan.EventType) {
+		return common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
+	}
+	for _, other := range rows {
+		if other.RefundId != currentRefundID && other.Status != AdtyManualRefundStatusTerminated && other.ReconcileOrphanId == orphanID {
+			return ErrAdtyIdempotencyConflict
+		}
+	}
+	return nil
 }
 
 // moveCustomerRefundOperatingTx atomically adjusts a subsite's operating wallet
@@ -620,9 +649,20 @@ func adtyRequireApprovedManualRefund(row *AdtyManualRefund) error {
 // amount occupies H and is capped by S+H+U+r ≤ L. It does not debit the wallet,
 // reclaim gift, handle commission, or record an offline payout.
 func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID string, requestUSD decimal.Decimal, ownerSiteID ...int) (*AdtyManualRefundResult, error) {
+	return ApplyAdtyTopUpManualRefundForOrphan(tradeNo, reason, operatorID, refundID, requestUSD, 0, ownerSiteID...)
+}
+
+// ApplyAdtyTopUpManualRefundForOrphan files a manual refund application and,
+// when reconcileOrphanID > 0 (platform operators only), binds it to a specific
+// pending_review external-reversal orphan so internal bookkeeping can complete
+// without double-counting that orphan's X offset or requiring a second payout (R8-009).
+func ApplyAdtyTopUpManualRefundForOrphan(tradeNo, reason string, operatorID int, refundID string, requestUSD decimal.Decimal, reconcileOrphanID int64, ownerSiteID ...int) (*AdtyManualRefundResult, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return nil, common.NewMessage("A refund reason is required")
+	}
+	if reconcileOrphanID < 0 || (reconcileOrphanID > 0 && len(ownerSiteID) > 0) {
+		return nil, common.NewMessage("Invalid parameters")
 	}
 	refundID, err := adtyNormalizeRefundID(refundID)
 	if err != nil {
@@ -639,14 +679,14 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 			return err
 		}
 		if existing != nil {
-			if existing.TradeNo != tradeNo || !existing.RequestUSD.Equal(requestUSD) || existing.Reason != reason || existing.ApplyOperatorId != operatorID {
+			if existing.TradeNo != tradeNo || !existing.RequestUSD.Equal(requestUSD) || existing.Reason != reason || existing.ApplyOperatorId != operatorID || existing.ReconcileOrphanId != reconcileOrphanID {
 				return ErrAdtyIdempotencyConflict
 			}
 			rows, err := lockAdtyManualRefundsTx(tx, tradeNo)
 			if err != nil {
 				return err
 			}
-			occ, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+			occ, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, existing.ReconcileOrphanId)
 			if err != nil {
 				return err
 			}
@@ -660,7 +700,12 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if reconcileOrphanID > 0 {
+			if err := adtyValidateReconcileOrphanTx(tx, ext, rows, refundID, reconcileOrphanID); err != nil {
+				return err
+			}
+		}
+		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, reconcileOrphanID)
 		if err != nil {
 			return err
 		}
@@ -686,23 +731,24 @@ func ApplyAdtyTopUpManualRefund(tradeNo, reason string, operatorID int, refundID
 		}
 		now := common.GetTimestamp()
 		row := &AdtyManualRefund{
-			RefundId:         refundID,
-			TradeNo:          tradeNo,
-			UserId:           topUp.UserId,
-			SiteId:           ext.SiteId,
-			Status:           AdtyManualRefundStatusSubmitted,
-			RequestUSD:       requestUSD,
-			RequestQuota:     requestQuota,
-			Reason:           reason,
-			ForeignReference: adtyRefundAmount(ext, requestQuota, ext.FaceQuota()),
-			ApplyOperatorId:  operatorID,
-			AppliedAt:        now,
-			ApplyIdemKey:     refundID,
+			RefundId:          refundID,
+			TradeNo:           tradeNo,
+			UserId:            topUp.UserId,
+			SiteId:            ext.SiteId,
+			Status:            AdtyManualRefundStatusSubmitted,
+			RequestUSD:        requestUSD,
+			RequestQuota:      requestQuota,
+			Reason:            reason,
+			ForeignReference:  adtyRefundAmount(ext, requestQuota, ext.FaceQuota()),
+			ReconcileOrphanId: reconcileOrphanID,
+			ApplyOperatorId:   operatorID,
+			AppliedAt:         now,
+			ApplyIdemKey:      refundID,
 		}
 		if err := tx.Create(row).Error; err != nil {
 			return err
 		}
-		afterOcc, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, requestQuota)
+		afterOcc, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, requestQuota, reconcileOrphanID)
 		if err != nil {
 			return err
 		}
@@ -738,7 +784,7 @@ func ApproveAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
 		if err != nil {
 			return err
 		}
@@ -825,7 +871,7 @@ func ReclaimAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, idem
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
 		if err != nil {
 			return err
 		}
@@ -937,7 +983,7 @@ func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID st
 	if err != nil {
 		return nil, false, err
 	}
-	occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+	occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1107,7 +1153,7 @@ func PlanAdtyTopUpManualRefundBonus(tradeNo, refundID string, operatorID int, id
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
 		if err != nil {
 			return err
 		}
@@ -1168,7 +1214,7 @@ func PlanAdtyTopUpManualRefundCommission(tradeNo, refundID string, operatorID in
 		if err != nil {
 			return err
 		}
-		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		occupancy, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
 		if err != nil {
 			return err
 		}
@@ -1290,7 +1336,7 @@ func RecordAdtyTopUpManualRefundPayout(tradeNo, refundID string, operatorID int,
 		}
 		// S+H+U+X <= L must still hold before recording a non-failed payout (R1-004).
 		if status != AdtyManualRefundPayoutFailed {
-			occCheck, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+			occCheck, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
 			if err != nil {
 				return err
 			}
@@ -1399,7 +1445,12 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 			return err
 		}
 		// S+H+U+X <= L must still hold at completion time (R1-004).
-		occCheck, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
+		if row.ReconcileOrphanId > 0 {
+			if err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId); err != nil {
+				return err
+			}
+		}
+		occCheck, err := adtyComputeManualRefundOccupancyForRowTx(tx, ext, rows, 0, row.ReconcileOrphanId)
 		if err != nil {
 			return err
 		}
@@ -1456,7 +1507,11 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		if row.CommissionAt == 0 {
 			return common.NewMessage("Commission handling has not been recorded")
 		}
-		if row.PayoutRecordedAt == 0 || row.PayoutStatus != AdtyManualRefundPayoutSuccess {
+		if row.ReconcileOrphanId > 0 {
+			if row.PayoutStatus == AdtyManualRefundPayoutUnknown {
+				return common.NewMessage("Offline payout has not been confirmed")
+			}
+		} else if row.PayoutRecordedAt == 0 || row.PayoutStatus != AdtyManualRefundPayoutSuccess {
 			return common.NewMessage("Offline payout has not been confirmed")
 		}
 		if ext.IsOwnerSelfUse() {

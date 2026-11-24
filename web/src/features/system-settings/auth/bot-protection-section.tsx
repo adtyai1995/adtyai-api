@@ -92,18 +92,25 @@ export function BotProtectionSection({
       return order(keyA) - order(keyB)
     })
 
-    for (const [key, value] of updates) {
-      await updateOption.mutateAsync({ key, value: value ?? '' })
-      baselineRef.current = {
-        ...baselineRef.current,
-        [key]: key === 'TurnstileSecretKey' ? '' : value,
+    try {
+      for (const [key, value] of updates) {
+        await updateOption.mutateAsync({ key, value: value ?? '' })
+        if (key === 'TurnstileSecretKey') {
+          form.setValue('TurnstileSecretKey', '')
+        }
+        baselineRef.current = {
+          ...baselineRef.current,
+          [key]: key === 'TurnstileSecretKey' ? '' : value,
+        }
+        baselineSerializedRef.current = JSON.stringify(baselineRef.current)
       }
-      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
+      form.reset(
+        { ...data, TurnstileSecretKey: '' },
+        { keepDirtyValues: false }
+      )
+    } catch {
+      // Error toast is already surfaced by updateOption's onError handler.
     }
-    form.reset(
-      { ...data, TurnstileSecretKey: '' },
-      { keepDirtyValues: false }
-    )
   }
 
   return (

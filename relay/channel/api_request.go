@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -25,6 +26,46 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+// ErrAmbiguousTaskSubmitTransport marks a sanitized doRequest failure whose raw
+// transport error occurred after the request may have been transmitted upstream.
+var ErrAmbiguousTaskSubmitTransport = errors.New("upstream error: do request failed")
+
+func sanitizeDoRequestError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr != nil {
+		sanitized := *urlErr
+		sanitized.URL = common.SanitizeURLForLog(sanitized.URL)
+		return &sanitized
+	}
+	return err
+}
+
+func isRawAmbiguousTransportError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && strings.EqualFold(opErr.Op, "dial") {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "no such host") || strings.Contains(msg, "dial tcp") {
+		return false
+	}
+	return strings.Contains(msg, "awaiting headers") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "timeout")
+}
 
 // ApplyUpstreamBodyMetadata restores metadata that net/http cannot infer from
 // a ReplayableBody. Callers must pass the original body because NewRequest
@@ -489,8 +530,12 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	common2.SetContextKey(c, appconstant.ContextKeyUpstreamRequestOrigin, req.URL.Scheme+"://"+req.URL.Host)
 	resp, err := relayClient.Do(req)
 	if err != nil {
-		logger.LogError(c, common2.LogText("do request failed: %s", err.Error()))
-		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
+		safeErr := sanitizeDoRequestError(err)
+		logger.LogError(c, common2.LogText("do request failed: %s", safeErr.Error()))
+		if isRawAmbiguousTransportError(err) {
+			return nil, types.NewError(ErrAmbiguousTaskSubmitTransport, types.ErrorCodeDoRequestFailed)
+		}
+		return nil, types.NewError(safeErr, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")
@@ -546,6 +591,16 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	if common2.RelayTimeout > 0 {
 		if configured := time.Duration(common2.RelayTimeout) * time.Second; configured > submitTimeout {
 			submitTimeout = configured
+		}
+	}
+	if appconstant.TaskPluginProtocolTimeoutSeconds > 0 {
+		if pluginTimeout := time.Duration(appconstant.TaskPluginProtocolTimeoutSeconds) * time.Second; pluginTimeout > submitTimeout {
+			submitTimeout = pluginTimeout
+		}
+	}
+	if deadline, ok := c.Request.Context().Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > submitTimeout {
+			submitTimeout = remaining
 		}
 	}
 	submitCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), submitTimeout)

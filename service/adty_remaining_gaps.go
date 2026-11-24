@@ -1089,13 +1089,9 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 	var auditEntry *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
-		siteID := 0
 		hasUser := tx.Select("id", "username", "role", "site_id").Where("id = ?", userID).Limit(1).Find(&user).RowsAffected > 0
-		if hasUser {
-			siteID = user.SiteId
-		}
 		var item AdtyTodoItem
-		found := tx.Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
+		found := model.AdtyLockForUpdate(tx).Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
 		if found.Error != nil {
 			return found.Error
 		}
@@ -1147,8 +1143,12 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 			"publication_id":  item.PublicationId,
 			"resolution_note": note,
 		}
-		if err := tx.Model(&item).Updates(updates).Error; err != nil {
-			return err
+		res := tx.Model(&AdtyTodoItem{}).Where("id = ? AND revision = ?", item.Id, item.Revision).Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return common.NewMessage("Todo item was modified concurrently, please retry")
 		}
 		item.Status = targetStatus
 		item.Revision = nextRev
@@ -1169,22 +1169,15 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 			return err
 		}
 
-		if targetStatus == AdtyTodoStatusCompleted {
+		if targetStatus == AdtyTodoStatusCompleted && tx.Migrator().HasTable(&model.AdtyNotificationRead{}) {
 			// R1-055: Completing a personal todo must NEVER mutate global AdtyAnomalyDisposition rows;
 			// anomaly dispositions are exclusively closed by authorized Root review handlers.
-			if pub != nil && pub.ReadKey != "" && tx.Migrator().HasTable(&model.AdtyNotificationRead{}) {
-				readSiteID := siteID
-				if c != nil {
-					if reqSite := AdtySiteForRequest(c); reqSite != nil && reqSite.Id > 0 {
-						readSiteID = reqSite.Id
-					}
-				}
-				if readSiteID == 0 {
-					if item.SiteId > 0 {
-						readSiteID = item.SiteId
-					} else if pub.TargetSiteId > 0 {
-						readSiteID = pub.TargetSiteId
-					}
+			if pub != nil && pub.ReadKey != "" {
+				readSiteID := 0
+				if pub.Audience == "site" && pub.TargetSiteId > 0 {
+					readSiteID = pub.TargetSiteId
+				} else if reqSite != nil && reqSite.Id > 0 {
+					readSiteID = reqSite.Id
 				}
 				readRow := model.AdtyNotificationRead{
 					UserId:  userID,
@@ -1192,7 +1185,25 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 					ReadKey: pub.ReadKey,
 					ReadAt:  now,
 				}
-				_ = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&readRow).Error
+				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&readRow).Error; err != nil {
+					return err
+				}
+			} else if pub == nil && item.Key != "" && tx.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+				var watcherCount int64
+				if err := tx.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND read_key = ?", userID, item.Key).Count(&watcherCount).Error; err != nil {
+					return err
+				}
+				if watcherCount > 0 {
+					readRow := model.AdtyNotificationRead{
+						UserId:  userID,
+						SiteId:  0,
+						ReadKey: item.Key,
+						ReadAt:  now,
+					}
+					if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&readRow).Error; err != nil {
+						return err
+					}
+				}
 			}
 		}
 		action := "adty.todo.transition"

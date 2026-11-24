@@ -739,15 +739,15 @@ func SetAdtyAdminSiteStatus(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	if replayed {
 		markIdempotentReplayNoAudit(c)
 	} else if eventID != "" {
 		rememberPreparedAuditEvent(c, eventID)
 		markAuditLogged(c)
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	common.ApiSuccess(c, site)
 }
@@ -796,15 +796,15 @@ func RepairAdtyPausedSite(c *gin.Context) {
 	site, eventID, replayed, err := service.RepairLeftoverPausedAdtySiteWithAudit(id, c.GetInt("id"), body.Outcome, service.AdtySiteClosePlan{
 		Immediate: body.Immediate, Reason: body.Reason,
 	})
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	if replayed {
 		markIdempotentReplayNoAudit(c)
 	} else if eventID != "" {
 		rememberPreparedAuditEvent(c, eventID)
 		markAuditLogged(c)
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	common.ApiSuccess(c, site)
 }
@@ -1366,13 +1366,13 @@ func ResolveAdtyAdminCloseMail(c *gin.Context) {
 		return
 	}
 	eventID, err := service.ResolveAdtyCloseMailRecipientWithAudit(id, c.GetInt("id"), req.RecipientID, req.Attempt, req.Decision, req.Reason)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	if eventID != "" {
 		rememberPreparedAuditEvent(c, eventID)
 		markAuditLogged(c)
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	common.ApiSuccess(c, nil)
 }

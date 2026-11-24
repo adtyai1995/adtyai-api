@@ -110,6 +110,7 @@ func vendorAPIError(c *gin.Context, err error) {
 }
 
 func PreviewVendorOperation(c *gin.Context) {
+	markIdempotentReplayNoAudit(c)
 	var request model.VendorOperation
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
 		vendorAPIError(c, err)

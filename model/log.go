@@ -238,7 +238,7 @@ func RecordLoginLog(userId, actorRole int, username string, content string, ip s
 	}
 	siteID := InferOfficialAuditSiteID(c, params)
 	objectType, objectID := InferOfficialAuditObject(action, params, strconv.Itoa(userId))
-	if err := WriteOfficialAuditLog(c, OfficialAuditWrite{
+	if err := WriteDurableOfficialAuditLog(c, OfficialAuditWrite{
 		UserId: userId, Username: username, ActorRole: actorRole, SiteID: OfficialAuditSiteIDPointer(siteID),
 		ObjectType: objectType, ObjectID: objectID, Action: action, Category: AuditCategoryLogin,
 		Content: content, Reason: InferOfficialAuditReason(params), ApprovalRef: InferOfficialAuditApprovalRef(params),
@@ -277,7 +277,7 @@ func RecordOperationAuditLog(logUserId, actorRole int, content string, ip string
 	siteID := InferOfficialAuditSiteID(c, params)
 	objectType, objectID := InferOfficialAuditObject(action, params, strconv.Itoa(logUserId))
 	before, after := InferOfficialAuditBeforeAfter(params)
-	if err := WriteOfficialAuditLog(c, OfficialAuditWrite{
+	if err := WriteDurableOfficialAuditLog(c, OfficialAuditWrite{
 		UserId: logUserId, Username: username, ActorRole: actorRole, SiteID: OfficialAuditSiteIDPointer(siteID),
 		ObjectType: objectType, ObjectID: objectID, Action: action, Category: category, Content: content,
 		Before: before, After: after, Reason: InferOfficialAuditReason(params),

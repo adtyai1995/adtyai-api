@@ -286,12 +286,31 @@ func getTaskForArtifactRequest(c *gin.Context, taskID string) (*model.Task, bool
 		}
 		return task, true, nil
 	}
-	// 二开：读别人的任务产物还要日志·查看（任务 2.6）
-	if c.GetInt("token_id") == 0 && c.GetInt("role") >= common.RoleAdminUser &&
-		service.AdtyAdminRoleCan(c.GetInt("id"), c.GetInt("role"), authz.AdtyLogRead) {
+	// 二开：读别人的任务产物还要日志·查看（任务 2.6），PAT 调用还必须带对应 scope（且旧版明文 PAT 不可跨用户读取）
+	if canReadCrossUserTaskArtifacts(c) {
 		return model.GetByOnlyTaskId(taskID)
 	}
 	return model.GetByTaskId(c.GetInt("id"), taskID)
+}
+
+func canReadCrossUserTaskArtifacts(c *gin.Context) bool {
+	if c.GetInt("token_id") != 0 || c.GetInt("role") < common.RoleAdminUser ||
+		!service.AdtyAdminRoleCan(c.GetInt("id"), c.GetInt("role"), authz.AdtyLogRead) {
+		return false
+	}
+	if service.AdtyAdminPermissionsEnabled() {
+		return adtyFieldScopeAllows(c, authz.AdtyLogRead)
+	}
+	legacy, isToken := c.Get("access_token_legacy")
+	if !isToken && !c.GetBool("use_access_token") {
+		return true
+	}
+	if legacy == true {
+		return false
+	}
+	scopes, _ := c.Get("access_token_scopes")
+	granted, _ := scopes.([]string)
+	return service.AccessTokenScopeGranted(granted, "log:read")
 }
 
 func writeTaskArtifactProjectionError(c *gin.Context, err error) {

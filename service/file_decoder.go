@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -9,6 +10,7 @@ import (
 	_ "image/png"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -20,16 +22,24 @@ import (
 
 // GetFileTypeFromUrl 获取文件类型，返回 mime type， 例如 image/jpeg, image/png, image/gif, image/bmp, image/tiff, application/pdf
 // 如果获取失败，返回 application/octet-stream
-func GetFileTypeFromUrl(c *gin.Context, url string, reason ...string) (string, error) {
-	response, err := DoDownloadRequest(url, []string{"get_mime_type", strings.Join(reason, ", ")}...)
+func GetFileTypeFromUrl(c *gin.Context, rawURL string, reason ...string) (string, error) {
+	maskedURL := common.MaskSensitiveInfo(rawURL)
+	response, err := DoDownloadRequest(rawURL, []string{"get_mime_type", strings.Join(reason, ", ")}...)
 	if err != nil {
-		common.SysLog(common.LogText("fail to get file type from url: %s, error: %s", url, err.Error()))
+		errText := common.MaskSensitiveInfo(err.Error())
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr != nil {
+			sanitized := *urlErr
+			sanitized.URL = common.MaskSensitiveInfo(sanitized.URL)
+			errText = sanitized.Error()
+		}
+		common.SysLog(common.LogText("fail to get file type from url: %s, error: %s", maskedURL, errText))
 		return "", err
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != 200 {
-		logger.LogError(c, common.LogText("failed to download file from %s, status code: %d", url, response.StatusCode))
+		logger.LogError(c, common.LogText("failed to download file from %s, status code: %d", maskedURL, response.StatusCode))
 		return "", fmt.Errorf("failed to download file, status code: %d", response.StatusCode)
 	}
 
@@ -65,7 +75,7 @@ func GetFileTypeFromUrl(c *gin.Context, url string, reason ...string) (string, e
 		}
 	}
 
-	cleanedURL := url
+	cleanedURL := rawURL
 	if q := strings.Index(cleanedURL, "?"); q != -1 {
 		cleanedURL = cleanedURL[:q]
 	}

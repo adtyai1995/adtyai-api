@@ -546,7 +546,7 @@ func UpdateOption(c *gin.Context) {
 			return
 		}
 	case "adty_site_setting.api_base_url":
-		if err = service.ValidateMainSiteDomainSeparation(system_setting.ServerAddress, option.Value.(string)); err != nil {
+		if err = service.ValidateMainSiteDomainSeparation(system_setting.GetServerAddress(), option.Value.(string)); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -674,7 +674,7 @@ func UpdateOption(c *gin.Context) {
 				return
 			}
 		case "adty_site_setting.api_base_url":
-			if err = service.ValidateMainSiteDomainSeparation(system_setting.ServerAddress, valueStr); err != nil {
+			if err = service.ValidateMainSiteDomainSeparation(system_setting.GetServerAddress(), valueStr); err != nil {
 				common.ApiError(c, err)
 				return
 			}

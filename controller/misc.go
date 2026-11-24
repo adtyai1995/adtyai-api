@@ -87,10 +87,10 @@ func GetStatus(c *gin.Context) {
 		publicAnnouncements = service.AdtyPublicAnnouncementsForRequest(c)
 	}
 	passkeySetting := system_setting.PasskeySettingsSnapshot()
+	legalSetting := system_setting.GetLegalSettings()
+	serverAddress := service.AdtySiteAPIBaseURL(nil)
 	// 锁只包住读 OptionMap / 全局变量的这段，读完立刻放（下面都是拼响应，不碰配置）。
 	common.OptionMapRWMutex.RLock()
-
-	legalSetting := system_setting.GetLegalSettings()
 
 	data := gin.H{
 		"version":            common.Version,
@@ -101,7 +101,7 @@ func GetStatus(c *gin.Context) {
 		"system_name":        common.SystemName,
 		"logo":               common.Logo,
 		"footer_html":        common.Footer,
-		"server_address":     service.AdtySiteAPIBaseURL(nil),
+		"server_address":     serverAddress,
 		"turnstile_check":    common.TurnstileCheckEnabled,
 		"turnstile_site_key": turnstileSiteKey,
 		"docs_link":          operation_setting.GetGeneralSetting().DocsLink,
@@ -293,7 +293,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 	user, err := model.ResolveUserForEmailChallenge(email, username, service.AdtyRequestSiteID(c))
 	switch {
 	case err == nil:
-		_ = sendPasswordResetInstructions(user)
+		_ = sendPasswordResetInstructions(c, user)
 	case errors.Is(err, model.ErrEmailAmbiguous):
 		common.ApiErrorStatus(c, http.StatusOK, common.NewMessage(model.EmailAmbiguousPrompt), gin.H{"code": model.EmailAmbiguousCode})
 		return
@@ -310,7 +310,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 
 // Self-service recovery issues a one-time reset link. No caller, including
 // staff, receives the reset token or chooses the customer's new password.
-func sendPasswordResetInstructions(user *model.User) error {
+func sendPasswordResetInstructions(c *gin.Context, user *model.User) error {
 	current, err := model.GetUserById(user.Id, false)
 	if err != nil || current == nil || current.Id != user.Id || current.Status != common.UserStatusEnabled {
 		return common.NewMessage("Invalid parameters")
@@ -335,7 +335,7 @@ func sendPasswordResetInstructions(user *model.User) error {
 		Footnote:    fmt.Sprintf("This link expires in %d minutes. If you did not request a password reset, ignore this email.", common.VerificationValidMinutes),
 	})
 	service.AdtySendSiteEmailAsync(site, subject, email, content)
-	writePasswordResetChallengeAudit(current)
+	writePasswordResetChallengeAudit(c, current)
 	return nil
 }
 
@@ -412,7 +412,7 @@ func ResetPassword(c *gin.Context) {
 	})
 }
 
-func writePasswordResetChallengeAudit(user *model.User) {
+func writePasswordResetChallengeAudit(c *gin.Context, user *model.User) {
 	if user == nil {
 		return
 	}
@@ -429,7 +429,7 @@ func writePasswordResetChallengeAudit(user *model.User) {
 		},
 		Result: model.AuditResultSuccess, Success: true,
 	}
-	if err := model.WriteOfficialAuditLog(nil, rec); err != nil {
+	if err := model.WriteDurableOfficialAuditLog(c, rec); err != nil {
 		common.SysLog(common.LogText("password reset challenge audit write failed: %s", err.Error()))
 	}
 }

@@ -1,6 +1,9 @@
 package adty_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 // LegalSetting 是多语言条款（任务 8.6），键名 adty_legal_setting.<json 标签>。
 // 每个字段都是「内容语言码（en、zh-CN、zh-TW、fr、ja、ko、ru、vi，约定 E）→ Markdown」。
@@ -29,7 +32,15 @@ func init() {
 	config.GlobalConfig.Register("adty_legal_setting", &legalSetting)
 }
 
-// GetLegalSetting 返回当前的多语言条款。
+// GetLegalSetting 返回当前多语言条款的线程安全深拷贝快照。
 func GetLegalSetting() *LegalSetting {
-	return &legalSetting
+	common.OptionMapRWMutex.RLock()
+	snap := legalSetting
+	snap.UserAgreement = cloneStringMap(legalSetting.UserAgreement)
+	snap.PrivacyPolicy = cloneStringMap(legalSetting.PrivacyPolicy)
+	snap.RefundPolicy = cloneStringMap(legalSetting.RefundPolicy)
+	snap.SiteAgreement = cloneStringMap(legalSetting.SiteAgreement)
+	snap.SiteCustomerTerms = cloneStringMap(legalSetting.SiteCustomerTerms)
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }

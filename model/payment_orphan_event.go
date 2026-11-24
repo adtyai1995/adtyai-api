@@ -167,7 +167,7 @@ func CanCreditPaymentOrphanEvent(orphan *PaymentOrphanEvent) bool {
 		return false
 	}
 	eventType := strings.ToLower(strings.TrimSpace(orphan.EventType))
-	if strings.HasPrefix(eventType, "refund") || strings.HasPrefix(eventType, "dispute") || strings.HasPrefix(eventType, "charge.refund") || strings.HasPrefix(eventType, "charge.dispute") {
+	if eventType != "payment_callback" || strings.TrimSpace(orphan.Payload) == "" {
 		return false
 	}
 	// Hosted events have provider-specific nested signed facts. Their recovery

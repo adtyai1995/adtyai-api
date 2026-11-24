@@ -89,6 +89,12 @@ func GetAdtySiteSenderDomain(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if domain != nil {
+		sanitized := *domain
+		sanitized.DisabledByPlatform = sanitized.DisabledBy > 0
+		sanitized.DisabledBy = 0
+		domain = &sanitized
+	}
 	common.ApiSuccess(c, domain)
 }
 
@@ -105,6 +111,12 @@ func AddAdtySiteSenderDomain(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if domain != nil {
+		sanitized := *domain
+		sanitized.DisabledByPlatform = sanitized.DisabledBy > 0
+		sanitized.DisabledBy = 0
+		domain = &sanitized
 	}
 	common.ApiSuccess(c, domain)
 }

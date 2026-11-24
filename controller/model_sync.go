@@ -17,6 +17,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 
 	"github.com/gin-gonic/gin"
@@ -88,6 +89,7 @@ func newHTTPClient() *http.Client {
 	timeoutSec := common.GetEnvOrDefault("SYNC_HTTP_TIMEOUT_SECONDS", 10)
 	dialer := &net.Dialer{Timeout: time.Duration(timeoutSec) * time.Second}
 	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   time.Duration(timeoutSec) * time.Second,
@@ -110,7 +112,21 @@ func newHTTPClient() *http.Client {
 		}
 		return dialer.DialContext(ctx, network, addr)
 	}
-	return &http.Client{Transport: transport}
+	return &http.Client{
+		Transport:     transport,
+		CheckRedirect: service.CheckRedirectSecurity,
+	}
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 var (
@@ -149,7 +165,9 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 			// backoff with jitter
 			sleep := baseDelay * time.Duration(1<<attempt)
 			jitter := time.Duration(rand.Intn(150)) * time.Millisecond
-			time.Sleep(sleep + jitter)
+			if err := sleepWithContext(ctx, sleep+jitter); err != nil {
+				return err
+			}
 			continue
 		}
 		func() {
@@ -225,7 +243,9 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 		}
 		sleep := baseDelay * time.Duration(1<<attempt)
 		jitter := time.Duration(rand.Intn(150)) * time.Millisecond
-		time.Sleep(sleep + jitter)
+		if err := sleepWithContext(ctx, sleep+jitter); err != nil {
+			return err
+		}
 	}
 	return lastErr
 }

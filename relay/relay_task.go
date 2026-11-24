@@ -413,7 +413,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// Any 2xx is a successful submission: task APIs commonly answer 201 Created
 	// or 202 Accepted, and parseSubmitResponse receives the exact status code.
 	if resp.StatusCode/100 != 2 {
-		responseBody, _ := io.ReadAll(resp.Body)
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		taskErr := service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode, common.UpstreamAddresses(c)...)
 		if resp.StatusCode == http.StatusGatewayTimeout {
 			taskErr.NoRetry = true
@@ -490,6 +490,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 func IsAmbiguousTaskSubmitTransportError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
+	}
+	if errors.Is(err, channel.ErrAmbiguousTaskSubmitTransport) {
+		return true
 	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) && strings.EqualFold(opErr.Op, "dial") {

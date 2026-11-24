@@ -255,15 +255,16 @@ func AdtyBrandFor(site *model.AdtySite) AdtySiteBrand {
 func adtyPlatformSender() (string, string) {
 	common.OptionMapRWMutex.RLock()
 	provider, resendFrom := common.OptionMap["EmailProvider"], common.OptionMap["ResendFrom"]
+	smtpFrom, smtpAccount := common.SMTPFrom, common.SMTPAccount
 	common.OptionMapRWMutex.RUnlock()
 	if provider == "resend" {
 		if parsed, err := mail.ParseAddress(strings.TrimSpace(resendFrom)); err == nil {
 			return parsed.Address, provider
 		}
 	}
-	from := common.SMTPFrom
+	from := smtpFrom
 	if from == "" {
-		from = common.SMTPAccount
+		from = smtpAccount
 	}
 	return from, provider
 }

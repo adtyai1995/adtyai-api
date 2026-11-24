@@ -37,7 +37,6 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Switch } from '@/components/ui/switch'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
-import { handleServerError } from '@/lib/handle-server-error'
 
 import {
   SettingsControlChildren,
@@ -241,6 +240,7 @@ export function EmailSettingsSection({
       for (const update of updates) {
         await updateOption.mutateAsync(update)
         if (update.key === 'ResendApiKey') {
+          form.setValue('ResendApiKey', '')
           form.setValue('ResendKeyConfigured', true)
           baselineRef.current = {
             ...baselineRef.current,
@@ -258,8 +258,8 @@ export function EmailSettingsSection({
       }
       form.setValue('ResendApiKey', '')
       form.setValue('SMTPToken', '')
-    } catch (error) {
-      handleServerError(error)
+    } catch {
+      // Error toast is already surfaced by updateOption's onError handler.
     }
   }
 

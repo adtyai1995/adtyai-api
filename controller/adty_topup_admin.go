@@ -203,6 +203,9 @@ func adtyFactsFromOrphan(orphan *model.PaymentOrphanEvent, method string) (model
 		facts.PaidAmount, facts.PaidCurrency = paid, "CNY"
 		facts.GatewayTradeId = get("trade_no")
 		facts.TxHash = get("trade_no")
+		paidAt := service.AdtyEpayPaidTime(get("endtime"))
+		facts.PaidAt = paidAt
+		facts.PaidTimeVerified = paidAt > 0
 	default:
 		return facts, model.ErrPaymentOrphanNotCredit
 	}
@@ -392,11 +395,12 @@ func PreviewAdtyTopUpRefund(c *gin.Context) {
 
 func RefundAdtyTopUp(c *gin.Context) {
 	var body struct {
-		Reason         string `json:"reason"`
-		IdempotencyKey string `json:"idempotency_key"`
-		RefundQuota    *int64 `json:"refund_quota"`
-		RefundUSD      string `json:"refund_usd"`
-		Proof          string `json:"proof"`
+		Reason            string `json:"reason"`
+		IdempotencyKey    string `json:"idempotency_key"`
+		RefundQuota       *int64 `json:"refund_quota"`
+		RefundUSD         string `json:"refund_usd"`
+		Proof             string `json:"proof"`
+		ReconcileOrphanID int64  `json:"reconcile_orphan_id"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -434,17 +438,21 @@ func RefundAdtyTopUp(c *gin.Context) {
 			return
 		}
 	}
-	applied, applyErr := model.ApplyAdtyTopUpManualRefund(tradeNo, body.Reason, c.GetInt("id"), body.IdempotencyKey, amount)
+	applied, applyErr := model.ApplyAdtyTopUpManualRefundForOrphan(tradeNo, body.Reason, c.GetInt("id"), body.IdempotencyKey, amount, body.ReconcileOrphanID)
 	if applyErr != nil {
 		writeAdtyFinanceError(c, applyErr)
 		return
 	}
-	recordManageAuditFor(c, applied.Refund.UserId, "adty.topup.refund.apply", map[string]any{
+	auditParams := map[string]any{
 		"trade_no": tradeNo, "refund_id": applied.Refund.RefundId,
 		"reason":        strings.TrimSpace(body.Reason),
 		"request_usd":   applied.Refund.RequestUSD.String(),
 		"request_quota": applied.Refund.RequestQuota,
-	})
+	}
+	if body.ReconcileOrphanID > 0 {
+		auditParams["reconcile_orphan_id"] = body.ReconcileOrphanID
+	}
+	recordManageAuditFor(c, applied.Refund.UserId, "adty.topup.refund.apply", auditParams)
 	common.ApiSuccess(c, applied)
 }
 

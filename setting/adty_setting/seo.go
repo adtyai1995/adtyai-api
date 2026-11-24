@@ -1,6 +1,9 @@
 package adty_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 // SEOSetting 是两个正式首页的标题、描述和分享图，键名 adty_seo_setting.<json 标签>。
 // 正式页只有英文 / 和简体中文 /zh-cn。HomeTitle、HomeDescription 的键是 en 与 zh-CN。
@@ -21,7 +24,12 @@ func init() {
 	config.GlobalConfig.Register("adty_seo_setting", &seoSetting)
 }
 
-// GetSEOSetting 返回当前的首页 SEO 配置。
+// GetSEOSetting 返回当前首页 SEO 配置的线程安全深拷贝快照。
 func GetSEOSetting() *SEOSetting {
-	return &seoSetting
+	common.OptionMapRWMutex.RLock()
+	snap := seoSetting
+	snap.HomeTitle = cloneStringMap(seoSetting.HomeTitle)
+	snap.HomeDescription = cloneStringMap(seoSetting.HomeDescription)
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }

@@ -75,7 +75,9 @@ func sendResendEmail(apiKey, from, subject, receiver, content string) error {
 	apiKey = strings.TrimSpace(apiKey)
 	sender, _ := mail.ParseAddress(strings.TrimSpace(from))
 	if sender.Name == "" {
+		OptionMapRWMutex.RLock()
 		sender.Name = SystemName
+		OptionMapRWMutex.RUnlock()
 	}
 	to := make([]string, 0)
 	for address := range strings.SplitSeq(receiver, ";") {

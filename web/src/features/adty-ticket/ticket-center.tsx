@@ -995,7 +995,7 @@ function TicketWorkspace({
                     )[message.author_role ?? ''] ??
                       'Historical author role unconfirmed'
                   )}{' '}
-                  #{message.author_id} ·{' '}
+                  {message.author_id > 0 ? `#${message.author_id} · ` : ''}
                   {formatDateTimeObject(new Date(message.created_at * 1000))}
                 </p>
                 <p className='text-sm whitespace-pre-wrap'>
@@ -1020,10 +1020,14 @@ function TicketWorkspace({
                       (detail.data.can_note || image.visibility === 'public')
                   )
                   .map((image) => {
+                    const isSupportMessage = Boolean(
+                      message.author_role && message.author_role !== 'customer'
+                    )
                     const canDelete =
                       !terminal &&
                       (detail.data.can_manage ||
                         (image.visibility === 'public' &&
+                          !isSupportMessage &&
                           (detail.data.can_control ||
                             detail.data.ticket.user_id === userId ||
                             message.author_id === userId)))

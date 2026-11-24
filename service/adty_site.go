@@ -736,11 +736,28 @@ func AdjustAdtySiteWithAudit(siteId, adminId int, adjust AdtySiteAdjust) (*model
 			return nil, "", err
 		}
 	}
+	var allowedGroupIDs []string
+	var allowedGroupsEncoded string
+	if !adjust.ClearAllowedGroups && adjust.AllowedGroups != nil {
+		var err error
+		allowedGroupIDs, allowedGroupsEncoded, err = parseAdtyAllowedGroupIDs(*adjust.AllowedGroups)
+		if err != nil {
+			return nil, "", err
+		}
+	}
 	var site model.AdtySite
 	var costChanged bool
 	var pendingScheduled bool
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if len(allowedGroupIDs) > 0 {
+			if missingID, err := model.LockActiveAdtyGroupsTx(tx, allowedGroupIDs); err != nil {
+				if errors.Is(err, model.ErrAdtyGroupNotFound) && missingID != "" {
+					return common.NewMessage("Unknown group ID {{id}} in {{key}}", map[string]any{"id": missingID, "key": "allowed_groups"})
+				}
+				return err
+			}
+		}
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrAdtySiteNotFound
@@ -780,11 +797,7 @@ func AdjustAdtySiteWithAudit(siteId, adminId int, adjust AdtySiteAdjust) (*model
 		case adjust.ClearAllowedGroups:
 			updates["allowed_groups"] = ""
 		case adjust.AllowedGroups != nil:
-			encoded, err := ParseAdtyAllowedGroups(*adjust.AllowedGroups)
-			if err != nil {
-				return err
-			}
-			updates["allowed_groups"] = encoded
+			updates["allowed_groups"] = allowedGroupsEncoded
 		}
 		if len(updates) == 0 {
 			return nil
@@ -1135,7 +1148,7 @@ func scheduleAdtySiteCloseWithAudit(siteId, adminId int, plan AdtySiteClosePlan,
 	}
 	if immediate {
 		if err := ExecuteAdtySiteClose(siteId, now); err != nil {
-			return nil, "", false, err
+			return nil, eventID, false, err
 		}
 	}
 	return result()

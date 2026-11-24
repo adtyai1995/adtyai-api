@@ -239,7 +239,8 @@ export type SenderDomain = {
   status: 'pending' | 'verified' | 'failed' | 'removing' | 'disabled'
   /** JSON array of SenderDnsRecord. */
   records: string
-  disabled_by: number
+  disabled_by?: number
+  disabled_by_platform?: boolean
   cleanup_error?: string
   last_checked_at: number
   created_at: number

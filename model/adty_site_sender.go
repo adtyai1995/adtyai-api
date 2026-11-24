@@ -17,8 +17,9 @@ type AdtySiteSenderDomain struct {
 	Domain         string `json:"domain" gorm:"type:varchar(253);index"`
 	ResendDomainId string `json:"resend_domain_id" gorm:"type:varchar(64)"`
 	Status         string `json:"status" gorm:"type:varchar(16);index"`
-	Records        string `json:"records" gorm:"type:text"` // Resend 返回的 DNS 记录（JSON 数组），给站长看
-	DisabledBy     int    `json:"disabled_by"`              // 管理员停用时记下操作人
+	Records            string `json:"records" gorm:"type:text"` // Resend 返回的 DNS 记录（JSON 数组），给站长看
+	DisabledBy         int    `json:"disabled_by"`              // 管理员停用时记下操作人
+	DisabledByPlatform bool   `json:"disabled_by_platform" gorm:"-"`
 	CleanupError   string `json:"cleanup_error" gorm:"type:text"`
 	RetryAt        int64  `json:"retry_at" gorm:"not null;default:0"`
 	LastCheckedAt  int64  `json:"last_checked_at"`

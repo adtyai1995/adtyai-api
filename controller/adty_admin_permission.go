@@ -18,6 +18,16 @@ const AdtyPermissionDeniedCode = "ADTY_PERMISSION_DENIED"
 
 var errAdtyAdminActionDenied = errors.New("admin action permission denied")
 
+func isAccessTokenRequest(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if _, ok := c.Get("access_token_legacy"); ok {
+		return true
+	}
+	return c.GetBool("use_access_token")
+}
+
 // adtyAuthorizeAdminActions checks every action of a compound operation. Token
 // scopes constrain the live user grant; neither can substitute for the other.
 func adtyAuthorizeAdminActions(c *gin.Context, permissions ...authz.Permission) error {

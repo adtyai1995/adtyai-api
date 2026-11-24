@@ -33,10 +33,19 @@ type TieredResultWrapper = billingexpr.TieredResult
 // costs a fixed multiple of the short write price: it is billed in cc, or in
 // p when cc has no price either.
 func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool) billingexpr.TokenParams {
-	p := float64(usage.PromptTokens)
-	c := float64(usage.CompletionTokens)
-	cr := float64(usage.PromptTokensDetails.CachedTokens)
-	cc := float64(usage.PromptTokensDetails.CacheCreationTokensTotal())
+	if usage == nil {
+		return billingexpr.TokenParams{}
+	}
+	promptTokens := max(usage.PromptTokens, 0)
+	completionTokens := max(usage.CompletionTokens, 0)
+	cachedTokens := max(usage.PromptTokensDetails.CachedTokens, 0)
+	cacheCreationTotal := max(usage.PromptTokensDetails.CacheCreationTokensTotal(), 0)
+	imageTokens := max(usage.PromptTokensDetails.ImageTokens, 0)
+
+	p := float64(promptTokens)
+	c := float64(completionTokens)
+	cr := float64(cachedTokens)
+	cc := float64(cacheCreationTotal)
 	cc1h := float64(0)
 	cc12h := float64(0)
 
@@ -44,24 +53,24 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 		// Upstreams may report the cache-write total without a full 5m/1h
 		// split; the unlabelled remainder is billed as 5m writes.
 		split5m, split1h := relayconvert.NormalizeCacheCreationSplit(
-			usage.PromptTokensDetails.CacheCreationTokensTotal(),
-			usage.ClaudeCacheCreation5mTokens,
-			usage.ClaudeCacheCreation1hTokens,
+			cacheCreationTotal,
+			max(usage.ClaudeCacheCreation5mTokens, 0),
+			max(usage.ClaudeCacheCreation1hTokens, 0),
 		)
-		cc = float64(split5m)
-		cc1h = float64(split1h)
+		cc = float64(max(split5m, 0))
+		cc1h = float64(max(split1h, 0))
 	}
 
-	img := float64(usage.PromptTokensDetails.ImageTokens)
+	img := float64(imageTokens)
 	imgCR := float64(0)
 	if usedVars["img_cr"] && !isClaudeUsageSemantic {
 		details := usage.PromptTokensDetails.CachedTokensDetails
 		if details != nil && details.ImageTokens != nil {
 			cachedImage := *details.ImageTokens
-			cached := usage.PromptTokensDetails.CachedTokens
-			image := usage.PromptTokensDetails.ImageTokens
+			cached := cachedTokens
+			image := imageTokens
 			valid := cachedImage >= 0 && cached >= cachedImage && image >= cachedImage &&
-				cached <= usage.PromptTokens && image <= usage.PromptTokens-(cached-cachedImage)
+				cached <= promptTokens && image <= promptTokens-(cached-cachedImage)
 			if valid {
 				remaining := cached - cachedImage
 				for _, count := range []*int{details.TextTokens, details.AudioTokens} {
@@ -77,21 +86,21 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 			}
 			if valid {
 				imgCR = float64(cachedImage)
-				cr -= imgCR
-				img -= imgCR
+				cr = max(cr-imgCR, 0)
+				img = max(img-imgCR, 0)
 			} else {
 				common.SysError(common.LogText("invalid image cache token breakdown; using aggregate cache billing"))
 			}
 		}
 	}
-	ai := float64(usage.PromptTokensDetails.AudioTokens)
-	imgO := float64(usage.CompletionTokenDetails.ImageTokens)
-	ao := float64(usage.CompletionTokenDetails.AudioTokens)
+	ai := float64(max(usage.PromptTokensDetails.AudioTokens, 0))
+	imgO := float64(max(usage.CompletionTokenDetails.ImageTokens, 0))
+	ao := float64(max(usage.CompletionTokenDetails.AudioTokens, 0))
 
 	// len = total input context length for tier condition evaluation.
 	// Non-Claude: prompt_tokens already includes everything.
 	// Claude: input_tokens is text-only, so add cache read + cache creation.
-	inputLen := p
+	inputLen := max(p, 0)
 	if isClaudeUsageSemantic {
 		inputLen = p + cr + cc + cc1h
 	}

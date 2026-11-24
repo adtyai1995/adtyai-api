@@ -112,7 +112,14 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("mj-api-secret", midjourneyChannel.Key)
-		resp, err := service.GetHttpClient().Do(req)
+		chSettings := midjourneyChannel.GetSetting()
+		httpClient, clientErr := service.GetHttpClientWithProxySettings(chSettings.Proxy, chSettings)
+		if clientErr != nil {
+			logger.LogError(ctx, common.LogText("Get Task http client error: %v", clientErr))
+			cancel()
+			continue
+		}
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			logger.LogError(ctx, common.LogText("Get Task Do req error: %v", err))
 			cancel()
@@ -124,7 +131,7 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			cancel()
 			continue
 		}
-		responseBody, err := io.ReadAll(resp.Body)
+		responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		if err != nil {
 			logger.LogError(ctx, common.LogText("Get Mjp Task parse body error: %v", err))
 			resp.Body.Close()
@@ -134,7 +141,11 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		var responseItems []dto.MidjourneyDto
 		err = common.Unmarshal(responseBody, &responseItems)
 		if err != nil {
-			logger.LogError(ctx, common.LogText("Get Mjp Task parse body error2: %v, body: %s", err, string(responseBody)))
+			preview := string(responseBody)
+			if len(preview) > 512 {
+				preview = preview[:512] + "..."
+			}
+			logger.LogError(ctx, common.LogText("Get Mjp Task parse body error2: %v, body: %s", err, preview))
 			resp.Body.Close()
 			cancel()
 			continue
@@ -277,7 +288,7 @@ func signedMidjourneyImageURL(mjID string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimRight(system_setting.ServerAddress, "/") + path
+	return strings.TrimRight(system_setting.GetServerAddress(), "/") + path
 }
 
 func GetAllMidjourney(c *gin.Context) {

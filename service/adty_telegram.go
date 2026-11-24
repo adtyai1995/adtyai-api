@@ -1074,10 +1074,11 @@ func adtyTelegramViewTx(tx *gorm.DB, purpose string) (AdtyTelegramBotView, error
 }
 
 func adtyMaskTail(value string) string {
-	if len(value) <= 4 {
+	runes := []rune(value)
+	if len(runes) <= 4 {
 		return "••••"
 	}
-	return "••••" + value[len(value)-4:]
+	return "••••" + string(runes[len(runes)-4:])
 }
 
 func mustOpenTelegramToken(row model.AdtyTelegramBot) string {

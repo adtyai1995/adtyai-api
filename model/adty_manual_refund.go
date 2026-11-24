@@ -53,8 +53,9 @@ type AdtyManualRefund struct {
 	Status           string          `json:"status" gorm:"type:varchar(32);index;not null"`
 	RequestUSD       decimal.Decimal `json:"request_usd" gorm:"type:decimal(20,8);not null"`
 	RequestQuota     int64           `json:"request_quota" gorm:"not null"`
-	Reason           string          `json:"reason" gorm:"type:text"`
-	ForeignReference decimal.Decimal `json:"foreign_reference" gorm:"type:decimal(20,8);not null;default:0"`
+	Reason            string          `json:"reason" gorm:"type:text"`
+	ForeignReference  decimal.Decimal `json:"foreign_reference" gorm:"type:decimal(20,8);not null;default:0"`
+	ReconcileOrphanId int64           `json:"reconcile_orphan_id" gorm:"index;not null;default:0"`
 
 	ApplyOperatorId int    `json:"apply_operator_id"`
 	AppliedAt       int64  `json:"applied_at"`
@@ -210,6 +211,13 @@ func isExternalReversalEventType(eventID, eventType string) bool {
 // refund/chargeback/dispute occupancy beyond already-completed internal refund S
 // (R1-004 / G.9 / 1.3.3). Must be called inside the original order lock.
 func adtyExternalRefundOffsetTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error) {
+	return adtyExternalRefundOffsetExcludingOrphanTx(tx, ext, 0)
+}
+
+// adtyExternalRefundOffsetExcludingOrphanTx computes X while optionally waiving
+// a single pending_review external-reversal orphan event that is explicitly
+// bound to the manual refund currently reconciling that external reversal (R8-009).
+func adtyExternalRefundOffsetExcludingOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder, waiveOrphanID int64) (int64, error) {
 	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
 		return 0, nil
 	}
@@ -241,6 +249,9 @@ func adtyExternalRefundOffsetTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, error)
 			return 0, err
 		}
 		for _, ev := range events {
+			if waiveOrphanID > 0 && ev.ID == waiveOrphanID && ev.Status == PaymentOrphanStatusPendingReview {
+				continue
+			}
 			if ev.ReviewID > 0 {
 				if rev, ok := reviewByID[ev.ReviewID]; ok {
 					if rev.Status == PaymentOrphanStatusDismissed || rev.Status == PaymentOrphanStatusNeverCredited {

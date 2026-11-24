@@ -290,25 +290,25 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 	}
 
-	summary.PromptTokens = usage.PromptTokens
-	summary.CompletionTokens = usage.CompletionTokens
-	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
-	summary.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
-	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens
-	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
-	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
-	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
+	summary.PromptTokens = max(usage.PromptTokens, 0)
+	summary.CompletionTokens = max(usage.CompletionTokens, 0)
+	summary.TotalTokens = summary.PromptTokens + summary.CompletionTokens
+	summary.CacheTokens = max(usage.PromptTokensDetails.CachedTokens, 0)
+	summary.CacheCreationTokens = max(usage.PromptTokensDetails.CacheCreationTokensTotal(), 0)
+	summary.CacheCreationTokens5m = max(usage.ClaudeCacheCreation5mTokens, 0)
+	summary.CacheCreationTokens1h = max(usage.ClaudeCacheCreation1hTokens, 0)
+	summary.ImageTokens = max(usage.PromptTokensDetails.ImageTokens, 0)
+	summary.AudioTokens = max(usage.PromptTokensDetails.AudioTokens, 0)
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
 	if !summary.IsClaudeUsageSemantic && !legacyClaudeDerived {
-		summary.CacheCreationTokens12h = usage.PromptTokensDetails.CacheWrite12hTokens()
+		summary.CacheCreationTokens12h = max(usage.PromptTokensDetails.CacheWrite12hTokens(), 0)
 	}
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
 		summary.IsClaudeUsageSemantic
 
 	if isOpenRouterClaudeBilling {
-		summary.PromptTokens -= summary.CacheTokens
+		summary.PromptTokens = max(summary.PromptTokens-summary.CacheTokens, 0)
 		isUsingCustomSettings := relayInfo.PriceData.UsePrice || hasCustomModelRatio(summary.ModelName, relayInfo.PriceData.ModelRatio)
 		if summary.CacheCreationTokens == 0 && relayInfo.PriceData.CacheCreationRatio != 1 && usage.Cost != 0 && !isUsingCustomSettings {
 			maybeCacheCreationTokens := CalcOpenRouterCacheCreateTokens(*usage, relayInfo.PriceData)
@@ -316,7 +316,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 				summary.CacheCreationTokens = maybeCacheCreationTokens
 			}
 		}
-		summary.PromptTokens -= summary.CacheCreationTokens
+		summary.PromptTokens = max(summary.PromptTokens-summary.CacheCreationTokens, 0)
 	}
 
 	dPromptTokens := decimal.NewFromInt(int64(summary.PromptTokens))
@@ -359,7 +359,11 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 				baseTokens = baseTokens.Sub(dCachedCreationTokens)
 				// The total includes the 12h writes, which have their own ratio.
 				dCachedCreationTokens12h := decimal.NewFromInt(int64(summary.CacheCreationTokens12h))
-				cachedCreationTokensWithRatio = dCachedCreationTokens.Sub(dCachedCreationTokens12h).Mul(dCacheCreationRatio)
+				dShortCacheCreation := dCachedCreationTokens.Sub(dCachedCreationTokens12h)
+				if dShortCacheCreation.IsNegative() {
+					dShortCacheCreation = decimal.Zero
+				}
+				cachedCreationTokensWithRatio = dShortCacheCreation.Mul(dCacheCreationRatio)
 				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(dCachedCreationTokens12h.Mul(dCacheCreationRatio12h))
 			} else {
 				remaining := max(summary.CacheCreationTokens-summary.CacheCreationTokens5m-summary.CacheCreationTokens1h, 0)

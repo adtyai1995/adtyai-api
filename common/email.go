@@ -26,25 +26,59 @@ func generateMessageID(from string) (string, error) {
 	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), GetRandomString(12), split[1]), nil
 }
 
+type smtpConfigSnapshot struct {
+	systemName         string
+	server             string
+	port               int
+	account            string
+	from               string
+	token              string
+	sslEnabled         bool
+	startTLSEnabled    bool
+	forceAuthLogin     bool
+	insecureSkipVerify bool
+}
+
+func snapshotSMTPConfig() smtpConfigSnapshot {
+	OptionMapRWMutex.RLock()
+	snap := smtpConfigSnapshot{
+		systemName:         SystemName,
+		server:             SMTPServer,
+		port:               SMTPPort,
+		account:            SMTPAccount,
+		from:               SMTPFrom,
+		token:              SMTPToken,
+		sslEnabled:         SMTPSSLEnabled,
+		startTLSEnabled:    SMTPStartTLSEnabled,
+		forceAuthLogin:     SMTPForceAuthLogin,
+		insecureSkipVerify: SMTPInsecureSkipVerify,
+	}
+	OptionMapRWMutex.RUnlock()
+	return snap
+}
+
 func shouldUseSMTPLoginAuth() bool {
-	if SMTPForceAuthLogin {
+	cfg := snapshotSMTPConfig()
+	if cfg.forceAuthLogin {
 		return true
 	}
-	return isOutlookServer(SMTPAccount) || slices.Contains(EmailLoginAuthServerList, SMTPServer)
+	return isOutlookServer(cfg.account) || slices.Contains(EmailLoginAuthServerList, cfg.server)
 }
 
 func getSMTPAuth() smtp.Auth {
-	return AutoSMTPAuth(SMTPAccount, SMTPToken)
+	cfg := snapshotSMTPConfig()
+	return AutoSMTPAuth(cfg.account, cfg.token)
 }
 
 func shouldAuthenticateSMTP() bool {
-	return SMTPAccount != "" && SMTPToken != ""
+	cfg := snapshotSMTPConfig()
+	return cfg.account != "" && cfg.token != ""
 }
 
-func smtpTLSConfig() *tls.Config {
+func smtpTLSConfig(cfg smtpConfigSnapshot) *tls.Config {
 	return &tls.Config{
-		ServerName:         SMTPServer,
-		InsecureSkipVerify: SMTPInsecureSkipVerify, // #nosec G402 -- admin-controlled SMTP compatibility option.
+		ServerName:         cfg.server,
+		InsecureSkipVerify: cfg.insecureSkipVerify, // #nosec G402 -- admin-controlled SMTP compatibility option.
 	}
 }
 
@@ -53,15 +87,15 @@ const (
 	smtpIODeadline  = 30 * time.Second
 )
 
-func newSMTPClient(addr string) (*smtp.Client, error) {
+func newSMTPClient(addr string, cfg smtpConfigSnapshot) (*smtp.Client, error) {
 	dialer := &net.Dialer{Timeout: smtpDialTimeout}
-	if SMTPSSLEnabled || (SMTPPort == 465 && !SMTPStartTLSEnabled) {
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, smtpTLSConfig())
+	if cfg.sslEnabled || (cfg.port == 465 && !cfg.startTLSEnabled) {
+		conn, err := tls.DialWithDialer(dialer, "tcp", addr, smtpTLSConfig(cfg))
 		if err != nil {
 			return nil, err
 		}
 		_ = conn.SetDeadline(time.Now().Add(smtpIODeadline))
-		client, err := smtp.NewClient(conn, SMTPServer)
+		client, err := smtp.NewClient(conn, cfg.server)
 		if err != nil {
 			_ = conn.Close()
 			return nil, err
@@ -74,19 +108,19 @@ func newSMTPClient(addr string) (*smtp.Client, error) {
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(smtpIODeadline))
-	client, err := smtp.NewClient(conn, SMTPServer)
+	client, err := smtp.NewClient(conn, cfg.server)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 
-	if SMTPStartTLSEnabled {
+	if cfg.startTLSEnabled {
 		startTLSSupported, _ := client.Extension("STARTTLS")
 		if !startTLSSupported {
 			_ = client.Close()
 			return nil, fmt.Errorf("SMTP server does not support STARTTLS")
 		}
-		if err := client.StartTLS(smtpTLSConfig()); err != nil {
+		if err := client.StartTLS(smtpTLSConfig(cfg)); err != nil {
 			_ = client.Close()
 			return nil, err
 		}
@@ -126,21 +160,22 @@ func SendEmailFrom(from string, subject string, receiver string, content string)
 
 // SendSMTPEmailFrom uses the transport frozen on a claimed delivery attempt.
 func SendSMTPEmailFrom(from, subject, receiver, content string) error {
-	displayName := SystemName
+	cfg := snapshotSMTPConfig()
+	displayName := cfg.systemName
 	if parsed, err := mail.ParseAddress(from); err == nil && parsed.Name != "" {
 		displayName = parsed.Name
 	}
 	// Compatibility fallback stays local. Publishing it onto SMTPFrom races with
 	// concurrent readers such as adtyPlatformSender while a background send runs.
-	smtpFrom := SMTPFrom
+	smtpFrom := cfg.from
 	if smtpFrom == "" {
-		smtpFrom = SMTPAccount
+		smtpFrom = cfg.account
 	}
 	id, err2 := generateMessageID(smtpFrom)
 	if err2 != nil {
 		return err2
 	}
-	if SMTPServer == "" && SMTPAccount == "" {
+	if cfg.server == "" && cfg.account == "" {
 		return NewMessage("SMTP server is not configured")
 	}
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
@@ -151,16 +186,16 @@ func SendSMTPEmailFrom(from, subject, receiver, content string) error {
 		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
 		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
 		receiver, mime.QEncoding.Encode("utf-8", displayName), smtpFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
-	auth := getSMTPAuth()
-	addr := fmt.Sprintf("%s:%d", SMTPServer, SMTPPort)
+	auth := AutoSMTPAuth(cfg.account, cfg.token)
+	addr := fmt.Sprintf("%s:%d", cfg.server, cfg.port)
 	to := strings.Split(receiver, ";")
 	var err error
-	client, err := newSMTPClient(addr)
+	client, err := newSMTPClient(addr, cfg)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	if shouldAuthenticateSMTP() {
+	if cfg.account != "" && cfg.token != "" {
 		if err = client.Auth(auth); err != nil {
 			return err
 		}

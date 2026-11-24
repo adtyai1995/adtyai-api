@@ -23,11 +23,8 @@ func SessionCookieOriginGuard() gin.HandlerFunc {
 		}
 		origin, ok := requestBrowserOrigin(c.Request)
 		if !ok || !isAllowedSessionOrigin(c.Request, origin) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"code":    "AUTH_ORIGIN_FORBIDDEN",
-				"message": "request origin is not allowed",
-			})
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Request origin is not allowed"), gin.H{"code": "AUTH_ORIGIN_FORBIDDEN"})
+			c.Abort()
 			return
 		}
 		c.Next()

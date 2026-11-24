@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -45,16 +45,40 @@ const rowValue = (row: MethodRow) =>
 export function BonusPanel(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const saved = props.site.bonus_methods
+  const savedRef = useRef<Map<string, string>>(
+    new Map(saved.map((row) => [row.method, rowValue(row)]))
+  )
   const [rows, setRows] = useState<MethodRow[]>(() =>
     saved.map(({ method, enabled, rate }) => ({ method, enabled, rate }))
   )
   useEffect(() => {
-    setRows(
-      props.site.bonus_methods.map(({ method, enabled, rate }) => ({
+    const incoming = props.site.bonus_methods.map(
+      ({ method, enabled, rate }) => ({
         method,
         enabled,
         rate,
-      }))
+      })
+    )
+    const prevSaved = savedRef.current
+    setRows((current) => {
+      const currentByMethod = new Map(current.map((row) => [row.method, row]))
+      return incoming.map((serverRow) => {
+        const existing = currentByMethod.get(serverRow.method)
+        const prevBaseline = prevSaved.get(serverRow.method)
+        const serverSerialized = rowValue(serverRow)
+        if (
+          existing &&
+          prevBaseline !== undefined &&
+          rowValue(existing) !== prevBaseline &&
+          serverSerialized === prevBaseline
+        ) {
+          return existing
+        }
+        return serverRow
+      })
+    })
+    savedRef.current = new Map(
+      incoming.map((row) => [row.method, rowValue(row)])
     )
   }, [props.site.bonus_methods])
   const savedByMethod = new Map(saved.map((row) => [row.method, rowValue(row)]))
@@ -67,7 +91,7 @@ export function BonusPanel(props: { site: OwnerSite }) {
     run: (row, proof) =>
       saveOwnerSiteMethodBonus(row.method, row.enabled, row.rate.trim(), proof),
   })
-  const closing = props.site.status === 'closing'
+  const closing = props.site.status !== 'active'
   const update = (method: string, patch: Partial<MethodRow>) =>
     setRows((prev) =>
       prev.map((row) => (row.method === method ? { ...row, ...patch } : row))

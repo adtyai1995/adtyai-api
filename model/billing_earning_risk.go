@@ -110,11 +110,32 @@ func applyBillingEarningReviewTx(tx *gorm.DB, row *BillingOperation, event *Adty
 			event.RiskReleased = approved
 		}
 	}
-	if event.ReviewStatus == AdtyEarningNeedsReview {
-		return tx.Model(&AdtySite{}).Where("id = ? AND (settle_hold_reason = ? OR settle_hold_reason IS NULL)", row.SiteId, "").
-			Update("settle_hold_reason", AdtyEarningReviewHoldReason).Error
-	}
+	// Do not update adty_sites inside the billing transaction (holding User ->
+	// AdtySiteWallet locks): locking adty_sites here reverses the canonical
+	// AdtySite -> User -> AdtySiteWallet lock order. Caller marks settle_hold_reason
+	// post-commit via markAdtyEarningReviewHold, and settleAdtySite independently
+	// checks unresolved AdtySiteEarningEvent rows.
 	return nil
+}
+
+func markAdtyEarningReviewHold(siteId int) {
+	if siteId <= 0 || DB == nil {
+		return
+	}
+	_ = DB.Transaction(func(tx *gorm.DB) error {
+		var site AdtySite
+		if err := lockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
+			return err
+		}
+		var unresolved int64
+		if err := tx.Model(&AdtySiteEarningEvent{}).Where("site_id = ? AND review_status = ?", siteId, AdtyEarningNeedsReview).Count(&unresolved).Error; err != nil {
+			return err
+		}
+		if unresolved > 0 && site.SettleHoldReason == "" {
+			return tx.Model(&site).Update("settle_hold_reason", AdtyEarningReviewHoldReason).Error
+		}
+		return nil
+	})
 }
 
 func releasedBillingEarningAuditTx(tx *gorm.DB, siteId, userId int, afterId, chargeAt int64) (string, bool, error) {

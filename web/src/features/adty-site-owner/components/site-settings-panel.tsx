@@ -569,7 +569,10 @@ function SenderDomainCard(props: { site: OwnerSite }) {
               )}
             </p>
             {query.data?.status === 'disabled' &&
-              query.data.disabled_by > 0 && (
+              Boolean(
+                query.data.disabled_by_platform ||
+                  (query.data.disabled_by ?? 0) > 0
+              ) && (
                 <p className='text-muted-foreground text-sm'>
                   {t('The platform turned off your sender domain.')}
                 </p>

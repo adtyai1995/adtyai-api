@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -133,7 +134,7 @@ func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textReques
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	domain, authUrl := getXunfeiAuthUrl(c, apiKey, apiSecret, textRequest.Model)
-	dataChan, stopChan, err := xunfeiMakeRequest(ctx, textRequest, domain, authUrl, appId)
+	dataChan, stopChan, err := xunfeiMakeRequest(ctx, info, textRequest, domain, authUrl, appId)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed)
 	}
@@ -198,7 +199,7 @@ func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	domain, authUrl := getXunfeiAuthUrl(c, apiKey, apiSecret, textRequest.Model)
-	dataChan, stopChan, err := xunfeiMakeRequest(ctx, textRequest, domain, authUrl, appId)
+	dataChan, stopChan, err := xunfeiMakeRequest(ctx, info, textRequest, domain, authUrl, appId)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed)
 	}
@@ -257,16 +258,37 @@ func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.
 	return &usage, nil
 }
 
-func xunfeiMakeRequest(ctx context.Context, textRequest dto.GeneralOpenAIRequest, domain, authUrl, appId string) (<-chan XunfeiChatResponse, <-chan error, error) {
+func xunfeiMakeRequest(ctx context.Context, info *relaycommon.RelayInfo, textRequest dto.GeneralOpenAIRequest, domain, authUrl, appId string) (<-chan XunfeiChatResponse, <-chan error, error) {
+	handshakeTimeout := 10 * time.Second
+	if common.RelayTimeout > 0 {
+		if configured := time.Duration(common.RelayTimeout) * time.Second; configured < handshakeTimeout {
+			handshakeTimeout = configured
+		}
+	}
 	d := websocket.Dialer{
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: handshakeTimeout,
+	}
+	if info != nil {
+		tr, err := service.NewRelayTransportWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
+		if err != nil {
+			return nil, nil, fmt.Errorf("xunfei transport setup failed: %w", err)
+		}
+		d.Proxy = tr.Proxy
+		d.NetDialContext = tr.DialContext
+		d.TLSClientConfig = tr.TLSClientConfig
 	}
 	conn, resp, err := d.DialContext(ctx, authUrl, nil)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		return nil, nil, err
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr != nil {
+			sanitized := *urlErr
+			sanitized.URL = relaycommon.SanitizeURLForLog(sanitized.URL)
+			return nil, nil, &sanitized
+		}
+		return nil, nil, fmt.Errorf("xunfei dial failed (%s): %w", relaycommon.SanitizeURLForLog(authUrl), err)
 	}
 	stopCancellation := context.AfterFunc(ctx, func() { _ = conn.Close() })
 
@@ -278,6 +300,10 @@ func xunfeiMakeRequest(ctx context.Context, textRequest dto.GeneralOpenAIRequest
 		return nil, nil, err
 	}
 
+	readTimeout := 60 * time.Second
+	if common.RelayTimeout > 0 {
+		readTimeout = time.Duration(common.RelayTimeout) * time.Second
+	}
 	dataChan := make(chan XunfeiChatResponse)
 	stopChan := make(chan error, 1)
 	go func() {
@@ -288,6 +314,7 @@ func xunfeiMakeRequest(ctx context.Context, textRequest dto.GeneralOpenAIRequest
 			stopChan <- responseErr
 		}()
 		for {
+			_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				responseErr = fmt.Errorf("xunfei response ended before its final frame: %w", err)

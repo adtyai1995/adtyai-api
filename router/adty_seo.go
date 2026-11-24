@@ -242,7 +242,7 @@ func adtySEOHomePage(path string) (adtySEOHomeLang, bool) {
 
 // adtySEOBaseURL 是后台的服务器地址；没设或还是上游默认值时返回 nil。
 func adtySEOBaseURL() *url.URL {
-	raw := strings.TrimRight(strings.TrimSpace(system_setting.ServerAddress), "/")
+	raw := strings.TrimRight(strings.TrimSpace(system_setting.GetServerAddress()), "/")
 	if raw == "" || raw == adtyDefaultServerAddress {
 		return nil
 	}

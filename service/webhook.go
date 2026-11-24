@@ -62,7 +62,7 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 		// 构建worker请求数据
 		workerReq := &WorkerRequest{
 			URL:    webhookURL,
-			Key:    system_setting.WorkerValidKey,
+			Key:    system_setting.GetWorkerValidKey(),
 			Method: http.MethodPost,
 			Headers: map[string]string{
 				"Content-Type": "application/json",

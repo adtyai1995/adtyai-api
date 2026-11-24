@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/gin-gonic/gin"
@@ -148,6 +149,33 @@ func WriteOfficialAuditLog(c *gin.Context, rec OfficialAuditWrite) error {
 		ctx = c.Request.Context()
 	}
 	return writeAuditLog(context.WithoutCancel(ctx), entry, false)
+}
+
+// WriteDurableOfficialAuditLog persists the audit intent to the primary DB
+// before best-effort delivery to the log store so transient LOG_DB outages
+// cannot drop official audit records. Falls back to direct write only when
+// the primary DB is unavailable.
+func WriteDurableOfficialAuditLog(c *gin.Context, rec OfficialAuditWrite) error {
+	entry, err := PrepareOfficialAuditLog(c, rec)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	if DB == nil {
+		return writeAuditLog(context.WithoutCancel(ctx), entry, false)
+	}
+	if err := AppendAuditIntentTx(DB, entry); err != nil {
+		return err
+	}
+	deliverCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := DeliverAuditIntent(deliverCtx, entry.EventId); err != nil {
+		common.SysLog(common.LogText("official audit intent delivery deferred (%s): %s", entry.EventId, err.Error()))
+	}
+	return nil
 }
 
 func OfficialAuditSiteIDFromContext(c *gin.Context) int {

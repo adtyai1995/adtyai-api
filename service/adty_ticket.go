@@ -350,6 +350,9 @@ func SearchAdtyTicketPage(userId int, queue, search string, before int64, page, 
 	}
 	for i := range rows {
 		rows[i].Status = model.NormalizeAdtyTicketStatus(rows[i].Status, rows[i].AssigneeId)
+		if !actor.isHandling() {
+			rows[i].AssigneeId = 0
+		}
 	}
 	badges, err := countAdtyTicketBadges(scope)
 	if err != nil {
@@ -516,6 +519,22 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 		return nil, err
 	}
 	ticket.Status = model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
+	if !actor.isHandling() {
+		ticket.AssigneeId = 0
+		for i := range messages {
+			if ticketSupportAuthor(messages[i].AuthorRole) {
+				messages[i].AuthorId = 0
+			}
+		}
+		for i := range events {
+			if events[i].Action == "assign" || events[i].Action == "transfer" || events[i].Action == "site_handoff" {
+				events[i].ActorId = 0
+				events[i].Detail = ""
+			} else if events[i].ActorId != actor.User.Id {
+				events[i].ActorId = 0
+			}
+		}
+	}
 	var assignees []AdtyTicketAssignee
 	if actor.isHandling() {
 		assignees, err = adtyTicketAssigneesTx(model.DB, ticket, actor.Scope == "platform" || actor.Scope == "platform_main", 0)
@@ -1093,14 +1112,21 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 				return ErrAdtyTicketForbidden
 			}
 		} else if !actor.isHandling() {
-			allowed := isAdtyTicketCustomerController(actor, ticket)
-			if !allowed && target.MessageId > 0 {
+			if target.MessageId > 0 {
 				var msg model.AdtyTicketMessage
-				if err := tx.Select("author_id").Where("id = ? AND ticket_id = ?", target.MessageId, ticket.Id).First(&msg).Error; err == nil && msg.AuthorId == actor.User.Id {
-					allowed = true
+				if err := tx.Select("author_id", "author_role").Where("id = ? AND ticket_id = ?", target.MessageId, ticket.Id).First(&msg).Error; err != nil {
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						return ErrAdtyTicketForbidden
+					}
+					return err
 				}
-			}
-			if !allowed {
+				if ticketSupportAuthor(msg.AuthorRole) || (msg.AuthorRole != "customer" && msg.AuthorId != actor.User.Id) {
+					return ErrAdtyTicketForbidden
+				}
+				if msg.AuthorId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
+					return ErrAdtyTicketForbidden
+				}
+			} else if !isAdtyTicketCustomerController(actor, ticket) {
 				return ErrAdtyTicketForbidden
 			}
 		}

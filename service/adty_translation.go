@@ -157,6 +157,12 @@ func SaveAdtyTranslationConfig(input AdtyTranslationInput, audits ...model.Audit
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
 	input.ModelName = strings.TrimSpace(input.ModelName)
 	input.BackupModel = strings.TrimSpace(input.BackupModel)
+	input.Token = strings.TrimSpace(input.Token)
+	for _, r := range input.Token {
+		if r < 0x20 || r == 0x7f {
+			return nil, ErrAdtyTranslationInvalid
+		}
+	}
 	if input.Mode != model.AdtyTranslationModeOwn && input.Mode != model.AdtyTranslationModeSet {
 		return nil, ErrAdtyTranslationInvalid
 	}

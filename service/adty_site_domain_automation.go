@@ -101,8 +101,9 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 		finished := now.Add(time.Since(started))
 		updates := map[string]any{"lease_token": "", "lease_until": 0, "last_checked_at": finished.Unix(), "next_run_at": finished.Add(5 * time.Minute).Unix()}
 		if err != nil {
+			safeErr := adtyDomainAutomationUserError(err)
 			updates["attempts"] = row.Attempts + 1
-			updates["last_error"] = err.Error()
+			updates["last_error"] = safeErr.Error()
 			updates["automation_state"] = "retry"
 			updates["next_run_at"] = finished.Add(time.Duration(min(3600, 30*(1<<min(row.Attempts, 7)))) * time.Second).Unix()
 			failures = append(failures, fmt.Errorf("domain %d: %w", row.Id, err))
@@ -167,7 +168,7 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 		cancel()
 		updates := map[string]any{"lease_token": "", "lease_until": 0}
 		if err != nil {
-			updates["last_error"] = err.Error()
+			updates["last_error"] = adtyCloudflareUserError(err).Error()
 			failures = append(failures, fmt.Errorf("domain %d turnstile backfill: %w", row.Id, err))
 		} else if widget != "" {
 			updates["turnstile_widget"] = widget
@@ -211,10 +212,10 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		}
 	}
 	if row.ProviderZone != cfg.CloudflareZoneId {
-		return fmt.Errorf("Stored Cloudflare zone differs; restore credentials or explicitly migrate this domain")
+		return common.NewMessage("Stored Cloudflare zone differs; restore credentials or explicitly migrate this domain")
 	}
 	if row.DNSRoot != "" && row.DNSRoot != cfg.AliyunDomain {
-		return fmt.Errorf("Stored DNS root differs; restore DNS configuration before continuing")
+		return common.NewMessage("Stored DNS root differs; restore DNS configuration before continuing")
 	}
 	if row.DesiredState == "redirect_only" && row.TurnstileWidget != "" {
 		if err := releaseRedirectWidget(ctx, row); err != nil {
@@ -224,7 +225,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 	var records []AdtyDNSRecord
 	if row.DNSRecords != "" {
 		if err := common.Unmarshal([]byte(row.DNSRecords), &records); err != nil {
-			return fmt.Errorf("Stored DNS resource list is invalid")
+			return common.NewMessage("Stored DNS resource list is invalid")
 		}
 	}
 	if row.DesiredState == "removed" {
@@ -241,7 +242,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 				return err
 			}
 			if candidate != nil {
-				return fmt.Errorf("Unrecorded Cloudflare creation requires reconciliation before cleanup")
+				return common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup")
 			}
 		}
 		if row.CFHostnameId != "" {
@@ -469,10 +470,48 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 	return nil
 }
 
+func adtyAliDNSUserError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var msg *common.Message
+	if errors.As(err, &msg) {
+		return msg
+	}
+	common.SysError(common.LogText("aliyun dns request failed: %s", err.Error()))
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "invalidaccesskey") || strings.Contains(lower, "signaturedoesnotmatch") ||
+		strings.Contains(lower, "forbidden") || strings.Contains(lower, "unauthorized") ||
+		strings.Contains(lower, "401") || strings.Contains(lower, "403") {
+		return common.NewMessage("Aliyun DNS rejected the configured credentials")
+	}
+	return common.NewMessage("Aliyun DNS request failed. Check the DNS configuration and try again")
+}
+
+func adtyDomainAutomationUserError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var msg *common.Message
+	if errors.As(err, &msg) {
+		return msg
+	}
+	var cfErr *AdtyCloudflareError
+	if errors.As(err, &cfErr) {
+		return adtyCloudflareUserError(err)
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "aliyun dns") || strings.Contains(lower, "alidns") {
+		return adtyAliDNSUserError(err)
+	}
+	common.SysError(common.LogText("domain automation error: %s", err.Error()))
+	return common.NewMessage("Domain automation failed. Please check the domain provider settings and try again")
+}
+
 func releaseRedirectWidget(ctx context.Context, row *model.AdtySiteDomain) error {
 	cfg := resellerSetting()
 	if cfg.CloudflareAccountId == "" {
-		return fmt.Errorf("Restore the Turnstile account to release the hostname")
+		return common.NewMessage("Restore the Turnstile account to release the hostname")
 	}
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := adtyTurnstileRemoveDomain(ctx, tx, row.TurnstileWidget, row.Hostname); err != nil {
@@ -491,7 +530,10 @@ func CheckAdtyDomainProvider(ctx context.Context, provider string) error {
 	cfg := adty_setting.GetResellerSetting()
 	switch provider {
 	case "aliyun":
-		return AdtyAliDNS().Check(ctx, cfg.AliyunDomain)
+		if err := AdtyAliDNS().Check(ctx, cfg.AliyunDomain); err != nil {
+			return adtyAliDNSUserError(err)
+		}
+		return nil
 	case "cloudflare":
 		zoneID := strings.TrimSpace(cfg.CloudflareZoneId)
 		if !adtyCloudflareZoneIDPattern.MatchString(zoneID) {
@@ -502,7 +544,7 @@ func CheckAdtyDomainProvider(ctx context.Context, provider string) error {
 			Status string `json:"status"`
 		}
 		if err := AdtyCloudflare.do(ctx, http.MethodGet, "/zones/"+url.PathEscape(zoneID)+"/custom_hostnames/fallback_origin", nil, &fallback); err != nil {
-			return err
+			return adtyCloudflareUserError(err)
 		}
 		if fallback.Origin != cfg.FallbackOrigin || fallback.Status != "active" {
 			return common.NewMessage("Cloudflare fallback origin is not active or does not match configuration")

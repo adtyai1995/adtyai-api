@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 
 	"github.com/gin-gonic/gin"
@@ -104,9 +105,11 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 
 	c.Set(contextKeyTTSRequest, volcRequest)
 
-	if volcRequest.Request.Operation == "submit" {
-		info.IsStream = true
+	baseUrl := info.ChannelBaseUrl
+	if baseUrl == "" {
+		baseUrl = channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine)
 	}
+	info.IsStream = baseUrl == channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine) && volcRequest.Request.Operation == "submit"
 
 	jsonData, err := common.Marshal(volcRequest)
 	if err != nil {
@@ -289,7 +292,10 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 			return fmt.Sprintf("%s/api/v3/responses", baseUrl), nil
 		case constant.RelayModeAudioSpeech:
 			if baseUrl == channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine) {
-				return "wss://openspeech.bytedance.com/api/v1/tts/ws_binary", nil
+				if info.IsStream {
+					return "wss://openspeech.bytedance.com/api/v1/tts/ws_binary", nil
+				}
+				return "https://openspeech.bytedance.com/api/v1/tts", nil
 			}
 			return fmt.Sprintf("%s/v1/audio/speech", baseUrl), nil
 		default:
@@ -391,6 +397,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	if info.RelayMode == constant.RelayModeAudioSpeech {
 		encoding := mapEncoding(c.GetString(contextKeyResponseFormat))
 		if info.IsStream {
+			if resp != nil {
+				defer service.CloseResponseBodyGracefully(resp)
+			}
 			volcRequestInterface, exists := c.Get(contextKeyTTSRequest)
 			if !exists {
 				return nil, types.NewErrorWithStatusCode(

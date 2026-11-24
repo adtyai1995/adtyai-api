@@ -473,9 +473,10 @@ func getAdtySiteBalances(site *model.AdtySite, ownerID int) (*AdtySiteBalances, 
 		return nil, err
 	}
 	for _, sum := range sums {
-		if sum.Kind == model.AdtySiteEarningSkipped {
+		switch sum.Kind {
+		case model.AdtySiteEarningSkipped:
 			result.SkippedUSD = sum.Total
-		} else {
+		case model.AdtySiteEarningUsage, model.AdtySiteEarningRefund:
 			result.PendingUSD = result.PendingUSD.Add(sum.Total)
 		}
 	}

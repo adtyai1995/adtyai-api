@@ -143,10 +143,10 @@ func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	}
 	ratio := groupRatio.Mul(modelRatio)
 
-	inputTextTokens := decimal.NewFromInt(int64(info.InputDetails.TextTokens))
-	outputTextTokens := decimal.NewFromInt(int64(info.OutputDetails.TextTokens))
-	inputAudioTokens := decimal.NewFromInt(int64(info.InputDetails.AudioTokens))
-	outputAudioTokens := decimal.NewFromInt(int64(info.OutputDetails.AudioTokens))
+	inputTextTokens := decimal.NewFromInt(int64(max(info.InputDetails.TextTokens, 0)))
+	outputTextTokens := decimal.NewFromInt(int64(max(info.OutputDetails.TextTokens, 0)))
+	inputAudioTokens := decimal.NewFromInt(int64(max(info.InputDetails.AudioTokens, 0)))
+	outputAudioTokens := decimal.NewFromInt(int64(max(info.OutputDetails.AudioTokens, 0)))
 
 	quota := decimal.Zero
 	quota = quota.Add(inputTextTokens)
@@ -162,6 +162,23 @@ func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	}
 
 	return common.QuotaFromDecimalChecked(quota)
+}
+
+func normalizeAudioUsageDetails(promptTokens, completionTokens, rawTotal, rawTextIn, rawAudioIn, rawTextOut, rawAudioOut int) (textIn, audioIn, textOut, audioOut, total int) {
+	prompt := max(promptTokens, 0)
+	completion := max(completionTokens, 0)
+	textIn = max(rawTextIn, 0)
+	audioIn = max(rawAudioIn, 0)
+	textOut = max(rawTextOut, 0)
+	audioOut = max(rawAudioOut, 0)
+	if textIn == 0 && prompt > audioIn {
+		textIn = prompt - audioIn
+	}
+	if textOut == 0 && completion > audioOut {
+		textOut = completion - audioOut
+	}
+	total = max(max(rawTotal, 0), prompt+completion, textIn+textOut+audioIn+audioOut)
+	return
 }
 
 func realtimeUsageToDTOUsage(usage *dto.RealtimeUsage) *dto.Usage {
@@ -209,10 +226,14 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		if modelName == "" {
 			modelName = relayInfo.OriginModelName
 		}
-		textInputTokens := usage.InputTokenDetails.TextTokens
-		textOutTokens := usage.OutputTokenDetails.TextTokens
-		audioInputTokens := usage.InputTokenDetails.AudioTokens
-		audioOutTokens := usage.OutputTokenDetails.AudioTokens
+		var textInputTokens, audioInputTokens, textOutTokens, audioOutTokens int
+		if usage != nil {
+			textInputTokens, audioInputTokens, textOutTokens, audioOutTokens, _ = normalizeAudioUsageDetails(
+				usage.InputTokens, usage.OutputTokens, usage.TotalTokens,
+				usage.InputTokenDetails.TextTokens, usage.InputTokenDetails.AudioTokens,
+				usage.OutputTokenDetails.TextTokens, usage.OutputTokenDetails.AudioTokens,
+			)
+		}
 		groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 		modelRatioDec, _, _ := ratio_setting.GetModelRatioDecimal(modelName)
 		if relayInfo.PriceData.HasBilledModelRatio() {
@@ -359,11 +380,14 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	}
 
 	useTimeSeconds := time.Now().Unix() - relayInfo.StartTime.Unix()
-	textInputTokens := usage.InputTokenDetails.TextTokens
-	textOutTokens := usage.OutputTokenDetails.TextTokens
-
-	audioInputTokens := usage.InputTokenDetails.AudioTokens
-	audioOutTokens := usage.OutputTokenDetails.AudioTokens
+	var textInputTokens, audioInputTokens, textOutTokens, audioOutTokens int
+	if usage != nil {
+		textInputTokens, audioInputTokens, textOutTokens, audioOutTokens, _ = normalizeAudioUsageDetails(
+			usage.InputTokens, usage.OutputTokens, usage.TotalTokens,
+			usage.InputTokenDetails.TextTokens, usage.InputTokenDetails.AudioTokens,
+			usage.OutputTokenDetails.TextTokens, usage.OutputTokenDetails.AudioTokens,
+		)
+	}
 
 	tokenName := ctx.GetString("token_name")
 	// 结算与预扣必须用同一个计价身份。modelName 是渠道映射后的上游名，用它查倍率会让同一次
@@ -526,7 +550,8 @@ func openRouterUsageCostDecimal(cost any) (decimal.Decimal, bool) {
 
 func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []*common.Message) error {
 	if usage == nil {
-		usage = &dto.Usage{PromptTokens: relayInfo.GetEstimatePromptTokens(), TotalTokens: relayInfo.GetEstimatePromptTokens()}
+		est := max(relayInfo.GetEstimatePromptTokens(), 0)
+		usage = &dto.Usage{PromptTokens: est, TotalTokens: est}
 	}
 
 	var tieredUsedVars map[string]bool
@@ -541,11 +566,11 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	fixedPriceBilling := tieredOk && isFixedPriceSettlement(relayInfo, tieredRes)
 
 	useTimeSeconds := time.Now().Unix() - relayInfo.StartTime.Unix()
-	textInputTokens := usage.PromptTokensDetails.TextTokens
-	textOutTokens := usage.CompletionTokenDetails.TextTokens
-
-	audioInputTokens := usage.PromptTokensDetails.AudioTokens
-	audioOutTokens := usage.CompletionTokenDetails.AudioTokens
+	textInputTokens, audioInputTokens, textOutTokens, audioOutTokens, totalTokens := normalizeAudioUsageDetails(
+		usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
+		usage.PromptTokensDetails.TextTokens, usage.PromptTokensDetails.AudioTokens,
+		usage.CompletionTokenDetails.TextTokens, usage.CompletionTokenDetails.AudioTokens,
+	)
 
 	tokenName := ctx.GetString("token_name")
 	billingModelName := relayInfo.GetBillingModelName()
@@ -584,7 +609,6 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		quota = tieredQuota
 	}
 
-	totalTokens := usage.TotalTokens
 	var logContent []*common.Message
 	if !usePrice {
 		logContent = append(logContent, common.NewMessage("Model ratio {{model_ratio}}, completion ratio {{completion_ratio}}, audio ratio {{audio_ratio}}, audio completion ratio {{audio_completion_ratio}}, group ratio {{group_ratio}}", map[string]any{

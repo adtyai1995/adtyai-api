@@ -908,6 +908,10 @@ func UpdateUser(c *gin.Context) {
 		common.ApiErrorT(c, "No permission to update users of same or higher permission level")
 		return
 	}
+	if isAccessTokenRequest(c) && (originUser.Role >= common.RoleAdminUser || updatedUser.AdminPermissions != nil) {
+		denyAdtyAdminAction(c)
+		return
+	}
 	// 二开：改分组要用户·改分组，目标分组要在分组表里（任务 2.6）
 	if !adtyCheckUserUpdate(c, originUser, &updatedUser) {
 		return
@@ -932,12 +936,21 @@ func UpdateUser(c *gin.Context) {
 	auditEvents := make([]model.AuditLog, 0, 2)
 	previousAuthVersion := originUser.AuthVersion
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// Maintain canonical lock order adty_groups -> users before EditWithTx locks updatedUser.Group.
+		if updatedUser.Group != "" {
+			if err := model.PreLockAdtyGroupsTx(tx, updatedUser.Group); err != nil {
+				return err
+			}
+		}
 		var current model.User
 		if err := model.AdtyLockForUpdate(tx).First(&current, updatedUser.Id).Error; err != nil {
 			return err
 		}
 		if !canManageTargetRole(myRole, current.Role) {
 			return common.NewMessage("No permission to update users of same or higher permission level")
+		}
+		if isAccessTokenRequest(c) && (current.Role >= common.RoleAdminUser || updatedUser.AdminPermissions != nil) {
+			return errAdtyAdminActionDenied
 		}
 		if current.Group != updatedUser.Group {
 			if err := adtyAuthorizeAdminActions(c, authz.AdtyUserGroup); err != nil {
@@ -1387,6 +1400,10 @@ func CreateUser(c *gin.Context) {
 		common.ApiErrorT(c, "Cannot create users with permission level equal to or higher than yourself")
 		return
 	}
+	if isAccessTokenRequest(c) && (user.Role >= common.RoleAdminUser || user.AdminPermissions != nil) {
+		denyAdtyAdminAction(c)
+		return
+	}
 	auditParams := map[string]any{"role": user.Role}
 	// Creating an administrator grants privilege just like promoting one.
 	if user.Role >= common.RoleAdminUser {
@@ -1404,7 +1421,7 @@ func CreateUser(c *gin.Context) {
 		Role:        user.Role, // 保持管理员设置的角色
 	}
 	authzTouched := false
-	var permissionAuditEvents []model.AuditLog
+	auditEvents := make([]model.AuditLog, 0, 2)
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := cleanUser.InsertWithTx(tx, 0); err != nil {
 			return err
@@ -1419,11 +1436,21 @@ func CreateUser(c *gin.Context) {
 			if err != nil {
 				return err
 			}
-			permissionAuditEvents = append(permissionAuditEvents, event)
+			auditEvents = append(auditEvents, event)
 			auditParams["admin_permissions_updated"] = true
 		}
+		auditParams["username"] = cleanUser.Username
+		createEvent := prepareManageAudit(c, cleanUser.Id, "user.create", auditParams)
+		if err := model.AppendAuditIntentTx(tx, createEvent); err != nil {
+			return err
+		}
+		auditEvents = append(auditEvents, createEvent)
 		return nil
 	}); err != nil {
+		if errors.Is(err, errAdtyAdminActionDenied) {
+			denyAdtyAdminAction(c)
+			return
+		}
 		if errors.Is(err, model.ErrUsernameAlreadyTaken) {
 			common.ApiErrorT(c, "Username already exists or has been deleted")
 			return
@@ -1431,20 +1458,26 @@ func CreateUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if len(permissionAuditEvents) > 0 {
-		deliverCommittedAudits(c, permissionAuditEvents)
-	}
+	deliverCommittedAudits(c, auditEvents)
+	var postCommitWarnings []string
 	if authzTouched {
 		if err := authz.ReloadPolicy(); err != nil {
-			common.ApiError(c, err)
-			return
+			postCommitWarnings = append(postCommitWarnings, "policy_reload_failed")
+		} else {
+			authz.NotifyPolicyChanged()
 		}
-		authz.NotifyPolicyChanged()
 	}
 	cleanUser.FinishInsert(0)
-
-	auditParams["username"] = cleanUser.Username
-	recordManageAuditFor(c, cleanUser.Id, "user.create", auditParams)
+	if len(postCommitWarnings) > 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success":              true,
+			"committed":            true,
+			"recovery_required":    true,
+			"post_commit_warnings": postCommitWarnings,
+			"message":              "",
+		})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -1453,6 +1486,9 @@ func CreateUser(c *gin.Context) {
 }
 
 func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, userRole int, permissions map[string]map[string]bool) (bool, error) {
+	if isAccessTokenRequest(c) && (permissions != nil || userRole >= common.RoleAdminUser) {
+		return false, errAdtyAdminActionDenied
+	}
 	if permissions == nil {
 		if userRole < common.RoleAdminUser && c.GetInt("role") == common.RoleRootUser {
 			return true, authz.ClearUserAuthorizationInTx(tx, userID)

@@ -55,6 +55,7 @@ export function GroupMigrateDialog(props: GroupMigrateDialogProps) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: adminGroupsQueryKey }),
         queryClient.invalidateQueries({ queryKey: groupDisplayQueryKey }),
+        queryClient.invalidateQueries({ queryKey: ['system-options'] }),
       ])
       toast.success(
         t(

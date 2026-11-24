@@ -132,9 +132,53 @@ func init() {
 	config.GlobalConfig.Register(ResellerSettingModule, &resellerSetting)
 }
 
-// GetResellerSetting 返回当前的分站设置。
+func cloneFloat64Ptr(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// GetResellerSetting 返回当前分站设置的线程安全深拷贝快照。
 func GetResellerSetting() *ResellerSetting {
-	return &resellerSetting
+	common.OptionMapRWMutex.RLock()
+	snap := resellerSetting
+	snap.MaxMarkup = cloneFloat64Ptr(resellerSetting.MaxMarkup)
+	snap.CostFactor = cloneFloat64Ptr(resellerSetting.CostFactor)
+	snap.PendingCostFactor = cloneFloat64Ptr(resellerSetting.PendingCostFactor)
+	snap.MinCostFactor = cloneFloat64Ptr(resellerSetting.MinCostFactor)
+	snap.PendingMinCostFactor = cloneFloat64Ptr(resellerSetting.PendingMinCostFactor)
+	snap.MaxSiteBonusExtra = cloneFloat64Ptr(resellerSetting.MaxSiteBonusExtra)
+	snap.TrialGrantMaxUSD = cloneFloat64Ptr(resellerSetting.TrialGrantMaxUSD)
+	snap.TrialGrantDailyUSD = cloneFloat64Ptr(resellerSetting.TrialGrantDailyUSD)
+	if resellerSetting.RootDomains != nil {
+		snap.RootDomains = slices.Clone(resellerSetting.RootDomains)
+	}
+	if resellerSetting.ReservedSubdomains != nil {
+		snap.ReservedSubdomains = slices.Clone(resellerSetting.ReservedSubdomains)
+	}
+	if resellerSetting.CostFactorTiers != nil {
+		snap.CostFactorTiers = slices.Clone(resellerSetting.CostFactorTiers)
+	}
+	if resellerSetting.TurnstileWidgets != nil {
+		snap.TurnstileWidgets = slices.Clone(resellerSetting.TurnstileWidgets)
+	}
+	snap.Visibility = cloneStringMap(resellerSetting.Visibility)
+	snap.TurnstileWidgetSecret = cloneStringMap(resellerSetting.TurnstileWidgetSecret)
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 // ResellerMoneyConfigured 说明开分站要的金额参数是否都设了（档位可以为空）。

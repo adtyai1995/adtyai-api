@@ -507,7 +507,7 @@ func paySiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, txID, pro
 			if err := model.AdtyLockForUpdate(tx).First(&commission, item.CommissionId).Error; err != nil {
 				return err
 			}
-			if err := consumeSiteCommissionHoldTx(tx, &commission, item.AmountUSD, true, "paid:"+strconv.FormatInt(row.Id, 10)+":"+strconv.FormatInt(item.Id, 10)); err != nil {
+			if err := consumeSiteCommissionHoldTx(tx, &commission, item.AmountUSD, !platform, "paid:"+strconv.FormatInt(row.Id, 10)+":"+strconv.FormatInt(item.Id, 10)); err != nil {
 				return err
 			}
 			if item.RefundUSD.IsPositive() {

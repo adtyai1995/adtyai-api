@@ -1141,7 +1141,7 @@ func upsertOpenAdtyAnomalyDisposition(item adtyFundAnomalyItem) error {
 		}
 		var existing []model.AdtyAnomalyDisposition
 		lookup := model.AdtyLockForUpdate(tx).
-			Where("kind = ? AND ref = ? AND status = ?", kind, ref, adtyAnomalyDispositionOpen).
+			Where("kind = ? AND ref = ? AND status IN ?", kind, ref, []string{adtyAnomalyDispositionOpen, "reviewing"}).
 			Limit(1).Find(&existing)
 		if lookup.Error != nil {
 			return lookup.Error

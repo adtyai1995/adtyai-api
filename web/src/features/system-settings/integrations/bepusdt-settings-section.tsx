@@ -153,31 +153,37 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
       }
       return order(a.key) - order(b.key)
     })
-    for (const update of updates) {
-      await updateOption.mutateAsync(update)
-      if (update.key === 'adty_bepusdt.enabled') {
-        savedRef.current = {
-          ...savedRef.current,
-          enabled: update.value as boolean,
-        }
-      } else if (update.key === 'adty_bepusdt.base_url') {
-        savedRef.current = {
-          ...savedRef.current,
-          baseUrl: update.value as string,
-        }
-      } else if (update.key === 'adty_bepusdt.trade_types') {
-        savedRef.current = {
-          ...savedRef.current,
-          tradeTypes: update.value as string,
-        }
-      } else if (update.key === 'adty_topup_setting.usdt_order_minutes') {
-        savedRef.current = {
-          ...savedRef.current,
-          orderMinutes: update.value as number,
+    try {
+      for (const update of updates) {
+        await updateOption.mutateAsync(update)
+        if (update.key === 'adty_bepusdt.secret') {
+          setSecret('')
+        } else if (update.key === 'adty_bepusdt.enabled') {
+          savedRef.current = {
+            ...savedRef.current,
+            enabled: update.value as boolean,
+          }
+        } else if (update.key === 'adty_bepusdt.base_url') {
+          savedRef.current = {
+            ...savedRef.current,
+            baseUrl: update.value as string,
+          }
+        } else if (update.key === 'adty_bepusdt.trade_types') {
+          savedRef.current = {
+            ...savedRef.current,
+            tradeTypes: update.value as string,
+          }
+        } else if (update.key === 'adty_topup_setting.usdt_order_minutes') {
+          savedRef.current = {
+            ...savedRef.current,
+            orderMinutes: update.value as number,
+          }
         }
       }
+      setSecret('')
+    } catch {
+      // Error toast is already surfaced by updateOption's onError handler.
     }
-    setSecret('')
   }
 
   return (

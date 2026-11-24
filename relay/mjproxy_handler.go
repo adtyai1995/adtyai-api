@@ -64,15 +64,17 @@ func RelayMidjourneyImage(c *gin.Context) {
 		httpClient = service.GetSSRFProtectedHTTPClient()
 	}
 	var validateErr error
-	imageURL := midjourneyTask.ImageUrl
+	logicalURL := midjourneyTask.ImageUrl
+	imageURL := logicalURL
 	serverName := ""
+	requestHost := ""
 	if proxy == "" {
 		validateErr = service.ValidateSSRFProtectedFetchURL(imageURL)
 	} else {
 		fetchSetting := system_setting.GetFetchSetting()
 		validateErr = common.ValidateURLWithFetchSetting(imageURL, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
 		if validateErr == nil {
-			imageURL, serverName, validateErr = pinMidjourneyImageURL(imageURL)
+			imageURL, serverName, requestHost, validateErr = pinMidjourneyImageURL(imageURL)
 		}
 	}
 	if validateErr != nil {
@@ -81,7 +83,7 @@ func RelayMidjourneyImage(c *gin.Context) {
 		})
 		return
 	}
-	resp, err := fetchMidjourneyImage(c, httpClient, imageURL, serverName, proxy != "")
+	resp, err := fetchMidjourneyImage(c, httpClient, imageURL, logicalURL, serverName, requestHost, proxy != "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "http_get_image_failed",
@@ -121,43 +123,44 @@ var lookupMidjourneyImageIPs = func(host string) ([]net.IP, error) {
 
 // pinMidjourneyImageURL resolves a proxied image URL and rewrites it to one
 // allowed IP. The proxy then connects to that IP instead of resolving the name again.
-func pinMidjourneyImageURL(raw string) (pinnedURL, serverName string, err error) {
+func pinMidjourneyImageURL(raw string) (pinnedURL, serverName, requestHost string, err error) {
 	fetchSetting := system_setting.GetFetchSetting()
 	if fetchSetting == nil || !fetchSetting.EnableSSRFProtection {
-		return raw, "", nil
+		return raw, "", "", nil
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	host := parsed.Hostname()
 	if host == "" {
-		return "", "", fmt.Errorf("invalid host")
+		return "", "", "", fmt.Errorf("invalid host")
 	}
 	// Redirect targets, including IP literals, must repeat the URL, private-network and port checks.
 	// Returning a literal early let a public image redirect the proxy onto loopback.
 	if err := common.ValidateURLWithFetchSetting(raw, true, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if net.ParseIP(host) != nil {
-		return raw, "", nil
+		return raw, "", "", nil
 	}
 	ips, err := lookupMidjourneyImageIPs(host)
 	if err != nil {
-		return "", "", fmt.Errorf("DNS resolution failed for %s: %v", host, err)
+		return "", "", "", fmt.Errorf("DNS resolution failed for %s: %v", host, err)
 	}
 	if len(ips) == 0 {
-		return "", "", fmt.Errorf("DNS resolution failed for %s", host)
+		return "", "", "", fmt.Errorf("DNS resolution failed for %s", host)
 	}
 	protection, err := common.NewSSRFProtectionFromFetchSetting(fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, true)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for _, ip := range ips {
 		if err := protection.ValidateResolvedIP(host, ip); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 	}
+	origHost := parsed.Host
 	port := parsed.Port()
 	if port == "" {
 		if parsed.Scheme == "https" {
@@ -170,7 +173,7 @@ func pinMidjourneyImageURL(raw string) (pinnedURL, serverName string, err error)
 	if parsed.Scheme == "https" {
 		serverName = host
 	}
-	return parsed.String(), serverName, nil
+	return parsed.String(), serverName, origHost, nil
 }
 
 type transportClosingBody struct {
@@ -186,12 +189,17 @@ func (b *transportClosingBody) Close() error {
 	return err
 }
 
-func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, serverName string, pinRedirects bool) (*http.Response, error) {
+func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, logicalURL, serverName, requestHost string, pinRedirects bool) (*http.Response, error) {
 	if client == nil {
 		return nil, fmt.Errorf("http client is nil")
 	}
 	currentURL := rawURL
+	currentLogicalURL := logicalURL
+	if currentLogicalURL == "" {
+		currentLogicalURL = rawURL
+	}
 	currentServerName := serverName
+	currentRequestHost := requestHost
 	for hop := 0; hop <= 5; hop++ {
 		oneOff := *client
 		oneOff.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -218,6 +226,9 @@ func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, serverNam
 			}
 			return nil, err
 		}
+		if currentRequestHost != "" {
+			req.Host = currentRequestHost
+		}
 		resp, err := oneOff.Do(req)
 		if err != nil {
 			if clonedTransport != nil {
@@ -235,7 +246,7 @@ func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, serverNam
 			if loc == "" || hop >= 5 {
 				return nil, fmt.Errorf("stopped after redirects")
 			}
-			baseParsed, parseErr := url.Parse(currentURL)
+			baseParsed, parseErr := url.Parse(currentLogicalURL)
 			if parseErr != nil {
 				return nil, parseErr
 			}
@@ -243,20 +254,27 @@ func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, serverNam
 			if parseErr != nil {
 				return nil, parseErr
 			}
-			nextURL := baseParsed.ResolveReference(refParsed).String()
+			nextParsed := baseParsed.ResolveReference(refParsed)
+			if strings.EqualFold(baseParsed.Scheme, "https") && !strings.EqualFold(nextParsed.Scheme, "https") {
+				return nil, fmt.Errorf("https to non-https redirect blocked")
+			}
+			nextURL := nextParsed.String()
+			currentLogicalURL = nextURL
 			if pinRedirects {
-				pinned, nextServerName, pinErr := pinMidjourneyImageURL(nextURL)
+				pinned, nextServerName, nextRequestHost, pinErr := pinMidjourneyImageURL(nextURL)
 				if pinErr != nil {
 					return nil, pinErr
 				}
 				currentURL = pinned
 				currentServerName = nextServerName
+				currentRequestHost = nextRequestHost
 			} else {
 				if valErr := service.ValidateSSRFProtectedFetchURL(nextURL); valErr != nil {
 					return nil, valErr
 				}
 				currentURL = nextURL
 				currentServerName = ""
+				currentRequestHost = ""
 			}
 			continue
 		}

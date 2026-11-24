@@ -456,6 +456,41 @@ func lockAssignableAdtyGroupsTx(tx *gorm.DB, ids []string) error {
 	return nil
 }
 
+// PreLockAdtyGroupsTx locks assignable adty_groups rows in sorted order so callers
+// that subsequently lock users/channels preserve the canonical adty_groups -> users lock order.
+func PreLockAdtyGroupsTx(tx *gorm.DB, ids ...string) error {
+	return lockAssignableAdtyGroupsTx(tx, ids)
+}
+
+// LockActiveAdtyGroupsTx locks every requested adty_groups row in sorted order and
+// requires each group ID to exist and remain active (not soft-deleted).
+func LockActiveAdtyGroupsTx(tx *gorm.DB, ids []string) (string, error) {
+	if tx == nil || len(ids) == 0 {
+		return "", nil
+	}
+	sorted := append([]string(nil), ids...)
+	slices.Sort(sorted)
+	seen := map[string]struct{}{}
+	for _, id := range sorted {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		var rows []AdtyGroup
+		if err := lockForUpdate(tx.Unscoped()).Where("id = ?", id).Limit(1).Find(&rows).Error; err != nil {
+			return "", err
+		}
+		if len(rows) == 0 || rows[0].DeletedAt.Valid {
+			return id, ErrAdtyGroupNotFound
+		}
+	}
+	return "", nil
+}
+
 func adtyFillLangs(text string) AdtyLangText {
 	out := make(AdtyLangText, len(AdtyContentLangs))
 	for _, lang := range AdtyContentLangs {

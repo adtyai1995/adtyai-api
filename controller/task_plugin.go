@@ -383,6 +383,7 @@ type taskPluginDryRunRequest struct {
 }
 
 func DryRunTaskPlugin(c *gin.Context) {
+	markIdempotentReplayNoAudit(c)
 	var request taskPluginDryRunRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		common.ApiErrorMsg(c, err.Error())

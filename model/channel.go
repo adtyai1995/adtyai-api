@@ -506,6 +506,17 @@ func BatchInsertChannels(channels []Channel) error {
 		}
 	}()
 
+	var allGroups []string
+	for _, channel_ := range channels {
+		allGroups = append(allGroups, channel_.GetGroups()...)
+	}
+	if len(allGroups) > 0 {
+		if err := lockAssignableAdtyGroupsTx(tx, allGroups); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
 	for _, chunk := range lo.Chunk(channels, 50) {
 		if err := tx.Create(&chunk).Error; err != nil {
 			tx.Rollback()

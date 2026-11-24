@@ -247,7 +247,37 @@ export function useUpdatePasskeyDomains() {
     },
     onSuccess: (result, request) => {
       if (request.preview || !result.success) return
-      queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      const nextRpId = result.data?.rp_id ?? request.rp_id
+      const nextLegacyRpIds =
+        result.data?.legacy_rp_ids ?? request.legacy_rp_ids
+      const nextOrigins = result.data?.origins ?? request.origins
+      queryClient.setQueryData<SystemOptionsResponse>(
+        ['system-options'],
+        (current) => {
+          if (!current || !Array.isArray(current.data)) return current
+          let nextData = upsertSystemOption(
+            current.data,
+            'passkey.rp_id',
+            nextRpId
+          )
+          nextData = upsertSystemOption(
+            nextData,
+            'passkey.legacy_rp_ids',
+            nextLegacyRpIds
+          )
+          nextData = upsertSystemOption(
+            nextData,
+            'passkey.origins',
+            nextOrigins
+          )
+          if (nextData === current.data) return current
+          return { ...current, data: nextData }
+        }
+      )
+      queryClient.invalidateQueries({
+        queryKey: ['system-options'],
+        refetchType: 'none',
+      })
       queryClient.invalidateQueries({ queryKey: ['status'] })
       try {
         window.localStorage.removeItem('status')

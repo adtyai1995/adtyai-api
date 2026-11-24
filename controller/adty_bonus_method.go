@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+var errAdtyBonusSiteForbidden = errors.New("site is not active for bonus rule changes")
 
 type adtyMethodBonusBody struct {
 	Method  string `json:"method"`
@@ -52,6 +55,10 @@ func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[st
 	})
 	if err != nil {
 		// R1-037: Business/authorization validation failures return 400/403 instead of 500.
+		if errors.Is(err, errAdtyBonusSiteForbidden) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This site is not active and cannot change bonus rules"))
+			return false
+		}
 		if adty_setting.IsBonusMethodValidationError(err) {
 			common.ApiErrorStatus(c, http.StatusForbidden, err)
 			return false
@@ -168,9 +175,9 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// R1-037: Disallow gift rule edits on closing sites and enforce step-up verification.
-	if site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusClosed {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This site is closing and cannot change bonus rules"))
+	// R1-037 / R8-025: Only active sites may change bonus rules (blocks paused, closing, closed).
+	if site.Status != model.AdtySiteStatusActive {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This site is not active and cannot change bonus rules"))
 		return
 	}
 	var body adtyMethodBonusBody
@@ -185,13 +192,25 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionBonus, site.Id) {
 		return
 	}
+	actorID := c.GetInt("id")
 	var authorization string
+	var txRef *gorm.DB
 	merge := func(current string) (string, error) {
+		// Lock AdtySite after options (site_method_auth -> site_method_bonus -> AdtySite)
+		// matching CreateAdtyPaymentOrder canonical lock order to serialize with site close/pause.
+		var locked model.AdtySite
+		if err := model.AdtyLockForUpdate(txRef).Where("id = ?", site.Id).First(&locked).Error; err != nil {
+			return "", err
+		}
+		if locked.OwnerUserId != actorID || locked.Status != model.AdtySiteStatusActive {
+			return "", errAdtyBonusSiteForbidden
+		}
 		return adty_setting.MergeSiteMethodBonusWithAuth(current, authorization, site.Id, body.Method, body.Enabled, body.Rate)
 	}
 	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteMethodBonus, "adty.topup.site_method_bonus.update",
 		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate, "site_id": site.Id},
 		map[string]any{"method": body.Method, "enabled": body.Enabled}, merge, func(tx *gorm.DB) error {
+			txRef = tx
 			var err error
 			authorization, err = model.LockOptionValueTx(tx, adty_setting.TopupSettingKeySiteMethodAuth)
 			return err

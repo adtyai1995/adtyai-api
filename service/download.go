@@ -24,10 +24,11 @@ type WorkerRequest struct {
 
 // DoWorkerRequest 通过Worker发送请求
 func DoWorkerRequest(req *WorkerRequest) (*http.Response, error) {
-	if !system_setting.EnableWorker() {
+	workerUrl, _, allowHTTPImage := system_setting.GetWorkerConfig()
+	if workerUrl == "" {
 		return nil, fmt.Errorf("worker not enabled")
 	}
-	if !system_setting.WorkerAllowHttpImageRequestEnabled && !strings.HasPrefix(req.URL, "https") {
+	if !allowHTTPImage && !strings.HasPrefix(req.URL, "https") {
 		return nil, fmt.Errorf("only support https url")
 	}
 
@@ -37,7 +38,6 @@ func DoWorkerRequest(req *WorkerRequest) (*http.Response, error) {
 		return nil, fmt.Errorf("request reject: %w", err)
 	}
 
-	workerUrl := system_setting.WorkerUrl
 	if !strings.HasSuffix(workerUrl, "/") {
 		workerUrl += "/"
 	}
@@ -63,11 +63,11 @@ func DoDownloadRequestWithContext(ctx context.Context, originUrl string, reason 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if system_setting.EnableWorker() {
+	if workerURL, workerKey, _ := system_setting.GetWorkerConfig(); workerURL != "" {
 		common.SysLog(common.LogText("downloading file from worker: %s, reason: %s", common.MaskSensitiveInfo(originUrl), strings.Join(reason, ", ")))
 		req := &WorkerRequest{
 			URL: originUrl,
-			Key: system_setting.WorkerValidKey,
+			Key: workerKey,
 		}
 		return DoWorkerRequest(req)
 	}

@@ -253,7 +253,7 @@ func verifyRecordsFor(hostname, cnameTarget string, h *adtyCustomHostname) strin
 
 // adtyMainHost 是主站的域名（来自后台的服务器地址），小写，没设就是空。
 func adtyMainHost() string {
-	parsed, err := url.Parse(strings.TrimSpace(system_setting.ServerAddress))
+	parsed, err := url.Parse(strings.TrimSpace(system_setting.GetServerAddress()))
 	if err != nil {
 		return ""
 	}
@@ -602,6 +602,13 @@ func adtyAttachCustomHostnameLocked(ctx context.Context, tx *gorm.DB, domain *mo
 	}
 	cfg := resellerSetting()
 	zone := strings.TrimSpace(cfg.CloudflareZoneId)
+	if domain.CFCreateStartedAt == 0 {
+		startedAt := time.Now().Unix()
+		if err := adtyDomainSnapshotQuery(tx, domain).Update("cf_create_started_at", startedAt).Error; err != nil {
+			return err
+		}
+		domain.CFCreateStartedAt = startedAt
+	}
 	created, err := AdtyCloudflare.createCustomHostname(ctx, zone, domain)
 	var apiErr *AdtyCloudflareError
 	if errors.As(err, &apiErr) && apiErr.Code == adtyCloudflareDuplicateCode {
@@ -733,14 +740,18 @@ func removeAdtySiteDomainLocked(ctx context.Context, tx *gorm.DB, domain *model.
 	if hostnameID == "" {
 		// A remote create may have succeeded before the database transaction
 		// rolled back. Only our exact generation marker proves it is ours;
-		// an unrecorded duplicate/find result is never deleted speculatively.
+		// an unrecorded candidate fails closed so removal cannot orphan it in Cloudflare (R8-030).
 		candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, domain.Hostname)
 		if err != nil {
 			return adtyCloudflareUserError(err)
 		}
-		if candidate != nil && candidate.Metadata["site_id"] == strconv.Itoa(domain.SiteId) &&
-			candidate.Metadata["adty_domain_id"] == strconv.Itoa(domain.Id) && candidate.Metadata["adty_generation"] == adtyCustomHostnameGeneration(domain) {
-			hostnameID = candidate.Id
+		if candidate != nil {
+			if candidate.Metadata["site_id"] == strconv.Itoa(domain.SiteId) &&
+				candidate.Metadata["adty_domain_id"] == strconv.Itoa(domain.Id) && candidate.Metadata["adty_generation"] == adtyCustomHostnameGeneration(domain) {
+				hostnameID = candidate.Id
+			} else {
+				return common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup")
+			}
 		}
 	}
 	// Scan configured widgets too: a successful remote PUT may not have been

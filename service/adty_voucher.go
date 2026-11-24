@@ -447,12 +447,29 @@ func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
 func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRedeemed, int64, int, error) {
 	var result *AdtyVoucherRedeemed
 	var credit int64
+	var voucherHint model.AdtyVoucher
+	_ = model.DB.Select("target_site_id", "source_site_id").Where("code_hash = ?", hash).Limit(1).Find(&voucherHint).Error
+	preLockSiteID := voucherHint.TargetSiteId
+	if preLockSiteID == 0 {
+		preLockSiteID = voucherHint.SourceSiteId
+	}
 	var marginResumedSiteID int
 	var redeemAudit map[string]any
 	var redeemAuditEntry *model.AuditLog
 	var redeemVoucherID int64
 	var redeemSiteID int
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var lockedSite *model.AdtySite
+		if preLockSiteID > 0 {
+			var s model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).First(&s, preLockSiteID).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+			} else {
+				lockedSite = &s
+			}
+		}
 		user, err := lockAdtyVoucherUser(tx, userId)
 		if err != nil {
 			return err
@@ -463,6 +480,13 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 			return lookup.Error
 		}
 		if lookup.RowsAffected == 0 {
+			return ErrAdtyVoucherInvalid
+		}
+		actualSiteID := voucher.TargetSiteId
+		if actualSiteID == 0 {
+			actualSiteID = voucher.SourceSiteId
+		}
+		if actualSiteID > 0 && (lockedSite == nil || lockedSite.Id != actualSiteID) {
 			return ErrAdtyVoucherInvalid
 		}
 		if voucher.Status == model.AdtyVoucherStatusRedeemed {
@@ -481,7 +505,7 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 		if voucher.Status != model.AdtyVoucherStatusPending {
 			return ErrAdtyVoucherInvalid
 		}
-		if err := adtyVoucherRedeemAllowed(tx, user, &voucher); err != nil {
+		if err := adtyVoucherRedeemAllowed(tx, user, &voucher, lockedSite); err != nil {
 			return err
 		}
 		trade, err := allocateAdtyVoucherTradeNo(tx, hash, attempt)
@@ -1150,7 +1174,7 @@ func creditAdtyVoucherMarginTx(tx *gorm.DB, siteId int, amount decimal.Decimal, 
 	return err
 }
 
-func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.AdtyVoucher) error {
+func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.AdtyVoucher, lockedSite *model.AdtySite) error {
 	if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, user.Id); empErr != nil {
 		return empErr
 	} else if isEmp {
@@ -1165,11 +1189,7 @@ func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.Adty
 		if voucher.DesignatedOwnerId <= 0 || user.Id != voucher.DesignatedOwnerId {
 			return ErrAdtyVoucherWrongAccount
 		}
-		var site model.AdtySite
-		if err := tx.First(&site, voucher.TargetSiteId).Error; err != nil {
-			return err
-		}
-		if site.Status != model.AdtySiteStatusActive {
+		if lockedSite == nil || lockedSite.Id != voucher.TargetSiteId || lockedSite.Status != model.AdtySiteStatusActive {
 			return ErrAdtyVoucherWrongAccount
 		}
 	case model.AdtyVoucherPurposeSiteCustomer:
@@ -1193,11 +1213,7 @@ func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.Adty
 		if user.Id != voucher.IssuerId {
 			return ErrAdtyVoucherWrongAccount
 		}
-		var site model.AdtySite
-		if err := tx.First(&site, voucher.TargetSiteId).Error; err != nil {
-			return err
-		}
-		if site.Status != model.AdtySiteStatusActive {
+		if lockedSite == nil || lockedSite.Id != voucher.TargetSiteId || lockedSite.Status != model.AdtySiteStatusActive {
 			return ErrAdtyVoucherWrongAccount
 		}
 	default:

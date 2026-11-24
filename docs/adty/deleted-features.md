@@ -4,13 +4,13 @@
 
 - 删除个人页签到卡片、专用请求函数和响应类型，以及计费设置中的签到分区、默认值和表单。历史 `/system-settings/billing/checkin` 书签按现有未知分区规则回到额度设置。
 - 删除 `web/src/features/profile/components/checkin-calendar-card.tsx` 和 `web/src/features/system-settings/general/checkin-settings-section.tsx`，不再受历史 `checkin_enabled` 或 `checkin_setting.*` 启用值影响。
-- 保留 `GET/POST /api/user/checkin` 的永久 403、历史签到记录、`checkin_quota` 和退款来源保护；不改写或删除历史资金。
+- 删除 `GET/POST /api/user/checkin` 路由（不再注册，访问返回 404）；保留历史签到记录、`checkin_quota` 和退款来源保护，不改写或删除历史资金。
 - 保留语言包旧键与历史数据库选项用于升级兼容；不再提供操作入口。
-- 提交：`fix(ui): remove retired check-in controls and refresh read badges`。
+- 提交：`fix(ui): remove retired check-in controls and refresh read badges`（后续 2026-11-16 彻底移除路由）。
 
 ## Stripe / Creem / Waffo 与遗留单通道易支付入账入口
 
-- 保留下列路由的永久 403（`This feature is not available`），在鉴权和入账之前拒绝，避免合并时静默恢复旧处理函数；不改写或删除历史充值行、回调日志和设置。
+- 已彻底删除下列已退役路由（不再注册，访问返回 404，而非保留 403 占位），同时不改写或删除历史充值行、回调日志和设置：
   - `POST /api/stripe/webhook`、`POST /api/creem/webhook`、`POST /api/waffo/webhook`、`POST /api/waffo-pancake/webhook/:env`
   - `POST /api/user/stripe/pay`、`POST /api/user/stripe/amount`
   - `POST /api/user/creem/pay`
@@ -18,10 +18,10 @@
   - `POST /api/user/waffo-pancake/pay`、`POST /api/user/waffo-pancake/amount`
   - 遗留 `GET /api/user/epay/notify` 和 `POST /api/user/epay/notify`（无 `:channelId`，`controller.EpayNotify`）
   - 仅用于退役托管目录的 `POST /api/option/waffo-pancake/catalog|pair|save`
-- `GET /api/user/topup/info` 的 `enable_stripe_topup`、`enable_creem_topup`、`enable_waffo_topup`、`enable_waffo_pancake_topup` 固定为 false，不再跟随现场 Stripe/Creem/Waffo 设置。官方 `GetAdtyTopUpInfo` / `AdtyPaymentScenesForUser` 不再向客户展示这些托管方式。
+- `GET /api/user/topup/info` 已随退役清理一并下线（返回 404）；官方 `GetAdtyTopUpInfo` / `AdtyPaymentScenesForUser` 不再向客户展示这些托管方式。
 - 保留官方资金路径：`POST /api/user/pay`（`RequestAdtyEpayPay`，仍需登录）、`GET/POST /api/user/epay/notify/:channelId`（`AdtyEpayNotify`）、`/api/adty/topup/*` 报价/下单/取消/查询，以及官方 USDT/易支付通道和已有管理员退款/补单。
 - 保留历史订单的管理员查询、补单和退款能力；不把退役处理函数改造成新的 ADTY 批次入账入口。
-- 提交：`Close retired Stripe, Creem, Waffo, and legacy epay notify payment entries (ISS-R1-0021).`。
+- 提交：`Close retired Stripe, Creem, Waffo, and legacy epay notify payment entries (ISS-R1-0021).`（后续 2026-11-16 彻底移除相关路由与 `GET /api/user/topup/info`）。
 
 ## Playground（最新全平台方案）
 

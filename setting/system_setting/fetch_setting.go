@@ -1,6 +1,11 @@
 package system_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"slices"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 type FetchSetting struct {
 	EnableSSRFProtection   bool     `json:"enable_ssrf_protection"` // 是否启用SSRF防护
@@ -30,5 +35,17 @@ func init() {
 }
 
 func GetFetchSetting() *FetchSetting {
-	return &defaultFetchSetting
+	common.OptionMapRWMutex.RLock()
+	snap := defaultFetchSetting
+	if defaultFetchSetting.DomainList != nil {
+		snap.DomainList = slices.Clone(defaultFetchSetting.DomainList)
+	}
+	if defaultFetchSetting.IpList != nil {
+		snap.IpList = slices.Clone(defaultFetchSetting.IpList)
+	}
+	if defaultFetchSetting.AllowedPorts != nil {
+		snap.AllowedPorts = slices.Clone(defaultFetchSetting.AllowedPorts)
+	}
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }

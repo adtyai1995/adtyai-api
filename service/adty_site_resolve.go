@@ -215,7 +215,7 @@ func hostOfURL(raw string) string {
 // unconfigured or localhost default (used to allow initial /setup on a fresh
 // deployment before ServerAddress is configured — R1-013).
 func AdtyIsDefaultServerAddress() bool {
-	host := hostOfURL(system_setting.ServerAddress)
+	host := hostOfURL(system_setting.GetServerAddress())
 	return host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
@@ -258,7 +258,7 @@ func AdtyIsMainSiteHost(host string) bool {
 	if host == "" {
 		return false
 	}
-	siteHost := hostOfURL(system_setting.ServerAddress)
+	siteHost := hostOfURL(system_setting.GetServerAddress())
 	return siteHost != "" && host == siteHost
 }
 
@@ -418,7 +418,7 @@ func AdtySiteServesCustomers(site *model.AdtySite) bool {
 // AdtySiteBaseURL 是站点的平台子域名地址，不用自定义域名；nil 返回 ServerAddress。
 // 协议跟主站 ServerAddress 一样（生产是 https）。邮件链接和支付跳回都用它（11.2、11.3）。
 func AdtySiteBaseURL(site *model.AdtySite) string {
-	main := strings.TrimRight(system_setting.ServerAddress, "/")
+	main := strings.TrimRight(system_setting.GetServerAddress(), "/")
 	if site == nil {
 		return main
 	}
@@ -434,7 +434,7 @@ func AdtySiteBaseURL(site *model.AdtySite) string {
 //
 // 支付返回与账号邮件使用这个地址，SEO 的 canonical 继续使用稳定的平台子域名。
 func AdtySitePublicBaseURL(site *model.AdtySite) string {
-	main := strings.TrimRight(system_setting.ServerAddress, "/")
+	main := strings.TrimRight(system_setting.GetServerAddress(), "/")
 	if site == nil {
 		return main
 	}
@@ -473,7 +473,7 @@ func adtyAdvertisedDomain(siteID int, role string) string {
 func AdtySiteAPIBaseURL(site *model.AdtySite) string {
 	if site == nil {
 		apiBase := strings.TrimRight(strings.TrimSpace(adty_setting.GetSiteSetting().APIBaseURL), "/")
-		if apiBase == "" || hostOfURL(apiBase) == hostOfURL(system_setting.ServerAddress) {
+		if apiBase == "" || hostOfURL(apiBase) == hostOfURL(system_setting.GetServerAddress()) {
 			return ""
 		}
 		return apiBase
@@ -490,7 +490,7 @@ func AdtySiteAPIBaseURL(site *model.AdtySite) string {
 
 // adtyScheme 跟主站 ServerAddress 用同一个协议（生产是 https）。
 func adtyScheme() string {
-	if parsed, err := url.Parse(strings.TrimRight(system_setting.ServerAddress, "/")); err == nil && parsed.Scheme != "" {
+	if parsed, err := url.Parse(strings.TrimRight(system_setting.GetServerAddress(), "/")); err == nil && parsed.Scheme != "" {
 		return parsed.Scheme
 	}
 	return "https"
@@ -708,7 +708,7 @@ func AdtyEnsureSiteCustomer(userId, siteId int, ipHash, deviceHash, termsVersion
 	})
 	if err != nil {
 		sID := siteId
-		_ = model.WriteOfficialAuditLog(nil, model.OfficialAuditWrite{
+		if auditErr := model.WriteDurableOfficialAuditLog(nil, model.OfficialAuditWrite{
 			UserId:     userId,
 			SiteID:     &sID,
 			ObjectType: "site_customer",
@@ -724,7 +724,9 @@ func AdtyEnsureSiteCustomer(userId, siteId int, ipHash, deviceHash, termsVersion
 			},
 			Result:  model.AuditResultFailure,
 			Success: false,
-		})
+		}); auditErr != nil {
+			common.SysLog(common.LogText("site customer relation recovery audit write failed: %s", auditErr.Error()))
+		}
 		return err
 	}
 	return nil

@@ -125,29 +125,22 @@ func SiteGroupAllowed(siteID int, group string) bool {
 	return false
 }
 
-// ParseAdtyAllowedGroups checks a site allow-list. An empty value clears it.
-func ParseAdtyAllowedGroups(raw string) (string, error) {
+// parseAdtyAllowedGroupIDs validates JSON structure and normalizes group IDs without touching DB.
+func parseAdtyAllowedGroupIDs(raw string) ([]string, string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", nil
+		return nil, "", nil
 	}
 	var groups []string
 	if err := common.UnmarshalJsonStr(raw, &groups); err != nil || len(groups) == 0 {
-		return "", common.NewMessage("Invalid parameters")
-	}
-	active, err := model.ActiveAdtyGroupIDs()
-	if err != nil {
-		return "", err
+		return nil, "", common.NewMessage("Invalid parameters")
 	}
 	seen := map[string]struct{}{}
 	clean := make([]string, 0, len(groups))
 	for _, id := range groups {
 		id = strings.TrimSpace(id)
 		if id == "" || id == "auto" {
-			return "", common.NewMessage("Invalid parameters")
-		}
-		if _, ok := active[id]; !ok {
-			return "", common.NewMessage("Unknown group ID {{id}} in {{key}}", map[string]any{"id": id, "key": "allowed_groups"})
+			return nil, "", common.NewMessage("Invalid parameters")
 		}
 		if _, ok := seen[id]; ok {
 			continue
@@ -157,7 +150,25 @@ func ParseAdtyAllowedGroups(raw string) (string, error) {
 	}
 	encoded, err := common.Marshal(clean)
 	if err != nil {
+		return nil, "", err
+	}
+	return clean, string(encoded), nil
+}
+
+// ParseAdtyAllowedGroups checks a site allow-list. An empty value clears it.
+func ParseAdtyAllowedGroups(raw string) (string, error) {
+	clean, encoded, err := parseAdtyAllowedGroupIDs(raw)
+	if err != nil || len(clean) == 0 {
+		return encoded, err
+	}
+	active, err := model.ActiveAdtyGroupIDs()
+	if err != nil {
 		return "", err
 	}
-	return string(encoded), nil
+	for _, id := range clean {
+		if _, ok := active[id]; !ok {
+			return "", common.NewMessage("Unknown group ID {{id}} in {{key}}", map[string]any{"id": id, "key": "allowed_groups"})
+		}
+	}
+	return encoded, nil
 }

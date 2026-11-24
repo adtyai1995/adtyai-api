@@ -28,6 +28,7 @@ func GetModelPricingIssues(c *gin.Context) {
 }
 
 func PreviewModelPricingConversion(c *gin.Context) {
+	markIdempotentReplayNoAudit(c)
 	var request struct {
 		ModelName string              `json:"model_name"`
 		Pricing   model.PricingValues `json:"pricing"`
@@ -45,6 +46,7 @@ func PreviewModelPricingConversion(c *gin.Context) {
 }
 
 func PreviewModelPricing(c *gin.Context) {
+	markIdempotentReplayNoAudit(c)
 	var request struct {
 		ModelName string              `json:"model_name"`
 		Pricing   model.PricingValues `json:"pricing"`

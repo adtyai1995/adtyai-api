@@ -121,7 +121,7 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 			"id": "x.id", "user_id": "x.customer_user_id", "site_id": "x.site_id", "order_type": "'staff_adjustment'", "source_type": "'staff_adjustment'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'STAFF-ADJ-' || CAST(x.id AS TEXT)",
 			"payment_method": "x.direction", "payment_provider": "'staff_balance'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.reviewed_at", "face_usd": "x.amount_usd", "paid_currency": "'USD'",
 		}},
-		{from: "adty_balance_ledgers x", where: "x.type NOT IN ('topup', 'refund') AND COALESCE(x.ref_type, '') NOT IN ('staff_balance', 'staff_balance_request')", columns: map[string]string{
+		{from: "adty_balance_ledgers x", where: "x.type NOT IN ('topup', 'refund', 'voucher') AND COALESCE(x.ref_type, '') NOT IN ('staff_balance', 'staff_balance_request', 'site_invite_withdrawal', 'referral_withdrawal')", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "NULL", "order_type": "'other'", "source_type": "'balance_ledger'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'LEDGER-' || CAST(x.id AS TEXT)",
 			"payment_method": "x.type", "payment_provider": "'wallet'", "status": "'completed'", "create_time": "x.created_at", "complete_time": "x.created_at", "amount": "x.delta_quota", "face_usd": "x.delta_quota / 500000.0", "credit_quota": "x.delta_quota", "paid_currency": "'USD'",
 		}},

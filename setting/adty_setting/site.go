@@ -1,6 +1,9 @@
 package adty_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 // SiteSetting 是站点的公开配置（任务 8.3），键名 adty_site_setting.<json 标签>，GET /api/adty/site 原样返回。
 // 键名不能以 Key、Secret、Token 结尾，否则 GET /api/option/ 会把它们过滤掉，后台表单读不回来。
@@ -21,7 +24,10 @@ func init() {
 	config.GlobalConfig.Register("adty_site_setting", &siteSetting)
 }
 
-// GetSiteSetting 返回当前的站点配置。
+// GetSiteSetting 返回当前站点配置的线程安全快照。
 func GetSiteSetting() *SiteSetting {
-	return &siteSetting
+	common.OptionMapRWMutex.RLock()
+	snap := siteSetting
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }

@@ -119,7 +119,7 @@ func DeleteLoginSession(c *gin.Context) {
 	}
 	sid := strings.TrimSpace(c.Param("sid"))
 	if sid == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "AUTH_SESSION_ID_REQUIRED", "message": "session id is required"})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Session ID is required"), gin.H{"code": "AUTH_SESSION_ID_REQUIRED"})
 		return
 	}
 	revoked, err := model.RevokeUserSession(identity.UserID, sid, "user_revoked")
@@ -128,7 +128,7 @@ func DeleteLoginSession(c *gin.Context) {
 		return
 	}
 	if !revoked {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "code": "AUTH_SESSION_NOT_FOUND", "message": "session not found"})
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Session not found"), gin.H{"code": "AUTH_SESSION_NOT_FOUND"})
 		return
 	}
 	if rawRefreshToken, cookieErr := c.Cookie(service.RefreshCookieName); cookieErr == nil {
@@ -156,11 +156,7 @@ func RevokeOtherLoginSessions(c *gin.Context) {
 func requireBrowserSession(c *gin.Context) (service.AuthIdentity, bool) {
 	identity, ok := middleware.GetSessionAuthIdentity(c)
 	if !ok {
-		c.JSON(http.StatusForbidden, gin.H{
-			"success": false,
-			"code":    "AUTH_SESSION_REQUIRED",
-			"message": "a dashboard login session is required",
-		})
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("A dashboard login session is required"), gin.H{"code": "AUTH_SESSION_REQUIRED"})
 		return service.AuthIdentity{}, false
 	}
 	return identity, true
@@ -177,7 +173,11 @@ func writeAuthSessionError(c *gin.Context, err error) {
 		// failure is indistinguishable from the client side.
 		logger.LogError(c.Request.Context(), common.LogText("auth session internal error (%s %s): %v", c.Request.Method, c.Request.URL.Path, err))
 	}
-	c.JSON(status, gin.H{"success": false, "code": code, "message": http.StatusText(status)})
+	msgText := http.StatusText(status)
+	if msgText == "" {
+		msgText = "Internal Server Error"
+	}
+	common.ApiErrorStatus(c, status, common.NewMessage(msgText), gin.H{"code": code})
 }
 
 func setAuthNoStore(c *gin.Context) {

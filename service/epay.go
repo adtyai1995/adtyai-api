@@ -14,7 +14,7 @@ var ErrAdtyUnverifiedPaymentTLS = errors.New("payment order query requires a ver
 
 func GetCallbackAddress() string {
 	if operation_setting.CustomCallbackAddress == "" {
-		return system_setting.ServerAddress
+		return system_setting.GetServerAddress()
 	}
 	return operation_setting.CustomCallbackAddress
 }

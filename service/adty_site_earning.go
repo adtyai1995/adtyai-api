@@ -673,7 +673,7 @@ func ReviewAdtySiteCustomerWithAudit(userId, adminId int, convertSkipped bool) (
 			}
 			var events []model.AdtySiteEarningEvent
 			if err := model.AdtyLockForUpdate(tx).Where("user_id = ? AND site_id = ? AND risk_flag <> ? AND (risk_released = ? OR risk_released IS NULL) AND (review_status = ? OR review_status IS NULL)",
-				userId, customer.SiteId, "", false, "").Order("id ASC").Find(&events).Error; err != nil {
+				userId, customer.SiteId, "", false, "").Order("operation_key ASC").Find(&events).Error; err != nil {
 				return err
 			}
 			for _, event := range events {
