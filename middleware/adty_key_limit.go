@@ -39,7 +39,7 @@ func AdtyKeyRateLimit(midjourney ...bool) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		now := adtyLimitNow()
+		now := adtyCurrentTime()
 		if limit.TPM > 0 {
 			allowed, err := adtyKeyTPMAllow(tokenID, limit.TPM, now)
 			if err != nil {
@@ -126,9 +126,7 @@ var (
 	adtyKeyTPMMemorySwept int64 = -1
 	adtyKeyTPMMemoryMu    sync.Mutex
 
-	adtyKeyConcurrencyMemory = map[int]map[string]time.Time{}
-	adtyKeyConcurrencyMu     sync.Mutex
-	adtyKeyConcurrencySeq    atomic.Uint64
+	adtyKeyConcurrencySeq atomic.Uint64
 
 	adtyKeyRateTTLArg      any = adtyKeyRateTTLSeconds
 	adtyKeyRateIncrWithTTL     = redis.NewScript(`
@@ -225,7 +223,7 @@ func RecordAdtyKeyTPM(tokenID, tokens int, nowOpt ...time.Time) error {
 	if tokenID <= 0 || tokens <= 0 {
 		return nil
 	}
-	now := adtyLimitNow()
+	now := adtyCurrentTime()
 	if len(nowOpt) > 0 {
 		now = nowOpt[0]
 	}
@@ -330,59 +328,22 @@ func init() {
 }
 
 func adtyKeyConcurrencyAcquire(c *gin.Context, tokenID, maxConcurrency int, now time.Time) (func(), bool, error) {
+	store, err := adtyStore()
+	if err != nil {
+		return nil, false, err
+	}
 	seq := adtyKeyConcurrencySeq.Add(1)
 	reqID := ""
 	if c != nil {
 		reqID = c.GetString(common.RequestIdKey)
 	}
 	member := fmt.Sprintf("%s:%d", reqID, seq)
-	if common.RedisEnabled {
-		if common.RDB == nil {
-			return nil, false, errAdtyLimitStoreUnavailable
-		}
-		store := adtylimit.NewRedisStore(common.RDB)
-		subjectID := adtylimit.KeySubjectID(tokenID)
-		ok, err := store.Acquire(subjectID, member, maxConcurrency, now, adtylimit.ConcurrencyTTL)
-		if err != nil || !ok {
-			return nil, ok, err
-		}
-		var once sync.Once
-		return func() {
-			once.Do(func() {
-				_ = store.Release(subjectID, member)
-			})
-		}, true, nil
+	release, reason, err := adtylimit.CheckKey(store, tokenID, adtylimit.Limits{Concurrency: maxConcurrency}, member, now)
+	if err != nil {
+		return nil, false, err
 	}
-
-	adtyKeyConcurrencyMu.Lock()
-	active := adtyKeyConcurrencyMemory[tokenID]
-	if active == nil {
-		active = map[string]time.Time{}
-		adtyKeyConcurrencyMemory[tokenID] = active
-	}
-	for m, exp := range active {
-		if !now.Before(exp) {
-			delete(active, m)
-		}
-	}
-	if len(active) >= maxConcurrency {
-		adtyKeyConcurrencyMu.Unlock()
+	if reason != adtylimit.ReasonNone {
 		return nil, false, nil
 	}
-	active[member] = now.Add(adtylimit.ConcurrencyTTL)
-	adtyKeyConcurrencyMu.Unlock()
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			adtyKeyConcurrencyMu.Lock()
-			if current := adtyKeyConcurrencyMemory[tokenID]; current != nil {
-				delete(current, member)
-				if len(current) == 0 {
-					delete(adtyKeyConcurrencyMemory, tokenID)
-				}
-			}
-			adtyKeyConcurrencyMu.Unlock()
-		})
-	}, true, nil
+	return release, true, nil
 }

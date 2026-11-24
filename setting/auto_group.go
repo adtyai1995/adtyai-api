@@ -19,12 +19,20 @@ var (
 	}
 )
 
-var DefaultUseAutoGroup = false
+var defaultUseAutoGroup atomic.Bool
 
 var maxTokenAutoGroups atomic.Int64
 
 func init() {
 	maxTokenAutoGroups.Store(DefaultMaxTokenAutoGroups)
+}
+
+func GetDefaultUseAutoGroup() bool {
+	return defaultUseAutoGroup.Load()
+}
+
+func SetDefaultUseAutoGroup(v bool) {
+	defaultUseAutoGroup.Store(v)
 }
 
 func ContainsAutoGroup(group string) bool {
@@ -37,6 +45,9 @@ func UpdateAutoGroupsByJsonString(jsonString string) error {
 	parsed := make([]string, 0)
 	if err := common.Unmarshal([]byte(jsonString), &parsed); err != nil {
 		return err
+	}
+	if parsed == nil {
+		return fmt.Errorf("AutoGroups must be a JSON array")
 	}
 	autoGroupsMu.Lock()
 	autoGroups = parsed

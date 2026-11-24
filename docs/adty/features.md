@@ -193,7 +193,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 - 上线时要先把批量注册阈值设成 0，真实 IP 验证通过后再改回 3（见上线清单）。代码默认是 3。
 
-任务 6.1–6.8、11.1。和方案不一致：方案说合作伙伴比例 15–20，代码只限制 0–100（2026-11-17 用户确认保持现状，由 Root 自己填）；方案 11.1 要求「站长首次提现必须人工审核」：现在站长收益走独立提现，每笔都由 Root 审核后打款，不再转进推广佣金余额（见「站长收益提现」）。
+任务 6.1–6.8、11.1。合作伙伴比例受后台配置的合作伙伴比例范围约束（未单独配置区间时默认 0–100）；方案 11.1 要求「站长首次提现必须人工审核」：现在站长收益走独立提现，每笔都由 Root 审核后打款，不再转进推广佣金余额（见「站长收益提现」）。
 
 ## 分站邀请佣金
 
@@ -203,14 +203,14 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 - **成立**：站长在本站设置一级返佣比例（0–100%）、待覆盖阈值（USD）和观察天数后可开启。每个新订单冻结当时的邀请人、比例、阈值和观察天数。先冻结本站收益。收益不够时，只在 Root 已授权的保证金周期额度内冻结。两边都不够就保持待覆盖，这时不能转余额，也不能提现。观察期从覆盖完成起算，零天表示足额覆盖后立即可用。
 - **转站内余额**：扣掉对应冻结，并在同一事务里按 1 USD = 500000 给邀请人加可消费额度。
-- **现金提现**：可转入余额；外部打款仅为支付宝或 USDT。只提交申请不释放冻结。待审驳回、申请人在主站撤销时限内取消、审核通过后打款失败，冻结都留着。站长标记打款完成后，冻结退回原来的收益或保证金。站点营业期间审核人为该站站长；站点关闭后，存量分站客户邀请佣金提现由主站 Root 承接审核与打款（`/api/user/admin/referral/closed-site-withdrawals`）。
+- **现金提现**：可转入余额；外部打款仅为支付宝或 USDT。只提交申请不释放冻结。待审驳回、申请人在主站撤销时限内取消、审核通过后打款失败，冻结都留着。站长标记打款完成后，冻结退回原来的收益或保证金。站点营业期间审核人为该站站长；站点关闭后，存量分站客户邀请佣金提现由具备主站推广读取、审核与打款权限的主站推广财务席位（含 Root）承接审核与打款（`/api/user/admin/referral/closed-site-withdrawals`）。
 - **拆开用**：转余额的部分扣冻结，外部打款的部分释放冻结，两边按金额分别记账。
 - **退款**：按已完成本金比例。还冻着的释放；已转余额的冲回用户余额；已外部打款并释放的，不再扣站长，只记追偿。
 - **未设参数**：站长未配置本站最低提现额、USDT 手续费及人民币汇率时，现金方式拒绝。不抄 `adty_site_withdraw.*`，也不调用 `Referral.CreateWithdrawal`。
 
 **后台**：站长在站长中心「邀请佣金提现」设置本站规则，按状态筛选和分页审核本站客户的申请。客户在钱包页申请。
 
-**表和接口**：`adty_site_invite_commissions`、`adty_site_invite_withdrawals`、`adty_site_invite_withdrawal_items`。客户 `GET`/`POST /api/adty/site-commissions/withdrawals`；站长 `GET /api/adty/site/commission-withdrawals`、`POST /api/adty/site/commission-withdrawals/:id/review`、`POST /api/adty/site/commission-withdrawals/:id/paid`；Root `PUT /api/adty/admin/site-invite-withdraw/rules`。
+**表和接口**：`adty_site_invite_commissions`、`adty_site_invite_withdrawals`、`adty_site_invite_withdrawal_items`。客户 `GET`/`POST /api/adty/site-commissions/withdrawals`；站长 `GET /api/adty/site/commission-withdrawals`、`POST /api/adty/site/commission-withdrawals/:id/review`、`POST /api/adty/site/commission-withdrawals/:id/paid`；关站后主站承接 `GET /api/user/admin/referral/closed-site-withdrawals`、`POST .../review|failed|paid`（旧全局 `PUT /api/adty/admin/site-invite-withdraw/rules` 已退役返回 410 Gone，由各分站独立配置）。
 
 ## 站长分站
 
@@ -287,10 +287,10 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - **配置**：Root 必须先设 `adty_site_withdraw.min_usd`、`fee_usd`、`alipay_cny_rate`、`usdt_usd_rate` 四项，缺一项或非正数就整条链路拒绝（`service/adty_site_withdraw.go:14-19,55-116`）。接口 `PUT /api/adty/admin/site-withdrawals/rules`（Root）。
 - **方式**：支付宝或 USDT。USDT 按所选链校验地址；支付宝要收款人姓名和账号。金额不低于 `min_usd`，且必须大于 `fee_usd`。
 - **实付**：`(申请金额 − fee_usd) × 对应汇率`。支付宝按 `alipay_cny_rate` 出人民币，USDT 按 `usdt_usd_rate` 出 USDT。用户提交时要带看到的汇率，汇率变了会要求确认新汇率。
-- **资金**：申请时当场从 earnings 钱包余额扣下，写流水 `earning_withdraw_freeze`；幂等键重复提交返回原单。
-- **状态机**：`pending` →（Root 标记打款中）`paying` →（Root 记录打款）`paid`；`pending` 可由站长 `POST /api/adty/site/withdrawals/:id/cancel` 撤销，或由 Root `reject` 驳回，两条都把金额退回 earnings（`earning_withdraw_release`）。USDT 标记 `paid` 必须填交易号；两种方式至少要有交易号或凭证（`service/adty_site_withdraw.go:236-317`）。
+- **资金**：申请时先冻结 earnings 钱包的 `hold`（不立即扣减 `balance`），写流水 `earning_withdraw_freeze`，标记 `paid` 时才正式扣减 `balance` 与 `hold`；幂等键重复提交返回原单。
+- **状态机**：`pending` →（Root 标记打款中）`paying`（可经 `POST /api/adty/admin/site-withdrawals/:id/recall` 撤回至 `pending`）→（Root 记录打款）`paid`；`pending` 可由站长 `POST /api/adty/site/withdrawals/:id/cancel` 撤销，或由 Root `reject` 驳回，两条都把金额从 `hold` 释放回可用 earnings（`earning_withdraw_release`）。USDT 标记 `paid` 必须填交易号；两种方式至少要有交易号或凭证（`service/adty_site_withdraw.go:236-317`）。
 - **算例**：申请 $150、`fee_usd` = 2、`usdt_usd_rate` = 1：实付 148 USDT。申请 $50、`fee_usd` = 2、`alipay_cny_rate` = 7.1：实付 (50 − 2) × 7.1 = **¥340.80**。
-- **接口**：站长 `GET /api/adty/site/withdrawals`、`GET /api/adty/site/withdrawals/rules`、`POST /api/adty/site/withdrawals`、`POST /api/adty/site/withdrawals/:id/cancel`；Root `GET /api/adty/admin/site-withdrawals`（全部站点，可按 `status` 筛选，带站点子域名）、`POST /api/adty/admin/site-withdrawals/:id/paying|reject|paid`。界面：分站后台「提现」分区（只有 Root 看得到），按状态筛选，标记打款中、记录打款（USDT 必须填交易哈希）、驳回（必须填理由）；站长在「收益」页看到的状态改成文字。
+- **接口**：站长 `GET /api/adty/site/withdrawals`、`GET /api/adty/site/withdrawals/rules`、`POST /api/adty/site/withdrawals`、`POST /api/adty/site/withdrawals/:id/cancel`；Root `GET /api/adty/admin/site-withdrawals`（全部站点，可按 `status` 筛选，带站点子域名）、`POST /api/adty/admin/site-withdrawals/:id/paying|recall|reject|paid`。界面：分站后台「提现」分区（只有 Root 看得到），按状态筛选，标记打款中、撤回至待处理、记录打款（USDT 必须填交易哈希）、驳回（必须填理由）；站长在「收益」页看到的状态改成文字。
 
 ### 站长中心
 
@@ -501,7 +501,7 @@ Telegram 通知解绑分别用 `DELETE /api/adty/telegram/me` 和 `DELETE /api/a
 
 ## 限流、脱敏和其他安全
 
-**按用户限流**：`adty_limit_setting.enabled`（默认关）、`default_rpm`、`default_tpm`、`default_concurrency`（默认 0 表示不限）；单个用户在「用户 → 编辑」里单独设（-1 跟默认、0 不限），存在 `adty_user_limits`。固定 1 分钟窗口；TPM 在写消费日志时累计（关掉消费日志也算）；并发按请求登记，请求结束释放。超限返回 HTTP 429 和 `Retry-After`，错误类型 `adtyai_error`、错误码 `rate_limit_exceeded`。开了 Redis 就只用 Redis 计数，不退回进程内存；客户端没接上或计数出错时返回 HTTP 503，错误码 `rate_limit_unavailable`，不放行。没开 Redis 时用进程内存。后台：系统设置 → 安全 → 用户限流。接口 `GET`、`PUT /api/adty/admin/users/:id/limits`。限制：TPM 是事后累计，同一分钟里同时进来的大请求拦不住；跨分钟边界时短时间内最多约 2 倍上限；同一用户所有令牌共用计数；演练场 `/pg` 没挂。任务 7.4。
+**按用户限流**：`adty_limit_setting.enabled`（默认关）、`default_rpm`、`default_tpm`、`default_concurrency`（默认 0 表示不限）；单个用户在「用户 → 编辑」里单独设（-1 跟默认、0 不限），存在 `adty_user_limits`。固定 1 分钟窗口；TPM 在写消费日志时累计（关掉消费日志也算）；并发按请求登记，请求结束释放。超限返回 HTTP 429 和 `Retry-After`，错误类型 `adtyai_error`、错误码 `rate_limit_exceeded`。开了 Redis 就只用 Redis 计数，不退回进程内存；客户端没接上或计数出错时返回 HTTP 503，错误码 `rate_limit_unavailable`，不放行。没开 Redis 时用进程内存。后台：系统设置 → 安全 → 用户限流。接口 `GET`、`PUT /api/adty/admin/users/:id/limits`。限制：TPM 是事后累计，同一分钟里同时进来的大请求拦不住；跨分钟边界时短时间内最多约 2 倍上限；同一用户所有令牌共用计数。任务 7.4。
 
 **客户接口脱敏**：客户自己看到的日志去掉渠道 ID、渠道名、上游请求 ID，`other` 按白名单只留用量和状态（去掉倍率、模型价、上游模型名、`admin_info`）；任务列表不露渠道和上游模型名；任务提交不再返回 `X-New-Api-Other-Ratios` 头。作用于 `GET /api/log/self`、`/api/log/self/export`、`/api/log/token`、`/api/task/self`、`/api/mj/self`、站长看客户请求的接口。管理员的 `/api/log/`、`/api/task` 照常显示渠道。按接口脱敏，不按角色：管理员调 `/api/log/self` 看到的也是脱敏后的。任务 7.1。
 
@@ -529,7 +529,7 @@ Root 和获授用户读取权限的管理员在统一用户列表、搜索及详
 
 **官方价（已退役）**：模型官方价同步、模型广场「省 X%」对比展示、公开接口与后台官方价及历史价格快照回填入口均已下线；升级库中的旧 `adty_official_prices` 表不自动删表，但不再参与 `AutoMigrate` 或业务读写。
 
-**接入文档**（`/docs`、`/docs/<页>`，公开）：快速开始、Claude Code、Codex CLI、Cherry Studio、OpenAI SDK、错误和限制、常见问题。正式维护简体中文和英文，是仓库里的 Markdown（`web/src/features/adty-docs/content/`），改内容要改代码后重新构建。其他语言目录如仍存在，不在前台承诺。文中的接入地址取当前站点配置，没填用服务器地址。示例密钥使用占位符。任务 8.6。
+**接入文档**（`/docs`、`/docs/<页>`，公开）：快速开始、Claude Code、Codex CLI、Cherry Studio、OpenAI SDK、模型说明、角色使用说明、Agent 接入、错误和限制、常见问题。正式维护简体中文和英文，是仓库里的 Markdown（`web/src/features/adty-docs/content/`），改内容要改代码后重新构建。其他语言目录如仍存在，不在前台承诺。文中的接入地址取当前站点配置，没填用服务器地址。示例密钥使用占位符。任务 8.6。
 
 **条款**：后台「系统设置 → 内容 → 多语言条款」可编辑用户协议、隐私政策、退款政策和分站客户条款（开站协议已退役，`/api/adty/legal/site-agreement` 与 `adty_legal_setting.site_agreement*` 写入均拒绝）。正式文本是简体中文和英文。旧的其他语言字段可以保留，但不作为正式语言。分站客户条款另有非负整数版本号；修改已发布条款后提高版本号，以要求相关用户重新接受。保存仅提交当前文档和对应版本，其他文档的未保存内容继续保留，离开页面时会提示。`GET /api/adty/legal/:doc?lang=` 按「本语言 → 英文 → 上游的 `legal.*`」回退；退款政策由 `refund_policy_enabled` 控制显示。主站发布用户协议或隐私政策后，注册必须带 `agreement_accepted: true`，否则拒绝并不建账号；接受后写系统日志。分站客户使用受保护的接口、任务和长连接时核对当前客户条款版本。任务 8.6、11.1。
 

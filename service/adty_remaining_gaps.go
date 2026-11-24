@@ -974,20 +974,26 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 			}
 		}
 		pub := lookupAdtyPublicationForTodoTx(tx, key, publicationID)
+		if pub == nil && publicationID > 0 && tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+			return nil
+		}
 		if pub != nil {
+			if !adtyPublicationIsSevere(tx, pub) {
+				return nil
+			}
 			if publicationID <= 0 {
 				publicationID = pub.Id
 			}
 			if liveKey := normalizeAdtyTodoKey(pub.ReadKey); liveKey != "" {
 				key = liveKey
 			}
-			if strings.TrimSpace(title) == "" {
+			if strings.TrimSpace(pub.Title) != "" {
 				title = pub.Title
 			}
-			if strings.TrimSpace(content) == "" {
+			if strings.TrimSpace(pub.Content) != "" {
 				content = pub.Content
 			}
-			if strings.TrimSpace(business) == "" {
+			if strings.TrimSpace(pub.Business) != "" {
 				business = pub.Business
 			}
 			if siteID == 0 && pub.TargetSiteId > 0 {

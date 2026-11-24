@@ -545,11 +545,14 @@ func GetChannelKey(c *gin.Context) {
 		return
 	}
 
-	// 记录操作审计日志（高危：查看渠道密钥）
-	recordManageAudit(c, "channel.key_view", map[string]any{
+	// 记录操作审计日志（高危：查看渠道密钥，审计意图必须落库成功才放行明文密钥 — R11-014）
+	if !recordManageAudit(c, "channel.key_view", map[string]any{
 		"id":   channelId,
 		"name": channel.Name,
-	})
+	}) {
+		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Service temporarily unavailable"))
+		return
+	}
 
 	// 返回渠道密钥
 	common.ApiSuccessT(c, "Fetched successfully", map[string]any{
@@ -696,7 +699,7 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 func RefreshCodexChannelCredential(c *gin.Context) {
 	channelId, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 
@@ -711,8 +714,9 @@ func RefreshCodexChannelCredential(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "refreshed",
+		"success":     true,
+		"message":     "Credentials refreshed",
+		"message_key": "Credentials refreshed",
 		"data": gin.H{
 			"expires_at":   oauthKey.Expired,
 			"last_refresh": oauthKey.LastRefresh,
@@ -777,10 +781,7 @@ func AddChannel(c *gin.Context) {
 	if addChannelRequest.Channel != nil &&
 		(addChannelRequest.Channel.Type == constant.ChannelTypeTaskPlugin || len(addChannelRequest.Channel.GetSetting().TaskPluginBindings()) > 0) &&
 		!canActWithPermission(c, authz.TaskPluginBind) {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "task plugin channels require the task_plugin.bind permission",
-		})
+		common.ApiErrorT(c, "Task plugin channels require the task_plugin.bind permission")
 		return
 	}
 
@@ -1155,10 +1156,7 @@ func UpdateChannel(c *gin.Context) {
 
 	if channel.Type == constant.ChannelTypeTaskPlugin &&
 		!canActWithPermission(c, authz.TaskPluginBind) {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "task plugin channels require the task_plugin.bind permission",
-		})
+		common.ApiErrorT(c, "Task plugin channels require the task_plugin.bind permission")
 		return
 	}
 
@@ -1194,10 +1192,7 @@ func UpdateChannel(c *gin.Context) {
 	if settingProvided &&
 		!slices.Equal(channel.GetSetting().TaskPluginBindings(), originChannel.GetSetting().TaskPluginBindings()) &&
 		!canActWithPermission(c, authz.TaskPluginBind) {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "task plugin channels require the task_plugin.bind permission",
-		})
+		common.ApiErrorT(c, "Task plugin channels require the task_plugin.bind permission")
 		return
 	}
 
@@ -1510,10 +1505,7 @@ func FetchModels(c *gin.Context) {
 	var req fetchModelsRequest
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid request"))
 		return
 	}
 
@@ -2296,7 +2288,9 @@ func OllamaPullModelStream(c *gin.Context) {
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(errorData))
 	} else {
 		successData, _ := common.Marshal(gin.H{
-			"message": fmt.Sprintf("Model %s pulled successfully", req.ModelName),
+			"message":        fmt.Sprintf("Model %s pulled successfully", req.ModelName),
+			"message_key":    "Model {{model}} pulled successfully",
+			"message_params": gin.H{"model": req.ModelName},
 		})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(successData))
 	}

@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -219,9 +221,74 @@ func (c *closeIdleOnBodyClose) Close() error {
 	return err
 }
 
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) {
+	return c.r.Read(p)
+}
+
+func dialHTTPSOverHTTPSProxy(ctx context.Context, dialContext func(ctx context.Context, network, address string) (net.Conn, error), proxyURL *url.URL, targetAddr, origHost string, baseTLS *tls.Config) (net.Conn, error) {
+	proxyHost := proxyURL.Host
+	if proxyURL.Port() == "" {
+		proxyHost = net.JoinHostPort(proxyURL.Hostname(), "443")
+	}
+	rawConn, err := dialContext(ctx, "tcp", proxyHost)
+	if err != nil {
+		return nil, err
+	}
+	proxyTLS := baseTLS.Clone()
+	proxyTLS.ServerName = proxyURL.Hostname()
+	proxyTLSConn := tls.Client(rawConn, proxyTLS)
+	if err := proxyTLSConn.HandshakeContext(ctx); err != nil {
+		_ = rawConn.Close()
+		return nil, err
+	}
+	connectReq := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Opaque: targetAddr},
+		Host:   targetAddr,
+		Header: make(http.Header),
+	}
+	if proxyURL.User != nil {
+		auth := base64.StdEncoding.EncodeToString([]byte(proxyURL.User.String()))
+		connectReq.Header.Set("Proxy-Authorization", "Basic "+auth)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = proxyTLSConn.SetDeadline(deadline)
+	}
+	if err := connectReq.Write(proxyTLSConn); err != nil {
+		_ = proxyTLSConn.Close()
+		return nil, err
+	}
+	br := bufio.NewReader(proxyTLSConn)
+	connectResp, err := http.ReadResponse(br, connectReq)
+	if err != nil {
+		_ = proxyTLSConn.Close()
+		return nil, err
+	}
+	_ = connectResp.Body.Close()
+	if connectResp.StatusCode != http.StatusOK {
+		_ = proxyTLSConn.Close()
+		return nil, fmt.Errorf("proxy CONNECT failed with status %d", connectResp.StatusCode)
+	}
+	_ = proxyTLSConn.SetDeadline(time.Time{})
+	tunnelConn := &bufferedConn{Conn: proxyTLSConn, r: br}
+	targetTLS := baseTLS.Clone()
+	targetTLS.ServerName = origHost
+	targetTLSConn := tls.Client(tunnelConn, targetTLS)
+	if err := targetTLSConn.HandshakeContext(ctx); err != nil {
+		_ = proxyTLSConn.Close()
+		return nil, err
+	}
+	return targetTLSConn, nil
+}
+
 // roundTripViaPinnedProxy pins domain targets to a validated resolved IP before
 // handing the request to an environment proxy, blocking DNS rebinding and
-// proxy-side split-horizon internal DNS SSRF while preserving Host and TLS SNI (R10-022).
+// proxy-side split-horizon internal DNS SSRF while preserving Host and TLS SNI (R10-022/R11-022).
 func (t *ssrfProtectedRoundTripper) roundTripViaPinnedProxy(req *http.Request, proxyURL *url.URL) (*http.Response, error) {
 	protection, enabled, err := t.getProtection()
 	if err != nil {
@@ -271,24 +338,43 @@ func (t *ssrfProtectedRoundTripper) roundTripViaPinnedProxy(req *http.Request, p
 		pinnedReq.Host = req.URL.Host
 	}
 	pinnedURL := *req.URL
-	pinnedURL.Host = net.JoinHostPort(pinnedIP.String(), portText)
+	pinnedAddr := net.JoinHostPort(pinnedIP.String(), portText)
+	pinnedURL.Host = pinnedAddr
 	pinnedReq.URL = &pinnedURL
 
 	if !strings.EqualFold(req.URL.Scheme, "https") {
-		return t.transportFor(proxyURL).RoundTrip(pinnedReq)
+		resp, err := t.transportFor(proxyURL).RoundTrip(pinnedReq)
+		if resp != nil {
+			resp.Request = req
+		}
+		return resp, err
 	}
 
 	ephemeral := t.newTransport(proxyURL)
+	var baseTLS *tls.Config
 	if ephemeral.TLSClientConfig != nil {
-		ephemeral.TLSClientConfig = ephemeral.TLSClientConfig.Clone()
+		baseTLS = ephemeral.TLSClientConfig.Clone()
 	} else {
-		ephemeral.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		baseTLS = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
-	ephemeral.TLSClientConfig.ServerName = origHost
+	if strings.EqualFold(proxyURL.Scheme, "https") {
+		ephemeral.Proxy = nil
+		ephemeral.TLSClientConfig = nil
+		ephemeral.ForceAttemptHTTP2 = false
+		ephemeral.DialTLSContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialHTTPSOverHTTPSProxy(ctx, t.dialContext, proxyURL, pinnedAddr, origHost, baseTLS)
+		}
+	} else {
+		baseTLS.ServerName = origHost
+		ephemeral.TLSClientConfig = baseTLS
+	}
 	resp, err := ephemeral.RoundTrip(pinnedReq)
 	if err != nil {
 		ephemeral.CloseIdleConnections()
 		return nil, err
+	}
+	if resp != nil {
+		resp.Request = req
 	}
 	if resp != nil && resp.Body != nil {
 		resp.Body = &closeIdleOnBodyClose{ReadCloser: resp.Body, transport: ephemeral}

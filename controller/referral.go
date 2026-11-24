@@ -332,6 +332,10 @@ func GetReferralAsset(c *gin.Context) {
 func writeReferralError(c *gin.Context, err error) {
 	var message *common.Message
 	switch {
+	case errors.Is(err, model.ErrAdminTargetSessionRequired):
+		denyAdtyAdminAction(c)
+	case errors.Is(err, model.ErrUserQuotaPermission):
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 	case errors.As(err, &message):
 		common.ApiError(c, err)
 	case errors.Is(err, service.ErrReferralDisabled):

@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -242,7 +243,7 @@ func GetLogsSelfStat(c *gin.Context) {
 	tokenName := c.Query("token_name")
 	modelName := c.Query("model_name")
 	channel := 0
-	if c.GetInt("role") >= common.RoleAdminUser { // 二开：普通用户不能按渠道统计（任务 7.1）
+	if c.GetInt("role") >= common.RoleAdminUser && canActWithPermission(c, authz.AdtyLogRead) { // 二开：普通用户/无权限管理员不能按渠道统计（任务 7.1 / R11-016）
 		channel, _ = strconv.Atoi(c.Query("channel"))
 	}
 	group := c.Query("group")

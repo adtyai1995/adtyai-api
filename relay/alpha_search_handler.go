@@ -123,6 +123,9 @@ func buildAlphaSearchRequestBody(rawBody []byte, originModel, upstreamModel stri
 	if err := common.Unmarshal(rawBody, &body); err != nil {
 		return nil, err
 	}
+	if body == nil {
+		return nil, errors.New("request body must be a JSON object")
+	}
 	body["model"] = upstreamModel
 	return common.Marshal(body)
 }

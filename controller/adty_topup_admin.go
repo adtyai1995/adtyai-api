@@ -115,6 +115,19 @@ func QueryAdtyTopUp(c *gin.Context) {
 		writeAdtyFinanceError(c, model.ErrPaymentMethodMismatch)
 		return
 	}
+	var targetUser model.User
+	if err := model.DB.Select("id", "role").First(&targetUser, topUp.UserId).Error; err != nil {
+		writeAdtyFinanceError(c, err)
+		return
+	}
+	if !canManageTargetRole(c.GetInt("role"), targetUser.Role) {
+		writeAdtyFinanceError(c, model.ErrUserQuotaPermission)
+		return
+	}
+	if isAccessTokenRequest(c) && targetUser.Role >= common.RoleAdminUser {
+		writeAdtyFinanceError(c, model.ErrAdminTargetSessionRequired)
+		return
+	}
 	if _, ok := service.AdtyPaymentProviderByName(ext.Provider).(service.AdtyPaymentOrderQuerier); !ok {
 		common.ApiErrorT(c, "This payment provider does not support order queries")
 		return
@@ -129,10 +142,14 @@ func QueryAdtyTopUp(c *gin.Context) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
-		err := service.RecoverAdtyHostedPaymentAs(ctx, ext, c.GetInt("id"))
+		err := service.RecoverAdtyHostedPaymentForActor(ctx, ext, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c))
 		cancel()
 		if errors.Is(err, model.ErrAdtyOwnerTopupReview) {
 			common.ApiErrorT(c, "Payment verified and queued for review. No balance was credited.")
+			return
+		}
+		if errors.Is(err, model.ErrUserQuotaPermission) || errors.Is(err, model.ErrAdminTargetSessionRequired) {
+			writeAdtyFinanceError(c, err)
 			return
 		}
 		if err != nil {
@@ -251,6 +268,8 @@ func CreditPaymentOrphan(c *gin.Context) {
 			return err
 		}
 		facts.OperatorId = c.GetInt("id")
+		facts.ActorRole = c.GetInt("role")
+		facts.DenyAdminTarget = isAccessTokenRequest(c)
 		alreadyDone, credited, topUp, ext, err = model.CompleteAdtyTopUpTx(tx, orphan.ReferenceID, facts)
 		if err != nil {
 			return err
@@ -325,12 +344,14 @@ func ManualCompleteAdtyTopUp(c *gin.Context) {
 		return
 	}
 	facts := model.AdtyPaymentFacts{
-		Provider:   topUps[0].PaymentProvider,
-		Method:     topUps[0].PaymentMethod,
-		TxHash:     body.Proof,
-		Source:     model.AdtyPaymentSourceManual,
-		Payload:    common.GetJsonString(map[string]any{"proof": body.Proof, "note": body.Note, "operator": c.GetInt("id")}),
-		OperatorId: c.GetInt("id"),
+		Provider:        topUps[0].PaymentProvider,
+		Method:          topUps[0].PaymentMethod,
+		TxHash:          body.Proof,
+		Source:          model.AdtyPaymentSourceManual,
+		Payload:         common.GetJsonString(map[string]any{"proof": body.Proof, "note": body.Note, "operator": c.GetInt("id")}),
+		OperatorId:      c.GetInt("id"),
+		ActorRole:       c.GetInt("role"),
+		DenyAdminTarget: isAccessTokenRequest(c),
 	}
 	var topUp *model.TopUp
 	var ext *model.AdtyTopupOrder
@@ -442,7 +463,12 @@ func RefundAdtyTopUp(c *gin.Context) {
 			return
 		}
 	}
-	applied, applyErr := model.ApplyAdtyTopUpManualRefundForOrphan(tradeNo, body.Reason, c.GetInt("id"), body.IdempotencyKey, amount, body.ReconcileOrphanID)
+	actor := model.AdtyRefundActor{
+		OperatorID:      c.GetInt("id"),
+		Role:            c.GetInt("role"),
+		DenyAdminTarget: isAccessTokenRequest(c),
+	}
+	applied, applyErr := model.ApplyAdtyTopUpManualRefundForActor(tradeNo, body.Reason, actor, body.IdempotencyKey, amount, body.ReconcileOrphanID)
 	if applyErr != nil {
 		writeAdtyFinanceError(c, applyErr)
 		return
@@ -478,7 +504,7 @@ func GetAdtyTopUpManualRefund(c *gin.Context) {
 	common.ApiSuccess(c, result)
 }
 
-func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refundID string, operatorID int, idemKey string, ownerSiteID ...int) (*model.AdtyManualRefundResult, error)) {
+func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refundID string, actor model.AdtyRefundActor, idemKey string) (*model.AdtyManualRefundResult, error)) {
 	var body struct {
 		IdempotencyKey string `json:"idempotency_key"`
 		Note           string `json:"note"`
@@ -523,17 +549,22 @@ func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refund
 	if middleware.RequireSecurityProof(c, op) == nil {
 		return
 	}
+	actor := model.AdtyRefundActor{
+		OperatorID:      c.GetInt("id"),
+		Role:            c.GetInt("role"),
+		DenyAdminTarget: isAccessTokenRequest(c),
+	}
 	var result *model.AdtyManualRefundResult
 	var err error
 	switch step {
 	case model.AdtyManualRefundStepPayout:
-		result, err = model.RecordAdtyTopUpManualRefundPayout(tradeNo, refundID, c.GetInt("id"), body.IdempotencyKey, payout)
+		result, err = model.RecordAdtyTopUpManualRefundPayoutForActor(tradeNo, refundID, actor, body.IdempotencyKey, payout)
 	case model.AdtyManualRefundStepApprove:
-		result, err = model.ApproveAdtyTopUpManualRefund(tradeNo, refundID, c.GetInt("id"), body.IdempotencyKey, body.Note)
+		result, err = model.ApproveAdtyTopUpManualRefundForActor(tradeNo, refundID, actor, body.IdempotencyKey, body.Note)
 	case model.AdtyManualRefundStepTerminate:
-		result, err = model.TerminateAdtyTopUpManualRefund(tradeNo, refundID, c.GetInt("id"), body.IdempotencyKey, body.Note)
+		result, err = model.TerminateAdtyTopUpManualRefundForActor(tradeNo, refundID, actor, body.IdempotencyKey, body.Note)
 	default:
-		result, err = run(tradeNo, refundID, c.GetInt("id"), body.IdempotencyKey)
+		result, err = run(tradeNo, refundID, actor, body.IdempotencyKey)
 	}
 	if err != nil {
 		writeAdtyFinanceError(c, err)
@@ -554,15 +585,15 @@ func ApproveAdtyTopUpManualRefund(c *gin.Context) {
 }
 
 func ReclaimAdtyTopUpManualRefund(c *gin.Context) {
-	writeManualRefundStep(c, model.AdtyManualRefundStepReclaim, model.ReclaimAdtyTopUpManualRefund)
+	writeManualRefundStep(c, model.AdtyManualRefundStepReclaim, model.ReclaimAdtyTopUpManualRefundForActor)
 }
 
 func PlanAdtyTopUpManualRefundBonus(c *gin.Context) {
-	writeManualRefundStep(c, model.AdtyManualRefundStepBonus, model.PlanAdtyTopUpManualRefundBonus)
+	writeManualRefundStep(c, model.AdtyManualRefundStepBonus, model.PlanAdtyTopUpManualRefundBonusForActor)
 }
 
 func PlanAdtyTopUpManualRefundCommission(c *gin.Context) {
-	writeManualRefundStep(c, model.AdtyManualRefundStepCommission, model.PlanAdtyTopUpManualRefundCommission)
+	writeManualRefundStep(c, model.AdtyManualRefundStepCommission, model.PlanAdtyTopUpManualRefundCommissionForActor)
 }
 
 func RecordAdtyTopUpManualRefundPayout(c *gin.Context) {
@@ -570,7 +601,7 @@ func RecordAdtyTopUpManualRefundPayout(c *gin.Context) {
 }
 
 func CompleteAdtyTopUpManualRefund(c *gin.Context) {
-	writeManualRefundStep(c, model.AdtyManualRefundStepComplete, model.CompleteAdtyTopUpManualRefund)
+	writeManualRefundStep(c, model.AdtyManualRefundStepComplete, model.CompleteAdtyTopUpManualRefundForActor)
 }
 
 func TerminateAdtyTopUpManualRefund(c *gin.Context) {
@@ -580,6 +611,10 @@ func TerminateAdtyTopUpManualRefund(c *gin.Context) {
 func writeAdtyFinanceError(c *gin.Context, err error) {
 	var message *common.Message
 	switch {
+	case errors.Is(err, model.ErrAdminTargetSessionRequired):
+		denyAdtyAdminAction(c)
+	case errors.Is(err, model.ErrUserQuotaPermission):
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 	case errors.As(err, &message):
 		common.ApiError(c, err)
 	case errors.Is(err, model.ErrTopUpNotFound), errors.Is(err, model.ErrPaymentOrphanNotFound):

@@ -315,9 +315,9 @@ func cohereEmbeddingHandler(c *gin.Context, resp *http.Response, info *relaycomm
 		}
 	}
 	inputTokens := info.GetEstimatePromptTokens()
-	if response.Meta.BilledUnits.InputTokens != nil {
+	if response.Meta.BilledUnits.InputTokens != nil && *response.Meta.BilledUnits.InputTokens > 0 {
 		inputTokens = common.QuotaFromFloat(*response.Meta.BilledUnits.InputTokens)
-	} else if response.Meta.Tokens.InputTokens != nil {
+	} else if response.Meta.Tokens.InputTokens != nil && *response.Meta.Tokens.InputTokens > 0 {
 		inputTokens = common.QuotaFromFloat(*response.Meta.Tokens.InputTokens)
 	}
 	if inputTokens < 0 || inputTokens > common.MaxQuota {

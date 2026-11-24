@@ -938,7 +938,7 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 	}
 
 	// 用户缓存没读成就没有请求上下文。这时耗时不是上游响应，不能拿空上下文去禁用渠道。
-	if common.AutomaticDisableChannelEnabled && !shouldBanChannel && result.context != nil {
+	if common.GetAutomaticDisableChannelEnabled() && !shouldBanChannel && result.context != nil {
 		if milliseconds > disableThreshold {
 			// The reason is stored with the channel and sent in the disable
 			// notice; no request states a language here.

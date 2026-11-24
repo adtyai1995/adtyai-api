@@ -464,7 +464,7 @@ func AdminResetPasskey(c *gin.Context) {
 	}
 	myRole := c.GetInt("role")
 	if !canManageTargetRole(myRole, user.Role) {
-		common.ApiErrorMsg(c, "no permission")
+		common.ApiErrorT(c, "No permission to perform this action")
 		return
 	}
 	if isAccessTokenRequest(c) && user.Role >= common.RoleAdminUser {

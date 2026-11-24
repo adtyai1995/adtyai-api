@@ -312,11 +312,42 @@ func (s *ReferralService) ApplyPartner(userId int, note string) error {
 	}).Error
 }
 
+// CheckReferralAdminTargetUserTx locks the target user row (after any referral
+// locks, matching CreateWithdrawal's canonical Affiliate -> Commission ->
+// Withdrawal -> Account -> User lock order) and enforces role hierarchy,
+// anti-self-operation, and PAT admin-target restrictions (R11-004).
+func CheckReferralAdminTargetUserTx(tx *gorm.DB, targetUserID, adminID, actorRole int, denyAdminTarget bool) error {
+	if tx == nil || (actorRole <= 0 && !denyAdminTarget) {
+		return nil
+	}
+	var target model.User
+	if err := model.AdtyLockForUpdate(tx).Select("id", "role").First(&target, targetUserID).Error; err != nil {
+		return err
+	}
+	if adminID > 0 && adminID == target.Id {
+		return model.ErrUserQuotaPermission
+	}
+	if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= target.Role {
+		return model.ErrUserQuotaPermission
+	}
+	if denyAdminTarget && target.Role >= common.RoleAdminUser {
+		return model.ErrAdminTargetSessionRequired
+	}
+	return nil
+}
+
 // ReviewPartner 批准（按后台配置的合作伙伴比例范围或通用 0–100 范围设比例）或驳回合作伙伴申请。
 func (s *ReferralService) ReviewPartner(userId, adminId int, approve bool, rate decimal.Decimal, reason, ip, ua string) error {
+	return s.ReviewPartnerForActor(userId, adminId, 0, false, approve, rate, reason, ip, ua)
+}
+
+func (s *ReferralService) ReviewPartnerForActor(userId, adminId, actorRole int, denyAdminTarget, approve bool, rate decimal.Decimal, reason, ip, ua string) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var affiliate model.ReferralAffiliate
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userId).First(&affiliate).Error; err != nil {
+			return err
+		}
+		if err := CheckReferralAdminTargetUserTx(tx, userId, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
 		if affiliate.PartnerStatus != model.ReferralPartnerStatusPending {

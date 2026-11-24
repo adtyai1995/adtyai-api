@@ -56,6 +56,10 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if body.Purpose != model.AdtyVoucherPurposeSiteCustomer && body.Purpose != model.AdtyVoucherPurposeSiteOwner {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
+		return
+	}
 	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherIssue, site.Id) {
 		return
 	}
@@ -104,6 +108,10 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 	intentKey, ok := resolveAdtyVoucherIntentKey(c, body.IntentKey, body.IdempotencyKey, body.ClientRequestId)
 	if !ok {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if body.Purpose != model.AdtyVoucherPurposeMainUser && body.Purpose != model.AdtyVoucherPurposeSiteMargin {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}
 	issued, err := service.IssueAdtyVoucher(service.AdtyVoucherIssueInput{

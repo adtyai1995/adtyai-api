@@ -113,7 +113,7 @@ func InitOptionMap() {
 	common.OptionMap["TopupGroupRatio"] = common.TopupGroupRatio2JSONString()
 	common.OptionMap["Chats"] = setting.Chats2JsonString()
 	common.OptionMap["AutoGroups"] = setting.AutoGroups2JsonString()
-	common.OptionMap["DefaultUseAutoGroup"] = strconv.FormatBool(setting.DefaultUseAutoGroup)
+	common.OptionMap["DefaultUseAutoGroup"] = strconv.FormatBool(setting.GetDefaultUseAutoGroup())
 	common.OptionMap["MaxTokenAutoGroups"] = strconv.Itoa(setting.GetMaxTokenAutoGroups())
 	common.OptionMap["TelegramBotToken"] = ""
 	common.OptionMap["TelegramBotName"] = ""
@@ -330,7 +330,7 @@ func validateOptionValue(key string, value string) error {
 		}
 	case "AutoGroups":
 		parsed := []string{}
-		if err := common.UnmarshalJsonStr(value, &parsed); err != nil {
+		if err := common.UnmarshalJsonStr(value, &parsed); err != nil || parsed == nil {
 			return common.NewMessage("{{key}} must be a JSON array", map[string]any{"key": key})
 		}
 	case "ModelRequestRateLimitGroup":
@@ -772,7 +772,7 @@ func updateOptionMap(key string, value string) (err error) {
 		case "CheckSensitiveOnPromptEnabled":
 			setting.CheckSensitiveOnPromptEnabled = boolValue
 		case "ModelRequestRateLimitEnabled":
-			setting.ModelRequestRateLimitEnabled = boolValue
+			setting.SetModelRequestRateLimitEnabled(boolValue)
 		case "StopOnSensitiveEnabled":
 			setting.StopOnSensitiveEnabled = boolValue
 		case "SMTPSSLEnabled":
@@ -786,7 +786,7 @@ func updateOptionMap(key string, value string) (err error) {
 		case "WorkerAllowHttpImageRequestEnabled":
 			system_setting.WorkerAllowHttpImageRequestEnabled = boolValue
 		case "DefaultUseAutoGroup":
-			setting.DefaultUseAutoGroup = boolValue
+			setting.SetDefaultUseAutoGroup(boolValue)
 		case "ExposeRatioEnabled":
 			ratio_setting.SetExposeRatioEnabled(boolValue)
 		}
@@ -865,11 +865,14 @@ func updateOptionMap(key string, value string) (err error) {
 	case "PreConsumedQuota":
 		common.PreConsumedQuota, _ = strconv.Atoi(value)
 	case "ModelRequestRateLimitCount":
-		setting.ModelRequestRateLimitCount, _ = strconv.Atoi(value)
+		v, _ := strconv.Atoi(value)
+		setting.SetModelRequestRateLimitCount(v)
 	case "ModelRequestRateLimitDurationMinutes":
-		setting.ModelRequestRateLimitDurationMinutes, _ = strconv.Atoi(value)
+		v, _ := strconv.Atoi(value)
+		setting.SetModelRequestRateLimitDurationMinutes(v)
 	case "ModelRequestRateLimitSuccessCount":
-		setting.ModelRequestRateLimitSuccessCount, _ = strconv.Atoi(value)
+		v, _ := strconv.Atoi(value)
+		setting.SetModelRequestRateLimitSuccessCount(v)
 	case "ModelRequestRateLimitGroup":
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":

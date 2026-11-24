@@ -17,7 +17,10 @@ import (
 	"time"
 )
 
-var adtyCloudflareZoneIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var (
+	adtyCloudflareZoneIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	errAdtyDomainLeaseLost      = errors.New("domain automation lease lost")
+)
 
 var AdtyAliDNS = func() *AdtyAliDNSClient {
 	cfg := resellerSetting()
@@ -163,7 +166,21 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var assignErr error
 			widget, assignErr = adtyTurnstileAssign(runctx, tx, row.Hostname)
-			return assignErr
+			if assignErr != nil {
+				return assignErr
+			}
+			if widget != "" {
+				res := tx.Model(&model.AdtySiteDomain{}).
+					Where("id = ? AND lease_token = ?", row.Id, row.LeaseToken).
+					Update("turnstile_widget", widget)
+				if res.Error != nil {
+					return res.Error
+				}
+				if res.RowsAffected == 0 {
+					return errAdtyDomainLeaseLost
+				}
+			}
+			return nil
 		})
 		cancel()
 		updates := map[string]any{"lease_token": "", "lease_until": 0}
@@ -171,7 +188,6 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 			updates["last_error"] = adtyCloudflareUserError(err).Error()
 			failures = append(failures, fmt.Errorf("domain %d turnstile backfill: %w", row.Id, err))
 		} else if widget != "" {
-			updates["turnstile_widget"] = widget
 			updates["last_error"] = ""
 		}
 		if err := model.DB.Model(&model.AdtySiteDomain{}).
@@ -180,9 +196,6 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 			return err
 		}
 		genChangedUpdates := map[string]any{"lease_token": "", "lease_until": 0, "next_run_at": 0}
-		if err == nil && widget != "" {
-			genChangedUpdates["turnstile_widget"] = widget
-		}
 		if err := model.DB.Model(&model.AdtySiteDomain{}).
 			Where("id = ? AND lease_token = ? AND generation <> ?", row.Id, row.LeaseToken, row.Generation).
 			Updates(genChangedUpdates).Error; err != nil {
@@ -290,7 +303,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 				return err
 			}
 		}
-		if row.TurnstileWidget != "" {
+		if row.TurnstileWidget != "" || (row.ManagedBy != "platform" && (hostnameID != "" || createAttempted || row.Status == model.AdtySiteDomainActive) && cfg.TurnstileConfigured()) {
 			if err := model.DB.Transaction(func(tx *gorm.DB) error { return adtyTurnstileRemoveDomain(ctx, tx, row.TurnstileWidget, row.Hostname) }); err != nil {
 				return err
 			}
@@ -456,14 +469,25 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var err error
 			widget, err = adtyTurnstileAssign(ctx, tx, row.Hostname)
-			return err
+			if err != nil {
+				return err
+			}
+			if widget != "" {
+				res := tx.Model(&model.AdtySiteDomain{}).
+					Where("id = ? AND lease_token = ?", row.Id, row.LeaseToken).
+					Update("turnstile_widget", widget)
+				if res.Error != nil {
+					return res.Error
+				}
+				if res.RowsAffected == 0 {
+					return errAdtyDomainLeaseLost
+				}
+			}
+			return nil
 		}); err != nil {
 			return err
 		}
 		if widget != "" {
-			if err := adtySaveDomainResource(row, map[string]any{"turnstile_widget": widget}); err != nil {
-				return err
-			}
 			row.TurnstileWidget = widget
 		}
 	}

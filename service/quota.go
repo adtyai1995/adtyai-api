@@ -178,6 +178,9 @@ func normalizeAudioUsageDetails(promptTokens, completionTokens, rawTotal, rawTex
 		textOut = completion - audioOut
 	}
 	total = max(max(rawTotal, 0), prompt+completion, textIn+textOut+audioIn+audioOut)
+	if textIn == 0 && audioIn == 0 && textOut == 0 && audioOut == 0 && total > 0 {
+		textIn = total
+	}
 	return
 }
 

@@ -73,7 +73,7 @@ func fetchCodexChannelWhamData(
 ) {
 	channelId, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 
@@ -83,15 +83,15 @@ func fetchCodexChannelWhamData(
 		return
 	}
 	if ch == nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "channel not found"})
+		common.ApiErrorT(c, "Channel not found")
 		return
 	}
 	if ch.Type != constant.ChannelTypeCodex {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "channel type is not Codex"})
+		common.ApiErrorT(c, "Channel type is not Codex")
 		return
 	}
 	if ch.ChannelInfo.IsMultiKey {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "multi-key channel is not supported"})
+		common.ApiErrorT(c, "Multi-key channel is not supported")
 		return
 	}
 
@@ -104,11 +104,11 @@ func fetchCodexChannelWhamData(
 	accessToken := strings.TrimSpace(oauthKey.AccessToken)
 	accountID := strings.TrimSpace(oauthKey.AccountID)
 	if accessToken == "" {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "codex channel: access_token is required"})
+		common.ApiErrorT(c, "Codex channel requires access_token")
 		return
 	}
 	if accountID == "" {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "codex channel: account_id is required"})
+		common.ApiErrorT(c, "Codex channel requires account_id")
 		return
 	}
 
@@ -135,7 +135,7 @@ func fetchCodexChannelWhamData(
 
 	statusCode, body, err := fetch(ctx, client, ch.GetBaseURL(), accessToken, accountID, redeemID)
 	if err != nil {
-		common.SysError(logPrefix + ": " + err.Error())
+		common.SysError(common.LogText("%s: %s", logPrefix, common.SanitizeOutboundError(err, accessToken).Error()))
 		common.ApiErrorT(c, userMessage)
 		return
 	}
@@ -155,7 +155,7 @@ func fetchCodexChannelWhamData(
 			defer cancel2()
 			statusCode, body, err = fetch(ctx2, client, ch.GetBaseURL(), accessToken, accountID, redeemID)
 			if err != nil {
-				common.SysError(common.LogText("%s after refresh: %s", logPrefix, err.Error()))
+				common.SysError(common.LogText("%s after refresh: %s", logPrefix, common.SanitizeOutboundError(err, accessToken).Error()))
 				common.ApiErrorT(c, userMessage)
 				return
 			}
@@ -180,7 +180,9 @@ func fetchCodexChannelWhamData(
 		"data":            payload,
 	}
 	if !ok {
-		resp["message"] = fmt.Sprintf("upstream status: %d", statusCode)
+		resp["message"] = fmt.Sprintf("Upstream status: %d", statusCode)
+		resp["message_key"] = "Upstream status: {{status}}"
+		resp["message_params"] = gin.H{"status": statusCode}
 	}
 	c.JSON(http.StatusOK, resp)
 }

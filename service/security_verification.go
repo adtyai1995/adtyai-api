@@ -487,7 +487,7 @@ func GetVerificationRequirementsForSite(identity AuthIdentity, scope string, sit
 		requirements.Methods = methods
 	}
 	for i := range methods {
-		if methods[i].Method == VerificationMethodPassword && !common.PasswordLoginEnabled {
+		if methods[i].Method == VerificationMethodPassword && !common.GetPasswordLoginEnabled() {
 			switch scope {
 			case VerificationScopeAccountBind, VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete,
 				VerificationScopeAdminUserCreate, VerificationScopeAdminUserUpdate, VerificationScopeAdminUserDelete,

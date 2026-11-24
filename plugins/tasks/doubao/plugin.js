@@ -1216,8 +1216,9 @@ export function extractUsageOnComplete(task, taskResult, body) {
   const facts = {};
   const usage = body.usage || {};
   if (threeDProfile(task) || trimmed((body.content || {}).file_url)) {
-    const tokens = usage.completion_tokens ?? usage.total_tokens;
-    return tokens == null ? {} : { tokens: tokens };
+    let tokens = Number(usage.completion_tokens);
+    if (!Number.isFinite(tokens) || tokens <= 0) tokens = Number(usage.total_tokens);
+    return Number.isFinite(tokens) && tokens > 0 ? { tokens: tokens } : {};
   }
   let tokens = Number(usage.completion_tokens);
   if (!Number.isFinite(tokens) || tokens <= 0) tokens = Number(usage.total_tokens);

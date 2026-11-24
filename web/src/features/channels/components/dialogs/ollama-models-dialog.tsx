@@ -298,7 +298,7 @@ export function OllamaModelsDialog({
               pullAbortRef.current = null
               return
             } else if (data?.message) {
-              toast.success(String(data.message))
+              toast.success(getServerMessage(data) || String(data.message))
               setPullName('')
               setIsPulling(false)
               setPullProgress(null)

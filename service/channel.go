@@ -62,7 +62,7 @@ func EnableChannel(channelId int, usingKey string, channelName string) {
 }
 
 func ShouldDisableChannel(err *types.NewAPIError) bool {
-	if !common.AutomaticDisableChannelEnabled {
+	if !common.GetAutomaticDisableChannelEnabled() {
 		return false
 	}
 	if err == nil {
@@ -84,7 +84,7 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 }
 
 func ShouldEnableChannel(newAPIError *types.NewAPIError, status int) bool {
-	if !common.AutomaticEnableChannelEnabled {
+	if !common.GetAutomaticEnableChannelEnabled() {
 		return false
 	}
 	if newAPIError != nil {

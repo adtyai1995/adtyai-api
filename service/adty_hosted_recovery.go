@@ -67,6 +67,12 @@ func RecoverAdtyHostedPayment(ctx context.Context, ext *model.AdtyTopupOrder) er
 // RecoverAdtyHostedPaymentAs records the authenticated administrator for manual
 // queries; background recovery retains actor zero.
 func RecoverAdtyHostedPaymentAs(ctx context.Context, ext *model.AdtyTopupOrder, operatorID int) error {
+	return RecoverAdtyHostedPaymentForActor(ctx, ext, operatorID, 0, false)
+}
+
+// RecoverAdtyHostedPaymentForActor enforces target role hierarchy and PAT
+// admin-target restrictions inside the credit transaction (R11-003).
+func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupOrder, operatorID, actorRole int, denyAdminTarget bool) error {
 	if ext == nil {
 		return model.ErrTopUpNotFound
 	}
@@ -86,6 +92,8 @@ func RecoverAdtyHostedPaymentAs(ctx context.Context, ext *model.AdtyTopupOrder, 
 	}
 	facts.Source = model.AdtyPaymentSourceQuery
 	facts.OperatorId = operatorID
+	facts.ActorRole = actorRole
+	facts.DenyAdminTarget = denyAdminTarget
 	var topUp *model.TopUp
 	var frozen *model.AdtyTopupOrder
 	var credited int

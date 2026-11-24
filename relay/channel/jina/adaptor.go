@@ -256,9 +256,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 			return nil, types.NewError(errors.New("Jina response contains inconsistent embedding token usage"), types.ErrorCodeBadResponseBody)
 		}
 		inputTokens := info.GetEstimatePromptTokens()
-		if reportedUsage.PromptTokens != nil {
+		if reportedUsage.PromptTokens != nil && *reportedUsage.PromptTokens > 0 {
 			inputTokens = *reportedUsage.PromptTokens
-		} else if reportedUsage.TotalTokens != nil {
+		} else if reportedUsage.TotalTokens != nil && *reportedUsage.TotalTokens > 0 {
 			inputTokens = *reportedUsage.TotalTokens
 		}
 		if inputTokens < 0 || inputTokens > common.MaxQuota {

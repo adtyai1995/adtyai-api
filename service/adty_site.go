@@ -1336,6 +1336,12 @@ func RunAdtySiteCloseOnce(now int64) error {
 			first = err
 		}
 	}
+	if err := model.MigrateUnencumberedOwnerLotsOnClosedSites(); err != nil {
+		common.SysError(common.LogText("migrate leftover owner principal lots on closed sites: %s", err.Error()))
+		if first == nil {
+			first = err
+		}
+	}
 	return first
 }
 

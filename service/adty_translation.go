@@ -297,7 +297,7 @@ func adtyTranslationHeadMatchesSource(head model.AdtyTranslationHead, currentSou
 	return strings.TrimSpace(head.Source) == norm
 }
 
-func invalidateAdtyTranslationHeadOnSecret(objectKey, sourceHash string, siteId int) {
+func invalidateAdtyTranslationHeadOnSecret(objectKey, sourceHash string, siteId, notifPubID int, notifRevision int64) {
 	if objectKey == "" || model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
 		return
 	}
@@ -306,6 +306,12 @@ func invalidateAdtyTranslationHeadOnSecret(objectKey, sourceHash string, siteId 
 		lookup := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).Limit(1).Find(&head)
 		if lookup.Error != nil || lookup.RowsAffected == 0 {
 			return lookup.Error
+		}
+		if notifPubID > 0 {
+			ok, checkErr := adtyNotificationRevisionMatchesTx(tx, notifPubID, notifRevision)
+			if checkErr != nil || !ok {
+				return checkErr
+			}
 		}
 		return tx.Model(&model.AdtyTranslationHead{}).Where("id = ?", head.Id).Updates(map[string]any{
 			"site_id":      siteId,
@@ -382,7 +388,7 @@ func translateAdtyDynamicInternal(objectKey, source string, siteId, notifPubID i
 	}
 	hash := adtyTranslationSourceHash(source)
 	if adtyTextHasOutboundSecret(source) {
-		invalidateAdtyTranslationHeadOnSecret(objectKey, hash, siteId)
+		invalidateAdtyTranslationHeadOnSecret(objectKey, hash, siteId, notifPubID, notifRevision)
 		return &AdtyTranslationResult{ObjectKey: objectKey, Source: source, Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady}, nil
 	}
 
@@ -1206,7 +1212,7 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 				return nil
 			}
 		}
-		if (strings.HasPrefix(objectKey, "ticket-reply:") || strings.HasPrefix(objectKey, "notification:")) &&
+		if (strings.HasPrefix(objectKey, "ticket-reply:") || strings.HasPrefix(objectKey, "notification:") || strings.HasPrefix(objectKey, "notification-title:")) &&
 			(found.RowsAffected == 0 || current.Status != model.AdtyTranslationPending || current.Version != version || current.SourceHash != hash) {
 			head = current
 			return nil

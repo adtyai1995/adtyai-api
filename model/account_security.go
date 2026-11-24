@@ -52,7 +52,7 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 		if current.Password != "" && common.ValidatePasswordAndHash(update.Password, current.Password) {
 			return common.ErrAccountPasswordSame
 		}
-		changes := map[string]any{"password": hash}
+		changes := map[string]any{"password": hash, "access_token": nil, "access_token_created_at": nil}
 		trimmedUsername := strings.TrimSpace(update.Username)
 		if trimmedUsername != "" {
 			if err := EnsureUsernameAvailableWithTx(tx, trimmedUsername, identity.UserID); err != nil {

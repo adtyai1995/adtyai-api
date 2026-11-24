@@ -1152,7 +1152,7 @@ func loadAdtySiteTierStatsTx(tx *gorm.DB, siteID int) (AdtySiteTierStats, error)
 		).
 		Select(`COALESCE(SUM(CASE
 			WHEN state = 'settled' AND kind = 'request' THEN applied_quota - stream_wallet_quota
-			WHEN state = 'settled' AND kind = 'direct' THEN applied_quota
+			WHEN state = 'settled' AND kind = 'direct' THEN applied_quota - reserved_quota
 			WHEN state = 'settled' AND kind = 'task' THEN applied_quota - reserved_quota
 			WHEN state = 'settled' AND kind = 'mj_charge' THEN applied_quota
 			WHEN state = 'refunded' AND kind = 'request' THEN -stream_wallet_quota

@@ -638,6 +638,10 @@ func (s *ReferralService) releaseWithdrawalTx(tx *gorm.DB, withdrawal *model.Ref
 
 // ReviewWithdrawal 审核通过或驳回（驳回会解冻并发邮件）。
 func (s *ReferralService) ReviewWithdrawal(withdrawalId, adminId int, approve bool, reason, ip, ua string) error {
+	return s.ReviewWithdrawalForActor(withdrawalId, adminId, 0, false, approve, reason, ip, ua)
+}
+
+func (s *ReferralService) ReviewWithdrawalForActor(withdrawalId, adminId, actorRole int, denyAdminTarget, approve bool, reason, ip, ua string) error {
 	now := time.Now().Unix()
 	var notifyUser int
 	var withdrawalCopy model.ReferralWithdrawal
@@ -654,6 +658,9 @@ func (s *ReferralService) ReviewWithdrawal(withdrawalId, adminId int, approve bo
 			return err
 		}
 		if approve {
+			if err := CheckReferralAdminTargetUserTx(tx, withdrawal.UserId, adminId, actorRole, denyAdminTarget); err != nil {
+				return err
+			}
 			if withdrawal.Status != model.ReferralWithdrawalStatusPending {
 				return common.NewMessage("Only pending withdrawals can be reviewed")
 			}
@@ -673,6 +680,9 @@ func (s *ReferralService) ReviewWithdrawal(withdrawalId, adminId int, approve bo
 		if err := s.releaseWithdrawalTx(tx, &withdrawal, model.ReferralWithdrawalStatusRejected, adminId, reason, now); err != nil {
 			return err
 		}
+		if err := CheckReferralAdminTargetUserTx(tx, withdrawal.UserId, adminId, actorRole, denyAdminTarget); err != nil {
+			return err
+		}
 		notifyUser = withdrawal.UserId
 		withdrawalCopy = withdrawal
 		return recordReferralAuditTx(tx, "withdrawal_reject", withdrawal.UserId, withdrawal.AffiliateId, adminId, reason, ip, ua, nil, map[string]any{"id": withdrawal.Id})
@@ -685,6 +695,10 @@ func (s *ReferralService) ReviewWithdrawal(withdrawalId, adminId int, approve bo
 
 // MarkWithdrawalPaid 标记已打款：冻结转已提现，明细标 withdrawn，佣金推到 paid；USDT 要填交易哈希。
 func (s *ReferralService) MarkWithdrawalPaid(withdrawalId, adminId int, txnNo, proofURL, note, ip, ua string) error {
+	return s.MarkWithdrawalPaidForActor(withdrawalId, adminId, 0, false, txnNo, proofURL, note, ip, ua)
+}
+
+func (s *ReferralService) MarkWithdrawalPaidForActor(withdrawalId, adminId, actorRole int, denyAdminTarget bool, txnNo, proofURL, note, ip, ua string) error {
 	now := time.Now().Unix()
 	var withdrawalCopy model.ReferralWithdrawal
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -718,6 +732,9 @@ func (s *ReferralService) MarkWithdrawalPaid(withdrawalId, adminId int, txnNo, p
 		}
 		account, err := lockReferralAccountTx(tx, withdrawal.AffiliateId)
 		if err != nil {
+			return err
+		}
+		if err := CheckReferralAdminTargetUserTx(tx, withdrawal.UserId, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
 		amount, err := withdrawalMovableFrozenTx(tx, &withdrawal, account)

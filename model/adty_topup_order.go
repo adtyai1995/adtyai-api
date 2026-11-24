@@ -151,6 +151,8 @@ type AdtyPaymentFacts struct {
 	MerchantId       string
 	Environment      string
 	OperatorId       int   // Server-side actor; zero denotes a provider or maintenance task.
+	ActorRole        int   // > 0 on admin-initiated completions; enforces hierarchy & anti-self-credit (R11-003).
+	DenyAdminTarget  bool  // True on PAT-authenticated admin calls; forbids Role >= RoleAdminUser targets (R11-003).
 	PaidAt           int64 // Verified Unix timestamp when payment became effective (ISS-R1-0009).
 	PaidTimeVerified bool  // True only when PaidAt comes from verified gateway or reviewed timing evidence.
 }
@@ -407,6 +409,23 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	if ext.TeamId == 0 {
 		if err := lockForUpdate(tx).First(&user, topUp.UserId).Error; err != nil {
 			return false, 0, nil, nil, err
+		}
+	}
+	if facts.ActorRole > 0 || facts.DenyAdminTarget {
+		targetUser := user
+		if ext.TeamId > 0 {
+			if err := tx.Select("id", "role").First(&targetUser, topUp.UserId).Error; err != nil {
+				return false, 0, nil, nil, err
+			}
+		}
+		if facts.Source == AdtyPaymentSourceManual && facts.OperatorId > 0 && facts.OperatorId == targetUser.Id {
+			return false, 0, nil, nil, ErrUserQuotaPermission
+		}
+		if facts.ActorRole > 0 && facts.ActorRole != common.RoleRootUser && facts.ActorRole <= targetUser.Role {
+			return false, 0, nil, nil, ErrUserQuotaPermission
+		}
+		if facts.DenyAdminTarget && targetUser.Role >= common.RoleAdminUser {
+			return false, 0, nil, nil, ErrAdminTargetSessionRequired
 		}
 	}
 	if err := tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Updates(map[string]any{

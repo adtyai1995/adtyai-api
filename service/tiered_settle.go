@@ -38,6 +38,9 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 	}
 	promptTokens := max(usage.PromptTokens, 0)
 	completionTokens := max(usage.CompletionTokens, 0)
+	if promptTokens == 0 && completionTokens == 0 && usage.TotalTokens > 0 {
+		promptTokens = usage.TotalTokens
+	}
 	cachedTokens := max(usage.PromptTokensDetails.CachedTokens, 0)
 	cacheCreationTotal := max(usage.PromptTokensDetails.CacheCreationTokensTotal(), 0)
 	imageTokens := max(usage.PromptTokensDetails.ImageTokens, 0)

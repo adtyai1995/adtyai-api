@@ -425,11 +425,15 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 	// 的释放分支，一分都不会计进 principalSpent。
 	principalSpent := int64(0)
 	bonusBySource := map[string]int64{}
+	var touchedPrincipalBatchIDs []int64
 	left := applied
 	for i := range shares {
 		held := shares[i].Held - shares[i].Settled
 		if held <= 0 {
 			continue
+		}
+		if shares[i].Kind == AdtyFundBatchKindPrincipal && shares[i].BatchId > 0 {
+			touchedPrincipalBatchIDs = append(touchedPrincipalBatchIDs, shares[i].BatchId)
 		}
 		take := min(held, left)
 		if take <= 0 {
@@ -474,6 +478,9 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationID, principalSpent); err != nil {
 			return 0, err
 		}
+		if err := migrateTouchedClosedOwnerBatchesTx(tx, userID, touchedPrincipalBatchIDs, "settle:"+operationID); err != nil {
+			return 0, err
+		}
 		return applied, nil
 	}
 	// 已登记额度不够覆盖实际消耗：补记一条已结算分摊，再按 FIFO 扣批次。
@@ -495,6 +502,9 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		held := shares[i].Held - shares[i].Settled
 		if held <= 0 {
 			continue
+		}
+		if shares[i].Kind == AdtyFundBatchKindPrincipal && shares[i].BatchId > 0 {
+			touchedPrincipalBatchIDs = append(touchedPrincipalBatchIDs, shares[i].BatchId)
 		}
 		take := min(held, left)
 		if err := deductAdtyFundBatchTx(tx, shares[i].BatchId, take); err != nil {
@@ -545,6 +555,9 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		return 0, err
 	}
 	if err := adtyNotifyPrincipalSpentTx(tx, userID, operationID, principalSpent); err != nil {
+		return 0, err
+	}
+	if err := migrateTouchedClosedOwnerBatchesTx(tx, userID, touchedPrincipalBatchIDs, "settle:"+operationID); err != nil {
 		return 0, err
 	}
 	return backed, nil
@@ -663,6 +676,7 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 	left := refundQuota
 	principalBySite := map[int]int64{}
 	bonusBySource := map[string]int64{}
+	var touchedPrincipalBatchIDs []int64
 	for i := range shares {
 		if left <= 0 {
 			break
@@ -670,6 +684,9 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 		giveBack := min(shares[i].Settled, left)
 		if giveBack <= 0 {
 			continue
+		}
+		if shares[i].Kind == AdtyFundBatchKindPrincipal && shares[i].BatchId > 0 {
+			touchedPrincipalBatchIDs = append(touchedPrincipalBatchIDs, shares[i].BatchId)
 		}
 		if err := tx.Model(&AdtyFundBatch{}).
 			Where("id = ?", shares[i].BatchId).
@@ -712,5 +729,8 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 	if err := adtyNotifyBonusRefundedTx(tx, userID, reverseOperationID, bonusBySource); err != nil {
 		return err
 	}
-	return adtyNotifyPrincipalRefundedTx(tx, userID, reverseOperationID, principalBySite)
+	if err := adtyNotifyPrincipalRefundedTx(tx, userID, reverseOperationID, principalBySite); err != nil {
+		return err
+	}
+	return migrateTouchedClosedOwnerBatchesTx(tx, userID, touchedPrincipalBatchIDs, "refund:"+reverseOperationID)
 }

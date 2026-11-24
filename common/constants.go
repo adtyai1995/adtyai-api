@@ -67,6 +67,62 @@ func GetSystemName() string {
 	return name
 }
 
+func GetDisplayTokenStatEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := DisplayTokenStatEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetPasswordLoginEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := PasswordLoginEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetPasswordRegisterEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := PasswordRegisterEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetEmailVerificationEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := EmailVerificationEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetRegisterEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := RegisterEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetAutomaticDisableChannelEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := AutomaticDisableChannelEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetAutomaticEnableChannelEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := AutomaticEnableChannelEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetRetryTimes() int {
+	OptionMapRWMutex.RLock()
+	v := RetryTimes
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
 var ItemsPerPage = 10
 var MaxRecentItems = 1000
 

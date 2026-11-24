@@ -1,6 +1,9 @@
 package operation_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 // TokenSetting 令牌相关配置
 type TokenSetting struct {
@@ -17,9 +20,12 @@ func init() {
 	config.GlobalConfig.Register("token_setting", &tokenSetting)
 }
 
-// GetTokenSetting 获取令牌配置
+// GetTokenSetting 获取令牌配置快照（并发安全 — R11-009）
 func GetTokenSetting() *TokenSetting {
-	return &tokenSetting
+	common.OptionMapRWMutex.RLock()
+	snap := tokenSetting
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 // GetMaxUserTokens 获取每用户最大令牌数量

@@ -814,24 +814,6 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 	pollingLock.Lock()
 	defer pollingLock.Unlock()
 
-	if common.MemoryCacheEnabled {
-		channelCache, _ := CacheGetChannel(channelId)
-		if channelCache == nil {
-			// Returned before any cache write, so this node has nothing to restore.
-			return false
-		}
-		// A request failure must not replace an admin's manual disable;
-		// otherwise automatic recovery could re-enable the channel later.
-		if status == common.ChannelStatusAutoDisabled && channelCache.Status == common.ChannelStatusManuallyDisabled {
-			return false
-		}
-		// Never mutate the published cached *Channel or its MultiKeyStatusList map in place
-		// (R9-007): concurrent readers hold pointers without channelSyncLock.
-		if !channelCache.ChannelInfo.IsMultiKey && channelCache.Status == status && status != common.ChannelStatusAutoDisabled {
-			return false
-		}
-	}
-
 	shouldUpdateAbilities := false
 	refreshNeeded := false
 	defer func() {
@@ -883,6 +865,11 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 			}
 		}
 		if channel.Status == status && !overridesKeyExhaustion && !multiKeyTargetNeedsUpdate {
+			if common.MemoryCacheEnabled {
+				if channelCache, _ := CacheGetChannel(channelId); channelCache == nil || channelCache.Status != channel.Status {
+					refreshNeeded = true
+				}
+			}
 			return false
 		}
 

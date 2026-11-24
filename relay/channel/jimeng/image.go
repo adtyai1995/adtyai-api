@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -29,23 +30,32 @@ type ImageResponse struct {
 	TimeElapsed string `json:"time_elapsed"`
 }
 
-func responseJimeng2OpenAIImage(_ *gin.Context, response *ImageResponse, info *relaycommon.RelayInfo) *dto.ImageResponse {
+func responseJimeng2OpenAIImage(_ *gin.Context, response *ImageResponse, info *relaycommon.RelayInfo) (*dto.ImageResponse, int64) {
 	imageResponse := dto.ImageResponse{
 		Created: info.StartTime.Unix(),
 	}
 
+	var nonEmptyB64s, nonEmptyURLs int64
 	for _, base64Data := range response.Data.BinaryDataBase64 {
+		if strings.TrimSpace(base64Data) == "" {
+			continue
+		}
+		nonEmptyB64s++
 		imageResponse.Data = append(imageResponse.Data, dto.ImageData{
 			B64Json: base64Data,
 		})
 	}
 	for _, imageUrl := range response.Data.ImageUrls {
+		if strings.TrimSpace(imageUrl) == "" {
+			continue
+		}
+		nonEmptyURLs++
 		imageResponse.Data = append(imageResponse.Data, dto.ImageData{
 			Url: imageUrl,
 		})
 	}
 
-	return &imageResponse
+	return &imageResponse, max(nonEmptyB64s, nonEmptyURLs)
 }
 
 // jimengImageHandler handles the Jimeng image generation response
@@ -73,9 +83,9 @@ func jimengImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 	}
 
 	// Convert Jimeng response to OpenAI format
-	fullTextResponse := responseJimeng2OpenAIImage(c, &jimengResponse, info)
-	if info != nil && fullTextResponse != nil {
-		info.UpdateImageCount(int64(len(fullTextResponse.Data)))
+	fullTextResponse, billableImages := responseJimeng2OpenAIImage(c, &jimengResponse, info)
+	if info != nil && billableImages > 0 {
+		info.UpdateImageCount(billableImages)
 	}
 	jsonResponse, err := common.Marshal(fullTextResponse)
 	if err != nil {

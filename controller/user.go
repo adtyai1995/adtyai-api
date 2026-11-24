@@ -51,7 +51,7 @@ func GetPasswordEncryptionKey(c *gin.Context) {
 }
 
 func Login(c *gin.Context) {
-	if !common.PasswordLoginEnabled {
+	if !common.GetPasswordLoginEnabled() {
 		common.ApiErrorT(c, "Password login has been disabled by administrator")
 		return
 	}
@@ -250,11 +250,11 @@ func writeLoginResponse(c *gin.Context, user *model.User, bundle *service.AuthBu
 }
 
 func Register(c *gin.Context) {
-	if !common.RegisterEnabled {
+	if !common.GetRegisterEnabled() {
 		common.ApiErrorT(c, "New user registration has been disabled by administrator")
 		return
 	}
-	if !common.PasswordRegisterEnabled {
+	if !common.GetPasswordRegisterEnabled() {
 		common.ApiErrorT(c, "Password registration has been disabled by administrator")
 		return
 	}
@@ -289,7 +289,7 @@ func Register(c *gin.Context) {
 		common.ApiErrorT(c, "New user registration has been disabled by administrator")
 		return
 	}
-	if common.EmailVerificationEnabled {
+	if common.GetEmailVerificationEnabled() {
 		if user.Email == "" || user.VerificationCode == "" {
 			common.ApiErrorT(c, "Email verification is enabled, please enter email address and verification code")
 			return
@@ -316,7 +316,7 @@ func Register(c *gin.Context) {
 		}
 	}
 	emailForExistCheck := ""
-	if common.EmailVerificationEnabled {
+	if common.GetEmailVerificationEnabled() {
 		emailForExistCheck = user.Email
 	}
 	exist, err := model.CheckUserExistOrDeleted(user.Username, emailForExistCheck, siteId)
@@ -336,7 +336,7 @@ func Register(c *gin.Context) {
 		Role:        common.RoleCommonUser, // 明确设置角色为普通用户
 		SiteId:      siteId,
 	}
-	if common.EmailVerificationEnabled {
+	if common.GetEmailVerificationEnabled() {
 		cleanUser.Email = user.Email
 	}
 	if !service.AdtyRegisterTermsAccepted(c, siteId) {
@@ -404,7 +404,7 @@ func Register(c *gin.Context) {
 			ModelLimitsEnabled: false,
 		}
 		token.AllowUserQuotaQuery = true
-		if setting.DefaultUseAutoGroup {
+		if setting.GetDefaultUseAutoGroup() {
 			token.Group = "auto"
 		}
 		if err := token.InsertWithLimit(operation_setting.GetMaxUserTokens()); err != nil && !errors.Is(err, model.ErrTokenLimit) {

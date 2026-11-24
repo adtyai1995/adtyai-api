@@ -136,17 +136,23 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 
 	var httpResp *http.Response
 	if resp != nil {
-		httpResp = resp.(*http.Response)
-		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
-		if httpResp.StatusCode != http.StatusOK {
-			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
-			// reset status code 重置状态码
-			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
-			return newAPIError
+		var ok bool
+		httpResp, ok = resp.(*http.Response)
+		if !ok {
+			return types.NewOpenAIError(fmt.Errorf("unexpected response type %T", resp), types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
+		}
+		if httpResp != nil {
+			info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
+			if httpResp.StatusCode != http.StatusOK {
+				newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+				// reset status code 重置状态码
+				service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+				return newAPIError
+			}
 		}
 	}
 
-	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
+	usage, openaiErr := adaptor.DoResponse(c, httpResp, info)
 	if openaiErr != nil {
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr
@@ -176,8 +182,14 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo) (newAPI
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 		}
+		if len(batchRequest.Requests) == 0 {
+			return types.NewErrorWithStatusCode(fmt.Errorf("requests is required"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
 		req = batchRequest
-		for _, r := range batchRequest.Requests {
+		for i, r := range batchRequest.Requests {
+			if r == nil {
+				return types.NewErrorWithStatusCode(fmt.Errorf("requests[%d] must not be null", i), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			}
 			for _, part := range r.Content.Parts {
 				if part.Text != "" {
 					inputTexts = append(inputTexts, part.Text)
@@ -245,15 +257,19 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo) (newAPI
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 	var httpResp *http.Response
 	if resp != nil {
-		httpResp = resp.(*http.Response)
-		if httpResp.StatusCode != http.StatusOK {
+		var ok bool
+		httpResp, ok = resp.(*http.Response)
+		if !ok {
+			return types.NewOpenAIError(fmt.Errorf("unexpected response type %T", resp), types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
+		}
+		if httpResp != nil && httpResp.StatusCode != http.StatusOK {
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 			return newAPIError
 		}
 	}
 
-	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
+	usage, openaiErr := adaptor.DoResponse(c, httpResp, info)
 	if openaiErr != nil {
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr

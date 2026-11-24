@@ -166,6 +166,54 @@ function formatGroupFormValues(values: GroupFormValues): GroupFormValues {
     GroupModelAllow: formatJsonForTextarea(values.GroupModelAllow ?? '{}'),
   }
 }
+
+function formatModelFormValues(values: ModelFormValues): ModelFormValues {
+  return {
+    ...values,
+    ModelPrice: formatJsonForTextarea(values.ModelPrice),
+    ModelRatio: formatJsonForTextarea(values.ModelRatio),
+    CacheRatio: formatJsonForTextarea(values.CacheRatio),
+    CreateCacheRatio: formatJsonForTextarea(values.CreateCacheRatio),
+    CompletionRatio: formatJsonForTextarea(values.CompletionRatio),
+    ImageRatio: formatJsonForTextarea(values.ImageRatio),
+    AudioRatio: formatJsonForTextarea(values.AudioRatio),
+    AudioCompletionRatio: formatJsonForTextarea(values.AudioCompletionRatio),
+    BillingMode: formatJsonForTextarea(values.BillingMode),
+    BillingExpr: formatJsonForTextarea(values.BillingExpr),
+    PluginBillingExpr: formatJsonForTextarea(values.PluginBillingExpr),
+  }
+}
+
+function normalizeModelFormValues(values: ModelFormValues) {
+  return {
+    ModelPrice: normalizeJsonString(values.ModelPrice),
+    ModelRatio: normalizeJsonString(values.ModelRatio),
+    CacheRatio: normalizeJsonString(values.CacheRatio),
+    CreateCacheRatio: normalizeJsonString(values.CreateCacheRatio),
+    CompletionRatio: normalizeJsonString(values.CompletionRatio),
+    ImageRatio: normalizeJsonString(values.ImageRatio),
+    AudioRatio: normalizeJsonString(values.AudioRatio),
+    AudioCompletionRatio: normalizeJsonString(values.AudioCompletionRatio),
+    ExposeRatioEnabled: values.ExposeRatioEnabled,
+    BillingMode: normalizeJsonString(values.BillingMode),
+    BillingExpr: normalizeJsonString(values.BillingExpr),
+    PluginBillingExpr: normalizeJsonString(values.PluginBillingExpr),
+  }
+}
+
+function mergePricingIntoModelDefaults(
+  initial: ModelFormValues,
+  baseline: ModelPricingConfig | null
+): ModelFormValues {
+  if (!baseline) return initial
+  return {
+    ...initial,
+    ...baseline.options,
+    BillingMode: baseline.options['billing_setting.billing_mode'],
+    BillingExpr: baseline.options['billing_setting.billing_expr'],
+    PluginBillingExpr: baseline.options['billing_setting.plugin_billing_expr'],
+  }
+}
 type RatioTabId =
   | 'models'
   | 'unset-models'
@@ -203,41 +251,9 @@ export function RatioSettingsCard({
     }
   }, [pricingBaseline, pricingQuery.data])
   const modelDefaults = useMemo(
-    () =>
-      pricingBaseline
-        ? {
-            ...initialModelDefaults,
-            ...pricingBaseline.options,
-            BillingMode:
-              pricingBaseline.options['billing_setting.billing_mode'],
-            BillingExpr:
-              pricingBaseline.options['billing_setting.billing_expr'],
-            PluginBillingExpr:
-              pricingBaseline.options['billing_setting.plugin_billing_expr'],
-          }
-        : initialModelDefaults,
+    () => mergePricingIntoModelDefaults(initialModelDefaults, pricingBaseline),
     [initialModelDefaults, pricingBaseline]
   )
-  const resetMutation = useMutation({
-    mutationFn: async () => {
-      if (!pricingBaseline) return
-      await savePricing.mutateAsync(
-        pricingBaseline.entries.map((entry) => ({
-          model_name: entry.model_name,
-          expected_version: entry.version,
-          pricing: {},
-          reset: true,
-        }))
-      )
-      const refreshed = await pricingQuery.refetch()
-      setPricingBaseline(refreshed.data ?? null)
-    },
-    onSuccess: () => {
-      toast.success(t('Model prices reset successfully'))
-      setConfirmOpen(false)
-    },
-    onError: (error) => handleServerError(error),
-  })
 
   const modelNormalizedDefaults = useRef({
     ModelPrice: normalizeJsonString(modelDefaults.ModelPrice),
@@ -309,6 +325,43 @@ export function RatioSettingsCard({
     resolver: zodResolver(groupSchema),
     mode: 'onChange',
     defaultValues: groupFormDefaultsRef.current,
+  })
+
+  const syncModelFormToDefaults = useCallback(
+    (nextBaseline: ModelPricingConfig | null) => {
+      const nextDefaults = mergePricingIntoModelDefaults(
+        initialModelDefaults,
+        nextBaseline
+      )
+      const nextNormalized = normalizeModelFormValues(nextDefaults)
+      modelNormalizedDefaults.current = nextNormalized
+      modelNormalizedSerializedRef.current = JSON.stringify(nextNormalized)
+      setSavedModelValues(nextNormalized)
+      modelForm.reset(formatModelFormValues(nextDefaults))
+    },
+    [initialModelDefaults, modelForm]
+  )
+  const resetMutation = useMutation({
+    mutationFn: async () => {
+      if (!pricingBaseline) return
+      await savePricing.mutateAsync(
+        pricingBaseline.entries.map((entry) => ({
+          model_name: entry.model_name,
+          expected_version: entry.version,
+          pricing: {},
+          reset: true,
+        }))
+      )
+      const refreshed = await pricingQuery.refetch()
+      const nextBaseline = refreshed.data ?? null
+      setPricingBaseline(nextBaseline)
+      syncModelFormToDefaults(nextBaseline)
+    },
+    onSuccess: () => {
+      toast.success(t('Model prices reset successfully'))
+      setConfirmOpen(false)
+    },
+    onError: (error) => handleServerError(error),
   })
 
   useEffect(() => {
@@ -428,6 +481,11 @@ export function RatioSettingsCard({
           modelNormalizedDefaults.current = partialSaved
           modelNormalizedSerializedRef.current = JSON.stringify(partialSaved)
           setSavedModelValues(partialSaved)
+          modelForm.reset(formatModelFormValues(partialSaved), {
+            keepValues: true,
+            keepFieldsRef: true,
+            keepErrors: true,
+          })
         }
         if (visibilityChanged) {
           await updateOption.mutateAsync({
@@ -438,12 +496,13 @@ export function RatioSettingsCard({
         modelNormalizedDefaults.current = normalized
         modelNormalizedSerializedRef.current = JSON.stringify(normalized)
         setSavedModelValues(normalized)
+        modelForm.reset(formatModelFormValues(normalized))
         toast.success(t('Model pricing saved'))
       } catch (error) {
         handleServerError(error)
       }
     },
-    [t, updateOption, pricingBaseline, savePricing, pricingQuery]
+    [t, updateOption, pricingBaseline, savePricing, pricingQuery, modelForm]
   )
 
   const saveGroupRatios = useCallback(
@@ -557,7 +616,10 @@ export function RatioSettingsCard({
               size='sm'
               onClick={async () => {
                 const refreshed = await pricingQuery.refetch()
-                if (refreshed.data) setPricingBaseline(refreshed.data)
+                if (refreshed.data) {
+                  setPricingBaseline(refreshed.data)
+                  syncModelFormToDefaults(refreshed.data)
+                }
                 savePricing.reset()
               }}
             >

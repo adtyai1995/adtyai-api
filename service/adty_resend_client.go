@@ -97,7 +97,7 @@ func (c *AdtyResendClient) do(ctx context.Context, method, path string, body any
 	}
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, reader)
 	if err != nil {
-		return err
+		return common.SanitizeOutboundError(err, apiKey)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	if body != nil {
@@ -108,7 +108,7 @@ func (c *AdtyResendClient) do(ctx context.Context, method, path string, body any
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return common.SanitizeOutboundError(err, apiKey)
 	}
 	defer resp.Body.Close()
 	limited := io.LimitReader(resp.Body, 1<<20)

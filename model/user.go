@@ -986,7 +986,8 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 		if _, err = DeleteUserAccessTokensWithTx(tx, user.Id); err != nil {
 			return err
 		}
-		updates["access_token"] = ""
+		updates["access_token"] = nil
+		updates["access_token_created_at"] = nil
 	}
 	if err = tx.Model(&current).Updates(updates).Error; err != nil {
 		if isUsernameUniqueViolation(err) {
@@ -1735,7 +1736,11 @@ func resetUserPasswordWithOutcome(user *User, password string) (PasswordResetOut
 		if _, err := DeleteUserAccessTokensWithTx(tx, user.Id); err != nil {
 			return err
 		}
-		updated := tx.Model(&User{}).Where("id = ?", user.Id).Update("password", hashedPassword)
+		updated := tx.Model(&User{}).Where("id = ?", user.Id).Updates(map[string]any{
+			"password":                hashedPassword,
+			"access_token":            nil,
+			"access_token_created_at": nil,
+		})
 		if updated.Error != nil {
 			return updated.Error
 		}

@@ -459,7 +459,7 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 	if ownerLocked && tx.Migrator().HasTable(&AdtyFundBatch{}) {
 		var ownerBatches []AdtyFundBatch
 		if err := lockForUpdate(tx).
-			Where("user_id = ? AND site_id = ? AND kind = ? AND remaining > 0", ownerUserID, fromSite, AdtyFundBatchKindPrincipal).
+			Where("user_id = ? AND site_id = ? AND kind = ?", ownerUserID, fromSite, AdtyFundBatchKindPrincipal).
 			Order("id ASC").
 			Find(&ownerBatches).Error; err != nil {
 			return nil, 0, err
@@ -500,7 +500,7 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 					continue
 				}
 				moveBatchIDs = append(moveBatchIDs, batch.Id)
-				if batch.Source != adtyLegacyBatchSource {
+				if batch.Remaining > 0 && batch.Source != adtyLegacyBatchSource {
 					movedPrincipal += batch.Remaining
 				}
 			}

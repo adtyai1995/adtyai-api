@@ -607,20 +607,33 @@ func SetAdtyTicketStatus(userId int, ticketId int64, status, priority string, as
 }
 
 func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority string, assigneeId int, key string, closureID int64, workspace ...string) error {
-	if assigneeId < 0 {
+	if assigneeId < 0 || len(workspace) > 1 {
 		return ErrAdtyTicketInvalid
 	}
 	var err error
 	if err := ensureAdtyTicketNoticeSchema(); err != nil {
 		return err
 	}
+	requestedScope := ""
+	if len(workspace) == 1 {
+		requestedScope = workspace[0]
+	}
 	var statusAudit map[string]any
 	var statusBefore map[string]any
 	var statusAuditEntry *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		if assigneeId > 0 {
-			var membership model.AdtySiteStaff
-			if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id=?", assigneeId).Limit(1).Find(&membership).Error; err != nil {
+		staffUserIDs := make([]int, 0, 2)
+		if (requestedScope == "staff" || len(workspace) == 0) && userId > 0 {
+			staffUserIDs = append(staffUserIDs, userId)
+		}
+		if assigneeId > 0 && (len(workspace) == 0 || requestedScope == "platform" || requestedScope == "platform_main" || requestedScope == "owner" || requestedScope == "staff") {
+			staffUserIDs = append(staffUserIDs, assigneeId)
+		}
+		if len(staffUserIDs) > 0 {
+			slices.Sort(staffUserIDs)
+			staffUserIDs = slices.Compact(staffUserIDs)
+			var memberships []model.AdtySiteStaff
+			if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id IN ?", staffUserIDs).Order("user_id ASC, id ASC").Find(&memberships).Error; err != nil {
 				return err
 			}
 		}

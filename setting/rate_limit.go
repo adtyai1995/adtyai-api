@@ -25,6 +25,42 @@ var ModelRequestRateLimitSuccessCount = 1000
 var ModelRequestRateLimitGroup = map[string][2]int{}
 var ModelRequestRateLimitMutex sync.RWMutex
 
+func SetModelRequestRateLimitEnabled(v bool) {
+	ModelRequestRateLimitMutex.Lock()
+	ModelRequestRateLimitEnabled = v
+	ModelRequestRateLimitMutex.Unlock()
+}
+
+func SetModelRequestRateLimitCount(v int) {
+	ModelRequestRateLimitMutex.Lock()
+	ModelRequestRateLimitCount = v
+	ModelRequestRateLimitMutex.Unlock()
+}
+
+func SetModelRequestRateLimitDurationMinutes(v int) {
+	ModelRequestRateLimitMutex.Lock()
+	ModelRequestRateLimitDurationMinutes = v
+	ModelRequestRateLimitMutex.Unlock()
+}
+
+func SetModelRequestRateLimitSuccessCount(v int) {
+	ModelRequestRateLimitMutex.Lock()
+	ModelRequestRateLimitSuccessCount = v
+	ModelRequestRateLimitMutex.Unlock()
+}
+
+// GetModelRequestRateLimitConfig returns a consistent per-request snapshot of
+// the four model rate-limit globals under ModelRequestRateLimitMutex (R11-009).
+func GetModelRequestRateLimitConfig() (enabled bool, durationMinutes, count, successCount int) {
+	ModelRequestRateLimitMutex.RLock()
+	enabled = ModelRequestRateLimitEnabled
+	durationMinutes = ModelRequestRateLimitDurationMinutes
+	count = ModelRequestRateLimitCount
+	successCount = ModelRequestRateLimitSuccessCount
+	ModelRequestRateLimitMutex.RUnlock()
+	return
+}
+
 func ModelRequestRateLimitGroup2JSONString() string {
 	ModelRequestRateLimitMutex.RLock()
 	defer ModelRequestRateLimitMutex.RUnlock()
@@ -40,6 +76,9 @@ func UpdateModelRequestRateLimitGroupByJSONString(jsonStr string) error {
 	parsed := make(map[string][2]int)
 	if err := common.Unmarshal([]byte(jsonStr), &parsed); err != nil {
 		return err
+	}
+	if parsed == nil {
+		return fmt.Errorf("ModelRequestRateLimitGroup must be a JSON object")
 	}
 	ModelRequestRateLimitMutex.Lock()
 	defer ModelRequestRateLimitMutex.Unlock()
@@ -67,6 +106,9 @@ func CheckModelRequestRateLimitGroup(jsonStr string) error {
 	err := common.Unmarshal([]byte(jsonStr), &checkModelRequestRateLimitGroup)
 	if err != nil {
 		return err
+	}
+	if checkModelRequestRateLimitGroup == nil {
+		return fmt.Errorf("ModelRequestRateLimitGroup must be a JSON object")
 	}
 	for group, limits := range checkModelRequestRateLimitGroup {
 		if limits[0] < 0 || limits[1] < 1 {

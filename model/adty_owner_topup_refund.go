@@ -171,45 +171,72 @@ func reclaimOwnerRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRefun
 	return moveOwnerRefundOperatingTx(tx, ext, lot, row, operatorID, false)
 }
 
-// migrateClosedOwnerLotIfUnencumberedTx moves an owner self-use principal lot
-// that remained pinned to a closed subsite (due to an active refund/hold at
-// close time) onto main site (site_id = 0) and debits its remaining balance
-// from the closed site's operating wallet so operating(S) == ownerPrincipal(S)
-// remains exact (R10-019).
-func migrateClosedOwnerLotIfUnencumberedTx(tx *gorm.DB, ext *AdtyTopupOrder, lot *AdtyFundBatch, remainingQuota int64, row *AdtyManualRefund, operatorID int, keySuffix string) error {
-	if tx == nil || ext == nil || lot == nil || lot.SiteId == nil || *lot.SiteId != ext.SiteId || ext.SiteId <= 0 {
+// migrateClosedOwnerBatchIfUnencumberedTx moves an owner self-use principal lot
+// pinned to a closed subsite onto main site (site_id = 0) and debits its
+// authoritative DB remaining balance from the closed site's operating wallet so
+// operating(S) == ownerPrincipal(S) remains exact (R10-019/R11-001/R11-002/R11-032).
+func migrateClosedOwnerBatchIfUnencumberedTx(tx *gorm.DB, siteID, ownerUserID int, batchID int64, excludeRefundID string, operatorID int, reason, idemKey string, ignoreRestricted bool) error {
+	if tx == nil || siteID <= 0 || ownerUserID <= 0 || batchID <= 0 {
 		return nil
 	}
-	siteClosed, err := isOwnerRefundSiteClosedTx(tx, ext.SiteId)
+	siteClosed, err := isOwnerRefundSiteClosedTx(tx, siteID)
 	if err != nil || !siteClosed {
 		return err
 	}
-	var activeAllocs int64
-	if err := tx.Model(&AdtyFundAllocation{}).Where("batch_id = ? AND held > settled", lot.Id).Count(&activeAllocs).Error; err != nil {
-		return err
-	}
-	var otherActiveRefunds int64
-	if err := tx.Model(&AdtyManualRefund{}).Where("trade_no = ? AND refund_id <> ? AND status NOT IN ?", ext.TradeNo, row.RefundId, []string{AdtyManualRefundStatusCompleted, AdtyManualRefundStatusTerminated}).Count(&otherActiveRefunds).Error; err != nil {
-		return err
-	}
-	if activeAllocs != 0 || otherActiveRefunds != 0 {
-		return nil
-	}
-	if err := tx.Model(&AdtyFundBatch{}).Where("id = ?", lot.Id).Update("site_id", 0).Error; err != nil {
-		return err
-	}
-	if remainingQuota <= 0 || lot.Source == adtyLegacyBatchSource || !tx.Migrator().HasTable(&AdtySiteWallet{}) {
-		return nil
-	}
-	var wallet AdtySiteWallet
-	res := lockForUpdate(tx).Where("site_id = ? AND kind = ?", ext.SiteId, AdtySiteWalletOperating).Limit(1).Find(&wallet)
+	var fresh AdtyFundBatch
+	res := lockForUpdate(tx).
+		Where("id = ? AND user_id = ? AND kind = ?", batchID, ownerUserID, AdtyFundBatchKindPrincipal).
+		Limit(1).Find(&fresh)
 	if res.Error != nil {
 		return res.Error
 	}
-	if res.RowsAffected == 0 || !wallet.Balance.IsPositive() {
+	if res.RowsAffected == 0 || fresh.SiteId == nil || *fresh.SiteId != siteID {
 		return nil
 	}
-	debitUSD := decimal.NewFromInt(remainingQuota).Div(common.QuotaPerUnitDecimal())
+	if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+		var activeAllocs int64
+		if err := tx.Model(&AdtyFundAllocation{}).Where("batch_id = ? AND held > settled", fresh.Id).Count(&activeAllocs).Error; err != nil {
+			return err
+		}
+		if activeAllocs != 0 {
+			return nil
+		}
+	}
+	if fresh.Source != "" && tx.Migrator().HasTable(&AdtyManualRefund{}) {
+		q := tx.Model(&AdtyManualRefund{}).
+			Where("trade_no = ? AND status NOT IN ?", fresh.Source, []string{AdtyManualRefundStatusCompleted, AdtyManualRefundStatusTerminated})
+		if excludeRefundID != "" {
+			q = q.Where("refund_id <> ?", excludeRefundID)
+		}
+		var otherActiveRefunds int64
+		if err := q.Count(&otherActiveRefunds).Error; err != nil {
+			return err
+		}
+		if otherActiveRefunds != 0 {
+			return nil
+		}
+	}
+	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: siteID, AccountID: ownerUserID, OrderRef: fresh.Source}); err != nil {
+		if ignoreRestricted {
+			return nil
+		}
+		return err
+	}
+	if err := tx.Model(&AdtyFundBatch{}).Where("id = ?", fresh.Id).Update("site_id", 0).Error; err != nil {
+		return err
+	}
+	if fresh.Remaining <= 0 || fresh.Source == adtyLegacyBatchSource || !tx.Migrator().HasTable(&AdtySiteWallet{}) {
+		return nil
+	}
+	var wallet AdtySiteWallet
+	wres := lockForUpdate(tx).Where("site_id = ? AND kind = ?", siteID, AdtySiteWalletOperating).Limit(1).Find(&wallet)
+	if wres.Error != nil {
+		return wres.Error
+	}
+	if wres.RowsAffected == 0 || !wallet.Balance.IsPositive() {
+		return nil
+	}
+	debitUSD := decimal.NewFromInt(fresh.Remaining).Div(common.QuotaPerUnitDecimal())
 	if debitUSD.GreaterThan(wallet.Balance) {
 		debitUSD = wallet.Balance
 	}
@@ -222,12 +249,124 @@ func migrateClosedOwnerLotIfUnencumberedTx(tx *gorm.DB, ext *AdtyTopupOrder, lot
 		return err
 	}
 	return tx.Create(&AdtySiteWalletLedger{
-		SiteId: ext.SiteId, WalletId: wallet.Id, WalletKind: wallet.Kind,
+		SiteId: siteID, WalletId: wallet.Id, WalletKind: wallet.Kind,
 		Delta: debitUSD.Neg(), BalanceBefore: before, BalanceAfter: after,
-		Type: "principal_site_close_migrate", RefType: "topup", RefId: ext.TradeNo,
-		OperatorId: operatorID, Reason: row.Reason,
-		IdempotencyKey: "owner_topup_close_migrate:" + keySuffix + ":" + row.RefundId,
+		Type: "principal_site_close_migrate", RefType: "topup", RefId: fresh.Source,
+		OperatorId: operatorID, Reason: reason,
+		IdempotencyKey: idemKey,
 	}).Error
+}
+
+func migrateClosedOwnerLotIfUnencumberedTx(tx *gorm.DB, ext *AdtyTopupOrder, lot *AdtyFundBatch, row *AdtyManualRefund, operatorID int, keySuffix string) error {
+	if ext == nil || lot == nil || row == nil {
+		return nil
+	}
+	return migrateClosedOwnerBatchIfUnencumberedTx(
+		tx,
+		ext.SiteId,
+		ext.UserId,
+		lot.Id,
+		row.RefundId,
+		operatorID,
+		row.Reason,
+		"owner_topup_close_migrate:"+keySuffix+":"+row.RefundId,
+		false,
+	)
+}
+
+// migrateTouchedClosedOwnerBatchesTx runs inside a billing settlement/refund tx
+// (after User lock and operating principal callbacks) to migrate any touched
+// owner principal batches on already-closed subsites once unencumbered (R11-002).
+func migrateTouchedClosedOwnerBatchesTx(tx *gorm.DB, userID int, batchIDs []int64, keySuffix string) error {
+	if tx == nil || userID <= 0 || len(batchIDs) == 0 || !tx.Migrator().HasTable(&AdtySite{}) || !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		return nil
+	}
+	seen := make(map[int64]bool, len(batchIDs))
+	uniq := make([]int64, 0, len(batchIDs))
+	for _, id := range batchIDs {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	if len(uniq) == 0 {
+		return nil
+	}
+	var candidates []struct {
+		BatchId int64
+		SiteId  int
+	}
+	if err := tx.Table("adty_fund_batches b").
+		Joins("JOIN adty_sites s ON s.id = b.site_id AND s.owner_user_id = b.user_id").
+		Where("b.id IN ? AND b.user_id = ? AND b.kind = ? AND b.site_id > 0 AND s.status = ?",
+			uniq, userID, AdtyFundBatchKindPrincipal, AdtySiteStatusClosed).
+		Order("b.id ASC").
+		Select("b.id AS batch_id, b.site_id AS site_id").
+		Scan(&candidates).Error; err != nil {
+		return err
+	}
+	for _, c := range candidates {
+		idem := "owner_topup_close_migrate:batch:" + strconv.FormatInt(c.BatchId, 10)
+		if err := migrateClosedOwnerBatchIfUnencumberedTx(tx, c.SiteId, userID, c.BatchId, "", 0, "closed site owner lot cleanup", idem, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// MigrateUnencumberedOwnerLotsOnClosedSites periodically sweeps closed subsites
+// for owner principal lots that stayed pinned due to in-flight holds/refunds
+// during site close, migrating them in canonical AdtySite -> User -> AdtyFundBatch -> AdtySiteWallet order (R11-002).
+func MigrateUnencumberedOwnerLotsOnClosedSites() error {
+	if DB == nil || !DB.Migrator().HasTable(&AdtySite{}) || !DB.Migrator().HasTable(&AdtyFundBatch{}) {
+		return nil
+	}
+	var targets []struct {
+		SiteId      int
+		OwnerUserId int
+	}
+	if err := DB.Table("adty_fund_batches b").
+		Joins("JOIN adty_sites s ON s.id = b.site_id AND s.owner_user_id = b.user_id").
+		Where("b.kind = ? AND b.site_id > 0 AND s.status = ?", AdtyFundBatchKindPrincipal, AdtySiteStatusClosed).
+		Distinct("s.id AS site_id, s.owner_user_id AS owner_user_id").
+		Order("s.id ASC").
+		Scan(&targets).Error; err != nil {
+		return err
+	}
+	var firstErr error
+	for _, target := range targets {
+		err := DB.Transaction(func(tx *gorm.DB) error {
+			var site AdtySite
+			if err := lockForUpdate(tx).First(&site, target.SiteId).Error; err != nil {
+				return err
+			}
+			if site.Status != AdtySiteStatusClosed || site.OwnerUserId <= 0 {
+				return nil
+			}
+			var owner User
+			if err := lockForUpdate(tx).Select("id").Where("id = ?", site.OwnerUserId).First(&owner).Error; err != nil {
+				return err
+			}
+			var batches []AdtyFundBatch
+			if err := lockForUpdate(tx).
+				Where("user_id = ? AND site_id = ? AND kind = ?", site.OwnerUserId, site.Id, AdtyFundBatchKindPrincipal).
+				Order("id ASC").
+				Find(&batches).Error; err != nil {
+				return err
+			}
+			for i := range batches {
+				idem := "owner_topup_close_migrate:sweep:" + strconv.Itoa(site.Id) + ":" + strconv.FormatInt(batches[i].Id, 10)
+				if err := migrateClosedOwnerBatchIfUnencumberedTx(tx, site.Id, site.OwnerUserId, batches[i].Id, "", 0, "closed site owner lot sweep", idem, true); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // Payout can be recorded before internal reclaim under the existing state
@@ -293,9 +432,5 @@ func releaseOwnerRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRefun
 	if err := tx.Model(share).Updates(map[string]any{"held": 0, "settled": 0}).Error; err != nil {
 		return err
 	}
-	restoredRemaining := lot.Remaining
-	if row.ReclaimedAt > 0 {
-		restoredRemaining += share.Settled
-	}
-	return migrateClosedOwnerLotIfUnencumberedTx(tx, ext, lot, restoredRemaining, row, operatorID, "release")
+	return migrateClosedOwnerLotIfUnencumberedTx(tx, ext, lot, row, operatorID, "release")
 }

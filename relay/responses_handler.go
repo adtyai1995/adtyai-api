@@ -61,9 +61,13 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 
 	if resp != nil {
-		httpResp = resp.(*http.Response)
+		var ok bool
+		httpResp, ok = resp.(*http.Response)
+		if !ok {
+			return types.NewOpenAIError(fmt.Errorf("unexpected response type %T", resp), types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
+		}
 
-		if httpResp.StatusCode != http.StatusOK {
+		if httpResp != nil && httpResp.StatusCode != http.StatusOK {
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)

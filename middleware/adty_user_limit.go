@@ -22,15 +22,33 @@ import (
 const adtyRateLimitedCode types.ErrorCode = "rate_limit_exceeded"
 
 var (
-	adtyLimitStoreOnce sync.Once
-	adtyLimitStore     adtylimit.Store
-	adtyLimitNow       = time.Now
+	adtyLimitStoreMu sync.RWMutex
+	adtyLimitStore   adtylimit.Store
+	adtyLimitNow     = time.Now
 )
 
 var errAdtyLimitStoreUnavailable = errors.New("user limit store unavailable")
 
+func adtyCurrentTime() time.Time {
+	adtyLimitStoreMu.RLock()
+	nowFn := adtyLimitNow
+	adtyLimitStoreMu.RUnlock()
+	if nowFn == nil {
+		return time.Now()
+	}
+	return nowFn()
+}
+
 // adtyStore 开了 Redis 就只用 Redis。客户端还没接上时不能退回进程内存，否则多实例各算各的限额。
 func adtyStore() (adtylimit.Store, error) {
+	adtyLimitStoreMu.RLock()
+	store := adtyLimitStore
+	adtyLimitStoreMu.RUnlock()
+	if store != nil {
+		return store, nil
+	}
+	adtyLimitStoreMu.Lock()
+	defer adtyLimitStoreMu.Unlock()
 	if adtyLimitStore != nil {
 		return adtyLimitStore, nil
 	}
@@ -38,19 +56,10 @@ func adtyStore() (adtylimit.Store, error) {
 		if common.RDB == nil {
 			return nil, errAdtyLimitStoreUnavailable
 		}
-		adtyLimitStoreOnce.Do(func() {
-			if common.RDB != nil {
-				adtyLimitStore = adtylimit.NewRedisStore(common.RDB)
-			}
-		})
-		if adtyLimitStore == nil {
-			return nil, errAdtyLimitStoreUnavailable
-		}
+		adtyLimitStore = adtylimit.NewRedisStore(common.RDB)
 		return adtyLimitStore, nil
 	}
-	adtyLimitStoreOnce.Do(func() {
-		adtyLimitStore = adtylimit.NewMemoryStore()
-	})
+	adtyLimitStore = adtylimit.NewMemoryStore()
 	return adtyLimitStore, nil
 }
 
@@ -64,7 +73,7 @@ func init() {
 			common.SysError(common.LogText("adty tpm count skipped user=%d: %s", userId, err.Error()))
 			return
 		}
-		if err := store.AddTPM(userId, adtylimit.MinuteOf(adtyLimitNow()), int64(tokens)); err != nil {
+		if err := store.AddTPM(userId, adtylimit.MinuteOf(adtyCurrentTime()), int64(tokens)); err != nil {
 			common.SysError(common.LogText("adty tpm count failed user=%d: %s", userId, err.Error()))
 		}
 	}
@@ -73,9 +82,15 @@ func init() {
 // SetAdtyLimitStoreForTest 换成给定的计数和时钟，结束时还原。只给测试用。
 func SetAdtyLimitStoreForTest(t interface{ Cleanup(func()) }, store adtylimit.Store, now func() time.Time) {
 	_, _ = adtyStore()
+	adtyLimitStoreMu.Lock()
 	oldStore, oldNow := adtyLimitStore, adtyLimitNow
 	adtyLimitStore, adtyLimitNow = store, now
-	t.Cleanup(func() { adtyLimitStore, adtyLimitNow = oldStore, oldNow })
+	adtyLimitStoreMu.Unlock()
+	t.Cleanup(func() {
+		adtyLimitStoreMu.Lock()
+		adtyLimitStore, adtyLimitNow = oldStore, oldNow
+		adtyLimitStoreMu.Unlock()
+	})
 }
 
 // adtyEffectiveLimits 是用户自己的限制（-1 跟默认）合上全局默认值。
@@ -116,7 +131,7 @@ func AdtyUserLimit(midjourney ...bool) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		now := adtyLimitNow()
+		now := adtyCurrentTime()
 		member := c.GetString(common.RequestIdKey)
 		if member == "" {
 			member = strconv.FormatInt(now.UnixNano(), 36)

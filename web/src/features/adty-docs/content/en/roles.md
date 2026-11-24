@@ -22,4 +22,4 @@ Work only on customers of this site. A balance change is a request until the own
 
 ## Main-site admin
 
-Create sites and set supply prices and invite rates. Payments, refunds, and adjustments must write a ledger row. Do not edit a balance by hand.
+Manage operational settings, supply prices, and invite rates within granted permissions (opening subsites and creating teams are Root-only). Payments, refunds, and adjustments must write a ledger row. Do not edit a balance by hand.

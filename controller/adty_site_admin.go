@@ -1330,10 +1330,14 @@ func GetAdtyAdminCloseMail(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	showEmail := adtyAdminFieldVisible(c, authz.AdtyUserRead)
 	if len(rows) > 0 {
 		ids := make([]int64, len(rows))
 		byID := make(map[int64]*model.AdtySiteCloseMailRecipient, len(rows))
 		for i := range rows {
+			if !showEmail {
+				rows[i].Email = service.AdtyMaskEmail(rows[i].Email)
+			}
 			ids[i] = rows[i].Id
 			byID[rows[i].Id] = &rows[i]
 		}

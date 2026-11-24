@@ -313,7 +313,11 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	// the zero-copy field forwarding below stays valid for both shapes.
 	// Entries without url or b64_json carry no image and are not forwarded.
 	emitted := 0
-	for _, image := range gjson.GetBytes(responseBody, "data").Array() {
+	imagesResult := gjson.GetBytes(responseBody, "data")
+	if !imagesResult.Exists() {
+		imagesResult = gjson.GetBytes(responseBody, "images")
+	}
+	for _, image := range imagesResult.Array() {
 		if !openaiImageDataHasField(image, "url") && !openaiImageDataHasField(image, "b64_json") {
 			continue
 		}

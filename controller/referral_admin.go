@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -209,6 +210,15 @@ func GetReferralBindings(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	var targetUser model.User
+	if err := model.DB.Select("id", "role").First(&targetUser, userID).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !canManageTargetRole(c.GetInt("role"), targetUser.Role) {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
+		return
+	}
 	var items []model.ReferralBinding
 	referralPage(c, service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralBinding{}).Where("inviter_user_id = ?", userID), "inviter_user_id", siteID), &items)
 }
@@ -237,7 +247,7 @@ func ReviewReferralPartner(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.Referral.ReviewPartner(userID, c.GetInt("id"), body.Approve, body.Rate, body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
+	if err := service.Referral.ReviewPartnerForActor(userID, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body.Approve, body.Rate, body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
 		writeReferralError(c, err)
 		return
 	}
@@ -272,11 +282,18 @@ func UpdateReferralAffiliate(c *gin.Context) {
 		return
 	}
 	adminID := c.GetInt("id")
+	actorRole := c.GetInt("role")
+	denyAdminTarget := isAccessTokenRequest(c)
 	replayed := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var affiliate model.ReferralAffiliate
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userID).First(&affiliate).Error; err != nil {
 			return err
+		}
+		if body.Action != "adjust" {
+			if err := service.CheckReferralAdminTargetUserTx(tx, userID, adminID, actorRole, denyAdminTarget); err != nil {
+				return err
+			}
 		}
 		updates := map[string]any{}
 		switch body.Action {
@@ -329,6 +346,9 @@ func UpdateReferralAffiliate(c *gin.Context) {
 			}
 			var acc model.ReferralCommissionAccount
 			if err := model.AdtyLockForUpdate(tx).Where("affiliate_id = ?", affiliate.Id).First(&acc).Error; err != nil {
+				return err
+			}
+			if err := service.CheckReferralAdminTargetUserTx(tx, userID, adminID, actorRole, denyAdminTarget); err != nil {
 				return err
 			}
 			if decimal.NewFromFloat(acc.AvailableAmount).Add(delta).IsNegative() {
@@ -517,7 +537,7 @@ func ReviewReferralWithdrawal(c *gin.Context) {
 		common.ApiErrorT(c, "Enter a reason for rejecting")
 		return
 	}
-	if err := service.Referral.ReviewWithdrawal(id, c.GetInt("id"), body.Approve, body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
+	if err := service.Referral.ReviewWithdrawalForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body.Approve, body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
 		writeReferralError(c, err)
 		return
 	}
@@ -549,7 +569,7 @@ func PayReferralWithdrawal(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.Referral.MarkWithdrawalPaid(id, c.GetInt("id"), body.TxnNo, body.ProofURL, body.Note, c.ClientIP(), c.Request.UserAgent()); err != nil {
+	if err := service.Referral.MarkWithdrawalPaidForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body.TxnNo, body.ProofURL, body.Note, c.ClientIP(), c.Request.UserAgent()); err != nil {
 		writeReferralError(c, err)
 		return
 	}

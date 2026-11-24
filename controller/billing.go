@@ -14,7 +14,7 @@ func GetSubscription(c *gin.Context) {
 	var err error
 	var token *model.Token
 	var expiredTime int64
-	if common.DisplayTokenStatEnabled {
+	if common.GetDisplayTokenStatEnabled() {
 		tokenId := c.GetInt("token_id")
 		token, err = model.GetTokenById(tokenId)
 		if err != nil {
@@ -80,7 +80,7 @@ func GetUsage(c *gin.Context) {
 	var quota int
 	var err error
 	var token *model.Token
-	if common.DisplayTokenStatEnabled {
+	if common.GetDisplayTokenStatEnabled() {
 		tokenId := c.GetInt("token_id")
 		token, err = model.GetTokenById(tokenId)
 		if err != nil {

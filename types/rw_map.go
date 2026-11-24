@@ -48,12 +48,18 @@ func (m *RWMap[K, V]) Get(key K) (V, bool) {
 func (m *RWMap[K, V]) Set(key K, value V) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
+	if m.data == nil {
+		m.data = make(map[K]V)
+	}
 	m.data[key] = value
 }
 
 func (m *RWMap[K, V]) AddAll(other map[K]V) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
+	if m.data == nil {
+		m.data = make(map[K]V, len(other))
+	}
 	for k, v := range other {
 		m.data[k] = v
 	}
@@ -99,6 +105,9 @@ func LoadFromJsonStringWithCallback[K comparable, V any](m *RWMap[K, V], jsonStr
 	parsed := make(map[K]V)
 	if err := common.Unmarshal([]byte(jsonStr), &parsed); err != nil {
 		return err
+	}
+	if parsed == nil {
+		return errors.New("null is not allowed for map config")
 	}
 	m.mutex.Lock()
 	defer m.mutex.Unlock()

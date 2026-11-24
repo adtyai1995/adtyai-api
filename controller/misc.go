@@ -130,7 +130,7 @@ func GetStatus(c *gin.Context) {
 		"register_enabled":              common.RegisterEnabled,
 		"password_login_enabled":        common.PasswordLoginEnabled,
 		"password_register_enabled":     common.PasswordRegisterEnabled,
-		"default_use_auto_group":        setting.DefaultUseAutoGroup,
+		"default_use_auto_group":        setting.GetDefaultUseAutoGroup(),
 
 		"password_login_encryption_enabled": common.PasswordLoginEncryptionEnabled,
 

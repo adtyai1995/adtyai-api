@@ -38,19 +38,19 @@ func FetchCodexWhamUsage(
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, bu+"/backend-api/wham/usage", nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, common.SanitizeOutboundError(err, at)
 	}
 	setCodexWhamRequestHeaders(req, at, aid)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, common.SanitizeOutboundError(err, at)
 	}
 	defer resp.Body.Close()
 
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return resp.StatusCode, nil, err
+		return resp.StatusCode, nil, common.SanitizeOutboundError(err, at)
 	}
 	return resp.StatusCode, body, nil
 }
@@ -80,19 +80,19 @@ func FetchCodexWhamRateLimitResetCredits(
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, bu+"/backend-api/wham/rate-limit-reset-credits", nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, common.SanitizeOutboundError(err, at)
 	}
 	setCodexWhamRequestHeaders(req, at, aid)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, common.SanitizeOutboundError(err, at)
 	}
 	defer resp.Body.Close()
 
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return resp.StatusCode, nil, err
+		return resp.StatusCode, nil, common.SanitizeOutboundError(err, at)
 	}
 	return resp.StatusCode, body, nil
 }
@@ -149,20 +149,20 @@ func ConsumeCodexWhamRateLimitResetCredit(
 		bytes.NewReader(requestBody),
 	)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, common.SanitizeOutboundError(err, at)
 	}
 	setCodexWhamRequestHeaders(req, at, aid)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, common.SanitizeOutboundError(err, at)
 	}
 	defer resp.Body.Close()
 
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return resp.StatusCode, nil, err
+		return resp.StatusCode, nil, common.SanitizeOutboundError(err, at)
 	}
 	return resp.StatusCode, body, nil
 }

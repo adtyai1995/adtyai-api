@@ -95,8 +95,8 @@ func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, 
 }
 
 func GetAndValidateRerankRequest(c *gin.Context) (*dto.RerankRequest, error) {
-	var rerankRequest *dto.RerankRequest
-	err := common.UnmarshalBodyReusable(c, &rerankRequest)
+	rerankRequest := &dto.RerankRequest{}
+	err := common.UnmarshalBodyReusable(c, rerankRequest)
 	if err != nil {
 		logger.LogError(c, common.LogText("getAndValidateTextRequest failed: %s", err.Error()))
 		return nil, types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
@@ -112,8 +112,8 @@ func GetAndValidateRerankRequest(c *gin.Context) (*dto.RerankRequest, error) {
 }
 
 func GetAndValidateEmbeddingRequest(c *gin.Context, relayMode int) (*dto.EmbeddingRequest, error) {
-	var embeddingRequest *dto.EmbeddingRequest
-	err := common.UnmarshalBodyReusable(c, &embeddingRequest)
+	embeddingRequest := &dto.EmbeddingRequest{}
+	err := common.UnmarshalBodyReusable(c, embeddingRequest)
 	if err != nil {
 		logger.LogError(c, common.LogText("getAndValidateTextRequest failed: %s", err.Error()))
 		return nil, types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
@@ -201,6 +201,10 @@ func GetAndValidateDeepSeekToolsRequest(c *gin.Context) (*dto.DeepSeekToolsReque
 	}
 	if len(rawBody) == 0 {
 		return nil, errors.New("request body is empty")
+	}
+	var bodyObj map[string]any
+	if err := common.Unmarshal(rawBody, &bodyObj); err != nil || bodyObj == nil {
+		return nil, errors.New("request body must be a JSON object")
 	}
 	request.RawBody = rawBody
 	return request, nil
@@ -450,6 +454,14 @@ func GetAndValidateGeminiBatchEmbeddingRequest(c *gin.Context) (*dto.GeminiBatch
 	err := common.UnmarshalBodyReusable(c, request)
 	if err != nil {
 		return nil, err
+	}
+	if len(request.Requests) == 0 {
+		return nil, errors.New("requests is required")
+	}
+	for i, item := range request.Requests {
+		if item == nil {
+			return nil, fmt.Errorf("requests[%d] must not be null", i)
+		}
 	}
 	return request, nil
 }

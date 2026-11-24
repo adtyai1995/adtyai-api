@@ -317,8 +317,8 @@ func markIdempotentReplayNoAudit(c *gin.Context) {
 
 // recordManageAudit 记录一条由操作者本人归属的管理/高危审计日志（资源类操作：
 // 渠道 / 系统设置 / 兑换码等）。content 由 action+params 自动渲染。
-func recordManageAudit(c *gin.Context, action string, params map[string]any) {
-	recordManageAuditFor(c, c.GetInt("id"), action, params)
+func recordManageAudit(c *gin.Context, action string, params map[string]any) bool {
+	return recordManageAuditFor(c, c.GetInt("id"), action, params)
 }
 
 // recordDurableOperationAudit persists one official operation audit and only
@@ -370,7 +370,7 @@ func recordDurableOperationAudit(c *gin.Context, action, content string, params 
 
 // recordManageAuditFor 记录一条管理审计日志，日志归属于操作者；targetUserId
 // 只表示被操作用户，用于在结构化参数中保留目标上下文。
-func recordManageAuditFor(c *gin.Context, targetUserId int, action string, params map[string]any) {
+func recordManageAuditFor(c *gin.Context, targetUserId int, action string, params map[string]any) bool {
 	if params == nil {
 		params = map[string]any{}
 	}
@@ -382,7 +382,7 @@ func recordManageAuditFor(c *gin.Context, targetUserId int, action string, param
 		params["target_user_id"] = targetUserId
 	}
 	entry := prepareManageAudit(c, targetUserId, action, params)
-	persistAndDeliverAuditEvent(c, entry)
+	return persistAndDeliverAuditEvent(c, entry)
 }
 
 // prepareManageAudit freezes safe metadata before entering the business

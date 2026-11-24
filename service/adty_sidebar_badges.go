@@ -90,23 +90,29 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 		return nil, err
 	}
 	counts[AdtyBadgeNotificationUnread] = unread
+	isToken := len(tokenScopes) > 0
+	tokenAllows := func(scope string) bool {
+		return !isToken || AccessTokenScopeGranted(tokenScopes[0], scope)
+	}
 
-	if err := collectAdtyReferralAdminBadgeCounts(counts, actor, tokenScopes...); err != nil {
-		return nil, err
-	}
-	if actor.User.Role >= common.RoleRootUser {
-		pending, err := countScoped(model.DB.Model(&model.AdtySiteWithdrawal{}).Where("status = ?", model.AdtySiteWithdrawPending))
-		if err != nil {
+	if requestSite == nil {
+		if err := collectAdtyReferralAdminBadgeCounts(counts, actor, tokenScopes...); err != nil {
 			return nil, err
 		}
-		counts[AdtyBadgeSiteWithdrawalsPending] = pending
-		anomalies, err := countScoped(model.DB.Model(&model.AdtyAnomalyDisposition{}).Where("status IN ?", []string{"open", "reviewing"}))
-		if err != nil {
-			return nil, err
+		if actor.User.Role >= common.RoleRootUser && tokenAllows("option:read") {
+			pending, err := countScoped(model.DB.Model(&model.AdtySiteWithdrawal{}).Where("status = ?", model.AdtySiteWithdrawPending))
+			if err != nil {
+				return nil, err
+			}
+			counts[AdtyBadgeSiteWithdrawalsPending] = pending
+			anomalies, err := countScoped(model.DB.Model(&model.AdtyAnomalyDisposition{}).Where("status IN ?", []string{"open", "reviewing"}))
+			if err != nil {
+				return nil, err
+			}
+			counts[AdtyBadgeFundAnomaliesOpen] = anomalies
 		}
-		counts[AdtyBadgeFundAnomaliesOpen] = anomalies
 	}
-	if actor.OwnerSiteId > 0 {
+	if actor.OwnerSiteId > 0 && tokenAllows(AccessTokenResourceSiteOwnerOrder+":read") {
 		invites, err := countScoped(model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id = ? AND status = ?", actor.OwnerSiteId, model.AdtySiteInviteWithdrawPending))
 		if err != nil {
 			return nil, err
@@ -118,14 +124,18 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 		}
 		counts[AdtyBadgeSiteInviteCommissionsPendingCoverage] = coverage
 	}
-	if err := collectAdtyStaffBalanceBadge(counts, actor); err != nil {
+	if !isToken {
+		if err := collectAdtyStaffBalanceBadge(counts, actor, requestSite == nil); err != nil {
+			return nil, err
+		}
+	}
+	if err := collectAdtyTicketBadgesInto(counts, actor, requestSite == nil, tokenScopes...); err != nil {
 		return nil, err
 	}
-	if err := collectAdtyTicketBadgesInto(counts, actor, tokenScopes...); err != nil {
-		return nil, err
-	}
-	if err := collectAdtyPaymentOrphanBadge(counts, actor); err != nil {
-		return nil, err
+	if requestSite == nil && tokenAllows(AccessTokenScopeOf(authz.AdtyFinanceRead)) {
+		if err := collectAdtyPaymentOrphanBadge(counts, actor); err != nil {
+			return nil, err
+		}
 	}
 	return counts, nil
 }
@@ -355,10 +365,10 @@ func scopeReferralUserQuery(query *gorm.DB, userColumn string, siteID *int) *gor
 	return query.Where(userColumn+" IN (?)", model.DB.Model(&model.User{}).Select("id").Where("site_id = ?", *siteID))
 }
 
-func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor) error {
+func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor, onMainSite bool) error {
 	query := model.DB.Model(&model.AdtyStaffBalanceRequest{}).Where("status = ?", model.AdtyStaffBalancePending)
 	switch {
-	case actor.User.Role >= common.RoleRootUser:
+	case onMainSite && actor.User.Role >= common.RoleRootUser:
 	case actor.OwnerSiteId > 0:
 		query = query.Where("site_id = ?", actor.OwnerSiteId)
 	case actor.Staff != nil && actor.Staff.Status == "enabled":
@@ -374,7 +384,7 @@ func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor
 	return nil
 }
 
-func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor, tokenScopes ...[]string) error {
+func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor, onMainSite bool, tokenScopes ...[]string) error {
 	resolveScope := func(requested string) string {
 		if len(tokenScopes) > 0 {
 			return AdtyTicketTokenScope(requested, "GET", tokenScopes[0])
@@ -403,7 +413,7 @@ func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor,
 	}
 
 	// 2. Platform handler pending badge.
-	if actor.PlatformMain {
+	if onMainSite && actor.PlatformMain {
 		if resolved := resolveScope("platform"); resolved != "denied" {
 			badges, err := countForScope(resolved)
 			if err != nil {

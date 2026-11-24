@@ -677,6 +677,9 @@ func (r *GeminiBatchEmbeddingRequest) IsStream(c *http.Request) bool {
 func (r *GeminiBatchEmbeddingRequest) GetTokenCountMeta() *types.TokenCountMeta {
 	var inputTexts []string
 	for _, request := range r.Requests {
+		if request == nil {
+			continue
+		}
 		meta := request.GetTokenCountMeta()
 		if meta != nil && meta.CombineText != "" {
 			inputTexts = append(inputTexts, meta.CombineText)
@@ -691,6 +694,9 @@ func (r *GeminiBatchEmbeddingRequest) GetTokenCountMeta() *types.TokenCountMeta 
 func (r *GeminiBatchEmbeddingRequest) SetModelName(modelName string) {
 	if modelName != "" {
 		for _, req := range r.Requests {
+			if req == nil {
+				continue
+			}
 			req.SetModelName(modelName)
 		}
 	}

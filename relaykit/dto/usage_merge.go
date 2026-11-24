@@ -102,41 +102,43 @@ func MergeUsageNonZero(current *Usage, incoming *Usage) *Usage {
 // partial stream snapshots. A snapshot from a different billing dialect
 // remains authoritative and replaces the previous payload.
 func MergeBillingUsageNonZero(current *BillingUsage, incoming *BillingUsage) *BillingUsage {
-	if incoming == nil {
-		return CloneBillingUsage(current)
+	sanitizedCurrent := SanitizeBillingUsage(current)
+	sanitizedIncoming := SanitizeBillingUsage(incoming)
+	if sanitizedIncoming == nil {
+		return sanitizedCurrent
 	}
-	if current == nil || !sameBillingUsageDialect(current, incoming) {
-		replaced := CloneBillingUsage(incoming)
-		if current != nil && replaced != nil {
+	if sanitizedCurrent == nil || !sameBillingUsageDialect(sanitizedCurrent, sanitizedIncoming) {
+		replaced := CloneBillingUsage(sanitizedIncoming)
+		if sanitizedCurrent != nil && replaced != nil {
 			// Replacement carries the incoming payload; Estimated carries the
 			// history of any local synthesis on either side.
-			replaced.Estimated = current.Estimated || incoming.Estimated
+			replaced.Estimated = sanitizedCurrent.Estimated || sanitizedIncoming.Estimated
 		}
 		return replaced
 	}
 
-	merged := CloneBillingUsage(current)
-	if incoming.Source != "" {
-		merged.Source = incoming.Source
+	merged := CloneBillingUsage(sanitizedCurrent)
+	if sanitizedIncoming.Source != "" {
+		merged.Source = sanitizedIncoming.Source
 	}
-	if incoming.Semantic != "" {
-		merged.Semantic = incoming.Semantic
+	if sanitizedIncoming.Semantic != "" {
+		merged.Semantic = sanitizedIncoming.Semantic
 	}
-	merged.Estimated = current.Estimated || incoming.Estimated
+	merged.Estimated = sanitizedCurrent.Estimated || sanitizedIncoming.Estimated
 
 	switch {
-	case current.OpenAIUsage != nil && incoming.OpenAIUsage != nil:
+	case sanitizedCurrent.OpenAIUsage != nil && sanitizedIncoming.OpenAIUsage != nil:
 		merged.OpenAIUsage = MergeUsageNonZero(
-			cloneOpenAIUsage(current.OpenAIUsage),
-			cloneOpenAIUsage(incoming.OpenAIUsage),
+			cloneOpenAIUsage(sanitizedCurrent.OpenAIUsage),
+			cloneOpenAIUsage(sanitizedIncoming.OpenAIUsage),
 		)
-	case current.ClaudeUsage != nil && incoming.ClaudeUsage != nil:
-		merged.ClaudeUsage = MergeClaudeUsageNonZero(current.ClaudeUsage, incoming.ClaudeUsage)
-	case current.GeminiUsageMetadata != nil && incoming.GeminiUsageMetadata != nil:
-		merged.GeminiUsageMetadata = MergeGeminiUsageMetadataNonZero(current.GeminiUsageMetadata, incoming.GeminiUsageMetadata)
+	case sanitizedCurrent.ClaudeUsage != nil && sanitizedIncoming.ClaudeUsage != nil:
+		merged.ClaudeUsage = MergeClaudeUsageNonZero(sanitizedCurrent.ClaudeUsage, sanitizedIncoming.ClaudeUsage)
+	case sanitizedCurrent.GeminiUsageMetadata != nil && sanitizedIncoming.GeminiUsageMetadata != nil:
+		merged.GeminiUsageMetadata = MergeGeminiUsageMetadataNonZero(sanitizedCurrent.GeminiUsageMetadata, sanitizedIncoming.GeminiUsageMetadata)
 	}
 
-	return merged
+	return SanitizeBillingUsage(merged)
 }
 
 func sameBillingUsageDialect(current *BillingUsage, incoming *BillingUsage) bool {
@@ -158,7 +160,7 @@ func MergeClaudeUsageNonZero(current *ClaudeUsage, incoming *ClaudeUsage) *Claud
 	}
 	if incoming == nil {
 		if current != nil {
-			merged.BillingUsage = CloneBillingUsage(current.BillingUsage)
+			merged.BillingUsage = SanitizeBillingUsage(current.BillingUsage)
 		}
 		return merged
 	}
@@ -207,12 +209,14 @@ func MergeClaudeUsageNonZero(current *ClaudeUsage, incoming *ClaudeUsage) *Claud
 		}
 	}
 	// cloneClaudeUsage strips BillingUsage so a nested Claude snapshot cannot
-	// recurse. Restore the client-visible sidecar here: incoming wins when
-	// present (authoritative/upstream), otherwise keep current's.
+	// recurse. Restore and merge the client-visible sidecar here after
+	// sanitizing so a malformed/zero/negative trailing chunk cannot wipe out
+	// an earlier valid BillingUsage.
+	if current != nil {
+		merged.BillingUsage = SanitizeBillingUsage(current.BillingUsage)
+	}
 	if incoming.BillingUsage != nil {
-		merged.BillingUsage = CloneBillingUsage(incoming.BillingUsage)
-	} else if current != nil {
-		merged.BillingUsage = CloneBillingUsage(current.BillingUsage)
+		merged.BillingUsage = SanitizeBillingUsage(MergeBillingUsageNonZero(merged.BillingUsage, SanitizeBillingUsage(incoming.BillingUsage)))
 	}
 	return merged
 }

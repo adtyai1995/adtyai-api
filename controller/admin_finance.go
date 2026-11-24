@@ -77,7 +77,7 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 		return nil, false
 	}
 	columns := []string{"id", "user_id", "site_id", "order_type", "source_type", "reference", "original_trade_no", "team_id", "trade_no", "payment_method", "payment_provider", "status", "create_time", "complete_time", "amount", "face_usd", "credit_quota", "paid_amount", "paid_currency", "channel_id", "owner_private"}
-	billingNetQuota := "(CASE WHEN x.kind = 'request' THEN x.applied_quota - x.stream_wallet_quota WHEN x.kind = 'task' THEN x.applied_quota - x.reserved_quota ELSE x.applied_quota END)"
+	billingNetQuota := "(CASE WHEN x.kind = 'request' THEN x.applied_quota - x.stream_wallet_quota WHEN x.kind IN ('task', 'direct') THEN x.applied_quota - x.reserved_quota ELSE x.applied_quota END)"
 	sources := []adtyUnifiedSource{
 		{from: "top_ups x LEFT JOIN adty_topup_orders e ON e.trade_no = x.trade_no", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "e.site_id", "team_id": "COALESCE(e.team_id, 0)", "order_type": "CASE WHEN x.payment_provider = '" + model.AdtyVoucherProvider + "' THEN 'voucher' ELSE 'topup' END",

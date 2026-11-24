@@ -135,14 +135,15 @@ func bepusdtPost(ctx context.Context, path string, body map[string]any) (common.
 	if err != nil || parsedBase == nil || (parsedBase.Scheme != "http" && parsedBase.Scheme != "https") || strings.TrimSpace(parsedBase.Host) == "" {
 		return nil, errBEpusdtNotConfigured
 	}
-	payload, err := bepusdtSignedBody(body, strings.TrimSpace(cfg.Secret))
+	secret := strings.TrimSpace(cfg.Secret)
+	payload, err := bepusdtSignedBody(body, secret)
 	if err != nil {
 		return nil, err
 	}
 	targetURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return nil, common.SanitizeOutboundError(err, secret)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -163,12 +164,12 @@ func bepusdtPost(ctx context.Context, path string, body map[string]any) (common.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, common.SanitizeOutboundError(err, secret)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, common.SanitizeOutboundError(err, secret)
 	}
 	var parsed bepusdtResponse
 	if err := common.Unmarshal(raw, &parsed); err != nil {

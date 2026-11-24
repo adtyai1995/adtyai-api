@@ -38,7 +38,10 @@ var alwaysSkipRetryCodes = map[types.ErrorCode]struct{}{
 }
 
 func AutomaticDisableStatusCodesToString() string {
-	return statusCodeRangesToString(AutomaticDisableStatusCodeRanges)
+	operationSettingMu.RLock()
+	ranges := AutomaticDisableStatusCodeRanges
+	operationSettingMu.RUnlock()
+	return statusCodeRangesToString(ranges)
 }
 
 func AutomaticDisableStatusCodesFromString(s string) error {
@@ -46,16 +49,24 @@ func AutomaticDisableStatusCodesFromString(s string) error {
 	if err != nil {
 		return err
 	}
+	operationSettingMu.Lock()
 	AutomaticDisableStatusCodeRanges = ranges
+	operationSettingMu.Unlock()
 	return nil
 }
 
 func ShouldDisableByStatusCode(code int) bool {
-	return shouldMatchStatusCodeRanges(AutomaticDisableStatusCodeRanges, code)
+	operationSettingMu.RLock()
+	ranges := AutomaticDisableStatusCodeRanges
+	operationSettingMu.RUnlock()
+	return shouldMatchStatusCodeRanges(ranges, code)
 }
 
 func AutomaticRetryStatusCodesToString() string {
-	return statusCodeRangesToString(AutomaticRetryStatusCodeRanges)
+	operationSettingMu.RLock()
+	ranges := AutomaticRetryStatusCodeRanges
+	operationSettingMu.RUnlock()
+	return statusCodeRangesToString(ranges)
 }
 
 func AutomaticRetryStatusCodesFromString(s string) error {
@@ -63,7 +74,9 @@ func AutomaticRetryStatusCodesFromString(s string) error {
 	if err != nil {
 		return err
 	}
+	operationSettingMu.Lock()
 	AutomaticRetryStatusCodeRanges = ranges
+	operationSettingMu.Unlock()
 	return nil
 }
 
@@ -81,7 +94,10 @@ func ShouldRetryByStatusCode(code int) bool {
 	if IsAlwaysSkipRetryStatusCode(code) {
 		return false
 	}
-	return shouldMatchStatusCodeRanges(AutomaticRetryStatusCodeRanges, code)
+	operationSettingMu.RLock()
+	ranges := AutomaticRetryStatusCodeRanges
+	operationSettingMu.RUnlock()
+	return shouldMatchStatusCodeRanges(ranges, code)
 }
 
 func statusCodeRangesToString(ranges []StatusCodeRange) string {
