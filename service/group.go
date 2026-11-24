@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
@@ -19,11 +21,33 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 			groupsCopy[groupName] = setting.GetUsableGroupDescription(groupName)
 		}
 	}
+	deletedGroups := map[string]struct{}{}
+	if model.DB != nil {
+		if allGroups, err := model.ListAdtyGroups(true); err == nil {
+			for _, g := range allGroups {
+				id := strings.TrimSpace(g.ID)
+				if id == "" || id == "auto" {
+					continue
+				}
+				if g.Deleted() {
+					deletedGroups[id] = struct{}{}
+					delete(groupsCopy, id)
+					continue
+				}
+				label := g.DisplayDesc()
+				if existing, ok := groupsCopy[id]; !ok || strings.TrimSpace(existing) == "" || existing == id {
+					groupsCopy[id] = label
+				}
+			}
+		}
+	}
 	if userGroup != "" {
-		// 如果userGroup不在UserUsableGroups中，返回UserUsableGroups + userGroup。
-		// 描述是英文源文本，由 web 控制台翻译；管理员配置的描述原样显示。
-		if _, ok := groupsCopy[userGroup]; !ok {
-			groupsCopy[userGroup] = "User group"
+		if _, deleted := deletedGroups[userGroup]; !deleted {
+			// 如果userGroup不在UserUsableGroups中，返回UserUsableGroups + userGroup。
+			// 描述是英文源文本，由 web 控制台翻译；管理员配置的描述原样显示。
+			if _, ok := groupsCopy[userGroup]; !ok {
+				groupsCopy[userGroup] = "User group"
+			}
 		}
 	}
 	return groupsCopy

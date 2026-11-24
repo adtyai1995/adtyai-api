@@ -43,12 +43,12 @@ import type { UptimeGroupResult } from '@/features/dashboard/types'
 import { ModelHeartbeatBars } from '@/features/pricing/components/model-connectivity-badge'
 import { useUptimeStatus } from '@/features/pricing/hooks/use-uptime-status'
 import {
-  computeAveragePing,
   extractGroupModelStatuses,
   formatUptimePercentage,
   getConnectivityBadgeVariant,
   getConnectivityStatusLabelKey,
   getConnectivityTextColorClass,
+  resolveModelPingMs,
   type ConnectivityState,
   type ResolvedModelUptime,
 } from '@/features/pricing/lib/uptime'
@@ -68,6 +68,28 @@ interface DisplayGroupSection {
   title: string
   description?: string
   items: ResolvedModelUptime[]
+}
+
+function formatLastCheckedAt(
+  value: string | number | null | undefined,
+  locale?: string
+): string | null {
+  if (value == null || value === '') return null
+  let date: Date
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null
+    date = new Date(value > 1e12 ? value : value * 1000)
+  } else {
+    date = new Date(value)
+  }
+  if (Number.isNaN(date.getTime())) {
+    return typeof value === 'string' ? value : null
+  }
+  return new Intl.DateTimeFormat(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date)
 }
 
 function getGroupKey(group: UptimeGroupResult, idx: number): string {
@@ -239,9 +261,9 @@ export function ModelStatusPage() {
       <EmptyState
         bordered
         icon={Activity}
-        title={t('No uptime monitoring configured')}
+        title={t('No model connectivity monitoring configured')}
         description={t(
-          'Model connectivity status will appear here once Uptime Kuma monitoring is configured.'
+          'Model connectivity status will appear here once model connectivity monitoring is configured.'
         )}
       />
     )
@@ -405,7 +427,11 @@ export function ModelStatusPage() {
                   <CardContent className='divide-border divide-y p-0'>
                     {section.items.map((item) => {
                       const icon = getLobeIcon(item.model, 16)
-                      const avgPing = computeAveragePing(item.heartbeats)
+                      const avgPing = resolveModelPingMs(item)
+                      const checkedAt = formatLastCheckedAt(
+                        item.lastCheckedAt,
+                        locale
+                      )
                       return (
                         <div
                           key={`${section.key}:${item.model}`}
@@ -457,9 +483,27 @@ export function ModelStatusPage() {
                               size='lg'
                               fillWidth
                             />
-                            <div className='text-muted-foreground/70 flex items-center justify-between text-[11px]'>
+                            <div className='text-muted-foreground/70 flex flex-wrap items-center justify-between gap-2 text-[11px]'>
                               <span>{t('24h ago')}</span>
-                              <span>{t('Now')}</span>
+                              <div className='flex min-w-0 items-center gap-2'>
+                                {item.lastMessage && (
+                                  <span
+                                    className={cn(
+                                      'max-w-xs truncate',
+                                      item.state === 'offline' &&
+                                        'text-destructive/80'
+                                    )}
+                                    title={item.lastMessage}
+                                  >
+                                    {item.lastMessage}
+                                  </span>
+                                )}
+                                <span>
+                                  {checkedAt
+                                    ? t('Checked {{time}}', { time: checkedAt })
+                                    : t('Now')}
+                                </span>
+                              </div>
                             </div>
                           </div>
                         </div>

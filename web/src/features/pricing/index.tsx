@@ -73,14 +73,18 @@ export function Pricing() {
   const hasCatalogData = hasData ?? Boolean(models && models.length > 0)
   const hasError = Boolean(isError || error)
 
-  // Groups the viewer can pick; hidden group IDs on models are not shown.
-  const availableGroups = useMemo(
-    () =>
-      Object.keys(usableGroup || {}).filter(
-        (g) => !EXCLUDED_GROUPS.includes(g)
-      ),
-    [usableGroup]
-  )
+  // Groups the viewer can pick; include every allowed group from usableGroup
+  // and groupRatio while excluding empty/auto pseudo-groups.
+  const availableGroups = useMemo(() => {
+    const seen = new Set<string>()
+    for (const g of Object.keys(usableGroup || {})) {
+      if (!EXCLUDED_GROUPS.includes(g)) seen.add(g)
+    }
+    for (const g of Object.keys(groupRatio || {})) {
+      if (!EXCLUDED_GROUPS.includes(g)) seen.add(g)
+    }
+    return [...seen]
+  }, [groupRatio, usableGroup])
 
   const groupControl = useMemo(
     () => ({ value: explicitGroup, onChange: setExplicitGroup }),
@@ -157,6 +161,7 @@ export function Pricing() {
           showRechargePrice={showRechargePrice}
           selectedGroup={groupFilter}
           usableGroups={availableGroups}
+          usableGroup={usableGroup}
           uptimeGroups={uptimeGroups}
         />
       )
@@ -172,6 +177,7 @@ export function Pricing() {
         selectedGroup={groupFilter}
         onModelClick={handleModelClick}
         usableGroups={availableGroups}
+        usableGroup={usableGroup}
         uptimeGroups={uptimeGroups}
       />
     )
@@ -250,6 +256,7 @@ export function Pricing() {
               vendors={vendors || []}
               groups={availableGroups}
               groupRatios={groupRatio}
+              usableGroup={usableGroup}
               tags={availableTags}
               models={models || []}
               hasActiveFilters={hasActiveFilters}

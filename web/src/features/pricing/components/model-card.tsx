@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
+import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
 import { useStatus } from '@/hooks/use-status'
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { subsiteDocument } from '@/lib/subsite-document'
@@ -39,11 +40,19 @@ import {
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
-import { isTokenBasedModel } from '../lib/model-helpers'
+import {
+  isTokenBasedModel,
+  resolvePricingGroupName,
+} from '../lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '../lib/price'
 import { taskPriceLabel, taskUsageUnitLabel } from '../lib/task-price-display'
 import type { ResolvedModelUptime } from '../lib/uptime'
-import type { PricingModel, PriceType, TokenUnit } from '../types'
+import type {
+  PricingModel,
+  PricingUsableGroupValue,
+  PriceType,
+  TokenUnit,
+} from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelConnectivityBadge } from './model-connectivity-badge'
 
@@ -58,11 +67,14 @@ export interface ModelCardProps {
   uptime?: ResolvedModelUptime | null
   /** Groups the viewer can use; when set, other groups are not shown. */
   usableGroups?: string[]
+  /** Group metadata map from `/api/pricing` used as real-name fallback. */
+  usableGroup?: Record<string, PricingUsableGroupValue>
 }
 
 export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const { t, i18n } = useTranslation()
   const { status } = useStatus()
+  const groupDisplay = useGroupDisplay()
   const isSubsite = Boolean(status?.adty_site || subsiteDocument())
   const tokenUnit = props.tokenUnit ?? DEFAULT_TOKEN_UNIT
   const priceRate = props.priceRate ?? 1
@@ -73,6 +85,9 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const tags = parseTags(props.model.tags)
   const groups = (props.model.enable_groups || []).filter(
     (group) => !props.usableGroups || props.usableGroups.includes(group)
+  )
+  const groupNames = groups.map((group) =>
+    resolvePricingGroupName(group, groupDisplay.name(group), props.usableGroup)
   )
   const endpoints = props.model.supported_endpoint_types || []
   const modelIconKey = props.model.icon || props.model.vendor_icon
@@ -375,21 +390,21 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
               (groups.length === 0 || endpoints.length === 0) && 'grid-cols-1'
             )}
           >
-            {groups.length > 0 && (
+            {groupNames.length > 0 && (
               <div className='flex min-w-0 items-baseline gap-1.5'>
                 <dt className='text-muted-foreground shrink-0'>
                   {t('Groups')}
                 </dt>
                 <dd className='flex min-w-0 items-baseline gap-1'>
-                  <span className='truncate' title={groups.join(', ')}>
-                    {groups[0]}
+                  <span className='truncate' title={groupNames.join(', ')}>
+                    {groupNames[0]}
                   </span>
-                  {groups.length > 1 && (
+                  {groupNames.length > 1 && (
                     <span
                       className='text-muted-foreground shrink-0'
-                      title={groups.slice(1).join(', ')}
+                      title={groupNames.slice(1).join(', ')}
                     >
-                      +{groups.length - 1}
+                      +{groupNames.length - 1}
                     </span>
                   )}
                 </dd>

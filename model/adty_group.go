@@ -22,7 +22,7 @@ const (
 	adtyGroupIDMaxLen    = 32
 	adtyGroupIDAlphabet  = "abcdefghijklmnopqrstuvwxyz0123456789"
 	adtyGroupIDSuffixLen = 4
-	// AdtyDefaultGroupID 是 users、channels 的列默认值，不能删除。
+	// AdtyDefaultGroupID 是 users、channels 的默认分组 ID；当系统仍有其他活跃分组时允许删除。
 	AdtyDefaultGroupID = "default"
 	// AdtyGroupModelAllowOption 是分组可用模型白名单在 options 表里的键。
 	AdtyGroupModelAllowOption = "GroupModelAllow"
@@ -158,6 +158,46 @@ func (AdtyGroup) TableName() string {
 // Deleted 表示这一行已软删除。
 func (group AdtyGroup) Deleted() bool {
 	return group.DeletedAt.Valid
+}
+
+// DisplayName 按优先语言 → zh-CN → en → 其余内容语言 → ID 取分组显示名。
+func (group AdtyGroup) DisplayName(preferredLangs ...string) string {
+	for _, lang := range preferredLangs {
+		if v := strings.TrimSpace(group.Names[lang]); v != "" {
+			return v
+		}
+	}
+	for _, lang := range []string{"zh-CN", "en"} {
+		if v := strings.TrimSpace(group.Names[lang]); v != "" {
+			return v
+		}
+	}
+	for _, lang := range AdtyContentLangs {
+		if v := strings.TrimSpace(group.Names[lang]); v != "" {
+			return v
+		}
+	}
+	return group.ID
+}
+
+// DisplayDesc 按优先语言取分组说明，全部为空时回退到 DisplayName。
+func (group AdtyGroup) DisplayDesc(preferredLangs ...string) string {
+	for _, lang := range preferredLangs {
+		if v := strings.TrimSpace(group.Descs[lang]); v != "" {
+			return v
+		}
+	}
+	for _, lang := range []string{"zh-CN", "en"} {
+		if v := strings.TrimSpace(group.Descs[lang]); v != "" {
+			return v
+		}
+	}
+	for _, lang := range AdtyContentLangs {
+		if v := strings.TrimSpace(group.Descs[lang]); v != "" {
+			return v
+		}
+	}
+	return group.DisplayName(preferredLangs...)
 }
 
 // AdtyGroupRefs 是分组被引用的数量。一个密钥即使分组和自动分组都命中，也只算一次。
@@ -316,6 +356,8 @@ func CreateAdtyGroup(name, desc string) (*AdtyGroup, error) {
 					}
 				}
 			}
+			ratio_setting.InvalidateExposedDataCache()
+			InvalidatePricingCache()
 			return created, nil
 		}
 		if !isAdtyUniqueViolation(err) {
@@ -344,6 +386,7 @@ func UpdateAdtyGroupTexts(id string, names, descs AdtyLangText) (*AdtyGroup, err
 	if err := DB.Save(group).Error; err != nil {
 		return nil, err
 	}
+	InvalidatePricingCache()
 	return group, nil
 }
 
@@ -452,8 +495,13 @@ func parseAdtySiteAllowedGroups(raw string) ([]string, error) {
 		return nil, nil
 	}
 	var groups []string
-	if err := common.UnmarshalJsonStr(raw, &groups); err != nil {
-		return nil, err
+	if strings.HasPrefix(raw, "[") {
+		if err := common.UnmarshalJsonStr(raw, &groups); err != nil {
+			return nil, err
+		}
+	} else if err := common.UnmarshalJsonStr(raw, &groups); err != nil {
+		// Fallback for legacy comma-separated allowed_groups values.
+		groups = strings.Split(raw, ",")
 	}
 	out := make([]string, 0, len(groups))
 	for _, group := range groups {
@@ -881,36 +929,37 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 	if moved.Channels > 0 {
 		_ = RefreshChannelCache()
 	}
+	InvalidatePricingCache()
 	return moved, nil
 }
 
-// DeleteAdtyGroup 软删除分组：default 不能删，还有用户、密钥、渠道或分站在用时拒绝。
-// 同一个事务里从各分组配置（含 GroupModelAllow 及已关停分站的 allowed_groups）里去掉这个 ID，提交后再更新内存里的配置与缓存。
+// DeleteAdtyGroup 软删除任意未删除分组（含 default），只要系统里还剩下至少 1 个其他未删除分组。
+// 同一个事务里清理渠道（若分组清空则手动禁用并删空 abilities）、分站 allowed_groups、用户默认分组、
+// 全部 8 个分组配置项并软删除分组行；不改 tokens（避免静默重绑到不同倍率分组）。
+// 提交后同步内存配置并刷新用户、渠道、定价与分站缓存。
 func DeleteAdtyGroup(id string) error {
-	if id == AdtyDefaultGroupID {
-		return ErrAdtyGroupUndeletable
-	}
 	if _, err := GetAdtyGroup(id); err != nil {
 		return err
 	}
 	adtyGroupConfigMu.Lock()
 	defer adtyGroupConfigMu.Unlock()
 	var values map[string]string
-	var siteChanged bool
+	var channelsChanged bool
+	affectedUsers := map[int]struct{}{}
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		// R9-008: Pre-lock all 8 group option keys in sorted order BEFORE adty_groups -> adty_sites.
+		// R9-008: Pre-lock all 8 group option keys in sorted order BEFORE adty_groups -> adty_sites -> users -> channels.
 		if err := preLockAdtyGroupOptionsTx(tx, adtyGroupOptionKeysSorted); err != nil {
 			return err
 		}
-		if err := lockLiveAdtyGroupsTx(tx, id); err != nil {
-			return err
-		}
-		refs, err := countAdtyGroupRefs(tx, id)
+		activeIDs, err := ActiveAdtyGroupIDsTx(tx, true)
 		if err != nil {
 			return err
 		}
-		if refs.Total() > 0 {
-			return ErrAdtyGroupInUse
+		if _, exists := activeIDs[id]; !exists {
+			return ErrAdtyGroupNotFound
+		}
+		if len(activeIDs) <= 1 {
+			return common.NewMessage("At least one active group must remain")
 		}
 		if tx.Migrator().HasTable(&AdtySite{}) {
 			var sites []AdtySite
@@ -936,7 +985,67 @@ func DeleteAdtyGroup(id string) error {
 				if err := tx.Model(&AdtySite{}).Where("id = ?", site.Id).Update("allowed_groups", encoded).Error; err != nil {
 					return err
 				}
-				siteChanged = true
+			}
+		}
+		if tx.Migrator().HasTable(&User{}) {
+			var users []User
+			if err := lockForUpdate(tx.Unscoped()).Select("id").Where(AdtyGroupColumn()+" = ?", id).Order("id").Find(&users).Error; err != nil {
+				return err
+			}
+			if len(users) > 0 {
+				ids := make([]int, 0, len(users))
+				for _, user := range users {
+					ids = append(ids, user.Id)
+					affectedUsers[user.Id] = struct{}{}
+				}
+				if err := tx.Unscoped().Model(&User{}).Where("id IN ?", ids).Update(AdtyGroupColumn(), "").Error; err != nil {
+					return err
+				}
+			}
+		}
+		// Keep tokens untouched so existing API keys are never silently rebound to another group.
+		if tx.Migrator().HasTable(&Channel{}) {
+			var channels []Channel
+			if err := lockForUpdate(tx).Select("id", "models", "status", commonGroupCol, "priority", "weight", "tag").Order("id").Find(&channels).Error; err != nil {
+				return err
+			}
+			for _, channel := range channels {
+				groups := channel.GetGroups()
+				if !slices.Contains(groups, id) {
+					continue
+				}
+				next := make([]string, 0, len(groups))
+				for _, g := range groups {
+					g = strings.TrimSpace(g)
+					if g == "" || g == id || slices.Contains(next, g) {
+						continue
+					}
+					next = append(next, g)
+				}
+				if len(next) == 0 {
+					if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(map[string]any{
+						commonGroupCol: "",
+						"status":       common.ChannelStatusManuallyDisabled,
+					}).Error; err != nil {
+						return err
+					}
+					if tx.Migrator().HasTable(&Ability{}) {
+						if err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error; err != nil {
+							return err
+						}
+					}
+				} else {
+					channel.Group = strings.Join(next, ",")
+					if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Update(commonGroupCol, channel.Group).Error; err != nil {
+						return err
+					}
+					if tx.Migrator().HasTable(&Ability{}) {
+						if err := channel.UpdateAbilities(tx); err != nil {
+							return err
+						}
+					}
+				}
+				channelsChanged = true
 			}
 		}
 		values, err = adtyGroupOptionsWithout(id, func(key string) (string, error) {
@@ -958,14 +1067,164 @@ func DeleteAdtyGroup(id string) error {
 	if err != nil {
 		return err
 	}
+	common.OptionMapRWMutex.Lock()
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
+	common.OptionMapRWMutex.Unlock()
 	for key, value := range values {
 		if err := updateOptionMap(key, value); err != nil {
-			return err
+			common.SysError(common.LogText("update option map after group delete (%s): %s", key, err.Error()))
 		}
 	}
-	if siteChanged && AdtyOnSiteGroupConfigChanged != nil {
+	ratio_setting.InvalidateExposedDataCache()
+	for userID := range affectedUsers {
+		if err := RefreshUserGroupCache(userID); err != nil {
+			common.SysError(common.LogText("refresh user group cache after group delete: %s", err.Error()))
+		}
+	}
+	if channelsChanged {
+		_ = RefreshChannelCache()
+	}
+	InvalidatePricingCache()
+	if AdtyOnSiteGroupConfigChanged != nil {
 		AdtyOnSiteGroupConfigChanged()
 	}
+	return nil
+}
+
+// SyncActiveAdtyGroupsToOptions 幂等同步所有未删除的 adty_groups 到 options.GroupRatio 与
+// options.UserUsableGroups（缺项补默认倍率 1 与分组名），同时清除已软删除的分组键，
+// 持久化后刷新内存设置与定价缓存。
+func SyncActiveAdtyGroupsToOptions() error {
+	if DB == nil || !DB.Migrator().HasTable(&AdtyGroup{}) {
+		return nil
+	}
+	adtyGroupConfigMu.Lock()
+	defer adtyGroupConfigMu.Unlock()
+	var optionValues map[string]string
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := preLockAdtyGroupOptionsTx(tx, []string{"GroupRatio", "UserUsableGroups"}); err != nil {
+			return err
+		}
+		var allGroups []AdtyGroup
+		if err := tx.Unscoped().Order("id ASC").Find(&allGroups).Error; err != nil {
+			return err
+		}
+		if len(allGroups) == 0 {
+			return nil
+		}
+		activeGroups := make([]AdtyGroup, 0, len(allGroups))
+		deletedSet := make(map[string]struct{})
+		for _, g := range allGroups {
+			id := strings.TrimSpace(g.ID)
+			if id == "" || id == "auto" {
+				continue
+			}
+			if g.Deleted() {
+				deletedSet[id] = struct{}{}
+				continue
+			}
+			activeGroups = append(activeGroups, g)
+		}
+		var load func(string) (string, error)
+		hasOptionTable := tx.Migrator().HasTable(&Option{})
+		if hasOptionTable {
+			load = func(key string) (string, error) {
+				return loadAdtyGroupOptionTx(tx, key)
+			}
+		}
+		ratioRaw, err := adtyGroupOptionSource(load, "GroupRatio", ratio_setting.GroupRatio2JSONString())
+		if err != nil {
+			return err
+		}
+		ratios := map[string]float64{}
+		if err := adtyUnmarshalObject(ratioRaw, &ratios); err != nil {
+			return err
+		}
+		ratioChanged := false
+		for _, g := range activeGroups {
+			id := strings.TrimSpace(g.ID)
+			if _, exists := ratios[id]; !exists {
+				ratios[id] = 1
+				ratioChanged = true
+			}
+		}
+		for id := range deletedSet {
+			if _, exists := ratios[id]; exists {
+				delete(ratios, id)
+				ratioChanged = true
+			}
+		}
+
+		usableRaw, err := adtyGroupOptionSource(load, "UserUsableGroups", setting.UserUsableGroups2JSONString())
+		if err != nil {
+			return err
+		}
+		usable := map[string]string{}
+		if err := adtyUnmarshalObject(usableRaw, &usable); err != nil {
+			return err
+		}
+		usableChanged := false
+		for _, g := range activeGroups {
+			id := strings.TrimSpace(g.ID)
+			if existing, exists := usable[id]; !exists || strings.TrimSpace(existing) == "" {
+				usable[id] = g.DisplayName()
+				usableChanged = true
+			}
+		}
+		for id := range deletedSet {
+			if _, exists := usable[id]; exists {
+				delete(usable, id)
+				usableChanged = true
+			}
+		}
+
+		if !ratioChanged && !usableChanged {
+			return nil
+		}
+		optionValues = map[string]string{}
+		if ratioChanged {
+			ratioBytes, err := common.Marshal(ratios)
+			if err != nil {
+				return err
+			}
+			optionValues["GroupRatio"] = string(ratioBytes)
+		}
+		if usableChanged {
+			usableBytes, err := common.Marshal(usable)
+			if err != nil {
+				return err
+			}
+			optionValues["UserUsableGroups"] = string(usableBytes)
+		}
+		if hasOptionTable && len(optionValues) > 0 {
+			if err := SaveOptionsTx(tx, optionValues); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(optionValues) == 0 {
+		return nil
+	}
+	common.OptionMapRWMutex.Lock()
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
+	common.OptionMapRWMutex.Unlock()
+	for _, key := range []string{"GroupRatio", "UserUsableGroups"} {
+		if value, ok := optionValues[key]; ok {
+			if updateErr := updateOptionMap(key, value); updateErr != nil {
+				common.SysError(common.LogText("update option map after sync active adty groups (%s): %s", key, updateErr.Error()))
+			}
+		}
+	}
+	ratio_setting.InvalidateExposedDataCache()
+	InvalidatePricingCache()
 	return nil
 }
 

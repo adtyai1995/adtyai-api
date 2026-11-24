@@ -16,190 +16,62 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  Download,
+  LifeBuoy,
+  Plus,
+  RefreshCw,
+  SlidersHorizontal,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Dialog } from '@/components/dialog'
+import { EmptyState } from '@/components/empty-state'
+import { ErrorState } from '@/components/error-state'
+import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { Textarea } from '@/components/ui/textarea'
-import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { api } from '@/lib/api'
 import {
   createServerError,
   getServerErrorMessage,
 } from '@/lib/server-error-message'
-import { formatDateTimeObject } from '@/lib/time'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { TicketPriorityPill, TicketStatusPill } from './ticket-badges'
 import {
-  ticketDraftLink,
-  ticketOperationKey,
-  ticketRelations,
-} from './ticket-draft'
+  TicketCreateDialog,
+  type PendingCreateFile,
+} from './ticket-create-dialog'
+import { TicketDetailView } from './ticket-detail-view'
+import { ticketDraftLink, ticketOperationKey } from './ticket-draft'
 import { hashTicketImageData } from './ticket-hash'
-import { TicketImage } from './ticket-image'
+import { TicketImagePolicySettings } from './ticket-image-policy'
 import {
-  TicketImagePolicySettings,
-  type TicketPolicy,
-} from './ticket-image-policy'
-import {
-  TICKET_QUEUES,
-  TICKET_STATUS_LABELS,
-  type TicketBadges,
-  type TicketQueueId,
-  normalizeTicketStatus,
-  ticketStatusLabel,
-} from './ticket-status'
+  formatTicketNumber,
+  formatTicketShortTime,
+  parseInitialTicketHashFilters,
+  readFileAsBase64,
+  TICKET_PRIORITIES,
+  TICKET_STATUS_FILTER_OPTIONS,
+  TICKET_TYPES,
+  validateTicketImageBatch,
+  type Ticket,
+  type TicketDetail,
+  type TicketList,
+  type TicketScope,
+} from './ticket-types'
 
-type TicketScope = 'personal' | 'platform' | 'owner' | 'staff' | 'team'
-const ticketTypes: Record<string, string> = {
-  billing: 'Billing',
-  api: 'API',
-  account: 'Account',
-  other: 'Other',
-}
-const ticketPriorities: Record<string, string> = {
-  normal: 'Normal',
-  important: 'Important',
-  urgent: 'Urgent',
-}
-const eventLabels: Record<string, string> = {
-  create: 'New ticket',
-  reply: 'Reply',
-  note: 'Internal note',
-  assign: 'Assign ticket',
-  transfer: 'Transfer ticket',
-  site_handoff: 'Transferred to main-site support',
-  status: 'Status',
-  priority: 'Priority',
-  reopen: 'Reopen ticket',
-  image_upload: 'Upload image',
-  image_view: 'View image',
-  image_delete: 'Delete image',
-}
+const PAGE_SIZE = 20
 
-const TICKET_IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp'
-const ACCEPTED_TICKET_IMAGE_MIMES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-])
-const ACCEPTED_TICKET_IMAGE_EXT = /\.(png|jpe?g|webp)$/i
-
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.addEventListener(
-      'load',
-      () => {
-        const value = String(reader.result || '')
-        resolve(value.slice(value.indexOf(',') + 1))
-      },
-      { once: true }
-    )
-    reader.addEventListener(
-      'error',
-      () =>
-        reject(
-          createServerError({
-            message: 'Only images are accepted',
-            message_key: 'Only images are accepted',
-          })
-        ),
-      { once: true }
-    )
-    reader.readAsDataURL(file)
-  })
-}
-
-type Ticket = {
-  type: string
-  user_id: number
-  site_id: number
-  team_id: number
-  related_kind?: string
-  related_ref?: string
-  related_model?: string
-  related_group?: string
-  related_at?: number
-  team_shared?: boolean
-  related_error?: string
-  id: number
-  initial_message_id?: number
-  title: string
-  status: string
-  priority?: string
-  assignee_id?: number
-}
-
-type TicketMessage = {
-  author_id: number
-  author_role?: string
-  created_at: number
-  english?: string
-  translation_status?: string
-  id: number
-  visibility: string
-  body: string
-}
-
-type TicketImage = {
-  id: number
-  object_id?: string
-  ticket_id?: number
-  message_id?: number
-  visibility: string
-  mime: string
-  size?: number
-  width?: number
-  height?: number
-  sha256?: string
-  created_at?: number
-}
-
-type TicketEvent = {
-  id: number
-  ticket_id?: number
-  actor_id?: number
-  action: string
-  detail?: string
-  created_at?: number
-}
-
-type TicketDetail = {
-  actions: string[]
-  image_grants?: Record<number, string>
-  image_grants_exp?: number
-  ticket: Ticket
-  assignees?: { id: number; username: string; display_name: string }[]
-  messages: TicketMessage[]
-  images?: TicketImage[]
-  events?: TicketEvent[]
-  can_note: boolean
-  can_manage: boolean
-  can_control?: boolean
-}
-
-type TicketList = {
-  image_policy: TicketPolicy
-  tickets?: Ticket[]
-  total: number
-  can_view_team: boolean
-  can_note?: boolean
-  can_manage?: boolean
-  badges?: TicketBadges
-}
-
-export function TicketCenter({
-  scope: workspace = 'personal',
-}: {
-  scope?: TicketScope
-}) {
+export function TicketCenter(props: { scope?: TicketScope }) {
+  const workspace = props.scope ?? 'personal'
   const userId = useAuthStore((state) => state.auth.user?.id)
   return (
     <TicketWorkspace
@@ -210,91 +82,73 @@ export function TicketCenter({
   )
 }
 
-function TicketWorkspace({
-  workspace,
-  userId,
-}: {
-  workspace: TicketScope
-  userId?: number
-}) {
-  const [scope, setScope] = useState(workspace)
-  const [page, setPage] = useState(1)
-  const createVersion = useRef(0)
-  const [type, setType] = useState('other')
-  const [priority, setPriority] = useState('normal')
-  const [createFiles, setCreateFiles] = useState<{ id: string; file: File }[]>([])
-  const [imageMessage, setImageMessage] = useState<number | null>(null)
-  const [audience, setAudience] = useState('personal')
-  const [relatedKind, setRelatedKind] = useState('')
-  const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState('')
-  const attempts = useRef(new Map<string, { key: string; value: string }>())
-  const headers = (action: string, value: string) => ({
-    'Idempotency-Key': ticketOperationKey(attempts.current, action, value),
-  })
-  const isRoot = useAuthStore((state) => state.auth.user?.role === 100)
-  const pageSize = 20
+function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
+  const { workspace, userId } = props
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const [queue, setQueue] = useState<TicketQueueId | ''>(() =>
-    workspace === 'personal'
-      ? ''
-      : (TICKET_QUEUES.find((item) => window.location.hash === `#${item.id}`)
-          ?.id ?? '')
+  const isRoot = useAuthStore((state) => state.auth.user?.role === 100)
+  const isAdminView = workspace !== 'personal'
+
+  const initialHash = parseInitialTicketHashFilters(
+    typeof window !== 'undefined' ? window.location.hash : '',
+    workspace
   )
-  const list = useQuery({
-    queryKey: ['adty-tickets', userId, scope, queue, page, filter],
-    retry: false,
-    refetchInterval: 30_000,
-    queryFn: async () => {
-      const response = await api.get('/api/adty/tickets', {
-        params: { scope, queue, q: filter, p: page, page_size: pageSize },
-      })
-      const body = response.data as {
-        success?: boolean
-        data?: TicketList
-        message?: string
-      }
-      if (!body.success) {
-        throw createServerError(body, t('Failed to load data'))
-      }
-      return {
-        tickets: body.data?.tickets ?? [],
-        total: body.data?.total ?? 0,
-        imagePolicy: body.data?.image_policy,
-        canViewTeam: Boolean(body.data?.can_view_team),
-        can_note: Boolean(body.data?.can_note),
-        can_manage: Boolean(body.data?.can_manage),
-        badges: body.data?.badges,
-      }
-    },
-  })
+
+  const [scope, setScope] = useState<TicketScope>(workspace)
+  const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<number | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [policyOpen, setPolicyOpen] = useState(false)
+
+  // Admin filter controls
+  const [searchInput, setSearchInput] = useState('')
+  const [appliedSearch, setAppliedSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState(initialHash.status)
+  const [priorityFilter, setPriorityFilter] = useState(initialHash.priority)
+  const [typeFilter, setTypeFilter] = useState('')
+  const [assigneeInput, setAssigneeInput] = useState('')
+  const [appliedAssignee, setAppliedAssignee] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+
+  // Create form state
+  const createVersion = useRef(0)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
-  const draftKey = JSON.stringify([userId, scope, selected])
-  const [drafts, setDrafts] = useState<
-    Record<string, { reply?: string; note?: string }>
-  >({})
-  const reply = drafts[draftKey]?.reply ?? ''
-  const note = drafts[draftKey]?.note ?? ''
-  function updateDraft(field: 'reply' | 'note', value: string) {
-    setDrafts((previous) => ({
-      ...previous,
-      [draftKey]: { ...previous[draftKey], [field]: value },
-    }))
-  }
-  function clearSubmitted(field: 'reply' | 'note', submitted: string) {
-    setDrafts((previous) =>
-      previous[draftKey]?.[field] === submitted
-        ? { ...previous, [draftKey]: { ...previous[draftKey], [field]: '' } }
-        : previous
-    )
-  }
-  const [assignee, setAssignee] = useState('')
+  const [type, setType] = useState('other')
+  const [priority, setPriority] = useState('normal')
+  const [audience, setAudience] = useState('personal')
+  const [relatedKind, setRelatedKind] = useState('')
   const [related, setRelated] = useState('')
+  const [createFiles, setCreateFiles] = useState<PendingCreateFile[]>([])
+
+  // Detail state
+  const [imageMessage, setImageMessage] = useState<number | null>(null)
+  const [assignee, setAssignee] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+
+  const attempts = useRef(new Map<string, { key: string; value: string }>())
+  const idempotencyHeaders = (action: string, value: string) => ({
+    'Idempotency-Key': ticketOperationKey(attempts.current, action, value),
+  })
+
+  // Debounce text filter inputs for admin view
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const nextSearch = searchInput.trim()
+      const nextAssignee = assigneeInput.trim()
+      setAppliedSearch((prev) => {
+        if (prev !== nextSearch) setPage(1)
+        return nextSearch
+      })
+      setAppliedAssignee((prev) => {
+        if (prev !== nextAssignee) setPage(1)
+        return nextAssignee
+      })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [searchInput, assigneeInput])
 
   const selectTicket = useCallback((id: number | null) => {
     setSelected(id)
@@ -303,55 +157,7 @@ function TicketWorkspace({
     setError('')
   }, [])
 
-  const requestRef = relatedKind === 'request' ? related.trim() : ''
-  const requestAudience = useQuery({
-    queryKey: ['ticket-request-audience', userId, requestRef],
-    enabled: Boolean(requestRef && userId),
-    retry: false,
-    queryFn: async ({ signal }) => {
-      const { data } = await api.get('/api/adty/tickets/request-audience', {
-        params: { ref: requestRef },
-        signal,
-      })
-      if (
-        !data.success ||
-        !['personal', 'team'].includes(data.data?.audience)
-      ) {
-        throw createServerError(data, t('Failed to load data'))
-      }
-      return data.data.audience as 'personal' | 'team'
-    },
-  })
-  const resolvedAudience = requestRef ? requestAudience.data : audience
-  const relatedTickets = useQuery({
-    queryKey: [
-      'adty-tickets',
-      userId,
-      resolvedAudience,
-      'related',
-      relatedKind,
-      related.trim(),
-    ],
-    enabled:
-      workspace === 'personal' &&
-      Boolean(relatedKind && related.trim() && resolvedAudience),
-    retry: false,
-    queryFn: async ({ signal }) => {
-      const { data } = await api.get('/api/adty/tickets', {
-        params: {
-          scope: resolvedAudience,
-          related_kind: relatedKind,
-          related_ref: related.trim(),
-        },
-        signal,
-      })
-      if (!data.success) {
-        throw createServerError(data, t('Failed to load data'))
-      }
-      return (data.data?.tickets ?? []) as Ticket[]
-    },
-  })
-
+  // Handle deep-link hashes (#case-123, #case-123-team, #ticket-..., #ticket:kind:ref)
   useEffect(() => {
     function readLink() {
       const hash = window.location.hash
@@ -372,6 +178,9 @@ function TicketWorkspace({
             : 'billing'
         )
         setAudience(source.kind.startsWith('team_') ? 'team' : 'personal')
+        if (workspace === 'personal') {
+          setCreateOpen(true)
+        }
       }
       if (match || source) {
         document.querySelector('#tickets')?.scrollIntoView()
@@ -382,9 +191,55 @@ function TicketWorkspace({
     return () => window.removeEventListener('hashchange', readLink)
   }, [selectTicket, workspace])
 
+  const listParams = {
+    scope,
+    q: isAdminView && appliedSearch ? appliedSearch : undefined,
+    status: isAdminView && statusFilter ? statusFilter : undefined,
+    priority: isAdminView && priorityFilter ? priorityFilter : undefined,
+    type: isAdminView && typeFilter ? typeFilter : undefined,
+    assignee_id:
+      isAdminView && /^\d+$/.test(appliedAssignee)
+        ? appliedAssignee
+        : undefined,
+    date_from: isAdminView && dateFrom ? dateFrom : undefined,
+    date_to: isAdminView && dateTo ? dateTo : undefined,
+    p: page,
+    page,
+    page_size: PAGE_SIZE,
+  }
+
+  const list = useQuery({
+    queryKey: ['adty-tickets', userId, listParams],
+    retry: false,
+    refetchInterval: 30_000,
+    placeholderData: keepPreviousData,
+    queryFn: async () => {
+      const response = await api.get('/api/adty/tickets', {
+        params: listParams,
+      })
+      const payload = response.data as {
+        success?: boolean
+        data?: TicketList
+        message?: string
+      }
+      if (!payload.success) {
+        throw createServerError(payload, t('Failed to load data'))
+      }
+      return {
+        tickets: payload.data?.tickets ?? [],
+        total: payload.data?.total ?? 0,
+        imagePolicy: payload.data?.image_policy,
+        canViewTeam: Boolean(payload.data?.can_view_team),
+        can_note: Boolean(payload.data?.can_note),
+        can_manage: Boolean(payload.data?.can_manage),
+        badges: payload.data?.badges,
+      }
+    },
+  })
+
   const detail = useQuery({
     queryKey: ['adty-tickets', userId, scope, 'detail', selected],
-    enabled: selected !== null && list.isSuccess,
+    enabled: selected !== null,
     retry: false,
     refetchInterval: 30_000,
     queryFn: async () => {
@@ -403,6 +258,28 @@ function TicketWorkspace({
     },
   })
 
+  const draftKey = JSON.stringify([userId, scope, selected])
+  const [drafts, setDrafts] = useState<
+    Record<string, { reply?: string; note?: string }>
+  >({})
+  const reply = drafts[draftKey]?.reply ?? ''
+  const note = drafts[draftKey]?.note ?? ''
+
+  function updateDraft(field: 'reply' | 'note', value: string) {
+    setDrafts((previous) => ({
+      ...previous,
+      [draftKey]: { ...previous[draftKey], [field]: value },
+    }))
+  }
+
+  function clearSubmitted(field: 'reply' | 'note', submitted: string) {
+    setDrafts((previous) =>
+      previous[draftKey]?.[field] === submitted
+        ? { ...previous, [draftKey]: { ...previous[draftKey], [field]: '' } }
+        : previous
+    )
+  }
+
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['adty-tickets'] }),
@@ -410,7 +287,33 @@ function TicketWorkspace({
     ])
   }
 
-  const create = async () => {
+  const postTicketImage = async (
+    ticketId: number,
+    messageId: number,
+    visibility: string | undefined,
+    targetScope: string,
+    encodedData: string
+  ) => {
+    const hash = await hashTicketImageData(encodedData)
+    const response = await api.post(
+      `/api/adty/tickets/${ticketId}/images`,
+      {
+        data: encodedData,
+        message_id: messageId,
+        visibility: visibility || 'public',
+      },
+      {
+        params: { scope: targetScope },
+        headers: { 'Idempotency-Key': `image:${messageId}:${hash}` },
+      }
+    )
+    const payload = response.data as { success?: boolean; message?: string }
+    if (!payload?.success) {
+      throw createServerError(payload, t('Only images are accepted'))
+    }
+  }
+
+  const createTicket = async (resolvedAudience: string) => {
     const submittedVersion = createVersion.current
     setPending(true)
     setError('')
@@ -425,7 +328,7 @@ function TicketWorkspace({
         related_ref: relatedKind ? related.trim() : '',
       }
       const response = await api.post('/api/adty/tickets', draft, {
-        headers: headers('create', JSON.stringify(draft)),
+        headers: idempotencyHeaders('create', JSON.stringify(draft)),
       })
       const payload = response.data as {
         success?: boolean
@@ -436,7 +339,8 @@ function TicketWorkspace({
         throw createServerError(payload, t('Failed to save'))
       }
       const createdTicket = payload.data
-      const targetScope = resolvedAudience === 'team' ? 'team' : 'personal'
+      const targetScope: TicketScope =
+        resolvedAudience === 'team' ? 'team' : 'personal'
       const pendingItems = [...createFiles]
       attempts.current.delete('create')
       if (submittedVersion === createVersion.current) {
@@ -452,11 +356,12 @@ function TicketWorkspace({
         }
       }
       setPage(1)
-      setQueue('')
       setScope(targetScope)
+      setCreateOpen(false)
       selectTicket(createdTicket.id)
+
       const firstMessageId = createdTicket.initial_message_id ?? 0
-      const failedItems: typeof pendingItems = []
+      const failedItems: PendingCreateFile[] = []
       let firstErr = ''
       for (const item of pendingItems) {
         try {
@@ -526,7 +431,7 @@ function TicketWorkspace({
           params: { scope },
           headers:
             status === 'reopen'
-              ? headers(`reopen:${selected}`, String(closure))
+              ? idempotencyHeaders(`reopen:${selected}`, String(closure))
               : undefined,
         }
       )
@@ -549,12 +454,10 @@ function TicketWorkspace({
     try {
       const response = await api.post(
         `/api/adty/tickets/${selected}/replies`,
-        {
-          body: reply.trim(),
-        },
+        { body: reply.trim() },
         {
           params: { scope },
-          headers: headers(
+          headers: idempotencyHeaders(
             `${draftKey}:reply`,
             JSON.stringify([selected, scope, reply.trim()])
           ),
@@ -581,12 +484,10 @@ function TicketWorkspace({
     try {
       const response = await api.post(
         `/api/adty/tickets/${selected}/notes`,
-        {
-          body: note.trim(),
-        },
+        { body: note.trim() },
         {
           params: { scope },
-          headers: headers(
+          headers: idempotencyHeaders(
             `${draftKey}:note`,
             JSON.stringify([selected, scope, note.trim()])
           ),
@@ -606,74 +507,15 @@ function TicketWorkspace({
     }
   }
 
-  const postTicketImage = async (
-    ticketId: number,
-    messageId: number,
-    visibility: string | undefined,
-    targetScope: string,
-    encodedData: string
-  ) => {
-    const hash = await hashTicketImageData(encodedData)
-    const response = await api.post(
-      `/api/adty/tickets/${ticketId}/images`,
-      {
-        data: encodedData,
-        message_id: messageId,
-        visibility: visibility || 'public',
-      },
-      {
-        params: { scope: targetScope },
-        headers: { 'Idempotency-Key': `image:${messageId}:${hash}` },
-      }
-    )
-    const payload = response.data as { success?: boolean; message?: string }
-    if (!payload?.success) {
-      throw createServerError(payload, t('Only images are accepted'))
-    }
-  }
-
-  const validateImageBatch = (
-    incoming: File[],
-    currentCount: number,
-    currentTotalBytes: number
-  ): string | null => {
-    const policy = list.data?.imagePolicy
-    const maxBytes = policy?.max_bytes ?? 0
-    const maxCount = policy?.max_count ?? 0
-    const maxTotal = policy?.max_total ?? 0
-    if (maxCount > 0 && currentCount + incoming.length > maxCount) {
-      return t('Image count exceeds the limit ({{limit}})', { limit: maxCount })
-    }
-    let nextTotal = currentTotalBytes
-    for (const file of incoming) {
-      const mime = file.type.toLowerCase()
-      const mimeAllowed =
-        mime !== ''
-          ? ACCEPTED_TICKET_IMAGE_MIMES.has(mime)
-          : ACCEPTED_TICKET_IMAGE_EXT.test(file.name)
-      if (!mimeAllowed || /\.gif$/i.test(file.name)) {
-        return t('Only PNG, JPEG and WebP images are accepted')
-      }
-      if (maxBytes > 0 && file.size > maxBytes) {
-        return t('Image exceeds the size limit')
-      }
-      nextTotal += file.size
-    }
-    if (maxTotal > 0 && nextTotal > maxTotal) {
-      return t('Total image size exceeds the limit')
-    }
-    return null
-  }
-
   const authorMessages = (detail.data?.messages ?? []).filter(
-    (m) => m.author_id === userId
+    (message) => message.author_id === userId
   )
   const latestAuthorMessageId = authorMessages.at(-1)?.id ?? 0
   let effectiveImageMessage = latestAuthorMessageId
   if (imageMessage !== null) {
     if (
       imageMessage === 0 ||
-      authorMessages.some((m) => m.id === imageMessage)
+      authorMessages.some((message) => message.id === imageMessage)
     ) {
       effectiveImageMessage = imageMessage
     }
@@ -683,13 +525,15 @@ function TicketWorkspace({
     if (selected === null || files.length === 0) return
     const existingImages = detail.data?.images ?? []
     const existingTotal = existingImages.reduce(
-      (sum, img) => sum + (img.size ?? 0),
+      (sum, image) => sum + (image.size ?? 0),
       0
     )
-    const validationError = validateImageBatch(
+    const validationError = validateTicketImageBatch(
       files,
       existingImages.length,
-      existingTotal
+      existingTotal,
+      list.data?.imagePolicy,
+      t
     )
     if (validationError) {
       setError(validationError)
@@ -700,7 +544,7 @@ function TicketWorkspace({
     try {
       const targetMessageId = effectiveImageMessage
       const visibility =
-        detail.data?.messages.find((m) => m.id === targetMessageId)
+        detail.data?.messages.find((message) => message.id === targetMessageId)
           ?.visibility ?? 'public'
       let failedCount = 0
       let firstErr = ''
@@ -761,15 +605,7 @@ function TicketWorkspace({
     }
   }
 
-  function changeQueue(next: TicketQueueId | '') {
-    setQueue(next)
-    setPage(1)
-    selectTicket(null)
-  }
-  const badges = list.isSuccess ? list.data.badges : undefined
-  const canManage = list.isSuccess && list.data.can_manage
-
-  async function exportTickets() {
+  const exportTickets = async () => {
     setPending(true)
     setError('')
     try {
@@ -778,10 +614,9 @@ function TicketWorkspace({
       for (;;) {
         const response = await api.get('/api/adty/tickets', {
           params: {
-            scope,
-            queue,
-            q: filter,
+            ...listParams,
             p: 1,
+            page: 1,
             page_size: 100,
             before_id: before,
           },
@@ -809,771 +644,466 @@ function TicketWorkspace({
       setPending(false)
     }
   }
-  const allowed = (action: string) =>
-    detail.data?.actions?.includes(action) === true
-  const terminal =
-    detail.data?.ticket.status === 'closed' ||
-    detail.data?.ticket.status === 'resolved'
+
+  const hasActiveFilters = Boolean(
+    searchInput.trim() ||
+      statusFilter ||
+      priorityFilter ||
+      typeFilter ||
+      assigneeInput.trim() ||
+      dateFrom ||
+      dateTo
+  )
+
+  const clearFilters = () => {
+    setSearchInput('')
+    setAppliedSearch('')
+    setStatusFilter('')
+    setPriorityFilter('')
+    setTypeFilter('')
+    setAssigneeInput('')
+    setAppliedAssignee('')
+    setDateFrom('')
+    setDateTo('')
+    setPage(1)
+  }
+
+  const tickets = list.data?.tickets ?? []
+  const total = list.data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const canManage = Boolean(list.data?.can_manage)
+  const canViewTeam = Boolean(list.data?.canViewTeam)
+
+  const selectPillClass =
+    'w-auto min-w-[104px] [&_select]:h-9 [&_select]:rounded-full [&_select]:px-3.5 [&_select]:pr-8 [&_select]:text-sm'
+
   return (
-    <Card id='tickets'>
-      <CardContent className='flex flex-col gap-4 py-4'>
-        <div className='flex flex-col gap-1'>
-          <h2 className='text-sm font-medium'>
-            {workspace === 'personal' ? t('My tickets') : t('Ticket management')}
-          </h2>
-          <p className='text-muted-foreground text-sm'>
-            {t('Images only. Hide API keys, passwords, and payment details.')}
-          </p>
-        </div>
-        {workspace === 'personal' &&
-          list.isSuccess &&
-          list.data.canViewTeam && (
-            <div className='flex flex-wrap gap-2'>
-              {(['personal', 'team'] as const).map((value) => (
-                <Button
-                  key={value}
-                  variant={value === scope ? 'default' : 'outline'}
-                  onClick={() => {
-                    setScope(value)
-                    changeQueue('')
-                  }}
-                >
-                  {value === 'personal' ? t('My tickets') : t('Team tickets')}
-                </Button>
-              ))}
-            </div>
-          )}
-        {workspace === 'platform' && isRoot && list.data?.imagePolicy && (
-          <TicketImagePolicySettings
-            policy={list.data.imagePolicy}
-            onSaved={refresh}
-          />
-        )}
-        <form
-          className='flex flex-wrap gap-2'
-          onSubmit={(event) => {
-            event.preventDefault()
-            setFilter(search.trim())
-            setPage(1)
-            selectTicket(null)
-          }}
-        >
-          <Input
-            aria-label={t('Ticket or business number')}
-            placeholder={t('Ticket or business number')}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <Button type='submit' variant='outline'>
-            {t('Search')}
-          </Button>
-          {canManage && (
-            <Button
-              type='button'
-              variant='outline'
-              disabled={pending}
-              onClick={() => void exportTickets()}
-            >
-              {t('Export tickets')}
-            </Button>
-          )}
-        </form>
-        {canManage && badges && (
-          <div className='flex flex-col gap-2'>
-            <div className='flex flex-wrap gap-2'>
-              <Button
-                size='sm'
-                variant={queue === '' ? 'default' : 'outline'}
-                onClick={() => changeQueue('')}
-              >
-                {t('All tickets')}
-              </Button>
-              {TICKET_QUEUES.map((item) => (
-                <Button
-                  key={item.id}
-                  type='button'
-                  size='sm'
-                  variant={queue === item.id ? 'default' : 'outline'}
-                  onClick={() => changeQueue(item.id)}
-                >
-                  {t(item.label)}
-                  <span className='tabular-nums'>
-                    {badges[item.badge] ?? 0}
-                  </span>
-                </Button>
-              ))}
-            </div>
-            <p className='text-muted-foreground text-xs'>
-              {t('Ticket badge new')} {badges.new} ·{' '}
-              {t('Ticket badge pending assignment')} {badges.pending_assignment}{' '}
-              · {t('Ticket status in progress')} {badges.in_progress}
-            </p>
-          </div>
-        )}
-        {list.isLoading && (
-          <p className='text-muted-foreground text-sm'>{t('Loading...')}</p>
-        )}
-        {list.isError && (
-          <Button
-            type='button'
-            variant='outline'
-            onClick={() => void list.refetch()}
-          >
-            {t('Retry')}
-          </Button>
-        )}
-        {list.isSuccess && list.data.tickets.length === 0 && (
-          <p className='text-muted-foreground text-sm'>{t('No tickets')}</p>
-        )}
-        <div className='flex flex-col gap-2'>
-          {(list.isSuccess ? list.data.tickets : []).map((ticket) => (
-            <button
-              key={ticket.id}
-              type='button'
-              className='hover:bg-muted flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors'
-              disabled={pending}
-              onClick={() => selectTicket(ticket.id)}
-            >
-              <span className='min-w-0 truncate'>
-                #{ticket.id} · {ticket.title} ·{' '}
-                {t(ticketTypes[ticket.type] ?? 'Other')}
-              </span>
-              <span className='text-muted-foreground shrink-0'>
-                {t(ticketStatusLabel(ticket.status, ticket.assignee_id))}
-              </span>
-            </button>
-          ))}
-        </div>
-        {list.isSuccess && (
-          <PageSwitcher
-            page={page}
-            total={list.data.total}
-            pageSize={pageSize}
-            onPageChange={(next) => {
-              setPage(next)
-              selectTicket(null)
-            }}
-          />
-        )}
-        {selected !== null && list.isSuccess && detail.isError && (
-          <Button variant='outline' onClick={() => void detail.refetch()}>
-            {t('Retry')}
-          </Button>
-        )}
-        {list.isSuccess && detail.isSuccess && (
-          <div className='flex flex-col gap-3'>
-            <h3 className='text-sm font-medium'>{detail.data.ticket.title}</h3>
-            <p className='text-muted-foreground text-sm'>
-              {t(
-                ticketStatusLabel(
-                  detail.data.ticket.status,
-                  detail.data.ticket.assignee_id
-                )
-              )}{' '}
-              · {t(ticketTypes[detail.data.ticket.type] ?? 'Other')} ·{' '}
-              {t(
-                ticketPriorities[detail.data.ticket.priority ?? 'normal'] ??
-                  'Normal'
-              )}
-            </p>
-            {Object.entries({
-              [t('Business reference')]: detail.data.ticket.related_ref,
-              [t('Model')]: detail.data.ticket.related_model,
-              [t('Group')]: detail.data.ticket.related_group,
-              [t('Error')]: detail.data.ticket.related_error,
-              [t('Request time')]:
-                detail.data.ticket.related_at &&
-                formatDateTimeObject(
-                  new Date(detail.data.ticket.related_at * 1000)
-                ),
-            })
-              .filter(([, value]) => value)
-              .map(([label, value]) => (
-                <p className='text-sm break-all' key={label}>
-                  {label} · {value}
-                </p>
-              ))}
-            {detail.data.can_manage && (
-              <p className='text-muted-foreground text-sm'>
-                {t('Site ID')} {detail.data.ticket.site_id} · {t('User ID')}{' '}
-                {detail.data.ticket.user_id}
-                {detail.data.ticket.team_id > 0 && (
-                  <>
-                    {' '}
-                    · {t('Team ID')} {detail.data.ticket.team_id}
-                  </>
-                )}
-              </p>
-            )}
-            {detail.data.messages.map((message) => (
-              <div key={message.id} className='grid gap-1 border-b py-2'>
-                <p className='text-muted-foreground text-xs'>
-                  #{message.id} ·{' '}
-                  {t(
-                    (
-                      {
-                        customer: 'Customer',
-                        staff: 'Support staff',
-                        support: 'Support staff',
-                        owner: 'Site owner',
-                        platform: 'Platform support',
-                        platform_main: 'Platform support',
-                      } as Record<string, string>
-                    )[message.author_role ?? ''] ??
-                      'Historical author role unconfirmed'
-                  )}{' '}
-                  {message.author_id > 0 ? `#${message.author_id} · ` : ''}
-                  {formatDateTimeObject(new Date(message.created_at * 1000))}
-                </p>
-                <p className='text-sm whitespace-pre-wrap'>
-                  {message.visibility === 'internal' &&
-                    `${t('Internal note')} · `}
-                  {message.body}
-                </p>
-                {message.english && (
-                  <p lang='en' className='text-sm whitespace-pre-wrap'>
-                    {message.english}
-                  </p>
-                )}
-                {message.translation_status && !message.english && (
-                  <p className='text-muted-foreground text-xs'>
-                    {t('English is not ready')}
-                  </p>
-                )}
-                {detail.data.images
-                  ?.filter(
-                    (image) =>
-                      image.message_id === message.id &&
-                      (detail.data.can_note || image.visibility === 'public')
-                  )
-                  .map((image) => {
-                    const isSupportMessage = Boolean(
-                      message.author_role && message.author_role !== 'customer'
-                    )
-                    const canDelete =
-                      !terminal &&
-                      (detail.data.can_manage ||
-                        (image.visibility === 'public' &&
-                          !isSupportMessage &&
-                          (detail.data.can_control ||
-                            detail.data.ticket.user_id === userId ||
-                            message.author_id === userId)))
-                    return (
-                      <TicketImage
-                        key={image.id}
-                        ticketID={detail.data.ticket.id}
-                        imageID={image.id}
-                        grant={detail.data.image_grants?.[image.id]}
-                        expiresAt={detail.data.image_grants_exp}
-                        scope={scope}
-                        userId={userId}
-                        label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
-                        deleting={pending}
-                        onDelete={
-                          canDelete ? () => void deleteImage(image.id) : undefined
-                        }
-                      />
-                    )
-                  })}
-              </div>
-            ))}
-            {(() => {
-              const renderedMessageIds = new Set(
-                detail.data.messages.map((message) => message.id)
-              )
-              const unattachedImages = (detail.data.images ?? []).filter(
-                (image) =>
-                  (!image.message_id ||
-                    !renderedMessageIds.has(image.message_id)) &&
-                  (detail.data.can_note || image.visibility === 'public')
-              )
-              if (unattachedImages.length === 0) return null
-              return (
-                <div className='flex flex-col gap-2 rounded-lg border p-3'>
-                  <p className='text-muted-foreground text-xs font-medium'>
-                    {t('Attachments')}
-                  </p>
-                  <div className='flex flex-wrap gap-4'>
-                    {unattachedImages.map((image) => {
-                      const canDelete =
-                        !terminal &&
-                        (detail.data.can_manage ||
-                          (image.visibility === 'public' &&
-                            (detail.data.can_control ||
-                              detail.data.ticket.user_id === userId)))
-                      return (
-                        <TicketImage
-                          key={image.id}
-                          ticketID={detail.data.ticket.id}
-                          imageID={image.id}
-                          grant={detail.data.image_grants?.[image.id]}
-                          expiresAt={detail.data.image_grants_exp}
-                          scope={scope}
-                          userId={userId}
-                          label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
-                          deleting={pending}
-                          onDelete={
-                            canDelete
-                              ? () => void deleteImage(image.id)
-                              : undefined
-                          }
-                        />
-                      )
-                    })}
-                  </div>
+    <div
+      id='tickets'
+      className='border-border bg-card overflow-hidden rounded-2xl border'
+    >
+      {selected !== null ? (
+        <TicketDetailView
+          scope={scope}
+          userId={userId}
+          detail={detail.data}
+          isPending={detail.isPending}
+          isError={detail.isError}
+          isFetching={detail.isFetching}
+          imagePolicy={list.data?.imagePolicy}
+          busy={pending}
+          error={error}
+          reply={reply}
+          note={note}
+          assignee={assignee}
+          effectiveImageMessage={effectiveImageMessage}
+          onBack={() => selectTicket(null)}
+          onRefresh={() => void refresh()}
+          onReplyChange={(value) => updateDraft('reply', value)}
+          onNoteChange={(value) => updateDraft('note', value)}
+          onAssigneeChange={setAssignee}
+          onImageMessageChange={setImageMessage}
+          onSubmitReply={submitReply}
+          onSubmitNote={submitNote}
+          onUpdateStatus={updateStatus}
+          onUploadImages={uploadImages}
+          onDeleteImage={deleteImage}
+        />
+      ) : (
+        <div className='flex flex-col'>
+          <div className='border-border flex flex-col gap-3.5 border-b px-5 py-4'>
+            <div className='flex flex-wrap items-center justify-between gap-3'>
+              <div className='flex flex-wrap items-center gap-3'>
+                <div className='flex items-center gap-2'>
+                  <LifeBuoy
+                    className='text-foreground size-4.5 shrink-0'
+                    aria-hidden='true'
+                  />
+                  <h2 className='text-foreground text-[15px] font-semibold'>
+                    {t('Ticket list')}
+                  </h2>
                 </div>
-              )
-            })()}
-            {(detail.data.events ?? [])
-              .filter(
-                (event) => event.action !== 'note' || detail.data.can_note
-              )
-              .map((event) => {
-                let detailLabel = ''
-                if (event.detail) {
-                  detailLabel = event.detail
-                  if (
-                    TICKET_STATUS_LABELS[normalizeTicketStatus(event.detail)]
-                  ) {
-                    detailLabel = t(ticketStatusLabel(event.detail))
-                  } else if (event.action === 'priority') {
-                    detailLabel = t(
-                      ticketPriorities[event.detail] ?? event.detail
-                    )
-                  }
-                }
-                return (
-                  <p key={event.id} className='text-muted-foreground text-xs'>
-                    {t(eventLabels[event.action] ?? event.action)}
-                    {detailLabel ? ` · ${detailLabel}` : ''}
-                  </p>
-                )
-              })}
-            {detail.data.can_manage && allowed('reply') && (
-              <NativeSelect
-                aria-label={t('Common replies')}
-                value=''
-                onChange={(event) =>
-                  updateDraft('reply', t(event.target.value))
-                }
-              >
-                <NativeSelectOption value=''>
-                  {t('Common replies')}
-                </NativeSelectOption>
-                {[
-                  'Please share the request ID and time.',
-                  'We are checking your order.',
-                  'Please confirm whether the issue is resolved.',
-                ].map((key) => (
-                  <NativeSelectOption key={key} value={key}>
-                    {t(key)}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            )}
-            {allowed('reply') && (
-              <>
-                <Textarea
-                  disabled={terminal}
-                  aria-label={t('Reply')}
-                  value={reply}
-                  onChange={(event) => updateDraft('reply', event.target.value)}
-                />
-                <Button
-                  type='button'
-                  disabled={terminal || pending || reply.trim() === ''}
-                  onClick={() => void submitReply()}
-                >
-                  {t('Reply')}
-                </Button>
-              </>
-            )}
-            {allowed('note') && (
-              <>
-                <Textarea
-                  aria-label={t('Internal note')}
-                  value={note}
-                  onChange={(event) => updateDraft('note', event.target.value)}
-                />
+                {!isAdminView && canViewTeam && (
+                  <div className='bg-muted inline-flex items-center rounded-full p-0.5'>
+                    {(['personal', 'team'] as const).map((value) => (
+                      <button
+                        key={value}
+                        type='button'
+                        className={cn(
+                          'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+                          scope === value
+                            ? 'bg-background text-foreground shadow-xs'
+                            : 'text-muted-foreground hover:text-foreground'
+                        )}
+                        onClick={() => {
+                          setScope(value)
+                          setPage(1)
+                        }}
+                      >
+                        {value === 'personal'
+                          ? t('My tickets')
+                          : t('Team tickets')}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className='flex flex-wrap items-center gap-2'>
+                {!isAdminView && (
+                  <Button
+                    type='button'
+                    variant='brand'
+                    size='sm'
+                    className='h-8 rounded-full px-4 shadow-none'
+                    onClick={() => {
+                      setError('')
+                      setCreateOpen(true)
+                    }}
+                  >
+                    <Plus className='size-3.5' aria-hidden='true' />
+                    {t('Create ticket')}
+                  </Button>
+                )}
+                {workspace === 'platform' &&
+                  isRoot &&
+                  list.data?.imagePolicy && (
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      className='h-8 rounded-full px-3.5'
+                      onClick={() => setPolicyOpen(true)}
+                    >
+                      <SlidersHorizontal
+                        className='size-3.5'
+                        aria-hidden='true'
+                      />
+                      {t('Ticket image limits')}
+                    </Button>
+                  )}
+                {isAdminView && canManage && (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    className='h-8 rounded-full px-3.5'
+                    disabled={pending}
+                    onClick={() => void exportTickets()}
+                  >
+                    <Download className='size-3.5' aria-hidden='true' />
+                    {t('Export')}
+                  </Button>
+                )}
                 <Button
                   type='button'
                   variant='outline'
-                  disabled={terminal || pending || note.trim() === ''}
-                  onClick={() => void submitNote()}
+                  size='sm'
+                  className='h-8 rounded-full px-3.5'
+                  disabled={list.isFetching}
+                  onClick={() => void refresh()}
                 >
-                  {t('Internal note')}
+                  <RefreshCw
+                    className={
+                      list.isFetching ? 'size-3.5 animate-spin' : 'size-3.5'
+                    }
+                    aria-hidden='true'
+                  />
+                  {t('Refresh')}
                 </Button>
-              </>
-            )}
-            {detail.data.can_manage && (
-              <>
-                {allowed('assign') && (
-                  <>
-                    <Label htmlFor='ticket-assignee'>
-                      {t('Ticket assignee')}
-                    </Label>
-                    <NativeSelect
-                      id='ticket-assignee'
-                      value={
-                        assignee || String(detail.data.ticket.assignee_id || '')
-                      }
-                      onChange={(event) => setAssignee(event.target.value)}
-                    >
-                      <NativeSelectOption value=''>
-                        {t('Unassigned')}
-                      </NativeSelectOption>
-                      {(detail.data.ticket.assignee_id ?? 0) > 0 &&
-                        !detail.data.assignees?.some(
-                          (handler) =>
-                            handler.id === detail.data.ticket.assignee_id
-                        ) && (
-                          <NativeSelectOption
-                            value={detail.data.ticket.assignee_id}
-                            disabled
-                          >
-                            #{detail.data.ticket.assignee_id}
-                          </NativeSelectOption>
-                        )}
-                      {detail.data.assignees?.map((handler) => (
-                        <NativeSelectOption key={handler.id} value={handler.id}>
-                          {handler.display_name || handler.username} ·{' '}
-                          {handler.username} (#{handler.id})
-                        </NativeSelectOption>
-                      ))}
-                    </NativeSelect>
-                  </>
-                )}
-                <Label htmlFor='ticket-current-priority'>{t('Priority')}</Label>
+              </div>
+            </div>
+
+            {isAdminView && (
+              <div className='flex flex-wrap items-center gap-2'>
+                <Input
+                  aria-label={t('Search ticket no., title, username')}
+                  placeholder={t('Search ticket no., title, username')}
+                  className='h-9 min-w-[200px] flex-1 rounded-full px-4'
+                  value={searchInput}
+                  onChange={(event) => setSearchInput(event.target.value)}
+                />
                 <NativeSelect
-                  id='ticket-current-priority'
-                  disabled={pending}
-                  value={detail.data.ticket.priority || 'normal'}
-                  onChange={(event) =>
-                    void updateStatus('', undefined, event.target.value)
-                  }
+                  aria-label={t('Status')}
+                  className={selectPillClass}
+                  value={statusFilter}
+                  onChange={(event) => {
+                    setStatusFilter(event.target.value)
+                    setPage(1)
+                  }}
                 >
-                  {Object.entries(ticketPriorities).map(([value, label]) => (
-                    <NativeSelectOption value={value} key={value}>
+                  <NativeSelectOption value=''>
+                    {t('All statuses')}
+                  </NativeSelectOption>
+                  {TICKET_STATUS_FILTER_OPTIONS.map((option) => (
+                    <NativeSelectOption key={option.value} value={option.value}>
+                      {t(option.labelKey)}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+                <NativeSelect
+                  aria-label={t('Priority')}
+                  className={selectPillClass}
+                  value={priorityFilter}
+                  onChange={(event) => {
+                    setPriorityFilter(event.target.value)
+                    setPage(1)
+                  }}
+                >
+                  <NativeSelectOption value=''>
+                    {t('All priorities')}
+                  </NativeSelectOption>
+                  {Object.entries(TICKET_PRIORITIES).map(([value, label]) => (
+                    <NativeSelectOption key={value} value={value}>
                       {t(label)}
                     </NativeSelectOption>
                   ))}
                 </NativeSelect>
-                <div className='flex flex-wrap gap-2'>
-                  {allowed('assign') && (
-                    <Button
-                      type='button'
-                      variant='outline'
-                      disabled={pending || !/^\d+$/.test(assignee.trim())}
-                      onClick={() =>
-                        void updateStatus('', Number(assignee.trim()))
-                      }
-                    >
-                      {detail.data.ticket.assignee_id
-                        ? t('Transfer ticket')
-                        : t('Assign ticket')}
-                    </Button>
-                  )}
-                </div>
-              </>
-            )}
-            <div className='flex flex-wrap gap-2'>
-              {Object.entries({
-                pending_assignment: 'Ticket status pending assignment',
-                in_progress: 'Ticket status in progress',
-                waiting_user: 'Ticket status waiting user',
-                waiting_internal: 'Ticket status waiting internal',
-                resolve: detail.data.can_manage
-                  ? 'Ticket status resolved'
-                  : 'Confirm ticket resolved',
-                close: 'Ticket status closed',
-                reopen: detail.data.can_manage
-                  ? 'Reopen ticket'
-                  : 'Request ticket continue',
-              })
-                .filter(([action]) => allowed(action))
-                .map(([action, label]) => (
-                  <Button
-                    key={action}
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => void updateStatus(action)}
-                  >
-                    {t(label)}
-                  </Button>
-                ))}
-            </div>
-            <Label htmlFor='ticket-image-message'>
-              {t('Attach image to message')}
-            </Label>
-            <NativeSelect
-              id='ticket-image-message'
-              disabled={terminal}
-              value={effectiveImageMessage}
-              onChange={(event) => setImageMessage(Number(event.target.value))}
-            >
-              <NativeSelectOption value={0}>
-                {t('Attach directly to ticket')}
-              </NativeSelectOption>
-              {authorMessages.map((m) => (
-                <NativeSelectOption value={m.id} key={m.id}>
-                  #{m.id} ·{' '}
-                  {m.visibility === 'internal' && `${t('Internal note')} · `}
-                  {m.body.slice(0, 60)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <Label htmlFor='ticket-image'>
-              {t('Image')} · {t('Upload limit (bytes)')}{' '}
-              {list.data.imagePolicy?.max_bytes} ·{' '}
-              {t('Images used {{used}}/{{max}}', {
-                used: detail.data.images?.length ?? 0,
-                max: list.data.imagePolicy?.max_count ?? 0,
-              })}
-            </Label>
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Mask API keys, emails, verification codes and payment secrets before uploading. PNG, JPEG and WebP only.'
-              )}
-            </p>
-            <Input
-              id='ticket-image'
-              type='file'
-              multiple
-              accept={TICKET_IMAGE_ACCEPT}
-              disabled={terminal || pending}
-              onChange={(event) => {
-                const files = [...(event.target.files ?? [])]
-                event.target.value = ''
-                if (files.length === 0 || selected === null) return
-                void uploadImages(files)
-              }}
-            />
-          </div>
-        )}
-        {workspace === 'personal' && (
-          <div
-            className='flex flex-col gap-2'
-            onChangeCapture={() => {
-              createVersion.current++
-            }}
-          >
-            <Label htmlFor='ticket-audience'>{t('Ticket audience')}</Label>
-            <NativeSelect
-              id='ticket-audience'
-              value={resolvedAudience ?? ''}
-              disabled={
-                type === 'account' ||
-                Boolean(requestRef) ||
-                relatedKind.startsWith('team_')
-              }
-              onChange={(e) => setAudience(e.target.value)}
-            >
-              {requestRef && !resolvedAudience && (
-                <NativeSelectOption value=''>
-                  {t(
-                    requestAudience.isError
-                      ? 'Failed to load data'
-                      : 'Loading...'
-                  )}
-                </NativeSelectOption>
-              )}
-              <NativeSelectOption value='personal'>
-                {t('Only me and authorized support')}
-              </NativeSelectOption>
-              {list.data?.canViewTeam && (
-                <NativeSelectOption value='team'>
-                  {t('My team and authorized support')}
-                </NativeSelectOption>
-              )}
-            </NativeSelect>
-            <Label htmlFor='ticket-type'>{t('Issue type')}</Label>
-            <NativeSelect
-              id='ticket-type'
-              value={type}
-              onChange={(event) => {
-                setType(event.target.value)
-                if (event.target.value === 'account') {
-                  setAudience('personal')
-                  setRelatedKind('')
-                  setRelated('')
-                }
-              }}
-            >
-              {Object.entries(ticketTypes).map(([value, label]) => (
-                <NativeSelectOption value={value} key={value}>
-                  {t(label)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <Label htmlFor='ticket-priority'>{t('Priority')}</Label>
-            <NativeSelect
-              id='ticket-priority'
-              value={priority}
-              onChange={(event) => setPriority(event.target.value)}
-            >
-              {Object.entries(ticketPriorities).map(([value, label]) => (
-                <NativeSelectOption value={value} key={value}>
-                  {t(label)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <Label htmlFor='ticket-title'>{t('Title')}</Label>
-            <Input
-              id='ticket-title'
-              maxLength={120}
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-            />
-            <Label htmlFor='ticket-body'>{t('Description')}</Label>
-            <Textarea
-              id='ticket-body'
-              value={body}
-              onChange={(event) => setBody(event.target.value)}
-            />
-            <Label htmlFor='ticket-related-kind'>{t('Related business')}</Label>
-            <NativeSelect
-              id='ticket-related-kind'
-              value={relatedKind}
-              onChange={(e) => {
-                const kind = e.target.value
-                setRelatedKind(kind)
-                setRelated('')
-                if (kind.startsWith('team_')) {
-                  setAudience('team')
-                  if (type === 'account') setType('billing')
-                } else if (['topup', 'refund'].includes(kind)) {
-                  setAudience('personal')
-                }
-              }}
-            >
-              <NativeSelectOption value=''>{t('None')}</NativeSelectOption>
-              {Object.entries(ticketRelations)
-                .filter(
-                  ([kind]) =>
-                    !kind.startsWith('team_') || list.data?.canViewTeam
-                )
-                .map(([kind, label]) => (
-                  <NativeSelectOption key={kind} value={kind}>
-                    {t(label)}
+                <NativeSelect
+                  aria-label={t('Type')}
+                  className={selectPillClass}
+                  value={typeFilter}
+                  onChange={(event) => {
+                    setTypeFilter(event.target.value)
+                    setPage(1)
+                  }}
+                >
+                  <NativeSelectOption value=''>
+                    {t('All types')}
                   </NativeSelectOption>
-                ))}
-            </NativeSelect>
-            {relatedKind && (
-              <Input
-                aria-label={t('Business reference')}
-                value={related}
-                onChange={(e) => setRelated(e.target.value)}
-              />
-            )}
-            {Boolean(relatedTickets.data?.length) && (
-              <div className='flex flex-col items-start gap-1'>
-                <p>{t('Open tickets for this reference')}</p>
-                {relatedTickets.data?.map((ticket) => (
+                  {Object.entries(TICKET_TYPES).map(([value, label]) => (
+                    <NativeSelectOption key={value} value={value}>
+                      {t(label)}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+                <Input
+                  aria-label={t('Assignee ID')}
+                  placeholder={t('Assignee ID')}
+                  inputMode='numeric'
+                  className='h-9 w-28 rounded-full px-3.5 sm:w-32'
+                  value={assigneeInput}
+                  onChange={(event) =>
+                    setAssigneeInput(event.target.value.replaceAll(/\D+/g, ''))
+                  }
+                />
+                <Input
+                  type='date'
+                  aria-label={t('Start date')}
+                  className='h-9 w-36 rounded-full px-3.5'
+                  value={dateFrom}
+                  onChange={(event) => {
+                    setDateFrom(event.target.value)
+                    setPage(1)
+                  }}
+                />
+                <Input
+                  type='date'
+                  aria-label={t('End date')}
+                  className='h-9 w-36 rounded-full px-3.5'
+                  value={dateTo}
+                  onChange={(event) => {
+                    setDateTo(event.target.value)
+                    setPage(1)
+                  }}
+                />
+                {hasActiveFilters && (
                   <Button
                     type='button'
-                    variant='link'
-                    key={ticket.id}
-                    onClick={() => {
-                      setScope(ticket.team_shared ? 'team' : 'personal')
-                      selectTicket(ticket.id)
-                    }}
+                    variant='ghost'
+                    size='sm'
+                    className='text-muted-foreground h-9 rounded-full px-3'
+                    onClick={clearFilters}
                   >
-                    #{ticket.id} · {ticket.title}
+                    <X className='size-3.5' aria-hidden='true' />
+                    {t('Reset')}
                   </Button>
-                ))}
+                )}
               </div>
             )}
-            <div className='flex flex-col gap-1'>
-              <Label htmlFor='ticket-create-images'>
-                {t('Attachments (optional)')}
-                {list.data?.imagePolicy &&
-                  ` · ${t('Images used {{used}}/{{max}}', {
-                    used: createFiles.length,
-                    max: list.data.imagePolicy.max_count,
-                  })}`}
-              </Label>
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Mask API keys, emails, verification codes and payment secrets before uploading. PNG, JPEG and WebP only.'
-                )}
-              </p>
-              <Input
-                id='ticket-create-images'
-                type='file'
-                multiple
-                accept={TICKET_IMAGE_ACCEPT}
-                disabled={pending}
-                onChange={(event) => {
-                  const picked = [...(event.target.files ?? [])]
-                  event.target.value = ''
-                  if (picked.length === 0) return
-                  const currentBytes = createFiles.reduce(
-                    (sum, item) => sum + item.file.size,
-                    0
-                  )
-                  const validationError = validateImageBatch(
-                    picked,
-                    createFiles.length,
-                    currentBytes
-                  )
-                  if (validationError) {
-                    setError(validationError)
-                    return
-                  }
-                  setError('')
-                  setCreateFiles((prev) => [
-                    ...prev,
-                    ...picked.map((file, i) => ({
-                      id: `${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`,
-                      file,
-                    })),
-                  ])
-                }}
-              />
-              {createFiles.length > 0 && (
-                <div className='flex flex-col gap-1'>
-                  {createFiles.map((item) => (
-                    <div
-                      key={item.id}
-                      className='flex items-center justify-between gap-2 text-xs'
-                    >
-                      <span className='min-w-0 truncate'>{item.file.name}</span>
-                      <Button
-                        type='button'
-                        size='sm'
-                        variant='ghost'
-                        disabled={pending}
-                        onClick={() =>
-                          setCreateFiles((prev) =>
-                            prev.filter((entry) => entry.id !== item.id)
-                          )
-                        }
-                      >
-                        {t('Remove')}
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <Button
-              type='button'
-              disabled={
-                pending ||
-                title.trim() === '' ||
-                body.trim() === '' ||
-                Boolean(relatedKind && !related.trim()) ||
-                !resolvedAudience
-              }
-              onClick={() => void create()}
-            >
-              {t('New ticket')}
-            </Button>
           </div>
-        )}
-        {error && <p className='text-destructive text-sm'>{error}</p>}
-      </CardContent>
-    </Card>
+
+          {error && (
+            <div className='border-border border-b px-5 py-2.5'>
+              <p role='alert' className='text-destructive text-sm'>
+                {error}
+              </p>
+            </div>
+          )}
+
+          {list.isPending && (
+            <div className='p-8'>
+              <LoadingState />
+            </div>
+          )}
+
+          {list.isError && (
+            <div className='p-8'>
+              <ErrorState onRetry={() => void list.refetch()} />
+            </div>
+          )}
+
+          {!list.isPending && !list.isError && tickets.length === 0 && (
+            <div className='py-12'>
+              <EmptyState title={t('No tickets')} />
+            </div>
+          )}
+
+          {!list.isPending && !list.isError && tickets.length > 0 && (
+            <div className='divide-border divide-y'>
+              {tickets.map((ticket) => {
+                const timestampText = formatTicketShortTime(ticket.created_at)
+                const submitterText =
+                  ticket.username ||
+                  (ticket.user_id > 0 ? `#${ticket.user_id}` : '')
+                const assigneeText = ticket.assignee_id
+                  ? ticket.assignee_username || `#${ticket.assignee_id}`
+                  : ''
+
+                return (
+                  <button
+                    key={ticket.id}
+                    type='button'
+                    className='hover:bg-muted/35 focus-visible:ring-ring flex w-full items-center justify-between gap-4 px-5 py-4 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-inset'
+                    disabled={pending}
+                    onClick={() => selectTicket(ticket.id)}
+                  >
+                    <div className='flex min-w-0 flex-1 flex-col gap-1.5'>
+                      <p className='text-foreground truncate text-[15px] font-medium'>
+                        {ticket.title}
+                      </p>
+                      <p className='text-muted-foreground truncate text-xs'>
+                        <span className='font-mono'>
+                          {formatTicketNumber(ticket)}
+                        </span>
+                        {' · '}
+                        {t(TICKET_TYPES[ticket.type] ?? 'Other')}
+                      </p>
+                      <div className='text-muted-foreground flex flex-wrap items-center gap-2 text-xs'>
+                        <TicketPriorityPill priority={ticket.priority} />
+                        {timestampText && (
+                          <span className='tabular-nums'>{timestampText}</span>
+                        )}
+                        {isAdminView && submitterText && (
+                          <span>{submitterText}</span>
+                        )}
+                        {isAdminView && assigneeText && (
+                          <span className='bg-muted rounded-full px-2 py-0.5 text-[11px]'>
+                            {t('Ticket assignee')}: {assigneeText}
+                          </span>
+                        )}
+                        {!isAdminView && ticket.team_shared && (
+                          <span className='bg-muted rounded-full px-2 py-0.5 text-[11px]'>
+                            {t('Team tickets')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className='shrink-0'>
+                      <TicketStatusPill
+                        status={ticket.status}
+                        assigneeId={ticket.assignee_id}
+                      />
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {!list.isError && (
+            <div className='border-border flex flex-col gap-3 border-t px-5 py-4'>
+              <p className='text-muted-foreground text-center text-xs tabular-nums'>
+                {t('Page {{page}} of {{totalPages}}, {{total}} tickets total', {
+                  page,
+                  totalPages,
+                  total,
+                })}
+              </p>
+              <div className='grid grid-cols-2 gap-3'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  className='text-muted-foreground h-9 w-full rounded-full'
+                  disabled={page <= 1 || list.isFetching}
+                  onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                >
+                  {t('Previous page')}
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  className='text-muted-foreground h-9 w-full rounded-full'
+                  disabled={page >= totalPages || list.isFetching}
+                  onClick={() =>
+                    setPage((prev) => Math.min(totalPages, prev + 1))
+                  }
+                >
+                  {t('Next page')}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!isAdminView && (
+        <TicketCreateDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          userId={userId}
+          canViewTeam={canViewTeam}
+          imagePolicy={list.data?.imagePolicy}
+          pending={pending}
+          error={error}
+          onClearError={() => setError('')}
+          onError={setError}
+          title={title}
+          onTitleChange={setTitle}
+          body={body}
+          onBodyChange={setBody}
+          type={type}
+          onTypeChange={setType}
+          priority={priority}
+          onPriorityChange={setPriority}
+          audience={audience}
+          onAudienceChange={setAudience}
+          relatedKind={relatedKind}
+          onRelatedKindChange={setRelatedKind}
+          related={related}
+          onRelatedChange={setRelated}
+          createFiles={createFiles}
+          onCreateFilesChange={setCreateFiles}
+          onDraftMutated={() => {
+            createVersion.current++
+          }}
+          onJumpToTicket={(ticket) => {
+            setCreateOpen(false)
+            setScope(ticket.team_shared ? 'team' : 'personal')
+            selectTicket(ticket.id)
+          }}
+          onSubmit={createTicket}
+        />
+      )}
+
+      {workspace === 'platform' && isRoot && list.data?.imagePolicy && (
+        <Dialog
+          open={policyOpen}
+          onOpenChange={setPolicyOpen}
+          title={t('Ticket image limits')}
+          contentClassName='sm:max-w-md'
+        >
+          <TicketImagePolicySettings
+            embedded
+            policy={list.data.imagePolicy}
+            onSaved={async () => {
+              await refresh()
+              setPolicyOpen(false)
+            }}
+          />
+        </Dialog>
+      )}
+    </div>
   )
 }

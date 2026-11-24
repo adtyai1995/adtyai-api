@@ -476,19 +476,45 @@ export async function markOwnerCommissionWithdrawalPaid(
 
 export type OwnerEarningLine = {
   id: number
+  user_id?: number
   model_name: string
   group: string
   request_id: string
+  revenue_usd?: string
+  platform_usd?: string
+  markup?: string
   earning_usd: string
   created_at: number
 }
 
-export async function getOwnerEarningLines(): Promise<OwnerEarningLine[]> {
+export async function getOwnerEarningLines(
+  page = 1,
+  pageSize = OWNER_PAGE_SIZE
+): Promise<OwnerEarningLine[]> {
   const res = await api.get<ApiResponse<OwnerEarningLine[]>>(
     `${BASE}/earnings/lines`,
-    { params: { page_size: 20 } }
+    { params: { p: page, page_size: pageSize } }
   )
   return requireServerSuccess(res.data).data ?? []
+}
+
+export type RedeemedOwnerVoucher = {
+  trade_no: string
+  purpose: string
+  amount_usd: string
+  quota: number
+  replayed?: boolean
+}
+
+/** Redeems a platform-issued margin recharge code into the site's margin wallet. */
+export async function redeemOwnerMarginVoucher(
+  code: string
+): Promise<RedeemedOwnerVoucher> {
+  const res = await api.post<ApiResponse<RedeemedOwnerVoucher>>(
+    '/api/adty/vouchers/redeem',
+    { code: code.trim() }
+  )
+  return requireServerSuccess(res.data).data
 }
 
 export type SettlementSummary = Pick<SettlementSheet,'id'|'site_id'|'business_day'>

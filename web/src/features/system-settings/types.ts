@@ -195,8 +195,9 @@ export type ContentSettings = {
   'console_setting.api_info': string
   'console_setting.announcements': string
   'console_setting.faq': string
-  'console_setting.uptime_kuma_base_url': string
   'console_setting.uptime_kuma_groups': string
+  'console_setting.model_probe_interval_minutes': number
+  'console_setting.model_probe_timeout_seconds': number
   'console_setting.api_info_enabled': boolean
   'console_setting.announcements_enabled': boolean
   'console_setting.faq_enabled': boolean

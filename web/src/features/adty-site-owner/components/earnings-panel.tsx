@@ -17,18 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery } from '@tanstack/react-query'
-import type { TFunction } from 'i18next'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
-import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
@@ -38,62 +36,67 @@ import { cn } from '@/lib/utils'
 import {
   downloadExport,
   getOwnerEarningLines,
-  getOwnerEarnings,
-  OWNER_PAGE_SIZE,
   siteOwnerKeys,
   type ExportKind,
+  type OwnerEarningLine,
 } from '../api'
-import { earningKindLabel, isNegativeAmount } from '../lib/site-owner'
-import type { EarningKind, EarningRow } from '../types'
-import { OwnerStatGrid } from './stat-grid'
+import { isNegativeAmount } from '../lib/site-owner'
 
-const EARNING_KINDS: EarningKind[] = [
-  'usage',
-  'refund',
-  'bonus',
-  'bonus_reversal',
-  'trial',
-  'skipped',
-]
+const EARNING_LINES_PAGE_SIZE = 50
+const EMPTY_EARNING_LINES: OwnerEarningLine[] = []
 
-function kindLabel(t: TFunction, kind: EarningKind): string {
-  return earningKindLabel(t, kind)
-}
-
-function reasonLabel(t: TFunction, reason: string): string {
-  if (reason === 'self_use') return t('Suspected self-use')
-  if (reason === 'migration') return t('Suspected move from the main site')
-  return reason
-}
-
-function statusLabel(t: TFunction, status: EarningRow['status']): string {
-  if (status === 'available') return t('Settled')
-  if (status === 'void') return t('Void')
-  return t('Pending')
-}
-
-/** Earnings ledger with balances; negative amounts are shown in red (task 11.6). */
+/**
+ * Single-request earning details (R-33 #1): shows per-request earning lines
+ * with model/request/group filters and CSV exports.
+ */
 export function EarningsPanel() {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
-  const [kind, setKind] = useState('')
-  const query = useQuery({
-    queryKey: siteOwnerKeys.list('earnings', { p: page, kind }),
-    queryFn: () => getOwnerEarnings(page, kind),
-  })
+  const [searchText, setSearchText] = useState('')
+  const [groupFilter, setGroupFilter] = useState('')
   const lines = useQuery({
-    queryKey: siteOwnerKeys.list('earning-lines', {}),
-    queryFn: getOwnerEarningLines,
+    queryKey: siteOwnerKeys.list('earning-lines', {
+      page,
+      pageSize: EARNING_LINES_PAGE_SIZE,
+    }),
+    queryFn: () => getOwnerEarningLines(page, EARNING_LINES_PAGE_SIZE),
   })
   const exporter = useMutation({
     mutationFn: (exportKind: ExportKind) => downloadExport(exportKind),
     onError: (err) => handleServerError(err),
   })
-  const balances = query.data?.balances
+
+  const rawRows = lines.data ?? EMPTY_EARNING_LINES
+  const groupOptions = useMemo(() => {
+    const groups = new Set<string>()
+    for (const row of rawRows) {
+      if (row.group) groups.add(row.group)
+    }
+    return [...groups].sort((a, b) => a.localeCompare(b))
+  }, [rawRows])
+
+  const filteredRows = useMemo(() => {
+    const needle = searchText.trim().toLowerCase()
+    return rawRows.filter((row) => {
+      if (groupFilter && row.group !== groupFilter) {
+        return false
+      }
+      if (!needle) {
+        return true
+      }
+      return (
+        row.model_name.toLowerCase().includes(needle) ||
+        row.request_id.toLowerCase().includes(needle) ||
+        String(row.user_id ?? '').includes(needle)
+      )
+    })
+  }, [rawRows, searchText, groupFilter])
+
+  const hasFilters = searchText.trim() !== '' || groupFilter !== ''
   const money = (value: string | undefined) =>
     value == null || value === '' ? '—' : formatUsd(Number(value), locale)
-  const amountCell = (value: string) => (
+  const amountCell = (value: string | undefined) => (
     <span
       data-negative={isNegativeAmount(value) ? 'true' : undefined}
       className={cn(isNegativeAmount(value) && 'text-destructive')}
@@ -102,103 +105,107 @@ export function EarningsPanel() {
     </span>
   )
 
-  if (query.isError && !query.data) {
-    return <ErrorState onRetry={() => void query.refetch()} />
+  if (lines.isError && !lines.data) {
+    return <ErrorState onRetry={() => void lines.refetch()} />
   }
-  if (query.isPending) {
+  if (lines.isPending) {
     return <LoadingState />
   }
 
   return (
     <div className='flex flex-col gap-4'>
-      {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-      <OwnerStatGrid
-        label={t('Balances')}
-        items={[
-          {
-            label: t('Pending settlement'),
-            value: money(balances?.pending_usd),
-            negative: isNegativeAmount(balances?.pending_usd),
-          },
-          {
-            label: t('Withdrawable'),
-            value: balances?.requires_review
-              ? t(
-                  'Contact the platform to reconcile this historical site account'
-                )
-              : money(balances?.available_usd),
-            negative: isNegativeAmount(balances?.available_usd),
-          },
-          { label: t('Withdrawn'), value: money(balances?.withdrawn_usd) },
-          { label: t('Not counted'), value: money(balances?.skipped_usd) },
-        ]}
-      />
-      <p className='text-muted-foreground text-sm'>
-        {t(
-          'Withdraw site earnings using Earnings wallet withdrawal on this tab. A negative balance cannot be withdrawn.'
-        )}
-      </p>
-      <div className='flex flex-wrap items-center gap-2'>
-        <NativeSelect
-          aria-label={t('Type')}
-          value={kind}
-          onChange={(event) => {
-            setKind(event.target.value)
-            setPage(1)
-          }}
-        >
-          <NativeSelectOption value=''>{t('All types')}</NativeSelectOption>
-          {EARNING_KINDS.map((key) => (
-            <NativeSelectOption key={key} value={key}>
-              {kindLabel(t, key)}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-        {(
-          [
-            ['earnings', t('Export earnings')],
-            ['stats', t('Export report')],
-            ['customers', t('Export customers')],
-          ] as const
-        ).map(([exportKind, label]) => (
-          <Button
-            key={exportKind}
-            size='sm'
-            variant='outline'
-            disabled={exporter.isPending}
-            onClick={() => exporter.mutate(exportKind)}
+      {lines.isError && <ErrorState onRetry={() => void lines.refetch()} />}
+      <div className='flex flex-col gap-1'>
+        <h2 className='text-sm font-medium'>{t('Request earnings')}</h2>
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'Each request shows the model and billing group. Upstream channel names are not shown.'
+          )}
+        </p>
+      </div>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <div className='flex flex-wrap items-center gap-2'>
+          <Input
+            aria-label={t('Filter by model or request ID')}
+            placeholder={t('Filter by model or request ID')}
+            className='w-64'
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+          />
+          <NativeSelect
+            aria-label={t('Filter by group')}
+            value={groupFilter}
+            onChange={(event) => setGroupFilter(event.target.value)}
           >
-            {label}
-          </Button>
-        ))}
+            <NativeSelectOption value=''>{t('All groups')}</NativeSelectOption>
+            {groupOptions.map((group) => (
+              <NativeSelectOption key={group} value={group}>
+                {group}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          {hasFilters && (
+            <Button
+              type='button'
+              size='sm'
+              variant='ghost'
+              onClick={() => {
+                setSearchText('')
+                setGroupFilter('')
+              }}
+            >
+              {t('Clear')}
+            </Button>
+          )}
+        </div>
+        <div className='flex flex-wrap items-center gap-2'>
+          {(
+            [
+              ['earnings', t('Export earnings')],
+              ['stats', t('Export report')],
+              ['customers', t('Export customers')],
+            ] as const
+          ).map(([exportKind, label]) => (
+            <Button
+              key={exportKind}
+              type='button'
+              size='sm'
+              variant='outline'
+              disabled={exporter.isPending}
+              onClick={() => exporter.mutate(exportKind)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
       </div>
       <StaticDataTable
         tableClassName='min-w-[720px]'
-        tableProps={{ 'aria-label': t('Earnings') }}
-        data={query.data?.page.items ?? []}
-        getRowKey={(row) => `${row.day}-${row.user_id}-${row.kind}`}
+        tableProps={{ 'aria-label': t('Request earnings') }}
+        data={filteredRows}
+        getRowKey={(row) => row.id}
         emptyContent={
           <EmptyState className='min-h-32' title={t('No earnings yet')} />
         }
         columns={[
           {
-            id: 'day',
-            header: t('Date'),
-            cell: (row) => row.day.split('+')[0],
+            id: 'time',
+            header: t('Time'),
+            cell: (row) =>
+              row.created_at > 0 ? formatTimestamp(row.created_at) : '—',
           },
-          { id: 'user', header: t('Customer ID'), cell: (row) => row.user_id },
           {
-            id: 'kind',
-            header: t('Type'),
+            id: 'user',
+            header: t('Customer ID'),
+            cell: (row) => (row.user_id ? row.user_id : '—'),
+          },
+          { id: 'model', header: t('Model'), cell: (row) => row.model_name },
+          { id: 'group', header: t('Group'), cell: (row) => row.group || '—' },
+          {
+            id: 'request',
+            header: t('Request'),
             cell: (row) => (
-              <span>
-                {kindLabel(t, row.kind)}
-                {row.reason && (
-                  <span className='text-muted-foreground ml-1 text-xs'>
-                    ({reasonLabel(t, row.reason)})
-                  </span>
-                )}
-              </span>
+              <span className='font-mono text-xs'>{row.request_id || '—'}</span>
             ),
           },
           {
@@ -211,67 +218,32 @@ export function EarningsPanel() {
             header: t('Your earnings'),
             cell: (row) => amountCell(row.earning_usd),
           },
-          {
-            id: 'status',
-            header: t('Status'),
-            cell: (row) => (
-              <StatusBadge
-                label={statusLabel(t, row.status)}
-                variant={row.status === 'available' ? 'success' : 'neutral'}
-              />
-            ),
-          },
-          {
-            id: 'settled',
-            header: t('Settled at'),
-            cell: (row) =>
-              row.settled_at > 0 ? formatTimestamp(row.settled_at) : '—',
-          },
         ]}
       />
-      <PageSwitcher
-        page={page}
-        total={query.data?.page.total ?? 0}
-        pageSize={OWNER_PAGE_SIZE}
-        onPageChange={setPage}
-      />
-      <div className='flex flex-col gap-2'>
-        <h2 className='text-sm font-medium'>{t('Request earnings')}</h2>
-        <p className='text-muted-foreground text-sm'>
-          {t(
-            'Each request shows the model and billing group. Upstream channel names are not shown.'
-          )}
-        </p>
-        <StaticDataTable
-          tableClassName='min-w-[640px]'
-          tableProps={{ 'aria-label': t('Request earnings') }}
-          data={lines.data ?? []}
-          getRowKey={(row) => row.id}
-          emptyContent={
-            <EmptyState className='min-h-24' title={t('No earnings yet')} />
-          }
-          columns={[
-            {
-              id: 'time',
-              header: t('Time'),
-              cell: (row) =>
-                row.created_at > 0 ? formatTimestamp(row.created_at) : '—',
-            },
-            { id: 'model', header: t('Model'), cell: (row) => row.model_name },
-            { id: 'group', header: t('Group'), cell: (row) => row.group },
-            {
-              id: 'request',
-              header: t('Request'),
-              cell: (row) => row.request_id || '—',
-            },
-            {
-              id: 'earning',
-              header: t('Your earnings'),
-              cell: (row) => amountCell(row.earning_usd),
-            },
-          ]}
-        />
-      </div>
+      {(page > 1 || rawRows.length >= EARNING_LINES_PAGE_SIZE) && (
+        <div className='flex items-center gap-2'>
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            disabled={page <= 1 || lines.isFetching}
+            onClick={() => setPage((current) => Math.max(1, current - 1))}
+          >
+            {t('Previous page')}
+          </Button>
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            disabled={
+              rawRows.length < EARNING_LINES_PAGE_SIZE || lines.isFetching
+            }
+            onClick={() => setPage((current) => current + 1)}
+          >
+            {t('Next page')}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

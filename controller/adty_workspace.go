@@ -358,7 +358,26 @@ func GetAdtyTickets(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	list, err := service.SearchAdtyTicketPage(c.GetInt("id"), c.Query("queue"), c.Query("q"), before, page.Page, page.PageSize, adtyRequestedTicketScope(c))
+	assigneeID := 0
+	if rawAssignee := strings.TrimSpace(c.Query("assignee_id")); rawAssignee != "" {
+		parsed, parseErr := strconv.Atoi(rawAssignee)
+		if parseErr != nil || parsed < 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		assigneeID = parsed
+	}
+	filter := service.AdtyTicketSearchFilter{
+		Queue:      c.Query("queue"),
+		Status:     c.Query("status"),
+		Priority:   c.Query("priority"),
+		Type:       c.Query("type"),
+		AssigneeId: assigneeID,
+		DateFrom:   c.Query("date_from"),
+		DateTo:     c.Query("date_to"),
+		Search:     c.Query("q"),
+	}
+	list, err := service.SearchAdtyTicketPageWithFilter(c.GetInt("id"), filter, before, page.Page, page.PageSize, adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return

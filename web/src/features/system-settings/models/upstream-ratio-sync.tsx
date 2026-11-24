@@ -17,19 +17,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckSquare, RefreshCcw } from 'lucide-react'
+import { AlertTriangle, CheckSquare, RefreshCcw, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { CopyButton } from '@/components/copy-button'
 import { ErrorState } from '@/components/error-state'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   buildPricingChanges,
   getModelPricing,
   saveModelPricing,
   invalidateModelPricing,
+  type FailedModelPricingSync,
   type ModelPricingConfig,
   type ModelPricingChange,
 } from '@/features/model-pricing/api'
@@ -138,6 +143,10 @@ export function UpstreamRatioSync() {
   )
   const [preview, setPreview] = useState<SyncPreview | null>(null)
   const [loadingBaseline, setLoadingBaseline] = useState(false)
+  const [syncFailureReport, setSyncFailureReport] = useState<{
+    updatedCount: number
+    failedModels: FailedModelPricingSync[]
+  } | null>(null)
   const { data: channelsData } = useQuery({
     queryKey: ['upstream-channels'],
     queryFn: async () => requireServerSuccess(await getUpstreamChannels()),
@@ -200,6 +209,7 @@ export function UpstreamRatioSync() {
       setPrices({})
       setDifferences({})
       setSelections({})
+      setSyncFailureReport(null)
     },
     onSuccess: (response) => {
       const errors = response.data.test_results.filter(
@@ -228,22 +238,67 @@ export function UpstreamRatioSync() {
   })
   const syncMutation = useMutation({
     mutationFn: async (confirmed: SyncPreview) => {
-      await saveModelPricing(confirmed.changes)
-      return confirmed.resolutions
+      const result = await saveModelPricing(confirmed.changes, {
+        partial: true,
+      })
+      return { confirmed, result }
     },
-    onSuccess: async (saved) => {
-      setPrices((previous) =>
-        Object.fromEntries(
-          Object.entries(previous).map(([name, row]) => [
-            name,
-            { ...row, current: saved[name] ?? row.current },
-          ])
+    onSuccess: async ({ confirmed, result }) => {
+      const failedModels = result.failed_models ?? []
+      const failedSet = new Set(failedModels.map((item) => item.model_name))
+      const updatedModels = Array.isArray(result.updated_models)
+        ? result.updated_models
+        : Object.keys(confirmed.resolutions).filter(
+            (name) => !failedSet.has(name)
+          )
+      const updatedSet = new Set(updatedModels)
+      const updatedCount = result.updated_count ?? updatedSet.size
+      const failedCount = result.failed_count ?? failedModels.length
+
+      if (updatedSet.size > 0) {
+        setPrices((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).map(([name, row]) => [
+              name,
+              updatedSet.has(name) && confirmed.resolutions[name]
+                ? { ...row, current: confirmed.resolutions[name] }
+                : row,
+            ])
+          )
         )
-      )
-      setSelections({})
+      }
+
+      setSelections((previous) => {
+        const next = { ...previous }
+        for (const name of updatedSet) {
+          delete next[name]
+        }
+        return next
+      })
+
       setConflictDialogOpen(false)
       setPricingBaseline(null)
-      toast.success(t('Prices synced successfully'))
+
+      if (failedCount === 0) {
+        setSyncFailureReport(null)
+        toast.success(
+          t('{{count}} models synced', {
+            count: updatedCount,
+          })
+        )
+      } else {
+        setSyncFailureReport({
+          updatedCount,
+          failedModels,
+        })
+        toast.warning(
+          t('{{updated}} synced, {{failed}} failed', {
+            updated: updatedCount,
+            failed: failedCount,
+          })
+        )
+      }
+
       await invalidateModelPricing(queryClient)
       try {
         setPricingBaseline(await getModelPricing())
@@ -275,6 +330,7 @@ export function UpstreamRatioSync() {
     fetchMutation.reset()
     setPricingBaseline(null)
     setSelections({})
+    setSyncFailureReport(null)
     syncMutation.reset()
     try {
       setPricingBaseline(await getModelPricing())
@@ -385,6 +441,13 @@ export function UpstreamRatioSync() {
   const selectedModels = Object.keys(selections)
   const batchAdjustmentDisabled =
     isLoading || selectedModels.length === 0 || rate === null
+  const failureReportText = useMemo(() => {
+    if (!syncFailureReport?.failedModels.length) return ''
+    return syncFailureReport.failedModels
+      .map((item) => `${item.model_name}: ${item.error}`)
+      .join('\n')
+  }, [syncFailureReport])
+
   return (
     <div className='flex h-full min-h-0 flex-col gap-3'>
       <div className='flex shrink-0 flex-wrap items-center gap-2'>
@@ -404,6 +467,68 @@ export function UpstreamRatioSync() {
             : t('A valid site exchange rate is required.')}
         </span>
       </div>
+      {syncFailureReport && syncFailureReport.failedModels.length > 0 && (
+        <Card className='border-warning/40 bg-warning/5 shrink-0 gap-2 rounded-[14px] py-3 shadow-none'>
+          <CardHeader className='flex flex-row flex-wrap items-center justify-between gap-2 px-4 py-0'>
+            <div className='flex flex-wrap items-center gap-2'>
+              <AlertTriangle
+                className='text-warning size-4 shrink-0'
+                aria-hidden='true'
+              />
+              <CardTitle className='text-sm'>
+                {t('Sync Failure Report')}
+              </CardTitle>
+              <Badge variant='outline' className='font-mono text-[11px]'>
+                {t('{{updated}} synced, {{failed}} failed', {
+                  updated: syncFailureReport.updatedCount,
+                  failed: syncFailureReport.failedModels.length,
+                })}
+              </Badge>
+            </div>
+            <div className='flex items-center gap-1.5'>
+              <CopyButton
+                value={failureReportText}
+                variant='outline'
+                size='sm'
+                className='h-7 gap-1.5 px-2.5 text-xs'
+                iconClassName='size-3.5'
+                tooltip={t('Copy Failures')}
+              >
+                {t('Copy Failures')}
+              </CopyButton>
+              <Button
+                type='button'
+                variant='ghost'
+                size='sm'
+                className='h-7 gap-1 px-2 text-xs'
+                onClick={() => setSyncFailureReport(null)}
+              >
+                <X className='size-3.5' aria-hidden='true' />
+                {t('Dismiss')}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className='px-4 py-0'>
+            <ScrollArea className='bg-background/80 max-h-44 rounded-lg border'>
+              <div className='divide-border divide-y'>
+                {syncFailureReport.failedModels.map((item) => (
+                  <div
+                    key={`${item.model_name}:${item.error}`}
+                    className='flex flex-col gap-0.5 px-3 py-2 text-xs sm:flex-row sm:items-baseline sm:justify-between sm:gap-4'
+                  >
+                    <span className='shrink-0 font-mono font-medium'>
+                      {item.model_name}
+                    </span>
+                    <span className='text-destructive min-w-0 break-words sm:text-right'>
+                      {item.error}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      )}
       <div className='min-h-0 flex-1'>
         {fetchMutation.isError ? (
           <ErrorState

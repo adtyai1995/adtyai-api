@@ -52,7 +52,16 @@ import {
   type SortOption,
   type ViewMode,
 } from '../constants'
-import type { PricingModel, PricingVendor, TokenUnit } from '../types'
+import {
+  formatEffectiveGroupRatio,
+  resolvePricingGroupName,
+} from '../lib/model-helpers'
+import type {
+  PricingModel,
+  PricingUsableGroupValue,
+  PricingVendor,
+  TokenUnit,
+} from '../types'
 import { PricingSidebar } from './pricing-sidebar'
 import { SearchBar } from './search-bar'
 
@@ -85,6 +94,7 @@ export interface PricingToolbarProps {
   vendors: PricingVendor[]
   groups: string[]
   groupRatios?: Record<string, number>
+  usableGroup?: Record<string, PricingUsableGroupValue>
   tags: string[]
   models: PricingModel[]
   hasActiveFilters: boolean
@@ -99,10 +109,19 @@ export function PricingToolbar(props: PricingToolbarProps) {
   const sortLabels = getSortLabels(t)
   const hasSearch =
     props.searchValue !== undefined && props.onSearchChange !== undefined
-  const activeGroupLabel =
-    props.groupFilter === FILTER_ALL
+  const getGroupLabel = (group: string) =>
+    group === FILTER_ALL
       ? t('All Groups')
-      : groupDisplay.name(props.groupFilter)
+      : resolvePricingGroupName(
+          group,
+          groupDisplay.name(group),
+          props.usableGroup
+        )
+  const activeGroupLabel = getGroupLabel(props.groupFilter)
+  const activeGroupRatio =
+    props.groupFilter === FILTER_ALL
+      ? undefined
+      : formatEffectiveGroupRatio(props.groupRatios?.[props.groupFilter])
 
   return (
     <div className='bg-card rounded-[14px] border'>
@@ -149,31 +168,45 @@ export function PricingToolbar(props: PricingToolbarProps) {
               <span className='min-w-0 truncate font-medium'>
                 {activeGroupLabel}
               </span>
+              {activeGroupRatio && (
+                <span className='bg-muted text-muted-foreground shrink-0 rounded px-1 py-0.5 font-mono text-[11px]'>
+                  {activeGroupRatio}
+                </span>
+              )}
               <ChevronDown className='text-muted-foreground/70 size-3.5 shrink-0' />
             </DropdownMenuTrigger>
-            <DropdownMenuContent align='start' className='w-52'>
+            <DropdownMenuContent align='start' className='w-60'>
               <DropdownMenuGroup>
-                {[FILTER_ALL, ...props.groups].map((group) => (
-                  <DropdownMenuItem
-                    key={group}
-                    onClick={() => props.onGroupChange(group)}
-                    className='gap-2'
-                  >
-                    <Check
-                      className={cn(
-                        'size-4 shrink-0',
-                        props.groupFilter === group
-                          ? 'opacity-100'
-                          : 'opacity-0'
+                {[FILTER_ALL, ...props.groups].map((group) => {
+                  const ratioLabel =
+                    group === FILTER_ALL
+                      ? undefined
+                      : formatEffectiveGroupRatio(props.groupRatios?.[group])
+                  return (
+                    <DropdownMenuItem
+                      key={group}
+                      onClick={() => props.onGroupChange(group)}
+                      className='gap-2'
+                    >
+                      <Check
+                        className={cn(
+                          'size-4 shrink-0',
+                          props.groupFilter === group
+                            ? 'opacity-100'
+                            : 'opacity-0'
+                        )}
+                      />
+                      <span className='min-w-0 flex-1 truncate'>
+                        {getGroupLabel(group)}
+                      </span>
+                      {ratioLabel && (
+                        <span className='text-muted-foreground shrink-0 font-mono text-xs tabular-nums'>
+                          {ratioLabel}
+                        </span>
                       )}
-                    />
-                    <span className='truncate'>
-                      {group === FILTER_ALL
-                        ? t('All Groups')
-                        : groupDisplay.name(group)}
-                    </span>
-                  </DropdownMenuItem>
-                ))}
+                    </DropdownMenuItem>
+                  )
+                })}
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -262,6 +295,49 @@ export function PricingToolbar(props: PricingToolbarProps) {
         </div>
       </div>
 
+      {props.groups.length > 0 && (
+        <div
+          role='group'
+          aria-label={t('Groups')}
+          className='border-border/70 flex flex-wrap items-center gap-1.5 border-t px-2.5 py-2'
+        >
+          {[FILTER_ALL, ...props.groups].map((group) => {
+            const active = props.groupFilter === group
+            const label = getGroupLabel(group)
+            const ratioLabel =
+              group === FILTER_ALL
+                ? undefined
+                : formatEffectiveGroupRatio(props.groupRatios?.[group])
+            return (
+              <Button
+                key={group}
+                type='button'
+                variant={active ? 'secondary' : 'outline'}
+                size='sm'
+                onClick={() => props.onGroupChange(group)}
+                aria-pressed={active}
+                className='h-7 max-w-full gap-1.5 px-2.5 text-xs'
+                title={label}
+              >
+                <span className='truncate'>{label}</span>
+                {ratioLabel && (
+                  <span
+                    className={cn(
+                      'rounded px-1.5 py-0.5 font-mono text-[11px] tabular-nums',
+                      active
+                        ? 'bg-background text-foreground'
+                        : 'bg-muted text-muted-foreground'
+                    )}
+                  >
+                    {ratioLabel}
+                  </span>
+                )}
+              </Button>
+            )
+          })}
+        </div>
+      )}
+
       <Sheet open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen}>
         <SheetContent
           side='left'
@@ -288,6 +364,7 @@ export function PricingToolbar(props: PricingToolbarProps) {
               vendors={props.vendors}
               groups={props.groups}
               groupRatios={props.groupRatios}
+              usableGroup={props.usableGroup}
               tags={props.tags}
               models={props.models}
               hasActiveFilters={props.hasActiveFilters}

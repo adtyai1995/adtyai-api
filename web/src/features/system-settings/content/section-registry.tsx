@@ -94,11 +94,14 @@ const CONTENT_SECTIONS = [
   },
   {
     id: 'uptime-kuma',
-    titleKey: 'Uptime Kuma',
+    titleKey: 'Model Connectivity Monitor',
     build: (settings: ContentSettings) => (
       <UptimeKumaSection
         enabled={settings['console_setting.uptime_kuma_enabled']}
-        baseUrl={settings['console_setting.uptime_kuma_base_url']}
+        intervalMinutes={
+          settings['console_setting.model_probe_interval_minutes']
+        }
+        timeoutSeconds={settings['console_setting.model_probe_timeout_seconds']}
         data={settings['console_setting.uptime_kuma_groups']}
       />
     ),

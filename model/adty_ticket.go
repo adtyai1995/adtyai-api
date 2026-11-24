@@ -1,6 +1,11 @@
 package model
 
-import "gorm.io/gorm"
+import (
+	"fmt"
+	"time"
+
+	"gorm.io/gorm"
+)
 
 const (
 	AdtyTicketNew               = "new"
@@ -25,27 +30,42 @@ const (
 
 // AdtyTicket is one support case. Related fields are investigation hints, never a full key or upstream secret.
 type AdtyTicket struct {
-	Id             int64  `json:"id"`
-	SiteId         int    `json:"site_id" gorm:"index"`
-	HandlingSiteId *int   `json:"handling_site_id" gorm:"index"`
-	UserId         int    `json:"user_id" gorm:"index"`
-	ContactId      int    `json:"-"`
-	RelatedAt      int64  `json:"related_at,omitempty"`
-	TeamShared     bool   `json:"team_shared" gorm:"default:false"`
-	TeamId         int64  `json:"team_id" gorm:"index"`
-	Type           string `json:"type" gorm:"type:varchar(32)"`
-	Title          string `json:"title" gorm:"type:varchar(120)"`
-	Priority       string `json:"priority" gorm:"type:varchar(16);index"`
-	Status         string `json:"status" gorm:"type:varchar(24);index"`
-	AssigneeId     int    `json:"assignee_id" gorm:"index"`
-	RelatedKind    string `json:"related_kind" gorm:"type:varchar(32)"`
-	RelatedRef     string `json:"related_ref" gorm:"type:varchar(64)"`
-	RelatedModel   string `json:"related_model" gorm:"type:varchar(80)"`
-	RelatedGroup   string `json:"related_group" gorm:"type:varchar(64)"`
-	RelatedError   string `json:"related_error" gorm:"type:varchar(64)"`
+	Id               int64  `json:"id"`
+	SiteId           int    `json:"site_id" gorm:"index"`
+	HandlingSiteId   *int   `json:"handling_site_id" gorm:"index"`
+	UserId           int    `json:"user_id" gorm:"index"`
+	ContactId        int    `json:"-"`
+	RelatedAt        int64  `json:"related_at,omitempty"`
+	TeamShared       bool   `json:"team_shared" gorm:"default:false"`
+	TeamId           int64  `json:"team_id" gorm:"index"`
+	Type             string `json:"type" gorm:"type:varchar(32)"`
+	Title            string `json:"title" gorm:"type:varchar(120)"`
+	Priority         string `json:"priority" gorm:"type:varchar(16);index"`
+	Status           string `json:"status" gorm:"type:varchar(24);index"`
+	AssigneeId       int    `json:"assignee_id" gorm:"index"`
+	RelatedKind      string `json:"related_kind" gorm:"type:varchar(32)"`
+	RelatedRef       string `json:"related_ref" gorm:"type:varchar(64)"`
+	RelatedModel     string `json:"related_model" gorm:"type:varchar(80)"`
+	RelatedGroup     string `json:"related_group" gorm:"type:varchar(64)"`
+	RelatedError     string `json:"related_error" gorm:"type:varchar(64)"`
 	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt        int64  `json:"updated_at" gorm:"autoUpdateTime"`
 	InitialMessageId int64  `json:"initial_message_id,omitempty" gorm:"-"`
+	TicketNo         string `json:"ticket_no,omitempty" gorm:"-"`
+	Username         string `json:"username,omitempty" gorm:"-"`
+	AssigneeUsername string `json:"assignee_username,omitempty" gorm:"-"`
+}
+
+// FormatAdtyTicketNo returns a deterministic human-readable ticket code such as ADTY2026-000001.
+func FormatAdtyTicketNo(id int64, createdAt int64) string {
+	if id <= 0 {
+		return ""
+	}
+	year := time.Now().Year()
+	if createdAt > 0 {
+		year = time.Unix(createdAt, 0).Year()
+	}
+	return fmt.Sprintf("ADTY%d-%06d", year, id)
 }
 
 func (t AdtyTicket) HandlingSite() int {

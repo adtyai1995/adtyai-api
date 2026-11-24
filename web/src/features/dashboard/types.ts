@@ -190,6 +190,9 @@ export interface UptimeModelStatus {
   status: number
   statusLabel: string
   uptime: number | null
+  avgPingMs?: number | null
+  lastCheckedAt?: string | number | null
+  lastMessage?: string | null
   heartbeats: UptimeHeartbeat[]
 }
 
@@ -197,18 +200,34 @@ export interface UptimeGroupResult {
   groupId?: string
   categoryName: string
   description?: string
-  monitors: UptimeMonitor[]
+  monitors?: UptimeMonitor[]
   models?: UptimeModelStatus[]
 }
 
 export interface UptimeKumaGroupConfig {
   groupId?: string
   categoryName: string
-  url?: string
-  slug: string
+  enabled?: boolean
   description?: string
   models?: string[]
-  monitorMap?: Record<string, string>
+}
+
+export interface UptimeProbeRequest {
+  group_id?: string
+  model?: string
+}
+
+export interface UptimeProbeResponseData {
+  probed?: number
+  total?: number
+  up?: number
+  down?: number
+  unknown?: number
+  skipped?: number
+  checked_at?: number
+  group_id?: string
+  duration_ms?: number
+  results?: UptimeGroupResult[]
 }
 
 // ============================================================================

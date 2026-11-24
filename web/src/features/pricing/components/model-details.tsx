@@ -71,9 +71,11 @@ import {
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
 import {
+  formatGroupRatioMultiplier,
   getAvailableGroups,
   getConfiguredGroupRatio,
   isTokenBasedModel,
+  resolvePricingGroupName,
 } from '../lib/model-helpers'
 import { withPluginPricing } from '../lib/plugin-pricing'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
@@ -91,14 +93,19 @@ import {
   pricingDisplayFallbackKey,
 } from '../lib/task-price-display'
 import {
-  computeAveragePing,
   formatUptimePercentage,
   getConnectivityBadgeVariant,
   getConnectivityStatusLabelKey,
   getConnectivityTextColorClass,
+  resolveModelPingMs,
   resolveModelUptimeForPricing,
 } from '../lib/uptime'
-import type { PriceType, PricingModel, TokenUnit } from '../types'
+import type {
+  PriceType,
+  PricingModel,
+  PricingUsableGroupValue,
+  TokenUnit,
+} from '../types'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelHeartbeatBars } from './model-connectivity-badge'
@@ -233,7 +240,7 @@ function OverviewSummaryGrid(props: {
       resolveModelUptimeForPricing(groups, props.model, props.selectedGroup),
     [groups, props.model, props.selectedGroup]
   )
-  const avgPing = resolved ? computeAveragePing(resolved.heartbeats) : null
+  const avgPing = resolved ? resolveModelPingMs(resolved) : null
 
   return (
     <div className='bg-muted/20 overflow-hidden rounded-lg border'>
@@ -317,7 +324,10 @@ function CatalogInfoCell(props: { label: string; children: React.ReactNode }) {
   )
 }
 
-function ModelBackendProviderSection(props: { model: PricingModel }) {
+function ModelBackendProviderSection(props: {
+  model: PricingModel
+  usableGroup?: Record<string, PricingUsableGroupValue>
+}) {
   const { t } = useTranslation()
   const groupDisplay = useGroupDisplay()
   const model = props.model
@@ -343,7 +353,15 @@ function ModelBackendProviderSection(props: { model: PricingModel }) {
   if (groups.length > 0) {
     cells.push(
       <CatalogInfoCell key='groups' label={t('Groups')}>
-        <CatalogPillList items={groups.map(groupDisplay.name)} />
+        <CatalogPillList
+          items={groups.map((group) =>
+            resolvePricingGroupName(
+              group,
+              groupDisplay.name(group),
+              props.usableGroup
+            )
+          )}
+        />
       </CatalogInfoCell>
     )
   }
@@ -376,8 +394,16 @@ function ModelBackendProviderSection(props: { model: PricingModel }) {
   )
 }
 
-function ModelBackendDetailsSection(props: { model: PricingModel }) {
-  return <ModelBackendProviderSection model={props.model} />
+function ModelBackendDetailsSection(props: {
+  model: PricingModel
+  usableGroup?: Record<string, PricingUsableGroupValue>
+}) {
+  return (
+    <ModelBackendProviderSection
+      model={props.model}
+      usableGroup={props.usableGroup}
+    />
+  )
 }
 
 // ----------------------------------------------------------------------------
@@ -776,13 +802,13 @@ function getDynamicFormattedPricesByTier(
 type GroupPricingSectionProps = {
   model: PricingModel
   groupRatio: Record<string, number>
-  usableGroup: Record<string, { desc: string; ratio: number }>
+  usableGroup: Record<string, PricingUsableGroupValue>
   autoGroups: string[]
   priceRate: number
   usdExchangeRate: number
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
-  hideRatio?: boolean
+  hideRawExpression?: boolean
 }
 
 function GroupPricingSection(props: GroupPricingSectionProps) {
@@ -843,12 +869,18 @@ function ProviderGroupPricingSection(
   props: GroupPricingSectionProps & { hideTitle?: boolean }
 ) {
   const { t, i18n } = useTranslation()
+  const groupDisplay = useGroupDisplay()
   const showRechargePrice = props.showRechargePrice ?? false
   const effectiveGroupRatio = props.model.group_ratio ?? props.groupRatio
 
   const availableGroups = useMemo(
-    () => getAvailableGroups(props.model, props.usableGroup || {}),
-    [props.model, props.usableGroup]
+    () =>
+      getAvailableGroups(
+        props.model,
+        props.usableGroup || {},
+        effectiveGroupRatio
+      ),
+    [effectiveGroupRatio, props.model, props.usableGroup]
   )
 
   const isTokenBased = isTokenBasedModel(props.model)
@@ -913,12 +945,12 @@ function ProviderGroupPricingSection(
           <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
           <div className='rounded-lg border border-amber-200/70 bg-amber-50/70 p-3 dark:border-amber-500/20 dark:bg-amber-500/10'>
             <div className='text-sm font-medium text-amber-800 dark:text-amber-200'>
-              {props.hideRatio
+              {props.hideRawExpression
                 ? t('Dynamic Pricing')
                 : t('Special billing expression')}
             </div>
             <p className='text-muted-foreground mt-1 text-xs'>
-              {props.hideRatio
+              {props.hideRawExpression
                 ? t(
                     'Billed dynamically based on actual usage and site retail pricing'
                   )
@@ -929,7 +961,7 @@ function ProviderGroupPricingSection(
                     )
                   )}
             </p>
-            {!props.hideRatio && (
+            {!props.hideRawExpression && (
               <div className='mt-3'>
                 <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase'>
                   {t('Raw expression')}
@@ -990,12 +1022,18 @@ function ProviderGroupPricingSection(
             return (
               <div key={group} className='overflow-hidden rounded-lg border'>
                 <div className='bg-muted/20 flex items-center justify-between gap-3 border-b px-3 py-2'>
-                  <GroupBadge group={group} size='sm' />
-                  {!props.hideRatio && (
-                    <span className='text-muted-foreground font-mono text-xs'>
-                      {ratio}x
-                    </span>
-                  )}
+                  <GroupBadge
+                    group={group}
+                    label={resolvePricingGroupName(
+                      group,
+                      groupDisplay.name(group),
+                      props.usableGroup
+                    )}
+                    size='sm'
+                  />
+                  <span className='text-muted-foreground font-mono text-xs tabular-nums'>
+                    {formatGroupRatioMultiplier(ratio)}
+                  </span>
                 </div>
                 <StaticDataTable
                   className='rounded-none border-0'
@@ -1187,20 +1225,29 @@ function ProviderGroupPricingSection(
             header: t('Group'),
             className: thClass,
             cellClassName: 'py-2.5',
-            cell: (group) => <GroupBadge group={group} size='sm' />,
+            cell: (group) => (
+              <GroupBadge
+                group={group}
+                label={resolvePricingGroupName(
+                  group,
+                  groupDisplay.name(group),
+                  props.usableGroup
+                )}
+                size='sm'
+              />
+            ),
           },
-          ...(props.hideRatio
-            ? []
-            : [
-                {
-                  id: 'ratio',
-                  header: t('Ratio'),
-                  className: thClass,
-                  cellClassName: 'text-muted-foreground py-2.5 font-mono',
-                  cell: (group: string) =>
-                    `${getConfiguredGroupRatio(effectiveGroupRatio, group)}x`,
-                },
-              ]),
+          {
+            id: 'ratio',
+            header: t('Ratio'),
+            className: thClass,
+            cellClassName:
+              'text-muted-foreground py-2.5 font-mono tabular-nums',
+            cell: (group: string) =>
+              formatGroupRatioMultiplier(
+                getConfiguredGroupRatio(effectiveGroupRatio, group)
+              ),
+          },
           ...(isTokenBased
             ? [
                 {
@@ -1262,7 +1309,7 @@ const TAB_META: Record<
 export interface ModelDetailsContentProps {
   model: PricingModel
   groupRatio: Record<string, number>
-  usableGroup: Record<string, { desc: string; ratio: number }>
+  usableGroup: Record<string, PricingUsableGroupValue>
   endpointMap: Record<string, { path?: string; method?: string }>
   autoGroups: string[]
   priceRate: number
@@ -1359,11 +1406,14 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
               usdExchangeRate={props.usdExchangeRate}
               tokenUnit={props.tokenUnit}
               showRechargePrice={showRechargePrice}
-              hideRatio={isSubsite}
+              hideRawExpression={isSubsite}
             />
           </section>
 
-          <ModelBackendDetailsSection model={props.model} />
+          <ModelBackendDetailsSection
+            model={props.model}
+            usableGroup={props.usableGroup}
+          />
         </TabsContent>
 
         <TabsContent value='performance' className='outline-none'>

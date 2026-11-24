@@ -78,6 +78,9 @@ export const SITE_OWNER_EARNINGS_BADGE_KINDS = [
   'site_invite_commissions_pending_coverage',
 ] as const
 
+export const SITE_OWNER_COMMISSIONS_BADGE_KINDS =
+  SITE_OWNER_EARNINGS_BADGE_KINDS
+
 export const SITE_OWNER_STAFF_BADGE_KINDS = ['staff_balance_pending'] as const
 
 export const SITE_OWNER_BADGE_KINDS = [
@@ -131,12 +134,10 @@ export function getSidebarBadgeKeysForPath(
     return OWNER_TICKET_BADGE_KINDS
   }
   if (
-    normalized === '/site-owner/earnings' ||
-    normalized.startsWith('/site-owner/earnings/') ||
     normalized === '/site-owner/commissions' ||
     normalized.startsWith('/site-owner/commissions/')
   ) {
-    return SITE_OWNER_EARNINGS_BADGE_KINDS
+    return SITE_OWNER_COMMISSIONS_BADGE_KINDS
   }
   if (
     normalized === '/site-owner/staff' ||
@@ -283,19 +284,19 @@ export function clearSidebarBadgesForPath(
   void markSidebarBadgesSeen(queryClient, keys)
 }
 
+const EMPTY_SIDEBAR_BADGE_COUNTS: SidebarBadgeCounts = {}
+
 /**
  * Build the sidebar cue for one menu item. Different duties are never summed.
- * A failed or stale query must not be shown as a successful number.
+ * A failed or unavailable query silently falls back to no badge rather than
+ * rendering an error text pill in the sidebar (R-33 #3).
  */
 export function sidebarBadgeText(
   counts: SidebarBadgeCounts | undefined,
   kinds: readonly string[],
-  options: { failed?: boolean; mixedLabel: string; failedLabel: string }
+  options: { failed?: boolean; mixedLabel: string; failedLabel?: string }
 ): string | undefined {
-  if (options.failed) {
-    return options.failedLabel
-  }
-  if (!counts) {
+  if (options.failed || !counts) {
     return undefined
   }
   const values = kinds
@@ -311,12 +312,12 @@ export function sidebarBadgeText(
 }
 
 export function useSidebarBadges(): {
-  counts: SidebarBadgeCounts | undefined
+  counts: SidebarBadgeCounts
   failed: boolean
   badge: (
     kinds: readonly string[],
     mixedLabel: string,
-    failedLabel: string
+    _failedLabel?: string
   ) => string | undefined
 } {
   const userID = useAuthStore((state) => state.auth.user?.id ?? 0)
@@ -329,16 +330,18 @@ export function useSidebarBadges(): {
     refetchInterval: SIDEBAR_BADGE_EXISTING_REFETCH_MS,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
-    retry: false,
+    retry: 1,
     meta: { errorToast: false },
   })
-  // LIST-012: after a failed refetch, cached rows must not be shown as success.
+  // On error or before first success, expose empty counts silently without
+  // showing stale cached numbers or error text pills in the sidebar.
   const failed = query.isError
-  const counts = failed || !query.isSuccess ? undefined : query.data
+  const counts =
+    failed || !query.isSuccess ? EMPTY_SIDEBAR_BADGE_COUNTS : query.data
   return {
     counts,
     failed,
-    badge: (kinds, mixedLabel, failedLabel) =>
-      sidebarBadgeText(counts, kinds, { failed, mixedLabel, failedLabel }),
+    badge: (kinds, mixedLabel) =>
+      sidebarBadgeText(counts, kinds, { failed, mixedLabel }),
   }
 }

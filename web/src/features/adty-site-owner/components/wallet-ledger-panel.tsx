@@ -30,10 +30,10 @@ import { marginCycleSummary } from '../lib/site-owner'
 import { OwnerStatGrid } from './stat-grid'
 
 /**
- * Earnings and margin wallet balances with every movement behind them. The
- * operating wallet is platform bookkeeping and is never shown to the owner.
+ * Earnings and margin wallet summary cards. The operating wallet is platform
+ * bookkeeping and is never shown to the owner.
  */
-export function WalletLedgerPanel() {
+export function OwnerWalletBalances() {
   const { t } = useTranslation()
   const wallets = useQuery({
     queryKey: siteOwnerKeys.list('wallets', {}),
@@ -107,6 +107,19 @@ export function WalletLedgerPanel() {
           })}
         />
       )}
+    </section>
+  )
+}
+
+/**
+ * Earnings and margin wallet balances with every movement behind them. The
+ * operating wallet is platform bookkeeping and is never shown to the owner.
+ */
+export function WalletLedgerPanel() {
+  const { t } = useTranslation()
+  return (
+    <section className='flex flex-col gap-4'>
+      <OwnerWalletBalances />
       <SiteWalletLedger
         label={t('Wallet ledger')}
         queryKey={siteOwnerKeys.list('wallet-ledger', {})}

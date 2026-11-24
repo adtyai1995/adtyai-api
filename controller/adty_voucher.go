@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -36,6 +37,7 @@ func PostAdtySiteVoucher(c *gin.Context) {
 	var body struct {
 		Purpose         string `json:"purpose"`
 		AmountUSD       string `json:"amount_usd"`
+		Count           int    `json:"count"`
 		Source          string `json:"source"`
 		Reason          string `json:"reason"`
 		IntentKey       string `json:"intent_key"`
@@ -63,9 +65,9 @@ func PostAdtySiteVoucher(c *gin.Context) {
 	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherIssue, site.Id) {
 		return
 	}
-	issued, err := service.IssueAdtyVoucher(service.AdtyVoucherIssueInput{
+	issued, err := service.IssueAdtyVoucherBatch(service.AdtyVoucherIssueInput{
 		IssuerId: c.GetInt("id"), Purpose: body.Purpose, SiteId: site.Id, AmountUSD: amount,
-		Source: body.Source, Reason: body.Reason, IntentKey: intentKey,
+		Source: body.Source, Reason: body.Reason, IntentKey: intentKey, Count: body.Count,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrAdtyVoucherIntentConflict) || errors.Is(err, model.ErrAdtyIdempotencyConflict) {
@@ -86,6 +88,7 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 		OwnerUserId       int    `json:"owner_user_id"`
 		OwnerId           int    `json:"owner_id"`
 		AmountUSD         string `json:"amount_usd"`
+		Count             int    `json:"count"`
 		Reason            string `json:"reason"`
 		IntentKey         string `json:"intent_key"`
 		IdempotencyKey    string `json:"idempotency_key"`
@@ -114,9 +117,9 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}
-	issued, err := service.IssueAdtyVoucher(service.AdtyVoucherIssueInput{
+	issued, err := service.IssueAdtyVoucherBatch(service.AdtyVoucherIssueInput{
 		IssuerId: c.GetInt("id"), Purpose: body.Purpose, SiteId: body.SiteId,
-		DesignatedOwnerId: designatedOwnerID, AmountUSD: amount, Reason: body.Reason, IntentKey: intentKey,
+		DesignatedOwnerId: designatedOwnerID, AmountUSD: amount, Reason: body.Reason, IntentKey: intentKey, Count: body.Count,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrAdtyVoucherIntentConflict) || errors.Is(err, model.ErrAdtyIdempotencyConflict) {
@@ -272,11 +275,23 @@ func PutAdtyVoucherIssuanceLimit(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"limit_usd": limit.String()})
 }
 
-// GetAdtyAdminVouchers lists every code for Root, optionally by status and purpose.
+// GetAdtyAdminVouchers lists every code for Root, optionally by status, purpose, target site, and batch_no.
 func GetAdtyAdminVouchers(c *gin.Context) {
 	page := common.GetPageQuery(c)
+	targetSiteID := 0
+	if rawSiteID := strings.TrimSpace(c.Query("site_id")); rawSiteID != "" {
+		parsed, err := strconv.Atoi(rawSiteID)
+		if err != nil || parsed < 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		targetSiteID = parsed
+	}
 	items, total, err := service.ListAdtyVouchers(service.AdtyVoucherListFilter{
-		Status: strings.TrimSpace(c.Query("status")), Purpose: strings.TrimSpace(c.Query("purpose")),
+		Status:       strings.TrimSpace(c.Query("status")),
+		Purpose:      strings.TrimSpace(c.Query("purpose")),
+		TargetSiteId: targetSiteID,
+		BatchNo:      strings.TrimSpace(c.Query("batch_no")),
 	}, page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
@@ -285,7 +300,7 @@ func GetAdtyAdminVouchers(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"total": total, "items": items, "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
-// GetAdtySiteVouchers lists the codes this owner issued from this site's wallets.
+// GetAdtySiteVouchers lists the site_customer codes this owner issued from this site's wallets.
 func GetAdtySiteVouchers(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {
@@ -293,7 +308,11 @@ func GetAdtySiteVouchers(c *gin.Context) {
 	}
 	page := common.GetPageQuery(c)
 	items, total, err := service.ListAdtyVouchers(service.AdtyVoucherListFilter{
-		Status: strings.TrimSpace(c.Query("status")), IssuerId: c.GetInt("id"), SiteId: site.Id,
+		Status:   strings.TrimSpace(c.Query("status")),
+		Purpose:  model.AdtyVoucherPurposeSiteCustomer,
+		IssuerId: c.GetInt("id"),
+		SiteId:   site.Id,
+		BatchNo:  strings.TrimSpace(c.Query("batch_no")),
 	}, page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)

@@ -21,6 +21,7 @@ import {
   Bell,
   Box,
   ClipboardList,
+  FileSpreadsheet,
   FileText,
   Gift,
   HandCoins,
@@ -28,6 +29,7 @@ import {
   LayoutDashboard,
   LifeBuoy,
   ListTodo,
+  Megaphone,
   PlugZap,
   Radio,
   ReceiptText,
@@ -37,6 +39,7 @@ import {
   Store,
   Tags,
   Ticket,
+  TrendingUp,
   User,
   UserCog,
   Users,
@@ -46,7 +49,11 @@ import {
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { SidebarBadges, SidebarData } from '@/components/layout/types'
+import type {
+  NavLink,
+  SidebarBadges,
+  SidebarData,
+} from '@/components/layout/types'
 import {
   ORDER_MANAGEMENT_BADGE_KINDS,
   OWNER_TICKET_BADGE_KINDS,
@@ -54,8 +61,7 @@ import {
   PLATFORM_TICKET_BADGE_KINDS,
   REFERRAL_ADMIN_BADGE_KINDS,
   RESELLER_SITES_BADGE_KINDS,
-  SITE_OWNER_BADGE_KINDS,
-  SITE_OWNER_EARNINGS_BADGE_KINDS,
+  SITE_OWNER_COMMISSIONS_BADGE_KINDS,
   SITE_OWNER_STAFF_BADGE_KINDS,
   STAFF_WORKSPACE_BADGE_KINDS,
   useSidebarBadges,
@@ -75,65 +81,50 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
   // unchanged because module switches and the admin-only filter key on them.
   const { t } = useTranslation()
   const sidebarBadges = useSidebarBadges()
-  const failedLabel = t('Sidebar badge unavailable')
   const mixedLabel = t('Sidebar badge pending work')
   const staffWorkspaceBadge = sidebarBadges.badge(
     STAFF_WORKSPACE_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+    mixedLabel
   )
   const personalTicketsBadge = sidebarBadges.badge(
     PERSONAL_TICKET_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+    mixedLabel
   )
   const ownerTicketsBadge = sidebarBadges.badge(
     OWNER_TICKET_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+    mixedLabel
   )
   const platformTicketsBadge = sidebarBadges.badge(
     PLATFORM_TICKET_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+    mixedLabel
   )
-  const siteOwnerBadge = sidebarBadges.badge(
-    SITE_OWNER_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
-  )
-  const siteOwnerEarningsBadge = sidebarBadges.badge(
-    SITE_OWNER_EARNINGS_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+  const siteOwnerCommissionsBadge = sidebarBadges.badge(
+    SITE_OWNER_COMMISSIONS_BADGE_KINDS,
+    mixedLabel
   )
   const siteOwnerStaffBadge = sidebarBadges.badge(
     SITE_OWNER_STAFF_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+    mixedLabel
   )
   const referralAdminBadge = sidebarBadges.badge(
     REFERRAL_ADMIN_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+    mixedLabel
   )
   const reviewWork =
-    (sidebarBadges.counts?.referral_withdrawals_pending ?? 0) > 0
+    (sidebarBadges.counts.referral_withdrawals_pending ?? 0) > 0
   const payoutWork =
-    (sidebarBadges.counts?.referral_withdrawals_approved ?? 0) > 0
+    (sidebarBadges.counts.referral_withdrawals_approved ?? 0) > 0
   let withdrawalFilter: 'actionable' | 'pending' | 'approved' | undefined
   if (reviewWork && payoutWork) withdrawalFilter = 'actionable'
   else if (reviewWork) withdrawalFilter = 'pending'
   else if (payoutWork) withdrawalFilter = 'approved'
   const resellerSitesBadge = sidebarBadges.badge(
     RESELLER_SITES_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+    mixedLabel
   )
   const orderManagementBadge = sidebarBadges.badge(
     ORDER_MANAGEMENT_BADGE_KINDS,
-    mixedLabel,
-    failedLabel
+    mixedLabel
   )
   const platformTickets = useAuthStore(
     (state) =>
@@ -177,74 +168,100 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
       }
     }
 
-    // R-32 #25: Site owners (non-admin) get a pure management sidebar only.
+    const siteOwnerManagementItems: NavLink[] = [
+      {
+        title: t('Site Overview'),
+        url: '/site-owner/overview',
+        icon: LayoutDashboard,
+      },
+      {
+        title: t('Customers'),
+        url: '/site-owner/customers',
+        icon: Users,
+      },
+      {
+        title: t('Team management'),
+        url: '/site-owner/teams',
+        icon: UsersRound,
+      },
+      {
+        title: t('Order management'),
+        url: '/site-owner/orders',
+        icon: ReceiptText,
+      },
+      {
+        title: t('Pricing & Multiplier'),
+        url: '/site-owner/pricing',
+        icon: Tags,
+      },
+      {
+        title: t('Top-up Bonus'),
+        url: '/site-owner/bonus',
+        icon: Gift,
+      },
+      {
+        title: t('Promotion Management'),
+        url: '/site-owner/commissions',
+        icon: Megaphone,
+        badge: siteOwnerCommissionsBadge,
+      },
+      {
+        title: t('Earnings Details'),
+        url: '/site-owner/earnings',
+        icon: TrendingUp,
+      },
+      {
+        title: t('Withdrawal Management'),
+        url: '/site-owner/withdrawals',
+        icon: HandCoins,
+      },
+      {
+        title: t('Settlement Sheets'),
+        url: '/site-owner/settlements',
+        icon: FileSpreadsheet,
+      },
+      {
+        title: t('Owner Wallets'),
+        url: '/site-owner/wallets',
+        icon: Wallet,
+      },
+      {
+        title: t('Redemption Codes'),
+        url: '/site-owner/vouchers',
+        icon: Ticket,
+      },
+      {
+        title: t('Notifications'),
+        url: '/site-owner/notices',
+        icon: Bell,
+      },
+      {
+        title: t('Staff accounts'),
+        url: '/site-owner/staff',
+        icon: UserCog,
+        badge: siteOwnerStaffBadge,
+      },
+      {
+        title: t('Ticket management'),
+        url: '/site-owner/tickets',
+        icon: LifeBuoy,
+        badge: ownerTicketsBadge,
+      },
+      {
+        title: t('Site settings'),
+        url: '/site-owner/settings',
+        icon: Settings,
+      },
+    ]
+
+    // R-32 #25 & R-33 #1: Site owners (non-admin) get a pure management sidebar only.
     if (isPureSiteOwner) {
       return {
         navGroups: [
           {
             id: 'site-owner-management',
             title: t('Site Management'),
-            items: [
-              {
-                title: t('Site Overview'),
-                url: '/site-owner/overview',
-                icon: LayoutDashboard,
-              },
-              {
-                title: t('Customers'),
-                url: '/site-owner/customers',
-                icon: Users,
-              },
-              {
-                title: t('Team management'),
-                url: '/site-owner/teams',
-                icon: UsersRound,
-              },
-              {
-                title: t('Order management'),
-                url: '/site-owner/orders',
-                icon: ReceiptText,
-              },
-              {
-                title: t('Pricing & Multiplier'),
-                url: '/site-owner/pricing',
-                icon: Tags,
-              },
-              {
-                title: t('Earnings & Withdrawals'),
-                url: '/site-owner/earnings',
-                activeUrls: ['/site-owner/commissions'],
-                icon: HandCoins,
-                badge: siteOwnerEarningsBadge,
-              },
-              {
-                title: t('Redemption Codes'),
-                url: '/site-owner/vouchers',
-                icon: Ticket,
-              },
-              {
-                title: t('Notifications'),
-                url: '/site-owner/notices',
-                icon: Bell,
-              },
-              {
-                title: t('Staff accounts'),
-                url: '/site-owner/staff',
-                icon: UserCog,
-                badge: siteOwnerStaffBadge,
-              },
-              {
-                title: t('Ticket management'),
-                url: '/site-owner/tickets',
-                icon: LifeBuoy,
-                badge: ownerTicketsBadge,
-              },
-              {
-                title: t('Site settings'),
-                url: '/site-owner/settings',
-                icon: Settings,
-              },
-            ],
+            items: siteOwnerManagementItems,
           },
           {
             id: 'site-owner-account',
@@ -347,35 +364,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
                   },
                 ]
               : []),
-            // adty task 11.6: only site owners see the owner center.
             ...(hasArchivedSite
               ? [
                   {
                     title: t('Historical site accounts'),
                     url: '/site-owner/history',
                     icon: Store,
-                  },
-                ]
-              : []),
-            ...(isSiteOwner
-              ? [
-                  {
-                    title: t('Ticket management'),
-                    url: '/site-owner/tickets',
-                    icon: LifeBuoy,
-                    badge: ownerTicketsBadge,
-                  },
-                  {
-                    title: t('Team management'),
-                    url: '/site-owner/teams',
-                    icon: Users,
-                  },
-                  {
-                    title: t('Site owner center'),
-                    url: '/site-owner/overview',
-                    activeUrls: ['/site-owner'],
-                    icon: Store,
-                    badge: siteOwnerBadge,
                   },
                 ]
               : []),
@@ -391,6 +385,15 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             },
           ],
         },
+        ...(isSiteOwner
+          ? [
+              {
+                id: 'site-owner-management',
+                title: t('Site Management'),
+                items: siteOwnerManagementItems,
+              },
+            ]
+          : []),
         {
           id: 'admin',
           title: t('Administration'),
@@ -495,8 +498,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     personalTicketsBadge,
     ownerTicketsBadge,
     platformTicketsBadge,
-    siteOwnerBadge,
-    siteOwnerEarningsBadge,
+    siteOwnerCommissionsBadge,
     siteOwnerStaffBadge,
     referralAdminBadge,
     withdrawalFilter,

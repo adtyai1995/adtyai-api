@@ -18,16 +18,18 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Activity,
   Check,
   ChevronDown,
   ChevronRight,
-  Globe,
+  Clock,
+  Layers,
   Loader2,
+  Play,
   Plus,
-  RefreshCw,
   Save,
   Search,
-  Sparkles,
+  Timer,
   Trash2,
   X,
 } from 'lucide-react'
@@ -39,20 +41,14 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { LoadingState } from '@/components/loading-state'
-import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import {
   adminGroupsQueryKey,
   getAdminGroups,
@@ -60,10 +56,11 @@ import {
 } from '@/features/adty-groups/api'
 import { getEnabledModels } from '@/features/channels/api'
 import {
-  getUptimeMonitors,
+  triggerUptimeProbe,
   UPTIME_STATUS_QUERY_KEY,
+  type UptimeKumaGroupConfig,
+  type UptimeProbeResponseData,
 } from '@/features/dashboard/api'
-import type { UptimeKumaGroupConfig } from '@/features/dashboard/types'
 import { getPricing } from '@/features/pricing/api'
 import { pickContentText, toContentLang } from '@/lib/adty-lang'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -74,41 +71,44 @@ import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 
-interface EditableUptimeGroup {
+interface EditableProbeGroup {
   localId: string
   groupId: string
   categoryName: string
-  url: string
-  slug: string
+  enabled: boolean
   description: string
   models: string[]
-  monitorMap: Record<string, string>
 }
 
 interface UptimeKumaSectionProps {
   enabled: boolean
-  baseUrl: string
+  intervalMinutes: number
+  timeoutSeconds: number
   data: string
 }
 
-const SLUG_PATTERN = /^[a-zA-Z0-9_-]+$/
 const MAX_GROUPS = 50
 const MAX_MODELS_PER_GROUP = 500
-const AUTO_MONITOR_VALUE = '__auto__'
+const DEFAULT_INTERVAL_MINUTES = 10
+const MIN_INTERVAL_MINUTES = 1
+const MAX_INTERVAL_MINUTES = 60
+const DEFAULT_TIMEOUT_SECONDS = 15
+const MIN_TIMEOUT_SECONDS = 5
+const MAX_TIMEOUT_SECONDS = 60
 
-function isValidHttpUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value)
-    return (
-      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
-      Boolean(parsed.host)
-    )
-  } catch {
-    return false
-  }
+function clampInteger(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  const rounded = Math.round(value)
+  if (rounded < min || rounded > max) return fallback
+  return rounded
 }
 
-function parseGroups(raw: string): EditableUptimeGroup[] {
+function parseGroups(raw: string): EditableProbeGroup[] {
   try {
     const parsed: unknown = JSON.parse(raw || '[]')
     if (!Array.isArray(parsed)) return []
@@ -124,17 +124,6 @@ function parseGroups(raw: string): EditableUptimeGroup[] {
               .map((m) => m.trim())
               .filter(Boolean)
           : []
-        const rawMap = item.monitorMap
-        const monitorMap: Record<string, string> = {}
-        if (rawMap && typeof rawMap === 'object' && !Array.isArray(rawMap)) {
-          for (const [k, v] of Object.entries(
-            rawMap as Record<string, unknown>
-          )) {
-            if (typeof v === 'string' && k.trim() && v.trim()) {
-              monitorMap[k.trim()] = v.trim()
-            }
-          }
-        }
         return {
           localId: `group-${idx}-${String(item.groupId ?? item.categoryName ?? idx)}`,
           groupId: typeof item.groupId === 'string' ? item.groupId.trim() : '',
@@ -142,12 +131,10 @@ function parseGroups(raw: string): EditableUptimeGroup[] {
             typeof item.categoryName === 'string'
               ? item.categoryName.trim()
               : '',
-          url: typeof item.url === 'string' ? item.url.trim() : '',
-          slug: typeof item.slug === 'string' ? item.slug.trim() : '',
+          enabled: typeof item.enabled === 'boolean' ? item.enabled : true,
           description:
             typeof item.description === 'string' ? item.description.trim() : '',
           models: [...new Set(models)],
-          monitorMap,
         }
       })
   } catch {
@@ -156,96 +143,114 @@ function parseGroups(raw: string): EditableUptimeGroup[] {
 }
 
 function serializeGroups(
-  groups: EditableUptimeGroup[],
-  globalBaseUrl: string
+  groups: EditableProbeGroup[],
+  groupDisplayNames: Map<string, string>
 ): UptimeKumaGroupConfig[] {
-  const trimmedBase = globalBaseUrl.trim()
   return groups.map((group) => {
     const cleanedModels = [
       ...new Set(group.models.map((m) => m.trim()).filter(Boolean)),
     ]
-    const modelSet = new Set(cleanedModels)
-    const cleanedMap: Record<string, string> = {}
-    for (const [modelName, monitorName] of Object.entries(group.monitorMap)) {
-      const m = modelName.trim()
-      const mon = monitorName.trim()
-      if (m && mon && modelSet.has(m) && mon !== m) {
-        cleanedMap[m] = mon
-      }
-    }
-    const effectiveUrl = group.url.trim() || trimmedBase
+    const trimmedGroupId = group.groupId.trim()
+    const fallbackName =
+      (trimmedGroupId ? groupDisplayNames.get(trimmedGroupId) : undefined) ||
+      trimmedGroupId
+    const categoryName = group.categoryName.trim() || fallbackName
     const payload: UptimeKumaGroupConfig = {
-      categoryName: group.categoryName.trim(),
-      url: effectiveUrl,
-      slug: group.slug.trim(),
+      categoryName,
+      enabled: group.enabled,
+      models: cleanedModels,
     }
-    if (group.groupId.trim()) {
-      payload.groupId = group.groupId.trim()
+    if (trimmedGroupId) {
+      payload.groupId = trimmedGroupId
     }
     if (group.description.trim()) {
       payload.description = group.description.trim()
-    }
-    if (cleanedModels.length > 0) {
-      payload.models = cleanedModels
-    }
-    if (Object.keys(cleanedMap).length > 0) {
-      payload.monitorMap = cleanedMap
     }
     return payload
   })
 }
 
-function makeUniqueCategoryName(
-  baseName: string,
-  existingNames: Set<string>
-): string {
-  const trimmed = baseName.trim().slice(0, 50)
-  if (!existingNames.has(trimmed)) return trimmed
-  for (let i = 2; i < 100; i++) {
-    const suffix = ` (${i})`
-    const candidate = `${trimmed.slice(0, 50 - suffix.length)}${suffix}`
-    if (!existingNames.has(candidate)) return candidate
+function summarizeProbeResult(data: UptimeProbeResponseData | undefined): {
+  probed: number
+  up: number
+  down: number
+  hasCounts: boolean
+} {
+  if (!data) {
+    return { probed: 0, up: 0, down: 0, hasCounts: false }
   }
-  return trimmed
+  const hasExplicitCounts =
+    typeof data.probed === 'number' ||
+    typeof data.total === 'number' ||
+    typeof data.up === 'number' ||
+    typeof data.down === 'number'
+  if (hasExplicitCounts) {
+    const up = typeof data.up === 'number' ? data.up : 0
+    const down = typeof data.down === 'number' ? data.down : 0
+    let probed = up + down
+    if (typeof data.probed === 'number') {
+      probed = data.probed
+    } else if (typeof data.total === 'number') {
+      probed = data.total
+    }
+    return { probed, up, down, hasCounts: true }
+  }
+  if (Array.isArray(data.results)) {
+    let probed = 0
+    let up = 0
+    let down = 0
+    for (const group of data.results) {
+      for (const item of group.models ?? []) {
+        probed++
+        if (item.status === 1) up++
+        else if (item.status === 0) down++
+      }
+    }
+    return { probed, up, down, hasCounts: true }
+  }
+  return { probed: 0, up: 0, down: 0, hasCounts: false }
 }
 
-interface UptimeGroupCardProps {
-  group: EditableUptimeGroup
-  globalBaseUrl: string
+interface ProbeGroupCardProps {
+  group: EditableProbeGroup
+  displayName: string
   expanded: boolean
   allModels: string[]
   groupModels: string[]
-  fetchedMonitors: string[] | undefined
-  isFetchingMonitors: boolean
+  isProbing: boolean
   onToggleExpand: () => void
-  onChange: (next: EditableUptimeGroup) => void
+  onChange: (next: EditableProbeGroup) => void
   onDelete: () => void
-  onFetchMonitors: () => void
+  onProbeGroup: () => void
 }
 
-function UptimeGroupCard(props: UptimeGroupCardProps) {
+function ProbeGroupCard(props: ProbeGroupCardProps) {
   const { t } = useTranslation()
   const [modelSearch, setModelSearch] = useState('')
   const [customModelInput, setCustomModelInput] = useState('')
 
-  const effectiveUrl = (
-    props.group.url.trim() || props.globalBaseUrl.trim()
-  ).replace(/\/+$/, '')
-  const previewSlug = props.group.slug.trim()
-  const fetchedMonitors = props.fetchedMonitors
-  const monitorLowerSet = useMemo(
-    () => new Set((fetchedMonitors ?? []).map((m) => m.toLowerCase())),
-    [fetchedMonitors]
-  )
   const selectedSet = useMemo(
     () => new Set(props.group.models),
     [props.group.models]
   )
+  const groupModelSet = useMemo(
+    () => new Set(props.groupModels),
+    [props.groupModels]
+  )
 
   const selectableModels = useMemo(() => {
-    const merged = new Set<string>([...props.allModels, ...props.group.models])
-    return [...merged].sort((a, b) => a.localeCompare(b))
-  }, [props.allModels, props.group.models])
+    const merged = new Set<string>([
+      ...props.groupModels,
+      ...props.allModels,
+      ...props.group.models,
+    ])
+    return [...merged].sort((a, b) => {
+      const aInGroup = groupModelSet.has(a) ? 0 : 1
+      const bInGroup = groupModelSet.has(b) ? 0 : 1
+      if (aInGroup !== bInGroup) return aInGroup - bInGroup
+      return a.localeCompare(b)
+    })
+  }, [groupModelSet, props.allModels, props.group.models, props.groupModels])
 
   const filteredModels = useMemo(() => {
     const query = modelSearch.trim().toLowerCase()
@@ -253,9 +258,9 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
     return selectableModels.filter((m) => m.toLowerCase().includes(query))
   }, [modelSearch, selectableModels])
 
-  const updateField = <K extends keyof EditableUptimeGroup>(
+  const updateField = <K extends keyof EditableProbeGroup>(
     key: K,
-    value: EditableUptimeGroup[K]
+    value: EditableProbeGroup[K]
   ) => {
     props.onChange({ ...props.group, [key]: value })
   }
@@ -274,13 +279,10 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
       updateField('models', [...props.group.models, modelName])
       return
     }
-    const nextMap = { ...props.group.monitorMap }
-    delete nextMap[modelName]
-    props.onChange({
-      ...props.group,
-      models: props.group.models.filter((m) => m !== modelName),
-      monitorMap: nextMap,
-    })
+    updateField(
+      'models',
+      props.group.models.filter((m) => m !== modelName)
+    )
   }
 
   const handleAddCustomModel = () => {
@@ -314,44 +316,22 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
   }
 
   const handleClearModels = () => {
-    props.onChange({
-      ...props.group,
-      models: [],
-      monitorMap: {},
-    })
+    updateField('models', [])
   }
 
-  const handleAutoMatchMonitors = () => {
-    if (!fetchedMonitors || fetchedMonitors.length === 0) return
-    const matched = selectableModels.filter((modelName) =>
-      monitorLowerSet.has(modelName.toLowerCase())
-    )
-    if (matched.length === 0) {
-      toast.info(t('No matching system models found for fetched monitors'))
-      return
-    }
-    const next = [...new Set([...props.group.models, ...matched])]
-    updateField('models', next.slice(0, MAX_MODELS_PER_GROUP))
-    toast.success(
-      t('Matched {{count}} models from Uptime Kuma monitors', {
-        count: matched.length,
-      })
-    )
-  }
-
-  const handleMonitorOverrideChange = (modelName: string, value: string) => {
-    const nextMap = { ...props.group.monitorMap }
-    const trimmed = value.trim()
-    if (!trimmed || trimmed === AUTO_MONITOR_VALUE || trimmed === modelName) {
-      delete nextMap[modelName]
-    } else {
-      nextMap[modelName] = trimmed
-    }
-    updateField('monitorMap', nextMap)
-  }
+  const headerTitle =
+    props.group.categoryName.trim() ||
+    props.displayName ||
+    props.group.groupId ||
+    t('Untitled Group')
 
   return (
-    <div className='border-border bg-card overflow-hidden rounded-[14px] border'>
+    <Card
+      className={cn(
+        'overflow-hidden rounded-[14px] py-0 shadow-none transition-opacity',
+        !props.group.enabled && 'opacity-75'
+      )}
+    >
       <div className='flex flex-wrap items-center justify-between gap-2 px-4 py-3'>
         <button
           type='button'
@@ -364,160 +344,98 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
           ) : (
             <ChevronRight className='text-muted-foreground size-4 shrink-0' />
           )}
-          <span className='truncate text-sm font-semibold'>
-            {props.group.categoryName || t('Untitled Group')}
-          </span>
+          <span className='truncate text-sm font-semibold'>{headerTitle}</span>
           {props.group.groupId && (
             <Badge variant='outline' className='font-mono text-[11px]'>
               {props.group.groupId}
             </Badge>
           )}
-          {previewSlug && (
-            <Badge
-              variant='secondary'
-              className='hidden font-mono text-[11px] sm:inline-flex'
-            >
-              /status/{previewSlug}
-            </Badge>
-          )}
           <Badge variant='secondary' className='text-[11px]'>
             {t('{{count}} models', { count: props.group.models.length })}
           </Badge>
+          {!props.group.enabled && (
+            <Badge
+              variant='outline'
+              className='text-muted-foreground text-[11px]'
+            >
+              {t('Disabled')}
+            </Badge>
+          )}
         </button>
 
-        <Button
-          type='button'
-          variant='ghost'
-          size='sm'
-          onClick={props.onDelete}
-          className='text-muted-foreground hover:text-destructive size-8 p-0'
-          aria-label={t('Delete')}
-        >
-          <Trash2 className='size-4' />
-        </Button>
+        <div className='flex shrink-0 items-center gap-2'>
+          <div className='flex items-center gap-1.5'>
+            <Switch
+              checked={props.group.enabled}
+              onCheckedChange={(checked) => updateField('enabled', checked)}
+              aria-label={t('Enable probing for {{group}}', {
+                group: headerTitle,
+              })}
+            />
+          </div>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            onClick={props.onProbeGroup}
+            disabled={props.isProbing || !props.group.groupId}
+            className='h-8 gap-1.5 text-xs'
+          >
+            {props.isProbing ? (
+              <Loader2 className='size-3.5 animate-spin' aria-hidden='true' />
+            ) : (
+              <Play className='size-3.5' aria-hidden='true' />
+            )}
+            <span className='hidden sm:inline'>{t('Probe Group')}</span>
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='sm'
+            onClick={props.onDelete}
+            className='text-muted-foreground hover:text-destructive size-8 p-0'
+            aria-label={t('Delete')}
+          >
+            <Trash2 className='size-4' />
+          </Button>
+        </div>
       </div>
 
       {props.expanded && (
-        <div className='border-border space-y-5 border-t px-4 py-4'>
-          <div className='grid gap-4 md:grid-cols-3'>
+        <CardContent className='border-border space-y-5 border-t px-4 py-4'>
+          <div className='grid gap-4 md:grid-cols-2'>
             <div className='space-y-1.5'>
               <Label
                 htmlFor={`${props.group.localId}-name`}
                 className='text-xs font-medium'
               >
-                {t('Category Name')}
+                {t('Display Name (optional)')}
               </Label>
               <Input
                 id={`${props.group.localId}-name`}
                 value={props.group.categoryName}
                 onChange={(e) => updateField('categoryName', e.target.value)}
-                placeholder={t('e.g., Core APIs, OpenAI, Claude')}
+                placeholder={props.displayName || props.group.groupId}
                 maxLength={50}
               />
             </div>
 
             <div className='space-y-1.5'>
               <Label
-                htmlFor={`${props.group.localId}-url`}
+                htmlFor={`${props.group.localId}-description`}
                 className='text-xs font-medium'
               >
-                {t('Uptime Kuma URL')}
+                {t('Description (optional)')}
               </Label>
               <Input
-                id={`${props.group.localId}-url`}
-                value={props.group.url}
-                onChange={(e) => updateField('url', e.target.value)}
-                placeholder={
-                  props.globalBaseUrl.trim() || 'https://status.example.com'
-                }
+                id={`${props.group.localId}-description`}
+                value={props.group.description}
+                onChange={(e) => updateField('description', e.target.value)}
+                placeholder={t('Optional group status note')}
+                maxLength={200}
               />
             </div>
-
-            <div className='space-y-1.5'>
-              <Label
-                htmlFor={`${props.group.localId}-slug`}
-                className='text-xs font-medium'
-              >
-                {t('Status Page Slug')}
-              </Label>
-              <div className='flex gap-2'>
-                <Input
-                  id={`${props.group.localId}-slug`}
-                  value={props.group.slug}
-                  onChange={(e) => updateField('slug', e.target.value)}
-                  placeholder='my-status'
-                  maxLength={100}
-                  className='font-mono text-sm'
-                />
-                <Button
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  onClick={props.onFetchMonitors}
-                  disabled={
-                    props.isFetchingMonitors || !effectiveUrl || !previewSlug
-                  }
-                  className='shrink-0'
-                >
-                  {props.isFetchingMonitors ? (
-                    <Loader2 className='size-3.5 animate-spin' />
-                  ) : (
-                    <RefreshCw className='size-3.5' />
-                  )}
-                  <span className='hidden sm:inline'>
-                    {t('Fetch Uptime Kuma monitors')}
-                  </span>
-                </Button>
-              </div>
-              {effectiveUrl && previewSlug && (
-                <p className='text-muted-foreground truncate font-mono text-[11px]'>
-                  {effectiveUrl}/status/{previewSlug}
-                </p>
-              )}
-            </div>
           </div>
-
-          {fetchedMonitors !== undefined && (
-            <div className='bg-muted/30 space-y-2 rounded-lg border p-3'>
-              <div className='flex flex-wrap items-center justify-between gap-2'>
-                <div className='flex items-center gap-2 text-xs font-medium'>
-                  <span>{t('Available Uptime Kuma monitors')}</span>
-                  <Badge variant='secondary' className='font-mono text-[11px]'>
-                    {fetchedMonitors.length}
-                  </Badge>
-                </div>
-                {fetchedMonitors.length > 0 && (
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    className='h-7 gap-1.5 text-xs'
-                    onClick={handleAutoMatchMonitors}
-                  >
-                    <Sparkles className='size-3.5' />
-                    {t('Auto-match models')}
-                  </Button>
-                )}
-              </div>
-              {fetchedMonitors.length === 0 ? (
-                <p className='text-muted-foreground text-xs'>
-                  {t('No monitors found on this status page')}
-                </p>
-              ) : (
-                <div className='flex flex-wrap gap-1.5'>
-                  {fetchedMonitors.map((monitorName) => (
-                    <Badge
-                      key={monitorName}
-                      variant='outline'
-                      className='bg-background font-mono text-[11px]'
-                    >
-                      {monitorName}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
           <div className='space-y-3'>
             <div className='flex flex-wrap items-center justify-between gap-2'>
@@ -527,7 +445,7 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
                 </Label>
                 <p className='text-muted-foreground text-xs'>
                   {t(
-                    'Select the models displayed for this group on the status page and pricing table'
+                    'Select the exact models to probe periodically for this group'
                   )}
                 </p>
               </div>
@@ -553,7 +471,7 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
                     className='h-7 text-xs'
                     onClick={handleSelectVisibleModels}
                   >
-                    {t('Select visible')}
+                    {t('Select all visible')}
                   </Button>
                 )}
                 {props.group.models.length > 0 && (
@@ -564,7 +482,7 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
                     className='text-muted-foreground h-7 text-xs'
                     onClick={handleClearModels}
                   >
-                    {t('Clear')}
+                    {t('Clear all')}
                   </Button>
                 )}
               </div>
@@ -600,6 +518,7 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
                   className='h-8 shrink-0 px-2.5 text-xs'
                   onClick={handleAddCustomModel}
                   disabled={!customModelInput.trim()}
+                  aria-label={t('Add custom model name...')}
                 >
                   <Plus className='size-3.5' />
                 </Button>
@@ -616,9 +535,7 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
                   <div className='grid grid-cols-1 gap-1 p-2 sm:grid-cols-2 lg:grid-cols-3'>
                     {filteredModels.map((modelName) => {
                       const isChecked = selectedSet.has(modelName)
-                      const matchesFetched =
-                        fetchedMonitors !== undefined &&
-                        monitorLowerSet.has(modelName.toLowerCase())
+                      const isInGroup = groupModelSet.has(modelName)
                       return (
                         <label
                           key={modelName}
@@ -639,10 +556,10 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
                           >
                             {modelName}
                           </span>
-                          {matchesFetched && (
+                          {isInGroup && (
                             <span
-                              className='bg-success size-1.5 shrink-0 rounded-full'
-                              title={t('Matched in Uptime Kuma')}
+                              className='bg-primary/60 size-1.5 shrink-0 rounded-full'
+                              title={t('Enabled in this group')}
                             />
                           )}
                         </label>
@@ -655,107 +572,38 @@ function UptimeGroupCard(props: UptimeGroupCardProps) {
 
             {props.group.models.length > 0 && (
               <div className='space-y-2'>
-                <div className='flex items-center justify-between'>
-                  <span className='text-muted-foreground text-xs font-medium'>
-                    {t('Selected models & optional monitor name override')} (
-                    {props.group.models.length})
-                  </span>
-                </div>
-                <div className='divide-border max-h-64 divide-y overflow-y-auto rounded-lg border'>
-                  {props.group.models.map((modelName) => {
-                    const override = props.group.monitorMap[modelName] ?? ''
-                    const effectiveMonitor = override || modelName
-                    const isMatched =
-                      fetchedMonitors !== undefined &&
-                      monitorLowerSet.has(effectiveMonitor.toLowerCase())
-                    return (
-                      <div
-                        key={modelName}
-                        className='flex flex-wrap items-center gap-2 px-3 py-2 text-xs sm:flex-nowrap'
-                      >
-                        <div className='flex min-w-0 flex-1 items-center gap-2'>
-                          <span
-                            className='truncate font-mono font-medium'
-                            title={modelName}
-                          >
-                            {modelName}
-                          </span>
-                          {fetchedMonitors !== undefined && (
-                            <StatusBadge
-                              variant={isMatched ? 'success' : 'warning'}
-                              label={isMatched ? t('Matched') : t('Unmatched')}
-                              size='sm'
-                              copyable={false}
-                            />
-                          )}
-                        </div>
-
-                        <div className='flex w-full items-center gap-1.5 sm:w-auto'>
-                          <Input
-                            value={override}
-                            onChange={(e) =>
-                              handleMonitorOverrideChange(
-                                modelName,
-                                e.target.value
-                              )
-                            }
-                            placeholder={t(
-                              'Monitor name (default: model name)'
-                            )}
-                            className='h-7 min-w-0 flex-1 font-mono text-xs sm:w-48'
-                            aria-label={`${t('Monitor Name Override')}: ${modelName}`}
-                          />
-                          {fetchedMonitors && fetchedMonitors.length > 0 && (
-                            <Select
-                              value={
-                                override && fetchedMonitors.includes(override)
-                                  ? override
-                                  : AUTO_MONITOR_VALUE
-                              }
-                              onValueChange={(value) => {
-                                if (value === null) return
-                                handleMonitorOverrideChange(modelName, value)
-                              }}
-                            >
-                              <SelectTrigger
-                                size='sm'
-                                className='h-7 w-32 shrink-0 text-xs'
-                              >
-                                <SelectValue placeholder={t('Pick monitor')} />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value={AUTO_MONITOR_VALUE}>
-                                  {t('Same as model')}
-                                </SelectItem>
-                                {fetchedMonitors.map((mon) => (
-                                  <SelectItem key={mon} value={mon}>
-                                    {mon}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          )}
-                          <Button
-                            type='button'
-                            variant='ghost'
-                            size='sm'
-                            onClick={() => toggleModel(modelName, false)}
-                            className='text-muted-foreground hover:text-destructive size-7 shrink-0 p-0'
-                            aria-label={t('Remove')}
-                          >
-                            <X className='size-3.5' />
-                          </Button>
-                        </div>
-                      </div>
-                    )
+                <span className='text-muted-foreground text-xs font-medium'>
+                  {t('Selected models ({{count}})', {
+                    count: props.group.models.length,
                   })}
+                </span>
+                <div className='flex max-h-36 flex-wrap gap-1.5 overflow-y-auto rounded-lg border p-2'>
+                  {props.group.models.map((modelName) => (
+                    <Badge
+                      key={modelName}
+                      variant='secondary'
+                      className='gap-1 pr-1 font-mono text-[11px]'
+                    >
+                      <span className='max-w-52 truncate' title={modelName}>
+                        {modelName}
+                      </span>
+                      <button
+                        type='button'
+                        onClick={() => toggleModel(modelName, false)}
+                        className='text-muted-foreground hover:text-destructive rounded-xs p-0.5'
+                        aria-label={`${t('Remove')} ${modelName}`}
+                      >
+                        <X className='size-3' />
+                      </button>
+                    </Badge>
+                  ))}
                 </div>
               </div>
             )}
           </div>
-        </div>
+        </CardContent>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -766,34 +614,74 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   const updateOption = useUpdateOption()
 
   const [isEnabled, setIsEnabled] = useState(props.enabled)
-  const [globalBaseUrl, setGlobalBaseUrl] = useState(props.baseUrl)
-  const [groups, setGroups] = useState<EditableUptimeGroup[]>(() =>
+  const [intervalInput, setIntervalInput] = useState(() =>
+    String(
+      clampInteger(
+        props.intervalMinutes,
+        DEFAULT_INTERVAL_MINUTES,
+        MIN_INTERVAL_MINUTES,
+        MAX_INTERVAL_MINUTES
+      )
+    )
+  )
+  const [timeoutInput, setTimeoutInput] = useState(() =>
+    String(
+      clampInteger(
+        props.timeoutSeconds,
+        DEFAULT_TIMEOUT_SECONDS,
+        MIN_TIMEOUT_SECONDS,
+        MAX_TIMEOUT_SECONDS
+      )
+    )
+  )
+  const [groups, setGroups] = useState<EditableProbeGroup[]>(() =>
     parseGroups(props.data)
   )
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({})
-  const [baseUrlDirty, setBaseUrlDirty] = useState(false)
+  const [intervalDirty, setIntervalDirty] = useState(false)
+  const [timeoutDirty, setTimeoutDirty] = useState(false)
   const [groupsDirty, setGroupsDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [probingAll, setProbingAll] = useState(false)
+  const [probingGroupIds, setProbingGroupIds] = useState<
+    Record<string, boolean>
+  >({})
 
   const [showAddGroupDialog, setShowAddGroupDialog] = useState(false)
   const [groupSearch, setGroupSearch] = useState('')
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
-
-  const [fetchedMonitorsByGroup, setFetchedMonitorsByGroup] = useState<
-    Record<string, string[]>
-  >({})
-  const [fetchingMonitorsByGroup, setFetchingMonitorsByGroup] = useState<
-    Record<string, boolean>
-  >({})
 
   useEffect(() => {
     setIsEnabled(props.enabled)
   }, [props.enabled])
 
   useEffect(() => {
-    setGlobalBaseUrl(props.baseUrl)
-    setBaseUrlDirty(false)
-  }, [props.baseUrl])
+    setIntervalInput(
+      String(
+        clampInteger(
+          props.intervalMinutes,
+          DEFAULT_INTERVAL_MINUTES,
+          MIN_INTERVAL_MINUTES,
+          MAX_INTERVAL_MINUTES
+        )
+      )
+    )
+    setIntervalDirty(false)
+  }, [props.intervalMinutes])
+
+  useEffect(() => {
+    setTimeoutInput(
+      String(
+        clampInteger(
+          props.timeoutSeconds,
+          DEFAULT_TIMEOUT_SECONDS,
+          MIN_TIMEOUT_SECONDS,
+          MAX_TIMEOUT_SECONDS
+        )
+      )
+    )
+    setTimeoutDirty(false)
+  }, [props.timeoutSeconds])
 
   useEffect(() => {
     const parsed = parseGroups(props.data)
@@ -814,7 +702,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   })
 
   const systemModelsQuery = useQuery({
-    queryKey: ['uptime-kuma', 'available-models'],
+    queryKey: ['model-probe', 'available-models'],
     queryFn: async () => {
       const [enabledRes, pricingRes] = await Promise.allSettled([
         getEnabledModels(),
@@ -866,24 +754,53 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
     staleTime: 60 * 1000,
   })
 
+  const groupDisplayNames = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const item of adminGroupsQuery.data ?? []) {
+      const name = pickContentText(item.names, contentLang) || item.id
+      map.set(item.id, name)
+    }
+    return map
+  }, [adminGroupsQuery.data, contentLang])
+
   const addedGroupIds = useMemo(
     () => new Set(groups.map((g) => g.groupId).filter(Boolean)),
     [groups]
   )
 
-  const availableAdminGroups = useMemo(() => {
-    const list = adminGroupsQuery.data ?? []
-    const query = groupSearch.trim().toLowerCase()
-    return list
-      .filter((g) => !addedGroupIds.has(g.id))
-      .filter((g) => {
-        if (!query) return true
-        const displayName = pickContentText(g.names, contentLang).toLowerCase()
-        return g.id.toLowerCase().includes(query) || displayName.includes(query)
-      })
-  }, [addedGroupIds, adminGroupsQuery.data, contentLang, groupSearch])
+  const unaddedAdminGroups = useMemo(
+    () => (adminGroupsQuery.data ?? []).filter((g) => !addedGroupIds.has(g.id)),
+    [addedGroupIds, adminGroupsQuery.data]
+  )
 
-  const hasChanges = baseUrlDirty || groupsDirty
+  const availableAdminGroups = useMemo(() => {
+    const query = groupSearch.trim().toLowerCase()
+    if (!query) return unaddedAdminGroups
+    return unaddedAdminGroups.filter((g) => {
+      const displayName = pickContentText(g.names, contentLang).toLowerCase()
+      return g.id.toLowerCase().includes(query) || displayName.includes(query)
+    })
+  }, [contentLang, groupSearch, unaddedAdminGroups])
+
+  const hasChanges = intervalDirty || timeoutDirty || groupsDirty
+
+  const buildEditableGroupFromAdmin = (
+    adminGroup: AdminGroup,
+    indexOffset = 0
+  ): EditableProbeGroup => {
+    const displayName =
+      pickContentText(adminGroup.names, contentLang) || adminGroup.id
+    const desc = pickContentText(adminGroup.descs, contentLang).slice(0, 200)
+    const groupModels = systemModelsQuery.data?.byGroup[adminGroup.id] ?? []
+    return {
+      localId: `group-${Date.now()}-${indexOffset}-${adminGroup.id}`,
+      groupId: adminGroup.id,
+      categoryName: displayName.slice(0, 50),
+      enabled: true,
+      description: desc,
+      models: groupModels.slice(0, MAX_MODELS_PER_GROUP),
+    }
+  }
 
   const handleToggleEnabled = async (checked: boolean) => {
     try {
@@ -901,7 +818,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   const handleOpenAddGroup = () => {
     if (groups.length >= MAX_GROUPS) {
       toast.error(
-        t('Uptime Kuma groups cannot exceed {{count}} entries', {
+        t('Monitored groups cannot exceed {{count}} entries', {
           count: MAX_GROUPS,
         })
       )
@@ -913,27 +830,41 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   }
 
   const handleSelectAdminGroup = (adminGroup: AdminGroup) => {
-    const displayName =
-      pickContentText(adminGroup.names, contentLang) || adminGroup.id
-    const existingNames = new Set(groups.map((g) => g.categoryName.trim()))
-    const localId = `group-${Date.now()}-${adminGroup.id}`
-    const newGroup: EditableUptimeGroup = {
-      localId,
-      groupId: adminGroup.id,
-      categoryName: makeUniqueCategoryName(displayName, existingNames),
-      url: globalBaseUrl.trim(),
-      slug: '',
-      description: pickContentText(adminGroup.descs, contentLang).slice(0, 200),
-      models: [],
-      monitorMap: {},
-    }
+    const newGroup = buildEditableGroupFromAdmin(adminGroup)
     setGroups((prev) => [...prev, newGroup])
-    setExpandedIds((prev) => ({ ...prev, [localId]: true }))
+    setExpandedIds((prev) => ({ ...prev, [newGroup.localId]: true }))
     setGroupsDirty(true)
     setShowAddGroupDialog(false)
   }
 
-  const handleUpdateGroup = (next: EditableUptimeGroup) => {
+  const handleAddAllGroups = () => {
+    if (unaddedAdminGroups.length === 0) return
+    const remainingSlots = Math.max(0, MAX_GROUPS - groups.length)
+    if (remainingSlots === 0) {
+      toast.error(
+        t('Monitored groups cannot exceed {{count}} entries', {
+          count: MAX_GROUPS,
+        })
+      )
+      return
+    }
+    const batch = unaddedAdminGroups
+      .slice(0, remainingSlots)
+      .map((adminGroup, idx) => buildEditableGroupFromAdmin(adminGroup, idx))
+    setGroups((prev) => [...prev, ...batch])
+    if (batch[0]) {
+      setExpandedIds((prev) => ({ ...prev, [batch[0].localId]: true }))
+    }
+    setGroupsDirty(true)
+    setShowAddGroupDialog(false)
+    toast.success(
+      t('Added {{count}} groups. Click Save Settings to apply.', {
+        count: batch.length,
+      })
+    )
+  }
+
+  const handleUpdateGroup = (next: EditableProbeGroup) => {
     setGroups((prev) =>
       prev.map((item) => (item.localId === next.localId ? next : item))
     )
@@ -947,100 +878,152 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
     setDeleteTargetId(null)
   }
 
-  const handleFetchMonitors = async (group: EditableUptimeGroup) => {
-    const effectiveUrl = group.url.trim() || globalBaseUrl.trim()
-    const slug = group.slug.trim()
-    if (!effectiveUrl || !isValidHttpUrl(effectiveUrl)) {
-      toast.error(t('Please enter a valid Uptime Kuma URL first'))
-      return
-    }
-    if (!slug || !SLUG_PATTERN.test(slug)) {
-      toast.error(t('Please enter a valid status page slug first'))
-      return
-    }
-    setFetchingMonitorsByGroup((prev) => ({ ...prev, [group.localId]: true }))
-    try {
-      const res = requireServerSuccess(
-        await getUptimeMonitors({ url: effectiveUrl, slug })
-      )
-      const names = Array.isArray(res.data) ? res.data : []
-      setFetchedMonitorsByGroup((prev) => ({
-        ...prev,
-        [group.localId]: names,
-      }))
+  const showProbeSummaryToast = (data: UptimeProbeResponseData | undefined) => {
+    const summary = summarizeProbeResult(data)
+    if (summary.hasCounts) {
       toast.success(
-        t('Fetched {{count}} monitors from Uptime Kuma', {
-          count: names.length,
+        t('Probe finished: {{probed}} checked, {{up}} up, {{down}} down', {
+          probed: summary.probed,
+          up: summary.up,
+          down: summary.down,
         })
       )
+      return
+    }
+    toast.success(t('Model connectivity probe completed'))
+  }
+
+  const handleProbeNow = async () => {
+    setProbingAll(true)
+    try {
+      const res = requireServerSuccess(await triggerUptimeProbe())
+      showProbeSummaryToast(res.data)
+      void queryClient.invalidateQueries({ queryKey: UPTIME_STATUS_QUERY_KEY })
     } catch (error) {
-      handleServerError(error, t('Failed to fetch Uptime Kuma monitors'))
+      handleServerError(error, t('Failed to run connectivity probe'))
     } finally {
-      setFetchingMonitorsByGroup((prev) => ({
-        ...prev,
-        [group.localId]: false,
-      }))
+      setProbingAll(false)
     }
   }
 
-  const validateBeforeSave = (): string | null => {
-    const trimmedBase = globalBaseUrl.trim()
-    if (trimmedBase && !isValidHttpUrl(trimmedBase)) {
-      return t('Global Uptime Kuma URL must be a valid http or https URL')
+  const handleProbeGroup = async (group: EditableProbeGroup) => {
+    const groupId = group.groupId.trim()
+    if (!groupId) return
+    setProbingGroupIds((prev) => ({ ...prev, [group.localId]: true }))
+    try {
+      const res = requireServerSuccess(
+        await triggerUptimeProbe({ group_id: groupId })
+      )
+      showProbeSummaryToast(res.data)
+      void queryClient.invalidateQueries({ queryKey: UPTIME_STATUS_QUERY_KEY })
+    } catch (error) {
+      handleServerError(error, t('Failed to run connectivity probe'))
+    } finally {
+      setProbingGroupIds((prev) => ({ ...prev, [group.localId]: false }))
     }
+  }
+
+  const validateBeforeSave = (): {
+    error: string | null
+    interval: number
+    timeout: number
+  } => {
+    const parsedInterval = Number(intervalInput.trim())
+    if (
+      !Number.isInteger(parsedInterval) ||
+      parsedInterval < MIN_INTERVAL_MINUTES ||
+      parsedInterval > MAX_INTERVAL_MINUTES
+    ) {
+      return {
+        error: t(
+          'Probe interval must be a whole number between {{min}} and {{max}} minutes',
+          { min: MIN_INTERVAL_MINUTES, max: MAX_INTERVAL_MINUTES }
+        ),
+        interval: DEFAULT_INTERVAL_MINUTES,
+        timeout: DEFAULT_TIMEOUT_SECONDS,
+      }
+    }
+
+    const parsedTimeout = Number(timeoutInput.trim())
+    if (
+      !Number.isInteger(parsedTimeout) ||
+      parsedTimeout < MIN_TIMEOUT_SECONDS ||
+      parsedTimeout > MAX_TIMEOUT_SECONDS
+    ) {
+      return {
+        error: t(
+          'Probe timeout must be a whole number between {{min}} and {{max}} seconds',
+          { min: MIN_TIMEOUT_SECONDS, max: MAX_TIMEOUT_SECONDS }
+        ),
+        interval: parsedInterval,
+        timeout: DEFAULT_TIMEOUT_SECONDS,
+      }
+    }
+
     if (groups.length > MAX_GROUPS) {
-      return t('Uptime Kuma groups cannot exceed {{count}} entries', {
-        count: MAX_GROUPS,
-      })
+      return {
+        error: t('Monitored groups cannot exceed {{count}} entries', {
+          count: MAX_GROUPS,
+        }),
+        interval: parsedInterval,
+        timeout: parsedTimeout,
+      }
     }
-    const seenNames = new Set<string>()
+
+    const seenGroupIds = new Set<string>()
     for (let idx = 0; idx < groups.length; idx++) {
       const g = groups[idx]
-      const label = g.categoryName.trim() || `#${idx + 1}`
-      if (!g.categoryName.trim()) {
-        return t('Group #{{index}} is missing the category name field', {
-          index: idx + 1,
-        })
+      const gId = g.groupId.trim()
+      if (!gId && !g.categoryName.trim()) {
+        return {
+          error: t('Group #{{index}} requires a group ID or display name', {
+            index: idx + 1,
+          }),
+          interval: parsedInterval,
+          timeout: parsedTimeout,
+        }
       }
-      if (seenNames.has(g.categoryName.trim())) {
-        return t('Group #{{index}} category name duplicates another group', {
-          index: idx + 1,
-        })
-      }
-      seenNames.add(g.categoryName.trim())
-      const effectiveUrl = g.url.trim() || trimmedBase
-      if (!effectiveUrl || !isValidHttpUrl(effectiveUrl)) {
-        return t('Group "{{name}}" requires a valid Uptime Kuma URL', {
-          name: label,
-        })
-      }
-      const slug = g.slug.trim()
-      if (!slug || !SLUG_PATTERN.test(slug)) {
-        return t('Group "{{name}}" requires a valid status page slug', {
-          name: label,
-        })
+      if (gId) {
+        if (seenGroupIds.has(gId)) {
+          return {
+            error: t('Group #{{index}} duplicates another monitored group', {
+              index: idx + 1,
+            }),
+            interval: parsedInterval,
+            timeout: parsedTimeout,
+          }
+        }
+        seenGroupIds.add(gId)
       }
     }
-    return null
+
+    return { error: null, interval: parsedInterval, timeout: parsedTimeout }
   }
 
   const handleSaveAll = async () => {
-    const validationError = validateBeforeSave()
+    const { error: validationError, interval, timeout } = validateBeforeSave()
     if (validationError) {
       toast.error(validationError)
       return
     }
     setSaving(true)
     try {
-      if (baseUrlDirty) {
+      if (intervalDirty) {
         await updateOption.mutateAsync({
-          key: 'console_setting.uptime_kuma_base_url',
-          value: globalBaseUrl.trim(),
+          key: 'console_setting.model_probe_interval_minutes',
+          value: interval,
         })
-        setBaseUrlDirty(false)
+        setIntervalDirty(false)
+      }
+      if (timeoutDirty) {
+        await updateOption.mutateAsync({
+          key: 'console_setting.model_probe_timeout_seconds',
+          value: timeout,
+        })
+        setTimeoutDirty(false)
       }
       if (groupsDirty) {
-        const serialized = serializeGroups(groups, globalBaseUrl)
+        const serialized = serializeGroups(groups, groupDisplayNames)
         await updateOption.mutateAsync({
           key: 'console_setting.uptime_kuma_groups',
           value: JSON.stringify(serialized),
@@ -1049,7 +1032,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
       }
       void queryClient.invalidateQueries({ queryKey: UPTIME_STATUS_QUERY_KEY })
     } catch (error) {
-      handleServerError(error, t('Failed to save Uptime Kuma settings'))
+      handleServerError(error, t('Failed to save model probe settings'))
     } finally {
       setSaving(false)
     }
@@ -1075,6 +1058,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
             const displayName =
               pickContentText(adminGroup.names, contentLang) || adminGroup.id
             const desc = pickContentText(adminGroup.descs, contentLang)
+            const modelCount = (modelsByGroup[adminGroup.id] ?? []).length
             return (
               <button
                 key={adminGroup.id}
@@ -1101,6 +1085,9 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
                 </div>
                 <div className='flex shrink-0 items-center gap-2'>
                   <Badge variant='secondary' className='text-[11px]'>
+                    {t('{{count}} models', { count: modelCount })}
+                  </Badge>
+                  <Badge variant='outline' className='text-[11px]'>
                     {t('{{count}} channels', {
                       count: adminGroup.refs.channels,
                     })}
@@ -1117,102 +1104,186 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
 
   return (
     <SettingsSection
-      title={t('Uptime Kuma')}
+      title={t('Model Connectivity Monitor')}
       description={t(
-        'Connect Uptime Kuma status pages to system groups for 24h model availability monitoring'
+        'Configure built-in scheduled connectivity probes per group and model for Overview, Pricing, and Model Status pages'
       )}
     >
       <div className='space-y-5'>
-        <div className='bg-muted/20 flex flex-col gap-4 rounded-[14px] border p-4'>
-          <div className='flex flex-wrap items-center justify-between gap-3'>
-            <SettingsSwitchField
-              checked={isEnabled}
-              onCheckedChange={handleToggleEnabled}
-              label={t('Enable Uptime Kuma monitoring')}
-              description={t(
-                'Display 24h connectivity status on Overview, Pricing, and Model Status pages'
-              )}
-              className='flex-1 py-0'
-            />
-            <div className='flex flex-wrap items-center gap-2'>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                onClick={handleOpenAddGroup}
-              >
-                <Plus className='size-4' />
-                {t('Add Group')}
-              </Button>
-              <Button
-                type='button'
-                variant='brand'
-                size='sm'
-                onClick={handleSaveAll}
-                disabled={!hasChanges || saving || updateOption.isPending}
-              >
-                <Save className='size-4' />
-                {saving ? t('Saving...') : t('Save Settings')}
-              </Button>
+        <Card className='bg-muted/20 rounded-[14px] py-0 shadow-none'>
+          <CardContent className='flex flex-col gap-4 p-4'>
+            <div className='flex flex-wrap items-center justify-between gap-3'>
+              <SettingsSwitchField
+                checked={isEnabled}
+                onCheckedChange={handleToggleEnabled}
+                label={t('Enable Model Connectivity Monitor')}
+                description={t(
+                  'Periodically probe configured models and display 24h connectivity status across Overview, Pricing, and Model Status pages'
+                )}
+                className='flex-1 py-0'
+              />
+              <div className='flex flex-wrap items-center gap-2'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={() => void handleProbeNow()}
+                  disabled={probingAll || saving}
+                >
+                  {probingAll ? (
+                    <Loader2
+                      className='size-4 animate-spin'
+                      aria-hidden='true'
+                    />
+                  ) : (
+                    <Activity className='size-4' aria-hidden='true' />
+                  )}
+                  {probingAll ? t('Probing...') : t('Probe Now')}
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={handleOpenAddGroup}
+                >
+                  <Plus className='size-4' aria-hidden='true' />
+                  {t('Add Group')}
+                </Button>
+                {unaddedAdminGroups.length > 0 && (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={handleAddAllGroups}
+                  >
+                    <Layers className='size-4' aria-hidden='true' />
+                    {t('Add all groups')}
+                  </Button>
+                )}
+                <Button
+                  type='button'
+                  variant='brand'
+                  size='sm'
+                  onClick={handleSaveAll}
+                  disabled={!hasChanges || saving || updateOption.isPending}
+                >
+                  <Save className='size-4' aria-hidden='true' />
+                  {saving ? t('Saving...') : t('Save Settings')}
+                </Button>
+              </div>
             </div>
-          </div>
 
-          <div className='border-border/60 space-y-1.5 border-t pt-3'>
-            <Label
-              htmlFor='uptime-kuma-global-base-url'
-              className='flex items-center gap-1.5 text-xs font-semibold'
-            >
-              <Globe className='text-muted-foreground size-3.5' />
-              {t('Global Uptime Kuma URL')}
-            </Label>
-            <Input
-              id='uptime-kuma-global-base-url'
-              value={globalBaseUrl}
-              onChange={(e) => {
-                setGlobalBaseUrl(e.target.value)
-                setBaseUrlDirty(true)
-              }}
-              placeholder='https://status.example.com'
-              className='max-w-xl font-mono text-sm'
-            />
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Default Uptime Kuma server URL automatically pre-filled when adding groups'
-              )}
-            </p>
-          </div>
-        </div>
+            <div className='border-border/60 grid gap-4 border-t pt-3 sm:grid-cols-2'>
+              <div className='space-y-1.5'>
+                <Label
+                  htmlFor='model-probe-interval-minutes'
+                  className='flex items-center gap-1.5 text-xs font-semibold'
+                >
+                  <Clock className='text-muted-foreground size-3.5' />
+                  {t('Probe Interval (minutes)')}
+                </Label>
+                <Input
+                  id='model-probe-interval-minutes'
+                  type='number'
+                  min={MIN_INTERVAL_MINUTES}
+                  max={MAX_INTERVAL_MINUTES}
+                  step={1}
+                  value={intervalInput}
+                  onChange={(e) => {
+                    setIntervalInput(e.target.value)
+                    setIntervalDirty(true)
+                  }}
+                  className='max-w-44 font-mono text-sm'
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Interval between automatic probe cycles ({{min}}–{{max}} min)',
+                    {
+                      min: MIN_INTERVAL_MINUTES,
+                      max: MAX_INTERVAL_MINUTES,
+                    }
+                  )}
+                </p>
+              </div>
+
+              <div className='space-y-1.5'>
+                <Label
+                  htmlFor='model-probe-timeout-seconds'
+                  className='flex items-center gap-1.5 text-xs font-semibold'
+                >
+                  <Timer className='text-muted-foreground size-3.5' />
+                  {t('Probe Timeout (seconds)')}
+                </Label>
+                <Input
+                  id='model-probe-timeout-seconds'
+                  type='number'
+                  min={MIN_TIMEOUT_SECONDS}
+                  max={MAX_TIMEOUT_SECONDS}
+                  step={1}
+                  value={timeoutInput}
+                  onChange={(e) => {
+                    setTimeoutInput(e.target.value)
+                    setTimeoutDirty(true)
+                  }}
+                  className='max-w-44 font-mono text-sm'
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t('Per-model probe request timeout ({{min}}–{{max}} sec)', {
+                    min: MIN_TIMEOUT_SECONDS,
+                    max: MAX_TIMEOUT_SECONDS,
+                  })}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {groups.length === 0 ? (
           <EmptyState
             bordered
-            title={t('No Uptime Kuma groups configured')}
+            title={t('No monitored groups configured')}
             description={t(
-              'Click "Add Group" to bind a system group to an Uptime Kuma status page.'
+              'Click "Add Group" to select system groups and models for built-in connectivity probing.'
             )}
             action={
-              <Button type='button' size='sm' onClick={handleOpenAddGroup}>
-                <Plus className='size-4' />
-                {t('Add Group')}
-              </Button>
+              <div className='flex flex-wrap items-center justify-center gap-2'>
+                <Button type='button' size='sm' onClick={handleOpenAddGroup}>
+                  <Plus className='size-4' />
+                  {t('Add Group')}
+                </Button>
+                {unaddedAdminGroups.length > 0 && (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={handleAddAllGroups}
+                  >
+                    <Layers className='size-4' />
+                    {t('Add all groups')}
+                  </Button>
+                )}
+              </div>
             }
           />
         ) : (
           <div className='space-y-3'>
             {groups.map((group) => (
-              <UptimeGroupCard
+              <ProbeGroupCard
                 key={group.localId}
                 group={group}
-                globalBaseUrl={globalBaseUrl}
+                displayName={
+                  (group.groupId
+                    ? groupDisplayNames.get(group.groupId)
+                    : undefined) ?? group.groupId
+                }
                 expanded={Boolean(expandedIds[group.localId])}
                 allModels={allModels}
                 groupModels={
                   group.groupId ? (modelsByGroup[group.groupId] ?? []) : []
                 }
-                fetchedMonitors={fetchedMonitorsByGroup[group.localId]}
-                isFetchingMonitors={Boolean(
-                  fetchingMonitorsByGroup[group.localId]
-                )}
+                isProbing={
+                  Boolean(probingGroupIds[group.localId]) || probingAll
+                }
                 onToggleExpand={() =>
                   setExpandedIds((prev) => ({
                     ...prev,
@@ -1221,7 +1292,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
                 }
                 onChange={handleUpdateGroup}
                 onDelete={() => setDeleteTargetId(group.localId)}
-                onFetchMonitors={() => void handleFetchMonitors(group)}
+                onProbeGroup={() => void handleProbeGroup(group)}
               />
             ))}
           </div>
@@ -1233,19 +1304,33 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
         onOpenChange={setShowAddGroupDialog}
         title={t('Select Group')}
         description={t(
-          'Choose a system group to configure Uptime Kuma monitoring'
+          'Choose a system group to enable built-in model connectivity probing'
         )}
         contentHeight='auto'
         bodyClassName='space-y-3'
       >
-        <div className='relative'>
-          <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2' />
-          <Input
-            value={groupSearch}
-            onChange={(e) => setGroupSearch(e.target.value)}
-            placeholder={t('Search system groups...')}
-            className='pl-8'
-          />
+        <div className='flex flex-wrap items-center gap-2'>
+          <div className='relative min-w-0 flex-1'>
+            <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2' />
+            <Input
+              value={groupSearch}
+              onChange={(e) => setGroupSearch(e.target.value)}
+              placeholder={t('Search system groups...')}
+              className='pl-8'
+            />
+          </div>
+          {unaddedAdminGroups.length > 0 && (
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={handleAddAllGroups}
+              className='shrink-0'
+            >
+              <Plus className='size-4' />
+              {t('Add all groups')}
+            </Button>
+          )}
         </div>
 
         {groupDialogBody}
@@ -1257,7 +1342,9 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
           if (!open) setDeleteTargetId(null)
         }}
         title={t('Are you sure?')}
-        desc={t('This Uptime Kuma group will be removed from the list.')}
+        desc={t(
+          'This monitored group configuration will be removed from the list.'
+        )}
         confirmText={t('Delete')}
         destructive
         handleConfirm={handleConfirmDelete}

@@ -32,6 +32,13 @@ type ModelPricingChange struct {
 	Reset           bool          `json:"reset,omitempty"`
 }
 
+type FailedModelPricingUpdate struct {
+	ModelName string `json:"model_name"`
+	Error     string `json:"error"`
+}
+
+var errNoPricingUpdates = errors.New("no valid model pricing updates")
+
 type ModelPricingEntry struct {
 	ModelPricingDescription
 	PluginVariants []ModelPricingPluginVariant          `json:"plugin_variants,omitempty"`
@@ -661,6 +668,75 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 		}
 		return nil
 	})
+}
+
+// UpdateModelPricingPartial validates each model change independently so valid
+// entries are persisted together in one batch while invalid entries are returned
+// in failed with their exact error strings.
+func UpdateModelPricingPartial(changes []ModelPricingChange) (updated []string, failed []FailedModelPricingUpdate, err error) {
+	if len(changes) == 0 {
+		return nil, nil, common.NewMessage("Select model pricing changes before saving")
+	}
+	updated = make([]string, 0, len(changes))
+	failed = make([]FailedModelPricingUpdate, 0)
+	err = mutateModelPricingOptions(func(_ *gorm.DB, values map[string]map[string]any) error {
+		defaults := defaultPricingMaps()
+		seen := make(map[string]bool, len(changes))
+		for _, change := range changes {
+			if strings.TrimSpace(change.ModelName) == "" {
+				failed = append(failed, FailedModelPricingUpdate{
+					ModelName: change.ModelName,
+					Error:     common.NewMessage("Model name is required").Error(),
+				})
+				continue
+			}
+			if seen[change.ModelName] {
+				failed = append(failed, FailedModelPricingUpdate{
+					ModelName: change.ModelName,
+					Error:     common.NewMessage("Duplicate model pricing change").Error(),
+				})
+				continue
+			}
+			seen[change.ModelName] = true
+			previous := modelPricingValues(values, change.ModelName)
+			if change.ExpectedVersion == "" || ModelPricingVersion(previous) != change.ExpectedVersion {
+				failed = append(failed, FailedModelPricingUpdate{
+					ModelName: change.ModelName,
+					Error:     fmt.Errorf("%w: %s", ErrModelPricingConflict, change.ModelName).Error(),
+				})
+				continue
+			}
+			pricing := change.Pricing
+			if change.Reset {
+				pricing = modelPricingValues(defaults, change.ModelName)
+			}
+			if vErr := validateModelPricing(change.ModelName, pricing, previous); vErr != nil {
+				failed = append(failed, FailedModelPricingUpdate{
+					ModelName: change.ModelName,
+					Error:     vErr.Error(),
+				})
+				continue
+			}
+			replaceModelPricing(values, change.ModelName, pricing)
+			updated = append(updated, change.ModelName)
+		}
+		sort.Strings(updated)
+		sort.Slice(failed, func(i, j int) bool {
+			return failed[i].ModelName < failed[j].ModelName
+		})
+		if len(updated) == 0 {
+			return errNoPricingUpdates
+		}
+		return nil
+	})
+	if errors.Is(err, errNoPricingUpdates) {
+		return updated, failed, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	InvalidatePricingCache()
+	return updated, failed, nil
 }
 
 // UpdateModelPricingOptions keeps legacy single-option callers on the same

@@ -3,10 +3,10 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,19 +17,14 @@ import (
 	"github.com/QuantumNous/new-api/setting/console_setting"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
 
 const (
-	requestTimeout      = 30 * time.Second
-	httpTimeout         = 10 * time.Second
-	uptimeCacheTTL      = 15 * time.Second
-	uptimeKeySuffix     = "_24"
-	maxRecentHeartbeats = 24
-	apiStatusPath       = "/api/status-page/"
-	apiHeartbeatPath    = "/api/status-page/heartbeat/"
-
+	uptimeCacheTTL          = 10 * time.Second
+	uptimeWindowSeconds     = 24 * 3600
+	manualProbeTimeout      = 60 * time.Second
+	maxRecentHeartbeats     = 24
 	UptimeStatusUnknown     = -1
 	UptimeStatusDown        = 0
 	UptimeStatusUp          = 1
@@ -52,12 +47,15 @@ type Monitor struct {
 }
 
 type UptimeModelStatus struct {
-	Model       string            `json:"model"`
-	MonitorName string            `json:"monitorName,omitempty"`
-	Status      int               `json:"status"`
-	StatusLabel string            `json:"statusLabel"`
-	Uptime      *float64          `json:"uptime"`
-	Heartbeats  []UptimeHeartbeat `json:"heartbeats"`
+	Model         string            `json:"model"`
+	MonitorName   string            `json:"monitorName,omitempty"`
+	Status        int               `json:"status"`
+	StatusLabel   string            `json:"statusLabel"`
+	Uptime        *float64          `json:"uptime"`
+	AvgPingMs     *float64          `json:"avgPingMs,omitempty"`
+	LastCheckedAt int64             `json:"lastCheckedAt,omitempty"`
+	LastMessage   string            `json:"lastMessage,omitempty"`
+	Heartbeats    []UptimeHeartbeat `json:"heartbeats"`
 }
 
 type UptimeGroupResult struct {
@@ -68,53 +66,36 @@ type UptimeGroupResult struct {
 	Models       []UptimeModelStatus `json:"models,omitempty"`
 }
 
-type uptimeStatusPageResponse struct {
-	PublicGroupList []struct {
-		ID          int    `json:"id"`
-		Name        string `json:"name"`
-		MonitorList []struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-		} `json:"monitorList"`
-	} `json:"publicGroupList"`
-}
-
-type uptimeKumaStatusCache struct {
+type uptimeStatusCache struct {
 	sync.Mutex
+	generation    uint64
 	configuration string
 	expiresAt     time.Time
 	results       []UptimeGroupResult
 	refresh       singleflight.Group
 }
 
-var publicUptimeStatusCache uptimeKumaStatusCache
+var publicUptimeStatusCache uptimeStatusCache
 
-func (cache *uptimeKumaStatusCache) get(configuration string) ([]UptimeGroupResult, bool) {
+func (cache *uptimeStatusCache) get(configuration string) ([]UptimeGroupResult, uint64, bool) {
 	cache.Lock()
 	defer cache.Unlock()
+	gen := cache.generation
 	if cache.configuration != configuration || !time.Now().Before(cache.expiresAt) {
-		return nil, false
+		return nil, gen, false
 	}
-	return cache.results, true
+	return cache.results, gen, true
 }
 
-func getAndDecode(ctx context.Context, client *http.Client, url string, dest any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return errors.New("non-200 status")
-	}
-
-	return common.DecodeJson(io.LimitReader(resp.Body, 2<<20), dest)
+// InvalidateUptimeStatusCache clears the short-lived public status cache so option
+// changes and manual probe runs become visible immediately.
+func InvalidateUptimeStatusCache() {
+	publicUptimeStatusCache.Lock()
+	publicUptimeStatusCache.generation++
+	publicUptimeStatusCache.configuration = ""
+	publicUptimeStatusCache.expiresAt = time.Time{}
+	publicUptimeStatusCache.results = nil
+	publicUptimeStatusCache.Unlock()
 }
 
 func uptimeStatusLabel(status int) string {
@@ -132,193 +113,146 @@ func uptimeStatusLabel(status int) string {
 	}
 }
 
-func parseHeartbeatTime(value string) (time.Time, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return time.Time{}, false
+func resolveUptimeGroupDisplayName(group console_setting.UptimeKumaGroup) string {
+	if name := strings.TrimSpace(group.CategoryName); name != "" {
+		return name
 	}
-	for _, layout := range []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		"2006-01-02 15:04:05.999999999",
-		"2006-01-02 15:04:05",
-	} {
-		if t, err := time.Parse(layout, trimmed); err == nil {
-			return t, true
+	groupID := strings.TrimSpace(group.GroupID)
+	if groupID == "" {
+		return ""
+	}
+	if adtyGroup, err := model.GetAdtyGroup(groupID); err == nil && adtyGroup != nil {
+		if name := strings.TrimSpace(adtyGroup.Names["en"]); name != "" {
+			return name
+		}
+		if name := strings.TrimSpace(adtyGroup.Names["zh-CN"]); name != "" {
+			return name
+		}
+		for _, lang := range model.AdtyContentLangs {
+			if name := strings.TrimSpace(adtyGroup.Names[lang]); name != "" {
+				return name
+			}
 		}
 	}
-	return time.Time{}, false
+	return groupID
 }
 
-func extractRecentHeartbeats(raw []UptimeHeartbeat) (int, []UptimeHeartbeat) {
-	if len(raw) == 0 {
-		return UptimeStatusUnknown, nil
+func buildBuiltInUptimeResults(groups []console_setting.UptimeKumaGroup, probes []model.AdtyModelProbe) []UptimeGroupResult {
+	type probeKey struct {
+		groupID   string
+		modelName string
 	}
-	reverseOrder := false
-	if len(raw) >= 2 {
-		if first, ok1 := parseHeartbeatTime(raw[0].Time); ok1 {
-			if last, ok2 := parseHeartbeatTime(raw[len(raw)-1].Time); ok2 && first.After(last) {
-				reverseOrder = true
-			}
+	grouped := make(map[probeKey][]model.AdtyModelProbe)
+	for _, p := range probes {
+		key := probeKey{
+			groupID:   strings.TrimSpace(p.GroupId),
+			modelName: strings.TrimSpace(p.ModelName),
 		}
-	}
-	count := min(len(raw), maxRecentHeartbeats)
-	recent := make([]UptimeHeartbeat, count)
-	if reverseOrder {
-		for i := range count {
-			recent[count-1-i] = raw[i]
-		}
-	} else {
-		copy(recent, raw[len(raw)-count:])
-	}
-	return recent[len(recent)-1].Status, recent
-}
-
-func buildUptimeModelStatuses(group console_setting.UptimeKumaGroup, monitors []Monitor, hasUptime []bool) []UptimeModelStatus {
-	if len(group.Models) == 0 {
-		return nil
+		grouped[key] = append(grouped[key], p)
 	}
 
-	byExactName := make(map[string]int, len(monitors))
-	byLowerName := make(map[string]int, len(monitors))
-	for i, m := range monitors {
-		if _, exists := byExactName[m.Name]; !exists {
-			byExactName[m.Name] = i
-		}
-		lower := strings.ToLower(strings.TrimSpace(m.Name))
-		if lower != "" {
-			if _, exists := byLowerName[lower]; !exists {
-				byLowerName[lower] = i
-			}
-		}
-	}
-
-	statuses := make([]UptimeModelStatus, 0, len(group.Models))
-	for _, modelName := range group.Models {
-		matchedIdx := -1
-		if mappedName := strings.TrimSpace(group.MonitorMap[modelName]); mappedName != "" {
-			if idx, ok := byExactName[mappedName]; ok {
-				matchedIdx = idx
-			} else if idx, ok := byLowerName[strings.ToLower(mappedName)]; ok {
-				matchedIdx = idx
-			}
-		}
-		if matchedIdx < 0 {
-			if idx, ok := byExactName[modelName]; ok {
-				matchedIdx = idx
-			} else if idx, ok := byLowerName[strings.ToLower(modelName)]; ok {
-				matchedIdx = idx
-			}
-		}
-
-		if matchedIdx < 0 {
-			statuses = append(statuses, UptimeModelStatus{
-				Model:       modelName,
-				Status:      UptimeStatusUnknown,
-				StatusLabel: uptimeStatusLabel(UptimeStatusUnknown),
-				Uptime:      nil,
-				Heartbeats:  []UptimeHeartbeat{},
-			})
+	results := make([]UptimeGroupResult, 0, len(groups))
+	for _, group := range groups {
+		if !group.IsEnabled() {
 			continue
 		}
-
-		m := monitors[matchedIdx]
-		var uptimePtr *float64
-		if matchedIdx < len(hasUptime) && hasUptime[matchedIdx] {
-			val := m.Uptime
-			uptimePtr = &val
+		groupKey := strings.TrimSpace(group.GroupID)
+		if groupKey == "" {
+			groupKey = strings.TrimSpace(group.CategoryName)
 		}
-		heartbeats := m.Heartbeats
-		if heartbeats == nil {
-			heartbeats = []UptimeHeartbeat{}
-		}
-		statuses = append(statuses, UptimeModelStatus{
-			Model:       modelName,
-			MonitorName: m.Name,
-			Status:      m.Status,
-			StatusLabel: uptimeStatusLabel(m.Status),
-			Uptime:      uptimePtr,
-			Heartbeats:  heartbeats,
-		})
-	}
-	return statuses
-}
+		displayName := resolveUptimeGroupDisplayName(group)
 
-func fetchGroupData(ctx context.Context, client *http.Client, group console_setting.UptimeKumaGroup, globalBaseURL string) UptimeGroupResult {
-	result := UptimeGroupResult{
-		GroupID:      group.GroupID,
-		CategoryName: group.CategoryName,
-		Description:  group.Description,
-		Monitors:     []Monitor{},
-	}
+		models := make([]UptimeModelStatus, 0, len(group.Models))
+		monitors := make([]Monitor, 0, len(group.Models))
 
-	effectiveURL := strings.TrimSpace(group.URL)
-	if effectiveURL == "" {
-		effectiveURL = strings.TrimSpace(globalBaseURL)
-	}
-	slug := strings.TrimSpace(group.Slug)
-	if effectiveURL == "" || slug == "" || console_setting.ValidateUptimeKumaBaseURL(effectiveURL) != nil || console_setting.ValidateUptimeKumaSlug(slug) != nil {
-		result.Models = buildUptimeModelStatuses(group, nil, nil)
-		return result
-	}
-
-	baseURL := strings.TrimRight(effectiveURL, "/")
-
-	var statusData uptimeStatusPageResponse
-	var heartbeatData struct {
-		HeartbeatList map[string][]UptimeHeartbeat `json:"heartbeatList"`
-		UptimeList    map[string]*float64          `json:"uptimeList"`
-	}
-
-	// The status and heartbeat endpoints are independent; one failure must not
-	// cancel the other request after it has already been dispatched.
-	var g errgroup.Group
-	g.Go(func() error {
-		return getAndDecode(ctx, client, baseURL+apiStatusPath+slug, &statusData)
-	})
-	g.Go(func() error {
-		return getAndDecode(ctx, client, baseURL+apiHeartbeatPath+slug, &heartbeatData)
-	})
-
-	if g.Wait() != nil {
-		result.Models = buildUptimeModelStatuses(group, nil, nil)
-		return result
-	}
-
-	hasUptime := make([]bool, 0)
-	for _, pg := range statusData.PublicGroupList {
-		if len(pg.MonitorList) == 0 {
-			continue
-		}
-
-		for _, m := range pg.MonitorList {
-			// Group names often identify channels. The public page does not
-			// show them, and this unauthenticated response must not either.
-			monitor := Monitor{
-				Name:   m.Name,
-				Status: UptimeStatusUnknown,
+		for _, modelName := range group.Models {
+			rows := grouped[probeKey{groupID: groupKey, modelName: modelName}]
+			if len(rows) == 0 {
+				models = append(models, UptimeModelStatus{
+					Model:       modelName,
+					MonitorName: modelName,
+					Status:      UptimeStatusUnknown,
+					StatusLabel: uptimeStatusLabel(UptimeStatusUnknown),
+					Uptime:      nil,
+					Heartbeats:  []UptimeHeartbeat{},
+				})
+				monitors = append(monitors, Monitor{
+					Name:       modelName,
+					Uptime:     0,
+					Status:     UptimeStatusUnknown,
+					Heartbeats: []UptimeHeartbeat{},
+				})
+				continue
 			}
 
-			monitorID := strconv.Itoa(m.ID)
-			if heartbeats, exists := heartbeatData.HeartbeatList[monitorID]; exists && len(heartbeats) > 0 {
-				monitor.Status, monitor.Heartbeats = extractRecentHeartbeats(heartbeats)
-			}
-
-			uptimeFound := false
-			if uptimePtr, exists := heartbeatData.UptimeList[monitorID+uptimeKeySuffix]; exists && uptimePtr != nil && !math.IsNaN(*uptimePtr) && !math.IsInf(*uptimePtr, 0) {
-				if len(monitor.Heartbeats) > 0 || *uptimePtr > 0 {
-					monitor.Uptime = *uptimePtr
-					uptimeFound = true
+			upCount := 0
+			pingSum := 0.0
+			pingCount := 0
+			for _, row := range rows {
+				if row.Status == model.AdtyModelProbeStatusUp {
+					upCount++
+					pingSum += row.PingMs
+					pingCount++
 				}
 			}
 
-			result.Monitors = append(result.Monitors, monitor)
-			hasUptime = append(hasUptime, uptimeFound)
-		}
-	}
+			uptimeVal := float64(upCount) / float64(len(rows))
+			var avgPingPtr *float64
+			if pingCount > 0 {
+				avg := math.Round((pingSum/float64(pingCount))*100) / 100
+				avgPingPtr = &avg
+			}
 
-	result.Models = buildUptimeModelStatuses(group, result.Monitors, hasUptime)
-	return result
+			latest := rows[len(rows)-1]
+			status := UptimeStatusDown
+			if latest.Status == model.AdtyModelProbeStatusUp {
+				status = UptimeStatusUp
+			}
+
+			startIdx := max(0, len(rows)-maxRecentHeartbeats)
+			recentRows := rows[startIdx:]
+			heartbeats := make([]UptimeHeartbeat, 0, len(recentRows))
+			for _, row := range recentRows {
+				ping := row.PingMs
+				hbStatus := UptimeStatusDown
+				if row.Status == model.AdtyModelProbeStatusUp {
+					hbStatus = UptimeStatusUp
+				}
+				heartbeats = append(heartbeats, UptimeHeartbeat{
+					Status: hbStatus,
+					Time:   time.Unix(row.CheckedAt, 0).UTC().Format(time.RFC3339),
+					Ping:   &ping,
+				})
+			}
+
+			models = append(models, UptimeModelStatus{
+				Model:         modelName,
+				MonitorName:   modelName,
+				Status:        status,
+				StatusLabel:   uptimeStatusLabel(status),
+				Uptime:        &uptimeVal,
+				AvgPingMs:     avgPingPtr,
+				LastCheckedAt: latest.CheckedAt,
+				LastMessage:   latest.Message,
+				Heartbeats:    heartbeats,
+			})
+			monitors = append(monitors, Monitor{
+				Name:       modelName,
+				Uptime:     uptimeVal,
+				Status:     status,
+				Heartbeats: heartbeats,
+			})
+		}
+
+		results = append(results, UptimeGroupResult{
+			GroupID:      group.GroupID,
+			CategoryName: displayName,
+			Description:  group.Description,
+			Monitors:     monitors,
+			Models:       models,
+		})
+	}
+	return results
 }
 
 func resolveUptimeSiteID(c *gin.Context) int {
@@ -353,9 +287,8 @@ func GetUptimeKumaStatus(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": []UptimeGroupResult{}})
 		return
 	}
-	globalBaseURL := strings.TrimSpace(settings.UptimeKumaBaseURL)
-	configuration := globalBaseURL + "\x00" + settings.UptimeKumaGroups
-	groups := console_setting.ParseUptimeKumaGroups(settings.UptimeKumaGroups)
+	configuration := settings.UptimeKumaGroups
+	groups := console_setting.ParseUptimeKumaGroups(configuration)
 	if len(groups) == 0 {
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": []UptimeGroupResult{}})
 		return
@@ -363,34 +296,34 @@ func GetUptimeKumaStatus(c *gin.Context) {
 
 	siteID := resolveUptimeSiteID(c)
 
-	if results, ok := publicUptimeStatusCache.get(configuration); ok {
+	if results, _, ok := publicUptimeStatusCache.get(configuration); ok {
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": filterUptimeResultsForSite(results, siteID)})
 		return
 	}
 
-	refresh := publicUptimeStatusCache.refresh.DoChan(configuration, func() (any, error) {
-		if results, ok := publicUptimeStatusCache.get(configuration); ok {
+	publicUptimeStatusCache.Lock()
+	startGen := publicUptimeStatusCache.generation
+	publicUptimeStatusCache.Unlock()
+
+	flightKey := fmt.Sprintf("%d\x00%s", startGen, configuration)
+	refresh := publicUptimeStatusCache.refresh.DoChan(flightKey, func() (any, error) {
+		if results, gen, ok := publicUptimeStatusCache.get(configuration); ok && gen == startGen {
 			return results, nil
 		}
-		// A disconnected visitor must not cancel work shared by other callers.
-		// The independent deadline still bounds every refresh, including failures.
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-		defer cancel()
-		client := service.GetVerifiedNoRedirectSSRFProtectedHTTPClient(httpTimeout)
-		results := make([]UptimeGroupResult, len(groups))
-		g, gCtx := errgroup.WithContext(ctx)
-		g.SetLimit(4)
-		for i, group := range groups {
-			g.Go(func() error {
-				results[i] = fetchGroupData(gCtx, client, group, globalBaseURL)
-				return nil
-			})
+		since := time.Now().Unix() - uptimeWindowSeconds
+		probes, err := model.ListAdtyModelProbesSince(since)
+		if err != nil {
+			common.SysError(common.LogText("list adty model probes: %s", err.Error()))
+			return buildBuiltInUptimeResults(groups, nil), nil
 		}
-		_ = g.Wait()
+		results := buildBuiltInUptimeResults(groups, probes)
+
 		publicUptimeStatusCache.Lock()
-		publicUptimeStatusCache.configuration = configuration
-		publicUptimeStatusCache.results = results
-		publicUptimeStatusCache.expiresAt = time.Now().Add(uptimeCacheTTL)
+		if publicUptimeStatusCache.generation == startGen {
+			publicUptimeStatusCache.configuration = configuration
+			publicUptimeStatusCache.results = results
+			publicUptimeStatusCache.expiresAt = time.Now().Add(uptimeCacheTTL)
+		}
 		publicUptimeStatusCache.Unlock()
 		return results, nil
 	})
@@ -403,52 +336,27 @@ func GetUptimeKumaStatus(c *gin.Context) {
 	}
 }
 
-func GetUptimeKumaMonitors(c *gin.Context) {
-	rawURL := strings.TrimSpace(c.Query("url"))
-	if rawURL == "" {
-		rawURL = strings.TrimSpace(console_setting.GetConsoleSetting().UptimeKumaBaseURL)
+// PostAdtyModelProbeRun manually triggers a built-in model connectivity probe batch
+// (optionally scoped to one group_id) and invalidates the cached public status.
+func PostAdtyModelProbeRun(c *gin.Context) {
+	var body struct {
+		GroupID string `json:"group_id"`
 	}
-	if rawURL == "" {
-		common.ApiErrorT(c, "Uptime Kuma URL is required")
-		return
-	}
-	if err := console_setting.ValidateUptimeKumaBaseURL(rawURL); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-
-	slug := strings.TrimSpace(c.Query("slug"))
-	if err := console_setting.ValidateUptimeKumaSlug(slug); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-
-	baseURL := strings.TrimRight(rawURL, "/")
-	ctx, cancel := context.WithTimeout(c.Request.Context(), httpTimeout)
-	defer cancel()
-
-	client := service.GetVerifiedNoRedirectSSRFProtectedHTTPClient(httpTimeout)
-	var statusData uptimeStatusPageResponse
-	if err := getAndDecode(ctx, client, baseURL+apiStatusPath+slug, &statusData); err != nil {
-		common.ApiErrorT(c, "Failed to fetch Uptime Kuma monitors: {{error}}", map[string]any{"error": err.Error()})
-		return
-	}
-
-	names := make([]string, 0)
-	seen := make(map[string]struct{})
-	for _, pg := range statusData.PublicGroupList {
-		for _, m := range pg.MonitorList {
-			name := strings.TrimSpace(m.Name)
-			if name == "" {
-				continue
-			}
-			if _, dup := seen[name]; dup {
-				continue
-			}
-			seen[name] = struct{}{}
-			names = append(names, name)
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := common.DecodeJson(c.Request.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
 		}
 	}
 
-	common.ApiSuccess(c, names)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), manualProbeTimeout)
+	defer cancel()
+
+	summary, err := service.RunAdtyModelProbesOnce(ctx, strings.TrimSpace(body.GroupID))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	InvalidateUptimeStatusCache()
+	common.ApiSuccess(c, summary)
 }

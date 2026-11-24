@@ -81,6 +81,22 @@ export type ModelPricingChange = {
   reset?: boolean
 }
 
+export type FailedModelPricingSync = {
+  model_name: string
+  error: string
+}
+
+export type SaveModelPricingResult = {
+  updated_models?: string[]
+  failed_models?: FailedModelPricingSync[]
+  updated_count?: number
+  failed_count?: number
+}
+
+export type SaveModelPricingOptions = {
+  partial?: boolean
+}
+
 export type ModelPricingConversion = Partial<ModelPricingDescription> & {
   expression?: string
   unsupported_reason?: string
@@ -155,18 +171,49 @@ export async function invalidateModelPricing(client: QueryClient) {
   ])
 }
 
-export async function saveModelPricing(changes: ModelPricingChange[]) {
-  if (!changes.length) return
-  const res = await api.patch('/api/option/model_pricing', { changes })
+export async function saveModelPricing(
+  changes: ModelPricingChange[],
+  options?: SaveModelPricingOptions
+): Promise<SaveModelPricingResult> {
+  if (!changes.length) {
+    return {
+      updated_models: [],
+      failed_models: [],
+      updated_count: 0,
+      failed_count: 0,
+    }
+  }
+  const payload: {
+    changes: ModelPricingChange[]
+    partial?: boolean
+  } = { changes }
+  if (options?.partial) {
+    payload.partial = true
+  }
+  const res = await api.patch<{
+    success: boolean
+    message?: string
+    message_key?: string
+    message_params?: Record<string, unknown>
+    data?: SaveModelPricingResult
+  }>('/api/option/model_pricing', payload)
   if (!res.data.success) {
+    if (
+      options?.partial &&
+      Array.isArray(res.data.data?.failed_models) &&
+      res.data.data.failed_models.length > 0
+    ) {
+      return res.data.data
+    }
     throw createServerError(res.data, t('Failed to save model pricing'))
   }
+  return res.data.data ?? {}
 }
 
 export function useSaveModelPricing() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: saveModelPricing,
+    mutationFn: (changes: ModelPricingChange[]) => saveModelPricing(changes),
     onSuccess: () => invalidateModelPricing(client),
   })
 }

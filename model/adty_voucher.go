@@ -45,6 +45,7 @@ type AdtyVoucher struct {
 	IssuerId          int             `json:"issuer_id" gorm:"index;uniqueIndex:ux_adty_voucher_issuer_intent"`
 	RedeemerId        int             `json:"redeemer_id" gorm:"index"`
 	Reason            string          `json:"reason,omitempty" gorm:"type:varchar(200)"`
+	BatchNo           string          `json:"batch_no,omitempty" gorm:"type:varchar(48);index"`
 	IntentKey         *string         `json:"intent_key,omitempty" gorm:"uniqueIndex:ux_adty_voucher_issuer_intent;type:varchar(128)"`
 	InheritedByMain   bool            `json:"inherited_by_main"`
 	// TradeNo is empty until redeem. Uniqueness of non-empty values is enforced

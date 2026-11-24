@@ -25,6 +25,7 @@ import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
 import { getSelf } from '@/lib/api'
 import { getCurrencyDisplay } from '@/lib/currency'
+import { ROLE } from '@/lib/roles'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -41,6 +42,10 @@ export function BalanceChip() {
   const { t, i18n } = useTranslation()
   const user = useAuthStore((state) => state.auth.user)
   const isSiteStaff = (user?.staff_site_id ?? 0) > 0
+  const isPureSiteOwner = Boolean(
+    user?.adty_site_owner && user.role < ROLE.ADMIN
+  )
+  const hideBalanceChip = isSiteStaff || isPureSiteOwner
   const sessionQuota = user?.quota
   const balanceQuery = useQuery({
     queryKey: adtyBalanceQueryKey,
@@ -48,7 +53,7 @@ export function BalanceChip() {
       const response = requireServerSuccess(await getSelf())
       return Number(response.data?.quota ?? 0)
     },
-    enabled: !isSiteStaff,
+    enabled: !hideBalanceChip,
     // Payment settlement already invalidates this key. Do not refetch on
     // every tab focus: that redraws the header while the admin is working.
     staleTime: 60_000,
@@ -56,7 +61,7 @@ export function BalanceChip() {
     meta: { errorToast: false },
   })
 
-  if (isSiteStaff) {
+  if (hideBalanceChip) {
     return null
   }
 

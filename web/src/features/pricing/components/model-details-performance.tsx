@@ -31,12 +31,12 @@ import { cn } from '@/lib/utils'
 
 import { useUptimeStatus } from '../hooks/use-uptime-status'
 import {
-  computeAveragePing,
   formatUptimePercentage,
   getConnectivityBadgeVariant,
   getConnectivityStatusLabelKey,
   getConnectivityTextColorClass,
   resolveAllGroupUptimesForModel,
+  resolveModelPingMs,
   resolveModelUptimeForPricing,
   type ResolvedModelUptime,
 } from '../lib/uptime'
@@ -113,7 +113,7 @@ export function ModelDetailsPerformance(props: ModelDetailsPerformanceProps) {
     )
   }
 
-  const avgPing = computeAveragePing(primary.heartbeats)
+  const avgPing = resolveModelPingMs(primary)
 
   return (
     <div className='flex flex-col gap-4'>
@@ -236,7 +236,7 @@ export function ModelDetailsPerformance(props: ModelDetailsPerformanceProps) {
               className: tableStyles.compactHeaderCellRight,
               cellClassName: tableStyles.compactMutedNumericCell,
               cell: (row: ResolvedModelUptime) => {
-                const ping = computeAveragePing(row.heartbeats)
+                const ping = resolveModelPingMs(row)
                 return ping !== null ? `${ping} ${t('ms')}` : '—'
               },
             },

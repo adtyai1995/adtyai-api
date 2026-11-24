@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { AlertTriangle, ArrowLeft, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ticket, Trash2 } from 'lucide-react'
 import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -38,6 +38,7 @@ import {
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import { QuickMarginVoucherDialog } from '@/features/adty-voucher/quick-margin-voucher-dialog'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
@@ -76,6 +77,7 @@ export function SiteDetailPage(props: { siteId: number }) {
   const [closing, setClosing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteReason, setDeleteReason] = useState('')
+  const [quickMarginOpen, setQuickMarginOpen] = useState(false)
 
   const query = useQuery({
     queryKey: siteAdminKeys.site(props.siteId),
@@ -286,8 +288,18 @@ export function SiteDetailPage(props: { siteId: number }) {
                     <SiteBonusMethodAuth siteId={site.id} />
                     {isRoot && (
                       <Card>
-                        <CardHeader>
+                        <CardHeader className='flex flex-row flex-wrap items-center justify-between gap-2 space-y-0'>
                           <CardTitle>{t('Wallets & Margin')}</CardTitle>
+                          <Button
+                            type='button'
+                            size='sm'
+                            variant='brand'
+                            disabled={site.status !== 'active'}
+                            onClick={() => setQuickMarginOpen(true)}
+                          >
+                            <Ticket className='size-3.5' aria-hidden='true' />
+                            {t('Issue margin recharge code')}
+                          </Button>
                         </CardHeader>
                         <CardContent>
                           <SiteFundPanel siteId={site.id} />
@@ -392,6 +404,15 @@ export function SiteDetailPage(props: { siteId: number }) {
 
                 {isRoot && (
                   <>
+                    <QuickMarginVoucherDialog
+                      siteId={site.id}
+                      siteLabel={
+                        brand.name ? `${brand.name} · ${displayHost}` : displayHost
+                      }
+                      ownerLabel={site.owner_username || `#${site.owner_user_id}`}
+                      open={quickMarginOpen}
+                      onOpenChange={setQuickMarginOpen}
+                    />
                     <CloseSiteDialog
                       domains={domains}
                       site={site}

@@ -97,28 +97,58 @@ interface UptimePanelRow {
   name: string
   status: number
   uptime: number | null
+  pingMs: number | null
+  lastMessage?: string | null
   heartbeats: UptimeHeartbeat[]
   group?: string
 }
 
+function resolveRowPingMs(
+  avgPingMs: number | null | undefined,
+  heartbeats: UptimeHeartbeat[]
+): number | null {
+  if (avgPingMs != null && Number.isFinite(avgPingMs) && avgPingMs >= 0) {
+    return Math.round(avgPingMs)
+  }
+  let sum = 0
+  let count = 0
+  for (const hb of heartbeats) {
+    if (hb.ping != null && Number.isFinite(hb.ping) && hb.ping >= 0) {
+      sum += hb.ping
+      count++
+    }
+  }
+  if (count === 0) return null
+  return Math.round(sum / count)
+}
+
 function getGroupRows(group: UptimeGroupResult): UptimePanelRow[] {
   if (group.models && group.models.length > 0) {
-    return group.models.map((item) => ({
-      key: `model:${item.model}`,
-      name: item.model,
-      status: item.status,
-      uptime: item.uptime,
-      heartbeats: item.heartbeats ?? [],
-    }))
+    return group.models.map((item) => {
+      const heartbeats = item.heartbeats ?? []
+      return {
+        key: `model:${item.model}`,
+        name: item.model,
+        status: item.status,
+        uptime: item.uptime,
+        pingMs: resolveRowPingMs(item.avgPingMs, heartbeats),
+        lastMessage: item.lastMessage,
+        heartbeats,
+      }
+    })
   }
-  return (group.monitors ?? []).map((monitor) => ({
-    key: `monitor:${monitor.name}`,
-    name: monitor.name,
-    status: monitor.status,
-    uptime: Number.isFinite(monitor.uptime) ? monitor.uptime : null,
-    heartbeats: monitor.heartbeats ?? [],
-    group: monitor.group,
-  }))
+  return (group.monitors ?? []).map((monitor) => {
+    const heartbeats = monitor.heartbeats ?? []
+    return {
+      key: `monitor:${monitor.name}`,
+      name: monitor.name,
+      status: monitor.status,
+      uptime: Number.isFinite(monitor.uptime) ? monitor.uptime : null,
+      pingMs: resolveRowPingMs(null, heartbeats),
+      heartbeats,
+      group: monitor.group,
+    }
+  })
 }
 
 export function UptimePanel() {
@@ -158,12 +188,12 @@ export function UptimePanel() {
           {t('Uptime')}
         </span>
       }
-      description={t('Grouped monitor status from Uptime Kuma')}
+      description={t('24h model connectivity status')}
       loading={uptimeQuery.isLoading}
       error={errorMessage}
       onRetry={handleRefresh}
       empty={!groups.length}
-      emptyMessage={t('No uptime monitoring configured')}
+      emptyMessage={t('No model connectivity monitoring configured')}
       height='h-80'
       contentClassName='p-0'
       headerActions={
@@ -214,7 +244,10 @@ export function UptimePanel() {
                         'border-border/60 border-b'
                     )}
                   >
-                    <div className='flex min-w-0 items-center gap-2.5'>
+                    <div
+                      className='flex min-w-0 items-center gap-2.5'
+                      title={row.lastMessage || undefined}
+                    >
                       <StatusDot status={row.status} />
                       <span className='truncate font-mono text-xs sm:text-sm'>
                         {row.name}
@@ -227,6 +260,11 @@ export function UptimePanel() {
                     </div>
                     <div className='flex shrink-0 items-center gap-2.5'>
                       <MiniHeartbeatStrip heartbeats={row.heartbeats} />
+                      {row.pingMs !== null && (
+                        <span className='text-muted-foreground hidden w-14 text-right font-mono text-xs tabular-nums sm:inline'>
+                          {row.pingMs} {t('ms')}
+                        </span>
+                      )}
                       <span className='text-foreground w-16 text-right font-mono text-xs font-semibold tabular-nums sm:text-sm'>
                         {row.uptime !== null
                           ? `${(row.uptime * 100).toFixed(2)}%`

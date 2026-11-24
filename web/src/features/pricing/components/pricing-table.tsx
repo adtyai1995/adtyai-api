@@ -29,7 +29,7 @@ import {
 import type { UptimeGroupResult } from '@/features/dashboard/types'
 
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
-import type { PricingModel, TokenUnit } from '../types'
+import type { PricingModel, PricingUsableGroupValue, TokenUnit } from '../types'
 import { usePricingColumns } from './pricing-columns'
 
 export interface PricingTableProps {
@@ -42,6 +42,7 @@ export interface PricingTableProps {
   selectedGroup?: string
   onModelClick?: (modelName: string) => void
   usableGroups?: string[]
+  usableGroup?: Record<string, PricingUsableGroupValue>
   uptimeGroups?: UptimeGroupResult[]
 }
 
@@ -70,6 +71,7 @@ export function PricingTable(props: PricingTableProps) {
     showRechargePrice,
     selectedGroup,
     usableGroups: props.usableGroups,
+    usableGroup: props.usableGroup,
     uptimeGroups: props.uptimeGroups,
   })
 

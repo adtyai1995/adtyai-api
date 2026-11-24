@@ -19,8 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { AdtyOnlineTopup } from '@/features/wallet/adty/components/adty-online-topup'
@@ -49,36 +51,47 @@ export function EarningToMarginPanel(props: {
     onSuccess: () => {
       intentRef.current = null
       setAmount('')
+      toast.success(t('Saved successfully'))
       void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
     },
     onError: (error) => handleServerError(error),
   })
   return (
-    <section className='flex flex-col gap-3'>
-      <div className='flex flex-col gap-1'>
-        <h2 className='text-sm font-medium'>{t('Transfer earnings to margin')}</h2>
-        <p className='text-muted-foreground text-sm'>
-          {t('The margin tier comes from the enabled site tier. This page does not choose a tier amount.')}
-        </p>
-      </div>
-      <div className='flex flex-col gap-1'>
-        <Label htmlFor='earn-margin-amount'>{t('Amount')}</Label>
-        <Input
-          id='earn-margin-amount'
-          value={amount}
-          inputMode='decimal'
-          autoComplete='off'
-          onChange={(event) => setAmount(event.target.value)}
-        />
-      </div>
-      <Button
-        type='button'
-        variant='outline'
-        disabled={transfer.isPending || amount.trim() === ''}
-        onClick={() => transfer.mutate()}
-      >
-        {t('Transfer earnings to margin')}
-      </Button>
+    <section className='flex flex-col gap-4'>
+      <Card>
+        <CardContent className='flex flex-col gap-3 py-4'>
+          <div className='flex flex-col gap-1'>
+            <h2 className='text-sm font-medium'>
+              {t('Transfer earnings to margin')}
+            </h2>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'The margin tier comes from the enabled site tier. This page does not choose a tier amount.'
+              )}
+            </p>
+          </div>
+          <div className='flex flex-col gap-2 sm:flex-row sm:items-end'>
+            <div className='flex flex-1 flex-col gap-1'>
+              <Label htmlFor='earn-margin-amount'>{t('Amount')}</Label>
+              <Input
+                id='earn-margin-amount'
+                value={amount}
+                inputMode='decimal'
+                autoComplete='off'
+                onChange={(event) => setAmount(event.target.value)}
+              />
+            </div>
+            <Button
+              type='button'
+              variant='outline'
+              disabled={transfer.isPending || amount.trim() === ''}
+              onClick={() => transfer.mutate()}
+            >
+              {t('Transfer earnings to margin')}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
       <AdtyOnlineTopup
         business='owner_margin_topup'
         returnTradeNo={props.returnTradeNo}

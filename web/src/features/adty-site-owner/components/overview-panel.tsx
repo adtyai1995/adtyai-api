@@ -55,18 +55,21 @@ export function OverviewPanel() {
   const { counts, failed } = useSidebarBadges()
   const tasks = [
     {
-      kind: 'tickets_pending',
-      section: 'tickets',
+      key: 'tickets',
+      count: counts.owner_tickets_pending ?? counts.tickets_pending ?? 0,
+      section: 'tickets' as const,
       label: t('Ticket management'),
     },
     {
-      kind: 'invite_withdrawals_pending',
-      section: 'commissions',
+      key: 'commissions',
+      count: counts.invite_withdrawals_pending ?? 0,
+      section: 'commissions' as const,
       label: t('Invite commission withdrawal'),
     },
     {
-      kind: 'staff_balance_pending',
-      section: 'staff',
+      key: 'staff',
+      count: counts.staff_balance_pending ?? 0,
+      section: 'staff' as const,
       label: t('Balance requests'),
     },
   ]
@@ -90,29 +93,31 @@ export function OverviewPanel() {
         <div className='flex flex-wrap gap-4'>
           {tasks.map((task) => (
             <Link
-              key={task.kind}
+              key={task.key}
               to='/site-owner/$section'
               params={{ section: task.section }}
               hash='pending'
               className='underline'
             >
-              {task.label} ({failed || !counts ? '—' : (counts[task.kind] ?? 0)}
-              )
+              {task.label} ({failed ? '—' : task.count})
             </Link>
           ))}
         </div>
       </section>
       <nav aria-label={t('Earnings')} className='flex flex-wrap gap-4'>
-        {[
-          ['withdrawal', t('Withdrawals')],
-          ['margin', t('Transfer earnings to margin')],
-          ['settlement', t('Settlement sheet')],
-        ].map(([hash, label]) => (
+        {(
+          [
+            ['earnings', t('Earnings Details')],
+            ['withdrawals', t('Withdrawals')],
+            ['wallets', t('Transfer earnings to margin')],
+            ['settlements', t('Settlement Sheets')],
+            ['commissions', t('Promotion Management')],
+          ] as const
+        ).map(([section, label]) => (
           <Link
-            key={hash}
+            key={section}
             to='/site-owner/$section'
-            params={{ section: 'earnings' }}
-            hash={hash}
+            params={{ section }}
             className='underline'
           >
             {label}
@@ -120,10 +125,12 @@ export function OverviewPanel() {
         ))}
       </nav>
       {(earnings.isError || stats.isError) && (
-        <ErrorState onRetry={() => {
-          if (earnings.isError) void earnings.refetch()
-          if (stats.isError) void stats.refetch()
-        }} />
+        <ErrorState
+          onRetry={() => {
+            if (earnings.isError) void earnings.refetch()
+            if (stats.isError) void stats.refetch()
+          }}
+        />
       )}
       {earnings.isPending && <LoadingState />}
       {balances && (

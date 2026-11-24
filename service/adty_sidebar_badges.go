@@ -75,9 +75,9 @@ type AdtyReferralAdminBadges struct {
 
 // CollectAdtySidebarBadges returns confirmed badge counts the caller is
 // allowed to see. Unauthorized kinds are omitted (not zero) so a caller
-// cannot learn that work exists outside their scope (EMP-017). Any query
-// failure is returned to the caller; the map must not be treated as a
-// successful empty result.
+// cannot learn that work exists outside their scope (EMP-017). Individual
+// counter query failures are logged and degraded to 0 so one failing subquery
+// never takes down the entire sidebar badge response (R-33 #3).
 // MarkAdtySidebarBadgesSeen records the current timestamp as seen for the given
 // confirmed badge keys so opening a menu immediately clears its badge (R-32 #6).
 func MarkAdtySidebarBadgesSeen(userID int, keys []string) error {
@@ -107,6 +107,15 @@ func badgeAfterSeen(query *gorm.DB, col string, seenAt int64) *gorm.DB {
 	return query
 }
 
+func countBadgeOrZero(kind string, query *gorm.DB) int64 {
+	n, err := countScoped(query)
+	if err != nil {
+		common.SysError(common.LogText("sidebar badge %s query failed: %s", kind, err.Error()))
+		return 0
+	}
+	return n
+}
+
 func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScopes ...[]string) (map[string]int64, error) {
 	if userID <= 0 {
 		return nil, common.NewMessage("Invalid parameters")
@@ -117,12 +126,14 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 	}
 	seenMap, err := model.GetAdtyBadgeSeenMap(userID)
 	if err != nil {
-		return nil, err
+		common.SysError(common.LogText("sidebar badge seen map load failed (user %d): %s", userID, err.Error()))
+		seenMap = map[string]int64{}
 	}
 	counts := map[string]int64{}
 	unread, err := countAdtyNotificationUnread(userID, requestSite, tokenScopes...)
 	if err != nil {
-		return nil, err
+		common.SysError(common.LogText("sidebar badge %s query failed: %s", AdtyBadgeNotificationUnread, err.Error()))
+		unread = 0
 	}
 	counts[AdtyBadgeNotificationUnread] = unread
 	isToken := len(tokenScopes) > 0
@@ -131,46 +142,34 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 	}
 
 	if requestSite == nil {
-		if err := collectAdtyReferralAdminBadgeCounts(counts, actor, seenMap, tokenScopes...); err != nil {
-			return nil, err
-		}
+		_ = collectAdtyReferralAdminBadgeCounts(counts, actor, seenMap, true, tokenScopes...)
 		if actor.User.Role >= common.RoleRootUser && tokenAllows("option:read") {
-			pending, err := countScoped(badgeAfterSeen(model.DB.Model(&model.AdtySiteWithdrawal{}).Where("status = ?", model.AdtySiteWithdrawPending), "created_at", seenMap[AdtyBadgeSiteWithdrawalsPending]))
-			if err != nil {
-				return nil, err
-			}
-			counts[AdtyBadgeSiteWithdrawalsPending] = pending
-			anomalies, err := countScoped(badgeAfterSeen(model.DB.Model(&model.AdtyAnomalyDisposition{}).Where("status IN ?", []string{"open", "reviewing"}), "created_at", seenMap[AdtyBadgeFundAnomaliesOpen]))
-			if err != nil {
-				return nil, err
-			}
-			counts[AdtyBadgeFundAnomaliesOpen] = anomalies
+			counts[AdtyBadgeSiteWithdrawalsPending] = countBadgeOrZero(
+				AdtyBadgeSiteWithdrawalsPending,
+				badgeAfterSeen(model.DB.Model(&model.AdtySiteWithdrawal{}).Where("status = ?", model.AdtySiteWithdrawPending), "created_at", seenMap[AdtyBadgeSiteWithdrawalsPending]),
+			)
+			counts[AdtyBadgeFundAnomaliesOpen] = countBadgeOrZero(
+				AdtyBadgeFundAnomaliesOpen,
+				badgeAfterSeen(model.DB.Model(&model.AdtyAnomalyDisposition{}).Where("status IN ?", []string{"open", "reviewing"}), "created_at", seenMap[AdtyBadgeFundAnomaliesOpen]),
+			)
 		}
 	}
 	if actor.OwnerSiteId > 0 && tokenAllows(AccessTokenResourceSiteOwnerOrder+":read") {
-		invites, err := countScoped(badgeAfterSeen(model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id = ? AND status = ?", actor.OwnerSiteId, model.AdtySiteInviteWithdrawPending), "created_at", seenMap[AdtyBadgeInviteWithdrawalsPending]))
-		if err != nil {
-			return nil, err
-		}
-		counts[AdtyBadgeInviteWithdrawalsPending] = invites
-		coverage, err := countScoped(badgeAfterSeen(model.DB.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ? AND status = ?", actor.OwnerSiteId, model.AdtySiteCommissionPendingCoverage), "created_at", seenMap[AdtyBadgeSiteInviteCommissionsPendingCoverage]))
-		if err != nil {
-			return nil, err
-		}
-		counts[AdtyBadgeSiteInviteCommissionsPendingCoverage] = coverage
+		counts[AdtyBadgeInviteWithdrawalsPending] = countBadgeOrZero(
+			AdtyBadgeInviteWithdrawalsPending,
+			badgeAfterSeen(model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("site_id = ? AND status = ?", actor.OwnerSiteId, model.AdtySiteInviteWithdrawPending), "created_at", seenMap[AdtyBadgeInviteWithdrawalsPending]),
+		)
+		counts[AdtyBadgeSiteInviteCommissionsPendingCoverage] = countBadgeOrZero(
+			AdtyBadgeSiteInviteCommissionsPendingCoverage,
+			badgeAfterSeen(model.DB.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ? AND status = ?", actor.OwnerSiteId, model.AdtySiteCommissionPendingCoverage), "created_at", seenMap[AdtyBadgeSiteInviteCommissionsPendingCoverage]),
+		)
 	}
 	if !isToken {
-		if err := collectAdtyStaffBalanceBadge(counts, actor, requestSite == nil, seenMap); err != nil {
-			return nil, err
-		}
+		collectAdtyStaffBalanceBadge(counts, actor, requestSite == nil, seenMap)
 	}
-	if err := collectAdtyTicketBadgesInto(counts, actor, requestSite == nil, seenMap, tokenScopes...); err != nil {
-		return nil, err
-	}
+	collectAdtyTicketBadgesInto(counts, actor, requestSite == nil, seenMap, tokenScopes...)
 	if requestSite == nil && tokenAllows(AccessTokenScopeOf(authz.AdtyFinanceRead)) {
-		if err := collectAdtyPaymentOrphanBadge(counts, actor, seenMap); err != nil {
-			return nil, err
-		}
+		collectAdtyPaymentOrphanBadge(counts, actor, seenMap)
 	}
 	return counts, nil
 }
@@ -194,7 +193,7 @@ func CollectAdtyReferralAdminBadges(userID int, tokenScopes ...[]string) (AdtyRe
 		return out, ErrAdtyTicketForbidden
 	}
 	counts := map[string]int64{}
-	if err := collectAdtyReferralAdminBadgeCounts(counts, actor, nil, tokenScopes...); err != nil {
+	if err := collectAdtyReferralAdminBadgeCounts(counts, actor, nil, false, tokenScopes...); err != nil {
 		return out, err
 	}
 	return AdtyReferralAdminBadges{Partners: counts[AdtyBadgeReferralPartners], PendingWithdrawals: counts[AdtyBadgeReferralWithdrawalsPending], ApprovedWithdrawals: counts[AdtyBadgeReferralWithdrawalsApproved], FrozenCommissions: counts[AdtyBadgeReferralCommissionsFrozen]}, nil
@@ -258,7 +257,7 @@ func countAdtyReferralOverview(siteID *int) (AdtyReferralOverview, error) {
 	return out, nil
 }
 
-func collectAdtyReferralAdminBadgeCounts(counts map[string]int64, actor adtyTicketActor, seenMap map[string]int64, tokenScopes ...[]string) error {
+func collectAdtyReferralAdminBadgeCounts(counts map[string]int64, actor adtyTicketActor, seenMap map[string]int64, softFail bool, tokenScopes ...[]string) error {
 	siteID, ok := referralAdminSiteScope(actor)
 	can := func(p authz.Permission) bool {
 		return AdtyAdminRoleCan(actor.User.Id, actor.User.Role, p) && (len(tokenScopes) == 0 || AccessTokenScopeGranted(tokenScopes[0], AccessTokenScopeOf(p)))
@@ -266,8 +265,14 @@ func collectAdtyReferralAdminBadgeCounts(counts map[string]int64, actor adtyTick
 	if !ok || !can(authz.AdtyReferralRead) {
 		return nil
 	}
+	runCount := func(kind string, query *gorm.DB) (int64, error) {
+		if softFail {
+			return countBadgeOrZero(kind, query), nil
+		}
+		return countScoped(query)
+	}
 	if can(authz.AdtyReferralReview) {
-		partners, err := countScoped(badgeAfterSeen(scopeReferralUserQuery(model.DB.Model(&model.ReferralAffiliate{}).Where("partner_status = ?", model.ReferralPartnerStatusPending), "user_id", siteID), "updated_at", seenMap[AdtyBadgeReferralPartners]))
+		partners, err := runCount(AdtyBadgeReferralPartners, badgeAfterSeen(scopeReferralUserQuery(model.DB.Model(&model.ReferralAffiliate{}).Where("partner_status = ?", model.ReferralPartnerStatusPending), "user_id", siteID), "updated_at", seenMap[AdtyBadgeReferralPartners]))
 		if err != nil {
 			return err
 		}
@@ -284,17 +289,22 @@ func collectAdtyReferralAdminBadgeCounts(counts map[string]int64, actor adtyTick
 			continue
 		}
 		seenAt := seenMap[duty.badge]
-		platform, err := countScoped(badgeAfterSeen(scopeReferralUserQuery(model.DB.Model(&model.ReferralWithdrawal{}).Where("status = ?", duty.status), "user_id", siteID), "updated_at", seenAt))
+		platform, err := runCount(duty.badge, badgeAfterSeen(scopeReferralUserQuery(model.DB.Model(&model.ReferralWithdrawal{}).Where("status = ?", duty.status), "user_id", siteID), "updated_at", seenAt))
 		if err != nil {
 			return err
 		}
-		closed, err := countScoped(badgeAfterSeen(closedSiteInviteWithdrawalQuery(duty.status).Where("status = ?", duty.status), "updated_at", seenAt))
+		// adty_site_invite_withdrawals has created_at and reviewed_at (no updated_at column).
+		closedQuery := closedSiteInviteWithdrawalQuery(duty.status).Where("status = ?", duty.status)
+		if seenAt > 0 {
+			closedQuery = closedQuery.Where("(created_at > ? OR reviewed_at > ?)", seenAt, seenAt)
+		}
+		closed, err := runCount(duty.badge, closedQuery)
 		if err != nil {
 			return err
 		}
 		counts[duty.badge] = platform + closed
 	}
-	frozen, err := countScoped(badgeAfterSeen(scopeReferralUserQuery(model.DB.Model(&model.ReferralCommission{}).Where("status = ?", model.ReferralCommissionStatusFrozen), "affiliate_user_id", siteID), "updated_at", seenMap[AdtyBadgeReferralCommissionsFrozen]))
+	frozen, err := runCount(AdtyBadgeReferralCommissionsFrozen, badgeAfterSeen(scopeReferralUserQuery(model.DB.Model(&model.ReferralCommission{}).Where("status = ?", model.ReferralCommissionStatusFrozen), "affiliate_user_id", siteID), "updated_at", seenMap[AdtyBadgeReferralCommissionsFrozen]))
 	if err != nil {
 		return err
 	}
@@ -401,7 +411,7 @@ func scopeReferralUserQuery(query *gorm.DB, userColumn string, siteID *int) *gor
 	return query.Where(userColumn+" IN (?)", model.DB.Model(&model.User{}).Select("id").Where("site_id = ?", *siteID))
 }
 
-func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor, onMainSite bool, seenMap map[string]int64) error {
+func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor, onMainSite bool, seenMap map[string]int64) {
 	query := badgeAfterSeen(model.DB.Model(&model.AdtyStaffBalanceRequest{}).Where("status = ?", model.AdtyStaffBalancePending), "created_at", seenMap[AdtyBadgeStaffBalancePending])
 	switch {
 	case onMainSite && actor.User.Role >= common.RoleRootUser:
@@ -410,27 +420,27 @@ func collectAdtyStaffBalanceBadge(counts map[string]int64, actor adtyTicketActor
 	case actor.Staff != nil && actor.Staff.Status == "enabled":
 		query = query.Where("site_id = ? AND staff_user_id = ?", actor.Staff.SiteId, actor.User.Id)
 	default:
-		return nil
+		return
 	}
-	n, err := countScoped(query)
-	if err != nil {
-		return err
-	}
-	counts[AdtyBadgeStaffBalancePending] = n
-	return nil
+	counts[AdtyBadgeStaffBalancePending] = countBadgeOrZero(AdtyBadgeStaffBalancePending, query)
 }
 
-func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor, onMainSite bool, seenMap map[string]int64, tokenScopes ...[]string) error {
+func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor, onMainSite bool, seenMap map[string]int64, tokenScopes ...[]string) {
 	resolveScope := func(requested string) string {
 		if len(tokenScopes) > 0 {
 			return AdtyTicketTokenScope(requested, "GET", tokenScopes[0])
 		}
 		return requested
 	}
-	countForScope := func(scope string, seenAt int64) (AdtyTicketBadges, error) {
+	countForScope := func(kind, scope string, seenAt int64) AdtyTicketBadges {
 		scoped := actor
 		scoped.Scope = scope
-		return countAdtyTicketBadges(badgeAfterSeen(scopedAdtyTickets(model.DB, scoped), "updated_at", seenAt))
+		badges, err := countAdtyTicketBadges(badgeAfterSeen(scopedAdtyTickets(model.DB, scoped), "updated_at", seenAt))
+		if err != nil {
+			common.SysError(common.LogText("sidebar badge %s (%s) query failed: %s", kind, scope, err.Error()))
+			return AdtyTicketBadges{}
+		}
+		return badges
 	}
 
 	// 1. Customer-side waiting-user badge (personal + shared team tickets for team leaders).
@@ -440,10 +450,7 @@ func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor,
 			customerScope = "participant"
 		}
 		if resolved := resolveScope(customerScope); resolved != "denied" {
-			badges, err := countForScope(resolved, seenMap[AdtyBadgeTicketsWaitingUser])
-			if err != nil {
-				return err
-			}
+			badges := countForScope(AdtyBadgeTicketsWaitingUser, resolved, seenMap[AdtyBadgeTicketsWaitingUser])
 			counts[AdtyBadgeTicketsWaitingUser] = badges.WaitingUser
 		}
 	}
@@ -451,10 +458,7 @@ func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor,
 	// 2. Platform handler pending badge.
 	if onMainSite && actor.PlatformMain {
 		if resolved := resolveScope("platform"); resolved != "denied" {
-			badges, err := countForScope(resolved, max(seenMap[AdtyBadgePlatformTicketsPending], seenMap[AdtyBadgeTicketsPending]))
-			if err != nil {
-				return err
-			}
+			badges := countForScope(AdtyBadgePlatformTicketsPending, resolved, max(seenMap[AdtyBadgePlatformTicketsPending], seenMap[AdtyBadgeTicketsPending]))
 			counts[AdtyBadgePlatformTicketsPending] = badges.Pending
 			counts[AdtyBadgeTicketsPending] = badges.Pending
 		}
@@ -463,10 +467,7 @@ func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor,
 	// 3. Site-owner handler pending badge.
 	if actor.OwnerTickets {
 		if resolved := resolveScope("owner"); resolved != "denied" {
-			badges, err := countForScope(resolved, max(seenMap[AdtyBadgeOwnerTicketsPending], seenMap[AdtyBadgeTicketsPending]))
-			if err != nil {
-				return err
-			}
+			badges := countForScope(AdtyBadgeOwnerTicketsPending, resolved, max(seenMap[AdtyBadgeOwnerTicketsPending], seenMap[AdtyBadgeTicketsPending]))
 			counts[AdtyBadgeOwnerTicketsPending] = badges.Pending
 			if _, exists := counts[AdtyBadgeTicketsPending]; !exists {
 				counts[AdtyBadgeTicketsPending] = badges.Pending
@@ -477,34 +478,26 @@ func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor,
 	// 4. Site-staff handler badges.
 	if actor.StaffTickets {
 		if resolved := resolveScope("staff"); resolved != "denied" {
-			badges, err := countForScope(resolved, seenMap[AdtyBadgeTicketsPending])
-			if err != nil {
-				return err
-			}
+			badges := countForScope(AdtyBadgeTicketsPending, resolved, seenMap[AdtyBadgeTicketsPending])
 			counts[AdtyBadgeTicketsPending] = badges.Pending
 			counts[AdtyBadgeTicketsWaitingUser] = badges.WaitingUser
 		}
 	}
-	return nil
 }
 
-func collectAdtyPaymentOrphanBadge(counts map[string]int64, actor adtyTicketActor, seenMap map[string]int64) error {
+func collectAdtyPaymentOrphanBadge(counts map[string]int64, actor adtyTicketActor, seenMap map[string]int64) {
 	if actor.User.Role < common.RoleAdminUser {
-		return nil
+		return
 	}
 	if AdtyAdminPermissionsEnabled() && actor.User.Role < common.RoleRootUser && !AdtyAdminRoleCan(actor.User.Id, actor.User.Role, authz.AdtyFinanceRead) {
-		return nil
+		return
 	}
-	query := badgeAfterSeen(model.DB.Model(&model.PaymentOrphanEvent{}).Where("status = ?", model.PaymentOrphanStatusPendingReview), "created_at", seenMap[AdtyBadgePaymentOrphansPendingReview])
+	// adty_payment_orphan_events uses create_time (not created_at) (R-33 #3).
+	query := badgeAfterSeen(model.DB.Model(&model.PaymentOrphanEvent{}).Where("status = ?", model.PaymentOrphanStatusPendingReview), "create_time", seenMap[AdtyBadgePaymentOrphansPendingReview])
 	if actor.User.Role < common.RoleRootUser {
 		query = query.Where("EXISTS (SELECT 1 FROM adty_topup_orders a WHERE a.trade_no = adty_payment_orphan_events.reference_id AND a.site_id = 0)")
 	}
-	n, err := countScoped(query)
-	if err != nil {
-		return err
-	}
-	counts[AdtyBadgePaymentOrphansPendingReview] = n
-	return nil
+	counts[AdtyBadgePaymentOrphansPendingReview] = countBadgeOrZero(AdtyBadgePaymentOrphansPendingReview, query)
 }
 
 func countAdtyNotificationUnread(userID int, site *model.AdtySite, tokenScopes ...[]string) (int64, error) {

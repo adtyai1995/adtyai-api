@@ -594,6 +594,18 @@ func UpdateOption(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	case "console_setting.model_probe_interval_minutes":
+		err = console_setting.ValidateModelProbeIntervalMinutes(option.Value.(string))
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	case "console_setting.model_probe_timeout_seconds":
+		err = console_setting.ValidateModelProbeTimeoutSeconds(option.Value.(string))
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
 	if model.IsPasskeyDomainOption(option.Key) {
 		if option.Key == "ServerAddress" {
@@ -730,6 +742,14 @@ func UpdateOption(c *gin.Context) {
 	}
 	if option.Key == "adty_site_setting.api_base_url" {
 		service.InvalidateAdtySiteCache()
+	}
+	switch option.Key {
+	case "console_setting.uptime_kuma_enabled",
+		"console_setting.uptime_kuma_groups",
+		"console_setting.uptime_kuma_base_url",
+		"console_setting.model_probe_interval_minutes",
+		"console_setting.model_probe_timeout_seconds":
+		InvalidateUptimeStatusCache()
 	}
 	deliverCommittedAudits(c, []model.AuditLog{auditEvent})
 	c.JSON(http.StatusOK, gin.H{

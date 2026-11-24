@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -86,6 +87,7 @@ type AdtyVoucherIssueInput struct {
 	Source            string
 	Reason            string
 	IntentKey         string
+	Count             int
 }
 
 type AdtyVoucherIssued struct {
@@ -102,8 +104,35 @@ type AdtyVoucherIssued struct {
 	AmountUSD         decimal.Decimal `json:"amount_usd"`
 	Quota             int64           `json:"quota"`
 	IntentKey         string          `json:"intent_key,omitempty"`
+	BatchNo           string          `json:"batch_no,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	CreatedAt         int64           `json:"created_at,omitempty"`
 	Replayed          bool            `json:"replayed,omitempty"`
 	AuditEventID      string          `json:"-"`
+}
+
+type AdtyVoucherBatchIssued struct {
+	Id                int64               `json:"id"`
+	Code              string              `json:"code"`
+	CodeTail          string              `json:"code_tail"`
+	Purpose           string              `json:"purpose"`
+	Status            string              `json:"status,omitempty"`
+	SourceKind        string              `json:"source_kind,omitempty"`
+	FrozenEarningsUSD decimal.Decimal     `json:"frozen_earnings_usd"`
+	FrozenMarginUSD   decimal.Decimal     `json:"frozen_margin_usd"`
+	TargetSiteId      int                 `json:"target_site_id,omitempty"`
+	DesignatedOwnerId int                 `json:"designated_owner_id,omitempty"`
+	AmountUSD         decimal.Decimal     `json:"amount_usd"`
+	Quota             int64               `json:"quota"`
+	IntentKey         string              `json:"intent_key,omitempty"`
+	BatchNo           string              `json:"batch_no,omitempty"`
+	Reason            string              `json:"reason,omitempty"`
+	CreatedAt         int64               `json:"created_at,omitempty"`
+	Replayed          bool                `json:"replayed,omitempty"`
+	Count             int                 `json:"count"`
+	TotalAmountUSD    decimal.Decimal     `json:"total_amount_usd"`
+	Items             []AdtyVoucherIssued `json:"items"`
+	AuditEventID      string              `json:"-"`
 }
 
 type AdtyVoucherRedeemed struct {
@@ -307,6 +336,7 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 			SourceKind: row.SourceKind, FrozenEarningsUSD: row.FrozenEarningsUSD, FrozenMarginUSD: row.FrozenMarginUSD,
 			TargetSiteId: row.TargetSiteId, DesignatedOwnerId: row.DesignatedOwnerId,
 			AmountUSD: row.AmountUSD, Quota: row.Quota, IntentKey: input.IntentKey,
+			BatchNo: row.BatchNo, Reason: row.Reason, CreatedAt: row.CreatedAt,
 			AuditEventID: auditEvent.EventId,
 		}
 		return nil
@@ -324,6 +354,396 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 	return issued, err
 }
 
+func adtyVoucherBatchFromSingle(issued *AdtyVoucherIssued) *AdtyVoucherBatchIssued {
+	if issued == nil {
+		return nil
+	}
+	item := *issued
+	return &AdtyVoucherBatchIssued{
+		Id:                item.Id,
+		Code:              item.Code,
+		CodeTail:          item.CodeTail,
+		Purpose:           item.Purpose,
+		Status:            item.Status,
+		SourceKind:        item.SourceKind,
+		FrozenEarningsUSD: item.FrozenEarningsUSD,
+		FrozenMarginUSD:   item.FrozenMarginUSD,
+		TargetSiteId:      item.TargetSiteId,
+		DesignatedOwnerId: item.DesignatedOwnerId,
+		AmountUSD:         item.AmountUSD,
+		Quota:             item.Quota,
+		IntentKey:         item.IntentKey,
+		BatchNo:           item.BatchNo,
+		Reason:            item.Reason,
+		CreatedAt:         item.CreatedAt,
+		Replayed:          item.Replayed,
+		Count:             1,
+		TotalAmountUSD:    item.AmountUSD,
+		Items:             []AdtyVoucherIssued{item},
+		AuditEventID:      item.AuditEventID,
+	}
+}
+
+func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued, error) {
+	if input.Count <= 0 {
+		input.Count = 1
+	}
+	if input.Count > 100 {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	if input.Count == 1 {
+		issued, err := IssueAdtyVoucher(input)
+		if err != nil {
+			return nil, err
+		}
+		return adtyVoucherBatchFromSingle(issued), nil
+	}
+
+	count := input.Count
+	input.Reason = strings.TrimSpace(input.Reason)
+	input.Purpose = strings.TrimSpace(input.Purpose)
+	input.Source = strings.TrimSpace(input.Source)
+	input.IntentKey = strings.TrimSpace(input.IntentKey)
+	if input.DesignatedOwnerId < 0 || input.OwnerUserId < 0 || (input.DesignatedOwnerId > 0 && input.OwnerUserId > 0 && input.DesignatedOwnerId != input.OwnerUserId) {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	if input.DesignatedOwnerId == 0 {
+		input.DesignatedOwnerId = input.OwnerUserId
+	}
+	quota, err := adtyVoucherQuota(input.AmountUSD)
+	if err != nil || input.IssuerId <= 0 || input.Reason == "" || len(input.Reason) > 200 || len(input.IntentKey) > 128 {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+
+	batchNo, err := newAdtyVoucherBatchNo()
+	if err != nil {
+		return nil, err
+	}
+	codes := make([]string, count)
+	hashes := make([]string, count)
+	tails := make([]string, count)
+	seenHash := make(map[string]struct{}, count)
+	for i := 0; i < count; i++ {
+		for {
+			code, genErr := newAdtyVoucherCode()
+			if genErr != nil {
+				return nil, genErr
+			}
+			hash := model.AdtyVoucherCodeHash(code)
+			if _, dup := seenHash[hash]; dup {
+				continue
+			}
+			seenHash[hash] = struct{}{}
+			codes[i] = code
+			hashes[i] = hash
+			tails[i] = code[len(code)-4:]
+			break
+		}
+	}
+
+	totalAmount := input.AmountUSD.Mul(decimal.NewFromInt(int64(count)))
+	var batch *AdtyVoucherBatchIssued
+	var auditEvent *model.AuditLog
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// Canonical lock order: AdtySite -> User(id ASC) -> AdtySiteWallet.
+		var lockedSite *model.AdtySite
+		if input.SiteId > 0 && (input.Purpose == model.AdtyVoucherPurposeSiteMargin || input.Purpose == model.AdtyVoucherPurposeSiteCustomer || input.Purpose == model.AdtyVoucherPurposeSiteOwner) {
+			site, err := lockAdtyVoucherSite(tx, input.SiteId)
+			if err != nil {
+				return err
+			}
+			lockedSite = site
+		}
+		var issuer *model.User
+		if input.Purpose == model.AdtyVoucherPurposeSiteMargin && lockedSite != nil && lockedSite.OwnerUserId > 0 && lockedSite.OwnerUserId < input.IssuerId {
+			if _, err := lockAdtyVoucherUser(tx, lockedSite.OwnerUserId); err != nil {
+				return err
+			}
+		}
+		issuer, err = lockAdtyVoucherUser(tx, input.IssuerId)
+		if err != nil {
+			return err
+		}
+		if input.IntentKey != "" {
+			replay, err := findAdtyVoucherBatchReplayTx(tx, issuer.Id, input, quota, count)
+			if err != nil {
+				return err
+			}
+			if replay != nil {
+				batch = replay
+				return nil
+			}
+		}
+
+		var intentKeyPtr *string
+		if input.IntentKey != "" {
+			k := input.IntentKey
+			intentKeyPtr = &k
+		}
+		rows := make([]model.AdtyVoucher, count)
+		for i := 0; i < count; i++ {
+			rows[i] = model.AdtyVoucher{
+				CodeHash:  hashes[i],
+				CodeTail:  tails[i],
+				Purpose:   input.Purpose,
+				Status:    model.AdtyVoucherStatusPending,
+				AmountUSD: input.AmountUSD,
+				Quota:     quota,
+				IssuerId:  issuer.Id,
+				Reason:    input.Reason,
+				BatchNo:   batchNo,
+			}
+			if i == 0 {
+				rows[i].IntentKey = intentKeyPtr
+			}
+		}
+
+		switch input.Purpose {
+		case model.AdtyVoucherPurposeMainUser:
+			if issuer.Role != common.RoleRootUser {
+				return ErrAdtyVoucherForbidden
+			}
+			if input.SiteId != 0 || input.DesignatedOwnerId != 0 || input.Source != "" {
+				return common.NewMessage("Invalid parameters")
+			}
+			if err := freezeAdtyVoucherLiabilityTx(tx, totalAmount); err != nil {
+				return err
+			}
+			for i := range rows {
+				rows[i].SourceKind = model.AdtyVoucherSourcePlatform
+			}
+		case model.AdtyVoucherPurposeSiteMargin:
+			if issuer.Role != common.RoleRootUser || input.SiteId <= 0 || lockedSite == nil {
+				return common.NewMessage("Invalid parameters")
+			}
+			site := lockedSite
+			if site.Status != model.AdtySiteStatusActive || site.OwnerUserId <= 0 {
+				return common.NewMessage("Invalid parameters")
+			}
+			designatedOwnerID := input.DesignatedOwnerId
+			if designatedOwnerID == 0 {
+				designatedOwnerID = site.OwnerUserId
+			} else if designatedOwnerID != site.OwnerUserId {
+				return common.NewMessage("Invalid parameters")
+			}
+			if designatedOwnerID > input.IssuerId {
+				if _, err := lockAdtyVoucherUser(tx, designatedOwnerID); err != nil {
+					return err
+				}
+			}
+			if err := freezeAdtyVoucherLiabilityTx(tx, totalAmount); err != nil {
+				return err
+			}
+			for i := range rows {
+				rows[i].SourceKind = model.AdtyVoucherSourcePlatform
+				rows[i].TargetSiteId = site.Id
+				rows[i].DesignatedOwnerId = designatedOwnerID
+			}
+		case model.AdtyVoucherPurposeSiteCustomer:
+			if lockedSite == nil {
+				return common.NewMessage("Invalid parameters")
+			}
+			site := lockedSite
+			if site.OwnerUserId != issuer.Id || site.Status != model.AdtySiteStatusActive {
+				return ErrAdtyVoucherForbidden
+			}
+			if input.DesignatedOwnerId != 0 && input.DesignatedOwnerId != site.OwnerUserId {
+				return common.NewMessage("Invalid parameters")
+			}
+			switch input.Source {
+			case "", "auto", model.AdtyVoucherSourceEarnings, model.AdtyVoucherSourceMargin:
+			default:
+				return common.NewMessage("Invalid parameters")
+			}
+			for i := range rows {
+				split, freezeErr := adtyFreezeOwnerAutoFundingTx(tx, site.Id, issuer.Id, input.AmountUSD, hashes[i][:16], "voucher issuance freeze", "voucher-freeze:"+hashes[i], "voucher-freeze:"+hashes[i]+":margin")
+				if freezeErr != nil {
+					if errors.Is(freezeErr, ErrAdtySiteWalletInsufficient) {
+						return ErrAdtyVoucherFunds
+					}
+					return freezeErr
+				}
+				rows[i].SourceKind = split.SourceKind()
+				rows[i].FrozenEarningsUSD = split.EarningsUSD
+				rows[i].FrozenMarginUSD = split.MarginUSD
+				rows[i].SourceSiteId = site.Id
+				rows[i].TargetSiteId = site.Id
+			}
+		case model.AdtyVoucherPurposeSiteOwner:
+			return ErrAdtyVoucherForbidden
+		default:
+			return common.NewMessage("Invalid parameters")
+		}
+
+		voucherIDs := make([]int64, count)
+		for i := range rows {
+			if err := tx.Create(&rows[i]).Error; err != nil {
+				return err
+			}
+			voucherIDs[i] = rows[i].Id
+		}
+
+		auditSiteID := rows[0].TargetSiteId
+		if auditSiteID == 0 {
+			auditSiteID = input.SiteId
+		}
+		auditEvent, err = appendAdtyOfficialAuditTx(tx, input.IssuerId, auditSiteID, "voucher", batchNo, "adty.voucher.issue", input.Reason, "",
+			nil,
+			map[string]any{
+				"batch_no": batchNo, "count": count, "voucher_id": rows[0].Id, "voucher_ids": voucherIDs,
+				"purpose": rows[0].Purpose, "amount_usd": input.AmountUSD.String(), "total_amount_usd": totalAmount.String(),
+				"quota": quota, "status": model.AdtyVoucherStatusPending, "source": rows[0].SourceKind,
+				"site_id": auditSiteID, "target_site_id": rows[0].TargetSiteId,
+				"designated_owner_id": rows[0].DesignatedOwnerId, "intent_key": input.IntentKey,
+			},
+			model.AuditResultSuccess)
+		if err != nil {
+			return err
+		}
+
+		items := make([]AdtyVoucherIssued, count)
+		for i, row := range rows {
+			itemIntentKey := ""
+			if i == 0 {
+				itemIntentKey = input.IntentKey
+			}
+			items[i] = AdtyVoucherIssued{
+				Id:                row.Id,
+				Code:              codes[i],
+				CodeTail:          row.CodeTail,
+				Purpose:           row.Purpose,
+				Status:            row.Status,
+				SourceKind:        row.SourceKind,
+				FrozenEarningsUSD: row.FrozenEarningsUSD,
+				FrozenMarginUSD:   row.FrozenMarginUSD,
+				TargetSiteId:      row.TargetSiteId,
+				DesignatedOwnerId: row.DesignatedOwnerId,
+				AmountUSD:         row.AmountUSD,
+				Quota:             row.Quota,
+				IntentKey:         itemIntentKey,
+				BatchNo:           row.BatchNo,
+				Reason:            row.Reason,
+				CreatedAt:         row.CreatedAt,
+				AuditEventID:      auditEvent.EventId,
+			}
+		}
+		first := items[0]
+		batch = &AdtyVoucherBatchIssued{
+			Id:                first.Id,
+			Code:              first.Code,
+			CodeTail:          first.CodeTail,
+			Purpose:           first.Purpose,
+			Status:            first.Status,
+			SourceKind:        first.SourceKind,
+			FrozenEarningsUSD: first.FrozenEarningsUSD,
+			FrozenMarginUSD:   first.FrozenMarginUSD,
+			TargetSiteId:      first.TargetSiteId,
+			DesignatedOwnerId: first.DesignatedOwnerId,
+			AmountUSD:         first.AmountUSD,
+			Quota:             first.Quota,
+			IntentKey:         input.IntentKey,
+			BatchNo:           batchNo,
+			Reason:            first.Reason,
+			CreatedAt:         first.CreatedAt,
+			Count:             count,
+			TotalAmountUSD:    totalAmount,
+			Items:             items,
+			AuditEventID:      auditEvent.EventId,
+		}
+		return nil
+	})
+	if err != nil && input.IntentKey != "" {
+		if replay, lookErr := findAdtyVoucherBatchReplayTx(model.DB, input.IssuerId, input, quota, count); lookErr != nil {
+			return nil, lookErr
+		} else if replay != nil {
+			return replay, nil
+		}
+	}
+	if err == nil && batch != nil && !batch.Replayed && auditEvent != nil {
+		deliverAdtyCommittedAudit(*auditEvent)
+	}
+	return batch, err
+}
+
+func findAdtyVoucherBatchReplayTx(tx *gorm.DB, issuerId int, input AdtyVoucherIssueInput, quota int64, count int) (*AdtyVoucherBatchIssued, error) {
+	if tx == nil || issuerId <= 0 || input.IntentKey == "" {
+		return nil, nil
+	}
+	var existing model.AdtyVoucher
+	lookup := tx.Where("issuer_id = ? AND intent_key = ?", issuerId, input.IntentKey).Limit(1).Find(&existing)
+	if lookup.Error != nil {
+		return nil, lookup.Error
+	}
+	if lookup.RowsAffected == 0 {
+		return nil, nil
+	}
+	if !adtyVoucherIntentMatches(existing, input, quota) {
+		return nil, ErrAdtyVoucherIntentConflict
+	}
+	var rows []model.AdtyVoucher
+	if existing.BatchNo != "" {
+		if err := tx.Where("issuer_id = ? AND batch_no = ?", issuerId, existing.BatchNo).Order("id ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+	} else {
+		rows = []model.AdtyVoucher{existing}
+	}
+	if len(rows) != count {
+		return nil, ErrAdtyVoucherIntentConflict
+	}
+	items := make([]AdtyVoucherIssued, len(rows))
+	totalAmount := decimal.Zero
+	for i, row := range rows {
+		totalAmount = totalAmount.Add(row.AmountUSD)
+		itemIntent := ""
+		if row.IntentKey != nil {
+			itemIntent = *row.IntentKey
+		}
+		items[i] = AdtyVoucherIssued{
+			Id:                row.Id,
+			Code:              "",
+			CodeTail:          row.CodeTail,
+			Purpose:           row.Purpose,
+			Status:            row.Status,
+			SourceKind:        row.SourceKind,
+			FrozenEarningsUSD: row.FrozenEarningsUSD,
+			FrozenMarginUSD:   row.FrozenMarginUSD,
+			TargetSiteId:      row.TargetSiteId,
+			DesignatedOwnerId: row.DesignatedOwnerId,
+			AmountUSD:         row.AmountUSD,
+			Quota:             row.Quota,
+			IntentKey:         itemIntent,
+			BatchNo:           row.BatchNo,
+			Reason:            row.Reason,
+			CreatedAt:         row.CreatedAt,
+			Replayed:          true,
+		}
+	}
+	first := items[0]
+	return &AdtyVoucherBatchIssued{
+		Id:                first.Id,
+		Code:              "",
+		CodeTail:          first.CodeTail,
+		Purpose:           first.Purpose,
+		Status:            first.Status,
+		SourceKind:        first.SourceKind,
+		FrozenEarningsUSD: first.FrozenEarningsUSD,
+		FrozenMarginUSD:   first.FrozenMarginUSD,
+		TargetSiteId:      first.TargetSiteId,
+		DesignatedOwnerId: first.DesignatedOwnerId,
+		AmountUSD:         first.AmountUSD,
+		Quota:             first.Quota,
+		IntentKey:         input.IntentKey,
+		BatchNo:           first.BatchNo,
+		Reason:            first.Reason,
+		CreatedAt:         first.CreatedAt,
+		Replayed:          true,
+		Count:             len(items),
+		TotalAmountUSD:    totalAmount,
+		Items:             items,
+	}, nil
+}
+
 func findAdtyVoucherIssueReplayTx(tx *gorm.DB, issuerId int, input AdtyVoucherIssueInput, quota int64) (*AdtyVoucherIssued, error) {
 	if tx == nil || issuerId <= 0 || input.IntentKey == "" {
 		return nil, nil
@@ -339,6 +759,15 @@ func findAdtyVoucherIssueReplayTx(tx *gorm.DB, issuerId int, input AdtyVoucherIs
 	if !adtyVoucherIntentMatches(existing, input, quota) {
 		return nil, ErrAdtyVoucherIntentConflict
 	}
+	if existing.BatchNo != "" {
+		var batchCount int64
+		if err := tx.Model(&model.AdtyVoucher{}).Where("issuer_id = ? AND batch_no = ?", issuerId, existing.BatchNo).Count(&batchCount).Error; err != nil {
+			return nil, err
+		}
+		if batchCount > 1 {
+			return nil, ErrAdtyVoucherIntentConflict
+		}
+	}
 	return &AdtyVoucherIssued{
 		Id:                existing.Id,
 		Code:              "",
@@ -353,6 +782,9 @@ func findAdtyVoucherIssueReplayTx(tx *gorm.DB, issuerId int, input AdtyVoucherIs
 		AmountUSD:         existing.AmountUSD,
 		Quota:             existing.Quota,
 		IntentKey:         input.IntentKey,
+		BatchNo:           existing.BatchNo,
+		Reason:            existing.Reason,
+		CreatedAt:         existing.CreatedAt,
 		Replayed:          true,
 	}, nil
 }
@@ -638,10 +1070,12 @@ func generateAdtyVoucherTradeNo(hash string, attempt int) string {
 
 // AdtyVoucherListFilter narrows a voucher list; empty fields do not filter.
 type AdtyVoucherListFilter struct {
-	Status   string
-	Purpose  string
-	IssuerId int
-	SiteId   int // codes funded by this site's wallets
+	Status       string
+	Purpose      string
+	IssuerId     int
+	SiteId       int    // codes funded by this site's wallets
+	TargetSiteId int    // codes targeted at this site
+	BatchNo      string // filter by batch number
 }
 
 // ListAdtyVouchers lists codes newest first. Only the tail of each code is
@@ -657,6 +1091,9 @@ func ListAdtyVouchers(filter AdtyVoucherListFilter, offset, limit int) ([]model.
 	default:
 		return nil, 0, common.NewMessage("Invalid parameters")
 	}
+	if filter.TargetSiteId < 0 {
+		return nil, 0, common.NewMessage("Invalid parameters")
+	}
 	query := model.DB.Model(&model.AdtyVoucher{})
 	if filter.Status != "" {
 		query = query.Where("status = ?", filter.Status)
@@ -669,6 +1106,12 @@ func ListAdtyVouchers(filter AdtyVoucherListFilter, offset, limit int) ([]model.
 	}
 	if filter.SiteId > 0 {
 		query = query.Where("source_site_id = ?", filter.SiteId)
+	}
+	if filter.TargetSiteId > 0 {
+		query = query.Where("target_site_id = ?", filter.TargetSiteId)
+	}
+	if batchNo := strings.TrimSpace(filter.BatchNo); batchNo != "" {
+		query = query.Where("batch_no = ?", batchNo)
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -1021,6 +1464,14 @@ func newAdtyVoucherCode() (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw), "="), nil
+}
+
+func newAdtyVoucherBatchNo() (string, error) {
+	raw := make([]byte, 3)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("VB%d-%s", time.Now().Unix(), strings.ToUpper(hex.EncodeToString(raw))), nil
 }
 
 func lockAdtyVoucherUser(tx *gorm.DB, id int) (*model.User, error) {

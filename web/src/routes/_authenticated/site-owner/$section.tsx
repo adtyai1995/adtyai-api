@@ -31,12 +31,9 @@ import { useAuthStore } from '@/stores/auth-store'
 export const Route = createFileRoute('/_authenticated/site-owner/$section')({
   validateSearch: z.object({
     trade_no: z.string().trim().min(1).max(64).optional().catch(undefined),
-    business: z
-      .enum(['owner_margin_topup'])
-      .optional()
-      .catch(undefined),
+    business: z.enum(['owner_margin_topup']).optional().catch(undefined),
   }),
-  beforeLoad: ({ params }) => {
+  beforeLoad: ({ params, search }) => {
     if (!isSiteOwnerSection(params.section)) {
       throw redirect({
         to: '/site-owner/$section',
@@ -51,6 +48,22 @@ export const Route = createFileRoute('/_authenticated/site-owner/$section')({
     ) {
       throw redirect({ to: '/403' })
     }
+    // Preserve payment return links targeting /site-owner/earnings for margin top-up.
+    if (
+      params.section === 'earnings' &&
+      search.business === 'owner_margin_topup' &&
+      search.trade_no
+    ) {
+      throw redirect({
+        to: '/site-owner/$section',
+        params: { section: 'wallets' },
+        search: {
+          trade_no: search.trade_no,
+          business: search.business,
+        },
+        replace: true,
+      })
+    }
   },
   component: SiteOwnerPage,
 })
@@ -60,8 +73,8 @@ function SiteOwnerPage() {
   const { trade_no, business } = Route.useSearch()
   return (
     <SiteOwnerCenter
-      returnTradeNo={params.section === 'earnings' ? trade_no : undefined}
-      returnBusiness={params.section === 'earnings' ? business : undefined}
+      returnTradeNo={params.section === 'wallets' ? trade_no : undefined}
+      returnBusiness={params.section === 'wallets' ? business : undefined}
       section={
         isSiteOwnerSection(params.section)
           ? params.section

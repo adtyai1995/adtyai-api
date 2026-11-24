@@ -26,7 +26,7 @@ import type { UptimeGroupResult } from '@/features/dashboard/types'
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
 import { useUptimeStatus } from '../hooks/use-uptime-status'
 import { resolveModelUptimeForPricing } from '../lib/uptime'
-import type { PricingModel, TokenUnit } from '../types'
+import type { PricingModel, PricingUsableGroupValue, TokenUnit } from '../types'
 import { ModelCard } from './model-card'
 
 export interface ModelCardGridProps {
@@ -38,6 +38,7 @@ export interface ModelCardGridProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   usableGroups?: string[]
+  usableGroup?: Record<string, PricingUsableGroupValue>
   uptimeGroups?: UptimeGroupResult[]
 }
 
@@ -78,6 +79,7 @@ export const ModelCardGrid = memo(function ModelCardGrid(
             showRechargePrice={props.showRechargePrice}
             selectedGroup={props.selectedGroup}
             usableGroups={props.usableGroups}
+            usableGroup={props.usableGroup}
             uptime={resolveModelUptimeForPricing(
               effectiveUptimeGroups,
               model,

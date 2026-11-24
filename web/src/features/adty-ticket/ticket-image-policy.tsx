@@ -40,6 +40,7 @@ export type TicketPolicy = Record<keyof typeof fields, number>
 export function TicketImagePolicySettings(props: {
   policy: TicketPolicy
   onSaved: () => Promise<void>
+  embedded?: boolean
 }) {
   const { t } = useTranslation()
   const [draft, setDraft] = useState(props.policy)
@@ -62,33 +63,45 @@ export function TicketImagePolicySettings(props: {
       setPending(false)
     }
   }
+  const form = (
+    <form
+      className={props.embedded ? 'grid gap-3' : 'my-3 grid gap-2'}
+      onSubmit={(e) => {
+        e.preventDefault()
+        void save()
+      }}
+    >
+      {(Object.keys(fields) as (keyof TicketPolicy)[]).map((key) => (
+        <Label key={key} className='flex flex-col items-start gap-1.5'>
+          <span>{t(fields[key])}</span>
+          <Input
+            type='number'
+            required
+            min={1}
+            value={draft[key]}
+            onChange={(e) =>
+              setDraft({ ...draft, [key]: Number(e.target.value) })
+            }
+          />
+        </Label>
+      ))}
+      <Button type='submit' variant='brand' disabled={pending}>
+        {t('Save')}
+      </Button>
+      {feedback && (
+        <p role='status' className='text-muted-foreground text-xs'>
+          {feedback}
+        </p>
+      )}
+    </form>
+  )
+  if (props.embedded) {
+    return form
+  }
   return (
     <details>
       <summary>{t('Ticket image limits')}</summary>
-      <form
-        className='my-3 grid gap-2'
-        onSubmit={(e) => {
-          e.preventDefault()
-          void save()
-        }}
-      >
-        {(Object.keys(fields) as (keyof TicketPolicy)[]).map((key) => (
-          <Label key={key} className='flex flex-wrap items-center gap-2'>
-            {t(fields[key])}
-            <Input
-              type='number'
-              required
-              min={1}
-              value={draft[key]}
-              onChange={(e) =>
-                setDraft({ ...draft, [key]: Number(e.target.value) })
-              }
-            />
-          </Label>
-        ))}
-        <Button disabled={pending}>{t('Save')}</Button>
-        {feedback && <p role='status'>{feedback}</p>}
-      </form>
+      {form}
     </details>
   )
 }

@@ -22,7 +22,21 @@ import type {
   FlowQuotaDataItem,
   QuotaDataItem,
   UptimeGroupResult,
+  UptimeHeartbeat,
+  UptimeKumaGroupConfig,
+  UptimeModelStatus,
+  UptimeProbeRequest,
+  UptimeProbeResponseData,
 } from './types'
+
+export type {
+  UptimeGroupResult,
+  UptimeHeartbeat,
+  UptimeKumaGroupConfig,
+  UptimeModelStatus,
+  UptimeProbeRequest,
+  UptimeProbeResponseData,
+}
 
 // ============================================================================
 // Dashboard APIs
@@ -104,23 +118,21 @@ export async function getUptimeStatus() {
   return res.data
 }
 
-// Fetch monitor names from an Uptime Kuma status page (admin only)
-export async function getUptimeMonitors(params: {
-  url?: string
-  slug: string
-}) {
-  const res = await api.get<{
+// Trigger an immediate built-in connectivity probe (admin only)
+export async function triggerUptimeProbe(params?: UptimeProbeRequest) {
+  const body: UptimeProbeRequest = {}
+  if (params?.group_id?.trim()) {
+    body.group_id = params.group_id.trim()
+  }
+  if (params?.model?.trim()) {
+    body.model = params.model.trim()
+  }
+  const res = await api.post<{
     success: boolean
-    data?: string[]
+    data?: UptimeProbeResponseData
     message?: string
     message_key?: string
     message_params?: Record<string, unknown>
-  }>('/api/uptime/monitors', {
-    params: {
-      ...(params.url?.trim() ? { url: params.url.trim() } : {}),
-      slug: params.slug.trim(),
-    },
-    disableDuplicate: true,
-  })
+  }>('/api/uptime/probe', body)
   return res.data
 }

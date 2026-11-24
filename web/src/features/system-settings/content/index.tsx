@@ -28,8 +28,9 @@ const defaultContentSettings: ContentSettings = {
   'console_setting.api_info': '[]',
   'console_setting.announcements': '[]',
   'console_setting.faq': '[]',
-  'console_setting.uptime_kuma_base_url': '',
   'console_setting.uptime_kuma_groups': '[]',
+  'console_setting.model_probe_interval_minutes': 10,
+  'console_setting.model_probe_timeout_seconds': 15,
   'console_setting.api_info_enabled': true,
   'console_setting.announcements_enabled': true,
   'console_setting.faq_enabled': true,
@@ -72,16 +73,6 @@ function resolveContentSettings(
       if (legacyValue !== undefined) {
         next[current] = legacyValue
       }
-    }
-  }
-
-  if (!optionMap.has('console_setting.uptime_kuma_groups')) {
-    const legacyUrl = optionMap.get('UptimeKumaUrl')
-    const legacySlug = optionMap.get('UptimeKumaSlug')
-    if (legacyUrl && legacySlug) {
-      next['console_setting.uptime_kuma_groups'] = JSON.stringify([
-        { id: 1, categoryName: 'Legacy', url: legacyUrl, slug: legacySlug },
-      ])
     }
   }
 

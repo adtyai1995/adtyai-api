@@ -92,6 +92,17 @@ type AdtyTicketList struct {
 	Badges      AdtyTicketBadges       `json:"badges"`
 }
 
+type AdtyTicketSearchFilter struct {
+	Queue      string
+	Status     string
+	Priority   string
+	Type       string
+	AssigneeId int
+	DateFrom   string
+	DateTo     string
+	Search     string
+}
+
 type adtyTicketActor struct {
 	Scope        string
 	PlatformMain bool
@@ -234,6 +245,8 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 				ticket.Status = model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
 				ticket.AssigneeId = 0
 				ticket.InitialMessageId = prior.Id
+				ticket.TicketNo = model.FormatAdtyTicketNo(ticket.Id, ticket.CreatedAt)
+				ticket.Username = actor.User.Username
 				created = &ticket
 				return nil
 			}
@@ -279,6 +292,8 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 			return err
 		}
 		ticket.InitialMessageId = message.Id
+		ticket.TicketNo = model.FormatAdtyTicketNo(ticket.Id, ticket.CreatedAt)
+		ticket.Username = actor.User.Username
 		created = &ticket
 		createdNew = true
 		var auditErr error
@@ -318,25 +333,85 @@ func ListAdtyTicketPage(userId int, queue string, page, pageSize int, workspace 
 }
 
 func SearchAdtyTicketPage(userId int, queue, search string, before int64, page, pageSize int, workspace ...string) (*AdtyTicketList, error) {
+	return SearchAdtyTicketPageWithFilter(userId, AdtyTicketSearchFilter{
+		Queue:  queue,
+		Search: search,
+	}, before, page, pageSize, workspace...)
+}
+
+func SearchAdtyTicketPageWithFilter(userId int, filter AdtyTicketSearchFilter, before int64, page, pageSize int, workspace ...string) (*AdtyTicketList, error) {
 	actor, err := loadAdtyTicketWorkspace(model.DB, userId, workspace...)
 	if err != nil {
 		return nil, err
 	}
-	if page < 1 || pageSize < 1 || pageSize > 100 || page > math.MaxInt/pageSize {
+	if page < 1 || pageSize < 1 || pageSize > 100 || page > math.MaxInt/pageSize || before < 0 || filter.AssigneeId < 0 {
 		return nil, ErrAdtyTicketInvalid
 	}
 	scope := scopedAdtyTickets(model.DB, actor)
-	query, err := applyAdtyTicketQueueFilter(scope.Session(&gorm.Session{}), queue)
+	query, err := applyAdtyTicketQueueFilter(scope.Session(&gorm.Session{}), filter.Queue)
 	if err != nil {
 		return nil, err
 	}
-	search = strings.TrimSpace(search)
-	if len(search) > 128 || before < 0 {
+	query, err = applyAdtyTicketStatusFilter(query, filter.Status)
+	if err != nil {
+		return nil, err
+	}
+	if priority := strings.TrimSpace(filter.Priority); priority != "" && priority != "all" {
+		switch priority {
+		case model.AdtyTicketPriorityNormal, model.AdtyTicketPriorityHigh, model.AdtyTicketPriorityUrgent:
+			query = query.Where("priority = ?", priority)
+		default:
+			return nil, ErrAdtyTicketInvalid
+		}
+	}
+	if typ := strings.TrimSpace(filter.Type); typ != "" && typ != "all" {
+		switch typ {
+		case "billing", "api", "account", "other":
+			query = query.Where("type = ?", typ)
+		default:
+			return nil, ErrAdtyTicketInvalid
+		}
+	}
+	if filter.AssigneeId > 0 && actor.isHandling() {
+		query = query.Where("assignee_id = ?", filter.AssigneeId)
+	}
+	loc, locErr := time.LoadLocation("Asia/Shanghai")
+	if locErr != nil {
+		loc = time.UTC
+	}
+	if dateFrom := strings.TrimSpace(filter.DateFrom); dateFrom != "" {
+		t, parseErr := time.ParseInLocation("2006-01-02", dateFrom, loc)
+		if parseErr != nil {
+			return nil, ErrAdtyTicketInvalid
+		}
+		query = query.Where("created_at >= ?", t.Unix())
+	}
+	if dateTo := strings.TrimSpace(filter.DateTo); dateTo != "" {
+		t, parseErr := time.ParseInLocation("2006-01-02", dateTo, loc)
+		if parseErr != nil {
+			return nil, ErrAdtyTicketInvalid
+		}
+		query = query.Where("created_at <= ?", t.Add(24*time.Hour-time.Second).Unix())
+	}
+	search := strings.TrimSpace(filter.Search)
+	if len(search) > 128 {
 		return nil, ErrAdtyTicketInvalid
 	}
 	if search != "" {
-		ticketID, _ := strconv.ParseInt(strings.TrimPrefix(search, "#"), 10, 64)
-		query = query.Where("id = ? OR related_ref = ?", ticketID, search)
+		likePattern := "%" + escapeAdtyTicketLike(strings.ToLower(search)) + "%"
+		clauses := make([]string, 0, 4)
+		args := make([]any, 0, 4)
+		if ticketID := parseAdtyTicketSearchID(search); ticketID > 0 {
+			clauses = append(clauses, "id = ?")
+			args = append(args, ticketID)
+		}
+		clauses = append(clauses, "related_ref = ?", `LOWER(title) LIKE ? ESCAPE '\'`)
+		args = append(args, search, likePattern)
+		if actor.isHandling() {
+			clauses = append(clauses, `user_id IN (SELECT id FROM users WHERE LOWER(username) LIKE ? ESCAPE '\')`)
+			args = append(args, likePattern)
+		}
+		query = query.Where("("+strings.Join(clauses, " OR ")+")", args...)
 	}
 	if before > 0 {
 		query = query.Where("id < ?", before)
@@ -355,12 +430,119 @@ func SearchAdtyTicketPage(userId int, queue, search string, before int64, page, 
 			rows[i].AssigneeId = 0
 		}
 	}
+	if err := enrichAdtyTickets(model.DB, actor, rows); err != nil {
+		return nil, err
+	}
 	badges, err := countAdtyTicketBadges(scope)
 	if err != nil {
 		return nil, err
 	}
 	manages := actor.isHandling()
 	return &AdtyTicketList{Tickets: rows, Total: total, Page: page, PageSize: pageSize, ImagePolicy: adtyTicketPolicy(), CanViewTeam: actor.TeamId > 0, CanNote: manages, CanManage: manages, Badges: badges}, nil
+}
+
+func applyAdtyTicketStatusFilter(query *gorm.DB, rawStatus string) (*gorm.DB, error) {
+	status := strings.TrimSpace(rawStatus)
+	switch status {
+	case "", "all":
+		return query, nil
+	case model.AdtyTicketNew:
+		return query.Where("(status = ? OR (status = ? AND assignee_id = 0))",
+			model.AdtyTicketNew, model.AdtyTicketLegacyOpen), nil
+	case "pending":
+		return query.Where("(status = ? OR status = ? OR (status = ? AND assignee_id = 0))",
+			model.AdtyTicketNew, model.AdtyTicketPendingAssignment, model.AdtyTicketLegacyOpen), nil
+	case model.AdtyTicketPendingAssignment:
+		return query.Where("status = ?", model.AdtyTicketPendingAssignment), nil
+	case model.AdtyTicketInProgress:
+		return query.Where("(status = ? OR status = ? OR (status = ? AND assignee_id > 0))",
+			model.AdtyTicketInProgress, model.AdtyTicketLegacyAssigned, model.AdtyTicketLegacyOpen), nil
+	case model.AdtyTicketWaitingUser, model.AdtyTicketWaitingInternal, model.AdtyTicketResolved, model.AdtyTicketClosed:
+		return query.Where("status = ?", status), nil
+	default:
+		return nil, ErrAdtyTicketInvalid
+	}
+}
+
+func parseAdtyTicketSearchID(search string) int64 {
+	s := strings.TrimSpace(search)
+	if s == "" {
+		return 0
+	}
+	if id, err := strconv.ParseInt(strings.TrimPrefix(s, "#"), 10, 64); err == nil && id > 0 {
+		return id
+	}
+	upper := strings.ToUpper(s)
+	if strings.HasPrefix(upper, "ADTY") {
+		if idx := strings.LastIndex(upper, "-"); idx >= 4 && idx < len(upper)-1 {
+			if id, err := strconv.ParseInt(upper[idx+1:], 10, 64); err == nil && id > 0 {
+				return id
+			}
+		}
+	}
+	return 0
+}
+
+func escapeAdtyTicketLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+func enrichAdtyTickets(db *gorm.DB, actor adtyTicketActor, tickets []model.AdtyTicket) error {
+	if len(tickets) == 0 {
+		return nil
+	}
+	handling := actor.isHandling()
+	idSet := make(map[int]struct{}, len(tickets)*2)
+	for i := range tickets {
+		tickets[i].TicketNo = model.FormatAdtyTicketNo(tickets[i].Id, tickets[i].CreatedAt)
+		if handling {
+			if tickets[i].UserId > 0 {
+				idSet[tickets[i].UserId] = struct{}{}
+			}
+			if tickets[i].AssigneeId > 0 {
+				idSet[tickets[i].AssigneeId] = struct{}{}
+			}
+		} else {
+			tickets[i].AssigneeId = 0
+			tickets[i].AssigneeUsername = ""
+			if tickets[i].UserId == actor.User.Id && tickets[i].UserId > 0 {
+				idSet[tickets[i].UserId] = struct{}{}
+			}
+		}
+	}
+	if len(idSet) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	var users []model.User
+	if err := db.Model(&model.User{}).Select("id", "username").Where("id IN ?", ids).Find(&users).Error; err != nil {
+		return err
+	}
+	usernames := make(map[int]string, len(users))
+	for _, u := range users {
+		usernames[u.Id] = u.Username
+	}
+	for i := range tickets {
+		if handling {
+			if name, ok := usernames[tickets[i].UserId]; ok {
+				tickets[i].Username = name
+			}
+			if tickets[i].AssigneeId > 0 {
+				if name, ok := usernames[tickets[i].AssigneeId]; ok {
+					tickets[i].AssigneeUsername = name
+				}
+			}
+		} else if tickets[i].UserId == actor.User.Id {
+			if name, ok := usernames[tickets[i].UserId]; ok {
+				tickets[i].Username = name
+			}
+		}
+	}
+	return nil
 }
 
 // Every operation resolves the requested workspace before applying this same
@@ -548,6 +730,11 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 			return nil, err
 		}
 	}
+	enriched := []model.AdtyTicket{ticket}
+	if err := enrichAdtyTickets(model.DB, actor, enriched); err != nil {
+		return nil, err
+	}
+	ticket = enriched[0]
 	canControl := actor.isHandling() || isAdtyTicketCustomerController(actor, ticket)
 	return &AdtyTicketDetail{Actions: allowedTicketActions(actor, ticket), Assignees: assignees, Ticket: ticket, Messages: messages, Images: images, Events: events, CanNote: actor.isHandling(), CanManage: actor.isHandling(), CanControl: canControl}, nil
 }

@@ -16,33 +16,30 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-/** Sections of /site-owner/$section (task 11.6). */
+/** Sections of /site-owner/$section (task 11.6, R-33 #1 split). */
 export const SITE_OWNER_SECTIONS = [
   'overview',
-  'history',
   'customers',
-  'tickets',
   'teams',
-  'commissions',
-  'staff',
   'orders',
   'pricing',
   'bonus',
-  'settings',
+  'commissions',
   'earnings',
+  'withdrawals',
+  'settlements',
+  'wallets',
   'vouchers',
   'notices',
+  'staff',
+  'tickets',
+  'settings',
+  'history',
 ] as const
 
 export type SiteOwnerSectionId = (typeof SITE_OWNER_SECTIONS)[number]
 
 export const SITE_OWNER_DEFAULT_SECTION: SiteOwnerSectionId = 'overview'
-
-/** Sections with their own sidebar entry; they render without the owner-center tab bar. */
-export const SITE_OWNER_STANDALONE_SECTIONS: readonly SiteOwnerSectionId[] = [
-  'tickets',
-  'teams',
-]
 
 export function isSiteOwnerSection(value: string): value is SiteOwnerSectionId {
   return (SITE_OWNER_SECTIONS as readonly string[]).includes(value)

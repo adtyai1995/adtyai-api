@@ -173,13 +173,16 @@ func MigrateAdtyGroup(c *gin.Context) {
 	common.ApiSuccess(c, moved)
 }
 
-// DeleteAdtyGroup 删除没有引用的分组，并从各分组配置里去掉它。
+// DeleteAdtyGroup 软删除分组（只要系统仍有其他未删除分组即可删除，含 default），
+// 在同一事务内清理渠道、分站白名单、用户默认分组及全部 8 个分组配置项，提交后刷新缓存。
 func DeleteAdtyGroup(c *gin.Context) {
 	id := c.Param("id")
 	if err := model.DeleteAdtyGroup(id); err != nil {
 		writeAdtyGroupError(c, err)
 		return
 	}
+	service.InvalidateAdtySiteCache()
+	model.InvalidatePricingCache()
 	recordManageAudit(c, "adty.group.delete", map[string]any{"id": id})
 	common.ApiSuccess(c, nil)
 }

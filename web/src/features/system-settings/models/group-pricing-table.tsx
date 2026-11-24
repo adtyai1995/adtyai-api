@@ -56,6 +56,7 @@ import {
   getAdminGroups,
   groupDisplayQueryKey,
   type AdminGroup,
+  type GroupRefs,
 } from '@/features/adty-groups/api'
 import { GroupMigrateDialog } from '@/features/adty-groups/components/group-migrate-dialog'
 import { GroupTextDialog } from '@/features/adty-groups/components/group-text-dialog'
@@ -78,7 +79,10 @@ type GroupPricingTableProps = {
   onShowDetail: (name: string) => void
 }
 
-const DEFAULT_GROUP_ID = 'default'
+type DeletingGroupTarget = {
+  id: string
+  refs?: GroupRefs
+}
 
 export function GroupPricingTable(props: GroupPricingTableProps) {
   const { t, i18n } = useTranslation()
@@ -88,7 +92,7 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState<AdminGroup | null>(null)
   const [migrating, setMigrating] = useState<AdminGroup | null>(null)
-  const [deleting, setDeleting] = useState<AdminGroup | null>(null)
+  const [deleting, setDeleting] = useState<DeletingGroupTarget | null>(null)
 
   const adminQuery = useQuery({
     queryKey: adminGroupsQueryKey,
@@ -181,6 +185,8 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
         queryClient.invalidateQueries({ queryKey: ['system-options'] }),
         queryClient.invalidateQueries({ queryKey: ['groups'] }),
         queryClient.invalidateQueries({ queryKey: ['user-groups'] }),
+        queryClient.invalidateQueries({ queryKey: ['pricing'] }),
+        queryClient.invalidateQueries({ queryKey: ['channels'] }),
       ])
       toast.success(t('Group deleted'))
     },
@@ -210,11 +216,14 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
     )
   }
 
-  const deleteBlocked = (id: string) => {
-    const refs = adminById.get(id)?.refs
-    if (!refs || id === DEFAULT_GROUP_ID) return true
-    return refs.users + refs.tokens + refs.channels + (refs.sites ?? 0) > 0
-  }
+  const isLastGroup = rows.length <= 1
+  const deletingRefs = deleting?.refs
+  const deletingTotalRefs = deletingRefs
+    ? deletingRefs.users +
+      deletingRefs.tokens +
+      deletingRefs.channels +
+      (deletingRefs.sites ?? 0)
+    : 0
 
   return (
     <Card className='min-w-0 shadow-none'>
@@ -224,7 +233,7 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
             <CardTitle>{t('Pricing groups')}</CardTitle>
             <CardDescription>
               {t(
-                'Each group has a fixed ID. Rename it in any language without affecting users or keys; to remove a group, migrate its users, keys, channels and sites first.'
+                'Each group has a fixed ID. Rename it in any language without affecting users or keys. Any group can be migrated or deleted as long as at least one active group remains.'
               )}
             </CardDescription>
           </div>
@@ -419,14 +428,14 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
                       <Button
                         variant='ghost'
                         size='sm'
-                        disabled={deleteBlocked(row.id)}
-                        onClick={() => admin && setDeleting(admin)}
+                        disabled={isLastGroup}
+                        onClick={() =>
+                          setDeleting({ id: row.id, refs: admin?.refs })
+                        }
                         aria-label={t('Delete group')}
                         title={
-                          deleteBlocked(row.id)
-                            ? t(
-                                'Migrate its users, keys, channels and sites first'
-                              )
+                          isLastGroup
+                            ? t('At least one active group must remain')
                             : undefined
                         }
                       >
@@ -470,13 +479,54 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t('Delete group')}
         desc={t(
-          'Delete {{group}}? It is removed from every group setting. Old logs still show its name.',
+          'Delete {{group}}? It will be removed from all group settings. Historical logs will still show its name.',
           { group: deleting ? display.adminLabel(deleting.id) : '' }
         )}
+        confirmText={t('Delete')}
         destructive
         isLoading={deleteMutation.isPending}
         handleConfirm={() => deleting && deleteMutation.mutate(deleting.id)}
-      />
+      >
+        {deletingRefs && deletingTotalRefs > 0 && (
+          <div className='border-destructive/30 bg-destructive/5 space-y-1.5 rounded-lg border p-3 text-xs'>
+            <p className='text-destructive font-medium'>
+              {t('Impact of deleting this group:')}
+            </p>
+            <ul className='text-muted-foreground list-disc space-y-1 pl-4'>
+              {deletingRefs.channels > 0 && (
+                <li>
+                  {t(
+                    '{{count}} channels will have this group detached; channels with no remaining groups will be automatically disabled.',
+                    { count: formatNumber(deletingRefs.channels, locale) }
+                  )}
+                </li>
+              )}
+              {deletingRefs.users > 0 && (
+                <li>
+                  {t(
+                    '{{count}} users currently assigned to this group will be reassigned to an active fallback group.',
+                    { count: formatNumber(deletingRefs.users, locale) }
+                  )}
+                </li>
+              )}
+              {deletingRefs.tokens > 0 && (
+                <li>
+                  {t('{{count}} API keys reference this group.', {
+                    count: formatNumber(deletingRefs.tokens, locale),
+                  })}
+                </li>
+              )}
+              {(deletingRefs.sites ?? 0) > 0 && (
+                <li>
+                  {t('{{count}} subsites reference this group.', {
+                    count: formatNumber(deletingRefs.sites ?? 0, locale),
+                  })}
+                </li>
+              )}
+            </ul>
+          </div>
+        )}
+      </ConfirmDialog>
     </Card>
   )
 }

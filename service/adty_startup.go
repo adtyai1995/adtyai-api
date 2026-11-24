@@ -38,6 +38,9 @@ func StartAdty() {
 	if err := model.SeedAdtyGroups(); err != nil {
 		common.SysError(common.LogText("seed adty groups: %s", err.Error()))
 	}
+	if err := model.SyncActiveAdtyGroupsToOptions(); err != nil {
+		common.SysError(common.LogText("sync active adty groups to options: %s", err.Error()))
+	}
 	if err := SeedAdtyOfficialGlossary(); err != nil {
 		common.SysError(common.LogText("seed official glossary: %s", err.Error()))
 	}

@@ -17,24 +17,81 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { EXCLUDED_GROUPS, FILTER_ALL, QUOTA_TYPE_VALUES } from '../constants'
-import type { PricingModel } from '../types'
+import type { PricingModel, PricingUsableGroupValue } from '../types'
 
 // ----------------------------------------------------------------------------
 // Model Helper Utilities
 // ----------------------------------------------------------------------------
 
 /**
+ * Format an effective group ratio without IEEE-754 floating-point noise
+ * (e.g. 1.2000000000000002 -> "x1.2").
+ */
+export function formatEffectiveGroupRatio(
+  ratio: number | null | undefined
+): string | undefined {
+  if (ratio == null || !Number.isFinite(ratio)) return undefined
+  const clean = Number(ratio.toFixed(6))
+  return `x${clean}`
+}
+
+/**
+ * Format a group multiplier cleanly with trailing "x" (e.g. "1.2x").
+ */
+export function formatGroupRatioMultiplier(
+  ratio: number | null | undefined
+): string {
+  if (ratio == null || !Number.isFinite(ratio)) return '1x'
+  const clean = Number(ratio.toFixed(6))
+  return `${clean}x`
+}
+
+/**
+ * Resolve the human-readable name for a pricing group.
+ * Prefers the multilingual display store name when resolved, otherwise falls
+ * back to `usable_group[group]` from `/api/pricing`, and finally the group ID.
+ */
+export function resolvePricingGroupName(
+  groupId: string,
+  displayName: string,
+  usableGroup?: Record<string, PricingUsableGroupValue>
+): string {
+  if (displayName && displayName !== groupId) {
+    return displayName
+  }
+  const raw = usableGroup?.[groupId]
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.trim()
+  }
+  if (raw && typeof raw === 'object') {
+    if (typeof raw.name === 'string' && raw.name.trim()) {
+      return raw.name.trim()
+    }
+    if (typeof raw.desc === 'string' && raw.desc.trim()) {
+      return raw.desc.trim()
+    }
+  }
+  return groupId
+}
+
+/**
  * Get available groups for a model
  */
 export function getAvailableGroups(
   model: PricingModel,
-  usableGroup: Record<string, { desc: string; ratio: number }>
+  usableGroup: Record<string, PricingUsableGroupValue>,
+  groupRatio?: Record<string, number>
 ): string[] {
   const modelEnableGroups = Array.isArray(model.enable_groups)
     ? model.enable_groups
     : []
 
-  return Object.keys(usableGroup)
+  const known = new Set<string>([
+    ...Object.keys(usableGroup || {}),
+    ...Object.keys(groupRatio || {}),
+  ])
+
+  return [...known]
     .filter((g) => !EXCLUDED_GROUPS.includes(g))
     .filter((g) => modelEnableGroups.includes(g))
 }

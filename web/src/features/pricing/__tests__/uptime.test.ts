@@ -27,6 +27,7 @@ import {
   extractGroupModelStatuses,
   formatUptimePercentage,
   resolveAllGroupUptimesForModel,
+  resolveModelPingMs,
   resolveModelUptimeForPricing,
 } from '../lib/uptime'
 import type { PricingModel } from '../types'
@@ -146,5 +147,48 @@ describe('pricing uptime helpers', () => {
     expect(items).toHaveLength(1)
     expect(items[0].model).toBe('claude-3-7-sonnet')
     expect(items[0].state).toBe('online')
+  })
+
+  it('preserves built-in probe metadata (avgPingMs, lastCheckedAt, lastMessage) and prefers avgPingMs', () => {
+    const builtInGroup: UptimeGroupResult = {
+      groupId: 'grp_test',
+      categoryName: '测试',
+      models: [
+        {
+          model: 'gpt-4o-mini',
+          status: 1,
+          statusLabel: 'up',
+          uptime: 1,
+          avgPingMs: 142.6,
+          lastCheckedAt: '2026-11-24T17:30:00Z',
+          lastMessage: 'ok',
+          heartbeats: [{ status: 1, time: '2026-11-24T17:30:00Z', ping: 200 }],
+        },
+        {
+          model: 'claude-3-5-sonnet',
+          status: 0,
+          statusLabel: 'down',
+          uptime: 0.5,
+          avgPingMs: null,
+          lastCheckedAt: 1764005400,
+          lastMessage: 'upstream timeout',
+          heartbeats: [
+            { status: 1, time: 't1', ping: 120 },
+            { status: 0, time: 't2', ping: 180 },
+          ],
+        },
+      ],
+    }
+
+    const items = extractGroupModelStatuses(builtInGroup)
+    expect(items).toHaveLength(2)
+    expect(items[0].avgPingMs).toBe(142.6)
+    expect(items[0].lastCheckedAt).toBe('2026-11-24T17:30:00Z')
+    expect(items[0].lastMessage).toBe('ok')
+    expect(resolveModelPingMs(items[0])).toBe(143)
+
+    expect(items[1].lastCheckedAt).toBe(1764005400)
+    expect(items[1].lastMessage).toBe('upstream timeout')
+    expect(resolveModelPingMs(items[1])).toBe(150)
   })
 })

@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { SiteMarginVoucherPanel } from '@/features/adty-voucher/site-margin-voucher-panel'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { useAuthStore } from '@/stores/auth-store'
@@ -35,7 +36,6 @@ import { SiteTiersPanel } from './components/site-tiers-panel'
 import { SiteWithdrawalsPanel } from './components/site-withdrawals-panel'
 import { SitesPanel } from './components/sites-panel'
 import { UsagePanel } from './components/usage-panel'
-import { VoucherAdminPanel } from './components/voucher-admin-panel'
 import { WithdrawRulesPanel } from './components/withdraw-rules-panel'
 import {
   canOpenSiteAdminSection,
@@ -58,7 +58,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
     domains: t('Domains'),
     policies: t('Access and risk'),
     withdrawals: t('Withdrawals'),
-    vouchers: t('Recharge codes'),
+    vouchers: t('Margin recharge codes'),
   }
   const visible = SITE_ADMIN_SECTIONS.filter((section) =>
     canOpenSiteAdminSection(user, section)
@@ -156,7 +156,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
               <SiteWithdrawalsPanel />
             </TabsContent>
             <TabsContent value='vouchers'>
-              <VoucherAdminPanel />
+              <SiteMarginVoucherPanel />
             </TabsContent>
           </Tabs>
         </SectionPageLayout.Content>

@@ -353,6 +353,7 @@ func FixChannelsAbilities(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	model.InvalidatePricingCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -872,6 +873,7 @@ func AddChannel(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	createAudit := map[string]any{
 		"name":  addChannelRequest.Channel.Name,
 		"type":  addChannelRequest.Channel.Type,
@@ -906,6 +908,7 @@ func DeleteChannel(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	if channelLookupFailed {
 		service.ResetProxyClientCache()
 	} else {
@@ -937,6 +940,7 @@ func DeleteDisabledChannel(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	if rows > 0 {
 		service.ResetProxyClientCache()
 	}
@@ -983,6 +987,7 @@ func DisableTagChannels(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	recordManageAudit(c, "channel.tag_disable", map[string]any{
 		"tag": channelTag.Tag,
 	})
@@ -1007,6 +1012,7 @@ func EnableTagChannels(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	recordManageAudit(c, "channel.tag_enable", map[string]any{
 		"tag": channelTag.Tag,
 	})
@@ -1074,6 +1080,7 @@ func EditTagChannels(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	recordManageAudit(c, "channel.tag_edit", map[string]any{
 		"tag": channelTag.Tag,
 	})
@@ -1102,6 +1109,7 @@ func DeleteChannelBatch(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	if deletedCount > 0 {
 		service.ResetProxyClientCache()
 	}
@@ -1293,6 +1301,7 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
 	}
@@ -1346,6 +1355,7 @@ func UpdateChannelStatus(c *gin.Context) {
 	changed := model.UpdateChannelStatus(id, "", req.Status, "manual operation")
 	if changed {
 		_ = model.RefreshChannelCache()
+		model.InvalidatePricingCache()
 		if req.Status != common.ChannelStatusEnabled {
 			closeActiveChannelWebSockets([]int{id})
 		}
@@ -1380,6 +1390,7 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 	}
 	if changedCount > 0 {
 		_ = model.RefreshChannelCache()
+		model.InvalidatePricingCache()
 	}
 	if len(disabledIDs) > 0 {
 		closeActiveChannelWebSockets(disabledIDs)
@@ -1607,6 +1618,7 @@ func BatchSetChannelTag(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	recordManageAudit(c, "channel.tag_batch_set", map[string]any{
 		"count": len(channelBatch.Ids),
 	})
@@ -1715,6 +1727,7 @@ func CopyChannel(c *gin.Context) {
 		return
 	}
 	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 	recordManageAudit(c, "channel.copy", map[string]any{
 		"sourceId": id,
 		"id":       clone.Id,
@@ -1941,6 +1954,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 		_ = model.RefreshChannelCache()
+		model.InvalidatePricingCache()
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
@@ -1979,6 +1993,7 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		_ = model.RefreshChannelCache()
+		model.InvalidatePricingCache()
 		auditMultiKey()
 		common.ApiSuccessT(c, "Key enabled", nil)
 		return
@@ -2002,6 +2017,7 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		_ = model.RefreshChannelCache()
+		model.InvalidatePricingCache()
 		auditMultiKey()
 		common.ApiSuccessT(c, "Enabled {{count}} keys", nil, map[string]any{"count": enabledCount})
 		return
@@ -2044,6 +2060,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 		_ = model.RefreshChannelCache()
+		model.InvalidatePricingCache()
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
@@ -2116,6 +2133,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 		_ = model.RefreshChannelCache()
+		model.InvalidatePricingCache()
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
@@ -2186,6 +2204,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 		_ = model.RefreshChannelCache()
+		model.InvalidatePricingCache()
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}

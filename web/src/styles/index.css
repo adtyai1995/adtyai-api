@@ -21,7 +21,6 @@ For commercial licensing, please contact support@quantumnous.com
 @import './shadcn-tailwind.css';
 @import '@fontsource-variable/public-sans';
 @import '@fontsource-variable/inter';
-@import '@fontsource-variable/plus-jakarta-sans';
 @import '@fontsource-variable/jetbrains-mono';
 /* Editorial serif (Lora) backing the `serif` font axis and the Anthropic
  * preset's default typography. See `--font-serif` in theme.css for the

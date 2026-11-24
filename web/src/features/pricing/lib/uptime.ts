@@ -40,6 +40,9 @@ export interface ResolvedModelUptime {
   status: number
   state: ConnectivityState
   uptime: number | null
+  avgPingMs?: number | null
+  lastCheckedAt?: string | number | null
+  lastMessage?: string | null
   heartbeats: UptimeHeartbeat[]
 }
 
@@ -86,6 +89,19 @@ export function computeAveragePing(
   }
   if (count === 0) return null
   return Math.round(sum / count)
+}
+
+export function resolveModelPingMs(
+  item: Pick<ResolvedModelUptime, 'avgPingMs' | 'heartbeats'>
+): number | null {
+  if (
+    item.avgPingMs != null &&
+    Number.isFinite(item.avgPingMs) &&
+    item.avgPingMs >= 0
+  ) {
+    return Math.round(item.avgPingMs)
+  }
+  return computeAveragePing(item.heartbeats)
 }
 
 export function getConnectivityStatusLabelKey(
@@ -167,6 +183,9 @@ export function extractGroupModelStatuses(
       status: item.status,
       state: classifyUptimeState(item.status, item.uptime),
       uptime: item.uptime,
+      avgPingMs: item.avgPingMs,
+      lastCheckedAt: item.lastCheckedAt,
+      lastMessage: item.lastMessage,
       heartbeats: item.heartbeats ?? [],
     }))
   }
