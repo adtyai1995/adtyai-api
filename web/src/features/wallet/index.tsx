@@ -16,12 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Megaphone } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
+import { RichContent } from '@/components/rich-content'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { useAdtySite } from '@/features/adty-site/api'
 import { getSelf } from '@/lib/api'
 
 import { AdtyOnlineTopup } from './adty/components/adty-online-topup'
@@ -37,6 +41,8 @@ interface WalletProps {
 
 export function Wallet(props: WalletProps) {
   const { t } = useTranslation()
+  const siteQuery = useAdtySite()
+  const walletNotice = siteQuery.data?.wallet_notice?.trim() ?? ''
   const [user, setUser] = useState<UserWalletData | null>(null)
   const [userLoading, setUserLoading] = useState(true)
   const [userError, setUserError] = useState(false)
@@ -93,6 +99,15 @@ export function Wallet(props: WalletProps) {
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
         <div className='mx-auto flex w-full max-w-7xl flex-col gap-4'>
+          {walletNotice && (
+            <Alert>
+              <Megaphone aria-hidden='true' />
+              <AlertTitle>{t('Wallet Announcement')}</AlertTitle>
+              <AlertDescription className='mt-1'>
+                <RichContent breaks content={walletNotice} className='text-sm' />
+              </AlertDescription>
+            </Alert>
+          )}
           <WalletStatsCard
             user={userError ? null : user}
             loading={userLoading}

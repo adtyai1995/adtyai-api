@@ -110,11 +110,12 @@ export async function getOwnerSite(): Promise<OwnerSite> {
   return requireServerSuccess(res.data).data
 }
 
-/** Brand and the SEO switch do not need verification. */
+/** Brand, custom home page, and the SEO switch do not need verification. */
 export async function saveOwnerSite(body: {
   brand?: Partial<SiteBrand>
   expected_brand?: Partial<SiteBrand>
   seo_index?: boolean
+  home_page_content?: string
 }): Promise<OwnerSite> {
   const res = await api.put<ApiResponse<OwnerSite>>(`${BASE}/self`, body)
   return requireServerSuccess(res.data).data
@@ -161,10 +162,14 @@ export type SiteWithdrawal = {
   fee_usd: string
   method: string
   network: string
+  account_no?: string
+  account_name?: string
+  qr_image_url?: string
   status: string
   rate: string
   payout_amount: string
   payout_currency: string
+  created_at?: number
 }
 
 function archivedQuery(siteId?: number) {
@@ -237,6 +242,23 @@ export async function getSiteWithdrawals(
   return requireServerSuccess(res.data).data
 }
 
+/** Uploads an Alipay payout QR or payout proof image (PNG, JPEG or WebP, up to 5 MB) and returns a signed URL. */
+export async function uploadOwnerWithdrawalQR(
+  file: File,
+  purpose?: 'withdrawal_qr' | 'payment_proof'
+): Promise<string> {
+  const form = new FormData()
+  form.append('file', file)
+  if (purpose) {
+    form.append('purpose', purpose)
+  }
+  const res = await api.post<ApiResponse<{ url: string }>>(
+    `${BASE}/withdrawals/qr`,
+    form
+  )
+  return requireServerSuccess(res.data).data.url
+}
+
 export async function createSiteWithdrawal(
   body: {
     site_id: number
@@ -245,6 +267,7 @@ export async function createSiteWithdrawal(
     network: string
     account_no: string
     account_name: string
+    qr_image_url?: string
     expected_payout?: string
     expected_rate: string
     idempotencyKey: string
@@ -261,6 +284,7 @@ export async function createSiteWithdrawal(
       network: body.network,
       account_no: body.account_no,
       account_name: body.account_name,
+      qr_image_url: body.qr_image_url ?? '',
       expected_rate: body.expected_rate,
       expected_payout: body.expected_payout,
     },
@@ -286,81 +310,6 @@ export async function transferEarningToMargin(
     { headers: { 'Idempotency-Key': idempotencyKey } }
   )
   requireServerSuccess(res.data)
-}
-
-export async function getSelfUsePrincipal(): Promise<{
-  available_usd: string
-}> {
-  const res = await api.get<ApiResponse<{ available_usd: string }>>(
-    `${BASE}/wallets/self-use`
-  )
-  return requireServerSuccess(res.data).data
-}
-
-export async function transferOwnerPrincipal(amount: string, intent: string) {
-  const res = await api.post<ApiResponse<{ transfer_id: string }>>(
-    `${BASE}/wallets/earning-to-personal`,
-    { amount_usd: amount },
-    { headers: { 'Idempotency-Key': intent } }
-  )
-  return requireServerSuccess(res.data).data
-}
-
-export async function createSelfUseKey(name: string): Promise<string> {
-  const res = await api.post<ApiResponse<{ key: string }>>(
-    `${BASE}/self-use/keys`,
-    {
-      name,
-      expired_time: -1,
-      unlimited_quota: true,
-      allow_user_quota_query: false,
-    }
-  )
-  return requireServerSuccess(res.data).data.key
-}
-
-export type OwnerPrincipalTransfer = {
-  transfer_id: string
-  created_at: number
-  amount_usd: string
-  earnings_before: string
-  earnings_after: string
-  personal_before: string
-  personal_after: string
-}
-
-export type OwnerSelfUseUsage = {
-  operation_key: string
-  request_id: string
-  created_at: number
-  model_name: string
-  billing_group: string
-  billing_unit: string
-  supply_unit_price: string
-  charged_usd: string
-  prompt_tokens: number
-  completion_tokens: number
-  usage_facts?: Record<string, number>
-}
-
-export async function getOwnerPrincipalTransfers(
-  page: number
-): Promise<OwnerPage<OwnerPrincipalTransfer>> {
-  const res = await api.get<ApiResponse<OwnerPage<OwnerPrincipalTransfer>>>(
-    `${BASE}/self-use/transfers`,
-    { params: { p: page, page_size: OWNER_PAGE_SIZE } }
-  )
-  return requireServerSuccess(res.data).data
-}
-
-export async function getOwnerSelfUseUsage(
-  page: number
-): Promise<OwnerPage<OwnerSelfUseUsage>> {
-  const res = await api.get<ApiResponse<OwnerPage<OwnerSelfUseUsage>>>(
-    `${BASE}/self-use/usage`,
-    { params: { p: page, page_size: OWNER_PAGE_SIZE } }
-  )
-  return requireServerSuccess(res.data).data
 }
 
 /** Earnings and margin wallets; the server never returns the operating wallet here. */

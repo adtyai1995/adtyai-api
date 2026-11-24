@@ -39,6 +39,7 @@ import {
   resolvePricingDisplayGroup,
   usePricingData,
 } from './hooks/use-pricing-data'
+import { useUptimeStatus } from './hooks/use-uptime-status'
 
 export function Pricing() {
   const { t } = useTranslation()
@@ -51,6 +52,7 @@ export function Pricing() {
     () => search.group
   )
   const displayGroup = resolvePricingDisplayGroup(explicitGroup)
+  const { groups: uptimeGroups } = useUptimeStatus()
 
   const {
     models,
@@ -155,6 +157,7 @@ export function Pricing() {
           showRechargePrice={showRechargePrice}
           selectedGroup={groupFilter}
           usableGroups={availableGroups}
+          uptimeGroups={uptimeGroups}
         />
       )
     }
@@ -169,6 +172,7 @@ export function Pricing() {
         selectedGroup={groupFilter}
         onModelClick={handleModelClick}
         usableGroups={availableGroups}
+        uptimeGroups={uptimeGroups}
       />
     )
   }
@@ -276,6 +280,8 @@ export function Pricing() {
               usdExchangeRate={usdExchangeRate ?? 1}
               tokenUnit={tokenUnit}
               showRechargePrice={showRechargePrice}
+              selectedGroup={groupFilter}
+              uptimeGroups={uptimeGroups}
             />
           )}
         </PageTransition>

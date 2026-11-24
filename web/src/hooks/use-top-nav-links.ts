@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import type { TopNavLink } from '@/components/layout/types'
 import { useStatus } from '@/hooks/use-status'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 export type { TopNavLink } from '@/components/layout/types'
@@ -53,7 +54,12 @@ export function useTopNavLinks(): TopNavLink[] {
   // Documentation link (may be external)
   const docsLink: string | undefined = status?.docs_link as string | undefined
 
-  const isAuthed = !!auth?.user
+  const user = auth?.user
+  const isAuthed = !!user
+  const isAdmin = Boolean(user && user.role >= ROLE.ADMIN)
+  const isSiteOwner = user?.adty_site_owner === true
+  const isPureSiteOwner = isSiteOwner && !isAdmin
+  const isStaff = (user?.staff_site_id ?? 0) > 0
 
   const links: TopNavLink[] = []
 
@@ -62,9 +68,13 @@ export function useTopNavLinks(): TopNavLink[] {
     links.push({ id: 'home', title: t('Home'), href: '/' })
   }
 
-  // Console -> /dashboard (new console path)
+  // Console -> /dashboard (or /site-owner/overview for pure site owners)
   if (modules?.console !== false) {
-    links.push({ id: 'console', title: t('Console'), href: '/dashboard' })
+    links.push({
+      id: 'console',
+      title: t('Console'),
+      href: isPureSiteOwner ? '/site-owner/overview' : '/dashboard',
+    })
   }
 
   // Pricing
@@ -76,6 +86,20 @@ export function useTopNavLinks(): TopNavLink[] {
       title: t('Model Square'),
       href: '/pricing',
       requiresAuth,
+    })
+  }
+
+  // Model Status (authenticated console entry for ordinary and admin users)
+  if (
+    isAuthed &&
+    !isPureSiteOwner &&
+    !isStaff &&
+    modules?.model_status !== false
+  ) {
+    links.push({
+      id: 'model-status',
+      title: t('Model Status'),
+      href: '/model-status',
     })
   }
 
@@ -113,8 +137,9 @@ export function useTopNavLinks(): TopNavLink[] {
   // ADTY task 8.2: unknown nav keys default to visible, so no admin setting
   // is needed; HeaderNavModules {"affiliate": false} hides it.
   // R4-045: Hide the main-site affiliate program entry on subsites.
+  // R-32 #21: Hide affiliate entry for signed-in admins and site owners.
   const isSubsite = Boolean(status?.adty_site)
-  if (!isSubsite && modules?.affiliate !== false) {
+  if (!isSubsite && !isAdmin && !isSiteOwner && modules?.affiliate !== false) {
     links.push({
       id: 'affiliate',
       title: t('Affiliate Program'),

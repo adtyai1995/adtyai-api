@@ -21,7 +21,6 @@ import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ActivityTimeCell } from '@/components/activity-time-cell'
-import { BadgeCell } from '@/components/data-table'
 import { LongText } from '@/components/long-text'
 import { StatusBadge } from '@/components/status-badge'
 import { TableId } from '@/components/table-id'
@@ -31,7 +30,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { AdminGroupBadge } from '@/features/adty-groups/components/admin-group-badge'
 import { getCurrencyDisplay } from '@/lib/currency'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
@@ -142,16 +140,23 @@ export function useUsersColumns(): ColumnDef<User>[] {
       {
         accessorKey: 'site_id',
         header: t('Site'),
-        cell: ({ row }) => (
-          <div className='flex min-w-0 flex-col gap-1'>
-            <LongText className='max-w-[180px] text-sm'>
-              {row.original.site_name || t('Site')}
-            </LongText>
-            <span className='text-muted-foreground text-xs'>
-              {t('Site ID')}: {row.original.site_id ?? 0}
-            </span>
-          </div>
-        ),
+        cell: ({ row }) => {
+          const siteId = row.original.site_id ?? 0
+          const siteLabel =
+            siteId === 0
+              ? t('Main site')
+              : row.original.site_name || `${t('Site')} #${siteId}`
+          return (
+            <div className='flex min-w-0 flex-col gap-1'>
+              <LongText className='max-w-[180px] text-sm'>{siteLabel}</LongText>
+              {siteId > 0 && (
+                <span className='text-muted-foreground text-xs'>
+                  {t('Site ID')}: {siteId}
+                </span>
+              )}
+            </div>
+          )
+        },
         enableSorting: false,
         size: 200,
         meta: { mobileOrder: 15 },
@@ -214,27 +219,6 @@ export function useUsersColumns(): ColumnDef<User>[] {
         size: 180,
         minSize: 160,
         meta: { mobileOrder: 40 },
-      },
-      {
-        accessorKey: 'group',
-        header: t('User Group'),
-        cell: ({ row }) => {
-          const group = row.getValue('group') as string
-          return (
-            <BadgeCell>
-              <AdminGroupBadge group={group} className='font-normal' />
-            </BadgeCell>
-          )
-        },
-        filterFn: (row, id, value) => {
-          const group = String(
-            row.getValue(id) || t('User Group')
-          ).toLowerCase()
-          const searchValue = String(value).toLowerCase()
-          return group.includes(searchValue)
-        },
-        size: 140,
-        meta: { mobileOrder: 30 },
       },
       {
         accessorKey: 'role',

@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -237,6 +239,7 @@ func isRetiredOptionKey(k string) bool {
 		return true
 	}
 	return strings.HasPrefix(k, "adty_legal_setting.site_agreement") ||
+		strings.HasPrefix(k, "adty_legal_setting.site_customer_terms") ||
 		strings.HasPrefix(k, "adty_reseller_setting.cost_factor") ||
 		strings.HasPrefix(k, "adty_reseller_setting.pending_cost_factor") ||
 		strings.HasPrefix(k, "adty_reseller_setting.min_cost_factor") ||
@@ -389,7 +392,8 @@ func UpdateOption(c *gin.Context) {
 	case adty_setting.EpaySettingKeyChannelTimeout, adty_setting.EpaySettingKeyTotalTimeout:
 		// Cross-key validation runs below after locking both SQL rows.
 	default:
-		if strings.HasPrefix(option.Key, "adty_legal_setting.site_agreement") {
+		if strings.HasPrefix(option.Key, "adty_legal_setting.site_agreement") ||
+			strings.HasPrefix(option.Key, "adty_legal_setting.site_customer_terms") {
 			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 			return
 		}
@@ -559,8 +563,33 @@ func UpdateOption(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	case "adty_site_setting.wallet_notice":
+		trimmed := strings.TrimSpace(option.Value.(string))
+		if utf8.RuneCountInString(trimmed) > 2000 {
+			common.ApiError(c, common.NewMessage("Wallet notice must be at most 2000 characters"))
+			return
+		}
+		option.Value = trimmed
+	case "adty_site_setting.voucher_purchase_url":
+		rawURL := strings.TrimSpace(option.Value.(string))
+		if rawURL != "" {
+			parsed, parseErr := url.Parse(rawURL)
+			if parseErr != nil || strings.ContainsAny(rawURL, " \t\r\n") ||
+				(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+				strings.TrimSpace(parsed.Host) == "" || len(rawURL) > 500 {
+				common.ApiError(c, common.NewMessage("Voucher purchase link must be a valid http:// or https:// URL"))
+				return
+			}
+		}
+		option.Value = rawURL
 	case "console_setting.uptime_kuma_groups":
 		err = console_setting.ValidateConsoleSettings(option.Value.(string), "UptimeKumaGroups")
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	case "console_setting.uptime_kuma_base_url":
+		err = console_setting.ValidateConsoleSettings(option.Value.(string), "UptimeKumaBaseURL")
 		if err != nil {
 			common.ApiError(c, err)
 			return

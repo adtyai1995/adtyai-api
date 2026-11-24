@@ -42,9 +42,10 @@ import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '../lib/price'
 import { taskPriceLabel, taskUsageUnitLabel } from '../lib/task-price-display'
+import type { ResolvedModelUptime } from '../lib/uptime'
 import type { PricingModel, PriceType, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
-import { ModelPerfBadge, type ModelPerfBadgeData } from './model-perf-badge'
+import { ModelConnectivityBadge } from './model-connectivity-badge'
 
 export interface ModelCardProps {
   model: PricingModel
@@ -54,7 +55,7 @@ export interface ModelCardProps {
   tokenUnit?: TokenUnit
   showRechargePrice?: boolean
   selectedGroup?: string
-  perf?: ModelPerfBadgeData
+  uptime?: ResolvedModelUptime | null
   /** Groups the viewer can use; when set, other groups are not shown. */
   usableGroups?: string[]
 }
@@ -418,8 +419,9 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         )}
       </CardContent>
       <CardFooter className='mt-auto border-0 bg-transparent pt-0'>
-        <ModelPerfBadge
-          perf={props.perf}
+        <ModelConnectivityBadge
+          uptime={props.uptime}
+          variant='card'
           className='border-border/60 border-t pt-2'
         >
           <Button
@@ -430,7 +432,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
             {t('Details')}
             <ChevronRight aria-hidden className='size-3.5' />
           </Button>
-        </ModelPerfBadge>
+        </ModelConnectivityBadge>
       </CardFooter>
     </Card>
   )

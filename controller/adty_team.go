@@ -158,6 +158,8 @@ func PostAdtyOwnerSiteTeamBalance(c *gin.Context) {
 	common.ApiSuccess(c, res)
 }
 
+// PutAdtyMainTeamAgreementPrice lets Root customize or re-customize the pricing
+// multiplier for any active team (main-site: 0 < d <= 10; subsite: 1 <= d <= 10).
 func PutAdtyMainTeamAgreementPrice(c *gin.Context) {
 	if c.GetInt("role") != common.RoleRootUser {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))

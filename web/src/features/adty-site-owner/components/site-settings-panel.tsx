@@ -60,7 +60,7 @@ import {
   uploadLogo,
 } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
-import { parseSenderRecords } from '../lib/site-owner'
+import { isValidOptionalHttpUrl, parseSenderRecords } from '../lib/site-owner'
 import type {
   OwnerSite,
   SenderDomain,
@@ -81,6 +81,8 @@ const BRAND_LIMITS: Record<
   theme_color: 7,
   tawk_property_id: 64,
   tawk_widget_id: 64,
+  wallet_notice: 2000,
+  voucher_purchase_url: 500,
 }
 
 function domainVariant(status: SiteDomain['status']) {
@@ -187,14 +189,22 @@ function BrandCard(props: { site: OwnerSite }) {
   const field = (
     key: keyof typeof BRAND_LIMITS,
     label: string,
-    multiline = false
+    multiline = false,
+    extraHint?: string
   ) => {
     const id = `brand-${key}`
+    let placeholder: string | undefined
+    if (key === 'theme_color') placeholder = '#RRGGBB'
+    else if (key === 'voucher_purchase_url') placeholder = 'https://...'
+    const isUrlInvalid =
+      key === 'voucher_purchase_url' &&
+      !isValidOptionalHttpUrl(brand.voucher_purchase_url ?? '')
     const inputProps = {
       id,
       maxLength: BRAND_LIMITS[key],
       value: brand[key] ?? '',
-      placeholder: key === 'theme_color' ? '#RRGGBB' : undefined,
+      placeholder,
+      'aria-invalid': isUrlInvalid || undefined,
       onChange: (event: { target: { value: string } }) =>
         editBrand({ [key]: event.target.value }),
     }
@@ -202,12 +212,19 @@ function BrandCard(props: { site: OwnerSite }) {
       <div className='space-y-2'>
         <Label htmlFor={id}>{label}</Label>
         {multiline ? <Textarea {...inputProps} /> : <Input {...inputProps} />}
-        <p className='text-muted-foreground text-xs'>
-          {t('{{count}} / {{max}} characters', {
-            count: [...(brand[key] ?? '')].length,
-            max: BRAND_LIMITS[key],
-          })}
-        </p>
+        {isUrlInvalid ? (
+          <p role='alert' className='text-destructive text-xs'>
+            {t('Enter a valid http:// or https:// URL')}
+          </p>
+        ) : (
+          <p className='text-muted-foreground text-xs'>
+            {extraHint ? `${extraHint} · ` : ''}
+            {t('{{count}} / {{max}} characters', {
+              count: [...(brand[key] ?? '')].length,
+              max: BRAND_LIMITS[key],
+            })}
+          </p>
+        )}
       </div>
     )
   }
@@ -258,9 +275,14 @@ function BrandCard(props: { site: OwnerSite }) {
     support_contact: t('Support contact'),
     tawk_property_id: t('Tawk.to property ID'),
     tawk_widget_id: t('Tawk.to widget ID'),
+    wallet_notice: t('Wallet notice'),
+    voucher_purchase_url: t('Voucher purchase link'),
     logo_url: t('Logo'),
     favicon_url: t('Favicon'),
   }
+  const voucherUrlInvalid = !isValidOptionalHttpUrl(
+    brand.voucher_purchase_url ?? ''
+  )
   return (
     <Card>
       <CardHeader>
@@ -269,7 +291,7 @@ function BrandCard(props: { site: OwnerSite }) {
       <CardContent className='grid gap-3'>
         {conflicts.length>0 && <div role="alert">
           {conflicts.map(key=><p key={key}>{brandFieldLabels[key] ?? key} · {t('Current value')}: {observed[key]} · {t('Previous value')}: {baseline[key]}</p>)}
-          <Button variant="outline" onClick={()=>{
+          <Button type='button' variant="outline" onClick={()=>{
             setBrand({...observed,...Object.fromEntries(changed.map(key=>[key,brand[key]]))})
             setBaseline(observed)
           }}>{t('Keep my changes')}</Button>
@@ -279,6 +301,18 @@ function BrandCard(props: { site: OwnerSite }) {
         {field('theme_color', t('Theme color'))}
         {field('tagline', t('Tagline'))}
         {field('notice', t('Notice'), true)}
+        {field(
+          'wallet_notice',
+          t('Wallet notice'),
+          true,
+          t('Displayed on the customer wallet page')
+        )}
+        {field(
+          'voucher_purchase_url',
+          t('Voucher purchase link'),
+          false,
+          t('External http(s) link where customers can buy recharge codes')
+        )}
         {field('support_contact', t('Support contact'))}
         <div className='grid gap-3 sm:grid-cols-2'>
           {field('tawk_property_id', t('Tawk.to property ID'))}
@@ -294,8 +328,14 @@ function BrandCard(props: { site: OwnerSite }) {
         </p>
         <div>
           <Button
+            type='button'
             variant='brand'
-            disabled={save.isPending || !changed.length || conflicts.length>0}
+            disabled={
+              save.isPending ||
+              !changed.length ||
+              conflicts.length > 0 ||
+              voucherUrlInvalid
+            }
             onClick={() => save.mutate({...edits.current})}
           >
             {t('Save brand')}
@@ -731,11 +771,95 @@ function CloseRequestCard(props: { site: OwnerSite }) {
   )
 }
 
-/** Site settings: brand, custom domains, sender domain and SEO (task 11.6). */
+function HomePageCard(props: { site: OwnerSite }) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const saved = props.site.home_page_content ?? ''
+  const [content, setContent] = useState(saved)
+  const previousSaved = useRef(saved)
+  useEffect(() => {
+    if (previousSaved.current !== saved) {
+      setContent((current) =>
+        current === previousSaved.current ? saved : current
+      )
+      previousSaved.current = saved
+    }
+  }, [saved])
+  const dirty = content !== saved
+  useDraftNavigation(dirty)
+  const closing = props.site.status === 'closing'
+  const save = useMutation({
+    mutationFn: () => saveOwnerSite({ home_page_content: content }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(siteOwnerKeys.site, updated)
+      const nextSaved = updated.home_page_content ?? ''
+      previousSaved.current = nextSaved
+      setContent(nextSaved)
+      toast.success(t('Saved successfully'))
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      void queryClient.invalidateQueries({ queryKey: adtySiteQueryKey })
+      void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+    },
+    onError: (err) => handleServerError(err),
+  })
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t('Custom Home Page')}</CardTitle>
+      </CardHeader>
+      <CardContent className='grid gap-3'>
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'Enter Markdown, HTML, or an http:// or https:// URL (embedded as an iframe). Setting custom home page content replaces the default homepage and hides default status info.'
+          )}
+        </p>
+        <div className='space-y-2'>
+          <Label htmlFor='owner-home-page-content'>
+            {t('Home page content')}
+          </Label>
+          <Textarea
+            id='owner-home-page-content'
+            rows={8}
+            className='font-mono text-xs'
+            disabled={closing || save.isPending}
+            value={content}
+            placeholder={t(
+              'Leave empty to use the default homepage, or paste Markdown, HTML, or https://...'
+            )}
+            onChange={(event) => setContent(event.target.value)}
+          />
+        </div>
+        <div className='flex flex-wrap gap-2'>
+          <Button
+            type='button'
+            variant='brand'
+            disabled={closing || !dirty || save.isPending}
+            onClick={() => save.mutate()}
+          >
+            {t('Save home page')}
+          </Button>
+          {dirty && (
+            <Button
+              type='button'
+              variant='outline'
+              disabled={save.isPending}
+              onClick={() => setContent(saved)}
+            >
+              {t('Reset')}
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/** Site settings: brand, custom home page, custom domains, sender domain and SEO (task 11.6). */
 export function SiteSettingsPanel(props: { site: OwnerSite }) {
   return (
     <div className='grid gap-4'>
       <BrandCard site={props.site} />
+      <HomePageCard site={props.site} />
       <DomainsCard site={props.site} />
       <SenderDomainCard site={props.site} />
       <SearchCard site={props.site} />

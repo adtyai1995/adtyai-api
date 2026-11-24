@@ -41,6 +41,7 @@ import {
 } from '@/components/ui/empty'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useApiBaseUrl } from '@/features/adty-site/api'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
@@ -56,8 +57,8 @@ import type { ApiKey } from '../types'
 import { ApiKeyQuotaCell } from './api-key-quota-cell'
 import { ApiKeyActivityCell } from './api-key-timestamp-cell'
 import {
+  ApiAddressCell,
   ApiKeyCell,
-  ModelLimitsCell,
   IpRestrictionsCell,
 } from './api-keys-cells'
 import { useApiKeysColumns } from './api-keys-columns'
@@ -109,6 +110,7 @@ function ApiKeysMobileList({
   now: number
 }) {
   const { t } = useTranslation()
+  const apiBaseUrl = useApiBaseUrl()
   const rows = table.getRowModel().rows
 
   if (isLoading) return <ApiKeysMobileSkeleton />
@@ -190,7 +192,7 @@ function ApiKeysMobileList({
             </div>
 
             <div className='flex flex-wrap items-center gap-x-5 gap-y-1'>
-              <ModelLimitsCell apiKey={apiKey} detailsTrigger='click' />
+              <ApiAddressCell apiBaseUrl={apiBaseUrl} />
               <IpRestrictionsCell apiKey={apiKey} detailsTrigger='click' />
             </div>
 

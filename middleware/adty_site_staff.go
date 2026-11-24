@@ -44,7 +44,7 @@ func adtyStaffDashboardAllowed(c *gin.Context, user *model.UserBase, identity se
 		"POST /api/adty/telegram/bind/start", "POST /api/adty/telegram/bind/confirm",
 		"POST /api/adty/telegram/unbind", "POST /api/adty/telegram/bind/unbind":
 		allowed = slices.Contains(service.AdtyStaffViewOf(*staff).Permissions, service.AdtyStaffTicketManage)
-	case "GET /api/adty/badges", "GET /api/adty/staff/self", "GET /api/adty/staff/customers", "GET /api/adty/staff/customers/:id", "GET /api/adty/staff/customers/:id/topups", "GET /api/adty/staff/customers/:id/logs", "GET /api/adty/staff/balance-requests",
+	case "GET /api/adty/badges", "POST /api/adty/badges/seen", "GET /api/adty/staff/self", "GET /api/adty/staff/customers", "GET /api/adty/staff/customers/:id", "GET /api/adty/staff/customers/:id/topups", "GET /api/adty/staff/customers/:id/logs", "GET /api/adty/staff/balance-requests",
 		"GET /api/adty/staff/customers/:id/orders", "GET /api/adty/staff/customers/:id/orders/:trade_no",
 		"POST /api/adty/staff/customers/:id/password-reset", "POST /api/adty/staff/customers/:id/disable", "POST /api/adty/staff/balance-requests",
 		"GET /api/user/self", "GET /api/verify/methods", "POST /api/verify", "GET /api/user/sessions", "DELETE /api/user/sessions/:sid", "POST /api/user/sessions/revoke-others",

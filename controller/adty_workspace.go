@@ -5,9 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -525,9 +528,15 @@ func PostAdtyTicketImage(c *gin.Context) {
 	}
 	// Base64 expansion and the metadata envelope use the same byte policy
 	// reported to the frontend. Limit the stream before reading the JSON.
-	limit := base64.StdEncoding.EncodedLen(service.AdtyTicketImageMaxBytes()) + 1024
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(limit))
+	maxBytes := service.AdtyTicketImageMaxBytes()
+	limit := int64(base64.StdEncoding.EncodedLen(maxBytes)) + 4096
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiError(c, service.ErrAdtyTicketImageSize)
+			return
+		}
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
@@ -597,12 +606,34 @@ func GetAdtyTicketImage(c *gin.Context) {
 	}
 	path, mime, err := service.OpenAdtyTicketImage(userID, id, imageID, adtyRequestedTicketScope(c))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Image not found"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
-	c.Header("Cache-Control", "private, no-store")
+	cleanMime, _, _ := strings.Cut(strings.TrimSpace(mime), ";")
+	cleanMime = strings.ToLower(strings.TrimSpace(cleanMime))
+	if cleanMime == "image/jpg" {
+		cleanMime = "image/jpeg"
+	}
+	if cleanMime == "" {
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".jpg", ".jpeg":
+			cleanMime = "image/jpeg"
+		case ".webp":
+			cleanMime = "image/webp"
+		case ".gif":
+			cleanMime = "image/gif"
+		default:
+			cleanMime = "image/png"
+		}
+	}
+	c.Header("Content-Encoding", "identity")
+	c.Header("Content-Type", cleanMime)
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("Content-Type", mime)
+	c.Header("Cache-Control", "private, max-age=300")
 	c.File(path)
 }
 

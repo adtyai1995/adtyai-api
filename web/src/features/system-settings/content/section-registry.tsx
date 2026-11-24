@@ -31,24 +31,9 @@ const AnnouncementsSection = lazy(() =>
     default: module.AnnouncementsSection,
   }))
 )
-const ApiInfoSection = lazy(() =>
-  import('./api-info-section').then((module) => ({
-    default: module.ApiInfoSection,
-  }))
-)
-const ChatSettingsSection = lazy(() =>
-  import('./chat-settings-section').then((module) => ({
-    default: module.ChatSettingsSection,
-  }))
-)
 const DashboardSection = lazy(() =>
   import('./dashboard-section').then((module) => ({
     default: module.DashboardSection,
-  }))
-)
-const DrawingSettingsSection = lazy(() =>
-  import('./drawing-settings-section').then((module) => ({
-    default: module.DrawingSettingsSection,
   }))
 )
 const FAQSection = lazy(() =>
@@ -98,16 +83,6 @@ const CONTENT_SECTIONS = [
     ),
   },
   {
-    id: 'api-info',
-    titleKey: 'API Addresses',
-    build: (settings: ContentSettings) => (
-      <ApiInfoSection
-        enabled={settings['console_setting.api_info_enabled']}
-        data={settings['console_setting.api_info']}
-      />
-    ),
-  },
-  {
     id: 'faq',
     titleKey: 'FAQ',
     build: (settings: ContentSettings) => (
@@ -123,30 +98,8 @@ const CONTENT_SECTIONS = [
     build: (settings: ContentSettings) => (
       <UptimeKumaSection
         enabled={settings['console_setting.uptime_kuma_enabled']}
+        baseUrl={settings['console_setting.uptime_kuma_base_url']}
         data={settings['console_setting.uptime_kuma_groups']}
-      />
-    ),
-  },
-  {
-    id: 'chat',
-    titleKey: 'Chat Presets',
-    build: (settings: ContentSettings) => (
-      <ChatSettingsSection defaultValue={settings.Chats} />
-    ),
-  },
-  {
-    id: 'drawing',
-    titleKey: 'Drawing',
-    build: (settings: ContentSettings) => (
-      <DrawingSettingsSection
-        defaultValues={{
-          DrawingEnabled: settings.DrawingEnabled,
-          MjNotifyEnabled: settings.MjNotifyEnabled,
-          MjAccountFilterEnabled: settings.MjAccountFilterEnabled,
-          MjForwardUrlEnabled: settings.MjForwardUrlEnabled,
-          MjModeClearEnabled: settings.MjModeClearEnabled,
-          MjActionCheckSuccessEnabled: settings.MjActionCheckSuccessEnabled,
-        }}
       />
     ),
   },
@@ -159,10 +112,6 @@ const CONTENT_SECTIONS = [
           user_agreement: settings['adty_legal_setting.user_agreement'],
           privacy_policy: settings['adty_legal_setting.privacy_policy'],
           refund_policy: settings['adty_legal_setting.refund_policy'],
-          site_customer_terms:
-            settings['adty_legal_setting.site_customer_terms'],
-          site_customer_terms_version:
-            settings['adty_legal_setting.site_customer_terms_version'],
         }}
       />
     ),
@@ -176,7 +125,7 @@ const contentRegistry = createSectionRegistry<
   ContentSettings
 >({
   sections: CONTENT_SECTIONS,
-  defaultSection: 'dashboard',
+  defaultSection: 'announcements',
   basePath: '/system-settings/content',
   urlStyle: 'path',
 })

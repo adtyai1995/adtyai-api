@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { KeyRound, Loader2, ShieldCheck } from 'lucide-react'
+import { Loader2, ShieldCheck } from 'lucide-react'
 import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -28,7 +28,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AuthOperationError } from '@/lib/secure-verification'
 
 import type { PasskeyDomains } from '../../passkey/assertion'
-import { PasskeyDomainSelector } from '../../passkey/components/passkey-domain-selector'
 import { requestSecurityEmailCode } from '../api'
 import type {
   SecureVerificationState,
@@ -88,11 +87,13 @@ export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
       case 'email_code':
         props.onInputChange({ method, code: '' })
         break
-      case 'passkey':
-        props.onInputChange({ method })
-        break
     }
   }
+
+  const visibleMethods =
+    ready?.requirements.methods.filter(
+      (option) => option.method !== 'passkey'
+    ) ?? []
 
   return (
     <Dialog
@@ -163,7 +164,7 @@ export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
           {!input ? (
             <div className='space-y-2 text-sm'>
               <p>{t('No verification method is available for this action.')}</p>
-              {ready.requirements.methods.map(
+              {visibleMethods.map(
                 (option) =>
                   option.reason && (
                     <p className='text-muted-foreground' key={option.method}>
@@ -175,7 +176,7 @@ export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
           ) : (
             <Tabs value={input.method} onValueChange={selectMethod}>
               <TabsList>
-                {ready.requirements.methods.map((option) => (
+                {visibleMethods.map((option) => (
                   <TabsTrigger
                     key={option.method}
                     value={option.method}
@@ -243,22 +244,6 @@ export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
                         'Enter the 6-digit authenticator code or an unused backup code.'
                       )
                     : t('Enter the 6-digit authenticator code.')}
-                </p>
-              </TabsContent>
-              <TabsContent value='passkey' className='space-y-3'>
-                <PasskeyDomainSelector
-                  domains={props.passkeyDomains}
-                  value={input.method === 'passkey' ? input.rpID : undefined}
-                  onChange={(rpID) =>
-                    props.onInputChange({ method: 'passkey', rpID })
-                  }
-                  disabled={verifying}
-                />
-                <p className='text-muted-foreground flex items-center gap-2 text-sm'>
-                  <KeyRound className='size-5' />
-                  {t(
-                    'We will prompt your device to confirm using biometrics or your hardware key.'
-                  )}
                 </p>
               </TabsContent>
             </Tabs>

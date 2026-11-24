@@ -41,7 +41,6 @@ import { CustomersPanel } from './components/customers-panel'
 import { EarningToMarginPanel } from './components/earning-to-margin-panel'
 import { EarningsPanel } from './components/earnings-panel'
 import { OverviewPanel } from './components/overview-panel'
-import { OwnerSelfUsePanel } from './components/owner-self-use-panel'
 import { toIntlLocale } from '@/i18n/languages'
 import { OwnerVerificationProvider } from './components/owner-verification'
 import { PricingPanel } from './components/pricing-panel'
@@ -62,7 +61,7 @@ import {
 export function SiteOwnerCenter(props: {
   section: SiteOwnerSectionId
   returnTradeNo?: string
-  returnBusiness?: 'owner_self_use_topup' | 'owner_margin_topup'
+  returnBusiness?: 'owner_margin_topup'
 }) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
@@ -196,23 +195,6 @@ export function SiteOwnerCenter(props: {
                   <TabsContent value='earnings'>
                     <div className='flex flex-col gap-5'>
                       <EarningsPanel />
-                      <section id='self-use'>
-                        <OwnerSelfUsePanel
-                          returnTradeNo={
-                            props.returnBusiness === 'owner_margin_topup'
-                              ? undefined
-                              : props.returnTradeNo
-                          }
-                          onReturnClosed={() =>
-                            void navigate({
-                              to: '/site-owner/$section',
-                              params: { section: 'earnings' },
-                              search: {},
-                              replace: true,
-                            })
-                          }
-                        />
-                      </section>
                       <section id='settlement'>
                         <SettlementSheetPanel />
                       </section>

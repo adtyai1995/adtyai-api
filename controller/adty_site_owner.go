@@ -182,8 +182,8 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		"host": service.AdtySiteDisplayHost(site), "base_url": service.AdtySiteBaseURL(site), "api_base_url": service.AdtySiteAPIBaseURL(site),
 		"cost_factor":           d.String(),
 		"custom_domain_enabled": cfg.CustomDomainEnabled,
-		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "bonus_methods": service.AdtySiteBonusMethods(site),
-		"seo_index": site.SeoIndex,
+		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "home_page_content": site.HomePageContent, "bonus_methods": service.AdtySiteBonusMethods(site),
+		"seo_index":          site.SeoIndex,
 		"close_requested_at": site.CloseRequestedAt, "close_execute_at": site.CloseExecuteAt,
 		"prices": prices, "pricing_version": version, "domains": domains, "visibility": service.AdtySiteVisibility(site),
 	})
@@ -198,16 +198,17 @@ func PutAdtyOwnerSite(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Brand         map[string]string `json:"brand"`
-		ExpectedBrand map[string]string `json:"expected_brand"`
-		BonusRates    *map[int]float64  `json:"bonus_rates"`
-		SeoIndex      *bool             `json:"seo_index"`
+		Brand           map[string]string `json:"brand"`
+		ExpectedBrand   map[string]string `json:"expected_brand"`
+		BonusRates      *map[int]float64  `json:"bonus_rates"`
+		SeoIndex        *bool             `json:"seo_index"`
+		HomePageContent *string           `json:"home_page_content"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if (body.Brand != nil || body.SeoIndex != nil) && site.Status == model.AdtySiteStatusClosing {
+	if (body.Brand != nil || body.SeoIndex != nil || body.HomePageContent != nil) && site.Status == model.AdtySiteStatusClosing {
 		common.ApiError(c, service.ErrAdtySiteClosing)
 		return
 	}
@@ -215,8 +216,8 @@ func PutAdtyOwnerSite(c *gin.Context) {
 		common.ApiError(c, service.ErrAdtyAmountTierRetired)
 		return
 	}
-	if body.Brand != nil || body.SeoIndex != nil {
-		if err := service.SaveAdtyBrandPatch(site.Id, c.GetInt("id"), body.Brand, body.ExpectedBrand, body.SeoIndex); err != nil {
+	if body.Brand != nil || body.SeoIndex != nil || body.HomePageContent != nil {
+		if err := service.SaveAdtyBrandPatch(site.Id, c.GetInt("id"), body.Brand, body.ExpectedBrand, body.SeoIndex, body.HomePageContent); err != nil {
 			common.ApiError(c, err)
 			return
 		}

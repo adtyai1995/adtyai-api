@@ -20,6 +20,7 @@ import { Check, Copy, Loader2 } from 'lucide-react'
 import { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { CopyButton } from '@/components/copy-button'
 import { BadgeCell } from '@/components/data-table'
 import { MaskedValueTrigger } from '@/components/masked-value-display'
 import { StatusBadge } from '@/components/status-badge'
@@ -139,6 +140,49 @@ export function ApiKeyCell({ apiKey }: { apiKey: ApiKey }) {
         </TooltipTrigger>
         <TooltipContent>{copyTooltip}</TooltipContent>
       </Tooltip>
+    </div>
+  )
+}
+
+export function ApiAddressCell(props: { apiBaseUrl: string }) {
+  const { t } = useTranslation()
+
+  if (!props.apiBaseUrl) {
+    return (
+      <StatusBadge
+        label={t('Not configured')}
+        variant='neutral'
+        copyable={false}
+        className='-ml-1.5'
+      />
+    )
+  }
+
+  return (
+    <div className='flex max-w-full min-w-0 items-center gap-1'>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <code className='bg-muted/60 text-foreground max-w-[200px] truncate rounded-md border px-2 py-0.5 font-mono text-xs select-all' />
+          }
+        >
+          {props.apiBaseUrl}
+        </TooltipTrigger>
+        <TooltipContent
+          side='top'
+          className='max-w-xs font-mono text-xs break-all'
+        >
+          {props.apiBaseUrl}
+        </TooltipContent>
+      </Tooltip>
+      <CopyButton
+        value={props.apiBaseUrl}
+        size='icon'
+        className='size-7'
+        iconClassName='size-3.5'
+        tooltip={t('Copy API URL')}
+        aria-label={`${t('Copy API URL')}: ${props.apiBaseUrl}`}
+      />
     </div>
   )
 }

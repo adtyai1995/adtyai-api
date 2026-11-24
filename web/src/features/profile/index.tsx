@@ -16,6 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useNavigate } from '@tanstack/react-router'
+import { useEffect } from 'react'
+
 import { Main } from '@/components/layout'
 import {
   CardStaggerContainer,
@@ -23,9 +26,9 @@ import {
 } from '@/components/page-transition'
 import { canOpenPlatformTickets } from '@/features/adty-site-admin/sections'
 import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
-import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { useStatus } from '@/hooks/use-status'
 import { ROLE } from '@/lib/roles'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { LanguagePreferencesCard } from './components/language-preferences-card'
@@ -34,17 +37,33 @@ import { ProfileSettingsCard } from './components/profile-settings-card'
 import { SidebarModulesCard } from './components/sidebar-modules-card'
 import { useProfile } from './hooks'
 
+function extractTicketHash(hash: string): string | null {
+  const clean = hash.replace(/^#/, '')
+  if (
+    clean === 'tickets' ||
+    /^case-\d+(?:-team)?$/.test(clean) ||
+    clean.startsWith('ticket:') ||
+    clean.startsWith('ticket-')
+  ) {
+    return clean
+  }
+  return null
+}
+
 export function Profile() {
+  const navigate = useNavigate()
   const { profile, loading, refreshProfile } = useProfile()
   const { status } = useStatus()
   const user = useAuthStore((s) => s.auth.user)
   const permissions = user?.permissions
 
-  const canConfigureSidebar = permissions?.sidebar_settings !== false
+  const isSubsiteUser = (user?.site_id ?? 0) > 0
+  const showSidebarModules =
+    !isSubsiteUser && permissions?.sidebar_settings !== false
   const showPlatformAdminTelegram = Boolean(
-    user &&
+    !isSubsiteUser &&
+      user &&
       user.role < ROLE.SUPER_ADMIN &&
-      (user.site_id ?? 0) === 0 &&
       (user.staff_site_id ?? 0) === 0 &&
       !user.adty_site_owner &&
       canOpenPlatformTickets(user)
@@ -53,16 +72,42 @@ export function Profile() {
   const quotaRemindEnabled = status?.quota_remind_enabled !== false
   const quotaRemindThreshold = status?.quota_remind_threshold ?? 0
 
+  useEffect(() => {
+    const redirectTicketHash = () => {
+      const ticketHash = extractTicketHash(window.location.hash)
+      if (!ticketHash) return
+      void navigate({
+        to: '/support',
+        hash: ticketHash,
+        replace: true,
+      })
+    }
+    redirectTicketHash()
+    window.addEventListener('hashchange', redirectTicketHash)
+    return () => window.removeEventListener('hashchange', redirectTicketHash)
+  }, [navigate])
+
   return (
     <Main>
       <div className='min-h-0 flex-1 overflow-auto px-3 py-3 sm:px-4 sm:py-6'>
-        <CardStaggerContainer className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-6'>
+        <CardStaggerContainer
+          className={cn(
+            'mx-auto flex w-full flex-col gap-4 sm:gap-6',
+            showSidebarModules ? 'max-w-7xl' : 'max-w-4xl'
+          )}
+        >
           <CardStaggerItem>
             <ProfileHeader profile={profile} loading={loading} />
           </CardStaggerItem>
 
           <CardStaggerItem>
-            <div className='grid gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.46fr)] xl:items-start'>
+            <div
+              className={cn(
+                'grid gap-4 sm:gap-5',
+                showSidebarModules &&
+                  'xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.46fr)] xl:items-start'
+              )}
+            >
               <div className='space-y-4 sm:space-y-6'>
                 <ProfileSettingsCard
                   profile={profile}
@@ -79,12 +124,13 @@ export function Profile() {
                 {showPlatformAdminTelegram && (
                   <TelegramBindCard purpose='admin' platformSupport />
                 )}
-                <TicketCenter scope='personal' />
               </div>
 
-              <div className='space-y-4 sm:space-y-6 xl:sticky xl:top-6'>
-                {canConfigureSidebar && <SidebarModulesCard />}
-              </div>
+              {showSidebarModules && (
+                <div className='space-y-4 sm:space-y-6 xl:sticky xl:top-6'>
+                  <SidebarModulesCard />
+                </div>
+              )}
             </div>
           </CardStaggerItem>
         </CardStaggerContainer>

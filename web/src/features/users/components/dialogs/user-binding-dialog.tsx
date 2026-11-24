@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Mail, Link2, Unlink, Loader2, Eye, EyeOff } from 'lucide-react'
+import { Mail, Send, Link2, Unlink, Loader2, Eye, EyeOff } from 'lucide-react'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -66,6 +66,12 @@ const BUILTIN_BINDINGS: ReadonlyArray<{
     field: 'email',
     label: 'Email',
     icon: <Mail className='h-4 w-4' />,
+  },
+  {
+    key: 'telegram',
+    field: 'telegram_id',
+    label: 'Telegram',
+    icon: <Send className='h-4 w-4' />,
   },
 ]
 

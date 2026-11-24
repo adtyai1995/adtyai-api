@@ -46,11 +46,6 @@ const EmailSettingsSection = lazy(() =>
     default: module.EmailSettingsSection,
   }))
 )
-const MonitoringSettingsSection = lazy(() =>
-  import('../integrations/monitoring-settings-section').then((module) => ({
-    default: module.MonitoringSettingsSection,
-  }))
-)
 const WorkerSettingsSection = lazy(() =>
   import('../integrations/worker-settings-section').then((module) => ({
     default: module.WorkerSettingsSection,
@@ -61,11 +56,6 @@ const DataRetentionSection = lazy(() =>
     default: module.DataRetentionSection,
   }))
 )
-const GroupHealthSection = lazy(() =>
-  import('../maintenance/group-health-section').then((module) => ({
-    default: module.GroupHealthSection,
-  }))
-)
 const LogSettingsSection = lazy(() =>
   import('../maintenance/log-settings-section').then((module) => ({
     default: module.LogSettingsSection,
@@ -74,11 +64,6 @@ const LogSettingsSection = lazy(() =>
 const PerformanceSection = lazy(() =>
   import('../maintenance/performance-section').then((module) => ({
     default: module.PerformanceSection,
-  }))
-)
-const UpdateCheckerSection = lazy(() =>
-  import('../maintenance/update-checker-section').then((module) => ({
-    default: module.UpdateCheckerSection,
   }))
 )
 
@@ -92,24 +77,6 @@ const OPERATIONS_SECTIONS = [
           DefaultCollapseSidebar: settings.DefaultCollapseSidebar,
           DemoSiteEnabled: settings.DemoSiteEnabled,
           SelfUseModeEnabled: settings.SelfUseModeEnabled,
-        }}
-      />
-    ),
-  },
-  {
-    id: 'alerts',
-    titleKey: 'Model performance metrics',
-    build: (settings: OperationsSettings) => (
-      <MonitoringSettingsSection
-        defaultValues={{
-          'perf_metrics_setting.enabled':
-            settings['perf_metrics_setting.enabled'] ?? true,
-          'perf_metrics_setting.flush_interval':
-            settings['perf_metrics_setting.flush_interval'] ?? 5,
-          'perf_metrics_setting.bucket_time':
-            settings['perf_metrics_setting.bucket_time'] ?? 'hour',
-          'perf_metrics_setting.retention_days':
-            settings['perf_metrics_setting.retention_days'] ?? 0,
         }}
       />
     ),
@@ -200,11 +167,6 @@ const OPERATIONS_SECTIONS = [
     ),
   },
   {
-    id: 'group-health',
-    titleKey: 'Group health',
-    build: () => <GroupHealthSection />,
-  },
-  {
     id: 'telegram',
     titleKey: 'Telegram bots',
     build: () => <TelegramAdminPanel />,
@@ -219,28 +181,13 @@ const OPERATIONS_SECTIONS = [
     titleKey: 'System translation',
     build: () => <TranslationAdminPanel />,
   },
-  {
-    id: 'update-checker',
-    titleKey: 'System maintenance',
-    build: (
-      _settings: OperationsSettings,
-      currentVersion?: string | null,
-      startTime?: number | null
-    ) => (
-      <UpdateCheckerSection
-        currentVersion={currentVersion}
-        startTime={startTime}
-      />
-    ),
-  },
 ] as const
 
 export type OperationsSectionId = (typeof OPERATIONS_SECTIONS)[number]['id']
 
 const operationsRegistry = createSectionRegistry<
   OperationsSectionId,
-  OperationsSettings,
-  [string | null | undefined, number | null | undefined]
+  OperationsSettings
 >({
   sections: OPERATIONS_SECTIONS,
   defaultSection: 'behavior',

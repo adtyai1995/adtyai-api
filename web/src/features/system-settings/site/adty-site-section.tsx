@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
@@ -30,15 +31,22 @@ import type { AdtySiteDefaults } from './adty-site-defaults'
 
 type TextField = Exclude<keyof AdtySiteDefaults, 'refund_policy_enabled'>
 
-const TEXT_FIELDS: Array<{ field: TextField; kind: 'url' | 'email' | 'text' }> =
-  [
-    { field: 'api_base_url', kind: 'url' },
-    { field: 'support_email', kind: 'email' },
-    { field: 'telegram_url', kind: 'url' },
-    { field: 'support_hours', kind: 'text' },
-    { field: 'tawk_property_id', kind: 'text' },
-    { field: 'tawk_widget_id', kind: 'text' },
-  ]
+const WALLET_NOTICE_MAX_LENGTH = 2000
+
+const TEXT_FIELDS: Array<{
+  field: TextField
+  kind: 'url' | 'email' | 'text' | 'textarea'
+  fullWidth?: boolean
+}> = [
+  { field: 'api_base_url', kind: 'url' },
+  { field: 'support_email', kind: 'email' },
+  { field: 'telegram_url', kind: 'url' },
+  { field: 'support_hours', kind: 'text' },
+  { field: 'tawk_property_id', kind: 'text' },
+  { field: 'tawk_widget_id', kind: 'text' },
+  { field: 'voucher_purchase_url', kind: 'url', fullWidth: true },
+  { field: 'wallet_notice', kind: 'textarea', fullWidth: true },
+]
 
 const TAWK_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
@@ -57,7 +65,7 @@ function toDrafts(values: AdtySiteDefaults): Record<TextField, string> {
   return drafts
 }
 
-/** Public site settings (adty task 8.3): API address, support contacts, live chat, refund policy. */
+/** Public site settings (adty task 8.3): API address, support contacts, live chat, wallet notice, voucher link, refund policy. */
 export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
@@ -98,6 +106,8 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
     support_hours: t('Support hours'),
     tawk_property_id: t('Tawk.to property ID'),
     tawk_widget_id: t('Tawk.to widget ID'),
+    voucher_purchase_url: t('Voucher Purchase Link'),
+    wallet_notice: t('Wallet Notice'),
   }
   const hints: Partial<Record<TextField, string>> = {
     api_base_url: t(
@@ -107,6 +117,12 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
       'Published in public site metadata for support hours (e.g. 09:00–22:00 UTC+8).'
     ),
     tawk_widget_id: t('Live chat appears when both Tawk.to IDs are set.'),
+    voucher_purchase_url: t(
+      'External link where users can buy recharge vouchers (must start with http:// or https://).'
+    ),
+    wallet_notice: t(
+      'Notice displayed on the user Wallet page (up to 2000 characters).'
+    ),
   }
 
   const values = {} as Record<TextField, string>
@@ -130,6 +146,12 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
       errors[item.field] = t(
         'Tawk.to IDs may only contain letters, digits, hyphens and underscores (up to 64 characters).'
       )
+    }
+    if (
+      item.field === 'wallet_notice' &&
+      [...value].length > WALLET_NOTICE_MAX_LENGTH
+    ) {
+      errors[item.field] = t('Must be 2000 characters or fewer')
     }
   }
 
@@ -173,25 +195,59 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
         {TEXT_FIELDS.map((item) => {
           const error = showErrors ? errors[item.field] : undefined
           return (
-            <div key={item.field} className='space-y-2'>
+            <div
+              key={item.field}
+              className={
+                item.fullWidth ? 'space-y-2 sm:col-span-2' : 'space-y-2'
+              }
+            >
               <Label htmlFor={`adty-site-${item.field}`}>
                 {labels[item.field]}
               </Label>
-              <Input
-                id={`adty-site-${item.field}`}
-                type={item.kind === 'text' ? 'text' : item.kind}
-                value={drafts[item.field]}
-                aria-invalid={Boolean(error)}
-                onChange={(event) =>
-                  setDrafts((prev) => ({
-                    ...prev,
-                    [item.field]: event.target.value,
-                  }))
-                }
-              />
+              {item.kind === 'textarea' ? (
+                <Textarea
+                  id={`adty-site-${item.field}`}
+                  rows={4}
+                  maxLength={WALLET_NOTICE_MAX_LENGTH}
+                  value={drafts[item.field]}
+                  aria-invalid={Boolean(error)}
+                  onChange={(event) =>
+                    setDrafts((prev) => ({
+                      ...prev,
+                      [item.field]: event.target.value,
+                    }))
+                  }
+                />
+              ) : (
+                <Input
+                  id={`adty-site-${item.field}`}
+                  type={item.kind === 'text' ? 'text' : item.kind}
+                  placeholder={
+                    item.field === 'voucher_purchase_url'
+                      ? 'https://example.com/vouchers'
+                      : undefined
+                  }
+                  value={drafts[item.field]}
+                  aria-invalid={Boolean(error)}
+                  onChange={(event) =>
+                    setDrafts((prev) => ({
+                      ...prev,
+                      [item.field]: event.target.value,
+                    }))
+                  }
+                />
+              )}
               {error && <p className='text-destructive text-xs'>{error}</p>}
               {!error && hints[item.field] && (
                 <p className='text-dim text-[12.5px]'>{hints[item.field]}</p>
+              )}
+              {item.field === 'wallet_notice' && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('{{count}} / {{max}} characters', {
+                    count: [...drafts.wallet_notice].length,
+                    max: WALLET_NOTICE_MAX_LENGTH,
+                  })}
+                </p>
               )}
             </div>
           )

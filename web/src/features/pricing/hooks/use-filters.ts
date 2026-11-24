@@ -20,7 +20,6 @@ import { useSearch } from '@tanstack/react-router'
 import { useMemo, useCallback, useState } from 'react'
 
 import { useDebounce } from '@/hooks/use-debounce'
-import { useAuthStore } from '@/stores/auth-store'
 
 import {
   FILTER_ALL,
@@ -57,16 +56,11 @@ function normalizeViewMode(value: unknown): ViewMode {
 }
 
 /**
- * Group preselected on the pricing page (adty task 8.5): the signed-in user's
- * group, or `default` for visitors; all groups when that one is not selectable.
+ * Default group filter on the pricing page: always all groups so every model
+ * connected via enabled channels is displayed by default.
  */
-function getDefaultGroupFilter(
-  userGroup: string | undefined,
-  availableGroups: string[]
-): string {
-  const preferred = userGroup || 'default'
-  if (availableGroups.length === 0) return preferred
-  return availableGroups.includes(preferred) ? preferred : FILTER_ALL
+function getDefaultGroupFilter(): string {
+  return FILTER_ALL
 }
 
 export type PricingGroupControl = {
@@ -76,12 +70,11 @@ export type PricingGroupControl = {
 
 export function useFilters(
   models: PricingModel[],
-  availableGroups: string[] = [],
+  _availableGroups: string[] = [],
   groupControl?: PricingGroupControl
 ) {
   const search = useSearch({ from: '/pricing/' })
-  const userGroup = useAuthStore((state) => state.auth.user?.group)
-  const defaultGroup = getDefaultGroupFilter(userGroup, availableGroups)
+  const defaultGroup = getDefaultGroupFilter()
   const [filterState, setFilterState] = useState<FilterState>(() => ({
     search: search.search,
     sort: search.sort,

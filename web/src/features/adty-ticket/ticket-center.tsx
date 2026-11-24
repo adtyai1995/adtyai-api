@@ -41,6 +41,7 @@ import {
   ticketOperationKey,
   ticketRelations,
 } from './ticket-draft'
+import { hashTicketImageData } from './ticket-hash'
 import { TicketImage } from './ticket-image'
 import {
   TicketImagePolicySettings,
@@ -222,7 +223,7 @@ function TicketWorkspace({
   const [type, setType] = useState('other')
   const [priority, setPriority] = useState('normal')
   const [createFiles, setCreateFiles] = useState<{ id: string; file: File }[]>([])
-  const [imageMessage, setImageMessage] = useState(0)
+  const [imageMessage, setImageMessage] = useState<number | null>(null)
   const [audience, setAudience] = useState('personal')
   const [relatedKind, setRelatedKind] = useState('')
   const [search, setSearch] = useState('')
@@ -298,7 +299,7 @@ function TicketWorkspace({
   const selectTicket = useCallback((id: number | null) => {
     setSelected(id)
     setAssignee('')
-    setImageMessage(0)
+    setImageMessage(null)
     setError('')
   }, [])
 
@@ -403,8 +404,10 @@ function TicketWorkspace({
   })
 
   const refresh = async () => {
-    await queryClient.invalidateQueries({ queryKey: ['adty-tickets'] })
-    void invalidateSidebarBadges(queryClient)
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['adty-tickets'] }),
+      invalidateSidebarBadges(queryClient),
+    ])
   }
 
   const create = async () => {
@@ -610,13 +613,7 @@ function TicketWorkspace({
     targetScope: string,
     encodedData: string
   ) => {
-    const digest = await crypto.subtle.digest(
-      'SHA-256',
-      new TextEncoder().encode(encodedData)
-    )
-    const hash = Array.from(new Uint8Array(digest), (b) =>
-      b.toString(16).padStart(2, '0')
-    ).join('')
+    const hash = await hashTicketImageData(encodedData)
     const response = await api.post(
       `/api/adty/tickets/${ticketId}/images`,
       {
@@ -668,6 +665,20 @@ function TicketWorkspace({
     return null
   }
 
+  const authorMessages = (detail.data?.messages ?? []).filter(
+    (m) => m.author_id === userId
+  )
+  const latestAuthorMessageId = authorMessages.at(-1)?.id ?? 0
+  let effectiveImageMessage = latestAuthorMessageId
+  if (imageMessage !== null) {
+    if (
+      imageMessage === 0 ||
+      authorMessages.some((m) => m.id === imageMessage)
+    ) {
+      effectiveImageMessage = imageMessage
+    }
+  }
+
   const uploadImages = async (files: File[]) => {
     if (selected === null || files.length === 0) return
     const existingImages = detail.data?.images ?? []
@@ -687,15 +698,22 @@ function TicketWorkspace({
     setPending(true)
     setError('')
     try {
-      const visibility = detail.data?.messages.find(
-        (m) => m.id === imageMessage
-      )?.visibility
+      const targetMessageId = effectiveImageMessage
+      const visibility =
+        detail.data?.messages.find((m) => m.id === targetMessageId)
+          ?.visibility ?? 'public'
       let failedCount = 0
       let firstErr = ''
       for (const file of files) {
         try {
           const encoded = await readFileAsBase64(file)
-          await postTicketImage(selected, imageMessage, visibility, scope, encoded)
+          await postTicketImage(
+            selected,
+            targetMessageId,
+            visibility,
+            scope,
+            encoded
+          )
         } catch (cause) {
           failedCount++
           if (!firstErr) {
@@ -1059,36 +1077,53 @@ function TicketWorkspace({
                   })}
               </div>
             ))}
-            {detail.data.images
-              ?.filter(
+            {(() => {
+              const renderedMessageIds = new Set(
+                detail.data.messages.map((message) => message.id)
+              )
+              const unattachedImages = (detail.data.images ?? []).filter(
                 (image) =>
-                  !image.message_id &&
+                  (!image.message_id ||
+                    !renderedMessageIds.has(image.message_id)) &&
                   (detail.data.can_note || image.visibility === 'public')
               )
-              .map((image) => {
-                const canDelete =
-                  !terminal &&
-                  (detail.data.can_manage ||
-                    (image.visibility === 'public' &&
-                      (detail.data.can_control ||
-                        detail.data.ticket.user_id === userId)))
-                return (
-                  <TicketImage
-                    key={image.id}
-                    ticketID={detail.data.ticket.id}
-                    imageID={image.id}
-                    grant={detail.data.image_grants?.[image.id]}
-                    expiresAt={detail.data.image_grants_exp}
-                    scope={scope}
-                    userId={userId}
-                    label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
-                    deleting={pending}
-                    onDelete={
-                      canDelete ? () => void deleteImage(image.id) : undefined
-                    }
-                  />
-                )
-              })}
+              if (unattachedImages.length === 0) return null
+              return (
+                <div className='flex flex-col gap-2 rounded-lg border p-3'>
+                  <p className='text-muted-foreground text-xs font-medium'>
+                    {t('Attachments')}
+                  </p>
+                  <div className='flex flex-wrap gap-4'>
+                    {unattachedImages.map((image) => {
+                      const canDelete =
+                        !terminal &&
+                        (detail.data.can_manage ||
+                          (image.visibility === 'public' &&
+                            (detail.data.can_control ||
+                              detail.data.ticket.user_id === userId)))
+                      return (
+                        <TicketImage
+                          key={image.id}
+                          ticketID={detail.data.ticket.id}
+                          imageID={image.id}
+                          grant={detail.data.image_grants?.[image.id]}
+                          expiresAt={detail.data.image_grants_exp}
+                          scope={scope}
+                          userId={userId}
+                          label={`${t('Image')} ${image.object_id || `#${image.id}`}`}
+                          deleting={pending}
+                          onDelete={
+                            canDelete
+                              ? () => void deleteImage(image.id)
+                              : undefined
+                          }
+                        />
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })()}
             {(detail.data.events ?? [])
               .filter(
                 (event) => event.action !== 'note' || detail.data.can_note
@@ -1274,21 +1309,19 @@ function TicketWorkspace({
             <NativeSelect
               id='ticket-image-message'
               disabled={terminal}
-              value={imageMessage}
+              value={effectiveImageMessage}
               onChange={(event) => setImageMessage(Number(event.target.value))}
             >
               <NativeSelectOption value={0}>
-                {t('Select a message')}
+                {t('Attach directly to ticket')}
               </NativeSelectOption>
-              {detail.data.messages
-                .filter((m) => m.author_id === userId)
-                .map((m) => (
-                  <NativeSelectOption value={m.id} key={m.id}>
-                    #{m.id} ·{' '}
-                    {m.visibility === 'internal' && `${t('Internal note')} · `}
-                    {m.body.slice(0, 60)}
-                  </NativeSelectOption>
-                ))}
+              {authorMessages.map((m) => (
+                <NativeSelectOption value={m.id} key={m.id}>
+                  #{m.id} ·{' '}
+                  {m.visibility === 'internal' && `${t('Internal note')} · `}
+                  {m.body.slice(0, 60)}
+                </NativeSelectOption>
+              ))}
             </NativeSelect>
             <Label htmlFor='ticket-image'>
               {t('Image')} · {t('Upload limit (bytes)')}{' '}
@@ -1308,7 +1341,7 @@ function TicketWorkspace({
               type='file'
               multiple
               accept={TICKET_IMAGE_ACCEPT}
-              disabled={terminal || pending || !imageMessage}
+              disabled={terminal || pending}
               onChange={(event) => {
                 const files = [...(event.target.files ?? [])]
                 event.target.value = ''

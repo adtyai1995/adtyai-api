@@ -31,31 +31,35 @@ import (
 
 // AdtySiteBrand 是一个站点对外显示的品牌。主站返回平台的站名和地址。
 type AdtySiteBrand struct {
-	Name           string `json:"name"`
-	LogoURL        string `json:"logo_url"`
-	Title          string `json:"title"`
-	FaviconURL     string `json:"favicon_url"`
-	ThemeColor     string `json:"theme_color"`
-	Tagline        string `json:"tagline"`
-	Notice         string `json:"notice"`
-	SupportContact string `json:"support_contact"`
-	TawkPropertyID string `json:"tawk_property_id"`
-	TawkWidgetID   string `json:"tawk_widget_id"`
-	BaseURL        string `json:"base_url"`
+	Name               string `json:"name"`
+	LogoURL            string `json:"logo_url"`
+	Title              string `json:"title"`
+	FaviconURL         string `json:"favicon_url"`
+	ThemeColor         string `json:"theme_color"`
+	Tagline            string `json:"tagline"`
+	Notice             string `json:"notice"`
+	SupportContact     string `json:"support_contact"`
+	TawkPropertyID     string `json:"tawk_property_id"`
+	TawkWidgetID       string `json:"tawk_widget_id"`
+	WalletNotice       string `json:"wallet_notice"`
+	VoucherPurchaseURL string `json:"voucher_purchase_url"`
+	BaseURL            string `json:"base_url"`
 }
 
 // AdtySiteBrandInput 是站长提交的品牌字段（11.6 的 PUT /api/adty/site/self 用）。
 type AdtySiteBrandInput struct {
-	Name           string `json:"name"`
-	LogoURL        string `json:"logo_url"`
-	Title          string `json:"title"`
-	FaviconURL     string `json:"favicon_url"`
-	ThemeColor     string `json:"theme_color"`
-	Tagline        string `json:"tagline"`
-	Notice         string `json:"notice"`
-	SupportContact string `json:"support_contact"`
-	TawkPropertyID string `json:"tawk_property_id"`
-	TawkWidgetID   string `json:"tawk_widget_id"`
+	Name               string `json:"name"`
+	LogoURL            string `json:"logo_url"`
+	Title              string `json:"title"`
+	FaviconURL         string `json:"favicon_url"`
+	ThemeColor         string `json:"theme_color"`
+	Tagline            string `json:"tagline"`
+	Notice             string `json:"notice"`
+	SupportContact     string `json:"support_contact"`
+	TawkPropertyID     string `json:"tawk_property_id"`
+	TawkWidgetID       string `json:"tawk_widget_id"`
+	WalletNotice       string `json:"wallet_notice"`
+	VoucherPurchaseURL string `json:"voucher_purchase_url"`
 }
 
 // 品牌字段的字数上限（按字符数，不是字节）。
@@ -107,19 +111,30 @@ func adtyPlainText(value string, keepNewlines bool) string {
 // NormalizeAdtySiteBrand 校验并整理站长提交的品牌：只是模板字段，不接受 HTML 以外的格式，也不渲染 HTML。
 func NormalizeAdtySiteBrand(input AdtySiteBrandInput) (AdtySiteBrandInput, error) {
 	out := AdtySiteBrandInput{
-		Name:           adtyPlainText(input.Name, false),
-		Tagline:        adtyPlainText(input.Tagline, false),
-		Notice:         adtyPlainText(input.Notice, true),
-		SupportContact: adtyPlainText(input.SupportContact, false),
-		LogoURL:        strings.TrimSpace(input.LogoURL),
-		Title:          adtyPlainText(input.Title, false),
-		FaviconURL:     strings.TrimSpace(input.FaviconURL),
-		ThemeColor:     strings.TrimSpace(input.ThemeColor),
-		TawkPropertyID: strings.TrimSpace(input.TawkPropertyID),
-		TawkWidgetID:   strings.TrimSpace(input.TawkWidgetID),
+		Name:               adtyPlainText(input.Name, false),
+		Tagline:            adtyPlainText(input.Tagline, false),
+		Notice:             adtyPlainText(input.Notice, true),
+		SupportContact:     adtyPlainText(input.SupportContact, false),
+		LogoURL:            strings.TrimSpace(input.LogoURL),
+		Title:              adtyPlainText(input.Title, false),
+		FaviconURL:         strings.TrimSpace(input.FaviconURL),
+		ThemeColor:         strings.TrimSpace(input.ThemeColor),
+		TawkPropertyID:     strings.TrimSpace(input.TawkPropertyID),
+		TawkWidgetID:       strings.TrimSpace(input.TawkWidgetID),
+		WalletNotice:       adtyPlainText(input.WalletNotice, true),
+		VoucherPurchaseURL: strings.TrimSpace(input.VoucherPurchaseURL),
 	}
 	if utf8.RuneCountInString(out.Title) > 80 {
 		return out, common.NewMessage("Website title must be at most 80 characters")
+	}
+	if utf8.RuneCountInString(out.WalletNotice) > 2000 {
+		return out, common.NewMessage("Wallet notice must be at most 2000 characters")
+	}
+	if out.VoucherPurchaseURL != "" {
+		parsed, err := url.Parse(out.VoucherPurchaseURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || len(out.VoucherPurchaseURL) > 500 {
+			return out, common.NewMessage("Voucher purchase link must be a valid http:// or https:// URL")
+		}
 	}
 	if out.ThemeColor != "" && !adtyBrandColor.MatchString(out.ThemeColor) {
 		return out, common.NewMessage("Theme color must use #RRGGBB")
@@ -168,7 +183,7 @@ func validateAdtySiteOwnedAsset(siteID int, urlPath string, invalidErr error) er
 }
 
 // SaveAdtyBrandPatch checks only edited fields while holding the site's row lock.
-func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string, seo *bool) error {
+func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string, seo *bool, homePageContent ...*string) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND owner_user_id = ?", siteID, ownerID).First(&site).Error; err != nil {
@@ -181,6 +196,13 @@ func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string,
 		if seo != nil {
 			updates["seo_index"] = *seo
 		}
+		if len(homePageContent) > 0 && homePageContent[0] != nil {
+			rawHome := strings.TrimSpace(*homePageContent[0])
+			if len(rawHome) > 200*1024 {
+				return common.NewMessage("Home page content is too long")
+			}
+			updates["home_page_content"] = rawHome
+		}
 		if len(fields) > 0 {
 			var brand AdtySiteBrandInput
 			if site.Brand != "" {
@@ -192,6 +214,7 @@ func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string,
 				"name": &brand.Name, "title": &brand.Title, "tagline": &brand.Tagline, "notice": &brand.Notice,
 				"support_contact": &brand.SupportContact, "logo_url": &brand.LogoURL, "favicon_url": &brand.FaviconURL,
 				"theme_color": &brand.ThemeColor, "tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
+				"wallet_notice": &brand.WalletNotice, "voucher_purchase_url": &brand.VoucherPurchaseURL,
 			}
 			for key, value := range fields {
 				dest, ok := values[key]
@@ -247,7 +270,8 @@ func AdtyBrandFor(site *model.AdtySite) AdtySiteBrand {
 		Name: name, LogoURL: strings.TrimSpace(brand.LogoURL), Tagline: brand.Tagline, Notice: brand.Notice,
 		Title: brand.Title, FaviconURL: strings.TrimSpace(brand.FaviconURL), ThemeColor: strings.TrimSpace(brand.ThemeColor),
 		SupportContact: brand.SupportContact, TawkPropertyID: strings.TrimSpace(brand.TawkPropertyID),
-		TawkWidgetID: strings.TrimSpace(brand.TawkWidgetID), BaseURL: AdtySiteBaseURL(site),
+		TawkWidgetID: strings.TrimSpace(brand.TawkWidgetID), WalletNotice: brand.WalletNotice,
+		VoucherPurchaseURL: strings.TrimSpace(brand.VoucherPurchaseURL), BaseURL: AdtySiteBaseURL(site),
 	}
 }
 

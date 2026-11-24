@@ -25,8 +25,6 @@ func GetAdtyLegal(c *gin.Context) {
 		localized, fallback = texts.PrivacyPolicy, upstream.PrivacyPolicy
 	case "refund-policy":
 		localized = texts.RefundPolicy
-	case "site-customer-terms":
-		localized = texts.SiteCustomerTerms
 	default:
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Invalid parameters"))
 		return

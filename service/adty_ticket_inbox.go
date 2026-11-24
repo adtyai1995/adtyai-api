@@ -90,7 +90,7 @@ func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) ma
 		return map[string]any{"id": fmt.Sprintf("ticket-notice:%d", row.Id), "read_key": row.ReadKey, "title": fmt.Sprintf("工单 #%d / Ticket #%d", row.TicketId, row.TicketId),
 			"content": "工单正文和附件已到期清理。\n\nThe ticket and its attachments have expired.", "publishDate": time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339)}
 	}
-	path := "/profile"
+	path := "/support"
 	if row.Purpose == model.AdtyTelegramPurposeAdmin || (row.Purpose == "" && row.UserId != row.TicketOwnerID) {
 		switch handlerScope {
 		case "platform", "platform_main":
@@ -102,7 +102,7 @@ func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) ma
 		}
 	}
 	link := path + "#case-" + strconv.FormatInt(row.TicketId, 10)
-	if path == "/profile" && row.TicketTeamShared {
+	if path == "/support" && row.TicketTeamShared {
 		link += "-team"
 	}
 	return map[string]any{"id": fmt.Sprintf("ticket-notice:%d", row.Id), "read_key": row.ReadKey, "title": row.Title, "content": row.Content,

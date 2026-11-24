@@ -54,8 +54,10 @@ type AdtySite struct {
 	Visibility                 string           `json:"visibility" gorm:"type:text"`
 	AllowedGroups              string           `json:"allowed_groups" gorm:"type:text"`
 	Brand                      string           `json:"brand" gorm:"type:text"`
+	HomePageContent            string           `json:"home_page_content" gorm:"type:text"`
 	BonusRates                 string           `json:"bonus_rates" gorm:"type:text"`
 	SeoIndex                   bool             `json:"seo_index"`
+	ArchivedHiddenAt           int64            `json:"archived_hidden_at" gorm:"index;not null;default:0"`
 	AgreementVer               string           `json:"agreement_ver" gorm:"type:varchar(32)"`
 	AgreementAt                int64            `json:"agreement_at"`
 	ContactInfo                string           `json:"contact_info" gorm:"type:text"`

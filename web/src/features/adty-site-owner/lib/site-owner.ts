@@ -22,6 +22,10 @@ import type { SiteWallet } from '@/features/adty-ledger/site-wallet-labels'
 
 import type { EarningKind, SenderDnsRecord, SitePrice } from '../types'
 
+export const MIN_RETAIL_MULTIPLIER = 1
+export const MAX_RETAIL_MULTIPLIER = 10
+export const MAX_SITE_REFERRAL_RATE = 0.3
+
 /** Literal t() calls so the key scanner sees every label. */
 export function earningKindLabel(t: TFunction, kind: EarningKind): string {
   switch (kind) {
@@ -74,18 +78,6 @@ export type MarginCycleSummary = {
   usedUsd: string
   limit90Usd: string
   availableUsd: string
-}
-
-export function ownerTransferPreview(
-  wallet: SiteWallet | undefined,
-  amount: string
-) {
-  if (!wallet || !/^\d{1,20}(\.\d{1,8})?$/.test(amount)) return null
-  const available =
-    parseScaledUsd(wallet.balance) - parseScaledUsd(wallet.frozen_usd)
-  const debit = parseScaledUsd(amount)
-  if (debit <= 0n || debit > available || debit % 200n !== 0n) return null
-  return formatScaledUsd(available - debit)
 }
 
 /**
@@ -174,7 +166,7 @@ export function pendingIncreases(
     })
 }
 
-/** The site-wide default markup and per-group markups as editable strings. */
+/** The site-wide default markup and legacy overrides as editable strings. */
 export function siteMarkups(prices: SitePrice[] | null | undefined): {
   defaultMarkup: string
   groups: Record<string, string>
@@ -196,41 +188,54 @@ export function siteMarkups(prices: SitePrice[] | null | undefined): {
   return { defaultMarkup, groups, models }
 }
 
-/** Only send changed overrides. Missing saved keys explicitly resume inheritance. */
-export function retailOverrideChanges(
-  saved: Record<string, string>,
-  rows: [string, string][]
-): Record<string, string> {
-  const current = new Map(
-    rows.map(([key, value]) => [key.trim(), value] as const)
-  )
-  const changes = new Map<string, string>()
-  for (const key of Object.keys(saved)) {
-    if (!current.has(key)) changes.set(key, '0')
-  }
-  for (const [key, value] of current) {
-    if (key && saved[key] !== value) changes.set(key, value)
-  }
-  return Object.fromEntries(changes)
-}
-
+/** Validates the single site-wide retail multiplier: [1, 10] with up to 4 decimal places. */
 export function validRetailMarkup(value: string): boolean {
+  const trimmed = value.trim()
+  if (!/^(?:\d{1,2}(?:\.\d{0,4})?)$/.test(trimmed)) return false
+  const parsed = Number(trimmed)
   return (
-    /^(?:\d{1,6}(?:\.\d{0,4})?|\.\d{1,4})$/.test(value) && Number(value) > 0
+    Number.isFinite(parsed) &&
+    parsed >= MIN_RETAIL_MULTIPLIER &&
+    parsed <= MAX_RETAIL_MULTIPLIER
   )
 }
 
-/** A fresh idempotency key for one trial grant. */
+/** Validates subsite invite commission rate: [0, 0.30] (0% to 30%), up to 6 decimal places. */
+export function validSiteReferralRate(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!/^(?:\d{1,2}(?:\.\d{0,6})?|\.\d{1,6})$/.test(trimmed)) return false
+  const parsed = Number(trimmed)
+  return (
+    Number.isFinite(parsed) && parsed >= 0 && parsed <= MAX_SITE_REFERRAL_RATE
+  )
+}
+
+/** Strips signed query parameters from /api/referral-assets/<name>?... for digest parity. */
+export function canonicalReferralAssetUrl(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed.startsWith('/api/referral-assets/')) return trimmed
+  const queryIdx = trimmed.indexOf('?')
+  return queryIdx === -1 ? trimmed : trimmed.slice(0, queryIdx)
+}
+
+/** Validates an optional http:// or https:// URL (empty string is allowed). */
+export function isValidOptionalHttpUrl(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (trimmed === '') return true
+  try {
+    const parsed = new URL(trimmed)
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      parsed.hostname.length > 0
+    )
+  } catch {
+    return false
+  }
+}
+
+/** A fresh idempotency key for one mutation. */
 export function newIdempotencyKey(): string {
   return crypto.randomUUID()
-}
-
-let rowSeq = 0
-
-/** A key for an editable list row; stays the same while the row is edited. */
-export function newRowKey(): string {
-  rowSeq += 1
-  return `row-${rowSeq}`
 }
 
 /** Parses the DNS records stored with a sender domain; bad or empty JSON gives no rows. */

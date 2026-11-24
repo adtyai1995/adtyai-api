@@ -148,26 +148,30 @@ func AdtySEOHomePages(indexPage []byte, buildFS fs.FS) gin.HandlerFunc {
 			}
 			siteIndex := indexPage
 			brand := service.AdtyBrandFor(site)
-			body := "<main><h1>" + html.EscapeString(brand.Name) + "</h1></main>"
-			if strings.TrimSpace(brand.Name) == "" {
-				head.noindex = true
-				body = ""
-			} else if template := sitePrerender.load(buildFS)[page.contentLang]; template != "" {
-				brandHTML := "<span>" + html.EscapeString(brand.Name) + "</span>"
-				if brand.LogoURL != "" {
-					brandHTML = `<img src="` + html.EscapeString(brand.LogoURL) + `" alt="` + html.EscapeString(brand.Name) + `" class="h-7 w-auto max-w-full object-contain" />`
-				}
-				apiBase := service.AdtySiteAPIBaseURL(site)
-				if apiBase == "" {
-					apiBase = "<BASE_URL>"
-				}
-				// Single-pass replacement: brand values cannot introduce template slots.
-				body = strings.NewReplacer(
-					"__ADTY_SITE_BRAND__", brandHTML,
-					"__ADTY_SITE_API__", html.EscapeString(apiBase),
-				).Replace(template)
-				if optimizedIndex != nil {
-					siteIndex = optimizedIndex
+			customSiteHome := strings.TrimSpace(site.HomePageContent) != ""
+			body := ""
+			if !customSiteHome {
+				body = "<main><h1>" + html.EscapeString(brand.Name) + "</h1></main>"
+				if strings.TrimSpace(brand.Name) == "" {
+					head.noindex = true
+					body = ""
+				} else if template := sitePrerender.load(buildFS)[page.contentLang]; template != "" {
+					brandHTML := "<span>" + html.EscapeString(brand.Name) + "</span>"
+					if brand.LogoURL != "" {
+						brandHTML = `<img src="` + html.EscapeString(brand.LogoURL) + `" alt="` + html.EscapeString(brand.Name) + `" class="h-7 w-auto max-w-full object-contain" />`
+					}
+					apiBase := service.AdtySiteAPIBaseURL(site)
+					if apiBase == "" {
+						apiBase = "<BASE_URL>"
+					}
+					// Single-pass replacement: brand values cannot introduce template slots.
+					body = strings.NewReplacer(
+						"__ADTY_SITE_BRAND__", brandHTML,
+						"__ADTY_SITE_API__", html.EscapeString(apiBase),
+					).Replace(template)
+					if optimizedIndex != nil {
+						siteIndex = optimizedIndex
+					}
 				}
 			}
 			out := adtyRenderHomePage(siteIndex, page, head, body)

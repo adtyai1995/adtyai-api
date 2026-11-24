@@ -3,7 +3,6 @@ package controller
 import (
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -39,23 +38,40 @@ type adtySitePricingBody struct {
 }
 
 // Limit the plain-decimal representation before parsing externally supplied exponents or coefficients.
-var retailMarkupPattern = regexp.MustCompile(`^(?:[0-9]{1,6}(?:\.[0-9]{0,4})?|\.[0-9]{1,4})$`)
+var retailMarkupPattern = regexp.MustCompile(`^(?:[0-9]{1,2}(?:\.[0-9]{0,4})?|\.[0-9]{1,4})$`)
 
 func parseRetailMarkup(raw string) (decimal.Decimal, error) {
 	raw = strings.TrimSpace(raw)
 	if !retailMarkupPattern.MatchString(raw) {
-		return decimal.Zero, common.NewMessage("Enter a positive retail multiplier with up to six integer digits and four decimal places")
+		return decimal.Zero, service.ErrAdtySiteSingleMultiplierOnly
 	}
-	return decimal.NewFromString(raw)
+	value, err := decimal.NewFromString(raw)
+	if err != nil {
+		return decimal.Zero, service.ErrAdtySiteSingleMultiplierOnly
+	}
+	if value.LessThan(decimal.NewFromInt(1)) || value.GreaterThan(decimal.NewFromInt(10)) {
+		return decimal.Zero, service.ErrAdtySiteSingleMultiplierOnly
+	}
+	return value, nil
 }
 
-func saveAdtySitePricing(c *gin.Context, site *model.AdtySite, userId int) {
+func saveAdtySitePricing(c *gin.Context, site *model.AdtySite) {
 	var body adtySitePricingBody
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	input := service.AdtySitePricingInput{SiteId: site.Id, UserId: userId, ClearDefault: body.ClearDefault, ActorId: c.GetInt("id"), ExpectedVersion: body.ExpectedVersion, GroupMarkups: map[string]decimal.Decimal{}, ModelMarkups: map[string]decimal.Decimal{}}
+	if len(body.GroupMarkups) > 0 || len(body.ModelMarkups) > 0 {
+		common.ApiError(c, service.ErrAdtySiteSingleMultiplierOnly)
+		return
+	}
+	input := service.AdtySitePricingInput{
+		SiteId:          site.Id,
+		UserId:          0,
+		ClearDefault:    body.ClearDefault,
+		ActorId:         c.GetInt("id"),
+		ExpectedVersion: body.ExpectedVersion,
+	}
 	if body.DefaultMarkup != nil && strings.TrimSpace(*body.DefaultMarkup) != "" {
 		value, err := parseRetailMarkup(*body.DefaultMarkup)
 		if err != nil {
@@ -63,22 +79,6 @@ func saveAdtySitePricing(c *gin.Context, site *model.AdtySite, userId int) {
 			return
 		}
 		input.DefaultMarkup = &value
-	}
-	for group, raw := range body.GroupMarkups {
-		value, err := parseRetailMarkup(raw)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		input.GroupMarkups[group] = value
-	}
-	for modelName, raw := range body.ModelMarkups {
-		value, err := parseRetailMarkup(raw)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		input.ModelMarkups[modelName] = value
 	}
 	result, err := service.SaveAdtySitePricing(input)
 	if err != nil {
@@ -88,47 +88,20 @@ func saveAdtySitePricing(c *gin.Context, site *model.AdtySite, userId int) {
 	common.ApiSuccess(c, result)
 }
 
-// PutAdtySitePricing 保存全站定价：PUT /api/adty/site/pricing {default_markup, group_markups, model_markups, expected_version}。
-// 只接受加价配置；供货倍率和主站标准价格不能从这条路径改（SPRC-014）。
+// PutAdtySitePricing 保存全站定价：PUT /api/adty/site/pricing {default_markup, expected_version}。
+// 只接受单一全站零售倍率（1x–10x）；不接受分组/模型独立覆盖，供货倍率和主站标准价格不能从这条路径改（SPRC-014）。
 func PutAdtySitePricing(c *gin.Context) {
 	site, ok := adtyOwnedSite(c)
 	if !ok {
 		return
 	}
-	saveAdtySitePricing(c, site, 0)
+	saveAdtySitePricing(c, site)
 }
 
-// PutAdtySiteCustomerPricing 保存一个客户的单独定价：PUT /api/adty/site/customers/:id/pricing。
-// 别的站的客户、主站用户一律当作不存在。
+// PutAdtySiteCustomerPricing 已退役（R-32）：分站定价仅支持单一全站倍率（1x–10x），不再支持按客户单独加价。
 func PutAdtySiteCustomerPricing(c *gin.Context) {
-	site, ok := adtyOwnedSite(c)
-	if !ok {
+	if _, ok := adtyOwnedSite(c); !ok {
 		return
 	}
-	customerId, err := strconv.Atoi(c.Param("id"))
-	if err != nil || customerId <= 0 {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	var count int64
-	if err := model.DB.Model(&model.User{}).Where("id = ? AND site_id = ? AND staff_site_id = 0", customerId, site.Id).Count(&count).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if count == 0 {
-		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Customer not found"))
-		return
-	}
-	if model.DB.Migrator().HasTable(&model.AdtyTeamMember{}) {
-		var empCount int64
-		if err := model.DB.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", customerId, true).Count(&empCount).Error; err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		if empCount > 0 {
-			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Customer not found"))
-			return
-		}
-	}
-	saveAdtySitePricing(c, site, customerId)
+	common.ApiError(c, service.ErrAdtySiteSingleMultiplierOnly)
 }

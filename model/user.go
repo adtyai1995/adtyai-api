@@ -435,11 +435,41 @@ func limitVisibleRoles(tx *gorm.DB, belowRole int) *gorm.DB {
 	return tx
 }
 
-// GetUserSiteIDs uses the same visibility as the management list, including archived users.
+// GetUserSiteIDs returns site IDs for the management site filter:
+// main site (0) first, followed by all non-archived subsites (even with 0 users),
+// plus any historical site_ids still referenced by visible users (including archived users).
 func GetUserSiteIDs(belowRole int) ([]int, error) {
-	siteIDs := []int{}
-	err := limitVisibleRoles(DB.Unscoped().Model(&User{}), belowRole).Distinct("site_id").Order("site_id ASC").Pluck("site_id", &siteIDs).Error
-	return siteIDs, err
+	result := []int{0}
+	seen := map[int]bool{0: true}
+
+	if DB.Migrator().HasTable(&AdtySite{}) {
+		var activeSiteIDs []int
+		siteQuery := DB.Model(&AdtySite{})
+		if DB.Migrator().HasColumn(&AdtySite{}, "archived_hidden_at") {
+			siteQuery = siteQuery.Where("archived_hidden_at = 0")
+		}
+		if err := siteQuery.Order("id ASC").Pluck("id", &activeSiteIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range activeSiteIDs {
+			if id > 0 && !seen[id] {
+				seen[id] = true
+				result = append(result, id)
+			}
+		}
+	}
+
+	var userSiteIDs []int
+	if err := limitVisibleRoles(DB.Unscoped().Model(&User{}), belowRole).Distinct("site_id").Order("site_id ASC").Pluck("site_id", &userSiteIDs).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range userSiteIDs {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
+	}
+	return result, nil
 }
 
 func SearchUsers(keyword string, group string, role *int, status *int, startIdx int, num int, belowRole int, siteID *int, sortOptions ...UserSortOptions) ([]*User, int64, error) {

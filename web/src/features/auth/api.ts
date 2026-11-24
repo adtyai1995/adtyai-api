@@ -162,15 +162,13 @@ export async function sendPasswordResetEmail(
 
 // User registration
 export async function register(payload: RegisterPayload): Promise<ApiResponse> {
-  const { lang, site_terms_version, ...body } = payload
-  // Page language and accepted site terms travel in the query,
+  const { lang, ...body } = payload
+  // Page language travels in the query,
   // because the upstream handler decodes the body straight into model.User.
-  // Site customer terms (11.7) use the same query.
   const res = await api.post(`/api/user/register`, body, {
     params: {
       turnstile: payload.turnstile ?? '',
       ...(lang && { lang }),
-      ...(site_terms_version && { site_terms_version }),
     },
   })
   return res.data

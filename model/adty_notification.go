@@ -1,6 +1,11 @@
 package model
 
 import (
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -9,23 +14,26 @@ import (
 // AdtyNotificationPublication keeps withdrawn publications and their original
 // attribution. IssuerSiteId=0 is the Root publishing domain, never a recipient.
 type AdtyNotificationPublication struct {
-	Id             int    `json:"id" gorm:"primaryKey"`
-	IssuerSiteId   int    `json:"issuer_site_id" gorm:"not null;index"`
-	PublisherId    int    `json:"publisher_id" gorm:"not null"`
-	PublisherName  string `json:"publisher_name" gorm:"type:varchar(80);not null"`
-	Audience       string `json:"audience" gorm:"type:varchar(16);not null"`
-	TargetSiteId   int    `json:"target_site_id" gorm:"not null;index"`
-	TargetSiteName string `json:"target_site_name" gorm:"type:varchar(255);not null"`
-	Kind           string `json:"kind" gorm:"type:varchar(16);not null"`
-	Title          string `json:"title" gorm:"type:varchar(120);not null"`
-	Content        string `json:"content" gorm:"type:text;not null"`
-	Business       string `json:"business" gorm:"type:varchar(200);not null"`
-	Status         string `json:"status" gorm:"type:varchar(16);not null;index"`
-	Revision       int64  `json:"revision" gorm:"not null"`
-	ReadKey        string `json:"-" gorm:"type:char(64);not null;uniqueIndex"`
-	PublishedAt    int64  `json:"published_at" gorm:"not null"`
-	UpdatedAt      int64  `json:"updated_at" gorm:"not null"`
-	UpdatedBy      int    `json:"updated_by" gorm:"not null"`
+	Id              int    `json:"id" gorm:"primaryKey"`
+	IssuerSiteId    int    `json:"issuer_site_id" gorm:"not null;index"`
+	PublisherId     int    `json:"publisher_id" gorm:"not null"`
+	PublisherName   string `json:"publisher_name" gorm:"type:varchar(80);not null"`
+	Audience        string `json:"audience" gorm:"type:varchar(16);not null"`
+	TargetAudiences string `json:"target_audiences" gorm:"type:text"`
+	TargetSiteIDs   string `json:"target_site_ids" gorm:"type:text"`
+	TargetSiteId    int    `json:"target_site_id" gorm:"not null;index"`
+	TargetSiteName  string `json:"target_site_name" gorm:"type:varchar(255);not null"`
+	Kind            string `json:"kind" gorm:"type:varchar(16);not null"`
+	Title           string `json:"title" gorm:"type:varchar(120);not null"`
+	Content         string `json:"content" gorm:"type:text;not null"`
+	ContentFormat   string `json:"content_format" gorm:"type:varchar(16);default:markdown"`
+	Business        string `json:"business" gorm:"type:varchar(200);not null"`
+	Status          string `json:"status" gorm:"type:varchar(16);not null;index"`
+	Revision        int64  `json:"revision" gorm:"not null"`
+	ReadKey         string `json:"-" gorm:"type:char(64);not null;uniqueIndex"`
+	PublishedAt     int64  `json:"published_at" gorm:"not null"`
+	UpdatedAt       int64  `json:"updated_at" gorm:"not null"`
+	UpdatedBy       int    `json:"updated_by" gorm:"not null"`
 	// TelegramChannel 是这条公告要同步到的 TG 频道（`@name` 或 `-100…`）。
 	// 空表示不同步。存在公告上而不是每次请求里带，编辑时才知道原来发到哪。
 	TelegramChannel string `json:"telegram_channel" gorm:"type:varchar(128);not null;default:''"`
@@ -43,6 +51,90 @@ type AdtyNotificationPublication struct {
 	TelegramOutboxSeededAt *int64 `json:"-" gorm:"index"`
 }
 
+// ParsedTargetAudiences decodes the JSON array stored in TargetAudiences.
+// Empty/legacy rows return nil so callers fall back to Audience/TargetSiteId.
+func (p AdtyNotificationPublication) ParsedTargetAudiences() []string {
+	raw := strings.TrimSpace(p.TargetAudiences)
+	if raw == "" {
+		return nil
+	}
+	var list []string
+	if err := common.UnmarshalJsonStr(raw, &list); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		item = strings.TrimSpace(item)
+		if item != "" && !slices.Contains(out, item) {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ParsedTargetSiteIDs decodes the positive site IDs stored in TargetSiteIDs.
+func (p AdtyNotificationPublication) ParsedTargetSiteIDs() []int {
+	raw := strings.TrimSpace(p.TargetSiteIDs)
+	if raw == "" {
+		return nil
+	}
+	var list []int
+	if err := common.UnmarshalJsonStr(raw, &list); err != nil {
+		return nil
+	}
+	out := make([]int, 0, len(list))
+	for _, id := range list {
+		if id > 0 && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// EffectiveTargetSiteIDs resolves the authoritative target site IDs for
+// site_users/site_teams. Subsite-issued publications can only target their own issuer site.
+func (p AdtyNotificationPublication) EffectiveTargetSiteIDs() []int {
+	if p.IssuerSiteId > 0 {
+		return []int{p.IssuerSiteId}
+	}
+	if ids := p.ParsedTargetSiteIDs(); len(ids) > 0 {
+		return ids
+	}
+	if p.TargetSiteId > 0 {
+		return []int{p.TargetSiteId}
+	}
+	return nil
+}
+
+// AdtyNotificationTargetSiteMatchSQL builds a cross-DB SQL predicate matching
+// a targeted site ID inside the JSON integer array target_site_ids (or issuer_site_id
+// for subsite-issued rows, with fallback to target_site_id when target_site_ids is empty).
+func AdtyNotificationTargetSiteMatchSQL(siteID int, hasTargetSiteIDs bool) (string, []any) {
+	if !hasTargetSiteIDs {
+		return "issuer_site_id = ? OR (issuer_site_id = 0 AND target_site_id = ?)", []any{siteID, siteID}
+	}
+	idStr := strconv.Itoa(siteID)
+	norm := "REPLACE(COALESCE(target_site_ids, ''), ' ', '')"
+	sql := fmt.Sprintf(
+		"issuer_site_id = ? OR (issuer_site_id = 0 AND (%s = ? OR %s LIKE ? OR %s LIKE ? OR %s LIKE ? OR (COALESCE(target_site_ids, '') IN ('', '[]') AND target_site_id = ?)))",
+		norm, norm, norm, norm,
+	)
+	return sql, []any{
+		siteID,
+		"[" + idStr + "]",
+		"[" + idStr + ",%",
+		"%," + idStr + ",%",
+		"%," + idStr + "]",
+		siteID,
+	}
+}
+
 var ErrAdtyNotificationConflict = common.NewMessage("This notification was changed elsewhere. Reload and try again")
 
 // UpdateAdtyNotificationPublication uses a conditional write so a stale editor
@@ -52,19 +144,33 @@ func UpdateAdtyNotificationPublication(row *AdtyNotificationPublication, revisio
 }
 
 func UpdateAdtyNotificationPublicationTx(tx *gorm.DB, row *AdtyNotificationPublication, revision int64) error {
+	updates := map[string]any{
+		"audience": row.Audience, "target_site_id": row.TargetSiteId, "target_site_name": row.TargetSiteName,
+		"kind": row.Kind, "title": row.Title, "content": row.Content, "business": row.Business,
+		"status": row.Status, "revision": revision + 1, "updated_at": row.UpdatedAt, "updated_by": row.UpdatedBy,
+		"read_key": row.ReadKey, "telegram_channel": row.TelegramChannel,
+		// A draft gets its publish time when it is first published through this update;
+		// later edits carry the stored value forward unchanged.
+		"published_at": row.PublishedAt,
+	}
+	if tx.Migrator().HasColumn(&AdtyNotificationPublication{}, "target_audiences") {
+		updates["target_audiences"] = row.TargetAudiences
+	}
+	if tx.Migrator().HasColumn(&AdtyNotificationPublication{}, "target_site_ids") {
+		updates["target_site_ids"] = row.TargetSiteIDs
+	}
+	if tx.Migrator().HasColumn(&AdtyNotificationPublication{}, "content_format") {
+		format := row.ContentFormat
+		if format == "" {
+			format = "markdown"
+		}
+		updates["content_format"] = format
+	}
 	result := tx.Model(&AdtyNotificationPublication{}).
 		// 草稿也能编辑：`draft` 存在的意义就是「还没发出去、随便改」。
 		// 已撤回的不能编辑——那不是编辑对象，是历史记录。
 		Where("id = ? AND issuer_site_id = ? AND revision = ? AND status IN ?", row.Id, row.IssuerSiteId, revision, []string{"published", "draft"}).
-		Updates(map[string]any{
-			"audience": row.Audience, "target_site_id": row.TargetSiteId, "target_site_name": row.TargetSiteName,
-			"kind": row.Kind, "title": row.Title, "content": row.Content, "business": row.Business,
-			"status": row.Status, "revision": revision + 1, "updated_at": row.UpdatedAt, "updated_by": row.UpdatedBy,
-			"read_key": row.ReadKey, "telegram_channel": row.TelegramChannel,
-			// A draft gets its publish time when it is first published through this update;
-			// later edits carry the stored value forward unchanged.
-			"published_at": row.PublishedAt,
-		})
+		Updates(updates)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -144,10 +250,13 @@ func ImportLegacyAnnouncement(row *AdtyNotificationPublication) (bool, error) {
 
 // ListAdtyNotificationsForSite 返回某个站点上「已发布」的公告，供公开面板读。
 //
-// siteID=0 是主站。公开列表没有登录用户，只按站点判断，但 all_users / all_sites / all
-// 与登录收件箱 `adtyVisibleNotificationPublications` 使用同一套全平台规则：
-// 主站和分站都能看到这些平台受众；分站另外看到指向自己的 site 公告。
-// 站内定向（team / user）仍只出现在登录收件箱，不进公开列表。
+// siteID=0 是主站。公开列表没有登录用户，只按站点判断：
+//   - 旧平台受众（all_users / all_sites / all 且无 target_audiences）：主站和分站均可见；
+//   - 旧 site 受众：仅指向自己的分站可见；
+//   - 新 target_audiences：
+//   - main_users 仅主站（siteID=0）可见，绝不出现在分站；
+//   - site_users 仅在 target_site_ids 命中该分站（或该分站自发）时可见；
+//   - all_site_owners / main_teams / site_teams / 旧 team / 旧 user 仅出现在登录收件箱，不进公开列表。
 func ListAdtyNotificationsForSite(siteID int, limit int) ([]AdtyNotificationPublication, error) {
 	items := []AdtyNotificationPublication{}
 	// 调用方是 `/api/status`——那条路由在服务启动的最前面就会被访问。
@@ -159,11 +268,34 @@ func ListAdtyNotificationsForSite(siteID int, limit int) ([]AdtyNotificationPubl
 	query := DB.Model(&AdtyNotificationPublication{}).Where("status = ?", "published")
 	// 与登录收件箱的 platformAudiences 对齐。两处规则必须一起改。
 	platformAudiences := []string{"all_users", "all_sites", "all"}
+	hasTargetAudiences := DB.Migrator().HasColumn(&AdtyNotificationPublication{}, "target_audiences")
+	hasTargetSiteIDs := DB.Migrator().HasColumn(&AdtyNotificationPublication{}, "target_site_ids")
+
+	if !hasTargetAudiences {
+		if siteID == 0 {
+			query = query.Where("audience IN ?", platformAudiences)
+		} else {
+			query = query.Where("audience IN ? OR (audience = ? AND target_site_id = ?)",
+				platformAudiences, "site", siteID)
+		}
+		err := query.Order("published_at DESC, id DESC").Limit(limit).Find(&items).Error
+		return items, err
+	}
+
 	if siteID == 0 {
-		query = query.Where("audience IN ?", platformAudiences)
+		query = query.Where(
+			"(COALESCE(target_audiences, '') IN ('', '[]') AND audience IN ?) OR target_audiences LIKE ?",
+			platformAudiences, `%"main_users"%`,
+		)
 	} else {
-		query = query.Where("audience IN ? OR (audience = ? AND target_site_id = ?)",
-			platformAudiences, "site", siteID)
+		siteMatchSQL, siteMatchArgs := AdtyNotificationTargetSiteMatchSQL(siteID, hasTargetSiteIDs)
+		args := make([]any, 0, 4+len(siteMatchArgs))
+		args = append(args, platformAudiences, "site", siteID, `%"site_users"%`)
+		args = append(args, siteMatchArgs...)
+		query = query.Where(
+			"(COALESCE(target_audiences, '') IN ('', '[]') AND (audience IN ? OR (audience = ? AND target_site_id = ?))) OR (target_audiences LIKE ? AND ("+siteMatchSQL+"))",
+			args...,
+		)
 	}
 	err := query.Order("published_at DESC, id DESC").Limit(limit).Find(&items).Error
 	return items, err

@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Link } from '@tanstack/react-router'
-import { Loader2, LogIn, KeyRound } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Loader2, LogIn } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -42,17 +42,9 @@ import { LegalConsent } from '@/features/auth/components/legal-consent'
 import { loginFormSchema } from '@/features/auth/constants'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
-import { beginPasskeyLogin, finishPasskeyLogin } from '@/features/auth/passkey'
-import {
-  requestPasskeyAssertion,
-  rememberPasskeyRPID,
-  type PasskeyDomains,
-} from '@/features/auth/passkey/assertion'
-import { PasskeyDomainSelector } from '@/features/auth/passkey/components/passkey-domain-selector'
 import type { AuthFormProps } from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
 import { handleServerError } from '@/lib/handle-server-error'
-import { isPasskeySupported as detectPasskeySupport } from '@/lib/passkey'
 import { AuthOperationError } from '@/lib/secure-verification'
 import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
@@ -65,22 +57,11 @@ export function UserAuthForm({
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
   const [agreedToLegal, setAgreedToLegal] = useState(false)
-  const [passkeySupported, setPasskeySupported] = useState(false)
-  const [isPasskeyLoading, setIsPasskeyLoading] = useState(false)
-  const [passkeyDomains, setPasskeyDomains] = useState<PasskeyDomains | null>(
-    null
-  )
-  const [passkeyRPID, setPasskeyRPID] = useState<string>()
-  const passkeyOperation = useRef<AbortController | null>(null)
-  useEffect(() => () => passkeyOperation.current?.abort(), [])
   const [turnstileWidgetKey, setTurnstileWidgetKey] = useState(0)
   const legalConsentErrorMessage = t('Please agree to the legal terms first')
   const loginFailedMessage = t('Login failed')
 
   const { status } = useStatus()
-  const passkeyLoginEnabled = Boolean(
-    status?.passkey_login ?? status?.data?.passkey_login
-  )
   const passwordLoginEnabled =
     (status?.password_login_enabled ??
       status?.data?.password_login_enabled ??
@@ -101,11 +82,6 @@ export function UserAuthForm({
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
   const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
   const requiresLegalConsent = hasUserAgreement || hasPrivacyPolicy
-  const passkeyButtonDisabled =
-    isPasskeyLoading ||
-    !passkeySupported ||
-    (requiresLegalConsent && !agreedToLegal)
-  const hasAlternativeLogin = passkeyLoginEnabled
 
   useEffect(() => {
     if (requiresLegalConsent) {
@@ -114,12 +90,6 @@ export function UserAuthForm({
       setAgreedToLegal(true)
     }
   }, [requiresLegalConsent])
-
-  useEffect(() => {
-    detectPasskeySupport()
-      .then(setPasskeySupported)
-      .catch(() => setPasskeySupported(false))
-  }, [])
 
   const form = useForm<z.infer<typeof loginFormSchema>>({
     resolver: zodResolver(loginFormSchema),
@@ -167,95 +137,6 @@ export function UserAuthForm({
     }
   }
 
-  async function handlePasskeyLogin() {
-    if (requiresLegalConsent && !agreedToLegal) {
-      toast.error(legalConsentErrorMessage)
-      return
-    }
-
-    if (!passkeySupported) {
-      toast.error(t('Passkey is not supported on this device'))
-      return
-    }
-
-    if (!navigator?.credentials) {
-      toast.error(t('Passkey is not available in this browser'))
-      return
-    }
-
-    if (passkeyOperation.current) return
-    const controller = new AbortController()
-    passkeyOperation.current = controller
-    setIsPasskeyLoading(true)
-    try {
-      const passkey = await requestPasskeyAssertion(
-        (rpID) => beginPasskeyLogin(rpID, controller.signal),
-        controller.signal,
-        { rpID: passkeyRPID, onDomains: setPasskeyDomains }
-      )
-      const finish = await finishPasskeyLogin(
-        passkey.flowToken,
-        passkey.assertion,
-        controller.signal
-      )
-      controller.signal.throwIfAborted()
-      if (!finish.success) {
-        throw createServerError(finish, t('Failed to complete Passkey login'))
-      }
-
-      rememberPasskeyRPID(passkey.rpID)
-      if (await handleLoginResult(finish.data, redirectTo)) {
-        toast.success(t('Signed in with Passkey'))
-      }
-    } catch (error: unknown) {
-      if (controller.signal.aborted) return
-      if (error instanceof DOMException && error.name === 'NotAllowedError') {
-        toast.info(t('Passkey login was cancelled or timed out'))
-      } else if (error instanceof Error) {
-        handleServerError(AuthOperationError.from(error))
-      } else {
-        handleServerError(
-          AuthOperationError.from(error, t('Passkey login failed'))
-        )
-      }
-    } finally {
-      if (passkeyOperation.current === controller) {
-        passkeyOperation.current = null
-      }
-      setIsPasskeyLoading(false)
-    }
-  }
-
-  const alternativeLoginMethods = passkeyLoginEnabled ? (
-    <div className='mt-2 space-y-1'>
-      <Button
-        type='button'
-        variant='outline'
-        disabled={passkeyButtonDisabled}
-        onClick={handlePasskeyLogin}
-        className='h-10 w-full justify-center gap-2 rounded-lg'
-      >
-        {isPasskeyLoading ? (
-          <Loader2 className='h-4 w-4 animate-spin' />
-        ) : (
-          <KeyRound className='h-4 w-4' />
-        )}
-        {t('Sign in with Passkey')}
-      </Button>
-      <PasskeyDomainSelector
-        domains={passkeyDomains}
-        value={passkeyRPID}
-        onChange={setPasskeyRPID}
-        disabled={passkeyButtonDisabled}
-      />
-      {!passkeySupported && (
-        <p className='text-muted-foreground text-xs'>
-          {t('Passkey is not supported on this device.')}
-        </p>
-      )}
-    </div>
-  ) : null
-
   return (
     <Form {...form}>
       <form
@@ -263,8 +144,6 @@ export function UserAuthForm({
         className={cn('grid gap-4 [&_input]:h-10', className)}
         {...props}
       >
-        {hasAlternativeLogin && alternativeLoginMethods}
-
         {passwordLoginEnabled && (
           <>
             {/* Username Field */}
@@ -340,8 +219,6 @@ export function UserAuthForm({
           onCheckedChange={setAgreedToLegal}
           className='mt-1'
         />
-
-        {!hasAlternativeLogin && alternativeLoginMethods}
       </form>
     </Form>
   )

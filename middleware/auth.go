@@ -92,6 +92,9 @@ func authHelper(c *gin.Context, minRole int) {
 	if !adtyStaffDashboardAllowed(c, user, identity) {
 		return
 	}
+	if !adtyOwnerDashboardAllowed(c, user) {
+		return
+	}
 	if lookup != nil {
 		setAccessTokenContext(c, lookup)
 	}
@@ -716,16 +719,12 @@ func TokenAuth() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, common.TranslateMessage(c, i18n.MsgAuthUserBanned))
 			return
 		}
-		billingSiteID := userCache.SiteId
-		if token.OwnerSelfUseSiteId > 0 {
-			site := service.AdtySiteForHost(c.Request.Host)
-			if site == nil || site.Id != token.OwnerSelfUseSiteId || site.OwnerUserId != token.UserId || site.Status != model.AdtySiteStatusActive {
-				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch), types.ErrorCodeAccessDenied)
-				return
-			}
-			billingSiteID = site.Id
-			c.Set(service.AdtyOwnerSelfUseContextKey, site)
+		// R-32 (#25): Site owner accounts are pure management-only and cannot invoke model APIs.
+		if token.OwnerSelfUseSiteId > 0 || (userCache.Role < common.RoleAdminUser && service.AdtyIsSiteOwner(token.UserId)) {
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch), types.ErrorCodeAccessDenied)
+			return
 		}
+		billingSiteID := userCache.SiteId
 		if !service.AdtyHostAllowsRelay(c.Request.Host) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAdtyRelayHostDisallowed), types.ErrorCodeAccessDenied)
 			return

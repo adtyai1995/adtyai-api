@@ -181,7 +181,7 @@ export function CreateTeamForm() {
             className='text-destructive text-xs'
           >
             {t(
-              'Supply discount must be between 0 and 1 with up to 4 decimal places.'
+              'Team discount ratio must be greater than 0 and at most 10.0 (up to 4 decimal places).'
             )}
           </p>
         ) : (
@@ -189,7 +189,7 @@ export function CreateTeamForm() {
             id='new-team-discount-hint'
             className='text-muted-foreground text-xs'
           >
-            {t('Range (0, 1], up to 4 decimals. Leave blank for 1 (no discount).')}
+            {t('Range (0, 10], up to 4 decimals. Leave blank for 1 (full price).')}
           </p>
         )}
       </div>

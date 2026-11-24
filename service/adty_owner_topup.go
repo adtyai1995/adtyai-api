@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/shopspring/decimal"
@@ -83,9 +85,15 @@ func adtyPaymentScopeIdentity(db *gorm.DB, user *model.User, scopes []AdtyPaymen
 }
 
 func AdtyQuoteForPayment(userID, requestSiteID int, group, business string, face int64, method string) (*AdtyQuote, error) {
+	if strings.TrimSpace(business) == model.AdtyBusinessOwnerSelfUseTopup {
+		return nil, common.NewMessage("Site owner self-use top-up has been retired")
+	}
 	user, _, err := adtyPaymentIdentity(model.DB, userID, false)
 	if err != nil {
 		return nil, err
+	}
+	if user.Role < common.RoleAdminUser && AdtyIsSiteOwner(user.Id) && strings.TrimSpace(business) != model.AdtyBusinessOwnerMarginTopup {
+		return nil, common.NewMessage("Site owner accounts can only top up site margin")
 	}
 	siteID, business, err := adtyPaymentScopeIdentity(model.DB, user, []AdtyPaymentScope{{Business: business, SiteID: requestSiteID}}, false)
 	if err != nil {

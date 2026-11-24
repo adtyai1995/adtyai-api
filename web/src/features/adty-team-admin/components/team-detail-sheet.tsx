@@ -54,7 +54,11 @@ import { OwnerFundingPreviewBox } from '@/features/adty-site-owner/components/ow
 import { useVerifiedOwnerMutation } from '@/features/adty-site-owner/hooks/use-verified-owner-mutation'
 import { computeOwnerFundingPreview } from '@/features/adty-site-owner/lib/funding-preview'
 import { newIdempotencyKey } from '@/features/adty-site-owner/lib/site-owner'
-import { validTeamDiscount } from '@/features/adty-team-registration/discount'
+import {
+  SUBSITE_TEAM_MULTIPLIER_MIN,
+  TEAM_DISCOUNT_MAX,
+  validTeamDiscount,
+} from '@/features/adty-team-registration/discount'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatQuota, formatTimestamp, formatTimestampToDate } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -213,13 +217,15 @@ function TeamDiscountEditor(props: {
   const { t } = useTranslation()
   const client = useQueryClient()
   const { team } = props
+  const isSubsite = team.site_id > 0
   const [draft, setDraft] = useState('')
-  // Root prices main-site teams; a subsite team's discount belongs to its owner.
-  const editable =
-    team.status === 'active' &&
-    (props.scope === 'owner' || team.site_id === 0)
+  // Both Root (for main-site and subsite teams) and site owners (for their own site teams) can edit active teams.
+  const editable = team.status === 'active'
+  const trimmed = draft.trim()
+  const valid = validTeamDiscount(trimmed, isSubsite)
+  const showError = trimmed !== '' && !valid
   const save = useMutation({
-    mutationFn: () => saveTeamDiscount(props.scope, team.id, draft),
+    mutationFn: () => saveTeamDiscount(props.scope, team.id, trimmed),
     onSuccess: () => {
       setDraft('')
       toast.success(t('Saved'))
@@ -229,34 +235,47 @@ function TeamDiscountEditor(props: {
   })
   return (
     <section className='flex flex-col gap-2'>
-      <h3 className='text-sm font-medium'>{t('Agreement price')}</h3>
-      <p className='text-muted-foreground text-sm'>
-        {t('Current post-discount payment ratio: {{value}}', {
-          value: team.discount,
-        })}
+      <h3 className='text-sm font-medium'>
+        {isSubsite ? t('Supply Price Multiplier') : t('Team Discount Ratio')}
+      </h3>
+      <p className='text-muted-foreground text-sm tabular-nums'>
+        {isSubsite
+          ? t('Current supply price multiplier: {{value}}x', {
+              value: team.discount,
+            })
+          : t('Current team discount ratio: {{value}}', {
+              value: team.discount,
+            })}
       </p>
-      {editable ? (
+      {editable && (
         <>
           <p className='text-muted-foreground text-sm'>
-            {props.scope === 'root'
+            {isSubsite
               ? t(
-                  'A main-site team discount has no supply floor. A subsite team is refused.'
+                  'Applied directly to the main-site supply price (1.0 to 10.0). Cannot be below the 1.0 supply floor. Shared balance is not changed.'
                 )
               : t(
-                  'A site team discount cannot go below the site supply price. Shared balance is not changed.'
+                  'Applied to the main-site group price (greater than 0, up to 10.0; for example, 0.8 means 80% of the main-site group price). Shared balance is not changed.'
                 )}
           </p>
           <div className='flex flex-wrap items-end gap-2'>
             <div className='flex flex-col gap-1'>
               <Label htmlFor={`team-admin-discount-${team.id}`}>
-                {t('Post-discount payment ratio')}
+                {isSubsite
+                  ? t('Supply Price Multiplier')
+                  : t('Team Discount Ratio')}
               </Label>
               <Input
                 id={`team-admin-discount-${team.id}`}
-                className='w-40'
+                className='w-44'
+                type='number'
+                min={isSubsite ? SUBSITE_TEAM_MULTIPLIER_MIN : undefined}
+                max={TEAM_DISCOUNT_MAX}
+                step='0.01'
                 value={draft}
                 inputMode='decimal'
                 autoComplete='off'
+                aria-invalid={showError}
                 placeholder={team.discount}
                 onChange={(event) => setDraft(event.target.value)}
               />
@@ -264,25 +283,34 @@ function TeamDiscountEditor(props: {
             <Button
               type='button'
               variant='outline'
-              disabled={save.isPending || !validTeamDiscount(draft)}
+              disabled={save.isPending || !valid}
               onClick={() => save.mutate()}
             >
               {t('Save')}
             </Button>
           </div>
-          <p className='text-muted-foreground text-xs'>
-            {t(
-              '0.8 means pay 80% of the ordinary price; 1 means pay the ordinary (full) price.'
-            )}
-          </p>
+          {showError ? (
+            <p role='alert' className='text-destructive text-xs'>
+              {isSubsite
+                ? t(
+                    'Supply price multiplier must be between 1.0 and 10.0 (up to 4 decimal places) and cannot be below the supply floor.'
+                  )
+                : t(
+                    'Team discount ratio must be greater than 0 and at most 10.0 (up to 4 decimal places).'
+                  )}
+            </p>
+          ) : (
+            <p className='text-muted-foreground text-xs'>
+              {isSubsite
+                ? t(
+                    '1.0 means charge at the main-site supply price; 1.5 means 1.5× supply price.'
+                  )
+                : t(
+                    '0.8 means 80% of the main-site group price; 1 means full price.'
+                  )}
+            </p>
+          )}
         </>
-      ) : (
-        team.status === 'active' &&
-        props.scope === 'root' && (
-          <p className='text-muted-foreground text-sm'>
-            {t('A subsite team discount is set by that site owner.')}
-          </p>
-        )
       )}
     </section>
   )

@@ -85,6 +85,62 @@ func getJSONList(jsonStr string) []map[string]any {
 	return list
 }
 
+const (
+	maxUptimeKumaGroups      = 50
+	maxUptimeKumaGroupModels = 500
+)
+
+type UptimeKumaGroup struct {
+	GroupID      string            `json:"groupId,omitempty"`
+	CategoryName string            `json:"categoryName"`
+	URL          string            `json:"url,omitempty"`
+	Slug         string            `json:"slug"`
+	Description  string            `json:"description,omitempty"`
+	Models       []string          `json:"models,omitempty"`
+	MonitorMap   map[string]string `json:"monitorMap,omitempty"`
+}
+
+func ValidateUptimeKumaBaseURL(rawURL string) error {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return nil
+	}
+	if exceedsMaxCharacters(trimmed, 500) {
+		return common.NewMessage("Uptime Kuma URL cannot exceed 500 characters")
+	}
+	if !urlRegex.MatchString(trimmed) {
+		return common.NewMessage("Uptime Kuma URL has an invalid format")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return common.NewMessage("Uptime Kuma URL cannot be parsed: {{error}}", map[string]any{"error": err.Error()})
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return common.NewMessage("Uptime Kuma URL has an invalid format")
+	}
+	lower := strings.ToLower(trimmed)
+	for _, d := range dangerousChars {
+		if strings.Contains(lower, d) {
+			return common.NewMessage("Uptime Kuma URL contains disallowed content")
+		}
+	}
+	return nil
+}
+
+func ValidateUptimeKumaSlug(slug string) error {
+	trimmed := strings.TrimSpace(slug)
+	if trimmed == "" {
+		return common.NewMessage("Status page slug is required")
+	}
+	if exceedsMaxCharacters(trimmed, 100) {
+		return common.NewMessage("Status page slug cannot exceed 100 characters")
+	}
+	if !slugRegex.MatchString(trimmed) {
+		return common.NewMessage("Status page slug can only contain letters, numbers, underscores and hyphens")
+	}
+	return nil
+}
+
 func ValidateConsoleSettings(settingsStr string, settingType string) error {
 	if settingsStr == "" {
 		return nil
@@ -99,6 +155,8 @@ func ValidateConsoleSettings(settingsStr string, settingType string) error {
 		return validateFAQ(settingsStr)
 	case "UptimeKumaGroups":
 		return validateUptimeKumaGroups(settingsStr)
+	case "UptimeKumaBaseURL", "console_setting.uptime_kuma_base_url":
+		return ValidateUptimeKumaBaseURL(settingsStr)
 	default:
 		return common.NewMessage("Unknown setting type: {{type}}", map[string]any{"type": settingType})
 	}
@@ -266,63 +324,236 @@ func validateUptimeKumaGroups(groupsStr string) error {
 		return err
 	}
 
-	if len(groups) > 20 {
-		return common.NewMessage("Uptime Kuma groups cannot exceed 20 entries")
+	if len(groups) > maxUptimeKumaGroups {
+		return common.NewMessage("Uptime Kuma groups cannot exceed 50 entries")
 	}
 
+	globalBaseURL := strings.TrimSpace(GetConsoleSetting().UptimeKumaBaseURL)
 	nameSet := make(map[string]bool)
 
 	for i, group := range groups {
-		categoryName, ok := group["categoryName"].(string)
-		if !ok || categoryName == "" {
-			return common.NewMessage("Group #{{index}} is missing the category name field", map[string]any{"index": i + 1})
-		}
-		if nameSet[categoryName] {
-			return common.NewMessage("Group #{{index}} category name duplicates another group", map[string]any{"index": i + 1})
-		}
-		nameSet[categoryName] = true
-		urlStr, ok := group["url"].(string)
-		if !ok || urlStr == "" {
-			return common.NewMessage("Group #{{index}} is missing the URL field", map[string]any{"index": i + 1})
-		}
-		slug, ok := group["slug"].(string)
-		if !ok || slug == "" {
-			return common.NewMessage("Group #{{index}} is missing the slug field", map[string]any{"index": i + 1})
-		}
-		description, ok := group["description"].(string)
-		if !ok {
-			description = ""
+		index := i + 1
+
+		if rawGroupID, exists := group["groupId"]; exists && rawGroupID != nil {
+			groupID, ok := rawGroupID.(string)
+			if !ok {
+				return common.NewMessage("Group #{{index}} has an invalid group ID field", map[string]any{"index": index})
+			}
+			groupID = strings.TrimSpace(groupID)
+			if exceedsMaxCharacters(groupID, 64) {
+				return common.NewMessage("Group #{{index}} group ID cannot exceed 64 characters", map[string]any{"index": index})
+			}
+			if err := checkDangerousContent(groupID, index, groupMessages); err != nil {
+				return err
+			}
 		}
 
-		if err := validateURL(urlStr, i+1, groupMessages); err != nil {
-			return err
+		categoryName, ok := group["categoryName"].(string)
+		categoryName = strings.TrimSpace(categoryName)
+		if !ok || categoryName == "" {
+			return common.NewMessage("Group #{{index}} is missing the category name field", map[string]any{"index": index})
+		}
+		if nameSet[categoryName] {
+			return common.NewMessage("Group #{{index}} category name duplicates another group", map[string]any{"index": index})
+		}
+		nameSet[categoryName] = true
+
+		var urlStr string
+		if rawURL, exists := group["url"]; exists && rawURL != nil {
+			s, ok := rawURL.(string)
+			if !ok {
+				return common.NewMessage("Group #{{index}} has an invalid URL format", map[string]any{"index": index})
+			}
+			urlStr = strings.TrimSpace(s)
+		}
+		if urlStr == "" {
+			if globalBaseURL == "" {
+				return common.NewMessage("Group #{{index}} is missing the URL field", map[string]any{"index": index})
+			}
+		} else {
+			if err := validateURL(urlStr, index, groupMessages); err != nil {
+				return err
+			}
+			if exceedsMaxCharacters(urlStr, 500) {
+				return common.NewMessage("Group #{{index}} URL cannot exceed 500 characters", map[string]any{"index": index})
+			}
+			if err := checkDangerousContent(urlStr, index, groupMessages); err != nil {
+				return err
+			}
+		}
+
+		slug, ok := group["slug"].(string)
+		slug = strings.TrimSpace(slug)
+		if !ok || slug == "" {
+			return common.NewMessage("Group #{{index}} is missing the slug field", map[string]any{"index": index})
+		}
+
+		var description string
+		if rawDesc, exists := group["description"]; exists && rawDesc != nil {
+			s, ok := rawDesc.(string)
+			if !ok {
+				return common.NewMessage("Group #{{index}} has an invalid description field", map[string]any{"index": index})
+			}
+			description = s
 		}
 
 		if exceedsMaxCharacters(categoryName, 50) {
-			return common.NewMessage("Group #{{index}} category name cannot exceed 50 characters", map[string]any{"index": i + 1})
-		}
-		if exceedsMaxCharacters(urlStr, 500) {
-			return common.NewMessage("Group #{{index}} URL cannot exceed 500 characters", map[string]any{"index": i + 1})
+			return common.NewMessage("Group #{{index}} category name cannot exceed 50 characters", map[string]any{"index": index})
 		}
 		if exceedsMaxCharacters(slug, 100) {
-			return common.NewMessage("Group #{{index}} slug cannot exceed 100 characters", map[string]any{"index": i + 1})
+			return common.NewMessage("Group #{{index}} slug cannot exceed 100 characters", map[string]any{"index": index})
 		}
 		if exceedsMaxCharacters(description, 200) {
-			return common.NewMessage("Group #{{index}} description cannot exceed 200 characters", map[string]any{"index": i + 1})
+			return common.NewMessage("Group #{{index}} description cannot exceed 200 characters", map[string]any{"index": index})
 		}
 
 		if !slugRegex.MatchString(slug) {
-			return common.NewMessage("Group #{{index}} slug can only contain letters, numbers, underscores and hyphens", map[string]any{"index": i + 1})
+			return common.NewMessage("Group #{{index}} slug can only contain letters, numbers, underscores and hyphens", map[string]any{"index": index})
 		}
 
-		if err := checkDangerousContent(description, i+1, groupMessages); err != nil {
+		if err := checkDangerousContent(description, index, groupMessages); err != nil {
 			return err
 		}
-		if err := checkDangerousContent(categoryName, i+1, groupMessages); err != nil {
+		if err := checkDangerousContent(categoryName, index, groupMessages); err != nil {
 			return err
+		}
+
+		if rawModels, exists := group["models"]; exists && rawModels != nil {
+			modelsSlice, ok := rawModels.([]any)
+			if !ok {
+				return common.NewMessage("Group #{{index}} models must be an array of strings", map[string]any{"index": index})
+			}
+			if len(modelsSlice) > maxUptimeKumaGroupModels*4 {
+				return common.NewMessage("Group #{{index}} models cannot exceed 500 entries", map[string]any{"index": index})
+			}
+			seenModels := make(map[string]struct{}, min(len(modelsSlice), maxUptimeKumaGroupModels))
+			for _, item := range modelsSlice {
+				modelStr, ok := item.(string)
+				if !ok {
+					return common.NewMessage("Group #{{index}} models must contain only strings", map[string]any{"index": index})
+				}
+				trimmed := strings.TrimSpace(modelStr)
+				if trimmed == "" {
+					continue
+				}
+				if exceedsMaxCharacters(trimmed, 200) {
+					return common.NewMessage("Group #{{index}} model name cannot exceed 200 characters", map[string]any{"index": index})
+				}
+				if err := checkDangerousContent(trimmed, index, groupMessages); err != nil {
+					return err
+				}
+				seenModels[trimmed] = struct{}{}
+				if len(seenModels) > maxUptimeKumaGroupModels {
+					return common.NewMessage("Group #{{index}} models cannot exceed 500 entries", map[string]any{"index": index})
+				}
+			}
+		}
+
+		if rawMonitorMap, exists := group["monitorMap"]; exists && rawMonitorMap != nil {
+			monitorMap, ok := rawMonitorMap.(map[string]any)
+			if !ok {
+				return common.NewMessage("Group #{{index}} monitorMap must be a string map", map[string]any{"index": index})
+			}
+			if len(monitorMap) > maxUptimeKumaGroupModels {
+				return common.NewMessage("Group #{{index}} monitorMap cannot exceed 500 entries", map[string]any{"index": index})
+			}
+			for key, val := range monitorMap {
+				valStr, ok := val.(string)
+				if !ok {
+					return common.NewMessage("Group #{{index}} monitorMap values must be strings", map[string]any{"index": index})
+				}
+				trimmedKey := strings.TrimSpace(key)
+				trimmedVal := strings.TrimSpace(valStr)
+				if trimmedKey == "" {
+					return common.NewMessage("Group #{{index}} monitorMap cannot contain empty keys", map[string]any{"index": index})
+				}
+				if exceedsMaxCharacters(trimmedKey, 200) || exceedsMaxCharacters(trimmedVal, 200) {
+					return common.NewMessage("Group #{{index}} monitorMap entries cannot exceed 200 characters", map[string]any{"index": index})
+				}
+				if err := checkDangerousContent(trimmedKey, index, groupMessages); err != nil {
+					return err
+				}
+				if err := checkDangerousContent(trimmedVal, index, groupMessages); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
+}
+
+func ParseUptimeKumaGroups(groupsStr string) []UptimeKumaGroup {
+	if strings.TrimSpace(groupsStr) == "" {
+		return []UptimeKumaGroup{}
+	}
+	var raw []UptimeKumaGroup
+	if err := common.UnmarshalJsonStr(groupsStr, &raw); err != nil {
+		return []UptimeKumaGroup{}
+	}
+	result := make([]UptimeKumaGroup, 0, len(raw))
+	for _, g := range raw {
+		g.GroupID = strings.TrimSpace(g.GroupID)
+		g.CategoryName = strings.TrimSpace(g.CategoryName)
+		g.URL = strings.TrimSpace(g.URL)
+		g.Slug = strings.TrimSpace(g.Slug)
+		g.Description = strings.TrimSpace(g.Description)
+
+		if len(g.Models) > 0 {
+			seen := make(map[string]struct{}, min(len(g.Models), maxUptimeKumaGroupModels))
+			models := make([]string, 0, min(len(g.Models), maxUptimeKumaGroupModels))
+			for _, m := range g.Models {
+				trimmed := strings.TrimSpace(m)
+				if trimmed == "" {
+					continue
+				}
+				if _, dup := seen[trimmed]; dup {
+					continue
+				}
+				seen[trimmed] = struct{}{}
+				models = append(models, trimmed)
+				if len(models) >= maxUptimeKumaGroupModels {
+					break
+				}
+			}
+			if len(models) > 0 {
+				g.Models = models
+			} else {
+				g.Models = nil
+			}
+		} else {
+			g.Models = nil
+		}
+
+		if len(g.MonitorMap) > 0 {
+			cleaned := make(map[string]string, len(g.MonitorMap))
+			for k, v := range g.MonitorMap {
+				kt := strings.TrimSpace(k)
+				vt := strings.TrimSpace(v)
+				if kt == "" || vt == "" {
+					continue
+				}
+				cleaned[kt] = vt
+			}
+			if len(cleaned) > 0 {
+				g.MonitorMap = cleaned
+			} else {
+				g.MonitorMap = nil
+			}
+		} else {
+			g.MonitorMap = nil
+		}
+
+		result = append(result, g)
+	}
+	return result
+}
+
+func GetUptimeKumaBaseURL() string {
+	return strings.TrimRight(strings.TrimSpace(GetConsoleSetting().UptimeKumaBaseURL), "/")
+}
+
+func GetUptimeKumaGroupConfigs() []UptimeKumaGroup {
+	return ParseUptimeKumaGroups(GetConsoleSetting().UptimeKumaGroups)
 }
 
 func GetUptimeKumaGroups() []map[string]any {

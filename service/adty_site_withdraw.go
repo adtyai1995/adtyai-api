@@ -41,8 +41,26 @@ type AdtySiteWithdrawInput struct {
 	Network        string
 	AccountNo      string
 	AccountName    string
+	QRImageURL     string
 	ExpectedRate   decimal.Decimal
 	IdempotencyKey string
+}
+
+// CanonicalReferralAssetURL strips signed query parameters and returns the
+// canonical /api/referral-assets/<name> path when raw is a valid asset URL.
+func CanonicalReferralAssetURL(raw string) (string, bool) {
+	name, ok := extractReferralAssetName(raw)
+	if !ok {
+		return "", false
+	}
+	return "/api/referral-assets/" + name, true
+}
+
+func resignSiteWithdrawalQR(row *model.AdtySiteWithdrawal, now time.Time) {
+	if row == nil || strings.TrimSpace(row.QRImageURL) == "" {
+		return
+	}
+	row.QRImageURL = ResignReferralAssetURLForWithdrawal(row.QRImageURL, row.OwnerUserId, model.ReferralAssetPurposeWithdrawalQR, now)
 }
 
 type adtySiteWithdrawConfig struct {
@@ -147,6 +165,9 @@ func siteWithdrawalAuditSnapshot(row *model.AdtySiteWithdrawal) map[string]any {
 	if row.TxID != "" {
 		snap["tx_id"] = row.TxID
 	}
+	if row.QRImageURL != "" {
+		snap["qr_image_url"] = row.QRImageURL
+	}
 	return snap
 }
 
@@ -219,7 +240,14 @@ func LoadAdtySiteWithdrawRules() (AdtySiteWithdrawRulesView, error) {
 func ListAdtySiteWithdrawals(siteID, ownerID int) ([]model.AdtySiteWithdrawal, error) {
 	var rows []model.AdtySiteWithdrawal
 	err := model.DB.Scopes(model.AdtyWithdrawalOwnerScope(siteID, ownerID)).Order("id desc").Limit(20).Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for i := range rows {
+		resignSiteWithdrawalQR(&rows[i], now)
+	}
+	return rows, nil
 }
 
 func PageAdtySiteWithdrawals(siteID, ownerID int, status, number string, offset, limit int) ([]model.AdtySiteWithdrawal, int64, error) {
@@ -240,7 +268,14 @@ func PageAdtySiteWithdrawals(siteID, ownerID int, status, number string, offset,
 	}
 	var rows []model.AdtySiteWithdrawal
 	err := q.Order("id DESC").Offset(offset).Limit(limit).Find(&rows).Error
-	return rows, total, err
+	if err != nil {
+		return nil, 0, err
+	}
+	now := time.Now()
+	for i := range rows {
+		resignSiteWithdrawalQR(&rows[i], now)
+	}
+	return rows, total, nil
 }
 
 // AdtySiteWithdrawalAdminRow is one withdrawal in Root's review list. The
@@ -285,8 +320,10 @@ func ListAdtySiteWithdrawalsForAdmin(status string, offset, limit int) ([]AdtySi
 			subdomains[site.Id] = site.Subdomain
 		}
 	}
+	now := time.Now()
 	items := make([]AdtySiteWithdrawalAdminRow, 0, len(rows))
 	for _, row := range rows {
+		resignSiteWithdrawalQR(&row, now)
 		items = append(items, AdtySiteWithdrawalAdminRow{AdtySiteWithdrawal: row, Subdomain: subdomains[row.SiteId]})
 	}
 	return items, total, nil
@@ -353,17 +390,29 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		return nil, common.NewMessage("Invalid idempotency key")
 	}
 	scopedKey := adtySiteWithdrawScopedKey(input.SiteID, rawKey)
+	accountNo := strings.TrimSpace(input.AccountNo)
+	accountName := strings.TrimSpace(input.AccountName)
+	rawQR := strings.TrimSpace(input.QRImageURL)
+	normalizedQR := ""
 	if method == "usdt" {
 		network := strings.ToUpper(strings.TrimSpace(input.Network))
-		if !ValidateUSDTAddress(network, input.AccountNo) {
+		if !ValidateUSDTAddress(network, accountNo) {
 			return nil, common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": network})
 		}
 		input.Network = network
-	} else if strings.TrimSpace(input.AccountName) == "" || strings.TrimSpace(input.AccountNo) == "" {
-		return nil, common.NewMessage("Enter the payee name and account")
+		rawQR = ""
+	} else {
+		if accountName == "" || (accountNo == "" && rawQR == "") {
+			return nil, common.NewMessage("Enter the payee name and account")
+		}
+		if rawQR != "" {
+			canonical, ok := CanonicalReferralAssetURL(rawQR)
+			if !ok {
+				return nil, common.NewMessage("Upload the payment QR code and enter the payee name")
+			}
+			normalizedQR = canonical
+		}
 	}
-	accountNo := strings.TrimSpace(input.AccountNo)
-	accountName := strings.TrimSpace(input.AccountName)
 	var created *model.AdtySiteWithdrawal
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -394,10 +443,15 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 				return model.ErrAdtyIdempotencyConflict
 			}
 			existingRate, rateErr := decimal.NewFromString(existing[0].Rate)
+			existingQR := strings.TrimSpace(existing[0].QRImageURL)
+			if canonical, ok := CanonicalReferralAssetURL(existingQR); ok {
+				existingQR = canonical
+			}
 			if existing[0].SiteId != input.SiteID || existingOwner != input.OwnerID ||
 				!existing[0].AmountUSD.Equal(amount) || existing[0].Method != method ||
 				existing[0].Network != input.Network || existing[0].AccountNo != accountNo ||
-				existing[0].AccountName != accountName || rateErr != nil || !existingRate.Equal(input.ExpectedRate) {
+				existing[0].AccountName != accountName || existingQR != normalizedQR ||
+				rateErr != nil || !existingRate.Equal(input.ExpectedRate) {
 				return model.ErrAdtyIdempotencyConflict
 			}
 			created = &existing[0]
@@ -433,6 +487,13 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		if input.ExpectedPayout != nil && !input.ExpectedPayout.Equal(payout) {
 			return common.NewMessage("Withdrawal quote changed. Confirm the updated amount.")
 		}
+		if method == "alipay" && rawQR != "" {
+			canonicalQR, ok := IsOwnedReferralAssetTx(tx, input.OwnerID, model.ReferralAssetPurposeWithdrawalQR, rawQR)
+			if !ok {
+				return common.NewMessage("Upload the payment QR code and enter the payee name")
+			}
+			normalizedQR = canonicalQR
+		}
 		// ISS-R1-0018: freeze earnings on application without decrementing Balance until paid.
 		if _, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletEarnings, decimal.Zero, AdtySiteWalletChange{
 			Type: "earning_withdraw_freeze", HoldDelta: amount, IdempotencyKey: adtySiteWithdrawLedgerKey("site-withdraw:", site.Id, scopedKey), OperatorID: input.OwnerID, RefType: "site_withdraw", RefID: scopedKey,
@@ -443,7 +504,7 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		row := &model.AdtySiteWithdrawal{
 			SiteId: site.Id, OwnerUserId: input.OwnerID, AmountUSD: amount, FeeUSD: cfg.Fee, NetUSD: net,
 			Method: method, Network: input.Network, AccountNo: accountNo, AccountName: accountName,
-			Rate: rateRaw, PayoutAmount: payout.String(), PayoutCurrency: currency,
+			QRImageURL: normalizedQR, Rate: rateRaw, PayoutAmount: payout.String(), PayoutCurrency: currency,
 			Status: model.AdtySiteWithdrawPending, IdempotencyKey: key,
 		}
 		if err := tx.Create(row).Error; err != nil {

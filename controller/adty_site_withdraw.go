@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -81,6 +82,68 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 	common.ApiSuccess(c, page)
 }
 
+// PostAdtySiteWithdrawalQR uploads a site owner's Alipay payout QR image using
+// the referral asset pipeline (<=5MB, PNG/JPEG/WebP, signed URL).
+func PostAdtySiteWithdrawalQR(c *gin.Context) {
+	if _, ok := adtyOwnerAccountingSite(c); !ok {
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20+64<<10)
+	header, err := c.FormFile("file")
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiErrorT(c, "The image must be at most 5 MB")
+			return
+		}
+		common.ApiErrorT(c, "Choose an image to upload")
+		return
+	}
+	file, err := header.Open()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 5<<20+1))
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiErrorT(c, "The image must be at most 5 MB")
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	if len(data) > 5<<20 {
+		common.ApiErrorT(c, "The image must be at most 5 MB")
+		return
+	}
+	contentType := http.DetectContentType(data)
+	switch contentType {
+	case "image/png", "image/jpeg", "image/webp":
+	default:
+		common.ApiErrorT(c, "Only PNG, JPEG or WebP images are accepted")
+		return
+	}
+	purpose := strings.TrimSpace(c.PostForm("purpose"))
+	if purpose == "" {
+		purpose = model.ReferralAssetPurposeWithdrawalQR
+	}
+	switch purpose {
+	case model.ReferralAssetPurposeWithdrawalQR, model.ReferralAssetPurposePaymentProof:
+	default:
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	link, err := service.SaveReferralAsset(data, contentType, c.GetInt("id"), purpose, "site_owner")
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"url": link})
+}
+
 func PostAdtySiteWithdrawal(c *gin.Context) {
 	site, ok := adtyOwnerAccountingSite(c)
 	if !ok {
@@ -93,6 +156,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		Network        string           `json:"network"`
 		AccountNo      string           `json:"account_no"`
 		AccountName    string           `json:"account_name"`
+		QRImageURL     string           `json:"qr_image_url"`
 		ExpectedRate   string           `json:"expected_rate"`
 		ExpectedPayout *decimal.Decimal `json:"expected_payout"`
 	}
@@ -114,20 +178,28 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionWithdrawalCreate, site.Id, service.AdtyOwnerWithdrawalDigestInput{
-		AmountUSD:      amount.String(),
-		Method:         body.Method,
-		Network:        body.Network,
-		AccountNo:      body.AccountNo,
-		AccountName:    body.AccountName,
-		ExpectedRate:   expected.String(),
-		IdempotencyKey: c.GetHeader("Idempotency-Key"),
+	digestQR := ""
+	if strings.EqualFold(strings.TrimSpace(body.Method), "alipay") {
+		digestQR = strings.TrimSpace(body.QRImageURL)
+		if canonicalQR, ok := service.CanonicalReferralAssetURL(digestQR); ok {
+			digestQR = canonicalQR
+		}
+	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionWithdrawalCreate, site.Id, map[string]any{
+		"amount_usd":      amount.String(),
+		"method":          body.Method,
+		"network":         body.Network,
+		"account_no":      body.AccountNo,
+		"account_name":    body.AccountName,
+		"qr_image_url":    digestQR,
+		"expected_rate":   expected.String(),
+		"idempotency_key": c.GetHeader("Idempotency-Key"),
 	}) {
 		return
 	}
 	row, err := service.CreateAdtySiteWithdrawal(service.AdtySiteWithdrawInput{
 		SiteID: site.Id, OwnerID: c.GetInt("id"), AmountUSD: amount, Method: body.Method, Network: body.Network,
-		AccountNo: body.AccountNo, AccountName: body.AccountName, ExpectedRate: expected, ExpectedPayout: body.ExpectedPayout,
+		AccountNo: body.AccountNo, AccountName: body.AccountName, QRImageURL: body.QRImageURL, ExpectedRate: expected, ExpectedPayout: body.ExpectedPayout,
 		IdempotencyKey: c.GetHeader("Idempotency-Key"),
 	})
 	if err != nil {
@@ -139,6 +211,9 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		return
 	}
 	redactSiteWithdrawalForOwner(row)
+	if row != nil && row.QRImageURL != "" {
+		row.QRImageURL = service.ResignReferralAssetURLForWithdrawal(row.QRImageURL, row.OwnerUserId, model.ReferralAssetPurposeWithdrawalQR, time.Now())
+	}
 	common.ApiSuccess(c, row)
 }
 

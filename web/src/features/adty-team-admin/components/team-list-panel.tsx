@@ -158,7 +158,9 @@ export function TeamListPanel(props: {
                   {t('Shared balance')}
                 </TableHead>
                 <TableHead className='text-right'>
-                  {t('Post-discount payment ratio')}
+                  {isRoot
+                    ? t('Discount / Multiplier')
+                    : t('Supply Price Multiplier')}
                 </TableHead>
                 <TableHead>{t('Created')}</TableHead>
                 <TableHead className='text-right'>{t('Actions')}</TableHead>
@@ -216,7 +218,7 @@ export function TeamListPanel(props: {
                       {formatQuota(row.shared_quota)}
                     </TableCell>
                     <TableCell className='text-right tabular-nums'>
-                      {row.discount}
+                      {row.site_id > 0 ? `${row.discount}x` : row.discount}
                     </TableCell>
                     <TableCell>{formatTimestampToDate(row.created_at)}</TableCell>
                     <TableCell className='text-right'>

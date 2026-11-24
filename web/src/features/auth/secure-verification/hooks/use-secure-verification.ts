@@ -44,7 +44,7 @@ function preferredVerificationMethod(
   isLogin: boolean
 ) {
   if (isLogin) {
-    return methods.find((option) => option.method === 'passkey') ?? methods[0]
+    return methods.find((option) => option.method === '2fa') ?? methods[0]
   }
   return (
     methods.find((option) => option.method === 'password') ??
@@ -73,7 +73,7 @@ function verificationReducer(
     case 'loaded': {
       if (state.phase !== 'loading') return state
       const methods = action.requirements.methods.filter(
-        (option) => option.available
+        (option) => option.available && option.method !== 'passkey'
       )
       const preferred = preferredVerificationMethod(
         methods,
@@ -90,9 +90,6 @@ function verificationReducer(
         case 'email_code':
           input = { method: 'email_code', code: '' }
           break
-        case 'passkey':
-          input = { method: 'passkey' }
-          break
       }
       return {
         phase: 'ready',
@@ -104,6 +101,7 @@ function verificationReducer(
     case 'input':
       if (
         state.phase !== 'ready' ||
+        action.input.method === 'passkey' ||
         !state.requirements.methods.some(
           (option) => option.method === action.input.method && option.available
         )

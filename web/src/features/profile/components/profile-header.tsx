@@ -24,7 +24,6 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Card, CardContent } from '@/components/ui/card'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
 import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lot-projection'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatCompactNumber, formatQuota } from '@/lib/format'
@@ -44,7 +43,6 @@ interface ProfileHeaderProps {
 
 export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
   const { t } = useTranslation()
-  const groupDisplay = useGroupDisplay()
 
   if (loading) {
     return (
@@ -153,14 +151,6 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
                 <>
                   <span>•</span>
                   <span className='truncate'>{profile.email}</span>
-                </>
-              )}
-              {profile.group && (
-                <>
-                  <span>•</span>
-                  <span className='truncate'>
-                    {groupDisplay.name(profile.group)}
-                  </span>
                 </>
               )}
             </div>

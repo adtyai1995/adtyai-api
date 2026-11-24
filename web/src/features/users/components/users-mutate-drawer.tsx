@@ -35,7 +35,6 @@ import { PasswordInput } from '@/components/password-input'
 import { PasswordStrength } from '@/components/password-strength'
 import { PermissionMatrix } from '@/components/permission-matrix'
 import { Button } from '@/components/ui/button'
-import { Combobox } from '@/components/ui/combobox'
 import {
   Form,
   FormControl,
@@ -66,7 +65,6 @@ import {
 } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { PermissionPresets } from '@/features/adty-admin-permissions/permission-presets'
-import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
 import { UserLedgerDialog } from '@/features/adty-ledger/user-ledger-dialog'
 import { UserLimitsFields } from '@/features/adty-ledger/user-limits-fields'
 import {
@@ -87,13 +85,7 @@ import { AuthOperationError } from '@/lib/secure-verification'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
-import {
-  createUser,
-  updateUser,
-  getUser,
-  getGroups,
-  getPermissionCatalog,
-} from '../api'
+import { createUser, updateUser, getUser, getPermissionCatalog } from '../api'
 import { BINDING_FIELDS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
   userFormSchema,
@@ -118,7 +110,6 @@ export function UsersMutateDrawer({
   currentRow,
 }: UsersMutateDrawerProps) {
   const { t } = useTranslation()
-  const groupDisplay = useGroupDisplay()
 
   const isUpdate = !!currentRow
   const targetUserId = currentRow?.id
@@ -128,8 +119,7 @@ export function UsersMutateDrawer({
     currentUser,
     isUpdate ? ADTY_PERMISSIONS.USER_WRITE : ADTY_PERMISSIONS.USER_CREATE
   )
-  // adty: the group needs "change user groups"; balances need "adjust balances"
-  const canChangeGroup = canAdmin(currentUser, ADTY_PERMISSIONS.USER_GROUP)
+  // adty: balances need "adjust balances"
   const canAdjustQuota = canAdmin(currentUser, ADTY_PERMISSIONS.USER_QUOTA)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
@@ -145,15 +135,6 @@ export function UsersMutateDrawer({
   // Matrix as loaded from the server; an unchanged matrix is not resubmitted so
   // routine edits of an administrator do not require step-up verification.
   const loadedPermissions = useRef<AdminPermissionMatrix | undefined>(undefined)
-
-  // Fetch groups
-  const { data: groupsData } = useQuery({
-    queryKey: ['groups'],
-    queryFn: async () => requireServerSuccess(await getGroups()),
-    staleTime: 5 * 60 * 1000,
-  })
-
-  const groups = groupsData?.data || []
 
   // Permission catalog is owned by the backend; fetched once and reused.
   const { data: permissionCatalog = EMPTY_PERMISSION_CATALOG } = useQuery({
@@ -371,7 +352,10 @@ export function UsersMutateDrawer({
                         aria-labelledby='user-site-label'
                         className='break-words'
                       >
-                        {siteUser?.site_name || t('Site')}
+                        {(siteUser?.site_id ?? 0) === 0
+                          ? t('Main site')
+                          : siteUser?.site_name ||
+                            `${t('Site')} #${siteUser?.site_id}`}
                       </dd>
                     </div>
                     <div>
@@ -502,34 +486,10 @@ export function UsersMutateDrawer({
                 />
               </SideDrawerSection>
 
-              {/* Group & Quota Settings (Update only) */}
+              {/* Quota Settings (Update only) */}
               {isUpdate && (
                 <SideDrawerSection>
-                  <h3 className='text-sm font-medium'>{t('Group & Quota')}</h3>
-
-                  <FormField
-                    control={form.control}
-                    name='group'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Group')}</FormLabel>
-                        <FormControl>
-                          <Combobox
-                            options={groups.map((group) => ({
-                              value: group,
-                              label: groupDisplay.adminLabel(group),
-                            }))}
-                            onValueChange={field.onChange}
-                            value={field.value}
-                            className='w-full'
-                            placeholder={t('Select a group')}
-                            disabled={!canChangeGroup}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <h3 className='text-sm font-medium'>{t('Quota Settings')}</h3>
 
                   <FormField
                     control={form.control}
@@ -674,7 +634,7 @@ export function UsersMutateDrawer({
                   </h3>
                   <p className='text-muted-foreground text-xs'>
                     {t(
-                      'Third-party account bindings (read-only, managed by user in Security & Access)'
+                      'Account bindings (read-only, managed by user in Security & Access)'
                     )}
                   </p>
 

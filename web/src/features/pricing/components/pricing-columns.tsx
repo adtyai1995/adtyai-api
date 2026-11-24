@@ -26,12 +26,15 @@ import {
 } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
+import type { UptimeGroupResult } from '@/features/dashboard/types'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
 import { parseTags } from '../lib/filters'
+import { resolveModelUptimeForPricing } from '../lib/uptime'
 import type { PricingModel } from '../types'
 import { CachedPriceCell } from './cached-price-cell'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
+import { ModelConnectivityBadge } from './model-connectivity-badge'
 import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
 
 // ----------------------------------------------------------------------------
@@ -41,6 +44,8 @@ import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
 export type PricingColumnsOptions = ModelPriceCellOptions & {
   /** Groups the viewer can use; when set, other groups are not shown. */
   usableGroups?: string[]
+  /** 24h Uptime Kuma status groups used for per-model connectivity cells. */
+  uptimeGroups?: UptimeGroupResult[]
 }
 
 export function usePricingColumns(
@@ -71,6 +76,22 @@ export function usePricingColumns(
         )
       },
       minSize: 170,
+    },
+
+    // 24h Connectivity column (Uptime Kuma)
+    {
+      id: 'connectivity',
+      header: t('Connectivity (24h)'),
+      cell: ({ row }) => {
+        const uptime = resolveModelUptimeForPricing(
+          options.uptimeGroups ?? [],
+          row.original,
+          options.selectedGroup
+        )
+        return <ModelConnectivityBadge uptime={uptime} variant='table' />
+      },
+      size: 156,
+      enableSorting: false,
     },
 
     // Type column

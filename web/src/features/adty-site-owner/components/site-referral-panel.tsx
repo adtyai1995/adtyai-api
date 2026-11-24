@@ -43,8 +43,18 @@ import {
   type SiteMarketingField,
   type SiteReferralView,
 } from '../api'
+import {
+  MAX_SITE_REFERRAL_RATE,
+  validSiteReferralRate,
+} from '../lib/site-owner'
 
-type PolicyField = { key: SiteMarketingField; label: string; integer?: boolean }
+type PolicyField = {
+  key: SiteMarketingField
+  label: string
+  integer?: boolean
+  max?: number
+  hint?: string
+}
 
 function MarketingFields(props: {
   title: string
@@ -57,10 +67,16 @@ function MarketingFields(props: {
   const [draft, setDraft] = useState<
     Partial<Record<SiteMarketingField, string>>
   >({})
+  const rateDraft = draft.rate
+  const rateInvalid =
+    rateDraft !== undefined &&
+    rateDraft.trim() !== '' &&
+    !validSiteReferralRate(rateDraft)
   const save = useMutation({
     mutationFn: () => saveOwnerSiteReferral(draft),
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      void invalidateSidebarBadges(client)
       setDraft({})
       toast.success(t('Saved successfully'))
     },
@@ -71,32 +87,64 @@ function MarketingFields(props: {
       className='space-y-3'
       onSubmit={(event) => {
         event.preventDefault()
+        if (rateInvalid) return
         save.mutate()
       }}
     >
       <h3 className='text-sm font-medium'>{props.title}</h3>
       <p className='text-muted-foreground text-sm'>{props.description}</p>
       <div className='grid gap-3 sm:grid-cols-3'>
-        {props.fields.map(({ key, label, integer }) => (
-          <div key={key} className='space-y-1'>
-            <Label htmlFor={`site-policy-${key}`}>{label}</Label>
-            <Input
-              id={`site-policy-${key}`}
-              type='number'
-              min='0'
-              step={integer ? '1' : 'any'}
-              value={draft[key] ?? props.policy[key] ?? ''}
-              onChange={(event) =>
-                setDraft({ ...draft, [key]: event.target.value })
-              }
-            />
-          </div>
-        ))}
+        {props.fields.map(({ key, label, integer, max, hint }) => {
+          const currentValue = String(draft[key] ?? props.policy[key] ?? '')
+          const isRate = key === 'rate'
+          const showRateError = isRate && rateInvalid
+          const parsedRate = isRate ? Number(currentValue) : Number.NaN
+          const ratePctHint =
+            isRate &&
+            currentValue.trim() !== '' &&
+            !showRateError &&
+            Number.isFinite(parsedRate)
+              ? `${Number((parsedRate * 100).toFixed(4))}%`
+              : ''
+          return (
+            <div key={key} className='space-y-1'>
+              <Label htmlFor={`site-policy-${key}`}>{label}</Label>
+              <Input
+                id={`site-policy-${key}`}
+                type='number'
+                min='0'
+                max={max}
+                step={integer ? '1' : 'any'}
+                aria-invalid={showRateError}
+                value={currentValue}
+                onChange={(event) =>
+                  setDraft({ ...draft, [key]: event.target.value })
+                }
+              />
+              {showRateError ? (
+                <p role='alert' className='text-destructive text-xs'>
+                  {t(
+                    'Commission rate must be between 0 and 0.30 (0% to 30%, up to 6 decimal places).'
+                  )}
+                </p>
+              ) : (
+                hint && (
+                  <p className='text-muted-foreground text-xs'>
+                    {hint}
+                    {ratePctHint ? ` (${ratePctHint})` : ''}
+                  </p>
+                )
+              )}
+            </div>
+          )
+        })}
       </div>
       <Button
         type='submit'
         variant='outline'
-        disabled={save.isPending || Object.keys(draft).length === 0}
+        disabled={
+          save.isPending || Object.keys(draft).length === 0 || rateInvalid
+        }
       >
         {t('Save')}
       </Button>
@@ -175,7 +223,14 @@ export function SiteReferralPanel() {
             )}
             policy={rules.data}
             fields={[
-              { key: 'rate', label: t('Invite rate (0 to 1)') },
+              {
+                key: 'rate',
+                label: t('Invite rate (0 to 0.30, max 30%)'),
+                max: MAX_SITE_REFERRAL_RATE,
+                hint: t(
+                  'Commission rate cannot exceed 30% (0 to 0.30). Example: 0.15 = 15%.'
+                ),
+              },
               {
                 key: 'pending_coverage_cap',
                 label: t('Pending coverage cap (USD)'),

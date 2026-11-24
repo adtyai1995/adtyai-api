@@ -31,7 +31,6 @@ import {
 } from '@/components/password-strength'
 import { Turnstile } from '@/components/turnstile'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   Form,
   FormControl,
@@ -61,13 +60,13 @@ export function SignUpForm({
 }: React.HTMLAttributes<HTMLFormElement>) {
   const { t, i18n } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
-  const [acceptedSiteTermsVersion, setAcceptedSiteTermsVersion] = useState<
-    number | null
-  >(null)
   const [verificationCode, setVerificationCode] = useState('')
   const [initialSiteInvite] = useState(() => {
     if (typeof window === 'undefined') return ''
-    return new URLSearchParams(window.location.search).get('site_invite')?.trim() ?? ''
+    return (
+      new URLSearchParams(window.location.search).get('site_invite')?.trim() ??
+      ''
+    )
   })
   const [siteInviteCode, setSiteInviteCode] = useState(initialSiteInvite)
   const [agreedToLegal, setAgreedToLegal] = useState(false)
@@ -122,10 +121,6 @@ export function SignUpForm({
   const isSubsite = Boolean(
     status?.adty_site || status?.data?.adty_site || subsiteDocument()
   )
-  const siteTermsVersion = Number(status?.site_customer_terms_version ?? 0)
-  const requiresSiteTerms =
-    Number.isInteger(siteTermsVersion) && siteTermsVersion > 0
-  const agreedToSiteTerms = acceptedSiteTermsVersion === siteTermsVersion
   const turnstileReady = !isTurnstileEnabled || Boolean(turnstileToken)
 
   useEffect(() => {
@@ -139,10 +134,6 @@ export function SignUpForm({
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
     if (requiresLegalConsent && !agreedToLegal) {
       toast.error(legalConsentErrorMessage)
-      return
-    }
-    if (requiresSiteTerms && !agreedToSiteTerms) {
-      toast.error(t('Accept the current site customer terms first'))
       return
     }
 
@@ -170,9 +161,6 @@ export function SignUpForm({
         turnstile: turnstileToken,
         agreement_accepted: requiresLegalConsent ? true : undefined,
         lang: i18n.resolvedLanguage || i18n.language,
-        site_terms_version: requiresSiteTerms
-          ? String(siteTermsVersion)
-          : undefined,
         site_invite_code: isSubsite
           ? siteInviteCode.trim() || undefined
           : undefined,
@@ -378,27 +366,6 @@ export function SignUpForm({
           className='mt-1'
         />
 
-        {requiresSiteTerms && (
-          <div className='border-border/60 bg-muted/40 mt-1 flex items-start gap-3 rounded-md border p-3'>
-            <Checkbox
-              id='site-customer-terms'
-              checked={agreedToSiteTerms}
-              onCheckedChange={(value) =>
-                setAcceptedSiteTermsVersion(
-                  value === true ? siteTermsVersion : null
-                )
-              }
-              className='mt-0.5'
-            />
-            <Label
-              htmlFor='site-customer-terms'
-              className='text-muted-foreground text-left text-xs leading-5 font-normal'
-            >
-              {t('I agree to the site customer terms')}
-            </Label>
-          </div>
-        )}
-
         {/* Submit Button */}
         <Button
           type='submit'
@@ -407,7 +374,6 @@ export function SignUpForm({
           disabled={
             isLoading ||
             (requiresLegalConsent && !agreedToLegal) ||
-            (requiresSiteTerms && !agreedToSiteTerms) ||
             !turnstileReady
           }
         >

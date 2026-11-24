@@ -45,8 +45,6 @@ export interface RegisterPayload {
   /** adty task 12.1 */
   agreement_accepted?: boolean
   lang?: string
-  /** adty task 11.7, sent as a query parameter */
-  site_terms_version?: string
   /** Optional sub-site customer invite code from ?site_invite= or form input */
   site_invite_code?: string
 }

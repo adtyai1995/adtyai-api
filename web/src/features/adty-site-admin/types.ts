@@ -42,6 +42,22 @@ export type ResellerUsage = {
 
 export type SiteStatus = 'pending' | 'active' | 'paused' | 'closing' | 'closed'
 
+/** Brand fields stored in site.brand JSON. */
+export type AdminSiteBrand = {
+  name?: string
+  title?: string
+  logo_url?: string
+  favicon_url?: string
+  theme_color?: string
+  tagline?: string
+  notice?: string
+  support_contact?: string
+  tawk_property_id?: string
+  tawk_widget_id?: string
+  wallet_notice?: string
+  voucher_purchase_url?: string
+}
+
 /** A row of GET /api/adty/admin/sites (controller/adty_site_admin.go). Decimals are strings. */
 export type AdminSite = {
   id: number
@@ -64,8 +80,10 @@ export type AdminSite = {
   tier_mode?: string
   visibility: string
   allowed_groups?: string
-  /** Brand JSON written by the owner (name, logo_url, tagline, notice, support_contact). */
+  /** Brand JSON written by the owner or Root (name, title, tagline, notice, wallet_notice, voucher_purchase_url, etc.). */
   brand: string
+  home_page_content?: string
+  seo_index?: boolean
   contact_info: string
   opened_by: 'apply' | 'admin' | 'invite'
   review_note: string
@@ -75,6 +93,7 @@ export type AdminSite = {
   close_claw_back: boolean
   close_reason: string
   closed_at: number
+  archived_hidden_at?: number
   customers: number
   month_topup_usd?: string
   month_revenue_usd?: string

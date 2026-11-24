@@ -50,15 +50,16 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SevereTodoList } from '@/features/adty-notifications/components/todo-item-card'
-import { useAuthStore } from '@/stores/auth-store'
+import { isHtmlNotificationContent } from '@/features/adty-notifications/lib/rich-text'
 import {
-  notificationAudienceLabels,
+  formatNotificationRecipients,
   notificationKindLabels,
 } from '@/features/adty-notifications/lib/schema'
 import { getAnnouncementDetail } from '@/lib/api'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 interface AnnouncementItem {
   ticket_path?: string
@@ -66,6 +67,7 @@ interface AnnouncementItem {
   type?: string
   content?: string
   content_en?: string
+  content_format?: string
   english?: string
   extra?: string
   publishDate?: string | Date
@@ -73,8 +75,13 @@ interface AnnouncementItem {
   title_en?: string
   publisher_name?: string
   kind?: keyof typeof notificationKindLabels
-  audience?: keyof typeof notificationAudienceLabels
+  audience?: string
+  target_audiences?: string[]
+  target_site_ids?: number[]
+  target_site_names?: string[]
   target_site_name?: string
+  target_team_id?: number
+  target_user_id?: number
   business?: string
   read_key?: string
 }
@@ -199,6 +206,13 @@ function AnnouncementDetailButton(props: { readKey: string }) {
   const content =
     (isEnglish && detailContentEn) ||
     (typeof detail.data?.content === 'string' ? detail.data.content : '')
+  const detailFormat =
+    typeof detail.data?.content_format === 'string'
+      ? detail.data.content_format
+      : undefined
+  const detailMode = isHtmlNotificationContent(content, detailFormat)
+    ? 'html'
+    : 'markdown'
   return (
     <>
       <Button
@@ -218,7 +232,9 @@ function AnnouncementDetailButton(props: { readKey: string }) {
           {detail.isError && (
             <ErrorState onRetry={() => void detail.refetch()} />
           )}
-          {detail.isSuccess && <RichContent breaks content={content} />}
+          {detail.isSuccess && (
+            <RichContent mode={detailMode} breaks content={content} />
+          )}
         </DialogContent>
       </Dialog>
     </>
@@ -353,6 +369,13 @@ function AnnouncementsContent({
             (isEnglish && (item.content_en?.trim() || item.english?.trim())) ||
             item.content ||
             ''
+          const contentMode = isHtmlNotificationContent(
+            displayContent,
+            item.content_format
+          )
+            ? 'html'
+            : 'markdown'
+          const recipientSummary = formatNotificationRecipients(item, t)
 
           return (
             <div key={announcementKey}>
@@ -365,22 +388,23 @@ function AnnouncementsContent({
                         {displayTitle}
                       </div>
                     )}
-                    {item.kind && item.audience && (
+                    {item.kind && recipientSummary && (
                       <div className='text-muted-foreground text-xs break-words'>
                         {t(notificationKindLabels[item.kind])} ·{' '}
                         {t('Publisher')}: {item.publisher_name} ·{' '}
-                        {t('Recipients')}:{' '}
-                        {item.audience === 'site'
-                          ? item.target_site_name
-                          : t(notificationAudienceLabels[item.audience])}
+                        {t('Recipients')}: {recipientSummary}
                       </div>
                     )}
                     <div className='text-sm'>
-                      <RichContent breaks content={displayContent} />
+                      <RichContent
+                        mode={contentMode}
+                        breaks
+                        content={displayContent}
+                      />
                     </div>
 
                     {item.ticket_path &&
-                      /^\/(profile|admin-tickets|site-admin\/tickets|site-owner\/tickets|site-staff)#case-\d+(?:-team)?$/.test(
+                      /^\/(profile|support|admin-tickets|site-admin\/tickets|site-owner\/tickets|site-staff)#case-\d+(?:-team)?$/.test(
                         item.ticket_path
                       ) && (
                         <a

@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -41,14 +40,12 @@ export type AdtyLegalField =
   | 'user_agreement'
   | 'privacy_policy'
   | 'refund_policy'
-  | 'site_customer_terms'
-
-type VersionKey = 'site_customer_terms_version'
-type LegalKey = AdtyLegalField | VersionKey
 
 /** Saved option values: each is a JSON object of content language → Markdown. */
-export type AdtyLegalDefaults = Record<AdtyLegalField, string> &
-  Record<VersionKey, number>
+export type AdtyLegalDefaults = Record<AdtyLegalField, string> & {
+  site_customer_terms?: string
+  site_customer_terms_version?: number
+}
 
 type LegalTexts = Partial<Record<StoredContentLang, string>>
 
@@ -56,7 +53,6 @@ const FIELDS: AdtyLegalField[] = [
   'user_agreement',
   'privacy_policy',
   'refund_policy',
-  'site_customer_terms',
 ]
 
 function parseTexts(raw: string): LegalTexts {
@@ -82,25 +78,16 @@ function serializeTexts(texts: LegalTexts): string {
   return JSON.stringify(out)
 }
 
-function toValues(saved: AdtyLegalDefaults): Record<LegalKey, string> {
+function toValues(saved: AdtyLegalDefaults): Record<AdtyLegalField, string> {
   return {
     user_agreement: serializeTexts(parseTexts(saved.user_agreement)),
     privacy_policy: serializeTexts(parseTexts(saved.privacy_policy)),
     refund_policy: serializeTexts(parseTexts(saved.refund_policy)),
-    site_customer_terms: serializeTexts(parseTexts(saved.site_customer_terms)),
-    site_customer_terms_version: String(saved.site_customer_terms_version),
   }
 }
 
-function versionKeyFor(field: AdtyLegalField): VersionKey | null {
-  if (field === 'site_customer_terms') return 'site_customer_terms_version'
-  return null
-}
-
-function normalizeValue(key: LegalKey, value: string) {
-  return FIELDS.includes(key as AdtyLegalField)
-    ? serializeTexts(parseTexts(value))
-    : value
+function normalizeValue(value: string) {
+  return serializeTexts(parseTexts(value))
 }
 
 function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
@@ -109,7 +96,6 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
     user_agreement: t('User Agreement'),
     privacy_policy: t('Privacy Policy'),
     refund_policy: t('Refund Policy'),
-    site_customer_terms: t('Site Customer Terms'),
   }
   const updateOption = useUpdateOption()
   const [field, setField] = useState<AdtyLegalField>('user_agreement')
@@ -118,40 +104,23 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
     baseline: toValues(props.defaultValues),
   }))
   const [saving, setSaving] = useState(false)
-  const versionKey = versionKeyFor(field)
-  const version = versionKey ? editor.values[versionKey] : ''
-  const isNonNegativeIntVersion =
-    !versionKey ||
-    (/^(0|[1-9]\d*)$/.test(version) && Number.isSafeInteger(Number(version)))
-  const currentFieldNormalized = normalizeValue(field, editor.values[field])
-  const baselineFieldNormalized = editor.baseline[field]
-  const baselineVersionNum = versionKey
-    ? Number(editor.baseline[versionKey])
-    : 0
-  const wasPublishedAgreement =
-    Boolean(versionKey) &&
-    baselineFieldNormalized !== '{}' &&
-    baselineVersionNum > 0
-  const requiresVersionBump =
-    wasPublishedAgreement &&
-    currentFieldNormalized !== baselineFieldNormalized &&
-    currentFieldNormalized !== '{}' &&
-    isNonNegativeIntVersion &&
-    Number(version) <= baselineVersionNum
-  const validVersion = isNonNegativeIntVersion && !requiresVersionBump
-  const dirty = (Object.keys(editor.values) as LegalKey[]).some(
-    (key) => normalizeValue(key, editor.values[key]) !== editor.baseline[key]
+  const dirty = FIELDS.some(
+    (key) => normalizeValue(editor.values[key]) !== editor.baseline[key]
   )
   useDraftNavigation(dirty)
 
-  const savedKey = JSON.stringify(props.defaultValues)
+  const savedKey = JSON.stringify({
+    user_agreement: props.defaultValues.user_agreement,
+    privacy_policy: props.defaultValues.privacy_policy,
+    refund_policy: props.defaultValues.refund_policy,
+  })
   useEffect(() => {
     if (saving) return
     const next = toValues(JSON.parse(savedKey))
     setEditor((current) => {
       const values = { ...current.values }
-      for (const key of Object.keys(next) as LegalKey[]) {
-        if (normalizeValue(key, values[key]) === current.baseline[key]) {
+      for (const key of FIELDS) {
+        if (normalizeValue(values[key]) === current.baseline[key]) {
           values[key] = next[key]
         }
       }
@@ -160,46 +129,23 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
   }, [savedKey, saving])
 
   const save = async () => {
-    if (!validVersion || saving) return
-    const previousBaseline = editor.baseline
-    const changes: Array<{ key: LegalKey; value: string }> = []
-    for (const key of [field, versionKey]) {
-      if (!key) continue
-      const value = normalizeValue(key, editor.values[key])
-      if (value !== previousBaseline[key]) changes.push({ key, value })
-    }
-    if (changes.length === 0) return
+    if (saving) return
+    const value = normalizeValue(editor.values[field])
+    if (value === editor.baseline[field]) return
     setSaving(true)
-    const committed: Array<{ key: LegalKey; previousValue: string }> = []
     try {
-      for (const { key, value } of changes) {
-        await updateOption.mutateAsync({
-          key: `adty_legal_setting.${key}`,
-          value,
-        })
-        committed.push({ key, previousValue: previousBaseline[key] })
-      }
-      setEditor((current) => {
-        const nextBaseline = { ...current.baseline }
-        for (const { key, value } of changes) {
-          nextBaseline[key] = value
-        }
-        return {
-          ...current,
-          baseline: nextBaseline,
-        }
+      await updateOption.mutateAsync({
+        key: `adty_legal_setting.${field}`,
+        value,
       })
+      setEditor((current) => ({
+        ...current,
+        baseline: {
+          ...current.baseline,
+          [field]: value,
+        },
+      }))
     } catch {
-      for (const item of [...committed].reverse()) {
-        try {
-          await updateOption.mutateAsync({
-            key: `adty_legal_setting.${item.key}`,
-            value: item.previousValue,
-          })
-        } catch {
-          // Best-effort rollback if network is down.
-        }
-      }
       // The mutation reports the error; remaining drafts stay available to retry.
     } finally {
       setSaving(false)
@@ -208,11 +154,7 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
 
   return (
     <SettingsSection title={t('Multilingual Legal Pages')}>
-      <SettingsPageFormActions
-        onSave={save}
-        isSaving={saving}
-        isSaveDisabled={!validVersion}
-      />
+      <SettingsPageFormActions onSave={save} isSaving={saving} />
       <p className='text-muted-foreground max-w-3xl text-sm'>
         {t(
           'Readers see the text in their language, then English. When both are empty, the user agreement and privacy policy fall back to the text under Site → System Info, which also decides whether sign-up asks for consent. The refund policy has no fallback and is shown only when it is enabled in the site settings.'
@@ -233,36 +175,6 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
             ))}
           </NativeSelect>
         </div>
-        {versionKey && (
-          <div className='space-y-2'>
-            <Label htmlFor='adty-legal-version'>{t('Document version')}</Label>
-            <Input
-              id='adty-legal-version'
-              type='number'
-              min={0}
-              step={1}
-              value={version}
-              aria-invalid={!validVersion}
-              onChange={(event) => {
-                const value = event.target.value
-                setEditor((current) => ({
-                  ...current,
-                  values: { ...current.values, [versionKey]: value },
-                }))
-              }}
-            />
-            <p className='text-muted-foreground text-sm'>
-              {t('Increase the version after changing a published agreement.')}
-            </p>
-            {!validVersion && (
-              <p className='text-destructive text-sm' role='alert'>
-                {requiresVersionBump
-                  ? t('Increase the version after changing a published agreement.')
-                  : t('Version must be a non-negative integer.')}
-              </p>
-            )}
-          </div>
-        )}
         <Tabs defaultValue='en' className='gap-4'>
           <div className='overflow-x-auto pb-1'>
             <TabsList className='w-full min-w-max'>
@@ -307,7 +219,7 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
   )
 }
 
-/** Five multilingual legal documents, with versioned site agreements. */
+/** Multilingual legal documents (user agreement, privacy policy, refund policy). */
 export function AdtyLegalSection(props: { defaultValues: AdtyLegalDefaults }) {
   return (
     <DraftNavigationProvider>

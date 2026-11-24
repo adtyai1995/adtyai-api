@@ -64,32 +64,10 @@ func SelectedBillingGroupAllowed(c *gin.Context, group, modelName string) bool {
 }
 
 // GroupModelAllowed reports whether a billing group may call a model.
-// A missing or empty list keeps the live catalog. A configured list is closed.
+// GroupModelAllow whitelist filtering is retired (R-32): model availability per
+// group is governed strictly by enabled channels configured for that group.
 func GroupModelAllowed(group, modelName string) bool {
-	group, modelName = strings.TrimSpace(group), strings.TrimSpace(modelName)
-	if group == "" || group == "auto" || modelName == "" {
-		return true
-	}
-	common.OptionMapRWMutex.RLock()
-	raw := strings.TrimSpace(common.OptionMap[groupModelAllowOption])
-	common.OptionMapRWMutex.RUnlock()
-	if raw == "" {
-		return true
-	}
-	var lists map[string][]string
-	if err := common.UnmarshalJsonStr(raw, &lists); err != nil {
-		return false
-	}
-	list := lists[group]
-	if len(list) == 0 {
-		return true
-	}
-	for _, name := range list {
-		if strings.TrimSpace(name) == modelName {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 // SiteGroupAllowed reports whether a site may use a billing group.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -42,8 +41,13 @@ const (
 )
 
 var (
-	ErrAdtySitePricingConflict = common.NewMessage("The prices were changed elsewhere. Reload and try again")
-	ErrAdtySitePaused          = common.NewMessage("Prices cannot be changed while the site is paused")
+	ErrAdtySitePricingConflict           = common.NewMessage("The prices were changed elsewhere. Reload and try again")
+	ErrAdtySitePaused                    = common.NewMessage("Prices cannot be changed while the site is paused")
+	ErrAdtySiteSingleMultiplierOnly      = common.NewMessage("Subsite pricing only supports a single site-wide multiplier between 1x and 10x")
+	ErrAdtySubsiteTeamDiscountBelowFloor = common.NewMessage("Subsite team multiplier cannot be below 1 (supply price floor)")
+	adtySiteMinMarkup                    = decimal.NewFromInt(1)
+	adtySiteMaxMarkup                    = decimal.NewFromInt(10)
+	adtyTeamMaxDiscount                  = decimal.NewFromInt(10)
 )
 
 func adtyNormalizeSitePriceModel(name string) string {
@@ -56,24 +60,29 @@ func adtySitePriceKey(group, modelName string) string {
 
 func adtySitePrices(siteID, userID int) ([]model.AdtySitePrice, error) {
 	var rows []model.AdtySitePrice
-	err := model.DB.Where("site_id = ? AND user_id IN ?", siteID, []int{0, userID}).Order("id").Find(&rows).Error
+	q := model.DB.Where("site_id = ?", siteID)
+	if userID == 0 {
+		q = q.Where("user_id = 0")
+	} else {
+		q = q.Where("user_id IN ?", []int{0, userID})
+	}
+	err := q.Order("id").Find(&rows).Error
 	return rows, err
 }
 
-// Load the price rows and both scope counters in one statement so a concurrent
+// Load the site-level price rows and scope counter in one statement so a concurrent
 // edit cannot pair an old price with a new revision. The site anchors the joins
-// even after the last override is deleted.
+// even after the last override is deleted. Only the single site-wide multiplier
+// row (user_id=0, group="", model="") governs retail pricing (R-32).
 func adtyAdmittedSitePrice(siteID, userID int, group, modelName string) (model.AdtySitePrice, string, error) {
 	var rows []struct {
 		model.AdtySitePrice
-		SiteVersion     int64
-		CustomerVersion int64
+		SiteVersion int64
 	}
 	err := model.DB.Model(&model.AdtySite{}).
-		Select("prices.*, COALESCE(site_scope.version, 0) AS site_version, COALESCE(customer_scope.version, 0) AS customer_version").
+		Select("prices.*, COALESCE(site_scope.version, 0) AS site_version").
 		Joins("LEFT JOIN adty_site_price_scopes AS site_scope ON site_scope.site_id = adty_sites.id AND site_scope.user_id = 0").
-		Joins("LEFT JOIN adty_site_price_scopes AS customer_scope ON customer_scope.site_id = adty_sites.id AND customer_scope.user_id = ?", userID).
-		Joins("LEFT JOIN adty_site_prices AS prices ON prices.site_id = adty_sites.id AND prices.user_id IN ?", []int{0, userID}).
+		Joins("LEFT JOIN adty_site_prices AS prices ON prices.site_id = adty_sites.id AND prices.user_id = 0").
 		Where("adty_sites.id = ?", siteID).Order("prices.id").Scan(&rows).Error
 	if err != nil {
 		return model.AdtySitePrice{}, "", err
@@ -85,11 +94,8 @@ func adtyAdmittedSitePrice(siteID, userID int, group, modelName string) (model.A
 	for i, row := range rows {
 		prices[i] = row.AdtySitePrice
 	}
-	selected := resolveAdtySitePrice(prices, userID, group, modelName)
-	revision := fmt.Sprintf("site:%d:v%d:user:%d:row:%d:v%d", siteID, rows[0].SiteVersion, selected.UserId, selected.Id, selected.Version)
-	if rows[0].CustomerVersion != 0 {
-		revision += fmt.Sprintf(":customer:%d:v%d", userID, rows[0].CustomerVersion)
-	}
+	selected := resolveAdtySitePrice(prices, 0, "", "")
+	revision := fmt.Sprintf("site:%d:v%d:user:0:row:%d:v%d", siteID, rows[0].SiteVersion, selected.Id, selected.Version)
 	return selected, revision, nil
 }
 
@@ -106,19 +112,18 @@ func AdtyBillingSiteForUser(userId int) *model.AdtySite {
 	return site
 }
 
-// AdtySiteMarkup 返回分站客户在这个分组、这个模型上的存储 k（加价比例 = k-1）；主站客户、站点没有开着时返回 1。
-// modelName 为空时使用该客户/分组层级的默认加价。
+// AdtySiteMarkup 返回分站客户的全站单一零售倍率 M（1 <= M <= 10，加价比例 = M-1）；主站客户、站点没有开着时返回 1。
 func AdtySiteMarkup(userId int, group, modelName string) decimal.Decimal {
 	site := AdtyBillingSiteForUser(userId)
 	if site == nil {
-		return decimal.NewFromInt(1)
+		return adtySiteMinMarkup
 	}
-	prices, err := adtySitePrices(site.Id, userId)
+	prices, err := adtySitePrices(site.Id, 0)
 	if err != nil {
 		common.SysError(common.LogText("load adty site prices failed: %s", err.Error()))
-		return decimal.NewFromInt(1)
+		return adtySiteMinMarkup
 	}
-	return ResolveAdtySiteMarkup(prices, userId, group, modelName)
+	return adtyValidStoredMarkup(ResolveAdtySiteMarkup(prices, 0, "", ""), userId, group)
 }
 
 // AdtySiteCostFactor 是站点当前的供货折扣：单站覆盖 → 分站等级供货折扣（历史无等级行才回退旧全局值）。
@@ -159,7 +164,13 @@ func adtyDecimalFloatInvalid(d decimal.Decimal) bool {
 func adtyValidStoredMarkup(k decimal.Decimal, userId int, group string) decimal.Decimal {
 	if !k.IsPositive() || adtyDecimalFloatInvalid(k) {
 		common.SysError(common.LogText("invalid site markup %s for user %d group %s, using 1", k.String(), userId, group))
-		return decimal.NewFromInt(1)
+		return adtySiteMinMarkup
+	}
+	if k.LessThan(adtySiteMinMarkup) {
+		return adtySiteMinMarkup
+	}
+	if k.GreaterThan(adtySiteMaxMarkup) {
+		return adtySiteMaxMarkup
 	}
 	return k
 }
@@ -170,20 +181,17 @@ func adtyDecimalFiniteNonNegative(d decimal.Decimal) bool {
 }
 
 // adtySiteOrdinarySellRatioDec 用精确十进制计算：供货价因子 = 分组倍率 × 供货倍率，
-// 普通售价因子 = 供货价因子 × (1 + 加价比例)。计费结果不再经过 float64 往返。
+// 普通售价因子 = 供货价因子 × 全站单一倍率 M（1 <= M <= 10）。计费结果不再经过 float64 往返。
 func adtySiteOrdinarySellRatioDec(groupRatio, k, costFactor decimal.Decimal, userId int, group string) (marked, storedK decimal.Decimal, ok bool) {
-	storedK = k
-	if !storedK.IsPositive() || adtyDecimalFloatInvalid(storedK) {
-		storedK = decimal.NewFromInt(1)
-	}
+	storedK = adtyValidStoredMarkup(k, userId, group)
 	if !costFactor.IsPositive() {
 		common.SysError(common.LogText("invalid site cost factor %s for user %d group %s, leaving group ratio unchanged", costFactor.String(), userId, group))
-		return groupRatio, decimal.NewFromInt(1), false
+		return groupRatio, adtySiteMinMarkup, false
 	}
-	marked = groupRatio.Mul(costFactor).Mul(decimal.NewFromInt(1).Add(adtyStoredMarkupRatio(storedK)))
+	marked = groupRatio.Mul(costFactor).Mul(storedK)
 	if !adtyDecimalFiniteNonNegative(marked) {
 		common.SysError(common.LogText("site sell price overflow for user %d group %s, leaving group ratio unchanged", userId, group))
-		return groupRatio, decimal.NewFromInt(1), false
+		return groupRatio, adtySiteMinMarkup, false
 	}
 	return marked, storedK, true
 }
@@ -324,11 +332,12 @@ func adtyApplySiteMarkupOnlyDecimal(c *gin.Context, userId int, group string, gr
 	return marked, storedK
 }
 
-// adtyApplyTeamProtocolPriceDecimal 按已确认口径把团队折后支付比例乘进分站普通售价：
-// 分站团队折扣计算价 = 分站普通售价 × 分站团队折后支付比例（0.8 表示支付普通售价的 80%），
-// 分站团队最终价 = max(分站供货价, 分站团队折扣计算价)。
-// 供货价沿用 ISS-R1-0009：分组倍率 × 供货倍率。主站团队没有供货价下限（G.2-5）。
-// 支付比例无效或结果溢出时仍置 AdtyTeamPriceBlockedKey；折后价低于供货价时改为按供货价计费，不再拒绝。
+// adtyApplyTeamProtocolPriceDecimal 计算团队计费倍率（R-32 #24 & #7）：
+//   - 主站团队（team.SiteId == 0）：team_price = main_group_price × team.Discount（0 < discount <= 10，无下限）。
+//   - 分站团队（team.SiteId > 0）：team_price = max(supply_price, supply_price × team.Discount)，
+//     其中 supply_price = 分组倍率 × 供货倍率，team.Discount >= 1.0 是基于供货价的直接倍率（不得低于供货价）。
+//
+// 支付比例无效或结果溢出时置 AdtyTeamPriceBlockedKey，在预扣前拒绝。
 func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, marked, storedK decimal.Decimal) (decimal.Decimal, decimal.Decimal) {
 	if c == nil || userId <= 0 {
 		return marked, storedK
@@ -352,16 +361,14 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 		return marked, storedK
 	}
 	factorDec := team.Discount
-	if !adtySiteTeamPayRatioConfigValid(factorDec) || adtyDecimalFloatInvalid(factorDec) {
+	if !adtySiteTeamPayRatioConfigValidForSite(team.SiteId, factorDec) || adtyDecimalFloatInvalid(factorDec) {
 		c.Set(AdtyTeamPriceBlockedKey, true)
 		return marked, storedK
 	}
-	discounted := marked.Mul(factorDec)
-	nextDec := discounted
+	var nextDec decimal.Decimal
 	var supply decimal.Decimal
 	effectiveK := storedK
 	floorApplied := false
-	// 只有分站团队才有供货价下限；主站团队即使有很深的折扣也不抬价。
 	if team.SiteId > 0 {
 		var site model.AdtySite
 		if err := model.DB.First(&site, team.SiteId).Error; err != nil || !AdtySiteServesCustomers(&site) {
@@ -374,13 +381,15 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 			return marked, storedK
 		}
 		supply = groupRatio.Mul(d)
-		nextDec = decimal.Max(supply, discounted)
+		nextDec = decimal.Max(supply, supply.Mul(factorDec))
 		floorApplied = true
 		if supply.IsPositive() {
-			effectiveK = decimal.Max(decimal.NewFromInt(1), nextDec.Div(supply))
+			effectiveK = decimal.Max(adtySiteMinMarkup, nextDec.Div(supply))
 		} else {
-			effectiveK = decimal.Max(decimal.NewFromInt(1), storedK.Mul(factorDec))
+			effectiveK = decimal.Max(adtySiteMinMarkup, factorDec)
 		}
+	} else {
+		nextDec = groupRatio.Mul(factorDec)
 	}
 	if !adtyDecimalFiniteNonNegative(nextDec) {
 		c.Set(AdtyTeamPriceBlockedKey, true)
@@ -402,6 +411,7 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 	factors.TeamPayRatio = factorDec
 	if floorApplied {
 		factors.StoredK = storedK
+		factors.MarkupRatio = adtyStoredMarkupRatio(storedK)
 		factors.FloorApplied = true
 		factors.SupplyFloor = supply
 	}
@@ -410,16 +420,40 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 }
 
 // AdtyTeamPriceBlocked 表示本次请求的团队支付比例无效或折后价溢出，计费应拒绝。
-// 折后价低于供货价不再走这条拒绝路径。
 func AdtyTeamPriceBlocked(c *gin.Context) bool {
 	return c != nil && c.GetBool(AdtyTeamPriceBlockedKey)
 }
 
-// adtySiteTeamPayRatioConfigValid 判断分站团队折后支付比例在配置时是否可保存。
-// 计费按 G.2：最终价 = max(分站供货价, 分站普通售价×折后支付比例)，折后价低于供货价时抬到供货价。
-// 因此配置时不得把支付比例本身和供货倍率比较后拒绝；仅拒绝非正或大于 1 的比例。
+// validateAdtyTeamDiscountForSite 校验团队倍率配置（R-32 #24 & #7）：
+// - 主站团队（siteID == 0）：0 < discount <= 10（最多 4 位小数）。
+// - 分站团队（siteID > 0）：1 <= discount <= 10（最多 4 位小数，低于 1 返回供货价下限错误）。
+func validateAdtyTeamDiscountForSite(siteID int, ratio decimal.Decimal) error {
+	if adtyDecimalFloatInvalid(ratio) {
+		return ErrAdtyTeamInvalid
+	}
+	if siteID > 0 {
+		if ratio.LessThan(adtySiteMinMarkup) {
+			return ErrAdtySubsiteTeamDiscountBelowFloor
+		}
+		if ratio.GreaterThan(adtyTeamMaxDiscount) || !ratio.Equal(ratio.Truncate(4)) {
+			return ErrAdtyTeamInvalid
+		}
+		return nil
+	}
+	if !ratio.IsPositive() || ratio.GreaterThan(adtyTeamMaxDiscount) || !ratio.Equal(ratio.Truncate(4)) {
+		return ErrAdtyTeamInvalid
+	}
+	return nil
+}
+
+// adtySiteTeamPayRatioConfigValidForSite 判断指定站点的团队倍率是否合法。
+func adtySiteTeamPayRatioConfigValidForSite(siteID int, ratio decimal.Decimal) bool {
+	return validateAdtyTeamDiscountForSite(siteID, ratio) == nil
+}
+
+// adtySiteTeamPayRatioConfigValid 兼容入口：按主站团队口径校验（0 < ratio <= 10，最多 4 位小数）。
 func adtySiteTeamPayRatioConfigValid(ratio decimal.Decimal) bool {
-	return ratio.IsPositive() && !ratio.GreaterThan(decimal.NewFromInt(1)) && ratio.Equal(ratio.Truncate(4))
+	return validateAdtyTeamDiscountForSite(0, ratio) == nil
 }
 
 // AdtyApplySiteMarkupHook 是兼容保留的浮点入口；财务权威入口为 AdtyApplySiteMarkupDecimalHook。
@@ -552,14 +586,24 @@ type AdtySitePricingResult struct {
 	Site           *model.AdtySite       `json:"-"`
 }
 
-// Retail multipliers must fit the persisted NUMERIC(10,4) column exactly.
+// Retail multipliers must be between 1.0 and 10.0 with at most 4 decimal places.
 func validRetailMarkup(k decimal.Decimal) bool {
-	return k.IsPositive() && k.Exponent() >= -32 && k.Exponent() <= 5 && k.NumDigits() <= 38 &&
-		k.LessThan(decimal.New(1, 6)) && k.Equal(k.Truncate(4))
+	return !adtyDecimalFloatInvalid(k) && !k.LessThan(adtySiteMinMarkup) && !k.GreaterThan(adtySiteMaxMarkup) && k.Equal(k.Truncate(4))
 }
 
-// SaveAdtySitePricing commits overrides and immutable history together under the site lock.
+// SaveAdtySitePricing commits the single site-wide retail multiplier (1x–10x),
+// clears any legacy per-group/per-model/per-customer override rows for the site,
+// and records immutable revision history under the site lock.
 func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, error) {
+	if input.UserId != 0 || len(input.GroupMarkups) > 0 || len(input.ModelMarkups) > 0 {
+		return nil, ErrAdtySiteSingleMultiplierOnly
+	}
+	if input.ClearDefault && input.DefaultMarkup != nil {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	if input.DefaultMarkup != nil && !validRetailMarkup(*input.DefaultMarkup) {
+		return nil, ErrAdtySiteSingleMultiplierOnly
+	}
 	now := input.Now
 	if now == 0 {
 		now = time.Now().Unix()
@@ -579,100 +623,26 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 		default:
 			return ErrAdtySiteStatus
 		}
-		if input.UserId > 0 {
-			var customerCount int64
-			if err := tx.Model(&model.User{}).Where("id = ? AND site_id = ? AND staff_site_id = 0", input.UserId, input.SiteId).Count(&customerCount).Error; err != nil {
-				return err
-			}
-			if customerCount == 0 {
-				return common.NewMessage("Customer not found")
-			}
-			if tx.Migrator().HasTable(&model.AdtyTeamMember{}) {
-				var empCount int64
-				if err := tx.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", input.UserId, true).Count(&empCount).Error; err != nil {
-					return err
-				}
-				if empCount > 0 {
-					return common.NewMessage("Customer not found")
-				}
-			}
-		}
-		type priceChange struct {
-			group, model string
-			markup       decimal.Decimal
-		}
-		var changes []priceChange
-		if input.ClearDefault {
-			if input.DefaultMarkup != nil {
-				return common.NewMessage("Invalid parameters")
-			}
-			changes = append(changes, priceChange{})
-		} else if input.DefaultMarkup != nil {
-			changes = append(changes, priceChange{markup: *input.DefaultMarkup})
-		}
-		if len(input.GroupMarkups) > 0 {
-			groupKeys := make([]string, 0, len(input.GroupMarkups))
-			for group := range input.GroupMarkups {
-				groupKeys = append(groupKeys, group)
-			}
-			sort.Strings(groupKeys)
-			for _, rawGroup := range groupKeys {
-				markup := input.GroupMarkups[rawGroup]
-				group := strings.TrimSpace(rawGroup)
-				if group == "" || len(group) > 64 {
-					return common.NewMessage("Invalid parameters")
-				}
-				changes = append(changes, priceChange{group: group, markup: markup})
-			}
-		}
-		if len(input.ModelMarkups) > 0 {
-			modelKeys := make([]string, 0, len(input.ModelMarkups))
-			for modelName := range input.ModelMarkups {
-				modelKeys = append(modelKeys, modelName)
-			}
-			sort.Strings(modelKeys)
-			for _, rawModel := range modelKeys {
-				markup := input.ModelMarkups[rawModel]
-				modelName := adtyNormalizeSitePriceModel(rawModel)
-				if modelName == "" || len(modelName) > 191 {
-					return common.NewMessage("Invalid parameters")
-				}
-				changes = append(changes, priceChange{model: modelName, markup: markup})
-			}
-		}
-		seenKeys := make(map[string]bool, len(changes))
-		for _, change := range changes {
-			key := adtySitePriceKey(change.group, change.model)
-			if seenKeys[key] {
-				return common.NewMessage("Invalid parameters")
-			}
-			seenKeys[key] = true
-			if change.markup.IsZero() && (change.group != "" || change.model != "" || input.ClearDefault) {
-				continue
-			}
-			if !validRetailMarkup(change.markup) {
-				return common.NewMessage("Enter a positive retail multiplier with up to six integer digits and four decimal places")
-			}
-		}
-		var rows []model.AdtySitePrice
-		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND user_id = ?", site.Id, input.UserId).Order("id asc").Find(&rows).Error; err != nil {
+		var allRows []model.AdtySitePrice
+		if err := model.AdtyLockForUpdate(tx).Where("site_id = ?", site.Id).Order("id asc").Find(&allRows).Error; err != nil {
 			return err
 		}
-		existing := map[string]model.AdtySitePrice{}
-		var duplicateIDs []int
-		for _, row := range rows {
-			key := adtySitePriceKey(strings.TrimSpace(row.Group), adtyNormalizeSitePriceModel(row.Model))
-			if prev, dup := existing[key]; dup {
-				duplicateIDs = append(duplicateIDs, prev.Id)
+		var defaultRow model.AdtySitePrice
+		hasDefault := false
+		var deleteIDs []int
+		for _, row := range allRows {
+			if row.UserId == 0 && strings.TrimSpace(row.Group) == "" && adtyNormalizeSitePriceModel(row.Model) == "" {
+				if hasDefault {
+					deleteIDs = append(deleteIDs, defaultRow.Id)
+				}
+				defaultRow = row
+				hasDefault = true
+				continue
 			}
-			existing[key] = row
+			// Clear all legacy per-group, per-model, and per-customer override rows.
+			deleteIDs = append(deleteIDs, row.Id)
 		}
-		if len(duplicateIDs) > 0 {
-			if err := tx.Where("id IN ?", duplicateIDs).Delete(&model.AdtySitePrice{}).Error; err != nil {
-				return err
-			}
-		}
-		version, err := adtySitePricingVersionTx(tx, site.Id, input.UserId)
+		version, err := adtySitePricingVersionTx(tx, site.Id, 0)
 		if err != nil {
 			return err
 		}
@@ -684,103 +654,97 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 		if actorId <= 0 {
 			actorId = site.OwnerUserId
 		}
-		recordRevision := func(group, modelName, beforeVal, afterVal string) error {
-			before, existed := existing[adtySitePriceKey(group, modelName)]
-			var after model.AdtySitePrice
-			saved := tx.Where(map[string]any{"site_id": site.Id, "user_id": input.UserId, "group": group, "model": modelName}).Limit(1).Find(&after)
-			if saved.Error != nil {
-				return saved.Error
+		if len(deleteIDs) > 0 {
+			if err := tx.Where("id IN ?", deleteIDs).Delete(&model.AdtySitePrice{}).Error; err != nil {
+				return err
 			}
-			action := "immediate"
-			if saved.RowsAffected == 0 {
+		}
+		before := adtySiteMinMarkup
+		if hasDefault && defaultRow.Markup.IsPositive() {
+			before = defaultRow.Markup
+		}
+		changed := false
+		after := before
+		action := "immediate"
+		var afterRow model.AdtySitePrice
+		hasAfter := hasDefault
+		if input.ClearDefault {
+			if hasDefault {
+				if err := tx.Delete(&defaultRow).Error; err != nil {
+					return err
+				}
+				changed = true
+				after = adtySiteMinMarkup
 				action = "deleted"
+				hasAfter = false
 			}
-			kind := adtyPriceRevisionKind(input.UserId, group, modelName)
-			beforeState, encodeErr := common.Marshal(map[string]any{"override": existed, "price": before})
-			if encodeErr != nil {
-				return encodeErr
-			}
-			afterState, encodeErr := common.Marshal(map[string]any{"override": saved.RowsAffected > 0, "price": after})
-			if encodeErr != nil {
-				return encodeErr
-			}
-			rev := model.AdtyPriceRevision{
-				SiteId:  site.Id,
-				ActorId: actorId,
-				UserId:  input.UserId, Group: group, Model: modelName, Kind: kind,
-				Action: action, Version: next, EffectiveAt: now,
-				BeforeState: string(beforeState), AfterState: string(afterState),
-				Before:    beforeVal,
-				After:     afterVal,
-				CreatedAt: now,
-			}
-			return tx.Create(&rev).Error
-		}
-		recordImmediate := func(change priceChange) {
-			if change.model != "" {
-				result.ModelImmediate = append(result.ModelImmediate, change.model)
-				return
-			}
-			result.Immediate = append(result.Immediate, change.group)
-		}
-		// The history's before values come from one pre-edit view. Deletions inherit
-		// the final same-save parent, so default edits precede group and model edits.
-		var baseline []model.AdtySitePrice
-		if err := tx.Where("site_id = ? AND user_id IN ?", site.Id, []int{0, input.UserId}).Order("id").Find(&baseline).Error; err != nil {
-			return err
-		}
-		for _, change := range changes {
-			group, modelName := change.group, change.model
-			row, found := existing[adtySitePriceKey(group, modelName)]
-			before := ResolveAdtySiteMarkup(baseline, input.UserId, group, modelName)
-			after := change.markup
-			if after.IsZero() {
-				if !found {
-					continue
-				}
-				if err := tx.Delete(&row).Error; err != nil {
-					return err
-				}
-				var remaining []model.AdtySitePrice
-				if err := tx.Where("site_id = ? AND user_id IN ?", site.Id, []int{0, input.UserId}).Order("id").Find(&remaining).Error; err != nil {
-					return err
-				}
-				after = ResolveAdtySiteMarkup(remaining, input.UserId, group, modelName)
-			} else if found {
-				if err := tx.Model(&row).Updates(map[string]any{
+		} else if input.DefaultMarkup != nil {
+			after = *input.DefaultMarkup
+			if hasDefault {
+				if err := tx.Model(&defaultRow).Updates(map[string]any{
 					"markup": after, "pending_markup": decimal.Zero, "pending_at": 0, "version": next, "updated_at": now,
 				}).Error; err != nil {
 					return err
 				}
+				afterRow = defaultRow
+				afterRow.Markup, afterRow.PendingMarkup, afterRow.PendingAt, afterRow.Version, afterRow.UpdatedAt = after, decimal.Zero, 0, next, now
 			} else {
-				row = model.AdtySitePrice{SiteId: site.Id, UserId: input.UserId, Group: group, Model: modelName, Markup: after, Version: next, UpdatedAt: now}
-				if err := tx.Create(&row).Error; err != nil {
+				afterRow = model.AdtySitePrice{SiteId: site.Id, UserId: 0, Group: "", Model: "", Markup: after, Version: next, UpdatedAt: now}
+				if err := tx.Create(&afterRow).Error; err != nil {
 					return err
 				}
 			}
-			if err := recordRevision(group, modelName, before.String(), after.String()); err != nil {
+			changed = true
+			hasAfter = true
+		}
+		if changed {
+			beforeState, encodeErr := common.Marshal(map[string]any{"override": hasDefault, "price": defaultRow})
+			if encodeErr != nil {
+				return encodeErr
+			}
+			afterState, encodeErr := common.Marshal(map[string]any{"override": hasAfter, "price": afterRow})
+			if encodeErr != nil {
+				return encodeErr
+			}
+			rev := model.AdtyPriceRevision{
+				SiteId:      site.Id,
+				ActorId:     actorId,
+				UserId:      0,
+				Group:       "",
+				Model:       "",
+				Kind:        adtyPriceRevisionKind(0, "", ""),
+				Action:      action,
+				Version:     next,
+				EffectiveAt: now,
+				BeforeState: string(beforeState),
+				AfterState:  string(afterState),
+				Before:      before.String(),
+				After:       after.String(),
+				CreatedAt:   now,
+			}
+			if err := tx.Create(&rev).Error; err != nil {
 				return err
 			}
-			recordImmediate(change)
+			result.Immediate = append(result.Immediate, "")
 			if after.GreaterThan(before) {
-				result.Raised = append(result.Raised, model.AdtySitePrice{Group: group, Model: modelName, Markup: after, UpdatedAt: now})
+				result.Raised = append(result.Raised, model.AdtySitePrice{Markup: after, UpdatedAt: now})
 			}
 		}
 		// 没有变更的行也要把版本推上去，这样下次带旧版本保存会冲突。
-		if err := tx.Model(&model.AdtySitePrice{}).Where("site_id = ? AND user_id = ?", site.Id, input.UserId).Update("version", next).Error; err != nil {
+		if err := tx.Model(&model.AdtySitePrice{}).Where("site_id = ? AND user_id = 0", site.Id).Update("version", next).Error; err != nil {
 			return err
 		}
-		if err := adtyUpsertPriceScopeVersion(tx, site.Id, input.UserId, next, now); err != nil {
+		if err := adtyUpsertPriceScopeVersion(tx, site.Id, 0, next, now); err != nil {
 			return err
 		}
 		result.Version, result.Site = next, &site
-		return tx.Where("site_id = ? AND user_id = ?", site.Id, input.UserId).Order("id").Find(&result.Prices).Error
+		return tx.Where("site_id = ? AND user_id = 0", site.Id).Order("id").Find(&result.Prices).Error
 	})
 	if err != nil {
 		return nil, err
 	}
 	if len(result.Raised) > 0 && AdtyOnSiteMarkupIncrease != nil {
-		AdtyOnSiteMarkupIncrease(result.Site, input.UserId, result.Raised)
+		AdtyOnSiteMarkupIncrease(result.Site, 0, result.Raised)
 	}
 	return result, nil
 }
@@ -1089,32 +1053,30 @@ func AdtySitePriceList(c *gin.Context, groupRatio map[string]float64, displayGro
 	if !ok {
 		return nil, common.NewMessage("Subsite pricing configuration is invalid")
 	}
-	prices, err := adtySitePrices(site.Id, priceUserID)
+	prices, err := adtySitePrices(site.Id, 0)
 	if err != nil {
 		return nil, err
 	}
+	siteMultiplier := adtyValidStoredMarkup(ResolveAdtySiteMarkup(prices, 0, "", ""), priceUserID, "")
 	rawGroupRatio := maps.Clone(groupRatio)
 	for group, ratio := range groupRatio {
-		k := ResolveAdtySiteMarkup(prices, priceUserID, group, "")
-		marked, _, _ := adtySiteOrdinarySellRatioDec(decimal.NewFromFloat(ratio), k, d, priceUserID, group)
+		marked, _, _ := adtySiteOrdinarySellRatioDec(decimal.NewFromFloat(ratio), siteMultiplier, d, priceUserID, group)
 		groupRatio[group] = marked.InexactFloat64()
 	}
 	_ = displayGroup
-	return adtyAdjustModelPriceList(prices, priceUserID, d, rawGroupRatio, pricing), nil
+	return adtyAdjustModelPriceList(siteMultiplier, priceUserID, d, rawGroupRatio, pricing), nil
 }
 
-func adtyAdjustModelPriceList(prices []model.AdtySitePrice, userId int, costFactor decimal.Decimal, rawGroupRatio map[string]float64, pricing []model.Pricing) []model.Pricing {
+func adtyAdjustModelPriceList(siteMultiplier decimal.Decimal, userId int, costFactor decimal.Decimal, rawGroupRatio map[string]float64, pricing []model.Pricing) []model.Pricing {
 	if len(pricing) == 0 {
 		return pricing
 	}
 	out := make([]model.Pricing, len(pricing))
 	copy(out, pricing)
 	for i := range out {
-		name := adtyNormalizeSitePriceModel(out[i].ModelName)
 		modelGroupRatio := make(map[string]float64, len(rawGroupRatio))
 		for group, rawRatio := range rawGroupRatio {
-			modelK := ResolveAdtySiteMarkup(prices, userId, group, name)
-			marked, _, _ := adtySiteOrdinarySellRatioDec(decimal.NewFromFloat(rawRatio), modelK, costFactor, userId, group)
+			marked, _, _ := adtySiteOrdinarySellRatioDec(decimal.NewFromFloat(rawRatio), siteMultiplier, costFactor, userId, group)
 			modelGroupRatio[group] = marked.InexactFloat64()
 		}
 		out[i].GroupRatio = modelGroupRatio

@@ -16,11 +16,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { Referral } from '@/features/referral'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
-// Every signed-in user is an affiliate, so no guard beyond _authenticated (adty task 6.6).
+// R-32 #21: Admins and site owners do not use the personal referral page.
 export const Route = createFileRoute('/_authenticated/referral/')({
+  beforeLoad: () => {
+    const user = useAuthStore.getState().auth.user
+    if (!user) return
+    if (user.adty_site_owner === true && user.role < ROLE.ADMIN) {
+      throw redirect({
+        to: '/site-owner/$section',
+        params: { section: 'overview' },
+      })
+    }
+    if (user.role >= ROLE.ADMIN || user.adty_site_owner === true) {
+      throw redirect({
+        to: '/dashboard/$section',
+        params: { section: 'overview' },
+      })
+    }
+  },
   component: Referral,
 })

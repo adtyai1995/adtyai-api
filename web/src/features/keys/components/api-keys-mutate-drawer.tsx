@@ -64,9 +64,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
-import { RelatedPolicyLink } from '@/features/system-settings/request-policies/related-policy-link'
-import { useStatus } from '@/hooks/use-status'
-import { api, getUserModels, getUserGroups } from '@/lib/api'
+import { getUserModels, getUserGroups } from '@/lib/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { handleServerError } from '@/lib/handle-server-error'
 import {
@@ -75,12 +73,7 @@ import {
 } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
-import {
-  createApiKey,
-  updateApiKey,
-  getApiKey,
-  getTokenAutoGroups,
-} from '../api'
+import { createApiKey, updateApiKey, getApiKey } from '../api'
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
   getApiKeyFormSchema,
@@ -93,10 +86,8 @@ import type { ApiKey } from '../types'
 import {
   ApiKeyGroupCombobox,
   type ApiKeyGroupOption,
-  type GroupHealth,
 } from './api-key-group-combobox'
 import { useApiKeys } from './api-keys-provider'
-import { AutoGroupOrderEditor } from './auto-group-order-editor'
 
 type ApiKeyMutateDrawerProps = {
   open: boolean
@@ -115,7 +106,6 @@ export function ApiKeysMutateDrawer({
   const isUpdate = !!currentRow
   const currentRowId = currentRow?.id
   const { triggerRefresh } = useApiKeys()
-  const { status, loading: statusLoading } = useStatus()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [initializedTarget, setInitializedTarget] = useState<string | null>(
@@ -125,7 +115,6 @@ export function ApiKeysMutateDrawer({
     { remain_quota: number; unlimited_quota: boolean } | undefined
   >(undefined)
   const previousRowIdRef = useRef<number | undefined>(currentRowId)
-  const defaultUseAutoGroup = status?.default_use_auto_group === true
 
   // Fetch models
   const { data: modelsData } = useQuery({
@@ -161,75 +150,31 @@ export function ApiKeysMutateDrawer({
     staleTime: 0,
   })
 
-  const {
-    data: autoGroupsData,
-    isFetched: autoGroupsFetched,
-    isFetching: autoGroupsFetching,
-  } = useQuery({
-    queryKey: ['token-auto-groups'],
-    queryFn: async () => requireServerSuccess(await getTokenAutoGroups()),
-    enabled: open,
-    staleTime: 0,
-  })
-
   const models = modelsData?.data || []
-  const healthQuery = useQuery({
-    queryKey: ['adty-group-health'],
-    queryFn: async () => {
-      const response = await api.get('/api/adty/groups/health')
-      return response.data as {
-        success?: boolean
-        data?: {
-          groups?: Array<{ group: string } & GroupHealth>
-        }
-      }
-    },
-    enabled: open,
-    staleTime: 60_000,
-  })
   const groups = useMemo<ApiKeyGroupOption[]>(() => {
-    const health = new Map((healthQuery.data?.data?.groups ?? []).map((row) => [row.group, row]))
-    return Object.entries(groupsData?.data || {}).map(([key, info]) => ({
-      value: key,
-      label: groupDisplay.name(key),
-      desc:
-        groupDisplay.desc(key) ||
-        (info.desc ? translateServerText(t, info.desc) : key),
-      ratio: info.ratio,
-      health: health.get(key),
-    }))
-  }, [groupsData, t, groupDisplay, healthQuery.data])
-  const backendHasAuto = groups.some((g) => g.value === 'auto')
-  const availableAutoGroupNames = useMemo(
-    () => groups.filter((group) => group.value !== 'auto').map((g) => g.value),
+    return Object.entries(groupsData?.data || {})
+      .filter(([key]) => key.trim() !== '' && key !== 'auto')
+      .map(([key, info]) => ({
+        value: key,
+        label: groupDisplay.name(key),
+        desc:
+          groupDisplay.desc(key) ||
+          (info.desc ? translateServerText(t, info.desc) : key),
+        ratio: info.ratio,
+      }))
+  }, [groupsData, t, groupDisplay])
+  const defaultConcreteGroup = useMemo(
+    () =>
+      groups.find((group) => group.value === 'default')?.value ??
+      groups[0]?.value ??
+      '',
     [groups]
   )
-  const globalAutoGroups = useMemo(() => {
-    const available = new Set(availableAutoGroupNames)
-    return (autoGroupsData?.data?.groups || []).filter((group) =>
-      available.has(group)
-    )
-  }, [autoGroupsData, availableAutoGroupNames])
-  const globalAutoGroupOptions = useMemo(() => {
-    const groupsByValue = new Map(groups.map((group) => [group.value, group]))
-    return globalAutoGroups.flatMap((group) => {
-      const option = groupsByValue.get(group)
-      return option ? [option] : []
-    })
-  }, [globalAutoGroups, groups])
-  const maxAutoGroups =
-    Number.isInteger(autoGroupsData?.data?.max_count) &&
-    Number(autoGroupsData?.data?.max_count) > 0
-      ? Number(autoGroupsData?.data?.max_count)
-      : 5
-  const schema = useMemo(
-    () => getApiKeyFormSchema(t, maxAutoGroups),
-    [t, maxAutoGroups]
-  )
+  const schema = useMemo(() => getApiKeyFormSchema(t), [t])
 
   const form = useForm<ApiKeyFormValues>({
     resolver: zodResolver(schema),
-    defaultValues: getApiKeyFormDefaultValues(defaultUseAutoGroup),
+    defaultValues: getApiKeyFormDefaultValues(defaultConcreteGroup),
   })
 
   useEffect(() => {
@@ -249,35 +194,28 @@ export function ApiKeysMutateDrawer({
   useEffect(() => {
     if (!open) {
       queryClient.removeQueries({ queryKey: ['api-key'] })
-      form.reset(
-        getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
-      )
+      form.reset(getApiKeyFormDefaultValues(defaultConcreteGroup))
       setInitializedTarget(null)
       setInitializedQuota(undefined)
       return
     }
-    if (
-      !groupsFetched ||
-      groupsFetching ||
-      !autoGroupsFetched ||
-      autoGroupsFetching
-    ) {
+    if (!groupsFetched || groupsFetching) {
       return
     }
     if (isUpdate && (!apiKeyFetched || apiKeyFetching)) return
-    if (!isUpdate && statusLoading) return
 
     const target = isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
     if (initializedTarget === target) return
     if (isUpdate && currentRow) {
       if (apiKeyData?.success && apiKeyData.data) {
-        form.reset(
-          transformApiKeyToFormDefaults(
-            apiKeyData.data,
-            availableAutoGroupNames,
-            maxAutoGroups
-          )
+        const defaults = transformApiKeyToFormDefaults(
+          apiKeyData.data,
+          defaultConcreteGroup
         )
+        if (!groups.some((group) => group.value === defaults.group)) {
+          defaults.group = defaultConcreteGroup
+        }
+        form.reset(defaults)
         setInitializedQuota({
           remain_quota: apiKeyData.data.remain_quota,
           unlimited_quota: apiKeyData.data.unlimited_quota,
@@ -285,9 +223,7 @@ export function ApiKeysMutateDrawer({
         setInitializedTarget(target)
       }
     } else {
-      form.reset(
-        getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
-      )
+      form.reset(getApiKeyFormDefaultValues(defaultConcreteGroup))
       setInitializedQuota(undefined)
       setInitializedTarget(target)
     }
@@ -296,18 +232,13 @@ export function ApiKeysMutateDrawer({
     isUpdate,
     currentRow,
     form,
-    defaultUseAutoGroup,
-    statusLoading,
-    backendHasAuto,
+    groups,
+    defaultConcreteGroup,
     groupsFetched,
     groupsFetching,
-    autoGroupsFetched,
-    autoGroupsFetching,
     apiKeyData,
     apiKeyFetched,
     apiKeyFetching,
-    availableAutoGroupNames,
-    maxAutoGroups,
     initializedTarget,
     queryClient,
   ])
@@ -317,23 +248,13 @@ export function ApiKeysMutateDrawer({
   const isFormInitialized = initializedTarget === formTarget
   const selectedGroup = form.watch('group')
 
-  // Correct group after groups load: if the form value is not in available groups, fall back
+  // Correct group after groups load: require an available concrete group
   useEffect(() => {
     if (groups.length === 0) return
-    const currentGroup = selectedGroup
-    if (currentGroup && !groups.some((g) => g.value === currentGroup)) {
-      const fallback =
-        groups.find((g) => g.value === 'default')?.value ??
-        groups[0]?.value ??
-        ''
-      form.setValue('group', fallback)
-      if (currentGroup === 'auto') {
-        form.setValue('auto_groups', [])
-        form.setValue('auto_groups_mode', 'inherit')
-        form.setValue('cross_group_retry', false)
-      }
+    if (!selectedGroup || !groups.some((g) => g.value === selectedGroup)) {
+      form.setValue('group', defaultConcreteGroup, { shouldValidate: true })
     }
-  }, [groups, form, selectedGroup])
+  }, [groups, form, selectedGroup, defaultConcreteGroup])
 
   const onSubmit = async (data: ApiKeyFormValues) => {
     setIsSubmitting(true)
@@ -435,7 +356,6 @@ export function ApiKeysMutateDrawer({
   const quotaPlaceholder = tokensOnly
     ? t('Enter quota in tokens')
     : t('Enter quota in {{currency}}', { currency: currencyLabel })
-  const autoGroupsMode = form.watch('auto_groups_mode')
   const unlimitedQuota = form.watch('unlimited_quota')
 
   return (
@@ -494,23 +414,12 @@ export function ApiKeysMutateDrawer({
                 name='group'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Group')}</FormLabel>
+                    <FormLabel required>{t('Group')}</FormLabel>
                     <FormControl>
                       <ApiKeyGroupCombobox
                         options={groups}
                         value={field.value}
-                        onValueChange={(group) => {
-                          field.onChange(group)
-                          if (group === 'auto') {
-                            form.setValue('cross_group_retry', true, {
-                              shouldDirty: true,
-                            })
-                            return
-                          }
-                          form.setValue('cross_group_retry', false, {
-                            shouldDirty: true,
-                          })
-                        }}
+                        onValueChange={field.onChange}
                         placeholder={t('Select a group')}
                       />
                     </FormControl>
@@ -518,75 +427,6 @@ export function ApiKeysMutateDrawer({
                   </FormItem>
                 )}
               />
-
-              {selectedGroup === 'auto' && (
-                <FormField
-                  control={form.control}
-                  name='auto_groups'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Auto group order')}</FormLabel>
-                      <FormDescription>
-                        {t(
-                          'Choose and order the groups this API key will try.'
-                        )}
-                      </FormDescription>
-                      <FormControl>
-                        <AutoGroupOrderEditor
-                          value={field.value}
-                          mode={autoGroupsMode}
-                          options={groups}
-                          globalOptions={globalAutoGroupOptions}
-                          maxCount={maxAutoGroups}
-                          onChange={(value) => {
-                            form.setValue('auto_groups_mode', value.mode, {
-                              shouldDirty: true,
-                              shouldValidate: false,
-                            })
-                            form.setValue(
-                              'auto_groups',
-                              value.groups.slice(0, maxAutoGroups),
-                              {
-                                shouldDirty: true,
-                                shouldValidate: true,
-                              }
-                            )
-                          }}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              )}
-
-              {selectedGroup === 'auto' && (
-                <FormField
-                  control={form.control}
-                  name='cross_group_retry'
-                  render={({ field }) => (
-                    <FormItem className={sideDrawerSwitchItemClassName()}>
-                      <div className='flex flex-col gap-0.5'>
-                        <FormLabel className='text-sm'>
-                          {t('Cross-group retry')}
-                        </FormLabel>
-                        <FormDescription className='line-clamp-2 text-xs sm:line-clamp-none'>
-                          {t(
-                            'When enabled, if channels in the current group fail, it will try channels in the next group in order.'
-                          )}
-                          <RelatedPolicyLink section='routing' />
-                        </FormDescription>
-                      </div>
-                      <FormControl>
-                        <Switch
-                          checked={!!field.value}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
-              )}
 
               <FormField
                 control={form.control}
@@ -816,7 +656,9 @@ export function ApiKeysMutateDrawer({
                             />
                           </FormControl>
                           <FormDescription>
-                            {t('Empty or zero means no extra limit on this key')}
+                            {t(
+                              'Empty or zero means no extra limit on this key'
+                            )}
                           </FormDescription>
                           <FormMessage />
                         </FormItem>
@@ -845,7 +687,9 @@ export function ApiKeysMutateDrawer({
                             />
                           </FormControl>
                           <FormDescription>
-                            {t('Empty or zero means no extra limit on this key')}
+                            {t(
+                              'Empty or zero means no extra limit on this key'
+                            )}
                           </FormDescription>
                           <FormMessage />
                         </FormItem>
@@ -874,7 +718,9 @@ export function ApiKeysMutateDrawer({
                             />
                           </FormControl>
                           <FormDescription>
-                            {t('Empty or zero means no extra limit on this key')}
+                            {t(
+                              'Empty or zero means no extra limit on this key'
+                            )}
                           </FormDescription>
                           <FormMessage />
                         </FormItem>

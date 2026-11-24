@@ -56,7 +56,7 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if body.Purpose != model.AdtyVoucherPurposeSiteCustomer && body.Purpose != model.AdtyVoucherPurposeSiteOwner {
+	if body.Purpose != model.AdtyVoucherPurposeSiteCustomer {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}

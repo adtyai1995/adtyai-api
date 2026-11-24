@@ -57,11 +57,11 @@ type AdtyTicketAssignee struct {
 }
 
 type AdtyTicketDetail struct {
-	Actions   []string                  `json:"actions"`
-	Assignees []AdtyTicketAssignee      `json:"assignees,omitempty"`
-	Ticket    model.AdtyTicket          `json:"ticket"`
-	Messages  []model.AdtyTicketMessage `json:"messages"`
-	Images    []model.AdtyTicketImage   `json:"images"`
+	Actions    []string                  `json:"actions"`
+	Assignees  []AdtyTicketAssignee      `json:"assignees,omitempty"`
+	Ticket     model.AdtyTicket          `json:"ticket"`
+	Messages   []model.AdtyTicketMessage `json:"messages"`
+	Images     []model.AdtyTicketImage   `json:"images"`
 	Events     []model.AdtyTicketEvent   `json:"events"`
 	CanNote    bool                      `json:"can_note"`
 	CanManage  bool                      `json:"can_manage"`
@@ -507,8 +507,13 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 			m.TranslationStatus, m.English = head.Status, head.English
 		}
 	}
-	var images []model.AdtyTicketImage
-	if err := model.DB.Select("id", "object_id", "ticket_id", "message_id", "visibility", "mime", "size", "width", "height", "sha256", "created_at").Where("ticket_id = ? AND visibility IN ? AND COALESCE(delete_pending, false) = false", ticket.Id, visibility).Order("id ASC").Find(&images).Error; err != nil {
+	images := []model.AdtyTicketImage{}
+	imageQuery := model.DB.Select("id", "object_id", "ticket_id", "message_id", "visibility", "mime", "size", "width", "height", "sha256", "created_at").
+		Where("ticket_id = ? AND COALESCE(delete_pending, false) = false", ticket.Id)
+	if !actor.isHandling() {
+		imageQuery = imageQuery.Where("visibility = ?", model.AdtyTicketVisibilityPublic)
+	}
+	if err := imageQuery.Order("id ASC").Find(&images).Error; err != nil {
 		return nil, err
 	}
 	var events []model.AdtyTicketEvent
@@ -670,129 +675,129 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 				reopenAssigneeHint = ticket.AssigneeId
 				return errRetryAssigneeLock
 			}
-		var operationKey *string
-		if status == "reopen" && key != "" {
-			if !isAdtyTicketCustomerController(actor, ticket) && !actor.isHandling() {
-				return ErrAdtyTicketForbidden
+			var operationKey *string
+			if status == "reopen" && key != "" {
+				if !isAdtyTicketCustomerController(actor, ticket) && !actor.isHandling() {
+					return ErrAdtyTicketForbidden
+				}
+				digest := sha256.Sum256([]byte(strconv.FormatInt(ticket.Id, 10) + ":" + strconv.Itoa(userId) + ":reopen:" + key))
+				encoded := hex.EncodeToString(digest[:])
+				operationKey = &encoded
+				var existing model.AdtyTicketEvent
+				found := tx.Where("operation_key=?", encoded).Limit(1).Find(&existing)
+				if found.Error != nil || found.RowsAffected > 0 {
+					return found.Error
+				}
+				var last model.AdtyTicketEvent
+				if err := tx.Where("ticket_id=? AND action='status' AND detail IN ?", ticket.Id, []string{model.AdtyTicketClosed, model.AdtyTicketResolved}).Order("id DESC").Limit(1).Find(&last).Error; err != nil {
+					return err
+				}
+				if last.Id != closureID || (ticket.Status != model.AdtyTicketClosed && ticket.Status != model.AdtyTicketResolved) {
+					return ErrAdtyTicketInvalid
+				}
 			}
-			digest := sha256.Sum256([]byte(strconv.FormatInt(ticket.Id, 10) + ":" + strconv.Itoa(userId) + ":reopen:" + key))
-			encoded := hex.EncodeToString(digest[:])
-			operationKey = &encoded
-			var existing model.AdtyTicketEvent
-			found := tx.Where("operation_key=?", encoded).Limit(1).Find(&existing)
-			if found.Error != nil || found.RowsAffected > 0 {
-				return found.Error
-			}
-			var last model.AdtyTicketEvent
-			if err := tx.Where("ticket_id=? AND action='status' AND detail IN ?", ticket.Id, []string{model.AdtyTicketClosed, model.AdtyTicketResolved}).Order("id DESC").Limit(1).Find(&last).Error; err != nil {
+			if err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId); err != nil {
 				return err
 			}
-			if last.Id != closureID || (ticket.Status != model.AdtyTicketClosed && ticket.Status != model.AdtyTicketResolved) {
-				return ErrAdtyTicketInvalid
+			current := model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
+			nextAssignee := ticket.AssigneeId
+			if assigneeId > 0 {
+				if !actor.isHandling() {
+					return ErrAdtyTicketForbidden
+				}
+				eligible, err := adtyTicketAssigneesTx(tx, ticket, actor.Scope == "platform" || actor.Scope == "platform_main", assigneeId)
+				if err != nil {
+					return err
+				}
+				if len(eligible) == 0 {
+					return ErrAdtyTicketInvalid
+				}
+				nextAssignee = assigneeId
 			}
-		}
-		if err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId); err != nil {
-			return err
-		}
-		current := model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
-		nextAssignee := ticket.AssigneeId
-		if assigneeId > 0 {
-			if !actor.isHandling() {
-				return ErrAdtyTicketForbidden
+			nextPriority := ticket.Priority
+			if priority != "" {
+				if !actor.isHandling() {
+					return ErrAdtyTicketForbidden
+				}
+				switch priority {
+				case model.AdtyTicketPriorityNormal, model.AdtyTicketPriorityHigh, model.AdtyTicketPriorityUrgent:
+					nextPriority = priority
+				default:
+					return ErrAdtyTicketInvalid
+				}
 			}
-			eligible, err := adtyTicketAssigneesTx(tx, ticket, actor.Scope == "platform" || actor.Scope == "platform_main", assigneeId)
+			action := "status"
+			next, err := nextAdtyTicketStatus(tx, actor, ticket, current, strings.TrimSpace(status), nextAssignee)
 			if err != nil {
 				return err
 			}
-			if len(eligible) == 0 {
+			if next == "reopen_idempotent" {
+				return nil
+			}
+			if strings.HasPrefix(next, "reopen:") {
+				action = "reopen"
+				next = strings.TrimPrefix(next, "reopen:")
+			}
+			if next == model.AdtyTicketInProgress && nextAssignee <= 0 {
 				return ErrAdtyTicketInvalid
 			}
-			nextAssignee = assigneeId
-		}
-		nextPriority := ticket.Priority
-		if priority != "" {
-			if !actor.isHandling() {
-				return ErrAdtyTicketForbidden
-			}
-			switch priority {
-			case model.AdtyTicketPriorityNormal, model.AdtyTicketPriorityHigh, model.AdtyTicketPriorityUrgent:
-				nextPriority = priority
-			default:
+			if (next == model.AdtyTicketNew || next == model.AdtyTicketPendingAssignment) && nextAssignee > 0 {
 				return ErrAdtyTicketInvalid
 			}
-		}
-		action := "status"
-		next, err := nextAdtyTicketStatus(tx, actor, ticket, current, strings.TrimSpace(status), nextAssignee)
-		if err != nil {
-			return err
-		}
-		if next == "reopen_idempotent" {
-			return nil
-		}
-		if strings.HasPrefix(next, "reopen:") {
-			action = "reopen"
-			next = strings.TrimPrefix(next, "reopen:")
-		}
-		if next == model.AdtyTicketInProgress && nextAssignee <= 0 {
-			return ErrAdtyTicketInvalid
-		}
-		if (next == model.AdtyTicketNew || next == model.AdtyTicketPendingAssignment) && nextAssignee > 0 {
-			return ErrAdtyTicketInvalid
-		}
-		if next == current && nextAssignee == ticket.AssigneeId && nextPriority == ticket.Priority {
-			return nil
-		}
-		updates := map[string]any{"status": next}
-		if nextPriority != ticket.Priority {
-			updates["priority"] = nextPriority
-		}
-		if nextAssignee != ticket.AssigneeId {
-			updates["assignee_id"] = nextAssignee
-		}
-		statusBefore = map[string]any{
-			"ticket_id": ticket.Id, "status": current, "priority": ticket.Priority, "assignee_id": ticket.AssigneeId,
-			"site_id": ticket.SiteId, "user_id": ticket.UserId,
-		}
-		statusAudit = map[string]any{
-			"ticket_id": ticket.Id, "status": next, "priority": nextPriority, "assignee_id": nextAssignee,
-			"site_id": ticket.SiteId, "user_id": ticket.UserId, "event": action,
-		}
-		if err := tx.Model(&model.AdtyTicket{}).Where("id = ?", ticket.Id).Updates(updates).Error; err != nil {
-			return err
-		}
-		if nextAssignee != ticket.AssigneeId {
-			assignment := "assign"
-			if ticket.AssigneeId > 0 {
-				assignment = "transfer"
+			if next == current && nextAssignee == ticket.AssigneeId && nextPriority == ticket.Priority {
+				return nil
 			}
-			change := strconv.Itoa(ticket.AssigneeId) + " → " + strconv.Itoa(nextAssignee)
-			if err := tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: assignment, Detail: change}).Error; err != nil {
+			updates := map[string]any{"status": next}
+			if nextPriority != ticket.Priority {
+				updates["priority"] = nextPriority
+			}
+			if nextAssignee != ticket.AssigneeId {
+				updates["assignee_id"] = nextAssignee
+			}
+			statusBefore = map[string]any{
+				"ticket_id": ticket.Id, "status": current, "priority": ticket.Priority, "assignee_id": ticket.AssigneeId,
+				"site_id": ticket.SiteId, "user_id": ticket.UserId,
+			}
+			statusAudit = map[string]any{
+				"ticket_id": ticket.Id, "status": next, "priority": nextPriority, "assignee_id": nextAssignee,
+				"site_id": ticket.SiteId, "user_id": ticket.UserId, "event": action,
+			}
+			if err := tx.Model(&model.AdtyTicket{}).Where("id = ?", ticket.Id).Updates(updates).Error; err != nil {
 				return err
 			}
-		}
-		eventAction := action
-		eventDetail := next
-		if action != "reopen" {
-			if next == current && nextAssignee != ticket.AssigneeId {
-				eventAction = "status"
-				eventDetail = next
-			} else if next == current && nextPriority != ticket.Priority {
-				eventAction = "priority"
-				eventDetail = nextPriority
+			if nextAssignee != ticket.AssigneeId {
+				assignment := "assign"
+				if ticket.AssigneeId > 0 {
+					assignment = "transfer"
+				}
+				change := strconv.Itoa(ticket.AssigneeId) + " → " + strconv.Itoa(nextAssignee)
+				if err := tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: assignment, Detail: change}).Error; err != nil {
+					return err
+				}
 			}
-		}
-		eventRow := model.AdtyTicketEvent{OperationKey: operationKey, ClosureEventId: closureID, TicketId: ticket.Id, ActorId: actor.User.Id, Action: eventAction, Detail: eventDetail}
-		if err := tx.Create(&eventRow).Error; err != nil {
-			return err
-		}
-		if err := emitAdtyTicketStatusNoticesTx(tx, ticket, eventRow, actor.User.Id, next, nextAssignee); err != nil {
-			return err
-		}
-		var auditErr error
-		statusAuditEntry, auditErr = appendAdtyOfficialAuditTx(tx, userId, ticket.SiteId, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.status", "", "",
-			statusBefore, statusAudit, model.AuditResultSuccess)
-		return auditErr
-	})
+			eventAction := action
+			eventDetail := next
+			if action != "reopen" {
+				if next == current && nextAssignee != ticket.AssigneeId {
+					eventAction = "status"
+					eventDetail = next
+				} else if next == current && nextPriority != ticket.Priority {
+					eventAction = "priority"
+					eventDetail = nextPriority
+				}
+			}
+			eventRow := model.AdtyTicketEvent{OperationKey: operationKey, ClosureEventId: closureID, TicketId: ticket.Id, ActorId: actor.User.Id, Action: eventAction, Detail: eventDetail}
+			if err := tx.Create(&eventRow).Error; err != nil {
+				return err
+			}
+			if err := emitAdtyTicketStatusNoticesTx(tx, ticket, eventRow, actor.User.Id, next, nextAssignee); err != nil {
+				return err
+			}
+			var auditErr error
+			statusAuditEntry, auditErr = appendAdtyOfficialAuditTx(tx, userId, ticket.SiteId, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.status", "", "",
+				statusBefore, statusAudit, model.AuditResultSuccess)
+			return auditErr
+		})
 		if !errors.Is(err, errRetryAssigneeLock) {
 			break
 		}
@@ -1128,6 +1133,10 @@ func OpenAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...strin
 	}
 	path, err := adtyTicketImageStoragePath(*imageRow)
 	if err != nil {
+		return "", "", os.ErrNotExist
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
 		return "", "", os.ErrNotExist
 	}
 	if err := model.DB.Create(&model.AdtyTicketEvent{TicketId: ticketId, ActorId: userId, Action: "image_view", Detail: strconv.FormatInt(imageRow.Id, 10)}).Error; err != nil {
@@ -2064,24 +2073,29 @@ func SaveAdtyTicketImagePolicy(policy model.AdtyTicketPolicy, audits ...model.Au
 func AdtyTicketImageMaxBytes() int { return adtyTicketPolicy().MaxBytes }
 
 func adtyTicketPolicy() model.AdtyTicketPolicy {
-	policy := model.AdtyTicketPolicy{MaxBytes: 2 << 20, MaxCount: 6, MaxTotal: 8 << 20, MaxSide: 8000, MaxPixels: 16_000_000}
-	var row model.AdtyTicketPolicy
-	if err := model.DB.Where("id = ?", 1).Limit(1).Find(&row).Error; err == nil {
-		if row.MaxBytes > 0 {
-			policy.MaxBytes = min(row.MaxBytes, adtyTicketMaxFileBytes)
+	policy := model.AdtyTicketPolicy{MaxBytes: 5 << 20, MaxCount: 6, MaxTotal: 20 << 20, MaxSide: 8000, MaxPixels: 16_000_000}
+	if model.DB != nil {
+		var row model.AdtyTicketPolicy
+		if err := model.DB.Where("id = ?", 1).Limit(1).Find(&row).Error; err == nil {
+			if row.MaxBytes > 0 {
+				policy.MaxBytes = min(row.MaxBytes, adtyTicketMaxFileBytes)
+			}
+			if row.MaxCount > 0 {
+				policy.MaxCount = row.MaxCount
+			}
+			if row.MaxTotal > 0 {
+				policy.MaxTotal = row.MaxTotal
+			}
+			if row.MaxSide > 0 {
+				policy.MaxSide = row.MaxSide
+			}
+			if row.MaxPixels > 0 {
+				policy.MaxPixels = row.MaxPixels
+			}
 		}
-		if row.MaxCount > 0 {
-			policy.MaxCount = row.MaxCount
-		}
-		if row.MaxTotal > 0 {
-			policy.MaxTotal = row.MaxTotal
-		}
-		if row.MaxSide > 0 {
-			policy.MaxSide = row.MaxSide
-		}
-		if row.MaxPixels > 0 {
-			policy.MaxPixels = row.MaxPixels
-		}
+	}
+	if policy.MaxTotal < policy.MaxBytes {
+		policy.MaxTotal = policy.MaxBytes
 	}
 	return policy
 }
@@ -2100,6 +2114,7 @@ func sanitizeAdtyTicketImage(data []byte, policy model.AdtyTicketPolicy) ([]byte
 		return nil, "", 0, 0, ErrAdtyTicketImage
 	}
 	var buf bytes.Buffer
+	bestPNG := png.Encoder{CompressionLevel: png.BestCompression}
 	switch strings.ToLower(format) {
 	case "jpeg", "jpg":
 		if err := jpeg.Encode(&buf, decoded, &jpeg.Options{Quality: 85}); err != nil {
@@ -2110,24 +2125,33 @@ func sanitizeAdtyTicketImage(data []byte, policy model.AdtyTicketPolicy) ([]byte
 		}
 		return buf.Bytes(), "image/jpeg", config.Width, config.Height, nil
 	case "png":
-		if err := png.Encode(&buf, decoded); err != nil {
+		if err := bestPNG.Encode(&buf, decoded); err != nil {
 			return nil, "", 0, 0, ErrAdtyTicketImage
 		}
-		if buf.Len() > policy.MaxBytes {
-			return nil, "", 0, 0, ErrAdtyTicketImageSize
+		if buf.Len() <= policy.MaxBytes {
+			return buf.Bytes(), "image/png", config.Width, config.Height, nil
 		}
-		return buf.Bytes(), "image/png", config.Width, config.Height, nil
+		if len(data) <= 10<<20 {
+			buf.Reset()
+			if err := jpeg.Encode(&buf, decoded, &jpeg.Options{Quality: 88}); err != nil {
+				return nil, "", 0, 0, ErrAdtyTicketImage
+			}
+			if buf.Len() <= policy.MaxBytes {
+				return buf.Bytes(), "image/jpeg", config.Width, config.Height, nil
+			}
+		}
+		return nil, "", 0, 0, ErrAdtyTicketImageSize
 	case "webp":
-		// Go 只有 WebP 解码器、没有编码器，先尝试重编码为 PNG；若 PNG 超过单图上限，
-		// 回退为 JPEG（Quality: 85），仍超限时明确返回尺寸超限错误。
-		if err := png.Encode(&buf, decoded); err != nil {
+		// Go 只有 WebP 解码器、没有编码器，先尝试高压缩重编码为 PNG；若 PNG 超过单图上限，
+		// 回退为高质量 JPEG（Quality: 88），仍超限时明确返回尺寸超限错误。
+		if err := bestPNG.Encode(&buf, decoded); err != nil {
 			return nil, "", 0, 0, ErrAdtyTicketImage
 		}
 		if buf.Len() <= policy.MaxBytes {
 			return buf.Bytes(), "image/png", config.Width, config.Height, nil
 		}
 		buf.Reset()
-		if err := jpeg.Encode(&buf, decoded, &jpeg.Options{Quality: 85}); err != nil {
+		if err := jpeg.Encode(&buf, decoded, &jpeg.Options{Quality: 88}); err != nil {
 			return nil, "", 0, 0, ErrAdtyTicketImage
 		}
 		if buf.Len() > policy.MaxBytes {

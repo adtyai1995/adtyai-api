@@ -221,16 +221,25 @@ func randomAdtyGroupID() (string, error) {
 }
 
 // CreateAdtyGroup 新建分组。名字必填，说明可空；两者都写进全部语言，之后可按语言改。
+// 同一个事务里把新分组写入 options 的 GroupRatio（默认倍率 1）与 UserUsableGroups（描述/名字），
+// 提交后立即刷新内存缓存，使新分组无需二次保存即可在渠道、定价和 API Key 中立即可见可用。
 func CreateAdtyGroup(name, desc string) (*AdtyGroup, error) {
 	name = strings.TrimSpace(name)
 	desc = strings.TrimSpace(desc)
 	if name == "" {
 		return nil, ErrAdtyGroupTextRequired
 	}
+	adtyGroupConfigMu.Lock()
+	defer adtyGroupConfigMu.Unlock()
 	var created *AdtyGroup
 	var lastErr error
 	for range adtyGroupCreateAttempts {
+		var optionValues map[string]string
 		err := DB.Transaction(func(tx *gorm.DB) error {
+			// Preserve canonical options -> adty_groups lock order (R9-008).
+			if err := preLockAdtyGroupOptionsTx(tx, []string{"GroupRatio", "UserUsableGroups"}); err != nil {
+				return err
+			}
 			id, err := NewAdtyGroupID(tx)
 			if err != nil {
 				return err
@@ -243,10 +252,70 @@ func CreateAdtyGroup(name, desc string) (*AdtyGroup, error) {
 			if err := tx.Create(row).Error; err != nil {
 				return err
 			}
+			var load func(string) (string, error)
+			hasOptionTable := tx.Migrator().HasTable(&Option{})
+			if hasOptionTable {
+				load = func(key string) (string, error) {
+					return loadAdtyGroupOptionTx(tx, key)
+				}
+			}
+			ratioRaw, err := adtyGroupOptionSource(load, "GroupRatio", ratio_setting.GroupRatio2JSONString())
+			if err != nil {
+				return err
+			}
+			ratios := map[string]float64{}
+			if err := adtyUnmarshalObject(ratioRaw, &ratios); err != nil {
+				return err
+			}
+			if _, exists := ratios[id]; !exists {
+				ratios[id] = 1
+			}
+			ratioBytes, err := common.Marshal(ratios)
+			if err != nil {
+				return err
+			}
+			usableRaw, err := adtyGroupOptionSource(load, "UserUsableGroups", setting.UserUsableGroups2JSONString())
+			if err != nil {
+				return err
+			}
+			usable := map[string]string{}
+			if err := adtyUnmarshalObject(usableRaw, &usable); err != nil {
+				return err
+			}
+			usableDesc := desc
+			if usableDesc == "" {
+				usableDesc = name
+			}
+			usable[id] = usableDesc
+			usableBytes, err := common.Marshal(usable)
+			if err != nil {
+				return err
+			}
+			optionValues = map[string]string{
+				"GroupRatio":       string(ratioBytes),
+				"UserUsableGroups": string(usableBytes),
+			}
+			if hasOptionTable {
+				if err := SaveOptionsTx(tx, optionValues); err != nil {
+					return err
+				}
+			}
 			created = row
 			return nil
 		})
 		if err == nil {
+			common.OptionMapRWMutex.Lock()
+			if common.OptionMap == nil {
+				common.OptionMap = make(map[string]string)
+			}
+			common.OptionMapRWMutex.Unlock()
+			for _, key := range []string{"GroupRatio", "UserUsableGroups"} {
+				if value, ok := optionValues[key]; ok {
+					if updateErr := updateOptionMap(key, value); updateErr != nil {
+						common.SysError(common.LogText("update option map after group create (%s): %s", key, updateErr.Error()))
+					}
+				}
+			}
 			return created, nil
 		}
 		if !isAdtyUniqueViolation(err) {

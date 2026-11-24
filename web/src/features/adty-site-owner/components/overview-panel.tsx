@@ -104,7 +104,6 @@ export function OverviewPanel() {
       </section>
       <nav aria-label={t('Earnings')} className='flex flex-wrap gap-4'>
         {[
-          ['self-use', t('Owner self-use')],
           ['withdrawal', t('Withdrawals')],
           ['margin', t('Transfer earnings to margin')],
           ['settlement', t('Settlement sheet')],

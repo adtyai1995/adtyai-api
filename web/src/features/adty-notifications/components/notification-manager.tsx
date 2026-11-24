@@ -42,7 +42,7 @@ import {
   type Publication,
 } from '../api'
 import {
-  notificationAudienceLabels,
+  formatNotificationRecipients,
   notificationKindLabels,
 } from '../lib/schema'
 import { NotificationEditor } from './notification-editor'
@@ -144,24 +144,7 @@ function NotificationManagement(props: {
                 {
                   id: 'recipients',
                   header: t('Recipients'),
-                  cell: (row) => {
-                    if (row.audience === 'site') {
-                      return row.target_site_name
-                    }
-                    if (row.audience === 'team') {
-                      const teamId =
-                        row.target_team_id ||
-                        row.target_site_name.replace(/^team:/, '')
-                      return `${t(notificationAudienceLabels.team)} #${teamId}`
-                    }
-                    if (row.audience === 'user') {
-                      const userId =
-                        row.target_user_id ||
-                        row.target_site_name.replace(/^user:/, '')
-                      return `${t(notificationAudienceLabels.user)} #${userId}`
-                    }
-                    return t(notificationAudienceLabels[row.audience])
-                  },
+                  cell: (row) => formatNotificationRecipients(row, t),
                 },
                 {
                   id: 'publisher',

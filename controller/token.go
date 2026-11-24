@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -44,6 +45,7 @@ type tokenRequest struct {
 	RateLimitTPM         *int  `json:"rate_limit_tpm"`
 	RateLimitConcurrency *int  `json:"rate_limit_concurrency"`
 	remainQuotaSet       bool  `json:"-"`
+	groupSet             bool  `json:"-"`
 }
 
 func unmarshalFirstOptionalInt(fields map[string]json.RawMessage, keys ...string) (*int, error) {
@@ -93,6 +95,9 @@ func (r *tokenRequest) UnmarshalJSON(data []byte) error {
 		}
 		r.RateLimitConcurrency = val
 	}
+	if _, ok := fields["group"]; ok {
+		r.groupSet = true
+	}
 	raw, ok := fields["remain_quota"]
 	if !ok || string(raw) == "null" {
 		return nil
@@ -117,22 +122,12 @@ func validateTokenKeyLimits(c *gin.Context, r tokenRequest) bool {
 }
 
 func validatePersonalTokenGroup(c *gin.Context, siteID int, group string) bool {
-	if group == "" {
-		return true
-	}
-	userGroup, err := getTokenRequestUserGroup(c)
-	if err != nil {
-		common.ApiError(c, err)
+	group = strings.TrimSpace(group)
+	if group == "" || group == "auto" {
+		common.ApiErrorT(c, "Please select a concrete group for this API key")
 		return false
 	}
-	if group == "auto" {
-		if _, ok := service.GetUserUsableGroups(userGroup)["auto"]; !ok {
-			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
-			return false
-		}
-		return true
-	}
-	if !service.IsUserSelectableGroup(userGroup, group) || !service.SiteGroupAllowed(siteID, group) {
+	if !ratio_setting.ContainsGroupRatio(group) || !service.SiteGroupAllowed(siteID, group) {
 		common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
 		return false
 	}
@@ -258,20 +253,16 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 		return false
 	}
 
-	userGroup, err := getTokenRequestUserGroup(c)
-	if err != nil {
-		common.ApiError(c, err)
-		return false
-	}
 	siteID := tokenRequestSiteID(c)
 	seen := make(map[string]struct{}, len(groups))
 	for _, group := range groups {
+		group = strings.TrimSpace(group)
 		if _, ok := seen[group]; ok {
 			common.ApiErrorT(c, "Auto group {{group}} is duplicated", map[string]any{"group": group})
 			return false
 		}
 		seen[group] = struct{}{}
-		if !service.IsUserSelectableGroup(userGroup, group) || !service.SiteGroupAllowed(siteID, group) {
+		if group == "" || group == "auto" || !ratio_setting.ContainsGroupRatio(group) || !service.SiteGroupAllowed(siteID, group) {
 			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
 			return false
 		}
@@ -533,17 +524,14 @@ func addPersonalToken(c *gin.Context, ownerSite int) {
 	if !validateTokenKeyLimits(c, request) {
 		return
 	}
-	if !validatePersonalTokenGroup(c, siteID, token.Group) {
-		return
-	}
-	if token.Group == "auto" {
-		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
+	token.Group = strings.TrimSpace(token.Group)
+	if ownerSite == 0 || token.Group != "" {
+		if !validatePersonalTokenGroup(c, siteID, token.Group) {
 			return
 		}
-	} else {
-		token.CrossGroupRetry = false
-		_ = token.SetAutoGroups(nil)
 	}
+	token.CrossGroupRetry = false
+	_ = token.SetAutoGroups(nil)
 	key, err := common.GenerateKey()
 	if err != nil {
 		common.ApiErrorT(c, "Failed to generate token")
@@ -700,12 +688,21 @@ func UpdateToken(c *gin.Context) {
 		if !validateTokenKeyLimits(c, request) {
 			return
 		}
-		if !validatePersonalTokenGroup(c, siteID, token.Group) {
-			return
+		targetGroup := strings.TrimSpace(token.Group)
+		if !request.groupSet {
+			targetGroup = previous.Group
 		}
-		cleanToken.Group = token.Group
+		// Allow updating non-group fields on legacy tokens that already had "" or "auto",
+		// while rejecting any change to empty or "auto" (and requiring a valid concrete group otherwise).
+		legacyGroupUnchanged := targetGroup == previous.Group && (previous.Group == "" || previous.Group == "auto")
+		if !legacyGroupUnchanged {
+			if !validatePersonalTokenGroup(c, siteID, targetGroup) {
+				return
+			}
+		}
+		cleanToken.Group = targetGroup
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
-		if token.Group != "auto" {
+		if cleanToken.Group != "auto" {
 			cleanToken.CrossGroupRetry = false
 			_ = cleanToken.SetAutoGroups(nil)
 		} else if request.AutoGroups.Set {

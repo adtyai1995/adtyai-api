@@ -20,7 +20,20 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { AuthenticatedLayout } from '@/components/layout'
 import { resolveAuthentication } from '@/lib/auth-session'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
+
+function isAllowedPureSiteOwnerPath(pathname: string): boolean {
+  return (
+    pathname === '/site-owner' ||
+    pathname.startsWith('/site-owner/') ||
+    pathname === '/security' ||
+    pathname.startsWith('/security/') ||
+    pathname === '/profile' ||
+    pathname.startsWith('/profile/') ||
+    pathname.startsWith('/errors/')
+  )
+}
 
 export const Route = createFileRoute('/_authenticated')({
   beforeLoad: async ({ location }) => {
@@ -43,6 +56,17 @@ export const Route = createFileRoute('/_authenticated')({
       location.pathname !== '/site-staff'
     ) {
       throw redirect({ to: '/site-staff' })
+    }
+    // R-32 #25: Site owners (non-admin) are restricted to pure management routes.
+    if (
+      auth.user.adty_site_owner === true &&
+      auth.user.role < ROLE.ADMIN &&
+      !isAllowedPureSiteOwnerPath(location.pathname)
+    ) {
+      throw redirect({
+        to: '/site-owner/$section',
+        params: { section: 'overview' },
+      })
     }
   },
   component: AuthenticatedLayout,

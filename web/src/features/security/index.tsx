@@ -36,7 +36,6 @@ import { AccessTokensCard } from './components/access-tokens-card'
 import { AccountActionCard } from './components/account-action-card'
 import { AccountBindings } from './components/account-bindings'
 import { LoginSessionsCard } from './components/login-sessions-card'
-import { PasskeyCard } from './components/passkey-card'
 import { PrivacyCard } from './components/privacy-card'
 import { TwoFACard } from './components/two-fa-card'
 
@@ -134,7 +133,6 @@ export function Security() {
             >
               {t('Security verification')}
             </h3>
-            <PasskeyCard loading={loading} />
             <TwoFACard loading={loading} />
           </div>
           <section aria-labelledby='security-privacy' className='space-y-4'>

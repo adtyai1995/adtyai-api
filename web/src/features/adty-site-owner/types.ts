@@ -41,6 +41,8 @@ export type SiteBrand = {
   support_contact: string
   tawk_property_id?: string
   tawk_widget_id?: string
+  wallet_notice?: string
+  voucher_purchase_url?: string
 }
 
 /** One site price row (model.AdtySitePrice). Decimals are strings. */
@@ -99,6 +101,7 @@ export type OwnerSite = {
   custom_domain_enabled: boolean
   sender_domain_enabled: boolean
   brand: SiteBrand
+  home_page_content?: string
   /** Payment methods Root authorized for this site's gift, with the owner's rule. */
   bonus_methods: OwnerBonusMethod[]
   seo_index: boolean

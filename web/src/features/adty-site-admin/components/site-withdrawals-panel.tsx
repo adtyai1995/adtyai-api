@@ -267,27 +267,45 @@ export function SiteWithdrawalsPanel() {
                   id: 'account',
                   header: t('Payee'),
                   cell: (row) => (
-                    <div className='flex flex-col gap-0.5'>
-                      <span className='font-medium'>
-                        {row.method === 'usdt'
-                          ? `USDT · ${row.network}`
-                          : t('Alipay')}
-                      </span>
-                      <div className='flex items-center gap-1'>
-                        <span className='font-mono text-xs break-all'>
-                          {row.account_no}
-                        </span>
-                        <CopyButton
-                          value={row.account_no}
-                          size='icon'
-                          aria-label={t('Copy account')}
-                        />
-                      </div>
-                      {row.account_name && (
-                        <span className='text-muted-foreground text-xs'>
-                          {row.account_name}
-                        </span>
+                    <div className='flex items-start gap-2.5'>
+                      {row.qr_image_url && (
+                        <a
+                          href={row.qr_image_url}
+                          target='_blank'
+                          rel='noopener noreferrer'
+                          className='shrink-0'
+                        >
+                          <img
+                            src={row.qr_image_url}
+                            alt={t('Payment QR code')}
+                            className='h-16 w-16 rounded border object-contain'
+                          />
+                        </a>
                       )}
+                      <div className='flex flex-col gap-0.5'>
+                        <span className='font-medium'>
+                          {row.method === 'usdt'
+                            ? `USDT · ${row.network}`
+                            : t('Alipay')}
+                        </span>
+                        {row.account_no && (
+                          <div className='flex items-center gap-1'>
+                            <span className='font-mono text-xs break-all'>
+                              {row.account_no}
+                            </span>
+                            <CopyButton
+                              value={row.account_no}
+                              size='icon'
+                              aria-label={t('Copy account')}
+                            />
+                          </div>
+                        )}
+                        {row.account_name && (
+                          <span className='text-muted-foreground text-xs'>
+                            {row.account_name}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   ),
                 },
@@ -425,10 +443,26 @@ export function SiteWithdrawalsPanel() {
         }
       >
         {action && (
-          <p className='text-sm tabular-nums'>
-            {action.row.subdomain || `#${action.row.site_id}`} ·{' '}
-            {action.row.payout_amount} {action.row.payout_currency}
-          </p>
+          <div className='flex items-start justify-between gap-3'>
+            <p className='text-sm tabular-nums'>
+              {action.row.subdomain || `#${action.row.site_id}`} ·{' '}
+              {action.row.payout_amount} {action.row.payout_currency}
+            </p>
+            {action.kind === 'paid' && action.row.qr_image_url && (
+              <a
+                href={action.row.qr_image_url}
+                target='_blank'
+                rel='noopener noreferrer'
+                className='shrink-0'
+              >
+                <img
+                  src={action.row.qr_image_url}
+                  alt={t('Payment QR code')}
+                  className='h-24 w-24 rounded border object-contain'
+                />
+              </a>
+            )}
+          </div>
         )}
         {action?.kind === 'failed' && (
           <div className='space-y-2'>

@@ -35,38 +35,15 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { useMediaQuery } from '@/hooks'
-import { formatTimestamp } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import {
-  AUTO_GROUP_FRAME_CLASS_NAME,
-  AutoGroupFlowBorder,
-  GroupRatioBadge,
-} from './auto-group-visuals'
-
-export type GroupHealthPoint = {
-  ts: number
-  success: number
-  fail: number
-}
-
-export type GroupHealth = {
-  status: 'no_data' | 'interrupted' | 'ok' | 'degraded' | string
-  request_success_rate?: number | null
-  request_samples?: number
-  probe_rate?: number | null
-  probe_samples?: number
-  scope?: string
-  updated_at?: number
-  series?: GroupHealthPoint[]
-}
+import { GroupRatioBadge } from './auto-group-visuals'
 
 export type ApiKeyGroupOption = {
   value: string
   label: string
   desc?: string
   ratio?: number | string
-  health?: GroupHealth
 }
 
 type ApiKeyGroupComboboxProps = {
@@ -75,117 +52,6 @@ type ApiKeyGroupComboboxProps = {
   onValueChange: (value: string) => void
   placeholder?: string
   disabled?: boolean
-}
-
-function statusDotClass(status: string, expired: boolean) {
-  const base = 'inline-block size-2 rounded-full'
-  if (status === 'degraded') return `bg-destructive ${base}`
-  if (expired) return `bg-muted ${base}`
-  return `bg-foreground ${base}`
-}
-
-function formatRate(
-  rate: number | null | undefined,
-  t: (key: string) => string
-) {
-  if (rate == null) return t('No data')
-  return `${Math.round(rate * 100)}%`
-}
-
-function getWindowState(point: GroupHealthPoint) {
-  if (point.success === 0 && point.fail === 0) return 'no_data'
-  if (point.fail === 0) return 'ok'
-  if (point.success === 0) return 'fail'
-  return 'degraded'
-}
-
-function getWindowBarClass(state: ReturnType<typeof getWindowState>) {
-  switch (state) {
-    case 'ok':
-      return 'bg-success'
-    case 'degraded':
-      return 'bg-warning'
-    case 'fail':
-      return 'bg-destructive'
-    default:
-      return 'bg-muted'
-  }
-}
-
-function GroupHealthSeriesBars(props: { series?: GroupHealthPoint[] }) {
-  const series = props.series
-  if (!series || series.length === 0) return null
-  return (
-    <span
-      data-slot='group-health-series'
-      className='mt-1 flex h-2 w-full items-stretch gap-px overflow-hidden rounded-xs'
-    >
-      {series.map((point, index) => {
-        const state = getWindowState(point)
-        return (
-          <span
-            key={point.ts || index}
-            data-slot='group-health-window'
-            data-state={state}
-            className={cn(
-              'min-w-0 flex-1 rounded-[1px]',
-              getWindowBarClass(state)
-            )}
-          />
-        )
-      })}
-    </span>
-  )
-}
-
-function GroupHealthLine(props: { health?: GroupHealth }) {
-  const { t } = useTranslation()
-  const health = props.health
-  const updated = health?.updated_at ? ` · ${t('Last updated')} ${formatTimestamp(health.updated_at)}` : ''
-  const seriesBars = <GroupHealthSeriesBars series={health?.series} />
-  if (!health || (health.status === 'no_data' && !health.probe_samples && !health.request_samples)) {
-    return (
-      <span className='mt-1 flex flex-col gap-1'>
-        {seriesBars}
-        <span className='text-muted-foreground flex items-center gap-2 text-xs'>
-          <span className='bg-muted inline-block size-2 rounded-full' />
-          {t('No data')}
-          {updated}
-        </span>
-      </span>
-    )
-  }
-  if (health.status === 'interrupted') {
-    return (
-      <span className='mt-1 flex flex-col gap-1'>
-        {seriesBars}
-        <span className='text-muted-foreground flex items-center gap-2 text-xs'>
-          <span className='bg-muted inline-block size-2 rounded-full' />
-          {t('Monitoring interrupted')}
-          {updated}
-        </span>
-      </span>
-    )
-  }
-  const request = formatRate(health.request_success_rate, t)
-  const probe = health.probe_samples
-    ? formatRate(health.probe_rate, t)
-    : t('No data')
-  const requestSamples = health.request_samples ?? 0
-  const probeSamples = health.probe_samples ?? 0
-  const expired = health.status === 'stale'
-  return (
-    <span className='mt-1 flex flex-col gap-1'>
-      {seriesBars}
-      <span className='text-muted-foreground flex flex-wrap items-center gap-2 text-xs tabular-nums'>
-        <span className={statusDotClass(health.status, expired)} />
-        {expired ? `${t('Expired')} · ` : ''}
-        {t('Request success')} {request} · {requestSamples} · {t('Probe availability')} {probe} · {probeSamples}
-        {health.scope === 'site' ? ` · ${t('Site data')}` : ` · ${t('Platform data')}`}
-        {updated}
-      </span>
-    </span>
-  )
 }
 
 export function ApiKeyGroupCombobox({
@@ -200,7 +66,6 @@ export function ApiKeyGroupCombobox({
   const [searchValue, setSearchValue] = useState('')
   const shouldReduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const selectedOption = options.find((option) => option.value === value)
-  const isAutoSelected = selectedOption?.value === 'auto'
 
   const filteredOptions = useMemo(() => {
     const search = searchValue.trim().toLowerCase()
@@ -232,22 +97,11 @@ export function ApiKeyGroupCombobox({
             variant='outline'
             role='combobox'
             aria-expanded={open}
-            data-auto-group-effect={isAutoSelected ? 'trigger' : undefined}
             disabled={disabled}
-            className={cn(
-              'border-input bg-muted/40 hover:bg-muted/55 hover:text-foreground active:bg-background data-popup-open:border-ring data-popup-open:bg-background data-popup-open:ring-ring/20 relative h-auto min-h-14 w-full justify-between gap-2 rounded-lg px-3 py-2 text-start shadow-none transition-[background-color,border-color,box-shadow] duration-150 data-popup-open:ring-[3px] sm:min-h-20 sm:gap-3 sm:px-4 sm:py-3',
-              isAutoSelected &&
-                cn(
-                  AUTO_GROUP_FRAME_CLASS_NAME,
-                  'hover:border-primary/55 data-popup-open:border-primary/55 data-popup-open:ring-primary/20'
-                )
-            )}
+            className='border-input bg-muted/40 hover:bg-muted/55 hover:text-foreground active:bg-background data-popup-open:border-ring data-popup-open:bg-background data-popup-open:ring-ring/20 relative h-auto min-h-14 w-full justify-between gap-2 rounded-lg px-3 py-2 text-start shadow-none transition-[background-color,border-color,box-shadow] duration-150 data-popup-open:ring-[3px] sm:min-h-20 sm:gap-3 sm:px-4 sm:py-3'
           />
         }
       >
-        {isAutoSelected && (
-          <AutoGroupFlowBorder shouldReduceMotion={shouldReduceMotion} />
-        )}
         <span className='flex min-w-0 flex-1 items-center justify-between gap-2 sm:gap-3'>
           <span className='min-w-0'>
             <span className='block truncate font-medium'>
@@ -262,7 +116,7 @@ export function ApiKeyGroupCombobox({
           <span className='hidden sm:block'>
             <GroupRatioBadge
               ratio={selectedOption?.ratio}
-              isAuto={isAutoSelected}
+              isAuto={false}
               shouldReduceMotion={shouldReduceMotion}
             />
           </span>
@@ -287,55 +141,37 @@ export function ApiKeyGroupCombobox({
           <CommandList className='max-h-[360px]'>
             <CommandEmpty>{t('No group found.')}</CommandEmpty>
             <CommandGroup>
-              {filteredOptions.map((option) => {
-                const isAutoOption = option.value === 'auto'
-
-                return (
-                  <CommandItem
-                    key={option.value}
-                    value={option.value}
-                    data-auto-group-effect={isAutoOption ? 'option' : undefined}
-                    onSelect={() => handleSelect(option.value)}
+              {filteredOptions.map((option) => (
+                <CommandItem
+                  key={option.value}
+                  value={option.value}
+                  onSelect={() => handleSelect(option.value)}
+                  className='data-[selected=true]:bg-muted items-start gap-3 rounded-lg px-3 py-3 transition-colors'
+                >
+                  <Check
+                    aria-hidden='true'
                     className={cn(
-                      'data-[selected=true]:bg-muted items-start gap-3 rounded-lg px-3 py-3 transition-colors',
-                      isAutoOption &&
-                        cn(
-                          AUTO_GROUP_FRAME_CLASS_NAME,
-                          'border-primary/35 data-[selected=true]:border-primary/55'
-                        )
+                      'mt-0.5 size-4',
+                      value === option.value ? 'opacity-100' : 'opacity-0'
                     )}
-                  >
-                    {isAutoOption && (
-                      <AutoGroupFlowBorder
-                        shouldReduceMotion={shouldReduceMotion}
-                      />
-                    )}
-                    <Check
-                      aria-hidden='true'
-                      className={cn(
-                        'mt-0.5 size-4',
-                        value === option.value ? 'opacity-100' : 'opacity-0'
-                      )}
-                    />
-                    <span className='min-w-0 flex-1'>
-                      <span className='block truncate font-medium'>
-                        {option.label}
-                      </span>
-                      {option.desc && (
-                        <span className='text-muted-foreground block truncate text-xs'>
-                          {option.desc}
-                        </span>
-                      )}
-                      <GroupHealthLine health={option.health} />
+                  />
+                  <span className='min-w-0 flex-1'>
+                    <span className='block truncate font-medium'>
+                      {option.label}
                     </span>
-                    <GroupRatioBadge
-                      ratio={option.ratio}
-                      isAuto={isAutoOption}
-                      shouldReduceMotion={shouldReduceMotion}
-                    />
-                  </CommandItem>
-                )
-              })}
+                    {option.desc && (
+                      <span className='text-muted-foreground block truncate text-xs'>
+                        {option.desc}
+                      </span>
+                    )}
+                  </span>
+                  <GroupRatioBadge
+                    ratio={option.ratio}
+                    isAuto={false}
+                    shouldReduceMotion={shouldReduceMotion}
+                  />
+                </CommandItem>
+              ))}
             </CommandGroup>
           </CommandList>
         </Command>

@@ -20,6 +20,7 @@ import { useMemo } from 'react'
 
 import type { NavGroup, NavItem } from '@/components/layout/types'
 import { useStatus } from '@/hooks/use-status'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 type SidebarSectionConfig = {
@@ -37,17 +38,12 @@ type SidebarModulesUserConfig = SidebarModulesAdminConfig | null
  * Default sidebar modules configuration
  */
 const DEFAULT_SIDEBAR_MODULES: SidebarModulesAdminConfig = {
-  chat: {
-    enabled: true,
-    chat: true,
-  },
   console: {
     enabled: true,
     detail: true,
     token: true,
     log: true,
     audit: true,
-    midjourney: true,
     task: true,
   },
   personal: {
@@ -106,7 +102,6 @@ const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
   '/usage-logs': { section: 'console', module: 'log' },
   '/usage-logs/common': { section: 'console', module: 'log' },
   '/usage-logs/audit': { section: 'console', module: 'audit' },
-  '/usage-logs/drawing': { section: 'console', module: 'midjourney' },
   '/usage-logs/task': { section: 'console', module: 'task' },
   '/wallet': { section: 'personal', module: 'topup' },
   '/referral': { section: 'personal', module: 'referral' },
@@ -204,16 +199,9 @@ function isNavItemVisible(
   adminConfig: SidebarModulesAdminConfig,
   userConfig: SidebarModulesUserConfig
 ): boolean {
-  // Handle dynamic chat presets type — also runs the admin × user AND gate
+  // R-32 #14: Chat presets have been removed from sidebar navigation.
   if ('type' in item && item.type === 'chat-presets') {
-    const adminChat = adminConfig.chat
-    const adminAllowed = Boolean(adminChat?.enabled && adminChat.chat === true)
-    if (!adminAllowed) return false
-    if (!userConfig) return true
-    const userChat = userConfig.chat
-    if (!userChat) return true
-    if (userChat.enabled === false) return false
-    return userChat.chat !== false
+    return false
   }
 
   // Handle direct link type
@@ -301,16 +289,25 @@ export function useSidebarConfig(navGroups: NavGroup[]): NavGroup[] {
     return parseUserSidebarConfig(auth?.user?.sidebar_modules)
   }, [auth?.user?.permissions?.sidebar_settings, auth?.user?.sidebar_modules])
 
-  const filteredNavGroups = useMemo(
-    () =>
-      navGroups
-        .map((group) => ({
-          ...group,
-          items: filterNavItems(group.items, adminConfig, userConfig),
-        }))
-        .filter((group) => group.items.length > 0), // Only show navigation groups with visible items
-    [navGroups, adminConfig, userConfig]
+  const isPureSiteOwner = Boolean(
+    auth?.user?.adty_site_owner === true &&
+    (auth?.user?.role ?? ROLE.GUEST) < ROLE.ADMIN
   )
+  const isStaff = (auth?.user?.staff_site_id ?? 0) > 0
+
+  const filteredNavGroups = useMemo(() => {
+    // Pure management sidebars (site owners and staff) are never narrowed by
+    // customer sidebar_modules preferences.
+    if (isPureSiteOwner || isStaff) {
+      return navGroups
+    }
+    return navGroups
+      .map((group) => ({
+        ...group,
+        items: filterNavItems(group.items, adminConfig, userConfig),
+      }))
+      .filter((group) => group.items.length > 0) // Only show navigation groups with visible items
+  }, [navGroups, adminConfig, userConfig, isPureSiteOwner, isStaff])
 
   return filteredNavGroups
 }

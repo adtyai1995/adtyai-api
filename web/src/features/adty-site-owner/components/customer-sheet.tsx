@@ -55,16 +55,14 @@ import {
   getOwnerCustomerTopUps,
   getOwnerWallets,
   reportCustomer,
-  savePricing,
   siteOwnerKeys,
 } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
 import { computeOwnerFundingPreview } from '../lib/funding-preview'
-import { newIdempotencyKey, validRetailMarkup } from '../lib/site-owner'
+import { newIdempotencyKey } from '../lib/site-owner'
 import { OwnerFundingPreviewBox } from './owner-funding-preview'
-import { PricingHistory } from './pricing-history'
 
-/** Customer drawer: profile, requests, top-ups, keys, manual balance, own price and report. */
+/** Customer drawer: profile, requests, top-ups, keys, manual balance and report. */
 export function CustomerSheet(props: {
   customerId: number | null
   onOpenChange: (open: boolean) => void
@@ -74,14 +72,9 @@ export function CustomerSheet(props: {
   const id = props.customerId ?? 0
   const [creditAmount, setCreditAmount] = useState('')
   const [creditReason, setCreditReason] = useState('')
-  const [markup, setMarkup] = useState('')
   const [reason, setReason] = useState('')
   const [discarding, setDiscarding] = useState(false)
-  const dirty =
-    creditAmount !== '' ||
-    creditReason !== '' ||
-    markup !== '' ||
-    reason !== ''
+  const dirty = creditAmount !== '' || creditReason !== '' || reason !== ''
   useDraftNavigation(dirty)
   const detail = useQuery({
     queryKey: siteOwnerKeys.list('customer', { id }),
@@ -134,21 +127,6 @@ export function CustomerSheet(props: {
     enabled: id > 0,
     meta: { errorToast: false },
   })
-  const price = useVerifiedOwnerMutation<string | null>({
-    action: 'pricing',
-    target: () => id,
-    run: (value, proof) =>
-      savePricing(
-        {
-          default_markup: value ?? undefined,
-          clear_default: value === null || undefined,
-          expected_version: detail.data?.pricing_version ?? 0,
-        },
-        proof,
-        id
-      ),
-    onSuccess: () => setMarkup(''),
-  })
   const report = useMutation({
     mutationFn: () => reportCustomer(id, reason.trim()),
     onSuccess: () => {
@@ -158,9 +136,6 @@ export function CustomerSheet(props: {
     onError: (err) => handleServerError(err),
   })
   const customer = detail.data?.customer
-  const ownMarkup = detail.data?.prices?.find(
-    (row) => row.group === '' && !row.model
-  )?.markup
 
   return (
     <Sheet
@@ -199,10 +174,6 @@ export function CustomerSheet(props: {
               </dd>
               <dt className='text-muted-foreground'>{t('Signed up')}</dt>
               <dd>{formatTimestamp(customer.created_at)}</dd>
-              <dt className='text-muted-foreground'>{t('Own price')}</dt>
-              <dd>
-                {ownMarkup ? `× ${Number(ownMarkup)}` : t('Site default')}
-              </dd>
             </dl>
             <Tabs defaultValue='logs'>
               <TabsList>
@@ -409,41 +380,6 @@ export function CustomerSheet(props: {
                 )}
               </p>
             </section>
-            <section className='space-y-2' aria-labelledby='own-price-title'>
-              <h3 id='own-price-title' className='text-sm font-medium'>
-                {t('Price for this customer')}
-              </h3>
-              <div className='flex items-end gap-2'>
-                <div className='space-y-2'>
-                  <Label htmlFor='own-markup'>{t('Markup')}</Label>
-                  <Input
-                    id='own-markup'
-                    type='number'
-                    min='0.0001'
-                    step='0.0001'
-                    value={markup}
-                    onChange={(event) => setMarkup(event.target.value)}
-                  />
-                </div>
-                <Button
-                  variant='outline'
-                  disabled={!validRetailMarkup(markup) || price.isPending}
-                  onClick={() => price.mutate(markup)}
-                >
-                  {t('Save')}
-                </Button>
-                {ownMarkup && (
-                  <Button
-                    variant='outline'
-                    disabled={price.isPending}
-                    onClick={() => price.mutate(null)}
-                  >
-                    {t('Use site default')}
-                  </Button>
-                )}
-              </div>
-            </section>
-            <PricingHistory key={id} customerId={id} />
             <section className='space-y-2' aria-labelledby='report-title'>
               <h3 id='report-title' className='text-sm font-medium'>
                 {t('Report this customer')}
@@ -472,7 +408,6 @@ export function CustomerSheet(props: {
           creditIntentRef.current = null
           setCreditAmount('')
           setCreditReason('')
-          setMarkup('')
           setReason('')
           props.onOpenChange(false)
         }}

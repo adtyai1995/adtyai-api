@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -63,17 +64,11 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 			}
 		}
 
-		allowedGroups := make([]string, 0, len(candidates))
-		for _, group := range candidates {
-			if service.GroupModelAllowed(group, item.ModelName) {
-				allowedGroups = append(allowedGroups, group)
-			}
-		}
-		if len(allowedGroups) == 0 {
+		if len(candidates) == 0 {
 			continue
 		}
 		copied := item
-		copied.EnableGroup = allowedGroups
+		copied.EnableGroup = candidates
 		filtered = append(filtered, copied)
 	}
 	return filtered
@@ -111,6 +106,14 @@ func GetPricing(c *gin.Context) {
 			continue
 		}
 		usableGroup[g] = desc
+	}
+	for g := range groupRatio {
+		if g == "" || g == "auto" || !service.SiteGroupAllowed(siteID, g) {
+			continue
+		}
+		if _, ok := usableGroup[g]; !ok {
+			usableGroup[g] = setting.GetUsableGroupDescription(g)
+		}
 	}
 	if desc, ok := rawUsable["auto"]; ok && (siteID == 0 || len(usableGroup) > 0) {
 		usableGroup["auto"] = desc

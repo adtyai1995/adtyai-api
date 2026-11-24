@@ -24,7 +24,6 @@ import {
   PowerOff,
   ArrowUp,
   ArrowDown,
-  KeyRound,
   ShieldAlert,
   Link2,
   Gift,
@@ -52,7 +51,7 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { AuthOperationError } from '@/lib/secure-verification'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { manageUser, resetUserPasskey, resetUserTwoFA } from '../api'
+import { manageUser, resetUserTwoFA } from '../api'
 import {
   USER_STATUS,
   USER_ROLE,
@@ -87,7 +86,6 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     requestVerification,
     verificationActive,
   } = useUsers()
-  const [resetPasskeyOpen, setResetPasskeyOpen] = useState(false)
   const [resetTwoFAOpen, setResetTwoFAOpen] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
   const [giftOpen, setGiftOpen] = useState(false)
@@ -126,35 +124,6 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         AuthOperationError.from(error),
         t(ERROR_MESSAGES.UNEXPECTED)
       )
-    }
-  }
-
-  const handleResetPasskey = async () => {
-    try {
-      const proof = await requestVerification({
-        scope: 'admin.user.passkey.reset',
-        context: { user_id: user.id },
-        title: t('Verify to reset Passkey'),
-        description: t(
-          'Confirm your identity before changing the account {{username}}.',
-          { username: user.username }
-        ),
-      })
-      if (!proof) return
-      const result = await resetUserPasskey(user.id, proof.proof_token)
-      if (result.success) {
-        toast.success(t('Passkey reset successfully'))
-        triggerRefresh()
-      } else {
-        handleServerError(result, t('Failed to reset Passkey'))
-      }
-    } catch (error) {
-      handleServerError(
-        AuthOperationError.from(error),
-        t(ERROR_MESSAGES.UNEXPECTED)
-      )
-    } finally {
-      setResetPasskeyOpen(false)
     }
   }
 
@@ -292,19 +261,6 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         <DropdownMenuItem
           onSelect={(event) => {
             event.preventDefault()
-            setResetPasskeyOpen(true)
-          }}
-          disabled={isRoot || !canWrite}
-        >
-          {t('Reset Passkey')}
-          <DropdownMenuShortcut>
-            <KeyRound size={16} />
-          </DropdownMenuShortcut>
-        </DropdownMenuItem>
-
-        <DropdownMenuItem
-          onSelect={(event) => {
-            event.preventDefault()
             setResetTwoFAOpen(true)
           }}
           disabled={isRoot || !canWrite}
@@ -328,18 +284,6 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuShortcut>
         </DropdownMenuItem>
       </DataTableRowActionMenu>
-
-      <ConfirmDialog
-        open={resetPasskeyOpen && !verificationActive}
-        onOpenChange={setResetPasskeyOpen}
-        title={t('Reset Passkey')}
-        desc={t(
-          'Reset Passkey for {{username}}? The user will need to register a new Passkey before using passwordless login.',
-          { username: user.username }
-        )}
-        confirmText={t('Reset Passkey')}
-        handleConfirm={handleResetPasskey}
-      />
 
       <ConfirmDialog
         open={resetTwoFAOpen && !verificationActive}

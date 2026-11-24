@@ -233,8 +233,8 @@ func GetMidjourney(c *gin.Context) {
 }
 
 func GetHomePageContent(c *gin.Context) {
-	if service.AdtySiteForRequest(c) != nil {
-		serveRevalidatedJSON(c, "")
+	if site := service.AdtySiteForRequest(c); site != nil {
+		serveRevalidatedJSON(c, site.HomePageContent)
 		return
 	}
 	common.OptionMapRWMutex.RLock()

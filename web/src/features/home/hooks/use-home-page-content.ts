@@ -21,7 +21,6 @@ import { useEffect, useState } from 'react'
 
 import { isHttpUrl } from '@/lib/content-format'
 import { handleServerError } from '@/lib/handle-server-error'
-import { subsiteDocument } from '@/lib/subsite-document'
 
 import { getHomePageContent } from '../api'
 import type { HomePageContentResult } from '../types'
@@ -42,8 +41,8 @@ export function useHomePageContent(): HomePageContentResult {
     const loadContent = async () => {
       try {
         try {
-          // Load from localStorage first for immediate display
-          const cached = !subsiteDocument() && window.localStorage.getItem(STORAGE_KEY)
+          // Load from localStorage first for immediate display (each domain origin has isolated storage)
+          const cached = window.localStorage.getItem(STORAGE_KEY)
           if (cached && mounted) {
             setContent(cached)
           }

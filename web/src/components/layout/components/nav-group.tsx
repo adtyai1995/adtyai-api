@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -46,15 +47,14 @@ import {
   SidebarMenuSubItem,
   useSidebar,
 } from '@/components/ui/sidebar'
+import { clearSidebarBadgesForPath } from '@/hooks/use-sidebar-badges'
 
 import { checkIsActive } from '../lib/url-utils'
 import type {
   NavCollapsible,
-  NavChatPresets,
   NavLink,
   NavGroup as NavGroupProps,
 } from '../types'
-import { ChatPresetsItem } from './chat-presets-item'
 
 /**
  * Sidebar navigation group component
@@ -73,9 +73,9 @@ export function NavGroup({ title, items }: NavGroupProps) {
         {items.map((item) => {
           const key = `${item.title}-${item.url || item.type}`
 
-          // Special handling: dynamic chat presets list
+          // R-32 #14: Chat presets have been removed from sidebar navigation.
           if (item.type === 'chat-presets') {
-            return <ChatPresetsItem key={key} item={item as NavChatPresets} />
+            return null
           }
 
           // If no sub-items, render regular link
@@ -117,12 +117,34 @@ function NavBadge({ children }: { children: ReactNode }) {
   return <Badge className='shrink-0 px-1 py-0 text-xs'>{children}</Badge>
 }
 
+function resolveNavLinkUrl(item: NavLink): string {
+  if (typeof item.linkOptions?.to === 'string') {
+    return item.linkOptions.to
+  }
+  if (typeof item.url === 'string') {
+    return item.url
+  }
+  return ''
+}
+
 /**
  * Sidebar menu link item
  */
 function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
   const { isMobile, setOpenMobile } = useSidebar()
-  const linkProps = { preload: isMobile ? false as const : undefined, onClick: () => setOpenMobile(false) }
+  const queryClient = useQueryClient()
+  const handleClick = () => {
+    setOpenMobile(false)
+    clearSidebarBadgesForPath(
+      queryClient,
+      resolveNavLinkUrl(item),
+      Boolean(item.badge)
+    )
+  }
+  const linkProps = {
+    preload: isMobile ? (false as const) : undefined,
+    onClick: handleClick,
+  }
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
@@ -130,9 +152,11 @@ function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
         tooltip={item.title}
         title={item.title}
         render={
-          item.linkOptions
-            ? <Link {...item.linkOptions} {...linkProps} />
-            : <Link to={item.url} {...linkProps} />
+          item.linkOptions ? (
+            <Link {...item.linkOptions} {...linkProps} />
+          ) : (
+            <Link to={item.url} {...linkProps} />
+          )
         }
       >
         {item.icon && <item.icon className='shrink-0' />}

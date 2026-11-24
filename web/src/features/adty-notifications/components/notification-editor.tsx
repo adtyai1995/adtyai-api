@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useId, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useId, useMemo, useState } from 'react'
+import { Controller, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -35,7 +35,6 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { Textarea } from '@/components/ui/textarea'
 import { DraftDiscardDialog } from '@/features/system-settings/components/draft-discard-dialog'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { getUserSites } from '@/features/users/api'
@@ -51,12 +50,59 @@ import {
   type Publication,
 } from '../api'
 import {
-  notificationAudienceLabels,
-  notificationDraftSchema,
+  getNotificationPlainLength,
+  MAX_NOTIFICATION_PLAIN_LENGTH,
+  sanitizeNotificationHtml,
+  toInitialEditorHtml,
+} from '../lib/rich-text'
+import {
+  createNotificationSchema,
+  deriveLegacyAudience,
   notificationKindLabels,
-  notificationSchema,
+  resolveInitialTargets,
   type NotificationInput,
+  type NotificationTargetAudience,
 } from '../lib/schema'
+import { RichNotificationEditor } from './rich-notification-editor'
+
+interface AudienceOption {
+  value: NotificationTargetAudience
+  labelKey: string
+  descriptionKey?: string
+}
+
+const ROOT_AUDIENCE_OPTIONS: readonly AudienceOption[] = [
+  {
+    value: 'main_users',
+    labelKey: 'Main-site users (main site only)',
+  },
+  {
+    value: 'all_site_owners',
+    labelKey: 'All subsite owners',
+  },
+  {
+    value: 'site_users',
+    labelKey: 'Specific subsite(s) all users',
+    descriptionKey: 'Includes all users and teams of the selected subsites',
+  },
+  {
+    value: 'main_teams',
+    labelKey: 'Main-site teams',
+  },
+]
+
+const OWNER_AUDIENCE_OPTIONS: readonly AudienceOption[] = [
+  {
+    value: 'site_users',
+    labelKey: 'Subsite users',
+    descriptionKey: 'All users of this site',
+  },
+  {
+    value: 'site_teams',
+    labelKey: 'Subsite team users',
+    descriptionKey: 'All team users of this site',
+  },
+]
 
 export function NotificationEditor(props: {
   mode: NotificationMode
@@ -69,44 +115,56 @@ export function NotificationEditor(props: {
   const id = useId()
   const client = useQueryClient()
   const [discarding, setDiscarding] = useState(false)
-  const parseTargetId = (raw: string | undefined, prefix: string): number => {
-    if (!raw || !raw.startsWith(prefix)) return 0
-    const parsed = Number.parseInt(raw.slice(prefix.length), 10)
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : 0
-  }
+
+  const publishSchema = useMemo(
+    () => createNotificationSchema(props.mode, false),
+    [props.mode]
+  )
+  const draftSchema = useMemo(
+    () => createNotificationSchema(props.mode, true),
+    [props.mode]
+  )
+
+  const initialTargets = useMemo(
+    () => resolveInitialTargets(props.mode, props.row),
+    [props.mode, props.row]
+  )
+
   const form = useForm<NotificationInput>({
-    resolver: zodResolver(notificationSchema),
-    // 编辑既有公告时后端只回 telegram_channel / telegram_at，没有 sync_telegram
-    // 这一列；这里由「推过没有 / 填了频道」反推勾选状态，否则表单字段是 undefined，
-    // z.boolean() 会直接判无效、保存按钮永远报错。
+    resolver: zodResolver(publishSchema),
     defaultValues: props.row
       ? {
-          ...props.row,
-          target_team_id:
-            props.row.target_team_id ??
-            parseTargetId(props.row.target_site_name, 'team:'),
-          target_user_id:
-            props.row.target_user_id ??
-            parseTargetId(props.row.target_site_name, 'user:'),
+          title: props.row.title ?? '',
+          content: toInitialEditorHtml(
+            props.row.content ?? '',
+            props.row.content_format
+          ),
+          content_format: 'html',
+          kind: props.row.kind ?? 'platform',
+          audience: props.row.audience ?? (props.mode === 'owner' ? 'site' : 'all_users'),
+          target_audiences: initialTargets.target_audiences,
+          target_site_ids: initialTargets.target_site_ids,
+          target_site_id: props.row.target_site_id ?? props.siteId,
+          target_team_id: props.row.target_team_id ?? 0,
+          target_user_id: props.row.target_user_id ?? 0,
+          business: props.row.business ?? '',
           sync_telegram:
-            (props.mode === 'root' ||
-              props.row.audience === 'team' ||
-              props.row.audience === 'user') &&
+            props.mode === 'root' &&
             ((props.row.telegram_at ?? 0) > 0 ||
               Boolean(props.row.telegram_channel)),
           telegram_channel:
-            props.mode === 'owner' ||
-            props.row.audience === 'team' ||
-            props.row.audience === 'user' ||
-            props.row.telegram_channel === '@private'
+            props.mode === 'owner' || props.row.telegram_channel === '@private'
               ? ''
               : (props.row.telegram_channel ?? ''),
         }
       : {
           title: '',
           content: '',
+          content_format: 'html',
           kind: 'platform',
           audience: props.mode === 'owner' ? 'site' : 'all_users',
+          target_audiences: initialTargets.target_audiences,
+          target_site_ids: initialTargets.target_site_ids,
           target_site_id: props.siteId,
           target_team_id: 0,
           target_user_id: 0,
@@ -115,59 +173,65 @@ export function NotificationEditor(props: {
           telegram_channel: '',
         },
   })
-  const audience = form.watch('audience')
+
+  const targetAudiences = form.watch('target_audiences')
+  const targetSiteIds = form.watch('target_site_ids')
+  const contentValue = form.watch('content')
   const syncTelegram = form.watch('sync_telegram')
-  const canSyncTelegram =
-    props.mode === 'root' || audience === 'team' || audience === 'user'
-  const parseNumericTarget = (value: string): number => {
-    const trimmedValue = String(value ?? '').trim()
-    if (trimmedValue === '') return 0
-    const parsed = Number(trimmedValue)
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  const audienceRegister = form.register('audience', {
-    onChange: (event) => {
-      const nextAudience = String(
-        event.target.value
-      ) as NotificationInput['audience']
-      const nextCanSync =
-        props.mode === 'root' ||
-        nextAudience === 'team' ||
-        nextAudience === 'user'
-      if (!nextCanSync) {
-        form.setValue('sync_telegram', false)
-        form.setValue('telegram_channel', '')
-        form.clearErrors('telegram_channel')
-      } else if (nextAudience === 'team' || nextAudience === 'user') {
-        form.setValue('telegram_channel', '')
-        form.clearErrors('telegram_channel')
-      }
-      if (nextAudience !== 'team') {
-        form.setValue('target_team_id', 0)
-        form.clearErrors('target_team_id')
-      }
-      if (nextAudience !== 'user') {
-        form.setValue('target_user_id', 0)
-        form.clearErrors('target_user_id')
-      }
-      if (nextAudience !== 'site') {
-        form.setValue(
-          'target_site_id',
-          props.mode === 'owner' ? props.siteId : 0
-        )
-        form.clearErrors('target_site_id')
-      }
-    },
-  })
+
+  const plainLength = getNotificationPlainLength(contentValue)
+  const isContentOverLimit = plainLength > MAX_NOTIFICATION_PLAIN_LENGTH
+  const showSubsitePicker =
+    props.mode === 'root' && targetAudiences.includes('site_users')
+  const canSyncTelegram = props.mode === 'root'
+
   useDraftNavigation(form.formState.isDirty)
+
   const sites = useQuery({
     queryKey: ['adty-notification-targets', props.userId],
     queryFn: async () => requireServerSuccess(await getUserSites()).data,
-    enabled: props.mode === 'root' && audience === 'site',
+    enabled: showSubsitePicker,
   })
-  // 草稿：还没发出去、随时可改。已发布的条目不能再退回草稿（撤回才是那个动作），
-  // 所以只在「新建」或「这条本来是草稿」时给出这个按钮。
+  const subsites = useMemo(
+    () =>
+      (Array.isArray(sites.data) ? sites.data : []).filter(
+        (site) => site.site_id > 0
+      ),
+    [sites.data]
+  )
+
   const canSaveDraft = !props.row || props.row.status === 'draft'
+
+  const preparePayload = (input: NotificationInput): NotificationInput => {
+    const sanitizedContent = sanitizeNotificationHtml(input.content)
+    const filteredSiteIds =
+      props.mode === 'root' && input.target_audiences.includes('site_users')
+        ? [...new Set(input.target_site_ids.filter((siteId) => siteId > 0))]
+        : []
+    const legacy = deriveLegacyAudience(
+      props.mode,
+      props.siteId,
+      input.target_audiences,
+      filteredSiteIds
+    )
+    return {
+      ...input,
+      content: sanitizedContent,
+      content_format: 'html',
+      audience: legacy.audience,
+      target_audiences: [...new Set(input.target_audiences)],
+      target_site_ids:
+        props.mode === 'owner' && props.siteId > 0
+          ? [props.siteId]
+          : filteredSiteIds,
+      target_site_id: legacy.target_site_id,
+      target_team_id: 0,
+      target_user_id: 0,
+      sync_telegram: canSyncTelegram ? input.sync_telegram : false,
+      telegram_channel: canSyncTelegram ? input.telegram_channel : '',
+    }
+  }
+
   const save = useMutation({
     mutationFn: (input: NotificationInput & { draft?: boolean }) => {
       const user = useAuthStore.getState().auth.user
@@ -177,22 +241,11 @@ export function NotificationEditor(props: {
       ) {
         throw new Error(t('Unauthorized, insufficient privileges'))
       }
+      const prepared = preparePayload(input)
       return savePublication(props.mode, props.row, {
-        ...input,
-        target_site_id:
-          input.audience === 'site' ? Number(input.target_site_id) || 0 : 0,
-        target_team_id:
-          input.audience === 'team' ? Number(input.target_team_id) || 0 : 0,
-        target_user_id:
-          input.audience === 'user' ? Number(input.target_user_id) || 0 : 0,
-        sync_telegram: canSyncTelegram ? input.sync_telegram : false,
-        telegram_channel:
-          !canSyncTelegram ||
-          input.audience === 'team' ||
-          input.audience === 'user'
-            ? ''
-            : input.telegram_channel,
-      })
+        ...prepared,
+        ...(input.draft ? { draft: true } : {}),
+      } as NotificationInput)
     },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: notificationManagerKey })
@@ -207,24 +260,50 @@ export function NotificationEditor(props: {
     },
     onError: (error) => handleServerError(error),
   })
+
   const close = () => {
     if (save.isPending) return
     if (form.formState.isDirty) setDiscarding(true)
     else props.onClose()
   }
+
+  const toggleAudience = (
+    audienceKey: NotificationTargetAudience,
+    checked: boolean
+  ) => {
+    const current = form.getValues('target_audiences')
+    const next = checked
+      ? [...new Set([...current, audienceKey])]
+      : current.filter((item) => item !== audienceKey)
+    form.setValue('target_audiences', next, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    if (audienceKey === 'site_users' && !checked) {
+      form.setValue('target_site_ids', [], { shouldDirty: true })
+      form.clearErrors('target_site_ids')
+    }
+  }
+
+  const toggleSubsite = (siteId: number, checked: boolean) => {
+    const current = form.getValues('target_site_ids')
+    const next = checked
+      ? [...new Set([...current, siteId])]
+      : current.filter((existing) => existing !== siteId)
+    form.setValue('target_site_ids', next, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+  }
+
   const handleDraftSave = () => {
     form.clearErrors()
     const raw = form.getValues()
-    const parsed = notificationDraftSchema.safeParse({
+    const parsed = draftSchema.safeParse({
       ...raw,
-      target_site_id: Number(raw.target_site_id) || 0,
-      target_team_id: Number(raw.target_team_id) || 0,
-      target_user_id: Number(raw.target_user_id) || 0,
+      content_format: 'html',
       sync_telegram: canSyncTelegram ? raw.sync_telegram : false,
-      telegram_channel:
-        !canSyncTelegram || raw.audience === 'team' || raw.audience === 'user'
-          ? ''
-          : raw.telegram_channel,
+      telegram_channel: canSyncTelegram ? raw.telegram_channel : '',
     })
     if (!parsed.success) {
       for (const issue of parsed.error.issues) {
@@ -237,6 +316,9 @@ export function NotificationEditor(props: {
     }
     save.mutate({ ...parsed.data, draft: true })
   }
+
+  const audienceOptions =
+    props.mode === 'root' ? ROOT_AUDIENCE_OPTIONS : OWNER_AUDIENCE_OPTIONS
   const errors = form.formState.errors
   let submitLabel = 'Publish notification'
   if (props.row?.status === 'draft') {
@@ -244,10 +326,12 @@ export function NotificationEditor(props: {
   } else if (props.row) {
     submitLabel = 'Save changes'
   }
+
   return (
     <>
       <Dialog
         open
+        contentClassName='sm:max-w-3xl'
         onOpenChange={(open) => {
           if (!open) close()
         }}
@@ -257,14 +341,19 @@ export function NotificationEditor(props: {
         )}
         footer={
           <>
-            <Button variant='outline' disabled={save.isPending} onClick={close}>
+            <Button
+              type='button'
+              variant='outline'
+              disabled={save.isPending}
+              onClick={close}
+            >
               {t('Cancel')}
             </Button>
             {canSaveDraft && (
               <Button
                 type='button'
                 variant='secondary'
-                disabled={save.isPending}
+                disabled={save.isPending || isContentOverLimit}
                 onClick={handleDraftSave}
               >
                 {t('Save as draft')}
@@ -274,7 +363,7 @@ export function NotificationEditor(props: {
               variant='brand'
               type='submit'
               form={id}
-              disabled={save.isPending}
+              disabled={save.isPending || isContentOverLimit}
             >
               {t(submitLabel)}
             </Button>
@@ -299,20 +388,27 @@ export function NotificationEditor(props: {
                 {errors.title?.message ? t(errors.title.message) : null}
               </FieldError>
             </Field>
-            <Field data-invalid={!!errors.content}>
+
+            <Field data-invalid={!!errors.content || isContentOverLimit}>
               <FieldLabel htmlFor={`${id}-content`}>{t('Content')}</FieldLabel>
-              <Textarea
-                id={`${id}-content`}
-                maxLength={10000}
-                rows={6}
-                aria-invalid={!!errors.content}
-                disabled={save.isPending}
-                {...form.register('content')}
+              <Controller
+                control={form.control}
+                name='content'
+                render={({ field }) => (
+                  <RichNotificationEditor
+                    id={`${id}-content`}
+                    value={field.value}
+                    onChange={(nextHtml) => field.onChange(nextHtml)}
+                    disabled={save.isPending}
+                    invalid={!!errors.content || isContentOverLimit}
+                  />
+                )}
               />
               <FieldError>
                 {errors.content?.message ? t(errors.content.message) : null}
               </FieldError>
             </Field>
+
             <Field>
               <FieldLabel htmlFor={`${id}-kind`}>
                 {t('Notification type')}
@@ -331,112 +427,151 @@ export function NotificationEditor(props: {
                 )}
               </NativeSelect>
             </Field>
-            <Field>
-              <FieldLabel htmlFor={`${id}-audience`}>
-                {t('Recipients')}
-              </FieldLabel>
-              <NativeSelect
-                id={`${id}-audience`}
-                disabled={save.isPending}
-                {...audienceRegister}
-              >
-                {Object.entries(notificationAudienceLabels)
-                  .filter(
-                    ([value]) =>
-                      props.mode === 'root' ||
-                      value === 'site' ||
-                      value === 'team' ||
-                      value === 'user'
+
+            <Field data-invalid={!!errors.target_audiences}>
+              <FieldLabel>{t('Recipients')}</FieldLabel>
+              <div className='grid gap-2 rounded-lg border p-3 sm:grid-cols-2'>
+                {audienceOptions.map((option) => {
+                  const checkboxId = `${id}-audience-${option.value}`
+                  const isChecked = targetAudiences.includes(option.value)
+                  return (
+                    <div key={option.value} className='flex items-start gap-2.5'>
+                      <Checkbox
+                        id={checkboxId}
+                        disabled={save.isPending}
+                        checked={isChecked}
+                        onCheckedChange={(checked) =>
+                          toggleAudience(option.value, checked === true)
+                        }
+                      />
+                      <div className='min-w-0 leading-snug'>
+                        <Label
+                          htmlFor={checkboxId}
+                          className='cursor-pointer text-sm font-normal'
+                        >
+                          {t(option.labelKey)}
+                        </Label>
+                        {option.descriptionKey && (
+                          <p className='text-muted-foreground mt-0.5 text-xs'>
+                            {t(option.descriptionKey)}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   )
-                  .map(([value, label]) => (
-                    <NativeSelectOption key={value} value={value}>
-                      {t(label)}
-                    </NativeSelectOption>
-                  ))}
-              </NativeSelect>
+                })}
+              </div>
+              <FieldError>
+                {errors.target_audiences?.message
+                  ? t(errors.target_audiences.message)
+                  : null}
+              </FieldError>
             </Field>
-            {audience === 'team' && (
-              <Field data-invalid={!!errors.target_team_id}>
-                <FieldLabel htmlFor={`${id}-team`}>
-                  {t('Target team ID')}
-                </FieldLabel>
-                <Input
-                  id={`${id}-team`}
-                  type='number'
-                  min={1}
-                  step={1}
-                  aria-invalid={!!errors.target_team_id}
-                  disabled={save.isPending}
-                  {...form.register('target_team_id', {
-                    setValueAs: parseNumericTarget,
-                  })}
-                />
-                <FieldError>
-                  {errors.target_team_id?.message
-                    ? t(errors.target_team_id.message)
-                    : null}
-                </FieldError>
-              </Field>
-            )}
-            {audience === 'user' && (
-              <Field data-invalid={!!errors.target_user_id}>
-                <FieldLabel htmlFor={`${id}-user`}>
-                  {t('Target user ID')}
-                </FieldLabel>
-                <Input
-                  id={`${id}-user`}
-                  type='number'
-                  min={1}
-                  step={1}
-                  aria-invalid={!!errors.target_user_id}
-                  disabled={save.isPending}
-                  {...form.register('target_user_id', {
-                    setValueAs: parseNumericTarget,
-                  })}
-                />
-                <FieldError>
-                  {errors.target_user_id?.message
-                    ? t(errors.target_user_id.message)
-                    : null}
-                </FieldError>
-              </Field>
-            )}
-            {props.mode === 'root' && audience === 'site' && (
-              <Field data-invalid={!!errors.target_site_id}>
-                <FieldLabel htmlFor={`${id}-site`}>{t('Site')}</FieldLabel>
-                <NativeSelect
-                  id={`${id}-site`}
-                  disabled={save.isPending || sites.isLoading || sites.isError}
-                  aria-invalid={!!errors.target_site_id}
-                  {...form.register('target_site_id', { valueAsNumber: true })}
-                >
-                  <NativeSelectOption value={0}>
-                    {t('Select a site')}
-                  </NativeSelectOption>
-                  {(Array.isArray(sites.data) ? sites.data : [])
-                    .filter((site) => site.site_id > 0)
-                    .map((site) => (
-                      <NativeSelectOption
-                        key={site.site_id}
-                        value={site.site_id}
+
+            {showSubsitePicker && (
+              <Field data-invalid={!!errors.target_site_ids}>
+                <div className='flex flex-wrap items-center justify-between gap-2'>
+                  <FieldLabel>
+                    {t('Select subsites')}
+                    {targetSiteIds.length > 0 && (
+                      <span className='text-muted-foreground ml-1.5 text-xs font-normal'>
+                        {t('Selected subsites ({{count}})', {
+                          count: targetSiteIds.length,
+                        })}
+                      </span>
+                    )}
+                  </FieldLabel>
+                  {subsites.length > 0 && (
+                    <div className='flex items-center gap-1.5'>
+                      <Button
+                        type='button'
+                        size='xs'
+                        variant='outline'
+                        disabled={save.isPending}
+                        onClick={() =>
+                          form.setValue(
+                            'target_site_ids',
+                            subsites.map((site) => site.site_id),
+                            { shouldDirty: true, shouldValidate: true }
+                          )
+                        }
                       >
-                        {site.site_name}
-                      </NativeSelectOption>
-                    ))}
-                </NativeSelect>
-                <FieldError>
-                  {errors.target_site_id?.message
-                    ? t(errors.target_site_id.message)
-                    : null}
-                </FieldError>
+                        {t('Select all')}
+                      </Button>
+                      <Button
+                        type='button'
+                        size='xs'
+                        variant='ghost'
+                        disabled={save.isPending || targetSiteIds.length === 0}
+                        onClick={() =>
+                          form.setValue('target_site_ids', [], {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          })
+                        }
+                      >
+                        {t('Clear')}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                {sites.isLoading && (
+                  <p className='text-muted-foreground text-sm'>
+                    {t('Loading...')}
+                  </p>
+                )}
                 {sites.isError && (
                   <ErrorState
                     className='min-h-24'
                     onRetry={() => void sites.refetch()}
                   />
                 )}
+                {sites.isSuccess && subsites.length === 0 && (
+                  <p className='text-muted-foreground text-sm'>
+                    {t('No subsites available')}
+                  </p>
+                )}
+                {sites.isSuccess && subsites.length > 0 && (
+                  <div className='max-h-44 overflow-y-auto rounded-lg border p-3'>
+                    <div className='grid gap-2 sm:grid-cols-2'>
+                      {subsites.map((site) => {
+                        const siteCheckboxId = `${id}-site-${site.site_id}`
+                        const isChecked = targetSiteIds.includes(site.site_id)
+                        return (
+                          <div
+                            key={site.site_id}
+                            className='flex items-center gap-2'
+                          >
+                            <Checkbox
+                              id={siteCheckboxId}
+                              disabled={save.isPending}
+                              checked={isChecked}
+                              onCheckedChange={(checked) =>
+                                toggleSubsite(site.site_id, checked === true)
+                              }
+                            />
+                            <Label
+                              htmlFor={siteCheckboxId}
+                              className='min-w-0 cursor-pointer truncate text-sm font-normal'
+                              title={site.site_name}
+                            >
+                              {site.site_name}
+                            </Label>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                <FieldError>
+                  {errors.target_site_ids?.message
+                    ? t(errors.target_site_ids.message)
+                    : null}
+                </FieldError>
               </Field>
             )}
+
             {canSyncTelegram && (
               <Field>
                 <div className='flex items-center gap-2'>
@@ -456,32 +591,28 @@ export function NotificationEditor(props: {
                 </div>
               </Field>
             )}
-            {canSyncTelegram &&
-              syncTelegram &&
-              (audience === 'team' || audience === 'user' ? (
-                <p className='text-muted-foreground text-sm'>
-                  {t('Will be sent privately to bound recipients via Telegram.')}
-                </p>
-              ) : (
-                <Field data-invalid={!!errors.telegram_channel}>
-                  <FieldLabel htmlFor={`${id}-telegram-channel`}>
-                    {t('Telegram channel')}
-                  </FieldLabel>
-                  <Input
-                    id={`${id}-telegram-channel`}
-                    maxLength={128}
-                    placeholder='@your_channel'
-                    aria-invalid={!!errors.telegram_channel}
-                    disabled={save.isPending}
-                    {...form.register('telegram_channel')}
-                  />
-                  <FieldError>
-                    {errors.telegram_channel?.message
-                      ? t(errors.telegram_channel.message)
-                      : null}
-                  </FieldError>
-                </Field>
-              ))}
+
+            {canSyncTelegram && syncTelegram && (
+              <Field data-invalid={!!errors.telegram_channel}>
+                <FieldLabel htmlFor={`${id}-telegram-channel`}>
+                  {t('Telegram channel')}
+                </FieldLabel>
+                <Input
+                  id={`${id}-telegram-channel`}
+                  maxLength={128}
+                  placeholder='@your_channel'
+                  aria-invalid={!!errors.telegram_channel}
+                  disabled={save.isPending}
+                  {...form.register('telegram_channel')}
+                />
+                <FieldError>
+                  {errors.telegram_channel?.message
+                    ? t(errors.telegram_channel.message)
+                    : null}
+                </FieldError>
+              </Field>
+            )}
+
             <Field data-invalid={!!errors.business}>
               <FieldLabel htmlFor={`${id}-business`}>
                 {t('Related business')}

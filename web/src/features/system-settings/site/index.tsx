@@ -21,14 +21,17 @@ import { ADTY_BRAND_NAME } from '@/lib/adty-brand'
 import { SettingsPage } from '../components/settings-page'
 import type { SiteSettings } from '../types'
 import { ADTY_SEO_OPTION_DEFAULTS } from './adty-seo-defaults'
-import { ADTY_SITE_OPTION_DEFAULTS } from './adty-site-defaults'
+import {
+  ADTY_SITE_OPTION_DEFAULTS,
+  type AdtySiteOptionSettings,
+} from './adty-site-defaults'
 import {
   SITE_DEFAULT_SECTION,
   getSiteSectionContent,
   getSiteSectionMeta,
 } from './section-registry.tsx'
 
-const defaultSiteSettings: SiteSettings = {
+const defaultSiteSettings: SiteSettings & AdtySiteOptionSettings = {
   Notice: '',
   SystemName: ADTY_BRAND_NAME,
   Logo: '',

@@ -35,7 +35,13 @@ export type AdtySite = {
   refund_policy_enabled: boolean
   /** Minimum top-up in USD (Top-up settings); missing on older servers. */
   min_topup?: number
+  /** Optional notice banner rendered on the wallet page (R-32 #11). */
+  wallet_notice?: string
+  /** Optional external URL for purchasing redemption codes / vouchers (R-32 #11). */
+  voucher_purchase_url?: string
 }
+
+export type AdtySiteConfig = AdtySite
 
 export const adtySiteQueryKey = ['adty', 'site'] as const
 

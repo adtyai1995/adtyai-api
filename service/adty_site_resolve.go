@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -337,9 +338,16 @@ func AdtyIsCustomDomainHost(host string) bool {
 }
 
 func AdtySiteForHost(host string) *model.AdtySite {
+	site, _ := AdtySiteForHostWithError(host)
+	return site
+}
+
+// AdtySiteForHostWithError distinguishes genuine database lookup errors
+// (err != nil -> 503) from missing/inactive sites (nil, nil -> 404).
+func AdtySiteForHostWithError(host string) (*model.AdtySite, error) {
 	host = AdtyNormalizeHost(host)
 	if host == "" {
-		return nil
+		return nil, nil
 	}
 	snapshot := loadAdtySiteSnapshot()
 	site := snapshot.byCustom[host]
@@ -347,35 +355,44 @@ func AdtySiteForHost(host string) *model.AdtySite {
 		site = snapshot.byHost[host]
 	}
 	if site == nil {
-		return nil
+		return nil, nil
 	}
 	// Read the authoritative status so a close on another instance wins over
-	// the local branding cache. A database failure must not serve stale business.
+	// the local branding cache. A database failure must not serve stale business
+	// nor trigger a false 404 logout on subsites (R-32 #26).
 	var current model.AdtySite
-	if err := model.DB.Select("id", "status", "close_transfer_to").First(&current, site.Id).Error; err != nil {
-		return nil
+	if err := model.DB.Select("id", "status", "close_transfer_to", "home_page_content", "archived_hidden_at").First(&current, site.Id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	var binding model.AdtySiteDomain
 	if err := model.DB.Where("hostname = ?", host).Limit(1).Find(&binding).Error; err != nil {
-		return nil
+		return nil, err
 	}
 	if binding.Id > 0 && (binding.SiteId != site.Id || binding.Status != model.AdtySiteDomainActive || binding.DesiredState == "removed" || (binding.Role == model.AdtySiteDomainRoleBaseURL) != snapshot.apiOnly[host]) {
-		return nil
+		return nil, nil
 	}
 	copy := *site
 	copy.Status, copy.CloseTransferTo = current.Status, current.CloseTransferTo
-	return &copy
+	copy.HomePageContent = current.HomePageContent
+	copy.ArchivedHiddenAt = current.ArchivedHiddenAt
+	return &copy, nil
 }
 
 // AdtyRejectSessionAPIStatus 判断这个 Host 能不能调用登录、注册、验证码和找回密码。
 // 主站、还在服务的平台子域名和还在服务的自定义域名返回 0（自定义域名承接完整客户端体验）。
-// 已关闭、已停止服务的站返回 403，其余 Host 返回 404。
+// 已关闭、已停止服务的站返回 403，数据库瞬时异常返回 503，其余 Host 返回 404。
 func AdtyRejectSessionAPIStatus(host string) int {
 	host = AdtyNormalizeHost(host)
 	if host == "" || AdtyIsMainHost(host) || !resellerSetting().Enabled {
 		return 0
 	}
-	site := AdtySiteForHost(host)
+	site, err := AdtySiteForHostWithError(host)
+	if err != nil {
+		return http.StatusServiceUnavailable
+	}
 	if site == nil {
 		return http.StatusNotFound
 	}
@@ -519,9 +536,6 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 	data["theme_color"] = brand.ThemeColor
 	data["server_address"] = AdtySiteAPIBaseURL(site)
 	data["adty_site"] = map[string]any{"id": site.Id, "status": site.Status, "subdomain": site.Subdomain}
-	if version := adty_setting.GetLegalSetting().SiteCustomerTermsVersion; version > 0 {
-		data["site_customer_terms_version"] = version
-	}
 	for _, key := range []string{"github_oauth", "discord_oauth", "linuxdo_oauth", "telegram_oauth", "wechat_login", "oidc_enabled", "passkey_login"} {
 		data[key] = false
 	}
@@ -605,33 +619,20 @@ func AdtyMainLegalConsentRequired() bool {
 	return strings.TrimSpace(legal.UserAgreement) != "" || strings.TrimSpace(legal.PrivacyPolicy) != ""
 }
 
-// AdtyRegisterTermsAccepted 是分站注册的客户条款检查（11.7）。主站，或条款还没发布
-// （版本号为 0）时直接通过。分站上必须带查询参数 site_terms_version，而且等于当前版本。
+// AdtyRegisterTermsAccepted always returns true after R-32 (#9) cancelled
+// subsite agreements and subsite customer terms.
 func AdtyRegisterTermsAccepted(c *gin.Context, siteId int) bool {
-	if siteId <= 0 || adty_setting.GetLegalSetting().SiteCustomerTermsVersion <= 0 {
-		return true
-	}
-	if c == nil || c.Request == nil {
-		return false
-	}
-	return adtyRequestSiteTermsVersion(c) == AdtyCurrentSiteCustomerTermsVersion()
+	return true
 }
 
 func adtyRequestSiteTermsVersion(c *gin.Context) string {
 	return strings.TrimSpace(c.Query("site_terms_version"))
 }
 
-// AdtyAcceptedSiteCustomerTerms 返回这次注册可以写入客户行的条款版本。版本没发布，
-// 或查询参数不是当前版本时返回空，调用方不写 TermsVersion。
+// AdtyAcceptedSiteCustomerTerms returns empty string after R-32 (#9) cancelled
+// subsite customer terms.
 func AdtyAcceptedSiteCustomerTerms(c *gin.Context) string {
-	if c == nil || c.Request == nil || adty_setting.GetLegalSetting().SiteCustomerTermsVersion <= 0 {
-		return ""
-	}
-	current := AdtyCurrentSiteCustomerTermsVersion()
-	if adtyRequestSiteTermsVersion(c) != current {
-		return ""
-	}
-	return current
+	return ""
 }
 
 // AdtyCheckSiteCustomerRisk 由 11.5 注册：注册时按指纹判断疑似自用、疑似主站迁移，返回风控标记和原因。

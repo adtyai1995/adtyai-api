@@ -90,6 +90,8 @@ export async function getFlowQuotaDates(
   return res.data
 }
 
+export const UPTIME_STATUS_QUERY_KEY = ['uptime', 'status'] as const
+
 // Get uptime monitoring status for all services
 export async function getUptimeStatus() {
   const res = await api.get<{
@@ -99,5 +101,26 @@ export async function getUptimeStatus() {
     message_key?: string
     message_params?: Record<string, unknown>
   }>('/api/uptime/status')
+  return res.data
+}
+
+// Fetch monitor names from an Uptime Kuma status page (admin only)
+export async function getUptimeMonitors(params: {
+  url?: string
+  slug: string
+}) {
+  const res = await api.get<{
+    success: boolean
+    data?: string[]
+    message?: string
+    message_key?: string
+    message_params?: Record<string, unknown>
+  }>('/api/uptime/monitors', {
+    params: {
+      ...(params.url?.trim() ? { url: params.url.trim() } : {}),
+      slug: params.slug.trim(),
+    },
+    disableDuplicate: true,
+  })
   return res.data
 }

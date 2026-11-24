@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
+import { ExternalLink } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -24,11 +25,19 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useAdtySite } from '@/features/adty-site/api'
 import { api } from '@/lib/api'
+import { isHttpUrl } from '@/lib/content-format'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 
 export function VoucherRedeemCard(props: { onRedeemed: () => void }) {
   const { t } = useTranslation()
+  const siteQuery = useAdtySite()
+  const rawPurchaseUrl = siteQuery.data?.voucher_purchase_url?.trim() ?? ''
+  const purchaseUrl =
+    rawPurchaseUrl && !rawPurchaseUrl.includes('\\') && isHttpUrl(rawPurchaseUrl)
+      ? rawPurchaseUrl
+      : ''
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [tradeNo, setTradeNo] = useState('')
@@ -79,20 +88,37 @@ export function VoucherRedeemCard(props: { onRedeemed: () => void }) {
               onChange={(event) => setCode(event.target.value)}
             />
           </div>
-          <Button
-            type='button'
-            disabled={pending || code.trim() === ''}
-            onClick={() => void submit()}
-          >
-            {t('Redeem')}
-          </Button>
+          <div className='flex flex-wrap items-center gap-2'>
+            <Button
+              type='button'
+              disabled={pending || code.trim() === ''}
+              onClick={() => void submit()}
+            >
+              {t('Redeem')}
+            </Button>
+            {purchaseUrl && (
+              <Button
+                variant='brand'
+                render={
+                  <a
+                    href={purchaseUrl}
+                    target='_blank'
+                    rel='noopener noreferrer'
+                  />
+                }
+              >
+                <ExternalLink aria-hidden='true' />
+                {t('Purchase Redemption Code')}
+              </Button>
+            )}
+          </div>
         </div>
         {error && <p className='text-destructive text-sm'>{error}</p>}
         {tradeNo && (
           <p className='text-sm'>
             {t('Redeemed as order {{trade}}', { trade: tradeNo })}{' '}
             <Link
-              to='/profile'
+              to='/support'
               hash={`ticket:voucher:${encodeURIComponent(tradeNo)}`}
               className='underline'
             >

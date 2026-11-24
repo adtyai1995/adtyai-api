@@ -23,6 +23,7 @@ type AdtySiteWithdrawal struct {
 	Network        string          `json:"network" gorm:"type:varchar(16)"`
 	AccountNo      string          `json:"account_no" gorm:"type:varchar(128)"`
 	AccountName    string          `json:"account_name" gorm:"type:varchar(128)"`
+	QRImageURL     string          `json:"qr_image_url" gorm:"type:varchar(512)"`
 	Rate           string          `json:"rate" gorm:"type:varchar(32)"`
 	PayoutAmount   string          `json:"payout_amount" gorm:"type:varchar(32)"`
 	PayoutCurrency string          `json:"payout_currency" gorm:"type:varchar(8)"`

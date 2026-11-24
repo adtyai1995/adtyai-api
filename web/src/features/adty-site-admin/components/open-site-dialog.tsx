@@ -17,37 +17,34 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, CheckCircle2, Search } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { CheckCircle2, RefreshCw } from 'lucide-react'
+import { useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { CopyButton } from '@/components/copy-button'
 import { Dialog } from '@/components/dialog'
-import { ErrorState } from '@/components/error-state'
-import { LoadingState } from '@/components/loading-state'
+import { PasswordInput } from '@/components/password-input'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
-import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
-import {
-  createSite,
-  getSiteOwnerCandidates,
-  getSiteTiers,
-  siteAdminKeys,
-  type SiteOwnerCandidate,
-} from '../api'
+import { createSite, getSiteTiers, siteAdminKeys } from '../api'
+import { generateOwnerPassword } from '../lib/sites'
 import type { AdminSite, ResellerSettings } from '../types'
 
 const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,32}$/
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 function newOpenIdempotencyKey(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -68,11 +65,10 @@ export function OpenSiteDialog(props: {
   const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
 
-  const [keyword, setKeyword] = useState('')
-  const [debouncedKeyword, setDebouncedKeyword] = useState('')
-  const [selectedOwner, setSelectedOwner] = useState<SiteOwnerCandidate | null>(
-    null
-  )
+  const [ownerUsername, setOwnerUsername] = useState('')
+  const [ownerPassword, setOwnerPassword] = useState('')
+  const [ownerEmail, setOwnerEmail] = useState('')
+  const [ownerDisplayName, setOwnerDisplayName] = useState('')
   const [subdomainMode, setSubdomainMode] = useState<'auto' | 'custom'>('auto')
   const [subdomain, setSubdomain] = useState('')
   const [rootDomain, setRootDomain] = useState('')
@@ -81,7 +77,11 @@ export function OpenSiteDialog(props: {
   const [costFactor, setCostFactor] = useState('')
   const [contactInfo, setContactInfo] = useState('')
   const [confirmed, setConfirmed] = useState(false)
-  const [createdSite, setCreatedSite] = useState<AdminSite | null>(null)
+  const [createdResult, setCreatedResult] = useState<{
+    site: AdminSite
+    ownerUsername: string
+    ownerPassword: string
+  } | null>(null)
   const intentRef = useRef<{ payload: string; key: string } | null>(null)
 
   const roots = props.settings?.root_domains ?? []
@@ -91,18 +91,11 @@ export function OpenSiteDialog(props: {
     ? managedRoot || roots[0] || ''
     : rootDomain || roots[0] || ''
 
-  useEffect(() => {
-    const timer = window.setTimeout(
-      () => setDebouncedKeyword(keyword.trim()),
-      250
-    )
-    return () => window.clearTimeout(timer)
-  }, [keyword])
-
   const resetForm = () => {
-    setKeyword('')
-    setDebouncedKeyword('')
-    setSelectedOwner(null)
+    setOwnerUsername('')
+    setOwnerPassword('')
+    setOwnerEmail('')
+    setOwnerDisplayName('')
     setSubdomainMode('auto')
     setSubdomain('')
     setRootDomain(roots[0] ?? '')
@@ -111,33 +104,48 @@ export function OpenSiteDialog(props: {
     setCostFactor('')
     setContactInfo('')
     setConfirmed(false)
-    setCreatedSite(null)
+    setCreatedResult(null)
     intentRef.current = null
   }
-
-  const candidates = useQuery({
-    queryKey: siteAdminKeys.list('owner-candidates', {
-      keyword: debouncedKeyword,
-    }),
-    queryFn: () =>
-      getSiteOwnerCandidates({
-        keyword: debouncedKeyword,
-        p: 1,
-        page_size: 20,
-      }),
-    enabled: props.open && isRoot && createdSite === null,
-  })
 
   const tiers = useQuery({
     queryKey: siteAdminKeys.list('tiers', {}),
     queryFn: getSiteTiers,
-    enabled: props.open && isRoot && createdSite === null,
+    enabled: props.open && isRoot && createdResult === null,
   })
   const enabledTiers = (tiers.data ?? []).filter(
     (item) => item.enabled && item.cost_factor
   )
 
+  const trimmedUsername = ownerUsername.trim()
+  const trimmedEmail = ownerEmail.trim()
+  const trimmedDisplayName = ownerDisplayName.trim()
   const normalizedSub = subdomain.trim().toLowerCase()
+
+  let usernameError = ''
+  if (trimmedUsername !== '') {
+    if (trimmedUsername.length < 3 || trimmedUsername.length > 32) {
+      usernameError = t('Owner username must be 3 to 32 characters')
+    } else if (!USERNAME_PATTERN.test(trimmedUsername)) {
+      usernameError = t(
+        'Owner username may only contain letters, digits, underscores, dots, and hyphens'
+      )
+    }
+  }
+
+  let passwordError = ''
+  if (
+    ownerPassword !== '' &&
+    (ownerPassword.length < 8 || ownerPassword.length > 64)
+  ) {
+    passwordError = t('Owner password must be 8 to 64 characters')
+  }
+
+  let emailError = ''
+  if (trimmedEmail !== '' && !EMAIL_PATTERN.test(trimmedEmail)) {
+    emailError = t('Enter a valid email address')
+  }
+
   const subdomainError =
     subdomainMode === 'custom' &&
     normalizedSub !== '' &&
@@ -160,12 +168,16 @@ export function OpenSiteDialog(props: {
       if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
         throw new Error(t('No permission to perform this action'))
       }
-      if (!selectedOwner) {
-        throw new Error(t('Select owner'))
-      }
       const body: Parameters<typeof createSite>[0] = {
-        user_id: selectedOwner.id,
+        owner_username: trimmedUsername,
+        owner_password: ownerPassword,
         subdomain: subdomainMode === 'custom' ? normalizedSub : '',
+      }
+      if (trimmedEmail !== '') {
+        body.owner_email = trimmedEmail
+      }
+      if (trimmedDisplayName !== '') {
+        body.owner_display_name = trimmedDisplayName
       }
       if (!automationOn && effectiveRoot) {
         body.root_domain = effectiveRoot
@@ -191,7 +203,11 @@ export function OpenSiteDialog(props: {
     },
     onSuccess: (site) => {
       intentRef.current = null
-      setCreatedSite(site)
+      setCreatedResult({
+        site,
+        ownerUsername: site.owner_username || trimmedUsername,
+        ownerPassword,
+      })
       toast.success(t('Site opened'))
       void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
     },
@@ -199,7 +215,12 @@ export function OpenSiteDialog(props: {
   })
 
   const canSubmit =
-    Boolean(selectedOwner) &&
+    trimmedUsername !== '' &&
+    usernameError === '' &&
+    ownerPassword.length >= 8 &&
+    ownerPassword.length <= 64 &&
+    passwordError === '' &&
+    emailError === '' &&
     confirmed &&
     !openMutation.isPending &&
     (subdomainMode === 'auto' || normalizedSub !== '') &&
@@ -223,7 +244,10 @@ export function OpenSiteDialog(props: {
     previewCostFactor = `${selectedTierObj.cost_factor} (${selectedTierObj.name})`
   }
 
-  const candidateRows = candidates.data?.items ?? []
+  const createdSite = createdResult?.site ?? null
+  const createdHost = createdSite
+    ? createdSite.host || `${createdSite.subdomain}.${createdSite.root_domain}`
+    : ''
 
   return (
     <Dialog
@@ -233,26 +257,28 @@ export function OpenSiteDialog(props: {
         if (!nextOpen) resetForm()
         props.onOpenChange(nextOpen)
       }}
-      title={
-        createdSite ? t('Site opened') : t('Open a reseller site')
-      }
+      title={createdSite ? t('Site opened') : t('Open a reseller site')}
       description={
         createdSite
           ? t(
-              'Review the generated site addresses and continue to site details to monitor domain readiness or configure settings.'
+              'Save the newly created site owner credentials and review the generated site addresses below.'
             )
           : t(
-              'Designate an existing main-site user as the permanent site owner and configure initial domain and supply settings.'
+              'Create a dedicated standalone site owner account and configure initial domain and supply settings.'
             )
       }
       contentClassName='sm:max-w-2xl'
       footer={
         createdSite ? (
           <div className='flex flex-wrap justify-end gap-2'>
-            <Button type='button' variant='ghost' onClick={() => {
-              resetForm()
-              props.onOpenChange(false)
-            }}>
+            <Button
+              type='button'
+              variant='ghost'
+              onClick={() => {
+                resetForm()
+                props.onOpenChange(false)
+              }}
+            >
               {t('Close')}
             </Button>
             <Button type='button' variant='outline' onClick={resetForm}>
@@ -296,7 +322,7 @@ export function OpenSiteDialog(props: {
         )
       }
     >
-      {createdSite ? (
+      {createdResult && createdSite ? (
         <div className='flex flex-col gap-4'>
           <div className='border-success/40 bg-success/5 flex items-start gap-3 rounded-lg border p-3'>
             <CheckCircle2 className='text-success mt-0.5 size-5 shrink-0' />
@@ -308,12 +334,9 @@ export function OpenSiteDialog(props: {
               </p>
               <p className='text-muted-foreground text-xs'>
                 {t(
-                  'Fixed owner: {{name}} (#{{id}}). Main-site referral commissions for this account have stopped.',
+                  'Standalone site owner account {{name}} (#{{id}}) has been created. Save the initial password now — it will not be shown again.',
                   {
-                    name:
-                      createdSite.owner_username ||
-                      selectedOwner?.username ||
-                      `#${createdSite.owner_user_id}`,
+                    name: createdResult.ownerUsername,
                     id: createdSite.owner_user_id,
                   }
                 )}
@@ -322,14 +345,42 @@ export function OpenSiteDialog(props: {
           </div>
 
           <dl className='grid gap-3 rounded-lg border p-3 text-sm sm:grid-cols-2'>
+            <div className='flex flex-col gap-1'>
+              <dt className='text-muted-foreground text-xs'>
+                {t('Owner username')}
+              </dt>
+              <dd className='flex items-center gap-2 font-mono text-sm break-all'>
+                <span>{createdResult.ownerUsername}</span>
+                <CopyButton
+                  value={createdResult.ownerUsername}
+                  size='sm'
+                  variant='outline'
+                  aria-label={t('Copy owner username')}
+                />
+              </dd>
+            </div>
+            <div className='flex flex-col gap-1'>
+              <dt className='text-muted-foreground text-xs'>
+                {t('Initial password')}
+              </dt>
+              <dd className='flex items-center gap-2 font-mono text-sm break-all'>
+                <span>{createdResult.ownerPassword}</span>
+                <CopyButton
+                  value={createdResult.ownerPassword}
+                  size='sm'
+                  variant='outline'
+                  aria-label={t('Copy password')}
+                />
+              </dd>
+            </div>
             <div className='flex flex-col gap-1 sm:col-span-2'>
               <dt className='text-muted-foreground text-xs'>
                 {t('Website address')}
               </dt>
               <dd className='flex items-center gap-2 font-mono text-sm break-all'>
-                <span>{createdSite.host || `${createdSite.subdomain}.${createdSite.root_domain}`}</span>
+                <span>{createdHost}</span>
                 <CopyButton
-                  value={`https://${createdSite.host || `${createdSite.subdomain}.${createdSite.root_domain}`}`}
+                  value={`https://${createdHost}`}
                   size='sm'
                   variant='outline'
                   aria-label={t('Copy link')}
@@ -369,7 +420,9 @@ export function OpenSiteDialog(props: {
               </dd>
             </div>
             <div className='flex flex-col gap-0.5'>
-              <dt className='text-muted-foreground text-xs'>{t('Site level')}</dt>
+              <dt className='text-muted-foreground text-xs'>
+                {t('Site level')}
+              </dt>
               <dd>
                 {createdSite.tier_code
                   ? `${createdSite.tier_code} (${createdSite.tier_mode === 'manual' ? t('Pinned') : t('Automatic')})`
@@ -398,96 +451,115 @@ export function OpenSiteDialog(props: {
             openMutation.mutate()
           }}
         >
-          {/* Step 1: Select fixed owner */}
-          <section className='flex flex-col gap-2.5'>
-            <div className='flex items-center justify-between gap-2'>
-              <Label
-                htmlFor={`${fieldId}-owner-search`}
-                className='text-sm font-medium'
-              >
-                {t('1. Select fixed site owner')}
-              </Label>
-              {selectedOwner && (
-                <Badge variant='secondary'>
-                  {selectedOwner.username} (#{selectedOwner.id})
-                </Badge>
-              )}
+          {/* Step 1: New standalone site owner account */}
+          <section className='flex flex-col gap-3'>
+            <div className='flex flex-col gap-1'>
+              <h3 className='text-sm font-medium'>
+                {t('1. New standalone site owner account')}
+              </h3>
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'A dedicated site owner account is created exclusively for managing this subsite (no main-site customer wallet or self-use API access).'
+                )}
+              </p>
             </div>
-            <div className='relative'>
-              <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2' />
-              <Input
-                id={`${fieldId}-owner-search`}
-                className='pl-8'
-                value={keyword}
-                placeholder={t('Search eligible main-site users by username, email, or ID')}
-                onChange={(event) => setKeyword(event.target.value)}
-              />
-            </div>
-            {candidates.isError && (
-              <ErrorState onRetry={() => void candidates.refetch()} />
-            )}
-            {candidates.isPending && <LoadingState />}
-            {candidates.isSuccess && (
-              <div
-                role='listbox'
-                aria-label={t('Eligible main-site users')}
-                className='max-h-44 overflow-y-auto rounded-md border divide-y'
-              >
-                {candidateRows.length === 0 ? (
-                  <p className='text-muted-foreground p-3 text-center text-xs'>
-                    {t('No eligible main-site users found')}
-                  </p>
+            <div className='grid gap-3 sm:grid-cols-2'>
+              <div className='flex flex-col gap-1.5'>
+                <Label htmlFor={`${fieldId}-owner-username`}>
+                  {t('Owner username')} *
+                </Label>
+                <Input
+                  id={`${fieldId}-owner-username`}
+                  value={ownerUsername}
+                  maxLength={32}
+                  autoComplete='off'
+                  placeholder='partner_admin'
+                  aria-invalid={usernameError !== ''}
+                  onChange={(event) => {
+                    setOwnerUsername(event.target.value)
+                    setConfirmed(false)
+                  }}
+                />
+                {usernameError ? (
+                  <p className='text-destructive text-xs'>{usernameError}</p>
                 ) : (
-                  candidateRows.map((item) => {
-                    const isSelected = selectedOwner?.id === item.id
-                    return (
-                      <button
-                        key={item.id}
-                        type='button'
-                        role='option'
-                        aria-selected={isSelected}
-                        className={cn(
-                          'hover:bg-muted/60 flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm transition-colors',
-                          isSelected && 'bg-muted font-medium'
-                        )}
-                        onClick={() => {
-                          setSelectedOwner(item)
-                          setConfirmed(false)
-                        }}
-                      >
-                        <div className='min-w-0 flex-1'>
-                          <div className='truncate'>
-                            {item.username}{' '}
-                            <span className='text-muted-foreground text-xs tabular-nums'>
-                              #{item.id}
-                            </span>
-                            {item.display_name &&
-                              item.display_name !== item.username && (
-                                <span className='text-muted-foreground ml-1.5 text-xs'>
-                                  ({item.display_name})
-                                </span>
-                              )}
-                          </div>
-                          {item.email && (
-                            <p className='text-muted-foreground truncate text-xs'>
-                              {item.email}
-                            </p>
-                          )}
-                        </div>
-                        {isSelected && (
-                          <Check className='text-primary size-4 shrink-0' />
-                        )}
-                      </button>
-                    )
-                  })
+                  <p className='text-muted-foreground text-xs'>
+                    {t('3 to 32 characters (letters, digits, _, ., -)')}
+                  </p>
                 )}
               </div>
-            )}
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Only active main-site accounts without an existing site (and not site staff or team employees) are listed.'
-              )}
-            </p>
+              <div className='flex flex-col gap-1.5'>
+                <Label htmlFor={`${fieldId}-owner-password`}>
+                  {t('Owner password')} *
+                </Label>
+                <div className='flex items-center gap-1.5'>
+                  <PasswordInput
+                    id={`${fieldId}-owner-password`}
+                    className='min-w-0 flex-1'
+                    value={ownerPassword}
+                    maxLength={64}
+                    autoComplete='new-password'
+                    placeholder={t('8 to 64 characters')}
+                    aria-invalid={passwordError !== ''}
+                    onChange={(event) => setOwnerPassword(event.target.value)}
+                  />
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    onClick={() => setOwnerPassword(generateOwnerPassword(16))}
+                  >
+                    <RefreshCw className='size-3.5' aria-hidden />
+                    {t('Generate')}
+                  </Button>
+                  {ownerPassword && (
+                    <CopyButton
+                      value={ownerPassword}
+                      size='icon'
+                      variant='outline'
+                      aria-label={t('Copy password')}
+                    />
+                  )}
+                </div>
+                {passwordError ? (
+                  <p className='text-destructive text-xs'>{passwordError}</p>
+                ) : (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('8 to 64 characters. Copy and deliver it securely to the owner.')}
+                  </p>
+                )}
+              </div>
+              <div className='flex flex-col gap-1.5'>
+                <Label htmlFor={`${fieldId}-owner-email`}>
+                  {t('Owner email (optional)')}
+                </Label>
+                <Input
+                  id={`${fieldId}-owner-email`}
+                  type='email'
+                  value={ownerEmail}
+                  autoComplete='off'
+                  placeholder='owner@example.com'
+                  aria-invalid={emailError !== ''}
+                  onChange={(event) => setOwnerEmail(event.target.value)}
+                />
+                {emailError && (
+                  <p className='text-destructive text-xs'>{emailError}</p>
+                )}
+              </div>
+              <div className='flex flex-col gap-1.5'>
+                <Label htmlFor={`${fieldId}-owner-display-name`}>
+                  {t('Display name (optional)')}
+                </Label>
+                <Input
+                  id={`${fieldId}-owner-display-name`}
+                  value={ownerDisplayName}
+                  maxLength={40}
+                  autoComplete='off'
+                  placeholder={t('Defaults to owner username')}
+                  onChange={(event) => setOwnerDisplayName(event.target.value)}
+                />
+              </div>
+            </div>
           </section>
 
           {/* Step 2: Domain & initial settings */}
@@ -521,7 +593,9 @@ export function OpenSiteDialog(props: {
                 )}
                 {automationOn && (
                   <p className='text-muted-foreground text-xs'>
-                    {t('Managed automatically by AliDNS and Cloudflare for SaaS.')}
+                    {t(
+                      'Managed automatically by AliDNS and Cloudflare for SaaS.'
+                    )}
                   </p>
                 )}
               </div>
@@ -664,16 +738,11 @@ export function OpenSiteDialog(props: {
           {/* Step 3: Verification & irreversible confirmation */}
           <section className='border-warning/40 bg-warning/5 flex flex-col gap-3 rounded-lg border p-3'>
             <div className='text-xs'>
-              <p className='font-medium'>{t('3. Confirm permanent owner')}</p>
+              <p className='font-medium'>{t('3. Confirm site creation')}</p>
               <ul className='text-muted-foreground mt-1 list-disc space-y-1 pl-4'>
                 <li>
                   {t(
-                    'The site owner is fixed upon creation and cannot be replaced or transferred later.'
-                  )}
-                </li>
-                <li>
-                  {t(
-                    'Main-site referral commission for this account will stop immediately once the site opens.'
+                    'A standalone owner account will be bound permanently to this site and cannot be replaced later.'
                   )}
                 </li>
                 <li>
@@ -681,7 +750,7 @@ export function OpenSiteDialog(props: {
                 </li>
               </ul>
             </div>
-            {selectedOwner ? (
+            {trimmedUsername !== '' && usernameError === '' ? (
               <div className='flex items-center gap-2'>
                 <Checkbox
                   id={`${fieldId}-confirm`}
@@ -689,15 +758,14 @@ export function OpenSiteDialog(props: {
                   onCheckedChange={(value) => setConfirmed(value === true)}
                 />
                 <Label htmlFor={`${fieldId}-confirm`} className='text-sm'>
-                  {t('Confirm site owner {{name}} (#{{id}})', {
-                    name: selectedOwner.username,
-                    id: selectedOwner.id,
+                  {t('Confirm creating standalone site owner {{name}}', {
+                    name: trimmedUsername,
                   })}
                 </Label>
               </div>
             ) : (
               <p className='text-muted-foreground text-xs'>
-                {t('Select an eligible main-site user above to enable confirmation.')}
+                {t('Enter a valid owner username above to enable confirmation.')}
               </p>
             )}
           </section>

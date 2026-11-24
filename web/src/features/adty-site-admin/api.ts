@@ -32,6 +32,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   AdminSite,
+  AdminSiteBrand,
   AdminSiteTierPrincipalAdjustResult,
   AdminSiteTierPrincipalView,
   ResellerSettings,
@@ -613,36 +614,12 @@ export async function getSiteCustomers(
   return requireServerSuccess(res.data).data
 }
 
-export type SiteOwnerCandidate = {
-  id: number
-  username: string
-  display_name: string
-  email: string
-  role: number
-  created_at: number
-}
-
-export async function getSiteOwnerCandidates(params: {
-  keyword?: string
-  p?: number
-  page_size?: number
-}): Promise<SitePage<SiteOwnerCandidate>> {
-  const res = await api.get<ApiResponse<SitePage<SiteOwnerCandidate>>>(
-    `${BASE}/sites/owner-candidates`,
-    {
-      params: {
-        p: params.p ?? 1,
-        page_size: params.page_size ?? 20,
-        keyword: params.keyword?.trim() || undefined,
-      },
-    }
-  )
-  return requireServerSuccess(res.data).data
-}
-
 export async function createSite(
   body: {
-    user_id: number
+    owner_username: string
+    owner_password: string
+    owner_email?: string
+    owner_display_name?: string
     subdomain: string
     root_domain?: string
     cost_factor?: string
@@ -655,6 +632,22 @@ export async function createSite(
   const res = await api.post<ApiResponse<AdminSite>>(`${BASE}/sites`, body, {
     headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
   })
+  return requireServerSuccess(res.data).data
+}
+
+export type DeleteSiteResult = {
+  deleted: boolean
+  mode: 'hard_deleted' | 'archived_hidden'
+}
+
+export async function deleteSite(
+  id: number,
+  reason?: string
+): Promise<DeleteSiteResult> {
+  const res = await api.delete<ApiResponse<DeleteSiteResult>>(
+    `${BASE}/sites/${id}`,
+    { data: reason ? { reason } : {} }
+  )
   return requireServerSuccess(res.data).data
 }
 
@@ -679,6 +672,10 @@ export async function adjustSite(
     cost_factor?: string
     visibility?: string
     allowed_groups?: string
+    contact_info?: string
+    brand?: Partial<Record<keyof AdminSiteBrand, string>>
+    home_page_content?: string
+    seo_index?: boolean
     clear?: Array<'cost_factor' | 'allowed_groups'>
     reason: string
   }
@@ -791,6 +788,7 @@ export type AdminSiteWithdrawal = {
   network: string
   account_no: string
   account_name: string
+  qr_image_url?: string
   rate: string
   payout_amount: string
   payout_currency: string

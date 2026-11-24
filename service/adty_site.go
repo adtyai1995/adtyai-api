@@ -51,6 +51,15 @@ const (
 	AdtyPausedRepairOutcomeClose  = "close"
 )
 
+// AdtyNewOwnerInput creates a dedicated standalone pure-admin owner account
+// atomically when opening a new reseller site (R-32 #25).
+type AdtyNewOwnerInput struct {
+	Username    string
+	Password    string
+	Email       string
+	DisplayName string
+}
+
 // AdtySitePreset 是开站时预设的单站 d、等级和元数据（管理员直接开），空就用全局。
 type AdtySitePreset struct {
 	MaxMarkup      *decimal.Decimal // Deprecated: owners control retail pricing.
@@ -64,6 +73,7 @@ type AdtySitePreset struct {
 	ExplicitRoot   string // 管理员开站可以指定根域名，空就用 root_domains 的第一个
 	InitialStatus  string // 空则按开站方式决定
 	IdempotencyKey string
+	NewOwner       *AdtyNewOwnerInput
 }
 
 func resellerSetting() *adty_setting.ResellerSetting { return adty_setting.GetResellerSetting() }
@@ -144,47 +154,10 @@ func AdtySiteTermsStatus(userId int) (required bool, version string) {
 	return req, ver
 }
 
-// AdtySiteTermsStatusWithError distinguishes genuine database/lookup errors
-// (returned as err != nil -> HTTP 503) from unaccepted customer terms (R1-062).
+// AdtySiteTermsStatusWithError always returns required=false after R-32 (#9)
+// cancelled subsite agreements and subsite customer terms.
 func AdtySiteTermsStatusWithError(userId int) (required bool, version string, err error) {
-	if site, ownerErr := AdtyOwnerSite(userId); ownerErr == nil && site != nil {
-		return false, "", nil
-	} else if ownerErr != nil && !errors.Is(ownerErr, ErrAdtySiteNotOwner) && !errors.Is(ownerErr, gorm.ErrRecordNotFound) {
-		return false, "", ownerErr
-	}
-	version = AdtyCurrentSiteCustomerTermsVersion()
-	if adty_setting.GetLegalSetting().SiteCustomerTermsVersion <= 0 {
-		return false, version, nil
-	}
-	if userId <= 0 || model.DB == nil {
-		return false, version, errors.New("terms database unavailable")
-	}
-	var users []model.User
-	if qErr := model.DB.Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; qErr != nil {
-		return false, version, qErr
-	}
-	if len(users) == 0 {
-		return true, version, nil
-	}
-	siteID := users[0].SiteId
-	if siteID <= 0 || users[0].StaffSiteId > 0 {
-		return false, version, nil
-	}
-	// R3-024: Independent team employees operate under their team leader's account and
-	// do not hold personal AdtySiteCustomer rows, so exempt them from customer terms gating.
-	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userId); empErr != nil {
-		return false, version, empErr
-	} else if isEmp {
-		return false, version, nil
-	}
-	var rows []model.AdtySiteCustomer
-	if qErr := model.AdtyLiveSiteCustomer(model.DB.Model(&model.AdtySiteCustomer{})).Select("terms_version").Where("user_id = ? AND site_id = ?", userId, siteID).Limit(1).Find(&rows).Error; qErr != nil {
-		return false, version, qErr
-	}
-	if len(rows) == 0 {
-		return true, version, nil
-	}
-	return rows[0].TermsVersion != version, version, nil
+	return false, "", nil
 }
 
 // AcceptAdtySiteTerms 接受当前分站客户条款（站长开站协议已退役 — R1-123）。
@@ -343,12 +316,37 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 		costStr = preset.CostFactor.String()
 	}
 	contact := truncateText(strings.TrimSpace(preset.ContactInfo), 500)
+	var newOwnerUsername, newOwnerPassHash, newOwnerEmail, newOwnerDisplayName string
+	if preset.NewOwner != nil {
+		newOwnerUsername = strings.TrimSpace(preset.NewOwner.Username)
+		if len(newOwnerUsername) < 3 || len(newOwnerUsername) > 32 {
+			return nil, "", false, common.NewMessage("Owner username must be between 3 and 32 characters")
+		}
+		if len(preset.NewOwner.Password) < 8 || len(preset.NewOwner.Password) > 64 {
+			return nil, "", false, common.NewMessage("Owner password must be between 8 and 64 characters")
+		}
+		hashed, hashErr := common.Password2Hash(preset.NewOwner.Password)
+		if hashErr != nil {
+			return nil, "", false, hashErr
+		}
+		newOwnerPassHash = hashed
+		newOwnerEmail = model.NormalizeEmail(preset.NewOwner.Email)
+		if newOwnerEmail != "" {
+			if err := common.Validate.Var(newOwnerEmail, "email"); err != nil {
+				return nil, "", false, common.NewMessage("Invalid email address")
+			}
+		}
+		newOwnerDisplayName = truncateText(strings.TrimSpace(preset.NewOwner.DisplayName), 40)
+		if newOwnerDisplayName == "" {
+			newOwnerDisplayName = newOwnerUsername
+		}
+	}
 	var openKeyDigest *string
 	openFingerprint := ""
 	if idemKey != "" {
 		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%s", preset.OperatorId, idemKey))))
 		openKeyDigest = &digest
-		openFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s", userId, rawSubdomain, root, costStr, tierCode, tierMode, contact))))
+		openFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s", userId, newOwnerUsername, rawSubdomain, root, costStr, tierCode, tierMode, contact))))
 	}
 	label := rawSubdomain
 	if label == "" {
@@ -421,6 +419,40 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 				replayed = true
 				return nil
 			}
+		}
+		if preset.NewOwner != nil {
+			var existingUsername int64
+			if err := tx.Unscoped().Model(&model.User{}).Where("username = ?", newOwnerUsername).Count(&existingUsername).Error; err != nil {
+				return err
+			}
+			if existingUsername > 0 {
+				return common.NewMessage("Username is already taken")
+			}
+			if newOwnerEmail != "" {
+				var existingEmail int64
+				if err := tx.Unscoped().Model(&model.User{}).Where("email = ? AND site_id = 0", newOwnerEmail).Count(&existingEmail).Error; err != nil {
+					return err
+				}
+				if existingEmail > 0 {
+					return common.NewMessage("Email is already registered")
+				}
+			}
+			ownerUser := model.User{
+				Username:    newOwnerUsername,
+				Password:    newOwnerPassHash,
+				DisplayName: newOwnerDisplayName,
+				Email:       newOwnerEmail,
+				Role:        common.RoleCommonUser,
+				Status:      common.UserStatusEnabled,
+				Group:       "",
+				SiteId:      0,
+				Quota:       0,
+			}
+			if err := tx.Create(&ownerUser).Error; err != nil {
+				return err
+			}
+			userId = ownerUser.Id
+			site.OwnerUserId = userId
 		}
 		// Commission transfers lock the affiliate before the user wallet. Keep
 		// the same order; invalid openings roll this uncommitted marker back.
@@ -713,6 +745,10 @@ type AdtySiteAdjust struct {
 	Visibility         *string
 	AllowedGroups      *string
 	ClearAllowedGroups bool
+	ContactInfo        *string
+	Brand              map[string]string
+	HomePageContent    *string
+	SeoIndex           *bool
 	Reason             string
 }
 
@@ -827,6 +863,47 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 			updates["allowed_groups"] = ""
 		case adjust.AllowedGroups != nil:
 			updates["allowed_groups"] = allowedGroupsEncoded
+		}
+		if adjust.ContactInfo != nil {
+			updates["contact_info"] = truncateText(strings.TrimSpace(*adjust.ContactInfo), 500)
+		}
+		if adjust.SeoIndex != nil {
+			updates["seo_index"] = *adjust.SeoIndex
+		}
+		if adjust.HomePageContent != nil {
+			content := strings.TrimSpace(*adjust.HomePageContent)
+			if len(content) > 200*1024 {
+				return common.NewMessage("Home page content is too long")
+			}
+			updates["home_page_content"] = content
+		}
+		if len(adjust.Brand) > 0 {
+			var brand AdtySiteBrandInput
+			if strings.TrimSpace(site.Brand) != "" {
+				_ = common.UnmarshalJsonStr(site.Brand, &brand)
+			}
+			fields := map[string]*string{
+				"name": &brand.Name, "title": &brand.Title, "tagline": &brand.Tagline, "notice": &brand.Notice,
+				"support_contact": &brand.SupportContact, "theme_color": &brand.ThemeColor,
+				"tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
+				"wallet_notice": &brand.WalletNotice, "voucher_purchase_url": &brand.VoucherPurchaseURL,
+			}
+			for key, val := range adjust.Brand {
+				dest, ok := fields[key]
+				if !ok {
+					return ErrAdtySiteBrandInvalid
+				}
+				*dest = val
+			}
+			normalized, normErr := NormalizeAdtySiteBrand(brand)
+			if normErr != nil {
+				return normErr
+			}
+			rawBrand, mErr := common.Marshal(normalized)
+			if mErr != nil {
+				return mErr
+			}
+			updates["brand"] = string(rawBrand)
 		}
 		if len(updates) == 0 {
 			return nil

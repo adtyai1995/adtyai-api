@@ -311,14 +311,16 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
                       <FormLabel>{t('Home Page Content')}</FormLabel>
                       <FormControl>
                         <Textarea
-                          placeholder={t('Welcome to our ADTY AI platform...')}
+                          placeholder={t(
+                            'Enter Markdown/HTML content, or an http:// or https:// URL to embed as an iframe'
+                          )}
                           rows={6}
                           {...field}
                         />
                       </FormControl>
                       <FormDescription>
                         {t(
-                          'Content displayed on the home page (supports Markdown)'
+                          'Supports Markdown/HTML content, or an http:// or https:// URL rendered as an iframe. When set, the default homepage status information is hidden.'
                         )}
                       </FormDescription>
                       <FormMessage />

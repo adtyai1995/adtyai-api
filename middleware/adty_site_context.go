@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -146,7 +145,11 @@ func AdtySiteContext() gin.HandlerFunc {
 				return
 			}
 		}
-		site := service.AdtySiteForHost(host)
+		site, lookupErr := service.AdtySiteForHostWithError(host)
+		if lookupErr != nil {
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
 		api := adtyIsAPIPath(method, path)
 		switch {
 		case service.AdtySiteServesCustomers(site):
@@ -177,7 +180,11 @@ func AdtySiteContext() gin.HandlerFunc {
 }
 
 func adtyHandleCustomDomain(c *gin.Context, host string) {
-	site := service.AdtySiteForHost(host)
+	site, lookupErr := service.AdtySiteForHostWithError(host)
+	if lookupErr != nil {
+		c.AbortWithStatus(http.StatusServiceUnavailable)
+		return
+	}
 	if site == nil {
 		// 域名表里还留着这个 Host，但站点已经查不到：按未知 Host 处理，不回退到主站。
 		c.AbortWithStatus(http.StatusNotFound)
@@ -217,32 +224,10 @@ func adtyHandleCustomDomain(c *gin.Context, host string) {
 	c.Next()
 }
 
-// AdtyRequireCurrentSiteTerms blocks account and relay use until a site customer
-// accepts the current terms. Logout, self, and the accept endpoint stay open.
+// AdtyRequireCurrentSiteTerms is a no-op after R-32 (#9) cancelled subsite
+// agreements and subsite customer terms.
 func AdtyRequireCurrentSiteTerms() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-		if path == "/api/user/self" || path == "/api/user/auth/logout" || path == "/api/adty/site/terms/accept" || path == "/api/status" {
-			c.Next()
-			return
-		}
-		userID := c.GetInt("id")
-		if userID <= 0 {
-			c.Next()
-			return
-		}
-		required, _, err := service.AdtySiteTermsStatusWithError(userID)
-		if err != nil {
-			// R1-062 / R3-068: Distinguish database/lookup failures (503) with i18n message_key.
-			common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Service temporarily unavailable, please retry later"))
-			c.Abort()
-			return
-		}
-		if required {
-			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Accept the current site customer terms first"))
-			c.Abort()
-			return
-		}
 		c.Next()
 	}
 }

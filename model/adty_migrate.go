@@ -60,7 +60,7 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 	if err := db.AutoMigrate(&AdtyGroup{}, &AdtyTopupOrder{}, &AdtyOrderPaymentEvent{}, &PaymentOrphanEvent{}, &PaymentOrphanReview{}, &AdtyBalanceLedger{}, &AdtyFinancialAdjustment{}, &BillingOperation{}, &BillingOperationMovement{}, &AdtySiteEarningEvent{}, &AdtyEpayChannel{}, &AdtyEpayChannelMethod{}, &AdtyUserFingerprint{}, &AdtyUserLimit{}, &AdtyBillingHold{}, &AdtyFundBatch{}, &AdtyFundAllocation{}, &AdtyGiftFulfillment{}, &AdtyManualRefund{}, &AdtyStaffBalanceRequest{}, &AdtyPriceRevision{}, &AdtyNotificationHide{}, &AdtyGlossaryTerm{}, &AdtySiteReferralRate{}, &AdtySiteInvite{}, &AdtySiteInviteCommission{}, &AdtyCommissionRecovery{}, &AdtyCommissionCoverageCancellation{}, &AdtySiteInviteWithdrawal{}, &AdtySiteInviteWithdrawalItem{}, &AdtyAnomalyDisposition{}, &AdtyEmailChange{}, &AdtyAccountClosure{}, &AdtyNoticeTemplate{}, &AdtyKeyLimit{}, &AdtyModelAlias{}, &AdtyGroupConfig{}); err != nil {
 		return err
 	}
-	if err := db.AutoMigrate(&AdtyNotificationRead{}, &AdtyNotificationPublication{}, &AdtyVoucher{}, &AdtyVoucherLiability{}, &AdtyVoucherCloseGrant{}, &AdtyTeam{}, &AdtyTeamMember{}, &AdtyTeamLedger{}, &AdtyTeamFundLot{}, &AdtyTeamFundAllocation{}, &AdtyTeamInvite{}, &AdtyTeamRegistrationLink{}, &AdtyTeamKey{}); err != nil {
+	if err := db.AutoMigrate(&AdtyNotificationRead{}, &AdtyNotificationPublication{}, &AdtyBadgeSeen{}, &AdtyVoucher{}, &AdtyVoucherLiability{}, &AdtyVoucherCloseGrant{}, &AdtyTeam{}, &AdtyTeamMember{}, &AdtyTeamLedger{}, &AdtyTeamFundLot{}, &AdtyTeamFundAllocation{}, &AdtyTeamInvite{}, &AdtyTeamRegistrationLink{}, &AdtyTeamKey{}); err != nil {
 		return err
 	}
 	// A surviving subsite team has never migrated; its original invite scope

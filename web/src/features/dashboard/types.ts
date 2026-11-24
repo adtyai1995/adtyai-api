@@ -170,16 +170,45 @@ export interface ProcessedFlowData {
 // Uptime Monitoring Types
 // ============================================================================
 
+export interface UptimeHeartbeat {
+  status: number
+  time: string
+  ping: number | null
+}
+
 export interface UptimeMonitor {
   name: string
   uptime: number
   status: number
   group?: string
+  heartbeats?: UptimeHeartbeat[]
+}
+
+export interface UptimeModelStatus {
+  model: string
+  monitorName?: string
+  status: number
+  statusLabel: string
+  uptime: number | null
+  heartbeats: UptimeHeartbeat[]
 }
 
 export interface UptimeGroupResult {
+  groupId?: string
   categoryName: string
+  description?: string
   monitors: UptimeMonitor[]
+  models?: UptimeModelStatus[]
+}
+
+export interface UptimeKumaGroupConfig {
+  groupId?: string
+  categoryName: string
+  url?: string
+  slug: string
+  description?: string
+  models?: string[]
+  monitorMap?: Record<string, string>
 }
 
 // ============================================================================

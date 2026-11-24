@@ -223,6 +223,7 @@ export function ChannelsTable() {
   const { data: groupsData } = useQuery({
     queryKey: ['groups'],
     queryFn: async () => requireServerSuccess(await getGroups()),
+    staleTime: 0,
   })
 
   const groupOptions = useMemo(

@@ -24,6 +24,8 @@ export type AdtySiteDefaults = {
   support_hours: string
   tawk_property_id: string
   tawk_widget_id: string
+  wallet_notice: string
+  voucher_purchase_url: string
   refund_policy_enabled: boolean
 }
 
@@ -39,6 +41,8 @@ export const ADTY_SITE_OPTION_DEFAULTS = {
   'adty_site_setting.support_hours': '',
   'adty_site_setting.tawk_property_id': '',
   'adty_site_setting.tawk_widget_id': '',
+  'adty_site_setting.wallet_notice': '',
+  'adty_site_setting.voucher_purchase_url': '',
   'adty_site_setting.refund_policy_enabled': false,
 }
 
@@ -54,6 +58,8 @@ export function toAdtySiteDefaults(
     support_hours: settings['adty_site_setting.support_hours'],
     tawk_property_id: settings['adty_site_setting.tawk_property_id'],
     tawk_widget_id: settings['adty_site_setting.tawk_widget_id'],
+    wallet_notice: settings['adty_site_setting.wallet_notice'],
+    voucher_purchase_url: settings['adty_site_setting.voucher_purchase_url'],
     refund_policy_enabled: settings['adty_site_setting.refund_policy_enabled'],
   }
 }

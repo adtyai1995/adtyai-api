@@ -29,7 +29,6 @@ import {
   useDataTable,
 } from '@/components/data-table'
 import { ErrorState } from '@/components/error-state'
-import { useGroupDisplay } from '@/features/adty-groups/hooks/use-group-display'
 import { useMediaQuery } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import {
@@ -37,7 +36,7 @@ import {
   requireServerSuccess,
 } from '@/lib/server-error-message'
 
-import { getGroups, getUsers, getUserSites, searchUsers } from '../api'
+import { getUsers, getUserSites, searchUsers } from '../api'
 import {
   USER_STATUS,
   getUserStatusOptions,
@@ -55,7 +54,6 @@ const USER_SORTABLE_COLUMNS = new Set<UserSortBy>([
   'id',
   'username',
   'quota',
-  'group',
   'created_at',
   'last_login_at',
 ])
@@ -66,7 +64,6 @@ function isDisabledUserRow(user: User) {
 
 export function UsersTable() {
   const { t } = useTranslation()
-  const groupDisplay = useGroupDisplay()
   const columns = useUsersColumns()
   const { refreshTrigger } = useUsers()
   const isMobile = useMediaQuery('(max-width: 640px)')
@@ -88,7 +85,6 @@ export function UsersTable() {
     columnFilters: [
       { columnId: 'status', searchKey: 'status', type: 'array' },
       { columnId: 'role', searchKey: 'role', type: 'array' },
-      { columnId: 'group', searchKey: 'group', type: 'array' },
       { columnId: 'site_id', searchKey: 'site_id', type: 'array' },
     ],
   })
@@ -100,17 +96,6 @@ export function UsersTable() {
     (columnFilters.find((filter) => filter.id === 'role')?.value as
       | string[]
       | undefined) ?? []
-  const groupFilter =
-    (columnFilters.find((filter) => filter.id === 'group')?.value as
-      | string[]
-      | undefined) ?? []
-
-  const { data: groupsData } = useQuery({
-    queryKey: ['groups'],
-    queryFn: async () => requireServerSuccess(await getGroups()),
-    staleTime: 5 * 60 * 1000,
-  })
-
   const siteFilter =
     (columnFilters.find((filter) => filter.id === 'site_id')?.value as
       | string[]
@@ -123,6 +108,16 @@ export function UsersTable() {
     queryKey: ['user-sites', refreshTrigger],
     queryFn: async () => requireServerSuccess(await getUserSites()),
   })
+
+  const siteFilterOptions = useMemo(() => {
+    const subsites = (sitesData?.data ?? [])
+      .filter((site) => site.site_id > 0)
+      .map((site) => ({
+        value: String(site.site_id),
+        label: site.site_name || `${t('Site')} #${site.site_id}`,
+      }))
+    return [{ value: '0', label: t('Main site') }, ...subsites]
+  }, [sitesData?.data, t])
 
   const sortParams = useMemo(() => {
     const activeSort = sorting[0]
@@ -155,17 +150,13 @@ export function UsersTable() {
       globalFilter,
       statusFilter,
       roleFilter,
-      groupFilter,
       siteFilter,
       sortParams,
       refreshTrigger,
     ],
     queryFn: async () => {
       const hasFilter = globalFilter?.trim()
-      const hasColumnFilter =
-        statusFilter.length > 0 ||
-        roleFilter.length > 0 ||
-        groupFilter.length > 0
+      const hasColumnFilter = statusFilter.length > 0 || roleFilter.length > 0
       const params = {
         p: pagination.pageIndex + 1,
         page_size: pagination.pageSize,
@@ -181,7 +172,6 @@ export function UsersTable() {
               keyword: globalFilter,
               status: statusFilter[0] ?? '',
               role: roleFilter[0] ?? '',
-              group: groupFilter[0] ?? '',
             })
           : await getUsers(params)
 
@@ -261,10 +251,7 @@ export function UsersTable() {
           {
             columnId: 'site_id',
             title: t('Site'),
-            options: (sitesData?.data ?? []).map((site) => ({
-              value: String(site.site_id),
-              label: `${site.site_name || t('Site')} · ${site.site_id}`,
-            })),
+            options: siteFilterOptions,
             singleSelect: true,
           },
           {
@@ -277,15 +264,6 @@ export function UsersTable() {
             columnId: 'role',
             title: t('Role'),
             options: getUserRoleOptions(t),
-            singleSelect: true,
-          },
-          {
-            columnId: 'group',
-            title: t('User Group'),
-            options: (groupsData?.data ?? []).map((group) => ({
-              label: groupDisplay.adminLabel(group),
-              value: group,
-            })),
             singleSelect: true,
           },
         ],

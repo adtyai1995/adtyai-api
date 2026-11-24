@@ -109,6 +109,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/admin/telegram/bots/:purpose/test", "option:write"},
 		{http.MethodPost, "/api/adty/telegram/webhook/:purpose/:secret", "session"},
 		{http.MethodGet, "/api/adty/badges", "profile:read"},
+		{http.MethodPost, "/api/adty/badges/seen", "profile:write"},
 		{http.MethodGet, "/api/adty/tickets", "profile:read"},
 		{http.MethodGet, "/api/adty/tickets/request-audience", "profile:read"},
 		{http.MethodPost, "/api/adty/tickets", "profile:write"},
@@ -207,6 +208,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	root.PUT("/data-retention", controller.PutAdtyDataRetention)
 	root.GET("/data-retention/runs", controller.GetAdtyDataRetentionRuns)
 	apiRouter.GET("/adty/badges", middleware.UserAuth(), controller.GetAdtySidebarBadges)
+	apiRouter.POST("/adty/badges/seen", middleware.UserAuth(), controller.PostAdtySidebarBadgesSeen)
 	apiRouter.GET("/adty/tickets", middleware.UserAuth(), controller.GetAdtyTickets)
 	apiRouter.GET("/adty/tickets/request-audience", middleware.UserAuth(), controller.GetAdtyTicketRequestAudience)
 	apiRouter.POST("/adty/tickets", middleware.UserAuth(), controller.PostAdtyTicket)
@@ -526,6 +528,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/withdrawals/by-key", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteWithdrawalByKey}},
 		{http.MethodGet, "/withdrawals", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteWithdrawals}},
 		{http.MethodPost, "/withdrawals", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtySiteWithdrawal}},
+		{http.MethodPost, "/withdrawals/qr", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-withdraw-qr"), controller.PostAdtySiteWithdrawalQR}},
 		{http.MethodPost, "/withdrawals/:id/cancel", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtySiteWithdrawalCancel}},
 		{http.MethodGet, "/wallet-ledgers", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerWalletLedger}},
 		{http.MethodGet, "/orders", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerOrders}},
@@ -668,6 +671,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootWallets.POST("/:id/tier-principal", controller.PostAdtyAdminSiteTierPrincipal)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites", "scope", "option:write")
 	rootWallets.POST("", controller.CreateAdtyAdminSite)
+	middleware.DeclareAdtyAccessTokenRoute("DELETE", "/api/adty/admin/sites/:id", "scope", "option:write")
+	rootWallets.DELETE("/:id", controller.DeleteAdtyAdminSite)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/review", "scope", "option:write")
 	rootWallets.POST("/:id/review", controller.ReviewAdtyAdminSite)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/owner", "scope", "option:write")

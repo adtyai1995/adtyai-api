@@ -141,7 +141,7 @@ export async function listAdminTeamLedger(
   return requireServerSuccess(res.data).data
 }
 
-/** Root sets a main-site team discount; the owner sets a discount on its own site team. */
+/** Root sets discount/multiplier for any main-site or subsite team; the owner sets the multiplier for its own site team. */
 export async function saveTeamDiscount(
   scope: TeamAdminScope,
   id: number,

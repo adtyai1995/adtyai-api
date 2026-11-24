@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -30,15 +33,18 @@ type AdtyNotificationInbox struct {
 }
 
 type AdtyNotificationInput struct {
-	Title        string `json:"title"`
-	Content      string `json:"content"`
-	Kind         string `json:"kind"`
-	Audience     string `json:"audience"`
-	TargetSiteId int    `json:"target_site_id"`
-	TargetTeamId int64  `json:"target_team_id"`
-	TargetUserId int    `json:"target_user_id"`
-	Business     string `json:"business"`
-	Revision     int64  `json:"revision"`
+	Title           string   `json:"title"`
+	Content         string   `json:"content"`
+	ContentFormat   string   `json:"content_format"`
+	Kind            string   `json:"kind"`
+	Audience        string   `json:"audience"`
+	TargetAudiences []string `json:"target_audiences"`
+	TargetSiteIDs   []int    `json:"target_site_ids"`
+	TargetSiteId    int      `json:"target_site_id"`
+	TargetTeamId    int64    `json:"target_team_id"`
+	TargetUserId    int      `json:"target_user_id"`
+	Business        string   `json:"business"`
+	Revision        int64    `json:"revision"`
 	// SyncTelegram 勾了才把这条公告排进 TG 队列；TelegramChannel 是目标频道
 	// （`@name` 或 `-100…`）。都不填就是只发站内。
 	SyncTelegram    bool   `json:"sync_telegram"`
@@ -49,7 +55,274 @@ type AdtyNotificationInput struct {
 	Draft bool `json:"draft"`
 }
 
-const adtyPrivateTelegramMarker = "@private"
+const (
+	adtyPrivateTelegramMarker    = "@private"
+	adtyNotificationMaxRunes     = 2000
+	adtyNotificationMaxRawBytes  = 32 * 1024
+	adtyNotificationMaxHTMLDepth = 64
+)
+
+var (
+	adtyOpenSiteStatuses = []string{
+		model.AdtySiteStatusActive,
+		model.AdtySiteStatusPaused,
+		model.AdtySiteStatusClosing,
+	}
+	adtyRootTargetAudiences    = []string{"main_users", "all_site_owners", "site_users", "main_teams"}
+	adtySubsiteTargetAudiences = []string{"site_users", "site_teams"}
+	adtyNewTargetAudiences     = []string{"main_users", "all_site_owners", "site_users", "main_teams", "site_teams"}
+
+	adtyNotificationFontSizeRegex   = regexp.MustCompile(`^(\d+(?:\.\d+)?)(px|rem|em)$`)
+	adtyNotificationHexColorRegex   = regexp.MustCompile(`^#[0-9a-fA-F]{3,6}$`)
+	adtyNotificationRGBColorRegex   = regexp.MustCompile(`(?i)^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$`)
+	adtyNotificationFontWeightRegex = regexp.MustCompile(`^\d{3}$`)
+	adtyNotificationMultiNewlines   = regexp.MustCompile(`\n{3,}`)
+)
+
+func isAdtyNotificationAllowedHTMLTag(tag string) bool {
+	switch tag {
+	case "p", "br", "div", "span", "strong", "b", "em", "i", "u", "h1", "h2", "h3", "ul", "ol", "li", "blockquote":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAdtyNotificationDropSubtreeTag(tag string) bool {
+	switch tag {
+	case "script", "style", "iframe", "object", "embed", "applet", "noscript", "template", "svg", "math", "head", "title", "textarea", "xmp":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeAdtyNotificationStyle(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	order := make([]string, 0, 3)
+	values := make(map[string]string, 3)
+	for decl := range strings.SplitSeq(raw, ";") {
+		prop, val, ok := strings.Cut(decl, ":")
+		if !ok {
+			continue
+		}
+		prop = strings.ToLower(strings.TrimSpace(prop))
+		val = strings.TrimSpace(val)
+		if prop == "" || val == "" {
+			continue
+		}
+		var cleaned string
+		switch prop {
+		case "font-size":
+			lowerVal := strings.ToLower(val)
+			m := adtyNotificationFontSizeRegex.FindStringSubmatch(lowerVal)
+			if m == nil {
+				continue
+			}
+			num, err := strconv.ParseFloat(m[1], 64)
+			if err != nil {
+				continue
+			}
+			unit := m[2]
+			px := num
+			if unit == "rem" || unit == "em" {
+				px = num * 16
+			}
+			if px < 10 || px > 48 {
+				continue
+			}
+			cleaned = m[1] + unit
+		case "color":
+			if adtyNotificationHexColorRegex.MatchString(val) {
+				cleaned = val
+			} else if m := adtyNotificationRGBColorRegex.FindStringSubmatch(val); m != nil {
+				r, errR := strconv.Atoi(m[1])
+				g, errG := strconv.Atoi(m[2])
+				b, errB := strconv.Atoi(m[3])
+				if errR != nil || errG != nil || errB != nil || r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255 {
+					continue
+				}
+				cleaned = fmt.Sprintf("rgb(%d, %d, %d)", r, g, b)
+			} else {
+				continue
+			}
+		case "font-weight":
+			lowerVal := strings.ToLower(val)
+			if lowerVal == "bold" {
+				cleaned = "bold"
+			} else if adtyNotificationFontWeightRegex.MatchString(lowerVal) {
+				w, err := strconv.Atoi(lowerVal)
+				if err != nil || w < 400 || w > 700 {
+					continue
+				}
+				cleaned = lowerVal
+			} else {
+				continue
+			}
+		default:
+			continue
+		}
+		if _, exists := values[prop]; !exists {
+			order = append(order, prop)
+		}
+		values[prop] = cleaned
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, prop := range order {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(prop)
+		b.WriteString(": ")
+		b.WriteString(values[prop])
+	}
+	return b.String()
+}
+
+// SanitizeAdtyNotificationHTML enforces a strict tag and inline-style whitelist
+// for rich-text notifications, stripping scripts, event handlers, links, and
+// any unknown tags or attributes.
+func SanitizeAdtyNotificationHTML(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	ctxNode := &html.Node{Type: html.ElementNode, DataAtom: atom.Body, Data: "body"}
+	nodes, err := html.ParseFragment(strings.NewReader(raw), ctxNode)
+	if err != nil {
+		return html.EscapeString(strings.TrimSpace(raw))
+	}
+	var b strings.Builder
+	for _, n := range nodes {
+		writeSanitizedAdtyHTMLNode(&b, n, 0)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func writeSanitizedAdtyHTMLNode(b *strings.Builder, n *html.Node, depth int) {
+	if n == nil {
+		return
+	}
+	switch n.Type {
+	case html.TextNode:
+		b.WriteString(html.EscapeString(n.Data))
+	case html.ElementNode:
+		tag := strings.ToLower(strings.TrimSpace(n.Data))
+		if n.Namespace != "" || isAdtyNotificationDropSubtreeTag(tag) {
+			return
+		}
+		if !isAdtyNotificationAllowedHTMLTag(tag) || depth >= adtyNotificationMaxHTMLDepth {
+			for child := n.FirstChild; child != nil; child = child.NextSibling {
+				writeSanitizedAdtyHTMLNode(b, child, depth+1)
+			}
+			return
+		}
+		var safeStyle string
+		for _, attr := range n.Attr {
+			if attr.Namespace == "" && strings.EqualFold(attr.Key, "style") {
+				safeStyle = sanitizeAdtyNotificationStyle(attr.Val)
+				break
+			}
+		}
+		b.WriteByte('<')
+		b.WriteString(tag)
+		if safeStyle != "" {
+			b.WriteString(` style="`)
+			b.WriteString(html.EscapeString(safeStyle))
+			b.WriteByte('"')
+		}
+		b.WriteByte('>')
+		if tag == "br" {
+			return
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			writeSanitizedAdtyHTMLNode(b, child, depth+1)
+		}
+		b.WriteString("</")
+		b.WriteString(tag)
+		b.WriteByte('>')
+	}
+}
+
+// AdtyNotificationHTMLToPlainText extracts visible plain text from rich-text
+// HTML for visible rune-count enforcement (<= 2000 runes).
+func AdtyNotificationHTMLToPlainText(raw string) string {
+	return extractAdtyNotificationHTMLText(raw, false)
+}
+
+func adtyNotificationHTMLToTelegramText(raw string) string {
+	return extractAdtyNotificationHTMLText(raw, true)
+}
+
+func extractAdtyNotificationHTMLText(raw string, formatListItems bool) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	ctxNode := &html.Node{Type: html.ElementNode, DataAtom: atom.Body, Data: "body"}
+	nodes, err := html.ParseFragment(strings.NewReader(raw), ctxNode)
+	if err != nil {
+		return strings.TrimSpace(raw)
+	}
+	var b strings.Builder
+	for _, n := range nodes {
+		writeAdtyHTMLPlainTextNode(&b, n, formatListItems, 0)
+	}
+	out := strings.ReplaceAll(b.String(), "\r\n", "\n")
+	out = strings.ReplaceAll(out, "\r", "\n")
+	out = strings.ReplaceAll(out, "\u00a0", " ")
+	out = adtyNotificationMultiNewlines.ReplaceAllString(out, "\n\n")
+	return strings.TrimSpace(out)
+}
+
+func writeAdtyHTMLPlainTextNode(b *strings.Builder, n *html.Node, formatListItems bool, depth int) {
+	if n == nil || depth > adtyNotificationMaxHTMLDepth*2 {
+		return
+	}
+	switch n.Type {
+	case html.TextNode:
+		b.WriteString(n.Data)
+	case html.ElementNode:
+		tag := strings.ToLower(strings.TrimSpace(n.Data))
+		if n.Namespace != "" || isAdtyNotificationDropSubtreeTag(tag) {
+			return
+		}
+		if tag == "br" {
+			b.WriteByte('\n')
+			return
+		}
+		isBlock := false
+		switch tag {
+		case "p", "div", "h1", "h2", "h3", "blockquote", "ul", "ol":
+			isBlock = true
+		}
+		if isBlock || tag == "li" {
+			if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+				b.WriteByte('\n')
+			}
+			if formatListItems && tag == "li" {
+				b.WriteString("- ")
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			writeAdtyHTMLPlainTextNode(b, child, formatListItems, depth+1)
+		}
+		if isBlock || tag == "li" {
+			if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+				b.WriteByte('\n')
+			}
+			if formatListItems && (tag == "p" || tag == "h1" || tag == "h2" || tag == "h3" || tag == "blockquote" || tag == "ul" || tag == "ol") {
+				if !strings.HasSuffix(b.String(), "\n\n") {
+					b.WriteByte('\n')
+				}
+			}
+		}
+	}
+}
 
 func ListAdtyManagedNotifications(issuerSiteID, start, limit int) ([]model.AdtyNotificationPublication, int64, error) {
 	query := model.DB.Model(&model.AdtyNotificationPublication{}).Where("issuer_site_id = ?", issuerSiteID)
@@ -67,10 +340,13 @@ func adtyNotificationAuditSnapshot(row model.AdtyNotificationPublication) map[st
 		"id":               row.Id,
 		"issuer_site_id":   row.IssuerSiteId,
 		"audience":         row.Audience,
+		"target_audiences": row.TargetAudiences,
+		"target_site_ids":  row.TargetSiteIDs,
 		"target_site_id":   row.TargetSiteId,
 		"target_site_name": row.TargetSiteName,
 		"kind":             row.Kind,
 		"title":            row.Title,
+		"content_format":   row.ContentFormat,
 		"business":         row.Business,
 		"status":           row.Status,
 		"revision":         row.Revision,
@@ -152,23 +428,44 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 		return &row, eventID, nil
 	}
 	input.Title, input.Content, input.Business = strings.TrimSpace(input.Title), strings.TrimSpace(input.Content), strings.TrimSpace(input.Business)
+	contentFormat := strings.ToLower(strings.TrimSpace(input.ContentFormat))
+	if contentFormat == "" {
+		contentFormat = "markdown"
+	}
+	if contentFormat != "markdown" && contentFormat != "html" {
+		return nil, "", common.NewMessage("Invalid parameters")
+	}
+	if len(input.Content) > adtyNotificationMaxRawBytes {
+		return nil, "", common.NewMessage("Notification content exceeds 32KB limit")
+	}
 	sourceContent := normalizeAdtyNotificationSourceContent(row.Id, input.Content)
+	visibleContent := sourceContent
+	if contentFormat == "html" {
+		sourceContent = SanitizeAdtyNotificationHTML(sourceContent)
+		if len(sourceContent) > adtyNotificationMaxRawBytes {
+			return nil, "", common.NewMessage("Notification content exceeds 32KB limit")
+		}
+		visibleContent = AdtyNotificationHTMLToPlainText(sourceContent)
+	}
+	if utf8.RuneCountInString(visibleContent) > adtyNotificationMaxRunes {
+		return nil, "", common.NewMessage("Notification content must be at most 2000 characters")
+	}
 	// 草稿允许空标题空正文——「先存着、回头再写」正是它存在的理由，要求填满就等于
 	// 没有草稿。但长度上限和类别/受众枚举始终要校验：那些是存储约束，不是完整度。
-	if (!input.Draft && (input.Title == "" || sourceContent == "")) ||
-		utf8.RuneCountInString(input.Title) > 120 || utf8.RuneCountInString(sourceContent) > 10000 || utf8.RuneCountInString(input.Business) > 200 ||
-		!slices.Contains([]string{"platform", "system", "maintenance", "rules"}, input.Kind) ||
-		!slices.Contains([]string{"all_users", "all_sites", "site", "team", "user"}, input.Audience) {
+	if (!input.Draft && (input.Title == "" || strings.TrimSpace(visibleContent) == "")) ||
+		utf8.RuneCountInString(input.Title) > 120 || utf8.RuneCountInString(input.Business) > 200 ||
+		!slices.Contains([]string{"platform", "system", "maintenance", "rules"}, input.Kind) {
 		return nil, "", common.NewMessage("Invalid parameters")
 	}
 
-	targetSiteID, targetSiteName, err := resolveAdtyNotificationTarget(issuer, issuerID, input)
+	resolved, err := resolveAdtyNotificationTargets(issuer, issuerID, input)
 	if err != nil {
 		return nil, "", err
 	}
 
-	row.Title, row.Content, row.Business = input.Title, sourceContent, input.Business
-	row.Kind, row.Audience, row.TargetSiteId, row.TargetSiteName = input.Kind, input.Audience, targetSiteID, targetSiteName
+	row.Title, row.Content, row.ContentFormat, row.Business = input.Title, sourceContent, contentFormat, input.Business
+	row.Kind, row.Audience, row.TargetSiteId, row.TargetSiteName = input.Kind, resolved.Audience, resolved.TargetSiteId, resolved.TargetSiteName
+	row.TargetAudiences, row.TargetSiteIDs = resolved.TargetAudiences, resolved.TargetSiteIDs
 	row.Status = "published"
 	if input.Draft {
 		row.Status = "draft"
@@ -182,13 +479,16 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 	// 不勾同步就把频道一起清掉：留着上一轮的频道名，下次勾上会安静地发到
 	// 一个没人预期的目标。
 	if input.SyncTelegram {
-		if row.Audience == "team" || row.Audience == "user" {
+		ch := strings.TrimSpace(input.TelegramChannel)
+		switch {
+		case row.Audience == "team" || row.Audience == "user":
 			row.TelegramChannel = adtyPrivateTelegramMarker
-		} else {
+		case resolved.UsesTargetAudiences && (ch == "" || strings.EqualFold(ch, adtyPrivateTelegramMarker)):
+			row.TelegramChannel = adtyPrivateTelegramMarker
+		default:
 			if issuer != nil || issuerID > 0 {
 				return nil, "", common.NewMessage("Subsites cannot push announcements to shared public Telegram channels")
 			}
-			ch := strings.TrimSpace(input.TelegramChannel)
 			if !adtyValidPublicTelegramChannel(ch) || utf8.RuneCountInString(ch) > 128 {
 				return nil, "", common.NewMessage("Invalid parameters")
 			}
@@ -234,6 +534,154 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 		}
 	}
 	return &row, eventID, nil
+}
+
+type resolvedAdtyNotificationTargets struct {
+	Audience            string
+	TargetAudiences     string
+	TargetSiteIDs       string
+	TargetSiteId        int
+	TargetSiteName      string
+	UsesTargetAudiences bool
+}
+
+func resolveAdtyNotificationTargets(issuer *model.AdtySite, issuerID int, input AdtyNotificationInput) (resolvedAdtyNotificationTargets, error) {
+	rawAudience := strings.TrimSpace(input.Audience)
+	useMulti := len(input.TargetAudiences) > 0 || slices.Contains(adtyNewTargetAudiences, rawAudience)
+	if !useMulti {
+		if !slices.Contains([]string{"all_users", "all_sites", "site", "team", "user"}, rawAudience) {
+			return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+		}
+		input.Audience = rawAudience
+		targetSiteID, targetSiteName, err := resolveAdtyNotificationTarget(issuer, issuerID, input)
+		if err != nil {
+			return resolvedAdtyNotificationTargets{}, err
+		}
+		return resolvedAdtyNotificationTargets{
+			Audience:       rawAudience,
+			TargetSiteId:   targetSiteID,
+			TargetSiteName: targetSiteName,
+		}, nil
+	}
+
+	rawList := input.TargetAudiences
+	if len(rawList) == 0 && rawAudience != "" {
+		rawList = []string{rawAudience}
+	}
+	allowed := adtyRootTargetAudiences
+	if issuer != nil {
+		allowed = adtySubsiteTargetAudiences
+	}
+	audiences := make([]string, 0, len(rawList))
+	for _, item := range rawList {
+		aud := strings.TrimSpace(item)
+		if !slices.Contains(allowed, aud) {
+			return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+		}
+		if !slices.Contains(audiences, aud) {
+			audiences = append(audiences, aud)
+		}
+	}
+	if len(audiences) == 0 || input.TargetTeamId != 0 || input.TargetUserId != 0 {
+		return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+	}
+	slices.Sort(audiences)
+	audiencesJSON, err := common.Marshal(audiences)
+	if err != nil {
+		return resolvedAdtyNotificationTargets{}, err
+	}
+
+	summaryAudience := "multi"
+	if len(audiences) == 1 {
+		summaryAudience = audiences[0]
+	}
+
+	if issuer != nil {
+		if input.TargetSiteId != 0 && input.TargetSiteId != issuerID {
+			return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+		}
+		for _, sid := range input.TargetSiteIDs {
+			if sid != issuerID {
+				return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+			}
+		}
+		siteIDsJSON, err := common.Marshal([]int{issuerID})
+		if err != nil {
+			return resolvedAdtyNotificationTargets{}, err
+		}
+		return resolvedAdtyNotificationTargets{
+			Audience:            summaryAudience,
+			TargetAudiences:     string(audiencesJSON),
+			TargetSiteIDs:       string(siteIDsJSON),
+			TargetSiteId:        issuerID,
+			TargetSiteName:      AdtySiteDisplayHost(issuer),
+			UsesTargetAudiences: true,
+		}, nil
+	}
+
+	// Main-site Root (issuer == nil)
+	hasSiteUsers := slices.Contains(audiences, "site_users")
+	if !hasSiteUsers {
+		if len(input.TargetSiteIDs) > 0 || input.TargetSiteId != 0 {
+			return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+		}
+		return resolvedAdtyNotificationTargets{
+			Audience:            summaryAudience,
+			TargetAudiences:     string(audiencesJSON),
+			TargetSiteIDs:       "[]",
+			UsesTargetAudiences: true,
+		}, nil
+	}
+
+	rawSiteIDs := input.TargetSiteIDs
+	if len(rawSiteIDs) == 0 && input.TargetSiteId > 0 {
+		rawSiteIDs = []int{input.TargetSiteId}
+	}
+	siteIDs := make([]int, 0, len(rawSiteIDs))
+	for _, sid := range rawSiteIDs {
+		if sid <= 0 {
+			return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+		}
+		if !slices.Contains(siteIDs, sid) {
+			siteIDs = append(siteIDs, sid)
+		}
+	}
+	if len(siteIDs) == 0 {
+		return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+	}
+	slices.Sort(siteIDs)
+
+	var sites []model.AdtySite
+	siteQuery := model.DB.Where("id IN ? AND status IN ?", siteIDs, adtyOpenSiteStatuses)
+	if model.DB.Migrator().HasColumn(&model.AdtySite{}, "archived_hidden_at") {
+		siteQuery = siteQuery.Where("archived_hidden_at = 0")
+	}
+	if err := siteQuery.Order("id ASC").Find(&sites).Error; err != nil {
+		return resolvedAdtyNotificationTargets{}, err
+	}
+	if len(sites) != len(siteIDs) {
+		return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+	}
+	hosts := make([]string, 0, len(sites))
+	for i := range sites {
+		hosts = append(hosts, AdtySiteDisplayHost(&sites[i]))
+	}
+	siteIDsJSON, err := common.Marshal(siteIDs)
+	if err != nil {
+		return resolvedAdtyNotificationTargets{}, err
+	}
+	targetSiteID := 0
+	if len(siteIDs) == 1 {
+		targetSiteID = siteIDs[0]
+	}
+	return resolvedAdtyNotificationTargets{
+		Audience:            summaryAudience,
+		TargetAudiences:     string(audiencesJSON),
+		TargetSiteIDs:       string(siteIDsJSON),
+		TargetSiteId:        targetSiteID,
+		TargetSiteName:      truncateAdtyRunes(strings.Join(hosts, ", "), 255),
+		UsesTargetAudiences: true,
+	}, nil
 }
 
 func resolveAdtyNotificationTarget(issuer *model.AdtySite, issuerID int, input AdtyNotificationInput) (int, string, error) {
@@ -370,9 +818,16 @@ func normalizeAdtyNotificationSourceContentWithDB(db *gorm.DB, pubID int, conten
 		var head model.AdtyTranslationHead
 		if db.Where("object_key = ?", adtyNotificationTranslationKey(pubID)).Limit(1).Find(&head).RowsAffected > 0 {
 			if head.English != "" {
-				suffix := "\n\n" + strings.TrimSpace(head.English)
-				if strings.HasSuffix(content, suffix) {
-					content = strings.TrimSpace(strings.TrimSuffix(content, suffix))
+				eng := strings.TrimSpace(head.English)
+				for _, candidate := range []string{eng, SanitizeAdtyNotificationHTML(eng)} {
+					if candidate == "" {
+						continue
+					}
+					suffix := "\n\n" + candidate
+					if strings.HasSuffix(content, suffix) {
+						content = strings.TrimSpace(strings.TrimSuffix(content, suffix))
+						break
+					}
 				}
 			}
 		}
@@ -470,7 +925,10 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 		bilingual := sourceContent
 		if hasHead && head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" && adtyTranslationHeadMatchesSource(head, bodyText) {
 			eng := strings.TrimSpace(head.English)
-			if !strings.Contains(bilingual, eng) {
+			if strings.EqualFold(strings.TrimSpace(pub.ContentFormat), "html") {
+				eng = SanitizeAdtyNotificationHTML(eng)
+			}
+			if eng != "" && !strings.Contains(bilingual, eng) {
 				bilingual = sourceContent + "\n\n" + eng
 			}
 		} else {
@@ -501,9 +959,193 @@ func adtyPublicNotificationEventKey(id int) string {
 	return fmt.Sprintf("pub:%d:public", id)
 }
 
+func adtyNotificationIsPrivateTelegram(row *model.AdtyNotificationPublication) bool {
+	if row == nil {
+		return false
+	}
+	if row.Audience == "team" || row.Audience == "user" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(row.TelegramChannel), adtyPrivateTelegramMarker)
+}
+
+func adtyActiveTeamUserIDsForSitesTx(tx *gorm.DB, siteIDs []int, staffSet map[int]bool) ([]int, error) {
+	if tx == nil || len(siteIDs) == 0 || !tx.Migrator().HasTable(&model.AdtyTeam{}) {
+		return nil, nil
+	}
+	var teams []model.AdtyTeam
+	if err := tx.Select("id", "leader_user_id").
+		Where("site_id IN ? AND status = ?", siteIDs, model.AdtyTeamStatusActive).
+		Find(&teams).Error; err != nil {
+		return nil, err
+	}
+	if len(teams) == 0 {
+		return nil, nil
+	}
+	teamIDs := make([]int64, 0, len(teams))
+	candidates := map[int]bool{}
+	for _, team := range teams {
+		teamIDs = append(teamIDs, team.Id)
+		if team.LeaderUserId > 0 {
+			candidates[team.LeaderUserId] = true
+		}
+	}
+	if tx.Migrator().HasTable(&model.AdtyTeamMember{}) {
+		var memberIDs []int
+		if err := tx.Model(&model.AdtyTeamMember{}).
+			Where("team_id IN ? AND status = ?", teamIDs, model.AdtyTeamMemberActive).
+			Pluck("user_id", &memberIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, uid := range memberIDs {
+			if uid > 0 {
+				candidates[uid] = true
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	candList := make([]int, 0, len(candidates))
+	for uid := range candidates {
+		if !staffSet[uid] {
+			candList = append(candList, uid)
+		}
+	}
+	if len(candList) == 0 {
+		return nil, nil
+	}
+	var validIDs []int
+	if err := tx.Model(&model.User{}).
+		Where("id IN ? AND status = ? AND site_id IN ? AND staff_site_id = 0", candList, common.UserStatusEnabled, siteIDs).
+		Order("id ASC").
+		Pluck("id", &validIDs).Error; err != nil {
+		return nil, err
+	}
+	return validIDs, nil
+}
+
+func adtyNotificationTargetedRecipientIDs(tx *gorm.DB, row *model.AdtyNotificationPublication, audiences []string) ([]int, error) {
+	staffSet := map[int]bool{}
+	if tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+		var staffIDs []int
+		if err := tx.Model(&model.AdtySiteStaff{}).Distinct("user_id").Pluck("user_id", &staffIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, uid := range staffIDs {
+			if uid > 0 {
+				staffSet[uid] = true
+			}
+		}
+	}
+
+	ownerSet := map[int]bool{}
+	if (slices.Contains(audiences, "main_users") || slices.Contains(audiences, "all_site_owners")) && tx.Migrator().HasTable(&model.AdtySite{}) {
+		var ownerIDs []int
+		if err := tx.Model(&model.AdtySite{}).
+			Where("status IN ? AND owner_user_id > 0", adtyOpenSiteStatuses).
+			Distinct("owner_user_id").
+			Pluck("owner_user_id", &ownerIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, uid := range ownerIDs {
+			if uid > 0 {
+				ownerSet[uid] = true
+			}
+		}
+	}
+
+	recipientSet := map[int]bool{}
+	for _, aud := range audiences {
+		switch aud {
+		case "main_users":
+			var ids []int
+			if err := tx.Model(&model.User{}).
+				Where("status = ? AND site_id = 0 AND staff_site_id = 0", common.UserStatusEnabled).
+				Pluck("id", &ids).Error; err != nil {
+				return nil, err
+			}
+			for _, uid := range ids {
+				if uid > 0 && !staffSet[uid] && !ownerSet[uid] {
+					recipientSet[uid] = true
+				}
+			}
+		case "all_site_owners":
+			if len(ownerSet) == 0 {
+				continue
+			}
+			ownerList := make([]int, 0, len(ownerSet))
+			for uid := range ownerSet {
+				ownerList = append(ownerList, uid)
+			}
+			var enabledOwners []int
+			if err := tx.Model(&model.User{}).
+				Where("id IN ? AND status = ?", ownerList, common.UserStatusEnabled).
+				Pluck("id", &enabledOwners).Error; err != nil {
+				return nil, err
+			}
+			for _, uid := range enabledOwners {
+				if uid > 0 {
+					recipientSet[uid] = true
+				}
+			}
+		case "site_users":
+			siteIDs := row.EffectiveTargetSiteIDs()
+			if len(siteIDs) == 0 {
+				continue
+			}
+			var ids []int
+			if err := tx.Model(&model.User{}).
+				Where("status = ? AND site_id IN ? AND staff_site_id = 0", common.UserStatusEnabled, siteIDs).
+				Pluck("id", &ids).Error; err != nil {
+				return nil, err
+			}
+			for _, uid := range ids {
+				if uid > 0 && !staffSet[uid] {
+					recipientSet[uid] = true
+				}
+			}
+		case "main_teams":
+			ids, err := adtyActiveTeamUserIDsForSitesTx(tx, []int{0}, staffSet)
+			if err != nil {
+				return nil, err
+			}
+			for _, uid := range ids {
+				if uid > 0 {
+					recipientSet[uid] = true
+				}
+			}
+		case "site_teams":
+			siteIDs := row.EffectiveTargetSiteIDs()
+			if len(siteIDs) == 0 {
+				continue
+			}
+			ids, err := adtyActiveTeamUserIDsForSitesTx(tx, siteIDs, staffSet)
+			if err != nil {
+				return nil, err
+			}
+			for _, uid := range ids {
+				if uid > 0 {
+					recipientSet[uid] = true
+				}
+			}
+		}
+	}
+
+	out := make([]int, 0, len(recipientSet))
+	for uid := range recipientSet {
+		out = append(out, uid)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 func adtyNotificationPrivateRecipientIDs(tx *gorm.DB, row *model.AdtyNotificationPublication) ([]int, error) {
 	if row == nil {
 		return nil, nil
+	}
+	if audiences := row.ParsedTargetAudiences(); len(audiences) > 0 {
+		return adtyNotificationTargetedRecipientIDs(tx, row, audiences)
 	}
 	switch row.Audience {
 	case "user":
@@ -552,13 +1194,14 @@ func queueAdtyPrivatePublicationTelegramTx(tx *gorm.DB, row *model.AdtyNotificat
 	if !strings.Contains(body, "\n\n") {
 		body += "\n\nEnglish is not ready"
 	}
-	purpose := model.AdtyTelegramPurposeUser
+	includeSiteOwners := slices.Contains(row.ParsedTargetAudiences(), "all_site_owners")
 	for _, uid := range userIDs {
 		eventKey := fmt.Sprintf("pub:%d:user:%d", row.Id, uid)
 		var existing model.AdtyTelegramDelivery
 		if tx.Where("event_key = ?", eventKey).Limit(1).Find(&existing).RowsAffected > 0 {
 			continue
 		}
+		purpose := model.AdtyTelegramPurposeUser
 		delivery := model.AdtyTelegramDelivery{
 			EventKey: eventKey,
 			UserId:   uid,
@@ -574,6 +1217,17 @@ func queueAdtyPrivatePublicationTelegramTx(tx *gorm.DB, row *model.AdtyNotificat
 		found := tx.Where("user_id = ? AND purpose = ? AND status = ?", uid, purpose, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
 		if found.Error != nil {
 			return found.Error
+		}
+		if found.RowsAffected == 0 && includeSiteOwners {
+			foundAdmin := tx.Where("user_id = ? AND purpose = ? AND status = ?", uid, model.AdtyTelegramPurposeAdmin, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
+			if foundAdmin.Error != nil {
+				return foundAdmin.Error
+			}
+			if foundAdmin.RowsAffected > 0 {
+				found = foundAdmin
+				purpose = model.AdtyTelegramPurposeAdmin
+				delivery.Purpose = purpose
+			}
 		}
 		if found.RowsAffected > 0 && user.Id > 0 && user.Status == common.UserStatusEnabled && user.SiteId == binding.SiteId {
 			siteOpen, err := adtyTelegramSiteAccess(tx, binding.SiteId)
@@ -603,7 +1257,7 @@ func adtyNotificationHasTelegramOutbox(tx *gorm.DB, row *model.AdtyNotificationP
 	if row == nil || row.Id <= 0 {
 		return true
 	}
-	if row.Audience == "team" || row.Audience == "user" {
+	if adtyNotificationIsPrivateTelegram(row) {
 		userIDs, err := adtyNotificationPrivateRecipientIDs(tx, row)
 		if err != nil || len(userIDs) == 0 {
 			return true
@@ -757,7 +1411,7 @@ func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, i
 				return nil
 			}
 		}
-		if current.Audience == "team" || current.Audience == "user" {
+		if adtyNotificationIsPrivateTelegram(&current) {
 			if err := queueAdtyPrivatePublicationTelegramTx(tx, &current); err != nil {
 				return err
 			}
@@ -811,6 +1465,9 @@ func announceTelegramBody(row model.AdtyNotificationPublication) string {
 
 func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublication) string {
 	content := resolveAdtyNotificationDisplayContentWithDB(db, row)
+	if strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html") {
+		content = adtyNotificationHTMLToTelegramText(content)
+	}
 	title := strings.TrimSpace(row.Title)
 	if title == "" {
 		return content
@@ -835,12 +1492,16 @@ func resolveAdtyNotificationDisplayContent(row model.AdtyNotificationPublication
 
 func resolveAdtyNotificationDisplayContentWithDB(db *gorm.DB, row model.AdtyNotificationPublication) string {
 	content := strings.TrimSpace(row.Content)
+	isHTML := strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html")
 	if row.Id > 0 && db != nil && adtyContainsChinese(content) && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
 		var head model.AdtyTranslationHead
 		if db.Where("object_key = ?", adtyNotificationTranslationKey(row.Id)).Limit(1).Find(&head).RowsAffected > 0 {
 			currentSrc := normalizeAdtyNotificationSourceContentWithDB(db, row.Id, content)
 			if head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" && adtyTranslationHeadMatchesSource(head, currentSrc) {
 				eng := strings.TrimSpace(head.English)
+				if isHTML {
+					eng = SanitizeAdtyNotificationHTML(eng)
+				}
 				src := strings.TrimSpace(head.Source)
 				// Guard against legacy rows where title was stored in notification:<id>
 				// while the body itself was pure English.
@@ -850,7 +1511,7 @@ func resolveAdtyNotificationDisplayContentWithDB(db *gorm.DB, row model.AdtyNoti
 				if src == "" {
 					src = currentSrc
 				}
-				if !strings.Contains(src, eng) {
+				if eng != "" && !strings.Contains(src, eng) {
 					return src + "\n\n" + eng
 				}
 			}
@@ -895,8 +1556,108 @@ func adtyUserActiveTeamTargetsWithDB(db *gorm.DB, userID, siteID int) ([]string,
 	return targets, nil
 }
 
+func adtyUserIsStaffWithDB(db *gorm.DB, user *model.User) (bool, error) {
+	if user == nil || user.Id <= 0 {
+		return false, nil
+	}
+	if user.StaffSiteId > 0 {
+		return true, nil
+	}
+	if db == nil {
+		db = model.DB
+	}
+	if db == nil || !db.Migrator().HasTable(&model.AdtySiteStaff{}) {
+		return false, nil
+	}
+	var count int64
+	if err := db.Model(&model.AdtySiteStaff{}).Where("user_id = ?", user.Id).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func adtyUserOwnsOpenSiteWithDB(db *gorm.DB, userID int) (bool, error) {
+	if db == nil {
+		db = model.DB
+	}
+	if db == nil || userID <= 0 || !db.Migrator().HasTable(&model.AdtySite{}) {
+		return false, nil
+	}
+	var count int64
+	if err := db.Model(&model.AdtySite{}).
+		Where("owner_user_id = ? AND status IN ?", userID, adtyOpenSiteStatuses).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func adtyUserInActiveTeamOnSiteWithDB(db *gorm.DB, userID, siteID int) (bool, error) {
+	if db == nil {
+		db = model.DB
+	}
+	if db == nil || userID <= 0 || !db.Migrator().HasTable(&model.AdtyTeam{}) {
+		return false, nil
+	}
+	targets, err := adtyUserActiveTeamTargetsWithDB(db, userID, siteID)
+	if err != nil {
+		return false, err
+	}
+	if len(targets) > 0 {
+		return true, nil
+	}
+	var leaderCount int64
+	if err := db.Model(&model.AdtyTeam{}).
+		Where("site_id = ? AND leader_user_id = ? AND status = ?", siteID, userID, model.AdtyTeamStatusActive).
+		Count(&leaderCount).Error; err != nil {
+		return false, err
+	}
+	return leaderCount > 0, nil
+}
+
 func adtyUserCanReadPublication(user *model.User, pub *model.AdtyNotificationPublication) bool {
 	if user == nil || pub == nil || user.Id <= 0 || user.Status != common.UserStatusEnabled || pub.Status != "published" {
+		return false
+	}
+	if audiences := pub.ParsedTargetAudiences(); len(audiences) > 0 {
+		isStaff, err := adtyUserIsStaffWithDB(model.DB, user)
+		if err != nil {
+			return false
+		}
+		isSiteOwner, err := adtyUserOwnsOpenSiteWithDB(model.DB, user.Id)
+		if err != nil {
+			return false
+		}
+		for _, aud := range audiences {
+			switch aud {
+			case "main_users":
+				if user.SiteId == 0 && !isSiteOwner && !isStaff {
+					return true
+				}
+			case "all_site_owners":
+				if isSiteOwner {
+					return true
+				}
+			case "site_users":
+				if !isStaff && user.SiteId > 0 && slices.Contains(pub.EffectiveTargetSiteIDs(), user.SiteId) {
+					return true
+				}
+			case "main_teams":
+				if !isStaff && user.SiteId == 0 {
+					inTeam, err := adtyUserInActiveTeamOnSiteWithDB(model.DB, user.Id, 0)
+					if err == nil && inTeam {
+						return true
+					}
+				}
+			case "site_teams":
+				if !isStaff && user.SiteId > 0 && slices.Contains(pub.EffectiveTargetSiteIDs(), user.SiteId) {
+					inTeam, err := adtyUserInActiveTeamOnSiteWithDB(model.DB, user.Id, user.SiteId)
+					if err == nil && inTeam {
+						return true
+					}
+				}
+			}
+		}
 		return false
 	}
 	switch pub.Audience {
@@ -936,59 +1697,127 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 	}
 	query := db.Model(&model.AdtyNotificationPublication{}).Where("status = ?", "published")
 	userTarget := fmt.Sprintf("user:%d", userID)
-	// 可见性规则（A.18.2 / features.md:16）：
-	//
-	//	audience    主站可见  分站可见
-	//	all_users   ✅        ✅  ← Root 发布的全部用户通知全平台可见
-	//	all_sites   ✅        ✅  平台级公告，全平台可见
-	//	site+target 仅 target 是自己时可见
-	//	team+target 仅同站活跃团队成员可见
-	//	user+target 仅同站目标用户本人可见
+	// 可见性规则（A.18.2 / R-32 #12）：
+	// 旧记录（target_audiences 为空）：
+	//   all_users / all_sites / all -> 全平台可见
+	//   site + target_site_id       -> 目标分站成员与站长可见
+	//   team / user                 -> 同站对应活跃团队成员或本人可见
+	// 新记录（target_audiences 非空，多选并集）：
+	//   main_users                  -> 仅主站 site_id=0 且非站长且非员工用户可见，绝不出现在分站
+	//   all_site_owners             -> 仅活跃/暂停/关站中分站的站长可见
+	//   site_users + target_site_ids-> 仅所选分站（或分站自发）的非员工用户（含团队成员/负责人）可见
+	//   main_teams                  -> 仅主站 site_id=0 活跃团队成员与负责人可见
+	//   site_teams                  -> 仅该分站活跃团队成员与负责人可见
 	platformAudiences := []string{"all_users", "all_sites", "all"}
+	hasTargetAudiences := db.Migrator().HasColumn(&model.AdtyNotificationPublication{}, "target_audiences")
+	hasTargetSiteIDs := db.Migrator().HasColumn(&model.AdtyNotificationPublication{}, "target_site_ids")
+
+	isStaff, err := adtyUserIsStaffWithDB(db, &user)
+	if err != nil {
+		return nil, err
+	}
+	isSiteOwner, err := adtyUserOwnsOpenSiteWithDB(db, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	clauses := make([]string, 0, 8)
+	args := make([]any, 0, 16)
+	addClause := func(sql string, clauseArgs ...any) {
+		clauses = append(clauses, "("+sql+")")
+		args = append(args, clauseArgs...)
+	}
+
+	if hasTargetAudiences {
+		addClause("COALESCE(target_audiences, '') IN ('', '[]') AND audience IN ?", platformAudiences)
+	} else {
+		addClause("audience IN ?", platformAudiences)
+	}
+
 	if site == nil {
-		if user.SiteId == 0 && user.StaffSiteId == 0 {
+		if user.SiteId == 0 && !isStaff {
+			addClause("audience = ? AND target_site_id = 0 AND target_site_name = ?", "user", userTarget)
 			teamTargets, err := adtyUserActiveTeamTargetsWithDB(db, userID, 0)
 			if err != nil {
 				return nil, err
 			}
 			if len(teamTargets) > 0 {
-				return query.Where(
-					"audience IN ? OR (audience = ? AND target_site_id = 0 AND target_site_name = ?) OR (audience = ? AND target_site_id = 0 AND target_site_name IN ?)",
-					platformAudiences, "user", userTarget, "team", teamTargets,
-				), nil
+				addClause("audience = ? AND target_site_id = 0 AND target_site_name IN ?", "team", teamTargets)
 			}
-			return query.Where(
-				"audience IN ? OR (audience = ? AND target_site_id = 0 AND target_site_name = ?)",
-				platformAudiences, "user", userTarget,
-			), nil
+			if hasTargetAudiences {
+				if !isSiteOwner {
+					addClause("target_audiences LIKE ?", `%"main_users"%`)
+				}
+				inMainTeam := len(teamTargets) > 0
+				if !inMainTeam {
+					inMainTeam, err = adtyUserInActiveTeamOnSiteWithDB(db, userID, 0)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if inMainTeam {
+					addClause("target_audiences LIKE ?", `%"main_teams"%`)
+				}
+			}
 		}
-		return query.Where("audience IN ?", platformAudiences), nil
+		if hasTargetAudiences && isSiteOwner {
+			addClause("target_audiences LIKE ?", `%"all_site_owners"%`)
+		}
+		return query.Where(strings.Join(clauses, " OR "), args...), nil
 	}
+
 	var current model.AdtySite
 	if err := db.First(&current, site.Id).Error; err != nil {
 		return nil, err
 	}
 	if user.SiteId != site.Id && current.OwnerUserId != userID {
 		// 只是访问了这个域名、并不属于这个站：平台级公告照常，站内定向内容不给。
-		return query.Where("audience IN ?", platformAudiences), nil
+		return query.Where(strings.Join(clauses, " OR "), args...), nil
 	}
-	if user.SiteId == site.Id && user.StaffSiteId == 0 {
+
+	if hasTargetAudiences {
+		addClause("COALESCE(target_audiences, '') IN ('', '[]') AND audience = ? AND target_site_id = ?", "site", site.Id)
+	} else {
+		addClause("audience = ? AND target_site_id = ?", "site", site.Id)
+	}
+	if hasTargetAudiences && isSiteOwner && current.OwnerUserId == userID {
+		addClause("target_audiences LIKE ?", `%"all_site_owners"%`)
+	}
+
+	if user.SiteId == site.Id && !isStaff {
+		addClause("audience = ? AND target_site_id = ? AND target_site_name = ?", "user", site.Id, userTarget)
 		teamTargets, err := adtyUserActiveTeamTargetsWithDB(db, userID, site.Id)
 		if err != nil {
 			return nil, err
 		}
 		if len(teamTargets) > 0 {
-			return query.Where(
-				"audience IN ? OR (audience = ? AND target_site_id = ?) OR (audience = ? AND target_site_id = ? AND target_site_name = ?) OR (audience = ? AND target_site_id = ? AND target_site_name IN ?)",
-				platformAudiences, "site", site.Id, "user", site.Id, userTarget, "team", site.Id, teamTargets,
-			), nil
+			addClause("audience = ? AND target_site_id = ? AND target_site_name IN ?", "team", site.Id, teamTargets)
 		}
-		return query.Where(
-			"audience IN ? OR (audience = ? AND target_site_id = ?) OR (audience = ? AND target_site_id = ? AND target_site_name = ?)",
-			platformAudiences, "site", site.Id, "user", site.Id, userTarget,
-		), nil
+		if hasTargetAudiences {
+			siteMatchSQL, siteMatchArgs := model.AdtyNotificationTargetSiteMatchSQL(site.Id, hasTargetSiteIDs)
+			siteArgs := make([]any, 0, 1+len(siteMatchArgs))
+			siteArgs = append(siteArgs, `%"site_users"%`)
+			siteArgs = append(siteArgs, siteMatchArgs...)
+			addClause("target_audiences LIKE ? AND ("+siteMatchSQL+")", siteArgs...)
+
+			inSiteTeam := len(teamTargets) > 0
+			if !inSiteTeam {
+				inSiteTeam, err = adtyUserInActiveTeamOnSiteWithDB(db, userID, site.Id)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if inSiteTeam {
+				teamSiteSQL, teamSiteArgs := model.AdtyNotificationTargetSiteMatchSQL(site.Id, hasTargetSiteIDs)
+				teamArgs := make([]any, 0, 1+len(teamSiteArgs))
+				teamArgs = append(teamArgs, `%"site_teams"%`)
+				teamArgs = append(teamArgs, teamSiteArgs...)
+				addClause("target_audiences LIKE ? AND ("+teamSiteSQL+")", teamArgs...)
+			}
+		}
 	}
-	return query.Where("audience IN ? OR (audience = ? AND target_site_id = ?)", platformAudiences, "site", site.Id), nil
+
+	return query.Where(strings.Join(clauses, " OR "), args...), nil
 }
 
 func adtyTodoSiteID(userID int, site *model.AdtySite) int {
@@ -1050,16 +1879,31 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 			}
 		}
 	}
+	contentFormat := strings.ToLower(strings.TrimSpace(row.ContentFormat))
+	if contentFormat == "" {
+		contentFormat = "markdown"
+	}
+	targetAudiences := row.ParsedTargetAudiences()
+	if targetAudiences == nil {
+		targetAudiences = []string{}
+	}
+	targetSiteIDs := row.ParsedTargetSiteIDs()
+	if targetSiteIDs == nil {
+		targetSiteIDs = []int{}
+	}
 	item := map[string]any{
 		"id":               fmt.Sprintf("publication:%d", row.Id),
 		"read_key":         row.ReadKey,
 		"title":            row.Title,
 		"content":          content,
+		"content_format":   contentFormat,
 		"type":             "default",
 		"publishDate":      time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
 		"publisher_name":   publisherLabel,
 		"issuer_site_id":   row.IssuerSiteId,
 		"audience":         row.Audience,
+		"target_audiences": targetAudiences,
+		"target_site_ids":  targetSiteIDs,
 		"target_site_id":   row.TargetSiteId,
 		"target_site_name": row.TargetSiteName,
 		"target_team_id":   targetTeamID,
@@ -1072,8 +1916,12 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 		var head model.AdtyTranslationHead
 		if model.DB.Where("object_key = ?", adtyNotificationTranslationKey(row.Id)).Limit(1).Find(&head).RowsAffected > 0 &&
 			adtyTranslationHeadMatchesSource(head, currentSrc) {
-			item["english"] = head.English
-			item["content_en"] = head.English
+			eng := head.English
+			if contentFormat == "html" {
+				eng = SanitizeAdtyNotificationHTML(eng)
+			}
+			item["english"] = eng
+			item["content_en"] = eng
 			item["source"] = head.Source
 			item["translation_status"] = head.Status
 			item["translation_notice"] = head.Notice

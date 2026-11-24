@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,7 +23,7 @@ func SessionCookieOriginGuard() gin.HandlerFunc {
 			return
 		}
 		origin, ok := requestBrowserOrigin(c.Request)
-		if !ok || !isAllowedSessionOrigin(c.Request, origin) {
+		if !ok || !isAllowedSessionOrigin(c, origin) {
 			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Request origin is not allowed"), gin.H{"code": "AUTH_ORIGIN_FORBIDDEN"})
 			c.Abort()
 			return
@@ -55,7 +56,8 @@ func requestBrowserOrigin(request *http.Request) (string, bool) {
 	return origin, err == nil
 }
 
-func isAllowedSessionOrigin(request *http.Request, origin string) bool {
+func isAllowedSessionOrigin(c *gin.Context, origin string) bool {
+	request := c.Request
 	requestScheme, ok := common.RequestScheme(request)
 	if !ok {
 		return false
@@ -67,6 +69,29 @@ func isAllowedSessionOrigin(request *http.Request, origin string) bool {
 	for _, trustedOrigin := range common.SessionCookieTrustedURLs {
 		if subtle.ConstantTimeCompare([]byte(origin), []byte(trustedOrigin)) == 1 {
 			return true
+		}
+	}
+	// R-32 (#26): Behind TLS-terminating reverse proxies (e.g. aaPanel Nginx)
+	// where TRUSTED_PROXIES is unset or does not match the proxy IP, RequestScheme
+	// falls back to "http" while the browser sends Origin: "https://<host>".
+	// Main site falls back to SESSION_COOKIE_TRUSTED_URL, whereas dynamic subsite
+	// subdomains and custom domains are not listed there and would 403 at the first
+	// 15-minute access-token refresh. If the Host has already been authenticated as
+	// an active serving subsite (or main host) via trusted site resolution, accept
+	// exact-host https://<request.Host> as a same-origin session request.
+	if host := strings.TrimSpace(request.Host); host != "" {
+		normalizedHost := service.AdtyNormalizeHost(host)
+		isKnownHost := service.AdtyIsMainHost(normalizedHost)
+		if !isKnownHost {
+			if site := service.AdtySiteForRequest(c); site != nil && service.AdtySiteServesCustomers(site) {
+				isKnownHost = true
+			}
+		}
+		if isKnownHost {
+			httpsOrigin, normErr := common.NormalizeOrigin("https://" + host)
+			if normErr == nil && subtle.ConstantTimeCompare([]byte(origin), []byte(httpsOrigin)) == 1 {
+				return true
+			}
 		}
 	}
 	return false

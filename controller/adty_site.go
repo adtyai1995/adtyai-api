@@ -31,6 +31,8 @@ func GetAdtySite(c *gin.Context) {
 			APIBaseURL:          service.AdtySiteAPIBaseURL(site),
 			TawkPropertyID:      brand.TawkPropertyID,
 			TawkWidgetID:        brand.TawkWidgetID,
+			WalletNotice:        brand.WalletNotice,
+			VoucherPurchaseURL:  brand.VoucherPurchaseURL,
 			RefundPolicyEnabled: settings.RefundPolicyEnabled,
 		}
 		contact = strings.TrimSpace(brand.SupportContact)

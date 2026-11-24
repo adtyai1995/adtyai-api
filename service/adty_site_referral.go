@@ -15,7 +15,11 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-var ErrAdtySiteReferralUnset = errors.New("site commission policy is not configured")
+var (
+	ErrAdtySiteReferralUnset     = errors.New("site commission policy is not configured")
+	ErrAdtySiteReferralRateLimit = common.NewMessage("Subsite referral commission rate cannot exceed 30%")
+	adtySiteMaxReferralRate      = decimal.RequireFromString("0.30")
+)
 
 type AdtySiteReferralView struct {
 	model.AdtySiteMarketingPolicy
@@ -138,8 +142,11 @@ func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpda
 		}
 		if input.Rate != nil {
 			value, err := parseSiteMarketingDecimal(*input.Rate)
-			if err != nil || value.GreaterThan(decimal.NewFromInt(1)) || !value.Equal(value.Round(6)) {
-				return common.NewMessage("Enter an invite rate between 0 and 1 with up to six decimal places")
+			if err != nil || value.IsNegative() || !value.Equal(value.Round(6)) {
+				return common.NewMessage("Enter an invite rate between 0 and 0.3 with up to six decimal places")
+			}
+			if value.GreaterThan(adtySiteMaxReferralRate) {
+				return ErrAdtySiteReferralRateLimit
 			}
 			rate.Rate = value
 		}
@@ -216,17 +223,19 @@ func BindAdtyOwnerSiteInviteFromIP(siteID, ownerID, inviterID, inviteeID int, ip
 	return BindSiteInviteFromIP(siteID, inviterID, inviteeID, ipHash)
 }
 
-// SaveAdtyOwnerSiteTeamDiscount updates one site team's payment ratio.
-// Validity follows G.2: final team price = max(site supply price, site regular
-// sale price × payment ratio). Billing already applies that floor, so a ratio
-// below the site cost factor is not rejected. Shared quota is not changed.
+// SaveAdtyOwnerSiteTeamDiscount updates one site team's supply-price multiplier.
+// Subsite teams use team_price = max(supply_price, supply_price * discount) with 1 <= discount <= 10.
+// Shared quota is not changed.
 func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string) error {
 	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
 		return err
 	}
 	value, err := decimal.NewFromString(strings.TrimSpace(raw))
-	if teamID <= 0 || err != nil || !adtySiteTeamPayRatioConfigValid(value) {
+	if teamID <= 0 || err != nil {
 		return common.NewMessage("Invalid parameters")
+	}
+	if err := validateAdtyTeamDiscountForSite(siteID, value); err != nil {
+		return err
 	}
 	var event model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {

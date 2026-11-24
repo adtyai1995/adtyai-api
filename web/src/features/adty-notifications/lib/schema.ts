@@ -16,13 +16,49 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { TFunction } from 'i18next'
 import { z } from 'zod'
+
+import {
+  getNotificationPlainLength,
+  MAX_NOTIFICATION_PLAIN_LENGTH,
+} from './rich-text'
+
+export const ROOT_TARGET_AUDIENCES = [
+  'main_users',
+  'all_site_owners',
+  'site_users',
+  'main_teams',
+] as const
+
+export const OWNER_TARGET_AUDIENCES = ['site_users', 'site_teams'] as const
+
+export const ALL_TARGET_AUDIENCES = [
+  'main_users',
+  'all_site_owners',
+  'site_users',
+  'main_teams',
+  'site_teams',
+] as const
+
+export type NotificationTargetAudience = (typeof ALL_TARGET_AUDIENCES)[number]
+
+export const NOTIFICATION_CONTENT_FORMATS = [
+  'html',
+  'markdown',
+  'text',
+] as const
+export type NotificationContentFormat =
+  (typeof NOTIFICATION_CONTENT_FORMATS)[number]
 
 const baseNotificationObject = z.object({
   title: z.string().trim().max(120, 'Invalid parameters'),
-  content: z.string().trim().max(10000, 'Invalid parameters'),
+  content: z.string().max(60000, 'Invalid parameters'),
+  content_format: z.enum(NOTIFICATION_CONTENT_FORMATS),
   kind: z.enum(['platform', 'system', 'maintenance', 'rules']),
   audience: z.enum(['all_users', 'all_sites', 'site', 'team', 'user']),
+  target_audiences: z.array(z.enum(ALL_TARGET_AUDIENCES)),
+  target_site_ids: z.array(z.number().int().positive()),
   target_site_id: z.number().int().nonnegative(),
   target_team_id: z.number().int().nonnegative(),
   target_user_id: z.number().int().nonnegative(),
@@ -31,12 +67,48 @@ const baseNotificationObject = z.object({
   telegram_channel: z.string().trim().max(128, 'Invalid parameters'),
 })
 
-function refineNotificationTargets(
+function refineNotificationInput(
   value: z.infer<typeof baseNotificationObject>,
-  ctx: z.RefinementCtx
+  ctx: z.RefinementCtx,
+  options: { mode?: 'root' | 'owner'; draft: boolean }
 ) {
+  const plainLength = getNotificationPlainLength(value.content)
+  if (!options.draft && plainLength === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['content'],
+      message: 'Content is required',
+    })
+  }
+  if (plainLength > MAX_NOTIFICATION_PLAIN_LENGTH) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['content'],
+      message: 'Content cannot exceed 2000 characters',
+    })
+  }
+
+  if (value.target_audiences.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['target_audiences'],
+      message: 'Select at least one recipient group',
+    })
+  }
+
+  if (
+    options.mode === 'root' &&
+    value.target_audiences.includes('site_users') &&
+    value.target_site_ids.length === 0
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['target_site_ids'],
+      message: 'Select at least one subsite',
+    })
+  }
+
   const isPrivateTarget = value.audience === 'team' || value.audience === 'user'
-  // 勾了同步但没填频道，排进队列也是一条发不出去的投递，前端先挡住；team/user 走私聊不要求公开频道。
   if (value.sync_telegram && !isPrivateTarget && value.telegram_channel === '') {
     ctx.addIssue({
       code: 'custom',
@@ -44,31 +116,28 @@ function refineNotificationTargets(
       message: 'Enter the Telegram channel',
     })
   }
-  if (value.audience === 'site' && value.target_site_id <= 0) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['target_site_id'],
-      message: 'Select a site',
-    })
-  }
-  if (value.audience === 'team' && value.target_team_id <= 0) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['target_team_id'],
-      message: 'Enter a valid team ID',
-    })
-  }
-  if (value.audience === 'user' && value.target_user_id <= 0) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['target_user_id'],
-      message: 'Enter a valid user ID',
-    })
-  }
+}
+
+export function createNotificationSchema(
+  mode: 'root' | 'owner',
+  draft = false
+) {
+  const base = draft
+    ? baseNotificationObject
+    : baseNotificationObject.extend({
+        title: z
+          .string()
+          .trim()
+          .min(1, 'Title is required')
+          .max(120, 'Invalid parameters'),
+      })
+  return base.superRefine((value, ctx) =>
+    refineNotificationInput(value, ctx, { mode, draft })
+  )
 }
 
 export const notificationDraftSchema = baseNotificationObject.superRefine(
-  refineNotificationTargets
+  (value, ctx) => refineNotificationInput(value, ctx, { draft: true })
 )
 
 export const notificationSchema = baseNotificationObject
@@ -78,15 +147,13 @@ export const notificationSchema = baseNotificationObject
       .trim()
       .min(1, 'Title is required')
       .max(120, 'Invalid parameters'),
-    content: z
-      .string()
-      .trim()
-      .min(1, 'Content is required')
-      .max(10000, 'Invalid parameters'),
   })
-  .superRefine(refineNotificationTargets)
+  .superRefine((value, ctx) =>
+    refineNotificationInput(value, ctx, { draft: false })
+  )
 
 export type NotificationInput = z.infer<typeof notificationSchema>
+
 export const notificationKindLabels: Record<NotificationInput['kind'], string> =
   {
     platform: 'Platform announcement',
@@ -94,13 +161,170 @@ export const notificationKindLabels: Record<NotificationInput['kind'], string> =
     maintenance: 'Maintenance notification',
     rules: 'Operating rules update',
   }
-export const notificationAudienceLabels: Record<
-  NotificationInput['audience'],
-  string
-> = {
+
+export const notificationAudienceLabels: Record<string, string> = {
   all_users: 'All users',
   all_sites: 'All sites',
   site: 'Selected site',
   team: 'Specific team',
   user: 'Specific user',
+  main_users: 'Main-site users',
+  all_site_owners: 'All subsite owners',
+  site_users: 'Subsite users',
+  main_teams: 'Main-site teams',
+  site_teams: 'Subsite team users',
+}
+
+export function deriveLegacyAudience(
+  mode: 'root' | 'owner',
+  siteId: number,
+  targetAudiences: NotificationTargetAudience[],
+  targetSiteIds: number[]
+): {
+  audience: NotificationInput['audience']
+  target_site_id: number
+} {
+  if (mode === 'owner') {
+    return { audience: 'site', target_site_id: siteId }
+  }
+  if (
+    targetAudiences.length === 1 &&
+    targetAudiences[0] === 'site_users' &&
+    targetSiteIds.length === 1
+  ) {
+    return { audience: 'site', target_site_id: targetSiteIds[0] }
+  }
+  if (
+    targetAudiences.length === 1 &&
+    targetAudiences[0] === 'all_site_owners'
+  ) {
+    return { audience: 'all_sites', target_site_id: 0 }
+  }
+  return { audience: 'all_users', target_site_id: 0 }
+}
+
+export function resolveInitialTargets(
+  mode: 'root' | 'owner',
+  row: {
+    audience?: string
+    target_audiences?: string[]
+    target_site_id?: number
+    target_site_ids?: number[]
+  } | null
+): {
+  target_audiences: NotificationTargetAudience[]
+  target_site_ids: number[]
+} {
+  const allowed = new Set<string>(
+    mode === 'root' ? ROOT_TARGET_AUDIENCES : OWNER_TARGET_AUDIENCES
+  )
+  const rawAudiences = Array.isArray(row?.target_audiences)
+    ? row.target_audiences.filter((item): item is NotificationTargetAudience =>
+        allowed.has(item)
+      )
+    : []
+
+  const rawSiteIds = Array.isArray(row?.target_site_ids)
+    ? row.target_site_ids.filter((id) => Number.isInteger(id) && id > 0)
+    : []
+
+  if (rawAudiences.length > 0) {
+    let resolvedSiteIds = rawSiteIds
+    if (
+      resolvedSiteIds.length === 0 &&
+      row?.target_site_id &&
+      row.target_site_id > 0
+    ) {
+      resolvedSiteIds = [row.target_site_id]
+    }
+    return {
+      target_audiences: rawAudiences,
+      target_site_ids: resolvedSiteIds,
+    }
+  }
+
+  if (!row) {
+    return {
+      target_audiences: [mode === 'root' ? 'main_users' : 'site_users'],
+      target_site_ids: [],
+    }
+  }
+
+  if (mode === 'owner') {
+    return {
+      target_audiences: [row.audience === 'team' ? 'site_teams' : 'site_users'],
+      target_site_ids: [],
+    }
+  }
+
+  if (row.audience === 'all_sites') {
+    return { target_audiences: ['all_site_owners'], target_site_ids: [] }
+  }
+  if (row.audience === 'site') {
+    return {
+      target_audiences: ['site_users'],
+      target_site_ids:
+        row.target_site_id && row.target_site_id > 0 ? [row.target_site_id] : [],
+    }
+  }
+  if (row.audience === 'team') {
+    return { target_audiences: ['main_teams'], target_site_ids: [] }
+  }
+  return { target_audiences: ['main_users'], target_site_ids: [] }
+}
+
+export function formatNotificationRecipients(
+  row: {
+    audience?: string
+    target_audiences?: string[]
+    target_site_name?: string
+    target_site_names?: string[]
+    target_site_ids?: number[]
+    target_team_id?: number
+    target_user_id?: number
+  },
+  t: TFunction
+): string {
+  if (Array.isArray(row.target_audiences) && row.target_audiences.length > 0) {
+    const labels = row.target_audiences.map((aud) => {
+      if (aud === 'site_users') {
+        if (
+          Array.isArray(row.target_site_names) &&
+          row.target_site_names.length > 0
+        ) {
+          return `${t(notificationAudienceLabels.site_users)} (${row.target_site_names.join(', ')})`
+        }
+        if (row.target_site_name) {
+          return `${t(notificationAudienceLabels.site_users)} (${row.target_site_name})`
+        }
+        if (
+          Array.isArray(row.target_site_ids) &&
+          row.target_site_ids.length > 0
+        ) {
+          return `${t(notificationAudienceLabels.site_users)} (${row.target_site_ids.map((id) => `#${id}`).join(', ')})`
+        }
+      }
+      const key = notificationAudienceLabels[aud]
+      return key ? t(key) : aud
+    })
+    return labels.join(' · ')
+  }
+
+  if (row.audience === 'site') {
+    return row.target_site_name || t(notificationAudienceLabels.site)
+  }
+  if (row.audience === 'team') {
+    const teamId =
+      row.target_team_id || (row.target_site_name ?? '').replace(/^team:/, '')
+    return `${t(notificationAudienceLabels.team)} #${teamId}`
+  }
+  if (row.audience === 'user') {
+    const userId =
+      row.target_user_id || (row.target_site_name ?? '').replace(/^user:/, '')
+    return `${t(notificationAudienceLabels.user)} #${userId}`
+  }
+  if (row.audience && Object.hasOwn(notificationAudienceLabels, row.audience)) {
+    return t(notificationAudienceLabels[row.audience])
+  }
+  return row.audience ?? ''
 }

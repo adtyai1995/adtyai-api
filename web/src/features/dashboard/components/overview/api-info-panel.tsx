@@ -17,25 +17,42 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Route } from 'lucide-react'
-import { useState, useCallback } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { IconBadge } from '@/components/ui/icon-badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useApiInfo } from '@/features/dashboard/hooks/use-status-data'
+import { useAdtySite, useApiBaseUrl } from '@/features/adty-site/api'
 import {
-  testUrlLatency,
   getDefaultPingStatus,
+  testUrlLatency,
 } from '@/features/dashboard/lib/api-info'
-import type { PingStatusMap, ApiInfoItem } from '@/features/dashboard/types'
+import type { ApiInfoItem, PingStatusMap } from '@/features/dashboard/types'
+import { useStatus } from '@/hooks/use-status'
 
 import { PanelWrapper } from '../ui/panel-wrapper'
 import { ApiInfoItemComponent } from './api-info-item'
 
 export function ApiInfoPanel() {
   const { t } = useTranslation()
-  const { items: list, loading } = useApiInfo()
+  const siteQuery = useAdtySite()
+  const { loading: statusLoading } = useStatus()
+  const apiBaseUrl = useApiBaseUrl()
   const [pingStatus, setPingStatus] = useState<PingStatusMap>({})
+
+  const loading = (statusLoading || siteQuery.isLoading) && !apiBaseUrl
+
+  const list = useMemo<ApiInfoItem[]>(() => {
+    if (!apiBaseUrl) return []
+    return [
+      {
+        url: apiBaseUrl,
+        route: t('Default API address'),
+        description: t('Primary API endpoint for this site'),
+        color: 'blue',
+      },
+    ]
+  }, [apiBaseUrl, t])
 
   const handleTest = useCallback(async (url: string) => {
     setPingStatus((prev) => ({
@@ -60,7 +77,7 @@ export function ApiInfoPanel() {
       description={t('Configured routes and latency checks')}
       loading={loading}
       empty={!list.length}
-      emptyMessage={t('No API routes configured')}
+      emptyMessage={t('API address is not configured yet')}
       height='h-72'
       contentClassName='p-0'
     >

@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { useApiBaseUrl } from '@/features/adty-site/api'
 import { useMediaQuery } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
 import { getUserGroups } from '@/lib/api'
@@ -39,9 +40,9 @@ import {
   ApiKeyTimestampCell,
 } from './api-key-timestamp-cell'
 import {
+  ApiAddressCell,
   ApiKeyCell,
   IpRestrictionsCell,
-  ModelLimitsCell,
 } from './api-keys-cells'
 import { DataTableRowActions } from './data-table-row-actions'
 
@@ -73,6 +74,7 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
   const { meta: currency } = getCurrencyDisplay()
   const quotaUnit = currency.kind === 'tokens' ? t('Tokens') : currency.symbol
   const groupRatios = useGroupRatios()
+  const apiBaseUrl = useApiBaseUrl()
   const shouldReduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const justNowLabel = t('Just now')
@@ -174,12 +176,11 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         meta: { mobileHidden: true },
       },
       {
-        id: 'model_limits',
-        accessorKey: 'model_limits',
-        header: t('Models'),
-        cell: ({ row }) => <ModelLimitsCell apiKey={row.original} />,
+        id: 'api_address',
+        header: t('API Address'),
+        cell: () => <ApiAddressCell apiBaseUrl={apiBaseUrl} />,
         enableSorting: false,
-        size: 160,
+        size: 240,
         meta: { mobileHidden: true },
       },
       {
@@ -240,6 +241,15 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         meta: { pinned: 'right' as const },
       },
     ],
-    [t, quotaUnit, now, groupRatios, shouldReduceMotion, locale, justNowLabel]
+    [
+      t,
+      quotaUnit,
+      now,
+      groupRatios,
+      apiBaseUrl,
+      shouldReduceMotion,
+      locale,
+      justNowLabel,
+    ]
   )
 }

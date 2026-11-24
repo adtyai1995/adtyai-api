@@ -249,7 +249,7 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 			if err := freezeAdtyVoucherLiabilityTx(tx, input.AmountUSD); err != nil {
 				return err
 			}
-		case model.AdtyVoucherPurposeSiteCustomer, model.AdtyVoucherPurposeSiteOwner:
+		case model.AdtyVoucherPurposeSiteCustomer:
 			if lockedSite == nil {
 				return common.NewMessage("Invalid parameters")
 			}
@@ -277,9 +277,8 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 			row.FrozenMarginUSD = split.MarginUSD
 			row.SourceSiteId = site.Id
 			row.TargetSiteId = site.Id
-			if input.Purpose == model.AdtyVoucherPurposeSiteOwner {
-				row.DesignatedOwnerId = issuer.Id
-			}
+		case model.AdtyVoucherPurposeSiteOwner:
+			return ErrAdtyVoucherForbidden
 		default:
 			return common.NewMessage("Invalid parameters")
 		}
@@ -1201,7 +1200,7 @@ func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.Adty
 	}
 	switch voucher.Purpose {
 	case model.AdtyVoucherPurposeMainUser:
-		if user.SiteId != 0 || user.StaffSiteId != 0 || user.Role != common.RoleCommonUser {
+		if user.SiteId != 0 || user.StaffSiteId != 0 || user.Role != common.RoleCommonUser || AdtyIsSiteOwner(user.Id) {
 			return ErrAdtyVoucherWrongAccount
 		}
 	case model.AdtyVoucherPurposeSiteMargin:
@@ -1229,12 +1228,7 @@ func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.Adty
 			return ErrAdtyVoucherWrongAccount
 		}
 	case model.AdtyVoucherPurposeSiteOwner:
-		if user.Id != voucher.IssuerId {
-			return ErrAdtyVoucherWrongAccount
-		}
-		if lockedSite == nil || lockedSite.Id != voucher.TargetSiteId || lockedSite.Status != model.AdtySiteStatusActive {
-			return ErrAdtyVoucherWrongAccount
-		}
+		return ErrAdtyVoucherWrongAccount
 	default:
 		return ErrAdtyVoucherInvalid
 	}

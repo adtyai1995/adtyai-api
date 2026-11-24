@@ -82,6 +82,7 @@ type AdtyOwnerWithdrawalDigestInput struct {
 	Network        string `json:"network"`
 	AccountNo      string `json:"account_no"`
 	AccountName    string `json:"account_name"`
+	QRImageURL     string `json:"qr_image_url,omitempty"`
 	ExpectedRate   string `json:"expected_rate"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
@@ -164,12 +165,20 @@ func normalizeAdtyOwnerWithdrawalDigestInput(in AdtyOwnerWithdrawalDigestInput) 
 	if method == "usdt" {
 		network = strings.ToUpper(strings.TrimSpace(in.Network))
 	}
+	qrImageURL := ""
+	if method == "alipay" {
+		qrImageURL = strings.TrimSpace(in.QRImageURL)
+		if canonicalQR, ok := CanonicalReferralAssetURL(qrImageURL); ok {
+			qrImageURL = canonicalQR
+		}
+	}
 	return AdtyOwnerWithdrawalDigestInput{
 		AmountUSD:      amt,
 		Method:         method,
 		Network:        network,
 		AccountNo:      strings.TrimSpace(in.AccountNo),
 		AccountName:    strings.TrimSpace(in.AccountName),
+		QRImageURL:     qrImageURL,
 		ExpectedRate:   rate,
 		IdempotencyKey: strings.TrimSpace(in.IdempotencyKey),
 	}

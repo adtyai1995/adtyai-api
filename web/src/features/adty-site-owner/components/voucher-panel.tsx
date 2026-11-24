@@ -26,7 +26,6 @@ import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { NativeSelect } from '@/components/ui/native-select'
 import { VoucherTable } from '@/features/adty-ledger/voucher-table'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 
@@ -52,7 +51,6 @@ const PAGE_SIZE = 20
  */
 export function VoucherPanel(props: { siteId: number }) {
   const { t } = useTranslation()
-  const [purpose, setPurpose] = useState('site_customer')
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
   const [code, setCode] = useState('')
@@ -155,12 +153,12 @@ export function VoucherPanel(props: { siteId: number }) {
           setReconciled(null)
           const trimmedAmount = amount.trim()
           const trimmedReason = reason.trim()
-          const payload = `${purpose}:${trimmedAmount}:${trimmedReason}`
+          const payload = `site_customer:${trimmedAmount}:${trimmedReason}`
           if (intentRef.current?.payload !== payload) {
             intentRef.current = { payload, key: newIdempotencyKey() }
           }
           issue.mutate({
-            purpose,
+            purpose: 'site_customer',
             amount: trimmedAmount,
             reason: trimmedReason,
             intentKey: intentRef.current.key,
@@ -171,20 +169,9 @@ export function VoucherPanel(props: { siteId: number }) {
           <h2 className='text-sm font-medium'>{t('Recharge codes')}</h2>
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Issuing a code automatically freezes available earnings first and excess margin above the level floor second. The full code is shown once.'
+              'Issue customer principal recharge codes. Issuing a code automatically freezes available earnings first and excess margin above the level floor second. The full code is shown once.'
             )}
           </p>
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='voucher-purpose'>{t('Purpose')}</Label>
-          <NativeSelect
-            id='voucher-purpose'
-            value={purpose}
-            onChange={(event) => setPurpose(event.target.value)}
-          >
-            <option value='site_customer'>{t('Customer principal')}</option>
-            <option value='site_owner'>{t('My spending principal')}</option>
-          </NativeSelect>
         </div>
         <div className='flex flex-col gap-1'>
           <Label htmlFor='voucher-amount'>{t('Amount (USD)')}</Label>

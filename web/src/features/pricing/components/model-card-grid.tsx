@@ -16,19 +16,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import { getPerfMetricsSummary } from '@/features/performance-metrics/api'
-import { requireServerSuccess } from '@/lib/server-error-message'
+import type { UptimeGroupResult } from '@/features/dashboard/types'
 
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
+import { useUptimeStatus } from '../hooks/use-uptime-status'
+import { resolveModelUptimeForPricing } from '../lib/uptime'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelCard } from './model-card'
-import type { ModelPerfBadgeData } from './model-perf-badge'
 
 export interface ModelCardGridProps {
   models: PricingModel[]
@@ -39,6 +38,7 @@ export interface ModelCardGridProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   usableGroups?: string[]
+  uptimeGroups?: UptimeGroupResult[]
 }
 
 export const ModelCardGrid = memo(function ModelCardGrid(
@@ -51,42 +51,15 @@ export const ModelCardGrid = memo(function ModelCardGrid(
   const totalPages = Math.max(1, Math.ceil(props.models.length / pageSize))
   const currentPage = Math.min(page, totalPages)
 
+  const uptimeQuery = useUptimeStatus({
+    enabled: props.uptimeGroups === undefined,
+  })
+  const effectiveUptimeGroups = props.uptimeGroups ?? uptimeQuery.groups
+
   const pagedModels = useMemo(() => {
     const start = (currentPage - 1) * pageSize
     return props.models.slice(start, start + pageSize)
   }, [currentPage, pageSize, props.models])
-  const recentModels = pagedModels.map((model) => model.model_name || '')
-  const perfQuery = useQuery({
-    queryKey: ['perf-metrics-summary', 24, recentModels],
-    queryFn: async () =>
-      requireServerSuccess(await getPerfMetricsSummary(24, recentModels)),
-    enabled: recentModels.length > 0,
-    staleTime: 60 * 1000,
-    retry: false,
-  })
-
-  const perfMap = useMemo(() => {
-    const map = new Map<string, ModelPerfBadgeData>()
-    for (const model of perfQuery.data?.data?.models ?? []) {
-      map.set(model.model_name, {
-        ...model,
-        window_start: perfQuery.data?.data.window_start,
-        window_end: perfQuery.data?.data.window_end,
-      })
-    }
-    for (const [name, series] of Object.entries(
-      perfQuery.data?.data?.recent_success_series ?? {}
-    )) {
-      map.set(name, {
-        avg_latency_ms: Number.NaN,
-        avg_tps: Number.NaN,
-        success_rate: Number.NaN,
-        ...map.get(name),
-        recent_success_series: series,
-      })
-    }
-    return map
-  }, [perfQuery.data])
 
   if (props.models.length === 0) {
     return null
@@ -105,7 +78,11 @@ export const ModelCardGrid = memo(function ModelCardGrid(
             showRechargePrice={props.showRechargePrice}
             selectedGroup={props.selectedGroup}
             usableGroups={props.usableGroups}
-            perf={perfMap.get(model.model_name || '')}
+            uptime={resolveModelUptimeForPricing(
+              effectiveUptimeGroups,
+              model,
+              props.selectedGroup
+            )}
             onClick={props.onModelClick}
           />
         ))}

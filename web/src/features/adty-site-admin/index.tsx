@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useNavigate } from '@tanstack/react-router'
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -31,7 +30,6 @@ import { OverviewPanel } from './components/overview-panel'
 import { PausedSiteRepairPanel } from './components/paused-site-repair-panel'
 import { ReviewsPanel } from './components/reviews-panel'
 import { SettingsPanel } from './components/settings-panel'
-import { SiteDetailSheet } from './components/site-detail-sheet'
 import { SiteReferralCapPanel } from './components/site-referral-cap-panel'
 import { SiteTiersPanel } from './components/site-tiers-panel'
 import { SiteWithdrawalsPanel } from './components/site-withdrawals-panel'
@@ -50,7 +48,6 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.auth.user)
-  const [openSite, setOpenSite] = useState<number | null>(null)
   const canSettings = canAdmin(user, ADTY_PERMISSIONS.SITE_SETTINGS)
   const canWriteSecrets = user?.role === 100
   const labels: Record<SiteAdminSectionId, string> = {
@@ -103,7 +100,12 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
             </TabsList>
             <TabsContent value='sites' className='min-w-0'>
               <SitesPanel
-                onOpenSite={(site) => setOpenSite(site.id)}
+                onOpenSite={(site) =>
+                  void navigate({
+                    to: '/site-admin/sites/$siteId',
+                    params: { siteId: String(site.id) },
+                  })
+                }
                 onNavigateSection={(section) =>
                   void navigate({
                     to: '/site-admin/$section',
@@ -157,10 +159,6 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
               <VoucherAdminPanel />
             </TabsContent>
           </Tabs>
-          <SiteDetailSheet
-            siteId={openSite}
-            onOpenChange={(open) => !open && setOpenSite(null)}
-          />
         </SectionPageLayout.Content>
       </SectionPageLayout>
     </DraftNavigationProvider>

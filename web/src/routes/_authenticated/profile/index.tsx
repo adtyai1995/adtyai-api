@@ -16,10 +16,33 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { Profile } from '@/features/profile'
 
+function normalizeTicketRedirectHash(hash: string): string | null {
+  const clean = hash.replace(/^#/, '')
+  if (
+    clean === 'tickets' ||
+    /^case-\d+(?:-team)?$/.test(clean) ||
+    clean.startsWith('ticket:') ||
+    clean.startsWith('ticket-')
+  ) {
+    return clean
+  }
+  return null
+}
+
 export const Route = createFileRoute('/_authenticated/profile/')({
+  beforeLoad: ({ location }) => {
+    const ticketHash = normalizeTicketRedirectHash(location.hash)
+    if (ticketHash) {
+      throw redirect({
+        to: '/support',
+        hash: ticketHash,
+        replace: true,
+      })
+    }
+  },
   component: Profile,
 })

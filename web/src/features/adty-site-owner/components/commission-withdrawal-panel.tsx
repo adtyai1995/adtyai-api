@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { Upload, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -28,6 +29,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { adminReferralKeys } from '@/features/admin-referral/api'
+import { uploadReferralAsset } from '@/features/referral/api'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { usdtNetworkLabel } from '@/features/referral/lib/address'
 import {
@@ -45,6 +47,7 @@ import {
   markOwnerCommissionWithdrawalPaid,
   reviewOwnerCommissionWithdrawal,
   siteOwnerKeys,
+  uploadOwnerWithdrawalQR,
   type SiteInviteCommissionWithdrawal,
 } from '../api'
 
@@ -116,6 +119,18 @@ function ReviewRow(props: {
   const [reason, setReason] = useState('')
   const [txId, setTxId] = useState('')
   const [proof, setProof] = useState('')
+  const proofFileRef = useRef<HTMLInputElement | null>(null)
+  const uploadProof = useMutation({
+    mutationFn: (file: File) =>
+      props.closed
+        ? uploadReferralAsset(file, '/api/user/admin/referral/upload')
+        : uploadOwnerWithdrawalQR(file, 'payment_proof'),
+    onSuccess: (url) => {
+      setProof(url)
+      toast.success(t('Payment proof uploaded'))
+    },
+    onError: (err) => handleServerError(err),
+  })
   const review = useMutation({
     mutationFn: (approve: boolean) =>
       props.closed
@@ -196,16 +211,37 @@ function ReviewRow(props: {
         </p>
       )}
       {row.status === 'paid' && row.proof_note && (
-        <p>
-          {t('Proof note')}{' '}
-          {row.proof_note.startsWith('/api/referral-assets/') ? (
-            <a href={row.proof_note} target='_blank' rel='noreferrer'>
-              {t('Payment proof')}
+        <div className='flex flex-col gap-1.5'>
+          <p>
+            {t('Proof note')}{' '}
+            {row.proof_note.startsWith('/api/referral-assets/') ? (
+              <a
+                href={row.proof_note}
+                target='_blank'
+                rel='noopener noreferrer'
+                className='underline'
+              >
+                {t('Payment proof')}
+              </a>
+            ) : (
+              row.proof_note
+            )}
+          </p>
+          {row.proof_note.startsWith('/api/referral-assets/') && (
+            <a
+              href={row.proof_note}
+              target='_blank'
+              rel='noopener noreferrer'
+              className='w-fit'
+            >
+              <img
+                src={row.proof_note}
+                alt={t('Payment proof')}
+                className='h-16 w-16 rounded border object-contain'
+              />
             </a>
-          ) : (
-            row.proof_note
           )}
-        </p>
+        </div>
       )}
       {props.canReview !== false &&
         row.status === 'pending' &&
@@ -266,12 +302,64 @@ function ReviewRow(props: {
             <Label htmlFor={`commission-proof-${row.id}`}>
               {t('Proof note')}
             </Label>
-            <Input
-              id={`commission-proof-${row.id}`}
-              value={proof}
-              autoComplete='off'
-              onChange={(event) => setProof(event.target.value)}
-            />
+            <div className='flex flex-wrap items-center gap-2'>
+              <Input
+                id={`commission-proof-${row.id}`}
+                className='min-w-0 flex-1'
+                value={proof}
+                autoComplete='off'
+                placeholder={t('Enter transfer note or upload proof image')}
+                onChange={(event) => setProof(event.target.value)}
+              />
+              <input
+                ref={proofFileRef}
+                type='file'
+                accept='image/png,image/jpeg,image/webp'
+                className='hidden'
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) uploadProof.mutate(file)
+                }}
+              />
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={props.canPay === false || uploadProof.isPending}
+                onClick={() => proofFileRef.current?.click()}
+              >
+                <Upload className='size-3.5' aria-hidden />
+                {t('Upload proof image')}
+              </Button>
+              {proof.trim().startsWith('/api/referral-assets/') && (
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='ghost'
+                  onClick={() => {
+                    setProof('')
+                    if (proofFileRef.current) proofFileRef.current.value = ''
+                  }}
+                >
+                  <X className='size-3.5' aria-hidden />
+                  {t('Clear')}
+                </Button>
+              )}
+            </div>
+            {proof.trim().startsWith('/api/referral-assets/') && (
+              <a
+                href={proof.trim()}
+                target='_blank'
+                rel='noopener noreferrer'
+                className='w-fit'
+              >
+                <img
+                  src={proof.trim()}
+                  alt={t('Payment proof')}
+                  className='h-20 w-20 rounded border object-contain'
+                />
+              </a>
+            )}
           </div>
           <div className='flex flex-col gap-2'>
             <Label htmlFor={`commission-fail-${row.id}`}>

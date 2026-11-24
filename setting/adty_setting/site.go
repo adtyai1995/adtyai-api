@@ -15,6 +15,8 @@ type SiteSetting struct {
 	SupportHours        string `json:"support_hours"`
 	TawkPropertyID      string `json:"tawk_property_id"`
 	TawkWidgetID        string `json:"tawk_widget_id"`
+	WalletNotice        string `json:"wallet_notice"`
+	VoucherPurchaseURL  string `json:"voucher_purchase_url"`
 	RefundPolicyEnabled bool   `json:"refund_policy_enabled"` // 退款政策页和各处链接是否显示
 }
 

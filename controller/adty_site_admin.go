@@ -166,6 +166,9 @@ var adtySiteSortKeys = map[string]func(a, b adtySiteAdminView) int{
 func GetAdtyAdminSites(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	query := model.DB.Model(&model.AdtySite{})
+	if c.Query("include_archived") != "1" {
+		query = query.Where("archived_hidden_at = 0")
+	}
 	if status := strings.TrimSpace(c.Query("status")); status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -556,20 +559,37 @@ func GetAdtyAdminSiteOwnerCandidates(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
-// CreateAdtyAdminSite 是管理员直接开站（仅 Root）：{user_id, subdomain?, root_domain?, cost_factor?, tier_code?, tier_mode?, contact_info?}。
+// CreateAdtyAdminSite 是管理员直接开站（仅 Root）：按 R-32 (#25) 同步创建独立纯管理端站长账号。
 func CreateAdtyAdminSite(c *gin.Context) {
 	var body struct {
-		UserId         int     `json:"user_id"`
-		Subdomain      string  `json:"subdomain"`
-		RootDomain     string  `json:"root_domain"`
-		CostFactor     *string `json:"cost_factor"`
-		TierCode       string  `json:"tier_code"`
-		TierMode       string  `json:"tier_mode"`
-		ContactInfo    string  `json:"contact_info"`
-		IdempotencyKey string  `json:"idempotency_key"`
+		UserId           int     `json:"user_id"`
+		OwnerUsername    string  `json:"owner_username"`
+		OwnerPassword    string  `json:"owner_password"`
+		OwnerEmail       string  `json:"owner_email"`
+		OwnerDisplayName string  `json:"owner_display_name"`
+		Subdomain        string  `json:"subdomain"`
+		RootDomain       string  `json:"root_domain"`
+		CostFactor       *string `json:"cost_factor"`
+		TierCode         string  `json:"tier_code"`
+		TierMode         string  `json:"tier_mode"`
+		ContactInfo      string  `json:"contact_info"`
+		IdempotencyKey   string  `json:"idempotency_key"`
 	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil || body.UserId <= 0 {
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var newOwner *service.AdtyNewOwnerInput
+	if strings.TrimSpace(body.OwnerUsername) != "" {
+		newOwner = &service.AdtyNewOwnerInput{
+			Username:    body.OwnerUsername,
+			Password:    body.OwnerPassword,
+			Email:       body.OwnerEmail,
+			DisplayName: body.OwnerDisplayName,
+		}
+		body.UserId = 0
+	} else if body.UserId <= 0 {
+		common.ApiErrorT(c, "Owner username and password are required")
 		return
 	}
 	costFactor, err := parseOptionalDecimal(body.CostFactor)
@@ -585,6 +605,7 @@ func CreateAdtyAdminSite(c *gin.Context) {
 		CostFactor: costFactor, TierCode: body.TierCode, TierMode: body.TierMode,
 		ContactInfo: body.ContactInfo, OperatorId: c.GetInt("id"),
 		ExplicitRoot: strings.ToLower(strings.TrimSpace(body.RootDomain)), IdempotencyKey: key,
+		NewOwner: newOwner,
 	})
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
@@ -644,18 +665,22 @@ func ReviewAdtyAdminSite(c *gin.Context) {
 	common.ApiSuccess(c, site)
 }
 
-// AdjustAdtyAdminSite 改单站 d、可见范围（分站·调整）。clear 列出要改回「用全局」的项：cost_factor。
+// AdjustAdtyAdminSite 改单站 d、可见范围与基础资料（分站·调整）。clear 列出要改回「用全局」的项：cost_factor。
 func AdjustAdtyAdminSite(c *gin.Context) {
 	id, ok := siteIdParam(c)
 	if !ok {
 		return
 	}
 	var body struct {
-		CostFactor    *string  `json:"cost_factor"`
-		Visibility    *string  `json:"visibility"`
-		AllowedGroups *string  `json:"allowed_groups"`
-		Clear         []string `json:"clear"`
-		Reason        string   `json:"reason"`
+		CostFactor      *string           `json:"cost_factor"`
+		Visibility      *string           `json:"visibility"`
+		AllowedGroups   *string           `json:"allowed_groups"`
+		ContactInfo     *string           `json:"contact_info"`
+		Brand           map[string]string `json:"brand"`
+		HomePageContent *string           `json:"home_page_content"`
+		SeoIndex        *bool             `json:"seo_index"`
+		Clear           []string          `json:"clear"`
+		Reason          string            `json:"reason"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -680,7 +705,12 @@ func AdjustAdtyAdminSite(c *gin.Context) {
 	site, eventID, err := service.AdjustAdtySiteWithAuditForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), service.AdtySiteAdjust{
 		CostFactor: costFactor, ClearCostFactor: clearCostFactor,
 		Visibility: body.Visibility, AllowedGroups: body.AllowedGroups,
-		ClearAllowedGroups: slices.Contains(body.Clear, "allowed_groups"), Reason: body.Reason,
+		ClearAllowedGroups: slices.Contains(body.Clear, "allowed_groups"),
+		ContactInfo:        body.ContactInfo,
+		Brand:              body.Brand,
+		HomePageContent:    body.HomePageContent,
+		SeoIndex:           body.SeoIndex,
+		Reason:             body.Reason,
 	})
 	if err != nil {
 		writeAdtyFinanceError(c, err)
@@ -693,6 +723,32 @@ func AdjustAdtyAdminSite(c *gin.Context) {
 		markIdempotentReplayNoAudit(c)
 	}
 	common.ApiSuccess(c, site)
+}
+
+// DeleteAdtyAdminSite deletes a zero-data site or archives/hides a closed site (Root only, R-32 #1).
+func DeleteAdtyAdminSite(c *gin.Context) {
+	if c.GetInt("role") < common.RoleRootUser {
+		denyAdtyAdminAction(c)
+		return
+	}
+	id, ok := siteIdParam(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = common.DecodeJson(c.Request.Body, &body)
+	mode, eventID, err := service.DeleteAdtySiteWithAudit(id, c.GetInt("id"), body.Reason)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
+	common.ApiSuccess(c, gin.H{"deleted": true, "mode": mode})
 }
 
 // SetAdtyAdminSiteStatus 关站（仅Root）。独立暂停/恢复已退役：

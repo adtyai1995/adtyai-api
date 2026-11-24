@@ -97,8 +97,9 @@ func creditAdtyTeamTopUpTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopup
 	return nil
 }
 
-// SaveAdtyMainTeamAgreementPrice sets a main-site team discount. Subsite teams are rejected.
-// There is no supply-price floor. The discount must be greater than zero and at most 1.
+// SaveAdtyMainTeamAgreementPrice lets Root customize or re-customize any active team's multiplier.
+// Main-site teams (site_id == 0): 0 < discount <= 10 (no floor).
+// Subsite teams (site_id > 0): 1 <= discount <= 10 (direct multiplier on supply price, never below 1).
 func SaveAdtyMainTeamAgreementPrice(teamID int64, raw string, actorIDs ...int) error {
 	_, err := SaveAdtyMainTeamAgreementPriceWithAudit(teamID, raw, actorIDs...)
 	return err
@@ -106,7 +107,7 @@ func SaveAdtyMainTeamAgreementPrice(teamID int64, raw string, actorIDs ...int) e
 
 func SaveAdtyMainTeamAgreementPriceWithAudit(teamID int64, raw string, actorIDs ...int) (string, error) {
 	value, err := decimal.NewFromString(strings.TrimSpace(raw))
-	if teamID <= 0 || err != nil || !adtySiteTeamPayRatioConfigValid(value) {
+	if teamID <= 0 || err != nil {
 		return "", ErrAdtyTeamInvalid
 	}
 	actorID := 0
@@ -119,16 +120,19 @@ func SaveAdtyMainTeamAgreementPriceWithAudit(teamID int64, raw string, actorIDs 
 		if err := model.AdtyLockForUpdate(tx).First(&team, teamID).Error; err != nil {
 			return err
 		}
-		if team.SiteId != 0 || team.Status != model.AdtyTeamStatusActive {
+		if team.Status != model.AdtyTeamStatusActive {
 			return ErrAdtyTeamForbidden
+		}
+		if err := validateAdtyTeamDiscountForSite(team.SiteId, value); err != nil {
+			return err
 		}
 		before := team.Discount.String()
 		if err := tx.Model(&team).Update("discount", value).Error; err != nil {
 			return err
 		}
-		event, err = appendAdtyTeamAuditTx(tx, actorID, 0, "team", strconv.FormatInt(teamID, 10), "adty.team.discount.update",
-			map[string]any{"team_id": teamID, "before": before},
-			map[string]any{"team_id": teamID, "before": before, "after": value.String()})
+		event, err = appendAdtyTeamAuditTx(tx, actorID, team.SiteId, "team", strconv.FormatInt(teamID, 10), "adty.team.discount.update",
+			map[string]any{"team_id": teamID, "site_id": team.SiteId, "before": before},
+			map[string]any{"team_id": teamID, "site_id": team.SiteId, "before": before, "after": value.String()})
 		return err
 	})
 	if err != nil {
@@ -1114,8 +1118,11 @@ func createAdtyTeamTx(tx *gorm.DB, leaderId, siteId int, name string, discount d
 	if err := validateAdtyTeamName(name); err != nil {
 		return nil, err
 	}
-	if leaderId <= 0 || siteId < 0 || !adtySiteTeamPayRatioConfigValid(discount) {
+	if leaderId <= 0 || siteId < 0 {
 		return nil, ErrAdtyTeamInvalid
+	}
+	if err := validateAdtyTeamDiscountForSite(siteId, discount); err != nil {
+		return nil, err
 	}
 	if siteId > 0 {
 		var site model.AdtySite

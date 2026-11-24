@@ -16,17 +16,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, Plus } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Plus,
+  Settings2,
+  Trash2,
+} from 'lucide-react'
+import { useId, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Label } from '@/components/ui/label'
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select'
 import {
   Table,
   TableBody,
@@ -35,21 +49,27 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Textarea } from '@/components/ui/textarea'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
+import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
+  deleteSite,
   getResellerSettings,
   getSites,
+  getSitesOverview,
   SITE_ADMIN_PAGE_SIZE,
   siteAdminKeys,
 } from '../api'
 import {
   DEFAULT_SITE_SORT,
   nextSiteSort,
+  parseSiteBrand,
   type SiteSort,
   type SiteSortKey,
 } from '../lib/sites'
@@ -58,12 +78,7 @@ import type { AdminSite, SiteStatus } from '../types'
 import { OpenSiteDialog } from './open-site-dialog'
 import { SiteStatusBadge } from './site-status-badge'
 
-const STATUSES: SiteStatus[] = [
-  'active',
-  'closing',
-  'closed',
-  'pending',
-]
+const STATUSES: SiteStatus[] = ['active', 'closing', 'closed', 'pending']
 
 /** Column header that sorts the loaded page; aria-sort sits on the header cell. */
 function SortHeader(props: {
@@ -84,6 +99,7 @@ function SortHeader(props: {
   }
   return (
     <Button
+      type='button'
       variant='ghost'
       size='sm'
       className='-ml-2 h-7 px-2'
@@ -100,26 +116,36 @@ function ariaSort(sort: SiteSort, key: SiteSortKey) {
   return sort.direction === 'asc' ? 'ascending' : 'descending'
 }
 
-/** Site list (task 11.9): status filter, search, sortable columns, paging, and structured site opening dialog. */
+/** Site list: KPI summary strip, status filter, search, sortable columns, manage navigation, and delete action. */
 export function SitesPanel(props: {
   onOpenSite: (site: AdminSite) => void
   onNavigateSection?: (section: SiteAdminSectionId) => void
 }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const queryClient = useQueryClient()
+  const fieldId = useId()
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
   const [keyword, setKeyword] = useState('')
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<SiteSort>(DEFAULT_SITE_SORT)
   const [openDialog, setOpenDialog] = useState(false)
-  const canCreate =
+  const [deletingSite, setDeletingSite] = useState<AdminSite | null>(null)
+  const [deleteReason, setDeleteReason] = useState('')
+
+  const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
   const settingsQuery = useQuery({
     queryKey: siteAdminKeys.settings,
     queryFn: getResellerSettings,
-    enabled: canCreate,
+    enabled: isRoot,
   })
+  const overviewQuery = useQuery({
+    queryKey: siteAdminKeys.list('sites-overview-strip', {}),
+    queryFn: getSitesOverview,
+  })
+
   const settings = settingsQuery.data
   const missingPrereqs: {
     key: string
@@ -165,6 +191,28 @@ export function SitesPanel(props: {
     queryKey: siteAdminKeys.list('sites', params),
     queryFn: () => getSites(params),
   })
+
+  const removeMutation = useMutation({
+    mutationFn: (site: AdminSite) => {
+      if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
+        throw new Error(t('No permission to perform this action'))
+      }
+      return deleteSite(site.id, deleteReason.trim() || undefined)
+    },
+    onSuccess: (result) => {
+      setDeletingSite(null)
+      setDeleteReason('')
+      toast.success(
+        result.mode === 'hard_deleted'
+          ? t('Site permanently deleted')
+          : t('Closed site archived and hidden')
+      )
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+      void invalidateSidebarBadges(queryClient)
+    },
+    onError: (err) => handleServerError(err),
+  })
+
   const rows = query.data?.items ?? []
   const onSort = (key: SiteSortKey) => {
     setSort((prev) => nextSiteSort(prev, key))
@@ -178,17 +226,68 @@ export function SitesPanel(props: {
     closed: t('Closed'),
   }
 
+  const siteCounts = overviewQuery.data?.sites ?? {}
+  const activeCount = siteCounts.active ?? 0
+  const closingCount = siteCounts.closing ?? 0
+  const closedCount = siteCounts.closed ?? 0
+  const totalCount = Object.values(siteCounts).reduce(
+    (sum, count) => sum + count,
+    0
+  )
+
   if (query.isError && !query.data) {
     return <ErrorState onRetry={() => void query.refetch()} />
   }
 
   return (
-    <div className='flex flex-col gap-3'>
+    <div className='flex flex-col gap-4'>
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-      {canCreate && settings && !openingReady && (
+
+      {/* KPI Summary Strip */}
+      <dl
+        aria-label={t('Subsite summary')}
+        className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'
+      >
+        <div className='bg-card rounded-xl border p-4'>
+          <dt className='text-muted-foreground text-xs font-medium'>
+            {t('Total sites')}
+          </dt>
+          <dd className='mt-1.5 text-2xl font-semibold tabular-nums'>
+            {overviewQuery.isSuccess ? formatNumber(totalCount, locale) : '—'}
+          </dd>
+        </div>
+        <div className='bg-card rounded-xl border p-4'>
+          <dt className='text-muted-foreground text-xs font-medium'>
+            {t('Active sites')}
+          </dt>
+          <dd className='text-success mt-1.5 text-2xl font-semibold tabular-nums'>
+            {overviewQuery.isSuccess ? formatNumber(activeCount, locale) : '—'}
+          </dd>
+        </div>
+        <div className='bg-card rounded-xl border p-4'>
+          <dt className='text-muted-foreground text-xs font-medium'>
+            {t('Closing sites')}
+          </dt>
+          <dd className='text-warning mt-1.5 text-2xl font-semibold tabular-nums'>
+            {overviewQuery.isSuccess ? formatNumber(closingCount, locale) : '—'}
+          </dd>
+        </div>
+        <div className='bg-card rounded-xl border p-4'>
+          <dt className='text-muted-foreground text-xs font-medium'>
+            {t('Closed sites')}
+          </dt>
+          <dd className='text-muted-foreground mt-1.5 text-2xl font-semibold tabular-nums'>
+            {overviewQuery.isSuccess ? formatNumber(closedCount, locale) : '—'}
+          </dd>
+        </div>
+      </dl>
+
+      {isRoot && settings && !openingReady && (
         <Alert className='border-warning/40 bg-warning/5'>
           <AlertTriangle className='text-warning size-4' />
-          <AlertTitle>{t('Complete prerequisites before opening a site')}</AlertTitle>
+          <AlertTitle>
+            {t('Complete prerequisites before opening a site')}
+          </AlertTitle>
           <AlertDescription className='mt-2 flex flex-col gap-2'>
             <ul className='list-disc space-y-1 pl-4 text-xs'>
               {missingPrereqs.map((item) => (
@@ -222,9 +321,11 @@ export function SitesPanel(props: {
           </AlertDescription>
         </Alert>
       )}
-      <div className='flex flex-wrap items-center justify-between gap-2'>
+
+      {/* Search & Filter Toolbar */}
+      <div className='flex flex-wrap items-center justify-between gap-3'>
         <form
-          className='flex flex-wrap gap-2'
+          className='flex flex-wrap items-center gap-2'
           onSubmit={(event) => {
             event.preventDefault()
             setSearch(keyword.trim())
@@ -257,7 +358,7 @@ export function SitesPanel(props: {
             {t('Search')}
           </Button>
         </form>
-        {canCreate && (
+        {isRoot && (
           <Button
             type='button'
             variant='brand'
@@ -269,7 +370,8 @@ export function SitesPanel(props: {
           </Button>
         )}
       </div>
-      {canCreate && (
+
+      {isRoot && (
         <OpenSiteDialog
           open={openDialog}
           settings={settings}
@@ -277,11 +379,8 @@ export function SitesPanel(props: {
           onViewSite={props.onOpenSite}
         />
       )}
-      {/* The ui/table primitives directly: StaticDataTable cannot put
-          aria-sort on the header cell of a sortable column. The card is the
-          horizontal scroll viewport, so it needs an explicit `w-full min-w-0`
-          (a flex parent can otherwise squeeze it) and the table keeps its
-          max-content width instead of shrinking its columns. */}
+
+      {/* Clean Scannable Table */}
       <div className='border-border bg-card w-full min-w-0 overflow-x-auto overflow-y-hidden rounded-[14px] border'>
         <Table
           withContainer={false}
@@ -349,7 +448,6 @@ export function SitesPanel(props: {
                   onSort={onSort}
                 />
               </TableHead>
-              <TableHead>{t('Close requested')}</TableHead>
               <TableHead>{t('Opened')}</TableHead>
               <TableHead className='text-right'>{t('Actions')}</TableHead>
             </TableRow>
@@ -357,65 +455,147 @@ export function SitesPanel(props: {
           <TableBody>
             {rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12}>
+                <TableCell colSpan={11}>
                   <EmptyState className='min-h-32' title={t('No data')} />
                 </TableCell>
               </TableRow>
             ) : (
-              rows.map((row) => (
-                <TableRow key={row.id}>
-                  <TableCell className='font-mono'>{row.host}</TableCell>
-                  <TableCell>
-                    {row.owner_username || `#${row.owner_user_id}`}
-                  </TableCell>
-                  <TableCell>
-                    <SiteStatusBadge status={row.status} />
-                  </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {row.cost_factor ?? row.tier_cost_factor ?? t('Follow site level')}
-                  </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {formatNumber(row.customers, locale)}
-                  </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {row.month_topup_usd ?? '0'}
-                  </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {row.month_revenue_usd ?? '0'}
-                  </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {row.month_earning_usd ?? '0'}
-                  </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {row.growth_pct == null ? '-' : `${row.growth_pct}%`}
-                  </TableCell>
-                  <TableCell>
-                    {row.close_requested_at > 0
-                      ? formatTimestampToDate(row.close_requested_at)
-                      : '-'}
-                  </TableCell>
-                  <TableCell>{formatTimestampToDate(row.created_at)}</TableCell>
-                  <TableCell className='text-right'>
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      onClick={() => props.onOpenSite(row)}
-                    >
-                      {t('Details')}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))
+              rows.map((row) => {
+                const brandName = parseSiteBrand(row.brand).name?.trim()
+                return (
+                  <TableRow key={row.id} className='hover:bg-muted/40'>
+                    <TableCell>
+                      <button
+                        type='button'
+                        className='group flex flex-col text-left'
+                        onClick={() => props.onOpenSite(row)}
+                      >
+                        <span className='font-mono text-sm font-medium group-hover:underline'>
+                          {row.host}
+                        </span>
+                        {brandName && (
+                          <span className='text-muted-foreground text-xs'>
+                            {brandName}
+                          </span>
+                        )}
+                      </button>
+                    </TableCell>
+                    <TableCell>
+                      {row.owner_username || `#${row.owner_user_id}`}
+                    </TableCell>
+                    <TableCell>
+                      <div className='flex flex-col gap-0.5'>
+                        <SiteStatusBadge status={row.status} />
+                        {row.close_requested_at > 0 && (
+                          <span className='text-muted-foreground text-xs'>
+                            {t('Close requested')}:{' '}
+                            {formatTimestampToDate(row.close_requested_at)}
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className='text-right tabular-nums'>
+                      {row.effective_cost_factor ??
+                        row.cost_factor ??
+                        row.tier_cost_factor ??
+                        t('Follow site level')}
+                    </TableCell>
+                    <TableCell className='text-right tabular-nums'>
+                      {formatNumber(row.customers, locale)}
+                    </TableCell>
+                    <TableCell className='text-right tabular-nums'>
+                      {row.month_topup_usd ?? '0'}
+                    </TableCell>
+                    <TableCell className='text-right tabular-nums'>
+                      {row.month_revenue_usd ?? '0'}
+                    </TableCell>
+                    <TableCell className='text-right tabular-nums'>
+                      {row.month_earning_usd ?? '0'}
+                    </TableCell>
+                    <TableCell className='text-right tabular-nums'>
+                      {row.growth_pct == null ? '-' : `${row.growth_pct}%`}
+                    </TableCell>
+                    <TableCell className='whitespace-nowrap'>
+                      {formatTimestampToDate(row.created_at)}
+                    </TableCell>
+                    <TableCell className='text-right'>
+                      <div className='flex items-center justify-end gap-1.5'>
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          onClick={() => props.onOpenSite(row)}
+                        >
+                          <Settings2 className='size-3.5' aria-hidden />
+                          {t('Manage')}
+                        </Button>
+                        {isRoot && (
+                          <Button
+                            type='button'
+                            size='sm'
+                            variant='destructive'
+                            onClick={() => {
+                              setDeleteReason('')
+                              setDeletingSite(row)
+                            }}
+                          >
+                            <Trash2 className='size-3.5' aria-hidden />
+                            {t('Delete')}
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })
             )}
           </TableBody>
         </Table>
       </div>
+
       <PageSwitcher
         page={page}
         total={query.data?.total ?? 0}
         pageSize={SITE_ADMIN_PAGE_SIZE}
         onPageChange={setPage}
       />
+
+      {isRoot && (
+        <ConfirmDialog
+          open={deletingSite !== null}
+          onOpenChange={(open) => {
+            if (!open && !removeMutation.isPending) {
+              setDeletingSite(null)
+              setDeleteReason('')
+            }
+          }}
+          title={t('Delete {{site}}', {
+            site: deletingSite?.host ?? '',
+          })}
+          desc={t(
+            'Zero-data sites will be permanently deleted, and closed sites will be archived and hidden from the list. Active sites with customers or financial records must be closed first.'
+          )}
+          confirmText={t('Delete site')}
+          destructive
+          isLoading={removeMutation.isPending}
+          handleConfirm={() =>
+            deletingSite && removeMutation.mutate(deletingSite)
+          }
+        >
+          <div className='space-y-1.5 pt-2'>
+            <Label htmlFor={`${fieldId}-delete-reason`}>
+              {t('Reason (optional)')}
+            </Label>
+            <Textarea
+              id={`${fieldId}-delete-reason`}
+              rows={2}
+              value={deleteReason}
+              placeholder={t('Optional audit note for deleting this site')}
+              onChange={(event) => setDeleteReason(event.target.value)}
+            />
+          </div>
+        </ConfirmDialog>
+      )}
     </div>
   )
 }

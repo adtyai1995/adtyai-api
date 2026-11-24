@@ -335,7 +335,7 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
                 <span className='flex items-center gap-2'>
                   <code className='font-mono text-xs'>{row.trade_no}</code>
                   <Link
-                    to='/profile'
+                    to='/support'
                     hash={`ticket:${row.ext?.team_id ? 'team_order' : 'topup'}:${encodeURIComponent(row.trade_no)}`}
                     className='text-muted-foreground text-xs'
                   >
@@ -344,7 +344,7 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
                   {(row.status === 'refunded' ||
                     (row.ext?.refunded_at ?? 0) > 0) && (
                     <Link
-                      to='/profile'
+                      to='/support'
                       hash={`ticket:${row.ext?.team_id ? 'team_refund' : 'refund'}:${encodeURIComponent(row.trade_no)}`}
                       className='text-muted-foreground text-xs'
                     >

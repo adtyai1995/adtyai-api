@@ -24,7 +24,7 @@ import type { NotificationInput } from './lib/schema'
 export type NotificationMode = 'root' | 'owner'
 export type Publication = Omit<
   NotificationInput,
-  'target_team_id' | 'target_user_id'
+  'target_team_id' | 'target_user_id' | 'target_audiences' | 'target_site_ids' | 'content_format'
 > & {
   id: number
   revision: number
@@ -32,6 +32,10 @@ export type Publication = Omit<
   publisher_name: string
   issuer_site_id: number
   target_site_name: string
+  target_site_names?: string[]
+  target_audiences?: string[]
+  target_site_ids?: number[]
+  content_format?: NotificationInput['content_format']
   target_team_id?: number
   target_user_id?: number
   published_at: number

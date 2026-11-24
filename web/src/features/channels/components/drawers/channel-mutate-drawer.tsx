@@ -560,6 +560,7 @@ export function ChannelMutateDrawer({
     queryKey: ['groups'],
     queryFn: async () => requireServerSuccess(await getGroups()),
     enabled: open && !showProviderPicker,
+    staleTime: 0,
   })
 
   // Fetch all available models

@@ -2,6 +2,8 @@ package controller
 
 import (
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -14,13 +16,33 @@ import (
 
 func GetGroups(c *gin.Context) {
 	siteID := service.AdtyRequestSiteID(c)
-	groupNames := make([]string, 0)
+	seen := make(map[string]struct{})
 	for groupName := range ratio_setting.GetGroupRatioCopy() {
+		groupName = strings.TrimSpace(groupName)
+		if groupName != "" && groupName != "auto" {
+			seen[groupName] = struct{}{}
+		}
+	}
+	if model.DB != nil {
+		if adtyGroups, err := model.ListAdtyGroups(false); err == nil {
+			for _, g := range adtyGroups {
+				id := strings.TrimSpace(g.ID)
+				if id != "" && id != "auto" {
+					seen[id] = struct{}{}
+				}
+			}
+		} else {
+			common.SysError(common.LogText("list active adty groups failed: %s", err.Error()))
+		}
+	}
+	groupNames := make([]string, 0, len(seen))
+	for groupName := range seen {
 		if !service.SiteGroupAllowed(siteID, groupName) {
 			continue
 		}
 		groupNames = append(groupNames, groupName)
 	}
+	slices.Sort(groupNames)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -41,15 +63,16 @@ func GetUserGroups(c *gin.Context) {
 			}
 		}
 	}
-	userUsableGroups := service.GetUserUsableGroups(userGroup)
 	groupRatios := make(map[string]float64)
 	for groupName := range ratio_setting.GetGroupRatioCopy() {
+		groupName = strings.TrimSpace(groupName)
+		if groupName == "" || groupName == "auto" {
+			continue
+		}
 		if !service.SiteGroupAllowed(siteID, groupName) {
 			continue
 		}
-		if _, ok := userUsableGroups[groupName]; ok {
-			groupRatios[groupName] = service.GetUserGroupRatio(userGroup, groupName)
-		}
+		groupRatios[groupName] = service.GetUserGroupRatio(userGroup, groupName)
 	}
 	if err := service.AdtyApplySitePricing(c, groupRatios); err != nil {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, err)
@@ -58,13 +81,7 @@ func GetUserGroups(c *gin.Context) {
 	for groupName, ratio := range groupRatios {
 		usableGroups[groupName] = map[string]any{
 			"ratio": ratio,
-			"desc":  userUsableGroups[groupName],
-		}
-	}
-	if _, ok := userUsableGroups["auto"]; ok && (siteID == 0 || len(usableGroups) > 0) {
-		usableGroups["auto"] = map[string]any{
-			"ratio": "auto",
-			"desc":  setting.GetUsableGroupDescription("auto"),
+			"desc":  setting.GetUsableGroupDescription(groupName),
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{

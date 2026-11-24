@@ -158,6 +158,8 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: adminGroupsQueryKey }),
         queryClient.invalidateQueries({ queryKey: groupDisplayQueryKey }),
+        queryClient.invalidateQueries({ queryKey: ['groups'] }),
+        queryClient.invalidateQueries({ queryKey: ['user-groups'] }),
       ])
       setEditing(created)
       toast.success(
@@ -177,6 +179,8 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
         queryClient.invalidateQueries({ queryKey: adminGroupsQueryKey }),
         queryClient.invalidateQueries({ queryKey: groupDisplayQueryKey }),
         queryClient.invalidateQueries({ queryKey: ['system-options'] }),
+        queryClient.invalidateQueries({ queryKey: ['groups'] }),
+        queryClient.invalidateQueries({ queryKey: ['user-groups'] }),
       ])
       toast.success(t('Group deleted'))
     },
@@ -420,7 +424,9 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
                         aria-label={t('Delete group')}
                         title={
                           deleteBlocked(row.id)
-                            ? t('Migrate its users, keys, channels and sites first')
+                            ? t(
+                                'Migrate its users, keys, channels and sites first'
+                              )
                             : undefined
                         }
                       >
@@ -436,12 +442,28 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
       </CardContent>
       <GroupTextDialog
         group={editing}
-        onOpenChange={(open) => !open && setEditing(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditing(null)
+            void Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['groups'] }),
+              queryClient.invalidateQueries({ queryKey: ['user-groups'] }),
+            ])
+          }
+        }}
       />
       <GroupMigrateDialog
         group={migrating}
         groups={adminGroups}
-        onOpenChange={(open) => !open && setMigrating(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMigrating(null)
+            void Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['groups'] }),
+              queryClient.invalidateQueries({ queryKey: ['user-groups'] }),
+            ])
+          }
+        }}
       />
       <ConfirmDialog
         open={deleting !== null}

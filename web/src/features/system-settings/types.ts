@@ -157,6 +157,8 @@ export type SiteSettings = {
   'adty_site_setting.tawk_property_id': string
   'adty_site_setting.tawk_widget_id': string
   'adty_site_setting.refund_policy_enabled': boolean
+  'adty_site_setting.wallet_notice': string
+  'adty_site_setting.voucher_purchase_url': string
   // ADTY task 9.3: home page SEO (setting/adty_setting/seo.go); the two
   // maps are JSON objects of content language -> text
   'adty_seo_setting.home_title': string
@@ -193,6 +195,7 @@ export type ContentSettings = {
   'console_setting.api_info': string
   'console_setting.announcements': string
   'console_setting.faq': string
+  'console_setting.uptime_kuma_base_url': string
   'console_setting.uptime_kuma_groups': string
   'console_setting.api_info_enabled': boolean
   'console_setting.announcements_enabled': boolean

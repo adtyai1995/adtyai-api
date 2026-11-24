@@ -16,108 +16,55 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { ChevronDown, Globe, Plus } from 'lucide-react'
+import { Globe, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
-import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemGroup,
-  ItemTitle,
-} from '@/components/ui/item'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTitle,
-  PopoverTrigger,
-} from '@/components/ui/popover'
 import { useApiBaseUrl } from '@/features/adty-site/api'
-import { useApiInfo } from '@/features/dashboard/hooks/use-status-data'
-import { useStatus } from '@/hooks/use-status'
 
 import { useApiKeys } from './api-keys-provider'
 
 export function ApiKeysPrimaryButtons() {
   const { t } = useTranslation()
   const { setOpen } = useApiKeys()
-  const { loading } = useStatus()
-  const { items } = useApiInfo()
   const apiBaseUrl = useApiBaseUrl()
-  let addresses = items
-  if (addresses.length === 0 && apiBaseUrl) {
-    addresses = [
-      {
-        url: apiBaseUrl,
-        route: t('Default API address'),
-        description: '',
-        color: '',
-      },
-    ]
-  }
 
   return (
-    <div className='flex flex-wrap gap-2'>
-      <Popover>
-        <PopoverTrigger render={<Button variant='outline' size='sm' />}>
-          <Globe aria-hidden='true' />
-          {t('API Addresses')}
-          <ChevronDown aria-hidden='true' />
-        </PopoverTrigger>
-        <PopoverContent
-          align='end'
-          className='max-h-[min(28rem,var(--available-height))] w-96 max-w-[calc(100vw-2rem)] overflow-y-auto'
+    <div className='flex flex-wrap items-center gap-2'>
+      {apiBaseUrl ? (
+        <div
+          className='bg-muted/50 border-border/80 flex h-8 max-w-full min-w-0 items-center gap-1.5 rounded-md border pr-1 pl-2.5 text-xs'
+          aria-label={t('API Address')}
         >
-          <PopoverTitle>{t('API Addresses')}</PopoverTitle>
-          {loading && (
-            <LoadingState inline size='sm' message={t('Loading...')} />
-          )}
-          {!loading && addresses.length === 0 && (
-            <p className='text-muted-foreground py-2 text-xs'>
-              {t('API address is not configured yet')}
-            </p>
-          )}
-          {!loading && addresses.length > 0 && (
-            <ItemGroup>
-              {addresses.map((address) => (
-                <Item
-                  key={address.url}
-                  role='listitem'
-                  variant='muted'
-                  size='xs'
-                  className='flex-nowrap items-start'
-                >
-                  <ItemContent className='min-w-0 gap-1'>
-                    <ItemTitle className='line-clamp-none break-all'>
-                      {address.route}
-                    </ItemTitle>
-                    <code className='text-xs break-all select-text'>
-                      {address.url}
-                    </code>
-                    {address.description && (
-                      <ItemDescription className='line-clamp-none break-words'>
-                        {address.description}
-                      </ItemDescription>
-                    )}
-                  </ItemContent>
-                  <ItemActions>
-                    <CopyButton
-                      value={address.url}
-                      size='sm'
-                      tooltip={t('Copy API URL')}
-                      aria-label={`${t('Copy API URL')}: ${address.url}`}
-                    />
-                  </ItemActions>
-                </Item>
-              ))}
-            </ItemGroup>
-          )}
-        </PopoverContent>
-      </Popover>
+          <Globe
+            aria-hidden='true'
+            className='text-muted-foreground size-3.5 shrink-0'
+          />
+          <span className='text-muted-foreground hidden shrink-0 sm:inline'>
+            {t('API Address')}:
+          </span>
+          <code
+            className='text-foreground max-w-[180px] truncate font-mono text-xs select-all sm:max-w-[260px]'
+            title={apiBaseUrl}
+          >
+            {apiBaseUrl}
+          </code>
+          <CopyButton
+            value={apiBaseUrl}
+            size='icon'
+            className='size-6'
+            iconClassName='size-3.5'
+            tooltip={t('Copy API URL')}
+            aria-label={`${t('Copy API URL')}: ${apiBaseUrl}`}
+          />
+        </div>
+      ) : (
+        <div className='bg-muted/40 border-border/60 text-muted-foreground flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs'>
+          <Globe aria-hidden='true' className='size-3.5 shrink-0' />
+          <span>{t('API address is not configured yet')}</span>
+        </div>
+      )}
       <Button variant='brand' size='sm' onClick={() => setOpen('create')}>
         <Plus className='h-4 w-4' />
         {t('Create API Key')}

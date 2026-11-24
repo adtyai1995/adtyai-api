@@ -27,7 +27,12 @@ import {
 import type { SiteSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { toAdtySeoDefaults } from './adty-seo-defaults'
-import { toAdtySiteDefaults } from './adty-site-defaults'
+import {
+  toAdtySiteDefaults,
+  type AdtySiteOptionSettings,
+} from './adty-site-defaults'
+
+type SitePageSettings = SiteSettings & AdtySiteOptionSettings
 
 const SystemInfoSection = lazy(() =>
   import('../general/system-info-section').then((module) => ({
@@ -64,7 +69,7 @@ const SITE_SECTIONS = [
   {
     id: 'system-info',
     titleKey: 'System Information',
-    build: (settings: SiteSettings) => (
+    build: (settings: SitePageSettings) => (
       <SystemInfoSection
         defaultValues={{
           SystemName: settings.SystemName,
@@ -88,14 +93,14 @@ const SITE_SECTIONS = [
   {
     id: 'notice',
     titleKey: 'System Notice',
-    build: (settings: SiteSettings) => (
+    build: (settings: SitePageSettings) => (
       <NoticeSection defaultValue={settings.Notice ?? ''} />
     ),
   },
   {
     id: 'header-navigation',
     titleKey: 'Header navigation',
-    build: (settings: SiteSettings) => {
+    build: (settings: SitePageSettings) => {
       const headerNavConfig = parseHeaderNavModules(settings.HeaderNavModules)
       const headerNavSerialized = serializeHeaderNavModules(headerNavConfig)
       return (
@@ -109,7 +114,7 @@ const SITE_SECTIONS = [
   {
     id: 'sidebar-modules',
     titleKey: 'Sidebar modules',
-    build: (settings: SiteSettings) => {
+    build: (settings: SitePageSettings) => {
       const sidebarConfig = parseSidebarModulesAdmin(
         settings.SidebarModulesAdmin
       )
@@ -125,14 +130,14 @@ const SITE_SECTIONS = [
   {
     id: 'adty-site',
     titleKey: 'ADTY AI Site',
-    build: (settings: SiteSettings) => (
+    build: (settings: SitePageSettings) => (
       <AdtySiteSection defaultValues={toAdtySiteDefaults(settings)} />
     ),
   },
   {
     id: 'adty-seo',
     titleKey: 'Home Page SEO',
-    build: (settings: SiteSettings) => (
+    build: (settings: SitePageSettings) => (
       <AdtySeoSection defaultValues={toAdtySeoDefaults(settings)} />
     ),
   },
@@ -140,7 +145,7 @@ const SITE_SECTIONS = [
 
 export type SiteSectionId = (typeof SITE_SECTIONS)[number]['id']
 
-const siteRegistry = createSectionRegistry<SiteSectionId, SiteSettings>({
+const siteRegistry = createSectionRegistry<SiteSectionId, SitePageSettings>({
   sections: SITE_SECTIONS,
   defaultSection: 'system-info',
   basePath: '/system-settings/site',

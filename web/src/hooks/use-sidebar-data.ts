@@ -18,26 +18,30 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
+  Bell,
   Box,
   ClipboardList,
   FileText,
+  Gift,
+  HandCoins,
   Key,
-  LifeBuoy,
   LayoutDashboard,
+  LifeBuoy,
   ListTodo,
-  MessageSquare,
   PlugZap,
   Radio,
+  ReceiptText,
   ServerCog,
   Settings,
   ShieldCheck,
-  User,
-  Users,
-  Wallet,
-  ReceiptText,
-  Gift,
-  HandCoins,
   Store,
+  Tags,
+  Ticket,
+  User,
+  UserCog,
+  Users,
+  UsersRound,
+  Wallet,
 } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -51,6 +55,8 @@ import {
   REFERRAL_ADMIN_BADGE_KINDS,
   RESELLER_SITES_BADGE_KINDS,
   SITE_OWNER_BADGE_KINDS,
+  SITE_OWNER_EARNINGS_BADGE_KINDS,
+  SITE_OWNER_STAFF_BADGE_KINDS,
   STAFF_WORKSPACE_BADGE_KINDS,
   useSidebarBadges,
 } from '@/hooks/use-sidebar-badges'
@@ -96,13 +102,25 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     mixedLabel,
     failedLabel
   )
+  const siteOwnerEarningsBadge = sidebarBadges.badge(
+    SITE_OWNER_EARNINGS_BADGE_KINDS,
+    mixedLabel,
+    failedLabel
+  )
+  const siteOwnerStaffBadge = sidebarBadges.badge(
+    SITE_OWNER_STAFF_BADGE_KINDS,
+    mixedLabel,
+    failedLabel
+  )
   const referralAdminBadge = sidebarBadges.badge(
     REFERRAL_ADMIN_BADGE_KINDS,
     mixedLabel,
     failedLabel
   )
-  const reviewWork = (sidebarBadges.counts?.referral_withdrawals_pending ?? 0) > 0
-  const payoutWork = (sidebarBadges.counts?.referral_withdrawals_approved ?? 0) > 0
+  const reviewWork =
+    (sidebarBadges.counts?.referral_withdrawals_pending ?? 0) > 0
+  const payoutWork =
+    (sidebarBadges.counts?.referral_withdrawals_approved ?? 0) > 0
   let withdrawalFilter: 'actionable' | 'pending' | 'approved' | undefined
   if (reviewWork && payoutWork) withdrawalFilter = 'actionable'
   else if (reviewWork) withdrawalFilter = 'pending'
@@ -122,12 +140,16 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
       canAdmin(state.auth.user, ADTY_PERMISSIONS.TICKET_MANAGE) ||
       canAdmin(state.auth.user, ADTY_PERMISSIONS.TICKET_MANAGE_ALL)
   )
+  const userRole = useAuthStore((state) => state.auth.user?.role ?? ROLE.GUEST)
+  const isAdmin = userRole >= ROLE.ADMIN
   const hasArchivedSite = useAuthStore(
     (state) => state.auth.user?.adty_archived_site_owner === true
   )
   const isSiteOwner = useAuthStore(
     (state) => state.auth.user?.adty_site_owner === true
   )
+  const isPureSiteOwner = isSiteOwner && !isAdmin
+  const showReferral = !isAdmin && !isSiteOwner
   const hasTeam = useAuthStore(
     (state) => state.auth.user?.adty_has_team === true
   )
@@ -154,6 +176,100 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         ],
       }
     }
+
+    // R-32 #25: Site owners (non-admin) get a pure management sidebar only.
+    if (isPureSiteOwner) {
+      return {
+        navGroups: [
+          {
+            id: 'site-owner-management',
+            title: t('Site Management'),
+            items: [
+              {
+                title: t('Site Overview'),
+                url: '/site-owner/overview',
+                icon: LayoutDashboard,
+              },
+              {
+                title: t('Customers'),
+                url: '/site-owner/customers',
+                icon: Users,
+              },
+              {
+                title: t('Team management'),
+                url: '/site-owner/teams',
+                icon: UsersRound,
+              },
+              {
+                title: t('Order management'),
+                url: '/site-owner/orders',
+                icon: ReceiptText,
+              },
+              {
+                title: t('Pricing & Multiplier'),
+                url: '/site-owner/pricing',
+                icon: Tags,
+              },
+              {
+                title: t('Earnings & Withdrawals'),
+                url: '/site-owner/earnings',
+                activeUrls: ['/site-owner/commissions'],
+                icon: HandCoins,
+                badge: siteOwnerEarningsBadge,
+              },
+              {
+                title: t('Redemption Codes'),
+                url: '/site-owner/vouchers',
+                icon: Ticket,
+              },
+              {
+                title: t('Notifications'),
+                url: '/site-owner/notices',
+                icon: Bell,
+              },
+              {
+                title: t('Staff accounts'),
+                url: '/site-owner/staff',
+                icon: UserCog,
+                badge: siteOwnerStaffBadge,
+              },
+              {
+                title: t('Ticket management'),
+                url: '/site-owner/tickets',
+                icon: LifeBuoy,
+                badge: ownerTicketsBadge,
+              },
+              {
+                title: t('Site settings'),
+                url: '/site-owner/settings',
+                icon: Settings,
+              },
+            ],
+          },
+          {
+            id: 'site-owner-account',
+            title: t('Account'),
+            items: [
+              ...(hasArchivedSite
+                ? [
+                    {
+                      title: t('Historical site accounts'),
+                      url: '/site-owner/history',
+                      icon: Store,
+                    },
+                  ]
+                : []),
+              {
+                title: t('Security & Access'),
+                url: '/security',
+                icon: ShieldCheck,
+              },
+            ],
+          },
+        ],
+      }
+    }
+
     return {
       navGroups: [
         {
@@ -170,6 +286,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               url: '/dashboard/models',
               icon: LayoutDashboard,
               requiredPermission: ADTY_PERMISSIONS.LOG_READ,
+            },
+            {
+              title: t('Model Status'),
+              url: '/model-status',
+              icon: Activity,
             },
             {
               title: t('API Keys'),
@@ -189,20 +310,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             {
               title: t('Task Logs'),
               url: '/usage-logs/task',
-              activeUrls: ['/usage-logs/drawing'],
-              configUrls: ['/usage-logs/drawing', '/usage-logs/task'],
               icon: ListTodo,
-            },
-          ],
-        },
-        {
-          id: 'chat',
-          title: t('Chat'),
-          items: [
-            {
-              title: t('Chat'),
-              icon: MessageSquare,
-              type: 'chat-presets',
             },
           ],
         },
@@ -225,16 +333,20 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               icon: Wallet,
             },
             {
-              title: t('Tickets'),
-              url: '/profile#tickets',
+              title: t('Support Center'),
+              url: '/support',
               icon: LifeBuoy,
               badge: personalTicketsBadge,
             },
-            {
-              title: t('Referral'),
-              url: '/referral',
-              icon: Gift,
-            },
+            ...(showReferral
+              ? [
+                  {
+                    title: t('Referral'),
+                    url: '/referral',
+                    icon: Gift,
+                  },
+                ]
+              : []),
             // adty task 11.6: only site owners see the owner center.
             ...(hasArchivedSite
               ? [
@@ -316,10 +428,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               url: '/admin-referral',
               icon: HandCoins,
               badge: referralAdminBadge,
-              linkOptions: withdrawalFilter ? {
-                to: '/admin-referral',
-                search: { withdrawals: withdrawalFilter },
-              } : undefined,
+              linkOptions: withdrawalFilter
+                ? {
+                    to: '/admin-referral',
+                    search: { withdrawals: withdrawalFilter },
+                  }
+                : undefined,
               requiredPermission: ADTY_PERMISSIONS.REFERRAL_READ,
             },
             {
@@ -342,6 +456,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               icon: ReceiptText,
               badge: orderManagementBadge,
               requiredPermission: ADTY_PERMISSIONS.FINANCE_READ,
+            },
+            {
+              title: t('Redemption Codes'),
+              url: '/vouchers',
+              icon: Ticket,
+              requiredRole: ROLE.SUPER_ADMIN,
             },
             {
               title: t('System Info'),
@@ -376,11 +496,15 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     ownerTicketsBadge,
     platformTicketsBadge,
     siteOwnerBadge,
+    siteOwnerEarningsBadge,
+    siteOwnerStaffBadge,
     referralAdminBadge,
     withdrawalFilter,
     resellerSitesBadge,
     orderManagementBadge,
     isSiteOwner,
+    isPureSiteOwner,
+    showReferral,
     hasTeam,
     hasArchivedSite,
     isStaff,

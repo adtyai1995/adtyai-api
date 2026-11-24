@@ -1,8 +1,6 @@
 package service
 
 import (
-	"strings"
-
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
@@ -13,25 +11,15 @@ import (
 
 func GetUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
-	if userGroup != "" {
-		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
-		if b {
-			// 处理特殊可用分组
-			for specialGroup, desc := range specialSettings {
-				if after, ok := strings.CutPrefix(specialGroup, "-:"); ok {
-					// 移除分组
-					groupToRemove := after
-					delete(groupsCopy, groupToRemove)
-				} else if after, ok := strings.CutPrefix(specialGroup, "+:"); ok {
-					// 添加分组
-					groupToAdd := after
-					groupsCopy[groupToAdd] = desc
-				} else {
-					// 直接添加分组
-					groupsCopy[specialGroup] = desc
-				}
-			}
+	for groupName := range ratio_setting.GetGroupRatioCopy() {
+		if groupName == "" || groupName == "auto" {
+			continue
 		}
+		if _, ok := groupsCopy[groupName]; !ok {
+			groupsCopy[groupName] = setting.GetUsableGroupDescription(groupName)
+		}
+	}
+	if userGroup != "" {
 		// 如果userGroup不在UserUsableGroups中，返回UserUsableGroups + userGroup。
 		// 描述是英文源文本，由 web 控制台翻译；管理员配置的描述原样显示。
 		if _, ok := groupsCopy[userGroup]; !ok {
@@ -50,7 +38,7 @@ func IsUserSelectableGroup(userGroup, groupName string) bool {
 	if groupName == "" || groupName == "auto" {
 		return false
 	}
-	return GroupInUserUsableGroups(userGroup, groupName) && ratio_setting.ContainsGroupRatio(groupName)
+	return ratio_setting.ContainsGroupRatio(groupName)
 }
 
 // GetUserAutoGroup 根据用户分组获取自动分组设置

@@ -32,7 +32,7 @@ export const Route = createFileRoute('/_authenticated/site-owner/$section')({
   validateSearch: z.object({
     trade_no: z.string().trim().min(1).max(64).optional().catch(undefined),
     business: z
-      .enum(['owner_self_use_topup', 'owner_margin_topup'])
+      .enum(['owner_margin_topup'])
       .optional()
       .catch(undefined),
   }),

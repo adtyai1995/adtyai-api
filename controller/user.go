@@ -555,10 +555,15 @@ func GetUserSites(c *gin.Context) {
 	type siteChoice struct {
 		SiteID   int    `json:"site_id"`
 		SiteName string `json:"site_name"`
+		IsMain   bool   `json:"is_main"`
 	}
 	items := make([]siteChoice, len(siteIDs))
 	for i, id := range siteIDs {
-		items[i] = siteChoice{SiteID: id, SiteName: names[id]}
+		if id == 0 {
+			items[i] = siteChoice{SiteID: 0, SiteName: "Main site", IsMain: true}
+			continue
+		}
+		items[i] = siteChoice{SiteID: id, SiteName: names[id], IsMain: false}
 	}
 	common.ApiSuccess(c, items)
 }
@@ -912,6 +917,12 @@ func UpdateUser(c *gin.Context) {
 		denyAdtyAdminAction(c)
 		return
 	}
+	groupProvided := strings.TrimSpace(updatedUser.Group) != ""
+	if !groupProvided {
+		updatedUser.Group = originUser.Group
+	} else {
+		updatedUser.Group = strings.TrimSpace(updatedUser.Group)
+	}
 	// 二开：改分组要用户·改分组，目标分组要在分组表里（任务 2.6）
 	if !adtyCheckUserUpdate(c, originUser, &updatedUser) {
 		return
@@ -945,6 +956,9 @@ func UpdateUser(c *gin.Context) {
 		var current model.User
 		if err := model.AdtyLockForUpdate(tx).First(&current, updatedUser.Id).Error; err != nil {
 			return err
+		}
+		if !groupProvided {
+			updatedUser.Group = current.Group
 		}
 		if !canManageTargetRole(myRole, current.Role) {
 			return common.NewMessage("No permission to update users of same or higher permission level")
@@ -1437,18 +1451,51 @@ func CreateUser(c *gin.Context) {
 		}
 		auditParams["verification_method"] = authorization.Method
 	}
+	group := strings.TrimSpace(user.Group)
+	if group != "" {
+		if group != model.AdtyDefaultGroupID {
+			if err := adtyAuthorizeAdminActions(c, authz.AdtyUserGroup); err != nil {
+				denyAdtyAdminAction(c)
+				return
+			}
+		}
+		if service.AdtyAdminPermissionsEnabled() {
+			active, err := model.ActiveAdtyGroupIDs()
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			if _, ok := active[group]; !ok {
+				common.ApiErrorT(c, "Group not found")
+				return
+			}
+		}
+	}
 	// Even for admin users, we cannot fully trust them!
 	cleanUser := model.User{
 		Username:    user.Username,
 		Password:    user.Password,
 		DisplayName: user.DisplayName,
 		Role:        user.Role, // 保持管理员设置的角色
+		Group:       group,
 	}
 	authzTouched := false
 	auditEvents := make([]model.AuditLog, 0, 2)
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if group != "" {
+			if err := model.PreLockAdtyGroupsTx(tx, group); err != nil {
+				return err
+			}
+		}
 		if err := cleanUser.InsertWithTx(tx, 0); err != nil {
 			return err
+		}
+		// Do not force the legacy column default "default" when caller omits/clears group.
+		if group == "" {
+			if err := tx.Model(&model.User{}).Where("id = ?", cleanUser.Id).Update("group", "").Error; err != nil {
+				return err
+			}
+			cleanUser.Group = ""
 		}
 		touched, err := updateAdminPermissionsForUserInTx(c, tx, cleanUser.Id, cleanUser.Role, user.AdminPermissions)
 		authzTouched = touched

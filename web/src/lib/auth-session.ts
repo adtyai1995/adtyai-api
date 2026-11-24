@@ -77,8 +77,112 @@ const authClient = axios.create({
 })
 
 const refreshRaceDelays = [80, 200, 500] as const
+const PROACTIVE_REFRESH_LEAD_SECONDS = 90
+const VISIBILITY_REFRESH_LEAD_SECONDS = 120
+const PROACTIVE_REFRESH_MIN_DELAY_MS = 5_000
+const PROACTIVE_REFRESH_RETRY_MS = 30_000
+const MAX_TIMEOUT_MS = 2_147_483_647
+
 let refreshPromise: Promise<RefreshOutcome> | null = null
 let authEpoch = 0
+let proactiveRefreshTimer: ReturnType<typeof globalThis.setTimeout> | null =
+  null
+let visibilityListenerAttached = false
+
+function clearProactiveRefreshTimer(): void {
+  if (proactiveRefreshTimer !== null) {
+    globalThis.clearTimeout(proactiveRefreshTimer)
+    proactiveRefreshTimer = null
+  }
+}
+
+function detachVisibilityRefreshListener(): void {
+  if (!visibilityListenerAttached || typeof document === 'undefined') return
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  visibilityListenerAttached = false
+}
+
+function stopProactiveRefresh(): void {
+  clearProactiveRefreshTimer()
+  detachVisibilityRefreshListener()
+}
+
+function computeProactiveRefreshDelayMs(accessExpiresAt: number): number {
+  const remainingMs = accessExpiresAt * 1000 - Date.now()
+  if (remainingMs <= 0) {
+    return 0
+  }
+  const leadMs = PROACTIVE_REFRESH_LEAD_SECONDS * 1000
+  const delayMs =
+    remainingMs > leadMs
+      ? remainingMs - leadMs
+      : Math.max(PROACTIVE_REFRESH_MIN_DELAY_MS, Math.floor(remainingMs / 2))
+  return Math.min(delayMs, MAX_TIMEOUT_MS)
+}
+
+function scheduleProactiveRefreshRetry(): void {
+  clearProactiveRefreshTimer()
+  const auth = useAuthStore.getState().auth
+  if (!auth.user || !auth.session || !auth.accessExpiresAt) return
+  proactiveRefreshTimer = globalThis.setTimeout(() => {
+    proactiveRefreshTimer = null
+    triggerProactiveRefresh()
+  }, PROACTIVE_REFRESH_RETRY_MS)
+}
+
+function triggerProactiveRefresh(): void {
+  const auth = useAuthStore.getState().auth
+  if (!auth.user || !auth.session || !auth.accessExpiresAt) return
+  void refreshAuthentication().then((outcome) => {
+    if (outcome.kind === 'transient_error') {
+      const current = useAuthStore.getState().auth
+      if (current.user && current.session && current.accessExpiresAt) {
+        scheduleProactiveRefreshRetry()
+      }
+    }
+  })
+}
+
+function handleVisibilityChange(): void {
+  if (
+    typeof document === 'undefined' ||
+    document.visibilityState !== 'visible'
+  ) {
+    return
+  }
+  const auth = useAuthStore.getState().auth
+  if (!auth.user || !auth.session || !auth.accessExpiresAt) {
+    return
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  if (auth.accessExpiresAt <= nowSeconds + VISIBILITY_REFRESH_LEAD_SECONDS) {
+    triggerProactiveRefresh()
+  }
+}
+
+function ensureVisibilityRefreshListener(): void {
+  if (visibilityListenerAttached || typeof document === 'undefined') return
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  visibilityListenerAttached = true
+}
+
+function scheduleProactiveRefresh(accessExpiresAt: number): void {
+  clearProactiveRefreshTimer()
+  if (!Number.isFinite(accessExpiresAt) || accessExpiresAt <= 0) return
+  ensureVisibilityRefreshListener()
+  const delayMs = computeProactiveRefreshDelayMs(accessExpiresAt)
+  proactiveRefreshTimer = globalThis.setTimeout(() => {
+    proactiveRefreshTimer = null
+    const auth = useAuthStore.getState().auth
+    if (!auth.user || !auth.session || !auth.accessExpiresAt) return
+    const secondsLeft = auth.accessExpiresAt - Math.floor(Date.now() / 1000)
+    if (secondsLeft > PROACTIVE_REFRESH_LEAD_SECONDS + 5) {
+      scheduleProactiveRefresh(auth.accessExpiresAt)
+      return
+    }
+    triggerProactiveRefresh()
+  }, delayMs)
+}
 
 class AuthRefreshSupersededError extends Error {
   constructor() {
@@ -154,6 +258,7 @@ export function applyAuthBundle(
   const previousSID = useAuthStore.getState().auth.session?.sid
   authEpoch += 1
   useAuthStore.getState().auth.setBundle(bundle)
+  scheduleProactiveRefresh(bundle.access_expires_at)
   if (synchronizeTabs && previousSID !== bundle.session.sid) {
     publishAuthSessionEvent('authenticated', bundle.session.sid)
   }
@@ -190,6 +295,7 @@ export function clearAuthentication(
 ): void {
   const sid = useAuthStore.getState().auth.session?.sid
   authEpoch += 1
+  stopProactiveRefresh()
   useAuthStore.getState().auth.reset(bootstrapState)
   if (synchronizeTabs && sid) {
     publishAuthSessionEvent('signed_out', sid)
@@ -255,6 +361,8 @@ export function createRefreshRunner(
       return { kind: 'anonymous' }
     }
 
+    // Network failures (0), 5xx (including 503 transient site/DB outages), and
+    // 429 rate limits are transient and must preserve the active session.
     if (!response.status || response.status >= 500 || response.status === 429) {
       runtime.markTransient()
       return {
@@ -303,6 +411,7 @@ function runRefresh(refreshEpoch: number): Promise<RefreshOutcome> {
     acceptBundle: (bundle) => applyAuthBundle(bundle, false),
     clear: (synchronizeTabs, bootstrapState) => {
       if (!synchronizeTabs && bootstrapState === 'idle') {
+        stopProactiveRefresh()
         useAuthStore.getState().auth.reset('idle')
         return
       }

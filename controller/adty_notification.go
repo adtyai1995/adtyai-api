@@ -181,7 +181,7 @@ func WriteAdtyManagedNotification(c *gin.Context) {
 		}
 	}
 	var input service.AdtyNotificationInput
-	if err := common.DecodeJson(http.MaxBytesReader(c.Writer, c.Request.Body, 65536), &input); err != nil {
+	if err := common.DecodeJson(http.MaxBytesReader(c.Writer, c.Request.Body, 98304), &input); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
