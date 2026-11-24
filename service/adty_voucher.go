@@ -703,12 +703,12 @@ func adtyVoucherManageAllowedTx(tx *gorm.DB, actor *model.User, voucher *model.A
 	if voucher.IssuerId != actor.Id || voucher.InheritedByMain {
 		return ErrAdtyVoucherForbidden
 	}
+	if ownerOnly && (voucher.SourceKind == model.AdtyVoucherSourcePlatform || voucher.SourceSiteId <= 0 || expectedSiteID <= 0 || voucher.SourceSiteId != expectedSiteID) {
+		return ErrAdtyVoucherForbidden
+	}
 	siteID := voucher.SourceSiteId
 	if siteID <= 0 {
 		siteID = voucher.TargetSiteId
-	}
-	if ownerOnly && (expectedSiteID <= 0 || siteID != expectedSiteID) {
-		return ErrAdtyVoucherForbidden
 	}
 	if siteID > 0 {
 		var site *model.AdtySite

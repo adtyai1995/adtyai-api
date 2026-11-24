@@ -328,7 +328,7 @@ func PostAdtyOwnerSiteInviteWithdrawalReview(c *gin.Context) {
 	processSiteWithdrawalReview(c, service.ReviewAdtySiteInviteWithdrawal)
 }
 func PostClosedSiteInviteWithdrawalReview(c *gin.Context) {
-	processClosedSiteWithdrawalReview(c, service.ReviewClosedAdtySiteInviteWithdrawalWithAudit)
+	processClosedSiteWithdrawalReview(c, service.ReviewClosedAdtySiteInviteWithdrawalWithAuditForActor)
 }
 func processSiteWithdrawalReview(c *gin.Context, process func(int, int64, bool, string) error) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -351,7 +351,7 @@ func processSiteWithdrawalReview(c *gin.Context, process func(int, int64, bool, 
 	common.ApiSuccess(c, gin.H{"reviewed": true})
 }
 
-func processClosedSiteWithdrawalReview(c *gin.Context, process func(int, int64, bool, string) (string, bool, error)) {
+func processClosedSiteWithdrawalReview(c *gin.Context, process func(int, int, bool, int64, bool, string) (string, bool, error)) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -365,9 +365,9 @@ func processClosedSiteWithdrawalReview(c *gin.Context, process func(int, int64, 
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	eventID, replayed, err := process(c.GetInt("id"), id, body.Approve, body.Reason)
+	eventID, replayed, err := process(c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), id, body.Approve, body.Reason)
 	if err != nil {
-		common.ApiError(c, err)
+		writeReferralError(c, err)
 		return
 	}
 	if replayed {
@@ -386,7 +386,7 @@ func PostAdtyOwnerSiteInviteWithdrawalPaid(c *gin.Context) {
 	processSiteWithdrawalPaid(c, service.MarkAdtySiteInviteWithdrawalPaid)
 }
 func PostClosedSiteInviteWithdrawalFailed(c *gin.Context) {
-	processClosedSiteWithdrawalReview(c, service.ConfirmClosedSiteInvitePayoutFailureWithAudit)
+	processClosedSiteWithdrawalReview(c, service.ConfirmClosedSiteInvitePayoutFailureWithAuditForActor)
 }
 func PostClosedSiteInviteWithdrawalPaid(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -402,9 +402,9 @@ func PostClosedSiteInviteWithdrawalPaid(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	eventID, replayed, err := service.MarkClosedAdtySiteInviteWithdrawalPaidWithAudit(c.GetInt("id"), id, body.TxID, body.Proof)
+	eventID, replayed, err := service.MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActor(c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), id, body.TxID, body.Proof)
 	if err != nil {
-		common.ApiError(c, err)
+		writeReferralError(c, err)
 		return
 	}
 	if replayed {

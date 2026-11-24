@@ -29,7 +29,10 @@ import { Textarea } from '@/components/ui/textarea'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { api } from '@/lib/api'
-import { getServerErrorMessage } from '@/lib/server-error-message'
+import {
+  createServerError,
+  getServerErrorMessage,
+} from '@/lib/server-error-message'
 import { formatDateTimeObject } from '@/lib/time'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -246,7 +249,7 @@ function TicketWorkspace({
         message?: string
       }
       if (!body.success) {
-        throw new Error(body.message || t('Failed to load data'))
+        throw createServerError(body, t('Failed to load data'))
       }
       return {
         tickets: body.data?.tickets ?? [],
@@ -307,7 +310,7 @@ function TicketWorkspace({
         !data.success ||
         !['personal', 'team'].includes(data.data?.audience)
       ) {
-        throw new Error(data.message || t('Failed to load data'))
+        throw createServerError(data, t('Failed to load data'))
       }
       return data.data.audience as 'personal' | 'team'
     },
@@ -336,7 +339,7 @@ function TicketWorkspace({
         signal,
       })
       if (!data.success) {
-        throw new Error(data.message || t('Failed to load data'))
+        throw createServerError(data, t('Failed to load data'))
       }
       return (data.data?.tickets ?? []) as Ticket[]
     },
@@ -387,7 +390,7 @@ function TicketWorkspace({
         message?: string
       }
       if (!payload.success || !payload.data) {
-        throw new Error(payload.message || t('Failed to load data'))
+        throw createServerError(payload, t('Failed to load data'))
       }
       return payload.data
     },
@@ -421,7 +424,7 @@ function TicketWorkspace({
         data?: Ticket
       }
       if (!payload.success || !payload.data) {
-        throw new Error(payload.message || t('Failed to save'))
+        throw createServerError(payload, t('Failed to save'))
       }
       const createdTicket = payload.data
       const targetScope = resolvedAudience === 'team' ? 'team' : 'personal'
@@ -520,7 +523,7 @@ function TicketWorkspace({
       )
       const payload = response.data as { success?: boolean; message?: string }
       if (!payload.success) {
-        throw new Error(payload.message || t('Failed to save'))
+        throw createServerError(payload, t('Failed to save'))
       }
       await refresh()
     } catch (cause) {
@@ -550,7 +553,7 @@ function TicketWorkspace({
       )
       const payload = response.data as { success?: boolean; message?: string }
       if (!payload?.success) {
-        throw new Error(payload?.message || t('Failed to save'))
+        throw createServerError(payload, t('Failed to save'))
       }
       attempts.current.delete(`${draftKey}:reply`)
       clearSubmitted('reply', reply)
@@ -582,7 +585,7 @@ function TicketWorkspace({
       )
       const payload = response.data as { success?: boolean; message?: string }
       if (!payload?.success) {
-        throw new Error(payload?.message || t('Failed to save'))
+        throw createServerError(payload, t('Failed to save'))
       }
       attempts.current.delete(`${draftKey}:note`)
       clearSubmitted('note', note)
@@ -622,7 +625,7 @@ function TicketWorkspace({
     )
     const payload = response.data as { success?: boolean; message?: string }
     if (!payload?.success) {
-      throw new Error(payload?.message || t('Only images are accepted'))
+      throw createServerError(payload, t('Only images are accepted'))
     }
   }
 
@@ -724,7 +727,7 @@ function TicketWorkspace({
       )
       const payload = response.data as { success?: boolean; message?: string }
       if (!payload?.success) {
-        throw new Error(payload?.message || t('Failed to save'))
+        throw createServerError(payload, t('Failed to save'))
       }
       await refresh()
     } catch (cause) {
@@ -760,7 +763,7 @@ function TicketWorkspace({
           },
         })
         if (!response.data.success) {
-          throw new Error(response.data.message || t('Failed to load data'))
+          throw createServerError(response.data, t('Failed to load data'))
         }
         const batch = (response.data.data as TicketList).tickets ?? []
         rows.push(...batch)

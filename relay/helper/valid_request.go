@@ -19,6 +19,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func IsGeminiSingleEmbeddingPath(path string) bool {
+	trimmed := strings.TrimRight(path, "/")
+	return strings.HasSuffix(trimmed, ":embedContent") || strings.HasSuffix(trimmed, "/embeddings")
+}
+
+func IsGeminiBatchEmbeddingPath(path string) bool {
+	trimmed := strings.TrimRight(path, "/")
+	return strings.HasSuffix(trimmed, ":batchEmbedContents")
+}
+
+func IsGeminiEmbeddingPath(path string) bool {
+	return IsGeminiSingleEmbeddingPath(path) || IsGeminiBatchEmbeddingPath(path)
+}
+
 func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dto.Request, err error) {
 	relayMode := relayconstant.EditsRelayMode(c.Request.URL.Path, c.GetInt("relay_mode"))
 
@@ -26,9 +40,9 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 	case types.RelayFormatOpenAI:
 		request, err = GetAndValidateTextRequest(c, relayMode)
 	case types.RelayFormatGemini:
-		if strings.Contains(c.Request.URL.Path, ":embedContent") {
+		if IsGeminiSingleEmbeddingPath(c.Request.URL.Path) {
 			request, err = GetAndValidateGeminiEmbeddingRequest(c)
-		} else if strings.Contains(c.Request.URL.Path, ":batchEmbedContents") {
+		} else if IsGeminiBatchEmbeddingPath(c.Request.URL.Path) {
 			request, err = GetAndValidateGeminiBatchEmbeddingRequest(c)
 		} else {
 			request, err = GetAndValidateGeminiRequest(c)

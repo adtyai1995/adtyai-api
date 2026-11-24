@@ -327,6 +327,27 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	priorStatus := topUp.Status
 	switch topUp.Status {
 	case common.TopUpStatusSuccess:
+		if facts.ActorRole > 0 || facts.DenyAdminTarget {
+			if ext.TeamId > 0 && tx.Migrator().HasTable(&AdtyTeam{}) {
+				var team AdtyTeam
+				if err := lockForUpdate(tx).Select("id").Where("id = ?", ext.TeamId).Limit(1).Find(&team).Error; err != nil {
+					return false, 0, nil, nil, err
+				}
+			}
+			var targetUser User
+			if err := lockForUpdate(tx).Select("id", "role").First(&targetUser, topUp.UserId).Error; err != nil {
+				return false, 0, nil, nil, err
+			}
+			if facts.Source == AdtyPaymentSourceManual && facts.OperatorId > 0 && facts.OperatorId == targetUser.Id {
+				return false, 0, nil, nil, ErrUserQuotaPermission
+			}
+			if facts.ActorRole > 0 && facts.ActorRole != common.RoleRootUser && facts.ActorRole <= targetUser.Role {
+				return false, 0, nil, nil, ErrUserQuotaPermission
+			}
+			if facts.DenyAdminTarget && targetUser.Role >= common.RoleAdminUser {
+				return false, 0, nil, nil, ErrAdminTargetSessionRequired
+			}
+		}
 		if adtyPaymentVoucherDiffers(ext, facts) {
 			return false, 0, topUp, ext, ErrAdtyDuplicatePayment
 		}

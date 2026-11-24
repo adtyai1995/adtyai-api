@@ -107,7 +107,7 @@ func GetModelMeta(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid model ID")
 		return
 	}
 	var m model.Model
@@ -266,17 +266,17 @@ func DeleteModelMeta(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid model ID")
 		return
 	}
 	removeFromChannels, err := strconv.ParseBool(c.DefaultQuery("remove_from_channels", "false"))
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	removePricing, err := strconv.ParseBool(c.DefaultQuery("remove_pricing", "false"))
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if removePricing && c.GetInt("role") != common.RoleRootUser {

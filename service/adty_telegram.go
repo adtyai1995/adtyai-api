@@ -923,6 +923,12 @@ func authorizeAndResolveAdtyTelegramDelivery(row *model.AdtyTelegramDelivery) (t
 					if pub.IssuerSiteId > 0 {
 						return "", "", "subsite public channel unsupported", ""
 					}
+					if pub.Audience == "user" || pub.Audience == "team" {
+						return "", "", "publication audience restricted", ""
+					}
+					if strings.TrimSpace(pub.TelegramChannel) != channel {
+						return "", "", "publication channel changed", ""
+					}
 				}
 			}
 		}

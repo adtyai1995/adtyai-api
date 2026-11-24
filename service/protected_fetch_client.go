@@ -253,23 +253,39 @@ func dialHTTPSOverHTTPSProxy(ctx context.Context, dialContext func(ctx context.C
 		Header: make(http.Header),
 	}
 	if proxyURL.User != nil {
-		auth := base64.StdEncoding.EncodeToString([]byte(proxyURL.User.String()))
+		password, _ := proxyURL.User.Password()
+		auth := base64.StdEncoding.EncodeToString([]byte(proxyURL.User.Username() + ":" + password))
 		connectReq.Header.Set("Proxy-Authorization", "Basic "+auth)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = proxyTLSConn.SetDeadline(deadline)
 	}
+	stopCancel := context.AfterFunc(ctx, func() {
+		_ = proxyTLSConn.SetDeadline(time.Now())
+	})
 	if err := connectReq.Write(proxyTLSConn); err != nil {
+		stopCancel()
 		_ = proxyTLSConn.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 	br := bufio.NewReader(proxyTLSConn)
 	connectResp, err := http.ReadResponse(br, connectReq)
 	if err != nil {
+		stopCancel()
 		_ = proxyTLSConn.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 	_ = connectResp.Body.Close()
+	if !stopCancel() {
+		_ = proxyTLSConn.Close()
+		return nil, ctx.Err()
+	}
 	if connectResp.StatusCode != http.StatusOK {
 		_ = proxyTLSConn.Close()
 		return nil, fmt.Errorf("proxy CONNECT failed with status %d", connectResp.StatusCode)

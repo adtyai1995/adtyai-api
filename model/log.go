@@ -146,7 +146,7 @@ func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 }
 
 func RecordLog(userId int, logType int, content *common.Message) {
-	if logType == LogTypeConsume && !common.LogConsumeEnabled {
+	if logType == LogTypeConsume && !common.GetLogConsumeEnabled() {
 		return
 	}
 	username, _ := GetUsernameById(userId, false)
@@ -168,7 +168,7 @@ func RecordLog(userId int, logType int, content *common.Message) {
 // RecordLogWithAdminInfo stores operator metadata under other.admin_info and
 // an optional, user-visible operation descriptor under other.op for localization.
 func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo *AuditAdminInfo, operation *AuditOperation, request ...*gin.Context) {
-	if logType == LogTypeConsume && !common.LogConsumeEnabled {
+	if logType == LogTypeConsume && !common.GetLogConsumeEnabled() {
 		return
 	}
 	username, _ := GetUsernameById(userId, false)
@@ -376,7 +376,7 @@ type RecordConsumeLogParams struct {
 }
 
 func recordConsumeQuotaData(userId int, username, modelName string, quota, tokenUsed int, group string, tokenId, channelId int, createdAt int64, other *LogOther) {
-	if !common.DataExportEnabled {
+	if !common.GetDataExportEnabled() {
 		return
 	}
 	var cacheReadTokens, cacheCreationTokens int
@@ -421,7 +421,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if AdtyOnConsumeLog != nil {
 		AdtyOnConsumeLog(c, userId, &params)
 	}
-	if !common.LogConsumeEnabled {
+	if !common.GetLogConsumeEnabled() {
 		// The usage row stays off, but the charge still needs dashboard evidence.
 		recordConsumeQuotaData(userId, c.GetString("username"), params.ModelName, params.Quota, params.PromptTokens+params.CompletionTokens, params.Group, params.TokenId, params.ChannelId, common.GetTimestamp(), params.Other)
 		return
@@ -471,7 +471,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if err != nil {
 		logger.LogError(c, common.LogText("failed to record log: %s", err.Error()))
 	}
-	if common.DataExportEnabled {
+	if common.GetDataExportEnabled() {
 		var cacheReadTokens, cacheCreationTokens int
 		if other != nil {
 			cacheReadTokens, _ = other.public["cache_tokens"].(int)
@@ -514,7 +514,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	if AdtyOnTaskBillingLog != nil {
 		AdtyOnTaskBillingLog(&params)
 	}
-	if params.LogType == LogTypeConsume && !common.LogConsumeEnabled {
+	if params.LogType == LogTypeConsume && !common.GetLogConsumeEnabled() {
 		username, _ := GetUsernameById(params.UserId, false)
 		recordConsumeQuotaData(params.UserId, username, params.ModelName, params.Quota, 0, params.Group, params.TokenId, params.ChannelId, common.GetTimestamp(), params.Other)
 		return
@@ -546,7 +546,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	if err != nil {
 		common.SysLog(common.LogText("failed to record task billing log: %s", err.Error()))
 	}
-	if params.LogType == LogTypeConsume && common.DataExportEnabled {
+	if params.LogType == LogTypeConsume && common.GetDataExportEnabled() {
 		nodeName := params.NodeName
 		if nodeName == "" {
 			nodeName = common.NodeName

@@ -319,7 +319,7 @@ func GetToken(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	userId := c.GetInt("id")
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid token ID")
 		return
 	}
 	token, err := model.GetTokenByIds(id, userId)

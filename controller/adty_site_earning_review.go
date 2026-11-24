@@ -43,9 +43,9 @@ func ReviewAdtySiteEarning(c *gin.Context) {
 	if middleware.RequireSecurityProof(c, service.AdtySiteEarningReviewOperation(body.OperationKey, body.OriginalCharge, body.Reason)) == nil {
 		return
 	}
-	eventID, replayed, err := service.ReviewAdtySiteEarningRootWithAudit(body.OperationKey, c.GetInt("id"), body.OriginalCharge, body.Reason)
+	eventID, replayed, err := service.ReviewAdtySiteEarningRootWithAuditForActor(body.OperationKey, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body.OriginalCharge, body.Reason)
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtyFinanceError(c, err)
 		return
 	}
 	if replayed {

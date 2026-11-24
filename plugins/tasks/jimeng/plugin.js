@@ -147,15 +147,19 @@ function decodeNativeRequest(ctx) {
   }
 
   const images = imageValues(body);
+  const metadata = Object.assign({}, body);
+  delete metadata.req_key;
+  const model = typeof body.req_key === "string" ? body.req_key : "";
+  validateMetadataFrames(metadata, convertedReqKey(model, images.length));
   return {
     kind: "submit",
-    model: typeof body.req_key === "string" ? body.req_key : "",
+    model: model,
     action: actionForImageCount(images.length),
     requestBody: {
-      model: typeof body.req_key === "string" ? body.req_key : "",
+      model: model,
       prompt: typeof body.prompt === "string" ? body.prompt : "",
       images: images,
-      metadata: body,
+      metadata: metadata,
     },
   };
 }
@@ -230,9 +234,22 @@ function submitImageCount(req) {
 
 function submitReqKey(ctx) {
   const req = (ctx && ctx.requestBody) || {};
-  const metadata = req.metadata || {};
-  const base = metadata.req_key || (ctx && ctx.upstreamModel) || req.model || "";
+  const base = (ctx && ctx.upstreamModel) || req.model || "";
   return convertedReqKey(String(base), submitImageCount(req)) || "jimeng_vgfm_t2v_l20";
+}
+
+function validateMetadataFrames(metadata, reqKey) {
+  if (!metadata || metadata.frames === undefined || metadata.frames === null) return undefined;
+  if (typeof metadata.frames === "boolean" || Array.isArray(metadata.frames) || String(metadata.frames).trim() === "") {
+    throw new Error("metadata.frames must be 121 or 241");
+  }
+  const frames = Number(metadata.frames);
+  if (!isV3ReqKey(reqKey)) {
+    if (frames !== 121) throw new Error("metadata.frames must be 121 for this model");
+    return 121;
+  }
+  if (frames !== 121 && frames !== 241) throw new Error("metadata.frames must be 121 or 241");
+  return frames;
 }
 
 function outboundSeconds(req, reqKey) {
@@ -321,7 +338,7 @@ export function buildSubmitRequest(ctx) {
     if (String(images[0]).startsWith("http")) body.image_urls = images;
     else body.binary_data_base64 = images.map(filePlaceholder);
   }
-  ["req_key", "binary_data_base64", "image_urls", "prompt", "seed", "aspect_ratio", "frames"].forEach(function (key) {
+  ["binary_data_base64", "image_urls", "prompt", "seed", "aspect_ratio"].forEach(function (key) {
     if (metadata[key] === undefined || metadata[key] === null) return;
     if (key === "aspect_ratio" && !String(metadata[key]).trim()) return;
     body[key] = metadata[key];
@@ -332,10 +349,12 @@ export function buildSubmitRequest(ctx) {
   const metadataImageCount = binaryCount + urlCount;
   const imageCount = metadataImageCount > 0 ? metadataImageCount : images.length;
   body.req_key = convertedReqKey(body.req_key, imageCount);
-  if (isV3ReqKey(body.req_key) && (body.frames === undefined || body.frames === null)) {
+  validateMetadataFrames(metadata, body.req_key);
+  if (isV3ReqKey(body.req_key)) {
     body.frames = outboundSeconds(req, body.req_key) === 10 ? 241 : 121;
+  } else {
+    delete body.frames;
   }
-  if (!isV3ReqKey(body.req_key)) delete body.frames;
 
   const ordered = { req_key: body.req_key };
   if (body.binary_data_base64 && body.binary_data_base64.length) ordered.binary_data_base64 = body.binary_data_base64;
@@ -428,13 +447,16 @@ export const protocols = {
       const prompt = responsesInput(req) || trimmed(req.prompt);
       if (!prompt) throw new Error("input is required");
       const metadata = Object.assign({}, req.metadata || {});
+      delete metadata.req_key;
       delete metadata.binary_data_base64;
       delete metadata.image_urls;
       delete metadata.images;
       delete metadata.image;
+      const resolvedReqKey = convertedReqKey(String(ctx.upstreamModel || model), 0);
+      validateMetadataFrames(metadata, resolvedReqKey);
       const requestBody = { model: model, prompt: prompt, metadata: metadata };
-      if (Object.prototype.hasOwnProperty.call(req, "seconds")) requestBody.duration = req.seconds;
-      else if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.duration = req.duration;
+      if (Object.prototype.hasOwnProperty.call(req, "seconds")) requestBody.duration = validateSecondsForReqKey(resolvedReqKey, req.seconds);
+      else if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.duration = validateSecondsForReqKey(resolvedReqKey, req.duration);
       return { kind: "submit", model: model, action: "text_to_video", requestBody: requestBody };
     },
     renderEvents: function (ctx, task, previousState) {
@@ -539,12 +561,15 @@ protocols.openai_video = {
       const image = trimmed(req.input_reference || req.image);
       if (image && (!Array.isArray(req.images) || req.images.length === 0)) req.images = [image];
     }
+    if (req.metadata && typeof req.metadata === "object" && !Array.isArray(req.metadata)) {
+      req.metadata = Object.assign({}, req.metadata);
+      delete req.metadata.req_key;
+    }
+    const resolvedReqKey = convertedReqKey(String(ctx.upstreamModel || ctx.model || req.model || ""), decodeImageCount(req, hasInputReferenceFile));
+    validateMetadataFrames(req.metadata, resolvedReqKey);
     const seconds = req.seconds === undefined ? req.duration : req.seconds;
     if (seconds !== undefined) {
-      req.duration = validateSecondsForReqKey(
-        convertedReqKey(String(ctx.upstreamModel || ctx.model || req.model || ""), decodeImageCount(req, hasInputReferenceFile)),
-        seconds
-      );
+      req.duration = validateSecondsForReqKey(resolvedReqKey, seconds);
     }
     return {
       kind: "submit",

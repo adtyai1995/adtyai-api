@@ -32,7 +32,7 @@ func GetVendorMeta(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		vendorAPIError(c, err)
+		vendorAPIError(c, common.NewMessage("Invalid vendor ID"))
 		return
 	}
 	v, err := model.GetVendorByID(id)
@@ -47,7 +47,7 @@ func GetVendorMeta(c *gin.Context) {
 func CreateVendorMeta(c *gin.Context) {
 	var v model.Vendor
 	if err := c.ShouldBindJSON(&v); err != nil {
-		vendorAPIError(c, err)
+		vendorAPIError(c, common.NewMessage("Invalid request"))
 		return
 	}
 	if err := v.Insert(); err != nil {
@@ -62,7 +62,7 @@ func CreateVendorMeta(c *gin.Context) {
 func UpdateVendorMeta(c *gin.Context) {
 	var v model.Vendor
 	if err := c.ShouldBindJSON(&v); err != nil {
-		vendorAPIError(c, err)
+		vendorAPIError(c, common.NewMessage("Invalid request"))
 		return
 	}
 	if v.Id == 0 {
@@ -82,7 +82,7 @@ func DeleteVendorMeta(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		vendorAPIError(c, err)
+		vendorAPIError(c, common.NewMessage("Invalid vendor ID"))
 		return
 	}
 	if err := model.DeleteVendors([]int{id}); err != nil {
@@ -113,7 +113,7 @@ func PreviewVendorOperation(c *gin.Context) {
 	markIdempotentReplayNoAudit(c)
 	var request model.VendorOperation
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
-		vendorAPIError(c, err)
+		vendorAPIError(c, common.NewMessage("Invalid request"))
 		return
 	}
 	preview, err := model.PreviewVendorOperation(request)
@@ -127,7 +127,7 @@ func PreviewVendorOperation(c *gin.Context) {
 func ApplyVendorOperation(c *gin.Context) {
 	var request model.VendorOperation
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
-		vendorAPIError(c, err)
+		vendorAPIError(c, common.NewMessage("Invalid request"))
 		return
 	}
 	var permissions []authz.Permission

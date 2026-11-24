@@ -1071,7 +1071,7 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	disableThreshold := int64(common.ChannelDisableThreshold * 1000)
+	disableThreshold := int64(common.GetChannelDisableThreshold() * 1000)
 	if disableThreshold == 0 {
 		disableThreshold = 10000000 // an impossible value
 	}

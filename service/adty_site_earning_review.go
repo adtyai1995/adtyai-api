@@ -18,6 +18,10 @@ func ReviewAdtySiteEarningRoot(operationKey string, adminId int, decision, reaso
 }
 
 func ReviewAdtySiteEarningRootWithAudit(operationKey string, adminId int, decision, reason string) (string, bool, error) {
+	return ReviewAdtySiteEarningRootWithAuditForActor(operationKey, adminId, 0, false, decision, reason)
+}
+
+func ReviewAdtySiteEarningRootWithAuditForActor(operationKey string, adminId, actorRole int, denyAdminTarget bool, decision, reason string) (string, bool, error) {
 	if adminId <= 0 || strings.TrimSpace(reason) == "" ||
 		(decision != model.AdtyEarningOriginalReleased && decision != model.AdtyEarningOriginalSkipped) {
 		return "", false, common.NewMessage("Invalid parameters")
@@ -30,6 +34,27 @@ func ReviewAdtySiteEarningRootWithAudit(operationKey string, adminId int, decisi
 	var auditEvent *model.AuditLog
 	replayed := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if actorRole > 0 || denyAdminTarget {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id").First(&site, event.SiteId).Error; err != nil {
+				return err
+			}
+			if site.OwnerUserId > 0 {
+				var owner model.User
+				if err := model.AdtyLockForUpdate(tx).Select("id", "role").First(&owner, site.OwnerUserId).Error; err != nil {
+					return err
+				}
+				if adminId > 0 && adminId == owner.Id {
+					return model.ErrUserQuotaPermission
+				}
+				if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= owner.Role {
+					return model.ErrUserQuotaPermission
+				}
+				if denyAdminTarget && owner.Role >= common.RoleAdminUser {
+					return model.ErrAdminTargetSessionRequired
+				}
+			}
+		}
 		var customers []model.AdtySiteCustomer
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", event.UserId).Limit(1).Find(&customers).Error; err != nil {
 			return err

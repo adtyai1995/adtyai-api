@@ -146,18 +146,25 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 	defer service.CloseResponseBodyGracefully(resp)
 
-	helper.SetEventStreamHeaders(c)
 	scanner := helper.NewStreamScanner(resp.Body)
 	usage := &dto.Usage{}
 	var model = info.UpstreamModelName
 	var responseId = common.GetUUID()
 	var created = time.Now().Unix()
 	var toolCallIndex int
+	var started bool
 	var emittedOutput bool
 	var responseText strings.Builder
-	start := helper.GenerateStartEmptyResponse(responseId, created, model, nil)
-	if data, err := common.Marshal(start); err == nil {
-		_ = helper.StringData(c, string(data))
+	ensureStarted := func() {
+		if started {
+			return
+		}
+		started = true
+		helper.SetEventStreamHeaders(c)
+		start := helper.GenerateStartEmptyResponse(responseId, created, model, nil)
+		if data, err := common.Marshal(start); err == nil {
+			_ = helper.StringData(c, string(data))
+		}
 	}
 
 	for scanner.Scan() {
@@ -174,12 +181,16 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 				// billed usage instead of returning an error that refunds 100%.
 				break
 			}
+			if started {
+				return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
+			}
 			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 		if chunk.Model != "" {
 			model = chunk.Model
 		}
 		created = toUnix(chunk.CreatedAt)
+		ensureStarted()
 
 		if !chunk.Done {
 			delta, hasPayload := buildOllamaStreamDelta(&chunk, responseId, created, model, &toolCallIndex)
@@ -243,6 +254,13 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 	if err := scanner.Err(); err != nil && err != io.EOF {
 		logger.LogError(c, common.LogText("ollama stream scan error: %s", err.Error()))
+		if !started {
+			return usage, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusBadGateway)
+		}
+	}
+	if !started {
+		ensureStarted()
+		helper.Done(c)
 	}
 	if usage.TotalTokens <= 0 && (emittedOutput || responseText.Len() > 0) {
 		usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())

@@ -38,4 +38,4 @@ Join the [Affiliate Program](/affiliate): share your link and earn a commission 
 
 ## I still need help
 
-Contact support through the links at the bottom of the page.
+Sign in and submit a request in the in-console [Ticket Center](/tickets), or check the console announcements for support information.

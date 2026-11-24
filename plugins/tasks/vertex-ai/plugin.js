@@ -27,6 +27,8 @@ const OMNI_USAGE_SCHEMA = {
   },
 };
 function saturatedTokens(value) {
+  if (value === undefined || value === null || typeof value === "boolean" || Array.isArray(value)) return NaN;
+  if (typeof value === "string" && value.trim() === "") return NaN;
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return NaN;
   return Math.min(n, OMNI_TOKEN_LIMIT);
@@ -509,7 +511,7 @@ export function extractUsageOnComplete(ctx, _result, body) {
     else textTokens = (Number.isFinite(textTokens) ? textTokens : 0) + tokens;
   }
   if (Number.isFinite(textTokens)) facts.output_tokens = Math.min(textTokens, OMNI_TOKEN_LIMIT);
-  if (Number.isFinite(videoTokens)) facts.video_tokens = Math.min(videoTokens, OMNI_TOKEN_LIMIT);
+  if (Number.isFinite(videoTokens) && videoTokens > 0) facts.video_tokens = Math.min(videoTokens, OMNI_TOKEN_LIMIT);
   return facts;
 }
 export function buildQueryRequest(ctx) {

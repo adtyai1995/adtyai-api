@@ -85,7 +85,7 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 		return nil, err
 	}
 	counts := map[string]int64{}
-	unread, err := countAdtyNotificationUnread(userID, requestSite)
+	unread, err := countAdtyNotificationUnread(userID, requestSite, tokenScopes...)
 	if err != nil {
 		return nil, err
 	}
@@ -471,8 +471,8 @@ func collectAdtyPaymentOrphanBadge(counts map[string]int64, actor adtyTicketActo
 	return nil
 }
 
-func countAdtyNotificationUnread(userID int, site *model.AdtySite) (int64, error) {
-	inbox, err := GetAdtyNotificationInbox(userID, site, 0)
+func countAdtyNotificationUnread(userID int, site *model.AdtySite, tokenScopes ...[]string) (int64, error) {
+	inbox, err := GetAdtyNotificationInboxWithScopes(userID, site, 0, 0, tokenScopes...)
 	if err != nil {
 		return 0, err
 	}

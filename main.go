@@ -240,7 +240,7 @@ func main() {
 		common.SysError(common.LogText("server forced to shutdown: %v", err))
 	}
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
-	if common.DataExportEnabled {
+	if common.GetDataExportEnabled() {
 		model.SaveQuotaDataCache()
 	}
 	// 批量额度还在内存队列里时，退出前写进数据库。

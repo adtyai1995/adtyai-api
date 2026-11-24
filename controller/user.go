@@ -643,7 +643,7 @@ func visibleUserRoleCeiling(myRole int) int {
 func GetUser(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid user ID")
 		return
 	}
 	user, err := model.GetUserById(id, false)
@@ -1307,7 +1307,7 @@ func writeUserDeleteBlockError(c *gin.Context, err error) bool {
 func DeleteUser(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid user ID")
 		return
 	}
 	originUser, err := model.GetUserByIdIncludingDeleted(id, false)

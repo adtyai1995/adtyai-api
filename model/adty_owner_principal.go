@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -121,7 +122,11 @@ func AdtyOwnerScopedWallet(tx *gorm.DB, op *BillingOperation, balance int) (int,
 
 func ownerScopedWallet(tx *gorm.DB, op *BillingOperation, balance int) (int, error) {
 	if op.PayerKind != BillingPayerOwner && !tx.Migrator().HasTable(&AdtySite{}) {
-		return balance, nil
+		overdueGift, err := overdueUnsweptExpiringGiftQuotaTx(tx, op.UserId, time.Now())
+		if err != nil {
+			return 0, err
+		}
+		return int(max(0, int64(balance)-overdueGift)), nil
 	}
 	siteID := 0
 	if op.PayerKind == BillingPayerOwner {
@@ -143,5 +148,9 @@ func ownerScopedWallet(tx *gorm.DB, op *BillingOperation, balance int) (int, err
 		Select("COALESCE(SUM(held-settled),0)").Scan(&refundHeld).Error; err != nil {
 		return 0, err
 	}
-	return int(max(0, int64(balance)-available-refundHeld)), nil
+	overdueGift, err := overdueUnsweptExpiringGiftQuotaTx(tx, op.UserId, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	return int(max(0, int64(balance)-available-refundHeld-overdueGift)), nil
 }

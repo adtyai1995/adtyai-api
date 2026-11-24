@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -25,6 +26,8 @@ const (
 	modelRateLimitTimeFormat              = "2006-01-02T15:04:05.000Z"
 )
 
+var modelInMemoryRateLimiter common.InMemoryRateLimiter
+
 // 检查Redis中的请求限制
 func checkRedisRateLimit(ctx context.Context, rdb *redis.Client, key string, maxCount int, durationMinutes int, duration int64) (bool, error) {
 	// 如果maxCount为0，表示不限制
@@ -44,7 +47,13 @@ func checkRedisRateLimit(ctx context.Context, rdb *redis.Client, key string, max
 	}
 
 	// 检查时间窗口
-	oldTimeStr, _ := rdb.LIndex(ctx, key, -1).Result()
+	oldTimeStr, err := rdb.LIndex(ctx, key, -1).Result()
+	if errors.Is(err, redis.Nil) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	oldTime, err := time.Parse(modelRateLimitTimeFormat, oldTimeStr)
 	if err != nil {
 		return false, err
@@ -138,21 +147,21 @@ func redisRateLimitHandler(subject string, durationMinutes int, duration int64, 
 
 // 内存限流处理器
 func memoryRateLimitHandler(subject string, durationMinutes int, duration int64, totalMaxCount, successMaxCount int) gin.HandlerFunc {
-	inMemoryRateLimiter.Init(time.Duration(durationMinutes) * time.Minute)
+	modelInMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
 
 	return func(c *gin.Context) {
 		totalKey := ModelRequestRateLimitCountMark + subject
 		successKey := ModelRequestRateLimitSuccessCountMark + subject
 
 		// 1. 检查总请求数限制（当totalMaxCount为0时跳过）
-		if totalMaxCount > 0 && !inMemoryRateLimiter.Request(totalKey, totalMaxCount, duration) {
+		if totalMaxCount > 0 && !modelInMemoryRateLimiter.Request(totalKey, totalMaxCount, duration) {
 			abortWithOpenAiMessage(c, http.StatusTooManyRequests, i18n.T(c, i18n.MsgRateLimitTotalReached, map[string]any{"Minutes": durationMinutes, "Max": totalMaxCount}))
 			return
 		}
 
 		var reservation *common.RateLimitReservation
 		if successMaxCount > 0 {
-			reservation = inMemoryRateLimiter.Reserve(successKey, successMaxCount, duration)
+			reservation = modelInMemoryRateLimiter.Reserve(successKey, successMaxCount, duration)
 			if reservation == nil {
 				abortWithOpenAiMessage(c, http.StatusTooManyRequests, i18n.T(c, i18n.MsgRateLimitReached, map[string]any{"Minutes": durationMinutes, "Max": successMaxCount}))
 				return

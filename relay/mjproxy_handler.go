@@ -614,11 +614,12 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *dto.MidjourneyResponse {
 		return &midjResponseWithStatus.Response
 	}
 	midjResponse := &midjResponseWithStatus.Response
-	c.Writer.WriteHeader(midjResponseWithStatus.StatusCode)
 	respBody, err := common.Marshal(midjResponse)
 	if err != nil {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "unmarshal_response_body_failed")
 	}
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(midjResponseWithStatus.StatusCode)
 	service.IOCopyBytesGracefully(c, nil, respBody)
 	return nil
 }
@@ -686,10 +687,7 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *dto.MidjourneyResponse 
 
 	_, err = io.Copy(c.Writer, bytes.NewBuffer(respBody))
 	if err != nil {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: "copy_response_body_failed",
-		}
+		logger.LogError(c, common.LogText("midjourney copy response body failed: %s", err.Error()))
 	}
 	return nil
 }
@@ -1039,21 +1037,15 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	//for k, v := range resp.Header {
 	//	c.Writer.Header().Set(k, v[0])
 	//}
+	c.Writer.Header().Set("Content-Type", "application/json")
 	c.Writer.WriteHeader(midjResponseWithStatus.StatusCode)
 
 	_, err = io.Copy(c.Writer, bodyReader)
 	if err != nil {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: "copy_response_body_failed",
-		}
+		logger.LogError(c, common.LogText("midjourney copy response body failed: %s", err.Error()))
 	}
-	err = bodyReader.Close()
-	if err != nil {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: "close_response_body_failed",
-		}
+	if closeErr := bodyReader.Close(); closeErr != nil {
+		logger.LogError(c, common.LogText("midjourney close response body failed: %s", closeErr.Error()))
 	}
 	return nil
 }

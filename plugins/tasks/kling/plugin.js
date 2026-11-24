@@ -451,7 +451,7 @@ function kling4CompletedUnits(ctx, body) {
       const units = Number.parseFloat(item.amount);
       return units >= 0 ? sum + units : Number.NaN;
     }, 0);
-    if (Number.isFinite(deducted)) return { units: deducted };
+    if (Number.isFinite(deducted) && deducted > 0) return { units: deducted };
   }
   return kling4DurationUnits(entry, ctx);
 }
@@ -705,7 +705,7 @@ export function extractUsageOnComplete(ctx, _taskResult, body) {
     return null;
   }
   const units = Number.parseFloat(data.final_unit_deduction);
-  if (!Number.isFinite(units)) return null;
+  if (!Number.isFinite(units) || units <= 0) return null;
   return { units: units };
 }
 

@@ -18,7 +18,7 @@ Set the brand, retail price, and site gift. Earnings go to the earnings wallet. 
 
 ## Site staff
 
-Work only on customers of this site. A balance change is a request until the owner or a main-site admin approves it.
+Work only on customers of this site. A balance change is a request until the owner or main-site Root approves it.
 
 ## Main-site admin
 

@@ -34,7 +34,10 @@ import { SecureVerificationDialog } from '@/features/auth/secure-verification/co
 import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
 import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
-import { getServerErrorMessage } from '@/lib/server-error-message'
+import {
+  createServerError,
+  getServerErrorMessage,
+} from '@/lib/server-error-message'
 
 function translationTaskStatusLabel(
   status: string,
@@ -161,7 +164,7 @@ async function readData<T>(
     message?: string
   }
   if (!body.success || body.data === undefined) {
-    throw new Error(body.message || fallback)
+    throw createServerError(body, fallback)
   }
   return body.data
 }
@@ -372,7 +375,7 @@ export function TranslationAdminPanel() {
             version?: number
           }
         }
-        if (!body.success) throw new Error(body.message || t('Failed to save'))
+        if (!body.success) throw createServerError(body, t('Failed to save'))
         const resolvedKey = body.data?.object_key || targetKey
         const resolvedVersion = body.data?.version || 1
         const resolvedStatus =

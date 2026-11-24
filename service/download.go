@@ -52,7 +52,11 @@ func DoWorkerRequest(req *WorkerRequest) (*http.Response, error) {
 	if common.RelayTimeout > 0 {
 		workerTimeout = time.Duration(common.RelayTimeout) * time.Second
 	}
-	return NewVerifiedDirectNoRedirectHTTPClient(workerTimeout).Post(workerUrl, "application/json", bytes.NewBuffer(workerPayload))
+	resp, err := NewVerifiedDirectNoRedirectHTTPClient(workerTimeout).Post(workerUrl, "application/json", bytes.NewBuffer(workerPayload))
+	if err != nil {
+		return nil, sanitizeOutboundError(err)
+	}
+	return resp, nil
 }
 
 func DoDownloadRequest(originUrl string, reason ...string) (resp *http.Response, err error) {
@@ -79,7 +83,11 @@ func DoDownloadRequestWithContext(ctx context.Context, originUrl string, reason 
 	common.SysLog(common.LogText("downloading from origin: %s, reason: %s", common.MaskSensitiveInfo(originUrl), strings.Join(reason, ", ")))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, originUrl, nil)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeOutboundError(err)
 	}
-	return GetSSRFProtectedHTTPClient().Do(httpReq)
+	resp, err = GetSSRFProtectedHTTPClient().Do(httpReq)
+	if err != nil {
+		return nil, sanitizeOutboundError(err)
+	}
+	return resp, nil
 }

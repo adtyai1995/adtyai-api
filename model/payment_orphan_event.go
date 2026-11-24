@@ -123,7 +123,14 @@ func RecordPaymentOrphanEvent(event *PaymentOrphanEvent) error {
 
 // ListPaymentOrphanEvents 分页列出事件，status 为空或 all 时不过滤。
 func ListPaymentOrphanEvents(status string, pageInfo *common.PageInfo) (events []*PaymentOrphanEvent, total int64, err error) {
+	return ListPaymentOrphanEventsForRole(status, pageInfo, false)
+}
+
+func ListPaymentOrphanEventsForRole(status string, pageInfo *common.PageInfo, mainSiteOnly bool) (events []*PaymentOrphanEvent, total int64, err error) {
 	query := DB.Model(&PaymentOrphanEvent{})
+	if mainSiteOnly {
+		query = query.Where("EXISTS (SELECT 1 FROM adty_topup_orders a WHERE a.trade_no = adty_payment_orphan_events.reference_id AND a.site_id = 0)")
+	}
 	status = strings.TrimSpace(status)
 	if status != "" && status != "all" {
 		query = query.Where("status = ?", status)

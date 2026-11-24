@@ -1365,11 +1365,14 @@ export function extractUsageOnComplete(task, taskResult, body) {
     if (inputSeconds != null && outputSeconds != null) {
       if (typeof inputSeconds !== "number" || !Number.isFinite(inputSeconds) || inputSeconds < 0) facts.seconds = inputSeconds;
       else if (typeof outputSeconds !== "number" || !Number.isFinite(outputSeconds) || outputSeconds < 0) facts.seconds = outputSeconds;
-      else facts.seconds = inputSeconds + outputSeconds;
+      else if (inputSeconds + outputSeconds > 0) facts.seconds = inputSeconds + outputSeconds;
     }
   } else {
     const seconds = usage.duration ?? usage.output_video_duration ?? usage.video_duration ?? output.duration ?? output.duration_seconds;
-    if (seconds != null) facts.seconds = seconds;
+    if (seconds != null && typeof seconds !== "boolean" && !Array.isArray(seconds) && !(typeof seconds === "string" && seconds.trim() === "")) {
+      const parsedSeconds = Number(seconds);
+      if (Number.isFinite(parsedSeconds) && parsedSeconds > 0) facts.seconds = parsedSeconds;
+    }
   }
   const resolution = usage.SR ?? output.resolution;
   if (resolution != null) facts.resolution = normalizeResolution(resolution);

@@ -278,7 +278,8 @@ func GetOptions(c *gin.Context) {
 	} {
 		encoded, err := common.Marshal(values)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+			common.SysError(common.LogText("failed to marshal billing option %s: %s", key, err.Error()))
+			common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Failed to serialize system options"))
 			return
 		}
 		options = append(options, &model.Option{Key: key, Value: string(encoded)})

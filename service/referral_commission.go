@@ -93,6 +93,12 @@ func prepareAdtyReferralSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.A
 		ext.ReferralAffiliateId, ext.ReferralRate = 0, decimal.Zero
 		return nil
 	}
+	// Subsite orders never accrue main-site referral commissions; skipping
+	// adtyReferralSnapshotWithDB avoids locking User before AdtySite (R12-014).
+	if ext.SiteId > 0 {
+		ext.ReferralAffiliateId, ext.ReferralRate = 0, decimal.Zero
+		return PrepareAdtySiteInviteCommissionSnapshotTx(tx, topUp, ext)
+	}
 	affiliateID, rate, err := adtyReferralSnapshotWithDB(tx, topUp.UserId, true)
 	if err != nil {
 		return err
@@ -250,18 +256,19 @@ func RunReferralSettlementOnceForSite(now int64, limit int, siteID *int) (int, e
 	settled := 0
 	for _, item := range due {
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			// Canonical referral lock order: Affiliate -> Commission -> Account (R12-026).
+			var affiliate model.ReferralAffiliate
+			if err := model.AdtyLockForUpdate(tx).Where("id = ?", item.AffiliateId).First(&affiliate).Error; err != nil {
+				return err
+			}
+			if !affiliate.SettlementEnabled {
+				return nil
+			}
 			var commission model.ReferralCommission
 			if err := model.AdtyLockForUpdate(tx).Where("id = ?", item.Id).First(&commission).Error; err != nil {
 				return err
 			}
-			if commission.Status != model.ReferralCommissionStatusPending {
-				return nil
-			}
-			var affiliate model.ReferralAffiliate
-			if err := model.AdtyLockForUpdate(tx).Where("id = ?", commission.AffiliateId).First(&affiliate).Error; err != nil {
-				return err
-			}
-			if !affiliate.SettlementEnabled {
+			if commission.Status != model.ReferralCommissionStatusPending || commission.AffiliateId != affiliate.Id {
 				return nil
 			}
 			account, err := lockReferralAccountTx(tx, commission.AffiliateId)

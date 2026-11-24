@@ -709,7 +709,7 @@ func updateStandardChannelBalance(channel *model.Channel) (float64, error) {
 func UpdateChannelBalance(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 	channel, err := model.CacheGetChannel(id)

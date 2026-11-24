@@ -460,6 +460,15 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 		if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {
 			return err
 		}
+		if result.PayerKind != BillingPayerOwner {
+			if expired, err := ExpireOverdueAdtyGiftBatchesForUserTx(tx, result.UserId, time.Now()); err != nil {
+				return err
+			} else if expired > 0 {
+				if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {
+					return err
+				}
+			}
+		}
 		balance, err := userWalletBalance(user.Quota, user.QuotaPending)
 		if err != nil {
 			return err
@@ -875,6 +884,15 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 			if err := lockForUpdate(tx).First(&user, row.UserId).Error; err != nil {
 				return err
 			}
+			if delta > 0 && row.PayerKind != BillingPayerOwner {
+				if expired, err := ExpireOverdueAdtyGiftBatchesForUserTx(tx, row.UserId, time.Now()); err != nil {
+					return err
+				} else if expired > 0 {
+					if err := lockForUpdate(tx).First(&user, row.UserId).Error; err != nil {
+						return err
+					}
+				}
+			}
 			balance, err = userWalletBalance(user.Quota, user.QuotaPending)
 			if err != nil {
 				return err
@@ -1027,6 +1045,14 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 					return err
 				}
 				backedByBatches = backed
+			}
+			// Re-sweep overdue expiring gift lots in the same transaction so
+			// post-midnight task/stream/request refunds cannot resurrect expired
+			// trial credits back into spendable balance (R12-027).
+			if row.PayerKind != BillingPayerOwner {
+				if _, err := ExpireOverdueAdtyGiftBatchesForUserTx(tx, row.UserId, time.Now()); err != nil {
+					return err
+				}
 			}
 		}
 		// 差额落库，不能只写日志：日志不可聚合，事后无法回答「这个用户漂了多少、

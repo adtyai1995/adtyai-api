@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -217,7 +218,11 @@ func migrateClosedOwnerBatchIfUnencumberedTx(tx *gorm.DB, siteID, ownerUserID in
 		}
 	}
 	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: siteID, AccountID: ownerUserID, OrderRef: fresh.Source}); err != nil {
-		if ignoreRestricted {
+		// Honor reviewing anomaly restrictions without mutating restricted funds
+		// AND without wedging un-reclaimed Terminate or paid-out Complete;
+		// both batch.SiteId and operating(S) stay unchanged and conserved until
+		// the review closes and MigrateUnencumberedOwnerLotsOnClosedSites sweeps it (R12-029).
+		if errors.Is(err, ErrAdtyFundWriteRestricted) {
 			return nil
 		}
 		return err

@@ -432,9 +432,9 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 | 充值财务 `adty_finance` | `read` 查看订单和充值对账；`manual_credit` 手动补单；`refund` 退款 |
 | 推广返佣 `adty_referral` | `read` 查看；`review` 审核合作伙伴申请和提现；`payout` 标记已打款；`adjust` 调整佣金、冻结结算、比例、停用推广员；`settings_read` 查看设置；`settings` 修改设置（含提现汇率） |
 | 支付通道 `adty_payment` | `read` 查看状态；`operate` 启停和测试 |
-| 分站 `adty_site` | `read` 查看站点、客户、统计；`create` 建站；`review` 审核旧申请、复核风控客户、处理举报；`adjust` 改供货倍率、可见范围、关站；`delete` 删除站点附属记录（域名、发件域名、公告）；`settings_read` 查看分站设置；`settings` 修改分站设置 |
+| 分站 `adty_site` | `read` 查看站点、客户、统计；`create` 建站；`review` 审核旧申请、复核风控客户、处理举报；`adjust` 调整可见范围与允许分组；`delete` 删除站点附属记录（域名、发件域名、公告）；`settings_read` 查看分站设置；`settings` 修改分站设置 |
 
-开站、旧申请激活和关站迁移仍只对 Root 开放，拥有 `adty_site:create` 的普通管理员也不能调用。
+开站、旧申请激活、修改或清空供货倍率（`cost_factor`）与关站迁移仍只对 Root 开放，拥有 `adty_site:create` 或 `adty_site:adjust` 的普通管理员也不能调用。
 
 上游原有的「渠道管理」「审计日志」「任务插件」三个区域照旧。
 

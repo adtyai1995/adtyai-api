@@ -245,11 +245,6 @@ export function RatioSettingsCard({
   const savePricing = useSaveModelPricing()
   const [pricingBaseline, setPricingBaseline] =
     useState<ModelPricingConfig | null>(null)
-  useEffect(() => {
-    if (!pricingBaseline && pricingQuery.data) {
-      setPricingBaseline(pricingQuery.data)
-    }
-  }, [pricingBaseline, pricingQuery.data])
   const modelDefaults = useMemo(
     () => mergePricingIntoModelDefaults(initialModelDefaults, pricingBaseline),
     [initialModelDefaults, pricingBaseline]
@@ -363,6 +358,24 @@ export function RatioSettingsCard({
     },
     onError: (error) => handleServerError(error),
   })
+
+  useEffect(() => {
+    if (!pricingQuery.data) return
+    if (
+      !pricingBaseline ||
+      (!modelForm.formState.isDirty &&
+        !savePricing.isPending &&
+        !resetMutation.isPending)
+    ) {
+      setPricingBaseline(pricingQuery.data)
+    }
+  }, [
+    modelForm.formState.isDirty,
+    pricingBaseline,
+    pricingQuery.data,
+    resetMutation.isPending,
+    savePricing.isPending,
+  ])
 
   useEffect(() => {
     const nextModelNormalized = {

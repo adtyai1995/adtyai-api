@@ -228,7 +228,12 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 	lock.Lock()
 	defer lock.Unlock()
 
-	statusList := channel.ChannelInfo.MultiKeyStatusList
+	channelInfo, fromCache, err := cacheGetChannelInfo(channel.Id)
+	if err != nil {
+		return "", 0, types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+
+	statusList := channelInfo.MultiKeyStatusList
 	// helper to get key status, default to enabled when missing
 	getStatus := func(idx int) int {
 		if statusList == nil {
@@ -254,54 +259,52 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 		return "", 0, types.NewError(errors.New("no enabled keys"), types.ErrorCodeChannelNoAvailableKey)
 	}
 
-	switch channel.ChannelInfo.MultiKeyMode {
+	switch channelInfo.MultiKeyMode {
 	case constant.MultiKeyModeRandom:
 		// Randomly pick one enabled key
 		selectedIdx := enabledIdx[rand.Intn(len(enabledIdx))]
 		return keys[selectedIdx], selectedIdx, nil
 	case constant.MultiKeyModePolling:
-		// Use channel-specific lock to ensure thread-safe polling
-
-		channelInfo, fromCache, err := cacheGetChannelInfo(channel.Id)
-		if err != nil {
-			return "", 0, types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
-		}
-		defer func() {
-			if common.DebugEnabled {
-				logger.LogDebug(nil, "channel %d polling index: %d", channel.Id, channel.ChannelInfo.MultiKeyPollingIndex)
-			}
-			channelSyncLock.Lock()
-			current, present := channelsIDM[channel.Id]
-			persistCursor := !fromCache || channelCacheInvalid || !present || &current.ChannelInfo != channelInfo
-			if present {
-				current.ChannelInfo.MultiKeyPollingIndex = channel.ChannelInfo.MultiKeyPollingIndex
-			}
-			channelSyncLock.Unlock()
-			if persistCursor {
-				// Persist the fresh status snapshot used for this poll, rather
-				// than overwriting it with the request's earlier channel copy.
-				info := *channelInfo
-				info.MultiKeyPollingIndex = channel.ChannelInfo.MultiKeyPollingIndex
-				_ = (&Channel{Id: channel.Id, ChannelInfo: info}).SaveChannelInfo()
-			}
-		}()
 		// Start from the saved polling index and look for the next enabled key
 		start := channelInfo.MultiKeyPollingIndex
 		if start < 0 || start >= len(keys) {
 			start = 0
 		}
+		selectedIdx := enabledIdx[0]
 		for i := range keys {
 			idx := (start + i) % len(keys)
 			if getStatus(idx) == common.ChannelStatusEnabled {
-				// update polling index for next call (point to the next position)
-				channelSyncLock.Lock()
-				channel.ChannelInfo.MultiKeyPollingIndex = (idx + 1) % len(keys)
-				channelSyncLock.Unlock()
-				return keys[idx], idx, nil
+				selectedIdx = idx
+				break
 			}
 		}
-		// Fallback – should not happen, but return first enabled key
-		return keys[enabledIdx[0]], enabledIdx[0], nil
+		nextIndex := (selectedIdx + 1) % len(keys)
+		if common.DebugEnabled {
+			logger.LogDebug(nil, "channel %d polling index: %d", channel.Id, nextIndex)
+		}
+		channelSyncLock.Lock()
+		channel.ChannelInfo.MultiKeyPollingIndex = nextIndex
+		current, present := channelsIDM[channel.Id]
+		persistCursor := !fromCache || channelCacheInvalid
+		if present && !channelCacheInvalid {
+			current.ChannelInfo.MultiKeyPollingIndex = nextIndex
+		}
+		channelSyncLock.Unlock()
+		if persistCursor {
+			// Never overwrite DB channel_info with a superseded cached snapshot;
+			// reload authoritative DB state when cache was invalidated (R12-005).
+			var toSave ChannelInfo
+			if !fromCache {
+				toSave = *channelInfo
+			} else if fresh, freshErr := GetChannelById(channel.Id, true); freshErr == nil && fresh != nil {
+				toSave = fresh.ChannelInfo
+			} else {
+				return keys[selectedIdx], selectedIdx, nil
+			}
+			toSave.MultiKeyPollingIndex = nextIndex
+			_ = (&Channel{Id: channel.Id, ChannelInfo: toSave}).SaveChannelInfo()
+		}
+		return keys[selectedIdx], selectedIdx, nil
 	default:
 		// Unknown mode, default to first enabled key (or original key string)
 		return keys[enabledIdx[0]], enabledIdx[0], nil

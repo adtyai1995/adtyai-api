@@ -643,15 +643,40 @@ func ReviewAdtySiteCustomer(userId, adminId int, convertSkipped bool) error {
 }
 
 func ReviewAdtySiteCustomerWithAudit(userId, adminId int, convertSkipped bool) (string, error) {
+	return ReviewAdtySiteCustomerWithAuditForActor(userId, adminId, 0, false, convertSkipped)
+}
+
+func ReviewAdtySiteCustomerWithAuditForActor(userId, adminId, actorRole int, denyAdminTarget, convertSkipped bool) (string, error) {
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var hint model.AdtySiteCustomer
 		if err := tx.Select("user_id", "site_id").Where("user_id = ?", userId).First(&hint).Error; err != nil {
 			return err
 		}
+		if (actorRole > 0 || denyAdminTarget) && hint.SiteId > 0 {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id").First(&site, hint.SiteId).Error; err != nil {
+				return err
+			}
+			if site.OwnerUserId > 0 {
+				var owner model.User
+				if err := model.AdtyLockForUpdate(tx).Select("id", "role").First(&owner, site.OwnerUserId).Error; err != nil {
+					return err
+				}
+				if adminId > 0 && adminId == owner.Id {
+					return model.ErrUserQuotaPermission
+				}
+				if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= owner.Role {
+					return model.ErrUserQuotaPermission
+				}
+				if denyAdminTarget && owner.Role >= common.RoleAdminUser {
+					return model.ErrAdminTargetSessionRequired
+				}
+			}
+		}
 		// R7-004: Pre-lock site earnings wallet BEFORE AdtySiteCustomer when converting
 		// skipped rows so lock order matches ApplyBillingSettlement
-		// (AdtySiteWallet(earnings) -> AdtySiteCustomer -> AdtySiteEarningDaily).
+		// (AdtySite -> User -> AdtySiteWallet(earnings) -> AdtySiteCustomer -> AdtySiteEarningDaily).
 		if convertSkipped && hint.SiteId > 0 {
 			if err := preLockAdtySiteWalletsTx(tx, hint.SiteId, model.AdtySiteWalletEarnings); err != nil {
 				return err
@@ -661,7 +686,7 @@ func ReviewAdtySiteCustomerWithAudit(userId, adminId int, convertSkipped bool) (
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userId).First(&customer).Error; err != nil {
 			return err
 		}
-		if convertSkipped && customer.SiteId != hint.SiteId {
+		if customer.SiteId != hint.SiteId {
 			return model.ErrBillingOperationConflict
 		}
 		if err := tx.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", userId).Update("reviewed", true).Error; err != nil {

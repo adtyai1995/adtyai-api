@@ -310,30 +310,39 @@ func siteInviteCommissionFree(row *model.AdtySiteInviteCommission) decimal.Decim
 // ReviewAdtySiteInviteWithdrawal approves or rejects a pending cash withdrawal.
 // Only the owner of that withdrawal's site may review it.
 func ReviewAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string) error {
-	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, withdrawalID, approve, reason, false, "")
+	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, approve, reason, false, "")
 	return err
 }
 func ReviewClosedAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string) error {
-	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
+	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
 	return err
 }
 func ReviewClosedAdtySiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, approve bool, reason string) (string, bool, error) {
-	return reviewSiteInviteWithdrawalWithAudit(ownerID, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
+	return ReviewClosedAdtySiteInviteWithdrawalWithAuditForActor(ownerID, 0, false, withdrawalID, approve, reason)
+}
+func ReviewClosedAdtySiteInviteWithdrawalWithAuditForActor(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, approve bool, reason string) (string, bool, error) {
+	return reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
 }
 func ConfirmClosedSiteInvitePayoutFailure(actor int, id int64, approve bool, reason string) error {
 	_, _, err := ConfirmClosedSiteInvitePayoutFailureWithAudit(actor, id, approve, reason)
 	return err
 }
 func ConfirmClosedSiteInvitePayoutFailureWithAudit(actor int, id int64, approve bool, reason string) (string, bool, error) {
+	return ConfirmClosedSiteInvitePayoutFailureWithAuditForActor(actor, 0, false, id, approve, reason)
+}
+func ConfirmClosedSiteInvitePayoutFailureWithAuditForActor(actor, actorRole int, denyAdminTarget bool, id int64, approve bool, reason string) (string, bool, error) {
 	if approve {
 		return "", false, common.NewMessage("Invalid parameters")
 	}
-	return reviewSiteInviteWithdrawalWithAudit(actor, id, false, reason, true, model.AdtySiteInviteWithdrawApproved)
+	return reviewSiteInviteWithdrawalWithAudit(actor, actorRole, denyAdminTarget, id, false, reason, true, model.AdtySiteInviteWithdrawApproved)
 }
 // lockSiteInviteWithdrawalCanonicalTx acquires locks in canonical global order
-// (AdtySite -> AdtySiteInviteCommission(id ASC) -> AdtySiteInviteWithdrawal)
-// after a non-locking pre-read to eliminate AB-BA deadlocks with refund clawbacks (R2-022).
+// (AdtySite -> User -> AdtySiteInviteCommission(id ASC) -> AdtySiteInviteWithdrawal)
+// after a non-locking pre-read to eliminate AB-BA deadlocks with refund clawbacks (R2-022, R12-003).
 func lockSiteInviteWithdrawalCanonicalTx(tx *gorm.DB, withdrawalID int64, ownerID int, platform bool, checkUserID int) (*model.AdtySiteInviteWithdrawal, error) {
+	return lockSiteInviteWithdrawalCanonicalForActorTx(tx, withdrawalID, ownerID, 0, false, platform, checkUserID)
+}
+func lockSiteInviteWithdrawalCanonicalForActorTx(tx *gorm.DB, withdrawalID int64, ownerID, actorRole int, denyAdminTarget, platform bool, checkUserID int) (*model.AdtySiteInviteWithdrawal, error) {
 	var stub model.AdtySiteInviteWithdrawal
 	if err := tx.Select("id", "site_id", "user_id").First(&stub, withdrawalID).Error; err != nil {
 		return nil, err
@@ -352,6 +361,21 @@ func lockSiteInviteWithdrawalCanonicalTx(tx *gorm.DB, withdrawalID int64, ownerI
 	if ownerID > 0 {
 		if err := requireSiteInviteProcessor(tx, ownerID, stub.SiteId, platform); err != nil {
 			return nil, err
+		}
+	}
+	if platform && (actorRole > 0 || denyAdminTarget) {
+		var target model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "role").First(&target, stub.UserId).Error; err != nil {
+			return nil, err
+		}
+		if ownerID > 0 && ownerID == target.Id {
+			return nil, model.ErrUserQuotaPermission
+		}
+		if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= target.Role {
+			return nil, model.ErrUserQuotaPermission
+		}
+		if denyAdminTarget && target.Role >= common.RoleAdminUser {
+			return nil, model.ErrAdminTargetSessionRequired
 		}
 	}
 	if len(commIDs) > 0 {
@@ -375,11 +399,11 @@ func lockSiteInviteWithdrawalCanonicalTx(tx *gorm.DB, withdrawalID int64, ownerI
 	return &row, nil
 }
 
-func reviewSiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, approve bool, reason string, platform bool, requiredStatus string) (string, bool, error) {
+func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, approve bool, reason string, platform bool, requiredStatus string) (string, bool, error) {
 	var auditEvent *model.AuditLog
 	replayed := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		lockedRow, err := lockSiteInviteWithdrawalCanonicalTx(tx, withdrawalID, ownerID, platform, 0)
+		lockedRow, err := lockSiteInviteWithdrawalCanonicalForActorTx(tx, withdrawalID, ownerID, actorRole, denyAdminTarget, platform, 0)
 		if err != nil {
 			return err
 		}
@@ -445,22 +469,25 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, approv
 // MarkAdtySiteInviteWithdrawalPaid records the owner's offline payment.
 // It moves the freeze to withdrawn commission and does not credit quota.
 func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, proof string) error {
-	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, withdrawalID, txID, proof, false)
+	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, txID, proof, false)
 	return err
 }
 func MarkClosedAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, proof string) error {
-	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, withdrawalID, txID, proof, true)
+	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, txID, proof, true)
 	return err
 }
 func MarkClosedAdtySiteInviteWithdrawalPaidWithAudit(ownerID int, withdrawalID int64, txID, proof string) (string, bool, error) {
-	return paySiteInviteWithdrawalWithAudit(ownerID, withdrawalID, txID, proof, true)
+	return MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActor(ownerID, 0, false, withdrawalID, txID, proof)
 }
-func paySiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, txID, proof string, platform bool) (string, bool, error) {
+func MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActor(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, txID, proof string) (string, bool, error) {
+	return paySiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, txID, proof, true)
+}
+func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, txID, proof string, platform bool) (string, bool, error) {
 	txID = strings.TrimSpace(txID)
 	var auditEvent *model.AuditLog
 	replayed := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		lockedRow, err := lockSiteInviteWithdrawalCanonicalTx(tx, withdrawalID, ownerID, platform, 0)
+		lockedRow, err := lockSiteInviteWithdrawalCanonicalForActorTx(tx, withdrawalID, ownerID, actorRole, denyAdminTarget, platform, 0)
 		if err != nil {
 			return err
 		}

@@ -665,7 +665,7 @@ func (user *User) Insert(_ int) error {
 			if err := user.prepareForInsert(tx); err != nil {
 				return err
 			}
-			user.Quota = common.QuotaForNewUser
+			user.Quota = common.GetQuotaForNewUser()
 
 			// 初始化用户设置，包括默认的边栏配置
 			if user.Setting == "" {
@@ -706,8 +706,8 @@ func (user *User) finishInsert() {
 		}
 	}
 
-	if common.QuotaForNewUser > 0 {
-		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForNewUser)}))
+	if quotaForNewUser := common.GetQuotaForNewUser(); quotaForNewUser > 0 {
+		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(quotaForNewUser)}))
 	}
 }
 
@@ -723,7 +723,7 @@ func (user *User) InsertWithTx(tx *gorm.DB, _ int) error {
 		if err := user.prepareForInsert(tx); err != nil {
 			return err
 		}
-		user.Quota = common.QuotaForNewUser
+		user.Quota = common.GetQuotaForNewUser()
 
 		// 初始化用户设置
 		if user.Setting == "" {
@@ -751,8 +751,8 @@ func (user *User) FinalizeOAuthUserCreation(_ int) {
 		}
 	}
 
-	if common.QuotaForNewUser > 0 {
-		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForNewUser)}))
+	if quotaForNewUser := common.GetQuotaForNewUser(); quotaForNewUser > 0 {
+		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(quotaForNewUser)}))
 	}
 }
 

@@ -35,7 +35,10 @@ import { useSecureVerification } from '@/features/auth/secure-verification/hooks
 import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
-import { getServerErrorMessage } from '@/lib/server-error-message'
+import {
+  createServerError,
+  getServerErrorMessage,
+} from '@/lib/server-error-message'
 
 import { TelegramBindCard } from './bind-card'
 
@@ -87,7 +90,7 @@ export function TelegramAdminPanel() {
         message?: string
       }
       if (!body.success) {
-        throw new Error(body.message || t('Failed to load data'))
+        throw createServerError(body, t('Failed to load data'))
       }
       return body.data?.bots ?? []
     },
@@ -137,7 +140,7 @@ export function TelegramAdminPanel() {
         message?: string
         data?: { webhook_secret?: string }
       }
-      if (!body.success) throw new Error(body.message || t('Failed to save'))
+      if (!body.success) throw createServerError(body, t('Failed to save'))
       if (body.data?.webhook_secret) {
         setSecrets((prev) => ({
           ...prev,
@@ -181,7 +184,7 @@ export function TelegramAdminPanel() {
         { headers: { 'X-Security-Proof': proof.proof_token } }
       )
       const body = response.data as { success?: boolean; message?: string }
-      if (!body.success) throw new Error(body.message || t('Bot test failed'))
+      if (!body.success) throw createServerError(body, t('Bot test failed'))
       toast.success(t('Bot test passed'))
       await queryClient.invalidateQueries({ queryKey: ['adty-telegram-admin'] })
     } catch (cause) {

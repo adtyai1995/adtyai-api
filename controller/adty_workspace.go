@@ -321,6 +321,9 @@ func PostAdtyAdminTelegramTest(c *gin.Context) {
 // need its management grant, in addition to the route's profile read/write scope.
 func adtyRequestedTicketScope(c *gin.Context) string {
 	scope := c.Query("scope")
+	if (scope == "platform" || scope == "platform_main") && service.AdtyRequestSiteID(c) != 0 {
+		return "denied"
+	}
 	if _, token := c.Get("access_token_legacy"); token {
 		return service.AdtyTicketTokenScope(scope, c.Request.Method, c.GetStringSlice("access_token_scopes"))
 	}

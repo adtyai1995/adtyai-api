@@ -69,7 +69,7 @@ func DecodeBase64FileData(base64String string) (string, string, error) {
 func GetImageFromUrl(url string) (mimeType string, data string, err error) {
 	resp, err := DoDownloadRequest(url)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to download image: %w", err)
+		return "", "", fmt.Errorf("failed to download image: %w", sanitizeOutboundError(err))
 	}
 	defer resp.Body.Close()
 
@@ -119,8 +119,9 @@ func GetImageFromUrl(url string) (mimeType string, data string, err error) {
 func DecodeUrlImageData(imageUrl string) (image.Config, string, error) {
 	response, err := DoDownloadRequest(imageUrl)
 	if err != nil {
-		common.SysLog(common.LogText("fail to get image from url: %s", err.Error()))
-		return image.Config{}, "", err
+		safeErr := sanitizeOutboundError(err)
+		common.SysLog(common.LogText("fail to get image from url: %s", safeErr.Error()))
+		return image.Config{}, "", safeErr
 	}
 	defer response.Body.Close()
 

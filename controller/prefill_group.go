@@ -79,7 +79,7 @@ func DeletePrefillGroup(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if err := model.DeletePrefillGroupByID(id); err != nil {

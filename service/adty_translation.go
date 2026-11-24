@@ -1196,6 +1196,7 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 		ObjectKey: objectKey, SiteId: siteId, Version: version, SourceHash: hash, Source: source,
 		Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady, ModelName: modelName,
 	}
+	preserved := false
 	err := withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
 		var current model.AdtyTranslationHead
 		found := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).Limit(1).Find(&current)
@@ -1209,12 +1210,14 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 			}
 			if !ok {
 				head = current
+				preserved = found.RowsAffected > 0
 				return nil
 			}
 		}
 		if (strings.HasPrefix(objectKey, "ticket-reply:") || strings.HasPrefix(objectKey, "notification:") || strings.HasPrefix(objectKey, "notification-title:")) &&
 			(found.RowsAffected == 0 || current.Status != model.AdtyTranslationPending || current.Version != version || current.SourceHash != hash) {
 			head = current
+			preserved = found.RowsAffected > 0
 			return nil
 		}
 		if err := upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
@@ -1229,6 +1232,7 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 		}
 		if found.RowsAffected > 0 && (current.HumanEdited || current.Version != version || (current.SourceHash != "" && current.SourceHash != hash)) {
 			head = current
+			preserved = true
 			return nil
 		}
 		head.Id = current.Id
@@ -1248,6 +1252,18 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 	})
 	if err != nil {
 		return nil, err
+	}
+	if preserved && head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" &&
+		(head.SourceHash == "" || head.SourceHash == hash) &&
+		(head.HumanEdited || head.Version == version) {
+		return &AdtyTranslationResult{
+			ObjectKey: objectKey,
+			Source:    head.Source,
+			English:   head.English,
+			Status:    model.AdtyTranslationReady,
+			Notice:    head.Notice,
+			Version:   head.Version,
+		}, nil
 	}
 	return &AdtyTranslationResult{
 		ObjectKey: objectKey,

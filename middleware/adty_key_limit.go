@@ -305,7 +305,7 @@ func adtyKeyTPMAllow(tokenID, tpmLimit int, now time.Time) (bool, error) {
 }
 
 func adtyKeyTPMLogTokens(tokenID int, now time.Time) (int64, error) {
-	if !common.LogConsumeEnabled || model.LOG_DB == nil || !model.LOG_DB.Migrator().HasTable("logs") {
+	if !common.GetLogConsumeEnabled() || model.LOG_DB == nil || !model.LOG_DB.Migrator().HasTable("logs") {
 		return 0, nil
 	}
 	minuteStart := (now.Unix() / 60) * 60

@@ -62,6 +62,7 @@ func (q *rateLimitQueue) clear() {
 // rateLimitEntry is both a rate-limit bucket and a node in the key-level LRU.
 type rateLimitEntry struct {
 	lastActive time.Time
+	ttl        time.Duration
 	element    *list.Element
 	requests   rateLimitQueue
 	key        string
@@ -103,7 +104,9 @@ func (l *InMemoryRateLimiter) clearExpiredItems(ticks <-chan time.Time) {
 	}
 }
 
-// deleteExpiredEntries walks only the oldest LRU entries and stops at the first active key.
+// deleteExpiredEntries walks from the oldest LRU entry, honoring per-entry
+// window TTLs so entries with windows longer than l.expirationDuration are
+// never evicted early (R12-019).
 func (l *InMemoryRateLimiter) deleteExpiredEntries(now time.Time) {
 	if l.expirationDuration <= 0 {
 		return
@@ -112,38 +115,49 @@ func (l *InMemoryRateLimiter) deleteExpiredEntries(now time.Time) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	for {
-		oldest := l.lru.Back()
-		if oldest == nil {
+	for cur := l.lru.Back(); cur != nil; {
+		prev := cur.Prev()
+		entry := cur.Value.(*rateLimitEntry)
+		idle := now.Sub(entry.lastActive)
+		if idle < l.expirationDuration {
 			return
 		}
-
-		entry := oldest.Value.(*rateLimitEntry)
-		if now.Sub(entry.lastActive) < l.expirationDuration {
-			return
+		ttl := entry.ttl
+		if ttl < l.expirationDuration {
+			ttl = l.expirationDuration
 		}
-
-		delete(l.store, entry.key)
-		l.lru.Remove(oldest)
-		entry.element = nil
-		entry.requests.clear()
+		if idle >= ttl {
+			delete(l.store, entry.key)
+			l.lru.Remove(cur)
+			entry.element = nil
+			entry.requests.clear()
+		}
+		cur = prev
 	}
 }
 
 // touchEntry returns the key's bucket, creating it on demand, and marks it as
 // the most recently active key. The caller must hold the mutex.
-func (l *InMemoryRateLimiter) touchEntry(key string, now time.Time) *rateLimitEntry {
+func (l *InMemoryRateLimiter) touchEntry(key string, now time.Time, windowDuration time.Duration) *rateLimitEntry {
+	ttl := l.expirationDuration
+	if windowDuration > ttl {
+		ttl = windowDuration
+	}
 	entry, ok := l.store[key]
 	if !ok {
 		entry = &rateLimitEntry{
 			key:        key,
 			lastActive: now,
+			ttl:        ttl,
 		}
 		entry.element = l.lru.PushFront(entry)
 		l.store[key] = entry
 		return entry
 	}
 	entry.lastActive = now
+	if ttl > entry.ttl {
+		entry.ttl = ttl
+	}
 	l.lru.MoveToFront(entry.element)
 	return entry
 }
@@ -154,7 +168,7 @@ func (l *InMemoryRateLimiter) Request(key string, maxRequestNum int, duration in
 	defer l.mutex.Unlock()
 
 	now := time.Now()
-	entry := l.touchEntry(key, now)
+	entry := l.touchEntry(key, now, time.Duration(duration)*time.Second)
 	entry.requests.removeExpired(now.Unix(), duration)
 
 	allowed := entry.requests.length < maxRequestNum
@@ -168,9 +182,10 @@ func (l *InMemoryRateLimiter) Request(key string, maxRequestNum int, duration in
 // RateLimitReservation counts an active request towards admission until its
 // outcome is known. Failed requests release the slot without consuming quota.
 type RateLimitReservation struct {
-	limiter *InMemoryRateLimiter
-	key     string
-	once    sync.Once
+	limiter  *InMemoryRateLimiter
+	key      string
+	duration int64
+	once     sync.Once
 }
 
 // Reserve admits a request when the key's accepted requests plus its in-flight
@@ -180,13 +195,13 @@ func (l *InMemoryRateLimiter) Reserve(key string, maxRequests int, duration int6
 	defer l.mutex.Unlock()
 
 	now := time.Now()
-	entry := l.touchEntry(key, now)
+	entry := l.touchEntry(key, now, time.Duration(duration)*time.Second)
 	entry.requests.removeExpired(now.Unix(), duration)
 	if entry.requests.length+l.reservations[key] >= maxRequests {
 		return nil
 	}
 	l.reservations[key]++
-	return &RateLimitReservation{limiter: l, key: key}
+	return &RateLimitReservation{limiter: l, key: key, duration: duration}
 }
 
 // Complete releases the reservation. A successful outcome records the request
@@ -205,7 +220,7 @@ func (r *RateLimitReservation) Complete(success bool) {
 		}
 		if success {
 			now := time.Now()
-			l.touchEntry(r.key, now).requests.append(now.Unix())
+			l.touchEntry(r.key, now, time.Duration(r.duration)*time.Second).requests.append(now.Unix())
 		}
 	})
 }

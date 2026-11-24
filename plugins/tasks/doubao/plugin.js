@@ -980,12 +980,12 @@ export const native = {
         .join("\n"),
       metadata: body,
     };
-    const seconds = Number(body.duration);
-    if (Number.isFinite(seconds) && seconds > 0) requestBody.seconds = seconds;
     if (threeDProfile({ model: model })) {
       const converted = convert3D({ model: model, requestBody: requestBody });
       return { kind: "submit", model: model, action: converted.action, requestBody: requestBody };
     }
+    const seconds = parseVideoDuration(body.duration, "duration");
+    if (seconds !== undefined) requestBody.seconds = seconds;
     const intent = { kind: "submit", model: model, action: hasReference ? "image_to_video" : "text_to_video", requestBody: requestBody };
     const originTaskIds = draftTaskIds(content);
     if (originTaskIds.length) intent.originTaskIds = originTaskIds;
@@ -1023,6 +1023,26 @@ export const native = {
   },
 };
 
+function parseVideoDuration(value, fieldName) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "boolean" || Array.isArray(value)) throw new Error(fieldName + " must be -1 or an integer between 1 and 3600");
+  const n = Number(value);
+  if (n === -1) return -1;
+  if (!Number.isInteger(n) || n < 1 || n > 3600) throw new Error(fieldName + " must be -1 or an integer between 1 and 3600");
+  return n;
+}
+
+function resolveVideoDuration(req) {
+  const metadata = (req && req.metadata) || {};
+  const topRaw = req && req.seconds !== undefined ? req.seconds : req && req.duration;
+  const topDur = parseVideoDuration(topRaw, "seconds");
+  const metaDur = parseVideoDuration(metadata.duration, "metadata.duration");
+  if (topDur !== undefined && metaDur !== undefined && topDur !== metaDur) {
+    throw new Error("seconds and metadata.duration must match");
+  }
+  return topDur !== undefined ? topDur : metaDur;
+}
+
 export function buildSubmitRequest(ctx) {
   if (imageTask(ctx)) {
     const converted = convertImage(ctx);
@@ -1059,8 +1079,8 @@ export function buildSubmitRequest(ctx) {
   if (trimmed(req.prompt) || !hasReference) body.content.push({ type: "text", text: req.prompt || "" });
   if (Array.isArray(body.content)) body.content = rewriteDraftTaskContent(body.content, ctx.originTasks);
   // -1 lets the model pick the length; extractUsage reserves the longest one.
-  const seconds = Number.parseInt(req.seconds || "", 10);
-  if (seconds > 0 || seconds === -1) body.duration = seconds;
+  const seconds = resolveVideoDuration(req);
+  if (seconds !== undefined) body.duration = seconds;
   body.model = ctx.upstreamModel || body.model;
   return {
     url: apiRoot(ctx) + "/api/v3/contents/generations/tasks",
@@ -1111,7 +1131,8 @@ export function extractUsage(ctx) {
   const profile = videoProfile(ctx);
   // A missing duration or -1 (the model picks the length; Seedance 2.5
   // defaults to it) reserves the longest duration the model can produce.
-  let seconds = Number(req.seconds || req.duration || metadata.duration || 0);
+  const resolvedDuration = resolveVideoDuration(req);
+  let seconds = resolvedDuration !== undefined && resolvedDuration > 0 ? resolvedDuration : 0;
   if (!Number.isFinite(seconds) || seconds <= 0) {
     const frames = Number(metadata.frames);
     seconds = Number.isFinite(frames) && frames > 0 ? Math.floor(frames / 24) : profile.maxDuration;
@@ -1315,6 +1336,8 @@ export const protocols = {
       if (images.length) requestBody.images = images;
       if (Object.prototype.hasOwnProperty.call(req, "seconds")) requestBody.seconds = req.seconds;
       else if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.seconds = req.duration;
+      const resolvedDuration = resolveVideoDuration(requestBody);
+      if (resolvedDuration !== undefined) requestBody.seconds = resolvedDuration;
       if (Object.prototype.hasOwnProperty.call(req, "size")) requestBody.size = req.size;
       const intent = { kind: "submit", model: model, action: images.length ? "image_to_video" : "text_to_video", requestBody: requestBody };
       const originTaskIds = draftTaskIds(metadata.content);
@@ -1450,12 +1473,10 @@ protocols.openai_video = {
     if (ctx.body.kind === "json") {
       if (!ctx.body.value || Array.isArray(ctx.body.value)) throw new Error("JSON object required");
       const req = ctx.body.value;
-      const seconds = req.seconds === undefined ? req.duration : req.seconds;
-      if (seconds !== undefined && Number(seconds) !== -1 && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
-        throw new Error("seconds must be -1 or between 1 and 3600");
+      const resolvedDuration = resolveVideoDuration(req);
       const requestBody = Object.assign({}, req, { model: ctx.model });
       // buildSubmitRequest reads seconds; duration is accepted as its alias.
-      if (seconds !== undefined) requestBody.seconds = seconds;
+      if (resolvedDuration !== undefined) requestBody.seconds = resolvedDuration;
       return {
         kind: "submit",
         model: ctx.model,
@@ -1484,11 +1505,8 @@ protocols.openai_video = {
       req.metadata = parsed;
     }
     if ((ctx.body.files || []).length) throw new Error("Doubao requires image and video references to be URLs inside metadata.content");
-    if (req.seconds !== undefined) req.seconds = Number(req.seconds);
-    else if (req.duration !== undefined) req.seconds = Number(req.duration);
-    const seconds = req.seconds === undefined ? req.duration : req.seconds;
-    if (seconds !== undefined && Number(seconds) !== -1 && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
-      throw new Error("seconds must be -1 or between 1 and 3600");
+    const resolvedDuration = resolveVideoDuration(req);
+    if (resolvedDuration !== undefined) req.seconds = resolvedDuration;
     return {
       kind: "submit",
       model: ctx.model,

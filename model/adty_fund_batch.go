@@ -622,6 +622,113 @@ func ExpireAdtyGiftBatchesTx(tx *gorm.DB, now time.Time) ([]AdtyGiftExpirationIt
 	return items, nil
 }
 
+// isAdtyFundBatchExpiredAt reports whether batch is an expiring gift lot whose
+// business-midnight cutoff has already passed at nowUnix (R12-027).
+func isAdtyFundBatchExpiredAt(batch *AdtyFundBatch, nowUnix int64, loc *time.Location) bool {
+	if batch == nil {
+		return false
+	}
+	if batch.Status == AdtyFundBatchStatusExpired {
+		return true
+	}
+	if !batch.IsExpiringGift() || batch.ExpiresAt == nil || *batch.ExpiresAt <= 0 {
+		return false
+	}
+	return nowUnix >= AdtyGiftExpiryMidnightUnix(*batch.ExpiresAt, loc)
+}
+
+// ExpireOverdueAdtyGiftBatchesForUserTx synchronously expires any overdue
+// expiring-gift batches for an already-locked user inside tx (R12-027).
+// Each batch runs in a savepoint so restricted-write / shortfall conditions
+// never roll back live billing settlements.
+func ExpireOverdueAdtyGiftBatchesForUserTx(tx *gorm.DB, userID int, now time.Time) (int64, error) {
+	if tx == nil || userID <= 0 ||
+		!tx.Migrator().HasTable(&AdtyFundBatch{}) ||
+		!tx.Migrator().HasTable(&AdtyFundAllocation{}) ||
+		!tx.Migrator().HasTable(&AdtyBalanceLedger{}) {
+		return 0, nil
+	}
+	loc := now.Location()
+	if loc == nil || loc == time.Local || loc == time.UTC {
+		loc = AdtyBusinessLocation(tx)
+		now = now.In(loc)
+	}
+	nowUnix := now.Unix()
+	dayStart := AdtyGiftExpiryMidnightUnix(nowUnix, loc)
+	nextDay := time.Unix(dayStart, 0).In(loc).AddDate(0, 0, 1).Unix()
+	var candidates []AdtyFundBatch
+	if err := tx.Select("id").
+		Where("user_id = ? AND expires_at IS NOT NULL AND expires_at > 0 AND expires_at < ? AND remaining > 0", userID, nextDay).
+		Order("id ASC").
+		Find(&candidates).Error; err != nil {
+		return 0, err
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	var expiredTotal int64
+	for _, cand := range candidates {
+		var item *AdtyGiftExpirationItem
+		spErr := tx.Transaction(func(sp *gorm.DB) error {
+			var err error
+			item, err = expireSingleAdtyGiftBatchTx(sp, cand.Id, now, loc)
+			return err
+		})
+		if spErr != nil {
+			if errors.Is(spErr, ErrAdtyFundWriteRestricted) || errors.Is(spErr, ErrAdtyFundBatchShortfall) {
+				continue
+			}
+			return expiredTotal, spErr
+		}
+		if item != nil {
+			expiredTotal += item.ExpiredQuota
+		}
+	}
+	return expiredTotal, nil
+}
+
+// overdueUnsweptExpiringGiftQuotaTx sums remaining unheld quota on expiring
+// gift batches whose midnight cutoff has already passed (e.g., if a reviewing
+// restriction prevented sweeping them), so spendable balance never includes them.
+func overdueUnsweptExpiringGiftQuotaTx(tx *gorm.DB, userID int, now time.Time) (int64, error) {
+	if tx == nil || userID <= 0 || !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		return 0, nil
+	}
+	loc := AdtyBusinessLocation(tx)
+	now = now.In(loc)
+	nowUnix := now.Unix()
+	dayStart := AdtyGiftExpiryMidnightUnix(nowUnix, loc)
+	nextDay := time.Unix(dayStart, 0).In(loc).AddDate(0, 0, 1).Unix()
+	var batches []AdtyFundBatch
+	if err := tx.Where("user_id = ? AND expires_at IS NOT NULL AND expires_at > 0 AND expires_at < ? AND remaining > 0", userID, nextDay).
+		Order("id ASC").
+		Find(&batches).Error; err != nil {
+		return 0, err
+	}
+	if len(batches) == 0 {
+		return 0, nil
+	}
+	heldByBatch := map[int64]int64{}
+	if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+		var err error
+		heldByBatch, err = outstandingAdtyFundAllocationByBatchTx(tx, userID)
+		if err != nil {
+			return 0, err
+		}
+	}
+	var overdue int64
+	for i := range batches {
+		if !isAdtyFundBatchExpiredAt(&batches[i], nowUnix, loc) {
+			continue
+		}
+		unheld := batches[i].Remaining - heldByBatch[batches[i].Id]
+		if unheld > 0 {
+			overdue += unheld
+		}
+	}
+	return overdue, nil
+}
+
 // adtyMoveFundBatchesToSiteTx 把迁移用户的批次一起搬到目标站（ISS-R4-0047）。
 //
 // 站迁移以前不需要碰批次表：那张表里根本没有站点字段。加了 site_id 之后不动它，

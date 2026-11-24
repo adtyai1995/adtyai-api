@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 
 // The recipient is fixed at event time. Reading still requires the account and
 // workspace to have access on this host, including after site closure or revocation.
-func adtyTicketInboxQuery(userID int, site *model.AdtySite) (*gorm.DB, string, error) {
+func adtyTicketInboxQuery(userID int, site *model.AdtySite, tokenScopes ...[]string) (*gorm.DB, string, error) {
 	q := model.DB.Model(&model.AdtyTicketNotice{}).Where("adty_ticket_notices.user_id = ?", userID)
 	actor, err := loadAdtyTicketActor(userID)
 	if err != nil {
@@ -29,6 +30,9 @@ func adtyTicketInboxQuery(userID int, site *model.AdtySite) (*gorm.DB, string, e
 		handlerScope = "owner"
 	case actor.StaffTickets && host == actor.Staff.SiteId:
 		handlerScope = "staff"
+	}
+	if handlerScope != "" && len(tokenScopes) > 0 && AdtyTicketTokenScope(handlerScope, http.MethodGet, tokenScopes[0]) == "denied" {
+		handlerScope = ""
 	}
 	actor.Scope = "personal"
 	customerTickets := scopedAdtyTickets(model.DB, actor).Select("id")

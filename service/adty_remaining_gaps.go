@@ -886,7 +886,7 @@ func adtyTodoItemVisibleForUserOnSite(db *gorm.DB, userID int, site *model.AdtyS
 		if !hasPubTable {
 			return false, nil
 		}
-		if pub == nil || pub.Status != "published" {
+		if pub == nil || pub.Status != "published" || !adtyPublicationIsSevere(db, pub) {
 			return false, nil
 		}
 		q, err := adtyVisibleNotificationPublicationsWithDB(db, userID, site)
@@ -984,6 +984,34 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 			if publicationID <= 0 {
 				publicationID = pub.Id
 			}
+			if siteID == 0 && pub.TargetSiteId > 0 {
+				siteID = pub.TargetSiteId
+			}
+			if tx.Migrator().HasTable(&model.User{}) {
+				var targetSite *model.AdtySite
+				if siteID > 0 && tx.Migrator().HasTable(&model.AdtySite{}) {
+					var siteRow model.AdtySite
+					if tx.Where("id = ?", siteID).Limit(1).Find(&siteRow).RowsAffected == 0 {
+						return nil
+					}
+					targetSite = &siteRow
+				}
+				visible, visErr := adtyTodoItemVisibleForUserOnSite(tx, userID, targetSite, &AdtyTodoItem{
+					UserId:        userID,
+					SiteId:        siteID,
+					Key:           key,
+					PublicationId: pub.Id,
+				}, pub)
+				if visErr != nil {
+					if errors.Is(visErr, gorm.ErrRecordNotFound) {
+						return nil
+					}
+					return visErr
+				}
+				if !visible {
+					return nil
+				}
+			}
 			if liveKey := normalizeAdtyTodoKey(pub.ReadKey); liveKey != "" {
 				key = liveKey
 			}
@@ -995,9 +1023,6 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 			}
 			if strings.TrimSpace(pub.Business) != "" {
 				business = pub.Business
-			}
-			if siteID == 0 && pub.TargetSiteId > 0 {
-				siteID = pub.TargetSiteId
 			}
 		}
 		var item AdtyTodoItem
@@ -1506,16 +1531,56 @@ func RenderAdtyTodoInboxItems(userID int, announcements []map[string]any) []map[
 	if err := model.DB.Where("user_id = ?", userID).Find(&todos).Error; err != nil || len(todos) == 0 {
 		return announcements
 	}
+	hasPubTable := model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{})
+	severePubs := make(map[int]bool)
+	if hasPubTable {
+		pubIDSet := make(map[int]struct{})
+		for _, td := range todos {
+			if td.PublicationId > 0 {
+				pubIDSet[td.PublicationId] = struct{}{}
+			}
+		}
+		for _, item := range announcements {
+			if idStr, _ := item["id"].(string); strings.HasPrefix(idStr, "publication:") {
+				if pubID, err := strconv.Atoi(strings.TrimPrefix(idStr, "publication:")); err == nil && pubID > 0 {
+					pubIDSet[pubID] = struct{}{}
+				}
+			}
+		}
+		if len(pubIDSet) > 0 {
+			pubIDs := make([]int, 0, len(pubIDSet))
+			for id := range pubIDSet {
+				pubIDs = append(pubIDs, id)
+			}
+			var pubs []model.AdtyNotificationPublication
+			if err := model.DB.Where("id IN ?", pubIDs).Find(&pubs).Error; err == nil {
+				for i := range pubs {
+					if pubs[i].Status == "published" && adtyPublicationIsSevere(model.DB, &pubs[i]) {
+						severePubs[pubs[i].Id] = true
+					}
+				}
+			}
+		}
+	}
 	byKey := make(map[string]AdtyTodoItem, len(todos)*2)
 	for _, td := range todos {
+		if td.PublicationId > 0 && (!hasPubTable || !severePubs[td.PublicationId]) {
+			continue
+		}
 		byKey[td.Key] = td
 		if td.PublicationId > 0 {
 			byKey[fmt.Sprintf("publication:%d", td.PublicationId)] = td
 		}
 	}
 	for _, item := range announcements {
-		readKey, _ := item["read_key"].(string)
 		idStr, _ := item["id"].(string)
+		if strings.HasPrefix(idStr, "publication:") {
+			pubID, err := strconv.Atoi(strings.TrimPrefix(idStr, "publication:"))
+			if err == nil && pubID > 0 && (!hasPubTable || !severePubs[pubID]) {
+				continue
+			}
+		}
+		readKey, _ := item["read_key"].(string)
 		if td, ok := byKey[readKey]; ok {
 			item["todo_key"] = td.Key
 			item["todo_status"] = td.Status
@@ -1719,7 +1784,13 @@ func HideAdtyNotificationForUserFromRequest(c *gin.Context, userID int, key stri
 	if adtyIsNotificationKeyHidden(userID, key) {
 		return nil
 	}
-	canonicalKey, found, err := resolveAdtyNotificationCanonicalKey(userID, AdtySiteForRequest(c), key)
+	var tokenScopes [][]string
+	if c != nil {
+		if _, isToken := c.Get("access_token_legacy"); isToken {
+			tokenScopes = [][]string{c.GetStringSlice("access_token_scopes")}
+		}
+	}
+	canonicalKey, found, err := resolveAdtyNotificationCanonicalKey(userID, AdtySiteForRequest(c), key, tokenScopes...)
 	if err != nil {
 		return err
 	}

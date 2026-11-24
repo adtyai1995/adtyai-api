@@ -262,20 +262,30 @@ func assignConfigField(field reflect.Value, key, strValue string) error {
 		}
 		field.SetFloat(floatValue)
 	case reflect.Pointer:
-		if strValue == "null" {
+		trimmed := strings.TrimSpace(strValue)
+		if trimmed == "null" {
 			if _, isUnmarshaler := reflect.New(field.Type().Elem()).Interface().(json.Unmarshaler); isUnmarshaler {
 				return fmt.Errorf("invalid %s: null is not allowed", key)
 			}
 			field.Set(reflect.Zero(field.Type()))
 			return nil
 		}
+		// Validate into a fresh candidate before mutating the live field so invalid
+		// values never turn a nil pointer into a zero value or partially corrupt state.
+		candidate := reflect.New(field.Type().Elem())
+		if err := common.Unmarshal([]byte(trimmed), candidate.Interface()); err != nil {
+			return fmt.Errorf("invalid %s: %w", key, err)
+		}
 		// Keep a non-nil pointer. Callers such as group ratio read the original
 		// map variable, not a replacement pointer.
 		if field.IsNil() {
-			field.Set(reflect.New(field.Type().Elem()))
-		}
-		if err := common.Unmarshal([]byte(strValue), field.Interface()); err != nil {
-			return fmt.Errorf("invalid %s: %w", key, err)
+			field.Set(candidate)
+		} else if _, isUnmarshaler := field.Interface().(json.Unmarshaler); isUnmarshaler {
+			if err := common.Unmarshal([]byte(trimmed), field.Interface()); err != nil {
+				return fmt.Errorf("invalid %s: %w", key, err)
+			}
+		} else {
+			field.Elem().Set(candidate.Elem())
 		}
 	case reflect.Map:
 		fresh := reflect.New(field.Type())

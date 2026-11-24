@@ -150,7 +150,10 @@ func init() {
 }
 
 func GetPasskeySettings() *PasskeySettings {
-	return &defaultPasskeySettings
+	common.OptionMapRWMutex.RLock()
+	s := defaultPasskeySettings
+	common.OptionMapRWMutex.RUnlock()
+	return &s
 }
 
 func (s PasskeySettings) WithDefaults(serverAddress string, extraOrigins ...string) PasskeySettings {

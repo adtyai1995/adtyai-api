@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -45,6 +45,7 @@ import {
 } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
+import { useResetForm } from '../hooks/use-reset-form'
 import { useSavePolicy } from './use-save-policy'
 
 const sensitiveSchema = z.object({
@@ -64,19 +65,21 @@ export function RequestChecksSection({
 }: RequestChecksSectionProps) {
   const { t } = useTranslation()
   const updateOption = useSavePolicy()
+  const baselineRef = useRef<SensitiveFormValues>(defaultValues)
   const form = useForm<SensitiveFormValues>({
     resolver: zodResolver(sensitiveSchema),
     defaultValues,
   })
 
+  useResetForm(form, defaultValues)
   useEffect(() => {
-    form.reset(defaultValues)
-  }, [defaultValues, form])
+    baselineRef.current = defaultValues
+  }, [defaultValues])
 
   const onSubmit = async (values: SensitiveFormValues) => {
     const updates = Object.entries(values).filter(
       ([key, value]) =>
-        value !== defaultValues[key as keyof SensitiveFormValues]
+        value !== baselineRef.current[key as keyof SensitiveFormValues]
     )
 
     try {
@@ -86,6 +89,7 @@ export function RequestChecksSection({
             updates.map(([key, value]) => [key, String(value ?? '')])
           )
         )
+        baselineRef.current = values
       }
     } catch (error) {
       handleServerError(error)

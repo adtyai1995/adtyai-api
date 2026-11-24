@@ -173,7 +173,7 @@ func QueryAdtyTopUp(c *gin.Context) {
 // GetPaymentOrphans 分页列出对不上的支付回调（任务 3.5）。
 func GetPaymentOrphans(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	events, total, err := model.ListPaymentOrphanEvents(c.Query("status"), pageInfo)
+	events, total, err := model.ListPaymentOrphanEventsForRole(c.Query("status"), pageInfo, c.GetInt("role") < common.RoleRootUser)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -304,7 +304,7 @@ func ResolvePaymentOrphan(c *gin.Context) {
 	)) == nil {
 		return
 	}
-	review, err := model.ResolvePaymentOrphanReview(id, c.GetInt("id"), body)
+	review, err := model.ResolvePaymentOrphanReviewForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body)
 	if err != nil {
 		writeAdtyFinanceError(c, err)
 		return

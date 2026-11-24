@@ -621,30 +621,55 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 	var statusAudit map[string]any
 	var statusBefore map[string]any
 	var statusAuditEntry *model.AuditLog
-	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		staffUserIDs := make([]int, 0, 2)
-		if (requestedScope == "staff" || len(workspace) == 0) && userId > 0 {
-			staffUserIDs = append(staffUserIDs, userId)
-		}
-		if assigneeId > 0 && (len(workspace) == 0 || requestedScope == "platform" || requestedScope == "platform_main" || requestedScope == "owner" || requestedScope == "staff") {
-			staffUserIDs = append(staffUserIDs, assigneeId)
-		}
-		if len(staffUserIDs) > 0 {
-			slices.Sort(staffUserIDs)
-			staffUserIDs = slices.Compact(staffUserIDs)
-			var memberships []model.AdtySiteStaff
-			if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id IN ?", staffUserIDs).Order("user_id ASC, id ASC").Find(&memberships).Error; err != nil {
+	errRetryAssigneeLock := errors.New("retry ticket assignee staff lock")
+	reopenAssigneeHint := 0
+	for attempt := 0; attempt < 2; attempt++ {
+		statusAudit = nil
+		statusBefore = nil
+		statusAuditEntry = nil
+		err = model.DB.Transaction(func(tx *gorm.DB) error {
+			// R12-036: On reopen without explicit assigneeId, pre-read ticket.AssigneeId
+			// and lock its AdtySiteStaff membership before locking AdtyTicket so concurrent
+			// MutateAdtyStaff (AdtySiteStaff -> AdtyTicket) cannot race a deactivated staff
+			// member into an in_progress reopened ticket.
+			preReadAssigneeID := reopenAssigneeHint
+			if strings.TrimSpace(status) == "reopen" && assigneeId == 0 && preReadAssigneeID == 0 {
+				var preTicket model.AdtyTicket
+				if err := tx.Select("assignee_id").Where("id = ?", ticketId).Limit(1).Find(&preTicket).Error; err != nil {
+					return err
+				}
+				preReadAssigneeID = preTicket.AssigneeId
+			}
+			staffUserIDs := make([]int, 0, 3)
+			if (requestedScope == "staff" || len(workspace) == 0) && userId > 0 {
+				staffUserIDs = append(staffUserIDs, userId)
+			}
+			if assigneeId > 0 && (len(workspace) == 0 || requestedScope == "platform" || requestedScope == "platform_main" || requestedScope == "owner" || requestedScope == "staff") {
+				staffUserIDs = append(staffUserIDs, assigneeId)
+			}
+			if preReadAssigneeID > 0 {
+				staffUserIDs = append(staffUserIDs, preReadAssigneeID)
+			}
+			if len(staffUserIDs) > 0 {
+				slices.Sort(staffUserIDs)
+				staffUserIDs = slices.Compact(staffUserIDs)
+				var memberships []model.AdtySiteStaff
+				if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id IN ?", staffUserIDs).Order("user_id ASC, id ASC").Find(&memberships).Error; err != nil {
+					return err
+				}
+			}
+			actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
+			if err != nil {
 				return err
 			}
-		}
-		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
-		if err != nil {
-			return err
-		}
-		var ticket model.AdtyTicket
-		if err := scopedAdtyTickets(model.AdtyLockForUpdate(tx), actor).First(&ticket, ticketId).Error; err != nil {
-			return err
-		}
+			var ticket model.AdtyTicket
+			if err := scopedAdtyTickets(model.AdtyLockForUpdate(tx), actor).First(&ticket, ticketId).Error; err != nil {
+				return err
+			}
+			if strings.TrimSpace(status) == "reopen" && assigneeId == 0 && ticket.AssigneeId > 0 && !slices.Contains(staffUserIDs, ticket.AssigneeId) {
+				reopenAssigneeHint = ticket.AssigneeId
+				return errRetryAssigneeLock
+			}
 		var operationKey *string
 		if status == "reopen" && key != "" {
 			if !isAdtyTicketCustomerController(actor, ticket) && !actor.isHandling() {
@@ -768,6 +793,13 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 			statusBefore, statusAudit, model.AuditResultSuccess)
 		return auditErr
 	})
+		if !errors.Is(err, errRetryAssigneeLock) {
+			break
+		}
+	}
+	if errors.Is(err, errRetryAssigneeLock) {
+		return ErrAdtyTicketInvalid
+	}
 	if err == nil && statusAudit != nil {
 		if statusAuditEntry != nil {
 			deliverAdtyCommittedAudit(*statusAuditEntry)

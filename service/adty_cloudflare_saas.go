@@ -830,11 +830,18 @@ func removeAdtySiteDomainLocked(ctx context.Context, tx *gorm.DB, domain *model.
 		}
 	}
 	if err := adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{
-		"status": model.AdtySiteDomainRemoved, "turnstile_widget": "", "last_checked_at": time.Now().Unix(),
+		"status":           model.AdtySiteDomainRemoved,
+		"turnstile_widget": "",
+		"lease_token":      "",
+		"lease_until":      0,
+		"generation":       gorm.Expr("generation + 1"),
+		"last_checked_at":  time.Now().Unix(),
 	}).Error; err != nil {
 		return err
 	}
 	domain.Status, domain.TurnstileWidget = model.AdtySiteDomainRemoved, ""
+	domain.LeaseToken, domain.LeaseUntil = "", 0
+	domain.Generation++
 	return nil
 }
 

@@ -45,11 +45,11 @@ type QuotaDataLogParams struct {
 
 func UpdateQuotaData() {
 	for {
-		if common.DataExportEnabled {
+		if common.GetDataExportEnabled() {
 			common.SysLog(common.LogText("updating dashboard data..."))
 			SaveQuotaDataCache()
 		}
-		time.Sleep(time.Duration(common.DataExportInterval) * time.Minute)
+		time.Sleep(time.Duration(common.GetDataExportInterval()) * time.Minute)
 	}
 }
 

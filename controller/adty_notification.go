@@ -30,7 +30,11 @@ func GetAdtyNotifications(c *gin.Context) {
 	if before > 0 && c.Query("ticket_before") == "" {
 		ticketBefore = -1
 	}
-	inbox, err := service.GetAdtyNotificationInbox(c.GetInt("id"), service.AdtySiteForRequest(c), before, ticketBefore)
+	var tokenScopes [][]string
+	if _, isToken := c.Get("access_token_legacy"); isToken {
+		tokenScopes = [][]string{c.GetStringSlice("access_token_scopes")}
+	}
+	inbox, err := service.GetAdtyNotificationInboxWithScopes(c.GetInt("id"), service.AdtySiteForRequest(c), before, ticketBefore, tokenScopes...)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -40,7 +44,11 @@ func GetAdtyNotifications(c *gin.Context) {
 }
 
 func GetAdtyAnnouncement(c *gin.Context) {
-	item, ok, err := service.GetAdtyNotificationDetail(c.GetInt("id"), service.AdtySiteForRequest(c), c.Param("key"))
+	var tokenScopes [][]string
+	if _, isToken := c.Get("access_token_legacy"); isToken {
+		tokenScopes = [][]string{c.GetStringSlice("access_token_scopes")}
+	}
+	item, ok, err := service.GetAdtyNotificationDetail(c.GetInt("id"), service.AdtySiteForRequest(c), c.Param("key"), tokenScopes...)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -201,7 +209,11 @@ func ReadAdtyNotifications(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.MarkAdtyNotificationInboxRead(c.GetInt("id"), service.AdtySiteForRequest(c), body.Keys); err != nil {
+	var tokenScopes [][]string
+	if _, isToken := c.Get("access_token_legacy"); isToken {
+		tokenScopes = [][]string{c.GetStringSlice("access_token_scopes")}
+	}
+	if err := service.MarkAdtyNotificationInboxRead(c.GetInt("id"), service.AdtySiteForRequest(c), body.Keys, tokenScopes...); err != nil {
 		common.ApiError(c, err)
 		return
 	}

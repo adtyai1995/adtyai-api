@@ -788,7 +788,7 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 		// 二开：充值链接指向用户所属站点（任务 11.3）
 		content, values := quotaNotifyContent(lang, userSetting.NotifyType, prompt, logger.FormatQuota(balanceAfter), AdtySitePublicBaseURL(AdtySiteForUser(relayInfo.UserId)))
 		// R3-058: Apply Root-customized quota_exceed template when configured.
-		threshold := common.QuotaRemindThreshold
+		threshold := common.GetQuotaRemindThreshold()
 		if userSetting.QuotaWarningThreshold != 0 {
 			threshold = int(userSetting.QuotaWarningThreshold)
 		}
@@ -814,13 +814,13 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 // already below the threshold earns nothing more until a top-up lifts it back
 // above, so a user gets one reminder per drop.
 func quotaReminderDue(userSetting dto.UserSetting, before int64, after int64) bool {
-	if !common.QuotaRemindEnabled {
+	if !common.GetQuotaRemindEnabled() {
 		return false
 	}
 	if userSetting.QuotaWarningEnabled != nil && !*userSetting.QuotaWarningEnabled {
 		return false
 	}
-	threshold := float64(common.QuotaRemindThreshold)
+	threshold := float64(common.GetQuotaRemindThreshold())
 	if userSetting.QuotaWarningThreshold != 0 {
 		threshold = userSetting.QuotaWarningThreshold
 	}

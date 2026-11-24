@@ -58,6 +58,10 @@ func (PaymentOrphanReview) TableName() string { return "adty_payment_orphan_revi
 // ResolvePaymentOrphanReview never changes a wallet. A refunded disposition
 // requires the existing authorized refund flow and its same-order ledger.
 func ResolvePaymentOrphanReview(id int64, operatorID int, request PaymentOrphanReviewRequest) (*PaymentOrphanReview, error) {
+	return ResolvePaymentOrphanReviewForActor(id, operatorID, 0, false, request)
+}
+
+func ResolvePaymentOrphanReviewForActor(id int64, operatorID, actorRole int, denyAdminTarget bool, request PaymentOrphanReviewRequest) (*PaymentOrphanReview, error) {
 	request.Status = strings.TrimSpace(request.Status)
 	request.TradeNo = strings.TrimSpace(request.TradeNo)
 	request.ExternalCurrency = strings.ToUpper(strings.TrimSpace(request.ExternalCurrency))
@@ -109,6 +113,36 @@ func ResolvePaymentOrphanReview(id int64, operatorID int, request PaymentOrphanR
 		orphan, topUp, ext, err := LockPaymentOrphanOrderTx(tx, id)
 		if err != nil {
 			return err
+		}
+		if actorRole > 0 || denyAdminTarget {
+			if topUp == nil {
+				if actorRole > 0 && actorRole != common.RoleRootUser {
+					return ErrUserQuotaPermission
+				}
+			} else {
+				if actorRole > 0 && actorRole != common.RoleRootUser && (ext == nil || ext.SiteId != 0) {
+					return ErrUserQuotaPermission
+				}
+				if ext != nil && ext.TeamId > 0 && tx.Migrator().HasTable(&AdtyTeam{}) {
+					var team AdtyTeam
+					if err := lockForUpdate(tx).Select("id").Where("id = ?", ext.TeamId).Limit(1).Find(&team).Error; err != nil {
+						return err
+					}
+				}
+				var target User
+				if err := lockForUpdate(tx).Select("id", "role").First(&target, topUp.UserId).Error; err != nil {
+					return err
+				}
+				if operatorID > 0 && operatorID == target.Id {
+					return ErrUserQuotaPermission
+				}
+				if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= target.Role {
+					return ErrUserQuotaPermission
+				}
+				if denyAdminTarget && target.Role >= common.RoleAdminUser {
+					return ErrAdminTargetSessionRequired
+				}
+			}
 		}
 		if request.TradeNo != orphan.ReferenceID {
 			return common.NewMessage("The review must reference the original order")

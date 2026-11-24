@@ -282,10 +282,18 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s has no usage expression or meter", modelName), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
 		sharedModel := pinnedPlugin.Generation.SharedModel(modelName) || pinnedPlugin.Generation.SharedModel(info.UpstreamModelName)
-		if sharedModel && pinnedPlugin.Plugin != nil {
+		canReusePrevExpr := prevSnapshot != nil && prevSnapshot.TaskUsageBilling &&
+			prevSnapshot.ExprString != "" &&
+			prevSnapshot.ModelName == modelName &&
+			prevSnapshot.PluginKey == pluginKey &&
+			prevSnapshot.UpstreamModelName == info.UpstreamModelName
+		if pinnedPlugin.Plugin != nil {
 			schema, _ := pinnedPlugin.Plugin.Meta.UsageForModels(info.UpstreamModelName, modelName)
-			if !billing_setting.TaskExprCompatible(exprStr, schema) {
+			if sharedModel && !billing_setting.TaskExprCompatible(exprStr, schema) {
 				return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s pricing is not configured for plugin %s", modelName, pluginKey), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
+			}
+			if canReusePrevExpr && !billing_setting.TaskExprCompatible(prevSnapshot.ExprString, schema) {
+				canReusePrevExpr = false
 			}
 		}
 		var facts map[string]any
@@ -302,7 +310,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		if err != nil {
 			return nil, service.TaskErrorWrapperLocal(err, "model_price_error", http.StatusBadRequest)
 		}
-		if prevSnapshot != nil && prevSnapshot.TaskUsageBilling && prevSnapshot.ModelName == modelName {
+		if canReusePrevExpr {
 			exprStr = prevSnapshot.ExprString
 		}
 		cost, trace, runErr := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{}, input)
@@ -321,6 +329,8 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{
 			BillingMode:               billing_setting.BillingModeTieredExpr,
 			ModelName:                 modelName,
+			PluginKey:                 pluginKey,
+			UpstreamModelName:         info.UpstreamModelName,
 			ExprString:                exprStr,
 			ExprHash:                  billingexpr.ExprHashString(exprStr),
 			GroupRatio:                groupRatioInfo.GroupRatio,
@@ -576,10 +586,9 @@ func RelayTaskFetch(c *gin.Context, relayMode int) (taskResp *dto.TaskError) {
 	c.Writer.Header().Set("Content-Type", "application/json")
 	_, err := io.Copy(c.Writer, bytes.NewBuffer(respBody))
 	if err != nil {
-		taskResp = service.TaskErrorWrapper(err, "copy_response_body_failed", http.StatusInternalServerError)
-		return
+		logger.LogError(c, common.LogText("task fetch copy response body failed: %s", err.Error()))
 	}
-	return
+	return nil
 }
 
 func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *dto.TaskError) {

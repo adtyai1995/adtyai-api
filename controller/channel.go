@@ -164,7 +164,7 @@ func GetChannelOps(c *gin.Context) {
 	if value, present := c.GetQuery("auto_ban"); present {
 		autoBan, err := strconv.ParseBool(value)
 		if err != nil {
-			common.ApiError(c, err)
+			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
 		automaticDisable = snapshot.AutoDisable && autoBan
@@ -324,7 +324,7 @@ func applyFetchModelsHeaderOverrides(channel *model.Channel, key string, headers
 func FetchUpstreamModels(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 
@@ -506,7 +506,7 @@ func groupChannelsByTag(channels []*model.Channel) [][]*model.Channel {
 func GetChannel(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 	channel, err := model.GetChannelById(id, false)
@@ -567,7 +567,7 @@ const maxTaskExtendPluginKeys = 32
 // validateChannel 通用的渠道校验函数
 func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
-		return fmt.Errorf("channel cannot be empty")
+		return common.NewMessage("Channel cannot be empty")
 	}
 
 	// 校验 channel settings
@@ -577,21 +577,21 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel.Type == constant.ChannelTypeTaskPlugin {
 		pluginKey := strings.TrimSpace(channel.GetSetting().TaskPluginKey)
 		if pluginKey == "" {
-			return fmt.Errorf("task plugin key is required")
+			return common.NewMessage("Task plugin key is required")
 		}
 		if len(pluginKey) > 30 {
-			return fmt.Errorf("task plugin key must not exceed 30 characters")
+			return common.NewMessage("Task plugin key must not exceed 30 characters")
 		}
 		plugin, ok := jsplugin.DefaultRegistry.Get(pluginKey)
 		if !ok {
-			return fmt.Errorf("task plugin %q is not registered", pluginKey)
+			return common.NewMessage("Task plugin {{key}} is not registered", map[string]any{"key": pluginKey})
 		}
 		if channel.BaseURL == nil || strings.TrimSpace(*channel.BaseURL) == "" {
 			// The plugin default is persisted onto the channel instead of being
 			// resolved per request, so the destination host stays an auditable
 			// channel property that only an administrator edit can change.
 			if plugin.Meta.BaseURL == "" {
-				return fmt.Errorf("base URL is required for task plugin channels")
+				return common.NewMessage("Base URL is required for task plugin channels")
 			}
 			defaultBaseURL := plugin.Meta.BaseURL
 			channel.BaseURL = &defaultBaseURL
@@ -600,11 +600,11 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 
 	setting := channel.GetSetting()
 	if channel.Type != constant.ChannelTypeNewAPI && len(setting.TaskExtendPluginKeys) > 0 {
-		return fmt.Errorf("task_extend_plugin_keys is only supported on New API channels")
+		return common.NewMessage("task_extend_plugin_keys is only supported on New API channels")
 	}
 	if channel.Type == constant.ChannelTypeNewAPI {
 		if len(setting.TaskExtendPluginKeys) > maxTaskExtendPluginKeys {
-			return fmt.Errorf("task_extend_plugin_keys must not exceed %d plugins", maxTaskExtendPluginKeys)
+			return common.NewMessage("task_extend_plugin_keys must not exceed {{limit}} plugins", map[string]any{"limit": maxTaskExtendPluginKeys})
 		}
 		// The single key stays valid on a New API channel, so both bindings are
 		// checked as one set.
@@ -615,39 +615,39 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 		bound := make(map[string]struct{}, len(keys))
 		for _, key := range keys {
 			if key == "" || key != strings.TrimSpace(key) {
-				return fmt.Errorf("task plugin key %q is invalid", key)
+				return common.NewMessage("Task plugin key {{key}} is invalid", map[string]any{"key": key})
 			}
 			if len(key) > 30 {
-				return fmt.Errorf("task plugin key must not exceed 30 characters")
+				return common.NewMessage("Task plugin key must not exceed 30 characters")
 			}
 			if _, duplicate := bound[key]; duplicate {
-				return fmt.Errorf("task plugin %q is bound more than once", key)
+				return common.NewMessage("Task plugin {{key}} is bound more than once", map[string]any{"key": key})
 			}
 			plugin, ok := jsplugin.DefaultRegistry.Get(key)
 			if !ok {
-				return fmt.Errorf("task plugin %q is not registered", key)
+				return common.NewMessage("Task plugin {{key}} is not registered", map[string]any{"key": key})
 			}
 			if !plugin.Meta.SupportsUpstream(jsplugin.UpstreamKindNewAPI) {
-				return fmt.Errorf("task plugin %q does not support a New API upstream and cannot be bound to a New API channel", key)
+				return common.NewMessage("Task plugin {{key}} does not support a New API upstream and cannot be bound to a New API channel", map[string]any{"key": key})
 			}
 			bound[key] = struct{}{}
 		}
 	}
 
 	if channel.Type == constant.ChannelTypeNewAPI && strings.TrimSpace(channel.GetBaseURL()) == "" {
-		return fmt.Errorf("New API channel base URL cannot be empty")
+		return common.NewMessage("New API channel base URL cannot be empty")
 	}
 	if channel.Type == constant.ChannelTypeVLLM && strings.TrimSpace(channel.GetBaseURL()) == "" {
-		return fmt.Errorf("vLLM channel base URL cannot be empty")
+		return common.NewMessage("vLLM channel base URL cannot be empty")
 	}
 	if channel.Type == constant.ChannelTypeSGLang && strings.TrimSpace(channel.GetBaseURL()) == "" {
-		return fmt.Errorf("SGLang channel base URL cannot be empty")
+		return common.NewMessage("SGLang channel base URL cannot be empty")
 	}
 
 	// 如果是添加操作，检查 channel 和 key 是否为空
 	if isAdd {
 		if channel.Key == "" {
-			return fmt.Errorf("channel cannot be empty")
+			return common.NewMessage("Channel cannot be empty")
 		}
 	}
 	// abilities.model 是 varchar(255)。更新也要先拒绝，避免渠道行已经写上超长模型名、能力表再插入失败。
@@ -678,17 +678,17 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 		trimmedKey := strings.TrimSpace(channel.Key)
 		if isAdd || trimmedKey != "" {
 			if !strings.HasPrefix(trimmedKey, "{") {
-				return fmt.Errorf("Codex key must be a valid JSON object")
+				return common.NewMessage("Codex key must be a valid JSON object")
 			}
 			var keyMap map[string]any
 			if err := common.Unmarshal([]byte(trimmedKey), &keyMap); err != nil {
-				return fmt.Errorf("Codex key must be a valid JSON object")
+				return common.NewMessage("Codex key must be a valid JSON object")
 			}
 			if v, ok := keyMap["access_token"]; !ok || v == nil || strings.TrimSpace(fmt.Sprintf("%v", v)) == "" {
-				return fmt.Errorf("Codex key JSON must include access_token")
+				return common.NewMessage("Codex key JSON must include access_token")
 			}
 			if v, ok := keyMap["account_id"]; !ok || v == nil || strings.TrimSpace(fmt.Sprintf("%v", v)) == "" {
-				return fmt.Errorf("Codex key JSON must include account_id")
+				return common.NewMessage("Codex key JSON must include account_id")
 			}
 		}
 	}
@@ -1421,17 +1421,50 @@ type fetchModelsRequest struct {
 	Proxy          *string `json:"proxy"`
 }
 
-func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Channel, error) {
+func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Channel, bool, error) {
 	var channel *model.Channel
+	usedSavedKey := false
 	if req.ChannelID > 0 {
 		savedChannel, err := model.GetChannelById(req.ChannelID, true)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if savedChannel.Type != constant.ChannelTypeAdvancedCustom {
-			return nil, fmt.Errorf("channel %d is not an advanced custom channel", req.ChannelID)
+			return nil, false, common.NewMessage("Channel type must be advanced custom")
+		}
+		overrideBaseURL := req.BaseURL != nil && strings.TrimSpace(*req.BaseURL) != strings.TrimSpace(savedChannel.GetBaseURL())
+		overrideProxy := req.Proxy != nil && strings.TrimSpace(*req.Proxy) != strings.TrimSpace(savedChannel.GetSetting().Proxy)
+		savedHeader := ""
+		if savedChannel.HeaderOverride != nil {
+			savedHeader = strings.TrimSpace(*savedChannel.HeaderOverride)
+		}
+		overrideHeader := req.HeaderOverride != nil && strings.TrimSpace(*req.HeaderOverride) != savedHeader
+		overrideAdvCustom := false
+		if req.AdvancedCustom != nil {
+			rawConfig := strings.TrimSpace(*req.AdvancedCustom)
+			if rawConfig == "" {
+				return nil, false, common.NewMessage("advanced_custom is required")
+			}
+			var incoming dto.AdvancedCustomConfig
+			if err := common.UnmarshalJsonStr(rawConfig, &incoming); err != nil {
+				return nil, false, common.NewMessage("Invalid advanced_custom JSON")
+			}
+			savedBytes, _ := common.Marshal(savedChannel.GetOtherSettings().AdvancedCustom)
+			incomingBytes, _ := common.Marshal(&incoming)
+			overrideAdvCustom = string(savedBytes) != string(incomingBytes)
 		}
 		channel = savedChannel
+		if overrideBaseURL || overrideProxy || overrideHeader || overrideAdvCustom {
+			// Never send a persisted upstream key to caller-overridden endpoints,
+			// proxies, headers, or custom auth locations (R12-001).
+			explicitKey := strings.TrimSpace(req.Key)
+			if explicitKey == "" {
+				return nil, false, common.NewMessage("Provide an explicit API key when overriding channel endpoint, proxy, headers, or custom config")
+			}
+			channel.Key = strings.Split(explicitKey, "\n")[0]
+		} else {
+			usedSavedKey = strings.TrimSpace(channel.Key) != ""
+		}
 	} else {
 		key := strings.TrimSpace(req.Key)
 		if key != "" {
@@ -1444,7 +1477,7 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 	}
 
 	if channel.Type != constant.ChannelTypeAdvancedCustom {
-		return nil, fmt.Errorf("channel type must be advanced custom")
+		return nil, false, common.NewMessage("Channel type must be advanced custom")
 	}
 	if req.BaseURL != nil {
 		baseURL := strings.TrimSpace(*req.BaseURL)
@@ -1455,26 +1488,26 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 	if req.AdvancedCustom != nil {
 		rawConfig := strings.TrimSpace(*req.AdvancedCustom)
 		if rawConfig == "" {
-			return nil, fmt.Errorf("advanced_custom is required")
+			return nil, false, common.NewMessage("advanced_custom is required")
 		}
 		var config dto.AdvancedCustomConfig
 		if err := common.UnmarshalJsonStr(rawConfig, &config); err != nil {
-			return nil, err
+			return nil, false, common.NewMessage("Invalid advanced_custom JSON")
 		}
 		settings.AdvancedCustom = &config
 	} else if req.ChannelID <= 0 {
-		return nil, fmt.Errorf("advanced_custom is required")
+		return nil, false, common.NewMessage("advanced_custom is required")
 	}
 	channel.SetOtherSettings(settings)
 
 	if err := applyFetchModelsPreviewTransport(channel, req.HeaderOverride, req.Proxy); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if err := validateChannel(channel, false); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return channel, nil
+	return channel, usedSavedKey, nil
 }
 
 // applyFetchModelsPreviewTransport copies the preview request's proxy and header
@@ -1487,7 +1520,7 @@ func applyFetchModelsPreviewTransport(channel *model.Channel, headerOverride *st
 		if rawHeaderOverride != "" {
 			var parsed map[string]any
 			if err := common.UnmarshalJsonStr(rawHeaderOverride, &parsed); err != nil {
-				return fmt.Errorf("header_override must be a JSON object: %w", err)
+				return common.NewMessage("header_override must be a JSON object")
 			}
 		}
 		channel.HeaderOverride = &rawHeaderOverride
@@ -1501,7 +1534,6 @@ func applyFetchModelsPreviewTransport(channel *model.Channel, headerOverride *st
 }
 
 func FetchModels(c *gin.Context) {
-	markIdempotentReplayNoAudit(c)
 	var req fetchModelsRequest
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1510,9 +1542,10 @@ func FetchModels(c *gin.Context) {
 	}
 
 	var channel *model.Channel
+	usedSavedKey := false
 	if req.Type == constant.ChannelTypeAdvancedCustom || req.ChannelID > 0 {
 		var err error
-		channel, err = buildAdvancedCustomModelPreviewChannel(req)
+		channel, usedSavedKey, err = buildAdvancedCustomModelPreviewChannel(req)
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -1539,6 +1572,14 @@ func FetchModels(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	}
+	if usedSavedKey {
+		if !recordManageAudit(c, "channel.fetch_models_saved", map[string]any{"channel_id": req.ChannelID}) {
+			common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Audit log unavailable; operation aborted"))
+			return
+		}
+	} else {
+		markIdempotentReplayNoAudit(c)
 	}
 
 	models, err := fetchChannelUpstreamModelIDs(channel)

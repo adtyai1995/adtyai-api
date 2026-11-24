@@ -123,6 +123,55 @@ func GetRetryTimes() int {
 	return v
 }
 
+func GetLogConsumeEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := LogConsumeEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetDataExportEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := DataExportEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetDataExportInterval() int {
+	OptionMapRWMutex.RLock()
+	v := DataExportInterval
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetQuotaRemindEnabled() bool {
+	OptionMapRWMutex.RLock()
+	v := QuotaRemindEnabled
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetQuotaRemindThreshold() int {
+	OptionMapRWMutex.RLock()
+	v := QuotaRemindThreshold
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetQuotaForNewUser() int {
+	OptionMapRWMutex.RLock()
+	v := QuotaForNewUser
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
+func GetChannelDisableThreshold() float64 {
+	OptionMapRWMutex.RLock()
+	v := ChannelDisableThreshold
+	OptionMapRWMutex.RUnlock()
+	return v
+}
+
 var ItemsPerPage = 10
 var MaxRecentItems = 1000
 

@@ -63,7 +63,7 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
-	if strings.Contains(c.Request.URL.Path, "embed") {
+	if helper.IsGeminiEmbeddingPath(c.Request.URL.Path) {
 		err = relay.GeminiEmbeddingHandler(c, info)
 	} else {
 		err = relay.GeminiHelper(c, info)
@@ -399,13 +399,16 @@ func RelayMidjourney(c *gin.Context) {
 			mjErr.Result = i18n.T(c, i18n.MsgRelayGroupSaturated)
 			statusCode = http.StatusTooManyRequests
 		}
+		channelId := c.GetInt("channel_id")
+		logger.LogError(c, common.LogText("relay error (channel #%d, status code %d): %s", channelId, statusCode, fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result)))
+		if c.Writer.Written() {
+			return
+		}
 		c.JSON(statusCode, gin.H{
 			"description": fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result),
 			"type":        "upstream_error",
 			"code":        mjErr.Code,
 		})
-		channelId := c.GetInt("channel_id")
-		logger.LogError(c, common.LogText("relay error (channel #%d, status code %d): %s", channelId, statusCode, fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result)))
 	}
 }
 
@@ -895,6 +898,9 @@ func holdAmbiguousTaskSubmission(c *gin.Context, relayInfo *relaycommon.RelayInf
 
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）
 func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
+	if c.Writer.Written() {
+		return
+	}
 	if taskErr.StatusCode == http.StatusTooManyRequests {
 		taskErr.Message = i18n.T(c, i18n.MsgRelayGroupUpstreamSaturated)
 	}

@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -190,12 +191,26 @@ func allocateAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, 
 		}
 		remaining -= take
 	}
+	var loc *time.Location
+	var nowUnix int64
 	for _, batch := range batches {
 		if remaining <= 0 {
 			break
 		}
 		if !isAdtyBonusBatchKind(batch.Kind) {
 			continue
+		}
+		if batch.Status == AdtyFundBatchStatusExpired {
+			continue
+		}
+		if batch.IsExpiringGift() && batch.ExpiresAt != nil && *batch.ExpiresAt > 0 {
+			if loc == nil {
+				loc = AdtyBusinessLocation(tx)
+				nowUnix = time.Now().In(loc).Unix()
+			}
+			if isAdtyFundBatchExpiredAt(&batch, nowUnix, loc) {
+				continue
+			}
 		}
 		available := batch.Remaining - heldByBatch[batch.Id]
 		if available <= 0 {

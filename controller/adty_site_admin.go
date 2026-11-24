@@ -506,6 +506,7 @@ func GetAdtyAdminSiteOwnerCandidates(c *gin.Context) {
 		Where("site_id = 0 AND staff_site_id = 0 AND status = ?", common.UserStatusEnabled).
 		Where("id NOT IN (?)", ownedSub).
 		Where("id NOT IN (?)", empSub)
+	showEmail := adtyAdminFieldVisible(c, authz.AdtyUserRead)
 	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
 		op := "LIKE"
 		if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
@@ -513,9 +514,15 @@ func GetAdtyAdminSiteOwnerCandidates(c *gin.Context) {
 		}
 		like := "%" + keyword + "%"
 		if id, err := strconv.Atoi(strings.TrimPrefix(keyword, "#")); err == nil && id > 0 {
-			query = query.Where("(id = ? OR username "+op+" ? OR display_name "+op+" ? OR email "+op+" ?)", id, like, like, like)
-		} else {
+			if showEmail {
+				query = query.Where("(id = ? OR username "+op+" ? OR display_name "+op+" ? OR email "+op+" ?)", id, like, like, like)
+			} else {
+				query = query.Where("(id = ? OR username "+op+" ? OR display_name "+op+" ?)", id, like, like)
+			}
+		} else if showEmail {
 			query = query.Where("(username "+op+" ? OR display_name "+op+" ? OR email "+op+" ?)", like, like, like)
+		} else {
+			query = query.Where("(username "+op+" ? OR display_name "+op+" ?)", like, like)
 		}
 	}
 	var total int64
@@ -529,7 +536,6 @@ func GetAdtyAdminSiteOwnerCandidates(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	showEmail := adtyAdminFieldVisible(c, authz.AdtyUserRead)
 	items := make([]gin.H, 0, len(users))
 	for _, user := range users {
 		email := service.AdtyMaskEmail(user.Email)
@@ -1245,9 +1251,9 @@ func ReviewAdtySiteCustomer(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	eventID, err := service.ReviewAdtySiteCustomerWithAudit(id, c.GetInt("id"), body.ConvertSkipped)
+	eventID, err := service.ReviewAdtySiteCustomerWithAuditForActor(id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), body.ConvertSkipped)
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtyFinanceError(c, err)
 		return
 	}
 	if eventID != "" {

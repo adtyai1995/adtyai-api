@@ -26,7 +26,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
-import { getServerErrorMessage } from '@/lib/server-error-message'
+import {
+  createServerError,
+  getServerErrorMessage,
+} from '@/lib/server-error-message'
 
 type BindView = {
   status: string
@@ -64,7 +67,7 @@ export function TelegramBindCard(props: {
         message?: string
       }
       if (!body.success || !body.data) {
-        throw new Error(body.message || t('Failed to load data'))
+        throw createServerError(body, t('Failed to load data'))
       }
       return body.data
     },
@@ -87,7 +90,7 @@ export function TelegramBindCard(props: {
         data?: { code?: string; bot_username?: string; expires_at?: number }
       }
       if (!body.success || !body.data?.code) {
-        throw new Error(body.message || t('Failed to save'))
+        throw createServerError(body, t('Failed to save'))
       }
       setCode(body.data.code)
       setBotUsername(body.data.bot_username ?? '')
@@ -109,7 +112,7 @@ export function TelegramBindCard(props: {
         telegram_user_id: Number(telegramId),
       })
       const body = response.data as { success?: boolean; message?: string }
-      if (!body.success) throw new Error(body.message || t('Failed to save'))
+      if (!body.success) throw createServerError(body, t('Failed to save'))
       setCode('')
       setBotUsername('')
       setExpiresAt(0)
@@ -130,7 +133,7 @@ export function TelegramBindCard(props: {
     try {
       const response = await api.delete(bindingPath, { params })
       const body = response.data as { success?: boolean; message?: string }
-      if (!body.success) throw new Error(body.message || t('Failed to save'))
+      if (!body.success) throw createServerError(body, t('Failed to save'))
       setCode('')
       setBotUsername('')
       setExpiresAt(0)

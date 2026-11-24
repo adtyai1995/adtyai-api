@@ -79,6 +79,8 @@ type BillingSnapshot struct {
 	EstimatedImageCount       *int           `json:"estimated_image_count,omitempty"`
 	BillingMode               string         `json:"billing_mode"`
 	ModelName                 string         `json:"model_name"`
+	PluginKey                 string         `json:"plugin_key,omitempty"`
+	UpstreamModelName         string         `json:"upstream_model_name,omitempty"`
 	ExprString                string         `json:"expr_string"`
 	ExprHash                  string         `json:"expr_hash"`
 	GroupRatio                float64        `json:"group_ratio"`

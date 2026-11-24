@@ -185,7 +185,17 @@ func visionEmbeddingResponse(c *gin.Context, resp *http.Response, info *relaycom
 	if *u.PromptTokens != *u.TotalTokens || image > *u.PromptTokens || text > *u.PromptTokens-image {
 		return nil, types.NewOpenAIError(errors.New("inconsistent Volcengine vision embedding token usage"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
-	usage := &dto.Usage{PromptTokens: *u.PromptTokens, TotalTokens: *u.TotalTokens, PromptTokensDetails: dto.InputTokenDetails{TextTokens: text, ImageTokens: image}}
+	promptTokens := *u.PromptTokens
+	totalTokens := *u.TotalTokens
+	if promptTokens <= 0 {
+		est := info.GetEstimatePromptTokens()
+		if est <= 0 || est > math.MaxInt32 {
+			return nil, types.NewOpenAIError(errors.New("invalid Volcengine vision embedding token usage"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		promptTokens = est
+		totalTokens = est
+	}
+	usage := &dto.Usage{PromptTokens: promptTokens, TotalTokens: totalTokens, PromptTokensDetails: dto.InputTokenDetails{TextTokens: text, ImageTokens: image}}
 	info.ObserveResponseModel(response.Model)
 	if response.Model == "" {
 		response.Model = info.UpstreamModelName

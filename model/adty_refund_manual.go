@@ -80,9 +80,34 @@ func lockAdtyRefundOrderForActorTx(tx *gorm.DB, tradeNo string, actor AdtyRefund
 				return nil, nil, err
 			}
 		}
+		// Preserve R2-022 canonical ascending user_id lock order when an invite
+		// commission exists on this subsite order so locking the target user here
+		// never inverts [inviter, invitee] locking later in Complete (R12-014).
+		var inviterID int
+		if ext.TeamId == 0 && ext.SiteId > 0 && tx.Migrator().HasTable(&AdtySiteInviteCommission{}) {
+			var commStub AdtySiteInviteCommission
+			if err := tx.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&commStub).Error; err != nil {
+				return nil, nil, err
+			}
+			if commStub.InviterId > 0 && commStub.InviterId != topUp.UserId {
+				inviterID = commStub.InviterId
+			}
+		}
+		if inviterID > 0 && inviterID < topUp.UserId {
+			var inviter User
+			if err := lockForUpdate(tx).Select("id").Where("id = ?", inviterID).Limit(1).Find(&inviter).Error; err != nil {
+				return nil, nil, err
+			}
+		}
 		var target User
 		if err := lockForUpdate(tx).Select("id", "role").First(&target, topUp.UserId).Error; err != nil {
 			return nil, nil, err
+		}
+		if inviterID > topUp.UserId {
+			var inviter User
+			if err := lockForUpdate(tx).Select("id").Where("id = ?", inviterID).Limit(1).Find(&inviter).Error; err != nil {
+				return nil, nil, err
+			}
 		}
 		if actor.OperatorID > 0 && actor.OperatorID == target.Id {
 			return nil, nil, ErrUserQuotaPermission
@@ -1458,12 +1483,17 @@ func RecordAdtyTopUpManualRefundPayoutForActor(tradeNo, refundID string, actor A
 	}
 	currency := strings.TrimSpace(payout.Currency)
 	voucher := strings.TrimSpace(payout.Voucher)
+	if len(voucher) > 255 || len(currency) > 16 || payout.Amount.IsNegative() {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	maxDecimal20x8 := decimal.New(1, 12).Sub(decimal.New(1, -8))
+	if !payout.Amount.IsZero() && (payout.Amount.GreaterThan(maxDecimal20x8) || !payout.Amount.Equal(payout.Amount.Truncate(8))) {
+		return nil, common.NewMessage("Invalid parameters")
+	}
 	if status == AdtyManualRefundPayoutSuccess {
-		if currency == "" || !payout.Amount.IsPositive() || payout.PaidAt <= 0 || voucher == "" || len(voucher) > 255 {
+		if currency == "" || !payout.Amount.IsPositive() || payout.PaidAt <= 0 || voucher == "" {
 			return nil, common.NewMessage("Invalid parameters")
 		}
-	} else if len(voucher) > 255 || len(currency) > 16 {
-		return nil, common.NewMessage("Invalid parameters")
 	}
 	var result *AdtyManualRefundResult
 	err = DB.Transaction(func(tx *gorm.DB) error {
@@ -1502,6 +1532,24 @@ func RecordAdtyTopUpManualRefundPayoutForActor(tradeNo, refundID string, actor A
 		}
 		if err := adtyRequireApprovedManualRefund(row); err != nil {
 			return err
+		}
+		if status == AdtyManualRefundPayoutSuccess && ext.PaidAmount.IsPositive() && strings.EqualFold(currency, strings.TrimSpace(ext.refundCurrency())) {
+			committedAndInFlight := ext.RefundAmount
+			for _, other := range rows {
+				if other.RefundId == row.RefundId ||
+					other.Status == AdtyManualRefundStatusCompleted ||
+					other.Status == AdtyManualRefundStatusTerminated {
+					continue
+				}
+				if other.PayoutStatus == AdtyManualRefundPayoutSuccess &&
+					other.PayoutAmount.IsPositive() &&
+					strings.EqualFold(strings.TrimSpace(other.PayoutCurrency), strings.TrimSpace(ext.refundCurrency())) {
+					committedAndInFlight = committedAndInFlight.Add(other.PayoutAmount)
+				}
+			}
+			if committedAndInFlight.Add(payout.Amount).GreaterThan(ext.PaidAmount) {
+				return common.NewMessage("Refund amount exceeds the paid order amount")
+			}
 		}
 		// S+H+U+X <= L must still hold before recording a non-failed payout (R1-004).
 		if status != AdtyManualRefundPayoutFailed {
@@ -1771,6 +1819,9 @@ func CompleteAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyR
 			refundAmountDelta = row.RequestUSD
 		}
 		nextRefundAmount := ext.RefundAmount.Add(refundAmountDelta)
+		if ext.PaidAmount.IsPositive() && nextRefundAmount.GreaterThan(ext.PaidAmount) {
+			return common.NewMessage("Refund amount exceeds the paid order amount")
+		}
 		if err := tx.Model(&AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
 			"refunded_at":   now,
 			"refund_reason": row.Reason,

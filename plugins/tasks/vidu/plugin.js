@@ -391,9 +391,19 @@ export function buildContentRequest(ctx) {
 }
 
 export function extractUsageOnComplete(_task, _taskResult, body) {
-  if (!body || !Object.prototype.hasOwnProperty.call(body, "credits") || body.credits === undefined || body.credits === null) return null;
+  if (
+    !body ||
+    !Object.prototype.hasOwnProperty.call(body, "credits") ||
+    body.credits === undefined ||
+    body.credits === null ||
+    typeof body.credits === "boolean" ||
+    Array.isArray(body.credits) ||
+    (typeof body.credits === "string" && body.credits.trim() === "")
+  ) {
+    return null;
+  }
   const credits = Number(body.credits);
-  if (!Number.isFinite(credits)) return null;
+  if (!Number.isFinite(credits) || credits <= 0) return null;
   return { credits: credits };
 }
 
