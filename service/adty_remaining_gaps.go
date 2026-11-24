@@ -1682,6 +1682,24 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 			}
 			return nil
 		}
+		// R14-025: Prevent mutual or cyclic subsite invite chains (matching main-site referral rules).
+		ancestorID := inviterID
+		visited := map[int]struct{}{inviteeID: {}}
+		for hops := 0; hops < 64 && ancestorID > 0; hops++ {
+			if _, seen := visited[ancestorID]; seen {
+				return common.NewMessage("Cannot create a circular invite relationship")
+			}
+			visited[ancestorID] = struct{}{}
+			var parent model.AdtySiteInvite
+			parentLookup := tx.Select("inviter_id").Where("site_id = ? AND invitee_id = ?", siteID, ancestorID).Limit(1).Find(&parent)
+			if parentLookup.Error != nil {
+				return parentLookup.Error
+			}
+			if parentLookup.RowsAffected == 0 || parent.InviterId <= 0 {
+				break
+			}
+			ancestorID = parent.InviterId
+		}
 		if err := refuseSiteInviteBatchTx(tx, siteID, inviterID, ipHash); err != nil {
 			return err
 		}

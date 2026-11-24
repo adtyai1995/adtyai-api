@@ -100,8 +100,17 @@ export function buildSubmitRequest(ctx) {
   const action = ctx.action === "remix" ? "remix" : ctx.action;
   const headers = { Authorization: "Bearer " + ctx.apiKey };
   if (action === "remix") {
+    const origin = resolveOriginTask(ctx);
+    const upstreamId = trimmed(origin && origin.upstreamTaskId) || trimmed(ctx.originTaskId);
+    if (!upstreamId) throw new Error("origin task id is required");
     headers["Content-Type"] = "application/json";
-    return { url: ctx.baseUrl + "/v1/videos/" + ctx.originTaskId + "/remix", method: "POST", headers, body: requestValues(req, ctx.upstreamModel), action };
+    return {
+      url: ctx.baseUrl + "/v1/videos/" + encodeURIComponent(upstreamId) + "/remix",
+      method: "POST",
+      headers,
+      body: requestValues(req, ctx.upstreamModel),
+      action,
+    };
   }
   if ((ctx.files || []).length) {
     const parts = [];

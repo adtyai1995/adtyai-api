@@ -1346,6 +1346,11 @@ func SpendAdtyTeam(userId int, quota int64, ref string) error {
 		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: team.SiteId, AccountID: userId, OrderRef: ref}); err != nil {
 			return err
 		}
+		if team.LeaderUserId > 0 && team.LeaderUserId != userId {
+			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: team.SiteId, AccountID: team.LeaderUserId, OrderRef: ref}); err != nil {
+				return err
+			}
+		}
 		if team.SharedQuota < quota {
 			return ErrAdtyTeamFunds
 		}
@@ -1870,6 +1875,14 @@ func reserveAdtyTeamQuotaHook(tx *gorm.DB, teamId int64, userId, delta int, ref 
 	if priorReserved == 0 {
 		if err := validateNewAdtyTeamReserveTx(tx, &team, userId, ref); err != nil {
 			return true, err
+		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: team.SiteId, AccountID: userId, OrderRef: ref}); err != nil {
+			return true, err
+		}
+		if team.LeaderUserId > 0 && team.LeaderUserId != userId {
+			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: team.SiteId, AccountID: team.LeaderUserId, OrderRef: ref}); err != nil {
+				return true, err
+			}
 		}
 	}
 	if team.SharedQuota < int64(delta) {

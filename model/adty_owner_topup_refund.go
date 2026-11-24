@@ -64,6 +64,9 @@ func ownerRefundOperation(row *AdtyManualRefund) string {
 }
 
 func reserveOwnerRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRefund) error {
+	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
+		return err
+	}
 	before, checkin, err := lockUserQuotaForRefundTx(tx, ext.UserId)
 	if err != nil {
 		return err

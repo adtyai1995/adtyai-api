@@ -101,29 +101,15 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is disabled"), "task_channel_disable", http.StatusBadRequest)
 	}
 	info.LockedChannel = ch
-
-	if originTask.ChannelId != info.ChannelId {
-		key, _, newAPIError := ch.GetNextEnabledKey()
-		if newAPIError != nil {
-			return service.TaskErrorWrapper(newAPIError, "channel_no_available_key", newAPIError.StatusCode, common.UpstreamAddresses(c)...)
+	// R14-009: Preserve the origin task's plugin binding on NewAPI/TaskPlugin locked
+	// channels, and let controller/relay.go run SetupContextForSelectedChannel on attempt 0
+	// instead of partially writing context keys here and skipping full channel setup.
+	if c.GetString("expected_task_plugin_key") == "" {
+		if ch.Type == constant.ChannelTypeNewAPI && originTask.Platform != "" && ch.GetSetting().BindsTaskPlugin(string(originTask.Platform)) {
+			c.Set("expected_task_plugin_key", string(originTask.Platform))
+		} else if ch.Type == constant.ChannelTypeTaskPlugin && ch.GetSetting().TaskPluginKey != "" {
+			c.Set("expected_task_plugin_key", ch.GetSetting().TaskPluginKey)
 		}
-		chSetting := ch.GetSetting()
-		chOtherSettings := ch.GetOtherSettings()
-		common.SetContextKey(c, constant.ContextKeyChannelKey, key)
-		common.SetContextKey(c, constant.ContextKeyChannelType, ch.Type)
-		common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, ch.GetBaseURL())
-		common.SetContextKey(c, constant.ContextKeyChannelId, originTask.ChannelId)
-		common.SetContextKey(c, constant.ContextKeyChannelSetting, chSetting)
-		common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, chOtherSettings)
-		common.SetContextKey(c, constant.ContextKeyChannelParamOverride, ch.GetParamOverride())
-		common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, ch.GetHeaderOverride())
-
-		info.ChannelBaseUrl = ch.GetBaseURL()
-		info.ChannelId = originTask.ChannelId
-		info.ChannelType = ch.Type
-		info.ApiKey = key
-		info.ChannelSetting = chSetting
-		info.ChannelOtherSettings = chOtherSettings
 	}
 
 	// R13-025: Expose origin task payload and prior usage facts to plugin hooks
@@ -389,12 +375,19 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
 	}
+	// R14-008: Preserve OtherRatios preset before ModelPriceHelperPerCall (e.g. Sora
+	// remix seconds/size ratios populated by ResolveOriginTask) so per-call pricing
+	// does not wipe them when EstimateBilling returns an empty map.
+	presetRatios := info.PriceData.OtherRatios()
 	info.PriceData = priceData
 
 	// 5. 计费估算：让适配器根据用户请求提供 OtherRatios（时长、分辨率等）
 	//    必须在 ModelPriceHelperPerCall 之后调用（它会重建 PriceData）。
 	//    ResolveOriginTask 可能已在 remix 路径中预设了 OtherRatios，此处合并。
 	if info.TieredBillingSnapshot == nil {
+		for k, v := range presetRatios {
+			info.PriceData.AddOtherRatio(k, v)
+		}
 		var estimatedRatios map[string]float64
 		if validatedProvider, ok := adaptor.(channel.TaskValidatedBillingProvider); ok {
 			estimatedRatios, err = validatedProvider.EstimateBillingValidated(c, info)

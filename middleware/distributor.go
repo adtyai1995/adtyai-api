@@ -49,11 +49,12 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, invalidRequestStatus(err), i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
-		if shouldSelectChannel && !model.CatalogModelCallable(modelRequest.Model) {
+		checkModelPolicy := shouldSelectChannel || (c.Request.Method == http.MethodPost && modelRequest.Model != "")
+		if checkModelPolicy && !model.CatalogModelCallable(modelRequest.Model) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorModelShelved))
 			return
 		}
-		if shouldSelectChannel && !service.GroupModelAllowed(common.GetContextKeyString(c, constant.ContextKeyUsingGroup), modelRequest.Model) {
+		if checkModelPolicy && !service.GroupModelAllowed(common.GetContextKeyString(c, constant.ContextKeyUsingGroup), modelRequest.Model) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupModelForbidden, map[string]any{"Model": modelRequest.Model}))
 			return
 		}
@@ -396,6 +397,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		relayMode := relayconstant.RelayModeVideoSubmit
 		c.Set("relay_mode", relayMode)
 		shouldSelectChannel = false
+		modelRequest.Model = getRemixOriginModelName(c)
 	} else if strings.Contains(c.Request.URL.Path, "/v1/videos") {
 		//curl https://api.openai.com/v1/videos \
 		//  -H "Authorization: Bearer $OPENAI_API_KEY" \
@@ -544,6 +546,35 @@ func getTaskOriginModelName(c *gin.Context) string {
 	return ""
 }
 
+// R14-009: Resolve the origin video task's model name for POST /v1/videos/:video_id/remix
+// so catalog callability, group access, and token model limits validate the real model.
+func getRemixOriginModelName(c *gin.Context) string {
+	videoID := strings.TrimSpace(c.Param("video_id"))
+	if videoID == "" {
+		return ""
+	}
+	userId := c.GetInt("id")
+	task, exist, err := model.GetByTaskId(userId, videoID)
+	if err != nil || !exist || task == nil {
+		return ""
+	}
+	if task.Properties.OriginModelName != "" {
+		return task.Properties.OriginModelName
+	}
+	if task.Properties.UpstreamModelName != "" {
+		return task.Properties.UpstreamModelName
+	}
+	if len(task.Data) > 0 {
+		var taskData map[string]any
+		if err := common.Unmarshal(task.Data, &taskData); err == nil {
+			if m, ok := taskData["model"].(string); ok && strings.TrimSpace(m) != "" {
+				return strings.TrimSpace(m)
+			}
+		}
+	}
+	return ""
+}
+
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
 	c.Set("original_model", modelName) // for retry
 	expectedPlugin := c.GetString("expected_task_plugin_key")
@@ -620,6 +651,8 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, headerOverride)
 	if nil != channel.OpenAIOrganization && *channel.OpenAIOrganization != "" {
 		common.SetContextKey(c, constant.ContextKeyChannelOrganization, *channel.OpenAIOrganization)
+	} else {
+		common.SetContextKey(c, constant.ContextKeyChannelOrganization, "")
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
@@ -637,6 +670,15 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
 
 	common.SetContextKey(c, constant.ContextKeySystemPromptOverride, false)
+
+	// R14-011: Clear channel-type-specific keys before populating for the newly selected
+	// channel so retries across channel types never leak stale api_version/region/plugin/bot_id.
+	if c.Keys != nil {
+		delete(c.Keys, "api_version")
+		delete(c.Keys, "region")
+		delete(c.Keys, "plugin")
+		delete(c.Keys, "bot_id")
+	}
 
 	// TODO: api_version统一
 	switch channel.Type {

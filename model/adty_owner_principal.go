@@ -8,17 +8,23 @@ import (
 )
 
 type ownerLotScopeKey struct{}
+type ownerWalletPreAdjustedKey struct{}
 
 // Attach the immutable payer scope to all batch queries in this transaction.
 func withOwnerFundScope(tx *gorm.DB, op *BillingOperation) *gorm.DB {
+	ctx := tx.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, ownerWalletPreAdjustedKey{}, true)
 	if op.PayerKind != BillingPayerOwner && !tx.Migrator().HasTable(&AdtySite{}) {
-		return tx
+		return tx.WithContext(ctx)
 	}
 	id := 0
 	if op.PayerKind == BillingPayerOwner {
 		id = op.SiteId
 	}
-	return tx.WithContext(context.WithValue(tx.Statement.Context, ownerLotScopeKey{}, id))
+	return tx.WithContext(context.WithValue(ctx, ownerLotScopeKey{}, id))
 }
 
 // Reverse only settled shares belonging to this original self-use request.

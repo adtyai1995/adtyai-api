@@ -14,8 +14,8 @@ import (
 )
 
 func CreateLogCleanupSystemTask(c *gin.Context) {
-	targetTimestamp, _ := strconv.ParseInt(c.Query("target_timestamp"), 10, 64)
-	if targetTimestamp == 0 {
+	targetTimestamp, err := strconv.ParseInt(c.Query("target_timestamp"), 10, 64)
+	if err != nil || targetTimestamp <= 0 {
 		common.ApiErrorT(c, "Target timestamp is required")
 		return
 	}

@@ -234,6 +234,9 @@ func loadOptionsFromDatabase() {
 }
 
 func SyncOptions(frequency int) {
+	if frequency < 1 {
+		frequency = 60
+	}
 	for {
 		time.Sleep(time.Duration(frequency) * time.Second)
 		common.SysLog(common.LogText("syncing options from database"))
@@ -352,6 +355,16 @@ func validateOptionValue(key string, value string) error {
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || n < 1 || n > 1440 {
 			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 1, "max": 1440})
+		}
+	case "perf_metrics_setting.flush_interval":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 1 || n > 1440 {
+			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 1, "max": 1440})
+		}
+	case "perf_metrics_setting.retention_days":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 || n > 3650 {
+			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 0, "max": 3650})
 		}
 	case "ModelRequestRateLimitGroup":
 		if err := setting.CheckModelRequestRateLimitGroup(value); err != nil {
@@ -698,17 +711,27 @@ func updateOptionMap(key string, value string) (err error) {
 		common.OptionMapRWMutex.Unlock()
 		return nil
 	}
+	var postHook func()
 	common.OptionMapRWMutex.Lock()
-	defer common.OptionMapRWMutex.Unlock()
-
 	// 分层配置先解析成功再写入内存。解析失败不能显示成保存成功。
-	if handled, err := handleConfigUpdate(key, value); handled {
-		if err != nil {
-			return err
+	if handled, hook, hookErr := handleConfigUpdate(key, value); handled {
+		if hookErr != nil {
+			common.OptionMapRWMutex.Unlock()
+			return hookErr
 		}
 		common.OptionMap[key] = value
+		common.OptionMapRWMutex.Unlock()
+		if hook != nil {
+			hook()
+		}
 		return nil
 	}
+	defer func() {
+		common.OptionMapRWMutex.Unlock()
+		if postHook != nil {
+			postHook()
+		}
+	}()
 	common.OptionMap[key] = value
 
 	// 处理传统配置项...
@@ -960,16 +983,17 @@ func updateOptionMap(key string, value string) (err error) {
 	return err
 }
 
-// handleConfigUpdate 处理分层配置更新。第一个返回值表示这个键属于分层配置。
-func handleConfigUpdate(key, value string) (bool, error) {
+// handleConfigUpdate 处理分层配置更新。第一个返回值表示这个键属于分层配置，
+// 第二个返回值是须在释放 OptionMapRWMutex 后执行的后处理回调。
+func handleConfigUpdate(key, value string) (bool, func(), error) {
 	if key == operation_setting.ToolPriceOptionKey {
 		operation_setting.LoadToolPricesFromJSONString(value)
-		return true, nil
+		return true, nil, nil
 	}
 
 	parts := strings.SplitN(key, ".", 2)
 	if len(parts) != 2 {
-		return false, nil // 不是分层配置
+		return false, nil, nil // 不是分层配置
 	}
 
 	configName := parts[0]
@@ -978,7 +1002,7 @@ func handleConfigUpdate(key, value string) (bool, error) {
 	// 获取配置对象
 	cfg := config.GlobalConfig.Get(configName)
 	if cfg == nil {
-		return false, nil // 未注册的配置
+		return false, nil, nil // 未注册的配置
 	}
 
 	// 更新配置
@@ -986,16 +1010,19 @@ func handleConfigUpdate(key, value string) (bool, error) {
 		configKey: value,
 	}
 	if err := config.UpdateConfigFromMap(cfg, configMap); err != nil {
-		return true, err
+		return true, nil, err
 	}
 
-	// 特定配置的后处理
+	// 特定配置的后处理必须在释放 OptionMapRWMutex 后执行，避免与 updatePricingLock/channelSyncLock 成环（R14-001）。
+	var postHook func()
 	if configName == "performance_setting" {
-		performance_setting.UpdateAndSync()
+		postHook = performance_setting.UpdateAndSync
 	} else if configName == "billing_setting" {
-		InvalidatePricingCache()
-		ratio_setting.InvalidateExposedDataCache()
+		postHook = func() {
+			InvalidatePricingCache()
+			ratio_setting.InvalidateExposedDataCache()
+		}
 	}
 
-	return true, nil
+	return true, postHook, nil
 }

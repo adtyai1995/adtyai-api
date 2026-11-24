@@ -1174,7 +1174,11 @@ export function extractUsage(ctx) {
   const refContent = videoReferenceContent(req);
   const resolution = videoResolution(ctx);
   if (ctx.usagePurpose === "billing_ratios") {
-    const ratio = videoInputRatio(ctx.upstreamModel || ctx.model, resolution, refContent);
+    const canonicalModel =
+      [ctx.upstreamModel, ctx.model, req.model].map(trimmed).find(function (m) {
+        return Object.prototype.hasOwnProperty.call(VIDEO_MODELS, m);
+      }) || trimmed(ctx.upstreamModel || ctx.model);
+    const ratio = videoInputRatio(canonicalModel, resolution, refContent);
     return ratio === 1 ? null : { video_input_ratio: ratio };
   }
   const profile = videoProfile(ctx);

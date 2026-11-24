@@ -901,6 +901,15 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 			}
 		}
 	}
+	if domain.TurnstileWidget != "" || (hostnameID != "" && resellerSetting().TurnstileConfigured()) {
+		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
+			common.SysError(common.LogText("remove timed out turnstile domain %d failed", domain.Id))
+			updates["last_error"] = "turnstile cleanup failed"
+			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+		}
+		updates["turnstile_widget"] = ""
+		domain.TurnstileWidget = ""
+	}
 	if hostnameID != "" {
 		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
 			common.SysError(common.LogText("delete timed out custom hostname for domain %d failed", domain.Id))
@@ -908,14 +917,7 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
 		}
 		updates["cf_hostname_id"] = ""
-	}
-	if domain.TurnstileWidget != "" {
-		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
-			common.SysError(common.LogText("remove timed out turnstile domain %d failed", domain.Id))
-			updates["last_error"] = "turnstile cleanup failed"
-			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
-		}
-		updates["turnstile_widget"] = ""
+		domain.CFHostnameId = ""
 	}
 	updates["status"] = model.AdtySiteDomainFailed
 	return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
@@ -997,6 +999,9 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 			return nil
 		}
 		if domain.CFHostnameId == "" {
+			if now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
+				return adtyMarkCustomDomainFailed(ctx, tx, zone, domain, map[string]any{"last_checked_at": now.Unix()})
+			}
 			if err := adtyAttachCustomHostnameLocked(ctx, tx, domain); err != nil {
 				// Cloudflare 拒绝这个主机名（非法、已被别的 zone 占用、token 缺权限……）
 				// 是这一行的属性，不是整批的：记账，并让超时判断也能看到它。

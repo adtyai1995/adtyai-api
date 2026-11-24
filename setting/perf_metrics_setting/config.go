@@ -1,6 +1,9 @@
 package perf_metrics_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 type PerfMetricsSetting struct {
 	Enabled       bool   `json:"enabled"`
@@ -21,11 +24,14 @@ func init() {
 }
 
 func GetSetting() PerfMetricsSetting {
-	return perfMetricsSetting
+	common.OptionMapRWMutex.RLock()
+	snapshot := perfMetricsSetting
+	common.OptionMapRWMutex.RUnlock()
+	return snapshot
 }
 
 func GetBucketSeconds() int64 {
-	switch perfMetricsSetting.BucketTime {
+	switch GetSetting().BucketTime {
 	case "minute":
 		return 60
 	case "5min":
@@ -38,8 +44,12 @@ func GetBucketSeconds() int64 {
 }
 
 func GetFlushIntervalMinutes() int {
-	if perfMetricsSetting.FlushInterval < 1 {
+	interval := GetSetting().FlushInterval
+	if interval < 1 {
 		return 1
 	}
-	return perfMetricsSetting.FlushInterval
+	if interval > 1440 {
+		return 1440
+	}
+	return interval
 }

@@ -486,6 +486,11 @@ func CreditAdtySiteTeamBalanceByOwner(siteID, ownerID int, teamID int64, amountU
 			}
 			return nil
 		}
+		if team.LeaderUserId > 0 {
+			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: siteID, AccountID: team.LeaderUserId}); err != nil {
+				return err
+			}
+		}
 		split, err := adtyDebitOwnerAutoFundingTx(tx, siteID, ownerID, amountUSD, "owner_team_balance", "owner_team_balance", strconv.FormatInt(teamID, 10), reason, baseKey)
 		if err != nil {
 			if errors.Is(err, ErrAdtySiteWalletInsufficient) {

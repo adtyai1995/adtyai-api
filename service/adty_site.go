@@ -1258,6 +1258,22 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		if err := model.ArchiveAdtySiteCustomersOnCloseTx(tx, moved, site.Id, now); err != nil {
 			return err
 		}
+		// R14-031: Require reconfirmation of closed-site Telegram bindings after users
+		// inherit to main site, and skip unsent closed-site deliveries cleanly.
+		if tx.Migrator().HasTable(&model.AdtyTelegramBinding{}) {
+			if err := tx.Model(&model.AdtyTelegramBinding{}).
+				Where("site_id = ? AND status = ?", site.Id, model.AdtyTelegramBindActive).
+				Update("status", model.AdtyTelegramBindConfirm).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.AdtyTelegramDelivery{}) {
+			if err := tx.Model(&model.AdtyTelegramDelivery{}).
+				Where("site_id = ? AND status IN ?", site.Id, []string{model.AdtyTelegramDeliveryWait, model.AdtyTelegramDeliveryFail}).
+				Updates(map[string]any{"status": model.AdtyTelegramDeliverySkip, "last_error": "site closed"}).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(map[string]any{
 			"status": model.AdtySiteStatusClosed, "closed_at": now, "close_transfer_to": target,
 		}).Error; err != nil {

@@ -263,7 +263,7 @@ func PostAdtyTelegramWebhook(c *gin.Context) {
 		return
 	}
 	chatID := int64(0)
-	if update.Message != nil {
+	if update.Message != nil && update.Message.Chat.Type == "private" {
 		chatID = update.Message.Chat.Id
 	}
 	if chatID == 0 || strings.TrimSpace(reply) == "" {

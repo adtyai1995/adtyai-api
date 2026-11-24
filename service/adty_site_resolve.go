@@ -102,9 +102,11 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 		snapshot.byId[site.Id] = site
 		snapshot.byHost[strings.ToLower(site.Subdomain+"."+site.RootDomain)] = site
 	}
+	loadErr := false
 	if AdtyLoadCustomDomains != nil {
 		domains, err := AdtyLoadCustomDomains()
 		if err != nil {
+			loadErr = true
 			common.SysError(common.LogText("load adty custom domains failed: %s", err.Error()))
 		}
 		for host, siteId := range domains {
@@ -116,6 +118,7 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 	if AdtyLoadApiOnlyDomains != nil {
 		apiHosts, err := AdtyLoadApiOnlyDomains()
 		if err != nil {
+			loadErr = true
 			common.SysError(common.LogText("load adty api-only domains failed: %s", err.Error()))
 			// Never serve a custom API hostname as an account website without its role.
 			clear(snapshot.byCustom)
@@ -157,7 +160,9 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 			break
 		}
 	}
-	adtySiteCache = snapshot
+	if !loadErr {
+		adtySiteCache = snapshot
+	}
 	return snapshot
 }
 

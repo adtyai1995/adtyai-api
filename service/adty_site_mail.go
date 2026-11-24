@@ -460,7 +460,7 @@ func AddAdtySiteSenderDomain(ctx context.Context, ownerUserId int, rawDomain str
 		return nil, staged.Error
 	}
 	if staged.RowsAffected == 0 {
-		return nil, errors.New("Sender domain creation is already being reconciled")
+		return nil, common.NewMessage("Sender domain creation is already being reconciled")
 	}
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var locked model.AdtySite
@@ -477,7 +477,7 @@ func AddAdtySiteSenderDomain(ctx context.Context, ownerUserId int, rawDomain str
 			return remove.Error
 		}
 		if remove.RowsAffected != 1 {
-			return errors.New("Sender domain creation expired")
+			return common.NewMessage("Sender domain creation expired")
 		}
 		var prior model.AdtySiteSenderDomain
 		lookup := model.AdtyLockForUpdate(tx).Where("site_id = ?", site.Id).Limit(1).Find(&prior)

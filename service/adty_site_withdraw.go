@@ -486,6 +486,9 @@ func MarkAdtySiteWithdrawalPayingWithAudit(id int64, reviewerID int, expected ..
 		if row.Status != model.AdtySiteWithdrawPending || row.AttemptNumber != previous || row.AttemptOpen {
 			return ErrAdtySiteWithdrawLocked
 		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: row.OwnerUserId}); err != nil {
+			return err
+		}
 		before := siteWithdrawalAuditSnapshot(&row)
 		now := time.Now().Unix()
 		attempt := model.AdtySitePayoutAttempt{WithdrawalId: row.Id, Number: previous + 1, AmountUSD: row.AmountUSD, Status: "unknown", StartedBy: reviewerID, CreatedAt: now}

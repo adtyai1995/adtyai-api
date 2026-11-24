@@ -670,9 +670,9 @@ func GetAdtyTelegramBind(userId int, purpose string) (*AdtyTelegramBindView, err
 	if !adtyValidTelegramPurpose(purpose) {
 		return nil, ErrAdtyTelegramInvalid
 	}
+	var u model.User
 	if userId > 0 && model.DB != nil {
-		var u model.User
-		if err := model.DB.Select("id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&u).Error; err != nil {
+		if err := model.DB.Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&u).Error; err != nil {
 			return nil, err
 		}
 		if u.StaffSiteId > 0 && purpose != model.AdtyTelegramPurposeAdmin {
@@ -689,6 +689,18 @@ func GetAdtyTelegramBind(userId int, purpose string) (*AdtyTelegramBindView, err
 		return view, nil
 	}
 	view.Status = row.Status
+	// R14-031: If the user's current site or active bot identity no longer matches
+	// the binding, report needs_reconfirm so the UI exposes the rebind entry point.
+	if row.Status == model.AdtyTelegramBindActive {
+		if u.Id > 0 && row.SiteId != u.SiteId {
+			view.Status = model.AdtyTelegramBindConfirm
+		} else {
+			var bot model.AdtyTelegramBot
+			if err := model.DB.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).Error; err == nil && bot.Id != 0 && bot.IdentityHash != row.BotIdentity {
+				view.Status = model.AdtyTelegramBindConfirm
+			}
+		}
+	}
 	if row.Status != "revoked" {
 		view.TelegramUserId = row.TelegramUserId
 	}

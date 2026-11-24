@@ -296,16 +296,67 @@ func getOGGDuration(r io.ReadSeeker) (float64, error) {
 	return duration, nil
 }
 
+// opusFrameSamplesByConfig maps RFC 6716 Section 3.1 TOC config (0..31) to
+// samples per frame at 48000 Hz.
+var opusFrameSamplesByConfig = [32]int64{
+	480, 960, 1920, 2880, // 0..3: SILK NB 10/20/40/60ms
+	480, 960, 1920, 2880, // 4..7: SILK MB
+	480, 960, 1920, 2880, // 8..11: SILK WB
+	480, 960, // 12..13: Hybrid SWB 10/20ms
+	480, 960, // 14..15: Hybrid FB 10/20ms
+	120, 240, 480, 960, // 16..19: CELT NB 2.5/5/10/20ms
+	120, 240, 480, 960, // 20..23: CELT WB
+	120, 240, 480, 960, // 24..27: CELT SWB
+	120, 240, 480, 960, // 28..31: CELT FB
+}
+
+func opusPacketSamples(pktHeader []byte) int64 {
+	if len(pktHeader) == 0 {
+		return 0
+	}
+	if len(pktHeader) >= 8 {
+		tag := string(pktHeader[:8])
+		if tag == "OpusHead" || tag == "OpusTags" {
+			return 0
+		}
+	}
+	toc := pktHeader[0]
+	frameSamples := opusFrameSamplesByConfig[toc>>3]
+	var frameCount int64
+	switch toc & 0x03 {
+	case 0:
+		frameCount = 1
+	case 1, 2:
+		frameCount = 2
+	case 3:
+		if len(pktHeader) < 2 {
+			return 0
+		}
+		frameCount = int64(pktHeader[1] & 0x3f)
+		if frameCount == 0 {
+			return 0
+		}
+	}
+	return frameSamples * frameCount
+}
+
 // getOpusDuration 解析 Opus 文件（在 OGG 容器中）以获取时长。
+// R14-010: 同时按逻辑流（BOS/serial）累加链式 Ogg granule position，并按 RFC 6716 TOC
+// 字节统计实际音频帧时长，取较大值以防止链式 Ogg 或负 granule 伪造规避 STT 计费。
 func getOpusDuration(r io.ReadSeeker) (float64, error) {
-	// Opus 通常封装在 OGG 容器中
-	// 我们需要解析 OGG 页面来获取时长信息
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return 0, errors.Wrap(err, "failed to seek opus file")
 	}
 
-	// 读取 OGG 页面头部
-	var totalGranulePos int64
+	type oggStreamState struct {
+		maxGranule int64
+		inPacket   bool
+		hdr        [8]byte
+		hdrLen     int
+	}
+	activeStreams := make(map[uint32]*oggStreamState)
+	var finishedGranuleSamples int64
+	var totalPacketSamples int64
 	foundPage := false
 	buf := make([]byte, 27) // OGG 页面头部最小大小
 
@@ -323,7 +374,6 @@ func getOpusDuration(r io.ReadSeeker) (float64, error) {
 
 		// 检查 OGG 页面标识 "OggS"
 		if string(buf[0:4]) != "OggS" {
-			// 跳过一些字节继续寻找
 			if _, err := r.Seek(-26, io.SeekCurrent); err != nil {
 				break
 			}
@@ -331,39 +381,248 @@ func getOpusDuration(r io.ReadSeeker) (float64, error) {
 		}
 		foundPage = true
 
-		// 读取 granule position (字节 6-13, 小端序)
+		headerType := buf[5]
 		granulePos := int64(binary.LittleEndian.Uint64(buf[6:14]))
-		if granulePos > totalGranulePos {
-			totalGranulePos = granulePos
+		serial := binary.LittleEndian.Uint32(buf[14:18])
+
+		stream := activeStreams[serial]
+		if headerType&0x02 != 0 {
+			// New chained logical bitstream (BOS): bank any previous stream's granule first.
+			if stream != nil && stream.maxGranule > 0 {
+				finishedGranuleSamples += stream.maxGranule
+			}
+			stream = &oggStreamState{}
+			activeStreams[serial] = stream
+		} else if stream == nil {
+			stream = &oggStreamState{}
+			activeStreams[serial] = stream
+		}
+		if granulePos > stream.maxGranule {
+			stream.maxGranule = granulePos
+		}
+		if headerType&0x01 == 0 {
+			stream.inPacket = false
+			stream.hdrLen = 0
 		}
 
-		// 读取段表大小
 		numSegments := int(buf[26])
 		segmentTable := make([]byte, numSegments)
 		if _, err := io.ReadFull(r, segmentTable); err != nil {
 			break
 		}
 
-		// 计算页面数据大小并跳过
 		var pageSize int
 		for _, segSize := range segmentTable {
 			pageSize += int(segSize)
 		}
-		if _, err := r.Seek(int64(pageSize), io.SeekCurrent); err != nil {
+		pageData := make([]byte, pageSize)
+		if _, err := io.ReadFull(r, pageData); err != nil {
 			break
+		}
+
+		offset := 0
+		for _, segSize := range segmentTable {
+			s := int(segSize)
+			if !stream.inPacket {
+				stream.inPacket = true
+				stream.hdrLen = 0
+			}
+			if stream.hdrLen < len(stream.hdr) && s > 0 {
+				need := len(stream.hdr) - stream.hdrLen
+				if need > s {
+					need = s
+				}
+				copy(stream.hdr[stream.hdrLen:], pageData[offset:offset+need])
+				stream.hdrLen += need
+			}
+			offset += s
+			if s < 255 {
+				totalPacketSamples += opusPacketSamples(stream.hdr[:stream.hdrLen])
+				stream.inPacket = false
+				stream.hdrLen = 0
+			}
+		}
+
+		if headerType&0x04 != 0 {
+			// EOS: bank this logical bitstream immediately.
+			if stream.maxGranule > 0 {
+				finishedGranuleSamples += stream.maxGranule
+			}
+			delete(activeStreams, serial)
 		}
 	}
 
-	if !foundPage || totalGranulePos <= 0 {
+	totalGranuleSamples := finishedGranuleSamples
+	for _, stream := range activeStreams {
+		if stream.maxGranule > 0 {
+			totalGranuleSamples += stream.maxGranule
+		}
+	}
+	effectiveSamples := totalGranuleSamples
+	if totalPacketSamples > effectiveSamples {
+		effectiveSamples = totalPacketSamples
+	}
+	if !foundPage || effectiveSamples <= 0 {
 		return 0, errors.New("invalid opus/ogg stream: missing valid granule position")
 	}
 
 	// Opus 的采样率固定为 48000 Hz
-	duration := float64(totalGranulePos) / 48000.0
+	duration := float64(effectiveSamples) / 48000.0
 	return duration, nil
 }
 
-// getAIFFDuration 解析 AIFF 文件头以获取时长。
+// parseAIFFExtended80 decodes an 80-bit IEEE 754 extended-precision float (big-endian)
+// used for sampleRate in AIFF COMM chunks.
+func parseAIFFExtended80(b []byte) float64 {
+	if len(b) < 10 {
+		return 0
+	}
+	exp := int(binary.BigEndian.Uint16(b[0:2])&0x7fff) - 16383
+	mantissa := binary.BigEndian.Uint64(b[2:10])
+	if mantissa == 0 || exp < -63 || exp > 63 {
+		return 0
+	}
+	val := math.Ldexp(float64(mantissa), exp-63)
+	if b[0]&0x80 != 0 {
+		val = -val
+	}
+	return val
+}
+
+// scanAIFFPCMDuration scans AIFF/AIFC COMM and SSND chunks directly to compute the
+// actual PCM audio duration lower bound, preventing forged tiny COMM.numSampleFrames (R14-010).
+func scanAIFFPCMDuration(r io.ReadSeeker) float64 {
+	fileSize, err := r.Seek(0, io.SeekEnd)
+	if err != nil || fileSize < 12 {
+		return 0
+	}
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return 0
+	}
+	var formHdr [12]byte
+	if _, err := io.ReadFull(r, formHdr[:]); err != nil {
+		return 0
+	}
+	if string(formHdr[0:4]) != "FORM" {
+		return 0
+	}
+	formType := string(formHdr[8:12])
+	if formType != "AIFF" && formType != "AIFC" {
+		return 0
+	}
+
+	var numChans int64
+	var bitDepth int64
+	var sampleRate float64
+	var compressionType string
+	var ssndPCMBytes int64
+	pos := int64(12)
+
+	for pos+8 <= fileSize {
+		if _, err := r.Seek(pos, io.SeekStart); err != nil {
+			break
+		}
+		var hdr [8]byte
+		if _, err := io.ReadFull(r, hdr[:]); err != nil {
+			break
+		}
+		chunkID := string(hdr[0:4])
+		chunkSize := int64(binary.BigEndian.Uint32(hdr[4:8]))
+		dataStart := pos + 8
+		avail := fileSize - dataStart
+		if avail < 0 {
+			break
+		}
+		switch chunkID {
+		case "COMM":
+			readLen := chunkSize
+			if readLen > avail {
+				readLen = avail
+			}
+			if readLen >= 18 {
+				bufLen := readLen
+				if bufLen > 22 {
+					bufLen = 22
+				}
+				buf := make([]byte, bufLen)
+				if _, err := io.ReadFull(r, buf); err == nil {
+					numChans = int64(binary.BigEndian.Uint16(buf[0:2]))
+					bitDepth = int64(binary.BigEndian.Uint16(buf[6:8]))
+					sampleRate = parseAIFFExtended80(buf[8:18])
+					if formType == "AIFC" && len(buf) >= 22 {
+						compressionType = string(buf[18:22])
+					}
+				}
+			}
+		case "SSND":
+			var ssndHdr [8]byte
+			ssndOffset := int64(0)
+			if avail >= 8 {
+				if _, err := io.ReadFull(r, ssndHdr[:]); err == nil {
+					ssndOffset = int64(binary.BigEndian.Uint32(ssndHdr[0:4]))
+				}
+			}
+			pcmStart := dataStart + 8 + ssndOffset
+			if pcmStart <= fileSize {
+				remaining := fileSize - pcmStart
+				declared := chunkSize - 8 - ssndOffset
+				if declared <= 0 {
+					// If SSND chunkSize was forged to 0/tiny on the trailing chunk, use actual bytes.
+					if chunkSize == 0 || dataStart+chunkSize >= fileSize {
+						declared = remaining
+					}
+				}
+				if declared > remaining {
+					declared = remaining
+				}
+				if declared > ssndPCMBytes {
+					ssndPCMBytes = declared
+				}
+			}
+		}
+		padded := chunkSize
+		if padded%2 != 0 {
+			padded++
+		}
+		if padded <= 0 && chunkID == "SSND" {
+			break
+		}
+		nextPos := dataStart + padded
+		if nextPos <= pos {
+			break
+		}
+		pos = nextPos
+	}
+
+	if numChans <= 0 || sampleRate <= 0 || ssndPCMBytes <= 0 {
+		return 0
+	}
+	bytesPerSample := (bitDepth + 7) / 8
+	if formType == "AIFC" {
+		switch compressionType {
+		case "", "NONE", "sowt", "twos", "raw ":
+			// uncompressed PCM
+		case "ulaw", "ULAW", "alaw", "ALAW":
+			bytesPerSample = 1
+		default:
+			return 0
+		}
+	}
+	if bytesPerSample <= 0 {
+		return 0
+	}
+	bytesPerFrame := numChans * bytesPerSample
+	if bytesPerFrame <= 0 {
+		return 0
+	}
+	d := float64(ssndPCMBytes) / (float64(bytesPerFrame) * sampleRate)
+	if math.IsNaN(d) || math.IsInf(d, 0) || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// getAIFFDuration 解析 AIFF 文件头与实际 SSND 音频载荷长度以获取时长。
 func getAIFFDuration(r io.ReadSeeker) (float64, error) {
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return 0, errors.Wrap(err, "failed to seek aiff file")
@@ -379,7 +638,12 @@ func getAIFFDuration(r io.ReadSeeker) (float64, error) {
 		return 0, errors.Wrap(err, "failed to get aiff duration")
 	}
 
-	return d.Seconds(), nil
+	headerSec := d.Seconds()
+	pcmSec := scanAIFFPCMDuration(r)
+	if pcmSec > headerSec {
+		return pcmSec, nil
+	}
+	return headerSec, nil
 }
 
 // getWebMDuration 解析 WebM 文件以获取时长。

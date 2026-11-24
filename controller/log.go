@@ -243,7 +243,7 @@ func GetLogsSelfStat(c *gin.Context) {
 	tokenName := c.Query("token_name")
 	modelName := c.Query("model_name")
 	channel := 0
-	if c.GetInt("role") >= common.RoleAdminUser && canActWithPermission(c, authz.AdtyLogRead) { // 二开：普通用户/无权限管理员不能按渠道统计（任务 7.1 / R11-016）
+	if service.AdtyRequestSiteID(c) == 0 && c.GetInt("role") >= common.RoleAdminUser && canActWithPermission(c, authz.AdtyLogRead) { // 二开：普通用户/无权限管理员/分站域会话不能按渠道统计（任务 7.1 / R11-016 / R14-016）
 		channel, _ = strconv.Atoi(c.Query("channel"))
 	}
 	group := c.Query("group")

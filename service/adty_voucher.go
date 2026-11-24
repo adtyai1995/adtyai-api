@@ -919,17 +919,8 @@ func RevokeUnusedOwnerAndMarginVouchersOnClosedSites() error {
 	if model.DB == nil {
 		return nil
 	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
-		return revokeUnusedOwnerAndMarginVouchersOnClosedSitesTx(tx)
-	})
-}
-
-func revokeUnusedOwnerAndMarginVouchersOnClosedSitesTx(tx *gorm.DB) error {
-	if tx == nil {
-		return nil
-	}
 	var leftovers []model.AdtyVoucher
-	if err := tx.Select("id", "target_site_id", "source_site_id").
+	if err := model.DB.Select("id", "target_site_id", "source_site_id").
 		Where("purpose IN ? AND status IN ?", []string{model.AdtyVoucherPurposeSiteOwner, model.AdtyVoucherPurposeSiteMargin}, []string{model.AdtyVoucherStatusPending, model.AdtyVoucherStatusFrozen}).
 		Find(&leftovers).Error; err != nil {
 		return err
@@ -948,19 +939,28 @@ func revokeUnusedOwnerAndMarginVouchersOnClosedSitesTx(tx *gorm.DB) error {
 		sortedSiteIDs = append(sortedSiteIDs, siteID)
 	}
 	slices.Sort(sortedSiteIDs)
+	// R14-027: Run each closed site in its own transaction so a reviewing restriction
+	// or transient error on one site never rolls back or starves other closed sites.
+	var firstErr error
 	for _, siteID := range sortedSiteIDs {
-		var site model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).Select("id", "status").Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil {
-			return err
-		}
-		if site.Id == 0 || site.Status != model.AdtySiteStatusClosed {
-			continue
-		}
-		if err := revokeUnusedOwnerAndMarginVouchersOnCloseTx(tx, siteID); err != nil {
-			return err
+		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Select("id", "status").Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil {
+				return err
+			}
+			if site.Id == 0 || site.Status != model.AdtySiteStatusClosed {
+				return nil
+			}
+			return revokeUnusedOwnerAndMarginVouchersOnCloseTx(tx, siteID)
+		})
+		if err != nil {
+			common.SysError(common.LogText("revoke unused closed-site vouchers failed site=%d: %s", siteID, err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 func cancelAdtyVoucherTx(tx *gorm.DB, voucher *model.AdtyVoucher) error {

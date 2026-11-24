@@ -143,6 +143,22 @@ func adtyComputeManualRefundOccupancyWithExtraReconcileTx(tx *gorm.DB, ext *Adty
 	return adtyBuildManualRefundOccupancy(ext, held+extraHeld, unknown, externalOffset), nil
 }
 
+// adtyCheckManualRefundReconcileActor enforces that external-reversal
+// orphan-reconciliation refunds on subsites are exclusively mutated by Root
+// (never by subsite owners or non-Root main-site admins) (R13-005 / R14-003).
+func adtyCheckManualRefundReconcileActor(row *AdtyManualRefund, ext *AdtyTopupOrder, actor AdtyRefundActor) error {
+	if row == nil || row.ReconcileOrphanId <= 0 {
+		return nil
+	}
+	if actor.OwnerSiteID != 0 {
+		return ErrUserQuotaPermission
+	}
+	if actor.Role > 0 && actor.Role != common.RoleRootUser && ext != nil && ext.SiteId != 0 {
+		return ErrUserQuotaPermission
+	}
+	return nil
+}
+
 // adtyValidateReconcileOrphanTx locks and verifies a pending_review external
 // reversal orphan event bound to a manual refund reconciling it (R8-009 / R9-015 / R9-016).
 // Returns the remaining reconcilable quota capacity on this orphan (excluding currentRefundID).
@@ -150,6 +166,15 @@ func adtyComputeManualRefundOccupancyWithExtraReconcileTx(tx *gorm.DB, ext *Adty
 func adtyValidateReconcileOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, currentRefundID string, orphanID, currentRequestQuota int64) (int64, error) {
 	if orphanID <= 0 {
 		return 0, nil
+	}
+	// R14-026: Non-locking pre-check prevents AB-BA deadlock on (PaymentOrphanEvent, User)
+	// when a request binds an orphan belonging to another order of the same user.
+	var observed PaymentOrphanEvent
+	if err := tx.Select("id", "provider", "reference_id").Where("id = ?", orphanID).First(&observed).Error; err != nil {
+		return 0, err
+	}
+	if observed.ReferenceID != ext.TradeNo || !strings.EqualFold(observed.Provider, ext.Provider) {
+		return 0, ErrPaymentMethodMismatch
 	}
 	orphan, err := LockPaymentOrphanTx(tx, orphanID)
 	if err != nil {
@@ -237,6 +262,9 @@ func moveCustomerRefundOperatingTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyMa
 	if tx == nil || ext == nil || row == nil || ext.SiteId <= 0 || ext.TeamId > 0 || ext.IsOwnerSelfUse() || quota <= 0 {
 		return nil
 	}
+	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
+		return err
+	}
 	if !tx.Migrator().HasTable(&AdtySiteWallet{}) || !tx.Migrator().HasTable(&AdtySiteWalletLedger{}) {
 		return nil
 	}
@@ -318,6 +346,9 @@ func moveCustomerRefundOperatingTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyMa
 func releaseCustomerManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRefund, operatorID int) (bool, error) {
 	if tx == nil || ext == nil || row == nil || ext.TeamId > 0 || ext.IsOwnerSelfUse() || row.ReclaimedAt == 0 || row.DeductedPrincipalQuota <= 0 {
 		return false, nil
+	}
+	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
+		return false, err
 	}
 	releaseKey := "customer_refund_release:" + row.RefundId
 	if existing, err := FindAdtyLedgerByIdemKeyTx(tx, releaseKey); err != nil {
@@ -980,6 +1011,9 @@ func ApproveAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyRe
 		if err != nil {
 			return err
 		}
+		if err := adtyCheckManualRefundReconcileActor(row, ext, actor); err != nil {
+			return err
+		}
 		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 		if err != nil {
 			return err
@@ -997,9 +1031,6 @@ func ApproveAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyRe
 			return common.NewMessage("This refund cannot be approved")
 		}
 		if row.ReconcileOrphanId > 0 {
-			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
-				return ErrUserQuotaPermission
-			}
 			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
@@ -1069,7 +1100,7 @@ func ReclaimAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyRe
 		}
 		if ext.TeamId > 0 {
 			var err error
-			result, replay, err = adtyReclaimTeamManualRefundTx(tx, ext, refundID, operatorID, idemKey)
+			result, replay, err = adtyReclaimTeamManualRefundTx(tx, ext, refundID, actor, idemKey)
 			return err
 		}
 		before, checkinQuota, err := lockUserQuotaForRefundTx(tx, topUp.UserId)
@@ -1078,6 +1109,9 @@ func ReclaimAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyRe
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
 		if err != nil {
+			return err
+		}
+		if err := adtyCheckManualRefundReconcileActor(row, ext, actor); err != nil {
 			return err
 		}
 		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
@@ -1100,9 +1134,6 @@ func ReclaimAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyRe
 			return err
 		}
 		if row.ReconcileOrphanId > 0 {
-			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
-				return ErrUserQuotaPermission
-			}
 			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
@@ -1122,6 +1153,9 @@ func ReclaimAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyRe
 				return err
 			}
 		} else {
+			if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
+				return err
+			}
 			remainingPrincipal, _, err = adtyOrderLotRemainingTx(tx, topUp.UserId, tradeNo)
 			if err != nil {
 				return err
@@ -1191,13 +1225,17 @@ func adtySaveManualRefundReclaimTx(tx *gorm.DB, row *AdtyManualRefund, operatorI
 	return nil
 }
 
-func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID string, operatorID int, idemKey string) (*AdtyManualRefundResult, bool, error) {
+func adtyReclaimTeamManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, refundID string, actor AdtyRefundActor, idemKey string) (*AdtyManualRefundResult, bool, error) {
+	operatorID := actor.OperatorID
 	var team AdtyTeam
 	if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
 		return nil, false, err
 	}
 	row, rows, err := lockAdtyManualRefundByIDTx(tx, ext.TradeNo, refundID)
 	if err != nil {
+		return nil, false, err
+	}
+	if err := adtyCheckManualRefundReconcileActor(row, ext, actor); err != nil {
 		return nil, false, err
 	}
 	occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
@@ -1383,6 +1421,9 @@ func PlanAdtyTopUpManualRefundBonusForActor(tradeNo, refundID string, actor Adty
 		if err != nil {
 			return err
 		}
+		if err := adtyCheckManualRefundReconcileActor(row, ext, actor); err != nil {
+			return err
+		}
 		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 		if err != nil {
 			return err
@@ -1398,9 +1439,6 @@ func PlanAdtyTopUpManualRefundBonusForActor(tradeNo, refundID string, actor Adty
 			return err
 		}
 		if row.ReconcileOrphanId > 0 {
-			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
-				return ErrUserQuotaPermission
-			}
 			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
@@ -1457,6 +1495,9 @@ func PlanAdtyTopUpManualRefundCommissionForActor(tradeNo, refundID string, actor
 		if err != nil {
 			return err
 		}
+		if err := adtyCheckManualRefundReconcileActor(row, ext, actor); err != nil {
+			return err
+		}
 		occupancy, err := adtyComputeManualRefundOccupancyTx(tx, ext, rows, 0)
 		if err != nil {
 			return err
@@ -1472,9 +1513,6 @@ func PlanAdtyTopUpManualRefundCommissionForActor(tradeNo, refundID string, actor
 			return err
 		}
 		if row.ReconcileOrphanId > 0 {
-			if actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
-				return ErrUserQuotaPermission
-			}
 			if _, err := adtyValidateReconcileOrphanTx(tx, ext, rows, row.RefundId, row.ReconcileOrphanId, row.RequestQuota); err != nil {
 				return err
 			}
@@ -1565,6 +1603,9 @@ func RecordAdtyTopUpManualRefundPayoutForActor(tradeNo, refundID string, actor A
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
 		if err != nil {
+			return err
+		}
+		if err := adtyCheckManualRefundReconcileActor(row, ext, actor); err != nil {
 			return err
 		}
 		// Idempotency & retry semantics (R1-049):
@@ -1703,6 +1744,9 @@ func CompleteAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyR
 		if err != nil {
 			return err
 		}
+		if err := adtyCheckManualRefundReconcileActor(row, ext, actor); err != nil {
+			return err
+		}
 		if row.Status == AdtyManualRefundStatusCompleted {
 			if (row.CompleteIdemKey != "" && row.CompleteIdemKey != idemKey) || row.CompleteOperatorId != operatorID {
 				return ErrAdtyIdempotencyConflict
@@ -1783,9 +1827,6 @@ func CompleteAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyR
 				return err
 			}
 		}
-		if row.ReconcileOrphanId > 0 && actor.Role > 0 && actor.Role != common.RoleRootUser && ext.SiteId != 0 {
-			return ErrUserQuotaPermission
-		}
 		if row.ReclaimedAt == 0 {
 			return common.NewMessage("Internal principal reclaim has not been recorded")
 		}
@@ -1813,6 +1854,11 @@ func CompleteAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyR
 		var planned, bonusTaken, bonusShortfall int64
 		var ledger *AdtyBalanceLedger
 		if ext.TeamId == 0 {
+			if !ext.IsOwnerSelfUse() {
+				if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
+					return err
+				}
+			}
 			if existing, err := FindAdtyLedgerByIdemKeyTx(tx, idemKey); err != nil {
 				return err
 			} else if existing != nil {
@@ -1971,6 +2017,9 @@ func TerminateAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor Adty
 		}
 		row, rows, err := lockAdtyManualRefundByIDTx(tx, tradeNo, refundID)
 		if err != nil {
+			return err
+		}
+		if err := adtyCheckManualRefundReconcileActor(row, ext, actor); err != nil {
 			return err
 		}
 		if row.Status == AdtyManualRefundStatusTerminated {

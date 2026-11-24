@@ -250,8 +250,8 @@ func UpdatePasskeyDomainOptions(values map[string]string, preview bool, confirma
 }
 
 func applyPasskeyDomainOptions(values map[string]string) {
+	var postHooks []func()
 	common.OptionMapRWMutex.Lock()
-	defer common.OptionMapRWMutex.Unlock()
 	if common.OptionMap == nil {
 		common.OptionMap = make(map[string]string)
 	}
@@ -261,10 +261,16 @@ func applyPasskeyDomainOptions(values map[string]string) {
 			if key == "ServerAddress" {
 				system_setting.ServerAddress = value
 			} else {
-				if _, err := handleConfigUpdate(key, value); err != nil {
+				if _, hook, err := handleConfigUpdate(key, value); err != nil {
 					common.SysError(common.LogText("failed to apply passkey option %s: %s", key, err.Error()))
+				} else if hook != nil {
+					postHooks = append(postHooks, hook)
 				}
 			}
 		}
+	}
+	common.OptionMapRWMutex.Unlock()
+	for _, hook := range postHooks {
+		hook()
 	}
 }

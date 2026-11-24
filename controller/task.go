@@ -294,7 +294,7 @@ func getTaskForArtifactRequest(c *gin.Context, taskID string) (*model.Task, bool
 }
 
 func canReadCrossUserTaskArtifacts(c *gin.Context) bool {
-	if c.GetInt("token_id") != 0 || c.GetInt("role") < common.RoleAdminUser ||
+	if service.AdtyRequestSiteID(c) != 0 || c.GetInt("token_id") != 0 || c.GetInt("role") < common.RoleAdminUser ||
 		!service.AdtyAdminRoleCan(c.GetInt("id"), c.GetInt("role"), authz.AdtyLogRead) {
 		return false
 	}

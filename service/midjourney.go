@@ -60,7 +60,22 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 		return false, errors.New("quota cannot be negative")
 	}
 	if model.DB != nil && task.UserId > 0 {
-		if err := model.RejectRestrictedAdtyFundWrite(model.DB, model.AdtyFundWrite{AccountID: task.UserId}); err != nil {
+		siteID := 0
+		if len(contexts) > 0 && contexts[0] != nil {
+			if value, ok := contexts[0].Get(AdtyOwnerSelfUseContextKey); ok {
+				if site, valid := value.(*model.AdtySite); valid && site != nil && site.Id > 0 {
+					siteID = site.Id
+				}
+			}
+			if siteID == 0 {
+				if snap := AdtyFrozenPriceSnapshot(contexts[0]); snap != nil && snap.SiteId > 0 {
+					siteID = snap.SiteId
+				} else if ctxSite := contexts[0].GetInt(AdtySiteIdContextKey); ctxSite > 0 {
+					siteID = ctxSite
+				}
+			}
+		}
+		if err := model.RejectRestrictedAdtyFundWrite(model.DB, model.AdtyFundWrite{SiteID: siteID, AccountID: task.UserId}); err != nil {
 			return false, err
 		}
 	}
@@ -497,16 +512,16 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 		if err != nil {
 			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "read_request_body_failed", http.StatusInternalServerError), nullBytes, err
 		}
-		if !setting.MjAccountFilterEnabled {
+		if !setting.GetMjAccountFilterEnabled() {
 			delete(mapResult, "accountFilter")
 		}
-		if !setting.MjNotifyEnabled {
+		if !setting.GetMjNotifyEnabled() {
 			delete(mapResult, "notifyHook")
 		}
 		//req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
 		// make new request with mapResult
 	}
-	if setting.MjModeClearEnabled {
+	if setting.GetMjModeClearEnabled() {
 		if prompt, ok := mapResult["prompt"].(string); ok {
 			prompt = strings.Replace(prompt, "--fast", "", -1)
 			prompt = strings.Replace(prompt, "--relax", "", -1)

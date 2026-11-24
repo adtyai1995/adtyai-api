@@ -89,9 +89,15 @@ export function NotificationEditor(props: {
             props.row.target_user_id ??
             parseTargetId(props.row.target_site_name, 'user:'),
           sync_telegram:
-            (props.row.telegram_at ?? 0) > 0 ||
-            Boolean(props.row.telegram_channel),
+            (props.mode === 'root' ||
+              props.row.audience === 'team' ||
+              props.row.audience === 'user') &&
+            ((props.row.telegram_at ?? 0) > 0 ||
+              Boolean(props.row.telegram_channel)),
           telegram_channel:
+            props.mode === 'owner' ||
+            props.row.audience === 'team' ||
+            props.row.audience === 'user' ||
             props.row.telegram_channel === '@private'
               ? ''
               : (props.row.telegram_channel ?? ''),
@@ -111,6 +117,48 @@ export function NotificationEditor(props: {
   })
   const audience = form.watch('audience')
   const syncTelegram = form.watch('sync_telegram')
+  const canSyncTelegram =
+    props.mode === 'root' || audience === 'team' || audience === 'user'
+  const parseNumericTarget = (value: string): number => {
+    const trimmedValue = String(value ?? '').trim()
+    if (trimmedValue === '') return 0
+    const parsed = Number(trimmedValue)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  const audienceRegister = form.register('audience', {
+    onChange: (event) => {
+      const nextAudience = String(
+        event.target.value
+      ) as NotificationInput['audience']
+      const nextCanSync =
+        props.mode === 'root' ||
+        nextAudience === 'team' ||
+        nextAudience === 'user'
+      if (!nextCanSync) {
+        form.setValue('sync_telegram', false)
+        form.setValue('telegram_channel', '')
+        form.clearErrors('telegram_channel')
+      } else if (nextAudience === 'team' || nextAudience === 'user') {
+        form.setValue('telegram_channel', '')
+        form.clearErrors('telegram_channel')
+      }
+      if (nextAudience !== 'team') {
+        form.setValue('target_team_id', 0)
+        form.clearErrors('target_team_id')
+      }
+      if (nextAudience !== 'user') {
+        form.setValue('target_user_id', 0)
+        form.clearErrors('target_user_id')
+      }
+      if (nextAudience !== 'site') {
+        form.setValue(
+          'target_site_id',
+          props.mode === 'owner' ? props.siteId : 0
+        )
+        form.clearErrors('target_site_id')
+      }
+    },
+  })
   useDraftNavigation(form.formState.isDirty)
   const sites = useQuery({
     queryKey: ['adty-notification-targets', props.userId],
@@ -131,13 +179,17 @@ export function NotificationEditor(props: {
       }
       return savePublication(props.mode, props.row, {
         ...input,
-        target_site_id: input.audience === 'site' ? input.target_site_id : 0,
+        target_site_id:
+          input.audience === 'site' ? Number(input.target_site_id) || 0 : 0,
         target_team_id:
-          input.audience === 'team' ? Number(input.target_team_id) : 0,
+          input.audience === 'team' ? Number(input.target_team_id) || 0 : 0,
         target_user_id:
-          input.audience === 'user' ? Number(input.target_user_id) : 0,
+          input.audience === 'user' ? Number(input.target_user_id) || 0 : 0,
+        sync_telegram: canSyncTelegram ? input.sync_telegram : false,
         telegram_channel:
-          input.audience === 'team' || input.audience === 'user'
+          !canSyncTelegram ||
+          input.audience === 'team' ||
+          input.audience === 'user'
             ? ''
             : input.telegram_channel,
       })
@@ -168,8 +220,9 @@ export function NotificationEditor(props: {
       target_site_id: Number(raw.target_site_id) || 0,
       target_team_id: Number(raw.target_team_id) || 0,
       target_user_id: Number(raw.target_user_id) || 0,
+      sync_telegram: canSyncTelegram ? raw.sync_telegram : false,
       telegram_channel:
-        raw.audience === 'team' || raw.audience === 'user'
+        !canSyncTelegram || raw.audience === 'team' || raw.audience === 'user'
           ? ''
           : raw.telegram_channel,
     })
@@ -285,7 +338,7 @@ export function NotificationEditor(props: {
               <NativeSelect
                 id={`${id}-audience`}
                 disabled={save.isPending}
-                {...form.register('audience')}
+                {...audienceRegister}
               >
                 {Object.entries(notificationAudienceLabels)
                   .filter(
@@ -314,7 +367,9 @@ export function NotificationEditor(props: {
                   step={1}
                   aria-invalid={!!errors.target_team_id}
                   disabled={save.isPending}
-                  {...form.register('target_team_id', { valueAsNumber: true })}
+                  {...form.register('target_team_id', {
+                    setValueAs: parseNumericTarget,
+                  })}
                 />
                 <FieldError>
                   {errors.target_team_id?.message
@@ -335,7 +390,9 @@ export function NotificationEditor(props: {
                   step={1}
                   aria-invalid={!!errors.target_user_id}
                   disabled={save.isPending}
-                  {...form.register('target_user_id', { valueAsNumber: true })}
+                  {...form.register('target_user_id', {
+                    setValueAs: parseNumericTarget,
+                  })}
                 />
                 <FieldError>
                   {errors.target_user_id?.message
@@ -380,24 +437,27 @@ export function NotificationEditor(props: {
                 )}
               </Field>
             )}
-            <Field>
-              <div className='flex items-center gap-2'>
-                <Checkbox
-                  id={`${id}-sync-telegram`}
-                  disabled={save.isPending}
-                  checked={syncTelegram === true}
-                  onCheckedChange={(checked) =>
-                    form.setValue('sync_telegram', checked === true, {
-                      shouldDirty: true,
-                    })
-                  }
-                />
-                <Label htmlFor={`${id}-sync-telegram`}>
-                  {t('Sync to Telegram')}
-                </Label>
-              </div>
-            </Field>
-            {syncTelegram &&
+            {canSyncTelegram && (
+              <Field>
+                <div className='flex items-center gap-2'>
+                  <Checkbox
+                    id={`${id}-sync-telegram`}
+                    disabled={save.isPending}
+                    checked={syncTelegram === true}
+                    onCheckedChange={(checked) =>
+                      form.setValue('sync_telegram', checked === true, {
+                        shouldDirty: true,
+                      })
+                    }
+                  />
+                  <Label htmlFor={`${id}-sync-telegram`}>
+                    {t('Sync to Telegram')}
+                  </Label>
+                </div>
+              </Field>
+            )}
+            {canSyncTelegram &&
+              syncTelegram &&
               (audience === 'team' || audience === 'user' ? (
                 <p className='text-muted-foreground text-sm'>
                   {t('Will be sent privately to bound recipients via Telegram.')}

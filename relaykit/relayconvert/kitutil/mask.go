@@ -14,7 +14,7 @@ var (
 	// as double quotes and angle or curly brackets, so a URL quoted in an error
 	// keeps its delimiters. Apostrophes and parentheses are valid inside a URL;
 	// the caller trims them, like other punctuation, only when they trail it.
-	maskURLPattern = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s"<>{}]+`)
+	maskURLPattern = regexp.MustCompile(`(?i)(?:https?|wss?|socks5h?)://[^\s"<>{}]+`)
 	maskIPPattern  = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 	// maskBracketedIPv6Pattern matches the bracketed form Go network errors use
 	// for IPv6 addresses, as in "dial tcp [2001:db8::1]:443", with an optional
@@ -85,6 +85,46 @@ func maskURLQuery(rawQuery string) string {
 	return "?" + strings.Join(maskedParams, "&")
 }
 
+// maskMalformedURL applies fail-closed redaction when url.Parse fails on a
+// URL-shaped substring so malformed credentials, query secrets, or hosts never leak (R14-012).
+func maskMalformedURL(urlStr string) string {
+	scheme, afterScheme, ok := strings.Cut(urlStr, "://")
+	if !ok {
+		return "***"
+	}
+	queryOrFrag := ""
+	if idx := strings.IndexAny(afterScheme, "?#"); idx >= 0 {
+		if afterScheme[idx] == '?' {
+			queryOrFrag = "?***"
+		} else {
+			queryOrFrag = "#***"
+		}
+		afterScheme = afterScheme[:idx]
+	}
+	authority := afterScheme
+	rawPath := ""
+	if slash := strings.IndexByte(afterScheme, '/'); slash >= 0 {
+		authority = afterScheme[:slash]
+		rawPath = afterScheme[slash:]
+	}
+	userPrefix := ""
+	if strings.LastIndexByte(authority, '@') >= 0 {
+		userPrefix = "***@"
+	}
+	maskedPath := ""
+	if rawPath != "" && rawPath != "/" {
+		parts := strings.Split(strings.Trim(rawPath, "/"), "/")
+		maskedParts := make([]string, len(parts))
+		for i := range parts {
+			maskedParts[i] = "***"
+		}
+		maskedPath = "/" + strings.Join(maskedParts, "/")
+	} else if rawPath == "/" {
+		maskedPath = "/"
+	}
+	return scheme + "://" + userPrefix + "***" + maskedPath + queryOrFrag
+}
+
 // MaskSensitiveInfo masks the upstream addresses in str and leaves every other
 // URL and domain readable. upstreamURLs are the channel base URL and the URL
 // the gateway actually requested, which differs for routes such as absolute
@@ -136,7 +176,7 @@ func MaskSensitiveInfo(str string, upstreamURLs ...string) string {
 		suffix := match[len(urlStr):]
 		u, err := url.Parse(urlStr)
 		if err != nil {
-			return match
+			return maskMalformedURL(urlStr) + suffix
 		}
 		host := strings.TrimSuffix(u.Hostname(), ".")
 		if !slices.ContainsFunc(upstreamHosts, func(upstreamHost string) bool { return strings.EqualFold(upstreamHost, host) }) {

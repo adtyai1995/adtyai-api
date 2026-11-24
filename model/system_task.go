@@ -28,7 +28,7 @@ const (
 
 var (
 	ErrSystemTaskLockLost       = errors.New("system task lock lost")
-	ErrSystemTaskCancelConflict = errors.New("system task cancel state conflict")
+	ErrSystemTaskCancelConflict = common.NewMessage("System task cancel state conflict")
 )
 
 type SystemTask struct {

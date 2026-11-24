@@ -275,8 +275,12 @@ func allocateAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, 
 		//
 		// 这么写是因为原来那句「覆盖两种正当情形」把边界说大了一圈，而它正是
 		// 讨论 drift 的前提。
-		if lotTotal == 0 && balanceBefore > 0 {
-			if err := ensureAdtyLegacyBatchTx(tx, userID, balanceBefore); err != nil {
+		effectiveBalanceBefore, err := adtyEffectiveLegacyBalanceTx(tx, userID, balanceBefore, batches, heldByBatch, loc, nowUnix)
+		if err != nil {
+			return err
+		}
+		if lotTotal == 0 && effectiveBalanceBefore > 0 {
+			if err := ensureAdtyLegacyBatchTx(tx, userID, effectiveBalanceBefore); err != nil {
 				return err
 			}
 			var fresh []AdtyFundBatch

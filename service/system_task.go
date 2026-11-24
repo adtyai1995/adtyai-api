@@ -171,7 +171,7 @@ const LogCleanupRetention = 90 * 24 * time.Hour
 
 // ErrLogCleanupRetention is returned when a cleanup target would delete logs
 // inside the retention window, including a future timestamp.
-var ErrLogCleanupRetention = errors.New("log cleanup must keep at least 90 days of logs")
+var ErrLogCleanupRetention = common.NewMessage("Log cleanup must keep at least 90 days of logs")
 
 func logCleanupLatestTarget(now time.Time) int64 {
 	return now.Add(-usageLogCleanupFloor(now)).Unix()
@@ -179,7 +179,7 @@ func logCleanupLatestTarget(now time.Time) int64 {
 
 func StartLogCleanupTask(targetTimestamp int64) (*model.SystemTask, error) {
 	if targetTimestamp <= 0 {
-		return nil, errors.New("target timestamp is required")
+		return nil, common.NewMessage("Target timestamp is required")
 	}
 	if targetTimestamp > logCleanupLatestTarget(time.Now()) {
 		return nil, ErrLogCleanupRetention

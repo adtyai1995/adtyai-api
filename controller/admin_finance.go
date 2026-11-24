@@ -1162,7 +1162,7 @@ func adtyOwnerRefundRow(row *model.AdtyManualRefund, ownerID int) {
 	}
 	row.ApplyOperatorId, row.ApproveOperatorId, row.ReclaimOperatorId = 0, 0, 0
 	row.BonusOperatorId, row.CommissionOperatorId, row.PayoutOperatorId = 0, 0, 0
-	row.CompleteOperatorId, row.TerminateOperatorId = 0, 0
+	row.CompleteOperatorId, row.TerminateOperatorId, row.ReconcileOrphanId = 0, 0, 0
 	row.ApplyIdemKey, row.ApproveIdemKey, row.ReclaimIdemKey = "", "", ""
 	row.BonusIdemKey, row.CommissionIdemKey, row.PayoutIdemKey = "", "", ""
 	row.CompleteIdemKey, row.TerminateIdemKey, row.CommissionSnapshot = "", "", ""

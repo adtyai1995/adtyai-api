@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/service"
 
@@ -406,23 +407,6 @@ func FetchUpstreamRatios(c *gin.Context) {
 			defer func() { <-sem }()
 
 			isOpenRouter := chItem.Endpoint == "openrouter"
-
-			endpoint := chItem.Endpoint
-			var fullURL string
-			if isOpenRouter {
-				fullURL = chItem.BaseURL + "/v1/models"
-			} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-				fullURL = endpoint
-			} else {
-				if endpoint == "" {
-					endpoint = defaultEndpoint
-				} else if !strings.HasPrefix(endpoint, "/") {
-					endpoint = "/" + endpoint
-				}
-				fullURL = chItem.BaseURL + endpoint
-			}
-			isModelsDev := isModelsDevAPIEndpoint(fullURL)
-
 			uniqueName := chItem.Name
 			if chItem.ID != 0 {
 				uniqueName = fmt.Sprintf("%s(%d)", chItem.Name, chItem.ID)
@@ -430,22 +414,71 @@ func FetchUpstreamRatios(c *gin.Context) {
 
 			var dbCh *model.Channel
 			var chSetting dto.ChannelSettings
+			effectiveBaseURL := chItem.BaseURL
 			if chItem.ID > 0 {
 				if cached, ok := dbChannelMap[chItem.ID]; ok {
 					dbCh = cached
 				} else {
 					var chErr error
 					dbCh, chErr = model.GetChannelById(chItem.ID, true)
-					if chErr != nil && isOpenRouter {
-						ch <- upstreamResult{Name: uniqueName, Err: "failed to get channel key: " + chErr.Error()}
+					if chErr != nil {
+						ch <- upstreamResult{Name: uniqueName, Err: "failed to get channel: " + chErr.Error()}
 						return
 					}
 				}
-				if dbCh != nil {
-					chSetting = dbCh.GetSetting()
+				if dbCh == nil {
+					ch <- upstreamResult{Name: uniqueName, Err: "channel not found"}
+					return
 				}
+				dbBaseURL := strings.TrimRight(strings.TrimSpace(dbCh.GetBaseURL()), "/")
+				if dbBaseURL == "" {
+					ch <- upstreamResult{Name: uniqueName, Err: "channel base URL is not configured"}
+					return
+				}
+				dbParsed, dbParseErr := url.Parse(dbBaseURL)
+				if dbParseErr != nil || (dbParsed.Scheme != "http" && dbParsed.Scheme != "https") || dbParsed.Host == "" {
+					ch <- upstreamResult{Name: uniqueName, Err: "channel base URL is invalid"}
+					return
+				}
+				if chItem.BaseURL != "" {
+					reqParsed, reqParseErr := url.Parse(chItem.BaseURL)
+					if reqParseErr != nil || !sameTaskMediaOrigin(reqParsed, dbParsed) {
+						ch <- upstreamResult{Name: uniqueName, Err: "upstream base URL does not match channel configuration"}
+						return
+					}
+				}
+				if isOpenRouter && dbCh.Type != constant.ChannelTypeOpenRouter {
+					ch <- upstreamResult{Name: uniqueName, Err: "channel is not an OpenRouter channel"}
+					return
+				}
+				effectiveBaseURL = dbBaseURL
+				chSetting = dbCh.GetSetting()
 			}
 			proxy := strings.TrimSpace(chSetting.Proxy)
+
+			endpoint := chItem.Endpoint
+			var fullURL string
+			if isOpenRouter {
+				fullURL = effectiveBaseURL + "/v1/models"
+			} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+				if dbCh != nil {
+					dbParsed, _ := url.Parse(effectiveBaseURL)
+					epParsed, epErr := url.Parse(endpoint)
+					if epErr != nil || !sameTaskMediaOrigin(epParsed, dbParsed) {
+						ch <- upstreamResult{Name: uniqueName, Err: "upstream endpoint does not match channel configuration"}
+						return
+					}
+				}
+				fullURL = endpoint
+			} else {
+				if endpoint == "" {
+					endpoint = defaultEndpoint
+				} else if !strings.HasPrefix(endpoint, "/") {
+					endpoint = "/" + endpoint
+				}
+				fullURL = effectiveBaseURL + endpoint
+			}
+			isModelsDev := isModelsDevAPIEndpoint(fullURL)
 
 			if err := validateTaskMediaURL(fullURL, proxy); err != nil {
 				sanitized := service.SanitizeOutboundError(err)

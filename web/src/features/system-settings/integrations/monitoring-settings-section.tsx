@@ -57,9 +57,9 @@ import { safeNumberFieldProps } from '../utils/numeric-field'
 const monitoringSchema = z.object({
   perf_metrics_setting: z.object({
     enabled: z.boolean(),
-    flush_interval: z.coerce.number().min(1),
+    flush_interval: z.coerce.number().int().min(1).max(1440),
     bucket_time: z.enum(['minute', '5min', 'hour']),
-    retention_days: z.coerce.number().min(0),
+    retention_days: z.coerce.number().int().min(0).max(3650),
   }),
 })
 

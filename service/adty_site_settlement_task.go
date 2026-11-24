@@ -35,9 +35,16 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 		return 0, err
 	}
 	projectedSites := map[int]struct{}{}
+	var first error
 	for _, event := range events {
 		if err := projectAdtySiteEarningEvent(context.Background(), event.OperationKey); err != nil {
-			return 0, err
+			// R14-027: Isolate per-event projection errors (e.g. site-level reviewing
+			// restriction) so healthy subsites still project, settle, and resume.
+			common.SysError(common.LogText("project site earning event failed site=%d op=%s: %s", event.SiteId, event.OperationKey, err.Error()))
+			if first == nil {
+				first = err
+			}
+			continue
 		}
 		if event.SiteId > 0 {
 			projectedSites[event.SiteId] = struct{}{}
@@ -104,7 +111,6 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 		}
 	}
 	settled := 0
-	var first error
 	for _, siteId := range siteIds {
 		ok, err := settleAdtySite(siteId, cutoff, now.Unix())
 		if err != nil {

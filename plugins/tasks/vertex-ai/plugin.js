@@ -321,10 +321,24 @@ function aspect(size) {
   const p = sizeParts(size);
   return !p || p[0] <= 0 || p[1] <= 0 ? "16:9" : p[1] > p[0] ? "9:16" : "16:9";
 }
-function duration(req) {
-  let n = Number(req.duration);
-  if (!Number.isFinite(n) || n <= 0) n = 8;
+function assertSingleVideoCount(params) {
+  for (const key of ["sampleCount", "numberOfVideos"]) {
+    if (params[key] !== undefined && params[key] !== null && params[key] !== "") {
+      const count = typeof params[key] === "boolean" || Array.isArray(params[key]) ? Number.NaN : Number(params[key]);
+      if (!Number.isInteger(count) || count !== 1) throw new Error(key + " must be 1");
+    }
+  }
+}
+function veoSeconds(value) {
+  if (value === undefined || value === null || value === "") return 8;
+  const n = typeof value === "boolean" || Array.isArray(value) ? Number.NaN : Number(value);
+  if (n !== 4 && n !== 6 && n !== 8) throw new Error("seconds must be one of 4, 6, or 8");
   return n;
+}
+function duration(req) {
+  const metadata = req.metadata || {};
+  const raw = req.duration !== undefined && req.duration !== null && req.duration !== "" ? req.duration : metadata.durationSeconds;
+  return veoSeconds(raw);
 }
 function region(ctx, model) {
   const setting = ctx.userSetting || {};
@@ -381,6 +395,9 @@ export const native = {
       if (key !== "prompt" && key !== "image") throw new Error("instances[0]." + key + " is not supported");
     }
     const metadata = Object.assign({}, plainObject(body.parameters) || {});
+    assertSingleVideoCount(metadata);
+    delete metadata.numberOfVideos;
+    metadata.sampleCount = 1;
     const requestBody = { model: model, prompt: instance.prompt, metadata: metadata };
     if (metadata.durationSeconds !== undefined) {
       requestBody.duration = metadata.durationSeconds;
@@ -428,10 +445,14 @@ export function buildSubmitRequest(ctx) {
     metadata = Object.assign({}, req.metadata || {}),
     model = ctx.upstreamModel || "veo-3.0-generate-001";
   if (omniModel(ctx)) return omniSubmitRequest(ctx, req, model);
-  if (Number(req.duration) > 0) metadata.durationSeconds = Number(req.duration);
+  assertSingleVideoCount(metadata);
+  if (req.duration !== undefined && req.duration !== null && req.duration !== "") metadata.durationSeconds = veoSeconds(req.duration);
+  else if (metadata.durationSeconds !== undefined && metadata.durationSeconds !== null && metadata.durationSeconds !== "")
+    metadata.durationSeconds = veoSeconds(metadata.durationSeconds);
   if (!metadata.resolution && req.size) metadata.resolution = resolution(req.size);
   if (!metadata.aspectRatio && req.size) metadata.aspectRatio = aspect(req.size);
   if (metadata.resolution) metadata.resolution = String(metadata.resolution).toLowerCase();
+  delete metadata.numberOfVideos;
   metadata.sampleCount = 1;
   const instance = { prompt: req.prompt };
   const image = (req.images || [])[0];
@@ -600,10 +621,27 @@ export const protocols = {
       if (!images.every(validImageInput)) throw new Error("input image must be a data URL or base64 value");
       const metadata = Object.assign({}, req.metadata || {});
       if (Object.prototype.hasOwnProperty.call(req, "resolution")) metadata.resolution = req.resolution;
+      const isOmni = trimmed(model).startsWith("gemini-omni-");
+      if (!isOmni) {
+        assertSingleVideoCount(metadata);
+        if (metadata.resolution !== undefined && metadata.resolution !== "") {
+          const res = String(metadata.resolution).toLowerCase();
+          if (res !== "720p" && res !== "1080p" && res !== "4k") throw new Error("resolution must be one of 720p, 1080p, or 4k");
+          metadata.resolution = res;
+        }
+      }
       const requestBody = { model: model, prompt: prompt, metadata: metadata };
       if (images.length) requestBody.images = images;
       if (Object.prototype.hasOwnProperty.call(req, "seconds")) requestBody.duration = req.seconds;
       else if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.duration = req.duration;
+      if (!isOmni) {
+        if (requestBody.duration !== undefined && requestBody.duration !== null && requestBody.duration !== "") {
+          requestBody.duration = veoSeconds(requestBody.duration);
+        } else if (metadata.durationSeconds !== undefined && metadata.durationSeconds !== null && metadata.durationSeconds !== "") {
+          requestBody.duration = veoSeconds(metadata.durationSeconds);
+          delete metadata.durationSeconds;
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(req, "size")) requestBody.size = req.size;
       return { kind: "submit", model: model, action: images.length ? "image_to_video" : "text_to_video", requestBody: requestBody };
     },
@@ -704,9 +742,15 @@ protocols.openai_video = {
       req.duration = n;
     }
     const providedResolution = req.resolution !== undefined ? req.resolution : req.metadata && req.metadata.resolution;
+    if (!omni) {
+      assertSingleVideoCount(plainObject(req.metadata) || {});
+    }
     if (!omni && providedResolution !== undefined && providedResolution !== "") {
       const value = String(providedResolution).toLowerCase();
       if (value !== "720p" && value !== "1080p" && value !== "4k") throw new Error("resolution must be one of 720p, 1080p, or 4k");
+    }
+    if (req.resolution !== undefined && req.resolution !== "") {
+      req.metadata = Object.assign({}, plainObject(req.metadata) || {}, { resolution: String(req.resolution).toLowerCase() });
     }
     if (hasInputReferenceFile) {
       req.images = [{ __fileRef: "request_file:input_reference", encoding: "base64", maxBytes: 20971520 }];

@@ -1856,7 +1856,7 @@ func emitAdtyTicketReplyNoticesTx(tx *gorm.DB, ticket model.AdtyTicket, message 
 	if message.AuthorRole == "customer" {
 		return notifyTicketHandlersTx(tx, ticket, eventID, actorID, "reply", key, title, body)
 	}
-	if ticket.UserId == actorID {
+	if ticket.UserId == actorID && !ticket.TeamShared {
 		return nil
 	}
 	return recordTicketNoticeTx(tx, ticket, eventID, actorID, ticket.UserId, model.AdtyTelegramPurposeUser, "reply", key, title, body)

@@ -62,10 +62,10 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 
 	var rootUser model.User
 	if err := model.DB.Select("id").Where("role = ?", common.RoleRootUser).First(&rootUser).Error; err != nil {
-		return 0, fmt.Errorf("failed to resolve channel test user: %w", err)
+		return 0, common.NewMessage("Failed to resolve channel test user")
 	}
 	if rootUser.Id == 0 {
-		return 0, errors.New("failed to resolve channel test user")
+		return 0, common.NewMessage("Failed to resolve channel test user")
 	}
 	return rootUser.Id, nil
 }
@@ -88,7 +88,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	if lo.Contains(unsupportedTestChannelTypes, channel.Type) {
 		channelTypeName := constant.GetChannelTypeName(channel.Type)
 		return testResult{
-			localErr: fmt.Errorf("%s channel test is not supported", channelTypeName),
+			localErr: common.NewMessage("{{channelType}} channel test is not supported", map[string]any{"channelType": channelTypeName}),
 		}
 	}
 	w := httptest.NewRecorder()
@@ -847,14 +847,14 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 func TestChannel(c *gin.Context) {
 	channelId, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		common.ApiError(c, err)
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 	channel, err := model.CacheGetChannel(channelId)
 	if err != nil {
 		channel, err = model.GetChannelById(channelId, true)
 		if err != nil {
-			common.ApiError(c, err)
+			common.ApiErrorT(c, "Channel not found")
 			return
 		}
 	}
@@ -877,11 +877,18 @@ func TestChannel(c *gin.Context) {
 		requestCtx = c.Request.Context()
 	}
 	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
+	upstreamHints := []string{channel.GetBaseURL(), channel.GetSetting().Proxy}
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
-			"message": result.localErr.Error(),
+			"message": common.MaskSensitiveInfo(result.localErr.Error(), upstreamHints...),
 			"time":    0.0,
+		}
+		var msg *common.Message
+		if errors.As(result.localErr, &msg) {
+			for k, v := range msg.Fields() {
+				resp[k] = v
+			}
 		}
 		if result.newAPIError != nil {
 			resp["error_code"] = result.newAPIError.GetErrorCode()
@@ -896,7 +903,7 @@ func TestChannel(c *gin.Context) {
 	if result.newAPIError != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success":    false,
-			"message":    result.newAPIError.Error(),
+			"message":    common.MaskSensitiveInfo(result.newAPIError.Error(), upstreamHints...),
 			"time":       consumedTime,
 			"error_code": result.newAPIError.GetErrorCode(),
 		})

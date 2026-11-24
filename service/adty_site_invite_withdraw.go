@@ -83,6 +83,9 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 		if err := authorizeCommissionSource(tx, input.UserID, user.SiteId, input.SiteID); err != nil {
 			return err
 		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: input.SiteID, AccountID: input.UserID}); err != nil {
+			return err
+		}
 		var site model.AdtySite
 		if err := tx.First(&site, input.SiteID).Error; err != nil {
 			return err
@@ -426,6 +429,9 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 		}
 		beforeSnap := map[string]any{"id": row.Id, "site_id": row.SiteId, "status": row.Status, "amount_usd": row.AmountUSD.String()}
 		if approve {
+			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: row.UserId}); err != nil {
+				return err
+			}
 			if err := tx.Model(&row).Updates(map[string]any{
 				"status": model.AdtySiteInviteWithdrawApproved, "reviewed_by": ownerID, "reviewed_at": time.Now().Unix(),
 			}).Error; err != nil {
@@ -506,6 +512,9 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 		}
 		if row.Status != model.AdtySiteInviteWithdrawApproved || !payableSiteInviteWithdrawal(&row) {
 			return common.NewMessage("This withdrawal cannot be marked as paid")
+		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: row.UserId}); err != nil {
+			return err
 		}
 		if row.Method == "usdt" && txID == "" {
 			return common.NewMessage("Enter the transaction hash")

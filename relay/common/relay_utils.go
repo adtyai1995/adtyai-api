@@ -37,6 +37,38 @@ func GetFullRequestURL(baseURL string, requestURL string, channelType int) strin
 	return fullRequestURL
 }
 
+func sanitizeMalformedURLForLog(rawURL string) string {
+	scheme, afterScheme, ok := strings.Cut(rawURL, "://")
+	if !ok {
+		if idx := strings.IndexAny(rawURL, "?#"); idx >= 0 {
+			if rawURL[idx] == '?' {
+				return rawURL[:idx] + "?***"
+			}
+			return rawURL[:idx] + "#***"
+		}
+		return "***"
+	}
+	queryOrFrag := ""
+	if idx := strings.IndexAny(afterScheme, "?#"); idx >= 0 {
+		if afterScheme[idx] == '?' {
+			queryOrFrag = "?***"
+		} else {
+			queryOrFrag = "#***"
+		}
+		afterScheme = afterScheme[:idx]
+	}
+	authority := afterScheme
+	rest := ""
+	if slash := strings.IndexByte(afterScheme, '/'); slash >= 0 {
+		authority = afterScheme[:slash]
+		rest = afterScheme[slash:]
+	}
+	if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+		authority = "***@" + authority[at+1:]
+	}
+	return scheme + "://" + authority + rest + queryOrFrag
+}
+
 func SanitizeURLForLog(rawURL string) string {
 	if rawURL == "" {
 		return rawURL
@@ -44,18 +76,27 @@ func SanitizeURLForLog(rawURL string) string {
 
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		return rawURL
-	}
-
-	query := parsedURL.Query()
-	if len(query) == 0 {
-		return rawURL
+		return sanitizeMalformedURLForLog(rawURL)
 	}
 
 	changed := false
-	for key := range query {
-		if isSensitiveURLQueryKey(key) {
-			query.Set(key, "***masked***")
+	hadUser := parsedURL.User != nil
+	if hadUser {
+		parsedURL.User = nil
+		changed = true
+	}
+
+	query := parsedURL.Query()
+	if len(query) > 0 {
+		queryChanged := false
+		for key := range query {
+			if isSensitiveURLQueryKey(key) {
+				query.Set(key, "***masked***")
+				queryChanged = true
+			}
+		}
+		if queryChanged {
+			parsedURL.RawQuery = query.Encode()
 			changed = true
 		}
 	}
@@ -63,8 +104,15 @@ func SanitizeURLForLog(rawURL string) string {
 		return rawURL
 	}
 
-	parsedURL.RawQuery = query.Encode()
-	return parsedURL.String()
+	sanitized := parsedURL.String()
+	if hadUser {
+		if scheme, after, ok := strings.Cut(sanitized, "://"); ok {
+			sanitized = scheme + "://***@" + after
+		} else {
+			sanitized = "***@" + sanitized
+		}
+	}
+	return sanitized
 }
 
 func isSensitiveURLQueryKey(key string) bool {

@@ -267,6 +267,11 @@ func backfillAdtyTerminatedTeamRefunds(db *gorm.DB) error {
 					if err == nil {
 						return nil
 					}
+					// R14-005: Preserve active reviewing restrictions during startup backfill
+					// without crashing InitDB or creating false-positive review anomalies.
+					if errors.Is(err, ErrAdtyFundWriteRestricted) {
+						return nil
+					}
 					if !errors.Is(err, ErrBillingOperationConflict) && !errors.Is(err, gorm.ErrRecordNotFound) {
 						return err
 					}

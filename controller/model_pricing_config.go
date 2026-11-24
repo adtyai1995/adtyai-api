@@ -34,7 +34,7 @@ func PreviewModelPricingConversion(c *gin.Context) {
 		Pricing   model.PricingValues `json:"pricing"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
 	preview, err := model.PreviewModelPricingConversion(request.ModelName, request.Pricing)
@@ -52,7 +52,7 @@ func PreviewModelPricing(c *gin.Context) {
 		Pricing   model.PricingValues `json:"pricing"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
 	preview, err := model.PreviewModelPricing(request.ModelName, request.Pricing)
@@ -72,7 +72,7 @@ func UpdateModelPricingConfig(c *gin.Context) {
 		Changes []model.ModelPricingChange `json:"changes"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
 	if err := model.UpdateModelPricing(request.Changes); err != nil {
@@ -80,7 +80,7 @@ func UpdateModelPricingConfig(c *gin.Context) {
 		if errors.Is(err, model.ErrModelPricingConflict) {
 			status = http.StatusConflict
 		}
-		c.JSON(status, gin.H{"success": false, "message": err.Error()})
+		common.ApiErrorStatus(c, status, err)
 		return
 	}
 	names := make([]string, 0, len(request.Changes))

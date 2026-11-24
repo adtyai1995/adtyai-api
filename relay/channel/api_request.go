@@ -388,7 +388,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
 	req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
 	if err != nil {
-		return nil, fmt.Errorf("new request failed: %w", err)
+		return nil, fmt.Errorf("new request failed: %w", sanitizeDoRequestError(err))
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
 	headers := req.Header
@@ -416,7 +416,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
 	req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
 	if err != nil {
-		return nil, fmt.Errorf("new request failed: %w", err)
+		return nil, fmt.Errorf("new request failed: %w", sanitizeDoRequestError(err))
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
 	// set form data
@@ -519,7 +519,7 @@ func keepUpstreamRedirectResponse(_ *http.Request, _ []*http.Request) error {
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if err != nil {
-		return nil, fmt.Errorf("new proxy http client failed: %w", err)
+		return nil, fmt.Errorf("new proxy http client failed: %w", sanitizeDoRequestError(err))
 	}
 	// Clients are cached and shared across channels, so override redirect
 	// behavior on a shallow copy instead of mutating the cached client. This
@@ -631,7 +631,7 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	req, err := http.NewRequestWithContext(submitCtx, c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("new request failed: %w", err)
+		return nil, fmt.Errorf("new request failed: %w", sanitizeDoRequestError(err))
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
 	// Do NOT wrap requestBody in a GetBody closure here: returning the same

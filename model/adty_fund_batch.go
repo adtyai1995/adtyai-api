@@ -977,6 +977,52 @@ func RestoreAdtyFundBatchesInReverseOrderTx(tx *gorm.DB, userID int, amount int6
 // operationKey is passed through to the principal-spent hook so a settlement
 // whose operation has no shares still debits the site operating wallet exactly
 // once. Direct charges have no operation identity and pass "".
+// adtyEffectiveLegacyBalanceTx adjusts balanceBefore for unscoped callers whose
+// balanceBefore is raw users.quota (which still includes overdue unswept expiring
+// gift quota and pending owner-refund holds that have not yet decremented
+// users.quota). Scoped billing callers already run ownerScopedWallet and attach
+// ownerLotScopeKey/ownerWalletPreAdjustedKey, so they are never double-subtracted (R14-024).
+func adtyEffectiveLegacyBalanceTx(tx *gorm.DB, userID int, balanceBefore int64, rows []AdtyFundBatch, heldByBatch map[int64]int64, loc *time.Location, nowUnix int64) (int64, error) {
+	if balanceBefore <= 0 || tx == nil {
+		return max(0, balanceBefore), nil
+	}
+	if tx.Statement != nil && tx.Statement.Context != nil {
+		if _, hasScope := tx.Statement.Context.Value(ownerLotScopeKey{}).(int); hasScope {
+			return balanceBefore, nil
+		}
+		if preAdjusted, _ := tx.Statement.Context.Value(ownerWalletPreAdjustedKey{}).(bool); preAdjusted {
+			return balanceBefore, nil
+		}
+	}
+	var overdueUnheld int64
+	for i := range rows {
+		if rows[i].Status == AdtyFundBatchStatusExpired || rows[i].Remaining <= 0 {
+			continue
+		}
+		if rows[i].IsExpiringGift() && rows[i].ExpiresAt != nil && *rows[i].ExpiresAt > 0 {
+			if loc == nil {
+				loc = AdtyBusinessLocation(tx)
+				nowUnix = time.Now().In(loc).Unix()
+			}
+			if isAdtyFundBatchExpiredAt(&rows[i], nowUnix, loc) {
+				if unheld := rows[i].Remaining - heldByBatch[rows[i].Id]; unheld > 0 {
+					overdueUnheld += unheld
+				}
+			}
+		}
+	}
+	var ownerRefundHeld int64
+	if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+		if err := tx.Model(&AdtyFundAllocation{}).
+			Where("user_id = ? AND operation_id LIKE ? AND held > settled", userID, ownerRefundOperationPrefix+"%").
+			Select("COALESCE(SUM(held-settled),0)").
+			Scan(&ownerRefundHeld).Error; err != nil {
+			return 0, err
+		}
+	}
+	return max(0, balanceBefore-overdueUnheld-ownerRefundHeld), nil
+}
+
 func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int64, notifyPrincipalSpent bool, operationKey string) (int64, error) {
 	if tx == nil || userID <= 0 || amount <= 0 {
 		return 0, nil
@@ -997,8 +1043,9 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 	// 批次总量与「这次业务之前」的余额之间的差，是**没有批次背书的额度**：
 	// 升级前的余额从来没有对应的行，退款（IncreaseUserQuota）也不会补行。
 	// 这部分要落到那条唯一的 legacy 批次上，否则扣费一定失败。
-	// R13-014: 必须排除已过期未清零的到期赠金以及已被并发请求在途占用的额度，
-	// 既防止把过期赠金当可用批次冲抵并凭空铸造额度，也防止挪用他人占位引发 BillingDead。
+	// R13-014 / R14-024: 必须排除已过期未清零的到期赠金以及已被并发请求在途占用的额度；
+	// 对未走 ownerScopedWallet 的非作用域调用方，也必须从 effectiveBalanceBefore 中扣除
+	// 未清零过期赠金与 owner-refund 冻结，防止把过期赠金或退款占用铸造成永久 legacy 本金。
 	var lotTotal int64
 	// realRemaining 记下**补建之前**每个批次真正有多少可扣额度。补建之后 remaining
 	// 里有一部分是刚凭空写进去的，不能算进「批次背书了多少」。
@@ -1014,7 +1061,11 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 		lotTotal += avail
 		realRemaining[rows[i].Id] = avail
 	}
-	if short := balanceBefore - lotTotal; short > 0 {
+	effectiveBalanceBefore, err := adtyEffectiveLegacyBalanceTx(tx, userID, balanceBefore, rows, heldByBatch, loc, nowUnix)
+	if err != nil {
+		return 0, err
+	}
+	if short := effectiveBalanceBefore - lotTotal; short > 0 {
 		// 补建是必须的：存量用户升级前的额度从来没有对应行，退款
 		// （IncreaseUserQuota）也不会补行，不补建就一笔都扣不出去。
 		//

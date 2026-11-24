@@ -127,7 +127,11 @@ func main() {
 		if err != nil {
 			common.FatalLog(common.LogText("failed to parse CHANNEL_UPDATE_FREQUENCY: %s", err.Error()))
 		}
-		go controller.AutomaticallyUpdateChannels(frequency)
+		if frequency > 0 {
+			go controller.AutomaticallyUpdateChannels(frequency)
+		} else {
+			common.SysLog(common.LogText("CHANNEL_UPDATE_FREQUENCY=%d is non-positive, skipping automatic channel balance updates", frequency))
+		}
 	}
 
 	// Codex credential auto-refresh check every 10 minutes, refresh when expires within 1 day
@@ -233,7 +237,11 @@ func main() {
 	common.SysLog(common.LogText("received signal: %v, shutting down...", sig))
 
 	// SSE streams may run for minutes; give them time to finish before forced exit
-	shutdownTimeout := time.Duration(common.GetEnvOrDefault("SHUTDOWN_TIMEOUT_SECONDS", 120)) * time.Second
+	shutdownSeconds := common.GetEnvOrDefault("SHUTDOWN_TIMEOUT_SECONDS", 120)
+	if shutdownSeconds < 1 {
+		shutdownSeconds = 120
+	}
+	shutdownTimeout := time.Duration(shutdownSeconds) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

@@ -2,7 +2,7 @@
 
 ## User
 
-After registration, open the wallet to see the USD balance, principal, and bonus. Create an API key and put the site URL and key in the client.
+After registration, open the wallet to see the USD balance, principal, and bonus. Create an API key and put the API base URL and key in the client.
 
 ## Team lead
 

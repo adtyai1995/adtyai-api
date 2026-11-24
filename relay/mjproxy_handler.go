@@ -370,12 +370,12 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	midjourneyTask.StartTime = originTask.StartTime
 	midjourneyTask.FinishTime = originTask.FinishTime
 	midjourneyTask.ImageUrl = ""
-	if originTask.ImageUrl != "" && setting.MjForwardUrlEnabled {
+	if originTask.ImageUrl != "" && setting.GetMjForwardUrlEnabled() {
 		imagePath, err := service.MidjourneyImagePath(originTask.MjId, time.Now())
 		if err != nil {
 			midjourneyTask.ImageUrl = ""
 		} else {
-			midjourneyTask.ImageUrl = strings.TrimRight(system_setting.ServerAddress, "/") + imagePath
+			midjourneyTask.ImageUrl = strings.TrimRight(system_setting.GetServerAddress(), "/") + imagePath
 			if originTask.Status != "SUCCESS" {
 				sep := "?"
 				if strings.Contains(midjourneyTask.ImageUrl, "?") {
@@ -763,7 +763,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		if originTask == nil {
 			return service.MidjourneyErrorWrapper(constant.MjRequestError, "task_not_found")
 		} else { //原任务的Status=SUCCESS，则可以做放大UPSCALE、变换VARIATION等动作，此时必须使用原来的请求地址才能正确处理
-			if setting.MjActionCheckSuccessEnabled {
+			if setting.GetMjActionCheckSuccessEnabled() {
 				if originTask.Status != "SUCCESS" && relayInfo.RelayMode != relayconstant.RelayModeMidjourneyModal {
 					return service.MidjourneyErrorWrapper(constant.MjRequestError, "task_status_not_success")
 				}
@@ -901,7 +901,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		if err != nil {
 			common.SysLog(common.LogText("get_channel_null: %s", err.Error()))
 		}
-		if channel != nil && channel.GetAutoBan() && common.AutomaticDisableChannelEnabled {
+		if channel != nil && channel.GetAutoBan() && common.GetAutomaticDisableChannelEnabled() {
 			if model.UpdateChannelStatus(midjourneyTask.ChannelId, "", common.ChannelStatusManuallyDisabled, "No available account instance") {
 				service.CloseActiveWebSocketsForChannel(midjourneyTask.ChannelId, service.ChannelDisabledCloseReason)
 				service.RequestPolicy(c).AddEvent(service.PolicyEvent{ChannelID: midjourneyTask.ChannelId, Decision: service.PolicyDecision{Action: "stop", Reason: "task_failed", Source: "upstream"}, Health: "channel_disable_requested"})

@@ -59,7 +59,7 @@ type ModelPricingSnapshot struct {
 	EmptyVersion string              `json:"empty_version"`
 }
 
-var ErrModelPricingConflict = errors.New("model pricing changed; reload before saving")
+var ErrModelPricingConflict = common.NewMessage("Model pricing changed; reload before saving")
 
 // Lock order is stable across instances. Creating missing option rows inside
 // the transaction also serializes the first write to an unconfigured database.
@@ -104,10 +104,10 @@ func readModelPricingMaps(db *gorm.DB) (map[string]map[string]any, map[string]bo
 	for _, row := range rows {
 		var entries map[string]any
 		if err := common.UnmarshalJsonStr(row.Value, &entries); err != nil {
-			return nil, nil, nil, fmt.Errorf("%s: %w", row.Key, err)
+			return nil, nil, nil, common.NewMessage("{{key}} must be a valid JSON object", map[string]any{"key": row.Key})
 		}
 		if entries == nil {
-			return nil, nil, nil, fmt.Errorf("%s must be a JSON object", row.Key)
+			return nil, nil, nil, common.NewMessage("{{key}} must be a valid JSON object", map[string]any{"key": row.Key})
 		}
 		values[row.Key] = entries
 		existing[row.Key] = true
@@ -242,7 +242,7 @@ func effectiveModelPricing(values map[string]map[string]any, name string) Pricin
 // as the saved-price display and conversion. It has no write side effects.
 func PreviewModelPricing(name string, draft PricingValues) (PricingValues, error) {
 	if draft == nil {
-		return nil, errors.New("pricing draft is required")
+		return nil, common.NewMessage("Pricing draft is required")
 	}
 	values, _, _, err := readModelPricingMaps(DB)
 	if err != nil {
@@ -520,7 +520,7 @@ func ValidateModelPricing(name string, values PricingValues) error {
 // override cannot bypass validation through an out-of-date process-local cache.
 func validateModelPricing(name string, values, previous PricingValues) error {
 	if strings.TrimSpace(name) == "" {
-		return errors.New("model name is required")
+		return common.NewMessage("Model name is required")
 	}
 	generation := jsplugin.DefaultRegistry.Generation()
 	previousVariants, _ := previous[billing_setting.PluginBillingExprOption].(map[string]any)
@@ -529,12 +529,12 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 		var ok bool
 		variants, ok = value.(map[string]any)
 		if !ok || variants == nil {
-			return errors.New("plugin billing expressions must be a plugin-to-expression object")
+			return common.NewMessage("Plugin billing expressions must be a valid object")
 		}
 		for key, value := range variants {
 			expression, ok := value.(string)
 			if !ok || strings.TrimSpace(expression) == "" {
-				return fmt.Errorf("model %s: plugin %s: billing expression is required", name, key)
+				return common.NewMessage("Model {{model}} plugin {{plugin}}: billing expression is required", map[string]any{"model": name, "plugin": key})
 			}
 			plugin, exists := generation.Get(key)
 			declared := exists && slices.Contains(plugin.Meta.Models, name)
@@ -546,11 +546,11 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 				continue
 			}
 			if !declared {
-				return fmt.Errorf("model %s: plugin %s does not declare this model", name, key)
+				return common.NewMessage("Model {{model}}: plugin {{plugin}} does not declare this model", map[string]any{"model": name, "plugin": key})
 			}
 			schema, _ := plugin.Meta.UsageForModel(name)
 			if err := billing_setting.SmokeTestTaskExpr(expression, schema); err != nil {
-				return fmt.Errorf("model %s: plugin %s: %w", name, key, err)
+				return common.NewMessage("Model {{model}} plugin {{plugin}}: {{error}}", map[string]any{"model": name, "plugin": key, "error": err.Error()})
 			}
 		}
 	}
@@ -559,23 +559,23 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 			continue
 		}
 		if !IsModelPricingOption(key) {
-			return fmt.Errorf("unsupported pricing field: %s", key)
+			return common.NewMessage("Unsupported pricing field: {{key}}", map[string]any{"key": key})
 		}
 		if key == "billing_setting.billing_mode" {
 			if value != "ratio" && value != "tiered_expr" {
-				return errors.New("invalid billing mode")
+				return common.NewMessage("Invalid billing mode")
 			}
 			continue
 		}
 		if key == "billing_setting.billing_expr" {
 			expression, ok := value.(string)
 			if !ok || strings.TrimSpace(expression) == "" {
-				return errors.New("billing expression is required")
+				return common.NewMessage("Billing expression is required")
 			}
 			// Even a model expression currently shadowed by every provider must
 			// compile; only its schema-specific smoke tests can be skipped.
 			if _, err := billingexpr.CompileFromCache(expression); err != nil {
-				return fmt.Errorf("model %s: %w", name, err)
+				return common.NewMessage("Model {{model}}: {{error}}", map[string]any{"model": name, "error": err.Error()})
 			}
 			// An unchanged expression a sole provider has been charging with keeps
 			// its price after the plugin narrows its usage profile; relay checks
@@ -591,7 +591,7 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 					}
 					schema, _ := plugin.Meta.UsageForModel(name)
 					if err = billing_setting.SmokeTestTaskExpr(expression, schema); err != nil {
-						return fmt.Errorf("model %s: plugin %s: %w", name, plugin.Meta.Key, err)
+						return common.NewMessage("Model {{model}} plugin {{plugin}}: {{error}}", map[string]any{"model": name, "plugin": plugin.Meta.Key, "error": err.Error()})
 					}
 				}
 			} else if target, resolved := ResolveTaskModelAlias(generation, name); resolved {
@@ -610,19 +610,19 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 			// no schema to test. Preserve it so removing stale overrides or saving
 			// other model prices does not become impossible.
 			if err != nil {
-				return fmt.Errorf("model %s: %w", name, err)
+				return common.NewMessage("Model {{model}}: {{error}}", map[string]any{"model": name, "error": err.Error()})
 			}
 			continue
 		}
 		number, ok := value.(float64)
 		if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
-			return fmt.Errorf("%s must be a finite, non-negative number", key)
+			return common.NewMessage("{{key}} must be a finite, non-negative number", map[string]any{"key": key})
 		}
 	}
 	if values["billing_setting.billing_mode"] == "tiered_expr" {
 		if _, exists := values["billing_setting.billing_expr"]; !exists {
 			if _, builtin := billing_setting.GetBuiltinBillingExpr(name); !builtin {
-				return errors.New("billing expression is required")
+				return common.NewMessage("Billing expression is required")
 			}
 		}
 	}
@@ -631,12 +631,12 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 
 func UpdateModelPricing(changes []ModelPricingChange) error {
 	if len(changes) == 0 {
-		return errors.New("select model pricing changes before saving")
+		return common.NewMessage("Select model pricing changes before saving")
 	}
 	seen := make(map[string]bool)
 	for _, change := range changes {
 		if seen[change.ModelName] {
-			return errors.New("duplicate model pricing change")
+			return common.NewMessage("Duplicate model pricing change")
 		}
 		seen[change.ModelName] = true
 		if change.ExpectedVersion == "" {
@@ -676,21 +676,21 @@ func UpdateModelPricingOptions(updates map[string]string, audits ...func(*gorm.D
 		names := make(map[string]bool)
 		for key, raw := range updates {
 			if !IsModelPricingOption(key) {
-				return fmt.Errorf("unsupported pricing field: %s", key)
+				return common.NewMessage("Unsupported pricing field: {{key}}", map[string]any{"key": key})
 			}
 			var entries map[string]any
 			if err := common.UnmarshalJsonStr(raw, &entries); err != nil {
-				return err
+				return common.NewMessage("{{key}} must be a valid JSON object", map[string]any{"key": key})
 			}
 			if entries == nil {
-				return fmt.Errorf("%s must be a JSON object", key)
+				return common.NewMessage("{{key}} must be a valid JSON object", map[string]any{"key": key})
 			}
 			for _, entriesForKey := range []map[string]any{values[key], entries} {
 				for name := range entriesForKey {
 					if key == billing_setting.PluginBillingExprOption {
 						_, model, ok := billing_setting.SplitPluginBillingExprKey(name)
 						if !ok {
-							return fmt.Errorf("invalid plugin billing expression key: %s", name)
+							return common.NewMessage("Invalid plugin billing expression key: {{key}}", map[string]any{"key": name})
 						}
 						name = model
 					}

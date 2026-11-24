@@ -393,6 +393,27 @@ func ManualCompleteAdtyTopUp(c *gin.Context) {
 
 // RefundAdtyTopUp 退款：按当前余额扣回这笔订单还剩的额度，赠金不退，只退没花掉的本金；佣金按比例扣回。
 // 返回扣回额度、退的本金额度和应退金额，真正退钱在线下做。
+func redactAdtyManualRefundFactsForViewer(c *gin.Context, facts *model.AdtyRefundPageFacts) {
+	if c == nil || facts == nil || c.GetInt("role") >= common.RoleRootUser {
+		return
+	}
+	for i := range facts.ManualRefunds {
+		if facts.ManualRefunds[i].SiteId != 0 {
+			facts.ManualRefunds[i].ReconcileOrphanId = 0
+		}
+	}
+}
+
+func redactAdtyManualRefundResultForViewer(c *gin.Context, result *model.AdtyManualRefundResult) {
+	if c == nil || result == nil || c.GetInt("role") >= common.RoleRootUser {
+		return
+	}
+	if result.Refund != nil && result.Refund.SiteId != 0 {
+		result.Refund.ReconcileOrphanId = 0
+	}
+	redactAdtyManualRefundFactsForViewer(c, result.Facts)
+}
+
 func PreviewAdtyTopUpRefund(c *gin.Context) {
 	tradeNo := c.Param("trade_no")
 	result, err := model.PreviewAdtyTopUpRefund(tradeNo)
@@ -419,6 +440,7 @@ func PreviewAdtyTopUpRefund(c *gin.Context) {
 			result.CommissionClawbackUSD = facts.Commission.ExpectedClawbackUSD
 		}
 	}
+	redactAdtyManualRefundFactsForViewer(c, result.Facts)
 	common.ApiSuccess(c, result)
 }
 
@@ -491,6 +513,7 @@ func RefundAdtyTopUp(c *gin.Context) {
 		auditParams["reconcile_orphan_id"] = body.ReconcileOrphanID
 	}
 	recordManageAuditFor(c, applied.Refund.UserId, "adty.topup.refund.apply", auditParams)
+	redactAdtyManualRefundResultForViewer(c, applied)
 	common.ApiSuccess(c, applied)
 }
 
@@ -500,6 +523,7 @@ func ListAdtyTopUpManualRefunds(c *gin.Context) {
 		writeAdtyFinanceError(c, err)
 		return
 	}
+	redactAdtyManualRefundResultForViewer(c, result)
 	common.ApiSuccess(c, result)
 }
 
@@ -509,6 +533,7 @@ func GetAdtyTopUpManualRefund(c *gin.Context) {
 		writeAdtyFinanceError(c, err)
 		return
 	}
+	redactAdtyManualRefundResultForViewer(c, result)
 	common.ApiSuccess(c, result)
 }
 
@@ -585,6 +610,7 @@ func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refund
 		audit["payout_status"] = result.Refund.PayoutStatus
 	}
 	recordManageAuditFor(c, result.Refund.UserId, "adty.topup.refund."+step, audit)
+	redactAdtyManualRefundResultForViewer(c, result)
 	common.ApiSuccess(c, result)
 }
 

@@ -473,10 +473,14 @@ protocols.openai_video = {
       if (n !== 4 && n !== 6 && n !== 8) throw new Error("seconds must be one of 4, 6, or 8");
       req.duration = n;
     }
+    assertSingleVideoCount(plainObject(req.metadata) || {});
     const providedResolution = req.resolution !== undefined ? req.resolution : req.metadata && req.metadata.resolution;
     if (providedResolution !== undefined && providedResolution !== "") {
       const resolution = String(providedResolution).toLowerCase();
       if (resolution !== "720p" && resolution !== "1080p" && resolution !== "4k") throw new Error("resolution must be one of 720p, 1080p, or 4k");
+      if (req.resolution !== undefined && req.resolution !== "") {
+        req.metadata = Object.assign({}, plainObject(req.metadata) || {}, { resolution: resolution });
+      }
     }
     if (hasInputReferenceFile) {
       req.images = [{ __fileRef: "request_file:input_reference", encoding: "base64", maxBytes: 20971520 }];

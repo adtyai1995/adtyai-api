@@ -148,6 +148,9 @@ func InitChannelCache() error {
 }
 
 func SyncChannelCache(frequency int) {
+	if frequency < 1 {
+		frequency = 60
+	}
 	for {
 		time.Sleep(time.Duration(frequency) * time.Second)
 		syncChannelCacheOnce()
@@ -175,6 +178,10 @@ func GetRandomSatisfiedChannel(
 		return GetChannel(group, model, retry, filters)
 	}
 
+	// R14-001: Compute normalized model name before acquiring channelSyncLock.RLock()
+	// so channelSyncLock never nests OptionMapRWMutex.RLock().
+	normalizedModel := ratio_setting.RoutingMatchModelName(model)
+
 	channelSyncLock.RLock()
 	if channelCacheInvalid {
 		channelSyncLock.RUnlock()
@@ -186,8 +193,7 @@ func GetRandomSatisfiedChannel(
 	channels, _ := filterCandidateIDs(group2model2channels[group][model], model, filters)
 
 	// If no channels found, try to find channels with the normalized model name.
-	if len(channels) == 0 {
-		normalizedModel := ratio_setting.RoutingMatchModelName(model)
+	if len(channels) == 0 && normalizedModel != "" && normalizedModel != model {
 		channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
 	}
 

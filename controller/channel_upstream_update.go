@@ -355,7 +355,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	if channel.Type == constant.ChannelTypeTaskPlugin {
 		plugin, ok := jsplugin.DefaultRegistry.Get(channel.GetSetting().TaskPluginKey)
 		if !ok {
-			return nil, fmt.Errorf("task plugin %q is not registered", channel.GetSetting().TaskPluginKey)
+			return nil, common.NewMessage("Task plugin {{plugin}} is not registered", map[string]any{"plugin": channel.GetSetting().TaskPluginKey})
 		}
 		return normalizeModelNames(plugin.Meta.Models), nil
 	}
@@ -367,7 +367,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	if channel.Type == constant.ChannelTypeOllama {
 		key, err := ollamaRequestKey(channel)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get channel key: %w", err)
+			return nil, common.NewMessage("Failed to get channel key: {{error}}", map[string]any{"error": err.Error()})
 		}
 		models, err := ollama.FetchOllamaModels(context.Background(), baseURL, key, channel.GetSetting())
 		if err != nil {
@@ -381,7 +381,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	if channel.Type == constant.ChannelTypeGemini {
 		key, _, apiErr := channel.GetNextEnabledKey()
 		if apiErr != nil {
-			return nil, fmt.Errorf("failed to get channel key: %w", apiErr)
+			return nil, common.NewMessage("Failed to get channel key: {{error}}", map[string]any{"error": apiErr.Error()})
 		}
 		key = strings.TrimSpace(key)
 		models, err := gemini.FetchGeminiModels(baseURL, key, channel.GetSetting())
@@ -434,7 +434,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 
 	key, _, apiErr := channel.GetNextEnabledKey()
 	if apiErr != nil {
-		return nil, fmt.Errorf("failed to get channel key: %w", apiErr)
+		return nil, common.NewMessage("Failed to get channel key: {{error}}", map[string]any{"error": apiErr.Error()})
 	}
 	key = strings.TrimSpace(key)
 
@@ -464,7 +464,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 func fetchAdvancedCustomUpstreamModelIDs(channel *model.Channel, baseURL string) ([]string, error) {
 	key, _, apiErr := channel.GetNextEnabledKey()
 	if apiErr != nil {
-		return nil, fmt.Errorf("failed to get channel key: %w", apiErr)
+		return nil, common.NewMessage("Failed to get channel key: {{error}}", map[string]any{"error": apiErr.Error()})
 	}
 	key = strings.TrimSpace(key)
 
@@ -945,6 +945,10 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 
 	channel, err := model.GetChannelById(req.ID, true)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorT(c, "Channel not found")
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -952,7 +956,13 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 	settings := channel.GetOtherSettings()
 	modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(channel, &settings, true, false)
 	if err != nil {
-		common.ApiError(c, err)
+		var msg *common.Message
+		if errors.As(err, &msg) {
+			common.ApiError(c, err)
+			return
+		}
+		maskedErr := common.MaskSensitiveInfo(err.Error(), channel.GetBaseURL(), channel.GetSetting().Proxy)
+		common.ApiErrorT(c, "Failed to detect upstream model updates: {{error}}", map[string]any{"error": maskedErr})
 		return
 	}
 	if modelsChanged {

@@ -143,6 +143,20 @@ if redis.call('TTL', KEYS[1]) < 0 then
   end
 end
 return count`)
+	adtyKeyTPMIncrByWithTTL = redis.NewScript(`
+local count = redis.call('INCRBY', KEYS[1], ARGV[1])
+if redis.call('TTL', KEYS[1]) < 0 then
+  local res = redis.pcall('EXPIRE', KEYS[1], ARGV[2])
+  if type(res) == 'table' and res.err ~= nil then
+    redis.pcall('DEL', KEYS[1])
+    return res
+  end
+  if res ~= 1 or redis.call('TTL', KEYS[1]) <= 0 then
+    redis.pcall('DEL', KEYS[1])
+    return redis.error_reply('ERR failed to set key tpm ttl')
+  end
+end
+return count`)
 )
 
 func adtyKeyRateRedisKey(tokenID int, now time.Time) string {
@@ -218,6 +232,29 @@ func adtyKeyRateAllowFallback(ctx context.Context, key string, perMinute int) (b
 	return count <= int64(perMinute), nil
 }
 
+func adtyKeyTPMRecordFallback(ctx context.Context, key string, tokens int64) error {
+	if _, err := common.RDB.IncrBy(ctx, key, tokens).Result(); err != nil {
+		return err
+	}
+	ttl, err := common.RDB.TTL(ctx, key).Result()
+	if err != nil {
+		_ = common.RDB.Del(ctx, key).Err()
+		return err
+	}
+	if ttl <= 0 {
+		ok, expErr := common.RDB.Expire(ctx, key, adtyKeyRateTTLSeconds*time.Second).Result()
+		if expErr != nil {
+			_ = common.RDB.Del(ctx, key).Err()
+			return expErr
+		}
+		if !ok {
+			_ = common.RDB.Del(ctx, key).Err()
+			return errors.New("failed to set key tpm ttl")
+		}
+	}
+	return nil
+}
+
 // RecordAdtyKeyTPM adds consumed tokens to the per-key minute bucket.
 func RecordAdtyKeyTPM(tokenID, tokens int, nowOpt ...time.Time) error {
 	if tokenID <= 0 || tokens <= 0 {
@@ -233,11 +270,12 @@ func RecordAdtyKeyTPM(tokenID, tokens int, nowOpt ...time.Time) error {
 		}
 		ctx := context.Background()
 		key := adtyKeyTPMRedisKey(tokenID, now)
-		if _, err := common.RDB.IncrBy(ctx, key, int64(tokens)).Result(); err != nil {
+		if _, err := adtyKeyTPMIncrByWithTTL.Run(ctx, common.RDB, []string{key}, int64(tokens), adtyKeyRateTTLArg).Int64(); err != nil {
+			lowerErr := strings.ToLower(err.Error())
+			if strings.Contains(lowerErr, "noperm") && strings.Contains(lowerErr, "eval") {
+				return adtyKeyTPMRecordFallback(ctx, key, int64(tokens))
+			}
 			return err
-		}
-		if ttl, err := common.RDB.TTL(ctx, key).Result(); err == nil && ttl <= 0 {
-			_ = common.RDB.Expire(ctx, key, adtyKeyRateTTLSeconds*time.Second).Err()
 		}
 		return nil
 	}

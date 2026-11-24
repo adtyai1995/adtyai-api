@@ -128,7 +128,16 @@ function RoutingPolicyEditor(props: { config: PolicyConfig }) {
     }
     try {
       const data = await mutation.mutateAsync(delta)
-      form.reset(routingPolicyFormValues(data.options))
+      const current = form.getValues()
+      const nextValues = routingPolicyFormValues(data.options)
+      form.reset(nextValues)
+      for (const key of Object.keys(
+        nextValues
+      ) as (keyof RoutingPolicyFormValues)[]) {
+        if (JSON.stringify(current[key]) !== JSON.stringify(submitted[key])) {
+          form.setValue(key, current[key] as never, { shouldDirty: true })
+        }
+      }
     } catch (error) {
       handleServerError(error)
     }

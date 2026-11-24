@@ -585,12 +585,16 @@ export function buildSubmitRequest(ctx) {
       action: h3HasVisualContent(content) ? "image_to_video" : "text_to_video",
     };
   }
+  const duration = outboundDuration(req, model);
+  const resolution = outboundResolution(req, model);
+  const hasImage = hasHailuoImage(req, false);
+  validateHailuoCombo(model, duration, resolution, hasImage);
   const body = Object.assign(
     {
       model: model,
       prompt: req.prompt || undefined,
-      duration: outboundDuration(req, model),
-      resolution: outboundResolution(req, model),
+      duration: duration,
+      resolution: resolution,
     },
     definedFields(metadata, V1_METADATA_FIELDS)
   );
@@ -599,7 +603,7 @@ export function buildSubmitRequest(ctx) {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: "Bearer " + ctx.apiKey },
     body: body,
-    action: hasHailuoImage(req, false) ? "image_to_video" : "text_to_video",
+    action: hasImage ? "image_to_video" : "text_to_video",
   };
 }
 
@@ -751,7 +755,7 @@ export function buildContentRequest(ctx) {
   return { url: url, method: "GET", credentialless: true };
 }
 
-export function extractUsageOnComplete(_task, _taskResult, body) {
+export function extractUsageOnComplete(task, _taskResult, body) {
   const h3Task = h3QueryTask(body);
   if (h3Task) {
     const resolution = trimmed(h3Task.resolution).toUpperCase();
@@ -776,7 +780,7 @@ export function extractUsageOnComplete(_task, _taskResult, body) {
   const width = Number((body || {}).video_width || 0);
   const height = Number((body || {}).video_height || 0);
   if (!(width > 0) || !(height > 0)) return null;
-  return { resolution: resolutionFor(width + "x" + height, "") };
+  return { resolution: resolutionFor(width + "x" + height, trimmed(task && (task.upstreamModel || task.model))) };
 }
 
 export const protocols = {
@@ -805,11 +809,11 @@ export const protocols = {
       if (images.length) requestBody.images = images;
       if (Object.prototype.hasOwnProperty.call(req, "seconds")) requestBody.duration = req.seconds;
       else if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.duration = req.duration;
+      if (Object.prototype.hasOwnProperty.call(req, "size")) requestBody.size = req.size;
+      else if (Object.prototype.hasOwnProperty.call(req, "resolution")) requestBody.size = req.resolution;
       const comboModel = model;
       const comboDuration = requestBody.duration === undefined ? undefined : Number(requestBody.duration);
       validateHailuoCombo(comboModel, comboDuration, outboundResolution(requestBody, comboModel), images.length > 0);
-      if (Object.prototype.hasOwnProperty.call(req, "size")) requestBody.size = req.size;
-      else if (Object.prototype.hasOwnProperty.call(req, "resolution")) requestBody.size = req.resolution;
       return { kind: "submit", model: model, action: images.length ? "image_to_video" : "text_to_video", requestBody: requestBody };
     },
     renderEvents: function (ctx, task, previousState) {
