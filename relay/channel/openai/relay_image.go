@@ -106,10 +106,11 @@ func normalizeOpenAIUsage(usage *dto.Usage) {
 	if usage == nil {
 		return
 	}
-	if usage.InputTokens != 0 {
+	clampNonNegativeUsage(usage)
+	if usage.InputTokens > 0 {
 		usage.PromptTokens = usage.InputTokens
 	}
-	if usage.OutputTokens != 0 {
+	if usage.OutputTokens > 0 {
 		usage.CompletionTokens = usage.OutputTokens
 	}
 	if usage.InputTokensDetails != nil {
@@ -118,7 +119,11 @@ func normalizeOpenAIUsage(usage *dto.Usage) {
 	if usage.OutputTokensDetails != nil {
 		usage.CompletionTokenDetails = *usage.OutputTokensDetails
 	}
-	if usage.TotalTokens == 0 {
+	clampNonNegativeUsage(usage)
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && usage.TotalTokens > 0 {
+		usage.PromptTokens = usage.TotalTokens
+	}
+	if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 }

@@ -1,6 +1,7 @@
 package types
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,10 +13,17 @@ type RWMap[K comparable, V any] struct {
 }
 
 func (m *RWMap[K, V]) UnmarshalJSON(b []byte) error {
+	parsed := make(map[K]V)
+	if err := common.Unmarshal(b, &parsed); err != nil {
+		return err
+	}
+	if parsed == nil {
+		return errors.New("null is not allowed for map config")
+	}
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-	m.data = make(map[K]V)
-	return common.Unmarshal(b, &m.data)
+	m.data = parsed
+	return nil
 }
 
 func (m *RWMap[K, V]) MarshalJSON() ([]byte, error) {

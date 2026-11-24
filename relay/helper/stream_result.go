@@ -26,11 +26,16 @@ func (r *StreamResult) Error(err error) {
 	if err == nil {
 		return
 	}
-	r.status.RecordError(err.Error())
 	var apiErr *types.NewAPIError
 	if errors.As(err, &apiErr) {
+		if apiErr == nil {
+			return
+		}
+		r.status.RecordError(err.Error())
 		r.status.MarkFailed(string(apiErr.GetErrorCode()), apiErr.ToOpenAIError().Type, apiErr.StatusCode)
+		return
 	}
+	r.status.RecordError(err.Error())
 }
 
 // Stop records a fatal error and marks the stream to stop after this chunk.

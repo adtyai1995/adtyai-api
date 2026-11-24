@@ -244,8 +244,10 @@ func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		usage.CompletionTokens = max(usage.CompletionTokens, 0)
 		usage.TotalTokens = max(usage.TotalTokens, 0)
 	}
-	if usage == nil || (usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0) {
-		if responseText.Len() > 0 {
+	if usage == nil || (usage.PromptTokens <= 0 && usage.CompletionTokens <= 0) {
+		if usage != nil && usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
+		} else if responseText.Len() > 0 {
 			usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		} else {
 			usage = &dto.Usage{}
@@ -279,13 +281,17 @@ func zhipuHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respon
 	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
 	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
 	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
-	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
-		var textBuilder strings.Builder
-		for _, ch := range fullTextResponse.Choices {
-			textBuilder.WriteString(ch.Message.StringContent())
-		}
-		if est := service.ResponseText2Usage(c, textBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
-			fullTextResponse.Usage = *est
+	if fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
+		if fullTextResponse.Usage.TotalTokens > 0 {
+			fullTextResponse.Usage.PromptTokens = fullTextResponse.Usage.TotalTokens
+		} else {
+			var textBuilder strings.Builder
+			for _, ch := range fullTextResponse.Choices {
+				textBuilder.WriteString(ch.Message.StringContent())
+			}
+			if est := service.ResponseText2Usage(c, textBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
+				fullTextResponse.Usage = *est
+			}
 		}
 	} else if fullTextResponse.Usage.TotalTokens <= 0 {
 		fullTextResponse.Usage.TotalTokens = fullTextResponse.Usage.PromptTokens + fullTextResponse.Usage.CompletionTokens

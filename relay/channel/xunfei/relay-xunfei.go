@@ -146,16 +146,22 @@ func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textReques
 		usage.PromptTokens = max(usage.PromptTokens, 0)
 		usage.CompletionTokens = max(usage.CompletionTokens, 0)
 		usage.TotalTokens = max(usage.TotalTokens, 0)
-		if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && (hasOutput || responseText.Len() > 0) {
-			modelName := textRequest.Model
-			promptTokens := 0
-			if info != nil {
-				if info.UpstreamModelName != "" {
-					modelName = info.UpstreamModelName
-				}
-				promptTokens = info.GetEstimatePromptTokens()
+		if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
+			if usage.TotalTokens > 0 {
+				usage.PromptTokens = usage.TotalTokens
+				return &usage
 			}
-			return service.ResponseText2Usage(c, responseText.String(), modelName, promptTokens)
+			if hasOutput || responseText.Len() > 0 {
+				modelName := textRequest.Model
+				promptTokens := 0
+				if info != nil {
+					if info.UpstreamModelName != "" {
+						modelName = info.UpstreamModelName
+					}
+					promptTokens = info.GetEstimatePromptTokens()
+				}
+				return service.ResponseText2Usage(c, responseText.String(), modelName, promptTokens)
+			}
 		}
 		if usage.TotalTokens <= 0 {
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -238,17 +244,21 @@ func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.
 			},
 		}
 	}
-	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
-		modelName := textRequest.Model
-		promptTokens := 0
-		if info != nil {
-			if info.UpstreamModelName != "" {
-				modelName = info.UpstreamModelName
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
+		if usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
+		} else {
+			modelName := textRequest.Model
+			promptTokens := 0
+			if info != nil {
+				if info.UpstreamModelName != "" {
+					modelName = info.UpstreamModelName
+				}
+				promptTokens = info.GetEstimatePromptTokens()
 			}
-			promptTokens = info.GetEstimatePromptTokens()
-		}
-		if est := service.ResponseText2Usage(c, content, modelName, promptTokens); est != nil {
-			usage = *est
+			if est := service.ResponseText2Usage(c, content, modelName, promptTokens); est != nil {
+				usage = *est
+			}
 		}
 	} else if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens

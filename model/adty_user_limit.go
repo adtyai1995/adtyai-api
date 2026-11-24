@@ -1,6 +1,7 @@
 package model
 
 import (
+	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -46,4 +47,28 @@ func SaveAdtyUserLimit(limit AdtyUserLimit) error {
 		Columns:   []clause.Column{{Name: "user_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"rpm", "tpm", "concurrency", "updated_at"}),
 	}).Create(&limit).Error
+}
+
+// SaveAdtyUserLimitForActor locks the target user row and enforces role hierarchy
+// and PAT admin-target guards atomically alongside saving AdtyUserLimit (R10-006).
+func SaveAdtyUserLimitForActor(limit AdtyUserLimit, actorRole int, denyAdminTarget bool) error {
+	if DB == nil {
+		return gorm.ErrInvalidDB
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var target User
+		if err := lockForUpdate(tx).Select("id", "role").First(&target, limit.UserId).Error; err != nil {
+			return err
+		}
+		if actorRole != common.RoleRootUser && (actorRole < common.RoleAdminUser || actorRole <= target.Role) {
+			return ErrUserQuotaPermission
+		}
+		if denyAdminTarget && target.Role >= common.RoleAdminUser {
+			return ErrAdminTargetSessionRequired
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "user_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"rpm", "tpm", "concurrency", "updated_at"}),
+		}).Create(&limit).Error
+	})
 }

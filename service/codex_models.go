@@ -66,7 +66,7 @@ func fetchLatestCodexClientVersion(ctx context.Context, client *http.Client, rel
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", common.SanitizeOutboundError(err)
 	}
 	defer resp.Body.Close()
 
@@ -142,7 +142,7 @@ func FetchCodexModels(
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, common.SanitizeOutboundError(err, accessToken)
 	}
 	defer resp.Body.Close()
 

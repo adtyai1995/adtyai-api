@@ -124,9 +124,9 @@ func GetStatus(c *gin.Context) {
 		"data_export_default_time":      common.DataExportDefaultTime,
 		"default_collapse_sidebar":      common.DefaultCollapseSidebar,
 		"mj_notify_enabled":             setting.MjNotifyEnabled,
-		"chats":                         setting.Chats,
-		"demo_site_enabled":             operation_setting.DemoSiteEnabled,
-		"self_use_mode_enabled":         operation_setting.SelfUseModeEnabled,
+		"chats":                         setting.GetChats(),
+		"demo_site_enabled":             operation_setting.GetDemoSiteEnabled(),
+		"self_use_mode_enabled":         operation_setting.GetSelfUseModeEnabled(),
 		"register_enabled":              common.RegisterEnabled,
 		"password_login_enabled":        common.PasswordLoginEnabled,
 		"password_register_enabled":     common.PasswordRegisterEnabled,
@@ -134,8 +134,8 @@ func GetStatus(c *gin.Context) {
 
 		"password_login_encryption_enabled": common.PasswordLoginEncryptionEnabled,
 
-		"usd_exchange_rate": operation_setting.USDExchangeRate,
-		"price":             operation_setting.Price,
+		"usd_exchange_rate": operation_setting.GetUSDExchangeRate(),
+		"price":             operation_setting.GetPrice(),
 
 		// 面板启用开关
 		"api_info_enabled":      cs.ApiInfoEnabled,

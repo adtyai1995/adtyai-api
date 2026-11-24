@@ -1140,12 +1140,30 @@ func loadAdtySiteTierStatsTx(tx *gorm.DB, siteID int) (AdtySiteTierStats, error)
 	}
 	stats.PrincipalUSD = effective
 
+	// R10-021: Sum incremental net billed quota across request/direct/task/mj
+	// so Realtime WSS (direct:* + request:*) and task:*:adjust are never double-counted
+	// and downward task/mj refunds properly reduce net site consumption.
 	var billed int64
 	if err := tx.Model(&model.BillingOperation{}).
-		Where("site_id = ? AND state = ? AND kind IN ?", siteID, model.BillingSettled, []string{"request", "task", "mj_charge"}).
-		Where("COALESCE(payer_kind,'') <> ?", model.BillingPayerOwner).
-		Select("COALESCE(SUM(applied_quota), 0)").Scan(&billed).Error; err != nil {
+		Where("site_id = ? AND COALESCE(payer_kind,'') <> ?", siteID, model.BillingPayerOwner).
+		Where("(state = ? AND kind IN ?) OR (state = ? AND kind IN ?)",
+			model.BillingSettled, []string{"request", "direct", "task", "mj_charge"},
+			model.BillingRefunded, []string{"request", "task", "mj_refund"},
+		).
+		Select(`COALESCE(SUM(CASE
+			WHEN state = 'settled' AND kind = 'request' THEN applied_quota - stream_wallet_quota
+			WHEN state = 'settled' AND kind = 'direct' THEN applied_quota
+			WHEN state = 'settled' AND kind = 'task' THEN applied_quota - reserved_quota
+			WHEN state = 'settled' AND kind = 'mj_charge' THEN applied_quota
+			WHEN state = 'refunded' AND kind = 'request' THEN -stream_wallet_quota
+			WHEN state = 'refunded' AND kind = 'task' THEN applied_quota - reserved_quota
+			WHEN state = 'refunded' AND kind = 'mj_refund' THEN -reserved_quota
+			ELSE 0 END), 0)`).
+		Scan(&billed).Error; err != nil {
 		return stats, err
+	}
+	if billed < 0 {
+		billed = 0
 	}
 	stats.ConsumptionUSD = QuotaToUSD(billed)
 	return stats, nil

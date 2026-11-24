@@ -182,6 +182,9 @@ func (e *NewAPIError) SetMessage(message string) {
 // ToOpenAIError masks the upstream addresses in the message; pass those of the
 // channel that produced the error, or none when no channel did.
 func (e *NewAPIError) ToOpenAIError(upstreamURLs ...string) OpenAIError {
+	if e == nil {
+		return OpenAIError{}
+	}
 	var result OpenAIError
 	switch e.errorType {
 	case ErrorTypeOpenAIError:
@@ -216,6 +219,9 @@ func (e *NewAPIError) ToOpenAIError(upstreamURLs ...string) OpenAIError {
 
 // ToClaudeError masks the upstream addresses like ToOpenAIError.
 func (e *NewAPIError) ToClaudeError(upstreamURLs ...string) ClaudeError {
+	if e == nil {
+		return ClaudeError{}
+	}
 	var result ClaudeError
 	switch e.errorType {
 	case ErrorTypeOpenAIError:

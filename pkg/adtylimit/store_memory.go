@@ -59,10 +59,13 @@ func (s *MemoryStore) Renew(userID int, member string, now time.Time, ttl time.D
 	defer s.mu.Unlock()
 	members := s.running[userID]
 	if members == nil {
-		members = map[string]time.Time{}
-		s.running[userID] = members
+		return nil
 	}
-	if next := now.Add(ttl); next.After(members[member]) {
+	current, exists := members[member]
+	if !exists {
+		return nil
+	}
+	if next := now.Add(ttl); next.After(current) {
 		members[member] = next
 	}
 	return nil

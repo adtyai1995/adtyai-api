@@ -2,7 +2,9 @@ package model_setting
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -41,13 +43,40 @@ func init() {
 	config.GlobalConfig.Register("claude", &claudeSettings)
 }
 
-// GetClaudeSettings 获取Claude配置
-func GetClaudeSettings() *ClaudeSettings {
-	// check default max tokens must have default key
-	if _, ok := claudeSettings.DefaultMaxTokens["default"]; !ok {
-		claudeSettings.DefaultMaxTokens["default"] = 8192
+func cloneClaudeHeadersSettings(src map[string]map[string][]string) map[string]map[string][]string {
+	if src == nil {
+		return map[string]map[string][]string{}
 	}
-	return &claudeSettings
+	dst := make(map[string]map[string][]string, len(src))
+	for model, headers := range src {
+		if headers == nil {
+			continue
+		}
+		clonedHeaders := make(map[string][]string, len(headers))
+		for k, vals := range headers {
+			clonedHeaders[k] = slices.Clone(vals)
+		}
+		dst[model] = clonedHeaders
+	}
+	return dst
+}
+
+// GetClaudeSettings 获取Claude配置快照（并发安全，不修改全局 map）
+func GetClaudeSettings() *ClaudeSettings {
+	common.OptionMapRWMutex.RLock()
+	snap := ClaudeSettings{
+		HeadersSettings:                       cloneClaudeHeadersSettings(claudeSettings.HeadersSettings),
+		DefaultMaxTokens:                      maps.Clone(claudeSettings.DefaultMaxTokens),
+		ThinkingAdapterEnabled:                claudeSettings.ThinkingAdapterEnabled,
+		ThinkingAdapterBudgetTokensPercentage: claudeSettings.ThinkingAdapterBudgetTokensPercentage,
+	}
+	common.OptionMapRWMutex.RUnlock()
+	if snap.DefaultMaxTokens == nil {
+		snap.DefaultMaxTokens = map[string]int{"default": 8192}
+	} else if _, ok := snap.DefaultMaxTokens["default"]; !ok {
+		snap.DefaultMaxTokens["default"] = 8192
+	}
+	return &snap
 }
 
 func (c *ClaudeSettings) WriteHeaders(originModel string, httpHeader *http.Header) {

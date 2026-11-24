@@ -51,7 +51,7 @@ func GetModelRatioDecimal(name string) (decimal.Decimal, bool, string) {
 	if ratio, ok := modelRatioStore.getDecimal(name); ok {
 		return ratio, true, name
 	}
-	return unsetModelRatioDecimal, operation_setting.SelfUseModeEnabled, name
+	return unsetModelRatioDecimal, operation_setting.GetSelfUseModeEnabled(), name
 }
 
 // GetCompletionRatioDecimal follows the same configured vs hardcoded policy as

@@ -329,7 +329,7 @@ func writeTaskArtifactError(c *gin.Context, status int, code, message string) {
 		message = "Task or artifact not found"
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-		c.JSON(status, gin.H{"success": false, "code": code, "message": message})
+		common.ApiErrorStatus(c, status, common.NewMessage(message), gin.H{"code": code})
 		return
 	}
 	c.JSON(status, gin.H{

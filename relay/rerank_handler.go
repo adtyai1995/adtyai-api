@@ -118,13 +118,19 @@ func rerankBillingUsage(usage any, info *relaycommon.RelayInfo) *dto.Usage {
 	} else {
 		billingUsage = &dto.Usage{}
 	}
-	if billingUsage.TotalTokens == 0 {
-		if billingUsage.PromptTokens == 0 {
+	billingUsage.PromptTokens = max(billingUsage.PromptTokens, 0)
+	billingUsage.CompletionTokens = max(billingUsage.CompletionTokens, 0)
+	billingUsage.TotalTokens = max(billingUsage.TotalTokens, 0)
+	if billingUsage.BillingUsage != nil {
+		billingUsage.BillingUsage = dto.SanitizeBillingUsage(billingUsage.BillingUsage)
+	}
+	if billingUsage.TotalTokens <= 0 {
+		if billingUsage.PromptTokens <= 0 {
 			billingUsage.PromptTokens = info.GetEstimatePromptTokens()
 		}
 		billingUsage.TotalTokens = billingUsage.PromptTokens + billingUsage.CompletionTokens
 	}
-	if billingUsage.PromptTokens == 0 && billingUsage.CompletionTokens == 0 {
+	if billingUsage.PromptTokens <= 0 && billingUsage.CompletionTokens <= 0 {
 		billingUsage.PromptTokens = billingUsage.TotalTokens
 	}
 	return billingUsage

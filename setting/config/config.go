@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
@@ -262,6 +263,9 @@ func assignConfigField(field reflect.Value, key, strValue string) error {
 		field.SetFloat(floatValue)
 	case reflect.Pointer:
 		if strValue == "null" {
+			if _, isUnmarshaler := reflect.New(field.Type().Elem()).Interface().(json.Unmarshaler); isUnmarshaler {
+				return fmt.Errorf("invalid %s: null is not allowed", key)
+			}
 			field.Set(reflect.Zero(field.Type()))
 			return nil
 		}
@@ -280,9 +284,11 @@ func assignConfigField(field reflect.Value, key, strValue string) error {
 		}
 		field.Set(fresh.Elem())
 	case reflect.Slice, reflect.Struct:
-		if err := common.Unmarshal([]byte(strValue), field.Addr().Interface()); err != nil {
+		fresh := reflect.New(field.Type())
+		if err := common.Unmarshal([]byte(strValue), fresh.Interface()); err != nil {
 			return fmt.Errorf("invalid %s: %w", key, err)
 		}
+		field.Set(fresh.Elem())
 	}
 	return nil
 }

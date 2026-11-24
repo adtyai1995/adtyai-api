@@ -485,9 +485,13 @@ func AdminResetPasskey(c *gin.Context) {
 		return
 	}
 
-	if err := model.DeletePasskeyByUserIDWithAuthVersionForActor(user.Id, isAccessTokenRequest(c)); err != nil {
+	if err := model.DeletePasskeyByUserIDWithAuthVersionForActor(user.Id, myRole, isAccessTokenRequest(c)); err != nil {
 		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 			denyAdtyAdminAction(c)
+			return
+		}
+		if errors.Is(err, model.ErrUserQuotaPermission) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 			return
 		}
 		writeSecurityOperationError(c, err)

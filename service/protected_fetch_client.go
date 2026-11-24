@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -195,7 +197,105 @@ func (t *ssrfProtectedRoundTripper) RoundTrip(req *http.Request) (*http.Response
 	if err != nil {
 		return nil, err
 	}
-	return t.transportFor(proxyURL).RoundTrip(req)
+	if proxyURL != nil {
+		return t.roundTripViaPinnedProxy(req, proxyURL)
+	}
+	return t.transportFor(nil).RoundTrip(req)
+}
+
+type closeIdleOnBodyClose struct {
+	io.ReadCloser
+	transport *http.Transport
+	once      sync.Once
+}
+
+func (c *closeIdleOnBodyClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.once.Do(func() {
+		if c.transport != nil {
+			c.transport.CloseIdleConnections()
+		}
+	})
+	return err
+}
+
+// roundTripViaPinnedProxy pins domain targets to a validated resolved IP before
+// handing the request to an environment proxy, blocking DNS rebinding and
+// proxy-side split-horizon internal DNS SSRF while preserving Host and TLS SNI (R10-022).
+func (t *ssrfProtectedRoundTripper) roundTripViaPinnedProxy(req *http.Request, proxyURL *url.URL) (*http.Response, error) {
+	protection, enabled, err := t.getProtection()
+	if err != nil {
+		return nil, err
+	}
+	if !enabled || !protection.NeedsDomainIPResolution() {
+		return t.transportFor(proxyURL).RoundTrip(req)
+	}
+
+	origHost := req.URL.Hostname()
+	if _, isIP, ipErr := common.ParseSSRFIPLiteral(origHost); ipErr != nil {
+		return nil, ipErr
+	} else if isIP {
+		return t.transportFor(proxyURL).RoundTrip(req)
+	}
+
+	portText := req.URL.Port()
+	if portText == "" {
+		if strings.EqualFold(req.URL.Scheme, "https") {
+			portText = "443"
+		} else {
+			portText = "80"
+		}
+	}
+	resolved, err := t.resolver.LookupIPAddr(req.Context(), origHost)
+	if err != nil {
+		return nil, fmt.Errorf("DNS resolution failed for %s: %v", origHost, err)
+	}
+	var pinnedIP net.IP
+	for _, ipAddr := range resolved {
+		if ipAddr.IP == nil {
+			continue
+		}
+		if err := protection.ValidateResolvedIP(origHost, ipAddr.IP); err != nil {
+			return nil, err
+		}
+		if pinnedIP == nil {
+			pinnedIP = ipAddr.IP
+		}
+	}
+	if pinnedIP == nil {
+		return nil, fmt.Errorf("DNS resolution for %s returned no usable IP addresses", origHost)
+	}
+
+	pinnedReq := req.Clone(req.Context())
+	if pinnedReq.Host == "" {
+		pinnedReq.Host = req.URL.Host
+	}
+	pinnedURL := *req.URL
+	pinnedURL.Host = net.JoinHostPort(pinnedIP.String(), portText)
+	pinnedReq.URL = &pinnedURL
+
+	if !strings.EqualFold(req.URL.Scheme, "https") {
+		return t.transportFor(proxyURL).RoundTrip(pinnedReq)
+	}
+
+	ephemeral := t.newTransport(proxyURL)
+	if ephemeral.TLSClientConfig != nil {
+		ephemeral.TLSClientConfig = ephemeral.TLSClientConfig.Clone()
+	} else {
+		ephemeral.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	ephemeral.TLSClientConfig.ServerName = origHost
+	resp, err := ephemeral.RoundTrip(pinnedReq)
+	if err != nil {
+		ephemeral.CloseIdleConnections()
+		return nil, err
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body = &closeIdleOnBodyClose{ReadCloser: resp.Body, transport: ephemeral}
+	} else {
+		ephemeral.CloseIdleConnections()
+	}
+	return resp, nil
 }
 
 func (t *ssrfProtectedRoundTripper) CloseIdleConnections() {
@@ -278,10 +378,12 @@ func (d *protectedFetchDialer) DialContext(ctx context.Context, network, addr st
 		return nil, err
 	}
 
-	if ip := net.ParseIP(host); ip != nil {
+	if ip, isIP, err := common.ParseSSRFIPLiteral(host); err != nil {
+		return nil, err
+	} else if isIP {
 		return d.dialContext(ctx, network, net.JoinHostPort(ip.String(), portText))
 	}
-	if !protection.ApplyIPFilterForDomain {
+	if !protection.NeedsDomainIPResolution() {
 		return d.dialContext(ctx, network, addr)
 	}
 

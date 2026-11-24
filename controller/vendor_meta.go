@@ -95,18 +95,18 @@ func DeleteVendorMeta(c *gin.Context) {
 
 func vendorAPIError(c *gin.Context, err error) {
 	status := http.StatusBadRequest
-	payload := gin.H{"success": false, "message": err.Error()}
+	extra := gin.H{}
 	var references *model.VendorReferenceError
 	if errors.Is(err, model.ErrVendorConflict) {
 		status = http.StatusConflict
-		payload["code"] = "VENDOR_CONFLICT"
+		extra["code"] = "VENDOR_CONFLICT"
 	}
 	if errors.As(err, &references) {
 		status = http.StatusConflict
-		payload["code"] = "VENDOR_REFERENCED"
-		payload["reference_counts"] = references.Counts
+		extra["code"] = "VENDOR_REFERENCED"
+		extra["reference_counts"] = references.Counts
 	}
-	c.JSON(status, payload)
+	common.ApiErrorStatus(c, status, err, extra)
 }
 
 func PreviewVendorOperation(c *gin.Context) {

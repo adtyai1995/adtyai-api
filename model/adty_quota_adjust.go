@@ -140,6 +140,10 @@ func AdjustUserQuotaWithProvenance(input AdtyQuotaAdjustInput) (*AdtyQuotaAdjust
 // User, batch, ledger, approval and durable audit are committed together.
 // A repeated key must match the full original request and never changes money.
 func AdjustUserQuotaWithLedger(userID, operatorID, operatorRole int, mode string, value int, reason, idemKey string, provenance ...AdtyQuotaAdjustProvenance) (*AdtyQuotaAdjustResult, error) {
+	return AdjustUserQuotaWithLedgerForActor(userID, operatorID, operatorRole, false, mode, value, reason, idemKey, provenance...)
+}
+
+func AdjustUserQuotaWithLedgerForActor(userID, operatorID, operatorRole int, denyAdminTarget bool, mode string, value int, reason, idemKey string, provenance ...AdtyQuotaAdjustProvenance) (*AdtyQuotaAdjustResult, error) {
 	reason, idemKey = strings.TrimSpace(reason), strings.TrimSpace(idemKey)
 	if reason == "" {
 		return nil, ErrAdtyAdjustReasonRequired
@@ -183,6 +187,9 @@ func AdjustUserQuotaWithLedger(userID, operatorID, operatorRole int, mode string
 		}
 		if actor.Role != operatorRole || actor.Role < common.RoleAdminUser || actor.StaffSiteId != 0 || actor.Status != common.UserStatusEnabled || (actor.Role != common.RoleRootUser && actor.Role <= user.Role) {
 			return ErrUserQuotaPermission
+		}
+		if denyAdminTarget && user.Role >= common.RoleAdminUser {
+			return ErrAdminTargetSessionRequired
 		}
 		var row AdtyFinancialAdjustment
 		lookup := tx.Where("idempotency_key = ?", idemKey).Limit(1).Find(&row)
@@ -229,11 +236,26 @@ func AdjustUserQuotaWithLedger(userID, operatorID, operatorRole int, mode string
 			return ErrAdtyQuotaFloor
 		}
 		delta := int64(after) - int64(user.Quota)
+		batchSiteID := order.SiteId
 		if delta < 0 {
 			if prov.FundingSource != AdtyAdjustSourceBatch {
 				return common.NewMessage("A specific available fund batch is required")
 			}
-			if err := ReduceAdtyAdjustmentBatchTx(tx, userID, order.SiteId, prov.BatchSource, prov.BatchKind, -delta); err != nil {
+			// R10-033: When a customer's original subsite has closed and migrated the
+			// user and their batches to main site (site_id = 0), target site_id = 0
+			// and do not debit the closed site's drained operating wallet.
+			if batchSiteID > 0 && user.SiteId == 0 {
+				batchSiteID = 0
+			} else if batchSiteID > 0 && tx.Migrator().HasTable(&AdtySite{}) {
+				var siteStatus string
+				if err := tx.Model(&AdtySite{}).Select("status").Where("id = ?", batchSiteID).Limit(1).Scan(&siteStatus).Error; err != nil {
+					return err
+				}
+				if siteStatus == AdtySiteStatusClosed {
+					batchSiteID = 0
+				}
+			}
+			if err := ReduceAdtyAdjustmentBatchTx(tx, userID, batchSiteID, prov.BatchSource, prov.BatchKind, -delta); err != nil {
 				return err
 			}
 		} else if delta > 0 {
@@ -255,13 +277,13 @@ func AdjustUserQuotaWithLedger(userID, operatorID, operatorRole int, mode string
 			return err
 		}
 		row.ApprovalRef = fmt.Sprintf("financial_adjustment:%d:approved:%d", row.Id, operatorID)
-		if delta < 0 && order.SiteId > 0 && prov.BatchKind == AdtyFundBatchKindPrincipal {
+		if delta < 0 && batchSiteID > 0 && prov.BatchKind == AdtyFundBatchKindPrincipal {
 			// Reducing a subsite customer's principal lot must symmetrically debit
 			// the subsite operating wallet to preserve 1:1 principal backing (R1-007 / R2-034 fail-closed).
 			if AdtyAfterPrincipalReducedTx == nil {
 				return common.NewMessage("Site operating wallet principal reduction hook is unavailable")
 			}
-			if err := AdtyAfterPrincipalReducedTx(tx, order.SiteId, -delta, "financial_adjustment", fmt.Sprintf("%d", row.Id), fmt.Sprintf("financial-adjustment:%d:operating_debit", row.Id)); err != nil {
+			if err := AdtyAfterPrincipalReducedTx(tx, batchSiteID, -delta, "financial_adjustment", fmt.Sprintf("%d", row.Id), fmt.Sprintf("financial-adjustment:%d:operating_debit", row.Id)); err != nil {
 				return err
 			}
 		}

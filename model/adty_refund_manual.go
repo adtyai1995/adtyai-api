@@ -94,29 +94,68 @@ func adtyValidateReconcileOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []Adty
 		return 0, common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
 	}
 	reviewByID := map[int64]PaymentOrphanReview{}
-	if orphan.ReviewID > 0 && tx.Migrator().HasTable(&PaymentOrphanReview{}) {
-		var rev PaymentOrphanReview
-		if err := tx.Where("id = ?", orphan.ReviewID).Limit(1).Find(&rev).Error; err != nil {
+	if tx.Migrator().HasTable(&PaymentOrphanReview{}) {
+		var reviews []PaymentOrphanReview
+		if err := tx.Where("trade_no = ? AND status IN ?", ext.TradeNo, []string{PaymentOrphanStatusPendingReview, PaymentOrphanStatusRefunded}).
+			Order("id ASC").Find(&reviews).Error; err != nil {
 			return 0, err
 		}
-		if rev.ID > 0 {
-			if rev.Status == PaymentOrphanStatusDismissed || rev.Status == PaymentOrphanStatusNeverCredited {
-				return 0, common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
+		for _, r := range reviews {
+			reviewByID[r.ID] = r
+		}
+		if orphan.ReviewID > 0 {
+			if _, ok := reviewByID[orphan.ReviewID]; !ok {
+				var rev PaymentOrphanReview
+				if err := tx.Where("id = ?", orphan.ReviewID).Limit(1).Find(&rev).Error; err != nil {
+					return 0, err
+				}
+				if rev.ID > 0 {
+					reviewByID[rev.ID] = rev
+				}
 			}
-			reviewByID[rev.ID] = rev
 		}
 	}
-	orphanCap := adtyOrphanExternalQuota(ext, *orphan, reviewByID)
+	if orphan.ReviewID > 0 {
+		if rev, ok := reviewByID[orphan.ReviewID]; ok {
+			if rev.Status == PaymentOrphanStatusDismissed || rev.Status == PaymentOrphanStatusNeverCredited || !rev.ExternalAmount.IsPositive() {
+				return 0, common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
+			}
+		}
+	}
+	orphanCap := adtyOrphanAuthorizedReconcileQuota(ext, *orphan, reviewByID)
 	if orphanCap <= 0 {
 		return 0, common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
 	}
-	var boundOther int64
-	for _, other := range rows {
-		if other.RefundId != currentRefundID && other.Status != AdtyManualRefundStatusTerminated && other.ReconcileOrphanId == orphanID {
-			boundOther += other.RequestQuota
+	// External reversal amounts are cumulative per order, never additive across
+	// duplicate/sibling reversal notifications. Bound reconciliation by both the
+	// target orphan cap and order-wide (maxExternalQuota - ext.RefundQuota - otherActive) (R10-018).
+	maxExternalQuota := orphanCap
+	var siblingEvents []PaymentOrphanEvent
+	if err := tx.Where("reference_id = ? AND status IN ?", ext.TradeNo, []string{PaymentOrphanStatusPendingReview, PaymentOrphanStatusRefunded}).
+		Order("id ASC").Find(&siblingEvents).Error; err != nil {
+		return 0, err
+	}
+	for _, ev := range siblingEvents {
+		q := adtyOrphanAuthorizedReconcileQuota(ext, ev, reviewByID)
+		if q > maxExternalQuota {
+			maxExternalQuota = q
 		}
 	}
-	avail := orphanCap - boundOther
+	var boundSameOrphan, otherActiveReconcile int64
+	for _, other := range rows {
+		if other.RefundId == currentRefundID || other.Status == AdtyManualRefundStatusTerminated {
+			continue
+		}
+		if other.ReconcileOrphanId == orphanID {
+			boundSameOrphan += other.RequestQuota
+		}
+		if other.ReconcileOrphanId > 0 && other.Status != AdtyManualRefundStatusCompleted {
+			otherActiveReconcile += other.RequestQuota
+		}
+	}
+	sameOrphanAvail := orphanCap - boundSameOrphan
+	orderWideAvail := maxExternalQuota - ext.RefundQuota - otherActiveReconcile
+	avail := min(sameOrphanAvail, orderWideAvail)
 	if avail <= 0 || (currentRequestQuota > 0 && currentRequestQuota > avail) {
 		return 0, common.NewMessage("Refund amount exceeds the verified external reversal amount")
 	}
@@ -1413,7 +1452,7 @@ func RecordAdtyTopUpManualRefundPayout(tradeNo, refundID string, operatorID int,
 			return err
 		}
 		if ext.IsOwnerSelfUse() && status != AdtyManualRefundPayoutFailed {
-			if err := confirmOwnerRefundBackingTx(tx, ext, row); err != nil {
+			if _, err := confirmOwnerRefundBackingTx(tx, ext, row); err != nil {
 				return err
 			}
 		}
@@ -1577,8 +1616,11 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		} else if row.PayoutRecordedAt == 0 || row.PayoutStatus != AdtyManualRefundPayoutSuccess {
 			return common.NewMessage("Offline payout has not been confirmed")
 		}
+		var ownerLot *AdtyFundBatch
 		if ext.IsOwnerSelfUse() {
-			if err := confirmOwnerRefundBackingTx(tx, ext, row); err != nil {
+			var err error
+			ownerLot, err = confirmOwnerRefundBackingTx(tx, ext, row)
+			if err != nil {
 				return err
 			}
 		}
@@ -1645,7 +1687,7 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		// R4-013: Accumulate adty_topup_orders.refund_amount in the order's payment
 		// currency (not USD) so non-USD order traces report accurate currency totals.
 		refundAmountDelta := adtyRefundAmount(ext, row.RequestQuota, ext.FaceQuota())
-		if row.PayoutAmount.IsPositive() && strings.EqualFold(strings.TrimSpace(row.PayoutCurrency), strings.TrimSpace(ext.refundCurrency())) {
+		if row.PayoutStatus == AdtyManualRefundPayoutSuccess && row.PayoutAmount.IsPositive() && strings.EqualFold(strings.TrimSpace(row.PayoutCurrency), strings.TrimSpace(ext.refundCurrency())) {
 			refundAmountDelta = row.PayoutAmount
 		} else if !refundAmountDelta.IsPositive() {
 			refundAmountDelta = row.RequestUSD
@@ -1681,6 +1723,11 @@ func CompleteAdtyTopUpManualRefund(tradeNo, refundID string, operatorID int, ide
 		ext.RefundBonusQuota = bonusTaken
 		if AdtyAfterTopUpRefundedTx != nil {
 			if err := AdtyAfterTopUpRefundedTx(tx, topUp, ext); err != nil {
+				return err
+			}
+		}
+		if ext.IsOwnerSelfUse() && ownerLot != nil {
+			if err := migrateClosedOwnerLotIfUnencumberedTx(tx, ext, ownerLot, ownerLot.Remaining, row, operatorID, "complete"); err != nil {
 				return err
 			}
 		}

@@ -168,11 +168,18 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		imageN = common.QuotaRound(count)
 	}
 
-	if usage.(*dto.Usage).TotalTokens == 0 {
-		usage.(*dto.Usage).TotalTokens = 1
+	usageDto, ok := usage.(*dto.Usage)
+	if !ok || usageDto == nil {
+		return types.NewError(fmt.Errorf("unexpected usage type %T", usage), types.ErrorCodeBadResponseBody)
 	}
-	if usage.(*dto.Usage).PromptTokens == 0 {
-		usage.(*dto.Usage).PromptTokens = 1
+	if usageDto.PromptTokens <= 0 {
+		usageDto.PromptTokens = 1
+	}
+	if usageDto.CompletionTokens < 0 {
+		usageDto.CompletionTokens = 0
+	}
+	if usageDto.TotalTokens <= 0 {
+		usageDto.TotalTokens = max(1, usageDto.PromptTokens+usageDto.CompletionTokens)
 	}
 
 	quality := request.Quality
@@ -192,6 +199,6 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		logContent = append(logContent, common.NewMessage("Image count {{count}}", map[string]any{"count": imageN}))
 	}
 
-	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), logContent)
+	service.PostTextConsumeQuota(c, info, usageDto, logContent)
 	return nil
 }

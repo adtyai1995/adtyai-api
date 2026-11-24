@@ -394,13 +394,6 @@ func ensureAdtyTranslationTables() {
 	}
 }
 
-func deleteAdtyTranslationHeadByKey(objectKey string) {
-	if objectKey == "" || model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
-		return
-	}
-	_ = model.DB.Where("object_key = ?", objectKey).Delete(&model.AdtyTranslationHead{}).Error
-}
-
 func adtyNotificationRevisionIsCurrent(id int, revision int64) bool {
 	if id <= 0 || model.DB == nil {
 		return false
@@ -437,18 +430,18 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 	bodyText := strings.TrimSpace(sourceContent)
 	titleHasZH := adtyContainsChinese(titleText)
 	bodyHasZH := adtyContainsChinese(bodyText)
-	if !titleHasZH && adtyNotificationRevisionIsCurrent(row.Id, row.Revision) {
-		deleteAdtyTranslationHeadByKey(adtyNotificationTitleTranslationKey(row.Id))
+	if !titleHasZH {
+		deleteAdtyNotificationTranslationHeadIfCurrent(row.Id, row.Revision, adtyNotificationTitleTranslationKey(row.Id))
 	}
-	if !bodyHasZH && adtyNotificationRevisionIsCurrent(row.Id, row.Revision) {
-		deleteAdtyTranslationHeadByKey(adtyNotificationTranslationKey(row.Id))
+	if !bodyHasZH {
+		deleteAdtyNotificationTranslationHeadIfCurrent(row.Id, row.Revision, adtyNotificationTranslationKey(row.Id))
 	}
 	if !titleHasZH && !bodyHasZH {
 		return adtyNotificationRevisionIsCurrent(row.Id, row.Revision)
 	}
 	ensureAdtyTranslationTables()
 	if titleHasZH {
-		if _, err := TranslateAdtyDynamic(adtyNotificationTitleTranslationKey(row.Id), titleText, siteID); err != nil {
+		if _, err := translateAdtyNotificationDynamic(row.Id, row.Revision, adtyNotificationTitleTranslationKey(row.Id), titleText, siteID); err != nil {
 			common.SysError(common.LogText("translate notification %d title failed: %s", row.Id, err.Error()))
 		}
 	}
@@ -456,7 +449,7 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 		return adtyNotificationRevisionIsCurrent(row.Id, row.Revision)
 	}
 	objectKey := adtyNotificationTranslationKey(row.Id)
-	res, err := TranslateAdtyDynamic(objectKey, bodyText, siteID)
+	res, err := translateAdtyNotificationDynamic(row.Id, row.Revision, objectKey, bodyText, siteID)
 	if err != nil {
 		common.SysError(common.LogText("translate notification %d failed: %s", row.Id, err.Error()))
 	}

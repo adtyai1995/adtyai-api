@@ -15,6 +15,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -44,6 +45,33 @@ var adtyGroupOptionKeysSorted = []string{
 	"group_ratio_setting.group_special_usable_group",
 }
 
+func adtyGroupOptionDefaultValue(key string) string {
+	switch key {
+	case "AutoGroups":
+		return setting.AutoGroups2JsonString()
+	case "GroupRatio":
+		return ratio_setting.GroupRatio2JSONString()
+	case "UserUsableGroups":
+		return setting.UserUsableGroups2JSONString()
+	case "TopupGroupRatio":
+		return common.TopupGroupRatio2JSONString()
+	case "GroupGroupRatio":
+		return ratio_setting.GroupGroupRatio2JSONString()
+	case "group_ratio_setting.group_special_usable_group":
+		if spec := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup; spec != nil {
+			return spec.MarshalJSONString()
+		}
+		return "{}"
+	case "ModelRequestRateLimitGroup":
+		if raw := setting.ModelRequestRateLimitGroup2JSONString(); raw != "" {
+			return raw
+		}
+		return "{}"
+	default:
+		return "{}"
+	}
+}
+
 func preLockAdtyGroupOptionsTx(tx *gorm.DB, keys []string) error {
 	if tx == nil || len(keys) == 0 || !tx.Migrator().HasTable(&Option{}) {
 		return nil
@@ -51,6 +79,14 @@ func preLockAdtyGroupOptionsTx(tx *gorm.DB, keys []string) error {
 	sorted := slices.Clone(keys)
 	slices.Sort(sorted)
 	sorted = slices.Compact(sorted)
+	// Seed any missing option rows with valid default JSON BEFORE FOR UPDATE so
+	// concurrent UpdateOptionWithAudit cannot form an AB-BA 40P01 deadlock (R10-025).
+	for _, key := range sorted {
+		seed := Option{Key: key, Value: adtyGroupOptionDefaultValue(key)}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
+			return err
+		}
+	}
 	var rows []Option
 	return lockForUpdate(tx).Where(commonKeyCol+" IN ?", sorted).Order(commonKeyCol + " ASC").Find(&rows).Error
 }

@@ -1,9 +1,13 @@
 package setting
 
 import (
+	"maps"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 )
+
+var chatsMu sync.RWMutex
 
 var Chats = []map[string]string{
 	//{
@@ -41,13 +45,35 @@ var Chats = []map[string]string{
 	},
 }
 
+func GetChats() []map[string]string {
+	chatsMu.RLock()
+	defer chatsMu.RUnlock()
+	out := make([]map[string]string, len(Chats))
+	for i, item := range Chats {
+		out[i] = maps.Clone(item)
+	}
+	return out
+}
+
 func UpdateChatsByJsonString(jsonString string) error {
-	Chats = make([]map[string]string, 0)
-	return common.Unmarshal([]byte(jsonString), &Chats)
+	parsed := make([]map[string]string, 0)
+	if err := common.Unmarshal([]byte(jsonString), &parsed); err != nil {
+		return err
+	}
+	chatsMu.Lock()
+	Chats = parsed
+	chatsMu.Unlock()
+	return nil
 }
 
 func Chats2JsonString() string {
-	jsonBytes, err := common.Marshal(Chats)
+	chatsMu.RLock()
+	snapshot := make([]map[string]string, len(Chats))
+	for i, item := range Chats {
+		snapshot[i] = maps.Clone(item)
+	}
+	chatsMu.RUnlock()
+	jsonBytes, err := common.Marshal(snapshot)
 	if err != nil {
 		common.SysLog(common.LogText("error marshalling chats: %s", err.Error()))
 		return "[]"

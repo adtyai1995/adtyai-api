@@ -5,15 +5,45 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"mime"
 	"net"
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 )
+
+var outboundURLCredentialsRe = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
+
+// SanitizeOutboundError unwraps any *url.Error chain (dropping full request URLs
+// and query secrets), redacts embedded URL/proxy userinfo credentials, and strips
+// any caller-supplied secret values before surfacing or logging an outbound error (R10-023/R10-039).
+func SanitizeOutboundError(err error, secrets ...string) error {
+	if err == nil {
+		return nil
+	}
+	for {
+		var urlErr *url.Error
+		if !errors.As(err, &urlErr) || urlErr.Err == nil {
+			break
+		}
+		err = urlErr.Err
+	}
+	msg := outboundURLCredentialsRe.ReplaceAllString(err.Error(), "${1}[REDACTED]@")
+	for _, secret := range secrets {
+		s := strings.TrimSpace(secret)
+		if s == "" {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, s, "[REDACTED]")
+		msg = strings.ReplaceAll(msg, url.QueryEscape(s), "[REDACTED]")
+		msg = strings.ReplaceAll(msg, url.PathEscape(s), "[REDACTED]")
+	}
+	return errors.New(msg)
+}
 
 // ErrSMTPDeliveryUnknown marks a lost acknowledgement after DATA was transmitted.
 var ErrSMTPDeliveryUnknown = errors.New("SMTP delivery outcome unknown")
@@ -180,14 +210,16 @@ func SendSMTPEmailFrom(from, subject, receiver, content string) error {
 	if cfg.server == "" && cfg.account == "" {
 		return NewMessage("SMTP server is not configured")
 	}
+	displayName = strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(strings.TrimSpace(displayName))
+	fromHeader := (&mail.Address{Name: displayName, Address: smtpFrom}).String()
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
 	mail := []byte(fmt.Sprintf("To: %s\r\n"+
-		"From: %s <%s>\r\n"+
+		"From: %s\r\n"+
 		"Subject: %s\r\n"+
 		"Date: %s\r\n"+
 		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
 		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, mime.QEncoding.Encode("utf-8", displayName), smtpFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
+		receiver, fromHeader, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
 	auth := autoSMTPAuthWithConfig(cfg)
 	addr := fmt.Sprintf("%s:%d", cfg.server, cfg.port)
 	to := strings.Split(receiver, ";")

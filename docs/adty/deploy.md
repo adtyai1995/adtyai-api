@@ -250,7 +250,7 @@ sudo docker compose ps adtyai-api                 # 等到 healthy
 3. 在这个 zone 上开 Cloudflare for SaaS（SSL/TLS → 自定义主机名），建两条记录，都开小云朵：
    - 回源主机名，例如 `origin.sites.example.com`，指向源站。在「自定义主机名」页把它设为回源（fallback origin），状态要变成 active。
    - CNAME 目标，例如 `customers.sites.example.com`，CNAME 到回源主机名。站长的域名 CNAME 到它。
-4. 后台「分站管理 → 设置」里填：Cloudflare API Token、Zone ID、Account ID、CNAME 目标、回源主机名、Turnstile widget（id、site key、secret）。Token 要的权限：这个 zone 的 `SSL and Certificates Write`，账号的 `Turnstile Sites Write`。这几项都填好之前，「自定义域名」开关打不开。
+4. 后台「分站管理 → 设置」里填：Cloudflare API Token、Zone ID、CNAME 目标（开启「自定义域名」开关前必须先填好这三项），并按需配置 Account ID、回源主机名与 Turnstile widget（id、site key、secret）。Token 要的权限：这个 zone 的 `SSL and Certificates Write`，如需自动登记 Turnstile 再加账号的 `Turnstile Sites Write`。
 5. Turnstile：第一个 widget 的域名列表里登记主站域名和分站根域名（一个域名连带它的子域名一起授权，平台子域名不用逐个加）。自定义域名生效后，网关会自动登记进还有空位的 widget；免费版每个 widget 最多 10 个域名、每个账号最多 20 个 widget。
 
 ### 源服务器证书

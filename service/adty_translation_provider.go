@@ -139,7 +139,7 @@ func adtyDispatchTranslationHTTP(protocol, endpoint, token, modelName, text stri
 
 	response, err := adtyTranslationHTTPClient(adtyTranslationTimeout(timeoutSec)).Do(request)
 	if err != nil {
-		return "", err
+		return "", common.SanitizeOutboundError(err, token)
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, adtyTranslationMaxBodyBytes))

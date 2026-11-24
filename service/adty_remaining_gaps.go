@@ -965,10 +965,21 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 	now := time.Now().Unix()
 	var out *AdtyTodoItem
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// R10-036: Serialize per-user severe todo upserts so concurrent edits cannot
+		// create duplicate rows, and normalize key against the live publication ReadKey.
+		if tx.Migrator().HasTable(&model.User{}) {
+			var lockedUser model.User
+			if err := model.AdtyLockForUpdate(tx).Select("id").Where("id = ?", userID).Limit(1).Find(&lockedUser).Error; err != nil {
+				return err
+			}
+		}
 		pub := lookupAdtyPublicationForTodoTx(tx, key, publicationID)
 		if pub != nil {
 			if publicationID <= 0 {
 				publicationID = pub.Id
+			}
+			if liveKey := normalizeAdtyTodoKey(pub.ReadKey); liveKey != "" {
+				key = liveKey
 			}
 			if strings.TrimSpace(title) == "" {
 				title = pub.Title

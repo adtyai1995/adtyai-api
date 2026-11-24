@@ -141,7 +141,7 @@ func ResolvePaymentOrphanReview(id int64, operatorID int, request PaymentOrphanR
 					return common.NewMessage("Terminate active manual refunds bound to this external reversal before resolving")
 				}
 			}
-			if request.Status == PaymentOrphanStatusPendingReview && ext != nil && amount.IsPositive() {
+			if request.Status == PaymentOrphanStatusPendingReview && ext != nil {
 				var boundQuota int64
 				if err := tx.Model(&AdtyManualRefund{}).
 					Select("COALESCE(SUM(request_quota), 0)").
@@ -149,7 +149,7 @@ func ResolvePaymentOrphanReview(id int64, operatorID int, request PaymentOrphanR
 					Scan(&boundQuota).Error; err != nil {
 					return err
 				}
-				if boundQuota > 0 && adtyConvertExternalOffsetToQuota(ext, amount, request.ExternalCurrency) < boundQuota {
+				if boundQuota > 0 && (!amount.IsPositive() || adtyConvertExternalOffsetToQuota(ext, amount, request.ExternalCurrency) < boundQuota) {
 					return common.NewMessage("External reversal amount cannot be less than manual refunds already bound to it")
 				}
 			}

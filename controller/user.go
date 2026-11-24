@@ -1060,9 +1060,13 @@ func AdminClearUserBinding(c *gin.Context) {
 		return
 	}
 
-	if err := user.ClearBindingForActor(bindingType, isAccessTokenRequest(c)); err != nil {
+	if err := user.ClearBindingForActor(bindingType, myRole, isAccessTokenRequest(c)); err != nil {
 		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 			denyAdtyAdminAction(c)
+			return
+		}
+		if errors.Is(err, model.ErrUserQuotaPermission) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to access users of same or higher level"))
 			return
 		}
 		common.ApiError(c, err)
@@ -1324,10 +1328,14 @@ func DeleteUser(c *gin.Context) {
 	if authorization == nil {
 		return
 	}
-	revokedAccessTokens, err := model.HardDeleteUserByIdForActor(id, isAccessTokenRequest(c))
+	revokedAccessTokens, err := model.HardDeleteUserByIdForActor(id, myRole, isAccessTokenRequest(c))
 	if err != nil {
 		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 			denyAdtyAdminAction(c)
+			return
+		}
+		if errors.Is(err, model.ErrUserQuotaPermission) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to update users of same or higher permission level"))
 			return
 		}
 		if writeUserDeleteBlockError(c, err) {
@@ -1512,7 +1520,7 @@ func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, 
 		return false, nil
 	}
 	if c.GetInt("role") != common.RoleRootUser {
-		return false, fmt.Errorf("only root can update admin permissions")
+		return false, common.NewMessage("Only super administrators can update admin permissions")
 	}
 	if userRole < common.RoleAdminUser {
 		return true, authz.ClearUserAuthorizationInTx(tx, userID)
@@ -1570,14 +1578,17 @@ func ManageUser(c *gin.Context) {
 		denyAdtyAdminAction(c)
 		return
 	}
+	delta := model.User{Id: user.Id}
 	switch req.Action {
 	case "disable":
+		delta.Status = common.UserStatusDisabled
 		user.Status = common.UserStatusDisabled
 		if user.Role == common.RoleRootUser {
 			common.ApiErrorT(c, "Cannot disable super administrator user")
 			return
 		}
 	case "enable":
+		delta.Status = common.UserStatusEnabled
 		user.Status = common.UserStatusEnabled
 	case "delete":
 		if user.Role == common.RoleRootUser {
@@ -1588,10 +1599,14 @@ func ManageUser(c *gin.Context) {
 		if authorization == nil {
 			return
 		}
-		revokedAccessTokens, err := user.DeleteForActor(isAccessTokenRequest(c))
+		revokedAccessTokens, err := user.DeleteForActor(myRole, isAccessTokenRequest(c))
 		if err != nil {
 			if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 				denyAdtyAdminAction(c)
+				return
+			}
+			if errors.Is(err, model.ErrUserQuotaPermission) {
+				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to update users of same or higher permission level"))
 				return
 			}
 			if writeUserDeleteBlockError(c, err) {
@@ -1639,6 +1654,7 @@ func ManageUser(c *gin.Context) {
 			common.ApiErrorStatus(c, http.StatusForbidden, model.ErrCannotPromoteScopedUser)
 			return
 		}
+		delta.Role = common.RoleAdminUser
 		user.Role = common.RoleAdminUser
 	case "demote":
 		if user.Role == common.RoleRootUser {
@@ -1649,6 +1665,7 @@ func ManageUser(c *gin.Context) {
 			common.ApiErrorT(c, "This user is already a common user")
 			return
 		}
+		delta.Role = common.RoleCommonUser
 		user.Role = common.RoleCommonUser
 	default:
 		common.ApiErrorT(c, "Invalid parameters")
@@ -1664,12 +1681,20 @@ func ManageUser(c *gin.Context) {
 	if req.Action == "demote" {
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var txErr error
-			changed, txErr = model.ApplyManagedUserAccessTx(tx, &user)
+			changed, txErr = model.ApplyManagedUserAccessForActorTx(tx, &delta, myRole, isAccessTokenRequest(c))
 			if txErr != nil {
 				return txErr
 			}
 			return authz.ClearUserAuthorizationInTx(tx, user.Id)
 		}); err != nil {
+			if errors.Is(err, model.ErrAdminTargetSessionRequired) {
+				denyAdtyAdminAction(c)
+				return
+			}
+			if errors.Is(err, model.ErrUserQuotaPermission) {
+				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to update users of same or higher permission level"))
+				return
+			}
 			common.ApiError(c, err)
 			return
 		}
@@ -1680,11 +1705,15 @@ func ManageUser(c *gin.Context) {
 		}
 	} else if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var txErr error
-		changed, txErr = model.ApplyManagedUserAccessForActorTx(tx, &user, isAccessTokenRequest(c))
+		changed, txErr = model.ApplyManagedUserAccessForActorTx(tx, &delta, myRole, isAccessTokenRequest(c))
 		return txErr
 	}); err != nil {
 		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 			denyAdtyAdminAction(c)
+			return
+		}
+		if errors.Is(err, model.ErrUserQuotaPermission) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to update users of same or higher permission level"))
 			return
 		}
 		common.ApiError(c, err)

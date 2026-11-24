@@ -130,6 +130,7 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 	}
 
 	if isNovaModel(awsModelId) {
+		a.IsNova = true
 		var novaReq *NovaRequest
 		err = common.DecodeJson(requestBody, &novaReq)
 		if err != nil {
@@ -242,7 +243,11 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 	ctx, cancel := newAwsInvokeContext(requestContext)
 	defer cancel()
 
-	awsResp, err := a.AwsClient.InvokeModel(ctx, a.AwsReq.(*bedrockruntime.InvokeModelInput))
+	invokeInput, ok := a.AwsReq.(*bedrockruntime.InvokeModelInput)
+	if !ok || invokeInput == nil {
+		return types.NewError(fmt.Errorf("unexpected AWS invoke request type %T", a.AwsReq), types.ErrorCodeBadRequestBody), nil
+	}
+	awsResp, err := a.AwsClient.InvokeModel(ctx, invokeInput)
 	if err != nil {
 		return newAwsInvokeError(requestContext, err, "InvokeModel"), nil
 	}
@@ -272,7 +277,11 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 	ctx, cancel := newAwsInvokeContext(requestContext)
 	defer cancel()
 
-	awsResp, err := a.AwsClient.InvokeModelWithResponseStream(ctx, a.AwsReq.(*bedrockruntime.InvokeModelWithResponseStreamInput))
+	streamInput, ok := a.AwsReq.(*bedrockruntime.InvokeModelWithResponseStreamInput)
+	if !ok || streamInput == nil {
+		return types.NewError(fmt.Errorf("unexpected AWS stream request type %T", a.AwsReq), types.ErrorCodeBadRequestBody), nil
+	}
+	awsResp, err := a.AwsClient.InvokeModelWithResponseStream(ctx, streamInput)
 	if err != nil {
 		return newAwsInvokeError(requestContext, err, "InvokeModelWithResponseStream"), nil
 	}
@@ -357,7 +366,11 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 	ctx, cancel := newAwsInvokeContext(requestContext)
 	defer cancel()
 
-	awsResp, err := a.AwsClient.InvokeModel(ctx, a.AwsReq.(*bedrockruntime.InvokeModelInput))
+	invokeInput, ok := a.AwsReq.(*bedrockruntime.InvokeModelInput)
+	if !ok || invokeInput == nil {
+		return types.NewError(fmt.Errorf("unexpected AWS invoke request type %T", a.AwsReq), types.ErrorCodeBadRequestBody), nil
+	}
+	awsResp, err := a.AwsClient.InvokeModel(ctx, invokeInput)
 	if err != nil {
 		return newAwsInvokeError(requestContext, err, "InvokeModel"), nil
 	}
@@ -415,10 +428,14 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 		CompletionTokens: max(novaResp.Usage.OutputTokens, 0),
 		TotalTokens:      max(novaResp.Usage.TotalTokens, 0),
 	}
-	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && usage.TotalTokens <= 0 {
-		// 向上游拿不到 usage（拦截/空 content 时常见）就会全零——那等于这次调用免费。
-		// 退回本地估算：没有文本可数，只有输入 token。
-		usage = *service.ResponseText2Usage(c, content, info.UpstreamModelName, info.GetEstimatePromptTokens())
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
+		if usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
+		} else {
+			// 向上游拿不到 usage（拦截/空 content 时常见）就会全零——那等于这次调用免费。
+			// 退回本地估算：没有文本可数，只有输入 token。
+			usage = *service.ResponseText2Usage(c, content, info.UpstreamModelName, info.GetEstimatePromptTokens())
+		}
 	} else if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}

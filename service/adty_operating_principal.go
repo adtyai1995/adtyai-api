@@ -27,6 +27,16 @@ func adtyCreditOperatingPrincipalTx(tx *gorm.DB, topUp *model.TopUp, ext *model.
 	if tx == nil || ext == nil || ext.SiteId <= 0 || ext.TeamId > 0 {
 		return nil
 	}
+	// R10-020: Never re-credit a closed subsite's drained operating wallet on late settlement.
+	if tx.Migrator().HasTable(&model.AdtySite{}) {
+		var status string
+		if err := tx.Model(&model.AdtySite{}).Select("status").Where("id = ?", ext.SiteId).Limit(1).Scan(&status).Error; err != nil {
+			return err
+		}
+		if status == model.AdtySiteStatusClosed {
+			return nil
+		}
+	}
 	return adtyMoveOperatingPrincipalTx(tx, ext.SiteId, ext.FaceQuota(), "principal_credit", "topup", ext.TradeNo, "operating:topup:"+ext.TradeNo, false)
 }
 

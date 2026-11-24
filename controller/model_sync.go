@@ -161,7 +161,7 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 
 		resp, err := getHTTPClient().Do(req)
 		if err != nil {
-			lastErr = err
+			lastErr = common.SanitizeOutboundError(err)
 			// backoff with jitter
 			sleep := baseDelay * time.Duration(1<<attempt)
 			jitter := time.Duration(rand.Intn(150)) * time.Millisecond

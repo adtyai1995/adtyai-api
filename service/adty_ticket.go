@@ -1133,13 +1133,12 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 					return ErrAdtyTicketForbidden
 				}
 			} else {
-				if ticketSupportAuthor(target.UploaderRole) || (target.UploaderRole != "" && target.UploaderRole != "customer" && target.UploaderId != actor.User.Id) {
+				// R10-037: Fail closed for legacy/empty UploaderRole rows on non-handler
+				// delete requests so customers cannot delete pre-upgrade support images.
+				if target.UploaderRole != "customer" {
 					return ErrAdtyTicketForbidden
 				}
-				if target.UploaderId > 0 && target.UploaderId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
-					return ErrAdtyTicketForbidden
-				}
-				if !isAdtyTicketCustomerController(actor, ticket) && target.UploaderId != actor.User.Id {
+				if target.UploaderId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
 					return ErrAdtyTicketForbidden
 				}
 			}

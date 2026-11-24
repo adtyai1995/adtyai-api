@@ -33,21 +33,20 @@ func OaiResponsesCompactionHandler(c *gin.Context, info *relaycommon.RelayInfo, 
 
 	usage := dto.Usage{}
 	if compactResp.Usage != nil {
-		usage.PromptTokens = compactResp.Usage.InputTokens
-		usage.CompletionTokens = compactResp.Usage.OutputTokens
-		usage.TotalTokens = compactResp.Usage.TotalTokens
+		usage.PromptTokens = max(compactResp.Usage.InputTokens, 0)
+		usage.CompletionTokens = max(compactResp.Usage.OutputTokens, 0)
+		usage.TotalTokens = max(compactResp.Usage.TotalTokens, 0)
 		if compactResp.Usage.InputTokensDetails != nil {
-			usage.PromptTokensDetails.CachedTokens = compactResp.Usage.InputTokensDetails.CachedTokens
-			usage.PromptTokensDetails.CacheWriteTokens = compactResp.Usage.InputTokensDetails.CacheWriteTokens
+			usage.PromptTokensDetails.CachedTokens = max(compactResp.Usage.InputTokensDetails.CachedTokens, 0)
+			usage.PromptTokensDetails.CacheWriteTokens = max(compactResp.Usage.InputTokensDetails.CacheWriteTokens, 0)
 			usage.PromptTokensDetails.CacheWriteTokensDetails = compactResp.Usage.InputTokensDetails.CacheWriteTokensDetails
 		}
 	}
+	clampNonNegativeUsage(&usage)
 
-	// Upstream may omit usage, or send it as null: the compacted body has already
-	// been delivered, so settle the input instead of a zero bill. The compacted
-	// output is opaque ciphertext, so only the prompt side is estimated — the
-	// same fallback the non-streaming Responses path applies.
-	if usage.PromptTokens == 0 {
+	// Upstream may omit usage, send it as null, or report negative tokens: the compacted
+	// body has already been delivered, so settle the input instead of a zero bill (R10-015).
+	if usage.PromptTokens <= 0 {
 		usage.PromptTokens = info.GetEstimatePromptTokens()
 	}
 	if usage.TotalTokens < usage.PromptTokens+usage.CompletionTokens {

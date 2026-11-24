@@ -370,7 +370,10 @@ func UpdateOption(c *gin.Context) {
 	case "QuotaForInviter", "QuotaForInvitee", "TopUpLink", "WaffoSubscriptionReturnUrl",
 		// Telegram 只是通知通道（约定 I）；OAuth 登录链已退役，开关和客户端凭据
 		// 都不再接受写入，历史明文凭据由 model.InitOptionMap 清理。
-		"TelegramOAuthEnabled", "telegram.client_id", "telegram.client_secret":
+		"TelegramOAuthEnabled", "telegram.client_id", "telegram.client_secret",
+		// group_ratio_setting.group_ratio / group_group_ratio are internal aliases of
+		// GroupRatio / GroupGroupRatio and must not bypass ADTY group option guards (R10-010).
+		"group_ratio_setting.group_ratio", "group_ratio_setting.group_group_ratio":
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	case adty_setting.TopupSettingKeyBonusRates, "payment_setting.amount_discount":

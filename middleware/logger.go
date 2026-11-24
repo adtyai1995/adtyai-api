@@ -30,9 +30,19 @@ func SetUpLogger(server *gin.Engine) {
 			tag = "web"
 		}
 		path := param.Path
-		// OAuth callbacks carry one-time codes and state in the query string.
-		// Redact the log value only; the handler still needs the original query.
-		if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
+		// Redact Telegram webhook path secret before writing access logs (R10-038).
+		const tgWebhookPrefix = "/api/adty/telegram/webhook/"
+		if strings.HasPrefix(path, tgWebhookPrefix) {
+			pathWithoutQuery, _, _ := strings.Cut(path, "?")
+			rest := strings.TrimPrefix(pathWithoutQuery, tgWebhookPrefix)
+			if purpose, _, hasSecret := strings.Cut(rest, "/"); hasSecret {
+				path = tgWebhookPrefix + purpose + "/[REDACTED]"
+			} else {
+				path = pathWithoutQuery
+			}
+		} else if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
+			// OAuth callbacks carry one-time codes and state in the query string.
+			// Redact the log value only; the handler still needs the original query.
 			path, _, _ = strings.Cut(path, "?")
 		} else if param.Request.URL.RawQuery != "" {
 			query := param.Request.URL.Query().Encode()

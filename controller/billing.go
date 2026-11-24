@@ -55,7 +55,7 @@ func GetSubscription(c *gin.Context) {
 	// - TOKENS: 直接使用 tokens 数量
 	switch operation_setting.GetQuotaDisplayType() {
 	case operation_setting.QuotaDisplayTypeCNY:
-		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
+		amount = amount / common.QuotaPerUnit * operation_setting.GetUSDExchangeRate()
 	case operation_setting.QuotaDisplayTypeTokens:
 		// amount 保持 tokens 数值
 	default:
@@ -111,7 +111,7 @@ func GetUsage(c *gin.Context) {
 	amount := float64(quota)
 	switch operation_setting.GetQuotaDisplayType() {
 	case operation_setting.QuotaDisplayTypeCNY:
-		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
+		amount = amount / common.QuotaPerUnit * operation_setting.GetUSDExchangeRate()
 	case operation_setting.QuotaDisplayTypeTokens:
 		// tokens 保持原值
 	default:

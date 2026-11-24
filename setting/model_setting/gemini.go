@@ -2,6 +2,7 @@ package model_setting
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/QuantumNous/new-api/common"
@@ -62,18 +63,32 @@ func init() {
 	config.GlobalConfig.Register("gemini", &geminiSettings)
 }
 
-// GetGeminiSettings 获取Gemini配置
+// GetGeminiSettings 获取Gemini配置快照（并发安全）
 func GetGeminiSettings() *GeminiSettings {
-	return &geminiSettings
+	common.OptionMapRWMutex.RLock()
+	snap := GeminiSettings{
+		SafetySettings:                        maps.Clone(geminiSettings.SafetySettings),
+		VersionSettings:                       maps.Clone(geminiSettings.VersionSettings),
+		SupportedImagineModels:                slices.Clone(geminiSettings.SupportedImagineModels),
+		ThinkingAdapterEnabled:                geminiSettings.ThinkingAdapterEnabled,
+		ThinkingAdapterBudgetTokensPercentage: geminiSettings.ThinkingAdapterBudgetTokensPercentage,
+		FunctionCallThoughtSignatureEnabled:   geminiSettings.FunctionCallThoughtSignatureEnabled,
+		RemoveFunctionResponseIdEnabled:       geminiSettings.RemoveFunctionResponseIdEnabled,
+	}
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 // GetGeminiSafetySetting 获取安全设置
 func GetGeminiSafetySetting(key string) string {
+	common.OptionMapRWMutex.RLock()
 	settings := geminiSettings.SafetySettings
-	if value := settings[key]; value != "" {
-		return value
+	value := settings[key]
+	if value == "" {
+		value = settings["default"]
 	}
-	if value := settings["default"]; value != "" {
+	common.OptionMapRWMutex.RUnlock()
+	if value != "" {
 		return value
 	}
 	return defaultGeminiSafetySetting
@@ -102,6 +117,8 @@ func ValidateGeminiSafetySettings(value string) error {
 
 // GetGeminiVersionSetting 获取版本设置
 func GetGeminiVersionSetting(key string) string {
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
 	if value, ok := geminiSettings.VersionSettings[key]; ok {
 		return value
 	}
@@ -109,5 +126,7 @@ func GetGeminiVersionSetting(key string) string {
 }
 
 func IsGeminiModelSupportImagine(model string) bool {
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
 	return slices.Contains(geminiSettings.SupportedImagineModels, model)
 }

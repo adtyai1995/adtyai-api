@@ -87,11 +87,14 @@ func CheckRedirectSecurity(req *http.Request, via []*http.Request) error {
 }
 
 func checkRedirectSecurity(req *http.Request, via []*http.Request) error {
-	if len(via) > 0 {
-		if strings.EqualFold(via[0].URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+	for _, prev := range via {
+		if prev == nil || prev.URL == nil {
+			continue
+		}
+		if strings.EqualFold(prev.URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
 			return fmt.Errorf("https to non-https redirect blocked")
 		}
-		if requestHasCredentialHeader(via[0]) && !sameHTTPOrigin(via[0].URL, req.URL) {
+		if requestHasCredentialHeader(prev) && !sameHTTPOrigin(prev.URL, req.URL) {
 			return fmt.Errorf("cross-origin credential redirect blocked")
 		}
 	}

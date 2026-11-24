@@ -216,7 +216,7 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 }
 
 func ListModels(c *gin.Context, modelType int) {
-	acceptUnsetRatioModel := operation_setting.SelfUseModeEnabled
+	acceptUnsetRatioModel := operation_setting.GetSelfUseModeEnabled()
 	if !acceptUnsetRatioModel {
 		userId := c.GetInt("id")
 		if userId > 0 {
@@ -355,7 +355,7 @@ func EnabledListModels(c *gin.Context) {
 }
 
 func requesterCanSeeModel(c *gin.Context, modelName string) (bool, error) {
-	acceptUnsetRatioModel := operation_setting.SelfUseModeEnabled
+	acceptUnsetRatioModel := operation_setting.GetSelfUseModeEnabled()
 	if !acceptUnsetRatioModel {
 		if userId := c.GetInt("id"); userId > 0 {
 			userSettings, _ := model.GetUserSetting(userId, false)

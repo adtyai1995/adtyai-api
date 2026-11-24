@@ -16,10 +16,7 @@ import (
 func CreateLogCleanupSystemTask(c *gin.Context) {
 	targetTimestamp, _ := strconv.ParseInt(c.Query("target_timestamp"), 10, 64)
 	if targetTimestamp == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "target timestamp is required",
-		})
+		common.ApiErrorT(c, "Target timestamp is required")
 		return
 	}
 
@@ -44,7 +41,7 @@ func CancelSystemTask(c *gin.Context) {
 	task, err := model.RequestSystemTaskCancel(c.Param("task_id"))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "task not found"})
+			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Task not found"))
 			return
 		}
 		if errors.Is(err, model.ErrSystemTaskCancelConflict) {
@@ -55,7 +52,7 @@ func CancelSystemTask(c *gin.Context) {
 		return
 	}
 	if task == nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "task not found"})
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Task not found"))
 		return
 	}
 	if task.Status == model.SystemTaskStatusPending || (task.Status == model.SystemTaskStatusRunning && !task.CancelRequested) {
@@ -78,10 +75,7 @@ func CancelSystemTask(c *gin.Context) {
 func GetCurrentSystemTask(c *gin.Context) {
 	taskType := c.Query("type")
 	if taskType == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "type is required",
-		})
+		common.ApiErrorT(c, "Task type is required")
 		return
 	}
 
@@ -113,7 +107,7 @@ func ListSystemTasks(c *gin.Context) {
 		Limit  int `form:"limit"`
 	}
 	if err := c.ShouldBindQuery(&query); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid system task filters"})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid system task filters"))
 		return
 	}
 
@@ -139,7 +133,7 @@ func ListSystemTasks(c *gin.Context) {
 func DeleteSystemTaskHistory(c *gin.Context) {
 	var filter model.SystemTaskFilter
 	if err := c.ShouldBindQuery(&filter); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid system task filters"})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid system task filters"))
 		return
 	}
 	deleted, err := model.DeleteSystemTaskHistory(filter)
@@ -157,10 +151,7 @@ func DeleteSystemTaskHistory(c *gin.Context) {
 func GetSystemTask(c *gin.Context) {
 	taskID := c.Param("task_id")
 	if taskID == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "task id is required",
-		})
+		common.ApiErrorT(c, "Task ID is required")
 		return
 	}
 
@@ -170,10 +161,7 @@ func GetSystemTask(c *gin.Context) {
 		return
 	}
 	if task == nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"message": "task not found",
-		})
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Task not found"))
 		return
 	}
 

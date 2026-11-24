@@ -58,10 +58,6 @@ func init() {
 }
 
 func GetGroupRatioSetting() *GroupRatioSetting {
-	if groupRatioSetting.GroupSpecialUsableGroup == nil {
-		groupRatioSetting.GroupSpecialUsableGroup = types.NewRWMap[string, map[string]string]()
-		groupRatioSetting.GroupSpecialUsableGroup.AddAll(defaultGroupSpecialUsableGroup)
-	}
 	return &groupRatioSetting
 }
 

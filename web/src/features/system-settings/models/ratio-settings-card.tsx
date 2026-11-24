@@ -255,6 +255,9 @@ export function RatioSettingsCard({
     BillingExpr: normalizeJsonString(modelDefaults.BillingExpr),
     PluginBillingExpr: normalizeJsonString(modelDefaults.PluginBillingExpr),
   })
+  const modelNormalizedSerializedRef = useRef(
+    JSON.stringify(modelNormalizedDefaults.current)
+  )
   const [savedModelValues, setSavedModelValues] = useState(
     modelNormalizedDefaults.current
   )
@@ -309,7 +312,7 @@ export function RatioSettingsCard({
   })
 
   useEffect(() => {
-    modelNormalizedDefaults.current = {
+    const nextModelNormalized = {
       ModelPrice: normalizeJsonString(modelDefaults.ModelPrice),
       ModelRatio: normalizeJsonString(modelDefaults.ModelRatio),
       CacheRatio: normalizeJsonString(modelDefaults.CacheRatio),
@@ -325,24 +328,33 @@ export function RatioSettingsCard({
       BillingExpr: normalizeJsonString(modelDefaults.BillingExpr),
       PluginBillingExpr: normalizeJsonString(modelDefaults.PluginBillingExpr),
     }
-    setSavedModelValues(modelNormalizedDefaults.current)
+    const serialized = JSON.stringify(nextModelNormalized)
+    if (serialized === modelNormalizedSerializedRef.current) return
+    modelNormalizedDefaults.current = nextModelNormalized
+    modelNormalizedSerializedRef.current = serialized
+    setSavedModelValues(nextModelNormalized)
 
-    modelForm.reset({
-      ...modelDefaults,
-      ModelPrice: formatJsonForTextarea(modelDefaults.ModelPrice),
-      ModelRatio: formatJsonForTextarea(modelDefaults.ModelRatio),
-      CacheRatio: formatJsonForTextarea(modelDefaults.CacheRatio),
-      CreateCacheRatio: formatJsonForTextarea(modelDefaults.CreateCacheRatio),
-      CompletionRatio: formatJsonForTextarea(modelDefaults.CompletionRatio),
-      ImageRatio: formatJsonForTextarea(modelDefaults.ImageRatio),
-      AudioRatio: formatJsonForTextarea(modelDefaults.AudioRatio),
-      AudioCompletionRatio: formatJsonForTextarea(
-        modelDefaults.AudioCompletionRatio
-      ),
-      BillingMode: formatJsonForTextarea(modelDefaults.BillingMode),
-      BillingExpr: formatJsonForTextarea(modelDefaults.BillingExpr),
-      PluginBillingExpr: formatJsonForTextarea(modelDefaults.PluginBillingExpr),
-    })
+    modelForm.reset(
+      {
+        ...modelDefaults,
+        ModelPrice: formatJsonForTextarea(modelDefaults.ModelPrice),
+        ModelRatio: formatJsonForTextarea(modelDefaults.ModelRatio),
+        CacheRatio: formatJsonForTextarea(modelDefaults.CacheRatio),
+        CreateCacheRatio: formatJsonForTextarea(modelDefaults.CreateCacheRatio),
+        CompletionRatio: formatJsonForTextarea(modelDefaults.CompletionRatio),
+        ImageRatio: formatJsonForTextarea(modelDefaults.ImageRatio),
+        AudioRatio: formatJsonForTextarea(modelDefaults.AudioRatio),
+        AudioCompletionRatio: formatJsonForTextarea(
+          modelDefaults.AudioCompletionRatio
+        ),
+        BillingMode: formatJsonForTextarea(modelDefaults.BillingMode),
+        BillingExpr: formatJsonForTextarea(modelDefaults.BillingExpr),
+        PluginBillingExpr: formatJsonForTextarea(
+          modelDefaults.PluginBillingExpr
+        ),
+      },
+      { keepDirtyValues: true }
+    )
   }, [modelDefaults, modelForm])
 
   useEffect(() => {
@@ -402,16 +414,29 @@ export function RatioSettingsCard({
           toast.info(t('No model price changes to save'))
           return
         }
-        await savePricing.mutateAsync(changes)
+        if (changes.length > 0) {
+          await savePricing.mutateAsync(changes)
+          const refreshedPricing = await pricingQuery.refetch()
+          if (refreshedPricing.data) {
+            setPricingBaseline(refreshedPricing.data)
+          }
+          const partialSaved = {
+            ...normalized,
+            ExposeRatioEnabled:
+              modelNormalizedDefaults.current.ExposeRatioEnabled,
+          }
+          modelNormalizedDefaults.current = partialSaved
+          modelNormalizedSerializedRef.current = JSON.stringify(partialSaved)
+          setSavedModelValues(partialSaved)
+        }
         if (visibilityChanged) {
           await updateOption.mutateAsync({
             key: 'ExposeRatioEnabled',
             value: normalized.ExposeRatioEnabled,
           })
         }
-        const refreshed = await pricingQuery.refetch()
-        setPricingBaseline(refreshed.data ?? null)
         modelNormalizedDefaults.current = normalized
+        modelNormalizedSerializedRef.current = JSON.stringify(normalized)
         setSavedModelValues(normalized)
         toast.success(t('Model pricing saved'))
       } catch (error) {

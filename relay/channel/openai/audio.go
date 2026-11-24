@@ -187,35 +187,39 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	parsedJSON := common.Unmarshal(responseBody, &responseData) == nil
 	if parsedJSON && responseData.Usage != nil {
 		usage := &responseData.Usage.Usage
-		if usage.PromptTokens == 0 {
+		clampNonNegativeUsage(usage)
+		if usage.PromptTokens <= 0 && usage.InputTokens > 0 {
 			usage.PromptTokens = usage.InputTokens
 		}
-		if usage.CompletionTokens == 0 {
+		if usage.CompletionTokens <= 0 && usage.OutputTokens > 0 {
 			usage.CompletionTokens = usage.OutputTokens
 		}
-		if usage.TotalTokens == 0 {
+		if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
+		}
+		if usage.TotalTokens <= 0 {
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
-		if usage.TotalTokens > 0 {
+		if usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
 			// R6-014: Map OpenAI STT singular `input_token_details` (and plural
 			// `input_tokens_details`) into PromptTokensDetails so AudioRatio applies.
 			if details := responseData.Usage.InputTokenDetails; details != nil {
-				if usage.PromptTokensDetails.AudioTokens == 0 && details.AudioTokens > 0 {
+				if usage.PromptTokensDetails.AudioTokens <= 0 && details.AudioTokens > 0 {
 					usage.PromptTokensDetails.AudioTokens = details.AudioTokens
 				}
-				if usage.PromptTokensDetails.TextTokens == 0 && details.TextTokens > 0 {
+				if usage.PromptTokensDetails.TextTokens <= 0 && details.TextTokens > 0 {
 					usage.PromptTokensDetails.TextTokens = details.TextTokens
 				}
 			}
 			if usage.InputTokensDetails != nil {
-				if usage.PromptTokensDetails.AudioTokens == 0 && usage.InputTokensDetails.AudioTokens > 0 {
+				if usage.PromptTokensDetails.AudioTokens <= 0 && usage.InputTokensDetails.AudioTokens > 0 {
 					usage.PromptTokensDetails.AudioTokens = usage.InputTokensDetails.AudioTokens
 				}
-				if usage.PromptTokensDetails.TextTokens == 0 && usage.InputTokensDetails.TextTokens > 0 {
+				if usage.PromptTokensDetails.TextTokens <= 0 && usage.InputTokensDetails.TextTokens > 0 {
 					usage.PromptTokensDetails.TextTokens = usage.InputTokensDetails.TextTokens
 				}
 			}
-			if usage.CompletionTokens > 0 && usage.CompletionTokenDetails.TextTokens == 0 && usage.CompletionTokenDetails.AudioTokens == 0 {
+			if usage.CompletionTokens > 0 && usage.CompletionTokenDetails.TextTokens <= 0 && usage.CompletionTokenDetails.AudioTokens <= 0 {
 				usage.CompletionTokenDetails.TextTokens = usage.CompletionTokens
 			}
 			return nil, usage

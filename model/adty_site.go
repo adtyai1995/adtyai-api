@@ -466,11 +466,14 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 		}
 		if len(ownerBatches) > 0 {
 			encumbered := map[int64]bool{}
+			// R10-019: Exclude ALL batches with any active allocation (in-flight API
+			// precharges as well as owner-refund holds) AND any batch whose source
+			// top-up still has a non-final manual refund (submitted/approved/reclaimed).
 			if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
 				var heldBatchIDs []int64
 				if err := tx.Model(&AdtyFundAllocation{}).
 					Distinct("batch_id").
-					Where("user_id = ? AND operation_id LIKE ? AND held > settled", ownerUserID, ownerRefundOperationPrefix+"%").
+					Where("user_id = ? AND held > settled", ownerUserID).
 					Pluck("batch_id", &heldBatchIDs).Error; err != nil {
 					return nil, 0, err
 				}
@@ -478,9 +481,22 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 					encumbered[bid] = true
 				}
 			}
+			encumberedSources := map[string]bool{}
+			if tx.Migrator().HasTable(&AdtyManualRefund{}) {
+				var refundSources []string
+				if err := tx.Model(&AdtyManualRefund{}).
+					Distinct("trade_no").
+					Where("user_id = ? AND site_id = ? AND status NOT IN ?", ownerUserID, fromSite, []string{AdtyManualRefundStatusCompleted, AdtyManualRefundStatusTerminated}).
+					Pluck("trade_no", &refundSources).Error; err != nil {
+					return nil, 0, err
+				}
+				for _, src := range refundSources {
+					encumberedSources[src] = true
+				}
+			}
 			moveBatchIDs := make([]int64, 0, len(ownerBatches))
 			for _, batch := range ownerBatches {
-				if encumbered[batch.Id] {
+				if encumbered[batch.Id] || encumberedSources[batch.Source] {
 					continue
 				}
 				moveBatchIDs = append(moveBatchIDs, batch.Id)

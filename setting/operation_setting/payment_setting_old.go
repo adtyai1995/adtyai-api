@@ -5,7 +5,9 @@ This file is the old version of the payment settings file. If you need to add ne
 
 package operation_setting
 
-import "github.com/QuantumNous/new-api/common"
+import "sync"
+
+var paymentOldMu sync.RWMutex
 
 var CustomCallbackAddress = ""
 var Price = 7.3
@@ -13,8 +15,53 @@ var MinTopUp = 1
 var USDExchangeRate = 7.3
 
 func GetMinTopUp() int {
-	common.OptionMapRWMutex.RLock()
+	paymentOldMu.RLock()
 	v := MinTopUp
-	common.OptionMapRWMutex.RUnlock()
+	paymentOldMu.RUnlock()
 	return v
+}
+
+func SetMinTopUp(v int) {
+	paymentOldMu.Lock()
+	MinTopUp = v
+	paymentOldMu.Unlock()
+}
+
+func GetPrice() float64 {
+	paymentOldMu.RLock()
+	v := Price
+	paymentOldMu.RUnlock()
+	return v
+}
+
+func SetPrice(v float64) {
+	paymentOldMu.Lock()
+	Price = v
+	paymentOldMu.Unlock()
+}
+
+func GetUSDExchangeRate() float64 {
+	paymentOldMu.RLock()
+	v := USDExchangeRate
+	paymentOldMu.RUnlock()
+	return v
+}
+
+func SetUSDExchangeRate(v float64) {
+	paymentOldMu.Lock()
+	USDExchangeRate = v
+	paymentOldMu.Unlock()
+}
+
+func GetCustomCallbackAddress() string {
+	paymentOldMu.RLock()
+	v := CustomCallbackAddress
+	paymentOldMu.RUnlock()
+	return v
+}
+
+func SetCustomCallbackAddress(v string) {
+	paymentOldMu.Lock()
+	CustomCallbackAddress = v
+	paymentOldMu.Unlock()
 }

@@ -226,12 +226,14 @@ func MergeGeminiUsageMetadataNonZero(current *GeminiUsageMetadata, incoming *Gem
 	}
 	if current == nil {
 		metadata := cloneGeminiUsageMetadata(*incoming)
-		metadata.BillingUsage = CloneBillingUsage(incoming.BillingUsage)
+		clampGeminiUsageMetadataCounters(&metadata)
+		metadata.BillingUsage = SanitizeBillingUsage(incoming.BillingUsage)
 		return &metadata
 	}
 
 	merged := cloneGeminiUsageMetadata(*current)
-	merged.BillingUsage = CloneBillingUsage(current.BillingUsage)
+	clampGeminiUsageMetadataCounters(&merged)
+	merged.BillingUsage = SanitizeBillingUsage(current.BillingUsage)
 	if incoming == nil {
 		return &merged
 	}
@@ -243,7 +245,9 @@ func MergeGeminiUsageMetadataNonZero(current *GeminiUsageMetadata, incoming *Gem
 	}
 	if incoming.CandidatesTokenCount > 0 {
 		merged.CandidatesTokenCount = incoming.CandidatesTokenCount
-		merged.ThoughtsTokenCount = incoming.ThoughtsTokenCount
+		if incoming.ThoughtsTokenCount >= 0 {
+			merged.ThoughtsTokenCount = incoming.ThoughtsTokenCount
+		}
 	} else if incoming.ThoughtsTokenCount > 0 {
 		merged.ThoughtsTokenCount = incoming.ThoughtsTokenCount
 	}
@@ -256,8 +260,9 @@ func MergeGeminiUsageMetadataNonZero(current *GeminiUsageMetadata, incoming *Gem
 	merged.PromptTokensDetails = mergeGeminiTokenDetails(merged.PromptTokensDetails, incoming.PromptTokensDetails)
 	merged.ToolUsePromptTokensDetails = mergeGeminiTokenDetails(merged.ToolUsePromptTokensDetails, incoming.ToolUsePromptTokensDetails)
 	merged.CandidatesTokensDetails = mergeGeminiTokenDetails(merged.CandidatesTokensDetails, incoming.CandidatesTokensDetails)
+	clampGeminiUsageMetadataCounters(&merged)
 	if incoming.BillingUsage != nil {
-		merged.BillingUsage = MergeBillingUsageNonZero(merged.BillingUsage, incoming.BillingUsage)
+		merged.BillingUsage = SanitizeBillingUsage(MergeBillingUsageNonZero(merged.BillingUsage, SanitizeBillingUsage(incoming.BillingUsage)))
 	}
 	if total := merged.PromptTokenCount + merged.ToolUsePromptTokenCount + merged.CandidatesTokenCount + merged.ThoughtsTokenCount; total > merged.TotalTokenCount {
 		merged.TotalTokenCount = total

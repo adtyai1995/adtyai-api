@@ -288,23 +288,7 @@ func sanitizeFetchModelsError(err error, key string) error {
 	if err == nil {
 		return nil
 	}
-
-	// net/http includes the complete request URL in url.Error. Discovery routes
-	// may put the API key in a custom query name or value, so never return that
-	// wrapper to an API client.
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) && urlErr.Err != nil {
-		err = urlErr.Err
-	}
-
-	message := err.Error()
-	key = strings.TrimSpace(key)
-	if key != "" {
-		message = strings.ReplaceAll(message, key, "[REDACTED]")
-		message = strings.ReplaceAll(message, url.QueryEscape(key), "[REDACTED]")
-		message = strings.ReplaceAll(message, url.PathEscape(key), "[REDACTED]")
-	}
-	return errors.New(message)
+	return common.SanitizeOutboundError(err, key)
 }
 
 func sanitizeAdvancedCustomRequestError(err error, key string, requestURL string) error {
@@ -387,7 +371,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		}
 		models, err := ollama.FetchOllamaModels(context.Background(), baseURL, key, channel.GetSetting())
 		if err != nil {
-			return nil, err
+			return nil, sanitizeFetchModelsError(err, key)
 		}
 		return normalizeModelNames(lo.Map(models, func(item ollama.OllamaModel, _ int) string {
 			return item.Name
@@ -402,7 +386,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		key = strings.TrimSpace(key)
 		models, err := gemini.FetchGeminiModels(baseURL, key, channel.GetSetting())
 		if err != nil {
-			return nil, err
+			return nil, sanitizeFetchModelsError(err, key)
 		}
 		return normalizeModelNames(models), nil
 	}
@@ -412,7 +396,11 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	}
 
 	if channel.Type == constant.ChannelTypeCodex {
-		return service.FetchCodexChannelModels(channel)
+		models, err := service.FetchCodexChannelModels(channel)
+		if err != nil {
+			return nil, sanitizeFetchModelsError(err, channel.Key)
+		}
+		return models, nil
 	}
 
 	var url string
@@ -503,7 +491,7 @@ func fetchAdvancedCustomUpstreamModelIDs(channel *model.Channel, baseURL string)
 
 	body, err := getFetchModelsResponseBody(http.MethodGet, url, channel, headers)
 	if err != nil {
-		return nil, sanitizeFetchModelsError(err, key)
+		return nil, sanitizeAdvancedCustomRequestError(err, key, url)
 	}
 	return parseOpenAIModelIDs(body)
 }
@@ -898,10 +886,7 @@ func ApplyChannelUpstreamModelUpdates(c *gin.Context) {
 		return
 	}
 	if req.ID <= 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "invalid channel id",
-		})
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 
@@ -954,10 +939,7 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 		return
 	}
 	if req.ID <= 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "invalid channel id",
-		})
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 

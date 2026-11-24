@@ -155,7 +155,7 @@ func GetResponseBody(method, url string, channel *model.Channel, headers http.He
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, common.SanitizeOutboundError(err, channel.Key)
 	}
 	for k := range headers {
 		req.Header.Add(k, headers.Get(k))
@@ -163,11 +163,11 @@ func GetResponseBody(method, url string, channel *model.Channel, headers http.He
 	setting := channel.GetSetting()
 	client, err := service.GetHttpClientWithProxySettings(setting.Proxy, setting)
 	if err != nil {
-		return nil, err
+		return nil, common.SanitizeOutboundError(err, channel.Key)
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, common.SanitizeOutboundError(err, channel.Key)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
@@ -340,7 +340,7 @@ func updateChannelDeepSeekBalance(channel *model.Channel) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	balance, err := getDeepSeekBalanceUSD(response, operation_setting.USDExchangeRate)
+	balance, err := getDeepSeekBalanceUSD(response, operation_setting.GetUSDExchangeRate())
 	if err != nil {
 		return 0, err
 	}
@@ -408,7 +408,7 @@ func updateChannelMoonshotBalance(channel *model.Channel) (float64, error) {
 	if !response.Status || response.Code != 0 {
 		return 0, fmt.Errorf("failed to update moonshot balance, status: %v, code: %d, scode: %s", response.Status, response.Code, response.Scode)
 	}
-	availableBalanceUsd, err := moonshotBalanceUSD(response.Data.AvailableBalance, operation_setting.Price)
+	availableBalanceUsd, err := moonshotBalanceUSD(response.Data.AvailableBalance, operation_setting.GetPrice())
 	if err != nil {
 		return 0, err
 	}

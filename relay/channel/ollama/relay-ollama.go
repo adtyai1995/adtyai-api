@@ -369,11 +369,11 @@ func FetchOllamaModels(ctx context.Context, baseURL, apiKey string, settings ...
 
 	client, err := ollamaManagementClient(30*time.Second, settings...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create http client: %v", err)
+		return nil, fmt.Errorf("failed to create http client: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %v", err)
+		return nil, fmt.Errorf("failed to create request: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 
 	// Ollama 通常不需要 Bearer token，但为了兼容性保留
@@ -383,13 +383,13 @@ func FetchOllamaModels(ctx context.Context, baseURL, apiKey string, settings ...
 
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %v", err)
+		return nil, fmt.Errorf("request failed: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return nil, fmt.Errorf("server returned error %d: %s", response.StatusCode, string(body))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return nil, fmt.Errorf("upstream returned status %d", response.StatusCode)
 	}
 
 	var tagsResponse OllamaTagsResponse
@@ -425,11 +425,11 @@ func PullOllamaModel(ctx context.Context, baseURL, apiKey, modelName string, set
 
 	client, err := ollamaManagementClient(30*time.Minute, settings...)
 	if err != nil {
-		return fmt.Errorf("failed to create http client: %v", err)
+		return fmt.Errorf("failed to create http client: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(requestBody)))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
+		return fmt.Errorf("failed to create request: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 
 	request.Header.Set("Content-Type", "application/json")
@@ -439,13 +439,13 @@ func PullOllamaModel(ctx context.Context, baseURL, apiKey, modelName string, set
 
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("request failed: %v", err)
+		return fmt.Errorf("request failed: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("failed to pull model, status %d: %s", response.StatusCode, string(body))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("failed to pull model, status %d", response.StatusCode)
 	}
 
 	return nil
@@ -470,11 +470,11 @@ func PullOllamaModelStream(ctx context.Context, baseURL, apiKey, modelName strin
 
 	client, err := ollamaManagementClient(60*time.Minute, settings...)
 	if err != nil {
-		return fmt.Errorf("failed to create http client: %v", err)
+		return fmt.Errorf("failed to create http client: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(requestBody)))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
+		return fmt.Errorf("failed to create request: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 
 	request.Header.Set("Content-Type", "application/json")
@@ -484,13 +484,13 @@ func PullOllamaModelStream(ctx context.Context, baseURL, apiKey, modelName strin
 
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("request failed: %v", err)
+		return fmt.Errorf("request failed: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("failed to pull model, status %d: %s", response.StatusCode, string(body))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("failed to pull model, status %d", response.StatusCode)
 	}
 
 	// 读取流式响应
@@ -550,11 +550,11 @@ func DeleteOllamaModel(ctx context.Context, baseURL, apiKey, modelName string, s
 
 	client, err := ollamaManagementClient(30*time.Second, settings...)
 	if err != nil {
-		return fmt.Errorf("failed to create http client: %v", err)
+		return fmt.Errorf("failed to create http client: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, strings.NewReader(string(requestBody)))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
+		return fmt.Errorf("failed to create request: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 
 	request.Header.Set("Content-Type", "application/json")
@@ -564,13 +564,13 @@ func DeleteOllamaModel(ctx context.Context, baseURL, apiKey, modelName string, s
 
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("request failed: %v", err)
+		return fmt.Errorf("request failed: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("failed to delete model, status %d: %s", response.StatusCode, string(body))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("failed to delete model, status %d", response.StatusCode)
 	}
 
 	return nil
@@ -589,11 +589,11 @@ func FetchOllamaVersion(ctx context.Context, baseURL, apiKey string, settings ..
 
 	client, err := ollamaManagementClient(10*time.Second, settings...)
 	if err != nil {
-		return "", fmt.Errorf("failed to create http client: %v", err)
+		return "", fmt.Errorf("failed to create http client: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %v", err)
+		return "", fmt.Errorf("failed to create request: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 
 	if apiKey != "" {
@@ -602,17 +602,18 @@ func FetchOllamaVersion(ctx context.Context, baseURL, apiKey string, settings ..
 
 	response, err := client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %v", err)
+		return "", fmt.Errorf("request failed: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return "", fmt.Errorf("failed to query version, status %d", response.StatusCode)
+	}
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %v", err)
-	}
-
-	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to query version, status %d: %s", response.StatusCode, string(body))
 	}
 
 	var versionResp struct {

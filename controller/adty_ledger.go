@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"net/http"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -13,6 +14,17 @@ func GetAdtyUserLedger(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Param("id"))
 	if err != nil || userID <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	myRole := c.GetInt("role")
+	targetUser, err := model.GetUserByIdIncludingDeleted(userID, false)
+	if err != nil || targetUser == nil {
+		if myRole != common.RoleRootUser {
+			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("User not found"))
+			return
+		}
+	} else if !canManageTargetRole(myRole, targetUser.Role) {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to access users of same or higher level"))
 		return
 	}
 	pageInfo := common.GetPageQuery(c)

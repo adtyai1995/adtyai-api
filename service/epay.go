@@ -13,10 +13,11 @@ import (
 var ErrAdtyUnverifiedPaymentTLS = errors.New("payment order query requires a verified TLS transport")
 
 func GetCallbackAddress() string {
-	if operation_setting.CustomCallbackAddress == "" {
+	addr := operation_setting.GetCustomCallbackAddress()
+	if addr == "" {
 		return system_setting.GetServerAddress()
 	}
-	return operation_setting.CustomCallbackAddress
+	return addr
 }
 
 func cloneAdtyVerifiedPaymentTransport(rt http.RoundTripper) (*http.Transport, error) {

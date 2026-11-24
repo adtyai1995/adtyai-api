@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -77,7 +78,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
@@ -90,15 +91,13 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-
 	switch info.RelayMode {
 	case constant.RelayModeEmbeddings:
 		return mokaEmbeddingHandler(c, info, resp)
 	default:
-		// err, usage = mokaHandler(c, resp)
-
+		service.CloseResponseBodyGracefully(resp)
+		return nil, types.NewErrorWithStatusCode(fmt.Errorf("mokaai adaptor does not support relay mode %d", info.RelayMode), types.ErrorCodeInvalidRequest, http.StatusBadRequest)
 	}
-	return
 }
 
 func (a *Adaptor) GetModelList() []string {

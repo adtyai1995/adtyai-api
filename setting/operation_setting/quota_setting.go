@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
 )
 
@@ -27,7 +28,10 @@ func init() {
 }
 
 func GetQuotaSetting() *QuotaSetting {
-	return &quotaSetting
+	common.OptionMapRWMutex.RLock()
+	snap := quotaSetting
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 // ValidateQuotaOption validates reservation settings before they are persisted.
@@ -47,7 +51,9 @@ func ValidateQuotaOption(key, value string) error {
 
 // InputPreConsumeMultiplier rejects invalid runtime settings as well as invalid saves.
 func InputPreConsumeMultiplier() (float64, error) {
+	common.OptionMapRWMutex.RLock()
 	multiplier := quotaSetting.PreConsumeMultiplier
+	common.OptionMapRWMutex.RUnlock()
 	if multiplier <= 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
 		return 0, fmt.Errorf("pre-consume multiplier must be a finite number greater than zero")
 	}

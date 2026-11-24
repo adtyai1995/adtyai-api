@@ -140,10 +140,48 @@ func PostAdtyTeamTransfer(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"transferred": false})
 }
 
+// adtyRequireTelegramAdminAccess enforces admin/site-owner eligibility and
+// prevents personal profile:read/write PATs from accessing or mutating the
+// Admin Operations Telegram Bot via purpose=admin on /api/adty/telegram/* (R10-005).
+func adtyRequireTelegramAdminAccess(c *gin.Context, write bool) bool {
+	if err := service.CheckAdtyTelegramAdminAccess(c.GetInt("id")); err != nil {
+		common.ApiErrorStatus(c, http.StatusForbidden, err)
+		return false
+	}
+	if !isAccessTokenRequest(c) {
+		return true
+	}
+	if c.GetBool("access_token_legacy") {
+		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyTelegramForbidden)
+		return false
+	}
+	scopes := c.GetStringSlice("access_token_scopes")
+	allowed := []string{"site_owner_setting:write", "adty_ticket:manage", "adty_ticket:manage_all", "option:write"}
+	if !write {
+		allowed = append(allowed, "site_owner_setting:read", "option:read")
+	}
+	for _, s := range scopes {
+		for _, want := range allowed {
+			if s == want {
+				return true
+			}
+		}
+	}
+	common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyTelegramForbidden)
+	return false
+}
+
 func GetAdtyTelegramMe(c *gin.Context) {
 	purpose := c.DefaultQuery("purpose", model.AdtyTelegramPurposeUser)
 	if c.FullPath() != "" && strings.Contains(c.FullPath(), "/site/") {
+		if _, ok := adtyOwnerSiteOr403(c); !ok {
+			return
+		}
 		purpose = model.AdtyTelegramPurposeAdmin
+	} else if purpose == model.AdtyTelegramPurposeAdmin {
+		if !adtyRequireTelegramAdminAccess(c, false) {
+			return
+		}
 	}
 	view, err := service.GetAdtyTelegramBind(c.GetInt("id"), purpose)
 	if err != nil {
@@ -162,8 +200,7 @@ func PostAdtyTelegramBindStart(c *gin.Context) {
 		purpose = model.AdtyTelegramPurposeAdmin
 	}
 	if !strings.Contains(c.FullPath(), "/site/") && c.Query("purpose") == model.AdtyTelegramPurposeAdmin {
-		if err := service.CheckAdtyTelegramAdminAccess(c.GetInt("id")); err != nil {
-			common.ApiError(c, err)
+		if !adtyRequireTelegramAdminAccess(c, true) {
 			return
 		}
 		purpose = model.AdtyTelegramPurposeAdmin
@@ -196,8 +233,7 @@ func PostAdtyTelegramBindConfirm(c *gin.Context) {
 		body.Purpose = model.AdtyTelegramPurposeUser
 	}
 	if !strings.Contains(c.FullPath(), "/site/") && body.Purpose == model.AdtyTelegramPurposeAdmin {
-		if err := service.CheckAdtyTelegramAdminAccess(c.GetInt("id")); err != nil {
-			common.ApiError(c, err)
+		if !adtyRequireTelegramAdminAccess(c, true) {
 			return
 		}
 	}

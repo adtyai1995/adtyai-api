@@ -527,7 +527,7 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 			return nil
 		}
 		var user model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id").Where("id = ?", peek.UserId).First(&user).Error; err != nil {
+		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").Where("id = ?", peek.UserId).First(&user).Error; err != nil {
 			return err
 		}
 		var row model.AdtyGiftFulfillment
@@ -566,7 +566,20 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 		if err != nil {
 			return err
 		}
-		if err := addAdtyGiftFulfilledBonusTx(tx, row.UserId, row.SiteId, tradeNo, owed); err != nil {
+		batchSiteID := row.SiteId
+		if batchSiteID > 0 && user.SiteId == 0 {
+			// R10-033: Customer migrated to main site after subsite close.
+			batchSiteID = 0
+		} else if batchSiteID > 0 && tx.Migrator().HasTable(&model.AdtySite{}) {
+			var siteStatus string
+			if err := tx.Model(&model.AdtySite{}).Select("status").Where("id = ?", batchSiteID).Limit(1).Scan(&siteStatus).Error; err != nil {
+				return err
+			}
+			if siteStatus == model.AdtySiteStatusClosed {
+				batchSiteID = 0
+			}
+		}
+		if err := addAdtyGiftFulfilledBonusTx(tx, row.UserId, batchSiteID, tradeNo, owed); err != nil {
 			return err
 		}
 		key := "gift-fulfill:" + common.Sha1([]byte(tradeNo))

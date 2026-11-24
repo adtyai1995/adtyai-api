@@ -1,6 +1,12 @@
 package operation_setting
 
-import "strings"
+import (
+	"slices"
+	"strings"
+	"sync"
+)
+
+var operationSettingMu sync.RWMutex
 
 var DemoSiteEnabled = false
 var SelfUseModeEnabled = false
@@ -15,18 +21,56 @@ var AutomaticDisableKeywords = []string{
 	"Your account is not authorized",
 }
 
+func GetDemoSiteEnabled() bool {
+	operationSettingMu.RLock()
+	v := DemoSiteEnabled
+	operationSettingMu.RUnlock()
+	return v
+}
+
+func SetDemoSiteEnabled(v bool) {
+	operationSettingMu.Lock()
+	DemoSiteEnabled = v
+	operationSettingMu.Unlock()
+}
+
+func GetSelfUseModeEnabled() bool {
+	operationSettingMu.RLock()
+	v := SelfUseModeEnabled
+	operationSettingMu.RUnlock()
+	return v
+}
+
+func SetSelfUseModeEnabled(v bool) {
+	operationSettingMu.Lock()
+	SelfUseModeEnabled = v
+	operationSettingMu.Unlock()
+}
+
+func GetAutomaticDisableKeywords() []string {
+	operationSettingMu.RLock()
+	defer operationSettingMu.RUnlock()
+	return slices.Clone(AutomaticDisableKeywords)
+}
+
 func AutomaticDisableKeywordsToString() string {
-	return strings.Join(AutomaticDisableKeywords, "\n")
+	operationSettingMu.RLock()
+	snapshot := slices.Clone(AutomaticDisableKeywords)
+	operationSettingMu.RUnlock()
+	return strings.Join(snapshot, "\n")
 }
 
 func AutomaticDisableKeywordsFromString(s string) {
-	AutomaticDisableKeywords = []string{}
+	next := []string{}
 	ak := strings.SplitSeq(s, "\n")
 	for k := range ak {
 		k = strings.TrimSpace(k)
 		k = strings.ToLower(k)
 		if k != "" {
-			AutomaticDisableKeywords = append(AutomaticDisableKeywords, k)
+			next = append(next, k)
 		}
 	}
+	operationSettingMu.Lock()
+	AutomaticDisableKeywords = next
+	operationSettingMu.Unlock()
 }

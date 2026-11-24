@@ -44,6 +44,9 @@ redis.call('EXPIRE', KEYS[1], ARGV[5])
 return 1`)
 
 var renewScript = redis.NewScript(`
+if redis.call('ZSCORE', KEYS[1], ARGV[2]) == false then
+  return 0
+end
 redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
 redis.call('EXPIRE', KEYS[1], ARGV[3])
 return 1`)

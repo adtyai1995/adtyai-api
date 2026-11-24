@@ -210,7 +210,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 **后台**：站长在站长中心「邀请佣金提现」设置本站规则，按状态筛选和分页审核本站客户的申请。客户在钱包页申请。
 
-**表和接口**：`adty_site_invite_commissions`、`adty_site_invite_withdrawals`、`adty_site_invite_withdrawal_items`。客户 `GET`/`POST /api/adty/site-commissions/withdrawals`；站长 `GET /api/adty/site/commission-withdrawals`、`POST /api/adty/site/commission-withdrawals/:id/review`、`POST /api/adty/site/commission-withdrawals/:id/paid`；Root `GET`/`PUT /api/adty/admin/site-invite-withdraw/rules`。
+**表和接口**：`adty_site_invite_commissions`、`adty_site_invite_withdrawals`、`adty_site_invite_withdrawal_items`。客户 `GET`/`POST /api/adty/site-commissions/withdrawals`；站长 `GET /api/adty/site/commission-withdrawals`、`POST /api/adty/site/commission-withdrawals/:id/review`、`POST /api/adty/site/commission-withdrawals/:id/paid`；Root `PUT /api/adty/admin/site-invite-withdraw/rules`。
 
 ## 站长分站
 
@@ -330,7 +330,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - **两种 role**：每个域名带 `role`，建站时用 `POST /api/adty/site/domains {hostname, role}` 指定（`controller/adty_reseller.go:47-52`、`model/adty_site_domain.go:13-28`）：
   - `role=site`（默认）承接网站、登录、充值、支付返回和账户接口。模型调用在转发与预扣前返回 403。
   - `role=base_url`：API 地址，承接全部模型中转（`/v1`、`/v1beta`、`/mj`）以及本站客户端页面与探活/元信息接口（`/api/status`、`/api/ready`、`/api/uptime/status`、`/api/ratio_config`、`/api/pricing`、`/api/adty/groups/display`、`/api/adty/site`），同时禁止平台管理接口（返回 403）且不参与搜索引擎收录；关站后全部路径返回 403。
-- **流程**：站长在站点设置里填子域名（不能是根域名，不能在我们的根域名、主站域名、CNAME 目标、回源主机名下）→ 后端调 Cloudflare 建自定义主机名（HTTP 验证、DV 证书），3 秒后再查一次取验证记录 → 站长中心显示「把这个域名 CNAME 到 `cname_target`」和要加的 TXT 记录 → 主节点每 5 分钟查一次，主机名和证书都是 active 才启用；72 小时还不通标失败，站长重新提交就是重试。
+- **流程**：站长在站点设置里填子域名（不能是根域名，不能在我们的根域名、主站域名、CNAME 目标、回源主机名下）→ 后端先生成归属校验令牌并进入 `pending_verify` 状态，站长添加对应的归属验证 DNS TXT 记录 → 验证归属通过后，后端调 Cloudflare 建自定义主机名（HTTP 验证、DV 证书），3 秒后再查一次取验证记录 → 站长中心显示「把这个域名 CNAME 到 `cname_target`」和要加的 TXT 记录 → 主节点每 5 分钟查一次，主机名和证书都是 active 才启用；72 小时还不通标失败，站长重新提交就是重试。
 - **Turnstile**：域名启用后，按 `turnstile_widgets` 的顺序登记进第一个还有空位的 widget（每个 widget 最多 10 个域名）；名额满了域名照常能用，之后每 5 分钟重试登记。`/api/status` 按当前站点返回对应的 site key，校验时用对应的 secret，并核对 Cloudflare 返回的主机名。
 - `/api/status` 的 `server_address` 优先使用本站已激活的 `role=base_url` 域名，否则使用 `api-s<site_id>.<root_domain>`。原有主机名发生冲突时以站长后台返回的地址为准。同站 Key 换入口后继续按原个人、团队或站长自用账户计费。
 - 分站首份 HTML 根据请求主机名提供站名、标题与图标。未配置 Logo 时使用站名。外部客服使用本站联系方式，缺省时通过个人中心的工单联系本站。

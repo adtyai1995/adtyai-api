@@ -73,7 +73,22 @@ func init() {
 }
 
 func GetGlobalSettings() *GlobalSettings {
-	return &globalSettings
+	common.OptionMapRWMutex.RLock()
+	policy := globalSettings.ChatCompletionsToResponsesPolicy
+	snap := GlobalSettings{
+		PassThroughRequestEnabled: globalSettings.PassThroughRequestEnabled,
+		ThinkingModelBlacklist:    slices.Clone(globalSettings.ThinkingModelBlacklist),
+		EffortTailModelIDs:        slices.Clone(globalSettings.EffortTailModelIDs),
+		ChatCompletionsToResponsesPolicy: ChatCompletionsToResponsesPolicy{
+			Enabled:       policy.Enabled,
+			AllChannels:   policy.AllChannels,
+			ChannelIDs:    slices.Clone(policy.ChannelIDs),
+			ChannelTypes:  slices.Clone(policy.ChannelTypes),
+			ModelPatterns: slices.Clone(policy.ModelPatterns),
+		},
+	}
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 const thinkingBlacklistRegexPrefix = "re:"
@@ -94,7 +109,9 @@ func thinkingBlacklistSourceKey(entries []string) string {
 }
 
 func compiledThinkingBlacklist() ([]string, []*regexp.Regexp) {
-	entries := globalSettings.ThinkingModelBlacklist
+	common.OptionMapRWMutex.RLock()
+	entries := slices.Clone(globalSettings.ThinkingModelBlacklist)
+	common.OptionMapRWMutex.RUnlock()
 	key := thinkingBlacklistSourceKey(entries)
 
 	thinkingBlacklistMu.RLock()
@@ -173,7 +190,11 @@ func ShouldPreserveEffortTail(modelName string) bool {
 		bare = target[slash+1:]
 	}
 
-	for _, entry := range globalSettings.EffortTailModelIDs {
+	common.OptionMapRWMutex.RLock()
+	entries := slices.Clone(globalSettings.EffortTailModelIDs)
+	common.OptionMapRWMutex.RUnlock()
+
+	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue

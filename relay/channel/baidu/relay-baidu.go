@@ -170,8 +170,10 @@ func baiduHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respon
 	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
 	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
 	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
-	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
-		if est := service.ResponseText2Usage(c, baiduResponse.Result, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
+	if fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
+		if fullTextResponse.Usage.TotalTokens > 0 {
+			fullTextResponse.Usage.PromptTokens = fullTextResponse.Usage.TotalTokens
+		} else if est := service.ResponseText2Usage(c, baiduResponse.Result, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
 			fullTextResponse.Usage = *est
 		}
 	} else if fullTextResponse.Usage.TotalTokens <= 0 {
@@ -205,10 +207,14 @@ func baiduEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
 	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
 	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
-	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && len(fullTextResponse.Data) > 0 {
-		est := info.GetEstimatePromptTokens()
-		fullTextResponse.Usage.PromptTokens = est
-		fullTextResponse.Usage.TotalTokens = est
+	if fullTextResponse.Usage.PromptTokens <= 0 {
+		if fullTextResponse.Usage.TotalTokens > 0 {
+			fullTextResponse.Usage.PromptTokens = fullTextResponse.Usage.TotalTokens
+		} else if len(fullTextResponse.Data) > 0 {
+			est := info.GetEstimatePromptTokens()
+			fullTextResponse.Usage.PromptTokens = est
+			fullTextResponse.Usage.TotalTokens = est
+		}
 	} else if fullTextResponse.Usage.TotalTokens <= 0 {
 		fullTextResponse.Usage.TotalTokens = fullTextResponse.Usage.PromptTokens
 	}

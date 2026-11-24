@@ -84,14 +84,19 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 			response.Created = data.CreatedAt
 		}
 	}
-	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && len(responseContent) > 0 {
-		promptTokens := usage.PromptTokens
-		if promptTokens <= 0 {
-			promptTokens = info.GetEstimatePromptTokens()
-		}
-		if est := service.ResponseText2Usage(c, string(responseContent), info.UpstreamModelName, promptTokens); est != nil {
-			usage = *est
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
+		if usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
 			response.Usage = usage
+		} else if len(responseContent) > 0 {
+			promptTokens := usage.PromptTokens
+			if promptTokens <= 0 {
+				promptTokens = info.GetEstimatePromptTokens()
+			}
+			if est := service.ResponseText2Usage(c, string(responseContent), info.UpstreamModelName, promptTokens); est != nil {
+				usage = *est
+				response.Usage = usage
+			}
 		}
 	}
 	// 添加 response.Choices
@@ -173,14 +178,18 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 	usage.PromptTokens = max(usage.PromptTokens, 0)
 	usage.CompletionTokens = max(usage.CompletionTokens, 0)
 	usage.TotalTokens = max(usage.TotalTokens, 0)
-	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
-		// 流式路径不经过 checkIfChatComplete，coze_input_count 没被设置过，取到的是 0；
-		// 拿 0 当 prompt 等于把输入白送出去。退回所有 adaptor 共用的估算口径。
-		promptTokens := c.GetInt("coze_input_count")
-		if promptTokens <= 0 {
-			promptTokens = info.GetEstimatePromptTokens()
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
+		if usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
+		} else {
+			// 流式路径不经过 checkIfChatComplete，coze_input_count 没被设置过，取到的是 0；
+			// 拿 0 当 prompt 等于把输入白送出去。退回所有 adaptor 共用的估算口径。
+			promptTokens := c.GetInt("coze_input_count")
+			if promptTokens <= 0 {
+				promptTokens = info.GetEstimatePromptTokens()
+			}
+			usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, promptTokens)
 		}
-		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, promptTokens)
 	} else if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}

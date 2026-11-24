@@ -345,20 +345,23 @@ func UpdateAbilityByTag(tag string, newTag *string, priority *int64, weight *uin
 }
 
 func updateAbilityByTag(tx *gorm.DB, tag string, newTag *string, priority *int64, weight *uint) error {
-	ability := Ability{}
+	updates := map[string]any{}
 	if newTag != nil {
-		ability.Tag = newTag
+		updates["tag"] = *newTag
 	}
 	if priority != nil {
-		ability.Priority = priority
+		updates["priority"] = *priority
 	}
 	if weight != nil {
-		ability.Weight = *weight
+		updates["weight"] = *weight
+	}
+	if len(updates) == 0 {
+		return nil
 	}
 	if tx == nil {
 		tx = DB
 	}
-	return tx.Model(&Ability{}).Where("tag = ?", tag).Updates(ability).Error
+	return tx.Model(&Ability{}).Where("tag = ?", tag).Updates(updates).Error
 }
 
 var fixLock = sync.Mutex{}

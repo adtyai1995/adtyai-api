@@ -1,6 +1,11 @@
 package operation_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"slices"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 type ChannelAffinityKeySource struct {
 	Type string `json:"type"` // context_int, context_string, request_header, gjson
@@ -158,6 +163,49 @@ func init() {
 	config.GlobalConfig.Register("channel_affinity_setting", &channelAffinitySetting)
 }
 
+func cloneChannelAffinityAny(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			out[k] = cloneChannelAffinityAny(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, val := range x {
+			out[i] = cloneChannelAffinityAny(val)
+		}
+		return out
+	case []string:
+		return slices.Clone(x)
+	default:
+		return v
+	}
+}
+
 func GetChannelAffinitySetting() *ChannelAffinitySetting {
-	return &channelAffinitySetting
+	common.OptionMapRWMutex.RLock()
+	snap := channelAffinitySetting
+	if len(channelAffinitySetting.Rules) > 0 {
+		rules := make([]ChannelAffinityRule, len(channelAffinitySetting.Rules))
+		for i, r := range channelAffinitySetting.Rules {
+			rc := r
+			rc.ModelRegex = slices.Clone(r.ModelRegex)
+			rc.PathRegex = slices.Clone(r.PathRegex)
+			rc.UserAgentInclude = slices.Clone(r.UserAgentInclude)
+			rc.KeySources = slices.Clone(r.KeySources)
+			if r.ParamOverrideTemplate != nil {
+				if cloned, ok := cloneChannelAffinityAny(r.ParamOverrideTemplate).(map[string]any); ok {
+					rc.ParamOverrideTemplate = cloned
+				}
+			}
+			rules[i] = rc
+		}
+		snap.Rules = rules
+	} else {
+		snap.Rules = nil
+	}
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }

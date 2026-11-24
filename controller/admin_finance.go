@@ -76,26 +76,31 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 		common.ApiErrorT(c, "Invalid parameters")
 		return nil, false
 	}
-	columns := []string{"id", "user_id", "site_id", "order_type", "source_type", "reference", "original_trade_no", "team_id", "trade_no", "payment_method", "payment_provider", "status", "create_time", "complete_time", "amount", "face_usd", "credit_quota", "paid_amount", "paid_currency", "channel_id"}
+	columns := []string{"id", "user_id", "site_id", "order_type", "source_type", "reference", "original_trade_no", "team_id", "trade_no", "payment_method", "payment_provider", "status", "create_time", "complete_time", "amount", "face_usd", "credit_quota", "paid_amount", "paid_currency", "channel_id", "owner_private"}
+	billingNetQuota := "(CASE WHEN x.kind = 'request' THEN x.applied_quota - x.stream_wallet_quota WHEN x.kind = 'task' THEN x.applied_quota - x.reserved_quota ELSE x.applied_quota END)"
 	sources := []adtyUnifiedSource{
 		{from: "top_ups x LEFT JOIN adty_topup_orders e ON e.trade_no = x.trade_no", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "e.site_id", "team_id": "COALESCE(e.team_id, 0)", "order_type": "CASE WHEN x.payment_provider = '" + model.AdtyVoucherProvider + "' THEN 'voucher' ELSE 'topup' END",
 			"source_type": "'topup'", "reference": "x.trade_no", "trade_no": "x.trade_no", "original_trade_no": "x.trade_no",
 			"payment_method": "x.payment_method", "payment_provider": "x.payment_provider", "status": "x.status", "create_time": "x.create_time", "complete_time": "x.complete_time",
 			"amount": "x.amount", "face_usd": "COALESCE(e.face_usd, x.amount)", "credit_quota": "COALESCE(e.credit_quota, 0)", "paid_amount": "COALESCE(e.paid_amount, 0)", "paid_currency": "COALESCE(e.paid_currency, '')", "channel_id": "COALESCE(e.channel_id, 0)",
+			"owner_private": "CASE WHEN COALESCE(e.business, '') IN ('" + model.AdtyBusinessOwnerSelfUseTopup + "', '" + model.AdtyBusinessOwnerMarginTopup + "') OR (x.payment_provider = '" + model.AdtyVoucherProvider + "' AND x.payment_method IN ('" + model.AdtyVoucherPurposeSiteOwner + "', '" + model.AdtyVoucherPurposeSiteMargin + "')) THEN 1 ELSE 0 END",
 		}},
-		{from: "billing_operations x", where: "x.state = 'settled' AND x.applied_quota > 0", columns: map[string]string{
+		{from: "billing_operations x", where: "x.state = 'settled' AND " + billingNetQuota + " > 0", columns: map[string]string{
 			"id": "x.reference_id", "user_id": "x.user_id", "site_id": "x.site_id", "order_type": "'consumption'", "source_type": "'billing'",
 			"reference": "x.operation_key", "trade_no": "x.operation_key", "team_id": "x.payer_team_id", "payment_method": "'api'", "payment_provider": "'wallet'", "status": "x.state", "create_time": "x.created_at", "complete_time": "x.updated_at",
-			"amount": "x.applied_quota", "face_usd": "x.applied_quota / 500000.0", "credit_quota": "x.applied_quota", "paid_amount": "x.applied_quota / 500000.0", "paid_currency": "'USD'",
+			"amount": billingNetQuota, "face_usd": billingNetQuota + " / 500000.0", "credit_quota": billingNetQuota, "paid_amount": billingNetQuota + " / 500000.0", "paid_currency": "'USD'",
+			"owner_private": "CASE WHEN COALESCE(x.payer_kind, '') = '" + model.BillingPayerOwner + "' THEN 1 ELSE 0 END",
 		}},
 		{from: "adty_manual_refunds x LEFT JOIN adty_topup_orders e ON e.trade_no = x.trade_no", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "x.site_id", "team_id": "COALESCE(e.team_id, 0)", "order_type": "'refund'", "source_type": "'manual_refund'", "reference": "x.refund_id", "trade_no": "x.refund_id", "original_trade_no": "x.trade_no",
 			"payment_method": "'manual'", "payment_provider": "'manual_refund'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.completed_at", "amount": "x.request_quota", "face_usd": "x.request_usd", "credit_quota": "x.request_quota", "paid_amount": "x.payout_amount", "paid_currency": "x.payout_currency",
+			"owner_private": "CASE WHEN COALESCE(e.business, '') IN ('" + model.AdtyBusinessOwnerSelfUseTopup + "', '" + model.AdtyBusinessOwnerMarginTopup + "') THEN 1 ELSE 0 END",
 		}},
 		{from: "adty_topup_orders x", where: "x.refunded_at > 0 AND NOT EXISTS (SELECT 1 FROM adty_manual_refunds r WHERE r.trade_no = x.trade_no)", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "x.site_id", "team_id": "COALESCE(x.team_id, 0)", "order_type": "'refund'", "source_type": "'legacy_refund'", "reference": "x.trade_no", "trade_no": "x.trade_no", "original_trade_no": "x.trade_no",
 			"payment_method": "'manual'", "payment_provider": "'manual_refund'", "status": "'completed'", "create_time": "x.refunded_at", "complete_time": "x.refunded_at", "amount": "x.refund_quota", "face_usd": "x.refund_quota / 500000.0", "credit_quota": "x.refund_quota", "paid_amount": "x.refund_amount", "paid_currency": "COALESCE(NULLIF(x.paid_currency, ''), x.pay_currency)",
+			"owner_private": "CASE WHEN COALESCE(x.business, '') IN ('" + model.AdtyBusinessOwnerSelfUseTopup + "', '" + model.AdtyBusinessOwnerMarginTopup + "') THEN 1 ELSE 0 END",
 		}},
 		{from: "adty_site_withdrawals x", columns: map[string]string{
 			"id": "x.id", "user_id": "x.owner_user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-SITE-' || CAST(x.id AS TEXT)",
@@ -152,10 +157,11 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 		Joins("LEFT JOIN top_ups t ON o.source_type = 'topup' AND t.trade_no = o.reference").
 		Joins("LEFT JOIN adty_topup_orders a ON o.source_type = 'topup' AND a.trade_no = o.reference")
 	if ownerSiteID != nil {
-		ownWithdrawals := model.DB.Model(&model.AdtySiteWithdrawal{}).Select("id").Scopes(model.AdtyWithdrawalOwnerScope(*ownerSiteID, c.GetInt("id")))
+		callerID := c.GetInt("id")
+		ownWithdrawals := model.DB.Model(&model.AdtySiteWithdrawal{}).Select("id").Scopes(model.AdtyWithdrawalOwnerScope(*ownerSiteID, callerID))
 		query = query.Where("o.site_id = ?", *ownerSiteID).
 			Where("(o.source_type <> 'site_withdrawal' OR o.id IN (?))", ownWithdrawals).
-			Where("(o.source_type <> 'topup' OR COALESCE(a.business,'') NOT IN ? OR o.user_id = ?)", []string{model.AdtyBusinessOwnerSelfUseTopup, model.AdtyBusinessOwnerMarginTopup}, c.GetInt("id"))
+			Where("(o.owner_private = 0 OR o.user_id = ?)", callerID)
 	}
 	if selfUserID != nil {
 		query = query.Where("o.user_id = ?", *selfUserID)

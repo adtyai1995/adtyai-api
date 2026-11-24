@@ -294,7 +294,7 @@ type CacheWriteTokenDetails struct {
 }
 
 func (d *CacheWriteTokenDetails) HasTokens() bool {
-	return d != nil && (d.TTL30mTokens != 0 || d.TTL12hTokens != 0)
+	return d != nil && (d.TTL30mTokens > 0 || d.TTL12hTokens > 0)
 }
 
 // CachedTokenDetails describes subsets of cached_tokens. Pointers distinguish
@@ -306,8 +306,8 @@ type CachedTokenDetails struct {
 }
 
 func (d *CachedTokenDetails) HasTokens() bool {
-	return d != nil && (d.TextTokens != nil && *d.TextTokens != 0 ||
-		d.ImageTokens != nil && *d.ImageTokens != 0 || d.AudioTokens != nil && *d.AudioTokens != 0)
+	return d != nil && (d.TextTokens != nil && *d.TextTokens > 0 ||
+		d.ImageTokens != nil && *d.ImageTokens > 0 || d.AudioTokens != nil && *d.AudioTokens > 0)
 }
 
 // Clone preserves presence information without sharing mutable usage fields.

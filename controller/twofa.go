@@ -208,9 +208,13 @@ func AdminDisable2FA(c *gin.Context) {
 	}
 
 	// 禁用2FA
-	if err := model.DisableTwoFAWithAuthVersionForActor(userId, isAccessTokenRequest(c)); err != nil {
+	if err := model.DisableTwoFAWithAuthVersionForActor(userId, myRole, isAccessTokenRequest(c)); err != nil {
 		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 			denyAdtyAdminAction(c)
+			return
+		}
+		if errors.Is(err, model.ErrUserQuotaPermission) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to change the 2FA settings of users at the same or higher level"))
 			return
 		}
 		if errors.Is(err, model.ErrTwoFANotEnabled) {

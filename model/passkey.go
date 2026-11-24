@@ -263,18 +263,18 @@ func upsertPasskeyCredentialWithAuthVersion(credential *PasskeyCredential, ident
 }
 
 func DeletePasskeyByUserIDWithAuthVersion(userID int) error {
-	return deletePasskeyWithAuthVersion(userID, nil, false)
+	return deletePasskeyWithAuthVersion(userID, nil, common.RoleRootUser, false)
 }
 
-func DeletePasskeyByUserIDWithAuthVersionForActor(userID int, denyAdminTarget bool) error {
-	return deletePasskeyWithAuthVersion(userID, nil, denyAdminTarget)
+func DeletePasskeyByUserIDWithAuthVersionForActor(userID int, actorRole int, denyAdminTarget bool) error {
+	return deletePasskeyWithAuthVersion(userID, nil, actorRole, denyAdminTarget)
 }
 
 func DeletePasskeyForSession(identity AuthSessionIdentity) error {
-	return deletePasskeyWithAuthVersion(identity.UserID, &identity, false)
+	return deletePasskeyWithAuthVersion(identity.UserID, &identity, 0, false)
 }
 
-func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity, denyAdminTarget bool) error {
+func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity, actorRole int, denyAdminTarget bool) error {
 	if userID == 0 {
 		return errors.New("failed to delete the Passkey, please try again")
 	}
@@ -287,6 +287,9 @@ func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity, den
 			var target User
 			if err := lockForUpdate(tx).Select("id", "role").First(&target, userID).Error; err != nil {
 				return err
+			}
+			if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= target.Role {
+				return ErrUserQuotaPermission
 			}
 			if denyAdminTarget && target.Role >= common.RoleAdminUser {
 				return ErrAdminTargetSessionRequired

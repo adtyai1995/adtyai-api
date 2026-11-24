@@ -617,7 +617,7 @@ type GeminiModelsResponse struct {
 func FetchGeminiModels(baseURL, apiKey string, setting dto.ChannelSettings) ([]string, error) {
 	client, err := service.GetHttpClientWithProxySettings(setting.Proxy, setting)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %v", err)
+		return nil, fmt.Errorf("failed to create HTTP client: %v", common.SanitizeOutboundError(err, apiKey))
 	}
 
 	allModels := make([]string, 0)
@@ -634,7 +634,7 @@ func FetchGeminiModels(baseURL, apiKey string, setting dto.ChannelSettings) ([]s
 		request, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			cancel()
-			return nil, fmt.Errorf("failed to create request: %v", err)
+			return nil, fmt.Errorf("failed to create request: %v", common.SanitizeOutboundError(err, apiKey))
 		}
 
 		request.Header.Set("x-goog-api-key", apiKey)
@@ -642,14 +642,14 @@ func FetchGeminiModels(baseURL, apiKey string, setting dto.ChannelSettings) ([]s
 		response, err := client.Do(request)
 		if err != nil {
 			cancel()
-			return nil, fmt.Errorf("request failed: %v", err)
+			return nil, fmt.Errorf("request failed: %v", common.SanitizeOutboundError(err, apiKey))
 		}
 
 		if response.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 			response.Body.Close()
 			cancel()
-			return nil, fmt.Errorf("server returned error %d: %s", response.StatusCode, string(body))
+			return nil, fmt.Errorf("upstream returned status %d", response.StatusCode)
 		}
 
 		body, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))

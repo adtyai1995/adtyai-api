@@ -68,8 +68,8 @@ func getPersistedSetupOptions() (selfUse bool, demoSite bool, ok bool) {
 }
 
 func applySetupMemoryOptions(selfUse, demoSite bool) {
-	operation_setting.SelfUseModeEnabled = selfUse
-	operation_setting.DemoSiteEnabled = demoSite
+	operation_setting.SetSelfUseModeEnabled(selfUse)
+	operation_setting.SetDemoSiteEnabled(demoSite)
 	common.OptionMapRWMutex.Lock()
 	if common.OptionMap != nil {
 		common.OptionMap["SelfUseModeEnabled"] = boolToString(selfUse)
@@ -225,16 +225,16 @@ func PostSetup(c *gin.Context) {
 		return
 	}
 
-	prevSelfUse := operation_setting.SelfUseModeEnabled
-	prevDemoSite := operation_setting.DemoSiteEnabled
+	prevSelfUse := operation_setting.GetSelfUseModeEnabled()
+	prevDemoSite := operation_setting.GetDemoSiteEnabled()
 	common.OptionMapRWMutex.RLock()
 	prevSelfOpt, hadSelfOpt := common.OptionMap["SelfUseModeEnabled"]
 	prevDemoOpt, hadDemoOpt := common.OptionMap["DemoSiteEnabled"]
 	common.OptionMapRWMutex.RUnlock()
 
 	restoreMemory := func() {
-		operation_setting.SelfUseModeEnabled = prevSelfUse
-		operation_setting.DemoSiteEnabled = prevDemoSite
+		operation_setting.SetSelfUseModeEnabled(prevSelfUse)
+		operation_setting.SetDemoSiteEnabled(prevDemoSite)
 		common.OptionMapRWMutex.Lock()
 		if common.OptionMap != nil {
 			if hadSelfOpt {

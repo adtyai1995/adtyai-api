@@ -87,6 +87,15 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		return true
 	}
 
+	stopStream := func(sr *helper.StreamResult, err *types.NewAPIError) {
+		// Avoid boxing a typed-nil *types.NewAPIError into a non-nil error interface (R10-012).
+		if err == nil {
+			sr.Stop(nil)
+			return
+		}
+		sr.Stop(err)
+	}
+
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var claudeResponse dto.ClaudeResponse
 		if err := common.UnmarshalJsonStr(data, &claudeResponse); err != nil {
@@ -94,20 +103,20 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			if failResponsesStream(err) {
 				// A nil streamErr here is intentional: the protocol-level failure
 				// event was delivered, so only the scanner needs to stop.
-				sr.Stop(streamErr)
+				stopStream(sr, streamErr)
 				return
 			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-			sr.Stop(streamErr)
+			stopStream(sr, streamErr)
 			return
 		}
 		if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 			if failResponsesStream(fmt.Errorf("%s", claudeError.Message)) {
-				sr.Stop(streamErr)
+				stopStream(sr, streamErr)
 				return
 			}
 			streamErr = types.WithClaudeError(*claudeError, http.StatusInternalServerError)
-			sr.Stop(streamErr)
+			stopStream(sr, streamErr)
 			return
 		}
 
@@ -129,16 +138,16 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		hostedEvents, consumed, err := hostedBridge.Convert(&claudeResponse, state)
 		if err != nil {
 			if failResponsesStream(err) {
-				sr.Stop(streamErr)
+				stopStream(sr, streamErr)
 				return
 			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
-			sr.Stop(streamErr)
+			stopStream(sr, streamErr)
 			return
 		}
 		for _, event := range hostedEvents {
 			if !sendResponsesEvent(event.Type, event.Payload) {
-				sr.Stop(streamErr)
+				stopStream(sr, streamErr)
 				return
 			}
 		}
@@ -149,16 +158,16 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		results, err := service.ConvertStreamResponseChunk(c, info, state, &claudeResponse)
 		if err != nil {
 			if failResponsesStream(err) {
-				sr.Stop(streamErr)
+				stopStream(sr, streamErr)
 				return
 			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
-			sr.Stop(streamErr)
+			stopStream(sr, streamErr)
 			return
 		}
 		for _, result := range results {
 			if !sendResult(result) {
-				sr.Stop(streamErr)
+				stopStream(sr, streamErr)
 				return
 			}
 		}

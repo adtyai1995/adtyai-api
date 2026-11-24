@@ -1594,10 +1594,7 @@ func GetTagModels(c *gin.Context) {
 
 	channels, err := model.GetChannelsByTag(tag, false, false) // idSort=false, selectAll=false
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiErrorStatus(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -1635,7 +1632,7 @@ func GetTagModels(c *gin.Context) {
 func CopyChannel(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "invalid id"})
+		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
 
@@ -1656,7 +1653,7 @@ func CopyChannel(c *gin.Context) {
 	}
 	if (origin.Type == constant.ChannelTypeTaskPlugin || len(origin.GetSetting().TaskPluginBindings()) > 0) &&
 		!canActWithPermission(c, authz.TaskPluginBind) {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "task plugin channels require the task_plugin.bind permission"})
+		common.ApiErrorT(c, "Task plugin channels require the task_plugin.bind permission")
 		return
 	}
 
@@ -1674,7 +1671,7 @@ func CopyChannel(c *gin.Context) {
 
 	if err := clone.ValidateSettings(); err != nil {
 		common.SysError(common.LogText("failed to validate cloned channel: %s", err.Error()))
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "Failed to copy channel: invalid channel settings"})
+		common.ApiErrorT(c, "Failed to copy channel: invalid channel settings")
 		return
 	}
 
@@ -2191,37 +2188,25 @@ func OllamaPullModel(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request parameters",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
 
 	if req.ChannelID == 0 || req.ModelName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Channel ID and model name are required",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Channel ID and model name are required"))
 		return
 	}
 
 	// 获取渠道信息
 	channel, err := model.GetChannelById(req.ChannelID, true)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"message": "Channel not found",
-		})
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Channel not found"))
 		return
 	}
 
 	// 检查是否是 Ollama 渠道
 	if channel.Type != constant.ChannelTypeOllama {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "This operation is only supported for Ollama channels",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This operation is only supported for Ollama channels"))
 		return
 	}
 
@@ -2232,25 +2217,16 @@ func OllamaPullModel(c *gin.Context) {
 
 	key, err := ollamaRequestKey(channel)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Failed to pull model: %s", err.Error()),
-		})
+		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Failed to pull model: {{error}}", map[string]any{"error": common.SanitizeOutboundError(err).Error()}))
 		return
 	}
 	err = ollama.PullOllamaModel(c.Request.Context(), baseURL, key, req.ModelName, channel.GetSetting())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Failed to pull model: %s", err.Error()),
-		})
+		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Failed to pull model: {{error}}", map[string]any{"error": common.SanitizeOutboundError(err, key).Error()}))
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": fmt.Sprintf("Model %s pulled successfully", req.ModelName),
-	})
+	common.ApiSuccessT(c, "Model {{model}} pulled successfully", nil, map[string]any{"model": req.ModelName})
 }
 
 // OllamaPullModelStream 流式拉取 Ollama 模型
@@ -2261,37 +2237,25 @@ func OllamaPullModelStream(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request parameters",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
 
 	if req.ChannelID == 0 || req.ModelName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Channel ID and model name are required",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Channel ID and model name are required"))
 		return
 	}
 
 	// 获取渠道信息
 	channel, err := model.GetChannelById(req.ChannelID, true)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"message": "Channel not found",
-		})
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Channel not found"))
 		return
 	}
 
 	// 检查是否是 Ollama 渠道
 	if channel.Type != constant.ChannelTypeOllama {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "This operation is only supported for Ollama channels",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This operation is only supported for Ollama channels"))
 		return
 	}
 
@@ -2308,7 +2272,7 @@ func OllamaPullModelStream(c *gin.Context) {
 
 	key, err := ollamaRequestKey(channel)
 	if err != nil {
-		errorData, _ := common.Marshal(gin.H{"error": err.Error()})
+		errorData, _ := common.Marshal(gin.H{"error": common.SanitizeOutboundError(err).Error()})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(errorData))
 		fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
@@ -2327,7 +2291,7 @@ func OllamaPullModelStream(c *gin.Context) {
 
 	if err != nil {
 		errorData, _ := common.Marshal(gin.H{
-			"error": err.Error(),
+			"error": common.SanitizeOutboundError(err, key).Error(),
 		})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(errorData))
 	} else {
@@ -2350,37 +2314,25 @@ func OllamaDeleteModel(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request parameters",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
 
 	if req.ChannelID == 0 || req.ModelName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Channel ID and model name are required",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Channel ID and model name are required"))
 		return
 	}
 
 	// 获取渠道信息
 	channel, err := model.GetChannelById(req.ChannelID, true)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"message": "Channel not found",
-		})
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Channel not found"))
 		return
 	}
 
 	// 检查是否是 Ollama 渠道
 	if channel.Type != constant.ChannelTypeOllama {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "This operation is only supported for Ollama channels",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This operation is only supported for Ollama channels"))
 		return
 	}
 
@@ -2391,52 +2343,34 @@ func OllamaDeleteModel(c *gin.Context) {
 
 	key, err := ollamaRequestKey(channel)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Failed to delete model: %s", err.Error()),
-		})
+		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Failed to delete model: {{error}}", map[string]any{"error": common.SanitizeOutboundError(err).Error()}))
 		return
 	}
 	err = ollama.DeleteOllamaModel(c.Request.Context(), baseURL, key, req.ModelName, channel.GetSetting())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Failed to delete model: %s", err.Error()),
-		})
+		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Failed to delete model: {{error}}", map[string]any{"error": common.SanitizeOutboundError(err, key).Error()}))
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": fmt.Sprintf("Model %s deleted successfully", req.ModelName),
-	})
+	common.ApiSuccessT(c, "Model {{model}} deleted successfully", nil, map[string]any{"model": req.ModelName})
 }
 
 // OllamaVersion 获取 Ollama 服务版本信息
 func OllamaVersion(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid channel id",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid channel ID"))
 		return
 	}
 
 	channel, err := model.GetChannelById(id, true)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"message": "Channel not found",
-		})
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Channel not found"))
 		return
 	}
 
 	if channel.Type != constant.ChannelTypeOllama {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "This operation is only supported for Ollama channels",
-		})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This operation is only supported for Ollama channels"))
 		return
 	}
 
@@ -2447,12 +2381,12 @@ func OllamaVersion(c *gin.Context) {
 
 	key, err := ollamaRequestKey(channel)
 	if err != nil {
-		common.ApiErrorT(c, "Failed to fetch Ollama version: {{error}}", map[string]any{"error": err.Error()})
+		common.ApiErrorT(c, "Failed to fetch Ollama version: {{error}}", map[string]any{"error": common.SanitizeOutboundError(err).Error()})
 		return
 	}
 	version, err := ollama.FetchOllamaVersion(c.Request.Context(), baseURL, key, channel.GetSetting())
 	if err != nil {
-		common.ApiErrorT(c, "Failed to fetch Ollama version: {{error}}", map[string]any{"error": err.Error()})
+		common.ApiErrorT(c, "Failed to fetch Ollama version: {{error}}", map[string]any{"error": common.SanitizeOutboundError(err, key).Error()})
 		return
 	}
 

@@ -216,7 +216,7 @@ func effectiveModelPricing(values map[string]map[string]any, name string) Pricin
 	if _, exists := result["ModelPrice"]; exists {
 		return result
 	}
-	if _, exists := result["ModelRatio"]; !exists && operation_setting.SelfUseModeEnabled {
+	if _, exists := result["ModelRatio"]; !exists && operation_setting.GetSelfUseModeEnabled() {
 		result["ModelRatio"] = float64(37.5)
 	}
 	// Completion ratios include engine-enforced model defaults. Expose their

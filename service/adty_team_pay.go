@@ -57,7 +57,7 @@ func adtyTeamQuote(userGroup string, face int64, method string) (*AdtyQuote, err
 		quote.PayAmount = quote.FaceUSD.Mul(quote.TopupGroupRatio).Round(8)
 		return quote, nil
 	}
-	price := decimal.NewFromFloat(operation_setting.Price)
+	price := decimal.NewFromFloat(operation_setting.GetPrice())
 	if !price.IsPositive() {
 		return nil, common.NewMessage("The top-up price is not configured")
 	}

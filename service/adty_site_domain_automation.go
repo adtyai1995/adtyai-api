@@ -229,14 +229,22 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		}
 	}
 	if row.DesiredState == "removed" {
-		if row.CFHostnameId == "" {
-			var resource model.AdtyDomainCloudResource
-			if err := model.DB.Where("domain_id = ? AND generation = ? AND zone = ?", row.Id, adtyCustomHostnameGeneration(row), row.ProviderZone).Order("id DESC").Limit(1).Find(&resource).Error; err != nil {
+		hostnameID := row.CFHostnameId
+		createAttempted := row.CFCreateStartedAt > 0
+		if strings.HasPrefix(hostnameID, adtyCloudResourcePendingPrefix) {
+			hostnameID = ""
+			createAttempted = true
+		}
+		if hostnameID == "" {
+			var lookupAttempted bool
+			var err error
+			hostnameID, lookupAttempted, err = adtyLookupCloudResourceState(model.DB, row.ProviderZone, row)
+			if err != nil {
 				return err
 			}
-			row.CFHostnameId = resource.ResourceID
+			createAttempted = createAttempted || lookupAttempted
 		}
-		if row.CFHostnameId == "" && row.CFCreateStartedAt > 0 {
+		if hostnameID == "" && createAttempted {
 			candidate, err := AdtyCloudflare.findCustomHostname(ctx, row.ProviderZone, row.Hostname)
 			if err != nil {
 				return err
@@ -245,16 +253,20 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 				return common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup")
 			}
 		}
-		if row.CFHostnameId != "" {
-			if err := AdtyCloudflare.deleteCustomHostname(ctx, row.ProviderZone, row.CFHostnameId); err != nil {
+		if hostnameID != "" {
+			if err := AdtyCloudflare.deleteCustomHostname(ctx, row.ProviderZone, hostnameID); err != nil {
 				return err
 			}
-			if err := model.DB.Where("domain_id = ? AND zone = ? AND resource_id = ?", row.Id, row.ProviderZone, row.CFHostnameId).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
+		}
+		if hostnameID != "" || createAttempted || row.CFHostnameId != "" {
+			if err := model.DB.Where("domain_id = ? AND generation = ? AND zone = ?", row.Id, adtyCustomHostnameGeneration(row), row.ProviderZone).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
 				return err
 			}
-			row.CFHostnameId = ""
-			if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": ""}); err != nil {
-				return err
+			if row.CFHostnameId != "" {
+				row.CFHostnameId = ""
+				if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": ""}); err != nil {
+					return err
+				}
 			}
 		}
 		for len(records) > 0 {
@@ -353,13 +365,19 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			}
 		}
 	}
-	if row.CFHostnameId == "" {
-		var resource model.AdtyDomainCloudResource
-		if err := model.DB.Where("domain_id = ? AND generation = ? AND zone = ?", row.Id, adtyCustomHostnameGeneration(row), row.ProviderZone).Order("id DESC").Limit(1).Find(&resource).Error; err != nil {
+	if strings.HasPrefix(row.CFHostnameId, adtyCloudResourcePendingPrefix) {
+		row.CFHostnameId = ""
+		if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": ""}); err != nil {
 			return err
 		}
-		if resource.ResourceID != "" {
-			row.CFHostnameId = resource.ResourceID
+	}
+	if row.CFHostnameId == "" {
+		hostnameID, _, err := adtyLookupCloudResourceState(model.DB, row.ProviderZone, row)
+		if err != nil {
+			return err
+		}
+		if hostnameID != "" {
+			row.CFHostnameId = hostnameID
 			if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": row.CFHostnameId}); err != nil {
 				return err
 			}

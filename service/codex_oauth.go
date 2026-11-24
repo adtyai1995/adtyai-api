@@ -57,9 +57,12 @@ func RefreshCodexOAuthToken(ctx context.Context, refreshToken string) (*CodexOAu
 }
 
 func RefreshCodexOAuthTokenWithProxy(ctx context.Context, refreshToken string, proxyURL string) (*CodexOAuthTokenResult, error) {
-	client, err := getCodexOAuthHTTPClient(proxyURL)
+	client, cleanup, err := getCodexOAuthHTTPClient(proxyURL)
 	if err != nil {
 		return nil, err
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	return refreshCodexOAuthToken(ctx, client, currentCodexOAuthTokenURL(), codexOAuthClientID, refreshToken)
 }
@@ -90,7 +93,7 @@ func refreshCodexOAuthToken(
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, common.SanitizeOutboundError(err, rt)
 	}
 	defer resp.Body.Close()
 
@@ -118,21 +121,21 @@ func refreshCodexOAuthToken(
 	}, nil
 }
 
-func getCodexOAuthHTTPClient(proxyURL string) (*http.Client, error) {
+func getCodexOAuthHTTPClient(proxyURL string) (*http.Client, func(), error) {
 	proxyURL = strings.TrimSpace(proxyURL)
 	if proxyURL == "" {
-		return NewVerifiedDirectNoRedirectHTTPClient(defaultHTTPTimeout), nil
+		return NewVerifiedDirectNoRedirectHTTPClient(defaultHTTPTimeout), nil, nil
 	}
 	baseClient, err := GetHttpClientWithProxy(proxyURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if baseClient == nil {
-		return NewVerifiedDirectNoRedirectHTTPClient(defaultHTTPTimeout), nil
+		return NewVerifiedDirectNoRedirectHTTPClient(defaultHTTPTimeout), nil, nil
 	}
 	verifiedTransport, err := cloneAdtyVerifiedPaymentTransport(baseClient.Transport)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	clientCopy := *baseClient
 	clientCopy.Transport = verifiedTransport
@@ -140,7 +143,7 @@ func getCodexOAuthHTTPClient(proxyURL string) (*http.Client, error) {
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return &clientCopy, nil
+	return &clientCopy, verifiedTransport.CloseIdleConnections, nil
 }
 
 func ExtractCodexAccountIDFromJWT(token string) (string, bool) {

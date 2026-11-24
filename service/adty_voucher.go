@@ -696,8 +696,8 @@ func LoadAdtyVoucherIssuance() (AdtyVoucherIssuance, error) {
 	return AdtyVoucherIssuance{LimitUSD: row.LimitUSD.String(), FrozenUSD: row.FrozenUSD.String(), SpentUSD: row.SpentUSD.String()}, nil
 }
 
-func adtyVoucherNonRootManageAllowedTx(tx *gorm.DB, actor *model.User, voucher *model.AdtyVoucher, lockedSite *model.AdtySite) error {
-	if actor.Role == common.RoleRootUser {
+func adtyVoucherManageAllowedTx(tx *gorm.DB, actor *model.User, voucher *model.AdtyVoucher, lockedSite *model.AdtySite, ownerOnly bool, expectedSiteID int) error {
+	if !ownerOnly && actor.Role == common.RoleRootUser {
 		return nil
 	}
 	if voucher.IssuerId != actor.Id || voucher.InheritedByMain {
@@ -706,6 +706,9 @@ func adtyVoucherNonRootManageAllowedTx(tx *gorm.DB, actor *model.User, voucher *
 	siteID := voucher.SourceSiteId
 	if siteID <= 0 {
 		siteID = voucher.TargetSiteId
+	}
+	if ownerOnly && (expectedSiteID <= 0 || siteID != expectedSiteID) {
+		return ErrAdtyVoucherForbidden
 	}
 	if siteID > 0 {
 		var site *model.AdtySite
@@ -731,6 +734,14 @@ func FreezeAdtyVoucher(actorId int, voucherId int64) error {
 }
 
 func FreezeAdtyVoucherWithAudit(actorId int, voucherId int64) (string, error) {
+	return freezeAdtyVoucherWithScope(actorId, voucherId, false, 0)
+}
+
+func FreezeAdtySiteVoucherWithAudit(actorId, siteID int, voucherId int64) (string, error) {
+	return freezeAdtyVoucherWithScope(actorId, voucherId, true, siteID)
+}
+
+func freezeAdtyVoucherWithScope(actorId int, voucherId int64, ownerOnly bool, expectedSiteID int) (string, error) {
 	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var stub struct {
@@ -760,7 +771,7 @@ func FreezeAdtyVoucherWithAudit(actorId int, voucherId int64) (string, error) {
 		if err := model.AdtyLockForUpdate(tx).First(&voucher, voucherId).Error; err != nil {
 			return err
 		}
-		if err := adtyVoucherNonRootManageAllowedTx(tx, actor, &voucher, lockedSite); err != nil {
+		if err := adtyVoucherManageAllowedTx(tx, actor, &voucher, lockedSite, ownerOnly, expectedSiteID); err != nil {
 			return err
 		}
 		if voucher.Status != model.AdtyVoucherStatusPending {
@@ -819,6 +830,14 @@ func CancelAdtyVoucher(actorId int, voucherId int64) error {
 }
 
 func CancelAdtyVoucherWithAudit(actorId int, voucherId int64) (string, error) {
+	return cancelAdtyVoucherWithScope(actorId, voucherId, false, 0)
+}
+
+func CancelAdtySiteVoucherWithAudit(actorId, siteID int, voucherId int64) (string, error) {
+	return cancelAdtyVoucherWithScope(actorId, voucherId, true, siteID)
+}
+
+func cancelAdtyVoucherWithScope(actorId int, voucherId int64, ownerOnly bool, expectedSiteID int) (string, error) {
 	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var stub struct {
@@ -848,7 +867,7 @@ func CancelAdtyVoucherWithAudit(actorId int, voucherId int64) (string, error) {
 		if err := model.AdtyLockForUpdate(tx).First(&voucher, voucherId).Error; err != nil {
 			return err
 		}
-		if err := adtyVoucherNonRootManageAllowedTx(tx, actor, &voucher, lockedSite); err != nil {
+		if err := adtyVoucherManageAllowedTx(tx, actor, &voucher, lockedSite, ownerOnly, expectedSiteID); err != nil {
 			return err
 		}
 		beforeStatus := voucher.Status

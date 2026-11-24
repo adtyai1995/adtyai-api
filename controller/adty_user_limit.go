@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -8,15 +9,17 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 var (
 	adtyUserLimitGetTargetUser = func(userID int) (*model.User, error) {
 		return model.GetUserById(userID, false)
 	}
-	adtyUserLimitGetLimit    = model.GetAdtyUserLimit
-	adtyUserLimitSaveLimit   = model.SaveAdtyUserLimit
-	adtyUserLimitRecordAudit = func(c *gin.Context, targetID int, action string, after map[string]any) {
+	adtyUserLimitGetLimit         = model.GetAdtyUserLimit
+	adtyUserLimitSaveLimit        = model.SaveAdtyUserLimit
+	adtyUserLimitSaveLimitForUser = model.SaveAdtyUserLimitForActor
+	adtyUserLimitRecordAudit      = func(c *gin.Context, targetID int, action string, after map[string]any) {
 		if model.DB == nil {
 			return
 		}
@@ -45,6 +48,10 @@ func adtyCheckUserLimitTargetScope(c *gin.Context, targetUserID int, requireTarg
 			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to update user with same or higher role"))
 			return false
 		}
+	}
+	if requireTarget && isAccessTokenRequest(c) && targetUser.Role >= common.RoleAdminUser {
+		denyAdtyAdminAction(c)
+		return false
 	}
 	if hostSite := service.AdtySiteForRequest(c); hostSite != nil && hostSite.Id > 0 && myRole != common.RoleRootUser {
 		if _, err := service.GetAdtyOwnerCustomer(hostSite, targetUserID); err != nil {
@@ -93,8 +100,32 @@ func PutAdtyUserLimits(c *gin.Context) {
 		return
 	}
 	limit := model.AdtyUserLimit{UserId: userID, RPM: body.RPM, TPM: body.TPM, Concurrency: body.Concurrency}
-	if err := adtyUserLimitSaveLimit(limit); err != nil {
-		common.ApiError(c, err)
+	myRole := c.GetInt("role")
+	if myRole == 0 && c.GetInt("id") > 0 {
+		if actor, actorErr := adtyUserLimitGetTargetUser(c.GetInt("id")); actorErr == nil && actor != nil {
+			myRole = actor.Role
+		}
+	}
+	var saveErr error
+	if model.DB != nil {
+		saveErr = adtyUserLimitSaveLimitForUser(limit, myRole, isAccessTokenRequest(c))
+	} else {
+		saveErr = adtyUserLimitSaveLimit(limit)
+	}
+	if saveErr != nil {
+		if errors.Is(saveErr, model.ErrAdminTargetSessionRequired) {
+			denyAdtyAdminAction(c)
+			return
+		}
+		if errors.Is(saveErr, model.ErrUserQuotaPermission) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to update user with same or higher role"))
+			return
+		}
+		if errors.Is(saveErr, gorm.ErrRecordNotFound) {
+			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("User not found"))
+			return
+		}
+		common.ApiError(c, saveErr)
 		return
 	}
 	adtyUserLimitRecordAudit(c, userID, "adty.user.limits", map[string]any{"rpm": body.RPM, "tpm": body.TPM, "concurrency": body.Concurrency})

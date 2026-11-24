@@ -65,7 +65,7 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 		"min_topup":          operation_setting.GetMinTopUp(),
 		"methods":            methods,
 		"scenes":             scenes,
-		"price_cny_per_usd":  operation_setting.Price,
+		"price_cny_per_usd":  operation_setting.GetPrice(),
 		"usdt_order_minutes": setting.USDTOrderMinutes,
 		"epay_order_minutes": setting.EpayOrderMinutes,
 		"pending":            pending,

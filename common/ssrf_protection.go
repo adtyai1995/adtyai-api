@@ -3,6 +3,7 @@ package common
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -74,16 +75,21 @@ var privateIPv4Nets = []net.IPNet{
 // https://www.iana.org/assignments/iana-ipv6-special-registry/
 var privateIPv6Nets = func() []net.IPNet {
 	cidrs := []string{
-		"::/128",        // 未指定地址
-		"::1/128",       // 回环
-		"::ffff:0:0/96", // IPv4-mapped
-		"64:ff9b::/96",  // IPv4/IPv6 translation
-		"100::/64",      // Discard-Only
-		"2001::/23",     // IETF Protocol Assignments
-		"2001:db8::/32", // 文档
-		"fc00::/7",      // Unique Local Address (ULA)
-		"fe80::/10",     // 链路本地
-		"ff00::/8",      // 组播
+		"::/128",          // 未指定地址
+		"::1/128",         // 回环
+		"::/96",           // 已弃用 IPv4-compatible IPv6
+		"::ffff:0:0/96",   // IPv4-mapped
+		"::ffff:0:0:0/96", // IPv4-translated (SIIT)
+		"64:ff9b::/96",    // IPv4/IPv6 translation
+		"64:ff9b:1::/48",  // Local-Use IPv4/IPv6 translation (RFC 8215)
+		"100::/64",        // Discard-Only
+		"2001::/23",       // IETF Protocol Assignments
+		"2001:db8::/32",   // 文档
+		"2002::/16",       // 6to4 (可内嵌私有/元数据 IPv4)
+		"fc00::/7",        // Unique Local Address (ULA)
+		"fe80::/10",       // 链路本地
+		"fec0::/10",       // 已弃用 site-local
+		"ff00::/8",        // 组播
 	}
 	nets := make([]net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {
@@ -289,6 +295,29 @@ func (p *SSRFProtection) ipAccessError(host string, ip net.IP) error {
 	return fmt.Errorf("ip in blacklist: %s", ip.String())
 }
 
+// ParseSSRFIPLiteral parses an IP literal (rejecting IPv6 zone IDs such as
+// "::1%lo" which bypass net.ParseIP and would otherwise be treated as domains).
+func ParseSSRFIPLiteral(host string) (net.IP, bool, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil, false, nil
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if addr.Zone() != "" {
+			return nil, true, fmt.Errorf("IPv6 zone identifier is not allowed: %s", host)
+		}
+		return net.IP(addr.AsSlice()), true, nil
+	}
+	if strings.Contains(host, "%") {
+		if idx := strings.IndexByte(host, '%'); idx > 0 {
+			if _, err := netip.ParseAddr(host[:idx]); err == nil {
+				return nil, true, fmt.Errorf("IPv6 zone identifier is not allowed: %s", host)
+			}
+		}
+	}
+	return nil, false, nil
+}
+
 // ValidateNetworkTarget validates the host and port before dialing.
 func (p *SSRFProtection) ValidateNetworkTarget(host string, port int) error {
 	host = strings.TrimSpace(host)
@@ -302,7 +331,9 @@ func (p *SSRFProtection) ValidateNetworkTarget(host string, port int) error {
 		return fmt.Errorf("port %d is not allowed", port)
 	}
 
-	if ip := net.ParseIP(host); ip != nil {
+	if ip, isIP, err := ParseSSRFIPLiteral(host); err != nil {
+		return err
+	} else if isIP {
 		if !p.IsIPAccessAllowed(ip) {
 			return p.ipAccessError("", ip)
 		}
@@ -322,9 +353,19 @@ func (p *SSRFProtection) ValidateNetworkTarget(host string, port int) error {
 	return nil
 }
 
+// NeedsDomainIPResolution reports whether a domain target must be DNS-resolved
+// and its resolved IPs checked (always true when private IPs are blocked, or
+// when custom IP allow/deny lists apply to domains).
+func (p *SSRFProtection) NeedsDomainIPResolution() bool {
+	return !p.AllowPrivateIp || p.ApplyIPFilterForDomain
+}
+
 // ValidateResolvedIP validates a domain's resolved IP immediately before dialing it.
 func (p *SSRFProtection) ValidateResolvedIP(host string, ip net.IP) error {
-	if !p.IsIPAccessAllowed(ip) {
+	if isPrivateIP(ip) && !p.AllowPrivateIp {
+		return p.ipAccessError(host, ip)
+	}
+	if p.ApplyIPFilterForDomain && !p.IsIPAccessAllowed(ip) {
 		return p.ipAccessError(host, ip)
 	}
 	return nil
@@ -365,8 +406,9 @@ func (p *SSRFProtection) ValidateURL(urlStr string) error {
 		return err
 	}
 
-	// 如果 host 是 IP，或未启用对域名应用 IP 过滤，则到此通过。
-	if net.ParseIP(host) != nil || !p.ApplyIPFilterForDomain {
+	if _, isIP, err := ParseSSRFIPLiteral(host); err != nil {
+		return err
+	} else if isIP || !p.NeedsDomainIPResolution() {
 		return nil
 	}
 
@@ -374,6 +416,9 @@ func (p *SSRFProtection) ValidateURL(urlStr string) error {
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return fmt.Errorf("DNS resolution failed for %s: %v", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("DNS resolution failed for %s: no addresses returned", host)
 	}
 	for _, ip := range ips {
 		if err := p.ValidateResolvedIP(host, ip); err != nil {

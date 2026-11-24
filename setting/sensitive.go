@@ -1,6 +1,12 @@
 package setting
 
-import "strings"
+import (
+	"slices"
+	"strings"
+	"sync"
+
+	"github.com/QuantumNous/new-api/common"
+)
 
 var CheckSensitiveEnabled = false
 var CheckSensitiveOnPromptEnabled = false
@@ -13,26 +19,43 @@ var StopOnSensitiveEnabled = true
 // StreamCacheQueueLength 流模式缓存队列长度，0表示无缓存
 var StreamCacheQueueLength = 0
 
+var sensitiveWordsMu sync.RWMutex
+
 // SensitiveWords 敏感词
 var SensitiveWords []string
 
+func GetSensitiveWords() []string {
+	sensitiveWordsMu.RLock()
+	defer sensitiveWordsMu.RUnlock()
+	return slices.Clone(SensitiveWords)
+}
+
 func SensitiveWordsToString() string {
-	return strings.Join(SensitiveWords, "\n")
+	sensitiveWordsMu.RLock()
+	snapshot := slices.Clone(SensitiveWords)
+	sensitiveWordsMu.RUnlock()
+	return strings.Join(snapshot, "\n")
 }
 
 func SensitiveWordsFromString(s string) {
-	SensitiveWords = []string{}
+	next := []string{}
 	sw := strings.SplitSeq(s, "\n")
 	for w := range sw {
 		w = strings.TrimSpace(w)
 		if w != "" {
-			SensitiveWords = append(SensitiveWords, w)
+			next = append(next, w)
 		}
 	}
+	sensitiveWordsMu.Lock()
+	SensitiveWords = next
+	sensitiveWordsMu.Unlock()
 }
 
 func ShouldCheckPromptSensitive() bool {
-	return CheckSensitiveEnabled && CheckSensitiveOnPromptEnabled
+	common.OptionMapRWMutex.RLock()
+	enabled := CheckSensitiveEnabled && CheckSensitiveOnPromptEnabled
+	common.OptionMapRWMutex.RUnlock()
+	return enabled
 }
 
 //func ShouldCheckCompletionSensitive() bool {

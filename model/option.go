@@ -766,9 +766,9 @@ func updateOptionMap(key string, value string) (err error) {
 		case "CheckSensitiveEnabled":
 			setting.CheckSensitiveEnabled = boolValue
 		case "DemoSiteEnabled":
-			operation_setting.DemoSiteEnabled = boolValue
+			operation_setting.SetDemoSiteEnabled(boolValue)
 		case "SelfUseModeEnabled":
-			operation_setting.SelfUseModeEnabled = boolValue
+			operation_setting.SetSelfUseModeEnabled(boolValue)
 		case "CheckSensitiveOnPromptEnabled":
 			setting.CheckSensitiveOnPromptEnabled = boolValue
 		case "ModelRequestRateLimitEnabled":
@@ -823,25 +823,25 @@ func updateOptionMap(key string, value string) (err error) {
 	case "MaxTokenAutoGroups":
 		err = setting.UpdateMaxTokenAutoGroups(value)
 	case "CustomCallbackAddress":
-		operation_setting.CustomCallbackAddress = value
+		operation_setting.SetCustomCallbackAddress(value)
 	case "Price":
 		n, parseErr := strconv.ParseFloat(value, 64)
 		if parseErr != nil || math.IsNaN(n) || math.IsInf(n, 0) || n <= 0 {
 			return common.NewMessage("{{key}} must be a positive number", map[string]any{"key": key})
 		}
-		operation_setting.Price = n
+		operation_setting.SetPrice(n)
 	case "USDExchangeRate":
 		n, parseErr := strconv.ParseFloat(value, 64)
 		if parseErr != nil || math.IsNaN(n) || math.IsInf(n, 0) || n <= 0 {
 			return common.NewMessage("{{key}} must be a positive number", map[string]any{"key": key})
 		}
-		operation_setting.USDExchangeRate = n
+		operation_setting.SetUSDExchangeRate(n)
 	case "MinTopUp":
 		n, parseErr := strconv.Atoi(value)
 		if parseErr != nil || n < 0 {
 			return common.NewMessage("{{key}} must be a non-negative integer", map[string]any{"key": key})
 		}
-		operation_setting.MinTopUp = n
+		operation_setting.SetMinTopUp(n)
 	case "TopupGroupRatio":
 		err = common.UpdateTopupGroupRatioByJSONString(value)
 	case "Footer":

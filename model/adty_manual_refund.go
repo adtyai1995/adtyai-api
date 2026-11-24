@@ -242,10 +242,41 @@ func adtyOrphanExternalQuota(ext *AdtyTopupOrder, ev PaymentOrphanEvent, reviewB
 	return 0
 }
 
+// adtyOrphanAuthorizedReconcileQuota returns the verified external reversal
+// quota that may authorize payout-free manual refund reconciliation. Unlike
+// adtyOrphanExternalQuota (which conservatively returns full face for unreviewed
+// or zero-amount blocking X), an explicit $0 review authorizes 0 (R10-018).
+func adtyOrphanAuthorizedReconcileQuota(ext *AdtyTopupOrder, ev PaymentOrphanEvent, reviewByID map[int64]PaymentOrphanReview) int64 {
+	if ext == nil {
+		return 0
+	}
+	face := ext.FaceQuota()
+	if face <= 0 {
+		return 0
+	}
+	if ev.ReviewID > 0 {
+		if rev, ok := reviewByID[ev.ReviewID]; ok {
+			if rev.Status == PaymentOrphanStatusDismissed || rev.Status == PaymentOrphanStatusNeverCredited || !rev.ExternalAmount.IsPositive() {
+				return 0
+			}
+			q := adtyConvertExternalOffsetToQuota(ext, rev.ExternalAmount, rev.ExternalCurrency)
+			if q > face {
+				return face
+			}
+			return max(q, int64(0))
+		}
+	}
+	if ev.Status == PaymentOrphanStatusRefunded || isExternalReversalEventType(ev.EventID, ev.EventType) {
+		return face
+	}
+	return 0
+}
+
 // adtyExternalRefundOffsetForRowsTx computes X (unreconciled external reversal
 // exposure beyond completed S and in-flight manual refunds explicitly reconciling
 // pending_review external reversal orphans on this order). Each bound orphan's
-// waived share is strictly capped at that orphan's verified external reversal quota.
+// waived share is strictly capped at both that orphan's verified external
+// reversal quota and the order-wide cumulative maxExternalQuota (R10-018).
 func adtyExternalRefundOffsetForRowsTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []AdtyManualRefund, extraReconcileOrphanID, extraReconcileQuota int64) (int64, error) {
 	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
 		return 0, nil
@@ -283,8 +314,9 @@ func adtyExternalRefundOffsetForRowsTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []
 			if q > maxExternalQuota {
 				maxExternalQuota = q
 			}
-			if ev.Status == PaymentOrphanStatusPendingReview && isExternalReversalEventType(ev.EventID, ev.EventType) && q > 0 {
-				pendingOrphanCap[ev.ID] = q
+			authCap := adtyOrphanAuthorizedReconcileQuota(ext, ev, reviewByID)
+			if ev.Status == PaymentOrphanStatusPendingReview && isExternalReversalEventType(ev.EventID, ev.EventType) && authCap > 0 {
+				pendingOrphanCap[ev.ID] = authCap
 			}
 		}
 	} else if hasReview {
@@ -319,6 +351,9 @@ func adtyExternalRefundOffsetForRowsTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []
 			bound = capQuota
 		}
 		activeReconcileQuota += bound
+	}
+	if activeReconcileQuota > maxExternalQuota {
+		activeReconcileQuota = maxExternalQuota
 	}
 	accounted := ext.RefundQuota + activeReconcileQuota
 	if maxExternalQuota <= accounted {

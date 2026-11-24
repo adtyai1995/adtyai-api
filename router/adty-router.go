@@ -683,7 +683,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootVouchers.POST("", controller.PostAdtyAdminVoucher)
 	rootVouchers.GET("/limit", controller.GetAdtyVoucherIssuanceLimit)
 	rootVouchers.PUT("/limit", controller.PutAdtyVoucherIssuanceLimit)
-	rootVouchers.POST("/:id/freeze", controller.PostAdtyVoucherFreeze)
+	rootVouchers.POST("/:id/freeze", controller.PostAdtyAdminVoucherFreeze)
 	rootVouchers.POST("/:id/cancel", controller.PostAdtyAdminVoucherCancel)
 
 	admin := apiRouter.Group("/adty/admin", middleware.AdminAuth())

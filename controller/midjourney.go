@@ -167,8 +167,8 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			}
 
 			useTime := (time.Now().UnixNano() / int64(time.Millisecond)) - task.SubmitTime
-			// 如果时间超过一小时，且进度不是100%，则认为任务失败
-			if useTime > 3600000 && task.Progress != "100%" {
+			// 如果时间超过一小时，且响应结果仍未完成，则认为任务失败（R10-016）
+			if task.SubmitTime > 0 && useTime > 3600000 && responseItem.Progress != "100%" && responseItem.Status != "SUCCESS" {
 				responseItem.FailReason = "Upstream task timed out (over 1 hour)"
 				responseItem.Status = "FAILURE"
 			}
@@ -180,7 +180,9 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			task.Progress = responseItem.Progress
 			task.PromptEn = responseItem.PromptEn
 			task.State = responseItem.State
-			task.SubmitTime = responseItem.SubmitTime
+			if responseItem.SubmitTime > 0 {
+				task.SubmitTime = responseItem.SubmitTime
+			}
 			task.StartTime = responseItem.StartTime
 			task.FinishTime = responseItem.FinishTime
 			task.ImageUrl = responseItem.ImageUrl

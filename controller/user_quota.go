@@ -54,6 +54,13 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if isAccessTokenRequest(c) {
+		if targetUser, lookupErr := model.GetUserByIdIncludingDeleted(req.Id, false); lookupErr == nil && targetUser != nil && targetUser.Role >= common.RoleAdminUser {
+			params["failure_reason"] = "admin_target_session_required"
+			denyAdtyAdminAction(c)
+			return
+		}
+	}
 	if requireAdminUserProof(c, service.VerificationScopeAdminUserQuota, service.AdminUserContext{UserID: req.Id}) == nil {
 		params["failure_reason"] = "security_proof_required"
 		return
@@ -61,9 +68,12 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 
 	// 二开：原因和幂等键，同一事务写余额流水（任务 7.2）；原因只进审计，不进用户日志。
 	params["reason"] = strings.TrimSpace(req.Reason)
-	adjustment, err := model.AdjustUserQuotaWithLedger(req.Id, c.GetInt("id"), c.GetInt("role"), req.Mode, req.Value, req.Reason, req.IdempotencyKey, req.AdtyQuotaAdjustProvenance)
+	adjustment, err := model.AdjustUserQuotaWithLedgerForActor(req.Id, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c), req.Mode, req.Value, req.Reason, req.IdempotencyKey, req.AdtyQuotaAdjustProvenance)
 	if err != nil {
 		switch {
+		case errors.Is(err, model.ErrAdminTargetSessionRequired):
+			params["failure_reason"] = "admin_target_session_required"
+			denyAdtyAdminAction(c)
 		case errors.Is(err, model.ErrAdtyAdjustReasonRequired):
 			params["failure_reason"] = "reason_required"
 			common.ApiErrorT(c, "Enter a reason for the adjustment")

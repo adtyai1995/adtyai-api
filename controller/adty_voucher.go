@@ -178,13 +178,10 @@ func writeAdtyVoucherError(c *gin.Context, err error) {
 	common.ApiError(c, err)
 }
 
-func PostAdtyVoucherFreeze(c *gin.Context) {
+// PostAdtyAdminVoucherFreeze lets Root freeze any pending code under RootAuth + option:write (R10-007).
+func PostAdtyAdminVoucherFreeze(c *gin.Context) {
 	id, ok := adtyPathId(c)
 	if !ok {
-		return
-	}
-	// Root admin freeze stays on the existing G.14.7 path and is not part of ISS-R2-0048.
-	if c.GetInt("role") != common.RoleRootUser && !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherFreeze, id) {
 		return
 	}
 	eventID, err := service.FreezeAdtyVoucherWithAudit(c.GetInt("id"), int64(id))
@@ -199,7 +196,35 @@ func PostAdtyVoucherFreeze(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"id": id, "status": model.AdtyVoucherStatusFrozen})
 }
 
+func PostAdtyVoucherFreeze(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	id, ok := adtyPathId(c)
+	if !ok {
+		return
+	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherFreeze, id) {
+		return
+	}
+	eventID, err := service.FreezeAdtySiteVoucherWithAudit(c.GetInt("id"), site.Id, int64(id))
+	if err != nil {
+		writeAdtyVoucherError(c, err)
+		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
+	common.ApiSuccess(c, gin.H{"id": id, "status": model.AdtyVoucherStatusFrozen})
+}
+
 func PostAdtyVoucherCancel(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
 	id, ok := adtyPathId(c)
 	if !ok {
 		return
@@ -207,9 +232,14 @@ func PostAdtyVoucherCancel(c *gin.Context) {
 	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherCancel, id) {
 		return
 	}
-	if err := service.CancelAdtyVoucher(c.GetInt("id"), int64(id)); err != nil {
+	eventID, err := service.CancelAdtySiteVoucherWithAudit(c.GetInt("id"), site.Id, int64(id))
+	if err != nil {
 		writeAdtyVoucherError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, gin.H{"id": id, "status": model.AdtyVoucherStatusCancelled})
 }

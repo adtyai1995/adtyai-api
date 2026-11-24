@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/samber/lo"
 )
 
@@ -30,15 +31,15 @@ const (
 // DB keys: billing_setting.billing_mode, billing_setting.billing_expr,
 // billing_setting.plugin_billing_expr
 type BillingSetting struct {
-	BillingMode       map[string]string `json:"billing_mode"`
-	BillingExpr       map[string]string `json:"billing_expr"`
-	PluginBillingExpr map[string]string `json:"plugin_billing_expr"`
+	BillingMode       *types.RWMap[string, string] `json:"billing_mode"`
+	BillingExpr       *types.RWMap[string, string] `json:"billing_expr"`
+	PluginBillingExpr *types.RWMap[string, string] `json:"plugin_billing_expr"`
 }
 
 var billingSetting = BillingSetting{
-	BillingMode:       make(map[string]string),
-	BillingExpr:       make(map[string]string),
-	PluginBillingExpr: make(map[string]string),
+	BillingMode:       types.NewRWMap[string, string](),
+	BillingExpr:       types.NewRWMap[string, string](),
+	PluginBillingExpr: types.NewRWMap[string, string](),
 }
 
 func init() {
@@ -50,7 +51,7 @@ func init() {
 // ---------------------------------------------------------------------------
 
 func GetBillingMode(model string) string {
-	if mode, ok := billingSetting.BillingMode[model]; ok {
+	if mode, ok := billingSetting.BillingMode.Get(model); ok {
 		return mode
 	}
 	if _, ok := builtinBillingExpr[model]; ok {
@@ -68,7 +69,7 @@ func GetBillingMode(model string) string {
 }
 
 func GetBillingExpr(model string) (string, bool) {
-	if expr, ok := billingSetting.BillingExpr[model]; ok {
+	if expr, ok := billingSetting.BillingExpr.Get(model); ok {
 		return expr, true
 	}
 	if GetBillingMode(model) == BillingModeTieredExpr {
@@ -96,11 +97,11 @@ func SplitPluginBillingExprKey(key string) (plugin, model string, ok bool) {
 }
 
 func GetPluginBillingExprCopy() map[string]string {
-	return maps.Clone(billingSetting.PluginBillingExpr)
+	return billingSetting.PluginBillingExpr.ReadAll()
 }
 
 func GetPluginBillingExpr(pluginKey, model string) (string, bool) {
-	expression, ok := billingSetting.PluginBillingExpr[PluginBillingExprKey(pluginKey, model)]
+	expression, ok := billingSetting.PluginBillingExpr.Get(PluginBillingExprKey(pluginKey, model))
 	return expression, ok
 }
 
@@ -149,7 +150,7 @@ func GetBuiltinBillingExprCopy() map[string]string {
 }
 
 func GetBillingModeCopy() map[string]string {
-	modes := lo.Assign(billingSetting.BillingMode)
+	modes := billingSetting.BillingMode.ReadAll()
 	for model := range builtinBillingExpr {
 		if _, configured := modes[model]; !configured && GetBillingMode(model) == BillingModeTieredExpr {
 			modes[model] = BillingModeTieredExpr
@@ -159,7 +160,7 @@ func GetBillingModeCopy() map[string]string {
 }
 
 func GetBillingExprCopy() map[string]string {
-	expressions := lo.Assign(billingSetting.BillingExpr)
+	expressions := billingSetting.BillingExpr.ReadAll()
 	for model := range builtinBillingExpr {
 		if _, configured := expressions[model]; configured {
 			continue

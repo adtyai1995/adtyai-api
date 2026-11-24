@@ -41,6 +41,12 @@ func (m *ratioJSONMap) loadJSON(jsonStr string) error {
 }
 
 func (m *ratioJSONMap) replaceAll(decimals map[string]decimal.Decimal) {
+	if m.decimals == nil {
+		m.decimals = types.NewRWMap[string, decimal.Decimal]()
+	}
+	if m.floats == nil {
+		m.floats = types.NewRWMap[string, float64]()
+	}
 	floats := make(map[string]float64, len(decimals))
 	for key, value := range decimals {
 		floats[key] = value.InexactFloat64()
@@ -89,6 +95,12 @@ func (m *nestedRatioJSONMap) loadJSON(jsonStr string) error {
 }
 
 func (m *nestedRatioJSONMap) replaceAll(decimals map[string]map[string]decimal.Decimal) {
+	if m.decimals == nil {
+		m.decimals = types.NewRWMap[string, map[string]decimal.Decimal]()
+	}
+	if m.floats == nil {
+		m.floats = types.NewRWMap[string, map[string]float64]()
+	}
 	floats := make(map[string]map[string]float64, len(decimals))
 	for outer, inner := range decimals {
 		converted := make(map[string]float64, len(inner))

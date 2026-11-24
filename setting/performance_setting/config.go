@@ -63,9 +63,12 @@ func syncToCommon() {
 	})
 }
 
-// GetPerformanceSetting 获取性能设置
+// GetPerformanceSetting 获取性能设置快照（并发安全）
 func GetPerformanceSetting() *PerformanceSetting {
-	return &performanceSetting
+	common.OptionMapRWMutex.RLock()
+	snap := performanceSetting
+	common.OptionMapRWMutex.RUnlock()
+	return &snap
 }
 
 // UpdateAndSync 更新配置并同步到 common 包

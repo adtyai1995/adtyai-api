@@ -176,10 +176,5 @@ func ResetModelRatio(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	err = ratio_setting.UpdateModelRatioByJSONString(defaultStr)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	common.ApiSuccessT(c, "Model ratios reset", nil)
 }

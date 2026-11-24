@@ -279,8 +279,12 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	usage.PromptTokens = max(usage.PromptTokens, 0)
 	usage.CompletionTokens = max(usage.CompletionTokens, 0)
 	usage.TotalTokens = max(usage.TotalTokens, 0)
-	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
-		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
+		if usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
+		} else {
+			usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
+		}
 	} else if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
@@ -307,9 +311,13 @@ func difyHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 	usage.PromptTokens = max(usage.PromptTokens, 0)
 	usage.CompletionTokens = max(usage.CompletionTokens, 0)
 	usage.TotalTokens = max(usage.TotalTokens, 0)
-	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && strings.TrimSpace(difyResponse.Answer) != "" {
-		if est := service.ResponseText2Usage(c, difyResponse.Answer, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
-			usage = *est
+	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
+		if usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
+		} else if strings.TrimSpace(difyResponse.Answer) != "" {
+			if est := service.ResponseText2Usage(c, difyResponse.Answer, info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
+				usage = *est
+			}
 		}
 	} else if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens

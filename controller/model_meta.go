@@ -44,14 +44,14 @@ func listModelsMeta(c *gin.Context, keyword, vendor string) {
 	switch squareState {
 	case "", model.ModelSquareVisible, model.ModelSquareUnavailable, model.ModelSquareHidden, model.ModelSquarePartial:
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid model square state"})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid model square state"))
 		return
 	}
 
 	// 分页校验对所有请求生效。它守护的是「负页码不许变成负 offset」，与是否按
 	// square_state 过滤无关：只看 square_state 时才校验，等于不带的请求没有防线。
 	if invalidModelMetaPage(c) {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid pagination"})
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid pagination"))
 		return
 	}
 	pageInfo := common.GetPageQuery(c)
@@ -189,7 +189,7 @@ func UpdateModelMeta(c *gin.Context) {
 
 	if statusOnly {
 		if m.Status != 0 && m.Status != 1 {
-			common.ApiErrorMsg(c, "invalid catalog visibility")
+			common.ApiErrorT(c, "Invalid catalog visibility")
 			return
 		}
 		// 只更新状态，防止误清空其他字段
@@ -280,7 +280,7 @@ func DeleteModelMeta(c *gin.Context) {
 		return
 	}
 	if removePricing && c.GetInt("role") != common.RoleRootUser {
-		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "Model pricing is managed by a super administrator."})
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Model pricing is managed by a super administrator"))
 		return
 	}
 	permissions := []authz.Permission{authz.AdtyModelDelete}
@@ -311,7 +311,7 @@ func BatchDeleteModelMeta(c *gin.Context) {
 		return
 	}
 	if request.RemovePricing && c.GetInt("role") != common.RoleRootUser {
-		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "Model pricing is managed by a super administrator."})
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Model pricing is managed by a super administrator"))
 		return
 	}
 	permissions := []authz.Permission{authz.AdtyModelDelete}

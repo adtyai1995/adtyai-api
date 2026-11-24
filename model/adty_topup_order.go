@@ -478,7 +478,13 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	if err := creditTopUpQuota(tx, topUp.UserId, credited, nil); err != nil {
 		return false, 0, nil, nil, err
 	}
-	if err := CreateAdtyFundBatchesWithSiteTx(tx, topUp.UserId, AdtyFundBatchSiteID(ext.SiteId), tradeNo, faceQuota, bonusQuota); err != nil {
+	batchSiteID := ext.SiteId
+	if batchSiteID > 0 && lockedSiteID == ext.SiteId && lockedSite.Status == AdtySiteStatusClosed {
+		// R10-020: A late customer top-up settled after subsite close belongs to
+		// the customer's migrated main-site wallet (site_id = 0), never the closed site.
+		batchSiteID = 0
+	}
+	if err := CreateAdtyFundBatchesWithSiteTx(tx, topUp.UserId, AdtyFundBatchSiteID(batchSiteID), tradeNo, faceQuota, bonusQuota); err != nil {
 		return false, 0, nil, nil, err
 	}
 	key := "topup:" + common.Sha1([]byte(tradeNo))

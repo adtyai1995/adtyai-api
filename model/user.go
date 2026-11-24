@@ -579,15 +579,15 @@ var ErrAdminTargetSessionRequired = errors.New("admin target mutation requires b
 // HardDeleteUserById permanently deletes a user and returns how many scoped
 // access tokens were deleted with it.
 func HardDeleteUserById(id int) (int64, error) {
-	return HardDeleteUserByIdForActor(id, false)
+	return HardDeleteUserByIdForActor(id, common.RoleRootUser, false)
 }
 
-func HardDeleteUserByIdForActor(id int, denyAdminTarget bool) (int64, error) {
+func HardDeleteUserByIdForActor(id int, actorRole int, denyAdminTarget bool) (int64, error) {
 	if id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
 	user := User{Id: id}
-	return user.hardDelete(denyAdminTarget)
+	return user.hardDelete(actorRole, denyAdminTarget)
 }
 
 func (user *User) prepareForInsert(tx *gorm.DB) error {
@@ -835,16 +835,22 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 // the row is not restored from that old snapshot. changed is false when the
 // locked row already has the requested role and status.
 func ApplyManagedUserAccessTx(tx *gorm.DB, user *User) (bool, error) {
-	return ApplyManagedUserAccessForActorTx(tx, user, false)
+	return ApplyManagedUserAccessForActorTx(tx, user, common.RoleRootUser, false)
 }
 
-func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, denyAdminTarget bool) (bool, error) {
+func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, denyAdminTarget bool) (bool, error) {
 	if tx == nil || user == nil || user.Id <= 0 {
 		return false, fmt.Errorf("invalid managed user update")
 	}
 	var current User
 	if err := lockForUpdate(tx).Select("id", "role", "status", "site_id", "staff_site_id").Where("id = ?", user.Id).First(&current).Error; err != nil {
 		return false, err
+	}
+	if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= current.Role {
+		return false, ErrUserQuotaPermission
+	}
+	if current.Role == common.RoleRootUser && (user.Status == common.UserStatusDisabled || (user.Role != 0 && user.Role < common.RoleRootUser)) {
+		return false, ErrUserQuotaPermission
 	}
 	if denyAdminTarget && current.Role >= common.RoleAdminUser {
 		return false, ErrAdminTargetSessionRequired
@@ -992,10 +998,10 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 }
 
 func (user *User) ClearBinding(bindingType string) error {
-	return user.ClearBindingForActor(bindingType, false)
+	return user.ClearBindingForActor(bindingType, common.RoleRootUser, false)
 }
 
-func (user *User) ClearBindingForActor(bindingType string, denyAdminTarget bool) error {
+func (user *User) ClearBindingForActor(bindingType string, actorRole int, denyAdminTarget bool) error {
 	if user.Id == 0 {
 		return errors.New("user id is empty")
 	}
@@ -1014,6 +1020,9 @@ func (user *User) ClearBindingForActor(bindingType string, denyAdminTarget bool)
 		var current User
 		if err := lockForUpdate(tx).Select("id", "role").First(&current, user.Id).Error; err != nil {
 			return err
+		}
+		if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= current.Role {
+			return ErrUserQuotaPermission
 		}
 		if denyAdminTarget && current.Role >= common.RoleAdminUser {
 			return ErrAdminTargetSessionRequired
@@ -1272,15 +1281,15 @@ func LookupLoginCandidateUserID(identifier string, siteID int) (int, bool) {
 	return 0, false
 }
 
-func (user *User) DeleteForActor(denyAdminTarget bool) (int64, error) {
-	return user.deleteWithOptions(nil, denyAdminTarget)
+func (user *User) DeleteForActor(actorRole int, denyAdminTarget bool) (int64, error) {
+	return user.deleteWithOptions(nil, actorRole, denyAdminTarget)
 }
 
 func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
-	return user.deleteWithOptions(identity, false)
+	return user.deleteWithOptions(identity, 0, false)
 }
 
-func (user *User) deleteWithOptions(identity *AuthSessionIdentity, denyAdminTarget bool) (int64, error) {
+func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorRole int, denyAdminTarget bool) (int64, error) {
 	if user.Id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
@@ -1306,6 +1315,9 @@ func (user *User) deleteWithOptions(identity *AuthSessionIdentity, denyAdminTarg
 		}
 		if lockedUser.Role == common.RoleRootUser {
 			return ErrCannotDeleteRootUser
+		}
+		if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= lockedUser.Role {
+			return ErrUserQuotaPermission
 		}
 		if denyAdminTarget && lockedUser.Role >= common.RoleAdminUser {
 			return ErrAdminTargetSessionRequired
@@ -1370,10 +1382,10 @@ func (user *User) deleteWithOptions(identity *AuthSessionIdentity, denyAdminTarg
 }
 
 func (user *User) HardDelete() (int64, error) {
-	return user.hardDelete(false)
+	return user.hardDelete(common.RoleRootUser, false)
 }
 
-func (user *User) hardDelete(denyAdminTarget bool) (int64, error) {
+func (user *User) hardDelete(actorRole int, denyAdminTarget bool) (int64, error) {
 	if user.Id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
@@ -1395,6 +1407,9 @@ func (user *User) hardDelete(denyAdminTarget bool) (int64, error) {
 		}
 		if lockedUser.Role == common.RoleRootUser {
 			return ErrCannotDeleteRootUser
+		}
+		if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= lockedUser.Role {
+			return ErrUserQuotaPermission
 		}
 		if denyAdminTarget && lockedUser.Role >= common.RoleAdminUser {
 			return ErrAdminTargetSessionRequired

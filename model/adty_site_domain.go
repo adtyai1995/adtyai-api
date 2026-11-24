@@ -64,6 +64,6 @@ type AdtyDomainCloudResource struct {
 	Generation string `gorm:"type:varchar(64);index"`
 	Zone       string `gorm:"type:varchar(64)"`
 	Hostname   string `gorm:"type:varchar(253)"`
-	ResourceID string `gorm:"type:varchar(64);uniqueIndex"`
+	ResourceID string `gorm:"type:varchar(128);uniqueIndex"`
 	CreatedAt  int64  `gorm:"autoCreateTime"`
 }

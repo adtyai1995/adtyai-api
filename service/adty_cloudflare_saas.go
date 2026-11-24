@@ -183,7 +183,12 @@ func adtyCustomHostnameGeneration(domain *model.AdtySiteDomain) string {
 const adtyCloudResourcePendingPrefix = "pending:"
 
 func adtyPendingCloudResourceID(domain *model.AdtySiteDomain) string {
-	return adtyCloudResourcePendingPrefix + adtyCustomHostnameGeneration(domain)
+	gen := adtyCustomHostnameGeneration(domain)
+	maxGen := 64 - len(adtyCloudResourcePendingPrefix)
+	if len(gen) > maxGen {
+		gen = gen[:maxGen]
+	}
+	return adtyCloudResourcePendingPrefix + gen
 }
 
 func adtyRecordCloudCreateIntent(zone string, domain *model.AdtySiteDomain) error {

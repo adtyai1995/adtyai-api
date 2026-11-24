@@ -70,6 +70,13 @@ func clampNonNegativeUsage(usage *dto.Usage) bool {
 	clampOutput(&usage.CompletionTokenDetails)
 	clampInput(usage.InputTokensDetails)
 	clampOutput(usage.OutputTokensDetails)
+	if usage.BillingUsage != nil {
+		sanitized := dto.SanitizeBillingUsage(usage.BillingUsage)
+		if sanitized == nil {
+			changed = true
+		}
+		usage.BillingUsage = sanitized
+	}
 	return changed
 }
 
@@ -235,10 +242,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	clampNonNegativeUsage(usage)
-	if !containStreamUsage || (usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && usage.TotalTokens <= 0) {
-		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		usage.CompletionTokens += toolCount * 7
-		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	if !containStreamUsage || (usage.PromptTokens <= 0 && usage.CompletionTokens <= 0) {
+		if containStreamUsage && usage.TotalTokens > 0 {
+			usage.PromptTokens = usage.TotalTokens
+		} else {
+			usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+			usage.CompletionTokens += toolCount * 7
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
 	} else if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}

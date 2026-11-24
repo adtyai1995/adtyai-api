@@ -927,17 +927,8 @@ func EnableChannelByTag(tag string) error {
 		if channel.Status == common.ChannelStatusEnabled && !keysBlocked {
 			continue
 		}
-		if channel.Status != common.ChannelStatusEnabled {
-			if !UpdateChannelStatus(channel.Id, "", common.ChannelStatusEnabled, "manual tag operation") {
-				return fmt.Errorf("failed to enable channel #%d by tag", channel.Id)
-			}
-			continue
-		}
-		channel.ChannelInfo.MultiKeyStatusList = map[int]int{}
-		channel.ChannelInfo.MultiKeyDisabledTime = map[int]int64{}
-		channel.ChannelInfo.MultiKeyDisabledReason = map[int]string{}
-		if err := channel.saveStatusState(); err != nil {
-			return err
+		if !UpdateChannelStatus(channel.Id, "", common.ChannelStatusEnabled, "manual tag operation") {
+			return fmt.Errorf("failed to enable channel #%d by tag", channel.Id)
 		}
 	}
 	return UpdateAbilityStatusByTag(tag, true)
@@ -1178,8 +1169,6 @@ func (channel *Channel) GetSetting() dto.ChannelSettings {
 		err := common.Unmarshal([]byte(*channel.Setting), &setting)
 		if err != nil {
 			common.SysLog(common.LogText("failed to unmarshal setting: channel_id=%d, error=%v", channel.Id, err))
-			channel.Setting = nil // 清空设置以避免后续错误
-			_ = channel.Save()    // 保存修改
 		}
 	}
 	return setting
@@ -1200,8 +1189,6 @@ func (channel *Channel) GetOtherSettings() dto.ChannelOtherSettings {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, &setting)
 		if err != nil {
 			common.SysLog(common.LogText("failed to unmarshal setting: channel_id=%d, error=%v", channel.Id, err))
-			channel.OtherSettings = "{}" // 清空设置以避免后续错误
-			_ = channel.Save()           // 保存修改
 		}
 	}
 	if preset := common.GetAdvancedCustomPreset(channel.Type); preset != nil {

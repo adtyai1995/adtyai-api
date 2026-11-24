@@ -292,6 +292,9 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 
 	summary.PromptTokens = max(usage.PromptTokens, 0)
 	summary.CompletionTokens = max(usage.CompletionTokens, 0)
+	if summary.PromptTokens == 0 && summary.CompletionTokens == 0 && usage.TotalTokens > 0 {
+		summary.PromptTokens = usage.TotalTokens
+	}
 	summary.TotalTokens = summary.PromptTokens + summary.CompletionTokens
 	summary.CacheTokens = max(usage.PromptTokensDetails.CachedTokens, 0)
 	summary.CacheCreationTokens = max(usage.PromptTokensDetails.CacheCreationTokensTotal(), 0)

@@ -106,7 +106,7 @@ func sendResendEmail(apiKey, from, subject, receiver, content string) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := resendEmailClient.Do(req)
 	if err != nil {
-		SysError(LogText("Resend request failed: error=%q", err))
+		SysError(LogText("Resend request failed: error=%q", SanitizeOutboundError(err, apiKey)))
 		return NewMessage("Resend request failed")
 	}
 	defer resp.Body.Close()

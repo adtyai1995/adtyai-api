@@ -202,13 +202,17 @@ func tencentHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Resp
 	fullTextResponse.Usage.PromptTokens = max(fullTextResponse.Usage.PromptTokens, 0)
 	fullTextResponse.Usage.CompletionTokens = max(fullTextResponse.Usage.CompletionTokens, 0)
 	fullTextResponse.Usage.TotalTokens = max(fullTextResponse.Usage.TotalTokens, 0)
-	if fullTextResponse.Usage.TotalTokens <= 0 && fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
-		var textBuilder strings.Builder
-		for _, ch := range fullTextResponse.Choices {
-			textBuilder.WriteString(ch.Message.StringContent())
-		}
-		if est := service.ResponseText2Usage(c, textBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
-			fullTextResponse.Usage = *est
+	if fullTextResponse.Usage.PromptTokens <= 0 && fullTextResponse.Usage.CompletionTokens <= 0 {
+		if fullTextResponse.Usage.TotalTokens > 0 {
+			fullTextResponse.Usage.PromptTokens = fullTextResponse.Usage.TotalTokens
+		} else {
+			var textBuilder strings.Builder
+			for _, ch := range fullTextResponse.Choices {
+				textBuilder.WriteString(ch.Message.StringContent())
+			}
+			if est := service.ResponseText2Usage(c, textBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()); est != nil {
+				fullTextResponse.Usage = *est
+			}
 		}
 	} else if fullTextResponse.Usage.TotalTokens <= 0 {
 		fullTextResponse.Usage.TotalTokens = fullTextResponse.Usage.PromptTokens + fullTextResponse.Usage.CompletionTokens
