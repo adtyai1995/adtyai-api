@@ -101,6 +101,7 @@ describe('adty-site-owner/sections (R-33 #1)', () => {
       'notices',
       'staff',
       'tickets',
+      'mail',
       'settings',
       'history',
     ]

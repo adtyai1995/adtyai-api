@@ -29,6 +29,7 @@ import {
   LayoutDashboard,
   LifeBuoy,
   ListTodo,
+  Mail,
   Megaphone,
   PlugZap,
   Radio,
@@ -248,6 +249,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         url: '/site-owner/tickets',
         icon: LifeBuoy,
         badge: ownerTicketsBadge,
+      },
+      {
+        title: t('Email configuration'),
+        url: '/site-owner/mail',
+        icon: Mail,
       },
       {
         title: t('Site settings'),

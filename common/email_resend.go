@@ -64,20 +64,22 @@ func ValidateResendConfiguration(apiKey, from string) error {
 	return nil
 }
 
-// API contract: https://resend.com/docs/api-reference/emails/send-email
-// OWASP Authentication / Session Management / Forgot Password cheat sheets:
-// do not expose credentials, verification codes or reset links in errors/logs.
-// This transport does not change token expiry, single-use or session rules.
-func sendResendEmail(apiKey, from, subject, receiver, content string) error {
-	if err := ValidateResendConfiguration(apiKey, from); err != nil {
+// SendResendEmailWithConfig sends an email through the Resend API using the
+// caller's own API key, sender address, and optional display name without
+// reading global platform mail settings.
+func SendResendEmailWithConfig(apiKey, fromAddr, displayName, subject, receiver, content string) error {
+	if err := ValidateResendConfiguration(apiKey, fromAddr); err != nil {
 		return err
 	}
 	apiKey = strings.TrimSpace(apiKey)
-	sender, _ := mail.ParseAddress(strings.TrimSpace(from))
-	if sender.Name == "" {
-		OptionMapRWMutex.RLock()
-		sender.Name = SystemName
-		OptionMapRWMutex.RUnlock()
+	sender, _ := mail.ParseAddress(strings.TrimSpace(fromAddr))
+	cleanDisplayName := strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(strings.TrimSpace(displayName))
+	if sender.Name == "" && cleanDisplayName != "" {
+		sender.Name = cleanDisplayName
+	}
+	fromField := sender.Address
+	if sender.Name != "" {
+		fromField = sender.String()
 	}
 	to := make([]string, 0)
 	for address := range strings.SplitSeq(receiver, ";") {
@@ -92,7 +94,7 @@ func sendResendEmail(apiKey, from, subject, receiver, content string) error {
 		To      []string `json:"to"`
 		Subject string   `json:"subject"`
 		HTML    string   `json:"html"`
-	}{sender.String(), to, subject, content})
+	}{fromField, to, subject, content})
 	if err != nil {
 		return NewMessage("Resend request failed")
 	}
@@ -128,4 +130,15 @@ func sendResendEmail(apiKey, from, subject, receiver, content string) error {
 		return NewMessage("Invalid Resend delivery response")
 	}
 	return nil
+}
+
+// API contract: https://resend.com/docs/api-reference/emails/send-email
+// OWASP Authentication / Session Management / Forgot Password cheat sheets:
+// do not expose credentials, verification codes or reset links in errors/logs.
+// This transport does not change token expiry, single-use or session rules.
+func sendResendEmail(apiKey, from, subject, receiver, content string) error {
+	OptionMapRWMutex.RLock()
+	defaultName := SystemName
+	OptionMapRWMutex.RUnlock()
+	return SendResendEmailWithConfig(apiKey, from, defaultName, subject, receiver, content)
 }

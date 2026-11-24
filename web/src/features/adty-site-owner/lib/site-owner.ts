@@ -25,6 +25,7 @@ import type { EarningKind, SenderDnsRecord, SitePrice } from '../types'
 export const MIN_RETAIL_MULTIPLIER = 1
 export const MAX_RETAIL_MULTIPLIER = 10
 export const MAX_SITE_REFERRAL_RATE = 0.3
+export const MAX_SITE_REFERRAL_RATE_PERCENT = 30
 
 /** Literal t() calls so the key scanner sees every label. */
 export function earningKindLabel(t: TFunction, kind: EarningKind): string {
@@ -208,6 +209,36 @@ export function validSiteReferralRate(raw: string): boolean {
   return (
     Number.isFinite(parsed) && parsed >= 0 && parsed <= MAX_SITE_REFERRAL_RATE
   )
+}
+
+/** Validates subsite invite commission rate in percent: [0, 30], up to 4 decimal places. */
+export function validSiteReferralRatePercent(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!/^(?:\d{1,2}(?:\.\d{0,4})?|\.\d{1,4})$/.test(trimmed)) return false
+  const parsed = Number(trimmed)
+  return (
+    Number.isFinite(parsed) &&
+    parsed >= 0 &&
+    parsed <= MAX_SITE_REFERRAL_RATE_PERCENT
+  )
+}
+
+/** Converts a stored decimal fraction string (e.g. "0.15") to percentage string ("15"). */
+export function decimalRateToPercentString(raw: string | undefined): string {
+  const trimmed = (raw ?? '').trim()
+  if (trimmed === '') return ''
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed)) return ''
+  return String(Number((parsed * 100).toFixed(4)))
+}
+
+/** Converts a percentage string (e.g. "15") to decimal fraction string ("0.15") for API storage. */
+export function percentStringToDecimalRate(raw: string): string {
+  const trimmed = raw.trim()
+  if (trimmed === '') return ''
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed)) return ''
+  return String(Number((parsed / 100).toFixed(6)))
 }
 
 /** Strips signed query parameters from /api/referral-assets/<name>?... for digest parity. */

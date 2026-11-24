@@ -41,6 +41,7 @@ import { OverviewPanel } from './components/overview-panel'
 import { OwnerVerificationProvider } from './components/owner-verification'
 import { PricingPanel } from './components/pricing-panel'
 import { SettlementSheetPanel } from './components/settlement-sheet-panel'
+import { SiteMailPanel } from './components/site-mail-panel'
 import { SiteReferralAdmin } from './components/site-referral-admin'
 import { SiteSettingsPanel } from './components/site-settings-panel'
 import { StaffPanel } from './components/staff-panel'
@@ -78,6 +79,7 @@ export function SiteOwnerCenter(props: {
     notices: t('Notifications'),
     staff: t('Staff accounts'),
     tickets: t('Ticket management'),
+    mail: t('Email configuration'),
     settings: t('Site settings'),
     history: t('Historical site accounts'),
   }
@@ -153,7 +155,11 @@ export function SiteOwnerCenter(props: {
                     activeSiteId={site.data.id}
                   />
                 )}
-                {props.section === 'settlements' && <SettlementSheetPanel />}
+                {props.section === 'settlements' && (
+                  <SettlementSheetPanel
+                    siteName={site.data.brand.name || site.data.host}
+                  />
+                )}
                 {props.section === 'wallets' && (
                   <WalletsPanel
                     returnTradeNo={
@@ -187,6 +193,9 @@ export function SiteOwnerCenter(props: {
                   />
                 )}
                 {props.section === 'tickets' && <TicketCenter scope='owner' />}
+                {props.section === 'mail' && (
+                  <SiteMailPanel site={site.data} />
+                )}
                 {props.section === 'settings' && (
                   <SiteSettingsPanel site={site.data} />
                 )}

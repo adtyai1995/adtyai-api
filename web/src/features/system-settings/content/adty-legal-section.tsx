@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -29,6 +30,7 @@ import {
   STORED_CONTENT_LANGS,
   type StoredContentLang,
 } from '@/lib/adty-lang'
+import { STATUS_QUERY_KEY, STATUS_STORAGE_KEY } from '@/lib/status-query'
 
 import { DraftNavigationProvider } from '../components/draft-navigation-provider'
 import { SettingsPageFormActions } from '../components/settings-page-context'
@@ -98,6 +100,7 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
     refund_policy: t('Refund Policy'),
   }
   const updateOption = useUpdateOption()
+  const queryClient = useQueryClient()
   const [field, setField] = useState<AdtyLegalField>('user_agreement')
   const [editor, setEditor] = useState(() => ({
     values: toValues(props.defaultValues),
@@ -138,6 +141,14 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
         key: `adty_legal_setting.${field}`,
         value,
       })
+      if (field === 'user_agreement' || field === 'privacy_policy') {
+        void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+        try {
+          window.localStorage.removeItem(STATUS_STORAGE_KEY)
+        } catch {
+          /* Storage may be disabled. */
+        }
+      }
       setEditor((current) => ({
         ...current,
         baseline: {
@@ -157,7 +168,7 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
       <SettingsPageFormActions onSave={save} isSaving={saving} />
       <p className='text-muted-foreground max-w-3xl text-sm'>
         {t(
-          'Readers see the text in their language, then English. When both are empty, the user agreement and privacy policy fall back to the text under Site → System Info, which also decides whether sign-up asks for consent. The refund policy has no fallback and is shown only when it is enabled in the site settings.'
+          'Readers see the text in their language, falling back to English or Simplified Chinese when empty. Filling in the user agreement or privacy policy automatically enables sign-up consent and footer links. The refund policy is shown only when enabled in site settings.'
         )}
       </p>
       <div className='max-w-3xl space-y-4'>

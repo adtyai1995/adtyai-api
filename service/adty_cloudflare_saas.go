@@ -67,14 +67,17 @@ const (
 )
 
 var (
-	ErrAdtyCustomDomainOff         = common.NewMessage("Custom domains are not available")
-	ErrAdtyCustomDomainInvalid     = common.NewMessage("Enter a subdomain such as api.example.com; root domains and our own domains cannot be used")
-	ErrAdtyCustomDomainTaken       = common.NewMessage("This domain is already used by another site")
-	ErrAdtyCustomDomainLimit       = common.NewMessage("This site already has the maximum number of custom domains")
-	ErrAdtyCustomDomainRate        = common.NewMessage("This site has added too many custom domains this hour")
-	ErrAdtyCustomDomainRoleInvalid = common.NewMessage("Domain role must be site or base_url")
-	ErrAdtyCloudflareRejected      = common.NewMessage("Cloudflare rejected the request; check the API token permissions")
-	ErrAdtyCloudflareFailed        = common.NewMessage("Cloudflare could not complete the request; try again later")
+	ErrAdtyCustomDomainOff          = common.NewMessage("Custom domains are not available")
+	ErrAdtyCustomDomainInvalid      = common.NewMessage("Enter a subdomain such as api.example.com; root domains and our own domains cannot be used")
+	ErrAdtyCustomDomainTaken        = common.NewMessage("This domain is already used by another site")
+	ErrAdtyCustomDomainLimit        = common.NewMessage("This site already has the maximum number of custom domains")
+	ErrAdtyCustomDomainRate         = common.NewMessage("This site has added too many custom domains this hour")
+	ErrAdtyCustomDomainRoleInvalid  = common.NewMessage("Domain role must be site or base_url")
+	ErrAdtyCustomDomainRoleLimit    = common.NewMessage("This site already has a custom domain for this purpose; remove it first to replace")
+	ErrAdtyCustomDomainPairRequired = common.NewMessage("Both site domain and API domain are required")
+	ErrAdtyCustomDomainPairSame     = common.NewMessage("Site domain and API domain must be different")
+	ErrAdtyCloudflareRejected       = common.NewMessage("Cloudflare rejected the request; check the API token permissions")
+	ErrAdtyCloudflareFailed         = common.NewMessage("Cloudflare could not complete the request; try again later")
 )
 
 // AdtyCloudflareError 是 Cloudflare 返回的错误（外壳 success=false 或非 2xx）。
@@ -390,8 +393,16 @@ const adtySiteDomainCreateAuditAction = "domain_create"
 // adtyCustomDomainAllowCreate 检查这个站还能不能再新建一个自定义域名。
 // reusingCountedRow 为真时，这一行已经是本站的 pending、active 或 failed，不占新名额；每小时新建数两种都算。
 func adtyCustomDomainAllowCreate(tx *gorm.DB, siteId int, reusingCountedRow bool, now int64) error {
+	newQuotaCount := 1
+	if reusingCountedRow {
+		newQuotaCount = 0
+	}
+	return adtyCustomDomainAllowCreateCount(tx, siteId, newQuotaCount, 1, now)
+}
+
+func adtyCustomDomainAllowCreateCount(tx *gorm.DB, siteId, newQuotaCount, createCount int, now int64) error {
 	cfg := resellerSetting()
-	if !reusingCountedRow {
+	if newQuotaCount > 0 {
 		var counted int64
 		err := tx.Model(&model.AdtySiteDomain{}).Where("managed_by <> ?", "platform").
 			Where("site_id = ? AND status IN ?", siteId, []string{
@@ -400,24 +411,103 @@ func adtyCustomDomainAllowCreate(tx *gorm.DB, siteId int, reusingCountedRow bool
 		if err != nil {
 			return err
 		}
-		if int(counted) >= cfg.MaxCustomDomainsPerSite {
+		if int(counted)+newQuotaCount > cfg.MaxCustomDomainsPerSite {
 			return ErrAdtyCustomDomainLimit
 		}
 	}
-	var recentDomains int64
-	if err := tx.Model(&model.AdtySiteDomain{}).Where("managed_by <> ?", "platform").
-		Where("site_id = ? AND created_at >= ?", siteId, now-3600).Count(&recentDomains).Error; err != nil {
-		return err
-	}
-	var recentAudits int64
-	if err := tx.Model(&model.AdtySiteAudit{}).
-		Where("site_id = ? AND action = ? AND created_at >= ?", siteId, adtySiteDomainCreateAuditAction, now-3600).Count(&recentAudits).Error; err != nil {
-		return err
-	}
-	if int(max(recentDomains, recentAudits)) >= cfg.CustomDomainCreatesPerHour {
-		return ErrAdtyCustomDomainRate
+	if createCount > 0 {
+		var recentDomains int64
+		if err := tx.Model(&model.AdtySiteDomain{}).Where("managed_by <> ?", "platform").
+			Where("site_id = ? AND created_at >= ?", siteId, now-3600).Count(&recentDomains).Error; err != nil {
+			return err
+		}
+		var recentAudits int64
+		if err := tx.Model(&model.AdtySiteAudit{}).
+			Where("site_id = ? AND action = ? AND created_at >= ?", siteId, adtySiteDomainCreateAuditAction, now-3600).Count(&recentAudits).Error; err != nil {
+			return err
+		}
+		if int(max(recentDomains, recentAudits))+createCount > cfg.CustomDomainCreatesPerHour {
+			return ErrAdtyCustomDomainRate
+		}
 	}
 	return nil
+}
+
+func adtyNormalizeDomainRole(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return model.AdtySiteDomainRoleSite
+	}
+	return role
+}
+
+func adtyCustomDomainRoleOccupied(tx *gorm.DB, siteId int, role string, excludeIds ...int) (bool, error) {
+	query := tx.Model(&model.AdtySiteDomain{}).
+		Where("site_id = ? AND managed_by <> ? AND status IN ?",
+			siteId, "platform", []string{
+				model.AdtySiteDomainPending, model.AdtySiteDomainActive, model.AdtySiteDomainFailed,
+			})
+	if role == model.AdtySiteDomainRoleSite {
+		query = query.Where("role IN ?", []string{"", model.AdtySiteDomainRoleSite})
+	} else {
+		query = query.Where("role = ?", role)
+	}
+	var filtered []int
+	for _, id := range excludeIds {
+		if id > 0 {
+			filtered = append(filtered, id)
+		}
+	}
+	if len(filtered) > 0 {
+		query = query.Where("id NOT IN ?", filtered)
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func adtyUpsertCustomDomainTx(tx *gorm.DB, cfg *adty_setting.ResellerSetting, siteId, ownerUserId int, host, role string, found bool, existing *model.AdtySiteDomain, now int64) (model.AdtySiteDomain, error) {
+	token, err := adtyNewOwnershipToken()
+	if err != nil {
+		return model.AdtySiteDomain{}, err
+	}
+	domain := model.AdtySiteDomain{
+		SiteId: siteId, BoundBy: ownerUserId, Hostname: host, Role: role, OwnershipToken: token, Status: model.AdtySiteDomainPending,
+		ManagedBy: "owner", DesiredState: "serve", ProviderZone: cfg.CloudflareZoneId, DNSTarget: cfg.CnameTarget,
+		VerifyRecords: adtyOwnershipRecords(host, token, strings.TrimSpace(cfg.CnameTarget)),
+		LastCheckedAt: now, CreatedAt: now,
+	}
+	if cfg.DomainAutomationEnabled {
+		domain.AutomationState = "queued"
+	}
+	if !found {
+		if err := tx.Create(&domain).Error; err != nil {
+			return model.AdtySiteDomain{}, err
+		}
+	} else {
+		domain.Id = existing.Id
+		domain.Generation = existing.Generation + 1
+		if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", existing.Id).Updates(map[string]any{
+			"site_id": siteId, "bound_by": ownerUserId, "role": role, "ownership_token": token, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
+			"ssl_status": "", "verify_records": domain.VerifyRecords, "turnstile_widget": "",
+			"last_error": "", "last_checked_at": now, "created_at": now,
+			"managed_by": "owner", "desired_state": "serve", "automation_state": domain.AutomationState, "provider_zone": cfg.CloudflareZoneId, "dns_root": "", "dns_target": cfg.CnameTarget, "dns_records": "", "mainland_target": "", "lease_token": "", "lease_until": 0, "next_run_at": 0, "attempts": 0, "cf_create_started_at": 0, "generation": gorm.Expr("generation + 1"),
+		}).Error; err != nil {
+			return model.AdtySiteDomain{}, err
+		}
+	}
+	if err := tx.Create(&model.AdtySiteAudit{
+		SiteId:     siteId,
+		Action:     adtySiteDomainCreateAuditAction,
+		OperatorId: ownerUserId,
+		NewValue:   host,
+		CreatedAt:  now,
+	}).Error; err != nil {
+		return model.AdtySiteDomain{}, err
+	}
+	return domain, nil
 }
 
 func adtyLockSiteRow(tx *gorm.DB, id int, current *model.AdtySite) error {
@@ -512,46 +602,24 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 			domain = existing
 			return nil
 		}
+		excludeId := 0
+		if found {
+			excludeId = existing.Id
+		}
+		occupied, err := adtyCustomDomainRoleOccupied(tx, site.Id, role, excludeId)
+		if err != nil {
+			return err
+		}
+		if occupied {
+			return ErrAdtyCustomDomainRoleLimit
+		}
 		now := time.Now().Unix()
 		reusingCounted := found && existing.SiteId == site.Id && existing.Status != model.AdtySiteDomainRemoved
 		if err := adtyCustomDomainAllowCreate(tx, site.Id, reusingCounted, now); err != nil {
 			return err
 		}
-		token, err := adtyNewOwnershipToken()
-		if err != nil {
-			return err
-		}
-		domain = model.AdtySiteDomain{
-			SiteId: site.Id, BoundBy: ownerUserId, Hostname: host, Role: role, OwnershipToken: token, Status: model.AdtySiteDomainPending,
-			ManagedBy: "owner", DesiredState: "serve", ProviderZone: cfg.CloudflareZoneId, DNSTarget: cfg.CnameTarget,
-			VerifyRecords: adtyOwnershipRecords(host, token, strings.TrimSpace(cfg.CnameTarget)),
-			LastCheckedAt: now, CreatedAt: now,
-		}
-		if cfg.DomainAutomationEnabled {
-			domain.AutomationState = "queued"
-		}
-		if !found {
-			if err := tx.Create(&domain).Error; err != nil {
-				return err
-			}
-		} else {
-			domain.Id = existing.Id
-			if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", existing.Id).Updates(map[string]any{
-				"site_id": site.Id, "bound_by": ownerUserId, "role": role, "ownership_token": token, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
-				"ssl_status": "", "verify_records": domain.VerifyRecords, "turnstile_widget": "",
-				"last_error": "", "last_checked_at": now, "created_at": now,
-				"managed_by": "owner", "desired_state": "serve", "automation_state": domain.AutomationState, "provider_zone": cfg.CloudflareZoneId, "dns_root": "", "dns_target": cfg.CnameTarget, "dns_records": "", "mainland_target": "", "lease_token": "", "lease_until": 0, "next_run_at": 0, "attempts": 0, "cf_create_started_at": 0, "generation": gorm.Expr("generation + 1"),
-			}).Error; err != nil {
-				return err
-			}
-		}
-		return tx.Create(&model.AdtySiteAudit{
-			SiteId:     site.Id,
-			Action:     adtySiteDomainCreateAuditAction,
-			OperatorId: ownerUserId,
-			NewValue:   host,
-			CreatedAt:  now,
-		}).Error
+		domain, err = adtyUpsertCustomDomainTx(tx, cfg, site.Id, ownerUserId, host, role, found, &existing, now)
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -560,6 +628,151 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 		return nil, err
 	}
 	return &domain, nil
+}
+
+// AddAdtySiteDomainPair 在同一个数据库事务里同时绑定一个站点域名（role=site）和一个 API 域名（role=base_url）。
+// 任一域名校验失败、被其他站点占用、或对应用途槽位已被其他自定义域名占用时整体回滚，不产生半成品。
+func AddAdtySiteDomainPair(ctx context.Context, ownerUserId int, rawSiteHost, rawAPIHost string) ([]model.AdtySiteDomain, error) {
+	cfg := resellerSetting()
+	if !cfg.CustomDomainEnabled || !cfg.CloudflareConfigured() {
+		return nil, ErrAdtyCustomDomainOff
+	}
+	site, err := adtyOwnerSite(ownerUserId)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(rawSiteHost) == "" || strings.TrimSpace(rawAPIHost) == "" {
+		return nil, ErrAdtyCustomDomainPairRequired
+	}
+	siteHost, err := normalizeCustomDomain(rawSiteHost)
+	if err != nil {
+		return nil, err
+	}
+	apiHost, err := normalizeCustomDomain(rawAPIHost)
+	if err != nil {
+		return nil, err
+	}
+	if siteHost == apiHost {
+		return nil, ErrAdtyCustomDomainPairSame
+	}
+
+	domains := make([]model.AdtySiteDomain, 2)
+	err = model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lockedSite model.AdtySite
+		if err := adtyLockSiteRow(tx, site.Id, &lockedSite); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtySiteNotFound
+			}
+			return err
+		}
+		if lockedSite.OwnerUserId != ownerUserId || (lockedSite.Status != model.AdtySiteStatusActive && lockedSite.Status != model.AdtySiteStatusPaused) {
+			return ErrAdtySiteNotFound
+		}
+
+		type pairItem struct {
+			host       string
+			role       string
+			found      bool
+			existing   model.AdtySiteDomain
+			idempotent bool
+		}
+		items := [2]pairItem{
+			{host: siteHost, role: model.AdtySiteDomainRoleSite},
+			{host: apiHost, role: model.AdtySiteDomainRoleBaseURL},
+		}
+
+		for i := range items {
+			res := tx.Where("hostname = ?", items[i].host).Limit(1).Find(&items[i].existing)
+			if res.Error != nil {
+				return res.Error
+			}
+			items[i].found = res.RowsAffected > 0
+		}
+
+		// Lock any existing rows in ascending ID order to avoid lock-order deadlocks.
+		lockOrder := []int{}
+		for i := range items {
+			if items[i].found {
+				lockOrder = append(lockOrder, i)
+			}
+		}
+		if len(lockOrder) == 2 && items[lockOrder[0]].existing.Id > items[lockOrder[1]].existing.Id {
+			lockOrder[0], lockOrder[1] = lockOrder[1], lockOrder[0]
+		}
+		for _, idx := range lockOrder {
+			if err := adtyLockDomainRow(tx, items[idx].existing.Id, &items[idx].existing); err != nil {
+				return err
+			}
+		}
+
+		// Validate ownership and idempotency for BOTH hosts before mutating either.
+		var excludeIds []int
+		newQuotaCount := 0
+		createCount := 0
+		for i := range items {
+			item := &items[i]
+			if item.found && item.existing.SiteId != site.Id && item.existing.Status != model.AdtySiteDomainRemoved {
+				return ErrAdtyCustomDomainTaken
+			}
+			if item.found && item.existing.SiteId == site.Id {
+				excludeIds = append(excludeIds, item.existing.Id)
+				if item.existing.Status == model.AdtySiteDomainPending || item.existing.Status == model.AdtySiteDomainActive {
+					if item.existing.ManagedBy != "platform" && adtyNormalizeDomainRole(item.existing.Role) == item.role {
+						item.idempotent = true
+						continue
+					}
+					return ErrAdtyCustomDomainRoleLimit
+				}
+			}
+			createCount++
+			reusingCounted := item.found && item.existing.SiteId == site.Id && item.existing.Status != model.AdtySiteDomainRemoved
+			if !reusingCounted {
+				newQuotaCount++
+			}
+		}
+
+		// Enforce 1-per-role custom domain slot cap for BOTH roles.
+		for i := range items {
+			occupied, err := adtyCustomDomainRoleOccupied(tx, site.Id, items[i].role, excludeIds...)
+			if err != nil {
+				return err
+			}
+			if occupied {
+				return ErrAdtyCustomDomainRoleLimit
+			}
+		}
+
+		now := time.Now().Unix()
+		if err := adtyCustomDomainAllowCreateCount(tx, site.Id, newQuotaCount, createCount, now); err != nil {
+			return err
+		}
+
+		for i := range items {
+			if items[i].idempotent {
+				domains[i] = items[i].existing
+				continue
+			}
+			created, err := adtyUpsertCustomDomainTx(tx, cfg, site.Id, ownerUserId, items[i].host, items[i].role, items[i].found, &items[i].existing, now)
+			if err != nil {
+				return err
+			}
+			domains[i] = created
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	var attachErr error
+	for i := range domains {
+		if err := adtyAttachCustomHostname(ctx, &domains[i]); err != nil && attachErr == nil {
+			attachErr = err
+		}
+	}
+	if attachErr != nil {
+		return nil, attachErr
+	}
+	return domains, nil
 }
 
 func adtyNewOwnershipToken() (string, error) {

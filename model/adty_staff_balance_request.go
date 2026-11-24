@@ -420,6 +420,7 @@ type AdtySiteInvite struct {
 	InviteeId int             `json:"invitee_id" gorm:"uniqueIndex"`
 	Rate      decimal.Decimal `json:"rate" gorm:"type:decimal(10,6);not null"`
 	IpHash    string          `json:"-" gorm:"type:varchar(64);index"`
+	RiskFlag  string          `json:"risk_flag,omitempty" gorm:"type:varchar(32);index"`
 	CreatedAt int64           `json:"created_at" gorm:"autoCreateTime"`
 }
 

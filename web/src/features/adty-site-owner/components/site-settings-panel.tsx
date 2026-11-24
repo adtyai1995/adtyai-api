@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -24,22 +24,12 @@ import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyButton } from '@/components/copy-button'
-import { StaticDataTable } from '@/components/data-table/static/static-data-table'
-import { ErrorState } from '@/components/error-state'
-import { LoadingState } from '@/components/loading-state'
 import { StatusBadge } from '@/components/status-badge'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { adtySiteQueryKey } from '@/features/adty-site/api'
@@ -50,39 +40,64 @@ import { STATUS_QUERY_KEY } from '@/lib/status-query'
 
 import {
   addDomain,
-  addSenderDomain,
-  getSenderDomain,
+  addDomainPair,
   requestSiteClose,
   removeDomain,
-  removeSenderDomain,
   saveOwnerSite,
   siteOwnerKeys,
   uploadLogo,
 } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
-import { isValidOptionalHttpUrl, parseSenderRecords } from '../lib/site-owner'
-import type {
-  OwnerSite,
-  SenderDomain,
-  SiteBrand,
-  SiteDomain,
-  SiteDomainRole,
-} from '../types'
+import { isValidOptionalHttpUrl } from '../lib/site-owner'
+import type { OwnerSite, SiteBrand, SiteDomain, SiteDomainRole } from '../types'
+import { SiteLegalCard } from './site-legal-card'
 
 const BRAND_LIMITS: Record<
-  Exclude<keyof SiteBrand, 'logo_url' | 'favicon_url'>,
+  Exclude<
+    keyof SiteBrand,
+    'logo_url' | 'favicon_url' | 'tagline' | 'theme_color'
+  >,
   number
 > = {
   name: 40,
-  tagline: 80,
   notice: 500,
   support_contact: 200,
   title: 80,
-  theme_color: 7,
   tawk_property_id: 64,
   tawk_widget_id: 64,
   wallet_notice: 2000,
   voucher_purchase_url: 500,
+}
+
+type DomainVerifyRecord = {
+  type: string
+  name: string
+  value: string
+}
+
+function parseVerifyRecords(raw: string | undefined): DomainVerifyRecord[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is DomainVerifyRecord =>
+        typeof item === 'object' &&
+        item !== null &&
+        typeof (item as DomainVerifyRecord).type === 'string' &&
+        typeof (item as DomainVerifyRecord).name === 'string' &&
+        typeof (item as DomainVerifyRecord).value === 'string'
+    )
+  } catch {
+    return []
+  }
+}
+
+function normalizeDisplayUrl(raw: string | undefined): string {
+  const trimmed = (raw ?? '').trim()
+  if (!trimmed) return ''
+  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  return `https://${trimmed}`
 }
 
 function domainVariant(status: SiteDomain['status']) {
@@ -194,8 +209,7 @@ function BrandCard(props: { site: OwnerSite }) {
   ) => {
     const id = `brand-${key}`
     let placeholder: string | undefined
-    if (key === 'theme_color') placeholder = '#RRGGBB'
-    else if (key === 'voucher_purchase_url') placeholder = 'https://...'
+    if (key === 'voucher_purchase_url') placeholder = 'https://...'
     const isUrlInvalid =
       key === 'voucher_purchase_url' &&
       !isValidOptionalHttpUrl(brand.voucher_purchase_url ?? '')
@@ -298,8 +312,6 @@ function BrandCard(props: { site: OwnerSite }) {
         </div>}
         {field('name', t('Site name'))}
         {field('title', t('Website title'))}
-        {field('theme_color', t('Theme color'))}
-        {field('tagline', t('Tagline'))}
         {field('notice', t('Notice'), true)}
         {field(
           'wallet_notice',
@@ -349,15 +361,57 @@ function BrandCard(props: { site: OwnerSite }) {
 function DomainsCard(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const [hostname, setHostname] = useState('')
-  const [role, setRole] = useState<SiteDomainRole>('site')
-  useDraftNavigation(hostname !== '')
+  const [siteHostname, setSiteHostname] = useState('')
+  const [apiHostname, setApiHostname] = useState('')
+  useDraftNavigation(siteHostname !== '' || apiHostname !== '')
   const [deleting, setDeleting] = useState<SiteDomain | null>(null)
-  const add = useMutation({
-    mutationFn: () => addDomain(hostname.trim(), role),
+  const domains = props.site.domains ?? []
+  const customSiteDomain = domains.find(
+    (d) =>
+      d.managed_by !== 'platform' &&
+      d.role === 'site' &&
+      d.status !== 'removed'
+  )
+  const customApiDomain = domains.find(
+    (d) =>
+      d.managed_by !== 'platform' &&
+      d.role === 'base_url' &&
+      d.status !== 'removed'
+  )
+  const bothEmpty = !customSiteDomain && !customApiDomain
+  const bothConfigured = Boolean(customSiteDomain && customApiDomain)
+  let missingRole: SiteDomainRole | null = null
+  if (customSiteDomain && !customApiDomain) {
+    missingRole = 'base_url'
+  } else if (!customSiteDomain && customApiDomain) {
+    missingRole = 'site'
+  }
+
+  const normalizedSite = siteHostname.trim().toLowerCase()
+  const normalizedApi = apiHostname.trim().toLowerCase()
+  const pairDuplicate =
+    bothEmpty &&
+    normalizedSite !== '' &&
+    normalizedApi !== '' &&
+    normalizedSite === normalizedApi
+
+  const addPair = useMutation({
+    mutationFn: () => addDomainPair(siteHostname.trim(), apiHostname.trim()),
     onSuccess: () => {
       toast.success(t('Saved successfully'))
-      setHostname('')
+      setSiteHostname('')
+      setApiHostname('')
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+    },
+    onError: (err) => handleServerError(err),
+  })
+  const addSingleMissing = useMutation({
+    mutationFn: (input: { hostname: string; role: SiteDomainRole }) =>
+      addDomain(input.hostname, input.role),
+    onSuccess: () => {
+      toast.success(t('Saved successfully'))
+      setSiteHostname('')
+      setApiHostname('')
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
     },
     onError: (err) => handleServerError(err),
@@ -369,125 +423,345 @@ function DomainsCard(props: { site: OwnerSite }) {
     successMessage: t('Deleted successfully'),
     onSuccess: () => setDeleting(null),
   })
-  const domains = props.site.domains ?? []
+
+  const platformSiteUrl = normalizeDisplayUrl(
+    props.site.base_url || props.site.host
+  )
+  const platformApiUrl = normalizeDisplayUrl(props.site.api_base_url)
+  const cnameTarget = (props.site.cname_target ?? '').trim()
+  const mainlandTarget = (props.site.domain_mainland_target ?? '').trim()
+  const closing = props.site.status === 'closing'
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>{t('Custom domains')}</CardTitle>
       </CardHeader>
-      <CardContent className='grid gap-3'>
-        <p className='text-sm'>
-          {t('Platform address')}:{' '}
-          <span className='font-mono'>{props.site.host}</span>{' '}
-          <CopyButton value={props.site.base_url} />
-        </p>
-        {props.site.api_base_url && (
-          <p className='text-sm'>
-            {t('API address')}:{' '}
-            <span className='font-mono'>{props.site.api_base_url}</span>{' '}
-            <CopyButton value={props.site.api_base_url} />
-          </p>
-        )}
+      <CardContent className='grid gap-4'>
+        <div className='grid gap-3 rounded-lg border bg-muted/30 p-3 sm:grid-cols-2'>
+          <div className='space-y-1'>
+            <p className='text-muted-foreground text-xs font-medium'>
+              {t('Platform site address')}
+            </p>
+            <div className='flex items-center gap-1.5'>
+              <span className='truncate font-mono text-sm'>
+                {platformSiteUrl}
+              </span>
+              {platformSiteUrl && <CopyButton value={platformSiteUrl} />}
+            </div>
+          </div>
+          {platformApiUrl && (
+            <div className='space-y-1'>
+              <p className='text-muted-foreground text-xs font-medium'>
+                {t('Platform API address')}
+              </p>
+              <div className='flex items-center gap-1.5'>
+                <span className='truncate font-mono text-sm'>
+                  {platformApiUrl}
+                </span>
+                <CopyButton value={platformApiUrl} />
+              </div>
+            </div>
+          )}
+        </div>
+
         {!props.site.custom_domain_enabled ? (
           <p className='text-muted-foreground text-sm'>
             {t('Custom domains are not available yet.')}
           </p>
         ) : (
           <>
-            {domains.map((domain) => (
-              <div key={domain.id} className='space-y-1 rounded-md border p-3'>
-                <div className='flex items-center justify-between gap-2'>
-                  <span className='font-mono text-sm'>{domain.hostname}</span>
-                  <div className='flex items-center gap-2'>
-                    <span className='text-muted-foreground text-xs'>
-                      {domain.role === 'base_url'
-                        ? t('API address')
-                        : t('Site domain')}
-                    </span>
-                    <StatusBadge
-                      variant={domainVariant(domain.status)}
-                      label={domainLabel(t, domain.status)}
-                    />
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      onClick={() => setDeleting(domain)}
-                      disabled={domain.managed_by === 'platform'}
+            {(cnameTarget || mainlandTarget) && (
+              <div className='space-y-2.5 rounded-lg border bg-muted/40 p-3'>
+                <div className='space-y-0.5'>
+                  <p className='text-sm font-medium'>
+                    {t('DNS CNAME target')}
+                  </p>
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Add a CNAME record for both your site domain and API domain pointing to the target below.'
+                    )}
+                  </p>
+                </div>
+                <div className='grid gap-2 sm:grid-cols-2'>
+                  {cnameTarget && (
+                    <div className='bg-background flex items-center justify-between gap-2 rounded-md border px-3 py-2'>
+                      <div className='min-w-0'>
+                        <p className='text-muted-foreground text-[11px]'>
+                          {mainlandTarget
+                            ? t('Default / Overseas CNAME')
+                            : t('CNAME target')}
+                        </p>
+                        <p className='truncate font-mono text-xs'>
+                          {cnameTarget}
+                        </p>
+                      </div>
+                      <CopyButton value={cnameTarget} />
+                    </div>
+                  )}
+                  {mainlandTarget && (
+                    <div className='bg-background flex items-center justify-between gap-2 rounded-md border px-3 py-2'>
+                      <div className='min-w-0'>
+                        <p className='text-muted-foreground text-[11px]'>
+                          {t('Mainland China CNAME')}
+                        </p>
+                        <p className='truncate font-mono text-xs'>
+                          {mainlandTarget}
+                        </p>
+                      </div>
+                      <CopyButton value={mainlandTarget} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {domains.length > 0 && (
+              <div className='grid gap-2.5'>
+                {domains.map((domain) => {
+                  const verifyRecords = parseVerifyRecords(domain.verify_records)
+                  return (
+                    <div
+                      key={domain.id}
+                      className='space-y-2 rounded-lg border p-3'
                     >
-                      {t('Delete')}
-                    </Button>
+                      <div className='flex flex-wrap items-center justify-between gap-2'>
+                        <div className='flex flex-wrap items-center gap-2'>
+                          <span className='font-mono text-sm font-medium'>
+                            {domain.hostname}
+                          </span>
+                          <Badge variant='secondary'>
+                            {domain.role === 'base_url'
+                              ? t('API domain')
+                              : t('Site domain')}
+                          </Badge>
+                        </div>
+                        <div className='flex items-center gap-2'>
+                          <StatusBadge
+                            variant={domainVariant(domain.status)}
+                            label={domainLabel(t, domain.status)}
+                          />
+                          <Button
+                            size='sm'
+                            variant='outline'
+                            onClick={() => setDeleting(domain)}
+                            disabled={domain.managed_by === 'platform'}
+                          >
+                            {t('Delete')}
+                          </Button>
+                        </div>
+                      </div>
+                      {domain.managed_by === 'platform' && (
+                        <p className='text-muted-foreground text-xs'>
+                          {t('Platform domains are managed by the platform')}
+                        </p>
+                      )}
+                      {domain.automation_state && (
+                        <p className='text-muted-foreground text-xs'>
+                          {domainAutomationLabel(t, domain.automation_state)}
+                        </p>
+                      )}
+                      {domain.managed_by !== 'platform' &&
+                        domain.status !== 'active' &&
+                        domain.verify_records &&
+                        (verifyRecords.length > 0 ? (
+                          <div className='space-y-2 pt-1'>
+                            <p className='text-muted-foreground text-xs font-medium'>
+                              {t('DNS records to add')}
+                            </p>
+                            <div className='grid gap-2'>
+                              {verifyRecords.map((rec) => (
+                                <div
+                                  key={`${rec.type}-${rec.name}-${rec.value}`}
+                                  className='bg-muted/40 grid gap-2 rounded-md border p-2.5 text-xs sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] sm:items-center'
+                                >
+                                  <Badge
+                                    variant='outline'
+                                    className='w-fit font-mono'
+                                  >
+                                    {rec.type}
+                                  </Badge>
+                                  <div className='flex min-w-0 items-center justify-between gap-1.5'>
+                                    <div className='min-w-0'>
+                                      <span className='text-muted-foreground block text-[11px]'>
+                                        {t('Host record')}
+                                      </span>
+                                      <span className='block truncate font-mono'>
+                                        {rec.name}
+                                      </span>
+                                    </div>
+                                    <CopyButton value={rec.name} />
+                                  </div>
+                                  <div className='flex min-w-0 items-center justify-between gap-1.5'>
+                                    <div className='min-w-0'>
+                                      <span className='text-muted-foreground block text-[11px]'>
+                                        {t('Record value')}
+                                      </span>
+                                      <span className='block truncate font-mono'>
+                                        {rec.value}
+                                      </span>
+                                    </div>
+                                    <CopyButton value={rec.value} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <pre className='bg-muted overflow-x-auto rounded p-2 text-xs'>
+                            {domain.verify_records}
+                          </pre>
+                        ))}
+                      {domain.last_error && (
+                        <p className='text-destructive text-xs'>
+                          {domain.last_error}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {bothEmpty && (
+              <div className='space-y-3 rounded-lg border p-4'>
+                <div className='space-y-0.5'>
+                  <p className='text-sm font-medium'>
+                    {t('Bind custom domains')}
+                  </p>
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Fill in both your site domain and API domain and submit them together.'
+                    )}
+                  </p>
+                </div>
+                <div className='grid gap-3 sm:grid-cols-2'>
+                  <div className='space-y-1.5'>
+                    <Label htmlFor='new-site-domain'>{t('Site domain')}</Label>
+                    <Input
+                      id='new-site-domain'
+                      placeholder='www.example.com'
+                      disabled={closing || addPair.isPending}
+                      value={siteHostname}
+                      onChange={(event) => setSiteHostname(event.target.value)}
+                    />
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'A site domain serves web pages, sign-in and console, and rejects model API calls.'
+                      )}
+                    </p>
+                  </div>
+                  <div className='space-y-1.5'>
+                    <Label htmlFor='new-api-domain'>{t('API domain')}</Label>
+                    <Input
+                      id='new-api-domain'
+                      placeholder='api.example.com'
+                      disabled={closing || addPair.isPending}
+                      value={apiHostname}
+                      onChange={(event) => setApiHostname(event.target.value)}
+                    />
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'An API address answers model API calls and also opens your site homepage and console. Search engines do not index it.'
+                      )}
+                    </p>
                   </div>
                 </div>
-                {domain.managed_by === 'platform' && (
-                  <p className='text-muted-foreground text-xs'>
-                    {t('Platform domains are managed by the platform')}
+                {pairDuplicate && (
+                  <p role='alert' className='text-destructive text-xs'>
+                    {t('Site domain and API domain must be different')}
                   </p>
                 )}
-                {domain.automation_state && (
-                  <p className='text-muted-foreground text-xs'>
-                    {domainAutomationLabel(t, domain.automation_state)}
-                  </p>
+                <div>
+                  <Button
+                    type='button'
+                    variant='brand'
+                    disabled={
+                      closing ||
+                      !normalizedSite ||
+                      !normalizedApi ||
+                      pairDuplicate ||
+                      addPair.isPending
+                    }
+                    onClick={() => addPair.mutate()}
+                  >
+                    {t('Submit custom domains')}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {missingRole && (
+              <div className='space-y-3 rounded-lg border p-4'>
+                <p className='text-muted-foreground text-xs'>
+                  {missingRole === 'base_url'
+                    ? t(
+                        'Your site domain is configured. Add the matching API domain below, or delete the existing domain to reconfigure both together.'
+                      )
+                    : t(
+                        'Your API domain is configured. Add the matching site domain below, or delete the existing domain to reconfigure both together.'
+                      )}
+                </p>
+                <div className='flex flex-wrap items-end gap-2'>
+                  <div className='space-y-1.5'>
+                    <Label htmlFor='missing-domain'>
+                      {missingRole === 'base_url'
+                        ? t('API domain')
+                        : t('Site domain')}
+                    </Label>
+                    <Input
+                      id='missing-domain'
+                      className='w-64'
+                      disabled={closing || addSingleMissing.isPending}
+                      placeholder={
+                        missingRole === 'base_url'
+                          ? 'api.example.com'
+                          : 'www.example.com'
+                      }
+                      value={
+                        missingRole === 'base_url' ? apiHostname : siteHostname
+                      }
+                      onChange={(event) =>
+                        missingRole === 'base_url'
+                          ? setApiHostname(event.target.value)
+                          : setSiteHostname(event.target.value)
+                      }
+                    />
+                  </div>
+                  <Button
+                    type='button'
+                    disabled={
+                      closing ||
+                      addSingleMissing.isPending ||
+                      !(
+                        missingRole === 'base_url'
+                          ? apiHostname.trim()
+                          : siteHostname.trim()
+                      )
+                    }
+                    onClick={() =>
+                      addSingleMissing.mutate({
+                        hostname: (missingRole === 'base_url'
+                          ? apiHostname
+                          : siteHostname
+                        ).trim(),
+                        role: missingRole,
+                      })
+                    }
+                  >
+                    {t('Add')}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {bothConfigured && (
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Both custom domain slots (site domain and API domain) are configured. Delete a domain above to reconfigure.'
                 )}
-                {domain.managed_by !== 'platform' &&
-                  domain.status !== 'active' &&
-                  domain.verify_records && (
-                    <pre className='bg-muted overflow-x-auto rounded p-2 text-xs'>
-                      {domain.verify_records}
-                    </pre>
-                  )}
-                {domain.last_error && (
-                  <p className='text-destructive text-xs'>
-                    {domain.last_error}
-                  </p>
-                )}
-              </div>
-            ))}
-            <div className='flex flex-wrap items-end gap-2'>
-              <div className='space-y-2'>
-                <Label htmlFor='new-domain'>{t('Domain')}</Label>
-                <Input
-                  id='new-domain'
-                  className='w-64'
-                  placeholder='www.example.com'
-                  value={hostname}
-                  onChange={(event) => setHostname(event.target.value)}
-                />
-              </div>
-              <div className='space-y-2'>
-                <Label>{t('What it is for')}</Label>
-                <Select
-                  value={role}
-                  onValueChange={(value) => setRole(value as SiteDomainRole)}
-                >
-                  <SelectTrigger className='w-56'>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent alignItemWithTrigger={false}>
-                    <SelectGroup>
-                      <SelectItem value='site'>{t('Site domain')}</SelectItem>
-                      <SelectItem value='base_url'>
-                        {t('API address')}
-                      </SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                disabled={!hostname.trim() || add.isPending}
-                onClick={() => add.mutate()}
-              >
-                {t('Add')}
-              </Button>
-            </div>
-            <p className='text-muted-foreground text-xs'>
-              {role === 'base_url'
-                ? t(
-                    'An API address answers model API calls and also opens your site homepage and console. Search engines do not index it.'
-                  )
-                : t(
-                    'A site domain serves web pages, sign-in and console, and rejects model API calls.'
-                  )}
-            </p>
+              </p>
+            )}
           </>
         )}
         <ConfirmDialog
@@ -532,189 +806,6 @@ function SearchCard(props: { site: OwnerSite }) {
             onCheckedChange={(checked) => seo.mutate(checked)}
           />
         </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function senderLabel(t: TFunction, status: SenderDomain['status']): string {
-  if (status === 'verified') return t('Verified')
-  if (status === 'failed') return t('Verification failed')
-  if (status === 'removing') return t('Removing')
-  if (status === 'disabled') return t('Turned off')
-  return t('Waiting for DNS')
-}
-
-function senderVariant(status: SenderDomain['status']) {
-  if (status === 'verified') return 'success' as const
-  if (status === 'failed') return 'danger' as const
-  if (status === 'disabled') return 'neutral' as const
-  return 'warning' as const
-}
-
-/** Sender domain (task 11.3): DNS records to add and the verification status. */
-function SenderDomainCard(props: { site: OwnerSite }) {
-  const { t } = useTranslation()
-  const queryClient = useQueryClient()
-  const [domain, setDomain] = useState('')
-  useDraftNavigation(domain !== '')
-  const [deleting, setDeleting] = useState(false)
-  const query = useQuery({
-    queryKey: siteOwnerKeys.list('sender-domain', {}),
-    queryFn: getSenderDomain,
-    enabled: props.site.sender_domain_enabled,
-  })
-  const add = useMutation({
-    mutationFn: () => addSenderDomain(domain.trim()),
-    onSuccess: () => {
-      toast.success(t('Saved successfully'))
-      setDomain('')
-      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
-    },
-    onError: (err) => handleServerError(err),
-  })
-  const remove = useVerifiedOwnerMutation<void>({
-    action: 'sender.delete',
-    target: () => props.site.id,
-    run: (_vars, proof) => removeSenderDomain(proof),
-    successMessage: t('Deleted successfully'),
-    onSuccess: () => setDeleting(false),
-  })
-  const current =
-    query.data && query.data.status !== 'disabled' ? query.data : null
-  const records = parseSenderRecords(current?.records)
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Sender domain')}</CardTitle>
-      </CardHeader>
-      <CardContent className='grid gap-3'>
-        {!props.site.sender_domain_enabled && (
-          <p className='text-muted-foreground text-sm'>
-            {t('Not available yet')}
-          </p>
-        )}
-        {props.site.sender_domain_enabled && query.isError && (
-          <ErrorState onRetry={() => void query.refetch()} />
-        )}
-        {props.site.sender_domain_enabled && query.isPending && (
-          <LoadingState />
-        )}
-        {props.site.sender_domain_enabled && query.isSuccess && (
-          <>
-            <p className='text-muted-foreground text-sm'>
-              {t(
-                'System emails to your customers are sent from your own domain once it is verified. Until then they come from the platform address with your site name.'
-              )}
-            </p>
-            {query.data?.status === 'disabled' &&
-              Boolean(
-                query.data.disabled_by_platform ||
-                  (query.data.disabled_by ?? 0) > 0
-              ) && (
-                <p className='text-muted-foreground text-sm'>
-                  {t('The platform turned off your sender domain.')}
-                </p>
-              )}
-            {current ? (
-              <div className='space-y-2 rounded-md border p-3'>
-                <div className='flex items-center justify-between gap-2'>
-                  <span className='font-mono text-sm'>{current.domain}</span>
-                  <div className='flex items-center gap-2'>
-                    <StatusBadge
-                      variant={senderVariant(current.status)}
-                      label={senderLabel(t, current.status)}
-                    />
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      disabled={current.status === 'removing'}
-                      onClick={() => setDeleting(true)}
-                    >
-                      {t('Delete')}
-                    </Button>
-                  </div>
-                </div>
-                {current.status === 'removing' && current.cleanup_error && (
-                  <p className='text-destructive text-xs'>
-                    {current.cleanup_error}
-                  </p>
-                )}
-                {current.status !== 'verified' &&
-                  current.status !== 'removing' &&
-                  records.length > 0 && (
-                  <StaticDataTable
-                    tableProps={{ 'aria-label': t('DNS records to add') }}
-                    data={records}
-                    getRowKey={(row) => `${row.type}-${row.name}-${row.value}`}
-                    columns={[
-                      {
-                        id: 'type',
-                        header: t('Type'),
-                        cell: (row) => row.type,
-                      },
-                      {
-                        id: 'name',
-                        header: t('Name'),
-                        cell: (row) => (
-                          <span className='font-mono text-xs'>{row.name}</span>
-                        ),
-                      },
-                      {
-                        id: 'value',
-                        header: t('Value'),
-                        cell: (row) => (
-                          <span className='flex items-center gap-1'>
-                            <span className='max-w-64 truncate font-mono text-xs'>
-                              {row.value}
-                            </span>
-                            <CopyButton value={row.value} />
-                          </span>
-                        ),
-                      },
-                      {
-                        id: 'priority',
-                        header: t('Priority'),
-                        cell: (row) => row.priority ?? '—',
-                      },
-                    ]}
-                  />
-                )}
-              </div>
-            ) : (
-              <div className='flex items-end gap-2'>
-                <div className='space-y-2'>
-                  <Label htmlFor='sender-domain'>{t('Domain')}</Label>
-                  <Input
-                    id='sender-domain'
-                    className='w-72'
-                    placeholder='mail.example.com'
-                    value={domain}
-                    onChange={(event) => setDomain(event.target.value)}
-                  />
-                </div>
-                <Button
-                  disabled={!domain.trim() || add.isPending}
-                  onClick={() => add.mutate()}
-                >
-                  {t('Add')}
-                </Button>
-              </div>
-            )}
-          </>
-        )}
-        <ConfirmDialog
-          open={deleting}
-          onOpenChange={setDeleting}
-          title={t('Delete sender domain')}
-          desc={t(
-            'Emails go back to the platform address with your site name.'
-          )}
-          destructive
-          isLoading={remove.isPending}
-          handleConfirm={() => remove.mutate()}
-        />
       </CardContent>
     </Card>
   )
@@ -854,14 +945,14 @@ function HomePageCard(props: { site: OwnerSite }) {
   )
 }
 
-/** Site settings: brand, custom home page, custom domains, sender domain and SEO (task 11.6). */
+/** Site settings: brand, custom home page, legal docs, custom domains and SEO (task 11.6). */
 export function SiteSettingsPanel(props: { site: OwnerSite }) {
   return (
     <div className='grid gap-4'>
       <BrandCard site={props.site} />
       <HomePageCard site={props.site} />
+      <SiteLegalCard site={props.site} />
       <DomainsCard site={props.site} />
-      <SenderDomainCard site={props.site} />
       <SearchCard site={props.site} />
       <CloseRequestCard site={props.site} />
     </div>

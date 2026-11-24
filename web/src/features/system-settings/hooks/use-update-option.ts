@@ -87,6 +87,8 @@ const STATUS_RELATED_KEYS = new Set([
   'QuotaForInvitee',
   'legal.user_agreement',
   'legal.privacy_policy',
+  'adty_legal_setting.user_agreement',
+  'adty_legal_setting.privacy_policy',
   'adty_legal_setting.site_customer_terms_version',
   'adty_site_setting.refund_policy_enabled',
   'LogConsumeEnabled',

@@ -42,6 +42,9 @@ import type {
   SiteBrand,
   SiteDomain,
   SiteDomainRole,
+  SiteLegalDocs,
+  SiteMailConfig,
+  SiteMailConfigUpdate,
   SiteStats,
 } from './types'
 
@@ -110,12 +113,13 @@ export async function getOwnerSite(): Promise<OwnerSite> {
   return requireServerSuccess(res.data).data
 }
 
-/** Brand, custom home page, and the SEO switch do not need verification. */
+/** Brand, custom home page, legal docs, and the SEO switch do not need verification. */
 export async function saveOwnerSite(body: {
   brand?: Partial<SiteBrand>
   expected_brand?: Partial<SiteBrand>
   seo_index?: boolean
   home_page_content?: string
+  legal_docs?: SiteLegalDocs
 }): Promise<OwnerSite> {
   const res = await api.put<ApiResponse<OwnerSite>>(`${BASE}/self`, body)
   return requireServerSuccess(res.data).data
@@ -598,6 +602,10 @@ export type SiteReferralView = {
   pending_coverage_cap: string | null
   cancel_window_minutes?: number | null
   observation_days: number | null
+  cookie_ttl_days?: number | null
+  self_invite_window_days?: number | null
+  batch_register_threshold?: number | null
+  batch_register_window_hours?: number | null
   min_usd: string | null
   fee_usd: string | null
   cny_rate: string | null
@@ -616,6 +624,7 @@ export type SiteInvite = {
   invitee_id: number
   invitee_username?: string
   rate: string
+  risk_flag?: string
   created_at: number
 }
 
@@ -630,16 +639,47 @@ export type SiteReferralOverview = {
   pending_withdrawals: number
 }
 
+export type SiteReferralAffiliateAction =
+  | 'rate'
+  | 'disable'
+  | 'restore'
+  | 'freeze_settlement'
+  | 'restore_settlement'
+  | 'freeze_withdrawal'
+  | 'restore_withdrawal'
+
 export type SiteReferralAffiliateItem = {
   user_id: number
   username: string
   display_name?: string
+  invite_code?: string
+  rate_override?: number | null
+  status?: string
+  settlement_enabled?: boolean
+  withdrawal_enabled?: boolean
+  risk_reason?: string
+  risk_note?: string
   invite_count: number
   pending: string
   available: string
   frozen: string
   withdrawn: string
   total_earned: string
+}
+
+export type SiteReferralAuditLogItem = {
+  id: number
+  site_id: number
+  action: string
+  operator_id: number
+  operator_username?: string
+  target_user_id: number
+  target_username?: string
+  reason: string
+  old_value: string
+  new_value: string
+  ip: string
+  created_at: number
 }
 
 export type SiteReferralCommissionItem = {
@@ -728,6 +768,39 @@ export async function getOwnerSiteReferralCommissions(
   }
 }
 
+export async function updateOwnerSiteReferralAffiliate(
+  userId: number,
+  body: {
+    action: SiteReferralAffiliateAction
+    rate?: number | null
+    reason?: string
+  }
+): Promise<void> {
+  const res = await api.post<ApiResponse<{ updated: boolean }>>(
+    `${BASE}/referral/affiliates/${userId}/update`,
+    body
+  )
+  requireServerSuccess(res.data)
+}
+
+export async function getOwnerSiteReferralAuditLogs(
+  page = 1,
+  pageSize = OWNER_PAGE_SIZE
+): Promise<SiteReferralPage<SiteReferralAuditLogItem>> {
+  const res = await api.get<
+    ApiResponse<SiteReferralPage<SiteReferralAuditLogItem>>
+  >(`${BASE}/referral/audit-logs`, {
+    params: { page, p: page, page_size: pageSize },
+  })
+  const data = requireServerSuccess(res.data).data
+  return {
+    items: Array.isArray(data?.items) ? data.items : [],
+    total: Number(data?.total) || 0,
+    page: Number(data?.page) || page,
+    page_size: Number(data?.page_size) || pageSize,
+  }
+}
+
 export async function getOwnerSiteReferral(): Promise<SiteReferralView> {
   const res = await api.get<ApiResponse<SiteReferralView>>(`${BASE}/referral`)
   return requireServerSuccess(res.data).data
@@ -749,6 +822,7 @@ export type SiteMarketingField = Exclude<
 >
 
 export type SiteMarketingUpdate = Partial<Record<SiteMarketingField, string>> & {
+  enabled?: boolean
   withdraw_methods?: string[]
   withdraw_usdt_networks?: string[]
 }
@@ -906,6 +980,43 @@ export async function addDomain(
     role,
   })
   return requireServerSuccess(res.data).data
+}
+
+/** Atomically binds both custom domains (site + base_url) in one submission. */
+export async function addDomainPair(
+  siteHostname: string,
+  apiHostname: string
+): Promise<SiteDomain[]> {
+  const res = await api.post<ApiResponse<SiteDomain[]>>(
+    `${BASE}/domains/pair`,
+    {
+      site_hostname: siteHostname,
+      api_hostname: apiHostname,
+    }
+  )
+  return requireServerSuccess(res.data).data ?? []
+}
+
+export async function getOwnerSiteMailConfig(): Promise<SiteMailConfig> {
+  const res = await api.get<ApiResponse<SiteMailConfig>>(`${BASE}/mail-config`)
+  return requireServerSuccess(res.data).data
+}
+
+export async function saveOwnerSiteMailConfig(
+  body: SiteMailConfigUpdate
+): Promise<SiteMailConfig> {
+  const res = await api.put<ApiResponse<SiteMailConfig>>(
+    `${BASE}/mail-config`,
+    body
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function testOwnerSiteMailConfig(to: string): Promise<void> {
+  const res = await api.post<ApiResponse<unknown>>(`${BASE}/mail-config/test`, {
+    to,
+  })
+  requireServerSuccess(res.data)
 }
 
 /** Proof: action `domain.delete`, target = domain id. */

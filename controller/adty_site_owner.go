@@ -177,16 +177,24 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		return
 	}
 	cfg := adty_setting.GetResellerSetting()
-	common.ApiSuccess(c, gin.H{
+	resp := gin.H{
 		"id": site.Id, "status": site.Status, "subdomain": site.Subdomain, "root_domain": site.RootDomain,
 		"host": service.AdtySiteDisplayHost(site), "base_url": service.AdtySiteBaseURL(site), "api_base_url": service.AdtySiteAPIBaseURL(site),
 		"cost_factor":           d.String(),
 		"custom_domain_enabled": cfg.CustomDomainEnabled,
-		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "home_page_content": site.HomePageContent, "bonus_methods": service.AdtySiteBonusMethods(site),
+		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "home_page_content": site.HomePageContent,
+		"legal_docs":    service.AdtySiteLegalFor(site),
+		"bonus_methods": service.AdtySiteBonusMethods(site),
 		"seo_index":          site.SeoIndex,
 		"close_requested_at": site.CloseRequestedAt, "close_execute_at": site.CloseExecuteAt,
 		"prices": prices, "pricing_version": version, "domains": domains, "visibility": service.AdtySiteVisibility(site),
-	})
+	}
+	if cfg.CustomDomainEnabled {
+		resp["domain_automation_enabled"] = cfg.DomainAutomationEnabled
+		resp["cname_target"] = strings.TrimSpace(cfg.CnameTarget)
+		resp["domain_mainland_target"] = strings.TrimSpace(cfg.DomainMainlandTarget)
+	}
+	common.ApiSuccess(c, resp)
 }
 
 // PutAdtyOwnerSite 改站点资料：PUT /api/adty/site/self {brand?, bonus_rates?, seo_index?}。
@@ -198,17 +206,18 @@ func PutAdtyOwnerSite(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Brand           map[string]string `json:"brand"`
-		ExpectedBrand   map[string]string `json:"expected_brand"`
-		BonusRates      *map[int]float64  `json:"bonus_rates"`
-		SeoIndex        *bool             `json:"seo_index"`
-		HomePageContent *string           `json:"home_page_content"`
+		Brand           map[string]string        `json:"brand"`
+		ExpectedBrand   map[string]string        `json:"expected_brand"`
+		BonusRates      *map[int]float64         `json:"bonus_rates"`
+		SeoIndex        *bool                    `json:"seo_index"`
+		HomePageContent *string                  `json:"home_page_content"`
+		LegalDocs       *model.AdtySiteLegalDocs `json:"legal_docs"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if (body.Brand != nil || body.SeoIndex != nil || body.HomePageContent != nil) && site.Status == model.AdtySiteStatusClosing {
+	if (body.Brand != nil || body.SeoIndex != nil || body.HomePageContent != nil || body.LegalDocs != nil) && site.Status == model.AdtySiteStatusClosing {
 		common.ApiError(c, service.ErrAdtySiteClosing)
 		return
 	}
@@ -222,6 +231,12 @@ func PutAdtyOwnerSite(c *gin.Context) {
 			return
 		}
 		service.InvalidateAdtySiteCache()
+	}
+	if body.LegalDocs != nil {
+		if err := service.SaveAdtySiteLegal(site.Id, c.GetInt("id"), *body.LegalDocs); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
 	GetAdtyOwnerSite(c)
 }

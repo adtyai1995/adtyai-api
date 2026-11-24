@@ -29,7 +29,6 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { NativeSelect } from '@/components/ui/native-select'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { formatUserIdentity } from '@/lib/format-user-identity'
@@ -79,6 +78,27 @@ export function AffiliatePanel(props: {
   const [amount, setAmount] = useState('')
   const [adjustKey, setAdjustKey] = useState(() => crypto.randomUUID())
   const [reason, setReason] = useState('')
+
+  const openEditing = (row: AdminReferralAffiliate) => {
+    setEditing(row)
+    setRate(
+      row.rate_override === null || row.rate_override === undefined
+        ? ''
+        : String(row.rate_override)
+    )
+    setAmount('')
+    setReason('')
+    setAdjustKey(crypto.randomUUID())
+  }
+
+  const closeEditing = () => {
+    setEditing(null)
+    setRate('')
+    setAmount('')
+    setReason('')
+    setAdjustKey(crypto.randomUUID())
+  }
+
   const params = {
     p: page,
     keyword: search,
@@ -89,16 +109,18 @@ export function AffiliatePanel(props: {
   })
   const done = () => {
     toast.success(t('Saved successfully'))
-    setEditing(null)
-    setRate('')
-    setAmount('')
-    setReason('')
-    setAdjustKey(crypto.randomUUID())
+    closeEditing()
     void queryClient.invalidateQueries({ queryKey: adminReferralKeys.all })
     void invalidateSidebarBadges(queryClient)
   }
+
   // An empty own rate goes back to the default rate.
-  const ownRate = rate === '' ? null : Number(rate)
+  const trimmedRate = rate.trim()
+  const ownRate = trimmedRate === '' ? null : Number(trimmedRate)
+  const rateInvalid =
+    ownRate !== null &&
+    (!Number.isFinite(ownRate) || ownRate < 0 || ownRate > 100)
+
   const update = useMutation({
     mutationFn: (input: {
       affiliate: AdminReferralAffiliate
@@ -107,15 +129,18 @@ export function AffiliatePanel(props: {
       updateAffiliate(input.affiliate.user_id, {
         action: input.action,
         rate: input.action === 'rate' ? ownRate : undefined,
-        amount: input.action === 'adjust' ? amount : undefined,
-        reason,
+        amount: input.action === 'adjust' ? amount.trim() : undefined,
+        reason: reason.trim(),
         idempotency_key: input.action === 'adjust' ? adjustKey : undefined,
       }),
     onSuccess: done,
     onError: (err) => handleServerError(err),
   })
-  const act = (affiliate: AdminReferralAffiliate, action: AffiliateAction) =>
+  const act = (affiliate: AdminReferralAffiliate, action: AffiliateAction) => {
+    if (update.isPending) return
+    if (action === 'rate' && rateInvalid) return
     update.mutate({ affiliate, action })
+  }
 
   if (query.isError && !query.data) {
     return <ErrorState onRetry={() => void query.refetch()} />
@@ -165,7 +190,7 @@ export function AffiliatePanel(props: {
             id: 'rate',
             header: t('Rate'),
             cell: (row) =>
-              row.rate_override === null
+              row.rate_override === null || row.rate_override === undefined
                 ? t('Default')
                 : `${row.rate_override}%`,
           },
@@ -179,7 +204,7 @@ export function AffiliatePanel(props: {
             header: t('Risk'),
             cell: (row) => (
               <span className='text-muted-foreground text-xs'>
-                {row.risk_note || '-'}
+                {row.risk_note || row.risk_reason || '-'}
               </span>
             ),
           },
@@ -203,7 +228,7 @@ export function AffiliatePanel(props: {
                   <Button
                     size='sm'
                     variant='outline'
-                    onClick={() => setEditing(row)}
+                    onClick={() => openEditing(row)}
                   >
                     {t('Adjust')}
                   </Button>
@@ -222,7 +247,7 @@ export function AffiliatePanel(props: {
 
       <Dialog
         open={editing !== null}
-        onOpenChange={(open) => !open && setEditing(null)}
+        onOpenChange={(open) => !open && closeEditing()}
         title={t('Adjust affiliate')}
         description={
           editing
@@ -237,26 +262,41 @@ export function AffiliatePanel(props: {
               <Input
                 id='adjust-reason'
                 value={reason}
+                disabled={update.isPending}
                 onChange={(event) => setReason(event.target.value)}
               />
             </div>
-            <div className='flex items-end gap-2'>
-              <div className='flex-1 space-y-2'>
-                <Label htmlFor='adjust-rate'>
-                  {t('Own rate (%), empty for the default')}
-                </Label>
-                <Input
-                  id='adjust-rate'
-                  type='number'
-                  min={0}
-                  max={100}
-                  value={rate}
-                  onChange={(event) => setRate(event.target.value)}
-                />
+            <div className='space-y-1.5'>
+              <div className='flex items-end gap-2'>
+                <div className='flex-1 space-y-2'>
+                  <Label htmlFor='adjust-rate'>
+                    {t('Own rate (%), empty for the default')}
+                  </Label>
+                  <Input
+                    id='adjust-rate'
+                    type='number'
+                    min={0}
+                    max={100}
+                    step='0.01'
+                    disabled={update.isPending}
+                    aria-invalid={rateInvalid}
+                    value={rate}
+                    onChange={(event) => setRate(event.target.value)}
+                  />
+                </div>
+                <Button
+                  type='button'
+                  disabled={update.isPending || rateInvalid}
+                  onClick={() => act(editing, 'rate')}
+                >
+                  {t('Set rate')}
+                </Button>
               </div>
-              <Button onClick={() => act(editing, 'rate')}>
-                {t('Set rate')}
-              </Button>
+              {rateInvalid && (
+                <p role='alert' className='text-destructive text-xs'>
+                  {t('The rate must be between 0 and 100')}
+                </p>
+              )}
             </div>
             <div className='flex items-end gap-2'>
               <div className='flex-1 space-y-2'>
@@ -267,65 +307,96 @@ export function AffiliatePanel(props: {
                   id='adjust-amount'
                   type='number'
                   step='0.01'
+                  disabled={update.isPending}
                   value={amount}
                   onChange={(event) => setAmount(event.target.value)}
                 />
               </div>
               <Button
+                type='button'
                 variant='brand'
                 disabled={
-                  update.isPending || amount === '' || reason.trim() === ''
+                  update.isPending ||
+                  amount.trim() === '' ||
+                  reason.trim() === ''
                 }
                 onClick={() => act(editing, 'adjust')}
               >
                 {t('Apply')}
               </Button>
             </div>
-            <NativeSelect
-              aria-label={t('More actions')}
-              value=''
-              onChange={(event) => {
-                if (event.target.value) {
-                  act(editing, event.target.value as AffiliateAction)
-                }
-              }}
-            >
-              <option value=''>{t('More actions')}</option>
-              <option
-                value={editing.status === 'disabled' ? 'restore' : 'disable'}
-              >
-                {editing.status === 'disabled'
-                  ? t('Restore affiliate')
-                  : t('Disable affiliate')}
-              </option>
-              <option
-                value={
-                  editing.settlement_enabled
-                    ? 'freeze_settlement'
-                    : 'restore_settlement'
-                }
-              >
-                {editing.settlement_enabled
-                  ? t('Freeze settlement')
-                  : t('Restore settlement')}
-              </option>
-              <option
-                value={
-                  editing.withdrawal_enabled
-                    ? 'freeze_withdrawal'
-                    : 'restore_withdrawal'
-                }
-              >
-                {editing.withdrawal_enabled
-                  ? t('Freeze withdrawals')
-                  : t('Restore withdrawals')}
-              </option>
-              {editing.site_owner_since > 0 && (
-                <option value='restore_referral'>
-                  {t('Restore referral commission')}
-                </option>
-              )}
-            </NativeSelect>
+            <div className='space-y-2 border-t pt-4'>
+              <p className='text-muted-foreground text-xs font-medium'>
+                {t('Account controls')}
+              </p>
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant={
+                    editing.status === 'disabled' ? 'outline' : 'destructive'
+                  }
+                  disabled={update.isPending}
+                  onClick={() =>
+                    act(
+                      editing,
+                      editing.status === 'disabled' ? 'restore' : 'disable'
+                    )
+                  }
+                >
+                  {editing.status === 'disabled'
+                    ? t('Restore affiliate')
+                    : t('Disable affiliate')}
+                </Button>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={update.isPending}
+                  onClick={() =>
+                    act(
+                      editing,
+                      editing.settlement_enabled
+                        ? 'freeze_settlement'
+                        : 'restore_settlement'
+                    )
+                  }
+                >
+                  {editing.settlement_enabled
+                    ? t('Freeze settlement')
+                    : t('Restore settlement')}
+                </Button>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={update.isPending}
+                  onClick={() =>
+                    act(
+                      editing,
+                      editing.withdrawal_enabled
+                        ? 'freeze_withdrawal'
+                        : 'restore_withdrawal'
+                    )
+                  }
+                >
+                  {editing.withdrawal_enabled
+                    ? t('Freeze withdrawals')
+                    : t('Restore withdrawals')}
+                </Button>
+                {editing.site_owner_since > 0 && (
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={update.isPending}
+                    onClick={() => act(editing, 'restore_referral')}
+                  >
+                    {t('Restore referral commission')}
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </Dialog>

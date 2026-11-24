@@ -1664,6 +1664,17 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 		if err := tx.Where("site_id = ?", siteID).First(&rate).Error; err != nil {
 			return common.NewMessage("Site invite rate is not configured")
 		}
+		effectiveRate := rate.Rate
+		if aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, siteID, inviterID); affErr != nil {
+			return affErr
+		} else if affFound {
+			if aff.Status == model.AdtySiteAffiliateStatusDisabled {
+				return common.NewMessage("This affiliate is disabled")
+			}
+			if aff.RateOverride != nil {
+				effectiveRate = *aff.RateOverride
+			}
+		}
 		var paid int64
 		if err := tx.Model(&model.TopUp{}).Where("user_id = ? AND status IN ?", inviteeID, []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}).Count(&paid).Error; err != nil {
 			return err
@@ -1700,12 +1711,61 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 			}
 			ancestorID = parent.InviterId
 		}
-		if err := refuseSiteInviteBatchTx(tx, siteID, inviterID, ipHash); err != nil {
+		if site.MarketingPolicy.BatchRegisterThreshold == nil {
+			if err := refuseSiteInviteBatchTx(tx, siteID, inviterID, ipHash); err != nil {
+				return err
+			}
+		}
+		trimmedIP := strings.TrimSpace(ipHash)
+		riskFlag := ""
+		if site.MarketingPolicy.SelfInviteWindowDays != nil && *site.MarketingPolicy.SelfInviteWindowDays > 0 && tx.Migrator().HasTable(&model.AdtyUserFingerprint{}) {
+			deviceHash := ""
+			var latestFP model.AdtyUserFingerprint
+			if tx.Where("user_id = ?", inviteeID).Order("id DESC").Limit(1).Find(&latestFP).RowsAffected > 0 {
+				deviceHash = strings.TrimSpace(latestFP.DeviceHash)
+				if trimmedIP == "" {
+					trimmedIP = strings.TrimSpace(latestFP.IpHash)
+				}
+			}
+			if trimmedIP != "" || deviceHash != "" {
+				since := time.Now().Unix() - (*site.MarketingPolicy.SelfInviteWindowDays)*86400
+				fpQ := tx.Model(&model.AdtyUserFingerprint{}).Where("user_id = ? AND created_at >= ?", inviterID, since)
+				switch {
+				case trimmedIP != "" && deviceHash != "":
+					fpQ = fpQ.Where("(ip_hash = ? OR device_hash = ?)", trimmedIP, deviceHash)
+				case trimmedIP != "":
+					fpQ = fpQ.Where("ip_hash = ?", trimmedIP)
+				default:
+					fpQ = fpQ.Where("device_hash = ?", deviceHash)
+				}
+				var fpMatches int64
+				if err := fpQ.Count(&fpMatches).Error; err == nil && fpMatches > 0 {
+					riskFlag = model.ReferralRiskSelfInvite
+					note := "self invite: invitee shares IP or device with the inviter"
+					_ = upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, false, model.ReferralRiskSelfInvite, note)
+					_ = upsertSiteReferralAffiliateRiskTx(tx, siteID, inviteeID, false, model.ReferralRiskSelfInvite, note)
+				}
+			}
+		}
+		if err := tx.Create(&model.AdtySiteInvite{
+			SiteId: siteID, InviterId: inviterID, InviteeId: inviteeID, Rate: effectiveRate, IpHash: trimmedIP, RiskFlag: riskFlag,
+		}).Error; err != nil {
 			return err
 		}
-		return tx.Create(&model.AdtySiteInvite{
-			SiteId: siteID, InviterId: inviterID, InviteeId: inviteeID, Rate: rate.Rate, IpHash: strings.TrimSpace(ipHash),
-		}).Error
+		if site.MarketingPolicy.BatchRegisterThreshold != nil && *site.MarketingPolicy.BatchRegisterThreshold > 0 && trimmedIP != "" {
+			hours := int64(24)
+			if site.MarketingPolicy.BatchRegisterWindowHours != nil && *site.MarketingPolicy.BatchRegisterWindowHours > 0 {
+				hours = *site.MarketingPolicy.BatchRegisterWindowHours
+			}
+			since := time.Now().Unix() - hours*3600
+			var recentCount int64
+			if err := tx.Model(&model.AdtySiteInvite{}).
+				Where("site_id = ? AND inviter_id = ? AND ip_hash = ? AND created_at >= ?", siteID, inviterID, trimmedIP, since).
+				Count(&recentCount).Error; err == nil && recentCount >= *site.MarketingPolicy.BatchRegisterThreshold {
+				_ = upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, true, model.ReferralRiskBatchRegister, "settlement frozen: several sign-ups from one IP")
+			}
+		}
+		return nil
 	})
 	if err == errSiteInviteNeedsReview {
 		if writeErr := recordSiteInviteBatchAnomaly(siteID, inviterID); writeErr != nil {

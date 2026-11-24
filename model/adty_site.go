@@ -55,6 +55,7 @@ type AdtySite struct {
 	AllowedGroups              string           `json:"allowed_groups" gorm:"type:text"`
 	Brand                      string           `json:"brand" gorm:"type:text"`
 	HomePageContent            string           `json:"home_page_content" gorm:"type:text"`
+	LegalDocs                  string           `json:"-" gorm:"type:text"`
 	BonusRates                 string           `json:"bonus_rates" gorm:"type:text"`
 	SeoIndex                   bool             `json:"seo_index"`
 	ArchivedHiddenAt           int64            `json:"archived_hidden_at" gorm:"index;not null;default:0"`
@@ -91,17 +92,65 @@ func (s *AdtySite) BeforeCreate(tx *gorm.DB) error {
 }
 
 type AdtySiteMarketingPolicy struct {
-	PendingCoverageCap   *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
-	CancelWindowMinutes  *int64           `json:"cancel_window_minutes" gorm:"column:invite_cancel_window_minutes"`
-	ObservationDays      *int64           `json:"observation_days"`
-	MinUSD               *decimal.Decimal `json:"min_usd" gorm:"column:invite_withdraw_min;type:decimal(20,8)"`
-	FeeUSD               *decimal.Decimal `json:"fee_usd" gorm:"column:invite_withdraw_fee;type:decimal(20,8)"`
-	CNYRate              *decimal.Decimal `json:"cny_rate" gorm:"column:invite_withdraw_cny_rate;type:decimal(20,8)"`
-	WithdrawMethods      *string          `json:"-" gorm:"column:invite_withdraw_methods;type:varchar(64)"`
-	WithdrawUSDTNetworks *string          `json:"-" gorm:"column:invite_withdraw_usdt_networks;type:varchar(128)"`
-	TrialGrantMaxUSD     *decimal.Decimal `json:"trial_grant_max_usd" gorm:"type:decimal(20,8)"`
-	TrialGrantDailyUSD   *decimal.Decimal `json:"trial_grant_daily_usd" gorm:"type:decimal(20,8)"`
+	PendingCoverageCap       *decimal.Decimal `json:"pending_coverage_cap" gorm:"type:decimal(20,8)"`
+	CancelWindowMinutes      *int64           `json:"cancel_window_minutes" gorm:"column:invite_cancel_window_minutes"`
+	ObservationDays          *int64           `json:"observation_days"`
+	CookieTTLDays            *int64           `json:"cookie_ttl_days" gorm:"column:invite_cookie_ttl_days"`
+	SelfInviteWindowDays     *int64           `json:"self_invite_window_days" gorm:"column:invite_self_invite_window_days"`
+	BatchRegisterThreshold   *int64           `json:"batch_register_threshold" gorm:"column:invite_batch_register_threshold"`
+	BatchRegisterWindowHours *int64           `json:"batch_register_window_hours" gorm:"column:invite_batch_register_window_hours"`
+	MinUSD                   *decimal.Decimal `json:"min_usd" gorm:"column:invite_withdraw_min;type:decimal(20,8)"`
+	FeeUSD                   *decimal.Decimal `json:"fee_usd" gorm:"column:invite_withdraw_fee;type:decimal(20,8)"`
+	CNYRate                  *decimal.Decimal `json:"cny_rate" gorm:"column:invite_withdraw_cny_rate;type:decimal(20,8)"`
+	WithdrawMethods          *string          `json:"-" gorm:"column:invite_withdraw_methods;type:varchar(64)"`
+	WithdrawUSDTNetworks     *string          `json:"-" gorm:"column:invite_withdraw_usdt_networks;type:varchar(128)"`
+	TrialGrantMaxUSD         *decimal.Decimal `json:"trial_grant_max_usd" gorm:"type:decimal(20,8)"`
+	TrialGrantDailyUSD       *decimal.Decimal `json:"trial_grant_daily_usd" gorm:"type:decimal(20,8)"`
 }
+
+const (
+	AdtySiteAffiliateStatusApproved = "approved"
+	AdtySiteAffiliateStatusDisabled = "disabled"
+)
+
+// AdtySiteReferralAffiliate stores per-affiliate controls on a subsite:
+// individual commission rate override (0..0.30, nil = site default),
+// disable/restore state, and settlement/withdrawal freeze flags.
+type AdtySiteReferralAffiliate struct {
+	Id                int64            `json:"id" gorm:"primaryKey"`
+	SiteId            int              `json:"site_id" gorm:"uniqueIndex:ux_adty_site_referral_aff,priority:1;index"`
+	UserId            int              `json:"user_id" gorm:"uniqueIndex:ux_adty_site_referral_aff,priority:2;index"`
+	RateOverride      *decimal.Decimal `json:"rate_override" gorm:"type:decimal(10,6)"`
+	Status            string           `json:"status" gorm:"type:varchar(24);not null;default:approved;index"`
+	SettlementEnabled bool             `json:"settlement_enabled" gorm:"not null;default:true"`
+	WithdrawalEnabled bool             `json:"withdrawal_enabled" gorm:"not null;default:true"`
+	RiskReason        string           `json:"risk_reason" gorm:"type:varchar(64)"`
+	RiskNote          string           `json:"risk_note" gorm:"type:text"`
+	DisabledBy        int              `json:"disabled_by"`
+	DisabledAt        int64            `json:"disabled_at"`
+	CreatedAt         int64            `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt         int64            `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
+func (AdtySiteReferralAffiliate) TableName() string { return "adty_site_referral_affiliates" }
+
+// AdtySiteReferralAuditLog records subsite referral administration actions
+// (settings changes, affiliate adjustments, withdrawal reviews/payouts, invite binds).
+type AdtySiteReferralAuditLog struct {
+	Id           int64  `json:"id" gorm:"primaryKey"`
+	SiteId       int    `json:"site_id" gorm:"index"`
+	Action       string `json:"action" gorm:"type:varchar(64);index"`
+	TargetUserId int    `json:"target_user_id" gorm:"index"`
+	OperatorId   int    `json:"operator_id" gorm:"index"`
+	Reason       string `json:"reason" gorm:"type:text"`
+	Ip           string `json:"ip" gorm:"type:varchar(64)"`
+	UserAgent    string `json:"user_agent" gorm:"type:text"`
+	OldValue     string `json:"old_value" gorm:"type:text"`
+	NewValue     string `json:"new_value" gorm:"type:text"`
+	CreatedAt    int64  `json:"created_at" gorm:"autoCreateTime;index"`
+}
+
+func (AdtySiteReferralAuditLog) TableName() string { return "adty_site_referral_audit_logs" }
 
 // AdtySiteInviteCode 是开站邀请码：有效就直接开成 active，并用码上预设的供货倍率。
 type AdtySiteInviteCode struct {
@@ -336,12 +385,22 @@ type AdtySiteLookup struct {
 
 func (AdtySiteLookup) TableName() string { return "adty_site_lookups" }
 
+// AdtySiteLegalDocs stores a subsite's own multilingual legal documents (en, zh-CN)
+// and refund policy visibility toggle. Subsites never fall back to main site legal docs.
+type AdtySiteLegalDocs struct {
+	UserAgreement       map[string]string `json:"user_agreement"`
+	PrivacyPolicy       map[string]string `json:"privacy_policy"`
+	RefundPolicy        map[string]string `json:"refund_policy"`
+	RefundPolicyEnabled bool              `json:"refund_policy_enabled"`
+}
+
 // AdtySiteTables 是分站的表，迁移和测试共用。
 func AdtySiteTables() []any {
 	return []any{&AdtySite{}, &AdtySiteInviteCode{}, &AdtySiteAudit{}, &AdtySiteCustomer{}, &AdtyUserSiteMigration{}, &AdtySitePrice{}, &AdtySitePriceScope{}, &AdtyPriceRevision{}, &AdtySiteDomain{},
 		&AdtySiteEarningDaily{}, &AdtySiteEarningLine{}, &AdtySiteEarningFact{}, &AdtySiteTrialGrant{}, &AdtySiteReport{}, &AdtySiteLookup{}, &AdtySiteSenderDomain{}, &AdtySenderDomainCleanup{},
 		&AdtySiteTier{}, &AdtySiteTierEvaluation{}, &AdtySiteTierPrincipalAdjustment{}, &AdtySiteWallet{}, &AdtySiteWalletLedger{}, &AdtySiteWithdrawal{}, &AdtySitePayoutAttempt{}, &AdtySiteStaff{}, &AdtySiteOwnership{},
-		&AdtySiteSettlementSheet{}, &AdtySettlementCoverageAdjustment{}, &AdtySettlementRevision{}, &AdtySettlementScan{}, &AdtySiteCloseMailBatch{}, &AdtySiteCloseMailRecipient{}, &AdtySiteCloseMailAttempt{}, &AdtyDomainCloudResource{}}
+		&AdtySiteSettlementSheet{}, &AdtySettlementCoverageAdjustment{}, &AdtySettlementRevision{}, &AdtySettlementScan{}, &AdtySiteCloseMailBatch{}, &AdtySiteCloseMailRecipient{}, &AdtySiteCloseMailAttempt{}, &AdtyDomainCloudResource{},
+		&AdtySiteReferralAffiliate{}, &AdtySiteReferralAuditLog{}, &AdtySiteMailConfig{}}
 }
 
 // AdtySetUsersSiteTx 把 fromSite 的客户全部改到 toSite（0 是主站），同事务撤销旧Key。

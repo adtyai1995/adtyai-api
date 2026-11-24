@@ -83,6 +83,8 @@ var auditSecretKeyNames = map[string]struct{}{
 	"bearer":               {},
 	"backup_codes":         {},
 	"backup_code":          {},
+	"smtp_token":           {},
+	"resend_api_key":       {},
 }
 
 // PrepareOfficialAuditLog validates G.13.2 first-class fields, redacts secrets,

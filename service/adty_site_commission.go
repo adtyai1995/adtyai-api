@@ -115,7 +115,7 @@ func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, 
 		if lookup.Error != nil {
 			return lookup.Error
 		}
-		if lookup.RowsAffected > 0 && invite.InviterId > 0 && invite.InviterId != userID {
+		if lookup.RowsAffected > 0 && invite.InviterId > 0 && invite.InviterId != userID && invite.RiskFlag != model.ReferralRiskSelfInvite {
 			if ext.CreatedAt <= 0 || invite.CreatedAt <= 0 || invite.CreatedAt <= ext.CreatedAt {
 				snap.InviterId = invite.InviterId
 			}
@@ -127,6 +127,25 @@ func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, 
 		}
 		snap.Enabled = rateLookup.RowsAffected > 0 && siteRate.Enabled
 		snap.Rate = siteRate.Rate
+		if snap.InviterId > 0 {
+			aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, siteID, snap.InviterId)
+			if affErr != nil {
+				return affErr
+			}
+			if affFound {
+				if aff.Status == model.AdtySiteAffiliateStatusDisabled {
+					snap.InviterId = 0
+				} else if aff.RateOverride != nil {
+					override := *aff.RateOverride
+					if override.IsNegative() {
+						override = decimal.Zero
+					} else if override.GreaterThan(adtySiteMaxReferralRate) {
+						override = adtySiteMaxReferralRate
+					}
+					snap.Rate = override
+				}
+			}
+		}
 		snap.PendingCoverageCap = site.MarketingPolicy.PendingCoverageCap
 		if site.MarketingPolicy.ObservationDays != nil {
 			snap.ObservationDays = *site.MarketingPolicy.ObservationDays
@@ -1022,6 +1041,11 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 		if !SiteInviteCommissionWithdrawable(&row, time.Now()) {
 			return common.NewMessage("No permission to perform this action")
 		}
+		if blocked, blockErr := isSiteReferralAffiliateWithdrawalBlockedTx(tx, row.SiteId, inviterID); blockErr != nil {
+			return blockErr
+		} else if blocked {
+			return common.NewMessage("Withdrawals are paused for this account")
+		}
 		remaining := siteInviteCommissionFree(&row)
 		if amount.GreaterThan(remaining) {
 			return common.NewMessage("Invalid parameters")
@@ -1090,9 +1114,16 @@ func adtyRecordSiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 }
 
 // ReleaseAdtySiteInviteCommissions marks covered rows available after observation.
+// Affiliates with settlement frozen on their site are skipped until restored.
 // It does not credit personal quota or a second commission account.
 func ReleaseAdtySiteInviteCommissions(now time.Time) error {
-	return model.DB.Model(&model.AdtySiteInviteCommission{}).
-		Where("status = ? AND available_at > 0 AND available_at <= ?", model.AdtySiteCommissionCovered, now.Unix()).
-		Update("status", model.AdtySiteCommissionAvailable).Error
+	query := model.DB.Model(&model.AdtySiteInviteCommission{}).
+		Where("status = ? AND available_at > 0 AND available_at <= ?", model.AdtySiteCommissionCovered, now.Unix())
+	if model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+		query = query.Where(
+			"NOT EXISTS (SELECT 1 FROM adty_site_referral_affiliates a WHERE a.site_id = adty_site_invite_commissions.site_id AND a.user_id = adty_site_invite_commissions.inviter_id AND a.settlement_enabled = ?)",
+			false,
+		)
+	}
+	return query.Update("status", model.AdtySiteCommissionAvailable).Error
 }

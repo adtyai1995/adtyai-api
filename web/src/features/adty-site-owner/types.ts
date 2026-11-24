@@ -88,6 +88,56 @@ export type OwnerBonusMethod = {
   rate: string
 }
 
+/** Per-site multilingual legal documents (en, zh-CN) + refund policy switch. */
+export type SiteLegalDocs = {
+  user_agreement: Record<string, string>
+  privacy_policy: Record<string, string>
+  refund_policy: Record<string, string>
+  refund_policy_enabled: boolean
+}
+
+export type SiteMailProvider = 'platform' | 'smtp' | 'resend'
+
+/** GET /api/adty/site/mail-config — secrets are never returned in plaintext. */
+export type SiteMailConfig = {
+  provider: SiteMailProvider
+  sender_name: string
+  smtp_server: string
+  smtp_port: number
+  smtp_account: string
+  smtp_from: string
+  smtp_sender_name: string
+  smtp_token_configured: boolean
+  smtp_ssl_enabled: boolean
+  smtp_starttls_enabled: boolean
+  smtp_insecure_skip_verify: boolean
+  smtp_force_auth_login: boolean
+  resend_from: string
+  resend_sender_name: string
+  resend_api_key_configured: boolean
+  updated_at?: number
+}
+
+export type SiteMailConfigUpdate = {
+  provider: SiteMailProvider
+  sender_name?: string
+  smtp_server?: string
+  smtp_port?: number
+  smtp_account?: string
+  smtp_from?: string
+  smtp_sender_name?: string
+  smtp_token?: string
+  clear_smtp_token?: boolean
+  smtp_ssl_enabled?: boolean
+  smtp_starttls_enabled?: boolean
+  smtp_insecure_skip_verify?: boolean
+  smtp_force_auth_login?: boolean
+  resend_from?: string
+  resend_sender_name?: string
+  resend_api_key?: string
+  clear_resend_api_key?: boolean
+}
+
 /** GET /api/adty/site/self (controller/adty_site_owner.go). */
 export type OwnerSite = {
   id: number
@@ -99,9 +149,13 @@ export type OwnerSite = {
   api_base_url?: string
   cost_factor: string
   custom_domain_enabled: boolean
+  domain_automation_enabled?: boolean
+  cname_target?: string
+  domain_mainland_target?: string
   sender_domain_enabled: boolean
   brand: SiteBrand
   home_page_content?: string
+  legal_docs?: SiteLegalDocs
   /** Payment methods Root authorized for this site's gift, with the owner's rule. */
   bonus_methods: OwnerBonusMethod[]
   seo_index: boolean

@@ -500,6 +500,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		// 自定义域名（任务 11.8）
 		{http.MethodGet, "/domains", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteDomains}},
 		{http.MethodPost, "/domains", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-domain"), controller.AddAdtySiteDomain}},
+		{http.MethodPost, "/domains/pair", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-domain"), controller.AddAdtySiteDomainPair}},
 		{http.MethodDelete, "/domains/:id", ownerSetWrite, []gin.HandlerFunc{controller.RemoveAdtySiteDomainWithProof}},
 		// 站长中心（任务 11.6、11.7）。接受协议不走站长中心的协议门。
 		{http.MethodPost, "/terms/accept", "profile:write", []gin.HandlerFunc{controller.AcceptAdtySiteTerms}},
@@ -559,7 +560,9 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPut, "/referral/enabled", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtyOwnerSiteReferralEnabled}},
 		{http.MethodGet, "/referral/overview", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferralOverview}},
 		{http.MethodGet, "/referral/affiliates", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferralAffiliates}},
+		{http.MethodPost, "/referral/affiliates/:user_id/update", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteReferralAffiliateUpdate}},
 		{http.MethodGet, "/referral/commissions", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferralCommissions}},
+		{http.MethodGet, "/referral/audit-logs", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferralAuditLogs}},
 		{http.MethodGet, "/referral/invites", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteInvites}},
 		{http.MethodPost, "/referral/invites", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteInvite}},
 		{http.MethodPost, "/referral/cover-pending", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteCoverageResume}},
@@ -576,10 +579,13 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/report", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-report"), controller.PostAdtyOwnerReport}},
 		{http.MethodGet, "/export", ownerLogRead, []gin.HandlerFunc{controller.GetAdtyOwnerExport}},
 		{http.MethodPost, "/logo", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-logo"), controller.UploadAdtySiteLogo}},
-		// 站长发件域名（任务 11.3）
+		// 站长发件域名（任务 11.3）与独立邮件配置（R-37）
 		{http.MethodGet, "/sender-domain", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteSenderDomain}},
 		{http.MethodPost, "/sender-domain", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-sender"), controller.AddAdtySiteSenderDomain}},
 		{http.MethodDelete, "/sender-domain", ownerSetWrite, []gin.HandlerFunc{controller.RemoveAdtySiteSenderDomainWithProof}},
+		{http.MethodGet, "/mail-config", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteMailConfig}},
+		{http.MethodPut, "/mail-config", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtySiteMailConfig}},
+		{http.MethodPost, "/mail-config/test", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-mail-test"), controller.PostAdtySiteMailConfigTest}},
 	} {
 		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api/adty/site"+route.path, "scope", route.scope)
 		owner.Handle(route.method, route.path, route.handlers...)

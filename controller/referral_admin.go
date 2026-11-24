@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -383,13 +384,24 @@ func UpdateReferralAffiliate(c *gin.Context) {
 				return err
 			}
 		}
+		oldSnap := map[string]any{
+			"rate_override":      affiliate.RateOverride,
+			"status":             affiliate.Status,
+			"settlement_enabled": affiliate.SettlementEnabled,
+			"withdrawal_enabled": affiliate.WithdrawalEnabled,
+			"site_owner_since":   affiliate.SiteOwnerSince,
+		}
 		updates := map[string]any{}
 		switch body.Action {
 		case "rate":
-			if body.Rate != nil && (*body.Rate < 0 || *body.Rate > 100) {
+			if body.Rate != nil && (math.IsNaN(*body.Rate) || math.IsInf(*body.Rate, 0) || *body.Rate < 0 || *body.Rate > 100) {
 				return common.NewMessage("The rate must be between 0 and 100")
 			}
-			updates["rate_override"] = body.Rate
+			if body.Rate == nil {
+				updates["rate_override"] = nil
+			} else {
+				updates["rate_override"] = *body.Rate
+			}
 		case "disable":
 			updates["status"], updates["disabled_at"], updates["disabled_by"] = model.ReferralAffiliateStatusDisabled, time.Now().Unix(), adminID
 		case "restore":
@@ -398,6 +410,9 @@ func UpdateReferralAffiliate(c *gin.Context) {
 			updates["settlement_enabled"] = body.Action == "restore_settlement"
 			if body.Action == "restore_settlement" {
 				updates["risk_reason"] = ""
+				updates["risk_note"] = ""
+			} else if note := strings.TrimSpace(body.Reason); note != "" {
+				updates["risk_note"] = note
 			}
 		case "freeze_withdrawal", "restore_withdrawal":
 			updates["withdrawal_enabled"] = body.Action == "restore_withdrawal"
@@ -442,6 +457,7 @@ func UpdateReferralAffiliate(c *gin.Context) {
 			if decimal.NewFromFloat(acc.AvailableAmount).Add(delta).IsNegative() {
 				return service.ErrReferralInsufficient
 			}
+			oldSnap = map[string]any{"available_amount": decimal.NewFromFloat(acc.AvailableAmount).Round(2).String()}
 			if err := service.AdjustAccountTx(tx, &acc, decimal.Zero, delta, decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
 				Type: "admin_adjust", RefType: "admin", RefId: fmt.Sprint(adminID), ExternalRefId: ref, Remark: strings.TrimSpace(body.Reason), Operator: fmt.Sprint(adminID),
 			}); err != nil {
@@ -457,7 +473,8 @@ func UpdateReferralAffiliate(c *gin.Context) {
 		}
 		return tx.Create(&model.ReferralAdminAuditLog{
 			Action: body.Action, TargetUserId: userID, AffiliateId: affiliate.Id, AdminUserId: adminID,
-			Reason: body.Reason, Ip: c.ClientIP(), UserAgent: c.Request.UserAgent(), NewValue: common.GetJsonString(body),
+			Reason: strings.TrimSpace(body.Reason), Ip: c.ClientIP(), UserAgent: c.Request.UserAgent(),
+			OldValue: common.GetJsonString(oldSnap), NewValue: common.GetJsonString(body),
 		}).Error
 	})
 	if err != nil {

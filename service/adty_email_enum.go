@@ -109,14 +109,16 @@ var (
 	// Registration codes may contain hex letters and are rendered as standalone text.
 	adtySystemEmailHexCodeText = regexp.MustCompile(`(?i)(>\s*)[0-9a-f]{6}(\s*<)`)
 
-	// AdtySystemEmailSender performs the underlying SMTP/Resend transport call.
-	// Tests may replace it to inject provider failures or inspect deliveries.
-	AdtySystemEmailSender = func(from, subject, to, content string) error {
+	defaultAdtySystemEmailSender = func(from, subject, to, content string) error {
 		if strings.TrimSpace(from) == "" {
 			return common.SendEmail(subject, to, content)
 		}
 		return common.SendEmailFrom(from, subject, to, content)
 	}
+
+	// AdtySystemEmailSender performs the underlying SMTP/Resend transport call.
+	// Tests may replace it to inject provider failures or inspect deliveries.
+	AdtySystemEmailSender = defaultAdtySystemEmailSender
 
 	// AdtySystemEmailAsyncDispatch controls whether async enqueue immediately
 	// schedules a background delivery attempt after persisting the outbox row.
@@ -425,6 +427,15 @@ func DeliverAdtySystemEmail(req AdtySystemEmailRequest) (*AdtySystemEmailDeliver
 	return row, sendErr
 }
 
+func adtyUsesDefaultSystemEmailSender() bool {
+	if AdtySystemEmailSender == nil {
+		return false
+	}
+	ptr := reflect.ValueOf(AdtySystemEmailSender).Pointer()
+	return ptr == reflect.ValueOf(defaultAdtySystemEmailSender).Pointer() ||
+		ptr == reflect.ValueOf(common.SendEmailFrom).Pointer()
+}
+
 func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now time.Time) error {
 	if row == nil {
 		return nil
@@ -472,7 +483,16 @@ func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now ti
 		}
 	}
 	attempts := row.Attempts + 1
-	sendErr := AdtySystemEmailSender(row.Sender, row.Subject, row.Recipient, content)
+	var sendErr error
+	if adtyUsesDefaultSystemEmailSender() && row.SiteId > 0 {
+		if site := AdtySiteById(row.SiteId); site != nil {
+			sendErr = AdtySendSiteEmail(site, row.Subject, row.Recipient, content)
+		} else {
+			sendErr = AdtySystemEmailSender(row.Sender, row.Subject, row.Recipient, content)
+		}
+	} else {
+		sendErr = AdtySystemEmailSender(row.Sender, row.Subject, row.Recipient, content)
+	}
 	row.Attempts = attempts
 	if sendErr == nil {
 		row.Status = AdtySystemEmailStatusSent

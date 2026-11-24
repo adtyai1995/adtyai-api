@@ -269,7 +269,7 @@ func Register(c *gin.Context) {
 		return
 	}
 	user := payload.User
-	if service.AdtyMainLegalConsentRequired() && !payload.AgreementAccepted {
+	if service.AdtyLegalConsentRequiredForRequest(c) && !payload.AgreementAccepted {
 		common.ApiErrorT(c, "Accept the current terms first")
 		return
 	}

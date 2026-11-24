@@ -29,6 +29,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
+import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
@@ -70,14 +71,18 @@ import {
   getOwnerSiteInvites,
   getOwnerSiteReferral,
   getOwnerSiteReferralAffiliates,
+  getOwnerSiteReferralAuditLogs,
   getOwnerSiteReferralCommissions,
   getOwnerSiteReferralOverview,
   OWNER_PAGE_SIZE,
   resumeOwnerSiteCoverage,
   siteOwnerKeys,
+  updateOwnerSiteReferralAffiliate,
+  type SiteReferralAffiliateAction,
   type SiteReferralAffiliateItem,
   type SiteReferralOverview,
 } from '../api'
+import { MAX_SITE_REFERRAL_RATE_PERCENT } from '../lib/site-owner'
 import { CommissionWithdrawalPanel } from './commission-withdrawal-panel'
 import { SiteReferralPanel } from './site-referral-panel'
 
@@ -151,6 +156,75 @@ function coverageStatusLabel(t: TFunction, status: string): string {
     default:
       return status
   }
+}
+
+function siteAuditActionLabel(t: TFunction, action: string): string {
+  switch (action) {
+    case 'settings_update':
+      return t('Updated referral settings')
+    case 'invite_bind':
+      return t('Bound invite manually')
+    case 'withdrawal_approve':
+      return t('Approved withdrawal')
+    case 'withdrawal_reject':
+      return t('Rejected withdrawal')
+    case 'withdrawal_pay':
+      return t('Marked withdrawal paid')
+    case 'rate':
+      return t('Changed affiliate rate')
+    case 'disable':
+      return t('Disabled affiliate')
+    case 'restore':
+      return t('Restored affiliate')
+    case 'freeze_settlement':
+      return t('Froze settlement')
+    case 'restore_settlement':
+      return t('Restored settlement')
+    case 'freeze_withdrawal':
+      return t('Froze withdrawals')
+    case 'restore_withdrawal':
+      return t('Restore withdrawals')
+    default:
+      return action
+  }
+}
+
+function auditSnippet(value: string) {
+  const text = (value || '').trim()
+  if (!text || text === 'null' || text === '{}') return ''
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text
+}
+
+function SiteAffiliateState(props: { affiliate: SiteReferralAffiliateItem }) {
+  const { t } = useTranslation()
+  const aff = props.affiliate
+  const disabled = aff.status === 'disabled'
+  const settlementFrozen = aff.settlement_enabled === false
+  const withdrawalFrozen = aff.withdrawal_enabled === false
+  if (!disabled && !settlementFrozen && !withdrawalFrozen) {
+    return <StatusBadge label={t('Normal')} variant='success' copyable={false} />
+  }
+  return (
+    <div className='flex flex-wrap gap-1'>
+      {disabled && (
+        <StatusBadge label={t('Disabled')} variant='neutral' copyable={false} />
+      )}
+      {settlementFrozen && (
+        <StatusBadge
+          label={t('Settlement frozen')}
+          variant='danger'
+          copyable={false}
+        />
+      )}
+      {withdrawalFrozen && (
+        <StatusBadge
+          label={t('Withdrawals frozen')}
+          variant='danger'
+          copyable={false}
+        />
+      )}
+    </div>
+  )
 }
 
 function SiteReferralKpiStrip(props: { data: SiteReferralOverview }) {
@@ -369,10 +443,30 @@ function SiteAffiliatesTab(props: {
   onViewCommissions: (affiliate: SiteReferralAffiliateItem) => void
 }) {
   const { t, i18n } = useTranslation()
+  const queryClient = useQueryClient()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
   const [search, setSearch] = useState('')
+  const [editing, setEditing] = useState<SiteReferralAffiliateItem | null>(null)
+  const [rate, setRate] = useState('')
+  const [reason, setReason] = useState('')
+
+  const openEditing = (row: SiteReferralAffiliateItem) => {
+    setEditing(row)
+    setRate(
+      row.rate_override === null || row.rate_override === undefined
+        ? ''
+        : String(row.rate_override)
+    )
+    setReason('')
+  }
+
+  const closeEditing = () => {
+    setEditing(null)
+    setRate('')
+    setReason('')
+  }
 
   const query = useQuery({
     queryKey: siteOwnerKeys.list('site-referral-affiliates', {
@@ -383,6 +477,42 @@ function SiteAffiliatesTab(props: {
       getOwnerSiteReferralAffiliates(page, OWNER_PAGE_SIZE, search),
     placeholderData: keepPreviousData,
   })
+
+  const trimmedRate = rate.trim()
+  const ownRate = trimmedRate === '' ? null : Number(trimmedRate)
+  const rateInvalid =
+    ownRate !== null &&
+    (!Number.isFinite(ownRate) ||
+      ownRate < 0 ||
+      ownRate > MAX_SITE_REFERRAL_RATE_PERCENT)
+
+  const update = useMutation({
+    mutationFn: (input: {
+      affiliate: SiteReferralAffiliateItem
+      action: SiteReferralAffiliateAction
+    }) =>
+      updateOwnerSiteReferralAffiliate(input.affiliate.user_id, {
+        action: input.action,
+        rate: input.action === 'rate' ? ownRate : undefined,
+        reason: reason.trim(),
+      }),
+    onSuccess: () => {
+      toast.success(t('Saved successfully'))
+      closeEditing()
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      void invalidateSidebarBadges(queryClient)
+    },
+    onError: (err) => handleServerError(err),
+  })
+
+  const act = (
+    affiliate: SiteReferralAffiliateItem,
+    action: SiteReferralAffiliateAction
+  ) => {
+    if (update.isPending) return
+    if (action === 'rate' && rateInvalid) return
+    update.mutate({ affiliate, action })
+  }
 
   return (
     <div className='flex flex-col gap-4 pt-3'>
@@ -398,7 +528,7 @@ function SiteAffiliatesTab(props: {
           className='w-64'
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
-          placeholder={t('Search by username or ID')}
+          placeholder={t('Invite code or username')}
           aria-label={t('Search')}
         />
         <Button variant='brand' type='submit'>
@@ -425,7 +555,7 @@ function SiteAffiliatesTab(props: {
       ) : (
         <>
           <StaticDataTable
-            tableClassName='min-w-[960px]'
+            tableClassName='min-w-[1100px]'
             tableProps={{ 'aria-label': t('Affiliates') }}
             data={query.data?.items ?? []}
             getRowKey={(row) => String(row.user_id)}
@@ -438,6 +568,28 @@ function SiteAffiliatesTab(props: {
                 header: t('Affiliate'),
                 cellClassName: 'font-medium tabular-nums',
                 cell: (row) => formatUserIdentity(row.user_id, row.username),
+              },
+              {
+                id: 'invite_code',
+                header: t('Invite code'),
+                cell: (row) => (
+                  <span className='font-mono text-xs'>
+                    {row.invite_code || '-'}
+                  </span>
+                ),
+              },
+              {
+                id: 'rate',
+                header: t('Rate'),
+                cell: (row) =>
+                  row.rate_override === null || row.rate_override === undefined
+                    ? t('Default')
+                    : `${row.rate_override}%`,
+              },
+              {
+                id: 'status',
+                header: t('Status'),
+                cell: (row) => <SiteAffiliateState affiliate={row} />,
               },
               {
                 id: 'invite_count',
@@ -461,13 +613,6 @@ function SiteAffiliatesTab(props: {
                 cell: (row) => formatUsd(Number(row.available ?? 0), locale),
               },
               {
-                id: 'frozen',
-                header: t('Withdrawing'),
-                className: 'text-right',
-                cellClassName: 'text-right tabular-nums',
-                cell: (row) => formatUsd(Number(row.frozen ?? 0), locale),
-              },
-              {
                 id: 'withdrawn',
                 header: t('Withdrawn'),
                 className: 'text-right',
@@ -482,18 +627,36 @@ function SiteAffiliatesTab(props: {
                 cell: (row) => formatUsd(Number(row.total_earned ?? 0), locale),
               },
               {
+                id: 'risk',
+                header: t('Risk'),
+                cell: (row) => (
+                  <span className='text-muted-foreground text-xs'>
+                    {row.risk_note || row.risk_reason || '-'}
+                  </span>
+                ),
+              },
+              {
                 id: 'actions',
                 header: t('Actions'),
                 className: 'text-right',
                 cellClassName: 'text-right',
                 cell: (row) => (
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    onClick={() => props.onViewCommissions(row)}
-                  >
-                    {t('View commissions')}
-                  </Button>
+                  <div className='flex justify-end gap-1'>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      onClick={() => props.onViewCommissions(row)}
+                    >
+                      {t('View commissions')}
+                    </Button>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      onClick={() => openEditing(row)}
+                    >
+                      {t('Adjust')}
+                    </Button>
+                  </div>
                 ),
               },
             ]}
@@ -506,6 +669,126 @@ function SiteAffiliatesTab(props: {
           />
         </>
       )}
+
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(open) => !open && closeEditing()}
+        title={t('Adjust affiliate')}
+        description={
+          editing
+            ? `${formatUserIdentity(editing.user_id, editing.username)}${
+                editing.invite_code ? ` · ${editing.invite_code}` : ''
+              }`
+            : ''
+        }
+      >
+        {editing && (
+          <div className='space-y-5'>
+            <div className='space-y-2'>
+              <Label htmlFor='site-adjust-reason'>{t('Reason')}</Label>
+              <Input
+                id='site-adjust-reason'
+                value={reason}
+                disabled={update.isPending}
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </div>
+            <div className='space-y-1.5'>
+              <div className='flex items-end gap-2'>
+                <div className='flex-1 space-y-2'>
+                  <Label htmlFor='site-adjust-rate'>
+                    {t('Own rate (%, max 30%), empty for site default')}
+                  </Label>
+                  <Input
+                    id='site-adjust-rate'
+                    type='number'
+                    min={0}
+                    max={MAX_SITE_REFERRAL_RATE_PERCENT}
+                    step='0.01'
+                    disabled={update.isPending}
+                    aria-invalid={rateInvalid}
+                    value={rate}
+                    onChange={(event) => setRate(event.target.value)}
+                  />
+                </div>
+                <Button
+                  type='button'
+                  disabled={update.isPending || rateInvalid}
+                  onClick={() => act(editing, 'rate')}
+                >
+                  {t('Set rate')}
+                </Button>
+              </div>
+              {rateInvalid && (
+                <p role='alert' className='text-destructive text-xs'>
+                  {t('Commission rate must be between 0% and 30%.')}
+                </p>
+              )}
+            </div>
+            <div className='space-y-2 border-t pt-4'>
+              <p className='text-muted-foreground text-xs font-medium'>
+                {t('Account controls')}
+              </p>
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant={
+                    editing.status === 'disabled' ? 'outline' : 'destructive'
+                  }
+                  disabled={update.isPending}
+                  onClick={() =>
+                    act(
+                      editing,
+                      editing.status === 'disabled' ? 'restore' : 'disable'
+                    )
+                  }
+                >
+                  {editing.status === 'disabled'
+                    ? t('Restore affiliate')
+                    : t('Disable affiliate')}
+                </Button>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={update.isPending}
+                  onClick={() =>
+                    act(
+                      editing,
+                      editing.settlement_enabled === false
+                        ? 'restore_settlement'
+                        : 'freeze_settlement'
+                    )
+                  }
+                >
+                  {editing.settlement_enabled === false
+                    ? t('Restore settlement')
+                    : t('Freeze settlement')}
+                </Button>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={update.isPending}
+                  onClick={() =>
+                    act(
+                      editing,
+                      editing.withdrawal_enabled === false
+                        ? 'restore_withdrawal'
+                        : 'freeze_withdrawal'
+                    )
+                  }
+                >
+                  {editing.withdrawal_enabled === false
+                    ? t('Restore withdrawals')
+                    : t('Freeze withdrawals')}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Dialog>
 
       <SiteManualBindingsCard />
     </div>
@@ -761,7 +1044,117 @@ function SiteCommissionsTab(props: {
   )
 }
 
-/** Unified subsite Promotion Management workspace matching main-site /admin-referral (R-34 #1). */
+function SiteAuditLogTab() {
+  const { t } = useTranslation()
+  const [page, setPage] = useState(1)
+  const query = useQuery({
+    queryKey: siteOwnerKeys.list('site-referral-audit-logs', { page }),
+    queryFn: () => getOwnerSiteReferralAuditLogs(page, OWNER_PAGE_SIZE),
+    placeholderData: keepPreviousData,
+  })
+  const rows = Array.isArray(query.data?.items) ? query.data.items : []
+
+  return (
+    <section className='flex flex-col gap-3 pt-4'>
+      <p className='text-muted-foreground max-w-2xl text-sm'>
+        {t(
+          'Records of withdrawal reviews, affiliate adjustments, invite bindings, and referral settings changes on this site.'
+        )}
+      </p>
+      {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
+      {query.isPending && !query.data ? (
+        <LoadingState />
+      ) : (
+        <>
+          <StaticDataTable
+            tableClassName='min-w-[900px]'
+            tableProps={{ 'aria-label': t('Admin activity') }}
+            data={rows}
+            getRowKey={(row) => String(row.id)}
+            emptyContent={
+              <EmptyState className='min-h-24' title={t('No records')} />
+            }
+            columns={[
+              {
+                id: 'time',
+                header: t('Time'),
+                cell: (row) => formatTimestamp(row.created_at),
+              },
+              {
+                id: 'action',
+                header: t('Action'),
+                cell: (row) => siteAuditActionLabel(t, row.action),
+              },
+              {
+                id: 'operator',
+                header: t('Operator'),
+                cellClassName: 'tabular-nums',
+                cell: (row) =>
+                  row.operator_id
+                    ? formatUserIdentity(row.operator_id, row.operator_username)
+                    : '—',
+              },
+              {
+                id: 'target',
+                header: t('Target'),
+                cellClassName: 'tabular-nums',
+                cell: (row) =>
+                  row.target_user_id
+                    ? formatUserIdentity(
+                        row.target_user_id,
+                        row.target_username
+                      )
+                    : '—',
+              },
+              {
+                id: 'reason',
+                header: t('Reason'),
+                cell: (row) => (
+                  <span className='text-xs break-words'>
+                    {row.reason || '—'}
+                  </span>
+                ),
+              },
+              {
+                id: 'change',
+                header: t('Change'),
+                cell: (row) => {
+                  const before = auditSnippet(row.old_value)
+                  const after = auditSnippet(row.new_value)
+                  if (!before && !after) return '—'
+                  return (
+                    <code
+                      className='text-muted-foreground font-mono text-xs break-all'
+                      title={`${row.old_value} → ${row.new_value}`}
+                    >
+                      {before ? `${before} → ` : ''}
+                      {after}
+                    </code>
+                  )
+                },
+              },
+              {
+                id: 'ip',
+                header: t('IP'),
+                cell: (row) => (
+                  <span className='font-mono text-xs'>{row.ip || '—'}</span>
+                ),
+              },
+            ]}
+          />
+          <PageSwitcher
+            page={page}
+            total={Number(query.data?.total) || 0}
+            pageSize={OWNER_PAGE_SIZE}
+            onPageChange={setPage}
+          />
+        </>
+      )}
+    </section>
+  )
+}
+
+/** Unified subsite Promotion Management workspace matching main-site /admin-referral (R-34 #1, R-37 #1). */
 export function SiteReferralAdmin() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -851,6 +1244,12 @@ export function SiteReferralAdmin() {
               {t('Commission details')}
             </TabsTrigger>
             <TabsTrigger
+              value='audit-logs'
+              className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
+            >
+              {t('Admin activity')}
+            </TabsTrigger>
+            <TabsTrigger
               value='settings'
               className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
             >
@@ -887,6 +1286,9 @@ export function SiteReferralAdmin() {
             affiliateFilter={commissionAffiliateFilter}
             onClearAffiliateFilter={() => setCommissionAffiliateFilter(null)}
           />
+        </TabsContent>
+        <TabsContent value='audit-logs'>
+          <SiteAuditLogTab />
         </TabsContent>
         <TabsContent value='settings' className='pt-4'>
           <SiteReferralPanel />

@@ -63,6 +63,24 @@ func AddAdtySiteDomain(c *gin.Context) {
 	common.ApiSuccess(c, domain)
 }
 
+// AddAdtySiteDomainPair 同时绑定站点域名和 API 地址：POST /api/adty/site/domains/pair {site_hostname, api_hostname}。
+func AddAdtySiteDomainPair(c *gin.Context) {
+	var body struct {
+		SiteHostname string `json:"site_hostname"`
+		APIHostname  string `json:"api_hostname"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	domains, err := service.AddAdtySiteDomainPair(c.Request.Context(), c.GetInt("id"), body.SiteHostname, body.APIHostname)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, domains)
+}
+
 // RemoveAdtySiteDomain 删除自定义域名：DELETE /api/adty/site/domains/:id（任务 11.8）。
 func RemoveAdtySiteDomain(c *gin.Context) {
 	id, ok := siteIdParam(c)

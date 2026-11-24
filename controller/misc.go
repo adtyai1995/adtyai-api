@@ -3,7 +3,6 @@ package controller
 import (
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	passkeysvc "github.com/QuantumNous/new-api/service/passkey"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -88,7 +88,8 @@ func GetStatus(c *gin.Context) {
 	}
 	passkeySetting := system_setting.PasskeySettingsSnapshot()
 	passkeyLoginAvailable := passkeySetting.Enabled && passkeysvc.IsAvailableForRequest(c.Request, "")
-	legalSetting := system_setting.GetLegalSettings()
+	userAgreementEnabled := service.AdtyMainLegalDocEnabled("user-agreement")
+	privacyPolicyEnabled := service.AdtyMainLegalDocEnabled("privacy-policy")
 	generalSetting := operation_setting.GetGeneralSetting()
 	isCurrencyDisplay := operation_setting.IsCurrencyDisplay()
 	quotaDisplayType := operation_setting.GetQuotaDisplayType()
@@ -156,8 +157,8 @@ func GetStatus(c *gin.Context) {
 		"passkey_user_verification": passkeySetting.UserVerification,
 		"passkey_attachment":        passkeySetting.AttachmentPreference,
 		"setup":                     constant.Setup,
-		"user_agreement_enabled":    legalSetting.UserAgreement != "",
-		"privacy_policy_enabled":    legalSetting.PrivacyPolicy != "",
+		"user_agreement_enabled":    userAgreementEnabled,
+		"privacy_policy_enabled":    privacyPolicyEnabled,
 		"log_export_enabled":        logSetting.UserExportEnabled,
 		"log_max_range_days":        logSetting.MaxRangeDays,
 		"quota_remind_enabled":      common.QuotaRemindEnabled,
@@ -205,8 +206,8 @@ func GetNotice(c *gin.Context) {
 }
 
 func GetAbout(c *gin.Context) {
-	if site := service.AdtySiteForRequest(c); site != nil {
-		serveRevalidatedJSON(c, html.EscapeString(service.AdtyBrandFor(site).Tagline))
+	if service.AdtySiteForRequest(c) != nil {
+		serveRevalidatedJSON(c, "")
 		return
 	}
 	common.OptionMapRWMutex.RLock()
@@ -216,10 +217,30 @@ func GetAbout(c *gin.Context) {
 }
 
 func GetUserAgreement(c *gin.Context) {
+	lang := service.AdtyRequestLegalLang(c)
+	if site := service.AdtySiteForRequest(c); site != nil {
+		legal := service.AdtySiteLegalFor(site)
+		serveRevalidatedJSON(c, service.AdtyResolveLegalText(legal.UserAgreement, lang))
+		return
+	}
+	if text := service.AdtyResolveLegalText(adty_setting.GetLegalSetting().UserAgreement, lang); text != "" {
+		serveRevalidatedJSON(c, text)
+		return
+	}
 	serveRevalidatedJSON(c, system_setting.GetLegalSettings().UserAgreement)
 }
 
 func GetPrivacyPolicy(c *gin.Context) {
+	lang := service.AdtyRequestLegalLang(c)
+	if site := service.AdtySiteForRequest(c); site != nil {
+		legal := service.AdtySiteLegalFor(site)
+		serveRevalidatedJSON(c, service.AdtyResolveLegalText(legal.PrivacyPolicy, lang))
+		return
+	}
+	if text := service.AdtyResolveLegalText(adty_setting.GetLegalSetting().PrivacyPolicy, lang); text != "" {
+		serveRevalidatedJSON(c, text)
+		return
+	}
 	serveRevalidatedJSON(c, system_setting.GetLegalSettings().PrivacyPolicy)
 }
 

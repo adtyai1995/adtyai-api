@@ -27,13 +27,14 @@ func GetAdtySite(c *gin.Context) {
 	var contact string
 	if site := service.AdtySiteForRequest(c); site != nil {
 		brand := service.AdtyBrandFor(site)
+		legal := service.AdtySiteLegalFor(site)
 		settings = adty_setting.SiteSetting{
 			APIBaseURL:          service.AdtySiteAPIBaseURL(site),
 			TawkPropertyID:      brand.TawkPropertyID,
 			TawkWidgetID:        brand.TawkWidgetID,
 			WalletNotice:        brand.WalletNotice,
 			VoucherPurchaseURL:  brand.VoucherPurchaseURL,
-			RefundPolicyEnabled: settings.RefundPolicyEnabled,
+			RefundPolicyEnabled: legal.RefundPolicyEnabled,
 		}
 		contact = strings.TrimSpace(brand.SupportContact)
 		if addr, err := mail.ParseAddress(contact); err == nil && addr.Address == contact {

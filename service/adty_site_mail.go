@@ -313,8 +313,19 @@ func adtyFormatSender(name, address string) string {
 // 用「站名 <noreply@站长发件域名>」；否则用「站名 <全局发件地址>」。SMTP 只能用全局发件地址，只换显示名。
 func AdtySenderFor(site *model.AdtySite) string {
 	name := AdtyBrandFor(site).Name
+	if site != nil {
+		if cfg, found, err := loadAdtySiteMailConfig(site.Id); err == nil && found && cfg != nil &&
+			(cfg.Provider == "" || cfg.Provider == model.AdtySiteMailProviderPlatform) &&
+			strings.TrimSpace(cfg.SenderName) != "" {
+			name = strings.TrimSpace(cfg.SenderName)
+		}
+		if strings.TrimSpace(name) == "" {
+			name = AdtySiteDisplayHost(site)
+		}
+	}
 	platform, provider := adtyPlatformSender()
-	if site != nil && resellerSetting().SenderDomainEnabled && provider == "resend" {
+	if site != nil && resellerSetting().SenderDomainEnabled && provider == "resend" &&
+		model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySiteSenderDomain{}) {
 		var domain model.AdtySiteSenderDomain
 		if model.DB.Where("site_id = ? AND status = ?", site.Id, model.AdtySenderDomainVerified).Limit(1).Find(&domain).RowsAffected > 0 {
 			return adtyFormatSender(name, "noreply@"+domain.Domain)
@@ -323,12 +334,15 @@ func AdtySenderFor(site *model.AdtySite) string {
 	return adtyFormatSender(name, platform)
 }
 
-// AdtySendSiteEmail 用站点的发件人发一封系统邮件；site 为 nil 时和上游 SendEmail 一样。
+// AdtySendSiteEmail 用站点的发件配置发一封系统邮件；site 为 nil 时和上游 SendEmail 一样。
 func AdtySendSiteEmail(site *model.AdtySite, subject, receiver, content string) error {
 	if site == nil {
 		return common.SendEmail(subject, receiver, content)
 	}
-	return common.SendEmailFrom(AdtySenderFor(site), subject, receiver, content)
+	if !adtyUsesDefaultDeliverSiteEmail() {
+		return AdtyDeliverSiteEmail(site, subject, receiver, content)
+	}
+	return sendSubsiteConfiguredEmail(site, subject, receiver, content)
 }
 
 var (
@@ -779,7 +793,7 @@ type AdtySiteCloseMailBatchView struct {
 }
 
 var defaultAdtyDeliverSiteEmail = func(site *model.AdtySite, subject, receiver, content string) error {
-	return AdtySendSiteEmail(site, subject, receiver, content)
+	return sendSubsiteConfiguredEmail(site, subject, receiver, content)
 }
 
 // AdtyDeliverSiteEmail is the official synchronous delivery used when a

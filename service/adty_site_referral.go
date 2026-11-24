@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/rand"
 	"errors"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -35,18 +36,22 @@ type AdtySiteReferralView struct {
 }
 
 type AdtySiteMarketingUpdate struct {
-	Rate                 *string   `json:"rate"`
-	Enabled              *bool     `json:"enabled"`
-	PendingCoverageCap   *string   `json:"pending_coverage_cap"`
-	CancelWindowMinutes  *string   `json:"cancel_window_minutes"`
-	ObservationDays      *string   `json:"observation_days"`
-	MinUSD               *string   `json:"min_usd"`
-	FeeUSD               *string   `json:"fee_usd"`
-	CNYRate              *string   `json:"cny_rate"`
-	WithdrawMethods      *[]string `json:"withdraw_methods"`
-	WithdrawUSDTNetworks *[]string `json:"withdraw_usdt_networks"`
-	TrialGrantMaxUSD     *string   `json:"trial_grant_max_usd"`
-	TrialGrantDailyUSD   *string   `json:"trial_grant_daily_usd"`
+	Rate                     *string   `json:"rate"`
+	Enabled                  *bool     `json:"enabled"`
+	PendingCoverageCap       *string   `json:"pending_coverage_cap"`
+	CancelWindowMinutes      *string   `json:"cancel_window_minutes"`
+	ObservationDays          *string   `json:"observation_days"`
+	CookieTTLDays            *string   `json:"cookie_ttl_days"`
+	SelfInviteWindowDays     *string   `json:"self_invite_window_days"`
+	BatchRegisterThreshold   *string   `json:"batch_register_threshold"`
+	BatchRegisterWindowHours *string   `json:"batch_register_window_hours"`
+	MinUSD                   *string   `json:"min_usd"`
+	FeeUSD                   *string   `json:"fee_usd"`
+	CNYRate                  *string   `json:"cny_rate"`
+	WithdrawMethods          *[]string `json:"withdraw_methods"`
+	WithdrawUSDTNetworks     *[]string `json:"withdraw_usdt_networks"`
+	TrialGrantMaxUSD         *string   `json:"trial_grant_max_usd"`
+	TrialGrantDailyUSD       *string   `json:"trial_grant_daily_usd"`
 }
 
 func parseSiteWithdrawList(raw *string) ([]string, bool) {
@@ -175,6 +180,12 @@ func lockOwnerSite(siteID, ownerID int) (*model.AdtySite, error) {
 
 // SaveAdtyOwnerSiteMarketing updates only the fields submitted by the owner.
 func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpdate) error {
+	return SaveAdtyOwnerSiteMarketingWithAudit(siteID, ownerID, input, "", "")
+}
+
+// SaveAdtyOwnerSiteMarketingWithAudit updates the owner's subsite referral settings
+// and records an audit entry in adty_site_referral_audit_logs.
+func SaveAdtyOwnerSiteMarketingWithAudit(siteID, ownerID int, input AdtySiteMarketingUpdate, ip, ua string) error {
 	if input.TrialGrantMaxUSD != nil || input.TrialGrantDailyUSD != nil {
 		return common.NewMessage("Trial credit budgets have been retired")
 	}
@@ -187,6 +198,21 @@ func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpda
 			return common.NewMessage("No permission to perform this action")
 		}
 		policy := site.MarketingPolicy
+		oldMethods, oldNetworks := effectiveSiteInviteWithdrawConfig(policy)
+		oldSnap := map[string]any{
+			"pending_coverage_cap":        policy.PendingCoverageCap,
+			"observation_days":            policy.ObservationDays,
+			"cancel_window_minutes":       policy.CancelWindowMinutes,
+			"cookie_ttl_days":             policy.CookieTTLDays,
+			"self_invite_window_days":     policy.SelfInviteWindowDays,
+			"batch_register_threshold":    policy.BatchRegisterThreshold,
+			"batch_register_window_hours": policy.BatchRegisterWindowHours,
+			"min_usd":                     policy.MinUSD,
+			"fee_usd":                     policy.FeeUSD,
+			"cny_rate":                    policy.CNYRate,
+			"withdraw_methods":            oldMethods,
+			"withdraw_usdt_networks":      oldNetworks,
+		}
 		updates := map[string]any{}
 		for _, field := range []struct {
 			input     *string
@@ -216,27 +242,43 @@ func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpda
 		}
 		if input.CancelWindowMinutes != nil {
 			raw := strings.TrimSpace(*input.CancelWindowMinutes)
+			policy.CancelWindowMinutes = nil
 			if raw == "" {
 				updates["invite_cancel_window_minutes"] = nil
 			} else {
-				minutes, err := strconv.ParseUint(raw, 10, 31)
-				if err != nil {
+				minutes, err := strconv.ParseInt(raw, 10, 32)
+				if err != nil || minutes < 0 {
 					return common.NewMessage("Invalid parameters")
 				}
+				policy.CancelWindowMinutes = &minutes
 				updates["invite_cancel_window_minutes"] = minutes
 			}
 		}
-		if input.ObservationDays != nil {
-			raw := strings.TrimSpace(*input.ObservationDays)
-			policy.ObservationDays = nil
+		for _, intField := range []struct {
+			input  *string
+			dest   **int64
+			column string
+			minVal int64
+		}{
+			{input.ObservationDays, &policy.ObservationDays, "observation_days", 0},
+			{input.CookieTTLDays, &policy.CookieTTLDays, "invite_cookie_ttl_days", 1},
+			{input.SelfInviteWindowDays, &policy.SelfInviteWindowDays, "invite_self_invite_window_days", 1},
+			{input.BatchRegisterThreshold, &policy.BatchRegisterThreshold, "invite_batch_register_threshold", 0},
+			{input.BatchRegisterWindowHours, &policy.BatchRegisterWindowHours, "invite_batch_register_window_hours", 1},
+		} {
+			if intField.input == nil {
+				continue
+			}
+			raw := strings.TrimSpace(*intField.input)
+			*intField.dest = nil
 			if raw != "" {
-				days, err := strconv.ParseInt(raw, 10, 32)
-				if err != nil || days < 0 {
+				val, err := strconv.ParseInt(raw, 10, 32)
+				if err != nil || val < intField.minVal {
 					return common.NewMessage("Invalid parameters")
 				}
-				policy.ObservationDays = &days
+				*intField.dest = &val
 			}
-			updates["observation_days"] = policy.ObservationDays
+			updates[intField.column] = *intField.dest
 		}
 		if input.WithdrawMethods != nil {
 			methods, ok := adty_setting.NormalizeReferralWithdrawMethods(*input.WithdrawMethods)
@@ -297,6 +339,10 @@ func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpda
 		if lookup.Error != nil {
 			return lookup.Error
 		}
+		if lookup.RowsAffected > 0 {
+			oldSnap["rate"] = rate.Rate.String()
+			oldSnap["enabled"] = rate.Enabled
+		}
 		if input.Rate != nil {
 			value, err := parseSiteMarketingDecimal(*input.Rate)
 			if err != nil || value.IsNegative() || !value.Equal(value.Round(6)) {
@@ -320,13 +366,14 @@ func SaveAdtyOwnerSiteMarketing(siteID, ownerID int, input AdtySiteMarketingUpda
 			}
 		}
 		if input.Rate != nil || input.Enabled != nil {
-			if lookup.RowsAffected == 0 && input.Rate == nil {
-				return nil
+			if lookup.RowsAffected > 0 || input.Rate != nil {
+				rate.SiteId = siteID
+				if err := tx.Save(&rate).Error; err != nil {
+					return err
+				}
 			}
-			rate.SiteId = siteID
-			return tx.Save(&rate).Error
 		}
-		return nil
+		return recordSiteReferralAuditTx(tx, siteID, "settings_update", 0, ownerID, "", ip, ua, oldSnap, input)
 	})
 }
 
@@ -379,10 +426,24 @@ func BindAdtyOwnerSiteInvite(siteID, ownerID, inviterID, inviteeID int) error {
 
 // BindAdtyOwnerSiteInviteFromIP is the owner bind with the visitor IP hash.
 func BindAdtyOwnerSiteInviteFromIP(siteID, ownerID, inviterID, inviteeID int, ipHash string) error {
+	return BindAdtyOwnerSiteInviteFromIPWithAudit(siteID, ownerID, inviterID, inviteeID, ipHash, "", "")
+}
+
+// BindAdtyOwnerSiteInviteFromIPWithAudit binds an invite for the owner's site and logs an audit entry.
+func BindAdtyOwnerSiteInviteFromIPWithAudit(siteID, ownerID, inviterID, inviteeID int, ipHash, ip, ua string) error {
 	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
 		return err
 	}
-	return BindSiteInviteFromIP(siteID, inviterID, inviteeID, ipHash)
+	if err := BindSiteInviteFromIP(siteID, inviterID, inviteeID, ipHash); err != nil {
+		return err
+	}
+	if model.DB != nil {
+		_ = recordSiteReferralAuditTx(model.DB, siteID, "invite_bind", inviteeID, ownerID, "", ip, ua, nil, map[string]any{
+			"inviter_id": inviterID,
+			"invitee_id": inviteeID,
+		})
+	}
+	return nil
 }
 
 // SaveAdtyOwnerSiteTeamDiscount updates one site team's supply-price multiplier.
@@ -640,7 +701,17 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		inviteURL = baseURL + inviteURL
 	}
 	rateConfigured := rateLookup.RowsAffected > 0
-	enabled := rateConfigured && rateRow.Enabled && rateRow.Rate.IsPositive()
+	effectiveRate := rateRow.Rate
+	affiliateDisabled := false
+	if aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, site.Id, user.Id); affErr == nil && found {
+		if aff.Status == model.AdtySiteAffiliateStatusDisabled {
+			affiliateDisabled = true
+		}
+		if aff.RateOverride != nil {
+			effectiveRate = *aff.RateOverride
+		}
+	}
+	enabled := rateConfigured && rateRow.Enabled && effectiveRate.IsPositive() && !affiliateDisabled
 	siteOpen := site.Status != model.AdtySiteStatusClosed && site.Status != model.AdtySiteStatusClosing
 	profile := &AdtySiteCustomerReferralProfile{
 		SiteId:             site.Id,
@@ -656,11 +727,11 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		Invites:            invites,
 		HasInviter:         hasInviter,
 		InviterUsername:    inviterUsername,
-		CanBind:            !hasInviter && paid == 0 && enabled && siteOpen,
+		CanBind:            !hasInviter && paid == 0 && rateConfigured && rateRow.Enabled && rateRow.Rate.IsPositive() && siteOpen,
 	}
 	if rateConfigured {
-		profile.Rate = rateRow.Rate.String()
-		profile.RatePercent = rateRow.Rate.Mul(decimal.NewFromInt(100)).String()
+		profile.Rate = effectiveRate.String()
+		profile.RatePercent = effectiveRate.Mul(decimal.NewFromInt(100)).String()
 	}
 	return profile, nil
 }
@@ -739,15 +810,22 @@ type AdtyOwnerSiteReferralOverview struct {
 
 // AdtySiteAffiliateRow is one inviter summary row for the subsite owner's referral console.
 type AdtySiteAffiliateRow struct {
-	UserId      int    `json:"user_id"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name,omitempty"`
-	InviteCount int64  `json:"invite_count"`
-	Pending     string `json:"pending"`
-	Available   string `json:"available"`
-	Frozen      string `json:"frozen"`
-	Withdrawn   string `json:"withdrawn"`
-	TotalEarned string `json:"total_earned"`
+	UserId            int      `json:"user_id"`
+	Username          string   `json:"username"`
+	DisplayName       string   `json:"display_name,omitempty"`
+	InviteCode        string   `json:"invite_code,omitempty"`
+	RateOverride      *float64 `json:"rate_override"`
+	Status            string   `json:"status"`
+	SettlementEnabled bool     `json:"settlement_enabled"`
+	WithdrawalEnabled bool     `json:"withdrawal_enabled"`
+	RiskReason        string   `json:"risk_reason,omitempty"`
+	RiskNote          string   `json:"risk_note,omitempty"`
+	InviteCount       int64    `json:"invite_count"`
+	Pending           string   `json:"pending"`
+	Available         string   `json:"available"`
+	Frozen            string   `json:"frozen"`
+	Withdrawn         string   `json:"withdrawn"`
+	TotalEarned       string   `json:"total_earned"`
 }
 
 // AdtyOwnerSiteCommissionRow is one subsite invite commission row enriched for the site owner.
@@ -1008,6 +1086,18 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 	for _, uid := range commInviters {
 		affiliateSet[uid] = struct{}{}
 	}
+	if model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+		var configuredAffs []int
+		if err := model.DB.Model(&model.AdtySiteReferralAffiliate{}).
+			Where("site_id = ? AND user_id > 0", siteID).
+			Distinct("user_id").
+			Pluck("user_id", &configuredAffs).Error; err != nil {
+			return nil, 0, err
+		}
+		for _, uid := range configuredAffs {
+			affiliateSet[uid] = struct{}{}
+		}
+	}
 	if len(affiliateSet) == 0 {
 		return []AdtySiteAffiliateRow{}, 0, nil
 	}
@@ -1017,11 +1107,31 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 		filteredIDs = append(filteredIDs, uid)
 	}
 
+	inviteCodes := map[int]string{}
+	loadInviteCodes := func(ids []int) error {
+		if len(ids) == 0 || !model.DB.Migrator().HasTable(&model.AdtySiteCustomer{}) {
+			return nil
+		}
+		var custs []model.AdtySiteCustomer
+		if err := model.DB.Select("user_id", "invite_code").Where("site_id = ? AND user_id IN ?", siteID, ids).Find(&custs).Error; err != nil {
+			return err
+		}
+		for _, c := range custs {
+			if c.InviteCode != nil {
+				inviteCodes[c.UserId] = strings.TrimSpace(*c.InviteCode)
+			}
+		}
+		return nil
+	}
+
 	var userSummaries map[int]adtySiteReferralUserSummary
 	if q = strings.TrimSpace(q); q != "" {
 		var err error
 		userSummaries, err = loadSiteReferralUserSummaries(filteredIDs)
 		if err != nil {
+			return nil, 0, err
+		}
+		if err := loadInviteCodes(filteredIDs); err != nil {
 			return nil, 0, err
 		}
 		lowerQ := strings.ToLower(q)
@@ -1030,9 +1140,11 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 		matched := make([]int, 0, len(filteredIDs))
 		for _, uid := range filteredIDs {
 			u := userSummaries[uid]
+			code := strings.ToLower(inviteCodes[uid])
 			if (hasID && uid == parsedID) ||
 				strings.Contains(strings.ToLower(u.Username), lowerQ) ||
-				strings.Contains(strings.ToLower(u.DisplayName), lowerQ) {
+				strings.Contains(strings.ToLower(u.DisplayName), lowerQ) ||
+				(code != "" && strings.Contains(code, lowerQ)) {
 				matched = append(matched, uid)
 			}
 		}
@@ -1061,6 +1173,20 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 		userSummaries, err = loadSiteReferralUserSummaries(pageIDs)
 		if err != nil {
 			return nil, 0, err
+		}
+		if err := loadInviteCodes(pageIDs); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	affControls := map[int]model.AdtySiteReferralAffiliate{}
+	if model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+		var affRows []model.AdtySiteReferralAffiliate
+		if err := model.DB.Where("site_id = ? AND user_id IN ?", siteID, pageIDs).Find(&affRows).Error; err != nil {
+			return nil, 0, err
+		}
+		for _, r := range affRows {
+			affControls[r.UserId] = r
 		}
 	}
 
@@ -1139,16 +1265,42 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 		u := userSummaries[uid]
 		agg := totalsByUser[uid]
 		withdrawn := decimal.Max(agg.cashPaid, agg.commWithdrawn).Add(decimal.Max(agg.balancePaid, agg.commConverted))
+		status := model.AdtySiteAffiliateStatusApproved
+		settlementEnabled := true
+		withdrawalEnabled := true
+		var rateOverridePct *float64
+		riskReason := ""
+		riskNote := ""
+		if ctrl, ok := affControls[uid]; ok {
+			if ctrl.Status != "" {
+				status = ctrl.Status
+			}
+			settlementEnabled = ctrl.SettlementEnabled
+			withdrawalEnabled = ctrl.WithdrawalEnabled
+			riskReason = ctrl.RiskReason
+			riskNote = ctrl.RiskNote
+			if ctrl.RateOverride != nil {
+				pct, _ := ctrl.RateOverride.Mul(decimal.NewFromInt(100)).Round(4).Float64()
+				rateOverridePct = &pct
+			}
+		}
 		items = append(items, AdtySiteAffiliateRow{
-			UserId:      uid,
-			Username:    u.Username,
-			DisplayName: u.DisplayName,
-			InviteCount: inviteCounts[uid],
-			Pending:     agg.pending.StringFixed(2),
-			Available:   agg.available.StringFixed(2),
-			Frozen:      agg.frozen.StringFixed(2),
-			Withdrawn:   withdrawn.StringFixed(2),
-			TotalEarned: agg.totalEarned.StringFixed(2),
+			UserId:            uid,
+			Username:          u.Username,
+			DisplayName:       u.DisplayName,
+			InviteCode:        inviteCodes[uid],
+			RateOverride:      rateOverridePct,
+			Status:            status,
+			SettlementEnabled: settlementEnabled,
+			WithdrawalEnabled: withdrawalEnabled,
+			RiskReason:        riskReason,
+			RiskNote:          riskNote,
+			InviteCount:       inviteCounts[uid],
+			Pending:           agg.pending.StringFixed(2),
+			Available:         agg.available.StringFixed(2),
+			Frozen:            agg.frozen.StringFixed(2),
+			Withdrawn:         withdrawn.StringFixed(2),
+			TotalEarned:       agg.totalEarned.StringFixed(2),
 		})
 	}
 	return items, total, nil
@@ -1288,6 +1440,288 @@ func ListAdtyOwnerSiteReferralCommissions(siteID int, status, q string, offset, 
 			SettleAt:        row.AvailableAt,
 			CreatedAt:       row.CreatedAt,
 			OfficialStates:  states,
+		})
+	}
+	return items, total, nil
+}
+
+func loadSiteReferralAffiliateTx(tx *gorm.DB, siteID, userID int) (model.AdtySiteReferralAffiliate, bool, error) {
+	if tx == nil || siteID <= 0 || userID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+		return model.AdtySiteReferralAffiliate{}, false, nil
+	}
+	var row model.AdtySiteReferralAffiliate
+	res := tx.Where("site_id = ? AND user_id = ?", siteID, userID).Limit(1).Find(&row)
+	if res.Error != nil {
+		return model.AdtySiteReferralAffiliate{}, false, res.Error
+	}
+	return row, res.RowsAffected > 0, nil
+}
+
+func isSiteReferralAffiliateWithdrawalBlockedTx(tx *gorm.DB, siteID, userID int) (bool, error) {
+	aff, found, err := loadSiteReferralAffiliateTx(tx, siteID, userID)
+	if err != nil || !found {
+		return false, err
+	}
+	return aff.Status == model.AdtySiteAffiliateStatusDisabled || !aff.WithdrawalEnabled, nil
+}
+
+func recordSiteReferralAuditTx(tx *gorm.DB, siteID int, action string, targetUserID, operatorID int, reason, ip, ua string, oldValue, newValue any) error {
+	if tx == nil || siteID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteReferralAuditLog{}) {
+		return nil
+	}
+	oldJSON := ""
+	if oldValue != nil {
+		oldJSON = common.GetJsonString(oldValue)
+	}
+	newJSON := ""
+	if newValue != nil {
+		newJSON = common.GetJsonString(newValue)
+	}
+	return tx.Create(&model.AdtySiteReferralAuditLog{
+		SiteId:       siteID,
+		Action:       strings.TrimSpace(action),
+		TargetUserId: targetUserID,
+		OperatorId:   operatorID,
+		Reason:       truncateText(reason, 1000),
+		Ip:           truncateText(ip, 64),
+		UserAgent:    truncateText(ua, 512),
+		OldValue:     oldJSON,
+		NewValue:     newJSON,
+	}).Error
+}
+
+func upsertSiteReferralAffiliateRiskTx(tx *gorm.DB, siteID, userID int, freezeSettlement bool, riskReason, riskNote string) error {
+	if tx == nil || siteID <= 0 || userID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+		return nil
+	}
+	var row model.AdtySiteReferralAffiliate
+	lookup := model.AdtyLockForUpdate(tx).Where("site_id = ? AND user_id = ?", siteID, userID).Limit(1).Find(&row)
+	if lookup.Error != nil {
+		return lookup.Error
+	}
+	if lookup.RowsAffected == 0 {
+		row = model.AdtySiteReferralAffiliate{
+			SiteId:            siteID,
+			UserId:            userID,
+			Status:            model.AdtySiteAffiliateStatusApproved,
+			SettlementEnabled: !freezeSettlement,
+			WithdrawalEnabled: true,
+			RiskReason:        riskReason,
+			RiskNote:          riskNote,
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+		if freezeSettlement {
+			return tx.Model(&model.AdtySiteReferralAffiliate{}).Where("id = ?", row.Id).Update("settlement_enabled", false).Error
+		}
+		return nil
+	}
+	updates := map[string]any{}
+	if freezeSettlement {
+		updates["settlement_enabled"] = false
+	}
+	if riskReason != "" {
+		updates["risk_reason"] = riskReason
+	}
+	if riskNote != "" {
+		updates["risk_note"] = riskNote
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return tx.Model(&model.AdtySiteReferralAffiliate{}).Where("id = ?", row.Id).Updates(updates).Error
+}
+
+// AdtySiteAffiliateUpdateInput carries one owner adjustment to a single subsite affiliate.
+type AdtySiteAffiliateUpdateInput struct {
+	Action string   `json:"action"` // rate | disable | restore | freeze_settlement | restore_settlement | freeze_withdrawal | restore_withdrawal
+	Rate   *float64 `json:"rate"`   // percentage 0..30; nil restores site default
+	Reason string   `json:"reason"`
+}
+
+// UpdateAdtyOwnerSiteReferralAffiliate adjusts one affiliate on the owner's site
+// (rate override <= 30%, disable/restore, freeze/restore settlement, freeze/restore withdrawal)
+// and records the change in adty_site_referral_audit_logs.
+func UpdateAdtyOwnerSiteReferralAffiliate(siteID, ownerID, targetUserID int, input AdtySiteAffiliateUpdateInput, ip, ua string) error {
+	if siteID <= 0 || ownerID <= 0 || targetUserID <= 0 || targetUserID == ownerID {
+		return common.NewMessage("Invalid parameters")
+	}
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+			return err
+		}
+		if site.OwnerUserId != ownerID || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused) {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var target model.User
+		if err := tx.Select("id", "site_id", "staff_site_id").First(&target, targetUserID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.NewMessage("User not found")
+			}
+			return err
+		}
+		belongs := target.SiteId == siteID && target.StaffSiteId == 0
+		if !belongs {
+			var invCount int64
+			if err := tx.Model(&model.AdtySiteInvite{}).Where("site_id = ? AND inviter_id = ?", siteID, targetUserID).Count(&invCount).Error; err != nil {
+				return err
+			}
+			var commCount int64
+			if err := tx.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ? AND inviter_id = ?", siteID, targetUserID).Count(&commCount).Error; err != nil {
+				return err
+			}
+			belongs = invCount > 0 || commCount > 0
+		}
+		if !belongs {
+			return common.NewMessage("No permission to perform this action")
+		}
+		var aff model.AdtySiteReferralAffiliate
+		lookup := model.AdtyLockForUpdate(tx).Where("site_id = ? AND user_id = ?", siteID, targetUserID).Limit(1).Find(&aff)
+		if lookup.Error != nil {
+			return lookup.Error
+		}
+		if lookup.RowsAffected == 0 {
+			aff = model.AdtySiteReferralAffiliate{
+				SiteId:            siteID,
+				UserId:            targetUserID,
+				Status:            model.AdtySiteAffiliateStatusApproved,
+				SettlementEnabled: true,
+				WithdrawalEnabled: true,
+			}
+			if err := tx.Create(&aff).Error; err != nil {
+				return err
+			}
+		}
+		var oldRatePct *float64
+		if aff.RateOverride != nil {
+			pct, _ := aff.RateOverride.Mul(decimal.NewFromInt(100)).Round(4).Float64()
+			oldRatePct = &pct
+		}
+		oldSnap := map[string]any{
+			"rate_override":      oldRatePct,
+			"status":             aff.Status,
+			"settlement_enabled": aff.SettlementEnabled,
+			"withdrawal_enabled": aff.WithdrawalEnabled,
+		}
+		updates := map[string]any{}
+		switch input.Action {
+		case "rate":
+			if input.Rate == nil {
+				updates["rate_override"] = nil
+			} else {
+				if math.IsNaN(*input.Rate) || math.IsInf(*input.Rate, 0) || *input.Rate < 0 {
+					return common.NewMessage("Enter an invite rate between 0 and 0.3 with up to six decimal places")
+				}
+				if *input.Rate > 30 {
+					return ErrAdtySiteReferralRateLimit
+				}
+				dec := decimal.NewFromFloat(*input.Rate).Div(decimal.NewFromInt(100)).Round(6)
+				if dec.GreaterThan(adtySiteMaxReferralRate) {
+					return ErrAdtySiteReferralRateLimit
+				}
+				updates["rate_override"] = dec
+			}
+		case "disable":
+			updates["status"] = model.AdtySiteAffiliateStatusDisabled
+			updates["disabled_by"] = ownerID
+			updates["disabled_at"] = time.Now().Unix()
+		case "restore":
+			updates["status"] = model.AdtySiteAffiliateStatusApproved
+			updates["disabled_by"] = 0
+			updates["disabled_at"] = 0
+		case "freeze_settlement":
+			updates["settlement_enabled"] = false
+			if note := strings.TrimSpace(input.Reason); note != "" {
+				updates["risk_note"] = note
+			}
+		case "restore_settlement":
+			updates["settlement_enabled"] = true
+			updates["risk_reason"] = ""
+			updates["risk_note"] = ""
+		case "freeze_withdrawal":
+			updates["withdrawal_enabled"] = false
+		case "restore_withdrawal":
+			updates["withdrawal_enabled"] = true
+		default:
+			return common.NewMessage("Invalid parameters")
+		}
+		if err := tx.Model(&model.AdtySiteReferralAffiliate{}).Where("id = ?", aff.Id).Updates(updates).Error; err != nil {
+			return err
+		}
+		return recordSiteReferralAuditTx(tx, siteID, input.Action, targetUserID, ownerID, input.Reason, ip, ua, oldSnap, input)
+	})
+}
+
+// AdtySiteReferralAuditLogItem is one subsite referral activity row matching main-site AuditLogPanel.
+type AdtySiteReferralAuditLogItem struct {
+	Id               int64  `json:"id"`
+	SiteId           int    `json:"site_id"`
+	Action           string `json:"action"`
+	OperatorId       int    `json:"operator_id"`
+	OperatorUsername string `json:"operator_username"`
+	TargetUserId     int    `json:"target_user_id"`
+	TargetUsername   string `json:"target_username"`
+	Reason           string `json:"reason"`
+	OldValue         string `json:"old_value"`
+	NewValue         string `json:"new_value"`
+	Ip               string `json:"ip"`
+	CreatedAt        int64  `json:"created_at"`
+}
+
+// ListAdtyOwnerSiteReferralAuditLogs lists subsite referral activity newest first.
+func ListAdtyOwnerSiteReferralAuditLogs(siteID, offset, limit int) ([]AdtySiteReferralAuditLogItem, int64, error) {
+	if siteID <= 0 {
+		return nil, 0, common.NewMessage("Invalid parameters")
+	}
+	if !model.DB.Migrator().HasTable(&model.AdtySiteReferralAuditLog{}) {
+		return []AdtySiteReferralAuditLogItem{}, 0, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	query := model.DB.Model(&model.AdtySiteReferralAuditLog{}).Where("site_id = ?", siteID)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []AdtySiteReferralAuditLogItem{}, 0, nil
+	}
+	var rows []model.AdtySiteReferralAuditLog
+	if err := query.Order("id DESC").Offset(offset).Limit(limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	ids := make([]int, 0, len(rows)*2)
+	for _, r := range rows {
+		ids = append(ids, r.OperatorId, r.TargetUserId)
+	}
+	users, err := loadSiteReferralUserSummaries(ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	items := make([]AdtySiteReferralAuditLogItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, AdtySiteReferralAuditLogItem{
+			Id:               r.Id,
+			SiteId:           r.SiteId,
+			Action:           r.Action,
+			OperatorId:       r.OperatorId,
+			OperatorUsername: users[r.OperatorId].Username,
+			TargetUserId:     r.TargetUserId,
+			TargetUsername:   users[r.TargetUserId].Username,
+			Reason:           r.Reason,
+			OldValue:         r.OldValue,
+			NewValue:         r.NewValue,
+			Ip:               r.Ip,
+			CreatedAt:        r.CreatedAt,
 		})
 	}
 	return items, total, nil

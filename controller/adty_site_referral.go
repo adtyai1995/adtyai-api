@@ -130,7 +130,7 @@ func PutAdtyOwnerSiteReferral(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveAdtyOwnerSiteMarketing(site.Id, c.GetInt("id"), body); err != nil {
+	if err := service.SaveAdtyOwnerSiteMarketingWithAudit(site.Id, c.GetInt("id"), body, c.ClientIP(), c.Request.UserAgent()); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -503,7 +503,7 @@ func PutAdtyOwnerSiteReferralEnabled(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SaveAdtyOwnerSiteMarketing(site.Id, c.GetInt("id"), service.AdtySiteMarketingUpdate{Enabled: body.Enabled}); err != nil {
+	if err := service.SaveAdtyOwnerSiteMarketingWithAudit(site.Id, c.GetInt("id"), service.AdtySiteMarketingUpdate{Enabled: body.Enabled}, c.ClientIP(), c.Request.UserAgent()); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -689,11 +689,52 @@ func PostAdtyOwnerSiteInvite(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.BindAdtyOwnerSiteInviteFromIP(site.Id, c.GetInt("id"), body.InviterID, body.InviteeID, service.HashReferralRiskValue(c.ClientIP())); err != nil {
+	if err := service.BindAdtyOwnerSiteInviteFromIPWithAudit(site.Id, c.GetInt("id"), body.InviterID, body.InviteeID, service.HashReferralRiskValue(c.ClientIP()), c.ClientIP(), c.Request.UserAgent()); err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"bound": true})
+}
+
+func PostAdtyOwnerSiteReferralAffiliateUpdate(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	userID, err := strconv.Atoi(c.Param("user_id"))
+	if err != nil || userID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var body service.AdtySiteAffiliateUpdateInput
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.UpdateAdtyOwnerSiteReferralAffiliate(site.Id, c.GetInt("id"), userID, body, c.ClientIP(), c.Request.UserAgent()); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"updated": true})
+}
+
+func GetAdtyOwnerSiteReferralAuditLogs(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	page := adtySiteReferralPageQuery(c)
+	items, total, err := service.ListAdtyOwnerSiteReferralAuditLogs(site.Id, page.GetStartIdx(), page.GetPageSize())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"items":     items,
+		"total":     total,
+		"page":      page.GetPage(),
+		"page_size": page.GetPageSize(),
+	})
 }
 
 func GetAdtySiteCustomerReferralProfile(c *gin.Context) {

@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -56,6 +58,22 @@ func generateMessageID(from string) (string, error) {
 	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), GetRandomString(12), split[1]), nil
 }
 
+// SMTPTransportConfig specifies explicit SMTP transport parameters for sending
+// an email without reading global platform SMTP options.
+type SMTPTransportConfig struct {
+	Server             string
+	Port               int
+	Account            string
+	Token              string
+	From               string
+	DisplayName        string
+	SSLEnabled         bool
+	StartTLSEnabled    bool
+	InsecureSkipVerify bool
+	ForceAuthLogin     bool
+	DialContext        func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
 type smtpConfigSnapshot struct {
 	systemName         string
 	server             string
@@ -67,6 +85,7 @@ type smtpConfigSnapshot struct {
 	startTLSEnabled    bool
 	forceAuthLogin     bool
 	insecureSkipVerify bool
+	dialContext        func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 func snapshotSMTPConfig() smtpConfigSnapshot {
@@ -120,22 +139,34 @@ const (
 )
 
 func newSMTPClient(addr string, cfg smtpConfigSnapshot) (*smtp.Client, error) {
-	dialer := &net.Dialer{Timeout: smtpDialTimeout}
+	dialContext := cfg.dialContext
+	if dialContext == nil {
+		dialer := &net.Dialer{Timeout: smtpDialTimeout}
+		dialContext = dialer.DialContext
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), smtpDialTimeout)
+	defer cancel()
+
 	if cfg.sslEnabled || (cfg.port == 465 && !cfg.startTLSEnabled) {
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, smtpTLSConfig(cfg))
+		rawConn, err := dialContext(ctx, "tcp", addr)
 		if err != nil {
 			return nil, err
 		}
-		_ = conn.SetDeadline(time.Now().Add(smtpIODeadline))
-		client, err := smtp.NewClient(conn, cfg.server)
+		_ = rawConn.SetDeadline(time.Now().Add(smtpIODeadline))
+		tlsConn := tls.Client(rawConn, smtpTLSConfig(cfg))
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = rawConn.Close()
+			return nil, err
+		}
+		client, err := smtp.NewClient(tlsConn, cfg.server)
 		if err != nil {
-			_ = conn.Close()
+			_ = tlsConn.Close()
 			return nil, err
 		}
 		return client, nil
 	}
 
-	conn, err := dialer.Dial("tcp", addr)
+	conn, err := dialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +190,38 @@ func newSMTPClient(addr string, cfg smtpConfigSnapshot) (*smtp.Client, error) {
 	}
 
 	return client, nil
+}
+
+func resolveSMTPFrom(rawFrom, fallbackAccount, defaultDisplayName, overrideFromHeader string) (envelopeAddr, fromHeader string, err error) {
+	candidate := strings.TrimSpace(rawFrom)
+	if candidate == "" {
+		candidate = strings.TrimSpace(fallbackAccount)
+	}
+	if strings.ContainsAny(candidate, "\r\n\x00") {
+		return "", "", fmt.Errorf("invalid SMTP account")
+	}
+	envelopeAddr = candidate
+	parsedName := ""
+	if parsed, parseErr := mail.ParseAddress(candidate); parseErr == nil && parsed != nil {
+		envelopeAddr = strings.TrimSpace(parsed.Address)
+		parsedName = strings.TrimSpace(parsed.Name)
+	}
+	if strings.ContainsAny(envelopeAddr, "\r\n\x00<>") {
+		return "", "", fmt.Errorf("invalid SMTP account")
+	}
+
+	displayName := strings.TrimSpace(defaultDisplayName)
+	if displayName == "" {
+		displayName = parsedName
+	}
+	if override := strings.TrimSpace(overrideFromHeader); override != "" {
+		if parsedHdr, parseErr := mail.ParseAddress(override); parseErr == nil && parsedHdr != nil && strings.TrimSpace(parsedHdr.Name) != "" {
+			displayName = strings.TrimSpace(parsedHdr.Name)
+		}
+	}
+	displayName = strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(strings.TrimSpace(displayName))
+	fromHeader = (&mail.Address{Name: displayName, Address: envelopeAddr}).String()
+	return envelopeAddr, fromHeader, nil
 }
 
 func SendEmail(subject string, receiver string, content string) error {
@@ -190,55 +253,79 @@ func SendEmailFrom(from string, subject string, receiver string, content string)
 	return SendSMTPEmailFrom(from, subject, receiver, content)
 }
 
-// SendSMTPEmailFrom uses the transport frozen on a claimed delivery attempt.
-func SendSMTPEmailFrom(from, subject, receiver, content string) error {
-	cfg := snapshotSMTPConfig()
-	displayName := cfg.systemName
-	if parsed, err := mail.ParseAddress(from); err == nil && parsed.Name != "" {
-		displayName = parsed.Name
+// SendSMTPEmailWithConfig sends an email using explicit SMTP transport settings.
+// It extracts the pure email address for the SMTP envelope (MAIL FROM) and
+// Message-ID even when cfg.From includes a display name, and uses cfg.DialContext
+// when provided.
+func SendSMTPEmailWithConfig(cfg SMTPTransportConfig, fromHeader, subject, receiver, content string) error {
+	snap := smtpConfigSnapshot{
+		systemName:         cfg.DisplayName,
+		server:             strings.TrimSpace(cfg.Server),
+		port:               cfg.Port,
+		account:            strings.TrimSpace(cfg.Account),
+		from:               strings.TrimSpace(cfg.From),
+		token:              cfg.Token,
+		sslEnabled:         cfg.SSLEnabled,
+		startTLSEnabled:    cfg.StartTLSEnabled,
+		forceAuthLogin:     cfg.ForceAuthLogin,
+		insecureSkipVerify: cfg.InsecureSkipVerify,
+		dialContext:        cfg.DialContext,
 	}
-	// Compatibility fallback stays local. Publishing it onto SMTPFrom races with
-	// concurrent readers such as adtyPlatformSender while a background send runs.
-	smtpFrom := cfg.from
-	if smtpFrom == "" {
-		smtpFrom = cfg.account
+	if snap.server == "" && snap.account == "" {
+		return NewMessage("SMTP server is not configured")
 	}
-	id, err2 := generateMessageID(smtpFrom)
+	if snap.server == "" {
+		return NewMessage("SMTP server is not configured")
+	}
+	if strings.ContainsAny(receiver, "\r\n\x00") {
+		return NewMessage("Invalid email address")
+	}
+	envelopeFrom, formattedFrom, err := resolveSMTPFrom(snap.from, snap.account, cfg.DisplayName, fromHeader)
+	if err != nil {
+		return err
+	}
+	id, err2 := generateMessageID(envelopeFrom)
 	if err2 != nil {
 		return err2
 	}
-	if cfg.server == "" && cfg.account == "" {
-		return NewMessage("SMTP server is not configured")
+	rawRecipients := strings.Split(receiver, ";")
+	to := make([]string, 0, len(rawRecipients))
+	for _, item := range rawRecipients {
+		addr := strings.TrimSpace(item)
+		if addr == "" {
+			continue
+		}
+		to = append(to, addr)
 	}
-	displayName = strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(strings.TrimSpace(displayName))
-	fromHeader := (&mail.Address{Name: displayName, Address: smtpFrom}).String()
+	if len(to) == 0 {
+		return NewMessage("Invalid email address")
+	}
+
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
-	mail := []byte(fmt.Sprintf("To: %s\r\n"+
+	message := []byte(fmt.Sprintf("To: %s\r\n"+
 		"From: %s\r\n"+
 		"Subject: %s\r\n"+
 		"Date: %s\r\n"+
 		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
 		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, fromHeader, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
-	auth := autoSMTPAuthWithConfig(cfg)
-	addr := fmt.Sprintf("%s:%d", cfg.server, cfg.port)
-	to := strings.Split(receiver, ";")
-	var err error
-	client, err := newSMTPClient(addr, cfg)
+		strings.Join(to, ", "), formattedFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
+	auth := autoSMTPAuthWithConfig(snap)
+	addr := net.JoinHostPort(snap.server, strconv.Itoa(snap.port))
+	client, err := newSMTPClient(addr, snap)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	if cfg.account != "" && cfg.token != "" {
+	if snap.account != "" && snap.token != "" {
 		if err = client.Auth(auth); err != nil {
 			return err
 		}
 	}
-	if err = client.Mail(smtpFrom); err != nil {
+	if err = client.Mail(envelopeFrom); err != nil {
 		return err
 	}
-	for _, receiver := range to {
-		if err = client.Rcpt(receiver); err != nil {
+	for _, rcpt := range to {
+		if err = client.Rcpt(rcpt); err != nil {
 			return err
 		}
 	}
@@ -246,7 +333,7 @@ func SendSMTPEmailFrom(from, subject, receiver, content string) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(mail)
+	_, err = w.Write(message)
 	if err != nil {
 		return err
 	}
@@ -263,4 +350,25 @@ func SendSMTPEmailFrom(from, subject, receiver, content string) error {
 		SysError(LogText("SMTP QUIT failed after delivery acknowledgement: %v", err))
 	}
 	return nil
+}
+
+// SendSMTPEmailFrom uses the transport frozen on a claimed delivery attempt.
+func SendSMTPEmailFrom(from, subject, receiver, content string) error {
+	snap := snapshotSMTPConfig()
+	displayName := snap.systemName
+	if parsed, err := mail.ParseAddress(strings.TrimSpace(snap.from)); err == nil && parsed != nil && strings.TrimSpace(parsed.Name) != "" {
+		displayName = strings.TrimSpace(parsed.Name)
+	}
+	return SendSMTPEmailWithConfig(SMTPTransportConfig{
+		Server:             snap.server,
+		Port:               snap.port,
+		Account:            snap.account,
+		Token:              snap.token,
+		From:               snap.from,
+		DisplayName:        displayName,
+		SSLEnabled:         snap.sslEnabled,
+		StartTLSEnabled:    snap.startTLSEnabled,
+		InsecureSkipVerify: snap.insecureSkipVerify,
+		ForceAuthLogin:     snap.forceAuthLogin,
+	}, from, subject, receiver, content)
 }

@@ -62,7 +62,6 @@ import { SiteVisibilityEditor } from './site-visibility-editor'
 type EditableBrandKey =
   | 'name'
   | 'title'
-  | 'tagline'
   | 'notice'
   | 'support_contact'
   | 'tawk_property_id'
@@ -73,7 +72,6 @@ type EditableBrandKey =
 const EDITABLE_BRAND_KEYS: ReadonlyArray<EditableBrandKey> = [
   'name',
   'title',
-  'tagline',
   'notice',
   'support_contact',
   'tawk_property_id',
@@ -85,7 +83,6 @@ const EDITABLE_BRAND_KEYS: ReadonlyArray<EditableBrandKey> = [
 const BRAND_LIMITS: Record<EditableBrandKey, number> = {
   name: 40,
   title: 80,
-  tagline: 80,
   notice: 500,
   support_contact: 200,
   tawk_property_id: 64,
@@ -111,7 +108,6 @@ function brandSnapshot(brand: AdminSiteBrand): Record<EditableBrandKey, string> 
   return {
     name: brand.name ?? '',
     title: brand.title ?? '',
-    tagline: brand.tagline ?? '',
     notice: brand.notice ?? '',
     support_contact: brand.support_contact ?? '',
     tawk_property_id: brand.tawk_property_id ?? '',
@@ -452,18 +448,6 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
                 value={brand.title}
                 onChange={(event) =>
                   setBrand((prev) => ({ ...prev, title: event.target.value }))
-                }
-              />
-            </div>
-            <div className='space-y-1.5'>
-              <Label htmlFor={`${fieldId}-tagline`}>{t('Tagline')}</Label>
-              <Input
-                id={`${fieldId}-tagline`}
-                maxLength={BRAND_LIMITS.tagline}
-                disabled={!editable || busy}
-                value={brand.tagline}
-                onChange={(event) =>
-                  setBrand((prev) => ({ ...prev, tagline: event.target.value }))
                 }
               />
             </div>

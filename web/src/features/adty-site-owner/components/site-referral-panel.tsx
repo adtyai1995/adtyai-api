@@ -34,222 +34,272 @@ import {
   CASH_WITHDRAW_METHODS,
   type CashWithdrawMethod,
 } from '@/features/admin-referral/lib/settings'
+import { adtySiteQueryKey } from '@/features/adty-site/api'
+import { referralQueryKeys } from '@/features/referral/api'
 import {
   USDT_NETWORKS,
   usdtNetworkLabel,
   type UsdtNetwork,
 } from '@/features/referral/lib/address'
 import { WITHDRAWAL_TARGET_LABELS } from '@/features/referral/lib/labels'
+import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
+import { getSelf } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { STATUS_QUERY_KEY } from '@/lib/status-query'
+import { useAuthStore, type AuthUser } from '@/stores/auth-store'
 
 import {
   getOwnerSiteReferral,
   saveOwnerSiteReferral,
-  saveOwnerSiteReferralEnabled,
   siteOwnerKeys,
-  type SiteMarketingField,
   type SiteMarketingUpdate,
   type SiteReferralView,
 } from '../api'
 import {
-  MAX_SITE_REFERRAL_RATE,
-  validSiteReferralRate,
+  decimalRateToPercentString,
+  MAX_SITE_REFERRAL_RATE_PERCENT,
+  percentStringToDecimalRate,
+  validSiteReferralRatePercent,
 } from '../lib/site-owner'
 
-type PolicyField = {
-  key: SiteMarketingField
-  label: string
-  integer?: boolean
-  max?: number
-  hint?: string
+type SiteRuleKey =
+  | 'cookie_ttl_days'
+  | 'observation_days'
+  | 'cancel_window_minutes'
+  | 'self_invite_window_days'
+  | 'batch_register_threshold'
+  | 'batch_register_window_hours'
+
+const SITE_RULE_KEYS: SiteRuleKey[] = [
+  'cookie_ttl_days',
+  'observation_days',
+  'cancel_window_minutes',
+  'self_invite_window_days',
+  'batch_register_threshold',
+  'batch_register_window_hours',
+]
+
+type SiteSettingsDraft = {
+  rate_percent: string
+  pending_coverage_cap: string
+  min_usd: string
+  fee_usd: string
+  cny_rate: string
+  cookie_ttl_days: string
+  observation_days: string
+  cancel_window_minutes: string
+  self_invite_window_days: string
+  batch_register_threshold: string
+  batch_register_window_hours: string
 }
 
-function MarketingFields(props: {
-  title: string
-  description: string
-  fields: PolicyField[]
-  policy: SiteReferralView
-}) {
+function toDraft(policy: SiteReferralView): SiteSettingsDraft {
+  return {
+    rate_percent: policy.rate_configured
+      ? decimalRateToPercentString(policy.rate)
+      : '',
+    pending_coverage_cap: String(policy.pending_coverage_cap ?? ''),
+    min_usd: String(policy.min_usd ?? ''),
+    fee_usd: String(policy.fee_usd ?? ''),
+    cny_rate: String(policy.cny_rate ?? ''),
+    cookie_ttl_days:
+      policy.cookie_ttl_days === null || policy.cookie_ttl_days === undefined
+        ? ''
+        : String(policy.cookie_ttl_days),
+    observation_days:
+      policy.observation_days === null || policy.observation_days === undefined
+        ? ''
+        : String(policy.observation_days),
+    cancel_window_minutes:
+      policy.cancel_window_minutes === null ||
+      policy.cancel_window_minutes === undefined
+        ? ''
+        : String(policy.cancel_window_minutes),
+    self_invite_window_days:
+      policy.self_invite_window_days === null ||
+      policy.self_invite_window_days === undefined
+        ? ''
+        : String(policy.self_invite_window_days),
+    batch_register_threshold:
+      policy.batch_register_threshold === null ||
+      policy.batch_register_threshold === undefined
+        ? ''
+        : String(policy.batch_register_threshold),
+    batch_register_window_hours:
+      policy.batch_register_window_hours === null ||
+      policy.batch_register_window_hours === undefined
+        ? ''
+        : String(policy.batch_register_window_hours),
+  }
+}
+
+function buildSiteReferralUpdate(
+  saved: SiteReferralView,
+  draft: SiteSettingsDraft,
+  enabled: boolean,
+  methods: CashWithdrawMethod[],
+  networks: UsdtNetwork[]
+): SiteMarketingUpdate {
+  const baseline = toDraft(saved)
+  const payload: SiteMarketingUpdate = {}
+  const savedMethods = canonicalWithdrawMethods(saved.withdraw_methods)
+  const savedNetworks = canonicalWithdrawNetworks(saved.withdraw_usdt_networks)
+
+  if (enabled !== Boolean(saved.enabled)) {
+    payload.enabled = enabled
+  }
+  if (draft.rate_percent.trim() !== baseline.rate_percent.trim()) {
+    if (draft.rate_percent.trim() !== '') {
+      payload.rate = percentStringToDecimalRate(draft.rate_percent)
+    }
+  }
+  if (
+    draft.pending_coverage_cap.trim() !== baseline.pending_coverage_cap.trim()
+  ) {
+    payload.pending_coverage_cap = draft.pending_coverage_cap.trim()
+  }
+
+  let withdrawalTouched = false
+  if (draft.min_usd.trim() !== baseline.min_usd.trim()) {
+    payload.min_usd = draft.min_usd.trim()
+    withdrawalTouched = true
+  }
+  if (draft.fee_usd.trim() !== baseline.fee_usd.trim()) {
+    payload.fee_usd = draft.fee_usd.trim()
+    withdrawalTouched = true
+  }
+  if (draft.cny_rate.trim() !== baseline.cny_rate.trim()) {
+    payload.cny_rate = draft.cny_rate.trim()
+    withdrawalTouched = true
+  }
+  const methodsChanged =
+    JSON.stringify(methods) !== JSON.stringify(savedMethods)
+  const networksChanged =
+    JSON.stringify(networks) !== JSON.stringify(savedNetworks)
+  if (methodsChanged || networksChanged || withdrawalTouched) {
+    payload.withdraw_methods = methods
+    payload.withdraw_usdt_networks = networks
+  }
+
+  for (const key of SITE_RULE_KEYS) {
+    if (draft[key].trim() !== baseline[key].trim()) {
+      payload[key] = draft[key].trim()
+    }
+  }
+
+  return payload
+}
+
+/** Unified subsite referral settings matching main-site SettingsPanel (R-37 #1). */
+export function SiteReferralPanel() {
   const { t } = useTranslation()
   const client = useQueryClient()
-  const [draft, setDraft] = useState<
-    Partial<Record<SiteMarketingField, string>>
-  >({})
-  const rateDraft = draft.rate
-  const rateInvalid =
-    rateDraft !== undefined &&
-    rateDraft.trim() !== '' &&
-    !validSiteReferralRate(rateDraft)
-  const save = useMutation({
-    mutationFn: () => saveOwnerSiteReferral(draft),
-    onSuccess: async () => {
-      await client.invalidateQueries({ queryKey: siteOwnerKeys.all })
-      void invalidateSidebarBadges(client)
-      setDraft({})
-      toast.success(t('Saved successfully'))
-    },
-    onError: (error) => handleServerError(error),
+  const query = useQuery({
+    queryKey: siteOwnerKeys.list('site-referral', {}),
+    queryFn: getOwnerSiteReferral,
   })
-  return (
-    <form
-      className='space-y-3'
-      onSubmit={(event) => {
-        event.preventDefault()
-        if (rateInvalid) return
-        save.mutate()
-      }}
-    >
-      <div className='space-y-1'>
-        <h3 className='text-sm font-medium'>{props.title}</h3>
-        <p className='text-muted-foreground text-sm'>{props.description}</p>
-      </div>
-      <div className='grid gap-4 sm:grid-cols-3'>
-        {props.fields.map(({ key, label, integer, max, hint }) => {
-          const currentValue = String(draft[key] ?? props.policy[key] ?? '')
-          const isRate = key === 'rate'
-          const showRateError = isRate && rateInvalid
-          const parsedRate = isRate ? Number(currentValue) : Number.NaN
-          const ratePctHint =
-            isRate &&
-            currentValue.trim() !== '' &&
-            !showRateError &&
-            Number.isFinite(parsedRate)
-              ? `${Number((parsedRate * 100).toFixed(4))}%`
-              : ''
-          return (
-            <div key={key} className='space-y-1.5'>
-              <Label htmlFor={`site-policy-${key}`}>{label}</Label>
-              <Input
-                id={`site-policy-${key}`}
-                type='number'
-                min='0'
-                max={max}
-                step={integer ? '1' : 'any'}
-                aria-invalid={showRateError}
-                value={currentValue}
-                onChange={(event) =>
-                  setDraft({ ...draft, [key]: event.target.value })
-                }
-              />
-              {showRateError ? (
-                <p role='alert' className='text-destructive text-xs'>
-                  {t(
-                    'Commission rate must be between 0 and 0.30 (0% to 30%, up to 6 decimal places).'
-                  )}
-                </p>
-              ) : (
-                hint && (
-                  <p className='text-muted-foreground text-xs'>
-                    {hint}
-                    {ratePctHint ? ` (${ratePctHint})` : ''}
-                  </p>
-                )
-              )}
-            </div>
-          )
-        })}
-      </div>
-      <Button
-        type='submit'
-        variant='brand'
-        disabled={
-          save.isPending || Object.keys(draft).length === 0 || rateInvalid
-        }
-      >
-        {t('Save')}
-      </Button>
-    </form>
-  )
-}
+  const saved = query.data
 
-function SiteWithdrawPolicyForm(props: { policy: SiteReferralView }) {
-  const { t } = useTranslation()
-  const client = useQueryClient()
-  const policy = props.policy
-
-  const savedMethods = canonicalWithdrawMethods(policy.withdraw_methods)
-  const savedNetworks = canonicalWithdrawNetworks(policy.withdraw_usdt_networks)
-  const savedMin = String(policy.min_usd ?? '')
-  const savedFee = String(policy.fee_usd ?? '')
-  const savedRate = String(policy.cny_rate ?? '')
-  const savedCancel = String(policy.cancel_window_minutes ?? '')
-
-  const [methods, setMethods] = useState<CashWithdrawMethod[]>(savedMethods)
-  const [networks, setNetworks] = useState<UsdtNetwork[]>(savedNetworks)
-  const [minUsd, setMinUsd] = useState(savedMin)
-  const [feeUsd, setFeeUsd] = useState(savedFee)
-  const [cnyRate, setCnyRate] = useState(savedRate)
-  const [cancelWindowMinutes, setCancelWindowMinutes] = useState(savedCancel)
+  const [draft, setDraft] = useState<SiteSettingsDraft | null>(null)
+  const [enabled, setEnabled] = useState(false)
+  const [methods, setMethods] = useState<CashWithdrawMethod[]>([])
+  const [networks, setNetworks] = useState<UsdtNetwork[]>([])
 
   useEffect(() => {
-    setMethods(canonicalWithdrawMethods(policy.withdraw_methods))
-    setNetworks(canonicalWithdrawNetworks(policy.withdraw_usdt_networks))
-    setMinUsd(String(policy.min_usd ?? ''))
-    setFeeUsd(String(policy.fee_usd ?? ''))
-    setCnyRate(String(policy.cny_rate ?? ''))
-    setCancelWindowMinutes(String(policy.cancel_window_minutes ?? ''))
-  }, [policy])
+    if (!saved) return
+    setDraft(toDraft(saved))
+    setEnabled(saved.enabled === true)
+    setMethods(canonicalWithdrawMethods(saved.withdraw_methods))
+    setNetworks(canonicalWithdrawNetworks(saved.withdraw_usdt_networks))
+  }, [saved])
 
-  const usdtEnabled = methods.includes('usdt')
-  const alipayEnabled = methods.includes('alipay')
-  const anyCashEnabled = usdtEnabled || alipayEnabled
-
-  const usdtChainError =
-    usdtEnabled && networks.length === 0 ? t('Choose at least one chain') : ''
-  const minValue = Number(minUsd)
-  const minError =
-    anyCashEnabled &&
-    (minUsd.trim() === '' || !Number.isFinite(minValue) || !(minValue > 0))
-      ? t('Not set')
-      : ''
-  const feeValue = Number(feeUsd)
-  const feeError =
-    usdtEnabled &&
-    (feeUsd.trim() === '' || !Number.isFinite(feeValue) || feeValue < 0)
-      ? t('Not set')
-      : ''
-  const cnyValue = Number(cnyRate)
-  const cnyError =
-    alipayEnabled &&
-    (cnyRate.trim() === '' || !Number.isFinite(cnyValue) || !(cnyValue > 0))
-      ? t('Not set')
-      : ''
-  const hasError = Boolean(usdtChainError || minError || feeError || cnyError)
-
+  const savedMethods = saved
+    ? canonicalWithdrawMethods(saved.withdraw_methods)
+    : []
+  const savedNetworks = saved
+    ? canonicalWithdrawNetworks(saved.withdraw_usdt_networks)
+    : []
   const isDirty =
-    JSON.stringify(methods) !== JSON.stringify(savedMethods) ||
-    JSON.stringify(networks) !== JSON.stringify(savedNetworks) ||
-    minUsd.trim() !== savedMin.trim() ||
-    feeUsd.trim() !== savedFee.trim() ||
-    cnyRate.trim() !== savedRate.trim() ||
-    cancelWindowMinutes.trim() !== savedCancel.trim()
+    !!saved &&
+    !!draft &&
+    (enabled !== Boolean(saved.enabled) ||
+      JSON.stringify(draft) !== JSON.stringify(toDraft(saved)) ||
+      JSON.stringify(methods) !== JSON.stringify(savedMethods) ||
+      JSON.stringify(networks) !== JSON.stringify(savedNetworks))
+
+  useDraftNavigation(isDirty)
 
   const save = useMutation({
-    mutationFn: () => {
-      const payload: SiteMarketingUpdate = {
-        withdraw_methods: methods,
-        withdraw_usdt_networks: networks,
-      }
-      if (minUsd.trim() !== savedMin.trim()) payload.min_usd = minUsd.trim()
-      if (feeUsd.trim() !== savedFee.trim()) payload.fee_usd = feeUsd.trim()
-      if (cnyRate.trim() !== savedRate.trim()) payload.cny_rate = cnyRate.trim()
-      if (cancelWindowMinutes.trim() !== savedCancel.trim()) {
-        payload.cancel_window_minutes = cancelWindowMinutes.trim()
-      }
-      return saveOwnerSiteReferral(payload)
-    },
+    mutationFn: (payload: SiteMarketingUpdate) => saveOwnerSiteReferral(payload),
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: siteOwnerKeys.all })
       await client.invalidateQueries({
         queryKey: ['adty-site-invite-withdraw-rules'],
       })
+      void client.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+      void client.invalidateQueries({ queryKey: adtySiteQueryKey })
+      void client.invalidateQueries({ queryKey: referralQueryKeys.all })
+      void client.invalidateQueries({ queryKey: ['user', 'self'] })
       void invalidateSidebarBadges(client)
+      void getSelf()
+        .then((res) => {
+          if (res?.success && res.data) {
+            useAuthStore.getState().auth.setUser(res.data as AuthUser)
+          }
+        })
+        .catch(() => {})
       toast.success(t('Saved successfully'))
     },
     onError: (error) => handleServerError(error),
   })
+
+  if (query.isError) return <ErrorState onRetry={() => void query.refetch()} />
+  if (!saved || !draft) return <LoadingState />
+
+  const disabled = save.isPending
+  const set = (key: keyof SiteSettingsDraft, value: string) =>
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+
+  const rateTrimmed = draft.rate_percent.trim()
+  const rateMissing = rateTrimmed === ''
+  const rateInvalid =
+    !rateMissing && !validSiteReferralRatePercent(rateTrimmed)
+  const capMissing = draft.pending_coverage_cap.trim() === ''
+  const obsMissing = draft.observation_days.trim() === ''
+  const missingEnablePrerequisites = rateMissing || capMissing || obsMissing
+
+  const usdtEnabled = methods.includes('usdt')
+  const alipayEnabled = methods.includes('alipay')
+  const anyCashEnabled = usdtEnabled || alipayEnabled
+  const usdtChainError =
+    usdtEnabled && networks.length === 0 ? t('Choose at least one chain') : ''
+  const minVal = Number(draft.min_usd)
+  const minMissingError =
+    anyCashEnabled &&
+    (draft.min_usd.trim() === '' || !Number.isFinite(minVal) || !(minVal > 0))
+      ? t('Not set')
+      : ''
+  const feeVal = Number(draft.fee_usd)
+  const feeMissingError =
+    usdtEnabled &&
+    (draft.fee_usd.trim() === '' || !Number.isFinite(feeVal) || feeVal < 0)
+      ? t('Not set')
+      : ''
+  const cnyVal = Number(draft.cny_rate)
+  const cnyMissingError =
+    alipayEnabled &&
+    (draft.cny_rate.trim() === '' || !Number.isFinite(cnyVal) || !(cnyVal > 0))
+      ? t('Not set')
+      : ''
+
+  const hasValidationError = Boolean(
+    rateInvalid ||
+      usdtChainError ||
+      minMissingError ||
+      feeMissingError ||
+      cnyMissingError
+  )
 
   const toggleMethod = (method: CashWithdrawMethod, checked: boolean) => {
     setMethods((prev) => {
@@ -269,229 +319,279 @@ function SiteWithdrawPolicyForm(props: { policy: SiteReferralView }) {
     })
   }
 
+  const ruleLabels: Record<SiteRuleKey, string> = {
+    cookie_ttl_days: t('Referral cookie (days)'),
+    observation_days: t('Freeze period (days)'),
+    cancel_window_minutes: t('Cancel window (minutes)'),
+    self_invite_window_days: t('Self-invite check window (days)'),
+    batch_register_threshold: t(
+      'Sign-ups from one IP before freezing (0 = off)'
+    ),
+    batch_register_window_hours: t('Batch sign-up window (hours)'),
+  }
+
+  const ruleMin: Record<SiteRuleKey, number> = {
+    cookie_ttl_days: 1,
+    observation_days: 0,
+    cancel_window_minutes: 0,
+    self_invite_window_days: 1,
+    batch_register_threshold: 0,
+    batch_register_window_hours: 1,
+  }
+
   return (
     <form
-      className='space-y-4 rounded-lg border p-4'
+      className='flex max-w-3xl flex-col gap-6'
       onSubmit={(event) => {
         event.preventDefault()
-        if (hasError || !isDirty || save.isPending) return
-        save.mutate()
+        if (disabled || hasValidationError || !isDirty) return
+        const payload = buildSiteReferralUpdate(
+          saved,
+          draft,
+          enabled,
+          methods,
+          networks
+        )
+        if (Object.keys(payload).length === 0) return
+        save.mutate(payload)
       }}
     >
-      <div className='space-y-1'>
-        <h3 className='text-sm font-medium'>
-          {t('Invite commission withdrawal')}
-        </h3>
-        <p className='text-muted-foreground text-sm'>
-          {t('Transfer to account balance is always enabled.')}
-        </p>
-      </div>
-
-      <fieldset className='space-y-2'>
-        <legend className='text-sm font-medium'>
-          {t('Cash withdrawal methods')}
-        </legend>
-        <div className='flex flex-wrap gap-5'>
-          {CASH_WITHDRAW_METHODS.map((method) => (
-            <label
-              key={method}
-              className='flex items-center gap-2 text-sm font-medium'
-            >
-              <Checkbox
-                disabled={save.isPending}
-                checked={methods.includes(method)}
-                onCheckedChange={(checked) =>
-                  toggleMethod(method, checked === true)
-                }
-              />
-              {t(WITHDRAWAL_TARGET_LABELS[method])}
-            </label>
-          ))}
-        </div>
-      </fieldset>
-
-      <div className='grid gap-4 sm:grid-cols-2'>
-        <div className='space-y-1.5'>
-          <Label htmlFor='site-policy-min_usd'>
-            {t('Minimum withdrawal (USD)')}
-          </Label>
-          <Input
-            id='site-policy-min_usd'
-            type='number'
-            min='0'
-            step='any'
-            aria-invalid={Boolean(minError)}
-            value={minUsd}
-            placeholder={t('Not set')}
-            onChange={(event) => setMinUsd(event.target.value)}
-          />
-          {minError && <p className='text-destructive text-xs'>{minError}</p>}
-        </div>
-        <div className='space-y-1.5'>
-          <Label htmlFor='site-policy-cancel_window_minutes'>
-            {t('Cancel window (minutes)')}
-          </Label>
-          <Input
-            id='site-policy-cancel_window_minutes'
-            type='number'
-            min='0'
-            step='1'
-            value={cancelWindowMinutes}
-            onChange={(event) => setCancelWindowMinutes(event.target.value)}
-          />
-        </div>
-      </div>
-
-      {usdtEnabled && (
-        <div className='bg-muted/30 space-y-4 rounded-md border p-3'>
-          <fieldset className='space-y-2'>
-            <legend className='text-sm font-medium'>
-              {t('Enabled chains')}
-            </legend>
-            <div className='flex flex-wrap gap-4'>
-              {USDT_NETWORKS.map((network) => (
-                <label
-                  key={network}
-                  className='flex items-center gap-2 text-sm'
-                >
-                  <Checkbox
-                    disabled={save.isPending}
-                    checked={networks.includes(network)}
-                    onCheckedChange={(checked) =>
-                      toggleNetwork(network, checked === true)
-                    }
-                  />
-                  {usdtNetworkLabel(network)}
-                </label>
-              ))}
-            </div>
-            {usdtChainError && (
-              <p className='text-destructive text-xs'>{usdtChainError}</p>
-            )}
-          </fieldset>
-          <div className='max-w-xs space-y-1.5'>
-            <Label htmlFor='site-policy-fee_usd'>{t('USDT fee (USD)')}</Label>
-            <Input
-              id='site-policy-fee_usd'
-              type='number'
-              min='0'
-              step='any'
-              aria-invalid={Boolean(feeError)}
-              value={feeUsd}
-              placeholder={t('Not set')}
-              onChange={(event) => setFeeUsd(event.target.value)}
-            />
-            {feeError && <p className='text-destructive text-xs'>{feeError}</p>}
-          </div>
-        </div>
-      )}
-
-      {alipayEnabled && (
-        <div className='bg-muted/30 space-y-1.5 rounded-md border p-3'>
-          <Label htmlFor='site-policy-cny_rate'>
-            {t('CNY withdrawal rate (1 USD = ? CNY)')}
-          </Label>
-          <Input
-            id='site-policy-cny_rate'
-            className='w-44'
-            type='number'
-            min='0'
-            step='any'
-            aria-invalid={Boolean(cnyError)}
-            value={cnyRate}
-            placeholder={t('Not set')}
-            onChange={(event) => setCnyRate(event.target.value)}
-          />
-          {cnyError && <p className='text-destructive text-xs'>{cnyError}</p>}
-        </div>
-      )}
-
-      <Button
-        type='submit'
-        variant='brand'
-        disabled={save.isPending || !isDirty || hasError}
-      >
-        {t('Save')}
-      </Button>
-    </form>
-  )
-}
-
-/** Subsite referral policy settings: enable switch, invite rate (<= 30%), coverage & withdrawal terms. */
-export function SiteReferralPanel() {
-  const { t } = useTranslation()
-  const client = useQueryClient()
-  const rules = useQuery({
-    queryKey: siteOwnerKeys.list('site-referral', {}),
-    queryFn: getOwnerSiteReferral,
-  })
-  const enable = useMutation({
-    mutationFn: (enabled: boolean) => saveOwnerSiteReferralEnabled(enabled),
-    onSuccess: () => {
-      toast.success(t('Saved successfully'))
-      void client.invalidateQueries({ queryKey: siteOwnerKeys.all })
-      void client.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
-      void invalidateSidebarBadges(client)
-    },
-    onError: (error) => handleServerError(error),
-  })
-
-  if (rules.isPending) return <LoadingState />
-  if (rules.isError) return <ErrorState onRetry={() => void rules.refetch()} />
-  if (!rules.data) return null
-
-  const rateMissing = !rules.data.rate_configured
-  const isEnabled = rules.data.enabled === true
-
-  return (
-    <section className='flex max-w-3xl flex-col gap-6'>
       <div className='flex items-center justify-between gap-4 rounded-lg border p-3'>
         <div className='flex flex-col gap-0.5'>
-          <Label htmlFor='site-referral-enabled'>
-            {t('Invite commission')}
-          </Label>
+          <Label htmlFor='site-referral-enabled'>{t('Referral program')}</Label>
           <span className='text-muted-foreground text-xs'>
-            {rateMissing
-              ? t('Set the invite rate first before enabling.')
-              : t('Saving a rate does not pay commission.')}
+            {missingEnablePrerequisites
+              ? t(
+                  'Set the default commission rate, pending coverage cap, and freeze period before enabling.'
+                )
+              : t(
+                  'New orders use these terms. Zero freeze period makes fully covered commission available immediately.'
+                )}
           </span>
         </div>
         <Switch
           id='site-referral-enabled'
-          checked={isEnabled}
-          disabled={enable.isPending || (rateMissing && !isEnabled)}
-          onCheckedChange={(value) => enable.mutate(value)}
+          checked={enabled}
+          disabled={disabled || (missingEnablePrerequisites && !enabled)}
+          onCheckedChange={setEnabled}
         />
       </div>
 
-      <MarketingFields
-        title={t('Commission coverage')}
-        description={t(
-          'New orders use these terms. Zero observation days makes fully covered commission available immediately.'
-        )}
-        policy={rules.data}
-        fields={[
-          {
-            key: 'rate',
-            label: t('Invite rate (0 to 0.30, max 30%)'),
-            max: MAX_SITE_REFERRAL_RATE,
-            hint: t(
-              'Commission rate cannot exceed 30% (0 to 0.30). Example: 0.15 = 15%.'
-            ),
-          },
-          {
-            key: 'pending_coverage_cap',
-            label: t('Pending coverage cap (USD)'),
-          },
-          {
-            key: 'observation_days',
-            label: t('Observation days'),
-            integer: true,
-          },
-        ]}
-      />
+      <fieldset className='space-y-2'>
+        <legend className='text-sm font-medium'>
+          {t('Money (no built-in values)')}
+        </legend>
+        <div className='grid gap-4 sm:grid-cols-3'>
+          <div className='space-y-2'>
+            <Label htmlFor='site-policy-rate'>
+              {t('Default commission rate (%)')}
+            </Label>
+            <Input
+              id='site-policy-rate'
+              disabled={disabled}
+              type='number'
+              min={0}
+              max={MAX_SITE_REFERRAL_RATE_PERCENT}
+              step='0.01'
+              value={draft.rate_percent}
+              placeholder={t('Not set')}
+              aria-invalid={rateInvalid}
+              onChange={(event) => set('rate_percent', event.target.value)}
+            />
+            {rateInvalid && (
+              <p role='alert' className='text-destructive text-xs'>
+                {t('Commission rate must be between 0% and 30%.')}
+              </p>
+            )}
+            {!rateInvalid && rateMissing && (
+              <p className='text-warning text-xs'>{t('Not set')}</p>
+            )}
+            {!rateInvalid && !rateMissing && (
+              <p className='text-muted-foreground text-xs'>
+                {t('Up to 30% for subsite invitations.')}
+              </p>
+            )}
+          </div>
 
-      <SiteWithdrawPolicyForm policy={rules.data} />
-    </section>
+          <div className='space-y-2'>
+            <Label htmlFor='site-policy-pending_coverage_cap'>
+              {t('Pending coverage cap (USD)')}
+            </Label>
+            <Input
+              id='site-policy-pending_coverage_cap'
+              disabled={disabled}
+              type='number'
+              min={0}
+              step='0.01'
+              value={draft.pending_coverage_cap}
+              placeholder={t('Not set')}
+              onChange={(event) =>
+                set('pending_coverage_cap', event.target.value)
+              }
+            />
+            {capMissing && (
+              <p className='text-warning text-xs'>{t('Not set')}</p>
+            )}
+          </div>
+
+          <div className='space-y-2'>
+            <Label htmlFor='site-policy-min_usd'>
+              {t('Minimum withdrawal (USD)')}
+            </Label>
+            <Input
+              id='site-policy-min_usd'
+              disabled={disabled}
+              type='number'
+              min={0}
+              step='0.01'
+              value={draft.min_usd}
+              placeholder={t('Not set')}
+              aria-invalid={Boolean(minMissingError)}
+              onChange={(event) => set('min_usd', event.target.value)}
+            />
+            {minMissingError ? (
+              <p className='text-destructive text-xs'>{minMissingError}</p>
+            ) : (
+              draft.min_usd.trim() === '' && (
+                <p className='text-warning text-xs'>{t('Not set')}</p>
+              )
+            )}
+          </div>
+        </div>
+      </fieldset>
+
+      <div className='space-y-4 rounded-lg border p-4'>
+        <div className='space-y-1'>
+          <h3 className='text-sm font-medium'>
+            {t('Cash withdrawal methods')}
+          </h3>
+          <p className='text-muted-foreground text-xs'>
+            {t('Transfer to account balance is always enabled.')}
+          </p>
+        </div>
+
+        <fieldset className='space-y-2'>
+          <legend className='sr-only'>{t('Cash withdrawal methods')}</legend>
+          <div className='flex flex-wrap gap-5'>
+            {CASH_WITHDRAW_METHODS.map((method) => (
+              <label
+                key={method}
+                className='flex items-center gap-2 text-sm font-medium'
+              >
+                <Checkbox
+                  disabled={disabled}
+                  checked={methods.includes(method)}
+                  onCheckedChange={(checked) =>
+                    toggleMethod(method, checked === true)
+                  }
+                />
+                {t(WITHDRAWAL_TARGET_LABELS[method])}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        {usdtEnabled && (
+          <div className='bg-muted/30 space-y-4 rounded-md border p-3'>
+            <fieldset className='space-y-2'>
+              <legend className='text-sm font-medium'>
+                {t('Enabled chains')}
+              </legend>
+              <div className='flex flex-wrap gap-4'>
+                {USDT_NETWORKS.map((network) => (
+                  <label
+                    key={network}
+                    className='flex items-center gap-2 text-sm'
+                  >
+                    <Checkbox
+                      disabled={disabled}
+                      checked={networks.includes(network)}
+                      onCheckedChange={(checked) =>
+                        toggleNetwork(network, checked === true)
+                      }
+                    />
+                    {usdtNetworkLabel(network)}
+                  </label>
+                ))}
+              </div>
+              {usdtChainError && (
+                <p className='text-destructive text-xs'>{usdtChainError}</p>
+              )}
+            </fieldset>
+            <div className='max-w-xs space-y-2'>
+              <Label htmlFor='site-policy-fee_usd'>
+                {t('USDT withdrawal fee (USDT)')}
+              </Label>
+              <Input
+                id='site-policy-fee_usd'
+                disabled={disabled}
+                type='number'
+                min={0}
+                step='0.01'
+                value={draft.fee_usd}
+                placeholder={t('Not set')}
+                aria-invalid={Boolean(feeMissingError)}
+                onChange={(event) => set('fee_usd', event.target.value)}
+              />
+              {feeMissingError && (
+                <p className='text-destructive text-xs'>{feeMissingError}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {alipayEnabled && (
+          <div className='bg-muted/30 space-y-2 rounded-md border p-3'>
+            <Label htmlFor='site-policy-cny_rate'>
+              {t('CNY withdrawal rate (1 USD = ? CNY)')}
+            </Label>
+            <Input
+              id='site-policy-cny_rate'
+              disabled={disabled}
+              className='w-40'
+              type='number'
+              min={0}
+              step='0.0001'
+              value={draft.cny_rate}
+              placeholder={t('Not set')}
+              aria-invalid={Boolean(cnyMissingError)}
+              onChange={(event) => set('cny_rate', event.target.value)}
+            />
+            {cnyMissingError && (
+              <p className='text-destructive text-xs'>{cnyMissingError}</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <fieldset className='grid gap-4 sm:grid-cols-3'>
+        <legend className='mb-2 text-sm font-medium'>{t('Rules')}</legend>
+        {SITE_RULE_KEYS.map((key) => (
+          <div key={key} className='space-y-2'>
+            <Label htmlFor={`site-policy-${key}`}>{ruleLabels[key]}</Label>
+            <Input
+              id={`site-policy-${key}`}
+              disabled={disabled}
+              type='number'
+              min={ruleMin[key]}
+              step={1}
+              value={draft[key]}
+              placeholder={t('Not set')}
+              onChange={(event) => set(key, event.target.value)}
+            />
+          </div>
+        ))}
+      </fieldset>
+
+      <div>
+        <Button
+          variant='brand'
+          type='submit'
+          disabled={disabled || hasValidationError || !isDirty}
+        >
+          {t('Save Changes')}
+        </Button>
+      </div>
+    </form>
   )
 }

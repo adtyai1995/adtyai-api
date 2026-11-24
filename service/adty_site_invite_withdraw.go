@@ -86,6 +86,11 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 		if err := authorizeCommissionSource(tx, input.UserID, user.SiteId, input.SiteID); err != nil {
 			return err
 		}
+		if blocked, blockErr := isSiteReferralAffiliateWithdrawalBlockedTx(tx, input.SiteID, input.UserID); blockErr != nil {
+			return blockErr
+		} else if blocked {
+			return common.NewMessage("Withdrawals are paused for this account")
+		}
 		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: input.SiteID, AccountID: input.UserID}); err != nil {
 			return err
 		}
@@ -467,7 +472,13 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 			var auditErr error
 			auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, ownerID, row.SiteId, "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_invite_withdrawal.approve", strings.TrimSpace(reason), "",
 				beforeSnap, map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawApproved, "platform": platform}, model.AuditResultSuccess)
-			return auditErr
+			if auditErr != nil {
+				return auditErr
+			}
+			if !platform {
+				return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_approve", row.UserId, ownerID, strings.TrimSpace(reason), "", "", beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawApproved})
+			}
+			return nil
 		}
 		if err := releaseSiteInviteWithdrawalTx(tx, &row); err != nil {
 			return err
@@ -486,7 +497,13 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 		var auditErr error
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, ownerID, row.SiteId, "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), action, strings.TrimSpace(reason), "",
 			beforeSnap, map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawRejected, "platform": platform}, model.AuditResultSuccess)
-		return auditErr
+		if auditErr != nil {
+			return auditErr
+		}
+		if !platform {
+			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_reject", row.UserId, ownerID, strings.TrimSpace(reason), "", "", beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawRejected})
+		}
+		return nil
 	})
 	if err != nil {
 		return "", false, err
@@ -604,7 +621,15 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, ownerID, row.SiteId, "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_invite_withdrawal.paid", "", "",
 			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": row.Status, "amount_usd": row.AmountUSD.String()},
 			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID, "platform": platform}, model.AuditResultSuccess)
-		return auditErr
+		if auditErr != nil {
+			return auditErr
+		}
+		if !platform {
+			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_pay", row.UserId, ownerID, cleanProof, "", "",
+				map[string]any{"id": row.Id, "status": row.Status, "amount_usd": row.AmountUSD.String()},
+				map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID})
+		}
+		return nil
 	})
 	if err != nil {
 		return "", false, err
