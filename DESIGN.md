@@ -277,7 +277,7 @@ Corners scale from one 12px base (`--radius: 0.75rem`): 7.2px, 9.6px, 12px, 16.8
 - **Shape:** pill on public pages (9999px), gently rounded in the console (12px).
 - **Home primary:** ADTY blue fill, white 15px / 600 text, 48px tall, 28px horizontal padding, blue glow underneath.
 - **Home outline:** transparent with a 1px ink border at 70%, ink text, same size; on the terminal card the border is white at 25% and hover fills white at 10%.
-- **Console:** shared `Button`: 32px default (36px lg), 14px / 500, blue fill, hover to 80% blue on links; outline is white with a hairline, hover to tile gray. Focus is a 3px ring in blue at 50%. Pressed nudges down 1px.
+- **Console:** shared `Button`: 32px default (36px lg), 14px / 500, blue fill, hover to 80% blue on links; outline is white with a hairline, hover to tile gray. Focus is a 3px ring in blue at 50%. Pressed nudges down 1px. A disabled primary drops its blue entirely (tile gray fill, hairline border, slate text) instead of fading to a pale blue slab. Buttons keep their natural width on desktop; a form's primary action sits at the end of the form, left-aligned.
 
 ### Chips
 - **Protocol pill:** white at 85% with backdrop blur, hairline border, 14px label, leading 12px blue ring (2.5px stroke).
@@ -286,7 +286,9 @@ Corners scale from one 12px base (`--radius: 0.75rem`): 7.2px, 9.6px, 12px, 16.8
 - **Badge (console):** pill (`rounded-4xl`), 20px tall, 12px / 500.
 
 ### Cards / Containers
-- **Console card:** white, 16.8px radius, 1px ring in ink at 10%, 16px vertical padding, no shadow.
+- **Console card:** white, 16.8px radius, 1px ring in ink at 10%, 16px vertical padding, no shadow; its title is 15px / 600 with tight tracking.
+- **Console section (unframed):** the default grouping inside a console page. A 15px / 600 heading, an optional 12.5px slate line, filters or actions on the right, and the content (usually a table) directly below. Sections stack 32px apart. Implemented as `ContentSection`.
+- **Settings frame:** a form or settings group sits in one hairline-bordered 14px frame with a header row (15px / 600 title over a 12.5px slate description, hairline below) and a 20 to 24px body. Implemented as `SettingsSection`; tables never go inside it.
 - **Stat grid (console):** one 14px-radius shell whose cells are joined by 1px hairline gaps; each cell is a 12px slate label over a Public Sans 800 figure (22px for summaries, 28px for the overview KPIs). Columns follow the item count (3 or 4 on desktop, 2 on mobile) and any empty trailing cell stays white. A stat grid is never wrapped in another card, and a data table sits directly on the page, not inside a card.
 - **Task chips (console):** an outline button per pending task with its count in a pill, blue when work is due and tile gray at zero; section shortcuts beside them are ghost buttons with a small up-right arrow.
 - **Bento tile:** tile gray, 24px radius, 28 to 32px padding, Title heading followed by a 40px hairline rule; one tile per bento may be solid blue with white text.
@@ -295,6 +297,7 @@ Corners scale from one 12px base (`--radius: 0.75rem`): 7.2px, 9.6px, 12px, 16.8
 
 ### Inputs / Fields
 - **Style:** transparent ground, 1px field-line border, 12px radius, 32px tall, 14px text on md and up.
+- **Width follows the data:** amounts, ratios, counts and IDs take 8 to 12rem; names and emails up to 24rem; URLs, hosts and addresses up to 36rem; groups of short fields share a two-column grid. Only textareas and long rich text run the full width of a frame.
 - **Focus:** border turns blue with a 3px inset ring in blue at 50%.
 - **Error / Disabled:** red border and 20% red ring; disabled drops to 50% opacity with a field-line wash.
 
