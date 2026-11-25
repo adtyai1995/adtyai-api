@@ -204,7 +204,9 @@ function SiteAffiliateState(props: { affiliate: SiteReferralAffiliateItem }) {
   const settlementFrozen = aff.settlement_enabled === false
   const withdrawalFrozen = aff.withdrawal_enabled === false
   if (!disabled && !settlementFrozen && !withdrawalFrozen) {
-    return <StatusBadge label={t('Normal')} variant='success' copyable={false} />
+    return (
+      <StatusBadge label={t('Normal')} variant='success' copyable={false} />
+    )
   }
   return (
     <div className='flex flex-wrap gap-1'>
@@ -268,7 +270,7 @@ function SiteReferralKpiStrip(props: { data: SiteReferralOverview }) {
           <span className='text-dim text-[12px] leading-none'>
             {item.label}
           </span>
-          <span className='text-[19px] leading-tight font-semibold tabular-nums'>
+          <span className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
             {item.value}
           </span>
         </div>

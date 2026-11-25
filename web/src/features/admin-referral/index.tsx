@@ -53,7 +53,9 @@ import { WithdrawalPanel } from './components/withdrawal-panel'
 
 type ReferralEntry = { initialStatus?: 'pending' | 'approved' | 'actionable' }
 
-function WithdrawalWork(props: ReferralEntry & { canReview: boolean; canPayout: boolean }) {
+function WithdrawalWork(
+  props: ReferralEntry & { canReview: boolean; canPayout: boolean }
+) {
   const { canReview, canPayout } = props
   const [status, setStatus] = useState(() => {
     if (props.initialStatus === 'pending' && canReview) return 'pending'
@@ -173,7 +175,7 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                     <span className='text-dim text-[12px] leading-none'>
                       {item.label}
                     </span>
-                    <span className='text-[19px] leading-tight font-semibold tabular-nums'>
+                    <span className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
                       {item.value}
                     </span>
                   </div>
@@ -239,7 +241,7 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
               </div>
               <TabsContent value='withdrawals'>
                 <WithdrawalWork
-                  key={`${canReview}-${canPayout}-${initialStatus ?? ""}`}
+                  key={`${canReview}-${canPayout}-${initialStatus ?? ''}`}
                   initialStatus={initialStatus}
                   canReview={canReview}
                   canPayout={canPayout}

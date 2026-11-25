@@ -28,20 +28,27 @@ export type OwnerStat = {
 /** Row of headline numbers drawn as connected cells (1px hairlines, 14px
  *  radius); negative amounts are marked with data-negative for styling and tests. */
 export function OwnerStatGrid(props: { items: OwnerStat[]; label: string }) {
+  const threeUp = props.items.length === 3
+  const columns = threeUp ? 3 : 4
+  const desktopFill = (columns - (props.items.length % columns)) % columns
+  const mobileFill = props.items.length % 2
   return (
     <section
       aria-label={props.label}
-      className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-4'
+      className={cn(
+        'border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border',
+        threeUp ? 'lg:grid-cols-3' : 'lg:grid-cols-4'
+      )}
     >
       {props.items.map((item) => (
-        <div key={item.label} className='bg-card flex flex-col gap-1 px-5 py-4'>
+        <div key={item.label} className='bg-card flex flex-col gap-2 px-5 py-4'>
           <span className='text-dim text-[12px] leading-none'>
             {item.label}
           </span>
           <span
             data-negative={item.negative ? 'true' : undefined}
             className={cn(
-              'text-[19px] leading-tight font-semibold tabular-nums',
+              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
               item.negative && 'text-destructive'
             )}
           >
@@ -49,11 +56,20 @@ export function OwnerStatGrid(props: { items: OwnerStat[]; label: string }) {
           </span>
         </div>
       ))}
-      {/* Keep the trailing cells white when a row is not full; no copy. */}
+      {/* Keep the trailing cells white when a row is not full (2 columns on
+          mobile, 3 or 4 on desktop); no copy. */}
       {['stat-filler-a', 'stat-filler-b', 'stat-filler-c']
-        .slice(0, (4 - (props.items.length % 4)) % 4)
-        .map((key) => (
-          <div key={key} aria-hidden className='bg-card px-5 py-4' />
+        .slice(0, Math.max(desktopFill, mobileFill))
+        .map((key, index) => (
+          <div
+            key={key}
+            aria-hidden
+            className={cn(
+              'bg-card px-5 py-4',
+              index < mobileFill ? 'block' : 'hidden',
+              index < desktopFill ? 'lg:block' : 'lg:hidden'
+            )}
+          />
         ))}
     </section>
   )

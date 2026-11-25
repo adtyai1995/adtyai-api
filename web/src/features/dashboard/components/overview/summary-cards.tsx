@@ -308,7 +308,7 @@ export function SummaryCards() {
 
             <div
               className={cn(
-                'font-mono text-[26px] leading-none font-bold tracking-[-0.02em] tabular-nums',
+                'font-display text-[28px] leading-none font-extrabold tracking-[-0.02em] tabular-nums',
                 user ? 'text-foreground' : 'text-faint'
               )}
             >

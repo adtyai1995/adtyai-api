@@ -43,7 +43,7 @@ function StatGrid(props: { items: StatItem[]; testId: string }) {
           </span>
           <span
             className={cn(
-              'text-[19px] leading-tight font-semibold tabular-nums',
+              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
               item.negative && 'text-destructive'
             )}
           >

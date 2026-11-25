@@ -246,7 +246,7 @@ export function StatCard(props: StatCardProps) {
   } else if (props.error) {
     valueContent = (
       <div className='flex flex-col gap-1.5'>
-        <div className='text-faint font-mono text-[26px] leading-none font-bold tracking-tight break-all tabular-nums'>
+        <div className='text-faint font-display text-[28px] leading-none font-extrabold tracking-tight break-all tabular-nums'>
           &mdash;
         </div>
         <p
@@ -262,7 +262,7 @@ export function StatCard(props: StatCardProps) {
   } else {
     valueContent = (
       <div className='flex flex-col gap-1.5'>
-        <div className='text-foreground font-mono text-[26px] leading-none font-bold tracking-[-0.02em] break-all tabular-nums'>
+        <div className='text-foreground font-display text-[28px] leading-none font-extrabold tracking-[-0.02em] break-all tabular-nums'>
           {props.value}
         </div>
         <p

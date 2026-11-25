@@ -103,7 +103,7 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
                   : 'min-w-0 flex-1'
               }
             >
-              <h2 className='truncate text-[23px] leading-tight font-[750] tracking-[-0.025em] [text-wrap:balance] [word-break:keep-all]'>
+              <h2 className='font-display truncate text-[24px] leading-tight font-extrabold tracking-[-0.025em] [text-wrap:balance] [word-break:keep-all]'>
                 {title}
               </h2>
               {description != null && (

@@ -162,7 +162,7 @@ export function LogStatCards(props: LogStatCardsProps) {
           } else if (error) {
             valueContent = (
               <>
-                <div className='text-faint mt-2 font-mono text-[26px] leading-none font-bold tracking-[-0.02em] tabular-nums'>
+                <div className='text-faint font-display mt-2 text-[28px] leading-none font-extrabold tracking-[-0.02em] tabular-nums'>
                   &mdash;
                 </div>
                 <div className='text-dim mt-1.5 hidden text-[11.5px] leading-snug md:block'>
@@ -174,7 +174,7 @@ export function LogStatCards(props: LogStatCardsProps) {
             valueContent = (
               <>
                 <div
-                  className='text-foreground mt-2 max-w-full truncate font-mono text-[26px] leading-none font-bold tracking-[-0.02em] tabular-nums'
+                  className='text-foreground font-display mt-2 max-w-full truncate text-[28px] leading-none font-extrabold tracking-[-0.02em] tabular-nums'
                   title={it.fullValue}
                 >
                   {it.value}

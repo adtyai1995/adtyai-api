@@ -88,8 +88,8 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
             <div
               className={
                 item.value === '—'
-                  ? 'text-faint mt-2.5 font-mono text-[26px] leading-none font-bold tracking-[-0.02em] tabular-nums'
-                  : 'text-foreground mt-2.5 truncate font-mono text-[26px] leading-none font-bold tracking-[-0.02em] tabular-nums'
+                  ? 'text-faint font-display mt-2.5 text-[28px] leading-none font-extrabold tracking-[-0.02em] tabular-nums'
+                  : 'text-foreground font-display mt-2.5 truncate text-[28px] leading-none font-extrabold tracking-[-0.02em] tabular-nums'
               }
             >
               {item.value}
